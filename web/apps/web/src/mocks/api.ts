@@ -3,8 +3,9 @@
  * route's response schema), a Response (binary, errors), or throw MockError. Auth, CSRF, roles and chat rate limiting
  * behave like the real server so the UI's error paths can be exercised.
  */
-import { hasRole, ROUTES, type MemoryKindKey, type Me, type Role, type RouteId } from '@mineclaw/contracts';
+import { hasRole, ROUTES, STEP_UP_MS, type MemoryKindKey, type Me, type Role, type RouteId } from '@mineclaw/contracts';
 import { blockSheetSvg, iso, nowIso } from './util';
+import * as admin from './data/administration';
 import * as live from './data/live';
 import * as mem from './data/memory';
 import * as misc from './data/misc';
@@ -128,6 +129,40 @@ function writeSession(s: { username: string; created: number } | null): void {
 /** For tests (and a dev convenience): sign in as a user without the form. */
 export function mockSignIn(username: string | null): void {
   writeSession(username ? { username, created: Date.now() } : null);
+  writeStepUp(null);
+}
+
+// Step-up (re-entered TOTP or password) for the Administration writes: valid for STEP_UP_MS, per session.
+const STEP_UP_KEY = 'mcx-mock-stepup';
+let memoryStepUp: number | null = null;
+
+function readStepUp(): number | null {
+  try {
+    const raw = sessionStorage.getItem(STEP_UP_KEY);
+    return raw ? Number(raw) : null;
+  } catch {
+    return memoryStepUp;
+  }
+}
+
+function writeStepUp(until: number | null): void {
+  memoryStepUp = until;
+  try {
+    if (until) sessionStorage.setItem(STEP_UP_KEY, String(until));
+    else sessionStorage.removeItem(STEP_UP_KEY);
+  } catch {
+    /* node test env */
+  }
+}
+
+/** For tests: grant (or drop) a fresh step-up without the dialog. */
+export function mockStepUp(on: boolean): void {
+  writeStepUp(on ? Date.now() + STEP_UP_MS : null);
+}
+
+function stepUpFresh(): boolean {
+  const until = readStepUp();
+  return until !== null && until > Date.now();
 }
 
 function me(): Me | null {
@@ -142,6 +177,7 @@ function me(): Me | null {
     sessionCreatedAt: iso(s.created),
     idleExpiresAt: iso(Date.now() + 12 * 3600_000),
     absoluteExpiresAt: iso(s.created + 7 * 86400_000),
+    stepUpUntil: stepUpFresh() ? iso(readStepUp()!) : null,
   };
 }
 
@@ -156,6 +192,24 @@ export function checkAccess(id: RouteId, csrfHeader: string | null, method: stri
   const user = me();
   if (!user) throw new MockError(401, 'Not signed in', 'unauthorized');
   if (!hasRole(user.roles, route.access)) throw new MockError(403, 'You do not have access to this', 'forbidden');
+  if (route.stepUp && !stepUpFresh()) throw new MockError(403, 'confirm it is you first (step-up)', 'step_up_required');
+}
+
+function adminCall<T>(f: () => T): T {
+  try {
+    return f();
+  } catch (e) {
+    if (e instanceof admin.AdminMockError) throw new MockError(e.status, e.message, e.code, e.details ? { details: e.details } : {});
+    throw e;
+  }
+}
+
+function who(): string {
+  return `${me()?.username ?? 'unknown'} (web)`;
+}
+
+function checkNode(params: Record<string, unknown>): void {
+  if (params.node !== admin.NODE.id) throw new MockError(404, `no node ${String(params.node)}`, 'not_found');
 }
 
 const chatTimes: number[] = [];
@@ -185,11 +239,13 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     if (u.totp && !b.totp) throw new MockError(401, 'Enter the code from your authenticator', 'unauthorized', { details: [{ path: 'totp', message: 'required' }] });
     if (u.totp && b.totp !== u.totp) throw new MockError(401, 'Invalid credentials', 'unauthorized');
     writeSession({ username: u.username, created: Date.now() });
+    writeStepUp(null);
     csrf = randomToken();
     return { user: me(), csrfToken: csrf };
   },
   'auth.logout': () => {
     writeSession(null);
+    writeStepUp(null);
     csrf = randomToken();
     return { ok: true };
   },
@@ -207,6 +263,15 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     u.totp = '123456';
     persistUsers(list);
     return { ok: true, totpEnrolled: true };
+  },
+  'auth.stepUp': ({ body }) => {
+    const b = body as { code?: string; password?: string };
+    const u = users().find((x) => x.username === me()?.username);
+    if (!u) throw new MockError(401, 'Not signed in', 'unauthorized');
+    const ok = u.totp ? b.code !== undefined && b.code === u.totp : b.password !== undefined && b.password === u.password;
+    if (!ok) throw new MockError(401, 'invalid credentials', 'unauthorized');
+    mockStepUp(true);
+    return { ok: true, stepUpUntil: iso(readStepUp()!) };
   },
   'audit.list': ({ query }) => {
     let items = misc.webAudit;
@@ -287,7 +352,8 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
 
   // The Design Studio: the shared fake designer (a little house, a door, a roof) over an in-memory canvas.
   'designer.models': () => designer.models(),
-  'designer.create': ({ body }) => designer.create(body as { model?: string; designId?: number }, me()?.player ?? me()?.username ?? 'poofimafox'),
+  'designer.create': ({ body }) => designer.create(body as Parameters<typeof designer.create>[0], me()?.player ?? me()?.username ?? 'poofimafox'),
+  'designer.version': ({ params, body }) => designer.version(num(params.id), body as Parameters<typeof designer.version>[1]),
   'designer.get': ({ params }) => designer.get(num(params.id)),
   'designer.message': ({ params, body }) => designer.message(num(params.id), body as Parameters<typeof designer.message>[1]),
   'designer.canvas': ({ params, body }) => designer.canvas(num(params.id), body as Parameters<typeof designer.canvas>[1]),
@@ -339,6 +405,36 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     misc.startJob('job-import-1');
     return misc.importResult();
   },
+  'admin.nodes': () => admin.nodes(),
+  'admin.settings': ({ params }) => {
+    checkNode(params);
+    return admin.settings();
+  },
+  'admin.settingsSave': ({ params, body }) => {
+    checkNode(params);
+    const b = body as { changes: Parameters<typeof admin.save>[0]; reason: string };
+    return adminCall(() => admin.save(b.changes, b.reason, who()));
+  },
+  'admin.settingsTest': ({ params, body }) => {
+    checkNode(params);
+    return admin.test(body as Parameters<typeof admin.test>[0], who());
+  },
+  'admin.ollamaModels': ({ params, query }) => {
+    checkNode(params);
+    return admin.ollamaModels(query.endpoint as string | undefined);
+  },
+  'admin.restartSafety': ({ params }) => {
+    checkNode(params);
+    return admin.safety();
+  },
+  'admin.restart': ({ params, body }) => {
+    checkNode(params);
+    return adminCall(() => admin.restart(body as { reason: string; force?: boolean }, who()));
+  },
+  'admin.settingsAudit': ({ params, query }) => {
+    checkNode(params);
+    return admin.audit(num(query.max));
+  },
   'groom.preview': () => {
     throw new MockError(501, 'Groom preview is not available on this server yet', 'upstream_error');
   },
@@ -375,6 +471,11 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     const b = live.findBot(String(params.bot));
     if (!b) throw new MockError(404, 'No such bot', 'not_found');
     return live.botNow(b);
+  },
+  'bots.inventory': ({ params }) => {
+    const b = live.findBot(String(params.bot));
+    if (!b) throw new MockError(404, 'No such body', 'not_found');
+    return live.bodyInventory(b);
   },
   'bots.chat': ({ params, body }) => {
     const b = live.findBot(String(params.bot));
@@ -444,6 +545,7 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.get': (c) => run(() => storySim.state(id(c), c.query.since === undefined ? undefined : num(c.query.since))),
     'story.release': (c) => run(() => storySim.release(id(c))),
     'story.resume': (c) => run(() => storySim.resume(id(c))),
+    'story.online': (c) => run(() => storySim.online(id(c), b(c))),
     'story.directives.list': () => run(() => ({ directives: storySim.directives() })),
     'story.directive': (c) => run(() => storySim.directiveDetail(id(c))),
     'story.beds': (c) => run(() => storySim.beds(id(c), b(c))),
@@ -479,7 +581,9 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'designer.message': { params: { id: 1 }, query: {}, body: { text: 'build a little house', canvas: { rev: 0 } } },
   'designer.canvas': { params: { id: 1 }, query: {}, body: { rev: 0, ops: [{ kind: 'place', cells: [[1, 0, 1, 4, 0]] }] } },
   'designer.save': { params: { id: 1 }, query: {}, body: { name: 'mock hut' } },
+  'designer.version': { params: { id: 1 }, query: {}, body: { version: '1.12.2' } },
   'bots.now': { params: { bot: 'maid_chan' }, query: {}, body: null },
+  'bots.inventory': { params: { bot: 'maid_chan_67' }, query: {}, body: null },
   'bodies.script': { params: { body: 'maid_chan' }, query: { code: '1' }, body: null },
   'bodies.controller': { params: { body: 'maid_chan_68' }, query: {}, body: null },
   'vision.list': { params: { body: 'maid_chan' }, query: {}, body: null },
@@ -493,6 +597,14 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'admin.memoryEdit': { params: {}, query: {}, body: { op: 'update', kind: 'fact', id: '3', fields: { text: 'x' } } },
   'admin.rebuildEstimate': { params: {}, query: {}, body: { scope: 'kind', kind: 'fact' } },
   'admin.compact': { params: {}, query: {}, body: { dryRun: true } },
+  'auth.stepUp': { params: {}, query: {}, body: { code: '123456' } },
+  'admin.settings': { params: { node: 'local' }, query: {}, body: null },
+  'admin.settingsSave': { params: { node: 'local' }, query: {}, body: { changes: [{ key: 'Supervisor:Viewer:PerMinute', value: 10 }], reason: 'fixture test' } },
+  'admin.settingsTest': { params: { node: 'local' }, query: {}, body: { kind: 'ollama', endpoint: 'http://10.1.2.50:11434' } },
+  'admin.ollamaModels': { params: { node: 'local' }, query: {}, body: null },
+  'admin.restartSafety': { params: { node: 'local' }, query: {}, body: null },
+  'admin.restart': { params: { node: 'local' }, query: {}, body: { reason: 'fixture test' } },
+  'admin.settingsAudit': { params: { node: 'local' }, query: {}, body: null },
   'shards.exportPreview': { params: {}, query: {}, body: { name: 'kiwi', selection: { mode: 'person', people: ['kiwi'] } } },
   locate: { params: {}, query: { q: 'home' }, body: null },
   'blueprints.get': { params: { id: 12 }, query: {}, body: null },

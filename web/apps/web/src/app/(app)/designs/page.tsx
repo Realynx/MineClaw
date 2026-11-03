@@ -65,6 +65,7 @@ function Detail({ id }: { id: number }) {
             <span className="text-subtle">#{des.design.id}</span> {des.design.name}
           </h2>
           <Badge tone={des.design.status === 'built' ? 'ok' : des.design.status === 'building' ? 'info' : 'neutral'}>{des.design.status}</Badge>
+          {des.design.version ? <Badge tone="neutral" title="The game version it is drawn for">{des.design.version}</Badge> : null}
           <Link
             href={`/designs/studio?id=${des.design.id}`}
             className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs text-fg hover:bg-surface-2"
@@ -133,6 +134,7 @@ function Detail({ id }: { id: number }) {
             <li key={r.rev} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 rounded-lg border border-border px-3 py-2 text-sm">
               <span className="font-medium text-fg">r{r.rev}</span>
               {r.tag ? <Badge tone="accent">{r.tag}</Badge> : null}
+              {r.version ? <span className="font-mono text-[11px] text-subtle">{r.version}</span> : null}
               <span className="min-w-0 flex-1 text-muted">“{r.message}” · {r.n} blocks</span>
               <span className="text-xs text-subtle">
                 {r.author} ({r.authorKind}) · {dateTime(r.created)}
@@ -205,7 +207,7 @@ function DesignsInner() {
                     <Badge>{d.status}</Badge>
                   </div>
                   <p className="mt-0.5 text-[11px] text-subtle">
-                    r{d.rev} · {d.revisions} revisions{d.requester ? ` · for ${d.requester}` : ''} · {ago(d.updated)}
+                    r{d.rev} · {d.revisions} revisions{d.version ? ` · ${d.version}` : ''}{d.requester ? ` · for ${d.requester}` : ''} · {ago(d.updated)}
                   </p>
                 </button>
               </li>

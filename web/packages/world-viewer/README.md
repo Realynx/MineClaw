@@ -289,6 +289,15 @@ The options are:
 `stats().memory` shows the profile, the renderer string, why the profile was picked, the frame time, the draw factor and the
 culled sections.
 
+**Viewer settings.** `@mineclaw/world-viewer/settings` (no three.js) holds one page-wide `ViewerQuality` store:
+`setViewerQuality({...})` and every runtime of the page applies it at the start of its next frame (draw distance cap, top-down
+ground cover cap, entity distance "ground" or blocks, drops, render scale, fps cap, adaptive on/off, animated textures, clouds,
+weather, ambient occlusion, fog, model distance, labels, bubbles, silhouettes, an fps overlay). Null fields take the detected
+profile's value. `viewerStatus()` reports the last interactive view's fps, levers and entity reach; `probeRendererOnce()` and
+`recommendedPreset()` serve a settings panel. A view's `drawDistance` prop is a cap below the setting. Top-down / iso views
+measure entity distance across the ground from their look-at point. `npm run perf -- --settings '{"entityDistance":16}'`
+benchmarks a setting.
+
 `npm run perf` is the benchmark. It serves the demo, opens it in Playwright's Chromium with SwiftShader and then with the GPU,
 and measures sustained fps at the follow camera over the dense fixture world (lava lake, water channel, glass pillars,
 20 mobs). It prints one JSON line per run and exits non-zero when software rendering falls under 40 fps.

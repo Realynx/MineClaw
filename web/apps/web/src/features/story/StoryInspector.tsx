@@ -7,9 +7,12 @@
  * delete, and the bill dialog).
  */
 import {
+  regularsSeatsWouldHelp,
   STORY_STORAGE_PRIORITIES,
   storyItemLabel,
   type StoryAiBody,
+  type StoryDesignation,
+  type StoryOnlineBlocked,
   targetPos,
   type StoryBed,
   type StoryBill,
@@ -34,16 +37,20 @@ import {
   Pause,
   Play,
   Plus,
+  Power,
+  RotateCcw,
   Search,
   Shield,
   ShieldOff,
   Trash2,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
+import { retryIn, shortReason } from './failedLabels';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
 import { DirectiveList } from './StoryPanels';
@@ -172,6 +179,155 @@ function TabRow<T extends string>({
   );
 }
 
+// ------------------------------------------------------------------ offline pawns
+
+/**
+ * "Bring online" for one offline pawn or all of them: why they're out, the button, and when the last try was refused by the
+ * player cap, the reason and an explicit secondary "Use regulars' seats" (it can lock a regular out until a pawn leaves).
+ */
+export function BringOnlineBox({
+  reason,
+  blocked,
+  canWrite,
+  label,
+  onBring,
+  testid = 'bring-online',
+  names,
+}: {
+  /** Why it is offline (one pawn), or null for the colony's box. */
+  reason?: string | null;
+  /** The refusals of the last try (for these pawns). */
+  blocked: readonly StoryOnlineBlocked[];
+  canWrite: boolean;
+  label: string;
+  onBring: (overCap: boolean) => void;
+  testid?: string;
+  /** Account → display name for the refusals. */
+  names?: (account: string) => string;
+}) {
+  const overHelps = blocked.some((b) => regularsSeatsWouldHelp(b.reason));
+  return (
+    <div className="space-y-1.5 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs" data-testid={testid}>
+      {reason ? (
+        <div className="flex items-start gap-1.5">
+          <WifiOff className="mt-0.5 size-3.5 shrink-0 text-muted" aria-hidden />
+          <div className="min-w-0">
+            <span className="font-semibold">Offline:</span> <span data-testid="pawn-offline-reason">{reason}</span>
+          </div>
+        </div>
+      ) : null}
+      {canWrite ? (
+        <Button size="sm" onClick={() => onBring(false)}>
+          <Power className="size-3.5" />
+          {label}
+        </Button>
+      ) : (
+        <p className="text-muted">Bringing pawns online needs the story role.</p>
+      )}
+      {blocked.length ? (
+        <ul className="space-y-0.5 text-warn" data-testid="online-blocked">
+          {blocked.map((b) => (
+            <li key={b.pawn}>
+              {blocked.length > 1 || !reason ? `${names?.(b.pawn) ?? b.pawn}: ` : 'Still out: '}
+              {b.reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {canWrite && overHelps ? (
+        <div className="space-y-0.5">
+          <Button size="sm" variant="ghost" onClick={() => onBring(true)} data-testid="use-regulars-seats">
+            Use regulars&apos; seats
+          </Button>
+          <p className="text-[10.5px] text-muted">A regular may then find the server full until a pawn leaves.</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ a failed designation
+
+/** A designation that keeps failing: why (in full), how often, when it is tried again; Retry now / Cancel. */
+export function DesignationInspector({
+  designation: d,
+  cluster,
+  canWrite,
+  onRetry,
+  onCancel,
+  onClose,
+}: {
+  designation: StoryDesignation;
+  /** The other designations its map label stands for (same reason, adjacent), this one included. */
+  cluster: ReadonlyArray<string | number>;
+  canWrite: boolean;
+  onRetry: (ids: Array<string | number>) => void;
+  onCancel: (ids: Array<string | number>) => void;
+  onClose: () => void;
+}) {
+  const at = designationAt(d);
+  const short = shortReason(d.reason);
+  const many = cluster.length > 1;
+  return (
+    <Shell
+      title={`${d.label ?? d.kind}${at ? ` at ${at.join(', ')}` : ''}`}
+      sub={d.status === 'failed' ? `Failed: ${short.title}` : `Failing: ${short.title}`}
+      onClose={onClose}
+      testid="designation-inspector"
+    >
+      <div className="space-y-2 text-xs">
+        <div className="rounded-md bg-surface-2 px-2 py-1.5">
+          <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Why it failed</div>
+          <div className="break-words" data-testid="designation-reason">
+            {d.reason ?? 'No reason given'}
+          </div>
+        </div>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+          <dt className="text-muted">Tries</dt>
+          <dd className="tabular-nums" data-testid="designation-fails">
+            {d.fails ?? 0} failed
+          </dd>
+          <dt className="text-muted">Next try</dt>
+          <dd data-testid="designation-retry">{retryIn(d.retryAt)}</dd>
+          {many ? (
+            <>
+              <dt className="text-muted">Label</dt>
+              <dd>{cluster.length} like it nearby</dd>
+            </>
+          ) : null}
+        </dl>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" disabled={!canWrite} onClick={() => onRetry([d.id])}>
+            <RotateCcw className="size-3.5" />
+            Retry now
+          </Button>
+          <Button size="sm" variant="ghost" disabled={!canWrite} onClick={() => onCancel([d.id])}>
+            <Trash2 className="size-3.5" />
+            Cancel
+          </Button>
+          {many ? (
+            <>
+              <Button size="sm" variant="ghost" disabled={!canWrite} onClick={() => onRetry([...cluster])}>
+                Retry all {cluster.length}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={!canWrite} onClick={() => onCancel([...cluster])}>
+                Cancel all {cluster.length}
+              </Button>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </Shell>
+  );
+}
+
+function designationAt(d: StoryDesignation): number[] | null {
+  const t = d.target;
+  if (Array.isArray(t)) return t.map((n) => Math.floor(n));
+  const b = d.block ?? d.blocks?.[0] ?? d.targets?.[0];
+  return b ? b.map((n) => Math.floor(n)) : null;
+}
+
 // ------------------------------------------------------------------ pawn
 
 export function PawnInspector({
@@ -182,6 +338,8 @@ export function PawnInspector({
   onClearQueue,
   onShowBed,
   onClose,
+  blocked = [],
+  onBringOnline,
 }: {
   pawn: StoryPawn;
   bed?: StoryBed | null;
@@ -190,15 +348,31 @@ export function PawnInspector({
   onClearQueue: () => void;
   onShowBed?: () => void;
   onClose: () => void;
+  /** The last "Bring online" refusals for this pawn. */
+  blocked?: readonly StoryOnlineBlocked[];
+  onBringOnline?: (overCap: boolean) => void;
 }) {
   const [tab, setTab] = useState<'overview' | 'skills' | 'orders'>('overview');
+  const offline = pawn.online === false || pawn.state === 'offline';
   return (
     <Shell
       title={pawn.display}
-      sub={`${pawn.state ?? 'idle'}${pawn.online === false ? ' · offline' : ''}`}
+      sub={offline ? 'offline' : `${pawn.state ?? 'idle'}`}
       onClose={onClose}
       avatar={<Avatar name={pawn.name} size={30} />}
     >
+      {offline && onBringOnline ? (
+        <div className="mb-2">
+          <BringOnlineBox
+            reason={pawn.offlineReason ?? 'offline'}
+            blocked={blocked}
+            canWrite={canWrite}
+            label="Bring online"
+            onBring={onBringOnline}
+            testid="pawn-offline"
+          />
+        </div>
+      ) : null}
       <TabRow<'overview' | 'skills' | 'orders'>
         tabs={[
           ['overview', 'Overview'],

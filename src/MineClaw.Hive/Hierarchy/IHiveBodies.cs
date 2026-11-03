@@ -30,6 +30,10 @@ public interface ISubhiveHost
     string Spawn(string owner, string account, string? task, string? script);
     /// <summary>Planned logout: deposit first, then disconnect; the host reports it gone (main: <see cref="HiveHierarchy.Released"/>).</summary>
     string Release(string account);
+    /// <summary>A hosted body whose login is looping (a kick, a backoff) tries again now. False = not hosted here or not waiting.</summary>
+    bool RetryNow(string account) => false;
+    /// <summary>The owner chose to let this account use the seats kept for offline regulars (until it logs out for good).</summary>
+    void AllowOverCap(string account) { }
 }
 
 /// <summary>

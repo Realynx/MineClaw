@@ -13,9 +13,12 @@ import {
   type StoryAlert,
   type StoryColonyState,
   type StoryDirectiveSpec,
+  type StoryOnlineBlocked,
 } from '@mineclaw/contracts';
+import { Maximize2, Minimize2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PortalContainer } from '@/components/ui/overlays';
 import { ChatOverlay } from '@/features/world/InWorld';
 import { isTyping, sendDirective } from '@/features/world/directives';
 import { loadWorldViewer, WorldHost } from '@/features/world/integration';
@@ -49,10 +52,12 @@ import {
   AiInspector,
   BedInspector,
   BillsInspector,
+  DesignationInspector,
   GroupInspector,
   PawnInspector,
   StorageInspector,
 } from './StoryInspector';
+import { useFullscreen } from './useFullscreen';
 import { StoryMap, type DragResult, type FormationMove, type MapTool, type StoryMapHandle } from './StoryMap';
 import {
   ArchitectPanel,
@@ -176,6 +181,10 @@ export function StoryMode() {
   const lastDraft = useRef<{ key: string; drafted: boolean; at: number } | null>(null);
   const [pickHint, setPickHint] = useState(false);
   const [order, setOrder] = useBarOrder(me.username);
+  /** The last "Bring online" refusals (per pawn; dropped once that pawn is in game). */
+  const [blocked, setBlocked] = useState<StoryOnlineBlocked[]>([]);
+  // Full screen: the whole Story Mode (map + HUD, so every panel, menu, dialog and toast stays visible), Shift+F or the button.
+  const { attach: fsAttach, el: fsEl, on: fullscreen, toggle: toggleFullscreen } = useFullscreen<HTMLDivElement>();
   const xrayOn = xray === 'on' || (xray === 'auto' && (tool.kind === 'build' || lv > ground));
   const cutY = levelCutY(lv, build.height, xrayOn);
 
@@ -194,6 +203,40 @@ export function StoryMode() {
   }, [toast]);
 
   const pawns = useMemo(() => orderPawns(state?.pawns ?? [], order), [state?.pawns, order]);
+  const offlineNames = useMemo(
+    () => (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').map((p) => p.name),
+    [state?.pawns],
+  );
+  const stillBlocked = blocked.filter((b) => offlineNames.includes(b.pawn));
+  const displayOf = (account: string) => state?.pawns.find((p) => p.name === account)?.display ?? account;
+
+  /** "Bring online": these pawns (null = every offline one) are whitelisted again and started, the cap permitting. */
+  const bringOnline = async (names: string[] | null, overCap = false): Promise<StoryOnlineBlocked[]> => {
+    if (!canWrite) {
+      say('Needs the story role', 'warn');
+      return [];
+    }
+    try {
+      const out = await write('story.online', { pawns: names, ...(overCap ? { overCap: true } : {}) });
+      setBlocked((cur) => [...cur.filter((b) => !(names ?? offlineNames).includes(b.pawn)), ...out.blocked]);
+      const n = out.started.length;
+      if (out.blocked.length)
+        say(
+          `${n ? `${n} coming online; ` : ''}${out.blocked.length} can't: ${out.blocked[0]!.reason}`,
+          n ? 'ok' : 'warn',
+        );
+      else
+        say(
+          n
+            ? `${n} pawn${n === 1 ? '' : 's'} coming online${overCap ? ' (on the regulars’ seats)' : ''}`
+            : 'Nobody is offline',
+        );
+      return out.blocked;
+    } catch (e) {
+      say(errorText(e), 'warn');
+      return [];
+    }
+  };
   const ai = useMemo(() => orderAi(state?.ai ?? []), [state?.ai]);
   const bodies = useMemo(() => barBodies(pawns, ai), [pawns, ai]);
   const split = splitBodies(state, selection.bodies);
@@ -497,6 +540,7 @@ export function StoryMode() {
       else if (a === 'heightUp' || a === 'heightDown')
         setBuild((b) => ({ ...b, height: clampHeight(b.height + (a === 'heightUp' ? 1 : -1)) }));
       else if (a === 'help') setHelp((h) => !h);
+      else if (a === 'fullscreen') toggleFullscreen();
       else if (a === 'focus') {
         if (selection.bodies[0]) focusBody(selection.bodies[0]);
         else if (state?.home) map.current?.focus(state.home[0], state.home[2], state.home[1]);
@@ -520,7 +564,23 @@ export function StoryMode() {
       window.removeEventListener('keyup', up);
       window.removeEventListener('blur', blur);
     };
-  }, [tool, split, state, menu, help, chat, tab, lv, build.height, selection, draft, togglePause, focusBody, xrayOn]);
+  }, [
+    tool,
+    split,
+    state,
+    menu,
+    help,
+    chat,
+    tab,
+    lv,
+    build.height,
+    selection,
+    draft,
+    togglePause,
+    focusBody,
+    xrayOn,
+    toggleFullscreen,
+  ]);
 
   // ------------------------------------------------------------------ alerts
 
@@ -549,6 +609,35 @@ export function StoryMode() {
 
   const inspector = (() => {
     const close = () => setSelection(EMPTY_SELECTION);
+    if (selection.designation) {
+      const sel = selection.designation;
+      const d = (state?.designations ?? []).find((x) => String(x.id) === String(sel.id));
+      if (!d) return null;
+      const live = new Set((state?.designations ?? []).map((x) => String(x.id)));
+      const cluster = sel.cluster.filter((x) => live.has(String(x)));
+      const designations = (op: 'retry' | 'cancel', ids: Array<string | number>) =>
+        void write('story.designations', { op, ids }).then(
+          () => {
+            say(
+              op === 'retry'
+                ? `Trying ${ids.length === 1 ? 'it' : `${ids.length}`} again now`
+                : `${ids.length} designation${ids.length === 1 ? '' : 's'} cancelled`,
+            );
+            if (op === 'cancel' && ids.some((x) => String(x) === String(d.id))) close();
+          },
+          (e) => say(errorText(e), 'warn'),
+        );
+      return (
+        <DesignationInspector
+          designation={d}
+          cluster={cluster.length ? cluster : [d.id]}
+          canWrite={canWrite}
+          onRetry={(ids) => designations('retry', ids)}
+          onCancel={(ids) => designations('cancel', ids)}
+          onClose={close}
+        />
+      );
+    }
     if (selection.bench) {
       const bench = (state?.workbenches ?? []).find((w) => k3(w.pos) === k3(selection.bench!));
       return bench ? (
@@ -591,6 +680,8 @@ export function StoryMode() {
             onDraft={(d) => void draft([p.name], d)}
             onClearQueue={() => void write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })}
             onClose={close}
+            blocked={stillBlocked.filter((b) => b.pawn === p.name)}
+            onBringOnline={state?.active === false ? undefined : (overCap) => void bringOnline([p.name], overCap)}
           />
         );
       const a = state?.ai?.find((x) => x.name === selection.bodies[0]);
@@ -625,12 +716,28 @@ export function StoryMode() {
       let blocks = designBlocks(await api('blueprints.get', { params: { id } }).catch(() => null));
       if (!blocks.length) blocks = designBlocks(await api('buildplans.get', { params: { id } }).catch(() => null));
       // The Design Studio opens a design's newest revision as cells: the reliable source when the account may design.
-      // (with its dug cells: a basement goes under the clicked level).
-      if (!blocks.length && can('design'))
-        blocks = designCells(await api('designer.create', { body: { designId: id } }).catch(() => null));
+      // (with its dug cells: a basement goes under the clicked level). Converted to the server's version: a design drawn
+      // for the other one keeps what maps (substitutions said) and is refused when a block of it doesn't exist here.
+      let converted = '';
+      if (!blocks.length && can('design')) {
+        const server = await api('designer.models')
+          .then((m) => m.version)
+          .catch(() => null);
+        const s = await api('designer.create', {
+          body: { designId: id, ...(server === 'b1.8.1' || server === '1.12.2' ? { convertTo: server } : {}) },
+        }).catch(() => null);
+        if (s?.compat && !s.compat.compatible)
+          return say(
+            `${name} is drawn for ${s.compat.from}; ${s.compat.to} has no ${s.compat.missing.map((m) => `${m.name} (${m.count})`).join(', ')}: convert it in the Design Studio first`,
+            'warn',
+          );
+        if (s?.compat?.substituted.length)
+          converted = ` (converted from ${s.compat.from}: ${s.compat.substituted.map((m) => `${m.count} ${m.name}`).join(', ')})`;
+        blocks = designCells(s);
+      }
       if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
       setTool({ kind: 'design', id, name, blocks });
-      say(`${name}: move to a spot and click to queue it (Q/E turns)`);
+      say(`${name}: move to a spot and click to queue it (Q/E turns)${converted}`);
     })();
   }, [designParam, state, say, can]);
 
@@ -763,6 +870,9 @@ export function StoryMode() {
                 (e) => say(errorText(e), 'warn'),
               )
             }
+            blocked={stillBlocked}
+            onBringAll={(overCap) => void bringOnline(null, overCap)}
+            displayOf={displayOf}
           />
         );
       default:
@@ -776,174 +886,204 @@ export function StoryMode() {
   ).length;
 
   return (
-    <div className="relative h-full min-h-[32rem] overflow-hidden select-none" data-testid="story-mode">
-      <WorldHost>
-        <StoryMap
-          ref={map}
-          state={state}
-          selection={selection}
-          tool={tool}
-          build={build}
-          mineFilter={mineFilter}
-          level={lv}
-          cutY={cutY}
-          view={view}
-          keys={keys}
-          home={(state?.home as V3 | undefined) ?? null}
-          settle={noColony}
-          player={me.player ?? null}
-          onCentre={setCentre}
-          onSettled={setSettledY}
-          onSelect={onSelect}
-          onSelectSame={(kind, visible) =>
-            setSelection({
-              ...EMPTY_SELECTION,
-              bodies: visible.filter((n) =>
-                kind === 'pawn' ? state?.pawns.some((p) => p.name === n) : state?.ai?.some((x) => x.name === n),
-              ),
-            })
-          }
-          onTool={(r, shift) => void onTool(r, shift)}
-          onContext={onContext}
-          onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
-          onDropTool={() => setTool({ kind: 'select' })}
-        />
-      </WorldHost>
-
-      <div className="pointer-events-none absolute inset-0">
-        {/* top: controls (left), the colonist bar (centre), alerts (right) */}
-        <div className="absolute right-2 bottom-2">
-          {state ? (
-            <ControlCluster
-              name={state.name ?? id ?? ''}
-              hour={state.hour}
-              paused={!!state.paused}
-              canWrite={canWrite}
-              onPause={togglePause}
-              view={view}
-              onView={() => setView((v) => (v === 'top' ? 'angled' : 'top'))}
-              level={lv}
-              ground={ground}
-              height={build.height}
-              xray={xrayOn}
-              onLevel={(dir) => setLevel(nextLevel(lv, build.height, dir, false))}
-              onXray={() => setXray(xrayOn ? 'off' : 'on')}
-              onHelp={() => setHelp((h) => !h)}
-            >
-              <TimeSlider
-                tod={state.timeOfDay}
-                control={state.timeControl ?? colonies.data?.timeControl}
-                canWrite={canWrite}
-                onSet={setTime}
-              />
-            </ControlCluster>
-          ) : null}
-        </div>
-        <div className="absolute inset-x-2 top-2 flex flex-col items-center gap-1.5">
-          {state ? (
-            <ColonistBar
-              bodies={bodies}
-              selected={selection.bodies}
-              order={order}
-              onOrder={setOrder}
-              onClick={(name, mods) => {
-                setSelection((s) => clickBody(s, name, mods));
-                if (!mods.shift && !mods.ctrl) showBody(name);
-              }}
-              onBox={(names, add) =>
-                setSelection((s) => ({
-                  ...EMPTY_SELECTION,
-                  bodies: add ? [...new Set([...s.bodies, ...names])] : names,
-                }))
-              }
-              onJump={(name) => {
-                setSelection({ ...EMPTY_SELECTION, bodies: [name] });
-                focusBody(name);
-              }}
-            />
-          ) : null}
-          <OptionsBar
+    <div
+      ref={fsAttach}
+      className={cn(
+        'relative h-full min-h-[32rem] overflow-hidden bg-canvas select-none',
+        fullscreen && 'h-screen w-screen',
+      )}
+      data-testid="story-mode"
+      data-fullscreen={fullscreen || undefined}
+    >
+      {/* Dialogs and tooltips mount inside this element while it is full screen (else they would be invisible). */}
+      <PortalContainer.Provider value={fullscreen ? fsEl : null}>
+        <WorldHost>
+          <StoryMap
+            ref={map}
+            state={state}
+            selection={selection}
             tool={tool}
             build={build}
-            onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
             mineFilter={mineFilter}
-            onMineFilter={setMineFilter}
-            stock={stock}
-            onClose={() => setTool({ kind: 'select' })}
+            level={lv}
+            cutY={cutY}
+            view={view}
+            keys={keys}
+            home={(state?.home as V3 | undefined) ?? null}
+            settle={noColony}
+            player={me.player ?? null}
+            onCentre={setCentre}
+            onSettled={setSettledY}
+            onSelect={onSelect}
+            onSelectSame={(kind, visible) =>
+              setSelection({
+                ...EMPTY_SELECTION,
+                bodies: visible.filter((n) =>
+                  kind === 'pawn' ? state?.pawns.some((p) => p.name === n) : state?.ai?.some((x) => x.name === n),
+                ),
+              })
+            }
+            onTool={(r, shift) => void onTool(r, shift)}
+            onContext={onContext}
+            onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
+            onDropTool={() => setTool({ kind: 'select' })}
           />
-          {pickHint ? (
-            <div className={cn(panel, 'pointer-events-auto px-3 py-1.5 text-xs font-medium')}>
-              Click a chest on the map to store the bill&apos;s products there (Esc cancels)
+        </WorldHost>
+
+        <div className="pointer-events-none absolute inset-0">
+          {/* top: controls (left), the colonist bar (centre), alerts (right) */}
+          <div className="absolute right-2 bottom-2">
+            {state ? (
+              <ControlCluster
+                name={state.name ?? id ?? ''}
+                hour={state.hour}
+                paused={!!state.paused}
+                canWrite={canWrite}
+                onPause={togglePause}
+                view={view}
+                onView={() => setView((v) => (v === 'top' ? 'angled' : 'top'))}
+                level={lv}
+                ground={ground}
+                height={build.height}
+                xray={xrayOn}
+                onLevel={(dir) => setLevel(nextLevel(lv, build.height, dir, false))}
+                onXray={() => setXray(xrayOn ? 'off' : 'on')}
+                onHelp={() => setHelp((h) => !h)}
+              >
+                <TimeSlider
+                  tod={state.timeOfDay}
+                  control={state.timeControl ?? colonies.data?.timeControl}
+                  canWrite={canWrite}
+                  onSet={setTime}
+                />
+              </ControlCluster>
+            ) : null}
+          </div>
+          <div className="absolute top-2 right-2">
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}
+              aria-pressed={fullscreen}
+              title={fullscreen ? 'Exit full screen (Esc or Shift+F)' : 'Full screen (Shift+F)'}
+              className={cn(panel, 'pointer-events-auto grid size-8 place-items-center hover:bg-surface-2')}
+              data-testid="story-fullscreen"
+            >
+              {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+            </button>
+          </div>
+          <div className="absolute inset-x-12 top-2 flex flex-col items-center gap-1.5">
+            {state ? (
+              <ColonistBar
+                bodies={bodies}
+                selected={selection.bodies}
+                order={order}
+                onOrder={setOrder}
+                onClick={(name, mods) => {
+                  setSelection((s) => clickBody(s, name, mods));
+                  if (!mods.shift && !mods.ctrl) showBody(name);
+                }}
+                onBox={(names, add) =>
+                  setSelection((s) => ({
+                    ...EMPTY_SELECTION,
+                    bodies: add ? [...new Set([...s.bodies, ...names])] : names,
+                  }))
+                }
+                onJump={(name) => {
+                  setSelection({ ...EMPTY_SELECTION, bodies: [name] });
+                  focusBody(name);
+                }}
+                onBringAll={
+                  canWrite && state.active !== false
+                    ? // Refused by the cap: the Colony tab shows why, with the explicit "Use regulars' seats".
+                      () => void bringOnline(null).then((b) => b.length && setTab('colony'))
+                    : null
+                }
+              />
+            ) : null}
+            <OptionsBar
+              tool={tool}
+              build={build}
+              onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
+              mineFilter={mineFilter}
+              onMineFilter={setMineFilter}
+              stock={stock}
+              onClose={() => setTool({ kind: 'select' })}
+            />
+            {pickHint ? (
+              <div className={cn(panel, 'pointer-events-auto px-3 py-1.5 text-xs font-medium')}>
+                Click a chest on the map to store the bill&apos;s products there (Esc cancels)
+              </div>
+            ) : null}
+          </div>
+          <div className="absolute top-[5.75rem] right-2">
+            <AlertsStack alerts={alerts} onPick={onAlert} onDismiss={(k) => setDismissed((d) => new Set([...d, k]))} />
+          </div>
+
+          {/* middle overlays */}
+          {help ? (
+            <div className="absolute top-24 left-1/2 -translate-x-1/2">
+              <HelpOverlay onClose={() => setHelp(false)} />
+            </div>
+          ) : null}
+          {noColony ? (
+            <div className="absolute inset-0 grid place-items-center">
+              <div className={cn(panel, 'pointer-events-auto w-96 space-y-2 p-4')}>
+                <h2 className="text-base font-semibold">Story Mode</h2>
+                <p className="text-xs text-muted">
+                  Run a colony of pawns: script-only bodies that take work by your priorities and schedule. Pan to where
+                  they should settle, then found it.
+                </p>
+                <NewColony canWrite={canWrite} at={centre} onCreate={(name, n) => void create(name, n)} />
+              </div>
+            </div>
+          ) : null}
+
+          {/* bottom: inspector + the open tab's window, the tab bar, the toast, the chat */}
+          <div className="absolute bottom-9 left-2 flex items-end gap-2">
+            {inspector}
+            {panelEl}
+          </div>
+          <div className="absolute bottom-12 left-1/2 -translate-x-1/2">
+            <Toast text={toast?.text ?? null} tone={toast?.tone} />
+          </div>
+          <div className="absolute bottom-0 left-2">
+            <TabBar open={tab} onOpen={setTab} badge={{ queue: queued, directives: directivesLive }} />
+          </div>
+          {state ? (
+            <div className="pointer-events-auto">
+              <ChatOverlay
+                open={chat}
+                targets={
+                  split.ai.length ? split.ai : selection.bodies.filter((n) => state?.ai?.some((a) => a.name === n))
+                }
+                marker={null}
+                canChat={canChat}
+                results={null}
+                onClose={() => setChat(false)}
+                onSend={(text) =>
+                  void sendDirective(split.ai, text).then((res) => {
+                    const bad = res.filter((r) => !r.ok);
+                    say(
+                      bad.length ? `Not sent to ${bad.map((b) => b.bot).join(', ')}` : `Said to ${split.ai.join(', ')}`,
+                      bad.length ? 'warn' : 'ok',
+                    );
+                  })
+                }
+              />
             </div>
           ) : null}
         </div>
-        <div className="absolute top-[5.75rem] right-2">
-          <AlertsStack alerts={alerts} onPick={onAlert} onDismiss={(k) => setDismissed((d) => new Set([...d, k]))} />
-        </div>
-
-        {/* middle overlays */}
-        {help ? (
-          <div className="absolute top-24 left-1/2 -translate-x-1/2">
-            <HelpOverlay onClose={() => setHelp(false)} />
-          </div>
+        {menu ? (
+          <ContextMenu
+            at={menu.at}
+            title={menu.title}
+            items={menu.items}
+            onPick={(it, q) => void onMenuPick(it, q)}
+            onClose={() => setMenu(null)}
+          />
         ) : null}
-        {noColony ? (
-          <div className="absolute inset-0 grid place-items-center">
-            <div className={cn(panel, 'pointer-events-auto w-96 space-y-2 p-4')}>
-              <h2 className="text-base font-semibold">Story Mode</h2>
-              <p className="text-xs text-muted">
-                Run a colony of pawns: script-only bodies that take work by your priorities and schedule. Pan to where
-                they should settle, then found it.
-              </p>
-              <NewColony canWrite={canWrite} at={centre} onCreate={(name, n) => void create(name, n)} />
-            </div>
-          </div>
-        ) : null}
-
-        {/* bottom: inspector + the open tab's window, the tab bar, the toast, the chat */}
-        <div className="absolute bottom-9 left-2 flex items-end gap-2">
-          {inspector}
-          {panelEl}
-        </div>
-        <div className="absolute bottom-12 left-1/2 -translate-x-1/2">
-          <Toast text={toast?.text ?? null} tone={toast?.tone} />
-        </div>
-        <div className="absolute bottom-0 left-2">
-          <TabBar open={tab} onOpen={setTab} badge={{ queue: queued, directives: directivesLive }} />
-        </div>
-        {state ? (
-          <div className="pointer-events-auto">
-            <ChatOverlay
-              open={chat}
-              targets={
-                split.ai.length ? split.ai : selection.bodies.filter((n) => state?.ai?.some((a) => a.name === n))
-              }
-              marker={null}
-              canChat={canChat}
-              results={null}
-              onClose={() => setChat(false)}
-              onSend={(text) =>
-                void sendDirective(split.ai, text).then((res) => {
-                  const bad = res.filter((r) => !r.ok);
-                  say(
-                    bad.length ? `Not sent to ${bad.map((b) => b.bot).join(', ')}` : `Said to ${split.ai.join(', ')}`,
-                    bad.length ? 'warn' : 'ok',
-                  );
-                })
-              }
-            />
-          </div>
-        ) : null}
-      </div>
-      {menu ? (
-        <ContextMenu
-          at={menu.at}
-          title={menu.title}
-          items={menu.items}
-          onPick={(it, q) => void onMenuPick(it, q)}
-          onClose={() => setMenu(null)}
-        />
-      ) : null}
+      </PortalContainer.Provider>
     </div>
   );
 }

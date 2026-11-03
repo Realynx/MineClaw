@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronsLeft, ChevronsRight, Menu, X } from 'lucide-react';
+import { ChevronsLeft, ChevronsRight, Menu, Settings, X } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -10,6 +10,7 @@ import { setPrefs, usePrefs } from '@/lib/prefs';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/primitives';
 import { Tooltip } from '@/components/ui/overlays';
+import { initViewerSettings } from '@/features/settings/store';
 import { CommandPalette } from './CommandPalette';
 import { Header } from './Header';
 import { NAV } from './nav';
@@ -94,6 +95,34 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
   );
 }
 
+/** The sidebar footer's gear: Settings (viewer quality for every world view on this device). */
+function SettingsLink({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
+  const pathname = usePathname();
+  const active = pathname === '/settings' || pathname.startsWith('/settings/');
+  const link = (
+    <Link
+      href="/settings"
+      onClick={onNavigate}
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'group flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors',
+        active ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2 hover:text-fg',
+        collapsed && 'w-8 justify-center px-0',
+      )}
+    >
+      <Settings className={cn('size-4 shrink-0', active ? 'text-accent' : 'text-subtle group-hover:text-muted')} />
+      {collapsed ? <span className="sr-only">Settings</span> : <span>Settings</span>}
+    </Link>
+  );
+  return collapsed ? (
+    <Tooltip content="Settings" side="right">
+      {link}
+    </Tooltip>
+  ) : (
+    link
+  );
+}
+
 /** True at and above the given min-width (client only; false during SSR). */
 function useMinWidth(px: number): boolean {
   return useSyncExternalStore(
@@ -119,6 +148,9 @@ export function Shell({ children }: { children: ReactNode }) {
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
+
+  // The device's viewer settings reach every world view before it draws (and follow other tabs).
+  useEffect(() => initViewerSettings(), []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -148,7 +180,8 @@ export function Shell({ children }: { children: ReactNode }) {
       >
         <Logo collapsed={sidebarCollapsed} />
         <SidebarNav collapsed={sidebarCollapsed} />
-        <div className={cn('border-t border-border p-2', sidebarCollapsed && 'flex justify-center')}>
+        <div className={cn('space-y-0.5 border-t border-border p-2', sidebarCollapsed && 'flex flex-col items-center')}>
+          <SettingsLink collapsed={sidebarCollapsed} />
           <Button
             variant="ghost"
             size={sidebarCollapsed ? 'icon-sm' : 'sm'}
@@ -175,6 +208,9 @@ export function Shell({ children }: { children: ReactNode }) {
               </Button>
             </div>
             <SidebarNav collapsed={false} onNavigate={() => setMobileOpen(false)} />
+            <div className="border-t border-border p-2">
+              <SettingsLink collapsed={false} onNavigate={() => setMobileOpen(false)} />
+            </div>
           </aside>
         </div>
       ) : null}

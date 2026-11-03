@@ -28,7 +28,8 @@ import { SkyLayer } from './sky';
 import { AidsLayer } from './aids';
 import { BubbleLayer, type BubbleKind, type BubbleMode, type ShownBubble } from './bubbles';
 import { loadBundle, type AssetBundle } from '../assets/bundle';
-import { PROFILES, QualityController, probeRenderer, type QualityName, type RendererProbe } from './quality';
+import { PROFILES, QualityController, probeRendererOnce, type QualityName, type QualityProfile, type RendererProbe } from './quality';
+import { effectiveProfile, entityReach, FrameLimiter, getViewerQuality, reportViewerStatus, viewerQualityRev, type ViewerQuality } from './viewerQuality';
 import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
 import { BlockEntityStore } from '../world/blockEntities';
@@ -148,6 +149,8 @@ export interface RuntimeMemory {
   drawFactor: number;
   /** Sections hidden by cave culling in the last view drawn. */
   culledSections: number;
+  /** How far the last primary view drew entities (blocks; top-down / iso: across the ground from its look-at point). */
+  entityRadius: number;
 }
 
 let nextViewId = 1;
@@ -213,6 +216,19 @@ export class WorldRuntime {
   };
   readonly quality: QualityController;
   readonly probe: RendererProbe;
+  /** The detected (or forced) profile before the user's viewer settings are laid over it. */
+  private baseProfile: QualityProfile;
+  /** The viewer settings applied (re-read when the store's revision moves). */
+  private q: Readonly<ViewerQuality> = getViewerQuality();
+  private qRev = -1;
+  private readonly limiter = new FrameLimiter();
+  private readonly frustum = new THREE.Frustum();
+  private readonly projView = new THREE.Matrix4();
+  /** Primary renders counted for the reported fps. */
+  private statusFrames = 0;
+  private statusAt = 0;
+  private statusFps = 0;
+  private entityRadius = 0;
   private flash = 0;
   private readonly renderedAt = new Map<number, number>();
   private readonly tmpDir = new THREE.Vector3();
@@ -228,10 +244,10 @@ export class WorldRuntime {
     this.source = source;
     this.opts = opts;
     // Software WebGL (hardware acceleration off) gets its own profile: no MSAA, 1× pixels, shorter draw distance, 25 ms target.
-    this.probe = opts.quality && opts.quality !== 'auto' ? { software: opts.quality === 'software', renderer: 'forced', reason: `quality: ${opts.quality}` } : probeRenderer();
+    this.probe = opts.quality && opts.quality !== 'auto' ? { software: opts.quality === 'software', renderer: 'forced', reason: `quality: ${opts.quality}` } : probeRendererOnce();
     const profile = PROFILES[opts.quality && opts.quality !== 'auto' ? opts.quality : this.probe.software ? 'software' : 'gpu'];
+    this.baseProfile = profile;
     this.quality = new QualityController(profile);
-    this.quality.enabled = opts.adaptiveResolution !== false;
     this.renderer = new THREE.WebGLRenderer({ antialias: (opts.antialias ?? true) && profile.antialias, powerPreference: 'high-performance', preserveDrawingBuffer: false });
     this.renderer.setPixelRatio(1);
     this.renderer.setScissorTest(true);
@@ -254,6 +270,7 @@ export class WorldRuntime {
     this.scene.add(sun);
     this.uniforms = createChunkUniforms();
     this.materials = createChunkMaterials(this.uniforms);
+    this.applyQuality(); // the user's viewer settings over the profile
     this.backstop = capBackstop(this.materials.cap);
     this.scene.add(this.backstop);
     this.entities.setWorldUniforms(this.uniforms); // [entity models] entities light and fog like the sections
@@ -586,6 +603,7 @@ export class WorldRuntime {
       frameMs: this.quality.state.smoothMs,
       drawFactor: this.quality.state.drawFactor,
       culledSections: [...this.sections.values()].reduce((a, s) => a + s.culled, 0),
+      entityRadius: this.entityRadius,
     };
   }
 
@@ -700,6 +718,9 @@ export class WorldRuntime {
   private readonly tick = (now: number): void => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.tick);
+    this.applyQuality();
+    // The fps cap skips whole frames (upkeep included); the next drawn frame's dt spans the skipped ones.
+    if (!this.limiter.due(now, this.q.fpsCap)) return;
     const dt = Math.min(0.1, this.last ? (now - this.last) / 1000 : 0);
     this.last = now;
     this.step(now, dt);
@@ -707,6 +728,7 @@ export class WorldRuntime {
 
   /** One frame: shared upkeep, then every due view (the primary last, so its picture is what the canvas shows). */
   step(now: number, dt: number): void {
+    this.applyQuality();
     const selected = new Set<string>();
     for (const v of this.views.values()) for (const s of v.selectedBots()) selected.add(s);
     this.entities.update(this.store.bots(this.botsBuf), this.store.entities(null, this.entsBuf), now, selected);
@@ -738,7 +760,8 @@ export class WorldRuntime {
       }
     }
     void this.deltas.flush(); // a frame's worth of block changes, applied together
-    if (this.uniforms.uTextured.value > 0 && this.blockAtlas) {
+    // Animated textures off (viewer settings): the atlas keeps the frame it shows.
+    if (this.uniforms.uTextured.value > 0 && this.blockAtlas && this.q.animatedTextures) {
       // [blocks] atlas animation: the profile's tick rate and cell budget, only the cells the drawn sections sample.
       const p = this.quality.state.profile;
       this.blockAtlas.animHz = p.animHz;
@@ -786,6 +809,32 @@ export class WorldRuntime {
     }
   }
 
+  /** After a primary render: the page-wide viewer status (fps over half-second windows, the levers, the entity reach). */
+  private report(now: number, s: ViewSetup, entityRadius: number): void {
+    this.entityRadius = entityRadius;
+    this.statusFrames++;
+    if (!this.statusAt) this.statusAt = now;
+    if (now - this.statusAt >= 500) {
+      this.statusFps = (this.statusFrames * 1000) / (now - this.statusAt);
+      this.statusFrames = 0;
+      this.statusAt = now;
+    }
+    const st = this.quality.state;
+    reportViewerStatus({
+      fps: this.statusFps,
+      frameMs: st.smoothMs,
+      scale: st.scale,
+      drawFactor: st.drawFactor,
+      profile: st.profile.name,
+      software: this.probe.software,
+      renderer: this.gpu,
+      entities: this.entities.instances,
+      entityRadius,
+      drawDistance: s.drawDistance,
+      at: now,
+    });
+  }
+
   private overlaysShown: Overlays | null = null;
   private readonly labelLift = (key: string, bot: boolean): number => this.entities.labelLift(key, bot);
 
@@ -828,7 +877,34 @@ export class WorldRuntime {
 
   /** Forces a quality profile (developer details) or returns to the detected one. */
   setQuality(q: 'auto' | QualityName): void {
-    this.quality.setProfile(PROFILES[q === 'auto' ? (this.probe.software ? 'software' : 'gpu') : q]);
+    this.baseProfile = PROFILES[q === 'auto' ? (this.probe.software ? 'software' : 'gpu') : q];
+    this.qRev = -1;
+    this.applyQuality();
+  }
+
+  /** The viewer settings in force (what the last frame applied). */
+  get viewerQuality(): Readonly<ViewerQuality> {
+    return this.q;
+  }
+
+  /**
+   * Lays the user's viewer settings (`setViewerQuality`) over the base profile when they changed: draw distance cap, render
+   * scale, entity model distance, clouds, and whether the controller may move its levers (off: full resolution and distance).
+   * Runs at the start of every frame; a no-op unless the store's revision moved.
+   */
+  applyQuality(): void {
+    const rev = viewerQualityRev();
+    if (rev === this.qRev) return;
+    this.qRev = rev;
+    this.q = getViewerQuality();
+    const c = this.quality;
+    c.setProfile(effectiveProfile(this.baseProfile, this.q));
+    c.enabled = this.opts.adaptiveResolution !== false && this.q.adaptive;
+    if (!c.enabled) {
+      c.state.scale = 1;
+      c.state.drawFactor = 1;
+    }
+    this.uniforms.uAo.value = this.q.ambientOcclusion ? 1 : 0;
   }
 
   private readonly outlineBoxes: THREE.LineSegments[] = [];
@@ -904,12 +980,15 @@ export class WorldRuntime {
     const u = this.uniforms;
     const r = this.renderer;
     const primary = s.target === 'primary';
+    const q = this.q;
     // The controller's draw distance (software rendering, slow frames) applies to the interactive view.
-    // A top-down / iso view's visible ground is drawn whatever the lever says (the render scale gives way instead); entities
-    // keep the plain distance, so a zoomed-out map does not pay for far mobs a few pixels big.
+    // A top-down / iso view's visible ground is drawn whatever the lever says (the render scale gives way instead).
     const cover = s.cover ?? 0;
-    const entityDistance = primary ? this.quality.drawDistance(s.drawDistance) : s.drawDistance;
-    s = { ...s, drawDistance: Math.max(cover, entityDistance) };
+    const plainDistance = primary ? this.quality.drawDistance(s.drawDistance) : s.drawDistance;
+    s = { ...s, drawDistance: Math.max(cover, plainDistance) };
+    // Entities (viewer settings): as far as the ground by default, measured across it from the look-at point in top-down /
+    // iso views (far ones are cheap instanced boxes, frustum-culled and capped in number); or the user's own distance.
+    const reach = entityReach(q, cover, s.drawDistance);
     // Size: the primary owns the canvas; other views use its bottom-left corner (the canvas grows when nobody owns it).
     let w = s.width, h = s.height;
     const cw = this.canvas.width, ch = this.canvas.height;
@@ -926,7 +1005,8 @@ export class WorldRuntime {
     const nether = s.dim === -1;
     const time = this.cache.timeNow(s.dim, Date.now());
     const wx = this.cache.weatherIn(s.dim);
-    const rain = s.layers.weather ? wx.rain : 0, thunder = s.layers.weather ? wx.thunder : 0;
+    const weather = s.layers.weather && q.weather;
+    const rain = weather ? wx.rain : 0, thunder = weather ? wx.thunder : 0;
     u.uSkySub.value = nether || time == null ? 0 : skylightSubtractedSmooth(time, rain, thunder);
     u.uBase.value = nether ? 0.1 : 0;
     const sky = skyColour(time, rain, thunder, nether), fog = fogColour(time, rain, thunder, nether);
@@ -934,12 +1014,13 @@ export class WorldRuntime {
     u.uFogColor.value.setRGB(fog[0], fog[1], fog[2]);
     u.uFogCentre.value.copy(s.centre);
     // Fog starts past the picture's own ground in top-down / iso views (in the others cover is 0: the usual 72 %).
-    const fogStart = Math.max(s.drawDistance * 0.72, cover);
+    // Fog off (viewer settings): pushed out of reach, so the drawn world simply ends.
+    const fogStart = q.fog ? Math.max(s.drawDistance * 0.72, cover) : 1e7;
     u.uFogRange.value.set(fogStart, Math.max(s.drawDistance, fogStart + 16));
     u.uStale.value = s.layers.staleness ? 1 : 0;
     this.sky.update(s.camera.position, time, rain, nether, s.layers.weather && this.quality.state.profile.clouds, now, s.camera.far * 0.8);
-    if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, s.layers.weather && !nether, s.precip ?? 'rain');
-    this.weather.object.visible = primary && s.layers.weather && !nether && rain > 0.01;
+    if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, weather && !nether, s.precip ?? 'rain');
+    this.weather.object.visible = primary && weather && !nether && rain > 0.01;
     this.lightningFlash = Math.max(0, this.lightningFlash - 0.03);
     u.uFlash.value = (primary ? this.flash : 0) + this.lightningFlash;
     // Per-view cut-aways (uniforms only; the cap pass shows what they open).
@@ -971,11 +1052,26 @@ export class WorldRuntime {
         });
     }
     this.entities.detailDistance = this.quality.state.profile.entityDetailDistance; // posed models near, boxes beyond
-    const ghosts = s.ghosts ? this.ghostsFor(s, now) : null;
-    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: entityDistance, fov: s.camera.fov, ghosts });
+    const ghosts = s.ghosts && q.xray ? this.ghostsFor(s, now) : null;
+    const labels = s.labels && q.labels;
+    s.camera.updateMatrixWorld();
+    this.frustum.setFromProjectionMatrix(this.projView.multiplyMatrices(s.camera.projectionMatrix, s.camera.matrixWorldInverse));
+    this.entities.showFor(s.dim, cam, {
+      bots: s.layers.bots,
+      entities: s.layers.entities,
+      labels,
+      selected: s.selected,
+      drawDistance: reach.radius,
+      centre: reach.fromCentre ? s.centre : null,
+      drops: q.drops,
+      frustum: this.frustum,
+      fov: s.camera.fov,
+      ghosts,
+    });
     // After the entities: the name labels this view shows decide where the bubbles sit.
+    const bubbles = q.bubbles ? (s.bubbles ?? (s.labels ? 'full' : 'compact')) : 'off';
     this.bubbles.showFor(
-      { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode: s.bubbles ?? (s.labels ? 'full' : 'compact'), bots: s.layers.bots, players: s.layers.entities, labelLift: this.labelLift },
+      { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode: bubbles, bots: s.layers.bots, players: s.layers.entities, labelLift: this.labelLift },
       s.viewId ?? 0,
     );
     this.overlays.group.visible = s.overlays;
@@ -987,6 +1083,7 @@ export class WorldRuntime {
     r.setViewport(0, 0, w, h);
     r.setScissor(0, 0, w, h);
     r.render(this.scene, s.camera);
+    if (primary) this.report(now, s, reach.radius);
     if (s.target !== 'primary') {
       const ctx = s.target;
       const tw = ctx.canvas.width, th = ctx.canvas.height;

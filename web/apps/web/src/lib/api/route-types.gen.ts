@@ -14,6 +14,7 @@ export interface RouteTypes {
   'auth.me': { params: never; query: never; body: never; response: z.output<typeof C.Me> };
   'auth.totpEnroll': { params: never; query: never; body: z.input<typeof C.TotpEnrollRequest>; response: z.output<typeof C.TotpEnrollResponse> };
   'auth.totpVerify': { params: never; query: never; body: z.input<typeof C.TotpVerifyRequest>; response: z.output<typeof C.TotpVerifyResponse> };
+  'auth.stepUp': { params: never; query: never; body: z.input<typeof C.StepUpRequest>; response: z.output<typeof C.StepUpResponse> };
   'audit.list': { params: never; query: z.input<typeof C.WebAuditQuery>; body: never; response: z.output<typeof C.WebAuditPage> };
   'overview': { params: never; query: never; body: never; response: z.output<typeof C.Overview> };
   'memory.kinds': { params: never; query: never; body: never; response: z.output<typeof C.MemoryKindsResponse> };
@@ -50,6 +51,14 @@ export interface RouteTypes {
   'admin.compact': { params: never; query: never; body: z.input<typeof C.CompactRequest>; response: z.output<typeof C.ActivityCompactionReport> };
   'admin.shardImport': { params: never; query: never; body: z.input<typeof C.ShardImportOptions>; response: z.output<typeof C.ShardImportResult> };
   'groom.preview': { params: never; query: never; body: z.input<typeof C.GroomPreviewRequest>; response: z.output<typeof C.GroomPreviewResponse> };
+  'admin.nodes': { params: never; query: never; body: never; response: z.output<typeof C.AdminNodesResponse> };
+  'admin.settings': { params: z.input<typeof C.AdminNodeParams>; query: never; body: never; response: z.output<typeof C.AdminSettingsResponse> };
+  'admin.settingsSave': { params: z.input<typeof C.AdminNodeParams>; query: never; body: z.input<typeof C.AdminSettingsSaveRequest>; response: z.output<typeof C.AdminSettingsSaveResponse> };
+  'admin.settingsTest': { params: z.input<typeof C.AdminNodeParams>; query: never; body: z.input<typeof C.ProviderTestRequest>; response: z.output<typeof C.ProviderTestResponse> };
+  'admin.ollamaModels': { params: z.input<typeof C.AdminNodeParams>; query: z.input<typeof C.OllamaModelsQuery>; body: never; response: z.output<typeof C.OllamaModelsResponse> };
+  'admin.restartSafety': { params: z.input<typeof C.AdminNodeParams>; query: never; body: never; response: z.output<typeof C.RestartSafety> };
+  'admin.restart': { params: z.input<typeof C.AdminNodeParams>; query: never; body: z.input<typeof C.RestartRequest>; response: z.output<typeof C.RestartResponse> };
+  'admin.settingsAudit': { params: z.input<typeof C.AdminNodeParams>; query: z.input<typeof C.SettingsAuditQuery>; body: never; response: z.output<typeof C.SettingsAuditResponse> };
   'bots.list': { params: never; query: never; body: never; response: z.output<typeof C.BotsResponse> };
   'hive.tree': { params: never; query: never; body: never; response: z.output<typeof C.HiveTreeNode> };
   'status': { params: never; query: z.input<typeof C.StatusQuery>; body: never; response: z.output<typeof C.StatusResponse> };
@@ -63,6 +72,7 @@ export interface RouteTypes {
   'world.blockEntities': { params: never; query: z.input<typeof C.WorldBlockEntitiesQuery>; body: never; response: z.output<typeof C.WorldBlockEntities> };
   'bots.tile': { params: z.input<typeof C.BotParams>; query: z.input<typeof C.TileQuery>; body: never; response: never };
   'bots.now': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BotNow> };
+  'bots.inventory': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BodyInventory> };
   'bots.chat': { params: z.input<typeof C.BotParams>; query: never; body: z.input<typeof C.ChatRequest>; response: z.output<typeof C.ChatAccepted> };
   'feed': { params: never; query: z.input<typeof C.FeedQuery>; body: never; response: z.output<typeof C.FeedResponse> };
   'blueprints.list': { params: never; query: never; body: never; response: z.output<typeof C.BlueprintsResponse> };
@@ -87,6 +97,7 @@ export interface RouteTypes {
   'story.get': { params: z.input<typeof C.StoryColonyParams>; query: z.input<typeof C.StoryStateQuery>; body: never; response: z.output<typeof C.StoryColonyState> };
   'story.release': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.resume': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
+  'story.online': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryOnlineRequest>; response: z.output<typeof C.StoryOnlineResponse> };
   'story.pause': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPauseRequest>; response: z.output<typeof C.StoryAck> };
   'story.home': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryHomeRequest>; response: z.output<typeof C.StoryHomeResponse> };
   'story.beds': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBedsRequest>; response: z.output<typeof C.StoryBedsResponse> };
@@ -106,4 +117,5 @@ export interface RouteTypes {
   'designer.message': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerMessageRequest>; response: z.output<typeof C.DesignerMessageResponse> };
   'designer.canvas': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerCanvasRequest>; response: z.output<typeof C.DesignerCanvasResponse> };
   'designer.save': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerSaveRequest>; response: z.output<typeof C.DesignerSaveResponse> };
+  'designer.version': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerVersionRequest>; response: z.output<typeof C.DesignerVersionResponse> };
 }

@@ -86,6 +86,8 @@ export class MockStory {
         return s.release(cid);
       case 'story.resume':
         return s.resume(cid);
+      case 'story.online':
+        return s.online(cid, body);
       case 'story.directives.list':
         return { directives: s.directives() };
       case 'story.directive':

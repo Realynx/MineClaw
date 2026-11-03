@@ -291,14 +291,14 @@ describe('transforms', () => {
 
 describe('palette', () => {
   it('searches by words and ids, and fills the first hotbar', () => {
-    expect(searchPalette(MOCK_DESIGNER_PALETTE, 'oak')[0]!.name).toBe('oak log');
-    expect(searchPalette(MOCK_DESIGNER_PALETTE, 'st br').map((e) => e.name)).toContain('stone bricks');
-    expect(searchPalette(MOCK_DESIGNER_PALETTE, 'red wool').map((e) => e.name)).toEqual(['red wool']);
-    expect(searchPalette(MOCK_DESIGNER_PALETTE, '64')[0]!.name).toBe('wooden door');
+    expect(searchPalette(MOCK_DESIGNER_PALETTE, 'oak')[0]!.name).toBe('Oak Log');
+    expect(searchPalette(MOCK_DESIGNER_PALETTE, 'st br').map((e) => e.name)).toContain('Stone Bricks');
+    expect(searchPalette(MOCK_DESIGNER_PALETTE, 'red wool').map((e) => e.name)).toEqual(['Red Wool']);
+    expect(searchPalette(MOCK_DESIGNER_PALETTE, '64')[0]!.name).toBe('Wooden Door');
     expect(searchPalette(MOCK_DESIGNER_PALETTE, 'zzz')).toEqual([]);
     const bar = defaultHotbar(MOCK_DESIGNER_PALETTE);
     expect(bar).toHaveLength(9);
-    expect(bar[0]!.name).toBe('cobblestone');
+    expect(bar[0]!.name).toBe('Cobblestone');
   });
 });
 

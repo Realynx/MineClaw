@@ -17,13 +17,21 @@ public readonly record struct CanvasCell(int X, int Y, int Z, int Id, int Meta)
 /// The Design Studio's sandbox canvas (docs/web/api.md "Design Studio"): the AI's head, never the live world. A 64×64 plot,
 /// local coordinates x, z 0..63 (+x east, +z south) and y -16..47: y 0 is the first layer above the plot's grass, y -1 the
 /// grass layer itself and y -16..-1 the ground under it (solid earth until it is dug: a basement, a cellar, a foundation). It
-/// holds blocks in the designs system's own format (<see cref="DesignSnapshot"/>: the server version's ids and metas) and the
+/// holds blocks in the designs system's own format (<see cref="DesignSnapshot"/>: its <see cref="Version"/>'s ids and metas) and the
 /// dug-out cells below ground (air the build must dig), so a save is an ordinary design (<see cref="DesignerSave"/>: the dug
-/// cells drawn '.', the depth as <c>ground N</c>). Only design-palette blocks are accepted (<see cref="BuildBlocks.Buildable"/>);
-/// a door is kept as its two halves (lower = facing meta, upper = lower | 8, as the normalizer draws it).
+/// cells drawn '.', the depth as <c>ground N</c>). Every state of the version's design palette is accepted (<see cref="DesignPalette"/>);
+/// two-cell blocks are kept whole (<see cref="DesignFacing.Partner"/>): a door or a double plant as its two halves (upper = lower
+/// | 8, as the normalizer draws a door), a bed as foot + head (head = foot | 8, one step along its facing); a chest placed beside
+/// a single chest takes its facing (they pair, as the game pairs them).
 /// </summary>
 public sealed class DesignerCanvas
 {
+    /// <summary>The game version the canvas is drawn for ("b1.8.1" / "1.12.2"; default: the server's).</summary>
+    public string Version { get; set; } = DesignVersions.Server;
+
+    /// <summary>The design palette of <see cref="Version"/>.</summary>
+    public DesignPalette Palette => DesignPalette.For(Version);
+
     public const int Size = 64, Height = 48;
     /// <summary>Layers of ground under the grass the canvas reaches (y -Depth..-1).</summary>
     public const int Depth = 16;
@@ -56,14 +64,12 @@ public sealed class DesignerCanvas
         return Underground(y) && !_blocks.ContainsKey(p) && !_dug.Contains(p);
     }
 
-    /// <summary>Why (id, meta) can't stand on the canvas (null = it can): air and earth always can, else a design-palette block.</summary>
-    public static string? Refusal(int id, int meta)
-    {
-        if (id is 0 or Earth) return null;
-        if (id < 0) return $"no block id {id}";
-        if (BuildBlocks.Refusal(id) is { } r) return r;
-        return BuildBlocks.MetaProblem(id, meta);
-    }
+    /// <summary>Why (id, meta) can't stand on a canvas of the version in this flow (null = it can): air and earth always can, else a
+    /// design-palette state.</summary>
+    public static string? Refusal(int id, int meta) => id is 0 or Earth ? null : DesignPalette.Current.Refusal(id, meta);
+
+    /// <summary>Why (id, meta) can't stand on this canvas (its <see cref="Version"/>).</summary>
+    public string? RefusalOf(int id, int meta) => id is 0 or Earth ? null : Palette.Refusal(id, meta);
 
     /// <summary>
     /// Applies cell states in order (later wins) and returns the cells that really changed, with door halves kept paired. Air
@@ -79,13 +85,13 @@ public sealed class DesignerCanvas
         {
             if (++n > MaxCellsPerOp) { rejected++; continue; }
             var c = c0.Id is 0 or Earth ? c0 with { Id = c0.Id == Earth && Underground(c0.Y) ? Earth : 0, Meta = 0 } : c0;
-            if (!Inside(c.X, c.Y, c.Z) || Refusal(c.Id, c.Meta) != null) { rejected++; continue; }
+            if (!Inside(c.X, c.Y, c.Z) || RefusalOf(c.Id, c.Meta) != null) { rejected++; continue; }
+            if (c.Id > 0 && Pair(c) is { } paired) c = paired;
             Set(c, changed);
-            if (c.Id > 0 && BuildBlocks.KindOf(c.Id) == BuildKind.Door)
-            {
-                // A drawn lower half brings its upper; an upper half alone is accepted as drawn (the browser sends both).
-                if ((c.Meta & 8) == 0 && Inside(c.X, c.Y + 1, c.Z)) Set(new CanvasCell(c.X, c.Y + 1, c.Z, c.Id, (c.Meta & 7) | 8), changed);
-            }
+            // A drawn first half brings its second (a door's upper half, a bed's head); a second half alone is accepted as drawn
+            // (the browser sends both).
+            if (c.Id > 0 && DesignFacing.Partner(c.Id, c.Meta) is { } part && Inside(c.X + part.Dx, c.Y + part.Dy, c.Z + part.Dz))
+                Set(new CanvasCell(c.X + part.Dx, c.Y + part.Dy, c.Z + part.Dz, c.Id, part.Meta), changed);
         }
         // Wall torches and ladders hang on their wall: the changed ones and the ones next to a changed cell (a wall placed after
         // its torch) are turned to the solid side when theirs is open.
@@ -110,12 +116,15 @@ public sealed class DesignerCanvas
 
     /// <summary>The side (dx, dz) of the block a wall torch (1..4) or a ladder (2..5) hangs on; null for anything else (a floor torch).</summary>
     public static (int Dx, int Dz)? WallOf(int id, int meta) =>
-        id == MineClaw.Data.Blocks.Torch ? meta switch { 1 => (-1, 0), 2 => (1, 0), 3 => (0, -1), 4 => (0, 1), _ => null }
+        IsTorch(id) ? meta switch { 1 => (-1, 0), 2 => (1, 0), 3 => (0, -1), 4 => (0, 1), _ => null }
         : id == MineClaw.Data.Blocks.Ladder ? meta switch { 2 => (0, 1), 3 => (0, -1), 4 => (1, 0), 5 => (-1, 0), _ => null }
         : null;
 
+    /// <summary>A torch or a redstone torch (the same attachment rule).</summary>
+    private static bool IsTorch(int id) => id is MineClaw.Data.Blocks.Torch or 76;
+
     /// <summary>The meta that hangs a torch or a ladder on the block at side (dx, dz).</summary>
-    public static int MetaOn(int id, (int Dx, int Dz) wall) => id == MineClaw.Data.Blocks.Torch
+    public static int MetaOn(int id, (int Dx, int Dz) wall) => IsTorch(id)
         ? wall switch { (-1, 0) => 1, (1, 0) => 2, (0, -1) => 3, _ => 4 }
         : wall switch { (0, 1) => 2, (0, -1) => 3, (1, 0) => 4, _ => 5 };
 
@@ -144,7 +153,7 @@ public sealed class DesignerCanvas
             if (Holds(p.X + wall.Dx, p.Y, p.Z + wall.Dz)) continue;
             int meta;
             if (Holds(p.X - wall.Dx, p.Y, p.Z - wall.Dz)) meta = MetaOn(st.Id, (-wall.Dx, -wall.Dz));
-            else if (st.Id == MineClaw.Data.Blocks.Torch && Holds(p.X, p.Y - 1, p.Z)) meta = 5;
+            else if (IsTorch(st.Id) && Holds(p.X, p.Y - 1, p.Z)) meta = 5;
             else continue;
             _blocks[p] = (st.Id, meta);
             var c = new CanvasCell(p.X, p.Y, p.Z, st.Id, meta);
@@ -169,8 +178,8 @@ public sealed class DesignerCanvas
     public static string FixText(IReadOnlyCollection<CanvasCell> fixedCells)
     {
         if (fixedCells.Count == 0) return "";
-        int floor = fixedCells.Count(c => c.Id == MineClaw.Data.Blocks.Torch && c.Meta == 5);
-        int torches = fixedCells.Count(c => c.Id == MineClaw.Data.Blocks.Torch && c.Meta != 5), ladders = fixedCells.Count(c => c.Id == MineClaw.Data.Blocks.Ladder);
+        int floor = fixedCells.Count(c => IsTorch(c.Id) && c.Meta == 5);
+        int torches = fixedCells.Count(c => IsTorch(c.Id) && c.Meta != 5), ladders = fixedCells.Count(c => c.Id == MineClaw.Data.Blocks.Ladder);
         var parts = new List<string>();
         if (torches > 0) parts.Add($"turned {torches} wall torch{(torches == 1 ? "" : "es")} around to hang on the solid side");
         if (ladders > 0) parts.Add($"turned {ladders} ladder{(ladders == 1 ? "" : "s")} around to the solid side");
@@ -182,20 +191,40 @@ public sealed class DesignerCanvas
     private (int Id, int Meta) State(BlockPos p) =>
         _blocks.TryGetValue(p, out var o) ? o : Underground(p.Y) && !_dug.Contains(p) ? (Earth, 0) : (0, 0);
 
+    /// <summary>
+    /// A chest placed beside a single chest of the same kind takes its facing when theirs is across the pair (the game pairs them
+    /// that way: ItemBlock/BlockChest.onBlockPlacedBy); null = nothing to pair.
+    /// </summary>
+    private CanvasCell? Pair(CanvasCell c)
+    {
+        if (c.Id is not (54 or 146)) return null;
+        foreach (var (dx, dz) in Sides)
+        {
+            var n = new BlockPos(c.X + dx, c.Y, c.Z + dz);
+            if (!_blocks.TryGetValue(n, out var o) || o.Id != c.Id || DesignFacing.FacingOf(o.Id, o.Meta) is not { } f) continue;
+            // Already paired with another chest: a third never joins.
+            if (Sides.Any(s => (s.Dx, s.Dz) != (-dx, -dz) && _blocks.TryGetValue(new BlockPos(n.X + s.Dx, n.Y, n.Z + s.Dz), out var t) && t.Id == c.Id)) continue;
+            bool across = dx != 0 ? f is Dir.North or Dir.South : f is Dir.East or Dir.West;
+            return across && c.Meta != o.Meta ? c with { Meta = o.Meta } : null;
+        }
+        return null;
+    }
+
     private void Set(CanvasCell c, Dictionary<BlockPos, CanvasCell> changed)
     {
         var p = new BlockPos(c.X, c.Y, c.Z);
         var old = State(p);
         if (old == (c.Id, c.Meta)) return;
-        // Replacing one half of a door drops the other half (a door is never left half standing).
-        if (old.Id > 0 && BuildBlocks.KindOf(old.Item1) == BuildKind.Door && c.Id != old.Item1)
+        // Replacing one half of a two-cell block (a door, a double plant, a bed) drops the other half (never left half standing).
+        if (old.Id > 0 && DesignFacing.TwoCell(old.Item1) && c.Id != old.Item1)
         {
-            var other = (old.Item2 & 8) != 0 ? p.Down() : p.Up();
-            if (_blocks.TryGetValue(other, out var os) && os.Id == old.Item1)
+            BlockPos? other = DesignFacing.FirstHalf(old.Item1, old.Item2) is { } f ? new BlockPos(p.X + f.Dx, p.Y + f.Dy, p.Z + f.Dz)
+                : DesignFacing.Partner(old.Item1, old.Item2) is { } s ? new BlockPos(p.X + s.Dx, p.Y + s.Dy, p.Z + s.Dz) : null;
+            if (other is { } o && _blocks.TryGetValue(o, out var os) && os.Id == old.Item1)
             {
-                _blocks.Remove(other);
-                if (Underground(other.Y)) _dug.Add(other);
-                changed[other] = new CanvasCell(other.X, other.Y, other.Z, 0, 0);
+                _blocks.Remove(o);
+                if (Underground(o.Y)) _dug.Add(o);
+                changed[o] = new CanvasCell(o.X, o.Y, o.Z, 0, 0);
             }
         }
         _blocks.Remove(p);
@@ -203,6 +232,15 @@ public sealed class DesignerCanvas
         if (c.Id > 0) _blocks[p] = (c.Id, c.Meta);
         else if (c.Id == 0 && Underground(p.Y)) _dug.Add(p);
         changed[p] = c;
+    }
+
+    /// <summary>Blocks and dug cells set as they are (a converted canvas: already whole, never re-paired or re-checked).</summary>
+    public void Load(IEnumerable<KeyValuePair<BlockPos, (int Id, int Meta)>> blocks, IEnumerable<BlockPos> dug)
+    {
+        foreach (var (p, s) in blocks)
+            if (Inside(p.X, p.Y, p.Z) && s.Id > 0) _blocks[p] = s;
+        foreach (var p in dug)
+            if (Underground(p.Y) && Inside(p.X, p.Y, p.Z) && !_blocks.ContainsKey(p)) _dug.Add(p);
     }
 
     /// <summary>Every block removed and every dug cell filled back (the canvas cleared: a flat grassland again).</summary>
@@ -291,8 +329,15 @@ public sealed class DesignerCanvas
 
     // ------------------------------------------------------------------ what the AI reads
 
-    /// <summary>The palette spelling of a state ("planks", "oak stairs" → "wooden_stairs:2"), as the AI's tools accept it.</summary>
-    public static string Spec(int id, int meta) => StructureCapture.PaletteName(id, (BuildBlocks.KindOf(id) == BuildKind.Door ? meta & 7 : meta)) ?? BuildBlocks.Name(id, meta).Replace(' ', '_');
+    /// <summary>The palette spelling of a state in the version of this flow ("planks", "wool:red", "oak_stairs:2"), as the AI's
+    /// tools accept it (a second half is spelled as its first: the tools add the second).</summary>
+    public static string Spec(int id, int meta) => DesignPalette.Current.Spec(id, SecondFirst(id, meta));
+
+    /// <summary>The first half's meta of a second half (a door's upper → its lower), else the meta.</summary>
+    private static int SecondFirst(int id, int meta) => DesignFacing.SecondHalf(id, meta) ? meta & (DesignFacing.FamilyOf(id) == DesignFamily.Bed ? 3 : 7) : meta;
+
+    /// <summary>A state's display name in the version of this flow.</summary>
+    private static string NameOf(int id, int meta) => DesignPalette.Current.Name(id, meta).ToLowerInvariant();
 
     /// <summary>
     /// The compact summary sent with every message: "r12 214 blocks, box x28..36 y-4..5 z29..35 (9×10×7); planks 120,
@@ -306,8 +351,8 @@ public sealed class DesignerCanvas
         int w = b.Max.X - b.Min.X + 1, h = b.Max.Y - b.Min.Y + 1, d = b.Max.Z - b.Min.Z + 1;
         sb.Append(CultureInfo.InvariantCulture, $"r{Rev} {_blocks.Count} blocks, box x{b.Min.X}..{b.Max.X} y{b.Min.Y}..{b.Max.Y} z{b.Min.Z}..{b.Max.Z} ({w}×{h}×{d})");
         if (w > BlueprintParser.MaxSide || d > BlueprintParser.MaxSide || h > BlueprintParser.MaxHeight) sb.Append(" OVER the 32 limit");
-        var names = _blocks.Values.Where(s => !(BuildBlocks.KindOf(s.Id) == BuildKind.Door && (s.Meta & 8) != 0))
-            .GroupBy(s => BuildBlocks.Name(s.Id, s.Meta)).OrderByDescending(g => g.Count()).ToList();
+        var names = _blocks.Values.Where(s => !DesignFacing.SecondHalf(s.Id, s.Meta))
+            .GroupBy(s => NameOf(s.Id, s.Meta)).OrderByDescending(g => g.Count()).ToList();
         sb.Append("; ").Append(string.Join(", ", names.Take(maxNames).Select(g => $"{g.Key} {g.Count()}"))).Append(names.Count > maxNames ? ", …" : "");
         if (_dug.Count > 0) sb.Append(CultureInfo.InvariantCulture, $"; dug {_dug.Count} below ground (y{_dug.Min(p => p.Y)}..{_dug.Max(p => p.Y)})");
         var layers = new List<(int Y0, int Y1, string Text)>();
@@ -315,7 +360,7 @@ public sealed class DesignerCanvas
         {
             var at = _blocks.Where(kv => kv.Key.Y == y).ToList();
             int dug = Underground(y) ? _dug.Count(p => p.Y == y) : 0;
-            var text = at.Count == 0 ? "0" : $"{at.Count} " + string.Join("+", at.GroupBy(kv => BuildBlocks.Name(kv.Value.Id, kv.Value.Meta)).OrderByDescending(g => g.Count()).Take(2).Select(g => g.Key));
+            var text = at.Count == 0 ? "0" : $"{at.Count} " + string.Join("+", at.GroupBy(kv => NameOf(kv.Value.Id, kv.Value.Meta)).OrderByDescending(g => g.Count()).Take(2).Select(g => g.Key));
             if (dug > 0) text = (at.Count == 0 ? "" : text + ", ") + $"{dug} dug";
             if (layers.Count > 0 && layers[^1].Text == text) layers[^1] = (layers[^1].Y0, y, text);
             else layers.Add((y, y, text));
@@ -356,8 +401,8 @@ public sealed class DesignerCanvas
     public static string Summarize(IReadOnlyCollection<CanvasCell> changes, int max = 4)
     {
         if (changes.Count == 0) return "nothing changed";
-        var placed = changes.Where(c => c.Id > 0 && !(BuildBlocks.KindOf(c.Id) == BuildKind.Door && (c.Meta & 8) != 0))
-            .GroupBy(c => BuildBlocks.Name(c.Id, c.Meta)).OrderByDescending(g => g.Count()).ToList();
+        var placed = changes.Where(c => c.Id > 0 && !DesignFacing.SecondHalf(c.Id, c.Meta))
+            .GroupBy(c => NameOf(c.Id, c.Meta)).OrderByDescending(g => g.Count()).ToList();
         int removed = changes.Count(c => c.Id == 0 && !Underground(c.Y)), dug = changes.Count(c => c.Id == 0 && Underground(c.Y)), filled = changes.Count(c => c.Id == Earth);
         var parts = new List<string>();
         if (placed.Count > 0) parts.Add("placed " + string.Join(", ", placed.Take(max).Select(g => $"{g.Count()} {g.Key}")) + (placed.Count > max ? ", …" : ""));
@@ -367,22 +412,6 @@ public sealed class DesignerCanvas
         return parts.Count > 0 ? string.Join("; ", parts) : "nothing changed";
     }
 
-    /// <summary>The design palette of the running version: every buildable state worth a palette button (variants spelled out).</summary>
-    public static List<(int Id, int Meta, string Name, bool Facing)> Palette()
-    {
-        var list = new List<(int, int, string, bool)>();
-        for (int id = 1; id < 256; id++)
-        {
-            if (!MineClaw.Data.Blocks.Exists(id) || !BuildBlocks.Buildable(id)) continue;
-            bool facing = BuildBlocks.Directional(id) || id is MineClaw.Data.Blocks.Torch or MineClaw.Data.Blocks.Trapdoor or MineClaw.Data.Blocks.Pumpkin or MineClaw.Data.Blocks.JackOLantern;
-            int variants = id switch { MineClaw.Data.Blocks.Wool => 16, MineClaw.Data.Blocks.Log => 3, MineClaw.Data.Blocks.Slab => 6, MineClaw.Data.Blocks.StoneBricks => 3, _ => 1 };
-            for (int m = 0; m < variants; m++)
-            {
-                int meta = id == MineClaw.Data.Blocks.Torch ? 5 : m;
-                if (BuildBlocks.MetaProblem(id, meta) != null) continue;
-                list.Add((id, meta, BuildBlocks.Name(id, meta), facing));
-            }
-        }
-        return list;
-    }
+    /// <summary>The design palette of the version in this flow: every placeable state worth a palette button (<see cref="DesignPalette"/>).</summary>
+    public static IReadOnlyList<DesignBlock> PaletteEntries() => DesignPalette.Current.Entries;
 }

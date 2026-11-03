@@ -140,6 +140,68 @@ public sealed partial class StoryColony : IStoryPort
         return list.Count == 0 ? (list, "pawns required") : (list, null);
     }
 
+    // ================================================================ seats (pawns that couldn't come online, and why)
+
+    private readonly Dictionary<string, string> _blocked = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _troubleAlerted = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The pawn accounts (a copy).</summary>
+    public IReadOnlyList<string> PawnNames() { lock (_lock) return Pawns.Keys.ToList(); }
+
+    /// <summary>Is this account one of the colony's pawns?</summary>
+    public bool HasPawn(string account) { lock (_lock) return Pawns.ContainsKey(account); }
+
+    /// <summary>
+    /// Why an offline pawn isn't in game: "released" (the colony is), the host's word for a hosted body ("connecting",
+    /// "not whitelisted — re-adding", "not whitelisted — main … isn't op …"), else why its last seat try was refused
+    /// ("server full (player cap: 2 free, 2 kept for regulars)"). Null when online.
+    /// </summary>
+    private string? OfflineReason(PawnState p, PawnLive live)
+    {
+        if (live.Online) return null;
+        if (!Meta.Active) return "released";
+        PawnSeat seat;
+        try { seat = Host.Seat(p.Name); } catch (Exception) { seat = new(true, null); }
+        if (seat.Hosted) return seat.Why ?? "connecting";
+        return _blocked.GetValueOrDefault(p.Name) ?? seat.Why ?? "waiting for a seat";
+    }
+
+    /// <summary>
+    /// The outcome of bringing pawns in (the seat retry, "Bring online"): a refused pawn keeps the reason (its offline_reason), one that
+    /// is on its way drops it. One alert per newly refused group (a changing free-seat count doesn't repeat it).
+    /// </summary>
+    public void NoteSeats(IEnumerable<(string Account, string? Why)> results)
+    {
+        var fresh = new List<(string Pawn, string Why)>();
+        lock (_lock)
+            foreach (var (a, why) in results)
+            {
+                if (!Pawns.TryGetValue(a, out var p)) continue;
+                if (why == null) { if (_blocked.Remove(a)) p.Rev = Bump(); continue; }
+                if (_blocked.TryGetValue(a, out var old) && old == why) continue;
+                if (old == null) fresh.Add((a, why));
+                _blocked[a] = why;
+                p.Rev = Bump();
+            }
+        foreach (var g in fresh.GroupBy(f => f.Why.StartsWith("server full", StringComparison.Ordinal) ? "server full" : f.Why))
+        {
+            var names = string.Join(", ", g.Select(x => MineClaw.Hive.Hierarchy.HiveNode.ShortOf(x.Pawn)));
+            Alert("warn", $"{g.Count()} pawn(s) can't come online ({names}): {g.First().Why}", g.Count() == 1 ? g.First().Pawn : null);
+        }
+    }
+
+    /// <summary>A hosted pawn's login trouble that needs the owner (main can't whitelist it): one alert per distinct reason.</summary>
+    internal void NoteTrouble(string pawn, string? why)
+    {
+        lock (_lock)
+        {
+            if (why == null) { _troubleAlerted.Remove(pawn); return; }
+            if (_troubleAlerted.TryGetValue(pawn, out var old) && old == why) return;
+            _troubleAlerted[pawn] = why;
+        }
+        Alert("warn", $"{MineClaw.Hive.Hierarchy.HiveNode.ShortOf(pawn)} can't log in: {why}", pawn);
+    }
+
     // ================================================================ IStoryPort (the pawn script)
 
     public JsonObject? Next(string body)
@@ -279,6 +341,15 @@ public sealed partial class StoryColony : IStoryPort
                 var owner = _leases[k].Owner;
                 _leases.Remove(k);
                 if (_current.TryGetValue(owner, out var cur) && cur.Lease == k) { _current.Remove(owner); Release(cur); }
+            }
+            // A pawn that went offline holds nothing: its job and its leases go back at once (not after the 90 s lease).
+            foreach (var p in Pawns.Values)
+            {
+                if (!_current.ContainsKey(p.Name) && !_leases.Values.Any(l => l.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase))) continue;
+                if (Host.Live(p.Name).Online) continue;
+                if (_current.Remove(p.Name, out var gone)) Release(gone);
+                foreach (var k in _leases.Where(l => l.Value.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase)).Select(l => l.Key).ToList()) _leases.Remove(k);
+                p.Rev = Bump();
             }
             if (Meta.Active)
                 foreach (var p in Pawns.Values)

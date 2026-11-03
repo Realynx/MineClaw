@@ -20,6 +20,10 @@ const groups = [
     (id) => /^(overview|memory\.|search|raptor\.|personality|shards\.|scripts\.|designs\.)/.test(id),
   ],
   ['Memory activity', (id) => id.startsWith('memoryActivity.')],
+  [
+    "Administration (the bot's settings, per node; POSTs need a fresh step-up)",
+    (id) => ['admin.nodes', 'admin.settings', 'admin.settingsSave', 'admin.settingsTest', 'admin.ollamaModels', 'admin.restartSafety', 'admin.restart', 'admin.settingsAudit'].includes(id),
+  ],
   ['Admin (bot writes)', (id) => id.startsWith('admin.') || id.startsWith('groom.')],
   [
     'Live hive (supervisor pass-through)',
@@ -60,7 +64,7 @@ for (const [title, match] of groups) {
           ? 'bridge-native'
           : r.supervisor.replace(/\|/g, '\\|');
     lines.push(
-      `| \`${id}\` | \`${r.method} ${r.path}\` | ${r.access} | ${req || '–'} | ${res}${status} | ${bridge} | ${sup} | ${r.audit ?? '–'} |`,
+      `| \`${id}\` | \`${r.method} ${r.path}\` | ${r.access}${r.stepUp ? ' + step-up' : ''} | ${req || '–'} | ${res}${status} | ${bridge} | ${sup} | ${r.audit ?? '–'} |`,
     );
   }
   lines.push('');

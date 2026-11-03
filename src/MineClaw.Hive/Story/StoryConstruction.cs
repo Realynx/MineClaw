@@ -27,7 +27,9 @@ public static class StoryConstruction
         {
             int id = a[0]!.GetValue<int>(), meta = a.Count > 1 ? a[1]!.GetValue<int>() : 0;
             if (!d.ItemExists(id) && !d.BlockExists(id)) return null;
-            return new Material(id, Math.Max(0, meta), ItemOf(d, id, meta), d.ItemExists(id) ? d.Item(id).Name : d.Block(id).Name);
+            // An explicit block state (a placed design's cell): the item that places exactly it (its variant: red wool, not wool).
+            var (item, _) = PlacingItem(d, id, Math.Max(0, meta));
+            return new Material(id, Math.Max(0, meta), item ?? ItemOf(d, id, meta), d.ItemExists(id) ? d.Item(id).Name : d.Block(id).Name);
         }
         if (m is not JsonValue v || !v.TryGetValue<string>(out var s) || string.IsNullOrWhiteSpace(s)) return null;
         var name = s.Trim().ToLowerInvariant().Replace(' ', '_');
@@ -38,6 +40,43 @@ public static class StoryConstruction
     }
 
     private static string ItemOf(IGameData d, int id, int meta) => d.ItemExists(id) ? d.Item(id).Name : d.Block(id).Name;
+
+    /// <summary>Block → the item that places it, where they differ (doors, beds, wire, cane, cake, repeaters, string…).</summary>
+    private static readonly Dictionary<int, int> PlacedBy = new()
+    {
+        [26] = 355, [55] = 331, [64] = 324, [71] = 330, [83] = 338, [92] = 354, [93] = 356, [94] = 356, [117] = 379, [118] = 380,
+        [132] = 287, [140] = 390, [149] = 404, [150] = 404, [193] = 427, [194] = 428, [195] = 429, [196] = 430, [197] = 431,
+    };
+
+    /// <summary>Blocks a pawn can't place yet (special placement), and why.</summary>
+    private static string? SpecialPlacement(int id) => id switch
+    {
+        8 or 9 or 10 or 11 => "liquids are poured from a bucket",
+        59 or 104 or 105 or 115 or 141 or 142 or 207 => "crops are planted, not placed",
+        127 => "cocoa grows on jungle logs",
+        63 or 68 => "a sign asks for its text",
+        144 or 176 or 177 => "its look is block-entity data",
+        _ => null,
+    };
+
+    /// <summary>
+    /// The item a pawn places for (id, meta) in this version, with its variant ("red_wool", "spruce_planks"; a door's item for a
+    /// door), or (null, why) when pawns can't place it yet: those cells are kept as <c>unsupported</c> ghosts (shown, alerted,
+    /// never a job) instead of a wrong block or a build blocked forever on an item that doesn't exist.
+    /// </summary>
+    public static (string? Item, string? Why) PlacingItem(IGameData d, int id, int meta)
+    {
+        if (SpecialPlacement(id) is { } why) return (null, why);
+        int item = PlacedBy.TryGetValue(id, out var by) ? by : id;
+        if (!d.ItemExists(item)) return (null, $"no item places {(d.BlockExists(id) ? d.Block(id).DisplayName : $"block {id}")} in {d.VersionId}");
+        if (item != id) return (d.Item(item).Name, null);
+        // The item's damage is the block's variant bits (an anvil's damage is meta >> 2).
+        int damage = id == 145 ? (meta & 12) >> 2 : meta & MineClaw.Bot.Blueprints.DesignFacing.VariantMask(id);
+        if (damage == 0) return (d.Item(item).Name, null);
+        var name = d.VariantName(item, damage);
+        // Only a name that reads back as this exact variant (else the plain item: never a different colour by accident).
+        return d.ItemByNameWithDamage(name) is { } back && back.Item.Id == item && back.Damage == damage ? (name, null) : (null, $"no item name for {d.DisplayName(item, damage)}");
+    }
 
     private static Material M(IGameData d, int id, int meta, int? item = null) =>
         new(id, meta, item is { } i && d.ItemExists(i) ? d.Item(i).Name : ItemOf(d, id, meta), ItemOf(d, id, meta));
@@ -192,8 +231,18 @@ public static class StoryConstruction
                 }
                 break;
             default: // window, block and furniture: each block
-                foreach (var p in Positions()) Add(p.X, p.Y, p.Z, mat.Id, mat.Meta, mat.Item, facing.Length > 0 ? facing : null);
-                break;
+                {
+                    // A design's explicit state: a second half (a door's upper, a bed's head, a tall plant's top) comes with its first;
+                    // a block pawns can't place yet is kept as an unsupported ghost (alerted, never a job).
+                    bool second = kind == "block" && MineClaw.Bot.Blueprints.DesignFacing.SecondHalf(mat.Id, mat.Meta);
+                    var (placing, why) = kind == "block" ? PlacingItem(d, mat.Id, mat.Meta) : (mat.Item, null);
+                    foreach (var p in Positions())
+                    {
+                        Add(p.X, p.Y, p.Z, mat.Id, mat.Meta, placing ?? mat.Item, facing.Length > 0 ? facing : null, job: !second && placing != null);
+                        if (!second && placing == null && g.Count > 0 && g[^1].At == p) { g[^1].State = "unsupported"; g[^1].Reason = why; }
+                    }
+                    break;
+                }
         }
         foreach (var gh in g.Where(x => x.Item == null && !x.Remove)) gh.Item = d.ItemExists(gh.Id) ? d.Item(gh.Id).Name : d.Block(gh.Id).Name;
         return (g, mat, g.Count == 0 ? "nothing to build there" : null);

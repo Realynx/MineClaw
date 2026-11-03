@@ -1,0 +1,179 @@
+/* The body inventory grid: pure DOM/CSS, a Minecraft-style slot bevel on the theme's surfaces. Every animation is
+   opacity/transform only (compositor work, no layout), and none runs with reduced motion. */
+
+.slot {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--surface-3) 80%, #000 6%);
+  box-shadow:
+    inset 2px 2px 0 color-mix(in oklab, #000 22%, transparent),
+    inset -2px -2px 0 color-mix(in oklab, #fff 10%, transparent);
+  outline: none;
+}
+
+.slot:focus-visible {
+  box-shadow:
+    inset 2px 2px 0 color-mix(in oklab, #000 22%, transparent),
+    0 0 0 2px var(--ring);
+}
+
+.held {
+  box-shadow:
+    inset 2px 2px 0 color-mix(in oklab, #000 22%, transparent),
+    0 0 0 2px var(--accent),
+    0 0 0 4px color-mix(in oklab, var(--accent) 25%, transparent);
+}
+
+.icon {
+  position: absolute;
+  inset: 2px;
+  width: 32px;
+  height: 32px;
+  image-rendering: pixelated;
+  pointer-events: none;
+  user-select: none;
+}
+
+.fallback {
+  position: absolute;
+  inset: 2px;
+  display: grid;
+  place-items: center;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+  color: var(--text-muted);
+  background: color-mix(in oklab, var(--surface) 70%, transparent);
+  pointer-events: none;
+}
+
+.ghost {
+  position: absolute;
+  inset: 8px;
+  opacity: 0.18;
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+.count {
+  position: absolute;
+  right: 2px;
+  bottom: 0;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 1px 1px 0 #3f3f3f;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.bar {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 3px;
+  height: 2px;
+  background: #000;
+  pointer-events: none;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+}
+
+/* Enchantment glint: a purple sheen clipped to the icon's own pixels (mask), its highlight sliding across. */
+.glint {
+  position: absolute;
+  inset: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  background: rgb(128 64 255 / 0.22);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.glint::before {
+  content: '';
+  position: absolute;
+  inset: 0 -100%;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    rgb(170 110 255 / 0.7) 46%,
+    rgb(225 200 255 / 0.9) 50%,
+    rgb(170 110 255 / 0.7) 54%,
+    transparent 62%
+  );
+  animation: mcx-inv-glint 3.2s linear infinite;
+  will-change: transform;
+}
+
+@keyframes mcx-inv-glint {
+  from {
+    transform: translateX(-40%);
+  }
+  to {
+    transform: translateX(40%);
+  }
+}
+
+/* A slot whose item, count or damage just changed: one soft ring that fades out. */
+.pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  opacity: 0;
+  pointer-events: none;
+  animation: mcx-inv-pulse 1.4s ease-out;
+}
+
+@keyframes mcx-inv-pulse {
+  from {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.tip {
+  position: absolute;
+  z-index: 20;
+  min-width: 9rem;
+  max-width: 16rem;
+  padding: 6px 9px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in oklab, #7a3cff 55%, var(--border));
+  background: color-mix(in oklab, #100010 88%, var(--surface));
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+  box-shadow: var(--shadow-lg);
+  white-space: nowrap;
+}
+
+.tip .sub {
+  color: #a8a8a8;
+}
+
+.tip .ench {
+  color: #b48cff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glint::before,
+  .pulse {
+    animation: none;
+  }
+}

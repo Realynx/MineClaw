@@ -31,6 +31,8 @@ const camera = arg('camera', null);
 const zoom = Number(arg('zoom', '48'));
 const draw = arg('draw', '128');
 const radius = arg('radius', '8');
+/** Viewer settings as JSON (setViewerQuality), e.g. --settings '{"entityDistance":32}'; default: the Auto preset. */
+const settings = arg('settings', null);
 
 const FLAGS = {
   software: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu', '--ignore-gpu-blocklist'],
@@ -47,7 +49,7 @@ try {
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
       page.on('pageerror', (e) => console.error(`[${p}] page error:`, e.message));
-      const url = `http://localhost:${port}/?thumbs=0&dense=1&mobs=${mobs}&version=${version}&radius=${radius}&draw=${draw}`;
+      const url = `http://localhost:${port}/?thumbs=0&dense=1&mobs=${mobs}&version=${version}&radius=${radius}&draw=${draw}${settings ? `&q=${encodeURIComponent(settings)}` : ''}`;
       await page.goto(url, { waitUntil: 'load' });
       if (camera) {
         await page.waitForFunction(() => !!window.__viewer?.current?.engine(), null, { timeout: 25_000 });
@@ -100,9 +102,11 @@ try {
           sections: s.sections,
           culled: s.memory.culledSections,
           entities: s.memory.entities,
+          entitiesDrawn: window.__viewer.current.engine().runtime.entities.instances,
+          entityRadius: Math.round(s.memory.entityRadius),
         };
       }, seconds);
-      const line = { profile: p, version, mobs: Number(mobs), ...(camera ? { camera, zoom, draw: Number(draw), radius: Number(radius) } : {}), ...r };
+      const line = { profile: p, version, mobs: Number(mobs), ...(camera ? { camera, zoom, draw: Number(draw), radius: Number(radius) } : {}), ...(settings ? { settings: JSON.parse(settings) } : {}), ...r };
       results.push(line);
       console.log(JSON.stringify(line));
     } finally {

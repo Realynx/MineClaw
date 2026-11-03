@@ -55,7 +55,24 @@ public interface IStoryHost
     /// the colony owner's founding or home move. Null = sent; else why not (the director then walks it there).
     /// </summary>
     string? Teleport(string account, P3 to, string why) => "teleport isn't available here";
+    /// <summary>Is main in game (the seat facts are real)? The colony retries offline pawns only then.</summary>
+    bool InGame => true;
+    /// <summary>Whether a pawn's account is hosted (logged in or logging in) and, when it isn't in game, why ("connecting",
+    /// "not whitelisted — re-adding").</summary>
+    PawnSeat Seat(string account) => new(true, null);
+    /// <summary>The server's seats now (free, kept for offline regulars), or null when unknown.</summary>
+    (int Free, int Kept)? Seats() => null;
+    /// <summary>
+    /// Brings exactly these pawn accounts in: a hosted one is whitelisted again and retried now; another logs in, the player cap
+    /// permitting (<paramref name="overCap"/>: the regulars' seats too). Never another account. (account, null = started | why not).
+    /// </summary>
+    IReadOnlyList<(string Account, string? Why)> Bring(string colony, IReadOnlyList<string> accounts, bool overCap) =>
+        accounts.Select(a => (a, (string?)"bringing pawns online isn't available here")).ToList();
 }
+
+/// <param name="Hosted">The account is one of the colony's bodies right now (online, or its login is under way / looping).</param>
+/// <param name="Why">Why it isn't in game, when known.</param>
+public sealed record PawnSeat(bool Hosted, string? Why);
 
 /// <summary><see cref="IStoryWorld"/> over a client's <see cref="WorldState"/>.</summary>
 public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data) : IStoryWorld

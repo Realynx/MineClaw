@@ -88,6 +88,9 @@ export function entityText(e: EntityView): string {
 
 type DrawKind = 'model' | 'item' | 'block' | 'orb' | 'sprite' | 'painting' | 'frame' | 'box';
 
+/** Most far (box) entities one view draws; the rest are skipped (bots never are). */
+export const MAX_FAR_BOXES = 1500;
+
 /** A mob shown inside a block (spawner cages), driven by the block-entity layer. */
 interface DisplayMob {
   dim: number;
@@ -192,6 +195,8 @@ interface Drawn {
   ridersSig: string;
   /** A rider: a shoulder parrot (left/right) or a stuck arrow (its spot). */
   ride: { kind: 'shoulder'; left: boolean } | { kind: 'arrow'; spot: ArrowSpot } | null;
+  /** A dropped item or an experience orb (the viewer settings' "drops" toggle). */
+  drop: boolean;
   motion: Motion;
   frame: number;
   ent: EntityView | null;
@@ -272,6 +277,15 @@ export interface EntityShowOptions {
   selected?: string | null;
   /** Entities beyond this are not drawn (the view's draw distance; fog hides them anyway). */
   drawDistance?: number;
+  /**
+   * Measure `drawDistance` across the ground from this point instead of from the camera: a top-down / iso view hangs its camera
+   * hundreds of blocks above what it looks at, so the camera distance would hide every mob of a zoomed-out map.
+   */
+  centre?: { x: number; z: number } | null;
+  /** Dropped items and experience orbs (default on). */
+  drops?: boolean;
+  /** Entities wholly outside this frustum are skipped (bots too; their selection test only needs what is on screen). */
+  frustum?: THREE.Frustum | null;
   /** The view's vertical field of view (degrees): narrow (iso) views see far entities large, so detail reaches further. */
   fov?: number;
   /** Occluded-body silhouettes: strength 0..1 per entity key (bot name, player "dim:id"); absent = none. */
@@ -297,6 +311,7 @@ export class EntityLayer {
   /** Blob shadows under entities. */
   shadows = true;
   private readonly labels = new LabelFactory();
+  private readonly cullSphere = new THREE.Sphere();
   private readonly botObjs = new Map<string, BotObj>();
   private readonly entLabels = new Map<string, Label>();
   private readonly drawn = new Map<string, Drawn>();
@@ -633,7 +648,7 @@ export class EntityLayer {
         armor: null, armorDye: null, headLayer: false, armorLayer: false, villagerHead: false, baby: false, invisible: false, glowing: false,
         burning: false, flash: 0, hurt: 0, sky: 15, block: 0, bright: 1, age: 0, fixedYaw: null, fixedPitch: 0, hang: null, display: null, smoked: false, eqSig: '',
         armorGlint: null, heldGlint: false, heldOffGlint: false, headGlint: false, elytraGlint: false, itemGlint: false, carried: null, roseAt: 0,
-        parent: null, riders: null, ridersSig: '', ride: null,
+        parent: null, riders: null, ridersSig: '', ride: null, drop: false,
         motion: newMotion(x, y, z, yaw, key, now), frame: 0, ent: null, botView: null,
       };
       this.drawn.set(key, d);
@@ -768,6 +783,7 @@ export class EntityLayer {
       d.hang = null;
       d.fixedYaw = null;
       const kind = e.kind === 'object' ? (objectName(e.type, beta) ?? (e.name ? objectKind(e.name) : 'object')) : e.kind;
+      d.drop = kind === 'item' || kind === 'xp_orb' || kind === 'xporb' || kind === 'orb';
       if (kind === 'player') this.setLook(d, playerLook(this.version, e.name ?? 'player', false));
       else if (kind === 'mob') this.setLook(d, mobLook(this.version, e.type, e.name, d.v, e.id));
       else if (kind === 'item') {
@@ -1495,8 +1511,10 @@ export class EntityLayer {
     this.ghostMap = opts.ghosts ?? null;
     this.ghostSelected = opts.selected ?? null;
     const far = (opts.drawDistance ?? 1e9) + 8, detail = this.detailDistance;
+    const centre = opts.centre ?? null, drops = opts.drops !== false, frustum = opts.frustum ?? null;
+    const sphere = this.cullSphere;
     const want = new Set<string>();
-    let n = 0;
+    let n = 0, boxes = 0;
     for (const d of this.list) {
       d.detail = null;
       if (d.parent) {
@@ -1510,12 +1528,21 @@ export class EntityLayer {
       if (d.dim !== dim) continue;
       if (d.bot ? !opts.bots : !opts.entities) continue;
       if (d.motion.deadAt && this.now - d.motion.deadAt >= DEATH_GONE_MS) continue;
+      if (d.drop && !drops) continue;
       const real = Math.hypot(d.x - cam.x, d.y - cam.y, d.z - cam.z);
-      if (real > far) continue;
+      if ((centre ? Math.hypot(d.x - centre.x, d.z - centre.z) : real) > far) continue;
+      if (frustum) {
+        sphere.center.set(d.x, d.y + d.h * 0.5, d.z);
+        sphere.radius = Math.max(d.w, d.h) + 0.5;
+        if (!frustum.intersectsSphere(sphere)) continue;
+      }
       const dist = real * zoom;
+      const near = !(dist > detail || !d.posed || !this.bundle);
+      // Far boxes are a few pixels each: past the cap (a zoomed-out map over a mob farm) the rest are skipped, bots never.
+      if (!near && !d.bot && !d.display && ++boxes > MAX_FAR_BOXES) continue;
       if (d.bot) this.visibleBots.push(d);
       n++;
-      d.detail = !(dist > detail || !d.posed || !this.bundle);
+      d.detail = near;
       if (d.detail) this.pushDetail(d, dist);
       else if (!d.invisible) this.pushBox(d);
       if (!d.bot && !d.display && opts.labels && d.ent && !d.invisible) this.entityLabel(d, d.ent, dist, want);

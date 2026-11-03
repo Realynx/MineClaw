@@ -30,16 +30,23 @@ public static partial class DesignerSave
     public static (DesignerCanvas? Canvas, BlockPos Offset, BlueprintRecord? Design, string? Why) Load(BlueprintService s, long id)
     {
         if (s.Store.Get(id) is not { } rec || rec.Status == DesignStatus.Deleted) return (null, default, null, $"no design #{id}");
+        // The design's own version (its DSL's line; a legacy design is the server's): the canvas opens in it, never converted.
+        var version = DesignVersions.Of(rec);
         DesignSnapshot? snap = null;
-        if (s.History is { } h && h.Ensure(rec) is { } head) snap = h.Revisions.Snapshot(rec.Id, head.Rev);
+        if (s.History is { } h && h.Ensure(rec) is { } head)
+        {
+            snap = h.Revisions.Snapshot(rec.Id, head.Rev);
+            version = DesignVersions.OfDsl(head.Dsl) ?? version;
+        }
         snap ??= s.History?.SnapshotOf(rec);
         if (snap == null)
         {
-            if (s.PlanOf(rec, out var err) is not { } plan) return (null, default, rec, $"#{id} doesn't parse: {err}");
+            if (s.PlanOf(rec, out var err, forWorld: false) is not { } plan) return (null, default, rec, $"#{id} doesn't parse: {err}");
             snap = new DesignSnapshot();
             foreach (var b in plan.Blocks.Values) snap.Blocks[b.Pos] = (b.Id, b.Meta);
         }
         var (canvas, off) = DesignerCanvas.FromSnapshot(snap, GradeY(s, rec));
+        canvas.Version = version;
         if (canvas.Count < snap.Count) return (canvas, off, rec, $"#{id} is bigger than the plot: {snap.Count - canvas.Count} blocks left out");
         return (canvas, off, rec, null);
     }
@@ -50,7 +57,7 @@ public static partial class DesignerSave
     {
         try
         {
-            if (s.PlanOf(rec, out _) is not { } plan || plan.Blueprint.Ground <= 0) return null;
+            if (s.PlanOf(rec, out _, forWorld: false) is not { } plan || plan.Blueprint.Ground <= 0) return null;
             return s.AsBuilt(rec, plan).Origin.Y + plan.Blueprint.Ground;
         }
         catch (Exception) { return null; }
@@ -60,6 +67,8 @@ public static partial class DesignerSave
         string bot = "")
     {
         static DesignerSaveResult Fail(string why) => new(false, 0, 0, 0, false, why);
+        // Drawn in the session's version, with its version line (every revision records the version it was saved for).
+        using var scope = DesignVersions.Use(session.Version);
         name = Clean(name);
         if (name.Length == 0) return Fail("a design needs a name");
         var canvas = session.Canvas;
@@ -87,15 +96,17 @@ public static partial class DesignerSave
         snap.Air.UnionWith(dug);
         var air = DesignHistory.InteriorAir(snap);
         air.UnionWith(dug);
-        var (dsl, min, bad, why) = DesignHistory.Draw(name, snap, air, ChunkColumn.SizeY, dug.Count > 0 || snap.Blocks.Keys.Any(p => p.Y < grade) ? grade : null);
+        var (dsl, min, bad, why) = DesignHistory.Draw(name, snap, air, ChunkColumn.SizeY, dug.Count > 0 || snap.Blocks.Keys.Any(p => p.Y < grade) ? grade : null,
+            session.Version);
         if (dsl == null) return Fail($"can't save it as a design: {why}");
         if (!placed) dsl = OriginLine().Replace(dsl, "");
         dsl = CaptureComment().Replace(dsl, "# drawn in the Design Studio\n", 1);
         if (session.Anchor is { } a)
             dsl = string.Create(CultureInfo.InvariantCulture, $"# anchor {a.X - off.X - min.X},{a.Y - off.Y - min.Y},{a.Z - off.Z - min.Z}\n") + dsl;
         int w = box.Max.X - box.Min.X + 1, hgt = box.Max.Y - box.Min.Y + 1, d = box.Max.Z - box.Min.Z + 1;
-        var names = snap.Blocks.Values.Where(c => !(BuildBlocks.KindOf(c.Id) == BuildKind.Door && (c.Meta & 8) != 0))
-            .GroupBy(c => BuildBlocks.Name(c.Id, c.Meta)).OrderByDescending(g => g.Count()).ToList();
+        var pal = DesignPalette.For(session.Version);
+        var names = snap.Blocks.Values.Where(c => !DesignFacing.SecondHalf(c.Id, c.Meta))
+            .GroupBy(c => pal.Name(c.Id, c.Meta).ToLowerInvariant()).OrderByDescending(g => g.Count()).ToList();
         var palette = string.Join(", ", names.Take(5).Select(g => g.Key)) + (names.Count > 5 ? "…" : "");
         var line = string.Create(CultureInfo.InvariantCulture, $"{name} {w}×{d}×{hgt}, {snap.Count} blocks (palette: {palette})");
         var msg = string.IsNullOrWhiteSpace(summary) ? $"saved from the Design Studio by {requester}" : summary.Trim();
@@ -121,7 +132,7 @@ public static partial class DesignerSave
         if (s.Edits?.IsTrusted(requester) == true) s.Edits.Touch(rec.Id, $"{requester} saved it in the Design Studio");
         session.DesignId = rec.Id;
         session.Name = name;
-        var text = (created ? $"saved as design #{rec.Id}" : $"saved #{rec.Id}") + (rev > 0 ? $" r{rev}" : "") + $": {line}"
+        var text = (created ? $"saved as design #{rec.Id}" : $"saved #{rec.Id}") + (rev > 0 ? $" r{rev}" : "") + $" ({session.Version}): {line}"
                    + (bad > 0 ? $" ({bad} cells drawn as stand-ins)" : "");
         return new DesignerSaveResult(true, rec.Id, rev, snap.Count, created, text);
     }

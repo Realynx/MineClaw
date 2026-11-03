@@ -44,10 +44,13 @@ public sealed class SupervisorClient : IDisposable
     /// <paramref name="stream"/> the body is not buffered. The timeout covers the whole call when not streaming, and the
     /// headers when streaming (the caller's token bounds the body copy).
     /// </summary>
-    public async Task<HttpResponseMessage> SendAsync(HttpMethod method, string relative, HttpContent? content, TimeSpan timeout, bool stream, CancellationToken ct)
+    /// <param name="headers">Extra request headers (the node proxy's signed identity: <c>X-MCX-User</c>, <c>X-MCX-Roles</c>).</param>
+    public async Task<HttpResponseMessage> SendAsync(HttpMethod method, string relative, HttpContent? content, TimeSpan timeout, bool stream, CancellationToken ct,
+        IReadOnlyDictionary<string, string>? headers = null)
     {
         using var req = new HttpRequestMessage(method, relative) { Content = content };
         if (_token is { Length: > 0 }) req.Headers.TryAddWithoutValidation(TokenHeader, _token);
+        if (headers != null) foreach (var (k, v) in headers) req.Headers.TryAddWithoutValidation(k, v);
         req.Headers.Accept.ParseAdd("application/json, image/png, application/octet-stream");
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);

@@ -34,6 +34,7 @@ public sealed partial class StoryColony
                 ["paused"] = Meta.Paused, ["active"] = Meta.Active, ["home"] = Home()?.Json(), ["tie_break"] = Meta.TieBreak,
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
+                ["seats"] = SeatsJson(),
                 ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev)).Select(z => (JsonNode)new JsonObject
                 {
                     ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(), ["name"] = z.Name,
@@ -96,6 +97,7 @@ public sealed partial class StoryColony
             ["name"] = p.Name, ["display"] = p.Display, ["kind"] = "pawn", ["online"] = live.Online, ["hp"] = live.Hp, ["food"] = live.Food,
             ["pos"] = new JsonArray(Math.Round(live.X, 2), Math.Round(live.Y, 2), Math.Round(live.Z, 2)), ["dim"] = live.Dim, ["drafted"] = p.Drafted,
             ["state"] = state,
+            ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {
                 ["type"] = cur.Type, ["label"] = cur.Label, ["target"] = cur.At?.Json(), ["progress"] = cur.Progress, ["since"] = cur.Since,
@@ -116,6 +118,19 @@ public sealed partial class StoryColony
         };
     }
 
+    /// <summary>{online, wanted, cap_free, kept_for_regulars}: how many pawns are in, how many the colony wants, the server's seats.</summary>
+    private JsonObject SeatsJson()
+    {
+        (int Free, int Kept)? s = null;
+        try { s = Host.Seats(); } catch (Exception) { /* unknown */ }
+        return new JsonObject
+        {
+            ["online"] = Pawns.Values.Count(p => Host.Live(p.Name).Online),
+            ["wanted"] = Math.Max(Meta.Wanted, Pawns.Count),
+            ["cap_free"] = s?.Free, ["kept_for_regulars"] = s?.Kept,
+        };
+    }
+
     private static JsonObject OrderJson(Order q, string? pawn)
     {
         JsonNode? target = q.Entity is { } e ? new JsonObject { ["entity"] = e } : q.Area is { } a ? new JsonObject { ["area"] = a.Json() } : q.At?.Obj();
@@ -124,12 +139,12 @@ public sealed partial class StoryColony
         return o;
     }
 
-    private static JsonObject DesignationJson(DesignationState d) => new()
+    private JsonObject DesignationJson(DesignationState d) => new()
     {
         ["id"] = d.Id, ["kind"] = d.Kind, ["work_type"] = WorkOf(d.Kind) is { Length: > 0 } w ? w : null,
         ["target"] = d.Entity is { } e ? new JsonObject { ["entity"] = e } : d.At?.Json(),
         ["blocks"] = d.Blocks == null ? null : new JsonArray(d.Blocks.Select(b => (JsonNode)b.Json()).ToArray()),
-        ["label"] = d.Label, ["created"] = d.Created, ["status"] = d.Status, ["reason"] = d.Reason, ["fails"] = d.Fails,
+        ["label"] = d.Label, ["created"] = d.Created, ["status"] = d.Status, ["reason"] = d.Reason, ["fails"] = d.Fails, ["retry_at"] = RetryAt(d),
     };
 
     private static JsonObject BillJson(BillState b) => new()

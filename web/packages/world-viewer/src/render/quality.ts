@@ -76,6 +76,18 @@ export function probeRenderer(): RendererProbe {
   }
 }
 
+let probed: RendererProbe | null = null;
+
+/** `probeRenderer`, run once per page (a settings panel and every runtime share the answer). */
+export function probeRendererOnce(): RendererProbe {
+  return (probed ??= probeRenderer());
+}
+
+/** The preset a settings panel suggests for this renderer: the tuned Auto profile in software, High with a GPU. */
+export function recommendedPreset(p: Pick<RendererProbe, 'software'>): 'auto' | 'high' {
+  return p.software ? 'auto' : 'high';
+}
+
 /** The levers the controller moves (read by the runtime each frame). */
 export interface QualityState {
   profile: QualityProfile;

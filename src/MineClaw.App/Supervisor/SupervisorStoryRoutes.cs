@@ -15,7 +15,7 @@ namespace MineClaw.App.Supervisor;
 /// <list type="bullet">
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
-/// <item><c>POST /api/story/colonies/{id}/release|resume|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills</c></item>
+/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills</c></item>
 /// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
 /// </list>
@@ -180,6 +180,37 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             {
                 var why = colonies.Resume(c);
                 return Reply(200, new JsonObject { ["id"] = c.Id, ["pawns"] = c.Pawns.Count, ["note"] = why });
+            }
+            case "online":
+            {
+                // {pawns:[name]|null, over_cap?:bool} → {started:[account], blocked:[{pawn, reason}]}; null = every offline pawn.
+                List<string>? names = null;
+                if (b["pawns"] is JsonArray arr)
+                {
+                    names = new List<string>();
+                    foreach (var x in arr)
+                    {
+                        if (x is not JsonValue xv || !xv.TryGetValue<string>(out var s) || string.IsNullOrWhiteSpace(s)) return Bad("pawns must be [name] or null");
+                        names.Add(s);
+                    }
+                    if (names.Count == 0) return Bad("pawns must name at least one pawn, or be null for every offline pawn");
+                }
+                else if (b["pawns"] != null) return Bad("pawns must be [name] or null");
+                bool overCap = false;
+                if (b["over_cap"] is { } oc && (oc is not JsonValue ov || !ov.TryGetValue<bool>(out overCap))) return Bad("over_cap must be true|false");
+                List<string>? accounts = null;
+                if (names != null)
+                {
+                    var (ps, err) = c.Resolve(names);
+                    if (err != null) return Reply(404, new JsonObject { ["error"] = err });
+                    accounts = ps.Select(p => p.Name).ToList();
+                }
+                var (started, blocked) = colonies.BringOnline(c, accounts, overCap);
+                return Reply(200, new JsonObject
+                {
+                    ["started"] = new JsonArray(started.Select(s => (JsonNode)s!).ToArray()),
+                    ["blocked"] = new JsonArray(blocked.Select(x => (JsonNode)new JsonObject { ["pawn"] = x.Pawn, ["reason"] = x.Reason }).ToArray()),
+                });
             }
             case "home":
             {

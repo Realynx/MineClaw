@@ -1,7 +1,7 @@
 'use client';
 
 import { Command, defaultFilter } from 'cmdk';
-import { Bot, Boxes, Bug, Code2, FileText, Moon, Search, Sun } from 'lucide-react';
+import { Bot, Boxes, Bug, Code2, FileText, Moon, Search, Settings, Sun } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Dialog as D } from 'radix-ui';
 import { useDeferredValue, useEffect, useState, type ReactNode } from 'react';
@@ -149,6 +149,14 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                     </Item>
                   );
                 })}
+                <Item
+                  value="page settings viewer quality graphics fps frame rate performance draw distance entities"
+                  icon={<Settings className="size-4" />}
+                  hint="Viewer quality on this device"
+                  onSelect={() => go('/settings')}
+                >
+                  Settings
+                </Item>
               </Command.Group>
 
               {scripts.data?.scripts.length ? (

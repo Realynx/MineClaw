@@ -27,6 +27,8 @@ export const Errors = {
   invalidCredentials: () => new ApiHttpError(401, { error: 'invalid credentials', code: 'unauthorized' }),
   forbidden: (error = 'forbidden') => new ApiHttpError(403, { error, code: 'forbidden' }),
   csrf: () => new ApiHttpError(403, { error: 'request rejected (CSRF)', code: 'csrf' }),
+  stepUpRequired: () =>
+    new ApiHttpError(403, { error: 'confirm it is you first (step-up)', code: 'step_up_required' }),
   notFound: (error = 'not found') => new ApiHttpError(404, { error, code: 'not_found' }),
   conflict: (error = 'conflict') => new ApiHttpError(409, { error, code: 'conflict' }),
   tooLarge: (error = 'payload too large') => new ApiHttpError(413, { error, code: 'payload_too_large' }),

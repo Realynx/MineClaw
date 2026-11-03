@@ -54,6 +54,12 @@ beforeAll(async () => {
         return json(res, 200, { accepted: true, id: 2042, feed_seq: 2042 });
       case '/v1/sup/viewer/now':
         return json(res, 200, { bot: 'x' }); // missing `at`: contract mismatch
+      case '/v1/sup/viewer/bodies/maid_chan_67/inventory':
+        return json(res, 200, live.inventory);
+      case '/v1/sup/viewer/bodies/maid_chan_102/inventory':
+        return json(res, 200, live.inventoryOffline);
+      case '/v1/sup/viewer/bodies/ghost/inventory':
+        return json(res, 404, { error: 'no such body', code: 'not_found' });
       case '/v1/sup/admin/memory':
         return json(res, 400, { ok: false, message: 'refused: protected fact', reembedded: false });
       case '/v1/sup/admin/backup':
@@ -142,6 +148,30 @@ describe('JSON forwarding', () => {
     expect(sent).toMatchObject({ op: 'update', kind: 'fact', id: '12', fields: { text: 'x' } });
     const audit = t.api.services.audit.list({ offset: 0, limit: 5, kind: 'memory_edit' });
     expect(audit.items[0]).toMatchObject({ ok: false, status: 400, username: 'fox' });
+  });
+
+  it('a body inventory: viewer role, GET, camelCased, armour and off hand intact; unknown bodies 404', async () => {
+    const r = await robin.agent.get('/api/bots/maid_chan_67/inventory').expect(200);
+    expect(r.body.heldSlot).toBe(0);
+    expect(r.body.held_slot).toBeUndefined();
+    expect(r.body.version).toBe('1.12.2');
+    expect(r.body.slots[0]).toMatchObject({ slot: 0, id: 276, count: 1, enchanted: true, durability: { max: 1561, left: 1351 } });
+    expect(r.body.armor).toHaveLength(4);
+    expect(r.body.armor[0]).toMatchObject({ slot: 39, name: 'diamond_helmet' });
+    expect(r.body.armor[1]).toBeNull();
+    expect(r.body.offhand).toMatchObject({ slot: 40, name: 'shield' });
+    expect(r.headers['cache-control']).toBe('no-store');
+    const req = last('/v1/sup/viewer/bodies/maid_chan_67/inventory');
+    expect(req.method).toBe('GET');
+    expect(req.identity).toEqual({ user: 'robin', player: 'kiwi', roles: 'chat,viewer' });
+    const off = await fox.agent.get('/api/bots/maid_chan_102/inventory').expect(200);
+    expect(off.body).toMatchObject({ online: false, slots: [], offhand: null });
+    const missing = await fox.agent.get('/api/bots/ghost/inventory');
+    expect(missing.status).toBe(404);
+    expect(missing.body.code).toBe('not_found');
+    // Read-only: no write verb on the route, and a session is required.
+    expect([404, 405]).toContain((await fox.agent.post('/api/bots/maid_chan_67/inventory').set('Origin', ORIGIN).set('X-CSRF-Token', fox.csrf).send({})).status);
+    expect((await fetch(`${t.url}/api/bots/maid_chan_67/inventory`)).status).toBe(401);
   });
 
   it('never leaks upstream details on 5xx', async () => {

@@ -4,7 +4,7 @@
  * snake→camel, validation) runs exactly as against the real bridge.
  *
  * - Verifies every request's HMAC signature, skew and nonce (401 otherwise) and enforces the bridge's identity rules
- *   (admin role for `/v1/sup/admin/*`, a player for chat, no `player`/`allow_commands` in the chat body).
+ *   (admin role for `/v1/sup/admin/*` and `/v1/admin/nodes*`, a player for chat, no `player`/`allow_commands` in the chat body).
  * - Routes are generated from the contracts `ROUTES` bridge targets, so new routes are served without code changes:
  *   data comes from the contracts test fixtures (snake_case, realistic) or, when a route has none, is generated from its
  *   response schema. Binary routes serve real PNGs, MCWC v1 chunk replies and a `.mcshard` zip.
@@ -27,6 +27,7 @@ import {
   type RouteId,
   type SseEventName,
 } from '@mineclaw/contracts';
+import { mockInventory } from '@mineclaw/contracts/testing';
 import { SignatureVerifier, type BridgeIdentity } from '../bridge/signing.js';
 import { makeMcwc, makePng, makeZip } from './binary.js';
 import { generate } from './generate.js';
@@ -384,7 +385,9 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
         case 'designer.models':
           return { json: toSnake(designer.models()) };
         case 'designer.create':
-          return { json: toSnake(designer.create(camel(body) as { model?: string; designId?: number }, who)) };
+          return { json: toSnake(designer.create(camel(body) as Parameters<typeof designer.create>[0], who)) };
+        case 'designer.version':
+          return { json: toSnake(designer.version(sid, camel(body) as never)) };
         case 'designer.get':
           return { json: toSnake(designer.get(sid)) };
         case 'designer.message':
@@ -459,7 +462,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       const base = dataFor(id, params) as { items?: Obj[]; total?: number };
       const saved = designer.saved.map((d) => ({
         id: d.id, name: d.name, status: 'accepted', requester: d.requester, rev: d.revisions[0]?.rev ?? 1, revisions: d.revisions.length,
-        updated: d.updated, has_picture: false,
+        updated: d.updated, has_picture: false, version: d.version ?? null,
       }));
       return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
     }
@@ -468,6 +471,13 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
         return { json: (cloud ??= syntheticCloud()) };
       case 'bots.now':
         return { json: world.now(params.bot ?? query.get('bot') ?? 'maid_chan') };
+      case 'bots.inventory': {
+        // Like the bridge in front of the bot: any body by login or short name (snake_case); unknown = the ApiError 404.
+        const found = world.hive.find(params.bot ?? '');
+        if (!found) return { status: 404, json: { error: 'no such body', code: 'not_found' } };
+        const index = world.hive.names().indexOf(found.name);
+        return { json: toSnake(mockInventory(found.name, index, world.tick)) };
+      }
       case 'bots.list':
         return { json: world.hive.tiles() };
       case 'status':
@@ -674,7 +684,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
         const path = url.pathname;
         if (path === '/v1/health') return send(res, { json: { ok: true, version: 'mock', supervisor: 'up' } });
         if (path === '/v1/live/stream' && req.method === 'GET') return stream(req, res);
-        if (path.startsWith('/v1/sup/admin/') && !v.identity.roles.split(',').includes('admin')) {
+        if ((path.startsWith('/v1/sup/admin/') || path.startsWith('/v1/admin/nodes')) && !v.identity.roles.split(',').includes('admin')) {
           return send(res, { status: 403, json: { error: 'admin role required', code: 'forbidden' } });
         }
         for (const m of matchers) {

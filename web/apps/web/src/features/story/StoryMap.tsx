@@ -34,6 +34,7 @@ import {
   type V3,
   type ViewMats,
 } from './math';
+import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type PlacedLabel } from './failedLabels';
 import { type Selection } from './model';
 import {
   buildItem,
@@ -193,6 +194,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     busy: false,
   });
   const formationShown = useRef<Formation | null>(null);
+  /** The failed designations' labels (DOM over the canvas: crisp text in the theme's colours, hover titles, clickable). */
+  const labelsEl = useRef<HTMLDivElement | null>(null);
+  /** Where each failed designation's ring was drawn this frame, for clicks (id, the ids its cluster label stands for). */
+  const failedAt = useRef<Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }>>([]);
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
@@ -395,6 +400,38 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   // ------------------------------------------------------------------ drawing
 
+  /** Puts the placed labels on the DOM layer, reusing its elements (a handful at most; positions change every frame). */
+  const syncLabels = (placed: ReadonlyArray<PlacedLabel<FailedCluster>>) => {
+    const host = labelsEl.current;
+    if (!host) return;
+    while (host.children.length > placed.length) host.lastElementChild!.remove();
+    placed.forEach((pl, i) => {
+      let el = host.children[i] as HTMLButtonElement | undefined;
+      if (!el) {
+        el = document.createElement('button');
+        el.type = 'button';
+        el.className = LABEL_CLASS;
+        el.dataset.testid = 'designation-label';
+        const me = el;
+        // A click selects the cluster's first designation (the inspector says why, in full, with Retry now / Cancel).
+        el.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+        el.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const ids = JSON.parse(me.dataset.ids ?? '[]') as Array<string | number>;
+          if (ids.length) p.current.onSelect({ ...EMPTY_SEL, designation: { id: ids[0]!, cluster: ids } });
+        });
+        host.appendChild(el);
+      }
+      const cl = pl.item;
+      if (el.textContent !== cl.text) el.textContent = cl.text;
+      const title = cl.ids.length > 1 ? `${cl.ids.length} designations: ${cl.reason}` : cl.reason;
+      if (el.title !== title) el.title = title;
+      const ids = JSON.stringify(cl.ids);
+      if (el.dataset.ids !== ids) el.dataset.ids = ids;
+      el.style.transform = `translate(${Math.round(pl.x)}px, ${Math.round(pl.y)}px)`;
+    });
+  };
+
   const draw = (c: HTMLCanvasElement, dt: number, now: number) => {
     const ctx = c.getContext('2d');
     const m = mats.current;
@@ -591,6 +628,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       cube(g[0], g[1], g[2], col, state === 'leased' ? 0.5 : 0.32, cutY !== null && g[1] >= cutY);
     }
     // Designations: a mark on every target (one per tree for chop).
+    const failed: Array<FailedMark & { at: Pt }> = [];
     for (const d of st?.designations ?? []) {
       const col = COLORS.designation[d.kind] ?? '#ffffff';
       const all = designationCells(d);
@@ -599,23 +637,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       for (const b of cells) {
         const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
         if (at) mark(d.kind, at, col, cell > 18 ? 14 : 11);
-        // A designation that keeps failing (the director's status / reason): a red ring, the reason when zoomed in.
+        // A designation that keeps failing (the director's status / reason): a red ring always; its reason as a short label
+        // (one per cluster, see below) when zoomed in.
         if (at && (d.status === 'failed' || (d.fails ?? 0) > 0)) {
           ctx.strokeStyle = d.status === 'failed' ? COLORS.danger : '#ffb35c';
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
           ctx.stroke();
-          if (d.status === 'failed' && d.reason && cell > 14) {
-            ctx.font = '600 10px system-ui, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'top';
-            ctx.fillStyle = 'rgba(10,12,16,0.75)';
-            const tw = Math.min(180, ctx.measureText(d.reason).width);
-            ctx.fillRect(at.x - tw / 2 - 3, at.y + 12, tw + 6, 13);
-            ctx.fillStyle = '#ffb3b3';
-            ctx.fillText(d.reason, at.x, at.y + 13, 180);
-          }
+          if (d.status === 'failed')
+            failed.push({ id: d.id, kind: d.kind, reason: d.reason ?? '', cell: [b[0], b[1], b[2]], at });
         }
         if (d.pawn && at) {
           ctx.strokeStyle = pawnColor(d.pawn);
@@ -626,6 +657,29 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         }
       }
     }
+    // The failed designations' labels: one per cluster (same reason, adjacent), largest first, never on top of another; hidden
+    // when zoomed out (the rings stay).
+    const clusters = clusterFailed(failed);
+    const clusterOf = new Map<string, Array<string | number>>();
+    for (const cl of clusters) for (const id of cl.ids) clusterOf.set(String(id), cl.ids);
+    failedAt.current = failed.map((f) => ({
+      id: f.id,
+      cluster: clusterOf.get(String(f.id)) ?? [f.id],
+      x: f.at.x,
+      y: f.at.y,
+    }));
+    const view = { w: c.clientWidth, h: c.clientHeight };
+    syncLabels(
+      cell > LABEL_ZOOM
+        ? placeLabels(
+            clusters.map((cl) => {
+              const a = project(m, cl.anchor[0] + 0.5, Math.min(cl.anchor[1] + 1, cutY ?? 999), cl.anchor[2] + 0.5);
+              return { item: cl, at: a ? { x: a.x, y: a.y + 13 } : null, text: cl.text };
+            }),
+            view,
+          )
+        : [],
+    );
     // Chests and workbenches: registered storage gets its mark and a priority pip; unregistered chests show faintly.
     const storages = new Map(
       (st?.storages ?? []).flatMap((s) => [
@@ -1320,6 +1374,15 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         });
         return;
       }
+      // A failed designation's ring under the cursor (nearer than any body): its inspector (why, retry, cancel).
+      const failHit = failedAt.current
+        .map((f) => ({ f, d: Math.hypot(f.x - pt.x, f.y - pt.y) }))
+        .filter((x) => x.d <= 12)
+        .sort((a, b) => a.d - b.d)[0];
+      if (failHit && (!hit?.at || Math.hypot(hit.at.x - pt.x, hit.at.y - pt.y) > failHit.d)) {
+        props.onSelect({ ...EMPTY_SEL, designation: { id: failHit.f.id, cluster: failHit.f.cluster } });
+        return;
+      }
       if (hit) {
         const now = performance.now();
         if (lastClick.current && lastClick.current.name === hit.key && now - lastClick.current.t < 350) {
@@ -1518,6 +1581,14 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       mode: () => engine()?.rig.mode,
       level: () => p.current.level,
       beds: () => p.current.state?.beds ?? [],
+      /** Failed designations: their cell, and their ring on screen when drawn this frame. */
+      failed: () =>
+        (p.current.state?.designations ?? [])
+          .filter((d) => d.status === 'failed')
+          .map((d) => {
+            const at = failedAt.current.find((f) => String(f.id) === String(d.id));
+            return { id: d.id, cell: designationCells(d)[0] ?? null, x: at?.x ?? null, y: at?.y ?? null };
+          }),
     };
   });
 
@@ -1573,9 +1644,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         onContextMenu={(e) => e.preventDefault()}
         onAuxClick={(e) => e.preventDefault()}
       />
+      <div
+        ref={labelsEl}
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+        data-testid="designation-labels"
+      />
     </div>
   );
 });
+
+/** Labels show from this zoom (px per block) in; the rings show at any zoom. */
+const LABEL_ZOOM = 14;
+/** A failed designation's label: a calm pill in the theme's colours, readable in light and dark, 11px. */
+const LABEL_CLASS =
+  'pointer-events-auto absolute top-0 left-0 max-w-64 cursor-pointer truncate rounded-full border border-danger/50 bg-surface/90 px-2 ' +
+  'py-px text-[11px] leading-[16px] font-semibold whitespace-nowrap text-fg shadow-sm hover:bg-surface';
+const EMPTY_SEL: Selection = { bodies: [], chests: [], bench: null };
 
 const BLOCK_LABELS: Record<number, string> = {
   1: 'stone',

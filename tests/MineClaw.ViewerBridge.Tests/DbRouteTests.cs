@@ -175,6 +175,7 @@ public class DbRouteTests(ITestOutputHelper output)
             ("PersonalityResponse", "/v1/personality"), ("ShardPacksResponse", "/v1/shards/packs"), ("ScriptLibraryResponse", "/v1/scripts?source=db"),
             ("DesignListResponse", "/v1/designs"), ("DesignDetail", "/v1/designs/1"), ("DesignDiff", "/v1/designs/1/diff?a=1&b=2"),
             ("EditSchemaResponse", "/v1/admin/schema"), ("MemoryHeatResponse", "/v1/memory-activity/heat"), ("BotNow", "/v1/sup/viewer/now?bot=maid_chan"),
+            ("BodyInventory", "/v1/sup/viewer/bodies/maid_chan/inventory"),
         };
         var dir = Path.Combine(Path.GetTempPath(), "mineclaw-bridge-contract", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);

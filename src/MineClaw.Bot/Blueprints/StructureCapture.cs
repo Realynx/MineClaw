@@ -42,6 +42,9 @@ public sealed class CaptureResult
     /// <summary>Interior cells that are air in the world and drawn '.' (must be air when rebuilt).</summary>
     public HashSet<BlockPos> Air { get; } = new();
     public string Dsl { get; set; } = "";
+    /// <summary>The design's version (<c>version X</c>: the whole design palette of that version, <see cref="DesignVersions"/>); null
+    /// = the server's buildable blocks (a capture from the world).</summary>
+    public string? Version { get; set; }
     /// <summary>The DSL parsed back at <see cref="Min"/> (null when refused before generating).</summary>
     public VoxelPlan? Plan { get; set; }
     /// <summary>Captured cells the parsed DSL reproduces exactly (id and meta).</summary>
@@ -88,7 +91,11 @@ public static class StructureCapture
 
     /// <summary>Palette symbols in order of preference after the block's own initial. No 'L'/'l' (a row "LIT"/"light" would
     /// read as the <c>light</c> statement), no '.', '_', '#', '=', ';', spaces, quotes or backticks.</summary>
-    private const string Symbols = "ABCDEFGHIJKMNOPQRSTUVWXYZ0123456789abcdefghijkmnopqrstuvwxyz!$%&*+-/<>?@^~|()[]{}";
+    private const string Symbols = "ABCDEFGHIJKMNOPQRSTUVWXYZ0123456789abcdefghijkmnopqrstuvwxyz!$%&*+-/<>?@^~|()[]{}"
+        // A design of the whole palette can hold more states than ASCII has symbols (every stair facing is one): Latin-1 and
+        // Greek letters after them (one UTF-16 char each, never a statement word).
+        + "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ"
+        + "ΑΒΓΔΕΖΗΘΙΚΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικμνξοπρστυφχψω";
 
     public enum CellClass { Air, Natural, Build, Unsupported }
 
@@ -444,7 +451,7 @@ public static class StructureCapture
         var used = new HashSet<char>();
         foreach (var s in states)
         {
-            var name = PaletteName(s.Id, s.Meta);
+            var name = PaletteName(s.Id, s.Meta, r.Version != null);
             if (name == null) continue;
             char initial = char.ToUpperInvariant(BuildBlocks.Name(s.Id, s.Meta).FirstOrDefault(char.IsLetter));
             char c = Symbols.Contains(initial) && !used.Contains(initial) ? initial : Symbols.FirstOrDefault(ch => !used.Contains(ch));
@@ -457,6 +464,7 @@ public static class StructureCapture
         sb.Append(CultureInfo.InvariantCulture, $"# captured from the world at {r.Bounds}: {r.Blocks} blocks, drawn as it stands\n");
         sb.Append(CultureInfo.InvariantCulture, $"blueprint {r.Name}\n");
         sb.Append(CultureInfo.InvariantCulture, $"size {r.W}x{r.H}x{r.D}\n");
+        if (r.Version != null) sb.Append("version ").Append(r.Version).Append('\n');
         sb.Append(CultureInfo.InvariantCulture, $"origin {r.Min.X},{r.Min.Y},{r.Min.Z}\n");
         sb.Append("facing south\n");
         for (int i = 0; i < palette.Count; i += 8) sb.Append("palette ").Append(string.Join(' ', palette.Skip(i).Take(8))).Append('\n');
@@ -497,8 +505,16 @@ public static class StructureCapture
     }
 
     /// <summary>"planks", "cobblestone_stairs:2", "wooden_door:5" — a name the parser resolves back to exactly (id, meta).</summary>
-    internal static string? PaletteName(int id, int meta)
+    internal static string? PaletteName(int id, int meta, bool full = false)
     {
+        if (full)
+        {
+            // A versioned design: the design palette's spelling (resolves back to exactly this state in its version).
+            var pal = DesignPalette.Current;
+            int lower = BuildBlocks.KindOf(id) == BuildKind.Door ? meta & 7 : meta;
+            var spec = pal.Spec(id, lower);
+            return pal.TryResolve(spec, out var st, out _) && st == (id, lower) ? spec : null;
+        }
         var name = Data.Blocks.Get(id).Name;
         var arg = meta != 0 ? meta.ToString(CultureInfo.InvariantCulture) : null;
         var (e, _) = BlueprintParser.Resolve('X', name, arg, name);

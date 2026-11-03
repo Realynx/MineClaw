@@ -113,6 +113,13 @@ All three new processes run on CT 114 beside the bot:
 - **TOTP.**
   1. `enroll` re-checks the password and returns a pending `otpauth://` URL and secret, shown once and never logged.
   2. `verify` activates it.
+- **Step-up (added 2026-11-03).** `POST /api/auth/step-up` (`StepUpRequest`: `code` when the user has TOTP, else
+  `password`; never both) re-confirms the signed-in user for `STEP_UP_MS` (5 min), stored in the session row
+  (`sessions.step_up_at`, web.db schema 2). With TOTP a password is refused (a stolen session + password is not enough); codes
+  are single-use (the login replay guard). Failures count toward the login lockout (401 generic, 423 locked) and every attempt
+  is audited as `step_up`. Routes with `stepUp: true` in the table (the Administration POSTs) answer 403
+  `step_up_required` without a fresh one, checked after the role and CSRF and before the body is read. `Me.stepUpUntil`
+  says until when the current one holds (null = none).
 - **First-run setup** (`setup.status`, `setup.create`).
   - `GET /api/setup` → `SetupStatus {needed, allowedHere}`. `needed` is true while the users file is missing or holds no
     users (a file that does not parse never counts as empty). `allowedHere` says whether this request may complete it.
@@ -255,6 +262,7 @@ Notes on specific routes:
 | `auth.me` | `GET /api/auth/me` | authenticated | – | `Me` | Nest-native | – | – |
 | `auth.totpEnroll` | `POST /api/auth/totp/enroll` | authenticated | body `TotpEnrollRequest` | `TotpEnrollResponse` | Nest-native | – | totp_enroll |
 | `auth.totpVerify` | `POST /api/auth/totp/verify` | authenticated | body `TotpVerifyRequest` | `TotpVerifyResponse` | Nest-native | – | totp_verify |
+| `auth.stepUp` | `POST /api/auth/step-up` | authenticated | body `StepUpRequest` | `StepUpResponse` | Nest-native | – | step_up |
 | `audit.list` | `GET /api/audit` | admin | query `WebAuditQuery` | `WebAuditPage` | Nest-native | – | – |
 
 ### Db reads (bridge-native)
@@ -291,6 +299,19 @@ Notes on specific routes:
 | `memoryActivity.cloud` | `GET /api/memory-activity/cloud` | viewer | – | `MemoryCloudResponse` | `GET /v1/memory-activity/cloud` | bridge-native (UMAP over the RAPTOR leaf embeddings, computed in the background and cached per tree state) | – |
 | `memoryActivity.list` | `GET /api/memory-activity` | viewer | query `MemoryActivityQuery` | `MemoryActivityResponse` | `GET /v1/sup/viewer/memory-activity` | /api/viewer/memory-activity | – |
 
+### Administration (the bot's settings, per node; POSTs need a fresh step-up)
+
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `admin.nodes` | `GET /api/admin/nodes` | admin | – | `AdminNodesResponse` | `GET /v1/admin/nodes` | /api/admin/settings/node | – |
+| `admin.settings` | `GET /api/admin/nodes/:node/settings` | admin | params `AdminNodeParams` | `AdminSettingsResponse` | `GET /v1/admin/nodes/{node}/settings` | /api/admin/settings | – |
+| `admin.settingsSave` | `POST /api/admin/nodes/:node/settings` | admin + step-up | params `AdminNodeParams`<br>body `AdminSettingsSaveRequest` | `AdminSettingsSaveResponse` | `POST /v1/admin/nodes/{node}/settings` | PUT /api/admin/settings | admin_settings |
+| `admin.settingsTest` | `POST /api/admin/nodes/:node/settings/test` | admin + step-up | params `AdminNodeParams`<br>body `ProviderTestRequest` | `ProviderTestResponse` | `POST /v1/admin/nodes/{node}/settings/test` | /api/admin/settings/test | admin_settings |
+| `admin.ollamaModels` | `GET /api/admin/nodes/:node/ollama/models` | admin | params `AdminNodeParams`<br>query `OllamaModelsQuery` | `OllamaModelsResponse` | `GET /v1/admin/nodes/{node}/ollama/models` | /api/admin/ollama/models | – |
+| `admin.restartSafety` | `GET /api/admin/nodes/:node/restart/safety` | admin | params `AdminNodeParams` | `RestartSafety` | `GET /v1/admin/nodes/{node}/restart/safety` | /api/admin/restart/safety | – |
+| `admin.restart` | `POST /api/admin/nodes/:node/restart` | admin + step-up | params `AdminNodeParams`<br>body `RestartRequest` | `RestartResponse` (202) | `POST /v1/admin/nodes/{node}/restart` | /api/admin/restart | admin_settings |
+| `admin.settingsAudit` | `GET /api/admin/nodes/:node/audit` | admin | params `AdminNodeParams`<br>query `SettingsAuditQuery` | `SettingsAuditResponse` | `GET /v1/admin/nodes/{node}/audit` | /api/admin/settings/audit | – |
+
 ### Admin (bot writes)
 
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
@@ -324,6 +345,7 @@ Notes on specific routes:
 | `world.blockEntities` | `GET /api/world/blockentities` | viewer | query `WorldBlockEntitiesQuery` | `WorldBlockEntities` | `GET /v1/sup/world/blockentities` | /api/world/blockentities | – |
 | `bots.tile` | `GET /api/bots/:bot/tile.png` | viewer | params `BotParams`<br>query `TileQuery` | png | `GET /v1/render/tile/{bot}.png` | /view/{bot}?mode&radius&xray | – |
 | `bots.now` | `GET /api/bots/:bot/now` | viewer | params `BotParams` | `BotNow` | `GET /v1/sup/viewer/now?bot={bot}` | /api/viewer/now?bot= | – |
+| `bots.inventory` | `GET /api/bots/:bot/inventory` | viewer | params `BotParams` | `BodyInventory` | `GET /v1/sup/viewer/bodies/{bot}/inventory` | /api/viewer/bodies/{name}/inventory | – |
 | `bots.chat` | `POST /api/bots/:bot/chat` | chat | params `BotParams`<br>body `ChatRequest` | `ChatAccepted` (202) | `POST /v1/sup/viewer/chat` | /api/viewer/chat (bridge adds bot, player from X-MCX-Player, allow_commands from X-MCX-Roles) | chat |
 | `feed` | `GET /api/feed` | viewer | query `FeedQuery` | `FeedResponse` | `GET /v1/sup/viewer/feed` | /api/viewer/feed | – |
 | `blueprints.list` | `GET /api/blueprints` | viewer | – | `BlueprintsResponse` | `GET /v1/sup/blueprints` | /api/blueprints | – |
@@ -353,6 +375,7 @@ Notes on specific routes:
 | `story.get` | `GET /api/story/colonies/:id` | viewer | params `StoryColonyParams`<br>query `StoryStateQuery` | `StoryColonyState` | `GET /v1/sup/story/colonies/{id}` | /api/story/colonies/{id} | – |
 | `story.release` | `POST /api/story/colonies/:id/release` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/release` | /api/story/colonies/{id}/release | story |
 | `story.resume` | `POST /api/story/colonies/:id/resume` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/resume` | /api/story/colonies/{id}/resume | story |
+| `story.online` | `POST /api/story/colonies/:id/online` | story | params `StoryColonyParams`<br>body `StoryOnlineRequest` | `StoryOnlineResponse` | `POST /v1/sup/story/colonies/{id}/online` | /api/story/colonies/{id}/online | story |
 | `story.pause` | `POST /api/story/colonies/:id/pause` | story | params `StoryColonyParams`<br>body `StoryPauseRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/pause` | /api/story/colonies/{id}/pause | story |
 | `story.home` | `POST /api/story/colonies/:id/home` | story | params `StoryColonyParams`<br>body `StoryHomeRequest` | `StoryHomeResponse` | `POST /v1/sup/story/colonies/{id}/home` | /api/story/colonies/{id}/home | story |
 | `story.beds` | `POST /api/story/colonies/:id/beds` | story | params `StoryColonyParams`<br>body `StoryBedsRequest` | `StoryBedsResponse` | `POST /v1/sup/story/colonies/{id}/beds` | /api/story/colonies/{id}/beds | story |
@@ -382,6 +405,7 @@ Notes on specific routes:
 | `designer.message` | `POST /api/designer/sessions/:id/messages` | design | params `DesignerSessionParams`<br>body `DesignerMessageRequest` | `DesignerMessageResponse` | `POST /v1/sup/designer/sessions/{id}/messages` | /api/designer/sessions/{id}/messages | design |
 | `designer.canvas` | `POST /api/designer/sessions/:id/canvas` | design | params `DesignerSessionParams`<br>body `DesignerCanvasRequest` | `DesignerCanvasResponse` | `POST /v1/sup/designer/sessions/{id}/canvas` | /api/designer/sessions/{id}/canvas | – |
 | `designer.save` | `POST /api/designer/sessions/:id/save` | design | params `DesignerSessionParams`<br>body `DesignerSaveRequest` | `DesignerSaveResponse` | `POST /v1/sup/designer/sessions/{id}/save` | /api/designer/sessions/{id}/save | design |
+| `designer.version` | `POST /api/designer/sessions/:id/version` | design | params `DesignerSessionParams`<br>body `DesignerVersionRequest` | `DesignerVersionResponse` | `POST /v1/sup/designer/sessions/{id}/version` | /api/designer/sessions/{id}/version | design |
 
 <!-- routes:end -->
 
@@ -513,6 +537,34 @@ These are the bot-side additions from architecture.md, in their wire form. They 
   - Still not on the wire: player skins and capes (offline server). Horse coats and villager professions are always sent on
     1.12.2 (`look`); b1.8.1 has neither mob.
 
+- **`GET /api/viewer/bodies/{name}/inventory`** (`BodyInventory`, added 2026-11-03; public `GET /api/bots/:bot/inventory`,
+  role `viewer`). One body's inventory, read-only. `{name}` is a login or a short name (`main`, `102`). Every body whose client
+  runs in the bot's process answers: main, in-process hives, every subhive body and Story pawn (each client registers with
+  `Supervisor/BodyInventories` when it is built). Response:
+
+  ```
+  {name, version: "b1.8.1"|"1.12.2", held_slot: 0-8,
+   slots:[{slot, id, meta, count, name, display, durability:{max, left}|null, enchanted}],
+   armor:[head, chest, legs, feet],      // each a slot object or null
+   offhand: slot|null,                   // 1.12.2 only; always null on b1.8.1
+   at: unix_ms, online}
+  ```
+
+  - **Slot numbers** are vanilla's `InventoryPlayer` indices, the same in both versions: `0–8` hotbar, `9–35` main (three
+    rows of nine, top row first), `36` feet, `37` legs, `38` chest, `39` head, `40` off hand. `slots` lists only non-empty
+    hotbar and main slots, in that order (hotbar first). From the player window (b1.8.1: 45 slots; 1.12.2: 46): hotbar `i` ←
+    window `36+i`, main `9–35` ← window `9–35`, armour head..feet ← window `5..8`, off hand ← window `45`. The crafting grid
+    (window `0–4`) and the cursor are never sent.
+  - `name` keeps the variant (`red_wool`, `diamond_pickaxe`); `display` is the game's name (a renamed 1.12.2 item: its own);
+    `durability` only for damageable items (`left = max − meta`); `enchanted` is the NBT glint rule of "World looks" above
+    (b1.8.1: always false; items that glint by id the viewer knows).
+  - **Offline.** `online: false` = the body is not in game; the reply is its last snapshot (taken while it played, or when
+    it disconnected) with that snapshot's `at`. A body the process never saw, or one whose client runs in another process
+    (a process hive), is 404 `{error, online: false}`.
+  - **Cost.** A read is one copy of the player window under the inventory's own lock, never on or waiting for the game tick;
+    viewers asking within 500 ms share one snapshot. The web polls it only while a body's panel is open (2 s, paused while
+    the tab is hidden).
+
 - **`GET /api/viewer/memory-activity?since&brain`** (`MemoryActivityResponse`). Response:
 
   ```
@@ -578,10 +630,60 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
 
 - **Canvas.** Local coordinates x, z 0..63 (+x east, +z south) and y -16..47. y 0 is the first layer above the plot's
   grass; y -1 is the grass layer and y -16..-1 is the ground under it, solid earth until it is dug. A cell is
-  `[x, y, z, id, meta]` in the server version's ids: id 0 = air (below y 0 that digs the cell out), id -1 = undisturbed
+  `[x, y, z, id, meta]` in the session version's ids: id 0 = air (below y 0 that digs the cell out), id -1 = undisturbed
   ground again (fills a dug cell back; below y 0 only). The session lists `blocks` and `dug` (`[[x,y,z]]`, the cells below
-  ground dug out to air); `plot` is `{size, height, depth}`. Only the design palette is accepted (`palette` in the session:
-  `BuildBlocks.Buildable` blocks with their variants). A door is kept as two halves (upper = lower | 8).
+  ground dug out to air); `plot` is `{size, height, depth}`. Any state of the version's design palette is accepted (below).
+  Two-cell blocks are kept whole: a door or a double plant as two halves (upper = lower | 8, above it), a bed as foot + head
+  (head = foot | 8, one step along its facing S W N E); replacing either half clears the other. A chest placed beside a single
+  chest of its kind takes that chest's facing when it is across the pair (they pair, as the game pairs them). The browser's
+  canvas applies the same rules, so both stay in step.
+- **Versions (added 2026-11-03).** A session is drawn for one game version, `b1.8.1` or `1.12.2` (`version`; the server's is
+  `server_version`, `versions` lists both). A new canvas starts in the server's version (or `version` in the create body);
+  a design opens in the version it was saved for. Every save records the session's version in the design's DSL as a
+  `version X` line, so every revision, the bridge's design list/detail (`version` per design and revision) and every builder
+  see it. Migration rule: a design (or a session) saved before versions has none and is the version of the server whose db
+  holds it (one bot db has only ever served one version); a DSL without a `version` line also keeps the legacy palette
+  (only `BuildBlocks` blocks), a `version` line opens that version's whole design palette.
+- **The palette (added 2026-11-03).** `palette` is every placeable block state of the session's version
+  (src/MineClaw.Bot/Blueprints/DesignPalette.cs, curated from minecraft-data pc/1.12.2 blocks + variations and the b1.8.1
+  table): 398 entries for 1.12.2, 120 for b1.8.1, one per variant (every colour of wool, carpet, stained glass and panes,
+  terracotta, concrete and powder, glazed terracotta, shulker boxes; every wood of planks, logs, slabs, stairs, fences,
+  gates, doors, saplings, leaves; every stone, sandstone, stone brick, quartz and prismarine kind; plants, crops, redstone,
+  rails, beds, signs, banners, skulls, liquids' sources). Each is `{id, meta, name, facing, spec, cat, family, icon}`: `spec`
+  the canonical spelling ("wool:red", "spruce_door", "stained_glass:light_blue"), `cat` one of `categories` (Building,
+  Decoration, Colored, Nature, Redstone, Transport, Misc: the creative tabs), `family` its facing rule (stairs, slab, log,
+  door, tall, bed, torch, wall, front, facing6, hopper, horizontal, gate, trapdoor, button, lever, rail, poweredrail,
+  rotation16, skull, vine, age…), `icon` an icon hint (1.12.2: an item model, b1.8.1: "item:N"). Facings, halves and
+  runtime states are metas of an entry, all accepted (stairs 0..7 in 1.12.2, slabs + 8 top, log axes…). Left out (refused
+  with the reason): air; flowing water and lava (place a source); piston heads and moving pistons; fire; portals, end
+  portals and gateways; spawners, bedrock, silverfish blocks, end portal frames, chorus plants (unobtainable); command,
+  structure and structure-void blocks, barriers (operator-only); frosted ice; the technical double slabs whose full block
+  exists (double wooden / red sandstone / purpur slabs, double stone slab metas but 0 and 8 "smooth stone"; 1.12.2's
+  petrified oak slab 44:2); runtime states (lit furnace, lit redstone ore, lit redstone lamp, unlit redstone torch, powered
+  repeater and comparator). b1.8.1 also leaves out what it can't obtain: grass, mycelium-like silk-touch blocks (ice, huge
+  mushroom blocks, ores that drop items: coal, lapis, diamond, redstone), leaves (placed leaves decay), cobwebs (shears give
+  string) and its technical locked chest.
+- **Version compatibility (added 2026-11-03).** `POST sessions/{id}/version {version, apply?}` →
+  `{version, target, changed, report?, session?}`: an empty canvas switches at once (`changed`, the new `session`); a full one
+  is checked (`report`: `{from, to, same, compatible, exact, text, substituted:[{name, count}], missing:[{name, count}]}`) and,
+  with `apply`, converted (the missing blocks left out, the model told, an assistant line in the transcript). The mapping
+  (DesignConvert): 1.12.2's ids are a superset of b1.8.1's with the same numbers and metas, so a state carries over when the
+  target's palette has it, except id 95 (b1.8.1's locked chest, 1.12.2's stained glass: never carried over as is) and
+  b1.8.1's wooden slab 44:2 = 1.12.2's oak slab 126:0. Back to b1.8.1, the nearest block substitutes where one is close
+  (woods → oak, stone/sand/sandstone/stone-brick kinds and grass/podzol/coarse dirt → their plain block, stained glass and
+  panes → glass, top halves and upside-down stairs → bottom ones, other woods' stairs/fences/gates/doors → oak's, wooden
+  buttons → stone, trapped chests → chests, iron trapdoors → trapdoors); everything else (concrete, terracotta, quartz…) is
+  missing. `POST sessions {design_id, convert_to}` opens a design converted to a version with the report as `compat` (Story
+  Mode does this for the server's version and refuses a design whose `compat` is not `compatible`, naming the blocks); a
+  session drawn for another version than the server's carries `server_compat` (how it would build here).
+- **Builds of a versioned design.** `BlueprintService.PlanOf` (every builder: `design build`, the crew, revert): a design
+  drawn for another version is converted to the world's (`VoxelPlan.Converted`, said in the build's lines) or refused when a
+  block of it doesn't exist here (`design build` answers "#12 "hut" is drawn for 1.12.2; these blocks don't exist in b1.8.1:
+  12 White Concrete … (open it in the Design Studio and convert it, or pick other blocks)"); then the cells the survival
+  builder can't place yet (not `BuildBlocks` states: beds, redstone, upside-down stairs, new woods…) are set aside as
+  `VoxelPlan.Unsupported` and reported ("4 cells the builder can't place yet, left out: 2 Bed, 2 Redstone Wire"), never
+  placed wrong. Story's build queue gives each design cell the item that places exactly it (red wool, a spruce door's item)
+  and keeps blocks pawns can't place yet (crops, liquids, signs, banners, skulls) as `unsupported` ghosts with an alert.
 - **Attached blocks (added 2026-11-03).** Wall torches and ladders hang on a full block: every apply (the AI's ops and the
   user's) checks the changed ones and the ones next to a changed cell; one whose wall side is open but whose opposite side
   is solid is turned around, a wall torch with neither but a solid block under it stands on the floor (meta 5), anything
@@ -595,14 +697,22 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
 - **`GET models`** → `{models:[{id, label, provider, model, tier, profile, cost_hint, default}], default, version, budget}`:
   every tier model (`main`, `worker`, `cheap`) and every usable profile (`profile:<name>`, Ollama/DeepSeek too), de-duplicated;
   a Claude model outside the 5.5 generation is never offered.
-- **`POST sessions {model?, design_id?}`** → the session `{id, owner, model, design_id, name, rev, blocks, dug, anchor,
-  messages, cost_usd, calls, version, palette, plot, revisions}`: an empty canvas, or the design's newest revision centred on
-  the plot (a design that digs: its `ground N` layer on y 0, its forced air under it as dug cells).
+- **`POST sessions {model?, design_id?, version?, convert_to?}`** → the session `{id, owner, model, design_id, name, rev, blocks,
+  dug, anchor, messages, cost_usd, calls, version, server_version, versions, palette, categories, compat, server_compat, plot,
+  revisions}` (each revision with its `version`): an empty canvas in `version` (default the server's), or the design's newest
+  revision centred on the plot in its own version (a design that digs: its `ground N` layer on y 0, its forced air under it
+  as dug cells); `convert_to` converts it (see "Version compatibility").
 - **`POST sessions/{id}/messages {text, model?, canvas:{rev, edits?}, selection?:{min, max}}`** → `{reply, ops:[{kind, label,
   by, cells}], rev, cost_usd, session_cost_usd, model, calls, usage, message, user_message, refusal}`. Pending user edits are
   applied first and summarised for the model, with the canvas summary and the selection. The model edits through seven
   tools (place, box fill/hollow/walls, line, remove, replace, clear, describe; remove below y 0 digs, the block "earth" fills
-  back) for up to `MaxRounds` calls; the system prompt
+  back) and looks names up with `find_blocks {q, n?}` ("magenta concrete" → `concrete:magenta = Magenta Concrete (Colored)`)
+  for up to `MaxRounds` calls. Its blocks are any of the session version's design palette, by minecraft name, display
+  name, `name:variant`, `variant_name` or `name:meta`, then facing modifiers (`oak_stairs:north:top`, `bed:north`,
+  `torch:wall=west`, `log:spruce:x`); a wrong name answers "unknown 1.12.2 block 'redwol'; did you mean wool:red …?". The
+  prompt carries a compact category summary of the palette (about 200 tokens: the base names per category, `<colour>_` and
+  `<wood>_` families folded, the colour and wood words), never the whole list; the whole turn runs in the session's version.
+  The system prompt
   and tools are cached, history is the last `HistoryTurns` exchanges as plain text. Spend is recorded on the bot's
   `UsageTracker` (the shared daily/monthly caps; `designer` purpose rollup); a paused budget answers 429, the cheap-only
   stage refuses Claude models above the memory tier, and a message stops at `MaxUsdPerMessage`. A second write while a
@@ -677,3 +787,48 @@ filename="<slug>-<yyyyMMdd-HHmm>.mcshard"`. The format is `ShardFile` FormatVers
 | 14  | `FeedLine` correlation               | Optional `request_id` on viewer lines and `reply_to` on replies were added, so the composer's pending state can resolve. `ChatAccepted.id` echoes the request id.                                                                                       |
 | 15  | Export permission                    | Shard export (preview and download) is `viewer`, because it is a read: secrets are redacted and the export is audited. Import preview and apply are `admin`.                                                                                            |
 | 16  | Topology (2026-11-02)                | Everything runs on CT 114. Nest ↔ bridge is plain HTTP on loopback with no cert pin, and the bridge accepts loopback sources only. HMAC is unchanged. Cloudflare client-IP trust comes from `Web:TrustedProxies`.                                       |
+
+## 9. Administration: the bot's own settings (added 2026-11-03)
+
+The Administration page (`/administration`, `admin` only) reads and changes the bot's settings. Every route is scoped to a
+**node** (`AdminNode`): one bot instance the bridge can reach. Today there is exactly one, `local` (the bridge's
+`Bridge:SupervisorUrl`), and the UI's node selector is a stub over `admin.nodes`. See docs/web/deploy.md, "Bot settings from the
+web", for storage and the server-side changes.
+
+- **Chain.** Nest (`admin` role; POSTs: CSRF + Origin + a fresh step-up, §2) → bridge `/v1/admin/nodes/{node}/…`
+  (`SettingsProxy`: `admin` role in the signed identity, node `local` only, a closed route table) → supervisor
+  (`AdminSettingsRoutes`: `Supervisor:AllowAdminWrites` + `X-Supervisor-Token` + the identity the bridge forwards as
+  `X-MCX-User` / `X-MCX-Roles`, which must hold `admin`). The generic `/v1/sup/*` pass-through never forwards those headers, so
+  the bot refuses these routes reached through it.
+- **Supervisor routes** (snake_case):
+
+  | Supervisor | Bridge | Body / query | Reply |
+  |---|---|---|---|
+  | `GET /api/admin/settings/node` | `GET /v1/admin/nodes` | | `{id, name, version, started_at, game_version}`; the bridge answers `{nodes:[…]}` with `id: "local"`, `supervisor_url`, `reachable` |
+  | `GET /api/admin/settings` | `GET /v1/admin/nodes/{node}/settings` | | `AdminSettingsResponse`; the bridge stamps `node.id` and `node.supervisor_url` |
+  | `PUT /api/admin/settings` | `POST /v1/admin/nodes/{node}/settings` | `{changes:[{key, value}], reason}` | `{applied, restart_required, backup}`; 400 `{error, errors:[{key, message}]}` becomes `ApiError.details[{path: key, message}]` |
+  | `POST /api/admin/settings/test` | `POST …/settings/test` | `{kind, api_key?, base_url?, model?, endpoint?, ollama_api_key?}` | `{ok, message, latency_ms, models}` |
+  | `GET /api/admin/ollama/models` | `GET …/ollama/models?endpoint=` | | `{endpoint, ok, error, models:[{name, capabilities}]}` |
+  | `GET /api/admin/restart/safety` | `GET …/restart/safety` | | `RestartSafety` |
+  | `POST /api/admin/restart` | `POST …/restart` | `{reason, force?}` | 202 `RestartResponse`; 409 `{error, safety}` while unsafe |
+  | `GET /api/admin/settings/audit?max=` | `GET …/audit` | | `{entries:[SettingsAuditEntry]}` |
+
+- **Values.** `value` and `default` are scalars or string lists (`SettingValue`). A change's `value: null` drops the override
+  (back to the base config); a secret takes its new text (`""` clears it). Secrets never come back: `value` and `default` are
+  absent, and `secretState` is `{set, hint}`, where `hint` is "…" plus the last four characters, only for values of 12 or more
+  characters.
+- **Validation is all-or-nothing.** Unknown or read-only keys, types and ranges, enum choices, URLs (absolute http(s), no
+  credentials, no link-local), model ids (a Claude id must be in `allowedClaudeModels`, the startup 5.5-generation set
+  `ModelProfiles.CurrentGeneration`), then the startup config check on the whole candidate config: only the problems the save
+  would add count (an Ollama tier without an endpoint, a provider typo…). Nothing is written when anything fails.
+- **Live vs restart.** `apply: "live"` settings are written onto the running options objects at once (the brain reads them per
+  call, the viewer per request). `restart` ones are saved and listed in `restart_required` / `restartPending` until the bot
+  restarts. `pendingRestart` compares the saved value with the one the process started with.
+- **Restart safety.** Refused (409) while any body is in the overworld at night under open sky, or stands at a ledge with 8 or
+  more blocks of air (or the void) beside its feet, unless `force: true` (the reason and the overridden findings are audited).
+  A bot that is not in game is judged safe.
+- **Rate limits** (per bot): 12 saves and restarts, and 30 tests and model listings, per minute (429 with `retry_after_ms`).
+  The step-up itself shares the login limiter.
+- **Audit.** The bot appends `{at, who, action, keys, reason, ok, note}` to `settings-audit.jsonl` next to the override file
+  (0600): keys, never values. The web audit records the call as `admin_settings` with only the keys and the reason
+  (`adminSettingsAuditSummary`). The bridge's write log never holds bodies.

@@ -172,6 +172,9 @@ public class PassthroughTests
     [InlineData("GET", "botsx", false)]
     [InlineData("GET", "viewer/now", true)]
     [InlineData("GET", "viewer/chat", false)]
+    [InlineData("GET", "viewer/bodies/maid_chan/inventory", true)]
+    [InlineData("GET", "viewer/bodies", false)]
+    [InlineData("POST", "viewer/bodies/maid_chan/inventory", false)]
     [InlineData("GET", "admin/audit", true)]
     [InlineData("GET", "admin/rebuild/j1", true)]
     [InlineData("GET", "admin/schema", false)]
@@ -264,6 +267,34 @@ public class PassthroughTests
         Assert.Equal(404, (await h.GetAsync("/v1/sup/shutdown")).Status);
         Assert.Equal(404, (await h.PostAsync("/v1/sup/status", "{}")).Status);
         Assert.DoesNotContain(h.Sup.Seen, r => r.Target.StartsWith("/api/shutdown", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_body_inventory_passes_through_for_viewers_with_the_token_and_errors_map_to_ApiError()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        // Signed with the viewer role only: a read, unchanged (snake_case), the supervisor token added by the bridge.
+        var (s, body) = await h.GetAsync("/v1/sup/viewer/bodies/maid_chan/inventory", roles: "viewer");
+        Assert.Equal(200, s);
+        using (var doc = JsonDocument.Parse(body))
+        {
+            Assert.Equal(1, doc.RootElement.GetProperty("held_slot").GetInt32());
+            Assert.Equal(1441, doc.RootElement.GetProperty("slots")[0].GetProperty("durability").GetProperty("left").GetInt32());
+            Assert.Equal(4, doc.RootElement.GetProperty("armor").GetArrayLength());
+        }
+        Assert.Equal("test-token", h.Sup.Seen.Last(r => r.Target == "/api/viewer/bodies/maid_chan/inventory").Token);
+        // Unsigned: 401 before the supervisor is asked.
+        int before = h.Sup.Seen.Count(r => r.Target.Contains("/inventory", StringComparison.Ordinal));
+        using (var none = await h.Http.GetAsync("/v1/sup/viewer/bodies/maid_chan/inventory")) Assert.Equal(401, (int)none.StatusCode);
+        Assert.Equal(before, h.Sup.Seen.Count(r => r.Target.Contains("/inventory", StringComparison.Ordinal)));
+        // An unknown body: the bot's 404 becomes the contract's ApiError.
+        h.Sup.Routes["/api/viewer/bodies/nobody/inventory"] = _ => FakeSupervisor.Json("""{"error":"no such body","online":false}""", 404);
+        var (s2, b2) = await h.GetAsync("/v1/sup/viewer/bodies/nobody/inventory", roles: "viewer");
+        Assert.Equal(404, s2);
+        Assert.Contains("\"code\":\"not_found\"", b2);
+        // Not a write route, and no path tricks.
+        Assert.Equal(404, (await h.PostAsync("/v1/sup/viewer/bodies/maid_chan/inventory", "{}")).Status);
+        Assert.Equal(404, (await h.GetAsync("/v1/sup/viewer/bodies/..%2Fadmin/inventory")).Status);
     }
 
     [Fact]

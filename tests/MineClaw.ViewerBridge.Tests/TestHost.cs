@@ -15,7 +15,8 @@ using MineClaw.ViewerBridge.Security;
 namespace MineClaw.ViewerBridge.Tests;
 
 /// <summary>A request the fake supervisor saw.</summary>
-public sealed record SeenRequest(string Method, string Target, string? Token, string Body);
+/// <param name="User">The identity headers the node proxy forwards (<c>X-MCX-User</c>, <c>X-MCX-Roles</c>); null when absent.</param>
+public sealed record SeenRequest(string Method, string Target, string? Token, string Body, string? User = null, string? Roles = null);
 
 /// <summary>
 /// A stand-in for the bot's Supervisor on a free loopback port: canned replies per path (status, viewer routes, admin, world) and
@@ -48,7 +49,8 @@ public sealed class FakeSupervisor : IAsyncDisposable
             using var sr = new StreamReader(ctx.Request.Body);
             var body = await sr.ReadToEndAsync();
             var target = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
-            self!.Seen.Enqueue(new SeenRequest(ctx.Request.Method, target, ctx.Request.Headers["X-Supervisor-Token"].FirstOrDefault(), body));
+            self!.Seen.Enqueue(new SeenRequest(ctx.Request.Method, target, ctx.Request.Headers["X-Supervisor-Token"].FirstOrDefault(), body,
+                ctx.Request.Headers["X-MCX-User"].FirstOrDefault(), ctx.Request.Headers["X-MCX-Roles"].FirstOrDefault()));
             if (self.Routes.TryGetValue(ctx.Request.Path.Value ?? "", out var h))
             {
                 var (status, type, bytes) = h(ctx.Request);
@@ -73,6 +75,7 @@ public sealed class FakeSupervisor : IAsyncDisposable
         Routes["/api/bots"] = _ => Json("""{"at":"2026-11-02T10:00:00+00:00","bots":[]}""");
         Routes["/api/viewer/now"] = _ => Json("""{"bot":"maid_chan","at":"2026-11-02T10:00:00+00:00","brain_state":"awake","in_flight":null,"thought":null,"tool":null,"task":"mining","script":null,"body":{"hp":20,"food":19,"pos":"1,64,-2","dim":0,"held":"stone_pickaxe"}}""");
         Routes["/api/viewer/chat"] = _ => Json("""{"accepted":true,"id":17}""");
+        Routes["/api/viewer/bodies/maid_chan/inventory"] = _ => Json("""{"name":"maid_chan","version":"b1.8.1","held_slot":1,"slots":[{"slot":0,"id":278,"meta":120,"count":1,"name":"diamond_pickaxe","display":"Diamond Pickaxe","durability":{"max":1561,"left":1441},"enchanted":false},{"slot":1,"id":4,"meta":0,"count":64,"name":"cobblestone","display":"Cobblestone","durability":null,"enchanted":false}],"armor":[null,{"slot":38,"id":307,"meta":0,"count":1,"name":"iron_chestplate","display":"Iron Chestplate","durability":{"max":240,"left":240},"enchanted":false},null,null],"offhand":null,"at":1762077600000,"online":true}""");
         Routes["/api/admin/memory"] = _ => Json("""{"ok":true,"message":"added","id":"5","reembedded":true}""");
         Routes["/api/hive/tree"] = _ => Json("""{"id":"main","name":"maid_chan","kind":"main","state":"running","children":[]}""");
         Routes["/api/events"] = _ => Json("""{"events":[],"last":0}""");

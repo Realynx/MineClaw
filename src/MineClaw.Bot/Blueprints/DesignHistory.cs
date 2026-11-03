@@ -45,7 +45,8 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
     {
         if (string.IsNullOrWhiteSpace(rec.Dsl)) return null;
         VoxelPlan? plan;
-        try { plan = service.PlanOf(rec, out _); } catch (Exception) { return null; }
+        // The design as drawn, in its own version (never converted for the world, nothing left out).
+        try { plan = service.PlanOf(rec, out _, forWorld: false); } catch (Exception) { return null; }
         if (plan == null) return null;
         var built = service.AsBuilt(rec, plan);
         var s = new DesignSnapshot();
@@ -283,8 +284,10 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
     /// <paramref name="gradeY"/> (the y of the first layer above the ground) the layers under it are written <c>ground N</c>.
     /// </summary>
     internal static (string? Dsl, BlockPos Min, int Mismatched, string? Why) Draw(string name, DesignSnapshot snap, IReadOnlySet<BlockPos> air, int height,
-        int? gradeY = null)
+        int? gradeY = null, string? version = null)
     {
+        // A versioned design is drawn in its version's names, with its version line (its whole design palette).
+        using var scope = DesignVersions.Use(version);
         var cells = snap.Blocks.Keys.Concat(air).ToList();
         if (snap.Blocks.Count == 0) return (null, default, 0, "nothing buildable left in it");
         var min = new BlockPos(cells.Min(p => p.X), cells.Min(p => p.Y), cells.Min(p => p.Z));
@@ -292,7 +295,7 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         int wx = max.X - min.X + 1, hy = max.Y - min.Y + 1, dz = max.Z - min.Z + 1;
         if (wx > BlueprintParser.MaxSide || dz > BlueprintParser.MaxSide || hy > BlueprintParser.MaxHeight)
             return (null, min, 0, string.Create(CultureInfo.InvariantCulture, $"it would be {wx}×{hy}×{dz} (a design holds at most {BlueprintParser.MaxSide} a side)"));
-        var r = new CaptureResult { Name = name, Min = min, Max = max };
+        var r = new CaptureResult { Name = name, Min = min, Max = max, Version = DesignVersions.Normalize(version) };
         foreach (var (p, s) in snap.Blocks) r.Cells[p] = s;
         foreach (var p in air) if (!snap.Blocks.ContainsKey(p)) r.Air.Add(p);
         var dsl = StructureCapture.Dsl(r);
@@ -320,7 +323,7 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         var grade = DesignerSave.GradeY(service, rec);
         if (grade is { } g && next.Box is { } nb)
             air.UnionWith(next.Air.Where(p => p.Y < g && p.X >= nb.Min.X && p.X <= nb.Max.X && p.Z >= nb.Min.Z && p.Z <= nb.Max.Z));
-        var (dsl, min, bad, why) = Draw(rec.Name, next, air, height, grade);
+        var (dsl, min, bad, why) = Draw(rec.Name, next, air, height, grade, DesignVersions.OfDsl(rec.Dsl));
         if (dsl == null) return (false, $"can't save #{rec.Id} as a revision: {why}");
         rec.Dsl = dsl;
         rec.Origin = min;
