@@ -38,12 +38,6 @@ public sealed class BridgeOptions
     public double HeatHalfLifeS { get; set; } = 120;
     /// <summary>How often the db-side caches (vectors, RAPTOR tree) look for changes the bot made.</summary>
     public int ReloadCheckSeconds { get; set; } = 60;
-    /// <summary>Texture assets (terrain.png / client jar) for the atlas; default <c>&lt;DataDir&gt;/assets</c>.</summary>
-    public string? AssetsDir { get; set; }
-    /// <summary>The 1.12.2 client jar (block models + textures, read at runtime); default the bot's <c>Render:Assets:Jar</c>.</summary>
-    public string? ModernJar { get; set; }
-    /// <summary>Allow downloading the public client jars when nothing is on disk (off on CT 114 unless set).</summary>
-    public bool AllowAssetDownload { get; set; }
 }
 
 public sealed class BridgeConfig

@@ -1,6 +1,5 @@
 using System.Net;
 using MineClaw.ViewerBridge;
-using MineClaw.ViewerBridge.Atlas;
 using MineClaw.ViewerBridge.Data;
 using MineClaw.ViewerBridge.Endpoints;
 using MineClaw.ViewerBridge.Live;
@@ -57,7 +56,6 @@ namespace MineClaw.ViewerBridge
             s.AddSingleton<ChunkCache>();
             s.AddSingleton<MemoryActivityStore>();
             s.AddSingleton<LiveHub>();
-            s.AddSingleton<AtlasService>();
             configure?.Invoke(s);
 
             var app = builder.Build();
@@ -85,7 +83,6 @@ namespace MineClaw.ViewerBridge
                 }
             });
             BridgeEndpoints.Map(app);
-            AtlasEndpoints.Map(app);
             app.MapFallback((HttpContext ctx) => ApiErrors.NotFound());
             return app;
         }

@@ -2,66 +2,13 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using MineClaw.Render;
-using MineClaw.ViewerBridge.Atlas;
 using MineClaw.ViewerBridge.Data;
-using Xunit.Abstractions;
 
 namespace MineClaw.ViewerBridge.Tests;
 
-/// <summary>The runtime atlas (no Mojang assets: with none on disk it is the procedural cells + flat colours), shards, groom, diff.</summary>
-public class AtlasAndToolsTests(ITestOutputHelper output)
+/// <summary>Shards, groom, script diff.</summary>
+public class ToolsTests
 {
-    [Theory]
-    [InlineData("b1.8.1")]
-    [InlineData("1.12.2")]
-    public async Task Atlas_png_and_json_describe_every_state_and_are_cacheable(string version)
-    {
-        await using var h = await BridgeHost.StartAsync();
-        using var png = await h.SendAsync(h.Signed("GET", $"/v1/world/atlas.png?version={version}"));
-        Assert.Equal(200, (int)png.StatusCode);
-        Assert.Equal("image/png", png.Content.Headers.ContentType?.MediaType);
-        Assert.Contains("max-age=86400", png.Headers.CacheControl?.ToString());
-        var tag = png.Headers.ETag!.Tag;
-        Assert.StartsWith($"\"{version}-", tag);
-        var bytes = await png.Content.ReadAsByteArrayAsync();
-        var (w, hgt, _) = Png.Decode(bytes);
-
-        using var json = await h.SendAsync(h.Signed("GET", $"/v1/world/atlas.json?version={version}"));
-        var jsonText = await json.Content.ReadAsStringAsync();
-        var root = JsonDocument.Parse(jsonText).RootElement;
-        Assert.Equal("mineclaw-atlas", root.GetProperty("format").GetString());
-        Assert.Equal(version, root.GetProperty("version").GetString());
-        Assert.Equal(w, root.GetProperty("width").GetInt32());
-        Assert.Equal(hgt, root.GetProperty("height").GetInt32());
-        Assert.Equal(hgt, root.GetProperty("rows").GetInt32() * root.GetProperty("tile_size").GetInt32());
-        var states = root.GetProperty("states");
-        Assert.Equal("cube", states.GetProperty("1").GetProperty("shape").GetString()); // stone
-        Assert.Equal(6, states.GetProperty("1").GetProperty("faces").GetArrayLength());
-        Assert.Equal("fluid", states.GetProperty("9").GetProperty("shape").GetString());
-        Assert.Equal("quads", states.GetProperty("50").GetProperty("shape").GetString()); // torch
-        Assert.True(states.GetProperty("50").GetProperty("emissive").GetBoolean());
-        Assert.False(states.TryGetProperty("0", out _));
-        output.WriteLine($"{version}: {w}x{hgt}, {bytes.Length / 1024} KB png, {jsonText.Length / 1024} KB json, textured {root.GetProperty("textured").GetBoolean()}, {states.EnumerateObject().Count()} state keys");
-
-        var again = h.Signed("GET", $"/v1/world/atlas.png?version={version}");
-        again.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(tag));
-        using var notModified = await h.SendAsync(again);
-        Assert.Equal(304, (int)notModified.StatusCode);
-        Assert.Equal(400, (await h.GetAsync("/v1/world/atlas.json?version=1.7.10")).Status);
-    }
-
-    [Fact]
-    public async Task Atlas_json_parses_with_the_contract()
-    {
-        var dist = DbRouteTests.ContractDist();
-        if (dist == null || !DbRouteTests.NodeAvailable()) return;
-        await using var h = await BridgeHost.StartAsync();
-        var f = Path.Combine(Path.GetTempPath(), $"atlas-{Guid.NewGuid():N}.json");
-        await File.WriteAllTextAsync(f, (await h.GetAsync("/v1/world/atlas.json")).Body);
-        var (code, text) = DbRouteTests.Run("node", [Path.Combine(AppContext.BaseDirectory, "contract-check.mjs"), dist, "WorldAtlasJson", f]);
-        Assert.True(code == 0, text);
-    }
-
     [Fact]
     public async Task Shard_export_streams_a_zip_and_import_preview_diffs_it_read_only()
     {

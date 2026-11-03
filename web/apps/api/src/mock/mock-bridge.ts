@@ -414,21 +414,26 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
         const bytes = makeMcwc(dim, cols, Date.UTC(2026, 10, 2, 10));
         return conditional(bytes, 'application/octet-stream');
       }
-      case 'world.atlasPng':
-        return conditional(png(256, 256, 1), 'image/png');
-      case 'world.atlasJson': {
-        const version = query.get('version') ?? 'b1.8.1';
-        const json = {
-          version,
-          width: 256,
-          height: 256,
-          tile_size: 16,
-          tiles: { '1': [1, 0], '2': [0, 0], '3': [2, 0], '7': [1, 1] },
+      case 'world.blockEntities': {
+        // A sign and a red bed in the first column asked for; other columns have none.
+        const [cx = 0, cz = 0] = (query.get('cols') ?? '0,0').split(';', 1)[0]?.split(',').map(Number) ?? [];
+        const x = cx * 16 + 4, z = cz * 16 + 4;
+        return {
+          json: {
+            dim: Number(query.get('dim') ?? 0),
+            columns: [
+              {
+                cx,
+                cz,
+                hash: 1,
+                entities: [
+                  { x, y: 65, z, kind: 'sign', lines: ['Mock sign', 'line 2', '', ''] },
+                  { x: x + 2, y: 65, z, kind: 'bed', color: 14 },
+                ],
+              },
+            ],
+          },
         };
-        const text = JSON.stringify(json);
-        const etag = etagOf(text);
-        if (inm === etag) return { status: 304, raw: '', headers: { ETag: etag } };
-        return { raw: text, headers: { ETag: etag } };
       }
       case 'vision.render':
         if (query.get('meta') === '1') {

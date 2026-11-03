@@ -78,7 +78,7 @@ describe('block entity store', () => {
   it('fetches the columns that arrived, hands them to the worker and re-meshes their sections', async () => {
     const src = createFixtureSource({ version: '1.12.2', radius: 3, now: () => 0 });
     const host = new InlineMeshHost();
-    await host.configure('1.12.2', null);
+    await host.configure('1.12.2', null, false);
     const p = plaza('1.12.2').filter((b) => b.be);
     const cols = [...new Set(p.map((b) => `${b.x >> 4},${b.z >> 4}`))].map((k) => k.split(',').map(Number) as [number, number]);
     await host.apply(await src.chunks(0, cols));

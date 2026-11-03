@@ -1,7 +1,7 @@
 # MineClaw viewer bridge on CT 114
 
 The bridge (`tools/ViewerBridge`) is the web explorer's C# side: loopback only (`127.0.0.1:8766`), every request HMAC-signed by
-Nest (docs/web/api.md §3). It opens the bot's db **read-only**, runs search / RAPTOR / shards / lint / diffs / the texture atlas,
+Nest (docs/web/api.md §3). It opens the bot's db **read-only**, runs search / RAPTOR / shards / lint / diffs,
 and proxies the bot's Supervisor (`127.0.0.1:8765`) with the token. It never writes the db: edits go through the Supervisor's
 admin routes.
 
@@ -51,10 +51,7 @@ short key exits with code 2 (the unit does not restart it).
 | `Bridge:SupervisorConnections` | `4` | pooled connections to the Supervisor (its `MaxConnections` is 8) |
 | `Bridge:PacksDir` | `/opt/mineclaw/current/shards/defaults` | default knowledge packs |
 | `Bridge:AuditLog` | `/var/log/mineclaw-bridge/audit.jsonl` | one line per write (no bodies) |
-| `Bridge:ServerVersion` | `server-version.txt` beside the db, else `b1.8.1` | block names, atlas default |
-| `Bridge:AssetsDir` | `<DataDir>/assets` | texture cache for the atlas (terrain.png / client jars) |
-| `Bridge:ModernJar` | `Render:Assets:Jar` | the 1.12.2 client jar for block models |
-| `Bridge:AllowAssetDownload` | `false` | fetch the official client jar when none is on disk |
+| `Bridge:ServerVersion` | `server-version.txt` beside the db, else `b1.8.1` | block names |
 | `Bridge:HeatHalfLifeS` | `120` | memory heat decay half-life |
 | `Bridge:ReloadCheckSeconds` | `60` | how often the in-memory vectors / RAPTOR tree are checked against the db |
 
@@ -67,8 +64,6 @@ the embeddings key reaches search).
   holds the `-shm`), group read on those files is enough.
 - **Memory.** The bridge keeps the vectors and the RAPTOR tree in memory (like the explorer) and re-opens them when the bot
   changed them; `MemoryMax=600M` in the unit.
-- **Atlas.** No Mojang assets are committed. The atlas is built from what is on CT 114 (`AssetsDir`, the 1.12.2 jar, launcher
-  folders); with nothing there it carries only the procedural cells and flat colours. Copy the jars into `AssetsDir` or set
-  `Bridge:AllowAssetDownload=true` once.
+- **Textures.** The browser world viewer ships its own textures (`@mineclaw/world-viewer`); the bridge serves no atlas.
 - **Dev on Fox's PC.** `dotnet run --project tools/ViewerBridge` with `tools/ViewerBridge/appsettings.Development.json` (gitignored;
   start from `appsettings.Development.example.json`) pointing at a local db and supervisor.

@@ -9,7 +9,7 @@
  */
 import type { QueryClient } from '@tanstack/react-query';
 import { toNumber, type WorldEntities } from '@mineclaw/contracts';
-import type { EntityDelta, WorldSource } from '@mineclaw/world-viewer';
+import type { BlockEntities, EntityDelta, WorldSource } from '@mineclaw/world-viewer';
 import { api, apiBlob } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
 import { subscribeBlocks } from './blocks';
@@ -94,6 +94,10 @@ export function createWorldSource(qc?: QueryClient): WorldSource {
     overlays: (dim) => api('world.overlays', { query: { dim } }),
 
     // No atlas(): the viewer ships the Minecraft textures and builds its atlas itself (bundled with the package).
+
+    // Sign text, bed colours, banners, skulls, flower pots, spawners; the viewer batches ≤ 48 columns, the route takes 64.
+    blockEntities: async (dim, cols) =>
+      api('world.blockEntities', { query: { dim, cols: cols.map(([cx, cz]) => `${cx},${cz}`).join(';') } }) as unknown as Promise<BlockEntities>,
 
     blocks: (since) => api('world.blocks', { query: { since: since ?? 0 } }),
 

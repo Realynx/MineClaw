@@ -111,7 +111,7 @@ public sealed class BridgeHost : IAsyncDisposable
         var config = BridgeConfig.ForTests(new BridgeOptions
         {
             Key = Key, SupervisorUrl = sup.Url, DbPath = dbPath ?? Path.Combine(dir, "missing.db"), AuditLog = Path.Combine(dir, "audit.jsonl"),
-            PacksDir = Path.Combine(dir, "packs"), AssetsDir = Path.Combine(dir, "assets"), ServerVersion = "b1.8.1",
+            PacksDir = Path.Combine(dir, "packs"), ServerVersion = "b1.8.1",
         });
         var app = BridgeApp.Build([], config, s =>
         {

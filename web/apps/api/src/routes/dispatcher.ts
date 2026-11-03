@@ -73,14 +73,10 @@ export const BINARY_PASSTHROUGH = [
   'content-disposition',
 ] as const;
 
-/** Routes whose replies may be cached by the browser (the texture atlas). */
-const CACHEABLE: ReadonlySet<RouteId> = new Set(['world.atlasPng', 'world.atlasJson']);
-const ATLAS_CACHE = 'private, max-age=86400';
 /** Binary GET replies that carry an ETag (MCWC chunks, renders) may be kept and revalidated with If-None-Match. */
 const REVALIDATE = 'private, no-cache';
 
 function cacheControl(id: RouteId, binary: boolean, etag: unknown): string {
-  if (CACHEABLE.has(id)) return ATLAS_CACHE;
   return binary && etag ? REVALIDATE : 'no-store';
 }
 

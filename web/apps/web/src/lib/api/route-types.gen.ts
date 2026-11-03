@@ -58,8 +58,7 @@ export interface RouteTypes {
   'world.entities': { params: never; query: z.input<typeof C.WorldEntitiesQuery>; body: never; response: z.output<typeof C.WorldEntities> };
   'world.overlays': { params: never; query: z.input<typeof C.DimQuery>; body: never; response: z.output<typeof C.WorldOverlays> };
   'world.blocks': { params: never; query: z.input<typeof C.WorldBlocksQuery>; body: never; response: z.output<typeof C.WorldBlockDeltas> };
-  'world.atlasPng': { params: never; query: z.input<typeof C.AtlasQuery>; body: never; response: never };
-  'world.atlasJson': { params: never; query: z.input<typeof C.AtlasQuery>; body: never; response: z.output<typeof C.WorldAtlasJson> };
+  'world.blockEntities': { params: never; query: z.input<typeof C.WorldBlockEntitiesQuery>; body: never; response: z.output<typeof C.WorldBlockEntities> };
   'bots.tile': { params: z.input<typeof C.BotParams>; query: z.input<typeof C.TileQuery>; body: never; response: never };
   'bots.now': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BotNow> };
   'bots.chat': { params: z.input<typeof C.BotParams>; query: never; body: z.input<typeof C.ChatRequest>; response: z.output<typeof C.ChatAccepted> };

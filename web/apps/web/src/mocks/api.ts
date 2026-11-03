@@ -289,12 +289,8 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
   'world.entities': ({ query }) => live.entitiesSince(query.since === undefined ? undefined : num(query.since)),
   'world.overlays': ({ query }) => live.overlays(num(query.dim)),
+  'world.blockEntities': () => ({ columns: [] }),
   'world.blocks': ({ query }) => ({ at: Date.now(), rev: Math.max(1, num(query.since)), full: num(query.since) === 0, more: false, blocks: {}, columns: [] }),
-  'world.atlasPng': () =>
-    new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='), (c) => c.charCodeAt(0)), {
-      headers: { 'Content-Type': 'image/png' },
-    }),
-  'world.atlasJson': () => ({ version: 'b1.8.1', width: 256, height: 256, tileSize: 16 }),
   'bots.tile': () => {
     throw new MockError(410, 'Server tiles are not used by this client', 'not_found');
   },
@@ -358,6 +354,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'brains.context': { params: { brain: 'main' }, query: {}, body: null },
   'brains.turn': { params: { brain: 'main', n: 104 }, query: {}, body: null },
   'world.index': { params: {}, query: { x: 4, z: 6 }, body: null },
+  'world.blockEntities': { params: {}, query: { dim: 0, cols: '0,0;1,0' }, body: null },
   'world.overlays': { params: {}, query: {}, body: null },
   'admin.rebuildJob': { params: { jobId: 'job-x' }, query: {}, body: null },
   'admin.memoryEdit': { params: {}, query: {}, body: { op: 'update', kind: 'fact', id: '3', fields: { text: 'x' } } },

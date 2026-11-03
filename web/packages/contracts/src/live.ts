@@ -265,17 +265,49 @@ export const WorldBot = z.object({
 });
 export type WorldBot = z.infer<typeof WorldBot>;
 
-/** C# WorldEntity. flags: 0x01 burning, 0x02 sneaking, 0x08 sprinting. Velocity in blocks/tick. */
-export const WorldEntity = z.object({
-  kind: z.string().describe('player | mob | item | …'),
+/** An item or block [id, meta/damage] (version-specific numbering), or null for an empty slot. */
+export const ItemRef = z.tuple([z.number().int(), z.number().int()]).nullable();
+export type ItemRef = z.infer<typeof ItemRef>;
+
+/** Hand items and armour. */
+export const WorldEquipment = z.looseObject({
+  main: ItemRef.optional(),
+  off: ItemRef.optional(),
+  head: ItemRef.optional(),
+  chest: ItemRef.optional(),
+  legs: ItemRef.optional(),
+  feet: ItemRef.optional(),
+});
+export type WorldEquipment = z.infer<typeof WorldEquipment>;
+
+/** Entity state flags (omitted when all false). The older bitfield form (0x01 burning, 0x02 sneaking, 0x08 sprinting) is
+ * still accepted. */
+export const WorldEntityFlags = z.looseObject({
+  onFire: z.boolean().optional(),
+  sneaking: z.boolean().optional(),
+  sprinting: z.boolean().optional(),
+  invisible: z.boolean().optional(),
+  glowing: z.boolean().optional(),
+  vehicle: z.boolean().optional(),
+});
+
+/**
+ * C# WorldEntity. Velocity in blocks/tick. Fields are omitted when default. Loose: fields the bot adds pass through to the
+ * viewer, which decodes tolerantly. Kind-specific fields: painting `motive` + `facing`; item_frame `item` ([id, meta]) +
+ * `rotation` + `facing`; falling_block `block`; minecart `type` (name or number); tnt `fuse`.
+ */
+export const WorldEntity = z.looseObject({
+  kind: z
+    .string()
+    .describe('player | mob | item | painting | item_frame | armor_stand | arrow | boat | minecart | falling_block | tnt | xp_orb | ender_crystal | firework | …'),
   name: z.string().nullish(),
   dim: DimId,
   x: z.number(),
   y: z.number(),
   z: z.number(),
   id: z.number().int().nullish(),
-  type: z.number().int().nullish(),
-  item: z.number().int().nullish(),
+  type: z.union([z.number().int(), z.string()]).nullish(),
+  item: z.union([z.number().int(), ItemRef]).nullish(),
   damage: z.number().int().nullish(),
   count: z.number().int().nullish(),
   vx: z.number().nullish(),
@@ -284,10 +316,30 @@ export const WorldEntity = z.object({
   age: Double.nullish(),
   yaw: z.number().nullish(),
   by: z.string().nullish(),
-  flags: z.number().int().nullish(),
-  variant: z.number().int().nullish(),
+  flags: z.union([z.number().int(), WorldEntityFlags]).nullish(),
+  variant: z.union([z.number().int(), z.string()]).nullish().describe('per-kind: slime size, villager profession, "red,sheared", …'),
+  equipment: WorldEquipment.nullish(),
+  headYaw: z.number().nullish(),
+  baby: z.boolean().nullish(),
+  motive: z.string().nullish(),
+  facing: z.union([z.number().int(), z.string()]).nullish(),
+  rotation: z.number().int().nullish(),
+  block: ItemRef.nullish(),
+  fuse: z.number().int().nullish(),
 });
 export type WorldEntity = z.infer<typeof WorldEntity>;
+
+/** A one-off entity event (lightning: a position and no id). */
+export const WorldEntityEvent = z.looseObject({
+  id: z.number().int().nullish(),
+  dim: DimId.nullish(),
+  kind: z.string().describe('swing | swing_off | hurt | death | crit | magic_crit | eat | teleport | lightning'),
+  at: UnixMs,
+  x: z.number().nullish(),
+  y: z.number().nullish(),
+  z: z.number().nullish(),
+});
+export type WorldEntityEvent = z.infer<typeof WorldEntityEvent>;
 
 export const WorldEntitiesQuery = z.object({ dim: QInt.optional(), since: QInt.min(0).optional() });
 
@@ -302,6 +354,7 @@ export const WorldEntities = z.object({
   bots: z.array(WorldBot),
   entities: z.array(WorldEntity),
   removed: z.array(z.tuple([z.number().int(), z.number().int()])).nullish(),
+  events: z.array(WorldEntityEvent).nullish().describe('swings, hurts, deaths, crits, eating, teleports, lightning since `since`'),
 });
 export type WorldEntities = z.infer<typeof WorldEntities>;
 
@@ -345,7 +398,8 @@ export type WorldBlockChange = z.infer<typeof WorldBlockChange>;
 
 /**
  * A column event of the block feed: `loaded` = (re)fetch this column through /api/world/chunks (on b1.8.1 it can also mean a
- * partial chunk update), `unloaded` = it left live view (keep it as remembered).
+ * partial chunk update), `unloaded` = it left live view (keep it as remembered), `block_entity` = its block entities changed
+ * (refetch /api/world/blockentities for it).
  */
 export const WorldColumnChange = z.object({
   rev: z.number().int(),
@@ -353,9 +407,54 @@ export const WorldColumnChange = z.object({
   dim: DimId,
   cx: z.number().int(),
   cz: z.number().int(),
-  kind: z.enum(['loaded', 'unloaded']),
+  kind: z.enum(['loaded', 'unloaded', 'block_entity']),
 });
 export type WorldColumnChange = z.infer<typeof WorldColumnChange>;
+
+/** GET /api/world/blockentities?dim&cols=cx,cz;… (≤ 64 columns). */
+export const WorldBlockEntitiesQuery = z.object({
+  dim: QInt.default(0),
+  cols: z
+    .string()
+    .regex(/^-?\d+,-?\d+(;-?\d+,-?\d+){0,63}$/)
+    .describe('"cx,cz;cx,cz;…" ≤ 64 columns'),
+});
+export type WorldBlockEntitiesQuery = z.infer<typeof WorldBlockEntitiesQuery>;
+
+/**
+ * One block entity. Loose (kind-specific fields pass through): sign `lines` [4]; bed `color`; banner `base` + `patterns`
+ * [[pattern, color], …]; skull `type` + `rotation`; flower_pot `item`; mob_spawner `mob`; chest / trapped_chest / ender_chest.
+ */
+export const WorldBlockEntity = z.looseObject({
+  x: z.number().int(),
+  y: z.number().int(),
+  z: z.number().int(),
+  kind: z.string(),
+  lines: z.array(z.string()).nullish(),
+  color: z.union([z.number().int(), z.string()]).nullish(),
+  base: z.union([z.number().int(), z.string()]).nullish(),
+  patterns: z.array(z.tuple([z.string(), z.union([z.number().int(), z.string()])])).nullish(),
+  type: z.union([z.number().int(), z.string()]).nullish(),
+  rotation: z.number().int().nullish(),
+  item: z.union([ItemRef, z.string()]).nullish(),
+  mob: z.string().nullish(),
+});
+export type WorldBlockEntity = z.infer<typeof WorldBlockEntity>;
+
+/** A column's block entities with their hash (unchanged hash = nothing to redraw). */
+export const WorldBlockEntityColumn = z.object({
+  cx: z.number().int(),
+  cz: z.number().int(),
+  hash: z.union([z.number(), z.string()]),
+  entities: z.array(WorldBlockEntity),
+});
+
+/** GET /api/world/blockentities: columns asked for that have block entities (a column left out has none). */
+export const WorldBlockEntities = z.object({
+  dim: DimId.nullish(),
+  columns: z.array(WorldBlockEntityColumn),
+});
+export type WorldBlockEntities = z.infer<typeof WorldBlockEntities>;
 
 /**
  * GET /api/world/blocks?since=rev[&dim] (the bot's BlockDeltaLog) and the `blocks` SSE payload. Pass `rev` back as `since`.
@@ -386,21 +485,6 @@ export const WorldOverlays = z.object({
   notes: z.array(z.string()),
 });
 export type WorldOverlays = z.infer<typeof WorldOverlays>;
-
-export const AtlasQuery = z.object({ version: z.enum(['b1.8.1', '1.12.2']).optional() });
-
-/**
- * GET /api/world/atlas.json: the block texture atlas the browser viewer uses (generated at runtime by the bridge from
- * MineClaw.Render; no Mojang assets are committed). The tile layout beyond these fields is owned by packages/world-viewer and
- * the bridge, and passes through unchanged.
- */
-export const WorldAtlasJson = z.looseObject({
-  version: z.enum(['b1.8.1', '1.12.2']),
-  width: z.number().int(),
-  height: z.number().int(),
-  tileSize: z.number().int().nullish(),
-});
-export type WorldAtlasJson = z.infer<typeof WorldAtlasJson>;
 
 /** GET /api/bots/:bot/tile.png — the server-rendered per-bot view (supervisor /view/{bot}). */
 export const TileQuery = z.object({

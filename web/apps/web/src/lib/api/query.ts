@@ -37,7 +37,7 @@ const MIN = 60_000;
 export function staleTimeFor(id: RouteId): number {
   if (LIVE_ROUTES.has(id)) return Infinity;
   if (id === 'auth.me') return 5 * MIN;
-  if (id === 'admin.schema' || id === 'world.atlasJson') return Infinity;
+  if (id === 'admin.schema') return Infinity;
   if (id.startsWith('scripts.') && id !== 'scripts.list') return 5 * MIN; // versions are immutable once saved
   if (id === 'designs.diff' || id === 'scripts.diff') return 10 * MIN;
   if (id === 'memoryActivity.heat') return 15_000;

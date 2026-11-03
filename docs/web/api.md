@@ -83,8 +83,7 @@ All three new processes run on CT 114 beside the bot:
   - `Retry-After`
   - `Content-Disposition` (shard export)
 - **Caching.**
-  - JSON is `Cache-Control: no-store`.
-  - The texture atlas (`/api/world/atlas.*`) is `private, max-age=86400` with an `ETag`.
+  - JSON is `Cache-Control: no-store`. (The world viewer bundles its own textures; there is no atlas route.)
 
 ## 2. Auth, sessions, roles (Nest-native)
 
@@ -301,8 +300,7 @@ Notes on specific routes:
 | `world.entities` | `GET /api/world/entities` | viewer | query `WorldEntitiesQuery` | `WorldEntities` | `GET /v1/sup/world/entities` | /api/world/entities | – |
 | `world.overlays` | `GET /api/world/overlays` | viewer | query `DimQuery` | `WorldOverlays` | `GET /v1/sup/world/overlays` | /api/world/overlays | – |
 | `world.blocks` | `GET /api/world/blocks` | viewer | query `WorldBlocksQuery` | `WorldBlockDeltas` | `GET /v1/sup/world/blocks` | /api/world/blocks | – |
-| `world.atlasPng` | `GET /api/world/atlas.png` | viewer | query `AtlasQuery` | png | `GET /v1/world/atlas.png` | bridge-native | – |
-| `world.atlasJson` | `GET /api/world/atlas.json` | viewer | query `AtlasQuery` | `WorldAtlasJson` | `GET /v1/world/atlas.json` | bridge-native | – |
+| `world.blockEntities` | `GET /api/world/blockentities` | viewer | query `WorldBlockEntitiesQuery` | `WorldBlockEntities` | `GET /v1/sup/world/blockentities` | /api/world/blockentities | – |
 | `bots.tile` | `GET /api/bots/:bot/tile.png` | viewer | params `BotParams`<br>query `TileQuery` | png | `GET /v1/render/tile/{bot}.png` | /view/{bot}?mode&radius&xray | – |
 | `bots.now` | `GET /api/bots/:bot/now` | viewer | params `BotParams` | `BotNow` | `GET /v1/sup/viewer/now?bot={bot}` | /api/viewer/now?bot= | – |
 | `bots.chat` | `POST /api/bots/:bot/chat` | chat | params `BotParams`<br>body `ChatRequest` | `ChatAccepted` (202) | `POST /v1/sup/viewer/chat` | /api/viewer/chat (bridge adds bot, player from X-MCX-Player, allow_commands from X-MCX-Roles) | chat |
@@ -455,7 +453,7 @@ in_context, staleness_s, evicted}]}`.
   - Trailing bytes or truncation are errors. A column blob is at most 256 KB.
   - Full detail: `docs/web/reference/explorer-spec.md` §13.2.
 
-- **PNG routes** (`world.atlasPng`, `bots.tile`, `designs.picture`, `vision.png`, `vision.render`). Vision and render replies
+- **PNG routes** (`bots.tile`, `designs.picture`, `vision.png`, `vision.render`). Vision and render replies
   carry `X-Sha256` / `X-Tokens` / `X-Width` / `X-Height`. `vision.render?meta=1` returns JSON `ViewMeta` instead.
 - **`/api/shards/export`.** It returns `application/zip` with `Content-Disposition: attachment;
 filename="<slug>-<yyyyMMdd-HHmm>.mcshard"`. The format is `ShardFile` FormatVersion 1 (explorer-spec §8):

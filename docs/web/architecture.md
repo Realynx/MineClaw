@@ -147,9 +147,9 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
     multipart)
   - `/v1/admin/schema`
 - **Renders.**
-  - `/v1/world/atlas.png` and `/v1/world/atlas.json`: the block texture atlas the browser viewer uses, generated at runtime
-    from MineClaw.Render. No Mojang assets are committed.
   - `/v1/render/tile/{bot}.png`: the per-bot tile.
+  - The world viewer's textures ship with `@mineclaw/world-viewer` (committed assets, atlas built client-side), so the
+    bridge serves no atlas.
 - **Live.** `GET /v1/live/stream` is SSE. The bridge polls the supervisor on loopback (status 1 Hz, events 2 Hz, feed
   2 Hz, `viewer/now` 2 Hz per watched bot, entity deltas 5 Hz) and emits typed events: `bots`, `event`, `feed`, `now`,
   `entities`, `hive`. Nest holds one upstream stream and fans it out to browsers.
@@ -198,7 +198,8 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
 ## World rendering is browser-only (decided 2026-11-02)
 
 All world viewing renders in the browser with `@mineclaw/world-viewer` (three.js/WebGL), from the raw MCWC chunk,
-entity and overlay data plus the runtime-generated texture atlas. No world images or video are rendered on the server.
+entity, block-entity and overlay data and the package's bundled textures. No world images or video are rendered on the
+server.
 - The bot view's world pane is a follow camera. The hive grid's per-bot cards use the package's shared-renderer
   multi-view mode: one WebGL context for every card, so the browser's context limit is never hit.
 - `/v1/render/tile/{bot}.png` is deprecated and unused by the UI.
