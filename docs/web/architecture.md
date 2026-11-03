@@ -194,3 +194,13 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
   - The bot route `GET /api/viewer/memory-activity?since&brain` gives the access ring plus the in-context set per brain.
   - The bridge-native `heat` aggregate per RAPTOR node feeds the graph colouring.
   - SSE event `memoryActivity`.
+
+## World rendering is browser-only (decided 2026-11-02)
+
+All world viewing renders in the browser with `@mineclaw/world-viewer` (three.js/WebGL), from the raw MCWC chunk,
+entity and overlay data plus the runtime-generated texture atlas. No world images or video are rendered on the server.
+- The bot view's world pane is a follow camera. The hive grid's per-bot cards use the package's shared-renderer
+  multi-view mode: one WebGL context for every card, so the browser's context limit is never hit.
+- `/v1/render/tile/{bot}.png` is deprecated and unused by the UI.
+- Vision sheet PNGs remain. They are the exact images a model was sent, kept as a debugging record rather than a view
+  of the world.
