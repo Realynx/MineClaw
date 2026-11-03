@@ -1,10 +1,11 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type CSSProperties } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { WorldViewerEngine, type EngineOptions } from '../render/engine';
 import type { CameraMode, Dim, LayerToggles, PickedBlock, ViewerStats, WorldSource, XRayMode } from '../types';
 import type { BotView } from '../world/entities';
 import type { AimTarget } from '../render/aim';
 import type { BubbleKind, ShownBubble } from '../render/bubbles';
 import { useWorldRuntime } from './WorldThumbnail';
+import { getViewerQuality, subscribeViewerQuality } from '../render/viewerQuality';
 
 export interface WorldViewerProps {
   source: WorldSource;
@@ -16,7 +17,7 @@ export interface WorldViewerProps {
   /** Initial camera mode (change it later with the handle or this prop). */
   cameraMode?: CameraMode;
   xray?: XRayMode;
-  /** Blocks, 32..256 (default 128). */
+  /** Blocks, 32..256: the most this view draws (the viewer settings' draw distance applies below it). Absent = the setting. */
   drawDistance?: number;
   onSelectBot?: (name: string) => void;
   onPick?: (block: PickedBlock) => void;
@@ -128,7 +129,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
     if (props.cameraMode && engine.current && engine.current.getCameraMode() !== props.cameraMode) engine.current.setCameraMode(props.cameraMode);
   }, [props.cameraMode]);
   useEffect(() => engine.current?.setXRay(props.xray ?? 'auto'), [props.xray]);
-  useEffect(() => engine.current?.setDrawDistance(props.drawDistance ?? 128), [props.drawDistance]);
+  useEffect(() => engine.current?.setDrawDistance(props.drawDistance ?? null), [props.drawDistance]);
   const markerKey = props.marker ? props.marker.join(',') : '';
   useEffect(() => engine.current?.setMarker(props.marker ?? null), [markerKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const highlightKey = (props.highlighted ?? []).join(',');
@@ -170,6 +171,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
           Click to look around · WASD move · Space/E up · Q down · Shift fast · Esc releases the mouse
         </div>
       )}
+      <PerfOverlay engine={engine} />
       {showNotes && (
         <ul
           style={{ position: 'absolute', left: 8, bottom: 8, margin: 0, padding: '4px 8px', listStyle: 'none', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.5)', borderRadius: 6, pointerEvents: 'none' }}
@@ -183,3 +185,33 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
     </div>
   );
 });
+
+/** The viewer settings' fps readout (`perfOverlay`): this view's frame rate, the timed frame and the controller's levers. */
+function PerfOverlay({ engine }: { engine: { current: WorldViewerEngine | null } }) {
+  const on = useSyncExternalStore(subscribeViewerQuality, () => getViewerQuality().perfOverlay, () => false);
+  const [text, setText] = useState('');
+  useEffect(() => {
+    if (!on) return;
+    const tick = () => {
+      const e = engine.current;
+      const s = e?.stats();
+      if (!e || !s) return;
+      const m = s.memory;
+      setText(
+        `${s.fps.toFixed(0)} fps · ${m.frameMs.toFixed(1)} ms · ${Math.round(s.resolutionScale * 100)}% res · ${Math.round(m.drawFactor * 100)}% dist · ${e.runtime.entities.instances} ent · ${m.quality}`,
+      );
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [on, engine]);
+  if (!on || !text) return null;
+  return (
+    <div
+      data-testid="viewer-perf"
+      style={{ position: 'absolute', right: 8, bottom: 8, padding: '3px 8px', font: '11px ui-monospace, monospace', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 5 }}
+    >
+      {text}
+    </div>
+  );
+}
