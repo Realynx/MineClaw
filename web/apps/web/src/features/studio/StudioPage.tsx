@@ -19,7 +19,7 @@
  * prompt on reload or close).
  */
 import type { AimTarget, WorldViewerHandle } from '@mineclaw/world-viewer';
-import type { DesignerModel, DesignerSession, DesignRevision } from '@mineclaw/contracts';
+import type { DesignerCompatReport, DesignerModel, DesignerSession, DesignRevision } from '@mineclaw/contracts';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Anchor,
@@ -54,7 +54,7 @@ import { cn, newRequestId } from '@/lib/utils';
 import { useNavigationGuard } from '@/lib/navGuard';
 import { isTyping } from '@/features/world/directives';
 import { Crosshair } from '@/features/world/InWorld';
-import { Hotbar, PaletteDrawer, type IconOf } from './BlockBar';
+import { Hotbar, PaletteDrawer, type IconOf, type IconSheet } from './BlockBar';
 import {
   boxOf,
   connected,
@@ -70,7 +70,7 @@ import {
 } from './canvas';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { dirOfMcYaw, type Dir, hasFacing, placeMeta, turn, type Version } from './facing';
-import { defaultHotbar, type PaletteEntry } from './palette';
+import { defaultHotbar, entryKey, type PaletteEntry, pushRecent } from './palette';
 import { Studio, type StudioApi, type StudioSnapshot } from './studio';
 import type * as ViewerMod from './studio-viewer';
 import {
@@ -211,8 +211,9 @@ export function StudioPage() {
     );
   return (
     <StudioBody
-      key={session.id}
+      key={`${session.id}:${session.version}`}
       session={session}
+      onSession={setSession}
       mod={mod}
       models={models.data?.models ?? []}
       defaultModel={models.data?.default ?? null}
@@ -226,6 +227,7 @@ export function StudioPage() {
 
 function StudioBody({
   session,
+  onSession,
   mod,
   models,
   defaultModel,
@@ -235,6 +237,8 @@ function StudioBody({
   invalidate,
 }: {
   session: DesignerSession;
+  /** A new session state (another version: the body remounts on it). */
+  onSession: (s: DesignerSession) => void;
   mod: Mod;
   models: DesignerModel[];
   defaultModel: string | null;
@@ -287,29 +291,61 @@ function StudioBody({
   const bots = useApi('bots.list', {}, { enabled: canChat });
   const mainBot = bots.data?.bots.find((b) => b.main)?.name ?? bots.data?.bots[0]?.name ?? null;
 
-  // Icons from the bundled textures (loaded once per version).
+  // Icons from the bundled textures (loaded once per version); the whole palette drawn into one sheet once the page is idle.
   const bundle = useRef<Awaited<ReturnType<Mod['loadBundle']>> | null>(null);
+  const [sheet, setSheet] = useState<IconSheet | null>(null);
   useEffect(() => {
     let live = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     void mod
       .loadBundle(version)
       .then((b) => {
         if (!live) return;
         bundle.current = b;
         setIconTick((n) => n + 1);
+        timer = setTimeout(() => {
+          if (!live) return;
+          try {
+            setSheet(mod.blockIconAtlas(b, session.palette, 32));
+          } catch {
+            /* no 2D canvas: the cells show placeholders */
+          }
+        }, 50);
       })
       .catch(() => undefined);
     return () => {
       live = false;
+      if (timer) clearTimeout(timer);
     };
-  }, [mod, version]);
+  }, [mod, version, session.palette]);
+  const hints = useMemo(() => new Map(session.palette.map((e) => [entryKey(e), e.icon ?? null] as const)), [session.palette]);
   const icon: IconOf = useCallback(
-    (id, meta) => {
+    (id, meta, hint) => {
       void iconTick;
-      return bundle.current ? mod.blockIconUrl(bundle.current, id, meta, 32) : null;
+      return bundle.current ? mod.blockIconUrl(bundle.current, id, meta, 32, hint ?? hints.get(`${id}:${meta}`) ?? null) : null;
     },
-    [mod, iconTick],
+    [mod, iconTick, hints],
   );
+
+  // The game version: a dropdown; an empty canvas switches, a full one is checked and converted on the user's word.
+  const [versionAsk, setVersionAsk] = useState<{ target: Version; report: DesignerCompatReport } | null>(null);
+  const [versionBusy, setVersionBusy] = useState(false);
+  const changeVersion = async (target: Version, apply = false) => {
+    if (target === version && !apply) return;
+    setVersionBusy(true);
+    try {
+      await studio.flush();
+      const r = await api('designer.version', { params: { id: session.id }, body: { version: target, ...(apply ? { apply } : {}) } });
+      if (r.changed && r.session) {
+        setVersionAsk(null);
+        onSession(r.session);
+      } else if (r.report) setVersionAsk({ target, report: r.report });
+    } catch (e) {
+      setNotice(`Couldn't change the version: ${errorText(e)}`);
+    } finally {
+      setVersionBusy(false);
+    }
+  };
 
   // Everything the input handlers read, current on every render (they are bound once).
   const st = useRef({
@@ -860,6 +896,7 @@ function StudioBody({
       if (e.code === 'KeyR')
         return setFacing((f) => turn(f ?? dirOfMcYaw(viewer.current?.engine()?.rig.flyYaw ?? 0), e.shiftKey ? -1 : 1));
       if (e.code === 'KeyB') {
+        e.preventDefault(); // the "b" never lands in the palette's search box that opens with it
         if (document.pointerLockElement) document.exitPointerLock();
         return setPaletteOpen((v) => !v);
       }
@@ -981,6 +1018,32 @@ function StudioBody({
         <span className="text-subtle">/</span>
         <h1 className="text-sm font-semibold text-fg">Design Studio</h1>
         {snap.designId ? <Badge tone="accent">#{snap.designId}</Badge> : <Badge>unsaved</Badge>}
+        <label className="flex items-center gap-1 text-xs text-muted" title="The game version this design is drawn for">
+          Version
+          <select
+            aria-label="Game version"
+            value={version}
+            disabled={!canWrite || versionBusy || snap.busy}
+            onChange={(e) => void changeVersion(e.target.value as Version)}
+            className="h-7 rounded-md border border-border bg-surface px-1.5 font-mono text-xs text-fg"
+            data-testid="version-select"
+          >
+            {(session.versions?.length ? session.versions : ['b1.8.1', '1.12.2']).map((v) => (
+              <option key={v} value={v}>
+                {v}
+                {v === session.serverVersion ? ' (server)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        {session.serverVersion && session.serverVersion !== version ? (
+          <span
+            className="rounded bg-warn-soft px-1.5 py-0.5 text-[11px] text-warn"
+            title={`Drawn for ${version}; the server runs ${session.serverVersion}. A build there converts what maps and refuses blocks it doesn't have.`}
+          >
+            server is {session.serverVersion}
+          </span>
+        ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <div className="w-40">
             <Input
@@ -1080,6 +1143,41 @@ function StudioBody({
         <p className="border-b border-border bg-info-soft px-3 py-1 text-xs text-info" role="status">
           {notice}
         </p>
+      ) : null}
+      {versionAsk ? (
+        <div
+          role="dialog"
+          aria-label="Change the version"
+          className="flex flex-col gap-2 border-b border-border bg-warn-soft px-3 py-2 text-xs text-fg"
+          data-testid="version-dialog"
+        >
+          <p>
+            Convert this design from <b>{version}</b> to <b>{versionAsk.target}</b>?{' '}
+            <span className="text-muted">
+              {versionAsk.report.same} block{versionAsk.report.same === 1 ? '' : 's'} stay the same.
+            </span>
+          </p>
+          {versionAsk.report.substituted.length ? (
+            <p>
+              Becomes:{' '}
+              {versionAsk.report.substituted.map((s) => `${s.count} ${s.name}`).join(', ')}
+            </p>
+          ) : null}
+          {versionAsk.report.missing.length ? (
+            <p className="text-warn">
+              Not in {versionAsk.target} (left out):{' '}
+              {versionAsk.report.missing.map((s) => `${s.count} ${s.name}`).join(', ')}
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => void changeVersion(versionAsk.target, true)} loading={versionBusy}>
+              Convert to {versionAsk.target}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setVersionAsk(null)} disabled={versionBusy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div ref={stage} className="relative min-h-[420px] min-w-0 flex-1 bg-black" data-testid="studio-stage">
@@ -1463,15 +1561,17 @@ function StudioBody({
           {paletteOpen ? (
             <PaletteDrawer
               palette={session.palette}
+              version={version}
               current={current}
-              icon={icon}
-              onChoose={(e) =>
+              sheet={sheet}
+              onChoose={(e) => {
+                pushRecent(version, e);
                 setSlots((cur) => {
                   const next = [...cur];
                   next[active] = e;
                   return next;
-                })
-              }
+                });
+              }}
               onClose={() => {
                 setPaletteOpen(false);
                 backToWorld();

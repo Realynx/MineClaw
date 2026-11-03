@@ -53,6 +53,8 @@ import {
   DesignerSaveResponse,
   DesignerSession,
   DesignerSessionParams,
+  DesignerVersionRequest,
+  DesignerVersionResponse,
 } from './designer.js';
 import { Empty, HealthResponse, OkResponse } from './common.js';
 import {
@@ -1280,6 +1282,18 @@ export const ROUTES = {
     supervisor: '/api/designer/sessions/{id}/save',
     audit: 'design',
     summary: 'Saves the canvas as a design: a new one, or the next revision of the loaded one (Git-style, never locked).',
+  }),
+  'designer.version': post('/api/designer/sessions/:id/version', {
+    access: 'design',
+    params: DesignerSessionParams,
+    body: DesignerVersionRequest,
+    response: DesignerVersionResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/sessions/{id}/version', 'POST'),
+    supervisor: '/api/designer/sessions/{id}/version',
+    audit: 'design',
+    summary:
+      "The canvas's game version: an empty canvas switches; a full one is checked (what stays, what is substituted, what doesn't exist there) and, with apply, converted.",
   }),
 } as const satisfies Record<string, RouteDef>;
 

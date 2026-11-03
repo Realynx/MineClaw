@@ -461,8 +461,9 @@ public sealed class DesignPalette
         for (int i = 0; i < Entries.Count; i++)
         {
             var e = Entries[i];
-            var hay = (e.Name + " " + e.Spec.Replace(':', ' ').Replace('_', ' ') + " " + e.Category).ToLowerInvariant();
-            var parts = hay.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var own = (e.Name + " " + e.Spec.Replace(':', ' ').Replace('_', ' ')).ToLowerInvariant();
+            var hay = own.Replace(" ", ""); // inside a word: the name and spec only ("red" is not in "Colored")
+            var parts = (own + " " + e.Category.ToLowerInvariant()).Split(' ', StringSplitOptions.RemoveEmptyEntries);
             double score = 0;
             bool all = true;
             foreach (var w in words)
@@ -470,7 +471,7 @@ public sealed class DesignPalette
                 if (w == e.Id.ToString(CultureInfo.InvariantCulture) || w == $"{e.Id}:{e.Meta}") score += 3;
                 else if (parts.Any(p => p == w)) score += 2;
                 else if (parts.Any(p => p.StartsWith(w, StringComparison.Ordinal))) score += 1;
-                else if (w.Length >= 3 && hay.Replace(" ", "").Contains(w, StringComparison.Ordinal)) score += 0.5;
+                else if (w.Length >= 3 && hay.Contains(w, StringComparison.Ordinal)) score += 0.5;
                 else { all = false; break; }
             }
             if (all) scored.Add((score, i, e));

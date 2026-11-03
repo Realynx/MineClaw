@@ -3,10 +3,12 @@
  * 0..63 and y -16..47, cells `[x, y, z, id, meta]` (id 0 = air). y 0 is the first layer above the grass; under it (y < 0)
  * is the ground: earth until dug. There id 0 digs the cell out and `EARTH` (-1) fills it back. Every change, the AI's and the
  * user's, goes through `apply`, which returns what it really changed and the inverse, so one history covers both (undo of an
- * AI op is a user edit the bot then hears about; undo of a dig fills it back). Door halves stay paired.
+ * AI op is a user edit the bot then hears about; undo of a dig fills it back). Two-cell blocks stay whole (a door's or a
+ * double plant's upper half, a bed's head: `partnerOf`), and a chest placed beside a single chest takes its facing (they pair),
+ * the same rules as the bot's canvas.
  */
 import { DESIGNER_EARTH, DESIGNER_PLOT, type DesignerCell } from '@mineclaw/contracts';
-import { doorUpper, isDoor } from './facing';
+import { facingOf, firstHalfOf, partnerOf, twoCell } from './facing';
 
 export type Cell = DesignerCell;
 export type V3 = [number, number, number];
@@ -92,8 +94,33 @@ export class Canvas {
   }
 
   /**
-   * Applies cells in order (later wins). Out-of-plot cells are skipped. With `pairDoors`, a placed lower door half brings its
-   * upper half and replacing either half of a door clears the other (what the bot's canvas does too).
+   * A chest placed beside a single chest of its kind takes that chest's facing when it is across the pair (the bot's
+   * `DesignerCanvas.Pair`); else the meta as given.
+   */
+  private chestMeta(x: number, y: number, z: number, id: number, meta: number): number {
+    if (id !== 54 && id !== 146) return meta;
+    const sides: Array<[number, number]> = [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ];
+    for (const [dx, dz] of sides) {
+      const [oid, ometa] = this.get(x + dx, y, z + dz);
+      const f = oid === id ? facingOf(oid, ometa) : null;
+      if (!f) continue;
+      const paired = sides.some(([sx, sz]) => !(sx === -dx && sz === -dz) && this.get(x + dx + sx, y, z + dz + sz)[0] === id);
+      if (paired) continue;
+      const across = dx !== 0 ? f === 'north' || f === 'south' : f === 'east' || f === 'west';
+      return across ? ometa : meta;
+    }
+    return meta;
+  }
+
+  /**
+   * Applies cells in order (later wins). Out-of-plot cells are skipped. With `pairDoors`, a placed first half of a two-cell
+   * block brings its second (a door's upper half, a bed's head), replacing either half clears the other, and chests pair
+   * (what the bot's canvas does too).
    */
   apply(cells: readonly Cell[], pairDoors = true): Change {
     const before = new Map<number, number>();
@@ -115,9 +142,10 @@ export class Canvas {
         before.set(k, old);
         touched.push(k);
       }
-      if (pairDoors && old > 0 && isDoor(old >> 4) && id !== old >> 4) {
-        const oy = (old & 8) !== 0 ? y - 1 : y + 1;
-        const ok = inside(x, oy, z) ? keyOf(x, oy, z) : -1;
+      if (pairDoors && old > 0 && twoCell(old >> 4) && id !== old >> 4) {
+        const rel = firstHalfOf(old >> 4, old & 15) ?? partnerOf(old >> 4, old & 15);
+        const [ox, oy, oz] = rel ? [x + rel[0], y + rel[1], z + rel[2]] : [x, y, z];
+        const ok = rel && inside(ox, oy, oz) ? keyOf(ox, oy, oz) : -1;
         const other = ok >= 0 ? this.blocks.get(ok) : undefined;
         if (other !== undefined && other >> 4 === old >> 4) {
           if (!before.has(ok)) {
@@ -130,8 +158,10 @@ export class Canvas {
       put(k, y, next);
     };
     for (const c of cells) {
-      set(c[0], c[1], c[2], c[3], c[4]);
-      if (pairDoors && c[3] > 0 && isDoor(c[3]) && (c[4] & 8) === 0) set(c[0], c[1] + 1, c[2], c[3], doorUpper(c[4]));
+      const meta = pairDoors && c[3] > 0 ? this.chestMeta(c[0], c[1], c[2], c[3], c[4]) : c[4];
+      set(c[0], c[1], c[2], c[3], meta);
+      const p = pairDoors && c[3] > 0 ? partnerOf(c[3], meta) : null;
+      if (p) set(c[0] + p[0], c[1] + p[1], c[2] + p[2], c[3], p[3]);
     }
     const forward: Cell[] = [];
     const backward: Cell[] = [];

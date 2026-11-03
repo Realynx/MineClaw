@@ -287,7 +287,8 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
 
   // The Design Studio: the shared fake designer (a little house, a door, a roof) over an in-memory canvas.
   'designer.models': () => designer.models(),
-  'designer.create': ({ body }) => designer.create(body as { model?: string; designId?: number }, me()?.player ?? me()?.username ?? 'poofimafox'),
+  'designer.create': ({ body }) => designer.create(body as Parameters<typeof designer.create>[0], me()?.player ?? me()?.username ?? 'poofimafox'),
+  'designer.version': ({ params, body }) => designer.version(num(params.id), body as Parameters<typeof designer.version>[1]),
   'designer.get': ({ params }) => designer.get(num(params.id)),
   'designer.message': ({ params, body }) => designer.message(num(params.id), body as Parameters<typeof designer.message>[1]),
   'designer.canvas': ({ params, body }) => designer.canvas(num(params.id), body as Parameters<typeof designer.canvas>[1]),
@@ -478,6 +479,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'designer.message': { params: { id: 1 }, query: {}, body: { text: 'build a little house', canvas: { rev: 0 } } },
   'designer.canvas': { params: { id: 1 }, query: {}, body: { rev: 0, ops: [{ kind: 'place', cells: [[1, 0, 1, 4, 0]] }] } },
   'designer.save': { params: { id: 1 }, query: {}, body: { name: 'mock hut' } },
+  'designer.version': { params: { id: 1 }, query: {}, body: { version: '1.12.2' } },
   'bots.now': { params: { bot: 'maid_chan' }, query: {}, body: null },
   'bodies.script': { params: { body: 'maid_chan' }, query: { code: '1' }, body: null },
   'bodies.controller': { params: { body: 'maid_chan_68' }, query: {}, body: null },

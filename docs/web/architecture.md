@@ -249,6 +249,21 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   asks "Leave without saving?" (Save and leave / Leave / Stay) on in-app links (a capture-phase click listener ahead of
   Next's `<Link>`), on browser back / forward (a duplicate history entry of the page sits on top while dirty) and on the
   command palette (`guardedNavigate`); reload, tab close and external links get the browser's `beforeunload` prompt.
+- **Versions and the whole palette (added 2026-11-03).** The header's Version dropdown picks the game version the design is
+  drawn for (`b1.8.1` or `1.12.2`; a new design starts in the server's, a saved one opens in its own; "server is b1.8.1"
+  shows when they differ). An empty canvas switches at once; a full one asks first, listing what stays the same, what
+  becomes its nearest block and what doesn't exist there (left out), then converts or cancels (`POST …/version`; the
+  canvas remounts with that version's world assets, models and palette; the undo history starts over). The palette (B) is
+  every placeable block of that version (about 400 in 1.12.2, 120 in b1.8.1): searched by name, spec ("stained_glass:lime")
+  or id / id:meta, by creative-tab category, with Favourites (★ or right-click) and Recent rows kept per version in the
+  browser (localStorage). Its icons are drawn once into one sheet on a 2D canvas (`blockIconAtlas`: each block's baked
+  geometry projected the inventory's way, or its item sprite for doors, beds, signs, cane, wire, repeaters), shown as CSS
+  positions: no WebGL per entry, one image for the whole palette, fast on software rendering. Placement and transforms
+  follow each family's rule (`facing.ts`, the same table as the bot's `DesignFacing`): beds lie along the look with their
+  head added, doors and double plants get their upper half, pistons/dispensers/glazed terracotta face the player,
+  buttons/levers/vines/wall signs hang on the clicked block, rails run along the look, signs and banners turn in
+  sixteenths, 1.12.2 logs and pillars lie along the clicked face; rotate and mirror turn all of them. Chests placed side by
+  side pair. Story Mode builds a design converted to the server's version and refuses one whose blocks don't exist there.
 - **Creative controls.** Fly camera, the vanilla crosshair with the mouse locked: left breaks, right places (facing from the
   look, R turns it), middle picks; hotbar 1–9 with icons drawn from the bundled textures (`blockIconUrl`), B opens the
   searchable palette, Ctrl+Z / Ctrl+Y undo and redo AI and user ops alike, a grid and a coordinate HUD. T / Enter opens the

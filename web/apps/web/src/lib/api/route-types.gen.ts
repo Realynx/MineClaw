@@ -106,4 +106,5 @@ export interface RouteTypes {
   'designer.message': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerMessageRequest>; response: z.output<typeof C.DesignerMessageResponse> };
   'designer.canvas': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerCanvasRequest>; response: z.output<typeof C.DesignerCanvasResponse> };
   'designer.save': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerSaveRequest>; response: z.output<typeof C.DesignerSaveResponse> };
+  'designer.version': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerVersionRequest>; response: z.output<typeof C.DesignerVersionResponse> };
 }

@@ -382,6 +382,7 @@ Notes on specific routes:
 | `designer.message` | `POST /api/designer/sessions/:id/messages` | design | params `DesignerSessionParams`<br>body `DesignerMessageRequest` | `DesignerMessageResponse` | `POST /v1/sup/designer/sessions/{id}/messages` | /api/designer/sessions/{id}/messages | design |
 | `designer.canvas` | `POST /api/designer/sessions/:id/canvas` | design | params `DesignerSessionParams`<br>body `DesignerCanvasRequest` | `DesignerCanvasResponse` | `POST /v1/sup/designer/sessions/{id}/canvas` | /api/designer/sessions/{id}/canvas | – |
 | `designer.save` | `POST /api/designer/sessions/:id/save` | design | params `DesignerSessionParams`<br>body `DesignerSaveRequest` | `DesignerSaveResponse` | `POST /v1/sup/designer/sessions/{id}/save` | /api/designer/sessions/{id}/save | design |
+| `designer.version` | `POST /api/designer/sessions/:id/version` | design | params `DesignerSessionParams`<br>body `DesignerVersionRequest` | `DesignerVersionResponse` | `POST /v1/sup/designer/sessions/{id}/version` | /api/designer/sessions/{id}/version | design |
 
 <!-- routes:end -->
 
@@ -561,10 +562,60 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
 
 - **Canvas.** Local coordinates x, z 0..63 (+x east, +z south) and y -16..47. y 0 is the first layer above the plot's
   grass; y -1 is the grass layer and y -16..-1 is the ground under it, solid earth until it is dug. A cell is
-  `[x, y, z, id, meta]` in the server version's ids: id 0 = air (below y 0 that digs the cell out), id -1 = undisturbed
+  `[x, y, z, id, meta]` in the session version's ids: id 0 = air (below y 0 that digs the cell out), id -1 = undisturbed
   ground again (fills a dug cell back; below y 0 only). The session lists `blocks` and `dug` (`[[x,y,z]]`, the cells below
-  ground dug out to air); `plot` is `{size, height, depth}`. Only the design palette is accepted (`palette` in the session:
-  `BuildBlocks.Buildable` blocks with their variants). A door is kept as two halves (upper = lower | 8).
+  ground dug out to air); `plot` is `{size, height, depth}`. Any state of the version's design palette is accepted (below).
+  Two-cell blocks are kept whole: a door or a double plant as two halves (upper = lower | 8, above it), a bed as foot + head
+  (head = foot | 8, one step along its facing S W N E); replacing either half clears the other. A chest placed beside a single
+  chest of its kind takes that chest's facing when it is across the pair (they pair, as the game pairs them). The browser's
+  canvas applies the same rules, so both stay in step.
+- **Versions (added 2026-11-03).** A session is drawn for one game version, `b1.8.1` or `1.12.2` (`version`; the server's is
+  `server_version`, `versions` lists both). A new canvas starts in the server's version (or `version` in the create body);
+  a design opens in the version it was saved for. Every save records the session's version in the design's DSL as a
+  `version X` line, so every revision, the bridge's design list/detail (`version` per design and revision) and every builder
+  see it. Migration rule: a design (or a session) saved before versions has none and is the version of the server whose db
+  holds it (one bot db has only ever served one version); a DSL without a `version` line also keeps the legacy palette
+  (only `BuildBlocks` blocks), a `version` line opens that version's whole design palette.
+- **The palette (added 2026-11-03).** `palette` is every placeable block state of the session's version
+  (src/MineClaw.Bot/Blueprints/DesignPalette.cs, curated from minecraft-data pc/1.12.2 blocks + variations and the b1.8.1
+  table): 398 entries for 1.12.2, 120 for b1.8.1, one per variant (every colour of wool, carpet, stained glass and panes,
+  terracotta, concrete and powder, glazed terracotta, shulker boxes; every wood of planks, logs, slabs, stairs, fences,
+  gates, doors, saplings, leaves; every stone, sandstone, stone brick, quartz and prismarine kind; plants, crops, redstone,
+  rails, beds, signs, banners, skulls, liquids' sources). Each is `{id, meta, name, facing, spec, cat, family, icon}`: `spec`
+  the canonical spelling ("wool:red", "spruce_door", "stained_glass:light_blue"), `cat` one of `categories` (Building,
+  Decoration, Colored, Nature, Redstone, Transport, Misc: the creative tabs), `family` its facing rule (stairs, slab, log,
+  door, tall, bed, torch, wall, front, facing6, hopper, horizontal, gate, trapdoor, button, lever, rail, poweredrail,
+  rotation16, skull, vine, age…), `icon` an icon hint (1.12.2: an item model, b1.8.1: "item:N"). Facings, halves and
+  runtime states are metas of an entry, all accepted (stairs 0..7 in 1.12.2, slabs + 8 top, log axes…). Left out (refused
+  with the reason): air; flowing water and lava (place a source); piston heads and moving pistons; fire; portals, end
+  portals and gateways; spawners, bedrock, silverfish blocks, end portal frames, chorus plants (unobtainable); command,
+  structure and structure-void blocks, barriers (operator-only); frosted ice; the technical double slabs whose full block
+  exists (double wooden / red sandstone / purpur slabs, double stone slab metas but 0 and 8 "smooth stone"; 1.12.2's
+  petrified oak slab 44:2); runtime states (lit furnace, lit redstone ore, lit redstone lamp, unlit redstone torch, powered
+  repeater and comparator). b1.8.1 also leaves out what it can't obtain: grass, mycelium-like silk-touch blocks (ice, huge
+  mushroom blocks, ores that drop items: coal, lapis, diamond, redstone), leaves (placed leaves decay), cobwebs (shears give
+  string) and its technical locked chest.
+- **Version compatibility (added 2026-11-03).** `POST sessions/{id}/version {version, apply?}` →
+  `{version, target, changed, report?, session?}`: an empty canvas switches at once (`changed`, the new `session`); a full one
+  is checked (`report`: `{from, to, same, compatible, exact, text, substituted:[{name, count}], missing:[{name, count}]}`) and,
+  with `apply`, converted (the missing blocks left out, the model told, an assistant line in the transcript). The mapping
+  (DesignConvert): 1.12.2's ids are a superset of b1.8.1's with the same numbers and metas, so a state carries over when the
+  target's palette has it, except id 95 (b1.8.1's locked chest, 1.12.2's stained glass: never carried over as is) and
+  b1.8.1's wooden slab 44:2 = 1.12.2's oak slab 126:0. Back to b1.8.1, the nearest block substitutes where one is close
+  (woods → oak, stone/sand/sandstone/stone-brick kinds and grass/podzol/coarse dirt → their plain block, stained glass and
+  panes → glass, top halves and upside-down stairs → bottom ones, other woods' stairs/fences/gates/doors → oak's, wooden
+  buttons → stone, trapped chests → chests, iron trapdoors → trapdoors); everything else (concrete, terracotta, quartz…) is
+  missing. `POST sessions {design_id, convert_to}` opens a design converted to a version with the report as `compat` (Story
+  Mode does this for the server's version and refuses a design whose `compat` is not `compatible`, naming the blocks); a
+  session drawn for another version than the server's carries `server_compat` (how it would build here).
+- **Builds of a versioned design.** `BlueprintService.PlanOf` (every builder: `design build`, the crew, revert): a design
+  drawn for another version is converted to the world's (`VoxelPlan.Converted`, said in the build's lines) or refused when a
+  block of it doesn't exist here (`design build` answers "#12 "hut" is drawn for 1.12.2; these blocks don't exist in b1.8.1:
+  12 White Concrete … (open it in the Design Studio and convert it, or pick other blocks)"); then the cells the survival
+  builder can't place yet (not `BuildBlocks` states: beds, redstone, upside-down stairs, new woods…) are set aside as
+  `VoxelPlan.Unsupported` and reported ("4 cells the builder can't place yet, left out: 2 Bed, 2 Redstone Wire"), never
+  placed wrong. Story's build queue gives each design cell the item that places exactly it (red wool, a spruce door's item)
+  and keeps blocks pawns can't place yet (crops, liquids, signs, banners, skulls) as `unsupported` ghosts with an alert.
 - **Attached blocks (added 2026-11-03).** Wall torches and ladders hang on a full block: every apply (the AI's ops and the
   user's) checks the changed ones and the ones next to a changed cell; one whose wall side is open but whose opposite side
   is solid is turned around, a wall torch with neither but a solid block under it stands on the floor (meta 5), anything
@@ -578,14 +629,22 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
 - **`GET models`** → `{models:[{id, label, provider, model, tier, profile, cost_hint, default}], default, version, budget}`:
   every tier model (`main`, `worker`, `cheap`) and every usable profile (`profile:<name>`, Ollama/DeepSeek too), de-duplicated;
   a Claude model outside the 5.5 generation is never offered.
-- **`POST sessions {model?, design_id?}`** → the session `{id, owner, model, design_id, name, rev, blocks, dug, anchor,
-  messages, cost_usd, calls, version, palette, plot, revisions}`: an empty canvas, or the design's newest revision centred on
-  the plot (a design that digs: its `ground N` layer on y 0, its forced air under it as dug cells).
+- **`POST sessions {model?, design_id?, version?, convert_to?}`** → the session `{id, owner, model, design_id, name, rev, blocks,
+  dug, anchor, messages, cost_usd, calls, version, server_version, versions, palette, categories, compat, server_compat, plot,
+  revisions}` (each revision with its `version`): an empty canvas in `version` (default the server's), or the design's newest
+  revision centred on the plot in its own version (a design that digs: its `ground N` layer on y 0, its forced air under it
+  as dug cells); `convert_to` converts it (see "Version compatibility").
 - **`POST sessions/{id}/messages {text, model?, canvas:{rev, edits?}, selection?:{min, max}}`** → `{reply, ops:[{kind, label,
   by, cells}], rev, cost_usd, session_cost_usd, model, calls, usage, message, user_message, refusal}`. Pending user edits are
   applied first and summarised for the model, with the canvas summary and the selection. The model edits through seven
   tools (place, box fill/hollow/walls, line, remove, replace, clear, describe; remove below y 0 digs, the block "earth" fills
-  back) for up to `MaxRounds` calls; the system prompt
+  back) and looks names up with `find_blocks {q, n?}` ("magenta concrete" → `concrete:magenta = Magenta Concrete (Colored)`)
+  for up to `MaxRounds` calls. Its blocks are any of the session version's design palette, by minecraft name, display
+  name, `name:variant`, `variant_name` or `name:meta`, then facing modifiers (`oak_stairs:north:top`, `bed:north`,
+  `torch:wall=west`, `log:spruce:x`); a wrong name answers "unknown 1.12.2 block 'redwol'; did you mean wool:red …?". The
+  prompt carries a compact category summary of the palette (about 200 tokens: the base names per category, `<colour>_` and
+  `<wood>_` families folded, the colour and wood words), never the whole list; the whole turn runs in the session's version.
+  The system prompt
   and tools are cached, history is the last `HistoryTurns` exchanges as plain text. Spend is recorded on the bot's
   `UsageTracker` (the shared daily/monthly caps; `designer` purpose rollup); a paused budget answers 429, the cheap-only
   stage refuses Claude models above the memory tier, and a message stops at `MaxUsdPerMessage`. A second write while a
