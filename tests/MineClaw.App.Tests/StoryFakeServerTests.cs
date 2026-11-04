@@ -431,4 +431,49 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Empty(c.Benches.Single().Bills); // the auto bills went with the need
         Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("short of materials"));
     });
+
+    // ================================================================ tools and drafted combat (docs/web/story-mode.md "Tools and gear")
+
+    [Fact]
+    public Task A_drafted_pawn_draws_its_sword_and_kills_the_zombie_it_is_ordered_to_attack() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var pawn = x.Pawns[0];
+        var srv = x.Servers[pawn];
+        var p = c.Pawns[pawn];
+        // Out of the reflex's reach (5 blocks) and of the drafted pawns' own engage radius: only the order sends it there.
+        var zombie = srv.SpawnMob(MineClaw.World.MobTypes.Zombie, 16.5, 64, 8.5, health: 8);
+        Assert.True(await Until(() => c.Host.World!.Entities().Any(e => e.Id == zombie.Id), 5000), "the colony sees the zombie");
+        c.Draft([p], true);
+        Assert.True(await Until(() => srv.Held.Id == Items.IronSword, 30_000), "the sword in hand on draft: " + x.Diag());
+        var (_, err) = c.GiveOrder([p], new JsonObject { ["kind"] = "attack", ["target"] = new JsonObject { ["entity"] = zombie.Id } }, false);
+        Assert.Null(err);
+        Assert.True(await Until(() => zombie.Dead, 60_000), "the zombie is dead: " + x.Diag());
+        Assert.Contains(srv.MeleeHits, h => h.Target == zombie.Id && h.Damage > 0);
+        Assert.True(await Until(() => p.Queue.Count == 0, 10_000), "the order is done");
+        c.Draft([p], false);
+    }, s => s.Inventory[38] = new ItemStack((short)Items.IronSword, 1, 0));
+
+    [Fact]
+    public Task A_pawn_fetches_a_stone_pickaxe_from_storage_before_it_mines_iron_ore() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Everything").Error);
+        c.AddContents(c.StorageAt(WoodChest)!, new Stack(274, 0, 1)); // what the bot remembers of the chest
+        Only(x, WorkTypes.Mine);
+        Assert.Equal(1, c.Designate("add", "mine", null, [new P3(6, 64, 4)], null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => srv.Blocks.GetValueOrDefault((6, 64, 4)) == 0, 120_000),
+            "iron ore mined: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason} {d.Wait}")) + " | " + x.Diag());
+        Assert.Contains(srv.Dug, d => d.Id == 15 && d.X == 6 && d.Z == 4);
+        Assert.True(srv.Inventory.Any(i => !i.IsEmpty && i.Id == 274), "the stone pickaxe came out of the chest");
+        Assert.True(await Until(() => srv.Inventory.Any(i => !i.IsEmpty && i.Id == 15) || InChest(srv, WoodChest, i => i.Id == 15) > 0, 10_000),
+            "the iron ore dropped and was picked up (dug with the right pickaxe)");
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("failed"));
+    }, s =>
+    {
+        EmptyHanded(s);
+        s.Blocks[(6, 64, 4)] = 15; // iron ore
+        s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack(274, 1, 0);
+    });
 }

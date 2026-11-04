@@ -15,7 +15,7 @@ namespace MineClaw.App.Supervisor;
 /// <list type="bullet">
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
-/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options</c></item>
+/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
 /// <item><c>GET /api/story/colonies/{id}/architect</c> → <c>{entries:[…], benches, tabs}</c> (the Architect palette with tiers)</item>
 /// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
@@ -276,7 +276,22 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 var (ps, err) = Pawns();
                 if (err != null) return Bad(err);
                 if (b["order"] is not JsonObject order) return Bad("order must be {kind, target?, design?}");
-                return Result(c.GiveOrder(ps, order, b["queue"] is JsonValue q && q.TryGetValue<bool>(out var qq) && qq));
+                var given = c.GiveOrder(ps, order, b["queue"] is JsonValue q && q.TryGetValue<bool>(out var qq) && qq);
+                // An attack on a player or another bot: the owner confirms first (409 with what to confirm; resend with confirm: true).
+                if (given.Error is { } oe && oe.StartsWith(StoryColony.ConfirmError + ":", StringComparison.Ordinal))
+                    return Reply(409, new JsonObject { ["error"] = oe, ["confirm"] = given.Result?["confirm"]?.DeepClone() });
+                return Result(given);
+            }
+            case "policies":
+                return Result(c.PoliciesOp(b));
+            case "material-rules":
+                return Result(c.MaterialRulesOp(b));
+            case "gear":
+            {
+                // {op: arm|armor|pickup|return|tools, pawns:[name], item?, count?} → {results:[{pawn, display, got, missing}], summary}
+                var (ps, err) = Pawns();
+                if (err != null) return err.StartsWith("no pawn", StringComparison.Ordinal) ? Reply(404, new JsonObject { ["error"] = err }) : Bad(err);
+                return Result(c.GearOp(S(b, "op") ?? "", ps, b));
             }
             case "zones":
             {
@@ -335,8 +350,13 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 }
                 var auto = Flag("auto_place_benches");
                 var detect = Flag("detect_benches");
-                if (auto == null && detect == null) return Bad("auto_place_benches or detect_benches required");
-                return Reply(200, c.SetOptions(auto, detect));
+                var craftTools = Flag("auto_craft_tools");
+                var spare = b["spare_tools"] as JsonObject;
+                if (b["spare_tools"] != null && spare == null) return Bad("spare_tools must be {count, kinds}");
+                if (auto == null && detect == null && craftTools == null && spare == null)
+                    return Bad("auto_place_benches, detect_benches, auto_craft_tools or spare_tools required");
+                if ((craftTools != null || spare != null) && c.SetGearOptions(craftTools, spare) is { } gerr) return Bad(gerr);
+                return Reply(200, auto == null && detect == null ? c.OptionsNow() : c.SetOptions(auto, detect));
             }
             default:
                 return Reply(404, new JsonObject { ["error"] = "not found" });

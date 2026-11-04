@@ -46,6 +46,14 @@ function digAt(j) {
   wait(1)
   return block(j.at) == was ? dig(j.at) : r
 }
+// Gear: armour off (to store it) or on, then the item to hold (a weapon for the draft, the old item back after it).
+function gear(j) {
+  let r = { ok: true }
+  if (j.unwear) r = equip('all', 'unwear')
+  if (ok(r)) r = each(j.wear, a => equip(a, 'wear'))
+  if (ok(r) && j.hold) r = equip(j.hold, 'hold', null, j.hold_ench)
+  return r
+}
 function work(j) {
   const a = j.at
   switch (j.kind) {
@@ -71,7 +79,9 @@ function work(j) {
       if (j.clear) dig(a)
       if (j.stand) go(j.stand, 0)
       return place(j.block, a)
-    case 'attack': if (a) go(a, 3); return attack(j.mob)
+    // The exact entity the order named (it is followed if it moves); a type name for old jobs.
+    case 'attack': if (a) go(a, 3); return attack(j.target != null ? String(j.target) : j.mob)
+    case 'equip': return gear(j)
     case 'eat': return eat()
     case 'craft': if (a) go(a, 2); return craft(j.item, j.n)
     case 'smelt': return smelt(j.item, j.n, j.fuel, false, a)
@@ -90,9 +100,12 @@ function pawn() {
     const j = story.next(20)
     if (!j) continue
     if (j.kind === 'end') { story.report(j.id, 'done'); return 'released: ' + (j.label || 'colony') }
-    let r = each(j.fetch, f => take(f.item, f.n, f.from))
+    // A tool or weapon is taken exactly (the enchanted one, or a plain one: f.ench); the rest by name.
+    let r = each(j.fetch, f => f.ench ? equip(f.item, 'take', f.from, f.ench) : take(f.item, f.n, f.from))
     // Crafts first (a bench the colony places for a build: craft it, at the table when it needs one, then place it).
     if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })
+    // The tool the job's material takes in hand (the dig keeps it: never a lost drop, the Fortune pick for marked ores).
+    if (ok(r) && j.tool) r = equip(j.tool, 'hold', null, j.tool_ench)
     if (ok(r)) r = work(j)
     if (ok(r)) r = each(j.stash, s => deposit(s.to, s.items))
     story.report(j.id, ok(r) ? 'done' : 'failed', r && r.msg)

@@ -190,6 +190,8 @@ public sealed class PawnState
     public string[] Schedule { get; set; } = new string[24];
     public bool Drafted { get; set; }
     public List<Order> Queue { get; set; } = new();
+    /// <summary>Its gear policy, what it held before a draft, its post, pending gear work (StoryColony.Gear.cs).</summary>
+    public PawnGear Gear { get; set; } = new();
     public long Rev { get; set; }
 }
 
@@ -223,6 +225,8 @@ public sealed class DesignationState
     public string Status { get; set; } = "open";
     /// <summary>Why it last failed (null while it hasn't).</summary>
     public string? Reason { get; set; }
+    /// <summary>Why it waits without failing ("needs a stone pickaxe"): no pawn that picked it had or could fetch the tool; not saved.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public string? Wait { get; set; }
     public long Rev { get; set; }
 }
 
@@ -249,6 +253,8 @@ public sealed class StorageState
     public List<Stack> Contents { get; set; } = new();
     public int FreeSlots { get; set; } = 27;
     public DateTimeOffset? KnownAt { get; set; }
+    /// <summary>Enchanted gear known to be in this chest (put there by the colony's pawns): the contents list can't tell them apart.</summary>
+    public List<EnchStack> Enchanted { get; set; } = new();
     public long Rev { get; set; }
     public int Slots => DoubleWith != null ? 54 : 27;
 }
@@ -374,4 +380,6 @@ public sealed class ColonyMeta
     /// <summary>Workbenches near home and in houses join the colony by themselves. Off by default: only designated benches (the owner's
     /// "Use as colony crafting table", a bill added at a bench, a bench the colony placed) are used, never another player's.</summary>
     public bool DetectBenches { get; set; }
+    /// <summary>Gear policies, material tool rules, tool auto-crafting and spare tools (StoryColony.Gear.cs).</summary>
+    public GearSettings Gear { get; set; } = new();
 }

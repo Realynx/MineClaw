@@ -138,6 +138,11 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => T().EatAsync(ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => T().ChopTreeAsync(at, wood, ct);
     public Task<ActionResult> ChopThisTreeAsync(BlockPos at, CancellationToken ct = default) => T().ChopThisTreeAsync(at, ct);
+    public Task<ActionResult> HoldAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) => T().HoldAsync(match, label, ct);
+    public Task<ActionResult> WearAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) => T().WearAsync(match, label, ct);
+    public Task<ActionResult> UnwearAsync(Func<ItemStack, bool>? match = null, CancellationToken ct = default) => T().UnwearAsync(match, ct);
+    public Task<ActionResult> WithdrawMatchingAsync(BlockPos container, Func<ItemStack, bool> match, int count, string label, CancellationToken ct = default) =>
+        T().WithdrawMatchingAsync(container, match, count, label, ct);
 
     // ---- brainstem body
     public bool FaceIdle(Vec3d point) => T().FaceIdle(point);

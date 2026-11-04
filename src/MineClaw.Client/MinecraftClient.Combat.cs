@@ -289,11 +289,20 @@ public sealed partial class MinecraftClient
         }).ConfigureAwait(false);
     }
 
-    /// <summary>Fights the nearest mob of a type (or entity id). Never players (only via <see cref="SparAsync"/>), never tamed wolves.</summary>
+    /// <summary>Fights the nearest mob of a type (or entity id). Never players (only via <see cref="SparAsync"/>, or an entity id the
+    /// owner explicitly permitted: <see cref="CombatEngine.Permit"/>), never tamed wolves.</summary>
     public async Task<ActionResult> AttackAsync(string target, CancellationToken ct = default)
     {
         var engine = Combat;
-        string t = target.Trim().ToLowerInvariant().Replace(' ', '_');
+        string t = target.Trim().ToLowerInvariant().Replace(' ', '_').TrimStart('#');
+        // An entity id the owner ordered (Story Mode's confirmed attack on a player or another bot): exactly that entity, nothing else.
+        if (int.TryParse(t, out int pid) && World.Entities.Get(pid) is { Kind: EntityKind.Player } pe)
+        {
+            if (!engine.Permitted(pid)) return ActionResult.Fail("I only fight players in a spar they asked for");
+            if (engine.Engaged) return ActionResult.Fail("busy: " + engine.Status);
+            return await RunActionAsync("attack", ct, async c =>
+                await AwaitFightAsync(engine.StartAttack(pe.Id), c).ConfigureAwait(false)).ConfigureAwait(false);
+        }
         if (World.Entities.FindPlayer(t) is not null || World.Entities.OnlinePlayers.Any(n => string.Equals(n, t, StringComparison.OrdinalIgnoreCase))
             || t is "player" or "players")
             return ActionResult.Fail("I only fight players in a spar they asked for");

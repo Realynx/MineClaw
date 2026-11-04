@@ -197,6 +197,7 @@ public sealed partial class StoryColony
         var near = Home() ?? Builds.SelectMany(b => b.Ghosts).Select(g => g.At).FirstOrDefault();
         bool hasTable = Benches.Any(b => b.Kind == "crafting_table"), hasFurnace = Benches.Any(b => b.Kind == "furnace");
         List<MaterialNeed> Used(IReadOnlyList<MaterialNeed> used, Dictionary<(int Id, int Meta), int> after) { pool = after; return used.ToList(); }
+        pool = ToolCrafts(w, pool, reserved, wants, hasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
         foreach (var b in Builds.OrderBy(b => b.Order))
         {
             if (!Builds_Live(b)) { if (b.Materials.Count > 0) { b.Materials = new(); b.Rev = Bump(); } continue; }
@@ -329,6 +330,7 @@ public sealed partial class StoryColony
             bench.Rev = Touch();
         }
         var order = Builds.ToDictionary(b => b.Id, b => b.Order);
+        order[ToolsTag] = int.MinValue; // a missing tool holds work up: its bills first
         foreach (var bench in Benches.Where(b => b.Bills.Any(x => x.ForBuild != null)))
         {
             var sorted = bench.Bills.Where(x => x.ForBuild != null).OrderBy(x => order.GetValueOrDefault(x.ForBuild!, int.MaxValue)).ThenBy(x => x.Step)
@@ -537,5 +539,10 @@ public sealed partial class StoryColony
         lock (_lock) return OptionsJson();
     }
 
-    internal JsonObject OptionsJson() => new() { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches };
+    internal JsonObject OptionsJson()
+    {
+        var o = new JsonObject { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches };
+        foreach (var (k, v) in GearOptionsJson().ToList()) o[k] = v?.DeepClone(); // auto_craft_tools, spare_tools (StoryColony.Gear.cs)
+        return o;
+    }
 }

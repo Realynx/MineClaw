@@ -61,6 +61,7 @@ public sealed class Rig : IDisposable
                 new ScriptAction("eat", [], Atomic: true),
                 new ScriptAction("harvest_generator", ["at", "count", "store", "stand"]),
                 new ScriptAction("attack", ["target"]),
+                new ScriptAction("equip", ["item", "mode", "from", "ench"], Atomic: true),
             ],
             Act = (name, args, ct) =>
             {

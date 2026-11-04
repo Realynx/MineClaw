@@ -261,6 +261,11 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
         inner.UseItemOnBlockAsync(pos, face, itemId, damage, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => inner.EatAsync(ct);
+    public Task<ActionResult> HoldAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) => inner.HoldAsync(match, label, ct);
+    public Task<ActionResult> WearAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) => inner.WearAsync(match, label, ct);
+    public Task<ActionResult> UnwearAsync(Func<ItemStack, bool>? match = null, CancellationToken ct = default) => inner.UnwearAsync(match, ct);
+    public Task<ActionResult> WithdrawMatchingAsync(BlockPos container, Func<ItemStack, bool> match, int count, string label, CancellationToken ct = default) =>
+        inner.WithdrawMatchingAsync(container, match, count, label, ct);
     public bool FaceIdle(Vec3d point) => inner.FaceIdle(point);
     public bool SwingIdle() => inner.SwingIdle();
     public bool SafetyEngaged => inner.SafetyEngaged;

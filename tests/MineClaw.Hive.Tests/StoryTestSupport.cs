@@ -59,9 +59,21 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
         return null;
     }
     public IReadOnlyList<Stack>? KnownChest(P3 at) => Chests.TryGetValue(at, out var c) ? c : null;
+    /// <summary>Player names that are the hive's own bots.</summary>
+    public HashSet<string> Bots { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public bool IsBot(string name) => Bots.Contains(name);
+    /// <summary>Attack permits in force: (pawn, entity).</summary>
+    public HashSet<(string Pawn, int Entity)> Permits { get; } = new();
+    public void PermitAttack(string account, int entity, bool on) { if (on) Permits.Add((account, entity)); else Permits.Remove((account, entity)); }
 
+    /// <summary>A pawn in game with <paramref name="inv"/> and a stone pickaxe (the fixture world's floor is stone, which takes one: a
+    /// pawn without is <see cref="Bare"/>).</summary>
     public static PawnLive Live(double x, double y, double z, int hp = 20, int food = 20, params Stack[] inv) =>
-        new(true, hp, food, x + 0.5, y, z + 0.5, 0, null, inv, true, 36 - inv.Length);
+        new(true, hp, food, x + 0.5, y, z + 0.5, 0, null, [.. inv, new Stack(274, 0, 1)], true, 35 - inv.Length);
+
+    /// <summary>A pawn in game with exactly <paramref name="inv"/> (no tools unless given).</summary>
+    public static PawnLive Bare(double x, double y, double z, params Stack[] inv) =>
+        new(true, 20, 20, x + 0.5, y, z + 0.5, 0, null, inv, true, 36 - inv.Length);
 }
 
 internal static class StoryRig

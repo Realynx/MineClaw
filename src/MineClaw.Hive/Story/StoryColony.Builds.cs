@@ -149,10 +149,17 @@ public sealed partial class StoryColony
                 if (g.Remove)
                 {
                     if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0) { g.State = "done"; g.Rev = Touch(); continue; }
-                    return Claim(b, g, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10));
+                    // A dug cell takes its material's tool (a mine design's ore: the right pickaxe), else the build waits for one.
+                    var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
+                    if (dt is { Wait: { } why }) { NoteBuildWait(b, why); continue; }
+                    ClearBuildWait(b);
+                    return Claim(b, g, WithTool(dt, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10)));
                 }
                 var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
                 if (cur == g.Id && cur != 0) { g.State = "done"; g.Rev = Touch(); continue; }
+                // A block in the way is dug first: with its tool (stone in a wall's line takes a pickaxe).
+                var clearTool = !StoryBlocks.Replaceable.Contains(cur) ? PlanTool(p, live, cur) : null;
+                if (clearTool is { Wait: { } cwhy }) { NoteBuildWait(b, cwhy); continue; }
                 var item = g.Item ?? w.Data.Item(g.Id).Name;
                 var itemId = w.Data.ItemByNameWithDamage(item)?.Item.Id ?? g.Id;
                 bool have = live.Inventory.Any(s => s.Id == itemId);
@@ -193,7 +200,7 @@ public sealed partial class StoryColony
                     if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, n);
                 }, xp: 12);
                 if (stored is { } st2) job.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(n, st2.Stack.Count) }));
-                return Claim(b, g, job);
+                return Claim(b, g, WithTool(clear ? clearTool : null, job));
             }
             nextBuild:;
         }

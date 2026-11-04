@@ -461,6 +461,7 @@ public static class GameToolSet
             async (_, ct) => R(await FoodSupply.EatAsync(c, ct)), longRunning: true);
         TreeTools.Register(tools, c, places);
         AcquireTool.Register(tools, c); // hidden: scripts' ensure/acquire (no definition in any prefix)
+        EquipTool.Register(tools, c); // hidden: scripts' equip (hold / wear / take off / take one exact stack; Story Mode's pawns)
     }
 
     // ------------------------------------------------------------------ helpers
