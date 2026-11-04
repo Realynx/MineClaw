@@ -27,6 +27,7 @@ public class NumericsGoldenTests(ITestOutputHelper output)
         ["tokens"] = "6C1D5DD3449758073A40B9898A59F6BE",
         ["validate"] = "43A417216531046AD4A4A8D5C3C330D4",
         ["tree"] = "ECC5924C954FCE8B3795F046BEEEDE07",
+        ["split"] = "4346FA650C72B5EA4C8EE59950B6AFF4",
     };
 
     private sealed class Dump
@@ -284,6 +285,27 @@ public class NumericsGoldenTests(ITestOutputHelper output)
         ];
         foreach (var t in texts) d.Line($"{ApproxTokenCounter.Instance.Count(t)}");
         Check("tokens", d);
+    }
+
+    [Fact]
+    public void Text_split_is_exact()
+    {
+        var d = new Dump();
+        string[] texts =
+        [
+            "", "One sentence only.", "First. Second! Third? Fourth\nFifth.",
+            "Pi is 3.14 and e is 2.71. Next sentence here.",
+            "A very long sentence, with many clauses; separated by commas, semicolons: and colons, that keeps going, and going, and going, until it is much longer than the budget allows, surely.",
+            "Short. " + string.Join(", ", Enumerable.Range(0, 40).Select(i => $"clause {i}")) + ". Tail sentence. Another one!",
+            string.Join(" ", Enumerable.Range(0, 30).Select(i => $"Sentence {i} has some words in it.")),
+            "  . . \n\n ! ?  ", "no delimiters at all just words words words words words words words words",
+        ];
+        foreach (var (t, ti) in texts.Select((t, i) => (t, i)))
+            foreach (var max in new[] { 3, 8, 20, 100 })
+                foreach (var overlap in new[] { 0, 1, 2 })
+                    foreach (var mode in new[] { SplitMode.Reference, SplitMode.PreservePunctuation })
+                        d.Line($"{ti}/{max}/{overlap}/{mode}:" + string.Join("\u0001", TextSplitter.Split(t, ApproxTokenCounter.Instance, max, overlap, mode)));
+        Check("split", d);
     }
 
     [Fact]
