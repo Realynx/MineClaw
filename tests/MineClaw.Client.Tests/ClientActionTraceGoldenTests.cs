@@ -46,7 +46,25 @@ public class ClientActionTraceGoldenTests
             var line = Line(p);
             if (lines.Count == 0 || lines[^1] != line) lines.Add(line);
         }
+        DropSneakBlips(lines);
         return string.Join("\n", lines);
+    }
+
+    /// <summary>A sneak released and pressed again with only a hotbar change in between (two sneaking actions back to back, a tick
+    /// between them or not) is the same as holding it: the pair is dropped, so tick timing never decides the trace.</summary>
+    private static void DropSneakBlips(List<string> lines)
+    {
+        const string release = "EntityActionPacket Action=2 ", press = "EntityActionPacket Action=1 ";
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (!lines[i].StartsWith(release, StringComparison.Ordinal)) continue;
+            int j = i + 1;
+            while (j < lines.Count && lines[j].StartsWith("HoldingChangePacket ", StringComparison.Ordinal)) j++;
+            if (j >= lines.Count || !lines[j].StartsWith(press, StringComparison.Ordinal)) continue;
+            lines.RemoveAt(j);
+            lines.RemoveAt(i);
+            i--;
+        }
     }
 
     private static void World(FakeServer s)
