@@ -296,7 +296,8 @@ Notes on specific routes:
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
 |---|---|---|---|---|---|---|---|
 | `memoryActivity.heat` | `GET /api/memory-activity/heat` | viewer | query `MemoryHeatQuery` | `MemoryHeatResponse` | `GET /v1/memory-activity/heat` | bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree) | – |
-| `memoryActivity.cloud` | `GET /api/memory-activity/cloud` | viewer | – | `MemoryCloudResponse` | `GET /v1/memory-activity/cloud` | bridge-native (UMAP over the RAPTOR leaf embeddings, computed in the background and cached per tree state) | – |
+| `memoryActivity.cloud` | `GET /api/memory-activity/cloud` | viewer | query `MemoryCloudQuery` | `MemoryCloudResponse` | `GET /v1/memory-activity/cloud` | bridge-native (MDS / UMAP / PCA / tree layouts of the RAPTOR leaf embeddings, computed lazily in the background and cached per tree state) | – |
+| `memoryActivity.cloudDistance` | `GET /api/memory-activity/cloud/distance` | viewer | query `CloudDistanceQuery` | `CloudDistanceResponse` | `GET /v1/memory-activity/cloud/distance` | bridge-native (cosine of two stored RAPTOR embeddings; vectors never leave the bridge) | – |
 | `memoryActivity.list` | `GET /api/memory-activity` | viewer | query `MemoryActivityQuery` | `MemoryActivityResponse` | `GET /v1/sup/viewer/memory-activity` | /api/viewer/memory-activity | – |
 
 ### Administration (the bot's settings, per node; POSTs need a fresh step-up)
