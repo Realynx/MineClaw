@@ -37,20 +37,21 @@ public static class StoryBlocks
     public static (bool Ripe, string? Replant)? Crop(IStoryWorld w, int x, int y, int z)
     {
         var (id, meta) = w.Block(x, y, z);
-        var d = w.Data;
+        if (Replanted.TryGetValue(id, out var c)) return (meta >= c.Ripe, ItemName(w.Data, c.Seed));
         return id switch
         {
-            59 => (meta >= 7, ItemName(d, 295)),
-            141 => (meta >= 7, ItemName(d, 391)),
-            142 => (meta >= 7, ItemName(d, 392)),
-            207 => (meta >= 3, ItemName(d, 435)),
-            115 => (meta >= 3, ItemName(d, 372)),
             127 => ((meta >> 2) >= 2, null),
             103 or 86 => (true, null),
             83 or 81 => (w.Block(x, y - 1, z).Id == id, null), // above the base: the base regrows
             _ => null,
         };
     }
+
+    /// <summary>Crops sown again from a seed item: the age they are ripe at and the item (wheat, carrots, potatoes, beetroot, nether wart).</summary>
+    private static readonly Dictionary<int, (int Ripe, int Seed)> Replanted = new()
+    {
+        [59] = (7, 295), [141] = (7, 391), [142] = (7, 392), [207] = (3, 435), [115] = (3, 372),
+    };
 
     public static string? ItemName(IGameData d, int id) => d.ItemExists(id) ? d.Item(id).Name : null;
 
@@ -102,9 +103,8 @@ public static class StoryBlocks
     /// </summary>
     public static P3? TreeBaseOf(IStoryWorld w, P3 p, int reach = 5, int down = 32, int budget = 6000)
     {
-        bool Wood(P3 q) => w.Block(q.X, q.Y, q.Z).Id is var id && (Logs.Contains(id) || Leaves.Contains(id));
         var start = p;
-        if (!Wood(start)) { start = p.Add(0, -1, 0); if (!Wood(start)) return null; }
+        if (!Wood(w, start)) { start = p.Add(0, -1, 0); if (!Wood(w, start)) return null; }
         var seen = new HashSet<P3> { start };
         var todo = new Queue<P3>();
         todo.Enqueue(start);
@@ -112,20 +112,27 @@ public static class StoryBlocks
         while (todo.Count > 0 && seen.Count <= budget)
         {
             var q = todo.Dequeue();
-            if (Logs.Contains(w.Block(q.X, q.Y, q.Z).Id))
-            {
-                var b = q;
-                for (int i = 0; i < 48 && b.Y > 0 && Logs.Contains(w.Block(b.X, b.Y - 1, b.Z).Id); i++) b = b.Add(0, -1, 0);
-                if (tried.Add(b) && Rooted(w, b)) return b;
-            }
+            if (RootedTrunkBase(w, q, tried) is { } b) return b;
             foreach (var n in new[] { q.Add(0, -1, 0), q.Add(1, 0, 0), q.Add(-1, 0, 0), q.Add(0, 0, 1), q.Add(0, 0, -1), q.Add(0, 1, 0) })
-            {
-                if (n.Y < 0 || n.Y < p.Y - down || n.Y > p.Y + 2 || Math.Abs(n.X - p.X) > reach || Math.Abs(n.Z - p.Z) > reach) continue;
-                if (!seen.Contains(n) && Wood(n)) { seen.Add(n); todo.Enqueue(n); }
-            }
+                if (InTreeReach(p, n, reach, down) && !seen.Contains(n) && Wood(w, n)) { seen.Add(n); todo.Enqueue(n); }
         }
         return null;
     }
+
+    private static bool Wood(IStoryWorld w, P3 q) => w.Block(q.X, q.Y, q.Z).Id is var id && (Logs.Contains(id) || Leaves.Contains(id));
+
+    /// <summary>A log's trunk base (down its column), when that is rooted and wasn't tried before.</summary>
+    private static P3? RootedTrunkBase(IStoryWorld w, P3 q, HashSet<P3> tried)
+    {
+        if (!Logs.Contains(w.Block(q.X, q.Y, q.Z).Id)) return null;
+        var b = q;
+        for (int i = 0; i < 48 && b.Y > 0 && Logs.Contains(w.Block(b.X, b.Y - 1, b.Z).Id); i++) b = b.Add(0, -1, 0);
+        return tried.Add(b) && Rooted(w, b) ? b : null;
+    }
+
+    /// <summary>Within the search's box around the clicked block: <paramref name="reach"/> sideways, <paramref name="down"/> below, 2 above.</summary>
+    private static bool InTreeReach(P3 p, P3 n, int reach, int down) =>
+        n.Y >= 0 && n.Y >= p.Y - down && n.Y <= p.Y + 2 && Math.Abs(n.X - p.X) <= reach && Math.Abs(n.Z - p.Z) <= reach;
 
     /// <summary>
     /// The trees in an area, by their trunk bases: any log or leaf in the area's columns (from <paramref name="below"/> under its bottom,
@@ -134,35 +141,47 @@ public static class StoryBlocks
     /// </summary>
     public static List<P3> TreesIn(IStoryWorld w, Area a, int below = 32, int max = 512, int maxScan = 600_000)
     {
-        var bases = new List<P3>();
-        var covered = new HashSet<P3>();
+        var scan = new TreeScan(w);
         int y1 = Math.Max(0, a.Y1 - below), y2 = Math.Min(w.Height - 1, a.Y2);
         long scanned = 0;
-        int resolved = 0;
-        bool Near(P3 q) => bases.Any(b => Math.Abs(b.X - q.X) <= 4 && Math.Abs(b.Z - q.Z) <= 4 && q.Y >= b.Y);
         for (int x = a.X1; x <= a.X2; x++)
             for (int z = a.Z1; z <= a.Z2; z++)
                 for (int y = y1; y <= y2; y++)
                 {
-                    if (++scanned > maxScan || bases.Count >= max) return bases;
-                    int id = w.Block(x, y, z).Id;
-                    bool log = Logs.Contains(id);
-                    if (!log && !Leaves.Contains(id)) continue;
-                    var q = new P3(x, y, z);
-                    // Every log standing on ground is a trunk (as before: each column of a 2x2 trunk too); the rest (branches, the
-                    // crown, leaves) resolves to the trunk that carries it, unless that tree was found already.
-                    if (log && Rooted(w, q)) { Add(q); continue; }
-                    if (covered.Contains(q) || !log && Near(q)) continue;
-                    if (++resolved > 512) continue;
-                    if (TreeBaseOf(w, q) is { } b) Add(b);
+                    if (++scanned > maxScan || scan.Bases.Count >= max) return scan.Bases;
+                    scan.Look(x, y, z);
                 }
-        return bases;
+        return scan.Bases;
+    }
 
-        void Add(P3 b)
+    /// <summary>The trees found so far by <see cref="TreesIn"/>: their bases and the logs those trees cover.</summary>
+    private sealed class TreeScan(IStoryWorld w)
+    {
+        public readonly List<P3> Bases = new();
+        private readonly HashSet<P3> _covered = new();
+        private int _resolved;
+
+        /// <summary>Every log standing on ground is a trunk (as before: each column of a 2x2 trunk too); the rest (branches, the crown,
+        /// leaves) resolves to the trunk that carries it, unless that tree was found already.</summary>
+        public void Look(int x, int y, int z)
         {
-            if (bases.Contains(b)) return;
-            bases.Add(b);
-            foreach (var l in TreeFrom(w, b, 64)) covered.Add(l);
+            int id = w.Block(x, y, z).Id;
+            bool log = Logs.Contains(id);
+            if (!log && !Leaves.Contains(id)) return;
+            var q = new P3(x, y, z);
+            if (log && Rooted(w, q)) { Add(q); return; }
+            if (_covered.Contains(q) || !log && Near(q)) return;
+            if (++_resolved > 512) return;
+            if (TreeBaseOf(w, q) is { } b) Add(b);
+        }
+
+        private bool Near(P3 q) => Bases.Any(b => Math.Abs(b.X - q.X) <= 4 && Math.Abs(b.Z - q.Z) <= 4 && q.Y >= b.Y);
+
+        private void Add(P3 b)
+        {
+            if (Bases.Contains(b)) return;
+            Bases.Add(b);
+            foreach (var l in TreeFrom(w, b, 64)) _covered.Add(l);
         }
     }
 

@@ -30,9 +30,17 @@ public sealed partial class HiveSupervisor
         GoneOutcome o;
         lock (slot.Lock)
         {
-            if (gen != slot.Generation || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
-            o = DetachLocked(slot, reason, exitCode);
-            SettleLocked(slot, o, clean);
+            if (gen != slot.Generation || slot.Detaching || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
+            // Detaching disposes the link, whose Closed calls this method again on this thread: the lock is re-entrant and the
+            // state isn't settled yet, so without the flag that nested call settled and relaunched the slot (a task queued by a
+            // recall), and this one then killed the NEW process and set the slot Idle.
+            slot.Detaching = true;
+            try
+            {
+                o = DetachLocked(slot, reason, exitCode);
+                SettleLocked(slot, o, clean);
+            }
+            finally { slot.Detaching = false; }
         }
         // Immediately: the dead clone's leases, grants and conversations go.
         int released = Claims.ReleaseAll(slot.Name);

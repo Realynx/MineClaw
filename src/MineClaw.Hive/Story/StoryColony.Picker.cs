@@ -222,13 +222,17 @@ public sealed partial class StoryColony
         if (Skipped("deliver:" + p.Name)) return null; // its last delivery failed: not again right away
         // The genre's way: it keeps what it gathers and goes on to the next target of that work; one trip to storage later
         // (inventory nearly full, that work done, its hours over). Live 11-04 (Fox): miners walked every block to the chest.
-        if (!force && after && src is "designation" or "zone" or "crop" or "fish" && KeepGathering(p, live)) return null;
+        if (!force && StaysGathering(p, live, after, src)) return null;
         var items = Deliverables(live);
         if (items.Count == 0) { _lastSource.Remove(p.Name); return null; }
         _lastSource.Remove(p.Name);
         // To the chests or the fallback chest; drops it hauled with no storage at all go to the drop spot (StoryColony.Hauling.cs).
         return DeliverJob(p, live, items, dumpOk: after && src == "drop");
     }
+
+    /// <summary>After gathering work (a designation, a zone, a crop, fishing) the pawn keeps what it gathered while it goes on.</summary>
+    private bool StaysGathering(PawnState p, PawnLive live, bool after, string? src) =>
+        after && src is "designation" or "zone" or "crop" or "fish" && KeepGathering(p, live);
 
     // ---------------------------------------------------------------- work
 
@@ -515,29 +519,41 @@ public sealed partial class StoryColony
         var list = new List<(P3, string?, string)>();
         if (World is { } w)
         {
-            var a = z.Area;
-            long scanned = 0;
             var cells = z.Cells;
             if (z.Kind == "chop")
-                list.AddRange(StoryBlocks.TreesIn(w, a, max: 256).Where(b => cells.Contains(b.X, b.Z)).Take(64).Select(b => (b, (string?)null, "chop")));
-            else
-                foreach (var (x, zz) in cells.Sorted())
-                    if (list.Count < 256)
-                        for (int y = Math.Max(0, a.Y1); y <= Math.Min(w.Height - 1, a.Y2); y++)
-                        {
-                            if (++scanned > 300_000) goto done;
-                            var (id, _) = w.Block(x, y, zz);
-                            if (z.Kind == "mine" && StoryBlocks.Ores.Contains(id)) list.Add((new P3(x, y, zz), null, "mine"));
-                            else if (z.Kind == "farm")
-                            {
-                                if (StoryBlocks.Crop(w, x, y, zz) is { Ripe: true } crop) list.Add((new P3(x, y, zz), crop.Replant, "harvest"));
-                                else if (id == 60 && w.Block(x, y + 1, zz).Id == 0) list.Add((new P3(x, y + 1, zz), null, "sow"));
-                            }
-                        }
-            done:;
+                list.AddRange(StoryBlocks.TreesIn(w, z.Area, max: 256).Where(b => cells.Contains(b.X, b.Z)).Take(64).Select(b => (b, (string?)null, "chop")));
+            else ScanZoneCells(w, z, list);
         }
         _zoneScan[z.Id] = (Now, list);
         return list;
+    }
+
+    /// <summary>A mine or farm zone's columns, up to 256 tasks (300k blocks scanned at most).</summary>
+    private static void ScanZoneCells(IStoryWorld w, ZoneState z, List<(P3, string?, string)> list)
+    {
+        long scanned = 0;
+        int y1 = Math.Max(0, z.Area.Y1);
+        foreach (var (x, zz) in z.Cells.Sorted())
+        {
+            if (list.Count >= 256) continue;
+            for (int y = y1; y <= Math.Min(w.Height - 1, z.Area.Y2); y++)
+            {
+                if (++scanned > 300_000) return;
+                ZoneCellTask(w, z.Kind, x, y, zz, list);
+            }
+        }
+    }
+
+    /// <summary>One block's task: an ore in a mine zone; a ripe crop (harvest) or bare farmland (sow above it) in a farm zone.</summary>
+    private static void ZoneCellTask(IStoryWorld w, string kind, int x, int y, int zz, List<(P3, string?, string)> list)
+    {
+        var (id, _) = w.Block(x, y, zz);
+        if (kind == "mine" && StoryBlocks.Ores.Contains(id)) list.Add((new P3(x, y, zz), null, "mine"));
+        else if (kind == "farm")
+        {
+            if (StoryBlocks.Crop(w, x, y, zz) is { Ripe: true } crop) list.Add((new P3(x, y, zz), crop.Replant, "harvest"));
+            else if (id == 60 && w.Block(x, y + 1, zz).Id == 0) list.Add((new P3(x, y + 1, zz), null, "sow"));
+        }
     }
 
     private ActiveJob? ZoneJob(PawnState p, P3 from, string type, string zoneKind, PawnLive? live = null)
@@ -564,25 +580,29 @@ public sealed partial class StoryColony
         {
             if (z.Bills != null || z.Plant != null) { if (GrowJob(p, live, z) is { } grow) return grow; continue; } // a growing zone (StoryColony.Farming.cs)
             foreach (var t in ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)))
-            {
-                if (t.Kind == "harvest")
-                    return Job(WorkTypes.Farm, "harvest", "harvesting (farm zone)", t.Pos, "b:" + t.Pos, "crop", z.Id, "working",
-                        j => { if (t.Replant != null) j["replant"] = t.Replant; }, xp: 15);
-                if (World is not { } w) continue;
-                var seed = live.Inventory.FirstOrDefault(s => StoryCategories.For(w.Data).LeafOf(s.Id, s.Meta) == "plants_seeds" && s.Id != 372);
-                (StorageState Store, Stack Stack)? stored = seed == null ? FindStored(s => StoryCategories.For(w.Data).LeafOf(s.Id, s.Meta) == "plants_seeds" && s.Id != 372, from) : null;
-                if (seed == null && stored == null) continue;
-                var item = seed ?? stored!.Value.Stack;
-                var j2 = Job(WorkTypes.Farm, "place", "sowing", t.Pos, "b:" + t.Pos, "sow", z.Id, "working", f =>
-                {
-                    f["block"] = ItemName(item.Id, item.Meta);
-                    if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, 16);
-                }, xp: 10);
-                if (stored is { } st2) j2.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(16, st2.Stack.Count) }));
-                return j2;
-            }
+                if (FarmZoneTask(live, z, t, from) is { } j) return j;
         }
         return null;
+    }
+
+    /// <summary>A plain farm zone's task: harvest a ripe crop (replanted), or sow bare farmland with seeds carried or fetched.</summary>
+    private ActiveJob? FarmZoneTask(PawnLive live, ZoneState z, (P3 Pos, string? Replant, string Kind) t, P3 from)
+    {
+        if (t.Kind == "harvest")
+            return Job(WorkTypes.Farm, "harvest", "harvesting (farm zone)", t.Pos, "b:" + t.Pos, "crop", z.Id, "working",
+                j => { if (t.Replant != null) j["replant"] = t.Replant; }, xp: 15);
+        if (World is not { } w) return null;
+        var seed = live.Inventory.FirstOrDefault(s => StoryCategories.For(w.Data).LeafOf(s.Id, s.Meta) == "plants_seeds" && s.Id != 372);
+        (StorageState Store, Stack Stack)? stored = seed == null ? FindStored(s => StoryCategories.For(w.Data).LeafOf(s.Id, s.Meta) == "plants_seeds" && s.Id != 372, from) : null;
+        if (seed == null && stored == null) return null;
+        var item = seed ?? stored!.Value.Stack;
+        var j2 = Job(WorkTypes.Farm, "place", "sowing", t.Pos, "b:" + t.Pos, "sow", z.Id, "working", f =>
+        {
+            f["block"] = ItemName(item.Id, item.Meta);
+            if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, 16);
+        }, xp: 10);
+        if (stored is { } st2) j2.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(16, st2.Stack.Count) }));
+        return j2;
     }
 
     // ---------------------------------------------------------------- done / failed
@@ -676,17 +696,20 @@ public sealed partial class StoryColony
         if (d.Entity is { } eid)
             return d.Kind is "haul" or "hunt" && w.Entities().FirstOrDefault(e => e.Id == eid) is { } e ? $"the {e.Name} is still there" : null;
         if (d.At is not { } at || !w.Loaded(at.X, at.Z)) return null;
-        var (id, _) = w.Block(at.X, at.Y, at.Z);
-        string Name() => w.Data.BlockExists(id) ? w.Data.Block(id).Name : id.ToString();
-        return d.Kind switch
-        {
-            "chop" when StoryBlocks.Logs.Contains(id) => $"the tree's base log at {at} is still standing",
-            "cut" when StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id) => $"the {Name()} at {at} is still there",
-            "harvest" when StoryBlocks.Crop(w, at.X, at.Y, at.Z) is { Ripe: true } => $"the ripe {Name()} at {at} is still there",
-            "mine" or "deconstruct" when id != 0 && !StoryBlocks.Liquids.Contains(id) => $"the {Name()} at {at} is still there",
-            _ => null,
-        };
+        return BlockStillThere(w, d.Kind, at, w.Block(at.X, at.Y, at.Z).Id);
     }
+
+    private static string? BlockStillThere(IStoryWorld w, string kind, P3 at, int id) => kind switch
+    {
+        "chop" when StoryBlocks.Logs.Contains(id) => $"the tree's base log at {at} is still standing",
+        "cut" when StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id) => $"the {BlockIdName(w, id)} at {at} is still there",
+        "harvest" when StoryBlocks.Crop(w, at.X, at.Y, at.Z) is { Ripe: true } => $"the ripe {BlockIdName(w, id)} at {at} is still there",
+        "mine" or "deconstruct" when id != 0 && !StoryBlocks.Liquids.Contains(id) => $"the {BlockIdName(w, id)} at {at} is still there",
+        _ => null,
+    };
+
+    /// <summary>A block's id name in the world's version, else its number.</summary>
+    private static string BlockIdName(IStoryWorld w, int id) => w.Data.BlockExists(id) ? w.Data.Block(id).Name : id.ToString();
 
     /// <summary>
     /// What is left of a designation's target after <paramref name="pawn"/> said done, as that pawn's own body sees it when its view holds

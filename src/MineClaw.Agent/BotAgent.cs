@@ -289,13 +289,7 @@ public sealed partial class BotAgent
 
     private async Task<EpisodeOutcome> HandleBatchCoreAsync(EventBatch batch, CancellationToken ct)
     {
-        _restartsThisTurn = 0;
-        _lastEpisode = _time.GetUtcNow();
-        _turnSince = _lastTurnAt;
-        try { TurnFocus = ActiveBodies is { } dir ? global::MineClaw.Agent.Bodies.BodyFocus.For(batch, dir) : null; }
-        catch (Exception ex) { _log.LogDebug(ex, "turn focus failed"); TurnFocus = null; }
-        LogChat(batch);
-        if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote)) _lastActive = _lastEpisode;
+        BeginBatch(batch);
         var mode = _usage.CheckMode();
         if (mode == BudgetMode.Paused)
         {
@@ -312,9 +306,33 @@ public sealed partial class BotAgent
             return Done(new EpisodeOutcome(null, 0, LlmUsage.Zero, 0, [], false, "already handled"));
         }
         if (await TryHandleJoinsAsync(batch, ct).ConfigureAwait(false) is { } joins) return Done(joins);
+        var outcome = await AnswerBatchAsync(batch, mode, ct).ConfigureAwait(false);
+        await CompactIfNeededAsync(ct).ConfigureAwait(false);
+        await ReflectIfDueAsync(ct).ConfigureAwait(false);
+
+        // Idle again after answering: go back to the standing order (zero tokens).
+        try { Orders?.ResumeIfIdle("after turn", _activities.Shutdown); } catch (Exception ex) { _log.LogWarning(ex, "standing order resume failed"); }
+        if (batch.Waking.Any(e => e.Kind != EventKind.IdleTick)) _idleDefaultFired = false;
+        return Done(new EpisodeOutcome(outcome.Tier, outcome.Calls, outcome.Usage, outcome.Cost, outcome.Said, outcome.Escalation != null));
+    }
+
+    private void BeginBatch(EventBatch batch)
+    {
+        _restartsThisTurn = 0;
+        _lastEpisode = _time.GetUtcNow();
+        _turnSince = _lastTurnAt;
+        try { TurnFocus = ActiveBodies is { } dir ? global::MineClaw.Agent.Bodies.BodyFocus.For(batch, dir) : null; }
+        catch (Exception ex) { _log.LogDebug(ex, "turn focus failed"); TurnFocus = null; }
+        LogChat(batch);
+        if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote)) _lastActive = _lastEpisode;
+    }
+
+    /// <summary>Triage, then the two-phase reply (safe small talk may be answered by the cheap tier alone; a correction of that
+    /// escalates), then the brain's episode, then an escalation to the main tier if the cheap tier asked for one.</summary>
+    private async Task<RunResult> AnswerBatchAsync(EventBatch batch, BudgetMode mode, CancellationToken ct)
+    {
         var decision = _triage.Choose(batch, mode);
         _log.LogDebug("triage → {Tier} ({Why})", decision.Tier, decision.Why);
-        // Two-phase replies: safe small talk may be answered by the cheap tier alone; a correction of that escalates.
         var quick = await TryQuickAsync(batch, decision, mode, ct).ConfigureAwait(false);
         RunResult outcome;
         if (quick.Final != null) outcome = quick.Final;
@@ -324,49 +342,45 @@ public sealed partial class BotAgent
             if (quick.Calls > 0)
                 outcome = outcome with { Calls = outcome.Calls + quick.Calls, Usage = outcome.Usage.Add(quick.Usage ?? LlmUsage.Zero), Cost = outcome.Cost + quick.Cost };
         }
+        return outcome.Escalation is { } esc ? await EscalateAsync(batch, mode, outcome, esc, ct).ConfigureAwait(false) : outcome;
+    }
 
-        if (outcome.Escalation is { } esc)
+    private async Task<RunResult> EscalateAsync(EventBatch batch, BudgetMode mode, RunResult outcome, Escalation esc, CancellationToken ct)
+    {
+        var prelude = $"(escalated from quick mode: {esc.Reason}" + (esc.Said.Count > 0 ? $"; already in chat: \"{string.Join(" ", esc.Said)}\", don't repeat or mention it)" : ")");
+        var main = await RunEpisodeAsync(batch, ModelTier.Main, false, mode, prelude, ct).ConfigureAwait(false);
+        return main with
         {
-            var prelude = $"(escalated from quick mode: {esc.Reason}" + (esc.Said.Count > 0 ? $"; already in chat: \"{string.Join(" ", esc.Said)}\", don't repeat or mention it)" : ")");
-            var main = await RunEpisodeAsync(batch, ModelTier.Main, false, mode, prelude, ct).ConfigureAwait(false);
-            outcome = main with
-            {
-                Calls = main.Calls + outcome.Calls,
-                Usage = main.Usage.Add(outcome.Usage),
-                Cost = main.Cost + outcome.Cost,
-                Said = [.. outcome.Said, .. main.Said],
-                Escalation = esc,
-            };
-        }
+            Calls = main.Calls + outcome.Calls,
+            Usage = main.Usage.Add(outcome.Usage),
+            Cost = main.Cost + outcome.Cost,
+            Said = [.. outcome.Said, .. main.Said],
+            Escalation = esc,
+        };
+    }
 
-        if (_context.NeedsCompaction)
+    private async Task CompactIfNeededAsync(CancellationToken ct)
+    {
+        if (!_context.NeedsCompaction) return;
+        try
         {
-            try
-            {
-                int folded = await _context.CompactAsync(_usage.Mode == BudgetMode.Paused ? null : SummarizeAsync, ct).ConfigureAwait(false);
-                _log.LogDebug("compacted {Count} episodes into journal", folded);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "compaction failed"); }
+            int folded = await _context.CompactAsync(_usage.Mode == BudgetMode.Paused ? null : SummarizeAsync, ct).ConfigureAwait(false);
+            _log.LogDebug("compacted {Count} episodes into journal", folded);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "compaction failed"); }
+    }
 
-        if (Reflection != null)
+    private async Task ReflectIfDueAsync(CancellationToken ct)
+    {
+        if (Reflection == null) return;
+        Reflection.NoteEpisode();
+        if (!Reflection.IsDue || _usage.CheckMode() != BudgetMode.Normal) return;
+        try
         {
-            Reflection.NoteEpisode();
-            if (Reflection.IsDue && _usage.CheckMode() == BudgetMode.Normal)
-            {
-                try
-                {
-                    int changed = await Reflection.RunAsync(ct).ConfigureAwait(false);
-                    _log.LogInformation("self reflection: {Changed} change(s)", changed);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "self reflection failed"); }
-            }
+            int changed = await Reflection.RunAsync(ct).ConfigureAwait(false);
+            _log.LogInformation("self reflection: {Changed} change(s)", changed);
         }
-
-        // Idle again after answering: go back to the standing order (zero tokens).
-        try { Orders?.ResumeIfIdle("after turn", _activities.Shutdown); } catch (Exception ex) { _log.LogWarning(ex, "standing order resume failed"); }
-        if (batch.Waking.Any(e => e.Kind != EventKind.IdleTick)) _idleDefaultFired = false;
-        return Done(new EpisodeOutcome(outcome.Tier, outcome.Calls, outcome.Usage, outcome.Cost, outcome.Said, outcome.Escalation != null));
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "self reflection failed"); }
     }
 
     private EpisodeOutcome Done(EpisodeOutcome o)
@@ -385,321 +399,34 @@ public sealed partial class BotAgent
     private async Task<RunResult> RunEpisodeAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct,
         string? preAck = null)
     {
-        var episode = new Episode(tier, _time.GetUtcNow()) { IsTest = batch.IsTest };
-        episode.Events.AddRange(batch.Events);
+        // TurnContext (AsyncLocal) is set by the synchronous PrepareEpisode / SetTurnContext in this frame, so it flows to every round.
+        var episode = NewEpisode(batch, tier);
         var (turnText, turnHead) = await BuildTurnTextAsync(batch, tier, canEscalate, mode, prelude, ct).ConfigureAwait(false);
-        episode.Messages.Add(LlmMessage.User(turnText));
-        var flow = _options.ChatDebounce ?? new ChatDebounceOptions();
-
-        string? whisperTo = batch.WhisperOnlyFrom;
-        var audience = batch.Waking.Where(e => e.Player != null).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var speaker = batch.Waking.FirstOrDefault(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote && e.Player != null)?.Player;
-        // Ambient for tools (and background tasks started from this turn): who asked, and whether it's injected test chat.
-        TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
-        _chat.MarkTurnStart(); // tools (watch_demo, ask_stand) stay quiet when the brain already said its line
-        var said = new List<string>();
-        string? held = null; // a later line from a round that still called tools: said at the end if nothing else was
-        var usage = LlmUsage.Zero;
-        decimal cost = 0;
-        int calls = 0;
-        var tools = ToolsFor(tier, canEscalate);
-        bool retry = RetryAsked(batch);
-        // A turn woken only by task/system events (a standing-order run finishing, a hive notice, an idle check-in): the brain's
-        // plain text is a private log line, never public chat (live 10-27 23:30: "I didn't say anything in chat." + a run report
-        // on every run). Only the say tool speaks there, and only while a player is engaged.
-        bool quiet = IsQuietBatch(batch);
-        // Woken only by a danger (a player getting hurt, my own low hp): the warning line is public, the rest of the turn's
-        // text is internal (live 10-28 01:3x: after "foxy!! u getting poked at the cactus farm, careful uwu" the same turn
-        // narrated "I warned Fox that... I'm also back on the cobble generator now..." into public chat).
-        bool warnOnly = !quiet && IsWarningBatch(batch);
-        try { if (quiet && SpeaksOn?.Invoke(batch) == true) quiet = false; } catch (Exception ex) { _log.LogDebug(ex, "speaks-on hook failed"); }
-        _turnStatusAsked = MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
-        // Snapshot per episode: a rename mid-turn applies from the next turn, keeping this turn's prefix byte-stable.
-        var system = SystemPrompt;
-        // Budget fallback 1 (Economy): the brain's turn runs on the worker model; same tools and history.
-        string? model = tier == ModelTier.Main && mode == BudgetMode.Economy ? _options.Llm.WorkerModel : null;
-        int maxOut = _options.Llm.MaxTokensFor(tier);
-        // Simple chat (a reflex, one clear job, small talk): a cheaper, faster effort for the WHOLE turn (an effort change
-        // resets the history cache, so it never flips between rounds). Planning/multi-step turns keep the configured effort.
-        bool chatTurn = batch.HasTypedChat;
-        var (effort, thinking) = TurnEffort(batch, tier, chatTurn, model);
-        Latency?.BeginTurn(chatTurn);
-        if (chatTurn) Latency?.NoteEffort(effort ?? _options.Llm.EffortFor(tier));
-        TurnStartedAt = _time.GetUtcNow();
-        _turnEvents = episode.Events; // the honesty guard checks counts against this turn's task results
-        // Two-phase replies: streamed brain lines go out as they finish; a quick ack if the brain is slow to say anything.
+        var turn = PrepareEpisode(episode, batch, tier, canEscalate, mode, turnText, turnHead);
         using var speech = new TurnSpeech(ct);
-        if (_instantThisTurn.Count > 0)
-        {
-            // The instant line is this turn's first line: no quick ack after it, and a brain line repeating it never goes out.
-            lock (speech.Lock) { speech.Ack = string.Join(" | ", _instantThisTurn.Select(i => i.Text)); speech.AckNoted = true; }
-            Voice?.Consume(_instantThisTurn);
-        }
-        var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
-        StartAck(speech, batch, tier, turnHead, preAck, whisperTo, audience.ToArray(), ct);
-        // A turn says at most its in-persona lines (live 10-28 05:27: a hand-over + death-notice turn said its thank-you with the
-        // say tool, then its final text, "I picked the drop tower build back up since Fox already approved it. ... I thanked him
-        // in chat and asked if he's ok.", went to public chat). After the say tool spoke, or once a turn no player typed in has
-        // said its line, the rest of the brain's plain text is its own recap: internal.
-        bool talked = batch.HasTypedChat, sayToolSpoke = false;
-        _turnSay = async (t, c) =>
-        {
-            var r = await SayToolAsync(t, quiet, warnOnly, episode.Events, speech, cx, c).ConfigureAwait(false);
-            if (r.Ok && r.Text == "said") sayToolSpoke = true;
-            return r;
-        };
+        StartEpisodeSpeech(turn, speech, preAck, ct);
         try
         {
-
-        for (int round = 0; round < _options.MaxToolRounds; round++)
-        {
-            var nowMode = _usage.CheckMode();
-            if (nowMode == BudgetMode.Paused || (tier == ModelTier.Main && nowMode == BudgetMode.CheapOnly && round > 0)) break;
-
-            if (!FitHardCap(tier, system, tools, episode.Messages, maxOut))
+            for (int round = 0; round < _options.MaxToolRounds; round++)
             {
-                _log.LogError("context can't fit under the {Cap} token hard cap; ending turn without a call", _context.Options.MaxTokens);
-                break;
-            }
-
-            speech.BeginRound();
-            AddAckNote(speech, episode.Messages);
-            // once the brain spoke, later rounds keep the held-line rule; a quiet turn never streams (its text isn't chat)
-            bool streamThis = tier == ModelTier.Main && said.Count == 0 && !quiet && !warnOnly;
-            var messages = _context.BuildMessages(tier, episode.Messages);
-            // A call that re-writes a big cold history is not cut for a new chat line: the cut call's cache write never lands,
-            // so its restart writes it all again (live 10-27 15:55: 2 × 38K). The new line joins at the next round instead.
-            bool coldBig = tier == ModelTier.Main && _context.EstimateTokens() * _context.TokenScale > 15_000
-                && Warmth.ColdReason(CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), effort, thinking), _time.GetUtcNow(), BlockCount(messages)) != null;
-            var request = new LlmRequest
-            {
-                Tier = tier,
-                Model = model,
-                System = system,
-                Tools = tools,
-                Messages = messages,
-                Purpose = tier == ModelTier.Cheap ? "chat" : "task",
-                Interruptible = round == 0 && CanRestart(flow) && !coldBig,
-                Effort = effort,
-                Thinking = thinking,
-                OnToolUse = EarlyStarter(tier, retry, model ?? _options.Llm.ModelFor(tier), ct),
-                OnTextDelta = streamThis ? StreamHook(speech, cx, ct) : null,
-            };
-            LastRequestTokens = EstimateRequestTokens(request, maxOut);
-            var variant = CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), effort, thinking);
-            var callAt = _time.GetUtcNow();
-            int reqBlocks = BlockCount(request.Messages);
-            bool compactedBefore = Interlocked.Exchange(ref _compactedSinceCall, 0) != 0;
-            string cacheCause = tier == ModelTier.Main
-                ? CacheWriteGuard.Cause(Warmth.Last, variant, Warmth.ColdReason(variant, callAt, reqBlocks), Warmth.LastCallAt, callAt, compactedBefore)
-                : "cheap-tier call (its own prefix: cold or new)";
-            if (tier == ModelTier.Main) { Warmth.Note(variant, callAt, reqBlocks); _lastMainVariant = (effort, thinking); }
-            LlmResponse response;
-            if (!request.Interruptible)
-            {
-                response = await _llm.CompleteAsync(request, ct).ConfigureAwait(false);
-            }
-            else
-            {
-                // (a) A player adds a line while the first response is still generating (no tool ran, nothing said yet):
-                // cancel the call, let them finish typing, and restart this round with every line in one user message.
-                // History is untouched (the cancelled call never enters it), so the prefix stays cached.
-                var call = await CompleteInterruptibleAsync(request, tier, maxOut, ct, speech.TryCut).ConfigureAwait(false);
-                if (call.Response is null)
+                var end = await RunRoundAsync(turn, round, ct).ConfigureAwait(false);
+                if (end == RoundEnd.Restart)
                 {
-                    Task pendingChain;
-                    lock (speech.Lock) { speech.Cut = true; pendingChain = speech.Chain; speech.AckNoted = false; }
-                    await DrainAsync(pendingChain).ConfigureAwait(false); // nothing of the cut call was sent: its text is dropped
-                    _restartsThisTurn++;
-                    DropEarlyStarts("restarted for new chat");
-                    if (call.Partial is { } partial)
-                    {
-                        calls++;
-                        usage = usage.Add(partial);
-                        cost += call.PartialCost;
-                        WarnCacheWrite(partial, tier, round, cacheCause, interrupted: true);
-                    }
-                    var more = await TakeAfterTypingAsync(flow, ct).ConfigureAwait(false);
-                    if (more != null)
-                    {
-                        LogChat(more);
-                        batch = new EventBatch([.. batch.Events, .. more.Events]);
-                        episode.Events.AddRange(more.Events);
-                        foreach (var p in more.Waking.Where(e => e.Player != null).Select(e => e.Player!))
-                            if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
-                        whisperTo = batch.WhisperOnlyFrom;
-                        retry |= RetryAsked(more);
-                        (quiet, warnOnly) = AfterJoined(quiet, warnOnly, more);
-                        talked |= more.HasTypedChat;
-                        _turnStatusAsked |= MetaSpeech.AsksStatus(more.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
-                        TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
-                    }
-                    turnHead = RefreshHere(turnHead, batch);
-                    episode.Messages[0] = LlmMessage.User((turnHead + batch.Format()).TrimEnd());
-                    _log.LogInformation("restarted turn for new chat ({Restarts}/{Max}); {Flow}", _restartsThisTurn, flow.MaxRestartsPerTurn, _events.Stats.Summary());
+                    // Cut for new chat: the same round again, with every line in one user message.
+                    if (await TakeRestartLinesAsync(turn, round, ct).ConfigureAwait(false)) SetTurnContext(turn);
+                    RebuildTurnMessage(turn);
                     round--;
-                    continue;
                 }
-                response = call.Response;
+                else if (end == RoundEnd.Escalate) return turn.Escalated!;
+                else if (end == RoundEnd.Stop) break;
             }
-            calls++;
-            Latency?.NoteRound();
-            _avgOutTokens = _avgOutTokens <= 0 ? response.Usage.OutputTokens : 0.8 * _avgOutTokens + 0.2 * response.Usage.OutputTokens;
-            usage = usage.Add(response.Usage);
-            cost += _usage.Record(response.Model, response.Usage, tier);
-            WarnCacheWrite(response.Usage, tier, round, cacheCause);
-            if (tier == ModelTier.Main) Calibrate(request, response.Usage);
-            _log.LogInformation("call {Label} ({Model}) round {Round}: {Usage} cache {Hit:P0}",
-                UsageTracker.TierLabel(_options.Llm.TierOfModel(response.Model) ?? tier), response.Model, round, response.Usage, UsageTracker.CacheHit(response.Usage));
-
-            var content = response.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
-            if (content.Count == 0) content.Add(new LlmText("(silent)"));
-            episode.Messages.Add(new LlmMessage(LlmRole.Assistant, content));
-
-            var text = response.Text.Trim();
-            bool streamed, wasCut;
-            Task streamChain;
-            lock (speech.Lock) { streamed = speech.SawDelta; wasCut = speech.Cut; streamChain = speech.Chain; }
-            if (streamed && !wasCut)
-            {
-                // Streamed round: its lines already went out (or go out now, in order); nothing is sent twice.
-                await FinishStreamAsync(speech, cx, ct).ConfigureAwait(false);
-                text = "";
-            }
-            else if (wasCut) await DrainAsync(streamChain).ConfigureAwait(false); // cut too late to cancel: nothing of it was sent, speak it whole
-            if (quiet && !IsSilent(text))
-            {
-                KeepInternal(text);
-                text = "";
-            }
-            if (!IsSilent(text) && (sayToolSpoke || (!talked && said.Count > 0)))
-            {
-                KeepInternal(text);
-                text = "";
-            }
-            if (!IsSilent(text) && whisperTo == null && SpeechGate != null)
-            {
-                string? gated;
-                try { gated = SpeechGate(new EventBatch(episode.Events), text, said.Count > 0); }
-                catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); gated = text; }
-                if (gated == null || IsSilent(gated.Trim()))
-                {
-                    _log.LogDebug("muted: {Text}", text);
-                    try { Muted?.Invoke(text); } catch (Exception) { }
-                    text = "";
-                }
-                else text = gated.Trim();
-            }
-            if (!IsSilent(text))
-            {
-                // Never narrate plumbing ("Delegating the craft.", "running script"): drop purely meta sentences.
-                text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked, AddresseeNames(audience));
-                foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
-            }
-            if (warnOnly && !IsSilent(text))
-            {
-                var (warning, rest) = WarningLine(text, said.Count > 0);
-                if (!IsSilent(rest)) KeepInternal(rest);
-                text = warning;
-            }
-            if (!IsSilent(text))
-            {
-                // One chat output per addressed message: never restate what this turn already said (paraphrase after a
-                // tool round), and no second line from a round that is still calling tools — it waits for the end.
-                text = SpeechDedupe.DropRepeats(text, said, out var dup);
-                foreach (var d in dup) _log.LogInformation("[repeat suppressed] {Line}", d);
-                if (!IsSilent(text) && said.Count > 0 && response.ToolUses.Any()) { held = text; text = ""; }
-            }
-            if (!IsSilent(text) && AckOf(speech) is { } ackLine && SameLine(text, ackLine)) text = ""; // the ack already said exactly this
-            if (!IsSilent(text)) text = LastLook(text, audience);
-            if (!IsSilent(text))
-            {
-                held = null;
-                await SayBrainAsync(speech, cx, text, ct).ConfigureAwait(false);
-            }
-
-            if (response.StopReason == StopReasons.MaxTokens)
-            {
-                var cappedUses = response.ToolUses.ToList();
-                if (cappedUses.Count > 0)
-                    episode.Messages.Add(new LlmMessage(LlmRole.User, (await TruncatedToolsAsync(cappedUses).ConfigureAwait(false)).ToList<LlmBlock>()));
-                _log.LogWarning("response truncated; remaining tools not executed");
-                break;
-            }
-
-            if (response.StopReason == StopReasons.Refusal)
-            {
-                _log.LogWarning("model refused");
-                break;
-            }
-
-            var uses = response.ToolUses.ToList();
-            if (uses.Count == 0) break;
-
-            var esc = uses.FirstOrDefault(u => u.Name == EscalateToolName);
-            if (esc != null && canEscalate)
-            {
-                // Discard the cheap exchange (its escalate call never enters history) and let the main tier redo the turn.
-                return new RunResult(tier, calls, usage, cost, said, new Escalation(esc.Input.Str("reason") ?? "needs planning", said));
-            }
-
-            IReadOnlyList<LlmToolResult> results;
-            using (ToolCaller.Push(tier, response.Model))
-                results = await ExecuteToolsAsync(uses, tier, retry, ct).ConfigureAwait(false);
-            var blocks = new List<LlmBlock>(results);
-
-            // (b) Let urgent/new events reach the model mid-turn: appended as a text block AFTER the tool results in the same user
-            // message, so tool_use/tool_result pairing stays valid and history stays append-only.
-            var fresh = _events.TryTakeUrgent(flow.Enabled && !flow.InjectMidTurn ? EventPriority.High : EventPriority.Normal);
-            if (fresh != null)
-            {
-                LogChat(fresh);
-                episode.Events.AddRange(fresh.Events);
-                if (flow.Enabled)
-                {
-                    blocks.Add(new LlmText(fresh.Format(fresh: true)));
-                    _events.Stats.Injected(fresh.Events.Count);
-                }
-                else blocks.Add(new LlmText("[new events]\n" + fresh.Format()));
-                foreach (var p in fresh.Waking.Where(e => e.Player != null).Select(e => e.Player!))
-                    if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
-                if (fresh.WhisperOnlyFrom == null && fresh.Waking.Any()) whisperTo = null;
-                retry |= RetryAsked(fresh);
-                // A player spoke mid-turn: from here on the turn answers them (its text is chat again).
-                (quiet, warnOnly) = AfterJoined(quiet, warnOnly, fresh);
-                talked |= fresh.HasTypedChat;
-                _turnStatusAsked |= MetaSpeech.AsksStatus(fresh.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
-            }
-            episode.Messages.Add(new LlmMessage(LlmRole.User, blocks));
-        }
-        if (held != null && SpeechDedupe.DropRepeats(held, said, out _) is { Length: > 0 } heldText && LastLook(heldText, audience) is { Length: > 0 } last
-            && !IsSilent(last))
-        {
-            await SayBrainAsync(speech, cx, last, ct).ConfigureAwait(false);
-        }
+            await SayHeldAsync(turn, ct).ConfigureAwait(false);
         }
         finally
         {
-            _turnSay = null;
-            _early.Clear();
-            Interlocked.Exchange(ref _earlyChains, 0);
-            TurnStartedAt = null;
-            _turnEvents = null;
-            // A speculative walk the brain neither adopted nor replaced: it decided otherwise (talk, a question) — stop it.
-            if (_activities.CancelSpeculative("not adopted by the brain")) _log.LogDebug("speculative step cancelled: not adopted");
-            Latency?.EndTurn(workPending: _activities.IsBusy);
-            try { TurnEnded?.Invoke(); } catch (Exception) { }
+            EndEpisodeTurn();
         }
-
-        lock (_handled)
-        {
-            _handled.Clear();
-            foreach (var e in episode.Events.Where(e => e.Wakes)) _handled.Add(HandledKey(e));
-        }
-        _context.Commit(episode);
-        string? ackSaid;
-        lock (speech.Lock) ackSaid = speech.Ack;
-        return new RunResult(tier, calls, usage, cost, ackSaid != null ? [ackSaid, .. said] : said, null);
+        return CommitEpisode(turn);
     }
 
     /// <summary>
@@ -852,27 +579,57 @@ public sealed partial class BotAgent
     /// <summary>The first user message of a turn: (full text, the part before the events) — a restart swaps only the events.</summary>
     private async Task<(string Text, string Head)> BuildTurnTextAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct)
     {
-        string memory = "";
-        if (Retriever != null)
-        {
-            try
-            {
-                BlockPos? pos = null;
-                try { pos = Position?.Invoke(); } catch (Exception) { }
-                memory = await Retriever.BuildAsync(batch, tier, pos, NameWords(), ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "auto-retrieval failed"); }
-        }
+        string memory = await RetrieveTurnMemoryAsync(batch, tier, ct).ConfigureAwait(false);
         var sb = new StringBuilder();
-        string header = "";
-        var dir = ActiveBodies;
-        var focus = TurnFocus;
+        var status = AppendStatusLines(sb);
+        AppendStandingLines(sb, status, batch);
+        var digest = BuildDigest(memory);
+        AppendTurnLine(sb, digest);
+        AppendTurnLine(sb, TurnPerceptionText());
+        if (mode == BudgetMode.CheapOnly) sb.Append(Prompts.CheapOnlyHint).Append('\n');
+        else if (tier == ModelTier.Cheap && canEscalate) sb.Append(Prompts.CheapTierHint).Append('\n');
+        if (prelude != null) sb.Append(prelude).Append('\n');
+        var self = SelfBlock(batch, tier);
+        AppendTurnLine(sb, self);
+        AppendTurnLine(sb, memory);
+        // [here]: what the brain would look up first, so it can act in round 0 (chat turns only; deduped, built live).
+        _hereLine = BuildHere(batch, sb.ToString());
+        AppendTurnLine(sb, _hereLine);
+        AppendTurnLine(sb, TurnHintText(batch));
+        AppendActFirstLines(sb, batch);
+        var head = sb.ToString();
+        var events = batch.Format();
+        sb.Append(events);
+        var text = sb.ToString().TrimEnd();
+        try { TurnBuilt?.Invoke(new TurnInput(_time.GetUtcNow(), tier, status, digest, memory, events, text, self)); }
+        catch (Exception ex) { _log.LogDebug(ex, "TurnBuilt handler failed"); }
+        return (text, head);
+    }
+
+    private static void AppendTurnLine(StringBuilder sb, string line)
+    {
+        if (line.Length > 0) sb.Append(line).Append('\n');
+    }
+
+    /// <summary>Auto-retrieval for this batch ("" = off or failed).</summary>
+    private async Task<string> RetrieveTurnMemoryAsync(EventBatch batch, ModelTier tier, CancellationToken ct)
+    {
+        if (Retriever == null) return "";
         try
         {
-            // One brain, many bodies: a turn focused on another body reads that body's state ("67: pos ... | task: ...").
-            header = focus != null && dir?.StateHeader(focus) is { } fh ? focus + ": " + fh : StateHeader?.Invoke() ?? "";
+            BlockPos? pos = null;
+            try { pos = Position?.Invoke(); } catch (Exception) { }
+            return await Retriever.BuildAsync(batch, tier, pos, NameWords(), ct).ConfigureAwait(false);
         }
-        catch (Exception ex) { _log.LogWarning(ex, "state header failed"); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "auto-retrieval failed"); return ""; }
+    }
+
+    /// <summary>The status line ("pos ... | task: ..."), the body lock and the other bodies. Returns the status line.</summary>
+    private string AppendStatusLines(StringBuilder sb)
+    {
+        var dir = ActiveBodies;
+        var focus = TurnFocus;
+        var header = TurnStateHeader(dir, focus);
         var activity = FocusActivities.Describe();
         var status = string.Join(" | ", new[] { header.Trim(), activity != null ? "task: " + activity : (header.Contains("task:") ? "" : "task: idle") }
             .Where(s => s.Length > 0));
@@ -884,56 +641,53 @@ public sealed partial class BotAgent
         {
             string bodies = "";
             try { bodies = dir.StatusBlock(focus); } catch (Exception ex) { _log.LogDebug(ex, "[bodies] block failed"); }
-            if (bodies.Length > 0) sb.Append(bodies).Append('\n');
+            AppendTurnLine(sb, bodies);
         }
+        return status;
+    }
+
+    /// <summary>One brain, many bodies: a turn focused on another body reads that body's state ("67: pos ... | task: ...").</summary>
+    private string TurnStateHeader(global::MineClaw.Agent.Bodies.IBodyDirectory? dir, string? focus)
+    {
+        try { return focus != null && dir?.StateHeader(focus) is { } fh ? focus + ": " + fh : StateHeader?.Invoke() ?? ""; }
+        catch (Exception ex) { _log.LogWarning(ex, "state header failed"); return ""; }
+    }
+
+    /// <summary>The standing order, then trusted players' standing rules for what is in play (the task, the order, these events):
+    /// text only, the brain decides.</summary>
+    private void AppendStandingLines(StringBuilder sb, string status, EventBatch batch)
+    {
         string? standing = null;
         try { standing = Orders?.HeaderTag(); } catch (Exception ex) { _log.LogDebug(ex, "standing order read failed"); }
         if (standing != null) sb.Append(standing).Append('\n');
-        // Trusted players' standing rules for what is in play (the task, the standing order, these events): text only, the brain decides.
-        if (StandingRules != null)
-        {
-            string? rules = null;
-            try { rules = StandingRules(string.Join("\n", status, standing ?? "", batch.Format())); }
-            catch (Exception ex) { _log.LogDebug(ex, "standing rules read failed"); }
-            if (!string.IsNullOrWhiteSpace(rules)) sb.Append(rules.Trim()).Append('\n');
-        }
-        var digest = BuildDigest(memory);
-        if (digest.Length > 0) sb.Append(digest).Append('\n');
-        string perception = "";
-        try { perception = TurnPerception?.Invoke()?.Trim() ?? ""; } catch (Exception ex) { _log.LogWarning(ex, "turn perception failed"); }
-        if (perception.Length > 0) sb.Append(perception).Append('\n');
-        if (mode == BudgetMode.CheapOnly) sb.Append(Prompts.CheapOnlyHint).Append('\n');
-        else if (tier == ModelTier.Cheap && canEscalate) sb.Append(Prompts.CheapTierHint).Append('\n');
-        if (prelude != null) sb.Append(prelude).Append('\n');
-        var self = SelfBlock(batch, tier);
-        if (self.Length > 0) sb.Append(self).Append('\n');
-        if (memory.Length > 0) sb.Append(memory).Append('\n');
-        // [here]: what the brain would look up first, so it can act in round 0 (chat turns only; deduped, built live).
-        _hereLine = BuildHere(batch, sb.ToString());
-        if (_hereLine.Length > 0) sb.Append(_hereLine).Append('\n');
-        string hint = "";
-        if (TurnHint != null)
-        {
-            try { hint = TurnHint(batch)?.Trim() ?? ""; }
-            catch (Exception ex) { _log.LogWarning(ex, "turn hint failed"); }
-            if (hint.Length > 0) sb.Append(hint).Append('\n');
-        }
-        // Act first, think in parallel: what the body already said and is already doing for this chat, so the turn only amends.
+        if (StandingRules == null) return;
+        string? rules = null;
+        try { rules = StandingRules(string.Join("\n", status, standing ?? "", batch.Format())); }
+        catch (Exception ex) { _log.LogDebug(ex, "standing rules read failed"); }
+        if (!string.IsNullOrWhiteSpace(rules)) sb.Append(rules.Trim()).Append('\n');
+    }
+
+    private string TurnPerceptionText()
+    {
+        try { return TurnPerception?.Invoke()?.Trim() ?? ""; }
+        catch (Exception ex) { _log.LogWarning(ex, "turn perception failed"); return ""; }
+    }
+
+    private string TurnHintText(EventBatch batch)
+    {
+        if (TurnHint == null) return "";
+        try { return TurnHint(batch)?.Trim() ?? ""; }
+        catch (Exception ex) { _log.LogWarning(ex, "turn hint failed"); return ""; }
+    }
+
+    /// <summary>Act first, think in parallel: what the body already said and is already doing for this chat, so the turn only amends.</summary>
+    private void AppendActFirstLines(StringBuilder sb, EventBatch batch)
+    {
         _instantThisTurn = batch.HasTypedChat && Voice != null
             ? Voice.For(batch.Waking.Where(e => e.Player != null).Select(e => e.Player!)) : [];
-        var instantNote = Character.CharacterVoice.TurnNote(_instantThisTurn, _time.GetUtcNow());
-        if (instantNote.Length > 0) sb.Append(instantNote).Append('\n');
-        var doing = AlreadyDoing(batch);
-        if (doing.Length > 0) sb.Append(doing).Append('\n');
-        var busy = BusyLine(batch);
-        if (busy.Length > 0) sb.Append(busy).Append('\n');
-        var head = sb.ToString();
-        var events = batch.Format();
-        sb.Append(events);
-        var text = sb.ToString().TrimEnd();
-        try { TurnBuilt?.Invoke(new TurnInput(_time.GetUtcNow(), tier, status, digest, memory, events, text, self)); }
-        catch (Exception ex) { _log.LogDebug(ex, "TurnBuilt handler failed"); }
-        return (text, head);
+        AppendTurnLine(sb, Character.CharacterVoice.TurnNote(_instantThisTurn, _time.GetUtcNow()));
+        AppendTurnLine(sb, AlreadyDoing(batch));
+        AppendTurnLine(sb, BusyLine(batch));
     }
 
     public const string BusyTag = "[busy]";

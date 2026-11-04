@@ -54,13 +54,22 @@ public sealed partial class StoryColony
     internal P3? WaterNear(P3 stand)
     {
         if (World is not { } w) return null;
-        bool Water(P3 p)
-        {
-            var (id, meta) = w.Block(p.X, p.Y, p.Z);
-            return id == Brewing.CauldronBlock && meta > 0
-                   || id is Brewing.WaterSource or Brewing.FlowingWater && meta == 0 && w.Block(p.X, p.Y + 1, p.Z).Id == 0;
-        }
-        if (_water.TryGetValue(stand, out var c) && Now - c.At < TimeSpan.FromMinutes(1) && (c.Water is not { } cw || Water(cw))) return c.Water;
+        if (_water.TryGetValue(stand, out var c) && Now - c.At < TimeSpan.FromMinutes(1) && (c.Water is not { } cw || BrewWater(w, cw))) return c.Water;
+        var best = NearestBrewWater(w, stand);
+        _water[stand] = (Now, best);
+        return best;
+    }
+
+    /// <summary>A filled cauldron, or a water source block open above.</summary>
+    private static bool BrewWater(IStoryWorld w, P3 p)
+    {
+        var (id, meta) = w.Block(p.X, p.Y, p.Z);
+        return id == Brewing.CauldronBlock && meta > 0
+               || id is Brewing.WaterSource or Brewing.FlowingWater && meta == 0 && w.Block(p.X, p.Y + 1, p.Z).Id == 0;
+    }
+
+    private static P3? NearestBrewWater(IStoryWorld w, P3 stand)
+    {
         P3? best = null;
         double bd = double.MaxValue;
         for (int dx = -16; dx <= 16; dx++)
@@ -71,10 +80,9 @@ public sealed partial class StoryColony
                 {
                     var p = stand.Add(dx, dy, dz);
                     double dist = p.Dist(stand);
-                    if (dist < bd && Water(p)) { best = p; bd = dist; }
+                    if (dist < bd && BrewWater(w, p)) { best = p; bd = dist; }
                 }
             }
-        _water[stand] = (Now, best);
         return best;
     }
 
@@ -89,52 +97,63 @@ public sealed partial class StoryColony
         int form = r.Output.Id;
         if (Brewing.Chain(form, spec.Potion!) is not { Count: > 0 } chain) return (null, "no brewing chain makes it");
         int batch = Math.Clamp(Left(bill, r, Brewing.Bottles), 1, Brewing.Bottles);
-        int Held(int f, string type) => live.Inventory.Where(s => s.Id == f && s.Meta == Brewing.TypeId(type)).Sum(s => s.Count);
-        int start = 0;
-        for (int i = chain.Count - 1; i > 0; i--)
-            if (Held(chain[i].FromForm, chain[i].FromType) > 0) { start = i; break; }
+        int start = BrewStart(live, chain);
         var steps = chain.Skip(start).ToList();
         var g = new StationGathering(this, bill, live, bench.Pos);
-        JsonObject? fill = null;
-        if (start > 0) batch = Math.Min(batch, Held(steps[0].FromForm, steps[0].FromType));
-        else
-        {
-            int water = Held(Brewing.Potion, "water");
-            if (water < batch)
-            {
-                if (WaterNear(bench.Pos) is not { } wat)
-                {
-                    if (water == 0) return (null, "no water (a source block or a filled cauldron) within 16 blocks of the brewing stand");
-                    batch = water;
-                }
-                else
-                {
-                    int bottles = g.Get(s => s.Id == Brewing.GlassBottle, batch - water, "glass bottles (or water bottles)", partial: true);
-                    if (g.Missing != null)
-                    {
-                        if (water == 0) return (null, g.Missing);
-                        g.Missing = null;
-                        bottles = 0;
-                    }
-                    if (bottles > 0) fill = new JsonObject { ["at"] = wat.ToString(), ["n"] = bottles };
-                    batch = water + bottles;
-                }
-            }
-        }
+        (batch, var fill, var missing) = start > 0
+            ? (Math.Min(batch, HeldPotions(live, steps[0].FromForm, steps[0].FromType)), null, null)
+            : BrewBottles(live, bench, g, batch);
+        if (missing != null) return (null, missing);
         if (batch <= 0) return (null, null);
+        if (BrewIngredients(g, steps, bench) is { } lacking) return (null, lacking);
+        return (BrewJobOf(work, bench, bill, key, steps, batch, fill, g), null);
+    }
+
+    private static int HeldPotions(PawnLive live, int form, string type) =>
+        live.Inventory.Where(s => s.Id == form && s.Meta == Brewing.TypeId(type)).Sum(s => s.Count);
+
+    /// <summary>The furthest stage of the chain the pawn already holds the potions for (0: from water).</summary>
+    private static int BrewStart(PawnLive live, IReadOnlyList<Brewing.Step> chain)
+    {
+        for (int i = chain.Count - 1; i > 0; i--)
+            if (HeldPotions(live, chain[i].FromForm, chain[i].FromType) > 0) return i;
+        return 0;
+    }
+
+    /// <summary>A brew from water: the water bottles held, topped up with glass bottles filled at the stand's water.</summary>
+    private (int Batch, JsonObject? Fill, string? Missing) BrewBottles(PawnLive live, WorkbenchState bench, StationGathering g, int batch)
+    {
+        int water = HeldPotions(live, Brewing.Potion, "water");
+        if (water >= batch) return (batch, null, null);
+        if (WaterNear(bench.Pos) is not { } wat)
+            return water == 0 ? (batch, null, "no water (a source block or a filled cauldron) within 16 blocks of the brewing stand") : (water, null, null);
+        int bottles = g.Get(s => s.Id == Brewing.GlassBottle, batch - water, "glass bottles (or water bottles)", partial: true);
+        if (g.Missing != null)
+        {
+            if (water == 0) return (batch, null, g.Missing);
+            g.Missing = null;
+            bottles = 0;
+        }
+        return (water + bottles, bottles > 0 ? new JsonObject { ["at"] = wat.ToString(), ["n"] = bottles } : null, null);
+    }
+
+    /// <summary>Each step's ingredient, and blaze powder when the stand's fuel is short or unknown; what is missing, else null.</summary>
+    private string? BrewIngredients(StationGathering g, List<Brewing.Step> steps, WorkbenchState bench)
+    {
         foreach (var ing in steps.GroupBy(s => s.With))
             g.Get(s => s.Id == ing.Key.Id && (ing.Key.Meta <= 0 || s.Meta == ing.Key.Meta), ing.Count(),
                 StoryRecipes.Label(World!.Data, ing.Key.Id, ing.Key.Meta).ToLowerInvariant());
-        if (g.Missing != null) return (null, g.Missing);
-        if (bench.Fuel is not { } fuel || fuel < steps.Count)
-        {
-            g.Get(s => s.Id == Brewing.BlazePowder, 1, "blaze powder (the brewing stand's fuel)");
-            if (g.Missing != null)
-            {
-                if (bench.Fuel is not null) return (null, g.Missing); // known to be short
-                g.Missing = null; // unknown: the stand may have some (the pawn says so when it hasn't)
-            }
-        }
+        if (g.Missing != null) return g.Missing;
+        if (bench.Fuel is { } fuel && fuel >= steps.Count) return null;
+        g.Get(s => s.Id == Brewing.BlazePowder, 1, "blaze powder (the brewing stand's fuel)");
+        if (g.Missing == null) return null;
+        if (bench.Fuel is not null) return g.Missing; // known to be short
+        g.Missing = null; // unknown: the stand may have some (the pawn says so when it hasn't)
+        return null;
+    }
+
+    private ActiveJob BrewJobOf(string work, WorkbenchState bench, BillState bill, string key, List<Brewing.Step> steps, int batch, JsonObject? fill, StationGathering g)
+    {
         var last = steps[^1];
         var fetch = new JsonArray();
         var job = Job(work, "brew", $"Brew {Brewing.Label(last.Form, last.Type)}" + (bill.Mode == "count" ? $" ({bill.Done}/{bill.Target})" : ""), bench.Pos, key,
@@ -154,6 +173,6 @@ public sealed partial class StoryColony
             job.Json["stash"] = new JsonArray(new JsonObject { ["to"] = dst.Chest.ToString(), ["items"] = new JsonArray(StoryBrewing.FormName(last.Form)) });
             job.Puts.Add((dst.Chest, [new Stack(last.Form, Brewing.TypeId(last.Type), batch)]));
         }
-        return (job, null);
+        return job;
     }
 }

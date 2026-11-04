@@ -19,7 +19,7 @@ namespace MineClaw.App.Hosting;
 /// The real run: config → logging → key check → bot → TUI or headless → connect (retrying) → run until a signal, /quit,
 /// q in the TUI or --minutes → graceful, time-boxed shutdown → exit code.
 /// </summary>
-public static class AppHost
+public static partial class AppHost
 {
     /// <summary>Hive seam: runs before the bot disconnects on shutdown (e.g. "deposit items before logout"), inside
     /// Host:PreLogoutSeconds of the shutdown budget. Null = nothing.</summary>
@@ -29,120 +29,24 @@ public static class AppHost
     {
         var root = AppPaths.FindRoot();
         if (cli.CloneName != null) cli = cli with { Tui = TuiChoice.Off, NoKeyCheck = true }; // hive clone: headless, main checked the key
-
-        // ------------------------------------------------------------ config
-        IConfigurationRoot config;
-        try { config = AppConfig.Build(cli, root); }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"MineClaw: can't read the configuration: {ex.Message}");
-            return ExitCodes.Config;
-        }
-        var settings = AppSettings.Bind(config, root);
-        // Hive processes started from here read the same override file (the web's Administration page writes it).
-        if (cli.CloneName == null && SettingsOverrideFile.Of(config) is { } overrideLayer)
-            Environment.SetEnvironmentVariable(SettingsOverrideFile.EnvVar, overrideLayer.FilePath);
-        var (mc, agentOptions, botOptions, host, hive) = (settings.Mc, settings.Agent, settings.Bot, settings.Host, settings.Hive);
-        var (telemetryOptions, supervisorOptions, bodiesOptions) = (settings.Telemetry, settings.Supervisor, settings.Bodies);
-        var (logDir, telemetryDir) = (settings.LogDir, settings.TelemetryDir);
-        var mainLogDir = logDir;
-        if (cli.CloneName != null) (logDir, telemetryDir) = CloneMode.Prepare(cli.CloneName, mc, agentOptions, hive, logDir, telemetryDir);
-
-        var problems = ConfigCheck.Validate(mc, agentOptions);
-        if (problems.Count > 0)
-        {
-            Console.Error.WriteLine("MineClaw can't start, the config needs attention:");
-            foreach (var p in problems) Console.Error.WriteLine("  - " + p);
-            Console.Error.WriteLine("Edit appsettings.json (copy appsettings.example.json), pass --config <file>, or set env vars like MINECLAW_Agent__Llm__ApiKey.");
-            return ExitCodes.Config;
-        }
-        try
-        {
-            Directory.CreateDirectory(agentOptions.DataDirectory);
-            Directory.CreateDirectory(logDir);
-            Directory.CreateDirectory(telemetryDir);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            Console.Error.WriteLine($"MineClaw: can't create data/log directories: {ex.Message}");
-            return ExitCodes.Config;
-        }
+        if (Configure(cli, root) is not { } s) return ExitCodes.Config;
 
         // ------------------------------------------------------------ console mode + logging
         var (useTui, why) = TerminalDetect.Decide(cli.Tui, TerminalDetect.Current());
-        var fileLog = new FileLoggerProvider(logDir);
+        var fileLog = new FileLoggerProvider(s.LogDir);
         var ring = new RingLoggerProvider();
-        var format = AppLogging.ResolveFormat(host.LogFormat, TerminalDetect.UnderJournal());
-        AppLogging.SetConsoleLevel(host.ConsoleLogLevel);
+        var format = AppLogging.ResolveFormat(s.Settings.Host.LogFormat, TerminalDetect.UnderJournal());
+        AppLogging.SetConsoleLevel(s.Settings.Host.ConsoleLogLevel);
         var loggers = AppLogging.Create(useTui, format, fileLog, ring);
         var log = loggers.CreateLogger("MineClaw.App");
         using var signals = new ShutdownSignals(sig => log.LogInformation("{Signal}: shutting down", sig));
         // The web's Administration page (Supervisor/Admin): the config it edits on top of, and its graceful restart (systemd restarts us).
-        if (cli.CloneName == null) Supervisor.Admin.AdminSettingsWiring.Configure(config, settings, signals.Request);
-        log.LogInformation("MineClaw starting (root {Root}, data {Data}, log {Log}, console {Mode}: {Why})", root, agentOptions.DataDirectory, logDir,
+        if (cli.CloneName == null) Supervisor.Admin.AdminSettingsWiring.Configure(s.Config, s.Settings, signals.Request);
+        log.LogInformation("MineClaw starting (root {Root}, data {Data}, log {Log}, console {Mode}: {Why})", root, s.Settings.Agent.DataDirectory, s.LogDir,
             useTui ? "tui" : "headless/" + format, why);
-        using var minutesTimer = cli.Minutes is { } minutes ? new Timer(_ => signals.Request("--minutes elapsed"), null, TimeSpan.FromMinutes(minutes), Timeout.InfiniteTimeSpan) : null;
+        using var minutesTimer = MinutesTimer(cli, signals);
 
-        try
-        {
-            if (agentOptions.Llm.MockInUse)
-                log.LogWarning("MOCK LLM provider enabled: deterministic offline script replies, not a real language model");
-            // -------------------------------------------------------- key check (models API: free)
-            if (!cli.NoKeyCheck)
-            {
-                // Anthropic: only the tiers that run there (all three by default = the old check, unchanged).
-                var anthropicModels = KeyCheck.AnthropicModels(agentOptions.Llm);
-                if (anthropicModels.Count > 0)
-                {
-                    var check = await KeyCheck.RunAsync(agentOptions.Llm.ApiKey!, anthropicModels, signals.Token);
-                    if (!check.Ok)
-                    {
-                        log.LogCritical("Anthropic API check failed: {Message}", check.Message);
-                        if (useTui) Console.Error.WriteLine("Anthropic API check failed: " + check.Message);
-                        return signals.Token.IsCancellationRequested ? ExitCodes.Ok : check.Transient ? ExitCodes.TempFail : ExitCodes.Auth;
-                    }
-                    log.LogInformation("Anthropic key ok: {Models}", check.Message);
-                }
-                // Ollama: only when a tier uses it (GET /api/tags + /api/show: the models exist and can call tools).
-                if (agentOptions.Llm.TiersUseOllama)
-                {
-                    var oc = await KeyCheck.RunOllamaAsync(agentOptions.Llm, ct: signals.Token);
-                    if (!oc.Ok)
-                    {
-                        log.LogCritical("Ollama check failed: {Message}", oc.Message);
-                        if (useTui) Console.Error.WriteLine("Ollama check failed: " + oc.Message);
-                        return signals.Token.IsCancellationRequested ? ExitCodes.Ok : oc.Transient ? ExitCodes.TempFail : ExitCodes.Config;
-                    }
-                    log.LogInformation("Ollama ok ({Endpoint}): {Models}", agentOptions.Llm.Ollama.Endpoint, oc.Message);
-                }
-                if (agentOptions.Llm.Ollama.IsConfigured)
-                    foreach (var note in await KeyCheck.CheckOllamaProfilesAsync(agentOptions.Llm, ct: signals.Token)) log.LogWarning("{Note}", note);
-            }
-            // Script authorship is keyed to the brain tier: a brain that isn't Opus 5.5 still writes Lua, so say so loudly.
-            if (cli.CloneName == null && !(LlmOptions.IsOpus55(agentOptions.Llm.MainModel) && agentOptions.Llm.ProviderFor(ModelTier.Main) == LlmProviders.Anthropic))
-                log.LogWarning("brain tier runs {Provider}/{Model}, not Opus 5.5: it still writes Lua scripts (authorship belongs to the brain tier)",
-                    agentOptions.Llm.ProviderFor(ModelTier.Main), agentOptions.Llm.MainModel);
-            // The game version, once, before any client graph exists (docs/design/multi-version.md): config, else a server ping.
-            var version = await VersionSetup.ResolveAsync(config, mc, agentOptions.DataDirectory, log, signals.Token);
-            if (version.Profile is not { } profile)
-            {
-                if (signals.Token.IsCancellationRequested) return ExitCodes.Ok;
-                log.LogCritical("can't pick a game version: {Error}", version.Error);
-                if (useTui) Console.Error.WriteLine("MineClaw: can't pick a game version: " + version.Error);
-                return ExitCodes.Config;
-            }
-            cli = cli with { ServerVersion = profile.Version.Id }; // hive clones inherit the resolved version (MainHive pass-through)
-            // b1.8.1's server throttles joins from one IP < ~4 s apart: one login at a time there; 1.12.2 logs bodies in in batches.
-            // The db's packs decide skyblock vs a normal world for the whole process (WorldMode): this process's own runtime sets it.
-            settings.ApplyVersion(profile, appliesWorldMode: true);
-            if (cli.CloneName != null)
-                return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals, profile,
-                    bodiesOptions);
-            // Hives in this process (Hive:Isolation=inproc) bind their own copy of every option, as a clone process would.
-            var hives = new InProcHiveSettings(cli, () => AppSettings.Bind(AppConfig.Build(cli, root), root), profile, mainLogDir);
-            return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,
-                supervisorOptions, bodiesOptions, profile, hives);
-        }
+        try { return await RunLoggedAsync(s, useTui, ring, loggers, log, signals); }
         finally
         {
             loggers.Dispose();
@@ -150,195 +54,145 @@ public static class AppHost
         }
     }
 
-    private static async Task<int> RunBotAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
-        HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
-        ILogger log, ShutdownSignals signals, string logDir, Supervisor.SupervisorOptions? supervisorOptions = null,
-        MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null, MineClaw.Client.Versioning.GameVersionProfile? profile = null,
-        InProcHiveSettings? inProcHives = null)
+    /// <summary>The configuration a run starts from: the bound settings and this process's log/telemetry directories.</summary>
+    private sealed record StartupConfig(AppCli Cli, string Root, IConfigurationRoot Config, AppSettings Settings, string LogDir, string TelemetryDir,
+        string MainLogDir);
+
+    /// <summary>Config → settings → a clone's own overrides → the config check → the directories; null = exit with a config error.</summary>
+    private static StartupConfig? Configure(AppCli cli, string root)
     {
-        profile ??= MineClaw.Client.Versioning.GameVersionProfiles.Beta181;
-        var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
-        int seeded = telemetry.SeedFromLogs();
-        ILlmClient llm = LlmClientFactory.Create(agentOptions.Llm); // nothing on Ollama = the AnthropicLlmClient, as before
-        if (telemetryOptions.Enabled) llm = telemetry.Wrap(llm);
+        if (BuildConfig(cli, root) is not { } config) return null;
+        var settings = AppSettings.Bind(config, root);
+        // Hive processes started from here read the same override file (the web's Administration page writes it).
+        if (cli.CloneName == null && SettingsOverrideFile.Of(config) is { } overrideLayer)
+            Environment.SetEnvironmentVariable(SettingsOverrideFile.EnvVar, overrideLayer.FilePath);
+        var (logDir, telemetryDir) = (settings.LogDir, settings.TelemetryDir);
+        var mainLogDir = logDir;
+        if (cli.CloneName != null) (logDir, telemetryDir) = CloneMode.Prepare(cli.CloneName, settings.Mc, settings.Agent, settings.Hive, logDir, telemetryDir);
+        if (!ConfigIsValid(settings.Mc, settings.Agent) || !CreateDirectories(settings.Agent.DataDirectory, logDir, telemetryDir)) return null;
+        return new StartupConfig(cli, root, config, settings, logDir, telemetryDir, mainLogDir);
+    }
 
-        var clientLog = loggers.CreateLogger("MineClaw.Client");
-        var client = new MinecraftClient(new ClientOptions
-        {
-            Host = mc.Host, Port = mc.Port, Username = mc.Username, Profile = profile,
-            AutoReconnect = true, AutoRespawn = true, RecordDirectory = cli.Record,
-            DuplicateLoginBackoff = TimeSpan.FromSeconds(Math.Max(0, mc.DuplicateLoginBackoffSeconds)),
-            // Main is op (the empty state: main whitelisted + opped): on 1.12.2 its commands skip the spam spacing.
-            CommandInterval = profile.Version == MineClaw.Protocol.Versioning.GameVersion.Release1122 ? TimeSpan.FromMilliseconds(150) : null,
-            Log = m => clientLog.LogDebug("{Msg}", m),
-        });
-        var game = new MinecraftGameClient(client);
-        Supervisor.BlockDeltaLog.Attach(client.World); // the browser viewer's live block feed (logs only while someone reads it)
-        Supervisor.BodyInventories.Attach(mc.Username, client); // the viewer's body inventory panel (read only when asked)
-        // One brain, many bodies (step 2): Bodies:Mode=inproc runs the clone accounts as bodies in this process (no MainHive);
-        // the default "hive" keeps one process per clone.
-        var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile);
-        var mainHive = inproc == null ? MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive"), inProcHives, loggers) : null;
-        // Hive mode: main's own subhive bodies (one brain, many bodies next to the clone processes; accounts from the allocator).
-        var subhives = mainHive != null
-            ? InProcBodies.CreateSubhives(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile, mainHive.Board)
-            : null;
-        Func<IEnumerable<string>>? hiveBots = inproc != null ? inproc.HiveBots
-            : mainHive != null ? () => [.. mainHive.HiveBots(), .. subhives?.Registry?.Accounts ?? []] : null;
-        var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: inproc?.MainClaims ?? mainHive?.MainClaims,
-            hiveBots: hiveBots);
-        var rt = bot.Runtime;
-        telemetry.Attach(rt);
-        telemetry.CurrentBody = () => MineClaw.Bot.Bodies.BodyScope.Current?.Name; // the body a call worked for (null = brain-level)
-        _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
-        log.LogInformation("telemetry: {Dir} ({Seeded} records seeded)", telemetry.Directory ?? "off", seeded);
-        var toolChars = rt.Tools.Definitions().Sum(d => d.Name.Length + d.Description.Length + d.InputSchema.GetRawText().Length);
-        log.LogInformation("{Tools} tools (~{Tok} tokens of definitions), knowledge {K} chars{Trunc}", rt.Tools.All.Count, (int)Math.Ceiling(toolChars / 3.5),
-            rt.KnowledgeChars, rt.KnowledgeTruncated ? " (TRUNCATED)" : "");
-        rt.Agent.EpisodeCompleted += o => log.LogInformation("episode: {Tier} {Calls} call(s) ${Cost:0.0000} [{Usage}] said: {Said}{Skip}",
-            o.Tier?.ToString() ?? "-", o.Calls, o.CostUsd, o.Usage, string.Join(" | ", o.Said), o.Skipped != null ? " skipped: " + o.Skipped : "");
-        rt.Usage.ModeChanged += (mode, reason) => log.LogWarning("budget mode {Mode}: {Why}", mode, reason);
-        client.ChatReceived += line => log.LogInformation("chat: {Line}", ChatText.StripColours(line));
-        client.Kicked += r => log.LogWarning("kicked: {Reason}", r);
-        client.Kicked += r =>
-        {
-            var wait = MinecraftClient.FirstReconnectDelay(r, client.Options);
-            if (wait > client.Options.ReconnectInitialDelay)
-                log.LogWarning("another session is using {User}; backing off {S:0}s before reconnecting", mc.Username, wait.TotalSeconds);
-        };
-        client.Spawned += () => log.LogInformation("joined {Host}:{Port} as {User}", mc.Host, mc.Port, mc.Username);
-        client.Disconnected += r => log.LogWarning("disconnected: {Reason}", r);
-        client.Danger += d => log.LogWarning("danger {Kind}: {Msg}", d.Kind, d.Message);
+    /// <summary>With logging up: the provider checks, the game version, then the clone's or main's run.</summary>
+    private static async Task<int> RunLoggedAsync(StartupConfig s, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers, ILogger log,
+        ShutdownSignals signals)
+    {
+        var (cli, root, settings) = (s.Cli, s.Root, s.Settings);
+        var (mc, agentOptions, botOptions, host, hive) = (settings.Mc, settings.Agent, settings.Bot, settings.Host, settings.Hive);
+        var (telemetryOptions, supervisorOptions, bodiesOptions) = (settings.Telemetry, settings.Supervisor, settings.Bodies);
+        if (agentOptions.Llm.MockInUse)
+            log.LogWarning("MOCK LLM provider enabled: deterministic offline script replies, not a real language model");
+        // -------------------------------------------------------- key check (models API: free)
+        if (!cli.NoKeyCheck && await CheckKeysAsync(agentOptions.Llm, useTui, log, signals.Token) is { } keyFailed) return keyFailed;
+        if (cli.CloneName == null) WarnIfBrainIsNotOpus(agentOptions.Llm, log);
+        // The game version, once, before any client graph exists (docs/design/multi-version.md): config, else a server ping.
+        var version = await VersionSetup.ResolveAsync(s.Config, mc, agentOptions.DataDirectory, log, signals.Token);
+        if (version.Profile is not { } profile) return VersionFailed(version.Error, useTui, log, signals.Token);
+        cli = cli with { ServerVersion = profile.Version.Id }; // hive clones inherit the resolved version (MainHive pass-through)
+        // b1.8.1's server throttles joins from one IP < ~4 s apart: one login at a time there; 1.12.2 logs bodies in in batches.
+        // The db's packs decide skyblock vs a normal world for the whole process (WorldMode): this process's own runtime sets it.
+        settings.ApplyVersion(profile, appliesWorldMode: true);
+        if (cli.CloneName != null)
+            return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, s.TelemetryDir, loggers, log, signals, profile,
+                bodiesOptions);
+        // Hives in this process (Hive:Isolation=inproc) bind their own copy of every option, as a clone process would.
+        var hives = new InProcHiveSettings(cli, () => AppSettings.Bind(AppConfig.Build(cli, root), root), profile, s.MainLogDir);
+        return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, s.TelemetryDir, useTui, ring, loggers, log, signals,
+            s.MainLogDir, supervisorOptions, bodiesOptions, profile, hives);
+    }
 
-        var agent = new PausableAgent(rt, log);
-        var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
-        var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
-        Supervisor.ViewerTaps.Attach(mc.Username, rt, client, mainHears: true); // the web viewer's feed + memory map (read only when it's on)
-        mainHive?.Attach(bot, client, commands, agentOptions, subhives);
-        inproc?.Attach(bot, client, signals.Token);
-        subhives?.Attach(bot, client, signals.Token);
-        // Scripts: several bodies get a crew port (in-process lanes, or hive jobs over the shared db board); then the one-time
-        // Lua → JS migration of saved scripts runs in the background (main only; Scripting:MigrateLua).
-        if (MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } scripts)
+    /// <summary>The configuration, or null after telling the console why it can't be read.</summary>
+    private static IConfigurationRoot? BuildConfig(AppCli cli, string root)
+    {
+        try { return AppConfig.Build(cli, root); }
+        catch (Exception ex)
         {
-            if (inproc != null && bot.Bodies is { } registry)
-                scripts.Crew = new MineClaw.Bot.Bodies.BodyCrewPort(registry, rt.Tools, new MineClaw.Scripting.Crew.InMemoryCrewBoard());
-            else if (mainHive?.Supervisor is { } supervisor)
-            {
-                var board = new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db);
-                MineClaw.Scripting.Crew.ICrewPort hivePort = new MineClaw.Hive.Crew.HiveCrewPort(supervisor, board);
-                // Main's subhive bodies are crew lanes in this process; clone processes stay lanes over the db board.
-                if (subhives != null && bot.Bodies is { } reg)
-                {
-                    var own = new MineClaw.Bot.Bodies.BodyCrewPort(reg, rt.Tools, board);
-                    scripts.Crew = new CompositeCrewPort(board, own, hivePort);
-                    // Hive scripts (hive spawn kind=script bodies=N): one bodiless coordinator over its own bodies, no brain.
-                    if (mainHive.Hierarchy is { } hierarchy) SubhiveWiring.AttachScriptHives(hierarchy, scripts, own, reg, rt.Tools, board, log);
-                }
-                else scripts.Crew = hivePort;
-            }
-            _ = scripts.StartLuaMigrationAsync(signals.Token).ContinueWith(t =>
-            {
-                if (t.Exception is { } ex) log.LogWarning(ex.GetBaseException(), "lua migration stopped");
-            }, TaskScheduler.Default);
+            Console.Error.WriteLine($"MineClaw: can't read the configuration: {ex.Message}");
+            return null;
         }
+    }
 
-        // The TUI's per-bot sources (main in-process, clones over IPC); the supervisor viewer reads the same ones.
-        var roster = new HiveRoster([mc.Username, .. hive.Clones()]);
-        if (inproc != null) roster = new HiveRoster([mc.Username, .. inproc.Accounts]);
-        var sources = roster.Names.Select(n => string.Equals(n, mc.Username, StringComparison.OrdinalIgnoreCase)
-            ? (IBotTelemetrySource)source
-            : inproc != null ? new BodyBotSource(n, () => bot.Bodies?.Find(n),
-                b => new InProcessBotSource(b.Adapter, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token) { Activities = b.Activities })
-            : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
-        var supervisorServer = StartSupervisor(supervisorOptions, bot, client, mc.Username, sources, mainHive, loggers.CreateLogger("MineClaw.Supervisor"),
-            telemetryOptions.Enabled ? telemetry.Capture : null);
-        mainHive?.Hierarchy?.ClaimsReady(); // the saved colonies (Story Mode) claimed their pawns: the startup reconcile may run
+    /// <summary>False after listing on the console what the config needs.</summary>
+    private static bool ConfigIsValid(MinecraftSettings mc, AgentOptions agentOptions)
+    {
+        var problems = ConfigCheck.Validate(mc, agentOptions);
+        if (problems.Count == 0) return true;
+        Console.Error.WriteLine("MineClaw can't start, the config needs attention:");
+        foreach (var p in problems) Console.Error.WriteLine("  - " + p);
+        Console.Error.WriteLine("Edit appsettings.json (copy appsettings.example.json), pass --config <file>, or set env vars like MINECLAW_Agent__Llm__ApiKey.");
+        return false;
+    }
 
-        Task tuiTask = Task.CompletedTask;
-        if (useTui)
+    /// <summary>The data, log and telemetry directories; false after telling the console why one can't be made.</summary>
+    private static bool CreateDirectories(string dataDir, string logDir, string telemetryDir)
+    {
+        try
         {
-            var tui = new TuiApp(sources, roster, ring, host.Tui, w => signals.Request("tui " + w), log, cli.Bot - 1, ParseView(cli.ViewMode));
-            tuiTask = tui.RunAsync(signals.Token);
+            Directory.CreateDirectory(dataDir);
+            Directory.CreateDirectory(logDir);
+            Directory.CreateDirectory(telemetryDir);
+            return true;
         }
-
-        // Console commands (/quit etc.) work from the start, also while still connecting or backing off.
-        var token = signals.Token;
-        if (!useTui && cli.StdinCommands) commands.StartStdin(token);
-
-        // Connect (retry with backoff until it works or we're told to stop; the client reconnects by itself afterwards).
-        var delay = TimeSpan.FromSeconds(3);
-        while (!token.IsCancellationRequested)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            try
-            {
-                log.LogInformation("connecting to {Host}:{Port} as {User}", mc.Host, mc.Port, mc.Username);
-                await client.ConnectAsync(token);
-                await client.WaitForJoinStateAsync(TimeSpan.FromSeconds(3), token); // no default 20/20 or fake void in the line
-                log.LogInformation("in game: {Status}", client.DescribeStatus());
-                break;
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch (Exception ex)
-            {
-                log.LogWarning("connect failed: {Error}; retrying in {Delay}s", ex.Message, delay.TotalSeconds);
-                try { await Task.Delay(delay, token); } catch (OperationCanceledException) { break; }
-                delay = TimeSpan.FromSeconds(Math.Min(60, delay.TotalSeconds * 2));
-            }
+            Console.Error.WriteLine($"MineClaw: can't create data/log directories: {ex.Message}");
+            return false;
         }
+    }
 
-        var tasks = new List<Task>();
-        if (!token.IsCancellationRequested)
+    /// <summary><c>--minutes</c>: a one-shot timer that asks for the shutdown; null without the flag.</summary>
+    private static Timer? MinutesTimer(AppCli cli, ShutdownSignals signals) =>
+        cli.Minutes is { } minutes ? new Timer(_ => signals.Request("--minutes elapsed"), null, TimeSpan.FromMinutes(minutes), Timeout.InfiniteTimeSpan) : null;
+
+    /// <summary>
+    /// The startup provider checks: the Anthropic key (only the tiers that run there), the Ollama server (only when a tier uses
+    /// it), then the Ollama profiles. Null = go on; otherwise the exit code.
+    /// </summary>
+    private static async Task<int?> CheckKeysAsync(LlmOptions llm, bool useTui, ILogger log, CancellationToken ct)
+    {
+        // Anthropic: only the tiers that run there (all three by default = the old check, unchanged).
+        var anthropicModels = KeyCheck.AnthropicModels(llm);
+        if (anthropicModels.Count > 0)
         {
-            agent.Start(token);
-            if (cli.VoidAbort) tasks.Add(VoidWatch.RunAsync(game, log, signals.Source));
-            if (cli.Script != null) tasks.Add(commands.RunScriptAsync(cli.Script, token));
-            try { await Task.Delay(Timeout.Infinite, token); } catch (OperationCanceledException) { }
+            var check = await KeyCheck.RunAsync(llm.ApiKey!, anthropicModels, ct);
+            if (!check.Ok) return CheckFailed("Anthropic API", check, ExitCodes.Auth, useTui, log, ct);
+            log.LogInformation("Anthropic key ok: {Models}", check.Message);
         }
-
-        // ------------------------------------------------------------ graceful shutdown (time-boxed)
-        var budget = TimeSpan.FromSeconds(Math.Clamp(host.ShutdownTimeoutSeconds, 3, 600));
-        // Hive: clones need time to deposit; stay under systemd's TimeoutStopSec=90 (deploy/mineclaw.service).
-        if (mainHive?.Supervisor?.Slots.Any(s => s.State != MineClaw.Hive.Supervisor.CloneState.Idle && s.State != MineClaw.Hive.Supervisor.CloneState.Retired) == true
-            || bot.Bodies?.All.Any(b => !b.IsMain) == true)
-            budget = TimeSpan.FromSeconds(Math.Max(budget.TotalSeconds, Math.Min(85, hive.ShutdownRecallSeconds + 25)));
-        var seq = new ShutdownSequence(budget, log);
-        log.LogInformation("stopping ({Why}, budget {S:0}s): {Usage}", signals.Reason ?? "requested", budget.TotalSeconds, rt.Usage.Summary());
-        await seq.StepAsync("tui", TimeSpan.FromSeconds(2), _ => tuiTask);
-        if (supervisorServer != null) await seq.StepAsync("supervisor", TimeSpan.FromSeconds(3), _ => supervisorServer.DisposeAsync().AsTask());
-        if (useTui) Console.Out.WriteLine("MineClaw: shutting down...");
-        // Hive first: clones deposit everything and log out while main is still online (handoff receiver), then main stops.
-        if (inproc != null)
-            await seq.StepAsync("bodies recall", TimeSpan.FromSeconds(bodiesOptions!.ShutdownRecallSeconds), _ =>
-                inproc.RecallAllAsync("main shutting down", TimeSpan.FromSeconds(Math.Max(5, Math.Min(bodiesOptions.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1))));
-        if (mainHive != null)
-            await seq.StepAsync("hive recall", TimeSpan.FromSeconds(hive.ShutdownRecallSeconds), _ =>
-            {
-                var each = TimeSpan.FromSeconds(Math.Max(5, Math.Min(hive.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1));
-                // Clone processes and main's own subhive bodies put everything away in parallel while main is still online.
-                return Task.WhenAll(mainHive.RecallAllAsync("main shutting down", each), subhives?.RecallAllAsync("main shutting down", each) ?? Task.CompletedTask);
-            });
-        await seq.StepAsync("stop actions", TimeSpan.FromSeconds(5), ct =>
+        // Ollama: only when a tier uses it (GET /api/tags + /api/show: the models exist and can call tools).
+        if (llm.TiersUseOllama)
         {
-            rt.Activities.Cancel("shutdown");
-            return client.StopAsync(ct);
-        });
-        await seq.StepAsync("agent", TimeSpan.FromSeconds(10), _ => agent.StopAsync());
-        if (BeforeLogout is { } before && host.PreLogoutSeconds > 0 && client.IsPlaying)
-            await seq.StepAsync("pre-logout", TimeSpan.FromSeconds(host.PreLogoutSeconds), ct => before(bot, ct));
-        await seq.StepAsync("disconnect", TimeSpan.FromSeconds(5), _ => client.DisconnectAsync("Bye!"));
-        await seq.StepAsync("background tasks", TimeSpan.FromSeconds(3), _ => Task.WhenAll(tasks));
-        seq.Final("bot", () => { source.Dispose(); bot.Dispose(); });
-        await seq.StepAsync("client", TimeSpan.FromSeconds(3), _ => client.DisposeAsync().AsTask());
-        // In-process hives the recall left running are killed here and their teardown (db connections) awaited, bounded.
-        if (mainHive != null) await seq.StepAsync("hive", TimeSpan.FromSeconds(mainHive.InProc != null ? 12 : 3), _ => mainHive.DisposeAsync().AsTask());
-        if (inproc != null) await seq.StepAsync("bodies", TimeSpan.FromSeconds(5), _ => inproc.DisposeAsync().AsTask());
-        if (subhives != null) await seq.StepAsync("subhive bodies", TimeSpan.FromSeconds(5), _ => subhives.DisposeAsync().AsTask());
-        seq.Final("db", rt.Dispose);
-        seq.Final("telemetry", telemetry.Dispose);
-        log.LogInformation("bye{Late}", seq.TimedOut.Count > 0 ? " (timed out: " + string.Join(", ", seq.TimedOut) + ")" : "");
-        if (useTui) Console.Out.WriteLine("MineClaw: bye");
-        return ExitCodes.Ok;
+            var oc = await KeyCheck.RunOllamaAsync(llm, ct: ct);
+            if (!oc.Ok) return CheckFailed("Ollama", oc, ExitCodes.Config, useTui, log, ct);
+            log.LogInformation("Ollama ok ({Endpoint}): {Models}", llm.Ollama.Endpoint, oc.Message);
+        }
+        if (llm.Ollama.IsConfigured)
+            foreach (var note in await KeyCheck.CheckOllamaProfilesAsync(llm, ct: ct)) log.LogWarning("{Note}", note);
+        return null;
+    }
+
+    /// <summary>A failed provider check: logged (and on the console under the TUI); a shutdown wins, then transient = try again later.</summary>
+    private static int CheckFailed(string what, (bool Ok, string Message, bool Transient) check, int rejected, bool useTui, ILogger log, CancellationToken ct)
+    {
+        log.LogCritical("{What} check failed: {Message}", what, check.Message);
+        if (useTui) Console.Error.WriteLine(what + " check failed: " + check.Message);
+        return ct.IsCancellationRequested ? ExitCodes.Ok : check.Transient ? ExitCodes.TempFail : rejected;
+    }
+
+    /// <summary>Script authorship is keyed to the brain tier: a brain that isn't Opus 5.5 still writes Lua, so say so loudly.</summary>
+    private static void WarnIfBrainIsNotOpus(LlmOptions llm, ILogger log)
+    {
+        if (LlmOptions.IsOpus55(llm.MainModel) && llm.ProviderFor(ModelTier.Main) == LlmProviders.Anthropic) return;
+        log.LogWarning("brain tier runs {Provider}/{Model}, not Opus 5.5: it still writes Lua scripts (authorship belongs to the brain tier)",
+            llm.ProviderFor(ModelTier.Main), llm.MainModel);
+    }
+
+    /// <summary>No game version could be picked: a shutdown ends cleanly, anything else is a config error.</summary>
+    private static int VersionFailed(string? error, bool useTui, ILogger log, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return ExitCodes.Ok;
+        log.LogCritical("can't pick a game version: {Error}", error);
+        if (useTui) Console.Error.WriteLine("MineClaw: can't pick a game version: " + error);
+        return ExitCodes.Config;
     }
 
     internal static ViewMode? ParseView(string? v) => TuiApp.ParseView(v);

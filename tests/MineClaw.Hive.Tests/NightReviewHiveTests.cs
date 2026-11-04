@@ -115,12 +115,15 @@ public class NightReviewSupervisorTests(Xunit.Abstractions.ITestOutputHelper out
     }
 
     /// <summary>Starts each clone as an in-process CloneHost with a <see cref="FakeBody"/> (or exits with <see cref="ExitCode"/>).</summary>
-    private sealed class InProcLauncher(HiveConfig cfg) : IProcessLauncher
+    private sealed class InProcLauncher(HiveConfig cfg, Microsoft.Extensions.Logging.ILogger? log = null) : IProcessLauncher
     {
         private int _ids = 1000;
         public readonly List<(string Clone, DateTimeOffset At)> Starts = new();
         public readonly Dictionary<string, FakeBody> Bodies = new(StringComparer.OrdinalIgnoreCase);
         public int? ExitCode { get; set; }
+        /// <summary>The process counts as exited when its body disconnects, and its link stays open this long after (main sees the
+        /// exit before the link's close).</summary>
+        public TimeSpan? ExitBeforeLinkCloses { get; set; }
 
         public ICloneProcess Start(string clone, string pipeName)
         {
@@ -129,8 +132,15 @@ public class NightReviewSupervisorTests(Xunit.Abstractions.ITestOutputHelper out
             if (ExitCode is { } code) return new FakeProcess(Interlocked.Increment(ref _ids), Task.FromResult(code), kill);
             var body = new FakeBody(clone, new FakePort());
             lock (Bodies) Bodies[clone] = body;
-            var host = new CloneHost(clone, pipeName, cfg, body);
-            return new FakeProcess(Interlocked.Increment(ref _ids), Task.Run(() => host.RunAsync(kill.Token)), kill);
+            var host = new CloneHost(clone, pipeName, cfg, body, log: log);
+            var run = Task.Run(() => host.RunAsync(kill.Token));
+            if (ExitBeforeLinkCloses is { } hold)
+            {
+                var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+                body.OnDisconnect = async () => { exited.TrySetResult(0); await Task.Delay(hold); };
+                run = Task.WhenAny(run, exited.Task).Unwrap();
+            }
+            return new FakeProcess(Interlocked.Increment(ref _ids), run, kill);
         }
 
         public FakeBody Body(string clone) { lock (Bodies) return Bodies[clone]; }
@@ -143,17 +153,19 @@ public class NightReviewSupervisorTests(Xunit.Abstractions.ITestOutputHelper out
         public HiveSupervisor Sup { get; }
         public InProcLauncher Launcher { get; }
         public List<string> Notices { get; } = new();
+        /// <summary>The supervisor's and the clones' log lines (timestamped), for a failure's output.</summary>
+        public LineLog Log { get; } = new();
 
         public Hive(double launchGap = 0)
         {
             Cfg.LaunchGapSeconds = launchGap;
             Cfg.LaunchBatch = 1; // the b1.8.1 throttle (JoinPacerTests has the 1.12.2 batches)
             Cfg.DepositTimeoutSeconds = 5;
-            Launcher = new InProcLauncher(Cfg);
+            Launcher = new InProcLauncher(Cfg, Log);
             Arbiter = new ChatArbiter("maid_chan", "maid_chan", Cfg.Clones());
             var ledger = new BudgetLedger(new BudgetOptions { DailyCapUsd = 10, MonthlyCapUsd = 190 }, Cfg.Budget, () => (0m, 0m));
             Sup = new HiveSupervisor(Cfg, "maid_chan", Launcher, new ClaimBoard(TimeSpan.FromSeconds(60)), ledger, Arbiter, null,
-                () => new SlotFacts(20, ["maid_chan", "PoofimaFox"]), ["PoofimaFox"]);
+                () => new SlotFacts(20, ["maid_chan", "PoofimaFox"]), ["PoofimaFox"], Log);
             Sup.Notice += e => { lock (Notices) Notices.Add(e.Text); };
         }
 
@@ -166,6 +178,22 @@ public class NightReviewSupervisorTests(Xunit.Abstractions.ITestOutputHelper out
     }
 
     private static readonly TurnInfo Fox = new("PoofimaFox", ["PoofimaFox"], false);
+
+    /// <summary>Collects log lines with a timestamp and the thread; <see cref="Text"/> for a failing test's output.</summary>
+    private sealed class LineLog : Microsoft.Extensions.Logging.ILogger
+    {
+        private readonly List<string> _lines = new();
+        private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var line = $"{_sw.Elapsed.TotalMilliseconds,8:0} [{Environment.CurrentManagedThreadId,3}] {logLevel}: {formatter(state, exception)}" + (exception != null ? " | " + exception.GetType().Name + ": " + exception.Message : "");
+            lock (_lines) _lines.Add(line);
+        }
+        public string Text() { lock (_lines) return string.Join(Environment.NewLine, _lines); }
+    }
 
     [Fact] // B6: 06:55:30 tree clone, 07:49:13 spar clones, 07:50:20 420 for the spar: all refused as "67 already owns..."
     public async Task A_second_clone_for_the_same_players_new_or_parallel_request_goes_ahead()
@@ -273,11 +301,61 @@ public class NightReviewSupervisorTests(Xunit.Abstractions.ITestOutputHelper out
             Assert.StartsWith("ok", h.Sup.Spawn("craft maid_chan a new stone pickaxe and a spare, deliver it", "69"));
         }
         finally { TurnContext.Current = null; }
-        await Wait.Until(() => h.Launcher.Starts.Count(s => s.Clone == "maid_chan_69") == 2, 20, "69 relaunched");
+        try
+        {
+            await Wait.Until(() => h.Launcher.Starts.Count(s => s.Clone == "maid_chan_69") == 2, 20, "69 relaunched");
+            var s69 = h.Sup.Slot("maid_chan_69")!;
+            await Wait.Until(() => s69.Connected, 20, "69 back");
+            Assert.True(s69.Pending);
+            Assert.Contains("new stone pickaxe", s69.Task!.Text);
+        }
+        catch (Exception)
+        {
+            output.WriteLine($"starts: {string.Join(", ", h.Launcher.Starts.Select(s => s.Clone + "@" + s.At.ToString("HH:mm:ss.fff")))}");
+            output.WriteLine($"slot: {h.Sup.Slot("maid_chan_69")?.State} connected={h.Sup.Slot("maid_chan_69")?.Connected} notices: {h.NoticeText()}");
+            output.WriteLine(h.Log.Text());
+            throw;
+        }
+    }
+
+    [Fact] // the flake of the test above, made deterministic: main saw the process exit before the link closed
+    public async Task A_logout_seen_as_the_process_exit_first_still_relaunches_with_the_queued_task()
+    {
+        await using var h = new Hive();
+        h.Launcher.ExitBeforeLinkCloses = TimeSpan.FromMilliseconds(600);
+        TurnContext.Current = Fox;
+        try
+        {
+            Assert.StartsWith("ok", h.Sup.Spawn("craft stone pickaxes from the chest's cobble", "69"));
+            await Wait.Until(() => h.Sup.Slot("maid_chan_69")!.Connected, 20, "69 up");
+        }
+        finally { TurnContext.Current = null; }
+        TurnContext.Current = new TurnInfo("PoofimaFox", ["PoofimaFox"], false);
+        try
+        {
+            Assert.StartsWith("ok", h.Sup.Spawn("craft maid_chan a new stone pickaxe and a spare, deliver it", "69"));
+            Assert.Contains("logs back in with the task given this turn", h.Sup.Recall("69"));
+        }
+        finally { TurnContext.Current = null; }
         var s69 = h.Sup.Slot("maid_chan_69")!;
-        await Wait.Until(() => s69.Connected, 20, "69 back");
-        Assert.True(s69.Pending);
-        Assert.Contains("new stone pickaxe", s69.Task!.Text);
+        try
+        {
+            await Wait.Until(() => h.Launcher.Starts.Count(s => s.Clone == "maid_chan_69") == 2, 10, "69 relaunched");
+            // Disposing the old link raised its Closed inside the (re-entrant) slot lock: that nested exit relaunched 69, then the
+            // outer one killed the new process and left the slot Idle.
+            await Wait.Until(() => s69.Connected, 10, "69 back");
+            await Task.Delay(TimeSpan.FromMilliseconds(800)); // past the old link's close
+            Assert.True(s69.Connected);
+            Assert.Equal(CloneState.Running, s69.State);
+            Assert.Contains("new stone pickaxe", s69.Task!.Text);
+            Assert.Equal(2, h.Launcher.Starts.Count(s => s.Clone == "maid_chan_69"));
+        }
+        catch (Exception)
+        {
+            output.WriteLine($"slot: {s69.State} connected={s69.Connected} notices: {h.NoticeText()}");
+            output.WriteLine(h.Log.Text());
+            throw;
+        }
     }
 
     [Fact] // B19: two clones launched in the same millisecond hit the server's login throttle

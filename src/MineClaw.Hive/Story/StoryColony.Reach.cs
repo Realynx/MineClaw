@@ -39,9 +39,7 @@ public sealed partial class StoryColony
     private ActiveJob PillarHint(ActiveJob job, PawnLive live)
     {
         if (job.Kind is not ("dig" or "harvest" or "chop") || job.At is not { } at || !live.Online || Meta.PillarStack <= 0) return job;
-        int top = at.Y;
-        if (job.Kind == "chop" && job.Json["logs"] is JsonArray logs && logs.Count > 0 && P3.Parse(JsonNode.Parse("[" + logs[^1]!.GetValue<string>() + "]")) is { } hi)
-            top = Math.Max(top, hi.Y);
+        int top = JobTop(job, at);
         if (top <= live.Y + 3) return job;
         int have = live.Inventory.Where(s => PillarAny.Contains(s.Id)).Sum(s => s.Count);
         int want = Math.Max(8, Math.Min(Meta.PillarStack, top - (int)live.Y + 2));
@@ -52,6 +50,14 @@ public sealed partial class StoryColony
             ["from"] = st.Store.Chest.ToString(), ["item"] = ItemName(st.Stack.Id, st.Stack.Meta), ["n"] = Math.Min(st.Stack.Count, Math.Max(want, Meta.PillarStack) - have),
         };
         return job;
+    }
+
+    /// <summary>The highest cell a job works at: its target, or a chop's top log.</summary>
+    private static int JobTop(ActiveJob job, P3 at)
+    {
+        if (job.Kind == "chop" && job.Json["logs"] is JsonArray logs && logs.Count > 0 && P3.Parse(JsonNode.Parse("[" + logs[^1]!.GetValue<string>() + "]")) is { } hi)
+            return Math.Max(at.Y, hi.Y);
+        return at.Y;
     }
 
     /// <summary>How often a chop designation stays open after a partial chop (its rest still standing) before it is let go with an alert.</summary>

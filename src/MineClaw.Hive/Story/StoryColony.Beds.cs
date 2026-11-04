@@ -76,14 +76,21 @@ public sealed partial class StoryColony
                 for (int z = a.Z1; z <= a.Z2; z++)
                 {
                     if (cells != null && !cells.Contains(x, z) || !w.Loaded(x, z)) continue;
-                    for (int y = Math.Max(0, a.Y1); y <= Math.Min(w.Height - 1, a.Y2); y++)
-                    {
-                        if (++scanned > 1_000_000) return found;
-                        if (w.Block(x, y, z).Id != Bed || BedFoot(w, new P3(x, y, z)) is not { } foot || !seen.Add(foot)) continue;
-                        found.Add(new BedInfo(foot, ZoneAt(foot), null));
-                    }
+                    if (!ScanBedColumn(w, a, x, z, seen, found, ref scanned)) return found;
                 }
         return found;
+    }
+
+    /// <summary>The beds in one column (by their foot, each once); false when the scan's budget (1M blocks) is spent.</summary>
+    private bool ScanBedColumn(IStoryWorld w, Area a, int x, int z, HashSet<P3> seen, List<BedInfo> found, ref long scanned)
+    {
+        for (int y = Math.Max(0, a.Y1); y <= Math.Min(w.Height - 1, a.Y2); y++)
+        {
+            if (++scanned > 1_000_000) return false;
+            if (w.Block(x, y, z).Id != Bed || BedFoot(w, new P3(x, y, z)) is not { } foot || !seen.Add(foot)) continue;
+            found.Add(new BedInfo(foot, ZoneAt(foot), null));
+        }
+        return true;
     }
 
     /// <summary>The state's <c>beds</c>.</summary>
@@ -110,12 +117,7 @@ public sealed partial class StoryColony
             var key = f.ToString();
             if (op == "assign")
             {
-                if (string.IsNullOrWhiteSpace(pawn)) return (null, "pawn required", false);
-                if (Pawn(pawn) is not { } p) return (null, $"no pawn '{pawn}'", true);
-                foreach (var k in Meta.Beds.Where(kv => kv.Value.Equals(p.Name, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList())
-                    Meta.Beds.Remove(k); // its old bed is free now
-                Meta.Beds[key] = p.Name;
-                _noBedAlerted.Remove(p.Name);
+                if (AssignBed(key, pawn) is { } fail) return fail;
             }
             else Meta.Beds.Remove(key);
             Touch();
@@ -123,6 +125,18 @@ public sealed partial class StoryColony
         }
         Save(force: true);
         return (new JsonObject { ["beds"] = BedsJson() }, null, false);
+    }
+
+    /// <summary>The pawn's bed is this one now (its old bed is free); the error when there is no such pawn.</summary>
+    private (JsonNode? Result, string? Error, bool NotFound)? AssignBed(string key, string? pawn)
+    {
+        if (string.IsNullOrWhiteSpace(pawn)) return (null, "pawn required", false);
+        if (Pawn(pawn) is not { } p) return (null, $"no pawn '{pawn}'", true);
+        foreach (var k in Meta.Beds.Where(kv => kv.Value.Equals(p.Name, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList())
+            Meta.Beds.Remove(k); // its old bed is free now
+        Meta.Beds[key] = p.Name;
+        _noBedAlerted.Remove(p.Name);
+        return null;
     }
 
     /// <summary>The bed <paramref name="p"/> sleeps in tonight: its own (while it is still a bed), else the nearest free one at home.</summary>

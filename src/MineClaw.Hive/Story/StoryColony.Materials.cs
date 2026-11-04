@@ -55,33 +55,47 @@ public sealed partial class StoryColony
     private Dictionary<(int Id, int Meta), int> Pool(IStoryWorld w)
     {
         var pool = new Dictionary<(int, int), int>();
-        void Add(int id, int meta, int n) { if (n != 0) pool[(id, meta)] = pool.GetValueOrDefault((id, meta)) + n; }
-        foreach (var s in Storages) if (!ChestUnreachable(s.Chest)) foreach (var c in s.Contents) Add(c.Id, c.Meta, c.Count); // nobody gets there: not stock
+        foreach (var s in Storages) if (!ChestUnreachable(s.Chest)) foreach (var c in s.Contents) PoolAdd(pool, c.Id, c.Meta, c.Count); // nobody gets there: not stock
         var cats = StoryCategories.For(w.Data);
-        foreach (var p in Pawns.Values)
-        {
-            var live = Host.Live(p.Name);
-            if (!live.Online) continue;
-            foreach (var st in live.Inventory)
-                if (cats.LeafOf(st.Id, st.Meta) is not ("tools" or "weapons" or "armour")) Add(st.Id, st.Meta, st.Count);
-            // A job's takes are still listed in the chest until it ends, and once fetched they are in the pocket too: that copy never
-            // counts twice. A craft (bill, hand craft, bench, eating) consumes them, so they don't count at all; a builder's blocks
-            // or a haul only move them.
-            if (_current.TryGetValue(p.Name, out var cur))
-                foreach (var (_, t) in cur.Takes)
-                {
-                    bool consumed = cur.Source is "bill" or "hand" or "station" or "need";
-                    int pocket = live.Inventory.Where(s => s.Id == t.Id && s.Meta == t.Meta).Sum(s => s.Count);
-                    Add(t.Id, t.Meta, -((consumed ? t.Count : 0) + Math.Min(t.Count, pocket)));
-                }
-        }
+        foreach (var p in Pawns.Values) PoolPawn(pool, cats, p);
         foreach (var bench in Benches)
-            if (bench.LoadedBill is { } lb && (bench.LoadedRecipe ?? bench.Bills.FirstOrDefault(x => x.Id == lb)?.Recipe) is { } rid
-                && StoryRecipes.Get(w.Data, rid) is { } r)
-                Add(r.Output.Id, r.Output.Meta, bench.LoadedCount); // even when its bill is gone: it is collected all the same
+            if (LoadedOutput(w, bench) is { } r)
+                PoolAdd(pool, r.Output.Id, r.Output.Meta, bench.LoadedCount); // even when its bill is gone: it is collected all the same
         foreach (var k in pool.Where(kv => kv.Value <= 0).Select(kv => kv.Key).ToList()) pool.Remove(k);
         return pool;
     }
+
+    private static void PoolAdd(Dictionary<(int, int), int> pool, int id, int meta, int n)
+    {
+        if (n != 0) pool[(id, meta)] = pool.GetValueOrDefault((id, meta)) + n;
+    }
+
+    /// <summary>An online pawn's pockets (tools, weapons, armour excluded), less its job's takes (see <see cref="PoolTakes"/>).</summary>
+    private void PoolPawn(Dictionary<(int, int), int> pool, StoryCategories cats, PawnState p)
+    {
+        var live = Host.Live(p.Name);
+        if (!live.Online) return;
+        foreach (var st in live.Inventory)
+            if (cats.LeafOf(st.Id, st.Meta) is not ("tools" or "weapons" or "armour")) PoolAdd(pool, st.Id, st.Meta, st.Count);
+        if (_current.TryGetValue(p.Name, out var cur)) PoolTakes(pool, cur, live);
+    }
+
+    /// <summary>A job's takes are still listed in the chest until it ends, and once fetched they are in the pocket too: that copy never
+    /// counts twice. A craft (bill, hand craft, bench, eating) consumes them, so they don't count at all; a builder's blocks or a haul
+    /// only move them.</summary>
+    private static void PoolTakes(Dictionary<(int, int), int> pool, ActiveJob cur, PawnLive live)
+    {
+        foreach (var (_, t) in cur.Takes)
+        {
+            bool consumed = cur.Source is "bill" or "hand" or "station" or "need";
+            int pocket = live.Inventory.Where(s => s.Id == t.Id && s.Meta == t.Meta).Sum(s => s.Count);
+            PoolAdd(pool, t.Id, t.Meta, -((consumed ? t.Count : 0) + Math.Min(t.Count, pocket)));
+        }
+    }
+
+    /// <summary>The recipe of what a furnace is smelting, by its loaded bill (or the recipe kept when the bill went).</summary>
+    private static StoryRecipe? LoadedOutput(IStoryWorld w, WorkbenchState bench) =>
+        bench.LoadedBill is { } lb && (bench.LoadedRecipe ?? bench.Bills.FirstOrDefault(x => x.Id == lb)?.Recipe) is { } rid ? StoryRecipes.Get(w.Data, rid) : null;
 
     private static IEnumerable<ItemStack> Stacks(Dictionary<(int Id, int Meta), int> pool)
     {
@@ -455,27 +469,7 @@ public sealed partial class StoryColony
             .Select(g => g.First() with { Outputs = g.Sum(x => x.Outputs), Step = g.Min(x => x.Step) }).ToList();
         var placed = new HashSet<(string, string)>();
         foreach (var bench in Benches)
-        {
-            bool changed = false;
-            foreach (var bill in bench.Bills.Where(x => x.ForBuild != null).ToList())
-            {
-                var want = merged.FirstOrDefault(x => x.Build == bill.ForBuild && x.Recipe.Id.Equals(bill.Recipe, StringComparison.OrdinalIgnoreCase) && x.Bench == bench.Kind);
-                if (want != null && !placed.Contains((want.Build, want.Recipe.Id)))
-                {
-                    placed.Add((want.Build, want.Recipe.Id));
-                    int target = bill.Done + want.Outputs;
-                    if (bill.Target != target || bill.Step != want.Step) { bill.Target = target; bill.Step = want.Step; changed = true; }
-                    continue;
-                }
-                if (bench.LoadedBill == bill.Id) continue; // smelting: collected first
-                // A pawn is on it (it fetched the ore, so the shortfall seems gone): it stays until that job ends, or its furnace load
-                // would have no bill to land on (live 11-04: three ingots smelted, never collected).
-                if (_current.Values.Any(c => c.SourceId == bill.Id)) continue;
-                bench.Bills.Remove(bill);
-                changed = true;
-            }
-            if (changed) bench.Rev = Touch();
-        }
+            if (KeepAutoBills(bench, merged, placed)) bench.Rev = Touch();
         foreach (var want in merged.Where(x => !placed.Contains((x.Build, x.Recipe.Id))))
         {
             if (BenchFor(want.Bench, near) is not { } bench) continue;
@@ -486,6 +480,44 @@ public sealed partial class StoryColony
             });
             bench.Rev = Touch();
         }
+        SortAutoBills();
+    }
+
+    /// <summary>A bench's auto bills that are still wanted follow their shortfall (each want placed once); the others go, unless the
+    /// furnace is smelting for one or a pawn is on it. True when the bench changed.</summary>
+    private bool KeepAutoBills(WorkbenchState bench, List<Want> merged, HashSet<(string, string)> placed)
+    {
+        bool changed = false;
+        foreach (var bill in bench.Bills.Where(x => x.ForBuild != null).ToList())
+        {
+            var want = merged.FirstOrDefault(x => x.Build == bill.ForBuild && x.Recipe.Id.Equals(bill.Recipe, StringComparison.OrdinalIgnoreCase) && x.Bench == bench.Kind);
+            if (want != null && placed.Add((want.Build, want.Recipe.Id)))
+            {
+                changed |= RetargetBill(bill, want);
+                continue;
+            }
+            if (bench.LoadedBill == bill.Id) continue; // smelting: collected first
+            // A pawn is on it (it fetched the ore, so the shortfall seems gone): it stays until that job ends, or its furnace load
+            // would have no bill to land on (live 11-04: three ingots smelted, never collected).
+            if (_current.Values.Any(c => c.SourceId == bill.Id)) continue;
+            bench.Bills.Remove(bill);
+            changed = true;
+        }
+        return changed;
+    }
+
+    private static bool RetargetBill(BillState bill, Want want)
+    {
+        int target = bill.Done + want.Outputs;
+        if (bill.Target == target && bill.Step == want.Step) return false;
+        bill.Target = target;
+        bill.Step = want.Step;
+        return true;
+    }
+
+    /// <summary>Each bench lists its auto bills first, by build order (a missing tool's first: it holds work up) then step.</summary>
+    private void SortAutoBills()
+    {
         var order = Builds.ToDictionary(b => b.Id, b => b.Order);
         order[ToolsTag] = int.MinValue; // a missing tool holds work up: its bills first
         foreach (var bench in Benches.Where(b => b.Bills.Any(x => x.ForBuild != null)))
@@ -502,25 +534,28 @@ public sealed partial class StoryColony
     {
         if (Home() is not { } home) return null;
         var ghosts = Builds.Where(Builds_Live).SelectMany(b => b.Ghosts).Select(g => g.At).ToHashSet();
-        bool Free(int x, int y, int z) => StoryBlocks.Replaceable.Contains(w.Block(x, y, z).Id) && !StoryBlocks.Liquids.Contains(w.Block(x, y, z).Id);
         for (int r = 2; r <= 8; r++)
             for (int dx = -r; dx <= r; dx++)
                 for (int dz = -r; dz <= r; dz++)
                 {
                     if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
                     for (int dy = 0; dy <= 2; dy = dy <= 0 ? 1 - dy : -dy)
-                    {
-                        var c = home.Add(dx, dy, dz);
-                        if (!w.Loaded(c.X, c.Z) || ghosts.Contains(c) || Benches.Any(b => b.Pos == c)) continue;
-                        if (w.Block(c.X, c.Y, c.Z).Id != 0 || !Free(c.X, c.Y + 1, c.Z)) continue;
-                        var below = w.Block(c.X, c.Y - 1, c.Z).Id;
-                        if (StoryBlocks.Replaceable.Contains(below) || StoryBlocks.Liquids.Contains(below)) continue;
-                        if (Occupied(c)) continue;
-                        return c;
-                    }
+                        if (home.Add(dx, dy, dz) is var c && StationCellOk(w, ghosts, c)) return c;
                 }
         return null;
     }
+
+    private bool StationCellOk(IStoryWorld w, HashSet<P3> ghosts, P3 c)
+    {
+        if (!w.Loaded(c.X, c.Z) || ghosts.Contains(c) || Benches.Any(b => b.Pos == c)) return false;
+        if (w.Block(c.X, c.Y, c.Z).Id != 0 || !StationAirAt(w, c.X, c.Y + 1, c.Z)) return false;
+        var below = w.Block(c.X, c.Y - 1, c.Z).Id;
+        if (StoryBlocks.Replaceable.Contains(below) || StoryBlocks.Liquids.Contains(below)) return false;
+        return !Occupied(c);
+    }
+
+    private static bool StationAirAt(IStoryWorld w, int x, int y, int z) =>
+        StoryBlocks.Replaceable.Contains(w.Block(x, y, z).Id) && !StoryBlocks.Liquids.Contains(w.Block(x, y, z).Id);
 
     // ---------------------------------------------------------------- the jobs: a bench for a build, a craft in the hand grid
 
@@ -529,75 +564,86 @@ public sealed partial class StoryColony
     {
         if (World is not { } w) return null;
         EnsureMaterials();
-        if (_station is { } st)
-        {
-            var key = "station:" + st.Kind;
-            if (Open(key, p.Name, st.Spot))
-            {
-                var name = ItemName(st.Kind == "furnace" ? 61 : 58, 0);
-                var fetch = new JsonArray();
-                var takes = new List<(P3, Stack)>();
-                foreach (var u in st.Raw)
-                {
-                    int own = live.Inventory.Where(s => s.Id == u.Id && (u.Damage < 0 || s.Meta == u.Damage)).Sum(s => s.Count);
-                    if (own >= u.Count) continue;
-                    if (FindStored(s => s.Id == u.Id && (u.Damage < 0 || s.Meta == u.Damage), live.Block) is not { } got) { fetch = null; break; }
-                    int n = Math.Min(u.Count - own, got.Stack.Count);
-                    fetch.Add(new JsonObject { ["from"] = got.Store.Chest.ToString(), ["item"] = ItemName(got.Stack.Id, got.Stack.Meta), ["n"] = n });
-                    takes.Add((got.Store.Chest, got.Stack with { Count = n }));
-                }
-                if (fetch != null)
-                {
-                    var j = Job(WorkTypes.Craft, "place", $"making a {(st.Kind == "furnace" ? "furnace" : "crafting table")} for build {st.Build}", st.Spot, key,
-                        "station", st.Kind, "working", f =>
-                        {
-                            f["block"] = name;
-                            var craft = new JsonObject { ["item"] = name, ["n"] = 1 };
-                            if (st.Table is { } t) craft["at"] = t.ToString();
-                            f["craft"] = new JsonArray(craft);
-                            if (fetch.Count > 0) f["fetch"] = fetch;
-                        }, xp: 20);
-                    j.Takes.AddRange(takes);
-                    return j;
-                }
-            }
-        }
+        if (_station is { } st && StationPlaceJob(p, live, st) is { } placeJob) return placeJob;
         foreach (var h in _handCrafts.OrderBy(x => Builds.FirstOrDefault(b => b.Id == x.Build)?.Order ?? int.MaxValue).ThenBy(x => x.Step))
-        {
-            var key = $"hand:{h.Build}:{h.Recipe.Id}";
-            if (!Open(key, p.Name, null)) continue;
-            var r = h.Recipe;
-            int crafts = Math.Clamp((int)Math.Ceiling(h.Outputs / (double)Math.Max(1, r.Output.Count)), 1, 16);
-            var fetch = new JsonArray();
-            var takes = new List<(P3, Stack)>();
-            bool ok = true;
-            foreach (var input in r.Inputs)
-            {
-                int need = input.Count * crafts;
-                bool Ok(Stack s) => input.Options.Any(o => o.Matches(s.Id, s.Meta));
-                if (live.Inventory.Where(Ok).Sum(s => s.Count) >= need) continue;
-                if ((FindStored(s => Ok(s) && s.Count >= need, live.Block) ?? FindStored(Ok, live.Block)) is not { } src) { ok = false; break; }
-                int n = Math.Min(need, src.Stack.Count);
-                fetch.Add(new JsonObject { ["from"] = src.Store.Chest.ToString(), ["item"] = ItemName(src.Stack.Id, src.Stack.Meta), ["n"] = n });
-                takes.Add((src.Store.Chest, src.Stack with { Count = n }));
-            }
-            if (!ok) continue; // an earlier step makes the ingredient
-            int outputs = crafts * r.Output.Count;
-            var j = Job(WorkTypes.Craft, "craft", $"{r.Label} for build {h.Build}", null, key, "hand", h.Build, "working", f =>
-            {
-                f["item"] = r.ToolItem;
-                f["n"] = outputs;
-                if (fetch.Count > 0) f["fetch"] = fetch;
-            }, xp: 15, count: outputs);
-            j.Takes.AddRange(takes);
-            if (BestChest(r.Output.Id, r.Output.Meta, live.Block) is { } dst)
-            {
-                j.Json["stash"] = new JsonArray(new JsonObject { ["to"] = dst.Chest.ToString(), ["items"] = new JsonArray(ItemName(r.Output.Id, r.Output.Meta)) });
-                j.Puts.Add((dst.Chest, [r.Output with { Count = outputs }]));
-            }
-            return j;
-        }
+            if (HandCraftJob(p, live, h) is { } j) return j;
         return null;
+    }
+
+    /// <summary>Placing the bench the builds need: crafted from its raw items (carried, else fetched); null when one can't be had.</summary>
+    private ActiveJob? StationPlaceJob(PawnState p, PawnLive live, StationWant st)
+    {
+        var key = "station:" + st.Kind;
+        if (!Open(key, p.Name, st.Spot)) return null;
+        var name = ItemName(st.Kind == "furnace" ? 61 : 58, 0);
+        var fetch = new JsonArray();
+        var takes = new List<(P3, Stack)>();
+        foreach (var u in st.Raw)
+            if (!FetchRaw(live, u, fetch, takes)) return null;
+        var j = Job(WorkTypes.Craft, "place", $"making a {(st.Kind == "furnace" ? "furnace" : "crafting table")} for build {st.Build}", st.Spot, key,
+            "station", st.Kind, "working", f =>
+            {
+                f["block"] = name;
+                var craft = new JsonObject { ["item"] = name, ["n"] = 1 };
+                if (st.Table is { } t) craft["at"] = t.ToString();
+                f["craft"] = new JsonArray(craft);
+                if (fetch.Count > 0) f["fetch"] = fetch;
+            }, xp: 20);
+        j.Takes.AddRange(takes);
+        return j;
+    }
+
+    /// <summary>What the pawn lacks of one raw item, fetched from the nearest chest holding it; false when none is stored.</summary>
+    private bool FetchRaw(PawnLive live, MaterialNeed u, JsonArray fetch, List<(P3, Stack)> takes)
+    {
+        int own = live.Inventory.Where(s => s.Id == u.Id && (u.Damage < 0 || s.Meta == u.Damage)).Sum(s => s.Count);
+        if (own >= u.Count) return true;
+        if (FindStored(s => s.Id == u.Id && (u.Damage < 0 || s.Meta == u.Damage), live.Block) is not { } got) return false;
+        int n = Math.Min(u.Count - own, got.Stack.Count);
+        fetch.Add(new JsonObject { ["from"] = got.Store.Chest.ToString(), ["item"] = ItemName(got.Stack.Id, got.Stack.Meta), ["n"] = n });
+        takes.Add((got.Store.Chest, got.Stack with { Count = n }));
+        return true;
+    }
+
+    /// <summary>A 2×2 craft in the pawn's own grid for a build, its inputs carried or fetched, the output stored; null when it is
+    /// taken or an input is missing (an earlier step makes it).</summary>
+    private ActiveJob? HandCraftJob(PawnState p, PawnLive live, HandCraft h)
+    {
+        var key = $"hand:{h.Build}:{h.Recipe.Id}";
+        if (!Open(key, p.Name, null)) return null;
+        var r = h.Recipe;
+        int crafts = Math.Clamp((int)Math.Ceiling(h.Outputs / (double)Math.Max(1, r.Output.Count)), 1, 16);
+        var fetch = new JsonArray();
+        var takes = new List<(P3, Stack)>();
+        foreach (var input in r.Inputs)
+            if (!FetchInput(live, input, input.Count * crafts, fetch, takes)) return null; // an earlier step makes the ingredient
+        int outputs = crafts * r.Output.Count;
+        var j = Job(WorkTypes.Craft, "craft", $"{r.Label} for build {h.Build}", null, key, "hand", h.Build, "working", f =>
+        {
+            f["item"] = r.ToolItem;
+            f["n"] = outputs;
+            if (fetch.Count > 0) f["fetch"] = fetch;
+        }, xp: 15, count: outputs);
+        j.Takes.AddRange(takes);
+        if (BestChest(r.Output.Id, r.Output.Meta, live.Block) is { } dst)
+        {
+            j.Json["stash"] = new JsonArray(new JsonObject { ["to"] = dst.Chest.ToString(), ["items"] = new JsonArray(ItemName(r.Output.Id, r.Output.Meta)) });
+            j.Puts.Add((dst.Chest, [r.Output with { Count = outputs }]));
+        }
+        return j;
+    }
+
+    /// <summary>What the pawn lacks of one recipe input: fetched whole from one chest when one holds enough, else the biggest part;
+    /// false when none is stored.</summary>
+    private bool FetchInput(PawnLive live, RecipeInput input, int need, JsonArray fetch, List<(P3, Stack)> takes)
+    {
+        bool Ok(Stack s) => input.Options.Any(o => o.Matches(s.Id, s.Meta));
+        if (live.Inventory.Where(Ok).Sum(s => s.Count) >= need) return true;
+        if ((FindStored(s => Ok(s) && s.Count >= need, live.Block) ?? FindStored(Ok, live.Block)) is not { } src) return false;
+        int n = Math.Min(need, src.Stack.Count);
+        fetch.Add(new JsonObject { ["from"] = src.Store.Chest.ToString(), ["item"] = ItemName(src.Stack.Id, src.Stack.Meta), ["n"] = n });
+        takes.Add((src.Store.Chest, src.Stack with { Count = n }));
+        return true;
     }
 
     /// <summary>A station or hand craft finished: a placed bench becomes the colony's (designated); the next pass plans again.</summary>
@@ -690,29 +736,7 @@ public sealed partial class StoryColony
             using var scope = ReferenceEquals(GameData.Current, w.Data) ? null : GameData.Override(w.Data);
             bool hasTable = Benches.Any(b => b.Kind == "crafting_table"), hasFurnace = Benches.Any(b => b.Kind == "furnace");
             var entries = new JsonArray();
-            foreach (var e in StoryArchitect.Entries(w.Data))
-            {
-                var key = (e.ItemId, e.ItemMeta);
-                var (tier, needsTable, chain) = BasePlan(w.Data, key);
-                string? reason = null;
-                if (needsTable && !hasTable) reason = "Needs a crafting table — place one or designate an existing one";
-                else if (tier == "furnace" && !hasFurnace) reason = "Needs a furnace — place one or designate an existing one";
-                int have = _freePool.GetValueOrDefault(key);
-                var withStock = PlanFor(key, 1, _freePool);
-                // One the stock can't even make one of (the plan for 1 is short) makes none of 64 either: the search is skipped.
-                int can = have > 0 || chain.Length == 0 || !withStock.Complete ? 0 : MostCraftable(key, 64, _freePool).N;
-                var shortList = have > 0 || can > 0 ? new List<string>() : withStock.Missing.Select(m => m.ToString()).ToList();
-                entries.Add(new JsonObject
-                {
-                    ["id"] = e.Id, ["label"] = e.Label, ["tab"] = e.Tab, ["tier"] = tier, ["unlocked"] = reason == null, ["reason"] = reason,
-                    ["item"] = new JsonArray(e.ItemId, e.ItemMeta), ["material"] = new JsonArray(e.BlockId, e.BlockMeta), ["kind"] = e.Kinds[0],
-                    ["kinds"] = new JsonArray(e.Kinds.Select(k => (JsonNode)k!).ToArray()),
-                    ["chain"] = new JsonArray(chain.Select(s => (JsonNode)s!).ToArray()),
-                    ["have"] = have, ["craftable"] = can,
-                    ["from"] = new JsonArray(withStock.Used.Select(u => (JsonNode)u.ToString()!).ToArray()),
-                    ["short"] = new JsonArray(shortList.Select(s => (JsonNode)s!).ToArray()),
-                });
-            }
+            foreach (var e in StoryArchitect.Entries(w.Data)) entries.Add(ArchitectEntryJson(w, e, hasTable, hasFurnace));
             WaterEntries(w, entries, hasTable); // the Water tab: sources, channels, an infinite source (StoryColony.Water.cs)
             return new JsonObject
             {
@@ -722,6 +746,31 @@ public sealed partial class StoryColony
                 ["tabs"] = new JsonArray(StoryArchitect.Tabs.Select(t => (JsonNode)t!).ToArray()),
             };
         }
+    }
+
+    /// <summary>One palette entry: its tier and chain, whether the benches it takes are there, what the free pool has, could make or
+    /// lacks of it.</summary>
+    private JsonObject ArchitectEntryJson(IStoryWorld w, ArchitectEntry e, bool hasTable, bool hasFurnace)
+    {
+        var key = (e.ItemId, e.ItemMeta);
+        var (tier, needsTable, chain) = BasePlan(w.Data, key);
+        string? reason = needsTable && !hasTable ? "Needs a crafting table — place one or designate an existing one"
+            : tier == "furnace" && !hasFurnace ? "Needs a furnace — place one or designate an existing one" : null;
+        int have = _freePool.GetValueOrDefault(key);
+        var withStock = PlanFor(key, 1, _freePool);
+        // One the stock can't even make one of (the plan for 1 is short) makes none of 64 either: the search is skipped.
+        int can = have > 0 || chain.Length == 0 || !withStock.Complete ? 0 : MostCraftable(key, 64, _freePool).N;
+        var shortList = have > 0 || can > 0 ? new List<string>() : withStock.Missing.Select(m => m.ToString()).ToList();
+        return new JsonObject
+        {
+            ["id"] = e.Id, ["label"] = e.Label, ["tab"] = e.Tab, ["tier"] = tier, ["unlocked"] = reason == null, ["reason"] = reason,
+            ["item"] = new JsonArray(e.ItemId, e.ItemMeta), ["material"] = new JsonArray(e.BlockId, e.BlockMeta), ["kind"] = e.Kinds[0],
+            ["kinds"] = new JsonArray(e.Kinds.Select(k => (JsonNode)k!).ToArray()),
+            ["chain"] = new JsonArray(chain.Select(s => (JsonNode)s!).ToArray()),
+            ["have"] = have, ["craftable"] = can,
+            ["from"] = new JsonArray(withStock.Used.Select(u => (JsonNode)u.ToString()!).ToArray()),
+            ["short"] = new JsonArray(shortList.Select(s => (JsonNode)s!).ToArray()),
+        };
     }
 
     /// <summary>The colony options (<c>POST …/options</c>): auto-placing benches, detecting benches near home.</summary>
