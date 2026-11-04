@@ -78,7 +78,7 @@ public sealed class StoryStore(AgentDb db)
                 }
                 c.SetRev(rev);
                 // Older saves: rectangle zones become cell sets (the same cells), a growing zone's plant a one-bill list. Saved at once.
-                if (c.MigrateZones() | c.MigrateRoles()) Save(c);
+                if (c.MigrateZones() | c.MigrateRoles() | c.MigrateWaterFailures()) Save(c);
                 list.Add(c);
             }
             return list;

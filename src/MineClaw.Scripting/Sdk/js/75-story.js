@@ -35,13 +35,15 @@
     return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' placed' };
   };
   // pour(job): a liquid build's cells (j.liquid water|lava), each a source once done. A cell already holding one is done; with no
-  // full bucket the pawn fills its empty ones at j.source first (fill_bucket), then pours from the stand aimed at the cell
-  // (empty_bucket / move_lava: the face that lands it in that cell) and checks the world shows a source there. Each cell is reported;
-  // no way to fill a bucket ends the batch (the rest go back to the queue).
-  const NEAR = /can't get near|no block face|from my eyes|couldn't get closer|can't reach/i;
+  // full bucket the pawn fills its empty ones at j.source (fill_bucket: from dry land beside it). Then empty_bucket / move_lava pours
+  // from a dry spot with a face beside the cell in view (flowing water there is fine: it becomes the source); the world must show
+  // a source. Two tries a cell, each reported. A fill that fails ends the batch (`fill failed at …`: the director picks another
+  // source; the rest go back, no failure). In water, the pawn gets out first.
+  const AGAIN = /can't get near|no block face|from my eyes|couldn't get closer|can't reach|didn't appear/i;
   const pour = j => {
     const lava = j.liquid === 'lava', liq = lava ? 'lava' : 'water', full = liq + '_bucket', cells = j.cells || [j.at];
     const src = c => H.storyLiquid(c) === liq;
+    const wet = () => { const p = H.me('pos'); return H.storyLiquid([p.x, p.y + 0.2, p.z].map(Math.floor).join(',')) !== ''; };
     const fill = () => {
       let r = { ok: false, msg: 'no ' + liq + ' source to fill a bucket from' };
       for (let k = 0; j.source && k < (j.buckets || 1) && H.inv('bucket') > 0; k++) {
@@ -54,18 +56,23 @@
     let n = 0;
     for (const c of cells) {
       if (src(c)) { report(j, 'progress', 'cell ' + c + ' done'); n++; continue; }
+      if (wet()) escape(j.stand);
       if (!(H.inv(full) > 0)) {
         const f = fill();
-        if (!good(f)) { if (!n) return f; break; }
+        if (!good(f)) {
+          report(j, 'progress', 'fill failed at ' + j.source + ': ' + why(f));
+          return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' poured; no bucket filled: ' + why(f) };
+        }
+        if (wet()) escape(j.stand);
       }
-      if (j.stand && eyes(j.stand) > 1.8) call('go', j.stand, 0);
-      if (eyes(c) > 4) call('go', c, 2);
+      if (j.stand && eyes(c) > 4.5) call('go', j.stand, 0);
       let r = tip(c);
-      if (!good(r) && NEAR.test(why(r))) { call('go', c, 2); r = tip(c); }
+      if (!good(r) && AGAIN.test(why(r)) && !src(c)) r = tip(c);
       if (good(r) && !src(c)) {
         H.wait(0.5);
         if (!src(c)) r = { ok: false, msg: c + ' shows ' + (H.storyLiquid(c) || H.block(c)) + ', not a ' + liq + ' source' };
       }
+      if (!good(r) && src(c)) r = { ok: true };
       report(j, 'progress', 'cell ' + c + (good(r) ? ' done' : ' failed: ' + why(r)));
       if (good(r)) n++;
     }

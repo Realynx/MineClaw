@@ -213,6 +213,7 @@ public sealed partial class StoryColony
         List<MaterialNeed> Used(IReadOnlyList<MaterialNeed> used, Dictionary<(int Id, int Meta), int> after) { pool = after; return used.ToList(); }
         pool = ToolCrafts(w, pool, reserved, wants, hasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
         bool bucketCovered = BucketCarried(); // liquid builds need one bucket between them, not one per cell (StoryColony.Water.cs)
+        bool bucketAsked = false;
         foreach (var b in Builds.OrderBy(b => b.Order))
         {
             if (!Builds_Live(b)) { if (b.Materials.Count > 0) { b.Materials = new(); b.Rev = Bump(); } continue; }
@@ -228,6 +229,14 @@ public sealed partial class StoryColony
                 var item = liquid ? "bucket" : grp.Key;
                 var key = liquid ? (Id: Items.Bucket, Meta: 0) : KeyOfItem(w, item, grp.First().Id);
                 int need = liquid ? 1 : grp.Count();
+                // The colony's one bucket is asked for once (an earlier liquid build is crafting or asking for it): no second bill,
+                // no second alert (live 11-04: "need 1 bucket" from every water build).
+                if (liquid && !bucketCovered && bucketAsked)
+                {
+                    mats.Add(new BuildMaterial(item, Display(w, key.Id, key.Meta), 1, 0, 0, 1, "none", [], []));
+                    continue;
+                }
+                if (liquid) bucketAsked = true;
                 bool carried = liquid && bucketCovered;
                 int have = carried ? 1 : Take(pool, key, need);
                 Reserve(reserved, key, have);

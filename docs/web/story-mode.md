@@ -1089,6 +1089,9 @@ poured the same way. Checked when queued (`StoryColony.Water.cs`, 400 with why):
 - Each cell is open (air, tall grass, flowers, snow, vines, flowing liquid) or dug first by its `group` (a `remove` item of the
   same group, earlier in the request or queued: the dig goes first, as for a basement). Anything else: "4,63,12 holds stone: dig it
   first". Water never goes onto lava, nor lava onto water (obsidian or cobblestone).
+- Something must hold each cell: under it a block that stays (not dug first), another cell of the item, or a source of the same
+  liquid. Else "nothing under 4,66,12 to hold the water: it would pour down" (once, at queue time: live 11-04 it was "no block
+  face to pour against" cell after cell).
 - Indoors (a home zone with a roof within 8 above) only with `indoor: true`: the Water source tool's explicit click sends it, the
   channel tool and the irrigation planner never do.
 - A cell that already holds the source is done at once.
@@ -1107,7 +1110,7 @@ fair share), with one stand in reach of them:
   one alert. Buckets are tools: the pawn keeps them (deliveries never take tools); the batch that pours the colony's last
   liquid cells returns them to storage (`stash`).
 - **Fill source** (`FillSource`): a still source within 24 blocks of the cells that won't be used up: one the colony poured that
-  refills (an infinite pool it built) first, then any that refills (two source neighbours over ground: a lake, a pool), then a
+  refills (an infinite pool it built first, then a channel of its own that refills), then any that refills (two source neighbours over ground: a lake, a pool), then a
   source with another source beside it; never a lone puddle, never water the colony poured that doesn't refill (Fox's
   channels), never a cell of the batch. None and no full bucket: blocked, "no still water within 24 blocks to fill a bucket
   from". Lava: any lava source the colony didn't pour.
@@ -1149,6 +1152,50 @@ the previews left the dig out). The Growing zones window says when cells are dry
 Add irrigation: the planner's channels, pre-filled as a pending placement to confirm. The mock director (`storySim`) and
 `@mineclaw/contracts` (`storyWater.ts`: `waterToolCells`, `waterItems`, `liquidFlow`, `pourOrder`, `irrigationPlan`) carry
 reference copies of these rules.
+
+**Canals that work (fixed 2026-11-04).** Fox, live 11-04: "The pawns have a really difficult time pouring water in the canals." The
+log: 79 "no block face to pour against", 26 fills refused as "a protected water source" (the colony's own infinite pool), ponds at
+the bottom of a pit ("no path to any reach (227,54,406)"), pawns nearly drowning in the channel, a `story_pawn` run at its 30-minute
+limit with 429 actions, and "server correction" ledger lines for every bucket. Causes and fixes:
+- **Pour stand.** `empty_bucket` stepped to within 2 blocks of the cell's centre when its face wasn't in view: from the bank of a
+  1-deep trench the eye is 2.1 away, so only the channel itself qualified and the pawn walked into the water, where no face was in
+  view either. Now it walks to a dry stand (feet, head and floor out of any liquid) from which a pour aim exists (`BucketOps.DryStand`,
+  `Aiming.FindPourAim` from that cell's eye): the bank, looking down at the trench floor. A cell already holding flowing water takes
+  the pour (the full bucket's ray passes liquids) and becomes a source. A cell with nothing solid beside or under it says so.
+- **Protected sources.** Protection (farm irrigation, a generator, the colony's pool) refused every scoop. A source that refills
+  (`FluidRules.Refills`) is never used up, so `BucketOps.Scoopable` lets a bucket take it; a lone or non-refilling protected source
+  stays refused.
+- **Fill sources.** The director takes only a source with dry ground beside it (a bank at water level, or a shallow step), prefers
+  one near the cells' height (3 per block of height difference), and a pond a pawn couldn't fill at (`fill failed at x,y,z: why`, the
+  SDK's progress note) rests 10 minutes for that pawn, with the cells of its batch back in the queue and no failure counted.
+- **No retry loops.** `story.pour` tries a cell twice at most, reports it, and moves on; a fill that fails ends the batch at once.
+  In water, the pawn gets out (`story.escape`) before it fills or pours.
+- **One bucket.** Water builds ask for the colony's bucket once: the first is crafting it (or short of iron, with the one alert);
+  the others wait on it without a bill or an alert of their own.
+- **Ledger.** 1.12.2 answers every item use with the whole inventory (`sendContainerToPlayer`): a bucket filling or emptying in that
+  resync is the use ("a bucket filled or emptied"), not a server correction.
+- FakeServer: `LiquidFlow` settles water after a pour or a scoop (a cell between two sources over ground becomes one; a source runs
+  one step into an open cell beside it), and `PouredInto` records what each pour replaced. `StoryFakeServerTests.A_pawn_pours_an_infinite_pool_then_a_canal_every_other_cell_filling_at_its_own_pool`
+  (b1.8.1 and 1.12.2) pours a 2×2 pool from two full buckets, then a 4-long canal every other cell, filling at that pool; the
+  canal's end holds flowing water before its pour. `BucketPourTests` (skills) cover the bank stand, flowing cells and protected pools.
+
+**Retrying failed build cells (added 2026-11-04).** Fox: "There are some water channels I can't unblock to retry to make them
+fill." The Retry tool only covered designations; a build cell that failed three times stayed `blocked` for good.
+- `POST …/builds {op:"retry", id | ids, cells?}` reopens a build's failed cells (all of them, or the given ones): blocked → todo,
+  their failure counts, rests, soft failures and per-pawn skips forgotten, a blocked build queued again. `{op:"retry_all"}` does
+  it for every build. → `{ids, reopened, reasons:[{id, reason}]}`: the build's checks run at once (a water build's cells, its
+  bucket, water to fill from; ponds a pawn missed are tried again), and a reason that still holds blocks it again now, said in
+  `reasons`, instead of after three more failures.
+- A failed cell keeps its last reason (`GhostState.Reason`), sent as the ghost's 9th element: the map draws a dashed red ring with a
+  cross on each failed cell (holograms on or off), and hovering one names it in the map's tooltip ("Build b3: 4,63,12 failed: …
+  (Retry tool: O)").
+- The Retry tool's drag (O) takes the failed designations and the failed build cells in the box (one `retry {id, cells}` per build),
+  and its live count counts both (before, its count was always 0 and a drag sent nothing); "Retry all failed (N)" counts both and
+  sends `retry_all`. The build queue shows "Retry failed cells (N)" on a build with failed cells.
+- On the first load after this fix (`ColonyMeta.WaterRetried`), blocked water cells reopen (they were blocked before cells kept a
+  reason, or by "no block face", "protected", an unreachable pond), and a water build blocked by those reasons is queued again.
+- The mock director fails a pour cell with nothing under it at queue time (blocked, with the reason) so the retry UI has something
+  to show; the bot refuses such an item outright.
 
 **Tests.** `StoryWaterTests` (director: checks, flow, dig before pour, fill-source choice, bucket fetch and auto bill, infinite
 sources, irrigation), `StoryPourSdkTests` (the SDK), `StoryFakeServerTests.A_pawn_digs_a_canal_fills_its_bucket_at_a_pool_and_pours_each_cell_a_source`
