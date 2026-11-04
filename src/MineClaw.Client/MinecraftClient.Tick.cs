@@ -9,8 +9,10 @@ public sealed partial class MinecraftClient
 {
     /// <summary>One tick of a driver: the input to apply and whether the driver is finished. <paramref name="AllowDrop"/>
     /// marks a planned drop to a lower floor (the edge guard then verifies the landing instead of forcing sneak);
-    /// <paramref name="Parkour"/> a committed gap jump (the guard's planned-parkour exemption re-simulates it).</summary>
-    private readonly record struct DriverStep(MoveInput Input, bool Done = false, bool AllowDrop = false, ParkourCommit? Parkour = null);
+    /// <paramref name="Parkour"/> a committed gap jump (the guard's planned-parkour exemption re-simulates it).
+    /// <paramref name="BoostRoom"/>: how far a boosted body may travel this tick (Story Mode's Fast / Faster, <see cref="SpeedBoost"/>);
+    /// 0 = no boost (every driver but the path follower).</summary>
+    private readonly record struct DriverStep(MoveInput Input, bool Done = false, bool AllowDrop = false, ParkourCommit? Parkour = null, double BoostRoom = 0);
 
     /// <summary>Per-tick movement logic installed by an action; runs on the tick thread.</summary>
     private sealed class Driver(Func<PhysicsState, DriverStep> step)
@@ -99,7 +101,11 @@ public sealed partial class MinecraftClient
             // never runs its movement checks, so a bot holding still in the void can't be kicked for floating (see DeferEcho).
             if (DeferEcho(after)) _pendingEcho = t.EchoForServer(t.OnGround);
             else { _pendingEcho = null; Send(s, t.EchoForServer(t.OnGround)); }
-            if (s.PositionKnown && !s.AwaitingTeleport) s.Corrections++;
+            if (s.PositionKnown && !s.AwaitingTeleport)
+            {
+                s.Corrections++;
+                if (before.DistanceTo(after) < ServerMoveMinDistance) NoteSpeedCorrection(); // a rollback, maybe of a boosted move
+            }
             s.TeleportsReceived++;
             s.AwaitingTeleport = false;
             _lastX = t.X; _lastY = t.Y; _lastStance = t.Stance; _lastZ = t.Z;
@@ -107,6 +113,7 @@ public sealed partial class MinecraftClient
             _lookYaw = t.Yaw; _lookPitch = t.Pitch;
             _ticksSincePos = 0;
             teleported = true;
+            _lastTeleportTick = TickCount;
             OnServerTeleportForSafety();
             if (!s.PositionKnown)
             {
@@ -160,6 +167,7 @@ public sealed partial class MinecraftClient
         GestureTick(s, phys); // brainstem gesture frame: look overlay (sent only), idle sneak/jump, arm swing
         MoveInput input;
         bool allowDrop = false;
+        double boostRoom = 0;
         ParkourCommit? parkour = null;
         var d = _driver;
         // A fight owns the body: the driver is paused (and aborted). A hand-off hold pauses it without aborting.
@@ -170,6 +178,7 @@ public sealed partial class MinecraftClient
                 var step = d.Step(phys);
                 input = step.Input;
                 allowDrop = step.AllowDrop;
+                boostRoom = step.Done ? 0 : step.BoostRoom;
                 parkour = step.Done ? null : step.Parkour;
                 if (step.Done)
                 {
@@ -206,8 +215,12 @@ public sealed partial class MinecraftClient
         phys.SlownessAmplifier = player.EffectAmplifier(PotionEffects.Slowness);
         phys.JumpBoostAmplifier = player.EffectAmplifier(PotionEffects.JumpBoost);
         double fallBefore = phys.FallDistance;
+        var posBefore = phys.Position;
+        bool groundBefore = phys.OnGround;
         Options.Profile.Physics.Tick(World, phys, input with { Hungry = !CanSprintNow() });
         if (d is not null || combat.Overrides) { _lookYaw = phys.Yaw; _lookPitch = phys.Pitch; } // idle keeps the last look
+        // Story Mode's Fast / Faster (MinecraftClient.Speed.cs): the extra move after the normal one, its own position packets.
+        if (!teleported && _speedTarget > 1) SpeedAfterPhysics(s, phys, posBefore, groundBefore, boostRoom, combat.Overrides || allowDrop || parkour is not null || guard.Input.Sneak);
         player.SyncFromPhysics();
 
         BreathTick(phys, fallBefore);
