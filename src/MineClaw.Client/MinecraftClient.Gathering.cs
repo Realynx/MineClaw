@@ -417,165 +417,215 @@ public sealed partial class MinecraftClient
         // Never silently do something else: without a pickaxe the generator's output drops nothing, so say so.
         if (Drops.Primary(Blocks.Cobblestone, 0, BestToolId(Blocks.Cobblestone)) is null)
             return ActionResult.Fail("no pickaxe: cobblestone drops nothing without one (get a pickaxe first: withdraw or craft one)");
-        int haveBefore = World.Inventory.CountItem(Blocks.Cobblestone);
-        int mined = 0, failures = 0;
-        string stop = "";
-        bool badYield = false;
-        int windowStartProduced = 0, windowStartMined = 0;
-        var watch = new GenWatch(this, all);
-        var perCell = new Dictionary<BlockPos, int>();
-        var liquidSince = new Dictionary<BlockPos, long>();
-        var stuckNotes = new List<string>();
-        var lastDug = new Dictionary<BlockPos, long>();
-        long seq = 0;
+        var run = new GenRun(pos, all, count, World.Inventory.CountItem(Blocks.Cobblestone), new GenWatch(this, all));
         // A taught stand another bot's (or player's) body is on: walking into it only pushes both of us around (live 10-28:
         // main "stuck at 7.5,64.5,6.3, can't reach the stand spot 6,64,4" with 1337 standing there). Dig from a free spot.
-        string? standNote = null;
         if (stand is { } taken && OccupantOf(taken) is { } who)
         {
-            standNote = $"stand {Fmt(taken)} is taken by {who}: dug from a free spot";
+            run.StandNote = $"stand {Fmt(taken)} is taken by {who}: dug from a free spot";
             stand = null;
         }
+        run.Stand = stand;
+        return await GenRunAsync(run, c).ConfigureAwait(false);
+    }
+
+    /// <summary>The run itself: positioning, the dig loop, then the drops; the watch ends with the loop.</summary>
+    private async Task<ActionResult> GenRunAsync(GenRun run, CancellationToken c)
+    {
         try
         {
-            if (stand is { } st)
-            {
-                if (await GotoStandAsync(st, pos, c).ConfigureAwait(false) is { } no) return no;
-                _trustedStand = (st, pos);
-            }
-            else
-            {
-                // Stand within reach, away from the edge and from the lava (never next to the output block).
-                bool badSpot = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach) is null
-                               || OnRimDiggingRim(pos) || LavaNearMe() || LavaPathToMe(pos);
-                if (badSpot && IsGenOutput(World.GetBlock(pos)))
-                {
-                    var g = await GotoReachSafelyAsync(pos, generator: true, c).ConfigureAwait(false);
-                    if (!g.Ok) return ActionResult.Fail(UnreachableCellText(pos, g.Message));
-                }
-            }
-            while (mined < count)
-            {
-                if (World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) == 0) { stop = "inventory full"; break; }
-                // Tool broke mid-loop: digging on would yield nothing (the caller fetches a spare / crafts one).
-                if (Drops.Primary(Blocks.Cobblestone, 0, BestToolId(Blocks.Cobblestone)) is null) { stop = "pickaxe broke (no pickaxe left)"; break; }
-                await SurvivalWindowAsync(c).ConfigureAwait(false);
-                // The cells this spot works: the first one always (it may walk for it), the others only while in reach.
-                var work = all.Where(p => p == pos || CellInReach(p)).ToList();
-                // A cell that stays liquid far past the regen transient is out of the rotation while others still work.
-                if (work.Count > 1 && work.FirstOrDefault(p => LiquidFor(p, liquidSince) > GeneratorLiquidTimeout) is { } dead && dead != default)
-                {
-                    stuckNotes.Add(LiquidStuckText(dead, liquidSince));
-                    all.Remove(dead);
-                    if (dead == pos) pos = all[0];
-                    continue;
-                }
-                // Wait for a cell that holds cobble/stone again (the regen block update), never swinging at air or liquid. Flowing
-                // water or lava in a just-dug cell is the normal transient before they meet (live 21:5x "4,64,6 turned to water"):
-                // keep waiting while it is liquid, up to GeneratorLiquidTimeout; only then is it stuck.
-                if (!work.Any(p => IsGenOutput(World.GetBlock(p))))
-                {
-                    bool ready = await WaitUntilAsync(() => { NoteLiquid(work, liquidSince); return work.Any(p => IsGenOutput(World.GetBlock(p))); },
-                        GeneratorRegenWait, c).ConfigureAwait(false);
-                    while (!ready && work.Any(p => IsLiquidCell(p) && LiquidFor(p, liquidSince) < GeneratorLiquidTimeout))
-                        ready = await WaitUntilAsync(() => { NoteLiquid(work, liquidSince); return work.Any(p => IsGenOutput(World.GetBlock(p))); },
-                            TimeSpan.FromMilliseconds(500), c).ConfigureAwait(false);
-                    if (!ready)
-                    {
-                        var stuck = work.Where(p => IsLiquidCell(p) && LiquidFor(p, liquidSince) >= GeneratorLiquidTimeout).ToList();
-                        stop = stuck.Count > 0 && !watch.Shared
-                            ? $"generator at {Fmt(pos)} stopped producing: " + string.Join("; ", stuck.Select(p => LiquidStuckText(p, liquidSince)))
-                            : watch.StoppedText(pos, work, World.Entities);
-                        break;
-                    }
-                }
-                NoteLiquid(work, liquidSince);
-                var pick = work.Where(p => IsGenOutput(World.GetBlock(p))).OrderBy(p => lastDug.GetValueOrDefault(p, -1)).First();
-                // Stay put once positioned (live 10-27: a re-walk before every dig fought the water push, "goto: stuck,
-                // re-planning" every 8 s): walk again only when the cell is out of reach, or released lava could reach me.
-                bool move = Aiming.FindDigAim(World, World.Player.EyePosition, pick, Options.Reach) is null
-                            || (!OnTrustedStand(pick) && pick == pos && LavaPathToMe(pick));
-                if (move && stand is { } back)
-                {
-                    if (await GotoStandAsync(back, pick, c).ConfigureAwait(false) is { } no) { stop = no.Message; break; }
-                    move = false;
-                }
-                watch.Digging(pick);
-                var r = await DigCoreAsync(pick, c, allowPathing: move && pick == pos, ignoreProtection: true, generator: true).ConfigureAwait(false);
-                watch.Dug(pick);
-                lastDug[pick] = ++seq;
-                if (!r.Ok)
-                {
-                    // Someone else took the block first (shared gen): not our failure, try the next ready cell.
-                    if (watch.OthersDug(pick) > 0 && World.GetBlock(pick) == 0) continue;
-                    if (++failures >= 3) { stop = r.Message; break; }
-                    continue;
-                }
-                failures = 0;
-                mined++;
-                perCell[pick] = perCell.GetValueOrDefault(pick) + 1;
-                // Drops drift with the gen's water: pick them up every few digs, not only at the yield check.
-                if (mined % (YieldWindow / 2) == 0 && mined % YieldWindow != 0)
-                {
-                    await CollectDropsCoreAsync(4, 8, c).ConfigureAwait(false);
-                    if (stand is { } st1 && !OnTrustedStand(pos) && await GotoStandAsync(st1, pos, c).ConfigureAwait(false) is { } off1)
-                    {
-                        stop = off1.Message;
-                        break;
-                    }
-                }
-                if (mined % YieldWindow == 0)
-                {
-                    await CollectDropsCoreAsync(4, 8, c).ConfigureAwait(false);
-                    // Picking drops up may step off the taught spot: back onto it before the next dig.
-                    if (stand is { } st2 && !OnTrustedStand(pos) && await GotoStandAsync(st2, pos, c).ConfigureAwait(false) is { } off)
-                    {
-                        stop = off.Message;
-                        break;
-                    }
-                    // Yield guard: a real regen cell gives a drop per dig. Productive = the drops that appeared at the cells (picked
-                    // up, washed into the water, or taken by someone else), never just what reached the inventory. Fewer than ~80%
-                    // over the last window AND overall = the wrong block: stop, never dig on. Shared use never counts against it.
-                    int produced = Math.Max(World.Inventory.CountItem(Blocks.Cobblestone) - haveBefore, watch.Drops);
-                    double window = (produced - windowStartProduced) / (double)Math.Max(1, mined - windowStartMined);
-                    double overall = produced / (double)mined;
-                    windowStartProduced = produced;
-                    windowStartMined = mined;
-                    if (window < MinGeneratorYield && overall < MinGeneratorYield && !watch.Shared && watch.Sharer(World.Entities) is null)
-                    {
-                        badYield = true;
-                        stop = $"{Fmt(pos)} isn't regenerating cobble for me (yield {Percent.Of(overall)}: {produced} drops from {mined} digs), need the right cell";
-                        break;
-                    }
-                }
-            }
+            if (await GenTakePositionAsync(run, c).ConfigureAwait(false) is { } no) return no;
+            while (run.Mined < run.Count && await GenStepAsync(run, c).ConfigureAwait(false)) { }
         }
-        catch (OperationCanceledException) when (mined > 0)
+        catch (OperationCanceledException) when (run.Mined > 0)
         {
-            stop = _abortReason ?? "stopped";
+            run.Stop = _abortReason ?? "stopped";
         }
         finally
         {
             _trustedStand = null;
-            watch.Dispose();
+            run.Watch.Dispose();
         }
-        if (mined > 0)
+        if (run.Mined > 0)
         {
             try { await CollectDropsCoreAsync(4, 16, c).ConfigureAwait(false); }
             catch (OperationCanceledException) { /* keep the partial result */ }
         }
-        int gained = World.Inventory.CountItem(Blocks.Cobblestone) - haveBefore;
-        if (badYield) return ActionResult.Fail(stop + $" (dug {mined}, +{gained})", mined);
-        string cellsText = perCell.Count > 1 ? " across " + string.Join(", ", perCell.Select(kv => $"{Fmt(kv.Key)} x{kv.Value}")) : "";
-        int lost = Math.Max(0, Math.Min(mined, watch.Drops) - gained - watch.TakenByOthers);
-        string extras = (standNote != null ? "; " + standNote : "")
-                        + (lost > 0 ? $"; {lost} drop(s) washed into the gen's water/lava (not collected)" : "")
-                        + (stuckNotes.Count > 0 ? "; " + string.Join("; ", stuckNotes) + " (left it out)" : "")
-                        + (watch.SharedText(World.Entities) is { } shared ? "; " + shared : "");
-        string msg = $"generator: dug {mined}{cellsText}, +{gained} cobblestone (have {World.Inventory.CountItem(Blocks.Cobblestone)})" + extras
-                     + (stop.Length > 0 ? "; " + stop : "");
-        return mined > 0 ? ActionResult.Success(msg, mined) : ActionResult.Fail(msg);
+        return GenResult(run);
     }
+
+    /// <summary>One generator run's state: the cells it works, its counts and why it stopped.</summary>
+    private sealed class GenRun(BlockPos pos, List<BlockPos> cells, int count, int haveBefore, GenWatch watch)
+    {
+        public BlockPos Pos = pos;
+        public readonly List<BlockPos> Cells = cells;
+        public readonly int Count = count, HaveBefore = haveBefore;
+        public readonly GenWatch Watch = watch;
+        public BlockPos? Stand;
+        public string? StandNote;
+        public int Mined, Failures, WindowStartProduced, WindowStartMined;
+        public string Stop = "";
+        public bool BadYield;
+        public readonly Dictionary<BlockPos, int> PerCell = new();
+        public readonly Dictionary<BlockPos, long> LiquidSince = new();
+        public readonly List<string> StuckNotes = new();
+        public readonly Dictionary<BlockPos, long> LastDug = new();
+        public long Seq;
+    }
+
+    /// <summary>Onto the taught stand, or (without one) within reach of the first cell, away from the edge and from the lava (never
+    /// next to the output block); null = in place.</summary>
+    private async Task<ActionResult?> GenTakePositionAsync(GenRun run, CancellationToken c)
+    {
+        var pos = run.Pos;
+        if (run.Stand is { } st)
+        {
+            if (await GotoStandAsync(st, pos, c).ConfigureAwait(false) is { } no) return no;
+            _trustedStand = (st, pos);
+            return null;
+        }
+        bool badSpot = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach) is null
+                       || OnRimDiggingRim(pos) || LavaNearMe() || LavaPathToMe(pos);
+        if (!badSpot || !IsGenOutput(World.GetBlock(pos))) return null;
+        var g = await GotoReachSafelyAsync(pos, generator: true, c).ConfigureAwait(false);
+        return g.Ok ? null : ActionResult.Fail(UnreachableCellText(pos, g.Message));
+    }
+
+    /// <summary>One dig of the generator loop; false = the loop stops (<see cref="GenRun.Stop"/> says why).</summary>
+    private async Task<bool> GenStepAsync(GenRun run, CancellationToken c)
+    {
+        if (GenCantGoOn() is { } cant) { run.Stop = cant; return false; }
+        await SurvivalWindowAsync(c).ConfigureAwait(false);
+        // The cells this spot works: the first one always (it may walk for it), the others only while in reach.
+        var work = run.Cells.Where(p => p == run.Pos || CellInReach(p)).ToList();
+        if (GenDropStuckCell(run, work)) return true;
+        if (!work.Any(p => IsGenOutput(World.GetBlock(p))) && !await GenWaitRegenAsync(run, work, c).ConfigureAwait(false)) return false;
+        NoteLiquid(work, run.LiquidSince);
+        var pick = work.Where(p => IsGenOutput(World.GetBlock(p))).OrderBy(p => run.LastDug.GetValueOrDefault(p, -1)).First();
+        bool move = GenNeedsMove(run, pick);
+        if (move && run.Stand is { } back)
+        {
+            if (await GotoStandAsync(back, pick, c).ConfigureAwait(false) is { } no) { run.Stop = no.Message; return false; }
+            move = false;
+        }
+        run.Watch.Digging(pick);
+        var r = await DigCoreAsync(pick, c, allowPathing: move && pick == run.Pos, ignoreProtection: true, generator: true).ConfigureAwait(false);
+        run.Watch.Dug(pick);
+        run.LastDug[pick] = ++run.Seq;
+        if (!r.Ok) return GenDigFailed(run, pick, r);
+        run.Failures = 0;
+        run.Mined++;
+        run.PerCell[pick] = run.PerCell.GetValueOrDefault(pick) + 1;
+        return await GenAfterDigAsync(run, c).ConfigureAwait(false);
+    }
+
+    /// <summary>Why digging on is pointless: no room for the cobble, or the tool broke mid-loop (it would yield nothing; the caller
+    /// fetches a spare / crafts one).</summary>
+    private string? GenCantGoOn()
+    {
+        if (World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) == 0) return "inventory full";
+        if (Drops.Primary(Blocks.Cobblestone, 0, BestToolId(Blocks.Cobblestone)) is null) return "pickaxe broke (no pickaxe left)";
+        return null;
+    }
+
+    /// <summary>A cell that stays liquid far past the regen transient is out of the rotation while others still work.</summary>
+    private bool GenDropStuckCell(GenRun run, List<BlockPos> work)
+    {
+        if (work.Count <= 1) return false;
+        var dead = work.FirstOrDefault(p => LiquidFor(p, run.LiquidSince) > GeneratorLiquidTimeout);
+        if (dead == default) return false;
+        run.StuckNotes.Add(LiquidStuckText(dead, run.LiquidSince));
+        run.Cells.Remove(dead);
+        if (dead == run.Pos) run.Pos = run.Cells[0];
+        return true;
+    }
+
+    /// <summary>Waits for a cell that holds cobble/stone again (the regen block update), never swinging at air or liquid. Flowing
+    /// water or lava in a just-dug cell is the normal transient before they meet (live 21:5x "4,64,6 turned to water"): keep waiting
+    /// while it is liquid, up to GeneratorLiquidTimeout; only then is it stuck. False = it stopped (the reason in the run).</summary>
+    private async Task<bool> GenWaitRegenAsync(GenRun run, List<BlockPos> work, CancellationToken c)
+    {
+        var liquidSince = run.LiquidSince;
+        bool ready = await WaitUntilAsync(() => { NoteLiquid(work, liquidSince); return work.Any(p => IsGenOutput(World.GetBlock(p))); },
+            GeneratorRegenWait, c).ConfigureAwait(false);
+        while (!ready && work.Any(p => IsLiquidCell(p) && LiquidFor(p, liquidSince) < GeneratorLiquidTimeout))
+            ready = await WaitUntilAsync(() => { NoteLiquid(work, liquidSince); return work.Any(p => IsGenOutput(World.GetBlock(p))); },
+                TimeSpan.FromMilliseconds(500), c).ConfigureAwait(false);
+        if (ready) return true;
+        var stuck = work.Where(p => IsLiquidCell(p) && LiquidFor(p, liquidSince) >= GeneratorLiquidTimeout).ToList();
+        run.Stop = stuck.Count > 0 && !run.Watch.Shared
+            ? $"generator at {Fmt(run.Pos)} stopped producing: " + string.Join("; ", stuck.Select(p => LiquidStuckText(p, liquidSince)))
+            : run.Watch.StoppedText(run.Pos, work, World.Entities);
+        return false;
+    }
+
+    /// <summary>Stay put once positioned (live 10-27: a re-walk before every dig fought the water push, "goto: stuck, re-planning"
+    /// every 8 s): walk again only when the cell is out of reach, or released lava could reach me.</summary>
+    private bool GenNeedsMove(GenRun run, BlockPos pick) =>
+        Aiming.FindDigAim(World, World.Player.EyePosition, pick, Options.Reach) is null
+        || (!OnTrustedStand(pick) && pick == run.Pos && LavaPathToMe(pick));
+
+    /// <summary>A failed dig: someone else taking the block first (shared gen) is not our failure (try the next ready cell); three
+    /// failures in a row stop the run.</summary>
+    private bool GenDigFailed(GenRun run, BlockPos pick, ActionResult r)
+    {
+        if (run.Watch.OthersDug(pick) > 0 && World.GetBlock(pick) == 0) return true;
+        if (++run.Failures < 3) return true;
+        run.Stop = r.Message;
+        return false;
+    }
+
+    /// <summary>Drops drift with the gen's water: pick them up every few digs, not only at the yield check (picking up may step off
+    /// the taught spot: back onto it before the next dig), and check the yield every <see cref="YieldWindow"/> digs.</summary>
+    private async Task<bool> GenAfterDigAsync(GenRun run, CancellationToken c)
+    {
+        bool yieldCheck = run.Mined % YieldWindow == 0;
+        if (!yieldCheck && run.Mined % (YieldWindow / 2) != 0) return true;
+        await CollectDropsCoreAsync(4, 8, c).ConfigureAwait(false);
+        if (!await GenBackOnStandAsync(run, c).ConfigureAwait(false)) return false;
+        return !yieldCheck || GenYieldHolds(run);
+    }
+
+    private async Task<bool> GenBackOnStandAsync(GenRun run, CancellationToken c)
+    {
+        if (run.Stand is not { } st || OnTrustedStand(run.Pos) || await GotoStandAsync(st, run.Pos, c).ConfigureAwait(false) is not { } off)
+            return true;
+        run.Stop = off.Message;
+        return false;
+    }
+
+    /// <summary>Yield guard: a real regen cell gives a drop per dig. Productive = the drops that appeared at the cells (picked up,
+    /// washed into the water, or taken by someone else), never just what reached the inventory. Fewer than ~80% over the last window
+    /// AND overall = the wrong block: stop, never dig on. Shared use never counts against it.</summary>
+    private bool GenYieldHolds(GenRun run)
+    {
+        int produced = Math.Max(World.Inventory.CountItem(Blocks.Cobblestone) - run.HaveBefore, run.Watch.Drops);
+        double window = (produced - run.WindowStartProduced) / (double)Math.Max(1, run.Mined - run.WindowStartMined);
+        double overall = produced / (double)run.Mined;
+        run.WindowStartProduced = produced;
+        run.WindowStartMined = run.Mined;
+        if (window >= MinGeneratorYield || overall >= MinGeneratorYield || run.Watch.Shared || run.Watch.Sharer(World.Entities) is not null) return true;
+        run.BadYield = true;
+        run.Stop = $"{Fmt(run.Pos)} isn't regenerating cobble for me (yield {Percent.Of(overall)}: {produced} drops from {run.Mined} digs), need the right cell";
+        return false;
+    }
+
+    private ActionResult GenResult(GenRun run)
+    {
+        int gained = World.Inventory.CountItem(Blocks.Cobblestone) - run.HaveBefore;
+        if (run.BadYield) return ActionResult.Fail(run.Stop + $" (dug {run.Mined}, +{gained})", run.Mined);
+        string cellsText = run.PerCell.Count > 1 ? " across " + string.Join(", ", run.PerCell.Select(kv => $"{Fmt(kv.Key)} x{kv.Value}")) : "";
+        int lost = Math.Max(0, Math.Min(run.Mined, run.Watch.Drops) - gained - run.Watch.TakenByOthers);
+        string msg = $"generator: dug {run.Mined}{cellsText}, +{gained} cobblestone (have {World.Inventory.CountItem(Blocks.Cobblestone)})" + GenExtras(run, lost)
+                     + (run.Stop.Length > 0 ? "; " + run.Stop : "");
+        return run.Mined > 0 ? ActionResult.Success(msg, run.Mined) : ActionResult.Fail(msg);
+    }
+
+    private string GenExtras(GenRun run, int lost) =>
+        (run.StandNote != null ? "; " + run.StandNote : "")
+        + (lost > 0 ? $"; {lost} drop(s) washed into the gen's water/lava (not collected)" : "")
+        + (run.StuckNotes.Count > 0 ? "; " + string.Join("; ", run.StuckNotes) + " (left it out)" : "")
+        + (run.Watch.SharedText(World.Entities) is { } shared ? "; " + shared : "");
 
     /// <summary>The other player (hive bot or human) whose body is in the foot cell <paramref name="cell"/> (or its head cell),
     /// or null: a spot taken by someone else's body is no place to walk to.</summary>
