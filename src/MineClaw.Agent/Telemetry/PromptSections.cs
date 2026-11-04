@@ -30,86 +30,111 @@ public static class PromptSections
     {
         var s = PromptSection.All.ToDictionary(k => k, _ => 0);
         s[PromptSection.Tools] = Worker.WorkerAgent.ToolTokens(r.Tools);
-
-        for (int i = 0; i < r.System.Count; i++)
-        {
-            var text = r.System[i].Text;
-            if (i > 0)
-            {
-                // Block 2: identity is one paragraph; anything after the first blank line is the legacy (v1) self-profile.
-                int p = i == 1 ? text.IndexOf("\n\n", StringComparison.Ordinal) : -1;
-                if (p < 0) s[PromptSection.Identity] += TextUtil.EstimateTokens(text);
-                else
-                {
-                    s[PromptSection.Identity] += TextUtil.EstimateTokens(text[..p]);
-                    s[PromptSection.Self] += TextUtil.EstimateTokens(text[p..]);
-                }
-                continue;
-            }
-            int k = KnowledgeMarkers.Select(m => text.IndexOf(m, StringComparison.Ordinal)).Where(x => x >= 0).DefaultIfEmpty(-1).Min();
-            if (k < 0) s[PromptSection.System] += TextUtil.EstimateTokens(text);
-            else
-            {
-                s[PromptSection.System] += TextUtil.EstimateTokens(text[..k]);
-                s[PromptSection.Knowledge] += TextUtil.EstimateTokens(text[k..]);
-            }
-        }
-
-        var msgs = r.Messages;
-        int anchor = -1, anchorBlock = -1;
-        if (turn != null)
-        {
-            for (int i = msgs.Count - 1; i >= 0 && anchor < 0; i--)
-            {
-                if (msgs[i].Role != LlmRole.User) continue;
-                for (int j = 0; j < msgs[i].Content.Count; j++)
-                    if (msgs[i].Content[j] is LlmText t && t.Text == turn.Text) { anchor = i; anchorBlock = j; break; }
-            }
-        }
-
-        int round = 0;
-        if (anchor >= 0)
-        {
-            for (int i = 0; i < anchor; i++) s[PromptSection.History] += Tokens(msgs[i]);
-            var am = msgs[anchor];
-            for (int j = 0; j < am.Content.Count; j++)
-            {
-                if (j != anchorBlock) { s[PromptSection.History] += Tokens(am.Content[j]); continue; }
-                int total = TextUtil.EstimateTokens(turn!.Text);
-                int dig = Math.Min(total, TextUtil.EstimateTokens(turn.Digest));
-                int self = Math.Min(total - dig, TextUtil.EstimateTokens(turn.Self));
-                int mem = Math.Min(total - dig - self, TextUtil.EstimateTokens(turn.Memory));
-                s[PromptSection.Digest] += dig;
-                s[PromptSection.Self] += self;
-                s[PromptSection.Memory] += mem;
-                s[PromptSection.Events] += total - dig - self - mem + 4;
-            }
-            for (int i = anchor + 1; i < msgs.Count; i++)
-            {
-                s[PromptSection.TurnTools] += Tokens(msgs[i]);
-                if (msgs[i].Role == LlmRole.Assistant) round++;
-            }
-        }
-        else
-        {
-            // No turn (worker, ask_memory, compaction...): the first user message is the task/prompt. A brain turn whose text
-            // was cut by the hard-cap guard: the newest user message with text (not only tool results) starts the turn.
-            int first = -1;
-            if (turn != null)
-            {
-                for (int i = msgs.Count - 1; i >= 0 && first < 0; i--)
-                    if (msgs[i].Role == LlmRole.User && msgs[i].Content.Any(b => b is LlmText t && !t.Text.StartsWith("[new events]"))) first = i;
-            }
-            else
-                for (int i = 0; i < msgs.Count; i++) if (msgs[i].Role == LlmRole.User) { first = i; break; }
-            for (int i = 0; i < msgs.Count; i++)
-            {
-                if (i == first) s[PromptSection.Events] += Tokens(msgs[i]);
-                else s[i < first ? PromptSection.History : PromptSection.TurnTools] += Tokens(msgs[i]);
-                if (i > first && msgs[i].Role == LlmRole.Assistant) round++;
-            }
-        }
+        for (int i = 0; i < r.System.Count; i++) AddSystemBlock(s, i, r.System[i].Text);
+        var (anchor, anchorBlock) = turn != null ? FindTurn(r.Messages, turn.Text) : (-1, -1);
+        int round = anchor >= 0 ? AddAnchored(s, r.Messages, anchor, anchorBlock, turn!) : AddUnanchored(s, r.Messages, turn != null);
         return (s, round);
+    }
+
+    /// <summary>
+    /// Block 1: the system prompt, then the knowledge from its marker on. Block 2: identity is one paragraph; anything after the
+    /// first blank line is the legacy (v1) self-profile. Later blocks: identity.
+    /// </summary>
+    private static void AddSystemBlock(Dictionary<string, int> s, int i, string text)
+    {
+        if (i > 0)
+        {
+            int p = i == 1 ? text.IndexOf("\n\n", StringComparison.Ordinal) : -1;
+            AddSplit(s, text, p, PromptSection.Identity, PromptSection.Self);
+            return;
+        }
+        int k = KnowledgeMarkers.Select(m => text.IndexOf(m, StringComparison.Ordinal)).Where(x => x >= 0).DefaultIfEmpty(-1).Min();
+        AddSplit(s, text, k, PromptSection.System, PromptSection.Knowledge);
+    }
+
+    /// <summary>Text before <paramref name="at"/> counts to <paramref name="head"/>, the rest to <paramref name="tail"/> (at &lt; 0 = all head).</summary>
+    private static void AddSplit(Dictionary<string, int> s, string text, int at, string head, string tail)
+    {
+        if (at < 0)
+        {
+            s[head] += TextUtil.EstimateTokens(text);
+            return;
+        }
+        s[head] += TextUtil.EstimateTokens(text[..at]);
+        s[tail] += TextUtil.EstimateTokens(text[at..]);
+    }
+
+    /// <summary>The newest user message block holding the turn's text: (message, block), or (-1, -1).</summary>
+    private static (int Message, int Block) FindTurn(IReadOnlyList<LlmMessage> msgs, string text)
+    {
+        for (int i = msgs.Count - 1; i >= 0; i--)
+        {
+            if (msgs[i].Role != LlmRole.User) continue;
+            for (int j = 0; j < msgs[i].Content.Count; j++)
+                if (msgs[i].Content[j] is LlmText t && t.Text == text) return (i, j);
+        }
+        return (-1, -1);
+    }
+
+    /// <summary>Earlier messages are history; the turn's block splits into digest / self / memory / events; later ones are tool traffic.</summary>
+    private static int AddAnchored(Dictionary<string, int> s, IReadOnlyList<LlmMessage> msgs, int anchor, int anchorBlock, TurnInput turn)
+    {
+        for (int i = 0; i < anchor; i++) s[PromptSection.History] += Tokens(msgs[i]);
+        var am = msgs[anchor];
+        for (int j = 0; j < am.Content.Count; j++)
+        {
+            if (j != anchorBlock) s[PromptSection.History] += Tokens(am.Content[j]);
+            else AddTurnText(s, turn);
+        }
+        int round = 0;
+        for (int i = anchor + 1; i < msgs.Count; i++)
+        {
+            s[PromptSection.TurnTools] += Tokens(msgs[i]);
+            if (msgs[i].Role == LlmRole.Assistant) round++;
+        }
+        return round;
+    }
+
+    private static void AddTurnText(Dictionary<string, int> s, TurnInput turn)
+    {
+        int total = TextUtil.EstimateTokens(turn.Text);
+        int dig = Math.Min(total, TextUtil.EstimateTokens(turn.Digest));
+        int self = Math.Min(total - dig, TextUtil.EstimateTokens(turn.Self));
+        int mem = Math.Min(total - dig - self, TextUtil.EstimateTokens(turn.Memory));
+        s[PromptSection.Digest] += dig;
+        s[PromptSection.Self] += self;
+        s[PromptSection.Memory] += mem;
+        s[PromptSection.Events] += total - dig - self - mem + 4;
+    }
+
+    /// <summary>
+    /// No turn (worker, ask_memory, compaction...): the first user message is the task/prompt. A brain turn whose text was cut by
+    /// the hard-cap guard: the newest user message with text (not only tool results) starts the turn.
+    /// </summary>
+    private static int AddUnanchored(Dictionary<string, int> s, IReadOnlyList<LlmMessage> msgs, bool hasTurn)
+    {
+        int first = hasTurn ? NewestTextTurn(msgs) : FirstUser(msgs);
+        int round = 0;
+        for (int i = 0; i < msgs.Count; i++)
+        {
+            if (i == first) s[PromptSection.Events] += Tokens(msgs[i]);
+            else s[i < first ? PromptSection.History : PromptSection.TurnTools] += Tokens(msgs[i]);
+            if (i > first && msgs[i].Role == LlmRole.Assistant) round++;
+        }
+        return round;
+    }
+
+    private static int NewestTextTurn(IReadOnlyList<LlmMessage> msgs)
+    {
+        for (int i = msgs.Count - 1; i >= 0; i--)
+            if (msgs[i].Role == LlmRole.User && msgs[i].Content.Any(b => b is LlmText t && !t.Text.StartsWith("[new events]"))) return i;
+        return -1;
+    }
+
+    private static int FirstUser(IReadOnlyList<LlmMessage> msgs)
+    {
+        for (int i = 0; i < msgs.Count; i++) if (msgs[i].Role == LlmRole.User) return i;
+        return -1;
     }
 
     private static int Tokens(LlmMessage m) => ContextManager.EstimateTokens([m]);

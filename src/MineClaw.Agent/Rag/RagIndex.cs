@@ -455,85 +455,130 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     public List<RagHit> Search(RagQuery q, float[]? queryVector = null, SearchAugment? augment = null)
     {
         var terms = TextTokens.Terms(q.Text, q.IgnoreWords);
-        var lists = new List<List<long>>(3);
-        var lexical = new Dictionary<long, double>();
-        var snippets = new Dictionary<long, string>();
-        var distances = new Dictionary<long, double>();
-        var cosines = new Dictionary<long, double>();
-        var kinds = q.Kinds?.ToArray();
-        var tags = q.Tags?.ToArray();
-        int? dim = q.Dimension is { } qd && qd != WorldDim.Any ? qd : null;
-
+        var s = new SearchLists
+        {
+            Kinds = q.Kinds?.ToArray(),
+            Tags = q.Tags?.ToArray(),
+            Dim = q.Dimension is { } qd && qd != WorldDim.Any ? qd : null,
+        };
         lock (_db.Gate)
         {
-            if (terms.Count > 0)
-            {
-                var order = _db.HasFts ? FtsCandidates(terms, kinds, tags, dim, snippets, lexical) : LikeCandidates(terms, kinds, tags, dim, lexical);
-                if (order.Count > 0) lists.Add(order);
-            }
-            if (q.Near is { } p && q.Radius > 0)
-            {
-                var near = Spatial(p.X, p.Y, p.Z, q.Radius, q.NearKinds?.ToArray() ?? kinds, tags, CandidateLimit, dim ?? WorldDim.Any);
-                foreach (var (id, d) in near) distances[id] = d;
-                if (near.Count > 0) lists.Add(near.Select(n => n.Id).ToList());
-            }
+            AddLexicalList(s, terms);
+            AddSpatialList(s, q);
         }
+        AddSemanticList(s, queryVector, augment);
+        AddAugmentLists(s, augment);
+        if (s.Lists.Count == 0) return [];
 
-        if (queryVector != null && queryVector.Length > 0)
-        {
-            var sem = VectorTop(VectorMath.Normalize(queryVector), kinds, tags, CandidateLimit, _o.MinSimilarity * 0.75, augment?.SkipFlatVector, dim);
-            foreach (var (id, c) in sem) cosines[id] = c;
-            if (sem.Count > 0) lists.Add(sem.Select(s => s.Id).ToList());
-        }
-        if (augment != null)
-            foreach (var extra in augment.Lists)
-            {
-                if (extra.Items.Count == 0) continue;
-                var ids = new List<long>(extra.Items.Count);
-                var seen = new HashSet<long>();
-                foreach (var (id, c) in extra.Items)
-                {
-                    if (!seen.Add(id)) continue;
-                    ids.Add(id);
-                    if (c > cosines.GetValueOrDefault(id)) cosines[id] = c;
-                }
-                lists.Add(ids);
-            }
-        if (lists.Count == 0) return [];
-
-        var fused = new Dictionary<long, double>();
-        foreach (var list in lists)
-            for (int rank = 0; rank < list.Count; rank++)
-                fused[list[rank]] = fused.GetValueOrDefault(list[rank]) + 1.0 / (_o.RrfK + rank + 1);
-
-        var meta = LoadHits(fused.Keys);
-        var now = Now;
-        var hits = new List<RagHit>(meta.Count);
-        foreach (var (h, weight) in meta)
-        {
-            double lex = lexical.GetValueOrDefault(h.Id);
-            double cos = cosines.GetValueOrDefault(h.Id);
-            double? dist = distances.TryGetValue(h.Id, out var dd) ? dd : null;
-            bool pass = q.Strict
-                ? lex >= _o.MinLexical || cos >= _o.MinSimilarity || dist != null
-                : lex > 0 || cos >= _o.MinSimilarity || dist != null;
-            if (!pass) continue;
-            // Positioned docs of another dimension are dropped (e.g. RAPTOR leaves); episodes stay (tagged when rendered).
-            if (dim is { } wantDim && h.Bounds != null && h.Dimension != wantDim && h.Kind != EpisodeKind) continue;
-            if (q.Exclude?.Invoke(h.Id) == true) continue;
-
-            double score = fused[h.Id] * weight;
-            if (h.Kind == "episode" && _o.RecencyBoost > 0 && _o.RecencyHalfLifeHours > 0)
-            {
-                double ageH = Math.Max(0, (now - h.Updated).TotalHours);
-                score *= 1 + _o.RecencyBoost * Math.Pow(0.5, ageH / _o.RecencyHalfLifeHours);
-            }
-            hits.Add(h with { Score = score, Lexical = lex, Cosine = cos, Distance = dist, Snippet = snippets.GetValueOrDefault(h.Id) });
-        }
+        var hits = ScoreHits(q, s, Fuse(s.Lists));
         IEnumerable<RagHit> ranked = hits.OrderByDescending(h => h.Score).ThenByDescending(h => h.Updated);
         if (Corrections is { } cx) ranked = cx.Filter(this, ranked, q.Exclude); // retrieval time: catches later writes too
         return ranked.Take(Math.Max(1, q.Limit)).ToList();
     }
+
+    /// <summary>One search's ranked candidate lists (fused by RRF) and the per-doc evidence the relevance gates read.</summary>
+    private sealed class SearchLists
+    {
+        public required string[]? Kinds;
+        public required string[]? Tags;
+        public required int? Dim;
+        public readonly List<List<long>> Lists = new(3);
+        public readonly Dictionary<long, double> Lexical = new();
+        public readonly Dictionary<long, string> Snippets = new();
+        public readonly Dictionary<long, double> Distances = new();
+        public readonly Dictionary<long, double> Cosines = new();
+    }
+
+    private void AddLexicalList(SearchLists s, List<string> terms)
+    {
+        if (terms.Count == 0) return;
+        var order = _db.HasFts ? FtsCandidates(terms, s.Kinds, s.Tags, s.Dim, s.Snippets, s.Lexical) : LikeCandidates(terms, s.Kinds, s.Tags, s.Dim, s.Lexical);
+        if (order.Count > 0) s.Lists.Add(order);
+    }
+
+    private void AddSpatialList(SearchLists s, RagQuery q)
+    {
+        if (q.Near is not { } p || !(q.Radius > 0)) return;
+        var near = Spatial(p.X, p.Y, p.Z, q.Radius, q.NearKinds?.ToArray() ?? s.Kinds, s.Tags, CandidateLimit, s.Dim ?? WorldDim.Any);
+        foreach (var (id, d) in near) s.Distances[id] = d;
+        if (near.Count > 0) s.Lists.Add(near.Select(n => n.Id).ToList());
+    }
+
+    private void AddSemanticList(SearchLists s, float[]? queryVector, SearchAugment? augment)
+    {
+        if (queryVector == null || queryVector.Length == 0) return;
+        var sem = VectorTop(VectorMath.Normalize(queryVector), s.Kinds, s.Tags, CandidateLimit, _o.MinSimilarity * 0.75, augment?.SkipFlatVector, s.Dim);
+        foreach (var (id, c) in sem) s.Cosines[id] = c;
+        if (sem.Count > 0) s.Lists.Add(sem.Select(x => x.Id).ToList());
+    }
+
+    /// <summary>The augmenter's lists (RAPTOR): each id once, best rank first; their cosines feed the same gates.</summary>
+    private static void AddAugmentLists(SearchLists s, SearchAugment? augment)
+    {
+        if (augment == null) return;
+        foreach (var extra in augment.Lists)
+        {
+            if (extra.Items.Count == 0) continue;
+            var ids = new List<long>(extra.Items.Count);
+            var seen = new HashSet<long>();
+            foreach (var (id, c) in extra.Items)
+            {
+                if (!seen.Add(id)) continue;
+                ids.Add(id);
+                if (c > s.Cosines.GetValueOrDefault(id)) s.Cosines[id] = c;
+            }
+            s.Lists.Add(ids);
+        }
+    }
+
+    /// <summary>Reciprocal-rank fusion: Σ 1 / (k + rank) over every list a doc appears in.</summary>
+    private Dictionary<long, double> Fuse(List<List<long>> lists)
+    {
+        var fused = new Dictionary<long, double>();
+        foreach (var list in lists)
+            for (int rank = 0; rank < list.Count; rank++)
+                fused[list[rank]] = fused.GetValueOrDefault(list[rank]) + 1.0 / (_o.RrfK + rank + 1);
+        return fused;
+    }
+
+    private List<RagHit> ScoreHits(RagQuery q, SearchLists s, Dictionary<long, double> fused)
+    {
+        var meta = LoadHits(fused.Keys);
+        var now = Now;
+        var hits = new List<RagHit>(meta.Count);
+        foreach (var (h, weight) in meta)
+            if (ScoreHit(q, s, h, fused[h.Id] * weight, now) is { } hit) hits.Add(hit);
+        return hits;
+    }
+
+    /// <summary>A candidate past the relevance, dimension and exclude gates, scored (episodes get a recency boost); else null.</summary>
+    private RagHit? ScoreHit(RagQuery q, SearchLists s, RagHit h, double score, DateTimeOffset now)
+    {
+        double lex = s.Lexical.GetValueOrDefault(h.Id);
+        double cos = s.Cosines.GetValueOrDefault(h.Id);
+        double? dist = s.Distances.TryGetValue(h.Id, out var dd) ? dd : null;
+        if (!Relevant(q.Strict, lex, cos, dist)) return null;
+        // Positioned docs of another dimension are dropped (e.g. RAPTOR leaves); episodes stay (tagged when rendered).
+        if (OtherDimension(s.Dim, h)) return null;
+        if (q.Exclude?.Invoke(h.Id) == true) return null;
+        return h with { Score = WithRecency(h, score, now), Lexical = lex, Cosine = cos, Distance = dist, Snippet = s.Snippets.GetValueOrDefault(h.Id) };
+    }
+
+    private static bool OtherDimension(int? dim, RagHit h) =>
+        dim is { } wantDim && h.Bounds != null && h.Dimension != wantDim && h.Kind != EpisodeKind;
+
+    /// <summary>Episodes get a recency boost that halves every <see cref="RagOptions.RecencyHalfLifeHours"/>.</summary>
+    private double WithRecency(RagHit h, double score, DateTimeOffset now)
+    {
+        if (h.Kind != "episode" || !(_o.RecencyBoost > 0) || !(_o.RecencyHalfLifeHours > 0)) return score;
+        double ageH = Math.Max(0, (now - h.Updated).TotalHours);
+        return score * (1 + _o.RecencyBoost * Math.Pow(0.5, ageH / _o.RecencyHalfLifeHours));
+    }
+
+    /// <summary>Strict = the auto-retrieval gate (MinLexical / MinSimilarity); else any lexical match counts.</summary>
+    private bool Relevant(bool strict, double lex, double cos, double? dist) =>
+        strict ? lex >= _o.MinLexical || cos >= _o.MinSimilarity || dist != null
+            : lex > 0 || cos >= _o.MinSimilarity || dist != null;
 
     private static string KindFilter(string[]? kinds, string[]? tags, List<(string, object?)> args, int? dim = null)
     {

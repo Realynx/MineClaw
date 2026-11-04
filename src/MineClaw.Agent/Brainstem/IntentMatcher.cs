@@ -102,29 +102,50 @@ public static class IntentMatcher
         if (string.IsNullOrWhiteSpace(text) || text.Contains('?')) return Intent.None;
         var s = Normalize(text, names);
         if (s.Length == 0 || s.Length > 48) return Intent.None;
-        if (StopRx.IsMatch(s)) return new Intent(IntentKind.Stop);
-        if (TrailingStopRx.IsMatch(s) && !NotAStop.IsMatch(s)) return new Intent(IntentKind.Stop);
+        return CommandReflex(s) ?? (isItem != null ? GiveReflex(s, isItem) : Intent.None);
+    }
+
+    /// <summary>Stop, come, follow, look or a gesture when the whole line is that command; else null.</summary>
+    private static Intent? CommandReflex(string s)
+    {
+        if (StopRx.IsMatch(s) || (TrailingStopRx.IsMatch(s) && !NotAStop.IsMatch(s))) return new Intent(IntentKind.Stop);
         if (ComeRx.IsMatch(s)) return new Intent(IntentKind.Come);
         if (FollowRx.IsMatch(s)) return new Intent(IntentKind.Follow);
         if (LookRx.IsMatch(s)) return new Intent(IntentKind.LookAtMe);
-        if (GestureRx.Match(s) is { Success: true } g)
-        {
-            var m = g.Groups["m"].Value.ToLowerInvariant() switch { "sneak" => "crouch", "nod" => "look", "dance" => "spin", var x => x };
-            return new Intent(IntentKind.Gesture, m);
-        }
-        if (isItem != null && GiveRx.Match(s) is { Success: true } gm)
-        {
-            var item = gm.Groups["item"].Value.Trim();
-            var n = gm.Groups["n"].Success ? gm.Groups["n"].Value : gm.Groups["n2"].Success ? gm.Groups["n2"].Value : null;
-            // "give me a hand", "drop it", "give me some space": not an item we hold → the brain decides.
-            if (item is "it" or "that" or "this" or "them" or "those" or "everything" or "stuff" or "all" || !isItem(item)) return Intent.None;
-            bool all = n != null && n.StartsWith("all", StringComparison.Ordinal);
-            int? count = n != null && int.TryParse(n, out var k) ? Math.Clamp(k, 1, 256) : n is "a" or "an" or "one" ? 1 : null;
-            if (n is "some" or "a few" or "your" or "the" or "a stack of") count = n == "a stack of" ? 64 : null;
-            return new Intent(IntentKind.Give, item, count, all);
-        }
-        return Intent.None;
+        if (GestureRx.Match(s) is { Success: true } g) return new Intent(IntentKind.Gesture, GestureMove(g.Groups["m"].Value));
+        return null;
     }
+
+    private static string GestureMove(string m) => m.ToLowerInvariant() switch { "sneak" => "crouch", "nod" => "look", "dance" => "spin", var x => x };
+
+    /// <summary>"give me 5 cobblestone" when the item is one <paramref name="isItem"/> knows; else None.</summary>
+    private static Intent GiveReflex(string s, Func<string, bool> isItem)
+    {
+        if (GiveRx.Match(s) is not { Success: true } gm) return Intent.None;
+        var item = gm.Groups["item"].Value.Trim();
+        var n = gm.Groups["n"].Success ? gm.Groups["n"].Value : gm.Groups["n2"].Success ? gm.Groups["n2"].Value : null;
+        // "give me a hand", "drop it", "give me some space": not an item we hold → the brain decides.
+        if (NotAnItem.Contains(item) || !isItem(item)) return Intent.None;
+        bool all = n != null && n.StartsWith("all", StringComparison.Ordinal);
+        return new Intent(IntentKind.Give, item, GiveCount(n), all);
+    }
+
+    private static readonly HashSet<string> NotAnItem = new(StringComparer.Ordinal) { "it", "that", "this", "them", "those", "everything", "stuff", "all" };
+
+    /// <summary>The count a give asks for: a number (1..256), one for "a"/"an"/"one", a stack for "a stack of"; null = default.</summary>
+    private static int? GiveCount(string? n)
+    {
+        if (n == null) return null;
+        if (CountWords.TryGetValue(n, out var c)) return c;
+        return int.TryParse(n, out var k) ? Math.Clamp(k, 1, 256) : null;
+    }
+
+    /// <summary>Count words of a give: one, a stack, or the default (null) for vague amounts.</summary>
+    private static readonly Dictionary<string, int?> CountWords = new(StringComparer.Ordinal)
+    {
+        ["a"] = 1, ["an"] = 1, ["one"] = 1, ["a stack of"] = 64,
+        ["some"] = null, ["a few"] = null, ["your"] = null, ["the"] = null,
+    };
 
     /// <summary>
     /// A clear job worth a speculative first step (walk only), or None. Questions about how/what, negations and

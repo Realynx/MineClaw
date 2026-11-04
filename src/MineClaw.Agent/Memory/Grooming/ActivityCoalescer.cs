@@ -386,64 +386,89 @@ public sealed partial class ActivityCoalesceStage : IMemoryGroomer
     public static ActivitySpan? Parse(RagDoc doc, GroomContext ctx)
     {
         var meta = doc.Meta;
-        string? actor = meta?.GetValueOrDefault(ActivityMeta.Player);
-        if (actor == null && doc.Title.EndsWith(" activity", StringComparison.Ordinal)) actor = doc.Title[..^" activity".Length];
-        if (string.IsNullOrWhiteSpace(actor) || actor == "crew") return null;
+        if (ActorOf(doc) is not { } actor) return null;
         var body = doc.Body.Trim();
         if (!body.StartsWith(actor + " ", StringComparison.OrdinalIgnoreCase)) return null;
 
-        string day, ws, we;
-        var span = GroomText.TrailingSpan().Match(body);
-        long? startMs = long.TryParse(meta?.GetValueOrDefault(ActivityMeta.Start), NumberStyles.Integer, CultureInfo.InvariantCulture, out var s0) ? s0 : null;
-        long? endMs = long.TryParse(meta?.GetValueOrDefault(ActivityMeta.End), NumberStyles.Integer, CultureInfo.InvariantCulture, out var e0) ? e0 : null;
-        int sessions = 1;
-        if (span.Success)
-        {
-            day = span.Groups[1].Value;
-            ws = span.Groups[2].Value;
-            we = span.Groups[3].Success ? span.Groups[3].Value : ws;
-            if (span.Groups[4].Success) sessions = int.Parse(span.Groups[4].Value, CultureInfo.InvariantCulture);
-            body = body[..span.Index];
-        }
-        else
-        {
-            var st = (startMs is { } a ? DateTimeOffset.FromUnixTimeMilliseconds(a) : doc.At ?? ctx.Time.GetUtcNow()).ToLocalTime();
-            var en = (endMs is { } b ? DateTimeOffset.FromUnixTimeMilliseconds(b) : doc.At ?? ctx.Time.GetUtcNow()).ToLocalTime();
-            day = st.ToString("MM-dd", CultureInfo.InvariantCulture);
-            ws = st.ToString("HH:mm", CultureInfo.InvariantCulture);
-            we = en.ToString("HH:mm", CultureInfo.InvariantCulture);
-        }
+        long? startMs = MetaMs(meta, ActivityMeta.Start);
+        long? endMs = MetaMs(meta, ActivityMeta.End);
+        var (day, ws, we, sessions) = SpanWords(ref body, doc, ctx, startMs, endMs);
         long end = endMs ?? AgentDb.ToUnixMs(doc.At ?? ctx.Time.GetUtcNow());
         long start = startMs ?? end - (long)Math.Max(0, (TimeSpan.Parse(we, CultureInfo.InvariantCulture) - TimeSpan.Parse(ws, CultureInfo.InvariantCulture)).TotalMilliseconds);
 
         var rest = body[(actor.Length + 1)..].Trim();
         rest = FirstTail().Replace(rest, "");
-        string at = "";
-        var placeName = meta?.GetValueOrDefault(ActivityMeta.PlaceName);
-        if (placeName != null)
-        {
-            foreach (var cand in new[] { " at the " + placeName, " on " + placeName })
-                if (rest.EndsWith(cand, StringComparison.Ordinal)) { at = cand; break; }
-        }
-        else if (AtTail().Match(rest) is { Success: true } am) at = " " + am.Groups[1].Value;
+        string at = PlaceTail(rest, meta?.GetValueOrDefault(ActivityMeta.PlaceName));
         if (at.Length > 0) rest = rest[..^at.Length];
+        var (parts, novel) = Phrases(rest, ctx);
+        var (placeKey, placeKind) = PlaceOf(meta, at);
+        return new ActivitySpan(actor, at, parts, novel, day, ws, we, start, end, placeKey, placeKind, sessions);
+    }
 
+    /// <summary>Who the rollup is about: its player meta, else "X activity" in the title; null for none or the crew.</summary>
+    private static string? ActorOf(RagDoc doc)
+    {
+        string? actor = doc.Meta?.GetValueOrDefault(ActivityMeta.Player);
+        if (actor == null && doc.Title.EndsWith(" activity", StringComparison.Ordinal)) actor = doc.Title[..^" activity".Length];
+        return string.IsNullOrWhiteSpace(actor) || actor == "crew" ? null : actor;
+    }
+
+    private static long? MetaMs(IReadOnlyDictionary<string, string>? meta, string key) =>
+        long.TryParse(meta?.GetValueOrDefault(key), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : null;
+
+    /// <summary>
+    /// Day, window start/end and session count: from the body's trailing "(10-26 14:05-14:40, 3 sessions)" (cut off the body),
+    /// else from the start/end meta or the doc time, in local time.
+    /// </summary>
+    private static (string Day, string Ws, string We, int Sessions) SpanWords(ref string body, RagDoc doc, GroomContext ctx, long? startMs, long? endMs)
+    {
+        var span = GroomText.TrailingSpan().Match(body);
+        if (span.Success)
+        {
+            var ws = span.Groups[2].Value;
+            int sessions = span.Groups[4].Success ? int.Parse(span.Groups[4].Value, CultureInfo.InvariantCulture) : 1;
+            body = body[..span.Index];
+            return (span.Groups[1].Value, ws, span.Groups[3].Success ? span.Groups[3].Value : ws, sessions);
+        }
+        var st = (startMs is { } a ? DateTimeOffset.FromUnixTimeMilliseconds(a) : doc.At ?? ctx.Time.GetUtcNow()).ToLocalTime();
+        var en = (endMs is { } b ? DateTimeOffset.FromUnixTimeMilliseconds(b) : doc.At ?? ctx.Time.GetUtcNow()).ToLocalTime();
+        return (st.ToString("MM-dd", CultureInfo.InvariantCulture), st.ToString("HH:mm", CultureInfo.InvariantCulture), en.ToString("HH:mm", CultureInfo.InvariantCulture), 1);
+    }
+
+    /// <summary>The " at the X" / " on X" tail naming the place (the place meta's name, else any "at ..." tail); "" = none.</summary>
+    private static string PlaceTail(string rest, string? placeName)
+    {
+        if (placeName == null) return AtTail().Match(rest) is { Success: true } am ? " " + am.Groups[1].Value : "";
+        foreach (var cand in new[] { " at the " + placeName, " on " + placeName })
+            if (rest.EndsWith(cand, StringComparison.Ordinal)) return cand;
+        return "";
+    }
+
+    /// <summary>The listed phrases: known actions merged by key (counts summed), the rest kept as novel lines.</summary>
+    private static (List<ActivityPart> Parts, List<string> Novel) Phrases(string rest, GroomContext ctx)
+    {
         var parts = new List<ActivityPart>();
         var novel = new List<string>();
         foreach (var phrase in SplitList(rest))
         {
-            if (ParsePart(phrase) is { } p)
+            if (ParsePart(phrase) is not { } p)
             {
-                int i = parts.FindIndex(x => x.Key == p.Key);
-                if (i < 0) parts.Add(p);
-                else parts[i] = parts[i] with { Count = parts[i].Count + p.Count, Approx = parts[i].Approx || p.Approx, Probably = parts[i].Probably && p.Probably };
+                novel.Add(PhraseStage.Line(phrase, ctx));
+                continue;
             }
-            else novel.Add(PhraseStage.Line(phrase, ctx));
+            int i = parts.FindIndex(x => x.Key == p.Key);
+            if (i < 0) parts.Add(p);
+            else parts[i] = parts[i] with { Count = parts[i].Count + p.Count, Approx = parts[i].Approx || p.Approx, Probably = parts[i].Probably && p.Probably };
         }
+        return (parts, novel);
+    }
+
+    private static (string Key, string? Kind) PlaceOf(IReadOnlyDictionary<string, string>? meta, string at)
+    {
         var placeKind = meta?.GetValueOrDefault(ActivityMeta.PlaceKind);
         if (placeKind == null && at.Contains("unknown build", StringComparison.Ordinal)) placeKind = ActivityMeta.UnknownStructure;
         var placeKey = meta?.GetValueOrDefault(ActivityMeta.PlaceKey) is { Length: > 0 } pk ? (placeKind ?? "") + ":" + pk
             : at.Length > 0 ? "@" + at.Trim().ToLowerInvariant() : "-";
-        return new ActivitySpan(actor, at, parts, novel, day, ws, we, start, end, placeKey, placeKind, sessions);
+        return (placeKey, placeKind);
     }
 }

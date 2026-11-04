@@ -90,58 +90,78 @@ public sealed partial class BotAgent
     private Planned Plan(LlmToolUse u, ModelTier tier, bool retry, bool stopping, ICollection<string> queuedSigs, string? body = null)
     {
         var p = new Planned { Use = u, Body = body };
+        if (!PlanSteps(p, u, tier)) return p;
+        if (BodyRefusal(p, body) is { } refusal)
+        {
+            p.Result = ToolResult.Error(refusal);
+            return p;
+        }
+        if (p.AllInstant) return p;
+        HoldBackRepeat(p, body, retry, stopping, queuedSigs);
+        return p;
+    }
+
+    /// <summary>Resolves the call's tools into <see cref="Planned.Steps"/> (a <c>do</c> chain or a direct macro, else one tool). False = refused.</summary>
+    private bool PlanSteps(Planned p, LlmToolUse u, ModelTier tier)
+    {
         bool isDo = u.Name.Equals(DoTool.ToolName, StringComparison.OrdinalIgnoreCase);
         // A brain macro called directly (its definition lives in `do` now): run it the same way.
         bool direct = !isDo && tier == ModelTier.Main && DoTool.Actions.Contains(u.Name, StringComparer.OrdinalIgnoreCase)
             && _tools.TryGet(u.Name, out var dt) && !_tools.Allows(dt, tier);
-        if (isDo || direct)
-        {
-            if (isDo && (!_tools.TryGet(DoTool.ToolName, out var doTool) || !_tools.Allows(doTool, tier)))
-            {
-                p.Result = ToolResult.Error(tier == ModelTier.Cheap ? "not available in quick mode" : "'do' is not available here");
-                return p;
-            }
-            string? err = null;
-            var steps = isDo ? DoTool.Expand(u.Input, out err) : [(u.Name, u.Input)];
-            if (err != null) { p.Result = ToolResult.Error(err); return p; }
-            p.Compound = true;
-            p.Queue = isDo && DoTool.Queue(u.Input);
-            foreach (var (name, input) in steps)
-            {
-                if (!_tools.TryGet(name, out var t)) { p.Result = ToolResult.Error($"do: '{name}' isn't available here"); return p; }
-                p.Steps.Add((t, input));
-            }
-        }
-        else
-        {
-            if (!_tools.TryGet(u.Name, out var tool))
-            {
-                p.Result = ToolResult.Error(u.Name == EscalateToolName ? "can't escalate right now" : $"unknown tool '{u.Name}'");
-                return p;
-            }
-            if (!_tools.Allows(tool, tier))
-            {
-                p.Result = ToolResult.Error(tier == ModelTier.Cheap ? "not available in quick mode" : $"'{u.Name}' is a worker tool: use do or delegate");
-                return p;
-            }
-            p.Steps.Add((tool, u.Input));
-        }
+        return isDo || direct ? PlanCompound(p, u, tier, isDo) : PlanSingle(p, u, tier);
+    }
 
-        // Body lock: a running script owns the body; the brain decides explicitly (pause/replace it, or queue behind it).
+    private bool PlanCompound(Planned p, LlmToolUse u, ModelTier tier, bool isDo)
+    {
+        if (isDo && (!_tools.TryGet(DoTool.ToolName, out var doTool) || !_tools.Allows(doTool, tier)))
+            return Refuse(p, tier == ModelTier.Cheap ? "not available in quick mode" : "'do' is not available here");
+        string? err = null;
+        var steps = isDo ? DoTool.Expand(u.Input, out err) : [(u.Name, u.Input)];
+        if (err != null) return Refuse(p, err);
+        p.Compound = true;
+        p.Queue = isDo && DoTool.Queue(u.Input);
+        foreach (var (name, input) in steps)
+        {
+            if (!_tools.TryGet(name, out var t)) return Refuse(p, $"do: '{name}' isn't available here");
+            p.Steps.Add((t, input));
+        }
+        return true;
+    }
+
+    private bool PlanSingle(Planned p, LlmToolUse u, ModelTier tier)
+    {
+        if (!_tools.TryGet(u.Name, out var tool))
+            return Refuse(p, u.Name == EscalateToolName ? "can't escalate right now" : $"unknown tool '{u.Name}'");
+        if (!_tools.Allows(tool, tier))
+            return Refuse(p, tier == ModelTier.Cheap ? "not available in quick mode" : $"'{u.Name}' is a worker tool: use do or delegate");
+        p.Steps.Add((tool, u.Input));
+        return true;
+    }
+
+    private static bool Refuse(Planned p, string error)
+    {
+        p.Result = ToolResult.Error(error);
+        return false;
+    }
+
+    /// <summary>
+    /// Body lock: a running script owns the body; the brain decides explicitly (pause/replace it, or queue behind it). Then the
+    /// host's body-safety check on the main body. Null = the body may act.
+    /// </summary>
+    private string? BodyRefusal(Planned p, string? body)
+    {
         if (!p.Queue && p.Steps.Any(s => IsBodyTool(s.Tool.Name)) && HolderOf(body) is { } holder)
-        {
-            p.Result = ToolResult.Error($"body busy: {holder}. Use script op=pause or op=replace, or queue it: do{{...,queue:true}} runs after it");
-            return p;
-        }
-        if (IsMainBody(body) && BodySafety is { } safety && p.Steps.Any(s => IsBodyTool(s.Tool.Name) || IsCloneSpawn(s.Tool.Name, s.Input)))
-        {
-            string? no = null;
-            try { no = safety(p.Steps.Select(s => (s.Tool.Name, s.Input)).ToList()); } catch (Exception ex) { _log.LogDebug(ex, "body safety check failed"); }
-            if (no != null) { p.Result = ToolResult.Error(no); return p; }
-        }
-        if (p.AllInstant) return p;
+            return $"body busy: {holder}. Use script op=pause or op=replace, or queue it: do{{...,queue:true}} runs after it";
+        if (!IsMainBody(body) || BodySafety is not { } safety || !p.Steps.Any(s => IsBodyTool(s.Tool.Name) || IsCloneSpawn(s.Tool.Name, s.Input)))
+            return null;
+        string? no = null;
+        try { no = safety(p.Steps.Select(s => (s.Tool.Name, s.Input)).ToList()); } catch (Exception ex) { _log.LogDebug(ex, "body safety check failed"); }
+        return no;
+    }
 
-        // Same call (or same target) already running, or it just failed there: say so instead of re-issuing.
+    /// <summary>Same call (or same target) already running, or it just failed there: say so instead of re-issuing.</summary>
+    private void HoldBackRepeat(Planned p, string? body, bool retry, bool stopping, ICollection<string> queuedSigs)
+    {
         int first = p.Steps.FindIndex(s => s.Tool.IsLongRunning);
         var (ft, fi) = p.Steps[first];
         ToolResult? held = null;
@@ -152,17 +172,14 @@ public sealed partial class BotAgent
         }
         catch (Exception ex) { _log.LogDebug(ex, "tool guard failed"); }
         if (held == null && queuedSigs.Contains(SigOf(body, ft.Name, fi))) held = ToolResult.Success("already queued in this turn");
-        if (held != null)
+        if (held == null) return;
+        // The walk is already under way (a reflex, an earlier call): keep it and queue the rest behind it.
+        if (held.Ok && p.Steps.Count > first + 1 && ActivityManager.MovementTools.Contains(ft.Name))
         {
-            // The walk is already under way (a reflex, an earlier call): keep it and queue the rest behind it.
-            if (held.Ok && p.Steps.Count > first + 1 && ActivityManager.MovementTools.Contains(ft.Name))
-            {
-                p.Prefix = held.Text;
-                p.Steps.RemoveAt(first);
-            }
-            else p.Result = held;
+            p.Prefix = held.Text;
+            p.Steps.RemoveAt(first);
         }
-        return p;
+        else p.Result = held;
     }
 
     private async Task<IReadOnlyList<LlmToolResult>> ExecuteToolsAsync(List<LlmToolUse> uses, ModelTier tier, bool retry, CancellationToken ct)

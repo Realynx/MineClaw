@@ -45,39 +45,57 @@ public sealed class MinecraftDataSource : IGameDataSource
         Version = version;
         Edition = edition;
         var full = Path.GetFullPath(root);
-        string? dataDir = File.Exists(Path.Combine(full, "dataPaths.json")) ? full
-            : File.Exists(Path.Combine(full, "data", "dataPaths.json")) ? Path.Combine(full, "data") : null;
+        string? dataDir = DataDirOf(full);
         var used = new SortedSet<string>(StringComparer.Ordinal);
         foreach (var kind in new[] { "items", "blocks", "recipes", "foods", "entities" })
-        {
-            string? dir = null;
-            if (dataDir != null)
-            {
-                using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dataDir, "dataPaths.json")));
-                if (doc.RootElement.TryGetProperty(edition, out var ed) && ed.TryGetProperty(dataPathsKey ?? version, out var v)
-                    && v.TryGetProperty(kind, out var rel) && rel.GetString() is { Length: > 0 } r)
-                    dir = Path.Combine(dataDir, r.Replace('/', Path.DirectorySeparatorChar));
-                else if (Directory.Exists(Path.Combine(dataDir, edition, version))) dir = Path.Combine(dataDir, edition, version);
-                if (dir != null && File.Exists(Path.Combine(dir, kind + ".json"))) used.Add(Path.GetRelativePath(dataDir, dir).Replace('\\', '/'));
-            }
-            else dir = full;
-            var file = dir != null ? Path.Combine(dir, kind + ".json") : null;
-            if (file != null && File.Exists(file)) _files[kind] = file;
-        }
+            if (DataFileOf(full, dataDir, kind, edition, dataPathsKey ?? version, version, used) is { } file) _files[kind] = file;
         if (!_files.ContainsKey("items") || !_files.ContainsKey("blocks"))
             throw new FileNotFoundException($"no minecraft-data items.json/blocks.json for {edition} {dataPathsKey ?? version} under {full}");
-        var facts = new List<string>();
-        if (factsDirectory != null && Directory.Exists(factsDirectory))
-        {
-            FactsDirectory = Path.GetFullPath(factsDirectory);
-            foreach (var kind in new[] { "smelting", "mobs" })
-                if (File.Exists(Path.Combine(FactsDirectory, kind + ".json"))) { _files["facts-" + kind] = Path.Combine(FactsDirectory, kind + ".json"); facts.Add(kind); }
-        }
-        // Fixed text only (no absolute paths): the description feeds the source hash, which mustn't depend on the checkout location.
-        Description = $"minecraft-data {(used.Count > 0 ? string.Join(", ", used) : edition + "/" + version)}" +
-                      (facts.Count > 0 ? $" + {string.Join(" + ", facts)} facts (decompiled {version} client)" : "") +
-                      (tables != null ? $" + block drops from MineClaw.Data {tables.VersionId}" : "");
+        if (factsDirectory != null && Directory.Exists(factsDirectory)) FactsDirectory = Path.GetFullPath(factsDirectory);
+        var facts = FactsDirectory != null ? AddFactFiles(FactsDirectory) : [];
+        Description = DescribeSource(used, edition, version, facts, tables);
     }
+
+    /// <summary>The minecraft-data folder holding <c>dataPaths.json</c> (the repo root or its data folder); null = a version folder.</summary>
+    private static string? DataDirOf(string full) =>
+        File.Exists(Path.Combine(full, "dataPaths.json")) ? full
+            : File.Exists(Path.Combine(full, "data", "dataPaths.json")) ? Path.Combine(full, "data") : null;
+
+    /// <summary>One data kind's json file (via dataPaths.json, else in the given version folder); null = absent.</summary>
+    private static string? DataFileOf(string full, string? dataDir, string kind, string edition, string key, string version, SortedSet<string> used)
+    {
+        var dir = dataDir != null ? DirFromDataPaths(dataDir, kind, edition, key, version, used) : full;
+        var file = dir != null ? Path.Combine(dir, kind + ".json") : null;
+        return file != null && File.Exists(file) ? file : null;
+    }
+
+    /// <summary>The folder of one data kind per dataPaths.json (else the edition/version folder); a folder that has it is noted in <paramref name="used"/>.</summary>
+    private static string? DirFromDataPaths(string dataDir, string kind, string edition, string key, string version, SortedSet<string> used)
+    {
+        string? dir = null;
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dataDir, "dataPaths.json")));
+        if (doc.RootElement.TryGetProperty(edition, out var ed) && ed.TryGetProperty(key, out var v)
+            && v.TryGetProperty(kind, out var rel) && rel.GetString() is { Length: > 0 } r)
+            dir = Path.Combine(dataDir, r.Replace('/', Path.DirectorySeparatorChar));
+        else if (Directory.Exists(Path.Combine(dataDir, edition, version))) dir = Path.Combine(dataDir, edition, version);
+        if (dir != null && File.Exists(Path.Combine(dir, kind + ".json"))) used.Add(Path.GetRelativePath(dataDir, dir).Replace('\\', '/'));
+        return dir;
+    }
+
+    /// <summary>Registers the facts files present (smelting, mobs) and returns their kinds.</summary>
+    private List<string> AddFactFiles(string factsDirectory)
+    {
+        var facts = new List<string>();
+        foreach (var kind in new[] { "smelting", "mobs" })
+            if (File.Exists(Path.Combine(factsDirectory, kind + ".json"))) { _files["facts-" + kind] = Path.Combine(factsDirectory, kind + ".json"); facts.Add(kind); }
+        return facts;
+    }
+
+    /// <summary>Fixed text only (no absolute paths): the description feeds the source hash, which mustn't depend on the checkout location.</summary>
+    private static string DescribeSource(SortedSet<string> used, string edition, string version, List<string> facts, MineClaw.Data.Versioning.IGameData? tables) =>
+        $"minecraft-data {(used.Count > 0 ? string.Join(", ", used) : edition + "/" + version)}" +
+        (facts.Count > 0 ? $" + {string.Join(" + ", facts)} facts (decompiled {version} client)" : "") +
+        (tables != null ? $" + block drops from MineClaw.Data {tables.VersionId}" : "");
 
     private sealed record Variant(int Meta, string Display);
     private sealed record Item(int Id, string Name, string Display, int Stack, int Durability, IReadOnlyList<Variant> Variants);
@@ -141,29 +159,15 @@ public sealed class MinecraftDataSource : IGameDataSource
 
     public IReadOnlyList<RagDoc> Docs()
     {
-        var items = Load("items").EnumerateArray().Select(e => new Item(Int(e, "id"), Str(e, "name") ?? "", Str(e, "displayName") ?? Str(e, "name") ?? "?",
-            Int(e, "stackSize", 64), Int(e, "maxDurability", Int(e, "durability")), Variants(e))).OrderBy(i => i.Id).ToList();
-        var blocks = Load("blocks").EnumerateArray().Select(e => new Block(Int(e, "id"), Str(e, "name") ?? "", Str(e, "displayName") ?? Str(e, "name") ?? "?",
-            Num(e, "hardness"), !e.TryGetProperty("diggable", out var dg) || dg.ValueKind != JsonValueKind.False, Str(e, "material"),
-            Str(e, "boundingBox") is not "empty", e.TryGetProperty("transparent", out var tr) && tr.ValueKind == JsonValueKind.True,
-            Int(e, "emitLight"), HarvestTools(e), BlockDrops(e), Variants(e))).OrderBy(b => b.Id).ToList();
-        var foods = _files.ContainsKey("foods")
-            ? Load("foods").EnumerateArray().Select(e => new Food(Int(e, "id"), Str(e, "name"), Str(e, "displayName"), Num(e, "foodPoints") ?? 0, Num(e, "saturation") ?? 0)).ToList()
-            : [];
+        var items = LoadItems();
+        var blocks = LoadBlocks();
+        var foods = LoadFoods();
 
         var names = new Names();
         foreach (var i in items) names.Add(i.Id, i.Name, i.Display, i.Variants);
         foreach (var b in blocks) names.Add(b.Id, b.Name, b.Display, b.Variants);
         var blockNames = blocks.Select(b => b.Name).ToHashSet(StringComparer.Ordinal);
-        var itemKeys = items.Select(i => (i.Id, i.Name)).ToHashSet();
-
-        // A food row by item id (+ name), else by registry name, else by display name: minecraft-data 1.12 lists some foods under their
-        // crop block's id (carrots 141 → the Carrot item 391, melon_block 103 → the Melon slice 360).
-        Food? FoodOf(Item it) =>
-            foods.FirstOrDefault(f => f.Id == it.Id && (f.Name == null || f.Name == it.Name))
-            ?? foods.FirstOrDefault(f => f.Name == it.Name)
-            ?? foods.FirstOrDefault(f => f.Display != null && f.Display.Equals(it.Display, StringComparison.OrdinalIgnoreCase)
-                                         && !(itemKeys.Contains((f.Id, f.Name ?? "")) && !blockNames.Contains(f.Name ?? ""))); // not another item's own row
+        var foodOf = new FoodFinder(foods, items.Select(i => (i.Id, i.Name)).ToHashSet(), blockNames);
 
         var smelting = _files.ContainsKey("facts-smelting") ? SmeltingFacts.Parse(Load("facts-smelting"), names) : null;
 
@@ -171,42 +175,83 @@ public sealed class MinecraftDataSource : IGameDataSource
         if (_files.ContainsKey("recipes")) docs.AddRange(RecipeDocs(Load("recipes"), names));
         if (smelting != null) docs.AddRange(smelting.Docs(names, Version));
         foreach (var it in items.Where(i => !blockNames.Contains(i.Name))) // block items get their block doc
-        {
-            var sb = new StringBuilder($"Item: {it.Display} ({Reg(it.Name)}id {it.Id}). ");
-            sb.Append(it.Stack == 1 ? "Does not stack." : $"Stacks to {it.Stack}.");
-            if (it.Durability > 0) sb.Append($" Durability {it.Durability} uses.");
-            if (FoodOf(it) is { } f)
-                sb.Append($" Food: restores {F(f.Points)} hunger ({F(f.Points / 2)} shanks), saturation {F(f.Saturation)}.");
-            AppendVariants(sb, it.Display, it.Variants);
-            smelting?.AppendFacts(sb, it.Id, names);
-            docs.Add(Doc($"gd:item:{it.Id}", "item", $"item {it.Display}", sb.ToString()));
-        }
+            docs.Add(ItemDoc(it, foodOf.Of(it), smelting, names));
         foreach (var b in blocks.Where(b => b.Id > 0 && b.Name != "air"))
-        {
-            var sb = new StringBuilder($"Block: {b.Display} ({Reg(b.Name)}id {b.Id}). ");
-            sb.Append(!b.Diggable || b.Hardness is < 0 ? "Unbreakable." : b.Hardness is null or 0 ? "Breaks instantly." : $"Hardness {F(b.Hardness.Value)}.");
-            if (ToolOf(b.Material) is { } tool) sb.Append($" Best tool: {tool}.");
-            if (b.HarvestTools.Count > 0)
-            {
-                var tools = b.HarvestTools.Select(t => names.Of(t)).OrderBy(TierRank).ThenBy(n => n, StringComparer.Ordinal).ToList();
-                var kinds = tools.Select(t => t.Split(' ')[^1]).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                // One tool kind by tier ("at least a Stone Pickaxe"): short, and "iron pickaxe" stays the name of the iron pickaxe's own docs.
-                if (kinds.Count == 1 && tools.All(t => TierRank(t) < 5)) sb.Append($" Needs at least a {tools[0]} to drop anything.");
-                else sb.Append(" Drops anything only when mined with: ").Append(string.Join(", ", tools)).Append('.');
-            }
-            var drops = (Tables != null ? TableDrops(b, names) : b.Drops).Where(d => d.Id != 0).ToList();
-            if (drops.Count > 0) sb.Append(" Drops ").Append(string.Join(", ", drops.Select(names.Of))).Append('.');
-            else if (b.Diggable && b.Hardness is >= 0) sb.Append(" Drops nothing.");
-            if (!b.Solid) sb.Append(" Not solid (walk through).");
-            if (b.Light > 0) sb.Append($" Gives light {b.Light}.");
-            AppendVariants(sb, b.Display, b.Variants);
-            smelting?.AppendFacts(sb, b.Id, names);
-            docs.Add(Doc($"gd:block:{b.Id}", "block", $"block {b.Display}", sb.ToString()));
-        }
-        if (_files.ContainsKey("entities") || _files.ContainsKey("facts-mobs"))
-            docs.AddRange(MobDocs(_files.ContainsKey("entities") ? Load("entities") : default,
-                _files.ContainsKey("facts-mobs") ? Load("facts-mobs") : default, names));
+            docs.Add(BlockDoc(b, smelting, names));
+        if (_files.ContainsKey("entities") || _files.ContainsKey("facts-mobs")) docs.AddRange(LoadedMobDocs(names));
         return docs;
+    }
+
+    private IEnumerable<RagDoc> LoadedMobDocs(Names names) =>
+        MobDocs(_files.ContainsKey("entities") ? Load("entities") : default, _files.ContainsKey("facts-mobs") ? Load("facts-mobs") : default, names);
+
+    private List<Item> LoadItems() =>
+        Load("items").EnumerateArray().Select(e => new Item(Int(e, "id"), Str(e, "name") ?? "", Str(e, "displayName") ?? Str(e, "name") ?? "?",
+            Int(e, "stackSize", 64), Int(e, "maxDurability", Int(e, "durability")), Variants(e))).OrderBy(i => i.Id).ToList();
+
+    private List<Block> LoadBlocks() =>
+        Load("blocks").EnumerateArray().Select(e => new Block(Int(e, "id"), Str(e, "name") ?? "", Str(e, "displayName") ?? Str(e, "name") ?? "?",
+            Num(e, "hardness"), !e.TryGetProperty("diggable", out var dg) || dg.ValueKind != JsonValueKind.False, Str(e, "material"),
+            Str(e, "boundingBox") is not "empty", e.TryGetProperty("transparent", out var tr) && tr.ValueKind == JsonValueKind.True,
+            Int(e, "emitLight"), HarvestTools(e), BlockDrops(e), Variants(e))).OrderBy(b => b.Id).ToList();
+
+    private List<Food> LoadFoods() => _files.ContainsKey("foods")
+        ? Load("foods").EnumerateArray().Select(e => new Food(Int(e, "id"), Str(e, "name"), Str(e, "displayName"), Num(e, "foodPoints") ?? 0, Num(e, "saturation") ?? 0)).ToList()
+        : [];
+
+    /// <summary>
+    /// A food row by item id (+ name), else by registry name, else by display name: minecraft-data 1.12 lists some foods under their
+    /// crop block's id (carrots 141 → the Carrot item 391, melon_block 103 → the Melon slice 360).
+    /// </summary>
+    private sealed class FoodFinder(List<Food> foods, HashSet<(int Id, string Name)> itemKeys, HashSet<string> blockNames)
+    {
+        public Food? Of(Item it) =>
+            foods.FirstOrDefault(f => f.Id == it.Id && (f.Name == null || f.Name == it.Name))
+            ?? foods.FirstOrDefault(f => f.Name == it.Name)
+            ?? foods.FirstOrDefault(f => f.Display != null && f.Display.Equals(it.Display, StringComparison.OrdinalIgnoreCase)
+                                         && !(itemKeys.Contains((f.Id, f.Name ?? "")) && !blockNames.Contains(f.Name ?? ""))); // not another item's own row
+    }
+
+    private static RagDoc ItemDoc(Item it, Food? food, SmeltingFacts? smelting, Names names)
+    {
+        var sb = new StringBuilder($"Item: {it.Display} ({Reg(it.Name)}id {it.Id}). ");
+        sb.Append(it.Stack == 1 ? "Does not stack." : $"Stacks to {it.Stack}.");
+        if (it.Durability > 0) sb.Append($" Durability {it.Durability} uses.");
+        if (food is { } f)
+            sb.Append($" Food: restores {F(f.Points)} hunger ({F(f.Points / 2)} shanks), saturation {F(f.Saturation)}.");
+        AppendVariants(sb, it.Display, it.Variants);
+        smelting?.AppendFacts(sb, it.Id, names);
+        return Doc($"gd:item:{it.Id}", "item", $"item {it.Display}", sb.ToString());
+    }
+
+    private RagDoc BlockDoc(Block b, SmeltingFacts? smelting, Names names)
+    {
+        var sb = new StringBuilder($"Block: {b.Display} ({Reg(b.Name)}id {b.Id}). ");
+        sb.Append(!b.Diggable || b.Hardness is < 0 ? "Unbreakable." : b.Hardness is null or 0 ? "Breaks instantly." : $"Hardness {F(b.Hardness.Value)}.");
+        if (ToolOf(b.Material) is { } tool) sb.Append($" Best tool: {tool}.");
+        if (b.HarvestTools.Count > 0) AppendHarvestTools(sb, b, names);
+        AppendBlockDrops(sb, b, names);
+        if (!b.Solid) sb.Append(" Not solid (walk through).");
+        if (b.Light > 0) sb.Append($" Gives light {b.Light}.");
+        AppendVariants(sb, b.Display, b.Variants);
+        smelting?.AppendFacts(sb, b.Id, names);
+        return Doc($"gd:block:{b.Id}", "block", $"block {b.Display}", sb.ToString());
+    }
+
+    /// <summary>One tool kind by tier ("at least a Stone Pickaxe"): short, and "iron pickaxe" stays the name of the iron pickaxe's own docs.</summary>
+    private static void AppendHarvestTools(StringBuilder sb, Block b, Names names)
+    {
+        var tools = b.HarvestTools.Select(t => names.Of(t)).OrderBy(TierRank).ThenBy(n => n, StringComparer.Ordinal).ToList();
+        var kinds = tools.Select(t => t.Split(' ')[^1]).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (kinds.Count == 1 && tools.All(t => TierRank(t) < 5)) sb.Append($" Needs at least a {tools[0]} to drop anything.");
+        else sb.Append(" Drops anything only when mined with: ").Append(string.Join(", ", tools)).Append('.');
+    }
+
+    private void AppendBlockDrops(StringBuilder sb, Block b, Names names)
+    {
+        var drops = (Tables != null ? TableDrops(b, names) : b.Drops).Where(d => d.Id != 0).ToList();
+        if (drops.Count > 0) sb.Append(" Drops ").Append(string.Join(", ", drops.Select(names.Of))).Append('.');
+        else if (b.Diggable && b.Hardness is >= 0) sb.Append(" Drops nothing.");
     }
 
     /// <summary>The block's drops from <see cref="Tables"/> (by hand, else with the first harvest tool that can) over its variants,
@@ -420,69 +465,98 @@ public sealed class MinecraftDataSource : IGameDataSource
     /// </summary>
     private static IEnumerable<RagDoc> MobDocs(JsonElement entities, JsonElement facts, Names names)
     {
-        var info = new SortedDictionary<string, (string Display, string? Category, double? Height)>(StringComparer.Ordinal);
-        if (entities.ValueKind == JsonValueKind.Array)
-            foreach (var e in entities.EnumerateArray())
-            {
-                var cat = Str(e, "category");
-                if (Str(e, "type") != "mob" || cat is not ("Hostile mobs" or "Passive mobs") || Str(e, "name") is not { Length: > 0 } n) continue;
-                info.TryAdd(n, (Str(e, "displayName") ?? n, cat, Num(e, "height")));
-            }
-        var byName = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        if (facts.ValueKind == JsonValueKind.Object && facts.TryGetProperty("mobs", out var mobs) && mobs.ValueKind == JsonValueKind.Array)
-            foreach (var m in mobs.EnumerateArray())
-                if (Str(m, "name") is { Length: > 0 } n)
-                {
-                    byName[n] = m;
-                    if (!info.ContainsKey(n)) info[n] = (n.Replace('_', ' '), null, null);
-                }
-
-        string ItemName(JsonElement d) => Str(d, "item") is { } i && names.Id(i) is { } id
-            ? names.Of(id, d.TryGetProperty("meta", out var mm) && mm.ValueKind == JsonValueKind.Number ? mm.GetInt32() : null)
-            : (Str(d, "item") ?? "?").Replace('_', ' ');
-
+        var info = MobInfo(entities);
+        var byName = MobFacts(facts, info);
         foreach (var (name, (display, cat, height)) in info)
         {
             var kind = cat == "Hostile mobs" ? ", hostile" : cat == "Passive mobs" ? ", passive or neutral" : "";
             var sb = new StringBuilder($"Mob: {display} ({name}){kind}.");
-            if (byName.TryGetValue(name, out var m))
-            {
-                if (Num(m, "health") is { } hp) sb.Append($" Health {F(hp)} ({F(hp / 2)} hearts).");
-                else if (Str(m, "health") is { Length: > 0 } hps) sb.Append($" Health {hps}.");
-                if (Num(m, "attack") is { } atk) sb.Append($" Attack {F(atk)}.");
-                else if (Str(m, "attack") is { Length: > 0 } atks) sb.Append($" Attack {atks}.");
-                if (Str(m, "xp") is { Length: > 0 } xp) sb.Append($" XP {xp}.");
-                if (m.TryGetProperty("drops", out var drops) && drops.ValueKind == JsonValueKind.Array && drops.GetArrayLength() > 0)
-                    sb.Append(" Drops: ").Append(string.Join("; ", drops.EnumerateArray().Select(d =>
-                    {
-                        var range = Num(d, "min") is { } lo && Num(d, "max") is { } hi ? (lo == hi ? $"{F(lo)} " : $"{F(lo)}-{F(hi)} ") : "";
-                        var extra = new[]
-                        {
-                            Num(d, "chance") is { } ch && ch < 1 ? $"{F(ch * 100)}%" : null,
-                            Str(d, "looting") is { Length: > 0 } l ? "Looting " + l : null, Str(d, "condition"),
-                        }.OfType<string>().ToList();
-                        return range + ItemName(d) + (extra.Count > 0 ? $" ({string.Join(", ", extra)})" : "");
-                    }))).Append('.');
-                else sb.Append(" Drops nothing.");
-                if (m.TryGetProperty("rare", out var rare) && rare.ValueKind == JsonValueKind.Array && rare.GetArrayLength() > 0)
-                {
-                    // Consecutive rares with one condition (zombie: iron ingot, carrot, potato from one roll) share it.
-                    var groups = new List<(string? Cond, List<string> Items)>();
-                    foreach (var d in rare.EnumerateArray())
-                    {
-                        var item = ItemName(d) + (Num(d, "chance") is { } c ? $" {F(c * 100)}%" : "");
-                        var cond = Str(d, "condition") is { Length: > 0 } cd ? cd : null;
-                        if (groups.Count > 0 && groups[^1].Cond == cond) groups[^1].Items.Add(item);
-                        else groups.Add((cond, [item]));
-                    }
-                    sb.Append(" Rare: ").Append(string.Join("; ", groups.Select(g => string.Join(", ", g.Items) + (g.Cond != null ? $" ({g.Cond})" : "")))).Append('.');
-                }
-                if (Str(m, "notes") is { Length: > 0 } notes) sb.Append(' ').Append(notes.Trim());
-            }
+            if (byName.TryGetValue(name, out var m)) AppendMobFacts(sb, m, names);
             if (height is { } h) sb.Append($" {F(h)} blocks tall.");
             yield return Doc($"gd:mob:{name}", "mob", $"mob {display}", sb.ToString());
         }
         if (facts.ValueKind == JsonValueKind.Object && Str(facts, "attack_note") is { Length: > 0 } note)
             yield return Doc("gd:mob:overview", "mob", "mob attack and xp rules", "Mobs: " + note.Trim());
     }
+
+    /// <summary>Living mobs from entities.json by name: display name, hostile/passive category, height.</summary>
+    private static SortedDictionary<string, (string Display, string? Category, double? Height)> MobInfo(JsonElement entities)
+    {
+        var info = new SortedDictionary<string, (string Display, string? Category, double? Height)>(StringComparer.Ordinal);
+        if (entities.ValueKind != JsonValueKind.Array) return info;
+        foreach (var e in entities.EnumerateArray())
+        {
+            var cat = Str(e, "category");
+            if (Str(e, "type") != "mob" || cat is not ("Hostile mobs" or "Passive mobs") || Str(e, "name") is not { Length: > 0 } n) continue;
+            info.TryAdd(n, (Str(e, "displayName") ?? n, cat, Num(e, "height")));
+        }
+        return info;
+    }
+
+    /// <summary>mobs.json entries by name; a mob only the facts know is added to <paramref name="info"/> (no category or height).</summary>
+    private static Dictionary<string, JsonElement> MobFacts(JsonElement facts, SortedDictionary<string, (string Display, string? Category, double? Height)> info)
+    {
+        var byName = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        if (facts.ValueKind != JsonValueKind.Object || !facts.TryGetProperty("mobs", out var mobs) || mobs.ValueKind != JsonValueKind.Array) return byName;
+        foreach (var m in mobs.EnumerateArray())
+            if (Str(m, "name") is { Length: > 0 } n)
+            {
+                byName[n] = m;
+                if (!info.ContainsKey(n)) info[n] = (n.Replace('_', ' '), null, null);
+            }
+        return byName;
+    }
+
+    /// <summary>" Health 20 (10 hearts). Attack 3. XP 5. Drops: ... Rare: ... notes" for one mob's facts.</summary>
+    private static void AppendMobFacts(StringBuilder sb, JsonElement m, Names names)
+    {
+        AppendNumOrText(sb, m, "health", hp => $" Health {F(hp)} ({F(hp / 2)} hearts).", "Health");
+        AppendNumOrText(sb, m, "attack", atk => $" Attack {F(atk)}.", "Attack");
+        if (Str(m, "xp") is { Length: > 0 } xp) sb.Append($" XP {xp}.");
+        if (NonEmptyArray(m, "drops") is { } drops)
+            sb.Append(" Drops: ").Append(string.Join("; ", drops.EnumerateArray().Select(d => DropText(d, names)))).Append('.');
+        else sb.Append(" Drops nothing.");
+        if (NonEmptyArray(m, "rare") is { } rare) AppendRare(sb, rare, names);
+        if (Str(m, "notes") is { Length: > 0 } notes) sb.Append(' ').Append(notes.Trim());
+    }
+
+    /// <summary>A number in its own wording, else a text value as " Label text."; nothing when absent.</summary>
+    private static void AppendNumOrText(StringBuilder sb, JsonElement m, string key, Func<double, string> number, string label)
+    {
+        if (Num(m, key) is { } v) sb.Append(number(v));
+        else if (Str(m, key) is { Length: > 0 } s) sb.Append($" {label} {s}.");
+    }
+
+    private static JsonElement? NonEmptyArray(JsonElement m, string key) =>
+        m.TryGetProperty(key, out var a) && a.ValueKind == JsonValueKind.Array && a.GetArrayLength() > 0 ? a : null;
+
+    /// <summary>"1-2 Rotten Flesh (Looting +1, on fire)": count range, item, chance below 100%, looting and condition.</summary>
+    private static string DropText(JsonElement d, Names names)
+    {
+        var range = Num(d, "min") is { } lo && Num(d, "max") is { } hi ? (lo == hi ? $"{F(lo)} " : $"{F(lo)}-{F(hi)} ") : "";
+        var extra = new[]
+        {
+            Num(d, "chance") is { } ch && ch < 1 ? $"{F(ch * 100)}%" : null,
+            Str(d, "looting") is { Length: > 0 } l ? "Looting " + l : null, Str(d, "condition"),
+        }.OfType<string>().ToList();
+        return range + MobItemName(d, names) + (extra.Count > 0 ? $" ({string.Join(", ", extra)})" : "");
+    }
+
+    /// <summary>Consecutive rares with one condition (zombie: iron ingot, carrot, potato from one roll) share it.</summary>
+    private static void AppendRare(StringBuilder sb, JsonElement rare, Names names)
+    {
+        var groups = new List<(string? Cond, List<string> Items)>();
+        foreach (var d in rare.EnumerateArray())
+        {
+            var item = MobItemName(d, names) + (Num(d, "chance") is { } c ? $" {F(c * 100)}%" : "");
+            var cond = Str(d, "condition") is { Length: > 0 } cd ? cd : null;
+            if (groups.Count > 0 && groups[^1].Cond == cond) groups[^1].Items.Add(item);
+            else groups.Add((cond, [item]));
+        }
+        sb.Append(" Rare: ").Append(string.Join("; ", groups.Select(g => string.Join(", ", g.Items) + (g.Cond != null ? $" ({g.Cond})" : "")))).Append('.');
+    }
+
+    private static string MobItemName(JsonElement d, Names names) => Str(d, "item") is { } i && names.Id(i) is { } id
+        ? names.Of(id, d.TryGetProperty("meta", out var mm) && mm.ValueKind == JsonValueKind.Number ? mm.GetInt32() : null)
+        : (Str(d, "item") ?? "?").Replace('_', ' ');
 }

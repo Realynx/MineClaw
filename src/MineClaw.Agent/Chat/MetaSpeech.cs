@@ -272,45 +272,68 @@ public static partial class MetaSpeech
             if (line.Length == 0 || line.StartsWith('/')) { lines.Add(raw); continue; }
             // A whole line of data ("4,64,6 cobblestone", "4,6=cobblestone 5,6=water"): a tool/scan dump, never speech.
             if (IsData(line)) { suppressed.Add(line); continue; }
-            var kept = new List<string>();
-            foreach (var s in SentenceRx().Split(line))
-            {
-                var t = s.Trim();
-                if (t.Length == 0) continue;
-                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || IsSelfReport(t) || (!statusAsked && (IsRunStatus(t) || IsStatusNarration(t)))
-                    || TalksAboutAddressee(t, addressees)) { suppressed.Add(t); continue; }
-                if (AskingLeadRx().Match(t) is { Success: true } lead)
-                {
-                    suppressed.Add(t);
-                    var rest = t[(lead.Index + lead.Length)..].Trim();
-                    if (rest.Length == 0) continue;
-                    t = char.ToUpperInvariant(rest[0]) + rest[1..];
-                }
-                if (NarrationRx().IsMatch(t) && t.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length <= MaxPlumbingWords)
-                {
-                    if (suppressed.Count == 0 || !ReferenceEquals(suppressed[^1], t)) suppressed.Add(t);
-                    continue;
-                }
-                if (WithoutCapabilityTalk(t) is not { } plain) { suppressed.Add(t); continue; }
-                if (!ReferenceEquals(plain, t)) { suppressed.Add(t); t = plain; }
-                if (PlumbingRx().Match(t) is { Success: true } pm)
-                {
-                    // "I've started the job in the background: grab a stone axe and torches, ..." keeps what the job is.
-                    int colon = t.IndexOf(':', pm.Index + pm.Length);
-                    if (colon > 0 && t[(colon + 1)..].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length >= 3)
-                    {
-                        suppressed.Add(t[..(colon + 1)]);
-                        kept.Add("on it: " + t[(colon + 1)..].Trim());
-                        continue;
-                    }
-                    if (t.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length <= MaxPlumbingWords) { suppressed.Add(t); continue; }
-                }
-                kept.Add(t);
-            }
+            var kept = KeptSentences(line, suppressed, statusAsked, addressees);
             if (kept.Count > 0) lines.Add(string.Join(" ", kept));
         }
         return string.Join("\n", lines).Trim();
     }
+
+    private static List<string> KeptSentences(string line, List<string> suppressed, bool statusAsked, IReadOnlyCollection<string>? addressees)
+    {
+        var kept = new List<string>();
+        foreach (var s in SentenceRx().Split(line))
+        {
+            var t = s.Trim();
+            if (t.Length > 0 && KeptSentence(t, suppressed, statusAsked, addressees) is { } k) kept.Add(k);
+        }
+        return kept;
+    }
+
+    /// <summary>What a sentence says to the players after the meta filters (null = dropped; what went is added to <paramref name="suppressed"/>).</summary>
+    private static string? KeptSentence(string t, List<string> suppressed, bool statusAsked, IReadOnlyCollection<string>? addressees)
+    {
+        if (IsDroppedSentence(t, statusAsked, addressees)) { suppressed.Add(t); return null; }
+        if (AskingLeadRx().Match(t) is { Success: true } lead)
+        {
+            suppressed.Add(t);
+            var rest = t[(lead.Index + lead.Length)..].Trim();
+            if (rest.Length == 0) return null;
+            t = char.ToUpperInvariant(rest[0]) + rest[1..];
+        }
+        if (NarrationRx().IsMatch(t) && WordCount(t) <= MaxPlumbingWords)
+        {
+            if (suppressed.Count == 0 || !ReferenceEquals(suppressed[^1], t)) suppressed.Add(t);
+            return null;
+        }
+        if (WithoutCapabilityTalk(t) is not { } plain) { suppressed.Add(t); return null; }
+        if (!ReferenceEquals(plain, t)) { suppressed.Add(t); t = plain; }
+        return WithoutPlumbing(t, suppressed);
+    }
+
+    /// <summary>Meta, memory chores, self narration/report, run status (unless asked) or talk about this turn's players.</summary>
+    private static bool IsDroppedSentence(string t, bool statusAsked, IReadOnlyCollection<string>? addressees) =>
+        IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || IsSelfReport(t) || (!statusAsked && (IsRunStatus(t) || IsStatusNarration(t)))
+        || TalksAboutAddressee(t, addressees);
+
+    /// <summary>
+    /// "I've started the job in the background: grab a stone axe and torches, ..." keeps what the job is ("on it: ..."); a short
+    /// plumbing sentence goes; anything else stays.
+    /// </summary>
+    private static string? WithoutPlumbing(string t, List<string> suppressed)
+    {
+        if (PlumbingRx().Match(t) is not { Success: true } pm) return t;
+        int colon = t.IndexOf(':', pm.Index + pm.Length);
+        if (colon > 0 && WordCount(t[(colon + 1)..]) >= 3)
+        {
+            suppressed.Add(t[..(colon + 1)]);
+            return "on it: " + t[(colon + 1)..].Trim();
+        }
+        if (WordCount(t) > MaxPlumbingWords) return t;
+        suppressed.Add(t);
+        return null;
+    }
+
+    private static int WordCount(string s) => s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
 
     [GeneratedRegex(@"^(?:-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){1,2}|\(-?\d+(?:\s*,\s*-?\d+){1,2}\))$", RegexOptions.CultureInvariant)]
     private static partial Regex CoordRx();
