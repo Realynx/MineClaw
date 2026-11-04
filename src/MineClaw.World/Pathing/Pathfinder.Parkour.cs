@@ -30,89 +30,159 @@ public sealed partial class Pathfinder
         finally { _w.Mods = mods; }
     }
 
+    /// <summary>The takeoff cell and, per direction (<see cref="ParkourDirs"/>), its flat run-up before a gap (−1 none) and the
+    /// width (0 none) and far-bank row of a shallow ditch there.</summary>
+    private readonly ref struct ParkourFan(CellInfo here, int x, int y, int z, Span<int> run, Span<int> ditch, Span<int> ditchDy)
+    {
+        public readonly CellInfo Here = here;
+        public readonly int X = x, Y = y, Z = z;
+        public readonly Span<int> Run = run, Ditch = ditch, DitchDy = ditchDy;
+    }
+
     private void TryParkourCore(List<Candidate> output, CellInfo here, int x, int y, int z)
     {
         Span<int> run = stackalloc int[8];
         Span<int> ditch = stackalloc int[8], ditchDy = stackalloc int[8];
-        bool any = false;
-        for (int i = 0; i < 8; i++)
-        {
-            run[i] = GapAhead(here, x, y, z, ParkourDirs[i].Dx, ParkourDirs[i].Dz);
-            ditch[i] = 0;
-            // A shallow ditch ahead (a 1-deep trench or water channel): only the one straight jump from its edge to the far bank, 1 or 2
-            // wide. Every other way across it is walked (down and up). A field cut by Story water channels put every node within
-            // 3 cells of one through the whole candidate fan, ~16 simulations each: 2-3 s searches, past the 2 s plan budget.
-            if (run[i] >= 0 && DitchAhead(here, x, y, z, ParkourDirs[i].Dx, ParkourDirs[i].Dz, run[i], out int bdy) is int wd and >= 0)
-            {
-                bool straight = ParkourDirs[i].Dx == 0 || ParkourDirs[i].Dz == 0;
-                if (wd > 0 && straight && run[i] == 0) { ditch[i] = wd; ditchDy[i] = bdy; }
-                else run[i] = -1;
-            }
-            any |= run[i] >= 0;
-        }
-        if (!any) return;
+        var fan = new ParkourFan(here, x, y, z, run, ditch, ditchDy);
+        if (!JumpDirections(fan)) return;
 
-        var from = new BlockPos(x, y, z);
         var cands = new List<(double Dist, BlockPos To, CellInfo C, int Run, int Dir)>();
         for (int ox = -ParkourRadius; ox <= ParkourRadius; ox++)
         for (int oz = -ParkourRadius; oz <= ParkourRadius; oz++)
-        {
-            if (Math.Max(Math.Abs(ox), Math.Abs(oz)) < 2) continue;
-            double dist = Math.Sqrt(ox * ox + oz * oz);
-            if (dist > ParkourRadius + 0.5) continue;
-            double ang = Math.Atan2(oz, ox);
-            int di = ((int)Math.Round(ang / (Math.PI / 4)) % 8 + 8) % 8;
-            double dev = Math.Abs(Math.IEEERemainder(ang - di * Math.PI / 4, 2 * Math.PI));
-            if (dev > MaxOffAxis || run[di] < 0) continue;
-            var (dx, dz) = ParkourDirs[di];
-            if (ditch[di] > 0 && (ox != dx * (ditch[di] + 1) || oz != dz * (ditch[di] + 1))) continue;
-            double proj = (ox * dx + oz * dz) / (double)(dx * dx + dz * dz);
-            if (proj < run[di] + 1.5) continue; // must land past the gap
-            int tx = x + ox, tz = z + oz;
-            for (int dy = 1; dy >= -3; dy--)
-            {
-                int ty = y + dy;
-                if (ditch[di] > 0 && dy != ditchDy[di]) continue;
-                var c = Cell(tx, ty, tz);
-                if (!c.Ok || !c.Ground || c.Water || c.Climb) continue;
-                if (OnFarmland(tx, ty, tz)) continue; // a gap jump lands with a fall of 1.25+: it would trample the field
-                double rise = c.Floor - here.Floor;
-                if (rise > Parkour.MaxRise + 1e-6 || rise < -3 - 1e-6 || -rise + 1.25 > _o.ParkourMaxFall + 1e-6) continue;
-                var to = new BlockPos(tx, ty, tz);
-                if (_o.Avoid is { } avoid && avoid.Contains(to)) continue;
-                if (_o.AvoidJumps is { } aj && aj.Contains((from, to))) continue;
-                int dyb = Math.Clamp((int)Math.Floor(rise + 1e-6), -3, 1);
-                double step = dx != 0 && dz != 0 ? Math.Sqrt(2) : 1;
-                double bound = (run[di] + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, _o.CanSprint, _world.Physics) + 1.2;
-                if (dist > bound) continue;
-                if (!NearEdgeOfLanding(tx, ty, tz, c, ox, oz)) continue;
-                if (!GapOnLine(x, y, z, here, tx, ty, tz, c)) continue;
-                cands.Add((dist, to, c, run[di], di));
-            }
-        }
+            AddLandings(fan, ox, oz, cands);
         if (cands.Count == 0) return;
         cands.Sort((a, b) => a.Dist.CompareTo(b.Dist));
+        PlanJumps(output, fan, cands);
+    }
 
+    /// <summary>Fills the fan's run-ups and ditches; false when no direction has a gap to jump.</summary>
+    private bool JumpDirections(ParkourFan fan)
+    {
+        bool any = false;
+        for (int i = 0; i < 8; i++)
+        {
+            ClassifyDirection(fan, i);
+            any |= fan.Run[i] >= 0;
+        }
+        return any;
+    }
+
+    /// <summary>
+    /// A shallow ditch ahead (a 1-deep trench or water channel): only the one straight jump from its edge to the far bank, 1 or 2
+    /// wide. Every other way across it is walked (down and up). A field cut by Story water channels put every node within 3 cells
+    /// of one through the whole candidate fan, ~16 simulations each: 2-3 s searches, past the 2 s plan budget.
+    /// </summary>
+    private void ClassifyDirection(ParkourFan fan, int i)
+    {
+        var (dx, dz) = ParkourDirs[i];
+        fan.Run[i] = GapAhead(fan.Here, fan.X, fan.Y, fan.Z, dx, dz);
+        fan.Ditch[i] = 0;
+        if (fan.Run[i] < 0) return;
+        int wd = DitchAhead(fan.Here, fan.X, fan.Y, fan.Z, dx, dz, fan.Run[i], out int bdy);
+        if (wd < 0) return;
+        bool straight = dx == 0 || dz == 0;
+        if (wd > 0 && straight && fan.Run[i] == 0) { fan.Ditch[i] = wd; fan.DitchDy[i] = bdy; }
+        else fan.Run[i] = -1;
+    }
+
+    /// <summary>The landing candidates at offset (ox, oz) from the takeoff, top row first.</summary>
+    private void AddLandings(ParkourFan fan, int ox, int oz, List<(double Dist, BlockPos To, CellInfo C, int Run, int Dir)> cands)
+    {
+        if (Math.Max(Math.Abs(ox), Math.Abs(oz)) < 2) return;
+        double dist = Math.Sqrt(ox * ox + oz * oz);
+        if (dist > ParkourRadius + 0.5) return;
+        int di = JumpDirection(fan, ox, oz);
+        if (di < 0) return;
+        for (int dy = 1; dy >= -3; dy--) TryLanding(fan, ox, oz, dy, dist, di, cands);
+    }
+
+    /// <summary>The jump direction (within ±20°) offset (ox, oz) lies in, when that way has a gap and the offset lands past it
+    /// (straight across a ditch: only its far bank); −1 otherwise.</summary>
+    private static int JumpDirection(ParkourFan fan, int ox, int oz)
+    {
+        double ang = Math.Atan2(oz, ox);
+        int di = ((int)Math.Round(ang / (Math.PI / 4)) % 8 + 8) % 8;
+        double dev = Math.Abs(Math.IEEERemainder(ang - di * Math.PI / 4, 2 * Math.PI));
+        if (dev > MaxOffAxis || fan.Run[di] < 0) return -1;
+        var (dx, dz) = ParkourDirs[di];
+        int ditch = fan.Ditch[di];
+        if (ditch > 0 && (ox != dx * (ditch + 1) || oz != dz * (ditch + 1))) return -1;
+        double proj = (ox * dx + oz * dz) / (double)(dx * dx + dz * dz);
+        return proj < fan.Run[di] + 1.5 ? -1 : di; // must land past the gap
+    }
+
+    private void TryLanding(ParkourFan fan, int ox, int oz, int dy, double dist, int di,
+        List<(double Dist, BlockPos To, CellInfo C, int Run, int Dir)> cands)
+    {
+        int tx = fan.X + ox, ty = fan.Y + dy, tz = fan.Z + oz;
+        if (!LandingCell(fan, di, dy, tx, ty, tz, out var c)) return;
+        var to = new BlockPos(tx, ty, tz);
+        if (JumpAvoided(new BlockPos(fan.X, fan.Y, fan.Z), to)) return;
+        var (dx, dz) = ParkourDirs[di];
+        int dyb = Math.Clamp((int)Math.Floor(c.Floor - fan.Here.Floor + 1e-6), -3, 1);
+        double step = dx != 0 && dz != 0 ? Math.Sqrt(2) : 1;
+        double bound = (fan.Run[di] + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, _o.CanSprint, _world.Physics) + 1.2;
+        if (dist > bound) return;
+        if (!NearEdgeOfLanding(tx, ty, tz, c, ox, oz)) return;
+        if (!GapOnLine(fan.X, fan.Y, fan.Z, fan.Here, tx, ty, tz, c)) return;
+        cands.Add((dist, to, c, fan.Run[di], di));
+    }
+
+    /// <summary>The caller vetoed the landing cell or this jump.</summary>
+    private bool JumpAvoided(BlockPos from, BlockPos to) =>
+        (_o.Avoid is { } avoid && avoid.Contains(to)) || (_o.AvoidJumps is { } aj && aj.Contains((from, to)));
+
+    /// <summary>A standable dry landing in reach of the takeoff's height (a ditch jump: only its far bank's row), not farmland.</summary>
+    private bool LandingCell(ParkourFan fan, int di, int dy, int tx, int ty, int tz, out CellInfo c)
+    {
+        c = default;
+        if (fan.Ditch[di] > 0 && dy != fan.DitchDy[di]) return false;
+        c = Cell(tx, ty, tz);
+        if (!StandableLanding(c)) return false;
+        if (OnFarmland(tx, ty, tz)) return false; // a gap jump lands with a fall of 1.25+: it would trample the field
+        return LandingRiseOk(c.Floor - fan.Here.Floor);
+    }
+
+    private static bool StandableLanding(CellInfo c) => c.Ok && c.Ground && !c.Water && !c.Climb;
+
+    private bool LandingRiseOk(double rise) =>
+        !(rise > Parkour.MaxRise + 1e-6 || rise < -3 - 1e-6 || -rise + 1.25 > _o.ParkourMaxFall + 1e-6);
+
+    /// <summary>Simulates the nearest candidates (up to <see cref="PathOptions.MaxParkourCandidates"/>) and adds the jumps that work.</summary>
+    private void PlanJumps(List<Candidate> output, ParkourFan fan, List<(double Dist, BlockPos To, CellInfo C, int Run, int Dir)> cands)
+    {
+        var from = new BlockPos(fan.X, fan.Y, fan.Z);
         bool allowVoid = _o.AllowVoidParkour && _o.HasClutchBlock;
         int tried = 0;
         foreach (var (dist, to, c, r, di) in cands)
         {
             if (tried++ >= _o.MaxParkourCandidates) break;
-            var (dx, dz) = ParkourDirs[di];
-            double step = dx != 0 && dz != 0 ? Math.Sqrt(2) : 1;
-            int dyb = Math.Clamp((int)Math.Floor(c.Floor - here.Floor + 1e-6), -3, 1);
-            ParkourPlan? plan = null;
-            // A plain jump is calmer (no sprint state to keep): try it first when it can possibly reach.
-            if (dist <= (r + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, false, _world.Physics) + 1.2)
-                plan = PlanJump(from, here.Floor, to, c.Floor, sprint: false, allowVoid);
-            if (plan is null && _o.CanSprint) plan = PlanJump(from, here.Floor, to, c.Floor, sprint: true, allowVoid);
-            if (plan is null) continue;
-            // Over a ditch (a level jump across a 1-deep trench or water channel): a miss lands a block down and climbs out.
-            double risk = !plan.OverVoid && OverDitch(x, y, z, here, to.X, to.Z, c) ? Math.Min(_o.ParkourPenalty, _o.DitchJumpPenalty) : _o.ParkourPenalty;
-            double cost = plan.LandTick + 8 + risk + (plan.OverVoid ? _o.VoidParkourPenalty : 0)
-                          + Math.Max(0, 0.3 - plan.Margin) * 30 + HazardPenalty(to.X, to.Y, to.Z);
-            output.Add(new Candidate(to.X, to.Y, to.Z, plan.Kind, c.Floor, cost, [], null, false, null, plan));
+            if (PlanCandidate(fan.Here, from, dist, to, c, r, di, allowVoid) is { } plan)
+                output.Add(JumpCandidate(fan, to, c, plan));
         }
+    }
+
+    /// <summary>A plain jump is calmer (no sprint state to keep): tried first when it can possibly reach, then a sprint jump.</summary>
+    private ParkourPlan? PlanCandidate(CellInfo here, BlockPos from, double dist, BlockPos to, CellInfo c, int r, int di, bool allowVoid)
+    {
+        var (dx, dz) = ParkourDirs[di];
+        double step = dx != 0 && dz != 0 ? Math.Sqrt(2) : 1;
+        int dyb = Math.Clamp((int)Math.Floor(c.Floor - here.Floor + 1e-6), -3, 1);
+        ParkourPlan? plan = null;
+        if (dist <= (r + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, false, _world.Physics) + 1.2)
+            plan = PlanJump(from, here.Floor, to, c.Floor, sprint: false, allowVoid);
+        if (plan is null && _o.CanSprint) plan = PlanJump(from, here.Floor, to, c.Floor, sprint: true, allowVoid);
+        return plan;
+    }
+
+    /// <summary>Over a ditch (a level jump across a 1-deep trench or water channel): a miss lands a block down and climbs out.</summary>
+    private Candidate JumpCandidate(ParkourFan fan, BlockPos to, CellInfo c, ParkourPlan plan)
+    {
+        double risk = !plan.OverVoid && OverDitch(fan.X, fan.Y, fan.Z, fan.Here, to.X, to.Z, c)
+            ? Math.Min(_o.ParkourPenalty, _o.DitchJumpPenalty) : _o.ParkourPenalty;
+        double cost = plan.LandTick + 8 + risk + (plan.OverVoid ? _o.VoidParkourPenalty : 0)
+                      + Math.Max(0, 0.3 - plan.Margin) * 30 + HazardPenalty(to.X, to.Y, to.Z);
+        return new Candidate(to.X, to.Y, to.Z, plan.Kind, c.Floor, cost, [], null, false, null, plan);
     }
 
     private ParkourPlan? PlanJump(BlockPos from, double fromFloor, BlockPos to, double toFloor, bool sprint, bool allowVoid)

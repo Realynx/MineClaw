@@ -191,70 +191,23 @@ public static class PlayerPhysics
     {
         var boxes = _boxes ??= new List<AABB>(32);
         s.YSize *= 0.4;
-        if (s.InWeb)
-        {
-            s.InWeb = false;
-            dx *= 0.25; dy *= 0.05; dz *= 0.25;
-            s.Velocity = Vec3d.Zero;
-        }
+        if (s.InWeb) SlowInWeb(s, ref dx, ref dy, ref dz);
 
         double ox = dx, oy = dy, oz = dz;
         var box = s.BoundingBox;
         var startBox = box;
         bool sneakOnGround = s.OnGround && s.Sneaking; // mc-dev Entity.move: flag = onGround && isSneaking()
-
-        if (sneakOnGround)
-        {
-            const double step = SneakEdgeStep;
-            while (dx != 0 && BlockShapes.GetCollidingBoxes(w, box.Offset(dx, -1, 0), boxes).Count == 0)
-            {
-                if (dx < step && dx >= -step) dx = 0;
-                else if (dx > 0) dx -= step;
-                else dx += step;
-                ox = dx;
-            }
-            while (dz != 0 && BlockShapes.GetCollidingBoxes(w, box.Offset(0, -1, dz), boxes).Count == 0)
-            {
-                if (dz < step && dz >= -step) dz = 0;
-                else if (dz > 0) dz -= step;
-                else dz += step;
-                oz = dz;
-            }
-        }
+        if (sneakOnGround) ClampToEdge(w, box, boxes, ref dx, ref dz, ref ox, ref oz);
 
         BlockShapes.GetCollidingBoxes(w, box.Expand(dx, dy, dz), boxes);
         foreach (var b in boxes) dy = b.CalculateYOffset(box, dy);
         box = box.Offset(0, dy, 0);
         bool canStep = s.OnGround || (oy != dy && oy < 0);
-        foreach (var b in boxes) dx = b.CalculateXOffset(box, dx);
-        box = box.Offset(dx, 0, 0);
-        foreach (var b in boxes) dz = b.CalculateZOffset(box, dz);
-        box = box.Offset(0, 0, dz);
+        CollideXz(boxes, ref box, ref dx, ref dz);
 
         // mc-dev 1.8 Entity.move: `bI > 0 && flag1 && (flag || bH < 0.05F)`: sneaking on ground may step up whatever ySize is.
         if (stepHeight > 0 && canStep && (sneakOnGround || s.YSize < 0.05f) && (ox != dx || oz != dz))
-        {
-            double sx = dx, sy = dy, sz = dz;
-            var afterBox = box;
-            dx = ox; dy = stepHeight; dz = oz;
-            box = startBox;
-            BlockShapes.GetCollidingBoxes(w, box.Expand(dx, dy, dz), boxes);
-            foreach (var b in boxes) dy = b.CalculateYOffset(box, dy);
-            box = box.Offset(0, dy, 0);
-            foreach (var b in boxes) dx = b.CalculateXOffset(box, dx);
-            box = box.Offset(dx, 0, 0);
-            foreach (var b in boxes) dz = b.CalculateZOffset(box, dz);
-            box = box.Offset(0, 0, dz);
-            if (sx * sx + sz * sz >= dx * dx + dz * dz)
-            {
-                dx = sx; dy = sy; dz = sz;
-                box = afterBox;
-            }
-            else
-            {
-                s.YSize += 0.5;
-            }
-        }
+            StepUp(w, s, boxes, startBox, stepHeight, ox, oz, ref box, ref dx, ref dy, ref dz);
 
         s.Position = new Vec3d((box.MinX + box.MaxX) / 2, box.MinY, (box.MinZ + box.MaxZ) / 2);
         s.CollidedHorizontally = ox != dx || oz != dz;
@@ -265,13 +218,78 @@ public static class PlayerPhysics
         if (s.OnGround) s.FallDistance = 0;
         else if (dy < 0) s.FallDistance -= dy;
 
-        var v = s.Velocity;
-        if (ox != dx) v = v with { X = 0 };
-        if (oy != dy) v = v with { Y = 0 };
-        if (oz != dz) v = v with { Z = 0 };
-        s.Velocity = v;
-
+        s.Velocity = StopBlockedAxes(s.Velocity, ox != dx, oy != dy, oz != dz);
         DoBlockCollisions(w, s);
+    }
+
+    private static void SlowInWeb(PhysicsState s, ref double dx, ref double dy, ref double dz)
+    {
+        s.InWeb = false;
+        dx *= 0.25; dy *= 0.05; dz *= 0.25;
+        s.Velocity = Vec3d.Zero;
+    }
+
+    /// <summary>Sneaking on the ground: each horizontal axis is cut back in <see cref="SneakEdgeStep"/> steps until the box still
+    /// has floor under it.</summary>
+    private static void ClampToEdge(IBlockAccess w, AABB box, List<AABB> boxes, ref double dx, ref double dz, ref double ox, ref double oz)
+    {
+        while (dx != 0 && BlockShapes.GetCollidingBoxes(w, box.Offset(dx, -1, 0), boxes).Count == 0)
+        {
+            dx = TowardZero(dx);
+            ox = dx;
+        }
+        while (dz != 0 && BlockShapes.GetCollidingBoxes(w, box.Offset(0, -1, dz), boxes).Count == 0)
+        {
+            dz = TowardZero(dz);
+            oz = dz;
+        }
+    }
+
+    private static double TowardZero(double v)
+    {
+        const double step = SneakEdgeStep;
+        if (v < step && v >= -step) return 0;
+        return v > 0 ? v - step : v + step;
+    }
+
+    /// <summary>The x then z motion clipped against the boxes (the box moves after each).</summary>
+    private static void CollideXz(List<AABB> boxes, ref AABB box, ref double dx, ref double dz)
+    {
+        foreach (var b in boxes) dx = b.CalculateXOffset(box, dx);
+        box = box.Offset(dx, 0, 0);
+        foreach (var b in boxes) dz = b.CalculateZOffset(box, dz);
+        box = box.Offset(0, 0, dz);
+    }
+
+    /// <summary>The step-up retry from the start box: kept (and ySize raised) only when it gets farther than the plain move.</summary>
+    private static void StepUp(IBlockAccess w, PhysicsState s, List<AABB> boxes, AABB startBox, double stepHeight, double ox, double oz,
+        ref AABB box, ref double dx, ref double dy, ref double dz)
+    {
+        double sx = dx, sy = dy, sz = dz;
+        var afterBox = box;
+        dx = ox; dy = stepHeight; dz = oz;
+        box = startBox;
+        BlockShapes.GetCollidingBoxes(w, box.Expand(dx, dy, dz), boxes);
+        foreach (var b in boxes) dy = b.CalculateYOffset(box, dy);
+        box = box.Offset(0, dy, 0);
+        CollideXz(boxes, ref box, ref dx, ref dz);
+        if (sx * sx + sz * sz >= dx * dx + dz * dz)
+        {
+            dx = sx; dy = sy; dz = sz;
+            box = afterBox;
+        }
+        else
+        {
+            s.YSize += 0.5;
+        }
+    }
+
+    private static Vec3d StopBlockedAxes(Vec3d v, bool x, bool y, bool z)
+    {
+        if (x) v = v with { X = 0 };
+        if (y) v = v with { Y = 0 };
+        if (z) v = v with { Z = 0 };
+        return v;
     }
 
     /// <summary>Entity.doBlockCollisions: web and soul sand effects for blocks inside the (slightly shrunk) hitbox.</summary>
