@@ -31,33 +31,48 @@ public static class ChunkProxy
         int version = light ? 2 : 1;
         if (missing.Count > 0)
         {
-            var rel = $"api/world/chunks?dim={dim.ToString(CultureInfo.InvariantCulture)}&cols={string.Join(';', missing.Select(m => $"{m.Cx},{m.Cz}"))}" + (light ? "&light=1" : "");
-            HttpResponseMessage res;
-            try { res = await sup.SendAsync(HttpMethod.Get, rel, null, SupervisorProxy.TimeoutFor("world/chunks"), stream: false, ctx.RequestAborted); }
-            catch (SupervisorUnavailableException ex) { await ApiErrors.Write(ctx, 503, "upstream_unavailable", ex.Message); return; }
-            using (res)
+            if (await FetchAsync(ctx, sup, cache, light, dim, missing, hits.Count > 0, fetched) is not { } v) return; // answered already
+            version = v;
+        }
+        await Write(ctx, Mcwc.Encode(version, dim, Columns(wanted, fetched, hits, version)));
+    }
+
+    /// <summary>The columns the cache missed, from the supervisor (stored in the cache): the reply's MCWC version. Null = the request was
+    /// answered already (the supervisor's error, an unparsable reply passed through, or a 502 when part came from the cache).</summary>
+    private static async Task<int?> FetchAsync(HttpContext ctx, SupervisorClient sup, ChunkCache cache, bool light, int dim, List<(int Cx, int Cz)> missing,
+        bool anyHits, Dictionary<(int, int), McwcColumn> fetched)
+    {
+        var rel = $"api/world/chunks?dim={dim.ToString(CultureInfo.InvariantCulture)}&cols={string.Join(';', missing.Select(m => $"{m.Cx},{m.Cz}"))}" + (light ? "&light=1" : "");
+        HttpResponseMessage res;
+        try { res = await sup.SendAsync(HttpMethod.Get, rel, null, SupervisorProxy.TimeoutFor("world/chunks"), stream: false, ctx.RequestAborted); }
+        catch (SupervisorUnavailableException ex) { await ApiErrors.Write(ctx, 503, "upstream_unavailable", ex.Message); return null; }
+        using (res)
+        {
+            if (!res.IsSuccessStatusCode) { await SupervisorProxy.MapErrorAsync(ctx, res, "world/chunks", false); return null; }
+            var bytes = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
+            try
             {
-                if (!res.IsSuccessStatusCode) { await SupervisorProxy.MapErrorAsync(ctx, res, "world/chunks", false); return; }
-                var bytes = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
-                try
-                {
-                    var (v, _, cols) = Mcwc.Decode(bytes);
-                    version = v;
-                    cache.Store(light, dim, cols);
-                    foreach (var c in cols) fetched[(c.Cx, c.Cz)] = c;
-                }
-                catch (FormatException)
-                {
-                    if (hits.Count > 0) { await ApiErrors.Write(ctx, 502, "upstream_error", "upstream error"); return; }
-                    await Write(ctx, bytes);
-                    return;
-                }
+                var (v, _, cols) = Mcwc.Decode(bytes);
+                cache.Store(light, dim, cols);
+                foreach (var c in cols) fetched[(c.Cx, c.Cz)] = c;
+                return v;
+            }
+            catch (FormatException)
+            {
+                if (anyHits) { await ApiErrors.Write(ctx, 502, "upstream_error", "upstream error"); return null; }
+                await Write(ctx, bytes);
+                return null;
             }
         }
+    }
+
+    /// <summary>The wanted columns in order, fetched or cached (light dropped for a v1 reply).</summary>
+    private static List<McwcColumn> Columns(List<(int Cx, int Cz)> wanted, Dictionary<(int, int), McwcColumn> fetched, Dictionary<(int, int), McwcColumn> hits, int version)
+    {
         var outCols = new List<McwcColumn>(wanted.Count);
         foreach (var w in wanted)
             if (fetched.TryGetValue(w, out var c) || hits.TryGetValue(w, out c)) outCols.Add(version == 2 || c.Light == null ? c : c with { Light = null });
-        await Write(ctx, Mcwc.Encode(version, dim, outCols));
+        return outCols;
     }
 
     private static async Task Write(HttpContext ctx, byte[] body)

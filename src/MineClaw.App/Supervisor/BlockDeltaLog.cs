@@ -234,38 +234,57 @@ public sealed class BlockDeltaLog
                 _recentColumns.Clear();
             }
             _lastReadMs = now;
-            long oldest = _count > 0 ? _ring[_head].Rev : _rev + 1;
-            if (since <= 0 || since > _rev || since < _gap || since < oldest - 1)
-                return new Page(_rev, true, false, new Dictionary<string, List<int[]>>(), []);
+            if (MustResync(since)) return new Page(_rev, true, false, new Dictionary<string, List<int[]>>(), []);
             var blocks = new Dictionary<string, List<int[]>>();
             var columns = new List<ColumnEvent>();
-            long last = since;
-            int n = 0;
-            bool more = false;
-            // The ring is in rev order (a gap rev has no entry): binary search the first entry after since.
-            int lo = 0, hi = _count;
-            while (lo < hi)
-            {
-                int mid = (lo + hi) >> 1;
-                if (_ring[(_head + mid) % _ring.Length].Rev <= since) lo = mid + 1; else hi = mid;
-            }
-            int start = lo;
-            for (int i = start; i < _count; i++)
-            {
-                ref var e = ref _ring[(_head + i) % _ring.Length];
-                if (dim is { } d && e.Dim != d) { last = e.Rev; continue; }
-                if (n >= max) { more = true; break; }
-                if (e.Kind == 0)
-                {
-                    var key = e.Dim.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    if (!blocks.TryGetValue(key, out var list)) blocks[key] = list = new List<int[]>();
-                    list.Add([e.X, e.Y, e.Z, e.Id, e.Meta]);
-                }
-                else columns.Add(new ColumnEvent(e.Rev, e.AtMs, e.Dim, e.X, e.Z, e.Kind switch { 1 => Loaded, 2 => Unloaded, _ => BlockEntity }));
-                last = e.Rev;
-                n++;
-            }
+            var (last, more) = Collect(FirstAfter(since), since, dim, max, blocks, columns);
             return new Page(more ? last : _rev, false, more, blocks, columns);
         }
+    }
+
+    /// <summary><paramref name="since"/> can't be continued from (none, ahead, before the last gap, or older than the ring holds):
+    /// the reader starts over. Caller holds the lock.</summary>
+    private bool MustResync(long since)
+    {
+        long oldest = _count > 0 ? _ring[_head].Rev : _rev + 1;
+        return since <= 0 || since > _rev || since < _gap || since < oldest - 1;
+    }
+
+    /// <summary>The ring is in rev order (a gap rev has no entry): binary search the first entry after <paramref name="since"/>.</summary>
+    private int FirstAfter(long since)
+    {
+        int lo = 0, hi = _count;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >> 1;
+            if (_ring[(_head + mid) % _ring.Length].Rev <= since) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+
+    /// <summary>Up to <paramref name="max"/> entries from ring position <paramref name="start"/> (of <paramref name="dim"/> when given)
+    /// into blocks by dimension and column events: the last rev read and whether more are left.</summary>
+    private (long Last, bool More) Collect(int start, long since, int? dim, int max, Dictionary<string, List<int[]>> blocks, List<ColumnEvent> columns)
+    {
+        long last = since;
+        int n = 0;
+        for (int i = start; i < _count; i++)
+        {
+            ref var e = ref _ring[(_head + i) % _ring.Length];
+            if (dim is { } d && e.Dim != d) { last = e.Rev; continue; }
+            if (n >= max) return (last, true);
+            if (e.Kind == 0) BlockList(blocks, e.Dim).Add([e.X, e.Y, e.Z, e.Id, e.Meta]);
+            else columns.Add(new ColumnEvent(e.Rev, e.AtMs, e.Dim, e.X, e.Z, e.Kind switch { 1 => Loaded, 2 => Unloaded, _ => BlockEntity }));
+            last = e.Rev;
+            n++;
+        }
+        return (last, false);
+    }
+
+    private static List<int[]> BlockList(Dictionary<string, List<int[]>> blocks, int dim)
+    {
+        var key = dim.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (!blocks.TryGetValue(key, out var list)) blocks[key] = list = new List<int[]>();
+        return list;
     }
 }

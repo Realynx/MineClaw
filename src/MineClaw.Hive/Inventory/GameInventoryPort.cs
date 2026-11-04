@@ -156,10 +156,7 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
     /// <summary>The nearest open standable cell around <paramref name="me"/> (see <see cref="StepOutAsync"/>), or null.</summary>
     internal static BlockPos? OpenSpot(WorldState w, BlockPos me, int radius = 6)
     {
-        static bool Air(WorldState w, int x, int y, int z) => w.GetBlock(x, y, z) == 0;
-        int Open(int x, int y, int z) =>
-            (Air(w, x + 1, y, z) ? 1 : 0) + (Air(w, x - 1, y, z) ? 1 : 0) + (Air(w, x, y, z + 1) ? 1 : 0) + (Air(w, x, y, z - 1) ? 1 : 0);
-        if (Open(me.X, me.Y, me.Z) >= 3) return null; // already in the open
+        if (OpenSides(w, me.X, me.Y, me.Z) >= 3) return null; // already in the open
         BlockPos? best = null;
         double bestD = double.MaxValue;
         for (int dx = -radius; dx <= radius; dx++)
@@ -168,15 +165,27 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
         {
             int x = me.X + dx, y = me.Y + dy, z = me.Z + dz;
             if (dx == 0 && dz == 0 && dy == 0) continue;
-            if (!Air(w, x, y, z) || !Air(w, x, y + 1, z)) continue;
-            int below = w.GetBlock(x, y - 1, z);
-            if (below == 0 || !BlockShapes.HasCollision(w, x, y - 1, z) || BlockShapes.IsLiquid(below)) continue;
-            if (w.IsPlayerOverVoid(new Vec3d(x + 0.5, y, z + 0.5))) continue;
-            if (Open(x, y, z) < 3) continue;
+            if (!IsOpenStand(w, x, y, z)) continue;
             double d = dx * dx + dz * dz + dy * 0.5;
             if (d < bestD) { bestD = d; best = new BlockPos(x, y, z); }
         }
         return best;
+    }
+
+    private static bool Air(WorldState w, int x, int y, int z) => w.GetBlock(x, y, z) == 0;
+
+    /// <summary>How many of the four sides at (x, y, z) are air.</summary>
+    private static int OpenSides(WorldState w, int x, int y, int z) =>
+        (Air(w, x + 1, y, z) ? 1 : 0) + (Air(w, x - 1, y, z) ? 1 : 0) + (Air(w, x, y, z + 1) ? 1 : 0) + (Air(w, x, y, z - 1) ? 1 : 0);
+
+    /// <summary>Two air blocks over solid, non-liquid ground, not over the void, with at least three open sides.</summary>
+    private static bool IsOpenStand(WorldState w, int x, int y, int z)
+    {
+        if (!Air(w, x, y, z) || !Air(w, x, y + 1, z)) return false;
+        int below = w.GetBlock(x, y - 1, z);
+        if (below == 0 || !BlockShapes.HasCollision(w, x, y - 1, z) || BlockShapes.IsLiquid(below)) return false;
+        if (w.IsPlayerOverVoid(new Vec3d(x + 0.5, y, z + 0.5))) return false;
+        return OpenSides(w, x, y, z) >= 3;
     }
 
     public async Task<(ActionResult Result, BlockPos? Chest)> PlaceLabelledChestAsync(string label, CancellationToken ct)

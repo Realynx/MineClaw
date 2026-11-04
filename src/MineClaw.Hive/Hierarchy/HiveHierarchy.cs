@@ -488,51 +488,21 @@ public sealed class HiveHierarchy : IHiveAccounts
     private string SpawnSubhives(string owner, SpawnRequest r)
     {
         bool local = owner == HiveTree.Root;
-        if (local && Subhives is null)
-            return "no: subhive bodies aren't available here (Hive:Subhives:Enabled is off); spawn kind hive or script instead";
-        if (!local && (Bus is null || !RemoteSubhives)) return $"no: {Short(owner)} can't host subhive bodies here (no hive bus)";
+        if (SubhivesUnavailable(owner, local) is { } unavailable) return unavailable;
         // A named body: a new job for it (it stays logged in).
-        if (r.Name is { Length: > 0 } named)
-        {
-            if (Resolve(named) is not { } acc || Tree.Get(acc) is not { Kind: CloneKind.Subhive } node) return $"no: {named} isn't a subhive body";
-            if (!Tree.IsUnder(acc, owner)) return $"no: {named} isn't one of {Short(owner)}'s bodies";
-            Tree.Put(node with { Task = r.Task ?? node.Task, Script = r.Script ?? node.Script });
-            if (node.Owner == HiveTree.Root) return Subhives!.Spawn(owner, acc, r.Task, r.Script);
-            _ = Task.Run(() => HostRemoteAsync(node.Owner, [acc], r.Task, r.Script, whitelist: false));
-            return $"ok: new job for {node.Short} (its hive {Short(node.Owner)} drives it)";
-        }
+        if (r.Name is { Length: > 0 } named) return NewSubhiveJob(owner, named, r);
         int asked = Math.Max(1, r.Bodies ?? 1);
         int want = Math.Min(asked, Math.Max(1, MaxBodiesPerSpawn));
         var got = new List<string>();
         // A hive (re)starting asks for its bodies: the ones it had died with its old process; reuse those accounts first.
-        if (r.Reset && !local)
-            foreach (var old in Tree.Children(owner).Where(c => c.Kind == CloneKind.Subhive).ToList())
-            {
-                if (got.Count < want) { got.Add(old.Account); Tree.Put(old with { Task = r.Task ?? old.Task, State = "spawning" }); }
-                else Released(old.Account, $"its hive {Short(owner)} restarted with fewer bodies");
-            }
-        string? why = asked > want ? $"max {want} per spawn" : null;
-        while (got.Count < want)
-        {
-            var (acc, w) = AllocateBody(owner, r.Task, r.Script);
-            if (acc == null) { why = w; break; }
-            got.Add(acc);
-        }
+        if (r.Reset && !local) ReuseOldBodies(owner, r, want, got);
+        string? why = AllocateBodies(owner, r.Task, r.Script, null, want, got, asked > want ? $"max {want} per spawn" : null);
         if (got.Count == 0) return "no: " + why + "; spawned nothing";
         if (local)
         {
-            var refused = new List<string>();
-            string? first = null;
-            foreach (var acc in got)
-            {
-                var t = Subhives!.Spawn(owner, acc, r.Task, r.Script);
-                if (t.StartsWith("ok", StringComparison.Ordinal)) continue;
-                refused.Add(acc);
-                first ??= t;
-                Released(acc, "not spawned: " + t);
-            }
-            if (refused.Count == got.Count) return first!;
-            got = got.Except(refused).ToList();
+            var (kept, refusal) = SpawnLocalSubhives(owner, r, got);
+            if (refusal != null) return refusal;
+            got = kept;
         }
         else
         {
@@ -540,6 +510,71 @@ public sealed class HiveHierarchy : IHiveAccounts
             // A crew's bodies have no job of their own: the hive's coordinator gives each its lane once it is in.
             _ = Task.Run(() => HostRemoteAsync(owner, accounts, r.Crew != null ? null : r.Task, r.Crew != null ? null : r.Script, whitelist: true, crew: r.Crew));
         }
+        return SubhivesSpawnedText(owner, local, got, asked, why);
+    }
+
+    /// <summary>Why <paramref name="owner"/> can't host subhive bodies here; null = it can.</summary>
+    private string? SubhivesUnavailable(string owner, bool local)
+    {
+        if (local && Subhives is null)
+            return "no: subhive bodies aren't available here (Hive:Subhives:Enabled is off); spawn kind hive or script instead";
+        if (!local && (Bus is null || !RemoteSubhives)) return $"no: {Short(owner)} can't host subhive bodies here (no hive bus)";
+        return null;
+    }
+
+    /// <summary>A new job for the named subhive body of <paramref name="owner"/> (it stays logged in).</summary>
+    private string NewSubhiveJob(string owner, string named, SpawnRequest r)
+    {
+        if (Resolve(named) is not { } acc || Tree.Get(acc) is not { Kind: CloneKind.Subhive } node) return $"no: {named} isn't a subhive body";
+        if (!Tree.IsUnder(acc, owner)) return $"no: {named} isn't one of {Short(owner)}'s bodies";
+        Tree.Put(node with { Task = r.Task ?? node.Task, Script = r.Script ?? node.Script });
+        if (node.Owner == HiveTree.Root) return Subhives!.Spawn(owner, acc, r.Task, r.Script);
+        _ = Task.Run(() => HostRemoteAsync(node.Owner, [acc], r.Task, r.Script, whitelist: false));
+        return $"ok: new job for {node.Short} (its hive {Short(node.Owner)} drives it)";
+    }
+
+    /// <summary>Reuses a restarting hive's old body accounts (up to <paramref name="want"/>); the rest are released.</summary>
+    private void ReuseOldBodies(string owner, SpawnRequest r, int want, List<string> got)
+    {
+        foreach (var old in Tree.Children(owner).Where(c => c.Kind == CloneKind.Subhive).ToList())
+        {
+            if (got.Count < want) { got.Add(old.Account); Tree.Put(old with { Task = r.Task ?? old.Task, State = "spawning" }); }
+            else Released(old.Account, $"its hive {Short(owner)} restarted with fewer bodies");
+        }
+    }
+
+    /// <summary>Allocates fresh body accounts until <paramref name="got"/> holds <paramref name="want"/>: the allocator's reason when
+    /// it stopped short, else <paramref name="why"/>.</summary>
+    private string? AllocateBodies(string owner, string? task, string? script, string? crew, int want, List<string> got, string? why)
+    {
+        while (got.Count < want)
+        {
+            var (acc, w) = AllocateBody(owner, task, script, crew);
+            if (acc == null) return w;
+            got.Add(acc);
+        }
+        return why;
+    }
+
+    /// <summary>Spawns each body in main's process: the ones that spawned, or the first refusal when none did.</summary>
+    private (List<string> Kept, string? Refusal) SpawnLocalSubhives(string owner, SpawnRequest r, List<string> got)
+    {
+        var refused = new List<string>();
+        string? first = null;
+        foreach (var acc in got)
+        {
+            var t = Subhives!.Spawn(owner, acc, r.Task, r.Script);
+            if (t.StartsWith("ok", StringComparison.Ordinal)) continue;
+            refused.Add(acc);
+            first ??= t;
+            Released(acc, "not spawned: " + t);
+        }
+        if (refused.Count == got.Count) return (got, first!);
+        return (got.Except(refused).ToList(), null);
+    }
+
+    private string SubhivesSpawnedText(string owner, bool local, List<string> got, int asked, string? why)
+    {
         var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
         return $"ok: {got.Count} subhive bod{(got.Count == 1 ? "y" : "ies")} ({names}) " +
             (local ? "your brain drives (body=\"<n>\")" : $"for {Short(owner)}'s brain") +
@@ -556,56 +591,74 @@ public sealed class HiveHierarchy : IHiveAccounts
     /// </summary>
     private string SpawnScriptHive(string owner, SpawnRequest r)
     {
-        if (owner != HiveTree.Root)
-            return "no: run the hive script over your own bodies: script{name} (bodies() are yours); spawned nothing";
-        if (Subhives is null || ScriptHives is not { } host)
-            return "no: hive scripts need subhive bodies here (Hive:Subhives:Enabled is off); spawned nothing";
+        if (ScriptHiveRefusal(owner) is { } refusal) return refusal;
+        var host = ScriptHives!;
         var (name, err) = host.Prepare(r.Script, r.Code);
         if (name == null) return "error: " + (err ?? "script not saved");
-        string id;
-        lock (_lock)
-        {
-            id = name;
-            for (int i = 2; _scripts.ContainsKey(id); i++) id = $"{name}#{i}";
-            _scripts[id] = name;
-        }
+        string id = ReserveScriptId(name);
         int asked = Math.Max(1, r.Bodies ?? 1);
         int want = Math.Min(asked, Math.Max(1, MaxBodiesPerSpawn));
-        string? why = asked > want ? $"max {want} per spawn" : null;
         var got = new List<string>();
-        var task = "hive script " + id;
-        while (got.Count < want)
-        {
-            var (acc, w) = AllocateBody(owner, task, name, crew: id);
-            if (acc == null) { why = w; break; }
-            got.Add(acc);
-        }
-        string? first = null;
-        foreach (var acc in got.ToList())
-        {
-            var t = Subhives.Spawn(owner, acc, null, null); // no job of its own: the coordinator gives each its lane once it is in
-            if (t.StartsWith("ok", StringComparison.Ordinal)) continue;
-            first ??= t;
-            got.Remove(acc);
-            Released(acc, "not spawned: " + t);
-        }
+        string? why = AllocateBodies(owner, "hive script " + id, name, id, want, got, asked > want ? $"max {want} per spawn" : null);
+        string? first = SpawnCrewBodies(owner, got);
         if (got.Count == 0)
         {
             lock (_lock) _scripts.Remove(id);
             return "no: " + (first ?? why) + "; spawned nothing";
         }
         var started = host.Start(id, name, r.Args, () => Members(id), (ok, line) => ScriptEnded(id, ok, line));
-        if (!started.StartsWith("ok", StringComparison.Ordinal))
-        {
-            lock (_lock) _scripts.Remove(id);
-            ReleaseMembers(id, "hive script didn't start");
-            return started.StartsWith("error", StringComparison.Ordinal) ? started : "error: " + started;
-        }
+        if (!started.StartsWith("ok", StringComparison.Ordinal)) return NotStarted(id, started);
         _log.LogInformation("hive: hive script {Id} ({Script}) over {N} bodies: {Names}", id, name, got.Count, string.Join(", ", got));
         var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
         return $"ok: hive script {id}: ONE script drives {got.Count} bod{(got.Count == 1 ? "y" : "ies")} ({names}), no brain; " +
             $"none in game yet{Pacing(got.Count)}; when it ends they deposit and log out " +
             $"(release {id} stops it)" + (got.Count < asked ? $"; only {got.Count} of {asked}: {why}" : "");
+    }
+
+    /// <summary>The coordinator didn't start: the id is freed and its bodies released; the host's answer as an error.</summary>
+    private string NotStarted(string id, string started)
+    {
+        lock (_lock) _scripts.Remove(id);
+        ReleaseMembers(id, "hive script didn't start");
+        return started.StartsWith("error", StringComparison.Ordinal) ? started : "error: " + started;
+    }
+
+    /// <summary>Only main runs hive scripts, and only with subhive bodies and a script host; null = it may.</summary>
+    private string? ScriptHiveRefusal(string owner)
+    {
+        if (owner != HiveTree.Root)
+            return "no: run the hive script over your own bodies: script{name} (bodies() are yours); spawned nothing";
+        if (Subhives is null || ScriptHives is null)
+            return "no: hive scripts need subhive bodies here (Hive:Subhives:Enabled is off); spawned nothing";
+        return null;
+    }
+
+    /// <summary>A free id for a new run of <paramref name="name"/> ("chop_crew", then "chop_crew#2", ...), recorded as running.</summary>
+    private string ReserveScriptId(string name)
+    {
+        lock (_lock)
+        {
+            string id = name;
+            for (int i = 2; _scripts.ContainsKey(id); i++) id = $"{name}#{i}";
+            _scripts[id] = name;
+            return id;
+        }
+    }
+
+    /// <summary>Logs each crew body in with no job of its own (the coordinator gives each its lane once it is in); the ones refused
+    /// leave <paramref name="got"/> and are released. The first refusal, if any.</summary>
+    private string? SpawnCrewBodies(string owner, List<string> got)
+    {
+        string? first = null;
+        foreach (var acc in got.ToList())
+        {
+            var t = Subhives!.Spawn(owner, acc, null, null);
+            if (t.StartsWith("ok", StringComparison.Ordinal)) continue;
+            first ??= t;
+            got.Remove(acc);
+            Released(acc, "not spawned: " + t);
+        }
+        return first;
     }
 
     // ================================================================ groups (Story Mode colonies: docs/web/story-mode.md)
@@ -625,34 +678,57 @@ public sealed class HiveHierarchy : IHiveAccounts
         string? why = null;
         var want = new Queue<string>((prefer ?? []).Where(p => !string.IsNullOrWhiteSpace(p)));
         int target = Math.Min(Math.Max(1, n), Math.Max(1, MaxBodiesPerSpawn));
-        while (got.Count < target)
-        {
-            if (Resources?.CanAdd(0, 1) is { Ok: false } full) { why = full.Why; break; }
-            Allocation a;
-            string name;
-            lock (_lock)
-            {
-                a = _allocator.Allocate(Facts(b));
-                if (!a.Ok) { why = a.Error; break; }
-                name = a.Name!;
-                // The room is there; a pawn account the colony had before takes it when it is free (not in the tree, not online).
-                var online = b.Slots().Online;
-                while (want.Count > 0)
-                {
-                    var p = want.Dequeue();
-                    if (Tree.Get(p) == null && !online.Contains(p, StringComparer.OrdinalIgnoreCase) && Managed.Get(p) is not { Active: true }) { name = p; break; }
-                }
-                Managed.Upsert(name, x => x);
-                Tree.Put(new HiveNode(name, CloneKind.Subhive, null, HiveTree.Root) { Task = "story " + group, Script = script, Since = DateTimeOffset.UtcNow, Crew = group });
-                Managed.MarkActive(name, HiveKinds.Name(CloneKind.Script), null, HiveTree.Root);
-            }
-            try { Allocated?.Invoke(name); } catch (Exception ex) { _log.LogDebug(ex, "hive: allocated hook failed"); }
-            var t = Subhives.Spawn(HiveTree.Root, name, null, null); // no job of its own: the director starts its lane once it is in
-            if (!t.StartsWith("ok", StringComparison.Ordinal)) { why = t; Released(name, "not spawned: " + t); break; }
-            got.Add(name);
-        }
+        while (got.Count < target && AddGroupBody(b, group, script, want, got, out why)) { }
         if (got.Count > 0) _log.LogInformation("hive: group {Group}: {N} script-only bodies ({Names})", group, got.Count, string.Join(", ", got));
         return (got, got.Count < n ? why ?? (n > target ? $"max {target} per spawn" : null) : null);
+    }
+
+    /// <summary>Allocates and logs in one more group body (added to <paramref name="got"/>); false, with why, when it can't.</summary>
+    private bool AddGroupBody(IHiveBodies b, string group, string script, Queue<string> want, List<string> got, out string? why)
+    {
+        why = null;
+        if (Resources?.CanAdd(0, 1) is { Ok: false } full) { why = full.Why; return false; }
+        var (name, refused) = AllocateGroupBody(b, group, script, want);
+        if (name == null) { why = refused; return false; }
+        try { Allocated?.Invoke(name); } catch (Exception ex) { _log.LogDebug(ex, "hive: allocated hook failed"); }
+        var t = Subhives!.Spawn(HiveTree.Root, name, null, null); // no job of its own: the director starts its lane once it is in
+        if (!t.StartsWith("ok", StringComparison.Ordinal)) { why = t; Released(name, "not spawned: " + t); return false; }
+        got.Add(name);
+        return true;
+    }
+
+    /// <summary>One more account for the group (the room allocated; a pawn account it had before takes the room when free), recorded
+    /// as a group member. (null, why) when there is no room.</summary>
+    private (string? Name, string? Why) AllocateGroupBody(IHiveBodies b, string group, string script, Queue<string> want)
+    {
+        lock (_lock)
+        {
+            var a = _allocator.Allocate(Facts(b));
+            if (!a.Ok) return (null, a.Error);
+            var name = PreferredAccount(b, want) ?? a.Name!;
+            PutGroupMember(name, group, script);
+            return (name, null);
+        }
+    }
+
+    /// <summary>The first preferred account that is free (not in the tree, not online, not active), dequeuing the ones passed over.</summary>
+    private string? PreferredAccount(IHiveBodies b, Queue<string> want)
+    {
+        var online = b.Slots().Online;
+        while (want.Count > 0)
+        {
+            var p = want.Dequeue();
+            if (Tree.Get(p) == null && !online.Contains(p, StringComparer.OrdinalIgnoreCase) && Managed.Get(p) is not { Active: true }) return p;
+        }
+        return null;
+    }
+
+    /// <summary>Records <paramref name="account"/> as a script-only member of <paramref name="group"/> owned by main (caller holds the lock).</summary>
+    private void PutGroupMember(string account, string group, string script)
+    {
+        Managed.Upsert(account, x => x);
+        Tree.Put(new HiveNode(account, CloneKind.Subhive, null, HiveTree.Root) { Task = "story " + group, Script = script, Since = DateTimeOffset.UtcNow, Crew = group });
+        Managed.MarkActive(account, HiveKinds.Name(CloneKind.Script), null, HiveTree.Root);
     }
 
     /// <summary>
@@ -664,55 +740,62 @@ public sealed class HiveHierarchy : IHiveAccounts
     /// </summary>
     public IReadOnlyList<(string Account, string? Why)> BringGroup(string group, IReadOnlyList<string> accounts, string script, bool overCap = false)
     {
-        var res = new List<(string, string?)>();
         if (Bodies is not { } b) return accounts.Select(a => (a, (string?)"hive is off")).ToList();
         if (Subhives is not { } host) return accounts.Select(a => (a, (string?)"subhive bodies aren't available here (Hive:Subhives:Enabled is off)")).ToList();
+        var res = new List<(string, string?)>();
         foreach (var raw in accounts)
         {
             var acc = (raw ?? "").Trim();
-            if (!Whitelist.Accepts(acc)) { res.Add((acc, "not a managed account")); continue; }
-            var node = Tree.Get(acc);
-            if (node != null)
-            {
-                if (!string.Equals(node.Crew, group, StringComparison.OrdinalIgnoreCase)) { res.Add((acc, $"it belongs to {node.Crew ?? Short(node.Owner)} now")); continue; }
-                if (node.State == "releasing") { res.Add((acc, "it is logging out")); continue; }
-                if (overCap) host.AllowOverCap(acc);
-                // Hosted already: its login is looping. Put it back on the whitelist, then cut the reconnect wait short.
-                _ = Task.Run(async () =>
-                {
-                    try { await RewhitelistAsync(acc).ConfigureAwait(false); }
-                    catch (Exception ex) { _log.LogDebug(ex, "hive: re-whitelisting {Account} failed", acc); }
-                    host.RetryNow(acc);
-                });
-                res.Add((acc, null));
-                continue;
-            }
-            string? why = null;
-            lock (_lock)
-            {
-                var f = Facts(b);
-                if (f.Slots.Online.Contains(acc, StringComparer.OrdinalIgnoreCase)) why = "someone else is logged in as it";
-                else if (SlotPolicy.CanSpawn(f.Slots, overCap ? [] : f.Regulars, f.Pending, _maxPlayersFallback) is { Ok: false } d)
-                    why = CapReason(d, f.Slots, _maxPlayersFallback);
-                else if (Resources?.CanAdd(0, 1) is { Ok: false } full) why = full.Why;
-                else
-                {
-                    Managed.Upsert(acc, x => x);
-                    Tree.Put(new HiveNode(acc, CloneKind.Subhive, null, HiveTree.Root) { Task = "story " + group, Script = script, Since = DateTimeOffset.UtcNow, Crew = group });
-                    Managed.MarkActive(acc, HiveKinds.Name(CloneKind.Script), null, HiveTree.Root);
-                }
-            }
-            if (why != null) { res.Add((acc, why)); continue; }
-            NoteBody(acc, "connecting");
-            if (overCap) host.AllowOverCap(acc);
-            var t = host.Spawn(HiveTree.Root, acc, null, null);
-            if (!t.StartsWith("ok", StringComparison.Ordinal)) { Released(acc, "not spawned: " + t); res.Add((acc, t)); continue; }
-            res.Add((acc, null));
+            res.Add((acc, BringOne(b, host, group, acc, script, overCap)));
         }
         var started = res.Where(r => r.Item2 == null).Select(r => r.Item1).ToList();
         if (started.Count > 0)
             _log.LogInformation("hive: group {Group}: bringing {Names} in{Over}", group, string.Join(", ", started), overCap ? " (on the regulars' seats)" : "");
         return res;
+    }
+
+    /// <summary>One account of <see cref="BringGroup"/>: null = started (or retried), else why not.</summary>
+    private string? BringOne(IHiveBodies b, ISubhiveHost host, string group, string acc, string script, bool overCap)
+    {
+        if (!Whitelist.Accepts(acc)) return "not a managed account";
+        if (Tree.Get(acc) is { } node) return RetryHosted(host, node, group, acc, overCap);
+        if (AdmitGroupMember(b, group, acc, script, overCap) is { } why) return why;
+        NoteBody(acc, "connecting");
+        if (overCap) host.AllowOverCap(acc);
+        var t = host.Spawn(HiveTree.Root, acc, null, null);
+        if (t.StartsWith("ok", StringComparison.Ordinal)) return null;
+        Released(acc, "not spawned: " + t);
+        return t;
+    }
+
+    /// <summary>A group account hosted already: its login is looping. Put it back on the whitelist, then cut the reconnect wait short.</summary>
+    private string? RetryHosted(ISubhiveHost host, HiveNode node, string group, string acc, bool overCap)
+    {
+        if (!string.Equals(node.Crew, group, StringComparison.OrdinalIgnoreCase)) return $"it belongs to {node.Crew ?? Short(node.Owner)} now";
+        if (node.State == "releasing") return "it is logging out";
+        if (overCap) host.AllowOverCap(acc);
+        _ = Task.Run(async () =>
+        {
+            try { await RewhitelistAsync(acc).ConfigureAwait(false); }
+            catch (Exception ex) { _log.LogDebug(ex, "hive: re-whitelisting {Account} failed", acc); }
+            host.RetryNow(acc);
+        });
+        return null;
+    }
+
+    /// <summary>Puts a group account back in the tree when it may log in now (not online as someone else, a seat, memory); else why not.</summary>
+    private string? AdmitGroupMember(IHiveBodies b, string group, string acc, string script, bool overCap)
+    {
+        lock (_lock)
+        {
+            var f = Facts(b);
+            if (f.Slots.Online.Contains(acc, StringComparer.OrdinalIgnoreCase)) return "someone else is logged in as it";
+            if (SlotPolicy.CanSpawn(f.Slots, overCap ? [] : f.Regulars, f.Pending, _maxPlayersFallback) is { Ok: false } d)
+                return CapReason(d, f.Slots, _maxPlayersFallback);
+            if (Resources?.CanAdd(0, 1) is { Ok: false } full) return full.Why;
+            PutGroupMember(acc, group, script);
+            return null;
+        }
     }
 
     /// <summary>A group's bodies deposit and log out (whitelist remove follows each logout). Returns how many go.</summary>
@@ -759,23 +842,23 @@ public sealed class HiveHierarchy : IHiveAccounts
     {
         foreach (var acc in accounts)
         {
-            try
-            {
-                if (whitelist) await BeforeLaunchAsync(acc).ConfigureAwait(false); // on the whitelist before the hive logs it in
-                var reply = await Bus!.PublishAsync(BusTypes.Host, new HostReq(acc, task, script, crew), to: owner).ConfigureAwait(false);
-                var text = reply.Ok ? reply.As<string>() ?? "ok" : reply.Error ?? "failed";
-                if (!reply.Ok || !text.StartsWith("ok", StringComparison.Ordinal))
-                {
-                    _log.LogWarning("hive: {Owner} didn't host {Account}: {Text}", owner, acc, text);
-                    if (whitelist) Released(acc, "its hive didn't host it: " + text);
-                }
-            }
+            try { await HostOneRemoteAsync(owner, acc, task, script, whitelist, crew).ConfigureAwait(false); }
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "hive: hosting {Account} on {Owner} failed", acc, owner);
                 if (whitelist) Released(acc, "hosting failed: " + ex.Message);
             }
         }
+    }
+
+    private async Task HostOneRemoteAsync(string owner, string acc, string? task, string? script, bool whitelist, string? crew)
+    {
+        if (whitelist) await BeforeLaunchAsync(acc).ConfigureAwait(false); // on the whitelist before the hive logs it in
+        var reply = await Bus!.PublishAsync(BusTypes.Host, new HostReq(acc, task, script, crew), to: owner).ConfigureAwait(false);
+        var text = reply.Ok ? reply.As<string>() ?? "ok" : reply.Error ?? "failed";
+        if (reply.Ok && text.StartsWith("ok", StringComparison.Ordinal)) return;
+        _log.LogWarning("hive: {Owner} didn't host {Account}: {Text}", owner, acc, text);
+        if (whitelist) Released(acc, "its hive didn't host it: " + text);
     }
 
     private bool OwnedBy(string name, string owner)
@@ -824,31 +907,41 @@ public sealed class HiveHierarchy : IHiveAccounts
             ScriptHives?.Stop(sid, reason);
             return $"ok: stopping hive script {sid}; its {n} bod{(n == 1 ? "y" : "ies")} deposit and log out";
         }
-        List<string> roots;
-        bool all = string.IsNullOrWhiteSpace(id) || id.Trim().Equals("all", StringComparison.OrdinalIgnoreCase);
-        if (all)
-            roots = Tree.Children(requester).Select(c => c.Account).ToList();
-        else if (Resolve(id) is { } acc)
-        {
-            if (requester != HiveTree.Root && !acc.Equals(requester, StringComparison.OrdinalIgnoreCase) && !Tree.IsUnder(acc, requester))
-                return $"no: {Short(acc)} isn't one of {Short(requester)}'s clones";
-            roots = [acc];
-        }
-        else if (requester == HiveTree.Root) return bodies.Recall(id, reason); // not in the tree (an old slot): plain recall
-        else return $"no: no clone '{id}'";
+        var (roots, answer) = ReleaseRoots(bodies, id, requester, reason);
+        if (roots == null) return answer!;
         if (roots.Count == 0) return requester == HiveTree.Root ? bodies.Recall("all", reason) : "no clones of yours";
 
         var order = roots.SelectMany(Tree.ReleaseOrder).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         foreach (var a in order) Tree.SetState(a, "releasing");
-        // Every hive script whose bodies all go stops too (after they are marked: its end doesn't release them a second time).
-        List<string> scripts;
-        lock (_lock) scripts = _scripts.Keys.ToList();
-        foreach (var sid2 in scripts)
-            if (Members(sid2) is { Count: > 0 } ms && ms.All(m => order.Contains(m, StringComparer.OrdinalIgnoreCase))) ScriptHives?.Stop(sid2, reason);
+        StopScriptsLeaving(order, reason);
         _ = Task.Run(() => CascadeAsync(order, reason));
         var kids = order.Except(roots).ToList();
         return $"ok: releasing {HiveTree.Ranges(roots.Select(Short))}" +
             (kids.Count > 0 ? $" after {kids.Count} child clone(s) ({HiveTree.Ranges(kids.Select(Short))})" : "") + "; each deposits before logout";
+    }
+
+    /// <summary>The clones a release starts from ("all" = the requester's children), or (null, the answer) when it ends here: not the
+    /// requester's, unknown, or an old slot main recalls plainly.</summary>
+    private (List<string>? Roots, string? Answer) ReleaseRoots(IHiveBodies bodies, string id, string requester, string reason)
+    {
+        bool all = string.IsNullOrWhiteSpace(id) || id.Trim().Equals("all", StringComparison.OrdinalIgnoreCase);
+        if (all) return (Tree.Children(requester).Select(c => c.Account).ToList(), null);
+        if (Resolve(id) is { } acc)
+        {
+            if (requester != HiveTree.Root && !acc.Equals(requester, StringComparison.OrdinalIgnoreCase) && !Tree.IsUnder(acc, requester))
+                return (null, $"no: {Short(acc)} isn't one of {Short(requester)}'s clones");
+            return ([acc], null);
+        }
+        return (null, requester == HiveTree.Root ? bodies.Recall(id, reason) : $"no: no clone '{id}'"); // not in the tree (an old slot): plain recall
+    }
+
+    /// <summary>Every hive script whose bodies all go stops too (after they are marked: its end doesn't release them a second time).</summary>
+    private void StopScriptsLeaving(List<string> order, string reason)
+    {
+        List<string> scripts;
+        lock (_lock) scripts = _scripts.Keys.ToList();
+        foreach (var sid in scripts)
+            if (Members(sid) is { Count: > 0 } ms && ms.All(m => order.Contains(m, StringComparer.OrdinalIgnoreCase))) ScriptHives?.Stop(sid, reason);
     }
 
     private int Depth(string account)
@@ -922,54 +1015,68 @@ public sealed class HiveHierarchy : IHiveAccounts
     public async Task<BusReply> HandleBusAsync(BusEnvelope e, CancellationToken ct)
     {
         var from = Tree.Norm(e.From);
+        if (SpawnBusRequest(e, from) is { } spawned) return spawned;
+        if (BusNotice(e, from) is { } noticed) return noticed;
         switch (e.Type)
         {
-            case BusTypes.Spawn when e.As<SpawnReq>() is { } s:
-                return Text(Spawn(new SpawnRequest(s.Kind, s.Brain, s.Task, s.Script, null, s.Args, s.After, s.Name, Bodies: s.Bodies, Reset: s.Reset, Crew: s.Crew), from));
-            case BusTypes.Assign when e.As<AssignReq>() is { } a:
-                return Text(Spawn(new SpawnRequest(Task: a.Task, Name: a.To), from));
-            case BusTypes.Handover when e.As<AssignReq>() is { } h:
-                return Text(Spawn(new SpawnRequest(Task: h.Task, Name: h.To, Handover: true), from));
-            case BusTypes.Release when e.As<ReleaseReq>() is { } r:
-                return Text(Release(r.Id, from));
-            case BusTypes.List:
-                return Text(List(from));
             case BusTypes.SubhiveGone when e.As<SubhiveGoneMsg>() is { } g:
-                {
-                    // Only the hive hosting a body reports it gone; main then takes it off the whitelist.
-                    var acc = Resolve(g.Account) ?? g.Account;
-                    if (Tree.Get(acc) is not { Kind: CloneKind.Subhive } node || !node.Owner.Equals(from, StringComparison.OrdinalIgnoreCase))
-                        return BusReply.Fail($"refused: {g.Account} isn't a body of yours");
-                    Released(acc, g.Reason);
-                    return Text("ok");
-                }
+                return SubhiveGone(g, from);
             case BusTypes.Whitelist when e.As<WhitelistReq>() is { } w:
-                {
-                    // Hives never whitelist on their own: main does it, only for a managed account in the asker's subtree.
-                    var acc = Resolve(w.Name) ?? w.Name;
-                    if (!Whitelist.Accepts(acc) || (from != HiveTree.Root && !Tree.IsUnder(acc, from)))
-                        return BusReply.Fail($"refused: {w.Name} isn't a managed account of yours");
-                    bool ok = w.Op.Equals("remove", StringComparison.OrdinalIgnoreCase) ? await Whitelist.RemoveAsync(acc, ct).ConfigureAwait(false)
-                        : w.Op.Equals("add", StringComparison.OrdinalIgnoreCase) ? await Whitelist.AddAsync(acc, ct).ConfigureAwait(false) : false;
-                    return ok ? Text($"ok: whitelist {w.Op} {Short(acc)}") : BusReply.Fail("whitelist " + w.Op + " failed");
-                }
-            case BusTypes.Status when e.As<StatusMsg>() is { } st:
-                Quiet($"[hive bus] {Short(from)}: {Trunc(st.Text)}" + (st.Pct is { } p ? $" {p:P0}" : ""), EventPriority.Background);
-                return Text("ok");
-            case BusTypes.Result when e.As<ResultBusMsg>() is { } rs:
-                Quiet($"[hive bus] {Short(from)} {(rs.Ok ? "done" : "failed")}: {Trunc(rs.Text)}", EventPriority.Low);
-                return Text("ok");
-            case BusTypes.NeedHelp when e.As<NeedHelpMsg>() is { } nh:
-                Quiet($"[hive bus] {Short(from)} needs help: {Trunc(nh.Text)}", EventPriority.Normal, wake: true);
-                return Text("ok");
-            case BusTypes.Observation when e.As<ObservationMsg>() is { } ob:
-                Quiet($"[hive bus] {Short(from)} saw: {Trunc(ob.Text)}", EventPriority.Background);
-                return Text("ok");
+                return await WhitelistForAsync(w, from, ct).ConfigureAwait(false);
             case BusTypes.MemWrite:
                 return Memory is { } m ? await m.HandleAsync(e, ct).ConfigureAwait(false) : BusReply.Fail("no shared memory host");
             default:
                 return BusReply.Fail($"main doesn't take {e.Type}");
         }
+    }
+
+    /// <summary>The clone requests (spawn, assign, handover, release, list); null = not one of those.</summary>
+    private BusReply? SpawnBusRequest(BusEnvelope e, string from) => e.Type switch
+    {
+        BusTypes.Spawn when e.As<SpawnReq>() is { } s =>
+            Text(Spawn(new SpawnRequest(s.Kind, s.Brain, s.Task, s.Script, null, s.Args, s.After, s.Name, Bodies: s.Bodies, Reset: s.Reset, Crew: s.Crew), from)),
+        BusTypes.Assign when e.As<AssignReq>() is { } a => Text(Spawn(new SpawnRequest(Task: a.Task, Name: a.To), from)),
+        BusTypes.Handover when e.As<AssignReq>() is { } h => Text(Spawn(new SpawnRequest(Task: h.Task, Name: h.To, Handover: true), from)),
+        BusTypes.Release when e.As<ReleaseReq>() is { } r => Text(Release(r.Id, from)),
+        BusTypes.List => Text(List(from)),
+        _ => null,
+    };
+
+    /// <summary>A hive's status, result, call for help or observation, posted as a quiet notice; null = not one of those.</summary>
+    private BusReply? BusNotice(BusEnvelope e, string from)
+    {
+        var (text, priority) = e.Type switch
+        {
+            BusTypes.Status when e.As<StatusMsg>() is { } st => ($"[hive bus] {Short(from)}: {Trunc(st.Text)}" + (st.Pct is { } p ? $" {p:P0}" : ""), EventPriority.Background),
+            BusTypes.Result when e.As<ResultBusMsg>() is { } rs => ($"[hive bus] {Short(from)} {(rs.Ok ? "done" : "failed")}: {Trunc(rs.Text)}", EventPriority.Low),
+            BusTypes.NeedHelp when e.As<NeedHelpMsg>() is { } nh => ($"[hive bus] {Short(from)} needs help: {Trunc(nh.Text)}", EventPriority.Normal),
+            BusTypes.Observation when e.As<ObservationMsg>() is { } ob => ($"[hive bus] {Short(from)} saw: {Trunc(ob.Text)}", EventPriority.Background),
+            _ => ((string?)null, EventPriority.Background),
+        };
+        if (text == null) return null;
+        Quiet(text, priority, wake: e.Type == BusTypes.NeedHelp);
+        return Text("ok");
+    }
+
+    /// <summary>Only the hive hosting a body reports it gone; main then takes it off the whitelist.</summary>
+    private BusReply SubhiveGone(SubhiveGoneMsg g, string from)
+    {
+        var acc = Resolve(g.Account) ?? g.Account;
+        if (Tree.Get(acc) is not { Kind: CloneKind.Subhive } node || !node.Owner.Equals(from, StringComparison.OrdinalIgnoreCase))
+            return BusReply.Fail($"refused: {g.Account} isn't a body of yours");
+        Released(acc, g.Reason);
+        return Text("ok");
+    }
+
+    /// <summary>Hives never whitelist on their own: main does it, only for a managed account in the asker's subtree.</summary>
+    private async Task<BusReply> WhitelistForAsync(WhitelistReq w, string from, CancellationToken ct)
+    {
+        var acc = Resolve(w.Name) ?? w.Name;
+        if (!Whitelist.Accepts(acc) || (from != HiveTree.Root && !Tree.IsUnder(acc, from)))
+            return BusReply.Fail($"refused: {w.Name} isn't a managed account of yours");
+        bool ok = w.Op.Equals("remove", StringComparison.OrdinalIgnoreCase) ? await Whitelist.RemoveAsync(acc, ct).ConfigureAwait(false)
+            : w.Op.Equals("add", StringComparison.OrdinalIgnoreCase) && await Whitelist.AddAsync(acc, ct).ConfigureAwait(false);
+        return ok ? Text($"ok: whitelist {w.Op} {Short(acc)}") : BusReply.Fail("whitelist " + w.Op + " failed");
     }
 
     private static BusReply Text(string s) => s.StartsWith("error", StringComparison.Ordinal) ? BusReply.Fail(s) : BusReply.Of(s);

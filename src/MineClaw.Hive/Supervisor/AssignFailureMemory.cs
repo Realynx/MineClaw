@@ -81,11 +81,7 @@ public sealed class AssignFailureMemory(TimeProvider? time = null)
             _entries.RemoveAll(x => t - x.At > Memory);
             var e = _entries.LastOrDefault(x => Same(x, clone, intent));
             if (e == null) return null;
-            bool changed = (now.Hp is { } hp && e.Hp is { } hp0 && hp != hp0)
-                || (now.Food is { } f && e.Food is { } f0 && f != f0)
-                || (now.Items != null && e.Items != "?" && ItemsSig(now.Items) != e.Items)
-                || (night is { } n && e.Night is { } n0 && n != n0);
-            if (changed)
+            if (VitalsChanged(e, now) || (night is { } n && e.Night is { } n0 && n != n0))
             {
                 _entries.Remove(e);
                 return null;
@@ -93,6 +89,12 @@ public sealed class AssignFailureMemory(TimeProvider? time = null)
             return $"{e.Reason} ({Ago(t - e.At)} ago)";
         }
     }
+
+    /// <summary>hp, food or the inventory differ from when the refusal was recorded (unknown fields count as unchanged).</summary>
+    private static bool VitalsChanged(Entry e, CloneVitals now) =>
+        (now.Hp is { } hp && e.Hp is { } hp0 && hp != hp0)
+        || (now.Food is { } f && e.Food is { } f0 && f != f0)
+        || (now.Items != null && e.Items != "?" && ItemsSig(now.Items) != e.Items);
 
     private static readonly Regex Retry = new(@"\b(?:try (?:it |that |again|one more)|try again|retry|do it again|one more (?:time|try)|send (?:her|him|it|them) (?:again|back))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);

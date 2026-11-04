@@ -56,16 +56,24 @@ public sealed partial class WhitelistManager
     {
         _repliesFed = true;
         if (string.IsNullOrEmpty(text) || _pending.IsEmpty) return;
-        if (Added().Match(text) is { Success: true } a && _pending.TryGetValue(Key("add", a.Groups[1].Value), out var ok)) ok.TrySetResult(true);
-        else if (NotAdded().Match(text) is { Success: true } f && _pending.TryGetValue(Key("add", f.Groups[1].Value), out var no)) no.TrySetResult(false);
-        else if (Removed().Match(text) is { Success: true } r && _pending.TryGetValue(Key("remove", r.Groups[1].Value), out var rok)) rok.TrySetResult(true);
-        // "Could not remove X": X isn't on the server's list (CommandWhitelist: no profile in it), so it is off it already.
-        else if (NotRemoved().Match(text) is { Success: true } nr && _pending.TryGetValue(Key("remove", nr.Groups[1].Value), out var rno)) rno.TrySetResult(true);
+        foreach (var (reply, op, ok) in Replies)
+            if (reply.Match(text) is { Success: true } m && _pending.TryGetValue(Key(op, m.Groups[1].Value), out var pending))
+            {
+                pending.TrySetResult(ok);
+                return;
+            }
         // The permission error names no account: every whitelist line in flight failed (live 10-29: main not op yet, four
         // "/whitelist remove" each answered "commands.generic.permission", and the reconcile still said "removed 4").
-        else if (Denied().IsMatch(text))
+        if (Denied().IsMatch(text))
             foreach (var p in _pending.Values) p.TrySetResult(false);
     }
+
+    /// <summary>The server's answers to a whitelist line, in the order they are tried: the op they answer and whether it took. "Could
+    /// not remove X": X isn't on the server's list (CommandWhitelist: no profile in it), so it is off it already.</summary>
+    private static readonly (Regex Reply, string Op, bool Ok)[] Replies =
+    [
+        (Added(), "add", true), (NotAdded(), "add", false), (Removed(), "remove", true), (NotRemoved(), "remove", true),
+    ];
 
     private static string Key(string op, string name) => op + " " + name;
 
@@ -90,31 +98,45 @@ public sealed partial class WhitelistManager
         // An add counts once the server confirms it (when replies are fed): a gate that ate the line, a non-op main or a
         // typo'd name must not leave the account marked whitelisted (the clone would be kicked at login, forever).
         // A removal too: the reconcile counts only what the server took off its list.
-        TaskCompletionSource<bool>? confirm = _repliesFed ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
-        if (confirm != null) _pending[Key(op, name)] = confirm;
+        var confirm = Expect(op, name);
         bool sent;
         try
         {
             try { sent = await _send(line, ct).ConfigureAwait(false); }
             catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "hive: {Line} failed", line); return false; }
-            if (sent && confirm != null)
-            {
-                bool confirmed;
-                try { confirmed = await confirm.Task.WaitAsync(ConfirmTimeout, ct).ConfigureAwait(false); }
-                catch (TimeoutException) { confirmed = false; _log.LogWarning("hive: {Line}: no confirmation from the server within {S:0}s", line, ConfirmTimeout.TotalSeconds); }
-                if (!confirmed) return false;
-            }
+            if (sent && confirm != null && !await ConfirmedAsync(confirm, line, ct).ConfigureAwait(false)) return false;
         }
-        finally
-        {
-            if (confirm != null) _pending.TryRemove(new KeyValuePair<string, TaskCompletionSource<bool>>(Key(op, name), confirm));
-        }
+        finally { Forget(op, name, confirm); }
         if (sent)
         {
             _managed.SetWhitelisted(name, op == "add");
             _log.LogInformation("hive: {Line}", line);
         }
         return sent;
+    }
+
+    /// <summary>The server confirmed the line within <see cref="ConfirmTimeout"/>.</summary>
+    private async Task<bool> ConfirmedAsync(TaskCompletionSource<bool> confirm, string line, CancellationToken ct)
+    {
+        try { return await confirm.Task.WaitAsync(ConfirmTimeout, ct).ConfigureAwait(false); }
+        catch (TimeoutException)
+        {
+            _log.LogWarning("hive: {Line}: no confirmation from the server within {S:0}s", line, ConfirmTimeout.TotalSeconds);
+            return false;
+        }
+    }
+
+    /// <summary>The server's answer to wait for (only when its replies are fed); null = none.</summary>
+    private TaskCompletionSource<bool>? Expect(string op, string name)
+    {
+        TaskCompletionSource<bool>? confirm = _repliesFed ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
+        if (confirm != null) _pending[Key(op, name)] = confirm;
+        return confirm;
+    }
+
+    private void Forget(string op, string name, TaskCompletionSource<bool>? confirm)
+    {
+        if (confirm != null) _pending.TryRemove(new KeyValuePair<string, TaskCompletionSource<bool>>(Key(op, name), confirm));
     }
 
     /// <summary>

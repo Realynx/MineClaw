@@ -260,12 +260,13 @@ public static class SettingsRegistry
     }
 
     /// <summary>Whether a property type can hold this kind of setting (the coverage test's check).</summary>
-    public static bool Fits(SettingKind kind, Type t) => kind switch
+    public static bool Fits(SettingKind kind, Type t) => KindTypes.TryGetValue(kind, out var types) ? types.Contains(t) : t == typeof(string);
+
+    private static readonly Dictionary<SettingKind, Type[]> KindTypes = new()
     {
-        SettingKind.Bool => t == typeof(bool) || t == typeof(bool?),
-        SettingKind.Int => t == typeof(int) || t == typeof(int?) || t == typeof(long),
-        SettingKind.Number => t == typeof(double) || t == typeof(decimal) || t == typeof(double?) || t == typeof(decimal?) || t == typeof(float),
-        SettingKind.List => t == typeof(string[]) || t == typeof(List<string>),
-        _ => t == typeof(string),
+        [SettingKind.Bool] = [typeof(bool), typeof(bool?)],
+        [SettingKind.Int] = [typeof(int), typeof(int?), typeof(long)],
+        [SettingKind.Number] = [typeof(double), typeof(decimal), typeof(double?), typeof(decimal?), typeof(float)],
+        [SettingKind.List] = [typeof(string[]), typeof(List<string>)],
     };
 }

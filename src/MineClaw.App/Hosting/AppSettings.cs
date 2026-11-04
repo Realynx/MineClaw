@@ -32,15 +32,22 @@ public sealed record AppSettings(MinecraftSettings Mc, AgentOptions Agent, BotOp
         var telemetryOptions = config.GetSection("Telemetry").Get<TelemetryOptions>() ?? new TelemetryOptions();
         var supervisorOptions = config.GetSection("Supervisor").Get<Supervisor.SupervisorOptions>() ?? new Supervisor.SupervisorOptions();
         var bodiesOptions = config.GetSection("Bodies").Get<MineClaw.Bot.Bodies.BodiesOptions>() ?? new MineClaw.Bot.Bodies.BodiesOptions();
+        ResolveAgent(agentOptions, root);
+        var logDir = AppPaths.Under(root, host.LogDirectory);
+        var telemetryDir = string.IsNullOrWhiteSpace(telemetryOptions.Directory) ? logDir : AppPaths.Under(root, telemetryOptions.Directory);
+        return new AppSettings(mc, agentOptions, botOptions, host, hive, telemetryOptions, supervisorOptions, bodiesOptions, logDir, telemetryDir);
+    }
+
+    /// <summary>The API key from the environment when the config's is unset or a placeholder (Anthropic tiers only); the agent's paths
+    /// under <paramref name="root"/>.</summary>
+    private static void ResolveAgent(AgentOptions agentOptions, string root)
+    {
         if (agentOptions.Llm.TiersUseAnthropic && (string.IsNullOrWhiteSpace(agentOptions.Llm.ApiKey) || agentOptions.Llm.ApiKey.EndsWith("...")))
             agentOptions.Llm.ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         if (!string.IsNullOrWhiteSpace(agentOptions.Llm.MockScriptPath))
             agentOptions.Llm.MockScriptPath = AppPaths.Under(root, agentOptions.Llm.MockScriptPath);
         agentOptions.DataDirectory = AppPaths.Under(root, agentOptions.DataDirectory);
         if (agentOptions.KnowledgeDirectory != null) agentOptions.KnowledgeDirectory = AppPaths.UnderOrBeside(root, agentOptions.KnowledgeDirectory);
-        var logDir = AppPaths.Under(root, host.LogDirectory);
-        var telemetryDir = string.IsNullOrWhiteSpace(telemetryOptions.Directory) ? logDir : AppPaths.Under(root, telemetryOptions.Directory);
-        return new AppSettings(mc, agentOptions, botOptions, host, hive, telemetryOptions, supervisorOptions, bodiesOptions, logDir, telemetryDir);
     }
 
     /// <summary>

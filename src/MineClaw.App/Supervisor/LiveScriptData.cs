@@ -132,19 +132,26 @@ public sealed class LiveScriptData : IScriptSupervisorData
         if (_bot.Bodies?.Find(body) is { } b)
             return Reply(b.IsMain ? "main" : b.Short, b.Scripts, code);
         if (_hive() is { } sup && sup.Resolve(body) is { } clone)
-        {
-            var slot = sup.Slots.FirstOrDefault(s => s.Name.Equals(clone, StringComparison.OrdinalIgnoreCase));
-            if (slot is not { Connected: true }) return new BodyScriptReply(Short(clone), false, null, "clone offline");
-            ScriptDebugSnapshot? snap = null;
-            try { snap = await sup.RequestScriptDebugAsync(clone, code, CloneTimeout, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not OperationCanceledException) { _log?.LogDebug(ex, "supervisor scripts: clone {Clone} snapshot failed", clone); }
-            return new BodyScriptReply(Short(clone), snap is { Live: true }, snap, snap == null ? "no script on this clone (or it didn't answer)" : null);
-        }
-        if (Bodies?.Find(body) is { IsMain: false } r) // a hive's own body: its hive streams the script's name and line, not the debugger
-            return new BodyScriptReply(r.Short, r.Script is { Status: "running" or "paused" or "starting" }, null,
-                r.Script == null ? "no script on this body" : $"{r.Short} runs {r.Script.Name} (line {r.Script.Line}); its live debugger stays in its hive ({(r.Owner == null ? "main" : Short(r.Owner))})");
+            return await CloneScriptAsync(sup, clone, code, ct).ConfigureAwait(false);
+        if (Bodies?.Find(body) is { IsMain: false } r) return HiveBodyScript(r);
         return null;
     }
+
+    /// <summary>A clone's script debugger snapshot, asked over its link (offline, or no answer, says so).</summary>
+    private async Task<BodyScriptReply> CloneScriptAsync(HiveSupervisor sup, string clone, bool code, CancellationToken ct)
+    {
+        var slot = sup.Slots.FirstOrDefault(s => s.Name.Equals(clone, StringComparison.OrdinalIgnoreCase));
+        if (slot is not { Connected: true }) return new BodyScriptReply(Short(clone), false, null, "clone offline");
+        ScriptDebugSnapshot? snap = null;
+        try { snap = await sup.RequestScriptDebugAsync(clone, code, CloneTimeout, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log?.LogDebug(ex, "supervisor scripts: clone {Clone} snapshot failed", clone); }
+        return new BodyScriptReply(Short(clone), snap is { Live: true }, snap, snap == null ? "no script on this clone (or it didn't answer)" : null);
+    }
+
+    /// <summary>A hive's own body: its hive streams the script's name and line, not the debugger.</summary>
+    private static BodyScriptReply HiveBodyScript(BodyRow r) =>
+        new(r.Short, r.Script is { Status: "running" or "paused" or "starting" }, null,
+            r.Script == null ? "no script on this body" : $"{r.Short} runs {r.Script.Name} (line {r.Script.Line}); its live debugger stays in its hive ({(r.Owner == null ? "main" : Short(r.Owner))})");
 
     private bool IsMain(string body) => body.Equals("main", StringComparison.OrdinalIgnoreCase) || body.Equals(_main, StringComparison.OrdinalIgnoreCase);
 
@@ -166,28 +173,35 @@ public sealed class LiveScriptData : IScriptSupervisorData
         if (_bot.Bodies is { } reg)
             foreach (var b in reg.All)
                 if (!b.IsMain && b.Scripts?.Current is { } s) list.Add(Row(b.Name, b.Short, s));
-        if (_hive() is { } sup)
-            foreach (var slot in sup.Slots)
-            {
-                // Clones report their brain state in the telemetry snapshot ("asleep (script cobble_loop 34%)"): no IPC per poll.
-                if (!slot.Connected || slot.Snapshot?.Brain is not { } brain || BrainScript.Match(brain) is not { Success: true } bm) continue;
-                if (list.Any(x => x.Body.Equals(slot.Name, StringComparison.OrdinalIgnoreCase))) continue;
-                list.Add(new LiveScriptRow(slot.Name, Short(slot.Name), bm.Groups["name"].Value, bm.Groups["paused"].Success ? "paused" : "running",
-                    Paused: bm.Groups["paused"].Success));
-            }
-        if (Bodies is { } all)
-        {
-            IReadOnlyList<BodyRow> rows = [];
-            try { rows = all.Rows(); } catch (Exception ex) { _log?.LogDebug(ex, "supervisor scripts: body list unavailable"); }
-            var byName = rows.GroupBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < list.Count; i++)
-                if (byName.TryGetValue(list[i].Body, out var r) && !r.IsMain) list[i] = list[i] with { Owner = r.Owner };
-            // a hive's subhive bodies: the script each one runs, from the snapshot its hive streams (name, status, line)
-            foreach (var r in rows)
-                if (!r.IsMain && r.Online && r.Script is { } s && !list.Any(x => x.Body.Equals(r.Name, StringComparison.OrdinalIgnoreCase)))
-                    list.Add(new LiveScriptRow(r.Name, r.Short, s.Name, s.Status, s.Line, s.Paused, s.Version, Owner: r.Owner));
-        }
+        if (_hive() is { } sup) AddCloneRows(sup, list);
+        if (Bodies is { } all) AddHiveBodyRows(all, list);
         return list;
+    }
+
+    /// <summary>Clones report their brain state in the telemetry snapshot ("asleep (script cobble_loop 34%)"): no IPC per poll.</summary>
+    private static void AddCloneRows(HiveSupervisor sup, List<LiveScriptRow> list)
+    {
+        foreach (var slot in sup.Slots)
+        {
+            if (!slot.Connected || slot.Snapshot?.Brain is not { } brain || BrainScript.Match(brain) is not { Success: true } bm) continue;
+            if (list.Any(x => x.Body.Equals(slot.Name, StringComparison.OrdinalIgnoreCase))) continue;
+            list.Add(new LiveScriptRow(slot.Name, Short(slot.Name), bm.Groups["name"].Value, bm.Groups["paused"].Success ? "paused" : "running",
+                Paused: bm.Groups["paused"].Success));
+        }
+    }
+
+    /// <summary>Each row's owner from the body list, then a hive's subhive bodies: the script each one runs, from the snapshot its hive
+    /// streams (name, status, line).</summary>
+    private void AddHiveBodyRows(HiveBodyList all, List<LiveScriptRow> list)
+    {
+        IReadOnlyList<BodyRow> rows = [];
+        try { rows = all.Rows(); } catch (Exception ex) { _log?.LogDebug(ex, "supervisor scripts: body list unavailable"); }
+        var byName = rows.GroupBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < list.Count; i++)
+            if (byName.TryGetValue(list[i].Body, out var r) && !r.IsMain) list[i] = list[i] with { Owner = r.Owner };
+        foreach (var r in rows)
+            if (!r.IsMain && r.Online && r.Script is { } s && !list.Any(x => x.Body.Equals(r.Name, StringComparison.OrdinalIgnoreCase)))
+                list.Add(new LiveScriptRow(r.Name, r.Short, s.Name, s.Status, s.Line, s.Paused, s.Version, Owner: r.Owner));
     }
 
     private static LiveScriptRow Row(string name, string shortName, ScriptSession s) =>

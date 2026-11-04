@@ -107,10 +107,7 @@ public static class ScriptDiff
         var b = Split(newText);
         int n = a.Length, m = b.Length;
         if ((long)n * m > 4_000_000) return [.. a.Select((t, i) => new L(K.Removed, i + 1, null, t)), .. b.Select((t, i) => new L(K.Added, null, i + 1, t))];
-        var lcs = new int[n + 1, m + 1];
-        for (int i = n - 1; i >= 0; i--)
-            for (int j = m - 1; j >= 0; j--)
-                lcs[i, j] = Eq(a[i], b[j]) ? lcs[i + 1, j + 1] + 1 : Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+        var lcs = Lcs(a, b);
         var list = new List<L>(n + m);
         int x = 0, y = 0;
         while (x < n && y < m)
@@ -122,6 +119,17 @@ public static class ScriptDiff
         for (; x < n; x++) list.Add(new L(K.Removed, x + 1, null, a[x]));
         for (; y < m; y++) list.Add(new L(K.Added, null, y + 1, b[y]));
         return list;
+    }
+
+    /// <summary>The longest-common-subsequence table of two line lists (suffix lengths; lines equal up to trailing blanks).</summary>
+    private static int[,] Lcs(string[] a, string[] b)
+    {
+        int n = a.Length, m = b.Length;
+        var lcs = new int[n + 1, m + 1];
+        for (int i = n - 1; i >= 0; i--)
+            for (int j = m - 1; j >= 0; j--)
+                lcs[i, j] = Eq(a[i], b[j]) ? lcs[i + 1, j + 1] + 1 : Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+        return lcs;
     }
 
     private static string[] Split(string? text) => string.IsNullOrEmpty(text) ? [] : text.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');

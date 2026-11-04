@@ -95,20 +95,32 @@ public sealed class ViewerMemoryActivity(int capacity = 2000, TimeProvider? time
                 _present.Remove(key);
             foreach (var (id, fromEnd) in found.OrderBy(kv => kv.Value))
             {
-                var key = (brain, id);
-                if (!_present.TryGetValue(key, out var p))
-                {
-                    var read = _events.Reverse().FirstOrDefault(e => e.MemoryId == id && e.Brain.Equals(brain, StringComparison.OrdinalIgnoreCase));
-                    var addedAt = read?.At ?? window!.At;
-                    p = (addedAt, TurnOf(addedAt, page) ?? window!.TurnId);
-                    _present[key] = p;
-                }
-                int turns = p.AddedTurn is { } t0 ? Math.Max(1, brainTurns.Count(t => t >= t0 && t <= window!.TurnId)) : 1;
-                var kind = info.TryGetValue(id, out var di) ? di.Kind : KindOfRead(brain, id) ?? "memory";
-                list.Add(new ViewerInContext(brain, kind, id, info.TryGetValue(id, out var dr) ? dr.RaptorNode : null, p.AddedAt, window!.At, turns, fromEnd));
+                list.Add(Row(brain, id, fromEnd, Presence(brain, id, page!, window!), info, brainTurns, window!));
             }
         }
         return list;
+    }
+
+    /// <summary>When the memory entered the brain's window (caller holds _lock): known already, else at its latest read in the ring
+    /// (else the window's time), in that turn.</summary>
+    private (DateTimeOffset AddedAt, long? AddedTurn) Presence(string brain, long id, BrainContextPage page, CtxWindow window)
+    {
+        var key = (brain, id);
+        if (_present.TryGetValue(key, out var p)) return p;
+        var read = _events.Reverse().FirstOrDefault(e => e.MemoryId == id && e.Brain.Equals(brain, StringComparison.OrdinalIgnoreCase));
+        var addedAt = read?.At ?? window.At;
+        p = (addedAt, TurnOf(addedAt, page) ?? window.TurnId);
+        _present[key] = p;
+        return p;
+    }
+
+    /// <summary>One memory in the window: its kind (the doc's, else its latest read's), RAPTOR node and the brain turns it has stayed.</summary>
+    private ViewerInContext Row(string brain, long id, int fromEnd, (DateTimeOffset AddedAt, long? AddedTurn) p, IReadOnlyDictionary<long, MemoryDocInfo> info,
+        List<long> brainTurns, CtxWindow window)
+    {
+        int turns = p.AddedTurn is { } t0 ? Math.Max(1, brainTurns.Count(t => t >= t0 && t <= window.TurnId)) : 1;
+        var kind = info.TryGetValue(id, out var di) ? di.Kind : KindOfRead(brain, id) ?? "memory";
+        return new ViewerInContext(brain, kind, id, info.TryGetValue(id, out var dr) ? dr.RaptorNode : null, p.AddedAt, window.At, turns, fromEnd);
     }
 
     // caller holds _lock
@@ -129,19 +141,24 @@ public sealed class ViewerMemoryActivity(int capacity = 2000, TimeProvider? time
             int fromEnd = n - 1 - i;
             foreach (var b in window.Messages[i].Blocks)
             {
-                if (b.Kind == "tool_use" && b.Id != null && b.Name != null && RecallTools.Contains(b.Name)) recallCalls.Add(b.Id);
-                string? text = b.Kind switch
-                {
-                    "text" when b.Text != null && (b.Label == "memory" || b.Text.Contains("[memory]", StringComparison.Ordinal)) => MemorySection(b.Text),
-                    "tool_result" when b.Id != null && recallCalls.Contains(b.Id) => b.Text,
-                    _ => null,
-                };
-                if (text == null) continue;
+                if (MemoryText(b, recallCalls) is not { } text) continue;
                 foreach (Match m in IdLine.Matches(text))
                     if (long.TryParse(m.Groups["id"].Value, out var id)) found[id] = fromEnd; // later messages overwrite: the newest copy
             }
         }
         return found;
+    }
+
+    /// <summary>A block's memory lines: a text block's [memory] section, or a recall call's result (calls are noted as they pass).</summary>
+    private static string? MemoryText(CtxBlock b, HashSet<string> recallCalls)
+    {
+        if (b.Kind == "tool_use" && b.Id != null && b.Name != null && RecallTools.Contains(b.Name)) recallCalls.Add(b.Id);
+        return b.Kind switch
+        {
+            "text" when b.Text != null && (b.Label == "memory" || b.Text.Contains("[memory]", StringComparison.Ordinal)) => MemorySection(b.Text),
+            "tool_result" when b.Id != null && recallCalls.Contains(b.Id) => b.Text,
+            _ => null,
+        };
     }
 
     // The [memory] block's lines (it runs to the next blank line or "[section]" header).

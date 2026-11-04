@@ -78,42 +78,49 @@ public sealed class InProcessBotSource : IBotTelemetrySource, IDisposable
 
     public BotSnapshot Snapshot(bool full)
     {
-        try
-        {
-            var w = _game.World;
-            var p = w.Player.Snapshot;
-            bool playing = _game.IsPlaying;
-            if (playing) _everPlayed = true;
-            var status = playing ? (_agent.Paused ? BotStatus.Paused : BotStatus.Online)
-                : p.IsDead ? BotStatus.Dead : BotStatus.Connecting;
-            string[] chat;
-            lock (_lock) chat = _chat.ToArray();
-            var pos = playing || _everPlayed ? new BotPos(p.Position.X, p.Position.Y, p.Position.Z) : (BotPos?)null;
-            return new BotSnapshot
-            {
-                Name = Name,
-                Status = status,
-                At = DateTimeOffset.UtcNow,
-                Pos = pos,
-                Dimension = w.Dimension,
-                Hp = p.Health,
-                Food = p.Food,
-                Task = (Activities ?? _rt.Activities).Describe() ?? _game.CurrentAction,
-                Header = full ? GameBridge.StateHeader(_game) : null,
-                BudgetMode = _rt.Usage.Mode.ToString(),
-                Brain = MineClaw.Bot.GameTools.ScriptTools.BrainState(_rt),
-                Thought = full ? _telemetry.Thoughts.Snapshot() : null,
-                Usage = UsageSnapshots.From(_rt.Usage, _telemetry),
-                Viewport = full && pos != null ? ViewportBuilder.Build(w, p.Position, _view, Name) : null,
-                Voxels = full && pos != null ? _voxels.Get(w, p.Position, _view) : null,
-                Chat = chat,
-            };
-        }
+        try { return Take(full); }
         catch (Exception)
         {
             return BotSnapshot.Offline(Name);
         }
     }
+
+    private BotSnapshot Take(bool full)
+    {
+        var w = _game.World;
+        var p = w.Player.Snapshot;
+        bool playing = _game.IsPlaying;
+        if (playing) _everPlayed = true;
+        var status = StatusOf(playing, p);
+        string[] chat;
+        lock (_lock) chat = _chat.ToArray();
+        var pos = playing || _everPlayed ? new BotPos(p.Position.X, p.Position.Y, p.Position.Z) : (BotPos?)null;
+        bool view = full && pos != null;
+        return new BotSnapshot
+        {
+            Name = Name,
+            Status = status,
+            At = DateTimeOffset.UtcNow,
+            Pos = pos,
+            Dimension = w.Dimension,
+            Hp = p.Health,
+            Food = p.Food,
+            Task = CurrentTask(),
+            Header = full ? GameBridge.StateHeader(_game) : null,
+            BudgetMode = _rt.Usage.Mode.ToString(),
+            Brain = MineClaw.Bot.GameTools.ScriptTools.BrainState(_rt),
+            Thought = full ? _telemetry.Thoughts.Snapshot() : null,
+            Usage = UsageSnapshots.From(_rt.Usage, _telemetry),
+            Viewport = view ? ViewportBuilder.Build(w, p.Position, _view, Name) : null,
+            Voxels = view ? _voxels.Get(w, p.Position, _view) : null,
+            Chat = chat,
+        };
+    }
+
+    private BotStatus StatusOf(bool playing, MineClaw.World.PlayerSnapshot p) =>
+        playing ? (_agent.Paused ? BotStatus.Paused : BotStatus.Online) : p.IsDead ? BotStatus.Dead : BotStatus.Connecting;
+
+    private string? CurrentTask() => (Activities ?? _rt.Activities).Describe() ?? _game.CurrentAction;
 
     public async Task<bool> SendAsync(string line, CancellationToken ct)
     {

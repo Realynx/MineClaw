@@ -85,16 +85,20 @@ public sealed class GraphModel
         return false;
     }
 
-    public static MemoryCategory Categorize(string? kind, string? tag, string? source) => (kind?.ToLowerInvariant(), source?.ToLowerInvariant()) switch
+    public static MemoryCategory Categorize(string? kind, string? tag, string? source)
     {
-        ("episode", "activity") => MemoryCategory.Activity,
-        ("episode", "journal") => MemoryCategory.Self,
-        ("episode", _) => MemoryCategory.Episode,
-        ("gamedata", _) or ("recipe", _) or ("skill", _) or ("routine", _) => MemoryCategory.Recipe,
-        ("player", _) or ("chat", _) or ("claim", _) => MemoryCategory.Chat,
-        ("structure", _) or ("world", _) or ("waypoint", _) => MemoryCategory.World,
-        ("selfnote", _) or ("self", _) or ("identity", _) or ("journal", _) => MemoryCategory.Self,
-        _ => MemoryCategory.Fact, // knowledge, notes, corrections, anything else
+        var k = kind?.ToLowerInvariant();
+        if (k == "episode")
+            return source?.ToLowerInvariant() switch { "activity" => MemoryCategory.Activity, "journal" => MemoryCategory.Self, _ => MemoryCategory.Episode };
+        return k != null && KindCategories.TryGetValue(k, out var c) ? c : MemoryCategory.Fact; // knowledge, notes, corrections, anything else
+    }
+
+    private static readonly Dictionary<string, MemoryCategory> KindCategories = new(StringComparer.Ordinal)
+    {
+        ["gamedata"] = MemoryCategory.Recipe, ["recipe"] = MemoryCategory.Recipe, ["skill"] = MemoryCategory.Recipe, ["routine"] = MemoryCategory.Recipe,
+        ["player"] = MemoryCategory.Chat, ["chat"] = MemoryCategory.Chat, ["claim"] = MemoryCategory.Chat,
+        ["structure"] = MemoryCategory.World, ["world"] = MemoryCategory.World, ["waypoint"] = MemoryCategory.World,
+        ["selfnote"] = MemoryCategory.Self, ["self"] = MemoryCategory.Self, ["identity"] = MemoryCategory.Self, ["journal"] = MemoryCategory.Self,
     };
 
     /// <summary>Builds the graph from the live tree (call inside <see cref="MemoryBank.ReadTree{T}"/>).</summary>

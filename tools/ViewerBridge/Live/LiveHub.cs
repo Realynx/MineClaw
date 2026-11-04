@@ -342,25 +342,37 @@ public sealed class LiveHub : IDisposable
     /// </summary>
     private Func<CancellationToken, Task> PollBlocks()
     {
-        long? rev = null;
+        var cursor = new BlocksCursor();
         return async ct =>
         {
             for (int page = 0; page < 8; page++)
             {
-                var node = await GetJson($"api/world/blocks?since={(rev ?? 0).ToString(CultureInfo.InvariantCulture)}", TimeSpan.FromSeconds(3), ct);
-                if (node is not JsonObject o) return;
-                long newRev = o["rev"]?.GetValue<long>() ?? rev ?? 0;
-                bool first = rev == null;
-                bool full = o["full"]?.GetValue<bool>() == true, more = o["more"]?.GetValue<bool>() == true;
-                if (rev is { } r && newRev < r) { rev = newRev; return; } // the bot restarted: start over from its numbering
-                rev = newRev;
-                if (first) { if (more) continue; return; }
-                bool any = o["blocks"] is JsonObject per && per.Any(kv => kv.Value is JsonArray { Count: > 0 });
-                if (full || any || o["columns"] is JsonArray { Count: > 0 }) Publish("blocks", o);
-                if (!more) return;
+                var node = await GetJson($"api/world/blocks?since={(cursor.Rev ?? 0).ToString(CultureInfo.InvariantCulture)}", TimeSpan.FromSeconds(3), ct);
+                if (node is not JsonObject o || !BlocksPage(o, cursor)) return;
             }
         };
     }
+
+    private sealed class BlocksCursor
+    {
+        public long? Rev;
+    }
+
+    /// <summary>One page of block changes: the first only takes the revision; later ones are published when anything changed. True =
+    /// another page follows. The bot restarted (its revision went back): start over from its numbering.</summary>
+    private bool BlocksPage(JsonObject o, BlocksCursor cursor)
+    {
+        long newRev = o["rev"]?.GetValue<long>() ?? cursor.Rev ?? 0;
+        bool first = cursor.Rev == null;
+        bool full = o["full"]?.GetValue<bool>() == true, more = o["more"]?.GetValue<bool>() == true;
+        if (cursor.Rev is { } r && newRev < r) { cursor.Rev = newRev; return false; }
+        cursor.Rev = newRev;
+        if (first) return more;
+        if (full || HasBlocks(o) || o["columns"] is JsonArray { Count: > 0 }) Publish("blocks", o);
+        return more;
+    }
+
+    private static bool HasBlocks(JsonObject o) => o["blocks"] is JsonObject per && per.Any(kv => kv.Value is JsonArray { Count: > 0 });
 
     /// <summary>
     /// Story Mode (<c>/api/story</c> every 5 s for the colony list, then <c>/api/story/colonies/{id}?since=rev</c> per colony at
@@ -370,35 +382,45 @@ public sealed class LiveHub : IDisposable
     /// </summary>
     private Func<CancellationToken, Task> PollStory()
     {
-        var revs = new Dictionary<string, long>(StringComparer.Ordinal);
-        IReadOnlyList<string> colonies = [];
-        DateTimeOffset listedAt = DateTimeOffset.MinValue;
+        var state = new StoryCursor();
         return async ct =>
         {
-            if (DateTimeOffset.UtcNow - listedAt >= TimeSpan.FromSeconds(5))
-            {
-                var list = await GetJson("api/story", TimeSpan.FromSeconds(3), ct);
-                colonies = (list?["colonies"] as JsonArray ?? []).OfType<JsonObject>().Select(c => (string?)c["id"]).OfType<string>().ToList();
-                listedAt = DateTimeOffset.UtcNow;
-                foreach (var gone in revs.Keys.Except(colonies).ToList()) revs.Remove(gone);
-            }
-            foreach (var id in colonies)
-            {
-                bool known = revs.TryGetValue(id, out var since);
-                JsonNode? node;
-                try
-                {
-                    var q = known ? $"?since={since.ToString(CultureInfo.InvariantCulture)}" : "";
-                    node = await GetJson($"api/story/colonies/{Uri.EscapeDataString(id)}{q}", TimeSpan.FromSeconds(3), ct);
-                }
-                catch (SupervisorUnavailableException) { continue; }
-                if (node is not JsonObject o || o["rev"] is not JsonValue rv || !rv.TryGetValue<long>(out var rev)) continue;
-                revs[id] = rev;
-                if (!known || rev == since) continue;
-                o["id"] = id;
-                Publish("story", o);
-            }
+            if (DateTimeOffset.UtcNow - state.ListedAt >= TimeSpan.FromSeconds(5)) await ListColoniesAsync(state, ct);
+            foreach (var id in state.Colonies) await PollColonyAsync(state, id, ct);
         };
+    }
+
+    private sealed class StoryCursor
+    {
+        public readonly Dictionary<string, long> Revs = new(StringComparer.Ordinal);
+        public IReadOnlyList<string> Colonies = [];
+        public DateTimeOffset ListedAt = DateTimeOffset.MinValue;
+    }
+
+    private async Task ListColoniesAsync(StoryCursor state, CancellationToken ct)
+    {
+        var list = await GetJson("api/story", TimeSpan.FromSeconds(3), ct);
+        state.Colonies = (list?["colonies"] as JsonArray ?? []).OfType<JsonObject>().Select(c => (string?)c["id"]).OfType<string>().ToList();
+        state.ListedAt = DateTimeOffset.UtcNow;
+        foreach (var gone in state.Revs.Keys.Except(state.Colonies).ToList()) state.Revs.Remove(gone);
+    }
+
+    /// <summary>One colony: its revision recorded; its reply published when the revision moved (not on the first look).</summary>
+    private async Task PollColonyAsync(StoryCursor state, string id, CancellationToken ct)
+    {
+        bool known = state.Revs.TryGetValue(id, out var since);
+        JsonNode? node;
+        try
+        {
+            var q = known ? $"?since={since.ToString(CultureInfo.InvariantCulture)}" : "";
+            node = await GetJson($"api/story/colonies/{Uri.EscapeDataString(id)}{q}", TimeSpan.FromSeconds(3), ct);
+        }
+        catch (SupervisorUnavailableException) { return; }
+        if (node is not JsonObject o || o["rev"] is not JsonValue rv || !rv.TryGetValue<long>(out var rev)) return;
+        state.Revs[id] = rev;
+        if (!known || rev == since) return;
+        o["id"] = id;
+        Publish("story", o);
     }
 
     private Func<CancellationToken, Task> PollMemory()

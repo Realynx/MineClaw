@@ -133,17 +133,20 @@ public sealed class ChunkCache(long maxBytes = 96L * 1024 * 1024)
             int dim = dimEl.GetInt32();
             lock (_lock)
                 foreach (var c in cols.EnumerateArray())
-                {
-                    var key = new Key(light, dim, c.GetProperty("cx").GetInt32(), c.GetProperty("cz").GetInt32());
-                    long hash = c.GetProperty("hash").GetInt64();
-                    long seen = c.TryGetProperty("seen", out var s) && s.TryGetInt64(out var sv) ? sv : 0;
-                    string by = c.TryGetProperty("by", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString()! : "";
-                    bool live = c.TryGetProperty("live", out var lv) && lv.ValueKind == JsonValueKind.True;
-                    _index[key] = new Indexed(hash, seen, by, live, Now);
-                }
+                    _index[new Key(light, dim, c.GetProperty("cx").GetInt32(), c.GetProperty("cz").GetInt32())] = IndexedOf(c);
             lock (_lock) if (_index.Count > 200_000) _index.Clear();
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or FormatException) { }
+    }
+
+    /// <summary>One index column's hash, when and by whom it was seen, and whether it is live.</summary>
+    private Indexed IndexedOf(JsonElement c)
+    {
+        long hash = c.GetProperty("hash").GetInt64();
+        long seen = c.TryGetProperty("seen", out var s) && s.TryGetInt64(out var sv) ? sv : 0;
+        string by = c.TryGetProperty("by", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString()! : "";
+        bool live = c.TryGetProperty("live", out var lv) && lv.ValueKind == JsonValueKind.True;
+        return new Indexed(hash, seen, by, live, Now);
     }
 
     /// <summary>Requested columns split into cache hits (with index metadata applied) and the ones to fetch.</summary>

@@ -82,18 +82,25 @@ public static class DbViews
         var info = new DbInfo(Path.GetFileName(bank.Path), MemoryBank.FileSize(bank.Path), db.SchemaVersion, db.HasFts, db.HasRtree, vectors, mode, note,
             config.ServerVersion, DateTimeOffset.UtcNow);
 
-        KnowledgePackDto? pack = null;
+        return new OverviewDto(info, ActivePack(db), EmbeddingsOf(bank, config), cards, Stats(bank), bank.HasTree ? null : bank.TreeNote);
+    }
+
+    /// <summary>The knowledge pack the db runs on; null when it has none (or its record is unreadable).</summary>
+    private static KnowledgePackDto? ActivePack(AgentDb db)
+    {
         try
         {
             var a = KnowledgePack.Active(db);
-            pack = new KnowledgePackDto(a.Label, a.Version, a.Modes?.Select(m => m.Mode).ToList() ?? [], a.Shard);
+            return new KnowledgePackDto(a.Label, a.Version, a.Modes?.Select(m => m.Mode).ToList() ?? [], a.Shard);
         }
-        catch (Exception ex) when (ex is SqliteException or System.Text.Json.JsonException) { }
+        catch (Exception ex) when (ex is SqliteException or System.Text.Json.JsonException) { return null; }
+    }
 
+    private static EmbeddingsStatusDto EmbeddingsOf(MemoryBank bank, BridgeConfig config)
+    {
         var provider = bank.Embeddings;
-        var emb = new EmbeddingsStatusDto(config.EmbeddingsConfigured, config.EmbeddingsStatus, provider.IsAvailable ? provider.Model : null,
+        return new EmbeddingsStatusDto(config.EmbeddingsConfigured, config.EmbeddingsStatus, provider.IsAvailable ? provider.Model : null,
             provider.IsAvailable ? provider.Dimensions : null, bank.VectorSearch);
-        return new OverviewDto(info, pack, emb, cards, Stats(bank), bank.HasTree ? null : bank.TreeNote);
     }
 
     public static RaptorStatsDto? Stats(MemoryBank bank)
@@ -134,6 +141,28 @@ public static class DbViews
         return Math.Tanh(sum * Math.Pow(0.5, hours / Math.Max(0.1, halfLifeHours)) / 1.5);
     }
 
+    /// <summary>The scope's traits, by section and strength (scope and observations when the db has them).</summary>
+    private static List<TraitEntry> Traits(AgentDb db, string scope)
+    {
+        bool hasScope = db.HasColumn("self_profile", "scope"), hasObs = db.HasColumn("self_profile", "observations");
+        return db.Query($"""
+            SELECT id, section, player, text, strength, created, reinforced, reason, {(hasObs ? "observations" : "1")}
+            FROM self_profile {(hasScope ? "WHERE scope = $s" : "")} ORDER BY section, strength DESC
+            """, r => new TraitEntry(r.GetInt64(0), r.GetString(1), r.GetString(3), AgentDb.StrOrNull(r, 2), r.GetDouble(4), r.GetInt64(8),
+                AgentDb.LongOrNull(r, 5), AgentDb.LongOrNull(r, 6), AgentDb.StrOrNull(r, 7)), ("$s", scope));
+    }
+
+    /// <summary>The scope's last 500 self-profile changes (adds, reinforcements, adjustments, removals), newest first.</summary>
+    private static List<SelfHistoryEntry> History(AgentDb db, string scope)
+    {
+        bool hasScope = db.HasColumn("self_profile_history", "scope");
+        return db.Query($"""
+            SELECT version, at, op, section, text, reason, source FROM self_profile_history
+            {(hasScope ? "WHERE scope = $s" : "")} ORDER BY version DESC LIMIT 500
+            """, r => new SelfHistoryEntry(r.GetInt64(0), r.GetInt64(1), r.GetString(2), AgentDb.StrOrNull(r, 3) ?? "", AgentDb.StrOrNull(r, 4) ?? "",
+                AgentDb.StrOrNull(r, 5), AgentDb.StrOrNull(r, 6)), ("$s", scope)).Where(h => Ops.Contains(h.Op)).ToList();
+    }
+
     public static PersonalityResponse Personality(MemoryBank bank, string scope)
     {
         var db = bank.Db;
@@ -144,28 +173,10 @@ public static class DbViews
                 r => r.IsDBNull(0) ? "main" : r.GetString(0))
             : Has("self_profile") ? ["main"] : new List<string>();
 
-        var entries = new List<TraitEntry>();
-        if (Has("self_profile"))
-        {
-            bool hasScope = HasCol("self_profile", "scope"), hasObs = HasCol("self_profile", "observations");
-            entries = db.Query($"""
-                SELECT id, section, player, text, strength, created, reinforced, reason, {(hasObs ? "observations" : "1")}
-                FROM self_profile {(hasScope ? "WHERE scope = $s" : "")} ORDER BY section, strength DESC
-                """, r => new TraitEntry(r.GetInt64(0), r.GetString(1), r.GetString(3), AgentDb.StrOrNull(r, 2), r.GetDouble(4), r.GetInt64(8),
-                    AgentDb.LongOrNull(r, 5), AgentDb.LongOrNull(r, 6), AgentDb.StrOrNull(r, 7)), ("$s", scope));
-        }
+        var entries = Has("self_profile") ? Traits(db, scope) : new List<TraitEntry>();
         var groups = SectionOrder.Select(s => new TraitGroup(s, entries.Where(e => e.Section == s).ToList())).Where(g => g.Entries.Count > 0).ToList();
 
-        var history = new List<SelfHistoryEntry>();
-        if (Has("self_profile_history"))
-        {
-            bool hasScope = HasCol("self_profile_history", "scope");
-            history = db.Query($"""
-                SELECT version, at, op, section, text, reason, source FROM self_profile_history
-                {(hasScope ? "WHERE scope = $s" : "")} ORDER BY version DESC LIMIT 500
-                """, r => new SelfHistoryEntry(r.GetInt64(0), r.GetInt64(1), r.GetString(2), AgentDb.StrOrNull(r, 3) ?? "", AgentDb.StrOrNull(r, 4) ?? "",
-                    AgentDb.StrOrNull(r, 5), AgentDb.StrOrNull(r, 6)), ("$s", scope)).Where(h => Ops.Contains(h.Op)).ToList();
-        }
+        var history = Has("self_profile_history") ? History(db, scope) : new List<SelfHistoryEntry>();
         var mood = Has("self_acc")
             // The stored sum is a decayed accumulator as of `updated`; report what the bot itself reads (SelfGrowth.Mood):
             // decayed to now, then tanh(sum / 1.5), so the value is always within -1..1.

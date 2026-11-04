@@ -38,37 +38,48 @@ public static class ShardViews
             try { index = PackIndex.Load(dir); }
             catch (Exception ex) when (ex is IOException or JsonException) { index = new PackIndex(); }
             foreach (var e in index.Packs.OrderBy(p => p.IsMode).ThenBy(p => p.Version, StringComparer.Ordinal).ThenBy(p => p.Name, StringComparer.Ordinal))
-            {
-                var path = Path.Combine(dir, e.File);
-                string? error = null;
-                if (!File.Exists(path)) error = "missing: " + e.File + " (rebuild with tools/ShardPacks)";
-                else
-                    try
-                    {
-                        if (ShardFile.ReadManifest(path).ContentHash != e.ContentHash) error = "the file doesn't match index.json (rebuild with tools/ShardPacks)";
-                    }
-                    catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { error = ex.Message; }
-                bool isActive = active != null && (e.IsMode
-                    ? active.Modes?.Any(m => m.Mode.Equals(e.Mode, StringComparison.OrdinalIgnoreCase)) == true
-                    : active.Version.Equals(e.Version, StringComparison.OrdinalIgnoreCase));
-                packs.Add(new PackEntryDto(e.File, e.Name, e.IsMode ? "mode" : "version", e.Version, e.Mode, e.Description, e.Counts, e.Records, e.Bytes, e.Vectors,
-                    e.NeedsEmbedding, e.EmbeddingModel, e.Dims, e.Files, e.Source, e.SourceHash, e.ContentHash, e.Builder,
-                    e.IsMode ? $"mode pack {e.Mode} ({e.Version})" : $"knowledge pack {e.Version}", error, isActive));
-            }
+                packs.Add(PackEntry(e, dir, active));
             foreach (var path in Directory.EnumerateFiles(dir, "*" + ShardFile.Extension).Order(StringComparer.OrdinalIgnoreCase))
-            {
-                var file = Path.GetFileName(path);
-                if (index.Packs.Any(p => p.File.Equals(file, StringComparison.OrdinalIgnoreCase))) continue;
-                long bytes = new FileInfo(path).Length;
-                try
-                {
-                    var m = ShardFile.ReadManifest(path);
-                    extra.Add(new ShardFileInfoDto(file, bytes, m, KindLabel(m), null));
-                }
-                catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { extra.Add(new ShardFileInfoDto(file, bytes, null, "?", ex.Message)); }
-            }
+                if (Unindexed(path, index) is { } info) extra.Add(info);
         }
         return new ShardPacksResponse(packs, extra, active?.Label, active?.Modes?.Select(m => m.Mode).ToList() ?? []);
+    }
+
+    /// <summary>An indexed pack: its file checked against the index, and whether it is the active one.</summary>
+    private static PackEntryDto PackEntry(PackIndexEntry e, string dir, KnowledgePackInfo? active)
+    {
+        var error = PackFileError(Path.Combine(dir, e.File), e);
+        bool isActive = active != null && (e.IsMode
+            ? active.Modes?.Any(m => m.Mode.Equals(e.Mode, StringComparison.OrdinalIgnoreCase)) == true
+            : active.Version.Equals(e.Version, StringComparison.OrdinalIgnoreCase));
+        return new PackEntryDto(e.File, e.Name, e.IsMode ? "mode" : "version", e.Version, e.Mode, e.Description, e.Counts, e.Records, e.Bytes, e.Vectors,
+            e.NeedsEmbedding, e.EmbeddingModel, e.Dims, e.Files, e.Source, e.SourceHash, e.ContentHash, e.Builder,
+            e.IsMode ? $"mode pack {e.Mode} ({e.Version})" : $"knowledge pack {e.Version}", error, isActive);
+    }
+
+    /// <summary>Why the pack's file can't be used (missing, not the indexed content, unreadable); null = fine.</summary>
+    private static string? PackFileError(string path, PackIndexEntry e)
+    {
+        if (!File.Exists(path)) return "missing: " + e.File + " (rebuild with tools/ShardPacks)";
+        try
+        {
+            return ShardFile.ReadManifest(path).ContentHash != e.ContentHash ? "the file doesn't match index.json (rebuild with tools/ShardPacks)" : null;
+        }
+        catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { return ex.Message; }
+    }
+
+    /// <summary>A shard file in the folder that the index doesn't list (its manifest, or why it can't be read); null = indexed.</summary>
+    private static ShardFileInfoDto? Unindexed(string path, PackIndex index)
+    {
+        var file = Path.GetFileName(path);
+        if (index.Packs.Any(p => p.File.Equals(file, StringComparison.OrdinalIgnoreCase))) return null;
+        long bytes = new FileInfo(path).Length;
+        try
+        {
+            var m = ShardFile.ReadManifest(path);
+            return new ShardFileInfoDto(file, bytes, m, KindLabel(m), null);
+        }
+        catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { return new ShardFileInfoDto(file, bytes, null, "?", ex.Message); }
     }
 
     public static string KindLabel(ShardManifest m) => m.Kind switch
