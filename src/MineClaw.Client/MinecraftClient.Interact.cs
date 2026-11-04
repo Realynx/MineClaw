@@ -417,7 +417,13 @@ public sealed partial class MinecraftClient
         if (World.Inventory.CountItem(Items.Bow) == 0) return ActionResult.Fail("no bow");
         int arrows = World.Inventory.CountItem(Items.Arrow);
         if (arrows == 0) return ActionResult.Fail("no arrows");
-        chargeTicks = Math.Clamp(chargeTicks, 3, 60);
+        return await ShootWithBowAsync(target, entityId, what, Math.Clamp(chargeTicks, 3, 60), arrows, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Aims (leading a moving entity), draws for <paramref name="chargeTicks"/> server ticks and looses, with a bow and
+    /// <paramref name="arrows"/> arrows on hand.</summary>
+    private async Task<ActionResult> ShootWithBowAsync(Func<Vec3d?> target, int? entityId, string what, int chargeTicks, int arrows, CancellationToken ct)
+    {
         double speed = ArrowBallistics.Speed(chargeTicks);
         if (target() is not { } t0) return ActionResult.Fail($"lost {what}");
         if (ArrowBallistics.Solve(World.Player.EyePosition, t0, speed) is not { } first)
@@ -428,18 +434,35 @@ public sealed partial class MinecraftClient
         await LookCoreAsync(first.Yaw, first.Pitch, ct).ConfigureAwait(false);
         Send(PlayerBlockPlacementPacket.UseItem(HeldStack())); // ItemBow.onItemRightClick: setItemInUse (needs an arrow)
 
-        // The server counts the draw in its own player ticks (one per movement packet): hold a tick longer.
+        var (aim, vel, lost) = await DrawBowAsync(target, entityId, what, chargeTicks, speed, t0, first, ct).ConfigureAwait(false);
+        if (lost is not null) return ActionResult.Fail(lost);
+        if (target() is { } last && ArrowBallistics.SolveLeading(World.Player.EyePosition, last, vel, speed) is { } fin) aim = fin;
+        await LookCoreAsync(aim.Yaw, aim.Pitch, ct).ConfigureAwait(false); // the look goes out before the release
+        ReleaseBow();
+        bool shot = await WaitUntilAsync(() => World.Inventory.CountItem(Items.Arrow) < arrows, TimeSpan.FromMilliseconds(1500), ct)
+            .ConfigureAwait(false);
+        return shot
+            ? ActionResult.Success($"shot an arrow at {what} (power {ArrowBallistics.Power(chargeTicks):0.00}, pitch {aim.Pitch:0.#}, {World.Inventory.CountItem(Items.Arrow)} arrows left)")
+            : ActionResult.Fail("the bow didn't fire (no arrow used)");
+    }
+
+    private void ReleaseBow() => Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusReleaseUseItem, X = 0, Y = 0, Z = 0, Face = 255 });
+
+    /// <summary>The draw: the server counts it in its own player ticks (one per movement packet), so it is held a tick longer; the
+    /// aim follows the target (leading it by its velocity). The last aim and velocity, or why the draw was given up.</summary>
+    private async Task<((float Yaw, float Pitch, int Ticks) Aim, Vec3d Vel, string? Fail)> DrawBowAsync(Func<Vec3d?> target, int? entityId, string what,
+        int chargeTicks, double speed, Vec3d p0, (float Yaw, float Pitch, int Ticks) first, CancellationToken ct)
+    {
         long start = TickCount;
-        var p0 = t0;
         Vec3d vel = Vec3d.Zero;
         (float Yaw, float Pitch, int Ticks)? aim = first;
         while (TickCount < start + chargeTicks + 1)
         {
-            if (HeldStack().Id != Items.Bow) return ActionResult.Fail("the bow left my hand while drawing");
+            if (HeldStack().Id != Items.Bow) return (aim!.Value, vel, "the bow left my hand while drawing");
             if (target() is not { } now)
             {
-                Release();
-                return ActionResult.Fail($"lost {what} while drawing");
+                ReleaseBow();
+                return (aim!.Value, vel, $"lost {what} while drawing");
             }
             long elapsed = Math.Max(1, TickCount - start);
             vel = entityId is null ? Vec3d.Zero : (now - p0) * (1.0 / elapsed);
@@ -447,16 +470,7 @@ public sealed partial class MinecraftClient
             if (aim is { } a) { _lookYaw = a.Yaw; _lookPitch = Math.Clamp(a.Pitch, -90f, 90f); }
             await WaitTicksAsync(1, ct).ConfigureAwait(false);
         }
-        if (target() is { } last && ArrowBallistics.SolveLeading(World.Player.EyePosition, last, vel, speed) is { } fin) aim = fin;
-        await LookCoreAsync(aim!.Value.Yaw, aim.Value.Pitch, ct).ConfigureAwait(false); // the look goes out before the release
-        Release();
-        bool shot = await WaitUntilAsync(() => World.Inventory.CountItem(Items.Arrow) < arrows, TimeSpan.FromMilliseconds(1500), ct)
-            .ConfigureAwait(false);
-        return shot
-            ? ActionResult.Success($"shot an arrow at {what} (power {ArrowBallistics.Power(chargeTicks):0.00}, pitch {aim.Value.Pitch:0.#}, {World.Inventory.CountItem(Items.Arrow)} arrows left)")
-            : ActionResult.Fail("the bow didn't fire (no arrow used)");
-
-        void Release() => Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusReleaseUseItem, X = 0, Y = 0, Z = 0, Face = 255 });
+        return (aim!.Value, vel, null);
     }
 
     // ------------------------------------------------------------------ dispatch hooks (reader thread)

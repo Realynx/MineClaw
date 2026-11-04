@@ -43,17 +43,30 @@ public sealed partial class MinecraftClient
     public bool PlayGesture(GesturePlan plan)
     {
         if (plan.Frames.Count == 0 || !IsPlaying || SafetyEngaged || World.Player.IsDead) return false;
-        if (plan.UsesBody && (CurrentAction is not null || _driver is not null || _crouchHold || _idleSneak)) return false;
+        if (plan.UsesBody && BodyHeldForGesture()) return false;
         var prev = Interlocked.Exchange(ref _gesture, new GestureRun(plan));
         if (prev != null) Interlocked.Increment(ref GesturesCancelled);
         Interlocked.Increment(ref GesturesPlayed);
         return true;
     }
 
+    /// <summary>An action, a drive, a held crouch or an action's sneak owns the body.</summary>
+    private bool BodyHeldForGesture() => CurrentAction is not null || _driver is not null || _crouchHold || _idleSneak;
+
     /// <summary>Stops the gesture now; the next tick sends the real look and, if it was sneaking, "stop sneaking".</summary>
     public void CancelGesture()
     {
         if (Interlocked.Exchange(ref _gesture, null) != null) Interlocked.Increment(ref GesturesCancelled);
+    }
+
+    /// <summary>Why the gesture ends this tick (done, a safety reflex, the body busy, airborne on a drive), or null.</summary>
+    private string? GestureStop(GestureRun g, long i, PhysicsState phys)
+    {
+        if (i >= g.Plan.Frames.Count) return "done";
+        if (SafetyEngaged || World.Player.IsDead) return "safety";
+        bool busy = _driver is not null || CurrentAction is not null;
+        if (g.Plan.UsesBody && (busy || _crouchHold)) return "body busy";
+        return _driver is not null && !phys.OnGround && !phys.InWater ? "airborne" : null;
     }
 
     /// <summary>Tick thread, before the input: picks this tick's frame (or ends/cancels the gesture) and sends its swing.</summary>
@@ -64,12 +77,7 @@ public sealed partial class MinecraftClient
         if (g is null) return;
         if (g.StartTick < 0) g.StartTick = TickCount;
         long i = TickCount - g.StartTick;
-        bool busy = _driver is not null || CurrentAction is not null;
-        string? stop = i >= g.Plan.Frames.Count ? "done"
-            : SafetyEngaged || World.Player.IsDead ? "safety"
-            : g.Plan.UsesBody && (busy || _crouchHold) ? "body busy"
-            : _driver is not null && !phys.OnGround && !phys.InWater ? "airborne"
-            : null;
+        string? stop = GestureStop(g, i, phys);
         if (stop != null)
         {
             if (Interlocked.CompareExchange(ref _gesture, null, g) == g && stop != "done") Interlocked.Increment(ref GesturesCancelled);
