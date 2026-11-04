@@ -1,0 +1,77 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`build expansion: every kind over a grid of options > stays block for block the same (one digest per kind) 1`] = `
+{
+  "bed": "2600:6dd7dd2d5c833d8f",
+  "block": "23790:90a10e1d181c7c59",
+  "chest": "1300:42bf847146f12eae",
+  "crafting_table": "1300:59f24561596ee244",
+  "door": "2600:754a28cf07c84732",
+  "fence": "10920:18f70c08ae99e778",
+  "floor": "13520:c4bb89ae92b70b2b",
+  "furnace": "1300:5c75621a6e680ca7",
+  "mine": "4550:59139db9bbb70ed4",
+  "remove": "23790:d9008ab45d0e24a5",
+  "roof": "112320:627cc531afd80ebb",
+  "stairs": "13702:e096ac3c38c2ca47",
+  "torch": "1300:b371fb11e655a007",
+  "wall": "21710:0071c2d37f74d7df",
+  "water": "23790:6625ebcd229f8737",
+  "window": "23790:a566debae98f652c",
+}
+`;
+
+exports[`designate tool matching, liquids and target positions over every input > stays the same (digests) 1`] = `
+{
+  "liquids": [
+    "water",
+    "water",
+    "water",
+    "lava",
+    "water",
+    "lava",
+    "lava",
+    null,
+    "water",
+    "water",
+    "lava",
+    "lava",
+    null,
+  ],
+  "match": "0ed2e84bf9288668",
+  "targets": [
+    null,
+    null,
+    [
+      1,
+      2,
+      3,
+    ],
+    null,
+    null,
+    [
+      4,
+      5,
+      6,
+    ],
+    [
+      1,
+      0,
+      2,
+    ],
+    [
+      1,
+      3,
+      2,
+    ],
+    null,
+    [
+      2,
+      64,
+      1.5,
+    ],
+    null,
+    null,
+  ],
+}
+`;

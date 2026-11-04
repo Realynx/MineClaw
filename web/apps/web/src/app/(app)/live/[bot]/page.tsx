@@ -21,6 +21,39 @@ import { ago, cn, dimName } from '@/lib/utils';
 import { parsePos } from '@mineclaw/contracts';
 
 type Pane = 'now' | 'world';
+type NowQuery = ReturnType<typeof useNow>;
+type NowData = NonNullable<NowQuery['data']>;
+type BotView = NonNullable<ReturnType<typeof useStatus>['data']>['bots'][number];
+type HiveNode = NonNullable<ReturnType<ReturnType<typeof useHiveIndex>['get']>>;
+
+/** What the page shows about the body, from its `now` snapshot, the status tiles and the hive tree (first that knows). */
+function botFacts(n: NowData | undefined, view: BotView | undefined, node: HiveNode | undefined) {
+  return {
+    brain: node?.brain ?? view?.brain ?? null,
+    pos: parsePos(n?.body?.pos ?? view?.pos),
+    aliases: aliasesOf(view, node),
+    kind: kindOf(n, view, node),
+    owner: ownerOf(n, view, node),
+  };
+}
+
+/** The names chat lines may use for the body: its hive id, else its short name. */
+function aliasesOf(view: BotView | undefined, node: HiveNode | undefined): string[] {
+  if (node) return [node.id];
+  return view?.short ? [view.short] : [];
+}
+
+/** main / hive / subhive / script. */
+function kindOf(n: NowData | undefined, view: BotView | undefined, node: HiveNode | undefined) {
+  return view?.kind ?? n?.kind ?? node?.kind;
+}
+
+/** The body whose brain drives this one. */
+function ownerOf(n: NowData | undefined, view: BotView | undefined, node: HiveNode | undefined) {
+  return view?.owner ?? n?.owner ?? node?.owner;
+}
+type Kind = ReturnType<typeof botFacts>['kind'];
+type Owner = ReturnType<typeof botFacts>['owner'];
 
 export default function BotPage() {
   const { bot: raw } = useParams<{ bot: string }>();
@@ -29,7 +62,6 @@ export default function BotPage() {
   const status = useStatus();
   const now = useNow(bot);
   const hive = useHiveIndex();
-  const node = hive.get(bot);
   const view = status.data?.bots.find((b) => b.name === bot);
   const [pane, setPane] = useState<Pane>('now');
   const [history, setHistory] = useState<false | 'turns' | 'context'>(false);
@@ -37,147 +69,42 @@ export default function BotPage() {
   const [debug, setDebug] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const n = now.data;
-  const brain = node?.brain ?? view?.brain ?? null;
-  const pos = parsePos(n?.body?.pos ?? view?.pos);
-  const aliases = node ? [node.id] : view?.short ? [view.short] : [];
-  const kind = view?.kind ?? now.data?.kind ?? node?.kind;
-  const owner = view?.owner ?? now.data?.owner ?? node?.owner;
+  const { brain, pos, aliases, kind, owner } = botFacts(n, view, hive.get(bot));
 
-  if (now.error?.status === 404) {
-    return (
-      <div className="p-6">
-        <Card>
-          <EmptyState title={`No bot called ${bot}`} hint="It may have gone offline." action={<Link href="/live" className="text-sm text-accent">Back to the hive</Link>} />
-        </Card>
-      </div>
-    );
-  }
+  if (now.error?.status === 404) return <NoSuchBot bot={bot} />;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* header */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface px-4 py-3 sm:px-6">
-        <Link href="/live" aria-label="Back to the hive" className="grid size-8 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg">
-          <ArrowLeft className="size-4" />
-        </Link>
-        <StatusDot status={view?.status} />
-        <h1 className="text-lg font-semibold tracking-tight text-fg">{bot}</h1>
-        {kind ? <Badge>{KIND_LABEL[kind]}</Badge> : null}
-        {owner && kind !== 'main' ? <Link href={`/live/${encodeURIComponent(owner)}`} className="text-xs text-muted hover:text-fg">of {owner}</Link> : null}
-        {n?.brainState ? <span className="text-sm text-muted">{n.brainState}</span> : null}
-        <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          <Segmented<Pane>
-            label="Main pane"
-            size="sm"
-            value={pane}
-            onChange={setPane}
-            options={[
-              { value: 'now', label: <><LayoutPanelLeft className="size-3.5" /> Now</> },
-              { value: 'world', label: <><Box className="size-3.5" /> World</> },
-            ]}
-          />
-          <span className="mx-1 h-5 w-px bg-border" aria-hidden />
-          <Button size="sm" variant="ghost" onClick={() => setHistory('turns')} disabled={!brain}>
-            <History className="size-3.5" /> History
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setHistory('context')} disabled={!brain}>
-            <MessageSquareText className="size-3.5" /> Context
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setVision(true)}>
-            <Eye className="size-3.5" /> Vision
-          </Button>
-          {n?.script ? (
-            <Button size="sm" variant="ghost" onClick={() => setDebug(true)}>
-              <Bug className="size-3.5" /> Debugger
-            </Button>
-          ) : null}
-        </div>
-      </div>
+      <BotHeader
+        bot={bot}
+        n={n}
+        view={view}
+        kind={kind}
+        owner={owner}
+        pane={pane}
+        setPane={setPane}
+        hasBrain={!!brain}
+        openHistory={setHistory}
+        openVision={() => setVision(true)}
+        openDebugger={() => setDebug(true)}
+      />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_24rem] xl:grid-cols-[minmax(0,1fr)_28rem]">
         <div className="min-h-0 overflow-auto">
           {pane === 'world' ? (
-            <div className="flex h-full min-h-[28rem] flex-col">
-              <div className="min-h-0 flex-1">
-                <WorldHost>
-                  <WorldPane follow={bot} />
-                </WorldHost>
-              </div>
-              <div className="flex flex-wrap items-center gap-4 border-t border-border bg-surface px-5 py-3 text-sm">
-                {n?.body ? <div className="w-64"><Vitals hp={n.body.hp} food={n.body.food} compact /></div> : null}
-                <p className="min-w-0 flex-1 truncate text-muted">{n?.thought?.text}</p>
-              </div>
-            </div>
+            <WorldView bot={bot} n={n} />
           ) : (
-            <div className="mx-auto max-w-4xl space-y-4 p-4 sm:p-6">
-              {/* current thought */}
-              <Card>
-                <div className="p-5">
-                  <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-medium tracking-wide text-subtle uppercase">
-                      <Brain className="size-3.5" /> Thinking about
-                    </span>
-                    {n?.inFlight ? <InFlight inFlight={n.inFlight} devDetails={devDetails} /> : null}
-                    {n?.thought?.at ? <span className="ml-auto text-xs text-subtle">{ago(n.thought.at)}</span> : null}
-                  </div>
-                  {now.isPending ? (
-                    <SkeletonLines lines={2} />
-                  ) : now.error ? (
-                    <ErrorState error={now.error} onRetry={() => void now.refetch()} />
-                  ) : n?.thought?.text ? (
-                    <p className="text-[17px] leading-relaxed text-pretty text-fg">{n.thought.text}</p>
-                  ) : (
-                    <p className="text-muted">{kind === 'script' ? 'This body runs a script only; it has no brain of its own.' : 'No thought yet.'}</p>
-                  )}
-                  {n?.thought?.thinking ? (
-                    <div className="mt-3">
-                      <button
-                        onClick={() => setShowThinking((s) => !s)}
-                        aria-expanded={showThinking}
-                        className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-fg"
-                      >
-                        <ChevronDown className={cn('size-3.5 transition-transform', showThinking && 'rotate-180')} />
-                        {showThinking ? 'Hide thinking' : 'Show thinking'}
-                      </button>
-                      {showThinking ? <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed text-muted italic">{n.thought.thinking}</p> : null}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border px-5 py-3 text-[13px]">
-                  <span className="min-w-0 text-muted">
-                    <span className="text-subtle">Task</span> <span className="font-medium text-fg">{n?.task ?? view?.task ?? 'Idle'}</span>
-                  </span>
-                  {n?.tool ? (
-                    <span className="inline-flex min-w-0 items-center gap-1.5 text-muted">
-                      <Wrench className="size-3.5 text-subtle" />
-                      <span className="font-medium text-fg">{n.tool.name}</span>
-                      {n.tool.argsShort ? <code className="truncate font-mono text-xs text-subtle">{n.tool.argsShort}</code> : null}
-                    </span>
-                  ) : null}
-                </div>
-              </Card>
-
-              {n?.script ? (
-                <ScriptCard script={n.script} onDebug={() => setDebug(true)} />
-              ) : now.isPending ? (
-                <Skeleton className="h-60 rounded-card" />
-              ) : null}
-
-              <Card>
-                <CardHeader title="Body" icon={<Package className="size-4" />} subtitle={n?.body?.held ? `Holding ${n.body.held}` : undefined} />
-                <div className="space-y-3 p-5">
-                  {n?.body || view ? <Vitals hp={n?.body?.hp ?? view?.hp ?? 0} food={n?.body?.food ?? view?.food ?? 0} /> : <SkeletonLines lines={1} />}
-                  <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted">
-                    <span>{dimName(n?.body?.dim ?? view?.dim)}</span>
-                    {devDetails && pos ? <span className="tabular">{pos.map((v) => Math.floor(v)).join(', ')}</span> : null}
-                    {kind === 'subhive' && owner ? <span>Driven by {owner}’s brain</span> : null}
-                  </div>
-                </div>
-                <div className="border-t border-border p-5">
-                  <InventorySection bot={bot} />
-                </div>
-              </Card>
-            </div>
+            <NowView
+              bot={bot}
+              now={now}
+              view={view}
+              kind={kind}
+              owner={owner}
+              pos={devDetails ? pos : null}
+              devDetails={devDetails}
+              thinking={{ shown: showThinking, toggle: () => setShowThinking((s) => !s) }}
+              openDebugger={() => setDebug(true)}
+            />
           )}
         </div>
         <ChatPane bot={bot} aliases={aliases} className="h-[32rem] border-t border-border bg-surface lg:h-auto lg:border-t-0 lg:border-l" />
@@ -196,4 +123,224 @@ export default function BotPage() {
       <DebuggerDrawer open={debug} onOpenChange={setDebug} body={bot} />
     </div>
   );
+}
+
+function NoSuchBot({ bot }: { bot: string }) {
+  return (
+    <div className="p-6">
+      <Card>
+        <EmptyState title={`No bot called ${bot}`} hint="It may have gone offline." action={<Link href="/live" className="text-sm text-accent">Back to the hive</Link>} />
+      </Card>
+    </div>
+  );
+}
+
+function BotHeader(p: {
+  bot: string;
+  n: NowData | undefined;
+  view: BotView | undefined;
+  kind: Kind | undefined;
+  owner: Owner;
+  pane: Pane;
+  setPane: (p: Pane) => void;
+  hasBrain: boolean;
+  openHistory: (tab: 'turns' | 'context') => void;
+  openVision: () => void;
+  openDebugger: () => void;
+}) {
+  const { n, kind, owner } = p;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface px-4 py-3 sm:px-6">
+      <Link href="/live" aria-label="Back to the hive" className="grid size-8 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg">
+        <ArrowLeft className="size-4" />
+      </Link>
+      <StatusDot status={p.view?.status} />
+      <h1 className="text-lg font-semibold tracking-tight text-fg">{p.bot}</h1>
+      {kind ? <Badge>{KIND_LABEL[kind]}</Badge> : null}
+      {owner && kind !== 'main' ? <Link href={`/live/${encodeURIComponent(owner)}`} className="text-xs text-muted hover:text-fg">of {owner}</Link> : null}
+      {n?.brainState ? <span className="text-sm text-muted">{n.brainState}</span> : null}
+      <div className="ml-auto flex flex-wrap items-center gap-1.5">
+        <Segmented<Pane>
+          label="Main pane"
+          size="sm"
+          value={p.pane}
+          onChange={p.setPane}
+          options={[
+            { value: 'now', label: <><LayoutPanelLeft className="size-3.5" /> Now</> },
+            { value: 'world', label: <><Box className="size-3.5" /> World</> },
+          ]}
+        />
+        <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+        <Button size="sm" variant="ghost" onClick={() => p.openHistory('turns')} disabled={!p.hasBrain}>
+          <History className="size-3.5" /> History
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => p.openHistory('context')} disabled={!p.hasBrain}>
+          <MessageSquareText className="size-3.5" /> Context
+        </Button>
+        <Button size="sm" variant="ghost" onClick={p.openVision}>
+          <Eye className="size-3.5" /> Vision
+        </Button>
+        {n?.script ? (
+          <Button size="sm" variant="ghost" onClick={p.openDebugger}>
+            <Bug className="size-3.5" /> Debugger
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function WorldView({ bot, n }: { bot: string; n: NowData | undefined }) {
+  return (
+    <div className="flex h-full min-h-[28rem] flex-col">
+      <div className="min-h-0 flex-1">
+        <WorldHost>
+          <WorldPane follow={bot} />
+        </WorldHost>
+      </div>
+      <div className="flex flex-wrap items-center gap-4 border-t border-border bg-surface px-5 py-3 text-sm">
+        {n?.body ? <div className="w-64"><Vitals hp={n.body.hp} food={n.body.food} compact /></div> : null}
+        <p className="min-w-0 flex-1 truncate text-muted">{n?.thought?.text}</p>
+      </div>
+    </div>
+  );
+}
+
+function NowView(p: {
+  bot: string;
+  now: NowQuery;
+  view: BotView | undefined;
+  kind: Kind | undefined;
+  owner: Owner;
+  /** The body's position when the developer details are on. */
+  pos: ReturnType<typeof parsePos> | null;
+  devDetails: boolean;
+  thinking: ThinkingToggle;
+  openDebugger: () => void;
+}) {
+  const n = p.now.data;
+  return (
+    <div className="mx-auto max-w-4xl space-y-4 p-4 sm:p-6">
+      <ThoughtCard now={p.now} view={p.view} kind={p.kind} devDetails={p.devDetails} thinking={p.thinking} />
+      {n?.script ? (
+        <ScriptCard script={n.script} onDebug={p.openDebugger} />
+      ) : p.now.isPending ? (
+        <Skeleton className="h-60 rounded-card" />
+      ) : null}
+      <BodyCard bot={p.bot} n={n} view={p.view} kind={p.kind} owner={p.owner} pos={p.pos} />
+    </div>
+  );
+}
+
+/** The current thought: what the brain is thinking about, its hidden thinking, the task and the tool in hand. */
+function ThoughtCard(p: {
+  now: NowQuery;
+  view: BotView | undefined;
+  kind: Kind | undefined;
+  devDetails: boolean;
+  thinking: ThinkingToggle;
+}) {
+  const n = p.now.data;
+  return (
+    <Card>
+      <div className="p-5">
+        <ThoughtHeader n={n} devDetails={p.devDetails} />
+        <ThoughtText now={p.now} kind={p.kind} />
+        {n?.thought?.thinking ? <Thinking text={n.thought.thinking} toggle={p.thinking} /> : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border px-5 py-3 text-[13px]">
+        <span className="min-w-0 text-muted">
+          <span className="text-subtle">Task</span> <span className="font-medium text-fg">{n?.task ?? p.view?.task ?? 'Idle'}</span>
+        </span>
+        {n?.tool ? <ToolInHand tool={n.tool} /> : null}
+      </div>
+    </Card>
+  );
+}
+
+function ThoughtHeader({ n, devDetails }: { n: NowData | undefined; devDetails: boolean }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium tracking-wide text-subtle uppercase">
+        <Brain className="size-3.5" /> Thinking about
+      </span>
+      {n?.inFlight ? <InFlight inFlight={n.inFlight} devDetails={devDetails} /> : null}
+      {n?.thought?.at ? <span className="ml-auto text-xs text-subtle">{ago(n.thought.at)}</span> : null}
+    </div>
+  );
+}
+
+function ThoughtText({ now, kind }: { now: NowQuery; kind: Kind | undefined }) {
+  if (now.isPending) return <SkeletonLines lines={2} />;
+  if (now.error) return <ErrorState error={now.error} onRetry={() => void now.refetch()} />;
+  const text = now.data?.thought?.text;
+  if (text) return <p className="text-[17px] leading-relaxed text-pretty text-fg">{text}</p>;
+  return <p className="text-muted">{kind === 'script' ? 'This body runs a script only; it has no brain of its own.' : 'No thought yet.'}</p>;
+}
+
+/** The hidden thinking's toggle (kept by the page, so it survives pane switches and new thoughts). */
+type ThinkingToggle = { shown: boolean; toggle: () => void };
+
+function Thinking({ text, toggle }: { text: string; toggle: ThinkingToggle }) {
+  const showThinking = toggle.shown;
+  return (
+    <div className="mt-3">
+      <button
+        onClick={toggle.toggle}
+        aria-expanded={showThinking}
+        className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-fg"
+      >
+        <ChevronDown className={cn('size-3.5 transition-transform', showThinking && 'rotate-180')} />
+        {showThinking ? 'Hide thinking' : 'Show thinking'}
+      </button>
+      {showThinking ? <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed text-muted italic">{text}</p> : null}
+    </div>
+  );
+}
+
+function ToolInHand({ tool }: { tool: NonNullable<NowData['tool']> }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-muted">
+      <Wrench className="size-3.5 text-subtle" />
+      <span className="font-medium text-fg">{tool.name}</span>
+      {tool.argsShort ? <code className="truncate font-mono text-xs text-subtle">{tool.argsShort}</code> : null}
+    </span>
+  );
+}
+
+/** Vitals, dimension (and position with the developer details), who drives it, and the inventory. */
+function BodyCard(p: {
+  bot: string;
+  n: NowData | undefined;
+  view: BotView | undefined;
+  kind: Kind | undefined;
+  owner: Owner;
+  pos: ReturnType<typeof parsePos> | null;
+}) {
+  const body = p.n?.body;
+  const { view } = p;
+  return (
+    <Card>
+      <CardHeader title="Body" icon={<Package className="size-4" />} subtitle={body?.held ? `Holding ${body.held}` : undefined} />
+      <div className="space-y-3 p-5">
+        <BodyVitals body={body} view={view} />
+        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted">
+          <span>{dimName(body?.dim ?? view?.dim)}</span>
+          {p.pos ? <span className="tabular">{p.pos.map((v) => Math.floor(v)).join(', ')}</span> : null}
+          {p.kind === 'subhive' && p.owner ? <span>Driven by {p.owner}’s brain</span> : null}
+        </div>
+      </div>
+      <div className="border-t border-border p-5">
+        <InventorySection bot={p.bot} />
+      </div>
+    </Card>
+  );
+}
+
+const orZero = (a: number | undefined, b: number | undefined) => a ?? b ?? 0;
+
+/** Health and food from the body's snapshot, else the status tile; a placeholder until either is known. */
+function BodyVitals({ body, view }: { body: NowData['body'] | undefined; view: BotView | undefined }) {
+  if (!body && !view) return <SkeletonLines lines={1} />;
+  return <Vitals hp={orZero(body?.hp, view?.hp)} food={orZero(body?.food, view?.food)} />;
 }

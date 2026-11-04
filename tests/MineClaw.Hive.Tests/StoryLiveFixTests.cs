@@ -172,7 +172,7 @@ public sealed class StoryLiveFixTests
     {
         var code = StoryColonies.PawnCode();
         Assert.Contains("function chopTree(j)", code);
-        Assert.Contains("case 'chop': return chopTree(j)", code);
+        Assert.Contains("chop: chopTree,", code); // the 'chop' job kind runs chopTree (work's table of actions)
         Assert.Contains("craft(j.planks", code);
         Assert.Contains("partial: ", code);
     }

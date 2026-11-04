@@ -349,12 +349,7 @@ export function fakeDesignerTurn(
       cells: box(x0, 0, z0, x1, 0, z1, 4),
     });
     const wall = (x: number, _y: number, z: number) => x === x0 || x === x1 || z === z0 || z === z1;
-    const walls = box(x0, 1, z0, x1, 3, z1, 5, 0, wall).map((c): DesignerCell => {
-      const corner = (c[0] === x0 || c[0] === x1) && (c[2] === z0 || c[2] === z1);
-      const window =
-        c[1] === 2 && !corner && (c[0] === x0 + 2 || c[0] === x1 - 2 || c[2] === z0 + 2 || c[2] === z1 - 2);
-      return corner ? [c[0], c[1], c[2], 17, 0] : window ? [c[0], c[1], c[2], 20, 0] : c;
-    });
+    const walls = box(x0, 1, z0, x1, 3, z1, 5, 0, wall).map((c) => houseWallCell(c, x0, z0, x1, z1));
     ops.push({ kind: 'walls', label: 'walls of planks, log corners and glass windows', by: 'ai', cells: walls });
     ops.push({
       kind: 'fill',
@@ -371,6 +366,14 @@ export function fakeDesignerTurn(
   return { reply: "I'm the mock designer: ask me to build a house, add a door, a roof, or clear the canvas.", ops };
 }
 
+/** A plank wall cell of the mock house: log at the corners, glass windows two in from them on the middle layer. */
+function houseWallCell(c: DesignerCell, x0: number, z0: number, x1: number, z1: number): DesignerCell {
+  const corner = (c[0] === x0 || c[0] === x1) && (c[2] === z0 || c[2] === z1);
+  if (corner) return [c[0], c[1], c[2], 17, 0];
+  const window = c[1] === 2 && (c[0] === x0 + 2 || c[0] === x1 - 2 || c[2] === z0 + 2 || c[2] === z1 - 2);
+  return window ? [c[0], c[1], c[2], 20, 0] : c;
+}
+
 // ---------------------------------------------------------------------------------------------------------- mock studio
 
 
@@ -380,17 +383,10 @@ const titled = (w: string): string =>
   w === 'silver' ? 'Light Gray' : w.split('_').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 const FACING_FAMILIES = new Set(['stairs', 'door', 'bed', 'torch', 'wall', 'front', 'facing6', 'hopper', 'horizontal', 'gate', 'trapdoor', 'button', 'lever', 'rail', 'poweredrail', 'rotation16', 'skull', 'vine']);
 
-/**
- * A version's design palette as the bot serves it (DesignPalette: every placeable state in creative-tab categories): mock
- * modes only. Close to the bot's table (the same ids, metas, specs and categories for what the studio's tests and screens use),
- * not a copy of it.
- */
-export function mockDesignerPalette(version: string): DesignerPaletteEntry[] {
-  const out: DesignerPaletteEntry[] = [];
-  const add = (id: number, meta: number, name: string, spec: string, cat: string, family = 'none', icon: string | null = null) =>
-    out.push({ id, meta, name, spec, cat, family, facing: FACING_FAMILIES.has(family), icon });
-  const modern = version === '1.12.2';
-  // Building
+type AddEntry = (id: number, meta: number, name: string, spec: string, cat: string, family?: string, icon?: string | null) => void;
+
+/** Stone variants, cobble, planks and logs. */
+function paletteStoneAndWood(add: AddEntry, modern: boolean): void {
   add(1, 0, 'Stone', 'stone', 'Building');
   if (modern)
     ['granite', 'polished_granite', 'diorite', 'polished_diorite', 'andesite', 'polished_andesite'].forEach((w, i) =>
@@ -402,6 +398,10 @@ export function mockDesignerPalette(version: string): DesignerPaletteEntry[] {
   else add(5, 0, 'Wooden Planks', 'planks', 'Building');
   (modern ? WOODS.slice(0, 4) : WOODS.slice(0, 3)).forEach((w, i) => add(17, i, `${titled(w)} Log`, `log:${w}`, 'Building', 'log'));
   if (modern) WOODS.slice(4).forEach((w, i) => add(162, i, `${titled(w)} Log`, `log2:${w}`, 'Building', 'log'));
+}
+
+/** Bricks, stone bricks and sandstone. */
+function paletteBricks(add: AddEntry, modern: boolean): void {
   add(45, 0, 'Bricks', 'brick_block', 'Building');
   const sb = modern ? 'stonebrick' : 'stone_bricks';
   add(98, 0, 'Stone Bricks', sb, 'Building');
@@ -412,39 +412,55 @@ export function mockDesignerPalette(version: string): DesignerPaletteEntry[] {
     add(24, 2, 'Smooth Sandstone', 'sandstone:smooth', 'Building');
     add(179, 0, 'Red Sandstone', 'red_sandstone', 'Building');
   }
+}
+
+const SLABS_MODERN = [['stone', 0], ['sandstone', 1], ['cobblestone', 3], ['brick', 4], ['stone_brick', 5], ['nether_brick', 6], ['quartz', 7]] as const;
+const SLABS_BETA = [['stone', 0], ['sandstone', 1], ['wood', 2], ['cobblestone', 3], ['brick', 4], ['stone_brick', 5]] as const;
+const STAIRS_MODERN: Array<[number, string, string]> = [[134, 'spruce_stairs', 'Spruce Stairs'], [135, 'birch_stairs', 'Birch Stairs'], [136, 'jungle_stairs', 'Jungle Stairs'], [163, 'acacia_stairs', 'Acacia Stairs'], [164, 'dark_oak_stairs', 'Dark Oak Stairs'], [114, 'nether_brick_stairs', 'Nether Brick Stairs'], [128, 'sandstone_stairs', 'Sandstone Stairs'], [156, 'quartz_stairs', 'Quartz Stairs'], [203, 'purpur_stairs', 'Purpur Stairs']];
+
+/** Slabs (stone and, in 1.12.2, wooden) and stairs. */
+function paletteSlabsAndStairs(add: AddEntry, modern: boolean): void {
   add(43, 0, 'Double Stone Slab', 'double_stone_slab', 'Building');
-  (modern ? [['stone', 0], ['sandstone', 1], ['cobblestone', 3], ['brick', 4], ['stone_brick', 5], ['nether_brick', 6], ['quartz', 7]] : [['stone', 0], ['sandstone', 1], ['wood', 2], ['cobblestone', 3], ['brick', 4], ['stone_brick', 5]]).forEach(([w, m]) =>
-    add(44, m as number, w === 'stone' ? 'Stone Slab' : `${titled(w as string)} Slab`, `stone_slab:${w}`, 'Building', 'slab'),
+  (modern ? SLABS_MODERN : SLABS_BETA).forEach(([w, m]) =>
+    add(44, m, w === 'stone' ? 'Stone Slab' : `${titled(w)} Slab`, `stone_slab:${w}`, 'Building', 'slab'),
   );
   if (modern) WOODS.forEach((w, i) => add(126, i, `${titled(w)} Slab`, `wooden_slab:${w}`, 'Building', 'slab'));
   const stairs: Array<[number, string, string]> = [[53, 'oak_stairs', modern ? 'Oak Stairs' : 'Wooden Stairs'], [67, 'stone_stairs', 'Cobblestone Stairs'], [108, 'brick_stairs', 'Brick Stairs'], [109, 'stone_brick_stairs', 'Stone Brick Stairs']];
-  if (modern)
-    stairs.push([134, 'spruce_stairs', 'Spruce Stairs'], [135, 'birch_stairs', 'Birch Stairs'], [136, 'jungle_stairs', 'Jungle Stairs'], [163, 'acacia_stairs', 'Acacia Stairs'], [164, 'dark_oak_stairs', 'Dark Oak Stairs'], [114, 'nether_brick_stairs', 'Nether Brick Stairs'], [128, 'sandstone_stairs', 'Sandstone Stairs'], [156, 'quartz_stairs', 'Quartz Stairs'], [203, 'purpur_stairs', 'Purpur Stairs']);
+  if (modern) stairs.push(...STAIRS_MODERN);
   for (const [id, spec, name] of stairs) add(id, 0, name, spec, 'Building', 'stairs');
-  for (const [id, spec, name] of [[49, 'obsidian', 'Obsidian'], [20, 'glass', 'Glass'], [102, 'glass_pane', 'Glass Pane'], [101, 'iron_bars', 'Iron Bars'], [41, 'gold_block', 'Block of Gold'], [42, 'iron_block', 'Block of Iron'], [57, 'diamond_block', 'Block of Diamond'], [22, 'lapis_block', 'Lapis Lazuli Block'], [14, 'gold_ore', 'Gold Ore'], [15, 'iron_ore', 'Iron Ore'], [19, 'sponge', 'Sponge']] as const)
-    add(id, 0, name, spec, 'Building');
+}
+
+const MINERAL_BLOCKS = [[49, 'obsidian', 'Obsidian'], [20, 'glass', 'Glass'], [102, 'glass_pane', 'Glass Pane'], [101, 'iron_bars', 'Iron Bars'], [41, 'gold_block', 'Block of Gold'], [42, 'iron_block', 'Block of Iron'], [57, 'diamond_block', 'Block of Diamond'], [22, 'lapis_block', 'Lapis Lazuli Block'], [14, 'gold_ore', 'Gold Ore'], [15, 'iron_ore', 'Iron Ore'], [19, 'sponge', 'Sponge']] as const;
+const MODERN_BUILDING_BLOCKS = [[112, 'nether_brick', 'Nether Bricks'], [155, 'quartz_block', 'Block of Quartz'], [168, 'prismarine', 'Prismarine'], [201, 'purpur_block', 'Purpur Block'], [121, 'end_stone', 'End Stone'], [133, 'emerald_block', 'Block of Emerald'], [173, 'coal_block', 'Block of Coal'], [170, 'hay_block', 'Hay Bale'], [216, 'bone_block', 'Bone Block']] as const;
+
+/** Glass, metal and ore blocks; 1.12.2's nether, quartz, prismarine, purpur and the hay / bone pillars. */
+function paletteMinerals(add: AddEntry, modern: boolean): void {
+  for (const [id, spec, name] of MINERAL_BLOCKS) add(id, 0, name, spec, 'Building');
   if (modern)
-    for (const [id, spec, name] of [[112, 'nether_brick', 'Nether Bricks'], [155, 'quartz_block', 'Block of Quartz'], [168, 'prismarine', 'Prismarine'], [201, 'purpur_block', 'Purpur Block'], [121, 'end_stone', 'End Stone'], [133, 'emerald_block', 'Block of Emerald'], [173, 'coal_block', 'Block of Coal'], [170, 'hay_block', 'Hay Bale'], [216, 'bone_block', 'Bone Block']] as const)
+    for (const [id, spec, name] of MODERN_BUILDING_BLOCKS)
       add(id, 0, name, spec, 'Building', id === 170 || id === 216 ? 'pillar' : 'none');
-  // Colored
+}
+
+/** Wool; in 1.12.2 also carpet, stained glass, terracotta, concrete, glazed terracotta and shulker boxes. */
+function paletteColored(add: AddEntry, modern: boolean): void {
   COLOURS.forEach((c, i) => add(35, i, `${titled(c)} Wool`, `wool:${c}`, 'Colored'));
-  if (modern) {
-    COLOURS.forEach((c, i) => add(171, i, `${titled(c)} Carpet`, `carpet:${c}`, 'Colored'));
-    COLOURS.forEach((c, i) => add(95, i, `${titled(c)} Stained Glass`, `stained_glass:${c}`, 'Colored'));
-    COLOURS.forEach((c, i) => add(160, i, `${titled(c)} Stained Glass Pane`, `stained_glass_pane:${c}`, 'Colored'));
-    add(172, 0, 'Terracotta', 'hardened_clay', 'Colored');
-    COLOURS.forEach((c, i) => add(159, i, `${titled(c)} Terracotta`, `stained_hardened_clay:${c}`, 'Colored'));
-    COLOURS.forEach((c, i) => add(251, i, `${titled(c)} Concrete`, `concrete:${c}`, 'Colored'));
-    COLOURS.forEach((c, i) => add(252, i, `${titled(c)} Concrete Powder`, `concrete_powder:${c}`, 'Colored'));
-    COLOURS.forEach((c, i) => add(235 + i, 0, `${titled(c)} Glazed Terracotta`, `${c}_glazed_terracotta`, 'Colored', 'horizontal'));
-    COLOURS.forEach((c, i) => add(219 + i, 1, `${titled(c)} Shulker Box`, `${c}_shulker_box`, 'Colored', 'facing6'));
-  }
-  // Decoration
+  if (!modern) return;
+  COLOURS.forEach((c, i) => add(171, i, `${titled(c)} Carpet`, `carpet:${c}`, 'Colored'));
+  COLOURS.forEach((c, i) => add(95, i, `${titled(c)} Stained Glass`, `stained_glass:${c}`, 'Colored'));
+  COLOURS.forEach((c, i) => add(160, i, `${titled(c)} Stained Glass Pane`, `stained_glass_pane:${c}`, 'Colored'));
+  add(172, 0, 'Terracotta', 'hardened_clay', 'Colored');
+  COLOURS.forEach((c, i) => add(159, i, `${titled(c)} Terracotta`, `stained_hardened_clay:${c}`, 'Colored'));
+  COLOURS.forEach((c, i) => add(251, i, `${titled(c)} Concrete`, `concrete:${c}`, 'Colored'));
+  COLOURS.forEach((c, i) => add(252, i, `${titled(c)} Concrete Powder`, `concrete_powder:${c}`, 'Colored'));
+  COLOURS.forEach((c, i) => add(235 + i, 0, `${titled(c)} Glazed Terracotta`, `${c}_glazed_terracotta`, 'Colored', 'horizontal'));
+  COLOURS.forEach((c, i) => add(219 + i, 1, `${titled(c)} Shulker Box`, `${c}_shulker_box`, 'Colored', 'facing6'));
+}
+
+const MODERN_FENCES = [[188, 'spruce'], [189, 'birch'], [190, 'jungle'], [192, 'acacia'], [191, 'dark_oak']] as const;
+
+function paletteDecoration(add: AddEntry, modern: boolean): void {
   add(85, 0, modern ? 'Oak Fence' : 'Fence', 'fence', 'Decoration');
-  if (modern)
-    [[188, 'spruce'], [189, 'birch'], [190, 'jungle'], [192, 'acacia'], [191, 'dark_oak']].forEach(([id, w]) =>
-      add(id as number, 0, `${titled(w as string)} Fence`, `${w}_fence`, 'Decoration'),
-    );
+  if (modern) MODERN_FENCES.forEach(([id, w]) => add(id, 0, `${titled(w)} Fence`, `${w}_fence`, 'Decoration'));
   add(65, 2, 'Ladder', 'ladder', 'Decoration', 'wall');
   add(50, 5, 'Torch', 'torch', 'Decoration', 'torch');
   add(26, 0, 'Bed', 'bed', 'Decoration', 'bed', modern ? 'bed' : 'item:45');
@@ -456,35 +472,46 @@ export function mockDesignerPalette(version: string): DesignerPaletteEntry[] {
   add(47, 0, 'Bookshelf', 'bookshelf', 'Decoration');
   add(89, 0, 'Glowstone', 'glowstone', 'Decoration');
   add(91, 0, "Jack o'Lantern", 'lit_pumpkin', 'Decoration', 'horizontal');
-  if (modern) {
-    add(139, 0, 'Cobblestone Wall', 'cobblestone_wall', 'Decoration');
-    add(176, 0, 'Banner', 'standing_banner', 'Decoration', 'rotation16', 'banner');
-    add(145, 0, 'Anvil', 'anvil', 'Decoration', 'horizontal', 'anvil_intact');
-    add(169, 0, 'Sea Lantern', 'sea_lantern', 'Decoration');
-    add(198, 1, 'End Rod', 'end_rod', 'Decoration', 'facing6');
-    add(140, 0, 'Flower Pot', 'flower_pot', 'Decoration', 'none', 'flower_pot');
-  }
-  // Nature
+  if (!modern) return;
+  add(139, 0, 'Cobblestone Wall', 'cobblestone_wall', 'Decoration');
+  add(176, 0, 'Banner', 'standing_banner', 'Decoration', 'rotation16', 'banner');
+  add(145, 0, 'Anvil', 'anvil', 'Decoration', 'horizontal', 'anvil_intact');
+  add(169, 0, 'Sea Lantern', 'sea_lantern', 'Decoration');
+  add(198, 1, 'End Rod', 'end_rod', 'Decoration', 'facing6');
+  add(140, 0, 'Flower Pot', 'flower_pot', 'Decoration', 'none', 'flower_pot');
+}
+
+const NATURE_BLOCKS = [[12, 'sand', 'Sand'], [13, 'gravel', 'Gravel'], [82, 'clay', 'Clay'], [87, 'netherrack', 'Netherrack'], [88, 'soul_sand', 'Soul Sand'], [80, 'snow', 'Snow Block'], [86, 'pumpkin', 'Pumpkin'], [103, 'melon_block', 'Melon'], [81, 'cactus', 'Cactus'], [37, 'yellow_flower', 'Dandelion']] as const;
+const FLOWERS_MODERN = ['poppy', 'blue_orchid', 'allium', 'houstonia', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'oxeye_daisy'];
+const DOUBLE_PLANTS = ['sunflower', 'syringa', 'double_grass', 'double_fern', 'double_rose', 'paeonia'];
+const DOUBLE_PLANT_NAMES = ['Sunflower', 'Lilac', 'Tall Grass (double)', 'Large Fern', 'Rose Bush', 'Peony'];
+
+/** Ground blocks, saplings and (1.12.2) leaves, flowers and ice. */
+function paletteGround(add: AddEntry, modern: boolean): void {
   if (modern) add(2, 0, 'Grass Block', 'grass', 'Nature');
   add(3, 0, 'Dirt', 'dirt', 'Nature');
-  for (const [id, spec, name] of [[12, 'sand', 'Sand'], [13, 'gravel', 'Gravel'], [82, 'clay', 'Clay'], [87, 'netherrack', 'Netherrack'], [88, 'soul_sand', 'Soul Sand'], [80, 'snow', 'Snow Block'], [86, 'pumpkin', 'Pumpkin'], [103, 'melon_block', 'Melon'], [81, 'cactus', 'Cactus'], [37, 'yellow_flower', 'Dandelion']] as const)
-    add(id, 0, name, spec, 'Nature', id === 86 ? 'horizontal' : 'none');
+  for (const [id, spec, name] of NATURE_BLOCKS) add(id, 0, name, spec, 'Nature', id === 86 ? 'horizontal' : 'none');
   (modern ? WOODS : WOODS.slice(0, 3)).forEach((w, i) => add(6, i, `${titled(w)} Sapling`, `sapling:${w}`, 'Nature'));
-  if (modern) {
-    WOODS.slice(0, 4).forEach((w, i) => add(18, i + 4, `${titled(w)} Leaves`, `leaves:${w}`, 'Nature', 'leaves'));
-    ['poppy', 'blue_orchid', 'allium', 'houstonia', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'oxeye_daisy'].forEach((w, i) =>
-      add(38, i, w === 'houstonia' ? 'Azure Bluet' : titled(w), `red_flower:${w}`, 'Nature'),
-    );
-    ['sunflower', 'syringa', 'double_grass', 'double_fern', 'double_rose', 'paeonia'].forEach((w, i) =>
-      add(175, i, ['Sunflower', 'Lilac', 'Tall Grass (double)', 'Large Fern', 'Rose Bush', 'Peony'][i]!, `double_plant:${w}`, 'Nature', 'tall'),
-    );
-    add(79, 0, 'Ice', 'ice', 'Nature');
-  } else add(38, 0, 'Rose', 'red_flower', 'Nature');
+  if (!modern) {
+    add(38, 0, 'Rose', 'red_flower', 'Nature');
+    return;
+  }
+  WOODS.slice(0, 4).forEach((w, i) => add(18, i + 4, `${titled(w)} Leaves`, `leaves:${w}`, 'Nature', 'leaves'));
+  FLOWERS_MODERN.forEach((w, i) => add(38, i, w === 'houstonia' ? 'Azure Bluet' : titled(w), `red_flower:${w}`, 'Nature'));
+  DOUBLE_PLANTS.forEach((w, i) => add(175, i, DOUBLE_PLANT_NAMES[i]!, `double_plant:${w}`, 'Nature', 'tall'));
+  add(79, 0, 'Ice', 'ice', 'Nature');
+}
+
+/** Grass, cane, vines and wheat. */
+function palettePlants(add: AddEntry, modern: boolean): void {
   add(31, 1, modern ? 'Grass' : 'Tall Grass', 'tallgrass:grass', 'Nature');
   add(83, 0, 'Sugar Cane', modern ? 'reeds' : 'sugar_cane', 'Nature', 'age', modern ? 'reeds' : 'item:27');
   add(106, 1, 'Vines', 'vine', 'Nature', 'vine');
   add(59, 0, 'Wheat Crops', 'wheat', 'Nature', 'age', modern ? 'wheat_seeds' : 'item:9');
-  // Redstone
+}
+
+/** Wire, torches, repeaters, switches and pistons. */
+function paletteRedstoneParts(add: AddEntry, modern: boolean): void {
   add(55, 0, 'Redstone Wire', 'redstone_wire', 'Redstone', 'age', modern ? 'redstone' : 'item:56');
   add(76, 5, 'Redstone Torch', 'redstone_torch', 'Redstone', 'torch');
   add(93, 0, 'Redstone Repeater', 'unpowered_repeater', 'Redstone', 'horizontal', modern ? 'repeater' : 'item:86');
@@ -496,22 +523,27 @@ export function mockDesignerPalette(version: string): DesignerPaletteEntry[] {
   add(23, 3, 'Dispenser', 'dispenser', 'Redstone', 'facing6');
   add(25, 0, 'Note Block', 'noteblock', 'Redstone');
   add(46, 0, 'TNT', 'tnt', 'Redstone');
+}
+
+const MODERN_DOORS = [[193, 'spruce'], [194, 'birch'], [195, 'jungle'], [196, 'acacia'], [197, 'dark_oak']] as const;
+
+/** Doors, trapdoors and gates; 1.12.2's comparator, lamp, redstone block, observer and hopper. */
+function paletteRedstoneBlocks(add: AddEntry, modern: boolean): void {
   add(64, 0, modern ? 'Oak Door' : 'Wooden Door', 'wooden_door', 'Redstone', 'door', modern ? 'oak_door' : 'item:43');
-  if (modern)
-    [[193, 'spruce'], [194, 'birch'], [195, 'jungle'], [196, 'acacia'], [197, 'dark_oak']].forEach(([id, w]) =>
-      add(id as number, 0, `${titled(w as string)} Door`, `${w}_door`, 'Redstone', 'door', `${w}_door`),
-    );
+  if (modern) MODERN_DOORS.forEach(([id, w]) => add(id, 0, `${titled(w)} Door`, `${w}_door`, 'Redstone', 'door', `${w}_door`));
   add(71, 0, 'Iron Door', 'iron_door', 'Redstone', 'door', modern ? 'iron_door' : 'item:44');
   add(96, 0, modern ? 'Oak Trapdoor' : 'Trapdoor', 'trapdoor', 'Redstone', 'trapdoor');
   add(107, 0, modern ? 'Oak Fence Gate' : 'Fence Gate', 'fence_gate', 'Redstone', 'gate');
-  if (modern) {
-    add(149, 0, 'Redstone Comparator', 'unpowered_comparator', 'Redstone', 'horizontal', 'comparator');
-    add(123, 0, 'Redstone Lamp', 'redstone_lamp', 'Redstone');
-    add(152, 0, 'Block of Redstone', 'redstone_block', 'Redstone');
-    add(218, 3, 'Observer', 'observer', 'Redstone', 'facing6');
-    add(154, 0, 'Hopper', 'hopper', 'Redstone', 'hopper', 'hopper');
-  }
-  // Transport and misc
+  if (!modern) return;
+  add(149, 0, 'Redstone Comparator', 'unpowered_comparator', 'Redstone', 'horizontal', 'comparator');
+  add(123, 0, 'Redstone Lamp', 'redstone_lamp', 'Redstone');
+  add(152, 0, 'Block of Redstone', 'redstone_block', 'Redstone');
+  add(218, 3, 'Observer', 'observer', 'Redstone', 'facing6');
+  add(154, 0, 'Hopper', 'hopper', 'Redstone', 'hopper', 'hopper');
+}
+
+/** Rails, fluids and the beacon. */
+function paletteTransportAndMisc(add: AddEntry, modern: boolean): void {
   add(66, 0, 'Rail', 'rail', 'Transport', 'rail');
   add(27, 0, 'Powered Rail', 'golden_rail', 'Transport', 'poweredrail');
   add(28, 0, 'Detector Rail', 'detector_rail', 'Transport', 'poweredrail');
@@ -519,10 +551,45 @@ export function mockDesignerPalette(version: string): DesignerPaletteEntry[] {
   add(9, 0, 'Water (source)', 'water', 'Misc');
   add(11, 0, 'Lava (source)', 'lava', 'Misc');
   if (modern) add(138, 0, 'Beacon', 'beacon', 'Misc');
+}
+
+/** The palette's sections in the order the bot lists them. */
+const PALETTE_SECTIONS = [
+  paletteStoneAndWood,
+  paletteBricks,
+  paletteSlabsAndStairs,
+  paletteMinerals,
+  paletteColored,
+  paletteDecoration,
+  paletteGround,
+  palettePlants,
+  paletteRedstoneParts,
+  paletteRedstoneBlocks,
+  paletteTransportAndMisc,
+];
+
+/**
+ * A version's design palette as the bot serves it (DesignPalette: every placeable state in creative-tab categories): mock
+ * modes only. Close to the bot's table (the same ids, metas, specs and categories for what the studio's tests and screens use),
+ * not a copy of it.
+ */
+export function mockDesignerPalette(version: string): DesignerPaletteEntry[] {
+  const out: DesignerPaletteEntry[] = [];
+  const add: AddEntry = (id, meta, name, spec, cat, family = 'none', icon = null) =>
+    out.push({ id, meta, name, spec, cat, family, facing: FACING_FAMILIES.has(family), icon });
+  const modern = version === '1.12.2';
+  for (const section of PALETTE_SECTIONS) section(add, modern);
   return out;
 }
 
 export const DESIGNER_CATEGORIES = ['Building', 'Decoration', 'Colored', 'Nature', 'Redstone', 'Transport', 'Misc'] as const;
+
+/** Going back to b1.8.1: stained glass becomes glass, every plank colour oak planks; undefined when a block carries over. */
+function betaSubstitute(id: number, meta: number): [number, string] | undefined {
+  if (id === 95) return [20, 'Glass'];
+  if (id === 5 && meta > 0) return [5, 'Wooden Planks'];
+  return undefined;
+}
 
 /** A mock conversion (DesignConvert's shape): ids b1.8.1 doesn't have (and 1.12.2's stained glass) don't carry over going back. */
 export function mockConvert(
@@ -535,21 +602,16 @@ export function mockConvert(
   const out: DesignerCell[] = [];
   const missing = new Map<string, number>();
   const substituted = new Map<string, number>();
+  const count = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
   let same = 0;
+  const lossless = from === to || to === '1.12.2';
   for (const c of cells) {
-    if (from === to || to === '1.12.2') {
-      out.push(c);
-      same++;
-      continue;
-    }
     const [x, y, z, id, meta] = c;
-    if (id === 95) {
-      out.push([x, y, z, 20, 0]);
-      substituted.set(`${name(id, meta)} → Glass`, (substituted.get(`${name(id, meta)} → Glass`) ?? 0) + 1);
-    } else if (id === 5 && meta > 0) {
-      out.push([x, y, z, 5, 0]);
-      substituted.set(`${name(id, meta)} → Wooden Planks`, (substituted.get(`${name(id, meta)} → Wooden Planks`) ?? 0) + 1);
-    } else if (id > 109) missing.set(name(id, meta), (missing.get(name(id, meta)) ?? 0) + 1);
+    const sub = lossless ? undefined : betaSubstitute(id, meta);
+    if (sub) {
+      out.push([x, y, z, sub[0], 0]);
+      count(substituted, `${name(id, meta)} → ${sub[1]}`);
+    } else if (!lossless && id > 109) count(missing, name(id, meta));
     else {
       out.push(c);
       same++;
@@ -641,6 +703,173 @@ type MockSession = DesignerSession & { cells: Map<string, DesignerCell>; holes: 
  * The whole studio in memory for the mock modes (MSW and Nest's mock bridge share it; Nest snake-cases its replies): sessions,
  * the fake designer's turns, user edits, saves as designs with revisions. Never used against a real bot.
  */
+const cellKey = (c: readonly number[]) => `${c[0]},${c[1]},${c[2]}`;
+
+function inPlot(c: DesignerCell, plot: { size: number; height: number; depth: number }): boolean {
+  const inSquare = c[0] >= 0 && c[0] < plot.size && c[2] >= 0 && c[2] < plot.size;
+  return inSquare && c[1] >= -plot.depth && c[1] < plot.height;
+}
+
+/** In the plot; a mine has no terrain in the mock: every cell is ground but the bedrock floor (y 0), which never digs. */
+function editable(c: DesignerCell, plot: { size: number; height: number; depth: number }, mine: boolean): boolean {
+  return inPlot(c, plot) && !(mine && c[1] === 0 && c[3] === 0);
+}
+
+/** What a cell holds now: a block, undisturbed earth (below ground, not dug) or air. */
+function groundState(s: MockSession, k: string, below: boolean): 'block' | 'earth' | 'air' {
+  if (s.cells.get(k)) return 'block';
+  return below && !s.holes.has(k) ? 'earth' : 'air';
+}
+
+/** Air or earth. Below ground air digs the cell out and earth fills it back; above it both are air. The change, or null. */
+function applyGround(s: MockSession, c: DesignerCell, below: boolean): DesignerCell | null {
+  const k = cellKey(c);
+  const dig = below && c[3] === 0;
+  const now = below && !dig ? 'earth' : 'air';
+  if (groundState(s, k, below) === now) return null;
+  s.cells.delete(k);
+  if (dig) s.holes.add(k);
+  else s.holes.delete(k);
+  return [c[0], c[1], c[2], below && !dig ? DESIGNER_EARTH : 0, 0];
+}
+
+/** A block (the same block again is no change). The change, or null. */
+function applyBlock(s: MockSession, c: DesignerCell): DesignerCell | null {
+  const k = cellKey(c);
+  const old = s.cells.get(k);
+  if (old && old[3] === c[3] && old[4] === c[4]) return null;
+  s.cells.set(k, [c[0], c[1], c[2], c[3], c[4]]);
+  s.holes.delete(k);
+  return [c[0], c[1], c[2], c[3], c[4]];
+}
+
+const randomSeed = () => String(Math.floor(Math.random() * 1e9) + 1);
+
+type MakeBody = { model?: string; designId?: number; version?: string; convertTo?: string; rev?: number; kind?: DesignerKind; seed?: string };
+
+/** What a session opened from a saved design takes from it (a fresh one: the request's kind and the defaults). */
+function fromDesign(body: MakeBody, d: MockSavedDesign | undefined) {
+  return {
+    designId: d?.id ?? null,
+    name: d?.name ?? 'new design',
+    kind: d?.kind ?? body.kind ?? 'build',
+    preferredFor: d?.preferredFor ?? null,
+  };
+}
+
+/** A fresh session, or one opened from a saved design (its name, dug cells, kind, version tag and anchor). */
+function newMockSession(id: number, owner: string, body: MakeBody, d: MockSavedDesign | undefined): MockSession {
+  const from = fromDesign(body, d);
+  const s: MockSession = {
+    id,
+    owner,
+    model: body.model ?? 'main',
+    designId: from.designId,
+    name: from.name,
+    rev: 0,
+    blocks: [],
+    anchor: null,
+    messages: [],
+    costUsd: 0,
+    calls: 0,
+    version: 'b1.8.1',
+    palette: MOCK_DESIGNER_PALETTE,
+    plot: { ...DESIGNER_PLOT },
+    revisions: [],
+    created: Date.now(),
+    updated: Date.now(),
+    cells: new Map<string, DesignerCell>(),
+    holes: new Set<string>(d?.dug ?? []),
+    kind: from.kind,
+    seed: null,
+    preferredFor: from.preferredFor,
+  };
+  if (s.kind === 'mine') s.seed = d?.seed ?? body.seed ?? randomSeed();
+  if (d?.anchor) s.anchor = d.anchor;
+  return s;
+}
+
+/** The session's version and the palette, categories and server compatibility that follow from it. */
+function setMockVersion(s: MockSession, version: string): void {
+  s.version = version;
+  s.palette = mockDesignerPalette(version);
+  s.categories = [...DESIGNER_CATEGORIES];
+  s.serverVersion = MOCK_SERVER_VERSION;
+  s.versions = ['b1.8.1', '1.12.2'];
+}
+
+function revisionOf(body: MakeBody, d: MockSavedDesign | undefined) {
+  return d && body.rev ? d.revs?.[body.rev] : undefined;
+}
+
+/** The design's cells (a revision's with `rev`), converted on the way in with `convertTo`. */
+function openDesignCells(s: MockSession, body: MakeBody, d: MockSavedDesign | undefined): DesignerCell[] {
+  const at = revisionOf(body, d);
+  if (at) s.holes = new Set(at.dug);
+  const blocks = at?.blocks ?? d?.blocks ?? [];
+  if (!d || !body.convertTo || body.convertTo === s.version) return blocks;
+  const conv = mockConvert(blocks, s.version, body.convertTo);
+  s.compat = conv.report;
+  setMockVersion(s, body.convertTo);
+  return conv.cells;
+}
+
+type VersionBody = { version: string; kind?: DesignerKind; seed?: string; preferredFor?: string | null; apply?: boolean };
+
+/** Build <-> mine: a full canvas is cleared on apply (asked first); a mine keeps or gets a seed, a build drops the tag. */
+function switchMockKind(s: MockSession, body: VersionBody & { kind: DesignerKind }, view: (s: MockSession) => DesignerSession): DesignerVersionResponse {
+  const target = body.version;
+  if (s.cells.size + s.holes.size > 0 && !body.apply)
+    return { version: s.version, target, changed: false, report: null, session: null, needsClear: true };
+  s.cells.clear();
+  s.holes.clear();
+  s.anchor = null;
+  s.kind = body.kind;
+  s.seed = body.kind === 'mine' ? (body.seed ?? s.seed ?? randomSeed()) : null;
+  if (body.kind === 'build') s.preferredFor = null;
+  s.rev++;
+  if (target !== s.version) setMockVersion(s, target);
+  return { version: s.version, target, changed: true, report: null, session: view(s) };
+}
+
+/** A new mine seed or version tag; true when the request asks for one. */
+function retagMock(s: MockSession, body: VersionBody): boolean {
+  const newSeed = body.seed !== undefined && s.kind === 'mine';
+  if (!(newSeed && body.seed !== s.seed) && body.preferredFor === undefined) return false;
+  if (newSeed) s.seed = body.seed!.trim() || '0';
+  if (body.preferredFor !== undefined) s.preferredFor = body.preferredFor;
+  return true;
+}
+
+/** The saved design for this save: the session's own (unless `asNew`), else a new one listed first. */
+function designToSave(s: MockSession, saved: MockSavedDesign[], body: { name: string; asNew?: boolean }, owner: string, nextId: () => number) {
+  const d = !body.asNew && s.designId ? saved.find((x) => x.id === s.designId) : undefined;
+  if (d) return { d, created: false };
+  const fresh: MockSavedDesign = { id: nextId(), name: body.name, requester: owner, blocks: [], revisions: [], updated: Date.now() };
+  saved.unshift(fresh);
+  return { d: fresh, created: true };
+}
+
+/** The session's canvas, kind, seed, tag and anchor into the design. */
+function copyIntoDesign(d: MockSavedDesign, s: MockSession, name: string): void {
+  d.name = name;
+  d.blocks = [...s.cells.values()];
+  d.dug = [...s.holes];
+  d.version = s.version;
+  d.kind = s.kind ?? 'build';
+  d.seed = s.seed ?? null;
+  d.preferredFor = s.preferredFor ?? null;
+  d.anchor = s.anchor ?? null;
+  d.updated = Date.now();
+}
+
+function saveText(s: MockSession, d: MockSavedDesign, rev: number, name: string, created: boolean): string {
+  const saved = created ? 'saved as design' : 'saved';
+  return s.kind === 'mine'
+    ? `${saved} #${d.id} r${rev} (${s.version}, mine, anchor absolute): ${name}, ${d.dug!.length} cells to dig, ${d.blocks.length} blocks`
+    : `${saved} #${d.id} r${rev} (${s.version}): ${name}, ${d.blocks.length} blocks`;
+}
+
 export function createDesignerMock(
   firstDesignId = 100,
   /** Keeps the studio across reloads (the browser mock: sessionStorage), like the bot's db keeps sessions. */
@@ -680,35 +909,16 @@ export function createDesignerMock(
       /* storage full or blocked: the mock just forgets on reload */
     }
   };
-  const key = (c: readonly number[]) => `${c[0]},${c[1]},${c[2]}`;
+  const key = cellKey;
   const apply = (s: MockSession, cells: readonly DesignerCell[]): DesignerCell[] => {
     const changed: DesignerCell[] = [];
     const mine = s.kind === 'mine';
     const plot = mine ? DESIGNER_MINE_PLOT : DESIGNER_PLOT;
     for (const c of cells) {
-      if (c[0] < 0 || c[0] >= plot.size || c[2] < 0 || c[2] >= plot.size || c[1] < -plot.depth || c[1] >= plot.height) continue;
-      // A mine has no terrain in the mock: every cell is ground but the bedrock floor (y 0), which never digs.
-      if (mine && c[1] === 0 && c[3] === 0) continue;
-      const k = key(c);
-      const old = s.cells.get(k);
+      if (!editable(c, plot, mine)) continue;
       const below = mine ? c[1] > 0 : c[1] < 0;
-      if (c[3] === 0 || c[3] === DESIGNER_EARTH) {
-        // Below ground: air digs the cell out, earth fills it back; above it both are air.
-        const dig = below && c[3] === 0;
-        const was = old ? 'block' : below && !s.holes.has(k) ? 'earth' : 'air';
-        const now = dig ? 'air' : below ? 'earth' : 'air';
-        if (was === now) continue;
-        s.cells.delete(k);
-        if (dig) s.holes.add(k);
-        else s.holes.delete(k);
-        changed.push([c[0], c[1], c[2], below && !dig ? DESIGNER_EARTH : 0, 0]);
-        continue;
-      } else {
-        if (old && old[3] === c[3] && old[4] === c[4]) continue;
-        s.cells.set(k, [c[0], c[1], c[2], c[3], c[4]]);
-        s.holes.delete(k);
-      }
-      changed.push([c[0], c[1], c[2], c[3], c[4]]);
+      const done = c[3] === 0 || c[3] === DESIGNER_EARTH ? applyGround(s, c, below) : applyBlock(s, c);
+      if (done) changed.push(done);
     }
     if (changed.length) s.rev++;
     return changed;
@@ -749,59 +959,14 @@ export function createDesignerMock(
     s.messages.push(m);
     return m;
   };
-  /** The session's version and the palette, categories and server compatibility that follow from it. */
-  const setVersion = (s: MockSession, version: string) => {
-    s.version = version;
-    s.palette = mockDesignerPalette(version);
-    s.categories = [...DESIGNER_CATEGORIES];
-    s.serverVersion = MOCK_SERVER_VERSION;
-    s.versions = ['b1.8.1', '1.12.2'];
-  };
-  function make(
-    body: { model?: string; designId?: number; version?: string; convertTo?: string; rev?: number; kind?: DesignerKind; seed?: string },
-    owner: string,
-    forceId?: number,
-  ): MockSession {
+  const setVersion = setMockVersion;
+  function make(body: MakeBody, owner: string, forceId?: number): MockSession {
     const id = forceId ?? nextSession++;
     if (forceId && forceId >= nextSession) nextSession = forceId + 1;
     const d = body.designId ? saved.find((x) => x.id === body.designId) : undefined;
-    const s: MockSession = {
-      id,
-      owner,
-      model: body.model ?? 'main',
-      designId: d?.id ?? null,
-      name: d?.name ?? 'new design',
-      rev: 0,
-      blocks: [],
-      anchor: null,
-      messages: [],
-      costUsd: 0,
-      calls: 0,
-      version: 'b1.8.1',
-      palette: MOCK_DESIGNER_PALETTE,
-      plot: { ...DESIGNER_PLOT },
-      revisions: [],
-      created: Date.now(),
-      updated: Date.now(),
-      cells: new Map<string, DesignerCell>(),
-      holes: new Set<string>(d?.dug ?? []),
-      kind: d?.kind ?? body.kind ?? 'build',
-      seed: null,
-      preferredFor: d?.preferredFor ?? null,
-    };
-    if (s.kind === 'mine') s.seed = d?.seed ?? body.seed ?? String(Math.floor(Math.random() * 1e9) + 1);
-    if (d?.anchor) s.anchor = d.anchor;
+    const s = newMockSession(id, owner, body, d);
     setVersion(s, d?.version ?? body.version ?? MOCK_SERVER_VERSION);
-    const at = d && body.rev ? d.revs?.[body.rev] : undefined;
-    if (at) s.holes = new Set(at.dug);
-    let blocks = at?.blocks ?? d?.blocks ?? [];
-    if (d && body.convertTo && body.convertTo !== s.version) {
-      const conv = mockConvert(blocks, s.version, body.convertTo);
-      blocks = conv.cells;
-      s.compat = conv.report;
-      setVersion(s, body.convertTo);
-    }
-    for (const c of blocks) s.cells.set(key(c), c);
+    for (const c of openDesignCells(s, body, d)) s.cells.set(key(c), c);
     sessions.set(id, s);
     return s;
   }
@@ -817,32 +982,13 @@ export function createDesignerMock(
       budget: { mode: 'normal', todayUsd: 1.24, dailyCapUsd: 50 },
     }),
     /** The canvas's version: an empty one switches; a full one is checked, and converted with `apply`. */
-    version: (
-      id: number,
-      body: { version: string; kind?: DesignerKind; seed?: string; preferredFor?: string | null; apply?: boolean },
-    ): DesignerVersionResponse => {
+    version: (id: number, body: VersionBody): DesignerVersionResponse => {
       const s = get(id);
       const target = body.version;
       // The mode first: a kind switch (a full canvas is cleared on apply), a seed, a version tag.
-      if (body.kind && body.kind !== (s.kind ?? 'build')) {
-        if (s.cells.size + s.holes.size > 0 && !body.apply)
-          return { version: s.version, target, changed: false, report: null, session: null, needsClear: true };
-        s.cells.clear();
-        s.holes.clear();
-        s.anchor = null;
-        s.kind = body.kind;
-        s.seed = body.kind === 'mine' ? (body.seed ?? s.seed ?? String(Math.floor(Math.random() * 1e9) + 1)) : null;
-        if (body.kind === 'build') s.preferredFor = null;
-        s.rev++;
-        if (target !== s.version) setVersion(s, target);
-        return { version: s.version, target, changed: true, report: null, session: view(s) };
-      }
-      if ((body.seed !== undefined && s.kind === 'mine' && body.seed !== s.seed) || body.preferredFor !== undefined) {
-        if (body.seed !== undefined && s.kind === 'mine') s.seed = body.seed.trim() || '0';
-        if (body.preferredFor !== undefined) s.preferredFor = body.preferredFor;
-        if (target === s.version) return { version: s.version, target, changed: true, report: null, session: view(s) };
-      }
-      if (target === s.version) return { version: s.version, target, changed: false, report: null, session: view(s) };
+      if (body.kind && body.kind !== (s.kind ?? 'build')) return switchMockKind(s, { ...body, kind: body.kind }, view);
+      const retagged = retagMock(s, body);
+      if (target === s.version) return { version: s.version, target, changed: retagged, report: null, session: view(s) };
       if (s.cells.size === 0 && s.holes.size === 0) {
         setVersion(s, target);
         return { version: s.version, target, changed: true, report: null, session: view(s) };
@@ -931,23 +1077,10 @@ export function createDesignerMock(
     ): DesignerSaveResponse => {
       const s = get(id);
       if (s.cells.size === 0 && s.holes.size === 0) throw new Error('the canvas is empty');
-      let d = !body.asNew && s.designId ? saved.find((x) => x.id === s.designId) : undefined;
-      const created = !d;
-      if (!d) {
-        d = { id: nextDesign++, name: body.name, requester: owner, blocks: [], revisions: [], updated: Date.now() };
-        saved.unshift(d);
-      }
-      d.name = body.name;
-      d.blocks = [...s.cells.values()];
-      d.dug = [...s.holes];
-      d.version = s.version;
-      d.kind = s.kind ?? 'build';
-      d.seed = s.seed ?? null;
-      d.preferredFor = s.preferredFor ?? null;
-      d.anchor = s.anchor ?? null;
-      d.updated = Date.now();
+      const { d, created } = designToSave(s, saved, body, owner, () => nextDesign++);
+      copyIntoDesign(d, s, body.name);
       const rev = (d.revisions[0]?.rev ?? 0) + 1;
-      d.revs = { ...(d.revs ?? {}), [rev]: { blocks: [...d.blocks], dug: [...d.dug] } };
+      d.revs = { ...(d.revs ?? {}), [rev]: { blocks: [...d.blocks], dug: [...d.dug!] } };
       d.revisions.unshift({
         rev,
         author: owner,
@@ -961,10 +1094,7 @@ export function createDesignerMock(
       });
       s.designId = d.id;
       s.name = body.name;
-      const text =
-        s.kind === 'mine'
-          ? `${created ? 'saved as design' : 'saved'} #${d.id} r${rev} (${s.version}, mine, anchor absolute): ${body.name}, ${d.dug.length} cells to dig, ${d.blocks.length} blocks`
-          : `${created ? 'saved as design' : 'saved'} #${d.id} r${rev} (${s.version}): ${body.name}, ${d.blocks.length} blocks`;
+      const text = saveText(s, d, rev, body.name, created);
       msg(s, 'assistant', text);
       return { designId: d.id, rev, name: body.name, blocks: d.blocks.length, created, text };
     },

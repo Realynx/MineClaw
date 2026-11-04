@@ -206,7 +206,7 @@ public sealed partial class StoryColony
             : null;
         var pass = new MaterialsPass(this, w, pool);
         pass.Pool = ToolCrafts(w, pass.Pool, pass.Reserved, pass.Wants, pass.HasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
-        pass.BucketCovered = BucketCarried(); // liquid builds need one bucket between them, not one per cell (StoryColony.Water.cs)
+        pass.BucketCovered = BucketsHeld() > 0; // any bucket anywhere, empty or full, is the one liquid builds share (StoryColony.Water.cs)
         foreach (var b in Builds.OrderBy(b => b.Order)) pass.Build(b);
         CommitMaterials(pass, near);
     }

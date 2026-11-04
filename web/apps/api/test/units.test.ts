@@ -113,6 +113,71 @@ describe('users CLI', () => {
     expect((await run(['frobnicate'])).code).toBe(2);
   });
 
+  it('prints the same lines, usages and exit codes for every command', async () => {
+    const f2 = join(dir, 'users-lines.json');
+    const lines = async (args: string[], password = 'correct horse battery staple') => {
+      const all: string[] = [];
+      const code = await runUsersCli([...args, '--file', f2], {
+        out: (l) => all.push(`out ${l}`),
+        err: (l) => all.push(`err ${l}`),
+        password: () => Promise.resolve(password),
+        code: () => Promise.resolve('000000'),
+        now: () => 1_762_077_600_000,
+      });
+      return [code, ...all.map((l) => l.replace(f2, '<file>'))];
+    };
+    expect(await lines(['list'])).toEqual([0, 'out (no users in <file>)']);
+    expect(await lines(['add'])).toEqual([1, 'err usage: add <user> --roles viewer,chat [--player <name>]']);
+    expect(await lines(['add', 'bun', '--roles', 'viewer', '--player', 'bad name!'])).toEqual([
+      1,
+      'err player names are 1-16 chars of A-Z a-z 0-9 _',
+    ]);
+    expect(await lines(['add', 'bun', '--roles', ''])).toEqual([1, 'err roles are required, e.g. --roles viewer,chat']);
+    expect(await lines(['add', 'bun', '--roles', ','])).toEqual([1, 'err at least one role is required']);
+    expect(await lines(['add', 'bun', '--roles', 'viewer'], 'x'.repeat(257))).toEqual([
+      1,
+      'err password must be at most 256 characters',
+    ]);
+    expect(await lines(['add', 'bun', '--roles', 'viewer,story', '--player', 'Robin'])).toEqual([
+      0,
+      'out added bun (story,viewer, player Robin)',
+    ]);
+    expect(await lines(['add', 'kit', '--roles', 'viewer'])).toEqual([0, 'out added kit (viewer)']);
+    expect(await lines(['add', 'bun', '--roles', 'viewer'])).toEqual([1, 'err user "bun" exists (use passwd/roles)']);
+    expect(await lines(['passwd'])).toEqual([1, 'err usage: passwd <user>']);
+    expect(await lines(['passwd', 'nobody'])).toEqual([1, 'err no such user "nobody"']);
+    expect(await lines(['passwd', 'bun'])).toEqual([0, 'out password changed for bun']);
+    expect(await lines(['roles', 'bun'])).toEqual([1, 'err usage: roles <user> viewer,chat,commands,admin,story']);
+    expect(await lines(['roles', 'bun', 'chat,viewer'])).toEqual([0, 'out roles of bun: chat,viewer']);
+    expect(await lines(['player', 'bun'])).toEqual([1, 'err usage: player <user> <mc name | ->']);
+    expect(await lines(['player', 'bun', 'no way'])).toEqual([1, 'err player names are 1-16 chars of A-Z a-z 0-9 _']);
+    expect(await lines(['player', 'bun', 'Bun2'])).toEqual([0, 'out bun is linked to Bun2']);
+    expect(await lines(['player', 'bun', '-'])).toEqual([0, 'out bun has no linked player']);
+    expect(await lines(['totp', 'bun'])).toEqual([1, 'err usage: totp <user> enroll|disable']);
+    expect(await lines(['totp', 'bun', 'disable'])).toEqual([0, 'out TOTP disabled for bun']);
+    const enroll = await lines(['totp', 'bun', 'enroll', '--code', '000000']);
+    expect(enroll[0]).toBe(1);
+    expect(enroll.slice(1).map((l) => String(l).split(':')[0])).toEqual([
+      'out otpauth URL (shown once)',
+      'out secret (manual entry)',
+      'err code did not match; TOTP not enabled',
+    ]);
+    expect(await lines(['disable'])).toEqual([1, 'err usage: disable <user>']);
+    expect(await lines(['disable', 'bun'])).toEqual([0, 'out bun disabled']);
+    expect(await lines(['list'])).toEqual([
+      0,
+      'out bun              roles=chat,viewer                  player=-                totp=off DISABLED',
+      'out kit              roles=viewer                       player=-                totp=off',
+    ]);
+    expect(await lines(['enable', 'bun'])).toEqual([0, 'out bun enabled']);
+    expect(await lines(['remove'])).toEqual([1, 'err usage: remove <user>']);
+    expect(await lines(['remove', 'bun'])).toEqual([0, 'out removed bun']);
+    expect(await lines([])).toEqual([
+      2,
+      'err usage: users <add|passwd|roles|player|totp|disable|enable|remove|list> ... (see src/cli/users.ts)',
+    ]);
+  });
+
   it('passwd/remove end the user sessions in web.db', async () => {
     const dbPath = join(dir, 'web.db');
     const cfg = join(dir, 'config.json');

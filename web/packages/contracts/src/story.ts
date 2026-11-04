@@ -283,11 +283,19 @@ export type StoryTargetAny = z.infer<typeof StoryTargetAny>;
 /** The block position of a target, whatever its form (null for an entity without a known position). */
 export function targetPos(t: StoryTargetAny | null | undefined): [number, number, number] | null {
   if (t === null || t === undefined) return null;
-  if (typeof t === 'string') {
-    const p = t.split(',').map(Number);
-    return p.length === 3 && p.every(Number.isFinite) ? [p[0]!, p[1]!, p[2]!] : null;
-  }
+  if (typeof t === 'string') return parsedPos(t);
   if (Array.isArray(t)) return [t[0], t[1], t[2]];
+  return objectPos(t);
+}
+
+/** `"x,y,z"` → its position (null unless three finite numbers). */
+function parsedPos(t: string): [number, number, number] | null {
+  const p = t.split(',').map(Number);
+  return p.length === 3 && p.every(Number.isFinite) ? [p[0]!, p[1]!, p[2]!] : null;
+}
+
+/** `{x,y,z}` (y defaults to 0) or an area's centre on its floor; null for an entity. */
+function objectPos(t: StoryTargetOut): [number, number, number] | null {
   if (t.x !== null && t.x !== undefined && t.z !== null && t.z !== undefined) return [t.x, t.y ?? 0, t.z];
   if (t.area) return [(t.area[0] + t.area[3]) / 2, t.area[1], (t.area[2] + t.area[5]) / 2];
   return null;
@@ -1708,12 +1716,15 @@ export const STORY_FURNITURE = ['crafting_table', 'furnace', 'chest', 'bed', 'to
 /** The liquid a water item pours: its material "water" (default) or "lava" (or a block id 8–11); null for anything else. */
 export function liquidOf(m: StoryMaterial | null | undefined): 'water' | 'lava' | null {
   if (m === undefined || m === null) return 'water';
-  if (Array.isArray(m)) return m[0] === 8 || m[0] === 9 ? 'water' : m[0] === 10 || m[0] === 11 ? 'lava' : null;
+  if (Array.isArray(m)) return liquidOfId(m[0]);
   const n = m.trim().toLowerCase();
-  if (n === 'water' || n === 'still_water' || n === 'flowing_water' || n === 'water_bucket') return 'water';
-  if (n === 'lava' || n === 'still_lava' || n === 'flowing_lava' || n === 'lava_bucket') return 'lava';
-  return null;
+  return WATER_NAMES.has(n) ? 'water' : LAVA_NAMES.has(n) ? 'lava' : null;
 }
+
+const WATER_NAMES: ReadonlySet<string> = new Set(['water', 'still_water', 'flowing_water', 'water_bucket']);
+const LAVA_NAMES: ReadonlySet<string> = new Set(['lava', 'still_lava', 'flowing_lava', 'lava_bucket']);
+const liquidOfId = (id: number): 'water' | 'lava' | null =>
+  id === 8 || id === 9 ? 'water' : id === 10 || id === 11 ? 'lava' : null;
 
 /** Resolves a material to [id, meta] (unknown names → stone). */
 export function materialKey(m: StoryMaterial | null | undefined): [number, number] {
@@ -1738,6 +1749,187 @@ const PLACED_DOOR_IDS = new Set([64, 71, 193, 194, 195, 196, 197]);
 const FENCE_IDS = new Set([85, 113, 188, 189, 190, 191, 192]);
 const STAIRS_IDS = new Set([53, 67, 108, 109, 114, 128, 134, 135, 136, 156, 163, 164, 180, 203]);
 
+type BuildBlock = [number, number, number, number, number];
+type BuildCell = [number, number, number];
+
+/** An expansion's blocks in placement order, each cell once (the first put wins). */
+class BuildBlocks {
+  readonly out: BuildBlock[] = [];
+  private readonly seen = new Set<string>();
+
+  put(x: number, y: number, z: number, id: number, meta: number): void {
+    const k = `${x},${y},${z}`;
+    if (this.seen.has(k)) return;
+    this.seen.add(k);
+    this.out.push([x, y, z, id, meta]);
+  }
+
+  /** Takes a cell back out (a mine item's placement replaces the dig there). */
+  unput(x: number, y: number, z: number): void {
+    this.seen.delete(`${x},${y},${z}`);
+    const at = this.out.findIndex((c) => c[0] === x && c[1] === y && c[2] === z);
+    if (at >= 0) this.out.splice(at, 1);
+  }
+
+  cells(cells: readonly BuildCell[], id: number, meta: number): void {
+    for (const [x, y, z] of cells) this.put(x, y, z, id, meta);
+  }
+
+  /** Every cell of the area's box (x, then y, then z). */
+  box(a: StoryArea, id: number, meta: number): void {
+    for (let x = a[0]; x <= a[3]; x++)
+      for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) this.put(x, y, z, id, meta);
+  }
+}
+
+/** One build item being expanded: its material, its cells and normalised area, its height, the blocks so far. */
+interface Expansion {
+  item: StoryBuildItem;
+  id: number;
+  meta: number;
+  cells: BuildCell[];
+  a: StoryArea | null;
+  h: number;
+  b: BuildBlocks;
+}
+
+/** Is a column on the edge of the area's rectangle? */
+const onOutline = (a: StoryArea, x: number, z: number) => x === a[0] || x === a[3] || z === a[2] || z === a[5];
+
+/** A door's or a piece of furniture's cells: the area's first corner, else the item's cells. */
+const anchorCells = (e: Expansion): BuildCell[] => (e.a ? [[e.a[0], e.a[1], e.a[2]]] : e.cells);
+
+/** Wall: the outline of the area's rectangle, `height` blocks up from y1; cells `height` up. */
+function expandWall({ a, h, cells, id, meta, b }: Expansion): void {
+  if (a)
+    for (let x = a[0]; x <= a[3]; x++)
+      for (let z = a[2]; z <= a[5]; z++)
+        if (onOutline(a, x, z)) for (let y = a[1]; y < a[1] + h; y++) b.put(x, y, z, id, meta);
+  for (const [x, y, z] of cells) for (let k = 0; k < h; k++) b.put(x, y + k, z, id, meta);
+}
+
+/** Floor: the rectangle filled at y1, then the cells. */
+function expandFloor({ a, cells, id, meta, b }: Expansion): void {
+  if (a) for (let x = a[0]; x <= a[3]; x++) for (let z = a[2]; z <= a[5]; z++) b.put(x, a[1], z, id, meta);
+  b.cells(cells, id, meta);
+}
+
+/** A roof's style, overhang and material (its own, else the item's); null when it places nothing. */
+function roofSpec(e: Expansion): { style: string; o: number; rid: number; rmeta: number } | null {
+  const style = e.item.roof?.style ?? 'flat';
+  if (!e.a || style === 'none') return null;
+  const [rid, rmeta] = e.item.roof?.material ? materialKey(e.item.roof.material) : [e.id, e.meta];
+  return { style, o: e.item.roof?.overhang ?? 0, rid, rmeta };
+}
+
+/** Roof: flat = material, slab = slabs, gable = rising toward the ridge along the longer side; `overhang` grows it. */
+function expandRoof(e: Expansion): void {
+  const r = roofSpec(e);
+  if (!r) return;
+  const a = e.a!;
+  const x1 = a[0] - r.o,
+    x2 = a[3] + r.o,
+    z1 = a[2] - r.o,
+    z2 = a[5] + r.o,
+    y0 = a[1];
+  const slab = r.style === 'slab',
+    gable = r.style !== 'flat' && !slab;
+  const bid = slab ? SLAB : r.rid,
+    bm = slab ? slabMeta(r.rid) : r.rmeta;
+  // Gable: the ridge runs along the longer side; each row rises one block per step in from the eaves.
+  const alongX = x2 - x1 >= z2 - z1;
+  for (let x = x1; x <= x2; x++)
+    for (let z = z1; z <= z2; z++) {
+      const rise = gable ? (alongX ? Math.min(z - z1, z2 - z) : Math.min(x - x1, x2 - x)) : 0;
+      e.b.put(x, y0 + rise, z, bid, bm);
+    }
+}
+
+/** A slab's meta for a roof material: cobblestone and wood slabs, else stone. */
+const slabMeta = (rid: number) => (rid === 4 ? 3 : rid === 5 ? 2 : 0);
+
+/** Door: two high at each cell, the lower half turned to `facing`. */
+function expandDoor(e: Expansion): void {
+  const did = PLACED_DOOR_IDS.has(e.id) ? e.id : DOOR;
+  for (const [x, y, z] of anchorCells(e)) {
+    e.b.put(x, y, z, did, DOOR_META[e.item.facing ?? 'n']);
+    e.b.put(x, y + 1, z, did, 8);
+  }
+}
+
+/** Fence: the outline at y1, one high; then the cells. */
+function expandFence({ a, cells, id, b }: Expansion): void {
+  const fid = FENCE_IDS.has(id) ? id : FENCE;
+  if (a)
+    for (let x = a[0]; x <= a[3]; x++)
+      for (let z = a[2]; z <= a[5]; z++) if (onOutline(a, x, z)) b.put(x, a[1], z, fid, 0);
+  b.cells(cells, fid, 0);
+}
+
+/** Stairs: the cells, facing; an area is a run climbing toward `facing` (one step up per block along it). */
+function expandStairs({ item, a, cells, id, b }: Expansion): void {
+  const sid = STAIRS_IDS.has(id) ? id : id === 4 ? COBBLE_STAIRS : OAK_STAIRS;
+  const f = item.facing ?? 'n';
+  const m = STAIRS_META[f];
+  b.cells(cells, sid, m);
+  if (a)
+    for (let x = a[0]; x <= a[3]; x++)
+      for (let z = a[2]; z <= a[5]; z++) b.put(x, a[1] + stairStep(f, a, x, z), z, sid, m);
+}
+
+/** How far up a stair run is at a column (it climbs toward `f`). */
+const stairStep = (f: StoryFacing, a: StoryArea, x: number, z: number) =>
+  f === 'n' ? a[5] - z : f === 's' ? z - a[2] : f === 'e' ? x - a[0] : a[3] - x;
+
+const BED_DIR: Record<StoryFacing, number> = { s: 0, w: 1, n: 2, e: 3 };
+const BED_HEAD: Record<StoryFacing, readonly [number, number]> = { s: [0, 1], w: [-1, 0], n: [0, -1], e: [1, 0] };
+
+/** Furniture: a bed is two cells (the foot here, the head one block toward `facing`); a chest's or furnace's front faces
+ * `facing` (as the pawns place it); the rest as it is. */
+function expandFurniture(e: Expansion): void {
+  const f = e.item.facing ?? 's';
+  const [fid, fmeta] = materialKey(e.item.kind);
+  for (const [x, y, z] of anchorCells(e)) {
+    if (fid === 26) {
+      const [dx, dz] = BED_HEAD[f];
+      e.b.put(x, y, z, 26, BED_DIR[f]);
+      e.b.put(x + dx, y, z + dz, 26, BED_DIR[f] | 8);
+    } else e.b.put(x, y, z, fid, fid === 54 || fid === 61 ? FRONT_META[f] : fmeta);
+  }
+}
+
+/** Mine: each cell dug (air); `place` blocks go in once their cell is dug (replacing the dig there). */
+function expandMine({ item, cells, b }: Expansion): void {
+  b.cells(cells, 0, 0);
+  for (const [x, y, z, pid, pm] of item.place ?? []) {
+    b.unput(x, y, z);
+    b.put(x, y, z, pid, pm);
+  }
+}
+
+/** The cells, then the area's whole box, all of one block. */
+function fillCellsAndBox({ a, cells, b }: Expansion, id: number, meta: number): void {
+  b.cells(cells, id, meta);
+  if (a) b.box(a, id, meta);
+}
+
+/** Each build kind's expansion. */
+const EXPANDERS: ReadonlyMap<string, (e: Expansion) => void> = new Map<string, (e: Expansion) => void>([
+  ['wall', expandWall],
+  ['floor', expandFloor],
+  ['roof', expandRoof],
+  ['door', expandDoor],
+  ['window', (e) => fillCellsAndBox(e, 20, 0)],
+  ['fence', expandFence],
+  ['stairs', expandStairs],
+  ...STORY_FURNITURE.map((k) => [k, expandFurniture] as const),
+  ['mine', expandMine],
+  // Each cell a still source of its liquid (water 9, lava 11), poured from a bucket.
+  ['water', (e) => fillCellsAndBox(e, liquidOf(e.item.material) === 'lava' ? 11 : 9, 0)],
+  ['block', (e) => fillCellsAndBox(e, e.id, e.meta)],
+  ['remove', (e) => fillCellsAndBox(e, 0, 0)],
+]);
+
 /**
  * The reference expansion of a build item into blocks [x, y, z, id, meta] (the director owns the real one; the web uses this
  * for the placement preview and its block count, the mocks for ghosts):
@@ -1748,138 +1940,18 @@ const STAIRS_IDS = new Set([53, 67, 108, 109, 114, 128, 134, 135, 136, 156, 163,
  * - block: each cell or the whole box; remove: the same with id 0
  */
 export function expandBuildItem(item: StoryBuildItem): Array<[number, number, number, number, number]> {
-  const out: Array<[number, number, number, number, number]> = [];
   const [id, meta] = materialKey(item.material);
-  const cells: Array<[number, number, number]> = [...(item.blocks ?? [])];
-  const a = item.area ? normArea(item.area) : null;
-  const h = item.height ?? 1;
-  const seen = new Set<string>();
-  const put = (x: number, y: number, z: number, bid: number, bm: number) => {
-    const k = `${x},${y},${z}`;
-    if (seen.has(k)) return;
-    seen.add(k);
-    out.push([x, y, z, bid, bm]);
+  const e: Expansion = {
+    item,
+    id,
+    meta,
+    cells: [...(item.blocks ?? [])],
+    a: item.area ? normArea(item.area) : null,
+    h: item.height ?? 1,
+    b: new BuildBlocks(),
   };
-  const outline = (fn: (x: number, z: number) => void) => {
-    if (!a) return;
-    for (let x = a[0]; x <= a[3]; x++)
-      for (let z = a[2]; z <= a[5]; z++) if (x === a[0] || x === a[3] || z === a[2] || z === a[5]) fn(x, z);
-  };
-  switch (item.kind) {
-    case 'wall':
-      outline((x, z) => {
-        for (let y = a![1]; y < a![1] + h; y++) put(x, y, z, id, meta);
-      });
-      for (const [x, y, z] of cells) for (let k = 0; k < h; k++) put(x, y + k, z, id, meta);
-      break;
-    case 'floor':
-      if (a) for (let x = a[0]; x <= a[3]; x++) for (let z = a[2]; z <= a[5]; z++) put(x, a[1], z, id, meta);
-      for (const [x, y, z] of cells) put(x, y, z, id, meta);
-      break;
-    case 'roof': {
-      if (!a) break;
-      const style = item.roof?.style ?? 'flat';
-      if (style === 'none') break;
-      const o = item.roof?.overhang ?? 0;
-      const [rid, rmeta] = item.roof?.material ? materialKey(item.roof.material) : [id, meta];
-      const x1 = a[0] - o,
-        x2 = a[3] + o,
-        z1 = a[2] - o,
-        z2 = a[5] + o,
-        y0 = a[1];
-      for (let x = x1; x <= x2; x++)
-        for (let z = z1; z <= z2; z++) {
-          if (style === 'flat') put(x, y0, z, rid, rmeta);
-          else if (style === 'slab') put(x, y0, z, SLAB, rid === 4 ? 3 : rid === 5 ? 2 : 0);
-          else {
-            // Gable: the ridge runs along the longer side; each row rises one block per step in from the eaves.
-            const alongX = x2 - x1 >= z2 - z1;
-            const rise = alongX ? Math.min(z - z1, z2 - z) : Math.min(x - x1, x2 - x);
-            put(x, y0 + rise, z, rid, rmeta);
-          }
-        }
-      break;
-    }
-    case 'door':
-      for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
-        put(x, y, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, DOOR_META[item.facing ?? 'n']);
-        put(x, y + 1, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, 8);
-      }
-      break;
-    case 'window':
-      for (const [x, y, z] of cells) put(x, y, z, 20, 0);
-      if (a)
-        for (let x = a[0]; x <= a[3]; x++)
-          for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, 20, 0);
-      break;
-    case 'fence':
-      outline((x, z) => put(x, a![1], z, FENCE_IDS.has(id) ? id : FENCE, 0));
-      for (const [x, y, z] of cells) put(x, y, z, FENCE_IDS.has(id) ? id : FENCE, 0);
-      break;
-    case 'stairs': {
-      const sid = STAIRS_IDS.has(id) ? id : id === 4 ? COBBLE_STAIRS : OAK_STAIRS;
-      const m = STAIRS_META[item.facing ?? 'n'];
-      for (const [x, y, z] of cells) put(x, y, z, sid, m);
-      if (a) {
-        // A run climbing toward `facing`: one step up per block along it.
-        const f = item.facing ?? 'n';
-        for (let x = a[0]; x <= a[3]; x++)
-          for (let z = a[2]; z <= a[5]; z++) {
-            const step = f === 'n' ? a[5] - z : f === 's' ? z - a[2] : f === 'e' ? x - a[0] : a[3] - x;
-            put(x, a[1] + step, z, sid, m);
-          }
-      }
-      break;
-    }
-    case 'crafting_table':
-    case 'furnace':
-    case 'chest':
-    case 'bed':
-    case 'torch': {
-      // A bed is two cells: the foot here, the head one block toward `facing`.
-      const f = item.facing ?? 's';
-      const [fid, fmeta] = materialKey(item.kind);
-      for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
-        if (fid === 26) {
-          const dir = { s: 0, w: 1, n: 2, e: 3 }[f];
-          const [dx, dz] = ({ s: [0, 1], w: [-1, 0], n: [0, -1], e: [1, 0] } as const)[f];
-          put(x, y, z, 26, dir);
-          put(x + dx, y, z + dz, 26, dir | 8);
-        } else if (fid === 54 || fid === 61) put(x, y, z, fid, FRONT_META[f]); // the front faces `facing` (as the pawns place it)
-        else put(x, y, z, fid, fmeta);
-      }
-      break;
-    }
-    case 'mine':
-      for (const [x, y, z] of cells) put(x, y, z, 0, 0);
-      for (const [x, y, z, pid, pm] of item.place ?? []) {
-        seen.delete(`${x},${y},${z}`);
-        const at = out.findIndex((c) => c[0] === x && c[1] === y && c[2] === z);
-        if (at >= 0) out.splice(at, 1);
-        put(x, y, z, pid, pm);
-      }
-      break;
-    case 'water': {
-      // Each cell a still source of its liquid (water 9, lava 11), poured from a bucket.
-      const lid = liquidOf(item.material) === 'lava' ? 11 : 9;
-      for (const [x, y, z] of cells) put(x, y, z, lid, 0);
-      if (a)
-        for (let x = a[0]; x <= a[3]; x++)
-          for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, lid, 0);
-      break;
-    }
-    case 'block':
-    case 'remove': {
-      const bid = item.kind === 'remove' ? 0 : id,
-        bm = item.kind === 'remove' ? 0 : meta;
-      for (const [x, y, z] of cells) put(x, y, z, bid, bm);
-      if (a)
-        for (let x = a[0]; x <= a[3]; x++)
-          for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, bid, bm);
-      break;
-    }
-  }
-  return out;
+  EXPANDERS.get(item.kind)?.(e);
+  return e.b.out;
 }
 
 // ------------------------------------------------------------------ what each designate tool matches (preview + mocks)
@@ -1902,26 +1974,31 @@ const UNMINEABLE: ReadonlySet<number> = new Set([0, 7, 8, 9, 10, 11]);
 
 /** Does this block ripen to harvest (fully grown crops, melons, pumpkins, cane/cactus above the base, ripe cocoa)? */
 export function harvestable(id: number, meta: number, below: number): boolean {
-  switch (id) {
-    case 59:
-    case 141:
-    case 142:
-      return meta >= 7;
-    case 207:
-    case 115:
-      return meta >= 3;
-    case 103:
-    case 86:
-      return true;
-    case 83:
-    case 81:
-      return below === id;
-    case 127:
-      return meta >> 2 >= 2;
-    default:
-      return false;
-  }
+  return RIPE.get(id)?.(meta, below, id) ?? false;
 }
+
+type Ripe = (meta: number, below: number, id: number) => boolean;
+const grownAt =
+  (stage: number): Ripe =>
+  (meta) =>
+    meta >= stage;
+const always: Ripe = () => true;
+/** On its own kind (cane, cactus): the base stays. */
+const aboveItself: Ripe = (_meta, below, id) => below === id;
+/** When each crop is ripe: wheat, carrots, potatoes fully grown; beetroot, nether wart at 3; melons and pumpkins; cane and
+ * cactus above the base; cocoa at its last stage. */
+const RIPE: ReadonlyMap<number, Ripe> = new Map([
+  [59, grownAt(7)],
+  [141, grownAt(7)],
+  [142, grownAt(7)],
+  [207, grownAt(3)],
+  [115, grownAt(3)],
+  [103, always],
+  [86, always],
+  [83, aboveItself],
+  [81, aboveItself],
+  [127, (meta) => meta >> 2 >= 2],
+]);
 
 /** Does a block match a block-based designate tool? (`below` = the id under it.) */
 export function matchesTool(
@@ -1931,28 +2008,35 @@ export function matchesTool(
   below: number,
   filter: StoryMineFilter = 'all',
 ): boolean {
-  switch (kind) {
-    case 'chop':
-      return LOG_IDS.has(id);
-    case 'cut':
-      return PLANT_IDS.has(id);
-    case 'harvest':
-      return harvestable(id, meta, below);
-    case 'mine':
-      if (UNMINEABLE.has(id)) return false;
-      if (filter === 'ores') return ORE_IDS.has(id);
-      if (filter === 'stone') return STONE_IDS.has(id);
-      if (filter === 'soil') return SOIL_IDS.has(id);
-      return !LOG_IDS.has(id) && !PLANT_IDS.has(id) && id !== 18 && id !== 161;
-    case 'deconstruct':
-      return STRUCTURE_IDS.has(id);
-    case 'forbid':
-    case 'allow':
-      return DOOR_IDS.has(id);
-    default:
-      return false;
-  }
+  return TOOL_MATCHES.get(kind)?.(id, meta, below, filter) ?? false;
 }
+
+type ToolMatch = (id: number, meta: number, below: number, filter: StoryMineFilter) => boolean;
+const inSet =
+  (ids: ReadonlySet<number>): ToolMatch =>
+  (id) =>
+    ids.has(id);
+/** The mine tool's filters (any other: every minable block but trees and plants). */
+const MINE_FILTERS: ReadonlyMap<string, ReadonlySet<number>> = new Map([
+  ['ores', ORE_IDS],
+  ['stone', STONE_IDS],
+  ['soil', SOIL_IDS],
+]);
+function minable(id: number, filter: StoryMineFilter): boolean {
+  if (UNMINEABLE.has(id)) return false;
+  const only = MINE_FILTERS.get(filter);
+  if (only) return only.has(id);
+  return !LOG_IDS.has(id) && !PLANT_IDS.has(id) && id !== 18 && id !== 161;
+}
+const TOOL_MATCHES: ReadonlyMap<string, ToolMatch> = new Map<string, ToolMatch>([
+  ['chop', inSet(LOG_IDS)],
+  ['cut', inSet(PLANT_IDS)],
+  ['harvest', (id, meta, below) => harvestable(id, meta, below)],
+  ['mine', (id, _meta, _below, filter) => minable(id, filter)],
+  ['deconstruct', inSet(STRUCTURE_IDS)],
+  ['forbid', inSet(DOOR_IDS)],
+  ['allow', inSet(DOOR_IDS)],
+]);
 
 /** Groups log cells into trees (log columns that touch, diagonals included). Returns the tree count. */
 export function countTrees(logs: ReadonlyArray<readonly [number, number, number]>): number {

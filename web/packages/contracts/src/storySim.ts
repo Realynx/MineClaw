@@ -145,6 +145,10 @@ export interface StorySimOptions {
 
 type Key = string | number;
 type Fn<T> = { rev: number; v: T };
+/** A build's ghost cell: x, y, z, block id, meta, the build, its state, what it does (dig, place, pour), its failure. */
+type GhostCell = [number, number, number, number, number, Key, string, ('dig' | 'place' | 'pour')?, (string | null)?];
+/** A recipe of the sim's catalogue. */
+type SimRecipe = (typeof STORY_DEFAULT_RECIPES)[number];
 
 interface PawnSim {
   rev: number;
@@ -178,7 +182,7 @@ interface Colony {
   designations: Map<Key, Fn<StoryDesignation>>;
   orders: Map<Key, Fn<StoryOrder>>;
   builds: Map<Key, Fn<StoryBuild>>;
-  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string, ('dig' | 'place' | 'pour')?, (string | null)?]>>;
+  ghostCells: Map<Key, GhostCell[]>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
@@ -990,29 +994,44 @@ export class StorySim {
     return { ok: true, rev: c.rev };
   }
 
-  zones(id: string, body: StoryZoneRequest) {
+  zones(id: string, body: StoryZoneRequest): ZonesAnswer {
     const c = this.colony(id);
-    if (body.op === 'update' && body.mode) {
-      // A mine zone's mode: quarry (everything to bedrock, a stair) or ores only.
-      const f = c.zones.get(String(body.id));
-      if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
-      if (f.v.kind !== 'mine') throw Object.assign(new Error('only mine zones take a mode (ores | quarry)'), { status: 400 });
-      if (body.mode === 'quarry' && !quarryRing(zoneCellSet(f.v)))
-        throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
-      f.v = { ...f.v, mode: body.mode };
-      f.rev = this.bump(c);
-      return { id: f.v.id, rev: c.rev };
-    }
+    const edited = this.editZone(c, body);
+    if (edited !== undefined) return edited;
+    return this.paintOrErase(c, body);
+  }
+
+  /** The ops on one zone: a mine zone's mode, a growing zone's settings and seeds, irrigation, its bills, its name. */
+  private editZone(c: Colony, body: StoryZoneRequest) {
+    if (body.op === 'update' && body.mode) return this.zoneMode(c, body.id, body.mode);
     if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
     if (body.op === 'irrigation') return this.irrigation(c, String(body.id));
     if (body.op.startsWith('bill_')) return this.billOp(c, body as Extract<StoryZoneRequest, { op: `bill_${string}` }>);
-    if (body.op === 'rename') {
-      const f = c.zones.get(String(body.id));
-      if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
-      f.v = { ...f.v, name: body.name || null };
-      f.rev = this.bump(c);
-      return { id: f.v.id, name: f.v.name ?? '', rev: c.rev };
-    }
+    if (body.op === 'rename') return this.renameZone(c, body.id, body.name);
+    return undefined;
+  }
+
+  /** A mine zone's mode: quarry (everything to bedrock, a stair) or ores only. */
+  private zoneMode(c: Colony, id: Key, mode: 'ores' | 'quarry') {
+    const f = c.zones.get(String(id));
+    if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+    if (f.v.kind !== 'mine') throw Object.assign(new Error('only mine zones take a mode (ores | quarry)'), { status: 400 });
+    if (mode === 'quarry' && !quarryRing(zoneCellSet(f.v))) throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
+    f.v = { ...f.v, mode };
+    f.rev = this.bump(c);
+    return { id: f.v.id, rev: c.rev };
+  }
+
+  private renameZone(c: Colony, id: Key, name: string) {
+    const f = c.zones.get(String(id));
+    if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
+    f.v = { ...f.v, name: name || null };
+    f.rev = this.bump(c);
+    return { id: f.v.id, name: f.v.name ?? '', rev: c.rev };
+  }
+
+  /** Deletes a zone by id, erases an area's cells (of a kind, or any), or paints an area. */
+  private paintOrErase(c: Colony, body: StoryZoneRequest) {
     const list = [...c.zones.values()].map((f) => f.v);
     if (body.op === 'remove' && 'id' in body) {
       if (!c.zones.has(String(body.id))) throw Object.assign(new Error('no such zone'), { status: 404 });
@@ -1033,54 +1052,24 @@ export class StorySim {
     }
     if (body.op !== 'add')
       throw Object.assign(new Error('op must be add|remove|rename|update|seek_seeds|bill_*'), { status: 400 });
-    const into = body.into !== undefined ? c.zones.get(String(body.into))?.v : undefined;
-    if (body.into !== undefined && !into) throw Object.assign(new Error('into: no such zone'), { status: 400 });
+    return this.addZone(c, body, list, a, rect, newId);
+  }
+
+  /** Paints an area as a zone (RimWorld-style: joins, merges, overwrites; `into` extends one zone). */
+  private addZone(
+    c: Colony,
+    body: Extract<StoryZoneRequest, { op: 'add' }>,
+    list: StoryZone[],
+    a: StoryArea,
+    rect: readonly [number, number, number, number],
+    newId: () => string,
+  ) {
+    const into = this.zoneInto(c, body.into);
     const kind = into?.kind ?? body.kind ?? 'home';
-    if (!into && (body.plant || body.sow !== undefined || body.harvest !== undefined)) {
-      if (kind !== 'farm')
-        throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
-      if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
-        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
-          status: 400,
-        });
-    }
+    if (!into) checkNewZone(body, kind, list, rect);
+    const water = kind === 'fish' ? this.fishWater(rect, a, list) : null;
     const make = (k: string, plant: string | null): StoryZone =>
-      into
-        ? { ...into, id: newId(), name: null, rows: null }
-        : {
-            id: newId(),
-            kind: k,
-            area: a,
-            ...(body.name ? { name: body.name } : {}),
-            ...(k === 'mine' ? { mode: body.mode ?? 'quarry' } : {}),
-            ...(k === 'farm' && plant
-              ? {
-                  plant,
-                  sow: body.sow ?? true,
-                  harvest: body.harvest ?? true,
-                  bills: [{ id: `gb${c.seq++}`, plant, mode: 'forever' as const, target: 64, done: 0, paused: false }],
-                }
-              : {}),
-          };
-    if (
-      kind === 'mine' &&
-      !into &&
-      (body.mode ?? 'quarry') === 'quarry' &&
-      (rect[0] === rect[2] || rect[1] === rect[3]) &&
-      !list.some((z) => z.kind === 'mine' && z.mode === 'quarry' && cellsTouch(zoneCellSet(z), rectCells(...rect)))
-    )
-      throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
-    // A fishing zone keeps only still water (a source block, open above, near the level).
-    const water =
-      kind === 'fish'
-        ? new Set(
-            [...rectCells(rect[0], rect[1], rect[2], rect[3])].filter((k) =>
-              this.stillWaterAt(cellX(k), cellZ(k), a[1]),
-            ),
-          )
-        : null;
-    if (water && water.size + list.filter((z) => z.kind === 'fish').reduce((n, z) => n + (z.cells ?? 0), 0) < 4)
-      throw Object.assign(new Error('a fishing zone needs at least 4 water cells'), { status: 400 });
+      into ? { ...into, id: newId(), name: null, rows: null } : newZone(c, body, a, newId, k, plant);
     const out = paintZones(
       list,
       { kind, plant: body.plant ?? null, rect, y: [a[1], a[4]], into: body.into, cells: water },
@@ -1089,6 +1078,23 @@ export class StorySim {
     );
     this.setZones(c, out.zones);
     return { ...out.result, removed: out.result.deleted, rev: c.rev };
+  }
+
+  /** The zone an `into` names (400 when there is none). */
+  private zoneInto(c: Colony, into: Key | undefined): StoryZone | undefined {
+    const z = into !== undefined ? c.zones.get(String(into))?.v : undefined;
+    if (into !== undefined && !z) throw Object.assign(new Error('into: no such zone'), { status: 400 });
+    return z;
+  }
+
+  /** A fishing zone keeps only still water (a source block, open above, near the level); it needs 4 cells at least. */
+  private fishWater(rect: readonly [number, number, number, number], a: StoryArea, list: readonly StoryZone[]): Set<number> {
+    const water = new Set(
+      [...rectCells(rect[0], rect[1], rect[2], rect[3])].filter((k) => this.stillWaterAt(cellX(k), cellZ(k), a[1])),
+    );
+    if (water.size + list.filter((z) => z.kind === 'fish').reduce((n, z) => n + (z.cells ?? 0), 0) < 4)
+      throw Object.assign(new Error('a fishing zone needs at least 4 water cells'), { status: 400 });
+    return water;
   }
 
   private stillWaterAt(x: number, z: number, level: number): boolean {
@@ -1461,79 +1467,97 @@ export class StorySim {
     return out;
   }
 
-  designations(
-    id: string,
-    body: StoryDesignationRequest,
-  ): { ok: boolean; count: number; targets?: Array<[number, number, number]>; entities?: number[]; rev: number } {
+  designations(id: string, body: StoryDesignationRequest): DesignationsAck {
     const c = this.colony(id);
     const a = body.area ? normArea(body.area) : null;
-    if (body.op === 'retry') {
-      // The failed designations named by `ids` are tried again now (their rest is over).
-      const ids = (body.ids ?? []).map(String);
-      if (!ids.length) throw Object.assign(new Error('ids required'), { status: 400 });
-      const retried: Key[] = [];
-      for (const [k, f] of c.designations) {
-        if (!ids.includes(String(k))) continue;
-        f.v = { ...f.v, status: 'open', retryAt: null, state: 'todo' };
-        f.rev = this.bump(c);
-        retried.push(k);
-      }
-      return { ok: true, count: retried.length, retried, rev: c.rev } as never;
-    }
-    if (body.op === 'remove' || body.op === 'cancel') {
-      let n = 0;
-      for (const [k, f] of c.designations) {
-        const d = f.v;
-        if (body.kind && d.kind !== body.kind) continue;
-        const cells = d.targets ?? (d.block ? [d.block] : []);
-        const inArea = a
-          ? cells.some((p) => inside(a, p)) ||
-            (d.entity !== null && d.entity !== undefined && this.entityIn(d.entity, a))
-          : false;
-        const listed =
-          body.ids?.map(String).includes(String(k)) ||
-          body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) ||
-          (d.entity !== null && d.entity !== undefined && body.entities?.includes(d.entity));
-        if (!inArea && !listed) continue;
-        c.designations.delete(k);
-        c.removed.push({ rev: this.bump(c), kind: 'designations', key: k });
-        for (const p of c.pawns.values()) if (p.task?.ref === k) this.drop(c, p);
-        n++;
-      }
-      return { ok: true, count: n, rev: c.rev };
-    }
+    if (body.op === 'retry') return this.retryDesignations(c, body.ids);
+    if (body.op === 'remove' || body.op === 'cancel') return this.removeDesignations(c, body, a);
     const kind = body.kind ?? 'mine';
     const held = new Set(
       [...c.designations.values()].flatMap((f) => (f.v.targets ?? (f.v.block ? [f.v.block] : [])).map(keyOf)),
     );
+    if (designatesEntities(kind, body)) return this.designateEntities(c, body, kind, a, held);
+    return this.designateBlocks(c, body, kind, a, held);
+  }
+
+  /** The failed designations named by `ids` are tried again now (their rest is over). */
+  private retryDesignations(c: Colony, idList: StoryDesignationRequest['ids']): DesignationsAck {
+    const ids = (idList ?? []).map(String);
+    if (!ids.length) throw Object.assign(new Error('ids required'), { status: 400 });
+    const retried: Key[] = [];
+    for (const [k, f] of c.designations) {
+      if (!ids.includes(String(k))) continue;
+      f.v = { ...f.v, status: 'open', retryAt: null, state: 'todo' };
+      f.rev = this.bump(c);
+      retried.push(k);
+    }
+    return { ok: true, count: retried.length, retried, rev: c.rev } as never;
+  }
+
+  /** Cancels the designations (of a kind, if given) in the area or named by ids, blocks or entities; their pawns let go. */
+  private removeDesignations(c: Colony, body: StoryDesignationRequest, a: StoryArea | null): DesignationsAck {
+    let n = 0;
+    for (const [k, f] of c.designations) {
+      const d = f.v;
+      if (body.kind && d.kind !== body.kind) continue;
+      const cells = d.targets ?? (d.block ? [d.block] : []);
+      if (!this.designationInArea(d, cells, a) && !designationListed(d, k, cells, body)) continue;
+      c.designations.delete(k);
+      c.removed.push({ rev: this.bump(c), kind: 'designations', key: k });
+      for (const p of c.pawns.values()) if (p.task?.ref === k) this.drop(c, p);
+      n++;
+    }
+    return { ok: true, count: n, rev: c.rev };
+  }
+
+  private designationInArea(d: StoryDesignation, cells: ReadonlyArray<readonly number[]>, a: StoryArea | null): boolean {
+    if (!a) return false;
+    return cells.some((p) => inside(a, p)) || (d.entity !== null && d.entity !== undefined && this.entityIn(d.entity, a));
+  }
+
+  private addDesignation(c: Colony, d: Omit<StoryDesignation, 'id'>): void {
+    const des: StoryDesignation = { id: `d${c.seq++}`, ...d };
+    c.designations.set(des.id, { rev: this.bump(c), v: des });
+  }
+
+  /** Haul (drops), hunt (animals), forbid / allow over an area (drops, and doors too) or by entities; held ones skipped. */
+  private designateEntities(
+    c: Colony,
+    body: StoryDesignationRequest,
+    kind: StoryDesignationKind,
+    a: StoryArea | null,
+    held: ReadonlySet<string>,
+  ): DesignationsAck {
     const heldEnt = new Set(
       [...c.designations.values()].map((f) => f.v.entity).filter((e) => e !== null && e !== undefined),
     );
-    const add = (d: Omit<StoryDesignation, 'id'>) => {
-      const des: StoryDesignation = { id: `d${c.seq++}`, ...d };
-      c.designations.set(des.id, { rev: this.bump(c), v: des });
+    const ents = this.opts.world
+      .entities()
+      .filter((e) => (kind === 'hunt' ? e.kind === 'mob' && ANIMAL_TYPES.has(e.type ?? -1) : e.kind === 'item'))
+      .filter((e) => (a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id)));
+    const fresh = ents.filter((e) => !heldEnt.has(e.id));
+    for (const e of fresh)
+      this.addDesignation(c, { kind, entity: e.id, block: [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], state: 'todo' });
+    // Doors too, for forbid/allow over an area.
+    const doors = a && (kind === 'forbid' || kind === 'allow') ? this.scan(a, kind, undefined) : [];
+    for (const b of doors) if (!held.has(keyOf(b))) this.addDesignation(c, { kind, block: b, state: 'todo' });
+    return {
+      ok: true,
+      count: fresh.length + doors.length,
+      entities: fresh.map((e) => e.id),
+      targets: doors,
+      rev: c.rev,
     };
-    if (kind === 'haul' || kind === 'hunt' || ((kind === 'forbid' || kind === 'allow') && !body.blocks)) {
-      const ents = this.opts.world
-        .entities()
-        .filter((e) => (kind === 'hunt' ? e.kind === 'mob' && ANIMAL_TYPES.has(e.type ?? -1) : e.kind === 'item'))
-        .filter((e) =>
-          a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id),
-        );
-      const fresh = ents.filter((e) => !heldEnt.has(e.id));
-      for (const e of fresh)
-        add({ kind, entity: e.id, block: [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], state: 'todo' });
-      // Doors too, for forbid/allow over an area.
-      const doors = a && (kind === 'forbid' || kind === 'allow') ? this.scan(a, kind, undefined) : [];
-      for (const b of doors) if (!held.has(keyOf(b))) add({ kind, block: b, state: 'todo' });
-      return {
-        ok: true,
-        count: fresh.length + doors.length,
-        entities: fresh.map((e) => e.id),
-        targets: doors,
-        rev: c.rev,
-      };
-    }
+  }
+
+  /** A block tool over an area (scanned) or blocks; chop is one designation per tree (its touching log columns). */
+  private designateBlocks(
+    c: Colony,
+    body: StoryDesignationRequest,
+    kind: StoryDesignationKind,
+    a: StoryArea | null,
+    held: ReadonlySet<string>,
+  ): DesignationsAck {
     const cells = a
       ? this.scan(a, kind, body.filter)
       : (body.blocks ?? []).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
@@ -1541,16 +1565,11 @@ export class StorySim {
     if (kind === 'chop') {
       // One designation per tree: its log columns that touch, lowest log first.
       const byTree = groupTrees(fresh);
-      for (const logs of byTree) add({ kind, block: logs[0], targets: logs, state: 'todo' });
+      for (const logs of byTree) this.addDesignation(c, { kind, block: logs[0], targets: logs, state: 'todo' });
       return { ok: true, count: byTree.length, targets: fresh, rev: c.rev };
     }
-    for (const b of fresh)
-      add({
-        kind,
-        block: b,
-        state: 'todo',
-        ...(body.design !== null && body.design !== undefined ? { design: body.design } : {}),
-      });
+    const design = body.design !== null && body.design !== undefined ? { design: body.design } : {};
+    for (const b of fresh) this.addDesignation(c, { kind, block: b, state: 'todo', ...design });
     return { ok: true, count: fresh.length, targets: fresh, rev: c.rev };
   }
 
@@ -1563,96 +1582,70 @@ export class StorySim {
    * Water items (the director's checks, simplified): lava only while allowed; each cell open (air, plants, flowing liquid) or
    * dug first by its group's remove item; the expected flow beyond the drawn cells. Returns why not, or the warnings and flow.
    */
-  private checkWater(c: Colony, items: readonly StoryBuildItem[]) {
-    const w = this.opts.world;
-    const warnings: string[] = [];
-    const spread: Array<[number, number, number]> = [];
-    let cells = 0,
-      done = 0;
+  private checkWater(c: Colony, items: readonly StoryBuildItem[]): WaterCheck {
+    const r: WaterCheck = { error: null, warnings: [], spread: [], cells: 0, done: 0 };
     const dug: Array<[number, number, number]> = [];
     const queuedDigs = [...c.ghostCells.values()].flat().filter((g) => g[7] === 'dig' && g[6] !== 'done');
     for (const item of items) {
       if (item.kind === 'remove' && item.group) for (const b of expandBuildItem(item)) dug.push([b[0], b[1], b[2]]);
       if (item.kind !== 'water') continue;
-      const liquid = liquidOf(item.material);
-      if (!liquid) return { error: "a water item's material is water|lava", warnings, spread, cells, done };
-      if (liquid === 'lava' && !c.options.allowLava)
-        return { error: 'lava is off: turn on the colony option allow_lava first', warnings, spread, cells, done };
-      const own = expandBuildItem(item).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
-      cells += own.length;
-      const isDug = (x: number, y: number, z: number) =>
-        dug.some((d) => d[0] === x && d[1] === y && d[2] === z) || queuedDigs.some((g) => g[0] === x && g[1] === y && g[2] === z);
-      for (const [x, y, z] of own) {
-        const [bid, bm] = w.blockAt(x, y, z);
-        const want = liquid === 'lava' ? [10, 11] : [8, 9];
-        if (want.includes(bid) && bm === 0) {
-          done++;
-          continue;
-        }
-        const open = bid === 0 || [8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(bid);
-        if (!open && !isDug(x, y, z))
-          return {
-            error: `${x},${y},${z} holds ${storyItemLabel(bid, bm).toLowerCase()}: dig it first (a remove item in the same group, or the channel tool's "Dig the trench")`,
-            warnings,
-            spread,
-            cells,
-            done,
-          };
-      }
-      const f = liquidFlow((x, y, z) => w.blockAt(x, y, z), own, liquid === 'lava', dug);
-      spread.push(...f.spread);
-      if (f.spread.length)
-        warnings.push(
-          `the ${liquid} will spread to ${f.spread.length} cell${f.spread.length === 1 ? '' : 's'} beyond what was drawn (e.g. ${f.spread[0]!.join(',')}): place dam blocks first, or dig the channel into the ground`,
-        );
-      if (f.touches) warnings.push(f.touches);
+      const error = this.checkWaterItem(c, item, dug, queuedDigs, r);
+      if (error) return { error, warnings: r.warnings, spread: r.spread, cells: r.cells, done: r.done };
     }
-    return { error: null as string | null, warnings, spread, cells, done };
+    return r;
   }
 
-  builds(
-    id: string,
-    body: StoryBuildRequest,
-  ): {
-    ok: boolean;
-    ids?: Key[];
-    rev: number;
-    warnings?: string[];
-    flow?: { spread: number; cells: Array<[number, number, number]> };
-    cells?: number;
-    done?: number;
-    error?: string | null;
-    reopened?: number;
-    reasons?: Array<{ id: Key; reason: string }>;
-  } {
-    const c = this.colony(id);
-    if (body.op === 'retry' || body.op === 'retry_all') {
-      // Failed (blocked) cells start over: all of a build's, the given ones, or every build's.
-      const want = body.op === 'retry' ? new Set([body.id, ...(body.ids ?? [])].filter((x) => x !== undefined).map(String)) : null;
-      const cells = body.op === 'retry' && body.cells ? new Set(body.cells.map((p) => p.join(','))) : null;
-      if (want && ![...c.builds.keys()].some((k) => want.has(String(k)))) throw Object.assign(new Error('no such build'), { status: 400 });
-      let reopened = 0;
-      const ids: Key[] = [];
-      for (const [bid, list] of c.ghostCells) {
-        if (want && !want.has(String(bid))) continue;
-        ids.push(bid);
-        for (const g of list)
-          if ((g[6] === 'blocked' || (g[8] && g[6] !== 'done' && g[6] !== 'unsupported')) && (!cells || cells.has(`${g[0]},${g[1]},${g[2]}`))) {
-            g[6] = 'todo';
-            g.length = 8;
-            reopened++;
-          }
-        const f = c.builds.get(bid);
-        if (f && f.v.status === 'blocked') {
-          f.v.status = 'queued';
-          f.v.reason = null;
-          f.rev = this.bump(c);
-        }
+  /** One water item: its liquid allowed, its cells open or dug (counting those already full), its flow; why not, or null. */
+  private checkWaterItem(
+    c: Colony,
+    item: StoryBuildItem,
+    dug: Array<[number, number, number]>,
+    queuedDigs: readonly GhostCell[],
+    r: WaterCheck,
+  ): string | null {
+    const liquid = liquidOf(item.material);
+    if (!liquid) return "a water item's material is water|lava";
+    if (liquid === 'lava' && !c.options.allowLava) return 'lava is off: turn on the colony option allow_lava first';
+    const own = expandBuildItem(item).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
+    r.cells += own.length;
+    const blocked = this.unopenCell(own, liquid, dug, queuedDigs, r);
+    if (blocked) return blocked;
+    const f = liquidFlow((x, y, z) => this.opts.world.blockAt(x, y, z), own, liquid === 'lava', dug);
+    r.spread.push(...f.spread);
+    if (f.spread.length)
+      r.warnings.push(
+        `the ${liquid} will spread to ${f.spread.length} cell${f.spread.length === 1 ? '' : 's'} beyond what was drawn (e.g. ${f.spread[0]!.join(',')}): place dam blocks first, or dig the channel into the ground`,
+      );
+    if (f.touches) r.warnings.push(f.touches);
+    return null;
+  }
+
+  /** The first of a water item's cells it can't pour into (solid and not dug first), as the reason; cells already holding a
+   * source of the liquid count as done. */
+  private unopenCell(
+    own: ReadonlyArray<[number, number, number]>,
+    liquid: 'water' | 'lava',
+    dug: ReadonlyArray<[number, number, number]>,
+    queuedDigs: readonly GhostCell[],
+    r: WaterCheck,
+  ): string | null {
+    const want = liquid === 'lava' ? [10, 11] : [8, 9];
+    for (const [x, y, z] of own) {
+      const [bid, bm] = this.opts.world.blockAt(x, y, z);
+      if (want.includes(bid) && bm === 0) {
+        r.done++;
+        continue;
       }
-      c.ghostsRev = this.bump(c);
-      this.plan(c);
-      return { ok: true, ids, rev: c.rev, reopened, reasons: [] };
+      const open = bid === 0 || [8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(bid);
+      if (!open && !isDugCell(x, y, z, dug, queuedDigs))
+        return `${x},${y},${z} holds ${storyItemLabel(bid, bm).toLowerCase()}: dig it first (a remove item in the same group, or the channel tool's "Dig the trench")`;
     }
+    return null;
+  }
+
+  builds(id: string, body: StoryBuildRequest): BuildsAck {
+    const c = this.colony(id);
+    if (body.op === 'retry' || body.op === 'retry_all') return this.retryBuilds(c, body);
     if (body.op === 'preview') {
       const r = this.checkWater(c, body.items);
       return {
@@ -1665,92 +1658,14 @@ export class StorySim {
         flow: { spread: r.spread.length, cells: r.spread.slice(0, 256) },
       };
     }
-    if (body.op === 'add') {
-      const ids: Key[] = [];
-      const water = body.items.some((i) => i.kind === 'water') ? this.checkWater(c, body.items) : null;
-      if (water?.error) throw Object.assign(new Error(water.error), { status: 400 });
-      for (const item of body.items) {
-        const bid = `b${c.seq++}`;
-        const cells = expandBuildItem(item);
-        const [mid, mmeta] = materialKey(item.material);
-        const order = Math.max(0, ...[...c.builds.values()].map((f) => f.v.order)) + 1;
-        const need = cells.filter((b) => b[3] !== 0).length;
-        const have = c.stock.get(`${mid}:${mmeta}`) ?? 0;
-        const liquid = item.kind === 'water' ? liquidOf(item.material) : null;
-        const b: StoryBuild = {
-          id: bid,
-          kind: item.kind,
-          label: liquid
-            ? (item.name ??
-              (item.infinite
-                ? `infinite ${liquid} source (${cells.length} cells)`
-                : cells.length === 1
-                  ? `${liquid} source`
-                  : `${liquid} channel (${cells.length} sources)`))
-            : buildLabel(item.kind, cells.length, item.material),
-          status: 'queued',
-          ...(liquid ? { liquid, renewable: false } : {}),
-          reason:
-            have < need && item.kind !== 'remove' && item.kind !== 'mine' && item.kind !== 'water' && !(STORY_FURNITURE as readonly string[]).includes(item.kind)
-              ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}`
-              : null,
-          blocksTotal: cells.length,
-          blocksDone: 0,
-          material: item.material,
-          order,
-          created: this.iso(),
-          materials: [],
-        };
-        c.builds.set(bid, { rev: this.bump(c), v: b });
-        c.ghostCells.set(
-          bid,
-          cells.map(([x, y, z, bi, bm]) => {
-            // A pour cell with nothing under it (open ground, not dug by its group, not another cell): the mock's pawns fail it
-            // as the bot's did before its queue-time check, so the Retry tool and "Retry failed cells" have something to show.
-            const below = this.opts.world.blockAt(x, y - 1, z)[0];
-            const own = cells.some((o) => o[0] === x && o[1] === y - 1 && o[2] === z);
-            const dug = body.items.some((i) => i.kind === 'remove' && i.group && i.group === item.group && expandBuildItem(i).some((d) => d[0] === x && d[1] === y - 1 && d[2] === z));
-            if (liquid && !own && (dug || [0, 8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(below)))
-              return [x, y, z, bi, bm, bid, 'blocked', 'pour', `nothing under ${x},${y},${z} to hold the ${liquid}: it would pour down`];
-            return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place'];
-          }),
-        );
-        ids.push(bid);
-      }
-      c.ghostsRev = this.bump(c);
-      this.plan(c);
-      return {
-        ok: true,
-        ids,
-        rev: c.rev,
-        ...(water?.warnings.length ? { warnings: water.warnings } : {}),
-        ...(water ? { flow: { spread: water.spread.length, cells: water.spread.slice(0, 256) } } : {}),
-      };
-    }
+    if (body.op === 'add') return this.addBuilds(c, body.items);
     const ids = body.ids.map(String);
-    if (body.op === 'reorder') {
-      // The listed builds take the front of the queue in the listed order; the rest keep theirs after them.
-      const rest = [...c.builds.values()]
-        .map((f) => f.v)
-        .filter((b) => !ids.includes(String(b.id)))
-        .sort((x, y) => x.order - y.order);
-      const front = ids.map((i) => c.builds.get(i)?.v).filter((b): b is StoryBuild => !!b);
-      [...front, ...rest].forEach((b, i) => {
-        b.order = i + 1;
-        c.builds.set(b.id, { rev: this.bump(c), v: b });
-      });
-      this.plan(c);
-      return { ok: true, rev: c.rev };
-    }
+    if (body.op === 'reorder') return this.reorderBuilds(c, ids);
     for (const bid of ids) {
       const f = c.builds.get(bid);
       if (!f) continue;
-      if (body.op === 'remove') {
-        c.builds.delete(bid);
-        c.ghostCells.delete(bid);
-        c.removed.push({ rev: this.bump(c), kind: 'builds', key: bid });
-        for (const p of c.pawns.values()) if (p.task?.ref === bid) this.drop(c, p);
-      } else {
+      if (body.op === 'remove') this.removeBuild(c, bid);
+      else {
         f.v.status = body.op === 'pause' ? 'paused' : 'queued';
         f.rev = this.bump(c);
       }
@@ -1760,6 +1675,124 @@ export class StorySim {
     return { ok: true, rev: c.rev };
   }
 
+  /** Failed (blocked) cells start over: all of a build's, the given ones, or every build's. */
+  private retryBuilds(c: Colony, body: Extract<StoryBuildRequest, { op: 'retry' | 'retry_all' }>): BuildsAck {
+    const want =
+      body.op === 'retry' ? new Set([body.id, ...(body.ids ?? [])].filter((x) => x !== undefined).map(String)) : null;
+    const cells = body.op === 'retry' && body.cells ? new Set(body.cells.map((p) => p.join(','))) : null;
+    if (want && ![...c.builds.keys()].some((k) => want.has(String(k))))
+      throw Object.assign(new Error('no such build'), { status: 400 });
+    let reopened = 0;
+    const ids: Key[] = [];
+    for (const [bid, list] of c.ghostCells) {
+      if (want && !want.has(String(bid))) continue;
+      ids.push(bid);
+      reopened += reopenCells(list, cells);
+      const f = c.builds.get(bid);
+      if (f && f.v.status === 'blocked') {
+        f.v.status = 'queued';
+        f.v.reason = null;
+        f.rev = this.bump(c);
+      }
+    }
+    c.ghostsRev = this.bump(c);
+    this.plan(c);
+    return { ok: true, ids, rev: c.rev, reopened, reasons: [] };
+  }
+
+  private addBuilds(c: Colony, items: readonly StoryBuildItem[]): BuildsAck {
+    const ids: Key[] = [];
+    const water = items.some((i) => i.kind === 'water') ? this.checkWater(c, items) : null;
+    if (water?.error) throw Object.assign(new Error(water.error), { status: 400 });
+    for (const item of items) ids.push(this.addBuild(c, item, items));
+    c.ghostsRev = this.bump(c);
+    this.plan(c);
+    return {
+      ok: true,
+      ids,
+      rev: c.rev,
+      ...(water?.warnings.length ? { warnings: water.warnings } : {}),
+      ...(water ? { flow: { spread: water.spread.length, cells: water.spread.slice(0, 256) } } : {}),
+    };
+  }
+
+  /** Queues one build: its label, what it is short of, and its ghost cells (a pour with nothing under it fails at once). */
+  private addBuild(c: Colony, item: StoryBuildItem, items: readonly StoryBuildItem[]): Key {
+    const bid = `b${c.seq++}`;
+    const cells = expandBuildItem(item);
+    const [mid, mmeta] = materialKey(item.material);
+    const order = Math.max(0, ...[...c.builds.values()].map((f) => f.v.order)) + 1;
+    const need = cells.filter((b) => b[3] !== 0).length;
+    const have = c.stock.get(`${mid}:${mmeta}`) ?? 0;
+    const liquid = item.kind === 'water' ? liquidOf(item.material) : null;
+    const b: StoryBuild = {
+      id: bid,
+      kind: item.kind,
+      label: liquid ? waterBuildLabel(item, liquid, cells.length) : buildLabel(item.kind, cells.length, item.material),
+      status: 'queued',
+      ...(liquid ? { liquid, renewable: false } : {}),
+      reason: lacksMaterial(item, need, have) ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}` : null,
+      blocksTotal: cells.length,
+      blocksDone: 0,
+      material: item.material,
+      order,
+      created: this.iso(),
+      materials: [],
+    };
+    c.builds.set(bid, { rev: this.bump(c), v: b });
+    c.ghostCells.set(
+      bid,
+      cells.map((cell) => this.ghostOf(cell, cells, bid, item, items, liquid)),
+    );
+    return bid;
+  }
+
+  /** A pour cell with nothing under it (open ground, not dug by its group, not another cell): the mock's pawns fail it as the
+   * bot's did before its queue-time check, so the Retry tool and "Retry failed cells" have something to show. */
+  private ghostOf(
+    [x, y, z, bi, bm]: [number, number, number, number, number],
+    cells: ReadonlyArray<[number, number, number, number, number]>,
+    bid: Key,
+    item: StoryBuildItem,
+    items: readonly StoryBuildItem[],
+    liquid: 'water' | 'lava' | null,
+  ): GhostCell {
+    const below = this.opts.world.blockAt(x, y - 1, z)[0];
+    const own = cells.some((o) => o[0] === x && o[1] === y - 1 && o[2] === z);
+    const dug = items.some(
+      (i) =>
+        i.kind === 'remove' &&
+        i.group &&
+        i.group === item.group &&
+        expandBuildItem(i).some((d) => d[0] === x && d[1] === y - 1 && d[2] === z),
+    );
+    if (liquid && !own && (dug || [0, 8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(below)))
+      return [x, y, z, bi, bm, bid, 'blocked', 'pour', `nothing under ${x},${y},${z} to hold the ${liquid}: it would pour down`];
+    return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place'];
+  }
+
+  /** The listed builds take the front of the queue in the listed order; the rest keep theirs after them. */
+  private reorderBuilds(c: Colony, ids: string[]): BuildsAck {
+    const rest = [...c.builds.values()]
+      .map((f) => f.v)
+      .filter((b) => !ids.includes(String(b.id)))
+      .sort((x, y) => x.order - y.order);
+    const front = ids.map((i) => c.builds.get(i)?.v).filter((b): b is StoryBuild => !!b);
+    [...front, ...rest].forEach((b, i) => {
+      b.order = i + 1;
+      c.builds.set(b.id, { rev: this.bump(c), v: b });
+    });
+    this.plan(c);
+    return { ok: true, rev: c.rev };
+  }
+
+  private removeBuild(c: Colony, bid: string): void {
+    c.builds.delete(bid);
+    c.ghostCells.delete(bid);
+    c.removed.push({ rev: this.bump(c), kind: 'builds', key: bid });
+    for (const p of c.pawns.values()) if (p.task?.ref === bid) this.drop(c, p);
+  }
+
   /** Registers the chests and workbenches that stand in an area. */
   private discover(
     c: Colony,
@@ -1767,45 +1800,11 @@ export class StorySim {
     filter?: StoryFilter,
     priority?: string,
   ): Array<[number, number, number]> {
-    const w = this.opts.world;
     const a = normArea(area);
     const found: Array<[number, number, number]> = [];
     for (let x = a[0]; x <= a[3]; x++)
       for (let z = a[2]; z <= a[5]; z++)
-        for (let y = Math.max(1, a[1]); y <= Math.min(255, a[4]); y++) {
-          const [id] = w.blockAt(x, y, z);
-          if (CHEST_IDS.has(id)) found.push([x, y, z]);
-          else if (id === 26 && (w.blockAt(x, y, z)[1] & 8) === 0 && !c.beds.has(keyOf([x, y, z]))) {
-            c.beds.set(keyOf([x, y, z]), { pos: [x, y, z], dim: 0, pawn: null, zone: null });
-            c.bedsRev = this.bump(c);
-          } else if (id === 58 || id === 61 || id === 62 || id === 117 || id === 145 || id === 116) {
-            const k = keyOf([x, y, z]);
-            if (!c.benches.has(k)) {
-              const kind =
-                id === 58
-                  ? 'crafting_table'
-                  : id === 117
-                    ? 'brewing_stand'
-                    : id === 145
-                      ? 'anvil'
-                      : id === 116
-                        ? 'enchanting_table'
-                        : 'furnace';
-              c.benches.set(k, {
-                rev: this.bump(c),
-                v: {
-                  pos: [x, y, z],
-                  kind,
-                  label: null,
-                  supported: true,
-                  station: this.stationOf(kind, [x, y, z]),
-                  ...this.fuelOf(kind),
-                  bills: [],
-                },
-              });
-            }
-          }
-        }
+        for (let y = Math.max(1, a[1]); y <= Math.min(255, a[4]); y++) this.noteFurniture(c, x, y, z, found);
     if (filter === undefined && priority === undefined) return [];
     const out: Array<[number, number, number]> = [];
     const taken = new Set<string>();
@@ -1815,22 +1814,57 @@ export class StorySim {
       const other = found.find((q) => q !== p && Math.abs(q[0] - p[0]) + Math.abs(q[2] - p[2]) === 1 && q[1] === p[1]);
       if (other) taken.add(keyOf(other));
       taken.add(keyOf(p));
-      const k = keyOf(p);
-      const prev = c.storages.get(k)?.v;
-      const s: StoryStorage = {
-        chest: p,
-        doubleWith: other ?? null,
-        label: prev?.label ?? null,
-        priority: priority ?? prev?.priority ?? 'normal',
-        filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
-        contents: prev?.contents ?? this.stock(c, seedContents(p)),
-        freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
-        knownAt: this.iso(),
-      };
-      c.storages.set(k, { rev: this.bump(c), v: s });
+      this.registerStorage(c, p, other, filter, priority);
       out.push(p);
     }
     return out;
+  }
+
+  /** A block of the area: a chest (into `found`), a bed's foot (a bed the colony knows), or a workbench (the colony's). */
+  private noteFurniture(c: Colony, x: number, y: number, z: number, found: Array<[number, number, number]>): void {
+    const w = this.opts.world;
+    const [id] = w.blockAt(x, y, z);
+    const benchKind = BENCH_KIND_OF.get(id);
+    if (CHEST_IDS.has(id)) found.push([x, y, z]);
+    else if (id === 26 && (w.blockAt(x, y, z)[1] & 8) === 0 && !c.beds.has(keyOf([x, y, z]))) {
+      c.beds.set(keyOf([x, y, z]), { pos: [x, y, z], dim: 0, pawn: null, zone: null });
+      c.bedsRev = this.bump(c);
+    } else if (benchKind && !c.benches.has(keyOf([x, y, z]))) {
+      c.benches.set(keyOf([x, y, z]), {
+        rev: this.bump(c),
+        v: {
+          pos: [x, y, z],
+          kind: benchKind,
+          label: null,
+          supported: true,
+          station: this.stationOf(benchKind, [x, y, z]),
+          ...this.fuelOf(benchKind),
+          bills: [],
+        },
+      });
+    }
+  }
+
+  /** A chest (and its other half) as a storage: its settings as given, else as it was, else the defaults. */
+  private registerStorage(
+    c: Colony,
+    p: [number, number, number],
+    other: [number, number, number] | undefined,
+    filter: StoryFilter | undefined,
+    priority: string | undefined,
+  ): void {
+    const k = keyOf(p);
+    const prev = c.storages.get(k)?.v;
+    const s: StoryStorage = {
+      chest: p,
+      doubleWith: other ?? null,
+      label: prev?.label ?? null,
+      ...storageSettings(prev, filter, priority),
+      contents: prev?.contents ?? this.stock(c, seedContents(p)),
+      freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
+      knownAt: this.iso(),
+    };
+    c.storages.set(k, { rev: this.bump(c), v: s });
   }
 
   storage(
@@ -1926,136 +1960,137 @@ export class StorySim {
     return null;
   }
 
-  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; ids?: Key[]; rev: number; note?: string | null } {
+  bills(id: string, body: StoryBillsRequest): BillsAck {
     const c = this.colony(id);
-    const benchAt = (pos: readonly number[]) => {
-      const f = c.benches.get(keyOf(pos));
-      if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
-      if (f.v.supported === false)
-        throw Object.assign(new Error(`this version has no ${f.v.kind.replace(/_/g, ' ')} bills`), { status: 400 });
-      return f;
-    };
-    const holder = (billId: Key) => {
-      for (const f of c.benches.values()) if (f.v.bills.some((b) => String(b.id) === String(billId))) return f;
-      throw Object.assign(new Error('no such bill'), { status: 404 });
-    };
-    let f: Fn<StoryWorkbench>;
-    let newId: Key | undefined;
-    if (body.op === 'enchant_tools') {
-      // The tools hook: a count bill per pickaxe kind at the colony's enchanting table, preferring the enchantment.
-      const table = [...c.benches.values()].find((x) => x.v.kind === 'enchanting_table');
-      if (!table) throw Object.assign(new Error('no enchanting table: place one and designate it'), { status: 400 });
-      const prefer = body.prefer ?? (body.material && /ore|coal|diamond|lapis|redstone|emerald|quartz/.test(body.material) ? 'fortune' : body.material && /glass|ice|glowstone/.test(body.material) ? 'silk_touch' : 'efficiency');
-      const ids: Key[] = [];
-      for (const item of body.items ?? ['diamond_pickaxe']) {
-        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === `enchant:${item}`);
-        if (!recipe || table.v.bills.some((b) => b.recipe === recipe.id && b.prefer === prefer)) continue;
-        const b: StoryBill = {
-          id: `bill${c.seq++}`, recipe: recipe.id, mode: 'count', target: body.count ?? 1, done: 0, paused: false, suspendedReason: null,
-          ingredients: { allow: ['*'], deny: [] }, radius: 32, pawn: 'any', minSkill: null, store: 'best', option: 3, prefer,
-          preferOnly: body.preferOnly ?? false,
-        };
-        table.v.bills.push(b);
-        ids.push(b.id);
-      }
-      table.rev = this.bump(c);
-      return { ok: true, ids, rev: c.rev };
-    }
-    if (body.op === 'release_claim') {
-      // The sim reserves nothing for builds' chains: a release is a no-op that says so.
-      return { ok: true, rev: c.rev, note: `build ${body.build} holds nothing for ${body.item}` };
-    }
-    if (body.op !== 'add' && body.op !== 'reorder') {
-      const auto = [...c.benches.values()]
-        .flatMap((x) => x.v.bills)
-        .find((x) => String(x.id) === String(body.id) && (x.forBuild ?? null) !== null);
-      if (auto && body.op !== 'remove')
-        throw Object.assign(new Error(`an auto bill (for build ${auto.forBuild}) can only be cancelled`), {
-          status: 400,
-        });
-      if (auto) {
-        // Cancelled: that build waits for the item instead of crafting it.
-        const bf = c.builds.get(String(auto.forBuild)) ?? c.builds.get(auto.forBuild!);
-        if (bf && auto.forItem) {
-          bf.v.noCraft = [...(bf.v.noCraft ?? []), auto.forItem];
-          bf.rev = this.bump(c);
-        }
-      }
-    }
-    switch (body.op) {
-      case 'add': {
-        f = benchAt(body.bench);
-        const spec = body.bill;
-        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === spec.recipe);
-        if (!recipe) throw Object.assign(new Error('unknown recipe'), { status: 400 });
-        if (recipe.workbench !== f.v.kind)
-          throw Object.assign(new Error(`no recipe '${recipe.id}' at a ${f.v.kind}`), { status: 400 });
-        if (recipe.modes && !recipe.modes.includes(spec.mode))
-          throw Object.assign(new Error(`mode must be ${recipe.modes.join('|')} for this recipe`), { status: 400 });
-        const b: StoryBill = {
-          id: `bill${c.seq++}`,
-          recipe: recipe.id,
-          mode: spec.mode,
-          target: spec.target ?? (spec.mode === 'until' ? 64 : 1),
-          done: 0,
-          paused: spec.paused ?? false,
-          suspendedReason: null,
-          ingredients: spec.ingredients ?? {
-            allow: recipe.inputs.flatMap((i) =>
-              i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`),
-            ),
-            deny: [],
-          },
-          radius: spec.radius ?? 32,
-          pawn: spec.pawn ?? 'any',
-          minSkill: spec.minSkill ?? null,
-          store: spec.store ?? 'best',
-          ...(recipe.workbench === 'enchanting_table'
-            ? { option: spec.option ?? 3, prefer: spec.prefer ?? null, preferOnly: spec.preferOnly ?? false }
-            : {}),
-          ...(recipe.workbench === 'furnace' ? { fuel: spec.fuel && spec.fuel !== 'inherit' ? spec.fuel : null } : {}),
-        };
-        if (recipe.workbench === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
-        f.v.bills.push(b);
-        newId = b.id;
-        break;
-      }
-      case 'update': {
-        f = holder(body.id);
-        const b = f.v.bills.find((x) => String(x.id) === String(body.id))!;
-        const { op: _op, id: _id, ...fields } = body;
-        if (fields.fuel !== undefined && f.v.kind !== 'furnace')
-          throw Object.assign(new Error('fuel is for furnace bills (a brewing stand burns blaze powder)'), { status: 400 });
-        Object.assign(b, { ...fields, ...(fields.fuel !== undefined ? { fuel: fields.fuel === 'inherit' ? null : fields.fuel } : {}) });
-        if (f.v.kind === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
-        if (fields.paused === false) b.suspendedReason = null;
-        break;
-      }
-      case 'remove':
-        f = holder(body.id);
-        f.v.bills = f.v.bills.filter((b) => String(b.id) !== String(body.id));
-        break;
-      case 'pause':
-      case 'resume':
-        f = holder(body.id);
-        for (const b of f.v.bills)
-          if (String(b.id) === String(body.id)) {
-            b.paused = body.op === 'pause';
-            if (body.op === 'resume') b.suspendedReason = null;
-          }
-        break;
-      case 'reorder': {
-        f = benchAt(body.bench);
-        const ids = body.ids.map(String);
-        const front = ids.map((i) => f.v.bills.find((b) => String(b.id) === i)).filter((b): b is StoryBill => !!b);
-        f.v.bills = [...front, ...f.v.bills.filter((b) => !ids.includes(String(b.id)))];
-        f.rev = this.bump(c);
-        return { ok: true, ids: f.v.bills.map((b) => b.id), rev: c.rev };
-      }
-    }
+    if (body.op === 'enchant_tools') return this.enchantBills(c, body);
+    // The sim reserves nothing for builds' chains: a release is a no-op that says so.
+    if (body.op === 'release_claim') return { ok: true, rev: c.rev, note: `build ${body.build} holds nothing for ${body.item}` };
+    if (body.op === 'reorder') return this.reorderBills(c, body);
+    if (body.op !== 'add') this.guardAutoBill(c, body.id, body.op);
+    const { f, newId } = this.changeBill(c, body);
     f.rev = this.bump(c);
     if (body.op === 'remove') this.plan(c);
     return { ok: true, ...(newId ? { id: newId } : {}), rev: c.rev };
+  }
+
+  /** A designated bench that takes bills (404 none there; 400 one this version has no bills for). */
+  private billBench(c: Colony, pos: readonly number[]): Fn<StoryWorkbench> {
+    const f = c.benches.get(keyOf(pos));
+    if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
+    if (f.v.supported === false)
+      throw Object.assign(new Error(`this version has no ${f.v.kind.replace(/_/g, ' ')} bills`), { status: 400 });
+    return f;
+  }
+
+  /** The bench holding a bill (404 none). */
+  private billHolder(c: Colony, billId: Key): Fn<StoryWorkbench> {
+    for (const f of c.benches.values()) if (f.v.bills.some((b) => String(b.id) === String(billId))) return f;
+    throw Object.assign(new Error('no such bill'), { status: 404 });
+  }
+
+  /** The tools hook: a count bill per pickaxe kind at the colony's enchanting table, preferring the enchantment. */
+  private enchantBills(c: Colony, body: Extract<StoryBillsRequest, { op: 'enchant_tools' }>): BillsAck {
+    const table = [...c.benches.values()].find((x) => x.v.kind === 'enchanting_table');
+    if (!table) throw Object.assign(new Error('no enchanting table: place one and designate it'), { status: 400 });
+    const prefer = body.prefer ?? enchantFor(body.material);
+    const ids: Key[] = [];
+    for (const item of body.items ?? ['diamond_pickaxe']) {
+      const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === `enchant:${item}`);
+      if (!recipe || table.v.bills.some((b) => b.recipe === recipe.id && b.prefer === prefer)) continue;
+      const b: StoryBill = {
+        id: `bill${c.seq++}`,
+        recipe: recipe.id,
+        mode: 'count',
+        target: body.count ?? 1,
+        done: 0,
+        paused: false,
+        suspendedReason: null,
+        ingredients: { allow: ['*'], deny: [] },
+        radius: 32,
+        pawn: 'any',
+        minSkill: null,
+        store: 'best',
+        option: 3,
+        prefer,
+        preferOnly: body.preferOnly ?? false,
+      };
+      table.v.bills.push(b);
+      ids.push(b.id);
+    }
+    table.rev = this.bump(c);
+    return { ok: true, ids, rev: c.rev };
+  }
+
+  /** An auto bill (for a build) can only be cancelled; cancelled, its build waits for the item instead of crafting it. */
+  private guardAutoBill(c: Colony, billId: Key, op: string): void {
+    const auto = [...c.benches.values()]
+      .flatMap((x) => x.v.bills)
+      .find((x) => String(x.id) === String(billId) && (x.forBuild ?? null) !== null);
+    if (!auto) return;
+    if (op !== 'remove')
+      throw Object.assign(new Error(`an auto bill (for build ${auto.forBuild}) can only be cancelled`), {
+        status: 400,
+      });
+    const bf = c.builds.get(String(auto.forBuild)) ?? c.builds.get(auto.forBuild!);
+    if (!bf || !auto.forItem) return;
+    bf.v.noCraft = [...(bf.v.noCraft ?? []), auto.forItem];
+    bf.rev = this.bump(c);
+  }
+
+  private reorderBills(c: Colony, body: Extract<StoryBillsRequest, { op: 'reorder' }>): BillsAck {
+    const f = this.billBench(c, body.bench);
+    const ids = body.ids.map(String);
+    const front = ids.map((i) => f.v.bills.find((b) => String(b.id) === i)).filter((b): b is StoryBill => !!b);
+    f.v.bills = [...front, ...f.v.bills.filter((b) => !ids.includes(String(b.id)))];
+    f.rev = this.bump(c);
+    return { ok: true, ids: f.v.bills.map((b) => b.id), rev: c.rev };
+  }
+
+  /** Adds, updates, removes, pauses or resumes a bill; the bench it is on (and a new bill's id). */
+  private changeBill(
+    c: Colony,
+    body: Extract<StoryBillsRequest, { op: 'add' | 'update' | 'remove' | 'pause' | 'resume' }>,
+  ): { f: Fn<StoryWorkbench>; newId?: Key } {
+    if (body.op === 'add') return this.addBill(c, body);
+    const f = this.billHolder(c, body.id);
+    if (body.op === 'update') this.updateBill(f, body);
+    else if (body.op === 'remove') f.v.bills = f.v.bills.filter((b) => String(b.id) !== String(body.id));
+    else
+      for (const b of f.v.bills)
+        if (String(b.id) === String(body.id)) {
+          b.paused = body.op === 'pause';
+          if (body.op === 'resume') b.suspendedReason = null;
+        }
+    return { f };
+  }
+
+  private addBill(c: Colony, body: Extract<StoryBillsRequest, { op: 'add' }>): { f: Fn<StoryWorkbench>; newId: Key } {
+    const f = this.billBench(c, body.bench);
+    const spec = body.bill;
+    const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === spec.recipe);
+    if (!recipe) throw Object.assign(new Error('unknown recipe'), { status: 400 });
+    if (recipe.workbench !== f.v.kind)
+      throw Object.assign(new Error(`no recipe '${recipe.id}' at a ${f.v.kind}`), { status: 400 });
+    if (recipe.modes && !recipe.modes.includes(spec.mode))
+      throw Object.assign(new Error(`mode must be ${recipe.modes.join('|')} for this recipe`), { status: 400 });
+    const b = newBill(`bill${c.seq++}`, recipe, spec);
+    if (recipe.workbench === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
+    f.v.bills.push(b);
+    return { f, newId: b.id };
+  }
+
+  /** A bill's fields change (fuel only on a furnace's; `inherit` = the bench's); a resumed bill is no longer suspended. */
+  private updateBill(f: Fn<StoryWorkbench>, body: Extract<StoryBillsRequest, { op: 'update' }>): void {
+    const b = f.v.bills.find((x) => String(x.id) === String(body.id))!;
+    const { op: _op, id: _id, ...fields } = body;
+    if (fields.fuel !== undefined && f.v.kind !== 'furnace')
+      throw Object.assign(new Error('fuel is for furnace bills (a brewing stand burns blaze powder)'), { status: 400 });
+    Object.assign(b, {
+      ...fields,
+      ...(fields.fuel !== undefined ? { fuel: fields.fuel === 'inherit' ? null : fields.fuel } : {}),
+    });
+    if (f.v.kind === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
+    if (fields.paused === false) b.suspendedReason = null;
   }
 
   // ------------------------------------------------------------------ builds craft what they need; designated benches; tiers
@@ -2071,145 +2106,170 @@ export class StorySim {
    */
   private plan(c: Colony): void {
     const pool = new Map(c.stock);
-    const hasTable = this.hasBench(c, 'crafting_table');
-    const hasFurnace = this.hasBench(c, 'furnace');
-    const wants: Array<{ build: Key; item: string; recipe: string; n: number; bench: string }> = [];
+    const benches: PlanBenches = { table: this.hasBench(c, 'crafting_table'), furnace: this.hasBench(c, 'furnace') };
+    const wants: PlanWant[] = [];
     for (const f of [...c.builds.values()].sort((a, b) => a.v.order - b.v.order)) {
       const b = f.v;
       if (b.status === 'done' || b.status === 'paused' || b.kind === 'remove') continue;
-      if (b.kind === 'water') {
-        // A liquid build needs one bucket (kept, never used up), not one per cell.
-        const buckets = (pool.get('325:0') ?? 0) + (pool.get('326:0') ?? 0) + (pool.get('327:0') ?? 0);
-        const mats: StoryBuildMaterial[] = [
-          { item: 'bucket', label: 'Bucket', need: 1, have: buckets > 0 ? 1 : 0, crafting: 0, short: buckets > 0 ? 0 : 1, via: 'craft', chain: ['craft 1 Bucket from 3 Iron Ingot (table)'], raw: buckets > 0 ? [] : ['3 Iron Ingot'] },
-        ];
-        if (JSON.stringify(mats) !== JSON.stringify(b.materials)) {
-          b.materials = mats;
-          f.rev = this.bump(c);
-        }
-        continue;
-      }
-      // What the build places: its ghosts' block (a fence's fence, a door's door), else its material.
-      const cells = (c.ghostCells.get(b.id) ?? []).filter((g) => g[3] !== 0);
-      const [mid, mmeta] = cells[0] ? [cells[0][3], cells[0][4]] : materialKey(b.material);
-      const left = cells.filter((g) => g[6] !== 'done').length;
-      const cat =
-        SIM_ARCHITECT.find((e) => e[5][0] === mid && e[5][1] === mmeta) ??
-        SIM_ARCHITECT.find((e) => e[4][0] === mid) ??
-        SIM_ARCHITECT.find((e) => e[5][0] === mid);
-      const key = cat ? `${cat[4][0]}:${cat[4][1]}` : `${mid}:${mmeta}`;
-      const have = Math.min(left, pool.get(key) ?? 0);
-      pool.set(key, (pool.get(key) ?? 0) - have);
-      const label = cat?.[1] ?? storyItemLabel(mid, mmeta);
-      const short0 = left - have;
-      let crafting = 0;
-      let via = 'none';
-      const chain: string[] = [];
-      const raw: string[] = [];
-      let station: StoryBuild['station'] = null;
-      if (short0 > 0 && cat && cat[7] && !(b.noCraft ?? []).includes(cat[0])) {
-        const [rid, rmeta] = cat[7].split(':').map(Number) as [number, number];
-        const smelt = cat[3] === 'furnace';
-        via = smelt ? 'smelt' : 'craft';
-        chain.push(
-          `${smelt ? 'smelt' : 'craft'} ${short0} ${label} from ${storyItemLabel(rid, rmeta)}${cat[3] === 'workbench' ? ' (table)' : ''}`,
-        );
-        const rawHave = pool.get(cat[7]) ?? 0;
-        const can = Math.min(short0, Math.floor(rawHave * cat[8]));
-        const needsTable = cat[3] === 'workbench' || cat[0] === 'glass_pane';
-        const benchOk = (!needsTable || hasTable) && (!smelt || hasFurnace);
-        if (can > 0) {
-          pool.set(cat[7], rawHave - Math.ceil(can / cat[8]));
-          crafting = can;
-          if (benchOk) {
-            const recipe = STORY_DEFAULT_RECIPES.find((r) => r.output[0] === cat[4][0])?.id ?? `craft:${cat[0]}`;
-            wants.push({ build: b.id, item: cat[0], recipe, n: can, bench: smelt ? 'furnace' : 'crafting_table' });
-          }
-        }
-        if (!benchOk && c.options.autoPlaceBenches)
-          station = { kind: !hasTable ? 'crafting_table' : 'furnace', pos: [c.home[0] + 2, c.home[1], c.home[2]] };
-        if (short0 - can > 0) raw.push(`${Math.ceil((short0 - can) / cat[8])} ${storyItemLabel(rid, rmeta)}`);
-      } else if (short0 > 0) raw.push(`${short0} ${label}`);
-      const mats: StoryBuildMaterial[] = left
-        ? [{ item: cat?.[0] ?? key, label, need: left, have, crafting, short: short0 - crafting, via, chain, raw }]
-        : [];
-      const status =
-        b.status === 'queued' || b.status === 'blocked' || b.status === 'waiting'
-          ? short0 === 0
-            ? 'queued'
-            : crafting > 0
-              ? 'waiting'
-              : 'blocked'
-          : b.status;
-      const reason =
-        short0 === 0
-          ? null
-          : crafting > 0
-            ? `waiting for ${crafting} ${label.toLowerCase()} (being crafted)`
-            : `need ${short0} ${label.toLowerCase()}`;
-      if (
-        JSON.stringify([mats, station, status, reason]) !==
-        JSON.stringify([b.materials, b.station ?? null, b.status, b.reason ?? null])
-      ) {
-        b.materials = mats;
-        b.station = station;
-        b.status = status;
-        b.reason = reason;
-        f.rev = this.bump(c);
-      }
+      if (b.kind === 'water') this.planWater(c, f, pool);
+      else this.planBuild(c, f, pool, benches, wants);
     }
     // Auto bills follow the wants: targets track the shortfall, the rest go, new ones join the bench's front.
-    for (const f of c.benches.values()) {
-      let changed = false;
-      const kept: StoryBill[] = [];
-      for (const bill of f.v.bills) {
-        if ((bill.forBuild ?? null) === null) {
-          kept.push(bill);
-          continue;
-        }
-        const w = wants.find(
-          (x) => String(x.build) === String(bill.forBuild) && x.recipe === bill.recipe && x.bench === f.v.kind,
-        );
-        if (!w) {
-          changed = true;
-          continue;
-        }
-        wants.splice(wants.indexOf(w), 1);
-        if (bill.target !== bill.done + w.n) {
-          bill.target = bill.done + w.n;
-          changed = true;
-        }
-        kept.push(bill);
-      }
-      for (const w of wants.filter((x) => x.bench === f.v.kind)) {
-        kept.unshift({
-          id: `bill${c.seq++}`,
-          recipe: w.recipe,
-          mode: 'count',
-          target: w.n,
-          done: 0,
-          paused: false,
-          suspendedReason: null,
-          ingredients: { allow: ['*'], deny: [] },
-          radius: 256,
-          pawn: 'any',
-          minSkill: null,
-          store: 'best',
-          forBuild: w.build,
-          forItem: w.item,
-          step: 0,
-        });
-        changed = true;
-      }
-      for (let i = wants.length - 1; i >= 0; i--) if (wants[i]!.bench === f.v.kind) wants.splice(i, 1);
-      if (changed) {
-        f.v.bills = [
-          ...kept.filter((x) => (x.forBuild ?? null) !== null),
-          ...kept.filter((x) => (x.forBuild ?? null) === null),
-        ];
-        f.rev = this.bump(c);
-      }
+    for (const f of c.benches.values()) this.syncAutoBills(c, f, wants);
+  }
+
+  /** A liquid build needs one bucket (kept, never used up), not one per cell. */
+  private planWater(c: Colony, f: Fn<StoryBuild>, pool: Map<string, number>): void {
+    const b = f.v;
+    const buckets = (pool.get('325:0') ?? 0) + (pool.get('326:0') ?? 0) + (pool.get('327:0') ?? 0);
+    const mats: StoryBuildMaterial[] = [
+      {
+        item: 'bucket',
+        label: 'Bucket',
+        need: 1,
+        have: buckets > 0 ? 1 : 0,
+        crafting: 0,
+        short: buckets > 0 ? 0 : 1,
+        via: 'craft',
+        chain: ['craft 1 Bucket from 3 Iron Ingot (table)'],
+        raw: buckets > 0 ? [] : ['3 Iron Ingot'],
+      },
+    ];
+    if (JSON.stringify(mats) === JSON.stringify(b.materials)) return;
+    b.materials = mats;
+    f.rev = this.bump(c);
+  }
+
+  /** One build's materials: stock reserved from the pool, the shortfall crafted (an auto bill) or short; its status. */
+  private planBuild(c: Colony, f: Fn<StoryBuild>, pool: Map<string, number>, benches: PlanBenches, wants: PlanWant[]): void {
+    const b = f.v;
+    const { left, cat, key, label } = this.placedOf(c, b);
+    const have = Math.min(left, pool.get(key) ?? 0);
+    pool.set(key, (pool.get(key) ?? 0) - have);
+    const short0 = left - have;
+    const m = this.planShortfall(c, b, cat, label, short0, pool, benches, wants);
+    const mats: StoryBuildMaterial[] = left
+      ? [
+          {
+            item: cat?.[0] ?? key,
+            label,
+            need: left,
+            have,
+            crafting: m.crafting,
+            short: short0 - m.crafting,
+            via: m.via,
+            chain: m.chain,
+            raw: m.raw,
+          },
+        ]
+      : [];
+    const status = planStatus(b.status, short0, m.crafting);
+    const reason = planReason(short0, m.crafting, label);
+    if (
+      JSON.stringify([mats, m.station, status, reason]) ===
+      JSON.stringify([b.materials, b.station ?? null, b.status, b.reason ?? null])
+    )
+      return;
+    b.materials = mats;
+    b.station = m.station;
+    b.status = status;
+    b.reason = reason;
+    f.rev = this.bump(c);
+  }
+
+  /** What a build places and how many are left: its ghosts' block (a fence's fence, a door's door), else its material. */
+  private placedOf(c: Colony, b: StoryBuild): { left: number; cat: ArchitectEntry | undefined; key: string; label: string } {
+    const cells = (c.ghostCells.get(b.id) ?? []).filter((g) => g[3] !== 0);
+    const [mid, mmeta] = cells[0] ? [cells[0][3], cells[0][4]] : materialKey(b.material);
+    const left = cells.filter((g) => g[6] !== 'done').length;
+    const cat = architectEntryOf(mid, mmeta);
+    const key = cat ? `${cat[4][0]}:${cat[4][1]}` : `${mid}:${mmeta}`;
+    return { left, cat, key, label: cat?.[1] ?? storyItemLabel(mid, mmeta) };
+  }
+
+  /** A build's shortfall: crafted from its raw material when there is a recipe (and the build allows it), else short. */
+  private planShortfall(
+    c: Colony,
+    b: StoryBuild,
+    cat: ArchitectEntry | undefined,
+    label: string,
+    short0: number,
+    pool: Map<string, number>,
+    benches: PlanBenches,
+    wants: PlanWant[],
+  ): PlanCraft {
+    const out: PlanCraft = { crafting: 0, via: 'none', chain: [], raw: [], station: null };
+    if (short0 <= 0) return out;
+    if (cat && cat[7] && !(b.noCraft ?? []).includes(cat[0])) this.planCraft(c, b, cat, label, short0, pool, benches, wants, out);
+    else out.raw.push(`${short0} ${label}`);
+    return out;
+  }
+
+  /** Crafts (or smelts) what the raw stock allows: an auto bill when its bench is designated, else a bench to make and place
+   * (when the colony auto-places benches); the rest is short in raw material. */
+  private planCraft(
+    c: Colony,
+    b: StoryBuild,
+    cat: ArchitectEntry,
+    label: string,
+    short0: number,
+    pool: Map<string, number>,
+    benches: PlanBenches,
+    wants: PlanWant[],
+    out: PlanCraft,
+  ): void {
+    const raw = cat[7]!;
+    const [rid, rmeta] = raw.split(':').map(Number) as [number, number];
+    const smelt = cat[3] === 'furnace';
+    out.via = smelt ? 'smelt' : 'craft';
+    out.chain.push(`${out.via} ${short0} ${label} from ${storyItemLabel(rid, rmeta)}${cat[3] === 'workbench' ? ' (table)' : ''}`);
+    const rawHave = pool.get(raw) ?? 0;
+    const can = Math.min(short0, Math.floor(rawHave * cat[8]));
+    const benchOk = benchReady(cat, smelt, benches);
+    if (can > 0) {
+      pool.set(raw, rawHave - Math.ceil(can / cat[8]));
+      out.crafting = can;
+      if (benchOk)
+        wants.push({ build: b.id, item: cat[0], recipe: recipeOf(cat), n: can, bench: smelt ? 'furnace' : 'crafting_table' });
     }
+    if (!benchOk && c.options.autoPlaceBenches) out.station = autoStation(c, benches);
+    if (short0 - can > 0) out.raw.push(`${Math.ceil((short0 - can) / cat[8])} ${storyItemLabel(rid, rmeta)}`);
+  }
+
+  /** A bench's auto bills follow the wants (taken from `wants`): targets track the shortfall, the rest go, new ones join its
+   * front. */
+  private syncAutoBills(c: Colony, f: Fn<StoryWorkbench>, wants: PlanWant[]): void {
+    let changed = false;
+    const kept: StoryBill[] = [];
+    for (const bill of f.v.bills) changed = keepAutoBill(bill, f.v.kind, wants, kept) || changed;
+    for (const w of wants.filter((x) => x.bench === f.v.kind)) {
+      kept.unshift(this.autoBill(c, w));
+      changed = true;
+    }
+    for (let i = wants.length - 1; i >= 0; i--) if (wants[i]!.bench === f.v.kind) wants.splice(i, 1);
+    if (!changed) return;
+    f.v.bills = [...kept.filter((x) => (x.forBuild ?? null) !== null), ...kept.filter((x) => (x.forBuild ?? null) === null)];
+    f.rev = this.bump(c);
+  }
+
+  private autoBill(c: Colony, w: PlanWant): StoryBill {
+    return {
+      id: `bill${c.seq++}`,
+      recipe: w.recipe,
+      mode: 'count',
+      target: w.n,
+      done: 0,
+      paused: false,
+      suspendedReason: null,
+      ingredients: { allow: ['*'], deny: [] },
+      radius: 256,
+      pawn: 'any',
+      minSkill: null,
+      store: 'best',
+      forBuild: w.build,
+      forItem: w.item,
+      step: 0,
+    };
   }
 
   /** POST …/workbenches: designate a placed bench as the colony's, or release it. */
@@ -2512,118 +2572,144 @@ export class StorySim {
     }
   }
 
+  /** One pawn's tick: needs, then (in order) eating, its orders, its schedule and work; then it walks to its goal or works. */
   private stepPawn(c: Colony, p: PawnSim, dt: number): void {
     const pawn = p.p;
-    const brave = pawn.traits.some((t) => t.id === 'brave');
-    const skittish = pawn.traits.some((t) => t.id === 'skittish');
+    let changed = this.tickNeeds(p, dt);
+    // 1. urgent needs (not while drafted)
+    this.eatIfHungry(c, p);
+    // 2. orders (drafted pawns only follow orders; undrafted ones do theirs first too)
+    if (!p.task && pawn.queue.length) {
+      this.takeOrder(c, p);
+      changed = true;
+    }
+    // 3. schedule and work
+    if (!p.task && !pawn.drafted) changed = this.followSchedule(c, p) || changed;
+    if (!p.task) {
+      this.restIdle(c, p, changed);
+      return;
+    }
+    p.idleSince = this.now();
+    // Move toward the goal, then work.
+    if (p.goal && Math.hypot(p.goal[0] - p.x, p.goal[2] - p.z) > arriveWithin(p.task.kind)) this.walk(p, p.goal, dt);
+    else this.work(c, p, dt);
+    pawn.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];
+    if (p.task) pawn.job = this.jobOf(p, p.task);
+    p.rev = this.bump(c);
+  }
+
+  /** Hunger, a bulk gear op finishing (in a few seconds), healing; true when the gear work changed. */
+  private tickNeeds(p: PawnSim, dt: number): boolean {
+    const pawn = p.p;
     let changed = false;
     pawn.food = Math.max(0, (pawn.food ?? 20) - dt / 40000);
-    // Gear work (a bulk gear op) is done in a few seconds.
     if (pawn.gearTasks?.length && Math.random() < dt / 3000) {
       pawn.gearTasks = [];
       changed = true;
     }
     if ((pawn.hp ?? 20) < 20 && Math.random() < dt / 8000) pawn.hp = Math.min(20, (pawn.hp ?? 20) + 1);
-    // 1. urgent needs (not while drafted)
-    if (!pawn.drafted && (pawn.food ?? 20) <= (skittish ? 9 : brave ? 4 : 6) && p.task?.kind !== 'eat') {
-      this.drop(c, p);
-      p.task = { kind: 'eat', ref: null, label: 'Eating', target: null, type: 'eat' };
-      p.work = 2500;
+    return changed;
+  }
+
+  /** An undrafted pawn at its hunger line drops what it does and eats. */
+  private eatIfHungry(c: Colony, p: PawnSim): void {
+    const pawn = p.p;
+    if (pawn.drafted || p.task?.kind === 'eat' || (pawn.food ?? 20) > hungerLine(pawn)) return;
+    this.drop(c, p);
+    p.task = { kind: 'eat', ref: null, label: 'Eating', target: null, type: 'eat' };
+    p.work = 2500;
+  }
+
+  /** The first queued order becomes the task (its target: a position, else the entity's). */
+  private takeOrder(c: Colony, p: PawnSim): void {
+    const o = p.p.queue[0]!;
+    const at = this.orderTarget(o.target);
+    p.task = { kind: `order:${o.kind}`, ref: o.id ?? null, label: orderLabel(o.kind), target: at, type: o.kind };
+    p.goal = at;
+    p.work = orderWork(o.kind);
+    o.state = 'active';
+    const of = o.id !== null && o.id !== undefined ? c.orders.get(o.id) : undefined;
+    if (of) of.rev = this.bump(c);
+  }
+
+  private orderTarget(t: StoryOrder['target']): [number, number, number] | null {
+    const ent = t && typeof t === 'object' && !Array.isArray(t) ? t.entity : null;
+    return targetPos(t) ?? (ent !== null && ent !== undefined ? this.entityPos(ent) : null);
+  }
+
+  /** The schedule's hour: sleep at home, relax near it, else work (or idle); true when the pawn's state changed. */
+  private followSchedule(c: Colony, p: PawnSim): boolean {
+    const block = p.p.schedule[storyHour(c.tod)] ?? 'anything';
+    let changed = false;
+    if (block === 'sleep') {
+      p.task = { kind: 'sleep', ref: null, label: 'Sleeping', target: c.home, type: 'sleep' };
+      p.goal = [c.home[0] + 0.5, c.home[1] + 1, c.home[2] + 0.5];
+      p.work = 20000;
+    } else if (block === 'free') {
+      const a = Math.random() * Math.PI * 2;
+      p.task = { kind: 'free', ref: null, label: 'Relaxing near home', target: null, type: 'idle' };
+      p.goal = [c.home[0] + Math.cos(a) * 4, c.home[1] + 1, c.home[2] + Math.sin(a) * 4];
+      p.work = 4000;
+    } else if (!this.pickWork(c, p)) changed = this.goIdle(c, p);
+    return changed || !!p.task;
+  }
+
+  /** Nothing to do: idle (an alert after a minute, at most every two); true when it wasn't idle already. */
+  private goIdle(c: Colony, p: PawnSim): boolean {
+    const pawn = p.p;
+    const was = pawn.state !== 'idle';
+    pawn.state = 'idle';
+    pawn.job = null;
+    const now = this.now();
+    if (now - p.idleSince > 60_000 && now - p.lastAlert > 120_000) {
+      p.lastAlert = now;
+      this.alert(c, 'warn', `${pawn.display} is idle: nothing to do in their enabled work.`, pawn.name, {
+        tab: 'work',
+        pawn: pawn.name,
+      });
     }
-    // 2. orders (drafted pawns only follow orders; undrafted ones do theirs first too)
-    if (!p.task && pawn.queue.length) {
-      const o = pawn.queue[0]!;
-      const t = o.target;
-      const ent = t && typeof t === 'object' && !Array.isArray(t) ? t.entity : null;
-      const at: [number, number, number] | null =
-        targetPos(t) ?? (ent !== null && ent !== undefined ? this.entityPos(ent) : null);
-      p.task = { kind: `order:${o.kind}`, ref: o.id ?? null, label: orderLabel(o.kind), target: at, type: o.kind };
-      p.goal = at;
-      p.work = o.kind === 'hold' ? Infinity : (WORK_MS[o.kind] ?? (o.kind === 'move' ? 0 : 1500));
-      o.state = 'active';
-      const of = o.id !== null && o.id !== undefined ? c.orders.get(o.id) : undefined;
-      if (of) of.rev = this.bump(c);
+    return was;
+  }
+
+  /** No task this tick: a drafted pawn shows as drafted; the pawn is re-sent only when something changed. */
+  private restIdle(c: Colony, p: PawnSim, changed: boolean): void {
+    const pawn = p.p;
+    if (pawn.drafted && pawn.state !== 'drafted') {
+      pawn.state = 'drafted';
       changed = true;
     }
-    // 3. schedule and work
-    if (!p.task && !pawn.drafted) {
-      const block = pawn.schedule[storyHour(c.tod)] ?? 'anything';
-      if (block === 'sleep') {
-        p.task = { kind: 'sleep', ref: null, label: 'Sleeping', target: c.home, type: 'sleep' };
-        p.goal = [c.home[0] + 0.5, c.home[1] + 1, c.home[2] + 0.5];
-        p.work = 20000;
-      } else if (block === 'free') {
-        const a = Math.random() * Math.PI * 2;
-        p.task = { kind: 'free', ref: null, label: 'Relaxing near home', target: null, type: 'idle' };
-        p.goal = [c.home[0] + Math.cos(a) * 4, c.home[1] + 1, c.home[2] + Math.sin(a) * 4];
-        p.work = 4000;
-      } else if (!this.pickWork(c, p)) {
-        if (pawn.state !== 'idle') changed = true;
-        pawn.state = 'idle';
-        pawn.job = null;
-        const now = this.now();
-        if (now - p.idleSince > 60_000 && now - p.lastAlert > 120_000) {
-          p.lastAlert = now;
-          this.alert(c, 'warn', `${pawn.display} is idle: nothing to do in their enabled work.`, pawn.name, {
-            tab: 'work',
-            pawn: pawn.name,
-          });
-        }
-      }
-      if (p.task) changed = true;
-    }
-    if (!p.task) {
-      if (pawn.drafted && pawn.state !== 'drafted') {
-        pawn.state = 'drafted';
-        changed = true;
-      }
-      if (changed) p.rev = this.bump(c);
-      return;
-    }
-    p.idleSince = this.now();
-    // Move toward the goal, then work.
-    const t = p.task;
-    if (
-      p.goal &&
-      Math.hypot(p.goal[0] - p.x, p.goal[2] - p.z) >
-        (t.kind.startsWith('order:move') || t.kind === 'sleep' || t.kind === 'free' ? 0.3 : 1.6)
-    ) {
-      const dx = p.goal[0] - p.x,
-        dz = p.goal[2] - p.z;
-      const d = Math.hypot(dx, dz);
-      const s = Math.min(d, (SPEED * (pawn.food < 4 ? 0.6 : 1) * dt) / 1000);
-      p.x += (dx / d) * s;
-      p.z += (dz / d) * s;
-      p.y = this.opts.world.ground(Math.floor(p.x), Math.floor(p.z)) + 1;
-      pawn.state = pawn.drafted ? 'drafted' : t.kind === 'flee' ? 'fleeing' : 'moving';
-    } else {
-      pawn.state =
-        t.kind === 'eat'
-          ? 'eating'
-          : t.kind === 'sleep'
-            ? 'sleeping'
-            : t.kind === 'free'
-              ? 'idle'
-              : t.type === 'attack'
-                ? 'fighting'
-                : pawn.drafted
-                  ? 'drafted'
-                  : 'working';
-      p.work -= dt * (pawn.traits.some((x) => x.id === 'night_owl') && (storyHour(c.tod) >= 20 || storyHour(c.tod) < 6) ? 1.25 : 1);
-      if (p.work <= 0) this.finish(c, p);
-    }
-    pawn.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];
-    if (p.task) {
-      const total = WORK_MS[p.task.type] ?? 1500;
-      pawn.job = {
-        type: p.task.type,
-        label: p.task.label,
-        ...(p.task.target ? { target: { x: p.task.target[0], y: p.task.target[1], z: p.task.target[2] } } : {}),
-        progress: Number.isFinite(p.work) ? Math.max(0, Math.min(1, 1 - p.work / total)) : null,
-        since: this.iso(),
-      };
-    }
-    p.rev = this.bump(c);
+    if (changed) p.rev = this.bump(c);
+  }
+
+  private walk(p: PawnSim, goal: [number, number, number], dt: number): void {
+    const pawn = p.p;
+    const dx = goal[0] - p.x,
+      dz = goal[2] - p.z;
+    const d = Math.hypot(dx, dz);
+    const s = Math.min(d, (SPEED * (pawn.food! < 4 ? 0.6 : 1) * dt) / 1000);
+    p.x += (dx / d) * s;
+    p.z += (dz / d) * s;
+    p.y = this.opts.world.ground(Math.floor(p.x), Math.floor(p.z)) + 1;
+    pawn.state = pawn.drafted ? 'drafted' : p.task!.kind === 'flee' ? 'fleeing' : 'moving';
+  }
+
+  /** At the goal: works on the task (night owls faster at night) and finishes it when the work is done. */
+  private work(c: Colony, p: PawnSim, dt: number): void {
+    const pawn = p.p;
+    pawn.state = workState(p.task!, pawn.drafted);
+    p.work -= dt * workRate(pawn, c.tod);
+    if (p.work <= 0) this.finish(c, p);
+  }
+
+  private jobOf(p: PawnSim, task: NonNullable<PawnSim['task']>): StoryPawn['job'] {
+    const total = WORK_MS[task.type] ?? 1500;
+    return {
+      type: task.type,
+      label: task.label,
+      ...(task.target ? { target: { x: task.target[0], y: task.target[1], z: task.target[2] } } : {}),
+      progress: Number.isFinite(p.work) ? Math.max(0, Math.min(1, 1 - p.work / total)) : null,
+      since: this.iso(),
+    };
   }
 
   private entityPos(id: number): [number, number, number] | null {
@@ -2633,42 +2719,71 @@ export class StorySim {
 
   /** The job picker: the best-priority work type with an available job; ties to skill, then distance. */
   private pickWork(c: Colony, p: PawnSim): boolean {
-    const pawn = p.p;
     const here: [number, number, number] = [p.x, p.y, p.z];
-    type Cand = { pri: number; col: number; skill: number; d: number; take: () => void };
-    const cands: Cand[] = [];
-    const add = (type: string, at: readonly unknown[], take: () => void) => {
-      const pri = pawn.priorities[type] ?? 0;
-      if (pri <= 0) return;
-      cands.push({
-        pri,
-        col: STORY_WORK_TYPES.indexOf(type as never),
-        skill: pawn.skills[type]?.level ?? 0,
-        d: dist(here, at),
-        take,
-      });
-    };
+    const cands: WorkCand[] = [];
+    this.designationWork(c, p, here, cands);
+    this.buildWork(c, p, here, cands);
+    this.billWork(c, p, here, cands);
+    if (cands.length === 0) return false;
+    cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill || a.d - b.d);
+    cands[0]!.take();
+    return true;
+  }
+
+  /** A job of a work type the pawn does (priority > 0) as a candidate. */
+  private addWork(
+    pawn: StoryPawn,
+    here: [number, number, number],
+    cands: WorkCand[],
+    type: string,
+    at: readonly unknown[],
+    take: () => void,
+  ): void {
+    const pri = pawn.priorities[type] ?? 0;
+    if (pri <= 0) return;
+    cands.push({
+      pri,
+      col: STORY_WORK_TYPES.indexOf(type as never),
+      skill: pawn.skills[type]?.level ?? 0,
+      d: dist(here, at),
+      take,
+    });
+  }
+
+  /** Open designations (not leased, done, a door mark, or resting after a failure). */
+  private designationWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
     for (const [k, f] of c.designations) {
       const d = f.v;
-      if (d.pawn || d.state === 'done' || d.kind === 'forbid' || d.kind === 'allow') continue;
-      // A failed one rests until its retry.
-      if (d.retryAt && (typeof d.retryAt === 'number' ? d.retryAt : Date.parse(d.retryAt)) > this.now()) continue;
+      if (!this.designationOpen(d)) continue;
       const type = WORK_OF[d.kind];
       if (!type || !d.block) continue;
       const at = d.block;
-      add(type, at, () => {
-        d.pawn = pawn.name;
-        d.state = 'leased';
-        f.rev = this.bump(c);
-        p.task = { kind: d.kind, ref: k, label: designationLabel(d.kind), target: [at[0], at[1], at[2]], type: d.kind };
-        p.goal = [at[0] + 0.5, at[1], at[2] + 0.5];
-        p.work =
-          (WORK_MS[d.kind] ?? 1500) *
-          (d.kind === 'chop' ? Math.max(1, (d.targets?.length ?? 1) / 4) : 1) *
-          (1.4 - (pawn.skills[type]?.level ?? 0) / 40);
-      });
+      this.addWork(p.p, here, cands, type, at, () => this.leaseDesignation(c, p, k, f, type, at));
     }
-    // Builds in queue order: the first unpaused build with a todo ghost.
+  }
+
+  private designationOpen(d: StoryDesignation): boolean {
+    if (d.pawn || d.state === 'done' || d.kind === 'forbid' || d.kind === 'allow') return false;
+    // A failed one rests until its retry.
+    return !(d.retryAt && (typeof d.retryAt === 'number' ? d.retryAt : Date.parse(d.retryAt)) > this.now());
+  }
+
+  private leaseDesignation(c: Colony, p: PawnSim, k: Key, f: Fn<StoryDesignation>, type: string, at: readonly number[]): void {
+    const d = f.v;
+    const pawn = p.p;
+    d.pawn = pawn.name;
+    d.state = 'leased';
+    f.rev = this.bump(c);
+    p.task = { kind: d.kind, ref: k, label: designationLabel(d.kind), target: [at[0]!, at[1]!, at[2]!], type: d.kind };
+    p.goal = [at[0]! + 0.5, at[1]!, at[2]! + 0.5];
+    p.work =
+      (WORK_MS[d.kind] ?? 1500) *
+      (d.kind === 'chop' ? Math.max(1, (d.targets?.length ?? 1) / 4) : 1) *
+      (1.4 - (pawn.skills[type]?.level ?? 0) / 40);
+  }
+
+  /** Builds in queue order: the first unpaused build with a todo ghost (its lowest, nearest cell). */
+  private buildWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
     const queue = [...c.builds.values()]
       .map((f) => f.v)
       .filter((b) => b.status !== 'paused' && b.status !== 'done')
@@ -2677,7 +2792,7 @@ export class StorySim {
       const cells = c.ghostCells.get(b.id) ?? [];
       const g = cells.filter((x) => x[6] === 'todo').sort((a, b2) => a[1] - b2[1] || dist(here, a) - dist(here, b2))[0];
       if (!g) continue;
-      add('build', g, () => {
+      this.addWork(p.p, here, cands, 'build', g, () => {
         g[6] = 'leased';
         c.ghostsRev = this.bump(c);
         p.task = {
@@ -2688,25 +2803,22 @@ export class StorySim {
           type: 'build',
         };
         p.goal = [g[0] + 0.5, g[1], g[2] + 0.5];
-        p.work = WORK_MS.build! * (1.4 - (pawn.skills.build?.level ?? 0) / 40);
+        p.work = WORK_MS.build! * (1.4 - (p.p.skills.build?.level ?? 0) / 40);
       });
       break;
     }
-    // Bills at workbenches, top to bottom.
+  }
+
+  /** Bills at workbenches, top to bottom: each bench's first bill this pawn may do. */
+  private billWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
+    const pawn = p.p;
     for (const f of c.benches.values()) {
       const bench = f.v;
-      const bill = bench.bills.find(
-        (b) =>
-          !b.paused &&
-          !b.suspendedReason &&
-          (b.mode === 'forever' || b.done < b.target) &&
-          (b.pawn === 'any' || b.pawn === pawn.name) &&
-          (b.minSkill === null || b.minSkill === undefined || (pawn.skills.craft?.level ?? 0) >= b.minSkill),
-      );
+      const bill = bench.bills.find((b) => billWanted(b) && billOpenTo(b, pawn));
       if (!bill) continue;
       const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
       const type = recipe?.workType === 'cook' ? 'cook' : 'craft';
-      add(type, bench.pos, () => {
+      this.addWork(pawn, here, cands, type, bench.pos, () => {
         p.task = {
           kind: 'bill',
           ref: bill.id,
@@ -2718,10 +2830,6 @@ export class StorySim {
         p.work = WORK_MS.craft!;
       });
     }
-    if (cands.length === 0) return false;
-    cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill || a.d - b.d);
-    cands[0]!.take();
-    return true;
   }
 
   private grow(c: Colony, p: PawnSim, type: string): void {
@@ -2738,91 +2846,105 @@ export class StorySim {
     }
   }
 
+  /** A task's work is done: eat, an order, a bill, a build cell or a designation completes; the pawn is free again. */
   private finish(c: Colony, p: PawnSim): void {
     const t = p.task!;
-    const w = this.opts.world;
     if (t.kind === 'eat') p.p.food = 20;
-    else if (t.kind.startsWith('order:')) {
-      const o = p.p.queue.shift();
-      if (o?.id !== null && o?.id !== undefined) {
-        const of = c.orders.get(o.id);
-        if (of) {
-          of.v.state = 'done';
-          of.rev = this.bump(c);
-        }
-      }
-    } else if (t.kind === 'bill') {
-      for (const f of c.benches.values()) {
-        const bill = f.v.bills.find((b) => b.id === t.ref);
-        if (!bill) continue;
-        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
-        const k = recipe ? `${recipe.output[0]}:${recipe.output[1]}` : '';
-        const missing = recipe?.inputs.find((i) => {
-          const keys = i.category
-            ? categoryItems(STORY_DEFAULT_CATEGORIES, i.category)
-            : (i.options ?? []).map(([a, m]) => `${a}:${m === -1 ? 0 : m}`);
-          return !keys.some((key) => (c.stock.get(key.replace(':-1', ':0')) ?? 0) >= i.count);
-        });
-        if (missing && bill.mode !== 'forever' && Math.random() < 0.15) {
-          bill.suspendedReason = `missing ${storyItemLabel(missing.options?.[0]?.[0] ?? 0).toLowerCase()} within ${bill.radius} blocks`;
-          this.alert(
-            c,
-            'warn',
-            `A bill was suspended: ${recipe?.label ?? bill.recipe} (${bill.suspendedReason}).`,
-            undefined,
-            { tab: 'bills', workbench: f.v.pos },
-          );
-        } else {
-          bill.done++;
-          if (recipe) c.stock.set(k, (c.stock.get(k) ?? 0) + recipe.output[2]);
-          if (bill.mode === 'until' && (c.stock.get(k) ?? 0) >= bill.target) bill.done = bill.target;
-        }
-        f.rev = this.bump(c);
-      }
-      this.grow(c, p, t.type);
-    } else if (t.kind === 'build' && t.ref !== null && t.ref !== undefined) {
-      const cells = c.ghostCells.get(t.ref) ?? [];
-      const g = cells.find((x) => t.target && x[0] === t.target[0] && x[1] === t.target[1] && x[2] === t.target[2]);
-      const f = c.builds.get(t.ref);
-      if (g && f) {
-        g[6] = 'done';
-        w.setBlock?.(g[0], g[1], g[2], g[3], g[4]);
-        f.v.blocksDone = cells.filter((x) => x[6] === 'done').length;
-        f.v.status = f.v.blocksDone >= f.v.blocksTotal ? 'done' : 'active';
-        f.rev = this.bump(c);
-        c.ghostsRev = this.bump(c);
-        if (f.v.status === 'done') {
-          // Built furniture becomes a workbench or a chest the colony can use.
-          for (const [x, y, z, id] of cells)
-            if (id === 58 || id === 61 || CHEST_IDS.has(id))
-              this.discover(c, [x, y, z, x, y, z], CHEST_IDS.has(id) ? undefined : undefined);
-          this.alert(c, 'info', `Finished building: ${f.v.label}.`);
-        }
-      }
-      this.grow(c, p, 'build');
-    } else if (t.ref !== null && t.ref !== undefined) {
-      const f = c.designations.get(t.ref);
-      if (f) {
-        const d = f.v;
-        if (
-          d.kind === 'chop' ||
-          d.kind === 'mine' ||
-          d.kind === 'cut' ||
-          d.kind === 'harvest' ||
-          d.kind === 'deconstruct'
-        )
-          for (const b of d.targets ?? (d.block ? [d.block] : [])) w.setBlock?.(b[0], b[1], b[2], 0, 0);
-        if (d.kind === 'chop') c.stock.set('17:0', (c.stock.get('17:0') ?? 0) + (d.targets?.length ?? 1));
-        if (d.kind === 'haul') this.haul(c, p);
-        c.designations.delete(t.ref);
-        c.removed.push({ rev: this.bump(c), kind: 'designations', key: t.ref });
-        this.grow(c, p, WORK_OF[d.kind] ?? d.kind);
-      }
-    }
+    else if (t.kind.startsWith('order:')) this.finishOrder(c, p);
+    else if (t.kind === 'bill') this.finishBill(c, p, t);
+    else if (t.kind === 'build' && t.ref !== null && t.ref !== undefined) this.finishBuild(c, p, t, t.ref);
+    else if (t.ref !== null && t.ref !== undefined) this.finishDesignation(c, p, t.ref);
     p.task = null;
     p.goal = null;
     p.p.job = null;
     p.rev = this.bump(c);
+  }
+
+  private finishOrder(c: Colony, p: PawnSim): void {
+    const o = p.p.queue.shift();
+    if (o?.id === null || o?.id === undefined) return;
+    const of = c.orders.get(o.id);
+    if (!of) return;
+    of.v.state = 'done';
+    of.rev = this.bump(c);
+  }
+
+  private finishBill(c: Colony, p: PawnSim, t: NonNullable<PawnSim['task']>): void {
+    for (const f of c.benches.values()) {
+      const bill = f.v.bills.find((b) => b.id === t.ref);
+      if (bill) this.billMade(c, f, bill);
+    }
+    this.grow(c, p, t.type);
+  }
+
+  /** One round of a bill: made (stock grows; an `until` bill is done once the stock reaches it), or, sometimes, suspended for
+   * an ingredient the colony lacks. */
+  private billMade(c: Colony, f: Fn<StoryWorkbench>, bill: StoryBill): void {
+    const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
+    const missing = recipe?.inputs.find((i) => !hasInput(c.stock, i));
+    if (missing && bill.mode !== 'forever' && Math.random() < 0.15) this.suspendBill(c, f, bill, recipe, missing);
+    else stockMade(c.stock, bill, recipe);
+    f.rev = this.bump(c);
+  }
+
+  private suspendBill(
+    c: Colony,
+    f: Fn<StoryWorkbench>,
+    bill: StoryBill,
+    recipe: SimRecipe | undefined,
+    missing: SimRecipe['inputs'][number],
+  ): void {
+    bill.suspendedReason = `missing ${storyItemLabel(missing.options?.[0]?.[0] ?? 0).toLowerCase()} within ${bill.radius} blocks`;
+    this.alert(c, 'warn', `A bill was suspended: ${recipe?.label ?? bill.recipe} (${bill.suspendedReason}).`, undefined, {
+      tab: 'bills',
+      workbench: f.v.pos,
+    });
+  }
+
+  /** A build cell is placed (when it is still there); the pawn's build skill grows. */
+  private finishBuild(c: Colony, p: PawnSim, t: NonNullable<PawnSim['task']>, ref: Key): void {
+    const cells = c.ghostCells.get(ref) ?? [];
+    const g = cells.find((x) => t.target && x[0] === t.target[0] && x[1] === t.target[1] && x[2] === t.target[2]);
+    const f = c.builds.get(ref);
+    if (g && f) this.placeBuildCell(c, f, cells, g);
+    this.grow(c, p, 'build');
+  }
+
+  /** A ghost cell is built; a finished build says so, and its furniture becomes a workbench or a chest the colony can use. */
+  private placeBuildCell(
+    c: Colony,
+    f: Fn<StoryBuild>,
+    cells: GhostCell[],
+    g: GhostCell,
+  ): void {
+    g[6] = 'done';
+    this.opts.world.setBlock?.(g[0], g[1], g[2], g[3], g[4]);
+    f.v.blocksDone = cells.filter((x) => x[6] === 'done').length;
+    f.v.status = f.v.blocksDone >= f.v.blocksTotal ? 'done' : 'active';
+    f.rev = this.bump(c);
+    c.ghostsRev = this.bump(c);
+    if (f.v.status !== 'done') return;
+    for (const [x, y, z, id] of cells)
+      if (id === 58 || id === 61 || CHEST_IDS.has(id)) this.discover(c, [x, y, z, x, y, z], undefined);
+    this.alert(c, 'info', `Finished building: ${f.v.label}.`);
+  }
+
+  /** A designation is done: its blocks cleared (chop, mine, cut, harvest, deconstruct), logs stocked, a drop hauled. */
+  private finishDesignation(c: Colony, p: PawnSim, ref: Key): void {
+    const f = c.designations.get(ref);
+    if (!f) return;
+    const d = f.v;
+    this.clearDesignated(d);
+    if (d.kind === 'chop') c.stock.set('17:0', (c.stock.get('17:0') ?? 0) + (d.targets?.length ?? 1));
+    if (d.kind === 'haul') this.haul(c, p);
+    c.designations.delete(ref);
+    c.removed.push({ rev: this.bump(c), kind: 'designations', key: ref });
+    this.grow(c, p, WORK_OF[d.kind] ?? d.kind);
+  }
+
+  private clearDesignated(d: StoryDesignation): void {
+    if (!CLEARS_BLOCKS.has(d.kind)) return;
+    for (const b of d.targets ?? (d.block ? [d.block] : [])) this.opts.world.setBlock?.(b[0], b[1], b[2], 0, 0);
   }
 
   /** A hauled drop goes to the best storage that accepts it (by priority), or raises an alert. */
@@ -2981,3 +3103,401 @@ function directiveSummary(d: StoryDirectiveRequest['directive']): string {
 
 /** True when a world block is a log (exported for the mocks' world builders). */
 export const isLog = (id: number) => LOG_IDS.has(id);
+
+// ------------------------------------------------------------------ the materials pass (plan)
+
+/** A catalogue entry: id, label, group, tier, item [id, meta], placed block [id, meta], build kinds, raw item, yield per raw. */
+type ArchitectEntry = (typeof SIM_ARCHITECT)[number];
+/** Which benches the colony has designated. */
+interface PlanBenches {
+  table: boolean;
+  furnace: boolean;
+}
+/** A build's shortfall to craft at a bench (an auto bill). */
+interface PlanWant {
+  build: Key;
+  item: string;
+  recipe: string;
+  n: number;
+  bench: string;
+}
+/** How a build's shortfall is covered: crafted (via, the chain), short in raw material, a bench to make first. */
+interface PlanCraft {
+  crafting: number;
+  via: string;
+  chain: string[];
+  raw: string[];
+  station: StoryBuild['station'];
+}
+
+/** The catalogue entry of a placed block: by block and meta, else by item id, else by block id. */
+function architectEntryOf(mid: number, mmeta: number): ArchitectEntry | undefined {
+  return (
+    SIM_ARCHITECT.find((e) => e[5][0] === mid && e[5][1] === mmeta) ??
+    SIM_ARCHITECT.find((e) => e[4][0] === mid) ??
+    SIM_ARCHITECT.find((e) => e[5][0] === mid)
+  );
+}
+
+/** The recipe an auto bill crafts an entry with. */
+function recipeOf(cat: ArchitectEntry): string {
+  return STORY_DEFAULT_RECIPES.find((r) => r.output[0] === cat[4][0])?.id ?? `craft:${cat[0]}`;
+}
+
+/** Is the bench an entry is made at designated (a crafting table for workbench recipes and panes, a furnace to smelt)? */
+function benchReady(cat: ArchitectEntry, smelt: boolean, benches: PlanBenches): boolean {
+  const needsTable = cat[3] === 'workbench' || cat[0] === 'glass_pane';
+  return (!needsTable || benches.table) && (!smelt || benches.furnace);
+}
+
+/** A waiting build's status from its shortfall: queued (nothing short), waiting (being crafted), blocked; others keep theirs. */
+function planStatus(status: StoryBuild['status'], short0: number, crafting: number): StoryBuild['status'] {
+  if (status !== 'queued' && status !== 'blocked' && status !== 'waiting') return status;
+  return short0 === 0 ? 'queued' : crafting > 0 ? 'waiting' : 'blocked';
+}
+
+function planReason(short0: number, crafting: number, label: string): string | null {
+  if (short0 === 0) return null;
+  return crafting > 0
+    ? `waiting for ${crafting} ${label.toLowerCase()} (being crafted)`
+    : `need ${short0} ${label.toLowerCase()}`;
+}
+
+/** Keeps a bench's bill in a materials pass (its want taken from `wants`); true when that changed it (dropped or retargeted). */
+function keepAutoBill(bill: StoryBill, bench: string, wants: PlanWant[], kept: StoryBill[]): boolean {
+  if ((bill.forBuild ?? null) === null) {
+    kept.push(bill);
+    return false;
+  }
+  const w = wants.find(
+    (x) => String(x.build) === String(bill.forBuild) && x.recipe === bill.recipe && x.bench === bench,
+  );
+  if (!w) return true;
+  wants.splice(wants.indexOf(w), 1);
+  kept.push(bill);
+  if (bill.target === bill.done + w.n) return false;
+  bill.target = bill.done + w.n;
+  return true;
+}
+
+// ------------------------------------------------------------------ a pawn's tick
+
+/** A job a pawn could take now: its priority, work-type column, skill, distance, and how it leases it. */
+interface WorkCand {
+  pri: number;
+  col: number;
+  skill: number;
+  d: number;
+  take: () => void;
+}
+
+/** Designations whose blocks go when done. */
+const CLEARS_BLOCKS: ReadonlySet<string> = new Set(['chop', 'mine', 'cut', 'harvest', 'deconstruct']);
+
+/** How near its goal a pawn must be to work: on the spot for a move, sleep or rest, else within reach. */
+const arriveWithin = (kind: string): number =>
+  kind.startsWith('order:move') || kind === 'sleep' || kind === 'free' ? 0.3 : 1.6;
+
+/** An order's work: hold forever, a move none, others by kind. */
+const orderWork = (kind: string): number => (kind === 'hold' ? Infinity : (WORK_MS[kind] ?? (kind === 'move' ? 0 : 1500)));
+
+/** The food level a pawn stops to eat at: skittish pawns early, brave ones late. */
+function hungerLine(pawn: StoryPawn): number {
+  if (pawn.traits.some((t) => t.id === 'skittish')) return 9;
+  return pawn.traits.some((t) => t.id === 'brave') ? 4 : 6;
+}
+
+/** What a pawn at its task shows as. */
+function workState(t: NonNullable<PawnSim['task']>, drafted: boolean | null | undefined): string {
+  if (t.kind === 'eat') return 'eating';
+  if (t.kind === 'sleep') return 'sleeping';
+  if (t.kind === 'free') return 'idle';
+  if (t.type === 'attack') return 'fighting';
+  return drafted ? 'drafted' : 'working';
+}
+
+/** Night owls work a quarter faster from 20:00 to 06:00. */
+function workRate(pawn: StoryPawn, tod: number): number {
+  const night = storyHour(tod) >= 20 || storyHour(tod) < 6;
+  return pawn.traits.some((x) => x.id === 'night_owl') && night ? 1.25 : 1;
+}
+
+/** A bill with work left: not paused or suspended, forever or below its target. */
+const billWanted = (b: StoryBill): boolean => !b.paused && !b.suspendedReason && (b.mode === 'forever' || b.done < b.target);
+
+/** May this pawn do the bill (anyone or it, with the skill asked)? */
+function billOpenTo(b: StoryBill, pawn: StoryPawn): boolean {
+  if (b.pawn !== 'any' && b.pawn !== pawn.name) return false;
+  return b.minSkill === null || b.minSkill === undefined || (pawn.skills.craft?.level ?? 0) >= b.minSkill;
+}
+
+/** A bill round made: its count, the output into stock; an `until` bill is done once the stock reaches its target. */
+function stockMade(stock: Map<string, number>, bill: StoryBill, recipe: SimRecipe | undefined): void {
+  const k = recipe ? `${recipe.output[0]}:${recipe.output[1]}` : '';
+  bill.done++;
+  if (recipe) stock.set(k, (stock.get(k) ?? 0) + recipe.output[2]);
+  if (bill.mode === 'until' && (stock.get(k) ?? 0) >= bill.target) bill.done = bill.target;
+}
+
+/** The bench a build waits for, made and placed by home: a crafting table first, then a furnace. */
+function autoStation(c: Colony, benches: PlanBenches): StoryBuild['station'] {
+  return { kind: !benches.table ? 'crafting_table' : 'furnace', pos: [c.home[0] + 2, c.home[1], c.home[2]] };
+}
+
+/** Does the stock hold enough of a recipe input (any item of its category or options)? */
+function hasInput(stock: ReadonlyMap<string, number>, i: (typeof STORY_DEFAULT_RECIPES)[number]['inputs'][number]): boolean {
+  const keys = i.category
+    ? categoryItems(STORY_DEFAULT_CATEGORIES, i.category)
+    : (i.options ?? []).map(([a, m]) => `${a}:${m === -1 ? 0 : m}`);
+  return keys.some((key) => (stock.get(key.replace(':-1', ':0')) ?? 0) >= i.count);
+}
+
+// ------------------------------------------------------------------ bills
+
+/** What a bills request answers. */
+type BillsAck = { ok: boolean; id?: Key; ids?: Key[]; rev: number; note?: string | null };
+type BillSpec = Extract<StoryBillsRequest, { op: 'add' }>['bill'];
+
+/** The enchantment tools are enchanted toward for a material: fortune for ores, silk touch for glass and ice, else efficiency. */
+function enchantFor(material: string | undefined): string {
+  if (material && /ore|coal|diamond|lapis|redstone|emerald|quartz/.test(material)) return 'fortune';
+  return material && /glass|ice|glowstone/.test(material) ? 'silk_touch' : 'efficiency';
+}
+
+/** A new bill from its spec: defaults for what it leaves out; an enchanting table's option, a furnace's fuel. */
+function newBill(id: string, recipe: SimRecipe, spec: BillSpec): StoryBill {
+  return {
+    id,
+    recipe: recipe.id,
+    mode: spec.mode,
+    target: spec.target ?? (spec.mode === 'until' ? 64 : 1),
+    done: 0,
+    paused: spec.paused ?? false,
+    suspendedReason: null,
+    ingredients: spec.ingredients ?? { allow: recipeIngredients(recipe), deny: [] },
+    radius: spec.radius ?? 32,
+    pawn: spec.pawn ?? 'any',
+    minSkill: spec.minSkill ?? null,
+    store: spec.store ?? 'best',
+    ...enchantFields(recipe, spec),
+    ...fuelFields(recipe, spec),
+  };
+}
+
+/** A recipe's inputs as a bill's ingredient filter (categories, item keys). */
+const recipeIngredients = (recipe: SimRecipe): string[] =>
+  recipe.inputs.flatMap((i) => (i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`)));
+
+function enchantFields(recipe: SimRecipe, spec: BillSpec): Partial<StoryBill> {
+  if (recipe.workbench !== 'enchanting_table') return {};
+  return { option: spec.option ?? 3, prefer: spec.prefer ?? null, preferOnly: spec.preferOnly ?? false };
+}
+
+/** A furnace bill's own fuel (`inherit` or none: the bench's). */
+function fuelFields(recipe: SimRecipe, spec: BillSpec): Partial<StoryBill> {
+  if (recipe.workbench !== 'furnace') return {};
+  return { fuel: spec.fuel && spec.fuel !== 'inherit' ? spec.fuel : null };
+}
+
+// ------------------------------------------------------------------ designations, builds, storage
+
+type DesignationsAck = {
+  ok: boolean;
+  count: number;
+  targets?: Array<[number, number, number]>;
+  entities?: number[];
+  rev: number;
+};
+
+type BuildsAck = {
+  ok: boolean;
+  ids?: Key[];
+  rev: number;
+  warnings?: string[];
+  flow?: { spread: number; cells: Array<[number, number, number]> };
+  cells?: number;
+  done?: number;
+  error?: string | null;
+  reopened?: number;
+  reasons?: Array<{ id: Key; reason: string }>;
+};
+
+/** Water items checked: why not (null = fine), warnings, the expected spread, cells and those already full. */
+interface WaterCheck {
+  error: string | null;
+  warnings: string[];
+  spread: Array<[number, number, number]>;
+  cells: number;
+  done: number;
+}
+
+/** Designates entities (drops, animals) rather than blocks: haul, hunt, and forbid / allow without blocks. */
+function designatesEntities(kind: StoryDesignationKind, body: StoryDesignationRequest): boolean {
+  return kind === 'haul' || kind === 'hunt' || ((kind === 'forbid' || kind === 'allow') && !body.blocks);
+}
+
+/** Is a designation named by a remove request's ids, blocks or entities? */
+function designationListed(
+  d: StoryDesignation,
+  k: Key,
+  cells: ReadonlyArray<readonly number[]>,
+  body: StoryDesignationRequest,
+): boolean {
+  return !!(
+    body.ids?.map(String).includes(String(k)) ||
+    body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) ||
+    (d.entity !== null && d.entity !== undefined && body.entities?.includes(d.entity))
+  );
+}
+
+/** Reopens a build's failed cells (blocked, or with a failure's reason; only `cells` when given); how many. */
+function reopenCells(list: GhostCell[], cells: ReadonlySet<string> | null): number {
+  let n = 0;
+  for (const g of list)
+    if (reopenable(g) && (!cells || cells.has(`${g[0]},${g[1]},${g[2]}`))) {
+      g[6] = 'todo';
+      g.length = 8;
+      n++;
+    }
+  return n;
+}
+
+const reopenable = (g: GhostCell): boolean =>
+  g[6] === 'blocked' || (!!g[8] && g[6] !== 'done' && g[6] !== 'unsupported');
+
+/** Is a cell dug first: by a remove item in the request, or a dig already queued? */
+function isDugCell(
+  x: number,
+  y: number,
+  z: number,
+  dug: ReadonlyArray<[number, number, number]>,
+  queuedDigs: readonly GhostCell[],
+): boolean {
+  return (
+    dug.some((d) => d[0] === x && d[1] === y && d[2] === z) ||
+    queuedDigs.some((g) => g[0] === x && g[1] === y && g[2] === z)
+  );
+}
+
+/** A water build's label: its name, else an infinite source, a source, or a channel. */
+function waterBuildLabel(item: StoryBuildItem, liquid: string, cells: number): string {
+  if (item.name !== null && item.name !== undefined) return item.name;
+  if (item.infinite) return `infinite ${liquid} source (${cells} cells)`;
+  return cells === 1 ? `${liquid} source` : `${liquid} channel (${cells} sources)`;
+}
+
+/** A build short of its material at queue time (removals, mines, water and furniture never are). */
+function lacksMaterial(item: StoryBuildItem, need: number, have: number): boolean {
+  return (
+    have < need &&
+    item.kind !== 'remove' &&
+    item.kind !== 'mine' &&
+    item.kind !== 'water' &&
+    !(STORY_FURNITURE as readonly string[]).includes(item.kind)
+  );
+}
+
+/** Workbench block ids and their kinds. */
+const BENCH_KIND_OF: ReadonlyMap<number, string> = new Map([
+  [58, 'crafting_table'],
+  [61, 'furnace'],
+  [62, 'furnace'],
+  [117, 'brewing_stand'],
+  [145, 'anvil'],
+  [116, 'enchanting_table'],
+]);
+
+/** A storage's priority and filter: as given, else as it was, else normal and everything. */
+function storageSettings(
+  prev: StoryStorage | undefined,
+  filter: StoryFilter | undefined,
+  priority: string | undefined,
+): Pick<StoryStorage, 'priority' | 'filter'> {
+  return {
+    priority: priority ?? prev?.priority ?? 'normal',
+    filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
+  };
+}
+
+// ------------------------------------------------------------------ zones
+
+type ZoneAdd = Extract<StoryZoneRequest, { op: 'add' }>;
+
+/** A new zone's request: plant / sow / harvest only on growing zones (a known plant); a new quarry at least 2×2 unless it
+ * extends one it touches. */
+function checkNewZone(body: ZoneAdd, kind: string, list: readonly StoryZone[], rect: readonly [number, number, number, number]): void {
+  if (body.plant || body.sow !== undefined || body.harvest !== undefined) checkGrowFields(body.plant, kind);
+  if (
+    kind === 'mine' &&
+    (body.mode ?? 'quarry') === 'quarry' &&
+    (rect[0] === rect[2] || rect[1] === rect[3]) &&
+    !list.some((z) => z.kind === 'mine' && z.mode === 'quarry' && cellsTouch(zoneCellSet(z), rectCells(...rect)))
+  )
+    throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
+}
+
+function checkGrowFields(plant: string | undefined, kind: string): void {
+  if (kind !== 'farm') throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+  if (plant && !STORY_SIM_PLANTS.some((p) => p.id === plant))
+    throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
+      status: 400,
+    });
+}
+
+/** A painted zone: its kind and area, a name, a mine zone's mode, a growing zone's plant with its first planting bill. */
+function newZone(c: Colony, body: ZoneAdd, a: StoryArea, newId: () => string, k: string, plant: string | null): StoryZone {
+  return {
+    id: newId(),
+    kind: k,
+    area: a,
+    ...(body.name ? { name: body.name } : {}),
+    ...(k === 'mine' ? { mode: body.mode ?? 'quarry' } : {}),
+    ...(k === 'farm' && plant ? growingFields(c, body, plant) : {}),
+  };
+}
+
+function growingFields(c: Colony, body: ZoneAdd, plant: string): Partial<StoryZone> {
+  return {
+    plant,
+    sow: body.sow ?? true,
+    harvest: body.harvest ?? true,
+    bills: [{ id: `gb${c.seq++}`, plant, mode: 'forever' as const, target: 64, done: 0, paused: false }],
+  };
+}
+
+/** What a zones request answers (one shape per op: a mode, seeds, irrigation, a bill, a rename, a delete, a paint). */
+type ZonesAnswer =
+  | { id: string | number; warnings: never[]; rev: number; count?: undefined; kind?: undefined }
+  | { count: number; kind: string; rev: number; id?: undefined; warnings?: undefined }
+  | {
+      rev: number;
+      cells: [number, number, number][];
+      dig: [number, number, number][];
+      axis: 'x' | 'z';
+      lines: number;
+      note: string;
+      id: string | number;
+    }
+  | {
+      rev: number;
+      bill?: string | undefined;
+      id: string | number;
+      ids: (string | number)[];
+      activeBill: string | number | null;
+      warnings: never[];
+    }
+  | { id: string | number; rev: number; name?: undefined; removed?: undefined; deleted?: undefined }
+  | { id: string | number; name: string; rev: number; removed?: undefined; deleted?: undefined }
+  | { removed: (string | number)[]; deleted: (string | number)[]; rev: number; id?: undefined; name?: undefined }
+  | {
+      removed: (string | number)[];
+      rev: number;
+      id?: string | number;
+      created: Array<string | number>;
+      merged: Array<{ into: string | number; from: Array<string | number> }>;
+      grown: Array<string | number>;
+      shrunk: Array<string | number>;
+      split: Array<{ from: string | number; into: Array<string | number> }>;
+      deleted: Array<string | number>;
+      name?: undefined;
+    };

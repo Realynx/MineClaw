@@ -70,52 +70,100 @@ public sealed partial class StoryColony
         return null;
     }
 
-    private GrowCell Classify(IStoryWorld w, StoryPlant plant, ZoneState z, P3 soil)
+    internal GrowCell Classify(IStoryWorld w, StoryPlant plant, ZoneState z, P3 soil)
     {
-        var at = soil.Add(0, 1, 0);
-        int s = w.Block(soil.X, soil.Y, soil.Z).Id;
-        var (above, meta) = w.Block(at.X, at.Y, at.Z);
-        bool open = StoryWander.Passable(above) && !StoryBlocks.Liquids.Contains(above);
-        GrowCell Cell(string state, P3? where = null) => new(soil, state, where ?? at, open && above != 0, plant.Id);
-        switch (plant.Harvest)
+        var g = new GrowSpot(w, plant, z, soil);
+        return plant.Harvest switch
         {
-            case "crop" or "fruit" when plant.Soil == "farmland":
-                if (plant.Fruit != 0 && above == plant.Fruit) return Cell("ripe");
-                if (s == StoryPlants.Farmland)
-                {
-                    if (above == plant.Block)
-                    {
-                        if (plant.Harvest == "crop") return Cell(meta >= plant.Ripe ? "ripe" : "growing");
-                        foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
-                            if (w.Block(at.X + dx, at.Y, at.Z + dz).Id == plant.Fruit) return Cell("ripe", at.Add(dx, 0, dz));
-                        return Cell("growing");
-                    }
-                    if (plant.Harvest == "fruit" && (soil.X - z.Area.X1) % 2 == 1) return Cell("blocked"); // every other row: room for the fruit
-                    return open ? Cell("sow") : Cell("blocked");
-                }
-                if (s is StoryPlants.Grass or StoryPlants.Dirt && open)
-                    return plant.Harvest == "fruit" && (soil.X - z.Area.X1) % 2 == 1 ? Cell("blocked")
-                        : StoryPlants.WaterNear(w, soil) ? Cell("till", soil) : Cell("dry", soil);
-                return Cell("blocked");
-            case "crop": // nether wart on soul sand
-                if (s != StoryPlants.SoulSand) return Cell("blocked");
-                if (above == plant.Block) return Cell(meta >= plant.Ripe ? "ripe" : "growing");
-                return open ? Cell("sow") : Cell("blocked");
-            case "stalk":
-                if (above == plant.Block)
-                    return w.Block(at.X, at.Y + 1, at.Z).Id == plant.Block ? Cell("ripe", at.Add(0, 1, 0)) : Cell("growing");
-                if (!open || !StoryPlants.SoilFits(w, plant, soil) || plant.Block == StoryPlants.Cactus && !StoryPlants.ClearBeside(w, at))
-                    return Cell("blocked");
-                if (plant.Block == StoryPlants.Cactus && (soil.X - z.Area.X1 + soil.Z - z.Area.Z1) % 2 == 1) return Cell("blocked"); // a checkerboard
-                return Cell("sow");
-            case "tree":
-                if (StoryBlocks.Logs.Contains(above)) return Cell("ripe");
-                if (above == plant.Block) return Cell("growing");
-                // Saplings on a 3-block grid: room for the trees to grow.
-                if ((soil.X - z.Area.X1) % 3 != 0 || (soil.Z - z.Area.Z1) % 3 != 0) return Cell("blocked");
-                return open && StoryPlants.SoilFits(w, plant, soil) ? Cell("sow") : Cell("blocked");
+            "crop" or "fruit" when plant.Soil == "farmland" => g.FarmlandCell(),
+            "crop" => g.SoulSandCell(), // nether wart on soul sand
+            "stalk" => g.StalkCell(),
+            "tree" => g.TreeCell(),
+            _ => g.Cell("blocked"),
+        };
+    }
+
+    private static readonly (int Dx, int Dz)[] GrowSides = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+
+    /// <summary>One soil cell of a growing zone as <see cref="Classify"/> reads it: the soil, the block on it, the plant and the zone grid.</summary>
+    private readonly struct GrowSpot
+    {
+        private readonly IStoryWorld _w;
+        private readonly StoryPlant _plant;
+        private readonly ZoneState _z;
+        private readonly P3 _soil, _at;
+        private readonly int _soilId, _above, _meta;
+        private readonly bool _open;
+
+        public GrowSpot(IStoryWorld w, StoryPlant plant, ZoneState z, P3 soil)
+        {
+            _w = w; _plant = plant; _z = z; _soil = soil;
+            _at = soil.Add(0, 1, 0);
+            _soilId = w.Block(soil.X, soil.Y, soil.Z).Id;
+            (_above, _meta) = w.Block(_at.X, _at.Y, _at.Z);
+            _open = StoryWander.Passable(_above) && !StoryBlocks.Liquids.Contains(_above);
         }
-        return Cell("blocked");
+
+        public GrowCell Cell(string state, P3? where = null) => new(_soil, state, where ?? _at, _open && _above != 0, _plant.Id);
+
+        private GrowCell Blocked => Cell("blocked");
+
+        /// <summary>Every other row (a fruit plant's): room for the fruit.</summary>
+        private bool FruitGap => _plant.Harvest == "fruit" && (_soil.X - _z.Area.X1) % 2 == 1;
+
+        private GrowCell CropCell() => Cell(_meta >= _plant.Ripe ? "ripe" : "growing");
+
+        /// <summary>A crop or a fruit plant on farmland: ripe, growing, sow, till, dry (no water near: not tilled) or blocked.</summary>
+        public GrowCell FarmlandCell()
+        {
+            if (_plant.Fruit != 0 && _above == _plant.Fruit) return Cell("ripe");
+            if (_soilId == StoryPlants.Farmland) return OnFarmland();
+            if (_soilId is StoryPlants.Grass or StoryPlants.Dirt && _open)
+                return FruitGap ? Blocked : StoryPlants.WaterNear(_w, _soil) ? Cell("till", _soil) : Cell("dry", _soil);
+            return Blocked;
+        }
+
+        private GrowCell OnFarmland()
+        {
+            if (_above == _plant.Block) return _plant.Harvest == "crop" ? CropCell() : StemCell();
+            if (FruitGap) return Blocked;
+            return _open ? Cell("sow") : Blocked;
+        }
+
+        /// <summary>A stem: ripe when its fruit stands beside it (harvested there).</summary>
+        private GrowCell StemCell()
+        {
+            foreach (var (dx, dz) in GrowSides)
+                if (_w.Block(_at.X + dx, _at.Y, _at.Z + dz).Id == _plant.Fruit) return Cell("ripe", _at.Add(dx, 0, dz));
+            return Cell("growing");
+        }
+
+        public GrowCell SoulSandCell()
+        {
+            if (_soilId != StoryPlants.SoulSand) return Blocked;
+            if (_above == _plant.Block) return CropCell();
+            return _open ? Cell("sow") : Blocked;
+        }
+
+        /// <summary>Sugar cane and cactus: ripe when two tall (cut above the bottom block); cactus on a checkerboard, clear beside.</summary>
+        public GrowCell StalkCell()
+        {
+            bool cactus = _plant.Block == StoryPlants.Cactus;
+            if (_above == _plant.Block)
+                return _w.Block(_at.X, _at.Y + 1, _at.Z).Id == _plant.Block ? Cell("ripe", _at.Add(0, 1, 0)) : Cell("growing");
+            if (!_open || !StoryPlants.SoilFits(_w, _plant, _soil) || cactus && !StoryPlants.ClearBeside(_w, _at)) return Blocked;
+            if (cactus && (_soil.X - _z.Area.X1 + _soil.Z - _z.Area.Z1) % 2 == 1) return Blocked; // a checkerboard
+            return Cell("sow");
+        }
+
+        /// <summary>Saplings on a 3-block grid: room for the trees to grow.</summary>
+        public GrowCell TreeCell()
+        {
+            if (StoryBlocks.Logs.Contains(_above)) return Cell("ripe");
+            if (_above == _plant.Block) return Cell("growing");
+            if ((_soil.X - _z.Area.X1) % 3 != 0 || (_soil.Z - _z.Area.Z1) % 3 != 0) return Blocked;
+            return _open && StoryPlants.SoilFits(_w, _plant, _soil) ? Cell("sow") : Blocked;
+        }
     }
 
     /// <summary>How many of a plant's seed items the colony has (storage and pawns), minus what pending sow jobs already took.</summary>
