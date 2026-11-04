@@ -184,7 +184,18 @@ public static class ShardFile
     {
         using var zip = OpenZip(stream);
         var manifest = CheckManifest(ParseManifest(zip));
+        var records = ReadRecords(zip);
+        if (records.Count != manifest.Total) throw new ShardFormatException($"the manifest lists {manifest.Total} records, the shard holds {records.Count}");
+        if (ContentHash(records) != manifest.ContentHash)
+            throw new ShardFormatException("content hash mismatch: the shard is corrupt or was edited after export");
+        var embeddings = ReadEmbeddings(zip, manifest);
+        var summaries = ReadSummaries(zip, manifest);
+        return new Shard { Manifest = manifest, Records = records, Embeddings = embeddings, Summaries = summaries };
+    }
 
+    /// <summary>Every <c>records/{kind}.jsonl</c> entry in name order, each record checked against its kind and hash.</summary>
+    private static List<ShardRecord> ReadRecords(ZipArchive zip)
+    {
         var records = new List<ShardRecord>();
         foreach (var e in zip.Entries.Where(e => e.FullName.StartsWith("records/", StringComparison.Ordinal) && e.FullName.EndsWith(".jsonl", StringComparison.Ordinal))
                      .OrderBy(e => e.FullName, StringComparer.Ordinal))
@@ -194,42 +205,49 @@ public static class ShardFile
             foreach (var line in Encoding.UTF8.GetString(Bytes(e)).Split('\n'))
             {
                 if (line.Length == 0) continue;
-                ShardRecord r;
-                try { r = JsonSerializer.Deserialize<ShardRecord>(line, Json) ?? throw new JsonException("null record"); }
-                catch (JsonException ex) { throw new ShardFormatException($"unreadable record in {e.FullName}: {ex.Message}"); }
-                if (r.Kind != kind) throw new ShardFormatException($"record {r.Id} of kind {r.Kind} is filed under {kind}");
-                if (RecordHash(r.Kind, r.Fields) != r.Hash) throw new ShardFormatException($"record {r.Id} fails its hash: the shard is corrupt or was edited");
-                records.Add(r);
+                records.Add(ParseRecord(line, e.FullName, kind));
                 if (records.Count > MaxRecords) throw new ShardFormatException($"more than {MaxRecords:N0} records");
             }
         }
-        if (records.Count != manifest.Total) throw new ShardFormatException($"the manifest lists {manifest.Total} records, the shard holds {records.Count}");
-        if (ContentHash(records) != manifest.ContentHash)
-            throw new ShardFormatException("content hash mismatch: the shard is corrupt or was edited after export");
+        return records;
+    }
 
+    private static ShardRecord ParseRecord(string line, string entry, string kind)
+    {
+        ShardRecord r;
+        try { r = JsonSerializer.Deserialize<ShardRecord>(line, Json) ?? throw new JsonException("null record"); }
+        catch (JsonException ex) { throw new ShardFormatException($"unreadable record in {entry}: {ex.Message}"); }
+        if (r.Kind != kind) throw new ShardFormatException($"record {r.Id} of kind {r.Kind} is filed under {kind}");
+        if (RecordHash(r.Kind, r.Fields) != r.Hash) throw new ShardFormatException($"record {r.Id} fails its hash: the shard is corrupt or was edited");
+        return r;
+    }
+
+    private static Dictionary<string, float[]> ReadEmbeddings(ZipArchive zip, ShardManifest manifest)
+    {
         var embeddings = new Dictionary<string, float[]>(StringComparer.Ordinal);
-        if (manifest.Embeddings is { } ei)
-        {
-            var entry = zip.GetEntry(EmbeddingsEntry) ?? throw new ShardFormatException("the manifest lists embeddings but embeddings.bin is missing");
-            var bytes = Bytes(entry);
-            if (Sha256(bytes) != ei.Sha256) throw new ShardFormatException("embeddings.bin fails its hash: the shard is corrupt");
-            DecodeEmbeddings(bytes, ei.Dims, embeddings);
-            if (embeddings.Count != ei.Count) throw new ShardFormatException($"embeddings.bin holds {embeddings.Count} vectors, the manifest {ei.Count}");
-        }
+        if (manifest.Embeddings is not { } ei) return embeddings;
+        var entry = zip.GetEntry(EmbeddingsEntry) ?? throw new ShardFormatException("the manifest lists embeddings but embeddings.bin is missing");
+        var bytes = Bytes(entry);
+        if (Sha256(bytes) != ei.Sha256) throw new ShardFormatException("embeddings.bin fails its hash: the shard is corrupt");
+        DecodeEmbeddings(bytes, ei.Dims, embeddings);
+        if (embeddings.Count != ei.Count) throw new ShardFormatException($"embeddings.bin holds {embeddings.Count} vectors, the manifest {ei.Count}");
+        return embeddings;
+    }
 
+    /// <summary>The summaries cache; a broken cache is only a cache: dropped, the shard kept.</summary>
+    private static List<ShardSummary> ReadSummaries(ZipArchive zip, ShardManifest manifest)
+    {
         var summaries = new List<ShardSummary>();
-        if (manifest.Summaries is { } si && zip.GetEntry(SummariesEntry) is { } se)
+        if (manifest.Summaries is not { } si || zip.GetEntry(SummariesEntry) is not { } se) return summaries;
+        var bytes = Bytes(se);
+        if (Sha256(bytes) != si.Sha256) return summaries;
+        foreach (var line in Encoding.UTF8.GetString(bytes).Split('\n'))
         {
-            var bytes = Bytes(se);
-            if (Sha256(bytes) == si.Sha256) // a broken cache is only a cache: drop it, keep the shard
-                foreach (var line in Encoding.UTF8.GetString(bytes).Split('\n'))
-                {
-                    if (line.Length == 0) continue;
-                    try { if (JsonSerializer.Deserialize<ShardSummary>(line, Json) is { } s) summaries.Add(s); }
-                    catch (JsonException) { }
-                }
+            if (line.Length == 0) continue;
+            try { if (JsonSerializer.Deserialize<ShardSummary>(line, Json) is { } s) summaries.Add(s); }
+            catch (JsonException) { }
         }
-        return new Shard { Manifest = manifest, Records = records, Embeddings = embeddings, Summaries = summaries };
+        return summaries;
     }
 
     private static ZipArchive OpenZip(Stream stream)
@@ -271,22 +289,33 @@ public static class ShardFile
     {
         try
         {
-            if (b.Length < 16 || !b.AsSpan(0, 8).SequenceEqual(Magic)) throw new ShardFormatException("embeddings.bin has no MCEMB1 header");
-            int d = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(8));
-            int n = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(12));
-            if (d != dims || d <= 0 || d > 65536 || n < 0) throw new ShardFormatException($"embeddings.bin is {d}-dimensional, the manifest says {dims}");
+            var (d, n) = EmbeddingsHeader(b, dims);
             int o = 16;
-            for (int i = 0; i < n; i++)
-            {
-                int hl = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(o)); o += 4;
-                if (hl <= 0 || hl > 256) throw new ShardFormatException("embeddings.bin is corrupt");
-                var hash = Encoding.UTF8.GetString(b, o, hl); o += hl;
-                var v = new float[d];
-                for (int k = 0; k < d; k++) { v[k] = BinaryPrimitives.ReadSingleLittleEndian(b.AsSpan(o)); o += 4; }
-                into[hash] = v;
-            }
+            for (int i = 0; i < n; i++) o = ReadEmbedding(b, o, d, into);
             if (o != b.Length) throw new ShardFormatException("embeddings.bin has trailing bytes");
         }
         catch (ArgumentOutOfRangeException) { throw new ShardFormatException("embeddings.bin is truncated"); }
+    }
+
+    /// <summary>The MCEMB1 header: dimensions (must match the manifest) and vector count.</summary>
+    private static (int Dims, int Count) EmbeddingsHeader(byte[] b, int dims)
+    {
+        if (b.Length < 16 || !b.AsSpan(0, 8).SequenceEqual(Magic)) throw new ShardFormatException("embeddings.bin has no MCEMB1 header");
+        int d = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(8));
+        int n = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(12));
+        if (d != dims || d <= 0 || d > 65536 || n < 0) throw new ShardFormatException($"embeddings.bin is {d}-dimensional, the manifest says {dims}");
+        return (d, n);
+    }
+
+    /// <summary>One (hash, vector) entry at <paramref name="o"/>; returns the offset after it.</summary>
+    private static int ReadEmbedding(byte[] b, int o, int d, Dictionary<string, float[]> into)
+    {
+        int hl = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(o)); o += 4;
+        if (hl <= 0 || hl > 256) throw new ShardFormatException("embeddings.bin is corrupt");
+        var hash = Encoding.UTF8.GetString(b, o, hl); o += hl;
+        var v = new float[d];
+        for (int k = 0; k < d; k++) { v[k] = BinaryPrimitives.ReadSingleLittleEndian(b.AsSpan(o)); o += 4; }
+        into[hash] = v;
+        return o;
     }
 }

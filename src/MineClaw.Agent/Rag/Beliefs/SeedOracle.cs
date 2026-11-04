@@ -15,6 +15,34 @@ public static class SeedOracle
 {
     public static SeedVerdict? Check(RecipeClaim claim)
     {
+        if (Resolve(claim) is not { } resolved) return null;
+        var (output, inputs) = resolved;
+        int outDmg = output.Damage;
+        var recipes = Recipes.ForOutput(output.Id, outDmg);
+        var smelts = Smelting.ForOutput(output.Id, outDmg);
+        IReadOnlyList<int> dropSources = inputs.Count == 1 ? Drops.SourcesOf(output.Id, outDmg) : [];
+        string outName = Items.DisplayName(output.Id, Math.Max(0, outDmg)).ToLowerInvariant();
+
+        // Furnace.
+        if (inputs.Count == 1 && smelts.FirstOrDefault(s => SameItem(s.InputId, -1, inputs[0])) is { } sm)
+            return new(+1, $"gd:smelt:{sm.InputId}", $"seed: smelt {Lower(Items.Get(sm.InputId).DisplayName)}");
+
+        // Crafting: every claimed input is an ingredient of one recipe (a subset is fine: "torches from coal").
+        var (crafted, countMismatch, countWhy) = CraftVerdict(output, inputs, recipes);
+        if (crafted != null) return crafted;
+
+        // Block drops ("flint from gravel").
+        if (inputs.Count == 1 && dropSources.Contains(inputs[0].Id))
+            return new(+1, $"gd:block:{inputs[0].Id}", $"seed: {Lower(Blocks.Get(inputs[0].Id).DisplayName)} drops {outName}");
+
+        if (countMismatch != null) return new(-1, RecipeRef(countMismatch), countWhy!);
+        if (recipes.Count + smelts.Count + dropSources.Count == 0) return null; // mob drops, mechanics... unknown to the seed
+        return Refutation(claim, recipes, smelts, dropSources);
+    }
+
+    /// <summary>The claim's output and inputs as items; null when any doesn't resolve or a liquid (or its bucket) is involved.</summary>
+    private static (ClaimParser.ItemRef Output, List<ClaimParser.ItemRef> Inputs)? Resolve(RecipeClaim claim)
+    {
         if (ClaimParser.ResolveItem(claim.Output) is not { } output) return null;
         var inputs = new List<ClaimParser.ItemRef>();
         foreach (var i in claim.Inputs)
@@ -23,59 +51,46 @@ public static class SeedOracle
             inputs.Add(r);
         }
         if (inputs.Any(i => Blocks.Exists(i.Id) && (Blocks.IsWater(i.Id) || Blocks.IsLava(i.Id)) || i.Id is 326 or 327)) return null;
+        return (output, inputs);
+    }
 
-        int outDmg = output.Damage;
-        var recipes = Recipes.ForOutput(output.Id, outDmg);
-        var smelts = Smelting.ForOutput(output.Id, outDmg);
-        var dropSources = inputs.Count == 1 ? Drops.SourcesOf(output.Id, outDmg) : [];
-        string outName = Items.DisplayName(output.Id, Math.Max(0, outDmg)).ToLowerInvariant();
-
-        // Furnace.
-        if (inputs.Count == 1 && smelts.FirstOrDefault(s => SameItem(s.InputId, -1, inputs[0])) is { } sm)
-            return new(+1, $"gd:smelt:{sm.InputId}", $"seed: smelt {Lower(Items.Get(sm.InputId).DisplayName)}");
-
-        // Crafting: every claimed input is an ingredient of one recipe (a subset is fine: "torches from coal").
+    /// <summary>The first recipe whose ingredients include every input with the claimed counts; else the last count mismatch and why.</summary>
+    private static (SeedVerdict? Verdict, Recipe? CountMismatch, string? CountWhy) CraftVerdict(ClaimParser.ItemRef output, List<ClaimParser.ItemRef> inputs,
+        IReadOnlyList<Recipe> recipes)
+    {
         Recipe? countMismatch = null;
         string? countWhy = null;
         foreach (var r in recipes)
         {
             if (!inputs.All(i => r.Totals.Any(t => SameItem(t.Ingredient.Id, t.Ingredient.Damage, i)))) continue;
-            if (output.Count is { } oc && oc != r.OutputCount) { countMismatch = r; countWhy = $"seed says {r.OutputCount} per craft"; continue; }
-            var wrong = inputs.FirstOrDefault(i => i.Count is { } c && r.Totals.First(t => SameItem(t.Ingredient.Id, t.Ingredient.Damage, i)).Count != c);
-            if (wrong != null)
+            if (CountMismatch(output, inputs, r) is { } why)
             {
                 countMismatch = r;
-                countWhy = $"seed says {r.Totals.First(t => SameItem(t.Ingredient.Id, t.Ingredient.Damage, wrong)).Count} {Lower(Items.DisplayName(wrong.Id, Math.Max(0, wrong.Damage)))}";
+                countWhy = why;
                 continue;
             }
-            return new(+1, RecipeRef(r), "seed: " + Lower(string.Join(", ", r.Totals.Select(t => $"{t.Count} {t.Ingredient}"))));
+            return (new(+1, RecipeRef(r), "seed: " + Lower(string.Join(", ", r.Totals.Select(t => $"{t.Count} {t.Ingredient}")))), null, null);
         }
+        return (null, countMismatch, countWhy);
+    }
 
-        // Block drops ("flint from gravel").
-        if (inputs.Count == 1 && dropSources.Contains(inputs[0].Id))
-            return new(+1, $"gd:block:{inputs[0].Id}", $"seed: {Lower(Blocks.Get(inputs[0].Id).DisplayName)} drops {outName}");
+    /// <summary>"seed says 4 per craft" / "seed says 8 cobblestone" when a claimed count is off, else null.</summary>
+    private static string? CountMismatch(ClaimParser.ItemRef output, List<ClaimParser.ItemRef> inputs, Recipe r)
+    {
+        if (output.Count is { } oc && oc != r.OutputCount) return $"seed says {r.OutputCount} per craft";
+        var wrong = inputs.FirstOrDefault(i => i.Count is { } c && r.Totals.First(t => SameItem(t.Ingredient.Id, t.Ingredient.Damage, i)).Count != c);
+        if (wrong == null) return null;
+        return $"seed says {r.Totals.First(t => SameItem(t.Ingredient.Id, t.Ingredient.Damage, wrong)).Count} {Lower(Items.DisplayName(wrong.Id, Math.Max(0, wrong.Damage)))}";
+    }
 
-        if (countMismatch != null) return new(-1, RecipeRef(countMismatch), countWhy!);
-        if (recipes.Count + smelts.Count + dropSources.Count == 0) return null; // mob drops, mechanics... unknown to the seed
-
-        string alt;
-        string reference;
+    /// <summary>What the seed says makes it instead: the furnace (when claimed or the only way), a recipe, or the blocks that drop it.</summary>
+    private static SeedVerdict Refutation(RecipeClaim claim, IReadOnlyList<Recipe> recipes, IReadOnlyList<SmeltingRecipe> smelts, IReadOnlyList<int> dropSources)
+    {
         if (smelts.Count > 0 && (claim.Smelt || recipes.Count == 0))
-        {
-            alt = string.Join(" or ", smelts.Select(s => Lower(Items.Get(s.InputId).DisplayName)).Distinct());
-            reference = $"gd:smelt:{smelts[0].InputId}";
-        }
-        else if (recipes.Count > 0)
-        {
-            alt = Lower(string.Join(", ", recipes[0].Totals.Select(t => $"{t.Count} {t.Ingredient}")));
-            reference = RecipeRef(recipes[0]);
-        }
-        else
-        {
-            alt = string.Join(" or ", dropSources.Take(3).Select(id => Lower(Blocks.Get(id).DisplayName)));
-            reference = $"gd:block:{dropSources[0]}";
-        }
-        return new(-1, reference, "seed says " + alt);
+            return new(-1, $"gd:smelt:{smelts[0].InputId}", "seed says " + string.Join(" or ", smelts.Select(s => Lower(Items.Get(s.InputId).DisplayName)).Distinct()));
+        if (recipes.Count > 0)
+            return new(-1, RecipeRef(recipes[0]), "seed says " + Lower(string.Join(", ", recipes[0].Totals.Select(t => $"{t.Count} {t.Ingredient}"))));
+        return new(-1, $"gd:block:{dropSources[0]}", "seed says " + string.Join(" or ", dropSources.Take(3).Select(id => Lower(Blocks.Get(id).DisplayName))));
     }
 
     private static bool SameItem(int id, int damage, ClaimParser.ItemRef claimed) =>

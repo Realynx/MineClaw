@@ -120,14 +120,20 @@ public sealed class HaikuSummarizer : ISummarizer
     {
         text = text.TrimEnd();
         for (int i = text.Length - 1; i >= text.Length / 3; i--)
-        {
-            if (text[i] is not ('.' or '!' or '?')) continue;
-            int j = i + 1;
-            while (j < text.Length && text[j] is '"' or '\'' or ')' or ']' or '”' or '’') j++;
-            if (j == text.Length || char.IsWhiteSpace(text[j])) return text[..j];
-        }
+            if (SentenceEndAt(text, i) is { } end) return text[..end];
         int sp = text.LastIndexOf(' ');
         if (sp < text.Length / 3) return text;
         return text[..sp].TrimEnd(',', ';', ':', ' ', '-') + "…";
     }
+
+    /// <summary>Just past the sentence end at <paramref name="i"/> and its closing quotes/brackets, when whitespace or the end follows; else null.</summary>
+    private static int? SentenceEndAt(string text, int i)
+    {
+        if (text[i] is not ('.' or '!' or '?')) return null;
+        int j = i + 1;
+        while (j < text.Length && IsCloser(text[j])) j++;
+        return j == text.Length || char.IsWhiteSpace(text[j]) ? j : null;
+    }
+
+    private static bool IsCloser(char c) => c is '"' or '\'' or ')' or ']' or '”' or '’';
 }

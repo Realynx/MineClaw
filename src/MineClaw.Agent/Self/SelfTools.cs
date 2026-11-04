@@ -48,40 +48,58 @@ public static class SelfTools
             + (growth != null ? " why = what a feeling/relationship comes from (what: player name or mood)." : "")
             + (growth?.HiveProfile != null ? " scope=hive acts on the shared hive profile." : ""),
             Schema(growth),
-            (input, _) =>
-            {
-                var op = input.ReqStr("op").Trim().ToLowerInvariant();
-                bool hiveScope = string.Equals(input.Str("scope")?.Trim(), "hive", StringComparison.OrdinalIgnoreCase);
-                if (hiveScope && growth?.HiveProfile == null) return Task.FromResult(ToolResult.Error("no hive profile here"));
-                var target = hiveScope ? growth!.HiveProfile! : profile;
-                if (op == "why")
-                {
-                    if (growth == null) return Task.FromResult(ToolResult.Error("not available"));
-                    return Task.FromResult(ToolResult.Success(Why(growth, input.Str("what"))));
-                }
-                if (op == "history")
-                {
-                    var rows = target.History(5);
-                    return Task.FromResult(ToolResult.Success(rows.Count == 0 ? "no changes yet" : string.Join("; ", rows.Select(h =>
-                        $"v{h.Version} {h.At:MM-dd} {h.Op}{(h.Text != null ? " '" + h.Text + "'" : "")}"))));
-                }
-                if (TurnContext.IsTest) return Task.FromResult(ToolResult.Error(TestTurnRefusal));
-                var by = input.Str("by")?.Trim();
-                var trusted = by != null ? o.TrustedPlayers.FirstOrDefault(p => p.Equals(by, StringComparison.OrdinalIgnoreCase)) : null;
-                if (trusted == null) return Task.FromResult(ToolResult.Error("only trusted players can change that"));
-                // The claim must be backed by actual recent chat from that player (the model can't just assert it).
-                if (index != null && !index.PlayerSpokeSince(trusted, time.GetUtcNow() - TimeSpan.FromMinutes(Math.Max(1, o.AdminRequestMinutes))))
-                    return Task.FromResult(ToolResult.Error($"{trusted} hasn't asked recently"));
-                if (hiveScope) target.Reload();
-                var r = op switch
-                {
-                    "undo" => target.Undo(trusted),
-                    "reset" => target.Reset(trusted),
-                    "rollback" => input.Int("version") is { } v ? target.Rollback(v, trusted) : new SelfChangeResult(false, "version required"),
-                    _ => new SelfChangeResult(false, "bad op"),
-                };
-                return Task.FromResult(r.Ok ? ToolResult.Success(r.Message) : ToolResult.Error(r.Message));
-            }, cheapTier: true);
+            (input, _) => Task.FromResult(PersonalityAdmin(input, profile, index, time, growth)), cheapTier: true);
+    }
+
+    private static ToolResult PersonalityAdmin(System.Text.Json.JsonElement input, SelfProfile profile, RagIndex? index, TimeProvider time, SelfGrowth? growth)
+    {
+        var op = input.ReqStr("op").Trim().ToLowerInvariant();
+        bool hiveScope = string.Equals(input.Str("scope")?.Trim(), "hive", StringComparison.OrdinalIgnoreCase);
+        if (hiveScope && growth?.HiveProfile == null) return ToolResult.Error("no hive profile here");
+        var target = hiveScope ? growth!.HiveProfile! : profile;
+        if (op == "why") return growth == null ? ToolResult.Error("not available") : ToolResult.Success(Why(growth, input.Str("what")));
+        if (op == "history") return History(target);
+        if (TurnContext.IsTest) return ToolResult.Error(TestTurnRefusal);
+        if (TrustedRequester(input, profile.Options, index, time, out var refusal) is not { } trusted) return refusal!;
+        if (hiveScope) target.Reload();
+        return AdminChange(op, input, target, trusted);
+    }
+
+    private static ToolResult History(SelfProfile target)
+    {
+        var rows = target.History(5);
+        return ToolResult.Success(rows.Count == 0 ? "no changes yet" : string.Join("; ", rows.Select(h =>
+            $"v{h.Version} {h.At:MM-dd} {h.Op}{(h.Text != null ? " '" + h.Text + "'" : "")}")));
+    }
+
+    /// <summary>
+    /// The trusted player named by <c>by</c>, when they really asked: the claim must be backed by actual recent chat from that
+    /// player (the model can't just assert it). Null with the refusal otherwise.
+    /// </summary>
+    private static string? TrustedRequester(System.Text.Json.JsonElement input, SelfOptions o, RagIndex? index, TimeProvider time, out ToolResult? refusal)
+    {
+        refusal = null;
+        var by = input.Str("by")?.Trim();
+        var trusted = by != null ? o.TrustedPlayers.FirstOrDefault(p => p.Equals(by, StringComparison.OrdinalIgnoreCase)) : null;
+        if (trusted == null) { refusal = ToolResult.Error("only trusted players can change that"); return null; }
+        if (index != null && !index.PlayerSpokeSince(trusted, time.GetUtcNow() - TimeSpan.FromMinutes(Math.Max(1, o.AdminRequestMinutes))))
+        {
+            refusal = ToolResult.Error($"{trusted} hasn't asked recently");
+            return null;
+        }
+        return trusted;
+    }
+
+    private static ToolResult AdminChange(string op, System.Text.Json.JsonElement input, SelfProfile target, string trusted)
+    {
+        var r = op switch
+        {
+            "undo" => target.Undo(trusted),
+            "reset" => target.Reset(trusted),
+            "rollback" => input.Int("version") is { } v ? target.Rollback(v, trusted) : new SelfChangeResult(false, "version required"),
+            _ => new SelfChangeResult(false, "bad op"),
+        };
+        return r.Ok ? ToolResult.Success(r.Message) : ToolResult.Error(r.Message);
     }
 
     private static System.Text.Json.JsonElement Schema(SelfGrowth? growth)

@@ -122,56 +122,74 @@ public static partial class ClaimParser
             int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture),
             int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture))).ToList();
 
+    /// <summary>A claim's text forms, its first two coords and its default stakes, while the category is decided.</summary>
+    private readonly record struct ClaimText(string Clean, string Norm, string Low, ClaimPos? Pos, ClaimPos? Target, ClaimStakes BaseStakes)
+    {
+        public ParsedClaim As(ClaimCategory c, ClaimStakes st) => new() { Text = Clean, Norm = Norm, Category = c, Stakes = st, Pos = Pos, Target = Target };
+    }
+
     public static ParsedClaim Parse(string text)
     {
         var clean = TextUtil.Truncate(TextUtil.OneLine(text), 200).Trim();
         var low = Strip(clean.ToLowerInvariant());
-        var norm = Normalize(clean);
         var coords = Coords(low);
-        ClaimPos? pos = coords.Count > 0 ? coords[0] : null;
-        ClaimPos? target = coords.Count > 1 ? coords[1] : null;
-        var baseStakes = HighStakesRx.IsMatch(low) ? ClaimStakes.High : ClaimStakes.Medium;
-        ParsedClaim P(ClaimCategory c, ClaimStakes st) => new() { Text = clean, Norm = norm, Category = c, Stakes = st, Pos = pos, Target = target };
+        var c = new ClaimText(clean, Normalize(clean), low, coords.Count > 0 ? coords[0] : null, coords.Count > 1 ? coords[1] : null,
+            HighStakesRx.IsMatch(low) ? ClaimStakes.High : ClaimStakes.Medium);
+        return ParseRule(c) ?? ParseRecipe(c) ?? ParseStructure(c) ?? ParsePlace(c);
+    }
 
-        if (IsDirective(low)) return P(ClaimCategory.Other, ClaimStakes.High) with { Directive = true };
-        if (SafetyRx.IsMatch(low)) return P(ClaimCategory.Safety, ClaimStakes.High);
+    /// <summary>An instruction, a safety warning or a container's contents.</summary>
+    private static ParsedClaim? ParseRule(ClaimText c)
+    {
+        if (IsDirective(c.Low)) return c.As(ClaimCategory.Other, ClaimStakes.High) with { Directive = true };
+        if (SafetyRx.IsMatch(c.Low)) return c.As(ClaimCategory.Safety, ClaimStakes.High);
+        if (ContainerInRx.Match(c.Low) is { Success: true } ci) return Container(c.As(ClaimCategory.Container, c.BaseStakes), ci, tail: true);
+        if (ContainerHasRx.Match(c.Low) is { Success: true } ch) return Container(c.As(ClaimCategory.Container, c.BaseStakes), ch, tail: false);
+        return null;
+    }
 
-        if (ContainerInRx.Match(low) is { Success: true } ci) return Container(P(ClaimCategory.Container, baseStakes), ci, tail: true);
-        if (ContainerHasRx.Match(low) is { Success: true } ch) return Container(P(ClaimCategory.Container, baseStakes), ch, tail: false);
-
-        bool time = TimeRx.IsMatch(low);
-        if (!time && TryRecipe(low) is { } r && ResolveItem(r.Output) is { } output)
+    /// <summary>A recipe ("X is made from Y") or a time-based process claim.</summary>
+    private static ParsedClaim? ParseRecipe(ClaimText c)
+    {
+        bool time = TimeRx.IsMatch(c.Low);
+        if (!time && TryRecipe(c.Low) is { } r && ResolveItem(r.Output) is { } output)
         {
             var outName = Items.Get(output.Id).Name;
             var ins = string.Join("+", r.Inputs.Select(i => ResolveItem(i) is { } x ? Items.Get(x.Id).Name : Words(i)).Order(StringComparer.Ordinal));
-            return P(ClaimCategory.Recipe, baseStakes) with { Recipe = r, Subject = outName, Predicate = r.Smelt ? "smelted_from" : "made_from", Object = ins };
+            return c.As(ClaimCategory.Recipe, c.BaseStakes) with { Recipe = r, Subject = outName, Predicate = r.Smelt ? "smelted_from" : "made_from", Object = ins };
         }
-        if (time && (StructureRx.IsMatch(low) is false) && !SocialRx.IsMatch(low))
-            return P(ClaimCategory.Recipe, ClaimStakes.Low) with { TimeBased = true };
+        if (time && (StructureRx.IsMatch(c.Low) is false) && !SocialRx.IsMatch(c.Low))
+            return c.As(ClaimCategory.Recipe, ClaimStakes.Low) with { TimeBased = true };
+        return null;
+    }
 
-        if (StructureRx.Match(low) is { Success: true } sm)
+    /// <summary>A trigger acting on a target ("the lever at … opens the door").</summary>
+    private static ParsedClaim? ParseStructure(ClaimText c)
+    {
+        if (StructureRx.Match(c.Low) is not { Success: true } sm) return null;
+        var trig = sm.Groups["trig"].Value.Replace(' ', '_');
+        var verb = sm.Groups["verb"].Value.Split(' ')[0].TrimEnd('s');
+        var tgt = TargetNoun(sm.Groups["target"].Value);
+        return c.As(ClaimCategory.Structure, c.BaseStakes) with
         {
-            var trig = sm.Groups["trig"].Value.Replace(' ', '_');
-            var verb = sm.Groups["verb"].Value.Split(' ')[0].TrimEnd('s');
-            var tgt = TargetNoun(sm.Groups["target"].Value);
-            return P(ClaimCategory.Structure, baseStakes) with
-            {
-                Subject = pos is { } bp ? $"{trig}@{bp.Format()}" : trig,
-                Predicate = verb,
-                Object = tgt ?? Words(sm.Groups["target"].Value),
-                Risk = RiskOf(verb, tgt, sm.Groups["target"].Value),
-            };
-        }
+            Subject = c.Pos is { } bp ? $"{trig}@{bp.Format()}" : trig,
+            Predicate = verb,
+            Object = tgt ?? Words(sm.Groups["target"].Value),
+            Risk = RiskOf(verb, tgt, sm.Groups["target"].Value),
+        };
+    }
 
-        if (SocialRx.IsMatch(low) && pos == null) return P(ClaimCategory.Social, ClaimStakes.Low);
-
-        if (pos != null && LocationRx.Match(low) is { Success: true } lm)
+    /// <summary>A social remark, a thing at a place, a bare place, or anything else.</summary>
+    private static ParsedClaim ParsePlace(ClaimText c)
+    {
+        if (SocialRx.IsMatch(c.Low) && c.Pos == null) return c.As(ClaimCategory.Social, ClaimStakes.Low);
+        if (c.Pos != null && LocationRx.Match(c.Low) is { Success: true } lm)
         {
             var thing = ThingKind(lm.Groups["thing"].Value);
-            return P(ClaimCategory.Location, baseStakes) with { Subject = thing, Predicate = "at", Object = pos.Value.Format() };
+            return c.As(ClaimCategory.Location, c.BaseStakes) with { Subject = thing, Predicate = "at", Object = c.Pos.Value.Format() };
         }
-        if (pos != null) return P(ClaimCategory.Location, baseStakes);
-        return P(ClaimCategory.Other, ClaimStakes.Low);
+        if (c.Pos != null) return c.As(ClaimCategory.Location, c.BaseStakes);
+        return c.As(ClaimCategory.Other, ClaimStakes.Low);
     }
 
     private static ParsedClaim Container(ParsedClaim p, Match m, bool tail)
@@ -194,18 +212,20 @@ public static partial class ClaimParser
         low = Strip(low);
         if (low.Length > 120 || CoordsRx().IsMatch(low)) return null;
         foreach (var (rx, smelt, _) in RecipeRx)
-        {
-            var m = rx.Match(low);
-            if (!m.Success) continue;
-            var outPhrase = m.Groups["out"].Value.Trim();
-            var inputs = Regex.Split(m.Groups["in"].Value, @"\s*(?:,|\+|&|\band\b|\bplus\b|\bwith\b)\s*")
-                .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            if (outPhrase.Length == 0 || inputs.Count == 0 || inputs.Count > 9) continue;
-            if (outPhrase.Split(' ').Length > 4 || inputs.Any(i => i.Split(' ').Length > 4)) continue;
-            bool furnace = smelt || Regex.IsMatch(low, @"\b(smelt|smelting|smelted|cook|cooked|furnace)\b");
-            return new RecipeClaim(outPhrase, inputs, furnace);
-        }
+            if (RecipeFrom(rx.Match(low), smelt, low) is { } r) return r;
         return null;
+    }
+
+    private static RecipeClaim? RecipeFrom(Match m, bool smelt, string low)
+    {
+        if (!m.Success) return null;
+        var outPhrase = m.Groups["out"].Value.Trim();
+        var inputs = Regex.Split(m.Groups["in"].Value, @"\s*(?:,|\+|&|\band\b|\bplus\b|\bwith\b)\s*")
+            .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+        if (outPhrase.Length == 0 || inputs.Count == 0 || inputs.Count > 9) return null;
+        if (outPhrase.Split(' ').Length > 4 || inputs.Any(i => i.Split(' ').Length > 4)) return null;
+        bool furnace = smelt || Regex.IsMatch(low, @"\b(smelt|smelting|smelted|cook|cooked|furnace)\b");
+        return new RecipeClaim(outPhrase, inputs, furnace);
     }
 
     private static readonly Dictionary<string, string> ItemAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -215,24 +235,18 @@ public static partial class ClaimParser
         ["bonemeal"] = "bone_meal", ["plank"] = "planks", ["wooden planks"] = "planks", ["wood planks"] = "planks",
     };
 
+    private static readonly Dictionary<string, int> NumberWords = new(StringComparer.Ordinal)
+    {
+        ["one"] = 1, ["two"] = 2, ["three"] = 3, ["four"] = 4, ["five"] = 5, ["six"] = 6, ["seven"] = 7, ["eight"] = 8, ["nine"] = 9,
+    };
+
     public sealed record ItemRef(int Id, int Damage, int? Count, string Name);
 
     /// <summary>"8 gold blocks" → gold_block x8. Null when it isn't an item.</summary>
     public static ItemRef? ResolveItem(string phrase)
     {
         var s = phrase.Trim().ToLowerInvariant();
-        int? count = null;
-        var cm = Regex.Match(s, @"^(\d{1,3})\s*x?\s+");
-        if (cm.Success) { count = int.Parse(cm.Groups[1].Value, CultureInfo.InvariantCulture); s = s[cm.Length..]; }
-        var art = Regex.Match(s, @"^(a|an|the|some|any|one|two|three|four|five|six|seven|eight|nine)\s+");
-        if (art.Success)
-        {
-            count ??= art.Groups[1].Value switch
-            {
-                "one" => 1, "two" => 2, "three" => 3, "four" => 4, "five" => 5, "six" => 6, "seven" => 7, "eight" => 8, "nine" => 9, _ => null,
-            };
-            s = s[art.Length..];
-        }
+        int? count = TakeCount(ref s);
         s = Regex.Replace(s, @"\s+(items?|pieces?|stacks?)$", "").Trim();
         if (s.Length == 0 || s.Split(' ').Length > 3) return null;
         if (ItemAliases.TryGetValue(s, out var alias)) s = alias;
@@ -240,6 +254,21 @@ public static partial class ClaimParser
         if (r == null && s.EndsWith(" blocks")) r = Items.ByNameWithDamage(s[..^1]);
         if (r == null) return null;
         return new ItemRef(r.Value.Item.Id, r.Value.Damage, count, r.Value.Item.Name);
+    }
+
+    /// <summary>Strips a leading count ("8 ", "3x ") and article or number word ("a", "three"); returns the count, if any.</summary>
+    private static int? TakeCount(ref string s)
+    {
+        int? count = null;
+        var cm = Regex.Match(s, @"^(\d{1,3})\s*x?\s+");
+        if (cm.Success) { count = int.Parse(cm.Groups[1].Value, CultureInfo.InvariantCulture); s = s[cm.Length..]; }
+        var art = Regex.Match(s, @"^(a|an|the|some|any|one|two|three|four|five|six|seven|eight|nine)\s+");
+        if (art.Success)
+        {
+            count ??= NumberWords.TryGetValue(art.Groups[1].Value, out var n) ? (int?)n : null;
+            s = s[art.Length..];
+        }
+        return count;
     }
 
     /// <summary>Longest resolvable suffix ("there is iron" → iron).</summary>
@@ -283,10 +312,12 @@ public static partial class ClaimParser
     private static readonly HashSet<string> SafeTargets = ["door", "trapdoor", "gate", "light", "note_block"];
     private static readonly HashSet<string> DestructiveTargets = ["tnt", "lava", "water", "dispenser", "trap", "minecart"];
 
+    private static readonly HashSet<string> DestructiveVerbs = new(StringComparer.Ordinal) { "drain", "flood", "release", "drop", "fire", "ignite" };
+
     /// <summary>Doors/lights are safe to test; pistons/bridges/floors are edge-risky; liquids/TNT/dispensers destructive.</summary>
     public static ExperimentRisk RiskOf(string verb, string? noun, string rawTarget)
     {
-        if (verb is "drain" or "flood" or "release" or "drop" or "fire" or "ignite" || Regex.IsMatch(rawTarget, @"\b(lava|tnt|fire|flood|water|mobs?|spawner|void)\b"))
+        if (DestructiveVerbs.Contains(verb) || Regex.IsMatch(rawTarget, @"\b(lava|tnt|fire|flood|water|mobs?|spawner|void)\b"))
             return ExperimentRisk.Destructive;
         if (noun != null && DestructiveTargets.Contains(noun)) return ExperimentRisk.Destructive;
         if (noun != null && SafeTargets.Contains(noun)) return ExperimentRisk.Safe;

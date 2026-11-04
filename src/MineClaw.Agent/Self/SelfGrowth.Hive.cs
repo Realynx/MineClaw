@@ -110,22 +110,30 @@ public sealed partial class SelfGrowth
         if (!IsClone || HiveProfile == null) return 0;
         var db = _store.Db;
         var now = Now;
-        if (!force)
-        {
-            bool mine = db.Tx(() =>
-            {
-                var last = db.GetMeta("hive_last_promotion") is { } s && DateTimeOffset.TryParse(s, out var t) ? t : DateTimeOffset.MinValue;
-                if (now - last < TimeSpan.FromHours(Math.Max(0, _o.PromoteEveryHours))) return false;
-                db.SetMeta("hive_last_promotion", now.ToString("O"));
-                return true;
-            });
-            if (!mine) return 0;
-        }
+        if (!force && !TakePromotionLease(db, now)) return 0;
 
         var members = _hive.CloneScopes();
         if (members.Count < 2) return 0;
+        int applied = 0;
+        foreach (var g in GroupSimilar(PromotionCandidates(db, members)))
+            if (PromoteGroup(HiveProfile, g)) applied++;
+        return applied;
+    }
+
+    /// <summary>The db lease: true (and taken) when no clone ran a promotion within <see cref="SelfOptions.PromoteEveryHours"/>.</summary>
+    private bool TakePromotionLease(AgentDb db, DateTimeOffset now) => db.Tx(() =>
+    {
+        var last = db.GetMeta("hive_last_promotion") is { } s && DateTimeOffset.TryParse(s, out var t) ? t : DateTimeOffset.MinValue;
+        if (now - last < TimeSpan.FromHours(Math.Max(0, _o.PromoteEveryHours))) return false;
+        db.SetMeta("hive_last_promotion", now.ToString("O"));
+        return true;
+    });
+
+    /// <summary>Every member's strong, often observed trait/like/dislike/opinion/joke.</summary>
+    private List<Candidate> PromotionCandidates(AgentDb db, IReadOnlyList<string> members)
+    {
         var sections = new[] { SelfSection.Trait, SelfSection.Like, SelfSection.Dislike, SelfSection.Opinion, SelfSection.Joke };
-        var rows = db.Query($"""
+        return db.Query($"""
             SELECT scope, id, section, text, strength, observations FROM self_profile
             WHERE scope IN ({string.Join(",", members.Select((_, i) => "$m" + i))})
             """, r => new Candidate(r.GetString(0), new SelfEntry
@@ -135,25 +143,29 @@ public sealed partial class SelfGrowth
             }), [.. members.Select((m, i) => ("$m" + i, (object?)m))])
             .Where(c => sections.Contains(c.Entry.Section) && c.Entry.Strength >= _o.PromotionMinStrength
                 && c.Entry.Observations >= _o.PromotionMinObservations).ToList();
+    }
 
-        // Group similar entries across members (single-link on SelfProfile.Similar, same section).
+    /// <summary>Groups similar entries across members (single-link on SelfProfile.Similar, same section), strongest first.</summary>
+    private static List<List<Candidate>> GroupSimilar(List<Candidate> rows)
+    {
         var groups = new List<List<Candidate>>();
         foreach (var c in rows.OrderByDescending(c => c.Entry.Strength))
         {
             var g = groups.FirstOrDefault(g => g[0].Entry.Section == c.Entry.Section && g.Any(o => SelfProfile.Similar(o.Entry.Text, c.Entry.Text)));
             if (g != null) g.Add(c); else groups.Add([c]);
         }
-        int applied = 0;
-        foreach (var g in groups)
-        {
-            var who = g.Select(c => c.Scope).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
-            if (who.Count < Math.Max(2, _o.PromotionMinMembers)) continue;
-            var best = g.OrderByDescending(c => c.Entry.Strength).First().Entry;
-            var change = new SelfChange("add", best.Section, best.Text, Reason: "shown independently by " + string.Join(", ", who));
-            var r = HiveProfile.Atomically(() => HiveProfile.Apply(change, "hive", null, "scopes:" + string.Join(",", who)));
-            if (r.Ok) applied++;
-            _log.LogInformation("hive promotion {Section} '{Text}': {Result}", best.Section, best.Text, r.Message);
-        }
-        return applied;
+        return groups;
+    }
+
+    /// <summary>Adds (or reinforces) a group's strongest entry in the hive profile when enough members show it; true when applied.</summary>
+    private bool PromoteGroup(SelfProfile hive, List<Candidate> g)
+    {
+        var who = g.Select(c => c.Scope).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+        if (who.Count < Math.Max(2, _o.PromotionMinMembers)) return false;
+        var best = g.OrderByDescending(c => c.Entry.Strength).First().Entry;
+        var change = new SelfChange("add", best.Section, best.Text, Reason: "shown independently by " + string.Join(", ", who));
+        var r = hive.Atomically(() => hive.Apply(change, "hive", null, "scopes:" + string.Join(",", who)));
+        _log.LogInformation("hive promotion {Section} '{Text}': {Result}", best.Section, best.Text, r.Message);
+        return r.Ok;
     }
 }

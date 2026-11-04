@@ -57,19 +57,27 @@ public static partial class KnowledgeChunker
         text = Comment().Replace(text, "");
 
         var sections = SplitSections(text);
-        if (!hasMarker && sections.Count > 0)
-        {
-            // No marker: the first section with content is core.
-            int first = sections.FindIndex(s => s.Body.ToString().Trim().Length > 0);
-            if (first >= 0)
-            {
-                var s = sections[first];
-                core.Append(s.Path.Count > 0 ? "## " + s.Path[^1] + "\n" : "").Append(s.Body.ToString().Trim());
-                sections.RemoveAt(first);
-            }
-        }
+        // No marker: the first section with content is core.
+        if (!hasMarker && sections.Count > 0) TakeFirstAsCore(sections, core);
 
         int maxChars = (int)(maxTokens * 3.5), minChars = (int)(minTokens * 3.5);
+        var merged = MergeSmall(Pieces(sections, maxChars), minChars, maxChars);
+        var chunks = merged.Select((m, i) => new KnowledgeChunk(fileName, i, TextUtil.Truncate(m.Title, 120), m.Text)).ToList();
+        return (core.ToString().Trim(), chunks);
+    }
+
+    private static void TakeFirstAsCore(List<Section> sections, StringBuilder core)
+    {
+        int first = sections.FindIndex(s => s.Body.ToString().Trim().Length > 0);
+        if (first < 0) return;
+        var s = sections[first];
+        core.Append(s.Path.Count > 0 ? "## " + s.Path[^1] + "\n" : "").Append(s.Body.ToString().Trim());
+        sections.RemoveAt(first);
+    }
+
+    /// <summary>Each section's text, a long one split into numbered parts.</summary>
+    private static List<(string Title, string Text)> Pieces(List<Section> sections, int maxChars)
+    {
         var pieces = new List<(string Title, string Text)>();
         foreach (var s in sections)
         {
@@ -79,26 +87,28 @@ public static partial class KnowledgeChunker
             int part = 1;
             foreach (var p in SplitBody(body, maxChars)) pieces.Add(($"{s.Title} ({part++})", p));
         }
+        return pieces;
+    }
 
-        // Merge small consecutive pieces while they fit.
+    /// <summary>Merges small consecutive pieces while they fit.</summary>
+    private static List<(string Title, string Text)> MergeSmall(List<(string Title, string Text)> pieces, int minChars, int maxChars)
+    {
         var merged = new List<(string Title, string Text)>();
         foreach (var p in pieces)
         {
-            if (merged.Count > 0)
+            if (merged.Count > 0 && Mergeable(merged[^1], p, minChars, maxChars))
             {
                 var last = merged[^1];
-                if ((last.Text.Length < minChars || p.Text.Length < minChars) && last.Text.Length + p.Text.Length + 2 <= maxChars)
-                {
-                    merged[^1] = (last.Title + "; " + LastSegment(p.Title), last.Text + "\n" + p.Text);
-                    continue;
-                }
+                merged[^1] = (last.Title + "; " + LastSegment(p.Title), last.Text + "\n" + p.Text);
+                continue;
             }
             merged.Add(p);
         }
-
-        var chunks = merged.Select((m, i) => new KnowledgeChunk(fileName, i, TextUtil.Truncate(m.Title, 120), m.Text)).ToList();
-        return (core.ToString().Trim(), chunks);
+        return merged;
     }
+
+    private static bool Mergeable((string Title, string Text) last, (string Title, string Text) p, int minChars, int maxChars) =>
+        (last.Text.Length < minChars || p.Text.Length < minChars) && last.Text.Length + p.Text.Length + 2 <= maxChars;
 
     private static string LastSegment(string title)
     {
@@ -132,34 +142,48 @@ public static partial class KnowledgeChunker
     /// <summary>Splits at blank lines / bullets, packing blocks up to <paramref name="maxChars"/> (hard-splits huge blocks at sentences).</summary>
     private static IEnumerable<string> SplitBody(string body, int maxChars)
     {
+        var expanded = new List<string>();
+        foreach (var b in BodyBlocks(body)) AddBlock(expanded, b, maxChars);
+        return PackBlocks(expanded, maxChars);
+    }
+
+    /// <summary>The body's blocks, split at blank lines, bullets and numbered items.</summary>
+    private static List<string> BodyBlocks(string body)
+    {
         var blocks = new List<string>();
         var current = new StringBuilder();
         foreach (var line in body.Split('\n'))
         {
-            bool boundary = line.Trim().Length == 0 || line.TrimStart().StartsWith("- ") || line.TrimStart().StartsWith("* ") || Regex.IsMatch(line, @"^\s*\d+[.)]\s");
-            if (boundary && current.Length > 0) { blocks.Add(current.ToString().Trim()); current.Clear(); }
+            if (IsBlockBoundary(line) && current.Length > 0) { blocks.Add(current.ToString().Trim()); current.Clear(); }
             if (line.Trim().Length > 0) current.Append(line).Append('\n');
         }
         if (current.Length > 0) blocks.Add(current.ToString().Trim());
+        return blocks;
+    }
 
-        var expanded = new List<string>();
-        foreach (var b in blocks)
+    private static bool IsBlockBoundary(string line) =>
+        line.Trim().Length == 0 || line.TrimStart().StartsWith("- ") || line.TrimStart().StartsWith("* ") || Regex.IsMatch(line, @"^\s*\d+[.)]\s");
+
+    /// <summary>A block that fits as it is, else packed by sentences (a sentence longer than the limit hard-split).</summary>
+    private static void AddBlock(List<string> expanded, string b, int maxChars)
+    {
+        if (b.Length <= maxChars) { expanded.Add(b); return; }
+        var sb = new StringBuilder();
+        foreach (var sentence in Regex.Split(b, @"(?<=[.!?])\s+"))
         {
-            if (b.Length <= maxChars) { expanded.Add(b); continue; }
-            var sb = new StringBuilder();
-            foreach (var sentence in Regex.Split(b, @"(?<=[.!?])\s+"))
+            if (sb.Length > 0 && sb.Length + sentence.Length + 1 > maxChars) { expanded.Add(sb.ToString().Trim()); sb.Clear(); }
+            if (sentence.Length > maxChars)
             {
-                if (sb.Length > 0 && sb.Length + sentence.Length + 1 > maxChars) { expanded.Add(sb.ToString().Trim()); sb.Clear(); }
-                if (sentence.Length > maxChars)
-                {
-                    for (int i = 0; i < sentence.Length; i += maxChars) expanded.Add(sentence.Substring(i, Math.Min(maxChars, sentence.Length - i)));
-                    continue;
-                }
-                sb.Append(sentence).Append(' ');
+                for (int i = 0; i < sentence.Length; i += maxChars) expanded.Add(sentence.Substring(i, Math.Min(maxChars, sentence.Length - i)));
+                continue;
             }
-            if (sb.Length > 0) expanded.Add(sb.ToString().Trim());
+            sb.Append(sentence).Append(' ');
         }
+        if (sb.Length > 0) expanded.Add(sb.ToString().Trim());
+    }
 
+    private static IEnumerable<string> PackBlocks(List<string> expanded, int maxChars)
+    {
         var pack = new StringBuilder();
         foreach (var b in expanded)
         {

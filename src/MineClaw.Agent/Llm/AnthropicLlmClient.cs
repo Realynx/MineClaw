@@ -70,56 +70,14 @@ public sealed class AnthropicLlmClient : ILlmClient
     private async Task<LlmResponse> StreamAsync(MessageCreateParams parameters, string model, CancellationToken ct, Action<LlmToolUse>? onToolUse = null,
         Action<string>? onText = null, LlmRequest? request = null, bool longCall = false)
     {
-        LlmUsage? partial = null;
-        long deltaChars = 0, reportedOut = 0, thinkingChars = 0;
-        decimal? cap = request?.MaxUsd;
-        var costOf = request?.CostOf;
+        var watch = new StreamWatch(model, request?.MaxUsd, request?.CostOf, onToolUse, onText);
         var client = longCall ? _longClient : _client;
-        LlmUsage SoFar() => (partial ?? LlmUsage.Zero) with { OutputTokens = Math.Max(reportedOut, (deltaChars + thinkingChars + 3) / 4) };
-        void CheckCap()
-        {
-            if (cap is not { } c || costOf == null) return;
-            var used = SoFar();
-            decimal usd;
-            try { usd = costOf(used); } catch (Exception) { return; }
-            if (usd > c) throw new LlmCostCapException(used, model, usd, c);
-        }
-        // Streaming execution: tool_use blocks by index, handed to the caller the moment each block stops.
-        var open = new Dictionary<long, (string Id, string Name, System.Text.StringBuilder Json)>();
-        // Streamed chat: open text blocks by index (their end is a line boundary for the caller).
-        var openText = new HashSet<long>();
 
         async IAsyncEnumerable<RawMessageStreamEvent> Watch()
         {
             await foreach (RawMessageStreamEvent ev in client.Messages.CreateStreaming(parameters, ct).WithCancellation(ct).ConfigureAwait(false))
             {
-                if (ev.TryPickStart(out var start)) { partial = MapUsage(start.Message.Usage); CheckCap(); }
-                else if (ev.TryPickContentBlockStart(out var cbs))
-                {
-                    if (onToolUse != null && cbs.ContentBlock.TryPickToolUse(out var tu)) open[cbs.Index] = (tu.ID, tu.Name, new System.Text.StringBuilder());
-                    else if (onText != null && cbs.ContentBlock.TryPickText(out _)) openText.Add(cbs.Index);
-                }
-                else if (ev.TryPickContentBlockDelta(out var cbd))
-                {
-                    if (cbd.Delta.TryPickText(out var t))
-                    {
-                        deltaChars += t.Text.Length;
-                        if (onText != null) EmitText(onText, t.Text);
-                    }
-                    else if (cbd.Delta.TryPickInputJson(out var j))
-                    {
-                        deltaChars += j.PartialJson.Length;
-                        if (open.TryGetValue(cbd.Index, out var tb)) tb.Json.Append(j.PartialJson);
-                    }
-                    else if (cbd.Delta.TryPickThinking(out var th)) thinkingChars += th.Thinking.Length;
-                    CheckCap();
-                }
-                else if (ev.TryPickContentBlockStop(out var cbe))
-                {
-                    if (onToolUse != null && open.Remove(cbe.Index, out var done)) EmitToolUse(onToolUse, done.Id, done.Name, done.Json.ToString());
-                    else if (onText != null && openText.Remove(cbe.Index)) EmitText(onText, "\n");
-                }
-                else if (ev.TryPickDelta(out var md)) { reportedOut = md.Usage.OutputTokens; CheckCap(); }
+                watch.Observe(ev);
                 yield return ev;
             }
         }
@@ -132,8 +90,73 @@ public sealed class AnthropicLlmClient : ILlmClient
         // A torn-down stream can surface as an IO/HTTP error rather than OperationCanceledException.
         catch (Exception ex) when (ct.IsCancellationRequested && ex is not LlmInterruptedException)
         {
-            var used = partial is { } p ? p with { OutputTokens = Math.Max(reportedOut, (deltaChars + 3) / 4) } : null;
-            throw new LlmInterruptedException(used, model, ex);
+            throw new LlmInterruptedException(watch.InterruptedUsage(), model, ex);
+        }
+    }
+
+    /// <summary>
+    /// What a stream has shown so far: usage (message_start input/cache, the last message_delta output, ~4 chars per token of the
+    /// deltas), the cost cap check, and the streamed tool_use / text blocks handed to the caller's hooks as each one ends.
+    /// </summary>
+    private sealed class StreamWatch(string model, decimal? cap, Func<LlmUsage, decimal>? costOf, Action<LlmToolUse>? onToolUse, Action<string>? onText)
+    {
+        private LlmUsage? _partial;
+        private long _deltaChars, _reportedOut, _thinkingChars;
+        // Streaming execution: tool_use blocks by index, handed to the caller the moment each block stops.
+        private readonly Dictionary<long, (string Id, string Name, System.Text.StringBuilder Json)> _open = new();
+        // Streamed chat: open text blocks by index (their end is a line boundary for the caller).
+        private readonly HashSet<long> _openText = new();
+
+        private LlmUsage SoFar() => (_partial ?? LlmUsage.Zero) with { OutputTokens = Math.Max(_reportedOut, (_deltaChars + _thinkingChars + 3) / 4) };
+
+        /// <summary>The usage to book for an interrupted stream (null before message_start).</summary>
+        public LlmUsage? InterruptedUsage() =>
+            _partial is { } p ? p with { OutputTokens = Math.Max(_reportedOut, (_deltaChars + 3) / 4) } : null;
+
+        private void CheckCap()
+        {
+            if (cap is not { } c || costOf == null) return;
+            var used = SoFar();
+            decimal usd;
+            try { usd = costOf(used); } catch (Exception) { return; }
+            if (usd > c) throw new LlmCostCapException(used, model, usd, c);
+        }
+
+        public void Observe(RawMessageStreamEvent ev)
+        {
+            if (ev.TryPickStart(out var start)) { _partial = MapUsage(start.Message.Usage); CheckCap(); }
+            else if (ev.TryPickContentBlockStart(out var cbs)) OnBlockStart(cbs);
+            else if (ev.TryPickContentBlockDelta(out var cbd)) OnDelta(cbd);
+            else if (ev.TryPickContentBlockStop(out var cbe)) OnBlockStop(cbe);
+            else if (ev.TryPickDelta(out var md)) { _reportedOut = md.Usage.OutputTokens; CheckCap(); }
+        }
+
+        private void OnBlockStart(RawContentBlockStartEvent cbs)
+        {
+            if (onToolUse != null && cbs.ContentBlock.TryPickToolUse(out var tu)) _open[cbs.Index] = (tu.ID, tu.Name, new System.Text.StringBuilder());
+            else if (onText != null && cbs.ContentBlock.TryPickText(out _)) _openText.Add(cbs.Index);
+        }
+
+        private void OnDelta(RawContentBlockDeltaEvent cbd)
+        {
+            if (cbd.Delta.TryPickText(out var t))
+            {
+                _deltaChars += t.Text.Length;
+                if (onText != null) EmitText(onText, t.Text);
+            }
+            else if (cbd.Delta.TryPickInputJson(out var j))
+            {
+                _deltaChars += j.PartialJson.Length;
+                if (_open.TryGetValue(cbd.Index, out var tb)) tb.Json.Append(j.PartialJson);
+            }
+            else if (cbd.Delta.TryPickThinking(out var th)) _thinkingChars += th.Thinking.Length;
+            CheckCap();
+        }
+
+        private void OnBlockStop(RawContentBlockStopEvent cbe)
+        {
+            if (onToolUse != null && _open.Remove(cbe.Index, out var done)) EmitToolUse(onToolUse, done.Id, done.Name, done.Json.ToString());
+            else if (onText != null && _openText.Remove(cbe.Index)) EmitText(onText, "\n");
         }
     }
 
@@ -165,41 +188,11 @@ public sealed class AnthropicLlmClient : ILlmClient
 
     internal MessageCreateParams BuildParams(LlmRequest request, string model)
     {
-        var system = new List<TextBlockParam>();
-        bool firstCached = true, short5m = false;
-        foreach (var s in request.System)
-        {
-            if (!s.Cache)
-            {
-                system.Add(new TextBlockParam { Text = s.Text });
-                continue;
-            }
-            // An explicit block TTL wins (the brain: its prefix TTL); breakpoint 1 without one uses the legacy default, later ones 5m.
-            var ttl = LlmOptions.NormalizeTtl(s.Ttl) ?? (firstCached ? DefaultPrefixTtl() : "5m");
-            // The API wants longer TTLs first: once a 5m breakpoint went out, no later one may be 1h.
-            if (short5m) ttl = "5m";
-            short5m = ttl == "5m";
-            firstCached = false;
-            system.Add(new TextBlockParam { Text = s.Text, CacheControl = CacheFor(ttl) });
-        }
-
-        var tools = new List<ToolUnion>();
-        foreach (var t in request.Tools)
-        {
-            tools.Add(new Tool
-            {
-                Name = t.Name,
-                Description = t.Description,
-                InputSchema = ToInputSchema(t.InputSchema),
-            });
-        }
-
+        var system = SystemParams(request.System);
+        var tools = ToolParams(request.Tools);
         var messages = new List<MessageParam>();
         for (int i = 0; i < request.Messages.Count; i++)
-        {
-            bool cacheLast = request.CacheHistory && i == request.Messages.Count - 1;
-            messages.Add(ToParam(request.Messages[i], cacheLast));
-        }
+            messages.Add(ToParam(request.Messages[i], request.CacheHistory && i == request.Messages.Count - 1));
 
         var thinkingMode = request.Thinking ?? _options.ThinkingFor(request.Tier);
         string effort = request.Effort ?? _options.EffortFor(request.Tier);
@@ -215,19 +208,58 @@ public sealed class AnthropicLlmClient : ILlmClient
 
         var thinking = ThinkingParam(model, thinkingMode);
         if (thinking != null) p = p with { Thinking = thinking };
+        return WithEffort(p, effort, model);
+    }
 
-        if (!string.IsNullOrEmpty(effort) && ModelProfiles.SupportsEffort(model))
+    /// <summary>System blocks with their cache breakpoints, longer TTLs first.</summary>
+    private List<TextBlockParam> SystemParams(IReadOnlyList<LlmSystemBlock> blocks)
+    {
+        var system = new List<TextBlockParam>();
+        bool firstCached = true, short5m = false;
+        foreach (var s in blocks)
         {
-            Effort e = effort.ToLowerInvariant() switch
+            if (!s.Cache)
             {
-                "low" => Effort.Low,
-                "high" => Effort.High,
-                "max" => Effort.Max,
-                _ => Effort.Medium,
-            };
-            p = p with { OutputConfig = new OutputConfig { Effort = e } };
+                system.Add(new TextBlockParam { Text = s.Text });
+                continue;
+            }
+            // An explicit block TTL wins (the brain: its prefix TTL); breakpoint 1 without one uses the legacy default, later ones 5m.
+            var ttl = LlmOptions.NormalizeTtl(s.Ttl) ?? (firstCached ? DefaultPrefixTtl() : "5m");
+            // The API wants longer TTLs first: once a 5m breakpoint went out, no later one may be 1h.
+            if (short5m) ttl = "5m";
+            short5m = ttl == "5m";
+            firstCached = false;
+            system.Add(new TextBlockParam { Text = s.Text, CacheControl = CacheFor(ttl) });
         }
-        return p;
+        return system;
+    }
+
+    private static List<ToolUnion> ToolParams(IReadOnlyList<LlmToolDefinition> defs)
+    {
+        var tools = new List<ToolUnion>();
+        foreach (var t in defs)
+        {
+            tools.Add(new Tool
+            {
+                Name = t.Name,
+                Description = t.Description,
+                InputSchema = ToInputSchema(t.InputSchema),
+            });
+        }
+        return tools;
+    }
+
+    private static MessageCreateParams WithEffort(MessageCreateParams p, string effort, string model)
+    {
+        if (string.IsNullOrEmpty(effort) || !ModelProfiles.SupportsEffort(model)) return p;
+        Effort e = effort.ToLowerInvariant() switch
+        {
+            "low" => Effort.Low,
+            "high" => Effort.High,
+            "max" => Effort.Max,
+            _ => Effort.Medium,
+        };
+        return p with { OutputConfig = new OutputConfig { Effort = e } };
     }
 
     /// <summary>
@@ -278,58 +310,65 @@ public sealed class AnthropicLlmClient : ILlmClient
     {
         var blocks = new List<ContentBlockParam>();
         for (int i = 0; i < m.Content.Count; i++)
-        {
-            bool cache = cacheLast && i == m.Content.Count - 1;
-            switch (m.Content[i])
-            {
-                case LlmText t:
-                    blocks.Add(cache
-                        ? new TextBlockParam { Text = t.Text, CacheControl = new CacheControlEphemeral() }
-                        : new TextBlockParam { Text = t.Text });
-                    break;
-                case LlmToolUse u:
-                    blocks.Add(new ToolUseBlockParam { ID = u.Id, Name = u.Name, Input = ToDict(u.Input) });
-                    break;
-                case LlmToolResult { Image: { } img } r:
-                    // Text + PNG in one tool_result (vision). Only the newest turns carry it (compaction stubs old ones).
-                    {
-                        List<Block> content =
-                        [
-                            new TextBlockParam { Text = r.Content },
-                            new ImageBlockParam { Source = new Base64ImageSource { Data = Convert.ToBase64String(img.Data), MediaType = MediaType.ImagePng } },
-                        ];
-                        blocks.Add(cache
-                            ? new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = content, IsError = r.IsError, CacheControl = new CacheControlEphemeral() }
-                            : new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = content, IsError = r.IsError });
-                    }
-                    break;
-                case LlmToolResult r:
-                    blocks.Add(cache
-                        ? new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = r.Content, IsError = r.IsError, CacheControl = new CacheControlEphemeral() }
-                        : new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = r.Content, IsError = r.IsError });
-                    break;
-                case LlmImageBlock ib:
-                    blocks.Add(new ImageBlockParam
-                    {
-                        Source = new Base64ImageSource
-                        {
-                            Data = Convert.ToBase64String(ib.Image.Data),
-                            MediaType = ib.Image.MediaType == "image/jpeg" ? MediaType.ImageJpeg : MediaType.ImagePng,
-                        },
-                    });
-                    break;
-                case LlmThinking th:
-                    blocks.Add(new ThinkingBlockParam { Thinking = th.Thinking, Signature = th.Signature });
-                    break;
-                case LlmRedactedThinking rt:
-                    blocks.Add(new RedactedThinkingBlockParam { Data = rt.Data });
-                    break;
-            }
-        }
+            if (ToBlockParam(m.Content[i], cacheLast && i == m.Content.Count - 1) is { } block) blocks.Add(block);
         return m.Role == LlmRole.User
             ? new UserMessageParam { Content = blocks }
             : new AssistantMessageParam { Content = blocks };
     }
+
+    /// <summary>One block as the API takes it (<paramref name="cache"/>: the moving history breakpoint); null for a kind it doesn't send.</summary>
+    private static ContentBlockParam? ToBlockParam(LlmBlock b, bool cache)
+    {
+        switch (b)
+        {
+            case LlmText t:
+                return TextParam(t, cache);
+            case LlmToolUse u:
+                return new ToolUseBlockParam { ID = u.Id, Name = u.Name, Input = ToDict(u.Input) };
+            case LlmToolResult { Image: { } img } r:
+                return ImageToolResult(r, img, cache);
+            case LlmToolResult r:
+                return TextToolResult(r, cache);
+            case LlmImageBlock ib:
+                return ImageParam(ib.Image);
+            case LlmThinking th:
+                return new ThinkingBlockParam { Thinking = th.Thinking, Signature = th.Signature };
+            case LlmRedactedThinking rt:
+                return new RedactedThinkingBlockParam { Data = rt.Data };
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>Text + PNG in one tool_result (vision). Only the newest turns carry it (compaction stubs old ones).</summary>
+    private static ToolResultBlockParam ImageToolResult(LlmToolResult r, LlmImage img, bool cache)
+    {
+        List<Block> content =
+        [
+            new TextBlockParam { Text = r.Content },
+            new ImageBlockParam { Source = new Base64ImageSource { Data = Convert.ToBase64String(img.Data), MediaType = MediaType.ImagePng } },
+        ];
+        return cache
+            ? new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = content, IsError = r.IsError, CacheControl = new CacheControlEphemeral() }
+            : new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = content, IsError = r.IsError };
+    }
+
+    private static TextBlockParam TextParam(LlmText t, bool cache) => cache
+        ? new TextBlockParam { Text = t.Text, CacheControl = new CacheControlEphemeral() }
+        : new TextBlockParam { Text = t.Text };
+
+    private static ToolResultBlockParam TextToolResult(LlmToolResult r, bool cache) => cache
+        ? new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = r.Content, IsError = r.IsError, CacheControl = new CacheControlEphemeral() }
+        : new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = r.Content, IsError = r.IsError };
+
+    private static ImageBlockParam ImageParam(LlmImage image) => new()
+    {
+        Source = new Base64ImageSource
+        {
+            Data = Convert.ToBase64String(image.Data),
+            MediaType = image.MediaType == "image/jpeg" ? MediaType.ImageJpeg : MediaType.ImagePng,
+        },
+    };
 
     private static Dictionary<string, JsonElement> ToDict(JsonElement input)
     {

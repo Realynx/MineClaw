@@ -37,23 +37,29 @@ public static partial class TextTokens
     {
         var result = new List<string>();
         if (string.IsNullOrWhiteSpace(text)) return result;
-        HashSet<string>? ign = null;
-        if (ignore != null)
-        {
-            ign = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var w in ignore)
-                foreach (var part in NonWord().Split(w.ToLowerInvariant()))
-                    if (part.Length > 0) ign.Add(part);
-        }
+        var ign = IgnoredParts(ignore);
         foreach (var raw in NonWord().Split(text.ToLowerInvariant()))
         {
-            if (raw.Length < 2 || raw.Length > 40 || !raw.Any(char.IsLetter)) continue;
-            if (Stop.Contains(raw) || (ign != null && ign.Contains(raw))) continue;
+            if (!IsTerm(raw, ign)) continue;
             if (!result.Contains(raw)) result.Add(raw);
             if (result.Count >= max) break;
         }
         return result;
     }
+
+    private static HashSet<string>? IgnoredParts(IEnumerable<string>? ignore)
+    {
+        if (ignore == null) return null;
+        var ign = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var w in ignore)
+            foreach (var part in NonWord().Split(w.ToLowerInvariant()))
+                if (part.Length > 0) ign.Add(part);
+        return ign;
+    }
+
+    /// <summary>2..40 chars with a letter, not a stopword, not ignored.</summary>
+    private static bool IsTerm(string raw, HashSet<string>? ign) =>
+        raw.Length >= 2 && raw.Length <= 40 && raw.Any(char.IsLetter) && !Stop.Contains(raw) && !(ign != null && ign.Contains(raw));
 
     /// <summary>Crude stem for the LIKE fallback ("trees" → "tree", "cobblestone" → "cobblest").</summary>
     public static string Stem(string term) => term.Length <= 4 ? term : term[..Math.Max(4, Math.Min(term.Length - 2, 8))];

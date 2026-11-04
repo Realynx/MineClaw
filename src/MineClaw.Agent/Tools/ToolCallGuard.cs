@@ -151,43 +151,59 @@ public sealed class ToolCallGuard
         var now = _time.GetUtcNow();
 
         // In flight on the body asked about (another body's identical job is a second job, never "already running").
-        if (!stopping && (activities ?? _activities).Current is { } run)
-        {
-            foreach (var (t, i) in run.Steps)
-            {
-                // Same call, same tool on the same target, or the same delegated job. A delegate never shadows a game
-                // tool (or the reverse) just because both mention the house chest's coordinates.
-                bool same = Signature(t, i) == sig
-                    || (string.Equals(t, tool, StringComparison.OrdinalIgnoreCase) && tool != DelegateTool && Overlap(Targets(t, i), targets))
-                    || (tool == DelegateTool && t == DelegateTool && SameTask(i, input));
-                if (same)
-                    return ToolResult.Success($"already running: {run.Label} #{run.Id} (started {(int)(now - run.Started).TotalSeconds}s ago); " +
-                        "wait for its [task] event, or stop it first");
-            }
-        }
+        if (!stopping && (activities ?? _activities).Current is { } run && RunsSameCall(run, tool, input, sig, targets))
+            return ToolResult.Success($"already running: {run.Label} #{run.Id} (started {(int)(now - run.Started).TotalSeconds}s ago); " +
+                "wait for its [task] event, or stop it first");
 
         if (retryRequested) return null;
         // Movement is never refused from memory: a door opens, a bridge gets built, the player moves; just try.
         if (ActivityManager.MovementTools.Contains(tool)) return null;
+        return RememberedFailure(tool, input, body, sig, targets, now);
+    }
+
+    private static bool RunsSameCall(RunningActivity run, string tool, JsonElement input, string sig, IReadOnlySet<string> targets)
+    {
+        foreach (var (t, i) in run.Steps)
+            if (SameCall(t, i, tool, input, sig, targets)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Same call, same tool on the same target, or the same delegated job. A delegate never shadows a game tool (or the reverse)
+    /// just because both mention the house chest's coordinates.
+    /// </summary>
+    private static bool SameCall(string t, JsonElement i, string tool, JsonElement input, string sig, IReadOnlySet<string> targets) =>
+        Signature(t, i) == sig
+        || (string.Equals(t, tool, StringComparison.OrdinalIgnoreCase) && tool != DelegateTool && Overlap(Targets(t, i), targets))
+        || (tool == DelegateTool && t == DelegateTool && SameTask(i, input));
+
+    private ToolResult? RememberedFailure(string tool, JsonElement input, string? body, string sig, IReadOnlySet<string> targets, DateTimeOffset now)
+    {
         lock (_lock)
         {
             _failures.RemoveAll(f => now - f.At > (f.Transient != null ? TransientMemory : Memory));
             for (int k = _failures.Count - 1; k >= 0; k--)
             {
                 var f = _failures[k];
-                // Keyed on (tool, intent): the same game tool on the same target, or the same delegated job (task words,
-                // coordinates and boilerplate ignored). Never across tools.
-                if (!string.Equals(f.Tool, tool, StringComparison.OrdinalIgnoreCase)) continue;
-                if (!string.Equals(f.Body, body, StringComparison.OrdinalIgnoreCase)) continue; // another body's dead end
-                bool sameTarget = tool == DelegateTool
-                    ? f.Signature == sig || (f.Task != null && Jaccard(f.Task, TaskWords(input)) >= SameTaskThreshold)
-                    : targets.Count > 0 || f.Targets.Count > 0 ? Overlap(f.Targets, targets) : f.Signature == sig;
-                if (!sameTarget) continue;
+                if (!SameFailure(f, tool, input, body, sig, targets)) continue;
                 return ToolResult.Error($"not retried: {f.Tool} failed here {Ago(now - f.At)} ago: {f.Reason}. " +
                     "Try something else or tell the player; it reruns if they say try again");
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Keyed on (tool, intent): the same game tool on the same target, or the same delegated job (task words, coordinates and
+    /// boilerplate ignored). Never across tools, never another body's dead end.
+    /// </summary>
+    private static bool SameFailure(Failure f, string tool, JsonElement input, string? body, string sig, IReadOnlySet<string> targets)
+    {
+        if (!string.Equals(f.Tool, tool, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.Equals(f.Body, body, StringComparison.OrdinalIgnoreCase)) return false;
+        return tool == DelegateTool
+            ? f.Signature == sig || (f.Task != null && Jaccard(f.Task, TaskWords(input)) >= SameTaskThreshold)
+            : targets.Count > 0 || f.Targets.Count > 0 ? Overlap(f.Targets, targets) : f.Signature == sig;
     }
 
     private static readonly Regex CombatBusy = new(@"(?:busy|interrupted): fighting", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -287,21 +303,28 @@ public sealed class ToolCallGuard
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (input.ValueKind != JsonValueKind.Object) return set;
-        int? x = input.Int("x"), y = input.Int("y"), z = input.Int("z");
-        if (x != null && y != null && z != null) set.Add($"{x},{y},{z}");
+        AddXyz(set, input);
         var strings = new List<string>();
         foreach (var p in input.EnumerateObject())
         {
             if (p.Value.ValueKind != JsonValueKind.String) continue;
             var s = p.Value.GetString() ?? "";
             foreach (Match m in Coords.Matches(s)) set.Add($"{m.Groups[1].Value},{m.Groups[2].Value},{m.Groups[3].Value}");
-            // free text (delegate task/done_when) only contributes coordinates; short args are names
-            if (tool != DelegateTool && p.Name is not ("task" or "done_when" or "note" or "why" or "reason") && s.Length is > 0 and <= 40 && !Coords.IsMatch(s))
-                strings.Add(s.Trim().ToLowerInvariant());
+            if (IsNameArg(tool, p.Name, s)) strings.Add(s.Trim().ToLowerInvariant());
         }
         if (set.Count == 0) foreach (var s in strings) set.Add("n:" + s);
         return set;
     }
+
+    private static void AddXyz(HashSet<string> set, JsonElement input)
+    {
+        int? x = input.Int("x"), y = input.Int("y"), z = input.Int("z");
+        if (x != null && y != null && z != null) set.Add($"{x},{y},{z}");
+    }
+
+    /// <summary>Free text (delegate task/done_when) only contributes coordinates; short args are names.</summary>
+    private static bool IsNameArg(string tool, string name, string s) =>
+        tool != DelegateTool && name is not ("task" or "done_when" or "note" or "why" or "reason") && s.Length is > 0 and <= 40 && !Coords.IsMatch(s);
 
     private static bool Overlap(IReadOnlySet<string> a, IReadOnlySet<string> b) => a.Count > 0 && b.Count > 0 && a.Overlaps(b);
 
