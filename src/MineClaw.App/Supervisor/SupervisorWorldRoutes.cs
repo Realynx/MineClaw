@@ -194,92 +194,107 @@ public sealed class SupervisorWorldRoutes
         int dim = Dim(Q(r, "dim"));
         try
         {
-            switch (route)
+            return route switch
             {
-                case "index":
-                    {
-                        if (I(Q(r, "x")) is not { } x || I(Q(r, "z")) is not { } z) return Json(400, new { error = "index needs x, z (block coords) and r" });
-                        int rad = Math.Clamp(I(Q(r, "r")) ?? 96, 16, MaxIndexRadius);
-                        int cx0 = (x - rad) >> 4, cx1 = (x + rad) >> 4, cz0 = (z - rad) >> 4, cz1 = (z + rad) >> 4;
-                        bool light = Q(r, "light") is "1" or "true";
-                        var key = $"index:{dim}:{cx0}:{cz0}:{cx1}:{cz1}:{light}";
-                        return await _cache.GetAsync(key, IndexCache, () => Work(() =>
-                        {
-                            var cols = _world.Index(dim, cx0, cz0, cx1, cz1, (cx1 - cx0 + 1) * (cz1 - cz0 + 1), light);
-                            var wx = _world.WorldWeather(dim);
-                            return Json(200, new { dim, at = _time.GetUtcNow().ToUnixTimeMilliseconds(), columns = cols, version = _world.Version, time = _world.WorldTime(dim),
-                                time_frozen = _world.WorldTimeFrozen(dim), rain = wx?.Rain, thunder = wx?.Thunder });
-                        }, ct)).ConfigureAwait(false);
-                    }
-                case "chunks":
-                    {
-                        if (ParseCols(Q(r, "cols")) is not { } cols) return Json(400, new { error = $"chunks needs cols=cx,cz;cx,cz (1..{MaxColumnsPerRequest})" });
-                        bool light = Q(r, "light") is "1" or "true";
-                        return await Work(() => new SupervisorReply(200, ColumnPayload.ContentType, ColumnPayload.Encode(dim, _world.Columns(dim, cols, light))), ct)
-                            .ConfigureAwait(false);
-                    }
-                case "entities":
-                    {
-                        int? edim = Q(r, "dim") is { Length: > 0 } ? dim : null;
-                        if (Q(r, "since") is { Length: > 0 } sinceText)
-                        {
-                            long since = long.TryParse(sinceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
-                            return await Work(_live, () =>
-                            {
-                                var d = _entityLog.Since(since, () => _world.Entities(null), _world.EntityEvents);
-                                return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed,
-                                    events = d.Events });
-                            }, ct).ConfigureAwait(false);
-                        }
-                        return await _cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(_live, () =>
-                            Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim) }), ct))
-                            .ConfigureAwait(false);
-                    }
-                case "blocks":
-                    {
-                        if ((Blocks ?? BlockDeltaLog.Process) is not { } log) return Json(404, new { error = "no block feed in this process" });
-                        long since = long.TryParse(Q(r, "since"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
-                        int? bdim = Q(r, "dim") is { Length: > 0 } ? dim : null;
-                        var page = log.Since(since, bdim, MaxBlockEntries); // a ring read under its lock: no pool hop
-                        return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = page.Rev, full = page.Full, more = page.More,
-                            blocks = page.Blocks, columns = page.Columns });
-                    }
-                case "blockentities":
-                    {
-                        if (ParseCols(Q(r, "cols")) is not { } bcols) return Json(400, new { error = $"blockentities needs cols=cx,cz;cx,cz (1..{MaxColumnsPerRequest})" });
-                        return await Work(() => Json(200, new { dim, columns = _world.BlockEntities(dim, bcols) }), ct).ConfigureAwait(false);
-                    }
-                case "containers":
-                    {
-                        if (Q(r, "x0") is { Length: > 0 })
-                        {
-                            if (I(Q(r, "x0")) is not { } x0 || I(Q(r, "z0")) is not { } z0 || I(Q(r, "x1")) is not { } x1 || I(Q(r, "z1")) is not { } z1)
-                                return Json(400, new { error = "containers box needs x0, z0, x1, z1 (y0, y1 optional)" });
-                            int y0 = I(Q(r, "y0")) ?? 0, y1 = I(Q(r, "y1")) ?? 319;
-                            var min = new BlockPos(Math.Min(x0, x1), Math.Min(y0, y1), Math.Min(z0, z1));
-                            var max = new BlockPos(Math.Max(x0, x1), Math.Max(y0, y1), Math.Max(z0, z1));
-                            if (max.X - min.X > MaxContainerBox || max.Z - min.Z > MaxContainerBox)
-                                return Json(400, new { error = $"containers box is at most {MaxContainerBox} blocks wide" });
-                            int limit = Math.Clamp(I(Q(r, "limit")) ?? 200, 1, MaxContainers);
-                            return await _cache.GetAsync($"containers:{dim}:{min}:{max}:{limit}", ContainersCache, () => Work(() =>
-                            {
-                                var (items, capped) = _world.Containers(dim, min, max, limit);
-                                return Json(200, new { dim, containers = items, capped });
-                            }, ct)).ConfigureAwait(false);
-                        }
-                        if (I(Q(r, "x")) is not { } cx || I(Q(r, "y")) is not { } cy || I(Q(r, "z")) is not { } cz)
-                            return Json(400, new { error = "containers needs x, y, z (or a box x0..z1)" });
-                        return await Work(_live, () => _world.Container(dim, new BlockPos(cx, cy, cz)) is { } view
-                            ? Json(200, view)
-                            : Json(404, new { error = $"no container at {cx},{cy},{cz}" }), ct).ConfigureAwait(false);
-                    }
-                case "overlays":
-                    return await _cache.GetAsync($"overlays:{dim}", OverlaysCache, () => Work(() => Json(200, _world.Overlays(dim)), ct)).ConfigureAwait(false);
-            }
-            return Json(404, new { error = "not found" });
+                "index" => await IndexAsync(r, dim, ct).ConfigureAwait(false),
+                "chunks" => await ChunksAsync(r, dim, ct).ConfigureAwait(false),
+                "entities" => await EntitiesAsync(r, dim, ct).ConfigureAwait(false),
+                "blocks" => BlocksReply(r, dim),
+                "blockentities" => await BlockEntitiesAsync(r, dim, ct).ConfigureAwait(false),
+                "containers" => await ContainersAsync(r, dim, ct).ConfigureAwait(false),
+                "overlays" => await _cache.GetAsync($"overlays:{dim}", OverlaysCache, () => Work(() => Json(200, _world.Overlays(dim)), ct)).ConfigureAwait(false),
+                _ => Json(404, new { error = "not found" }),
+            };
         }
         catch (RenderBusyException) { return Json(503, new { error = "busy, retry" }, new Dictionary<string, string> { ["Retry-After"] = "1" }); }
         catch (OperationCanceledException) { return Json(503, new { error = "cancelled" }); }
+    }
+
+    private static bool Light(SupervisorRequest r) => Q(r, "light") is "1" or "true";
+
+    private async Task<SupervisorReply> IndexAsync(SupervisorRequest r, int dim, CancellationToken ct)
+    {
+        if (I(Q(r, "x")) is not { } x || I(Q(r, "z")) is not { } z) return Json(400, new { error = "index needs x, z (block coords) and r" });
+        int rad = Math.Clamp(I(Q(r, "r")) ?? 96, 16, MaxIndexRadius);
+        int cx0 = (x - rad) >> 4, cx1 = (x + rad) >> 4, cz0 = (z - rad) >> 4, cz1 = (z + rad) >> 4;
+        bool light = Light(r);
+        var key = $"index:{dim}:{cx0}:{cz0}:{cx1}:{cz1}:{light}";
+        return await _cache.GetAsync(key, IndexCache, () => Work(() =>
+        {
+            var cols = _world.Index(dim, cx0, cz0, cx1, cz1, (cx1 - cx0 + 1) * (cz1 - cz0 + 1), light);
+            var wx = _world.WorldWeather(dim);
+            return Json(200, new { dim, at = _time.GetUtcNow().ToUnixTimeMilliseconds(), columns = cols, version = _world.Version, time = _world.WorldTime(dim),
+                time_frozen = _world.WorldTimeFrozen(dim), rain = wx?.Rain, thunder = wx?.Thunder });
+        }, ct)).ConfigureAwait(false);
+    }
+
+    private async Task<SupervisorReply> ChunksAsync(SupervisorRequest r, int dim, CancellationToken ct)
+    {
+        if (ParseCols(Q(r, "cols")) is not { } cols) return Json(400, new { error = $"chunks needs cols=cx,cz;cx,cz (1..{MaxColumnsPerRequest})" });
+        bool light = Light(r);
+        return await Work(() => new SupervisorReply(200, ColumnPayload.ContentType, ColumnPayload.Encode(dim, _world.Columns(dim, cols, light))), ct)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<SupervisorReply> EntitiesAsync(SupervisorRequest r, int dim, CancellationToken ct)
+    {
+        int? edim = Q(r, "dim") is { Length: > 0 } ? dim : null;
+        if (Q(r, "since") is { Length: > 0 } sinceText)
+        {
+            long since = long.TryParse(sinceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
+            return await Work(_live, () =>
+            {
+                var d = _entityLog.Since(since, () => _world.Entities(null), _world.EntityEvents);
+                return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed,
+                    events = d.Events });
+            }, ct).ConfigureAwait(false);
+        }
+        return await _cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(_live, () =>
+            Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim) }), ct))
+            .ConfigureAwait(false);
+    }
+
+    private SupervisorReply BlocksReply(SupervisorRequest r, int dim)
+    {
+        if ((Blocks ?? BlockDeltaLog.Process) is not { } log) return Json(404, new { error = "no block feed in this process" });
+        long since = long.TryParse(Q(r, "since"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
+        int? bdim = Q(r, "dim") is { Length: > 0 } ? dim : null;
+        var page = log.Since(since, bdim, MaxBlockEntries); // a ring read under its lock: no pool hop
+        return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = page.Rev, full = page.Full, more = page.More,
+            blocks = page.Blocks, columns = page.Columns });
+    }
+
+    private async Task<SupervisorReply> BlockEntitiesAsync(SupervisorRequest r, int dim, CancellationToken ct)
+    {
+        if (ParseCols(Q(r, "cols")) is not { } bcols) return Json(400, new { error = $"blockentities needs cols=cx,cz;cx,cz (1..{MaxColumnsPerRequest})" });
+        return await Work(() => Json(200, new { dim, columns = _world.BlockEntities(dim, bcols) }), ct).ConfigureAwait(false);
+    }
+
+    private async Task<SupervisorReply> ContainersAsync(SupervisorRequest r, int dim, CancellationToken ct)
+    {
+        if (Q(r, "x0") is { Length: > 0 }) return await ContainerBoxAsync(r, dim, ct).ConfigureAwait(false);
+        if (I(Q(r, "x")) is not { } cx || I(Q(r, "y")) is not { } cy || I(Q(r, "z")) is not { } cz)
+            return Json(400, new { error = "containers needs x, y, z (or a box x0..z1)" });
+        return await Work(_live, () => _world.Container(dim, new BlockPos(cx, cy, cz)) is { } view
+            ? Json(200, view)
+            : Json(404, new { error = $"no container at {cx},{cy},{cz}" }), ct).ConfigureAwait(false);
+    }
+
+    private async Task<SupervisorReply> ContainerBoxAsync(SupervisorRequest r, int dim, CancellationToken ct)
+    {
+        if (I(Q(r, "x0")) is not { } x0 || I(Q(r, "z0")) is not { } z0 || I(Q(r, "x1")) is not { } x1 || I(Q(r, "z1")) is not { } z1)
+            return Json(400, new { error = "containers box needs x0, z0, x1, z1 (y0, y1 optional)" });
+        int y0 = I(Q(r, "y0")) ?? 0, y1 = I(Q(r, "y1")) ?? 319;
+        var min = new BlockPos(Math.Min(x0, x1), Math.Min(y0, y1), Math.Min(z0, z1));
+        var max = new BlockPos(Math.Max(x0, x1), Math.Max(y0, y1), Math.Max(z0, z1));
+        if (max.X - min.X > MaxContainerBox || max.Z - min.Z > MaxContainerBox)
+            return Json(400, new { error = $"containers box is at most {MaxContainerBox} blocks wide" });
+        int limit = Math.Clamp(I(Q(r, "limit")) ?? 200, 1, MaxContainers);
+        return await _cache.GetAsync($"containers:{dim}:{min}:{max}:{limit}", ContainersCache, () => Work(() =>
+        {
+            var (items, capped) = _world.Containers(dim, min, max, limit);
+            return Json(200, new { dim, containers = items, capped });
+        }, ct)).ConfigureAwait(false);
     }
 
     /// <summary>Runs the read on the pool (never the caller's or the game's thread), at most two at once; busy = 503.</summary>
