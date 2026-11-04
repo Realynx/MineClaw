@@ -60,27 +60,43 @@ public static class QuickReply
         bool status = false;
         foreach (var line in lines)
         {
-            var raw = (line ?? "").Replace("<3", " ily ", StringComparison.Ordinal); // a heart, not a number
-            if (string.IsNullOrWhiteSpace(raw) || raw.Length > 80 || Digit.IsMatch(raw)) return QuickKind.Brain;
-            if (IntentMatcher.Reflex(raw, nameList, _ => true).IsReflex || IntentMatcher.Speculative(raw, nameList).IsSpeculative) return QuickKind.Brain;
-            if (emote)
-            {
-                // "/me pats maid_chan": fine unless it involves an item or a job ("hands maid_chan a bucket").
-                var words = Regex.Matches(raw.ToLowerInvariant(), "[a-z_]{3,}").Select(m => m.Value);
-                if (words.Any(w => MineClaw.Data.Items.ByName(w) != null || MineClaw.Data.Blocks.ByName(w) != null)) return QuickKind.Brain;
-                if (Regex.IsMatch(raw, @"\b(?:give|gives|hands?|toss(?:es)?|throws?|drops?|points?|shows?)\b", O)) return QuickKind.Brain;
-                continue;
-            }
-            var norm = IntentMatcher.Normalize(raw, nameList);
-            foreach (var n in nameList.Where(n => !string.IsNullOrWhiteSpace(n)))
-                norm = Regex.Replace(norm, $@"\b{Regex.Escape(n.Trim().ToLowerInvariant())}\b", " ", O);
-            var clauses = ClauseSplit.Split(norm).Select(c => Regex.Replace(c, @"\s+", " ").Trim(' ', '@', '\'', '"')).Where(c => c.Length > 0).ToList();
-            foreach (var c in clauses)
-            {
-                if (SmallTalkRx.IsMatch(c)) continue;
-                if (StatusRx.IsMatch(c)) { status = true; continue; }
-                return QuickKind.Brain;
-            }
+            var kind = ClassifyLine(line, nameList, emote);
+            if (kind == QuickKind.Brain) return QuickKind.Brain;
+            if (kind == QuickKind.Status) status = true;
+        }
+        return status ? QuickKind.Status : QuickKind.SmallTalk;
+    }
+
+    private static QuickKind ClassifyLine(string? line, List<string> nameList, bool emote)
+    {
+        var raw = (line ?? "").Replace("<3", " ily ", StringComparison.Ordinal); // a heart, not a number
+        if (string.IsNullOrWhiteSpace(raw) || raw.Length > 80 || Digit.IsMatch(raw)) return QuickKind.Brain;
+        if (IntentMatcher.Reflex(raw, nameList, _ => true).IsReflex || IntentMatcher.Speculative(raw, nameList).IsSpeculative) return QuickKind.Brain;
+        return emote ? EmoteKind(raw) : ClauseKind(raw, nameList);
+    }
+
+    /// <summary>"/me pats maid_chan": fine unless it involves an item or a job ("hands maid_chan a bucket").</summary>
+    private static QuickKind EmoteKind(string raw)
+    {
+        var words = Regex.Matches(raw.ToLowerInvariant(), "[a-z_]{3,}").Select(m => m.Value);
+        if (words.Any(w => MineClaw.Data.Items.ByName(w) != null || MineClaw.Data.Blocks.ByName(w) != null)) return QuickKind.Brain;
+        if (Regex.IsMatch(raw, @"\b(?:give|gives|hands?|toss(?:es)?|throws?|drops?|points?|shows?)\b", O)) return QuickKind.Brain;
+        return QuickKind.SmallTalk;
+    }
+
+    /// <summary>Every clause (names removed) small talk, or status; anything else is for the brain.</summary>
+    private static QuickKind ClauseKind(string raw, List<string> nameList)
+    {
+        var norm = IntentMatcher.Normalize(raw, nameList);
+        foreach (var n in nameList.Where(n => !string.IsNullOrWhiteSpace(n)))
+            norm = Regex.Replace(norm, $@"\b{Regex.Escape(n.Trim().ToLowerInvariant())}\b", " ", O);
+        var clauses = ClauseSplit.Split(norm).Select(c => Regex.Replace(c, @"\s+", " ").Trim(' ', '@', '\'', '"')).Where(c => c.Length > 0).ToList();
+        bool status = false;
+        foreach (var c in clauses)
+        {
+            if (SmallTalkRx.IsMatch(c)) continue;
+            if (StatusRx.IsMatch(c)) { status = true; continue; }
+            return QuickKind.Brain;
         }
         return status ? QuickKind.Status : QuickKind.SmallTalk;
     }

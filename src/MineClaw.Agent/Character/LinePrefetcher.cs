@@ -72,22 +72,8 @@ public sealed class LinePrefetcher
     /// <summary>One refresh: sync the bank's context, and if moments are missing (and the budget allows) one call. Returns lines added.</summary>
     public async Task<int> RefreshAsync(CancellationToken ct = default)
     {
-        if (!_o.Prefetch || Context?.Invoke() is not { } ctx) return 0;
-        var sig = ctx.Signature;
-        int dropped = _bank.SetContext(sig);
-        if (dropped > 0) _log?.LogDebug("line bank: context changed, {N} line(s) expired", dropped);
-        if (ctx.Players.Count == 0) return 0; // nobody to talk to
-        var need = Needed(ctx);
-        if (need.Count == 0) return 0;
-        if (_usage.CheckMode() is not (BudgetMode.Normal or BudgetMode.Economy)) return 0;
-        var now = _time.GetUtcNow();
-        lock (_calls)
-        {
-            while (_calls.Count > 0 && now - _calls.Peek() > TimeSpan.FromHours(1)) _calls.Dequeue();
-            if (_calls.Count >= Math.Max(0, _o.MaxPrefetchPerHour)) return 0;
-            if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0) return 0;
-            _calls.Enqueue(now);
-        }
+        if (MissingMoments(out var ctx, out var sig) is not { } need) return 0;
+        if (!TryReserveCall()) return 0;
         try
         {
             string? self = null;
@@ -104,18 +90,7 @@ public sealed class LinePrefetcher
             Calls++;
             _usage.Record(response.Model, response.Usage, ModelTier.Cheap);
             if (_bank.Context != sig) return 0; // the world moved on while it was writing
-            int added = 0;
-            foreach (var (key, lines) in Parse(response.Text))
-            {
-                var (moment, player) = SplitKey(key);
-                if (!need.Any(n => n.Moment == moment && (n.Player == null || n.Player.Equals(player, StringComparison.OrdinalIgnoreCase)))) continue;
-                foreach (var raw in lines.Take(Math.Max(1, _o.LinesPerMoment)))
-                {
-                    if (Lint(raw, ctx, _o.MaxLineChars) is not { } line || _bank.RecentlySaid(line)) continue;
-                    _bank.Add(moment, player, line, sig);
-                    added++;
-                }
-            }
+            int added = AddLines(response.Text, need, ctx, sig);
             _log?.LogInformation("line prefetch: {Added} line(s) for {Moments} ({Context})", added, string.Join(",", need.Select(n => n.Moment + (n.Player != null ? "@" + n.Player : ""))), ctx.Activity);
             return added;
         }
@@ -125,6 +100,57 @@ public sealed class LinePrefetcher
             return 0;
         }
         finally { Interlocked.Exchange(ref _inFlight, 0); }
+    }
+
+    /// <summary>
+    /// Syncs the bank's context, then the moments to prefetch: null when prefetch is off, nobody is around, nothing is missing or
+    /// the budget is tight.
+    /// </summary>
+    private IReadOnlyList<(string Moment, string? Player)>? MissingMoments(out CharacterContext ctx, out string sig)
+    {
+        ctx = CharacterContext.Idle;
+        sig = "";
+        if (!_o.Prefetch || Context?.Invoke() is not { } current) return null;
+        ctx = current;
+        sig = ctx.Signature;
+        int dropped = _bank.SetContext(sig);
+        if (dropped > 0) _log?.LogDebug("line bank: context changed, {N} line(s) expired", dropped);
+        if (ctx.Players.Count == 0) return null; // nobody to talk to
+        var need = Needed(ctx);
+        if (need.Count == 0) return null;
+        return _usage.CheckMode() is BudgetMode.Normal or BudgetMode.Economy ? need : null;
+    }
+
+    /// <summary>One call at a time, at most <see cref="CharacterOptions.MaxPrefetchPerHour"/> an hour.</summary>
+    private bool TryReserveCall()
+    {
+        var now = _time.GetUtcNow();
+        lock (_calls)
+        {
+            while (_calls.Count > 0 && now - _calls.Peek() > TimeSpan.FromHours(1)) _calls.Dequeue();
+            if (_calls.Count >= Math.Max(0, _o.MaxPrefetchPerHour)) return false;
+            if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0) return false;
+            _calls.Enqueue(now);
+            return true;
+        }
+    }
+
+    /// <summary>Banks the reply's lines for the moments asked (each linted, none said recently); returns how many.</summary>
+    private int AddLines(string? text, IReadOnlyList<(string Moment, string? Player)> need, CharacterContext ctx, string sig)
+    {
+        int added = 0;
+        foreach (var (key, lines) in Parse(text))
+        {
+            var (moment, player) = SplitKey(key);
+            if (!need.Any(n => n.Moment == moment && (n.Player == null || n.Player.Equals(player, StringComparison.OrdinalIgnoreCase)))) continue;
+            foreach (var raw in lines.Take(Math.Max(1, _o.LinesPerMoment)))
+            {
+                if (Lint(raw, ctx, _o.MaxLineChars) is not { } line || _bank.RecentlySaid(line)) continue;
+                _bank.Add(moment, player, line, sig);
+                added++;
+            }
+        }
+        return added;
     }
 
     private static (string Moment, string? Player) SplitKey(string key)
@@ -166,16 +192,23 @@ public sealed class LinePrefetcher
         {
             using var doc = JsonDocument.Parse(text[a..(b + 1)]);
             foreach (var p in doc.RootElement.EnumerateObject())
-            {
-                var list = new List<string>();
-                if (p.Value.ValueKind == JsonValueKind.Array)
-                    foreach (var x in p.Value.EnumerateArray()) { if (x.ValueKind == JsonValueKind.String && x.GetString() is { } s) list.Add(s); }
-                else if (p.Value.ValueKind == JsonValueKind.String && p.Value.GetString() is { } one) list.Add(one);
-                if (list.Count > 0) map[p.Name] = list;
-            }
+                if (LinesOf(p.Value) is { Count: > 0 } list) map[p.Name] = list;
         }
         catch (JsonException) { }
         return map;
+    }
+
+    /// <summary>A moment's lines: the strings of an array, or one string.</summary>
+    private static List<string> LinesOf(JsonElement v)
+    {
+        var list = new List<string>();
+        if (v.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var x in v.EnumerateArray())
+                if (x.ValueKind == JsonValueKind.String && x.GetString() is { } s) list.Add(s);
+        }
+        else if (v.ValueKind == JsonValueKind.String && v.GetString() is { } one) list.Add(one);
+        return list;
     }
 
     private static readonly Regex Coords = new(@"-?\d+\s*[, ]\s*-?\d+(?:\s*[, ]\s*-?\d+)?", RegexOptions.Compiled);
@@ -186,14 +219,17 @@ public sealed class LinePrefetcher
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
         var t = text.Replace("\r", "").Trim().Trim('"', '\'', '`').Trim();
-        if (t.Length == 0 || t.Length > maxChars || t.Contains('\n') || t.StartsWith('/') || t.Contains('{') || t.Contains('[')) return null;
-        if (t.Any(c => c > 127)) return null; // the server's chat is ASCII
+        if (!IsOneChatLine(t, maxChars)) return null;
         if (Coords.IsMatch(t) || Claims.IsMatch(t)) return null;
         var situation = ctx.Describe();
         foreach (Match m in Regex.Matches(t, @"\d+"))
             if (!Regex.IsMatch(situation, $@"(?<!\d){m.Value}(?!\d)")) return null;
         return t;
     }
+
+    /// <summary>Non-empty, short enough, one line, no command, no JSON, ASCII only (the server's chat is ASCII).</summary>
+    private static bool IsOneChatLine(string t, int maxChars) =>
+        t.Length > 0 && t.Length <= maxChars && !t.Contains('\n') && !t.StartsWith('/') && !t.Contains('{') && !t.Contains('[') && !t.Any(c => c > 127);
 
     private static string Trunc(string s, int max) { s = (s ?? "").Trim(); return s.Length <= max ? s : s[..max]; }
 }

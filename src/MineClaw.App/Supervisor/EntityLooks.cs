@@ -169,16 +169,19 @@ public static class EntityLooks
     public static int? Variant(Entity e)
     {
         if (e.MetaInt(EntityMeta.Mob16) is { } m16) return m16;
-        if (e.Kind == EntityKind.Mob)
-            return e.MetaInt(EntityMeta.HorseVariant) ?? e.MetaInt(EntityMeta.LlamaVariant) ?? e.MetaInt(EntityMeta.RabbitType)
-                ?? e.MetaInt(EntityMeta.Profession) ?? e.MetaInt(EntityMeta.OcelotType) ?? e.MetaInt(EntityMeta.ParrotVariant);
-        return NameOf(e) switch
-        {
-            "boat" => e.MetaInt(EntityMeta.BoatType),
-            "minecart" when e.TypeName != null => e.Data is > 0 and < 7 ? e.Data : null, // 1.12.2: the spawn data is the cart type
-            _ => null,
-        };
+        return e.Kind == EntityKind.Mob ? MobVariant(e) : ObjectVariant(e);
     }
+
+    private static int? MobVariant(Entity e) =>
+        e.MetaInt(EntityMeta.HorseVariant) ?? e.MetaInt(EntityMeta.LlamaVariant) ?? e.MetaInt(EntityMeta.RabbitType)
+        ?? e.MetaInt(EntityMeta.Profession) ?? e.MetaInt(EntityMeta.OcelotType) ?? e.MetaInt(EntityMeta.ParrotVariant);
+
+    private static int? ObjectVariant(Entity e) => NameOf(e) switch
+    {
+        "boat" => e.MetaInt(EntityMeta.BoatType),
+        "minecart" when e.TypeName != null => e.Data is > 0 and < 7 ? e.Data : null, // 1.12.2: the spawn data is the cart type
+        _ => null,
+    };
 
     /// <summary>The compact <c>look</c> string per kind (comma-separated tokens: "red,sheared", "chestnut,white_dots,saddle,armor=iron",
     /// "tame,collar=red", "profession=librarian", "size=4", "powered"); null when there's nothing to say.</summary>

@@ -162,55 +162,72 @@ public sealed class RaptorSectionRebuilder
         var scope = (r.Scope ?? "").Trim().ToLowerInvariant();
         var who = string.IsNullOrWhiteSpace(r.Who) ? "admin" : r.Who.Trim();
         string id = scope == "node" ? r.Node?.ToString() ?? "" : r.Kind ?? "";
-        RebuildResult result;
-        decimal spent = 0;
-        if (Refusal(r, scope) is { } why) result = new RebuildResult(false, why, [], 0, sw.Elapsed);
-        else
-        {
-            var estimate = Estimate(r);
-            if (estimate.Summaries == 0 && estimate.EmbeddingTokens == 0 && scope == "node") result = new RebuildResult(false, estimate.Note, [], 0, sw.Elapsed);
-            else if (estimate.Usd > r.MaxUsd)
-                result = new RebuildResult(false, $"estimated ${estimate.Usd:F4} exceeds the ${r.MaxUsd:F2} cap; nothing was spent ({estimate.Note})", [], 0, sw.Elapsed);
-            else
-            {
-                await _ctx.RebuildGate.WaitAsync(ct).ConfigureAwait(false);
-                decimal embedBefore = _ctx.Usage?.Today.EmbeddingUsd ?? 0;
-                var summarizer = new HaikuSummarizer(_ctx.Llm!, _ctx.Options.Llm, _ctx.Usage)
-                {
-                    StyleHint = MemoryAdminContext.StyleHint(_ctx.Options),
-                };
-                LastSummarizer = summarizer;
-                try
-                {
-                    // Hard cap: what's left after the embedding estimate, enforced twice (RAPTOR reservations + the summarizer's own stop).
-                    decimal summaryCap = Math.Max(0, r.MaxUsd - EmbedUsd(estimate.EmbeddingTokens));
-                    summarizer.MaxCostUsd = summaryCap;
-                    var budget = summarizer.Budget(summaryCap);
-                    var reuse = ReuseSummaries is { Count: > 0 } map ? new ReusingSummarizer(summarizer, map) : null;
-                    ISummarizer s = reuse ?? (ISummarizer)summarizer;
-                    result = scope == "node"
-                        ? await RunNodeAsync(r.Node!.Value, budget, s, progress, ct).ConfigureAwait(false)
-                        : await RunKindAsync(r.Kind!, budget, s, progress, ct).ConfigureAwait(false);
-                    LastReused = reuse?.Reused ?? 0;
-                    if (LastReused > 0) result = result with { Message = result.Message + $" ({LastReused} cached summaries reused)" };
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    result = new RebuildResult(false, "cancelled; the tree is as it was before the unfinished step", [], 0, sw.Elapsed);
-                }
-                catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
-                {
-                    result = new RebuildResult(false, ex.Message, [], 0, sw.Elapsed);
-                }
-                finally { _ctx.RebuildGate.Release(); }
-                decimal embedUsd = _ctx.Usage != null ? _ctx.Usage.Today.EmbeddingUsd - embedBefore : 0;
-                spent = summarizer.CostUsd + Math.Max(0, embedUsd);
-                result = result with { SpentUsd = spent, Elapsed = sw.Elapsed };
-            }
-        }
+        var (result, spent) = Refusal(r, scope) is { } why
+            ? (NotRun(why, sw), 0m)
+            : await RunEstimatedAsync(r, scope, sw, progress, ct).ConfigureAwait(false);
         progress?.Report(new RebuildProgress("done", 1, 1, result.Message));
         _audit.Write(new AuditEntry(DateTimeOffset.UtcNow, who, _target, "rebuild", scope, id, null,
             result.Ok ? $"{result.Diffs.Count} summary change(s), ${spent:F4}" : null, null, result.Ok, result.Message));
+        return result;
+    }
+
+    private static RebuildResult NotRun(string message, Stopwatch sw) => new(false, message, [], 0, sw.Elapsed);
+
+    /// <summary>Refuses an empty node rebuild or one estimated over the cap; else runs it. Returns the result and the USD spent.</summary>
+    private async Task<(RebuildResult Result, decimal Spent)> RunEstimatedAsync(RebuildRequest r, string scope, Stopwatch sw,
+        IProgress<RebuildProgress>? progress, CancellationToken ct)
+    {
+        var estimate = Estimate(r);
+        if (estimate.Summaries == 0 && estimate.EmbeddingTokens == 0 && scope == "node") return (NotRun(estimate.Note, sw), 0);
+        if (estimate.Usd > r.MaxUsd)
+            return (NotRun($"estimated ${estimate.Usd:F4} exceeds the ${r.MaxUsd:F2} cap; nothing was spent ({estimate.Note})", sw), 0);
+        return await RunGatedAsync(r, scope, estimate, sw, progress, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>One rebuild at a time: summarize under the cap, then charge what the summaries and re-embedding cost.</summary>
+    private async Task<(RebuildResult Result, decimal Spent)> RunGatedAsync(RebuildRequest r, string scope, RebuildEstimate estimate, Stopwatch sw,
+        IProgress<RebuildProgress>? progress, CancellationToken ct)
+    {
+        await _ctx.RebuildGate.WaitAsync(ct).ConfigureAwait(false);
+        decimal embedBefore = _ctx.Usage?.Today.EmbeddingUsd ?? 0;
+        var summarizer = new HaikuSummarizer(_ctx.Llm!, _ctx.Options.Llm, _ctx.Usage)
+        {
+            StyleHint = MemoryAdminContext.StyleHint(_ctx.Options),
+        };
+        LastSummarizer = summarizer;
+        RebuildResult result;
+        try
+        {
+            result = await SummarizeAsync(r, scope, estimate, summarizer, progress, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            result = NotRun("cancelled; the tree is as it was before the unfinished step", sw);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            result = NotRun(ex.Message, sw);
+        }
+        finally { _ctx.RebuildGate.Release(); }
+        decimal embedUsd = _ctx.Usage != null ? _ctx.Usage.Today.EmbeddingUsd - embedBefore : 0;
+        decimal spent = summarizer.CostUsd + Math.Max(0, embedUsd);
+        return (result with { SpentUsd = spent, Elapsed = sw.Elapsed }, spent);
+    }
+
+    private async Task<RebuildResult> SummarizeAsync(RebuildRequest r, string scope, RebuildEstimate estimate, HaikuSummarizer summarizer,
+        IProgress<RebuildProgress>? progress, CancellationToken ct)
+    {
+        // Hard cap: what's left after the embedding estimate, enforced twice (RAPTOR reservations + the summarizer's own stop).
+        decimal summaryCap = Math.Max(0, r.MaxUsd - EmbedUsd(estimate.EmbeddingTokens));
+        summarizer.MaxCostUsd = summaryCap;
+        var budget = summarizer.Budget(summaryCap);
+        var reuse = ReuseSummaries is { Count: > 0 } map ? new ReusingSummarizer(summarizer, map) : null;
+        ISummarizer s = reuse ?? (ISummarizer)summarizer;
+        var result = scope == "node"
+            ? await RunNodeAsync(r.Node!.Value, budget, s, progress, ct).ConfigureAwait(false)
+            : await RunKindAsync(r.Kind!, budget, s, progress, ct).ConfigureAwait(false);
+        LastReused = reuse?.Reused ?? 0;
+        if (LastReused > 0) result = result with { Message = result.Message + $" ({LastReused} cached summaries reused)" };
         return result;
     }
 

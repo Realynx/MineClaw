@@ -117,44 +117,50 @@ public static class SeedCorpus
         if (it.Tool == ToolType.None || it.ToolTier < 0) return "";
         string tier = TierNames[Math.Clamp(it.ToolTier, 0, 4)];
         int level = MineClaw.Data.Tools.HarvestLevel(it.ToolTier);
-        string harvest = it.Tool == ToolType.Pickaxe
-            ? level switch
-            {
-                0 => " Mines stone, cobblestone and coal ore (not iron ore).",
-                1 => " Mines iron and lapis ore (not gold, diamond or redstone ore).",
-                2 => " Mines gold, diamond and redstone ore (not obsidian).",
-                _ => " Mines everything, including obsidian.",
-            }
-            : "";
+        string harvest = it.Tool == ToolType.Pickaxe ? PickaxeHarvest(level) : "";
         string speed = it.Tool is ToolType.Pickaxe or ToolType.Shovel or ToolType.Axe ? $" Speed x{F(MineClaw.Data.Tools.Efficiency(it.ToolTier))} on its blocks." : "";
         string gold = it.ToolTier == 4 ? " Gold is the fastest tier but has wood harvest level and very low durability." : "";
         return $" {char.ToUpper(it.Tool.ToString()[0]) + it.Tool.ToString()[1..].ToLowerInvariant()}, {tier} tier (harvest level {level}).{harvest}{speed}{gold}";
     }
 
+    private static string PickaxeHarvest(int level) => level switch
+    {
+        0 => " Mines stone, cobblestone and coal ore (not iron ore).",
+        1 => " Mines iron and lapis ore (not gold, diamond or redstone ore).",
+        2 => " Mines gold, diamond and redstone ore (not obsidian).",
+        _ => " Mines everything, including obsidian.",
+    };
+
     private static IEnumerable<RagDoc> ItemDocs()
     {
         foreach (var it in Items.All.Where(i => !i.IsBlock).OrderBy(i => i.Id))
-        {
-            var sb = new StringBuilder($"Item: {it.DisplayName} (id {it.Id}). ");
-            sb.Append(it.MaxStack == 1 ? "Does not stack." : $"Stacks to {it.MaxStack}.");
-            if (it.MaxDamage > 0) sb.Append($" Durability {it.MaxDamage + 1} uses.");
-            sb.Append(ToolLine(it));
-            if (Items.Food(it.Id) is { } food)
-            {
-                sb.Append($" Food: restores {food.Hunger} hunger ({F(food.Hunger / 2.0)} shanks), saturation {F(food.Saturation)}.");
-                float poison = Items.FoodPoisonChance(it.Id);
-                if (poison > 0) sb.Append($" {poison:P0} chance of food poisoning.");
-            }
-            if (Smelting.IsFuel(it.Id)) sb.Append($" Fuel: smelts {F(Smelting.ItemsPerFuel(it.Id))} items.");
-            var made = Recipes.ForOutput(it.Id);
-            if (made.Count > 0) sb.Append(" Crafted (").Append(made[0].RequiresCraftingTable ? "table" : "2x2").Append(") from ")
-                .Append(string.Join(", ", made[0].Totals.Select(t => $"{t.Count} {t.Ingredient}"))).Append('.');
-            var smelted = Smelting.ForOutput(it.Id);
-            if (smelted.Count > 0) sb.Append(" Smelted from ").Append(string.Join(", ", smelted.Select(s => Items.Get(s.InputId).DisplayName))).Append('.');
-            var sources = Drops.SourcesOf(it.Id).Where(b => b != it.Id).Take(3).Select(b => Blocks.Get(b).DisplayName).ToList();
-            if (sources.Count > 0) sb.Append(" Dropped by ").Append(string.Join(", ", sources)).Append('.');
-            yield return Doc($"gd:item:{it.Id}", "item", $"item {it.DisplayName}", sb.ToString());
-        }
+            yield return Doc($"gd:item:{it.Id}", "item", $"item {it.DisplayName}", ItemText(it));
+    }
+
+    private static string ItemText(ItemInfo it)
+    {
+        var sb = new StringBuilder($"Item: {it.DisplayName} (id {it.Id}). ");
+        sb.Append(it.MaxStack == 1 ? "Does not stack." : $"Stacks to {it.MaxStack}.");
+        if (it.MaxDamage > 0) sb.Append($" Durability {it.MaxDamage + 1} uses.");
+        sb.Append(ToolLine(it));
+        AppendFood(sb, it);
+        if (Smelting.IsFuel(it.Id)) sb.Append($" Fuel: smelts {F(Smelting.ItemsPerFuel(it.Id))} items.");
+        var made = Recipes.ForOutput(it.Id);
+        if (made.Count > 0) sb.Append(" Crafted (").Append(made[0].RequiresCraftingTable ? "table" : "2x2").Append(") from ")
+            .Append(string.Join(", ", made[0].Totals.Select(t => $"{t.Count} {t.Ingredient}"))).Append('.');
+        var smelted = Smelting.ForOutput(it.Id);
+        if (smelted.Count > 0) sb.Append(" Smelted from ").Append(string.Join(", ", smelted.Select(s => Items.Get(s.InputId).DisplayName))).Append('.');
+        var sources = Drops.SourcesOf(it.Id).Where(b => b != it.Id).Take(3).Select(b => Blocks.Get(b).DisplayName).ToList();
+        if (sources.Count > 0) sb.Append(" Dropped by ").Append(string.Join(", ", sources)).Append('.');
+        return sb.ToString();
+    }
+
+    private static void AppendFood(StringBuilder sb, ItemInfo it)
+    {
+        if (Items.Food(it.Id) is not { } food) return;
+        sb.Append($" Food: restores {food.Hunger} hunger ({F(food.Hunger / 2.0)} shanks), saturation {F(food.Saturation)}.");
+        float poison = Items.FoodPoisonChance(it.Id);
+        if (poison > 0) sb.Append($" {poison:P0} chance of food poisoning.");
     }
 
     // ======================= blocks =======================
@@ -184,30 +190,43 @@ public static class SeedCorpus
     private static IEnumerable<RagDoc> BlockDocs()
     {
         foreach (var b in Blocks.All.Where(b => b.Id > 0).OrderBy(b => b.Id))
-        {
-            var sb = new StringBuilder($"Block: {b.DisplayName} (id {b.Id}). ");
-            sb.Append(b.Hardness < 0 ? "Unbreakable." : b.Hardness == 0 ? "Breaks instantly." : $"Hardness {F(b.Hardness)}.");
-            if (b.Liquid) sb.Append(" Liquid.");
-            if (b.BestTool != ToolType.None)
-                sb.Append($" Best tool: {b.BestTool.ToString().ToLowerInvariant()}.");
-            if (MineClaw.Data.Tools.RequiresTool(b.Id))
-                sb.Append(b.MinHarvestLevel switch
-                {
-                    > 0 => $" Needs a {TierNames[b.MinHarvestLevel]} {(b.BestTool == ToolType.None ? "pickaxe" : b.BestTool.ToString().ToLowerInvariant())} or better to drop anything.",
-                    _ => $" Drops nothing without a {(b.BestTool == ToolType.None ? "pickaxe" : b.BestTool.ToString().ToLowerInvariant())}.",
-                });
-            if (b.Hardness >= 0 && !b.Liquid)
-            {
-                int tool = BestHarvester(b);
-                var drops = Drops.For(b.Id, 0, tool);
-                sb.Append(drops.Count == 0 ? " Drops nothing." : " Drops " + string.Join(", ", drops.Select(d => d.ToString())) + ".");
-            }
-            if (b.Hazard) sb.Append(" Hazard: damages players.");
-            if (b.Interactable) sb.Append(" Right-click to use.");
-            if (!b.Solid && !b.Liquid) sb.Append(" Not solid (walk through).");
-            if (Quirks.TryGetValue(b.Id, out var q)) sb.Append(' ').Append(q);
-            yield return Doc($"gd:block:{b.Id}", "block", $"block {b.DisplayName}", sb.ToString());
-        }
+            yield return Doc($"gd:block:{b.Id}", "block", $"block {b.DisplayName}", BlockText(b));
+    }
+
+    private static string BlockText(BlockInfo b)
+    {
+        var sb = new StringBuilder($"Block: {b.DisplayName} (id {b.Id}). ");
+        sb.Append(b.Hardness < 0 ? "Unbreakable." : b.Hardness == 0 ? "Breaks instantly." : $"Hardness {F(b.Hardness)}.");
+        if (b.Liquid) sb.Append(" Liquid.");
+        if (b.BestTool != ToolType.None)
+            sb.Append($" Best tool: {b.BestTool.ToString().ToLowerInvariant()}.");
+        if (MineClaw.Data.Tools.RequiresTool(b.Id)) sb.Append(HarvestNeed(b));
+        if (b.Hardness >= 0 && !b.Liquid) sb.Append(DropsText(b));
+        AppendBlockTraits(sb, b);
+        return sb.ToString();
+    }
+
+    private static string HarvestNeed(BlockInfo b)
+    {
+        var tool = b.BestTool == ToolType.None ? "pickaxe" : b.BestTool.ToString().ToLowerInvariant();
+        return b.MinHarvestLevel > 0
+            ? $" Needs a {TierNames[b.MinHarvestLevel]} {tool} or better to drop anything."
+            : $" Drops nothing without a {tool}.";
+    }
+
+    private static string DropsText(BlockInfo b)
+    {
+        int tool = BestHarvester(b);
+        var drops = Drops.For(b.Id, 0, tool);
+        return drops.Count == 0 ? " Drops nothing." : " Drops " + string.Join(", ", drops.Select(d => d.ToString())) + ".";
+    }
+
+    private static void AppendBlockTraits(StringBuilder sb, BlockInfo b)
+    {
+        if (b.Hazard) sb.Append(" Hazard: damages players.");
+        if (b.Interactable) sb.Append(" Right-click to use.");
+        if (!b.Solid && !b.Liquid) sb.Append(" Not solid (walk through).");
+        if (Quirks.TryGetValue(b.Id, out var q)) sb.Append(' ').Append(q);
     }
 
     private static int BestHarvester(BlockInfo b) =>
@@ -240,33 +259,41 @@ public static class SeedCorpus
         foreach (var id in DigBlocks.Where(Blocks.Exists))
         {
             var b = Blocks.Get(id);
-            var sb = new StringBuilder($"Dig times for {b.DisplayName}: by hand {Secs(MineClaw.Data.Tools.DigSeconds(id, -1))}");
-            if (!MineClaw.Data.Tools.CanHarvest(id, -1)) sb.Append(" (drops nothing by hand)");
-            int bestTicks = MineClaw.Data.Tools.CanHarvest(id, -1) ? MineClaw.Data.Tools.DigTicks(id, -1) : int.MaxValue;
-            var best = new List<string> { "bare hand" };
-            foreach (var (type, ids) in ToolsByType)
-            {
-                double plain = MineClaw.Data.Tools.DigSeconds(id, -1);
-                var times = ids.Select(t => (Tool: Items.Get(t), S: MineClaw.Data.Tools.DigSeconds(id, t))).ToList();
-                if (times.All(t => Math.Abs(t.S - plain) < 1e-9) && type != b.BestTool) continue;
-                sb.Append($"; {type.ToString().ToLowerInvariant()}: ").Append(string.Join(", ",
-                    times.Select(t => $"{TierNames[t.Tool.ToolTier]} {Secs(t.S)}{(MineClaw.Data.Tools.CanHarvest(id, t.Tool.Id) ? "" : " no drop")}")));
-                foreach (var t in times.Where(t => MineClaw.Data.Tools.CanHarvest(id, t.Tool.Id)))
-                {
-                    int ticks = MineClaw.Data.Tools.DigTicks(id, t.Tool.Id);
-                    if (ticks < bestTicks) { bestTicks = ticks; best = [t.Tool.DisplayName]; }
-                    else if (ticks == bestTicks && best[0] != "bare hand" && !best.Contains(t.Tool.DisplayName)) best.Add(t.Tool.DisplayName);
-                }
-            }
-            sb.Append($". Fastest tool for {b.DisplayName}: {string.Join(" or ", best)}");
-            if (bestTicks != int.MaxValue) sb.Append($" ({Secs(bestTicks / 20.0)})");
-            sb.Append(best.Any(n => n.StartsWith("Gold", StringComparison.Ordinal)) ? "; gold is fast but wears out quickly." : ".");
-            if (b.BestTool != ToolType.None) sb.Append($" Right tool type: {b.BestTool.ToString().ToLowerInvariant()}.");
-            yield return Doc($"gd:dig:{id}", "digtime", $"dig time {b.DisplayName}", sb.ToString());
+            yield return Doc($"gd:dig:{id}", "digtime", $"dig time {b.DisplayName}", DigText(id, b));
         }
         yield return Doc("gd:dig:tiers", "digtime", "tool tiers",
             "Tool tiers in beta 1.8.1: wooden (speed x2, 60 uses), stone (x4, 132 uses), iron (x6, 251 uses), diamond (x8, 1562 uses), " +
             "gold (x12, 33 uses; harvests like wood). Speed only applies to the tool's own blocks: pickaxe for rock and ores, shovel for dirt, " +
             "sand, gravel, clay and snow, axe for logs, planks, chests and bookshelves. Swords cut cobwebs; shears cut leaves, wool and webs.");
+    }
+
+    private static string DigText(int id, BlockInfo b)
+    {
+        var sb = new StringBuilder($"Dig times for {b.DisplayName}: by hand {Secs(MineClaw.Data.Tools.DigSeconds(id, -1))}");
+        if (!MineClaw.Data.Tools.CanHarvest(id, -1)) sb.Append(" (drops nothing by hand)");
+        int bestTicks = MineClaw.Data.Tools.CanHarvest(id, -1) ? MineClaw.Data.Tools.DigTicks(id, -1) : int.MaxValue;
+        var best = new List<string> { "bare hand" };
+        foreach (var (type, ids) in ToolsByType) AppendToolTimes(sb, id, b, type, ids, ref bestTicks, ref best);
+        sb.Append($". Fastest tool for {b.DisplayName}: {string.Join(" or ", best)}");
+        if (bestTicks != int.MaxValue) sb.Append($" ({Secs(bestTicks / 20.0)})");
+        sb.Append(best.Any(n => n.StartsWith("Gold", StringComparison.Ordinal)) ? "; gold is fast but wears out quickly." : ".");
+        if (b.BestTool != ToolType.None) sb.Append($" Right tool type: {b.BestTool.ToString().ToLowerInvariant()}.");
+        return sb.ToString();
+    }
+
+    /// <summary>One tool type's dig times (skipped when no tier beats the hand and it isn't the block's tool); tracks the fastest tools.</summary>
+    private static void AppendToolTimes(StringBuilder sb, int id, BlockInfo b, ToolType type, int[] ids, ref int bestTicks, ref List<string> best)
+    {
+        double plain = MineClaw.Data.Tools.DigSeconds(id, -1);
+        var times = ids.Select(t => (Tool: Items.Get(t), S: MineClaw.Data.Tools.DigSeconds(id, t))).ToList();
+        if (times.All(t => Math.Abs(t.S - plain) < 1e-9) && type != b.BestTool) return;
+        sb.Append($"; {type.ToString().ToLowerInvariant()}: ").Append(string.Join(", ",
+            times.Select(t => $"{TierNames[t.Tool.ToolTier]} {Secs(t.S)}{(MineClaw.Data.Tools.CanHarvest(id, t.Tool.Id) ? "" : " no drop")}")));
+        foreach (var t in times.Where(t => MineClaw.Data.Tools.CanHarvest(id, t.Tool.Id)))
+        {
+            int ticks = MineClaw.Data.Tools.DigTicks(id, t.Tool.Id);
+            if (ticks < bestTicks) { bestTicks = ticks; best = [t.Tool.DisplayName]; }
+            else if (ticks == bestTicks && best[0] != "bare hand" && !best.Contains(t.Tool.DisplayName)) best.Add(t.Tool.DisplayName);
+        }
     }
 }

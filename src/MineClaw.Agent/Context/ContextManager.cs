@@ -161,8 +161,24 @@ public sealed class ContextManager
     public async Task<int> CompactAsync(Func<string, CancellationToken, Task<string>>? summarize, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        List<Episode> old;
-        string journal;
+        var (old, journal) = OldestOverTarget();
+        string next = journal;
+        if (old.Count > 0)
+        {
+            // Null: a rejected checkpoint while the intact history still fits.
+            if (await FoldIntoJournalAsync(summarize, old, journal, ct).ConfigureAwait(false) is not { } folded) return 0;
+            next = folded;
+        }
+
+        ct.ThrowIfCancellationRequested();
+        Recompact(old, next);
+        if (old.Count > 0) Compacted?.Invoke(old, next);
+        return old.Count;
+    }
+
+    /// <summary>The oldest episodes to fold until both renderings fit their targets (never the newest), and the journal now.</summary>
+    private (List<Episode> Old, string Journal) OldestOverTarget()
+    {
         lock (_lock)
         {
             int jt = TextUtil.EstimateTokens(Journal);
@@ -175,40 +191,52 @@ public sealed class ContextManager
                 cheap -= _episodes[take].CheapTokens;
                 take++;
             }
-            old = _episodes.Take(take).ToList();
-            journal = Journal;
+            return (_episodes.Take(take).ToList(), Journal);
         }
+    }
 
-        string next = journal;
-        if (old.Count > 0)
+    /// <summary>
+    /// The journal with <paramref name="old"/> folded in by the summarizer, or mechanically when it fails; null when it gave an
+    /// unfinished checkpoint and the history still fits the hard ceiling.
+    /// </summary>
+    private async Task<string?> FoldIntoJournalAsync(Func<string, CancellationToken, Task<string>>? summarize, List<Episode> old, string journal,
+        CancellationToken ct)
+    {
+        var digest = string.Join("\n", old.Select(e => Flatten(e, 160)));
+        string next;
+        try
         {
-            var digest = string.Join("\n", old.Select(e => Flatten(e, 160)));
-            try
-            {
-                if (summarize == null) throw new InvalidOperationException("no summarizer");
-                var prompt = $"Journal so far:\n{(journal.Length > 0 ? journal : "(empty)")}\n\nNewer log to fold in:\n{digest}";
-                next = (await summarize(prompt, ct).ConfigureAwait(false)).Trim();
-                if (next.Length == 0) throw new InvalidOperationException("empty summary");
-            }
-            catch (IncompleteCompactionSummaryException) when (!ct.IsCancellationRequested &&
-                Scaled(EstimateTokens()) <= _options.MaxTokens && EstimateCheapTokens() <= _options.MaxTokens)
-            {
-                // A soft compaction threshold is not a reason to replace intact history with an unfinished checkpoint.
-                return 0;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException && !ct.IsCancellationRequested)
-            {
-                const string label = "[mechanical fallback; lossy]";
-                next = (journal + "\n" + digest).Trim();
-                // Reserve room for the label even when retaining only the newest part of the digest.
-                int chars = Math.Max(0, _options.JournalMaxChars - label.Length - 1);
-                if (next.Length > chars) next = chars > 3 ? "..." + next[^(chars - 3)..] : "";
-                next = label + "\n" + next;
-            }
-            next = TextUtil.Truncate(next, _options.JournalMaxChars);
+            if (summarize == null) throw new InvalidOperationException("no summarizer");
+            var prompt = $"Journal so far:\n{(journal.Length > 0 ? journal : "(empty)")}\n\nNewer log to fold in:\n{digest}";
+            next = (await summarize(prompt, ct).ConfigureAwait(false)).Trim();
+            if (next.Length == 0) throw new InvalidOperationException("empty summary");
         }
+        catch (IncompleteCompactionSummaryException) when (!ct.IsCancellationRequested &&
+            Scaled(EstimateTokens()) <= _options.MaxTokens && EstimateCheapTokens() <= _options.MaxTokens)
+        {
+            // A soft compaction threshold is not a reason to replace intact history with an unfinished checkpoint.
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            next = MechanicalJournal(journal, digest);
+        }
+        return TextUtil.Truncate(next, _options.JournalMaxChars);
+    }
 
-        ct.ThrowIfCancellationRequested();
+    private string MechanicalJournal(string journal, string digest)
+    {
+        const string label = "[mechanical fallback; lossy]";
+        var next = (journal + "\n" + digest).Trim();
+        // Reserve room for the label even when retaining only the newest part of the digest.
+        int chars = Math.Max(0, _options.JournalMaxChars - label.Length - 1);
+        if (next.Length > chars) next = chars > 3 ? "..." + next[^(chars - 3)..] : "";
+        return label + "\n" + next;
+    }
+
+    /// <summary>Drops the folded episodes, sets the journal, and (the cache rebuilds anyway) trims what stays.</summary>
+    private void Recompact(List<Episode> old, string next)
+    {
         lock (_lock)
         {
             foreach (var e in old) _episodes.Remove(e);
@@ -221,8 +249,6 @@ public sealed class ContextManager
             if (total > _options.MaxTokens)
                 foreach (var e in _episodes) Retruncate(e, Math.Max(40, _options.OldToolResultChars / 2));
         }
-        if (old.Count > 0) Compacted?.Invoke(old, next);
-        return old.Count;
     }
 
     private static void StripImages(Episode e)
@@ -304,10 +330,7 @@ public sealed class ContextManager
         // 1. tool results of all but the newest message, then of every message.
         if (messages.Count > 1)
         {
-            var older = messages.GetRange(0, messages.Count - 1);
-            TruncateToolResults(older, toolResultChars);
-            for (int i = 0; i < older.Count; i++) messages[i] = older[i];
-            est = EstimateTokens(messages);
+            est = TruncateOlderToolResults(messages, toolResultChars);
             if (est <= maxTokens) return est;
         }
         TruncateToolResults(messages, toolResultChars);
@@ -315,28 +338,49 @@ public sealed class ContextManager
         // 2. halve the longest text / tool-result block until it fits (bounded loop).
         for (int guard = 0; est > maxTokens && guard < 200; guard++)
         {
-            int bestMsg = -1, bestBlock = -1, bestLen = 0;
-            for (int i = 0; i < messages.Count; i++)
-                for (int j = 0; j < messages[i].Content.Count; j++)
-                {
-                    int len = messages[i].Content[j] switch { LlmText t => t.Text.Length, LlmToolResult r => r.Content.Length, _ => 0 };
-                    if (len > bestLen) { bestLen = len; bestMsg = i; bestBlock = j; }
-                }
-            if (bestMsg < 0 || bestLen <= 24) break;
-            int over = (int)Math.Ceiling((est - maxTokens) * 3.5) + 8;
-            int keep = Math.Max(20, Math.Min(bestLen / 2, bestLen - over));
-            var m = messages[bestMsg];
-            var blocks = m.Content.ToList();
-            blocks[bestBlock] = blocks[bestBlock] switch
-            {
-                LlmText t => new LlmText(TextUtil.Truncate(t.Text, keep)),
-                LlmToolResult r => r with { Content = TextUtil.Truncate(r.Content, keep) },
-                var b => b,
-            };
-            messages[bestMsg] = m with { Content = blocks };
+            if (!HalveLongestBlock(messages, est, maxTokens)) break;
             est = EstimateTokens(messages);
         }
         return est;
+    }
+
+    private static int TruncateOlderToolResults(List<LlmMessage> messages, int toolResultChars)
+    {
+        var older = messages.GetRange(0, messages.Count - 1);
+        TruncateToolResults(older, toolResultChars);
+        for (int i = 0; i < older.Count; i++) messages[i] = older[i];
+        return EstimateTokens(messages);
+    }
+
+    /// <summary>Cuts the longest text / tool-result block toward the target; false when nothing longer than 24 chars is left.</summary>
+    private static bool HalveLongestBlock(List<LlmMessage> messages, int est, int maxTokens)
+    {
+        var (bestMsg, bestBlock, bestLen) = LongestBlock(messages);
+        if (bestMsg < 0 || bestLen <= 24) return false;
+        int over = (int)Math.Ceiling((est - maxTokens) * 3.5) + 8;
+        int keep = Math.Max(20, Math.Min(bestLen / 2, bestLen - over));
+        var m = messages[bestMsg];
+        var blocks = m.Content.ToList();
+        blocks[bestBlock] = blocks[bestBlock] switch
+        {
+            LlmText t => new LlmText(TextUtil.Truncate(t.Text, keep)),
+            LlmToolResult r => r with { Content = TextUtil.Truncate(r.Content, keep) },
+            var b => b,
+        };
+        messages[bestMsg] = m with { Content = blocks };
+        return true;
+    }
+
+    private static (int Message, int Block, int Length) LongestBlock(List<LlmMessage> messages)
+    {
+        int bestMsg = -1, bestBlock = -1, bestLen = 0;
+        for (int i = 0; i < messages.Count; i++)
+            for (int j = 0; j < messages[i].Content.Count; j++)
+            {
+                int len = messages[i].Content[j] switch { LlmText t => t.Text.Length, LlmToolResult r => r.Content.Length, _ => 0 };
+                if (len > bestLen) { bestLen = len; bestMsg = i; bestBlock = j; }
+            }
+        return (bestMsg, bestBlock, bestLen);
     }
 
     /// <summary>System prompt for the compaction call.</summary>
@@ -376,30 +420,31 @@ public sealed class ContextManager
         var said = new List<string>();
         var uses = new Dictionary<string, LlmToolUse>();
         foreach (var m in e.Messages)
-        {
-            foreach (var b in m.Content)
-            {
-                switch (b)
-                {
-                    case LlmText t when m.Role == LlmRole.User:
-                        user.AddRange(EventLines(t.Text).Select(l => TextUtil.Truncate(l, 160)));
-                        break;
-                    case LlmText t when m.Role == LlmRole.Assistant && t.Text != "(silent)" && t.Text != "(stopped)":
-                        said.Add(TextUtil.OneLine(t.Text));
-                        break;
-                    case LlmToolUse u:
-                        uses[u.Id] = u;
-                        break;
-                    case LlmToolResult r:
-                        var name = uses.TryGetValue(r.ToolUseId, out var tu) ? $"{tu.Name}({CompactArgs(tu.Input)})" : "tool";
-                        user.Add($"[did] {name} {(r.IsError ? "!" : "=")} {TextUtil.Truncate(TextUtil.OneLine(r.Content), 80)}");
-                        break;
-                }
-            }
-        }
+            foreach (var b in m.Content) AddCheapBlock(m.Role, b, user, said, uses);
         var u1 = TextUtil.Truncate(user.Count > 0 ? string.Join("\n", user) : "(nothing)", maxChars);
         var a1 = TextUtil.Truncate(said.Count > 0 ? string.Join(" ", said) : "(silent)", maxChars);
         return (LlmMessage.User(u1), LlmMessage.Assistant(a1));
+    }
+
+    /// <summary>Events go to the user side, what was said to the assistant side, and each tool call as one "[did]" line.</summary>
+    private static void AddCheapBlock(LlmRole role, LlmBlock b, List<string> user, List<string> said, Dictionary<string, LlmToolUse> uses)
+    {
+        switch (b)
+        {
+            case LlmText t when role == LlmRole.User:
+                user.AddRange(EventLines(t.Text).Select(l => TextUtil.Truncate(l, 160)));
+                break;
+            case LlmText t when role == LlmRole.Assistant && t.Text != "(silent)" && t.Text != "(stopped)":
+                said.Add(TextUtil.OneLine(t.Text));
+                break;
+            case LlmToolUse u:
+                uses[u.Id] = u;
+                break;
+            case LlmToolResult r:
+                var name = uses.TryGetValue(r.ToolUseId, out var tu) ? $"{tu.Name}({CompactArgs(tu.Input)})" : "tool";
+                user.Add($"[did] {name} {(r.IsError ? "!" : "=")} {TextUtil.Truncate(TextUtil.OneLine(r.Content), 80)}");
+                break;
+        }
     }
 
     /// <summary>Event lines of a turn text (state header, journal and auto-recalled memory dropped).</summary>
@@ -417,31 +462,40 @@ public sealed class ContextManager
     {
         for (int i = 0; i < messages.Count; i++)
         {
-            var m = messages[i];
-            var cleaned = m.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
-            if (cleaned.Count == 0) cleaned.Add(new LlmText(m.Role == LlmRole.Assistant ? "(silent)" : "(nothing)"));
-            if (cleaned.Count != m.Content.Count) messages[i] = m = m with { Content = cleaned };
-
-            if (m.Role != LlmRole.Assistant) continue;
-            var ids = m.ToolUses.Select(u => u.Id).ToList();
-            if (ids.Count == 0) continue;
-            var next = i + 1 < messages.Count ? messages[i + 1] : null;
-            if (next == null || next.Role != LlmRole.User)
-            {
-                messages.Insert(i + 1, new LlmMessage(LlmRole.User, ids.Select(id => (LlmBlock)new LlmToolResult(id, "cancelled", true)).ToList()));
-                continue;
-            }
-            var answered = next.ToolResults.Select(r => r.ToolUseId).ToHashSet();
-            var missing = ids.Where(id => !answered.Contains(id)).ToList();
-            if (missing.Count > 0)
-            {
-                // tool_result blocks must come first in the user message.
-                var blocks = missing.Select(id => (LlmBlock)new LlmToolResult(id, "cancelled", true)).ToList();
-                messages[i + 1] = next with { Content = [.. next.Content.OfType<LlmToolResult>(), .. blocks, .. next.Content.Where(b => b is not LlmToolResult)] };
-            }
+            var m = WithoutEmptyText(messages, i);
+            if (m.Role == LlmRole.Assistant) AnswerToolUses(messages, i, m);
         }
         if (messages.Count > 0 && messages[^1].Role == LlmRole.User)
             messages.Add(LlmMessage.Assistant("(stopped)"));
+    }
+
+    /// <summary>Message <paramref name="i"/> without blank text blocks (a placeholder when nothing is left); returns it.</summary>
+    private static LlmMessage WithoutEmptyText(List<LlmMessage> messages, int i)
+    {
+        var m = messages[i];
+        var cleaned = m.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
+        if (cleaned.Count == 0) cleaned.Add(new LlmText(m.Role == LlmRole.Assistant ? "(silent)" : "(nothing)"));
+        if (cleaned.Count != m.Content.Count) messages[i] = m = m with { Content = cleaned };
+        return m;
+    }
+
+    /// <summary>Every tool_use of assistant message <paramref name="i"/> gets a result ("cancelled" when missing), results first.</summary>
+    private static void AnswerToolUses(List<LlmMessage> messages, int i, LlmMessage m)
+    {
+        var ids = m.ToolUses.Select(u => u.Id).ToList();
+        if (ids.Count == 0) return;
+        var next = i + 1 < messages.Count ? messages[i + 1] : null;
+        if (next == null || next.Role != LlmRole.User)
+        {
+            messages.Insert(i + 1, new LlmMessage(LlmRole.User, ids.Select(id => (LlmBlock)new LlmToolResult(id, "cancelled", true)).ToList()));
+            return;
+        }
+        var answered = next.ToolResults.Select(r => r.ToolUseId).ToHashSet();
+        var missing = ids.Where(id => !answered.Contains(id)).ToList();
+        if (missing.Count == 0) return;
+        // tool_result blocks must come first in the user message.
+        var blocks = missing.Select(id => (LlmBlock)new LlmToolResult(id, "cancelled", true)).ToList();
+        messages[i + 1] = next with { Content = [.. next.Content.OfType<LlmToolResult>(), .. blocks, .. next.Content.Where(b => b is not LlmToolResult)] };
     }
 
     public static void StripThinking(List<LlmMessage> messages)

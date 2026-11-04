@@ -186,31 +186,11 @@ public static class DefaultPackBuilder
     {
         using var db = AgentDb.Open(null);
         using var index = new RagIndex(db, o.Rag, NullEmbeddingProvider.Instance, usage: null, backgroundEmbedding: false);
-        var docs = new List<RagDoc>();
-        if (plan.GameData) docs.AddRange(gameDocs);
-        var cores = new List<string>();
-        if (plan.Generated is { } gen)
-        {
-            docs.AddRange(gen.Docs.Select(d => d with { At = SeedCorpus.At }));
-            if (gen.Core is { Length: > 0 } gc) cores.Add(gc);
-        }
-        foreach (var f in plan.Files)
-        {
-            var (fileCore, chunks) = KnowledgeIndexer.Docs(f.Name, f.Text, o.Rag, SeedCorpus.At);
-            if (fileCore.Length > 0) cores.Add(fileCore);
-            docs.AddRange(chunks);
-        }
+        var (docs, cores) = PackDocs(o, plan, gameDocs);
         index.UpsertMany(docs);
 
         // Seed vectors by material hash, straight into the scratch db (the exporter reads current vectors from there).
-        if (model != null)
-            db.Tx(() =>
-            {
-                foreach (var (id, hash) in db.Query("SELECT id, hash FROM docs WHERE embed = 1 AND level = 0 ORDER BY id", r => (r.GetInt64(0), r.GetString(1))))
-                    if (vectors.TryGetValue(hash, out var v))
-                        db.Exec("INSERT OR REPLACE INTO vectors(doc_id, model, dims, hash, vec) VALUES ($i, $m, $d, $h, $v)",
-                            ("$i", id), ("$m", model), ("$d", dims), ("$h", hash), ("$v", v));
-            });
+        if (model != null) SeedVectors(db, vectors, model, dims);
 
         var fileNames = plan.Generated is { } g0 ? [g0.FileName] : plan.Files.Select(f => f.Name).ToList();
         var selection = new ShardSelection
@@ -218,27 +198,17 @@ public static class DefaultPackBuilder
             Mode = "pack", PackVersion = version, PackMode = plan.Mode,
             IncludeKnowledgeDocs = fileNames.Count > 0, KnowledgeFiles = fileNames.Count > 0 ? fileNames : null,
         };
-        bool mobs = plan.GameData && gameDocs.Any(d => d.Ref.StartsWith("gd:mob:", StringComparison.Ordinal));
-        var desc = plan.Generated is { } g1 ? g1.Description
-            : plan.GameData
-            ? $"Minecraft {version} version pack: recipes, items, blocks, smelting{(mobs ? ", mob" : "")} and dig facts" +
-              (fileNames.Count > 0 ? $" + the general mechanics doc{(fileNames.Count > 1 ? "s" : "")} {string.Join(", ", fileNames)}" : "") +
-              ". Swap it in for any world on this version."
-            : $"{plan.Mode} mode pack for {version} ({string.Join(", ", fileNames)}): add it when the world is a {plan.Mode}, remove it for a plain world.";
+        var desc = PackDescription(plan, version, gameDocs, fileNames);
         var built = new ShardExporter(db).Build(new ShardExportRequest(plan.Name, selection, desc, IncludeEmbeddings: model != null,
             IncludeSummaries: false, CreatedBy: BuilderVersion));
         int embeddable = built.Records.Count(r => r.Get("embed") != "0");
         int withVector = built.Records.Count(r => r.Get("embed") != "0" && r.DocHash != null && built.Embeddings.ContainsKey(r.DocHash));
         var core = ShardRedactor.Redact(string.Join("\n\n", cores), out int coreSecrets);
         if (coreSecrets > 0) notes.Add($"{plan.Name}: {coreSecrets} token-shaped string(s) redacted from the core block");
-        var sourceHash = plan.Generated is { } g2
-            ? SourceHash("generated " + g2.Source, g2.Docs, [])
-            : SourceHash(plan.GameData ? o.Source.Description : null, plan.GameData ? gameDocs : [], plan.Files);
-        var sourceLabel = plan.Generated?.Source ?? (plan.GameData ? o.Source.Description : "docs/knowledge");
         var info = new ShardPackInfo
         {
             Kind = plan.Kind, Name = plan.Name, Version = version, Mode = plan.Mode, Core = core.Length > 0 ? core : null, Files = fileNames,
-            Source = sourceLabel, SourceHash = sourceHash, Builder = BuilderVersion,
+            Source = PackSourceLabel(o, plan), SourceHash = PackSourceHash(o, plan, gameDocs), Builder = BuilderVersion,
             NeedsEmbedding = embeddable - withVector,
         };
         var shard = new Shard
@@ -255,19 +225,70 @@ public static class DefaultPackBuilder
             Embeddings = built.Embeddings,
             Summaries = [],
         };
-        var file = plan.Name + ShardFile.Extension;
-        // Counts/hash as the file stores them (WriteTo recomputes them from the content).
-        var check = ShardFile.Read(ShardFile.ToBytes(shard)).Manifest;
-        var entry = new PackIndexEntry
-        {
-            File = file, Name = plan.Name, Kind = plan.Kind, Version = version, Mode = plan.Mode, Description = desc,
-            Counts = new SortedDictionary<string, int>(check.Counts, StringComparer.Ordinal), Records = check.Total,
-            Vectors = check.Embeddings?.Count ?? 0, NeedsEmbedding = info.NeedsEmbedding, EmbeddingModel = check.Embeddings?.Model,
-            Dims = check.Embeddings?.Dims ?? 0, Files = fileNames, Source = info.Source, SourceHash = sourceHash, ContentHash = check.ContentHash,
-            Builder = BuilderVersion,
-        };
+        var entry = IndexEntry(plan, version, desc, fileNames, info, shard);
         if (info.NeedsEmbedding > 0) notes.Add($"{plan.Name}: {info.NeedsEmbedding} of {embeddable} doc(s) have no seed vector (embedded on import)");
         return (shard, entry);
+    }
+
+    /// <summary>The pack's docs (game data, a generated set, the knowledge files' chunks) and the core blocks of its docs.</summary>
+    private static (List<RagDoc> Docs, List<string> Cores) PackDocs(PackBuildOptions o, PackPlan plan, IReadOnlyList<RagDoc> gameDocs)
+    {
+        var docs = new List<RagDoc>();
+        if (plan.GameData) docs.AddRange(gameDocs);
+        var cores = new List<string>();
+        if (plan.Generated is { } gen)
+        {
+            docs.AddRange(gen.Docs.Select(d => d with { At = SeedCorpus.At }));
+            if (gen.Core is { Length: > 0 } gc) cores.Add(gc);
+        }
+        foreach (var f in plan.Files)
+        {
+            var (fileCore, chunks) = KnowledgeIndexer.Docs(f.Name, f.Text, o.Rag, SeedCorpus.At);
+            if (fileCore.Length > 0) cores.Add(fileCore);
+            docs.AddRange(chunks);
+        }
+        return (docs, cores);
+    }
+
+    private static void SeedVectors(AgentDb db, IReadOnlyDictionary<string, byte[]> vectors, string model, int dims) => db.Tx(() =>
+    {
+        foreach (var (id, hash) in db.Query("SELECT id, hash FROM docs WHERE embed = 1 AND level = 0 ORDER BY id", r => (r.GetInt64(0), r.GetString(1))))
+            if (vectors.TryGetValue(hash, out var v))
+                db.Exec("INSERT OR REPLACE INTO vectors(doc_id, model, dims, hash, vec) VALUES ($i, $m, $d, $h, $v)",
+                    ("$i", id), ("$m", model), ("$d", dims), ("$h", hash), ("$v", v));
+    });
+
+    private static string PackDescription(PackPlan plan, string version, IReadOnlyList<RagDoc> gameDocs, List<string> fileNames)
+    {
+        if (plan.Generated is { } g1) return g1.Description;
+        if (!plan.GameData)
+            return $"{plan.Mode} mode pack for {version} ({string.Join(", ", fileNames)}): add it when the world is a {plan.Mode}, remove it for a plain world.";
+        bool mobs = gameDocs.Any(d => d.Ref.StartsWith("gd:mob:", StringComparison.Ordinal));
+        return $"Minecraft {version} version pack: recipes, items, blocks, smelting{(mobs ? ", mob" : "")} and dig facts" +
+               (fileNames.Count > 0 ? $" + the general mechanics doc{(fileNames.Count > 1 ? "s" : "")} {string.Join(", ", fileNames)}" : "") +
+               ". Swap it in for any world on this version.";
+    }
+
+    private static string PackSourceHash(PackBuildOptions o, PackPlan plan, IReadOnlyList<RagDoc> gameDocs) =>
+        plan.Generated is { } g2
+            ? SourceHash("generated " + g2.Source, g2.Docs, [])
+            : SourceHash(plan.GameData ? o.Source.Description : null, plan.GameData ? gameDocs : [], plan.Files);
+
+    private static string PackSourceLabel(PackBuildOptions o, PackPlan plan) =>
+        plan.Generated?.Source ?? (plan.GameData ? o.Source.Description : "docs/knowledge");
+
+    /// <summary>The index entry, with counts and hash as the file stores them (WriteTo recomputes them from the content).</summary>
+    private static PackIndexEntry IndexEntry(PackPlan plan, string version, string desc, List<string> fileNames, ShardPackInfo info, Shard shard)
+    {
+        var check = ShardFile.Read(ShardFile.ToBytes(shard)).Manifest;
+        return new PackIndexEntry
+        {
+            File = plan.Name + ShardFile.Extension, Name = plan.Name, Kind = plan.Kind, Version = version, Mode = plan.Mode, Description = desc,
+            Counts = new SortedDictionary<string, int>(check.Counts, StringComparer.Ordinal), Records = check.Total,
+            Vectors = check.Embeddings?.Count ?? 0, NeedsEmbedding = info.NeedsEmbedding, EmbeddingModel = check.Embeddings?.Model,
+            Dims = check.Embeddings?.Dims ?? 0, Files = fileNames, Source = info.Source, SourceHash = info.SourceHash, ContentHash = check.ContentHash,
+            Builder = BuilderVersion,
+        };
     }
 
     /// <summary>sha256 over every input: the game-data source + docs (ref, title, body) and each knowledge file (name + text, \n).</summary>

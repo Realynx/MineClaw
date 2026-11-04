@@ -51,9 +51,7 @@ public sealed class SelfTree
         var scope = growth.Scope;
         var now = _time.GetUtcNow();
         var docs = new List<RagDoc>();
-        foreach (var e in growth.Profile.Entries)
-            docs.Add(Doc(scope, "e" + e.Id, $"{SelfProfile.Name(e.Section)}{(e.Player != null ? " " + e.Player : "")}",
-                $"{SelfProfile.Name(e.Section)}{(e.Player != null ? " (" + e.Player + ")" : "")}: {e.Text} ({e.Observations} observations)", now));
+        foreach (var e in growth.Profile.Entries) docs.Add(EntryDoc(scope, e, now));
         foreach (var p in growth.KnownPlayers(8))
         {
             var line = growth.PersonLine(p);
@@ -61,13 +59,19 @@ public sealed class SelfTree
         }
         foreach (var s in growth.Store.Recent(scope, null, 400).Where(s => SignalKinds.IsMilestone(s.Kind)).Take(40))
             docs.Add(Doc(scope, "m" + s.Id, "memory", $"{s.At:MM-dd}: {s.Note ?? s.Kind} (s{s.Id})", s.At));
-        foreach (var p in growth.Preferences().Where(p => p.IsLike || p.IsDislike || p.IsPro).Take(6))
-            docs.Add(Doc(scope, "pref:" + p.Subject, "preference " + p.Subject,
-                $"{TaskTypes.Label(p.Subject)}: done {p.Done:0}, ok {p.Ok:0}, failed {p.Fail:0}, praised {p.Praise:0.#}" + (p.IsLike ? " (likes it)" : p.IsDislike ? " (meh about it)" : ""), now));
+        foreach (var p in growth.Preferences().Where(p => p.IsLike || p.IsDislike || p.IsPro).Take(6)) docs.Add(PreferenceDoc(scope, p, now));
         _index.UpsertMany(docs);
         _index.DeleteByPrefix(Prefix(scope), docs.Select(d => d.Ref).ToHashSet());
         return docs.Count;
     }
+
+    private static RagDoc EntryDoc(string scope, SelfEntry e, DateTimeOffset now) =>
+        Doc(scope, "e" + e.Id, $"{SelfProfile.Name(e.Section)}{(e.Player != null ? " " + e.Player : "")}",
+            $"{SelfProfile.Name(e.Section)}{(e.Player != null ? " (" + e.Player + ")" : "")}: {e.Text} ({e.Observations} observations)", now);
+
+    private static RagDoc PreferenceDoc(string scope, PreferenceState p, DateTimeOffset now) =>
+        Doc(scope, "pref:" + p.Subject, "preference " + p.Subject,
+            $"{TaskTypes.Label(p.Subject)}: done {p.Done:0}, ok {p.Ok:0}, failed {p.Fail:0}, praised {p.Praise:0.#}" + (p.IsLike ? " (likes it)" : p.IsDislike ? " (meh about it)" : ""), now);
 
     private static RagDoc Doc(string scope, string id, string title, string body, DateTimeOffset at) =>
         new($"{Prefix(scope)}{id}", Kind, title, TextUtil.Truncate(body, 240)) { Tag = scope, Source = Kind, At = at, Weight = 0.6 };

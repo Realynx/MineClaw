@@ -124,58 +124,87 @@ public sealed partial class MinecraftClient
 
         BraveTick(hp);
         bool engaged = _combatInstance?.Engaged ?? false;
-        bool idle = !engaged && CurrentAction is null && _driver is null && phys.OnGround && !phys.Frozen;
+        bool idle = SurvivalIdle(phys, engaged);
+        SurvivalCleanupLeftBox(me, idle);
+        SurvivalEdgeRetreat(o, phys, hp, cell, edge, idle);
+        SurvivalShelterCornered(o, phys, hp, engaged);
+        SurvivalNightShelter(o, phys, hp, cell, idle);
+        SurvivalAutoEat(o, p, slots, reserved, hp, food, me, idle);
+    }
 
-        // A box left standing (it timed out with mobs around): take it down once the body is idle by it and nothing can get at it.
+    /// <summary>No fight, no action, no driver, standing on the ground and not frozen.</summary>
+    private bool SurvivalIdle(PhysicsState phys, bool engaged) =>
+        !engaged && CurrentAction is null && _driver is null && phys.OnGround && !phys.Frozen;
+
+    /// <summary>A box left standing (it timed out with mobs around): take it down once the body is idle by it and nothing can get at it.</summary>
+    private void SurvivalCleanupLeftBox(Vec3d me, bool idle)
+    {
         if (idle && TickCount % 40 == 0 && ShelterLeftovers(me) && NearestThreat(me, 16) is null && Volatile.Read(ref _sheltering) == 0)
             StartShelterCleanup();
+    }
 
-        // Low health near the edge: step inward first (eating comes after, from a safe spot).
-        if (Survival.IsLow(hp) && idle && _healRetreat is null && edge < o.RetreatEdgeDistance)
+    /// <summary>Low health near the edge: step inward first (eating comes after, from a safe spot).</summary>
+    private void SurvivalEdgeRetreat(SurvivalOptions o, PhysicsState phys, int hp, BlockPos cell, int edge, bool idle)
+    {
+        if (!Survival.IsLow(hp) || !idle || _healRetreat is not null || edge >= o.RetreatEdgeDistance) return;
+        var me = phys.Position;
+        var threats = World.Entities.Nearby(me, 12, CombatRules.IsThreat).Select(e => e.Position).ToList();
+        var to = CombatGeometry.RetreatCell(World, me, threats, 7) ?? Guard.FindInterior(World, phys, 6) ?? LastSafeSpotNear(me, cell);
+        if (to is not { } t) return;
+        _healRetreat = t;
+        _healRetreatUntil = TickCount + 100;
+        Log($"survival: hp {hp}/20 at the edge; stepping inward to {Fmt(t)}");
+    }
+
+    /// <summary>The last safe spot, when it is on this level, within 8 and a safe walk away.</summary>
+    private BlockPos? LastSafeSpotNear(Vec3d me, BlockPos cell) =>
+        _lastSafeSpot is { } last && last.Y == cell.Y
+        && Math.Max(Math.Abs(last.X - cell.X), Math.Abs(last.Z - cell.Z)) <= 8 && CombatGeometry.WalkSafe(World, me, last)
+            ? last
+            : null;
+
+    /// <summary>No way home and low hp or outnumbered (not in a fight: the combat engine asks itself): box in.</summary>
+    private void SurvivalShelterCornered(SurvivalOptions o, PhysicsState phys, int hp, bool engaged)
+    {
+        if (!CorneredShelterDue(o, phys, engaged)) return;
+        var me = phys.Position;
+        var near = World.Entities.Nearby(me, 8, e => CombatRules.IsThreat(e) && CombatGeometry.CanGetAt(World, e, me));
+        if (near.Count > 0 && (Survival.IsLow(hp) || near.Count >= o.ShelterThreats)
+            && ShouldShelter(near.Count, CombatGeometry.RetreatCell(World, me, near.Select(e => e.Position).ToList(), 7) != null))
         {
-            var threats = World.Entities.Nearby(me, 12, CombatRules.IsThreat).Select(e => e.Position).ToList();
-            var to = CombatGeometry.RetreatCell(World, me, threats, 7) ?? Guard.FindInterior(World, phys, 6);
-            if (to is null && _lastSafeSpot is { } last && last.Y == cell.Y
-                && Math.Max(Math.Abs(last.X - cell.X), Math.Abs(last.Z - cell.Z)) <= 8 && CombatGeometry.WalkSafe(World, me, last))
-                to = last;
-            if (to is { } t)
-            {
-                _healRetreat = t;
-                _healRetreatUntil = TickCount + 100;
-                Log($"survival: hp {hp}/20 at the edge; stepping inward to {Fmt(t)}");
-            }
+            Log($"survival: hp {hp}/20, {near.Count} hostile(s) near and no way home: boxing in");
+            StartShelter($"hp {hp}, {near.Count} near, no way home");
         }
+    }
 
-        // No way home and low hp or outnumbered (not in a fight: the combat engine asks itself): box in.
-        if (o.ShelterEnabled && !Brave && !engaged && CurrentAction is null && phys.OnGround && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
+    private bool CorneredShelterDue(SurvivalOptions o, PhysicsState phys, bool engaged) =>
+        o.ShelterEnabled && !Brave && !engaged && CurrentAction is null && phys.OnGround && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0;
+
+    /// <summary>Night in a normal world: an idle or waiting body boxes in (logs and planks are fine walls) before a mob it can't beat
+    /// reaches it, not at critical hp (live 10-29 02:09: clone 1337 waited out the night "at the hangout" in the open with 30
+    /// spruce logs; the box started at hp 4 and it died building it).</summary>
+    private void SurvivalNightShelter(SurvivalOptions o, PhysicsState phys, int hp, BlockPos cell, bool idle)
+    {
+        if (!NightShelterDue(o, idle)) return;
+        var me = phys.Position;
+        // A mob on a guarded player is theirs to defend (the guard reflex goes), not a reason to hide while hp holds.
+        var guards = Survival.IsLow(hp) ? [] : Combat.Guarded.Select(n => World.Entities.FindPlayer(n)).OfType<Entity>().ToList();
+        var mobs = World.Entities.Nearby(me, o.NightShelterRadius, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Melee
+            && CombatGeometry.CanGetAt(World, e, me)
+            && !guards.Any(g => g.Position.DistanceTo(e.Position) <= Options.Combat.GuardRadius + 2));
+        if (mobs.Count > 0 && CanBoxIn(mobs.Count) && !Shelter.Enclosed(World, cell)
+            && (mobs.Count >= o.ShelterThreats || Combat.Outmatched(phys, mobs.OrderBy(e => e.Position.DistanceTo(me)).First()) is not null))
         {
-            var near = World.Entities.Nearby(me, 8, e => CombatRules.IsThreat(e) && CombatGeometry.CanGetAt(World, e, me));
-            if (near.Count > 0 && (Survival.IsLow(hp) || near.Count >= o.ShelterThreats)
-                && ShouldShelter(near.Count, CombatGeometry.RetreatCell(World, me, near.Select(e => e.Position).ToList(), 7) != null))
-            {
-                Log($"survival: hp {hp}/20, {near.Count} hostile(s) near and no way home: boxing in");
-                StartShelter($"hp {hp}, {near.Count} near, no way home");
-            }
+            Log($"survival: night, {mobs.Count} hostile(s) within {o.NightShelterRadius:0} and I can't take them: boxing in");
+            StartShelter($"night, {mobs.Count} near, hp {hp}");
         }
+    }
 
-        // Night in a normal world: an idle or waiting body boxes in (logs and planks are fine walls) before a mob it can't beat
-        // reaches it, not at critical hp (live 10-29 02:09: clone 1337 waited out the night "at the hangout" in the open with 30
-        // spruce logs; the box started at hp 4 and it died building it).
-        if (o.ShelterEnabled && !Brave && !WorldMode.Current.HasVoidBelow && World.IsNight && idle && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
-        {
-            // A mob on a guarded player is theirs to defend (the guard reflex goes), not a reason to hide while hp holds.
-            var guards = Survival.IsLow(hp) ? [] : Combat.Guarded.Select(n => World.Entities.FindPlayer(n)).OfType<Entity>().ToList();
-            var mobs = World.Entities.Nearby(me, o.NightShelterRadius, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Melee
-                && CombatGeometry.CanGetAt(World, e, me)
-                && !guards.Any(g => g.Position.DistanceTo(e.Position) <= Options.Combat.GuardRadius + 2));
-            if (mobs.Count > 0 && CanBoxIn(mobs.Count) && !Shelter.Enclosed(World, cell)
-                && (mobs.Count >= o.ShelterThreats || Combat.Outmatched(phys, mobs.OrderBy(e => e.Position.DistanceTo(me)).First()) is not null))
-            {
-                Log($"survival: night, {mobs.Count} hostile(s) within {o.NightShelterRadius:0} and I can't take them: boxing in");
-                StartShelter($"night, {mobs.Count} near, hp {hp}");
-            }
-        }
+    private bool NightShelterDue(SurvivalOptions o, bool idle) =>
+        o.ShelterEnabled && !Brave && !WorldMode.Current.HasVoidBelow && World.IsNight && idle && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0;
 
+    private void SurvivalAutoEat(SurvivalOptions o, PlayerState p, MineClaw.Data.ItemStack[] slots, IReadOnlySet<int> reserved, int hp, int food, Vec3d me, bool idle)
+    {
         if (o.AutoEat && idle && _healRetreat is null && TickCount >= _eatRetryTick
             && NearestThreat(me, 4) is null
             && SurvivalReflex.EatNow(slots, reserved, hp, food, o, Options.Profile.Hunger, p.Saturation) is { } pick

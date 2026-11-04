@@ -38,12 +38,7 @@ public static class AppConfig
 {
     public static IConfigurationRoot Build(AppCli cli, string root, IDictionary<string, string?>? env = null)
     {
-        var configPath = cli.ConfigPath ?? Get(env, "MINECLAW_CONFIG");
-        if (configPath != null)
-        {
-            configPath = Path.GetFullPath(configPath);
-            if (!File.Exists(configPath)) throw new FileNotFoundException($"config file not found: {configPath}", configPath);
-        }
+        var configPath = ConfigFile(cli, env);
         var b = new ConfigurationBuilder()
             .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true)
             .AddJsonFile(Path.Combine(root, "src", "MineClaw.App", "appsettings.json"), optional: true);
@@ -52,14 +47,30 @@ public static class AppConfig
         else b.AddInMemoryCollection(Prefixed(env));
         if (SettingsOverrideFile.ResolvePath(Get(env, SettingsOverrideFile.EnvVar), cli.DataDir, b.Build(), root, testSeam: env != null) is { } overridePath)
             b.Add(new SettingsOverrideSource(overridePath));
+        b.AddInMemoryCollection(CliOverrides(cli));
+        return b.Build();
+    }
+
+    /// <summary>The <c>--config</c> file (else env MINECLAW_CONFIG) as a full path, or null; a named file that doesn't exist throws.</summary>
+    private static string? ConfigFile(AppCli cli, IDictionary<string, string?>? env)
+    {
+        var configPath = cli.ConfigPath ?? Get(env, "MINECLAW_CONFIG");
+        if (configPath == null) return null;
+        configPath = Path.GetFullPath(configPath);
+        if (!File.Exists(configPath)) throw new FileNotFoundException($"config file not found: {configPath}", configPath);
+        return configPath;
+    }
+
+    /// <summary>The top layer: the paths and switches given on the command line.</summary>
+    private static Dictionary<string, string?> CliOverrides(AppCli cli)
+    {
         var overrides = new Dictionary<string, string?>();
         if (cli.DataDir != null) overrides["Agent:DataDirectory"] = cli.DataDir;
         if (cli.LogDir != null) overrides["Host:LogDirectory"] = cli.LogDir;
         if (cli.LogFormat != null) overrides["Host:LogFormat"] = cli.LogFormat;
         if (cli.ServerVersion != null) overrides[VersionSetup.ConfigKey] = cli.ServerVersion;
         if (cli.ShutdownTimeoutSeconds is { } s) overrides["Host:ShutdownTimeoutSeconds"] = s.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        b.AddInMemoryCollection(overrides);
-        return b.Build();
+        return overrides;
     }
 
     /// <summary>Test seam: MINECLAW_-prefixed entries of a fake environment, mapped like the env provider does.</summary>

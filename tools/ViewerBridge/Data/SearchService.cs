@@ -37,15 +37,7 @@ public static class SearchService
         var (mode, note) = ModeOf(bank);
         if (bank.VectorSearch && !forceLexical)
         {
-            try { qv = await bank.Rag.EmbedQueryAsync(text, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException) { qv = null; }
-            SearchAugment? aug = null;
-            if (bank.Raptor is { } raptor && qv != null)
-            {
-                aug = raptor.Augment(q, qv);
-                tree.AddRange(TreeHits(raptor, qv, q));
-            }
-            hits = await Task.Run(() => bank.Rag.Search(q, qv, aug), ct).ConfigureAwait(false);
+            (hits, qv) = await HybridSearchAsync(bank, q, text, tree, ct).ConfigureAwait(false);
             if (qv == null) (mode, note) = ("lexical", "lexical fallback: the query embedding call failed or timed out");
         }
         else
@@ -55,19 +47,41 @@ public static class SearchService
         }
 
         var g = bank.Graph();
-        var outHits = hits.Select((h, i) =>
-        {
-            int? leaf = bank.NodeOfDoc(h.Id);
-            var path = leaf is { } n
-                ? bank.ReadTree(t => RaptorViews.Path(t, g, n).Where(t.AllNodes.ContainsKey).Select(p => new GraphCrumb(p, t[p].Layer, RaptorViews.CrumbLabel(bank, g, t[p]))).ToList(), [])
-                : [];
-            var snippet = (h.Snippet ?? h.Body).ReplaceLineEndings(" ");
-            if (snippet.Length > 260) snippet = snippet[..259] + "…";
-            return new SearchHitDto(i + 1, h.Id, h.Ref, h.Kind, h.Tag, h.Title, snippet, h.Score,
-                new SearchSignals(Finite(h.Lexical), Finite(h.Cosine), h.Distance is { } d ? Finite(d) : null),
-                h.Updated.ToUnixTimeMilliseconds(), h.Bounds != null ? h.Dimension : null, Where(h), leaf, path);
-        }).ToList();
+        var outHits = hits.Select((h, i) => HitDto(bank, g, h, i + 1)).ToList();
         return new SearchResponse(text, mode, note, qv != null, Math.Round(sw.Elapsed.TotalMilliseconds, 1), outHits, tree);
+    }
+
+    /// <summary>
+    /// The query embedded (null when the call fails: the index then ranks lexically), the RAPTOR lists fused in when there is a tree
+    /// (its own candidates go to <paramref name="tree"/>), and the hits.
+    /// </summary>
+    private static async Task<(List<RagHit> Hits, float[]? Qv)> HybridSearchAsync(MemoryBank bank, RagQuery q, string text, List<TreeHitDto> tree,
+        CancellationToken ct)
+    {
+        float[]? qv;
+        try { qv = await bank.Rag.EmbedQueryAsync(text, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException) { qv = null; }
+        SearchAugment? aug = null;
+        if (bank.Raptor is { } raptor && qv != null)
+        {
+            aug = raptor.Augment(q, qv);
+            tree.AddRange(TreeHits(raptor, qv, q));
+        }
+        var hits = await Task.Run(() => bank.Rag.Search(q, qv, aug), ct).ConfigureAwait(false);
+        return (hits, qv);
+    }
+
+    private static SearchHitDto HitDto(MemoryBank bank, GraphModel? g, RagHit h, int rank)
+    {
+        int? leaf = bank.NodeOfDoc(h.Id);
+        var path = leaf is { } n
+            ? bank.ReadTree(t => RaptorViews.Path(t, g, n).Where(t.AllNodes.ContainsKey).Select(p => new GraphCrumb(p, t[p].Layer, RaptorViews.CrumbLabel(bank, g, t[p]))).ToList(), [])
+            : [];
+        var snippet = (h.Snippet ?? h.Body).ReplaceLineEndings(" ");
+        if (snippet.Length > 260) snippet = snippet[..259] + "…";
+        return new SearchHitDto(rank, h.Id, h.Ref, h.Kind, h.Tag, h.Title, snippet, h.Score,
+            new SearchSignals(Finite(h.Lexical), Finite(h.Cosine), h.Distance is { } d ? Finite(d) : null),
+            h.Updated.ToUnixTimeMilliseconds(), h.Bounds != null ? h.Dimension : null, Where(h), leaf, path);
     }
 
     private static double? Finite(double v) => double.IsFinite(v) && v != 0 ? v : null;

@@ -16,6 +16,46 @@ public static partial class ChatText
 
     public static bool IsAllowed(char c) => c >= 0x20 && c <= 0x7E && c != '`';
 
+    /// <summary>The characters <see cref="Sanitize"/> transliterates (smart quotes, dashes, odd spaces, ligatures…).</summary>
+    private static readonly Dictionary<char, string> Transliterated = new()
+    {
+        ['‘'] = "'",
+        ['’'] = "'",
+        ['‚'] = "'",
+        ['′'] = "'",
+        ['`'] = "'",
+        ['´'] = "'",
+        ['“'] = "\"",
+        ['”'] = "\"",
+        ['„'] = "\"",
+        ['″'] = "\"",
+        ['«'] = "\"",
+        ['»'] = "\"",
+        ['–'] = "-",
+        ['—'] = "-",
+        ['−'] = "-",
+        ['‐'] = "-",
+        ['‑'] = "-",
+        ['…'] = "...",
+        ['\u00A0'] = " ",
+        ['\t'] = " ",
+        ['\r'] = " ",
+        ['\n'] = " ",
+        ['\u2009'] = " ",
+        ['\u202F'] = " ",
+        ['•'] = "*",
+        ['·'] = "*",
+        ['→'] = "->",
+        ['←'] = "<-",
+        ['×'] = "x",
+        ['ß'] = "ss",
+        ['æ'] = "ae",
+        ['Æ'] = "AE",
+        ['ø'] = "o",
+        ['Ø'] = "O",
+        ['œ'] = "oe",
+    };
+
     /// <summary>Maps text to the allowed character set: smart quotes → ASCII, accents stripped, newlines → spaces,
     /// colour codes and unknown characters dropped, whitespace collapsed.</summary>
     public static string Sanitize(string text)
@@ -26,26 +66,8 @@ public static partial class ChatText
         {
             if (CharUnicodeInfo.GetUnicodeCategory(raw) == UnicodeCategory.NonSpacingMark) continue;
             if (raw == '§') { sb.Append(raw); continue; } // colour code marker: removed with its code below
-            string? mapped = raw switch
-            {
-                '‘' or '’' or '‚' or '′' or '`' or '´' => "'",
-                '“' or '”' or '„' or '″' or '«' or '»' => "\"",
-                '–' or '—' or '−' or '‐' or '‑' => "-",
-                '…' => "...",
-                ' ' or '\t' or '\r' or '\n' or ' ' or ' ' => " ",
-                '•' or '·' => "*",
-                '→' => "->",
-                '←' => "<-",
-                '×' => "x",
-                'ß' => "ss",
-                'æ' => "ae",
-                'Æ' => "AE",
-                'ø' => "o",
-                'Ø' => "O",
-                'œ' => "oe",
-                _ => IsAllowed(raw) ? raw.ToString() : null,
-            };
-            if (mapped is not null) sb.Append(mapped);
+            if (Transliterated.TryGetValue(raw, out var mapped)) sb.Append(mapped);
+            else if (IsAllowed(raw)) sb.Append(raw);
         }
         // Drop "§x" colour codes, then any remaining § and collapse whitespace.
         var s = ColourCode().Replace(sb.ToString(), "").Replace("§", "");

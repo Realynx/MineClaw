@@ -27,21 +27,8 @@ public sealed class CameraRenderer(Func<WorldState?> live, string liveName, Func
     {
         int w = Math.Clamp(q.W, 64, Math.Max(64, maxWidth)), h = Math.Clamp(q.H, 48, Math.Max(48, maxHeight));
         var now = _time.GetUtcNow();
-        int bx = (int)Math.Floor(q.X), bz = (int)Math.Floor(q.Z);
-        int slack = Distance / 3;
-        if (_region is not { } r || r.Dim != q.Dim || Math.Abs(r.X - bx) > slack || Math.Abs(r.Z - bz) > slack || now - r.At > RegionMaxAge)
-        {
-            var liveWorld = live() ?? new WorldState { Dimension = int.MinValue };
-            var region = RegionWorld.Build(liveWorld, liveName, store(), q.Dim, bx, bz, Distance + slack, now);
-            _region = r = (q.Dim, bx, bz, now, region, new WorldVoxels(region.World));
-            Builds++;
-        }
-        if (!_eyes.TryGetValue((w, h), out var eye))
-        {
-            if (_eyes.Count > 6) _eyes.Clear();
-            _eyes[(w, h)] = eye = new EyeRenderer { Width = w, Height = h, MaxDistance = Distance, MaxThreads = 1 };
-        }
-        var img = eye.Render(new EyeScene
+        var r = RegionAt(q, now);
+        var img = EyeFor(w, h).Render(new EyeScene
         {
             World = r.Voxels, Atlas = atlas(), EyeX = q.X, EyeY = q.Y, EyeZ = q.Z, Yaw = q.Yaw, Pitch = q.Pitch, Time = worldTime,
             Nether = q.Dim == -1, Entities = entities ?? [], Viewer = "camera",
@@ -51,5 +38,31 @@ public sealed class CameraRenderer(Func<WorldState?> live, string liveName, Func
         var legend = string.Create(CultureInfo.InvariantCulture,
             $"free camera @{at.Item1},{at.Item2},{at.Item3} {(q.Dim == -1 ? "nether" : "overworld")} yaw {q.Yaw:0} pitch {q.Pitch:0}, {w}x{h}px ~{img.Tokens}tok; {img.Legend}");
         return new ViewImage(img.Png, img.Width, img.Height, img.Tokens, legend, [], seen);
+    }
+
+    /// <summary>The cached region, rebuilt when the camera left its inner area, changed dimension, or it got too old.</summary>
+    private (int Dim, int X, int Z, DateTimeOffset At, RegionWorld Region, WorldVoxels Voxels) RegionAt(CameraQuery q, DateTimeOffset now)
+    {
+        int bx = (int)Math.Floor(q.X), bz = (int)Math.Floor(q.Z);
+        int slack = Distance / 3;
+        if (_region is not { } r || r.Dim != q.Dim || Math.Abs(r.X - bx) > slack || Math.Abs(r.Z - bz) > slack || now - r.At > RegionMaxAge)
+        {
+            var liveWorld = live() ?? new WorldState { Dimension = int.MinValue };
+            var region = RegionWorld.Build(liveWorld, liveName, store(), q.Dim, bx, bz, Distance + slack, now);
+            _region = r = (q.Dim, bx, bz, now, region, new WorldVoxels(region.World));
+            Builds++;
+        }
+        return r;
+    }
+
+    /// <summary>One eye renderer per frame size (a few sizes kept).</summary>
+    private EyeRenderer EyeFor(int w, int h)
+    {
+        if (!_eyes.TryGetValue((w, h), out var eye))
+        {
+            if (_eyes.Count > 6) _eyes.Clear();
+            _eyes[(w, h)] = eye = new EyeRenderer { Width = w, Height = h, MaxDistance = Distance, MaxThreads = 1 };
+        }
+        return eye;
     }
 }

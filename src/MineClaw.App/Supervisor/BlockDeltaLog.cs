@@ -96,13 +96,17 @@ public sealed class BlockDeltaLog
     private bool HeldElsewhere(WorldState self, int dim, int cx, int cz)
     {
         lock (AllWorlds)
-            foreach (var r in AllWorlds)
-                if (r.TryGetTarget(out var w) && !ReferenceEquals(w, self) && w.Dimension == dim && w.GetColumn(cx, cz) is { HasData: true })
-                    return true;
+            if (AnyHolds(AllWorlds, self, dim, cx, cz)) return true;
         lock (_lock)
-            foreach (var r in _worlds)
-                if (r.TryGetTarget(out var w) && !ReferenceEquals(w, self) && w.Dimension == dim && w.GetColumn(cx, cz) is { HasData: true })
-                    return true;
+            return AnyHolds(_worlds, self, dim, cx, cz);
+    }
+
+    // caller holds the list's lock
+    private static bool AnyHolds(List<WeakReference<WorldState>> worlds, WorldState self, int dim, int cx, int cz)
+    {
+        foreach (var r in worlds)
+            if (r.TryGetTarget(out var w) && !ReferenceEquals(w, self) && w.Dimension == dim && w.GetColumn(cx, cz) is { HasData: true })
+                return true;
         return false;
     }
 
@@ -133,8 +137,7 @@ public sealed class BlockDeltaLog
             if (_recentBlocks.TryGetValue(key, out var seen) && seen.State == state && now - seen.AtMs <= window) return;
             if (_recentBlocks.Count > 8192) Prune(_recentBlocks, now, window);
             _recentBlocks[key] = (state, now);
-            if (_changedAt.Count > 16384) _changedAt.Clear();
-            _changedAt[(dim, p.X >> 4, p.Z >> 4)] = now;
+            MarkChanged(dim, p.X >> 4, p.Z >> 4, now);
             Push(new Entry { AtMs = now, Dim = dim, X = p.X, Y = p.Y, Z = p.Z, Id = c.NewId, Meta = c.NewMeta & 15, Kind = 0 });
         }
     }
@@ -181,14 +184,25 @@ public sealed class BlockDeltaLog
         {
             var key = (dim, cx, cz, kind);
             if (_recentColumns.TryGetValue(key, out var at) && now - at <= window) return;
-            if (_recentColumns.Count > 8192)
-                foreach (var k in _recentColumns.Where(kv => now - kv.Value > window).Select(kv => kv.Key).ToList()) _recentColumns.Remove(k);
+            if (_recentColumns.Count > 8192) PruneColumns(now, window);
             _recentColumns[key] = now;
             if (kind is 1 or 2) _recentColumns.Remove((dim, cx, cz, kind == 1 ? (byte)2 : (byte)1)); // a reload right after an unload is news again
-            if (_changedAt.Count > 16384) _changedAt.Clear();
-            _changedAt[(dim, cx, cz)] = now;
+            MarkChanged(dim, cx, cz, now);
             Push(new Entry { AtMs = now, Dim = dim, X = cx, Z = cz, Kind = kind });
         }
+    }
+
+    // caller holds _lock
+    private void PruneColumns(long now, long window)
+    {
+        foreach (var k in _recentColumns.Where(kv => now - kv.Value > window).Select(kv => kv.Key).ToList()) _recentColumns.Remove(k);
+    }
+
+    // caller holds _lock
+    private void MarkChanged(int dim, int cx, int cz, long now)
+    {
+        if (_changedAt.Count > 16384) _changedAt.Clear();
+        _changedAt[(dim, cx, cz)] = now;
     }
 
     // caller holds _lock

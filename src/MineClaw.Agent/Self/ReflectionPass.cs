@@ -158,63 +158,11 @@ public sealed class ReflectionPass
         int applied = 0;
         if (lastSignal > mark)
         {
-            // The self subtree: notes (entries, relationships, milestones, preferences) -> RAPTOR -> "who I am" summaries.
-            var abstractions = new List<SelfAbstraction>();
-            if (g.Tree != null && O.SelfTree)
-            {
-                try
-                {
-                    g.Tree.SyncNotes(g);
-                    await _index.FlushEmbeddingsAsync(ct).ConfigureAwait(false);
-                    abstractions = await g.Tree.BuildAsync(_profile.Scope, ct).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "self subtree build failed"); }
-            }
-            var who = new StringBuilder();
-            foreach (var a in abstractions.Take(4))
-            {
-                var line = TextUtil.Truncate(a.Text, 300);
-                if (who.Length + line.Length > 900) break;
-                who.Append("- ").Append(line).Append('\n');
-            }
-            var caps = string.Join(", ", Enum.GetValues<SelfSection>().Select(s => $"{SelfProfile.Name(s)} {_profile.Cap(s)}"));
-            var seeds = g.Seeds();
-            var prompt = new StringBuilder();
-            if (seeds.Count > 0) prompt.Append($"Frozen seed quirks of this clone (not editable): {string.Join("; ", seeds)}\n\n");
-            prompt.Append($"Who I am (self-tree summaries):\n{(who.Length > 0 ? who.ToString().TrimEnd() : "(none yet)")}\n\n");
-            prompt.Append($"Aggregates (signal ids in parens):\n{g.DescribeForReflection()}\n\n");
-            prompt.Append($"Current profile (ids, strength, observations):\n{_profile.RenderForReflection()}\n\nSection caps: {caps}");
-
-            LlmResponse? resp = null;
-            try
-            {
-                resp = await _llm.CompleteAsync(new LlmRequest
-                {
-                    Tier = ModelTier.Cheap,
-                    System = [new LlmSystemBlock(string.Format(InstructionsV2, O.MaxChangesPerPass) + Prompts.ReflectionStyle(Terse))],
-                    Messages = [LlmMessage.User(prompt.ToString())],
-                    MaxTokens = 400,
-                    CacheHistory = false,
-                    Purpose = "reflect",
-                }, ct).ConfigureAwait(false);
-                _usage?.Record(resp.Model, resp.Usage);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "reflection call failed"); }
-
+            var abstractions = await SelfAbstractionsAsync(g, ct).ConfigureAwait(false);
+            var resp = await AskReflectionAsync(ReflectionPrompt(g, abstractions), ct).ConfigureAwait(false);
             if (resp != null)
             {
-                foreach (var (c, cited) in ParseGrounded(resp.Text).Take(Math.Max(0, O.MaxChangesPerPass)))
-                {
-                    var gr = g.Ground(c, cited);
-                    if (!gr.Ok)
-                    {
-                        _log.LogInformation("reflection {Op} {Section} rejected: {Why}", c.Op, c.Section, gr.Why);
-                        continue;
-                    }
-                    var r = _profile.Apply(c, SelfProfile.SourceReflection, null, gr.Evidence.Count > 0 ? gr.Refs : null);
-                    if (r.Ok) applied++;
-                    _log.LogInformation("reflection {Op} {Section}: {Result} [{Refs}]", c.Op, c.Section, r.Message, gr.Refs);
-                }
+                applied = ApplyGrounded(g, resp.Text);
                 _index.Db.SetMeta(SignalMark, lastSignal.ToString());
             }
         }
@@ -223,33 +171,89 @@ public sealed class ReflectionPass
         return applied;
     }
 
+    /// <summary>The self subtree: notes (entries, relationships, milestones, preferences) -> RAPTOR -> "who I am" summaries.</summary>
+    private async Task<List<SelfAbstraction>> SelfAbstractionsAsync(SelfGrowth g, CancellationToken ct)
+    {
+        if (g.Tree == null || !O.SelfTree) return [];
+        try
+        {
+            g.Tree.SyncNotes(g);
+            await _index.FlushEmbeddingsAsync(ct).ConfigureAwait(false);
+            return await g.Tree.BuildAsync(_profile.Scope, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "self subtree build failed");
+            return [];
+        }
+    }
+
+    private string ReflectionPrompt(SelfGrowth g, List<SelfAbstraction> abstractions)
+    {
+        var who = new StringBuilder();
+        foreach (var a in abstractions.Take(4))
+        {
+            var line = TextUtil.Truncate(a.Text, 300);
+            if (who.Length + line.Length > 900) break;
+            who.Append("- ").Append(line).Append('\n');
+        }
+        var caps = string.Join(", ", Enum.GetValues<SelfSection>().Select(s => $"{SelfProfile.Name(s)} {_profile.Cap(s)}"));
+        var seeds = g.Seeds();
+        var prompt = new StringBuilder();
+        if (seeds.Count > 0) prompt.Append($"Frozen seed quirks of this clone (not editable): {string.Join("; ", seeds)}\n\n");
+        prompt.Append($"Who I am (self-tree summaries):\n{(who.Length > 0 ? who.ToString().TrimEnd() : "(none yet)")}\n\n");
+        prompt.Append($"Aggregates (signal ids in parens):\n{g.DescribeForReflection()}\n\n");
+        prompt.Append($"Current profile (ids, strength, observations):\n{_profile.RenderForReflection()}\n\nSection caps: {caps}");
+        return prompt.ToString();
+    }
+
+    private async Task<LlmResponse?> AskReflectionAsync(string prompt, CancellationToken ct)
+    {
+        try
+        {
+            var resp = await _llm.CompleteAsync(new LlmRequest
+            {
+                Tier = ModelTier.Cheap,
+                System = [new LlmSystemBlock(string.Format(InstructionsV2, O.MaxChangesPerPass) + Prompts.ReflectionStyle(Terse))],
+                Messages = [LlmMessage.User(prompt)],
+                MaxTokens = 400,
+                CacheHistory = false,
+                Purpose = "reflect",
+            }, ct).ConfigureAwait(false);
+            _usage?.Record(resp.Model, resp.Usage);
+            return resp;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "reflection call failed");
+            return null;
+        }
+    }
+
+    /// <summary>Applies the grounded changes of the reply (each checked against the signals it cites); returns how many applied.</summary>
+    private int ApplyGrounded(SelfGrowth g, string text)
+    {
+        int applied = 0;
+        foreach (var (c, cited) in ParseGrounded(text).Take(Math.Max(0, O.MaxChangesPerPass)))
+        {
+            var gr = g.Ground(c, cited);
+            if (!gr.Ok)
+            {
+                _log.LogInformation("reflection {Op} {Section} rejected: {Why}", c.Op, c.Section, gr.Why);
+                continue;
+            }
+            var r = _profile.Apply(c, SelfProfile.SourceReflection, null, gr.Evidence.Count > 0 ? gr.Refs : null);
+            if (r.Ok) applied++;
+            _log.LogInformation("reflection {Op} {Section}: {Result} [{Refs}]", c.Op, c.Section, r.Message, gr.Refs);
+        }
+        return applied;
+    }
+
     /// <summary>Parse with each change's cited signal ids ("signals": [12, "s40"]).</summary>
     public static List<(SelfChange Change, List<long> Signals)> ParseGrounded(string text)
     {
         var list = new List<(SelfChange, List<long>)>();
-        int a = text.IndexOf('{'), b = text.LastIndexOf('}');
-        if (a < 0 || b <= a) return list;
-        try
-        {
-            using var doc = JsonDocument.Parse(text[a..(b + 1)]);
-            if (!doc.RootElement.TryGetProperty("changes", out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
-            foreach (var c in arr.EnumerateArray())
-            {
-                if (c.ValueKind != JsonValueKind.Object) continue;
-                var op = c.Str("op");
-                if (op == null || !SelfProfile.TryParseSection(c.Str("section"), out var section)) continue;
-                long? id = c.Int("id") is { } i ? i : null;
-                var ids = new List<long>();
-                if (c.TryGetProperty("signals", out var sig) && sig.ValueKind == JsonValueKind.Array)
-                    foreach (var x in sig.EnumerateArray())
-                    {
-                        if (x.ValueKind == JsonValueKind.Number && x.TryGetInt64(out var n)) ids.Add(n);
-                        else if (x.ValueKind == JsonValueKind.String && long.TryParse(x.GetString()!.TrimStart('s', 'S', '#'), out var n2)) ids.Add(n2);
-                    }
-                list.Add((new SelfChange(op, section, c.Str("text"), c.Str("player"), id, null, c.Str("reason") ?? "reflection"), ids));
-            }
-        }
-        catch (JsonException) { }
+        ForEachChange(text, (c, change) => list.Add((change, CitedSignals(c))));
         return list;
     }
 
@@ -257,22 +261,43 @@ public sealed class ReflectionPass
     public static List<SelfChange> Parse(string text)
     {
         var list = new List<SelfChange>();
+        ForEachChange(text, (_, change) => list.Add(change));
+        return list;
+    }
+
+    /// <summary>Each readable entry of the reply's <c>changes</c> array (unreadable JSON ends the walk, keeping what came before).</summary>
+    private static void ForEachChange(string text, Action<JsonElement, SelfChange> add)
+    {
         int a = text.IndexOf('{'), b = text.LastIndexOf('}');
-        if (a < 0 || b <= a) return list;
+        if (a < 0 || b <= a) return;
         try
         {
             using var doc = JsonDocument.Parse(text[a..(b + 1)]);
-            if (!doc.RootElement.TryGetProperty("changes", out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+            if (!doc.RootElement.TryGetProperty("changes", out var arr) || arr.ValueKind != JsonValueKind.Array) return;
             foreach (var c in arr.EnumerateArray())
-            {
-                if (c.ValueKind != JsonValueKind.Object) continue;
-                var op = c.Str("op");
-                if (op == null || !SelfProfile.TryParseSection(c.Str("section"), out var section)) continue;
-                long? id = c.Int("id") is { } i ? i : null;
-                list.Add(new SelfChange(op, section, c.Str("text"), c.Str("player"), id, null, c.Str("reason") ?? "reflection"));
-            }
+                if (ToChange(c) is { } change) add(c, change);
         }
         catch (JsonException) { }
-        return list;
+    }
+
+    private static SelfChange? ToChange(JsonElement c)
+    {
+        if (c.ValueKind != JsonValueKind.Object) return null;
+        var op = c.Str("op");
+        if (op == null || !SelfProfile.TryParseSection(c.Str("section"), out var section)) return null;
+        long? id = c.Int("id") is { } i ? i : null;
+        return new SelfChange(op, section, c.Str("text"), c.Str("player"), id, null, c.Str("reason") ?? "reflection");
+    }
+
+    private static List<long> CitedSignals(JsonElement c)
+    {
+        var ids = new List<long>();
+        if (!c.TryGetProperty("signals", out var sig) || sig.ValueKind != JsonValueKind.Array) return ids;
+        foreach (var x in sig.EnumerateArray())
+        {
+            if (x.ValueKind == JsonValueKind.Number && x.TryGetInt64(out var n)) ids.Add(n);
+            else if (x.ValueKind == JsonValueKind.String && long.TryParse(x.GetString()!.TrimStart('s', 'S', '#'), out var n2)) ids.Add(n2);
+        }
+        return ids;
     }
 }

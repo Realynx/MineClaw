@@ -50,22 +50,24 @@ public static partial class ChatText
         text = text.Replace("**", "").Replace("__", "");
 
         var sb = new StringBuilder(text.Length);
-        foreach (var c in text)
-        {
-            if (Allowed.Contains(c)) { sb.Append(c); continue; }
-            if (char.IsHighSurrogate(c) || char.IsLowSurrogate(c)) continue; // emoji etc.
-            // Try the base letter (e.g. 'ő' -> 'o').
-            var decomposed = c.ToString().Normalize(NormalizationForm.FormD);
-            foreach (var d in decomposed)
-            {
-                if (CharUnicodeInfo.GetUnicodeCategory(d) == UnicodeCategory.NonSpacingMark) continue;
-                if (Allowed.Contains(d)) sb.Append(d);
-            }
-        }
+        foreach (var c in text) AppendAllowed(sb, c);
         var result = MultiSpace().Replace(sb.ToString(), " ").Trim();
         // Never let model text become a server command.
         while (result.StartsWith('/')) result = result[1..].TrimStart();
         return result;
+    }
+
+    /// <summary>The character if the server takes it, else its base letter (e.g. 'ő' -> 'o'); emoji and other surrogates dropped.</summary>
+    private static void AppendAllowed(StringBuilder sb, char c)
+    {
+        if (Allowed.Contains(c)) { sb.Append(c); return; }
+        if (char.IsHighSurrogate(c) || char.IsLowSurrogate(c)) return; // emoji etc.
+        var decomposed = c.ToString().Normalize(NormalizationForm.FormD);
+        foreach (var d in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(d) == UnicodeCategory.NonSpacingMark) continue;
+            if (Allowed.Contains(d)) sb.Append(d);
+        }
     }
 
     /// <summary>Splits into lines of at most <paramref name="max"/> chars on word boundaries (hard-splitting huge words).</summary>

@@ -78,17 +78,7 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
         var progress = new StreamProgress { InputEstimate = json.Length / 4 };
         try
         {
-            for (int attempt = 0; ; attempt++)
-            {
-                try
-                {
-                    return await SendOnceAsync(json, model, stream, progress, request.OnToolUse, linked.Token).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (Retryable(ex) && attempt < _o.MaxRetries && !linked.IsCancellationRequested && progress.Chars == 0)
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(500 * Math.Pow(2, attempt)), linked.Token).ConfigureAwait(false);
-                }
-            }
+            return await SendWithRetriesAsync(json, model, stream, progress, request.OnToolUse, linked.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ct.IsCancellationRequested && ex is not LlmInterruptedException)
         {
@@ -99,6 +89,23 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
         catch (Exception ex) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested && ex is OperationCanceledException)
         {
             throw new TimeoutException($"ollama call to {model} timed out after {_o.EffectiveTimeoutSeconds}s", ex);
+        }
+    }
+
+    /// <summary>Retries a retryable failure with backoff while nothing was streamed yet and the call isn't cancelled.</summary>
+    private async Task<LlmResponse> SendWithRetriesAsync(string json, string model, bool stream, StreamProgress progress, Action<LlmToolUse>? onToolUse,
+        CancellationToken ct)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await SendOnceAsync(json, model, stream, progress, onToolUse, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (Retryable(ex) && attempt < _o.MaxRetries && !ct.IsCancellationRequested && progress.Chars == 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * Math.Pow(2, attempt)), ct).ConfigureAwait(false);
+            }
         }
     }
 
@@ -172,6 +179,23 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
     internal JsonObject BuildBody(LlmRequest request, string model, OllamaModelInfo? info, bool stream)
     {
         bool vision = info?.SupportsVision == true || _o.VisionModels.Any(v => OllamaCatalog.SameFamily(v, model));
+        var body = new JsonObject
+        {
+            ["model"] = model,
+            ["messages"] = BuildMessages(request, vision),
+            ["stream"] = stream,
+        };
+        if (request.Tools.Count > 0) body["tools"] = BuildTools(request.Tools);
+        body["options"] = BuildOptions(request);
+        if (!string.IsNullOrWhiteSpace(_o.KeepAlive)) body["keep_alive"] = _o.KeepAlive.Trim();
+        // think only where the model can (sending it to a non-thinking model is a 400); unknown capabilities = omit.
+        if (info?.SupportsThinking == true) SetThink(body, request);
+        return body;
+    }
+
+    /// <summary>The system prefix (one message, same every call), then the conversation with tool results paired by name.</summary>
+    private static JsonArray BuildMessages(LlmRequest request, bool vision)
+    {
         var messages = new JsonArray();
         var system = string.Join("\n\n", request.System.Select(s => s.Text).Where(t => !string.IsNullOrEmpty(t)));
         if (system.Length > 0) messages.Add(new JsonObject { ["role"] = "system", ["content"] = system });
@@ -185,42 +209,39 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
             if (m.Role == LlmRole.Assistant) messages.Add(AssistantMessage(m));
             else foreach (var node in UserMessages(m, names, vision)) messages.Add(node);
         }
+        return messages;
+    }
 
-        var body = new JsonObject
-        {
-            ["model"] = model,
-            ["messages"] = messages,
-            ["stream"] = stream,
-        };
-        if (request.Tools.Count > 0)
-        {
-            var tools = new JsonArray();
-            foreach (var t in request.Tools)
-                tools.Add(new JsonObject
+    private static JsonArray BuildTools(IReadOnlyList<LlmToolDefinition> defs)
+    {
+        var tools = new JsonArray();
+        foreach (var t in defs)
+            tools.Add(new JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new JsonObject
                 {
-                    ["type"] = "function",
-                    ["function"] = new JsonObject
-                    {
-                        ["name"] = t.Name,
-                        ["description"] = t.Description,
-                        ["parameters"] = t.InputSchema.ValueKind == JsonValueKind.Object ? JsonNode.Parse(t.InputSchema.GetRawText()) : new JsonObject { ["type"] = "object" },
-                    },
-                });
-            body["tools"] = tools;
-        }
+                    ["name"] = t.Name,
+                    ["description"] = t.Description,
+                    ["parameters"] = t.InputSchema.ValueKind == JsonValueKind.Object ? JsonNode.Parse(t.InputSchema.GetRawText()) : new JsonObject { ["type"] = "object" },
+                },
+            });
+        return tools;
+    }
+
+    private JsonObject BuildOptions(LlmRequest request)
+    {
         var options = new JsonObject { ["num_predict"] = request.MaxTokens ?? _options.MaxTokensFor(request.Tier) };
         if (_o.DefaultNumCtx > 0) options["num_ctx"] = _o.DefaultNumCtx;
         if (_o.Temperature is { } temp) options["temperature"] = temp;
-        body["options"] = options;
-        if (!string.IsNullOrWhiteSpace(_o.KeepAlive)) body["keep_alive"] = _o.KeepAlive.Trim();
-        // think only where the model can (sending it to a non-thinking model is a 400); unknown capabilities = omit.
-        if (info?.SupportsThinking == true)
-        {
-            var mode = (request.Thinking ?? _options.ThinkingFor(request.Tier)).ToLowerInvariant();
-            if (mode == "adaptive") body["think"] = true;
-            else if (mode != "omit") body["think"] = false;
-        }
-        return body;
+        return options;
+    }
+
+    private void SetThink(JsonObject body, LlmRequest request)
+    {
+        var mode = (request.Thinking ?? _options.ThinkingFor(request.Tier)).ToLowerInvariant();
+        if (mode == "adaptive") body["think"] = true;
+        else if (mode != "omit") body["think"] = false;
     }
 
     private static JsonObject AssistantMessage(LlmMessage m)
@@ -245,18 +266,7 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
     {
         var images = new JsonArray();
         // Tool results first and in order: Ollama pairs role:"tool" messages with the preceding assistant tool_calls.
-        foreach (var r in m.Content.OfType<LlmToolResult>())
-        {
-            var content = r.IsError && !r.Content.StartsWith("error", StringComparison.OrdinalIgnoreCase) ? "error: " + r.Content : r.Content;
-            if (r.Image is { } img)
-            {
-                if (vision) images.Add(Convert.ToBase64String(img.Data));
-                else content = content + " " + img.Stub;
-            }
-            var t = new JsonObject { ["role"] = "tool", ["content"] = content };
-            if (names.TryGetValue(r.ToolUseId, out var name)) t["tool_name"] = name;
-            yield return t;
-        }
+        foreach (var r in m.Content.OfType<LlmToolResult>()) yield return ToolResultMessage(r, names, vision, images);
         foreach (var ib in m.Content.OfType<LlmImageBlock>())
             if (vision) images.Add(Convert.ToBase64String(ib.Image.Data));
         var text = string.Join("\n", m.Content.OfType<LlmText>().Select(t => t.Text).Where(t => t.Length > 0));
@@ -264,6 +274,20 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
         var u = new JsonObject { ["role"] = "user", ["content"] = text.Length > 0 ? text : "(image from the tool result above)" };
         if (images.Count > 0) u["images"] = images;
         yield return u;
+    }
+
+    /// <summary>A role:"tool" message; its image goes to <paramref name="images"/> for a vision model, else its stub joins the text.</summary>
+    private static JsonObject ToolResultMessage(LlmToolResult r, Dictionary<string, string> names, bool vision, JsonArray images)
+    {
+        var content = r.IsError && !r.Content.StartsWith("error", StringComparison.OrdinalIgnoreCase) ? "error: " + r.Content : r.Content;
+        if (r.Image is { } img)
+        {
+            if (vision) images.Add(Convert.ToBase64String(img.Data));
+            else content = content + " " + img.Stub;
+        }
+        var t = new JsonObject { ["role"] = "tool", ["content"] = content };
+        if (names.TryGetValue(r.ToolUseId, out var name)) t["tool_name"] = name;
+        return t;
     }
 
     // ------------------------------------------------------------------ response parsing (one object or NDJSON chunks)
@@ -286,36 +310,45 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
         {
             long chars = 0;
             if (chunk.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.Object)
-            {
-                if (msg.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String && c.GetString() is { Length: > 0 } s)
-                {
-                    _text.Append(s);
-                    chars += s.Length;
-                }
-                if (msg.TryGetProperty("thinking", out var th) && th.ValueKind == JsonValueKind.String && th.GetString() is { Length: > 0 } ts)
-                {
-                    _thinking.Append(ts);
-                    chars += ts.Length;
-                }
-                if (msg.TryGetProperty("tool_calls", out var tc) && tc.ValueKind == JsonValueKind.Array)
-                    foreach (var call in tc.EnumerateArray())
-                    {
-                        var use = ParseCall(call, _calls.Count);
-                        if (use == null) continue;
-                        _calls.Add(use);
-                        chars += use.Input.GetRawText().Length;
-                        if (!LlmToolArgs.IsInvalid(use.Input, out _))
-                            try { OnToolUse?.Invoke(use); } catch (Exception) { /* an early start never breaks the call */ }
-                    }
-            }
+                chars = AppendString(msg, "content", _text) + AppendString(msg, "thinking", _thinking) + AddCalls(msg);
             if (chunk.TryGetProperty("done", out var d) && d.ValueKind == JsonValueKind.True)
             {
                 Done = true;
                 if (chunk.TryGetProperty("done_reason", out var dr) && dr.ValueKind == JsonValueKind.String) _doneReason = dr.GetString();
             }
-            if (chunk.TryGetProperty("prompt_eval_count", out var pe) && pe.TryGetInt64(out var pin)) _in = pin;
-            if (chunk.TryGetProperty("eval_count", out var ev) && ev.TryGetInt64(out var pout)) _out = pout;
+            if (TryCount(chunk, "prompt_eval_count", out var pin)) _in = pin;
+            if (TryCount(chunk, "eval_count", out var pout)) _out = pout;
             return chars;
+        }
+
+        /// <summary>Appends a non-empty string property to <paramref name="into"/>; returns its length (0 when absent).</summary>
+        private static long AppendString(JsonElement msg, string name, StringBuilder into)
+        {
+            if (!msg.TryGetProperty(name, out var c) || c.ValueKind != JsonValueKind.String || c.GetString() is not { Length: > 0 } s) return 0;
+            into.Append(s);
+            return s.Length;
+        }
+
+        private long AddCalls(JsonElement msg)
+        {
+            if (!msg.TryGetProperty("tool_calls", out var tc) || tc.ValueKind != JsonValueKind.Array) return 0;
+            long chars = 0;
+            foreach (var call in tc.EnumerateArray())
+            {
+                var use = ParseCall(call, _calls.Count);
+                if (use == null) continue;
+                _calls.Add(use);
+                chars += use.Input.GetRawText().Length;
+                if (!LlmToolArgs.IsInvalid(use.Input, out _))
+                    try { OnToolUse?.Invoke(use); } catch (Exception) { /* an early start never breaks the call */ }
+            }
+            return chars;
+        }
+
+        private static bool TryCount(JsonElement chunk, string name, out long value)
+        {
+            value = 0;
+            return chunk.TryGetProperty(name, out var v) && v.TryGetInt64(out value);
         }
 
         public LlmResponse ToResponse(string model)
@@ -389,40 +422,62 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
         if (end >= 0 && Balance(s[..(end + 1)]) == 0) s = s[..(end + 1)];
         if (!s.Contains('"') && s.Contains('\'')) s = s.Replace('\'', '"');
         s = TrailingComma.Replace(s, "$1");
-        // Close what a cut-off generation left open (strings first, then brackets in reverse order).
+        return TrailingComma.Replace(CloseOpen(s), "$1");
+    }
+
+    /// <summary>Closes what a cut-off generation left open (strings first, then brackets in reverse order).</summary>
+    private static string CloseOpen(string s)
+    {
         var stack = new Stack<char>();
-        bool inStr = false, esc = false;
+        var scan = new StringScan();
         foreach (var ch in s)
         {
-            if (inStr)
-            {
-                if (esc) esc = false;
-                else if (ch == '\\') esc = true;
-                else if (ch == '"') inStr = false;
-                continue;
-            }
-            if (ch == '"') inStr = true;
-            else if (ch is '{' or '[') stack.Push(ch == '{' ? '}' : ']');
-            else if (ch is '}' or ']' && stack.Count > 0) stack.Pop();
+            if (!scan.Skip(ch)) TrackBracket(stack, ch);
         }
         var sb = new StringBuilder(s);
-        if (inStr) sb.Append('"');
+        if (scan.InString) sb.Append('"');
         while (stack.Count > 0) sb.Append(stack.Pop());
-        return TrailingComma.Replace(sb.ToString(), "$1");
+        return sb.ToString();
+    }
+
+    private static void TrackBracket(Stack<char> stack, char ch)
+    {
+        if (ch is '{' or '[') stack.Push(ch == '{' ? '}' : ']');
+        else if (ch is '}' or ']' && stack.Count > 0) stack.Pop();
     }
 
     private static int Balance(string s)
     {
         int depth = 0;
-        bool inStr = false, esc = false;
+        var scan = new StringScan();
         foreach (var ch in s)
         {
-            if (inStr) { if (esc) esc = false; else if (ch == '\\') esc = true; else if (ch == '"') inStr = false; continue; }
-            if (ch == '"') inStr = true;
-            else if (ch is '{' or '[') depth++;
+            if (scan.Skip(ch)) continue;
+            if (ch is '{' or '[') depth++;
             else if (ch is '}' or ']') depth--;
         }
         return depth;
+    }
+
+    /// <summary>Tracks JSON strings during a scan: <see cref="Skip"/> is true for a string's characters (its quotes included).</summary>
+    private struct StringScan
+    {
+        private bool _esc;
+
+        public bool InString { get; private set; }
+
+        public bool Skip(char ch)
+        {
+            if (!InString)
+            {
+                InString = ch == '"';
+                return InString;
+            }
+            if (_esc) _esc = false;
+            else if (ch == '\\') _esc = true;
+            else if (ch == '"') InString = false;
+            return true;
+        }
     }
 
     public void Dispose()

@@ -29,20 +29,25 @@ public static class Anvil
         if (item is "elytra") return (334, 0, "leather");
         if (item is "shield") return (5, -1, "planks");
         int cut = item.IndexOf('_');
-        if (cut < 0) return null;
-        string kind = item[(cut + 1)..];
-        if (kind is not ("pickaxe" or "axe" or "shovel" or "hoe" or "sword" or "helmet" or "chestplate" or "leggings" or "boots")) return null;
-        return item[..cut] switch
-        {
-            "wooden" => (5, -1, "planks"),
-            "stone" => (4, 0, "cobblestone"),
-            "iron" or "chainmail" => (265, 0, "iron_ingot"),
-            "golden" => (266, 0, "gold_ingot"),
-            "diamond" => (264, 0, "diamond"),
-            "leather" => (334, 0, "leather"),
-            _ => null,
-        };
+        if (cut < 0 || !RepairableKinds.Contains(item[(cut + 1)..])) return null;
+        return RepairByMaterial.TryGetValue(item[..cut], out var material) ? material : null;
     }
+
+    /// <summary>The tool and armour kinds an anvil repairs with their material.</summary>
+    private static readonly HashSet<string> RepairableKinds =
+        ["pickaxe", "axe", "shovel", "hoe", "sword", "helmet", "chestplate", "leggings", "boots"];
+
+    /// <summary>The repair material by the item name's material prefix.</summary>
+    private static readonly Dictionary<string, (int Id, int Meta, string Name)> RepairByMaterial = new()
+    {
+        ["wooden"] = (5, -1, "planks"),
+        ["stone"] = (4, 0, "cobblestone"),
+        ["iron"] = (265, 0, "iron_ingot"),
+        ["chainmail"] = (265, 0, "iron_ingot"),
+        ["golden"] = (266, 0, "gold_ingot"),
+        ["diamond"] = (264, 0, "diamond"),
+        ["leather"] = (334, 0, "leather"),
+    };
 
     /// <summary>Material units a repair uses and the damage left: each unit mends min(damage, max/4), up to <paramref name="have"/> units.</summary>
     public static (int Units, int DamageLeft) Repair(int maxDamage, int damage, int have)

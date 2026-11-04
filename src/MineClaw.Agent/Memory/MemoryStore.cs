@@ -349,33 +349,40 @@ public sealed class MemoryStore : IDisposable
             kind = kind?.Trim().ToLowerInvariant().TrimEnd('s');
             var refs = new List<string>();
             int n = 0;
-            if (kind is null or "" or "waypoint")
-                foreach (var w in _data.Waypoints.Where(w => Same(w.Name, name)).ToList()) { _data.Waypoints.Remove(w); refs.Add(Ref(w)); n++; }
-            if (kind is null or "" or "structure")
-                foreach (var s in _data.Structures.Where(s => Same(s.Name, name)).ToList()) { _data.Structures.Remove(s); refs.Add(Ref(s)); n++; }
-            if (kind is null or "" or "routine")
-                foreach (var r in _data.Routines.Where(r => Same(r.Name, name)).ToList()) { _data.Routines.Remove(r); refs.Add(Ref(r)); n++; }
-            if (kind is null or "" or "note" or "fact" or "player")
-            {
-                var notes = int.TryParse(name.TrimStart('#'), out var id)
-                    ? _data.Notes.Where(x => x.Id == id).ToList()
-                    : _data.Notes.Where(x => x.Text.Contains(name, StringComparison.OrdinalIgnoreCase) || Same(x.Subject, name)).ToList();
-                foreach (var x in notes) { _data.Notes.Remove(x); refs.Add(Ref(x)); n++; }
-            }
-            if (n > 0)
-            {
-                _db.Tx(() =>
-                {
-                    foreach (var r in refs)
-                    {
-                        DeleteRow(r);
-                        _index.Delete(r);
-                    }
-                });
-            }
+            if (Wants(kind, "waypoint")) n += RemoveMatching(_data.Waypoints, w => Same(w.Name, name), w => Ref(w), refs);
+            if (Wants(kind, "structure")) n += RemoveMatching(_data.Structures, s => Same(s.Name, name), s => Ref(s), refs);
+            if (Wants(kind, "routine")) n += RemoveMatching(_data.Routines, r => Same(r.Name, name), r => Ref(r), refs);
+            if (kind is null or "" or "note" or "fact" or "player") n += RemoveMatching(_data.Notes, NoteMatch(name), x => Ref(x), refs);
+            if (n > 0) DeleteRefs(refs);
             return n;
         }
     }
+
+    /// <summary>Any kind (null/""), or this one.</summary>
+    private static bool Wants(string? kind, string one) => kind is null or "" || kind == one;
+
+    private static bool WantsNotes(string? kind) => Wants(kind, "note") || kind == "fact";
+
+    private static int RemoveMatching<T>(List<T> list, Func<T, bool> match, Func<T, string> refOf, List<string> refs)
+    {
+        int n = 0;
+        foreach (var x in list.Where(match).ToList()) { list.Remove(x); refs.Add(refOf(x)); n++; }
+        return n;
+    }
+
+    /// <summary>A note by id ("#3", "3"), else by text or subject.</summary>
+    private Func<Note, bool> NoteMatch(string name) => int.TryParse(name.TrimStart('#'), out var id)
+        ? x => x.Id == id
+        : x => x.Text.Contains(name, StringComparison.OrdinalIgnoreCase) || Same(x.Subject, name);
+
+    private void DeleteRefs(List<string> refs) => _db.Tx(() =>
+    {
+        foreach (var r in refs)
+        {
+            DeleteRow(r);
+            _index.Delete(r);
+        }
+    });
 
     /// <summary>Compact list of names for a kind (bounded).</summary>
     public string List(string? kind, int maxChars = 500)
@@ -385,13 +392,13 @@ public sealed class MemoryStore : IDisposable
             kind = kind?.Trim().ToLowerInvariant().TrimEnd('s');
             var parts = new List<string>();
             int cur = CurrentDimension;
-            if (kind is null or "" or "waypoint" && _data.Waypoints.Count > 0)
+            if (Wants(kind, "waypoint") && _data.Waypoints.Count > 0)
                 parts.Add("waypoints: " + string.Join(", ", _data.Waypoints.Select(w => $"{w.Name}@{w.X},{w.Y},{w.Z}{WorldDim.Tag(w.Dimension, cur)}")));
-            if (kind is null or "" or "structure" && _data.Structures.Count > 0)
+            if (Wants(kind, "structure") && _data.Structures.Count > 0)
                 parts.Add("structures: " + string.Join(", ", _data.Structures.Select(s => $"{s.Name}({s.Kind})")));
-            if (kind is null or "" or "routine" && _data.Routines.Count > 0)
+            if (Wants(kind, "routine") && _data.Routines.Count > 0)
                 parts.Add("routines: " + string.Join(", ", _data.Routines.Select(r => r.Name)));
-            if (kind is null or "" or "note" or "fact" && _data.Notes.Count > 0)
+            if (WantsNotes(kind) && _data.Notes.Count > 0)
                 parts.Add($"notes: {_data.Notes.Count} (subjects: " + string.Join(", ", _data.Notes.Select(n => n.Subject).Distinct(StringComparer.OrdinalIgnoreCase).Take(12)) + ")");
             var s = parts.Count == 0 ? "nothing saved" : string.Join(" | ", parts);
             return TextUtil.Truncate(s, maxChars);
@@ -575,23 +582,28 @@ public sealed class MemoryStore : IDisposable
     {
         if (_db.GetMeta("memory_json_imported") != null || !File.Exists(path)) return;
         var legacy = AtomicFile.ReadJson<MemoryData>(path);
-        if (legacy != null)
-        {
-            foreach (var w in legacy.Waypoints) { _data.Waypoints.RemoveAll(x => Same(x.Name, w.Name)); _data.Waypoints.Add(w); }
-            foreach (var s in legacy.Structures) { _data.Structures.RemoveAll(x => Same(x.Name, s.Name)); _data.Structures.Add(s); }
-            foreach (var r in legacy.Routines) { _data.Routines.RemoveAll(x => Same(x.Name, r.Name)); _data.Routines.Add(r); }
-            foreach (var n in legacy.Notes)
-            {
-                if (_data.Notes.Any(x => Same(x.Subject, n.Subject) && Same(x.Text, n.Text))) continue;
-                if (_data.Notes.Any(x => x.Id == n.Id)) n.Id = _data.Notes.Max(x => x.Id) + 1;
-                _data.Notes.Add(n);
-            }
-            _data.Identity = legacy.Identity ?? _data.Identity;
-            _data.NextNoteId = _data.Notes.Count == 0 ? 1 : _data.Notes.Max(n => n.Id) + 1;
-            _db.Tx(SyncAll);
-        }
+        if (legacy != null) MergeLegacy(legacy);
         _db.SetMeta("memory_json_imported", DateTimeOffset.UtcNow.ToString("O"));
         try { File.Move(path, path + ".imported", overwrite: true); } catch (IOException) { }
+    }
+
+    /// <summary>Merges a legacy memory.json by name (notes by subject + text, renumbered on an id clash) and syncs it to the db.</summary>
+    private void MergeLegacy(MemoryData legacy)
+    {
+        foreach (var w in legacy.Waypoints) { _data.Waypoints.RemoveAll(x => Same(x.Name, w.Name)); _data.Waypoints.Add(w); }
+        foreach (var s in legacy.Structures) { _data.Structures.RemoveAll(x => Same(x.Name, s.Name)); _data.Structures.Add(s); }
+        foreach (var r in legacy.Routines) { _data.Routines.RemoveAll(x => Same(x.Name, r.Name)); _data.Routines.Add(r); }
+        foreach (var n in legacy.Notes) MergeLegacyNote(n);
+        _data.Identity = legacy.Identity ?? _data.Identity;
+        _data.NextNoteId = _data.Notes.Count == 0 ? 1 : _data.Notes.Max(n => n.Id) + 1;
+        _db.Tx(SyncAll);
+    }
+
+    private void MergeLegacyNote(Note n)
+    {
+        if (_data.Notes.Any(x => Same(x.Subject, n.Subject) && Same(x.Text, n.Text))) return;
+        if (_data.Notes.Any(x => x.Id == n.Id)) n.Id = _data.Notes.Max(x => x.Id) + 1;
+        _data.Notes.Add(n);
     }
 
     public void Dispose()
