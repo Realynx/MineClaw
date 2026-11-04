@@ -44,25 +44,38 @@
     return null;
   };
   const glob = n => (typeof globalThis[n] === 'function' ? globalThis[n] : null);
+  // This body's own heading (one per body), from its name.
+  const bodyHash = () => {
+    let h = 7;
+    for (const ch of String(H.me('body') || H.me('name') || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return h;
+  };
+  // One leg further out -> a final result when it got stuck 4 times in a row (each time it turns 35 degrees), else null.
+  const scoutLeg = sc => {
+    sc.d += sc.step;
+    const a = sc.deg * Math.PI / 180, me = H.me('pos');
+    const x = Math.floor(sc.start.x - Math.sin(a) * sc.d), z = Math.floor(sc.start.z + Math.cos(a) * sc.d); // yaw 0 = south (+z), 90 = west
+    const y = ground(x, z, Math.floor(me.y)) ?? Math.floor(me.y);
+    const g = glob('go') ? glob('go')({ x, y, z }, 4) : { ok: false, msg: 'no go' };
+    if (!(g && g.ok === false)) { sc.fails = 0; return null; }
+    if (++sc.fails >= 4) return { ok: false, found: [], d: Math.round(sc.d), msg: `stuck ${Math.round(sc.d)} m out: ${g.msg}` };
+    sc.deg += 35;
+    sc.d -= sc.step;
+    return null;
+  };
+  const startDeg = (o, h) => (o.dir === 'random' ? Math.random() * 360 : o.dir != null ? Number(o.dir) : h % 360);
   /** scout(query, {dir, max:240}) - walk out (dir: degrees; default: one per body) till find(query) sees one -> {ok, found, msg}. */
   def('scout', (query, o = {}) => {
     // Fox 10-30: "go in a random direction until they encounter animals. That's how that works." Bodies only see their
     // loaded chunks; walking out into fresh ones finds what the hunted-out area round the base no longer has.
-    const start = H.me('pos'), step = o.step ?? 16, max = o.max ?? 240, r = o.r ?? 24;
-    let h = 7; for (const ch of String(H.me('body') || H.me('name') || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-    let deg = o.dir === 'random' ? Math.random() * 360 : o.dir != null ? Number(o.dir) : h % 360;
-    let d = 0, fails = 0;
+    const start = H.me('pos'), step = o.step ?? 16, max = o.max ?? 240, r = o.r ?? 24, h = bodyHash();
+    const sc = { start, step, deg: startDeg(o, h), d: 0, fails: 0 };
     for (;;) {
       const hit = find(query, { r, limit: o.limit ?? 8 });
-      if (hit.length) return { ok: true, found: hit, d: Math.round(d), msg: `found ${hit[0].name} ${Math.round(hit[0].d)} m off, ${Math.round(d)} m out` };
-      if (d >= max) return { ok: false, found: [], d: Math.round(d), msg: `no ${query} within ${max} m that way (${Math.round(deg) % 360} deg)` };
-      d += step;
-      const a = deg * Math.PI / 180, me = H.me('pos');
-      const x = Math.floor(start.x - Math.sin(a) * d), z = Math.floor(start.z + Math.cos(a) * d); // yaw 0 = south (+z), 90 = west
-      const y = ground(x, z, Math.floor(me.y)) ?? Math.floor(me.y);
-      const g = glob('go') ? glob('go')({ x, y, z }, 4) : { ok: false, msg: 'no go' };
-      if (g && g.ok === false) { if (++fails >= 4) return { ok: false, found: [], d: Math.round(d), msg: `stuck ${Math.round(d)} m out: ${g.msg}` }; deg += 35; d -= step; }
-      else fails = 0;
+      if (hit.length) return { ok: true, found: hit, d: Math.round(sc.d), msg: `found ${hit[0].name} ${Math.round(hit[0].d)} m off, ${Math.round(sc.d)} m out` };
+      if (sc.d >= max) return { ok: false, found: [], d: Math.round(sc.d), msg: `no ${query} within ${max} m that way (${Math.round(sc.deg) % 360} deg)` };
+      const stuck = scoutLeg(sc);
+      if (stuck) return stuck;
     }
   });
   /** item(name) - this version's facts for an item/block {name, id, block, stack, craftable, version} or null. */
