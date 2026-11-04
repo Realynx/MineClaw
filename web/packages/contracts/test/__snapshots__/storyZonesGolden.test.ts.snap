@@ -1,0 +1,5 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`zone painter (golden) > paints, extends and erases exactly as before 1`] = `"1648ba4c1026393c60ec378568d99191008b199166780dd28141fbf565c9c03f"`;
+
+exports[`zone painter (golden) > plans irrigation exactly as before 1`] = `"eeecd27f6e9c32e66516efe0b7dbf37080964cecfce965da171078942f5ac4f9"`;
