@@ -66,17 +66,7 @@ public sealed class AdminSettingsRoutes
         if (!(m.Equals("PUT", StringComparison.OrdinalIgnoreCase) || m.Equals("POST", StringComparison.OrdinalIgnoreCase)) || !IsSettingsPath(req.Url?.AbsolutePath ?? "/") || !req.HasEntityBody)
             return null;
         if (!o.AllowAdminWrites || !TokenOk(req.Headers["X-Supervisor-Token"], o.Token)) return null;
-        if (req.ContentLength64 > MaxBodyBytes) return SupervisorAdminRoutes.TooLarge;
-        using var ms = new MemoryStream();
-        var buf = new byte[16384];
-        while (true)
-        {
-            int r = await req.InputStream.ReadAsync(buf, ct).ConfigureAwait(false);
-            if (r == 0) break;
-            ms.Write(buf, 0, r);
-            if (ms.Length > MaxBodyBytes) return SupervisorAdminRoutes.TooLarge;
-        }
-        return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+        return await SupervisorAdminRoutes.ReadCappedAsync(req, MaxBodyBytes, 16384, ct).ConfigureAwait(false);
     }
 
     private static bool TokenOk(string? given, string? token)
