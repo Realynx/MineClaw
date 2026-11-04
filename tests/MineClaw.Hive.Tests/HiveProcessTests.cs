@@ -113,7 +113,8 @@ public class HiveProcessTests(Xunit.Abstractions.ITestOutputHelper output)
 
         Assert.StartsWith("ok: recalling 67", h.Supervisor.Recall("67"));
         await Wait.Until(() => slot.State == CloneState.Idle, 30, "logout");
-        Assert.Contains("67 logged out (recalled)", h.NoticeText());
+        // The slot turns Idle under its lock; main's notice follows once the link and process are closed (not at the same instant).
+        await Wait.Until(() => h.NoticeText().Contains("67 logged out (recalled)"), 10, "logout notice");
         Assert.Null(h.Store.Stranded("maid_chan_67"));
         Assert.Empty(h.Store.Inventory("maid_chan_67"));  // deposited: ledger shows an empty inventory
         Assert.Equal(BotStatus.Offline, src.Snapshot(true).Status);
