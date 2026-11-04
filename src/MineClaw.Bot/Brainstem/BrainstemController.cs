@@ -346,20 +346,32 @@ public sealed class BrainstemController : IDisposable
         lock (_lock) s = _spec;
         if (s is not { } cur || next.Count == 0) return SpeculationVerdict.Cancel;
         var (tool, input) = next[0];
-        if (tool is "goto" or "follow")
-        {
-            var to = tool == "goto" ? input.Str("to") : input.Str("player");
-            if (to == null || Resolve(to) is not { } p) return SpeculationVerdict.Cancel;
-            double d = Math.Sqrt(Sq(p.X - cur.Target.X) + Sq(p.Z - cur.Target.Z));
-            if (tool == "goto" && d <= Options.AdoptWithinBlocks) return SpeculationVerdict.Adopt;
-            return d <= Options.RetargetWithinBlocks ? SpeculationVerdict.Retarget : SpeculationVerdict.Cancel;
-        }
+        if (tool is "goto" or "follow") return JudgeMove(cur.Target, tool, input);
         var text = (tool + " " + input.GetRawText()).ToLowerInvariant();
-        bool forGen = cur.Intent.Kind == IntentKind.SpecGenerator && (tool == "harvest_generator" || (tool is "mine" or "delegate" or "script" && (text.Contains("cobble") || text.Contains("gen"))));
-        bool forTree = cur.Intent.Kind == IntentKind.SpecTree && (tool == "chop_tree" || (tool is "delegate" or "script" && (text.Contains("tree") || text.Contains("wood") || text.Contains("log"))));
-        bool forBring = cur.Intent.Kind == IntentKind.SpecBring && (tool is "withdraw" or "skill" || tool == "delegate" && text.Contains(cur.Intent.Arg ?? "\u0000"));
-        return forGen || forTree || forBring ? SpeculationVerdict.Retarget : SpeculationVerdict.Cancel;
+        return ServesGenerator(cur.Intent, tool, text) || ServesTree(cur.Intent, tool, text) || ServesBring(cur.Intent, tool, text)
+            ? SpeculationVerdict.Retarget : SpeculationVerdict.Cancel;
     }
+
+    /// <summary>A goto to (about) the walk's target adopts it; a goto/follow nearby retargets it; anything farther cancels it.</summary>
+    private SpeculationVerdict JudgeMove(BlockPos target, string tool, JsonElement input)
+    {
+        var to = tool == "goto" ? input.Str("to") : input.Str("player");
+        if (to == null || Resolve(to) is not { } p) return SpeculationVerdict.Cancel;
+        double d = Math.Sqrt(Sq(p.X - target.X) + Sq(p.Z - target.Z));
+        if (tool == "goto" && d <= Options.AdoptWithinBlocks) return SpeculationVerdict.Adopt;
+        return d <= Options.RetargetWithinBlocks ? SpeculationVerdict.Retarget : SpeculationVerdict.Cancel;
+    }
+
+    private static bool ServesGenerator(Intent intent, string tool, string text) =>
+        intent.Kind == IntentKind.SpecGenerator
+        && (tool == "harvest_generator" || (tool is "mine" or "delegate" or "script" && (text.Contains("cobble") || text.Contains("gen"))));
+
+    private static bool ServesTree(Intent intent, string tool, string text) =>
+        intent.Kind == IntentKind.SpecTree
+        && (tool == "chop_tree" || (tool is "delegate" or "script" && (text.Contains("tree") || text.Contains("wood") || text.Contains("log"))));
+
+    private static bool ServesBring(Intent intent, string tool, string text) =>
+        intent.Kind == IntentKind.SpecBring && (tool is "withdraw" or "skill" || tool == "delegate" && text.Contains(intent.Arg ?? "\u0000"));
 
     private BlockPos? Resolve(string to)
     {

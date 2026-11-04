@@ -19,22 +19,68 @@ namespace MineClaw.Bot.WorldIndex;
 /// </summary>
 public sealed class PlayerActivityTracker : IDisposable
 {
-    private abstract record Input(DateTimeOffset At);
+    /// <summary>One captured event; <see cref="Handle"/> runs on the pump.</summary>
+    private abstract record Input(DateTimeOffset At)
+    {
+        public abstract void Handle(PlayerActivityTracker t);
+    }
     /// <param name="Self">The bot's own dig/placement (its outbound 0x0E/0x0F, <see cref="WorldState.SelfEdits"/>): never a player's.</param>
-    private sealed record BlockIn(DateTimeOffset At, BlockChange Ch, PlayerSample[] Near, PlayerSample? Bot, bool BotBusy, bool Self = false) : Input(At);
-    private sealed record AnimIn(DateTimeOffset At, int Entity, int Anim) : Input(At);
-    private sealed record BlockActionIn(DateTimeOffset At, BlockPos Pos, PlayerSample[] Near) : Input(At);
-    private sealed record ChatIn(DateTimeOffset At, string Raw) : Input(At);
-    private sealed record PresenceIn(DateTimeOffset At, string Name, bool Joined) : Input(At);
-    private sealed record CollectIn(DateTimeOffset At, int ItemEntity, int Collector, ItemStack Item) : Input(At);
-    private sealed record EquipIn(DateTimeOffset At, int Entity, int Slot, int Item) : Input(At);
-    private sealed record StatusIn(DateTimeOffset At, int Entity, int Status) : Input(At);
-    private sealed record BedIn(DateTimeOffset At, int Entity, BlockPos Pos) : Input(At);
-    private sealed record AttachIn(DateTimeOffset At, int Entity, int Vehicle) : Input(At);
-    private sealed record SignIn(DateTimeOffset At, BlockPos Pos, string[] Lines, PlayerSample[] Near) : Input(At);
-    private sealed record SpawnIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At);
-    private sealed record RemovedIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At);
-    private sealed record SnapshotIn(DateTimeOffset At, string Kind, string Key, BlockPos Pos, IReadOnlyList<ItemCount> Items, bool First) : Input(At);
+    private sealed record BlockIn(DateTimeOffset At, BlockChange Ch, PlayerSample[] Near, PlayerSample? Bot, bool BotBusy, bool Self = false) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleBlock(this);
+    }
+    private sealed record AnimIn(DateTimeOffset At, int Entity, int Anim) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleAnim(this);
+    }
+    private sealed record BlockActionIn(DateTimeOffset At, BlockPos Pos, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleBlockAction(this);
+    }
+    private sealed record ChatIn(DateTimeOffset At, string Raw) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleChat(this);
+    }
+    private sealed record PresenceIn(DateTimeOffset At, string Name, bool Joined) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandlePresence(this);
+    }
+    private sealed record CollectIn(DateTimeOffset At, int ItemEntity, int Collector, ItemStack Item) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleCollect(this);
+    }
+    private sealed record EquipIn(DateTimeOffset At, int Entity, int Slot, int Item) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleEquip(this);
+    }
+    private sealed record StatusIn(DateTimeOffset At, int Entity, int Status) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleStatus(this);
+    }
+    private sealed record BedIn(DateTimeOffset At, int Entity, BlockPos Pos) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleBed(this);
+    }
+    private sealed record AttachIn(DateTimeOffset At, int Entity, int Vehicle) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleAttach(this);
+    }
+    private sealed record SignIn(DateTimeOffset At, BlockPos Pos, string[] Lines, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleSign(this);
+    }
+    private sealed record SpawnIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleSpawn(this);
+    }
+    private sealed record RemovedIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleRemoved(this);
+    }
+    private sealed record SnapshotIn(DateTimeOffset At, string Kind, string Key, BlockPos Pos, IReadOnlyList<ItemCount> Items, bool First) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleSnapshot(this);
+    }
 
     private sealed class PlayerState
     {
@@ -341,50 +387,53 @@ public sealed class PlayerActivityTracker : IDisposable
         DimensionSwitches++;
     }
 
-    private void Handle(Input input)
+    private void Handle(Input input) => input.Handle(this);
+
+    private void HandleAnim(AnimIn a)
     {
-        switch (input)
-        {
-            case AnimIn a:
-                _swings[a.Entity] = a.At;
-                if (a.Anim == 2 && NameOf(a.Entity) is { } hurt) Danger.Hurt(hurt, _world.Entities.Get(a.Entity)?.Position);
-                break;
-            case BlockIn b: HandleBlock(b); break;
-            case BlockActionIn ba:
-                if (_world.GetBlock(ba.Pos) == Blocks.Chest && Attribute(ba.Pos, ba.Near, null, false, ba.At, needSwing: false) is { } who)
-                    Record(new ActivityEvent(who.Name, ActivityKinds.Opened, ba.At, who.Conf) { BlockId = Blocks.Chest, Pos = ba.Pos, Place = Place(ba.Pos, 1) });
-                break;
-            case ChatIn c: HandleChat(c); break;
-            case PresenceIn p:
-                if (p.Name.Equals(_self, StringComparison.OrdinalIgnoreCase)) break;
-                Record(new ActivityEvent(p.Name, p.Joined ? ActivityKinds.Joined : ActivityKinds.Left, p.At, 1.0));
-                break;
-            case CollectIn ci:
-                _collected.Add(ci.ItemEntity);
-                if (NameOf(ci.Collector) is { } col && !ci.Item.IsEmpty)
-                    Record(new ActivityEvent(col, ActivityKinds.PickedUp, ci.At, 1.0) { ItemId = ci.Item.Id, Count = ci.Item.Count });
-                break;
-            case EquipIn eq:
-                if (eq.Slot == 0 && NameOf(eq.Entity) is { } eqn) HeldChanged(eqn, eq.Item, eq.At);
-                break;
-            case StatusIn st:
-                if (NameOf(st.Entity) is { } stn)
-                {
-                    if (st.Status == 2) Danger.Hurt(stn, _world.Entities.Get(st.Entity)?.Position);
-                    else if (st.Status == 3) Danger.DeathStatus(stn);
-                }
-                break;
-            case BedIn bed:
-                if (NameOf(bed.Entity) is { } bn) Record(new ActivityEvent(bn, ActivityKinds.Slept, bed.At, 1.0) { Pos = bed.Pos, Place = Place(bed.Pos, 2) });
-                break;
-            case AttachIn at:
-                if (NameOf(at.Entity) is { } an) VehicleChanged(an, at.Vehicle, at.At);
-                break;
-            case SignIn si: HandleSign(si); break;
-            case SpawnIn sp: HandleSpawn(sp); break;
-            case RemovedIn rm: HandleRemoved(rm); break;
-            case SnapshotIn sn: HandleSnapshot(sn); break;
-        }
+        _swings[a.Entity] = a.At;
+        if (a.Anim == 2 && NameOf(a.Entity) is { } hurt) Danger.Hurt(hurt, _world.Entities.Get(a.Entity)?.Position);
+    }
+
+    private void HandleBlockAction(BlockActionIn ba)
+    {
+        if (_world.GetBlock(ba.Pos) == Blocks.Chest && Attribute(ba.Pos, ba.Near, null, false, ba.At, needSwing: false) is { } who)
+            Record(new ActivityEvent(who.Name, ActivityKinds.Opened, ba.At, who.Conf) { BlockId = Blocks.Chest, Pos = ba.Pos, Place = Place(ba.Pos, 1) });
+    }
+
+    private void HandlePresence(PresenceIn p)
+    {
+        if (p.Name.Equals(_self, StringComparison.OrdinalIgnoreCase)) return;
+        Record(new ActivityEvent(p.Name, p.Joined ? ActivityKinds.Joined : ActivityKinds.Left, p.At, 1.0));
+    }
+
+    private void HandleCollect(CollectIn ci)
+    {
+        _collected.Add(ci.ItemEntity);
+        if (NameOf(ci.Collector) is { } col && !ci.Item.IsEmpty)
+            Record(new ActivityEvent(col, ActivityKinds.PickedUp, ci.At, 1.0) { ItemId = ci.Item.Id, Count = ci.Item.Count });
+    }
+
+    private void HandleEquip(EquipIn eq)
+    {
+        if (eq.Slot == 0 && NameOf(eq.Entity) is { } eqn) HeldChanged(eqn, eq.Item, eq.At);
+    }
+
+    private void HandleStatus(StatusIn st)
+    {
+        if (NameOf(st.Entity) is not { } stn) return;
+        if (st.Status == 2) Danger.Hurt(stn, _world.Entities.Get(st.Entity)?.Position);
+        else if (st.Status == 3) Danger.DeathStatus(stn);
+    }
+
+    private void HandleBed(BedIn bed)
+    {
+        if (NameOf(bed.Entity) is { } bn) Record(new ActivityEvent(bn, ActivityKinds.Slept, bed.At, 1.0) { Pos = bed.Pos, Place = Place(bed.Pos, 2) });
+    }
+
+    private void HandleAttach(AttachIn at)
+    {
+        if (NameOf(at.Entity) is { } an) VehicleChanged(an, at.Vehicle, at.At);
     }
 
     private string? NameOf(int entityId)
