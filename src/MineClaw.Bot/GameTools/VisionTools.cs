@@ -273,82 +273,101 @@ public static class VisionTools
         RoleMap? roles = null)
     {
         var w = c.World;
-        var me = w.Player.Position;
-        var feet = me.ToBlockPos();
         string view = (i.Str("view") ?? "top").ToLowerInvariant();
         int radius = Math.Clamp(i.Int("radius") ?? o.DefaultRadius, 8, 24);
-        string? focus = i.Str("focus")?.Trim();
-        BlockPos centre = feet;
-        Entity? focusPlayer = null;
-        BlockPos? asked = null;
-        if (!string.IsNullOrEmpty(focus) && !focus.Equals("you", StringComparison.OrdinalIgnoreCase) && !focus.Equals("me", StringComparison.OrdinalIgnoreCase)
-            && !focus.Equals("player", StringComparison.OrdinalIgnoreCase) && !focus.Equals(c.Username, StringComparison.OrdinalIgnoreCase))
-        {
-            if (Locations.ParseCoords(focus) is { } p) { centre = p; asked = p; }
-            else if (w.Entities.FindPlayer(focus) is { } e) { focusPlayer = e; centre = e.Position.ToBlockPos(); }
-            else if (places.Resolve(focus) is { } q) { centre = q; asked = q; }
-            else return ToolResult.Error($"unknown focus '{focus}' (player, saved name or x,y,z)");
-        }
-        else if (focus is not null && focus.Equals("player", StringComparison.OrdinalIgnoreCase)
-            && Agent.TurnContext.Current?.Speaker is { } who && w.Entities.FindPlayer(who) is { } sp)
-        {
-            focusPlayer = sp;
-            centre = sp.Position.ToBlockPos();
-        }
+        var (centre, focusPlayer, asked, error) = LegacyFocus(c, places, i.Str("focus")?.Trim());
+        if (error != null) return ToolResult.Error(error);
 
-        var target = asked ?? ActivityTarget(rt, places);
-        var pointed = lastPoint is { } g && now - g.At < TimeSpan.FromMinutes(10) ? lastPoint : null;
-        var ents = Entities(c, centre, radius + 4, isHive);
-        var ms = marks(centre.X, centre.Y, centre.Z, radius);
-        bool nether = w.Dimension == -1;
-        VisionImage img;
-        string kind;
-        if (view == "eye")
-        {
-            double ex, ey, ez;
-            float yaw, pitch;
-            string? viewer = null;
-            if (focusPlayer is { } fp)
-            {
-                (ex, ey, ez, yaw, pitch, viewer) = (fp.Position.X, fp.Position.Y + 1.62, fp.Position.Z, fp.Yaw, fp.Pitch, fp.Name);
-                ents.RemoveAll(e => e.Name != null && e.Name.Equals(fp.Name, StringComparison.OrdinalIgnoreCase));
-                ents.Add(new VisionEntity("hive", c.Username, me.X, me.Y, me.Z, '@'));
-            }
-            else
-            {
-                (ex, ey, ez) = (me.X, me.Y + 1.62, me.Z);
-                (yaw, pitch) = (w.Player.Yaw, w.Player.Pitch);
-                if (asked is { } t)
-                {
-                    double dx = t.X + 0.5 - ex, dy = t.Y + 0.5 - ey, dz = t.Z + 0.5 - ez;
-                    yaw = (float)(Math.Atan2(-dx, dz) * 180 / Math.PI);
-                    pitch = (float)(-Math.Atan2(dy, Math.Sqrt(dx * dx + dz * dz)) * 180 / Math.PI);
-                }
-            }
-            img = eye.Render(new EyeScene
-            {
-                World = voxels, Atlas = atlas, EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = yaw, Pitch = pitch, Time = w.Time, Nether = nether,
-                Weather = new Weather(w.Rain, w.Thunder),
-                Smooth = o.SmoothLighting, Entities = ents, Marks = ms, Target = target is { } tt ? (tt.X, tt.Y, tt.Z) : null,
-                Pointed = pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null, Viewer = viewer,
-            });
-            kind = "eye";
-        }
-        else
-        {
-            var v = view switch { "iso" => VisionView.Iso, "side" => VisionView.Side, _ => VisionView.Top };
-            voxels.Prepare(centre.X, centre.Z, radius / 16 + 2);
-            img = renderer.Render(new VisionScene
-            {
-                View = v, Radius = radius, Cx = centre.X, Cy = centre.Y, Cz = centre.Z, Blocks = w.PlanningView,
-                Self = (feet.X, feet.Y, feet.Z), Entities = ents, Marks = ms, Target = target is { } tt ? (tt.X, tt.Y, tt.Z) : null,
-                Pointed = pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null, PointedBy = pointed?.Player, Nether = nether,
-                Atlas = atlas, Light = voxels, Time = w.Time, Weather = new Weather(w.Rain, w.Thunder), Roles = roles,
-            });
-            kind = v.ToString().ToLowerInvariant();
-        }
+        var pic = new LegacyPicture(c, o, voxels, atlas, centre, radius,
+            asked ?? ActivityTarget(rt, places),
+            lastPoint is { } g && now - g.At < TimeSpan.FromMinutes(10) ? lastPoint : null,
+            Entities(c, centre, radius + 4, isHive), marks(centre.X, centre.Y, centre.Z, radius), w.Dimension == -1);
+        var (img, kind) = view == "eye" ? (pic.Eye(eye, focusPlayer, asked), "eye") : pic.Flat(renderer, view, roles);
         var text = img.Legend + (img.Labels.Count > 0 ? " Labels: " + string.Join("; ", img.Labels.Take(8)) : "");
         var stub = string.Create(CultureInfo.InvariantCulture, $"[picture omitted: see {kind} r{radius} at {centre.X},{centre.Y},{centre.Z}]");
         return ToolResult.Success(text) with { Image = new LlmImage(img.Png, img.Width, img.Height, stub) };
+    }
+
+    /// <summary>The legacy picture's centre: coords, a player (their eyes for the eye view), a saved place; "player" = whoever
+    /// spoke this turn; none/you/me/the bot = where the bot stands.</summary>
+    private static (BlockPos Centre, Entity? Player, BlockPos? Asked, string? Error) LegacyFocus(IGameClient c, IPlaceResolver places, string? focus)
+    {
+        var w = c.World;
+        var feet = w.Player.Position.ToBlockPos();
+        if (string.IsNullOrEmpty(focus)) return (feet, null, null, null);
+        if (focus.Equals("player", StringComparison.OrdinalIgnoreCase))
+            return Agent.TurnContext.Current?.Speaker is { } who && w.Entities.FindPlayer(who) is { } sp ? (sp.Position.ToBlockPos(), sp, null, null) : (feet, null, null, null);
+        if (focus.Equals("you", StringComparison.OrdinalIgnoreCase) || focus.Equals("me", StringComparison.OrdinalIgnoreCase)
+            || focus.Equals(c.Username, StringComparison.OrdinalIgnoreCase)) return (feet, null, null, null);
+        return NamedLegacyFocus(w, places, focus) ?? (feet, null, null, $"unknown focus '{focus}' (player, saved name or x,y,z)");
+    }
+
+    /// <summary>Coords, a player in view, or a saved place.</summary>
+    private static (BlockPos Centre, Entity? Player, BlockPos? Asked, string? Error)? NamedLegacyFocus(WorldState w, IPlaceResolver places, string focus)
+    {
+        if (Locations.ParseCoords(focus) is { } p) return (p, null, p, null);
+        if (w.Entities.FindPlayer(focus) is { } e) return (e.Position.ToBlockPos(), e, null, null);
+        if (places.Resolve(focus) is { } q) return (q, null, q, null);
+        return null;
+    }
+
+    /// <summary>One legacy single-view picture: what it shows (target, pointed block, entities, marks) around its centre.</summary>
+    private sealed record LegacyPicture(IGameClient C, VisionOptions O, WorldVoxels Voxels, TextureAtlas? Atlas, BlockPos Centre, int Radius,
+        BlockPos? Target, Perception.Gesture? Pointed, List<VisionEntity> Ents, IReadOnlyList<VisionMark> Marks, bool Nether)
+    {
+        private (int, int, int)? TargetCell => Target is { } tt ? (tt.X, tt.Y, tt.Z) : null;
+        private (int, int, int)? PointedCell => Pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null;
+
+        /// <summary>First person: through a focused player's eyes (the bot drawn where it stands), else the bot's own, turned to
+        /// an asked spot.</summary>
+        public VisionImage Eye(EyeRenderer eye, Entity? focusPlayer, BlockPos? asked)
+        {
+            var w = C.World;
+            var (ex, ey, ez, yaw, pitch, viewer) = focusPlayer is { } fp ? ThroughPlayer(fp) : OwnEyes(asked);
+            return eye.Render(new EyeScene
+            {
+                World = Voxels, Atlas = Atlas, EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = yaw, Pitch = pitch, Time = w.Time, Nether = Nether,
+                Weather = new Weather(w.Rain, w.Thunder),
+                Smooth = O.SmoothLighting, Entities = Ents, Marks = Marks, Target = TargetCell,
+                Pointed = PointedCell, Viewer = viewer,
+            });
+        }
+
+        private (double, double, double, float, float, string?) ThroughPlayer(Entity fp)
+        {
+            var me = C.World.Player.Position;
+            Ents.RemoveAll(e => e.Name != null && e.Name.Equals(fp.Name, StringComparison.OrdinalIgnoreCase));
+            Ents.Add(new VisionEntity("hive", C.Username, me.X, me.Y, me.Z, '@'));
+            return (fp.Position.X, fp.Position.Y + 1.62, fp.Position.Z, fp.Yaw, fp.Pitch, fp.Name);
+        }
+
+        private (double, double, double, float, float, string?) OwnEyes(BlockPos? asked)
+        {
+            var w = C.World;
+            var me = w.Player.Position;
+            var (ex, ey, ez) = (me.X, me.Y + 1.62, me.Z);
+            if (asked is not { } t) return (ex, ey, ez, w.Player.Yaw, w.Player.Pitch, null);
+            double dx = t.X + 0.5 - ex, dy = t.Y + 0.5 - ey, dz = t.Z + 0.5 - ez;
+            float yaw = (float)(Math.Atan2(-dx, dz) * 180 / Math.PI);
+            float pitch = (float)(-Math.Atan2(dy, Math.Sqrt(dx * dx + dz * dz)) * 180 / Math.PI);
+            return (ex, ey, ez, yaw, pitch, null);
+        }
+
+        /// <summary>The orthographic views: iso, side, else top.</summary>
+        public (VisionImage Image, string Kind) Flat(VisionRenderer renderer, string view, RoleMap? roles)
+        {
+            var w = C.World;
+            var feet = w.Player.Position.ToBlockPos();
+            var v = view switch { "iso" => VisionView.Iso, "side" => VisionView.Side, _ => VisionView.Top };
+            Voxels.Prepare(Centre.X, Centre.Z, Radius / 16 + 2);
+            var img = renderer.Render(new VisionScene
+            {
+                View = v, Radius = Radius, Cx = Centre.X, Cy = Centre.Y, Cz = Centre.Z, Blocks = w.PlanningView,
+                Self = (feet.X, feet.Y, feet.Z), Entities = Ents, Marks = Marks, Target = TargetCell,
+                Pointed = PointedCell, PointedBy = Pointed?.Player, Nether = Nether,
+                Atlas = Atlas, Light = Voxels, Time = w.Time, Weather = new Weather(w.Rain, w.Thunder), Roles = roles,
+            });
+            return (img, v.ToString().ToLowerInvariant());
+        }
     }
 }

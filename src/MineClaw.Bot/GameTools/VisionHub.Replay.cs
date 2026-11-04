@@ -37,10 +37,9 @@ public sealed partial class VisionHub
         var reqs = ParseViews(i, out var viewError);
         if (viewError != null) return (null, viewError);
         var focus = target.Focus;
-        if (reqs != null && (reqs.Any(r => r.Composite || r.Kind == "eye" && r.At != null || r.Kind == "orbit" && r.N > 1)
-            || reqs.Any(r => !r.Cam.IsEmpty) && reqs.GroupBy(r => r.Kind).Any(g => g.Count() > 1)))
+        if (WantsComposite(reqs))
         {
-            var (jobs, notes, error) = await PanelsAsync(reqs, focus, target.Dim, radius, aids, ct).ConfigureAwait(false);
+            var (jobs, notes, error) = await PanelsAsync(reqs!, focus, target.Dim, radius, aids, ct).ConfigureAwait(false);
             if (error != null) return (null, error);
             if (jobs.Count == 0) return (null, "no panels to render");
             return (await draw(() => Composite(jobs, focus, notes, s)).ConfigureAwait(false), null);
@@ -48,21 +47,10 @@ public sealed partial class VisionHub
         var views = reqs?.Select(r => r.Kind).ToList() ?? [];
         var bad = views.Where(x => !ContactSheet.Known.Contains(x.Trim())).ToList();
         if (bad.Count > 0) return (null, $"unknown view '{bad[0]}'");
-        IReadOnlyDictionary<string, CamParams>? viewParams = reqs?.Where(r => !r.Cam.IsEmpty).GroupBy(r => r.Kind)
-            .ToDictionary(g => g.Key, g => g.First().Cam, StringComparer.OrdinalIgnoreCase);
-        if (viewParams is { Count: 0 }) viewParams = null;
+        var viewParams = CamParamsOf(reqs);
         int dim = target.Dim;
-        HiveEyePose? pose = null;
-        if (target.Bot is { } cb)
-        {
-            try { pose = Hive == null ? null : await Hive.ViewAsync(cb.Name, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (!ct.IsCancellationRequested) { _log?.LogDebug(ex, "render see: view request failed"); }
-            if (pose != null)
-            {
-                focus = new BlockPos((int)Math.Floor(pose.X), (int)Math.Floor(pose.Y), (int)Math.Floor(pose.Z));
-                dim = pose.Dim;
-            }
-        }
+        var pose = target.Bot is { } cb ? await ClonePoseAsync(cb, "render see: view request failed", ct).ConfigureAwait(false) : null;
+        if (pose != null) (focus, dim) = (PoseBlock(pose), pose.Dim);
         var player = target.Player;
         return (await draw(() => s.Render(SheetRequest(focus, radius, views, player, SceneFor(focus, dim, radius), pose, aids, viewParams))).ConfigureAwait(false), null);
     }

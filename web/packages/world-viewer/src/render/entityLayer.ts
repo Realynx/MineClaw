@@ -20,7 +20,7 @@
 
 import * as THREE from 'three';
 import type { AssetBundle, Pack } from '../assets/bundle';
-import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type EquipRef, type Equipment, type ItemRef } from '../types';
+import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type EquipRef, type EquipSlot, type Equipment, type ItemRef } from '../types';
 import { stuckArrows, type ArrowSpot } from './entities/arrows';
 import type { GameVersion } from '../world/blocks';
 import type { BotView, EntityView } from '../world/entities';
@@ -32,7 +32,7 @@ import { isHandheld, itemLookById, itemLookByName, itemName, parseHeld, type Ite
 import { createEntityMaterials, GHOST_FLAG, GHOST_LEVEL, GHOST_PLAYER, GHOST_SELECTED, GLINT_FLAG, defaultWorldUniforms, glintTexture, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
 import { cubeGeometry, InstancedDraw, modelGeometry, ShadowDraw, spriteGeometry, type InstanceData } from './entities/meshes';
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, DEATH_SHRINK_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion, stepMotion, wrapDeg, type Motion } from './entities/motion';
-import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine } from './entities/pose';
+import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine, type RootParams } from './entities/pose';
 import { canonical, MOB_NAMES, MODEL_BY_ID, mobLook, mobName, objectLook, objectName, playerLook } from './entities/registry';
 import type { Look, PoseCtx } from './entities/types';
 import { Variant } from './entities/variant';
@@ -225,6 +225,25 @@ interface Label {
   text: string;
 }
 
+/** One `showFor`'s view parameters and counters (one object per layer, refilled for each view: no per-frame allocation). */
+interface ViewState {
+  dim: number;
+  cam: THREE.Vector3;
+  zoom: number;
+  bots: boolean;
+  entities: boolean;
+  labels: boolean;
+  far: number;
+  botDetail: number;
+  cut: NonNullable<EntityShowOptions['cut']> | null;
+  centre: { x: number; z: number } | null;
+  drops: boolean;
+  frustum: THREE.Frustum | null;
+  n: number;
+  boxes: number;
+  botModels: number;
+}
+
 /** Extra slots in an entity's bone row (models with more parts than CONTENT_SLOT skip these extras). */
 const HELD_SLOT = 62;
 const FIRE_SLOT = 61;
@@ -321,6 +340,9 @@ export class EntityLayer {
   shadows = true;
   private readonly labels = new LabelFactory();
   private readonly cullSphere = new THREE.Sphere();
+  private readonly view: ViewState = {
+    dim: 0, cam: new THREE.Vector3(), zoom: 1, bots: true, entities: true, labels: false, far: 0, botDetail: 0, cut: null, centre: null, drops: true, frustum: null, n: 0, boxes: 0, botModels: 0,
+  };
   private readonly botObjs = new Map<string, BotObj>();
   private readonly entLabels = new Map<string, Label>();
   private readonly drawn = new Map<string, Drawn>();
@@ -490,10 +512,7 @@ export class EntityLayer {
   /** Starts the death fall, then the body shrinks away (it stays drawn for that long even when the entity is removed). */
   kill(key: string, now = performance.now()): void {
     const m = this.motionOf(key);
-    if (m && !m.deadAt) {
-      m.deadAt = now;
-      m.hurtAt = now;
-    }
+    if (m) startDeath(m, now);
   }
 
   /**
@@ -523,43 +542,47 @@ export class EntityLayer {
   /** The entity event animations: swings, hurts, deaths, sparks, eating, teleport puffs, lightning bolts. */
   applyEvents(events: EntityEvent[], now: number): void {
     for (const ev of events) {
-      const dim = ev.dim ?? 0;
       if (ev.kind === 'lightning') {
-        if (ev.x != null && ev.y != null && ev.z != null) this.lightning.strike(dim, ev.x, ev.y, ev.z, now, ev.at || now);
+        if (hasPos(ev)) this.lightning.strike(ev.dim ?? 0, ev.x, ev.y, ev.z, now, ev.at || now);
         continue;
       }
-      const d = this.eventTarget(ev);
-      const m = d?.motion;
-      switch (ev.kind) {
-        case 'swing':
-          if (m) m.attackAt = now;
-          break;
-        case 'swing_off':
-          if (m) m.attackOffAt = now;
-          break;
-        case 'hurt':
-          if (m) m.hurtAt = now;
-          break;
-        case 'death':
-          if (m && !m.deadAt) {
-            m.deadAt = now;
-            m.hurtAt = now;
-          }
-          break;
-        case 'eat':
-          if (m) m.eatAt = now;
-          break;
-        case 'crit':
-        case 'magic_crit':
-          if (d) this.particles.burst(ev.kind, d.dim, d.x, d.y + d.h * 0.6, d.z, now);
-          else if (ev.x != null && ev.y != null && ev.z != null) this.particles.burst(ev.kind, dim, ev.x, ev.y + 1, ev.z, now);
-          break;
-        case 'teleport':
-          if (ev.x != null && ev.y != null && ev.z != null) this.particles.burst('teleport', dim, ev.x, ev.y + 1, ev.z, now);
-          if (d) this.particles.burst('teleport', d.dim, d.x, d.y + d.h * 0.5, d.z, now);
-          break;
-      }
+      const handle = EntityLayer.EVENTS.get(ev.kind);
+      if (handle) handle(this, ev, this.eventTarget(ev), now);
     }
+  }
+
+  /** What each entity event does to the body it is about (or, for sparks and puffs, at its position). */
+  private static readonly EVENTS = new Map<string, (l: EntityLayer, ev: EntityEvent, d: Drawn | null, now: number) => void>([
+    ['swing', (_l, _ev, d, now) => {
+      if (d) d.motion.attackAt = now;
+    }],
+    ['swing_off', (_l, _ev, d, now) => {
+      if (d) d.motion.attackOffAt = now;
+    }],
+    ['hurt', (_l, _ev, d, now) => {
+      if (d) d.motion.hurtAt = now;
+    }],
+    ['eat', (_l, _ev, d, now) => {
+      if (d) d.motion.eatAt = now;
+    }],
+    ['death', (_l, _ev, d, now) => {
+      if (d) startDeath(d.motion, now);
+    }],
+    ['crit', (l, ev, d, now) => l.sparks(ev, d, now)],
+    ['magic_crit', (l, ev, d, now) => l.sparks(ev, d, now)],
+    ['teleport', (l, ev, d, now) => l.teleportPuffs(ev, d, now)],
+  ]);
+
+  /** Crit / magic-crit sparks around the body, else where the event says. */
+  private sparks(ev: EntityEvent, d: Drawn | null, now: number): void {
+    if (d) this.particles.burst(ev.kind, d.dim, d.x, d.y + d.h * 0.6, d.z, now);
+    else if (hasPos(ev)) this.particles.burst(ev.kind, ev.dim ?? 0, ev.x, ev.y + 1, ev.z, now);
+  }
+
+  /** Teleport puffs where the event says and around the body. */
+  private teleportPuffs(ev: EntityEvent, d: Drawn | null, now: number): void {
+    if (hasPos(ev)) this.particles.burst('teleport', ev.dim ?? 0, ev.x, ev.y + 1, ev.z, now);
+    if (d) this.particles.burst('teleport', d.dim, d.x, d.y + d.h * 0.5, d.z, now);
   }
 
   /** The bot or entity an event is about: (dim, id), or a bot by `name` (bots carry no entity id on the wire). */
@@ -587,51 +610,10 @@ export class EntityLayer {
     this.mats.shared.uTime.value = timeMs / 1000;
     const list = this.list;
     list.length = 0;
-    for (const b of bots) {
-      const d = this.drawnFor(b.name, true, b.x, b.y, b.z, b.yaw, timeMs);
-      d.frame = frame;
-      d.botView = b;
-      d.ent = null;
-      d.dim = b.dim;
-      this.refreshBot(d, b, timeMs);
-      list.push(d);
-      this.botLabel(b, selected, timeMs);
-    }
-    for (const e of ents) {
-      const d = this.drawnFor(e.key, false, e.x, e.y, e.z, e.yaw, timeMs);
-      d.frame = frame;
-      d.ent = e;
-      d.botView = null;
-      d.dim = e.dim;
-      this.refreshEntity(d, e, timeMs);
-      list.push(d);
-      if (d.riders)
-        for (const r of d.riders) {
-          r.frame = frame;
-          r.dim = d.dim;
-          r.x = d.x;
-          r.y = d.y;
-          r.z = d.z;
-          r.posed = false;
-          list.push(r);
-        }
-    }
-    for (const [k, dm] of this.displays) {
-      const d = this.drawnFor(`display:${k}`, false, dm.x, dm.y, dm.z, 0, timeMs);
-      d.frame = frame;
-      d.dim = dm.dim;
-      d.display = dm;
-      this.refreshDisplay(d, dm);
-      list.push(d);
-    }
-    for (const [k, d] of this.drawn) {
-      if (d.frame === frame) continue;
-      // The dying stay until their body has shrunk away (the server usually removes them right after the death event).
-      if (d.motion.deadAt && timeMs - d.motion.deadAt < DEATH_GONE_MS) {
-        d.frame = frame;
-        list.push(d);
-      } else this.drawn.delete(k);
-    }
+    for (const b of bots) this.listBot(b, frame, timeMs, selected);
+    for (const e of ents) this.listEntity(e, frame, timeMs);
+    for (const [k, dm] of this.displays) this.listDisplay(k, dm, frame, timeMs);
+    this.keepDying(frame, timeMs);
     for (const [k, o] of this.botObjs) if (!this.drawn.get(k)?.bot) this.dropBot(k, o);
     // Bones: one row per entity, then the particles (63 per row).
     this.particles.step(timeMs);
@@ -647,6 +629,59 @@ export class EntityLayer {
     this.particleRow = list.length;
     this.particles.list.forEach((p, i) => this.particles.bone(p, timeMs, this.bones, (this.particleRow + Math.floor(i / PER_ROW)) * ROW_FLOATS + (i % PER_ROW) * 12));
     if (this.boneTex) this.boneTex.needsUpdate = true;
+  }
+
+  private listBot(b: BotView, frame: number, timeMs: number, selected: ReadonlySet<string>): void {
+    const d = this.drawnFor(b.name, true, b.x, b.y, b.z, b.yaw, timeMs);
+    d.frame = frame;
+    d.botView = b;
+    d.ent = null;
+    d.dim = b.dim;
+    this.refreshBot(d, b, timeMs);
+    this.list.push(d);
+    this.botLabel(b, selected, timeMs);
+  }
+
+  /** An entity and, right after it, its riders (at its position, posed by it). */
+  private listEntity(e: EntityView, frame: number, timeMs: number): void {
+    const d = this.drawnFor(e.key, false, e.x, e.y, e.z, e.yaw, timeMs);
+    d.frame = frame;
+    d.ent = e;
+    d.botView = null;
+    d.dim = e.dim;
+    this.refreshEntity(d, e, timeMs);
+    this.list.push(d);
+    if (!d.riders) return;
+    for (const r of d.riders) {
+      r.frame = frame;
+      r.dim = d.dim;
+      r.x = d.x;
+      r.y = d.y;
+      r.z = d.z;
+      r.posed = false;
+      this.list.push(r);
+    }
+  }
+
+  private listDisplay(k: string, dm: DisplayMob, frame: number, timeMs: number): void {
+    const d = this.drawnFor(`display:${k}`, false, dm.x, dm.y, dm.z, 0, timeMs);
+    d.frame = frame;
+    d.dim = dm.dim;
+    d.display = dm;
+    this.refreshDisplay(d, dm);
+    this.list.push(d);
+  }
+
+  /** Drops what this frame no longer lists, except the dying: they stay until their body has shrunk away (the server
+   * usually removes them right after the death event). */
+  private keepDying(frame: number, timeMs: number): void {
+    for (const [k, d] of this.drawn) {
+      if (d.frame === frame) continue;
+      if (d.motion.deadAt && timeMs - d.motion.deadAt < DEATH_GONE_MS) {
+        d.frame = frame;
+        this.list.push(d);
+      } else this.drawn.delete(k);
+    }
   }
 
   private drawnFor(key: string, bot: boolean, x: number, y: number, z: number, yaw: number, now: number): Drawn {
@@ -688,40 +723,59 @@ export class EntityLayer {
 
   /** Hands, head items, armour and elytra from wire equipment (ids in the world's version). */
   private equip(d: Drawn, eq: Equipment | null | undefined, mainFallback: ItemLook | null, mainName: string | null): void {
-    const beta = this.version === 'b1.8.1';
+    this.equipHands(d, eq, mainFallback, mainName);
+    this.equipHead(d, eq);
+    this.equipBody(d, eq);
+    this.equipGlints(d, eq);
+  }
+
+  private equipHands(d: Drawn, eq: Equipment | null | undefined, mainFallback: ItemLook | null, mainName: string | null): void {
     d.held = eq?.main ? this.itemById(eq.main) : mainFallback;
-    d.heldTool = eq?.main ? isHandheld(itemName(eq.main[0]) ?? '') : !!mainName && isHandheld(parseHeld(mainName).name);
+    d.heldTool = mainHandTool(eq, mainName);
     d.heldOff = eq?.off ? this.itemById(eq.off) : null;
     d.heldOffTool = !!eq?.off && isHandheld(itemName(eq.off[0]) ?? '');
-    d.bow = eq?.main?.[0] === 261 || (!!mainName && parseHeld(mainName).name === 'bow');
-    // LayerCustomHead: a skull (1.12.2 item 397, its meta the type) as the skull model; any other head item that is not a
-    // helmet as its item (blocks as a block, 1.12.2 flat items with their "head" transform). b1.8.1's RenderPlayer draws
-    // only blocks.
+    d.bow = holdsBow(eq, mainName);
+  }
+
+  /**
+   * LayerCustomHead: a skull (1.12.2 item 397, its meta the type) as the skull model; any other head item that is not a
+   * helmet as its item (blocks as a block, 1.12.2 flat items with their "head" transform). b1.8.1's RenderPlayer draws
+   * only blocks.
+   */
+  private equipHead(d: Drawn, eq: Equipment | null | undefined): void {
     d.headBlock = d.headItem = null;
     d.skull = -1;
     const head = eq?.head;
-    if (head && d.headLayer && armorMaterial(head[0], 'helmet') == null) {
-      if (!beta && head[0] === 397) d.skull = head[1] >= 0 && head[1] <= 5 ? head[1] : 0;
-      else {
-        const l = this.itemById(head);
-        if (l?.kind === 'cube') d.headBlock = l;
-        else if (l && !beta) d.headItem = l;
-      }
-    }
-    d.elytra = !beta && eq?.chest?.[0] === 443 && this.elytraWearer(d);
+    if (!head || !d.headLayer || armorMaterial(head[0], 'helmet') != null) return;
+    if (!this.beta && head[0] === 397) d.skull = head[1] >= 0 && head[1] <= 5 ? head[1] : 0;
+    else this.wearHeadItem(d, head);
+  }
+
+  private wearHeadItem(d: Drawn, head: NonNullable<EquipRef>): void {
+    const l = this.itemById(head);
+    if (l?.kind === 'cube') d.headBlock = l;
+    else if (l && !this.beta) d.headItem = l;
+  }
+
+  /** Elytra (1.12.2, on the renderers with LayerElytra) and armour (the wire's equipment, else an older material list). */
+  private equipBody(d: Drawn, eq: Equipment | null | undefined): void {
+    d.elytra = !this.beta && eq?.chest?.[0] === 443 && this.elytraWearer(d);
     d.armor = d.armorLayer ? (armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {})) : null;
     d.armorDye = d.armor ? armorDyes(eq) : null;
-    // The glint: the wire's flag (NBT), or the item's own (Item.hasEffect by id).
-    const g = eq?.glint ?? null;
-    const shiny = (slot: 'main' | 'off' | 'head' | 'chest' | 'legs' | 'feet') => {
-      const ref = eq?.[slot];
-      return !!ref && (!!g?.[slot] || glintsById(this.version, ref[0], ref[1]));
-    };
-    d.heldGlint = !!d.held && (eq?.main ? shiny('main') : false);
-    d.heldOffGlint = !!d.heldOff && shiny('off');
-    d.headGlint = (!!d.headBlock || !!d.headItem) && shiny('head');
-    d.elytraGlint = d.elytra && shiny('chest');
-    d.armorGlint = d.armor ? [shiny('head'), shiny('chest'), shiny('legs'), shiny('feet')] : null;
+  }
+
+  private equipGlints(d: Drawn, eq: Equipment | null | undefined): void {
+    d.heldGlint = !!d.held && (eq?.main ? this.shiny(eq, 'main') : false);
+    d.heldOffGlint = !!d.heldOff && this.shiny(eq, 'off');
+    d.headGlint = (!!d.headBlock || !!d.headItem) && this.shiny(eq, 'head');
+    d.elytraGlint = d.elytra && this.shiny(eq, 'chest');
+    d.armorGlint = d.armor ? [this.shiny(eq, 'head'), this.shiny(eq, 'chest'), this.shiny(eq, 'legs'), this.shiny(eq, 'feet')] : null;
+  }
+
+  /** The glint: the wire's flag (NBT), or the item's own (Item.hasEffect by id). */
+  private shiny(eq: Equipment | null | undefined, slot: EquipSlot): boolean {
+    const ref = eq?.[slot];
+    return !!ref && (!!eq?.glint?.[slot] || glintsById(this.version, ref[0], ref[1]));
   }
 
   private elytraWearer(d: Drawn): boolean {
@@ -782,68 +836,10 @@ export class EntityLayer {
   }
 
   private refreshEntity(d: Drawn, e: EntityView, now: number): void {
-    const dto = e.dto;
-    const sig = `${this.version}|${!!this.bundle}|${e.kind}|${e.type}|${dto.variant ?? ''}|${lookOf(dto) ?? ''}|${e.item}|${dto.damage ?? 0}|${e.name ?? ''}|${dto.baby ? 1 : 0}|${JSON.stringify(dto.equipment ?? null)}|${dto.motive ?? ''}|${dto.facing ?? ''}|${dto.rotation ?? ''}|${dto.frameItem ?? ''}|${dto.block ?? ''}|${dto.minecartType ?? ''}|${dto.glint ? 1 : 0}|${dto.carried ?? ''}`;
-    const beta = this.version === 'b1.8.1';
+    const sig = `${this.version}|${!!this.bundle}|${entityKindSig(e)}|${entityExtraSig(e.dto)}`;
     if (d.sig !== sig) {
       d.sig = sig;
-      d.v = Variant.of(dto.variant, lookOf(dto));
-      d.baby = !!dto.baby;
-      d.item = null;
-      d.hang = null;
-      d.fixedYaw = null;
-      const kind = e.kind === 'object' ? (objectName(e.type, beta) ?? (e.name ? objectKind(e.name) : 'object')) : e.kind;
-      d.drop = kind === 'item' || kind === 'xp_orb' || kind === 'xporb' || kind === 'orb';
-      if (kind === 'player') this.setLook(d, playerLook(this.version, e.name ?? 'player', false));
-      else if (kind === 'mob') this.setLook(d, mobLook(this.version, e.type, e.name, d.v, e.id));
-      else if (kind === 'item') {
-        this.setLook(d, null);
-        d.item = this.bundle && e.item > 0 ? itemLookById(this.version, this.bundle.pack, e.item, dto.damage ?? 0) : null;
-        d.itemGlint = !!dto.glint || glintsById(this.version, e.item, dto.damage ?? 0);
-        d.kind = d.item ? 'item' : 'box';
-        d.w = d.h = 0.25;
-        d.colour = 0xd8b040;
-      } else if (kind === 'xp_orb' || kind === 'xporb' || kind === 'orb') {
-        this.setLook(d, null);
-        d.kind = this.bundle ? 'orb' : 'box';
-        d.w = d.h = 0.25;
-        d.colour = 0x9ae040;
-      } else if (kind === 'painting') this.setPainting(d, e);
-      else if (kind === 'item_frame') this.setFrame(d, e);
-      else if (kind === 'firework' || kind === 'fireworks_rocket') {
-        this.setLook(d, null);
-        d.item = this.bundle && !beta ? itemLookByName(this.version, this.bundle.pack, 'fireworks') : null;
-        d.kind = d.item ? 'sprite' : 'box';
-        d.w = d.h = 0.25;
-        d.colour = 0xd04040;
-      } else if (kind === 'falling_block' || kind === 'falling_sand' || kind === 'tnt') {
-        this.setLook(d, null);
-        const ref: ItemRef = kind === 'tnt' ? [46, 0] : (dto.block ?? (e.item > 0 ? [e.item, dto.damage ?? 0] : [beta && e.type === 71 ? 13 : 12, 0]));
-        const l = this.itemById(ref);
-        d.item = l?.kind === 'cube' ? l : null;
-        d.kind = d.item ? 'block' : 'box';
-        d.w = d.h = 0.98;
-        d.colour = kind === 'tnt' ? 0xd04030 : 0xd8c890;
-      } else {
-        // Objects and stands with a model (boat, minecart, arrow, ender crystal, armor stand…).
-        const look = objectLook(this.version, kind, d.v, e.id);
-        this.setLook(d, look);
-        if (!look) {
-          d.w = d.h = 0.5;
-          d.colour = 0x9a9a9a;
-        }
-        if (kind === 'minecart' || kind.endsWith('_minecart')) {
-          const block = minecartBlock(dto.minecartType ?? (kind === 'minecart' ? 0 : kind));
-          d.cartBlock = block;
-          d.item = block ? this.itemById([block, 0]) : null;
-        }
-      }
-      // Hand items and armour: wire equipment, else a player's held item id.
-      this.layersFor(d, kind, e);
-      this.equip(d, dto.equipment, kind === 'player' && e.item > 0 ? this.itemById(null, e.item) : null, null);
-      if (!LIVING.has(kind) && d.kind === 'model') d.fixedYaw = e.yaw;
-      // LayerHeldBlock: an enderman's block.
-      d.carried = d.look?.model === 'enderman' && dto.carried ? this.itemById(dto.carried) : null;
+      this.applyEntityLook(d, e);
     }
     // LayerIronGolemFlower: holdRoseTick counts down 400 ticks from when the wire first said so.
     const rose = d.look?.model === 'iron_golem' && d.v.has('holding_rose', 'rose');
@@ -857,18 +853,101 @@ export class EntityLayer {
     d.invisible = (flags & FLAG_INVISIBLE) !== 0;
     d.glowing = (flags & FLAG_GLOWING) !== 0;
     if (d.fixedYaw !== null) this.objectAim(d, e);
-    // Creeper fusing (Mob16 state 1 / "fuse"/"ignited") and primed TNT (fuse ticks): white flashes.
-    const fuse = e.kind === 'mob' && e.type === 50 && ((!d.v.isString && d.v.num === 1) || d.v.has('fuse', 'fusing', 'ignited'));
-    const tnt = d.kind === 'block' && d.colour === 0xd04030;
-    const fuseTicks = dto.fuse ?? 80 - (e.ageTicks % 80);
-    // RenderCreeper.getColorMultiplier: a white overlay of f·0.2 on odd tenths of the flash intensity f (the fuse's progress
-    // over 28 ticks, from when the wire said it began); RenderTNTPrimed: (1 − (fuse + 1)/100)·0.8 every other 5 ticks.
-    if (fuse && !d.fuseAt) d.fuseAt = now;
-    else if (!fuse) d.fuseAt = 0;
-    const fi = creeperFlash(d.fuseAt, now);
-    d.flash = fuse ? (Math.floor(fi * 10) % 2 === 0 ? 0 : fi * 0.2) : tnt ? (Math.floor(fuseTicks / 5) % 2 === 0 ? Math.max(0, 1 - (fuseTicks + 1) / 100) * 0.8 : 0) : 0;
+    entityFlash(d, e, now);
     if (d.motion.deadAt && now - d.motion.deadAt > 4000) d.motion.deadAt = 0; // still reported long after: it lives
     stepMotion(d.motion, e.x, e.y, e.z, e.yaw, now, (flags & FLAG_SPRINTING) !== 0);
+  }
+
+  /** What an entity draws (its model or item, size, colour, layers, equipment), re-resolved when its wire look changes. */
+  private applyEntityLook(d: Drawn, e: EntityView): void {
+    const dto = e.dto;
+    d.v = Variant.of(dto.variant, lookOf(dto));
+    d.baby = !!dto.baby;
+    d.item = null;
+    d.hang = null;
+    d.fixedYaw = null;
+    const kind = entityKind(e, this.beta);
+    d.drop = kind === 'item' || isOrb(kind);
+    this.setKindLook(d, e, kind);
+    // Hand items and armour: wire equipment, else a player's held item id.
+    this.layersFor(d, kind, e);
+    this.equip(d, dto.equipment, kind === 'player' && e.item > 0 ? this.itemById(null, e.item) : null, null);
+    if (!LIVING.has(kind) && d.kind === 'model') d.fixedYaw = e.yaw;
+    // LayerHeldBlock: an enderman's block.
+    d.carried = d.look?.model === 'enderman' && dto.carried ? this.itemById(dto.carried) : null;
+  }
+
+  /** How each entity kind gets its look; anything else is an object with a model (or a box). */
+  private static readonly KIND_LOOKS = new Map<string, (l: EntityLayer, d: Drawn, e: EntityView, kind: string) => void>([
+    ['player', (l, d, e) => l.setLook(d, playerLook(l.version, e.name ?? 'player', false))],
+    ['mob', (l, d, e) => l.setLook(d, mobLook(l.version, e.type, e.name, d.v, e.id))],
+    ['item', (l, d, e) => l.setDrop(d, e)],
+    ['xp_orb', (l, d) => l.setOrb(d)],
+    ['xporb', (l, d) => l.setOrb(d)],
+    ['orb', (l, d) => l.setOrb(d)],
+    ['painting', (l, d, e) => l.setPainting(d, e)],
+    ['item_frame', (l, d, e) => l.setFrame(d, e)],
+    ['firework', (l, d) => l.setFirework(d)],
+    ['fireworks_rocket', (l, d) => l.setFirework(d)],
+    ['falling_block', (l, d, e, kind) => l.setFallingBlock(d, e, kind)],
+    ['falling_sand', (l, d, e, kind) => l.setFallingBlock(d, e, kind)],
+    ['tnt', (l, d, e, kind) => l.setFallingBlock(d, e, kind)],
+  ]);
+
+  private setKindLook(d: Drawn, e: EntityView, kind: string): void {
+    const set = EntityLayer.KIND_LOOKS.get(kind);
+    if (set) set(this, d, e, kind);
+    else this.setObject(d, e, kind);
+  }
+
+  private setDrop(d: Drawn, e: EntityView): void {
+    const damage = e.dto.damage ?? 0;
+    this.setLook(d, null);
+    d.item = this.bundle && e.item > 0 ? itemLookById(this.version, this.bundle.pack, e.item, damage) : null;
+    d.itemGlint = !!e.dto.glint || glintsById(this.version, e.item, damage);
+    d.kind = d.item ? 'item' : 'box';
+    d.w = d.h = 0.25;
+    d.colour = 0xd8b040;
+  }
+
+  private setOrb(d: Drawn): void {
+    this.setLook(d, null);
+    d.kind = this.bundle ? 'orb' : 'box';
+    d.w = d.h = 0.25;
+    d.colour = 0x9ae040;
+  }
+
+  private setFirework(d: Drawn): void {
+    this.setLook(d, null);
+    d.item = this.bundle && !this.beta ? itemLookByName(this.version, this.bundle.pack, 'fireworks') : null;
+    d.kind = d.item ? 'sprite' : 'box';
+    d.w = d.h = 0.25;
+    d.colour = 0xd04040;
+  }
+
+  /** Falling blocks and primed TNT: the block as a cube. */
+  private setFallingBlock(d: Drawn, e: EntityView, kind: string): void {
+    this.setLook(d, null);
+    const l = this.itemById(fallingBlockRef(e, kind, this.beta));
+    d.item = l?.kind === 'cube' ? l : null;
+    d.kind = d.item ? 'block' : 'box';
+    d.w = d.h = 0.98;
+    d.colour = kind === 'tnt' ? 0xd04030 : 0xd8c890;
+  }
+
+  /** Objects and stands with a model (boat, minecart, arrow, ender crystal, armor stand…); minecarts show their block. */
+  private setObject(d: Drawn, e: EntityView, kind: string): void {
+    const look = objectLook(this.version, kind, d.v, e.id);
+    this.setLook(d, look);
+    if (!look) {
+      d.w = d.h = 0.5;
+      d.colour = 0x9a9a9a;
+    }
+    if (kind === 'minecart' || kind.endsWith('_minecart')) {
+      const block = minecartBlock(e.dto.minecartType ?? (kind === 'minecart' ? 0 : kind));
+      d.cartBlock = block;
+      d.item = block ? this.itemById([block, 0]) : null;
+    }
   }
 
   /** Objects face their wire yaw; arrows (and anything flying without a yaw) turn and pitch along their velocity. */
@@ -930,13 +1009,28 @@ export class EntityLayer {
     if (d.parent) return; // its body poses it
     const off = d.row * ROW_FLOATS;
     const m = d.motion;
-    const yaw = d.hang ? d.hang.yaw : d.fixedYaw ?? (d.kind === 'model' ? m.body : d.ent?.yaw ?? 0);
-    // LOD box: translate · rotY · scale(w, h, w).
+    this.writeBox(d, off + BOX_SLOT * 12, now);
+    const light = this.lightAt?.(d.dim, d.x, d.y + d.h * 0.5, d.z) ?? null;
+    d.sky = light ? light[0] : 15;
+    d.block = light ? light[1] : 0;
+    d.hurt = hurtAmount(m, now);
+    if (m.deadAt && !d.smoked && now - m.deadAt > DEATH_SHRINK_MS) {
+      d.smoked = true;
+      this.particles.burst('death', d.dim, d.x, d.y + 0.3, d.z, now);
+    }
+    d.posed = false;
+    if (!this.near(d)) return;
+    this.poseKind(d, now, off);
+    d.posed = d.kind !== 'box';
+  }
+
+  /** The LOD box: translate · rotY · scale(w, h, w), shrinking in death. */
+  private writeBox(d: Drawn, bo: number, now: number): void {
+    const yaw = d.hang ? d.hang.yaw : d.fixedYaw ?? (d.kind === 'model' ? d.motion.body : d.ent?.yaw ?? 0);
     const a = (yaw * Math.PI) / 180;
     const b = this.bones;
-    const bo = off + BOX_SLOT * 12;
     const c = Math.cos(a), s = Math.sin(a);
-    const k = deathScale(m, now);
+    const k = deathScale(d.motion, now);
     b[bo] = c * d.w * k;
     b[bo + 1] = 0;
     b[bo + 2] = s * d.w * k;
@@ -949,22 +1043,15 @@ export class EntityLayer {
     b[bo + 9] = 0;
     b[bo + 10] = c * d.w * k;
     b[bo + 11] = d.z;
-    const light = this.lightAt?.(d.dim, d.x, d.y + d.h * 0.5, d.z) ?? null;
-    d.sky = light ? light[0] : 15;
-    d.block = light ? light[1] : 0;
-    d.hurt = hurtAmount(m, now);
-    if (m.deadAt && !d.smoked && now - m.deadAt > DEATH_SHRINK_MS) {
-      d.smoked = true;
-      this.particles.burst('death', d.dim, d.x, d.y + 0.3, d.z, now);
-    }
-    d.posed = false;
-    if (!this.near(d)) return;
+  }
+
+  /** The posed parts of what it draws (models, drops, blocks, billboards, hanging entities). */
+  private poseKind(d: Drawn, now: number, off: number): void {
     if (d.kind === 'model' && d.model && d.look) this.poseModel(d, now, off);
     else if (d.kind === 'item') this.poseDrop(d, off);
     else if (d.kind === 'block') this.poseBlock(d, off);
     else if (d.kind === 'orb' || d.kind === 'sprite') this.poseOrb(d, off);
     else if (d.kind === 'painting' || d.kind === 'frame') this.poseHanging(d, off);
-    d.posed = d.kind !== 'box';
   }
 
   private near(d: Drawn): boolean {
@@ -976,48 +1063,60 @@ export class EntityLayer {
   }
 
   private poseModel(d: Drawn, now: number, off: number): void {
-    const e = d.model!, look = d.look!, def = e.built.def, m = d.motion;
-    const layout = d.baby && def.baby ? true : false;
-    const s0 = def.scale ?? 1, k = (look.scale ?? 1) * (d.baby && !def.baby ? 0.5 : 1) * deathScale(m, now) * (d.display?.scale ?? 1);
-    const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
-    if (d.fuseAt) {
-      // RenderCreeper.preRenderCallback: the swell scale(h, i, h) from the flash intensity.
-      const f = creeperFlash(d.fuseAt, now), g = 1 + Math.sin(f * 100) * f * 0.01, f4 = Math.min(1, Math.max(0, f)) ** 4;
-      const h = (1 + f4 * 0.4) * g, i = (1 + f4 * 0.1) / g;
-      sc[0] *= h;
-      sc[1] *= i;
-      sc[2] *= h;
-    }
-    const flags = d.ent?.flags ?? (d.botView?.dto as { flags?: number } | undefined)?.flags ?? 0;
+    const e = d.model!;
+    const flags = poseFlags(d);
     const sneaking = (flags & FLAG_SNEAKING) !== 0;
+    const body = d.fixedYaw ?? d.motion.body;
+    this.placeRoot(d, this.rootFor(d, now, body, sneaking), sneaking);
+    turnHead(d, body);
+    this.fillMotionPose(d, now, body);
+    this.fillStatePose(d, now, flags, sneaking);
+    e.skel.pose(this.ctx, this.root, this.bones, off, d.baby && e.built.def.baby ? true : false);
+    this.poseAttachments(d, e, off, body, sneaking);
+  }
+
+  /** The model root: position (a screaming enderman jitters), yaw (a converting zombie villager shakes), death roll, scale,
+   * the sneaking player's sink and a display mob's tilt. */
+  private rootFor(d: Drawn, now: number, body: number, sneaking: boolean): RootParams {
+    const def = d.model!.built.def;
+    // RenderEnderman: a screaming enderman jitters (gaussian 0.02 on x and z).
+    const screaming = isScreaming(d);
     const isPlayer = d.bot || d.ent?.kind === 'player';
-    const body = d.fixedYaw ?? m.body;
-    // RenderEnderman: a screaming enderman jitters (gaussian 0.02 on x and z); RenderZombieVillager: a converting one shakes
-    // its yaw by cos(ticks · 3.25) · π/4 degrees.
-    const screaming = d.look?.model === 'enderman' && d.v.has('screaming');
-    const jx = screaming ? gaussian() * 0.02 : 0, jz = screaming ? gaussian() * 0.02 : 0;
-    const shake = d.look?.model === 'zombie_villager' && d.v.has('converting') ? Math.cos((now / 50) * 3.25) * Math.PI * 0.25 : 0;
-    const root = {
-      x: d.x + jx,
+    return {
+      x: d.x + (screaming ? gaussian() * 0.02 : 0),
       y: d.y,
-      z: d.z + jz,
-      yaw: body + shake,
-      death: deathAngle(m, now),
-      scale: sc,
+      z: d.z + (screaming ? gaussian() * 0.02 : 0),
+      yaw: body + convertingShake(d, now),
+      death: deathAngle(d.motion, now),
+      scale: this.modelScale(d, now),
       offset: def.offset ?? ZERO3,
       lift: sneaking && isPlayer ? -0.125 : 0,
       tilt: d.display ? -d.display.tilt : 0,
     };
+  }
+
+  /** The look's scale (babies of adult-only models at half size, a display mob's own), shrinking in death, a fusing
+   * creeper's swell. */
+  private modelScale(d: Drawn, now: number): [number, number, number] {
+    const def = d.model!.built.def, look = d.look!;
+    const s0 = def.scale ?? 1, k = (look.scale ?? 1) * (d.baby && !def.baby ? 0.5 : 1) * deathScale(d.motion, now) * (d.display?.scale ?? 1);
+    const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
+    if (d.fuseAt) creeperSwell(sc, creeperFlash(d.fuseAt, now));
+    return sc;
+  }
+
+  /** Writes the root matrix (and the root without the sneaking sink, for the elytra layer and riders). */
+  private placeRoot(d: Drawn, root: RootParams, sneaking: boolean): void {
     // 1.12.2 ModelBiped.render sinks a sneaking adult's parts 0.2 (3.2 px) after the pose (its layers follow: armour, held
     // items, the custom head); the elytra layer does not.
     const sneakSink = sneaking && !d.baby && !this.beta && d.armorLayer;
     if (sneakSink || d.elytra || d.riders) rootMatrix(this.rootBase, root);
     rootMatrix(this.root, sneakSink ? { ...root, offset: [root.offset[0], root.offset[1] + 3.2, root.offset[2]] } : root);
-    const c = this.ctx;
-    // Head yaw: the wire's own when it sends one (1.12.2 head look), else the look yaw; smoothed toward it.
-    const wireHead = d.ent?.dto.headYaw ?? (d.botView?.dto as { headYaw?: number | null } | undefined)?.headYaw ?? null;
-    const lookYaw = wireHead ?? (d.botView ? d.botView.yaw : d.ent?.yaw ?? body);
-    m.head = Number.isNaN(m.head) ? lookYaw : m.head + wrapDeg(lookYaw - m.head) * 0.35;
+  }
+
+  /** The pose context's motion: limb swing, age, head angles, swings and eating. */
+  private fillMotionPose(d: Drawn, now: number, body: number): void {
+    const c = this.ctx, m = d.motion;
     c.swing = d.display ? 0 : m.swing;
     c.amount = m.deadAt || d.display ? 0 : m.amount;
     c.age = now / 50 + m.seed * 1000;
@@ -1026,6 +1125,11 @@ export class EntityLayer {
     c.attack = attackProgress(m, now);
     c.attackOff = attackOffProgress(m, now);
     c.eat = eatProgress(m, now);
+  }
+
+  /** The pose context's state: age, variant, flags, what it holds and does, the stand pose, the golem's rose. */
+  private fillStatePose(d: Drawn, now: number, flags: number, sneaking: boolean): void {
+    const c = this.ctx, m = d.motion;
     c.baby = d.baby;
     c.v = d.v;
     c.variant = d.v.num;
@@ -1042,20 +1146,31 @@ export class EntityLayer {
     c.speed = m.speed;
     c.carrying = !!d.carried;
     c.rose = d.roseAt ? Math.max(0, 400 - (now - d.roseAt) / 50) : 0;
-    e.skel.pose(c, this.root, this.bones, off, layout);
-    if (e.built.parts.length <= CONTENT_SLOT) {
-      if (d.held) this.poseHeld(d, e, off, false);
-      if (d.heldOff) this.poseHeld(d, e, off, true);
-      if (d.skull >= 0 || d.headBlock || d.headItem) this.poseHead(d, e, off, m.swing);
-      else if (this.snowPumpkin(d)) this.poseSnowPumpkin(e, off);
-      if (d.item) this.poseContents(d, off, body);
-    }
-    if (this.mushrooms(d) && e.built.parts.length <= MUSHROOM_SLOT) this.poseMushrooms(e, off);
-    if (d.carried && e.built.parts.length <= MUSHROOM_SLOT) this.poseCarried(d, off);
-    if (c.rose && e.built.parts.length <= MUSHROOM_SLOT) this.poseRose(e, off);
-    if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.poseElytra(d, off, sneaking, this.rootBase);
+  }
+
+  /** Held and worn items, minecart contents, mooshroom mushrooms, the enderman's block, the golem's rose, elytra, fire and
+   * riders, each where the model has room for its bone slots. */
+  private poseAttachments(d: Drawn, e: ModelEntry, off: number, body: number, sneaking: boolean): void {
+    const parts = e.built.parts.length;
+    if (parts <= CONTENT_SLOT) this.poseContentSlots(d, e, off, body);
+    if (parts <= MUSHROOM_SLOT) this.poseMushroomSlots(d, e, off);
+    if (d.elytra && parts <= ELYTRA_SLOT) this.poseElytra(d, off, sneaking, this.rootBase);
     if (d.burning) this.poseFire(d, off);
     if (d.riders) this.poseRiders(d, e, sneaking);
+  }
+
+  private poseContentSlots(d: Drawn, e: ModelEntry, off: number, body: number): void {
+    if (d.held) this.poseHeld(d, e, off, false);
+    if (d.heldOff) this.poseHeld(d, e, off, true);
+    if (d.skull >= 0 || d.headBlock || d.headItem) this.poseHead(d, e, off, d.motion.swing);
+    else if (this.snowPumpkin(d)) this.poseSnowPumpkin(e, off);
+    if (d.item) this.poseContents(d, off, body);
+  }
+
+  private poseMushroomSlots(d: Drawn, e: ModelEntry, off: number): void {
+    if (this.mushrooms(d)) this.poseMushrooms(e, off);
+    if (d.carried) this.poseCarried(d, off);
+    if (this.ctx.rose) this.poseRose(e, off);
   }
 
   // ------------------------------------------------------------------------------------------------------- held blocks
@@ -1508,6 +1623,23 @@ export class EntityLayer {
     // Detail by apparent size: distances are scaled by the view's zoom relative to a 70° field of view.
     const zoom = opts.fov ? Math.tan((opts.fov * Math.PI) / 360) / Math.tan((35 * Math.PI) / 180) : 1;
     this.nextCams.push({ p: cam.clone(), k: zoom });
+    this.resetDraws();
+    this.visibleBots.length = 0;
+    this.ghostMap = opts.ghosts ?? null;
+    this.ghostSelected = opts.selected ?? null;
+    const v = this.beginView(dim, cam, opts, zoom);
+    const want = new Set<string>();
+    for (const d of this.list) this.showOne(d, v, want);
+    if (opts.entities) this.pushParticles(dim);
+    this.lightning.showFor(dim);
+    this.commitDraws();
+    this.drawnCount = v.n;
+    this.botModelCount = v.botModels;
+    this.syncEntityLabels(want, opts.labels);
+    for (const [name, o] of this.botObjs) this.syncBotObj(name, o, dim, opts);
+  }
+
+  private resetDraws(): void {
     for (const e of this.models.values()) {
       e.opaque.reset();
       e.translucent?.reset();
@@ -1518,56 +1650,9 @@ export class EntityLayer {
     this.shadowDraw.reset();
     for (const s of this.skullDraws.values()) s.reset();
     this.elytraDraw?.reset();
-    this.visibleBots.length = 0;
-    this.ghostMap = opts.ghosts ?? null;
-    this.ghostSelected = opts.selected ?? null;
-    const far = (opts.drawDistance ?? 1e9) + 8, detail = this.detailDistance;
-    const botDetail = detail > 0 ? Math.max(detail, BOT_DETAIL_MIN) : 0;
-    const cut = opts.cut ?? null;
-    let botModels = 0;
-    const centre = opts.centre ?? null, drops = opts.drops !== false, frustum = opts.frustum ?? null;
-    const sphere = this.cullSphere;
-    const want = new Set<string>();
-    let n = 0, boxes = 0;
-    for (const d of this.list) {
-      d.detail = null;
-      if (d.parent) {
-        // A rider shows with its body's detail.
-        if (d.parent.detail && d.posed && d.dim === dim && this.bundle) {
-          d.detail = true;
-          this.pushDetail(d, 0);
-        }
-        continue;
-      }
-      if (d.dim !== dim) continue;
-      if (d.bot ? !opts.bots : !opts.entities) continue;
-      if (d.motion.deadAt && this.now - d.motion.deadAt >= DEATH_GONE_MS) continue;
-      if (d.drop && !drops) continue;
-      const real = Math.hypot(d.x - cam.x, d.y - cam.y, d.z - cam.z);
-      if ((centre ? Math.hypot(d.x - centre.x, d.z - centre.z) : real) > far) continue;
-      if (cut && Math.floor(d.y + 0.01) >= cut.y && Math.hypot(d.x - cut.x, d.z - cut.z) <= cut.r) continue;
-      if (frustum) {
-        sphere.center.set(d.x, d.y + d.h * 0.5, d.z);
-        sphere.radius = Math.max(d.w, d.h) + 0.5;
-        if (!frustum.intersectsSphere(sphere)) continue;
-      }
-      const dist = real * zoom;
-      const near = !(dist > (d.bot ? botDetail : detail) || !d.posed || !this.bundle);
-      // Far boxes are a few pixels each: past the cap (a zoomed-out map over a mob farm) the rest are skipped, bots never.
-      if (!near && !d.bot && !d.display && ++boxes > MAX_FAR_BOXES) continue;
-      if (d.bot) this.visibleBots.push(d);
-      n++;
-      d.detail = near;
-      if (near && d.bot) botModels++;
-      const bright = d.bright;
-      if (cut && cut.dimBelow !== null && d.y < cut.dimBelow) d.bright = bright * 0.55;
-      if (d.detail) this.pushDetail(d, dist);
-      else if (!d.invisible) this.pushBox(d);
-      d.bright = bright;
-      if (!d.bot && !d.display && opts.labels && d.ent && !d.invisible) this.entityLabel(d, d.ent, dist, want);
-    }
-    if (opts.entities) this.pushParticles(dim);
-    this.lightning.showFor(dim);
+  }
+
+  private commitDraws(): void {
     for (const e of this.models.values()) {
       e.opaque.commit();
       e.translucent?.commit();
@@ -1579,24 +1664,113 @@ export class EntityLayer {
     this.shadowDraw.commit();
     for (const s of this.skullDraws.values()) s.commit();
     this.elytraDraw?.commit();
-    this.drawnCount = n;
-    this.botModelCount = botModels;
+  }
+
+  /** Fills the reused view state for one `showFor`. */
+  private beginView(dim: number, cam: THREE.Vector3, opts: EntityShowOptions, zoom: number): ViewState {
+    const v = this.view;
+    v.dim = dim;
+    v.cam = cam;
+    v.zoom = zoom;
+    v.bots = opts.bots;
+    v.entities = opts.entities;
+    v.labels = opts.labels;
+    v.far = (opts.drawDistance ?? 1e9) + 8;
+    v.botDetail = this.detailDistance > 0 ? Math.max(this.detailDistance, BOT_DETAIL_MIN) : 0;
+    v.cut = opts.cut ?? null;
+    v.centre = opts.centre ?? null;
+    v.drops = opts.drops !== false;
+    v.frustum = opts.frustum ?? null;
+    v.n = v.boxes = v.botModels = 0;
+    return v;
+  }
+
+  /** One drawn entity in this view: skipped, a full model, or a LOD box (and its label). */
+  private showOne(d: Drawn, v: ViewState, want: Set<string>): void {
+    d.detail = null;
+    if (d.parent) {
+      this.showRider(d, v.dim);
+      return;
+    }
+    if (!this.wanted(d, v)) return;
+    const real = Math.hypot(d.x - v.cam.x, d.y - v.cam.y, d.z - v.cam.z);
+    if (!this.inRange(d, v, real)) return;
+    const dist = real * v.zoom;
+    const near = this.isNear(d, v, dist);
+    // Far boxes are a few pixels each: past the cap (a zoomed-out map over a mob farm) the rest are skipped, bots never.
+    if (!near && !d.bot && !d.display && ++v.boxes > MAX_FAR_BOXES) return;
+    this.drawOne(d, v, near, dist, want);
+  }
+
+  /** A rider shows with its body's detail. */
+  private showRider(d: Drawn, dim: number): void {
+    if (d.parent!.detail && d.posed && d.dim === dim && this.bundle) {
+      d.detail = true;
+      this.pushDetail(d, 0);
+    }
+  }
+
+  /** In this view's dimension, of a kind it shows, not long dead, not a hidden drop. */
+  private wanted(d: Drawn, v: ViewState): boolean {
+    if (d.dim !== v.dim) return false;
+    if (d.bot ? !v.bots : !v.entities) return false;
+    if (d.motion.deadAt && this.now - d.motion.deadAt >= DEATH_GONE_MS) return false;
+    return !(d.drop && !v.drops);
+  }
+
+  /** Within the draw distance, not in the cut-away storey, not outside the frustum. */
+  private inRange(d: Drawn, v: ViewState, real: number): boolean {
+    if ((v.centre ? Math.hypot(d.x - v.centre.x, d.z - v.centre.z) : real) > v.far) return false;
+    if (cutAway(v.cut, d.x, d.y, d.z)) return false;
+    if (!v.frustum) return true;
+    const sphere = this.cullSphere;
+    sphere.center.set(d.x, d.y + d.h * 0.5, d.z);
+    sphere.radius = Math.max(d.w, d.h) + 0.5;
+    return v.frustum.intersectsSphere(sphere);
+  }
+
+  /** Drawn as a full model: within the detail distance (bots further), posed, and with textures. */
+  private isNear(d: Drawn, v: ViewState, dist: number): boolean {
+    return !(dist > (d.bot ? v.botDetail : this.detailDistance) || !d.posed || !this.bundle);
+  }
+
+  private drawOne(d: Drawn, v: ViewState, near: boolean, dist: number, want: Set<string>): void {
+    if (d.bot) this.visibleBots.push(d);
+    v.n++;
+    d.detail = near;
+    if (near && d.bot) v.botModels++;
+    this.pushShown(d, v.cut, dist);
+    if (!d.bot && !d.display && v.labels && d.ent && !d.invisible) this.entityLabel(d, d.ent, dist, want);
+  }
+
+  /** Its instances (dimmed below a level cut like the blocks there). */
+  private pushShown(d: Drawn, cut: ViewState['cut'], dist: number): void {
+    const bright = d.bright;
+    if (cut && cut.dimBelow !== null && d.y < cut.dimBelow) d.bright = bright * 0.55;
+    if (d.detail) this.pushDetail(d, dist);
+    else if (!d.invisible) this.pushBox(d);
+    d.bright = bright;
+  }
+
+  /** Keeps the entity labels this view wants; the rest are dropped (labels on) or hidden. */
+  private syncEntityLabels(want: Set<string>, labels: boolean): void {
     for (const [k, l] of this.entLabels) {
       if (want.has(k)) l.sprite.visible = true;
-      else if (opts.labels) {
+      else if (labels) {
         this.group.remove(l.sprite);
         this.labels.release(l.sprite);
         this.entLabels.delete(k);
       } else l.sprite.visible = false;
     }
-    for (const [name, o] of this.botObjs) {
-      const d = this.drawn.get(name);
-      o.root.visible = !!d && opts.bots && d.dim === dim;
-      if (d) o.root.position.set(d.x, d.y, d.z);
-      if (o.label) o.label.visible = opts.botLabels ?? opts.labels;
-      if (o.root.visible && d && cut && Math.floor(d.y + 0.01) >= cut.y && Math.hypot(d.x - cut.x, d.z - cut.z) <= cut.r) o.root.visible = false;
-      o.ring.visible = !!opts.selected && (o.root.userData.name === opts.selected || o.root.userData.short === opts.selected);
-    }
+  }
+
+  /** A bot's ring and name label in this view. */
+  private syncBotObj(name: string, o: BotObj, dim: number, opts: EntityShowOptions): void {
+    const d = this.drawn.get(name);
+    o.root.visible = !!d && opts.bots && d.dim === dim && !cutAway(opts.cut ?? null, d.x, d.y, d.z);
+    if (d) o.root.position.set(d.x, d.y, d.z);
+    if (o.label) o.label.visible = opts.botLabels ?? opts.labels;
+    o.ring.visible = !!opts.selected && (o.root.userData.name === opts.selected || o.root.userData.short === opts.selected);
   }
 
   private base(d: Drawn, slot: number, layer: number): InstanceData {
@@ -1663,67 +1837,105 @@ export class EntityLayer {
   }
 
   private pushDetail(d: Drawn, dist: number): void {
-    // No blob under spawner display mobs, hanging entities or the invisible.
-    if (this.shadows && dist < this.detailDistance && !d.display && !d.hang && !d.invisible && !d.parent) {
-      const r = d.kind === 'item' ? 0.15 : Math.min(3, Math.max(0.25, d.w * 0.5 + 0.1));
-      this.shadowDraw.push(d.x, d.y, d.z, r * deathScale(d.motion, this.now), d.motion.deadAt ? 0.2 : 0.45);
+    if (this.castsShadow(d, dist)) this.pushShadow(d);
+    if (d.kind === 'model') this.pushModel(d);
+    else this.pushObject(d);
+  }
+
+  /** No blob under spawner display mobs, hanging entities, riders or the invisible. */
+  private castsShadow(d: Drawn, dist: number): boolean {
+    return this.shadows && dist < this.detailDistance && !d.display && !d.hang && !d.invisible && !d.parent;
+  }
+
+  private pushShadow(d: Drawn): void {
+    const r = d.kind === 'item' ? 0.15 : Math.min(3, Math.max(0.25, d.w * 0.5 + 0.1));
+    this.shadowDraw.push(d.x, d.y, d.z, r * deathScale(d.motion, this.now), d.motion.deadAt ? 0.2 : 0.45);
+  }
+
+  /** A posed model: its body and layers, what it wears and holds, elytra and fire (a box without its texture). */
+  private pushModel(d: Drawn): void {
+    const e = d.model!, look = d.look!;
+    const tex = this.rect(look.texture);
+    if (!tex) return this.pushBox(d);
+    // Invisible (0x20): no body, but armour and held items still show (vanilla draws them).
+    if (!d.invisible) this.pushBody(d, e, look, tex);
+    if (e.built.parts.length <= CONTENT_SLOT) {
+      this.pushWorn(d, e);
+      this.pushModelExtras(d, e);
     }
-    if (d.kind === 'model') {
-      const e = d.model!, look = d.look!;
-      const tex = this.rect(look.texture);
-      if (!tex) return this.pushBox(d);
-      // Invisible (0x20): no body, but armour and held items still show (vanilla draws them).
-      if (!d.invisible) {
-        const i = this.base(d, 0, 0);
-        i.tex = tex;
-        tint(i, look.tint, d.bright);
-        if (!look.translucent) this.ghostFlags(d, i, e.opaque);
-        (look.translucent ? this.translucentOf(e) : e.opaque).push(i);
-        for (const l of look.layers ?? []) {
-          const lt = this.rect(l.texture);
-          if (!lt) continue;
-          const li = this.base(d, 0, l.layer ? (e.built.layers[l.layer] ?? 0) : 0);
-          li.tex = lt;
-          tint(li, l.tint, d.bright);
-          if (l.emissive) li.flags |= F_EMISSIVE;
-          if (l.scroll) li.flags |= F_SCROLL;
-          (l.translucent ? this.translucentOf(e) : e.opaque).push(li);
-        }
-      }
-      if (e.built.parts.length <= CONTENT_SLOT) {
-        if (d.armor) this.pushArmor(d, e);
-        if (d.held) this.pushItem(d, d.held, HELD_SLOT, false, d.heldGlint);
-        if (d.heldOff) this.pushItem(d, d.heldOff, OFF_SLOT, false, d.heldOffGlint);
-        if (d.skull >= 0) this.pushSkull(d);
-        else if (d.headBlock) this.pushItem(d, d.headBlock, HEAD_SLOT, false, d.headGlint);
-        else if (d.headItem) this.pushItem(d, d.headItem, HEAD_SLOT, false, d.headGlint);
-        else if (this.snowPumpkin(d)) {
-          const l = this.pumpkinLook();
-          if (l) this.pushItem(d, l, HEAD_SLOT, false);
-        }
-        if (this.mushrooms(d) && e.built.parts.length <= MUSHROOM_SLOT) {
-          const l = this.mushroomLook();
-          if (l) for (let s = 0; s < 6; s++) this.pushItem(d, l, MUSHROOM_SLOT + s, false);
-        }
-        if (d.item && d.look?.model === 'minecart') this.pushItem(d, d.item, CONTENT_SLOT, false);
-        if (d.carried && e.built.parts.length <= MUSHROOM_SLOT) {
-          if (d.carried.kind === 'cube') this.pushItem(d, d.carried, CONTENT_SLOT, false);
-          else for (let s = 0; s < 2; s++) this.pushItem(d, d.carried, MUSHROOM_SLOT + s, false);
-        }
-        if (d.roseAt && this.now - d.roseAt < 400 * 50 && e.built.parts.length <= MUSHROOM_SLOT) {
-          const l = this.roseLook();
-          if (l) for (let s = 0; s < 2; s++) this.pushItem(d, l, MUSHROOM_SLOT + s, false);
-        }
-      }
-      if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.pushElytra(d);
-      if (d.burning) this.pushFire(d);
-      return;
+    if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.pushElytra(d);
+    if (d.burning) this.pushFire(d);
+  }
+
+  private pushBody(d: Drawn, e: ModelEntry, look: Look, tex: [number, number, number, number]): void {
+    const i = this.base(d, 0, 0);
+    i.tex = tex;
+    tint(i, look.tint, d.bright);
+    if (!look.translucent) this.ghostFlags(d, i, e.opaque);
+    (look.translucent ? this.translucentOf(e) : e.opaque).push(i);
+    if (look.layers) for (const l of look.layers) this.pushLayer(d, e, l);
+  }
+
+  private pushLayer(d: Drawn, e: ModelEntry, l: NonNullable<Look['layers']>[number]): void {
+    const lt = this.rect(l.texture);
+    if (!lt) return;
+    const li = this.base(d, 0, l.layer ? (e.built.layers[l.layer] ?? 0) : 0);
+    li.tex = lt;
+    tint(li, l.tint, d.bright);
+    if (l.emissive) li.flags |= F_EMISSIVE;
+    if (l.scroll) li.flags |= F_SCROLL;
+    (l.translucent ? this.translucentOf(e) : e.opaque).push(li);
+  }
+
+  /** Armour, hand items and the head item (a skull, a block, a flat item, or a snow golem's pumpkin). */
+  private pushWorn(d: Drawn, e: ModelEntry): void {
+    if (d.armor) this.pushArmor(d, e);
+    if (d.held) this.pushItem(d, d.held, HELD_SLOT, false, d.heldGlint);
+    if (d.heldOff) this.pushItem(d, d.heldOff, OFF_SLOT, false, d.heldOffGlint);
+    if (d.skull >= 0) this.pushSkull(d);
+    else if (d.headBlock) this.pushItem(d, d.headBlock, HEAD_SLOT, false, d.headGlint);
+    else if (d.headItem) this.pushItem(d, d.headItem, HEAD_SLOT, false, d.headGlint);
+    else if (this.snowPumpkin(d)) {
+      const l = this.pumpkinLook();
+      if (l) this.pushItem(d, l, HEAD_SLOT, false);
     }
-    if (d.kind === 'item' && d.item) {
-      const n = copies(d.count, this.version === 'b1.8.1');
-      for (let k = 0; k < n; k++) this.pushItem(d, d.item, k, this.version === 'b1.8.1', d.itemGlint);
-    } else if (d.kind === 'block' && d.item) this.pushItem(d, d.item, 0, false);
-    else if (d.kind === 'sprite' && d.item) this.pushItem(d, d.item, 0, true);
+  }
+
+  /** Mooshroom mushrooms, minecart contents, an enderman's block, an iron golem's rose. */
+  private pushModelExtras(d: Drawn, e: ModelEntry): void {
+    const roomy = e.built.parts.length <= MUSHROOM_SLOT;
+    if (this.mushrooms(d) && roomy) this.pushPlanes(d, this.mushroomLook(), 6);
+    if (d.item && d.look?.model === 'minecart') this.pushItem(d, d.item, CONTENT_SLOT, false);
+    if (d.carried && roomy) this.pushCarried(d, d.carried);
+    if (this.holdsRose(d) && roomy) this.pushPlanes(d, this.roseLook(), 2);
+  }
+
+  /** `n` crossed-plane sprites from the first mushroom slot. */
+  private pushPlanes(d: Drawn, l: ItemLook | null, n: number): void {
+    if (l) for (let s = 0; s < n; s++) this.pushItem(d, l, MUSHROOM_SLOT + s, false);
+  }
+
+  /** LayerHeldBlock: a cube, or a plant as two crossed planes. */
+  private pushCarried(d: Drawn, carried: ItemLook): void {
+    if (carried.kind === 'cube') this.pushItem(d, carried, CONTENT_SLOT, false);
+    else this.pushPlanes(d, carried, 2);
+  }
+
+  /** LayerIronGolemFlower: for 400 ticks from when the wire first said so. */
+  private holdsRose(d: Drawn): boolean {
+    return !!d.roseAt && this.now - d.roseAt < 400 * 50;
+  }
+
+  /** A dropped stack: 1–4 (b1.8.1) / 1–5 copies by its size, b1.8.1 ones as billboards. */
+  private pushDrop(d: Drawn, item: ItemLook): void {
+    const n = copies(d.count, this.version === 'b1.8.1');
+    for (let k = 0; k < n; k++) this.pushItem(d, item, k, this.version === 'b1.8.1', d.itemGlint);
+  }
+
+  /** Drops, falling blocks, fireworks, orbs, paintings, item frames; then fire. */
+  private pushObject(d: Drawn): void {
+    if (d.kind === 'item' && d.item) this.pushDrop(d, d.item);
+    else if ((d.kind === 'block' || d.kind === 'sprite') && d.item) this.pushItem(d, d.item, 0, d.kind === 'sprite');
     else if (d.kind === 'orb') this.pushOrb(d);
     else if (d.kind === 'painting') this.pushPainting(d);
     else if (d.kind === 'frame') this.pushFrame(d);
@@ -2081,6 +2293,46 @@ function creeperFlash(fuseAt: number, now: number): number {
   return fuseAt ? Math.min(1, Math.max(0, (now - fuseAt) / (28 * 50))) : 0;
 }
 
+/** At or above a level cut's floor within its radius (the x-rayed storey). */
+function cutAway(cut: { x: number; y: number; z: number; r: number } | null, x: number, y: number, z: number): boolean {
+  return !!cut && Math.floor(y + 0.01) >= cut.y && Math.hypot(x - cut.x, z - cut.z) <= cut.r;
+}
+
+/** RenderCreeper.preRenderCallback: the swell scale(h, i, h) from the flash intensity `f`. */
+function creeperSwell(sc: [number, number, number], f: number): void {
+  const g = 1 + Math.sin(f * 100) * f * 0.01, f4 = Math.min(1, Math.max(0, f)) ** 4;
+  const h = (1 + f4 * 0.4) * g, i = (1 + f4 * 0.1) / g;
+  sc[0] *= h;
+  sc[1] *= i;
+  sc[2] *= h;
+}
+
+function isScreaming(d: Drawn): boolean {
+  return d.look?.model === 'enderman' && d.v.has('screaming');
+}
+
+/** RenderZombieVillager: a converting one shakes its yaw by cos(ticks · 3.25) · π/4 degrees. */
+function convertingShake(d: Drawn, now: number): number {
+  return d.look?.model === 'zombie_villager' && d.v.has('converting') ? Math.cos((now / 50) * 3.25) * Math.PI * 0.25 : 0;
+}
+
+/** The entity's (or bot's) wire flags. */
+function poseFlags(d: Drawn): number {
+  return d.ent?.flags ?? (d.botView?.dto as { flags?: number } | undefined)?.flags ?? 0;
+}
+
+/** The wire's own head yaw (1.12.2 head look), or null. */
+function wireHeadYaw(d: Drawn): number | null {
+  return d.ent?.dto.headYaw ?? (d.botView?.dto as { headYaw?: number | null } | undefined)?.headYaw ?? null;
+}
+
+/** Head yaw: the wire's own when it sends one, else the look yaw; smoothed toward it. */
+function turnHead(d: Drawn, body: number): void {
+  const m = d.motion;
+  const lookYaw = wireHeadYaw(d) ?? (d.botView ? d.botView.yaw : d.ent?.yaw ?? body);
+  m.head = Number.isNaN(m.head) ? lookYaw : m.head + wrapDeg(lookYaw - m.head) * 0.35;
+}
+
 /** A standard normal sample (Box–Muller), for java.util.Random.nextGaussian jitter. */
 function gaussian(): number {
   return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
@@ -2107,6 +2359,82 @@ export function copies(count: number, beta: boolean): number {
 function objectKind(name: string): string {
   const n = canonical(name);
   return ({ falling_sand: 'falling_block', primed_tnt: 'tnt', tnt_primed: 'tnt', xp_orb: 'xp_orb', experience_orb: 'xp_orb', fireworks_rocket: 'firework', fireworks_rocket_entity: 'firework', minecart_chest: 'chest_minecart', minecart_furnace: 'furnace_minecart', minecart_tnt: 'tnt_minecart', minecart_hopper: 'hopper_minecart', minecart_spawner: 'spawner_minecart', minecart_command_block: 'command_block_minecart', minecart_rideable: 'minecart', ender_crystal: 'ender_crystal', thrown_egg: 'egg', snowball: 'snowball', item_frame: 'item_frame', painting: 'painting', armor_stand: 'armor_stand' } as Record<string, string>)[n] ?? n;
+}
+
+/** Whether an event carries a position. */
+function hasPos(ev: EntityEvent): ev is EntityEvent & { x: number; y: number; z: number } {
+  return ev.x != null && ev.y != null && ev.z != null;
+}
+
+/** Starts the death fall (once). */
+function startDeath(m: Motion, now: number): void {
+  if (m.deadAt) return;
+  m.deadAt = now;
+  m.hurtAt = now;
+}
+
+/** The main hand holds a tool (drawn like one): by the wire's item, else the held item's name. */
+function mainHandTool(eq: Equipment | null | undefined, mainName: string | null): boolean {
+  if (eq?.main) return isHandheld(itemName(eq.main[0]) ?? '');
+  return !!mainName && isHandheld(parseHeld(mainName).name);
+}
+
+function holdsBow(eq: Equipment | null | undefined, mainName: string | null): boolean {
+  return eq?.main?.[0] === 261 || (!!mainName && parseHeld(mainName).name === 'bow');
+}
+
+/** An entity's kind; objects by their type (or wire type name). */
+function entityKind(e: EntityView, beta: boolean): string {
+  if (e.kind !== 'object') return e.kind;
+  return objectName(e.type, beta) ?? (e.name ? objectKind(e.name) : 'object');
+}
+
+/** Experience orbs, by the wire's kind names. */
+function isOrb(kind: string): boolean {
+  return kind === 'xp_orb' || kind === 'xporb' || kind === 'orb';
+}
+
+/** The wire fields an entity's look depends on: its kind, type, variant, item, name, age and equipment. */
+function entityKindSig(e: EntityView): string {
+  const dto = e.dto;
+  return `${e.kind}|${e.type}|${dto.variant ?? ''}|${lookOf(dto) ?? ''}|${e.item}|${dto.damage ?? 0}|${e.name ?? ''}|${dto.baby ? 1 : 0}|${JSON.stringify(dto.equipment ?? null)}`;
+}
+
+/** …and its hanging, block, minecart, glint and carried-block fields. */
+function entityExtraSig(dto: EntityDto): string {
+  return `${dto.motive ?? ''}|${dto.facing ?? ''}|${dto.rotation ?? ''}|${dto.frameItem ?? ''}|${dto.block ?? ''}|${dto.minecartType ?? ''}|${dto.glint ? 1 : 0}|${dto.carried ?? ''}`;
+}
+
+/** A falling block's block: TNT when primed, else the wire's block, its item id, or sand (b1.8.1 type 71: gravel). */
+function fallingBlockRef(e: EntityView, kind: string, beta: boolean): ItemRef {
+  if (kind === 'tnt') return [46, 0];
+  return e.dto.block ?? (e.item > 0 ? [e.item, e.dto.damage ?? 0] : [beta && e.type === 71 ? 13 : 12, 0]);
+}
+
+/** A creeper fusing (Mob16 state 1 / "fuse"/"ignited"). */
+function isFusing(d: Drawn, e: EntityView): boolean {
+  return e.kind === 'mob' && e.type === 50 && ((!d.v.isString && d.v.num === 1) || d.v.has('fuse', 'fusing', 'ignited'));
+}
+
+/**
+ * Creeper fusing and primed TNT (fuse ticks): white flashes. RenderCreeper.getColorMultiplier: a white overlay of f·0.2 on
+ * odd tenths of the flash intensity f (the fuse's progress over 28 ticks, from when the wire said it began);
+ * RenderTNTPrimed: (1 − (fuse + 1)/100)·0.8 every other 5 ticks.
+ */
+function entityFlash(d: Drawn, e: EntityView, now: number): void {
+  const fuse = isFusing(d, e);
+  if (fuse && !d.fuseAt) d.fuseAt = now;
+  else if (!fuse) d.fuseAt = 0;
+  if (fuse) d.flash = creeperOverlay(creeperFlash(d.fuseAt, now));
+  else d.flash = d.kind === 'block' && d.colour === 0xd04030 ? tntFlash(e.dto.fuse ?? 80 - (e.ageTicks % 80)) : 0;
+}
+
+function creeperOverlay(intensity: number): number {
+  return Math.floor(intensity * 10) % 2 === 0 ? 0 : intensity * 0.2;
+}
+
+function tntFlash(fuseTicks: number): number {
+  return Math.floor(fuseTicks / 5) % 2 === 0 ? Math.max(0, 1 - (fuseTicks + 1) / 100) * 0.8 : 0;
 }
 
 /** An older optional DTO form: `armor: [helmet, chestplate, leggings, boots]` material names. */

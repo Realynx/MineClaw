@@ -60,62 +60,92 @@ public static partial class HumanGameTools
                 var player = input.ReqStr("player");
                 var target = Locations.ParseCoords(input.Str("at"));
                 if (input.Str("at") is { Length: > 0 } && target == null) return ToolResult.Error("at must be x,y,z");
-                var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
                 // Hive: this bot owns the conversation with that player until they answer or it times out.
                 using var thread = chat.HoldThread(player, TimeSpan.FromSeconds(timeoutSeconds + 5));
-                // One prompt only: the brain's own line wins; the tool speaks only if the brain said nothing this turn.
-                bool quiet = chat.ModelSpokeThisTurn && input.Str("say") == null;
-
-                if (target is { } t)
-                {
-                    if (!quiet)
-                        await chat.SayAsync(input.Str("say") ?? $"{player}, can you stand at {chat.Landmark?.Invoke(t.X, t.Y, t.Z) ?? Locations.Fmt(t)}?",
-                            audience: [player], ct: ct).ConfigureAwait(false);
-                    int hits = 0;
-                    while (DateTimeOffset.UtcNow < deadline)
-                    {
-                        var e = client.World.Entities.FindPlayer(player);
-                        if (e != null && IsAt(e.Position, t)) { if (++hits >= 2) return ToolResult.Success($"{player} is at {Locations.Fmt(t)}"); }
-                        else hits = 0;
-                        await Task.Delay(poll, ct).ConfigureAwait(false);
-                    }
-                    var last = client.World.Entities.FindPlayer(player);
-                    return ToolResult.Error($"{player} not there after {timeoutSeconds}s" + (last != null ? $" (at {Locations.Fmt(last.Position)})" : " (can't see them)"));
-                }
-
-                var wait = chat.WaitForReplyAsync(player, TimeSpan.FromSeconds(timeoutSeconds), ct);
-                if (!quiet)
-                    await chat.SayAsync(input.Str("say") ?? $"{player}, stand on the spot and tell me when you're there", audience: [player], ct: ct).ConfigureAwait(false);
-                // "here", "here is the cell", "ok", "this spot"...; anything else first: keep waiting a little, it may be chatter.
-                var said = new List<string>();
-                string? reply = await wait.ConfigureAwait(false);
-                while (reply != null && !ReplyIntent.IsHere(reply) && said.Count < 3 && DateTimeOffset.UtcNow < deadline)
-                {
-                    said.Add(ReplyIntent.Strip(reply));
-                    reply = await chat.WaitForReplyAsync(player, deadline - DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
-                }
-                if (reply != null && !ReplyIntent.IsHere(reply)) { said.Add(ReplyIntent.Strip(reply)); reply = null; }
-                if (reply == null)
-                {
-                    if (said.Count == 0) return ToolResult.Error($"no reply in {timeoutSeconds}s");
-                    // Live2 01:12:31: chatter ("that is wood not cobble 67") was taken as the answer and its spot as the
-                    // place. Without a "here" the spot is NOT confirmed: say so, with where they are, and let the brain ask.
-                    var now = client.World.Entities.FindPlayer(player);
-                    return ToolResult.Error($"not confirmed: {player} didn't say \"here\" (said \"{Short(said[^1])}\")"
-                        + (now != null ? $"; they're at {Locations.Fmt(now.Position)} now, which may not be the spot" : "") + "; ask again");
-                }
-                var p = client.World.Entities.FindPlayer(player);
-                if (p == null) return ToolResult.Error($"{player} said \"{reply}\" but I can't see them");
-                var look = Demo.DemonstrationRecorder.LookTarget(client.World, p.Position, p.Yaw, p.Pitch, solidOnly: true);
-                var facing = look is { } lt ? $" facing {GameTools.Names.Block(lt.Id)} at {Locations.Fmt(lt.Pos)}" : "";
-                string taught = "";
-                if (digCells != null && DigCellAt(client.World, p.Position.ToBlockPos(), look?.Pos) is { } cell)
-                {
-                    digCells.Register(cell, player);
-                    taught = $"; dig cell {Locations.Fmt(cell)} ({Perception.BlockDescriber.GenCellName(client.World, cell) ?? "gen cell"}) saved, never protected";
-                }
-                return ToolResult.Success($"{player} stands at {Locations.Fmt(p.Position)}{facing} (said \"{ReplyIntent.Strip(reply)}\"){taught}");
+                var ask = new AskStand(chat, client, player, input.Str("say"), timeoutSeconds, poll, digCells);
+                return target is { } t
+                    ? await ask.StandAtAsync(t, ct).ConfigureAwait(false)
+                    : await ask.StandHereAsync(ct).ConfigureAwait(false);
             }, cheapTier: false);
+    }
+
+    /// <summary>One <c>ask_stand</c> call: the player, the optional line to say, the deadline.</summary>
+    private sealed class AskStand(ChatRouter chat, IGameClient client, string player, string? say, int timeoutSeconds, TimeSpan poll,
+        Perception.DigCells? digCells)
+    {
+        private readonly DateTimeOffset _deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
+
+        // One prompt only: the brain's own line wins; the tool speaks only if the brain said nothing this turn.
+        private readonly bool _quiet = chat.ModelSpokeThisTurn && say == null;
+
+        /// <summary>Asks them to stand at <paramref name="t"/>; done once two polls in a row see them there.</summary>
+        public async Task<ToolResult> StandAtAsync(BlockPos t, CancellationToken ct)
+        {
+            if (!_quiet)
+                await chat.SayAsync(say ?? $"{player}, can you stand at {chat.Landmark?.Invoke(t.X, t.Y, t.Z) ?? Locations.Fmt(t)}?",
+                    audience: [player], ct: ct).ConfigureAwait(false);
+            int hits = 0;
+            while (DateTimeOffset.UtcNow < _deadline)
+            {
+                var e = client.World.Entities.FindPlayer(player);
+                if (e != null && IsAt(e.Position, t)) { if (++hits >= 2) return ToolResult.Success($"{player} is at {Locations.Fmt(t)}"); }
+                else hits = 0;
+                await Task.Delay(poll, ct).ConfigureAwait(false);
+            }
+            var last = client.World.Entities.FindPlayer(player);
+            return ToolResult.Error($"{player} not there after {timeoutSeconds}s" + (last != null ? $" (at {Locations.Fmt(last.Position)})" : " (can't see them)"));
+        }
+
+        /// <summary>Asks them to stand on the spot they mean and say "here"; reports where they stand (and a dig cell there).</summary>
+        public async Task<ToolResult> StandHereAsync(CancellationToken ct)
+        {
+            var wait = chat.WaitForReplyAsync(player, TimeSpan.FromSeconds(timeoutSeconds), ct);
+            if (!_quiet)
+                await chat.SayAsync(say ?? $"{player}, stand on the spot and tell me when you're there", audience: [player], ct: ct).ConfigureAwait(false);
+            var said = new List<string>();
+            string? reply = await HereReplyAsync(await wait.ConfigureAwait(false), said, ct).ConfigureAwait(false);
+            if (reply == null) return NotConfirmed(said);
+            var p = client.World.Entities.FindPlayer(player);
+            if (p == null) return ToolResult.Error($"{player} said \"{reply}\" but I can't see them");
+            return Stands(p, reply);
+        }
+
+        /// <summary>"here", "here is the cell", "ok", "this spot"...; anything else first: keep waiting a little, it may be chatter
+        /// (collected in <paramref name="said"/>). Null when no "here" came.</summary>
+        private async Task<string?> HereReplyAsync(string? reply, List<string> said, CancellationToken ct)
+        {
+            while (reply != null && !ReplyIntent.IsHere(reply) && said.Count < 3 && DateTimeOffset.UtcNow < _deadline)
+            {
+                said.Add(ReplyIntent.Strip(reply));
+                reply = await chat.WaitForReplyAsync(player, _deadline - DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
+            }
+            if (reply != null && !ReplyIntent.IsHere(reply)) { said.Add(ReplyIntent.Strip(reply)); reply = null; }
+            return reply;
+        }
+
+        /// <summary>Live2 01:12:31: chatter ("that is wood not cobble 67") was taken as the answer and its spot as the place.
+        /// Without a "here" the spot is NOT confirmed: say so, with where they are, and let the brain ask.</summary>
+        private ToolResult NotConfirmed(List<string> said)
+        {
+            if (said.Count == 0) return ToolResult.Error($"no reply in {timeoutSeconds}s");
+            var now = client.World.Entities.FindPlayer(player);
+            return ToolResult.Error($"not confirmed: {player} didn't say \"here\" (said \"{Short(said[^1])}\")"
+                + (now != null ? $"; they're at {Locations.Fmt(now.Position)} now, which may not be the spot" : "") + "; ask again");
+        }
+
+        /// <summary>Where they stand and face; at a generator, the cell they mean is saved as a dig cell.</summary>
+        private ToolResult Stands(Entity p, string reply)
+        {
+            var look = Demo.DemonstrationRecorder.LookTarget(client.World, p.Position, p.Yaw, p.Pitch, solidOnly: true);
+            var facing = look is { } lt ? $" facing {GameTools.Names.Block(lt.Id)} at {Locations.Fmt(lt.Pos)}" : "";
+            string taught = "";
+            if (digCells != null && DigCellAt(client.World, p.Position.ToBlockPos(), look?.Pos) is { } cell)
+            {
+                digCells.Register(cell, player);
+                taught = $"; dig cell {Locations.Fmt(cell)} ({Perception.BlockDescriber.GenCellName(client.World, cell) ?? "gen cell"}) saved, never protected";
+            }
+            return ToolResult.Success($"{player} stands at {Locations.Fmt(p.Position)}{facing} (said \"{ReplyIntent.Strip(reply)}\"){taught}");
+        }
     }
 
     /// <summary>

@@ -187,33 +187,54 @@ public sealed partial class ScriptSession
 
     private PatchOutcome? Chain(ScriptInterrupt i, string sig, PatchContext ctx)
     {
-
         // 1. The script's own onInterrupt(kind, fn).
+        if (RunDeclaredPatch(i, ctx) is { } declared) return declared;
+        // 2. A learned handler or a patch turn.
+        return RunPatchTurn(i, ctx);
+    }
+
+    /// <summary>The script's own onInterrupt for this interrupt: its outcome when it handled it, else null (none, it passed it on, or it failed).</summary>
+    private PatchOutcome? RunDeclaredPatch(ScriptInterrupt i, PatchContext ctx)
+    {
         Declared? d;
         lock (_lock) d = _declared.FirstOrDefault(x => i.Matches(x.Pattern));
-        if (d != null)
-        {
-            _patchCount++;
-            var patch = new ScriptPatch("", PatchThen.Resume, PatchSources.Declared, $"onInterrupt('{d.Pattern}')");
-            var outcome = RunGuarded(i, patch, () => d.Run(i), declared: true);
-            SafeHost(p => p.Applied(ctx, patch, outcome));
-            if (outcome.Ok && outcome.Then != PatchThen.Escalate) return Done(ctx, patch, outcome);
-            if (!outcome.Ok) PatchNote = "onInterrupt failed: " + outcome.Error;
-        }
+        if (d == null) return null;
+        _patchCount++;
+        var patch = new ScriptPatch("", PatchThen.Resume, PatchSources.Declared, $"onInterrupt('{d.Pattern}')");
+        var outcome = RunGuarded(i, patch, () => d.Run(i), declared: true);
+        SafeHost(p => p.Applied(ctx, patch, outcome));
+        if (outcome.Ok && outcome.Then != PatchThen.Escalate) return Done(ctx, patch, outcome);
+        if (!outcome.Ok) PatchNote = "onInterrupt failed: " + outcome.Error;
+        return null;
+    }
 
-        // 2. A learned handler or a patch turn.
+    /// <summary>A learned handler or a patch turn (the patcher plans it while the script waits), else escalate.</summary>
+    private PatchOutcome? RunPatchTurn(ScriptInterrupt i, PatchContext ctx)
+    {
         if (!_o.Patches || _host.Patcher is not { } patcher || _patchCount >= _o.PatchMaxPerRun) return Escalate(ctx, null);
-        bool wants;
-        try { wants = patcher.Wants(this, i); } catch (Exception) { wants = false; }
-        if (!wants) return Escalate(ctx, null);
+        if (!PatcherWants(patcher, i)) return Escalate(ctx, null);
         _patchCount++;
         ctx = ctx with { Attempt = _patchCount, Prompt = PatchPrompt.Context(this, i) };
         _patching = "planning: " + i.Kind;
         ScriptPatch? plan;
         try { plan = WaitPlan(patcher, ctx, i); }
         finally { _patching = null; }
-        if (plan == null || plan.Then == PatchThen.Escalate || (plan.Js.Trim().Length == 0 && plan.Then != PatchThen.Stop && plan.Then != PatchThen.Resume))
-            return Escalate(ctx, plan?.Note ?? "no patch");
+        if (NoPatch(plan)) return Escalate(ctx, plan?.Note ?? "no patch");
+        return RunPlan(i, ctx, plan);
+    }
+
+    private bool PatcherWants(IInterruptPatcher patcher, ScriptInterrupt i)
+    {
+        try { return patcher.Wants(this, i); } catch (Exception) { return false; }
+    }
+
+    /// <summary>No plan, one that passes it on, or one with no code that neither stops nor resumes.</summary>
+    private static bool NoPatch([System.Diagnostics.CodeAnalysis.NotNullWhen(false)] ScriptPatch? plan) =>
+        plan == null || plan.Then == PatchThen.Escalate || (plan.Js.Trim().Length == 0 && plan.Then != PatchThen.Stop && plan.Then != PatchThen.Resume);
+
+    /// <summary>Lints and runs the planned patch code; its outcome, or escalate when it fails or passes it on.</summary>
+    private PatchOutcome? RunPlan(ScriptInterrupt i, PatchContext ctx, ScriptPatch plan)
+    {
         if (plan.Js.Trim().Length > 0 && LintPatch(plan.Js) is { } lintError)
         {
             var bad = new PatchOutcome(false, plan.Then, lintError, 0, 0);
@@ -305,7 +326,7 @@ public sealed partial class ScriptSession
         var run = new PatchRun { Interrupt = i, Deadline = _time.GetUtcNow() + TimeSpan.FromSeconds(Math.Max(0.5, _o.PatchMaxSeconds)) };
         _patchRun = run;
         _inPatch = true;
-        _patching = $"running {(declared ? "onInterrupt" : patch.Source == PatchSources.Learned ? "learned handler" : "patch")} for {i.Kind}";
+        _patching = $"running {PatchRunLabel(patch, declared)} for {i.Kind}";
         bool wasActive = _active.IsRunning;
         if (!wasActive) _active.Start();
         TouchSegment();
@@ -313,25 +334,14 @@ public sealed partial class ScriptSession
         {
             WaitForSafety(run);
             var ret = body();
-            var then = patch.Then;
-            if (declared) then = PatchThens.Parse(ret);
-            return new PatchOutcome(true, then, null, run.Actions, Math.Round(sw.Elapsed.TotalSeconds, 2), declared ? null : ret);
+            return PatchRan(patch, declared, ret, run, sw);
         }
-        catch (PatchAbortException a) { return new PatchOutcome(false, patch.Then, a.Message, run.Actions, Math.Round(sw.Elapsed.TotalSeconds, 2)); }
+        catch (PatchAbortException a) { return PatchFailed(patch, a.Message, run, sw); }
         catch (ScriptStopException) { throw; }
         catch (ScriptLimitException) { throw; }
         catch (Sdk.ScriptUnwind) { throw; } // m.go('x') from a patch: the machine takes the transition
-        catch (ScriptFailException f) { return new PatchOutcome(false, patch.Then, "fail(): " + Short(OneLine(f.Message), 100), run.Actions, Math.Round(sw.Elapsed.TotalSeconds, 2)); }
-        catch (Exception ex)
-        {
-            for (var e = ex; e != null; e = e.InnerException)
-                if (e is ScriptStopException or ScriptLimitException or Sdk.ScriptUnwind) throw e;
-                else if (e is PatchAbortException pa) return new PatchOutcome(false, patch.Then, pa.Message, run.Actions, Math.Round(sw.Elapsed.TotalSeconds, 2));
-            string why;
-            try { why = _runtime?.Describe(ex) is { } d ? (d.Line > 0 && !declared ? $"L{d.Line} " : "") + d.Reason : ex.GetType().Name + ": " + OneLine(ex.Message); }
-            catch (Exception) { why = ex.GetType().Name; }
-            return new PatchOutcome(false, patch.Then, Short(why, 140), run.Actions, Math.Round(sw.Elapsed.TotalSeconds, 2));
-        }
+        catch (ScriptFailException f) { return PatchFailed(patch, "fail(): " + Short(OneLine(f.Message), 100), run, sw); }
+        catch (Exception ex) { return PatchError(ex, patch, declared, run, sw); }
         finally
         {
             _patchRun = null;
@@ -340,6 +350,32 @@ public sealed partial class ScriptSession
             if (!wasActive) _active.Stop();
             TouchSegment();
         }
+    }
+
+    private static string PatchRunLabel(ScriptPatch patch, bool declared) =>
+        declared ? "onInterrupt" : patch.Source == PatchSources.Learned ? "learned handler" : "patch";
+
+    /// <summary>It ran: the patch's own next step (an onInterrupt's answer decides it, and is no answer to the brain).</summary>
+    private static PatchOutcome PatchRan(ScriptPatch patch, bool declared, string? ret, PatchRun run, Stopwatch sw)
+    {
+        var then = patch.Then;
+        if (declared) then = PatchThens.Parse(ret);
+        return new PatchOutcome(true, then, null, run.Actions, Math.Round(sw.Elapsed.TotalSeconds, 2), declared ? null : ret);
+    }
+
+    private static PatchOutcome PatchFailed(ScriptPatch patch, string error, PatchRun run, Stopwatch sw) =>
+        new(false, patch.Then, error, run.Actions, Math.Round(sw.Elapsed.TotalSeconds, 2));
+
+    /// <summary>An engine error: a stop / limit / unwind (or a patch abort) wrapped inside it decides; else its described reason.</summary>
+    private PatchOutcome PatchError(Exception ex, ScriptPatch patch, bool declared, PatchRun run, Stopwatch sw)
+    {
+        for (var e = ex; e != null; e = e.InnerException)
+            if (e is ScriptStopException or ScriptLimitException or Sdk.ScriptUnwind) throw e;
+            else if (e is PatchAbortException pa) return PatchFailed(patch, pa.Message, run, sw);
+        string why;
+        try { why = _runtime?.Describe(ex) is { } d ? (d.Line > 0 && !declared ? $"L{d.Line} " : "") + d.Reason : ex.GetType().Name + ": " + OneLine(ex.Message); }
+        catch (Exception) { why = ex.GetType().Name; }
+        return PatchFailed(patch, Short(why, 140), run, sw);
     }
 
     private string? RunPatchCode(string js, ScriptInterrupt i) =>
@@ -534,13 +570,27 @@ public static class PatchPrompt
     public static string Context(ScriptSession s, ScriptInterrupt i)
     {
         var sb = new StringBuilder();
+        AppendInterrupt(sb, s, i);
+        sb.Append(s.SourceAround(s.Line, 5));
+        AppendRunState(sb, s);
+        var text = sb.ToString();
+        return text.Length <= MaxContextChars ? text : text[..(MaxContextChars - 3)] + "...";
+    }
+
+    /// <summary>The interrupt (who from) and the script's name, version, actions, time and patch count.</summary>
+    private static void AppendInterrupt(StringBuilder sb, ScriptSession s, ScriptInterrupt i)
+    {
         sb.Append("interrupt: ").Append(i.Kind).Append(": ").Append(ScriptSession.Short(ScriptSession.OneLine(i.Text), 200));
         if (i.Player != null) sb.Append(" (from ").Append(i.Player).Append(')');
         sb.Append('\n');
         sb.Append("script: ").Append(s.Name).Append(s.Request.Version is { } v ? " v" + v : "").Append(" | ").Append(s.Actions).Append(" acts, ")
             .Append(ScriptText.Dur(s.Elapsed)).Append(s.Patches > 1 ? $" | patch #{s.Patches} this run" : "").Append('\n');
-        sb.Append(s.SourceAround(s.Line, 5));
-        if (s.MachineState != null) sb.Append("machine: state ").Append(s.MachineState).Append($" ({s.Transitions} moves)").Append(s.MachineBlackboard() is { } bb ? " bb " + ScriptSession.Short(bb, 300) : "").Append('\n');
+    }
+
+    /// <summary>Machine, params, checkpoint, carry, last failure, body, recent logs and the previous patch: each line only when there is one.</summary>
+    private static void AppendRunState(StringBuilder sb, ScriptSession s)
+    {
+        if (s.MachineState != null) AppendMachine(sb, s);
         if (s.ParamsJson != null) sb.Append("params P: ").Append(ScriptSession.Short(s.ParamsJson, 300)).Append('\n');
         if (s.Checkpoint != null) sb.Append("checkpoint: '").Append(s.Checkpoint).Append('\'').Append(s.CheckpointTotal > 0 ? $" {s.CheckpointsPassed}/{s.CheckpointTotal}" : "").Append('\n');
         if (s.CurrentCarryText() is { Length: > 2 } carry) sb.Append("carry: ").Append(ScriptSession.Short(carry, 200)).Append('\n');
@@ -549,7 +599,8 @@ public static class PatchPrompt
         var logs = s.RecentLogs(3);
         if (logs.Count > 0) sb.Append("logs: ").Append(ScriptSession.Short(string.Join(" | ", logs), 300)).Append('\n');
         if (s.PatchNote != null) sb.Append("previous patch: ").Append(s.PatchNote).Append('\n');
-        var text = sb.ToString();
-        return text.Length <= MaxContextChars ? text : text[..(MaxContextChars - 3)] + "...";
     }
+
+    private static void AppendMachine(StringBuilder sb, ScriptSession s) =>
+        sb.Append("machine: state ").Append(s.MachineState).Append($" ({s.Transitions} moves)").Append(s.MachineBlackboard() is { } bb ? " bb " + ScriptSession.Short(bb, 300) : "").Append('\n');
 }

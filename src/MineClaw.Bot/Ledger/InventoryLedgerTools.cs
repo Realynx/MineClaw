@@ -17,27 +17,34 @@ namespace MineClaw.Bot.Ledger;
 public static class InventoryLedgerTools
 {
     /// <summary>Game tools that move items, and how their changes read in the ledger.</summary>
-    private static string? ToolCause(string tool, JsonElement i)
+    internal static string? ToolCause(string tool, JsonElement i) => tool switch
     {
-        string? Arg(string k) => i.ValueKind == JsonValueKind.Object && i.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-        return tool switch
-        {
-            "craft" => $"crafting {Arg("item") ?? "something"}",
-            "deposit" => null, // the ledger names the chest the client really opened ("deposited (chest 14,64,-5)")
-            "withdraw" => $"taken from a chest ({Arg("at") ?? Arg("chest") ?? "chest"})",
-            "organize_chest" => "organizing a chest",
-            "smelt" => "smelting",
-            "collect_furnace" => "taken from a furnace",
-            "place" => "placed as a block",
-            "use_block" => "used on a block",
-            "eat" => "eaten",
-            "chop_tree" => "chop_tree",
-            "mine" or "harvest_generator" or "dig" => tool,
-            "collect_drops" => "picked up",
-            "goto" or "follow" => "placed while moving (bridge/pillar block)",
-            _ => null,
-        };
-    }
+        "craft" => $"crafting {StrArg(i, "item") ?? "something"}",
+        "withdraw" => $"taken from a chest ({StrArg(i, "at") ?? StrArg(i, "chest") ?? "chest"})",
+        // deposit: none here, the ledger names the chest the client really opened ("deposited (chest 14,64,-5)")
+        _ => FixedCauses.GetValueOrDefault(tool),
+    };
+
+    /// <summary>The causes that don't depend on the call's arguments.</summary>
+    private static readonly Dictionary<string, string> FixedCauses = new(StringComparer.Ordinal)
+    {
+        ["organize_chest"] = "organizing a chest",
+        ["smelt"] = "smelting",
+        ["collect_furnace"] = "taken from a furnace",
+        ["place"] = "placed as a block",
+        ["use_block"] = "used on a block",
+        ["eat"] = "eaten",
+        ["chop_tree"] = "chop_tree",
+        ["mine"] = "mine",
+        ["harvest_generator"] = "harvest_generator",
+        ["dig"] = "dig",
+        ["collect_drops"] = "picked up",
+        ["goto"] = "placed while moving (bridge/pillar block)",
+        ["follow"] = "placed while moving (bridge/pillar block)",
+    };
+
+    private static string? StrArg(JsonElement i, string k) =>
+        i.ValueKind == JsonValueKind.Object && i.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private static string SkillCause(string skill, JsonElement args)
     {
