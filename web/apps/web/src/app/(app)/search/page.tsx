@@ -12,6 +12,16 @@ import { useApi } from '@/lib/api/query';
 import { usePrefs } from '@/lib/prefs';
 import { ago, cn, copyText, fixed } from '@/lib/utils';
 
+/** The ranking signals (developer details): bm25, cosine, distance. */
+function Signals({ signals }: { signals: SearchHit['signals'] }) {
+  return (
+    <span className="tabular">
+      bm25 {fixed(signals.bm25, 2)} · cos {fixed(signals.cos, 3)}
+      {signals.distance !== null && signals.distance !== undefined ? ` · ${fixed(signals.distance, 0)} m` : ''}
+    </span>
+  );
+}
+
 function Hit({ h, hits, q }: { h: SearchHit; hits: number[]; q: string }) {
   const { devDetails } = usePrefs();
   const grand = h.raptorPath.length >= 3 ? h.raptorPath[h.raptorPath.length - 3] : h.raptorPath[0];
@@ -30,12 +40,7 @@ function Hit({ h, hits, q }: { h: SearchHit; hits: number[]; q: string }) {
       <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-subtle">
         {h.updated ? <span>{ago(h.updated)}</span> : null}
         {h.where ? <span>{h.where}</span> : null}
-        {devDetails ? (
-          <span className="tabular">
-            bm25 {fixed(h.signals.bm25, 2)} · cos {fixed(h.signals.cos, 3)}
-            {h.signals.distance !== null && h.signals.distance !== undefined ? ` · ${fixed(h.signals.distance, 0)} m` : ''}
-          </span>
-        ) : null}
+        {devDetails ? <Signals signals={h.signals} /> : null}
       </div>
       {h.raptorPath.length ? (
         <nav aria-label="Place in the RAPTOR tree" className="mt-2.5 flex flex-wrap items-center gap-1 text-xs">
@@ -64,6 +69,79 @@ function Hit({ h, hits, q }: { h: SearchHit; hits: number[]; q: string }) {
         ) : null}
       </div>
     </li>
+  );
+}
+
+type SearchQuery = ReturnType<typeof useApi<'search'>>;
+type SearchData = NonNullable<SearchQuery['data']>;
+/** Whether the tree candidates are unfolded (kept by the page across searches). */
+type Fold = { treeOpen: boolean; setTreeOpen: (f: (o: boolean) => boolean) => void };
+
+function SearchStats({ data }: { data: SearchData }) {
+  return (
+    <span className="ml-auto text-xs text-muted">
+      {data.hits.length} hits in {Math.round(data.elapsedMs)} ms · {data.modeNote}
+      {data.embedded ? ' · query embedded' : ''}
+    </span>
+  );
+}
+
+/** Nothing asked yet, loading, an error, nothing found, or the hits and the tree candidates. */
+function SearchResults({ q, res, hitIds, ...fold }: { q: string; res: SearchQuery; hitIds: number[] } & Fold) {
+  if (!q)
+    return (
+      <Card>
+        <EmptyState icon={<SearchIcon className="size-5" />} title="Search the bot's memory" hint="This runs the same recall pipeline the bot uses: words, meaning and the RAPTOR tree, fused." />
+      </Card>
+    );
+  if (res.isPending) return <SkeletonLines lines={8} />;
+  if (res.error)
+    return (
+      <Card>
+        <ErrorState error={res.error} onRetry={() => void res.refetch()} />
+      </Card>
+    );
+  if (res.data.hits.length === 0)
+    return (
+      <Card>
+        <EmptyState title={`Nothing for “${q}”`} hint="Try other words, or switch to all kinds." />
+      </Card>
+    );
+  return (
+    <>
+      <ol className="space-y-3">
+        {res.data.hits.map((h) => (
+          <Hit key={h.docId} h={h} hits={hitIds} q={q} />
+        ))}
+      </ol>
+      {res.data.treeHits.length ? <TreeCandidates treeHits={res.data.treeHits} {...fold} /> : null}
+    </>
+  );
+}
+
+/** The RAPTOR tree's candidates before fusion, folded. */
+function TreeCandidates({ treeHits, treeOpen, setTreeOpen }: { treeHits: SearchData['treeHits'] } & Fold) {
+  return (
+    <Card className="mt-5">
+      <button onClick={() => setTreeOpen((o) => !o)} aria-expanded={treeOpen} className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-medium text-fg">
+        <ChevronDown className={cn('size-4 text-subtle transition-transform', treeOpen && 'rotate-180')} />
+        Tree candidates before fusion <span className="font-normal text-subtle">({treeHits.length})</span>
+      </button>
+      {treeOpen ? (
+        <ul className="divide-y divide-border border-t border-border text-xs">
+          {treeHits.map((t, i) => (
+            <li key={i} className="flex items-center gap-3 px-4 py-2">
+              <Badge>{t.list}</Badge>
+              <Link href={`/memory-activity?node=${t.index}`} className="w-20 text-muted hover:text-fg">
+                {t.layer === 0 ? `leaf #${t.index}` : `L${t.layer} #${t.index}`}
+              </Link>
+              <span className="tabular w-14 text-subtle">{toNumber(t.score).toFixed(3)}</span>
+              <span className="min-w-0 flex-1 truncate text-fg">{t.preview}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </Card>
   );
 }
 
@@ -125,58 +203,9 @@ function SearchInner() {
           <option value="overworld">Overworld</option>
           <option value="nether">Nether</option>
         </Select>
-        {res.data ? (
-          <span className="ml-auto text-xs text-muted">
-            {res.data.hits.length} hits in {Math.round(res.data.elapsedMs)} ms · {res.data.modeNote}
-            {res.data.embedded ? ' · query embedded' : ''}
-          </span>
-        ) : null}
+        {res.data ? <SearchStats data={res.data} /> : null}
       </div>
-      {!q ? (
-        <Card>
-          <EmptyState icon={<SearchIcon className="size-5" />} title="Search the bot's memory" hint="This runs the same recall pipeline the bot uses: words, meaning and the RAPTOR tree, fused." />
-        </Card>
-      ) : res.isPending ? (
-        <SkeletonLines lines={8} />
-      ) : res.error ? (
-        <Card>
-          <ErrorState error={res.error} onRetry={() => void res.refetch()} />
-        </Card>
-      ) : res.data.hits.length === 0 ? (
-        <Card>
-          <EmptyState title={`Nothing for “${q}”`} hint="Try other words, or switch to all kinds." />
-        </Card>
-      ) : (
-        <>
-          <ol className="space-y-3">
-            {res.data.hits.map((h) => (
-              <Hit key={h.docId} h={h} hits={hitIds} q={q} />
-            ))}
-          </ol>
-          {res.data.treeHits.length ? (
-            <Card className="mt-5">
-              <button onClick={() => setTreeOpen((o) => !o)} aria-expanded={treeOpen} className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-medium text-fg">
-                <ChevronDown className={cn('size-4 text-subtle transition-transform', treeOpen && 'rotate-180')} />
-                Tree candidates before fusion <span className="font-normal text-subtle">({res.data.treeHits.length})</span>
-              </button>
-              {treeOpen ? (
-                <ul className="divide-y divide-border border-t border-border text-xs">
-                  {res.data.treeHits.map((t, i) => (
-                    <li key={i} className="flex items-center gap-3 px-4 py-2">
-                      <Badge>{t.list}</Badge>
-                      <Link href={`/memory-activity?node=${t.index}`} className="w-20 text-muted hover:text-fg">
-                        {t.layer === 0 ? `leaf #${t.index}` : `L${t.layer} #${t.index}`}
-                      </Link>
-                      <span className="tabular w-14 text-subtle">{toNumber(t.score).toFixed(3)}</span>
-                      <span className="min-w-0 flex-1 truncate text-fg">{t.preview}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </Card>
-          ) : null}
-        </>
-      )}
+      <SearchResults q={q} res={res} hitIds={hitIds} treeOpen={treeOpen} setTreeOpen={setTreeOpen} />
     </PageBody>
   );
 }

@@ -54,35 +54,46 @@ function pawnBots(base: BotDto | undefined): BotDto[] {
   const out: BotDto[] = [];
   for (const c of storySim.colonies.values()) {
     if (c.released) continue;
-    for (const sim of c.pawns.values()) {
-      const pw = sim.p;
-      if (pw.online === false || (pw.dim ?? 0) !== 0) continue;
-      const x = sim.x,
-        y = sim.y,
-        z = sim.z;
-      const last = pawnYaw.get(pw.name);
-      let yaw = last?.yaw ?? 0;
-      if (last && Math.hypot(x - last.x, z - last.z) > 0.05) yaw = (Math.atan2(-(x - last.x), z - last.z) * 180) / Math.PI;
-      pawnYaw.set(pw.name, { x, z, yaw });
-      out.push({
-        ...base,
-        name: pw.name,
-        short: pw.name.replace(/^maid_/, ''),
-        main: false,
-        dim: 0,
-        x,
-        y,
-        z,
-        yaw,
-        hp: pw.hp ?? 20,
-        food: pw.food ?? 20,
-        job: pw.job?.type ?? null,
-        held: pw.held ?? null,
-        equipment: null,
-      });
-    }
+    for (const sim of c.pawns.values()) if (inOverworld(sim.p)) out.push(pawnBot(base, sim));
   }
   return out;
+}
+
+type PawnSim = ReturnType<typeof storySim.colonies.values> extends Iterable<infer C> ? (C extends { pawns: Map<string, infer P> } ? P : never) : never;
+
+const inOverworld = (pw: PawnSim['p']) => pw.online !== false && (pw.dim ?? 0) === 0;
+
+/** The pawn's facing: the way it last walked (kept when it barely moved). */
+function pawnFacing(name: string, x: number, z: number): number {
+  const last = pawnYaw.get(name);
+  let yaw = last?.yaw ?? 0;
+  if (last && Math.hypot(x - last.x, z - last.z) > 0.05) yaw = (Math.atan2(-(x - last.x), z - last.z) * 180) / Math.PI;
+  pawnYaw.set(name, { x, z, yaw });
+  return yaw;
+}
+
+function pawnBot(base: BotDto, sim: PawnSim): BotDto {
+  const pw = sim.p;
+  const x = sim.x,
+    y = sim.y,
+    z = sim.z;
+  const yaw = pawnFacing(pw.name, x, z);
+  return {
+    ...base,
+    name: pw.name,
+    short: pw.name.replace(/^maid_/, ''),
+    main: false,
+    dim: 0,
+    x,
+    y,
+    z,
+    yaw,
+    hp: pw.hp ?? 20,
+    food: pw.food ?? 20,
+    job: pw.job?.type ?? null,
+    held: pw.held ?? null,
+    equipment: null,
+  };
 }
 
 let shared: WorldSource | null = null;

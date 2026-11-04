@@ -125,16 +125,28 @@ export function guardedHref(
   a: { href: string; target: string; hasAttribute(n: string): boolean } | null,
   here: { origin: string; pathname: string },
 ): string | null {
-  if (!a || ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return null;
-  if ((a.target && a.target !== '_self') || a.hasAttribute('download')) return null;
-  let url: URL;
+  if (!a || !plainClick(ev) || !opensHere(a)) return null;
+  const url = parseUrl(a.href, here.origin);
+  if (!url || url.origin !== here.origin || url.pathname === here.pathname) return null;
+  return url.pathname + url.search + url.hash;
+}
+
+/** A plain left click: not handled already, no modifier (new tab / window / download). */
+function plainClick(ev: Parameters<typeof guardedHref>[0]): boolean {
+  return !ev.defaultPrevented && ev.button === 0 && !(ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey);
+}
+
+/** The link opens in this tab (no other target) and is not a download. */
+function opensHere(a: NonNullable<Parameters<typeof guardedHref>[1]>): boolean {
+  return !(a.target && a.target !== '_self') && !a.hasAttribute('download');
+}
+
+function parseUrl(href: string, origin: string): URL | null {
   try {
-    url = new URL(a.href, here.origin);
+    return new URL(href, origin);
   } catch {
     return null;
   }
-  if (url.origin !== here.origin || url.pathname === here.pathname) return null;
-  return url.pathname + url.search + url.hash;
 }
 
 // ---------------------------------------------------------------------------------------------------------- hooks

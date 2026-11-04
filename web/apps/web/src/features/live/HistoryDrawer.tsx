@@ -18,22 +18,35 @@ import { Drawer, Segmented, Switch, TabPanel, Tabs } from '@/components/ui/overl
 const MAIN_LANES = new Set(['brain', 'reply']);
 const LANE_TONE: Record<string, 'accent' | 'info' | 'neutral' | 'warn'> = { brain: 'accent', reply: 'info', compaction: 'warn' };
 
-function BlockView({ block }: { block: CtxBlock }) {
-  const label = block.label ?? (block.kind === 'tool_use' ? `tool · ${block.name ?? ''}` : block.kind.replace('_', ' '));
-  let body: string = block.text ?? '';
-  if (block.kind === 'tool_use') {
-    try {
-      body = JSON.stringify(JSON.parse(block.input ?? '{}'), null, 2);
-    } catch {
-      body = block.input ?? '';
-    }
+function blockLabel(block: CtxBlock): string {
+  return block.label ?? (block.kind === 'tool_use' ? `tool · ${block.name ?? ''}` : block.kind.replace('_', ' '));
+}
+
+/** A tool call's input, pretty-printed when it is JSON. */
+function toolInput(input: string | null | undefined): string {
+  try {
+    return JSON.stringify(JSON.parse(input ?? '{}'), null, 2);
+  } catch {
+    return input ?? '';
   }
-  if (block.kind === 'redacted_thinking') body = `(encrypted, ${num(block.bytes ?? 0)} bytes)`;
-  if (block.kind === 'image') body = block.label ?? '(image)';
+}
+
+/** What a block shows: its text; a tool call's input; the size of encrypted thinking; an image's label. */
+const BLOCK_BODY: Partial<Record<CtxBlock['kind'], (b: CtxBlock) => string>> = {
+  tool_use: (b) => toolInput(b.input),
+  redacted_thinking: (b) => `(encrypted, ${num(b.bytes ?? 0)} bytes)`,
+  image: (b) => b.label ?? '(image)',
+};
+
+const isTool = (kind: CtxBlock['kind']) => kind === 'tool_use' || kind === 'tool_result';
+
+function BlockView({ block }: { block: CtxBlock }) {
+  const label = blockLabel(block);
+  const body = BLOCK_BODY[block.kind]?.(block) ?? block.text ?? '';
   return (
     <div className={cn('rounded-lg border px-3 py-2', block.isError ? 'border-danger/40 bg-danger-soft' : 'border-border bg-surface')}>
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-subtle">
-        {block.kind === 'tool_use' || block.kind === 'tool_result' ? <Wrench className="size-3" /> : null}
+        {isTool(block.kind) ? <Wrench className="size-3" /> : null}
         {label}
         {block.target ? <Badge tone="accent">this body</Badge> : null}
       </div>
@@ -234,6 +247,58 @@ function TurnDetailView({ brain, turn, body, onBack }: { brain: string; turn: nu
   );
 }
 
+const brainSubtitle = (brain: string | null | undefined, subhive: boolean) =>
+  brain ? `brain ${brain}${subhive ? ' (shared with the owner)' : ''}` : 'no brain';
+
+/** The brain's context pages (only `body`'s turns when given): on demand only, polled while the drawer is open (the stream carries no context pages). */
+function useBrainContext(open: boolean, brain: string | null | undefined, body: string | null) {
+  return useApi(
+    'brains.context',
+    { params: { brain: brain ?? '' }, query: body !== null ? { body } : {} },
+    { enabled: open && !!brain, refetchInterval: open ? 1500 : false },
+  );
+}
+
+type ContextQuery = ReturnType<typeof useBrainContext>;
+
+/** Background lanes on / off (with how many it hides), and in a subhive only this body's turns. */
+function TurnFilters(p: {
+  allLanes: boolean;
+  setAllLanes: (on: boolean) => void;
+  hidden: number;
+  subhive: boolean;
+  onlyBody: boolean;
+  setOnlyBody: (on: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">
+      <Switch checked={p.allLanes} onCheckedChange={p.setAllLanes} label={<span className="text-xs text-muted">Background lanes{!p.allLanes && p.hidden > 0 ? ` (${p.hidden} hidden)` : ''}</span>} />
+      {p.subhive ? <Switch checked={p.onlyBody} onCheckedChange={p.setOnlyBody} label={<span className="text-xs text-muted">Only this body’s turns</span>} /> : null}
+    </div>
+  );
+}
+
+function ContextPanel({ ctx }: { ctx: ContextQuery }) {
+  if (ctx.isPending) return <SkeletonLines lines={8} className="p-5" />;
+  if (ctx.error) return <ErrorState error={ctx.error} />;
+  return <ContextWindowView page={ctx.data} />;
+}
+
+/** The turns, newest first: loading, an error, telemetry off on the bot, none yet, or the rows. */
+function TurnList({ ctx, turns, dev, onOpen }: { ctx: ContextQuery; turns: readonly CtxTurnSummary[]; dev: boolean; onOpen: (id: number) => void }) {
+  if (ctx.isPending) return <SkeletonLines lines={8} className="p-5" />;
+  if (ctx.error) return <ErrorState error={ctx.error} onRetry={() => void ctx.refetch()} />;
+  if (!ctx.data.enabled) return <EmptyState title="Telemetry is off on the bot" hint={ctx.data.note ?? 'Turn on Telemetry:Enabled to see turns.'} />;
+  if (turns.length === 0) return <EmptyState title="No turns yet" />;
+  return (
+    <ul className="divide-y divide-border">
+      {turns.map((t) => (
+        <TurnRow key={t.id} t={t} dev={dev} onOpen={() => onOpen(t.id)} />
+      ))}
+    </ul>
+  );
+}
+
 export function HistoryDrawer({
   open,
   onOpenChange,
@@ -254,12 +319,7 @@ export function HistoryDrawer({
   const [allLanes, setAllLanes] = useState(false);
   const [onlyBody, setOnlyBody] = useState(subhive);
   const [turn, setTurn] = useState<number | null>(null);
-  // On demand only: polled while this drawer is open (the stream carries no context pages).
-  const ctx = useApi(
-    'brains.context',
-    { params: { brain: brain ?? '' }, query: onlyBody ? { body } : {} },
-    { enabled: open && !!brain, refetchInterval: open ? 1500 : false },
-  );
+  const ctx = useBrainContext(open, brain, onlyBody ? body : null);
   const turns = useMemo(() => {
     const list = [...(ctx.data?.turns ?? [])].sort((a, b) => b.id - a.id);
     return list.filter((t) => (allLanes || MAIN_LANES.has(t.lane)) && (!onlyBody || !t.body || t.body === body || t.targets));
@@ -274,7 +334,7 @@ export function HistoryDrawer({
         if (!o) setTurn(null);
       }}
       title={`History · ${body}`}
-      subtitle={brain ? `brain ${brain}${subhive ? ' (shared with the owner)' : ''}` : 'no brain'}
+      subtitle={brainSubtitle(brain, subhive)}
       width="lg"
     >
       {!brain ? (
@@ -292,28 +352,11 @@ export function HistoryDrawer({
           listClassName="px-4"
         >
           <TabPanel value="turns">
-            <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">
-              <Switch checked={allLanes} onCheckedChange={setAllLanes} label={<span className="text-xs text-muted">Background lanes{!allLanes && hidden > 0 ? ` (${hidden} hidden)` : ''}</span>} />
-              {subhive ? <Switch checked={onlyBody} onCheckedChange={setOnlyBody} label={<span className="text-xs text-muted">Only this body’s turns</span>} /> : null}
-            </div>
-            {ctx.isPending ? (
-              <SkeletonLines lines={8} className="p-5" />
-            ) : ctx.error ? (
-              <ErrorState error={ctx.error} onRetry={() => void ctx.refetch()} />
-            ) : !ctx.data.enabled ? (
-              <EmptyState title="Telemetry is off on the bot" hint={ctx.data.note ?? 'Turn on Telemetry:Enabled to see turns.'} />
-            ) : turns.length === 0 ? (
-              <EmptyState title="No turns yet" />
-            ) : (
-              <ul className="divide-y divide-border">
-                {turns.map((t) => (
-                  <TurnRow key={t.id} t={t} dev={devDetails} onOpen={() => setTurn(t.id)} />
-                ))}
-              </ul>
-            )}
+            <TurnFilters allLanes={allLanes} setAllLanes={setAllLanes} hidden={hidden} subhive={subhive} onlyBody={onlyBody} setOnlyBody={setOnlyBody} />
+            <TurnList ctx={ctx} turns={turns} dev={devDetails} onOpen={setTurn} />
           </TabPanel>
           <TabPanel value="context">
-            {ctx.isPending ? <SkeletonLines lines={8} className="p-5" /> : ctx.error ? <ErrorState error={ctx.error} /> : <ContextWindowView page={ctx.data} />}
+            <ContextPanel ctx={ctx} />
           </TabPanel>
         </Tabs>
       )}

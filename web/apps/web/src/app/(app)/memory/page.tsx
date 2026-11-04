@@ -1,18 +1,16 @@
 'use client';
 
-import { MEMORY_EDIT_KIND, MEMORY_REBUILD_KIND, toNumber, type DimFilter, type MemoryKindKey, type MemoryRecord, type MemorySort } from '@mineclaw/contracts';
-import { Copy, Hammer, Network, PackageOpen, Pencil, Plus, Search, Trash2, UserRound, X } from 'lucide-react';
-import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { Suspense, useDeferredValue, useEffect, useState } from 'react';
-import { Badge, Button, Card, ErrorState, Input, KeyValues, Select, Skeleton, SkeletonLines } from '@/components/ui/primitives';
+import { MEMORY_EDIT_KIND, MEMORY_REBUILD_KIND, toNumber, type MemoryKindKey, type MemoryRecord } from '@mineclaw/contracts';
+import { Suspense, useDeferredValue, useEffect, useState, type ReactNode } from 'react';
+import { Badge, Card, ErrorState, KeyValues, Skeleton, SkeletonLines } from '@/components/ui/primitives';
 import { Dialog, Drawer } from '@/components/ui/overlays';
 import { EditForm } from '@/features/admin/EditForm';
 import { RebuildDialog } from '@/features/admin/RebuildDialog';
+import { DetailActions, KindNav, MemoryToolbar, useMemoryParams } from '@/features/memory/MemoryBrowser';
 import { MemoryTable } from '@/features/memory/MemoryTable';
 import { useApi } from '@/lib/api/query';
 import { useAuth } from '@/lib/auth';
-import { cn, copyText, dateTime, num } from '@/lib/utils';
+import { dateTime, num } from '@/lib/utils';
 
 function RecordExtras({ record }: { record: MemoryRecord }) {
   if (record.kind === 'claims' || record.kind === 'beliefs') {
@@ -68,31 +66,7 @@ function Detail({ kind, id, onClose }: { kind: MemoryKindKey; id: string; onClos
         <div className="space-y-5 p-5">
           <KeyValues rows={d.data.props.map((p) => [p.label, p.value ? <span className="whitespace-pre-wrap">{p.value}</span> : null])} />
           <RecordExtras record={d.data.record} />
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => void copyText(d.data.props.map((p) => `${p.label}\t${p.value ?? ''}`).join('\n'))}>
-              <Copy className="size-3.5" /> Copy row
-            </Button>
-            {d.data.row.raptorLeaf !== null && d.data.row.raptorLeaf !== undefined ? (
-              <Link href={`/memory-activity?layout=cloud&node=${d.data.row.raptorLeaf}`} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs font-medium text-fg shadow-card hover:bg-surface-2">
-                <Network className="size-3.5" /> Show in memory activity (leaf #{d.data.row.raptorLeaf})
-              </Link>
-            ) : null}
-            {d.data.people.map((p) => (
-              <Link key={p} href={`/shards?export=person&people=${encodeURIComponent(p)}`} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs font-medium text-fg shadow-card hover:bg-surface-2">
-                <UserRound className="size-3.5" /> Export everything about {p}
-              </Link>
-            ))}
-            {isAdmin && d.data.editKind ? (
-              <>
-                <Button size="sm" onClick={() => setEdit('update')}>
-                  <Pencil className="size-3.5" /> Edit
-                </Button>
-                <Button size="sm" variant="ghost" className="text-danger" onClick={() => setEdit('delete')}>
-                  <Trash2 className="size-3.5" /> Delete
-                </Button>
-              </>
-            ) : null}
-          </div>
+          <DetailActions d={d.data} canEdit={isAdmin && !!d.data.editKind} onEdit={setEdit} />
           {edit && d.data.editKind ? (
             <Dialog open onOpenChange={(o) => !o && setEdit(null)} title={`${edit === 'delete' ? 'Delete' : 'Edit'} ${d.data.editKind}`} description={d.data.row.name}>
               <EditForm
@@ -115,33 +89,16 @@ function Detail({ kind, id, onClose }: { kind: MemoryKindKey; id: string; onClos
 }
 
 function MemoryInner() {
-  const params = useSearchParams();
-  const router = useRouter();
+  const { params, set, kind, selectedId, sort, dir, dim, state } = useMemoryParams();
   const { isAdmin } = useAuth();
   const kinds = useApi('memory.kinds');
-  const kind = (params.get('kind') as MemoryKindKey | null) ?? 'facts';
-  const selectedId = params.get('id');
-  const sort = (params.get('sort') as MemorySort | null) ?? 'updated';
-  const dir = (params.get('dir') as 'asc' | 'desc' | null) ?? 'desc';
-  const dim = (params.get('dim') as DimFilter | null) ?? 'any';
-  const state = params.get('state') ?? undefined;
   const [q, setQ] = useState(params.get('q') ?? '');
   const dq = useDeferredValue(q.trim());
   const [total, setTotal] = useState<number | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [rebuild, setRebuild] = useState(false);
   const info = kinds.data?.kinds.find((k) => k.key === kind);
   const editKind = MEMORY_EDIT_KIND[kind];
   const rebuildKind = MEMORY_REBUILD_KIND[kind];
-
-  const set = (patch: Record<string, string | null | undefined>) => {
-    const sp = new URLSearchParams(params.toString());
-    for (const [k, v] of Object.entries(patch)) {
-      if (v === null || v === undefined || v === '') sp.delete(k);
-      else sp.set(k, v);
-    }
-    router.replace(`/memory?${sp.toString()}`, { scroll: false });
-  };
+  const admin = useAdminDialogs(isAdmin, editKind, rebuildKind);
 
   // keep the search box in the URL (debounced)
   useEffect(() => {
@@ -152,109 +109,28 @@ function MemoryInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dq]);
 
-  const groups = kinds.data ? [...new Set(kinds.data.kinds.map((k) => k.group))] : [];
-  const exportHref = `/shards?export=filter&kind=${encodeURIComponent(rebuildKind ?? kind)}${dq ? `&q=${encodeURIComponent(dq)}` : ''}`;
-
   return (
     <div className="flex h-full min-h-0">
       {/* kinds */}
-      <nav aria-label="Memory kinds" className="hidden w-56 shrink-0 overflow-y-auto border-r border-border bg-surface py-3 md:block">
-        {kinds.isPending ? (
-          <SkeletonLines lines={10} className="px-4" />
-        ) : (
-          groups.map((g) => (
-            <div key={g} className="mb-3">
-              <div className="px-4 pb-1 text-[11px] font-semibold tracking-wider text-subtle uppercase">{g}</div>
-              {kinds.data!.kinds
-                .filter((k) => k.group === g)
-                .map((k) => (
-                  <button
-                    key={k.key}
-                    onClick={() => set({ kind: k.key, id: null, state: null, sort: null, dir: null })}
-                    aria-current={k.key === kind ? 'page' : undefined}
-                    disabled={!k.available}
-                    className={cn(
-                      'flex h-8 w-full items-center justify-between px-4 text-left text-[13px] disabled:opacity-40',
-                      k.key === kind ? 'bg-accent-soft font-medium text-fg' : 'text-muted hover:bg-surface-2 hover:text-fg',
-                    )}
-                  >
-                    <span className="truncate">{k.label}</span>
-                    <span className="tabular text-[11px] text-subtle">{num(k.count)}</span>
-                  </button>
-                ))}
-            </div>
-          ))
-        )}
-      </nav>
+      <KindNav kinds={kinds} kind={kind} set={set} />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-4 py-3">
-          <Select aria-label="Kind" value={kind} onChange={(e) => set({ kind: e.target.value, id: null, state: null })} className="h-8 md:hidden">
-            {kinds.data?.kinds.map((k) => (
-              <option key={k.key} value={k.key}>
-                {k.label}
-              </option>
-            ))}
-          </Select>
-          <div className="mr-1 hidden md:block">
-            <h1 className="text-[15px] font-semibold text-fg">{info?.label ?? kind}</h1>
-            <p className="tabular text-xs text-muted">{total === null ? '…' : `${num(total)} ${total === 1 ? 'row' : 'rows'}`}</p>
-          </div>
-          <div className="relative min-w-48 flex-1">
-            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Every word must match…" aria-label="Filter rows" className="h-8 pl-8" />
-          </div>
-          <Select aria-label="Dimension" value={dim} onChange={(e) => set({ dim: e.target.value === 'any' ? null : e.target.value })} className="h-8">
-            <option value="any">Any dimension</option>
-            <option value="overworld">Overworld</option>
-            <option value="nether">Nether</option>
-            <option value="none">No position</option>
-          </Select>
-          {info?.states.length ? (
-            <Select aria-label="State" value={state ?? ''} onChange={(e) => set({ state: e.target.value || null })} className="h-8">
-              <option value="">Any state</option>
-              {info.states.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
-          ) : null}
-          {q || dim !== 'any' || state ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setQ('');
-                set({ q: null, dim: null, state: null });
-              }}
-            >
-              <X className="size-3.5" /> Clear
-            </Button>
-          ) : null}
-          <span className="flex-1" />
-          <Link href={exportHref} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-fg">
-            <PackageOpen className="size-3.5" /> Export
-          </Link>
-          {isAdmin && rebuildKind ? (
-            <Button size="sm" variant="ghost" onClick={() => setRebuild(true)}>
-              <Hammer className="size-3.5" /> Rebuild
-            </Button>
-          ) : null}
-          {isAdmin && editKind ? (
-            <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
-              <Plus className="size-3.5" /> Add
-            </Button>
-          ) : null}
-        </div>
+        <MemoryToolbar
+          kinds={kinds}
+          kind={kind}
+          info={info}
+          total={total}
+          q={q}
+          setQ={setQ}
+          dim={dim}
+          state={state}
+          set={set}
+          exportHref={exportHrefOf(rebuildKind ?? kind, dq)}
+          onRebuild={admin.onRebuild}
+          onAdd={admin.onAdd}
+        />
         <div className="min-h-0 flex-1 bg-surface">
-          {kinds.error ? (
-            <Card className="m-4">
-              <ErrorState error={kinds.error} onRetry={() => void kinds.refetch()} />
-            </Card>
-          ) : kinds.isPending ? (
-            <Skeleton className="m-4 h-64" />
-          ) : (
+          <MemoryBody kinds={kinds}>
             <MemoryTable
               kind={kind}
               filters={{ q: dq || undefined, sort, dir, dim, state }}
@@ -263,18 +139,67 @@ function MemoryInner() {
               onOpen={(r) => set({ id: r.id })}
               onTotal={setTotal}
             />
-          )}
+          </MemoryBody>
         </div>
       </div>
       {selectedId ? <Detail kind={kind} id={selectedId} onClose={() => set({ id: null })} /> : null}
-      {adding && editKind ? (
-        <Dialog open onOpenChange={setAdding} title={`Add ${editKind}`}>
-          <EditForm kind={editKind} op="add" onCancel={() => setAdding(false)} onDone={() => setAdding(false)} />
-        </Dialog>
-      ) : null}
-      {rebuild && rebuildKind ? <RebuildDialog open onOpenChange={setRebuild} request={{ scope: 'kind', kind: rebuildKind }} label={`${info?.label ?? kind} (${rebuildKind})`} /> : null}
+      <AddDialog editKind={admin.adding ? editKind : undefined} close={() => admin.setAdding(false)} onOpenChange={admin.setAdding} />
+      <KindRebuild rebuildKind={admin.rebuild ? rebuildKind : undefined} label={info?.label ?? kind} onOpenChange={admin.setRebuild} />
     </div>
   );
+}
+
+/** The export page, filtered to this kind (as the shard export names it) and the search. */
+const exportHrefOf = (kind: string, dq: string) => `/shards?export=filter&kind=${encodeURIComponent(kind)}${dq ? `&q=${encodeURIComponent(dq)}` : ''}`;
+
+/** The admin's add and rebuild dialogs: open state, and the toolbar actions (null when the kind cannot be added / rebuilt). */
+function useAdminDialogs(isAdmin: boolean, editKind: unknown, rebuildKind: unknown) {
+  const [adding, setAdding] = useState(false);
+  const [rebuild, setRebuild] = useState(false);
+  return {
+    adding,
+    setAdding,
+    rebuild,
+    setRebuild,
+    onAdd: isAdmin && editKind ? () => setAdding(true) : null,
+    onRebuild: isAdmin && rebuildKind ? () => setRebuild(true) : null,
+  };
+}
+
+/** Adding a row of the kind (when it is open and the kind is editable). */
+function AddDialog({
+  editKind,
+  close,
+  onOpenChange,
+}: {
+  editKind: React.ComponentProps<typeof EditForm>['kind'] | null | undefined;
+  close: () => void;
+  onOpenChange: (o: boolean) => void;
+}) {
+  if (!editKind) return null;
+  return (
+    <Dialog open onOpenChange={onOpenChange} title={`Add ${editKind}`}>
+      <EditForm kind={editKind} op="add" onCancel={close} onDone={close} />
+    </Dialog>
+  );
+}
+
+/** Rebuilding the kind (when it is open and the kind rebuilds). */
+function KindRebuild({ rebuildKind, label, onOpenChange }: { rebuildKind: string | null | undefined; label: string; onOpenChange: (o: boolean) => void }) {
+  if (!rebuildKind) return null;
+  return <RebuildDialog open onOpenChange={onOpenChange} request={{ scope: 'kind', kind: rebuildKind }} label={`${label} (${rebuildKind})`} />;
+}
+
+/** The table once the kinds have loaded (an error or a skeleton before). */
+function MemoryBody({ kinds, children }: { kinds: ReturnType<typeof useApi<'memory.kinds'>>; children: ReactNode }) {
+  if (kinds.error)
+    return (
+      <Card className="m-4">
+        <ErrorState error={kinds.error} onRetry={() => void kinds.refetch()} />
+      </Card>
+    );
+  if (kinds.isPending) return <Skeleton className="m-4 h-64" />;
+  return children;
 }
 
 export default function MemoryPage() {

@@ -1,0 +1,142 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`mine templates (golden, pinned before the step reader and templates were split) > edges and ring places of every walkway cell 1`] = `
+[
+  "3: 0/0 0/1 1/2 ",
+  "3: 3/7 1/3 1/3 ",
+  "3: 3/6 2/5 2/4 ",
+  "4: 0/0 0/1 0/2 1/3 ",
+  "4: 3/11 0/1 1/4 1/4 ",
+  "4: 3/10 3/10 2/7 1/5 ",
+  "4: 3/9 2/8 2/7 2/6 ",
+  "5: 0/0 0/1 0/2 0/3 1/4 ",
+  "5: 3/15 0/1 0/2 1/5 1/5 ",
+  "5: 3/14 3/14 1/6 1/6 1/6 ",
+  "5: 3/13 3/13 2/10 2/9 1/7 ",
+  "5: 3/12 2/11 2/10 2/9 2/8 ",
+  "6: 0/0 0/1 0/2 0/3 0/4 1/5 ",
+  "6: 3/19 0/1 0/2 0/3 1/6 1/6 ",
+  "6: 3/18 3/18 0/2 1/7 1/7 1/7 ",
+  "6: 3/17 3/17 3/17 2/12 1/8 1/8 ",
+  "6: 3/16 3/16 2/13 2/12 2/11 1/9 ",
+  "6: 3/15 2/14 2/13 2/12 2/11 2/10 ",
+]
+`;
+
+exports[`mine templates (golden, pinned before the step reader and templates were split) > reads every kind of step the same, with and without a terrain 1`] = `
+[
+  [
+    "162:1489200179 entry 30,64,30 path 54:2795579879 | spiral shaft 4×4 (core 2×2) y64→11",
+    "177:134785113 entry 30,69,30 path 59:1791334668 | spiral shaft 4×4 (core 2×2) y69→11",
+  ],
+  [
+    "162:1489200179 entry 30,64,30 path 54:2795579879 | spiral shaft 4×4 (core 2×2) y64→11",
+    "177:134785113 entry 30,69,30 path 59:1791334668 | spiral shaft 4×4 (core 2×2) y69→11",
+  ],
+  [
+    "199:4063515102 entry 4,40,7 path 21:3087700938 | spiral shaft 5×5 (core 1×1) y40→20 ccw, landings 30/25/30/99",
+    "199:4063515102 entry 4,40,7 path 21:3087700938 | spiral shaft 5×5 (core 1×1) y40→20 ccw, landings 30/25/30/99",
+  ],
+  [
+    "319:654471938 entry 30,70,30 path 70:2833894313 | spiral shaft 6×6 (core 3×3) y70→1 ccw",
+    "319:654471938 entry 30,70,30 path 70:2833894313 | spiral shaft 6×6 (core 3×3) y70→1 ccw",
+  ],
+  [
+    "162:3166132435 entry 30,64,30 path 54:1390372747 | spiral shaft 3×3 (core 1×1) y64→11",
+    "177:1534829339 entry 30,69,30 path 59:2807133498 | spiral shaft 3×3 (core 1×1) y69→11",
+  ],
+  [
+    "162:3166132435 entry 30,64,30 path 54:1390372747 | spiral shaft 3×3 (core 1×1) y64→11",
+    "177:1534829339 entry 30,69,30 path 59:2807133498 | spiral shaft 3×3 (core 1×1) y69→11",
+  ],
+  [
+    "396:746303979 entry 0,11,0 path 30:667172068 | strip mine at y11 along x: 1×2 × 30, 7 branch rows 3 apart (12 long, both)",
+    "396:746303979 entry 0,11,0 path 30:667172068 | strip mine at y11 along x: 1×2 × 30, 7 branch rows 3 apart (12 long, both)",
+  ],
+  [
+    "106:1683860717 entry 3,20,-2 path 12:2815554685 | strip mine at y20 along z: 2×3 × 12, 4 branch rows 2 apart (4 long, left)",
+    "106:1683860717 entry 3,20,-2 path 12:2815554685 | strip mine at y20 along z: 2×3 × 12, 4 branch rows 2 apart (4 long, left)",
+  ],
+  [
+    "4351:1367387124 entry 0,11,0 path 64:2513485253 | strip mine at y11 along z: 1×3 × 64, 32 branch rows 1 apart (64 long, right)",
+    "4351:1367387124 entry 0,11,0 path 64:2513485253 | strip mine at y11 along z: 1×3 × 64, 32 branch rows 1 apart (64 long, right)",
+  ],
+  [
+    "12:4084072508 entry 0,11,0 path 5:291000600 | strip mine at y11 along x: 1×2 × 5, 2 branch rows 1 apart (12 long, none)",
+    "12:4084072508 entry 0,11,0 path 5:291000600 | strip mine at y11 along x: 1×2 × 5, 2 branch rows 1 apart (12 long, none)",
+  ],
+  [
+    "286:1811926699 entry 0,11,0 path 20:2980247877 | strip mine at y11 along x: 1×2 × 20, 5 branch rows 3 apart (12 long, both)",
+    "286:1811926699 entry 0,11,0 path 20:2980247877 | strip mine at y11 along x: 1×2 × 20, 5 branch rows 3 apart (12 long, both)",
+  ],
+  [
+    "throws no mine template 'room' (spiral, strip)",
+    "throws no mine template 'room' (spiral, strip)",
+  ],
+  [
+    "162:1489200179 entry 30,64,30 path 54:2795579879 | spiral shaft 4×4 (core 2×2) y64→11",
+    "177:134785113 entry 30,69,30 path 59:1791334668 | spiral shaft 4×4 (core 2×2) y69→11",
+  ],
+]
+`;
+
+exports[`mine templates (golden, pinned before the step reader and templates were split) > spirals and strips over their parameter ranges 1`] = `
+[
+  "102:2583464050 entry 2,30,3 path 19:1906174284 | spiral shaft 3×3 (core 1×1) y30→12, landings 20/14",
+  "102:2281131669 entry 2,30,3 path 19:944508698 | spiral shaft 3×3 (core 1×1) y30→12 ccw, landings 20/14",
+  "102:2583464050 entry 2,30,3 path 19:1906174284 | spiral shaft 3×3 (core 1×1) y30→12, landings 20/14",
+  "102:2281131669 entry 2,30,3 path 19:944508698 | spiral shaft 3×3 (core 1×1) y30→12 ccw, landings 20/14",
+  "102:2583464050 entry 2,30,3 path 19:1906174284 | spiral shaft 3×3 (core 1×1) y30→12, landings 20/14",
+  "102:2281131669 entry 2,30,3 path 19:944508698 | spiral shaft 3×3 (core 1×1) y30→12 ccw, landings 20/14",
+  "142:2042929476 entry 2,30,3 path 19:389840124 | spiral shaft 4×4 (core 1×1) y30→12, landings 20/14",
+  "145:602260271 entry 2,30,3 path 19:3132670514 | spiral shaft 4×4 (core 1×1) y30→12 ccw, landings 20/14",
+  "130:2417399612 entry 2,30,3 path 19:389840124 | spiral shaft 4×4 (core 2×2) y30→12, landings 20/14",
+  "130:2613339030 entry 2,30,3 path 19:3132670514 | spiral shaft 4×4 (core 2×2) y30→12 ccw, landings 20/14",
+  "130:2417399612 entry 2,30,3 path 19:389840124 | spiral shaft 4×4 (core 2×2) y30→12, landings 20/14",
+  "130:2613339030 entry 2,30,3 path 19:3132670514 | spiral shaft 4×4 (core 2×2) y30→12 ccw, landings 20/14",
+  "196:440543387 entry 2,30,3 path 19:2857747140 | spiral shaft 5×5 (core 1×1) y30→12, landings 20/14",
+  "193:1701850282 entry 2,30,3 path 19:3510095138 | spiral shaft 5×5 (core 1×1) y30→12 ccw, landings 20/14",
+  "181:2896697598 entry 2,30,3 path 19:2857747140 | spiral shaft 5×5 (core 2×2) y30→12, landings 20/14",
+  "181:3663163240 entry 2,30,3 path 19:3510095138 | spiral shaft 5×5 (core 2×2) y30→12 ccw, landings 20/14",
+  "166:1121602581 entry 2,30,3 path 19:2857747140 | spiral shaft 5×5 (core 3×3) y30→12, landings 20/14",
+  "166:996112269 entry 2,30,3 path 19:3510095138 | spiral shaft 5×5 (core 3×3) y30→12 ccw, landings 20/14",
+  "255:3609704314 entry 2,30,3 path 19:4235484420 | spiral shaft 6×6 (core 1×1) y30→12, landings 20/14",
+  "252:2104182299 entry 2,30,3 path 19:1923794562 | spiral shaft 6×6 (core 1×1) y30→12 ccw, landings 20/14",
+  "246:3079608616 entry 2,30,3 path 19:4235484420 | spiral shaft 6×6 (core 2×2) y30→12, landings 20/14",
+  "243:3927964135 entry 2,30,3 path 19:1923794562 | spiral shaft 6×6 (core 2×2) y30→12 ccw, landings 20/14",
+  "210:1625644340 entry 2,30,3 path 19:4235484420 | spiral shaft 6×6 (core 4×4) y30→12, landings 20/14",
+  "210:576580246 entry 2,30,3 path 19:1923794562 | spiral shaft 6×6 (core 4×4) y30→12 ccw, landings 20/14",
+  "148:648987247 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "165:2313304343 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "153:2228248404 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "152:2371850111 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "108:153616511 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "125:231651751 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "113:2627631268 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "112:3646853679 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "108:643222535 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "125:2929582191 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "113:3842686076 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "112:3210537303 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "68:1834338775 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+  "85:1022210879 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+  "73:67965068 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+  "72:253273543 entry 1,11,2 path 17:3613701421 | strip mine at y11 along x: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+  "148:2313559755 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "165:3794708841 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "153:4063544256 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "152:685660411 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, both)",
+  "108:2519202155 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "125:1007586953 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "113:2779581536 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "112:2271265819 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, left)",
+  "108:1243537163 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "125:3736554025 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "113:24899712 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "112:3791416635 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, right)",
+  "68:407213763 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+  "85:3178977409 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+  "73:1886358680 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+  "72:2770619827 entry 1,11,2 path 17:2247627357 | strip mine at y11 along z: 2×2 × 17, 4 branch rows 3 apart (5 long, none)",
+]
+`;

@@ -82,48 +82,63 @@ export function ContainerContents({
       data-source={v?.source}
       aria-label="Container contents"
     >
-      {heading ? (
-        <div className="flex items-center gap-1.5 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">
-          <Package className="size-3" /> Contents
-          {v && v.source !== 'unknown' ? (
-            <span className="ml-auto font-normal tracking-normal normal-case tabular-nums">
-              {containerTotals(v).used} / {v.size} slots
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-      {v ? (
-        <>
-          <p
-            className={cn('text-[12px]', v.source === 'live' ? 'text-ok' : 'text-muted')}
-            data-testid="container-freshness"
-            title={v.exact ? undefined : 'Laid out from item counts: the real slot order is not known'}
-          >
-            {freshnessText(v, now)}
-            {!v.exact && v.source !== 'unknown' ? ' · counts only' : ''}
-            {v.estimated ? ' · estimated (smelting since)' : ''}
-          </p>
-          {v.source === 'unknown' ? (
-            <p className="py-2 text-sm text-muted" data-testid="container-unknown">
-              Not opened yet by any bot. Its contents show here once a bot opens it.
-            </p>
-          ) : (
-            <div className={cn(v.source !== 'live' && 'opacity-95')}>
-              <ContainerGrid view={v} />
-            </div>
-          )}
-        </>
-      ) : notFound ? (
-        <p className="py-2 text-sm text-muted" data-testid="container-missing">
-          There is no container here any more.
-        </p>
-      ) : q.error ? (
-        <p className="py-2 text-sm text-danger">Could not load the contents.</p>
-      ) : (
-        <Skeleton className="h-[7.5rem] w-[20rem] max-w-full rounded-lg" />
-      )}
+      {heading ? <ContentsHeading v={v} /> : null}
+      {v ? <ContentsView v={v} now={now} /> : <NoContents notFound={notFound} failed={!!q.error} />}
     </section>
   );
+}
+
+/** "Contents", and how full it is once known. */
+function ContentsHeading({ v }: { v: ContainerView | undefined }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">
+      <Package className="size-3" /> Contents
+      {v && v.source !== 'unknown' ? (
+        <span className="ml-auto font-normal tracking-normal normal-case tabular-nums">
+          {containerTotals(v).used} / {v.size} slots
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** How fresh the contents are (counts only, estimated), then the grid, or that no bot has opened it yet. */
+function ContentsView({ v, now }: { v: ContainerView; now: number }) {
+  const unknown = v.source === 'unknown';
+  return (
+    <>
+      <p
+        className={cn('text-[12px]', v.source === 'live' ? 'text-ok' : 'text-muted')}
+        data-testid="container-freshness"
+        title={v.exact ? undefined : 'Laid out from item counts: the real slot order is not known'}
+      >
+        {freshnessText(v, now)}
+        {!v.exact && !unknown ? ' · counts only' : ''}
+        {v.estimated ? ' · estimated (smelting since)' : ''}
+      </p>
+      {unknown ? (
+        <p className="py-2 text-sm text-muted" data-testid="container-unknown">
+          Not opened yet by any bot. Its contents show here once a bot opens it.
+        </p>
+      ) : (
+        <div className={cn(v.source !== 'live' && 'opacity-95')}>
+          <ContainerGrid view={v} />
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Gone, failed to load, or loading. */
+function NoContents({ notFound, failed }: { notFound: boolean; failed: boolean }) {
+  if (notFound)
+    return (
+      <p className="py-2 text-sm text-muted" data-testid="container-missing">
+        There is no container here any more.
+      </p>
+    );
+  if (failed) return <p className="py-2 text-sm text-danger">Could not load the contents.</p>;
+  return <Skeleton className="h-[7.5rem] w-[20rem] max-w-full rounded-lg" />;
 }
 
 /** The floating panel: title, position, the contents, close (button or Esc). */

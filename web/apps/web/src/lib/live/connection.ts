@@ -29,17 +29,19 @@ export function connectionView(stream: StreamState, status: LiveStatus | undefin
 }
 
 function liveFromStatus(status: LiveStatus | undefined): ConnectionView {
-  const latency =
-    status?.latencyMs !== null && status?.latencyMs !== undefined ? ` · ${Math.round(status.latencyMs)} ms` : '';
   if (!status) return { level: 'live', label: 'Live', detail: 'Connected.' };
-  if (status.upstream === 'down') {
-    return { level: 'offline', label: 'Bridge down', detail: status.message ?? 'The web server cannot reach the bridge.' };
-  }
-  if (status.upstream === 'reconnecting' || status.upstream === 'connecting') {
-    return { level: 'reconnecting', label: 'Reconnecting', detail: status.message ?? 'The bridge is reconnecting.' };
-  }
-  if (status.bot === 'down') {
-    return { level: 'degraded', label: 'Bot offline', detail: status.message ?? 'The bot is not reachable. Memory pages still work.' };
-  }
-  return { level: 'live', label: 'Live', detail: `Connected${latency}.` };
+  const issue = statusIssue(status);
+  if (issue) return { level: issue.level, label: issue.label, detail: status.message ?? issue.detail };
+  return { level: 'live', label: 'Live', detail: `Connected${latencyText(status.latencyMs)}.` };
 }
+
+/** What is wrong upstream (the bridge down or reconnecting, the bot down), with its default detail; null when all is well. */
+function statusIssue(status: LiveStatus): ConnectionView | null {
+  if (status.upstream === 'down') return { level: 'offline', label: 'Bridge down', detail: 'The web server cannot reach the bridge.' };
+  if (status.upstream === 'reconnecting' || status.upstream === 'connecting')
+    return { level: 'reconnecting', label: 'Reconnecting', detail: 'The bridge is reconnecting.' };
+  if (status.bot === 'down') return { level: 'degraded', label: 'Bot offline', detail: 'The bot is not reachable. Memory pages still work.' };
+  return null;
+}
+
+const latencyText = (ms: number | null | undefined) => (ms !== null && ms !== undefined ? ` · ${Math.round(ms)} ms` : '');

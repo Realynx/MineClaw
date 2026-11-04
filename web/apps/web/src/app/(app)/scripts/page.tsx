@@ -81,7 +81,6 @@ function DiffView({ name, source, versions, current }: { name: string; source: S
 }
 
 function Detail({ name, source, v, onVersion }: { name: string; source: ScriptSource; v: number | undefined; onVersion: (v: number) => void }) {
-  const { devDetails } = usePrefs();
   const [tab, setTab] = useState('source');
   const [debugBody, setDebugBody] = useState<string | null>(null);
   const d = useApi('scripts.get', { params: { name }, query: { source, ...(v ? { v } : {}) } });
@@ -92,38 +91,10 @@ function Detail({ name, source, v, onVersion }: { name: string; source: ScriptSo
   if (d.isPending) return <SkeletonLines lines={12} className="p-6" />;
   if (d.error) return <ErrorState error={d.error} onRetry={() => void d.refetch()} />;
   const s = d.data;
+  const handlers = s.script.handlers ?? [];
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="space-y-2 border-b border-border px-5 py-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold text-fg">{s.script.name}</h2>
-          <Badge>
-            v{s.version.v} of {s.script.versions}
-          </Badge>
-          <Badge>{s.version.lang}</Badge>
-          <LintChip s={s.script} />
-          {s.script.archived ? <Badge tone="warn">archived</Badge> : null}
-          {s.script.promotedAs ? <Badge tone="accent">{s.script.promotedAs}</Badge> : null}
-        </div>
-        {s.script.purpose ? <p className="text-sm text-muted">{s.script.purpose}</p> : null}
-        <p className="text-xs text-subtle">
-          by {s.version.author ?? s.script.authorKind} · saved {ago(s.version.savedAt)} · {s.version.runs} runs, {s.version.successes} ok
-          {s.script.usedBy.length ? ` · used by ${s.script.usedBy.join(', ')}` : ''}
-        </p>
-        {s.revertNote ? <p className="text-xs text-warn">{s.revertNote}</p> : null}
-        {s.script.migration ? <p className="text-xs text-info">{s.script.migration}</p> : null}
-        {runningHere.length ? (
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <span className="text-xs text-muted">Running now:</span>
-            {runningHere.map((b) => (
-              <Button key={b.body} size="sm" variant="subtle" onClick={() => setDebugBody(b.body)}>
-                <Bug className="size-3.5" /> {b.body}
-                {b.line ? <span className="tabular text-subtle">L{b.line}</span> : null}
-              </Button>
-            ))}
-          </div>
-        ) : null}
-      </div>
+      <ScriptHeader s={s} runningHere={runningHere} onDebug={setDebugBody} />
       <Tabs
         value={tab}
         onValueChange={setTab}
@@ -135,7 +106,7 @@ function Detail({ name, source, v, onVersion }: { name: string; source: ScriptSo
           { value: 'diff', label: 'Diff', hidden: s.history.length < 2 },
           { value: 'params', label: 'Params & lint' },
           { value: 'runs', label: 'Runs', count: s.runs.length },
-          { value: 'handlers', label: 'Handlers', count: s.script.handlers?.length ?? 0, hidden: !s.script.handlers?.length },
+          { value: 'handlers', label: 'Handlers', count: handlers.length, hidden: !handlers.length },
         ]}
       >
         <TabPanel value="source" className="relative min-h-0">
@@ -145,120 +116,188 @@ function Detail({ name, source, v, onVersion }: { name: string; source: ScriptSo
           <CodeView code={s.code} lang={s.version.lang} lint={lint} className="h-full" />
         </TabPanel>
         <TabPanel value="history" className="overflow-auto">
-          <ul className="divide-y divide-border">
-            {s.history.map((h) => (
-              <li key={h.v}>
-                <button onClick={() => onVersion(h.v)} className={cn('flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-surface-2', h.v === s.version.v && 'bg-accent-soft')}>
-                  <span className="w-10 font-medium text-fg">v{h.v}</span>
-                  <Badge>{h.lang}</Badge>
-                  {h.active ? <Badge tone="ok">active</Badge> : null}
-                  <span className="min-w-0 flex-1 truncate text-xs text-muted">
-                    {h.author ?? h.authorKind} · saved {dateTime(h.savedAt)} · {h.successes}/{h.runs} ok · {duration(toNumber(h.avgSeconds))} avg · {h.lines} lines
-                    {h.topFailures.length ? ` · ${h.topFailures[0]}` : ''}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <HistoryTab s={s} onVersion={onVersion} />
         </TabPanel>
         <TabPanel value="diff" className="min-h-0">
           <DiffView name={name} source={source} versions={s.history.map((h) => h.v)} current={s.version.v} />
         </TabPanel>
         <TabPanel value="params" className="overflow-auto p-5">
-          <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Parameters</h3>
-          {s.params.length ? (
-            <table className="mb-6 w-full max-w-lg text-sm">
-              <thead className="text-left text-xs text-subtle">
-                <tr>
-                  <th className="pb-1.5 font-medium">Name</th>
-                  <th className="pb-1.5 font-medium">Default</th>
-                  <th className="pb-1.5 font-medium">Tuned</th>
-                </tr>
-              </thead>
-              <tbody className="font-mono text-xs">
-                {s.params.map((p) => (
-                  <tr key={p.name} className="border-t border-border">
-                    <td className="py-1.5 text-fg">{p.name}</td>
-                    <td className="py-1.5 text-muted">{p.default ?? '—'}</td>
-                    <td className="py-1.5 text-accent">{p.tuned ?? ''}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="mb-6 text-sm text-muted">No declared parameters.</p>
-          )}
-          <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Lint</h3>
-          {s.lint.findings.length ? (
-            <ul className="space-y-1.5 text-sm">
-              {s.lint.findings.map((f, i) => (
-                <li key={i} className="flex gap-2">
-                  <Badge tone={f.severity === 'error' ? 'danger' : 'warn'}>L{f.line}</Badge>
-                  <span className="text-fg">{f.message}</span>
-                  <span className="text-xs text-subtle">{f.rule}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-ok">No findings.</p>
-          )}
-          {s.lint.note ? <p className="mt-2 text-xs text-subtle">{s.lint.note}</p> : null}
+          <ParamsTab s={s} />
         </TabPanel>
         <TabPanel value="runs" className="overflow-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-surface text-left text-xs text-subtle">
-              <tr>
-                <th className="px-5 py-2 font-medium">When</th>
-                <th className="py-2 font-medium">Result</th>
-                <th className="py-2 text-right font-medium">Time</th>
-                <th className="py-2 pr-5 pl-4 font-medium">Outcome</th>
-              </tr>
-            </thead>
-            <tbody>
-              {s.runs.map((r, i) => (
-                <tr key={i} className="border-t border-border align-top">
-                  <td className="px-5 py-2 whitespace-nowrap text-muted">{ago(r.at)}</td>
-                  <td className="py-2">
-                    <Badge tone={r.ok ? 'ok' : 'danger'}>{r.ok ? 'ok' : (r.status ?? 'failed')}</Badge>
-                  </td>
-                  <td className="tabular py-2 text-right text-muted">{duration(toNumber(r.seconds))}</td>
-                  <td className="py-2 pr-5 pl-4 text-xs text-muted">
-                    {r.outcome}
-                    {r.failLine ? ` (line ${r.failLine})` : ''}
-                    {devDetails ? (
-                      <span className="block text-subtle">
-                        {r.actions ?? 0} actions · {r.body ?? ''} · {r.params ?? ''} {r.timings ? `· ${r.timings}` : ''}
-                      </span>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <RunsTab s={s} />
         </TabPanel>
         <TabPanel value="handlers" className="overflow-auto p-5">
-          <ul className="space-y-3">
-            {(s.script.handlers ?? []).map((h) => (
-              <li key={h.signature} className={cn('rounded-lg border border-border p-4', h.demoted && 'opacity-60')}>
-                <div className="mb-1 flex flex-wrap items-center gap-2">
-                  <Badge tone="accent">{h.kind}</Badge>
-                  <span className="text-sm font-medium text-fg">{h.signature.split('|')[1]}</span>
-                  <span className="text-xs text-subtle">then {h.then}</span>
-                  <span className="ml-auto text-xs text-muted">
-                    {h.successes} ok / {h.failures} failed
-                  </span>
-                </div>
-                <p className="text-xs text-muted">
-                  {h.note ? `${h.note} · ` : ''}learned on v{h.version} {ago(h.learnedAt)} · last used {ago(h.lastUsed)} · where {h.signature.split('|')[2]}
-                </p>
-                <pre className="mt-2 rounded-md bg-code p-2 font-mono text-xs text-fg">{h.js}</pre>
-              </li>
-            ))}
-          </ul>
+          <HandlersTab handlers={handlers} />
         </TabPanel>
       </Tabs>
       {debugBody ? <DebuggerDrawer open onOpenChange={(o) => !o && setDebugBody(null)} body={debugBody} /> : null}
     </div>
+  );
+}
+
+type Script = NonNullable<ReturnType<typeof useApi<'scripts.get'>>['data']>;
+type RunningBody = NonNullable<ReturnType<typeof useApi<'bodies.scripts'>>['data']>['bodies'][number];
+
+/** The script's name, version, language, lint and state badges, purpose, provenance, notes, and the bodies running it now. */
+function ScriptHeader({ s, runningHere, onDebug }: { s: Script; runningHere: readonly RunningBody[]; onDebug: (body: string) => void }) {
+  return (
+  <div className="space-y-2 border-b border-border px-5 py-4">
+    <div className="flex flex-wrap items-center gap-2">
+      <h2 className="text-lg font-semibold text-fg">{s.script.name}</h2>
+      <Badge>
+        v{s.version.v} of {s.script.versions}
+      </Badge>
+      <Badge>{s.version.lang}</Badge>
+      <LintChip s={s.script} />
+      {s.script.archived ? <Badge tone="warn">archived</Badge> : null}
+      {s.script.promotedAs ? <Badge tone="accent">{s.script.promotedAs}</Badge> : null}
+    </div>
+    {s.script.purpose ? <p className="text-sm text-muted">{s.script.purpose}</p> : null}
+    <p className="text-xs text-subtle">
+      by {s.version.author ?? s.script.authorKind} · saved {ago(s.version.savedAt)} · {s.version.runs} runs, {s.version.successes} ok
+      {s.script.usedBy.length ? ` · used by ${s.script.usedBy.join(', ')}` : ''}
+    </p>
+    {s.revertNote ? <p className="text-xs text-warn">{s.revertNote}</p> : null}
+    {s.script.migration ? <p className="text-xs text-info">{s.script.migration}</p> : null}
+    {runningHere.length ? (
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <span className="text-xs text-muted">Running now:</span>
+        {runningHere.map((b) => (
+          <Button key={b.body} size="sm" variant="subtle" onClick={() => onDebug(b.body)}>
+            <Bug className="size-3.5" /> {b.body}
+            {b.line ? <span className="tabular text-subtle">L{b.line}</span> : null}
+          </Button>
+        ))}
+      </div>
+    ) : null}
+  </div>
+  );
+}
+
+function HistoryTab({ s, onVersion }: { s: Script; onVersion: (v: number) => void }) {
+  return (
+    <ul className="divide-y divide-border">
+      {s.history.map((h) => (
+        <li key={h.v}>
+          <button onClick={() => onVersion(h.v)} className={cn('flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-surface-2', h.v === s.version.v && 'bg-accent-soft')}>
+            <span className="w-10 font-medium text-fg">v{h.v}</span>
+            <Badge>{h.lang}</Badge>
+            {h.active ? <Badge tone="ok">active</Badge> : null}
+            <span className="min-w-0 flex-1 truncate text-xs text-muted">
+              {h.author ?? h.authorKind} · saved {dateTime(h.savedAt)} · {h.successes}/{h.runs} ok · {duration(toNumber(h.avgSeconds))} avg · {h.lines} lines
+              {h.topFailures.length ? ` · ${h.topFailures[0]}` : ''}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The declared parameters (default and tuned) and the lint findings. */
+function ParamsTab({ s }: { s: Script }) {
+  return (
+    <>
+      <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Parameters</h3>
+      {s.params.length ? (
+        <table className="mb-6 w-full max-w-lg text-sm">
+          <thead className="text-left text-xs text-subtle">
+            <tr>
+              <th className="pb-1.5 font-medium">Name</th>
+              <th className="pb-1.5 font-medium">Default</th>
+              <th className="pb-1.5 font-medium">Tuned</th>
+            </tr>
+          </thead>
+          <tbody className="font-mono text-xs">
+            {s.params.map((p) => (
+              <tr key={p.name} className="border-t border-border">
+                <td className="py-1.5 text-fg">{p.name}</td>
+                <td className="py-1.5 text-muted">{p.default ?? '—'}</td>
+                <td className="py-1.5 text-accent">{p.tuned ?? ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="mb-6 text-sm text-muted">No declared parameters.</p>
+      )}
+      <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Lint</h3>
+      {s.lint.findings.length ? (
+        <ul className="space-y-1.5 text-sm">
+          {s.lint.findings.map((f, i) => (
+            <li key={i} className="flex gap-2">
+              <Badge tone={f.severity === 'error' ? 'danger' : 'warn'}>L{f.line}</Badge>
+              <span className="text-fg">{f.message}</span>
+              <span className="text-xs text-subtle">{f.rule}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-ok">No findings.</p>
+      )}
+      {s.lint.note ? <p className="mt-2 text-xs text-subtle">{s.lint.note}</p> : null}
+    </>
+  );
+}
+
+function RunsTab({ s }: { s: Script }) {
+  const { devDetails } = usePrefs();
+  return (
+    <table className="w-full text-sm">
+      <thead className="sticky top-0 bg-surface text-left text-xs text-subtle">
+        <tr>
+          <th className="px-5 py-2 font-medium">When</th>
+          <th className="py-2 font-medium">Result</th>
+          <th className="py-2 text-right font-medium">Time</th>
+          <th className="py-2 pr-5 pl-4 font-medium">Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {s.runs.map((r, i) => (
+          <tr key={i} className="border-t border-border align-top">
+            <td className="px-5 py-2 whitespace-nowrap text-muted">{ago(r.at)}</td>
+            <td className="py-2">
+              <Badge tone={r.ok ? 'ok' : 'danger'}>{r.ok ? 'ok' : (r.status ?? 'failed')}</Badge>
+            </td>
+            <td className="tabular py-2 text-right text-muted">{duration(toNumber(r.seconds))}</td>
+            <td className="py-2 pr-5 pl-4 text-xs text-muted">
+              {r.outcome}
+              {r.failLine ? ` (line ${r.failLine})` : ''}
+              {devDetails ? (
+                <span className="block text-subtle">
+                  {r.actions ?? 0} actions · {r.body ?? ''} · {r.params ?? ''} {r.timings ? `· ${r.timings}` : ''}
+                </span>
+              ) : null}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** The failure handlers the script learned: what they catch, what they do, how they did. */
+function HandlersTab({ handlers }: { handlers: NonNullable<Script['script']['handlers']> }) {
+  return (
+    <ul className="space-y-3">
+      {handlers.map((h) => (
+        <li key={h.signature} className={cn('rounded-lg border border-border p-4', h.demoted && 'opacity-60')}>
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <Badge tone="accent">{h.kind}</Badge>
+            <span className="text-sm font-medium text-fg">{h.signature.split('|')[1]}</span>
+            <span className="text-xs text-subtle">then {h.then}</span>
+            <span className="ml-auto text-xs text-muted">
+              {h.successes} ok / {h.failures} failed
+            </span>
+          </div>
+          <p className="text-xs text-muted">
+            {h.note ? `${h.note} · ` : ''}learned on v{h.version} {ago(h.learnedAt)} · last used {ago(h.lastUsed)} · where {h.signature.split('|')[2]}
+          </p>
+          <pre className="mt-2 rounded-md bg-code p-2 font-mono text-xs text-fg">{h.js}</pre>
+        </li>
+      ))}
+    </ul>
   );
 }
 

@@ -51,43 +51,15 @@ function Detail({ id }: { id: number }) {
     setA(null);
     setB(null);
   }, [id]);
-  const from = a ?? d.data?.defaultDiff.a;
-  const to = b ?? d.data?.defaultDiff.b;
+  const { from, to } = diffRange(a, b, d.data?.defaultDiff);
   const diff = useApi('designs.diff', { params: { id }, query: { a: from, b: to } }, { enabled: !!from && !!to && from !== to });
   if (d.isPending) return <SkeletonLines lines={10} className="p-6" />;
   if (d.error) return <ErrorState error={d.error} onRetry={() => void d.refetch()} />;
   const des = d.data;
   return (
     <div className="space-y-5 p-5">
-      <div>
-        <div className="mb-1 flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold text-fg">
-            <span className="text-subtle">#{des.design.id}</span> {des.design.name}
-          </h2>
-          <Badge tone={des.design.status === 'built' ? 'ok' : des.design.status === 'building' ? 'info' : 'neutral'}>{des.design.status}</Badge>
-          {des.design.version ? <Badge tone="neutral" title="The game version it is drawn for">{des.design.version}</Badge> : null}
-          <Link
-            href={`/designs/studio?id=${des.design.id}`}
-            className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs text-fg hover:bg-surface-2"
-          >
-            <Sparkles className="size-3.5" /> Open in studio
-          </Link>
-        </div>
-        <p className="text-xs text-muted">
-          r{des.design.rev} · {des.design.revisions} revisions{des.design.requester ? ` · for ${des.design.requester}` : ''} · updated {ago(des.design.updated)}
-        </p>
-      </div>
-      {des.design.hasPicture ? (
-        // eslint-disable-next-line @next/next/no-img-element -- the bot's stored sheet, served as-is
-        <img src={apiUrl('designs.picture', { id })} alt={`Preview sheet of ${des.design.name}`} className="w-full max-w-3xl rounded-lg border border-border bg-canvas" />
-      ) : (
-        <div className="grid h-40 max-w-3xl place-items-center rounded-lg border border-dashed border-border text-sm text-muted">No preview picture</div>
-      )}
-      {des.world ? (
-        <p className="flex items-start gap-2 rounded-lg bg-info-soft px-3 py-2 text-sm text-info">
-          <Eye className="mt-0.5 size-4 shrink-0" /> {des.world.text}
-        </p>
-      ) : null}
+      <DesignHeading des={des} />
+      <DesignPicture des={des} id={id} />
       <section>
         <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Diff</h3>
         <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
@@ -107,25 +79,9 @@ function Detail({ id }: { id: number }) {
             ))}
             {des.world ? <option value="world">the world (last seen)</option> : null}
           </Select>
-          {diff.data ? (
-            <Button size="sm" variant="ghost" className="ml-auto" onClick={() => void copyText(diff.data.text)}>
-              <Copy className="size-3.5" /> Copy diff
-            </Button>
-          ) : null}
+          <CopyDiff text={diff.data?.text} />
         </div>
-        {from === to ? (
-          <p className="text-sm text-muted">Pick two different revisions.</p>
-        ) : diff.isPending ? (
-          <SkeletonLines lines={4} />
-        ) : diff.error ? (
-          <ErrorState error={diff.error} />
-        ) : (
-          <>
-            <p className="mb-2 text-sm text-fg">{diff.data.summary}</p>
-            <Cells cells={diff.data.cells} />
-            {diff.data.truncated ? <p className="mt-1 text-xs text-subtle">Showing {diff.data.cells.length} of {diff.data.total} cells.</p> : null}
-          </>
-        )}
+        <DiffBody same={from === to} diff={diff} />
       </section>
       <section>
         <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Revisions</h3>
@@ -145,6 +101,127 @@ function Detail({ id }: { id: number }) {
       </section>
     </div>
   );
+}
+
+/** The revisions to diff: the picked ones, else the design's default pair. */
+function diffRange(a: string | null, b: string | null, def: { a: string; b: string } | undefined) {
+  return { from: a ?? def?.a, to: b ?? def?.b };
+}
+
+type Design = NonNullable<ReturnType<typeof useApi<'designs.get'>>['data']>;
+type DesignDiff = ReturnType<typeof useApi<'designs.diff'>>;
+
+const STATUS_TONE: Record<string, 'ok' | 'info'> = { built: 'ok', building: 'info' };
+
+/** Id, name, status and game version, the studio link, revision and provenance line. */
+function DesignHeading({ des }: { des: Design }) {
+  const d = des.design;
+  return (
+    <div>
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold text-fg">
+          <span className="text-subtle">#{d.id}</span> {d.name}
+        </h2>
+        <Badge tone={STATUS_TONE[d.status] ?? 'neutral'}>{d.status}</Badge>
+        {d.version ? <Badge tone="neutral" title="The game version it is drawn for">{d.version}</Badge> : null}
+        <Link
+          href={`/designs/studio?id=${d.id}`}
+          className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs text-fg hover:bg-surface-2"
+        >
+          <Sparkles className="size-3.5" /> Open in studio
+        </Link>
+      </div>
+      <p className="text-xs text-muted">
+        r{d.rev} · {d.revisions} revisions{d.requester ? ` · for ${d.requester}` : ''} · updated {ago(d.updated)}
+      </p>
+    </div>
+  );
+}
+
+/** The preview sheet (or a placeholder), and what the bots last saw of it in the world. */
+function DesignPicture({ des, id }: { des: Design; id: number }) {
+  return (
+    <>
+      {des.design.hasPicture ? (
+        // eslint-disable-next-line @next/next/no-img-element -- the bot's stored sheet, served as-is
+        <img src={apiUrl('designs.picture', { id })} alt={`Preview sheet of ${des.design.name}`} className="w-full max-w-3xl rounded-lg border border-border bg-canvas" />
+      ) : (
+        <div className="grid h-40 max-w-3xl place-items-center rounded-lg border border-dashed border-border text-sm text-muted">No preview picture</div>
+      )}
+      {des.world ? (
+        <p className="flex items-start gap-2 rounded-lg bg-info-soft px-3 py-2 text-sm text-info">
+          <Eye className="mt-0.5 size-4 shrink-0" /> {des.world.text}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function CopyDiff({ text }: { text: string | undefined }) {
+  if (text === undefined) return null;
+  return (
+    <Button size="sm" variant="ghost" className="ml-auto" onClick={() => void copyText(text)}>
+      <Copy className="size-3.5" /> Copy diff
+    </Button>
+  );
+}
+
+/** The diff between the two picked revisions: its summary and cells (truncated past the limit). */
+function DiffBody({ same, diff }: { same: boolean; diff: DesignDiff }) {
+  if (same) return <p className="text-sm text-muted">Pick two different revisions.</p>;
+  if (diff.isPending) return <SkeletonLines lines={4} />;
+  if (diff.error) return <ErrorState error={diff.error} />;
+  return (
+    <>
+      <p className="mb-2 text-sm text-fg">{diff.data.summary}</p>
+      <Cells cells={diff.data.cells} />
+      {diff.data.truncated ? <p className="mt-1 text-xs text-subtle">Showing {diff.data.cells.length} of {diff.data.total} cells.</p> : null}
+    </>
+  );
+}
+
+type DesignsList = ReturnType<typeof useApi<'designs.list'>>;
+
+/** The designs (the open one marked): loading, an error, none, or the rows. */
+function DesignList({ list, id, onPick }: { list: DesignsList; id: number | null; onPick: (id: number) => void }) {
+  if (list.isPending)
+    return (
+      <li className="space-y-2 p-4">
+        {Array.from({ length: 5 }, (_, i) => (
+          <Skeleton key={i} className="h-12" />
+        ))}
+      </li>
+    );
+  if (list.error)
+    return (
+      <li>
+        <ErrorState error={list.error} onRetry={() => void list.refetch()} />
+      </li>
+    );
+  if (list.data.items.length === 0)
+    return (
+      <li>
+        <EmptyState title="No designs" />
+      </li>
+    );
+  return list.data.items.map((d) => (
+    <li key={d.id}>
+      <button
+        onClick={() => onPick(d.id)}
+        aria-current={d.id === id ? 'true' : undefined}
+        className={cn('block w-full border-b border-border px-4 py-3 text-left', d.id === id ? 'bg-accent-soft' : 'hover:bg-surface-2')}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-subtle">#{d.id}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{d.name}</span>
+          <Badge>{d.status}</Badge>
+        </div>
+        <p className="mt-0.5 text-[11px] text-subtle">
+          r{d.rev} · {d.revisions} revisions{d.version ? ` · ${d.version}` : ''}{d.requester ? ` · for ${d.requester}` : ''} · {ago(d.updated)}
+        </p>
+      </button>
+    </li>
+  ));
 }
 
 function DesignsInner() {
@@ -179,40 +256,7 @@ function DesignsInner() {
           ) : null}
         </div>
         <ul className="min-h-0 flex-1 overflow-y-auto">
-          {list.isPending ? (
-            <li className="space-y-2 p-4">
-              {Array.from({ length: 5 }, (_, i) => (
-                <Skeleton key={i} className="h-12" />
-              ))}
-            </li>
-          ) : list.error ? (
-            <li>
-              <ErrorState error={list.error} onRetry={() => void list.refetch()} />
-            </li>
-          ) : list.data.items.length === 0 ? (
-            <li>
-              <EmptyState title="No designs" />
-            </li>
-          ) : (
-            list.data.items.map((d) => (
-              <li key={d.id}>
-                <button
-                  onClick={() => router.replace(`/designs?id=${d.id}`, { scroll: false })}
-                  aria-current={d.id === id ? 'true' : undefined}
-                  className={cn('block w-full border-b border-border px-4 py-3 text-left', d.id === id ? 'bg-accent-soft' : 'hover:bg-surface-2')}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-subtle">#{d.id}</span>
-                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{d.name}</span>
-                    <Badge>{d.status}</Badge>
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-subtle">
-                    r{d.rev} · {d.revisions} revisions{d.version ? ` · ${d.version}` : ''}{d.requester ? ` · for ${d.requester}` : ''} · {ago(d.updated)}
-                  </p>
-                </button>
-              </li>
-            ))
-          )}
+          <DesignList list={list} id={id} onPick={(d) => router.replace(`/designs?id=${d}`, { scroll: false })} />
         </ul>
       </aside>
       <section className="min-h-0 min-w-0 flex-1 overflow-auto bg-surface">

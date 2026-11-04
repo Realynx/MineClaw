@@ -28,15 +28,21 @@ export function searchPalette(entries: readonly PaletteEntry[], query: string): 
     const flat = own.join(''); // inside a word: the name and spec only ("red" is not in "Colored")
     let score = 0;
     for (const w of terms) {
-      if (String(e.id) === w || `${e.id}:${e.meta}` === w) score += 3;
-      else if (parts.includes(w)) score += 2.2;
-      else if (parts.some((p) => p.startsWith(w))) score += e.name.toLowerCase().startsWith(w) ? 2 : 1;
-      else if (w.length >= 3 && flat.includes(w)) score += 0.5;
-      else return;
+      const s = termScore(e, w, parts, flat);
+      if (s === 0) return;
+      score += s;
     }
     scored.push([score, i, e]);
   });
   return scored.sort((a, b) => b[0] - a[0] || a[1] - b[1]).map((s) => s[2]);
+}
+
+/** How well one query word matches an entry: its id or id:meta, a whole word, a word's prefix, inside the name; 0 = not at all. */
+function termScore(e: PaletteEntry, w: string, parts: readonly string[], flat: string): number {
+  if (String(e.id) === w || `${e.id}:${e.meta}` === w) return 3;
+  if (parts.includes(w)) return 2.2;
+  if (parts.some((p) => p.startsWith(w))) return e.name.toLowerCase().startsWith(w) ? 2 : 1;
+  return w.length >= 3 && flat.includes(w) ? 0.5 : 0;
 }
 
 /** The entries of a category (all of them for null). */
