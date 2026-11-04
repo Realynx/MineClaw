@@ -8,7 +8,8 @@ import type { ReactElement } from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MaterialBar } from '@/features/story/MaterialBar';
 import { materialsFor } from '@/features/story/materials';
-import type { StoryBuild } from '@mineclaw/contracts';
+import type { StoryBuild, StoryColonyState, StoryZone } from '@mineclaw/contracts';
+import { GrowingZonesPanel } from '@/features/story/GrowingZones';
 import type { MapTool } from '@/features/story/StoryMap';
 import { ArchitectPanel, ColonyPanel, QueuePanel } from '@/features/story/StoryPanels';
 import type { BuildOpts, BuildToolId } from '@/features/story/tools';
@@ -233,6 +234,77 @@ describe('ArchitectPanel', () => {
       cleanup();
     }
     expect(out).toMatchSnapshot();
+  });
+});
+
+describe('GrowingZonesPanel', () => {
+  const grow = (state: StoryColonyState | undefined, canWrite = true, irrigate = true) => (
+    <GrowingZonesPanel
+      state={state}
+      canWrite={canWrite}
+      onUpdate={vi.fn()}
+      onBill={vi.fn()}
+      onExtend={vi.fn()}
+      onSeek={vi.fn()}
+      onShow={vi.fn()}
+      onIrrigate={irrigate ? vi.fn() : undefined}
+    />
+  );
+  /** Hand-made farm zones over the sim's first one: every status line, seed state and bill state. */
+  const handZones = (): StoryZone[] => {
+    const z = S.ordered.zones.find((x) => x.kind === 'farm')!;
+    const bill = z.bills![0]!;
+    return [
+      {
+        ...z,
+        id: 'h1',
+        name: null,
+        label: null,
+        status: '3 too far from water',
+        needsHoe: true,
+        sow: false,
+        harvest: false,
+        seeds: { have: 4, item: 'wheat seeds', neededForEmpty: 1, sourceHint: 'tall grass', missing: 'no seeds', action: 'seek_seeds' },
+        bills: [
+          { ...bill, id: 'b1', active: true, paused: false, met: false, mode: 'forever', label: null },
+          { ...bill, id: 'b2', active: false, paused: true, met: false, mode: 'until', stored: undefined, plant: 'nothing' },
+          { ...bill, id: 'b3', active: false, paused: false, met: true, mode: 'count', seeds: { missing: 'short of seeds' } },
+          { ...bill, id: 'b4', active: false, paused: false, met: false, seeds: { missing: 'short of seeds' } },
+        ],
+      },
+      {
+        ...z,
+        id: 'h2',
+        label: 'Cane',
+        name: null,
+        activePlant: 'sugar_cane',
+        status: 'no water beside it',
+        seeds: { have: 0, item: 'sugar cane', neededForEmpty: 5, action: 'craft' },
+      },
+      { ...z, id: 'h3', name: null, label: null, plant: null, bills: undefined, status: 'no water within 4 blocks', seeds: null },
+      { ...z, id: 'h4', activePlant: 'nothing', status: null, seeds: { have: 2, item: 'carrot', neededForEmpty: 0 } },
+    ] as never;
+  };
+
+  it('every zone state', () => {
+    const hand = { ...S.ordered, zones: handZones() };
+    expect(
+      variants({
+        none: () => grow(undefined),
+        noFarms: () => grow(S.founded),
+        ordered: () => grow(S.ordered),
+        worked: () => grow(S.worked),
+        hand: () => grow(hand),
+        handReadOnly: () => grow(hand, false),
+        handNoIrrigate: () => grow(hand, true, false),
+      }),
+    ).toMatchSnapshot();
+  });
+
+  it('adding a bill', () => {
+    const r = html(grow(S.ordered));
+    fireEvent.click([...r.root.querySelectorAll('button')].find((b) => b.textContent === 'Add bill')!);
+    expect(r.out()).toMatchSnapshot();
   });
 });
 
