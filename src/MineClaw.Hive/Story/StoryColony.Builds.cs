@@ -578,8 +578,17 @@ public sealed partial class StoryColony
         if (cap > 1)
             foreach (var x in b.Ghosts)
                 if (BatchTakes(w, b, seed, x, pawn, clearId)) cand.Add(x);
-        var stand = StandFor(w, b, seed, cand.Where(x => Math.Abs(x.At.X - seed.At.X) <= StandRadius && Math.Abs(x.At.Z - seed.At.Z) <= StandRadius).ToList(), from);
+        var stand = StandFor(w, b, seed, NearSeed(cand, seed), from);
         return (OrderBatch(b, seed, cand, stand, cap), stand);
+    }
+
+    /// <summary>The candidates within <see cref="StandRadius"/> of the seed (the ones a stand is chosen for).</summary>
+    private static List<GhostState> NearSeed(List<GhostState> cand, GhostState seed)
+    {
+        var near = new List<GhostState>();
+        foreach (var x in cand)
+            if (Math.Abs(x.At.X - seed.At.X) <= StandRadius && Math.Abs(x.At.Z - seed.At.Z) <= StandRadius) near.Add(x);
+        return near;
     }
 
     /// <summary>

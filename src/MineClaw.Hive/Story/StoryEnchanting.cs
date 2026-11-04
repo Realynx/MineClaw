@@ -136,11 +136,8 @@ public sealed partial class StoryColony
         if (Enchanting.ByName(prefer) is not { } pe) return ([], $"unknown enchantment '{prefer}'");
         lock (_lock)
         {
-            var home = Home() ?? Benches.FirstOrDefault()?.Pos ?? default;
-            if (Benches.Where(b => b.Kind == "enchanting_table").OrderBy(b => b.Pos.Dist(home)).FirstOrDefault() is not { } table)
-                return ([], "no enchanting table: place one and designate it");
-            var list = items is { Count: > 0 } ? items
-                : Enchanting.TableItems.Where(n => n.EndsWith("_pickaxe", StringComparison.Ordinal) && w.Data.ItemByName(n) is { } it && CountItem(it.Id, -1) > 0).ToList();
+            if (EnchantingTableNearHome() is not { } table) return ([], "no enchanting table: place one and designate it");
+            var list = items is { Count: > 0 } ? items : PickaxesHeld(w);
             if (list.Count == 0) return ([], "the colony has no pickaxe to enchant");
             var ids = new List<string>();
             foreach (var name in list)
@@ -150,6 +147,16 @@ public sealed partial class StoryColony
             return (ids, null);
         }
     }
+
+    private WorkbenchState? EnchantingTableNearHome()
+    {
+        var home = Home() ?? Benches.FirstOrDefault()?.Pos ?? default;
+        return Benches.Where(b => b.Kind == "enchanting_table").OrderBy(b => b.Pos.Dist(home)).FirstOrDefault();
+    }
+
+    /// <summary>Every pickaxe kind the table takes that the colony has.</summary>
+    private List<string> PickaxesHeld(IStoryWorld w) =>
+        Enchanting.TableItems.Where(n => n.EndsWith("_pickaxe", StringComparison.Ordinal) && w.Data.ItemByName(n) is { } it && CountItem(it.Id, -1) > 0).ToList();
 
     /// <summary>One item's enchant bill (none when an unfinished one with that preference is there already); why it can't be, else null.</summary>
     private string? AddEnchantBill(IStoryWorld w, WorkbenchState table, EnchantmentInfo pe, string name, int target, bool preferOnly, List<string> ids)

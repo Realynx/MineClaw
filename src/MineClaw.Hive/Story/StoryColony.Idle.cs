@@ -51,17 +51,22 @@ public sealed partial class StoryColony
         var list = new List<P3>();
         foreach (var (name, s) in _spots)
             if (!name.Equals(pawn, StringComparison.OrdinalIgnoreCase) && SpotLive(name, s)) list.Add(s.At);
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { pawn };
+        AddOtherPawnsAt(list, pawn);
+        if (World is { } w)
+            foreach (var e in w.Entities())
+                if (e.Kind == "player" && !string.Equals(e.Name, pawn, StringComparison.OrdinalIgnoreCase)) list.Add(e.Block);
+        return list;
+    }
+
+    /// <summary>Where the other online pawns in the colony's dimension stand.</summary>
+    private void AddOtherPawnsAt(List<P3> list, string pawn)
+    {
         foreach (var q in Pawns.Values)
         {
             if (q.Name.Equals(pawn, StringComparison.OrdinalIgnoreCase)) continue;
             var l = Host.Live(q.Name);
             if (l.Online && l.Dim == (World?.Dimension ?? l.Dim)) list.Add(l.Block);
         }
-        if (World is { } w)
-            foreach (var e in w.Entities())
-                if (e.Kind == "player" && !names.Contains(e.Name)) list.Add(e.Block);
-        return list;
     }
 
     /// <summary>
@@ -71,28 +76,52 @@ public sealed partial class StoryColony
     private Func<P3, bool> Busy()
     {
         var cells = new HashSet<P3>();
+        AddDesignatedCells(cells);
+        AddOpenBuildCells(cells);
+        var fronts = Storages.SelectMany(s => s.DoubleWith is { } d ? new[] { s.Chest, d } : [s.Chest]).Concat(Benches.Select(b => b.Pos)).ToList();
+        // Inside a wall or fence ring still going up: an idle pawn there gets walled in (FakeServer: a hut's pawn shut in).
+        var rings = Builds.Where(b => b.Status != "done").Select(Footprint).Where(f => f.Walled).ToList();
+        return new BusyCells(this, cells, fronts, rings).Contains;
+    }
+
+    private void AddDesignatedCells(HashSet<P3> cells)
+    {
         foreach (var d in Designations)
         {
             if (d.At is { } a) cells.Add(a);
             if (d.Blocks != null) foreach (var b in d.Blocks) cells.Add(b);
         }
+    }
+
+    private void AddOpenBuildCells(HashSet<P3> cells)
+    {
         foreach (var b in Builds)
             if (b.Status != "done")
                 foreach (var g in b.Ghosts)
                     if (g.State is not ("done" or "unsupported" or "misrotated")) cells.Add(g.At);
-        var fronts = Storages.SelectMany(s => s.DoubleWith is { } d ? new[] { s.Chest, d } : [s.Chest]).Concat(Benches.Select(b => b.Pos)).ToList();
-        // Inside a wall or fence ring still going up: an idle pawn there gets walled in (FakeServer: a hut's pawn shut in).
-        var rings = Builds.Where(b => b.Status != "done").Select(Footprint).Where(f => f.Walled).ToList();
-        // Loops, not Any(lambda): this runs per idle cell, and each inner lambda over c was a closure and a delegate per call.
-        return c =>
+    }
+
+    /// <summary>The cells <see cref="Busy"/> keeps idle pawns off. Loops, not Any(lambda): this runs per idle cell, and each inner
+    /// lambda over a cell was a closure and a delegate per call.</summary>
+    private sealed class BusyCells(StoryColony colony, HashSet<P3> cells, List<P3> fronts, List<(bool Walled, int X1, int Z1, int X2, int Z2)> rings)
+    {
+        public bool Contains(P3 c) =>
+            cells.Contains(c) || cells.Contains(c.Add(0, -1, 0)) || cells.Contains(c.Add(0, 1, 0)) || InRing(c) || ByFront(c)
+            || colony.Forbidden(c) || colony.Forbidden(c.Add(0, -1, 0));
+
+        private bool InRing(P3 c)
         {
-            if (cells.Contains(c) || cells.Contains(c.Add(0, -1, 0)) || cells.Contains(c.Add(0, 1, 0))) return true;
             foreach (var f in rings)
                 if (c.X >= f.X1 && c.X <= f.X2 && c.Z >= f.Z1 && c.Z <= f.Z2) return true;
+            return false;
+        }
+
+        private bool ByFront(P3 c)
+        {
             foreach (var f in fronts)
                 if (Math.Abs(f.X - c.X) <= 1 && Math.Abs(f.Z - c.Z) <= 1 && Math.Abs(f.Y - c.Y) <= 1) return true;
-            return Forbidden(c) || Forbidden(c.Add(0, -1, 0));
-        };
+            return false;
+        }
     }
 
     /// <summary>
@@ -108,30 +137,37 @@ public sealed partial class StoryColony
         if (_idleCells is { } c && c.Key == key && Now - c.At < TimeSpan.FromSeconds(5)) return c.Cells;
         var cells = new List<P3>();
         var seen = new HashSet<(int, int)>();
-        void Column(int x, int z, int refY, bool inZone)
-        {
-            if (!seen.Add((x, z)) || StoryWander.GroundNear(w, x, z, refY) is not { } at) return;
-            // Never a cave cell (live 11-04: pawns wandered into caves and couldn't get back out); a home zone's own floors (a basement
-            // at the zone's height) still count.
-            if (StoryWander.Underground(w, at) && !(inZone && at.Y >= refY - 1)) return;
-            if (night && !(inZone && StoryWander.Roofed(w, at)) && !(w.NightLight(at.X, at.Y, at.Z) is >= 8)) return;
-            cells.Add(at);
-        }
-        if (homes.Count > 0)
-        {
-            long columns = homes.Sum(z => (long)z.Cells.Count);
-            int step = columns > 2000 ? (int)Math.Ceiling(Math.Sqrt(columns / 2000.0)) : 1; // a huge zone is sampled, not scanned whole
-            foreach (var z in homes)
-                foreach (var (x, zz) in z.Cells.Sorted())
-                    if ((x - z.Area.X1) % step == 0 && (zz - z.Area.Z1) % step == 0) Column(x, zz, z.Area.Y1, true);
-        }
+        if (homes.Count > 0) HomeZoneIdleCells(w, night, homes, seen, cells);
         else if (anchor is { } h)
             for (int dx = -WanderRadius; dx <= WanderRadius; dx++)
                 for (int dz = -WanderRadius; dz <= WanderRadius; dz++)
-                    if (dx * dx + dz * dz <= WanderRadius * WanderRadius) Column(h.X + dx, h.Z + dz, h.Y, false);
+                    if (dx * dx + dz * dz <= WanderRadius * WanderRadius) IdleColumn(w, night, seen, cells, h.X + dx, h.Z + dz, h.Y, false);
         _idleCells = (Now, key, cells);
         return cells;
     }
+
+    /// <summary>The home zones' columns (a huge zone is sampled, not scanned whole).</summary>
+    private static void HomeZoneIdleCells(IStoryWorld w, bool night, List<ZoneState> homes, HashSet<(int, int)> seen, List<P3> cells)
+    {
+        long columns = homes.Sum(z => (long)z.Cells.Count);
+        int step = columns > 2000 ? (int)Math.Ceiling(Math.Sqrt(columns / 2000.0)) : 1;
+        foreach (var z in homes)
+            foreach (var (x, zz) in z.Cells.Sorted())
+                if ((x - z.Area.X1) % step == 0 && (zz - z.Area.Z1) % step == 0) IdleColumn(w, night, seen, cells, x, zz, z.Area.Y1, true);
+    }
+
+    /// <summary>A column's idle cell: its ground near the level. Never a cave cell (live 11-04: pawns wandered into caves and couldn't
+    /// get back out); a home zone's own floors (a basement at the zone's height) still count. At night only in or lit.</summary>
+    private static void IdleColumn(IStoryWorld w, bool night, HashSet<(int, int)> seen, List<P3> cells, int x, int z, int refY, bool inZone)
+    {
+        if (!seen.Add((x, z)) || StoryWander.GroundNear(w, x, z, refY) is not { } at) return;
+        if (StoryWander.Underground(w, at) && !(inZone && at.Y >= refY - 1)) return;
+        if (night && !InOrLit(w, at, inZone)) return;
+        cells.Add(at);
+    }
+
+    /// <summary>Roofed in a home zone, or lit (light 8 or more at night).</summary>
+    private static bool InOrLit(IStoryWorld w, P3 at, bool inZone) => inZone && StoryWander.Roofed(w, at) || w.NightLight(at.X, at.Y, at.Z) is >= 8;
 
     /// <summary>The open cells with at least <paramref name="room"/> to every other pawn (most room first), or empty.</summary>
     private static List<P3> WithRoom(IEnumerable<P3> cells, List<P3> taken, out double room, double[]? rooms = null)
@@ -243,7 +279,12 @@ public sealed partial class StoryColony
             return;
         }
         // A resting leg too: work never waits for a rest.
-        if (WandererWork(p, live, workHours, wake, stamp, ref budget) is not { } job) return;
+        if (WandererWork(p, live, workHours, wake, stamp, ref budget) is { } job) HandToWanderer(p, job);
+    }
+
+    /// <summary>The wanderer's new job, leased now (so the next pawn sees it taken).</summary>
+    private void HandToWanderer(PawnState p, ActiveJob job)
+    {
         if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
         foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
         job.Assign?.Invoke(); // a build batch leases its cells now (as Next does)

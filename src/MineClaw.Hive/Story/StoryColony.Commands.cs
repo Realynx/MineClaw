@@ -214,11 +214,14 @@ public sealed partial class StoryColony
         "attack" => AttackJob(p, o, e, at), // the exact entity, every ordered pawn at once (StoryColony.Combat.cs)
         "chop" => ChopOrderJob(o, at),
         "mine" => MineOrderJob(p, live, o, at),
-        "haul" => Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, "order", o.Id, "working", j => j["r"] = 4, xp: 5),
+        "haul" => HaulOrderJob(o, at, e),
         "build" when o.Design is { } d => Job(WorkTypes.Build, "blueprint", $"building design #{d}", at, "design:" + d, "order", o.Id, "working", j => j["design"] = d.ToString(), xp: 60),
         "hold" => Job("order", "hold", "holding position", at, null, "order", o.Id, p.Drafted ? "drafted" : "idle", j => j["s"] = 5, xp: 0),
         _ => Job("order", "hold", "waiting", at, null, "order", o.Id, "idle", j => j["s"] = 3, xp: 0),
     };
+
+    private ActiveJob HaulOrderJob(Order o, P3? at, StoryEntity? e) =>
+        Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, "order", o.Id, "working", j => j["r"] = 4, xp: 5);
 
     private ActiveJob ChopOrderJob(Order o, P3? at) =>
         Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, "order", o.Id,
