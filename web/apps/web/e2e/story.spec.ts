@@ -442,17 +442,25 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   await arch.getByRole('button', { name: 'Structure' }).click();
   await arch.getByRole('button', { name: 'Wall' }).click();
   await expect(page.getByTestId('wall-height')).toHaveText('3');
+  // B closes the Architect window: the tool and its material selector stay, the map is free to drag on.
+  const reopen = async (tool: string) => {
+    await page.keyboard.press('b');
+    await arch.getByRole('button', { name: 'Structure' }).click();
+    await arch.getByRole('button', { name: tool }).click();
+    await page.keyboard.press('b');
+  };
+  await page.keyboard.press('b');
   const wall = post(page, /\/builds$/);
   await dragCells(page, [-8, lv, 2], [-4, lv, 6]);
   await page.mouse.up();
   const w = body(await wall) as { items: Array<{ kind: string; height: number }> };
   expect(w.items[0]).toMatchObject({ kind: 'wall', height: 3 });
-  await arch.getByRole('button', { name: 'Door' }).click();
+  await reopen('Door');
   const doorAt = (await story(page, 'toPage', -5.5, lv, 2.5))!;
   const door = post(page, /\/builds$/);
   await page.mouse.click(doorAt.x, doorAt.y);
   expect((body(await door) as { items: Array<{ kind: string }> }).items[0]?.kind).toBe('door');
-  await arch.getByRole('button', { name: 'Roof' }).click();
+  await reopen('Roof');
   const roof = post(page, /\/builds$/);
   await dragCells(page, [-8, lv, 2], [-4, lv, 6]);
   await page.mouse.up();
@@ -483,6 +491,7 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   await page.keyboard.press('b');
   await arch.getByRole('button', { name: 'Structure' }).click();
   await arch.getByRole('button', { name: 'Single block' }).click();
+  await page.keyboard.press('b'); // the window closes, the tool stays
   const at = await pageAt(page, -6.5, 4.5);
   await page.mouse.move(at.x, at.y);
   await page.waitForTimeout(400);
