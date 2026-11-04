@@ -47,50 +47,86 @@ public sealed class Crafter(IGameClient client)
             dmg = pick;
             notes.Add($"{Family(id)} = {Items.VariantName(id, dmg)} ({Recipes.VariantTag(id, dmg)})");
         }
-        string name = Names.Item(id, Math.Max(dmg, 0));
-        string? last = null;
-        int crafted = 0, batches = 0;
+        var job = new CraftJob(id, dmg, count, chests, notes, Names.Item(id, Math.Max(dmg, 0)));
         _hold.Value = Held(); // what's reserved now stays: withdrawn copies of the same item may still be used
 
-        for (int round = 0; round < MaxRounds && crafted < count; round++)
-        {
-            int want = count - crafted;
-            bool smelt = false;
-            var plan = Plan(id, dmg, want, chests, smelting: false);
-            if (!plan.Complete)
-            {
-                var withSmelt = Plan(id, dmg, want, chests, smelting: true);
-                if (!withSmelt.Complete || !FurnaceAvailable()) return Fail(notes, Shortfall(id, dmg, want, plan, chests));
-                plan = withSmelt;
-                smelt = true;
-            }
-            // The batch the inventory holds (ingredients from storage + room to spare for the products).
-            int n = want;
-            var take = Withdrawals(plan, id, dmg, chests);
-            while (n > 1 && !Fits(take))
-            {
-                n = Math.Max(1, n / 2);
-                plan = Plan(id, dmg, n, chests, smelt);
-                take = Withdrawals(plan, id, dmg, chests);
-            }
-            if (!Fits(take)) return Fail(notes, $"inventory full: no room for the {name} ingredients ({string.Join(", ", take.Select(t => t.Need))})");
-            var took = await WithdrawAsync(take, chests, ct).ConfigureAwait(false);
-            if (took.Count > 0) notes.Add("took " + string.Join("; ", took));
-            // A chest that had less than remembered: plan again on what's really there.
-            if (!Plan(id, dmg, n, ChestStock.Empty, smelt).Complete) { last = "storage held less than remembered"; continue; }
+        for (int round = 0; round < MaxRounds && job.Crafted < count; round++)
+            if (await CraftRoundAsync(job, ct).ConfigureAwait(false) is { } stop) return stop;
+        return Outcome(job);
+    }
 
-            int before = Have(id, dmg);
-            var made = await CraftBatchAsync(id, dmg, n, smelt, notes, ct).ConfigureAwait(false);
-            if (!made.Ok) return Fail(notes, crafted > 0 ? $"crafted {crafted}/{count} {name}, then: {made.Message}" : made.Message);
-            // The client's own count (an inventory that didn't show it yet counts the batch as made).
-            crafted += Math.Max(Have(id, dmg) - before, made.Count > 0 ? made.Count : n);
-            batches++;
-            last = made.Message;
+    /// <summary>One craft order in progress: what, how many, the chests it draws on, and how far it got.</summary>
+    private sealed class CraftJob(int id, int dmg, int count, ChestStock chests, List<string> notes, string name)
+    {
+        public int Id => id;
+        public int Dmg => dmg;
+        public int Count => count;
+        public ChestStock Chests => chests;
+        public List<string> Notes => notes;
+        public string Name => name;
+        public int Crafted, Batches;
+        public string? Last;
+    }
+
+    /// <summary>One round: plan (smelting only when it must), the batch the inventory holds, withdraw, craft. A result ends the
+    /// order; null = go on.</summary>
+    private async Task<ActionResult?> CraftRoundAsync(CraftJob job, CancellationToken ct)
+    {
+        var (id, dmg, notes) = (job.Id, job.Dmg, job.Notes);
+        int want = job.Count - job.Crafted;
+        var (plan, smelt, shortfall) = RoundPlan(job, want);
+        if (shortfall != null) return Fail(notes, shortfall);
+        // The batch the inventory holds (ingredients from storage + room to spare for the products).
+        var (n, take) = FitBatch(job, want, plan, smelt);
+        if (!Fits(take)) return Fail(notes, $"inventory full: no room for the {job.Name} ingredients ({string.Join(", ", take.Select(t => t.Need))})");
+        var took = await WithdrawAsync(take, job.Chests, ct).ConfigureAwait(false);
+        if (took.Count > 0) notes.Add("took " + string.Join("; ", took));
+        // A chest that had less than remembered: plan again on what's really there.
+        if (!Plan(id, dmg, n, ChestStock.Empty, smelt).Complete) { job.Last = "storage held less than remembered"; return null; }
+
+        int before = Have(id, dmg);
+        var made = await CraftBatchAsync(id, dmg, n, smelt, notes, ct).ConfigureAwait(false);
+        if (!made.Ok) return Fail(notes, job.Crafted > 0 ? $"crafted {job.Crafted}/{job.Count} {job.Name}, then: {made.Message}" : made.Message);
+        // The client's own count (an inventory that didn't show it yet counts the batch as made).
+        job.Crafted += Math.Max(Have(id, dmg) - before, made.Count > 0 ? made.Count : n);
+        job.Batches++;
+        job.Last = made.Message;
+        return null;
+    }
+
+    /// <summary>The round's plan from inventory + chests; with smelting only when that's the only way and a furnace is there.
+    /// The shortfall text when neither works.</summary>
+    private (CraftPlan Plan, bool Smelt, string? Shortfall) RoundPlan(CraftJob job, int want)
+    {
+        var plan = Plan(job.Id, job.Dmg, want, job.Chests, smelting: false);
+        if (plan.Complete) return (plan, false, null);
+        var withSmelt = Plan(job.Id, job.Dmg, want, job.Chests, smelting: true);
+        if (!withSmelt.Complete || !FurnaceAvailable()) return (plan, false, Shortfall(job.Id, job.Dmg, want, plan, job.Chests));
+        return (withSmelt, true, null);
+    }
+
+    /// <summary>Halves the batch until its withdrawals fit the inventory (down to one).</summary>
+    private (int N, List<Take> Take) FitBatch(CraftJob job, int want, CraftPlan plan, bool smelt)
+    {
+        int n = want;
+        var take = Withdrawals(plan, job.Id, job.Dmg, job.Chests);
+        while (n > 1 && !Fits(take))
+        {
+            n = Math.Max(1, n / 2);
+            plan = Plan(job.Id, job.Dmg, n, job.Chests, smelt);
+            take = Withdrawals(plan, job.Id, job.Dmg, job.Chests);
         }
-        if (crafted <= 0) return Fail(notes, last ?? $"crafting {name} produced nothing");
-        if (batches == 1 && crafted >= count) return ActionResult.Success(Join(notes) + last, crafted);
-        string done = crafted >= count ? $"crafted {crafted} {name} (have {Have(id, dmg)})" : $"crafted only {crafted}/{count} {name} ({last})";
-        return crafted >= count ? ActionResult.Success(Join(notes) + done, crafted) : ActionResult.Fail(Join(notes) + done, crafted);
+        return (n, take);
+    }
+
+    /// <summary>One batch: its own message; several: "crafted n name (have m)", or "crafted only n/count" when short.</summary>
+    private ActionResult Outcome(CraftJob job)
+    {
+        var (crafted, count, name, notes) = (job.Crafted, job.Count, job.Name, job.Notes);
+        if (crafted <= 0) return Fail(notes, job.Last ?? $"crafting {name} produced nothing");
+        if (job.Batches == 1 && crafted >= count) return ActionResult.Success(Join(notes) + job.Last, crafted);
+        if (crafted < count) return ActionResult.Fail(Join(notes) + $"crafted only {crafted}/{count} {name} ({job.Last})", crafted);
+        return ActionResult.Success(Join(notes) + $"crafted {crafted} {name} (have {Have(job.Id, job.Dmg)})", crafted);
     }
 
     private ChestStock Chests() => ChestStock.Read(client, Obs, Acquisition.Of(client)?.SkipChest);

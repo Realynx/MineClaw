@@ -254,12 +254,17 @@ public sealed partial class VisionHub
         if (t.Error != null || t.HiveView) return $"cam: unknown spot '{r.At}' (x,y,z, a landmark/structure, a bot or a player)";
         var spot = t.Bot is { } bot ? new BlockPos((int)Math.Floor(bot.X), (int)Math.Floor(bot.Y), (int)Math.Floor(bot.Z)) : t.Focus;
         var ctx = ContextFor(spot, t.Bot?.Dim ?? t.Dim, radius, null, t.Landmark, aids);
-        string label = "@" + Short(t.Landmark ?? t.Bot?.Short ?? r.At!);
+        AddSpotPanels(r, ctx, "@" + Short(t.Landmark ?? t.Bot?.Short ?? r.At!), radius, jobs);
+        return null;
+    }
+
+    /// <summary>The spot's panel(s) by kind: a camera, orbits, a titled 3D view, else a flat map.</summary>
+    private static void AddSpotPanels(PanelRequest r, PanelContext ctx, string label, int radius, List<PanelJob> jobs)
+    {
         if (r.Kind == "cam") jobs.Add(new PanelJob { Ctx = ctx, Rig = PerspectivePanel.Cam(ctx.Focus, ctx.FeetY, r.From, r.Dist, "CAM " + label, radius, r.Cam) });
         else if (r.Kind == "orbit" && (r.N > 1 || r.Cam.IsEmpty)) jobs.AddRange(PerspectivePanel.Orbits(ctx.Focus, ctx.FeetY, radius, r.N, "ORBIT " + label).Select(g => new PanelJob { Ctx = ctx, Rig = g }));
         else if (PerspectivePanel.Views.Contains(r.Kind) && PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, null, null, r.Cam) is { } g2) jobs.Add(new PanelJob { Ctx = ctx, Rig = g2 with { Title = g2.Title + " " + label } });
         else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Params = r.Cam });
-        return null;
     }
 
     /// <summary>The panels around the default focus: its context (made once, on first use) and main's eye looking at it.</summary>

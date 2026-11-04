@@ -299,10 +299,16 @@ public static class VisionTools
             return Agent.TurnContext.Current?.Speaker is { } who && w.Entities.FindPlayer(who) is { } sp ? (sp.Position.ToBlockPos(), sp, null, null) : (feet, null, null, null);
         if (focus.Equals("you", StringComparison.OrdinalIgnoreCase) || focus.Equals("me", StringComparison.OrdinalIgnoreCase)
             || focus.Equals(c.Username, StringComparison.OrdinalIgnoreCase)) return (feet, null, null, null);
+        return NamedLegacyFocus(w, places, focus) ?? (feet, null, null, $"unknown focus '{focus}' (player, saved name or x,y,z)");
+    }
+
+    /// <summary>Coords, a player in view, or a saved place.</summary>
+    private static (BlockPos Centre, Entity? Player, BlockPos? Asked, string? Error)? NamedLegacyFocus(WorldState w, IPlaceResolver places, string focus)
+    {
         if (Locations.ParseCoords(focus) is { } p) return (p, null, p, null);
         if (w.Entities.FindPlayer(focus) is { } e) return (e.Position.ToBlockPos(), e, null, null);
         if (places.Resolve(focus) is { } q) return (q, null, q, null);
-        return (feet, null, null, $"unknown focus '{focus}' (player, saved name or x,y,z)");
+        return null;
     }
 
     /// <summary>One legacy single-view picture: what it shows (target, pointed block, entities, marks) around its centre.</summary>
