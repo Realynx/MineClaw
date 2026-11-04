@@ -169,7 +169,9 @@ public sealed partial class MinecraftClient
             AllowBreak = o.AllowBreak,
             // A tunnelling goto never digs a dug design's floor (a stair's tread) out from under its air.
             CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos) && !othersStandOn.Contains(pos)
-                                          && !(World.KeepAir.Contains(pos.Up(), World.Dimension) && !World.KeepAir.Contains(pos, World.Dimension)),
+                                          && !(World.KeepAir.Contains(pos.Up(), World.Dimension) && !World.KeepAir.Contains(pos, World.Dimension))
+                                          // A narrowed dig (a chop's way up): only those blocks, never one somebody placed.
+                                          && (o.BreakOnly is not { } only || only(id, pos) && !World.Placed.IsPlaced(pos, World.Dimension, id)),
             // Never a bridge or pillar block in a cell a dug design keeps air (live 10-30 02:20: goto bridging put cobble on stair step 154,15,276).
             CanPlace = pos => !EditBlocked(pos) && !World.KeepAir.Contains(pos, World.Dimension),
             MaxDrop = o.MaxDrop ?? PathOptions.Default.MaxDrop,
@@ -197,6 +199,7 @@ public sealed partial class MinecraftClient
             HasClutchBlock = HotbarHasClutchBlock(),
             // A walk from the surface keeps to the surface when it can (caves cost more): the light the server sent says where the sky is.
             SkyLight = (x, y, z) => World.Light.Get(true, x, y, z),
+            Covered = o.PreferSurface ? CoveredByGround : null,
             ParkourCache = _parkourCache,
             MaxHeadUnderSteps = o.MaxHeadUnderSteps,
             HeadUnderStepCost = o.HeadUnderStepCost,
@@ -290,6 +293,7 @@ public sealed partial class MinecraftClient
                     if (path.Status == PathStatus.NoPath && replans == 0) NoRoutes.Put(routeKey, startCell, goal, noRoute);
                     return ActionResult.Fail(noRoute);
                 }
+                path = await CheckRouteAsync(path, start, goal, o, popts, replans, token).ConfigureAwait(false);
 
                 stuck.Step = null;
                 var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors, jumps, stuck).ConfigureAwait(false);
@@ -321,6 +325,54 @@ public sealed partial class MinecraftClient
         {
             return ActionResult.Fail($"timed out going to {goal}; at {Fmt(World.Player.Position)}");
         }
+    }
+
+    /// <summary>
+    /// The route's shape (<see cref="RouteStats"/>): counted for the perf line, logged for a <see cref="GotoOptions.Diagnose"/> goto
+    /// and for every detour. A detour (live 11-04 story-1: "way out of the way underground") is planned once more digging through
+    /// natural ground when this body may (<see cref="DigThroughDetours"/>, normal world, the first plan of the goto), and the dug
+    /// route replaces it when it costs under 70% of the walk.
+    /// </summary>
+    private async Task<PathResult> CheckRouteAsync(PathResult path, Vec3d start, Goal goal, GotoOptions o, PathOptions popts, int replans,
+        CancellationToken ct)
+    {
+        var shape = RouteStats.Of(start, path.Steps);
+        RouteStats.Note(shape, o.Diagnose);
+        if (o.Diagnose is { } label) Log($"goto ({label}): {shape} to {goal}{(shape.IsDetour ? " (detour)" : "")}");
+        else if (shape.IsDetour) Log($"goto: detour: {shape} to {goal}");
+        if (!shape.IsDetour || replans > 0 || !DigThroughDetours || o.AllowBreak || path.Status != PathStatus.Found
+            || MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain) return path;
+        var dugOpts = popts with
+        {
+            AllowBreak = true,
+            Covered = CoveredByGround, // fewer steps under ground win: the dig is worth it only when it shortens the time down there
+            CanBreak = (id, meta, pos) => NaturalGround(id) && !World.Placed.IsPlaced(pos, World.Dimension, id) && (popts.CanBreak?.Invoke(id, meta, pos) ?? true),
+        };
+        PathResult dug;
+        try { dug = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, dugOpts, ct), ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return path; }
+        if (dug.Status != PathStatus.Found || dug.Steps.Count == 0) return path;
+        var dugShape = RouteStats.Of(start, dug.Steps);
+        int breaks = dug.Steps.Sum(s => s.Break.Count);
+        // Taken only when it digs and is clearly shorter (its cost counts the steps under ground, the walk's doesn't: compare lengths).
+        if (breaks == 0 || dugShape.Length > shape.Length * 0.6) return path;
+        Log($"goto: detour dug short: {dugShape}, {breaks} block(s) to dig (walking: {shape})");
+        RouteStats.NoteDugShort();
+        return dug;
+    }
+
+    /// <summary>Natural ground over foot cell x,y,z: two or more solid blocks (leaves aside) within 8 above its head (a cave, a tunnel, a
+    /// trench's overhang), as opposed to the open sky or a tree's crown.</summary>
+    internal bool CoveredByGround(int x, int y, int z)
+    {
+        int n = 0;
+        for (int yy = y + 2, top = Math.Min(World.WorldHeight - 1, y + 10); yy <= top; yy++)
+        {
+            int id = World.GetBlock(x, yy, z);
+            if (id == 0 || id is MineClaw.Data.Blocks.Leaves or 161) continue;
+            if (BlockShapes.HasCollision(World, x, yy, z) && ++n >= 2) return true;
+        }
+        return false;
     }
 
     /// <summary>Follows one path. Returns null when finished, else the failure reason.</summary>
@@ -528,7 +580,8 @@ public sealed partial class MinecraftClient
     {
         BlockPos? target = goal switch
         {
-            GoalBlock b => b.Target, GoalNear n => n.Target, GoalNearPosition np => np.Position.ToBlockPos(), _ => null,
+            GoalBlock b => b.Target, GoalNear n => n.Target, GoalFiltered { Inner: GoalNear fn } => fn.Target,
+            GoalNearPosition np => np.Position.ToBlockPos(), _ => null,
         };
         if (target is not { } t) return "";
         int dy = t.Y - (int)Math.Floor(start.Y + 1e-6);

@@ -252,7 +252,7 @@ public class ChopTreeTests(Xunit.Abstractions.ITestOutputHelper log)
         var (c, s) = await Harness.StartAsync(srv =>
         {
             TreeWorld.Square(srv, 8, 8, 4);
-            TreeWorld.Tree(srv, 8, 8, 10);
+            TreeWorld.Tree(srv, 8, 8, 11); // logs 64..74: the 2-block Skyblock pillar reaches 73, not 74
             TreeWorld.Drops(srv, saplingEvery: 2);
             srv.SpawnAt = (5.5, 64, 5.5);
             srv.Inventory[37] = Harness.Stack(Blocks.Dirt, 10);
@@ -262,7 +262,8 @@ public class ChopTreeTests(Xunit.Abstractions.ITestOutputHelper log)
         var r = await c.ChopTreeAsync(options: TreeWorld.Fast);
         Assert.False(r.Ok);
         // No cobble/planks: it pillars on its OWN felled logs (minable afterwards, never part of the tree), never on dirt.
-        Assert.Matches(@"^1 log\(s\) out of reach \(up to y 73\)", r.Message);
+        // (It no longer digs its own log pillar out from under itself as "the next log": a 10-log tree now comes down whole.)
+        Assert.Matches(@"^1 log\(s\) out of reach \(up to y 74\)", r.Message);
         Assert.Contains(s.Got<PlayerBlockPlacementPacket>(), p => p.HeldItem.Id == Blocks.Log);
         Assert.DoesNotContain(s.Got<PlayerBlockPlacementPacket>(), p => p.HeldItem.Id == Blocks.Dirt);
     }

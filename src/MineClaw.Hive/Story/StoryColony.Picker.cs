@@ -310,12 +310,31 @@ public sealed partial class StoryColony
             case WorkTypes.Mine:
                 return DesignationJob(p, live, from, type, "mine", "dig", "mining") ?? ZoneJob(p, from, type, "mine", live);
             case WorkTypes.Chop:
+                if (LeaveToSurfacePawn(p, live, type)) return null; // under ground: a pawn up top takes the trees
                 return DesignationJob(p, live, from, type, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, type, "cut", "dig", "cutting plants")
                     ?? ZoneJob(p, from, type, "chop");
             case WorkTypes.Haul:
                 return HaulJob(p, live) ?? RebalanceJob(p, live); // StoryColony.Hauling.cs
         }
         return null;
+    }
+
+    /// <summary>
+    /// Surface work (trees) for a pawn under ground (a quarry, a cave, a trench: natural ground over it) waits while another pawn that
+    /// does that work stands up top: that one goes, and this one keeps to work down there or heads up by itself (live 11-04 story-1:
+    /// pawns 5 to 8 blocks under the trees failed "no path … it's 5 blocks up" and walked far round under ground). With no pawn up top
+    /// it still takes it (its route out digs short through the ground, the chop climbs out beside the trunk).
+    /// </summary>
+    private bool LeaveToSurfacePawn(PawnState p, PawnLive live, string type)
+    {
+        if (World is not { } w || !live.Online || !w.Loaded(live.Block.X, live.Block.Z) || !StoryWander.Underground(w, live.Block)) return false;
+        foreach (var o in Pawns.Values)
+        {
+            if (o == p || o.Drafted || o.Priorities.GetValueOrDefault(type) is not (>= 1 and <= 4)) continue;
+            var ol = Host.Live(o.Name);
+            if (ol.Online && !_stuck.ContainsKey(o.Name) && !StoryWander.Underground(w, ol.Block)) return true;
+        }
+        return false;
     }
 
     /// <summary>A block designation of <paramref name="kind"/> (nearest open first).</summary>
@@ -501,6 +520,17 @@ public sealed partial class StoryColony
             case "designation":
                 if (Designations.FirstOrDefault(d => d.Id == j.SourceId) is { } des)
                 {
+                    // Part of the tree came down and the rest still stands: the designation stays, now on its lowest log left, rested
+                    // a moment for this pawn (Fox 11-04 tree farming: the rest is chopped too, never dropped with "0/N" or half a tree).
+                    if (note is { } pn && pn.StartsWith("partial", StringComparison.OrdinalIgnoreCase) && ChopRest(des) is { } rest)
+                    {
+                        Alert("info", $"{p.Display} took what it could reach of the tree at {des.At}: {Short(pn)}; the rest ({rest.Count} log(s)) stays designated", p.Name);
+                        des.At = rest[0];
+                        des.Rev = Touch();
+                        _skip[PawnKey("b:" + rest[0], p.Name)] = Now + PartialRest;
+                        break;
+                    }
+                    _chopPartials.Remove(des.Id);
                     Designations.Remove(des);
                     Removed("designation", des.Id);
                     // Part of the tree was out of reach: what could be reached came down; the rest is said, not silently dropped.

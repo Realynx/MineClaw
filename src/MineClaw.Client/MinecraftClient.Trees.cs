@@ -121,8 +121,11 @@ public sealed partial class MinecraftClient
     /// the last resort: the bot stands on its OWN pillar, never on the tree's leaves, and a placed log is in the placed-block
     /// log, so it never reads as part of the tree (<see cref="TreeScan"/>) and is always minable afterwards (rule 1).</summary>
     private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Log];
-    /// <summary>The same in a normal world, where dirt is everywhere: dirt before the logs.</summary>
-    private static readonly int[] PillarBlocksNormal = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Dirt, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Log];
+    /// <summary>The same in a normal world, where dirt is everywhere: any placeable junk, dirt first (the classic nerd-pole block), then
+    /// stone kinds, gravel and sand (they stand on the pillar block under them and are dug back from the top), planks, and the felled
+    /// logs of this very tree last. Live 11-04 story-1: "no cobble/planks to pillar" with dirt all around.</summary>
+    private static readonly int[] PillarBlocksNormal = [Blocks.Dirt, Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Sandstone,
+        Blocks.Gravel, Blocks.Sand, Blocks.Planks, Blocks.StoneBricks, Blocks.Log, Wood.Log2];
     /// <summary>How high a tree pillar may go in a normal world (Story Mode, Fox 11-04: "it should nerd-pole up to reach those blocks").</summary>
     public const int TallTreePillar = 12;
     private static int[] TreePillarBlocks => MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain ? PillarBlocks : PillarBlocksNormal;
@@ -144,6 +147,11 @@ public sealed partial class MinecraftClient
         /// <summary>Item entities left lying near the void (counted once however often we look).</summary>
         public readonly HashSet<int> LostIds = new();
         public int Lost => LostIds.Count;
+        /// <summary>Dirt it dug for a pillar (normal world): filled again once the pillar is back down.</summary>
+        public readonly List<BlockPos> Holes = new();
+        public int DirtDug;
+        /// <summary>The dig-and-climb approach (normal world) was tried this chop.</summary>
+        public bool DugApproach;
     }
 
     /// <summary>
@@ -230,7 +238,9 @@ public sealed partial class MinecraftClient
             try
             {
                 stop = await FellAsync(st, o, limit.Token).ConfigureAwait(false);
+                await LeavesFromPillarAsync(st, limit.Token).ConfigureAwait(false);
                 await CleanupPillarAsync(st, limit.Token).ConfigureAwait(false);
+                await RefillHolesAsync(st, limit.Token).ConfigureAwait(false);
                 await GatherSaplingsAsync(st, o, limit.Token).ConfigureAwait(false);
                 (planted, problem) = await ReplantAsync(st, limit.Token).ConfigureAwait(false);
             }
@@ -399,7 +409,9 @@ public sealed partial class MinecraftClient
     // ------------------------------------------------------------------ felling
 
     private List<BlockPos> RemainingLogs(ChopState st) =>
-        st.Tree.Logs.Where(l => World.GetBlock(l) is var id && Wood.IsLog(id) && !st.Failed.Contains(l) && !IsBlockProtected(l, id)).ToList();
+        // Never its own pillar: a log it placed in the felled trunk column to climb on is no log of the tree (live 11-04 tests: it dug
+        // its own log pillar out from under its feet as "the next log" and was stranded).
+        st.Tree.Logs.Where(l => World.GetBlock(l) is var id && Wood.IsLog(id) && !st.Failed.Contains(l) && !st.PillarIds.ContainsKey(l) && !IsBlockProtected(l, id)).ToList();
 
     /// <summary>Column under <paramref name="p"/> is void: whatever drops there is gone.</summary>
     private bool DropsIntoVoid(BlockPos p) => Safety.IsOverVoid(World, p.X, p.Y - 1, p.Z);
@@ -438,9 +450,24 @@ public sealed partial class MinecraftClient
             }
             if (++idle > 24) return $"stuck with {remaining.Count} log(s) left";
 
-            // 1. Walk to a safe spot (2+ from any edge) that sees a log, lowest first.
             var lowest = remaining.OrderBy(l => l.Y).Take(4).ToList();
+            // 0. Below the tree (a cave or trench under it, a quarry beside it; live 11-04 story-1 "chopped 0/39", "it's 5 blocks up"):
+            // in a normal world it digs its own short way up beside the trunk (a stair through the dirt, a pillar step) instead of a
+            // long walk round under ground. Once per chop; elsewhere it is the fallback when no walk reaches a spot (1b).
+            bool normal = !WorldMode.Current.ScarceTerrain;
+            if (normal && !st.DugApproach && FeetY() < GroundY(st) - 1)
+            {
+                st.DugApproach = true;
+                if ((await GotoSeeingAsync(st, lowest, ct, strictOnly: true, dig: true).ConfigureAwait(false)).Ok && DiggableNow(remaining) is not null) continue;
+            }
+            // 1. Walk to a safe spot (2+ from any edge) that sees a log, lowest first.
             if ((await GotoSeeingAsync(st, lowest, ct, strictOnly: true).ConfigureAwait(false)).Ok && DiggableNow(remaining) is not null) continue;
+            // 1b. No walk gets there: dig and climb the way (normal world, once).
+            if (normal && !st.DugApproach && st.Felled == 0)
+            {
+                st.DugApproach = true;
+                if ((await GotoSeeingAsync(st, lowest, ct, strictOnly: true, dig: true).ConfigureAwait(false)).Ok && DiggableNow(remaining) is not null) continue;
+            }
             // 2. Its own leaves hide logs that are otherwise in reach: clear one next to them (also a sapling chance).
             if (lowest[0].Y - st.Tree.Base.Y <= 5 && await ClearOccludingLeafAsync(st, lowest, ct).ConfigureAwait(false)) continue;
             // 3. Just above reach: jump-dig from a safe spot.
@@ -451,6 +478,9 @@ public sealed partial class MinecraftClient
             // 5. Short pillar (cheap block, never dirt), then jump from it if needed.
             // A normal world has dirt to spare: a tall tree is climbed on a pillar (dug back down afterwards); skyblock keeps it short.
             int maxPillar = MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain ? o.MaxPillar : Math.Max(o.MaxPillar, TallTreePillar);
+            // Nothing to pillar with in a normal world: a few dirt blocks dug near the tree (filled again afterwards).
+            if (normal && st.Pillar.Count == 0 && PillarBlock() is null && st.DirtDug < MaxPillarDirt)
+                await GatherPillarDirtAsync(st, Math.Clamp(remaining.Max(l => l.Y) - (GroundY(st) + 4) + 1, 1, maxPillar), ct).ConfigureAwait(false);
             if (st.Pillar.Count < maxPillar && await PillarUpAsync(st, remaining, ct).ConfigureAwait(false))
             {
                 if (DiggableNow(remaining) is null) await JumpDigAsync(st, remaining, ct).ConfigureAwait(false);
@@ -458,7 +488,8 @@ public sealed partial class MinecraftClient
             }
             int top = remaining.Max(l => l.Y);
             return $"{remaining.Count} log(s) out of reach (up to y {top})"
-                   + (st.Pillar.Count == 0 && PillarBlock() is null ? "; no cobble/planks to pillar" : "");
+                   + (st.Pillar.Count == 0 && PillarBlock() is null ? normal ? "; no block to pillar with (and no dirt to dig near the tree)" : "; no cobble/planks to pillar" : "")
+                   + (st.Felled == 0 && FeetY() < GroundY(st) - 1 ? $"; I'm {GroundY(st) - FeetY()} blocks below the tree and found no way up" : "");
         }
     }
 
@@ -486,11 +517,19 @@ public sealed partial class MinecraftClient
     /// <summary>Goes to a spot near the tree from which one of <paramref name="targets"/> can be dug: strict (2+ from any
     /// edge) first, then relaxed (never closer to the void than the trunk). <paramref name="eyeBoost"/> &gt; 0 = reach at the
     /// top of a jump (strict spots with headroom only).</summary>
+    /// <param name="dig">Normal world: the path may dig natural ground (a stair up out of a trench or a cave) and place pillar
+    /// blocks it carries; never placed or protected blocks.</param>
     private async Task<ActionResult> GotoSeeingAsync(ChopState st, IReadOnlyList<BlockPos> targets, CancellationToken ct, bool strictOnly = false,
-        bool relaxedOnly = false, double eyeBoost = 0)
+        bool relaxedOnly = false, double eyeBoost = 0, bool dig = false)
     {
         if (targets.Count == 0) return ActionResult.Fail("nothing to reach");
-        var o = GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30), MaxReplans = 2, AllowPartial = false };
+        var o = GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30), MaxReplans = 2, AllowPartial = false, Diagnose = "chop" };
+        if (dig)
+            o = o with
+            {
+                AllowBreak = true, BreakOnly = (id, pos) => NaturalGround(id) && pos != st.Tree.Soil && !st.Tree.Logs.Contains(pos.Up()), AllowPlace = ScaffoldItem() is not null, ScaffoldBudget = 8, PreferSurface = true,
+                Diagnose = "chop dig", PlanTimeout = TimeSpan.FromSeconds(3),
+            };
         var center = targets[0];
         bool[] passes = strictOnly || eyeBoost > 0 ? [true] : relaxedOnly ? [false] : [true, false];
         foreach (bool strict in passes)
@@ -501,6 +540,7 @@ public sealed partial class MinecraftClient
                 strict ? "safe spot by the tree" : "spot by the tree, not on the void side");
             var g = await GotoCoreAsync(goal, o, ct).ConfigureAwait(false);
             if (g.Ok) return g;
+            if (dig) Log($"chop: no dug way up to the tree: {g.Message}");
         }
         return ActionResult.Fail("no safe spot in reach");
     }
@@ -591,8 +631,9 @@ public sealed partial class MinecraftClient
         return null;
     }
 
-    /// <summary>Places one cheap block under itself (cobblestone/netherrack, never dirt) in the felled trunk column or right
-    /// beside it, only 3+ from any edge, so the next log comes into (jump) reach. The pillar is dug back afterwards.</summary>
+    /// <summary>Places one cheap block under itself (<see cref="TreePillarBlocks"/>: on Skyblock cobblestone and the like, never dirt; in a
+    /// normal world any junk, dirt first) in the felled trunk column or right beside it, only 3+ from any edge, so the next log comes into
+    /// (jump) reach, or a few steps on up a free column. The pillar is dug back afterwards.</summary>
     private async Task<bool> PillarUpAsync(ChopState st, List<BlockPos> remaining, CancellationToken ct)
     {
         if (PillarBlock() is not { } block) return false;
@@ -608,7 +649,9 @@ public sealed partial class MinecraftClient
             return up && st.Pillar.Contains(at);
         }
         var lowest = remaining.OrderBy(l => l.Y).Take(3).ToList();
-        int feetY = Pathfinder.StartCellFor(World, World.Player.Position)?.Y ?? World.Player.Position.ToBlockPos().Y;
+        // The spot is by the trunk at its base, wherever the body stands now (live 11-04: from a trench 5 below the tree, "within 3 of
+        // my feet" held no cell by the trunk at all and the pillar never started).
+        int feetY = GroundY(st);
         bool Spot(int x, int y, int z, bool strictTrunk)
         {
             int ring = Math.Max(Math.Abs(x - trunk.X), Math.Abs(z - trunk.Z));
@@ -617,7 +660,21 @@ public sealed partial class MinecraftClient
             bool footing = st.Pillar.Contains(under) || TreeStandOk(st, x, y, z, strict: true);
             return footing && Safety.IsStandable(World, x, y, z) && Safety.EdgeDistance(World, x, y, z, 3) >= 3
                    && !BlockShapes.HasCollision(World, x, y + 2, z) && !BlockShapes.HasCollision(World, x, y + 3, z)
-                   && lowest.Any(l => CanAimFrom(x, y + 1, z, l, margin: 0, eyeBoost: JumpEyeBoost));
+                   && Reaches(x, y, z);
+        }
+        // One step brings a log into (jump) reach; in a normal world a taller pillar does too, when its column is free all the way up
+        // (live 11-04 tests: with the lowest log left 9 above the ground no first step "reached" it, so the climb never started).
+        bool Reaches(int x, int y, int z)
+        {
+            if (lowest.Any(l => CanAimFrom(x, y + 1, z, l, margin: 0, eyeBoost: JumpEyeBoost))) return true;
+            if (WorldMode.Current.ScarceTerrain) return false;
+            for (int k = 2; k <= TallTreePillar; k++)
+            {
+                if (lowest.Any(l => CanAimFrom(x, y + k, z, l, margin: 0))) return true;
+                if (BlockShapes.HasCollision(World, x, y + k + 2, z)) return false; // room to jump from the k-th block
+                if (lowest.Any(l => CanAimFrom(x, y + k, z, l, margin: 0, eyeBoost: JumpEyeBoost))) return true;
+            }
+            return false;
         }
         var go = GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30), MaxReplans = 2, AllowPartial = false };
         bool there = false;
@@ -729,6 +786,112 @@ public sealed partial class MinecraftClient
         return own;
     }
 
+    /// <summary>
+    /// Normal world, still up on its pillar with no sapling of the tree's kind: breaks the crown's leaves in reach from up there (no
+    /// walking) for one before the pillar comes down. A tall tree's crown is out of reach from the ground, so its spot was left bare
+    /// ("chopped oak tree (12 logs, 0 saplings); not replanted").
+    /// </summary>
+    private async Task LeavesFromPillarAsync(ChopState st, CancellationToken ct)
+    {
+        if (WorldMode.Current.ScarceTerrain || st.Pillar.Count == 0 || HasOwnSapling(st)) return;
+        var skip = new HashSet<BlockPos>();
+        bool SaplingDropped() => World.Entities.Nearby(TreeCenter(st), 12,
+            e => e.Kind == EntityKind.Item && e.Item.Id == Blocks.Sapling && e.Item.Damage == st.Tree.Wood, 1).Any();
+        for (int i = 0; i < NormalLeafBreaks && !HasOwnSapling(st) && !SaplingDropped(); i++)
+        {
+            if (i > 0) await WaitTicksAsync(2, ct).ConfigureAwait(false); // a drop shows up a tick or two after the break
+            var cands = LeavesLeft(st).Where(p => !skip.Contains(p) && !IsBlockProtected(p, World.GetBlock(p)) && !EditBlocked(p)).ToList();
+            if (DiggableNow(cands) is not { } leaf) break;
+            var r = await DigCoreAsync(leaf, ct, allowPathing: false, noShears: true).ConfigureAwait(false);
+            if (r.Ok) st.LeavesBroken++;
+            else skip.Add(leaf);
+        }
+        if (st.LeavesBroken > 0) Log($"chop: broke {st.LeavesBroken} leaves from my pillar for a sapling");
+    }
+
+    /// <summary>The foot level of the ground at the trunk: the base itself for a standing tree, the cell over whatever is under a hanging
+    /// remnant (its lower trunk already cut), else where the body stands.</summary>
+    private int GroundY(ChopState st)
+    {
+        if (st.Tree.OnSoil) return st.Tree.Base.Y;
+        var (sapling, dirt, other) = TreeScan.ColumnUnder(World, st.Tree.Soil, 24);
+        return (sapling?.Y ?? (dirt ?? other)?.Y + 1) ?? FeetY();
+    }
+
+    /// <summary>The foot cell's y (the cell the body stands in).</summary>
+    private int FeetY() => Pathfinder.StartCellFor(World, World.Player.Position)?.Y ?? World.Player.Position.ToBlockPos().Y;
+
+    /// <summary>Most dirt one chop digs for a pillar (normal world).</summary>
+    private const int MaxPillarDirt = 16;
+
+    /// <summary>Natural ground a chop's dug approach (or a detour's dig-through) may break: soil, sand, gravel, clay, snow, stone kinds and
+    /// leaves. Never ores (a lost drop), never anything a player placed (the placement log) or protects (the path's own veto).</summary>
+    internal static bool NaturalGround(int id) =>
+        id is Blocks.Grass or Blocks.Dirt or Blocks.Sand or Blocks.Gravel or Blocks.Clay or Blocks.SnowBlock or Blocks.SnowLayer or Blocks.Stone
+            or Blocks.Sandstone or Blocks.Netherrack or Blocks.Leaves or Wood.Leaves2 or 110 /* mycelium */;
+
+    /// <summary>A liquid touches the cell on any side (a dug hole there would flood or drain something).</summary>
+    private bool NextToLiquid(BlockPos p) => BlockFaceExtensions.All.Any(f => BlockShapes.IsLiquid(World.GetBlock(p.Offset(f))));
+
+    /// <summary>
+    /// Normal world, nothing to pillar with (live 11-04 story-1: "no clutch blocks on me (no cobble/planks to be had)"; "4 log(s) out of
+    /// reach", chopped 0/4): digs up to <paramref name="want"/> dirt or grass blocks near the tree, 2 to 5 out from the trunk (never its
+    /// soil, never the ring a pillar stands on, never under anyone, beside water or under a plant other than grass), and picks them up.
+    /// The holes are filled again once the pillar is dug back (<see cref="RefillHolesAsync"/>).
+    /// </summary>
+    private async Task<int> GatherPillarDirtAsync(ChopState st, int want, CancellationToken ct)
+    {
+        var t = st.Tree.Base;
+        var support = Safety.OtherPlayersSupport(World);
+        var me = Pathfinder.StartCellFor(World, World.Player.Position) ?? World.Player.Position.ToBlockPos();
+        var cands = new List<BlockPos>();
+        for (int dx = -5; dx <= 5; dx++)
+        for (int dz = -5; dz <= 5; dz++)
+        {
+            if (Math.Max(Math.Abs(dx), Math.Abs(dz)) < 2) continue;
+            for (int y = GroundY(st) - 4; y <= GroundY(st) + 1; y++)
+            {
+                var p = new BlockPos(t.X + dx, y, t.Z + dz);
+                int id = World.GetBlock(p);
+                if (id is not (Blocks.Dirt or Blocks.Grass)) continue;
+                int above = World.GetBlock(p.Up());
+                if (!Aiming.IsReplaceable(World, above) || BlockShapes.IsLiquid(above)) continue; // an open top (air, tall grass, snow)
+                if (p == me.Down() || support.Contains(p) || st.Tree.Logs.Contains(p.Up()) || p == st.Tree.Soil) continue;
+                if (IsBlockProtected(p, id) || EditBlocked(p) || NextToLiquid(p) || NextToLava(p)) continue;
+                cands.Add(p);
+            }
+        }
+        if (cands.Count == 0) { Log("chop: no dirt to dig near the tree for a pillar"); return 0; }
+        var eye = World.Player.EyePosition;
+        int before = World.Inventory.CountItem(Blocks.Dirt), tries = 0;
+        foreach (var p in cands.OrderBy(p => p.Center.DistanceSquaredTo(eye)).ThenByDescending(p => p.Y))
+        {
+            if (World.Inventory.CountItem(Blocks.Dirt) - before >= want || ++tries > want * 3 || st.DirtDug >= MaxPillarDirt) break;
+            var r = await DigCoreAsync(p, ct).ConfigureAwait(false);
+            if (!r.Ok) { Log($"chop: couldn't dig dirt for a pillar: {r.Message}"); continue; }
+            st.Holes.Add(p);
+            st.DirtDug++;
+            await CollectDropsCoreAsync(4, 6, ct, p.Center, st.LostIds, st.StuckIds).ConfigureAwait(false);
+        }
+        int got = World.Inventory.CountItem(Blocks.Dirt) - before;
+        Log($"chop: dug {st.Holes.Count} dirt for a pillar ({got} picked up, wanted {want})");
+        return got;
+    }
+
+    /// <summary>Fills the holes <see cref="GatherPillarDirtAsync"/> dug, with the dirt the pillar gave back (best effort).</summary>
+    private async Task RefillHolesAsync(ChopState st, CancellationToken ct)
+    {
+        foreach (var h in st.Holes.OrderBy(h => h.Center.DistanceSquaredTo(World.Player.Position)).ToList())
+        {
+            if (World.Inventory.CountItem(Blocks.Dirt) <= 0 || ReservedItems.Contains(Blocks.Dirt)) break;
+            if (!Aiming.IsReplaceable(World, World.GetBlock(h)) || BlockShapes.IsLiquid(World.GetBlock(h))) continue;
+            if (World.Entities.Nearby(h.Center, 1.2, e => e.Kind == EntityKind.Player, 1).Any()) continue; // someone stands in it
+            var r = await PlaceCoreAsync(h, Blocks.Dirt, ct).ConfigureAwait(false);
+            if (!r.Ok) Log($"chop: couldn't fill the hole at {Fmt(h)}: {r.Message}");
+        }
+        st.Holes.Clear();
+    }
+
     // ------------------------------------------------------------------ saplings
 
     private int SaplingsGained(ChopState st) => World.Inventory.CountItem(Blocks.Sapling) - st.SaplingsBefore;
@@ -809,20 +972,23 @@ public sealed partial class MinecraftClient
     private async Task GatherSaplingsAsync(ChopState st, TreeChopOptions o, CancellationToken ct)
     {
         await CollectAroundTreeAsync(st, ct).ConfigureAwait(false);
-        // A normal world has saplings to spare: leave the crown to decay by itself (no leaf clearing, no decay wait); only
-        // the drops already on the ground are picked up. Skyblock clears the crown for every sapling chance.
-        if (!WorldMode.Current.ScarceTerrain) return;
+        // A normal world has saplings to spare, but the tree farm wants its spot planted again (Fox 11-04: "make it farm trees"; live
+        // 11-04 "0 saplings, not replanted"): with no sapling of the tree's own species on it, it breaks a few of the crown's leaves it
+        // can reach (no long walks) and waits a little for the rest to drop, until one comes. Skyblock clears the crown for every chance.
+        bool normal = !WorldMode.Current.ScarceTerrain;
+        if (normal && (HasOwnSapling(st) || RemainingLogs(st).Contains(st.Tree.Base))) return;
         var sw = Stopwatch.StartNew();
         var skip = new HashSet<BlockPos>();
         int sinceCollect = 0, misses = 0;
-        while (sw.Elapsed < o.LeafPhase && st.LeavesBroken < o.MaxLeafBreaks)
+        int maxBreaks = normal ? Math.Min(o.MaxLeafBreaks, NormalLeafBreaks) : o.MaxLeafBreaks;
+        while (sw.Elapsed < o.LeafPhase && st.LeavesBroken < maxBreaks && !(normal && HasOwnSapling(st)))
         {
             var cands = LeavesLeft(st).Where(p => !skip.Contains(p) && !DropsIntoVoid(p) && !IsBlockProtected(p, World.GetBlock(p)) && !EditBlocked(p)).ToList();
             if (cands.Count == 0) break;
             if (DiggableNow(cands) is not { } leaf)
             {
                 var near = cands.OrderBy(p => p.Y).ThenBy(p => p.Center.DistanceSquaredTo(World.Player.Position)).Take(16).ToList();
-                if (++misses > 4 || !(await GotoSeeingAsync(st, near, ct, strictOnly: true).ConfigureAwait(false)).Ok) break;
+                if (++misses > (normal ? 2 : 4) || !(await GotoSeeingAsync(st, near, ct, strictOnly: true).ConfigureAwait(false)).Ok) break;
                 continue;
             }
             misses = 0;
@@ -842,7 +1008,8 @@ public sealed partial class MinecraftClient
         int leftBefore = LeavesLeft(st).Count, prev = leftBefore, brokenBefore = st.LeavesBroken;
         var wait = Stopwatch.StartNew();
         var progress = Stopwatch.StartNew();
-        while (wait.Elapsed < o.DecayWait && SaplingsGained(st) < o.WantSaplings)
+        var decayWait = normal ? TimeSpan.FromTicks(Math.Min(o.DecayWait.Ticks, NormalDecayWait.Ticks)) : o.DecayWait;
+        while (wait.Elapsed < decayWait && (normal ? !HasOwnSapling(st) : SaplingsGained(st) < o.WantSaplings))
         {
             var decaying = DecayingLeaves(st);
             if (decaying.Count == 0 && StuckDrops(st).Count == 0) break;
@@ -860,6 +1027,13 @@ public sealed partial class MinecraftClient
             await CollectAroundTreeAsync(st, ct).ConfigureAwait(false);
         }
     }
+
+    /// <summary>Normal world: leaves broken for a sapling when none of the tree's species is held, and how long to wait for decay.</summary>
+    private const int NormalLeafBreaks = 24;
+    private static readonly TimeSpan NormalDecayWait = TimeSpan.FromSeconds(12);
+
+    /// <summary>A sapling of the tree's own species is held (what the replant plants).</summary>
+    private bool HasOwnSapling(ChopState st) => World.Inventory.CountItem(Blocks.Sapling, st.Tree.Wood) > 0;
 
     // ------------------------------------------------------------------ replanting
 

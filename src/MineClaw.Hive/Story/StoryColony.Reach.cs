@@ -54,6 +54,29 @@ public sealed partial class StoryColony
         return job;
     }
 
+    /// <summary>How often a chop designation stays open after a partial chop (its rest still standing) before it is let go with an alert.</summary>
+    internal const int MaxChopPartials = 2;
+
+    /// <summary>The pawn that took part of a tree rests from its remnant this long (another pawn, or it later, climbs for the rest).</summary>
+    internal static readonly TimeSpan PartialRest = TimeSpan.FromSeconds(20);
+
+    private readonly Dictionary<string, int> _chopPartials = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A chop designation a pawn finished only in part ("partial: …"): the tree's logs still standing in the colony's view, lowest first,
+    /// when the designation should stay open for them (at most <see cref="MaxChopPartials"/> times), else null (it is done and said).
+    /// </summary>
+    private List<P3>? ChopRest(DesignationState des)
+    {
+        if (des.Kind != "chop" || World is not { } w || des.Blocks is not { Count: > 0 } logs) return null;
+        int n = _chopPartials.GetValueOrDefault(des.Id);
+        if (n >= MaxChopPartials) { _chopPartials.Remove(des.Id); return null; }
+        var rest = logs.Where(l => w.Loaded(l.X, l.Z) && StoryBlocks.Logs.Contains(w.Block(l.X, l.Y, l.Z).Id)).OrderBy(l => l.Y).ToList();
+        if (rest.Count == 0) { _chopPartials.Remove(des.Id); return null; }
+        _chopPartials[des.Id] = n + 1;
+        return rest;
+    }
+
     /// <summary>Out of reach even from a pillar ("out of reach even from a pillar: …", "out of reach: 9 block(s) to pillar up…").</summary>
     internal static bool OutOfReach(string why) => why.Contains("out of reach", StringComparison.OrdinalIgnoreCase);
 
