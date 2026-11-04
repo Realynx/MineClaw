@@ -298,6 +298,7 @@ public static class Parkour
         var startPos = new Vec3d(from.X + 0.5, fromFloor, from.Z + 0.5);
         double tx = to.X + 0.5, tz = to.Z + 0.5;
         float yaw = (float)(Math.Atan2(-(tx - startPos.X), tz - startPos.Z) * 180 / Math.PI);
+        var spec = new JumpSpec(from, fromFloor, to, toFloor, startPos, yaw, sprint, tx, tz, allowVoid, maxFall, safeMissFall);
 
         // Ground run without jumping: the last tick that still starts on the ground is the latest possible takeoff.
         var run = new List<PhysicsState>(MaxRunUpTicks + 1);
@@ -305,53 +306,92 @@ public static class Parkour
         if (lastGround < 2) { why = "no run-up"; return null; }
 
         // Nominal runs for every candidate takeoff tick (latest = longest jump); validate them closest landing first.
-        var nominals = new List<(int T, ParkourSchedule Sch, ParkourOutcome O, double Err)>();
-        for (int t = lastGround - 1; t >= Math.Max(1, lastGround - 4); t--)
+        foreach (var nominal in Nominals(w, run, lastGround, spec, ref why).OrderBy(n => n.Err))
         {
-            var sch = new ParkourSchedule(yaw, sprint, t, tx, tz);
-            // The run-up up to the takeoff is shared by every candidate tick: start from the recorded state at t.
-            var o = Simulate(w, run[t], sch, t, to, toFloor, maxFall, record: true);
-            if (!o.Ok) { why ??= o.Reason; continue; }
-            var full = new List<Vec3d>(t + o.Track!.Count);
-            for (int i = 0; i < t; i++) full.Add(run[i].Position);
-            full.AddRange(o.Track);
-            o = o with { Track = full };
-            var c = o.Track![Math.Min(o.LandTick + 1, o.Track.Count - 1)]; // first contact
-            double err = Math.Sqrt((c.X - tx) * (c.X - tx) + (c.Z - tz) * (c.Z - tz));
-            nominals.Add((t, sch, o, err));
-        }
-        foreach (var (t, sch, nominal, _) in nominals.OrderBy(n => n.Err))
-        {
-            bool overVoid = MissIsDeadly(w, nominal.Track!, sch.JumpTick, nominal.LandTick, fromFloor, toFloor, safeMissFall);
-            if (overVoid && !allowVoid) { why = "a miss falls into the void"; return null; }
-            double need = overVoid ? VoidMargin : GroundMargin;
-            if (nominal.Margin < need) { why = $"landing margin {nominal.Margin:0.00}"; continue; }
-            if (overVoid && !ClutchCoverage(w, nominal.Track!, sch.JumpTick, nominal.LandTick))
-            {
-                why = "no block within clutch reach mid-flight";
-                continue;
-            }
-            double worst = nominal.Margin;
-            bool robust = true;
-            foreach (var (along, across, dt, dyaw) in Perturbations(overVoid))
-            {
-                var p = Perturb(startPos, yaw, along, across);
-                var ps = sch with { JumpTick = t + dt, Yaw = yaw + dyaw };
-                var o = Simulate(w, StandingAt(p, ps.Yaw), ps, 0, to, toFloor, maxFall);
-                if (!o.Ok || o.Margin < (overVoid ? 0 : PerturbedMargin))
-                {
-                    robust = false;
-                    why = $"not robust ({(o.Ok ? $"margin {o.Margin:0.00}" : o.Reason)} at {along:+0.##;-0.##;0},{across:+0.##;-0.##;0} tick {dt:+0;-0;0})";
-                    break;
-                }
-                worst = Math.Min(worst, o.Margin);
-            }
-            if (!robust) continue;
-            return new ParkourPlan(from, to, fromFloor, toFloor, sch, nominal.LandTick, nominal.Distance, worst, overVoid,
-                nominal.Track!, maxFall);
+            var verdict = Validate(w, spec, nominal, ref why, out var plan);
+            if (verdict == Verdict.Accept) return plan;
+            if (verdict == Verdict.Abort) return null;
         }
         why ??= "no takeoff tick lands";
         return null;
+    }
+
+    /// <summary>What a plan is asked for: the cells and floors, the standing start, the run's yaw and sprint, the landing
+    /// target, and the fall limits.</summary>
+    private readonly record struct JumpSpec(BlockPos From, double FromFloor, BlockPos To, double ToFloor, Vec3d Start, float Yaw,
+        bool Sprint, double Tx, double Tz, bool AllowVoid, double MaxFall, double SafeMissFall);
+
+    private readonly record struct Nominal(int T, ParkourSchedule Sch, ParkourOutcome O, double Err);
+
+    private enum Verdict { Next, Accept, Abort }
+
+    /// <summary>The nominal flight of each candidate takeoff tick that lands, with its full track (the shared run-up first)
+    /// and how far its first contact is from the landing centre.</summary>
+    private static List<Nominal> Nominals(IBlockAccess w, List<PhysicsState> run, int lastGround, JumpSpec spec, ref string? why)
+    {
+        var nominals = new List<Nominal>();
+        for (int t = lastGround - 1; t >= Math.Max(1, lastGround - 4); t--)
+        {
+            var sch = new ParkourSchedule(spec.Yaw, spec.Sprint, t, spec.Tx, spec.Tz);
+            // The run-up up to the takeoff is shared by every candidate tick: start from the recorded state at t.
+            var o = Simulate(w, run[t], sch, t, spec.To, spec.ToFloor, spec.MaxFall, record: true);
+            if (!o.Ok) { why ??= o.Reason; continue; }
+            o = o with { Track = WithRunUp(run, t, o.Track!) };
+            var c = o.Track![Math.Min(o.LandTick + 1, o.Track.Count - 1)]; // first contact
+            double err = Math.Sqrt((c.X - spec.Tx) * (c.X - spec.Tx) + (c.Z - spec.Tz) * (c.Z - spec.Tz));
+            nominals.Add(new Nominal(t, sch, o, err));
+        }
+        return nominals;
+    }
+
+    private static List<Vec3d> WithRunUp(List<PhysicsState> run, int t, List<Vec3d> track)
+    {
+        var full = new List<Vec3d>(t + track.Count);
+        for (int i = 0; i < t; i++) full.Add(run[i].Position);
+        full.AddRange(track);
+        return full;
+    }
+
+    /// <summary>A nominal flight as a plan: refused over the void unless allowed (abort), with too little margin, without a
+    /// clutch block in reach (over the void), or when a perturbed run misses; else accepted.</summary>
+    private static Verdict Validate(IBlockAccess w, JumpSpec spec, Nominal n, ref string? why, out ParkourPlan? plan)
+    {
+        plan = null;
+        var (t, sch, nominal, _) = n;
+        bool overVoid = MissIsDeadly(w, nominal.Track!, sch.JumpTick, nominal.LandTick, spec.FromFloor, spec.ToFloor, spec.SafeMissFall);
+        if (overVoid && !spec.AllowVoid) { why = "a miss falls into the void"; return Verdict.Abort; }
+        double need = overVoid ? VoidMargin : GroundMargin;
+        if (nominal.Margin < need) { why = $"landing margin {nominal.Margin:0.00}"; return Verdict.Next; }
+        if (overVoid && !ClutchCoverage(w, nominal.Track!, sch.JumpTick, nominal.LandTick))
+        {
+            why = "no block within clutch reach mid-flight";
+            return Verdict.Next;
+        }
+        if (!Robust(w, spec, sch, t, overVoid, nominal.Margin, ref why, out double worst)) return Verdict.Next;
+        plan = new ParkourPlan(spec.From, spec.To, spec.FromFloor, spec.ToFloor, sch, nominal.LandTick, nominal.Distance, worst, overVoid,
+            nominal.Track!, spec.MaxFall);
+        return Verdict.Accept;
+    }
+
+    /// <summary>Every perturbation (start, takeoff tick, yaw) still lands with its margin; <paramref name="worst"/> is the
+    /// smallest margin seen.</summary>
+    private static bool Robust(IBlockAccess w, JumpSpec spec, ParkourSchedule sch, int t, bool overVoid, double margin, ref string? why,
+        out double worst)
+    {
+        worst = margin;
+        foreach (var (along, across, dt, dyaw) in Perturbations(overVoid))
+        {
+            var p = Perturb(spec.Start, spec.Yaw, along, across);
+            var ps = sch with { JumpTick = t + dt, Yaw = spec.Yaw + dyaw };
+            var o = Simulate(w, StandingAt(p, ps.Yaw), ps, 0, spec.To, spec.ToFloor, spec.MaxFall);
+            if (!o.Ok || o.Margin < (overVoid ? 0 : PerturbedMargin))
+            {
+                why = $"not robust ({(o.Ok ? $"margin {o.Margin:0.00}" : o.Reason)} at {along:+0.##;-0.##;0},{across:+0.##;-0.##;0} tick {dt:+0;-0;0})";
+                return false;
+            }
+            worst = Math.Min(worst, o.Margin);
+        }
+        return true;
     }
 
     private static IEnumerable<(double Along, double Across, int Dt, float DYaw)> Perturbations(bool strict)
@@ -425,24 +465,28 @@ public static class Parkour
     /// <summary>Every flight tick has a collidable block whose nearest point is within <see cref="ClutchCoverageRadius"/> of the eye.</summary>
     private static bool ClutchCoverage(IBlockAccess w, List<Vec3d> track, int jumpTick, int landTick)
     {
-        const double r = ClutchCoverageRadius;
         for (int i = Math.Max(0, jumpTick); i <= Math.Min(track.Count - 1, landTick); i++)
         {
             var eye = track[i] with { Y = track[i].Y + PlayerPhysics.EyeHeight };
-            bool found = false;
-            for (int x = (int)Math.Floor(eye.X - r); x <= (int)Math.Floor(eye.X + r) && !found; x++)
-            for (int y = (int)Math.Floor(eye.Y - r); y <= (int)Math.Floor(eye.Y + r) && !found; y++)
-            for (int z = (int)Math.Floor(eye.Z - r); z <= (int)Math.Floor(eye.Z + r) && !found; z++)
-            {
-                double dx = Math.Max(0, Math.Max(x - eye.X, eye.X - (x + 1)));
-                double dy = Math.Max(0, Math.Max(y - eye.Y, eye.Y - (y + 1)));
-                double dz = Math.Max(0, Math.Max(z - eye.Z, eye.Z - (z + 1)));
-                if (dx * dx + dy * dy + dz * dz > r * r) continue;
-                if (BlockShapes.IsFullCube(w, x, y, z)) found = true;
-            }
-            if (!found) return false;
+            if (!FullCubeWithin(w, eye, ClutchCoverageRadius)) return false;
         }
         return true;
+    }
+
+    /// <summary>A full cube whose nearest point is within <paramref name="r"/> of <paramref name="eye"/>.</summary>
+    private static bool FullCubeWithin(IBlockAccess w, Vec3d eye, double r)
+    {
+        for (int x = (int)Math.Floor(eye.X - r); x <= (int)Math.Floor(eye.X + r); x++)
+        for (int y = (int)Math.Floor(eye.Y - r); y <= (int)Math.Floor(eye.Y + r); y++)
+        for (int z = (int)Math.Floor(eye.Z - r); z <= (int)Math.Floor(eye.Z + r); z++)
+        {
+            double dx = Math.Max(0, Math.Max(x - eye.X, eye.X - (x + 1)));
+            double dy = Math.Max(0, Math.Max(y - eye.Y, eye.Y - (y + 1)));
+            double dz = Math.Max(0, Math.Max(z - eye.Z, eye.Z - (z + 1)));
+            if (dx * dx + dy * dy + dz * dz > r * r) continue;
+            if (BlockShapes.IsFullCube(w, x, y, z)) return true;
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------ reach bounds (pre-filter)
