@@ -161,49 +161,9 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
         if (Running) { Shell.Status = "An import is already running"; return; }
         var info = ShardService.Describe(path);
         if (!info.Ok) { LastResult = Shell.Status = $"Can't import {Path.GetFileName(path)}: {info.Error}"; return; }
-        if (ShowImport == null) return;
-        if (!Shell.Edit.EditMode)
-        {
-            var where = Shell.Edit.IsLive ? "the live bot on alice" : Bank != null ? ExplorerPaths.Display(Bank.Path) : "a db";
-            if (Shell.Confirm == null || !await Shell.Confirm("Turn on edit mode?", $"Importing \"{info.Name}\" writes memory into {where}. Turn on edit mode to continue?")) return;
-            if (!await Shell.Edit.TurnOnAsync()) return;
-        }
+        if (ShowImport == null || !await EnsureEditModeAsync(info)) return;
         if (!Shell.Edit.IsLive && Bank == null) { Shell.Status = "Open the database to import into first"; return; }
-        try
-        {
-            var target = Shell.Edit.OpenTarget();
-            var active = Bank != null ? KnowledgePack.ActiveVersion(Bank.Db) : KnowledgePack.DefaultVersion;
-            var options = await ShowImport(new ShardImportDialogRequest(info, target.Describe, Shell.Edit.IsLive, active,
-                o => target.PreviewShardAsync(path, o, CancellationToken.None), preset));
-            if (options == null) return;
-            if (!await Shell.Edit.EnsureBackupAsync(target)) return;
-            Running = true;
-            Percent = 0;
-            Stage = "importing…";
-            var cts = _cts = new CancellationTokenSource();
-            var result = await target.ImportShardAsync(path, options with { Who = Shell.Edit.Who }, cts.Token);
-            LastResult = Shell.Status = (result.Ok ? "" : "Import failed: ") + result.Message;
-            if (result.Ok && result.Rebuild.Count > 0)
-            {
-                Stage = "rebuilding " + string.Join(", ", result.Rebuild.Select(r => r.Kind)) + "…";
-                var progress = new Progress<RebuildStatus>(s =>
-                {
-                    if (s.Progress is { } p)
-                    {
-                        Stage = $"{p.Stage} {p.Done}/{p.Total}" + (p.Message != null ? " · " + p.Message : "");
-                        Percent = p.Total > 0 ? 100.0 * p.Done / p.Total : 0;
-                    }
-                });
-                var rb = await target.RunImportRebuildAsync(result, progress, cts.Token);
-                if (rb != null)
-                    LastResult = Shell.Status = result.Message + " · rebuild " + (rb.Result is { } r
-                        ? string.Create(CultureInfo.InvariantCulture, $"{rb.State}: {r.Message} (${r.SpentUsd:0.0000})")
-                        : rb.Error ?? rb.State);
-            }
-            await RefreshHistoryAsync();
-            if (!Shell.Edit.IsLive && result.Ok) await Shell.ReloadAsync();
-            else if (Bank != null) ActivePack = PackLabel(KnowledgePack.Active(Bank.Db));
-        }
+        try { await ImportThroughTargetAsync(path, info, preset); }
         catch (OperationCanceledException) { LastResult = Shell.Status = "Import cancelled"; }
         catch (Exception ex) { LastResult = Shell.Status = "Import failed: " + ex.Message; }
         finally
@@ -213,6 +173,54 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
             Stage = "";
         }
     }
+
+    /// <summary>Edit mode on (asking first when it is off); false when the user declines or it can't be turned on.</summary>
+    private async Task<bool> EnsureEditModeAsync(ShardFileInfo info)
+    {
+        if (Shell.Edit.EditMode) return true;
+        var where = Shell.Edit.IsLive ? "the live bot on alice" : Bank != null ? ExplorerPaths.Display(Bank.Path) : "a db";
+        if (Shell.Confirm == null || !await Shell.Confirm("Turn on edit mode?", $"Importing \"{info.Name}\" writes memory into {where}. Turn on edit mode to continue?")) return false;
+        return await Shell.Edit.TurnOnAsync();
+    }
+
+    /// <summary>The dialog (diff first), the backup, the write, the scoped rebuild, then the history and the reloaded bank.</summary>
+    private async Task ImportThroughTargetAsync(string path, ShardFileInfo info, ShardImportMode? preset)
+    {
+        var target = Shell.Edit.OpenTarget();
+        var active = Bank != null ? KnowledgePack.ActiveVersion(Bank.Db) : KnowledgePack.DefaultVersion;
+        var options = await ShowImport!(new ShardImportDialogRequest(info, target.Describe, Shell.Edit.IsLive, active,
+            o => target.PreviewShardAsync(path, o, CancellationToken.None), preset));
+        if (options == null || !await Shell.Edit.EnsureBackupAsync(target)) return;
+        Running = true;
+        Percent = 0;
+        Stage = "importing…";
+        var cts = _cts = new CancellationTokenSource();
+        var result = await target.ImportShardAsync(path, options with { Who = Shell.Edit.Who }, cts.Token);
+        LastResult = Shell.Status = (result.Ok ? "" : "Import failed: ") + result.Message;
+        if (result.Ok && result.Rebuild.Count > 0) await RebuildAfterImportAsync(target, result, cts.Token);
+        await RefreshHistoryAsync();
+        if (!Shell.Edit.IsLive && result.Ok) await Shell.ReloadAsync();
+        else if (Bank != null) ActivePack = PackLabel(KnowledgePack.Active(Bank.Db));
+    }
+
+    private async Task RebuildAfterImportAsync(IAdminTarget target, ShardImportResult result, CancellationToken ct)
+    {
+        Stage = "rebuilding " + string.Join(", ", result.Rebuild.Select(r => r.Kind)) + "…";
+        var progress = new Progress<RebuildStatus>(ShowRebuildProgress);
+        var rb = await target.RunImportRebuildAsync(result, progress, ct);
+        if (rb != null) LastResult = Shell.Status = result.Message + " · rebuild " + RebuildOutcome(rb);
+    }
+
+    private void ShowRebuildProgress(RebuildStatus s)
+    {
+        if (s.Progress is not { } p) return;
+        Stage = RebuildText.Stage(p);
+        Percent = RebuildText.Percent(p);
+    }
+
+    private static string RebuildOutcome(RebuildStatus rb) => rb.Result is { } r
+        ? string.Create(CultureInfo.InvariantCulture, $"{rb.State}: {r.Message} (${r.SpentUsd:0.0000})")
+        : rb.Error ?? rb.State;
 
     [RelayCommand]
     private void Cancel() => _cts?.Cancel();

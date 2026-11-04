@@ -91,14 +91,17 @@ public sealed class Release1122GameData : IGameData
     {
         if (id <= 0) return id == 0 ? "Air" : "(empty)";
         int m = Math.Max(0, damage);
-        if (T.Items.TryGetValue(id, out var it))
-        {
-            if (it.Variants.TryGetValue(m, out var v)) return v;
-            if (id < 256 && T.Blocks.TryGetValue(id, out var bl) && bl.Variants.TryGetValue(m, out var bv)) return bv;
-            if (it.MaxDurability > 0 && damage > 0) return $"{it.DisplayName} ({it.MaxDurability - damage}/{it.MaxDurability})";
-            return it.DisplayName;
-        }
+        if (T.Items.TryGetValue(id, out var it)) return ItemDisplayName(it, id, damage, m);
         return T.Blocks.TryGetValue(id, out var b) ? b.Variants.GetValueOrDefault(m, b.DisplayName) : MineClaw.Data.Items.DisplayNameB(id, damage);
+    }
+
+    /// <summary>An item's name: its variant's, else its block's variant's, else the name with the durability left (worn tools).</summary>
+    private string ItemDisplayName(McItem it, int id, int damage, int m)
+    {
+        if (it.Variants.TryGetValue(m, out var v)) return v;
+        if (id < 256 && T.Blocks.TryGetValue(id, out var bl) && bl.Variants.TryGetValue(m, out var bv)) return bv;
+        if (it.MaxDurability > 0 && damage > 0) return $"{it.DisplayName} ({it.MaxDurability - damage}/{it.MaxDurability})";
+        return it.DisplayName;
     }
 
     /// <summary>The variant's display name in snake case when the id has variants ("birch_wood_planks", "charcoal"), else the
@@ -161,45 +164,74 @@ public sealed class Release1122GameData : IGameData
     private static Tables Load()
     {
         var t = new Tables();
-        using (var doc = JsonDocument.Parse(Resource("mcdata.1.12.2.blocks.json")))
-            foreach (var e in doc.RootElement.EnumerateArray())
-            {
-                int id = e.GetProperty("id").GetInt32();
-                var tools = new HashSet<int>();
-                if (e.TryGetProperty("harvestTools", out var ht))
-                    foreach (var p in ht.EnumerateObject()) tools.Add(int.Parse(p.Name));
-                float hardness = e.TryGetProperty("hardness", out var h) && h.ValueKind == JsonValueKind.Number ? h.GetSingle() : -1f;
-                var b = new McBlock(id, e.GetProperty("name").GetString()!, e.GetProperty("displayName").GetString()!, hardness,
-                    e.GetProperty("boundingBox").GetString() == "block",
-                    e.TryGetProperty("material", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null,
-                    tools, e.TryGetProperty("transparent", out var tr) && tr.GetBoolean(), Variants(e));
-                t.Blocks[id] = b;
-                t.IdOfName.TryAdd(b.Name, id);
-            }
-        // minecraft-data 1.12.2 lists no stone variants, so granite/diorite/andesite (and polished) had no names of their own.
-        if (t.Blocks.TryGetValue(1, out var stone) && stone.Variants.Count == 0)
-            t.Blocks[1] = stone with
-            {
-                Variants = new Dictionary<int, string>
-                {
-                    [0] = "Stone", [1] = "Granite", [2] = "Polished Granite", [3] = "Diorite", [4] = "Polished Diorite",
-                    [5] = "Andesite", [6] = "Polished Andesite",
-                },
-            };
-        using (var doc = JsonDocument.Parse(Resource("mcdata.1.12.2.items.json")))
-            foreach (var e in doc.RootElement.EnumerateArray())
-            {
-                int id = e.GetProperty("id").GetInt32();
-                var it = new McItem(id, e.GetProperty("name").GetString()!, e.GetProperty("displayName").GetString()!,
-                    e.GetProperty("stackSize").GetInt32(), e.TryGetProperty("maxDurability", out var d) ? d.GetInt32() : 0, Variants(e));
-                t.Items[id] = it;
-                t.IdOfName[it.Name] = id; // the item name wins where a block shares it (e.g. "reeds" item vs block)
-            }
-
+        LoadBlocks(t);
+        AddStoneVariants(t);
+        LoadItems(t);
         foreach (var b in t.Blocks.Values) t.BlockInfos[b.Id] = ToBlockInfo(b, t);
         foreach (var i in t.Items.Values) t.ItemInfos[i.Id] = ToItemInfo(i);
+        IndexItemNames(t);
+        foreach (var b in t.Blocks.Values.OrderBy(x => x.Id))
+        {
+            t.BlockNames.TryAdd(MineClaw.Data.Blocks.Normalize(b.Name), b.Id);
+            t.BlockNames.TryAdd(MineClaw.Data.Blocks.Normalize(b.DisplayName), b.Id);
+        }
+        return t;
+    }
 
-        // Names: exact names, display names, then the variants ("birch wood planks" → (5, 2)); first writer wins.
+    private static void LoadBlocks(Tables t)
+    {
+        using var doc = JsonDocument.Parse(Resource("mcdata.1.12.2.blocks.json"));
+        foreach (var e in doc.RootElement.EnumerateArray())
+        {
+            var b = ParseBlock(e);
+            t.Blocks[b.Id] = b;
+            t.IdOfName.TryAdd(b.Name, b.Id);
+        }
+    }
+
+    private static McBlock ParseBlock(JsonElement e)
+    {
+        int id = e.GetProperty("id").GetInt32();
+        var tools = new HashSet<int>();
+        if (e.TryGetProperty("harvestTools", out var ht))
+            foreach (var p in ht.EnumerateObject()) tools.Add(int.Parse(p.Name));
+        float hardness = e.TryGetProperty("hardness", out var h) && h.ValueKind == JsonValueKind.Number ? h.GetSingle() : -1f;
+        return new McBlock(id, e.GetProperty("name").GetString()!, e.GetProperty("displayName").GetString()!, hardness,
+            e.GetProperty("boundingBox").GetString() == "block",
+            e.TryGetProperty("material", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null,
+            tools, e.TryGetProperty("transparent", out var tr) && tr.GetBoolean(), Variants(e));
+    }
+
+    /// <summary>minecraft-data 1.12.2 lists no stone variants, so granite/diorite/andesite (and polished) had no names of their own.</summary>
+    private static void AddStoneVariants(Tables t)
+    {
+        if (!t.Blocks.TryGetValue(1, out var stone) || stone.Variants.Count != 0) return;
+        t.Blocks[1] = stone with
+        {
+            Variants = new Dictionary<int, string>
+            {
+                [0] = "Stone", [1] = "Granite", [2] = "Polished Granite", [3] = "Diorite", [4] = "Polished Diorite",
+                [5] = "Andesite", [6] = "Polished Andesite",
+            },
+        };
+    }
+
+    private static void LoadItems(Tables t)
+    {
+        using var doc = JsonDocument.Parse(Resource("mcdata.1.12.2.items.json"));
+        foreach (var e in doc.RootElement.EnumerateArray())
+        {
+            int id = e.GetProperty("id").GetInt32();
+            var it = new McItem(id, e.GetProperty("name").GetString()!, e.GetProperty("displayName").GetString()!,
+                e.GetProperty("stackSize").GetInt32(), e.TryGetProperty("maxDurability", out var d) ? d.GetInt32() : 0, Variants(e));
+            t.Items[id] = it;
+            t.IdOfName[it.Name] = id; // the item name wins where a block shares it (e.g. "reeds" item vs block)
+        }
+    }
+
+    /// <summary>Names: exact names, display names, then the variants ("birch wood planks" → (5, 2)); first writer wins.</summary>
+    private static void IndexItemNames(Tables t)
+    {
         void AddItemName(string n, int id, int dmg) => t.ItemNames.TryAdd(MineClaw.Data.Blocks.Normalize(n), (id, dmg));
         foreach (var i in t.Items.Values.OrderBy(x => x.Id)) { AddItemName(i.Name, i.Id, -1); AddItemName(i.DisplayName, i.Id, -1); }
         foreach (var i in t.Items.Values.OrderBy(x => x.Id))
@@ -208,12 +240,6 @@ public sealed class Release1122GameData : IGameData
             if (i.Id < 256 && t.Blocks.TryGetValue(i.Id, out var bl))
                 foreach (var (meta, n) in bl.Variants.Where(v => v.Key < 16)) AddItemName(n, i.Id, meta);
         }
-        foreach (var b in t.Blocks.Values.OrderBy(x => x.Id))
-        {
-            t.BlockNames.TryAdd(MineClaw.Data.Blocks.Normalize(b.Name), b.Id);
-            t.BlockNames.TryAdd(MineClaw.Data.Blocks.Normalize(b.DisplayName), b.Id);
-        }
-        return t;
     }
 
     private static Dictionary<int, string> Variants(JsonElement e)
@@ -228,18 +254,19 @@ public sealed class Release1122GameData : IGameData
     private static BlockInfo ToBlockInfo(McBlock b, Tables t)
     {
         var (tool, level) = BestTool(b, t);
+        int minLevel = b.HarvestTools.Count == 0 ? -1 : level;
         if (MineClaw.Data.Blocks.ExistsB(b.Id) && b.Id <= 109 && b.Id != 95) // 95: b1.8.1 locked chest, 1.12.2 stained glass
-        {
-            var old = MineClaw.Data.Blocks.GetB(b.Id);
-            return old with { Name = b.Name, DisplayName = b.DisplayName, Hardness = b.Hardness, MinHarvestLevel = b.HarvestTools.Count == 0 ? -1 : level };
-        }
+            return MineClaw.Data.Blocks.GetB(b.Id) with { Name = b.Name, DisplayName = b.DisplayName, Hardness = b.Hardness, MinHarvestLevel = minLevel };
         bool liquid = b.Name.Contains("water") || b.Name.Contains("lava");
         return new BlockInfo(b.Id, b.Name, b.DisplayName, b.Hardness, b.FullBox, b.FullBox ? 1.0 : 0.0, liquid,
-            b.Name is "ladder" or "vine", b.Transparent || !b.FullBox, InteractableNames.Contains(b.Name) || b.Name.EndsWith("_door")
-                || b.Name.EndsWith("fence_gate") || b.Name.EndsWith("shulker_box"),
-            tool, b.HarvestTools.Count == 0 ? -1 : level, b.Name is "magma" or "fire" || b.Name.Contains("lava"));
+            b.Name is "ladder" or "vine", b.Transparent || !b.FullBox, IsInteractableName(b.Name), tool, minLevel, IsHazardName(b.Name));
     }
 
+    /// <summary>Blocks a right-click opens or uses (the list, every door, fence gate and shulker box).</summary>
+    private static bool IsInteractableName(string name) =>
+        InteractableNames.Contains(name) || name.EndsWith("_door") || name.EndsWith("fence_gate") || name.EndsWith("shulker_box");
+
+    private static bool IsHazardName(string name) => name is "magma" or "fire" || name.Contains("lava");
     private static (ToolType Tool, int Level) BestTool(McBlock b, Tables t)
     {
         if (b.HarvestTools.Count > 0)

@@ -68,17 +68,25 @@ public sealed class SurvivalReflex
         double bestScore = double.MinValue;
         for (int i = 9; i < Math.Min(45, slots.Count); i++)
         {
-            var s = slots[i];
-            if (s.IsEmpty || reserved.Contains(s.Id) || Items.Food(s.Id, s.Damage) is not { } f) continue;
-            if (s.Id == Items.GoldenApple && o.SaveGoldenApples && health > o.CriticalHealth) continue;
-            bool risky = HungerRules.IsRisky(s.Id, s.Damage);
-            int gain = Math.Min(f.Hunger, deficit), waste = f.Hunger - gain;
-            double sat = Math.Min(HungerRules.SaturationGain(f.Hunger, f.Saturation), food + gain);
-            double score = gain * 2 + sat - waste * (urgent ? 0.5 : 3) - (risky ? 100 : 0) + (i >= 36 ? 0.1 : 0); // hotbar: no swap
-            if (score > bestScore) { bestScore = score; best = new FoodPick(s.Id, i, f.Hunger, waste, risky); }
+            if (ScoreFood(slots[i], i, reserved, health, food, deficit, urgent, o) is not { } c) continue;
+            if (c.Score > bestScore) { bestScore = c.Score; best = c.Pick; }
         }
         if (best is { Risky: true } && food > o.StarvingFood) return null;
         return best;
+    }
+
+    /// <summary>A stack's worth as the meal: most food + saturation, least waste, risky food last, the hotbar a hair ahead (no swap);
+    /// null when it isn't food to pick (empty, reserved, not food, a golden apple kept for critical health).</summary>
+    private static (FoodPick Pick, double Score)? ScoreFood(ItemStack s, int slot, IReadOnlySet<int> reserved, int health, int food, int deficit,
+        bool urgent, SurvivalOptions o)
+    {
+        if (s.IsEmpty || reserved.Contains(s.Id) || Items.Food(s.Id, s.Damage) is not { } f) return null;
+        if (s.Id == Items.GoldenApple && o.SaveGoldenApples && health > o.CriticalHealth) return null;
+        bool risky = HungerRules.IsRisky(s.Id, s.Damage);
+        int gain = Math.Min(f.Hunger, deficit), waste = f.Hunger - gain;
+        double sat = Math.Min(HungerRules.SaturationGain(f.Hunger, f.Saturation), food + gain);
+        double score = gain * 2 + sat - waste * (urgent ? 0.5 : 3) - (risky ? 100 : 0) + (slot >= 36 ? 0.1 : 0);
+        return (new FoodPick(s.Id, slot, f.Hunger, waste, risky), score);
     }
 
     /// <summary>Food to eat right now, or null: <see cref="WantsEat"/> plus the waste rule for regeneration-only meals
@@ -128,26 +136,42 @@ public sealed class SurvivalReflex
         lock (_sync)
         {
             if (health <= 0) return null;
-            if (health > o.LowHealth + o.Hysteresis) _low = false;
-            if (health > o.CriticalHealth + o.Hysteresis) _critical = false;
+            RearmHealthAlerts(health, o);
             string foodText = hasFood ? $"food {food}" : $"food {food}, no food!";
             if (health <= o.CriticalHealth && !_critical)
             {
                 _critical = _low = true;
-                // A normal world has no island interior: the reflexes get away from the mobs or box in.
-                string retreat = underWater ? "head under water: surfacing"
-                    : WorldMode.Current.HasVoidBelow ? "retreating inward" : threat is null ? "getting to safety" : $"{threat}: boxing in or getting away";
-                return new HealthAlert(true, $"critical hp {health}/20 ({foodText}): stopped, {retreat}" + (hasFood ? " to eat" : ""));
+                return CriticalAlert(health, foodText, hasFood, threat, underWater);
             }
             if (health <= o.LowHealth && !_low)
             {
                 _low = true;
-                string rest = underWater ? "head under water: surfacing first"
-                    : threat is null ? "work goes on" : $"{threat}: fighting back only if I can win, else boxing in";
-                return new HealthAlert(false, $"low health {health}/20 ({foodText}): no fights/spars until it recovers, {rest}" + (hasFood ? ", eating" : ""));
+                return LowAlert(health, foodText, hasFood, threat, underWater);
             }
             return null;
         }
+    }
+
+    /// <summary>An alert re-arms once health rises <see cref="SurvivalOptions.Hysteresis"/> above its line.</summary>
+    private void RearmHealthAlerts(int health, SurvivalOptions o)
+    {
+        if (health > o.LowHealth + o.Hysteresis) _low = false;
+        if (health > o.CriticalHealth + o.Hysteresis) _critical = false;
+    }
+
+    /// <summary>A normal world has no island interior: the reflexes get away from the mobs or box in.</summary>
+    private static HealthAlert CriticalAlert(int health, string foodText, bool hasFood, string? threat, bool underWater)
+    {
+        string retreat = underWater ? "head under water: surfacing"
+            : WorldMode.Current.HasVoidBelow ? "retreating inward" : threat is null ? "getting to safety" : $"{threat}: boxing in or getting away";
+        return new HealthAlert(true, $"critical hp {health}/20 ({foodText}): stopped, {retreat}" + (hasFood ? " to eat" : ""));
+    }
+
+    private static HealthAlert LowAlert(int health, string foodText, bool hasFood, string? threat, bool underWater)
+    {
+        string rest = underWater ? "head under water: surfacing first"
+            : threat is null ? "work goes on" : $"{threat}: fighting back only if I can win, else boxing in";
+        return new HealthAlert(false, $"low health {health}/20 ({foodText}): no fights/spars until it recovers, {rest}" + (hasFood ? ", eating" : ""));
     }
 
     /// <summary>Health is at or below the low line (the episode is still open).</summary>
@@ -164,7 +188,7 @@ public sealed class SurvivalReflex
     {
         var o = Options;
         bool safe = HasSafeFood(slots, reserved), any = HasAnyFood(slots, reserved);
-        int level = food > o.EatAtFood ? 0 : food <= 0 ? 3 : food <= o.StarvingFood ? 2 : 1;
+        int level = HungerLevelOf(food, o);
         // Risky food is eaten from the starving line on, so it only counts as "no food" while not starving yet.
         bool usable = safe || (any && level >= 2);
         lock (_sync)
@@ -174,18 +198,29 @@ public sealed class SurvivalReflex
             _hungerLevel = level;
         }
         string what = any ? "only risky food (rotten flesh/raw chicken)" : "no food in inventory";
-        string msg = level switch
-        {
-            1 => $"hungry: food {food}, {what}",
-            2 => $"starving: food {food}, {what} (no sprint, no regen)",
-            _ => $"starving: food 0, losing hp (stops at {HungerRules.StarvationFloor(difficulty)}), {what}",
-        };
+        string msg = WithFoodHint(HungerMessage(level, food, what, difficulty));
+        return new DangerEvent(DangerKind.Hunger, msg) { Level = level, Critical = level >= 3 };
+    }
+
+    /// <summary>0 fed, 1 hungry (≤ EatAtFood), 2 starving (≤ StarvingFood), 3 food 0.</summary>
+    private static int HungerLevelOf(int food, SurvivalOptions o) => food > o.EatAtFood ? 0 : food <= 0 ? 3 : food <= o.StarvingFood ? 2 : 1;
+
+    private static string HungerMessage(int level, int food, string what, int difficulty) => level switch
+    {
+        1 => $"hungry: food {food}, {what}",
+        2 => $"starving: food {food}, {what} (no sprint, no regen)",
+        _ => $"starving: food 0, losing hp (stops at {HungerRules.StarvationFloor(difficulty)}), {what}",
+    };
+
+    /// <summary>The message plus what memory knows about food (at most 100 chars; a hint is optional).</summary>
+    private string WithFoodHint(string msg)
+    {
         try
         {
             if (FoodHint?.Invoke() is { Length: > 0 } hint) msg += "; memory: " + (hint.Length > 100 ? hint[..100] : hint);
         }
         catch { /* a hint is optional */ }
-        return new DangerEvent(DangerKind.Hunger, msg) { Level = level, Critical = level >= 3 };
+        return msg;
     }
 
     // ------------------------------------------------------------------ gating
@@ -201,22 +236,33 @@ public sealed class SurvivalReflex
         IReadOnlyDictionary<int, StatusEffect>? effects = null)
     {
         if (!o.Enabled) return null;
-        if (NeedsFood(what))
-        {
-            // Wither can kill and poison drains to 1 hp: no fight while either is on and health is short of the gate plus a margin.
-            if (effects is not null && health < o.GateMinHealth + 6 && Active(effects, PotionEffects.Wither) is { } wi)
-                return $"hp {health}/20 and withering ({wi / 20}s left): no {what} now";
-            if (effects is not null && health < o.GateMinHealth + 4 && Active(effects, PotionEffects.Poison) is { } po)
-                return $"hp {health}/20 and poisoned ({po / 20}s left): no {what} now";
-            if (health < o.GateMinHealth)
-                return $"hp {health}/20 too low to {what} (need {o.GateMinHealth})"
-                       + (food >= HungerRules.RegenFood ? "; regenerating" : hasFood ? "; eating to regenerate" : $" (food {food}, no food)");
-            if (food < o.GateMinFood && !hasFood) return $"too hungry to {what} (food {food}, no food)";
-            return null;
-        }
+        if (NeedsFood(what)) return FightGateReason(what, health, food, hasFood, o, effects);
         if ((edge || IsEdgeWork(what)) && health <= o.EdgeMinHealth)
             return $"hp {health}/20 too low to {what} over the void (need more than {o.EdgeMinHealth})"
                    + (hasFood ? "; eating to regenerate" : food >= HungerRules.RegenFood ? "; regenerating" : "");
+        return null;
+    }
+
+    /// <summary>Fights and spars: an effect that drains or kills, low health, or hunger with no food stops them.</summary>
+    private static string? FightGateReason(string what, int health, int food, bool hasFood, SurvivalOptions o,
+        IReadOnlyDictionary<int, StatusEffect>? effects)
+    {
+        if (EffectGateReason(what, health, o, effects) is { } fx) return fx;
+        if (health < o.GateMinHealth)
+            return $"hp {health}/20 too low to {what} (need {o.GateMinHealth})"
+                   + (food >= HungerRules.RegenFood ? "; regenerating" : hasFood ? "; eating to regenerate" : $" (food {food}, no food)");
+        if (food < o.GateMinFood && !hasFood) return $"too hungry to {what} (food {food}, no food)";
+        return null;
+    }
+
+    /// <summary>Wither can kill and poison drains to 1 hp: no fight while either is on and health is short of the gate plus a margin.</summary>
+    private static string? EffectGateReason(string what, int health, SurvivalOptions o, IReadOnlyDictionary<int, StatusEffect>? effects)
+    {
+        if (effects is null) return null;
+        if (health < o.GateMinHealth + 6 && Active(effects, PotionEffects.Wither) is { } wi)
+            return $"hp {health}/20 and withering ({wi / 20}s left): no {what} now";
+        if (health < o.GateMinHealth + 4 && Active(effects, PotionEffects.Poison) is { } po)
+            return $"hp {health}/20 and poisoned ({po / 20}s left): no {what} now";
         return null;
     }
 
@@ -246,19 +292,23 @@ public sealed class SurvivalReflex
     {
         if (effects is null || effects.Count == 0) return "";
         var parts = new List<string>(4);
-        string T(int ticks) => ticks >= short.MaxValue ? "" : $" {ticks / 20}s";
-        if (Active(effects, PotionEffects.Poison) is { } p) parts.Add($"poisoned{T(p)} (stops at 1 hp)");
-        if (Active(effects, PotionEffects.Wither) is { } w) parts.Add($"withering{T(w)} (can kill)");
-        if (Active(effects, PotionEffects.Regeneration) is { } r) parts.Add($"regenerating{T(r)}");
-        if (Active(effects, PotionEffects.Hunger) is { } h) parts.Add($"hunger effect{T(h)}");
-        if (Active(effects, PotionEffects.FireResistance) is { } f) parts.Add($"fire resistant{T(f)}");
-        if (Active(effects, PotionEffects.WaterBreathing) is { } wb) parts.Add($"water breathing{T(wb)}");
-        if (Active(effects, PotionEffects.NightVision) is not null) parts.Add("night vision");
-        if (Active(effects, PotionEffects.Blindness) is not null) parts.Add("blind");
-        if (Active(effects, PotionEffects.Slowness) is not null) parts.Add("slowed");
-        if (Active(effects, PotionEffects.MiningFatigue) is not null) parts.Add("mining fatigue");
+        foreach (var (id, name, timed, note) in EffectLabels)
+            if (Active(effects, id) is { } ticks) parts.Add(name + (timed ? Seconds(ticks) : "") + note);
         return string.Join(", ", parts);
     }
+
+    /// <summary>The effects <see cref="EffectFacts"/> names, in its order: the name, whether the time left follows it, and a note.</summary>
+    private static readonly (int Id, string Name, bool Timed, string Note)[] EffectLabels =
+    [
+        (PotionEffects.Poison, "poisoned", true, " (stops at 1 hp)"), (PotionEffects.Wither, "withering", true, " (can kill)"),
+        (PotionEffects.Regeneration, "regenerating", true, ""), (PotionEffects.Hunger, "hunger effect", true, ""),
+        (PotionEffects.FireResistance, "fire resistant", true, ""), (PotionEffects.WaterBreathing, "water breathing", true, ""),
+        (PotionEffects.NightVision, "night vision", false, ""), (PotionEffects.Blindness, "blind", false, ""),
+        (PotionEffects.Slowness, "slowed", false, ""), (PotionEffects.MiningFatigue, "mining fatigue", false, ""),
+    ];
+
+    /// <summary>" 12s" (an endless effect: nothing).</summary>
+    private static string Seconds(int ticks) => ticks >= short.MaxValue ? "" : $" {ticks / 20}s";
 
     /// <summary>The compact one-line health part of the state header: "hp 14/20 food 9 (no food!)", plus the effect facts
     /// ("hp 9/20 food 18 poisoned 6s (stops at 1 hp)") when the version sends effects.</summary>
@@ -274,13 +324,19 @@ public sealed class SurvivalReflex
     public static string HeaderText(int health, int food, IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, SurvivalOptions? o = null)
     {
         o ??= new SurvivalOptions();
-        string s = $"hp {health}/20 food {food}";
-        bool safe = HasSafeFood(slots, reserved);
-        if (food <= o.EatAtFood && !safe)
-            s += food <= 0 ? " (starving, no food!)" : HasAnyFood(slots, reserved) ? " (only risky food!)" : " (no food!)";
-        else if (food <= o.StarvingFood) s += " (hungry)";
-        if (health > 0 && health <= o.CriticalHealth) s += " CRITICAL";
-        else if (health > 0 && health <= o.LowHealth) s += " LOW";
-        return s;
+        return $"hp {health}/20 food {food}" + FoodNote(food, slots, reserved, o) + HealthNote(health, o);
+    }
+
+    private static string FoodNote(int food, IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, SurvivalOptions o)
+    {
+        if (food <= o.EatAtFood && !HasSafeFood(slots, reserved))
+            return food <= 0 ? " (starving, no food!)" : HasAnyFood(slots, reserved) ? " (only risky food!)" : " (no food!)";
+        return food <= o.StarvingFood ? " (hungry)" : "";
+    }
+
+    private static string HealthNote(int health, SurvivalOptions o)
+    {
+        if (health > 0 && health <= o.CriticalHealth) return " CRITICAL";
+        return health > 0 && health <= o.LowHealth ? " LOW" : "";
     }
 }

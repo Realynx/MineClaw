@@ -60,12 +60,14 @@ public sealed partial class MinecraftClient
             next += interval;
             try
             {
+                _inTick = true;
                 TickOnce(s);
             }
             catch (Exception ex)
             {
                 Log($"tick error: {ex}");
             }
+            finally { _inTick = false; }
             var wait = next - sw.Elapsed;
             if (wait > TimeSpan.Zero) Thread.Sleep(wait);
             else
@@ -266,6 +268,7 @@ public sealed partial class MinecraftClient
     private void EndTick()
     {
         _gNow = null;
+        _inTick = false;
         Interlocked.Increment(ref _tickCount);
         _changed.Pulse();
     }
@@ -287,17 +290,7 @@ public sealed partial class MinecraftClient
     /// 0x0D (moved + rotated), 0x0B (moved), 0x0C (rotated) or 0x0A (neither). Position is forced every 20 ticks.</summary>
     private void SendMovement(Session s, PhysicsState phys)
     {
-        int eid = World.Player.EntityId;
-        if (phys.Sprinting != _lastSprint)
-        {
-            Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sprinting ? 4 : 5) });
-            _lastSprint = phys.Sprinting;
-        }
-        if (phys.Sneaking != _lastSneak)
-        {
-            Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sneaking ? 1 : 2) });
-            _lastSneak = phys.Sneaking;
-        }
+        SendActionChanges(s, phys);
         if (phys.Frozen)
         {
             Send(s, new PlayerOnGroundPacket { OnGround = phys.OnGround });
@@ -311,15 +304,7 @@ public sealed partial class MinecraftClient
         var (yaw, pitch) = SentLook(phys); // a gesture's head overlay rides here only; physics keeps the real look
         bool rotated = yaw != _lastYaw || pitch != _lastPitch;
         _ticksSincePos++;
-
-        if (moved && rotated)
-            Send(s, new PlayerPositionLookPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
-        else if (moved)
-            Send(s, new PlayerPositionPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, OnGround = phys.OnGround });
-        else if (rotated)
-            Send(s, new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
-        else
-            Send(s, new PlayerOnGroundPacket { OnGround = phys.OnGround });
+        SendMotion(s, phys, stance, moved, rotated, yaw, pitch);
 
         if (moved)
         {
@@ -333,39 +318,82 @@ public sealed partial class MinecraftClient
         }
     }
 
+    /// <summary>0x13 on a sprint or sneak change.</summary>
+    private void SendActionChanges(Session s, PhysicsState phys)
+    {
+        int eid = World.Player.EntityId;
+        if (phys.Sprinting != _lastSprint)
+        {
+            Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sprinting ? 4 : 5) });
+            _lastSprint = phys.Sprinting;
+        }
+        if (phys.Sneaking == _lastSneak) return;
+        Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sneaking ? 1 : 2) });
+        _lastSneak = phys.Sneaking;
+    }
+
+    /// <summary>Exactly one of 0x0D (moved + rotated), 0x0B (moved), 0x0C (rotated) or 0x0A (neither).</summary>
+    private void SendMotion(Session s, PhysicsState phys, double stance, bool moved, bool rotated, float yaw, float pitch)
+    {
+        var pos = phys.Position;
+        if (moved && rotated)
+            Send(s, new PlayerPositionLookPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
+        else if (moved)
+            Send(s, new PlayerPositionPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, OnGround = phys.OnGround });
+        else if (rotated)
+            Send(s, new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
+        else
+            Send(s, new PlayerOnGroundPacket { OnGround = phys.OnGround });
+    }
+
     private void CheckDangers(PhysicsState phys)
     {
-        // Falling with nothing below.
+        CheckVoidFall(phys);
+        CheckLava(phys);
+        CheckHostilesNearby(phys);
+    }
+
+    /// <summary>Falling with nothing below: one alert per fall.</summary>
+    private void CheckVoidFall(PhysicsState phys)
+    {
         if (phys.OnGround || phys.InWater || phys.OnLadder) _voidAlerted = false;
         // A committed gap jump over the void whose re-simulated landing still holds is not a fall.
         else if ((_lastGuardActions & GuardActions.ParkourExempt) != 0) { }
-        else if (!_voidAlerted && !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position) && !InWaterHold(phys))
+        else if (!_voidAlerted && FallingFastOverVoid(phys))
         {
             _voidAlerted = true;
             var msg = $"falling into the void at {Fmt(phys.Position)}";
             Log(msg);
             RaiseDanger(DangerKind.FallingIntoVoid, msg, abort: true, critical: true);
         }
+    }
 
-        if (phys.InLava)
-        {
-            if (!_lavaAlerted)
-            {
-                _lavaAlerted = true;
-                RaiseDanger(DangerKind.Lava, "in lava!", abort: true);
-            }
-        }
-        else _lavaAlerted = false;
+    /// <summary>Falling fast over the void, outside a void episode and a planned water column.</summary>
+    private bool FallingFastOverVoid(PhysicsState phys) =>
+        !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position) && !InWaterHold(phys);
 
-        if (TickCount % 20 == 0 && Options.HostileAlertRadius > 0)
+    private void CheckLava(PhysicsState phys)
+    {
+        if (!phys.InLava)
         {
-            var near = World.Entities.Nearby(phys.Position, Options.HostileAlertRadius, e => e.IsHostileMob);
-            _hostileAlerted.IntersectWith(near.Select(e => e.Id));
-            foreach (var e in near)
-                if (_hostileAlerted.Add(e.Id) && !(Combat.DefendSelf && CombatRules.IsThreat(e) && e.TypeId != MobTypes.Enderman))
-                    RaiseDanger(DangerKind.HostileNearby,
-                        $"{e.DisplayName} {phys.Position.DistanceTo(e.Position):0} blocks away at {Fmt(e.Position)}", abort: false);
+            _lavaAlerted = false;
+            return;
         }
+        if (_lavaAlerted) return;
+        _lavaAlerted = true;
+        RaiseDanger(DangerKind.Lava, "in lava!", abort: true);
+    }
+
+    /// <summary>Once a second: a hostile newly within the alert radius is reported (not one the combat reflex will fight).</summary>
+    private void CheckHostilesNearby(PhysicsState phys)
+    {
+        if (TickCount % 20 != 0 || Options.HostileAlertRadius <= 0) return;
+        var near = World.Entities.Nearby(phys.Position, Options.HostileAlertRadius, e => e.IsHostileMob);
+        _hostileAlerted.IntersectWith(near.Select(e => e.Id));
+        foreach (var e in near)
+            if (_hostileAlerted.Add(e.Id) && !(Combat.DefendSelf && CombatRules.IsThreat(e) && e.TypeId != MobTypes.Enderman))
+                RaiseDanger(DangerKind.HostileNearby,
+                    $"{e.DisplayName} {phys.Position.DistanceTo(e.Position):0} blocks away at {Fmt(e.Position)}", abort: false);
     }
 
     private void RaiseDanger(DangerKind kind, string message, bool abort, bool critical = false)
@@ -398,8 +426,18 @@ public sealed partial class MinecraftClient
         await d.Tcs.Task.ConfigureAwait(false);
     }
 
-    /// <summary>Waits <paramref name="ticks"/> client ticks.</summary>
-    private Task WaitTicksAsync(int ticks, CancellationToken ct) => WaitUntilTickAsync(TickCount + Math.Max(1, ticks), ct);
+    /// <summary>A tick is under way (it may have read the input before the caller changed it).</summary>
+    private volatile bool _inTick;
+
+    /// <summary>Waits <paramref name="ticks"/> client ticks that all start after the call: a tick already under way read its input
+    /// (sneak, look) before the caller's change, so it doesn't count (it let a placement go out before the tick that pressed sneak
+    /// for it, and an action's sneak release land after the next action). The flag is read before the counter, so a tick ending in
+    /// between only costs one extra tick.</summary>
+    private Task WaitTicksAsync(int ticks, CancellationToken ct)
+    {
+        bool underWay = _inTick;
+        return WaitUntilTickAsync(TickCount + Math.Max(1, ticks) + (underWay ? 1 : 0), ct);
+    }
 
     /// <summary>Waits until the tick counter reaches <paramref name="target"/>.</summary>
     private async Task WaitUntilTickAsync(long target, CancellationToken ct)

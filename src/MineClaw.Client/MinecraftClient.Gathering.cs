@@ -139,22 +139,34 @@ public sealed partial class MinecraftClient
     {
         if (Safety.IsStandable(World, x, y, z)) return y;
         if (!World.IsLoaded(x, z) || y < 2 || y + 2 >= World.WorldHeight) return null;
-        static bool Half(double top) => top > 0 && top <= 0.5 + 1e-9;
-        double feet;
+        if (SlabFeet(x, y, z) is not { } feet) return null;
+        // The slab's own cell is floor(feet); the body (1.8 tall) fills the cells above it.
+        int y0 = (int)Math.Floor(feet);
+        if (!BodyFitsAbove(x, y0, (int)Math.Floor(feet + 1.8), z)) return null;
+        return World.IsOverVoid(x, y0, z) ? null : feet;
+    }
+
+    private static bool IsHalfTop(double top) => top > 0 && top <= 0.5 + 1e-9;
+
+    /// <summary>Feet on a bottom slab in the cell (y + 0.5) or in the cell below (y - 0.5), else null.</summary>
+    private double? SlabFeet(int x, int y, int z)
+    {
         if (BlockShapes.HasCollision(World, x, y, z))
         {
             double top = BlockShapes.CollisionTop(World, x, y, z);
-            if (!Half(top)) return null;
-            feet = y + top;
+            return IsHalfTop(top) ? y + top : null;
         }
-        else if (BlockShapes.HasCollision(World, x, y - 1, z) && Half(BlockShapes.CollisionTop(World, x, y - 1, z)))
-            feet = y - 1 + BlockShapes.CollisionTop(World, x, y - 1, z);
-        else return null;
-        // The slab's own cell is floor(feet); the body (1.8 tall) fills the cells above it.
-        int y0 = (int)Math.Floor(feet), y1 = (int)Math.Floor(feet + 1.8);
+        if (BlockShapes.HasCollision(World, x, y - 1, z) && IsHalfTop(BlockShapes.CollisionTop(World, x, y - 1, z)))
+            return y - 1 + BlockShapes.CollisionTop(World, x, y - 1, z);
+        return null;
+    }
+
+    /// <summary>Nothing solid or hazardous in the cells above <paramref name="y0"/> up to <paramref name="y1"/>.</summary>
+    private bool BodyFitsAbove(int x, int y0, int y1, int z)
+    {
         for (int yy = y0 + 1; yy <= y1; yy++)
-            if (BlockShapes.HasCollision(World, x, yy, z) || Safety.IsHazard(World, World.GetBlock(x, yy, z))) return null;
-        return World.IsOverVoid(x, y0, z) ? null : feet;
+            if (BlockShapes.HasCollision(World, x, yy, z) || Safety.IsHazard(World, World.GetBlock(x, yy, z))) return false;
+        return true;
     }
 
     /// <summary>Lava or water in the drop's cell or right next to it (a generator's channel).</summary>
@@ -697,12 +709,14 @@ public sealed partial class MinecraftClient
         foreach (var e in World.Entities.All())
         {
             if (e.Kind != EntityKind.Player || e.Id == World.Entities.SelfId || e.Id == World.Player.EntityId) continue;
-            var box = AABB.ForPlayer(e.Position);
-            if (box.MaxX > cell.X && box.MinX < cell.X + 1 && box.MaxZ > cell.Z && box.MinZ < cell.Z + 1
-                && box.MaxY > cell.Y && box.MinY < cell.Y + 2) return e.Name ?? "someone";
+            if (BodyInCell(AABB.ForPlayer(e.Position), cell)) return e.Name ?? "someone";
         }
         return null;
     }
+
+    /// <summary>The body's box overlaps the foot cell or its head cell.</summary>
+    private static bool BodyInCell(AABB box, BlockPos cell) =>
+        box.MaxX > cell.X && box.MinX < cell.X + 1 && box.MaxZ > cell.Z && box.MinZ < cell.Z + 1 && box.MaxY > cell.Y && box.MinY < cell.Y + 2;
 
     /// <summary>How long harvest_generator waits for a dug cell's regen block update before looking closer.</summary>
     public TimeSpan GeneratorRegenWait { get; set; } = TimeSpan.FromSeconds(8);
@@ -860,22 +874,26 @@ public sealed partial class MinecraftClient
                 return $"generator at {Fmt(primary)} shared: {Swinger() ?? Sharer(entities) ?? "someone"} is mining the same cells; waiting gave nothing for 8 s (now {now})";
             var causes = new List<string>();
             foreach (var p in work)
-            {
-                bool lava = false, water = false;
-                BlockPos? obsidian = null;
-                foreach (var f in BlockFaceExtensions.All)
-                {
-                    var n = p.Offset(f);
-                    int id = w.GetBlock(n);
-                    lava |= BlockShapes.IsLava(id);
-                    water |= BlockShapes.IsWater(id);
-                    if (id == Blocks.Obsidian) obsidian ??= n;
-                }
-                if (!lava) causes.Add($"no lava next to {Fmt(p)} any more" + (obsidian is { } o ? $" (obsidian at {Fmt(o)}: the lava turned to obsidian)" : ""));
-                else if (!water) causes.Add($"no water next to {Fmt(p)} any more");
-            }
+                if (CellCause(w, p) is { } cause) causes.Add(cause);
             string why = causes.Count > 0 ? string.Join("; ", causes) : "lava and water are still next to it";
             return $"generator at {Fmt(primary)} stopped producing (now {now}): {why}";
+        }
+
+        /// <summary>Why a generator cell stopped: no lava next to it (turned to obsidian?), or no water; null when both are there.</summary>
+        private static string? CellCause(WorldState w, BlockPos p)
+        {
+            bool lava = false, water = false;
+            BlockPos? obsidian = null;
+            foreach (var f in BlockFaceExtensions.All)
+            {
+                var n = p.Offset(f);
+                int id = w.GetBlock(n);
+                lava |= BlockShapes.IsLava(id);
+                water |= BlockShapes.IsWater(id);
+                if (id == Blocks.Obsidian) obsidian ??= n;
+            }
+            if (!lava) return $"no lava next to {Fmt(p)} any more" + (obsidian is { } o ? $" (obsidian at {Fmt(o)}: the lava turned to obsidian)" : "");
+            return water ? null : $"no water next to {Fmt(p)} any more";
         }
 
         public void Dispose()

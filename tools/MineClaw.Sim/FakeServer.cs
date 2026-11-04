@@ -569,102 +569,109 @@ public partial class FakeServer : IDisposable
     }
 
     /// <summary>1.12.2 server logic that differs from b1.8.1's (see the class remarks). True = handled.</summary>
-    private bool HandleModern(IPacket p)
+    private bool HandleModern(IPacket p) => p switch
     {
-        var srv = _srv!;
-        switch (p)
+        TransactionPacket { Accepted: true } t when _awaitingApology == t.ActionNumber => ModernApologyAccepted(),
+        WindowClickPacket click => ModernClick(click),
+        CloseWindowPacket cw => ModernClose(cw),
+        PlayerDiggingPacket { Status: PlayerDiggingPacket.StatusSwapHands } => ModernSwapHands(),
+        PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection => ModernOpenStation(place),
+        _ => false,
+    };
+
+    /// <summary>processConfirmTransaction: the window unlocks.</summary>
+    private bool ModernApologyAccepted()
+    {
+        _awaitingApology = null;
+        return true;
+    }
+
+    private bool ModernClick(WindowClickPacket click)
+    {
+        if (_awaitingApology is not null) return true; // getCanCraft false: ignored, no reply
+        SyncIn();
+        var w = _srv!.ActiveWindow;
+        if (w.Id != click.WindowId) return true;
+        var outputBefore = w.Get(0);
+        var r = _srv.ApplyClick(click.Slot, (ClickMode)click.EffectiveMode, click.EffectiveButton);
+        bool ok = !RejectActions.Contains(click.ActionNumber) && r.ExpectedItem.Equals(click.ClickedItem);
+        SyncOut();
+        Clicks.Enqueue((click.EffectiveMode, click.Slot, ok));
+        if (ok) AcceptModernClick(click, w, outputBefore);
+        else RejectModernClick(click, w);
+        return true;
+    }
+
+    private void AcceptModernClick(WindowClickPacket click, Window w, ItemStack outputBefore)
+    {
+        // slotChangedCraftingGrid sends the output during slotClick, ahead of the confirm.
+        if (w.Type is WindowType.Player or WindowType.Workbench && !w.Get(0).Equals(outputBefore))
+            Send(new SetSlotPacket { WindowId = (sbyte)w.Id, Slot = 0, Item = w.Get(0) });
+        Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = true });
+    }
+
+    /// <summary>A rejected click: the window locks until the client apologises, and gets the server's window and cursor.</summary>
+    private void RejectModernClick(WindowClickPacket click, Window w)
+    {
+        _awaitingApology = click.ActionNumber;
+        Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = false });
+        Send(new WindowItemsPacket { WindowId = (sbyte)w.Id, Items = AllSlots(w) });
+        Send(new SetSlotPacket { WindowId = -1, Slot = -1, Item = _srv!.Cursor });
+    }
+
+    private static ItemStack[] AllSlots(Window w)
+    {
+        var all = new ItemStack[w.SlotCount];
+        for (int i = 0; i < all.Length; i++) all[i] = w.Get(i);
+        return all;
+    }
+
+    private bool ModernClose(CloseWindowPacket cw)
+    {
+        SyncIn();
+        _srv!.Close(cw.WindowId);
+        _openChest = null;
+        _openFurnace = null;
+        return true;
+    }
+
+    private bool ModernSwapHands()
+    {
+        SyncIn();
+        _srv!.SwapHands(_heldSlot);
+        SyncOut();
+        Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = Inventory[36 + _heldSlot] });
+        Send(new SetSlotPacket { WindowId = 0, Slot = InventoryModel.OffhandSlot, Item = _srv.Offhand });
+        return true;
+    }
+
+    /// <summary>A click on a crafting table, furnace or chest opens its window; anything else isn't handled here.</summary>
+    private bool ModernOpenStation(PlayerBlockPlacementPacket place)
+    {
+        var at = (place.X, place.Y, place.Z);
+        if (Workbenches.Contains(at)) return OpenModernWindow(WindowType.Workbench, 1, "Crafting", 9, null);
+        // ContainerFurnace: input 0, fuel 1, output 2, then the player's main inventory and hotbar.
+        if (Furnaces.TryGetValue(at, out var fslots))
         {
-            case TransactionPacket { Accepted: true } t when _awaitingApology == t.ActionNumber:
-                _awaitingApology = null; // processConfirmTransaction: the window unlocks
-                return true;
-            case WindowClickPacket click:
-            {
-                if (_awaitingApology is not null) return true; // getCanCraft false: ignored, no reply
-                SyncIn();
-                var w = srv.ActiveWindow;
-                if (w.Id != click.WindowId) return true;
-                var outputBefore = w.Get(0);
-                var r = srv.ApplyClick(click.Slot, (ClickMode)click.EffectiveMode, click.EffectiveButton);
-                bool ok = !RejectActions.Contains(click.ActionNumber) && r.ExpectedItem.Equals(click.ClickedItem);
-                SyncOut();
-                Clicks.Enqueue((click.EffectiveMode, click.Slot, ok));
-                if (ok)
-                {
-                    // slotChangedCraftingGrid sends the output during slotClick, ahead of the confirm.
-                    if (w.Type is WindowType.Player or WindowType.Workbench && !w.Get(0).Equals(outputBefore))
-                        Send(new SetSlotPacket { WindowId = (sbyte)w.Id, Slot = 0, Item = w.Get(0) });
-                    Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = true });
-                }
-                else
-                {
-                    _awaitingApology = click.ActionNumber;
-                    Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = false });
-                    var all = new ItemStack[w.SlotCount];
-                    for (int i = 0; i < all.Length; i++) all[i] = w.Get(i);
-                    Send(new WindowItemsPacket { WindowId = (sbyte)w.Id, Items = all });
-                    Send(new SetSlotPacket { WindowId = -1, Slot = -1, Item = srv.Cursor });
-                }
-                return true;
-            }
-            case CloseWindowPacket cw:
-                SyncIn();
-                srv.Close(cw.WindowId);
-                _openChest = null;
-                _openFurnace = null;
-                return true;
-            case PlayerDiggingPacket { Status: PlayerDiggingPacket.StatusSwapHands }:
-            {
-                SyncIn();
-                srv.SwapHands(_heldSlot);
-                SyncOut();
-                Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = Inventory[36 + _heldSlot] });
-                Send(new SetSlotPacket { WindowId = 0, Slot = InventoryModel.OffhandSlot, Item = srv.Offhand });
-                return true;
-            }
-            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
-                                                        && Workbenches.Contains((place.X, place.Y, place.Z)):
-            {
-                SyncIn();
-                sbyte id = (sbyte)++_windowId;
-                var w = srv.Open(id, WindowType.Workbench, "Crafting", 9);
-                Send(new OpenWindowPacket { WindowId = id, InventoryType = 1, Title = "Crafting", SlotCount = 9 });
-                var items = new ItemStack[w.SlotCount];
-                for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
-                Send(new WindowItemsPacket { WindowId = id, Items = items });
-                return true;
-            }
-            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
-                                                        && Furnaces.TryGetValue((place.X, place.Y, place.Z), out var fslots):
-            {
-                // ContainerFurnace: input 0, fuel 1, output 2, then the player's main inventory and hotbar.
-                SyncIn();
-                sbyte id = (sbyte)++_windowId;
-                var w = srv.Open(id, WindowType.Furnace, "Furnace", 3);
-                srv.SetWindowItems(id, fslots.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
-                _openFurnace = (place.X, place.Y, place.Z);
-                Send(new OpenWindowPacket { WindowId = id, InventoryType = 2, Title = "Furnace", SlotCount = 3 });
-                var items = new ItemStack[w.SlotCount];
-                for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
-                Send(new WindowItemsPacket { WindowId = id, Items = items });
-                return true;
-            }
-            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
-                                                        && Chests.TryGetValue((place.X, place.Y, place.Z), out var contents):
-            {
-                SyncIn();
-                sbyte id = (sbyte)++_windowId;
-                var w = srv.Open(id, WindowType.Chest, "Chest", 27);
-                srv.SetWindowItems(id, contents.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
-                _openChest = (place.X, place.Y, place.Z);
-                Send(new OpenWindowPacket { WindowId = id, InventoryType = 0, Title = "Chest", SlotCount = 27 });
-                var items = new ItemStack[w.SlotCount];
-                for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
-                Send(new WindowItemsPacket { WindowId = id, Items = items });
-                return true;
-            }
-            default:
-                return false;
+            OpenModernWindow(WindowType.Furnace, 2, "Furnace", 3, fslots, () => _openFurnace = at);
+            return true;
         }
+        if (!Chests.TryGetValue(at, out var contents)) return false;
+        return OpenModernWindow(WindowType.Chest, 0, "Chest", 27, contents, () => _openChest = at);
+    }
+
+    /// <summary>Opens a window on the server model (filled with <paramref name="contents"/> and the player's inventory when given),
+    /// notes it open, and sends its 0x64 and contents.</summary>
+    private bool OpenModernWindow(WindowType type, byte inventoryType, string title, int slots, ItemStack[]? contents, Action? noteOpen = null)
+    {
+        SyncIn();
+        sbyte id = (sbyte)++_windowId;
+        var w = _srv!.Open(id, type, title, slots);
+        if (contents is not null) _srv.SetWindowItems(id, contents.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
+        noteOpen?.Invoke();
+        Send(new OpenWindowPacket { WindowId = id, InventoryType = inventoryType, Title = title, SlotCount = (byte)slots });
+        Send(new WindowItemsPacket { WindowId = id, Items = AllSlots(w) });
+        return true;
     }
 
     /// <summary>The server model's window 0 from <see cref="Inventory"/> (pickups, eating and tests write the array).</summary>
@@ -679,9 +686,15 @@ public partial class FakeServer : IDisposable
     {
         var cur = _srv!.PlayerSlots();
         for (int i = 0; i < 45; i++) Inventory[i] = cur[i];
-        if (_openChest is { } at && _srv.OpenWindow is { Type: WindowType.Chest } w && Chests.TryGetValue(at, out var contents))
+        SyncOutOpenContainer();
+    }
+
+    /// <summary>The open chest's or furnace's slots back into its contents.</summary>
+    private void SyncOutOpenContainer()
+    {
+        if (_openChest is { } at && _srv!.OpenWindow is { Type: WindowType.Chest } w && Chests.TryGetValue(at, out var contents))
             for (int i = 0; i < contents.Length && i < w.ContainerSlots; i++) contents[i] = w.Get(i);
-        if (_openFurnace is { } fat && _srv.OpenWindow is { Type: WindowType.Furnace } fw && Furnaces.TryGetValue(fat, out var fs))
+        if (_openFurnace is { } fat && _srv!.OpenWindow is { Type: WindowType.Furnace } fw && Furnaces.TryGetValue(fat, out var fs))
             for (int i = 0; i < 3; i++) fs[i] = fw.Get(i);
     }
 
@@ -719,43 +732,69 @@ public partial class FakeServer : IDisposable
 
     private void SmeltStep(MineClaw.Data.Versioning.IGameData data, int ticksPerStep)
     {
-        foreach (var (pos, slots) in Furnaces)
+        foreach (var (pos, slots) in Furnaces) SmeltFurnace(data, ticksPerStep, pos, slots);
+    }
+
+    /// <summary>One furnace's step: the open window's slots first, then refuel, cook (or cool down), and the window gets the changes.</summary>
+    private void SmeltFurnace(MineClaw.Data.Versioning.IGameData data, int ticksPerStep, (int, int, int) pos, ItemStack[] slots)
+    {
+        var st = _furnaceState.GetValueOrDefault(pos);
+        var fw = OpenFurnaceWindow(pos);
+        if (fw != null) for (int i = 0; i < 3; i++) slots[i] = fw.Get(i);
+        var input = slots[0];
+        var recipe = input.IsEmpty ? null : data.SmeltingFor(input.Id, input.Damage);
+        bool fits = OutputFits(recipe, slots[2]);
+        bool changed = fits && Refuel(ref st, slots, data);
+        if (fits && st.Burn > 0) changed |= Cook(ref st, slots, recipe!, data, ticksPerStep);
+        else CoolDown(ref st, ticksPerStep);
+        if (st.Burn < 0) st.Burn = 0;
+        _furnaceState[pos] = st;
+        if (changed && fw != null) PushFurnaceSlots(fw, slots);
+    }
+
+    /// <summary>Nothing cooking: the progress resets and what still burns burns on.</summary>
+    private static void CoolDown(ref (int Burn, int Cook) st, int ticksPerStep)
+    {
+        st.Cook = 0;
+        if (st.Burn > 0) st.Burn -= ticksPerStep;
+    }
+
+    private Window? OpenFurnaceWindow((int, int, int) pos) =>
+        _openFurnace == pos && _srv?.OpenWindow is { Type: WindowType.Furnace } ow ? ow : null;
+
+    /// <summary>A recipe whose output can go into the output slot (empty, or the same output below a full stack).</summary>
+    private static bool OutputFits(SmeltingRecipe? recipe, ItemStack output) =>
+        recipe != null && (output.IsEmpty || output.Id == recipe.OutputId && output.Damage == recipe.OutputDamage && output.Count < 64);
+
+    /// <summary>A burnt-out furnace takes one fuel item: true when it did.</summary>
+    private static bool Refuel(ref (int Burn, int Cook) st, ItemStack[] slots, MineClaw.Data.Versioning.IGameData data)
+    {
+        if (st.Burn > 0 || slots[1].IsEmpty || data.FuelTicks(slots[1].Id) is not (> 0 and var burn)) return false;
+        st.Burn = burn;
+        slots[1] = slots[1].Count <= 1 ? ItemStack.Empty : new ItemStack(slots[1].Id, (byte)(slots[1].Count - 1), slots[1].Damage);
+        return true;
+    }
+
+    /// <summary>Burns and cooks one step: true when an item finished (one input off, one output on).</summary>
+    private static bool Cook(ref (int Burn, int Cook) st, ItemStack[] slots, SmeltingRecipe recipe, MineClaw.Data.Versioning.IGameData data, int ticksPerStep)
+    {
+        st.Burn -= ticksPerStep;
+        st.Cook += ticksPerStep;
+        if (st.Cook < data.CookTicks) return false;
+        st.Cook = 0;
+        var input = slots[0];
+        slots[0] = input.Count <= 1 ? ItemStack.Empty : new ItemStack(input.Id, (byte)(input.Count - 1), input.Damage);
+        slots[2] = slots[2].IsEmpty ? new ItemStack((short)recipe.OutputId, 1, (short)recipe.OutputDamage)
+            : new ItemStack(slots[2].Id, (byte)(slots[2].Count + 1), slots[2].Damage);
+        return true;
+    }
+
+    private void PushFurnaceSlots(Window fw, ItemStack[] slots)
+    {
+        for (int i = 0; i < 3; i++)
         {
-            var st = _furnaceState.GetValueOrDefault(pos);
-            var fw = _openFurnace == pos && _srv?.OpenWindow is { Type: WindowType.Furnace } ow ? ow : null;
-            if (fw != null) for (int i = 0; i < 3; i++) slots[i] = fw.Get(i);
-            var input = slots[0];
-            var recipe = input.IsEmpty ? null : data.SmeltingFor(input.Id, input.Damage);
-            bool fits = recipe != null && (slots[2].IsEmpty || slots[2].Id == recipe.OutputId && slots[2].Damage == recipe.OutputDamage && slots[2].Count < 64);
-            bool changed = false;
-            if (fits && st.Burn <= 0 && !slots[1].IsEmpty && data.FuelTicks(slots[1].Id) is > 0 and var burn)
-            {
-                st.Burn = burn;
-                slots[1] = slots[1].Count <= 1 ? ItemStack.Empty : new ItemStack(slots[1].Id, (byte)(slots[1].Count - 1), slots[1].Damage);
-                changed = true;
-            }
-            if (fits && st.Burn > 0)
-            {
-                st.Burn -= ticksPerStep;
-                st.Cook += ticksPerStep;
-                if (st.Cook >= data.CookTicks)
-                {
-                    st.Cook = 0;
-                    slots[0] = input.Count <= 1 ? ItemStack.Empty : new ItemStack(input.Id, (byte)(input.Count - 1), input.Damage);
-                    slots[2] = slots[2].IsEmpty ? new ItemStack((short)recipe!.OutputId, 1, (short)recipe.OutputDamage)
-                        : new ItemStack(slots[2].Id, (byte)(slots[2].Count + 1), slots[2].Damage);
-                    changed = true;
-                }
-            }
-            else { st.Cook = 0; if (st.Burn > 0) st.Burn -= ticksPerStep; }
-            if (st.Burn < 0) st.Burn = 0;
-            _furnaceState[pos] = st;
-            if (changed && fw != null)
-                for (int i = 0; i < 3; i++)
-                {
-                    fw.Set(i, slots[i]);
-                    Send(new SetSlotPacket { WindowId = (sbyte)fw.Id, Slot = (short)i, Item = slots[i] });
-                }
+            fw.Set(i, slots[i]);
+            Send(new SetSlotPacket { WindowId = (sbyte)fw.Id, Slot = (short)i, Item = slots[i] });
         }
     }
 
@@ -766,16 +805,20 @@ public partial class FakeServer : IDisposable
         Blocks.TryGetValue((x, y, z), out int id);
         if (id is not (MineClaw.Data.Blocks.WoodenDoor or MineClaw.Data.Blocks.Trapdoor or MineClaw.Data.Blocks.FenceGate)) return false;
         Metas.TryGetValue((x, y, z), out int meta);
-        if (id == MineClaw.Data.Blocks.WoodenDoor && (meta & 8) != 0 && Blocks.TryGetValue((x, y - 1, z), out int below) && below == id) { y--; Metas.TryGetValue((x, y, z), out meta); }
+        if (DoorHalfAt(id, x, y - 1, z) && (meta & 8) != 0) { y--; Metas.TryGetValue((x, y, z), out meta); }
         if (Locked.Contains((x, y, z)))
         {
             Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)id, Metadata = (byte)meta });
             return true;
         }
         SetBlock(x, y, z, id, meta ^ 4);
-        if (id == MineClaw.Data.Blocks.WoodenDoor && Blocks.TryGetValue((x, y + 1, z), out int up) && up == id) SetBlock(x, y + 1, z, id, (meta ^ 4) | 8);
+        if (DoorHalfAt(id, x, y + 1, z)) SetBlock(x, y + 1, z, id, (meta ^ 4) | 8);
         return true;
     }
+
+    /// <summary>A wooden door's other half is at (x, y, z).</summary>
+    private bool DoorHalfAt(int id, int x, int y, int z) =>
+        id == MineClaw.Data.Blocks.WoodenDoor && Blocks.TryGetValue((x, y, z), out int other) && other == id;
 
     /// <summary>Item gravity: drops resting on a removed block fall to the next block below (or out of the world).</summary>
     private void SettleDrops(int x, int y, int z)
@@ -828,17 +871,21 @@ public partial class FakeServer : IDisposable
         return id;
     }
 
+    /// <summary>The item's box against the player's box expanded by 1 on x/z (strict: the y overlap too: a slab stand misses floor
+    /// drops).</summary>
+    private bool InPickupReach(double dropX, double dropY, double dropZ, double x, double y, double z)
+    {
+        if (Math.Abs(dropX - x) > 1.425 || Math.Abs(dropZ - z) > 1.425 || Math.Abs(dropY - y) > 1.5) return false;
+        return !(StrictPickup && (dropY + 0.125 <= y || dropY - 0.125 >= y + 1.8));
+    }
+
     private void CheckPickups(double x, double y, double z)
     {
         foreach (var (id, d) in Drops)
         {
             // Vanilla EntityPlayer.onLivingUpdate: items intersecting the player box expanded by 1 on x/z
             // (0.3 + 1 + item half-width 0.125 per axis).
-            double dx = d.X - x, dz = d.Z - z;
-            if (Math.Abs(dx) > 1.425 || Math.Abs(dz) > 1.425 || Math.Abs(d.Y - y) > 1.5) continue;
-            // mc-dev box overlap on y too (the item box ±0.125 against feet..feet+1.8): a slab stand misses floor drops.
-            if (StrictPickup && (d.Y + 0.125 <= y || d.Y - 0.125 >= y + 1.8)) continue;
-            if (!Drops.TryRemove(id, out _)) continue;
+            if (!InPickupReach(d.X, d.Y, d.Z, x, y, z) || !Drops.TryRemove(id, out _)) continue;
             int slot = Array.FindIndex(Inventory, 36, 9, s => s.IsEmpty || s.Id == d.Item.Id);
             if (slot < 0) slot = Array.FindIndex(Inventory, 9, 27, s => s.IsEmpty || s.Id == d.Item.Id);
             var cur = Inventory[slot];

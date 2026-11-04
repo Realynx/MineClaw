@@ -159,30 +159,12 @@ public sealed partial class MinecraftClient
         if (!_safetyFreeze) return false;
         if (SupportVerified(phys.Position))
         {
-            _safetyFreeze = false;
-            if (_freezeTicks > 0) Log($"safety: ground verified under {Fmt(phys.Position)} after {_freezeTicks} ticks; moving again");
-            if (_freezeAlerted)
-                RaiseDanger(DangerKind.Recovered, $"ground loaded under me at {Fmt(phys.Position)}; moving again", abort: false);
-            if (_voidHoldAt is not null)
-            {
-                _voidHoldAt = null;
-                var at = phys.Position;
-                Raise(() => VoidHoldEnded?.Invoke(at));
-            }
+            EndSafetyFreeze(phys);
             return false;
         }
         _freezeTicks++;
         bool loaded = AreaLoaded(phys.Position);
-        // Void under a loaded area: tell the Agent after 2 s. Chunks still streaming in: only after 10 s.
-        if (!_freezeAlerted && _freezeTicks >= (loaded ? 40 : 200))
-        {
-            _freezeAlerted = true;
-            var msg = loaded
-                ? $"teleported to {Fmt(phys.Position)} with only void below; holding still until someone /tp's me or puts a block under me (walking is impossible)"
-                : $"chunks under {Fmt(phys.Position)} not loaded yet; holding still";
-            Log("safety: " + msg);
-            RaiseDanger(DangerKind.UnsafePosition, msg, abort: true, critical: loaded);
-        }
+        AlertFrozen(phys, loaded);
         // Loaded and still nothing below for 2 s (the chunks may have come in after a "not loaded yet"): a void hold, once.
         if (loaded && _voidHoldAt is null && _freezeTicks >= 40)
         {
@@ -191,6 +173,31 @@ public sealed partial class MinecraftClient
             Raise(() => HoldingOverVoid?.Invoke(at));
         }
         return true;
+    }
+
+    /// <summary>The ground is verified: moving again (recovered from an alert, a void hold ended).</summary>
+    private void EndSafetyFreeze(PhysicsState phys)
+    {
+        _safetyFreeze = false;
+        if (_freezeTicks > 0) Log($"safety: ground verified under {Fmt(phys.Position)} after {_freezeTicks} ticks; moving again");
+        if (_freezeAlerted)
+            RaiseDanger(DangerKind.Recovered, $"ground loaded under me at {Fmt(phys.Position)}; moving again", abort: false);
+        if (_voidHoldAt is null) return;
+        _voidHoldAt = null;
+        var at = phys.Position;
+        Raise(() => VoidHoldEnded?.Invoke(at));
+    }
+
+    /// <summary>Void under a loaded area: tell the Agent after 2 s. Chunks still streaming in: only after 10 s.</summary>
+    private void AlertFrozen(PhysicsState phys, bool loaded)
+    {
+        if (_freezeAlerted || _freezeTicks < (loaded ? 40 : 200)) return;
+        _freezeAlerted = true;
+        var msg = loaded
+            ? $"teleported to {Fmt(phys.Position)} with only void below; holding still until someone /tp's me or puts a block under me (walking is impossible)"
+            : $"chunks under {Fmt(phys.Position)} not loaded yet; holding still";
+        Log("safety: " + msg);
+        RaiseDanger(DangerKind.UnsafePosition, msg, abort: true, critical: loaded);
     }
 
     private bool AreaLoaded(Vec3d feet)
@@ -208,16 +215,7 @@ public sealed partial class MinecraftClient
     private MoveInput RetreatOverride(PhysicsState phys, MoveInput input)
     {
         if (Options.EdgeRetreatHostileRadius <= 0 || !phys.OnGround) { _retreatTarget = null; return input; }
-        if (_retreatTarget is null && TickCount % 5 == 0)
-        {
-            bool hostile = World.Entities.Nearby(phys.Position, Options.EdgeRetreatHostileRadius, e => e.IsHostileMob).Count > 0;
-            if (hostile && Guard.IsNearEdge(World, phys) && Guard.FindInterior(World, phys) is { } cell)
-            {
-                _retreatTarget = cell;
-                _retreatUntil = TickCount + 60;
-                Log($"safety: hostile mob close while near the edge; stepping inward to {Fmt(cell)}");
-            }
-        }
+        if (_retreatTarget is null && TickCount % 5 == 0) MaybeStartRetreat(phys);
         if (_retreatTarget is not { } t) return input;
         var c = new Vec3d(t.X + 0.5, phys.Position.Y, t.Z + 0.5);
         double dx = c.X - phys.Position.X, dz = c.Z - phys.Position.Z;
@@ -230,18 +228,23 @@ public sealed partial class MinecraftClient
         return new MoveInput(Forward: 1, Yaw: yaw, Pitch: input.Pitch, Sneak: true);
     }
 
+    /// <summary>A hostile close while near the edge: step inward (for 3 s at most).</summary>
+    private void MaybeStartRetreat(PhysicsState phys)
+    {
+        bool hostile = World.Entities.Nearby(phys.Position, Options.EdgeRetreatHostileRadius, e => e.IsHostileMob).Count > 0;
+        if (!hostile || !Guard.IsNearEdge(World, phys) || Guard.FindInterior(World, phys) is not { } cell) return;
+        _retreatTarget = cell;
+        _retreatUntil = TickCount + 60;
+        Log($"safety: hostile mob close while near the edge; stepping inward to {Fmt(cell)}");
+    }
+
     /// <summary>The EdgeGuard pass: runs every tick right before physics, for drivers and idle alike.</summary>
     private GuardDecision SafetyFilter(PhysicsState phys, MoveInput input, bool allowDrop, ParkourCommit? parkour = null)
     {
         var d = Guard.Filter(World, phys, input, allowDrop, parkour);
         if ((d.Actions & GuardActions.ParkourRejected) != 0 && (_lastGuardActions & GuardActions.ParkourRejected) == 0)
             Log($"safety: gap jump to {Fmt(parkour!.Value.Plan.To)} no longer lands safely at {Fmt(phys.Position)} (tick {parkour.Value.Tick}); guard takes over");
-        bool edgeSneak = (d.Actions & GuardActions.ForcedSneak) != 0;
-        if (edgeSneak != _wasEdgeSneaking)
-        {
-            _wasEdgeSneaking = edgeSneak;
-            Debug(edgeSneak ? $"safety: near void edge at {Fmt(phys.Position)}, sneaking" : "safety: away from the edge");
-        }
+        NoteEdgeSneak(phys, d);
         if (d.Notable && (d.Actions != _lastGuardActions || TickCount - _lastGuardLogTick >= 20))
         {
             _lastGuardLogTick = TickCount;
@@ -256,6 +259,15 @@ public sealed partial class MinecraftClient
         return d;
     }
 
+    /// <summary>Logs when the guard starts or stops forcing a sneak at the edge.</summary>
+    private void NoteEdgeSneak(PhysicsState phys, GuardDecision d)
+    {
+        bool edgeSneak = (d.Actions & GuardActions.ForcedSneak) != 0;
+        if (edgeSneak == _wasEdgeSneaking) return;
+        _wasEdgeSneaking = edgeSneak;
+        Debug(edgeSneak ? $"safety: near void edge at {Fmt(phys.Position)}, sneaking" : "safety: away from the edge");
+    }
+
     private static string Describe(MoveInput i) =>
         $"f{i.Forward:0.#} s{i.Strafe:0.#}{(i.Jump ? " jump" : "")}{(i.Sneak ? " sneak" : "")}{(i.Sprint ? " sprint" : "")} yaw {i.Yaw:0}";
 
@@ -268,19 +280,24 @@ public sealed partial class MinecraftClient
             else ReportFall(phys, "clutching is disabled");
         }
 
-        if (_voidEpisode && (phys.OnGround || phys.OnLadder || phys.InWater) && !World.IsPlayerOverVoid(phys.Position))
+        if (_voidEpisode && Landed(phys)) CloseVoidEpisode(phys);
+    }
+
+    private bool Landed(PhysicsState phys) => (phys.OnGround || phys.OnLadder || phys.InWater) && !World.IsPlayerOverVoid(phys.Position);
+
+    /// <summary>A fall that ended on ground: recovered (said when a clutch went out or the fall was reported).</summary>
+    private void CloseVoidEpisode(PhysicsState phys)
+    {
+        _voidEpisode = false;
+        _voidAlerted = false;
+        if (_clutchPlaced > 0 || _clutchReported)
         {
-            _voidEpisode = false;
-            _voidAlerted = false;
-            if (_clutchPlaced > 0 || _clutchReported)
-            {
-                var msg = $"recovered: landed at {Fmt(phys.Position)}" + (_clutchPlaced > 0 ? $" after placing {_clutchPlaced} clutch block(s)" : "");
-                Log("safety: " + msg);
-                RaiseDanger(DangerKind.Recovered, msg, abort: false);
-            }
-            _clutchPlaced = 0;
-            _clutchReported = false;
+            var msg = $"recovered: landed at {Fmt(phys.Position)}" + (_clutchPlaced > 0 ? $" after placing {_clutchPlaced} clutch block(s)" : "");
+            Log("safety: " + msg);
+            RaiseDanger(DangerKind.Recovered, msg, abort: false);
         }
+        _clutchPlaced = 0;
+        _clutchReported = false;
     }
 
     /// <summary>
@@ -305,12 +322,7 @@ public sealed partial class MinecraftClient
             ReportFall(phys, "no solid face within reach to place a block against");
             return;
         }
-        if (World.Player.HeldSlot != hb || _serverHeldSlot != hb)
-        {
-            World.Player.HeldSlot = hb;
-            _serverHeldSlot = hb;
-            Send(s, new HoldingChangePacket { Slot = (short)hb });
-        }
+        HoldClutchSlot(s, hb);
         var a = p.Aim;
         Send(s, new PlayerBlockPlacementPacket
         {
@@ -322,16 +334,28 @@ public sealed partial class MinecraftClient
         Guard.Stats.CountClutch(p.Saves);
         _clutchPlaced++;
         Log($"safety: clutch {BlockName(blockId, 0)} at {Fmt(p.Target)} against {Fmt(a.Against)} ({(p.Saves ? $"predicted landing, fall {p.PredictedFall:0.#}" : "chaining, landing not yet assured")})");
-        if (!_clutchReported)
-        {
-            _clutchReported = true;
-            _voidAlerted = true;
-            var msg = (voidBelow ? $"knocked off toward the void at {Fmt(phys.Position)}" : $"falling {FallText(phys)} at {Fmt(phys.Position)}")
-                      + $"; placed {BlockName(blockId, 0)} at {Fmt(p.Target)} to catch myself"
-                      + (p.Saves ? " (should land safely)" : " (not sure it is enough)");
-            RaiseDanger(voidBelow ? DangerKind.FallingIntoVoid : DangerKind.HighFall, msg, abort: false, critical: true);
-            AbortCurrentAction(voidBelow ? "falling into the void" : "falling (a deadly drop)");
-        }
+        if (!_clutchReported) ReportClutch(phys, p, blockId, voidBelow);
+    }
+
+    /// <summary>The clutch block in hand, server-side too.</summary>
+    private void HoldClutchSlot(Session s, int hb)
+    {
+        if (World.Player.HeldSlot == hb && _serverHeldSlot == hb) return;
+        World.Player.HeldSlot = hb;
+        _serverHeldSlot = hb;
+        Send(s, new HoldingChangePacket { Slot = (short)hb });
+    }
+
+    /// <summary>The fall's first clutch: a critical danger, and the running action stops.</summary>
+    private void ReportClutch(PhysicsState phys, ClutchPlan p, int blockId, bool voidBelow)
+    {
+        _clutchReported = true;
+        _voidAlerted = true;
+        var msg = (voidBelow ? $"knocked off toward the void at {Fmt(phys.Position)}" : $"falling {FallText(phys)} at {Fmt(phys.Position)}")
+                  + $"; placed {BlockName(blockId, 0)} at {Fmt(p.Target)} to catch myself"
+                  + (p.Saves ? " (should land safely)" : " (not sure it is enough)");
+        RaiseDanger(voidBelow ? DangerKind.FallingIntoVoid : DangerKind.HighFall, msg, abort: false, critical: true);
+        AbortCurrentAction(voidBelow ? "falling into the void" : "falling (a deadly drop)");
     }
 
     private void ReportFall(PhysicsState phys, string why)
@@ -398,24 +422,14 @@ public sealed partial class MinecraftClient
     {
         blockId = 0;
         var inv = World.Inventory;
-        int best = -1, bestScore = -1;
-        for (int i = 0; i < 9; i++)
-        {
-            int sc = ClutchScore(inv.GetPlayerSlot(36 + i));
-            if (sc > bestScore) { bestScore = sc; best = i; }
-        }
+        int best = BestClutchSlot(36, 45);
         if (best >= 0)
         {
-            blockId = inv.GetPlayerSlot(36 + best).Id;
-            return best;
+            blockId = inv.GetPlayerSlot(best).Id;
+            return best - 36;
         }
 
-        int src = -1;
-        for (int slot = 9; slot < 36; slot++)
-        {
-            int sc = ClutchScore(inv.GetPlayerSlot(slot));
-            if (sc > bestScore) { bestScore = sc; src = slot; }
-        }
+        int src = BestClutchSlot(9, 36);
         if (src < 0) return -1;
         if (inv.OpenWindow is { } open)
         {
@@ -433,6 +447,19 @@ public sealed partial class MinecraftClient
         return inv.GetPlayerSlot(36 + hb).Id == blockId ? hb : -1;
     }
 
+    /// <summary>The window-0 slot in <paramref name="from"/>..<paramref name="to"/> (exclusive) with the best clutch block (the first
+    /// on a tie), or -1.</summary>
+    private int BestClutchSlot(int from, int to)
+    {
+        int best = -1, bestScore = -1;
+        for (int slot = from; slot < to; slot++)
+        {
+            int sc = ClutchScore(World.Inventory.GetPlayerSlot(slot));
+            if (sc > bestScore) { bestScore = sc; best = slot; }
+        }
+        return best;
+    }
+
     private void ClickNoWait(Session s, int slot)
     {
         var r = World.Inventory.ApplyClick(slot, false, false);
@@ -445,6 +472,16 @@ public sealed partial class MinecraftClient
 
     // ------------------------------------------------------------------ action-level helpers
 
+    private string? NearGoalOverVoid(GoalNear n)
+    {
+        int r = (int)Math.Ceiling(n.Range);
+        for (int x = n.Target.X - r; x <= n.Target.X + r; x++)
+        for (int y = n.Target.Y - r; y <= n.Target.Y + r; y++)
+        for (int z = n.Target.Z - r; z <= n.Target.Z + r; z++)
+            if (n.IsReached(x, y, z) && !World.IsOverVoid(x, y, z)) return null;
+        return $"refusing to go near {Fmt(n.Target)}: everything within {n.Range:0.#} is over the void";
+    }
+
     /// <summary>Why <paramref name="goal"/> can't be stood at (every candidate cell is over the void), or null.</summary>
     private string? GoalOverVoid(Goal goal)
     {
@@ -453,14 +490,7 @@ public sealed partial class MinecraftClient
             case GoalBlock b when World.IsLoaded(b.Target.X, b.Target.Z) && World.IsOverVoid(b.Target.X, b.Target.Y, b.Target.Z):
                 return $"refusing to go to {Fmt(b.Target)}: there is nothing under it but void";
             case GoalNear n when n.Range <= 6 && World.IsLoaded(n.Target.X, n.Target.Z):
-            {
-                int r = (int)Math.Ceiling(n.Range);
-                for (int x = n.Target.X - r; x <= n.Target.X + r; x++)
-                for (int y = n.Target.Y - r; y <= n.Target.Y + r; y++)
-                for (int z = n.Target.Z - r; z <= n.Target.Z + r; z++)
-                    if (n.IsReached(x, y, z) && !World.IsOverVoid(x, y, z)) return null;
-                return $"refusing to go near {Fmt(n.Target)}: everything within {n.Range:0.#} is over the void";
-            }
+                return NearGoalOverVoid(n);
             case GoalFiltered { Inner: GoalNear fn }: // "within N, not from under the ground": the void test is the plain one's
                 return GoalOverVoid(fn);
             default:

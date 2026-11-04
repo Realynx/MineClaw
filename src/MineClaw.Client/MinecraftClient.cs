@@ -453,26 +453,39 @@ public sealed partial class MinecraftClient : IAsyncDisposable
 
     // ------------------------------------------------------------------ reader thread
 
+    /// <summary>Reads and dispatches packets until the stream ends or the session is cancelled; true when the session ended itself.</summary>
+    private bool PumpPackets(Session s)
+    {
+        while (!s.Cts.IsCancellationRequested)
+        {
+            var p = s.Conn.ReadPacket();
+            if (p is null) break;
+            DispatchGuarded(s, p);
+            if (p.Id != KeepAlivePacket.PacketId) _changed.Pulse();
+            if (s.Ended) return true;
+        }
+        return false;
+    }
+
+    /// <summary>A handler's own error is logged, never the end of the reader (stream errors still end it).</summary>
+    private void DispatchGuarded(Session s, IPacket p)
+    {
+        try
+        {
+            Dispatch(s, p);
+        }
+        catch (Exception ex) when (ex is not (IOException or ObjectDisposedException))
+        {
+            Log($"error handling 0x{p.Id:X2}: {ex.Message}");
+        }
+    }
+
     private void ReaderLoop(Session s)
     {
         string reason = "server closed the connection";
         try
         {
-            while (!s.Cts.IsCancellationRequested)
-            {
-                var p = s.Conn.ReadPacket();
-                if (p is null) break;
-                try
-                {
-                    Dispatch(s, p);
-                }
-                catch (Exception ex) when (ex is not (IOException or ObjectDisposedException))
-                {
-                    Log($"error handling 0x{p.Id:X2}: {ex.Message}");
-                }
-                if (p.Id != KeepAlivePacket.PacketId) _changed.Pulse();
-                if (s.Ended) return;
-            }
+            if (PumpPackets(s)) return;
         }
         catch (ProtocolException ex)
         {

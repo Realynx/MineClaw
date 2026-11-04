@@ -13,10 +13,13 @@ namespace MineClaw.MemoryExplorer.Tests;
 /// </summary>
 internal static class StateDump
 {
-    public static string Of(object? o, int depth = 2)
+    public static string Of(object? o, int depth = 2) => Of(o, depth, null);
+
+    /// <summary>The dump without the properties named in <paramref name="skip"/> (at any level).</summary>
+    public static string Of(object? o, int depth, IReadOnlySet<string>? skip)
     {
         var sb = new StringBuilder();
-        Write(sb, o, depth, "");
+        Write(sb, o, depth, "", skip);
         return sb.ToString();
     }
 
@@ -26,7 +29,7 @@ internal static class StateDump
 
     private static bool Ours(Type t) => t.Namespace?.StartsWith("MineClaw", StringComparison.Ordinal) == true;
 
-    private static void Write(StringBuilder sb, object? o, int depth, string indent)
+    private static void Write(StringBuilder sb, object? o, int depth, string indent, IReadOnlySet<string>? skip)
     {
         switch (o)
         {
@@ -45,7 +48,7 @@ internal static class StateDump
             foreach (var item in e)
             {
                 sb.Append('\n').Append(indent).Append("  ").Append(n++).Append(": ");
-                Write(sb, item, depth - 1, indent + "  ");
+                Write(sb, item, depth - 1, indent + "  ", skip);
             }
             sb.Append(n > 0 ? "\n" + indent + "]" : "]");
             return;
@@ -54,12 +57,12 @@ internal static class StateDump
         sb.Append(t.Name).Append(" {");
         foreach (var p in t.GetProperties(BindingFlags.Instance | BindingFlags.Public).Where(p => p.GetIndexParameters().Length == 0).OrderBy(p => p.Name, StringComparer.Ordinal))
         {
-            if (typeof(ICommand).IsAssignableFrom(p.PropertyType)) continue;
+            if (typeof(ICommand).IsAssignableFrom(p.PropertyType) || skip?.Contains(p.Name) == true) continue;
             sb.Append('\n').Append(indent).Append("  ").Append(p.Name).Append(" = ");
             object? v;
             try { v = p.GetValue(o); }
             catch (TargetInvocationException ex) { sb.Append("throws ").Append(ex.InnerException?.GetType().Name); continue; }
-            Write(sb, v, depth - 1, indent + "  ");
+            Write(sb, v, depth - 1, indent + "  ", skip);
         }
         sb.Append('\n').Append(indent).Append('}');
     }

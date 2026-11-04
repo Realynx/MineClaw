@@ -547,7 +547,12 @@ public sealed partial class CombatEngine
         int dmg = prev - hp;
         var attacker = Attacker(phys);
         if (attacker is { Kind: EntityKind.Mob }) _provoked[attacker.Id] = _tick;
-        if (_fight is not { } f) return;
+        if (_fight is { } f) RecordHitTaken(f, phys, attacker, dmg, hp);
+    }
+
+    /// <summary>A hit taken in a fight: counted (the spar opponent's per round), logged, and a spar stops on a hit from anything else.</summary>
+    private void RecordHitTaken(Fight f, PhysicsState phys, Entity? attacker, int dmg, int hp)
+    {
         f.DamageTaken += dmg;
         bool fromOpponent = f.Spar is { } s && attacker?.Id == s.OpponentId;
         if (fromOpponent) { f.HitsReceived++; f.Spar!.RoundOpp++; }
@@ -601,26 +606,42 @@ public sealed partial class CombatEngine
         bool ranged = tactic == MobTactic.Ranged;
         if (tactic != MobTactic.Melee && !ranged || !CombatRules.IsThreat(target)) return null;
         var pick = WeaponChoice.Best(_w.Inventory.PlayerSlots(), Reserved(), Options.NeverWield, Rules);
-        if (WeaponChoice.Dps(pick.ItemId, Rules) is not { } dps || dps <= 0) return null;
-        // An archer strafes and backs off (1.12.2 EntityAIAttackRangedBow): at best about one landed swing a second, after the walk in.
-        if (ranged) dps = Math.Min(dps, Rules.ChargedDamage(Math.Max(0, pick.ItemId), 1f) * RangedHitsPerSecond);
+        if (EstimateDps(pick, ranged) is not { } dps) return null;
         var mobs = MeleeThreats(phys.Position);
         if (!mobs.Any(m => m.Id == target.Id)) mobs.Add(target);
         int diff = Difficulty?.Invoke() ?? 2;
-        // The target is knocked back by every charged hit and must walk in again: it lands about 0.6 of its hits.
-        double incoming = mobs.Where(m => CombatRules.ProfileOf(m).Tactic != MobTactic.Ranged)
-            .Sum(m => CombatRules.MonsterDamageToPlayer(CombatRules.MeleeDamageOf(m), diff) * (m.Id == target.Id ? KnockedBackHitShare : 1.0));
-        // Archers in sight within their 15-block range: a shield in the off hand takes most arrows.
-        var archers = _w.Entities.Nearby(phys.Position, 16, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Ranged
-            && (e.Id == target.Id || CombatGeometry.HasLineOfSight(_w, Eye(e), phys.EyePosition))).ToList();
-        if (ranged && !archers.Any(a => a.Id == target.Id)) archers.Add(target);
-        incoming += archers.Count * ArrowDps(diff) * (CanBlockNow() ? ShieldArrowShare : 1.0);
+        double incoming = IncomingDps(phys, target, ranged, mobs, diff);
         if (incoming <= 0) return null;
         double health = mobs.Sum(m => m.Health is float h and > 0 ? h : CombatRules.ProfileOf(m).MaxHealth);
         double walk = ranged ? Math.Max(0, Horizontal(phys.Position, target.Position) - Options.Reach) / RangedApproachSpeed : 0;
         double kill = health / dps + walk, die = Math.Max(0, _w.Player.Health - 1) / incoming;
+        return (kill, die, EstimateText(pick, dps, mobs.Count, health, incoming));
+    }
+
+    /// <summary>The weapon's damage per second (null without one). An archer strafes and backs off (1.12.2 EntityAIAttackRangedBow):
+    /// at best about one landed swing a second, after the walk in.</summary>
+    private double? EstimateDps(WeaponPick pick, bool ranged)
+    {
+        if (WeaponChoice.Dps(pick.ItemId, Rules) is not { } dps || dps <= 0) return null;
+        return ranged ? Math.Min(dps, Rules.ChargedDamage(Math.Max(0, pick.ItemId), 1f) * RangedHitsPerSecond) : dps;
+    }
+
+    /// <summary>Damage per second coming in: the melee mobs' (the target, knocked back by every charged hit, lands about 0.6 of its
+    /// hits) and the archers' in sight within their 15-block range (a shield in the off hand takes most arrows).</summary>
+    private double IncomingDps(PhysicsState phys, Entity target, bool ranged, List<Entity> mobs, int diff)
+    {
+        double incoming = mobs.Where(m => CombatRules.ProfileOf(m).Tactic != MobTactic.Ranged)
+            .Sum(m => CombatRules.MonsterDamageToPlayer(CombatRules.MeleeDamageOf(m), diff) * (m.Id == target.Id ? KnockedBackHitShare : 1.0));
+        var archers = _w.Entities.Nearby(phys.Position, 16, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Ranged
+            && (e.Id == target.Id || CombatGeometry.HasLineOfSight(_w, Eye(e), phys.EyePosition))).ToList();
+        if (ranged && !archers.Any(a => a.Id == target.Id)) archers.Add(target);
+        return incoming + archers.Count * ArrowDps(diff) * (CanBlockNow() ? ShieldArrowShare : 1.0);
+    }
+
+    private string EstimateText(WeaponPick pick, double dps, int mobs, double health, double incoming)
+    {
         string weapon = pick.ItemId > 0 ? Items.Get(pick.ItemId).Name.Replace('_', ' ') : "bare hands";
-        return (kill, die, $"{weapon} {dps:0.#} dmg/s vs {mobs.Count} mob{(mobs.Count > 1 ? "s" : "")} with {health:0} hp, taking {incoming:0.#}/s at hp {_w.Player.Health}");
+        return $"{weapon} {dps:0.#} dmg/s vs {mobs} mob{(mobs > 1 ? "s" : "")} with {health:0} hp, taking {incoming:0.#}/s at hp {_w.Player.Health}";
     }
 
     /// <summary>Beyond this an archer stops shooting (its 15-block attack range, plus a margin).</summary>

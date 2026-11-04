@@ -33,32 +33,44 @@ public sealed partial class MinecraftClient
         {
             ct.ThrowIfCancellationRequested();
             if (await SelectRodAsync(ct).ConfigureAwait(false) is null) break; // it broke and there's no spare
-            int me = World.Player.EntityId;
-            var before = Bobbers(me).Select(e => e.Id).ToHashSet();
-            Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
             casts++;
-            Entity? bob = null;
-            await WaitUntilAsync(() => (bob = Bobbers(me).FirstOrDefault(e => !before.Contains(e.Id))) != null, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
-            if (bob is null) { if (++lost >= 3) return ActionResult.Fail($"the cast never showed a bobber ({casts} casts)"); continue; }
-            var detector = new BiteDetector();
-            var left = end - DateTime.UtcNow;
-            var wait = left < TimeSpan.FromSeconds(45) ? left : TimeSpan.FromSeconds(45);
-            bool bit = await WaitUntilAsync(() => World.Entities.Get(bob.Id) is not { } e || detector.Sample(e.Position.Y, e.Velocity.Y),
-                wait < TimeSpan.Zero ? TimeSpan.Zero : wait, ct).ConfigureAwait(false) && World.Entities.Get(bob.Id) != null;
-            // Reel in: on a bite the catch flies to us; otherwise this just pulls the line back for the next cast.
-            Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
-            if (bit)
+            var outcome = await CastAndReelAsync(end, ct).ConfigureAwait(false);
+            if (outcome is null)
             {
-                bites++;
-                int had = FishCount();
-                await WaitUntilAsync(() => FishCount() > had, TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+                if (++lost >= 3) return ActionResult.Fail($"the cast never showed a bobber ({casts} casts)");
+                continue;
             }
-            else await WaitTicksAsync(5, ct).ConfigureAwait(false);
+            if (outcome.Value) bites++;
         }
         int caught = FishCount() - fishBefore;
         return casts == 0
             ? ActionResult.Fail($"no fishing rod to cast ({ItemName(rod.Id, rod.Damage)} worn out)")
             : ActionResult.Success($"fished: {casts} cast(s), {bites} bite(s), {caught} fish caught");
+    }
+
+    /// <summary>One cast: waits for a bite (up to 45 s, never past <paramref name="end"/>) and reels in; on a bite the catch flies to us,
+    /// otherwise this just pulls the line back for the next cast. True = a bite, false = none, null = no bobber showed.</summary>
+    private async Task<bool?> CastAndReelAsync(DateTime end, CancellationToken ct)
+    {
+        int me = World.Player.EntityId;
+        var before = Bobbers(me).Select(e => e.Id).ToHashSet();
+        Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
+        Entity? bob = null;
+        await WaitUntilAsync(() => (bob = Bobbers(me).FirstOrDefault(e => !before.Contains(e.Id))) != null, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+        if (bob is null) return null;
+        var detector = new BiteDetector();
+        var left = end - DateTime.UtcNow;
+        var wait = left < TimeSpan.FromSeconds(45) ? left : TimeSpan.FromSeconds(45);
+        bool bit = await WaitUntilAsync(() => World.Entities.Get(bob.Id) is not { } e || detector.Sample(e.Position.Y, e.Velocity.Y),
+            wait < TimeSpan.Zero ? TimeSpan.Zero : wait, ct).ConfigureAwait(false) && World.Entities.Get(bob.Id) != null;
+        Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
+        if (bit)
+        {
+            int had = FishCount();
+            await WaitUntilAsync(() => FishCount() > had, TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+        }
+        else await WaitTicksAsync(5, ct).ConfigureAwait(false);
+        return bit;
     }
 
     private List<Entity> Bobbers(int me) =>

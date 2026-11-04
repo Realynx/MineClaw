@@ -86,8 +86,7 @@ public static class PortalEntry
     public static async Task<ActionResult> EnterAsync(WorldState w, Func<Goal, CancellationToken, Task<ActionResult>> go,
         Func<int, CancellationToken, Task> waitTicks, BlockPos portal, TimeSpan switchTimeout, CancellationToken ct)
     {
-        int dim = w.Dimension;
-        bool Switched() => w.Dimension != dim;
+        var walk = new PortalWalk(w, go, waitTicks, ct);
         var stands = StandCells(w, portal, w.Player.Position);
         if (stands.Count == 0)
             return ActionResult.Fail(w.GetBlock(portal) == Blocks.Portal ? $"portal at {portal} has no floor to stand on" : $"no portal block at {portal}");
@@ -95,47 +94,74 @@ public static class PortalEntry
         if (InPortal(w, w.Player.Position))
         {
             // Just came through (or never left): the server's cooldown refreshes every tick in the sheet.
-            var outs = StepOutCells(w, w.Player.Position);
-            ActionResult? stepped = null;
-            foreach (var o in outs.Take(4))
-            {
-                stepped = await go(new GoalBlock(o), ct).ConfigureAwait(false);
-                if (Switched()) return Arrived(w, dim);
-                if (stepped.Ok && !InPortal(w, w.Player.Position)) break;
-            }
-            if (InPortal(w, w.Player.Position))
-                return ActionResult.Fail("standing in the portal but can't step out of it (the server only lets you back through after "
-                                         + "~1 s outside the sheet)" + (stepped is { Ok: false } s ? ": " + s.Message : ""));
-            await waitTicks(StepOutTicks, ct).ConfigureAwait(false);
+            if (await walk.StepOutAsync().ConfigureAwait(false) is { } outcome) return outcome;
             stands = StandCells(w, portal, w.Player.Position);
             if (stands.Count == 0) return ActionResult.Fail($"the portal at {portal} is gone");
         }
+        if (await walk.StepInAsync(stands).ConfigureAwait(false) is { } entered) return entered;
+        return await walk.WaitForSwitchAsync(stands[0], switchTimeout).ConfigureAwait(false);
+    }
 
-        ActionResult? last = null;
-        foreach (var stand in stands.Take(3))
-        {
-            last = await go(new GoalBlock(stand), ct).ConfigureAwait(false);
-            if (Switched()) return Arrived(w, dim);
-            if (InPortal(w, w.Player.Position)) break;
-        }
-        if (!InPortal(w, w.Player.Position))
-            return ActionResult.Fail($"couldn't step into the portal at {stands[0]}" + (last is { Ok: false } l ? ": " + l.Message : ""));
+    /// <summary>One walk through a portal: the dimension it started in and the walking it does.</summary>
+    private sealed class PortalWalk(WorldState w, Func<Goal, CancellationToken, Task<ActionResult>> go, Func<int, CancellationToken, Task> waitTicks,
+        CancellationToken ct)
+    {
+        private readonly int _dim = w.Dimension;
 
-        // Stand still: ~80 ticks in the sheet, then 0x09. A shove out (player, mob) gets one walk back in.
-        var until = DateTime.UtcNow + switchTimeout;
-        bool retried = false;
-        while (!Switched())
+        private bool Switched => w.Dimension != _dim;
+
+        private bool Inside => InPortal(w, w.Player.Position);
+
+        /// <summary>Steps out of the sheet and waits there (the server only lets the body back through after ~1 s outside): null,
+        /// or the outcome (through after all, or stuck inside).</summary>
+        public async Task<ActionResult?> StepOutAsync()
         {
-            if (DateTime.UtcNow >= until) return ActionResult.Fail($"stood in the portal at {stands[0]} but nothing happened (is it lit, allow-nether on?)");
-            if (!retried && !InPortal(w, w.Player.Position))
+            ActionResult? stepped = null;
+            foreach (var o in StepOutCells(w, w.Player.Position).Take(4))
             {
-                retried = true;
-                await go(new GoalBlock(stands[0]), ct).ConfigureAwait(false);
-                continue;
+                stepped = await go(new GoalBlock(o), ct).ConfigureAwait(false);
+                if (Switched) return Arrived(w, _dim);
+                if (stepped.Ok && !Inside) break;
             }
-            await Task.Delay(50, ct).ConfigureAwait(false);
+            if (Inside)
+                return ActionResult.Fail("standing in the portal but can't step out of it (the server only lets you back through after "
+                                         + "~1 s outside the sheet)" + (stepped is { Ok: false } s ? ": " + s.Message : ""));
+            await waitTicks(StepOutTicks, ct).ConfigureAwait(false);
+            return null;
         }
-        return Arrived(w, dim);
+
+        /// <summary>Walks onto the first stand cell that gets the body into the sheet: null once inside, else the outcome.</summary>
+        public async Task<ActionResult?> StepInAsync(List<BlockPos> stands)
+        {
+            ActionResult? last = null;
+            foreach (var stand in stands.Take(3))
+            {
+                last = await go(new GoalBlock(stand), ct).ConfigureAwait(false);
+                if (Switched) return Arrived(w, _dim);
+                if (Inside) return null;
+            }
+            if (Inside) return null;
+            return ActionResult.Fail($"couldn't step into the portal at {stands[0]}" + (last is { Ok: false } l ? ": " + l.Message : ""));
+        }
+
+        /// <summary>Stand still: ~80 ticks in the sheet, then 0x09. A shove out (player, mob) gets one walk back in.</summary>
+        public async Task<ActionResult> WaitForSwitchAsync(BlockPos stand, TimeSpan switchTimeout)
+        {
+            var until = DateTime.UtcNow + switchTimeout;
+            bool retried = false;
+            while (!Switched)
+            {
+                if (DateTime.UtcNow >= until) return ActionResult.Fail($"stood in the portal at {stand} but nothing happened (is it lit, allow-nether on?)");
+                if (!retried && !Inside)
+                {
+                    retried = true;
+                    await go(new GoalBlock(stand), ct).ConfigureAwait(false);
+                    continue;
+                }
+                await Task.Delay(50, ct).ConfigureAwait(false);
+            }
+            return Arrived(w, _dim);
+        }
     }
 
     private static ActionResult Arrived(WorldState w, int from) =>

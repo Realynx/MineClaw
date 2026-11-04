@@ -56,14 +56,17 @@ public static class WeaponChoice
             if (s.IsEmpty || !Usable(s, reserved, neverWield)) continue;
             int dmg = Dmg(s.Id, rules);
             if (dmg <= 1) continue;
-            double score = Dps(s.Id, rules) is { } dps
-                ? (dps <= handDps ? double.MinValue : dps * 10 + (CombatRules.IsSword(s.Id) ? 2 : 0) + (i >= 36 ? 1 : 0))
-                : dmg * 10 + (CombatRules.IsSword(s.Id) ? 5 : 0) + (i >= 36 ? 1 : 0);
+            double score = WeaponScore(s.Id, i, dmg, handDps, rules);
             if (score == double.MinValue) continue;
             if (score > bestScore) { bestScore = score; best = new WeaponPick(i, s.Id, dmg); }
         }
         return best ?? Hand(slots, reserved, neverWield);
     }
+
+    /// <summary>Damage per second with a cooldown (no better than the hand: never), else damage; swords and the hotbar win ties.</summary>
+    private static double WeaponScore(int id, int slot, int dmg, double? handDps, ICombatRules? rules) => Dps(id, rules) is { } dps
+        ? (dps <= handDps ? double.MinValue : dps * 10 + (CombatRules.IsSword(id) ? 2 : 0) + (slot >= 36 ? 1 : 0))
+        : dmg * 10 + (CombatRules.IsSword(id) ? 5 : 0) + (slot >= 36 ? 1 : 0);
 
     /// <summary>The weakest real weapon (damage &gt; 1), else the hand.</summary>
     public static WeaponPick Weakest(IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, IReadOnlySet<int> neverWield, ICombatRules? rules = null)
@@ -75,11 +78,14 @@ public static class WeaponChoice
             if (s.IsEmpty || !Usable(s, reserved, neverWield)) continue;
             int dmg = Dmg(s.Id, rules);
             if (dmg <= 1) continue;
-            if (pick is null || dmg < pick.Value.Damage || (dmg == pick.Value.Damage && i >= 36 && !pick.Value.InHotbar))
-                pick = new WeaponPick(i, s.Id, dmg);
+            if (WeakerThan(pick, dmg, i)) pick = new WeaponPick(i, s.Id, dmg);
         }
         return pick ?? Hand(slots, reserved, neverWield);
     }
+
+    /// <summary>Weaker than the pick so far (a hotbar one wins a tie with one outside it).</summary>
+    private static bool WeakerThan(WeaponPick? pick, int dmg, int slot) =>
+        pick is not { } p || dmg < p.Damage || (dmg == p.Damage && slot >= 36 && !p.InHotbar);
 
     /// <summary>A hotbar slot dealing 1 damage: empty first, else a plain item (not a tool, weapon or food).</summary>
     public static WeaponPick Hand(IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, IReadOnlySet<int> neverWield, ICombatRules? rules = null)
@@ -87,16 +93,22 @@ public static class WeaponChoice
         for (int i = 36; i < 45 && i < slots.Count; i++)
             if (slots[i].IsEmpty) return new WeaponPick(i, 0, 1);
         for (int i = 36; i < 45 && i < slots.Count; i++)
-        {
-            var s = slots[i];
-            if (Dmg(s.Id, rules) == 1 && (!Items.Exists(s.Id) || Items.Get(s.Id).MaxDamage == 0) && Items.Food(s.Id) is null)
-                return new WeaponPick(i, s.Id, 1);
-        }
-        // Every hotbar slot holds a tool or food: the least damaging one.
+            if (IsPlainItem(slots[i], rules)) return new WeaponPick(i, slots[i].Id, 1);
+        return LeastDamaging(slots, rules);
+    }
+
+    /// <summary>Hits for 1 and is no tool (wears) and no food.</summary>
+    private static bool IsPlainItem(ItemStack s, ICombatRules? rules) =>
+        Dmg(s.Id, rules) == 1 && (!Items.Exists(s.Id) || Items.Get(s.Id).MaxDamage == 0) && Items.Food(s.Id) is null;
+
+    /// <summary>Every hotbar slot holds a tool or food: the least damaging one.</summary>
+    private static WeaponPick LeastDamaging(IReadOnlyList<ItemStack> slots, ICombatRules? rules)
+    {
         int least = 36;
         for (int i = 37; i < 45 && i < slots.Count; i++)
             if (Dmg(slots[i].Id, rules) < Dmg(slots[least].Id, rules)) least = i;
-        return new WeaponPick(least, slots.Count > least ? slots[least].Id : 0, Dmg(slots.Count > least ? slots[least].Id : 0, rules));
+        int id = slots.Count > least ? slots[least].Id : 0;
+        return new WeaponPick(least, id, Dmg(id, rules));
     }
 
     public static WeaponPick ForSpar(SparWeapon mode, IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, IReadOnlySet<int> neverWield,

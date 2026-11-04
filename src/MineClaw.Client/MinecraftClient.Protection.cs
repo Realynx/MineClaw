@@ -67,6 +67,12 @@ public sealed partial class MinecraftClient
         if (NeverBreak?.Invoke(p) == true) return false;
         if (MineSource?.Invoke(p, id) == true || OverridesSoft(p, id)) return true;
         if (NaturalResource(id, World.Dimension) || NaturalPlant(id)) return true;
+        return TerrainMineSource(p, id);
+    }
+
+    /// <summary>Natural terrain in a normal world, a generator cell on skyblock, a log of a real tree.</summary>
+    private bool TerrainMineSource(BlockPos p, int id)
+    {
         bool skyblock = WorldMode.Current.GeneratorStone;
         if (!skyblock && NaturalTerrain(id)) return true;
         if (skyblock && id is Blocks.Cobblestone or Blocks.Stone) return LavaCouldFlowInto(p) && NextToWater(p);
@@ -80,13 +86,17 @@ public sealed partial class MinecraftClient
     private const int QuartzOre = 153;
 
     /// <summary>Blocks that are a resource wherever they are (nobody builds floors from ore or gravel).</summary>
-    public static bool NaturalResource(int id, int dimension) => id switch
-    {
-        Blocks.CoalOre or Blocks.IronOre or Blocks.GoldOre or Blocks.DiamondOre or Blocks.LapisOre or Blocks.RedstoneOre or Blocks.LitRedstoneOre
-            or EmeraldOre or Blocks.Gravel or Blocks.Sand or Blocks.Clay or Blocks.Leaves or Trees.Wood.Leaves2 => true,
-        QuartzOre or Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone => dimension == -1,
-        _ => false,
-    };
+    public static bool NaturalResource(int id, int dimension) =>
+        AnywhereResources.Contains(id) || dimension == -1 && NetherResources.Contains(id);
+
+    private static readonly HashSet<int> AnywhereResources =
+    [
+        Blocks.CoalOre, Blocks.IronOre, Blocks.GoldOre, Blocks.DiamondOre, Blocks.LapisOre, Blocks.RedstoneOre, Blocks.LitRedstoneOre,
+        EmeraldOre, Blocks.Gravel, Blocks.Sand, Blocks.Clay, Blocks.Leaves, Trees.Wood.Leaves2,
+    ];
+
+    /// <summary>Resources only in the Nether (elsewhere they were brought and placed).</summary>
+    private static readonly HashSet<int> NetherResources = [QuartzOre, Blocks.Netherrack, Blocks.SoulSand, Blocks.Glowstone];
 
     /// <summary>Wild plants are resources for mining/mowing, not placed structures. Includes tall grass and ferns,
     /// dead bush, dandelion, poppy and the 1.12.2 flowers (same id), and
@@ -201,59 +211,76 @@ public sealed partial class MinecraftClient
         var sp = World.Spawn;
         int d = Math.Max(Math.Abs(p.X - sp.X), Math.Abs(p.Z - sp.Z));
         bool nearSpawn = !SpawnProtectionDisabled && World.Dimension == 0 && d <= VanillaSpawnProtection;
-        if (nearSpawn && _lastOkInsideSpawn is { } proof && Environment.TickCount64 - proof.At < SpawnProofWindow.TotalMilliseconds)
+        if (nearSpawn) nearSpawn = WeighUndoneNearSpawn(p, what, sp, d);
+        if (Volatile.Read(ref _actionEditsOk) == 0) AbortAfterUndoneEdit(p, what, nearSpawn);
+    }
+
+    /// <summary>An undone edit <paramref name="d"/> from spawn: proof my edits work here, leaves (decay races) or another bot at
+    /// work on the spot explain it; otherwise it counts toward learning the spawn-protected region. False when it isn't spawn
+    /// protection.</summary>
+    private bool WeighUndoneNearSpawn(BlockPos p, string what, BlockPos sp, int d)
+    {
+        if (_lastOkInsideSpawn is { } proof && Environment.TickCount64 - proof.At < SpawnProofWindow.TotalMilliseconds)
         {
             // My digs/placements inside the spawn square worked minutes ago (op, or protection off): one that didn't take
             // is a lag/race failure, not spawn protection. Learning a region here once blocked replanting a tree whose
             // logs I had just felled at that very spot.
             Log($"server didn't take my {what} at {Fmt(p)}, but my edit at {Fmt(proof.Pos)} ({d} from spawn too) worked "
                 + $"{(Environment.TickCount64 - proof.At) / 1000}s ago: not spawn protection");
-            nearSpawn = false;
+            return false;
         }
-        else if (nearSpawn && Trees.Wood.IsLeaves(World.GetBlock(p)))
+        if (Trees.Wood.IsLeaves(World.GetBlock(p)))
         {
             // Leaves race with decay and with another bot chopping the same crown: never evidence of protection.
             Log($"server didn't take my {what} at {Fmt(p)} (leaves): not counted as spawn protection");
+            return true;
         }
-        else if (nearSpawn && EditContested?.Invoke(p) == true)
+        if (EditContested?.Invoke(p) == true)
         {
             Log($"server didn't take my {what} at {Fmt(p)}, but another hive bot is working right there: a race, not spawn protection");
-            nearSpawn = false;
+            return false;
         }
-        else if (nearSpawn)
+        CountUndoneNearSpawn(p, what, sp, d);
+        return true;
+    }
+
+    /// <summary>Records an undone edit near spawn; a second, independent one (or any once a region is known) learns the region.</summary>
+    private void CountUndoneNearSpawn(BlockPos p, string what, BlockPos sp, int d)
+    {
+        var old = _protectedRegion;
+        int fails;
+        bool confirmed;
+        long now = Environment.TickCount64;
+        object? action = _actionCts;
+        lock (_undoneNearSpawn)
         {
-            var old = _protectedRegion;
-            int fails;
-            bool confirmed;
-            long now = Environment.TickCount64;
-            object? action = _actionCts;
-            lock (_undoneNearSpawn)
-            {
-                _undoneNearSpawn.RemoveAll(f => now - f.At > UndoneWindow.TotalMilliseconds);
-                // Independent = from a separate action, or far enough apart that it isn't one tree crown / one spot.
-                confirmed = old != null || _undoneNearSpawn.Any(f => !ReferenceEquals(f.Action, action) || ChebyshevDistance(f.Pos, p) >= IndependentEditDistance);
-                _undoneNearSpawn.Add((now, p, action));
-                fails = (old?.Failures ?? 0) + (old == null ? _undoneNearSpawn.Count : 1);
-                if (confirmed) _undoneNearSpawn.Clear();
-            }
-            if (confirmed)
-            {
-                int radius = Math.Max(VanillaSpawnProtection, Math.Max(d, old?.Radius ?? 0));
-                var r = new LearnedProtectedRegion(sp, radius, World.Dimension, fails, $"server undid {what} at {Fmt(p)}, {d} from spawn ({fails} undone edits)", DateTime.UtcNow);
-                _protectedRegion = r;
-                Log("learned " + r);
-                Raise(() => ProtectedRegionChanged?.Invoke(r));
-            }
-            else Log($"server didn't take my {what} at {Fmt(p)} ({d} from spawn): one undone edit, not yet spawn protection (needs a second, independent one)");
+            _undoneNearSpawn.RemoveAll(f => now - f.At > UndoneWindow.TotalMilliseconds);
+            // Independent = from a separate action, or far enough apart that it isn't one tree crown / one spot.
+            confirmed = old != null || _undoneNearSpawn.Any(f => !ReferenceEquals(f.Action, action) || ChebyshevDistance(f.Pos, p) >= IndependentEditDistance);
+            _undoneNearSpawn.Add((now, p, action));
+            fails = (old?.Failures ?? 0) + (old == null ? _undoneNearSpawn.Count : 1);
+            if (confirmed) _undoneNearSpawn.Clear();
         }
-        if (Volatile.Read(ref _actionEditsOk) == 0)
+        if (!confirmed)
         {
-            string reason = nearSpawn
-                ? $"server undid my {what}s within {VanillaSpawnProtection} of spawn (spawn protection? need op)"
-                : $"server undid my {what} at {Fmt(p)} (protected area?)";
-            _abortReason ??= reason;
-            throw new ActionAbortedException(reason);
+            Log($"server didn't take my {what} at {Fmt(p)} ({d} from spawn): one undone edit, not yet spawn protection (needs a second, independent one)");
+            return;
         }
+        int radius = Math.Max(VanillaSpawnProtection, Math.Max(d, old?.Radius ?? 0));
+        var r = new LearnedProtectedRegion(sp, radius, World.Dimension, fails, $"server undid {what} at {Fmt(p)}, {d} from spawn ({fails} undone edits)", DateTime.UtcNow);
+        _protectedRegion = r;
+        Log("learned " + r);
+        Raise(() => ProtectedRegionChanged?.Invoke(r));
+    }
+
+    /// <summary>No edit of the running action has worked: abort the whole macro with a terse reason.</summary>
+    private void AbortAfterUndoneEdit(BlockPos p, string what, bool nearSpawn)
+    {
+        string reason = nearSpawn
+            ? $"server undid my {what}s within {VanillaSpawnProtection} of spawn (spawn protection? need op)"
+            : $"server undid my {what} at {Fmt(p)} (protected area?)";
+        _abortReason ??= reason;
+        throw new ActionAbortedException(reason);
     }
 
     private static int ChebyshevDistance(BlockPos a, BlockPos b) =>

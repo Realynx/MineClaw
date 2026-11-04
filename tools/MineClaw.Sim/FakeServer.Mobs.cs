@@ -96,36 +96,46 @@ public partial class FakeServer
     private void MobAiTick()
     {
         lock (BlockLock)
-            foreach (var m in Mobs.Values)
-            {
-                if (!m.Dead && m.Archer) { ArcherTick(m); continue; }
-                if (m.Dead || !m.Chase) continue;
-                if (KnockbackTick(m)) continue; // in the air: no walking, no attack
-                double dx = _px - m.X, dz = _pz - m.Z, d = Math.Sqrt(dx * dx + dz * dz);
-                if (d > 1.2)
-                {
-                    double step = Math.Min(0.12, d - 1.2);
-                    m.X += dx / d * step;
-                    m.Z += dz / d * step;
-                    byte yaw = (byte)((int)(Math.Atan2(-dx, dz) * 180 / Math.PI / 360 * 256) & 0xFF);
-                    Send(new EntityTeleportPacket
-                    {
-                        EntityId = m.Id, X = FixedPoint.ToAbsolute(m.X), Y = FixedPoint.ToAbsolute(m.Y), Z = FixedPoint.ToAbsolute(m.Z),
-                        Exact = (m.X, m.Y, m.Z), Yaw = yaw,
-                    });
-                }
-                // Its own check, not the walk's else: the walk ends at 1.2 only up to rounding, and that rounding used to decide
-                // whether the mob ever attacked at all.
-                double dy = _py - m.Y;
-                if (dx * dx + dz * dz + dy * dy <= MeleeReachSqr
-                    && DateTime.UtcNow - m.LastAttack > TimeSpan.FromMilliseconds(TickMs * 20) && Health > 0 && !PlayerBoxedIn())
-                {
-                    m.LastAttack = DateTime.UtcNow;
-                    Health = Math.Max(1, Health - m.AttackDamage);
-                    Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
-                    Send(new EntityStatusPacket { EntityId = EntityId, Status = 2 });
-                }
-            }
+            foreach (var m in Mobs.Values) MobTick(m);
+    }
+
+    private void MobTick(FakeMob m)
+    {
+        if (!m.Dead && m.Archer) { ArcherTick(m); return; }
+        if (m.Dead || !m.Chase) return;
+        if (KnockbackTick(m)) return; // in the air: no walking, no attack
+        double dx = _px - m.X, dz = _pz - m.Z, d = Math.Sqrt(dx * dx + dz * dz);
+        if (d > 1.2) WalkMob(m, dx, dz, d);
+        // Its own check, not the walk's else: the walk ends at 1.2 only up to rounding, and that rounding used to decide
+        // whether the mob ever attacked at all.
+        if (MobCanHit(m, dx, _py - m.Y, dz)) MobHitsPlayer(m);
+    }
+
+    /// <summary>In melee reach, its attack cooled down (20 ticks), the player alive and not boxed in.</summary>
+    private bool MobCanHit(FakeMob m, double dx, double dy, double dz) =>
+        dx * dx + dz * dz + dy * dy <= MeleeReachSqr
+        && DateTime.UtcNow - m.LastAttack > TimeSpan.FromMilliseconds(TickMs * 20) && Health > 0 && !PlayerBoxedIn();
+
+    /// <summary>A step (at most 0.12) toward the player, stopping 1.2 short.</summary>
+    private void WalkMob(FakeMob m, double dx, double dz, double d)
+    {
+        double step = Math.Min(0.12, d - 1.2);
+        m.X += dx / d * step;
+        m.Z += dz / d * step;
+        byte yaw = (byte)((int)(Math.Atan2(-dx, dz) * 180 / Math.PI / 360 * 256) & 0xFF);
+        Send(new EntityTeleportPacket
+        {
+            EntityId = m.Id, X = FixedPoint.ToAbsolute(m.X), Y = FixedPoint.ToAbsolute(m.Y), Z = FixedPoint.ToAbsolute(m.Z),
+            Exact = (m.X, m.Y, m.Z), Yaw = yaw,
+        });
+    }
+
+    private void MobHitsPlayer(FakeMob m)
+    {
+        m.LastAttack = DateTime.UtcNow;
+        Health = Math.Max(1, Health - m.AttackDamage);
+        Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
+        Send(new EntityStatusPacket { EntityId = EntityId, Status = 2 });
     }
 
     /// <summary>A zombie's melee reach on a player, squared: (width 0.6 · 2)² + the player's width 0.6.</summary>
@@ -253,32 +263,11 @@ public partial class FakeServer
             {
                 await Task.Delay(TickMs, CancellationToken.None).ConfigureAwait(false);
                 if (double.IsNaN(_px) || Health <= 0) continue;
-                bool under;
-                lock (BlockLock)
-                {
-                    double ey = _py + 1.62;
-                    var cell = ((int)Math.Floor(_px), (int)Math.Floor(ey), (int)Math.Floor(_pz));
-                    int id = Blocks.GetValueOrDefault(cell);
-                    int meta = Metas.GetValueOrDefault(cell);
-                    float pct = (meta >= 8 ? 1 : meta + 1) / 9f - 0.11111111f;
-                    under = id is 8 or 9 && ey < cell.Item2 + 1 - pct;
-                }
+                bool under = HeadInWater();
                 tick++;
-                if (!under) Air = 300;
-                else if (--Air <= -20)
-                {
-                    Air = 0;
-                    DrownHits++;
-                    Health = Math.Max(0, Health - 2);
-                    Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
-                }
+                Breathe(under);
                 LowestHealth = Math.Min(LowestHealth, Health);
-                if (Air != sent && (!under || tick % 5 == 0))
-                {
-                    sent = Air;
-                    var entry = Modern ? MetadataEntry.FromInt(EntityMeta.Air, Air) : MetadataEntry.FromShort(EntityMeta.Air, (short)Air);
-                    Send(new EntityMetadataPacket { EntityId = EntityId, Metadata = new EntityMetadata([entry]) });
-                }
+                if (Air != sent && (!under || tick % 5 == 0)) sent = SendAir();
             }
         }, CancellationToken.None);
     }
@@ -330,15 +319,54 @@ public partial class FakeServer
         }
     }
 
-    private void Attack(FakeMob m)
+    /// <summary>The player's eyes are in water below its surface (the eye cell's liquid height).</summary>
+    private bool HeadInWater()
+    {
+        lock (BlockLock)
+        {
+            double ey = _py + 1.62;
+            var cell = ((int)Math.Floor(_px), (int)Math.Floor(ey), (int)Math.Floor(_pz));
+            int id = Blocks.GetValueOrDefault(cell);
+            int meta = Metas.GetValueOrDefault(cell);
+            float pct = (meta >= 8 ? 1 : meta + 1) / 9f - 0.11111111f;
+            return id is 8 or 9 && ey < cell.Item2 + 1 - pct;
+        }
+    }
+
+    /// <summary>Air refills out of water; under it the air runs down and, past -20, drowning takes 2 hp.</summary>
+    private void Breathe(bool under)
+    {
+        if (!under) { Air = 300; return; }
+        if (--Air > -20) return;
+        Air = 0;
+        DrownHits++;
+        Health = Math.Max(0, Health - 2);
+        Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
+    }
+
+    /// <summary>The air metadata (1.12.2 an int, b1.8.1 a short); the value sent.</summary>
+    private int SendAir()
+    {
+        var entry = Modern ? MetadataEntry.FromInt(EntityMeta.Air, Air) : MetadataEntry.FromShort(EntityMeta.Air, (short)Air);
+        Send(new EntityMetadataPacket { EntityId = EntityId, Metadata = new EntityMetadata([entry]) });
+        return Air;
+    }
+
+    /// <summary>The swing's strength, crit and damage (1.9+ cooldown and crit rules on 1.12.2).</summary>
+    private float SwingDamage(out float strength, out bool crit)
     {
         var rules = ServerRules;
         int held = Inventory[36 + _heldSlot].IsEmpty ? 0 : Inventory[36 + _heldSlot].Id;
-        float strength = rules.AttackStrength(Ticks(_lastSwingAt), held);
+        strength = rules.AttackStrength(Ticks(_lastSwingAt), held);
         var ctx = new AttackContext(strength, _fall > 0 ? -0.1 : 0, _fall, _onGround, false, false, false, held);
-        bool crit = rules.IsCriticalHit(ctx);
+        crit = rules.IsCriticalHit(ctx);
         float dmg = (float)rules.ChargedDamage(held, strength);
-        if (crit) dmg = (float)rules.CritDamage(dmg);
+        return crit ? (float)rules.CritDamage(dmg) : dmg;
+    }
+
+    private void Attack(FakeMob m)
+    {
+        float dmg = SwingDamage(out float strength, out bool crit);
         _lastSwingAt = DateTime.UtcNow; // resetCooldown in attackTargetEntityWithCurrentItem
         // EntityLivingBase.attackEntityFrom: within half the 20-tick hurt resistance only a bigger hit counts (the difference).
         bool resisting = Ticks(m.LastHurt) < 10;

@@ -314,34 +314,51 @@ public sealed partial class ScriptsViewModel(MainWindowViewModel shell) : PageVi
         HasDetail = true;
         var v = d.Version;
         DetailTitle = $"{d.Script.Name} · v{v.V}";
-        DetailMeta = $"{(v.Lang == "js" ? "JavaScript" : "Lua (legacy)")} · {ScriptLabels.Author(v.AuthorKind, v.Author)}"
-            + (v.SavedAt is { } t ? " · saved " + t.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : "")
-            + (d.Script.Purpose is { Length: > 0 } purpose ? " · " + purpose : "") + (d.Script.UsedBy.Count > 0 ? " · used by " + string.Join(", ", d.Script.UsedBy) : "");
+        DetailMeta = DetailMetaOf(d);
         CodeText = d.Code;
-        Code.Clear();
-        foreach (var l in CodeLineRow.Build(d.Code, v.Lang == "lua", d.Lint.Findings)) Code.Add(l);
-        Params.Clear();
-        foreach (var p in d.Params) Params.Add(new ScriptParamRow(p.Name, p.Default ?? "", p.Tuned ?? ""));
-        Lint.Clear();
-        foreach (var f in d.Lint.Findings) Lint.Add(new ScriptLintRow(f.Line, $"L{f.Line} {f.Message}", f.Severity == "error"));
-        LintSummary = d.Lint.Status switch
-        {
-            "ok" => "lint: clean",
-            "errors" => $"lint: {d.Lint.Errors} error(s), {d.Lint.Warnings} warning(s)",
-            "warnings" => $"lint: {d.Lint.Warnings} warning(s)",
-            _ => "lint: not available",
-        } + (d.Lint.Note is { } n ? " · " + n : "");
-        Runs.Clear();
-        foreach (var r in d.Runs)
-            Runs.Add(new ScriptRunRow(r.At.ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
-                (r.Ok ? "ok" : r.Status ?? "failed") + $" · {r.Seconds:0.#} s" + (r.Actions is { } a ? $" · {a} actions" : "") + (r.FailLine is { } fl ? $" · line {fl}" : ""),
-                r.Outcome ?? string.Join(" · ", new[] { r.Params, r.Timings, r.Yield is > 0 ? $"+{r.Yield} items" : null, r.Body }.Where(x => !string.IsNullOrEmpty(x))),
-                r.Ok));
-        Handlers.Clear();
-        foreach (var h in d.Script.Handlers ?? []) Handlers.Add(new ScriptHandlerRow(h));
+        Fill(Code, CodeLineRow.Build(d.Code, v.Lang == "lua", d.Lint.Findings));
+        Fill(Params, d.Params.Select(p => new ScriptParamRow(p.Name, p.Default ?? "", p.Tuned ?? "")));
+        Fill(Lint, d.Lint.Findings.Select(f => new ScriptLintRow(f.Line, $"L{f.Line} {f.Message}", f.Severity == "error")));
+        LintSummary = LintSummaryOf(d.Lint);
+        Fill(Runs, d.Runs.Select(RunRowOf));
+        Fill(Handlers, (d.Script.Handlers ?? []).Select(h => new ScriptHandlerRow(h)));
         RevertNote = d.RevertNote ?? "";
         MigrationNote = d.Script.Migration is { } m ? "Lua migration: " + m : "";
     }
+
+    private static void Fill<T>(ObservableCollection<T> list, IEnumerable<T> items)
+    {
+        list.Clear();
+        foreach (var x in items) list.Add(x);
+    }
+
+    /// <summary>"JavaScript · Opus (main) · saved 2026-11-04 12:00 · mine the gen · used by 67".</summary>
+    private static string DetailMetaOf(ScriptVersionDetail d)
+    {
+        var v = d.Version;
+        return $"{(v.Lang == "js" ? "JavaScript" : "Lua (legacy)")} · {ScriptLabels.Author(v.AuthorKind, v.Author)}"
+            + (v.SavedAt is { } t ? " · saved " + t.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : "")
+            + (d.Script.Purpose is { Length: > 0 } purpose ? " · " + purpose : "") + (d.Script.UsedBy.Count > 0 ? " · used by " + string.Join(", ", d.Script.UsedBy) : "");
+    }
+
+    private static string LintSummaryOf(ScriptLintInfo lint) => lint.Status switch
+    {
+        "ok" => "lint: clean",
+        "errors" => $"lint: {lint.Errors} error(s), {lint.Warnings} warning(s)",
+        "warnings" => $"lint: {lint.Warnings} warning(s)",
+        _ => "lint: not available",
+    } + (lint.Note is { } n ? " · " + n : "");
+
+    private static ScriptRunRow RunRowOf(ScriptRunInfo r) =>
+        new(r.At.ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture), RunResult(r), RunDetail(r), r.Ok);
+
+    /// <summary>"ok · 12.3 s · 40 actions" / "aborted · 3 s · line 7".</summary>
+    private static string RunResult(ScriptRunInfo r) =>
+        (r.Ok ? "ok" : r.Status ?? "failed") + $" · {r.Seconds:0.#} s" + (r.Actions is { } a ? $" · {a} actions" : "") + (r.FailLine is { } fl ? $" · line {fl}" : "");
+
+    /// <summary>The outcome, else what the saved run recorded (params, timings, yield, body).</summary>
+    private static string RunDetail(ScriptRunInfo r) =>
+        r.Outcome ?? string.Join(" · ", new[] { r.Params, r.Timings, r.Yield is > 0 ? $"+{r.Yield} items" : null, r.Body }.Where(x => !string.IsNullOrEmpty(x)));
 
     /// <summary>Diff of the shown version against <see cref="CompareVersion"/> (older on the left).</summary>
     private async Task RefreshDiffAsync()

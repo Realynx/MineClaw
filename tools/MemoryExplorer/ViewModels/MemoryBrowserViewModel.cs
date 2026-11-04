@@ -112,7 +112,13 @@ public sealed partial class MemoryBrowserViewModel(MainWindowViewModel shell) : 
         ExtraHeader = "";
         if (value == null || Bank is not { } bank) return;
         foreach (var p in value.Props) Props.Add(new PropRow(p.Key, p.Value));
-        var q = new MemoryQueries(bank.Db);
+        ShowExtra(value, new MemoryQueries(bank.Db));
+        if (LeafOf(bank, value.DocRef) is { } node) Props.Add(new PropRow("RAPTOR leaf", "#" + node));
+    }
+
+    /// <summary>The detail pane's extra list: a claim's evidence, or a container's last-seen contents.</summary>
+    private void ShowExtra(MemoryRow value, MemoryQueries q)
+    {
         if (value.Kind == "claims" && long.TryParse(value.Id, out var cid))
         {
             ExtraHeader = "Evidence";
@@ -123,14 +129,16 @@ public sealed partial class MemoryBrowserViewModel(MainWindowViewModel shell) : 
             ExtraHeader = "Contents (last seen)";
             foreach (var i in items) Extra.Add(i);
         }
-        if (value.DocRef != null && bank.Rag.GetByRef(value.DocRef) is { } doc && bank.NodeOfDoc(doc.Id) is { } node)
-            Props.Add(new PropRow("RAPTOR leaf", "#" + node));
     }
+
+    /// <summary>The RAPTOR leaf of a row's doc, if it has one in the tree.</summary>
+    private static int? LeafOf(MemoryBank bank, string? docRef) =>
+        docRef != null && bank.Rag.GetByRef(docRef) is { } doc ? bank.NodeOfDoc(doc.Id) : null;
 
     [RelayCommand]
     private void ShowInTree()
     {
-        if (Selected?.DocRef is not { } r || Bank is not { } bank || bank.Rag.GetByRef(r) is not { } doc || bank.NodeOfDoc(doc.Id) is not { } node) return;
+        if (Selected?.DocRef is not { } r || Bank is not { } bank || LeafOf(bank, r) is not { } node) return;
         Shell.Navigate("tree");
         Shell.Tree.Reveal(node);
     }

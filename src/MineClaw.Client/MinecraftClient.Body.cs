@@ -124,17 +124,22 @@ public sealed partial class MinecraftClient
     /// <summary>One entry point for the compact <c>act {move, target?, times?}</c> tool: jump | spin | look | wave |
     /// crouch (times 0 = stand up) | uncrouch | punch (target = player).</summary>
     public Task<ActionResult> ActAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
-        (move ?? "").Trim().ToLowerInvariant() switch
-        {
-            "jump" => JumpAsync(times ?? 1, ct),
-            "spin" => SpinAsync(times ?? 1, ct),
-            "look" => target is { Length: > 0 } t ? LookAtPlayerAsync(t, ct) : Task.FromResult(ActionResult.Fail("look needs a target player")),
-            "wave" => SwingArmAsync(times ?? 3, ct),
-            "crouch" => CrouchAsync(times is not 0, ct),
-            "uncrouch" or "stand" => CrouchAsync(false, ct),
-            "punch" => target is { Length: > 0 } p ? PlayfulPunchAsync(p, ct) : Task.FromResult(ActionResult.Fail("punch needs a target player")),
-            _ => Task.FromResult(ActionResult.Fail($"unknown move '{move}' (jump|spin|look|wave|crouch|punch)")),
-        };
+        ActMoves.TryGetValue((move ?? "").Trim().ToLowerInvariant(), out var act)
+            ? act(this, target, times, ct)
+            : Task.FromResult(ActionResult.Fail($"unknown move '{move}' (jump|spin|look|wave|crouch|punch)"));
+
+    /// <summary>The moves of <see cref="ActAsync"/>: (client, target, times, token) → the action.</summary>
+    private static readonly Dictionary<string, Func<MinecraftClient, string?, int?, CancellationToken, Task<ActionResult>>> ActMoves = new()
+    {
+        ["jump"] = (c, _, times, ct) => c.JumpAsync(times ?? 1, ct),
+        ["spin"] = (c, _, times, ct) => c.SpinAsync(times ?? 1, ct),
+        ["look"] = (c, target, _, ct) => target is { Length: > 0 } t ? c.LookAtPlayerAsync(t, ct) : Task.FromResult(ActionResult.Fail("look needs a target player")),
+        ["wave"] = (c, _, times, ct) => c.SwingArmAsync(times ?? 3, ct),
+        ["crouch"] = (c, _, times, ct) => c.CrouchAsync(times is not 0, ct),
+        ["uncrouch"] = (c, _, _, ct) => c.CrouchAsync(false, ct),
+        ["stand"] = (c, _, _, ct) => c.CrouchAsync(false, ct),
+        ["punch"] = (c, target, _, ct) => target is { Length: > 0 } p ? c.PlayfulPunchAsync(p, ct) : Task.FromResult(ActionResult.Fail("punch needs a target player")),
+    };
 
     // ------------------------------------------------------------------ playful punch
 
@@ -180,43 +185,65 @@ public sealed partial class MinecraftClient
     /// have to stand at one, and not once their estimated health is low. Not a fight: the combat engine is not engaged.
     /// </summary>
     public Task<ActionResult> PlayfulPunchAsync(string player, CancellationToken ct = default) =>
-        RunActionAsync("punch", ct, async c =>
-        {
-            if (!_punchRequests.TryGetValue(player, out var req) || DateTime.UtcNow - req.At > PunchConsentWindow)
-                return ActionResult.Fail($"only if {player} asks me to (say \"punch me\"), within 30 s");
-            if (req.Used >= PunchesPerRequest) return ActionResult.Fail($"that's {PunchesPerRequest} punches for that request; ask again");
-            var target = World.Entities.FindPlayer(player);
-            if (target is null) return ActionResult.Fail($"can't see {player}");
-            double hp = PunchHealthEstimate(player);
-            if (hp <= PunchMinHealth) return ActionResult.Fail($"{player} looks hurt (est hp {hp:0}): no punching");
+        RunActionAsync("punch", ct, c => PlayfulPunchCoreAsync(player, c));
 
-            if (World.Player.EyePosition.DistanceTo(target.Position + new Vec3d(0, 1, 0)) > EntityUseReach)
-            {
-                var near = GoalFiltered.AwayFromEdge(World, new GoalNearPosition(target.Position, 2));
-                await GotoCoreAsync(near, GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(15), MaxReplans = 1, AllowOpenDoors = false }, c)
-                    .ConfigureAwait(false);
-                target = World.Entities.FindPlayer(player) ?? target;
-                if (World.Player.EyePosition.DistanceTo(target.Position + new Vec3d(0, 1, 0)) > EntityUseReach)
-                    return ActionResult.Fail($"can't get close to {player} safely");
-            }
-            if (PunchEdgeVeto(target) is { } veto) return ActionResult.Fail(veto);
-            int empty = -1;
-            for (int i = 0; i < 9; i++) if (World.Inventory.GetPlayerSlot(36 + i).IsEmpty) { empty = i; break; }
-            if (empty < 0) return ActionResult.Fail("my hands are full (no empty hotbar slot for a bare-handed punch)");
-            SelectHotbar(empty);
-            var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, target.Position + new Vec3d(0, 1.2, 0));
-            await LookCoreAsync(yaw, pitch, c).ConfigureAwait(false);
+    private async Task<ActionResult> PlayfulPunchCoreAsync(string player, CancellationToken c)
+    {
+        if (PunchRefusal(player, out var target, out double hp) is { } no) return ActionResult.Fail(no);
+        if (await ApproachToPunchAsync(player, target!, c).ConfigureAwait(false) is not { } near)
+            return ActionResult.Fail($"can't get close to {player} safely");
+        target = near;
+        if (PunchEdgeVeto(target) is { } veto) return ActionResult.Fail(veto);
+        int empty = FirstEmptyHotbar();
+        if (empty < 0) return ActionResult.Fail("my hands are full (no empty hotbar slot for a bare-handed punch)");
+        SelectHotbar(empty);
+        var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, target.Position + new Vec3d(0, 1.2, 0));
+        await LookCoreAsync(yaw, pitch, c).ConfigureAwait(false);
 
-            if (!_punchRequests.TryGetValue(player, out req) || DateTime.UtcNow - req.At > PunchConsentWindow || req.Used >= PunchesPerRequest)
-                return ActionResult.Fail($"{player}'s request expired");
-            _punchRequests[player] = req with { Used = req.Used + 1 };
-            _punchHp[player] = (hp, _punchHp.TryGetValue(player, out var e) ? e.At : DateTime.UtcNow, DateTime.UtcNow);
-            if (_session is not { Ended: false } hitSession) throw new ActionAbortedException("not connected");
-            SendMeleeHit(hitSession, target.Id);
-            await WaitTicksAsync(2, c).ConfigureAwait(false);
-            int left = PunchesPerRequest - req.Used - 1;
-            return ActionResult.Success($"bonk! punched {player} ({left} left for that request)");
-        });
+        if (PunchConsentLeft(player) is not { } req) return ActionResult.Fail($"{player}'s request expired");
+        _punchRequests[player] = req with { Used = req.Used + 1 };
+        _punchHp[player] = (hp, _punchHp.TryGetValue(player, out var e) ? e.At : DateTime.UtcNow, DateTime.UtcNow);
+        if (_session is not { Ended: false } hitSession) throw new ActionAbortedException("not connected");
+        SendMeleeHit(hitSession, target.Id);
+        await WaitTicksAsync(2, c).ConfigureAwait(false);
+        int left = PunchesPerRequest - req.Used - 1;
+        return ActionResult.Success($"bonk! punched {player} ({left} left for that request)");
+    }
+
+    /// <summary>Why <paramref name="player"/> isn't punched: no (fresh) request, its punches used up, out of sight, looking hurt.</summary>
+    private string? PunchRefusal(string player, out Entity? target, out double hp)
+    {
+        (target, hp) = (null, 0);
+        if (!_punchRequests.TryGetValue(player, out var req) || DateTime.UtcNow - req.At > PunchConsentWindow)
+            return $"only if {player} asks me to (say \"punch me\"), within 30 s";
+        if (req.Used >= PunchesPerRequest) return $"that's {PunchesPerRequest} punches for that request; ask again";
+        target = World.Entities.FindPlayer(player);
+        if (target is null) return $"can't see {player}";
+        hp = PunchHealthEstimate(player);
+        return hp <= PunchMinHealth ? $"{player} looks hurt (est hp {hp:0}): no punching" : null;
+    }
+
+    /// <summary>Walks near <paramref name="player"/> (away from edges) when out of reach: the target as seen then, or null when still
+    /// out of reach.</summary>
+    private async Task<Entity?> ApproachToPunchAsync(string player, Entity target, CancellationToken c)
+    {
+        if (World.Player.EyePosition.DistanceTo(target.Position + new Vec3d(0, 1, 0)) <= EntityUseReach) return target;
+        var near = GoalFiltered.AwayFromEdge(World, new GoalNearPosition(target.Position, 2));
+        await GotoCoreAsync(near, GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(15), MaxReplans = 1, AllowOpenDoors = false }, c)
+            .ConfigureAwait(false);
+        target = World.Entities.FindPlayer(player) ?? target;
+        return World.Player.EyePosition.DistanceTo(target.Position + new Vec3d(0, 1, 0)) > EntityUseReach ? null : target;
+    }
+
+    private int FirstEmptyHotbar()
+    {
+        for (int i = 0; i < 9; i++) if (World.Inventory.GetPlayerSlot(36 + i).IsEmpty) return i;
+        return -1;
+    }
+
+    /// <summary>The request still stands (in time, punches left).</summary>
+    private PunchRequest? PunchConsentLeft(string player) =>
+        _punchRequests.TryGetValue(player, out var req) && DateTime.UtcNow - req.At <= PunchConsentWindow && req.Used < PunchesPerRequest ? req : null;
 
     /// <summary>Why a punch could knock <paramref name="target"/> toward an edge or needs me at one, or null.</summary>
     private string? PunchEdgeVeto(Entity target)

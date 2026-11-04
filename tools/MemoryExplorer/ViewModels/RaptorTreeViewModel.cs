@@ -265,17 +265,7 @@ public sealed partial class RaptorTreeViewModel(MainWindowViewModel shell) : Pag
     public void ShowNode(int index)
     {
         if (Bank is not { } bank) return;
-        var data = bank.ReadTree(t =>
-        {
-            if (!t.TryGet(index, out var n)) return null;
-            NodeRow Row(RaptorNode c) => new(c.Index, c.Layer, c.IsLeaf ? bank.DocOf(c.Index)?.Kind ?? "leaf" : $"L{c.Layer}",
-                One(c.Text, 150), c.TokenCount);
-            return new
-            {
-                Node = n, Text = n.Text, Kids = n.Children.Select(c => Row(t[c])).ToList(), Parents = n.Parents.Select(p => Row(t[p])).ToList(),
-                LeafCount = n.IsLeaf ? 1 : CountLeaves(t, n),
-            };
-        }, null);
+        var data = ReadDetail(bank, index);
         if (data == null) return;
         Clear();
         HasSelection = true;
@@ -284,17 +274,42 @@ public sealed partial class RaptorTreeViewModel(MainWindowViewModel shell) : Pag
         var doc = bank.DocOf(index);
         DetailTitle = n.IsLeaf ? doc?.Title ?? $"Leaf #{index}" : $"Layer {n.Layer} summary #{index}";
         DetailText = data.Text;
-        DetailMeta = n.IsLeaf
-            ? $"leaf · {n.TokenCount} tokens · {data.Parents.Count} parent(s)" + (n.Pinned ? " · pinned" : "")
-            : $"layer {n.Layer} · {n.Children.Count} children · {data.LeafCount:N0} leaves below · {n.TokenCount} tokens" +
-              (n.Dirty ? " · dirty" : "") + (n.SummaryPending ? " · placeholder summary" : "");
-        if (doc != null)
-            DetailDoc = $"{doc.Ref} · {doc.Kind}{(doc.Tag != null ? "/" + doc.Tag : "")} · {doc.Source ?? "—"} · updated {doc.Updated.ToLocalTime():yyyy-MM-dd HH:mm}";
-        foreach (var p in GraphPath(index))
-            Breadcrumb.Add(new Crumb(p, p == index ? $"#{p}" : bank.ReadTree(t => t.TryGet(p, out var pn) ? $"L{pn.Layer} #{p}" : $"#{p}", $"#{p}")));
+        DetailMeta = DetailMetaOf(data);
+        if (doc != null) DetailDoc = DocLine(doc);
+        FillBreadcrumb(bank, index);
         foreach (var c in data.Kids.OrderByDescending(k => k.Tokens)) DetailChildren.Add(c);
         foreach (var p in data.Parents) DetailParents.Add(p);
         LeavesHeader = n.IsLeaf ? "" : $"{data.LeafCount:N0} leaves under this node";
+    }
+
+    /// <summary>A node with its children and parents as rows and the leaves below it, read under the tree lock.</summary>
+    private sealed record NodeDetail(RaptorNode Node, string Text, List<NodeRow> Kids, List<NodeRow> Parents, int LeafCount);
+
+    private static NodeDetail? ReadDetail(MemoryBank bank, int index) => bank.ReadTree(t =>
+    {
+        if (!t.TryGet(index, out var n)) return null;
+        NodeRow Row(RaptorNode c) => new(c.Index, c.Layer, c.IsLeaf ? bank.DocOf(c.Index)?.Kind ?? "leaf" : $"L{c.Layer}",
+            One(c.Text, 150), c.TokenCount);
+        return new NodeDetail(n, n.Text, n.Children.Select(c => Row(t[c])).ToList(), n.Parents.Select(p => Row(t[p])).ToList(),
+            n.IsLeaf ? 1 : CountLeaves(t, n));
+    }, (NodeDetail?)null);
+
+    private static string DetailMetaOf(NodeDetail data)
+    {
+        var n = data.Node;
+        return n.IsLeaf
+            ? $"leaf · {n.TokenCount} tokens · {data.Parents.Count} parent(s)" + (n.Pinned ? " · pinned" : "")
+            : $"layer {n.Layer} · {n.Children.Count} children · {data.LeafCount:N0} leaves below · {n.TokenCount} tokens" +
+              (n.Dirty ? " · dirty" : "") + (n.SummaryPending ? " · placeholder summary" : "");
+    }
+
+    private static string DocLine(NodeDoc doc) =>
+        $"{doc.Ref} · {doc.Kind}{(doc.Tag != null ? "/" + doc.Tag : "")} · {doc.Source ?? "—"} · updated {doc.Updated.ToLocalTime():yyyy-MM-dd HH:mm}";
+
+    private void FillBreadcrumb(MemoryBank bank, int index)
+    {
+        foreach (var p in GraphPath(index))
+            Breadcrumb.Add(new Crumb(p, p == index ? $"#{p}" : bank.ReadTree(t => t.TryGet(p, out var pn) ? $"L{pn.Layer} #{p}" : $"#{p}", $"#{p}")));
     }
 
     private static int CountLeaves(RaptorTree t, RaptorNode n)
@@ -360,23 +375,28 @@ public sealed partial class RaptorTreeViewModel(MainWindowViewModel shell) : Pag
         if (Bank is not { } bank) return;
         var path = bank.PathToRoot(index);
         if (path.Count == 0) return;
+        var cur = ExpandPath(path, index);
+        if (cur != null && cur.Index == index) Selected = cur;
+        else ShowNode(index);
+        // Breadcrumb sync: picking an ancestor of the focused subtree in the detail pane zooms the graph out to it.
+        if (GraphMode && GraphFocus >= 0 && index != GraphFocus && GraphPath(GraphFocus).Contains(index)) GraphFocus = index;
+    }
+
+    /// <summary>Expands the tree along <paramref name="path"/> down to <paramref name="index"/>; the last node found on the way.</summary>
+    private TreeNodeViewModel? ExpandPath(IEnumerable<int> path, int index)
+    {
         IEnumerable<TreeNodeViewModel> level = Roots;
         TreeNodeViewModel? cur = null;
         foreach (var p in path)
         {
             cur = level.FirstOrDefault(x => x.Index == p);
             if (cur == null) break;
-            if (p != index)
-            {
-                cur.IsExpanded = true;
-                cur.EnsureChildren();
-                level = cur.Children;
-            }
+            if (p == index) continue;
+            cur.IsExpanded = true;
+            cur.EnsureChildren();
+            level = cur.Children;
         }
-        if (cur != null && cur.Index == index) Selected = cur;
-        else ShowNode(index);
-        // Breadcrumb sync: picking an ancestor of the focused subtree in the detail pane zooms the graph out to it.
-        if (GraphMode && GraphFocus >= 0 && index != GraphFocus && GraphPath(GraphFocus).Contains(index)) GraphFocus = index;
+        return cur;
     }
 
     [RelayCommand]
@@ -418,10 +438,16 @@ public sealed partial class RaptorTreeViewModel(MainWindowViewModel shell) : Pag
             ? (Refs: ShardCollector.LeafRefsUnder(t, node), Layer: n.Layer, Leaf: n.IsLeaf)
             : (Refs: new List<string>(), Layer: -1, Leaf: false), (Refs: new List<string>(), Layer: -1, Leaf: false));
         if (info.Layer < 0) { Shell.Status = $"No node #{node}"; return Task.CompletedTask; }
-        string[] terms = Graph is { } g && g.TryGetSlot(node, out var slot) ? g.Nodes[slot].Terms : [];
-        var topic = terms.Length > 0 ? string.Join(" ", terms.Take(3)) : info.Leaf ? bank.DocOf(node)?.Title ?? "leaf" : "subtree";
+        var topic = SubtreeTopic(bank, node, info.Leaf);
         var label = $"#{node} · {(info.Leaf ? "leaf" : $"layer {info.Layer}")} · {topic} ({info.Refs.Count:N0} leaves)";
         return Shell.Shards.ExportAsync(new ShardSelection { Mode = "subtree", Node = node, LeafRefs = info.Refs }, $"subtree {topic}", label);
+    }
+
+    /// <summary>The node's top topic terms (the graph's labels), else a leaf's title, else "subtree".</summary>
+    private string SubtreeTopic(MemoryBank bank, int node, bool leaf)
+    {
+        string[] terms = Graph is { } g && g.TryGetSlot(node, out var slot) ? g.Nodes[slot].Terms : [];
+        return terms.Length > 0 ? string.Join(" ", terms.Take(3)) : leaf ? bank.DocOf(node)?.Title ?? "leaf" : "subtree";
     }
 
     /// <summary>Opens the rebuild flow for the selected node (edit mode).</summary>
