@@ -8,10 +8,12 @@ using MineClaw.World.Designs;
 namespace MineClaw.ViewerBridge.Data;
 
 /// <param name="Version">The game version the design is drawn for (its DSL's <c>version</c> line; none = the server's).</param>
+/// <param name="Kind">"build" or "mine" (its DSL's <c>kind mine</c> line: a mine design at absolute y, docs/web/api.md "Mine designs").</param>
 public sealed record DesignSummary(long Id, string Name, string Status, string? Requester, int Rev, int Revisions, long? Updated, bool HasPicture,
-    string? Version = null);
+    string? Version = null, string? Kind = null);
 public sealed record DesignListResponse(long Total, long RevisionsTotal, int Offset, int Limit, IReadOnlyList<DesignSummary> Items);
-public sealed record DesignRevision(int Rev, string? Author, string? AuthorKind, string? Message, string? Tag, long Created, int N, string? Version = null);
+public sealed record DesignRevision(int Rev, string? Author, string? AuthorKind, string? Message, string? Tag, long Created, int N, string? Version = null,
+    string? Kind = null);
 public sealed record DesignWorldNote(int Rev, long Seen, string? SeenBy, string? Diff, string? Causes, string Text);
 public sealed record DesignDiffPair(string A, string B);
 public sealed record DesignDetail(DesignSummary Design, IReadOnlyList<DesignRevision> Revisions, DesignWorldNote? World, DesignDiffPair DefaultDiff);
@@ -39,7 +41,13 @@ public sealed class DesignViews(AgentDb db, string serverVersion)
 
     private DesignSummary Map(Microsoft.Data.Sqlite.SqliteDataReader r) =>
         new(r.GetInt64(0), r.GetString(1), r.GetString(2), AgentDb.StrOrNull(r, 3), r.IsDBNull(7) ? 0 : (int)r.GetInt64(7), (int)r.GetInt64(6), AgentDb.LongOrNull(r, 4), r.GetInt64(5) != 0,
-            VersionOf(AgentDb.StrOrNull(r, 8)));
+            VersionOf(AgentDb.StrOrNull(r, 8)), KindOf(AgentDb.StrOrNull(r, 8)));
+
+    private static readonly System.Text.RegularExpressions.Regex MineLine =
+        new(@"^\s*kind\s+mine\b", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>"mine" for a mine design's DSL, else "build".</summary>
+    private static string KindOf(string? dsl) => dsl != null && MineLine.IsMatch(dsl) ? "mine" : "build";
 
     private static readonly System.Text.RegularExpressions.Regex VersionLine =
         new(@"^\s*version\s+(b1\.8\.1|1\.12\.2)\b", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -71,7 +79,7 @@ public sealed class DesignViews(AgentDb db, string serverVersion)
     public List<DesignRevision> Revisions(long id) => !Revs ? [] :
         db.Query("SELECT rev, author, author_kind, message, tag, created, n, dsl FROM blueprint_revisions WHERE blueprint_id = $id ORDER BY rev DESC",
             r => new DesignRevision(r.GetInt32(0), AgentDb.StrOrNull(r, 1), AgentDb.StrOrNull(r, 2), AgentDb.StrOrNull(r, 3), AgentDb.StrOrNull(r, 4), r.GetInt64(5), r.GetInt32(6),
-                VersionOf(AgentDb.StrOrNull(r, 7))),
+                VersionOf(AgentDb.StrOrNull(r, 7)), KindOf(AgentDb.StrOrNull(r, 7))),
             ("$id", id));
 
     private (DesignWorldNote Note, DesignSnapshot World)? WorldOf(long id) => !db.TableExists("blueprint_world") ? null :

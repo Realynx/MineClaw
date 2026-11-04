@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using MineClaw.Agent.Budget;
 using MineClaw.Agent.Llm;
 using MineClaw.Bot.Blueprints;
+using MineClaw.Bot.Blueprints.Mine;
 using MineClaw.Data.Versioning;
 
 namespace MineClaw.App.Supervisor;
@@ -62,6 +63,9 @@ public sealed class DesignerRoutes
     }
 
     public DesignerStore Store => _store;
+
+    /// <summary>The world seed the server told the bot (b1.8.1's login carries it; 1.12.2's doesn't): null or 0 = unknown.</summary>
+    public Func<long?>? ServerSeed { get; init; }
 
     public static bool IsDesignerPath(string path)
     {
@@ -166,19 +170,40 @@ public sealed class DesignerRoutes
             version = GameData.Current.VersionId,
             versions = DesignVersions.All,
             budget,
+            // A mine canvas may use it (our own terrain from that seed: it won't match the real world's).
+            server_seed = KnownSeed(),
         });
+    }
+
+    private string? KnownSeed()
+    {
+        try { return ServerSeed?.Invoke() is { } n && n != 0 ? n.ToString(CultureInfo.InvariantCulture) : null; }
+        catch (Exception) { return null; }
     }
 
     // ------------------------------------------------------------------ sessions
 
-    private sealed record CreateBody(string? Model, long? DesignId, string? Version, string? ConvertTo, string? Player, string? Who);
+    private sealed record CreateBody(string? Model, long? DesignId, string? Version, string? ConvertTo, string? Kind, string? Seed, int? Rev, string? Player,
+        string? Who);
+
+    /// <summary>"build" / "mine" from the body (null = not given; anything else is a 400).</summary>
+    private static (string? Kind, string? Error) KindOf(string? kind) => kind?.Trim().ToLowerInvariant() switch
+    {
+        null or "" => (null, null),
+        DesignerCanvas.KindBuild => (DesignerCanvas.KindBuild, null),
+        DesignerCanvas.KindMine => (DesignerCanvas.KindMine, null),
+        _ => (null, $"kind '{kind}': use build or mine"),
+    };
 
     private static string Requester(string? player, string? who) =>
         !string.IsNullOrWhiteSpace(player) ? player.Trim() : !string.IsNullOrWhiteSpace(who) ? who.Trim() : "a player";
 
     private SupervisorReply Create(SupervisorRequest r)
     {
-        var b = Parse<CreateBody>(r.Body) ?? new CreateBody(null, null, null, null, null, null);
+        var b = Parse<CreateBody>(r.Body) ?? new CreateBody(null, null, null, null, null, null, null, null, null);
+        var (kind, kindErr) = KindOf(b.Kind);
+        if (kindErr != null) return Reply(400, new { error = kindErr });
+        if (b.Seed is { Length: > 32 }) return Reply(400, new { error = "seed over 32 chars" });
         var model = DesignerModels.Resolve(_llm, b.Model);
         if (model == null) return Reply(400, new { error = b.Model is { Length: > 0 } ? $"model '{b.Model}' isn't configured" : "no model is configured" });
         string? version = null, convertTo = null;
@@ -186,18 +211,29 @@ public sealed class DesignerRoutes
         if (b.ConvertTo is { Length: > 0 } && (convertTo = DesignVersions.Normalize(b.ConvertTo)) == null) return Reply(400, new { error = BadVersion(b.ConvertTo) });
         var s = new DesignerSessionRecord { Owner = Requester(b.Player, b.Who), Model = model.Id, Name = "new design" };
         s.Canvas.Version = version ?? DesignVersions.Server;
+        if (kind == DesignerCanvas.KindMine)
+        {
+            s.Canvas.Kind = DesignerCanvas.KindMine;
+            s.Canvas.Seed = MineTerrain.NormalizeSeed(b.Seed is { Length: > 0 } seed ? seed : MineTerrain.RandomSeed());
+            s.Name = "new mine";
+        }
         string? note = null;
         ConvertReport? compat = null;
+        if (b.Rev is < 1) return Reply(400, new { error = "rev must be 1 or more" });
         if (b.DesignId is { } did)
         {
             if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
-            var (canvas, off, rec, why) = DesignerSave.Load(svc, did);
-            if (canvas == null) return Reply(404, new { error = why ?? "no such design" });
+            // A revision (rev) opens that one: saving it again is a revert.
+            var l = DesignerSave.LoadDesign(svc, did, b.Rev);
+            if (l.Canvas is not { } canvas) return Reply(404, new { error = l.Why ?? "no such design" });
+            var (off, rec, why) = (l.Offset, l.Design, l.Why);
             s.Canvas = canvas;
             s.Offset = off;
             s.DesignId = did;
             s.Name = rec?.Name ?? s.Name;
-            note = why;
+            s.Anchor = l.Anchor;
+            s.PreferredFor = l.PreferredFor;
+            note = why ?? (b.Rev is { } rv && l.Rev != 0 ? $"Opened r{rv} of #{did}: saving it makes it the newest revision again (a revert)." : null);
             // "Use it in a world of another version" (Story): the design's cells converted, with the report (missing ones left out).
             if (convertTo != null && convertTo != canvas.Version) compat = Convert(s, convertTo);
             using (DesignVersions.Use(s.Version)) Settle(s);
@@ -214,27 +250,69 @@ public sealed class DesignerRoutes
     {
         var from = s.Version;
         var (cells, report) = DesignConvert.Convert(s.Canvas.Blocks, from, to);
-        var next = new DesignerCanvas { Version = to, Rev = s.Canvas.Rev + 1 };
+        // A mine stays a mine on its seed (the terrain is regenerated for the new version).
+        var next = new DesignerCanvas { Version = to, Rev = s.Canvas.Rev + 1, Kind = s.Canvas.Kind, Seed = s.Canvas.Seed };
         // Straight onto the new canvas (pairs and attachments are carried over as they stand, already whole).
         next.Load(cells, s.Canvas.Dug);
         s.Canvas = next;
         return report;
     }
 
-    private sealed record VersionBody(string? Version, bool? Apply, string? Player, string? Who);
+    private sealed record VersionBody(string? Version, bool? Apply, string? Kind, string? Seed, string? PreferredFor, string? Player, string? Who);
 
     /// <summary>
-    /// <c>POST sessions/{id}/version {version, apply?}</c>: the canvas's target version. An empty canvas just switches. Otherwise
-    /// <c>apply</c> false (the default) is the compatibility check: <c>{version, target, report}</c> (what stays the same, what is
-    /// substituted, what doesn't exist there); <c>apply</c> true converts (the missing blocks are left out), tells the model, and
-    /// returns the session.
+    /// <c>POST sessions/{id}/version {version, kind?, seed?, preferred_for?, apply?}</c>: the canvas's target version and mode.
+    /// <list type="bullet">
+    /// <item><c>kind</c> (build | mine): an empty canvas switches at once; a full one answers <c>needs_clear</c> unless <c>apply</c>,
+    /// which clears it and switches (a mine canvas is generated terrain at absolute y: nothing carries over).</item>
+    /// <item><c>seed</c> (a mine): its terrain; <c>preferred_for</c> (a version, or "" / "none" to drop it): the design's preference.</item>
+    /// <item><c>version</c>: an empty canvas just switches. Otherwise <c>apply</c> false (the default) is the compatibility check:
+    /// <c>{version, target, report}</c> (what stays the same, what is substituted, what doesn't exist there); <c>apply</c> true
+    /// converts (the missing blocks are left out), tells the model, and returns the session.</item>
+    /// </list>
     /// </summary>
     private SupervisorReply Version(long id, SupervisorRequest r)
     {
         if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
         var b = Parse<VersionBody>(r.Body);
         if (DesignVersions.Normalize(b?.Version) is not { } target) return Reply(400, new { error = BadVersion(b?.Version ?? "") });
-        if (target == s.Version) return Reply(200, new { version = s.Version, target, changed = false, report = (object?)null, session = SessionJson(s) });
+        var (kind, kindErr) = KindOf(b!.Kind);
+        if (kindErr != null) return Reply(400, new { error = kindErr });
+        if (b.Seed is { Length: > 32 }) return Reply(400, new { error = "seed over 32 chars" });
+        if (b.PreferredFor is { Length: > 0 } pfx && pfx != "none" && DesignVersions.Normalize(pfx) == null) return Reply(400, new { error = BadVersion(pfx) });
+        bool modeChanged = false;
+        if (kind != null && kind != s.Canvas.Kind)
+        {
+            bool blank = s.Canvas.Count == 0 && s.Canvas.Dug.Count == 0;
+            if (!blank && b.Apply != true)
+                return Reply(200, new { version = s.Version, target, changed = false, report = (object?)null, needs_clear = true, session = (object?)null });
+            bool mine = kind == DesignerCanvas.KindMine;
+            s.Canvas = new DesignerCanvas
+            {
+                Version = target, Rev = s.Canvas.Rev + 1, Kind = kind,
+                Seed = mine ? MineTerrain.NormalizeSeed(b.Seed is { Length: > 0 } seed ? seed : MineTerrain.RandomSeed()) : "0",
+            };
+            s.Anchor = null;
+            s.Offset = default;
+            if (!mine) s.PreferredFor = null;
+            var switched = mine ? $"the canvas is now a mine over generated {target} terrain (seed {s.Canvas.Seed}, absolute y)" : "the canvas is a grassland build plot again";
+            s.PendingEdits = s.PendingEdits.Length == 0 ? switched : Clip(s.PendingEdits + "; " + switched, 600);
+            _store.AddMessage(s.Id, "assistant", mine ? $"Switched to a mine design over generated terrain (seed {s.Canvas.Seed})." : "Switched back to a build design.");
+            modeChanged = true;
+        }
+        if (b.Seed is { Length: > 0 } newSeed && s.Canvas.Mine && MineTerrain.NormalizeSeed(newSeed) != s.Canvas.Seed)
+        {
+            s.Canvas.Seed = MineTerrain.NormalizeSeed(newSeed);
+            s.PendingEdits = Clip((s.PendingEdits.Length == 0 ? "" : s.PendingEdits + "; ") + $"the terrain seed is now {s.Canvas.Seed}", 600);
+            modeChanged = true;
+        }
+        if (b.PreferredFor != null && s.Canvas.Mine)
+        {
+            var pf = b.PreferredFor is "" or "none" ? null : DesignVersions.Normalize(b.PreferredFor);
+            if (pf != s.PreferredFor) { s.PreferredFor = pf; modeChanged = true; }
+        }
+        if (modeChanged) _store.Update(s);
+        if (target == s.Version) return Reply(200, new { version = s.Version, target, changed = modeChanged, report = (object?)null, needs_clear = false, session = SessionJson(s) });
         bool empty = s.Canvas.Count == 0 && s.Canvas.Dug.Count == 0;
         if (empty)
         {
@@ -293,7 +371,7 @@ public sealed class DesignerRoutes
             ? h.List(did, 50).Select(v => (object)new
             {
                 rev = v.Rev, author = v.Author, author_kind = v.AuthorKind, message = v.Message, tag = v.Tag, created = v.At.ToUnixTimeMilliseconds(), n = v.Blocks,
-                version = DesignVersions.OfDsl(v.Dsl),
+                version = DesignVersions.OfDsl(v.Dsl), kind = MineDesign.IsMine(v.Dsl) ? DesignerCanvas.KindMine : DesignerCanvas.KindBuild,
             }).ToList()
             : [];
         var server = DesignVersions.Server;
@@ -304,6 +382,7 @@ public sealed class DesignerRoutes
         return new
         {
             id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(), dug = s.Canvas.DugWire(),
+            kind = s.Canvas.Kind, seed = s.Canvas.Mine ? s.Canvas.Seed : null, preferred_for = s.PreferredFor,
             anchor = s.Anchor is { } a ? new[] { a.X, a.Y, a.Z } : null,
             messages = _store.Messages(s.Id).Select(MessageJson),
             cost_usd = (double)s.CostUsd, calls = s.Calls, version = s.Version, server_version = server, versions = DesignVersions.All,
@@ -315,7 +394,9 @@ public sealed class DesignerRoutes
             categories = DesignPalette.Categories,
             compat = compat == null ? null : ReportJson(compat),
             server_compat = serverCompat,
-            plot = new { size = DesignerCanvas.Size, height = DesignerCanvas.Height, depth = DesignerCanvas.Depth },
+            // A mine: absolute y 0..127 ([-depth, height)).
+            plot = s.Canvas.Mine ? new { size = DesignerCanvas.Size, height = DesignerCanvas.MineHeight, depth = 0 }
+                : new { size = DesignerCanvas.Size, height = DesignerCanvas.Height, depth = DesignerCanvas.Depth },
             revisions = revs,
             created = s.Created.ToUnixTimeMilliseconds(), updated = s.Updated.ToUnixTimeMilliseconds(),
         };
@@ -362,7 +443,7 @@ public sealed class DesignerRoutes
         fixedCells = s.Canvas.LastFixed;
         if (changed.Count > 0)
         {
-            var line = DesignerCanvas.Summarize(changed) + (DesignerCanvas.FixText(fixedCells) is { Length: > 0 } fix ? $" ({fix})" : "");
+            var line = DesignerCanvas.Summarize(changed, on: s.Canvas) + (DesignerCanvas.FixText(fixedCells) is { Length: > 0 } fix ? $" ({fix})" : "");
             s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
         }
         return null;
@@ -375,7 +456,7 @@ public sealed class DesignerRoutes
         var b = Parse<CanvasBody>(r.Body);
         if (b == null) return Reply(400, new { error = "body must be JSON {rev, ops:[{kind, label, cells:[[x,y,z,id,meta]]}], anchor?}" });
         if (ApplyEdits(s, b.Ops, out var applied, out var fixedCells) is { } err) return Reply(400, new { error = err });
-        if (b.Anchor is { Length: 3 } a && DesignerCanvas.Inside(a[0], a[1], a[2])) s.Anchor = new MineClaw.World.BlockPos(a[0], a[1], a[2]);
+        if (b.Anchor is { Length: 3 } a && s.Canvas.Contains(a[0], a[1], a[2])) s.Anchor = new MineClaw.World.BlockPos(a[0], a[1], a[2]);
         else if (b.ClearAnchor == true) s.Anchor = null;
         _store.Update(s);
         return Reply(200, new { rev = s.Canvas.Rev, applied, stale = b.Rev != 0 && b.Rev > s.Canvas.Rev, @fixed = fixedCells.Select(c => c.Wire) });

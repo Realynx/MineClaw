@@ -58,7 +58,7 @@ public sealed partial class StoryColony
                             // Already there (a wall over a finished one): done at once.
                             var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
                             if (!g.Remove && id == g.Id && (g.Meta == meta || !g.Job)) g.State = "done";
-                            if (g.Remove && id == 0) g.State = "done";
+                            if (g.Remove && id == 0 && w.Loaded(g.At.X, g.At.Z)) g.State = "done";
                         }
                         Builds.Add(b);
                         // Blocks the pawns can't place yet (crops, liquids, signs…): shown as ghosts and said once, never a stuck job.
@@ -138,14 +138,17 @@ public sealed partial class StoryColony
             var left = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").ToList();
             bool digs = left.All(g => g.Remove);
             int lowest = digs ? left.Max(g => g.At.Y) : left.Min(g => g.At.Y);
-            var open = todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
-            foreach (var g in StoryConstruction.Ordered(open, Solid, from))
+            // A mine goes in reachable order: a cell opens once a neighbour is open (from the entry at the surface outward and down),
+            // top-down first; its blocks (torches, ladders…) go in as their cells open.
+            bool mine = b.Kind == "mine";
+            var open = mine ? todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList() : todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
+            foreach (var g in mine ? open.OrderByDescending(g => g.At.Y).ThenBy(g => g.Remove ? 0 : 1).ThenBy(g => g.At.Dist(from)) : StoryConstruction.Ordered(open, Solid, from))
             {
                 var key = $"g:{b.Id}|{g.At}";
                 if (!Open(key, p.Name, g.At) || Occupied(g.At)) continue;
                 if (g.Remove)
                 {
-                    if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0) { g.State = "done"; g.Rev = Touch(); continue; }
+                    if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z)) { g.State = "done"; g.Rev = Touch(); continue; }
                     return Claim(b, g, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10));
                 }
                 var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
@@ -191,11 +194,16 @@ public sealed partial class StoryColony
     private bool DigFirst(BuildState b)
     {
         static string? Group(BuildState x) => x.Spec?["group"] is JsonValue v && v.TryGetValue<string>(out var s) && s.Length > 0 ? s : null;
-        if (Group(b) is not { } group || b.Ghosts.All(g => g.Remove)) return false;
+        // A mine orders its own cells (a block goes in once its cell is open).
+        if (b.Kind == "mine" || Group(b) is not { } group || b.Ghosts.All(g => g.Remove)) return false;
         // A dig that keeps failing (blocked) doesn't hold the build forever: a placement digs its own cell anyway.
         return Builds.Any(o => o != b && o.Order < b.Order && o.Status != "done" && Group(o) == group
                                && o.Ghosts.Any(g => g.Remove && g.State is "todo" or "leased"));
     }
+
+    /// <summary>A cell with an open neighbour (air or anything a pawn walks through): a mine cell a pawn can reach and dig.</summary>
+    private bool Exposed(P3 p) =>
+        !Solid(p.Add(0, 1, 0)) || !Solid(p.Add(1, 0, 0)) || !Solid(p.Add(-1, 0, 0)) || !Solid(p.Add(0, 0, 1)) || !Solid(p.Add(0, 0, -1)) || !Solid(p.Add(0, -1, 0));
 
     /// <summary>A spot just outside the build's footprint, on its ground level, nearest the block (null for a single block).</summary>
     private static P3? StandOutside(BuildState b, P3 at)

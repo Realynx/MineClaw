@@ -16,7 +16,7 @@ public sealed record Material(int Id, int Meta, string Item, string Name);
 public static class StoryConstruction
 {
     public static readonly IReadOnlyList<string> Kinds =
-        ["wall", "floor", "roof", "door", "window", "stairs", "fence", "block", "remove", "crafting_table", "furnace", "chest", "bed", "torch"];
+        ["wall", "floor", "roof", "door", "window", "stairs", "fence", "block", "remove", "mine", "crafting_table", "furnace", "chest", "bed", "torch"];
 
     public static readonly IReadOnlyList<string> Furniture = ["crafting_table", "furnace", "chest", "bed", "torch"];
 
@@ -153,6 +153,9 @@ public static class StoryConstruction
         }
         IEnumerable<P3> Positions() => blocks ?? area!.Value.Blocks();
 
+        // A placed mine design (docs/web/api.md "Mine designs"): its cells to dig at their absolute y, then the blocks that go in them.
+        if (kind == "mine") return Mine(d, item, Positions(), world, Add, g);
+
         switch (kind)
         {
             case "wall":
@@ -246,6 +249,41 @@ public static class StoryConstruction
         }
         foreach (var gh in g.Where(x => x.Item == null && !x.Remove)) gh.Item = d.ItemExists(gh.Id) ? d.Item(gh.Id).Name : d.Block(gh.Id).Name;
         return (g, mat, g.Count == 0 ? "nothing to build there" : null);
+    }
+
+    /// <summary>
+    /// A mine job group's item (<c>kind: "mine"</c>): <c>blocks</c> = the cells to dig, each a dig ghost carrying the live world's
+    /// block there (its expected material, for the tools that dig it; a column not in view yet: 0 = unknown); <c>place</c> =
+    /// <c>[[x,y,z,id,meta]]</c>, the blocks put in once their cell is open (torches, ladders, rails…). Refused when a cell is below y 1
+    /// or would cut bedrock. Air (a cave) needs nothing; liquids, fire and portals are left alone.
+    /// </summary>
+    private static (List<GhostState>, Material?, string?) Mine(IGameData d, JsonObject item, IEnumerable<P3> dig, IStoryWorld? world,
+        Action<int, int, int, int, int, string?, string?, bool> add, List<GhostState> g)
+    {
+        if (world == null) return ([], null, "a mine needs the world view");
+        foreach (var p in dig)
+        {
+            if (p.Y < 1) return ([], null, $"the mine reaches y {p.Y} at {p}: a mine can't dig below y 1");
+            bool known = world.Loaded(p.X, p.Z);
+            var (id, meta) = known ? world.Block(p.X, p.Y, p.Z) : (0, 0);
+            if (known && id == 7) return ([], null, $"the mine would cut bedrock at {p}: place it higher");
+            if (known && StoryBlocks.Undiggable.Contains(id)) continue;
+            g.RemoveAll(o => o.At == p);
+            g.Add(new GhostState { At = p, Id = id, Meta = meta, Remove = true });
+        }
+        if (item["place"] is JsonArray place)
+            foreach (var n in place)
+            {
+                if (n is not JsonArray c || c.Count < 4) return ([], null, "place is [[x,y,z,id,meta]]");
+                int x = c[0]!.GetValue<int>(), y = c[1]!.GetValue<int>(), z = c[2]!.GetValue<int>(), id = c[3]!.GetValue<int>(), meta = c.Count > 4 ? c[4]!.GetValue<int>() : 0;
+                if (y < 1) return ([], null, $"the mine places a block at y {y}: a mine can't go below y 1");
+                if (!d.BlockExists(id)) return ([], null, $"no block {id} in {d.VersionId}");
+                bool second = MineClaw.Bot.Blueprints.DesignFacing.SecondHalf(id, meta);
+                var (placing, why) = PlacingItem(d, id, meta);
+                add(x, y, z, id, meta, placing ?? (d.ItemExists(id) ? d.Item(id).Name : d.Block(id).Name), null, !second && placing != null);
+                if (!second && placing == null && g.Count > 0 && g[^1].At == new P3(x, y, z)) { g[^1].State = "unsupported"; g[^1].Reason = why; }
+            }
+        return (g, null, g.Count == 0 ? "nothing to dig there (already open)" : null);
     }
 
     /// <summary>A roof over <paramref name="top"/> (its y = the roof's base level): flat | slab | gable | none, overhang 0|1.</summary>

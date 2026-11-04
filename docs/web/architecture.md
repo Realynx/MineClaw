@@ -288,6 +288,17 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   any block placed there replaces it) and cuts the view away above a level (the slider, y -16..0; the engine's level cut,
   which the aim looks through). Off, the grassland behaves as before: only blocks and already-dug cells are edited. A box
   selection's move / rotate / mirror / copy carries its dug cells and fills the ground it leaves back in.
+- **Mine designer (added 2026-11-03).** The header's Build / Mine switch turns the session into a mine (docs/web/api.md "Mine
+  designs"): the grassland becomes generated terrain for the session's version and seed (`features/studio/mine/mineTerrain.ts`,
+  the bot's generator ported line for line; random seed by default, editable, "server seed" when the bot knows it) and y is
+  absolute world y 1..127. The primary tool digs (dug cells are the design: forced air), "Ground (fill back)" on the hotbar
+  undoes digs, blocks (torches, ladders, rails, chests) still place; the Underground cut and its slider reach down to y 1. A
+  side panel holds the ore-height guide (each ore band of the version from `ore-heights.json` as a ruler, best levels marked,
+  the current level and what is at it), an X-ray layer (the generated ores as instanced boxes drawn through the stone), the
+  stats (blocks to mine by material and ores mined / exposed per band, estimated from the generated terrain: the real world
+  will differ), and the templates: spiral shaft, strip mine, room, "at ore band" levels and the version-preferred presets
+  (`mine-presets.json`; applying one tags the design `preferred_for`). Saves keep kind, seed, entry and the absolute y.
+  Story Mode places a mine at its saved y as `mine` build items.
 - **Leaving unsaved work.** The studio tracks every cell changed since the last save (or since it opened: an untouched new
   design is clean; an undo back to the saved state is clean). While dirty, `lib/navGuard` (generic, installed by the shell)
   asks "Leave without saving?" (Save and leave / Leave / Stay) on in-app links (a capture-phase click listener ahead of
