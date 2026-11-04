@@ -21,19 +21,11 @@ public sealed class SleepSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        if (ctx.World.Dimension != 0) return Fail(ctx.InNether ? "beds explode in the nether" : "beds explode outside the overworld");
-        long t = ctx.World.TimeOfDay;
-        if (t is < 12541 or > 23458) return Fail($"it's day ({TimeText(t)}); can only sleep at night");
+        if (CantSleepNow(ctx) is { } now) return Fail(now);
         var bed = args.Pos() ?? ctx.Find(Blocks.Bed, 16, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault();
         if (bed is not { } b || ctx.Block(b) != Blocks.Bed) return Fail("no bed nearby");
-        // Use the head half (meta 0x8): that's where the occupied flag lives.
-        if ((ctx.Meta(b) & 0x8) == 0)
-        {
-            var head = SkillWorld.Horizontal.Select(o => b + o).FirstOrDefault(p => ctx.Block(p) == Blocks.Bed && (ctx.Meta(p) & 0x8) != 0);
-            if (head != default) b = head;
-        }
-        if ((ctx.Meta(b) & 0x4) != 0) return Fail($"bed at {P(b)} is occupied");
-        if (ctx.World.Entities.NearestHostile(b.Center, 8) is { } mob) return Fail($"{mob.DisplayName} within 8 of the bed; can't sleep");
+        b = HeadHalf(ctx, b);
+        if (BedProblem(ctx, b) is { } problem) return Fail(problem);
         var reach = await ctx.ReachAsync(b, ct, 2.5);
         if (!reach.Ok) return Fail($"can't reach bed: {reach.Message}");
         var r = await ctx.Game.ActivateAsync(b, ct);
@@ -41,6 +33,30 @@ public sealed class SleepSkill : Skill
         return await ctx.WaitBlockAsync(b, (id, m) => id == Blocks.Bed && (m & 0x4) != 0, ct, TimeSpan.FromSeconds(2))
             ? Ok($"sleeping in bed at {P(b)} (spawn set; night skips when everyone sleeps)")
             : Fail("the server didn't let me sleep (monsters nearby or not night yet)");
+    }
+
+    /// <summary>Beds explode outside the overworld; sleeping only works at night.</summary>
+    private static string? CantSleepNow(SkillContext ctx)
+    {
+        if (ctx.World.Dimension != 0) return ctx.InNether ? "beds explode in the nether" : "beds explode outside the overworld";
+        long t = ctx.World.TimeOfDay;
+        if (t is < 12541 or > 23458) return $"it's day ({TimeText(t)}); can only sleep at night";
+        return null;
+    }
+
+    /// <summary>The head half (meta 0x8) of the bed at <paramref name="b"/>: that's where the occupied flag lives.</summary>
+    private static BlockPos HeadHalf(SkillContext ctx, BlockPos b)
+    {
+        if ((ctx.Meta(b) & 0x8) != 0) return b;
+        var head = SkillWorld.Horizontal.Select(o => b + o).FirstOrDefault(p => ctx.Block(p) == Blocks.Bed && (ctx.Meta(p) & 0x8) != 0);
+        return head != default ? head : b;
+    }
+
+    private static string? BedProblem(SkillContext ctx, BlockPos b)
+    {
+        if ((ctx.Meta(b) & 0x4) != 0) return $"bed at {P(b)} is occupied";
+        if (ctx.World.Entities.NearestHostile(b.Center, 8) is { } mob) return $"{mob.DisplayName} within 8 of the bed; can't sleep";
+        return null;
     }
 
     public static string TimeText(long t)

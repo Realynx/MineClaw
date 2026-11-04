@@ -54,17 +54,17 @@ public sealed record ScriptEvent(ScriptEventKind Kind, string Text, string? Play
         string kind = Kind.ToString().ToLowerInvariant();
         if (string.Equals(topic, kind, StringComparison.OrdinalIgnoreCase) && Kind != ScriptEventKind.Signal) return true;
         int c = topic.IndexOf(':');
-        if (c > 0)
-        {
-            var head = topic[..c];
-            var tail = topic[(c + 1)..].Trim();
-            if (Kind == ScriptEventKind.Chat && head.Equals("chat", StringComparison.OrdinalIgnoreCase))
-                return tail.Length == 0 || Text.Contains(tail, StringComparison.OrdinalIgnoreCase);
-            return false;
-        }
+        if (c > 0) return MatchesChat(topic[..c], topic[(c + 1)..].Trim());
         // "toolBroke" takes "toolBroke:pickaxe"; a game-event family ("player") takes its events ("player.punchBlock").
         return Name.StartsWith(topic + ":", StringComparison.OrdinalIgnoreCase)
             || (Data != null && Name.StartsWith(topic + ".", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>"chat:&lt;text&gt;": addressed chat containing the text (any chat for an empty text); other qualified topics never.</summary>
+    private bool MatchesChat(string head, string tail)
+    {
+        if (Kind != ScriptEventKind.Chat || !head.Equals("chat", StringComparison.OrdinalIgnoreCase)) return false;
+        return tail.Length == 0 || Text.Contains(tail, StringComparison.OrdinalIgnoreCase);
     }
 }
 

@@ -99,11 +99,20 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
     private List<JsonNode?> Returned(JsValue v)
     {
         if (v.IsUndefined() || v.IsNull()) return [];
-        if (v is ObjectInstance o && v is not JsArray && o.Get("ok").IsBoolean() && o.HasProperty("msg"))
+        if (OkMsg(v) is { } o)
             return [JsonValue.Create(o.Get("ok").AsBoolean()), JsonValue.Create(JsConvert.Text(o.Get("msg")))];
         if (v.IsString() || v.IsNumber() || v.IsBoolean()) return [JsConvert.ToNode(v, 0, args: false)];
+        return [JsonValue.Create(ClippedJson(v))];
+    }
+
+    /// <summary>A returned {ok: bool, msg} object (not an array), else null.</summary>
+    private static ObjectInstance? OkMsg(JsValue v) =>
+        v is ObjectInstance o && v is not JsArray && o.Get("ok").IsBoolean() && o.HasProperty("msg") ? o : null;
+
+    private static string ClippedJson(JsValue v)
+    {
         var json = JsConvert.ToNode(v, 0, args: false)?.ToJsonString() ?? "";
-        return [JsonValue.Create(json.Length <= 300 ? json : json[..297] + "...")];
+        return json.Length <= 300 ? json : json[..297] + "...";
     }
 
     // ------------------------------------------------------------------ location, errors
@@ -126,33 +135,42 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
     {
         switch (ex)
         {
-            case JavaScriptException je:
-            {
-                var name = je.Error is ObjectInstance eo ? JsConvert.Text(eo.Get("name")) : "";
-                int line = PatchLine(je.JavaScriptStackTrace) ?? (je.Location.SourceFile == "script" ? je.Location.Start.Line : je.Location.SourceFile == "patch" ? Math.Max(1, je.Location.Start.Line - 1) : LineIn(je.JavaScriptStackTrace));
-                var msg = Clean(je.Message);
-                return ((name == "SyntaxError" || msg.StartsWith("Unexpected", StringComparison.Ordinal) ? "syntax: " : "error: ") + msg, line);
-            }
-            case PromiseRejectedException pr:
-            {
-                var v = pr.RejectedValue;
-                if (v.IsString() && v.AsString().StartsWith("Timeout of", StringComparison.Ordinal))
-                    return ("error: a Promise never settled (host calls are synchronous: no new Promise/setTimeout needed)", 0);
-                if (v is ObjectInstance o)
-                {
-                    var msg = JsConvert.Text(o.Get("message"));
-                    var stack = o.Get("stack");
-                    int line = stack.IsString() ? PatchLine(stack.AsString()) ?? LineIn(stack.AsString()) : 0;
-                    return ("error: " + Clean(msg.Length > 0 ? msg : JsConvert.Text(v)), line);
-                }
-                return ("error: thrown " + ScriptSession.Short(JsConvert.Text(v), 100), 0);
-            }
+            case JavaScriptException je: return DescribeJsError(je);
+            case PromiseRejectedException pr: return DescribeRejection(pr.RejectedValue);
             case RecursionDepthOverflowException: return ($"call depth limit ({s.Options.MaxCallDepth})", CurrentLine());
             case MemoryLimitExceededException me: return ("memory limit (" + ScriptSession.Short(ScriptSession.OneLine(me.Message), 80) + ")", CurrentLine());
             case Acornima.ParseErrorException pe: return ("syntax: " + Clean(pe.Description), pe.LineNumber);
             case JintException jx when jx is not JavaScriptException: return ("error: " + Clean(jx.Message), CurrentLine());
             default: return null;
         }
+    }
+
+    private (string Reason, int Line) DescribeJsError(JavaScriptException je)
+    {
+        var name = je.Error is ObjectInstance eo ? JsConvert.Text(eo.Get("name")) : "";
+        int line = PatchLine(je.JavaScriptStackTrace) ?? JsErrorLine(je);
+        var msg = Clean(je.Message);
+        return ((name == "SyntaxError" || msg.StartsWith("Unexpected", StringComparison.Ordinal) ? "syntax: " : "error: ") + msg, line);
+    }
+
+    /// <summary>The script's own line, a patch's line (its wrapper adds one), else the first script frame of the stack.</summary>
+    private static int JsErrorLine(JavaScriptException je) =>
+        je.Location.SourceFile == "script" ? je.Location.Start.Line
+        : je.Location.SourceFile == "patch" ? Math.Max(1, je.Location.Start.Line - 1)
+        : LineIn(je.JavaScriptStackTrace);
+
+    private static (string Reason, int Line) DescribeRejection(JsValue v)
+    {
+        if (v.IsString() && v.AsString().StartsWith("Timeout of", StringComparison.Ordinal))
+            return ("error: a Promise never settled (host calls are synchronous: no new Promise/setTimeout needed)", 0);
+        if (v is ObjectInstance o)
+        {
+            var msg = JsConvert.Text(o.Get("message"));
+            var stack = o.Get("stack");
+            int line = stack.IsString() ? PatchLine(stack.AsString()) ?? LineIn(stack.AsString()) : 0;
+            return ("error: " + Clean(msg.Length > 0 ? msg : JsConvert.Text(v)), line);
+        }
+        return ("error: thrown " + ScriptSession.Short(JsConvert.Text(v), 100), 0);
     }
 
     private static readonly Regex PatchLoc = new(@"(?<![\w/])patch:(\d+):\d+", RegexOptions.Compiled);

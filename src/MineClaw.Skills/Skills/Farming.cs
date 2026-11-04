@@ -29,26 +29,7 @@ internal sealed class FarmField
     {
         static bool Farm(int id) => CropKinds.IsCrop(id) || id == Blocks.Farmland;
         var seed = w.FindBlocks(feet, radius, (id, _) => Farm(id), 1);
-        var seen = new HashSet<BlockPos>();
-        if (seed.Count > 0)
-        {
-            var queue = new Queue<BlockPos>();
-            queue.Enqueue(seed[0].Pos);
-            seen.Add(seed[0].Pos);
-            while (queue.Count > 0 && seen.Count < MaxCells)
-            {
-                var p = queue.Dequeue();
-                for (int dx = -2; dx <= 2; dx++)
-                for (int dz = -2; dz <= 2; dz++)
-                for (int dy = -1; dy <= 1; dy++)
-                {
-                    var n = p.Offset(dx, dy, dz);
-                    if ((dx | dy | dz) == 0 || seen.Contains(n) || !Farm(w.GetBlock(n.X, n.Y, n.Z))) continue;
-                    seen.Add(n);
-                    queue.Enqueue(n);
-                }
-            }
-        }
+        var seen = seed.Count > 0 ? Flood(w, seed[0].Pos, Farm) : new HashSet<BlockPos>();
         var crops = seen.Where(p => CropKinds.IsCrop(w.GetBlock(p.X, p.Y, p.Z))).ToList();
         var soil = seen.Where(p => w.GetBlock(p.X, p.Y, p.Z) == Blocks.Farmland).ToList();
         var f = new FarmField { Crops = crops, Soil = soil };
@@ -59,6 +40,28 @@ internal sealed class FarmField
             f.MinZ = seen.Min(p => p.Z); f.MaxZ = seen.Max(p => p.Z);
         }
         return f;
+    }
+
+    /// <summary>The farm cells connected to <paramref name="start"/> (gaps up to one cell, ±1 layer), at most MaxCells.</summary>
+    private static HashSet<BlockPos> Flood(WorldState w, BlockPos start, Func<int, bool> farm)
+    {
+        var seen = new HashSet<BlockPos> { start };
+        var queue = new Queue<BlockPos>();
+        queue.Enqueue(start);
+        while (queue.Count > 0 && seen.Count < MaxCells)
+        {
+            var p = queue.Dequeue();
+            for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                var n = p.Offset(dx, dy, dz);
+                if ((dx | dy | dz) == 0 || seen.Contains(n) || !farm(w.GetBlock(n.X, n.Y, n.Z))) continue;
+                seen.Add(n);
+                queue.Enqueue(n);
+            }
+        }
+        return seen;
     }
 
     /// <summary>Strips <see cref="StripWidth"/> rows wide across the long axis (claim-based crew split).</summary>
@@ -138,12 +141,13 @@ internal static class FarmOps
             }
         }
         var all = Farmland();
-        int left = all.Count(Empty);
-        string text = all.Count == 0 ? ""
-            : left == 0 ? $"; field: {all.Count}/{all.Count} farmland planted"
-            : $"; field: {all.Count - left}/{all.Count} planted, {left} empty" + (!ctx.Has(Items.Seeds) ? ": out of seeds (need " + left + " more)" : ": couldn't plant them");
-        return (planted, text);
+        return (planted, FieldText(all.Count, all.Count(Empty), ctx.Has(Items.Seeds)));
     }
+
+    private static string FieldText(int total, int left, bool hasSeeds) =>
+        total == 0 ? ""
+        : left == 0 ? $"; field: {total}/{total} farmland planted"
+        : $"; field: {total - left}/{total} planted, {left} empty" + (!hasSeeds ? ": out of seeds (need " + left + " more)" : ": couldn't plant them");
 
     /// <summary>Plants <paramref name="item"/> in the empty cell above <paramref name="soil"/>; verified by the block appearing.</summary>
     public static async Task<bool> PlantAsync(SkillContext ctx, BlockPos soil, int item, CancellationToken ct)
@@ -207,29 +211,44 @@ public sealed class HarvestWheatSkill : Skill
         foreach (var strip in strips.OrderBy(s => s.Centre.DistanceSquaredTo(ctx.Feet)).ThenBy(s => s.Index))
         {
             ct.ThrowIfCancellationRequested();
-            var inStrip = field.Crops.Where(c => strip.Key.Contains(c) && CropKinds.Ripe(ctx.Block(c), ctx.Meta(c))).ToList();
-            if (inStrip.Count == 0) continue;
-            var lease = await ctx.Claims.TryClaimAsync(strip.Key, StripTtl, "harvest_wheat", ct);
-            if (!lease.Ok) { theirs += inStrip.Count; refused.Add(strip.Key); continue; } // another bot's part: theirs, not "protected"
-            // Another bot may have harvested it while the lease was on its way: what is still ripe now.
-            inStrip = inStrip.Where(c => CropKinds.Ripe(ctx.Block(c), ctx.Meta(c))).ToList();
-            if (inStrip.Count > 0) any = true;
-            try { if (inStrip.Count > 0) await HarvestCellsAsync(ctx, inStrip, replant, st, ct); }
-            finally
-            {
-                try { await ctx.Claims.ReleaseAsync(strip.Key, CancellationToken.None); } catch (Exception) { /* the lease times out */ }
-            }
+            var (theirsHere, worked) = await WorkStripAsync(ctx, field, strip, replant, st, ct);
+            if (theirsHere is { } n) { theirs += n; refused.Add(strip.Key); } // another bot's part: theirs, not "protected"
+            any |= worked;
         }
         // Replanting covers my share: my band (part=i/n), else the field minus the strips other bots held.
-        Func<BlockPos, bool> fillable = part != null
-            ? p => strips.Any(s => s.Key.Contains(p.Up()) || s.Key.Contains(p))
-            : p => !refused.Any(k => k.Contains(p.Up()) || k.Contains(p));
+        var fillable = Fillable(part != null, strips, refused);
         string crew = theirs > 0 ? $"; {theirs} ripe in parts other hive bots are working (theirs)" : "";
         // Every ripe strip went to other bots (or they harvested it first): a done share, not a failure.
         if (!any) return Ok("nothing left in my part" + (crew.Length > 0 ? crew : ": the crew harvested it"));
         var result = await FinishAsync(ctx, st, growing, replant, radius, fillable, ct);
         return result.Ok ? Ok(result.Text + crew) : Fail(result.Text + crew);
     }
+
+    /// <summary>
+    /// Leases one strip, harvests + replants what is still ripe in it, releases it. Returns the ripe count when another bot holds
+    /// it (theirs), and whether anything was harvested.
+    /// </summary>
+    private async Task<(int? Theirs, bool Worked)> WorkStripAsync(SkillContext ctx, FarmField field, FarmField.Strip strip, bool replant, Tally st, CancellationToken ct)
+    {
+        var inStrip = field.Crops.Where(c => strip.Key.Contains(c) && CropKinds.Ripe(ctx.Block(c), ctx.Meta(c))).ToList();
+        if (inStrip.Count == 0) return (null, false);
+        var lease = await ctx.Claims.TryClaimAsync(strip.Key, StripTtl, "harvest_wheat", ct);
+        if (!lease.Ok) return (inStrip.Count, false);
+        // Another bot may have harvested it while the lease was on its way: what is still ripe now.
+        inStrip = inStrip.Where(c => CropKinds.Ripe(ctx.Block(c), ctx.Meta(c))).ToList();
+        bool worked = inStrip.Count > 0;
+        try { if (worked) await HarvestCellsAsync(ctx, inStrip, replant, st, ct); }
+        finally
+        {
+            try { await ctx.Claims.ReleaseAsync(strip.Key, CancellationToken.None); } catch (Exception) { /* the lease times out */ }
+        }
+        return (null, worked);
+    }
+
+    /// <summary>The soil this bot replants: its band (part=i/n), else the field minus the strips other bots held.</summary>
+    private static Func<BlockPos, bool> Fillable(bool hasPart, List<FarmField.Strip> strips, List<ClaimKey> refused) => hasPart
+        ? p => strips.Any(s => s.Key.Contains(p.Up()) || s.Key.Contains(p))
+        : p => !refused.Any(k => k.Contains(p.Up()) || k.Contains(p));
 
     private sealed class Tally
     {
@@ -408,14 +427,7 @@ public sealed class TillSoilSkill : Skill
     {
         int want = Clamp(args.Int("count"), 4, 1, 32);
         int hoe = ctx.FirstOwned(FarmOps.Hoes)!.Value;
-        // pos names the patch center, which may be water or existing farmland. Hoe only dirt/grass with air above near
-        // water, nearest to pos first; existing farmland counts as done and is planted if empty.
-        var given = args.Pos();
-        var near = ctx.World.FindBlocks(given?.Center ?? ctx.Feet, given is null ? 8 : PatchRadius,
-                (id, _) => id is Blocks.Dirt or Blocks.Grass or Blocks.Farmland, int.MaxValue)
-            .Where(f => SkillWorld.Air(ctx.World, f.Pos.Up()) && NearWater(ctx.World, f.Pos)).ToList();
-        var spots = near.Where(f => f.Id != Blocks.Farmland && !ctx.Game.IsProtected(f.Pos, f.Id))
-            .Concat(near.Where(f => f.Id == Blocks.Farmland)).Take(want).ToList();
+        var spots = Spots(ctx, args.Pos(), want);
         if (spots.Count == 0) return Fail("no dirt/grass within 4 of water with air above");
         int tilled = 0, planted = 0, already = 0;
         foreach (var s in spots)
@@ -426,14 +438,40 @@ public sealed class TillSoilSkill : Skill
                 if (ctx.Has(Items.Seeds) && await FarmOps.PlantAsync(ctx, s.Pos, Items.Seeds, ct)) planted++;
                 continue;
             }
-            var reach = await ctx.ReachAsync(s.Pos, ct);
-            if (!reach.Ok) continue;
-            var r = await ctx.Game.UseOnBlockAsync(s.Pos, BlockFace.Top, hoe, ct);
-            if (!r.Ok) return tilled > 0 ? Ok($"tilled {tilled}, then {r.Message}") : SkillResult.From(r);
-            if (!await ctx.WaitBlockAsync(s.Pos, (id, _) => id == Blocks.Farmland, ct)) continue;
+            var (done, failed) = await TillAsync(ctx, s.Pos, hoe, ct);
+            if (failed is { } r) return tilled > 0 ? Ok($"tilled {tilled}, then {r.Message}") : SkillResult.From(r);
+            if (!done) continue;
             tilled++;
             if (await FarmOps.PlantAsync(ctx, s.Pos, Items.Seeds, ct)) planted++;
         }
+        return Summary(tilled, planted, already);
+    }
+
+    /// <summary>
+    /// pos names the patch center, which may be water or existing farmland. Hoe only dirt/grass with air above near water, nearest
+    /// to pos first; existing farmland counts as done and is planted if empty.
+    /// </summary>
+    private static List<FoundBlock> Spots(SkillContext ctx, BlockPos? given, int want)
+    {
+        var near = ctx.World.FindBlocks(given?.Center ?? ctx.Feet, given is null ? 8 : PatchRadius,
+                (id, _) => id is Blocks.Dirt or Blocks.Grass or Blocks.Farmland, int.MaxValue)
+            .Where(f => SkillWorld.Air(ctx.World, f.Pos.Up()) && NearWater(ctx.World, f.Pos)).ToList();
+        return near.Where(f => f.Id != Blocks.Farmland && !ctx.Game.IsProtected(f.Pos, f.Id))
+            .Concat(near.Where(f => f.Id == Blocks.Farmland)).Take(want).ToList();
+    }
+
+    /// <summary>Hoes one cell: (true, null) when it became farmland, (false, null) to skip it, (_, failure) to stop.</summary>
+    private static async Task<(bool Tilled, MineClaw.Client.ActionResult? Failed)> TillAsync(SkillContext ctx, BlockPos pos, int hoe, CancellationToken ct)
+    {
+        var reach = await ctx.ReachAsync(pos, ct);
+        if (!reach.Ok) return (false, null);
+        var r = await ctx.Game.UseOnBlockAsync(pos, BlockFace.Top, hoe, ct);
+        if (!r.Ok) return (false, r);
+        return (await ctx.WaitBlockAsync(pos, (id, _) => id == Blocks.Farmland, ct), null);
+    }
+
+    private static SkillResult Summary(int tilled, int planted, int already)
+    {
         string done = already > 0 ? $" ({already} already farmland)" : "";
         return tilled > 0 || already > 0 ? Ok($"tilled {tilled}, planted {planted}{done}") : Fail("nothing tilled (protected or no block change)");
     }
@@ -548,31 +586,44 @@ public sealed class BonemealSkill : Skill
         if (!ctx.Has(Items.Dye, Items.BoneMeal)) return Fail("no bone meal");
         int want = Clamp(args.Int("count"), 3, 1, 16);
         // ctx.Find hides crops protected against digging. Bone meal grows them without breaking anything.
-        static bool Growing(int id, int m) => (CropKinds.IsCrop(id) && !CropKinds.Ripe(id, m)) || id == Blocks.Sapling;
         var targets = args.Pos() is { } p ? [p]
             : ctx.World.FindBlocks(ctx.Feet, 8, Growing, int.MaxValue).Select(f => f.Pos).Take(want).ToList();
         if (targets.Count == 0) return Fail("no growing crops or saplings nearby");
         int n = 0, uses = 0;
         foreach (var t in targets)
         {
-            // b1.8.1 grows a crop or sapling fully at once; 1.12.2 (ItemDye.applyBonemeal) adds 2-5 crop stages, a sapling stage
-            // 45% of the time: keep using it on the same one until it is ripe / a tree, like a player clicking again.
-            bool grew = false;
-            for (int i = 0; i < MaxUsesPerTarget && Growing(ctx.Block(t), ctx.Meta(t)); i++)
-            {
-                if (!ctx.Has(Items.Dye, Items.BoneMeal)) break;
-                var reach = await ctx.ReachAsync(t, ct);
-                if (!reach.Ok) break;
-                int id0 = ctx.Block(t), m0 = ctx.Meta(t), meal0 = ctx.Count(Items.Dye);
-                var r = await ctx.Game.UseOnBlockAsync(t, BlockFace.Top, Items.Dye, ct);
-                if (!r.Ok) return n > 0 ? Ok($"bonemealed {n} ({uses} bone meal), then {r.Message}") : SkillResult.From(r);
-                uses++;
-                if (await ctx.WaitBlockAsync(t, (id, m) => id != id0 || m != m0, ct)) grew = true;
-                else if (ctx.Count(Items.Dye) >= meal0) break; // not taken and nothing grew: it won't take bone meal
-            }
+            var (grew, used, failed) = await GrowAsync(ctx, t, ct);
+            uses += used;
+            if (failed is { } r) return n > 0 ? Ok($"bonemealed {n} ({uses} bone meal), then {r.Message}") : SkillResult.From(r);
             if (grew) n++;
         }
         return n > 0 ? Ok($"bonemealed {n} ({uses} bone meal)") : Fail("nothing grew");
+    }
+
+    private static bool Growing(int id, int m) => (CropKinds.IsCrop(id) && !CropKinds.Ripe(id, m)) || id == Blocks.Sapling;
+
+    /// <summary>
+    /// b1.8.1 grows a crop or sapling fully at once; 1.12.2 (ItemDye.applyBonemeal) adds 2-5 crop stages, a sapling stage 45% of
+    /// the time: keep using it on the same one until it is ripe / a tree, like a player clicking again. Returns whether it grew,
+    /// the bone meal used, and a failed use (which stops the skill).
+    /// </summary>
+    private static async Task<(bool Grew, int Uses, MineClaw.Client.ActionResult? Failed)> GrowAsync(SkillContext ctx, BlockPos t, CancellationToken ct)
+    {
+        bool grew = false;
+        int uses = 0;
+        for (int i = 0; i < MaxUsesPerTarget && Growing(ctx.Block(t), ctx.Meta(t)); i++)
+        {
+            if (!ctx.Has(Items.Dye, Items.BoneMeal)) break;
+            var reach = await ctx.ReachAsync(t, ct);
+            if (!reach.Ok) break;
+            int id0 = ctx.Block(t), m0 = ctx.Meta(t), meal0 = ctx.Count(Items.Dye);
+            var r = await ctx.Game.UseOnBlockAsync(t, BlockFace.Top, Items.Dye, ct);
+            if (!r.Ok) return (grew, uses, r);
+            uses++;
+            if (await ctx.WaitBlockAsync(t, (id, m) => id != id0 || m != m0, ct)) grew = true;
+            else if (ctx.Count(Items.Dye) >= meal0) break; // not taken and nothing grew: it won't take bone meal
+        }
+        return (grew, uses, null);
     }
 
     /// <summary>1.12.2: 2-5 stages a use, so a seedling (0/7) is ripe after at most 4; a sapling 45% a use (two stages).</summary>
@@ -594,16 +645,24 @@ public sealed class PlantSaplingSkill : Skill
     {
         var soil = args.Pos() is { } p ? (ctx.Block(p) is Blocks.Dirt or Blocks.Grass ? p : p.Down()) : Spot(ctx);
         if (soil is not { } s) return Fail("no dirt/grass with 2 blocks clearance and 5 of open sky nearby");
-        // An idempotent goal (live 10-27: "skill failed 2x the same way: 9,65,3 is occupied" by the sapling planted before):
-        // a sapling or a standing tree there already = done.
+        if (Unplantable(ctx, s) is { } settled) return settled;
+        // Someone standing on the spot: wait a moment, then skip it (ok, so a replant loop carries on with the other spots).
+        if (await WaitClearAsync(ctx, s.Up(), ct) is { } who) return Ok($"skipped {P(s.Up())} ({who} standing there)");
+        return await FarmOps.PlantAsync(ctx, s, Blocks.Sapling, ct) ? Ok($"planted sapling at {P(s.Up())}") : Fail($"sapling didn't take at {P(s.Up())}");
+    }
+
+    /// <summary>
+    /// An idempotent goal (live 10-27: "skill failed 2x the same way: 9,65,3 is occupied" by the sapling planted before): a sapling
+    /// or a standing tree there already = done; otherwise why the soil can't take one, or null.
+    /// </summary>
+    private static SkillResult? Unplantable(SkillContext ctx, BlockPos s)
+    {
         int there = ctx.Block(s.Up());
         if (there == Blocks.Sapling) return Ok($"already planted at {P(s.Up())}");
         if (MineClaw.Client.Trees.Wood.IsLog(there)) return Ok($"already a tree at {P(s.Up())}");
         if (ctx.Block(s) is not (Blocks.Dirt or Blocks.Grass)) return Fail($"{P(s)} is {ctx.BlockName(s)}, needs dirt/grass");
         if (!SkillWorld.Air(ctx.World, s.Up())) return Fail($"{P(s.Up())} is occupied by {Blocks.Get(there).Name}");
-        // Someone standing on the spot: wait a moment, then skip it (ok, so a replant loop carries on with the other spots).
-        if (await WaitClearAsync(ctx, s.Up(), ct) is { } who) return Ok($"skipped {P(s.Up())} ({who} standing there)");
-        return await FarmOps.PlantAsync(ctx, s, Blocks.Sapling, ct) ? Ok($"planted sapling at {P(s.Up())}") : Fail($"sapling didn't take at {P(s.Up())}");
+        return null;
     }
 
     /// <summary>Who (another player/bot, not us) stands in <paramref name="cell"/> after up to ~3 s of waiting; null = clear.</summary>
@@ -614,9 +673,7 @@ public sealed class PlantSaplingSkill : Skill
             foreach (var e in ctx.World.Entities.All())
             {
                 if (e.Kind != EntityKind.Player || e.Id == ctx.World.Player.EntityId) continue;
-                var box = AABB.ForPlayer(e.Position);
-                if (box.MaxX > cell.X && box.MinX < cell.X + 1 && box.MaxZ > cell.Z && box.MinZ < cell.Z + 1
-                    && box.MaxY > cell.Y && box.MinY < cell.Y + 1) return e.Name ?? "someone";
+                if (Overlaps(AABB.ForPlayer(e.Position), cell)) return e.Name ?? "someone";
             }
             return null;
         }
@@ -627,6 +684,9 @@ public sealed class PlantSaplingSkill : Skill
         }
         return null;
     }
+
+    private static bool Overlaps(AABB box, BlockPos cell) =>
+        box.MaxX > cell.X && box.MinX < cell.X + 1 && box.MaxZ > cell.Z && box.MinZ < cell.Z + 1 && box.MaxY > cell.Y && box.MinY < cell.Y + 1;
 
     private static BlockPos? Spot(SkillContext ctx) =>
         ctx.Find((id, _) => id is Blocks.Dirt or Blocks.Grass, 8, 128).Select(f => f.Pos)

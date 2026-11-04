@@ -247,24 +247,39 @@ static class Render3D
         for (int x = -4; x <= 8; x++)
             for (int z = -3; z <= 6; z++)
                 v.Set(x, 62, z, Blocks.Stone);
-        // Basin walls around a 2×2 of sources at (0..1, 63, 0..1), open to the east into a channel.
+        PoolBasin(v);
+        PoolChannel(v);
+        LavaPocket(v);
+        return v;
+    }
+
+    /// <summary>Basin walls around a 2×2 of sources at (0..1, 63, 0..1), open to the east into a channel.</summary>
+    private static void PoolBasin(SparseVoxels v)
+    {
         for (int x = -1; x <= 2; x++)
             for (int z = -1; z <= 2; z++)
                 if (x is -1 or 2 || z is -1 or 2) v.Set(x, 63, z, Blocks.Cobblestone);
         v.Set(0, 63, 0, Blocks.Water); v.Set(1, 63, 0, Blocks.Water); v.Set(0, 63, 1, Blocks.Water); v.Set(1, 63, 1, Blocks.Water);
         v.Set(2, 63, 1, 0);
-        // Channel east: flowing levels 1..4, then the edge: falling water down to the lower floor.
+    }
+
+    /// <summary>Channel east: flowing levels 1..4, then the edge: falling water down to the lower floor.</summary>
+    private static void PoolChannel(SparseVoxels v)
+    {
         for (int x = 2; x <= 5; x++) { v.Set(x, 63, 1, Blocks.FlowingWater, x - 1); v.Set(x, 63, 0, Blocks.Cobblestone); v.Set(x, 63, 2, Blocks.Cobblestone); }
         for (int x = 6; x <= 8; x++) for (int z = -3; z <= 6; z++) v.Set(x, 62, z, 0);
         for (int x = 6; x <= 8; x++) for (int z = -3; z <= 6; z++) v.Set(x, 59, z, Blocks.Stone);
         v.Set(6, 62, 1, Blocks.FlowingWater, 8); v.Set(6, 61, 1, Blocks.FlowingWater, 8); v.Set(6, 60, 1, Blocks.FlowingWater, 8);
         v.Set(6, 63, 1, Blocks.FlowingWater, 5);
         foreach (var (x, z, m) in new[] { (7, 1, 1), (8, 1, 2), (6, 0, 1), (6, 2, 1), (7, 0, 2), (7, 2, 2) }) v.Set(x, 60, z, Blocks.FlowingWater, m);
-        // Lava pocket beside the pool for comparison.
+    }
+
+    /// <summary>Lava pocket beside the pool for comparison.</summary>
+    private static void LavaPocket(SparseVoxels v)
+    {
         v.Set(-3, 63, 3, Blocks.Lava); v.Set(-2, 63, 3, Blocks.FlowingLava, 2);
         for (int x = -4; x <= -1; x++) for (int z = 2; z <= 4; z++) if (v.Block(x, 63, z) == 0) v.Set(x, 63, z, Blocks.Stone);
         v.Set(-1, 63, 3, Blocks.Stone);
-        return v;
     }
 
     /// <summary>One of each render type the islands use (and the rest of the common ones) on a plain background, labelled.</summary>
@@ -329,17 +344,34 @@ static class Render3D
         {
             var v = new SparseVoxels();
             cases[i].Build(v);
-            double tx = 0.5, ty = 64.5, tz = 0.5;
-            if (cases[i].Label is "dbl chest" or "flowers" or "stairs" or "slab" or "fence" or "glass pane" or "wool" or "pumpkin" or "lava" or "water flow" or "iron bars" or "plate+btn" or "rails" or "leaves") tx = 1;
-            if (cases[i].Label is "sugar cane" or "door" or "door open" or "cactus" or "ladder") ty = 65;
+            var (tx, ty, tz) = CaseTarget(cases[i].Label);
             double ex = tx + 2.3, ey = ty + 1.6, ez = tz + 2.6;
             var (yaw, pitch) = EyeScene.LookAt(ex, ey, ez, tx, ty - 0.2, tz);
             var fr = eye.Raster(new EyeScene { World = v, Atlas = atlas, EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = yaw, Pitch = pitch, Fov = 50 });
             int ox = i % cols * cw, oy = i / cols * (ch + lab);
-            for (int y = 0; y < ch; y++)
-                for (int x = 0; x < cw; x++) c.Set(ox + x, oy + y, fr.Px[y * cw + x]);
+            Blit(c, fr.Px, ox, oy, cw, ch);
             c.Text(ox + 3, oy + ch + 2, cases[i].Label, 0xe8ecf4);
         }
         File.WriteAllBytes(path, Png.Encode(c.Px, c.Width, c.Height));
+    }
+
+    /// <summary>Two-block cases are looked at between their blocks, tall ones a block higher.</summary>
+    private static (double X, double Y, double Z) CaseTarget(string label)
+    {
+        double tx = 0.5, ty = 64.5, tz = 0.5;
+        if (WideCases.Contains(label)) tx = 1;
+        if (TallCases.Contains(label)) ty = 65;
+        return (tx, ty, tz);
+    }
+
+    private static readonly HashSet<string> WideCases =
+        ["dbl chest", "flowers", "stairs", "slab", "fence", "glass pane", "wool", "pumpkin", "lava", "water flow", "iron bars", "plate+btn", "rails", "leaves"];
+
+    private static readonly HashSet<string> TallCases = ["sugar cane", "door", "door open", "cactus", "ladder"];
+
+    private static void Blit(Canvas c, uint[] px, int ox, int oy, int cw, int ch)
+    {
+        for (int y = 0; y < ch; y++)
+            for (int x = 0; x < cw; x++) c.Set(ox + x, oy + y, px[y * cw + x]);
     }
 }

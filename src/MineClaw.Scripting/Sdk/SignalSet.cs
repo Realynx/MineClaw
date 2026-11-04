@@ -72,26 +72,34 @@ internal sealed class SignalSet(ScriptSession s)
     {
         var t = (topic ?? "").Trim();
         var (head, tail) = t.IndexOf(':') is var c and > 0 ? (t[..c], t[(c + 1)..]) : (t, "");
-        Func<bool>? cond = head switch
-        {
-            "hungry" => () => s.Host.World.Player.Food < Num(opts, "below", 14),
-            "invFull" => () => s.Host.World.Inventory.EmptySlotCount() < Num(opts, "free", 1),
-            "night" => () => s.Host.World.IsNight,
-            "day" => () => !s.Host.World.IsNight,
-            "hurt" => Hurt,
-            "toolBroke" => tail.Length > 0 ? () => Broke(tail) : () => ToolKinds.Any(Broke),
-            _ => null,
-        };
+        var cond = BuiltInCondition(head, tail, opts);
         if (cond == null) return false;
+        Register(t, head, cond, opts);
+        return true;
+    }
+
+    private Func<bool>? BuiltInCondition(string head, string tail, JsonNode? opts) => head switch
+    {
+        "hungry" => () => s.Host.World.Player.Food < Num(opts, "below", 14),
+        "invFull" => () => s.Host.World.Inventory.EmptySlotCount() < Num(opts, "free", 1),
+        "night" => () => s.Host.World.IsNight,
+        "day" => () => !s.Host.World.IsNight,
+        "hurt" => Hurt,
+        "toolBroke" => tail.Length > 0 ? () => Broke(tail) : () => ToolKinds.Any(Broke),
+        _ => null,
+    };
+
+    /// <summary>Adds (or replaces) the built-in under its topic and takes its baseline; without opts an existing one keeps its threshold.</summary>
+    private void Register(string t, string head, Func<bool> cond, JsonNode? opts)
+    {
         lock (_lock)
         {
-            if (opts == null && _list.Any(x => x.Topic == t && x.Owner == null && x.Due == null)) return true; // keep its threshold
+            if (opts == null && _list.Any(x => x.Topic == t && x.Owner == null && x.Due == null)) return; // keep its threshold
             _list.RemoveAll(x => x.Topic == t && x.Owner == null && x.Due == null);
             if (head == "toolBroke") foreach (var k in ToolKinds) _lastTools[k] = ToolCount(k);
             if (head == "hurt") _lastHp = s.Host.World.Player.Health;
             _list.Add(new Signal { Topic = t, Cond = cond, Text = Describe(head) });
         }
-        return true;
     }
 
     /// <summary><c>when(fn)</c>: a predicate signal ("when:3"), polled on the script thread. Inactive until a handler or a machine state uses it.</summary>
@@ -165,46 +173,66 @@ internal sealed class SignalSet(ScriptSession s)
     /// <summary>Evaluates the signals this thread may evaluate and posts the ones that fired.</summary>
     public void Poll(bool onScriptThread)
     {
-        List<Signal> check;
         var now = s.Time.GetUtcNow();
-        lock (_lock)
-        {
-            if (_list.Count == 0) return;
-            // when() predicates: every 100 ms, or every 25 safe points when actions are quicker than that.
-            bool scriptSignals = onScriptThread && (now - _lastScriptPoll >= TimeSpan.FromMilliseconds(100) || ++_sincePoll >= 25);
-            if (scriptSignals) { _lastScriptPoll = now; _sincePoll = 0; }
-            check = _list.Where(x => x.Active && (!x.ScriptThread || scriptSignals)).ToList();
-        }
+        var check = SignalsToCheck(onScriptThread, now);
+        if (check == null) return;
         var fired = new List<ScriptEvent>();
-        foreach (var sig in check)
-        {
-            bool hit;
-            if (sig.Due is { } due) hit = now >= due;
-            else
-            {
-                try { hit = sig.Cond(); }
-                catch (ScriptUnwind) { throw; }
-                catch (ScriptStopException) { throw; }
-                catch (ScriptLimitException) { throw; }
-                catch (Exception ex) { hit = false; s.Host.Log?.Invoke($"signal {sig.Topic} failed: {ex.GetType().Name}: {ex.Message}"); }
-            }
-            lock (_lock)
-            {
-                if (!_list.Contains(sig)) continue;
-                if (sig.Due != null)
-                {
-                    if (!hit) continue;
-                    if (sig.Period is { } p) sig.Due = now + p; else _list.Remove(sig);
-                    fired.Add(new ScriptEvent(ScriptEventKind.Signal, sig.Text, Topic: sig.Topic));
-                    continue;
-                }
-                if (hit && sig.Armed) { sig.Armed = false; fired.Add(new ScriptEvent(ScriptEventKind.Signal, sig.Text + Detail(sig.Topic), Topic: FiredTopic(sig))); }
-                else if (!hit) sig.Armed = true;
-            }
-        }
+        foreach (var sig in check) Settle(sig, Hit(sig, now), now, fired);
         if (!onScriptThread) UpdateBaselines();
         foreach (var e in fired) s.Deliver(e);
         if (onScriptThread) UpdateBaselines();
+    }
+
+    /// <summary>The active signals this thread may evaluate now (null when there are none at all).</summary>
+    private List<Signal>? SignalsToCheck(bool onScriptThread, DateTimeOffset now)
+    {
+        lock (_lock)
+        {
+            if (_list.Count == 0) return null;
+            // when() predicates: every 100 ms, or every 25 safe points when actions are quicker than that.
+            bool scriptSignals = onScriptThread && (now - _lastScriptPoll >= TimeSpan.FromMilliseconds(100) || ++_sincePoll >= 25);
+            if (scriptSignals) { _lastScriptPoll = now; _sincePoll = 0; }
+            return _list.Where(x => x.Active && (!x.ScriptThread || scriptSignals)).ToList();
+        }
+    }
+
+    /// <summary>A timer is due, or the condition holds (a failing condition is logged and counts as false; unwinds pass through).</summary>
+    private bool Hit(Signal sig, DateTimeOffset now)
+    {
+        if (sig.Due is { } due) return now >= due;
+        try { return sig.Cond(); }
+        catch (ScriptUnwind) { throw; }
+        catch (ScriptStopException) { throw; }
+        catch (ScriptLimitException) { throw; }
+        catch (Exception ex)
+        {
+            s.Host.Log?.Invoke($"signal {sig.Topic} failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Edge trigger: a signal still registered fires once on a hit and re-arms on a miss; timers fire when due.</summary>
+    private void Settle(Signal sig, bool hit, DateTimeOffset now, List<ScriptEvent> fired)
+    {
+        lock (_lock)
+        {
+            if (!_list.Contains(sig)) return;
+            if (sig.Due != null)
+            {
+                SettleTimer(sig, hit, now, fired);
+                return;
+            }
+            if (hit && sig.Armed) { sig.Armed = false; fired.Add(new ScriptEvent(ScriptEventKind.Signal, sig.Text + Detail(sig.Topic), Topic: FiredTopic(sig))); }
+            else if (!hit) sig.Armed = true;
+        }
+    }
+
+    /// <summary>A due timer fires; a periodic one is rescheduled, a one-shot removed (caller holds the lock).</summary>
+    private void SettleTimer(Signal sig, bool hit, DateTimeOffset now, List<ScriptEvent> fired)
+    {
+        if (!hit) return;
+        if (sig.Period is { } p) sig.Due = now + p; else _list.Remove(sig);
+        fired.Add(new ScriptEvent(ScriptEventKind.Signal, sig.Text, Topic: sig.Topic));
     }
 
     // ------------------------------------------------------------------ built-in conditions

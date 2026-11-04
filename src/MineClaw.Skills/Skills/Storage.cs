@@ -19,13 +19,33 @@ public sealed class DepositEverythingSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         bool keepTools = args.Flag("keep_tools");
-        bool Keep(ItemStack s) => s.IsEmpty || ctx.Game.ReservedItems.Contains(s.Id) || (keepTools && (Items.Get(s.Id).MaxDamage > 0 || Items.Food(s.Id) != null));
-        var items = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s)).GroupBy(s => (s.Id, s.Damage)).ToList();
+        var items = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keeps(ctx, keepTools, s)).GroupBy(s => (s.Id, s.Damage)).ToList();
         if (items.Count == 0) return Ok("nothing to deposit");
-        var chests = args.Str("chest") is { } name && ctx.Directory.Resolve(ctx, name) is { } one ? [one]
-            : MineClaw.World.ChestPairs.Distinct(ctx.World, ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos)) // a double chest is one
-                .Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
+        var chests = Chests(ctx, args);
         if (chests.Count == 0) return Fail("no free chest nearby");
+        var moves = Moves(ctx, items, chests);
+        var run = new InventoryRun(ctx);
+        var error = await new MovePlanner(ctx, run).RunAsync(moves, ct);
+        await DepositLeftoversAsync(ctx, run, chests, keepTools, ct);
+        await run.CloseAsync(ct);
+        int remaining = ctx.World.Inventory.PlayerSlots().Skip(9).Count(s => !Keeps(ctx, keepTools, s));
+        run.Moves = moves.Count;
+        return remaining == 0 ? Ok($"inventory deposited: {run.Summary()}") : Fail($"{remaining} stacks left (chests full?); {run.Summary(error)}");
+    }
+
+    /// <summary>Stays in the inventory: empty slots, reserved items, and with keep_tools tools and food.</summary>
+    private static bool Keeps(SkillContext ctx, bool keepTools, ItemStack s) =>
+        s.IsEmpty || ctx.Game.ReservedItems.Contains(s.Id) || (keepTools && (Items.Get(s.Id).MaxDamage > 0 || Items.Food(s.Id) != null));
+
+    /// <summary>The named chest, else the free chests nearby (a double chest is one).</summary>
+    private static List<BlockPos> Chests(SkillContext ctx, JsonElement args) =>
+        args.Str("chest") is { } name && ctx.Directory.Resolve(ctx, name) is { } one ? [one]
+            : MineClaw.World.ChestPairs.Distinct(ctx.World, ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos))
+                .Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
+
+    /// <summary>Each item kind to the chest of its category, else the nearest chest.</summary>
+    private static List<MoveSpec> Moves(SkillContext ctx, List<IGrouping<(short Id, short Damage), ItemStack>> items, List<BlockPos> chests)
+    {
         var moves = new List<MoveSpec>();
         foreach (var g in items)
         {
@@ -34,21 +54,20 @@ public sealed class DepositEverythingSkill : Skill
             moves.Add(new MoveSpec(g.Key.Id, Items.Get(g.Key.Id).MaxDamage > 0 ? null : g.Key.Damage, null,
                 new Endpoint(null, Region.Player, null, "inv"), new Endpoint(home, Region.Container, null, $"chest@{P(home)}")));
         }
-        var run = new InventoryRun(ctx);
-        var error = await new MovePlanner(ctx, run).RunAsync(moves, ct);
-        // Whatever didn't fit: try the other chests.
+        return moves;
+    }
+
+    /// <summary>Whatever didn't fit: try the other chests.</summary>
+    private static async Task DepositLeftoversAsync(SkillContext ctx, InventoryRun run, List<BlockPos> chests, bool keepTools, CancellationToken ct)
+    {
         foreach (var c in chests)
         {
-            var left = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s)).ToList();
+            var left = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keeps(ctx, keepTools, s)).ToList();
             if (left.Count == 0) break;
             if (ctx.Protected(c) || !ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(c, ctx.World.Dimension))) continue;
             await run.CloseAsync(ct);
-            await ctx.Game.DepositAllAsync(c, s => !Keep(s), ct);
+            await ctx.Game.DepositAllAsync(c, s => !Keeps(ctx, keepTools, s), ct);
         }
-        await run.CloseAsync(ct);
-        int remaining = ctx.World.Inventory.PlayerSlots().Skip(9).Count(s => !Keep(s));
-        run.Moves = moves.Count;
-        return remaining == 0 ? Ok($"inventory deposited: {run.Summary()}") : Fail($"{remaining} stacks left (chests full?); {run.Summary(error)}");
     }
 }
 
@@ -84,31 +103,41 @@ public sealed class RestockLoadoutSkill : Skill
         {
             if (needs.Count == 0) break;
             if (await run.OpenAsync(c, ct) is { } err) { run.Notes.Add(err); continue; }
-            var stock = run.ContainerContents();
-            foreach (var n in needs.ToList())
-            {
-                int have = Have(ctx, n);
-                // Food: any safe food the version's data knows (1.12.2 baked potatoes, carrots, mutton...), the cooked
-                // staples first.
-                var ids = n.Name == "food"
-                    ? n.Ids.Concat(stock.Where(s => !s.IsEmpty && IsSafeFood(s)).Select(s => (int)s.Id)).Distinct().ToArray()
-                    : n.Ids;
-                foreach (var id in ids)
-                {
-                    if (have >= n.Want) break;
-                    int there = stock.Where(s => !s.IsEmpty && s.Id == id).Sum(s => s.Count);
-                    if (there == 0) continue;
-                    int k = await run.TransferAsync(id, null, Math.Min(there, n.Want - have), w => w.SlotsOf(Region.Container).ToArray(),
-                        w => w.SlotsOf(Region.Player).ToArray(), ct);
-                    have += k;
-                    if (k > 0) { got.Add($"{k} {Item(id)}"); run.Moves++; }
-                }
-                if (have >= n.Want) needs.Remove(n);
-            }
+            await RestockFromAsync(ctx, run, needs, got, ct);
         }
         await run.CloseAsync(ct);
         string missing = needs.Count > 0 ? "; still short: " + string.Join(", ", needs.Select(n => n.Name)) : "";
         return got.Count > 0 ? Ok($"took {string.Join(", ", got)}{missing}; {run.Summary()}") : Fail($"nothing useful in nearby chests{missing}");
+    }
+
+    /// <summary>Takes what the open chest has for each need; a need that is met is removed.</summary>
+    private static async Task RestockFromAsync(SkillContext ctx, InventoryRun run, List<(string Name, int[] Ids, int Want)> needs, List<string> got, CancellationToken ct)
+    {
+        var stock = run.ContainerContents();
+        foreach (var n in needs.ToList())
+            if (await TakeAsync(ctx, run, n, stock, got, ct) >= n.Want) needs.Remove(n);
+    }
+
+    /// <summary>Takes up to the need's shortfall, best ids first; returns how many it has now.</summary>
+    private static async Task<int> TakeAsync(SkillContext ctx, InventoryRun run, (string Name, int[] Ids, int Want) n, ItemStack[] stock, List<string> got, CancellationToken ct)
+    {
+        int have = Have(ctx, n);
+        // Food: any safe food the version's data knows (1.12.2 baked potatoes, carrots, mutton...), the cooked
+        // staples first.
+        var ids = n.Name == "food"
+            ? n.Ids.Concat(stock.Where(s => !s.IsEmpty && IsSafeFood(s)).Select(s => (int)s.Id)).Distinct().ToArray()
+            : n.Ids;
+        foreach (var id in ids)
+        {
+            if (have >= n.Want) break;
+            int there = stock.Where(s => !s.IsEmpty && s.Id == id).Sum(s => s.Count);
+            if (there == 0) continue;
+            int k = await run.TransferAsync(id, null, Math.Min(there, n.Want - have), w => w.SlotsOf(Region.Container).ToArray(),
+                w => w.SlotsOf(Region.Player).ToArray(), ct);
+            have += k;
+            if (k > 0) { got.Add($"{k} {Item(id)}"); run.Moves++; }
+        }
+        return have;
     }
 
     private static bool IsSafeFood(ItemStack s) =>

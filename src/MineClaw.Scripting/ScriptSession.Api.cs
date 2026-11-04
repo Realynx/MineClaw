@@ -871,17 +871,23 @@ public sealed partial class ScriptSession
         SafePoint();
         double r = radius is { } rr ? Math.Clamp(rr, 1, 64) : 24;
         int max = Math.Clamp(limit ?? 16, 1, 64);
+        var hits = FindHits((query ?? "").Trim(), r, max);
+        var list = new JsonArray();
+        foreach (var (_, o) in hits.OrderBy(h => h.D).Take(max)) list.Add(o);
+        return list;
+    }
+
+    /// <summary>Blocks of that name (unless it names entities), entities, else the remembered place.</summary>
+    private List<(double D, JsonObject O)> FindHits(string q, double r, int max)
+    {
         var feet = _host.World.Player.Position;
-        var q = (query ?? "").Trim();
         var key = q.ToLowerInvariant();
         var hits = new List<(double D, JsonObject O)>();
         bool entityWord = FindEntityWords.ContainsKey(key) || MobTypes.ByName(key) != null;
         if (!entityWord && (_host.Data.BlockByName(q) ?? Blocks.ByName(q)) is { } b) FindBlockHits(hits, b, feet, r, max);
         foreach (var e in _host.World.Entities.Nearby(feet, r, FindEntityFilter(key, q), max)) hits.Add(FindEntityHit(e, feet));
         if (hits.Count == 0) FindPlaceHit(hits, q, feet);
-        var list = new JsonArray();
-        foreach (var (_, o) in hits.OrderBy(h => h.D).Take(max)) list.Add(o);
-        return list;
+        return hits;
     }
 
     /// <summary>Nothing in view: the remembered place of that name, if any.</summary>

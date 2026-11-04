@@ -16,38 +16,48 @@ internal static class JsConvert
         if (depth > 8 || v.IsUndefined() || v.IsNull()) return null;
         if (v.IsString()) return JsonValue.Create(v.AsString());
         if (v.IsBoolean()) return JsonValue.Create(v.AsBoolean());
-        if (v.IsNumber())
+        if (v.IsNumber()) return NumberNode(v.AsNumber());
+        return v switch
         {
-            var d = v.AsNumber();
-            if (!double.IsFinite(d)) return JsonValue.Create(0);
-            return d == Math.Floor(d) && Math.Abs(d) < 1e15 ? JsonValue.Create((long)d) : JsonValue.Create(d);
-        }
-        if (v is Function) return null;
-        if (v is JsArray arr)
+            Function => null,
+            JsArray arr => ArrayNode(arr, depth, args),
+            ObjectInstance o => ObjectNode(o, depth, args),
+            _ => JsonValue.Create(v.ToString()),
+        };
+    }
+
+    /// <summary>Whole numbers below 1e15 as integers, non-finite as 0.</summary>
+    private static JsonNode NumberNode(double d)
+    {
+        if (!double.IsFinite(d)) return JsonValue.Create(0);
+        return d == Math.Floor(d) && Math.Abs(d) < 1e15 ? JsonValue.Create((long)d) : JsonValue.Create(d);
+    }
+
+    private static JsonArray ArrayNode(JsArray arr, int depth, bool args)
+    {
+        var ja = new JsonArray();
+        var len = Math.Min(arr.Length, 256u);
+        for (uint i = 0; i < len; i++) ja.Add(ToNode(arr.Get(i), depth + 1, args));
+        return ja;
+    }
+
+    /// <summary>Enumerable own string keys (first 64), functions dropped; nested <c>n</c> means count in args mode.</summary>
+    private static JsonObject ObjectNode(ObjectInstance o, int depth, bool args)
+    {
+        var jo = new JsonObject();
+        int n = 0;
+        foreach (var key in o.GetOwnPropertyKeys(Jint.Runtime.Types.String))
         {
-            var ja = new JsonArray();
-            var len = Math.Min(arr.Length, 256u);
-            for (uint i = 0; i < len; i++) ja.Add(ToNode(arr.Get(i), depth + 1, args));
-            return ja;
+            if (n++ >= 64) break;
+            var desc = o.GetOwnProperty(key);
+            if (!desc.Enumerable) continue;
+            var val = o.Get(key);
+            if (val is Function) continue;
+            var name = key.ToString();
+            if (args && name == "n" && depth >= 1) name = "count";
+            jo[name] = ToNode(val, depth + 1, args);
         }
-        if (v is ObjectInstance o)
-        {
-            var jo = new JsonObject();
-            int n = 0;
-            foreach (var key in o.GetOwnPropertyKeys(Jint.Runtime.Types.String))
-            {
-                if (n++ >= 64) break;
-                var desc = o.GetOwnProperty(key);
-                if (!desc.Enumerable) continue;
-                var val = o.Get(key);
-                if (val is Function) continue;
-                var name = key.ToString();
-                if (args && name == "n" && depth >= 1) name = "count";
-                jo[name] = ToNode(val, depth + 1, args);
-            }
-            return jo;
-        }
-        return JsonValue.Create(v.ToString());
+        return jo;
     }
 
     public static JsValue FromNode(Engine e, JsonNode? n, int depth = 0)
@@ -64,17 +74,19 @@ internal static class JsConvert
                 return obj;
             }
             case JsonValue v:
-                return v.GetValueKind() switch
-                {
-                    JsonValueKind.String => new JsString(v.GetValue<string>()),
-                    JsonValueKind.Number => new JsNumber(ScriptSession.AsNumber(v) ?? 0),
-                    JsonValueKind.True => JsBoolean.True,
-                    JsonValueKind.False => JsBoolean.False,
-                    _ => JsValue.Null,
-                };
+                return ScalarFrom(v);
             default: return JsValue.Null;
         }
     }
+
+    private static JsValue ScalarFrom(JsonValue v) => v.GetValueKind() switch
+    {
+        JsonValueKind.String => new JsString(v.GetValue<string>()),
+        JsonValueKind.Number => new JsNumber(ScriptSession.AsNumber(v) ?? 0),
+        JsonValueKind.True => JsBoolean.True,
+        JsonValueKind.False => JsBoolean.False,
+        _ => JsValue.Null,
+    };
 
     public static JsValue FromJson(Engine e, string? json)
     {

@@ -11,21 +11,7 @@ using MineClaw.Client;
 using MineClaw.Protocol;
 using MineClaw.World;
 
-var positional = new List<string>();
-bool walk = false, verbose = false;
-string? chat = null;
-int seconds = 20;
-for (int i = 0; i < args.Length; i++)
-{
-    switch (args[i])
-    {
-        case "--walk": walk = true; break;
-        case "--verbose": verbose = true; break;
-        case "--chat": chat = args[++i]; break;
-        case "--seconds": seconds = int.Parse(args[++i]); break;
-        default: positional.Add(args[i]); break;
-    }
-}
+var (positional, walk, verbose, chat, seconds) = ParseArgs(args);
 if (positional.Count < 3)
 {
     Console.Error.WriteLine("usage: ClientLive <host> <port> <username> [--walk] [--chat text] [--seconds N] [--verbose]");
@@ -52,7 +38,7 @@ var options = new ClientOptions
         {
             var d = t.Direction == PacketDirection.ServerBound ? sentCounts : recvCounts;
             d.AddOrUpdate(t.Packet.Id, 1, (_, v) => v + 1);
-            if (verbose && t.Packet.Id is not (0x0A or 0x0B or 0x0C or 0x0D or 0x1F or 0x20 or 0x21 or 0x1C or 0x22 or 0x00))
+            if (verbose && !Chatty(t.Packet.Id))
                 Say($"{t.Direction.Arrow()} 0x{t.Packet.Id:X2} {t.Packet.GetType().Name}");
         };
         return c;
@@ -82,8 +68,7 @@ catch (Exception ex)
 Say("spawned: " + client.DescribeStatus());
 
 // Give chunks/inventory a moment to arrive.
-for (int i = 0; i < 60 && (!client.World.IsLoaded((int)client.World.Player.Position.X, (int)client.World.Player.Position.Z) || !client.World.Player.OnGround); i++)
-    await Task.Delay(100);
+await WaitForWorldAsync();
 await Task.Delay(2000);
 
 var w = client.World;
@@ -102,43 +87,7 @@ if (chat is not null)
     Say("chat sent: " + r);
 }
 
-if (walk)
-{
-    // Pick a target 2-3 blocks away reachable by plain walking over non-edge cells only.
-    var start = Pathfinder.StartCellFor(w, w.Player.Position);
-    if (start is null) Say("WALK SKIPPED: not on a valid start cell");
-    else if (Safety.VoidNeighbourCount(w, start.Value.X, start.Value.Y, start.Value.Z) > 0) Say("WALK SKIPPED: standing on an edge");
-    else
-    {
-        BlockPos? target = null;
-        IReadOnlyList<PathStep>? path = null;
-        foreach (int dist in new[] { 3, 2 })
-        foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
-        {
-            if (target is not null) break;
-            var cand = start.Value.Offset(dx * dist, 0, dz * dist);
-            var opts = PathOptions.Default with { AllowBreak = false, AllowPlace = false, AllowPartial = false, MaxDrop = 0, AllowSwim = false, AllowClimb = false };
-            var pr = Pathfinder.FindPath(w, start.Value, new GoalBlock(cand), opts);
-            if (pr.Status != PathStatus.Found) continue;
-            bool safe = pr.Steps.All(s => s.Kind is MoveKind.Walk && !s.Sneak && s.Y == start.Value.Y
-                                          && Safety.VoidNeighbourCount(w, s.X, s.Y, s.Z) == 0
-                                          && !Safety.IsHazard(w, w.GetBlock(s.X, s.Y - 1, s.Z)));
-            if (safe) { target = cand; path = pr.Steps; }
-        }
-        if (target is null) Say("WALK SKIPPED: no safe non-edge cell 2-3 blocks away");
-        else
-        {
-            int corrBefore = client.PositionCorrections;
-            Say($"walking {start} -> {target} ({path!.Count} steps: {string.Join(", ", path)})");
-            var r1 = await client.GotoAsync(new GoalBlock(target.Value), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), MaxReplans = 1 });
-            Say($"there: {r1} | pos {w.Player.Position} | corrections {client.PositionCorrections - corrBefore}");
-            await Task.Delay(1500);
-            Say($"after 1.5s: pos {w.Player.Position} | corrections {client.PositionCorrections - corrBefore}");
-            var r2 = await client.GotoAsync(new GoalBlock(start.Value), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), MaxReplans = 1 });
-            Say($"back: {r2} | pos {w.Player.Position} | corrections {client.PositionCorrections - corrBefore}");
-        }
-    }
-}
+if (walk) await WalkAsync();
 
 var until = sw.Elapsed + TimeSpan.FromSeconds(seconds);
 while (sw.Elapsed < until && client.State == ClientState.Playing) await Task.Delay(250);
@@ -149,3 +98,71 @@ Say("disconnected cleanly");
 Console.WriteLine("sent:     " + string.Join(" ", sentCounts.OrderBy(k => k.Key).Select(k => $"{k.Key:X2}x{k.Value}")));
 Console.WriteLine("received: " + string.Join(" ", recvCounts.OrderBy(k => k.Key).Select(k => $"{k.Key:X2}x{k.Value}")));
 return kicked is null ? 0 : 1;
+
+static (List<string> Positional, bool Walk, bool Verbose, string? Chat, int Seconds) ParseArgs(string[] args)
+{
+    var positional = new List<string>();
+    bool walk = false, verbose = false;
+    string? chat = null;
+    int seconds = 20;
+    for (int i = 0; i < args.Length; i++)
+    {
+        switch (args[i])
+        {
+            case "--walk": walk = true; break;
+            case "--verbose": verbose = true; break;
+            case "--chat": chat = args[++i]; break;
+            case "--seconds": seconds = int.Parse(args[++i]); break;
+            default: positional.Add(args[i]); break;
+        }
+    }
+    return (positional, walk, verbose, chat, seconds);
+}
+
+// Packets too frequent to log one by one (movement, keep-alive, entity motion).
+static bool Chatty(byte id) => id is 0x0A or 0x0B or 0x0C or 0x0D or 0x1F or 0x20 or 0x21 or 0x1C or 0x22 or 0x00;
+
+async Task WaitForWorldAsync()
+{
+    for (int i = 0; i < 60 && (!client.World.IsLoaded((int)client.World.Player.Position.X, (int)client.World.Player.Position.Z) || !client.World.Player.OnGround); i++)
+        await Task.Delay(100);
+}
+
+// Walks to a target 2-3 blocks away reachable by plain walking over non-edge cells only, and back.
+async Task WalkAsync()
+{
+    var start = Pathfinder.StartCellFor(w, w.Player.Position);
+    if (start is null) { Say("WALK SKIPPED: not on a valid start cell"); return; }
+    if (Safety.VoidNeighbourCount(w, start.Value.X, start.Value.Y, start.Value.Z) > 0) { Say("WALK SKIPPED: standing on an edge"); return; }
+    var (target, path) = SafeTarget(w, start.Value);
+    if (target is null) { Say("WALK SKIPPED: no safe non-edge cell 2-3 blocks away"); return; }
+    int corrBefore = client.PositionCorrections;
+    Say($"walking {start} -> {target} ({path!.Count} steps: {string.Join(", ", path)})");
+    var r1 = await client.GotoAsync(new GoalBlock(target.Value), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), MaxReplans = 1 });
+    Say($"there: {r1} | pos {w.Player.Position} | corrections {client.PositionCorrections - corrBefore}");
+    await Task.Delay(1500);
+    Say($"after 1.5s: pos {w.Player.Position} | corrections {client.PositionCorrections - corrBefore}");
+    var r2 = await client.GotoAsync(new GoalBlock(start.Value), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), MaxReplans = 1 });
+    Say($"back: {r2} | pos {w.Player.Position} | corrections {client.PositionCorrections - corrBefore}");
+}
+
+// The first cell 3 (then 2) blocks away along an axis whose plain-walk path stays level, off edges and off hazards.
+static (BlockPos? Target, IReadOnlyList<PathStep>? Path) SafeTarget(WorldState w, BlockPos start)
+{
+    BlockPos? target = null;
+    IReadOnlyList<PathStep>? path = null;
+    foreach (int dist in new[] { 3, 2 })
+    foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+    {
+        if (target is not null) break;
+        var cand = start.Offset(dx * dist, 0, dz * dist);
+        var opts = PathOptions.Default with { AllowBreak = false, AllowPlace = false, AllowPartial = false, MaxDrop = 0, AllowSwim = false, AllowClimb = false };
+        var pr = Pathfinder.FindPath(w, start, new GoalBlock(cand), opts);
+        if (pr.Status != PathStatus.Found) continue;
+        bool safe = pr.Steps.All(s => s.Kind is MoveKind.Walk && !s.Sneak && s.Y == start.Y
+                                      && Safety.VoidNeighbourCount(w, s.X, s.Y, s.Z) == 0
+                                      && !Safety.IsHazard(w, w.GetBlock(s.X, s.Y - 1, s.Z)));
+        if (safe) { target = cand; path = pr.Steps; }
+    }
+    return (target, path);
+}

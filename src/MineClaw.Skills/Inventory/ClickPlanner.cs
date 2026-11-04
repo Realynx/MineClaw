@@ -126,33 +126,36 @@ public static class ClickPlanner
             if (dests.Count == 0) yield break;
             // Whole stack (or as much as fits) by pick-up + place into partial/empty destinations.
             if (n <= want) yield return PickPlace(m, s, false, dests, n);
-            // Exact counts from a bigger stack.
-            int half = (n + 1) / 2;
-            if (half == want) yield return PickPlace(m, s, true, dests, half);
-            if (n > want)
-            {
-                // a) take all, drop `want` singles on the destination, put the rest back
-                var a = new List<Click> { new(s) };
-                a.AddRange(Enumerable.Repeat(new Click(dests[0], Right: true), want));
-                a.Add(new Click(s));
-                yield return a;
-                // b) take all, put (n-want) singles back, place the rest
-                if (n - want < want)
-                {
-                    var b = new List<Click> { new(s) };
-                    b.AddRange(Enumerable.Repeat(new Click(s, Right: true), n - want));
-                    b.AddRange(PlaceAll(m, dests, want));
-                    yield return b;
-                }
-                // c) take half, then trim/extend with singles
-                if (half > want)
-                {
-                    var c = new List<Click> { new(s, Right: true) };
-                    c.AddRange(Enumerable.Repeat(new Click(s, Right: true), half - want));
-                    c.AddRange(PlaceAll(m, dests, want));
-                    yield return c;
-                }
-            }
+            foreach (var split in Splits(m, s, n, want, dests)) yield return split;
+        }
+    }
+
+    /// <summary>Exact counts from a bigger stack: half when that is it, else take all / put back singles / take half and trim.</summary>
+    private static IEnumerable<List<Click>> Splits(WindowModel m, int s, int n, int want, List<int> dests)
+    {
+        int half = (n + 1) / 2;
+        if (half == want) yield return PickPlace(m, s, true, dests, half);
+        if (n <= want) yield break;
+        // a) take all, drop `want` singles on the destination, put the rest back
+        var a = new List<Click> { new(s) };
+        a.AddRange(Enumerable.Repeat(new Click(dests[0], Right: true), want));
+        a.Add(new Click(s));
+        yield return a;
+        // b) take all, put (n-want) singles back, place the rest
+        if (n - want < want)
+        {
+            var b = new List<Click> { new(s) };
+            b.AddRange(Enumerable.Repeat(new Click(s, Right: true), n - want));
+            b.AddRange(PlaceAll(m, dests, want));
+            yield return b;
+        }
+        // c) take half, then trim/extend with singles
+        if (half > want)
+        {
+            var c = new List<Click> { new(s, Right: true) };
+            c.AddRange(Enumerable.Repeat(new Click(s, Right: true), half - want));
+            c.AddRange(PlaceAll(m, dests, want));
+            yield return c;
         }
     }
 
@@ -223,8 +226,15 @@ public static class ClickPlanner
         for (int j = 0; j < n; j++) if (next[j] >= 0) hasIncoming[next[j]] = true;
         var done = new bool[n];
         var plan = new List<Click>();
-        // Chains: start where nothing comes in (the slot ends empty), walk forward to an empty slot.
-        for (int start = 0; start < n; start++)
+        WalkChains(next, hasIncoming, done, plan);
+        WalkCycles(next, done, plan);
+        return plan;
+    }
+
+    /// <summary>Chains: start where nothing comes in (the slot ends empty), walk forward to an empty slot.</summary>
+    private static void WalkChains(int[] next, bool[] hasIncoming, bool[] done, List<Click> plan)
+    {
+        for (int start = 0; start < next.Length; start++)
         {
             if (next[start] < 0 || hasIncoming[start] || done[start]) continue;
             plan.Add(new Click(start));
@@ -236,8 +246,12 @@ public static class ClickPlanner
                 if (next[j] < 0) break;
             }
         }
-        // Cycles.
-        for (int start = 0; start < n; start++)
+    }
+
+    /// <summary>Cycles: pick up the start, walk the cycle, put the last stack down where it began.</summary>
+    private static void WalkCycles(int[] next, bool[] done, List<Click> plan)
+    {
+        for (int start = 0; start < next.Length; start++)
         {
             if (next[start] < 0 || done[start]) continue;
             plan.Add(new Click(start));
@@ -251,7 +265,6 @@ public static class ClickPlanner
             }
             plan.Add(new Click(start));
         }
-        return plan;
     }
 
     /// <summary>Merges partial stacks of the same item inside <paramref name="slots"/> (fewest clicks: 2 per merge, +1 when

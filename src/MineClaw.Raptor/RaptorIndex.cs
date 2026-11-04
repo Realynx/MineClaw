@@ -356,28 +356,39 @@ public sealed partial class RaptorIndex : IDisposable
                 var dirty = new HashSet<int>();
                 var victims = tree.Leaves.Where(l => l.Key != null && set.Contains(l.Key)).Select(l => l.Index).ToList();
                 var queue = new Queue<int>(victims);
-                while (queue.Count > 0)
-                {
-                    int i = queue.Dequeue();
-                    if (!tree.TryGet(i, out var node)) continue;
-                    var parents = node.Parents.ToList();
-                    tree.Remove(i);
-                    _deletes.Add(i);
-                    _upserts.Remove(i);
-                    if (node.IsLeaf) { removed++; if (!replacing) tree.RemovedSinceBuild++; }
-                    foreach (var p in parents)
-                    {
-                        if (!tree.TryGet(p, out var pn)) continue;
-                        Touch(p);
-                        if (pn.Children.Count == 0) queue.Enqueue(p);
-                        else MarkDirtyUpward(tree, p, dirty);
-                    }
-                }
-                while (tree.NumLayers > 0 && tree.LayerIndices(tree.NumLayers).Count == 0) tree.NumLayers--;
+                while (queue.Count > 0) removed += RemoveQueued(tree, queue.Dequeue(), replacing, queue, dirty);
+                                while (tree.NumLayers > 0 && tree.LayerIndices(tree.NumLayers).Count == 0) tree.NumLayers--;
                 foreach (var d in dirty) Touch(d);
             });
             return removed;
         }
+    }
+
+    /// <summary>
+    /// Removes one queued node; parents left without children are queued, the others marked dirty upward.
+    /// Returns 1 when it removed a leaf.
+    /// </summary>
+    private int RemoveQueued(RaptorTree tree, int i, bool replacing, Queue<int> queue, HashSet<int> dirty)
+    {
+        if (!tree.TryGet(i, out var node)) return 0;
+        var parents = node.Parents.ToList();
+        tree.Remove(i);
+        _deletes.Add(i);
+        _upserts.Remove(i);
+        int removed = 0;
+        if (node.IsLeaf)
+        {
+            removed = 1;
+            if (!replacing) tree.RemovedSinceBuild++;
+        }
+        foreach (var p in parents)
+        {
+            if (!tree.TryGet(p, out var pn)) continue;
+            Touch(p);
+            if (pn.Children.Count == 0) queue.Enqueue(p);
+            else MarkDirtyUpward(tree, p, dirty);
+        }
+        return removed;
     }
 
     /// <summary>
