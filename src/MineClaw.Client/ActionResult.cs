@@ -100,5 +100,17 @@ public sealed record GotoOptions
     /// <summary>Extra cost per consecutive head-under step (<see cref="MineClaw.World.PathOptions.HeadUnderStepCost"/>).</summary>
     public double HeadUnderStepCost { get; init; } = MineClaw.World.PathOptions.Default.HeadUnderStepCost;
 
+    /// <summary>With <see cref="AllowBreak"/>: only blocks of these ids are dug (e.g. natural ground for a chop's way up); null = any the
+    /// usual vetoes allow.</summary>
+    public Func<int, MineClaw.World.BlockPos, bool>? BreakOnly { get; init; }
+
+    /// <summary>A way up to the surface: steps with natural ground over them cost more wherever the walk starts
+    /// (<see cref="MineClaw.World.PathOptions.Covered"/>), so a short dug stair beats a long walk round through a cave.</summary>
+    public bool PreferSurface { get; init; }
+
+    /// <summary>A label: every plan logs its route shape (length against the straight line, lowest y) under it ("chop"). Detours are
+    /// logged and counted either way (<see cref="RouteStats"/>).</summary>
+    public string? Diagnose { get; init; }
+
     public static GotoOptions Default { get; } = new();
 }

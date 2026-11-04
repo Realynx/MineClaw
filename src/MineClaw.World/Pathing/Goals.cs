@@ -168,6 +168,40 @@ public sealed class GoalFiltered(Goal inner, Func<int, int, int, bool> accept, s
     public override string ToString() => $"{Inner} ({label})";
 
     /// <summary>
+    /// "Within <paramref name="range"/> of" a spot, but never from under the ground below it: a cell lower than the spot (feet below its
+    /// y − 1) counts only when nothing solid stands on the line from its eyes to the spot's centre (leaves aside: a crown is no ground).
+    /// Live 11-04 story-1: "within 3 of" a tree's base was met in a cave three blocks under it, and the chop found every log out of
+    /// reach ("chopped 0/39"). Cells beside or above the spot are unchanged.
+    /// </summary>
+    public static Goal NearNotFromBelow(IBlockAccess w, BlockPos target, double range)
+    {
+        var near = new GoalNear(target, range);
+        if (range < 2) return near;
+        return new GoalFiltered(near, (x, y, z) => y >= target.Y - 1 || ClearLine(w, x, y, z, target), "not from under the ground");
+    }
+
+    /// <summary>Nothing solid (leaves aside) on the line from the eyes of a body in foot cell x,y,z to <paramref name="target"/>'s centre;
+    /// the body's own cells and the target cell don't count.</summary>
+    public static bool ClearLine(IBlockAccess w, int x, int y, int z, BlockPos target)
+    {
+        double ex = x + 0.5, ey = y + PlayerPhysics.EyeHeight, ez = z + 0.5;
+        double tx = target.X + 0.5, ty = target.Y + 0.5, tz = target.Z + 0.5;
+        double dx = tx - ex, dy = ty - ey, dz = tz - ez, len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        int n = Math.Max(1, (int)Math.Ceiling(len / 0.2));
+        for (int i = 1; i < n; i++)
+        {
+            double f = (double)i / n;
+            int cx = (int)Math.Floor(ex + dx * f), cy = (int)Math.Floor(ey + dy * f), cz = (int)Math.Floor(ez + dz * f);
+            if (cx == target.X && cy == target.Y && cz == target.Z) continue;
+            if (cx == x && cz == z && (cy == y || cy == y + 1)) continue;
+            int id = w.GetBlock(cx, cy, cz);
+            if (id is 18 or 161 || !BlockShapes.HasCollision(w, cx, cy, cz)) continue;
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// <paramref name="inner"/>, but only standing cells at least <paramref name="minEdgeDistance"/> from any deadly
     /// drop (2 = never on the rim of the island) and, optionally, with no lava within 1 block of feet/head.
     /// </summary>

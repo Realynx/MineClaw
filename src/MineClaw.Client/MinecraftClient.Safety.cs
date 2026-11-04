@@ -461,6 +461,8 @@ public sealed partial class MinecraftClient
                     if (n.IsReached(x, y, z) && !World.IsOverVoid(x, y, z)) return null;
                 return $"refusing to go near {Fmt(n.Target)}: everything within {n.Range:0.#} is over the void";
             }
+            case GoalFiltered { Inner: GoalNear fn }: // "within N, not from under the ground": the void test is the plain one's
+                return GoalOverVoid(fn);
             default:
                 return null;
         }

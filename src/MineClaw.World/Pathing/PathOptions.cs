@@ -43,6 +43,14 @@ public sealed record PathOptions
     public Func<int, int, int, int>? SkyLight { get; init; }
     /// <summary>Extra cost per underground step (sky light ≤ 3) for a path that starts under the sky (see <see cref="SkyLight"/>).</summary>
     public double UndergroundPenalty { get; init; } = 3;
+    /// <summary>A way up to the surface (a chop's climb out of a trench or a cave, a detour dug short): every step in a cell with natural
+    /// ground over it (<see cref="Covered"/>) pays <see cref="CoveredPenalty"/>, wherever the path starts. Fewer steps under ground win,
+    /// so a short stair dug up through the dirt beats a long walk round through a cave (live 11-04 story-1: "it makes the pawn go way
+    /// out of the way underground"), while an open quarry's own stair (no ground over it) stays the cheap way out.</summary>
+    public Func<int, int, int, bool>? Covered { get; init; }
+    /// <summary>About six walked blocks a step: a dug stair step (three blocks of dirt by hand, ~67 ticks) wins once the walk out runs
+    /// more than two or three times the depth (an exit 10 blocks off from 5 down still walks; one 20 off is dug short).</summary>
+    public double CoveredPenalty { get; init; } = 30;
 
     /// <summary>Plan through closed wooden doors, fence gates and head-height trapdoors (and iron doors with a reachable
     /// button/lever/plate on the near side) as <see cref="MoveKind.OpenDoor"/>/<see cref="MoveKind.OpenGate"/>/

@@ -94,18 +94,77 @@ public sealed class StoryLiveFixTests
         Assert.Contains("6,75,0", logs);
     }
 
+    /// <summary>Fox 11-04 (tree farming): a tree taken only in part stays designated on its lowest log left, for another go (another
+    /// pawn, or this one after a rest), at most <see cref="StoryColony.MaxChopPartials"/> times; then it leaves the map with the alert.</summary>
     [Fact]
-    public void A_partial_chop_is_done_with_an_alert_and_the_tree_leaves_the_map()
+    public void A_partial_chop_keeps_the_rest_of_the_tree_designated_then_lets_it_go()
     {
-        var (c, _, w) = StoryRig.Make();
+        var clock = NewClock();
+        var (c, _, w) = StoryRig.Make(2, time: clock);
         Only(c, 0, WorkTypes.Chop);
+        Only(c, 1, WorkTypes.Chop);
         TallTree(w, 6, 0, 12);
         c.Designate("add", "chop", null, [new P3(6, 64, 0)], null);
         var j = c.Next();
         for (int y = 64; y < 69; y++) w.Set(6, y, 0, 0); // the reachable logs came down
         Assert.True(c.Report(c.P(), j["id"]!.GetValue<string>(), "done", "partial: 5 log(s) taken; 7 log(s) out of reach (up to y 75)", null));
+        var d = Assert.Single(c.Designations);
+        Assert.Equal(new P3(6, 69, 0), d.At);                         // its lowest log left
+        Assert.Contains(c.Alerts, a => a.Text.Contains("took what it could reach") && a.Text.Contains("stays designated"));
+        // The pawn that took part rests from it a moment; the other one goes for the rest.
+        var idle = c.Next(0);
+        Assert.NotEqual("chop", idle["kind"]!.GetValue<string>());
+        c.Report(c.P(0), idle["id"]!.GetValue<string>(), "done", null, null);
+        var j2 = c.Next(1);
+        Assert.Equal("chop", j2["kind"]!.GetValue<string>());
+        Assert.Equal("6,69,0", j2["at"]!.GetValue<string>());
+        for (int y = 69; y < 72; y++) w.Set(6, y, 0, 0);
+        Assert.True(c.Report(c.P(1), j2["id"]!.GetValue<string>(), "done", "partial: 3 log(s) taken; 4 log(s) out of reach (up to y 75)", null));
+        Assert.Equal(new P3(6, 72, 0), Assert.Single(c.Designations).At);
+        clock.Now += TimeSpan.FromMinutes(1);
+        var j3 = c.Next(0);
+        Assert.Equal("6,72,0", j3["at"]!.GetValue<string>());
+        // A third part: it is let go, said in an alert.
+        w.Set(6, 72, 0, 0);
+        Assert.True(c.Report(c.P(0), j3["id"]!.GetValue<string>(), "done", "partial: 1 log(s) taken; 3 log(s) out of reach (up to y 75)", null));
         Assert.Empty(c.Designations);
-        Assert.Contains(c.Alerts, a => a.Text.Contains("took what it could reach") && a.Text.Contains("out of reach"));
+        Assert.Contains(c.Alerts, a => a.Text.Contains("took what it could reach") && !a.Text.Contains("stays designated"));
+    }
+
+    /// <summary>Live 11-04 story-1: pawns 5 to 8 blocks under the trees ("no path … it's 5 blocks up") were handed surface chops. A pawn
+    /// under ground leaves the trees to a pawn up top and keeps to its work down there; with nobody up top it takes the tree.</summary>
+    [Fact]
+    public void A_pawn_under_ground_leaves_the_trees_to_a_pawn_up_top()
+    {
+        var (c, h, w) = StoryRig.Make(2);
+        foreach (var p in c.Pawns.Values) foreach (var t in WorkTypes.All) p.Priorities[t] = 0;
+        var deep = c.Pawns.Values.ElementAt(0);
+        deep.Priorities[WorkTypes.Chop] = 1;
+        deep.Priorities[WorkTypes.Mine] = 2;
+        c.Pawns.Values.ElementAt(1).Priorities[WorkTypes.Chop] = 1;
+        for (int x = -3; x <= 3; x++)
+            for (int z = -3; z <= 3; z++)
+                for (int y = 54; y <= 62; y++) w.Set(x, y, z, 3);
+        w.Set(0, 55, 0, 0); w.Set(0, 56, 0, 0);                        // its cell in the ground, 6 of dirt over its head
+        h.Lives[c.P(0)] = FakeStoryHost.Live(0.5, 55, 0.5) with { ScriptRunning = false };
+        h.Lives[c.P(1)] = FakeStoryHost.Live(10.5, 64, 10.5) with { ScriptRunning = false };
+        w.Tree(6, 8, 5);
+        c.Designate("add", "chop", null, [new P3(6, 64, 8)], null);
+        c.Designate("add", "mine", null, [new P3(1, 55, 0)], null);       // work beside it down there
+        Assert.Equal("dig", c.Next(0)["kind"]!.GetValue<string>());       // not the tree
+        Assert.Equal("chop", c.Next(1)["kind"]!.GetValue<string>());
+        // Nobody up top: it takes a tree itself.
+        var (c2, h2, w2) = StoryRig.Make(1);
+        foreach (var t in WorkTypes.All) c2.Pawns.Values.First().Priorities[t] = t == WorkTypes.Chop ? 1 : 0;
+        for (int x = -3; x <= 3; x++)
+            for (int z = -3; z <= 3; z++)
+                for (int y = 54; y <= 62; y++) w2.Set(x, y, z, 3);
+        w2.Set(0, 55, 0, 0); w2.Set(0, 56, 0, 0);
+        h2.Lives[c2.P()] = FakeStoryHost.Live(0.5, 55, 0.5) with { ScriptRunning = false };
+        w2.Tree(6, 8, 5);
+        c2.Designate("add", "mine", null, [new P3(1, 55, 0)], null);      // mining near: no escape job
+        c2.Designate("add", "chop", null, [new P3(6, 64, 8)], null);
+        Assert.Equal("chop", c2.Next()["kind"]!.GetValue<string>());
     }
 
     [Fact]

@@ -498,6 +498,25 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.True(srv.Inventory.Where(i => !i.IsEmpty && i.Id == Blocks.Dirt).Sum(i => i.Count) >= 28, "the pillar's dirt came back");
     }, s => { EmptyHanded(s); s.Inventory[37] = new ItemStack((short)Blocks.Dirt, 32, 0); Tree(s, 16, 16, 14); });
 
+    /// <summary>Live 11-04 story-1: "no clutch blocks on me (no cobble/planks to be had) … 4 log(s) out of reach; chopped 0/4", Fox: "make it
+    /// farm trees". A pawn with nothing at all on it fells a 12-log tree whole: it climbs on the junk it has (the tree's own felled logs,
+    /// dirt dug beside it), digs the pillar back down and leaves no pillar and no hole.</summary>
+    [Fact]
+    public Task An_empty_handed_pawn_fells_a_tall_tree_whole_with_no_cobble_anywhere() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(1, c.Designate("add", "chop", null, [new P3(16, 64, 16)], null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => c.Designations.Count == 0, 180_000),
+            "done: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.At} {d.Fails} {d.Reason}")) + " | " + x.Diag() + " | " + string.Join(" / ", ClientLog.TakeLast(30)));
+        Assert.Equal(0, Enumerable.Range(64, 12).Count(y => srv.Blocks.GetValueOrDefault((16, y, 16)) == Blocks.Log)); // the whole trunk
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("took what it could reach"));
+        var left = srv.Blocks.Where(b => b.Key.Item2 >= 64 && b.Value is Blocks.Dirt or Blocks.Log && Math.Abs(b.Key.Item1 - 16) <= 2 && Math.Abs(b.Key.Item3 - 16) <= 2).ToList();
+        Assert.True(left.Count == 0, $"pillar left: {string.Join(" ", left.Select(b => b.Key))}");
+        Assert.DoesNotContain(srv.Blocks, b => b.Value == Blocks.Cobblestone); // there never was any
+    }, s => { EmptyHanded(s); Tree(s, 16, 16, 12); });
+
     /// <summary>Live 11-04: maid_chan_114 stood for good in a hole two deep ("no path … it's 2 blocks up"). Now it digs a stair out
     /// (no blocks on it) and goes on to its job.</summary>
     [Fact]

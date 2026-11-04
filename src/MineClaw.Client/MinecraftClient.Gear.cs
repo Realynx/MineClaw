@@ -22,6 +22,14 @@ public sealed partial class MinecraftClient
     /// </summary>
     public bool PreferHeldTool { get; set; }
 
+    /// <summary>
+    /// A walk whose plan is a detour (<see cref="RouteStats.IsDetour"/>: three times the straight line, or a dip far below both ends) is
+    /// planned once more digging through natural ground (<see cref="NaturalGround"/>; normal world only), and the dug route is taken
+    /// when it is clearly cheaper. Live 11-04 story-1: "it makes the pawn go way out of the way underground". Off by default; Story
+    /// Mode's pawns turn it on.
+    /// </summary>
+    public bool DigThroughDetours { get; set; }
+
     /// <summary>This body's recent failed searches (<see cref="NoRouteCache"/>): the same one isn't run again for a while.</summary>
     public NoRouteCache NoRoutes { get; } = new();
 
