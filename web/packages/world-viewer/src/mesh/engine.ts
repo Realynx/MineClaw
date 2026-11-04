@@ -10,6 +10,7 @@ import { sectionVisibility } from './visibility';
 import { lightPacked } from '../wire/chunk';
 import type { BlockEntityDto } from '../types';
 import type { MeshAssets } from './source';
+import { meshHolograms, type HoloRequest, type HoloResult } from './holo';
 
 export interface PatchResult {
   dirty: Array<[number, number, number]>;
@@ -59,6 +60,11 @@ export class MeshEngine {
       m.vis = sectionVisibility(this.store, dim, cx, sy, cz, this.table); // cave culling (orchestrator hunk)
       return m;
     });
+  }
+
+  /** [holograms] Queued build cells / a placement as merged block meshes, built cells left out (mesh/holo.ts). */
+  meshHolo(dim: number, reqs: HoloRequest[]): HoloResult[] {
+    return meshHolograms(this.store, dim, this.table, reqs);
   }
 
   pick(dim: number, o: V3, d: V3, maxDist: number, cut: CutParams | null): PickHit | null {

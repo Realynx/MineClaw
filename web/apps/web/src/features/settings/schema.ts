@@ -63,6 +63,7 @@ export const PRESET_FIELDS: Record<FixedPreset, QualityFields> = {
     labels: true,
     bubbles: true,
     xray: false,
+    holograms: true,
   },
   medium: {
     drawDistance: 128,
@@ -81,6 +82,7 @@ export const PRESET_FIELDS: Record<FixedPreset, QualityFields> = {
     labels: true,
     bubbles: true,
     xray: true,
+    holograms: true,
   },
   high: {
     drawDistance: 256,
@@ -99,6 +101,7 @@ export const PRESET_FIELDS: Record<FixedPreset, QualityFields> = {
     labels: true,
     bubbles: true,
     xray: true,
+    holograms: true,
   },
 };
 
@@ -120,6 +123,7 @@ export const AUTO_FIELDS: Omit<ViewerQuality, 'perfOverlay'> = {
   labels: true,
   bubbles: true,
   xray: true,
+  holograms: true,
 };
 
 export const DEFAULT_SETTINGS: ViewerSettings = {
@@ -169,6 +173,7 @@ export const fieldsSchema = z.object({
   labels: flag(D.labels),
   bubbles: flag(D.bubbles),
   xray: flag(D.xray),
+  holograms: flag(D.holograms),
 });
 
 export const settingsSchema = z.object({
@@ -222,6 +227,7 @@ export function concreteFields(s: ViewerSettings, profile: Pick<QualityProfile, 
     labels: q.labels,
     bubbles: q.bubbles,
     xray: q.xray,
+    holograms: q.holograms,
   };
 }
 

@@ -426,8 +426,10 @@ when storage is unavailable. Other tabs follow through the `storage` event.
     distance, always).
   - Animated textures (the atlas animation pass stops on its current frame), clouds (Auto: off in software), weather (rain,
     snow, the rainy sky), ambient occlusion (a `uAo` shader uniform over the mesher's corner term: no re-mesh), fog (pushed out
-    of reach), detailed models (the entity layer's model distance; Auto 24 software / 64 GPU), name tags, chat bubbles, x-ray
-    silhouettes.
+    of reach), detailed models (the entity layer's model distance; Auto 24 software / 64 GPU; bots keep their model to at
+    least 96 blocks unless it is 0), name tags, chat bubbles, x-ray silhouettes.
+  - Build holograms (default on): Story Mode's queued builds as translucent block holograms in the world
+    (`render/holograms.ts`, `engine.setHolograms`); off, the map draws its flat ghosts.
   - Frame rate overlay: a small fps / frame time / resolution / distance / entity count readout in the top-right corner of
     every interactive view (`WorldViewer`). The panel also shows the measured fps of the last interactive view and whether
     WebGL is software-rendered (`WEBGL_debug_renderer_info`: SwiftShader, llvmpipe and the like).

@@ -619,3 +619,112 @@ test('offline pawns say why and come back; a failed cut says why; full screen ke
   await expect(page.getByTestId('story-fullscreen')).toHaveAttribute('aria-pressed', 'false');
   await expect(bar).toBeVisible();
 });
+
+// ------------------------------------------------------------------ the world under the HUD: models, holograms, notices
+
+type Ghost = [number, number, number, number, number, string | number, string];
+interface WorldDebug {
+  models(): Array<{ name: string; look: string; model: boolean | null }>;
+  botModels(): number;
+  holograms(): { cells: number; digs: number; boxes: number; lod: boolean } | null;
+  hologramAt(x: number, y: number, z: number): boolean;
+  ghosts(): Ghost[];
+}
+const dbg = <K extends keyof WorldDebug>(page: Page, m: K, ...a: Parameters<WorldDebug[K]>) =>
+  page.evaluate(
+    ([mm, aa]) => (window as unknown as { __story: Record<string, (...x: unknown[]) => unknown> }).__story[mm]!(...aa),
+    [m, a] as const,
+  ) as Promise<ReturnType<WorldDebug[K]>>;
+
+test('pawns are drawn as their player models; a queued build shows as holograms that go once built', async ({ page }) => {
+  await signIn(page, false);
+  await openStory(page);
+  // The seeded colony's online pawns: player models (the viewer's bots), with the overlay's marks instead of tokens.
+  await expect
+    .poll(async () => (await dbg(page, 'models')).filter((b) => b.name.startsWith('maid_s1_') && b.look === 'model').length, {
+      timeout: 60_000,
+    })
+    .toBeGreaterThan(0);
+  expect(await dbg(page, 'botModels')).toBeGreaterThan(0);
+  if (shots) await page.screenshot({ path: `${shots}/story-models.png` });
+  // Zoomed far out, the 2D tokens come back.
+  await story(page, 'setZoom', 112);
+  await expect.poll(async () => (await dbg(page, 'models')).filter((b) => b.look === 'model').length).toBe(0);
+  await story(page, 'setZoom', 40);
+  // The seeded shed (a cobblestone wall) is queued: holograms in the world.
+  await expect.poll(async () => (await dbg(page, 'holograms'))?.cells ?? 0, { timeout: 30_000 }).toBeGreaterThan(0);
+  const todo = (await dbg(page, 'ghosts')).find((g) => g[6] === 'todo' || g[6] === 'leased');
+  if (todo) await expect.poll(() => dbg(page, 'hologramAt', todo[0], todo[1], todo[2])).toBe(true);
+  if (shots) await page.screenshot({ path: `${shots}/story-holograms.png` });
+  // Pawns build it: a built cell has no hologram any more.
+  await expect
+    .poll(
+      async () => {
+        const done = (await dbg(page, 'ghosts')).filter((g) => g[6] === 'done');
+        if (!done.length) return 'none built yet';
+        for (const g of done)
+          if (await dbg(page, 'hologramAt', g[0], g[1], g[2])) return `hologram left at ${g.slice(0, 3).join(',')}`;
+        return 'ok';
+      },
+      { timeout: 90_000, intervals: [1000] },
+    )
+    .toBe('ok');
+});
+
+test('notifications: repeats coalesce, messages expire, Dismiss all, conditions and the log', async ({ page }) => {
+  await signIn(page, false);
+  await openStory(page);
+  const notices = (fn: string, ...a: unknown[]) =>
+    page.evaluate(
+      ([f, aa]) =>
+        (window as unknown as { __storyNotices: Record<string, (...x: unknown[]) => unknown> }).__storyNotices[f]!(...aa),
+      [fn, a] as const,
+    );
+  await page.waitForFunction(() => !!(window as unknown as { __storyNotices?: unknown }).__storyNotices);
+  await page.mouse.move(700, 450); // off the stack (hovering it holds the timers)
+  const msgs = page.getByTestId('message');
+  if (await page.getByTestId('dismiss-all').isVisible()) await page.getByTestId('dismiss-all').click();
+  // 20 identical failures: one message, ×20.
+  const now = new Date().toISOString();
+  await notices(
+    'ingest',
+    Array.from({ length: 20 }, (_, i) => ({
+      id: `e2e-${i}`,
+      at: now,
+      level: 'warn',
+      text: `Cut at ${i},64,${-i} failed ${i + 1} times: busy: claimed`,
+    })),
+  );
+  await expect(msgs.filter({ hasText: /Cut at/ })).toHaveCount(1);
+  await expect(msgs.filter({ hasText: /Cut at/ }).getByTestId('message-count')).toHaveText('×20');
+  if (shots) await page.screenshot({ path: `${shots}/story-notices.png` });
+  // Dismiss all clears the stack (the log keeps them, unread).
+  await page.getByTestId('dismiss-all').click();
+  await expect(msgs.filter({ hasText: /Cut at/ })).toHaveCount(0);
+  await expect(page.getByTestId('log-unread')).toBeVisible();
+  // Messages expire by themselves (a short test lifetime).
+  await notices('setTtlScale', 0.05);
+  await notices('ingest', [{ id: 'e2e-info', at: new Date().toISOString(), level: 'info', text: 'Ann is now level 5 in mining.' }]);
+  await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(1);
+  await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(0, { timeout: 5000 });
+  // At most four show; the rest are "+N more", which opens the log.
+  await notices('setTtlScale', 1);
+  await notices(
+    'ingest',
+    ['Ann is idle', 'Bob is hungry', 'A cow wandered off', 'The furnace is cold', 'A chest is full', 'Rain is coming'].map(
+      (t, i) => ({ id: `e2e-k${i}`, at: new Date().toISOString(), level: 'warn', text: t }),
+    ),
+  );
+  await expect(msgs).toHaveCount(4);
+  await page.getByTestId('more-messages').click();
+  const log = page.getByTestId('message-log');
+  await expect(log).toContainText('Cut at');
+  await expect(log).toContainText('Rain is coming');
+  await expect(page.getByTestId('log-unread')).toHaveCount(0);
+  // Esc on the stack dismisses all.
+  await page.getByTestId('alerts').focus();
+  await page.keyboard.press('Escape');
+  await expect(msgs.filter({ hasText: 'Rain is coming' })).toHaveCount(0);
+  // Ongoing conditions are listed apart (two of the seeded pawns are offline) and need no clicking away.
+  await expect(page.getByTestId('conditions').locator('[data-condition="offline"]')).toBeVisible();
+});

@@ -8,6 +8,7 @@ import type { CutParams, SectionMesh } from './mesher';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import type { PickHit, V3, ViewInfo } from './query';
 import type { MeshAssets } from './source';
+import type { HoloRequest, HoloResult } from './holo';
 
 type Dirty = Array<[number, number, number]>;
 
@@ -34,6 +35,8 @@ export interface MeshHost {
   blocksAt(dim: number, pts: number[]): Promise<number[]>;
   /** [scan] Blocks of a box whose id is in `ids` (every non-air block when empty): [x, y, z, id, meta, below-id, …]. */
   scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number): Promise<number[]>;
+  /** [holograms] Queued build cells / a placement as merged block meshes, built (or dug) cells left out (mesh/holo.ts). */
+  holo(dim: number, reqs: HoloRequest[]): Promise<HoloResult[]>;
   clear(): Promise<void>;
   dispose(): void;
 }
@@ -60,6 +63,7 @@ export class InlineMeshHost implements MeshHost {
   blocksAt(dim: number, pts: number[]) { return this.run(() => this.engine.blocksAt(dim, pts)); }
   scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number) { return this.run(() => this.engine.scan(dim, min, max, ids, maxHits)); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.run(() => this.engine.setBlockEntities(dim, cols)); }
+  holo(dim: number, reqs: HoloRequest[]) { return this.run(() => this.engine.meshHolo(dim, reqs)); }
   clear() { return this.run(() => this.engine.clear()); }
   dispose(): void {
     this.engine.clear();
@@ -113,6 +117,7 @@ export class WorkerMeshHost implements MeshHost {
   blocksAt(dim: number, pts: number[]) { return this.send<number[]>({ op: 'blocksAt', dim, pts }); }
   scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number) { return this.send<number[]>({ op: 'scan', dim, min, max, ids, maxHits }); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.send<Dirty>({ op: 'blockEntities', dim, cols }); }
+  holo(dim: number, reqs: HoloRequest[]) { return this.send<HoloResult[]>({ op: 'holo', dim, reqs }); }
   clear() { return this.send<void>({ op: 'clear' }); }
 
   dispose(): void {
