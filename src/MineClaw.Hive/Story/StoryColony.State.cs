@@ -76,7 +76,10 @@ public sealed partial class StoryColony
                     ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label,
                     ["supported"] = w != null ? StoryRecipes.SupportedIn(w.Data, b.Kind) : StoryRecipes.Supported.Contains(b.Kind),
                     ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b),
-                    ["bills"] = new JsonArray(b.Bills.Select(x => (JsonNode)BillJson(x)).ToArray()),
+                    ["fuel"] = b.Kind == "furnace" ? b.FuelSetting ?? StoryFuels.Auto : null,
+                    ["fuel_choices"] = b.Kind == "furnace" && w != null ? new JsonArray(StoryFuels.ValidFor(w.Data).Select(f => (JsonNode)f!).ToArray()) : null,
+                    ["fuel_credit"] = b.Kind == "furnace" ? Math.Round(b.FuelCredit, 2) : (double?)null,
+                    ["bills"] = new JsonArray(b.Bills.Select(x => { var bj = BillJson(x); bj["fuel_need"] = FuelNeedJson(b, x); return (JsonNode)bj; }).ToArray()),
                 }).ToArray()),
             };
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
@@ -172,6 +175,6 @@ public sealed partial class StoryColony
         },
         ["radius"] = b.Radius, ["pawn"] = b.Pawn, ["min_skill"] = b.MinSkill, ["store"] = b.Store?.DeepClone(),
         ["for_build"] = b.ForBuild, ["for_item"] = b.ForItem, ["step"] = b.ForBuild != null ? b.Step : null,
-        ["option"] = b.Option, ["prefer"] = b.Prefer, ["prefer_only"] = b.PreferOnly ? true : null, ["xp_needed"] = b.XpNeeded, ["last"] = b.Last,
+        ["option"] = b.Option, ["prefer"] = b.Prefer, ["prefer_only"] = b.PreferOnly ? true : null, ["xp_needed"] = b.XpNeeded, ["last"] = b.Last, ["fuel"] = b.Fuel,
     };
 }

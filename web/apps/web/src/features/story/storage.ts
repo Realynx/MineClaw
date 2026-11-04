@@ -11,6 +11,7 @@ import {
   type StoryFilter,
   type StoryRecipe,
   type StoryStoragePriority,
+  type StoryFuelChoice,
   type StoryWorkbench,
 } from '@mineclaw/contracts';
 
@@ -203,6 +204,8 @@ export interface BillDraft {
   option: number | null;
   prefer: string | null;
   preferOnly: boolean;
+  /** A furnace bill's fuel override (STORY_FUELS); null = the furnace's setting. */
+  fuel: string | null;
 }
 
 export function draftOf(b: StoryBill): BillDraft {
@@ -219,6 +222,7 @@ export function draftOf(b: StoryBill): BillDraft {
     option: b.option ?? null,
     prefer: b.prefer ?? null,
     preferOnly: b.preferOnly ?? false,
+    fuel: b.fuel ?? null,
   };
 }
 
@@ -238,6 +242,7 @@ export function newDraft(r: StoryRecipe, mode: BillDraft['mode'] = 'count', targ
     option: r.workbench === 'enchanting_table' ? 3 : null,
     prefer: null,
     preferOnly: false,
+    fuel: null,
   };
 }
 
@@ -255,6 +260,7 @@ export function specOf(d: BillDraft): StoryBillSpec {
     ...(d.option !== null && d.option !== undefined ? { option: Math.max(1, Math.min(3, Math.round(d.option))) } : {}),
     ...(d.prefer ? { prefer: d.prefer } : {}),
     ...(d.preferOnly ? { preferOnly: true } : {}),
+    ...(d.fuel ? { fuel: d.fuel as StoryFuelChoice } : {}),
   };
 }
 
@@ -271,6 +277,7 @@ export function updateBillBody(bill: StoryBill, d: BillDraft) {
   if (d.minSkill === null && (bill.minSkill !== null && bill.minSkill !== undefined)) spec.minSkill = 0;
   if (!d.prefer && bill.prefer) spec.prefer = null;
   if (!d.preferOnly && bill.preferOnly) spec.preferOnly = false;
+  if (!d.fuel && bill.fuel) spec.fuel = 'inherit';
   if (Object.keys(spec).length === 0) return null;
   return { op: 'update' as const, id: bill.id, ...spec };
 }
@@ -353,8 +360,49 @@ export function stationLines(bench: Pick<StoryWorkbench, 'kind' | 'station'>): s
   return out;
 }
 
+// ------------------------------------------------------------------ fuel
+
+/** The furnace's fuel choices, labelled and with the item the picker shows. */
+export const FUEL_CHOICES: Record<string, { label: string; icon: [number, number] }> = {
+  auto: { label: 'Auto (coal, then planks, then logs)', icon: [263, 0] },
+  coal: { label: 'Coal', icon: [263, 0] },
+  charcoal: { label: 'Charcoal', icon: [263, 1] },
+  coal_or_charcoal: { label: 'Coal or charcoal', icon: [263, 0] },
+  planks: { label: 'Planks', icon: [5, 0] },
+  logs: { label: 'Logs', icon: [17, 0] },
+  lava_bucket: { label: 'Lava bucket', icon: [327, 0] },
+  blaze_rod: { label: 'Blaze rod', icon: [369, 0] },
+  any: { label: 'Any fuel', icon: [327, 0] },
+};
+
+export function fuelLabel(choice: string | null | undefined): string {
+  return FUEL_CHOICES[choice ?? 'auto']?.label ?? (choice ?? 'auto').replace(/_/g, ' ');
+}
+
+/** The workbench op that sets a furnace's fuel. */
+export function fuelBody(pos: V3, fuel: string) {
+  return { op: 'fuel' as const, pos, fuel: fuel as StoryFuelChoice };
+}
+
+/** A bill's fuel for its next batch: "fuel: 1 coal (have 12)" / "needs fuel: 1 coal — none in storage" / "fuel: in the furnace". */
+export function fuelLine(need: StoryBill['fuelNeed']): string {
+  if (!need) return '';
+  const name = (need.name ?? 'fuel').replace(/_/g, ' ');
+  if (need.short) return `needs fuel: ${need.need} ${name} — none in storage`;
+  if (need.need <= 0) return `fuel: in the ${need.choice === 'blaze_powder' ? 'stand' : 'furnace'} already`;
+  return `fuel: ${need.need} ${name} (have ${need.have})`;
+}
+
+/** A recipe's fuel table: "coal 1 per 8 items · planks 1 per 1.5 items" (a brew: "blaze powder 1 per 20 brews"). */
+export function fuelTable(r: Pick<StoryRecipe, 'fuels' | 'workbench'> | undefined): string {
+  if (!r?.fuels?.length) return '';
+  const unit = r.workbench === 'brewing_stand' ? 'brews' : 'items';
+  return r.fuels.map((f) => `${f.name.replace(/_/g, ' ')} 1 per ${f.itemsPerUnit} ${unit}`).join(' · ');
+}
+
 /** "2 planks + 1 coal → 4 torches". */
 export function recipeLine(r: StoryRecipe): string {
   const ins = r.inputs.map((i) => `${i.count} ${i.category && !i.options?.length ? i.category : storyItemLabel(i.options?.[0]?.[0] ?? 0, Math.max(0, i.options?.[0]?.[1] ?? 0)).toLowerCase()}`);
+  if (r.fuel) ins.push('fuel');
   return `${ins.join(' + ')} → ${r.output[2]} ${storyItemLabel(r.output[0], r.output[1]).toLowerCase()}`;
 }

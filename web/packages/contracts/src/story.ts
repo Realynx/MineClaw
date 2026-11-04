@@ -619,6 +619,37 @@ export type StoryBillMode = z.infer<typeof StoryBillMode>;
 export const StoryBillStore = z.union([z.literal('best'), z.object({ chest: Vec3i }).strict()]);
 export type StoryBillStore = z.infer<typeof StoryBillStore>;
 
+/** A furnace's fuel choices (only what the version burns is valid: b1.8.1 has no blaze rods). */
+export const STORY_FUELS = [
+  'auto',
+  'coal',
+  'charcoal',
+  'coal_or_charcoal',
+  'planks',
+  'logs',
+  'lava_bucket',
+  'blaze_rod',
+  'any',
+] as const;
+export const StoryFuelChoice = z.enum(STORY_FUELS);
+export type StoryFuelChoice = z.infer<typeof StoryFuelChoice>;
+
+/** One fuel of a recipe's fuel table: its item and how many items (a brew: brews) one unit smelts. */
+export const StoryFuelEntry = z.object({ item: StoryItemKey, name: z.string(), itemsPerUnit: z.number() });
+export type StoryFuelEntry = z.infer<typeof StoryFuelEntry>;
+
+/** A bill's fuel for its next batch: the fuel it would burn, the units, the colony's stock of it, short when none covers it. */
+export const StoryFuelNeed = z.object({
+  choice: z.string(),
+  item: StoryItemKey.nullish(),
+  name: z.string().nullish(),
+  need: z.number().int(),
+  have: z.number().int(),
+  short: z.boolean(),
+  perItem: z.number().nullish().describe('fuel units per smelted item (coal 0.125, planks 0.667; blaze powder 0.05 per brew)'),
+});
+export type StoryFuelNeed = z.infer<typeof StoryFuelNeed>;
+
 export const StoryBill = z.object({
   id: z.union([z.string(), z.number()]),
   recipe: z.string(),
@@ -647,6 +678,8 @@ export const StoryBill = z.object({
     .nullish()
     .describe('the XP levels the last try needed (an offer, an anvil price): pawns with fewer leave it'),
   last: z.string().nullish().describe('what the last job made ("enchanted diamond pickaxe: Fortune II")'),
+  fuel: z.string().nullish().describe("a furnace bill's fuel override (STORY_FUELS); null = the furnace's setting"),
+  fuelNeed: StoryFuelNeed.nullish().describe("the fuel this bill's next batch burns: need / have / short"),
 });
 export type StoryBill = z.infer<typeof StoryBill>;
 
@@ -673,6 +706,9 @@ export const StoryWorkbench = z.object({
   loaded: z.unknown().optional().describe('a furnace: what is smelting'),
   readyAt: When.nullish(),
   station: StoryStationInfo.nullish(),
+  fuel: z.string().nullish().describe("a furnace's fuel choice (STORY_FUELS; default auto)"),
+  fuelChoices: z.array(z.string()).nullish().describe('the fuel choices this version burns'),
+  fuelCredit: z.number().nullish().describe('items the furnace can still smelt on the fuel the colony loaded'),
   bills: z.array(StoryBill).default([]),
 });
 export type StoryWorkbench = z.infer<typeof StoryWorkbench>;
@@ -709,6 +745,10 @@ export const StoryRecipe = z.object({
   chain: z.array(z.string()).nullish().describe("a brew's steps from water bottles"),
   enchantments: z.array(z.string()).nullish().describe('an enchant: what it can prefer'),
   modes: z.array(StoryBillMode).nullish().describe('the bill modes it takes (null: all)'),
+  fuels: z
+    .array(StoryFuelEntry)
+    .nullish()
+    .describe('a furnace recipe: the fuels it can burn and how many items one smelts; a brew: blaze powder (brews per unit)'),
 });
 export type StoryRecipe = z.infer<typeof StoryRecipe>;
 
@@ -1213,6 +1253,10 @@ export const StoryBillSpec = z
     option: z.number().int().min(1).max(3).nullish().describe('an enchant bill: the highest offer to take (1–3)'),
     prefer: z.string().max(40).nullish().describe('an enchant bill: the preferred enchantment (fortune, silk_touch…)'),
     preferOnly: z.boolean().optional(),
+    fuel: z
+      .union([StoryFuelChoice, z.literal('inherit')])
+      .nullish()
+      .describe("a furnace bill's fuel override; inherit or null = the furnace's setting"),
   })
   .strict();
 export type StoryBillSpec = z.infer<typeof StoryBillSpec>;
@@ -1259,9 +1303,19 @@ export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;
  * POST /api/story/colonies/{id}/workbenches: the owner marks a placed crafting table / furnace (any bench kind) as the
  * colony's (`designate`) or gives it back (`release`). Only designated benches take bills and unlock the Architect's tiers.
  */
-export const StoryWorkbenchesRequest = z.object({ op: z.enum(['designate', 'release']), pos: Vec3i }).strict();
+export const StoryWorkbenchesRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('designate'), pos: Vec3i }).strict(),
+  z.object({ op: z.literal('release'), pos: Vec3i }).strict(),
+  // A furnace's fuel choice (docs/web/story-mode.md "Fuel").
+  z.object({ op: z.literal('fuel'), pos: Vec3i, fuel: StoryFuelChoice }).strict(),
+]);
 export type StoryWorkbenchesRequest = z.infer<typeof StoryWorkbenchesRequest>;
-export const StoryWorkbenchesResponse = z.object({ pos: Vec3i, kind: z.string(), designated: z.boolean() });
+export const StoryWorkbenchesResponse = z.object({
+  pos: Vec3i,
+  kind: z.string(),
+  designated: z.boolean(),
+  fuel: z.string().nullish(),
+});
 export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
 
 /** Movement speed of the colony's pawns (docs/web/story-mode.md "Speed"): normal, fast (×2), faster (×3). */

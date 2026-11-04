@@ -1054,11 +1054,38 @@ Execution:
   bench. One pawn works a bench at a time.
 - It fetches the ingredients from storages within `radius` of the bench (the ingredient filter applies), crafts, and stores the
   product in the bill's chest, else by the storage rules.
-- A furnace is loaded and left to smelt (10 s an item). Its fuel comes from storage: coal or charcoal, then planks, then logs.
-  A later job of the same work type collects it, and the output is stored.
+- A furnace is loaded and left to smelt (10 s an item) with the fuel its choice allows (see "Fuel" below). A later job of the same
+  work type collects it, and the output is stored.
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
+
+### Fuel (added 2026-11-04)
+
+A furnace's fuel is a bench setting with a per-bill override (`StoryFuels`, `StoryColony.Fuel.cs`):
+- Choices: `auto` (the default: coal or charcoal, then planks, then logs), `coal`, `charcoal`, `coal_or_charcoal`, `planks`, `logs`,
+  `lava_bucket`, `blaze_rod` (1.12.2 only), `any` (auto plus blaze rods and lava buckets). The workbench state lists the version's
+  `fuel_choices`.
+- `POST …/workbenches {op:"fuel", pos, fuel}` → `{pos, kind, designated, fuel}` sets a furnace's choice (400 for another bench kind, or a
+  fuel the version doesn't burn); `POST …/bills {op:"update", id, fuel}` overrides it for one bill (`inherit` or null clears it; furnace
+  bills only).
+- A named fuel is the only one burnt: the pawn brings only it, and the smelt primitive takes another fuel out of the fuel slot
+  first and never stands another fuel in when it runs short (`MinecraftClient.SmeltAsync` with a fuel). Auto and any leave stock the
+  builds or bills reserved (planks a build needs) unless nothing else is there.
+- What the furnace still holds counts: the colony keeps `fuel_credit` (items it can still smelt on the fuel it loaded, burn time
+  and slot leftovers); a job tops up only what its batch needs beyond it (`fuel_units` 0 = none brought). A job that finds the
+  furnace short of fuel resets the credit. The primitive itself counts the real fuel slot and burn time.
+- Rates come from the version's burn times: coal and charcoal 8 items each, planks and logs 1.5, a blaze rod 12, a lava bucket 100.
+- No allowed fuel: the bill waits with "needs fuel: no coal, charcoal, planks or logs within 32 blocks" (or the choice's own list).
+- The materials pass plans the builds' smelting with the furnace's choice too.
+
+State: a furnace bench carries `fuel` (its choice), `fuel_choices` and `fuel_credit`; every bill `fuel` (its override) and `fuel_need:
+{choice, item, name, need, have, short, per_item}` for its next batch (a brew: blaze powder, one per 20 brews; `need` 0 when the stand's
+fuel is known to last). Furnace recipes carry `fuels:[{item, name, items_per_unit}]` (the version's table), a brew its blaze powder.
+
+The web: the furnace inspector has a fuel picker (an icon per choice) at the top; each furnace bill row a fuel chip (the furnace's,
+or an override) and its fuel need ("fuel: 1 coal (have 12)", red when short); the bill dialog lists the fuel table and takes an
+override; the recipe picker shows "+ fuel" in a smelting recipe's line.
 
 ### Stations: brewing stand, enchanting table, anvil (added 2026-11-03)
 

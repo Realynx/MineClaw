@@ -106,7 +106,7 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                     if (colonies.Host.World is not { } w) return Reply(503, new JsonObject { ["error"] = "no world view yet" });
                     var bench = Q(r, "workbench");
                     if (bench != null && !StoryRecipes.Benches.Contains(bench)) return Bad($"workbench must be {string.Join("|", StoryRecipes.Benches)}");
-                    return Reply(200, new JsonArray(StoryRecipes.For(w.Data, bench).Select(x => (JsonNode)x.Json()).ToArray()));
+                    return Reply(200, new JsonArray(StoryRecipes.For(w.Data, bench).Select(x => (JsonNode)x.Json(w.Data)).ToArray()));
                 }
                 case ["colonies"]:
                     return post ? Create(body) : NotAllowed("POST");
@@ -356,9 +356,9 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 return Result(c.BillsOp(S(b, "op") ?? "", b));
             case "workbenches":
             {
-                // {op: designate|release, pos:[x,y,z]} → {pos, kind, designated}
+                // {op: designate|release, pos:[x,y,z]} → {pos, kind, designated}; {op: fuel, pos, fuel} → + fuel (a furnace's fuel choice)
                 if (P3.Parse(b["pos"]) is not { } pos) return Bad("pos must be [x,y,z]");
-                return Result(c.WorkbenchOp(S(b, "op") ?? "", pos));
+                return Result(c.WorkbenchOp(S(b, "op") ?? "", pos, S(b, "fuel")));
             }
             case "options":
             {

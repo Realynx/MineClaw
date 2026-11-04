@@ -117,14 +117,19 @@ public sealed partial class StoryColony
     private static CraftPlan PlanFor((int Id, int Meta) key, int n, Dictionary<(int Id, int Meta), int> pool) =>
         RecipePlanner.Plan(key.Id, n, Stacks(pool), key.Meta, new PlannerOptions { AllowSmelting = true, HasCraftingTable = true });
 
-    /// <summary>Fuel for <paramref name="smelts"/> smelts out of the pool by preference (coal, planks, logs); the fuel taken, or null.</summary>
+    /// <summary>The fuels the materials pass plans with: the colony's furnace's choice (StoryColony.Fuel.cs), set by each pass on its
+    /// thread (the pass runs under the colony's lock); null = auto (coal, planks, logs).</summary>
+    [ThreadStatic] private static IReadOnlyList<(int Id, int Meta, double Per)>? _plannerFuels;
+
+    /// <summary>Fuel for <paramref name="smelts"/> smelts out of the pool by preference (the furnace's choice; auto = coal, planks,
+    /// logs); the fuel taken, or null.</summary>
     private static (int Id, int Count)? TakeFuel(Dictionary<(int Id, int Meta), int> pool, int smelts)
     {
         if (smelts <= 0) return (0, 0);
-        foreach (var (fid, per) in StoryRecipes.Fuels)
+        foreach (var (fid, fmeta, per) in _plannerFuels ?? StoryRecipes.Fuels.Select(f => (f.Id, -1, f.PerItem)).ToList())
         {
-            int need = Math.Max(1, (int)Math.Ceiling(smelts * per));
-            if (TakeAny(pool, fid, need)) return (fid, need);
+            int need = Math.Max(1, (int)Math.Ceiling(smelts * per - 1e-9));
+            if (fmeta < 0 ? TakeAny(pool, fid, need) : pool.GetValueOrDefault((fid, fmeta)) >= need && Take(pool, (fid, fmeta), need) == need) return (fid, need);
         }
         return null;
     }
@@ -199,6 +204,9 @@ public sealed partial class StoryColony
         var hand = new List<HandCraft>();
         StationWant? station = null;
         var near = Home() ?? Builds.SelectMany(b => b.Ghosts).Select(g => g.At).FirstOrDefault();
+        _plannerFuels = BenchFor("furnace", near) is { } fb
+            ? StoryFuels.For(w.Data, FuelChoice(fb, null)).Select(f => (f.Item.Id, f.Item.Meta, 1 / f.ItemsPerUnit)).ToList()
+            : null;
         bool hasTable = Benches.Any(b => b.Kind == "crafting_table"), hasFurnace = Benches.Any(b => b.Kind == "furnace");
         List<MaterialNeed> Used(IReadOnlyList<MaterialNeed> used, Dictionary<(int Id, int Meta), int> after) { pool = after; return used.ToList(); }
         pool = ToolCrafts(w, pool, reserved, wants, hasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)

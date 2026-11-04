@@ -417,6 +417,8 @@ public sealed class BillState
     public int? XpNeeded { get; set; }
     /// <summary>What the last job made ("enchanted diamond pickaxe: Fortune III", "brewed 3 Potion of Swiftness").</summary>
     public string? Last { get; set; }
+    /// <summary>A furnace bill's fuel override (StoryFuels.Choices); null = the bench's setting.</summary>
+    public string? Fuel { get; set; }
 }
 
 public sealed class WorkbenchState
@@ -432,6 +434,10 @@ public sealed class WorkbenchState
     public DateTimeOffset? ReadyAt { get; set; }
     /// <summary>A brewing stand's fuel (brews left) as the colony last left it; null = unknown.</summary>
     public int? Fuel { get; set; }
+    /// <summary>A furnace's fuel choice (StoryFuels.Choices); null = auto.</summary>
+    public string? FuelSetting { get; set; }
+    /// <summary>Items a furnace can still smelt on the fuel the colony loaded (burn time and fuel-slot leftovers), as last left.</summary>
+    public double FuelCredit { get; set; }
     public long Rev { get; set; }
 }
 
