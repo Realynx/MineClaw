@@ -1,0 +1,270 @@
+{
+  "tool": "web/scripts/complexity.mjs",
+  "language": "javascript",
+  "convention": "ESLint `complexity` (classic): 1 + if, ?:, &&, ||, ??, logical assignments, for, for-in, for-of, while, do, catch, non-default case, default parameter values, optional chaining (?. and ?.()). Each function/arrow/method measured on its own.",
+  "threshold": 10,
+  "totals": {
+    "files": 12,
+    "functions": 274,
+    "over": 24,
+    "excess": 263
+  },
+  "byProject": [
+    {
+      "project": "MineClaw.Scripting/Sdk/js",
+      "functions": 260,
+      "over": 21,
+      "excess": 234,
+      "max": 43
+    },
+    {
+      "project": "MineClaw.Hive/Story",
+      "functions": 14,
+      "over": 3,
+      "excess": 29,
+      "max": 35
+    }
+  ],
+  "functions": [
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 185,
+      "endLine": 239,
+      "member": "Arrow function escape",
+      "kind": "arrow function",
+      "complexity": 43,
+      "loc": 55,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/30-flow.js",
+      "line": 94,
+      "endLine": 142,
+      "member": "Arrow function def('forEach') callback",
+      "kind": "arrow function",
+      "complexity": 37,
+      "loc": 49,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/60-jobs.js",
+      "line": 128,
+      "endLine": 170,
+      "member": "Arrow function gather",
+      "kind": "arrow function",
+      "complexity": 37,
+      "loc": 43,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Hive/Story/story_pawn.js",
+      "line": 49,
+      "endLine": 87,
+      "member": "Function 'work'",
+      "kind": "function",
+      "complexity": 35,
+      "loc": 39,
+      "project": "MineClaw.Hive/Story"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/70-crew.js",
+      "line": 47,
+      "endLine": 77,
+      "member": "Arrow function def('everyBody') callback",
+      "kind": "arrow function",
+      "complexity": 31,
+      "loc": 31,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 17,
+      "endLine": 40,
+      "member": "Arrow function place",
+      "kind": "arrow function",
+      "complexity": 26,
+      "loc": 24,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 306,
+      "endLine": 338,
+      "member": "Arrow function run",
+      "kind": "arrow function",
+      "complexity": 23,
+      "loc": 33,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/60-jobs.js",
+      "line": 183,
+      "endLine": 203,
+      "member": "Arrow function def('patrol') callback",
+      "kind": "arrow function",
+      "complexity": 22,
+      "loc": 21,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 47,
+      "endLine": 84,
+      "member": "Arrow function pour",
+      "kind": "arrow function",
+      "complexity": 22,
+      "loc": 38,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/20-world.js",
+      "line": 48,
+      "endLine": 67,
+      "member": "Arrow function def('scout') callback",
+      "kind": "arrow function",
+      "complexity": 19,
+      "loc": 20,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/30-flow.js",
+      "line": 144,
+      "endLine": 164,
+      "member": "Arrow function def('ensure') callback",
+      "kind": "arrow function",
+      "complexity": 19,
+      "loc": 21,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 263,
+      "endLine": 290,
+      "member": "Arrow function reachUp",
+      "kind": "arrow function",
+      "complexity": 18,
+      "loc": 28,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/99-compat.js",
+      "line": 59,
+      "endLine": 74,
+      "member": "Arrow function def('chopTrees') callback",
+      "kind": "arrow function",
+      "complexity": 18,
+      "loc": 16,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/30-flow.js",
+      "line": 75,
+      "endLine": 90,
+      "member": "Arrow function def('quota') callback",
+      "kind": "arrow function",
+      "complexity": 17,
+      "loc": 16,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/99-compat.js",
+      "line": 29,
+      "endLine": 50,
+      "member": "Arrow function def('mineGen') callback",
+      "kind": "arrow function",
+      "complexity": 17,
+      "loc": 22,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 141,
+      "endLine": 160,
+      "member": "Arrow function fetch",
+      "kind": "arrow function",
+      "complexity": 16,
+      "loc": 20,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/99-compat.js",
+      "line": 92,
+      "endLine": 103,
+      "member": "Arrow function def('guardArea') callback",
+      "kind": "arrow function",
+      "complexity": 15,
+      "loc": 12,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 242,
+      "endLine": 257,
+      "member": "Arrow function go",
+      "kind": "arrow function",
+      "complexity": 14,
+      "loc": 16,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Hive/Story/story_pawn.js",
+      "line": 13,
+      "endLine": 34,
+      "member": "Function 'chopTree'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 22,
+      "project": "MineClaw.Hive/Story"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 90,
+      "endLine": 104,
+      "member": "Arrow function during() callback in idle",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 15,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/75-story.js",
+      "line": 107,
+      "endLine": 125,
+      "member": "Arrow function work",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 19,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/60-jobs.js",
+      "line": 20,
+      "endLine": 29,
+      "member": "Arrow function stash",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 10,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Scripting/Sdk/js/60-jobs.js",
+      "line": 106,
+      "endLine": 117,
+      "member": "Method 'gen'",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 12,
+      "project": "MineClaw.Scripting/Sdk/js"
+    },
+    {
+      "file": "src/MineClaw.Hive/Story/story_pawn.js",
+      "line": 88,
+      "endLine": 101,
+      "member": "Function 'pawn'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 14,
+      "project": "MineClaw.Hive/Story"
+    }
+  ]
+}
