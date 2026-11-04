@@ -480,7 +480,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   hovered face.
 - **Designate tools** work by area the genre's way: pick a tool, drag a grid rectangle, every matching target lights up with a
   live count, release designates (Shift keeps the tool). Kinds gain `cut`, `hunt`, `forbid`, `allow` and a mine `filter`; the
-  director expands an area to its targets and answers the count.
+  director expands an area to its targets and answers the count. Mine and Deconstruct send the exact cells instead (`blocks`):
+  see "Mining height" under the Story Mode tab.
 - **Storage is chests.** There is no ground stockpile (loose loot despawns). Chests get the genre's storage settings: a
   priority and a filter over a loot category tree. State: `categories` and `storages`.
 - **Bills.** Workbenches (crafting table, furnace, brewing stand, anvil, enchanting table) take bills: a recipe, repeat
@@ -511,6 +512,32 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a mob gives attack
   - a drop gives haul
   - a design gives build
+- **Mining height (added 2026-11-03).** Live 11-03: Fox flattening the ground mined too deep, because a Mine drag took a whole
+  storey (level − 1 to the wall height) and nothing showed how deep. A Mine or Deconstruct drag now has an explicit height mode,
+  picked on the tool's options bar or with 1–5 while the tool is active:
+  - **Surface** (Mine's default): the top block of each column (trees, leaves, plants and snow looked through) and the plants
+    standing on it. Exactly one layer.
+  - **Level**: only the blocks at the working level (PgUp / PgDn).
+  - **Down to level**: from the surface down to and including the working level (terrace down to a height).
+  - **Flatten here**: everything above the working level, the plants on a column already at the level included, so the ground
+    comes out flat at the level. This is "make a surface level".
+  - **Layers: N**: N blocks deep from each column's top, with a 1–8 stepper (+ / − while the tool is active).
+
+  Deconstruct takes the same modes over placed blocks only (default Down to level: a building and its floor); Cut, Harvest
+  and Chop target plants and trees as before. Air and liquids are never designated, nothing goes below the mode's bottom, and
+  Surface and Layers see what the level's x-ray cut leaves (Down to level and Flatten here take the whole column above the
+  level either way). While dragging, each affected column's top face is outlined (fuller the deeper it goes; the bottom dashed
+  in the angled view) and the label says `Mine (Surface): y 64 → 62 · 3 layers · 48 blocks`. The release sends exactly those
+  cells as `blocks`, never an area the director could expand deeper. One drag takes at most 4096 cells: over that the label turns
+  red ("too many") and the release only says so. The columns come from the viewer engine's `stacks` query (each column's top and
+  the cells under it, in the mesh worker), so the preview reads the same world the map shows.
+- **Cancelling a drag (added 2026-11-03).** Esc, or a press of the other mouse button (right during a left drag, left during a
+  right-drag formation line), cancels the drag in progress the genre's way: the preview goes, a small "Cancelled" toast shows,
+  and the release does nothing, not even the right-click's usual "put the tool down". A middle-drag pan is never cancelled.
+  A click under the drag threshold (5 px) paints no zone, and a designate box with nothing in it posts nothing (the tool
+  stays). In full screen Esc is normally the browser's way out: while a drag is held, the map locks Esc (Keyboard Lock, Chromium:
+  holding Esc still leaves full screen) so it cancels the drag instead. Where Esc can't be locked (other browsers), leaving full
+  screen also cancels the drag. Right-click cancel works the same in full screen.
 - **Draft.** A draft toggle, with R as the hotkey. Shift queues orders.
 - **Formations.** With drafted pawns selected, a right-drag draws a line; on release every drafted pawn gets its own move
   order (`POST .../orders`, one pawn each) to a distinct standable cell spread evenly along it, at least a cell apart. Pawns

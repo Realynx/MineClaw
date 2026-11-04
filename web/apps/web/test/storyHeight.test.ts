@@ -37,7 +37,7 @@ async function engineWith(blocks: B[]): Promise<MeshEngine> {
     return { cx: c.cx, cz: c.cz, hash: e.blockHash, seenMs: 1, by: 't', live: true, data: e.data, light: e.light };
   });
   const engine = new MeshEngine();
-  await engine.configure('b1.8.1', null, false);
+  engine.configure('b1.8.1', null, false);
   await engine.apply(encodeMcwc(0, entries));
   return engine;
 }

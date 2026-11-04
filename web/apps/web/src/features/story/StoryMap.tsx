@@ -168,6 +168,87 @@ function settleSpot(e: WorldViewerEngine, player: string | null | undefined): V3
 }
 const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
 
+/** A map mark (its glyph on a dark disc) drawn once into a small canvas and stamped with drawImage after that: a few hundred
+ * marks a frame cost a blit each instead of a path fill with save/restore (the Story perf profile's top item). */
+const sprites = new Map<string, HTMLCanvasElement | null>();
+function markSprite(id: string, color: string, size: number): HTMLCanvasElement | null {
+  const key = `${id}|${color}|${size}`;
+  const hit = sprites.get(key);
+  if (hit !== undefined) return hit;
+  let c: HTMLCanvasElement | null = null;
+  const g = glyph(id);
+  if (typeof document !== 'undefined') {
+    const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    const full = size + 6;
+    c = document.createElement('canvas');
+    c.width = Math.ceil(full * dpr);
+    c.height = Math.ceil(full * dpr);
+    const x = c.getContext('2d');
+    if (!x) c = null;
+    else {
+      x.scale(dpr, dpr);
+      x.translate(3, 3);
+      x.fillStyle = 'rgba(12,14,18,0.72)';
+      x.beginPath();
+      x.arc(size / 2, size / 2, size / 2 + 2, 0, Math.PI * 2);
+      x.fill();
+      if (g) {
+        x.scale(size / 16, size / 16);
+        x.fillStyle = color;
+        x.strokeStyle = color;
+        x.lineWidth = 1.4;
+        x.fill(g, 'evenodd');
+        if (id === 'hunt') x.stroke(g);
+      }
+    }
+  }
+  if (sprites.size > 256) sprites.clear();
+  sprites.set(key, c);
+  return c;
+}
+
+/** One designation as the map draws it: its mark's cell (a tree's top log), colour, ring, owner. */
+interface DesMark {
+  d: StoryColonyState['designations'][number];
+  cell: V3;
+  col: string;
+  ring: string | null;
+  failed: boolean;
+}
+
+/** The designations' marks and the failed ones' clusters, worked out once per state (not per frame). */
+interface DesModel {
+  marks: DesMark[];
+  failed: FailedMark[];
+  clusters: FailedCluster[];
+  clusterOf: Map<string, Array<string | number>>;
+}
+
+const desModels = new WeakMap<object, DesModel>();
+function designationModel(list: StoryColonyState['designations']): DesModel {
+  const hit = desModels.get(list);
+  if (hit) return hit;
+  const marks: DesMark[] = [];
+  const failed: FailedMark[] = [];
+  for (const d of list) {
+    const all = designationCells(d);
+    const cells = d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
+    const isFailed = d.status === 'failed';
+    const ring = isFailed ? COLORS.danger : (d.fails ?? 0) > 0 ? '#ffb35c' : null;
+    for (const b of cells) {
+      const cell: V3 = [b[0], b[1], b[2]];
+      marks.push({ d, cell, col: COLORS.designation[d.kind] ?? '#ffffff', ring, failed: isFailed });
+      if (isFailed) failed.push({ id: d.id, kind: d.kind, reason: d.reason ?? '', cell });
+    }
+  }
+  const clusters = clusterFailed(failed);
+  const clusterOf = new Map<string, Array<string | number>>();
+  for (const cl of clusters) for (const id of cl.ids) clusterOf.set(String(id), cl.ids);
+  const m = { marks, failed, clusters, clusterOf };
+  desModels.set(list, m);
+  return m;
+}
+
 /** One column of a height-mode preview: x, z, its highest and lowest designated y, how many cells. */
 type ColumnSpan = [number, number, number, number, number];
 
@@ -340,7 +421,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     let raf = 0;
     let last = performance.now();
     let centreAt = 0,
-      centreKey = '';
+      centreKey = '',
+      centreCb: StoryMapProps['onCentre'] = undefined;
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
       const dt = Math.min(0.1, (now - last) / 1000);
@@ -417,8 +499,13 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           })
           .catch(() => undefined);
       }
-      // The centre column for the panels ("settles at", "move home here"), at most five times a second, once placed.
-      if (placed.current && now - centreAt > 200) {
+      // The centre column for the panels ("settles at", "move home here"), at most five times a second, once placed, and
+      // only while a panel wants it (the page passes onCentre then: a re-render of the whole HUD per pan step otherwise).
+      if (p.current.onCentre !== centreCb) {
+        centreCb = p.current.onCentre;
+        centreKey = '';
+      }
+      if (placed.current && centreCb && now - centreAt > 200) {
         centreAt = now;
         const t = e.rig.target,
           cc: V3 = [Math.floor(t.x), p.current.level, Math.floor(t.z)];
@@ -520,6 +607,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       ctx.closePath();
     };
     const mark = (id: string, at: Pt, color: string, size = 14) => {
+      const sp = markSprite(id, color, size);
+      if (sp) {
+        ctx.drawImage(sp, at.x - size / 2 - 3, at.y - size / 2 - 3, size + 6, size + 6);
+        return;
+      }
       const g = glyph(id);
       ctx.save();
       ctx.translate(at.x - size / 2, at.y - size / 2);
@@ -690,47 +782,40 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const col = COLORS.ghost[state] ?? COLORS.ghost.todo!;
       cube(g[0], g[1], g[2], col, state === 'leased' ? 0.5 : 0.32, cutY !== null && g[1] >= cutY);
     }
-    // Designations: a mark on every target (one per tree for chop).
-    const failed: Array<FailedMark & { at: Pt }> = [];
-    for (const d of st?.designations ?? []) {
-      const col = COLORS.designation[d.kind] ?? '#ffffff';
-      const all = designationCells(d);
-      const cells =
-        d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
-      for (const b of cells) {
-        const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
-        if (at) mark(d.kind, at, col, cell > 18 ? 14 : 11);
-        // A designation that keeps failing (the director's status / reason): a red ring always; its reason as a short label
-        // (one per cluster, see below) when zoomed in.
-        if (at && (d.status === 'failed' || (d.fails ?? 0) > 0)) {
-          ctx.strokeStyle = d.status === 'failed' ? COLORS.danger : '#ffb35c';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
-          ctx.stroke();
-          if (d.status === 'failed')
-            failed.push({ id: d.id, kind: d.kind, reason: d.reason ?? '', cell: [b[0], b[1], b[2]], at });
-        }
-        if (d.pawn && at) {
-          ctx.strokeStyle = pawnColor(d.pawn);
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
-          ctx.stroke();
-        }
+    // Designations: a mark on every target (one per tree for chop). The marks and the failed ones' clusters are worked out
+    // once per state; a frame only projects and stamps them (off-screen ones skipped).
+    const model = designationModel(st?.designations ?? EMPTY_LIST);
+    const failedOn: Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }> = [];
+    const markSize = cell > 18 ? 14 : 11;
+    const vw = c.clientWidth,
+      vh = c.clientHeight;
+    for (const mk of model.marks) {
+      const b = mk.cell;
+      const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
+      if (!at || at.x < -20 || at.y < -20 || at.x > vw + 20 || at.y > vh + 20) continue;
+      mark(mk.d.kind, at, mk.col, markSize);
+      // A designation that keeps failing (the director's status / reason): a red ring always; its reason as a short label
+      // (one per cluster, see below) when zoomed in.
+      if (mk.ring) {
+        ctx.strokeStyle = mk.ring;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
+        ctx.stroke();
+        if (mk.failed) failedOn.push({ id: mk.d.id, cluster: model.clusterOf.get(String(mk.d.id)) ?? [mk.d.id], x: at.x, y: at.y });
+      }
+      if (mk.d.pawn) {
+        ctx.strokeStyle = pawnColor(mk.d.pawn);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
     // The failed designations' labels: one per cluster (same reason, adjacent), largest first, never on top of another; hidden
     // when zoomed out (the rings stay).
-    const clusters = clusterFailed(failed);
-    const clusterOf = new Map<string, Array<string | number>>();
-    for (const cl of clusters) for (const id of cl.ids) clusterOf.set(String(id), cl.ids);
-    failedAt.current = failed.map((f) => ({
-      id: f.id,
-      cluster: clusterOf.get(String(f.id)) ?? [f.id],
-      x: f.at.x,
-      y: f.at.y,
-    }));
+    const clusters = model.clusters;
+    failedAt.current = failedOn;
     const view = { w: c.clientWidth, h: c.clientHeight };
     syncLabels(
       cell > LABEL_ZOOM
@@ -1715,7 +1800,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     };
     document.addEventListener('fullscreenchange', off);
     return () => document.removeEventListener('fullscreenchange', off);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   /** The pointer was taken away (a touch scroll, the window lost it): the drag ends with nothing done. */
   const lost = () => {
@@ -1808,25 +1893,35 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     [],
   );
 
-  if (!ready) return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
-  return (
-    <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map">
-      {mod && source ? (
+  // The viewer's element is kept while its inputs stay (React then skips its subtree): the page re-renders on every state
+  // poll, and the viewer needs none of that (the overlay reads the state from a ref each frame).
+  const cameraMode = props.view === 'top' ? 'top' : 'iso';
+  const followName = mod && source ? '' : (props.state?.pawns[0]?.name ?? '');
+  const viewerEl = useMemo(
+    () =>
+      mod && source ? (
         <mod.WorldViewer
           ref={viewer}
           source={source}
           dim={0}
           follow={null}
           layers={layers}
-          cameraMode={props.view === 'top' ? 'top' : 'iso'}
+          cameraMode={cameraMode}
           xray="off"
           drawDistance={112}
           hideHint
           className="absolute inset-0"
         />
       ) : (
-        <DotMap follow={props.state?.pawns[0]?.name ?? ''} radius={40} className="absolute inset-0" label={false} />
-      )}
+        <DotMap follow={followName} radius={40} className="absolute inset-0" label={false} />
+      ),
+    [mod, source, layers, cameraMode, followName],
+  );
+
+  if (!ready) return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
+  return (
+    <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map">
+      {viewerEl}
       <canvas
         ref={canvas}
         tabIndex={0}
@@ -1862,6 +1957,7 @@ const LABEL_CLASS =
   'pointer-events-auto absolute top-0 left-0 max-w-64 cursor-pointer truncate rounded-full border border-danger/50 bg-surface/90 px-2 ' +
   'py-px text-[11px] leading-[16px] font-semibold whitespace-nowrap text-fg shadow-sm hover:bg-surface';
 const EMPTY_SEL: Selection = { bodies: [], chests: [], bench: null };
+const EMPTY_LIST: StoryColonyState['designations'] = [];
 
 const BLOCK_LABELS: Record<number, string> = {
   1: 'stone',

@@ -624,6 +624,7 @@ export function StoryMode() {
   }, [
     tool,
     heightTool,
+    say,
     layers,
     split,
     state,
@@ -973,7 +974,7 @@ export function StoryMode() {
             home={(state?.home as V3 | undefined) ?? null}
             settle={noColony}
             player={me.player ?? null}
-            onCentre={setCentre}
+            onCentre={noColony || tab === 'colony' ? setCentre : undefined}
             onSettled={setSettledY}
             onSelect={onSelect}
             onSelectSame={(kind, visible) =>

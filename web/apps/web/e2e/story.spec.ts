@@ -791,9 +791,7 @@ test('story map frame rate and main-thread time on software WebGL (10 pawns, hun
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Performance.enable');
   const metrics = async () => {
-    const { metrics: m } = (await cdp.send('Performance.getMetrics')) as {
-      metrics: Array<{ name: string; value: number }>;
-    };
+    const { metrics: m } = await cdp.send('Performance.getMetrics');
     return Object.fromEntries(m.map((x) => [x.name, x.value]));
   };
   const out: Record<string, unknown> = {};
@@ -831,6 +829,13 @@ test('story map frame rate and main-thread time on software WebGL (10 pawns, hun
     };
   };
   await page.mouse.move(720, 450);
+  // STORY_PROFILE=<file> also saves a CPU profile of the idle and panning phases (chrome://inspect → Performance can load it).
+  const profile = process.env.STORY_PROFILE;
+  if (profile) {
+    await cdp.send('Profiler.enable');
+    await cdp.send('Profiler.setSamplingInterval', { interval: 200 });
+    await cdp.send('Profiler.start');
+  }
   await measure('idle', () => page.waitForTimeout(6000));
   await measure('panning', async () => {
     for (const k of ['d', 's', 'a', 'w']) {
@@ -839,6 +844,11 @@ test('story map frame rate and main-thread time on software WebGL (10 pawns, hun
       await page.keyboard.up(k);
     }
   });
+  if (profile) {
+    const { profile: p } = (await cdp.send('Profiler.stop')) as { profile: unknown };
+    const fs = await import('node:fs');
+    fs.writeFileSync(profile, JSON.stringify(p));
+  }
   const failed = await story(page, 'failed');
   out.failed = failed.length;
   const cell = failed[0]!.cell!;
@@ -846,5 +856,5 @@ test('story map frame rate and main-thread time on software WebGL (10 pawns, hun
   await story(page, 'setZoom', 24);
   await page.waitForTimeout(800);
   await measure('labels', () => page.waitForTimeout(5000));
-  console.log(`STORY_PERF ${JSON.stringify(out)}`);
+  console.warn(`STORY_PERF ${JSON.stringify(out)}`);
 });
