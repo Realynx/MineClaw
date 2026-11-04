@@ -14,7 +14,8 @@ public sealed partial class StoryColony
         public readonly Dictionary<string, List<(DesignationState D, string Key, P3 Target)>> ByKind = new(StringComparer.Ordinal);
         public readonly HashSet<P3> ForbidCells = new();
         public readonly HashSet<int> ForbidEntities = new();
-        public readonly List<Area> ForbidZones = new();
+        /// <summary>Keep-out zones' columns and their level range (from the zones' cell sets: O(1) per test).</summary>
+        public readonly Dictionary<long, (int Y1, int Y2)> ForbidCols = new();
     }
 
     private readonly PickIndex _index = new();
@@ -41,8 +42,11 @@ public sealed partial class StoryColony
         ix.ByKind.Clear();
         ix.ForbidCells.Clear();
         ix.ForbidEntities.Clear();
-        ix.ForbidZones.Clear();
-        foreach (var z in Zones) if (z.Kind == "forbidden") ix.ForbidZones.Add(z.Area);
+        ix.ForbidCols.Clear();
+        foreach (var z in Zones)
+            if (z.Kind == "forbidden")
+                foreach (var k in z.Cells.Keys)
+                    ix.ForbidCols[k] = ix.ForbidCols.TryGetValue(k, out var r) ? (Math.Min(r.Y1, z.Area.Y1), Math.Max(r.Y2, z.Area.Y2)) : (z.Area.Y1, z.Area.Y2);
         foreach (var d in Designations)
         {
             if (d.Kind == "forbid")

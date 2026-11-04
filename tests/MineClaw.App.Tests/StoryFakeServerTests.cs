@@ -420,7 +420,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         var c = x.C;
         Only(x, WorkTypes.Chop);
         // Nothing to do: each wanders the home area on its own cell.
-        Assert.True(await Until(() => x.Pawns.All(p => c.CurrentOf(p)?.Label == "Idle (wandering)"), 30_000), "wandering: " + x.Diag());
+        Assert.True(await Until(() => x.Pawns.All(p => c.CurrentOf(p) is { Kind: "idle", Source: "wander" }), 30_000), "wandering: " + x.Diag());
         var cells = x.Pawns.ToDictionary(p => p, _ => new HashSet<P3>());
         var until = DateTime.UtcNow.AddSeconds(20);
         while (DateTime.UtcNow < until)

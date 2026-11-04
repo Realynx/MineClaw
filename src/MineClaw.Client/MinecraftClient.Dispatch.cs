@@ -77,6 +77,7 @@ public sealed partial class MinecraftClient
             // ---- world-level ----
             case TimeUpdatePacket t:
                 w.Time = t.Time;
+                w.TimeFrozen = t.Frozen;
                 break;
             case SpawnPositionPacket sp:
                 w.Spawn = new BlockPos(sp.X, sp.Y, sp.Z);

@@ -35,7 +35,8 @@ import { MockHive } from './hive.js';
 import { Replay } from './replay.js';
 import { MockStory } from './story.js';
 import { drainBlockChanges } from './terrain.js';
-import { memoryCloudMock, type CloudMockNode } from '@mineclaw/contracts/testing';
+import { cloudMockDistance, memoryCloudMock, type CloudMockNode } from '@mineclaw/contracts/testing';
+import type { CloudArrangement, MemoryCloudResponse } from '@mineclaw/contracts';
 
 type Obj = Record<string, unknown>;
 type Fixtures = Record<'db' | 'tools' | 'live', Obj>;
@@ -149,7 +150,7 @@ interface Reply {
  * A memory cloud of 3000 leaves under 60 layer-1 and 10 layer-2 summaries (2 roots), laid out by the shared synthetic generator
  * (`@mineclaw/contracts/testing`). The fixture graph is too small to show what the view is for.
  */
-function syntheticCloud(): Obj {
+function syntheticCloud(arrangement: CloudArrangement): MemoryCloudResponse {
   const topics = [
     ['cobble', 'generator'], ['wheat', 'farm'], ['oak', 'trees'], ['storage', 'chests'], ['nether', 'portal'],
     ['mob', 'grinder'], ['fox', 'requests'], ['recipes', 'crafting'], ['island', 'platform'], ['scripts', 'loops'],
@@ -165,7 +166,7 @@ function syntheticCloud(): Obj {
   for (let k = 0; k < 10; k++)
     tree.push({ id: 3100 + k, layer: 2, parents: [3200 + (k % 2)], title: `L2 #${3100 + k}`, kind: 'summary', terms: topics[k]!, text: `Memories about ${topics[k]!.join(' and ')}.` });
   for (let m = 0; m < 2; m++) tree.push({ id: 3200 + m, layer: 3, parents: [], title: `root ${m}`, kind: 'summary' });
-  return toSnake<Obj>(memoryCloudMock(tree, { stateKey: 'mock-cloud-3000' }));
+  return memoryCloudMock(tree, { stateKey: 'mock-cloud-3000', arrangement });
 }
 
 const iso = (ms = Date.now()) => new Date(ms).toISOString().replace('Z', '+00:00');
@@ -404,7 +405,8 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     }
   };
 
-  let cloud: Obj | undefined;
+  const clouds = new Map<CloudArrangement, MemoryCloudResponse>();
+  const cloudOf = (a: CloudArrangement) => clouds.get(a) ?? (clouds.set(a, syntheticCloud(a)), clouds.get(a)!);
   const dataFor = (id: RouteId, params: Record<string, string>): unknown => {
     const route: RouteDef = ROUTES[id];
     const f = FIXTURE_OF[id];
@@ -467,8 +469,24 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
     }
     switch (id) {
-      case 'memoryActivity.cloud':
-        return { json: (cloud ??= syntheticCloud()) };
+      case 'memoryActivity.cloud': {
+        const a = query.get('arrangement') ?? 'mds';
+        if (!['mds', 'umap', 'pca', 'tree'].includes(a))
+          return { status: 400, json: { error: 'arrangement must be one of mds|umap|pca|tree', code: 'bad_request' } };
+        return { json: toSnake(cloudOf(a as CloudArrangement)) };
+      }
+      case 'memoryActivity.cloudDistance': {
+        // Like the bridge: the viewer role, two integer ids, 404 for an unknown memory.
+        const roles = identity.roles.split(',');
+        if (!roles.includes('viewer') && !roles.includes('admin'))
+          return { status: 403, json: { error: 'viewer role required', code: 'forbidden' } };
+        const a = Number(query.get('a'));
+        const b = Number(query.get('b'));
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0)
+          return { status: 400, json: { error: 'a and b required', code: 'bad_request' } };
+        const d = cloudMockDistance(cloudOf('mds'), a, b);
+        return d ? { json: toSnake(d) } : { status: 404, json: { error: 'no such memory', code: 'not_found' } };
+      }
       case 'bots.now':
         return { json: world.now(params.bot ?? query.get('bot') ?? 'maid_chan') };
       case 'bots.inventory': {

@@ -266,7 +266,7 @@ public sealed class StoryDirectorTests
         Assert.Null(d1["categories"]);
         rev = d1["rev"]!.GetValue<long>();
         Assert.Empty(c.State(rev)["zones"]!.AsArray());
-        c.ZoneOp("remove", null, Area.Of(0, 64, 0, 0, 64, 0));
+        c.ZoneOp("remove", null, Area.Of(-8, 64, -8, 8, 64, 8)); // erase: every cell of it (a smaller box only shrinks it)
         var d2 = c.State(rev);
         Assert.Equal(z, d2["removed"]!["zones"]![0]!.GetValue<string>());
         Assert.Single(d2["pawns"]!.AsArray()); // pawns always (they move)

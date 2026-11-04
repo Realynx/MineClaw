@@ -6,6 +6,9 @@ public sealed class TimeUpdatePacket : IPacket
     public const byte PacketId = 0x04;
     public byte Id => PacketId;
     public long Time { get; set; }
+    /// <summary>The server stopped the daylight cycle (1.12.2 sends the time of day negative when <c>doDaylightCycle</c> is
+    /// false; <see cref="Time"/> is then its absolute value). Never on the b1.8.1 wire.</summary>
+    public bool Frozen { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d) => Time = r.ReadLong();
     public void Write(MinecraftWriter w, PacketDirection d) => w.WriteLong(Time);

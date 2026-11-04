@@ -3,8 +3,8 @@
  * padded with 2520 cloud-only leaves under the same layer-1 summaries, laid out by the shared generator the Nest mock bridge
  * uses too. 3000 points in 8 clusters (the L2 summaries), like a few days of a real bot.
  */
-import type { MemoryCloudResponse, RaptorNodeDetail } from '@mineclaw/contracts';
-import { memoryCloudMock } from '@mineclaw/contracts/testing';
+import type { CloudArrangement, CloudDistanceResponse, MemoryCloudResponse, RaptorNodeDetail } from '@mineclaw/contracts';
+import { cloudMockDistance, memoryCloudMock } from '@mineclaw/contracts/testing';
 import { STATE_KEY, cloudTree, extraLeafDetail } from './raptor';
 
 export const EXTRA_FROM = 100_000;
@@ -18,11 +18,27 @@ function extraLeaves(): number {
   }
 }
 
-let cached: MemoryCloudResponse | null = null;
+const cached = new Map<CloudArrangement, MemoryCloudResponse>();
 
-export function memoryCloud(): MemoryCloudResponse {
-  cached ??= memoryCloudMock(cloudTree(), { extraLeaves: extraLeaves(), extraFrom: EXTRA_FROM, seed: 23, stateKey: STATE_KEY });
-  return cached;
+/** One arrangement of the mock cloud (default: the distance layout); every arrangement has the same points in the same order. */
+export function memoryCloud(arrangement: CloudArrangement = 'mds'): MemoryCloudResponse {
+  let c = cached.get(arrangement);
+  if (!c) {
+    c = memoryCloudMock(cloudTree(), {
+      extraLeaves: extraLeaves(),
+      extraFrom: EXTRA_FROM,
+      seed: 23,
+      stateKey: STATE_KEY,
+      arrangement,
+    });
+    cached.set(arrangement, c);
+  }
+  return c;
+}
+
+/** The mock embedding distance of two leaves (null = unknown id). */
+export function cloudDistance(a: number, b: number): CloudDistanceResponse | null {
+  return cloudMockDistance(memoryCloud('mds'), a, b);
 }
 
 /** Detail for a cloud-only leaf (ids from EXTRA_FROM). */

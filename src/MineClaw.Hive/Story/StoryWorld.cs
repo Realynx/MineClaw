@@ -17,6 +17,8 @@ public interface IStoryWorld
     /// <summary>"b1.8.1" | "1.12.2".</summary>
     string Version => Data.VersionId;
     long TimeOfDay { get; }
+    /// <summary>The server stopped the daylight cycle (the time holds).</summary>
+    bool TimeFrozen => false;
     int Height { get; }
     (int Id, int Meta) Block(int x, int y, int z);
     IReadOnlyList<StoryEntity> Entities();
@@ -88,6 +90,7 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
 {
     public IGameData Data => data;
     public long TimeOfDay => world()?.TimeOfDay ?? 0;
+    public bool TimeFrozen => world()?.TimeFrozen ?? false;
     public int Height => world()?.WorldHeight ?? 128;
     public int Dimension => world()?.Dimension ?? 0;
     public bool Loaded(int x, int z) => world()?.IsLoaded(x, z) ?? false;

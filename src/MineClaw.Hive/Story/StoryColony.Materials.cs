@@ -538,5 +538,5 @@ public sealed partial class StoryColony
         lock (_lock) return OptionsJson();
     }
 
-    internal JsonObject OptionsJson() => new() { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches };
+    internal JsonObject OptionsJson() => new() { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches, ["idle"] = Meta.Idle };
 }

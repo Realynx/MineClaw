@@ -355,7 +355,10 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 }
                 var auto = Flag("auto_place_benches");
                 var detect = Flag("detect_benches");
-                if (auto == null && detect == null) return Bad("auto_place_benches or detect_benches required");
+                // idle: recreation | wander | stay (what pawns do with nothing to do; StoryColony.Recreation.cs)
+                var idle = b["idle"] is null ? null : b["idle"] is JsonValue iv && iv.TryGetValue<string>(out var im) ? im : "";
+                if (auto == null && detect == null && idle == null) return Bad("auto_place_benches, detect_benches or idle required");
+                if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 return Reply(200, c.SetOptions(auto, detect));
             }
             default:

@@ -16,6 +16,7 @@ interface StoryDebug {
   level(): number;
   beds(): Array<{ pos: [number, number, number]; pawn: string | null }>;
   failed(): Array<{ id: string | number; cell: [number, number, number] | null; x: number | null; y: number | null }>;
+  sky(): { time: number | null; skySub: number } | null;
 }
 
 async function signIn(page: Page, empty: boolean) {
@@ -441,17 +442,25 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   await arch.getByRole('button', { name: 'Structure' }).click();
   await arch.getByRole('button', { name: 'Wall' }).click();
   await expect(page.getByTestId('wall-height')).toHaveText('3');
+  // B closes the Architect window: the tool and its material selector stay, the map is free to drag on.
+  const reopen = async (tool: string) => {
+    await page.keyboard.press('b');
+    await arch.getByRole('button', { name: 'Structure' }).click();
+    await arch.getByRole('button', { name: tool }).click();
+    await page.keyboard.press('b');
+  };
+  await page.keyboard.press('b');
   const wall = post(page, /\/builds$/);
   await dragCells(page, [-8, lv, 2], [-4, lv, 6]);
   await page.mouse.up();
   const w = body(await wall) as { items: Array<{ kind: string; height: number }> };
   expect(w.items[0]).toMatchObject({ kind: 'wall', height: 3 });
-  await arch.getByRole('button', { name: 'Door' }).click();
+  await reopen('Door');
   const doorAt = (await story(page, 'toPage', -5.5, lv, 2.5))!;
   const door = post(page, /\/builds$/);
   await page.mouse.click(doorAt.x, doorAt.y);
   expect((body(await door) as { items: Array<{ kind: string }> }).items[0]?.kind).toBe('door');
-  await arch.getByRole('button', { name: 'Roof' }).click();
+  await reopen('Roof');
   const roof = post(page, /\/builds$/);
   await dragCells(page, [-8, lv, 2], [-4, lv, 6]);
   await page.mouse.up();
@@ -482,6 +491,7 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   await page.keyboard.press('b');
   await arch.getByRole('button', { name: 'Structure' }).click();
   await arch.getByRole('button', { name: 'Single block' }).click();
+  await page.keyboard.press('b'); // the window closes, the tool stays
   const at = await pageAt(page, -6.5, 4.5);
   await page.mouse.move(at.x, at.y);
   await page.waitForTimeout(400);
@@ -660,6 +670,97 @@ test('+ adds a joining pawn; − removes the selected one after a confirm; a gro
   expect(body(await zone)).toMatchObject({ op: 'add', kind: 'farm', plant: 'carrots' });
 });
 
+test('zones paint like RimWorld: overlapping growing zones are one, a woodlot takes its cells, erase removes; planting bills', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const [cx, , cz] = (await story(page, 'center')).map(Math.floor) as [number, number, number];
+  const lv = await story(page, 'level');
+  const zoneAck = () =>
+    page.waitForResponse((r) => r.request().method() === 'POST' && /\/zones$/.test(new URL(r.url()).pathname));
+  const paint = async (a: [number, number], b: [number, number]) => {
+    const ack = zoneAck();
+    await dragCells(page, [a[0], lv, a[1]], [b[0], lv, b[1]]);
+    await page.mouse.up();
+    const res = await ack;
+    return {
+      body: res.request().postDataJSON() as Record<string, unknown>,
+      ack: (await res.json()) as Record<string, unknown>,
+    };
+  };
+  await page.keyboard.press('KeyB'); // the Architect
+  await page.getByRole('button', { name: 'Zones', exact: true }).click();
+  await page.getByRole('button', { name: 'Growing zone' }).click();
+  await page.getByTestId('grow-plant-picker').getByRole('radio', { name: /Wheat/ }).click();
+
+  // Two overlapping growing zones of one plant: one zone (12 + 10 − 4 overlapping = 18 cells).
+  const first = await paint([cx - 4, cz - 1], [cx - 1, cz + 1]);
+  expect(first.body).toMatchObject({ op: 'add', kind: 'farm', plant: 'wheat' });
+  const id = first.ack.id;
+  const second = await paint([cx - 2, cz], [cx + 2, cz + 1]); // the tool stays in hand
+  expect(second.ack).toMatchObject({ id, created: [], grown: [id] });
+
+  // A woodlot over part of it: the growing zone loses those cells (6).
+  await page.getByRole('button', { name: 'Woodlot' }).click();
+  const wood = await paint([cx - 4, cz - 1], [cx - 3, cz + 1]);
+  expect(wood.ack).toMatchObject({ shrunk: [id] });
+
+  // Erase (any kind) a corner of the growing zone: 4 cells go.
+  await page.getByRole('button', { name: 'Erase zone' }).click();
+  await expect(page.getByTestId('zone-erase-kind').getByRole('radio', { name: 'Any' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  const erase = await paint([cx + 1, cz], [cx + 2, cz + 1]);
+  expect(erase.body).toEqual({ op: 'remove', area: [cx + 1, lv, cz, cx + 2, lv, cz + 1] });
+  expect(erase.ack).toMatchObject({ shrunk: [id] });
+  await page.keyboard.press('Escape'); // the tool
+
+  // The Growing zones window (beside the Colony tab): one zone of 8 cells, sowing wheat; a second bill, moved up, is sown now.
+  await page.keyboard.press('Escape'); // the Architect
+  await page
+    .getByTestId('tab-bar')
+    .getByRole('button', { name: /^Colony/ })
+    .click();
+  const zones = page.getByTestId('growing-zones');
+  await expect(zones.getByTestId('growing-zone')).toHaveCount(1);
+  await expect(zones.getByTestId('zone-cells')).toHaveText('8 cells');
+  await expect(zones.getByTestId('zone-active-plant')).toHaveText('Sowing: Wheat');
+  const bill = post(page, /\/zones$/);
+  await zones.getByRole('button', { name: 'Add bill' }).click();
+  await zones
+    .getByTestId('grow-bill-add')
+    .getByRole('button', { name: /Carrots/ })
+    .click();
+  expect(body(await bill)).toEqual({ op: 'bill_add', id, plant: 'carrots' });
+  await expect(zones.getByTestId('grow-bill')).toHaveCount(2);
+  const reorder = post(page, /\/zones$/);
+  await zones.getByRole('button', { name: 'Move Carrots up' }).click();
+  expect(body(await reorder)).toMatchObject({ op: 'bill_reorder', id });
+  await expect(zones.getByTestId('zone-active-plant')).toHaveText('Sowing: Carrots');
+  await expect(zones.getByTestId('grow-bill').first()).toHaveAttribute('data-active', 'true');
+
+  // Erase the rest: the zone is gone.
+  await page
+    .getByTestId('tab-bar')
+    .getByRole('button', { name: /^Colony/ })
+    .click();
+  await page.keyboard.press('KeyB');
+  await page.getByRole('button', { name: 'Zones', exact: true }).click();
+  await page.getByRole('button', { name: 'Erase zone' }).click();
+  const all = await paint([cx - 6, cz - 3], [cx + 4, cz + 3]);
+  expect(all.ack).toMatchObject({ deleted: expect.arrayContaining([id]) });
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page
+    .getByTestId('tab-bar')
+    .getByRole('button', { name: /^Colony/ })
+    .click();
+  await expect(page.getByTestId('growing-zones')).toHaveCount(0);
+});
+
 // ------------------------------------------------------------------ the world under the HUD: models, holograms, notices
 
 type Ghost = [number, number, number, number, number, string | number, string];
@@ -676,14 +777,19 @@ const dbg = <K extends keyof WorldDebug>(page: Page, m: K, ...a: Parameters<Worl
     [m, a] as const,
   ) as Promise<ReturnType<WorldDebug[K]>>;
 
-test('pawns are drawn as their player models; a queued build shows as holograms that go once built', async ({ page }) => {
+test('pawns are drawn as their player models; a queued build shows as holograms that go once built', async ({
+  page,
+}) => {
   await signIn(page, false);
   await openStory(page);
   // The seeded colony's online pawns: player models (the viewer's bots), with the overlay's marks instead of tokens.
   await expect
-    .poll(async () => (await dbg(page, 'models')).filter((b) => b.name.startsWith('maid_s1_') && b.look === 'model').length, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () => (await dbg(page, 'models')).filter((b) => b.name.startsWith('maid_s1_') && b.look === 'model').length,
+      {
+        timeout: 60_000,
+      },
+    )
     .toBeGreaterThan(0);
   expect(await dbg(page, 'botModels')).toBeGreaterThan(0);
   if (shots) await page.screenshot({ path: `${shots}/story-models.png` });
@@ -717,7 +823,9 @@ test('notifications: repeats coalesce, messages expire, Dismiss all, conditions 
   const notices = (fn: string, ...a: unknown[]) =>
     page.evaluate(
       ([f, aa]) =>
-        (window as unknown as { __storyNotices: Record<string, (...x: unknown[]) => unknown> }).__storyNotices[f]!(...aa),
+        (window as unknown as { __storyNotices: Record<string, (...x: unknown[]) => unknown> }).__storyNotices[f]!(
+          ...aa,
+        ),
       [fn, a] as const,
     );
   await page.waitForFunction(() => !!(window as unknown as { __storyNotices?: unknown }).__storyNotices);
@@ -744,16 +852,23 @@ test('notifications: repeats coalesce, messages expire, Dismiss all, conditions 
   await expect(page.getByTestId('log-unread')).toBeVisible();
   // Messages expire by themselves (a short test lifetime).
   await notices('setTtlScale', 0.05);
-  await notices('ingest', [{ id: 'e2e-info', at: new Date().toISOString(), level: 'info', text: 'Ann is now level 5 in mining.' }]);
+  await notices('ingest', [
+    { id: 'e2e-info', at: new Date().toISOString(), level: 'info', text: 'Ann is now level 5 in mining.' },
+  ]);
   await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(1);
   await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(0, { timeout: 5000 });
   // At most four show; the rest are "+N more", which opens the log.
   await notices('setTtlScale', 1);
   await notices(
     'ingest',
-    ['Ann is idle', 'Bob is hungry', 'A cow wandered off', 'The furnace is cold', 'A chest is full', 'Rain is coming'].map(
-      (t, i) => ({ id: `e2e-k${i}`, at: new Date().toISOString(), level: 'warn', text: t }),
-    ),
+    [
+      'Ann is idle',
+      'Bob is hungry',
+      'A cow wandered off',
+      'The furnace is cold',
+      'A chest is full',
+      'Rain is coming',
+    ].map((t, i) => ({ id: `e2e-k${i}`, at: new Date().toISOString(), level: 'warn', text: t })),
   );
   await expect(msgs).toHaveCount(4);
   await page.getByTestId('more-messages').click();
@@ -839,7 +954,10 @@ test('mine height: Surface designates one layer; Flatten here previews exactly w
   for (let x = 16; x <= 19; x++) for (let z = -12; z <= -9; z++) box.push([x, z]);
   const tops = await Promise.all(
     box.map(async ([x, z]) => {
-      const ids = await blockIds(page, Array.from({ length: 40 }, (_, i) => [x, 100 - i, z]));
+      const ids = await blockIds(
+        page,
+        Array.from({ length: 40 }, (_, i) => [x, 100 - i, z]),
+      );
       return 100 - ids.findIndex((id) => id !== 0 && !PLANTS.has(id));
     }),
   );
@@ -1034,6 +1152,12 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   // Picking the fence arms the fence tool; a fence queued from it lists its materials (crafted from logs at the table).
   await pal.locator('[data-entry="fence"]').click();
   await expect(arch.getByRole('button', { name: 'Fence' })).toHaveAttribute('aria-pressed', 'true');
+  // The material selector has it too; the Architect window closes (B) so the drag has the map.
+  await expect(page.getByTestId('material-bar').locator('[data-material="85:0"]')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await page.keyboard.press('b');
   const lv = await story(page, 'level');
   const fence = post(page, /\/builds$/);
   await dragCells(page, [-8, lv, 2], [-6, lv, 2]);
@@ -1069,4 +1193,116 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   await designate.getByRole('button', { name: 'Use as colony workbench' }).click();
   expect(body(await again)).toMatchObject({ op: 'designate' });
   await expect(page.getByTestId('bills-inspector')).toBeVisible();
+});
+
+/** Drags the time of day slider to a fraction of the day (0 = 06:00) and waits for its one POST. */
+async function setTime(page: Page, at: number): Promise<number> {
+  const slider = page.getByLabel('Time of day');
+  await expect(slider).toBeEnabled();
+  const sb = (await slider.boundingBox())!;
+  const sent = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/story/time');
+  const from = at > 0.5 ? 0.3 : 0.7;
+  await page.mouse.move(sb.x + sb.width * from, sb.y + sb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sb.x + sb.width * at, sb.y + sb.height / 2, { steps: 6 });
+  await page.mouse.up();
+  return (body(await sent) as { time: number }).time;
+}
+
+test('one world clock: the HUD, the schedule column and the map light follow the server time', async ({ page }) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  const clock = page.getByTestId('colony-clock');
+  const hudHour = async () => Number((await page.getByTestId('colony-time').textContent())!.slice(0, 2));
+
+  // Midnight: the HUD shows night, the map's sky light is taken off (the view darkens), the schedule's column follows.
+  const night = await setTime(page, 0.75);
+  expect(Math.abs(night - 18000)).toBeLessThan(1500);
+  await expect(clock).toHaveAttribute('data-night', 'true');
+  await expect.poll(async () => (await story(page, 'sky'))?.skySub ?? 0, { timeout: 15_000 }).toBeGreaterThan(9);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur()); // the slider keeps the keys otherwise
+  await page.keyboard.press('y');
+  const now = page.getByTestId('schedule-panel').locator('th[data-now="true"]');
+  await expect(now).toHaveCount(1);
+  await expect.poll(async () => Number(await now.textContent())).toBe(await hudHour());
+  expect([22, 23, 0, 1, 2]).toContain(await hudHour());
+  if (shots) await page.screenshot({ path: `${shots}/story-night.png` });
+
+  // Morning again (the mock allows one change a second): day on the HUD, full light on the map, the column moves with it.
+  await page.waitForTimeout(1100);
+  const noon = await setTime(page, 0.25);
+  expect(Math.abs(noon - 6000)).toBeLessThan(1500);
+  await expect(clock).toHaveAttribute('data-night', 'false');
+  await expect.poll(async () => (await story(page, 'sky'))?.skySub ?? 11, { timeout: 15_000 }).toBeLessThan(1);
+  await expect.poll(async () => Number(await now.textContent())).toBe(await hudHour());
+  expect([10, 11, 12, 13, 14]).toContain(await hudHour());
+});
+
+test('the material selector: docked bottom-left with the tool options, keyboard choice, used by the build', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  await story(page, 'focus', 1, -3);
+  await story(page, 'setZoom', 36);
+  await page.waitForTimeout(800);
+  await page.keyboard.press('b');
+  const arch = page.getByTestId('architect');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  await arch.getByRole('button', { name: 'Floor' }).click();
+
+  // Docked bottom-left, above the tab bar; no centred popup; nothing over the map's centre.
+  const bar = page.getByTestId('material-bar');
+  await expect(bar).toBeVisible();
+  await expect(page.getByTestId('tool-options')).toHaveCount(0);
+  const bb = (await bar.boundingBox())!;
+  const tabs = (await page.getByTestId('tab-bar').boundingBox())!;
+  const mapBox = (await page.getByTestId('story-map').boundingBox())!;
+  expect(bb.x - mapBox.x).toBeLessThan(mapBox.width * 0.05);
+  expect(Math.abs(bb.x - tabs.x)).toBeLessThan(4); // left-aligned with the tab bar
+  expect(bb.y + bb.height).toBeLessThanOrEqual(tabs.y + 1);
+  expect(bb.y + bb.height).toBeGreaterThan(tabs.y - 40);
+  const cx = mapBox.x + mapBox.width / 2,
+    cy = mapBox.y + mapBox.height / 2;
+  expect(cx >= bb.x && cx <= bb.x + bb.width && cy >= bb.y && cy <= bb.y + bb.height).toBe(false);
+
+  // The floor's materials: planks and the slab, no fence.
+  const list = bar.getByTestId('material-list');
+  await expect(list.locator('[data-material="44:0"]')).toBeVisible();
+  await expect(list.locator('[data-material="5:0"]')).toBeVisible();
+  await expect(list.locator('[data-material="85:0"]')).toHaveCount(0);
+  const chosen = async () => (await list.locator('[aria-pressed="true"]').getAttribute('data-material'))!;
+  const before = await chosen();
+  await page.mouse.move(cx, cy);
+  await page.keyboard.press(']');
+  await expect.poll(chosen).not.toBe(before);
+  const key = await chosen();
+
+  // A drag queues a floor in that material (the Architect window closed: B; the tool and its bar stay).
+  await page.keyboard.press('b');
+  await expect(arch).toHaveCount(0);
+  await expect(bar).toBeVisible();
+  const lv = await story(page, 'level');
+  const floor = post(page, /\/builds$/);
+  await dragCells(page, [-8, lv, 2], [-6, lv, 4]);
+  await page.mouse.up();
+  const item = (body(await floor) as { items: Array<{ kind: string; material: unknown }> }).items[0]!;
+  expect(item.kind).toBe('floor');
+  expect(item.material).toEqual(key.split(':').map(Number));
+  if (shots) await page.screenshot({ path: `${shots}/story-material-bar.png` });
+
+  // Wall: its materials (glass yes, the slab no) and the height control in the same bar; the floor keeps its choice.
+  await page.keyboard.press('b');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  await arch.getByRole('button', { name: 'Wall' }).click();
+  await expect(bar.getByTestId('wall-height')).toHaveText('3');
+  await expect(list.locator('[data-material="20:0"]')).toBeVisible();
+  await expect(list.locator('[data-material="44:0"]')).toHaveCount(0);
+  await bar.getByRole('button', { name: 'Higher' }).click();
+  await expect(bar.getByTestId('wall-height')).toHaveText('4');
+  await arch.getByRole('button', { name: 'Floor' }).click();
+  await expect.poll(chosen).toBe(key);
+  await expect(page.getByTestId('recent-materials').locator(`[data-recent="${key}"]`)).toBeVisible();
 });

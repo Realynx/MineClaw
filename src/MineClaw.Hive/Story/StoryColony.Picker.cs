@@ -18,7 +18,7 @@ public sealed partial class StoryColony
     /// <summary>The in-game hour now (12 when there is no world view yet).</summary>
     public int HourNow => World is { } w ? StoryCharacter.Hour(w.TimeOfDay) : 12;
 
-    private static readonly HashSet<string> Gathering = new(StringComparer.Ordinal) { "designation", "zone", "crop", "drop", "furnace", "order", "deliver" };
+    private static readonly HashSet<string> Gathering = new(StringComparer.Ordinal) { "designation", "zone", "crop", "drop", "furnace", "order", "deliver", "fish" };
 
     private string NewJobId() => $"{Id}.j{++_jobSeq}";
 
@@ -57,7 +57,7 @@ public sealed partial class StoryColony
         if (p.Drafted) return OrderJob(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
-        if (Resting(p) is { } rest) return rest;
+        if (Resting(p, live) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;
         int hour = HourNow;
         var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
@@ -92,12 +92,20 @@ public sealed partial class StoryColony
     public const int FailBurst = 3;
 
     /// <summary>A pawn whose last <see cref="FailBurst"/> jobs all failed within <see cref="FailWindow"/> holds a while (orders and needs still win).</summary>
-    private ActiveJob? Resting(PawnState p)
+    private ActiveJob? Resting(PawnState p, PawnLive live)
+    {
+        if (RestLeft(p) is not { } left) return null;
+        // It rests on its feet: idle legs about the home area (StoryColony.Recreation.cs) for as long as the back-off lasts.
+        return IdleJob(p, live, "rest", HourNow) ?? Hold("resting: the last jobs failed", "idle", null, (int)Math.Ceiling(left.TotalSeconds));
+    }
+
+    /// <summary>How long this pawn's back-off still lasts (null = not resting).</summary>
+    private TimeSpan? RestLeft(PawnState p)
     {
         if (!_fails.TryGetValue(p.Name, out var f) || f.Count < FailBurst) return null;
         var last = f[^1];
         if (last - f[^FailBurst] > FailWindow || Now - last >= FailRest) return null;
-        return Hold("resting: the last jobs failed", "idle", null, (int)Math.Ceiling((FailRest - (Now - last)).TotalSeconds));
+        return FailRest - (Now - last);
     }
 
     private void NoteFailure(PawnState p)
@@ -116,7 +124,7 @@ public sealed partial class StoryColony
         World is { } w ? live.Inventory.FirstOrDefault(s => w.Data.Food(s.Id, s.Meta) != null && !Raw(w, s.Id)) : null;
 
     /// <summary>Raw meat is food but poor: pawns cook it first when they can (chicken can poison).</summary>
-    private static bool Raw(IStoryWorld w, int id) => id is 319 or 363 or 365 or 411 or 423;
+    private static bool Raw(IStoryWorld w, int id) => id is 319 or 349 or 363 or 365 or 411 or 423; // 349: raw fish (a catch is stored, cooked by bills)
 
     private IReadOnlyList<StoryEntity> Hostiles(PawnLive live, double r) =>
         Ents().Where(e => e.Kind == "mob" && e.Hostile && Math.Abs(e.X - live.X) <= r && Math.Abs(e.Z - live.Z) <= r && Math.Abs(e.Y - live.Y) <= 6).ToList();
@@ -231,7 +239,7 @@ public sealed partial class StoryColony
     {
         var ix = Index();
         if (ix.ForbidCells.Contains(at)) return true;
-        foreach (var a in ix.ForbidZones) if (a.Contains(at)) return true;
+        if (ix.ForbidCols.TryGetValue(ZoneCells.Key(at.X, at.Z), out var fy) && at.Y >= fy.Y1 && at.Y <= fy.Y2) return true;
         return false;
     }
 
@@ -290,6 +298,8 @@ public sealed partial class StoryColony
                 var e = ents[d.Entity!.Value];
                 return Job(type, "attack", $"hunting a {e.Name}", e.Block, "e:" + e.Id, "designation", d.Id, "fighting", j => j["mob"] = e.Name, xp: 30);
             }
+            case WorkTypes.Fish:
+                return FishJob(p, live); // StoryColony.Fishing.cs
             case WorkTypes.Build:
                 return GhostJob(p, live) ?? DesignationJob(p, live, from, type, "deconstruct", "dig", "deconstructing");
             case WorkTypes.Farm:
@@ -391,10 +401,12 @@ public sealed partial class StoryColony
         {
             var a = z.Area;
             long scanned = 0;
-            if (z.Kind == "chop") list.AddRange(StoryBlocks.TreesIn(w, a, max: 64).Select(b => (b, (string?)null, "chop")));
+            var cells = z.Cells;
+            if (z.Kind == "chop")
+                list.AddRange(StoryBlocks.TreesIn(w, a, max: 256).Where(b => cells.Contains(b.X, b.Z)).Take(64).Select(b => (b, (string?)null, "chop")));
             else
-                for (int x = a.X1; x <= a.X2 && list.Count < 256; x++)
-                    for (int zz = a.Z1; zz <= a.Z2 && list.Count < 256; zz++)
+                foreach (var (x, zz) in cells.Sorted())
+                    if (list.Count < 256)
                         for (int y = Math.Max(0, a.Y1); y <= Math.Min(w.Height - 1, a.Y2); y++)
                         {
                             if (++scanned > 300_000) goto done;
@@ -431,7 +443,7 @@ public sealed partial class StoryColony
         var from = live.Block;
         foreach (var z in Zones.Where(z => z.Kind == "farm").OrderBy(z => z.Area.Center.Dist(from)))
         {
-            if (z.Plant != null) { if (GrowJob(p, live, z) is { } grow) return grow; continue; } // a growing zone (StoryColony.Farming.cs)
+            if (z.Bills != null || z.Plant != null) { if (GrowJob(p, live, z) is { } grow) return grow; continue; } // a growing zone (StoryColony.Farming.cs)
             foreach (var t in ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)))
             {
                 if (t.Kind == "harvest")
@@ -509,7 +521,11 @@ public sealed partial class StoryColony
             case "station" or "hand":
                 SupplyDone(p, j);
                 break;
+            case "fish":
+                FishDone(j, note); // the catch counts toward the zone (StoryColony.Fishing.cs)
+                break;
             case "zone" or "crop" or "sow":
+                if (j.Source == "crop") GrowHarvested(j); // counts toward the zone's planting bills
                 _zoneScan.Remove(j.SourceId ?? "");
                 _growScan.Remove(j.SourceId ?? "");
                 break;

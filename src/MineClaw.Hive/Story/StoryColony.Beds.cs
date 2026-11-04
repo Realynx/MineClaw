@@ -26,7 +26,7 @@ public sealed partial class StoryColony
     /// <summary>At home: in a home zone, or within <see cref="HomeRadius"/> of the primary home (horizontally).</summary>
     internal bool InHome(P3 at, P3? home = null)
     {
-        if (Zones.Any(z => z.Kind == "home" && z.Area.ContainsXZ(at.X, at.Z))) return true;
+        if (HomeZoneAt(at.X, at.Z) != null) return true; // the zones' cells (StoryColony.Zones.cs)
         return (home ?? Meta.Home ?? Home()) is { } h && Math.Sqrt((double)(at.X - h.X) * (at.X - h.X) + (double)(at.Z - h.Z) * (at.Z - h.Z)) <= HomeRadius;
     }
 
@@ -60,21 +60,22 @@ public sealed partial class StoryColony
         return parts.Length == 3 && int.TryParse(parts[0], out var x) && int.TryParse(parts[1], out var y) && int.TryParse(parts[2], out var z) ? new P3(x, y, z) : null;
     }
 
-    private string? ZoneAt(P3 at) => Zones.FirstOrDefault(z => z.Kind == "home" && z.Area.ContainsXZ(at.X, at.Z))?.Id;
+    private string? ZoneAt(P3 at) => HomeZoneAt(at.X, at.Z)?.Id;
 
     private List<BedInfo> ScanBeds()
     {
         var found = new List<BedInfo>();
         if (World is not { } w) return found;
-        var areas = Zones.Where(z => z.Kind == "home").Select(z => Area.Of(z.Area.X1, z.Area.Y1 - 8, z.Area.Z1, z.Area.X2, z.Area.Y2 + 8, z.Area.Z2)).ToList();
-        if (Home() is { } h) areas.Add(Area.Of(h.X - BedRadius, h.Y - 12, h.Z - BedRadius, h.X + BedRadius, h.Y + 12, h.Z + BedRadius));
+        // Every home zone's cells (8 above and below its level), then the primary home's surroundings.
+        var areas = Zones.Where(z => z.Kind == "home").Select(z => (Area: Area.Of(z.Area.X1, z.Area.Y1 - 8, z.Area.Z1, z.Area.X2, z.Area.Y2 + 8, z.Area.Z2), Cells: (ZoneCells?)z.Cells)).ToList();
+        if (Home() is { } h) areas.Add((Area.Of(h.X - BedRadius, h.Y - 12, h.Z - BedRadius, h.X + BedRadius, h.Y + 12, h.Z + BedRadius), null));
         var seen = new HashSet<P3>();
         long scanned = 0;
-        foreach (var a in areas)
+        foreach (var (a, cells) in areas)
             for (int x = a.X1; x <= a.X2; x++)
                 for (int z = a.Z1; z <= a.Z2; z++)
                 {
-                    if (!w.Loaded(x, z)) continue;
+                    if (cells != null && !cells.Contains(x, z) || !w.Loaded(x, z)) continue;
                     for (int y = Math.Max(0, a.Y1); y <= Math.Min(w.Height - 1, a.Y2); y++)
                     {
                         if (++scanned > 1_000_000) return found;
