@@ -154,15 +154,34 @@ public sealed class BridgeConfig
         var own = new[] { Path.Combine(AppContext.BaseDirectory, "appsettings.json"), Path.Combine(AppContext.BaseDirectory, $"appsettings.{environment}.json") }
             .Concat(new[] { Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json"), Path.Combine(Directory.GetCurrentDirectory(), $"appsettings.{environment}.json") })
             .Distinct(StringComparer.OrdinalIgnoreCase).Where(File.Exists).ToList();
+        var (botConfig, keyFile) = Locate(args, own, envPairs);
+        var (raw, sources, keyFileUsed) = BuildConfig(args, own, envPairs, botConfig, keyFile);
+        var bridge = new BridgeOptions();
+        raw.GetSection("Bridge").Bind(bridge);
+        var keySource = KeySourceOf(raw, bridge, env, keyFileUsed);
+        var agent = new AgentOptions();
+        raw.GetSection("Agent").Bind(agent);
+        var (token, tokenSource) = TokenOf(raw, env);
+        int port = int.TryParse(raw["Supervisor:Port"], out var sp) ? sp : 8765;
+        return new BridgeConfig(raw, bridge, agent, token, port, sources, keySource, tokenSource);
+    }
 
-        // Pass 1: where the bot config and the key file are.
+    /// <summary>Pass 1: where the bot config and the key file are.</summary>
+    private static (string BotConfig, string KeyFile) Locate(string[] args, List<string> own, List<KeyValuePair<string, string?>> envPairs)
+    {
         var pre = new ConfigurationBuilder();
         foreach (var f in own) pre.AddJsonFile(f, optional: true);
         pre.AddInMemoryCollection(envPairs).AddCommandLine(args);
         var p = pre.Build();
         var botConfig = p["Bridge:BotConfig"] is { Length: > 0 } bc ? bc : BridgeOptions.DefaultBotConfig;
         var keyFile = p["Bridge:KeyFile"] is { Length: > 0 } kf ? kf : BridgeOptions.DefaultKeyFile;
+        return (botConfig, keyFile);
+    }
 
+    /// <summary>Pass 2: the bot config, the bridge's own files, the key file, env and the command line (later wins).</summary>
+    private static (IConfigurationRoot Raw, List<string> Sources, bool KeyFileUsed) BuildConfig(string[] args, List<string> own, List<KeyValuePair<string, string?>> envPairs,
+        string botConfig, string keyFile)
+    {
         var b = new ConfigurationBuilder();
         var sources = new List<string>();
         if (File.Exists(botConfig)) { b.AddJsonFile(Path.GetFullPath(botConfig), optional: true); sources.Add("bot config " + botConfig); }
@@ -174,21 +193,24 @@ public sealed class BridgeConfig
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
         b.AddInMemoryCollection(envPairs).AddCommandLine(args);
-        var raw = b.Build();
+        return (b.Build(), sources, keyFileUsed);
+    }
 
-        var bridge = new BridgeOptions();
-        raw.GetSection("Bridge").Bind(bridge);
+    /// <summary>Where the bridge key came from (MINECLAW_BRIDGE_KEY in the environment wins and sets it).</summary>
+    private static string KeySourceOf(IConfiguration raw, BridgeOptions bridge, IDictionary<string, string?> env, bool keyFileUsed)
+    {
         string keySource = keyFileUsed && raw["Bridge:Key"] is { Length: > 0 } ? "key file" : bridge.Key is { Length: > 0 } ? "config" : "missing";
-        if (env.TryGetValue("MINECLAW_BRIDGE_KEY", out var envKey) && !string.IsNullOrWhiteSpace(envKey)) { bridge.Key = envKey.Trim(); keySource = "env MINECLAW_BRIDGE_KEY"; }
-        else if (env.ContainsKey("MINECLAW_Bridge__Key")) keySource = "env MINECLAW_Bridge__Key";
+        if (env.TryGetValue("MINECLAW_BRIDGE_KEY", out var envKey) && !string.IsNullOrWhiteSpace(envKey)) { bridge.Key = envKey.Trim(); return "env MINECLAW_BRIDGE_KEY"; }
+        return env.ContainsKey("MINECLAW_Bridge__Key") ? "env MINECLAW_Bridge__Key" : keySource;
+    }
 
-        var agent = new AgentOptions();
-        raw.GetSection("Agent").Bind(agent);
+    /// <summary>The supervisor token and where it came from (MINECLAW_SUPERVISOR_TOKEN in the environment wins).</summary>
+    private static (string? Token, string Source) TokenOf(IConfiguration raw, IDictionary<string, string?> env)
+    {
         string? token = raw["Supervisor:Token"];
         string tokenSource = string.IsNullOrEmpty(token) ? "missing" : "config";
         if (env.TryGetValue("MINECLAW_SUPERVISOR_TOKEN", out var envTok) && !string.IsNullOrWhiteSpace(envTok)) { token = envTok.Trim(); tokenSource = "env MINECLAW_SUPERVISOR_TOKEN"; }
-        int port = int.TryParse(raw["Supervisor:Port"], out var sp) ? sp : 8765;
-        return new BridgeConfig(raw, bridge, agent, token, port, sources, keySource, tokenSource);
+        return (token, tokenSource);
     }
 
     private static string? RepoRoot()

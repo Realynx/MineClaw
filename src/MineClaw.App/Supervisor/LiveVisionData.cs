@@ -63,10 +63,27 @@ public sealed class LiveVisionData(VisionHub hub, BotHost? bot, string main, Fun
 
     public async Task<ViewImage?> RenderAsync(string body, string seeJson, RenderGate gate, CancellationToken ct)
     {
-        string? focusDefault;
+        if (!TryFocusDefault(body, out var focusDefault)) return null;
+        var el = SeeInput(seeJson, focusDefault);
+        // Resolve on the caller's thread (clone poses go over IPC), draw behind the gate (one capped render thread).
+        var (img, error) = await hub.RenderSeeAsync(el, _sheet, ct, f => gate.RunAsync(f, ct)).ConfigureAwait(false);
+        if (img == null) return new ViewImage([], 0, 0, 0, "", [], Note: error ?? "nothing rendered");
+        return new ViewImage(img.Png, img.Width, img.Height, img.Tokens, img.Legend, [], Note: focusDefault != null && Local(body) == null ? "rendered by main from the shared world memory" : null);
+    }
+
+    /// <summary>The body's default focus (null for main, the body's name else); false = not a body this process can render for.</summary>
+    private bool TryFocusDefault(string body, out string? focusDefault)
+    {
+        focusDefault = null;
         if (Local(body) is { } name) focusDefault = IsMain(body) ? null : name;
         else if (Clone(body) is { } clone) focusDefault = clone; // main renders the clone's spot from its live pose + the shared memory
-        else return null;
+        else return false;
+        return true;
+    }
+
+    /// <summary>The see input (a non-object is {}), with <c>focus</c> defaulted to the body when it names none.</summary>
+    private static JsonElement SeeInput(string seeJson, string? focusDefault)
+    {
         using var doc = JsonDocument.Parse(seeJson);
         var input = doc.RootElement.ValueKind == JsonValueKind.Object ? doc.RootElement : JsonDocument.Parse("{}").RootElement;
         if (focusDefault != null && !input.TryGetProperty("focus", out _))
@@ -75,10 +92,6 @@ public sealed class LiveVisionData(VisionHub hub, BotHost? bot, string main, Fun
             o["focus"] = focusDefault;
             input = JsonDocument.Parse(o.ToJsonString()).RootElement;
         }
-        var el = input.Clone();
-        // Resolve on the caller's thread (clone poses go over IPC), draw behind the gate (one capped render thread).
-        var (img, error) = await hub.RenderSeeAsync(el, _sheet, ct, f => gate.RunAsync(f, ct)).ConfigureAwait(false);
-        if (img == null) return new ViewImage([], 0, 0, 0, "", [], Note: error ?? "nothing rendered");
-        return new ViewImage(img.Png, img.Width, img.Height, img.Tokens, img.Legend, [], Note: focusDefault != null && Local(body) == null ? "rendered by main from the shared world memory" : null);
+        return input.Clone();
     }
 }

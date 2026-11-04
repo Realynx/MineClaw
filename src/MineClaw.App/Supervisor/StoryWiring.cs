@@ -106,44 +106,73 @@ internal static class StoryWiring
     {
         var place = ghosts.Where(g => !g.Remove).ToList();
         if (place.Count == 0) return null;
-        int x1 = place.Min(g => g.At.X), y1 = place.Min(g => g.At.Y), z1 = place.Min(g => g.At.Z);
-        int x2 = place.Max(g => g.At.X), y2 = place.Max(g => g.At.Y), z2 = place.Max(g => g.At.Z);
-        int w = x2 - x1 + 1, h = y2 - y1 + 1, d = z2 - z1 + 1;
-        if (w > BlueprintParser.MaxSide || d > BlueprintParser.MaxSide || h > BlueprintParser.MaxHeight) return null;
+        var box = DesignBox.Of(place);
+        if (box.W > BlueprintParser.MaxSide || box.D > BlueprintParser.MaxSide || box.H > BlueprintParser.MaxHeight) return null;
+        if (DesignPalette(place) is not { } palette) return null;
+        return InsertDesign(store, name, DesignDsl(name, place, box, palette), box, place.Count, by, dim);
+    }
+
+    /// <summary>The bounding box of a design's blocks: its low corner and size.</summary>
+    private readonly record struct DesignBox(int X1, int Y1, int Z1, int W, int H, int D)
+    {
+        public static DesignBox Of(List<GhostState> place)
+        {
+            int x1 = place.Min(g => g.At.X), y1 = place.Min(g => g.At.Y), z1 = place.Min(g => g.At.Z);
+            int x2 = place.Max(g => g.At.X), y2 = place.Max(g => g.At.Y), z2 = place.Max(g => g.At.Z);
+            return new DesignBox(x1, y1, z1, x2 - x1 + 1, y2 - y1 + 1, z2 - z1 + 1);
+        }
+    }
+
+    private static string Inv(int v) => v.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>One symbol per (block, meta) in order of first use; null when there are more kinds than symbols.</summary>
+    private static Dictionary<(int, int), char>? DesignPalette(List<GhostState> place)
+    {
         const string Symbols = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         var palette = new Dictionary<(int, int), char>();
-        var sb = new StringBuilder();
-        string F(int v) => v.ToString(CultureInfo.InvariantCulture);
-        sb.Append("blueprint ").Append(name.Replace('\n', ' ')).Append('\n');
-        sb.Append($"size {F(w)}x{F(h)}x{F(d)}\norigin {F(x1)},{F(y1)},{F(z1)}\n");
         foreach (var g in place)
             if (!palette.ContainsKey((g.Id, g.Meta)))
             {
                 if (palette.Count >= Symbols.Length) return null;
                 palette[(g.Id, g.Meta)] = Symbols[palette.Count];
             }
+        return palette;
+    }
+
+    /// <summary>The blueprint DSL: name, size, origin, palette, then one layer per y (rows by z, a symbol or '_' per x).</summary>
+    private static string DesignDsl(string name, List<GhostState> place, DesignBox b, Dictionary<(int, int), char> palette)
+    {
+        var sb = new StringBuilder();
+        sb.Append("blueprint ").Append(name.Replace('\n', ' ')).Append('\n');
+        sb.Append($"size {Inv(b.W)}x{Inv(b.H)}x{Inv(b.D)}\norigin {Inv(b.X1)},{Inv(b.Y1)},{Inv(b.Z1)}\n");
         sb.Append("palette ").Append(string.Join(" ", palette.Select(p =>
-            $"{p.Value}={MineClaw.Data.Blocks.Get(p.Key.Item1).Name}{(p.Key.Item2 > 0 ? ":" + F(p.Key.Item2) : "")}"))).Append('\n');
+            $"{p.Value}={MineClaw.Data.Blocks.Get(p.Key.Item1).Name}{(p.Key.Item2 > 0 ? ":" + Inv(p.Key.Item2) : "")}"))).Append('\n');
         var at = place.GroupBy(g => g.At).ToDictionary(g => g.Key, g => g.Last());
-        for (int y = 0; y < h; y++)
+        for (int y = 0; y < b.H; y++)
         {
-            sb.Append("layer ").Append(F(y)).Append('\n');
-            for (int z = 0; z < d; z++)
+            sb.Append("layer ").Append(Inv(y)).Append('\n');
+            for (int z = 0; z < b.D; z++)
             {
-                for (int x = 0; x < w; x++)
-                    sb.Append(at.TryGetValue(new P3(x1 + x, y1 + y, z1 + z), out var g) ? palette[(g.Id, g.Meta)] : '_');
+                for (int x = 0; x < b.W; x++)
+                    sb.Append(at.TryGetValue(new P3(b.X1 + x, b.Y1 + y, b.Z1 + z), out var g) ? palette[(g.Id, g.Meta)] : '_');
                 sb.Append('\n');
             }
         }
+        return sb.ToString();
+    }
+
+    /// <summary>Saves the design as accepted by <paramref name="by"/> (revision 1, sited under its middle); its id.</summary>
+    private static long InsertDesign(BlueprintStore store, string name, string dsl, DesignBox b, int blocks, string by, int dim)
+    {
         var rec = store.Insert(new BlueprintRecord
         {
-            Name = name, Description = $"from the Story Mode map for {by}", Requester = by, Dsl = sb.ToString(), Status = DesignStatus.Accepted, Dim = dim,
-            Site = new MineClaw.World.BlockPos(x1 + w / 2, y1 - 1, z1 + d / 2), Anchor = "where it was drawn",
+            Name = name, Description = $"from the Story Mode map for {by}", Requester = by, Dsl = dsl, Status = DesignStatus.Accepted, Dim = dim,
+            Site = new MineClaw.World.BlockPos(b.X1 + b.W / 2, b.Y1 - 1, b.Z1 + b.D / 2), Anchor = "where it was drawn",
         });
-        rec.Origin = new MineClaw.World.BlockPos(x1, y1, z1);
+        rec.Origin = new MineClaw.World.BlockPos(b.X1, b.Y1, b.Z1);
         rec.AcceptedBy = by;
         rec.Rev = 1;
-        rec.Summary = $"{name} {F(w)}×{F(h)}×{F(d)}, {F(place.Count)} blocks (story map)";
+        rec.Summary = $"{name} {Inv(b.W)}×{Inv(b.H)}×{Inv(b.D)}, {Inv(blocks)} blocks (story map)";
         try { store.Update(rec); } catch (Exception) { /* the insert stands */ }
         return rec.Id;
     }

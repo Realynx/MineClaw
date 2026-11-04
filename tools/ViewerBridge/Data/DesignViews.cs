@@ -118,25 +118,35 @@ public sealed class DesignViews(AgentDb db, string serverVersion)
         b ??= detail.DefaultDiff.B;
         if (a == "world" && b == "world") throw new ArgumentException("compare a revision with the world, not the world with itself");
         using var _ = serverVersion == "1.12.2" ? GameData.Override(Release1122GameData.Instance) : null;
-        DesignDiff d;
-        if (a == "world" || b == "world")
-        {
-            var rev = int.Parse(a == "world" ? b : a, System.Globalization.CultureInfo.InvariantCulture);
-            if (Snapshot(id, rev) is not { } s || WorldOf(id) is not { } w) return null;
-            d = DesignDiff.Against(s, new SeenWorld(w.World));
-            if (a == "world") d = d.Inverse();
-        }
-        else
-        {
-            int ra = int.Parse(a, System.Globalization.CultureInfo.InvariantCulture), rb = int.Parse(b, System.Globalization.CultureInfo.InvariantCulture);
-            if (Snapshot(id, ra) is not { } x || Snapshot(id, rb) is not { } y) return null;
-            d = DesignDiff.Between(x, y);
-        }
-        static string N(int bid) => Blocks.Get(bid).Name.Replace('_', ' ');
-        static string NM(int bid, int meta) => N(bid) + (meta != 0 ? ":" + meta : "");
-        var cells = d.Added.Select(c => new DesignDiffCell("+", c.Pos.X, c.Pos.Y, c.Pos.Z, NM(c.ToId, c.ToMeta)))
-            .Concat(d.Removed.Select(c => new DesignDiffCell("-", c.Pos.X, c.Pos.Y, c.Pos.Z, NM(c.FromId, c.FromMeta))))
-            .Concat(d.Changed.Select(c => new DesignDiffCell("~", c.Pos.X, c.Pos.Y, c.Pos.Z, NM(c.ToId, c.ToMeta), $"{N(c.FromId)}:{c.FromMeta}", $"{N(c.ToId)}:{c.ToMeta}")))
+        var d = a == "world" || b == "world" ? AgainstWorld(id, a, b) : BetweenRevisions(id, a, b);
+        return d == null ? null : DiffDto(id, a, b, d, max);
+    }
+
+    /// <summary>A revision against what the bot saw of the world (inverted when the world is the first side); null = a side missing.</summary>
+    private DesignDiff? AgainstWorld(long id, string a, string b)
+    {
+        var rev = int.Parse(a == "world" ? b : a, System.Globalization.CultureInfo.InvariantCulture);
+        if (Snapshot(id, rev) is not { } s || WorldOf(id) is not { } w) return null;
+        var d = DesignDiff.Against(s, new SeenWorld(w.World));
+        return a == "world" ? d.Inverse() : d;
+    }
+
+    private DesignDiff? BetweenRevisions(long id, string a, string b)
+    {
+        int ra = int.Parse(a, System.Globalization.CultureInfo.InvariantCulture), rb = int.Parse(b, System.Globalization.CultureInfo.InvariantCulture);
+        if (Snapshot(id, ra) is not { } x || Snapshot(id, rb) is not { } y) return null;
+        return DesignDiff.Between(x, y);
+    }
+
+    private static string BlockName(int bid) => Blocks.Get(bid).Name.Replace('_', ' ');
+    private static string BlockName(int bid, int meta) => BlockName(bid) + (meta != 0 ? ":" + meta : "");
+
+    /// <summary>The diff's cells (added, removed, changed), its counts and summary, and a text listing of the first <paramref name="max"/>.</summary>
+    private static DesignDiffDto DiffDto(long id, string a, string b, DesignDiff d, int max)
+    {
+        var cells = d.Added.Select(c => new DesignDiffCell("+", c.Pos.X, c.Pos.Y, c.Pos.Z, BlockName(c.ToId, c.ToMeta)))
+            .Concat(d.Removed.Select(c => new DesignDiffCell("-", c.Pos.X, c.Pos.Y, c.Pos.Z, BlockName(c.FromId, c.FromMeta))))
+            .Concat(d.Changed.Select(c => new DesignDiffCell("~", c.Pos.X, c.Pos.Y, c.Pos.Z, BlockName(c.ToId, c.ToMeta), $"{BlockName(c.FromId)}:{c.FromMeta}", $"{BlockName(c.ToId)}:{c.ToMeta}")))
             .ToList();
         var counts = $"{d.Added.Count} added, {d.Removed.Count} removed, {d.Changed.Count} changed" + (d.Unknown > 0 ? $", {d.Unknown} not seen" : "");
         var summary = $"{d.Text(6)}  ({counts})";

@@ -72,35 +72,46 @@ public static class SettingsProxy
         if (!id.IsAdmin) { await ApiErrors.Write(ctx, 403, "forbidden", "admin role required"); return; }
         if (!node.Equals(LocalNode, StringComparison.Ordinal)) { await ApiErrors.Write(ctx, 404, "not_found", "no such node"); return; }
         if (Route(ctx.Request.Method, rest.TrimEnd('/')) is not { } route) { await ApiErrors.Write(ctx, 404, "not_found", "not found"); return; }
-
         HttpContent? content = null;
         if (route.Method != HttpMethod.Get)
         {
-            var obj = SupervisorProxy.ParseObject(ctx.BodyBytes());
-            if (obj == null) { await ApiErrors.Write(ctx, 400, "bad_request", "body must be a JSON object"); return; }
-            if (obj.ContainsKey("who")) { await ApiErrors.Write(ctx, 400, "bad_request", "who is set by the bridge"); return; }
-            content = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
+            var (body, bad) = WriteBody(ctx);
+            if (bad != null) { await ApiErrors.Write(ctx, 400, "bad_request", bad); return; }
+            content = body;
         }
         var query = ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value! : "";
         HttpResponseMessage res;
         try { res = await sup.SendAsync(route.Method, route.Path + query, content, route.Timeout, false, ctx.RequestAborted, IdentityHeaders(id)); }
         catch (SupervisorUnavailableException ex) { await ApiErrors.Write(ctx, 503, "upstream_unavailable", ex.Message); return; }
-        using (res)
+        using (res) await ReplyAsync(ctx, res, rest == "settings" && route.Method == HttpMethod.Get ? sup.BaseUrl : null);
+    }
+
+    /// <summary>A write's JSON body (who is the signed user, set upstream from the identity headers); why not otherwise.</summary>
+    private static (HttpContent? Body, string? Error) WriteBody(HttpContext ctx)
+    {
+        var obj = SupervisorProxy.ParseObject(ctx.BodyBytes());
+        if (obj == null) return (null, "body must be a JSON object");
+        if (obj.ContainsKey("who")) return (null, "who is set by the bridge");
+        return (new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json"), null);
+    }
+
+    /// <summary>The supervisor's answer: a success as JSON (the settings view stamped with the node when <paramref name="stampFrom"/> is
+    /// given), an error mapped.</summary>
+    private static async Task ReplyAsync(HttpContext ctx, HttpResponseMessage res, string? stampFrom)
+    {
+        var body = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
+        int status = (int)res.StatusCode;
+        if (status is < 200 or >= 300)
         {
-            var body = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
-            int status = (int)res.StatusCode;
-            if (status is >= 200 and < 300)
-            {
-                if (rest == "settings" && route.Method == HttpMethod.Get) body = StampNode(body, sup.BaseUrl);
-                ctx.Response.StatusCode = status;
-                ctx.Response.ContentType = "application/json; charset=utf-8";
-                ctx.Response.Headers.CacheControl = "no-store";
-                ctx.Response.ContentLength = body.Length;
-                await ctx.Response.Body.WriteAsync(body, ctx.RequestAborted);
-                return;
-            }
             await WriteErrorAsync(ctx, status, body, res.Headers.RetryAfter?.Delta);
+            return;
         }
+        if (stampFrom != null) body = StampNode(body, stampFrom);
+        ctx.Response.StatusCode = status;
+        ctx.Response.ContentType = "application/json; charset=utf-8";
+        ctx.Response.Headers.CacheControl = "no-store";
+        ctx.Response.ContentLength = body.Length;
+        await ctx.Response.Body.WriteAsync(body, ctx.RequestAborted);
     }
 
     /// <summary>The settings view names its node as the bridge knows it (id, URL).</summary>

@@ -48,93 +48,82 @@ public delegate BlockRole RoleMap(int x, int y, int z);
 
 public static class BlockRoles
 {
+    /// <summary>How a role shows: its text name, overlay colour (0xRRGGBB), overlay letter and whether it gets an overlay.</summary>
+    private readonly record struct Look(string Name, uint Colour, char? Glyph = null, bool Highlight = false);
+
+    private static readonly Look Unknown = new("none", 0x808080);
+
+    /// <summary>The look of every role, by its value (roles not listed: <see cref="Unknown"/>).</summary>
+    private static readonly Look[] Looks = BuildLooks();
+
+    private static Look[] BuildLooks()
+    {
+        var t = new Look[Enum.GetValues<BlockRole>().Length];
+        Array.Fill(t, Unknown);
+        t[(int)BlockRole.Floor] = new("floor", 0x808080);
+        t[(int)BlockRole.Wall] = new("wall", 0x808080);
+        t[(int)BlockRole.GenCell] = new("gen cell", 0x2cff6a, 'G', true);
+        t[(int)BlockRole.Water] = new("water", 0x3a6cff);
+        t[(int)BlockRole.Lava] = new("lava", 0xff7a1a);
+        t[(int)BlockRole.Void] = new("void", 0x0a1020);
+        t[(int)BlockRole.Door] = new("door", 0xfff2b0, null, true);
+        t[(int)BlockRole.Station] = new("station", 0xd9b3ff, null, true);
+        t[(int)BlockRole.PlayerBuild] = new("player build", 0xff9a2e, 'B', true);
+        t[(int)BlockRole.OwnPlaced] = new("own placed", 0x45c8ff, '+', true);
+        t[(int)BlockRole.SoftProtected] = new("protected", 0xe8b030, '$', true);
+        t[(int)BlockRole.NeverBreak] = new("never-break", 0xff2d2d, 'X', true);
+        t[(int)BlockRole.Portal] = new("portal", 0xb24dff, 'P', true);
+        t[(int)BlockRole.Planned] = new("planned", 0xff4fd8, '*', true);
+        t[(int)BlockRole.CropRipe] = new("ripe crop", 0xf5e04a, 'H', true);
+        t[(int)BlockRole.CropGrowing] = new("growing crop", 0x7fd35a, ':', true);
+        t[(int)BlockRole.DarkSpawn] = new("dark: mobs spawn", 0xff3b6b, '!', true);
+        return t;
+    }
+
+    private static Look Of(BlockRole r) => (int)r < Looks.Length ? Looks[(int)r] : Unknown;
+
     /// <summary>Roles worth an overlay (tint + letter); floor/wall/air read fine from the blocks themselves.</summary>
-    public static bool Highlight(BlockRole r) => r is BlockRole.GenCell or BlockRole.Portal or BlockRole.NeverBreak or BlockRole.PlayerBuild
-        or BlockRole.OwnPlaced or BlockRole.SoftProtected or BlockRole.Station or BlockRole.Door or BlockRole.Planned or BlockRole.CropRipe
-        or BlockRole.CropGrowing or BlockRole.DarkSpawn;
+    public static bool Highlight(BlockRole r) => Of(r).Highlight;
 
     /// <summary>One-character role glyph shared by the ASCII map and the image chips (null = no overlay letter).</summary>
-    public static char? Glyph(BlockRole r) => r switch
-    {
-        BlockRole.GenCell => 'G',
-        BlockRole.Portal => 'P',
-        BlockRole.NeverBreak => 'X',
-        BlockRole.PlayerBuild => 'B',
-        BlockRole.OwnPlaced => '+',
-        BlockRole.SoftProtected => '$',
-        BlockRole.Planned => '*',
-        BlockRole.CropRipe => 'H',
-        BlockRole.CropGrowing => ':',
-        BlockRole.DarkSpawn => '!',
-        _ => null,
-    };
+    public static char? Glyph(BlockRole r) => Of(r).Glyph;
 
     /// <summary>Overlay colour of a role (0xRRGGBB).</summary>
-    public static uint Colour(BlockRole r) => r switch
-    {
-        BlockRole.GenCell => 0x2cff6a,
-        BlockRole.Portal => 0xb24dff,
-        BlockRole.NeverBreak => 0xff2d2d,
-        BlockRole.PlayerBuild => 0xff9a2e,
-        BlockRole.OwnPlaced => 0x45c8ff,
-        BlockRole.SoftProtected => 0xe8b030,
-        BlockRole.Station => 0xd9b3ff,
-        BlockRole.Door => 0xfff2b0,
-        BlockRole.Water => 0x3a6cff,
-        BlockRole.Lava => 0xff7a1a,
-        BlockRole.Void => 0x0a1020,
-        BlockRole.Planned => 0xff4fd8,
-        BlockRole.CropRipe => 0xf5e04a,
-        BlockRole.CropGrowing => 0x7fd35a,
-        BlockRole.DarkSpawn => 0xff3b6b,
-        _ => 0x808080,
-    };
+    public static uint Colour(BlockRole r) => Of(r).Colour;
 
     /// <summary>Text name (perception legend, answers, verifier).</summary>
-    public static string Name(BlockRole r) => r switch
-    {
-        BlockRole.Floor => "floor",
-        BlockRole.Wall => "wall",
-        BlockRole.GenCell => "gen cell",
-        BlockRole.Water => "water",
-        BlockRole.Lava => "lava",
-        BlockRole.Void => "void",
-        BlockRole.Door => "door",
-        BlockRole.Station => "station",
-        BlockRole.PlayerBuild => "player build",
-        BlockRole.OwnPlaced => "own placed",
-        BlockRole.SoftProtected => "protected",
-        BlockRole.NeverBreak => "never-break",
-        BlockRole.Portal => "portal",
-        BlockRole.Planned => "planned",
-        BlockRole.CropRipe => "ripe crop",
-        BlockRole.CropGrowing => "growing crop",
-        BlockRole.DarkSpawn => "dark: mobs spawn",
-        _ => "none",
-    };
+    public static string Name(BlockRole r) => Of(r).Name;
+
+    /// <summary>What a model's words mean, checked in order (the first rule with a word in the text wins).</summary>
+    private static readonly (string[] Words, BlockRole Role)[] ParseRules =
+    [
+        (["never"], BlockRole.NeverBreak),
+        (["spawn", "dark"], BlockRole.DarkSpawn),
+        (["planned", "blueprint"], BlockRole.Planned),
+        (["unripe", "not ripe", "growing", "stem"], BlockRole.CropGrowing),
+        (["ripe", "crop", "wheat", "grown"], BlockRole.CropRipe),
+        (["gen", "mine here", "dig cell"], BlockRole.GenCell),
+        (["portal", "obsidian"], BlockRole.Portal),
+        (["void", "abyss"], BlockRole.Void),
+        (["lava"], BlockRole.Lava),
+        (["water"], BlockRole.Water),
+        (["door"], BlockRole.Door),
+        (["chest", "station", "furnace", "bench", "table"], BlockRole.Station),
+        (["own", "placed", "self"], BlockRole.OwnPlaced),
+        (["build"], BlockRole.PlayerBuild),
+        (["protect"], BlockRole.SoftProtected),
+        (["floor", "ground"], BlockRole.Floor),
+        (["wall", "solid"], BlockRole.Wall),
+    ];
 
     /// <summary>Lenient parse of a role named by a model ("gen_cell", "generator cell", "MINE HERE", "chest"...).</summary>
     public static BlockRole? Parse(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return null;
         var n = s.Trim().ToLowerInvariant().Replace('_', ' ').Replace('-', ' ');
-        if (n.Contains("never")) return BlockRole.NeverBreak;
-        if (n.Contains("spawn") || n.Contains("dark")) return BlockRole.DarkSpawn;
-        if (n.Contains("planned") || n.Contains("blueprint")) return BlockRole.Planned;
-        if (n.Contains("unripe") || n.Contains("not ripe") || n.Contains("growing") || n.Contains("stem")) return BlockRole.CropGrowing;
-        if (n.Contains("ripe") || n.Contains("crop") || n.Contains("wheat") || n.Contains("grown")) return BlockRole.CropRipe;
-        if (n.Contains("gen") || n.Contains("mine here") || n.Contains("dig cell")) return BlockRole.GenCell;
-        if (n.Contains("portal") || n.Contains("obsidian")) return BlockRole.Portal;
-        if (n.Contains("void") || n.Contains("abyss")) return BlockRole.Void;
-        if (n.Contains("lava")) return BlockRole.Lava;
-        if (n.Contains("water")) return BlockRole.Water;
-        if (n.Contains("door")) return BlockRole.Door;
-        if (n.Contains("chest") || n.Contains("station") || n.Contains("furnace") || n.Contains("bench") || n.Contains("table")) return BlockRole.Station;
-        if (n.Contains("own") || n.Contains("placed") || n.Contains("self")) return BlockRole.OwnPlaced;
-        if (n.Contains("build")) return BlockRole.PlayerBuild;
-        if (n.Contains("protect")) return BlockRole.SoftProtected;
-        if (n.Contains("floor") || n.Contains("ground")) return BlockRole.Floor;
-        if (n.Contains("wall") || n.Contains("solid")) return BlockRole.Wall;
+        foreach (var (words, role) in ParseRules)
+            foreach (var w in words)
+                if (n.Contains(w)) return role;
         if (n is "none" or "air" or "empty") return BlockRole.None;
         return null;
     }

@@ -62,12 +62,20 @@ public sealed class MemoryBrowser(MemoryBank bank)
     {
         var k = Kind(key);
         if (k == null || !Has(k.Table)) return null;
-        string Dim(string table, string? posCol)
-        {
-            var d = HasCol(table, "dimension") ? "dimension" : "0";
-            return posCol != null ? $"CASE WHEN {posCol} IS NULL THEN NULL ELSE {d} END" : d;
-        }
         const string Cols = "id, name, type, state, dim, conf, updated, text, docref, raptor";
+        return (MemorySelect(key) ?? WorldSelect(key) ?? EventSelect(key)) is { } sql ? $"SELECT {Cols} FROM ({sql})" : null;
+    }
+
+    /// <summary>The dimension column of <paramref name="table"/> ("0" when it has none), NULL where <paramref name="posCol"/> is.</summary>
+    private string Dim(string table, string? posCol)
+    {
+        var d = HasCol(table, "dimension") ? "dimension" : "0";
+        return posCol != null ? $"CASE WHEN {posCol} IS NULL THEN NULL ELSE {d} END" : d;
+    }
+
+    /// <summary>Notes, claims and beliefs, the self-profile, lessons and routines.</summary>
+    private string? MemorySelect(string key)
+    {
         return key switch
         {
             "facts" => $"SELECT CAST(id AS TEXT) AS id, subject AS name, 'note' AS type, '' AS state, NULL AS dim, NULL AS conf, created AS updated, text AS text, 'note:' || id AS docref, NULL AS raptor FROM notes",
@@ -79,6 +87,22 @@ public sealed class MemoryBrowser(MemoryBank bank)
                  """,
             "personality" =>
                 $"SELECT CAST(id AS TEXT) AS id, text AS name, section AS type, {(HasCol("self_profile", "scope") ? "scope" : "'main'")} AS state, NULL AS dim, strength AS conf, reinforced AS updated, text AS text, NULL AS docref, NULL AS raptor FROM self_profile",
+            "lessons" => $"SELECT id AS id, title AS name, source AS type, '' AS state, NULL AS dim, NULL AS conf, updated AS updated, correction AS text, NULL AS docref, NULL AS raptor FROM knowledge_corrections",
+            "routines" =>
+                $"""
+                 SELECT name AS id, name AS name, CASE WHEN json_valid(data) AND coalesce(json_extract(data, '$.script.code'), '') <> '' THEN 'script' ELSE 'routine' END AS type,
+                        '' AS state, NULL AS dim, NULL AS conf, updated AS updated, data AS text, 'rt:' || lower(trim(name)) AS docref, NULL AS raptor
+                 FROM routines
+                 """,
+            _ => null,
+        };
+    }
+
+    /// <summary>Structures, places and observations (chests, gen cells, other places seen).</summary>
+    private string? WorldSelect(string key)
+    {
+        return key switch
+        {
             "structures" =>
                 $"SELECT name AS id, name AS name, kind AS type, '' AS state, {Dim("structures", null)} AS dim, confidence AS conf, updated AS updated, data AS text, 'st:' || lower(trim(name)) AS docref, NULL AS raptor FROM structures",
             "places" =>
@@ -87,27 +111,45 @@ public sealed class MemoryBrowser(MemoryBank bank)
                 $"""
                  SELECT CAST(id AS TEXT) AS id, key AS name, kind AS type, CASE WHEN removed IS NOT NULL THEN 'removed' ELSE source END AS state, {Dim("observations", null)} AS dim,
                         confidence AS conf, last_seen AS updated, text || coalesce(char(10) || 'annotation: ' || annotation, '') AS text, NULL AS docref, NULL AS raptor
-                 FROM observations WHERE {key switch { "chests" => "kind IN " + ContainerKinds, "gencells" => "kind = 'cobble_generator'", _ => "kind NOT IN ('chest','trapped_chest','furnace','dispenser','cobble_generator')" }}
+                 FROM observations WHERE {ObservationFilter(key)}
                  """,
-            "lessons" => $"SELECT id AS id, title AS name, source AS type, '' AS state, NULL AS dim, NULL AS conf, updated AS updated, correction AS text, NULL AS docref, NULL AS raptor FROM knowledge_corrections",
+            _ => null,
+        };
+    }
+
+    /// <summary>Docs (episodes, recipes, knowledge), the activity log and the chat log.</summary>
+    private string? EventSelect(string key)
+    {
+        return key switch
+        {
             "episodes" or "recipes" or "knowledge" =>
                 $"""
                  SELECT ref AS id, title AS name, coalesce(tag, kind) AS type, coalesce(source, '') AS state, {Dim("docs", "min_x")} AS dim, NULL AS conf, updated AS updated,
                         body AS text, ref AS docref, raptor_idx AS raptor
-                 FROM docs WHERE {key switch { "episodes" => "kind = 'episode'", "recipes" => "kind = 'gamedata'", _ => "kind IN ('knowledge','skill')" }}
+                 FROM docs WHERE {DocFilter(key)}
                  """,
             "activity" =>
                 $"SELECT CAST(id AS TEXT) AS id, player || ' ' || kind AS name, category AS type, '' AS state, {Dim("activity_log", "x")} AS dim, confidence AS conf, at AS updated, text AS text, NULL AS docref, NULL AS raptor FROM activity_log",
             "chat" => $"SELECT CAST(id AS TEXT) AS id, coalesce(player, kind) AS name, kind AS type, '' AS state, NULL AS dim, NULL AS conf, at AS updated, text AS text, NULL AS docref, NULL AS raptor FROM chat_log",
-            "routines" =>
-                $"""
-                 SELECT name AS id, name AS name, CASE WHEN json_valid(data) AND coalesce(json_extract(data, '$.script.code'), '') <> '' THEN 'script' ELSE 'routine' END AS type,
-                        '' AS state, NULL AS dim, NULL AS conf, updated AS updated, data AS text, 'rt:' || lower(trim(name)) AS docref, NULL AS raptor
-                 FROM routines
-                 """,
             _ => null,
-        } is { } sql ? $"SELECT {Cols} FROM ({sql})" : null;
+        };
     }
+
+    /// <summary>The observations a kind lists: containers, cobble generators, or everything else.</summary>
+    private static string ObservationFilter(string key) => key switch
+    {
+        "chests" => "kind IN " + ContainerKinds,
+        "gencells" => "kind = 'cobble_generator'",
+        _ => "kind NOT IN ('chest','trapped_chest','furnace','dispenser','cobble_generator')",
+    };
+
+    /// <summary>The docs a kind lists: episodes, game data, or knowledge and skills.</summary>
+    private static string DocFilter(string key) => key switch
+    {
+        "episodes" => "kind = 'episode'",
+        "recipes" => "kind = 'gamedata'",
+        _ => "kind IN ('knowledge','skill')",
+    };
 
     public MemoryKindsResponse KindsInfo()
     {
@@ -143,23 +185,7 @@ public sealed class MemoryBrowser(MemoryBank bank)
         if (Kind(key) == null) return null;
         var sel = Select(key);
         if (sel == null) return new MemoryPage(key, 0, q.Offset, q.Limit, []);
-        var where = new List<string>();
-        var args = new List<(string, object?)>();
-        int w = 0;
-        foreach (var word in (q.Q ?? "").ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(12))
-        {
-            var p = "$w" + w++;
-            where.Add($"instr(lower(id || ' ' || coalesce(name, '') || ' ' || coalesce(type, '') || ' ' || coalesce(state, '') || ' ' || coalesce(text, '')), {p}) > 0");
-            args.Add((p, word));
-        }
-        switch (q.Dim)
-        {
-            case "overworld": where.Add("dim = 0"); break;
-            case "nether": where.Add("dim = -1"); break;
-            case "none": where.Add("dim IS NULL"); break;
-        }
-        if (!string.IsNullOrEmpty(q.State)) { where.Add("state = $state"); args.Add(("$state", q.State)); }
-        var filter = where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "";
+        var (filter, args) = Filter(q);
         var order = SortCols.GetValueOrDefault(q.Sort, "updated");
         var dir = q.Dir == "asc" ? "ASC" : "DESC";
         try
@@ -173,28 +199,57 @@ public sealed class MemoryBrowser(MemoryBank bank)
         catch (SqliteException) { return new MemoryPage(key, 0, q.Offset, q.Limit, []); }
     }
 
+    /// <summary>The query's WHERE clause and its parameters: every word (up to 12) somewhere in the row, the dimension, the state.</summary>
+    private static (string Filter, List<(string, object?)> Args) Filter(MemoryListQuery q)
+    {
+        var where = new List<string>();
+        var args = new List<(string, object?)>();
+        int w = 0;
+        foreach (var word in (q.Q ?? "").ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(12))
+        {
+            var p = "$w" + w++;
+            where.Add($"instr(lower(id || ' ' || coalesce(name, '') || ' ' || coalesce(type, '') || ' ' || coalesce(state, '') || ' ' || coalesce(text, '')), {p}) > 0");
+            args.Add((p, word));
+        }
+        if (q.Dim != null && DimFilters.TryGetValue(q.Dim, out var dim)) where.Add(dim);
+        if (!string.IsNullOrEmpty(q.State)) { where.Add("state = $state"); args.Add(("$state", q.State)); }
+        return (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "", args);
+    }
+
+    private static readonly Dictionary<string, string> DimFilters = new(StringComparer.Ordinal)
+    {
+        ["overworld"] = "dim = 0", ["nether"] = "dim = -1", ["none"] = "dim IS NULL",
+    };
+
     private MemoryRowDto ToRow(string key, SqliteDataReader r)
     {
         string id = Convert.ToString(r.GetValue(0), CultureInfo.InvariantCulture) ?? "";
         string name = AgentDb.StrOrNull(r, 1) ?? "";
-        string? type = r.IsDBNull(2) ? null : Convert.ToString(r.GetValue(2), CultureInfo.InvariantCulture);
-        string? state = r.IsDBNull(3) ? null : Convert.ToString(r.GetValue(3), CultureInfo.InvariantCulture);
+        string? type = TextOrNull(r, 2);
+        string? state = TextOrNull(r, 3);
         int? dim = r.IsDBNull(4) ? null : (int)r.GetInt64(4);
         double? conf = r.IsDBNull(5) ? null : r.GetDouble(5);
         long? updated = r.IsDBNull(6) ? null : r.GetInt64(6);
-        string text = r.IsDBNull(7) ? "" : Convert.ToString(r.GetValue(7), CultureInfo.InvariantCulture) ?? "";
-        string? docRef = AgentDb.StrOrNull(r, 8);
+        string text = RowText(key, TextOrNull(r, 7) ?? "");
+        string? docRef = ObservationRef(key, type, name, dim) ?? AgentDb.StrOrNull(r, 8);
         int? raptor = r.IsDBNull(9) ? null : (int)r.GetInt64(9);
-        if (key is "chests" or "gencells" or "observed" && type != null) docRef = ObservationStore.DocRef(type, name, dim ?? 0);
-        text = key switch
-        {
-            "structures" => StructureText(text),
-            "routines" => RoutineText(text),
-            _ => text,
-        };
         raptor ??= bank.NodeOfRef(docRef);
         return new MemoryRowDto(id, name, type, state, DimName(dim), conf, updated, Preview(text), docRef, raptor);
     }
+
+    private static string? TextOrNull(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToString(r.GetValue(i), CultureInfo.InvariantCulture);
+
+    /// <summary>An observation's doc ref (from its kind, key and dimension); null = not an observation kind or no kind.</summary>
+    private static string? ObservationRef(string key, string? type, string name, int? dim) =>
+        key is "chests" or "gencells" or "observed" && type != null ? ObservationStore.DocRef(type, name, dim ?? 0) : null;
+
+    /// <summary>The grid text: a structure's note and steps, a routine's script or note, else as stored.</summary>
+    private static string RowText(string key, string text) => key switch
+    {
+        "structures" => StructureText(text),
+        "routines" => RoutineText(text),
+        _ => text,
+    };
 
     public static string DimName(int? d) => d switch { 0 => "overworld", -1 => "nether", _ => "" };
 
@@ -235,36 +290,54 @@ public sealed class MemoryBrowser(MemoryBank bank)
 
     // ------------------------------------------------------------------ detail
 
+    private static readonly (string Col, string Key)[] ClaimCols =
+    [
+        ("id", "id"), ("claimant", "claimant"), ("text", "text"), ("category", "category"), ("stakes", "stakes"), ("confidence", "confidence"), ("status", "status"),
+        ("reason", "reason"), ("plan", "plan"), ("risk", "risk"), ("directive", "directive"), ("attempts", "attempts"), ("checked", "checked"), ("created", "created"),
+        ("updated", "updated"), ("clone_id", "clone_id"), ("dimension", "dimension"), ("x", "x"), ("y", "y"), ("z", "z"),
+    ];
+
+    private static readonly (string Col, string Key)[] ObservationCols =
+    [
+        ("id", "id"), ("kind", "observation_kind"), ("key", "key"), ("min_x", "min_x"), ("min_y", "min_y"), ("min_z", "min_z"), ("max_x", "max_x"), ("max_y", "max_y"),
+        ("max_z", "max_z"), ("text", "text"), ("source", "source"), ("confidence", "confidence"), ("annotation", "annotation"), ("first_seen", "first_seen"),
+        ("last_seen", "last_seen"), ("seen_count", "seen_count"), ("removed", "removed"), ("dimension", "dimension"), ("contents_at", "contents_at"), ("contents_by", "contents_by"),
+    ];
+
+    private static readonly (string Col, string Key)[] DocCols =
+    [
+        ("id", "id"), ("ref", "ref"), ("kind", "doc_kind"), ("tag", "tag"), ("title", "title"), ("body", "body"), ("source", "source"), ("updated", "updated"),
+        ("dimension", "dimension"), ("min_x", "min_x"), ("raptor_idx", "raptor_idx"),
+    ];
+
     /// <summary>Raw record columns per kind → wire key (contracts memory.ts *Record), the id column and the base filter.</summary>
-    private static (string Table, string IdCol, string? Base, (string Col, string Key)[] Cols)? RecordDef(string key) => key switch
+    private static readonly Dictionary<string, (string Table, string IdCol, string? Base, (string Col, string Key)[] Cols)> RecordDefs = new(StringComparer.Ordinal)
     {
-        "facts" => ("notes", "id", null, [("id", "id"), ("subject", "subject"), ("text", "text"), ("created", "created")]),
-        "claims" or "beliefs" => ("claims", "id", key == "beliefs" ? "status IN ('verified','provisional')" : null,
-            [("id", "id"), ("claimant", "claimant"), ("text", "text"), ("category", "category"), ("stakes", "stakes"), ("confidence", "confidence"), ("status", "status"),
-             ("reason", "reason"), ("plan", "plan"), ("risk", "risk"), ("directive", "directive"), ("attempts", "attempts"), ("checked", "checked"), ("created", "created"),
-             ("updated", "updated"), ("clone_id", "clone_id"), ("dimension", "dimension"), ("x", "x"), ("y", "y"), ("z", "z")]),
-        "personality" => ("self_profile", "id", null,
+        ["facts"] = ("notes", "id", null, [("id", "id"), ("subject", "subject"), ("text", "text"), ("created", "created")]),
+        ["claims"] = ("claims", "id", null, ClaimCols),
+        ["beliefs"] = ("claims", "id", "status IN ('verified','provisional')", ClaimCols),
+        ["personality"] = ("self_profile", "id", null,
             [("id", "id"), ("section", "section"), ("player", "player"), ("text", "text"), ("strength", "strength"), ("created", "created"), ("reinforced", "reinforced"),
              ("reason", "reason"), ("scope", "scope"), ("observations", "observations")]),
-        "structures" => ("structures", "name", null,
+        ["structures"] = ("structures", "name", null,
             [("name", "name"), ("kind", "structure_kind"), ("taught_by", "taught_by"), ("confidence", "confidence"), ("data", "data"), ("updated", "updated"), ("dimension", "dimension")]),
-        "places" => ("waypoints", "name", null, [("name", "name"), ("x", "x"), ("y", "y"), ("z", "z"), ("note", "note"), ("updated", "updated"), ("dimension", "dimension")]),
-        "chests" or "gencells" or "observed" => ("observations", "id",
-            key switch { "chests" => "kind IN " + ContainerKinds, "gencells" => "kind = 'cobble_generator'", _ => "kind NOT IN ('chest','trapped_chest','furnace','dispenser','cobble_generator')" },
-            [("id", "id"), ("kind", "observation_kind"), ("key", "key"), ("min_x", "min_x"), ("min_y", "min_y"), ("min_z", "min_z"), ("max_x", "max_x"), ("max_y", "max_y"),
-             ("max_z", "max_z"), ("text", "text"), ("source", "source"), ("confidence", "confidence"), ("annotation", "annotation"), ("first_seen", "first_seen"),
-             ("last_seen", "last_seen"), ("seen_count", "seen_count"), ("removed", "removed"), ("dimension", "dimension"), ("contents_at", "contents_at"), ("contents_by", "contents_by")]),
-        "lessons" => ("knowledge_corrections", "id", null, [("id", "id"), ("title", "title"), ("correction", "correction"), ("source", "source"), ("updated", "updated")]),
-        "episodes" or "recipes" or "knowledge" => ("docs", "ref", key switch { "episodes" => "kind = 'episode'", "recipes" => "kind = 'gamedata'", _ => "kind IN ('knowledge','skill')" },
-            [("id", "id"), ("ref", "ref"), ("kind", "doc_kind"), ("tag", "tag"), ("title", "title"), ("body", "body"), ("source", "source"), ("updated", "updated"),
-             ("dimension", "dimension"), ("min_x", "min_x"), ("raptor_idx", "raptor_idx")]),
-        "activity" => ("activity_log", "id", null,
+        ["places"] = ("waypoints", "name", null, [("name", "name"), ("x", "x"), ("y", "y"), ("z", "z"), ("note", "note"), ("updated", "updated"), ("dimension", "dimension")]),
+        ["chests"] = ("observations", "id", ObservationFilter("chests"), ObservationCols),
+        ["gencells"] = ("observations", "id", ObservationFilter("gencells"), ObservationCols),
+        ["observed"] = ("observations", "id", ObservationFilter("observed"), ObservationCols),
+        ["lessons"] = ("knowledge_corrections", "id", null, [("id", "id"), ("title", "title"), ("correction", "correction"), ("source", "source"), ("updated", "updated")]),
+        ["episodes"] = ("docs", "ref", DocFilter("episodes"), DocCols),
+        ["recipes"] = ("docs", "ref", DocFilter("recipes"), DocCols),
+        ["knowledge"] = ("docs", "ref", DocFilter("knowledge"), DocCols),
+        ["activity"] = ("activity_log", "id", null,
             [("id", "id"), ("at", "at"), ("player", "player"), ("kind", "activity_kind"), ("category", "category"), ("text", "text"), ("place_name", "place_name"),
              ("x", "x"), ("y", "y"), ("z", "z"), ("confidence", "confidence"), ("dimension", "dimension")]),
-        "chat" => ("chat_log", "id", null, [("id", "id"), ("at", "at"), ("kind", "chat_kind"), ("player", "player"), ("text", "text")]),
-        "routines" => ("routines", "name", null, [("name", "name"), ("data", "data"), ("updated", "updated")]),
-        _ => null,
+        ["chat"] = ("chat_log", "id", null, [("id", "id"), ("at", "at"), ("kind", "chat_kind"), ("player", "player"), ("text", "text")]),
+        ["routines"] = ("routines", "name", null, [("name", "name"), ("data", "data"), ("updated", "updated")]),
     };
+
+    private static (string Table, string IdCol, string? Base, (string Col, string Key)[] Cols)? RecordDef(string key) =>
+        key is not null && RecordDefs.TryGetValue(key, out var d) ? d : null;
 
     private static readonly HashSet<string> TimeKeys = ["created", "updated", "checked", "reinforced", "first_seen", "last_seen", "removed", "contents_at", "at"];
     private static readonly HashSet<string> IntCoordKeys = ["min_x", "min_y", "min_z", "max_x", "max_y", "max_z"];
@@ -278,27 +351,9 @@ public sealed class MemoryBrowser(MemoryBank bank)
         {
             var row = _db.Query($"SELECT * FROM ({sel}) WHERE id = $id LIMIT 1", r => ToRow(key, r), ("$id", id)).FirstOrDefault();
             if (row == null) return null;
-            var present = d.Cols.Where(c => HasCol(d.Table, c.Col)).ToArray();
-            var where = $"{d.IdCol} = $id" + (d.Base != null ? $" AND {d.Base}" : "");
-            object idArg = d.IdCol == "id" && long.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var nid) && key != "lessons" ? nid : id;
-            var rec = _db.Query($"SELECT {string.Join(", ", present.Select(c => c.Col))} FROM {d.Table} WHERE {where} LIMIT 1", r =>
-            {
-                var m = new Dictionary<string, object?>(StringComparer.Ordinal) { ["kind"] = key };
-                for (int i = 0; i < present.Length; i++)
-                {
-                    var (col, k) = present[i];
-                    object? v = r.IsDBNull(i) ? null : r.GetValue(i);
-                    if (v is double dbl && IntCoordKeys.Contains(k)) v = (long)Math.Round(dbl);
-                    if (k == "data" && v is string json) v = ParseJson(json);
-                    m[k] = v;
-                }
-                return m;
-            }, ("$id", idArg)).FirstOrDefault();
-            if (rec == null) return null;
+            if (Record(d, key, id) is not { } rec) return null;
             Fill(key, rec);
-            if (key is "claims" or "beliefs") rec["evidence"] = Evidence(Convert.ToInt64(rec["id"], CultureInfo.InvariantCulture));
-            if (key == "chests") rec["contents"] = Contents(Convert.ToInt64(rec["id"], CultureInfo.InvariantCulture));
-            if (key == "routines") rec["routine_type"] = row.Type ?? "routine";
+            AddRelated(key, rec, row);
             var props = Props(rec, row);
             var editKind = Kind(key)!.EditKind;
             var people = new[] { "player", "claimant", "subject" }.Select(p => rec.GetValueOrDefault(p) as string).OfType<string>()
@@ -306,6 +361,35 @@ public sealed class MemoryBrowser(MemoryBank bank)
             return new MemoryDetail(key, id, row, props, rec, editKind, editKind != null ? Prefill(key, rec, row) : null, people);
         }
         catch (SqliteException) { return null; }
+    }
+
+    /// <summary>The raw record: the kind's columns the db has, by wire key (box corners as whole numbers, structure data as JSON).</summary>
+    private Dictionary<string, object?>? Record((string Table, string IdCol, string? Base, (string Col, string Key)[] Cols) d, string key, string id)
+    {
+        var present = d.Cols.Where(c => HasCol(d.Table, c.Col)).ToArray();
+        var where = $"{d.IdCol} = $id" + (d.Base != null ? $" AND {d.Base}" : "");
+        object idArg = d.IdCol == "id" && long.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var nid) && key != "lessons" ? nid : id;
+        return _db.Query($"SELECT {string.Join(", ", present.Select(c => c.Col))} FROM {d.Table} WHERE {where} LIMIT 1", r =>
+        {
+            var m = new Dictionary<string, object?>(StringComparer.Ordinal) { ["kind"] = key };
+            for (int i = 0; i < present.Length; i++) m[present[i].Key] = RecordValue(present[i].Key, r.IsDBNull(i) ? null : r.GetValue(i));
+            return m;
+        }, ("$id", idArg)).FirstOrDefault();
+    }
+
+    private static object? RecordValue(string k, object? v)
+    {
+        if (v is double dbl && IntCoordKeys.Contains(k)) return (long)Math.Round(dbl);
+        if (k == "data" && v is string json) return ParseJson(json);
+        return v;
+    }
+
+    /// <summary>A claim's evidence, a chest's contents, a routine's type.</summary>
+    private void AddRelated(string key, Dictionary<string, object?> rec, MemoryRowDto row)
+    {
+        if (key is "claims" or "beliefs") rec["evidence"] = Evidence(Convert.ToInt64(rec["id"], CultureInfo.InvariantCulture));
+        if (key == "chests") rec["contents"] = Contents(Convert.ToInt64(rec["id"], CultureInfo.InvariantCulture));
+        if (key == "routines") rec["routine_type"] = row.Type ?? "routine";
     }
 
     /// <summary>Contract-required fields an older db may lack.</summary>
@@ -346,67 +430,95 @@ public sealed class MemoryBrowser(MemoryBank bank)
     {
         var list = new List<MemoryProp>();
         foreach (var (k, v) in rec)
-        {
-            if (k is "kind" or "body" or "evidence" or "contents" || v == null) continue;
-            string? text = v switch
-            {
-                long ms when TimeKeys.Contains(k) => DateTimeOffset.FromUnixTimeMilliseconds(ms).ToString("u", CultureInfo.InvariantCulture),
-                double dbl => dbl.ToString("0.###", CultureInfo.InvariantCulture),
-                JsonElement e => null,
-                _ => Convert.ToString(v, CultureInfo.InvariantCulture),
-            };
-            if (string.IsNullOrEmpty(text)) continue;
-            if (k == "text" && text.Length > 400) text = text[..399] + "…";
-            list.Add(new MemoryProp(k, k.Replace('_', ' '), text));
-        }
+            if (ScalarProp(k, v) is { } prop) list.Add(prop);
         if (rec.GetValueOrDefault("data") is JsonElement data && rec["kind"] as string == "structures"
             && ParseStructure(data.GetRawText()) is { } st)
-        {
-            if (st.Min is { } mn) list.Add(new("min", "min", mn.ToString()));
-            if (st.Max is { } mx) list.Add(new("max", "max", mx.ToString()));
-            foreach (var kb in st.KeyBlocks) list.Add(new("key_block", "key " + kb.Label, $"{kb.X},{kb.Y},{kb.Z}"));
-            foreach (var h in st.History) list.Add(new("history", "history", h));
-        }
+            AddStructureProps(list, st);
         if (row.RaptorLeaf is { } leaf) list.Add(new("raptor_leaf", "RAPTOR leaf", "#" + leaf));
         return list;
+    }
+
+    /// <summary>One record field as a prop (the long text clipped at 400); null for the kind, body, evidence, contents, nulls and blanks.</summary>
+    private static MemoryProp? ScalarProp(string k, object? v)
+    {
+        if (k is "kind" or "body" or "evidence" or "contents" || v == null) return null;
+        string? text = PropText(k, v);
+        if (string.IsNullOrEmpty(text)) return null;
+        if (k == "text" && text.Length > 400) text = text[..399] + "…";
+        return new MemoryProp(k, k.Replace('_', ' '), text);
+    }
+
+    /// <summary>A record value as a prop: times as UTC, doubles to 3 places, JSON left out (null), anything else as text.</summary>
+    private static string? PropText(string k, object v) => v switch
+    {
+        long ms when TimeKeys.Contains(k) => DateTimeOffset.FromUnixTimeMilliseconds(ms).ToString("u", CultureInfo.InvariantCulture),
+        double dbl => dbl.ToString("0.###", CultureInfo.InvariantCulture),
+        JsonElement => null,
+        _ => Convert.ToString(v, CultureInfo.InvariantCulture),
+    };
+
+    private static void AddStructureProps(List<MemoryProp> list, Structure st)
+    {
+        if (st.Min is { } mn) list.Add(new("min", "min", mn.ToString()));
+        if (st.Max is { } mx) list.Add(new("max", "max", mx.ToString()));
+        foreach (var kb in st.KeyBlocks) list.Add(new("key_block", "key " + kb.Label, $"{kb.X},{kb.Y},{kb.Z}"));
+        foreach (var h in st.History) list.Add(new("history", "history", h));
     }
 
     /// <summary>The edit form's starting values (ported from tools/MemoryExplorer/Services/EditPrefill.cs).</summary>
     private static Dictionary<string, string?> Prefill(string key, Dictionary<string, object?> rec, MemoryRowDto row)
     {
-        string? S(string k) => rec.GetValueOrDefault(k) is { } v ? Convert.ToString(v, CultureInfo.InvariantCulture) : null;
-        string Dim() => rec.GetValueOrDefault("dimension") is { } d && Convert.ToInt64(d, CultureInfo.InvariantCulture) == -1 ? "nether" : "overworld";
-        string Conf(string k) => rec.GetValueOrDefault(k) is double c ? c.ToString("0.00", CultureInfo.InvariantCulture) : S(k) ?? "";
         var p = new Dictionary<string, string?>(StringComparer.Ordinal);
-        switch (key)
+        switch (PrefillForm(key))
         {
             case "facts":
-                p["subject"] = S("subject"); p["text"] = S("text");
+                p["subject"] = S(rec, "subject"); p["text"] = S(rec, "text");
                 break;
             case "places":
-                p["name"] = S("name"); p["x"] = S("x"); p["y"] = S("y"); p["z"] = S("z"); p["dim"] = Dim(); p["note"] = S("note") ?? "";
+                p["name"] = S(rec, "name"); p["x"] = S(rec, "x"); p["y"] = S(rec, "y"); p["z"] = S(rec, "z"); p["dim"] = DimOf(rec); p["note"] = SOrEmpty(rec, "note");
                 break;
             case "structures":
-            {
-                var st = rec.GetValueOrDefault("data") is JsonElement e ? ParseStructure(e.GetRawText()) : null;
-                p["name"] = S("name"); p["kind"] = S("structure_kind"); p["note"] = st?.Note ?? "";
-                p["confidence"] = Conf("confidence"); p["steps"] = st != null ? string.Join("\n", st.Steps) : "";
-                p["min"] = st?.Min?.ToString() ?? ""; p["max"] = st?.Max?.ToString() ?? ""; p["dim"] = Dim();
+                PrefillStructure(rec, p);
                 break;
-            }
-            case "claims" or "beliefs":
-                p["text"] = S("text"); p["claimant"] = S("claimant"); p["status"] = S("status"); p["confidence"] = Conf("confidence"); p["reason"] = S("reason") ?? "";
+            case "claims":
+                p["text"] = S(rec, "text"); p["claimant"] = S(rec, "claimant"); p["status"] = S(rec, "status"); p["confidence"] = Conf(rec, "confidence"); p["reason"] = SOrEmpty(rec, "reason");
                 break;
             case "personality":
-                p["section"] = S("section"); p["text"] = S("text"); p["player"] = S("player") ?? ""; p["reason"] = "";
+                p["section"] = S(rec, "section"); p["text"] = S(rec, "text"); p["player"] = SOrEmpty(rec, "player"); p["reason"] = "";
                 break;
             case "lessons":
-                p["title"] = S("title"); p["correction"] = S("correction"); p["patterns"] = "";
+                p["title"] = S(rec, "title"); p["correction"] = S(rec, "correction"); p["patterns"] = "";
                 break;
-            case "chests" or "gencells" or "observed":
-                p["text"] = S("text"); p["annotation"] = S("annotation") ?? "";
+            case "observations":
+                p["text"] = S(rec, "text"); p["annotation"] = SOrEmpty(rec, "annotation");
                 break;
         }
         return p;
     }
+
+    /// <summary>Kinds that share an edit form: beliefs are claims; chests, gen cells and observed places are observations.</summary>
+    private static string PrefillForm(string key) => key switch
+    {
+        "beliefs" => "claims",
+        "chests" or "gencells" or "observed" => "observations",
+        _ => key,
+    };
+
+    private static void PrefillStructure(Dictionary<string, object?> rec, Dictionary<string, string?> p)
+    {
+        var st = rec.GetValueOrDefault("data") is JsonElement e ? ParseStructure(e.GetRawText()) : null;
+        p["name"] = S(rec, "name"); p["kind"] = S(rec, "structure_kind"); p["note"] = st?.Note ?? "";
+        p["confidence"] = Conf(rec, "confidence"); p["steps"] = st != null ? string.Join("\n", st.Steps) : "";
+        p["min"] = st?.Min?.ToString() ?? ""; p["max"] = st?.Max?.ToString() ?? ""; p["dim"] = DimOf(rec);
+    }
+
+    private static string? S(Dictionary<string, object?> rec, string k) => rec.GetValueOrDefault(k) is { } v ? Convert.ToString(v, CultureInfo.InvariantCulture) : null;
+
+    private static string SOrEmpty(Dictionary<string, object?> rec, string k) => S(rec, k) ?? "";
+
+    private static string DimOf(Dictionary<string, object?> rec) =>
+        rec.GetValueOrDefault("dimension") is { } d && Convert.ToInt64(d, CultureInfo.InvariantCulture) == -1 ? "nether" : "overworld";
+
+    private static string Conf(Dictionary<string, object?> rec, string k) =>
+        rec.GetValueOrDefault(k) is double c ? c.ToString("0.00", CultureInfo.InvariantCulture) : S(rec, k) ?? "";
 }

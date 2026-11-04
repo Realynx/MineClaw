@@ -21,15 +21,17 @@ public static class SettingsOverrideFile
     /// </summary>
     public static string? ResolvePath(string? envValue, string? cliDataDir, IConfiguration partial, string root, bool testSeam = false)
     {
-        if (envValue is { } e)
-            return e.Trim() is "" or "off" or "none" ? null : AppPaths.Under(root, e.Trim());
+        if (envValue is { } e) return Named(root, e);
         if (testSeam) return null;
         var configured = partial[ConfigKey];
-        if (!string.IsNullOrWhiteSpace(configured))
-            return configured.Trim() is "off" or "none" ? null : AppPaths.Under(root, configured.Trim());
+        if (!string.IsNullOrWhiteSpace(configured)) return Named(root, configured);
         var dataDir = cliDataDir ?? partial["Agent:DataDirectory"];
         return Path.Combine(AppPaths.Under(root, string.IsNullOrWhiteSpace(dataDir) ? "data" : dataDir), FileName);
     }
+
+    /// <summary>A named override path (env or config): blank, <c>off</c> or <c>none</c> = off.</summary>
+    private static string? Named(string root, string value) =>
+        value.Trim() is "" or "off" or "none" ? null : AppPaths.Under(root, value.Trim());
 
     /// <summary>The override layer of a built config (null = no override layer).</summary>
     public static SettingsOverrideProvider? Of(IConfigurationRoot config) => config.Providers.OfType<SettingsOverrideProvider>().LastOrDefault();
@@ -87,21 +89,28 @@ public sealed class SettingsOverrideProvider(string path) : ConfigurationProvide
                 foreach (var p in e.EnumerateObject()) Flatten(p.Value, prefix == null ? p.Name : prefix + ":" + p.Name, data, lists);
                 break;
             case JsonValueKind.Array:
-                if (prefix != null) lists.Add(prefix);
-                int i = 0;
-                foreach (var item in e.EnumerateArray()) Flatten(item, prefix + ":" + i++.ToString(System.Globalization.CultureInfo.InvariantCulture), data, lists);
-                break;
-            case JsonValueKind.Null:
-                if (prefix != null) data[prefix] = null;
-                break;
-            case JsonValueKind.String:
-                if (prefix != null) data[prefix] = e.GetString();
+                FlattenArray(e, prefix, data, lists);
                 break;
             default:
-                if (prefix != null) data[prefix] = e.GetRawText();
+                if (prefix != null) data[prefix] = Scalar(e);
                 break;
         }
     }
+
+    private static void FlattenArray(JsonElement e, string? prefix, IDictionary<string, string?> data, ISet<string> lists)
+    {
+        if (prefix != null) lists.Add(prefix);
+        int i = 0;
+        foreach (var item in e.EnumerateArray()) Flatten(item, prefix + ":" + i++.ToString(System.Globalization.CultureInfo.InvariantCulture), data, lists);
+    }
+
+    /// <summary>A scalar's config value: null, a string's text, else its raw JSON (numbers, true/false).</summary>
+    private static string? Scalar(JsonElement e) => e.ValueKind switch
+    {
+        JsonValueKind.Null => null,
+        JsonValueKind.String => e.GetString(),
+        _ => e.GetRawText(),
+    };
 
     /// <summary>A list this layer owns shows only its own items (the lower layers' items under it are hidden).</summary>
     public override IEnumerable<string> GetChildKeys(IEnumerable<string> earlierKeys, string? parentPath)

@@ -23,21 +23,31 @@ public sealed class HiveBuildJobs(HiveSupervisor hive, IReadOnlyList<string> clo
     public IReadOnlyList<CrewMember> Candidates(IReadOnlyList<string>? names = null)
     {
         var list = new List<CrewMember>();
-        bool model = MineClaw.Agent.Tools.ToolCaller.Current != null;
-        // No fixed roster: without configured names, the supervisor's current slots (dynamic accounts) are the candidates.
-        foreach (var n in names ?? (clones.Count > 0 ? clones : hive.Slots.Select(s => s.Name).ToList()))
-        {
-            if (hive.Resolve(n) is not { } name || hive.Slot(name) is not { } slot) continue;
-            if (slot.State == CloneState.Retired) continue;
-            // Default helpers: online and idle. Named ones are asked even when offline (the job logs them in), but only when a model
-            // asked now: a build C# resumes (a standing order after main's restart) never logs clones in (live 10-30: a re-run crew
-            // after the reboot launched 16 processes).
-            if ((names == null || !model) && !HiveSupervisor.IdleOnline(slot)) continue;
-            var v = hive.VitalsOf(slot);
-            var at = v.X is { } x && v.Y is { } y && v.Z is { } z ? new BlockPos((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z)) : default;
-            list.Add(new CrewMember(slot.Name, at, v.Items?.Any(i => i.Id == Items.WaterBucket) == true));
-        }
+        // Default helpers: online and idle. Named ones are asked even when offline (the job logs them in), but only when a model
+        // asked now: a build C# resumes (a standing order after main's restart) never logs clones in (live 10-30: a re-run crew
+        // after the reboot launched 16 processes).
+        bool evenOffline = names != null && MineClaw.Agent.Tools.ToolCaller.Current != null;
+        foreach (var n in names ?? DefaultCandidateNames())
+            if (CandidateSlot(n, evenOffline) is { } slot) list.Add(Member(slot));
         return list;
+    }
+
+    /// <summary>No fixed roster: without configured names, the supervisor's current slots (dynamic accounts) are the candidates.</summary>
+    private IReadOnlyList<string> DefaultCandidateNames() => clones.Count > 0 ? clones : hive.Slots.Select(s => s.Name).ToList();
+
+    /// <summary>The clone's slot when it can join the crew (known, not retired, and online and idle unless <paramref name="evenOffline"/>).</summary>
+    private CloneSlot? CandidateSlot(string n, bool evenOffline)
+    {
+        if (hive.Resolve(n) is not { } name || hive.Slot(name) is not { } slot) return null;
+        if (slot.State == CloneState.Retired) return null;
+        return evenOffline || HiveSupervisor.IdleOnline(slot) ? slot : null;
+    }
+
+    private CrewMember Member(CloneSlot slot)
+    {
+        var v = hive.VitalsOf(slot);
+        var at = v.X is { } x && v.Y is { } y && v.Z is { } z ? new BlockPos((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z)) : default;
+        return new CrewMember(slot.Name, at, v.Items?.Any(i => i.Id == Items.WaterBucket) == true);
     }
 
     public string? StartLane(string body, long blueprintId, int lane)

@@ -16,45 +16,60 @@ public static class Mcwc
 
     public static (int Version, int Dim, List<McwcColumn> Columns) Decode(ReadOnlySpan<byte> b)
     {
-        int p = 0;
-        ReadOnlySpan<byte> Take(ref int at, int n, ReadOnlySpan<byte> src)
-        {
-            if (n < 0 || at + n > src.Length) throw new FormatException("MCWC truncated");
-            var s = src.Slice(at, n);
-            at += n;
-            return s;
-        }
-        if (!Take(ref p, 4, b).SequenceEqual("MCWC"u8)) throw new FormatException("not MCWC");
-        int version = BinaryPrimitives.ReadUInt16LittleEndian(Take(ref p, 2, b));
+        var r = new Reader(b);
+        if (!r.Take(4).SequenceEqual("MCWC"u8)) throw new FormatException("not MCWC");
+        int version = r.U16();
         if (version is not (1 or 2)) throw new FormatException("MCWC version");
-        _ = BinaryPrimitives.ReadUInt16LittleEndian(Take(ref p, 2, b));
-        int dim = BinaryPrimitives.ReadInt32LittleEndian(Take(ref p, 4, b));
-        int count = BinaryPrimitives.ReadInt32LittleEndian(Take(ref p, 4, b));
+        _ = r.U16();
+        int dim = r.I32();
+        int count = r.I32();
         if (count is < 0 or > MaxColumns) throw new FormatException("MCWC count");
         var cols = new List<McwcColumn>(count);
-        for (int i = 0; i < count; i++)
-        {
-            int cx = BinaryPrimitives.ReadInt32LittleEndian(Take(ref p, 4, b));
-            int cz = BinaryPrimitives.ReadInt32LittleEndian(Take(ref p, 4, b));
-            long hash = BinaryPrimitives.ReadInt64LittleEndian(Take(ref p, 8, b));
-            long seen = BinaryPrimitives.ReadInt64LittleEndian(Take(ref p, 8, b));
-            bool live = Take(ref p, 1, b)[0] != 0;
-            int byLen = Take(ref p, 1, b)[0];
-            string by = Encoding.UTF8.GetString(Take(ref p, byLen, b));
-            int dataLen = BinaryPrimitives.ReadInt32LittleEndian(Take(ref p, 4, b));
-            if (dataLen > MaxBlob) throw new FormatException("MCWC blob too large");
-            var data = Take(ref p, dataLen, b).ToArray();
-            byte[]? light = null;
-            if (version == 2)
-            {
-                int lightLen = BinaryPrimitives.ReadInt32LittleEndian(Take(ref p, 4, b));
-                if (lightLen > MaxBlob) throw new FormatException("MCWC blob too large");
-                light = Take(ref p, lightLen, b).ToArray();
-            }
-            cols.Add(new McwcColumn(cx, cz, hash, seen, live, by, data, light));
-        }
-        if (p != b.Length) throw new FormatException("MCWC trailing bytes");
+        for (int i = 0; i < count; i++) cols.Add(ReadColumn(ref r, version));
+        if (r.Pos != b.Length) throw new FormatException("MCWC trailing bytes");
         return (version, dim, cols);
+    }
+
+    private static McwcColumn ReadColumn(ref Reader r, int version)
+    {
+        int cx = r.I32();
+        int cz = r.I32();
+        long hash = r.I64();
+        long seen = r.I64();
+        bool live = r.Take(1)[0] != 0;
+        int byLen = r.Take(1)[0];
+        string by = Encoding.UTF8.GetString(r.Take(byLen));
+        var data = r.Blob();
+        var light = version == 2 ? r.Blob() : null;
+        return new McwcColumn(cx, cz, hash, seen, live, by, data, light);
+    }
+
+    /// <summary>A forward reader over the payload; reading past its end is "MCWC truncated".</summary>
+    private ref struct Reader
+    {
+        private readonly ReadOnlySpan<byte> _src;
+        public Reader(ReadOnlySpan<byte> src) => _src = src;
+        public int Pos { get; private set; }
+
+        public ReadOnlySpan<byte> Take(int n)
+        {
+            if (n < 0 || Pos + n > _src.Length) throw new FormatException("MCWC truncated");
+            var s = _src.Slice(Pos, n);
+            Pos += n;
+            return s;
+        }
+
+        public int U16() => BinaryPrimitives.ReadUInt16LittleEndian(Take(2));
+        public int I32() => BinaryPrimitives.ReadInt32LittleEndian(Take(4));
+        public long I64() => BinaryPrimitives.ReadInt64LittleEndian(Take(8));
+
+        /// <summary>An i32 length (at most <see cref="MaxBlob"/>) and that many bytes, copied.</summary>
+        public byte[] Blob()
+        {
+            int len = I32();
+            if (len > MaxBlob) throw new FormatException("MCWC blob too large");
+            return Take(len).ToArray();
+        }
     }
 
     public static byte[] Encode(int version, int dim, IReadOnlyList<McwcColumn> cols)
@@ -133,17 +148,20 @@ public sealed class ChunkCache(long maxBytes = 96L * 1024 * 1024)
             int dim = dimEl.GetInt32();
             lock (_lock)
                 foreach (var c in cols.EnumerateArray())
-                {
-                    var key = new Key(light, dim, c.GetProperty("cx").GetInt32(), c.GetProperty("cz").GetInt32());
-                    long hash = c.GetProperty("hash").GetInt64();
-                    long seen = c.TryGetProperty("seen", out var s) && s.TryGetInt64(out var sv) ? sv : 0;
-                    string by = c.TryGetProperty("by", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString()! : "";
-                    bool live = c.TryGetProperty("live", out var lv) && lv.ValueKind == JsonValueKind.True;
-                    _index[key] = new Indexed(hash, seen, by, live, Now);
-                }
+                    _index[new Key(light, dim, c.GetProperty("cx").GetInt32(), c.GetProperty("cz").GetInt32())] = IndexedOf(c);
             lock (_lock) if (_index.Count > 200_000) _index.Clear();
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or FormatException) { }
+    }
+
+    /// <summary>One index column's hash, when and by whom it was seen, and whether it is live.</summary>
+    private Indexed IndexedOf(JsonElement c)
+    {
+        long hash = c.GetProperty("hash").GetInt64();
+        long seen = c.TryGetProperty("seen", out var s) && s.TryGetInt64(out var sv) ? sv : 0;
+        string by = c.TryGetProperty("by", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString()! : "";
+        bool live = c.TryGetProperty("live", out var lv) && lv.ValueKind == JsonValueKind.True;
+        return new Indexed(hash, seen, by, live, Now);
     }
 
     /// <summary>Requested columns split into cache hits (with index metadata applied) and the ones to fetch.</summary>

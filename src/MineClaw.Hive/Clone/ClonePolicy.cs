@@ -58,13 +58,15 @@ public static class ClonePolicy
         var clean = HiveTalk.Replace(text, "").Trim();
         clean = Regex.Replace(clean, @"\s{2,}", " ");
         if (clean.Length == 0 || clean.All(c => !char.IsLetterOrDigit(c))) return null;
-        if (ack)
-        {
-            var first = Regex.Match(clean, @"^[^\n.!?]*[.!?]?").Value.Trim();
-            clean = first.Length > 0 ? first : clean;
-            if (clean.Length > 90) clean = clean[..90].TrimEnd();
-        }
-        return clean;
+        return ack ? AckLine(clean) : clean;
+    }
+
+    /// <summary>A task ack: its first sentence, at most 90 chars.</summary>
+    private static string AckLine(string clean)
+    {
+        var first = Regex.Match(clean, @"^[^\n.!?]*[.!?]?").Value.Trim();
+        clean = first.Length > 0 ? first : clean;
+        return clean.Length > 90 ? clean[..90].TrimEnd() : clean;
     }
 
     private static string TaskText(string notice)

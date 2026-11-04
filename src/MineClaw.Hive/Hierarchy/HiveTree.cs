@@ -117,41 +117,52 @@ public sealed class HiveTree(string main)
     public string Render()
     {
         var parts = new List<string>();
-        void Walk(string owner, int depth)
-        {
-            if (depth > 16) return;
-            var kids = Children(owner);
-            // Many bodies of one hive read as one part ("15 subhive bodies of 101: 102-117 (3 spawning)"), not 15.
-            // A hive script's bodies read as one part: "hive script chop_crew: 3 bodies 102-105".
-            foreach (var crew in kids.Where(c => c.Kind == CloneKind.Subhive && c.Crew != null).GroupBy(c => c.Crew!, StringComparer.OrdinalIgnoreCase))
-            {
-                var bs = crew.ToList();
-                parts.Add($"hive script {crew.Key}: {bs.Count} bod{(bs.Count == 1 ? "y" : "ies")} {Ranges(bs.Select(c => c.Short))}" +
-                    (bs.Any(c => c.State != "running") ? $" ({bs.Count(c => c.State != "running")} {(bs.All(c => c.State == "releasing") ? "releasing" : "not in game yet")})" : ""));
-            }
-            kids = kids.Where(c => c.Crew == null).ToList();
-            var subs = kids.Where(c => c.Kind == CloneKind.Subhive).ToList();
-            if (subs.Count >= 3)
-            {
-                int notRunning = subs.Count(c => c.State != "running");
-                parts.Add($"{subs.Count} subhive bodies{(owner != Root ? $" of {HiveNode.ShortOf(owner)}" : "")}: {Ranges(subs.Select(c => c.Short))}" +
-                    (notRunning > 0 ? $" ({notRunning} {(subs.All(c => c.State == "releasing") ? "releasing" : "not in game yet")})" : ""));
-                kids = kids.Where(c => c.Kind != CloneKind.Subhive).ToList();
-            }
-            foreach (var c in kids)
-            {
-                var what = c.Kind switch
-                {
-                    CloneKind.Script => $"script {c.Script ?? "?"}",
-                    CloneKind.Subhive => "subhive",
-                    _ => $"hive {HiveKinds.Name(c.Brain ?? BrainKind.Opus)}",
-                };
-                parts.Add($"{c.Short} {what}" + (owner != Root ? $" (of {HiveNode.ShortOf(owner)})" : "") + (c.State != "running" ? $" {c.State}" : ""));
-                Walk(c.Account, depth + 1);
-            }
-        }
-        Walk(Root, 0);
+        RenderUnder(Root, 0, parts);
         return parts.Count == 0 ? "main alone" : string.Join("; ", parts);
+    }
+
+    private void RenderUnder(string owner, int depth, List<string> parts)
+    {
+        if (depth > 16) return;
+        var kids = Children(owner);
+        // A hive script's bodies read as one part: "hive script chop_crew: 3 bodies 102-105".
+        foreach (var crew in kids.Where(c => c.Kind == CloneKind.Subhive && c.Crew != null).GroupBy(c => c.Crew!, StringComparer.OrdinalIgnoreCase))
+            parts.Add(CrewPart(crew.Key, crew.ToList()));
+        kids = kids.Where(c => c.Crew == null).ToList();
+        // Many bodies of one hive read as one part ("15 subhive bodies of 101: 102-117 (3 spawning)"), not 15.
+        var subs = kids.Where(c => c.Kind == CloneKind.Subhive).ToList();
+        if (subs.Count >= 3)
+        {
+            parts.Add(SubhivesPart(owner, subs));
+            kids = kids.Where(c => c.Kind != CloneKind.Subhive).ToList();
+        }
+        foreach (var c in kids)
+        {
+            parts.Add(NodePart(owner, c));
+            RenderUnder(c.Account, depth + 1, parts);
+        }
+    }
+
+    private static string CrewPart(string crew, List<HiveNode> bs) =>
+        $"hive script {crew}: {bs.Count} bod{(bs.Count == 1 ? "y" : "ies")} {Ranges(bs.Select(c => c.Short))}" +
+        (bs.Any(c => c.State != "running") ? $" ({bs.Count(c => c.State != "running")} {(bs.All(c => c.State == "releasing") ? "releasing" : "not in game yet")})" : "");
+
+    private static string SubhivesPart(string owner, List<HiveNode> subs)
+    {
+        int notRunning = subs.Count(c => c.State != "running");
+        return $"{subs.Count} subhive bodies{(owner != Root ? $" of {HiveNode.ShortOf(owner)}" : "")}: {Ranges(subs.Select(c => c.Short))}" +
+            (notRunning > 0 ? $" ({notRunning} {(subs.All(c => c.State == "releasing") ? "releasing" : "not in game yet")})" : "");
+    }
+
+    private static string NodePart(string owner, HiveNode c)
+    {
+        var what = c.Kind switch
+        {
+            CloneKind.Script => $"script {c.Script ?? "?"}",
+            CloneKind.Subhive => "subhive",
+            _ => $"hive {HiveKinds.Name(c.Brain ?? BrainKind.Opus)}",
+        };
+        return $"{c.Short} {what}" + (owner != Root ? $" (of {HiveNode.ShortOf(owner)})" : "") + (c.State != "running" ? $" {c.State}" : "");
     }
 
     /// <summary>"102, 103, 105, 109" → "102-105, 109" (numeric shorts; ids the allocator never hands out, quantity-like ones such as

@@ -59,12 +59,7 @@ public static partial class PerspectivePanel
     /// <summary>A free camera on a spot: from a compass side ("N".."NW", or "above" straight-ish down) at a distance, looking at it.</summary>
     public static Rig Cam((int X, int Y, int Z) focus, int feetY, string? from, double? dist, string caption, int radius = 6)
     {
-        var f = (from ?? "S").Trim().ToUpperInvariant();
-        bool above = f is "ABOVE" or "UP" or "TOP";
-        var (sx, sz) = f switch
-        {
-            "N" => (0, -1), "NE" => (1, -1), "E" => (1, 0), "SE" => (1, 1), "S" => (0, 1), "SW" => (-1, 1), "W" => (-1, 0), "NW" => (-1, -1), _ => (0, 1),
-        };
+        var (f, above, sx, sz) = CamSide(from);
         double elev = above ? 80 : 35, d = Math.Clamp(dist ?? radius * 1.8 + 4, 3, 48);
         double fx = focus.X + 0.5, fy = feetY + 0.5, fz = focus.Z + 0.5;
         double h = d * Math.Cos(elev * Math.PI / 180), v = d * Math.Sin(elev * Math.PI / 180), len = Math.Sqrt(sx * sx + sz * sz);
@@ -72,6 +67,20 @@ public static partial class PerspectivePanel
         var (yaw, pitch) = EyeScene.LookAt(cx, cy, cz, fx, fy, fz);
         string side = above ? "ABOVE" : f.Length <= 2 ? f : "S";
         return new Rig(cx, cy, cz, yaw, pitch, 55, $"{caption} {side}", $"CAM {caption} from {(above ? "above" : side)}, {d:0} m", true, (int)(d + 2 * radius + 10));
+    }
+
+    /// <summary>Compass sides a free camera can stand on, as (dx, dz).</summary>
+    private static readonly Dictionary<string, (int X, int Z)> CamSides = new(StringComparer.Ordinal)
+    {
+        ["N"] = (0, -1), ["NE"] = (1, -1), ["E"] = (1, 0), ["SE"] = (1, 1), ["S"] = (0, 1), ["SW"] = (-1, 1), ["W"] = (-1, 0), ["NW"] = (-1, -1),
+    };
+
+    /// <summary>A free camera's side: the upper-cased name, whether it looks from above, and its direction (unknown: south).</summary>
+    private static (string F, bool Above, int Sx, int Sz) CamSide(string? from)
+    {
+        var f = (from ?? "S").Trim().ToUpperInvariant();
+        var (sx, sz) = CamSides.TryGetValue(f, out var side) ? side : (0, 1);
+        return (f, f is "ABOVE" or "UP" or "TOP", sx, sz);
     }
 
     /// <summary>n orbit cameras evenly spaced around a spot, 40° down, the first from the NW.</summary>
@@ -110,50 +119,61 @@ public static partial class PerspectivePanel
 
     public static Rig? For(string view, (int X, int Y, int Z) focus, int feetY, int radius, Body? body, EyeScene? eye, int rotation = 0)
     {
-        double fx = focus.X + 0.5, fy = feetY + 0.5, fz = focus.Z + 0.5;
-        Rig Orbit(string name, int sx, int sz, double elev, float fov, string title)
+        var at = new Spot(focus.X + 0.5, feetY + 0.5, focus.Z + 0.5, radius);
+        return view switch
         {
-            double half = (radius + 1.5) / Math.Tan(fov * Math.PI / 360);
-            double d = half * 1.05;
-            double h = d * Math.Cos(elev * Math.PI / 180), v = d * Math.Sin(elev * Math.PI / 180);
-            double len = Math.Sqrt(sx * sx + sz * sz);
-            double cx = fx + sx / len * h, cy = fy + v, cz = fz + sz / len * h;
-            var (yaw, pitch) = EyeScene.LookAt(cx, cy, cz, fx, fy, fz);
-            string from = Dir8(sx, sz), to = Dir8(-sx, -sz);
-            return new Rig(cx, cy, cz, yaw, pitch, fov, title, $"{name} from {from} looking {to}, {elev:0} deg down", true, (int)(d + 2 * radius + 8));
-        }
-        switch (view)
-        {
-            case "eye":
-                if (eye == null) return null;
-                return new Rig(eye.EyeX, eye.EyeY, eye.EyeZ, eye.Yaw, eye.Pitch, 70f, "EYE" + (eye.Viewer is { } who ? " " + Short(who) : "") + " >" + EyeRenderer.Compass(eye.Yaw),
-                    $"EYE (first person{(eye.Viewer != null ? " of " + eye.Viewer : "")}) facing {EyeRenderer.Compass(eye.Yaw)}", false, 48);
-            case "shoulder":
-            {
-                if (body is not { } b) return null;
-                double ex = b.X, ey = b.Y + 1.62, ez = b.Z;
-                double tx = fx - ex, tz = fz - ez;
-                bool self = tx * tx + tz * tz < 2.5;
-                double yawR = self ? b.Yaw * Math.PI / 180 : Math.Atan2(-tx, tz);
-                double fwx = -Math.Sin(yawR), fwz = Math.Cos(yawR), rx = -fwz, rz = fwx;
-                double cx = ex - fwx * 3.4 - rx * 0.9, cy = ey + 1.1, cz = ez - fwz * 3.4 - rz * 0.9;
-                var (yaw, pitch) = self ? EyeScene.LookAt(cx, cy, cz, ex + fwx * 5, ey - 1.6, ez + fwz * 5) : EyeScene.LookAt(cx, cy, cz, fx, fy, fz);
-                string dir = EyeRenderer.Compass(yaw);
-                return new Rig(cx, cy, cz, yaw, pitch, 62f, "SHOULDER >" + dir, $"SHOULDER (behind {(b.Name ?? "you")}, facing {dir})", false, 48);
-            }
-            case "orbit": return Orbit("ORBIT", -1, -1, 40, 50, "ORBIT NW>SE");
-            case "orbit2": return Orbit("ORBIT", 1, 1, 40, 50, "ORBIT SE>NW");
-            case "orbit3": return Orbit("ORBIT", 1, -1, 40, 50, "ORBIT NE>SW");
-            case "orbit4": return Orbit("ORBIT", -1, 1, 40, 50, "ORBIT SW>NE");
-            case "iso":
-            {
-                // Rotation in quarter turns, like the old isometric view: 0 from the SW (north up-right), 1 SE, 2 NE, 3 NW.
-                var (sx, sz, name) = (rotation & 3) switch { 1 => (1, 1, "SE>NW"), 2 => (1, -1, "NE>SW"), 3 => (-1, -1, "NW>SE"), _ => (-1, 1, "SW>NE") };
-                return Orbit("ISO", sx, sz, 35, 45, $"ISO {name}");
-            }
-            case "high": return Orbit("HIGH", 0, 1, 65, 50, "HIGH S>N");
-            default: return null;
-        }
+            "eye" => EyeRig(eye),
+            "shoulder" => Shoulder(body, at),
+            "orbit" => Orbit(at, "ORBIT", -1, -1, 40, 50, "ORBIT NW>SE"),
+            "orbit2" => Orbit(at, "ORBIT", 1, 1, 40, 50, "ORBIT SE>NW"),
+            "orbit3" => Orbit(at, "ORBIT", 1, -1, 40, 50, "ORBIT NE>SW"),
+            "orbit4" => Orbit(at, "ORBIT", -1, 1, 40, 50, "ORBIT SW>NE"),
+            "iso" => Iso(at, rotation),
+            "high" => Orbit(at, "HIGH", 0, 1, 65, 50, "HIGH S>N"),
+            _ => null,
+        };
+    }
+
+    /// <summary>The point a camera looks at (the focus block's centre at feet height) and the spot's radius.</summary>
+    private readonly record struct Spot(double X, double Y, double Z, int Radius);
+
+    /// <summary>A camera from (sx, sz) <paramref name="elev"/>° up, framing the spot's radius.</summary>
+    private static Rig Orbit(Spot at, string name, int sx, int sz, double elev, float fov, string title)
+    {
+        double half = (at.Radius + 1.5) / Math.Tan(fov * Math.PI / 360);
+        double d = half * 1.05;
+        double h = d * Math.Cos(elev * Math.PI / 180), v = d * Math.Sin(elev * Math.PI / 180);
+        double len = Math.Sqrt(sx * sx + sz * sz);
+        double cx = at.X + sx / len * h, cy = at.Y + v, cz = at.Z + sz / len * h;
+        var (yaw, pitch) = EyeScene.LookAt(cx, cy, cz, at.X, at.Y, at.Z);
+        string from = Dir8(sx, sz), to = Dir8(-sx, -sz);
+        return new Rig(cx, cy, cz, yaw, pitch, fov, title, $"{name} from {from} looking {to}, {elev:0} deg down", true, (int)(d + 2 * at.Radius + 8));
+    }
+
+    /// <summary>ISO: rotation in quarter turns, like the old isometric view: 0 from the SW (north up-right), 1 SE, 2 NE, 3 NW.</summary>
+    private static Rig Iso(Spot at, int rotation)
+    {
+        var (sx, sz, name) = (rotation & 3) switch { 1 => (1, 1, "SE>NW"), 2 => (1, -1, "NE>SW"), 3 => (-1, -1, "NW>SE"), _ => (-1, 1, "SW>NE") };
+        return Orbit(at, "ISO", sx, sz, 35, 45, $"ISO {name}");
+    }
+
+    private static Rig? EyeRig(EyeScene? eye) => eye == null ? null :
+        new Rig(eye.EyeX, eye.EyeY, eye.EyeZ, eye.Yaw, eye.Pitch, 70f, "EYE" + (eye.Viewer is { } who ? " " + Short(who) : "") + " >" + EyeRenderer.Compass(eye.Yaw),
+            $"EYE (first person{(eye.Viewer != null ? " of " + eye.Viewer : "")}) facing {EyeRenderer.Compass(eye.Yaw)}", false, 48);
+
+    /// <summary>Behind the body: looking where it looks when it stands at the spot, else at the spot.</summary>
+    private static Rig? Shoulder(Body? body, Spot at)
+    {
+        if (body is not { } b) return null;
+        double ex = b.X, ey = b.Y + 1.62, ez = b.Z;
+        double tx = at.X - ex, tz = at.Z - ez;
+        bool self = tx * tx + tz * tz < 2.5;
+        double yawR = self ? b.Yaw * Math.PI / 180 : Math.Atan2(-tx, tz);
+        double fwx = -Math.Sin(yawR), fwz = Math.Cos(yawR), rx = -fwz, rz = fwx;
+        double cx = ex - fwx * 3.4 - rx * 0.9, cy = ey + 1.1, cz = ez - fwz * 3.4 - rz * 0.9;
+        var (yaw, pitch) = self ? EyeScene.LookAt(cx, cy, cz, ex + fwx * 5, ey - 1.6, ez + fwz * 5) : EyeScene.LookAt(cx, cy, cz, at.X, at.Y, at.Z);
+        string dir = EyeRenderer.Compass(yaw);
+        return new Rig(cx, cy, cz, yaw, pitch, 62f, "SHOULDER >" + dir, $"SHOULDER (behind {(b.Name ?? "you")}, facing {dir})", false, 48);
     }
 
     private static string Short(string name) => name.Length <= 10 ? name : name[..10];
@@ -266,33 +286,7 @@ public static partial class PerspectivePanel
     private static void RoleOverlay(EyeRenderer r, Canvas c, EyeRenderer.Frame fr, EyeScene s, VisionRenderer.Slab slab)
     {
         if (fr.Cells is not { } cells) return;
-        int W = fr.Width, H = fr.Height;
-        var roleOf = new Dictionary<long, BlockRole>();
-        BlockRole RoleAt(long k)
-        {
-            if (k == EyeRenderer.NoCell) return BlockRole.None;
-            if (roleOf.TryGetValue(k, out var role)) return role;
-            var (x, y, z) = EyeRenderer.FromCellKey(k);
-            role = slab.RoleAt(x, y, z);
-            // A refilling gen cell is air: tint the floor it sits on, so it shows from above like a cobble one.
-            if (!Shown(role) && slab.At(x, y + 1, z) == 0 && slab.RoleAt(x, y + 1, z) == BlockRole.GenCell) role = BlockRole.GenCell;
-            // Lava (opaque) flowing over a gen cell hides it from above: tint the fluid in the cell's colour.
-            if (!Shown(role) && BlockGeometry.IsFluid(slab.At(x, y, z)) && slab.RoleAt(x, y - 1, z) == BlockRole.GenCell) role = BlockRole.GenCell;
-            if (!Shown(role)) role = BlockRole.None;
-            roleOf[k] = role;
-            return role;
-        }
-        var src = (uint[])c.Px.Clone();
-        for (int y = 0; y < H; y++)
-            for (int x = 0; x < W; x++)
-            {
-                long k = cells[y * W + x];
-                var role = RoleAt(k);
-                if (role == BlockRole.None) continue;
-                uint col = BlockRoles.Colour(role);
-                bool edge = x == 0 || y == 0 || x == W - 1 || y == H - 1 || cells[y * W + x - 1] != k || cells[y * W + x + 1] != k || cells[(y - 1) * W + x] != k || cells[(y + 1) * W + x] != k;
-                c.Px[y * W + x] = edge ? IsoPalette.Mix(src[y * W + x], col, 0.85f) : IsoPalette.Mix(src[y * W + x], col, role == BlockRole.GenCell ? 0.38f : 0.22f);
-            }
+        TintRoleCells(c, fr, cells, new CellRoles(slab));
         // Air cells with a role (a gen cell refilling, a planned block not yet placed) and the letters.
         int letters = 0;
         for (int iy = 0; iy < slab.Sy; iy++)
@@ -303,15 +297,60 @@ public static partial class PerspectivePanel
                     var role = slab.RoleAt(x, y, z);
                     if (!Shown(role)) continue;
                     if (slab.At(x, y, z) == 0) r.BlockBox(c, fr, s, (x, y, z), BlockRoles.Colour(role), 0.06f);
-                    if (letters < 10 && role is BlockRole.GenCell or BlockRole.NeverBreak or BlockRole.Portal
-                        && BlockRoles.Glyph(role) is { } g && r.Project(s, x + 0.5, y + 1.02, z + 0.5) is { } p
-                        && fr.Depth[p.Y * W + p.X] >= p.Dist - 0.6)
-                    {
-                        c.Fill(p.X - 3, p.Y - 4, 7, 9, 0x101318);
-                        c.Text(p.X - 2, p.Y - 3, g.ToString(), BlockRoles.Colour(role));
-                        letters++;
-                    }
+                    if (letters < 10 && RoleLetter(r, c, fr, s, role, x, y, z)) letters++;
                 }
+    }
+
+    /// <summary>The role of the cell each pixel shows (cached per cell), as drawn.</summary>
+    private sealed class CellRoles(VisionRenderer.Slab slab)
+    {
+        private readonly Dictionary<long, BlockRole> _roleOf = new();
+
+        public BlockRole At(long k)
+        {
+            if (k == EyeRenderer.NoCell) return BlockRole.None;
+            if (_roleOf.TryGetValue(k, out var role)) return role;
+            var (x, y, z) = EyeRenderer.FromCellKey(k);
+            role = slab.RoleAt(x, y, z);
+            // A refilling gen cell is air: tint the floor it sits on, so it shows from above like a cobble one.
+            if (!Shown(role) && slab.At(x, y + 1, z) == 0 && slab.RoleAt(x, y + 1, z) == BlockRole.GenCell) role = BlockRole.GenCell;
+            // Lava (opaque) flowing over a gen cell hides it from above: tint the fluid in the cell's colour.
+            if (!Shown(role) && BlockGeometry.IsFluid(slab.At(x, y, z)) && slab.RoleAt(x, y - 1, z) == BlockRole.GenCell) role = BlockRole.GenCell;
+            if (!Shown(role)) role = BlockRole.None;
+            _roleOf[k] = role;
+            return role;
+        }
+    }
+
+    /// <summary>Tints every pixel of a role's cells, its silhouette edge strongly.</summary>
+    private static void TintRoleCells(Canvas c, EyeRenderer.Frame fr, long[] cells, CellRoles roles)
+    {
+        int W = fr.Width, H = fr.Height;
+        var src = (uint[])c.Px.Clone();
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                long k = cells[y * W + x];
+                var role = roles.At(k);
+                if (role == BlockRole.None) continue;
+                uint col = BlockRoles.Colour(role);
+                bool edge = CellEdge(cells, x, y, W, H, k);
+                c.Px[y * W + x] = edge ? IsoPalette.Mix(src[y * W + x], col, 0.85f) : IsoPalette.Mix(src[y * W + x], col, role == BlockRole.GenCell ? 0.38f : 0.22f);
+            }
+    }
+
+    /// <summary>The pixel is on the frame border or next to a pixel of another cell.</summary>
+    private static bool CellEdge(long[] cells, int x, int y, int W, int H, long k) =>
+        x == 0 || y == 0 || x == W - 1 || y == H - 1 || cells[y * W + x - 1] != k || cells[y * W + x + 1] != k || cells[(y - 1) * W + x] != k || cells[(y + 1) * W + x] != k;
+
+    /// <summary>The role's letter (gen cell, never-break, portal) on the cell's top centre when visible; false when not drawn.</summary>
+    private static bool RoleLetter(EyeRenderer r, Canvas c, EyeRenderer.Frame fr, EyeScene s, BlockRole role, int x, int y, int z)
+    {
+        if (role is not (BlockRole.GenCell or BlockRole.NeverBreak or BlockRole.Portal) || BlockRoles.Glyph(role) is not { } g) return false;
+        if (r.Project(s, x + 0.5, y + 1.02, z + 0.5) is not { } p || fr.Depth[p.Y * fr.Width + p.X] < p.Dist - 0.6) return false;
+        c.Fill(p.X - 3, p.Y - 4, 7, 9, 0x101318);
+        c.Text(p.X - 2, p.Y - 3, g.ToString(), BlockRoles.Colour(role));
+        return true;
     }
 
     /// <summary>Roles worth drawing on a 3D panel (stations, doors and soft protection read fine from the blocks themselves).</summary>

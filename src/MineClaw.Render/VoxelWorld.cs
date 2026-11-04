@@ -180,21 +180,27 @@ public static class FaceLight
         if (y >= h) return 15 - subtracted;
         int sky = w.SkyLight(x, y, z), blk = w.BlockLight(x, y, z);
         if (sky < 0 || blk < 0) return -1;
-        if (sky == 0 && blk == 0 && w.Block(x, y, z) == 0)
-        {
-            // Stale after an edit (an air cell reading 0 everywhere): estimate from the six neighbours.
-            for (int f = 0; f < 6; f++)
-            {
-                var (dx, dy, dz) = Lighting.Normal((Face)f);
-                int nx = x + dx, ny = y + dy, nz = z + dz;
-                if (ny >= h) { sky = 15; continue; }
-                if (ny < 0 || Opaque(w.Block(nx, ny, nz))) continue;
-                int ns = w.SkyLight(nx, ny, nz), nb = w.BlockLight(nx, ny, nz);
-                if (ns > 0) sky = Math.Max(sky, ns - (dy == 1 && ns == 15 ? 0 : 1));
-                if (nb > 0) blk = Math.Max(blk, nb - 1);
-            }
-        }
+        // Stale after an edit (an air cell reading 0 everywhere): estimate from the six neighbours.
+        if (sky == 0 && blk == 0 && w.Block(x, y, z) == 0) (sky, blk) = FromNeighbours(w, x, y, z);
         return Lighting.Level(sky, blk, subtracted);
+    }
+
+    /// <summary>Sky and block light of a stale air cell from its non-opaque neighbours (−1 a step; straight down from full
+    /// sky keeps 15; the world's top counts as open sky).</summary>
+    private static (int Sky, int Block) FromNeighbours(IVoxelWorld w, int x, int y, int z)
+    {
+        int h = w.WorldHeight, sky = 0, blk = 0;
+        for (int f = 0; f < 6; f++)
+        {
+            var (dx, dy, dz) = Lighting.Normal((Face)f);
+            int nx = x + dx, ny = y + dy, nz = z + dz;
+            if (ny >= h) { sky = 15; continue; }
+            if (ny < 0 || Opaque(w.Block(nx, ny, nz))) continue;
+            int ns = w.SkyLight(nx, ny, nz), nb = w.BlockLight(nx, ny, nz);
+            if (ns > 0) sky = Math.Max(sky, ns - (dy == 1 && ns == 15 ? 0 : 1));
+            if (nb > 0) blk = Math.Max(blk, nb - 1);
+        }
+        return (sky, blk);
     }
 
     public static bool Opaque(int id)
@@ -279,39 +285,49 @@ public static class FaceLight
         int ax = x + nx, ay = y + ny, az = z + nz;
         int centre = CellLevel(w, ax, ay, az, sub);
         float shade = Lighting.FaceShade(f);
-        (int, int, int) uA, vA;
-        switch (f)
-        {
-            case Face.Up or Face.Down: uA = (1, 0, 0); vA = (0, 0, 1); break;
-            case Face.North: uA = (-1, 0, 0); vA = (0, -1, 0); break;
-            case Face.South: uA = (1, 0, 0); vA = (0, -1, 0); break;
-            case Face.West: uA = (0, 0, 1); vA = (0, -1, 0); break;
-            default: uA = (0, 0, -1); vA = (0, -1, 0); break;
-        }
+        var (uA, vA) = FaceAxes(f);
         // The 3 × 3 cells in front of the face (i along u, j along v, −1..1), each read once: every corner averages its 2 × 2.
         Span<int> g = stackalloc int[9];
         for (int i = -1; i <= 1; i++)
             for (int j = -1; j <= 1; j++)
-            {
-                if (i == 0 && j == 0) { g[4] = centre; continue; }
-                int cx = ax + uA.Item1 * i + vA.Item1 * j, cy = ay + uA.Item2 * i + vA.Item2 * j, cz = az + uA.Item3 * i + vA.Item3 * j;
-                bool opaque = w is ICellLevels memo ? memo.OpaqueAt(cx, cy, cz) : Opaque(w.Block(cx, cy, cz));
-                g[(i + 1) * 3 + j + 1] = opaque ? centre : CellLevel(w, cx, cy, cz, sub);
-            }
+                g[(i + 1) * 3 + j + 1] = i == 0 && j == 0 ? centre
+                    : FrontLevel(w, ax + uA.X * i + vA.X * j, ay + uA.Y * i + vA.Y * j, az + uA.Z * i + vA.Z * j, centre, sub);
         for (int corner = 0; corner < 4; corner++)
         {
-            int su = (corner & 1) == 0 ? -1 : 1, sv = (corner & 2) == 0 ? -1 : 1;
-            int sum = 0, n = 0;
-            for (int a = 0; a <= 1; a++)
-                for (int b = 0; b <= 1; b++)
-                {
-                    int lvl = g[(su * a + 1) * 3 + sv * b + 1];
-                    if (lvl < 0) continue;
-                    sum += lvl; n++;
-                }
-            float k = n == 0 ? 0.75f : Lighting.Brightness((int)Math.Round(sum / (double)n), nether);
+            float k = CornerBrightness(g, (corner & 1) == 0 ? -1 : 1, (corner & 2) == 0 ? -1 : 1, nether);
             outC[corner] = Math.Max(minB, k * shade);
         }
+    }
+
+    /// <summary>The face's u and v directions in block space (v down the sides).</summary>
+    private static ((int X, int Y, int Z) U, (int X, int Y, int Z) V) FaceAxes(Face f) => f switch
+    {
+        Face.Up or Face.Down => ((1, 0, 0), (0, 0, 1)),
+        Face.North => ((-1, 0, 0), (0, -1, 0)),
+        Face.South => ((1, 0, 0), (0, -1, 0)),
+        Face.West => ((0, 0, 1), (0, -1, 0)),
+        _ => ((0, 0, -1), (0, -1, 0)),
+    };
+
+    /// <summary>The light of a cell in front of a face: an opaque one counts as the face cell's own (<paramref name="centre"/>).</summary>
+    private static int FrontLevel(IVoxelWorld w, int cx, int cy, int cz, int centre, int sub)
+    {
+        bool opaque = w is ICellLevels memo ? memo.OpaqueAt(cx, cy, cz) : Opaque(w.Block(cx, cy, cz));
+        return opaque ? centre : CellLevel(w, cx, cy, cz, sub);
+    }
+
+    /// <summary>The brightness of the corner toward (su, sv): the average of its 2 × 2 known levels (none known: 0.75).</summary>
+    private static float CornerBrightness(Span<int> g, int su, int sv, bool nether)
+    {
+        int sum = 0, n = 0;
+        for (int a = 0; a <= 1; a++)
+            for (int b = 0; b <= 1; b++)
+            {
+                int lvl = g[(su * a + 1) * 3 + sv * b + 1];
+                if (lvl < 0) continue;
+                sum += lvl; n++;
+            }
+        return n == 0 ? 0.75f : Lighting.Brightness((int)Math.Round(sum / (double)n), nether);
     }
 
     /// <summary>Brightness of a shape quad's light cell before its shade: the neighbouring cell its face looks into (an opaque

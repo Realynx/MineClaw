@@ -1,3 +1,4 @@
+using System.Text.Json;
 using MineClaw.Agent.Tools;
 using MineClaw.Hive.Clone;
 using MineClaw.Hive.Hierarchy.Bus;
@@ -27,30 +28,45 @@ public static class CloneHiveTool
         tools.Register(HiveTools.MainTool, Description,
             ToolSchema.Create().Str("op", enumValues: ["spawn", "release", "list"]).Str("task", required: false).Str("name", required: false)
                 .Str("script", required: false).Str("kind", required: false).Int("bodies", required: false).Build(),
-            async (input, _) =>
-            {
-                var op = input.ReqStr("op").Trim().ToLowerInvariant();
-                string? args = input.ValueKind == System.Text.Json.JsonValueKind.Object && input.TryGetProperty("args", out var a)
-                    && a.ValueKind == System.Text.Json.JsonValueKind.Object ? a.GetRawText() : null;
-                // Bodies straight onto a saved crew script: this hive hosts them and runs the crew; a brain named = a new hive (main's path).
-                if (op == "spawn" && input.Str("script") is { Length: > 0 } script && input.Int("bodies") is > 0 and var n
-                    && input.Str("brain") is null && input.Str("kind") is null or "subhive" or "script" && string.IsNullOrWhiteSpace(input.Str("name")))
-                {
-                    if (host.CrewSpawn is not { } crewSpawn) return ToolResult.Error("no: this hive hosts no bodies of its own; spawned nothing");
-                    var t = await crewSpawn(script, args, n, input.Str("task")).ConfigureAwait(false);
-                    return t.StartsWith("ok", StringComparison.Ordinal) ? ToolResult.Success(t) : ToolResult.Error(t);
-                }
-                BusReply? r = op switch
-                {
-                    "spawn" => await host.BusAsync(BusTypes.Spawn, new SpawnReq(input.Str("kind"), input.Str("brain"), input.Str("task"), input.Str("script"), args,
-                        Name: input.Str("name"), Bodies: input.Int("bodies"))).ConfigureAwait(false),
-                    "release" or "recall" => await host.BusAsync(BusTypes.Release, new ReleaseReq(input.Str("name") ?? "all")).ConfigureAwait(false),
-                    "list" => await host.BusAsync(BusTypes.List, null).ConfigureAwait(false),
-                    _ => BusReply.Fail("op is spawn|release|list"),
-                };
-                if (r == null) return ToolResult.Error("main didn't answer on the hive bus");
-                var text = r.Ok ? r.As<string>() ?? "ok" : r.Error ?? "failed";
-                return r.Ok && !text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Success(text) : ToolResult.Error(text);
-            }, tiers: ToolTiers.Main);
+            (input, _) => RunAsync(host, input), tiers: ToolTiers.Main);
+    }
+
+    private static async Task<ToolResult> RunAsync(CloneHost host, JsonElement input)
+    {
+        var op = input.ReqStr("op").Trim().ToLowerInvariant();
+        string? args = HiveTools.ArgsOf(input);
+        // Bodies straight onto a saved crew script: this hive hosts them and runs the crew; a brain named = a new hive (main's path).
+        if (op == "spawn" && CrewScript(input) is { } crew) return await CrewSpawnAsync(host, crew.Script, args, crew.Bodies, input.Str("task")).ConfigureAwait(false);
+        return Answer(await BusRequestAsync(host, op, input, args).ConfigureAwait(false));
+    }
+
+    /// <summary>spawn bodies=N script=X with no brain, no name and kind subhive/script (or none): the crew to start here; null = not that.</summary>
+    private static (string Script, int Bodies)? CrewScript(JsonElement input) =>
+        input.Str("script") is { Length: > 0 } script && input.Int("bodies") is > 0 and var n && input.Str("brain") is null
+            && input.Str("kind") is null or "subhive" or "script" && string.IsNullOrWhiteSpace(input.Str("name"))
+            ? (script, n) : null;
+
+    private static async Task<ToolResult> CrewSpawnAsync(CloneHost host, string script, string? args, int n, string? task)
+    {
+        if (host.CrewSpawn is not { } crewSpawn) return ToolResult.Error("no: this hive hosts no bodies of its own; spawned nothing");
+        var t = await crewSpawn(script, args, n, task).ConfigureAwait(false);
+        return t.StartsWith("ok", StringComparison.Ordinal) ? ToolResult.Success(t) : ToolResult.Error(t);
+    }
+
+    private static async Task<BusReply?> BusRequestAsync(CloneHost host, string op, JsonElement input, string? args) => op switch
+    {
+        "spawn" => await host.BusAsync(BusTypes.Spawn, new SpawnReq(input.Str("kind"), input.Str("brain"), input.Str("task"), input.Str("script"), args,
+            Name: input.Str("name"), Bodies: input.Int("bodies"))).ConfigureAwait(false),
+        "release" or "recall" => await host.BusAsync(BusTypes.Release, new ReleaseReq(input.Str("name") ?? "all")).ConfigureAwait(false),
+        "list" => await host.BusAsync(BusTypes.List, null).ConfigureAwait(false),
+        _ => BusReply.Fail("op is spawn|release|list"),
+    };
+
+    /// <summary>Main's reply as the tool's result (an "error..." text is an error even when the bus call went through).</summary>
+    private static ToolResult Answer(BusReply? r)
+    {
+        if (r == null) return ToolResult.Error("main didn't answer on the hive bus");
+        var text = r.Ok ? r.As<string>() ?? "ok" : r.Error ?? "failed";
+        return r.Ok && !text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Success(text) : ToolResult.Error(text);
     }
 }

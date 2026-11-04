@@ -193,6 +193,17 @@ public sealed class ContactSheet
             Atlas = q.Atlas, Time = q.Time, Nether = q.Nether, Body = body, Pointed = q.Pointed, Target = q.Target, Spots = q.Spots, CutAway = q.CutAway,
             Aids = q.Aids, Staleness = q.Stamp, Smooth = q.Eye?.Smooth ?? false, XRay = q.XRay, Weather = q.Weather,
         };
+        var jobs = new List<PanelJob>();
+        foreach (var v in ViewsOf(q, body).Take(MaxPanels))
+            if (JobFor(q, ctx, v, feet, r, body) is { } job) jobs.Add(job);
+        var head = string.Create(CultureInfo.InvariantCulture, $"see sheet focus {q.Focus.X},{q.Focus.Y},{q.Focus.Z} r{r}");
+        return Compose(jobs, q.PixelBudget, head, ExtraNotes(q), q.Self);
+    }
+
+    /// <summary>The known views asked for, without repeats ("eye" without an eye → orbit3, "shoulder" without a body → orbit4);
+    /// none = the defaults.</summary>
+    private static List<string> ViewsOf(ContactSheetRequest q, PerspectivePanel.Body? body)
+    {
         var views = new List<string>();
         foreach (var v0 in q.Views.Select(v => v.Trim().ToLowerInvariant()).Where(Known.Contains))
         {
@@ -201,25 +212,30 @@ public sealed class ContactSheet
             if (v == "shoulder" && body == null) v = "orbit4";
             if (!views.Contains(v)) views.Add(v);
         }
-        if (views.Count == 0) views = DefaultViews.Where(v => v != "eye" || q.Eye != null).ToList();
-        var jobs = new List<PanelJob>();
-        foreach (var v in views.Take(MaxPanels))
-        {
-            var cam = q.ViewParams != null && q.ViewParams.TryGetValue(v, out var vp) ? vp : default;
-            if (PerspectivePanel.Views.Contains(v))
-            {
-                if (PerspectivePanel.For(v, q.Focus, feet, r, body, q.Eye, cam) is not { } rig) continue;
-                jobs.Add(new PanelJob { Ctx = ctx, Rig = rig, WorldOverride = v == "eye" && q.Eye is { } e && !ReferenceEquals(e.World, ctx.World) ? e.World : null });
-            }
-            else jobs.Add(new PanelJob { Ctx = ctx, Flat = v, Axis = q.Axis, Params = cam });
-        }
-        var head = string.Create(CultureInfo.InvariantCulture, $"see sheet focus {q.Focus.X},{q.Focus.Y},{q.Focus.Z} r{r}");
+        return views.Count == 0 ? DefaultViews.Where(v => v != "eye" || q.Eye != null).ToList() : views;
+    }
+
+    /// <summary>A view's panel: a 3D camera (null when it needs a body that isn't there) or a flat map.</summary>
+    private static PanelJob? JobFor(ContactSheetRequest q, PanelContext ctx, string v, int feet, int r, PerspectivePanel.Body? body)
+    {
+        var cam = q.ViewParams != null && q.ViewParams.TryGetValue(v, out var vp) ? vp : default;
+        if (!PerspectivePanel.Views.Contains(v)) return new PanelJob { Ctx = ctx, Flat = v, Axis = q.Axis, Params = cam };
+        if (PerspectivePanel.For(v, q.Focus, feet, r, body, q.Eye, cam) is not { } rig) return null;
+        return new PanelJob { Ctx = ctx, Rig = rig, WorldOverride = v == "eye" && q.Eye is { } e && !ReferenceEquals(e.World, ctx.World) ? e.World : null };
+    }
+
+    /// <summary>The sheet's notes: where you are, what is pointed at, drops in view.</summary>
+    private static List<string> ExtraNotes(ContactSheetRequest q)
+    {
         var extra = new List<string>();
         if (q.Self is { } me) extra.Add(string.Create(CultureInfo.InvariantCulture, $"@=you {me.X},{me.Y},{me.Z} (orange tag)."));
         if (q.Pointed is { } pt) extra.Add(string.Create(CultureInfo.InvariantCulture, $"Pink=pointed {pt.X},{pt.Y},{pt.Z}{(q.PointedBy != null ? " by " + q.PointedBy : "")}."));
         if (PerspectivePanel.DropsText(q.Entities, q.Focus) is { } drops) extra.Add(drops + ".");
-        return Compose(jobs, q.PixelBudget, head, extra, q.Self);
+        return extra;
     }
+
+    /// <summary>One rendered panel of a composite: its job, pixels, legend, facts and caption title.</summary>
+    private sealed record Panel(PanelJob Job, int W, int H, uint[] Px, string Legend, List<string> Facts, string Caption);
 
     /// <summary>
     /// Renders panels (any mix of spots and cameras) into one image within <paramref name="pixelBudget"/>: a grid of equal
@@ -230,50 +246,18 @@ public sealed class ContactSheet
         var sw = System.Diagnostics.Stopwatch.StartNew();
         jobs = jobs.Take(MaxPanels).ToList();
         var (cols, rows, pw, ph) = Layout(Math.Max(1, jobs.Count), pixelBudget);
-        var panels = new List<(PanelJob Job, int W, int H, uint[] Px, string Legend, List<string> Facts, string Caption)>();
+        var panels = new List<Panel>();
         bool xray = false;
         ulong hash = 14695981039346656037UL;
-        PerspectivePanel.Input InputFor(PanelJob job, PerspectivePanel.Rig rig)
-        {
-            var ctx = job.Ctx;
-            return new PerspectivePanel.Input
-            {
-                World = job.WorldOverride ?? ctx.World, Atlas = ctx.Atlas, Time = ctx.Time, Nether = ctx.Nether, Entities = ctx.WithBody(), Marks = ctx.Marks,
-                Focus = ctx.Focus, Pointed = ctx.Pointed, Target = ctx.Target, Slab = ctx.Slab, Smooth = ctx.Smooth,
-                Cut = ctx.CutAway && rig.Cut && job.WorldOverride == null ? PerspectivePanel.Cut(ctx.Slab, ctx.FeetY) : null,
-                Aids = ctx.Aids ? new ReadingAids.Input { Focus = ctx.Focus, FeetY = ctx.FeetY, Radius = ctx.Radius, Spots = ctx.Spots, Body = ctx.Body, Slab = ctx.Slab, Rings = rig.Ortho == 0 } : null,
-                Stamp = ctx.TimeOfDay + (ctx.WeatherText is { } wt ? ", " + wt : "") + (ctx.Staleness != null ? ", " + ctx.Staleness : ""),
-                XRay = job.WorldOverride == null && ctx.CutAway ? ctx.XRay : XRay.Off, Subject = ctx.Subject, FeetY = ctx.FeetY, Weather = ctx.Nether ? default : ctx.Weather, // design previews (no cut-away) stay exact
-            };
-        }
         foreach (var job in jobs)
         {
-            var ctx = job.Ctx;
-            unchecked { hash = (hash ^ ctx.Slab.Hash) * 1099511628211UL; }
-            if (job.Flat == "layers")
-            {
-                // Two orthographic slices side by side: the feet layer and the one below, each seen from straight above.
-                int hw = (pw - Gap) / 2;
-                var left = PerspectivePanel.Layer(ctx.Focus, ctx.FeetY, ctx.Radius, $"FEET Y{ctx.FeetY}");
-                var right = PerspectivePanel.Layer(ctx.Focus, ctx.FeetY - 1, ctx.Radius, $"BELOW Y{ctx.FeetY - 1}");
-                var a = PerspectivePanel.Render(Eye(hw, ph), left, InputFor(job, left), out _, out var fa);
-                var b = PerspectivePanel.Render(Eye(hw, ph), right, InputFor(job, right), out _, out var fb);
-                var px = new uint[pw * ph];
-                Array.Fill(px, Bg);
-                for (int y = 0; y < ph; y++)
-                {
-                    Array.Copy(a.Pixels!, y * hw, px, y * pw, hw);
-                    Array.Copy(b.Pixels!, y * hw, px, y * pw + hw + Gap, hw);
-                }
-                panels.Add((job, pw, ph, px, $"LAYERS (left: only y{ctx.FeetY} = blocks AT feet height from above, a solid cell there is a wall beside you, not floor; right: only y{ctx.FeetY - 1}, what you stand on)",
-                    fa.Concat(fb).Distinct().ToList(), "LAYERS"));
-                continue;
-            }
-            var rig = job.Rig ?? (job.Flat == "side" ? PerspectivePanel.Side(ctx.Focus, ctx.FeetY, ctx.Radius, job.Axis, job.Params) : PerspectivePanel.Top(ctx.Focus, ctx.FeetY, ctx.Radius, job.Params));
+            unchecked { hash = (hash ^ job.Ctx.Slab.Hash) * 1099511628211UL; }
+            if (job.Flat == "layers") { panels.Add(LayersPanel(job, pw, ph)); continue; }
+            var rig = job.Rig ?? FlatRig(job);
             var img = PerspectivePanel.Render(Eye(pw, ph), rig, InputFor(job, rig), out _, out var facts);
-            string legendText = job.Flat == "top" && ctx.CutAway ? rig.Legend[..^1] + ", roofs above it cut away)" : img.Legend;
+            string legendText = job.Flat == "top" && job.Ctx.CutAway ? rig.Legend[..^1] + ", roofs above it cut away)" : img.Legend;
             xray |= img.XRay;
-            panels.Add((job, img.Width, img.Height, img.Pixels!, legendText, facts, rig.Title));
+            panels.Add(new Panel(job, img.Width, img.Height, img.Pixels!, legendText, facts, rig.Title));
             unchecked { hash = (hash ^ (ulong)HashCode.Combine(Math.Round(rig.X, 1), Math.Round(rig.Y, 1), Math.Round(rig.Z, 1), rig.Yaw, rig.Pitch)) * 1099511628211UL; }
         }
 
@@ -281,18 +265,90 @@ public sealed class ContactSheet
         int usedRows = (panels.Count + cols - 1) / cols;
         int H = Math.Max(1, usedRows) * (ph + Gap) + StripH;
         var c = new Canvas(W, H, Bg);
-        for (int i = 0; i < panels.Count; i++)
-        {
-            var (job, iw, ih, px, _, _, _) = panels[i];
-            int ox = (i % cols) * (pw + Gap) + Math.Max(0, (pw - iw) / 2), oy = (i / cols) * (ph + Gap) + Math.Max(0, (ph - ih) / 2);
-            for (int y = 0; y < Math.Min(ih, ph); y++)
-                for (int x = 0; x < Math.Min(iw, pw); x++) c.Set(ox + x, oy + y, px[y * iw + x]);
-        }
+        for (int i = 0; i < panels.Count; i++) Paste(c, panels[i], i, cols, pw, ph);
         LegendStrip(c, 0, H - StripH, W);
 
-        // Legend text: header, panels (with their facts), shared notes.
+        var legend = LegendText(panels, head, W, H, xray, extra);
+        var weather = panels.Select(p => p.Job.Ctx.WeatherText).FirstOrDefault(t => t != null);
+        var labels = panels.SelectMany(p => p.Facts).Distinct().Take(12).ToList();
+        LastMs = sw.Elapsed.TotalMilliseconds;
+        ulong key = CacheKey(panels, head, hash);
+        return new VisionImage(Png.Encode(c.Px, W, H), W, H, key, legend, labels) { Pixels = c.Px, BlocksHash = hash, XRay = xray, Weather = weather };
+    }
+
+    private static PerspectivePanel.Rig FlatRig(PanelJob job)
+    {
+        var ctx = job.Ctx;
+        return job.Flat == "side" ? PerspectivePanel.Side(ctx.Focus, ctx.FeetY, ctx.Radius, job.Axis, job.Params) : PerspectivePanel.Top(ctx.Focus, ctx.FeetY, ctx.Radius, job.Params);
+    }
+
+    private static PerspectivePanel.Input InputFor(PanelJob job, PerspectivePanel.Rig rig)
+    {
+        var ctx = job.Ctx;
+        return new PerspectivePanel.Input
+        {
+            World = job.WorldOverride ?? ctx.World, Atlas = ctx.Atlas, Time = ctx.Time, Nether = ctx.Nether, Entities = ctx.WithBody(), Marks = ctx.Marks,
+            Focus = ctx.Focus, Pointed = ctx.Pointed, Target = ctx.Target, Slab = ctx.Slab, Smooth = ctx.Smooth,
+            Cut = ctx.CutAway && rig.Cut && job.WorldOverride == null ? PerspectivePanel.Cut(ctx.Slab, ctx.FeetY) : null,
+            Aids = ctx.Aids ? new ReadingAids.Input { Focus = ctx.Focus, FeetY = ctx.FeetY, Radius = ctx.Radius, Spots = ctx.Spots, Body = ctx.Body, Slab = ctx.Slab, Rings = rig.Ortho == 0 } : null,
+            Stamp = StampOf(ctx),
+            XRay = job.WorldOverride == null && ctx.CutAway ? ctx.XRay : XRay.Off, Subject = ctx.Subject, FeetY = ctx.FeetY, Weather = ctx.Nether ? default : ctx.Weather, // design previews (no cut-away) stay exact
+        };
+    }
+
+    /// <summary>Caption line 2: time of day, weather, staleness.</summary>
+    private static string StampOf(PanelContext ctx) =>
+        ctx.TimeOfDay + (ctx.WeatherText is { } wt ? ", " + wt : "") + (ctx.Staleness != null ? ", " + ctx.Staleness : "");
+
+    /// <summary>Two orthographic slices side by side: the feet layer and the one below, each seen from straight above.</summary>
+    private Panel LayersPanel(PanelJob job, int pw, int ph)
+    {
+        var ctx = job.Ctx;
+        int hw = (pw - Gap) / 2;
+        var left = PerspectivePanel.Layer(ctx.Focus, ctx.FeetY, ctx.Radius, $"FEET Y{ctx.FeetY}");
+        var right = PerspectivePanel.Layer(ctx.Focus, ctx.FeetY - 1, ctx.Radius, $"BELOW Y{ctx.FeetY - 1}");
+        var a = PerspectivePanel.Render(Eye(hw, ph), left, InputFor(job, left), out _, out var fa);
+        var b = PerspectivePanel.Render(Eye(hw, ph), right, InputFor(job, right), out _, out var fb);
+        var px = new uint[pw * ph];
+        Array.Fill(px, Bg);
+        for (int y = 0; y < ph; y++)
+        {
+            Array.Copy(a.Pixels!, y * hw, px, y * pw, hw);
+            Array.Copy(b.Pixels!, y * hw, px, y * pw + hw + Gap, hw);
+        }
+        return new Panel(job, pw, ph, px, $"LAYERS (left: only y{ctx.FeetY} = blocks AT feet height from above, a solid cell there is a wall beside you, not floor; right: only y{ctx.FeetY - 1}, what you stand on)",
+            fa.Concat(fb).Distinct().ToList(), "LAYERS");
+    }
+
+    /// <summary>Panel <paramref name="i"/> into its grid cell, centred.</summary>
+    private static void Paste(Canvas c, Panel p, int i, int cols, int pw, int ph)
+    {
+        int ox = (i % cols) * (pw + Gap) + Math.Max(0, (pw - p.W) / 2), oy = (i / cols) * (ph + Gap) + Math.Max(0, (ph - p.H) / 2);
+        for (int y = 0; y < Math.Min(p.H, ph); y++)
+            for (int x = 0; x < Math.Min(p.W, pw); x++) c.Set(ox + x, oy + y, p.Px[y * p.W + x]);
+    }
+
+    /// <summary>Legend text: header, panels (with their facts), shared notes.</summary>
+    private static string LegendText(List<Panel> panels, string head, int W, int H, bool xray, IReadOnlyList<string>? extra)
+    {
         var legend = new StringBuilder();
         legend.Append(CultureInfo.InvariantCulture, $"{head}, {W}x{H}px ~{(W * H + 749) / 750}tok; panels L>R, top>bottom:");
+        AppendPanelLegends(legend, panels);
+        legend.Append(" Cyan box = focus in every panel.");
+        legend.Append(" 3D = the game's view; caption = viewpoint >facing, time/staleness. Grid 1 block, every 5th labelled X/Z; gold Y ruler; crosshair + x,y,z on key blocks; rings 2/4/8 blocks from you; N/E/S/W gizmo.");
+        var roles = RolesShown(panels);
+        if (roles.Count > 0) legend.Append(" Roles (3D tint/outline, TOP letters): ").Append(string.Join(", ", roles)).Append('.');
+        if (panels.Any(p => p.Job.Ctx.CutAway && p.Job.Rig is { Cut: true })) legend.Append(" Cut-away: roofs over the focus layer cut away in ORBIT/HIGH/ISO and TOP.");
+        if (xray) legend.Append(" X-ray: rock/walls between the camera and you or the focus are removed in the panels that say x-ray; hatched slate faces are cut edges, not real walls.");
+        var weather = panels.Select(p => p.Job.Ctx.WeatherText).FirstOrDefault(t => t != null);
+        if (weather != null) legend.Append(" Weather: ").Append(weather).Append(" (darker sky and light; streaks are rain/snow, not blocks).");
+        if (extra != null) foreach (var e in extra) legend.Append(' ').Append(e);
+        legend.Append(" Dark below the island = void.");
+        return legend.ToString();
+    }
+
+    private static void AppendPanelLegends(StringBuilder legend, List<Panel> panels)
+    {
         var told = new HashSet<string>();
         for (int i = 0; i < panels.Count; i++)
         {
@@ -304,8 +360,11 @@ public sealed class ContactSheet
             if (fresh.Count > 0) legend.Append(": ").Append(string.Join("; ", fresh));
             legend.Append('.');
         }
-        legend.Append(" Cyan box = focus in every panel.");
-        legend.Append(" 3D = the game's view; caption = viewpoint >facing, time/staleness. Grid 1 block, every 5th labelled X/Z; gold Y ruler; crosshair + x,y,z on key blocks; rings 2/4/8 blocks from you; N/E/S/W gizmo.");
+    }
+
+    /// <summary>The names of the roles the panels' slabs show, in first-seen order.</summary>
+    private static HashSet<string> RolesShown(List<Panel> panels)
+    {
         var roles = new HashSet<string>();
         foreach (var p in panels)
         {
@@ -313,15 +372,12 @@ public sealed class ContactSheet
             if (slab.Roles == null) continue;
             for (int i = 0; i < slab.Roles.Length; i++) if (PerspectivePanel.Shown((BlockRole)slab.Roles[i])) roles.Add(BlockRoles.Name((BlockRole)slab.Roles[i]));
         }
-        if (roles.Count > 0) legend.Append(" Roles (3D tint/outline, TOP letters): ").Append(string.Join(", ", roles)).Append('.');
-        if (panels.Any(p => p.Job.Ctx.CutAway && p.Job.Rig is { Cut: true })) legend.Append(" Cut-away: roofs over the focus layer cut away in ORBIT/HIGH/ISO and TOP.");
-        if (xray) legend.Append(" X-ray: rock/walls between the camera and you or the focus are removed in the panels that say x-ray; hatched slate faces are cut edges, not real walls.");
-        var weather = panels.Select(p => p.Job.Ctx.WeatherText).FirstOrDefault(t => t != null);
-        if (weather != null) legend.Append(" Weather: ").Append(weather).Append(" (darker sky and light; streaks are rain/snow, not blocks).");
-        if (extra != null) foreach (var e in extra) legend.Append(' ').Append(e);
-        legend.Append(" Dark below the island = void.");
-        var labels = panels.SelectMany(p => p.Facts).Distinct().Take(12).ToList();
-        LastMs = sw.Elapsed.TotalMilliseconds;
+        return roles;
+    }
+
+    /// <summary>The sheet's cache key: the blocks hash, the entities in each panel and the header.</summary>
+    private static ulong CacheKey(List<Panel> panels, string head, ulong hash)
+    {
         ulong key = hash;
         unchecked
         {
@@ -329,9 +385,8 @@ public sealed class ContactSheet
                 foreach (var e in p.Job.Ctx.Entities) key = (key ^ (ulong)HashCode.Combine(e.Kind, e.Name, Math.Round(e.X, 1), Math.Round(e.Y, 1), Math.Round(e.Z, 1), e.Yaw, e.Burning)) * 1099511628211UL;
             foreach (char ch in head) key = (key ^ ch) * 1099511628211UL;
         }
-        return new VisionImage(Png.Encode(c.Px, W, H), W, H, key, legend.ToString(), labels) { Pixels = c.Px, BlocksHash = hash, XRay = xray, Weather = weather };
+        return key;
     }
-
     /// <summary>The one legend strip of a sheet: what the colours and outlines mean.</summary>
     private static void LegendStrip(Canvas c, int x0, int y0, int w)
     {

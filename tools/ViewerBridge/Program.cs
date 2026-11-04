@@ -68,17 +68,7 @@ namespace MineClaw.ViewerBridge
                 try { await next(ctx); }
                 catch (Exception ex) when (!ctx.Response.HasStarted)
                 {
-                    var (status, code, msg) = ex switch
-                    {
-                        BankUnavailableException b => (503, "upstream_unavailable", b.Message),
-                        SupervisorUnavailableException u => (503, "upstream_unavailable", u.Message),
-                        InvalidDataException => (413, "payload_too_large", "body too large"),
-                        ArgumentException a => (400, "bad_request", a.Message),
-                        FormatException => (400, "bad_request", "malformed request"),
-                        KeyNotFoundException k => (404, "not_found", k.Message),
-                        OperationCanceledException when ctx.RequestAborted.IsCancellationRequested => (499, "internal", "cancelled"),
-                        _ => (500, "internal", "internal error"),
-                    };
+                    var (status, code, msg) = ErrorFor(ex, ctx);
                     if (status == 500) app.Logger.LogError(ex, "unhandled error on {Path}", ctx.Request.Path.Value);
                     if (status != 499) await ApiErrors.Write(ctx, status, code, msg);
                 }
@@ -87,5 +77,18 @@ namespace MineClaw.ViewerBridge
             app.MapFallback((HttpContext ctx) => ApiErrors.NotFound());
             return app;
         }
+
+        /// <summary>An unhandled exception as (status, error code, message); 499 = the client went away (nothing is written).</summary>
+        private static (int Status, string Code, string Message) ErrorFor(Exception ex, HttpContext ctx) => ex switch
+        {
+            BankUnavailableException b => (503, "upstream_unavailable", b.Message),
+            SupervisorUnavailableException u => (503, "upstream_unavailable", u.Message),
+            InvalidDataException => (413, "payload_too_large", "body too large"),
+            ArgumentException a => (400, "bad_request", a.Message),
+            FormatException => (400, "bad_request", "malformed request"),
+            KeyNotFoundException k => (404, "not_found", k.Message),
+            OperationCanceledException when ctx.RequestAborted.IsCancellationRequested => (499, "internal", "cancelled"),
+            _ => (500, "internal", "internal error"),
+        };
     }
 }

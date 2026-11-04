@@ -216,38 +216,7 @@ public sealed class HiveLink : IAsyncDisposable
     private void ReadLoop()
     {
         string reason = "pipe closed";
-        try
-        {
-            while (!_cts.IsCancellationRequested)
-            {
-                var m = FrameCodec.Read(_stream);
-                if (m == null) break;
-                Interlocked.Exchange(ref _lastReceivedTicks, DateTimeOffset.UtcNow.UtcTicks);
-                if (m.Re != 0)
-                {
-                    if (_pending.TryRemove(m.Re, out var tcs)) tcs.TrySetResult(m);
-                    continue;
-                }
-                if (m.T == Msg.Heartbeat) continue; // liveness only (stamped above)
-                if (m.T == Msg.Ping && m.Id != 0)
-                {
-                    // Answered by the link itself, never by the (possibly busy) process.
-                    if (_beat != null)
-                    {
-                        _pongs.Enqueue(m.Id);
-                        try { _beatWake.Set(); } catch (ObjectDisposedException) { }
-                    }
-                    else
-                    {
-                        long id = m.Id;
-                        _ = Task.Run(async () => { try { await WriteAsync(new HiveMessage { T = Msg.Reply, Re = id }, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { } });
-                    }
-                    continue;
-                }
-                if (m.Id != 0) _ = Task.Run(() => AnswerAsync(m));
-                else _inbox.Writer.TryWrite(m);
-            }
-        }
+        try { ReadFrames(); }
         catch (Exception) when (_cts.IsCancellationRequested || !IsOpen) { reason = "link disposed"; }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidDataException or JsonException or InvalidOperationException
                                        or OperationCanceledException)
@@ -260,15 +229,61 @@ public sealed class HiveLink : IAsyncDisposable
             reason = "link error: " + ex.GetType().Name + ": " + ex.Message;
             _log.LogWarning(ex, "hive {Link}: reader failed", Name);
         }
-        // Notifications already read (a "bye" right before the pipe closes) are handled BEFORE Closed fires, as with inline
-        // dispatch: the other side's last words decide whether its exit was planned.
-        if (IsOpen && _dispatch != null)
-        {
-            _inbox.Writer.TryComplete();
-            try { _dispatch.Wait(TimeSpan.FromSeconds(3)); } catch (Exception) { }
-        }
+        DrainInbox();
         Close(reason);
     }
+
+    /// <summary>Notifications already read (a "bye" right before the pipe closes) are handled BEFORE Closed fires, as with inline
+    /// dispatch: the other side's last words decide whether its exit was planned.</summary>
+    private void DrainInbox()
+    {
+        if (!IsOpen || _dispatch == null) return;
+        _inbox.Writer.TryComplete();
+        try { _dispatch.Wait(TimeSpan.FromSeconds(3)); } catch (Exception) { }
+    }
+
+    /// <summary>Reads frames until the pipe ends (null frame) or the link is cancelled.</summary>
+    private void ReadFrames()
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            var m = FrameCodec.Read(_stream);
+            if (m == null) break;
+            Interlocked.Exchange(ref _lastReceivedTicks, DateTimeOffset.UtcNow.UtcTicks);
+            OnFrame(m);
+        }
+    }
+
+    /// <summary>One frame: a reply completes its request; a heartbeat is liveness only (stamped already); a ping is answered by the
+    /// link; a request is answered off the reader; a notification goes to the inbox.</summary>
+    private void OnFrame(HiveMessage m)
+    {
+        if (m.Re != 0)
+        {
+            if (_pending.TryRemove(m.Re, out var tcs)) tcs.TrySetResult(m);
+            return;
+        }
+        if (m.T == Msg.Heartbeat) return;
+        if (m.T == Msg.Ping && m.Id != 0) { AnswerPing(m.Id); return; }
+        if (m.Id != 0) AnswerLater(m);
+        else _inbox.Writer.TryWrite(m);
+    }
+
+    private void AnswerLater(HiveMessage m) => _ = Task.Run(() => AnswerAsync(m));
+
+    /// <summary>Answered by the link itself, never by the (possibly busy) process.</summary>
+    private void AnswerPing(long id)
+    {
+        if (_beat != null)
+        {
+            _pongs.Enqueue(id);
+            try { _beatWake.Set(); } catch (ObjectDisposedException) { }
+        }
+        else ReplyLater(id);
+    }
+
+    private void ReplyLater(long id) =>
+        _ = Task.Run(async () => { try { await WriteAsync(new HiveMessage { T = Msg.Reply, Re = id }, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { } });
 
     private async Task DispatchLoopAsync()
     {

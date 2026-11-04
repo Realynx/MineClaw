@@ -143,35 +143,45 @@ public sealed class SupervisorViewerRoutes
         if (!_o.Viewer.Enabled) return Reply(404, new { error = "not found" });
         if (string.IsNullOrEmpty(_o.Token)) return Reply(403, new { error = "the viewer needs Supervisor:Token" });
         if (!TokenOk(r.TokenHeader, _o.Token)) return Reply(403, new { error = "X-Supervisor-Token header required" });
-        bool post = r.Method.Equals("POST", StringComparison.OrdinalIgnoreCase);
-        bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+        var sub = path[Prefix.Length..];
         try
         {
-            if (InventoryPath.Match(path[Prefix.Length..]) is { Success: true } inv)
-                return get ? Inventory(inv.Groups["name"].Value) : NotAllowed("GET, HEAD");
-            switch (path[Prefix.Length..].ToLowerInvariant())
-            {
-                case "/chat":
-                    return post ? await ChatAsync(r, ct).ConfigureAwait(false) : NotAllowed("POST");
-                case "/feed":
-                    if (!get) return NotAllowed("GET, HEAD");
-                    {
-                        long since = Long(r, "since") ?? 0;
-                        var lines = Feed.Since(since, (int)Math.Clamp(Long(r, "max") ?? 200, 1, 500));
-                        return Reply(200, new { lines, last = lines.Count > 0 ? lines[^1].Seq : Math.Min(since, Feed.Last) });
-                    }
-                case "/now":
-                    if (!get) return NotAllowed("GET, HEAD");
-                    {
-                        if (Q(r, "bot") is not { Length: > 0 } bot || _data.Resolve(bot) is not { } login) return Reply(404, new { error = "no such bot" });
-                        return await _data.NowAsync(login, ct).ConfigureAwait(false) is { } now ? Reply(200, now) : Reply(404, new { error = "no such bot" });
-                    }
-                case "/memory-activity":
-                    return get ? await MemoryActivityAsync(r, ct).ConfigureAwait(false) : NotAllowed("GET, HEAD");
-            }
-            return Reply(404, new { error = "not found" });
+            if (InventoryPath.Match(sub) is { Success: true } inv) return IsGet(r) ? Inventory(inv.Groups["name"].Value) : NotAllowed("GET, HEAD");
+            return await RouteAsync(r, sub, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return Reply(503, new { error = "cancelled" }); }
+    }
+
+    private async Task<SupervisorReply> RouteAsync(SupervisorRequest r, string sub, CancellationToken ct)
+    {
+        bool post = r.Method.Equals("POST", StringComparison.OrdinalIgnoreCase);
+        bool get = IsGet(r);
+        return sub.ToLowerInvariant() switch
+        {
+            "/chat" => post ? await ChatAsync(r, ct).ConfigureAwait(false) : NotAllowed("POST"),
+            "/feed" => get ? FeedSince(r) : NotAllowed("GET, HEAD"),
+            "/now" => get ? await NowAsync(r, ct).ConfigureAwait(false) : NotAllowed("GET, HEAD"),
+            "/memory-activity" => get ? await MemoryActivityAsync(r, ct).ConfigureAwait(false) : NotAllowed("GET, HEAD"),
+            _ => Reply(404, new { error = "not found" }),
+        };
+    }
+
+    private static bool IsGet(SupervisorRequest r) =>
+        r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>GET /api/viewer/feed?since=&amp;max=: the feed lines after <c>since</c> (1-500, default 200).</summary>
+    private SupervisorReply FeedSince(SupervisorRequest r)
+    {
+        long since = Long(r, "since") ?? 0;
+        var lines = Feed.Since(since, (int)Math.Clamp(Long(r, "max") ?? 200, 1, 500));
+        return Reply(200, new { lines, last = lines.Count > 0 ? lines[^1].Seq : Math.Min(since, Feed.Last) });
+    }
+
+    /// <summary>GET /api/viewer/now?bot=: what the bot is doing now.</summary>
+    private async Task<SupervisorReply> NowAsync(SupervisorRequest r, CancellationToken ct)
+    {
+        if (Q(r, "bot") is not { Length: > 0 } bot || _data.Resolve(bot) is not { } login) return Reply(404, new { error = "no such bot" });
+        return await _data.NowAsync(login, ct).ConfigureAwait(false) is { } now ? Reply(200, now) : Reply(404, new { error = "no such bot" });
     }
 
     // ------------------------------------------------------------------ chat
@@ -181,28 +191,41 @@ public sealed class SupervisorViewerRoutes
     private async Task<SupervisorReply> ChatAsync(SupervisorRequest r, CancellationToken ct)
     {
         if (r.Body == SupervisorAdminRoutes.TooLarge) return Reply(413, new { error = $"body over {MaxBodyBytes} bytes" });
-        ChatBody? body;
-        try { body = string.IsNullOrWhiteSpace(r.Body) ? null : JsonSerializer.Deserialize<ChatBody>(r.Body, Json); }
-        catch (JsonException) { return Reply(400, new { error = "body must be JSON {bot, text, player, allow_commands, request_id}" }); }
-        if (body == null) return Reply(400, new { error = "body must be JSON {bot, text, player, allow_commands, request_id}" });
+        if (ParseChat(r.Body) is not { } body) return Reply(400, new { error = "body must be JSON {bot, text, player, allow_commands, request_id}" });
         var text = body.Text?.Trim() ?? "";
-        if (text.Length == 0) return Reply(400, new { error = "text is empty" });
-        if (text.Length > MaxText) return Reply(400, new { error = $"text over {MaxText} chars" });
-        if (text.Any(char.IsControl)) return Reply(400, new { error = "text must be one line (no control characters)" });
-        if (body.RequestId is { } rid && !RequestId.IsMatch(rid)) return Reply(400, new { error = "request_id: 1-64 of A-Z a-z 0-9 _ . : -" });
+        if (TextError(text, body.RequestId) is { } bad) return Reply(400, new { error = bad });
         // The player is who the viewer's own login says it is (the proxy's principal), and must be a trusted player here.
         var player = _data.TrustedPlayers.FirstOrDefault(p => p.Equals(body.Player?.Trim(), StringComparison.OrdinalIgnoreCase));
         if (player == null) return Reply(403, new { error = "player is not trusted (Agent:Self:TrustedPlayers)" });
         if (string.IsNullOrWhiteSpace(body.Bot) || _data.Resolve(body.Bot.Trim()) is not { } target) return Reply(404, new { error = "no such bot" });
-        if (!Allow(player, out var retry))
-            return Reply(429, new { error = $"over {Math.Max(1, _o.Viewer.PerMinute)} viewer lines a minute", retry_after_ms = (long)retry.TotalMilliseconds },
-                new Dictionary<string, string> { ["Retry-After"] = Math.Max(1, (int)Math.Ceiling(retry.TotalSeconds)).ToString(CultureInfo.InvariantCulture) });
+        if (!Allow(player, out var retry)) return TooMany(retry);
 
         var chat = new RemoteChat(player, text, "viewer", target, body.AllowCommands && _o.Viewer.AllowCommands, body.RequestId);
         long id = Feed.Add(target, "viewer", player, text, "viewer", body.RequestId); // before delivery: the reply's lines come after it
         bool accepted = await _data.SendAsync(chat, ct).ConfigureAwait(false);
         return Reply(200, new { accepted, id });
     }
+
+    /// <summary>The chat body; null when it is empty or not JSON.</summary>
+    private static ChatBody? ParseChat(string? raw)
+    {
+        try { return string.IsNullOrWhiteSpace(raw) ? null : JsonSerializer.Deserialize<ChatBody>(raw, Json); }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>Why a viewer line is refused (empty, too long, not one line, a bad request id); null = fine.</summary>
+    private static string? TextError(string text, string? requestId)
+    {
+        if (text.Length == 0) return "text is empty";
+        if (text.Length > MaxText) return $"text over {MaxText} chars";
+        if (text.Any(char.IsControl)) return "text must be one line (no control characters)";
+        if (requestId is { } rid && !RequestId.IsMatch(rid)) return "request_id: 1-64 of A-Z a-z 0-9 _ . : -";
+        return null;
+    }
+
+    private SupervisorReply TooMany(TimeSpan retry) =>
+        Reply(429, new { error = $"over {Math.Max(1, _o.Viewer.PerMinute)} viewer lines a minute", retry_after_ms = (long)retry.TotalMilliseconds },
+            new Dictionary<string, string> { ["Retry-After"] = Math.Max(1, (int)Math.Ceiling(retry.TotalSeconds)).ToString(CultureInfo.InvariantCulture) });
 
     // Sliding one-minute window per player.
     private bool Allow(string player, out TimeSpan retry)

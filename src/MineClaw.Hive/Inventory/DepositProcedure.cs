@@ -68,114 +68,138 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
 
     public static int CountOf(IEnumerable<ItemMsg> items) => items.Sum(i => i.Count);
 
+    /// <summary>One run's state: what it started with, what it tried, and what it noted for the report.</summary>
+    private sealed class DepositRun(int start)
+    {
+        public int Start { get; } = start;
+        /// <summary>Items() was just settled and nothing has changed it since.</summary>
+        public bool Fresh = true;
+        public readonly HashSet<BlockPos> Full = [];
+        public readonly HashSet<BlockPos> Unreachable = [];
+        public readonly List<string> Notes = [];
+        public int HandoffTries, PlaceTries, StepOuts;
+    }
+
     public async Task<DepositReport> RunAsync(TimeSpan timeout, CancellationToken ct)
     {
         var deadline = _time.GetUtcNow() + timeout;
         // Never decide "empty" from a stale snapshot (a cancelled worker may leave predicted clicks / an open window behind).
         await SettleAsync(ct).ConfigureAwait(false);
-        int start = CountOf(port.Items());
-        bool fresh = true; // Items() was just settled and nothing has changed it since
-        var full = new HashSet<BlockPos>();
-        int handoffTries = 0, placeTries = 0, stepOuts = 0;
-        var unreachable = new HashSet<BlockPos>();
-        var notes = new List<string>();
+        var run = new DepositRun(CountOf(port.Items()));
         while (!ct.IsCancellationRequested && _time.GetUtcNow() < deadline)
         {
-            int left = CountOf(port.Items());
-            if (left == 0 && !fresh)
-            {
-                await SettleAsync(ct).ConfigureAwait(false);
-                fresh = true;
-                left = CountOf(port.Items());
-                if (left > 0) _log.LogInformation("deposit: fresh inventory still holds {N} item(s)", left);
-            }
+            int left = await LeftAsync(run, ct).ConfigureAwait(false);
             if (left == 0) break;
-            fresh = false; // whatever happens next changes the inventory: settle again before trusting "empty"
+            run.Fresh = false; // whatever happens next changes the inventory: settle again before trusting "empty"
             if (!port.CanActSafely) { await Delay(ct); continue; }
-
-            // 1. Storage chests with room (nearest first), skipping ones another bot is using; then the ones memory calls full,
-            // opened and re-checked (memory may be stale: live 10-27 23:06 "all known chests full" while two were nearly empty).
-            var chest = port.Chests().Where(c => !full.Contains(c.Pos) && claims.IsFree(ClaimKey.Chest(c.Pos, port.Dimension)))
-                .OrderByDescending(c => c.FreeSlots > 0).FirstOrDefault();
-            if (chest != null)
-            {
-                var key = ClaimKey.Chest(chest.Pos, port.Dimension);
-                var lease = await claims.TryClaimAsync(key, TimeSpan.FromSeconds(60), "deposit", ct).ConfigureAwait(false);
-                if (!lease.Ok) { full.Add(chest.Pos); continue; }
-                try
-                {
-                    var r = await port.DepositToAsync(chest.Pos, ct).ConfigureAwait(false);
-                    _log.LogInformation("deposit into chest {Pos}: {Result}", chest.Pos, r.Message);
-                    if (!r.Ok && IsUnreachable(r)) unreachable.Add(chest.Pos);
-                    if (!r.Ok || CountOf(port.Items()) >= left) full.Add(chest.Pos); // full or unusable: next one
-                }
-                finally { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); }
-                continue;
-            }
-
-            // 1b. A chest with room was only out of reach from HERE (live2: a recall from inside the generator hole handed
-            // Fox's pickaxe to main on the first "can't reach chest"): step out to open ground and try those chests again
-            // before handing anything off. Tools and items belong in storage, not at main's feet.
-            if (unreachable.Count > 0 && stepOuts < 2)
-            {
-                stepOuts++;
-                bool moved = false;
-                try { moved = await port.StepOutAsync(ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { _log.LogWarning(ex, "deposit: step-out failed"); }
-                _log.LogInformation("deposit: {N} chest(s) out of reach from here; stepped out: {Moved}", unreachable.Count, moved);
-                if (moved)
-                {
-                    foreach (var u in unreachable) full.Remove(u);
-                    unreachable.Clear();
-                    notes.Add("stepped out to reach storage");
-                    continue;
-                }
-                unreachable.Clear();
-            }
-
-            // 2. Storage full: hand the items to main (toss at its feet, confirmed by its collect events).
-            if (handoff != null && handoffTries < 2)
-            {
-                handoffTries++;
-                var at = await handoff.OfferAsync(left, ct).ConfigureAwait(false);
-                if (at is { } feet)
-                {
-                    var r = await port.TossAllAtAsync(feet, ct).ConfigureAwait(false);
-                    await Task.Delay(TimeSpan.FromSeconds(2), _time, ct).ConfigureAwait(false);
-                    int got = await handoff.ConfirmAsync(ct).ConfigureAwait(false);
-                    notes.Add($"handed {got} to main");
-                    _log.LogInformation("handoff to main: {Result}; main collected {Got}", r.Message, got);
-                    continue;
-                }
-            }
-
-            // 3. Place and label a new chest (needs a chest item), then deposit into it.
-            if (placeTries < 1)
-            {
-                placeTries++;
-                var (r, pos) = await port.PlaceLabelledChestAsync(label, ct).ConfigureAwait(false);
-                _log.LogInformation("new storage chest: {Result}", r.Message);
-                if (r.Ok && pos is { } p)
-                {
-                    notes.Add($"placed chest at {p.X},{p.Y},{p.Z}");
-                    var d = await port.DepositToAsync(p, ct).ConfigureAwait(false);
-                    _log.LogInformation("deposit into new chest: {Result}", d.Message);
-                }
-                continue;
-            }
-
-            // Nothing worked yet: wait (someone may free space / come online) and try every chest again.
-            full.Clear();
-            handoffTries = Math.Min(handoffTries, 1);
-            await Delay(ct);
+            await StepAsync(run, left, ct).ConfigureAwait(false);
         }
-        if (!fresh) await SettleAsync(CancellationToken.None).ConfigureAwait(false);
+        if (!run.Fresh) await SettleAsync(CancellationToken.None).ConfigureAwait(false);
         int remaining = CountOf(port.Items());
-        string text = remaining == 0
-            ? $"inventory empty (deposited {start})" + (notes.Count > 0 ? "; " + string.Join("; ", notes) : "")
-            : $"{remaining} item(s) still held (no storage space)" + (notes.Count > 0 ? "; " + string.Join("; ", notes) : "");
-        return new DepositReport(remaining == 0, remaining, start - remaining, text);
+        string notes = run.Notes.Count > 0 ? "; " + string.Join("; ", run.Notes) : "";
+        string text = remaining == 0 ? $"inventory empty (deposited {run.Start})" + notes : $"{remaining} item(s) still held (no storage space)" + notes;
+        return new DepositReport(remaining == 0, remaining, run.Start - remaining, text);
+    }
+
+    /// <summary>Items still held; an "empty" read from a changed inventory is settled and read again first.</summary>
+    private async Task<int> LeftAsync(DepositRun run, CancellationToken ct)
+    {
+        int left = CountOf(port.Items());
+        if (left != 0 || run.Fresh) return left;
+        await SettleAsync(ct).ConfigureAwait(false);
+        run.Fresh = true;
+        left = CountOf(port.Items());
+        if (left > 0) _log.LogInformation("deposit: fresh inventory still holds {N} item(s)", left);
+        return left;
+    }
+
+    /// <summary>One attempt, in order: a storage chest, a step out (to reach one), a hand-off to main, a new chest; when none is
+    /// left to try, wait (someone may free space / come online) and try every chest again.</summary>
+    private async Task StepAsync(DepositRun run, int left, CancellationToken ct)
+    {
+        if (await TryChestAsync(run, left, ct).ConfigureAwait(false)) return;
+        if (await TryStepOutAsync(run, ct).ConfigureAwait(false)) return;
+        if (await TryHandoffAsync(run, left, ct).ConfigureAwait(false)) return;
+        if (await TryNewChestAsync(run, ct).ConfigureAwait(false)) return;
+        run.Full.Clear();
+        run.HandoffTries = Math.Min(run.HandoffTries, 1);
+        await Delay(ct);
+    }
+
+    /// <summary>
+    /// 1. Storage chests with room (nearest first), skipping ones another bot is using; then the ones memory calls full, opened and
+    /// re-checked (memory may be stale: live 10-27 23:06 "all known chests full" while two were nearly empty). False = no chest to try.
+    /// </summary>
+    private async Task<bool> TryChestAsync(DepositRun run, int left, CancellationToken ct)
+    {
+        var chest = port.Chests().Where(c => !run.Full.Contains(c.Pos) && claims.IsFree(ClaimKey.Chest(c.Pos, port.Dimension)))
+            .OrderByDescending(c => c.FreeSlots > 0).FirstOrDefault();
+        if (chest == null) return false;
+        var key = ClaimKey.Chest(chest.Pos, port.Dimension);
+        var lease = await claims.TryClaimAsync(key, TimeSpan.FromSeconds(60), "deposit", ct).ConfigureAwait(false);
+        if (!lease.Ok) { run.Full.Add(chest.Pos); return true; }
+        try
+        {
+            var r = await port.DepositToAsync(chest.Pos, ct).ConfigureAwait(false);
+            _log.LogInformation("deposit into chest {Pos}: {Result}", chest.Pos, r.Message);
+            if (!r.Ok && IsUnreachable(r)) run.Unreachable.Add(chest.Pos);
+            if (!r.Ok || CountOf(port.Items()) >= left) run.Full.Add(chest.Pos); // full or unusable: next one
+        }
+        finally { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); }
+        return true;
+    }
+
+    /// <summary>
+    /// 1b. A chest with room was only out of reach from HERE (live2: a recall from inside the generator hole handed Fox's pickaxe to
+    /// main on the first "can't reach chest"): step out to open ground and try those chests again before handing anything off. Tools
+    /// and items belong in storage, not at main's feet. True = stepped out (try the chests again).
+    /// </summary>
+    private async Task<bool> TryStepOutAsync(DepositRun run, CancellationToken ct)
+    {
+        if (run.Unreachable.Count == 0 || run.StepOuts >= 2) return false;
+        run.StepOuts++;
+        bool moved = false;
+        try { moved = await port.StepOutAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { _log.LogWarning(ex, "deposit: step-out failed"); }
+        _log.LogInformation("deposit: {N} chest(s) out of reach from here; stepped out: {Moved}", run.Unreachable.Count, moved);
+        if (moved)
+        {
+            foreach (var u in run.Unreachable) run.Full.Remove(u);
+            run.Notes.Add("stepped out to reach storage");
+        }
+        run.Unreachable.Clear();
+        return moved;
+    }
+
+    /// <summary>2. Storage full: hand the items to main (toss at its feet, confirmed by its collect events). True = handed off.</summary>
+    private async Task<bool> TryHandoffAsync(DepositRun run, int left, CancellationToken ct)
+    {
+        if (handoff == null || run.HandoffTries >= 2) return false;
+        run.HandoffTries++;
+        if (await handoff.OfferAsync(left, ct).ConfigureAwait(false) is not { } feet) return false;
+        var r = await port.TossAllAtAsync(feet, ct).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromSeconds(2), _time, ct).ConfigureAwait(false);
+        int got = await handoff.ConfirmAsync(ct).ConfigureAwait(false);
+        run.Notes.Add($"handed {got} to main");
+        _log.LogInformation("handoff to main: {Result}; main collected {Got}", r.Message, got);
+        return true;
+    }
+
+    /// <summary>3. Place and label a new chest (needs a chest item), then deposit into it. Once per run.</summary>
+    private async Task<bool> TryNewChestAsync(DepositRun run, CancellationToken ct)
+    {
+        if (run.PlaceTries >= 1) return false;
+        run.PlaceTries++;
+        var (r, pos) = await port.PlaceLabelledChestAsync(label, ct).ConfigureAwait(false);
+        _log.LogInformation("new storage chest: {Result}", r.Message);
+        if (r.Ok && pos is { } p)
+        {
+            run.Notes.Add($"placed chest at {p.X},{p.Y},{p.Z}");
+            var d = await port.DepositToAsync(p, ct).ConfigureAwait(false);
+            _log.LogInformation("deposit into new chest: {Result}", d.Message);
+        }
+        return true;
     }
 
     /// <summary>The deposit failed because the chest couldn't be reached (path/reach), not because it was full.</summary>

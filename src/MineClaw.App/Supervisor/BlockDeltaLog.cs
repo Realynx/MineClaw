@@ -96,13 +96,17 @@ public sealed class BlockDeltaLog
     private bool HeldElsewhere(WorldState self, int dim, int cx, int cz)
     {
         lock (AllWorlds)
-            foreach (var r in AllWorlds)
-                if (r.TryGetTarget(out var w) && !ReferenceEquals(w, self) && w.Dimension == dim && w.GetColumn(cx, cz) is { HasData: true })
-                    return true;
+            if (AnyHolds(AllWorlds, self, dim, cx, cz)) return true;
         lock (_lock)
-            foreach (var r in _worlds)
-                if (r.TryGetTarget(out var w) && !ReferenceEquals(w, self) && w.Dimension == dim && w.GetColumn(cx, cz) is { HasData: true })
-                    return true;
+            return AnyHolds(_worlds, self, dim, cx, cz);
+    }
+
+    // caller holds the list's lock
+    private static bool AnyHolds(List<WeakReference<WorldState>> worlds, WorldState self, int dim, int cx, int cz)
+    {
+        foreach (var r in worlds)
+            if (r.TryGetTarget(out var w) && !ReferenceEquals(w, self) && w.Dimension == dim && w.GetColumn(cx, cz) is { HasData: true })
+                return true;
         return false;
     }
 
@@ -133,8 +137,7 @@ public sealed class BlockDeltaLog
             if (_recentBlocks.TryGetValue(key, out var seen) && seen.State == state && now - seen.AtMs <= window) return;
             if (_recentBlocks.Count > 8192) Prune(_recentBlocks, now, window);
             _recentBlocks[key] = (state, now);
-            if (_changedAt.Count > 16384) _changedAt.Clear();
-            _changedAt[(dim, p.X >> 4, p.Z >> 4)] = now;
+            MarkChanged(dim, p.X >> 4, p.Z >> 4, now);
             Push(new Entry { AtMs = now, Dim = dim, X = p.X, Y = p.Y, Z = p.Z, Id = c.NewId, Meta = c.NewMeta & 15, Kind = 0 });
         }
     }
@@ -181,14 +184,25 @@ public sealed class BlockDeltaLog
         {
             var key = (dim, cx, cz, kind);
             if (_recentColumns.TryGetValue(key, out var at) && now - at <= window) return;
-            if (_recentColumns.Count > 8192)
-                foreach (var k in _recentColumns.Where(kv => now - kv.Value > window).Select(kv => kv.Key).ToList()) _recentColumns.Remove(k);
+            if (_recentColumns.Count > 8192) PruneColumns(now, window);
             _recentColumns[key] = now;
             if (kind is 1 or 2) _recentColumns.Remove((dim, cx, cz, kind == 1 ? (byte)2 : (byte)1)); // a reload right after an unload is news again
-            if (_changedAt.Count > 16384) _changedAt.Clear();
-            _changedAt[(dim, cx, cz)] = now;
+            MarkChanged(dim, cx, cz, now);
             Push(new Entry { AtMs = now, Dim = dim, X = cx, Z = cz, Kind = kind });
         }
+    }
+
+    // caller holds _lock
+    private void PruneColumns(long now, long window)
+    {
+        foreach (var k in _recentColumns.Where(kv => now - kv.Value > window).Select(kv => kv.Key).ToList()) _recentColumns.Remove(k);
+    }
+
+    // caller holds _lock
+    private void MarkChanged(int dim, int cx, int cz, long now)
+    {
+        if (_changedAt.Count > 16384) _changedAt.Clear();
+        _changedAt[(dim, cx, cz)] = now;
     }
 
     // caller holds _lock
@@ -234,38 +248,57 @@ public sealed class BlockDeltaLog
                 _recentColumns.Clear();
             }
             _lastReadMs = now;
-            long oldest = _count > 0 ? _ring[_head].Rev : _rev + 1;
-            if (since <= 0 || since > _rev || since < _gap || since < oldest - 1)
-                return new Page(_rev, true, false, new Dictionary<string, List<int[]>>(), []);
+            if (MustResync(since)) return new Page(_rev, true, false, new Dictionary<string, List<int[]>>(), []);
             var blocks = new Dictionary<string, List<int[]>>();
             var columns = new List<ColumnEvent>();
-            long last = since;
-            int n = 0;
-            bool more = false;
-            // The ring is in rev order (a gap rev has no entry): binary search the first entry after since.
-            int lo = 0, hi = _count;
-            while (lo < hi)
-            {
-                int mid = (lo + hi) >> 1;
-                if (_ring[(_head + mid) % _ring.Length].Rev <= since) lo = mid + 1; else hi = mid;
-            }
-            int start = lo;
-            for (int i = start; i < _count; i++)
-            {
-                ref var e = ref _ring[(_head + i) % _ring.Length];
-                if (dim is { } d && e.Dim != d) { last = e.Rev; continue; }
-                if (n >= max) { more = true; break; }
-                if (e.Kind == 0)
-                {
-                    var key = e.Dim.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    if (!blocks.TryGetValue(key, out var list)) blocks[key] = list = new List<int[]>();
-                    list.Add([e.X, e.Y, e.Z, e.Id, e.Meta]);
-                }
-                else columns.Add(new ColumnEvent(e.Rev, e.AtMs, e.Dim, e.X, e.Z, e.Kind switch { 1 => Loaded, 2 => Unloaded, _ => BlockEntity }));
-                last = e.Rev;
-                n++;
-            }
+            var (last, more) = Collect(FirstAfter(since), since, dim, max, blocks, columns);
             return new Page(more ? last : _rev, false, more, blocks, columns);
         }
+    }
+
+    /// <summary><paramref name="since"/> can't be continued from (none, ahead, before the last gap, or older than the ring holds):
+    /// the reader starts over. Caller holds the lock.</summary>
+    private bool MustResync(long since)
+    {
+        long oldest = _count > 0 ? _ring[_head].Rev : _rev + 1;
+        return since <= 0 || since > _rev || since < _gap || since < oldest - 1;
+    }
+
+    /// <summary>The ring is in rev order (a gap rev has no entry): binary search the first entry after <paramref name="since"/>.</summary>
+    private int FirstAfter(long since)
+    {
+        int lo = 0, hi = _count;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >> 1;
+            if (_ring[(_head + mid) % _ring.Length].Rev <= since) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+
+    /// <summary>Up to <paramref name="max"/> entries from ring position <paramref name="start"/> (of <paramref name="dim"/> when given)
+    /// into blocks by dimension and column events: the last rev read and whether more are left.</summary>
+    private (long Last, bool More) Collect(int start, long since, int? dim, int max, Dictionary<string, List<int[]>> blocks, List<ColumnEvent> columns)
+    {
+        long last = since;
+        int n = 0;
+        for (int i = start; i < _count; i++)
+        {
+            ref var e = ref _ring[(_head + i) % _ring.Length];
+            if (dim is { } d && e.Dim != d) { last = e.Rev; continue; }
+            if (n >= max) return (last, true);
+            if (e.Kind == 0) BlockList(blocks, e.Dim).Add([e.X, e.Y, e.Z, e.Id, e.Meta]);
+            else columns.Add(new ColumnEvent(e.Rev, e.AtMs, e.Dim, e.X, e.Z, e.Kind switch { 1 => Loaded, 2 => Unloaded, _ => BlockEntity }));
+            last = e.Rev;
+            n++;
+        }
+        return (last, false);
+    }
+
+    private static List<int[]> BlockList(Dictionary<string, List<int[]>> blocks, int dim)
+    {
+        var key = dim.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (!blocks.TryGetValue(key, out var list)) blocks[key] = list = new List<int[]>();
+        return list;
     }
 }

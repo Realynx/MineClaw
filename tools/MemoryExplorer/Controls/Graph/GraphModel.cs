@@ -115,45 +115,101 @@ public sealed class GraphModel
         var ordered = specs.OrderByDescending(s => s.Layer).ThenBy(s => s.Index).ToArray();
         var slot = new Dictionary<int, int>(ordered.Length);
         for (int k = 0; k < ordered.Length; k++) slot[ordered[k].Index] = k;
-        int n = ordered.Length;
-        var parents = new List<int>?[n];
-        for (int k = 0; k < n; k++)
-            foreach (var c in ordered[k].Children)
-                if (slot.TryGetValue(c, out var cs) && cs != k) (parents[cs] ??= []).Add(k);
-
-        var nodes = new GraphNode[n];
-        for (int k = 0; k < n; k++)
-        {
-            var s = ordered[k];
-            var one = s.Text.ReplaceLineEndings(" ").Trim();
-            nodes[k] = new GraphNode
-            {
-                Index = s.Index, Layer = s.Layer, Slot = k, ChildCount = s.Children.Count, Tokens = s.Tokens, Dirty = s.Dirty, Text = s.Text,
-                Preview = one.Length > 280 ? one[..280] + "…" : one,
-                Title = s.Layer == 0 ? (string.IsNullOrWhiteSpace(s.Title) ? Short(one, 80) : Short(s.Title!, 80)) : $"Layer {s.Layer} summary #{s.Index}",
-                Category = Categorize(s.Kind, s.Tag, s.Source),
-                // Seeded docs carry epoch-zero stamps: anything before 2000 counts as unknown.
-                Newest = s.Updated is { } u && u.Year >= 2000 ? u.ToUnixTimeMilliseconds() : 0,
-            };
-        }
+        var parents = ParentsOf(ordered, slot);
+        var nodes = new GraphNode[ordered.Length];
+        for (int k = 0; k < nodes.Length; k++) nodes[k] = NodeOf(ordered[k], k);
         // Primary parent (soft clustering puts most leaves under several clusters): the most specific cluster, i.e. the one with
         // the fewest children (ties: lowest index). Then a repair pass hands every cluster that would come out empty one child
         // from a cluster that has more than one, so every summary keeps a band.
-        var assigned = new int[n];
+        var assigned = AssignPrimaryParents(nodes, parents);
+        RepairEmptyClusters(nodes, ordered, slot, assigned);
+        var kids = LinkChildren(nodes, parents);
+        AggregateBottomUp(nodes, kids);
+        foreach (var g in nodes)
+            g.Children = kids[g.Slot] is { } ks ? ks.OrderByDescending(c => nodes[c].Leaves).ThenBy(c => nodes[c].Index).ToArray() : [];
+        var top = nodes.Where(g => g.Parent < 0).OrderByDescending(g => g.Layer).ThenByDescending(g => g.Leaves).ThenBy(g => g.Index)
+            .Select(g => g.Slot).ToArray();
+        // Roots (top-down: slot ascending is layer descending, so parents are assigned first).
+        for (int k = 0; k < nodes.Length; k++) nodes[k].Root = nodes[k].Parent < 0 ? k : nodes[nodes[k].Parent].Root;
+        return Assemble(nodes, slot, numLayers, top);
+    }
+
+    /// <summary>The other (soft-clustering) parents of every node, and each node's primary children.</summary>
+    private static List<int>?[] LinkChildren(GraphNode[] nodes, List<int>?[] parents)
+    {
+        int n = nodes.Length;
         for (int k = 0; k < n; k++)
+            if (parents[k] is { } ps) nodes[k].OtherParents = ps.Where(p => p != nodes[k].Parent).Distinct().OrderBy(p => nodes[p].Index).ToArray();
+        var kids = new List<int>?[n];
+        for (int k = 0; k < n; k++) if (nodes[k].Parent >= 0) (kids[nodes[k].Parent] ??= []).Add(k);
+        return kids;
+    }
+
+    /// <summary>The model: layer counts, the time range and rank, the partition layout.</summary>
+    private static GraphModel Assemble(GraphNode[] nodes, Dictionary<int, int> slot, int numLayers, int[] top)
+    {
+        int layers = Math.Max(numLayers, nodes.Length > 0 ? nodes.Max(g => g.Layer) : 0);
+        var counts = new int[layers + 1];
+        foreach (var g in nodes) counts[g.Layer]++;
+        var times = nodes.Where(g => g.Newest > 0).Select(g => g.Newest).ToList();
+        RankTimes(nodes);
+        var m = new GraphModel
+        {
+            Nodes = nodes, Slot = slot, NumLayers = layers, TopLevel = top, LayerCounts = counts,
+            MinTime = times.Count > 0 ? times.Min() : 0, MaxTime = times.Count > 0 ? times.Max() : 0,
+        };
+        m.Layout = PartitionLayout.Compute(m);
+        return m;
+    }
+
+    /// <summary>Every parent slot of each slot (soft clustering: a node can sit under several clusters).</summary>
+    private static List<int>?[] ParentsOf(NodeSpec[] ordered, Dictionary<int, int> slot)
+    {
+        var parents = new List<int>?[ordered.Length];
+        for (int k = 0; k < ordered.Length; k++)
+            foreach (var c in ordered[k].Children)
+                if (slot.TryGetValue(c, out var cs) && cs != k) (parents[cs] ??= []).Add(k);
+        return parents;
+    }
+
+    private static GraphNode NodeOf(NodeSpec s, int k)
+    {
+        var one = s.Text.ReplaceLineEndings(" ").Trim();
+        return new GraphNode
+        {
+            Index = s.Index, Layer = s.Layer, Slot = k, ChildCount = s.Children.Count, Tokens = s.Tokens, Dirty = s.Dirty, Text = s.Text,
+            Preview = one.Length > 280 ? one[..280] + "…" : one,
+            Title = s.Layer == 0 ? (string.IsNullOrWhiteSpace(s.Title) ? Short(one, 80) : Short(s.Title!, 80)) : $"Layer {s.Layer} summary #{s.Index}",
+            Category = Categorize(s.Kind, s.Tag, s.Source),
+            // Seeded docs carry epoch-zero stamps: anything before 2000 counts as unknown.
+            Newest = s.Updated is { } u && u.Year >= 2000 ? u.ToUnixTimeMilliseconds() : 0,
+        };
+    }
+
+    /// <summary>Each node's primary parent: the higher cluster with the fewest children (ties: lowest index). Returns the
+    /// number of children each cluster got.</summary>
+    private static int[] AssignPrimaryParents(GraphNode[] nodes, List<int>?[] parents)
+    {
+        var assigned = new int[nodes.Length];
+        for (int k = 0; k < nodes.Length; k++)
         {
             if (parents[k] is not { } ps) continue;
             int best = -1;
             foreach (var p in ps)
-            {
-                if (nodes[p].Layer <= nodes[k].Layer) continue;
-                if (best < 0 || nodes[p].ChildCount < nodes[best].ChildCount ||
-                    (nodes[p].ChildCount == nodes[best].ChildCount && nodes[p].Index < nodes[best].Index)) best = p;
-            }
+                if (nodes[p].Layer > nodes[k].Layer && MoreSpecific(nodes[p], best < 0 ? null : nodes[best])) best = p;
             nodes[k].Parent = best;
             if (best >= 0) assigned[best]++;
         }
-        for (int p = 0; p < n; p++)
+        return assigned;
+    }
+
+    private static bool MoreSpecific(GraphNode p, GraphNode? best) =>
+        best == null || p.ChildCount < best.ChildCount || (p.ChildCount == best.ChildCount && p.Index < best.Index);
+
+    /// <summary>A cluster no child chose takes one (lowest index) from a cluster that keeps at least one.</summary>
+    private static void RepairEmptyClusters(GraphNode[] nodes, NodeSpec[] ordered, Dictionary<int, int> slot, int[] assigned)
+    {
+        for (int p = 0; p < nodes.Length; p++)
         {
             if (assigned[p] > 0 || ordered[p].Children.Count == 0) continue;
             foreach (var ci in ordered[p].Children.OrderBy(i => i))
@@ -167,14 +223,13 @@ public sealed class GraphModel
                 break;
             }
         }
-        for (int k = 0; k < n; k++)
-            if (parents[k] is { } ps) nodes[k].OtherParents = ps.Where(p => p != nodes[k].Parent).Distinct().OrderBy(p => nodes[p].Index).ToArray();
-        var kids = new List<int>?[n];
-        for (int k = 0; k < n; k++) if (nodes[k].Parent >= 0) (kids[nodes[k].Parent] ??= []).Add(k);
+    }
 
-        // Bottom-up (layer ascending = slot descending): leaf weights, category votes and newest time.
-        var votes = new int[n, 7];
-        for (int k = n - 1; k >= 0; k--)
+    /// <summary>Bottom-up (layer ascending = slot descending): leaf weights, category votes and newest time.</summary>
+    private static void AggregateBottomUp(GraphNode[] nodes, List<int>?[] kids)
+    {
+        var votes = new int[nodes.Length, 7];
+        for (int k = nodes.Length - 1; k >= 0; k--)
         {
             var g = nodes[k];
             if (g.IsLeaf || kids[k] == null)
@@ -183,53 +238,43 @@ public sealed class GraphModel
                 g.LeafCount = g.IsLeaf ? 1 : 0;
                 if (g.IsLeaf) votes[k, (int)g.Category] = 1;
             }
-            else
-            {
-                int sum = 0, real = 0;
-                long newest = g.Newest;
-                foreach (var c in kids[k]!)
-                {
-                    sum += nodes[c].Leaves;
-                    real += nodes[c].LeafCount;
-                    newest = Math.Max(newest, nodes[c].Newest);
-                    for (int v = 0; v < 7; v++) votes[k, v] += votes[c, v];
-                }
-                g.Leaves = Math.Max(1, sum);
-                g.LeafCount = real;
-                g.Newest = newest;
-                int best = 0;
-                for (int v = 1; v < 7; v++) if (votes[k, v] > votes[k, best]) best = v;
-                if (votes[k, best] > 0) g.Category = (MemoryCategory)best;
-            }
+            else Aggregate(nodes, kids[k]!, votes, k);
         }
-        foreach (var g in nodes)
-            g.Children = kids[g.Slot] is { } ks ? ks.OrderByDescending(c => nodes[c].Leaves).ThenBy(c => nodes[c].Index).ToArray() : [];
-        var top = nodes.Where(g => g.Parent < 0).OrderByDescending(g => g.Layer).ThenByDescending(g => g.Leaves).ThenBy(g => g.Index)
-            .Select(g => g.Slot).ToArray();
-        // Roots (top-down: slot ascending is layer descending, so parents are assigned first).
-        for (int k = 0; k < n; k++) nodes[k].Root = nodes[k].Parent < 0 ? k : nodes[nodes[k].Parent].Root;
+    }
 
-        int layers = Math.Max(numLayers, nodes.Length > 0 ? nodes.Max(g => g.Layer) : 0);
-        var counts = new int[layers + 1];
-        foreach (var g in nodes) counts[g.Layer]++;
-        var times = nodes.Where(g => g.Newest > 0).Select(g => g.Newest).ToList();
-        var leafTimes = nodes.Where(g => g.IsLeaf && g.Newest > 0).Select(g => g.Newest).Order().ToArray();
-        if (leafTimes.Length > 0)
-            foreach (var g in nodes)
-            {
-                if (g.Newest <= 0) continue;
-                int i = Array.BinarySearch(leafTimes, g.Newest);
-                if (i < 0) i = ~i;
-                else while (i + 1 < leafTimes.Length && leafTimes[i + 1] == g.Newest) i++;
-                g.TimeRank = leafTimes.Length == 1 ? 1 : Math.Clamp((double)i / (leafTimes.Length - 1), 0, 1);
-            }
-        var m = new GraphModel
+    private static void Aggregate(GraphNode[] nodes, List<int> kids, int[,] votes, int k)
+    {
+        var g = nodes[k];
+        int sum = 0, real = 0;
+        long newest = g.Newest;
+        foreach (var c in kids)
         {
-            Nodes = nodes, Slot = slot, NumLayers = layers, TopLevel = top, LayerCounts = counts,
-            MinTime = times.Count > 0 ? times.Min() : 0, MaxTime = times.Count > 0 ? times.Max() : 0,
-        };
-        m.Layout = PartitionLayout.Compute(m);
-        return m;
+            sum += nodes[c].Leaves;
+            real += nodes[c].LeafCount;
+            newest = Math.Max(newest, nodes[c].Newest);
+            for (int v = 0; v < 7; v++) votes[k, v] += votes[c, v];
+        }
+        g.Leaves = Math.Max(1, sum);
+        g.LeafCount = real;
+        g.Newest = newest;
+        int best = 0;
+        for (int v = 1; v < 7; v++) if (votes[k, v] > votes[k, best]) best = v;
+        if (votes[k, best] > 0) g.Category = (MemoryCategory)best;
+    }
+
+    /// <summary>Each dated node's quantile among the leaf times (the time colour scale).</summary>
+    private static void RankTimes(GraphNode[] nodes)
+    {
+        var leafTimes = nodes.Where(g => g.IsLeaf && g.Newest > 0).Select(g => g.Newest).Order().ToArray();
+        if (leafTimes.Length == 0) return;
+        foreach (var g in nodes)
+        {
+            if (g.Newest <= 0) continue;
+            int i = Array.BinarySearch(leafTimes, g.Newest);
+            if (i < 0) i = ~i;
+            else while (i + 1 < leafTimes.Length && leafTimes[i + 1] == g.Newest) i++;
+            g.TimeRank = leafTimes.Length == 1 ? 1 : Math.Clamp((double)i / (leafTimes.Length - 1), 0, 1);
+        }
     }
 
     private static string Short(string s, int max)

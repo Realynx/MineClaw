@@ -28,7 +28,7 @@ public readonly record struct CombatStep(MoveInput Input, bool Overrides, int At
 /// consent-based sparring. Other threads only post signals (<see cref="OnChat"/>, <see cref="OnEntityStatus"/>...)
 /// and commands; everything else runs inside <see cref="Tick"/>.
 /// </summary>
-public sealed class CombatEngine
+public sealed partial class CombatEngine
 {
     private enum FightKind { Mob, Spar }
 
@@ -622,84 +622,6 @@ public sealed class CombatEngine
     public string? Outmatched(PhysicsState phys, Entity target) =>
         Estimate(phys, target) is { } e && e.Kill > e.Die * 0.75 ? e.Text : null;
 
-    private (Entity E, string Why, bool Cover)? Scan(PhysicsState phys)
-    {
-        var guarded = Guarded;
-        if (!DefendSelf && guarded.Count == 0) return null;
-        var me = phys.Position;
-        var guards = guarded.Select(n => _w.Entities.FindPlayer(n)).Where(p => p is not null).ToList();
-        (Entity E, string Why, bool Cover)? best = null;
-        double bestD = double.MaxValue;
-        foreach (var e in _w.Entities.Nearby(me, Options.MaxEngageDistance, e => e.Kind == EntityKind.Mob))
-        {
-            if (CombatRules.IsTamedWolf(e)) continue;
-            var prof = CombatRules.ProfileOf(e);
-            if (prof.Tactic == MobTactic.Ignore) continue;
-            bool provoked = _provoked.TryGetValue(e.Id, out var pt) && _tick - pt < 200;
-            if (!CombatRules.IsThreat(e) && !provoked) continue;
-            if (e.TypeId == MobTypes.Enderman && !provoked) continue;
-            if (e.TypeId == MobTypes.Spider && !_w.IsNight && !provoked) continue; // neutral in daylight
-            double d = e.Position.DistanceTo(me);
-            bool ranged = prof.Tactic == MobTactic.Ranged;
-            bool creeper = e.TypeId == MobTypes.Creeper;
-            bool inReach = InMeleeReach(phys, e);
-            // Out of its sight and off our level (a cave under the floor, a ledge): no danger until it shows up or hits us.
-            bool sensed = provoked || Senses(e, me);
-            bool creeperDanger = sensed && creeper && (CombatRules.IsCreeperFusing(e) ? d <= CombatRules.CreeperCancelRange + 1 : Horizontal(me, e.Position) <= Options.CreeperAvoidRadius);
-            string? why = null;
-            bool cover = false;
-
-            Unreachable? u;
-            lock (_unreachable) _unreachable.TryGetValue(e.Id, out u);
-            if (u is not null)
-            {
-                // Gave up on it: only a real change re-triggers (live 10-27 22:09-22:10: a creeper across a gap restarted a
-                // 20 s fight every 200 ms and cancelled every walk north).
-                bool hitMeSince = provoked && pt > u.Tick;
-                // A given-up creeper that's merely close re-triggers only once it has moved since (out of its pocket) or
-                // fuses (live 10-28 17:20: one trapped 3 m west of the tower restarted an 8 s fight back to back, freezing main).
-                if (CombatRules.IsCreeperFusing(e) && creeperDanger) why = "creeper fusing";
-                else if (creeperDanger && Horizontal(u.Pos, e.Position) > 1.0 && (inReach || CanWalkTo(me, e))) why = "creeper close";
-                else if (inReach && DefendSelf) why = "in reach";
-                else if (hitMeSince && !ranged && DefendSelf) why = "it attacked";
-                else if (hitMeSince && ranged && DefendSelf && _w.Player.Health <= Options.CoverHealth && _tick - u.LastCover > Options.CoverMaxTicks * 2
-                         && CombatGeometry.HasLineOfSight(_w, Eye(e), phys.EyePosition))
-                { why = "taking cover"; cover = true; }
-                if (why is null || d >= bestD) continue;
-                bestD = d;
-                best = (e, why, cover);
-                continue;
-            }
-
-            // Only what the bot can actually get to starts a fight: within melee reach, or a safe first step toward it.
-            bool approachable = inReach || CanWalkTo(me, e);
-            if (DefendSelf && sensed)
-            {
-                // One that hit us from water over its head is fought only once it's in reach (no chasing it in).
-                if (provoked && d <= 10 && !ranged && (inReach || !CombatGeometry.DeepWater(_w, e.Position))) why = "it attacked";
-                else if (ranged && (provoked || CombatGeometry.HasLineOfSight(_w, phys.EyePosition, Eye(e))))
-                {
-                    // Live 10-28 night: skeletons at 4-11 m on ledges/across gaps held every bot "busy" with 0 hits.
-                    // Shot from within its range by one it can walk to: close in (an unwinnable one turns into cover in Tick).
-                    if ((d <= Options.SkeletonEngageRange || provoked && d <= OutOfArcherRange - 2) && approachable && (provoked || !Brave))
-                        why = provoked ? "it attacked" : "skeleton in sight";
-                    else if (provoked && _w.Player.Health <= Options.CoverHealth) { why = "taking cover"; cover = true; }
-                }
-                else if (Brave) { if (creeperDanger && CombatRules.IsCreeperFusing(e)) why = "creeper fusing"; else if (inReach && !creeper) why = "in reach"; }
-                else if (creeperDanger) why = CombatRules.IsCreeperFusing(e) ? "creeper fusing" : "creeper close";
-                else if (creeper && d <= CombatRules.CreeperCancelRange && approachable) why = "creeper close";
-                else if (!creeper && d <= Options.DefendRadius && approachable) why = "defending myself";
-            }
-            if (why is null && approachable && (!ranged || d <= Options.SkeletonEngageRange))
-                foreach (var g in guards)
-                    if (g!.Position.DistanceTo(e.Position) <= Options.GuardRadius) { why = "guarding " + g.Name; break; }
-            if (why is null || d >= bestD) continue;
-            bestD = d;
-            best = (e, why, cover);
-        }
-        return best;
-    }
-
     private readonly Dictionary<int, (long Tick, BlockPos From, BlockPos At, bool Ok)> _walkable = new();
     private readonly Dictionary<int, (long Tick, bool Ok)> _sensed = new();
 
@@ -816,238 +738,6 @@ public sealed class CombatEngine
     }
 
     // ------------------------------------------------------------------ mob fights
-
-    private MoveInput MobTick(Fight f, PhysicsState phys, Ctx ctx)
-    {
-        if (_pendingEquip is { } eq) { ctx.Equip = eq; _pendingEquip = null; }
-        var me = phys.Position;
-        var face = Hold(phys);
-        if (f.StopRequest is { } stop) { EndFight(f, "stopped: " + stop, phys, ctx); return face; }
-
-        var target = _w.Entities.Get(f.TargetId);
-        if (target is null || _dead.ContainsKey(f.TargetId))
-        {
-            bool killed = _dead.ContainsKey(f.TargetId) || (_lastHurt.TryGetValue(f.TargetId, out var h) && _tick - h < 40);
-            if (killed) f.Kills++;
-            string what = killed ? $"killed {f.TargetName}" : $"{f.TargetName} gone";
-            if (!f.Explicit && f.FleeStart < 0 && Scan(phys) is { } next)
-            {
-                Log("retarget", phys, next.E.Position, new() { ["after"] = what, ["target"] = next.E.DisplayName });
-                f.TargetId = next.E.Id;
-                f.TargetName = next.E.DisplayName;
-                f.PrevDist = f.BestDist = double.MaxValue;
-                f.PrevTargetPos = null;
-                f.LastProgressTick = f.TargetSince = _tick;
-                f.TargetHits = 0;
-                f.Stance = null;
-                return face;
-            }
-            EndFight(f, what, phys, ctx);
-            return face;
-        }
-
-        var prof = CombatRules.ProfileOf(target);
-        double dist = Horizontal(me, target.Position);
-        if (dist > Options.MaxEngageDistance + 8) { EndFight(f, $"{f.TargetName} out of range", phys, ctx); return face; }
-        if (dist < f.BestDist - 0.5) { f.BestDist = dist; f.LastProgressTick = _tick; }
-        if (f.Cover) return CoverTick(f, phys, target, ctx);
-        if (_tick - f.LastProgressTick > Options.StaleFightTicks)
-        {
-            f.GaveUp = true;
-            EndFight(f, $"couldn't reach {f.TargetName} safely", phys, ctx);
-            return face;
-        }
-        // A reflex never holds the body for a mob it can't hit (live 10-28: "busy: fighting skeleton 11.4m: 0 hits").
-        if (!f.Explicit && f.Done is null && f.TargetHits == 0 && f.FleeStart < 0 && _tick - f.TargetSince > Options.ZeroHitGiveUpTicks
-            && !InMeleeReach(phys, target) && !AnyFusingCreeper(me, out _))
-        {
-            f.GaveUp = true;
-            EndFight(f, $"couldn't reach {f.TargetName} (0 hits in {Options.ZeroHitGiveUpTicks / 20}s), left it alone", phys, ctx);
-            return face;
-        }
-        // A reflex never follows a mob into water over its head: no footing, no crits, the air runs out, and the breath reflex's
-        // swim to shore got cut by the next re-engage (live 10-29 23:35: main chased a zombie under water, down to 7 s of air and
-        // 15 hp with bare hands). One that comes back into reach (or hits us) is fought again.
-        if (!f.Explicit && f.Done is null && f.FleeStart < 0 && !InMeleeReach(phys, target)
-            && (CombatGeometry.DeepWater(_w, target.Position) || _w.Player.HeadUnderWater))
-        {
-            if (f.WetSince < 0) f.WetSince = _tick;
-            else if (_tick - f.WetSince > 30)
-            {
-                f.GaveUp = true;
-                EndFight(f, $"won't chase {f.TargetName} into the water, left it alone", phys, ctx);
-                return face;
-            }
-        }
-        else f.WetSince = -1;
-        // "Approaching" is the MOB closing in (its own move toward where I stand now), not the gap shrinking: while the bot walks up
-        // to a mob busy with someone else the gap shrinks too, and "let it come to us" then held the bot 5 m short until the 8 s
-        // give-up (live 10-29: Fox and Robin killed by a zombie at a door; this guard fight never reached it).
-        bool approaching = false;
-        if ((_tick - f.StartTick) % 10 == 0)
-        {
-            approaching = f.PrevTargetPos is { } pt && Horizontal(me, pt) - dist > 0.3;
-            f.PrevTargetPos = target.Position;
-            f.MobApproaching = approaching;
-            f.PrevDist = dist;
-        }
-        else approaching = f.MobApproaching;
-        Sample(f, phys, target);
-
-        // ---- 1.9+ fight-or-flight: a reflex melee fight that turned out unwinnable (more mobs, hp lost) boxes in while it still can
-        // An archer fight that turned out unwinnable (hp lost, a second archer): break off into cover, never trade arrows for nothing.
-        if (!f.Explicit && f.FleeStart < 0 && prof.Tactic == MobTactic.Ranged && _tick - f.OutmatchCheck >= 10 && MayBoxInstead(f.Reason))
-        {
-            f.OutmatchCheck = _tick;
-            if (Outmatched(phys, target) is { } why && CombatGeometry.HasLineOfSight(_w, Eye(target), phys.EyePosition))
-            {
-                f.Cover = true;
-                f.Outmatched = true;
-                f.Stance = null;
-                Raise(CombatEventKind.Critical, $"can't win against {f.TargetName} at hp {_w.Player.Health} ({why}): taking cover");
-                return CoverTick(f, phys, target, ctx);
-            }
-        }
-        if (!f.Explicit && f.FleeStart < 0 && prof.Tactic == MobTactic.Melee && _tick - f.OutmatchCheck >= 10 && MayBoxInstead(f.Reason))
-        {
-            f.OutmatchCheck = _tick;
-            if (Outmatched(phys, target) is { } why && CanBoxIn is { } can && SafeAsk(can, MeleeThreats(me).Count))
-            {
-                Sheltering = true;
-                ctx.Shelter = true;
-                EndFight(f, $"boxing in at hp {_w.Player.Health}: can't win ({why})", phys, ctx);
-                return face;
-            }
-        }
-
-        // ---- low health: disengage inward, then eat
-        if (_w.Player.Health <= Options.DisengageHealth && f.FleeStart < 0)
-        {
-            f.FleeStart = _tick;
-            if (!f.LowAlerted) { f.LowAlerted = true; Raise(CombatEventKind.Critical, $"hp {_w.Player.Health}/20 fighting {f.TargetName}: disengaging inward"); }
-        }
-        if (f.FleeStart >= 0)
-        {
-            var threats = _w.Entities.Nearby(me, 12, CombatRules.IsThreat).Select(e => e.Position).ToList();
-            if (threats.Count == 0 || dist > 10 || _tick - f.FleeStart > 200) { EndFight(f, $"disengaged at hp {_w.Player.Health}", phys, ctx); return face; }
-            var retreat = CombatGeometry.RetreatCell(_w, me, threats, 7, 8);
-            // Retreat inward has nowhere to go (no cell, or no walk home from up here): box in instead of dying in the open.
-            if (!f.ShelterAsked && ShouldShelter is { } shelter)
-            {
-                f.ShelterAsked = true;
-                bool go;
-                try { go = shelter(threats.Count, retreat != null); } catch { go = false; }
-                if (go)
-                {
-                    Sheltering = true;
-                    ctx.Shelter = true;
-                    EndFight(f, $"boxing in at hp {_w.Player.Health} ({threats.Count} near, no way out)", phys, ctx);
-                    return face;
-                }
-            }
-            return MoveOrHold(phys, retreat, FaceAt(phys, target), sneak: false);
-        }
-
-        var look = FaceAt(phys, target);
-        double reach = CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(target));
-        // 1.9+: wait for the charge, unless hurt badly with the mob in reach (an uncharged hit still knocks it back).
-        _emergency = Rules.AttackCooldownTicks(Math.Max(0, _heldId)) > 0 && _w.Player.Health <= Options.EmergencySwingHealth && reach <= Options.Reach;
-        int cooldown = Cooldown(target.Id);
-
-        // ---- creepers: the fuse decides
-        if (prof.Tactic == MobTactic.Creeper || AnyFusingCreeper(me, out _))
-        {
-            if (AnyFusingCreeper(me, out var fusing))
-            {
-                if (!f.FuseAlerted)
-                {
-                    f.FuseAlerted = true;
-                    Log("creeper_fuse", phys, fusing!.Position, null);
-                    Raise(CombatEventKind.Critical, $"creeper fusing {Horizontal(me, fusing.Position):0.#}m away: backing off");
-                }
-                var away = CombatGeometry.RetreatCell(_w, me, [fusing!.Position], 7, CombatRules.CreeperCancelRange + 0.5);
-                if (away is null) { ctx.Block = CanBlockNow(fusing); return Slow(look); }
-                return MoveOrHold(phys, away, look, sneak: false);
-            }
-            f.FuseAlerted = false;
-            if (Options.Creeper == CreeperTactic.Avoid || _tick < f.BackoffUntil)
-            {
-                double keep = Options.Creeper == CreeperTactic.Avoid ? 6 : 5;
-                if (dist < keep) return MoveOrHold(phys, CombatGeometry.RetreatCell(_w, me, [target.Position], 6, keep), look, sneak: false);
-                return look;
-            }
-        }
-
-        // ---- positioning: never with the void behind (knockback goes away from the attacker)
-        Vec3d? moveTo = null;
-        bool climbStep = false;
-        bool edgeBehind = CombatGeometry.EdgeBehind(_w, me, target.Position, Options.KnockbackDepth);
-        if (edgeBehind)
-        {
-            if (f.Stance is not { } st || _tick > f.StanceUntil || CombatGeometry.EdgeBehind(_w, st.BottomCenter, target.Position, Options.KnockbackDepth))
-            {
-                f.Stance = CombatGeometry.ChooseStance(_w, me, target.Position, Options.KnockbackDepth)
-                           ?? CombatGeometry.RetreatCell(_w, me, [target.Position], 6);
-                f.StanceUntil = _tick + 20;
-                Log("reposition", phys, target.Position, new() { ["to"] = f.Stance?.ToString() ?? "none", ["why"] = "edge behind" });
-            }
-            if (f.Stance is { } s2) moveTo = s2.BottomCenter;
-        }
-        else if (reach > Options.Reach - 0.2)
-        {
-            f.Stance = null;
-            bool melee = prof.Tactic is MobTactic.Melee or MobTactic.Enderman or MobTactic.Creeper;
-            if (prof.Tactic == MobTactic.Ranged)
-                moveTo = RangedApproach(f, phys, target);
-            else if (!(melee && approaching && dist < 8)) // let it come to us; otherwise close in on safe ground only
-            {
-                moveTo = SafeApproachPoint(me, target.Position, Options.Reach - 0.6, out bool up);
-                climbStep = up;
-            }
-        }
-
-        // ---- swing timing: one full hit per invulnerability window; crit when falling
-        bool inReach = reach <= Options.Reach && CombatGeometry.HasLineOfSight(_w, phys.EyePosition, CombatRules.AimPoint(target));
-        bool safeForJump = Safety.EdgeDistance(_w, (int)Math.Floor(me.X), (int)Math.Floor(me.Y + 1e-6), (int)Math.Floor(me.Z), 4) > Options.KnockbackDepth;
-        // 1.9+: every charged hit knocks a melee mob ~2.5 blocks back, so the next one is charged before it walks back into reach.
-        // Jump as it comes (within a block of reach) so the fall meets it; on the ground only a jump in reach could crit.
-        bool meetIt = Rules.AttackCooldownTicks(Math.Max(0, _heldId)) > 0 && prof.Tactic == MobTactic.Melee && !inReach && approaching
-                      && reach <= Options.Reach + 1.0 && cooldown <= 6;
-        bool jump = Options.Crits && (inReach && cooldown is >= 4 and <= 6 || meetIt) && phys.OnGround && safeForJump && moveTo is null;
-        // Off the ground and not falling yet (rising, or at the top of the jump with no fall distance): hold the swing for the crit.
-        bool rising = !phys.OnGround && !phys.InWater && !phys.OnLadder && (phys.Velocity.Y > 0 || phys.FallDistance <= 0) && cooldown > -6;
-        if (inReach && cooldown <= 0 && !rising)
-        {
-            // 1.9+: a charged sword hit on the ground sweeps everything around the target: never into a player, a pet or a
-            // neutral mob. Hold it and jump for a crit instead (a crit never sweeps).
-            // Conservative: the server judges the step length itself, so a slow-step sweep is assumed whatever this tick's step was.
-            if (Rules.IsSweep(Context(phys, target) with { WalkedThisTick = 0 }) && SweepVictim(phys, target) is { } bystander)
-            {
-                if (f.Swings == 0 || _tick % 20 == 0) Log("hold_fire", phys, target.Position, new() { ["why"] = $"a sweep would hit {bystander.DisplayName}" });
-                jump = phys.OnGround && safeForJump && moveTo is null;
-            }
-            else
-            {
-                Swing(f, target, phys, ctx);
-                return moveTo is { } m0 ? CombatGeometry.SteerTo(me, m0, look.Yaw, look.Pitch) : look;
-            }
-        }
-
-        // ---- block between swings (melee threats close; b1.8.1 a sword, 1.9+ a shield that an axe isn't about to disable)
-        if (Options.Block && CanBlockNow(target) && dist <= 4 && cooldown >= Math.Max(2, Rules.BlockRaiseTicks) && !jump && phys.OnGround
-            && prof.Tactic is not MobTactic.Creeper)
-            ctx.Block = true;
-
-        var input = moveTo is { } m ? CombatGeometry.SteerTo(me, m, look.Yaw, look.Pitch) : look;
-        if (jump || climbStep && phys.OnGround && phys.CollidedHorizontally) input = input with { Jump = true };
-        // A passive animal runs when hit (panic: faster than a walk): sprint after it on open ground, like a player hunting.
-        if (!prof.Hostile && moveTo is not null && !edgeBehind && !ctx.Block && _w.Player.Food > 6 && dist > Options.Reach)
-            input = input with { Sprint = true };
-        // Closing on an archer: sprint the zig-zag (fewer arrows on the way in); never with the void behind or while blocking.
-        if (prof.Tactic == MobTactic.Ranged && moveTo is not null && !edgeBehind && !ctx.Block && _w.Player.Food > 6 && dist > Options.Reach + 1)
-            input = input with { Sprint = true };
-        return ctx.Block ? Slow(input) : input;
-    }
 
     /// <summary>Into cover from a ranged mob the bot can't reach: the nearest cell its eyes can't see, else away from it;
     /// ends once hidden or after <see cref="CombatOptions.CoverMaxTicks"/>.</summary>
@@ -1227,11 +917,21 @@ public sealed class CombatEngine
     private MoveInput SparTick(Fight f, PhysicsState phys, Ctx ctx)
     {
         var s = f.Spar!;
-        var me = phys.Position;
         var face = Hold(phys);
         var opp = _w.Entities.Get(s.OpponentId) ?? _w.Entities.FindPlayer(s.Opponent);
         if (opp is not null) s.OpponentId = opp.Id;
+        if (SparStopReason(f, s, phys, opp) is { } stop) { EndFight(f, stop, phys, ctx); return face; }
+        if (opp is null) return face;
 
+        Sample(f, phys, opp);
+        var look = FaceAt(phys, opp);
+        if (SparBetweenRounds(f, s, phys, ctx, opp, look, face) is { } between) return between;
+        return SparFightTick(f, s, phys, ctx, opp, look, face);
+    }
+
+    /// <summary>Why the spar stops now: the request, the opponent out of sight for 2 s, or <see cref="SparStopCheck"/>.</summary>
+    private string? SparStopReason(Fight f, SparState s, PhysicsState phys, Entity? opp)
+    {
         string? stop = f.StopRequest;
         if (stop is null && opp is null)
         {
@@ -1239,14 +939,12 @@ public sealed class CombatEngine
             else if (_tick - s.MissingSince > 40) stop = "opponent out of sight";
         }
         else if (opp is not null) s.MissingSince = -1;
-        stop ??= SparStopCheck(f, s, phys, opp);
-        if (stop is not null) { EndFight(f, stop, phys, ctx); return face; }
-        if (opp is null) return face;
+        return stop ?? SparStopCheck(f, s, phys, opp);
+    }
 
-        Sample(f, phys, opp);
-        var look = FaceAt(phys, opp);
-
-        // Rounds: first to N confirmed hits; short pause between rounds.
+    /// <summary>Rounds: first to N confirmed hits; short pause between rounds (back to the centre, "go!" as it ends). Null = fighting.</summary>
+    private MoveInput? SparBetweenRounds(Fight f, SparState s, PhysicsState phys, Ctx ctx, Entity opp, MoveInput look, MoveInput face)
+    {
         if (s.Rounds is { } rounds && (s.RoundBot >= Options.SparRoundHits || s.RoundOpp >= Options.SparRoundHits))
         {
             string score = $"me {s.RoundBot} - {s.Opponent} {s.RoundOpp}";
@@ -1258,67 +956,95 @@ public sealed class CombatEngine
             s.PauseUntil = _tick + 60;
             return face;
         }
-        if (_tick < s.PauseUntil)
-        {
-            if (s.PauseUntil - _tick == 1) ctx.Chat = "go!";
-            return MoveOrHold(phys, new BlockPos(s.Center.X, s.Center.Y, s.Center.Z), look, sneak: false);
-        }
+        if (_tick >= s.PauseUntil) return null;
+        if (s.PauseUntil - _tick == 1) ctx.Chat = "go!";
+        return MoveOrHold(phys, new BlockPos(s.Center.X, s.Center.Y, s.Center.Z), look, sneak: false);
+    }
 
+    private MoveInput SparFightTick(Fight f, SparState s, PhysicsState phys, Ctx ctx, Entity opp, MoveInput look, MoveInput face)
+    {
+        var me = phys.Position;
         double reach = CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(opp));
-        Vec3d? moveTo = null;
         // Positioning: my knockback (away from them) and theirs (away from me) should both point into the zone.
         // A sprinting player's hit throws ~4x further (b1.8 sprint knockback, CombatRules.SprintKnockbackHorizontal).
         double myDepth = opp.IsSprinting ? Math.Max(Options.KnockbackDepth, Options.SprintKnockbackDepth) : Options.KnockbackDepth;
         bool myBackUnsafe = CombatGeometry.EdgeBehind(_w, me, opp.Position, myDepth);
         bool theirBackUnsafe = CombatGeometry.EdgeBehind(_w, opp.Position, me, Options.KnockbackDepth);
-        if (myBackUnsafe || theirBackUnsafe || (s.Stance is not null && _tick <= s.StanceUntil))
-        {
-            if (s.Stance is null || _tick > s.StanceUntil || CombatGeometry.EdgeBehind(_w, s.Stance.Value.BottomCenter, opp.Position, myDepth))
-            {
-                s.Stance = s.Zone.Stance(_w, me, opp.Position, myDepth);
-                s.StanceUntil = _tick + 20;
-                Log("reposition", phys, opp.Position, new() { ["to"] = s.Stance?.ToString() ?? "none", ["why"] = myBackUnsafe ? "edge behind me" : "edge behind them" });
-            }
-            if (s.Stance is { } st && Horizontal(me, st.BottomCenter) > 0.3) moveTo = st.BottomCenter;
-        }
-        else if (reach > Options.Reach - 0.3 && SafeApproachPoint(me, opp.Position, 2.2) is { } p && s.Zone.Contains(p))
-            moveTo = p;
+        var moveTo = SparMoveTo(s, phys, opp, reach, myDepth, myBackUnsafe, theirBackUnsafe);
 
         int cooldown = Cooldown(opp.Id);
         bool inReach = reach <= Options.Reach && CombatGeometry.HasLineOfSight(_w, phys.EyePosition, CombatRules.AimPoint(opp));
-        if (inReach && cooldown <= 0 && phys.OnGround)
-        {
-            // The opponent's knockback must land on safe ground too; and never a hit that could be fatal.
-            int weapon = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
-            double worst = s.Model.WorstHit(weapon, couldCrit: false, Armor(opp));
-            if (s.Model.NextHitRisky(worst)) { EndFight(f, "next hit could be dangerous for the opponent", phys, ctx); return face; }
-            int oppEdge = SparZone.EdgeAt(_w, opp.Position);
-            if (oppEdge <= Options.SparNoSwingEdge)
-                Log("hold_fire", phys, opp.Position, new() { ["why"] = $"opponent {oppEdge} from an edge" });
-            else if (theirBackUnsafe)
-                Log("hold_fire", phys, opp.Position, new() { ["why"] = "opponent's knockback would carry them near an edge" });
-            else Swing(f, opp, phys, ctx);
-        }
+        if (inReach && cooldown <= 0 && phys.OnGround && SparSwingEnded(f, s, phys, ctx, opp, theirBackUnsafe)) return face;
         return moveTo is { } m ? CombatGeometry.SteerTo(me, m, look.Yaw, look.Pitch) : look;
     }
 
-    private string? SparStopCheck(Fight f, SparState s, PhysicsState phys, Entity? opp)
+    /// <summary>Where to stand: a stance with both knockbacks into the zone while an edge is behind either of us (or the last stance
+    /// still holds), else closer in on safe ground inside the zone.</summary>
+    private Vec3d? SparMoveTo(SparState s, PhysicsState phys, Entity opp, double reach, double myDepth, bool myBackUnsafe, bool theirBackUnsafe)
+    {
+        if (myBackUnsafe || theirBackUnsafe || (s.Stance is not null && _tick <= s.StanceUntil))
+            return SparStance(s, phys, opp, myDepth, myBackUnsafe);
+        if (reach > Options.Reach - 0.3 && SafeApproachPoint(phys.Position, opp.Position, 2.2) is { } p && s.Zone.Contains(p)) return p;
+        return null;
+    }
+
+    private Vec3d? SparStance(SparState s, PhysicsState phys, Entity opp, double myDepth, bool myBackUnsafe)
     {
         var me = phys.Position;
+        if (s.Stance is null || _tick > s.StanceUntil || CombatGeometry.EdgeBehind(_w, s.Stance.Value.BottomCenter, opp.Position, myDepth))
+        {
+            s.Stance = s.Zone.Stance(_w, me, opp.Position, myDepth);
+            s.StanceUntil = _tick + 20;
+            Log("reposition", phys, opp.Position, new() { ["to"] = s.Stance?.ToString() ?? "none", ["why"] = myBackUnsafe ? "edge behind me" : "edge behind them" });
+        }
+        return s.Stance is { } st && Horizontal(me, st.BottomCenter) > 0.3 ? st.BottomCenter : null;
+    }
+
+    /// <summary>The opponent's knockback must land on safe ground too; and never a hit that could be fatal (that ends the spar: true).
+    /// Otherwise swings, or holds fire with the opponent near an edge.</summary>
+    private bool SparSwingEnded(Fight f, SparState s, PhysicsState phys, Ctx ctx, Entity opp, bool theirBackUnsafe)
+    {
+        int weapon = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
+        double worst = s.Model.WorstHit(weapon, couldCrit: false, Armor(opp));
+        if (s.Model.NextHitRisky(worst)) { EndFight(f, "next hit could be dangerous for the opponent", phys, ctx); return true; }
+        int oppEdge = SparZone.EdgeAt(_w, opp.Position);
+        if (oppEdge <= Options.SparNoSwingEdge)
+            Log("hold_fire", phys, opp.Position, new() { ["why"] = $"opponent {oppEdge} from an edge" });
+        else if (theirBackUnsafe)
+            Log("hold_fire", phys, opp.Position, new() { ["why"] = "opponent's knockback would carry them near an edge" });
+        else Swing(f, opp, phys, ctx);
+        return false;
+    }
+
+    private string? SparStopCheck(Fight f, SparState s, PhysicsState phys, Entity? opp) =>
+        SparHealthStop(opp) ?? s.Model.StopReason() ?? SparArenaStop(s, phys, opp) ?? SparIntrusionStop(f, s);
+
+    /// <summary>My hp at the threshold, or the opponent's next (critical) hit could bring me to 1.</summary>
+    private string? SparHealthStop(Entity? opp)
+    {
         int hp = _w.Player.Health;
         if (hp <= Options.SparSelfStopHealth) return $"my hp {hp} at threshold";
-        if (opp is not null)
-        {
-            int incoming = (int)Math.Ceiling(Rules.DamageAfterArmor(Rules.CritDamage(Rules.AttackDamage(opp.HeldItem)),
-                Enumerable.Range(5, 4).Select(i => _w.Inventory.GetPlayerSlot(i))) - 1e-9);
-            if (hp - incoming <= 1) return $"my hp {hp}: their next hit could take {incoming}";
-        }
-        if (s.Model.StopReason() is { } r) return r;
+        if (opp is null) return null;
+        int incoming = (int)Math.Ceiling(Rules.DamageAfterArmor(Rules.CritDamage(Rules.AttackDamage(opp.HeldItem)),
+            Enumerable.Range(5, 4).Select(i => _w.Inventory.GetPlayerSlot(i))) - 1e-9);
+        return hp - incoming <= 1 ? $"my hp {hp}: their next hit could take {incoming}" : null;
+    }
+
+    /// <summary>Either of us too close to an edge, or out of the arena.</summary>
+    private string? SparArenaStop(SparState s, PhysicsState phys, Entity? opp)
+    {
+        var me = phys.Position;
         int stopEdge = Options.MinEdgeDistance - 1;
         if (phys.OnGround && SparZone.EdgeAt(_w, me) <= stopEdge) return "I got too close to the edge";
         if (opp is not null && SparZone.EdgeAt(_w, opp.Position) <= stopEdge) return $"{s.Opponent} got too close to the edge";
         if (s.Zone.OutsideDistance(me) > Options.ArenaLeaveSlack) return "I left the arena";
         if (opp is not null && s.Zone.OutsideDistance(opp.Position) > Options.ArenaLeaveSlack) return $"{s.Opponent} left the arena";
+        return null;
+    }
+
+    /// <summary>A mob near the arena, or the time limit.</summary>
+    private string? SparIntrusionStop(Fight f, SparState s)
+    {
         var center = s.Center.BottomCenter;
         var mob = _w.Entities.Nearest(center, 16, e => e.Kind == EntityKind.Mob
             && (CombatRules.IsThreat(e) || s.Zone.OutsideDistance(e.Position) <= 2));

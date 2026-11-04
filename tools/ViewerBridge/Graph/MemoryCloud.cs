@@ -72,18 +72,22 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
                 {
                     Status = "error", Note = "the memory cloud layout failed (see the bridge log)", Arrangements = Statuses(key),
                 };
-            if (_running != arrangement && !_queue.Contains(arrangement)) _queue.Add(arrangement);
-            if (!_looping)
-            {
-                _looping = true;
-                _job = Task.Run(LoopAsync);
-            }
+            Enqueue(arrangement);
             var stale = slot.Ready;
             var dto = stale != null
                 ? stale with { Status = "computing", ComputingStateKey = key }
                 : Empty(bank, "computing", "laying out the memory cloud", arrangement) with { ComputingStateKey = key };
             return dto with { Arrangements = Statuses(key) };
         }
+    }
+
+    /// <summary>Queues a computation of <paramref name="arrangement"/> (once) and starts the loop when it isn't running. Caller holds the lock.</summary>
+    private void Enqueue(string arrangement)
+    {
+        if (_running != arrangement && !_queue.Contains(arrangement)) _queue.Add(arrangement);
+        if (_looping) return;
+        _looping = true;
+        _job = Task.Run(LoopAsync);
     }
 
     /// <summary>The cosine distance between two nodes' stored embeddings, or null when either is unknown or has no vector.</summary>
@@ -219,7 +223,17 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
         IReadOnlyDictionary<int, (float X, float Y)> positions, string stateKey, string version, IReadOnlyDictionary<int, (float X, float Y)>? summaryPositions = null)
     {
         int layer = ClusterLayer(g);
-        // Leaf → cluster node: the first node at or below the cluster layer on its primary path from the top.
+        var clusterNodeOf = ClusterNodes(g, layer);
+        var placedLeaves = leaves.Where(l => positions.ContainsKey(l.Index)).OrderBy(l => l.Index).ToList();
+        var (clusters, clusterId) = Clusters(g, placedLeaves, clusterNodeOf, positions);
+        var (kinds, points) = Points(g, placedLeaves, parents, positions, clusterNodeOf, clusterId);
+        var summaries = Summaries(g, placedLeaves, parents, positions, clusterId, summaryPositions);
+        return new MemoryCloudDto("ready", version, stateKey, null, layer, kinds, points, summaries, clusters, 0, 0, null, null, null);
+    }
+
+    /// <summary>Leaf → cluster node: the first node at or below the cluster layer on its primary path from the top (a summary only).</summary>
+    private static Dictionary<int, int> ClusterNodes(GraphModel g, int layer)
+    {
         var clusterNodeOf = new Dictionary<int, int>();
         foreach (var n in g.Nodes)
         {
@@ -229,8 +243,14 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
                 if (g.Nodes[s].Layer <= layer) { found = s; break; }
             if (found >= 0 && !g.Nodes[found].IsLeaf) clusterNodeOf[n.Index] = found;
         }
-        // Clusters ordered by size (desc), then index: colour slots follow this order, so the biggest regions get the palette.
-        var placedLeaves = leaves.Where(l => positions.ContainsKey(l.Index)).OrderBy(l => l.Index).ToList();
+        return clusterNodeOf;
+    }
+
+    /// <summary>Clusters ordered by size (desc), then index: colour slots follow this order, so the biggest regions get the palette.
+    /// Also each cluster node's slot → cluster id.</summary>
+    private static (List<CloudClusterDto> Clusters, Dictionary<int, int> ClusterId) Clusters(GraphModel g, List<CloudLeaf> placedLeaves,
+        Dictionary<int, int> clusterNodeOf, IReadOnlyDictionary<int, (float X, float Y)> positions)
+    {
         var bySlot = placedLeaves.Where(l => clusterNodeOf.ContainsKey(l.Index)).GroupBy(l => clusterNodeOf[l.Index])
             .OrderByDescending(x => x.Count()).ThenBy(x => g.Nodes[x.Key].Index).ToList();
         var clusterId = new Dictionary<int, int>();
@@ -244,7 +264,13 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
             clusters.Add(new CloudClusterDto(clusters.Count, node.Index, node.Layer, node.Terms.Length > 0 ? string.Join(" · ", node.Terms.Take(3)) : $"L{node.Layer} #{node.Index}",
                 node.Terms, Short(node.Text, 180), grp.Count(), R(mx), R(my), R(spread)));
         }
+        return (clusters, clusterId);
+    }
 
+    /// <summary>The placed leaves as parallel arrays (ids, positions, cluster, kind, title, parents, inserted) and the kinds' names.</summary>
+    private static (List<string> Kinds, CloudPointsDto Points) Points(GraphModel g, List<CloudLeaf> placedLeaves, IReadOnlyDictionary<int, int[]> parents,
+        IReadOnlyDictionary<int, (float X, float Y)> positions, Dictionary<int, int> clusterNodeOf, Dictionary<int, int> clusterId)
+    {
         var kinds = new List<string>();
         var kindIx = new Dictionary<string, int>(StringComparer.Ordinal);
         int n0 = placedLeaves.Count;
@@ -264,26 +290,34 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
             xy[2 * i + 1] = p.Y;
             cl[i] = clusterNodeOf.TryGetValue(l.Index, out var cs) && clusterId.TryGetValue(cs, out var cid) ? cid : -1;
             var gn = g.TryGetSlot(l.Index, out var slot) ? g.Nodes[slot] : null;
-            string kind = gn?.Category.ToString().ToLowerInvariant() ?? "fact";
-            if (!kindIx.TryGetValue(kind, out var ki)) { ki = kinds.Count; kinds.Add(kind); kindIx[kind] = ki; }
-            kd[i] = ki;
+            kd[i] = KindIndex(gn?.Category.ToString().ToLowerInvariant() ?? "fact", kinds, kindIx);
             titles[i] = gn?.Title ?? $"leaf #{l.Index}";
             ps[i] = parents.TryGetValue(l.Index, out var pp) ? pp : [];
             ins[i] = l.InsertedSeq > 0;
         }
+        return (kinds, new CloudPointsDto(ids, xy, cl, kd, titles, ps, ins));
+    }
 
-        // Summaries at the mean of their placed children, bottom-up (slots descend with layer ascending), unless laid out themselves.
+    private static int KindIndex(string kind, List<string> kinds, Dictionary<string, int> kindIx)
+    {
+        if (!kindIx.TryGetValue(kind, out var ki)) { ki = kinds.Count; kinds.Add(kind); kindIx[kind] = ki; }
+        return ki;
+    }
+
+    /// <summary>Summaries at the mean of their placed children, bottom-up (slots descend with layer ascending), unless laid out themselves.</summary>
+    private static CloudSummariesDto Summaries(GraphModel g, List<CloudLeaf> placedLeaves, IReadOnlyDictionary<int, int[]> parents,
+        IReadOnlyDictionary<int, (float X, float Y)> positions, Dictionary<int, int> clusterId, IReadOnlyDictionary<int, (float X, float Y)>? summaryPositions)
+    {
         var sum = new Dictionary<int, (double X, double Y, int N)>();
         foreach (var l in placedLeaves)
             foreach (var p in parents.GetValueOrDefault(l.Index, []))
                 Add(sum, p, positions[l.Index].X, positions[l.Index].Y);
-        var summaries = g.Nodes.Where(n => !n.IsLeaf).OrderBy(n => n.Layer).ThenBy(n => n.Index).ToList();
         var sIds = new List<int>();
         var sXy = new List<float>();
         var sLayer = new List<int>();
         var sCluster = new List<int>();
         var sParents = new List<int[]>();
-        foreach (var s in summaries)
+        foreach (var s in g.Nodes.Where(n => !n.IsLeaf).OrderBy(n => n.Layer).ThenBy(n => n.Index))
         {
             if (!sum.TryGetValue(s.Index, out var a) || a.N == 0) continue;
             float x = (float)R(a.X / a.N), y = (float)R(a.Y / a.N);
@@ -292,19 +326,20 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
             sXy.Add(x);
             sXy.Add(y);
             sLayer.Add(s.Layer);
-            int c = -1;
-            if (clusterId.TryGetValue(s.Slot, out var mine)) c = mine;
-            else foreach (var t in g.PathToTop(s.Slot)) if (clusterId.TryGetValue(t, out var up)) { c = up; break; }
-            sCluster.Add(c);
+            sCluster.Add(SummaryCluster(g, s.Slot, clusterId));
             var sp = parents.GetValueOrDefault(s.Index, []);
             sParents.Add(sp);
             foreach (var p in sp) Add(sum, p, x, y);
         }
+        return new CloudSummariesDto(sIds.ToArray(), sXy.ToArray(), sLayer.ToArray(), sCluster.ToArray(), sParents.ToArray());
+    }
 
-        return new MemoryCloudDto("ready", version, stateKey, null, layer, kinds,
-            new CloudPointsDto(ids, xy, cl, kd, titles, ps, ins),
-            new CloudSummariesDto(sIds.ToArray(), sXy.ToArray(), sLayer.ToArray(), sCluster.ToArray(), sParents.ToArray()),
-            clusters, 0, 0, null, null, null);
+    /// <summary>A summary's cluster: its own, else the first on its path to the top; -1 = none.</summary>
+    private static int SummaryCluster(GraphModel g, int slot, Dictionary<int, int> clusterId)
+    {
+        if (clusterId.TryGetValue(slot, out var mine)) return mine;
+        foreach (var t in g.PathToTop(slot)) if (clusterId.TryGetValue(t, out var up)) return up;
+        return -1;
     }
 
     private static void Add(Dictionary<int, (double X, double Y, int N)> sum, int p, double x, double y)

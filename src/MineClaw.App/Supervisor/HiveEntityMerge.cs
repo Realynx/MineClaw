@@ -21,9 +21,7 @@ public static class HiveEntityMerge
         foreach (var b in bodies)
             foreach (var e in b.Entities)
             {
-                if (e.Kind is EntityKind.Weather) continue; // a bolt is an event (lightning), not a thing to draw
-                if (e.Kind == EntityKind.Player && (e.Name == null || botNames.Contains(e.Name))) continue;
-                if (e.Kind == EntityKind.Item && e.Item.IsEmpty) continue;
+                if (Hidden(e, botNames)) continue;
                 var k = (b.Dim, e.Id);
                 if (best.TryGetValue(k, out var have) && have.E.UpdatedAt >= e.UpdatedAt) continue;
                 best[k] = (e, b.Body, b.Dim);
@@ -38,6 +36,12 @@ public static class HiveEntityMerge
         }
         return list;
     }
+
+    /// <summary>Not drawn: a bolt (an event, lightning, not a thing), an unnamed player or one of the bots, an empty item.</summary>
+    private static bool Hidden(Entity e, ISet<string> botNames) =>
+        e.Kind is EntityKind.Weather
+        || (e.Kind == EntityKind.Player && (e.Name == null || botNames.Contains(e.Name)))
+        || (e.Kind == EntityKind.Item && e.Item.IsEmpty);
 
     private static double R(double v) => Math.Round(v, 2);
     private static double R3(double v) => Math.Round(v, 3);
@@ -77,19 +81,23 @@ public static class HiveEntityMerge
         var p = e.Position;
         var kind = EntityLooks.ObjectKind(e);
         var framed = e.FramedItem; // an item frame's or firework's item (1.12.2 metadata)
-        return new WorldEntity(kind, e.Kind == EntityKind.Painting ? e.Name : EntityLooks.NameOf(e), dim, R(p.X), R(p.Y), R(p.Z), e.Id,
+        return WithObjectLooks(new WorldEntity(kind, e.Kind == EntityKind.Painting ? e.Name : EntityLooks.NameOf(e), dim, R(p.X), R(p.Y), R(p.Z), e.Id,
             e.Kind == EntityKind.Object ? e.TypeId : null, framed.IsEmpty ? null : framed.Id, framed.IsEmpty ? null : framed.Damage,
             e.Kind == EntityKind.XpOrb ? e.Count : null, R3(e.Velocity.X), R3(e.Velocity.Y), R3(e.Velocity.Z), age,
-            e.Kind == EntityKind.XpOrb ? null : (float)Math.Round(e.Yaw, 1), by, FlagsOf(e), EntityLooks.Variant(e))
-        {
-            Facing = EntityLooks.Facing(e),
-            Rotation = kind == "item_frame" ? e.MetaInt(EntityMeta.FrameRotation) is { } rot and not 0 ? rot : null : null,
-            Block = EntityLooks.FallingBlock(e),
-            Fuse = kind == "tnt" ? e.MetaInt(EntityMeta.Fuse) : null,
-            Pose = kind == "armor_stand" ? EntityLooks.Pose(e) : null,
-            InGround = e.IsArrow && e.InGround ? true : null,
-        };
+            e.Kind == EntityKind.XpOrb ? null : (float)Math.Round(e.Yaw, 1), by, FlagsOf(e), EntityLooks.Variant(e)), e, kind);
     }
+
+    /// <summary>What draws an object: its facing, an item frame's rotation, a falling block, a tnt fuse, an armor stand's pose, an arrow
+    /// stuck in the ground.</summary>
+    private static WorldEntity WithObjectLooks(WorldEntity w, Entity e, string kind) => w with
+    {
+        Facing = EntityLooks.Facing(e),
+        Rotation = kind == "item_frame" ? e.MetaInt(EntityMeta.FrameRotation) is { } rot and not 0 ? rot : null : null,
+        Block = EntityLooks.FallingBlock(e),
+        Fuse = kind == "tnt" ? e.MetaInt(EntityMeta.Fuse) : null,
+        Pose = kind == "armor_stand" ? EntityLooks.Pose(e) : null,
+        InGround = e.IsArrow && e.InGround ? true : null,
+    };
 
     /// <summary>The entity flags byte (metadata index 0: 0x01 burning, 0x02 sneaking, 0x04 riding, 0x08 sprinting, 0x10 eating);
     /// null when none are set (the field is then left out of the JSON).</summary>
@@ -189,8 +197,17 @@ public sealed class EntityDeltaLog(TimeProvider? time = null)
     private void Apply(IReadOnlyList<WorldEntity> list, DateTimeOffset now)
     {
         long rev = _rev + 1;
-        bool changed = false;
         var seen = new HashSet<(int, int)>();
+        bool changed = Upsert(list, rev, seen);
+        changed |= RemoveUnseen(seen, rev, now);
+        if (changed) _rev = rev;
+        TrimRemoved(now);
+    }
+
+    /// <summary>Every listed entity in <see cref="_cur"/> (a changed one stamped <paramref name="rev"/>); true if any changed.</summary>
+    private bool Upsert(IReadOnlyList<WorldEntity> list, long rev, HashSet<(int, int)> seen)
+    {
+        bool changed = false;
         foreach (var e in list)
         {
             if (e.Id is not { } id) continue;
@@ -201,19 +218,29 @@ public sealed class EntityDeltaLog(TimeProvider? time = null)
             _cur[k] = (e, key, rev);
             changed = true;
         }
+        return changed;
+    }
+
+    /// <summary>Entities no longer listed move to the removed list at <paramref name="rev"/>; true if any did.</summary>
+    private bool RemoveUnseen(HashSet<(int, int)> seen, long rev, DateTimeOffset now)
+    {
+        bool changed = false;
         foreach (var k in _cur.Keys.Where(k => !seen.Contains(k)).ToList())
         {
             _cur.Remove(k);
             _removed.Add((rev, k.Dim, k.Id, now));
             changed = true;
         }
-        if (changed) _rev = rev;
+        return changed;
+    }
+
+    /// <summary>Removals older than <see cref="RemovedRetention"/> (or past the newest 4096) are dropped; the floor rises with them.</summary>
+    private void TrimRemoved(DateTimeOffset now)
+    {
         int drop = 0;
         while (drop < _removed.Count && (now - _removed[drop].At > RemovedRetention || _removed.Count - drop > 4096)) drop++;
-        if (drop > 0)
-        {
-            _floor = Math.Max(_floor, _removed[drop - 1].Rev);
-            _removed.RemoveRange(0, drop);
-        }
+        if (drop == 0) return;
+        _floor = Math.Max(_floor, _removed[drop - 1].Rev);
+        _removed.RemoveRange(0, drop);
     }
 }

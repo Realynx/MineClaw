@@ -49,33 +49,44 @@ public sealed class SupervisorControllerRoutes(IControllerSupervisorData data, s
         if (!r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) && !r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
             return Json(405, new { error = "read-only: GET only" }, new Dictionary<string, string> { ["Allow"] = "GET, HEAD" });
         if (!Authorized(r)) return Json(403, new { error = "token required (X-Supervisor-Token header or ?token=)" });
-        try
-        {
-            string? body = r.Query.TryGetValue("body", out var b) && b.Trim().Length > 0 ? b.Trim() : null;
-            if (path.StartsWith("/api/bodies/", StringComparison.OrdinalIgnoreCase))
-            {
-                var name = Uri.UnescapeDataString(path["/api/bodies/".Length..^"/controller".Length]);
-                if (name.Length == 0) return Json(404, new { error = "not found" });
-                return await data.ControllerAsync(name, ct).ConfigureAwait(false) is { } info ? Json(200, info) : Json(404, new { error = $"no body '{name}' online" });
-            }
-            var parts = path["/api/brains/".Length..].Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray();
-            if (parts.Length == 2 && parts[1].Equals("context", StringComparison.OrdinalIgnoreCase))
-            {
-                long since = r.Query.TryGetValue("since", out var s) && long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? Math.Max(0, sv) : 0;
-                return await data.ContextAsync(parts[0], since, body, ct).ConfigureAwait(false) is { } page
-                    ? Json(200, page) : Json(404, new { error = $"no brain '{parts[0]}' (offline, or it didn't answer)" });
-            }
-            if (parts.Length == 3 && parts[1].Equals("turn", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) || n < 1) return Json(400, new { error = "turn must be a number" });
-                var (found, turn) = await data.TurnAsync(parts[0], n, body, ct).ConfigureAwait(false);
-                if (!found) return Json(404, new { error = $"no brain '{parts[0]}' (offline, or it didn't answer)" });
-                return turn is { } t ? Json(200, t) : Json(404, new { error = $"turn {n} is no longer kept (the ring holds the last turns only)" });
-            }
-            return Json(404, new { error = "not found" });
-        }
+        try { return await RouteAsync(r, path, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return Json(503, new { error = "cancelled" }); }
         catch (Exception ex) { return Json(500, new { error = ex.Message, at = _time.GetUtcNow() }); }
+    }
+
+    private async Task<SupervisorReply> RouteAsync(SupervisorRequest r, string path, CancellationToken ct)
+    {
+        string? body = r.Query.TryGetValue("body", out var b) && b.Trim().Length > 0 ? b.Trim() : null;
+        if (path.StartsWith("/api/bodies/", StringComparison.OrdinalIgnoreCase)) return await BodyControllerAsync(path, ct).ConfigureAwait(false);
+        var parts = path["/api/brains/".Length..].Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray();
+        if (parts.Length == 2 && parts[1].Equals("context", StringComparison.OrdinalIgnoreCase)) return await BrainContextAsync(r, parts[0], body, ct).ConfigureAwait(false);
+        if (parts.Length == 3 && parts[1].Equals("turn", StringComparison.OrdinalIgnoreCase)) return await BrainTurnAsync(parts[0], parts[2], body, ct).ConfigureAwait(false);
+        return Json(404, new { error = "not found" });
+    }
+
+    /// <summary>GET /api/bodies/{name}/controller.</summary>
+    private async Task<SupervisorReply> BodyControllerAsync(string path, CancellationToken ct)
+    {
+        var name = Uri.UnescapeDataString(path["/api/bodies/".Length..^"/controller".Length]);
+        if (name.Length == 0) return Json(404, new { error = "not found" });
+        return await data.ControllerAsync(name, ct).ConfigureAwait(false) is { } info ? Json(200, info) : Json(404, new { error = $"no body '{name}' online" });
+    }
+
+    /// <summary>GET /api/brains/{brain}/context[?since=&amp;body=].</summary>
+    private async Task<SupervisorReply> BrainContextAsync(SupervisorRequest r, string brain, string? body, CancellationToken ct)
+    {
+        long since = r.Query.TryGetValue("since", out var s) && long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? Math.Max(0, sv) : 0;
+        return await data.ContextAsync(brain, since, body, ct).ConfigureAwait(false) is { } page
+            ? Json(200, page) : Json(404, new { error = $"no brain '{brain}' (offline, or it didn't answer)" });
+    }
+
+    /// <summary>GET /api/brains/{brain}/turn/{n}[?body=].</summary>
+    private async Task<SupervisorReply> BrainTurnAsync(string brain, string turnText, string? body, CancellationToken ct)
+    {
+        if (!long.TryParse(turnText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) || n < 1) return Json(400, new { error = "turn must be a number" });
+        var (found, turn) = await data.TurnAsync(brain, n, body, ct).ConfigureAwait(false);
+        if (!found) return Json(404, new { error = $"no brain '{brain}' (offline, or it didn't answer)" });
+        return turn is { } t ? Json(200, t) : Json(404, new { error = $"turn {n} is no longer kept (the ring holds the last turns only)" });
     }
 
     private bool Authorized(SupervisorRequest r)
