@@ -138,23 +138,7 @@ export function StoryNotices({
 
   return (
     <div className="pointer-events-auto flex w-64 flex-col gap-1" data-testid="notices">
-      {conds.length ? (
-        <ul aria-label="Alerts" data-testid="conditions" className="flex flex-col gap-0.5">
-          {conds.map((c) => (
-            <li key={c.key}>
-              <button
-                type="button"
-                onClick={() => onCondition(c)}
-                data-condition={c.key}
-                className={cn(panel, 'flex w-full items-start gap-1.5 border-l-4 px-2 py-1 text-left text-[11.5px] leading-snug', edge(c.level))}
-              >
-                {icon(c.level)}
-                <span className="min-w-0">{c.text}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      {conds.length ? <ConditionList conds={conds} onCondition={onCondition} /> : null}
       <div className="flex justify-end gap-1">
         {shown.length ? (
           <button
@@ -166,22 +150,7 @@ export function StoryNotices({
             Dismiss all
           </button>
         ) : null}
-        <button
-          type="button"
-          onClick={() => setLogOpen((o) => !o)}
-          aria-pressed={logOpen}
-          aria-label={`Message log${s.unread ? `, ${s.unread} unread` : ''}`}
-          className={cn(panel, 'relative flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted hover:text-fg', logOpen && 'text-fg')}
-          data-testid="log-button"
-        >
-          <History className="size-3.5" />
-          Log
-          {s.unread ? (
-            <span className="ml-0.5 rounded-full bg-accent px-1.5 text-[10px] font-semibold text-accent-fg" data-testid="log-unread">
-              {s.unread > 99 ? '99+' : s.unread}
-            </span>
-          ) : null}
-        </button>
+        <LogButton open={logOpen} unread={s.unread} onToggle={() => setLogOpen((o) => !o)} />
       </div>
       {shown.length ? (
         <ul
@@ -218,6 +187,49 @@ export function StoryNotices({
       ) : null}
       {logOpen ? <LogPanel log={s.log} onJump={onJump} onClose={() => setLogOpen(false)} /> : null}
     </div>
+  );
+}
+
+/** The ongoing conditions, each a button (select its pawns, open its tab). */
+function ConditionList({ conds, onCondition }: { conds: Condition[]; onCondition: (c: Condition) => void }) {
+  return (
+    <ul aria-label="Alerts" data-testid="conditions" className="flex flex-col gap-0.5">
+      {conds.map((c) => (
+        <li key={c.key}>
+          <button
+            type="button"
+            onClick={() => onCondition(c)}
+            data-condition={c.key}
+            className={cn(panel, 'flex w-full items-start gap-1.5 border-l-4 px-2 py-1 text-left text-[11.5px] leading-snug', edge(c.level))}
+          >
+            {icon(c.level)}
+            <span className="min-w-0">{c.text}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The Log toggle with its unread count (99+). */
+function LogButton({ open, unread, onToggle }: { open: boolean; unread: number; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={open}
+      aria-label={`Message log${unread ? `, ${unread} unread` : ''}`}
+      className={cn(panel, 'relative flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted hover:text-fg', open && 'text-fg')}
+      data-testid="log-button"
+    >
+      <History className="size-3.5" />
+      Log
+      {unread ? (
+        <span className="ml-0.5 rounded-full bg-accent px-1.5 text-[10px] font-semibold text-accent-fg" data-testid="log-unread">
+          {unread > 99 ? '99+' : unread}
+        </span>
+      ) : null}
+    </button>
   );
 }
 

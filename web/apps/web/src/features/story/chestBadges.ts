@@ -39,16 +39,22 @@ export function chestBadge(
   categories: readonly StoryCategory[] | null | undefined,
 ): ChestBadge | null {
   const text = storage ? storage.label || shortCategory(filterSummary(treeOf(categories), storage.filter)) : null;
-  let fill: number | null = null;
-  const ledgerAt = ms(storage?.knownAt);
-  if (summary && summary.source !== 'unknown' && summary.size > 0 && (!storage || ms(summary.seenAt) >= ledgerAt))
-    fill = summary.used / summary.size;
-  else if (storage && storage.freeSlots !== null && storage.freeSlots !== undefined) {
-    const slots = storage.doubleWith ? 54 : 27;
-    fill = (slots - Math.min(slots, storage.freeSlots)) / slots;
-  }
+  const fill = badgeFill(storage, summary);
   if (text === null && fill === null) return null;
   return { text, fill: fill === null ? null : Math.max(0, Math.min(1, fill)) };
+}
+
+/** The hive's look into the chest counts when it is at least as fresh as the colony's ledger (or the chest isn't storage). */
+function summaryCounts(storage: StoryStorage | undefined, summary: ContainerSummary | undefined): boolean {
+  return !!summary && summary.source !== 'unknown' && summary.size > 0 && (!storage || ms(summary.seenAt) >= ms(storage?.knownAt));
+}
+
+/** How full the chest is (unclamped), from the hive's look or else the ledger's free slots; null = not known. */
+function badgeFill(storage: StoryStorage | undefined, summary: ContainerSummary | undefined): number | null {
+  if (summaryCounts(storage, summary)) return summary!.used / summary!.size;
+  if (!storage || storage.freeSlots === null || storage.freeSlots === undefined) return null;
+  const slots = storage.doubleWith ? 54 : 27;
+  return (slots - Math.min(slots, storage.freeSlots)) / slots;
 }
 
 function shortCategory(s: string): string {

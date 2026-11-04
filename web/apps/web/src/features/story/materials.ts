@@ -54,30 +54,36 @@ export function materialsFor(
   palette?: readonly StoryArchitectEntry[] | null,
   stock?: ReadonlyMap<string, number>,
 ): MaterialOption[] {
-  if (palette?.length) {
-    const seen = new Set<string>();
-    const out: MaterialOption[] = [];
-    for (const e of palette) {
-      const kinds = e.kinds?.length ? e.kinds : [e.kind];
-      if (!kinds.includes(tool)) continue;
-      const key = `${e.material[0]}:${e.material[1]}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({
-        key,
-        material: [e.material[0], e.material[1]],
-        label: e.label,
-        item: [e.item[0], e.item[1]],
-        tier: e.tier,
-        unlocked: e.unlocked,
-        reason: e.reason ?? null,
-        have: e.have,
-        craftable: e.craftable,
-        short: e.short ?? [],
-      });
-    }
-    return [...out.filter((o) => o.unlocked), ...out.filter((o) => !o.unlocked)];
+  return palette?.length ? paletteMaterials(tool, palette) : fallbackMaterials(tool, stock);
+}
+
+/** The palette entries that list the tool, each material once, unlocked first. */
+function paletteMaterials(tool: MaterialToolId, palette: readonly StoryArchitectEntry[]): MaterialOption[] {
+  const seen = new Set<string>();
+  const out: MaterialOption[] = [];
+  for (const e of palette) {
+    const kinds = e.kinds?.length ? e.kinds : [e.kind];
+    const key = `${e.material[0]}:${e.material[1]}`;
+    if (!kinds.includes(tool) || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      material: [e.material[0], e.material[1]],
+      label: e.label,
+      item: [e.item[0], e.item[1]],
+      tier: e.tier,
+      unlocked: e.unlocked,
+      reason: e.reason ?? null,
+      have: e.have,
+      craftable: e.craftable,
+      short: e.short ?? [],
+    });
   }
+  return [...out.filter((o) => o.unlocked), ...out.filter((o) => !o.unlocked)];
+}
+
+/** Without a palette: the static list with the stockpile counts. */
+function fallbackMaterials(tool: MaterialToolId, stock?: ReadonlyMap<string, number>): MaterialOption[] {
   const base =
     FALLBACK_SPECIAL[tool] ??
     STORY_MATERIALS.filter((m) => !NOT_BUILDING.has(m.name)).map((m) => ({ label: m.label, id: m.id, meta: m.meta }));

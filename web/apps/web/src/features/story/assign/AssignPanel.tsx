@@ -32,19 +32,22 @@ export interface AssignWrites {
   options: (o: { autoCraftTools?: boolean; spareTools?: { count: number; kinds: string[] } }) => void;
 }
 
-export function AssignPanel({
-  state,
-  pawns,
-  canWrite,
-  writes,
-}: {
+const ASSIGN_TABS: ReadonlyArray<readonly [View, string]> = [
+  ['pawns', 'Pawns'],
+  ['policies', 'Policies'],
+  ['rules', 'Tool rules'],
+  ['options', 'Spare tools'],
+];
+
+type AssignProps = {
   state: StoryColonyState | undefined;
   pawns: StoryPawn[];
   canWrite: boolean;
   writes: AssignWrites;
-}) {
+};
+
+export function AssignPanel({ state, pawns, canWrite, writes }: AssignProps) {
   const [view, setView] = useState<View>('pawns');
-  const policies = state?.policies ?? [];
   return (
     <section
       className={cn(
@@ -55,14 +58,7 @@ export function AssignPanel({
       data-testid="assign-panel"
     >
       <div className="mb-2 flex gap-1" role="tablist">
-        {(
-          [
-            ['pawns', 'Pawns'],
-            ['policies', 'Policies'],
-            ['rules', 'Tool rules'],
-            ['options', 'Spare tools'],
-          ] as const
-        ).map(([v, label]) => (
+        {ASSIGN_TABS.map(([v, label]) => (
           <button
             key={v}
             type="button"
@@ -78,23 +74,45 @@ export function AssignPanel({
           </button>
         ))}
       </div>
-      {view === 'pawns' ? (
-        <PawnPolicies pawns={pawns} policies={policies} canWrite={canWrite} onAssign={writes.assign} />
-      ) : null}
-      {view === 'policies' ? (
-        <PolicyEditor policies={policies} canWrite={canWrite} onSet={writes.setPolicy} onRemove={writes.removePolicy} />
-      ) : null}
-      {view === 'rules' ? (
-        <MaterialRulesEditor
-          materials={state?.materials ?? []}
-          rules={state?.materialRules ?? []}
-          version={state?.version ?? null}
-          canWrite={canWrite}
-          write={writes.rule}
-        />
-      ) : null}
-      {view === 'options' ? <ToolOptions state={state} canWrite={canWrite} onOptions={writes.options} /> : null}
+      <AssignView view={view} state={state} pawns={pawns} canWrite={canWrite} writes={writes} />
     </section>
+  );
+}
+
+/** The tab's content. */
+function AssignView({ view, state, pawns, canWrite, writes }: AssignProps & { view: View }) {
+  const policies = state?.policies ?? [];
+  switch (view) {
+    case 'pawns':
+      return <PawnPolicies pawns={pawns} policies={policies} canWrite={canWrite} onAssign={writes.assign} />;
+    case 'policies':
+      return (
+        <PolicyEditor policies={policies} canWrite={canWrite} onSet={writes.setPolicy} onRemove={writes.removePolicy} />
+      );
+    case 'rules':
+      return <RulesView state={state} canWrite={canWrite} write={writes.rule} />;
+    case 'options':
+      return <ToolOptions state={state} canWrite={canWrite} onOptions={writes.options} />;
+  }
+}
+
+function RulesView({
+  state,
+  canWrite,
+  write,
+}: {
+  state: StoryColonyState | undefined;
+  canWrite: boolean;
+  write: RuleWrite;
+}) {
+  return (
+    <MaterialRulesEditor
+      materials={state?.materials ?? []}
+      rules={state?.materialRules ?? []}
+      version={state?.version ?? null}
+      canWrite={canWrite}
+      write={write}
+    />
   );
 }
 
@@ -121,60 +139,83 @@ function PawnPolicies({
         </tr>
       </thead>
       <tbody>
-        {pawns.map((p) => {
-          const pol = policyOf(p, policies);
-          const e = p.equipment;
-          return (
-            <tr key={p.name} data-assign-pawn={p.name} className="bg-surface-2">
-              <td className="rounded-l px-1 py-0.5">
-                <span className="flex items-center gap-1.5">
-                  <Avatar name={p.name} size={18} />
-                  <span className="font-semibold">{p.display}</span>
-                </span>
-              </td>
-              <td className="px-1">
-                <Select
-                  aria-label={`Policy of ${p.display}`}
-                  className="h-7 w-32 text-xs"
-                  value={pol?.id ?? ''}
-                  disabled={!canWrite || policies.length === 0}
-                  onChange={(ev) => onAssign(ev.target.value, [p.name])}
-                >
-                  {policies.map((x) => (
-                    <option key={x.id} value={x.id}>
-                      {x.name}
-                    </option>
-                  ))}
-                </Select>
-              </td>
-              <td className="px-1 text-muted">{e?.held?.label ?? p.held ?? '—'}</td>
-              <td className="px-1">
-                {(e?.tools ?? []).map((t, i) => {
-                  const d = durability(t);
-                  return (
-                    <span
-                      key={i}
-                      className={cn(
-                        'mr-1 rounded px-1',
-                        d.tone === 'worn' ? 'bg-danger-soft text-danger' : 'bg-surface-3',
-                      )}
-                      title={d.pct !== null ? `${d.pct}% left` : undefined}
-                    >
-                      {t.label ?? t.kind}
-                    </span>
-                  );
-                })}
-              </td>
-              <td className="rounded-r px-1 text-muted">{(e?.armor ?? []).map((a) => a.label).join(', ') || '—'}</td>
-            </tr>
-          );
-        })}
+        {pawns.map((p) => (
+          <PawnPolicyRow key={p.name} p={p} policies={policies} canWrite={canWrite} onAssign={onAssign} />
+        ))}
       </tbody>
     </table>
   );
 }
 
-const blank = (): Partial<StoryPolicy> & { name: string } => ({
+/** One pawn: its policy (a picker), what it holds, its tools (worn ones red) and its armour. */
+function PawnPolicyRow({
+  p,
+  policies,
+  canWrite,
+  onAssign,
+}: {
+  p: StoryPawn;
+  policies: StoryPolicy[];
+  canWrite: boolean;
+  onAssign: (policy: string, pawns: string[]) => void;
+}) {
+  const pol = policyOf(p, policies);
+  return (
+    <tr data-assign-pawn={p.name} className="bg-surface-2">
+      <td className="rounded-l px-1 py-0.5">
+        <span className="flex items-center gap-1.5">
+          <Avatar name={p.name} size={18} />
+          <span className="font-semibold">{p.display}</span>
+        </span>
+      </td>
+      <td className="px-1">
+        <Select
+          aria-label={`Policy of ${p.display}`}
+          className="h-7 w-32 text-xs"
+          value={pol?.id ?? ''}
+          disabled={!canWrite || policies.length === 0}
+          onChange={(ev) => onAssign(ev.target.value, [p.name])}
+        >
+          {policies.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.name}
+            </option>
+          ))}
+        </Select>
+      </td>
+      <td className="px-1 text-muted">{heldText(p)}</td>
+      <td className="px-1">
+        <ToolChips tools={p.equipment?.tools} />
+      </td>
+      <td className="rounded-r px-1 text-muted">{armourText(p)}</td>
+    </tr>
+  );
+}
+
+/** What the pawn holds (its equipment's label, else the state's), or a dash. */
+const heldText = (p: StoryPawn) => p.equipment?.held?.label ?? p.held ?? '—';
+
+/** The armour it wears, or a dash. */
+const armourText = (p: StoryPawn) => (p.equipment?.armor ?? []).map((a) => a.label).join(', ') || '—';
+
+function ToolChips({ tools }: { tools: NonNullable<StoryPawn['equipment']>['tools'] | undefined }) {
+  return (tools ?? []).map((t, i) => {
+    const d = durability(t);
+    return (
+      <span
+        key={i}
+        className={cn('mr-1 rounded px-1', d.tone === 'worn' ? 'bg-danger-soft text-danger' : 'bg-surface-3')}
+        title={d.pct !== null ? `${d.pct}% left` : undefined}
+      >
+        {t.label ?? t.kind}
+      </span>
+    );
+  });
+}
+
+type PolicyDraft = Partial<StoryPolicy> & { name: string };
+
+const blank = (): PolicyDraft => ({
   name: '',
   toolsByWork: true,
   tools: [],
@@ -182,6 +223,9 @@ const blank = (): Partial<StoryPolicy> & { name: string } => ({
   armor: 'drafted',
   food: 0,
 });
+
+/** 1–40 characters once trimmed. */
+const nameOkOf = (cur: PolicyDraft | null) => !!cur && cur.name.trim().length > 0 && cur.name.trim().length <= 40;
 
 export function PolicyEditor({
   policies,
@@ -191,14 +235,13 @@ export function PolicyEditor({
 }: {
   policies: StoryPolicy[];
   canWrite: boolean;
-  onSet: (p: Partial<StoryPolicy> & { name: string }) => void;
+  onSet: (p: PolicyDraft) => void;
   onRemove: (id: string) => void;
 }) {
   const [pick, setPick] = useState<string | null>(policies[0]?.id ?? null);
-  const [draft, setDraft] = useState<(Partial<StoryPolicy> & { name: string }) | null>(null);
+  const [draft, setDraft] = useState<PolicyDraft | null>(null);
   const cur = draft ?? policies.find((x) => x.id === pick) ?? null;
   const edit = (patch: Partial<StoryPolicy>) => setDraft({ ...(cur ?? blank()), ...patch });
-  const nameOk = !!cur && cur.name.trim().length > 0 && cur.name.trim().length <= 40;
   return (
     <div className="flex gap-3" data-testid="policy-editor">
       <ul className="w-36 shrink-0 space-y-0.5">
@@ -225,109 +268,143 @@ export function PolicyEditor({
       </ul>
       {cur ? (
         <div className="min-w-0 flex-1 space-y-2">
-          <label className="block">
-            <span className="mb-0.5 block text-[11px] text-muted">Name</span>
-            <Input
-              aria-label="Policy name"
-              className="h-7 text-xs"
-              value={cur.name}
-              maxLength={40}
-              onChange={(e) => edit({ name: e.target.value })}
-            />
-          </label>
-          <Checkbox
-            label="Tools for their work (mine: pickaxe + shovel, chop: axe, farm: hoe, build: pickaxe + axe)"
-            checked={cur.toolsByWork ?? true}
-            onChange={(v) => edit({ toolsByWork: v })}
+          <PolicyFields cur={cur} edit={edit} />
+          <PolicyActions
+            cur={cur}
+            draft={draft}
+            canWrite={canWrite}
+            onSave={() => {
+              onSet({ ...cur, name: cur.name.trim() });
+              setDraft(null);
+            }}
+            onDiscard={() => setDraft(null)}
+            onRemove={onRemove}
           />
-          <fieldset>
-            <legend className="mb-0.5 text-[11px] text-muted">Also carry</legend>
-            <div className="flex flex-wrap gap-2">
-              {STORY_TOOL_KINDS.map((k) => (
-                <Checkbox
-                  key={k}
-                  label={TOOL_LABELS[k]}
-                  checked={(cur.tools ?? []).includes(k)}
-                  onChange={(v) =>
-                    edit({ tools: v ? [...(cur.tools ?? []), k] : (cur.tools ?? []).filter((t) => t !== k) })
-                  }
-                />
-              ))}
-            </div>
-          </fieldset>
-          <div className="flex flex-wrap gap-3">
-            <label>
-              <span className="mb-0.5 block text-[11px] text-muted">Weapon</span>
-              <Select
-                aria-label="Weapon"
-                className="h-7 w-32 text-xs"
-                value={cur.weapon ?? 'best'}
-                onChange={(e) => edit({ weapon: e.target.value })}
-              >
-                {STORY_WEAPON_PREFS.map((w) => (
-                  <option key={w} value={w}>
-                    {WEAPON_LABELS[w]}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            <label>
-              <span className="mb-0.5 block text-[11px] text-muted">Armour</span>
-              <Select
-                aria-label="Armour"
-                className="h-7 w-32 text-xs"
-                value={cur.armor ?? 'drafted'}
-                onChange={(e) => edit({ armor: e.target.value })}
-              >
-                {STORY_ARMOR_MODES.map((a) => (
-                  <option key={a} value={a}>
-                    {ARMOR_LABELS[a]}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            <label>
-              <span className="mb-0.5 block text-[11px] text-muted">Food to carry</span>
-              <Input
-                aria-label="Food to carry"
-                type="number"
-                min={0}
-                max={16}
-                className="h-7 w-20 text-xs"
-                value={cur.food ?? 0}
-                onChange={(e) => edit({ food: Math.max(0, Math.min(16, Math.floor(Number(e.target.value) || 0))) })}
-              />
-            </label>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              disabled={!canWrite || !draft || !nameOk}
-              onClick={() => {
-                if (!cur) return;
-                onSet({ ...cur, name: cur.name.trim() });
-                setDraft(null);
-              }}
-            >
-              Save policy
-            </Button>
-            {draft ? (
-              <Button size="sm" variant="ghost" onClick={() => setDraft(null)}>
-                Discard
-              </Button>
-            ) : null}
-            {cur.id && !cur.default ? (
-              <Button size="sm" variant="ghost" disabled={!canWrite} onClick={() => onRemove(cur.id!)}>
-                <Trash2 className="size-3.5" /> Delete
-              </Button>
-            ) : null}
-          </div>
-          {!nameOk && draft ? <p className="text-danger">A policy needs a name (1–40 characters)</p> : null}
         </div>
       ) : (
         <p className="text-muted">Pick a policy, or make a new one.</p>
       )}
     </div>
+  );
+}
+
+/** A policy's name, tools by work, extra tools, weapon, armour and food. */
+function PolicyFields({ cur, edit }: { cur: PolicyDraft; edit: (patch: Partial<StoryPolicy>) => void }) {
+  const tools = cur.tools ?? [];
+  return (
+    <>
+      <label className="block">
+        <span className="mb-0.5 block text-[11px] text-muted">Name</span>
+        <Input
+          aria-label="Policy name"
+          className="h-7 text-xs"
+          value={cur.name}
+          maxLength={40}
+          onChange={(e) => edit({ name: e.target.value })}
+        />
+      </label>
+      <Checkbox
+        label="Tools for their work (mine: pickaxe + shovel, chop: axe, farm: hoe, build: pickaxe + axe)"
+        checked={cur.toolsByWork ?? true}
+        onChange={(v) => edit({ toolsByWork: v })}
+      />
+      <fieldset>
+        <legend className="mb-0.5 text-[11px] text-muted">Also carry</legend>
+        <div className="flex flex-wrap gap-2">
+          {STORY_TOOL_KINDS.map((k) => (
+            <Checkbox
+              key={k}
+              label={TOOL_LABELS[k]}
+              checked={tools.includes(k)}
+              onChange={(v) => edit({ tools: v ? [...tools, k] : tools.filter((t) => t !== k) })}
+            />
+          ))}
+        </div>
+      </fieldset>
+      <div className="flex flex-wrap gap-3">
+        <label>
+          <span className="mb-0.5 block text-[11px] text-muted">Weapon</span>
+          <Select
+            aria-label="Weapon"
+            className="h-7 w-32 text-xs"
+            value={cur.weapon ?? 'best'}
+            onChange={(e) => edit({ weapon: e.target.value })}
+          >
+            {STORY_WEAPON_PREFS.map((w) => (
+              <option key={w} value={w}>
+                {WEAPON_LABELS[w]}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="mb-0.5 block text-[11px] text-muted">Armour</span>
+          <Select
+            aria-label="Armour"
+            className="h-7 w-32 text-xs"
+            value={cur.armor ?? 'drafted'}
+            onChange={(e) => edit({ armor: e.target.value })}
+          >
+            {STORY_ARMOR_MODES.map((a) => (
+              <option key={a} value={a}>
+                {ARMOR_LABELS[a]}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="mb-0.5 block text-[11px] text-muted">Food to carry</span>
+          <Input
+            aria-label="Food to carry"
+            type="number"
+            min={0}
+            max={16}
+            className="h-7 w-20 text-xs"
+            value={cur.food ?? 0}
+            onChange={(e) => edit({ food: Math.max(0, Math.min(16, Math.floor(Number(e.target.value) || 0))) })}
+          />
+        </label>
+      </div>
+    </>
+  );
+}
+
+/** Save (a draft with a good name), Discard (a draft), Delete (a saved policy that isn't the default), and the name check. */
+function PolicyActions({
+  cur,
+  draft,
+  canWrite,
+  onSave,
+  onDiscard,
+  onRemove,
+}: {
+  cur: PolicyDraft;
+  draft: PolicyDraft | null;
+  canWrite: boolean;
+  onSave: () => void;
+  onDiscard: () => void;
+  onRemove: (id: string) => void;
+}) {
+  const nameOk = nameOkOf(cur);
+  return (
+    <>
+      <div className="flex gap-2">
+        <Button size="sm" disabled={!canWrite || !draft || !nameOk} onClick={onSave}>
+          Save policy
+        </Button>
+        {draft ? (
+          <Button size="sm" variant="ghost" onClick={onDiscard}>
+            Discard
+          </Button>
+        ) : null}
+        {cur.id && !cur.default ? (
+          <Button size="sm" variant="ghost" disabled={!canWrite} onClick={() => onRemove(cur.id!)}>
+            <Trash2 className="size-3.5" /> Delete
+          </Button>
+        ) : null}
+      </div>
+      {!nameOk && draft ? <p className="text-danger">A policy needs a name (1–40 characters)</p> : null}
+    </>
   );
 }
 
