@@ -154,6 +154,14 @@ describe('administration', () => {
     expect(text).toContain('admin_settings');
     expect(text).toContain('Agent:Llm:ApiKey');
     expect(text).toContain('step_up');
+    for (const summary of [
+      'step-up: wrong password',
+      'step-up: a code is required',
+      'step-up: wrong code',
+      'step-up (password)',
+      'step-up (TOTP)',
+    ])
+      expect(text).toContain(summary);
     expect(text).not.toContain(API_KEY);
     expect(text).not.toContain(PASSWORD);
   });
