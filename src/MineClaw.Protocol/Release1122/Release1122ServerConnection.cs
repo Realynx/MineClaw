@@ -237,7 +237,7 @@ public sealed class Release1122ServerConnection : IGameConnection
                 yield return WireWriter.ForPacket(Ids1122.Chat).WriteString(c.Json ?? ChatComponent.Text(c.Message)).WriteSByte(c.Position);
                 break;
             case TimeUpdatePacket t:
-                yield return WireWriter.ForPacket(Ids1122.TimeUpdate).WriteLong(t.Time).WriteLong(t.Time);
+                yield return WireWriter.ForPacket(Ids1122.TimeUpdate).WriteLong(t.Time).WriteLong(t.Frozen ? -t.Time : t.Time);
                 break;
             case SpawnPositionPacket sp:
                 yield return WireWriter.ForPacket(Ids1122.SpawnPosition).WritePosition(sp.X, sp.Y, sp.Z);

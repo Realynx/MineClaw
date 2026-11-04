@@ -619,6 +619,29 @@ public sealed partial class ScriptSession
         }
     }
 
+    private int _durings;
+
+    /// <summary>
+    /// <c>story.during(job, fn)</c>: runs <paramref name="body"/> while <paramref name="holds"/> stays true; the moment it turns false
+    /// (checked off the script thread, every 200 ms) the in-flight interruptible action is cut and the body unwound at the next safe
+    /// point. Null = cut (or false from the start).
+    /// </summary>
+    internal T? WhileHolds<T>(Func<bool> holds, Func<T> body) where T : class
+    {
+        if (!holds()) return null;
+        var owner = new object();
+        var topic = "during#" + (++_durings).ToString(CultureInfo.InvariantCulture);
+        Signals.AddCond(topic, () => !holds(), owner);
+        AddHandler(new Handler("during", e => e.Topic == topic, _ => throw new Sdk.ScriptUnwind(owner, "", "taken back"), Cuts: true, Owner: owner));
+        try { return body(); }
+        catch (Sdk.ScriptUnwind u) when (ReferenceEquals(u.Target, owner)) { return null; }
+        finally
+        {
+            RemoveHandlers(owner);
+            Signals.Remove(topic, owner);
+        }
+    }
+
     internal void Log(string msg)
     {
         msg = Short(msg, 160);

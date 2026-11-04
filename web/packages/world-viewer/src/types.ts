@@ -28,8 +28,10 @@ export interface WorldIndex {
   columns: WorldIndexColumn[];
   /** "b1.8.1" | "1.12.2" (older supervisors omit it: 256-high columns then mean 1.12.2). */
   version?: string | null;
-  /** World time in ticks. */
+  /** World time in ticks (negative from a 1.12.2 server whose daylight cycle is stopped: the absolute value is the time). */
   time?: number | null;
+  /** True when the daylight cycle is stopped (`doDaylightCycle false`): the time is not advanced locally. */
+  timeFrozen?: boolean | null;
   rain?: number | null;
   thunder?: number | null;
 }

@@ -185,6 +185,81 @@ public sealed class StoryColonies : IDisposable
         return r.Why;
     }
 
+    // ================================================================ adding and removing pawns (the colonist bar's + and −)
+
+    /// <summary>
+    /// + : <paramref name="n"/> more pawns. The colony's wanted size grows (at most <see cref="StoryColony.MaxPawns"/>); as many as the
+    /// free seats allow (never the seats kept for offline regulars) spawn now through the usual path (managed accounts, whitelisted
+    /// through main), the rest are pending and come with the seat retry as seats free up.
+    /// </summary>
+    public (JsonObject? Result, string? Error) AddPawns(StoryColony c, int n)
+    {
+        if (!c.Meta.Active) return (null, "the colony is released: resume it first");
+        if (n is < 1 or > StoryColony.MaxPawns) return (null, $"count: 1..{StoryColony.MaxPawns}");
+        int staying = c.Staying, wanted = Math.Max(c.Meta.Wanted, staying);
+        if (wanted + n > StoryColony.MaxPawns)
+            return (null, $"a colony has at most {StoryColony.MaxPawns} pawns ({wanted} now{(wanted > staying ? $", {wanted - staying} of them joining" : "")})");
+        c.Meta.Wanted = wanted + n;
+        int now = n;
+        string? why = null;
+        if (_host.Seats() is { } s)
+        {
+            now = Math.Clamp(s.Free - s.Kept, 0, n);
+            if (now < n) why = $"server full (player cap: {s.Free} free, {s.Kept} kept for regulars)";
+        }
+        var came = new List<string>();
+        if (now > 0)
+        {
+            (IReadOnlyList<string> Accounts, string? Why) r;
+            try { r = _host.Spawn(c.Id, now, null); } catch (Exception ex) { r = ([], ex.Message); }
+            came.AddRange(r.Accounts);
+            if (r.Accounts.Count < now) why ??= r.Why ?? "no account free";
+            c.Joined(r.Accounts);
+            Scripting.Crew.Crews.Open(c.Id);
+        }
+        _log.LogInformation("story {Colony}: + {N} pawn(s): {Came} now, wanted {Wanted} {Why}", c.Id, n, came.Count, c.Meta.Wanted, why ?? "");
+        c.Alert("info", came.Count == n ? $"{n} pawn(s) joining: {string.Join(", ", came.Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf))}"
+            : $"{came.Count} of {n} new pawn(s) joining now; the rest come when seats free up ({why})");
+        c.Save(force: true);
+        if (came.Count > 0) c.BringHome("joined", came);
+        return (Roster(c, why), null);
+    }
+
+    /// <summary>
+    /// − : the pawn leaves. Its job, claims and bed go back now; it stores what it carries, then logs out and its account is released.
+    /// The last pawn can't be removed (release the colony instead).
+    /// </summary>
+    public (JsonObject? Result, string? Error, bool NotFound) RemovePawn(StoryColony c, string pawn)
+    {
+        var (ps, err) = c.Resolve([pawn]);
+        if (err != null) return (null, err, true);
+        var p = ps[0];
+        if (c.IsLeaving(p.Name)) return (Roster(c, null), null, false);
+        if (c.Staying <= 1) return (null, "the last pawn can't be removed: release the colony instead", false);
+        c.Leave(p.Name);
+        c.Meta.Wanted = Math.Max(Math.Max(1, c.Staying), c.Meta.Wanted - 1);
+        _log.LogInformation("story {Colony}: − {Pawn} leaves (wanted {Wanted})", c.Id, p.Name, c.Meta.Wanted);
+        c.Alert("info", $"{p.Display} is leaving the colony: its things go to storage first", p.Name);
+        c.Save(force: true);
+        return (Roster(c, null), null, false);
+    }
+
+    private static JsonObject Roster(StoryColony c, string? why)
+    {
+        var names = c.PawnNames().Where(a => !c.IsLeaving(a)).ToList();
+        int pending = Math.Max(0, c.Meta.Wanted - names.Count);
+        var blocked = new JsonArray();
+        if (why != null && pending > 0) blocked.Add(new JsonObject { ["reason"] = why });
+        return new JsonObject
+        {
+            ["pawns"] = new JsonArray(names.Select(a => (JsonNode)a!).ToArray()),
+            ["wanted"] = c.Meta.Wanted,
+            ["pending"] = new JsonArray(Enumerable.Range(0, pending).Select(_ => (JsonNode)new JsonObject { ["reason"] = why ?? "waiting for a seat" }).ToArray()),
+            ["leaving"] = new JsonArray(c.PawnNames().Where(c.IsLeaving).Select(a => (JsonNode)a!).ToArray()),
+            ["blocked"] = blocked,
+        };
+    }
+
     /// <summary>The pawns deposit and log out; the colony's state is kept (it is inactive until resumed).</summary>
     public int Release(StoryColony c)
     {

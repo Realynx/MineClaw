@@ -6,8 +6,6 @@
  * view / level cluster and the active tool's options bar. Panels are plain DOM over the canvas: no blur, cheap to draw.
  */
 import {
-  storyClock,
-  STORY_MATERIALS,
   tickClock,
   type StoryAiBody,
   type StoryAlert,
@@ -29,6 +27,7 @@ import {
   Power,
   RotateCcw,
   RotateCw,
+  Snowflake,
   Sun,
   WifiOff,
   X,
@@ -37,15 +36,14 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Kbd } from '@/components/ui/primitives';
 import { ViewerQualityButton } from '@/features/settings/QuickSettings';
 import { cn } from '@/lib/utils';
+import { useWorldClock, type WorldClock } from './clock';
 import { pawnMood, reorderNames, type PawnMood } from './model';
 import {
   DESIGNATE_TOOLS,
-  FURNITURE_TOOLS,
   MINE_FILTERS,
   HEIGHT_MODES,
   hasHeight,
   type HeightMode,
-  STRUCTURE_TOOLS,
   ZONE_TOOLS,
   storeyOf,
   type BuildOpts,
@@ -136,6 +134,9 @@ export function ColonistBar({
   onBox,
   onJump,
   onBringAll,
+  pending = 0,
+  onAdd,
+  onRemove,
 }: {
   bodies: BarBody[];
   selected: readonly string[];
@@ -146,7 +147,15 @@ export function ColonistBar({
   onJump: (name: string) => void;
   /** Shown while any pawn is offline: bring every offline pawn in (null = no button: viewers can't). */
   onBringAll?: (() => void) | null;
+  /** Pawns added that aren't here yet: greyed "joining…" tiles. */
+  pending?: number;
+  /** + : add pawns (shift-click asks how many; null = no button: viewers can't). */
+  onAdd?: ((n: number) => void) | null;
+  /** − : remove the one selected pawn, after a confirm (null = no button). */
+  onRemove?: ((name: string) => void) | null;
 }) {
+  const [addMany, setAddMany] = useState<number | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const row = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ x0: number; x1: number; top: number } | null>(null);
   const [lift, setLift] = useState<{ name: string; x: number; top: number; height: number } | null>(null);
@@ -371,6 +380,100 @@ export function ColonistBar({
       aria-label="Colonists"
     >
       {pawns.map(portrait)}
+      {Array.from({ length: Math.max(0, pending) }, (_, i) => (
+        <div
+          key={`joining-${i}`}
+          className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale"
+          title="A new pawn joining: it comes as soon as a seat is free"
+          data-testid="bar-joining"
+        >
+          <Avatar name={`joining-${i}`} size={24} />
+          joining…
+        </div>
+      ))}
+      {onAdd || onRemove ? (
+        <div className="relative flex h-[58px] flex-col justify-center gap-1">
+          {onAdd ? (
+            <button
+              type="button"
+              onClick={(e) => (e.shiftKey ? setAddMany(2) : onAdd(1))}
+              className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg"
+              title="Add a pawn (Shift+click: add several)"
+              aria-label="Add a pawn"
+              data-testid="bar-add-pawn"
+            >
+              +
+            </button>
+          ) : null}
+          {onRemove ? (
+            <button
+              type="button"
+              disabled={pawns.filter((p) => sel.has(p.name)).length !== 1 || pawns.length <= 1}
+              onClick={() => setConfirmRemove(pawns.find((p) => sel.has(p.name))?.name ?? null)}
+              className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-40"
+              title="Remove the selected pawn (its items go to storage)"
+              aria-label="Remove the selected pawn"
+              data-testid="bar-remove-pawn"
+            >
+              −
+            </button>
+          ) : null}
+          {addMany !== null && onAdd ? (
+            <div className="absolute top-full left-0 z-40 mt-1 flex items-center gap-1 rounded-md border border-border bg-surface p-1.5 text-[11px] shadow-pop">
+              Add
+              <input
+                type="number"
+                min={1}
+                max={12}
+                value={addMany}
+                aria-label="How many pawns"
+                onChange={(e) => setAddMany(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
+                className="w-12 rounded border border-border bg-surface-2 px-1"
+              />
+              <button
+                type="button"
+                className="rounded bg-accent px-1.5 text-accent-fg"
+                onClick={() => {
+                  onAdd(addMany);
+                  setAddMany(null);
+                }}
+              >
+                Add
+              </button>
+              <button type="button" className="text-muted" onClick={() => setAddMany(null)}>
+                Cancel
+              </button>
+            </div>
+          ) : null}
+          {confirmRemove && onRemove ? (
+            <div
+              className="absolute top-full left-0 z-40 mt-1 w-max max-w-64 space-y-1 rounded-md border border-border bg-surface p-2 text-[11px] shadow-pop"
+              role="dialog"
+              aria-label="Remove a pawn"
+              data-testid="remove-pawn-confirm"
+            >
+              <div>
+                Remove {pawns.find((p) => p.name === confirmRemove)?.label ?? confirmRemove}? Their items go to storage.
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" className="text-muted" onClick={() => setConfirmRemove(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-danger px-1.5 text-white"
+                  onClick={() => {
+                    onRemove(confirmRemove);
+                    setConfirmRemove(null);
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {onBringAll && offlinePawns(bodies).length ? (
         <button
           type="button"
@@ -404,8 +507,8 @@ export function ColonistBar({
 // ------------------------------------------------------------------ clock, pause, view, level
 
 export function ControlCluster({
+  clock,
   name,
-  hour,
   paused,
   canWrite,
   onPause,
@@ -420,8 +523,9 @@ export function ControlCluster({
   onHelp,
   children,
 }: {
+  /** The page's world clock (else the context's). */
+  clock?: WorldClock | null;
   name: string;
-  hour: number | null | undefined;
   paused: boolean;
   canWrite: boolean;
   onPause: () => void;
@@ -437,18 +541,11 @@ export function ControlCluster({
   /** Extra rows (the time of day control). */
   children?: ReactNode;
 }) {
-  const night = hour !== null && hour !== undefined && hour >= 13 && hour < 23;
   return (
     <div className={cn(panel, 'pointer-events-auto flex flex-col gap-1.5 p-2 text-xs')} data-testid="story-controls">
       <div className="flex items-center gap-2">
         <span className="max-w-36 truncate text-[13px] font-semibold">{name}</span>
-        <span
-          className="flex items-center gap-1 tabular-nums text-muted"
-          title="Colony time (the server owns the clock)"
-        >
-          {night ? <Moon className="size-3.5" /> : <Sun className="size-3.5 text-warn" />}
-          {hour !== null && hour !== undefined ? storyClock(hour) : '–'}
-        </span>
+        <ColonyClock clock={clock} />
         <button
           type="button"
           onClick={onPause}
@@ -527,6 +624,38 @@ export function ControlCluster({
   );
 }
 
+/**
+ * The colony clock (the page's one world clock: the server's time, advanced between samples): HH:MM, the sun or the moon
+ * (night 19:00–05:59, as the bot's schedule sees it), a snowflake while the server's daylight cycle is stopped, dimmed when
+ * no sample came for a minute.
+ */
+function ColonyClock({ clock }: { clock?: WorldClock | null }) {
+  const c = useWorldClock(clock);
+  const title = !c.known
+    ? "Waiting for the server's time"
+    : [
+        'World time (the server owns the clock)',
+        c.frozen ? "Time is frozen: the server's daylight cycle is stopped" : null,
+        c.stale ? 'No time from the server for over a minute: this is the last one heard' : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+  return (
+    <span
+      className={cn('flex items-center gap-1 tabular-nums text-muted', c.stale && 'opacity-50')}
+      title={title}
+      data-testid="colony-clock"
+      data-night={c.known ? String(c.night) : undefined}
+      data-frozen={c.frozen ? 'true' : undefined}
+      data-stale={c.stale ? 'true' : undefined}
+    >
+      {c.night ? <Moon className="size-3.5" aria-label="night" /> : <Sun className="size-3.5 text-warn" aria-label="day" />}
+      <span data-testid="colony-time">{c.text}</span>
+      {c.frozen ? <Snowflake className="size-3.5 text-accent" aria-label="time is frozen" /> : null}
+    </span>
+  );
+}
+
 /** Day marks on the time slider (ticks; 0 = 06:00, the Minecraft convention). */
 const DAY_MARKS: Array<[number, string]> = [
   [0, 'dawn'],
@@ -541,12 +670,12 @@ const DAY_MARKS: Array<[number, string]> = [
  * reason.
  */
 export function TimeSlider({
-  tod,
+  clock: given,
   control,
   canWrite,
   onSet,
 }: {
-  tod: number | null | undefined;
+  clock?: WorldClock | null;
   control: StoryTimeControl | null | undefined;
   canWrite: boolean;
   onSet: (tick: number) => Promise<unknown>;
@@ -556,7 +685,9 @@ export function TimeSlider({
   const live = useRef<number | null>(null);
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
   const available = !!control?.available;
-  const value = held ?? Math.max(0, Math.min(23999, Math.round(tod ?? 0)));
+  // It follows the page's world clock (the server's time); a drag holds what it would set until the change is through.
+  const clock = useWorldClock(given);
+  const value = held ?? Math.max(0, Math.min(23999, Math.round(clock.ticks)));
   const commit = () => {
     if (live.current === null) return;
     if (timer.current) clearTimeout(timer.current);
@@ -607,6 +738,11 @@ export function TimeSlider({
         ))}
       </div>
       {!available ? <div className="text-[10.5px] text-warn">{hint}</div> : null}
+      {clock.frozen ? (
+        <div className="text-[10.5px] text-muted" data-testid="time-frozen">
+          Time is frozen: the server&apos;s daylight cycle is stopped
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -687,7 +823,6 @@ function HeightModes({
 export function OptionsBar({
   tool,
   build,
-  onBuild,
   mineFilter,
   onMineFilter,
   heightMode = 'surface',
@@ -695,12 +830,10 @@ export function OptionsBar({
   layers = 2,
   onLayers,
   level,
-  stock,
   onClose,
 }: {
   tool: MapTool;
   build: BuildOpts;
-  onBuild: (b: Partial<BuildOpts>) => void;
   mineFilter: string;
   onMineFilter: (f: 'all' | 'ores' | 'stone' | 'soil') => void;
   /** Mine / Deconstruct: how deep a drag goes (1–5 while the tool is active), and the Layers count (+ / −). */
@@ -710,10 +843,10 @@ export function OptionsBar({
   onLayers?: (n: number) => void;
   /** The working level (PgUp / PgDn): what Level, Down to level and Flatten here go to. */
   level?: number;
-  stock: Map<string, number>;
   onClose: () => void;
 }) {
-  if (tool.kind === 'select') return null;
+  // Structure and furniture tools have the docked material selector instead (MaterialBar.tsx): one place, no second bar.
+  if (tool.kind === 'select' || tool.kind === 'build') return null;
   const name =
     tool.kind === 'designate'
       ? DESIGNATE_TOOLS.find((t) => t.id === tool.id)?.label
@@ -723,37 +856,27 @@ export function OptionsBar({
           ? 'Register chests'
           : tool.kind === 'home'
             ? 'Set home'
-            : tool.kind === 'design'
-              ? `Design: ${tool.name}`
-              : tool.id.startsWith('furniture:')
-                ? FURNITURE_TOOLS.find((f) => `furniture:${f.id}` === tool.id)?.label
-                : STRUCTURE_TOOLS.find((s) => s.id === tool.id)?.label;
+            : `Design: ${tool.name}`;
   const hint =
     tool.kind === 'designate'
       ? `${DESIGNATE_TOOLS.find((t) => t.id === tool.id)?.hint}. Drag a box; Shift keeps the tool.`
-      : tool.kind === 'build'
-        ? (STRUCTURE_TOOLS.find((s) => s.id === tool.id)?.hint ?? 'Click to place; Q/E turns')
-        : tool.kind === 'storage'
-          ? 'Drag over chests to make them storage'
-          : tool.kind === 'home'
-            ? 'Click where home should be: the colony migrates there (you confirm first)'
-            : tool.kind === 'design'
-              ? `${tool.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`
-              : 'Drag to paint the zone';
+      : tool.kind === 'storage'
+        ? 'Drag over chests to make them storage'
+        : tool.kind === 'home'
+          ? 'Click where home should be: the colony migrates there (you confirm first)'
+          : tool.kind === 'design'
+            ? `${tool.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`
+            : 'Drag to paint the zone';
   const icon =
     tool.kind === 'designate'
       ? tool.id
-      : tool.kind === 'build'
-        ? tool.id.replace('furniture:', '')
-        : tool.kind === 'storage'
-          ? 'storage'
-          : tool.kind === 'design'
-            ? 'block'
-            : tool.kind === 'home'
-              ? 'home'
-              : 'zone';
-  const isStructure = tool.kind === 'build' && !tool.id.startsWith('furniture:');
-  const matKey = (m: BuildOpts['material']) => (Array.isArray(m) ? m.join(':') : m);
+      : tool.kind === 'storage'
+        ? 'storage'
+        : tool.kind === 'design'
+          ? 'block'
+          : tool.kind === 'home'
+            ? 'home'
+            : 'zone';
   return (
     <div
       className={cn(panel, 'pointer-events-auto flex flex-wrap items-center gap-2 px-2.5 py-1.5 text-xs')}
@@ -781,78 +904,7 @@ export function OptionsBar({
           ))}
         </select>
       ) : null}
-      {isStructure ? (
-        <>
-          <label className="flex items-center gap-1">
-            Material
-            <select
-              aria-label="Material"
-              value={matKey(build.material)}
-              onChange={(e) => onBuild({ material: e.target.value })}
-              className="h-6 rounded border border-border bg-surface-2 px-1"
-            >
-              {STORY_MATERIALS.filter(
-                (m) => !['crafting_table', 'furnace', 'chest', 'bed', 'torch'].includes(m.name),
-              ).map((m) => (
-                <option key={m.name} value={m.name}>
-                  {m.label}
-                  {stock.has(`${m.id}:${m.meta}`) ? ` (${stock.get(`${m.id}:${m.meta}`)})` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          {tool.id === 'wall' || tool.id === 'roof' ? (
-            <span className="flex items-center gap-1" title="Wall height (+ / −)">
-              Height
-              <button
-                type="button"
-                className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3"
-                aria-label="Lower"
-                onClick={() => onBuild({ height: Math.max(1, build.height - 1) })}
-              >
-                −
-              </button>
-              <span className="w-4 text-center tabular-nums" data-testid="wall-height">
-                {build.height}
-              </span>
-              <button
-                type="button"
-                className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3"
-                aria-label="Higher"
-                onClick={() => onBuild({ height: Math.min(12, build.height + 1) })}
-              >
-                +
-              </button>
-            </span>
-          ) : null}
-          {tool.id === 'roof' ? (
-            <>
-              <select
-                aria-label="Roof style"
-                value={build.roof}
-                onChange={(e) => onBuild({ roof: e.target.value as never })}
-                className="h-6 rounded border border-border bg-surface-2 px-1"
-              >
-                <option value="flat">Flat</option>
-                <option value="slab">Slab</option>
-                <option value="gable">Gable</option>
-                <option value="none">No roof</option>
-              </select>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={build.overhang}
-                  onChange={(e) => onBuild({ overhang: e.target.checked })}
-                  aria-label="Overhang"
-                />
-                Overhang
-              </label>
-            </>
-          ) : null}
-        </>
-      ) : null}
-      {(tool.kind === 'build' && (tool.id === 'door' || tool.id === 'stairs' || tool.id.startsWith('furniture:'))) ||
-      tool.kind === 'design' ? (
+      {tool.kind === 'design' ? (
         <span className="flex items-center gap-1" title="Facing (Q / E)">
           <RotateCcw className="size-3.5 text-muted" />
           <span className="w-4 text-center font-semibold uppercase" data-testid="facing">

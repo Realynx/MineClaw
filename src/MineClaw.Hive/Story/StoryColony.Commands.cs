@@ -5,7 +5,7 @@ namespace MineClaw.Hive.Story;
 /// <summary>What the browser asks of a colony: priorities, schedules, drafting, orders, zones and designations.</summary>
 public sealed partial class StoryColony
 {
-    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "home", "forbidden"];
+    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "fish", "home", "forbidden"];
     public static readonly IReadOnlyList<string> OrderKinds = ["move", "attack", "chop", "mine", "haul", "build", "hold", "stop"];
     public static readonly IReadOnlyList<string> DesignationKinds = ["chop", "cut", "harvest", "mine", "haul", "hunt", "deconstruct", "forbid", "allow"];
 
@@ -169,51 +169,7 @@ public sealed partial class StoryColony
         p.Rev = Touch();
     }
 
-    // ---------------------------------------------------------------- zones
-
-    public (JsonNode? Result, string? Error) ZoneOp(string op, string? kind, Area? area, string? id = null, string? name = null)
-    {
-        if (name is { Length: > 40 }) return (null, "name: at most 40 characters");
-        if (op == "rename")
-        {
-            lock (_lock)
-            {
-                if (Zones.FirstOrDefault(z => z.Id == id) is not { } rz) return (null, "id: no such zone");
-                rz.Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
-                rz.Rev = Touch();
-                return (new JsonObject { ["id"] = rz.Id, ["name"] = rz.Name }, null);
-            }
-        }
-        if (op == "remove" && id != null)
-        {
-            lock (_lock)
-            {
-                if (Zones.FirstOrDefault(z => z.Id == id) is not { } gz) return (null, "id: no such zone");
-                Zones.Remove(gz); Removed("zone", gz.Id); _zoneScan.Remove(gz.Id); _bedScan = null;
-                return (new JsonObject { ["removed"] = new JsonArray(gz.Id) }, null);
-            }
-        }
-        if (op is not ("add" or "remove")) return (null, "op must be add|remove|rename");
-        if (area is not { } a) return (null, "area [x1,y1,z1,x2,y2,z2] required");
-        if (kind == "stockpile") return (null, "storage is chests: register them with /storage (no ground stockpiles)");
-        if (op == "add" && (kind == null || !ZoneKinds.Contains(kind))) return (null, $"kind must be {string.Join("|", ZoneKinds)}");
-        if ((long)(a.X2 - a.X1 + 1) * (a.Z2 - a.Z1 + 1) > 256 * 256) return (null, "zone too large (256 x 256 max)");
-        lock (_lock)
-        {
-            if (op == "add")
-            {
-                var z = new ZoneState { Id = NextId("z"), Kind = kind!, Area = a, Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim(), Rev = Touch() };
-                Zones.Add(z);
-                _bedScan = null;
-                WakeIdle();
-                return (new JsonObject { ["id"] = z.Id }, null);
-            }
-            var gone = Zones.Where(z => (kind == null || z.Kind == kind) && z.Area.Overlaps(a)).ToList();
-            foreach (var z in gone) { Zones.Remove(z); Removed("zone", z.Id); _zoneScan.Remove(z.Id); }
-            _bedScan = null;
-            return (new JsonObject { ["removed"] = new JsonArray(gone.Select(z => (JsonNode)z.Id!).ToArray()) }, null);
-        }
-    }
+    // ---------------------------------------------------------------- zones: StoryColony.Zones.cs
 
     // ---------------------------------------------------------------- designations
 
@@ -269,11 +225,27 @@ public sealed partial class StoryColony
             // Also what this call made already: a tall plant's two halves (or any repeated cell) become one designation.
             // What this kind has already (sets: a 4096-cell box over a few hundred designations was O(n·m)).
             var hasAt = Designations.Where(d => d.Kind == kind && d.At != null).Select(d => d.At!.Value).ToHashSet();
+            // Marking a cell that already holds a failed/resting designation of this kind tries it again now (live 11-04: re-marking
+            // a grove whose cuts had failed answered "0" and nothing happened).
+            var existing = Designations.Where(d => d.Kind == kind && d.At != null).GroupBy(d => d.At!.Value).ToDictionary(g => g.Key, g => g.First());
+            int revived = 0;
+            void Revive(P3 at)
+            {
+                if (!existing.TryGetValue(at, out var d) || d.Status is null or "open") return;
+                var key = DesignationKey(d);
+                _skip.Remove(key);
+                _leaseFails.Remove(key);
+                _softFails.Remove(key);
+                d.Status = "open";
+                d.Rev = Touch();
+                revived++;
+                targets.Add(at.Json());
+            }
             var hasEnt = Designations.Where(d => d.Kind == kind && d.Entity != null).Select(d => d.Entity!.Value).ToHashSet();
             bool Taken(string k, P3? at, int? ent) => at is { } ma && (!madeAt.Add(ma) || hasAt.Contains(ma)) || ent is { } me && (!madeEnt.Add(me) || hasEnt.Contains(me));
             void Block(P3 at, List<P3>? col = null, string? replant = null, string? label = null)
             {
-                if (Taken(kind, at, null)) return;
+                if (Taken(kind, at, null)) { Revive(at); return; }
                 made.Add(new DesignationState { Id = NextId("d"), Kind = kind, At = at, Blocks = col, Replant = replant, Label = label, Created = Now });
                 targets.Add(at.Json());
             }
@@ -332,8 +304,8 @@ public sealed partial class StoryColony
             }
             if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
             foreach (var d in made) { d.Rev = Touch(); Designations.Add(d); }
-            if (made.Count > 0) WakeIdle();
-            return (new JsonObject { ["count"] = made.Count, ["targets"] = targets }, null);
+            if (made.Count > 0 || revived > 0) WakeIdle();
+            return (new JsonObject { ["count"] = made.Count + revived, ["revived"] = revived, ["targets"] = targets }, null);
         }
     }
 }

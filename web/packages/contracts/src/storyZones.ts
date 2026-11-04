@@ -1,0 +1,326 @@
+/**
+ * Story Mode zones as cell sets, painted RimWorld-style (docs/web/story-mode.md "Zones"). The same rules as the bot's
+ * `ZonePainter` (src/MineClaw.Hive/Story/StoryZones.cs): the mock director applies them and the map previews a paint or an erase
+ * with them before it is sent.
+ *
+ * - A zone is a set of XZ columns (row runs `[z, x1, x2]`, normalised) plus its level range (`area` y; `area` x/z is the cells'
+ *   bounding box). Zones without `rows` (older saves) are their whole `area` rectangle.
+ * - Add kind K: cells touching (4-neighbour) or overlapping zones of the same type join them; several touched zones merge into the
+ *   oldest (its id, name, settings). Same type = same kind, and for growing zones (`farm`) the same plant. `into` extends that zone
+ *   (its type wins). Work zones (farm, chop, mine) are mutually exclusive: the painted cells leave the other work zones.
+ * - Home and keep-out (`forbidden`) are overlay layers: they never overwrite and are never overwritten.
+ * - Erase: the cells leave the zones of a kind (or any); an empty zone goes, a zone cut in parts becomes several (" 2", " 3").
+ */
+import type { StoryArea } from './story.js';
+
+export type ZoneRow = [z: number, x1: number, x2: number];
+
+export interface ZoneLike {
+  id: string | number;
+  kind: string;
+  area: StoryArea;
+  rows?: ZoneRow[] | null;
+  plant?: string | null;
+  name?: string | null;
+  cells?: number | null;
+}
+
+export const ZONE_OVERLAYS: readonly string[] = ['home', 'forbidden'];
+export const ZONE_MAX_CELLS = 65_536;
+export const isOverlayZone = (kind: string): boolean => ZONE_OVERLAYS.includes(kind);
+
+const OFF = 2 ** 25;
+const SPAN = 2 ** 26;
+/** A column's key (exact for |x|, |z| < 2^25). */
+export const cellKey = (x: number, z: number): number => (x + OFF) * SPAN + (z + OFF);
+export const cellX = (k: number): number => Math.floor(k / SPAN) - OFF;
+export const cellZ = (k: number): number => (k % SPAN) - OFF;
+
+export function rectCells(x1: number, z1: number, x2: number, z2: number): Set<number> {
+  const s = new Set<number>();
+  for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++)
+    for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) s.add(cellKey(x, z));
+  return s;
+}
+
+const cache = new WeakMap<object, Set<number>>();
+/** A zone's columns (cached per rows array). */
+export function zoneCellSet(z: ZoneLike): Set<number> {
+  const src = (z.rows ?? z.area) as object;
+  const hit = cache.get(src);
+  if (hit) return hit;
+  let s: Set<number>;
+  if (z.rows) {
+    s = new Set();
+    for (const [rz, x1, x2] of z.rows) for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) s.add(cellKey(x, rz));
+  } else s = rectCells(z.area[0], z.area[2], z.area[3], z.area[5]);
+  cache.set(src, s);
+  return s;
+}
+
+/** Normalised row runs: sorted by z then x, each maximal. */
+export function rowsOf(cells: Iterable<number>): ZoneRow[] {
+  const pts = [...cells].map((k) => [cellX(k), cellZ(k)] as const).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  const rows: ZoneRow[] = [];
+  let cur: ZoneRow | null = null;
+  for (const [x, z] of pts) {
+    if (cur && cur[0] === z && cur[2] === x - 1) cur[2] = x;
+    else rows.push((cur = [z, x, x]));
+  }
+  return rows;
+}
+
+const N4 = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+] as const;
+
+/** Do the sets overlap or touch (4-neighbour)? */
+export function cellsTouch(a: Set<number>, b: Set<number>): boolean {
+  const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+  for (const k of small) {
+    if (big.has(k)) return true;
+    const x = cellX(k),
+      z = cellZ(k);
+    for (const [dx, dz] of N4) if (big.has(cellKey(x + dx, z + dz))) return true;
+  }
+  return false;
+}
+
+const overlapsSet = (a: Set<number>, b: Set<number>): boolean => {
+  const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+  for (const k of small) if (big.has(k)) return true;
+  return false;
+};
+
+/** 4-connected parts, largest first (ties: the one whose first cell sorts first). */
+export function components(cells: Set<number>): Set<number>[] {
+  const left = new Set(cells);
+  const parts: Set<number>[] = [];
+  const sorted = [...cells].sort((a, b) => cellZ(a) - cellZ(b) || cellX(a) - cellX(b));
+  for (const s of sorted) {
+    if (!left.delete(s)) continue;
+    const part = new Set<number>();
+    const stack = [s];
+    while (stack.length) {
+      const k = stack.pop()!;
+      part.add(k);
+      const x = cellX(k),
+        z = cellZ(k);
+      for (const [dx, dz] of N4) {
+        const n = cellKey(x + dx, z + dz);
+        if (left.delete(n)) stack.push(n);
+      }
+    }
+    parts.push(part);
+  }
+  return parts
+    .map((p, i) => [p, i] as const)
+    .sort((a, b) => b[0].size - a[0].size || a[1] - b[1])
+    .map((p) => p[0]);
+}
+
+export interface ZonePaintResult {
+  /** The zone the painted cells are in now (add). */
+  id?: string | number;
+  created: Array<string | number>;
+  merged: Array<{ into: string | number; from: Array<string | number> }>;
+  grown: Array<string | number>;
+  shrunk: Array<string | number>;
+  split: Array<{ from: string | number; into: Array<string | number> }>;
+  deleted: Array<string | number>;
+}
+
+export interface ZonePaintOut<Z extends ZoneLike> {
+  zones: Z[];
+  result: ZonePaintResult;
+  /** Cells taken out of other zones (add: overwritten work zones; erase: everything erased). */
+  removedCells: Set<number>;
+}
+
+const sameType = (z: ZoneLike, kind: string, plant: string | null | undefined) =>
+  z.kind === kind && (kind !== 'farm' || (z.plant ?? null) === (plant ?? null));
+
+function withCells<Z extends ZoneLike>(z: Z, cells: Set<number>, y1: number, y2: number): Z {
+  let x1 = Infinity,
+    z1 = Infinity,
+    x2 = -Infinity,
+    z2 = -Infinity;
+  for (const k of cells) {
+    const x = cellX(k),
+      zz = cellZ(k);
+    x1 = Math.min(x1, x);
+    x2 = Math.max(x2, x);
+    z1 = Math.min(z1, zz);
+    z2 = Math.max(z2, zz);
+  }
+  const rows = rowsOf(cells);
+  cache.set(rows, cells);
+  return { ...z, area: [x1, y1, z1, x2, y2, z2] as StoryArea, rows, cells: cells.size };
+}
+
+function subtract<Z extends ZoneLike>(
+  zones: Z[],
+  i: number,
+  cells: Set<number>,
+  r: ZonePaintResult,
+  removed: Set<number>,
+  newId: () => string | number,
+): void {
+  const z = zones[i]!;
+  const own = zoneCellSet(z);
+  const rest = new Set<number>();
+  for (const k of own) {
+    if (cells.has(k)) removed.add(k);
+    else rest.add(k);
+  }
+  if (rest.size === own.size) return;
+  const [y1, y2] = [z.area[1], z.area[4]];
+  if (rest.size === 0) {
+    zones.splice(i, 1);
+    r.deleted.push(z.id);
+    return;
+  }
+  const parts = components(rest);
+  zones[i] = withCells(z, parts[0]!, y1, y2);
+  r.shrunk.push(z.id);
+  if (parts.length === 1) return;
+  const into: Array<string | number> = [];
+  parts.slice(1).forEach((p, j) => {
+    const id = newId();
+    const suffix = ` ${j + 2}`;
+    const name = z.name ? z.name.slice(0, 40 - suffix.length) + suffix : (z.name ?? null);
+    zones.splice(i + 1 + j, 0, withCells({ ...z, id, name }, p, y1, y2));
+    into.push(id);
+  });
+  r.split.push({ from: z.id, into });
+}
+
+const emptyResult = (): ZonePaintResult => ({ created: [], merged: [], grown: [], shrunk: [], split: [], deleted: [] });
+
+/**
+ * Paint `rect` ([x1, z1, x2, z2]) at level `y` as a zone of `kind` (growing: `plant`); `into` extends that zone. `make` builds a new
+ * zone's settings (id, name, growing settings) when the cells touch no zone of the type. Throws past {@link ZONE_MAX_CELLS}.
+ */
+export function paintZones<Z extends ZoneLike>(
+  zonesIn: readonly Z[],
+  req: {
+    kind: string;
+    plant?: string | null;
+    rect: readonly [number, number, number, number];
+    y: readonly [number, number];
+    into?: string | number | null;
+    /** The cells to paint when not the whole rect (a fishing zone: only its still water). */
+    cells?: ReadonlySet<number> | null;
+  },
+  make: (kind: string, plant: string | null) => Z,
+  newId: () => string | number,
+): ZonePaintOut<Z> {
+  const zones = [...zonesIn];
+  const cells = req.cells ? new Set(req.cells) : rectCells(...req.rect);
+  if (cells.size === 0) throw Object.assign(new Error('nothing to paint here'), { status: 400 });
+  const into =
+    req.into !== undefined && req.into !== null ? zones.find((z) => String(z.id) === String(req.into)) : undefined;
+  if (req.into !== undefined && req.into !== null && !into)
+    throw Object.assign(new Error('into: no such zone'), { status: 400 });
+  const kind = into?.kind ?? req.kind;
+  const plant = into ? (into.plant ?? null) : kind === 'farm' ? (req.plant ?? null) : null;
+  const touched = zones.filter((z) => sameType(z, kind, plant) && cellsTouch(zoneCellSet(z), cells));
+  const target = into && touched.includes(into) ? into : touched[0];
+  if (cells.size + touched.reduce((n, z) => n + zoneCellSet(z).size, 0) > ZONE_MAX_CELLS)
+    throw Object.assign(new Error(`zone too large (${ZONE_MAX_CELLS} cells max)`), { status: 400 });
+  const r = emptyResult();
+  const removed = new Set<number>();
+  if (!isOverlayZone(kind))
+    for (let i = zones.length - 1; i >= 0; i--) {
+      const z = zones[i]!;
+      if (!isOverlayZone(z.kind) && !sameType(z, kind, plant) && overlapsSet(zoneCellSet(z), cells))
+        subtract(zones, i, cells, r, removed, newId);
+    }
+  // Shrunk/split lists come out in age order.
+  r.shrunk.reverse();
+  r.split.reverse();
+  r.deleted.reverse();
+  if (!target) {
+    const z = withCells(make(kind, plant), new Set(cells), req.y[0], req.y[1]);
+    zones.push(z);
+    r.created.push(z.id);
+    r.id = z.id;
+    return { zones, result: r, removedCells: removed };
+  }
+  const all = new Set(zoneCellSet(target));
+  const before = all.size;
+  for (const k of cells) all.add(k);
+  let lo = Math.min(target.area[1], req.y[0]),
+    hi = Math.max(target.area[4], req.y[1]);
+  const from: Array<string | number> = [];
+  for (const o of touched) {
+    if (o === target) continue;
+    for (const k of zoneCellSet(o)) all.add(k);
+    lo = Math.min(lo, o.area[1]);
+    hi = Math.max(hi, o.area[4]);
+    zones.splice(zones.indexOf(o), 1);
+    from.push(o.id);
+  }
+  if (from.length) r.merged.push({ into: target.id, from });
+  else if (all.size > before) r.grown.push(target.id);
+  zones[zones.indexOf(target)] = withCells(target, all, lo, hi);
+  r.id = target.id;
+  return { zones, result: r, removedCells: removed };
+}
+
+/** Erase `rect` ([x1, z1, x2, z2]) from every zone of `kind` (null / 'any' = every kind). */
+export function eraseZones<Z extends ZoneLike>(
+  zonesIn: readonly Z[],
+  kind: string | null | undefined,
+  rect: readonly [number, number, number, number],
+  newId: () => string | number,
+): ZonePaintOut<Z> {
+  const zones = [...zonesIn];
+  const cells = rectCells(...rect);
+  const r = emptyResult();
+  const removed = new Set<number>();
+  for (let i = zones.length - 1; i >= 0; i--) {
+    const z = zones[i]!;
+    if ((!kind || kind === 'any' || z.kind === kind) && overlapsSet(zoneCellSet(z), cells))
+      subtract(zones, i, cells, r, removed, newId);
+  }
+  r.shrunk.reverse();
+  r.split.reverse();
+  r.deleted.reverse();
+  return { zones, result: r, removedCells: removed };
+}
+
+/**
+ * The still-water columns of a block scan (flat `[x, y, z, id, meta, below]` records of ids 8/9): a column counts when its top
+ * water block is a source (meta 0). What a fishing zone keeps of a painted area (the bot also wants open air above).
+ */
+export function waterColumns(scan: readonly number[]): Set<number> {
+  const top = new Map<number, { y: number; meta: number }>();
+  for (let i = 0; i + 5 < scan.length + 1; i += 6) {
+    const [x, y, z, id, meta] = [scan[i]!, scan[i + 1]!, scan[i + 2]!, scan[i + 3]!, scan[i + 4]!];
+    if (id !== 8 && id !== 9) continue;
+    const k = cellKey(x, z);
+    const t = top.get(k);
+    if (!t || y > t.y) top.set(k, { y, meta });
+  }
+  return new Set([...top].filter(([, t]) => t.meta === 0).map(([k]) => k));
+}
+
+/** A one-line summary of what a paint or erase did ("merged 2 zones", "overwrote 6 cells of 1 zone"…), for toasts and previews. */
+export function describeZonePaint(r: ZonePaintResult, removedCells = 0): string {
+  const out: string[] = [];
+  if (r.created.length) out.push('a new zone');
+  for (const m of r.merged) out.push(`merged ${m.from.length + 1} zones`);
+  if (r.grown.length) out.push('extends the zone');
+  if (r.split.length) out.push(`splits ${r.split.length === 1 ? 'a zone' : `${r.split.length} zones`}`);
+  if (r.shrunk.length && removedCells)
+    out.push(
+      `takes ${removedCells} cell${removedCells === 1 ? '' : 's'} from ${r.shrunk.length + r.deleted.length === 1 ? 'a zone' : `${r.shrunk.length + r.deleted.length} zones`}`,
+    );
+  else if (r.shrunk.length) out.push(`shrinks ${r.shrunk.length === 1 ? 'a zone' : `${r.shrunk.length} zones`}`);
+  if (r.deleted.length) out.push(`removes ${r.deleted.length === 1 ? 'a zone' : `${r.deleted.length} zones`}`);
+  return out.join(', ') || 'no change';
+}

@@ -446,6 +446,57 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.True(byTree.Values.SelectMany(v => v).Distinct().Count() >= 3, "the work spread over the pawns: " + string.Join("; ", byTree.Select(t => $"{t.Key}: {string.Join(",", t.Value)}")));
     }, s => { foreach (var tx in new[] { 1, 6, 11, 16 }) Tree(s, tx, 16, 4); });
 
+    // ================================================================ live 11-03: idle pawns wander apart; growing zones
+
+    [Fact]
+    public Task Three_idle_pawns_wander_apart_and_one_takes_a_designated_tree_at_once() => Colony("1.12.2", 3, async x =>
+    {
+        var c = x.C;
+        Only(x, WorkTypes.Chop);
+        // Nothing to do: each wanders the home area on its own cell.
+        Assert.True(await Until(() => x.Pawns.All(p => c.CurrentOf(p) is { Kind: "idle", Source: "wander" }), 30_000), "wandering: " + x.Diag());
+        var cells = x.Pawns.ToDictionary(p => p, _ => new HashSet<P3>());
+        var until = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < until)
+        {
+            var spots = c.Spots();
+            Assert.Equal(spots.Count, spots.Values.Distinct().Count()); // never two pawns headed to one cell
+            foreach (var p in x.Pawns) cells[p].Add(c.Host.Live(p).Block);
+            await Task.Delay(250);
+        }
+        Assert.All(cells, kv => Assert.True(kv.Value.Count >= 2, $"{kv.Key} moved about: {string.Join(" ", kv.Value)}"));
+        // A designation: one pawn takes it at once (its leg is cut, not finished), and it is done.
+        Assert.Equal(1, c.Designate("add", "chop", Area.Of(10, 60, 6, 14, 72, 10), null, null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => x.Pawns.Any(p => c.CurrentOf(p)?.Kind == "chop"), 5000), "taken at once: " + x.Diag());
+        Assert.True(await Until(() => c.Designations.Count == 0, 90_000), "chopped: " + x.Diag());
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("failed", StringComparison.OrdinalIgnoreCase));
+    });
+
+    [Fact]
+    public Task A_pawn_sows_a_wheat_zone_and_harvests_and_sows_it_again() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Farm);
+        var (res, err) = c.ZoneOp("add", "farm", Area.Of(16, 63, 2, 17, 63, 2), name: "Wheat", grow: new JsonObject { ["plant"] = "wheat" });
+        Assert.True(err == null, err);
+        var zone = res!["id"]!.GetValue<string>();
+        Assert.True(await Until(() => srv.Blocks.GetValueOrDefault((16, 64, 2)) == 59 && srv.Blocks.GetValueOrDefault((17, 64, 2)) == 59, 60_000),
+            "sown: " + x.Diag());
+        // It grows ripe: the pawn harvests and sows it again.
+        foreach (var os in x.Servers.Values.Where(o => o.LoggedIn))
+            lock (OneWorld) { os.SetBlock(16, 64, 2, 59, 7); }
+        Assert.True(await Until(() => srv.Dug.Any(d => d.Id == 59 && d.X == 16), 60_000), "harvested: " + x.Diag());
+        Assert.True(await Until(() => srv.Blocks.GetValueOrDefault((16, 64, 2)) == 59 && srv.Metas.GetValueOrDefault((16, 64, 2)) == 0, 30_000),
+            "sown again: " + x.Diag());
+        Assert.Contains("sown", c.State()["zones"]!.AsArray().Single(z => z!["id"]!.GetValue<string>() == zone)!["status"]!.GetValue<string>());
+    }, s =>
+    {
+        s.Blocks[(16, 63, 2)] = 60; s.Blocks[(17, 63, 2)] = 60; // farmland
+        s.Blocks[(16, 63, 4)] = 9;                               // water near it
+        s.Inventory[38] = new ItemStack((short)295, 8, 0);       // wheat seeds
+    });
+
     [Fact]
     public Task A_fence_build_has_its_fences_crafted_from_stored_planks_at_the_colony_table_then_builds_them() => Colony("1.12.2", 1, async x =>
     {

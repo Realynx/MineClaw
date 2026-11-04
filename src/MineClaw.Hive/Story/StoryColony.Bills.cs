@@ -18,13 +18,13 @@ public sealed partial class StoryColony
     {
         if (!Meta.DetectBenches || World is not { } w || Home() is not { } home) return;
         // Every house (home zone) and the primary home's surroundings.
-        var areas = Zones.Where(z => z.Kind == "home").Select(z => z.Area).ToList();
-        areas.Add(Area.Of(home.X - 12, home.Y - 4, home.Z - 12, home.X + 12, home.Y + 6, home.Z + 12));
-        foreach (var a in areas)
+        var areas = Zones.Where(z => z.Kind == "home").Select(z => (Area: z.Area, Cells: (ZoneCells?)z.Cells)).ToList();
+        areas.Add((Area.Of(home.X - 12, home.Y - 4, home.Z - 12, home.X + 12, home.Y + 6, home.Z + 12), null));
+        foreach (var (a, cells) in areas)
         {
             if (a.Volume > 100_000) continue;
             foreach (var p in a.Blocks())
-                if (StoryRecipes.BenchOf(w.Block(p.X, p.Y, p.Z).Id) is { } kind && Benches.All(b => b.Pos != p))
+                if ((cells == null || cells.Contains(p.X, p.Z)) && StoryRecipes.BenchOf(w.Block(p.X, p.Y, p.Z).Id) is { } kind && Benches.All(b => b.Pos != p))
                 {
                     Benches.Add(new WorkbenchState { Pos = p, Kind = kind, Rev = Touch() });
                     MaterialsChanged();

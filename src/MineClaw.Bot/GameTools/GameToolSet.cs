@@ -460,7 +460,9 @@ public static class GameToolSet
         tools.Register("eat", "Eat the best spare food.", ToolSchema.Empty,
             async (_, ct) => R(await FoodSupply.EatAsync(c, ct)), longRunning: true);
         TreeTools.Register(tools, c, places);
+        FishingTool.Register(tools, c); // hidden: scripts' fish(at, seconds) (Story Mode's fishing zones)
         AcquireTool.Register(tools, c); // hidden: scripts' ensure/acquire (no definition in any prefix)
+        FaceTool.Register(tools, c); // hidden: scripts' face{at} (Story pawns' body language)
     }
 
     // ------------------------------------------------------------------ helpers

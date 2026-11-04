@@ -1,5 +1,5 @@
 /** `--mock-bridge`: the synthetic stream validates against SSE_EVENTS, and a chat line resolves the way the web will do it. */
-import { MemoryCloudResponse, SSE_EVENTS, type SseEventName } from '@mineclaw/contracts';
+import { CloudDistanceResponse, MemoryCloudResponse, SSE_EVENTS, type SseEventName } from '@mineclaw/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { fetchLogin, ORIGIN, readSse, startApp, type TestApp } from './helpers.js';
@@ -25,6 +25,35 @@ describe('mock bridge', () => {
     expect(cloud.clusterLayer).toBe(2);
     expect((await fetch(`${t.url}/api/memory-activity/cloud`)).status).toBe(401);
     expect((await fetch(`${t.url}/api/raptor/tree`, { headers: { cookie: s.cookie } })).status).toBe(404);
+    // the default arrangement is the distance layout, with its fidelity and every arrangement listed
+    expect(cloud.arrangement).toBe('mds');
+    expect(cloud.fidelity?.unitDistance).toBeGreaterThan(0);
+    expect(cloud.arrangements.map((a) => a.id)).toEqual(['mds', 'umap', 'pca', 'tree']);
+  });
+
+  it('memory cloud: each arrangement over the same points; the embedding distance route', async () => {
+    const s = await fetchLogin(t.url, 'vera');
+    const get = async (q: string) => fetch(`${t.url}/api/memory-activity/cloud${q}`, { headers: { cookie: s.cookie } });
+    const mds = MemoryCloudResponse.parse(await (await get('')).json());
+    const umap = MemoryCloudResponse.parse(await (await get('?arrangement=umap')).json());
+    expect(umap.arrangement).toBe('umap');
+    expect(umap.points.id).toEqual(mds.points.id);
+    expect(umap.points.xy).not.toEqual(mds.points.xy);
+    expect((await get('?arrangement=tsne')).status).toBe(400);
+
+    const [a, b] = [mds.points.id[0]!, mds.points.id[1500]!];
+    const res = await fetch(`${t.url}/api/memory-activity/cloud/distance?a=${a}&b=${b}`, { headers: { cookie: s.cookie } });
+    expect(res.status).toBe(200);
+    const d = CloudDistanceResponse.parse(await res.json());
+    expect(d.metric).toBe('cosine');
+    expect(d.distance).toBeGreaterThan(0);
+    expect(
+      (await fetch(`${t.url}/api/memory-activity/cloud/distance?a=${a}&b=99999999`, { headers: { cookie: s.cookie } })).status,
+    ).toBe(404);
+    expect(
+      (await fetch(`${t.url}/api/memory-activity/cloud/distance?a=x&b=1`, { headers: { cookie: s.cookie } })).status,
+    ).toBe(400);
+    expect((await fetch(`${t.url}/api/memory-activity/cloud/distance?a=${a}&b=${b}`)).status).toBe(401);
   });
 
   it('streams every topic, each frame valid against its schema', async () => {

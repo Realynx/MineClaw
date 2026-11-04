@@ -21,6 +21,7 @@ export const DesignSummary = z.object({
   revisions: z.number().int(),
   updated: UnixMs.nullish(),
   hasPicture: z.boolean(),
+  kind: z.string().nullish().describe('build | mine (a mine design: dug at absolute y)'),
   version: z
     .string()
     .nullish()
@@ -48,6 +49,7 @@ export const DesignRevision = z.object({
   created: UnixMs,
   n: z.number().int().describe('block count'),
   version: z.string().nullish().describe('the game version this revision was saved for'),
+  kind: z.string().nullish().describe('build | mine'),
 });
 export type DesignRevision = z.infer<typeof DesignRevision>;
 

@@ -190,6 +190,25 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 var why = colonies.Resume(c);
                 return Reply(200, new JsonObject { ["id"] = c.Id, ["pawns"] = c.Pawns.Count, ["note"] = why });
             }
+            case "pawns":
+            {
+                // {op:"add", count:1..12} | {op:"remove", pawn} → {pawns, wanted, pending:[{reason}], leaving, blocked:[{reason}]}.
+                var op = S(b, "op") ?? "";
+                if (op == "add")
+                {
+                    if (b["count"] is not JsonValue cv || !cv.TryGetValue<int>(out var n) || n is < 1 or > StoryColony.MaxPawns)
+                        return Bad($"count must be 1..{StoryColony.MaxPawns}");
+                    var (res, aerr) = colonies.AddPawns(c, n);
+                    return aerr != null ? Bad(aerr) : Reply(200, res!);
+                }
+                if (op == "remove")
+                {
+                    if (S(b, "pawn") is not { Length: > 0 } who) return Bad("pawn required");
+                    var (res, rerr, notFound) = colonies.RemovePawn(c, who);
+                    return rerr != null ? notFound ? Reply(404, new JsonObject { ["error"] = rerr }) : Bad(rerr) : Reply(200, res!);
+                }
+                return Bad("op must be add|remove");
+            }
             case "online":
             {
                 // {pawns:[name]|null, over_cap?:bool} → {started:[account], blocked:[{pawn, reason}]}; null = every offline pawn.
@@ -282,7 +301,8 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             {
                 Area? area = b["area"] != null ? Area.Parse(b["area"]) : null;
                 if (b["area"] != null && area == null) return Bad("area must be [x1,y1,z1,x2,y2,z2]");
-                return Result(c.ZoneOp(S(b, "op") ?? "", S(b, "kind"), area, S(b, "id"), S(b, "name")));
+                // Growing zones: plant, sow, harvest on add/update; seek_seeds {id} (docs/web/story-mode.md "Farming").
+                return Result(c.ZoneOp(S(b, "op") ?? "", S(b, "kind"), area, S(b, "id"), S(b, "name"), b));
             }
             case "designations":
             {
@@ -335,7 +355,10 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 }
                 var auto = Flag("auto_place_benches");
                 var detect = Flag("detect_benches");
-                if (auto == null && detect == null) return Bad("auto_place_benches or detect_benches required");
+                // idle: recreation | wander | stay (what pawns do with nothing to do; StoryColony.Recreation.cs)
+                var idle = b["idle"] is null ? null : b["idle"] is JsonValue iv && iv.TryGetValue<string>(out var im) ? im : "";
+                if (auto == null && detect == null && idle == null) return Bad("auto_place_benches, detect_benches or idle required");
+                if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 return Reply(200, c.SetOptions(auto, detect));
             }
             default:

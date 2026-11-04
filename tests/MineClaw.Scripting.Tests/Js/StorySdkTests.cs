@@ -65,6 +65,77 @@ public sealed class StorySdkTests
         Assert.All(want.Zip(port.Reports), x => Assert.StartsWith(x.First, x.Second));
     }
 
+    /// <summary>A director that takes a job back (real work came up for an idle pawn).</summary>
+    private sealed class TakesBack(params JsonObject[] jobs) : IStoryPort
+    {
+        private readonly Queue<JsonObject> _jobs = new(jobs);
+        public ConcurrentQueue<string> Reports { get; } = new();
+        public volatile string? TakenBack;
+        public JsonObject? Next(string body) => _jobs.Count > 0 ? _jobs.Dequeue() : null;
+        public bool Report(string body, string job, string status, string? note, double? pct)
+        {
+            Reports.Enqueue($"{job} {status}{(note != null ? " " + note : "")}");
+            return job != TakenBack;
+        }
+        public bool Holds(string body, string job) => job != TakenBack;
+    }
+
+    [Fact]
+    public async Task An_idle_leg_is_cut_mid_walk_the_moment_the_director_takes_it_back()
+    {
+        var port = new TakesBack(
+            J("j1", "idle", j => { j["at"] = "9,64,9"; j["dist"] = 0; j["s"] = 8; j["wander"] = true; }),
+            J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.On["goto"] = Rig.Blocking(new TaskCompletionSource(), () => _ = Task.Delay(300).ContinueWith(_ => port.TakenBack = "j1")); // a long walk
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), "cut at once, not after the walk: " + watch.Elapsed);
+        Assert.Contains("""goto {"dist":0,"to":"9,64,9"}""", rig.Norm());
+        Assert.StartsWith("j1 failed cancelled", port.Reports.First()); // a stale report the director ignores: no failure
+        Assert.Equal("j2 done", port.Reports.Last());
+    }
+
+    [Fact]
+    public async Task A_pastime_walks_to_its_cell_and_looks_at_each_point_and_till_holds_the_hoe_first()
+    {
+        var port = new TakesBack(
+            J("j1", "idle", j =>
+            {
+                j["at"] = "3,65,3"; j["dist"] = 0; j["s"] = 2; j["wander"] = true; j["act"] = "socialise";
+                j["look"] = new JsonArray("5.5,66.6,3.5", "3.5,95,11.5");
+            }),
+            J("j2", "till", j => { j["at"] = "1,64,1"; j["hoe"] = "wood_hoe"; }),
+            J("j3", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        int go = calls.FindIndex(c => c.StartsWith("goto "));
+        int f1 = calls.IndexOf("""face {"at":"5.5,66.6,3.5"}"""), f2 = calls.IndexOf("""face {"at":"3.5,95,11.5"}""");
+        Assert.True(go >= 0 && go < f1 && f1 < f2, string.Join(" | ", calls)); // walk, then look at each point in turn
+        int hold = calls.FindIndex(c => c.StartsWith("skill:hold_item")), use = calls.FindIndex(c => c.StartsWith("use_block "));
+        Assert.True(hold >= 0 && hold < use, string.Join(" | ", calls)); // the hoe in hand, then on the block
+        var reports = port.Reports.ToList();
+        Assert.Equal("j1 done", reports[0]);
+        Assert.StartsWith("j2 done", reports[1]);
+        Assert.Equal("j3 done", reports[2]);
+    }
+
+    [Fact]
+    public async Task Story_during_runs_the_function_while_the_job_holds()
+    {
+        var port = new TakesBack { TakenBack = "gone" };
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        var s = await rig.Run("const a = story.during('mine', () => 'ran'); const b = story.during('gone', () => 'ran'); return a + ' ' + b.cancelled");
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Contains("ran true", s.Outcome);
+    }
+
     [Fact]
     public async Task A_dig_that_said_ok_but_left_the_block_goes_once_more_and_a_pawn_on_its_target_steps_off_first()
     {

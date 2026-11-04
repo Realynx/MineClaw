@@ -38,7 +38,8 @@ export interface RouteTypes {
   'designs.diff': { params: z.input<typeof C.DesignParams>; query: z.input<typeof C.DesignDiffQuery>; body: never; response: z.output<typeof C.DesignDiff> };
   'designs.get': { params: z.input<typeof C.DesignParams>; query: never; body: never; response: z.output<typeof C.DesignDetail> };
   'memoryActivity.heat': { params: never; query: z.input<typeof C.MemoryHeatQuery>; body: never; response: z.output<typeof C.MemoryHeatResponse> };
-  'memoryActivity.cloud': { params: never; query: never; body: never; response: z.output<typeof C.MemoryCloudResponse> };
+  'memoryActivity.cloud': { params: never; query: z.input<typeof C.MemoryCloudQuery>; body: never; response: z.output<typeof C.MemoryCloudResponse> };
+  'memoryActivity.cloudDistance': { params: never; query: z.input<typeof C.CloudDistanceQuery>; body: never; response: z.output<typeof C.CloudDistanceResponse> };
   'memoryActivity.list': { params: never; query: z.input<typeof C.MemoryActivityQuery>; body: never; response: z.output<typeof C.MemoryActivityResponse> };
   'admin.schema': { params: never; query: never; body: never; response: z.output<typeof C.EditSchemaResponse> };
   'admin.memoryEdit': { params: never; query: never; body: z.input<typeof C.MemoryEditRequest>; response: z.output<typeof C.MemoryEditResult> };
@@ -100,6 +101,7 @@ export interface RouteTypes {
   'story.release': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.resume': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.online': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryOnlineRequest>; response: z.output<typeof C.StoryOnlineResponse> };
+  'story.pawns': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPawnsRequest>; response: z.output<typeof C.StoryPawnsResponse> };
   'story.pause': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPauseRequest>; response: z.output<typeof C.StoryAck> };
   'story.home': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryHomeRequest>; response: z.output<typeof C.StoryHomeResponse> };
   'story.beds': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBedsRequest>; response: z.output<typeof C.StoryBedsResponse> };

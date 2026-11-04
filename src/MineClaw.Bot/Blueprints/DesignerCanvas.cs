@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using MineClaw.Bot.Blueprints.Mine;
 using MineClaw.Data;
 using MineClaw.World;
 using MineClaw.World.Designs;
@@ -23,9 +24,39 @@ public readonly record struct CanvasCell(int X, int Y, int Z, int Id, int Meta)
 /// two-cell blocks are kept whole (<see cref="DesignFacing.Partner"/>): a door or a double plant as its two halves (upper = lower
 /// | 8, as the normalizer draws a door), a bed as foot + head (head = foot | 8, one step along its facing); a chest placed beside
 /// a single chest takes its facing (they pair, as the game pairs them).
+/// <para>A <b>mine</b> canvas (<see cref="Kind"/> "mine", docs/web/api.md "Mine designs") is the same 64×64 plot over generated
+/// terrain (<see cref="MineTerrain"/> of its <see cref="Seed"/> and version) at absolute world y 0..127: a cell is undisturbed
+/// ground where that terrain is solid; air there digs it (never bedrock), earth fills it back; blocks go anywhere.</para>
 /// </summary>
 public sealed class DesignerCanvas
 {
+    public const string KindBuild = "build", KindMine = "mine";
+
+    /// <summary>"build" (a grassland plot, y relative to the grass) or "mine" (generated terrain, absolute y).</summary>
+    public string Kind { get; set; } = KindBuild;
+
+    public bool Mine => Kind == KindMine;
+
+    /// <summary>A mine canvas's terrain seed (text; a whole number as it is).</summary>
+    public string Seed { get; set; } = "0";
+
+    /// <summary>A mine canvas's height (absolute y 0..127).</summary>
+    public const int MineHeight = MineTerrain.Height;
+
+    /// <summary>A mine canvas's generated terrain (null on a build canvas).</summary>
+    public MineTerrain? Terrain => Mine ? MineTerrain.For(Seed, Version) : null;
+
+    /// <summary>The y range of this canvas's kind.</summary>
+    public (int Min, int Max) YRange => Mine ? (0, MineHeight - 1) : (-Depth, Height - 1);
+
+    /// <summary>Inside the plot for this canvas's kind.</summary>
+    public bool Contains(int x, int y, int z) => Mine ? x is >= 0 and < Size && z is >= 0 and < Size && y >= 0 && y < MineHeight : Inside(x, y, z);
+
+    /// <summary>Ground that is earth until dug: below the grass (build), solid generated terrain (mine).</summary>
+    public bool Ground(int x, int y, int z) => Mine ? Terrain!.Solid(x, y, z) : Underground(y);
+
+    /// <summary>Generated bedrock (a mine canvas never digs it).</summary>
+    private bool Bedrock(int x, int y, int z) => Mine && Terrain!.Block(x, y, z).Id == MineTerrain.Bedrock;
     /// <summary>The game version the canvas is drawn for ("b1.8.1" / "1.12.2"; default: the server's).</summary>
     public string Version { get; set; } = DesignVersions.Server;
 
@@ -61,7 +92,7 @@ public sealed class DesignerCanvas
     public bool IsEarth(int x, int y, int z)
     {
         var p = new BlockPos(x, y, z);
-        return Underground(y) && !_blocks.ContainsKey(p) && !_dug.Contains(p);
+        return Ground(x, y, z) && !_blocks.ContainsKey(p) && !_dug.Contains(p);
     }
 
     /// <summary>Why (id, meta) can't stand on a canvas of the version in this flow (null = it can): air and earth always can, else a
@@ -84,13 +115,16 @@ public sealed class DesignerCanvas
         foreach (var c0 in cells)
         {
             if (++n > MaxCellsPerOp) { rejected++; continue; }
-            var c = c0.Id is 0 or Earth ? c0 with { Id = c0.Id == Earth && Underground(c0.Y) ? Earth : 0, Meta = 0 } : c0;
-            if (!Inside(c.X, c.Y, c.Z) || RefusalOf(c.Id, c.Meta) != null) { rejected++; continue; }
+            if (!Contains(c0.X, c0.Y, c0.Z)) { rejected++; continue; }
+            var c = c0.Id is 0 or Earth ? c0 with { Id = c0.Id == Earth && Ground(c0.X, c0.Y, c0.Z) ? Earth : 0, Meta = 0 } : c0;
+            if (RefusalOf(c.Id, c.Meta) != null) { rejected++; continue; }
+            // A mine never digs bedrock.
+            if (c.Id == 0 && Bedrock(c.X, c.Y, c.Z) && !_blocks.ContainsKey(new BlockPos(c.X, c.Y, c.Z))) { rejected++; continue; }
             if (c.Id > 0 && Pair(c) is { } paired) c = paired;
             Set(c, changed);
             // A drawn first half brings its second (a door's upper half, a bed's head); a second half alone is accepted as drawn
             // (the browser sends both).
-            if (c.Id > 0 && DesignFacing.Partner(c.Id, c.Meta) is { } part && Inside(c.X + part.Dx, c.Y + part.Dy, c.Z + part.Dz))
+            if (c.Id > 0 && DesignFacing.Partner(c.Id, c.Meta) is { } part && Contains(c.X + part.Dx, c.Y + part.Dy, c.Z + part.Dz))
                 Set(new CanvasCell(c.X + part.Dx, c.Y + part.Dy, c.Z + part.Dz, c.Id, part.Meta), changed);
         }
         // Wall torches and ladders hang on their wall: the changed ones and the ones next to a changed cell (a wall placed after
@@ -131,8 +165,8 @@ public sealed class DesignerCanvas
     /// <summary>A full block a torch or a ladder can hang on (a block on the canvas, or undisturbed ground below the grass).</summary>
     public bool Holds(int x, int y, int z)
     {
-        if (y < -Depth) return true;
-        if (x is < 0 or >= Size || z is < 0 or >= Size || y >= Height) return false;
+        if (y < YRange.Min) return true;
+        if (!Contains(x, y, z)) return false;
         if (IsEarth(x, y, z)) return true;
         var (id, _) = Get(x, y, z);
         return BuildBlocks.NormalCube(id);
@@ -189,7 +223,7 @@ public sealed class DesignerCanvas
 
     /// <summary>A cell's state as a wire id: a block, air (0) or, below ground, undisturbed earth.</summary>
     private (int Id, int Meta) State(BlockPos p) =>
-        _blocks.TryGetValue(p, out var o) ? o : Underground(p.Y) && !_dug.Contains(p) ? (Earth, 0) : (0, 0);
+        _blocks.TryGetValue(p, out var o) ? o : Ground(p.X, p.Y, p.Z) && !_dug.Contains(p) ? (Earth, 0) : (0, 0);
 
     /// <summary>
     /// A chest placed beside a single chest of the same kind takes its facing when theirs is across the pair (the game pairs them
@@ -223,14 +257,14 @@ public sealed class DesignerCanvas
             if (other is { } o && _blocks.TryGetValue(o, out var os) && os.Id == old.Item1)
             {
                 _blocks.Remove(o);
-                if (Underground(o.Y)) _dug.Add(o);
+                if (Ground(o.X, o.Y, o.Z) && !Bedrock(o.X, o.Y, o.Z)) _dug.Add(o);
                 changed[o] = new CanvasCell(o.X, o.Y, o.Z, 0, 0);
             }
         }
         _blocks.Remove(p);
         _dug.Remove(p);
         if (c.Id > 0) _blocks[p] = (c.Id, c.Meta);
-        else if (c.Id == 0 && Underground(p.Y)) _dug.Add(p);
+        else if (c.Id == 0 && Ground(p.X, p.Y, p.Z) && !Bedrock(p.X, p.Y, p.Z)) _dug.Add(p);
         changed[p] = c;
     }
 
@@ -238,13 +272,25 @@ public sealed class DesignerCanvas
     public void Load(IEnumerable<KeyValuePair<BlockPos, (int Id, int Meta)>> blocks, IEnumerable<BlockPos> dug)
     {
         foreach (var (p, s) in blocks)
-            if (Inside(p.X, p.Y, p.Z) && s.Id > 0) _blocks[p] = s;
+            if (Contains(p.X, p.Y, p.Z) && s.Id > 0) _blocks[p] = s;
+        // A mine keeps its dug cells as they are (its design data, whatever the terrain under them now).
         foreach (var p in dug)
-            if (Underground(p.Y) && Inside(p.X, p.Y, p.Z) && !_blocks.ContainsKey(p)) _dug.Add(p);
+            if ((Mine || Underground(p.Y)) && Contains(p.X, p.Y, p.Z) && !_blocks.ContainsKey(p)) _dug.Add(p);
     }
 
     /// <summary>Every block removed and every dug cell filled back (the canvas cleared: a flat grassland again).</summary>
-    public List<CanvasCell> Clear() => Apply(_blocks.Keys.Concat(_dug).ToList().Select(p => new CanvasCell(p.X, p.Y, p.Z, Underground(p.Y) ? Earth : 0, 0)));
+    public List<CanvasCell> Clear()
+    {
+        var changed = Apply(_blocks.Keys.Concat(_dug).ToList().Select(p => new CanvasCell(p.X, p.Y, p.Z, Ground(p.X, p.Y, p.Z) ? Earth : 0, 0)));
+        // A mine's dug cells kept over what is no longer ground (another seed) go too.
+        if (_dug.Count > 0)
+        {
+            changed.AddRange(_dug.Select(p => new CanvasCell(p.X, p.Y, p.Z, Earth, 0)));
+            _dug.Clear();
+            Rev++;
+        }
+        return changed;
+    }
 
     /// <summary>The box of the blocks and the dug cells, or null when the canvas is empty.</summary>
     public (BlockPos Min, BlockPos Max)? Bounds
@@ -280,14 +326,16 @@ public sealed class DesignerCanvas
         return DesignSnapshot.EncodeStates(all);
     }
 
-    public static DesignerCanvas Decode(string? states, int rev = 0)
+    public static DesignerCanvas Decode(string? states, int rev = 0, string? kind = null, string? seed = null, string? version = null)
     {
-        var c = new DesignerCanvas { Rev = rev };
+        var c = new DesignerCanvas { Rev = rev, Kind = kind == KindMine ? KindMine : KindBuild, Seed = MineTerrain.NormalizeSeed(seed) };
+        if (DesignVersions.Normalize(version) is { } v) c.Version = v;
         foreach (var kv in DesignSnapshot.Decode(states, null).Blocks)
         {
-            if (!Inside(kv.Key.X, kv.Key.Y, kv.Key.Z)) continue;
+            if (!c.Contains(kv.Key.X, kv.Key.Y, kv.Key.Z)) continue;
             if (kv.Value.Id > 0) c._blocks[kv.Key] = kv.Value;
-            else if (kv.Value.Id == 0 && Underground(kv.Key.Y)) c._dug.Add(kv.Key);
+            // Only dug cells are stored as air.
+            else if (kv.Value.Id == 0 && (c.Mine || Underground(kv.Key.Y))) c._dug.Add(kv.Key);
         }
         return c;
     }
@@ -346,20 +394,26 @@ public sealed class DesignerCanvas
     /// </summary>
     public string Describe(int maxNames = 8)
     {
+        if (Mine && Terrain is { } t && Bounds == null)
+        {
+            var (lo, hi) = t.SurfaceRange();
+            return $"r{Rev} empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y{lo}..{hi}, bedrock y0-4)";
+        }
         if (Bounds is not { } b) return $"r{Rev} empty (plot x,z 0..63, y -16..47; y0 stands on the grass, below is solid ground)";
         var sb = new StringBuilder();
         int w = b.Max.X - b.Min.X + 1, h = b.Max.Y - b.Min.Y + 1, d = b.Max.Z - b.Min.Z + 1;
         sb.Append(CultureInfo.InvariantCulture, $"r{Rev} {_blocks.Count} blocks, box x{b.Min.X}..{b.Max.X} y{b.Min.Y}..{b.Max.Y} z{b.Min.Z}..{b.Max.Z} ({w}×{h}×{d})");
-        if (w > BlueprintParser.MaxSide || d > BlueprintParser.MaxSide || h > BlueprintParser.MaxHeight) sb.Append(" OVER the 32 limit");
+        if (w > BlueprintParser.MaxSide || d > BlueprintParser.MaxSide || h > (Mine ? BlueprintParser.MaxMineHeight : BlueprintParser.MaxHeight))
+            sb.Append(Mine ? " OVER the 64 wide / 128 high limit" : " OVER the 32 limit");
         var names = _blocks.Values.Where(s => !DesignFacing.SecondHalf(s.Id, s.Meta))
             .GroupBy(s => NameOf(s.Id, s.Meta)).OrderByDescending(g => g.Count()).ToList();
         sb.Append("; ").Append(string.Join(", ", names.Take(maxNames).Select(g => $"{g.Key} {g.Count()}"))).Append(names.Count > maxNames ? ", …" : "");
-        if (_dug.Count > 0) sb.Append(CultureInfo.InvariantCulture, $"; dug {_dug.Count} below ground (y{_dug.Min(p => p.Y)}..{_dug.Max(p => p.Y)})");
+        if (_dug.Count > 0) sb.Append(CultureInfo.InvariantCulture, $"; dug {_dug.Count} {(Mine ? "to mine out" : "below ground")} (y{_dug.Min(p => p.Y)}..{_dug.Max(p => p.Y)})");
         var layers = new List<(int Y0, int Y1, string Text)>();
         for (int y = b.Min.Y; y <= b.Max.Y; y++)
         {
             var at = _blocks.Where(kv => kv.Key.Y == y).ToList();
-            int dug = Underground(y) ? _dug.Count(p => p.Y == y) : 0;
+            int dug = Mine || Underground(y) ? _dug.Count(p => p.Y == y) : 0;
             var text = at.Count == 0 ? "0" : $"{at.Count} " + string.Join("+", at.GroupBy(kv => NameOf(kv.Value.Id, kv.Value.Meta)).OrderByDescending(g => g.Count()).Take(2).Select(g => g.Key));
             if (dug > 0) text = (at.Count == 0 ? "" : text + ", ") + $"{dug} dug";
             if (layers.Count > 0 && layers[^1].Text == text) layers[^1] = (layers[^1].Y0, y, text);
@@ -377,7 +431,7 @@ public sealed class DesignerCanvas
         var legend = new Dictionary<(int, int), char>();
         const string Symbols = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         var sb = new StringBuilder();
-        sb.Append(CultureInfo.InvariantCulture, $"y{y}{(Underground(y) ? " (below ground)" : "")}, rows z{b.Min.Z}..{b.Max.Z}, cols x{b.Min.X}..{b.Max.X}:\n");
+        sb.Append(CultureInfo.InvariantCulture, $"y{y}{(Mine ? "" : Underground(y) ? " (below ground)" : "")}, rows z{b.Min.Z}..{b.Max.Z}, cols x{b.Min.X}..{b.Max.X}:\n");
         for (int z = b.Min.Z; z <= b.Max.Z; z++)
         {
             for (int x = b.Min.X; x <= b.Max.X; x++)
@@ -393,21 +447,22 @@ public sealed class DesignerCanvas
             sb.Append('\n');
         }
         sb.Append(string.Join(" ", legend.Select(kv => $"{kv.Value}={Spec(kv.Key.Item1, kv.Key.Item2)}")));
-        if (Underground(y)) sb.Append(legend.Count > 0 ? " " : "").Append("#=ground .=dug");
+        if (Mine || Underground(y)) sb.Append(legend.Count > 0 ? " " : "").Append("#=ground .=dug");
         return sb.ToString();
     }
 
     /// <summary>"placed 12 planks, removed 3 glass; dug 20": what a change set did, for the AI's next turn and the transcript.</summary>
-    public static string Summarize(IReadOnlyCollection<CanvasCell> changes, int max = 4)
+    public static string Summarize(IReadOnlyCollection<CanvasCell> changes, int max = 4, DesignerCanvas? on = null)
     {
         if (changes.Count == 0) return "nothing changed";
         var placed = changes.Where(c => c.Id > 0 && !DesignFacing.SecondHalf(c.Id, c.Meta))
             .GroupBy(c => NameOf(c.Id, c.Meta)).OrderByDescending(g => g.Count()).ToList();
-        int removed = changes.Count(c => c.Id == 0 && !Underground(c.Y)), dug = changes.Count(c => c.Id == 0 && Underground(c.Y)), filled = changes.Count(c => c.Id == Earth);
+        bool Below(CanvasCell c) => on?.Ground(c.X, c.Y, c.Z) ?? Underground(c.Y);
+        int removed = changes.Count(c => c.Id == 0 && !Below(c)), dug = changes.Count(c => c.Id == 0 && Below(c)), filled = changes.Count(c => c.Id == Earth);
         var parts = new List<string>();
         if (placed.Count > 0) parts.Add("placed " + string.Join(", ", placed.Take(max).Select(g => $"{g.Count()} {g.Key}")) + (placed.Count > max ? ", …" : ""));
         if (removed > 0) parts.Add($"removed {removed}");
-        if (dug > 0) parts.Add($"dug {dug} below ground");
+        if (dug > 0) parts.Add(on?.Mine == true ? $"dug {dug}" : $"dug {dug} below ground");
         if (filled > 0) parts.Add($"filled {filled} back with ground");
         return parts.Count > 0 ? string.Join("; ", parts) : "nothing changed";
     }

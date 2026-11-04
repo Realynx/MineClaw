@@ -4,7 +4,8 @@
  * the mean of their children. `extraLeaves` adds that many leaves (ids from `extraFrom`) under existing layer-1 summaries so the
  * cloud reaches a realistic size even when the mock tree is small. Deterministic for a given input and seed.
  */
-import type { MemoryCloudResponse } from './memoryActivity.js';
+import { toNumber } from './common.js';
+import type { CloudArrangement, CloudDistanceResponse, CloudFidelity, MemoryCloudResponse } from './memoryActivity.js';
 
 export interface CloudMockNode {
   id: number;
@@ -22,6 +23,50 @@ export interface CloudMockOptions {
   extraFrom?: number;
   seed?: number;
   stateKey?: string;
+  /** Which arrangement to fake (default `mds`): the same islands, transformed so each looks different and switching animates. */
+  arrangement?: CloudArrangement;
+}
+
+export const CLOUD_MOCK_ARRANGEMENTS: ReadonlyArray<{ id: CloudArrangement; label: string; metric: boolean }> = [
+  { id: 'mds', label: 'Distances (MDS)', metric: true },
+  { id: 'umap', label: 'Neighbourhoods (UMAP)', metric: false },
+  { id: 'pca', label: 'PCA', metric: true },
+  { id: 'tree', label: 'Tree (force)', metric: false },
+];
+
+/** Plausible fidelity per arrangement (the live db's order of magnitude: MDS best at distances, UMAP and PCA weakest). */
+export const CLOUD_MOCK_FIDELITY: Record<CloudArrangement, CloudFidelity> = {
+  mds: { metric: 'cosine', stress: 0.12, pearson: 0.86, spearman: 0.85, unitDistance: 1.35, pairs: 20000 },
+  umap: { metric: 'cosine', stress: 0.35, pearson: 0.66, spearman: 0.61, unitDistance: 1.34, pairs: 20000 },
+  pca: {
+    metric: 'cosine',
+    stress: 0.38,
+    pearson: 0.67,
+    spearman: 0.67,
+    unitDistance: 1.28,
+    pairs: 20000,
+    varianceExplained: [0.17, 0.07],
+  },
+  tree: { metric: 'cosine', stress: 0.33, pearson: 0.82, spearman: 0.82, unitDistance: 1.23, pairs: 20000 },
+};
+
+/**
+ * The mock's embedding distance of two leaves: their drawn MDS distance on its scale, times a symmetric deterministic factor
+ * (±15 %) so "actual" and "drawn" differ a little, as they do live. Null when either id is not a leaf of `mds`.
+ */
+export function cloudMockDistance(mds: MemoryCloudResponse, a: number, b: number): CloudDistanceResponse | null {
+  const ia = mds.points.id.indexOf(a);
+  const ib = mds.points.id.indexOf(b);
+  if (ia < 0 || ib < 0) return null;
+  const dx = mds.points.xy[2 * ia]! - mds.points.xy[2 * ib]!;
+  const dy = mds.points.xy[2 * ia + 1]! - mds.points.xy[2 * ib + 1]!;
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  const wobble = a === b ? 1 : 1 + 0.15 * Math.sin(lo * 12.9898 + hi * 78.233);
+  const unit = mds.fidelity ? toNumber(mds.fidelity.unitDistance) : 1.35;
+  const d = Math.min(2, Math.hypot(dx, dy) * unit * wobble);
+  const distance = Math.round(d * 1e5) / 1e5;
+  return { a, b, metric: 'cosine', distance, similarity: Math.round((1 - distance) * 1e5) / 1e5 };
 }
 
 function rng(seed: number): () => number {
@@ -99,6 +144,31 @@ export function memoryCloudMock(tree: readonly CloudMockNode[], o: CloudMockOpti
     const p = l.parents[0];
     const [sx, sy] = (p !== undefined && sub.get(p)) || [0.5 + gauss() * 0.2, 0.5 + gauss() * 0.2];
     pos.set(l.id, [r4(sx + gauss() * 0.014), r4(sy + gauss() * 0.014)]);
+  }
+  const arrangement = o.arrangement ?? 'mds';
+  if (arrangement !== 'mds') {
+    // Same islands, another look: UMAP tightens islands and spreads them apart, PCA shears and squashes onto two axes, the tree
+    // pulls each leaf to its layer-1 parent.
+    for (const l of leaves) {
+      const [x, y] = pos.get(l.id)!;
+      let nx: number;
+      let ny: number;
+      if (arrangement === 'umap') {
+        const c = ancestorAt(l, clusterLayer);
+        const [cx, cy] = (c && centre.get(c.id)) || [0.5, 0.5];
+        nx = 0.5 + (cx - 0.5) * 1.12 + (x - cx) * 0.55;
+        ny = 0.5 + (cy - 0.5) * 1.12 + (y - cy) * 0.55;
+      } else if (arrangement === 'pca') {
+        nx = 0.5 + (x - 0.5) * 0.9 + (y - 0.5) * 0.35;
+        ny = 0.5 + (y - 0.5) * 0.45 - (x - 0.5) * 0.1;
+      } else {
+        const p = l.parents[0];
+        const [sx, sy] = (p !== undefined && sub.get(p)) || [x, y];
+        nx = sx + (x - sx) * 0.4;
+        ny = sy + (y - sy) * 0.4;
+      }
+      pos.set(l.id, [r4(nx), r4(ny)]);
+    }
   }
   const sizes = new Map<number, number>();
   const clusterOfLeaf = new Map<number, number>();
@@ -190,5 +260,8 @@ export function memoryCloudMock(tree: readonly CloudMockNode[], o: CloudMockOpti
     anchors: Math.min(2000, leaves.length),
     placedSinceBuild: Math.max(0, leaves.length - 2000),
     computeMs: 0,
+    arrangement,
+    fidelity: CLOUD_MOCK_FIDELITY[arrangement],
+    arrangements: CLOUD_MOCK_ARRANGEMENTS.map((a) => ({ ...a, status: 'ready' as const })),
   };
 }

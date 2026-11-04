@@ -16,6 +16,10 @@ public interface IStoryPort
     /// <summary>A report on job <paramref name="job"/>: status progress|done|failed, an optional note and percentage. False = the job
     /// is no longer this body's (superseded: drop it and ask for the next).</summary>
     bool Report(string body, string job, string status, string? note, double? pct);
+
+    /// <summary>Is <paramref name="job"/> still <paramref name="body"/>'s? False once the director took it back (real work came up for
+    /// an idle pawn): <c>story.during</c> then cuts what the script is doing. A director that never takes jobs back keeps the default.</summary>
+    bool Holds(string body, string job) => true;
 }
 
 /// <summary>Which director a body's script talks to: a process-wide resolver (account → port), set by the colony host.</summary>

@@ -11,7 +11,7 @@ import { createMeshHost, InlineMeshHost, type MeshHost } from '../mesh/host';
 import type { ChatSay, Dim, LayerToggles, Overlays, WorldSource } from '../types';
 import { normalizeEntities, normalizeOverlays } from '../wire/normalize';
 import type { GameVersion } from '../world/blocks';
-import { WorldCache } from '../world/cache';
+import { WorldCache, type WorldTimeAnchor } from '../world/cache';
 import { EntityStore, type BotView, type EntityView } from '../world/entities';
 import { fogColour, precipitation, skyColour, skylightSubtractedSmooth } from '../world/sky';
 import { Poller, WorldSync, type Interest } from '../world/sync';
@@ -178,6 +178,8 @@ export class WorldRuntime {
   readonly host: MeshHost;
   cache = new WorldCache();
   sync: WorldSync;
+  /** Per view: the world time and sky light subtraction of its last frame. */
+  private readonly lastSky = new Map<number, { time: number | null; skySub: number }>();
   readonly store = new EntityStore();
   readonly entities = new EntityLayer();
   readonly overlays = new OverlayLayer();
@@ -591,6 +593,24 @@ export class WorldRuntime {
 
   timeNow(dim: Dim): number | null {
     return this.cache.timeNow(dim, Date.now());
+  }
+
+  /**
+   * Anchors the world time of `dim` from another feed of the server's clock (Story Mode's colony state): `ticks` received at
+   * `atMs` (Date.now() ms). The newer of this and the index replies' time wins; `frozen` = the daylight cycle is stopped.
+   */
+  setWorldTime(dim: Dim, ticks: number, atMs: number, frozen = false): void {
+    this.cache.setTime(dim, ticks, atMs, frozen);
+  }
+
+  /** The world time anchor of `dim` the sky and light follow (null = unknown). */
+  worldTimeAnchor(dim: Dim): WorldTimeAnchor | null {
+    return this.cache.timeAnchor(dim);
+  }
+
+  /** The sky light taken off (0 noon … 11 midnight) and the world time of a view's last frame (tests, debug hooks). */
+  skyOf(viewId: number): { time: number | null; skySub: number } | null {
+    return this.lastSky.get(viewId) ?? null;
   }
 
   /** Precipitation for a 1.12.2 biome id at height y (rain when unknown). */
@@ -1046,6 +1066,7 @@ export class WorldRuntime {
     const weather = s.layers.weather && q.weather;
     const rain = weather ? wx.rain : 0, thunder = weather ? wx.thunder : 0;
     u.uSkySub.value = nether || time == null ? 0 : skylightSubtractedSmooth(time, rain, thunder);
+    this.lastSky.set(s.viewId ?? -1, { time, skySub: u.uSkySub.value });
     u.uBase.value = nether ? 0.1 : 0;
     const sky = skyColour(time, rain, thunder, nether), fog = fogColour(time, rain, thunder, nether);
     (this.scene.background as THREE.Color).setRGB(sky[0], sky[1], sky[2], THREE.SRGBColorSpace);

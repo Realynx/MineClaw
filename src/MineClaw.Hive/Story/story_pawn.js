@@ -4,13 +4,12 @@ const each = (list, f) => {
   for (const s of list || []) { const r = f(s); if (!ok(r)) return r }
   return { ok: true }
 }
-// Walk over first when the target is far: a block out of this body's view reads as air, and a tool acting on it then does nothing.
+// Walk over first: a block out of view reads as air.
 function reach(a, d) {
   if (!a || dist(pos(a)) <= d + 2) return { ok: true }
   return go(a, d)
 }
-// A tree from an empty inventory: chop_tree fells what it can reach of THAT tree (" only"). When some logs came down but not all,
-// make planks (2x2 grid: clutch and pillar blocks up high) and go once more at the lowest log left. The rest is a partial job.
+// THAT tree (" only"); some down: planks, once more at the lowest log; else partial.
 function chopTree(j) {
   const wood = j.wood || ['log']
   const held = () => wood.reduce((n, w) => n + inv(w), 0)
@@ -32,9 +31,9 @@ function chopTree(j) {
   }
   return { ok: true, partial: true, msg: 'partial: ' + got + ' log(s) taken; ' + ((r && r.msg) || 'the rest is out of reach') }
 }
-// Sleep at the bed (only at night: the server refuses a bed by day), else rest by it.
+// Bed at night (refused by day), else rest by it; no bed: its own spot.
 function sleepAt(j) {
-  const there = reach(j.bed || j.at, 2)
+  const there = j.bed ? reach(j.bed, 2) : j.at ? go(j.at, j.dist ?? 2) : { ok: true }
   if (j.bed && ok(there) && night()) use_block(j.bed)
   return wait(j.s || 5)
 }
@@ -62,6 +61,7 @@ function work(j) {
       if (ok(r) && j.replant && inv(j.replant) > 0) place(j.replant, a)
       return r
     }
+    case 'till': return story.till(j)
     case 'collect': {
       const there = go(a, 1)
       const r = collect(j.r || 4)
@@ -75,9 +75,11 @@ function work(j) {
     case 'collect_furnace': return collect_furnace(a)
     case 'give': return handTo(j.to, j.item, j.n, { gather: false })
     case 'blueprint': return build(j.design)
+    case 'fish': { const t = go(a, 0); return ok(t) ? fish(j.water, j.s, j.max) : t }
     case 'sleep': return sleepAt(j)
-    case 'idle': case 'hold':
-      if (a) go(a, j.dist || 2)
+    case 'idle': return story.idle(j)
+    case 'hold':
+      if (a) go(a, j.dist ?? 2)
       return wait(j.s || 5)
     default: return { ok: true }
   }
@@ -88,7 +90,7 @@ function pawn() {
     if (!j) continue
     if (j.kind === 'end') { story.report(j.id, 'done'); return 'released: ' + (j.label || 'colony') }
     let r = story.fetch(j)
-    // Crafts first (a bench the colony places for a build: craft it, at the table when it needs one, then place it).
+    // Crafts first (a bench a build needs; at the table if need be).
     if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })
     if (ok(r)) r = work(j)
     if (ok(r) && j.stash) r = each(j.stash, s => deposit(s.to, s.items))

@@ -120,8 +120,11 @@ import {
   WorldOverlays,
 } from './live.js';
 import {
+  CloudDistanceQuery,
+  CloudDistanceResponse,
   MemoryActivityQuery,
   MemoryActivityResponse,
+  MemoryCloudQuery,
   MemoryCloudResponse,
   MemoryHeatQuery,
   MemoryHeatResponse,
@@ -187,6 +190,8 @@ import {
   StoryPauseRequest,
   StoryOnlineRequest,
   StoryOnlineResponse,
+  StoryPawnsRequest,
+  StoryPawnsResponse,
   StoryPrioritiesRequest,
   StoryRecipesQuery,
   StoryRecipesResponse,
@@ -604,14 +609,25 @@ export const ROUTES = {
   }),
   'memoryActivity.cloud': get('/api/memory-activity/cloud', {
     access: 'viewer',
+    query: MemoryCloudQuery,
     response: MemoryCloudResponse,
     responseKind: 'json',
     bridge: b('/v1/memory-activity/cloud'),
     supervisor:
-      'bridge-native (UMAP over the RAPTOR leaf embeddings, computed in the background and cached per tree state)',
+      'bridge-native (MDS / UMAP / PCA / tree layouts of the RAPTOR leaf embeddings, computed lazily in the background and cached per tree state)',
     audit: null,
     summary:
-      "Memory cloud: every RAPTOR leaf at its 2-D UMAP position, coloured by the bot's own clusters; `status: computing` while the layout runs.",
+      "Memory cloud: every RAPTOR leaf at its 2-D position in one arrangement (`mds` default: drawn distance ≈ embedding distance), coloured by the bot's own clusters, with fidelity numbers; `status: computing` while the layout runs.",
+  }),
+  'memoryActivity.cloudDistance': get('/api/memory-activity/cloud/distance', {
+    access: 'viewer',
+    query: CloudDistanceQuery,
+    response: CloudDistanceResponse,
+    responseKind: 'json',
+    bridge: b('/v1/memory-activity/cloud/distance'),
+    supervisor: 'bridge-native (cosine of two stored RAPTOR embeddings; vectors never leave the bridge)',
+    audit: null,
+    summary: 'The embedding (cosine) distance between two memories, for the cloud hover.',
   }),
   'memoryActivity.list': get('/api/memory-activity', {
     access: 'viewer',
@@ -1258,6 +1274,20 @@ export const ROUTES = {
       'Brings offline pawns in now (null = every offline one): whitelisted again through main and (re)started, the player cap ' +
       'permitting; overCap uses the seats kept for offline regulars (can lock a regular out until a pawn leaves). 404 unknown colony or pawn.',
   }),
+  'story.pawns': post('/api/story/colonies/:id/pawns', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryPawnsRequest,
+    response: StoryPawnsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/pawns', 'POST'),
+    supervisor: '/api/story/colonies/{id}/pawns',
+    audit: 'story',
+    summary:
+      'Adds pawns (as many as the free seats allow now, never the seats kept for regulars; the rest join as seats free up; at most 12) ' +
+      'or removes one (its claims and bed go back, it stores its things, logs out and its account is released). The last pawn ' +
+      'cannot be removed. 404 unknown colony or pawn.',
+  }),
   'story.pause': post('/api/story/colonies/:id/pause', {
     access: 'story',
     params: StoryColonyParams,
@@ -1344,7 +1374,11 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/zones', 'POST'),
     supervisor: '/api/story/colonies/{id}/zones',
     audit: 'story',
-    summary: 'Adds, removes or renames zones (home zones are the houses).',
+    summary:
+      'Paints (add: merges with touching zones of the type, overwrites other work zones), erases (remove an area), deletes ' +
+      '(remove an id) or renames zones (cell sets; home and forbidden are overlay layers; home zones are the houses); growing ' +
+      'zones take a plant, sow and harvest (update) and planting bills (bill_add|update|remove|pause|resume|reorder), and ' +
+      'seek_seeds designates tall grass to cut (wheat) or queues a seed bill (pumpkin, melon).',
   }),
   'story.designations': post('/api/story/colonies/:id/designations', {
     access: 'story',

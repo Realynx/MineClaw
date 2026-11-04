@@ -59,6 +59,12 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
         return null;
     }
     public IReadOnlyList<Stack>? KnownChest(P3 at) => Chests.TryGetValue(at, out var c) ? c : null;
+    /// <summary>Pawns released one by one (removed from the colony).</summary>
+    public List<string> ReleasedPawns { get; } = new();
+    public string? ReleasePawn(string account, string why) { ReleasedPawns.Add(account); Lives.Remove(account); return null; }
+    /// <summary>The server's seats (free, kept for regulars); null = unknown.</summary>
+    public (int Free, int Kept)? SeatsNow;
+    public (int Free, int Kept)? Seats() => SeatsNow;
 
     public static PawnLive Live(double x, double y, double z, int hp = 20, int food = 20, params Stack[] inv) =>
         new(true, hp, food, x + 0.5, y, z + 0.5, 0, null, inv, true, 36 - inv.Length);

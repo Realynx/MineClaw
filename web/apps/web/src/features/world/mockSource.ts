@@ -95,6 +95,13 @@ export function createMockWorldSource(player?: () => string | null | undefined):
   const src = createFixtureSource({ radius: 8, ticksPerSecond: 60 });
   shared = {
     ...src,
+    // One server clock, as live: the mock director's world time (the colonies' time of day) is the world's time, so the
+    // map's day and night follow the Story HUD's clock and its time slider.
+    async index(dim, x, z, r) {
+      const i = await src.index(dim, x, z, r);
+      const c = [...storySim.colonies.values()].find((k) => !k.released);
+      return c ? { ...i, time: Math.round(c.tod) } : i;
+    },
     // The mock stream's feed (viewer lines, the bots' replies) bubbles over the renamed bodies like the real one.
     chat: (onSay) => subscribeChat(onSay, () => playerOf?.()),
     async entities(since?: number): Promise<EntityDelta> {
