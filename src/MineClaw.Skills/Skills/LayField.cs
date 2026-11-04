@@ -98,89 +98,121 @@ public sealed class LayFieldSkill : Skill
     internal const int DefaultMaxDiff = 4;
     internal const int InfiniteWaterSearch = 48;
 
+    /// <summary>The parsed request: the field's geometry and how to treat it.</summary>
+    private sealed record FieldJob(FieldGeom G, string Note, bool Level, bool Fence, int MaxDiff);
+
+    /// <summary>The field's trench cells (every trench column along the whole length), as a list and a set.</summary>
+    private sealed record Trench(List<BlockPos> Cells, HashSet<BlockPos> Set);
+
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        if ((args.Pos("corner") ?? args.Pos()) is not { } corner) return Fail("corner required: the lowest-x,lowest-z cell of the field at ground level (the block that becomes farmland), e.g. corner=100,64,200");
+        var (job, invalid) = Parse(ctx, args);
+        if (job is null) return Fail(invalid!);
+        var g = job.G;
+
+        // ---- 1. survey: refuses up front, changes nothing ----
+        var survey = Survey(ctx, g, job.Level, job.MaxDiff);
+        if (survey.Problems.Count > 0) return Fail(Refusal(job, survey));
+
+        // ---- 2. water and materials, still before touching anything ----
+        var cells = g.TrenchColumns().SelectMany(v => Enumerable.Range(0, g.Length).Select(u => g.At(u, v))).ToList();
+        var trench = new Trench(cells, cells.ToHashSet());
+        var external = FindInfiniteWater(ctx, g, trench.Set);
+        if (WaterShort(ctx, g, trench, external) is { } dry) return Fail(dry);
+        if (job.Fence && await MaterialsShortAsync(ctx, g, ct).ConfigureAwait(false) is { } lacking) return Fail(lacking);
+
+        var done = new Tally();
+        var failure = await BuildAsync(ctx, job, survey, trench, external, done, ct).ConfigureAwait(false);
+        return failure is null ? Ok(Progress(g, done, null) + job.Note + "; plant_seeds next") : Fail(Progress(g, done, failure));
+    }
+
+    /// <summary>The field request, or why it can't be laid (no corner, out of the buildable range, not loaded).</summary>
+    private static (FieldJob? Job, string? Error) Parse(SkillContext ctx, JsonElement args)
+    {
+        if ((args.Pos("corner") ?? args.Pos()) is not { } corner)
+            return (null, "corner required: the lowest-x,lowest-z cell of the field at ground level (the block that becomes farmland), e.g. corner=100,64,200");
         int width = Clamp(args.Int("width"), 17, FieldGeom.MinWidth, FieldGeom.MaxWidth), length = Clamp(args.Int("length"), 40, FieldGeom.MinLength, FieldGeom.MaxLength);
         string note = "";
         if (width % 2 == 0) { width++; note = $" (width made odd: {width})"; }
         bool alongX = !string.Equals(args.Str("axis")?.Trim(), "z", StringComparison.OrdinalIgnoreCase);
-        bool level = args.Flag("level"), fence = args.Flag("fence", true);
-        int maxDiff = Clamp(args.Int("max_diff"), DefaultMaxDiff, 1, 8);
         var g = new FieldGeom(corner, width, length, alongX);
         var w = ctx.World;
         int y = g.Y;
-        if (y < 3 || y >= w.WorldHeight - 6) return Fail($"y {y} is outside the buildable range");
-        if (!CornersLoaded(w, g)) return Fail($"{g.Describe} isn't loaded; walk closer first");
+        if (y < 3 || y >= w.WorldHeight - 6) return (null, $"y {y} is outside the buildable range");
+        if (!CornersLoaded(w, g)) return (null, $"{g.Describe} isn't loaded; walk closer first");
+        return (new FieldJob(g, note, args.Flag("level"), args.Flag("fence", true), Clamp(args.Int("max_diff"), DefaultMaxDiff, 1, 8)), null);
+    }
 
-        // ---- 1. survey: refuses up front, changes nothing ----
-        var survey = Survey(ctx, g, level, maxDiff);
-        if (survey.Problems.Count > 0)
-            return Fail($"can't lay {g.Describe}{note}: " + string.Join("; ", survey.Problems.Take(3)) + (survey.Problems.Count > 3 ? $"; +{survey.Problems.Count - 3} more" : "")
-                        + (!level && survey.Off > 0 ? "; level:true flattens it" : ""));
+    private static string Refusal(FieldJob job, SurveyResult survey) =>
+        $"can't lay {job.G.Describe}{job.Note}: " + string.Join("; ", survey.Problems.Take(3)) + (survey.Problems.Count > 3 ? $"; +{survey.Problems.Count - 3} more" : "")
+        + (!job.Level && survey.Off > 0 ? "; level:true flattens it" : "");
 
-        // ---- 2. water and materials, still before touching anything ----
-        var trench = g.TrenchColumns().SelectMany(v => Enumerable.Range(0, g.Length).Select(u => g.At(u, v))).ToList();
-        var trenchSet = trench.ToHashSet();
+    /// <summary>Not enough water to fill the trench: 2 buckets, or 1 plus an infinite source (a pond, or the trench's own).</summary>
+    private static string? WaterShort(SkillContext ctx, FieldGeom g, Trench trench, List<BlockPos> external)
+    {
+        var w = ctx.World;
         int full = ctx.Count(Items.WaterBucket), buckets = full + ctx.Count(Items.Bucket);
-        var external = FindInfiniteWater(ctx, g, trenchSet);
         bool needWater = g.TrenchColumns().Any(v => g.PourRows().Any(u => !FluidRules.IsSource(w, g.At(u, v), false)));
-        if (needWater && !(full >= 2 || (buckets >= 1 && (external.Count > 0 || trench.Any(c => FluidRules.IsSource(w, c, false) && FluidRules.Refills(w, c))))))
-            return Fail($"{g.Describe}: needs 2 water buckets, or a bucket plus an infinite water source within {InfiniteWaterSearch} (infinite_water makes one); have {full} water, {buckets - full} empty");
+        if (!needWater || CanWater(w, full, buckets, external, trench.Cells)) return null;
+        return $"{g.Describe}: needs 2 water buckets, or a bucket plus an infinite water source within {InfiniteWaterSearch} (infinite_water makes one); have {full} water, {buckets - full} empty";
+    }
+
+    private static bool CanWater(WorldState w, int full, int buckets, List<BlockPos> external, List<BlockPos> trench) =>
+        full >= 2 || buckets >= 1 && (external.Count > 0 || trench.Any(c => FluidRules.IsSource(w, c, false) && FluidRules.Refills(w, c)));
+
+    /// <summary>Fence posts, the gate and the torches still to place, obtained when short; what's still missing after.</summary>
+    private static async Task<string?> MaterialsShortAsync(SkillContext ctx, FieldGeom g, CancellationToken ct)
+    {
+        var lacking = new List<string>();
+        foreach (var (id, name, want) in FenceNeeds(ctx, g))
+        {
+            await ObtainAsync(ctx, id, want, ct).ConfigureAwait(false);
+            if (ctx.Count(id) < want) lacking.Add($"{want - ctx.Count(id)} more {name}");
+        }
+        return lacking.Count > 0 ? $"{g.Describe}: short of {string.Join(", ", lacking)} (fence:false lays the field without them)" : null;
+    }
+
+    private static List<(int Id, string Name, int Want)> FenceNeeds(SkillContext ctx, FieldGeom g)
+    {
         var need = new List<(int Id, string Name, int Want)>();
-        var fenceCells = fence ? FenceCells(ctx, g) : [];
-        if (fence)
-        {
-            int posts = fenceCells.Count(c => c.Id == Blocks.Fence), gates = fenceCells.Count(c => c.Id == Blocks.FenceGate);
-            if (posts > 0) need.Add((Blocks.Fence, "fence", posts));
-            if (gates > 0) need.Add((Blocks.FenceGate, "fence gate", gates));
-            int torches = TorchSpots(g, fenceCells).Count(t => ctx.Block(t) != Blocks.Torch);
-            if (torches > 0) need.Add((Blocks.Torch, "torch", torches));
-        }
-        var short1 = new List<string>();
-        foreach (var (id, name, want) in need)
-        {
-            if (ctx.Count(id) < want && ctx.Registry.Obtain is { } obtain)
-            {
-                try { await obtain(ctx, id, want, ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception ex) { ctx.Log?.Invoke($"lay_field obtain threw: {ex.Message}"); }
-            }
-            if (ctx.Count(id) < want) short1.Add($"{want - ctx.Count(id)} more {name}");
-        }
-        if (short1.Count > 0) return Fail($"{g.Describe}: short of {string.Join(", ", short1)} (fence:false lays the field without them)");
+        var fenceCells = FenceCells(ctx, g);
+        int posts = fenceCells.Count(c => c.Id == Blocks.Fence), gates = fenceCells.Count(c => c.Id == Blocks.FenceGate);
+        if (posts > 0) need.Add((Blocks.Fence, "fence", posts));
+        if (gates > 0) need.Add((Blocks.FenceGate, "fence gate", gates));
+        int torches = TorchSpots(g, fenceCells).Count(t => ctx.Block(t) != Blocks.Torch);
+        if (torches > 0) need.Add((Blocks.Torch, "torch", torches));
+        return need;
+    }
 
-        var done = new Tally();
+    private static async Task ObtainAsync(SkillContext ctx, int id, int want, CancellationToken ct)
+    {
+        if (ctx.Count(id) >= want || ctx.Registry.Obtain is not { } obtain) return;
+        try { await obtain(ctx, id, want, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { ctx.Log?.Invoke($"lay_field obtain threw: {ex.Message}"); }
+    }
+
+    /// <summary>Steps 3-7, each stopping the job with its failure: level, close and dig the trench, water, till, fence.</summary>
+    private static async Task<string?> BuildAsync(SkillContext ctx, FieldJob job, SurveyResult survey, Trench trench, List<BlockPos> external,
+        Tally done, CancellationToken ct)
+    {
+        var g = job.G;
         int hoe = ctx.FirstOwned(FarmOps.Hoes)!.Value;
-
         // ---- 3. level (only cells off the target y: dig down or fill up; a cell at y is never touched) ----
-        var lv = await LevelAsync(ctx, g, survey, done, ct).ConfigureAwait(false);
-        if (lv is not null) return Fail(Progress(g, done, lv));
-
+        if (await LevelAsync(ctx, g, survey, done, ct).ConfigureAwait(false) is { } lv) return lv;
         // ---- 4. close the trench (floor, ring ground under the ends), dig it ----
-        var closed = await CloseTrenchAsync(ctx, g, trench, done, ct).ConfigureAwait(false);
-        if (closed is not null) return Fail(Progress(g, done, closed));
-
+        if (await CloseTrenchAsync(ctx, trench.Cells, done, ct).ConfigureAwait(false) is { } closed) return closed;
         // ---- 5. water ----
-        var water = await PourAsync(ctx, g, trench, external, done, ct).ConfigureAwait(false);
-        if (water is not null) return Fail(Progress(g, done, water));
-        var strays = StrayWater(ctx, g, trenchSet);
-        if (strays.Count > 0) return Fail(Progress(g, done, $"stray water outside the trench at {string.Join(" ", strays.Take(3).Select(SkillJson.Fmt))} ({strays.Count} cells): scoop it before tilling"));
-
+        if (await PourAsync(ctx, g, trench.Cells, external, done, ct).ConfigureAwait(false) is { } water) return water;
+        var strays = StrayWater(ctx, g, trench.Set);
+        if (strays.Count > 0) return $"stray water outside the trench at {string.Join(" ", strays.Take(3).Select(SkillJson.Fmt))} ({strays.Count} cells): scoop it before tilling";
         // ---- 6. till ----
-        var till = await TillAsync(ctx, g, trenchSet, hoe, done, ct).ConfigureAwait(false);
-        if (till is not null) return Fail(Progress(g, done, till));
-
+        if (await TillAsync(ctx, g, hoe, done, ct).ConfigureAwait(false) is { } till) return till;
         // ---- 7. fence, gate, torches ----
-        if (fence)
-        {
-            var fr = await FenceAsync(ctx, g, done, ct).ConfigureAwait(false);
-            if (fr is not null) return Fail(Progress(g, done, fr));
-        }
+        if (job.Fence && await FenceAsync(ctx, g, done, ct).ConfigureAwait(false) is { } fr) return fr;
         await FarmOps.CollectAsync(ctx, 8, ct).ConfigureAwait(false);
-        var left = StrayWater(ctx, g, trenchSet);
-        if (left.Count > 0) return Fail(Progress(g, done, $"stray water outside the trench at {SkillJson.Fmt(left[0])}"));
-        return Ok(Progress(g, done, null) + note + "; plant_seeds next");
+        var left = StrayWater(ctx, g, trench.Set);
+        return left.Count > 0 ? $"stray water outside the trench at {SkillJson.Fmt(left[0])}" : null;
     }
 
     /// <summary>Within reach of <paramref name="cell"/>, and never standing in its column (a dig or placement there would be refused).</summary>
@@ -253,70 +285,107 @@ public sealed class LayFieldSkill : Skill
         return (null, $"no ground near y{y} at {x},{z}");
     }
 
-    private static SurveyResult Survey(SkillContext ctx, FieldGeom g, bool level, int maxDiff)
+    private static SurveyResult Survey(SkillContext ctx, FieldGeom g, bool level, int maxDiff) => new FieldSurvey(ctx, g, level, maxDiff).Run();
+
+    /// <summary>One survey of the field and its ring: off-level columns (to dig or fill), what blocks it, foreign liquids.</summary>
+    private sealed class FieldSurvey(SkillContext ctx, FieldGeom g, bool level, int maxDiff)
     {
-        var r = new SurveyResult();
-        var w = ctx.World;
-        int y = g.Y;
-        var trenchCols = g.TrenchColumns().ToHashSet();
-        var offs = new List<(int Dev, BlockPos Pos)>();
-        var digs = new List<BlockPos>();
-        var fills = new List<BlockPos>();
-        for (int u = -1; u <= g.Length; u++)
-        for (int v = -1; v <= g.Width; v++)
+        private readonly SurveyResult _r = new();
+        private readonly HashSet<int> _trenchCols = g.TrenchColumns().ToHashSet();
+        private readonly List<(int Dev, BlockPos Pos)> _offs = new();
+        private readonly List<BlockPos> _digs = new();
+        private readonly List<BlockPos> _fills = new();
+        private int Y => g.Y;
+
+        public SurveyResult Run()
+        {
+            for (int u = -1; u <= g.Length; u++)
+            for (int v = -1; v <= g.Width; v++)
+                Column(u, v);
+            if (!level) NameOffCells();
+            Obstacles();
+            _r.Digs.AddRange(_digs.OrderByDescending(p => p.Y));
+            _r.Fills.AddRange(_fills.OrderBy(p => p.Y));
+            ForeignLiquids();
+            return _r;
+        }
+
+        private bool IsRing(int u, int v) => u < 0 || u >= g.Length || v < 0 || v >= g.Width;
+
+        private void Column(int u, int v)
         {
             var c = g.At(u, v);
-            bool ring = u < 0 || u >= g.Length || v < 0 || v >= g.Width, isTrench = !ring && trenchCols.Contains(v);
-            var (top, blocker) = Surface(ctx, c.X, c.Z, y, maxDiff, isTrench);
-            if (top is null) { r.Problems.Add(blocker!); continue; }
-            int dev = top.Value - y;
+            bool ring = IsRing(u, v), isTrench = !ring && _trenchCols.Contains(v);
+            var (top, blocker) = Surface(ctx, c.X, c.Z, Y, maxDiff, isTrench);
+            if (top is null) { _r.Problems.Add(blocker!); return; }
+            int dev = top.Value - Y;
             // A trench cell dug on an earlier run: water or air at y over a floor at y-1 is the finished state.
-            if (isTrench && dev == -1 && (ctx.Block(c) == 0 || BlockShapes.IsLiquid(ctx.Block(c)) || Ignorable(ctx.Block(c)))) dev = 0;
-            if (dev == 0) continue;
-            offs.Add((dev, c));
-            bool repair = level || (ring && dev < 0); // the ring's low cells are always filled (fence support, trench end cap)
-            if (!repair) continue;
-            if (Math.Abs(dev) > maxDiff) { r.Problems.Add($"{SkillJson.Fmt(c)} is {Math.Abs(dev)} {(dev > 0 ? "above" : "below")} y{y} (more than {maxDiff})"); continue; }
-            if (dev > 0)
-                for (int yy = y + 1; yy <= top.Value; yy++)
-                {
-                    var b = new BlockPos(c.X, yy, c.Z);
-                    int id = ctx.Block(b);
-                    if (Ignorable(id)) continue;
-                    if (ctx.Protected(b)) { r.Problems.Add(ctx.ProtectedText(b, SkillJson.Fmt(b))); continue; }
-                    if (Blocks.Get(id).Interactable || Blocks.Get(id).Hardness < 0) { r.Problems.Add($"{SkillWorld.Name(id)} at {SkillJson.Fmt(b)} can't be dug"); continue; }
-                    digs.Add(b);
-                }
-            else
-                for (int yy = top.Value + 1; yy <= y; yy++) fills.Add(new BlockPos(c.X, yy, c.Z));
+            if (isTrench && dev == -1 && DugOut(c)) dev = 0;
+            if (dev == 0) return;
+            _offs.Add((dev, c));
+            if (Repairs(ring, dev)) Repair(c, dev, top.Value);
         }
-        if (!level)
+
+        private bool DugOut(BlockPos c) => ctx.Block(c) == 0 || BlockShapes.IsLiquid(ctx.Block(c)) || Ignorable(ctx.Block(c));
+
+        /// <summary>Level fixes every column; without it the ring's low cells are still filled (fence support, trench end cap).</summary>
+        private bool Repairs(bool ring, int dev) => level || ring && dev < 0;
+
+        private void Repair(BlockPos c, int dev, int top)
         {
-            // Farm rows must be flat at y (±0): name the worst cells.
-            var rect = offs.Where(o => g.InRect(o.Pos.X, o.Pos.Z)).ToList();
-            r.Off = rect.Count;
-            if (rect.Count > 0)
+            if (Math.Abs(dev) > maxDiff) { _r.Problems.Add($"{SkillJson.Fmt(c)} is {Math.Abs(dev)} {(dev > 0 ? "above" : "below")} y{Y} (more than {maxDiff})"); return; }
+            if (dev > 0) DigsAbove(c, top);
+            else
+                for (int yy = top + 1; yy <= Y; yy++) _fills.Add(new BlockPos(c.X, yy, c.Z));
+        }
+
+        private void DigsAbove(BlockPos c, int top)
+        {
+            for (int yy = Y + 1; yy <= top; yy++)
             {
-                var worst = rect.OrderByDescending(o => Math.Abs(o.Dev)).Take(3).Select(o => $"{SkillJson.Fmt(o.Pos)} {Math.Abs(o.Dev)} {(o.Dev > 0 ? "above" : "below")}");
-                r.Problems.Insert(0, $"{rect.Count} of {g.Width * g.Length} cells aren't at y{y} (worst {string.Join(", ", worst)})");
+                var b = new BlockPos(c.X, yy, c.Z);
+                int id = ctx.Block(b);
+                if (Ignorable(id)) continue;
+                if (ctx.Protected(b)) _r.Problems.Add(ctx.ProtectedText(b, SkillJson.Fmt(b)));
+                else if (Blocks.Get(id).Interactable || Blocks.Get(id).Hardness < 0) _r.Problems.Add($"{SkillWorld.Name(id)} at {SkillJson.Fmt(b)} can't be dug");
+                else _digs.Add(b);
             }
         }
-        // Anything in the way above the farm rows that is neither air, a plant nor a crop is an obstacle (a torch, a sign...).
-        for (int u = 0; u < g.Length; u++)
-        for (int v = 0; v < g.Width; v++)
+
+        /// <summary>Farm rows must be flat at y (±0): name the worst cells.</summary>
+        private void NameOffCells()
         {
-            var up = g.At(u, v).Up();
-            int id = ctx.Block(up);
-            if (!Ignorable(id) && !digs.Contains(up) && !BlockShapes.IsLiquid(id) && !BlockShapes.HasCollision(w, up.X, up.Y, up.Z))
-                r.Problems.Add($"{SkillWorld.Name(id)} at {SkillJson.Fmt(up)}");
+            var rect = _offs.Where(o => g.InRect(o.Pos.X, o.Pos.Z)).ToList();
+            _r.Off = rect.Count;
+            if (rect.Count == 0) return;
+            var worst = rect.OrderByDescending(o => Math.Abs(o.Dev)).Take(3).Select(o => $"{SkillJson.Fmt(o.Pos)} {Math.Abs(o.Dev)} {(o.Dev > 0 ? "above" : "below")}");
+            _r.Problems.Insert(0, $"{rect.Count} of {g.Width * g.Length} cells aren't at y{Y} (worst {string.Join(", ", worst)})");
         }
-        r.Digs.AddRange(digs.OrderByDescending(p => p.Y));
-        r.Fills.AddRange(fills.OrderBy(p => p.Y));
-        // Foreign water or lava next to the field would meet the flow (or hold the soil): refuse by name.
-        foreach (var f in w.FindBlocks(g.At(g.Length / 2, g.Width / 2).Center, Math.Max(g.Length, g.Width) / 2.0 + 4, (id, _) => BlockShapes.IsLiquid(id), 64))
-            if (g.InRing(f.Pos.X, f.Pos.Z) && f.Pos.Y >= y - 1 && f.Pos.Y <= y + 1 && !(f.Pos.Y == y && g.InRect(f.Pos.X, f.Pos.Z) && trenchCols.Contains(AlongV(g, f.Pos))))
-                r.Problems.Add($"{SkillWorld.Name(f.Id)} at {SkillJson.Fmt(f.Pos)} is inside the field");
-        return r;
+
+        /// <summary>Anything in the way above the farm rows that is neither air, a plant nor a crop is an obstacle (a torch, a sign...).</summary>
+        private void Obstacles()
+        {
+            var w = ctx.World;
+            for (int u = 0; u < g.Length; u++)
+            for (int v = 0; v < g.Width; v++)
+            {
+                var up = g.At(u, v).Up();
+                int id = ctx.Block(up);
+                if (!Ignorable(id) && !_digs.Contains(up) && !BlockShapes.IsLiquid(id) && !BlockShapes.HasCollision(w, up.X, up.Y, up.Z))
+                    _r.Problems.Add($"{SkillWorld.Name(id)} at {SkillJson.Fmt(up)}");
+            }
+        }
+
+        /// <summary>Foreign water or lava next to the field would meet the flow (or hold the soil): refuse by name.</summary>
+        private void ForeignLiquids()
+        {
+            var w = ctx.World;
+            foreach (var f in w.FindBlocks(g.At(g.Length / 2, g.Width / 2).Center, Math.Max(g.Length, g.Width) / 2.0 + 4, (id, _) => BlockShapes.IsLiquid(id), 64))
+                if (g.InRing(f.Pos.X, f.Pos.Z) && f.Pos.Y >= Y - 1 && f.Pos.Y <= Y + 1 && !OwnTrench(f.Pos))
+                    _r.Problems.Add($"{SkillWorld.Name(f.Id)} at {SkillJson.Fmt(f.Pos)} is inside the field");
+        }
+
+        private bool OwnTrench(BlockPos p) => p.Y == Y && g.InRect(p.X, p.Z) && _trenchCols.Contains(AlongV(g, p));
     }
 
     private static int AlongV(FieldGeom g, BlockPos p) => g.AlongX ? p.Z - g.Corner.Z : p.X - g.Corner.X;
@@ -325,6 +394,15 @@ public sealed class LayFieldSkill : Skill
 
     /// <summary>Digs the columns above y down to it and fills the ones below up to it; cells already at y are never touched.</summary>
     private static async Task<string?> LevelAsync(SkillContext ctx, FieldGeom g, SurveyResult s, Tally t, CancellationToken ct)
+    {
+        if (await DigDownAsync(ctx, s, t, ct).ConfigureAwait(false) is { } dug) return dug;
+        if (s.Digs.Count > 0) await FarmOps.CollectAsync(ctx, 10, ct).ConfigureAwait(false);
+        if (s.Fills.Count == 0) return null;
+        await ObtainAsync(ctx, Blocks.Dirt, s.Fills.Count, ct).ConfigureAwait(false);
+        return await FillUpAsync(ctx, g, s, t, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<string?> DigDownAsync(SkillContext ctx, SurveyResult s, Tally t, CancellationToken ct)
     {
         foreach (var b in s.Digs)
         {
@@ -335,18 +413,16 @@ public sealed class LayFieldSkill : Skill
             if (!d.Ok) return $"couldn't dig {SkillJson.Fmt(b)}: {d.Message}";
             t.Dug++;
         }
-        if (s.Digs.Count > 0) await FarmOps.CollectAsync(ctx, 10, ct).ConfigureAwait(false);
-        if (s.Fills.Count == 0) return null;
-        if (ctx.Count(Blocks.Dirt) < s.Fills.Count && ctx.Registry.Obtain is { } obtain)
-            try { await obtain(ctx, Blocks.Dirt, s.Fills.Count, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex) { ctx.Log?.Invoke($"lay_field obtain threw: {ex.Message}"); }
+        return null;
+    }
+
+    private static async Task<string?> FillUpAsync(SkillContext ctx, FieldGeom g, SurveyResult s, Tally t, CancellationToken ct)
+    {
         foreach (var b in s.Fills)
         {
             ct.ThrowIfCancellationRequested();
             if (!SkillWorld.Replaceable(ctx.World, b)) continue;
-            // The farm layer itself must be tillable (dirt); the support below it can be any building block.
-            int block = b.Y == g.Y || ctx.Has(Blocks.Dirt) ? (ctx.Has(Blocks.Dirt) ? Blocks.Dirt : -1) : SkillWorld.BuildingBlock(ctx) ?? -1;
+            int block = FillBlock(ctx, g, b);
             if (block < 0) return $"out of dirt at {SkillJson.Fmt(b)} ({s.Fills.Count - t.Filled} cells still to fill)";
             await ApproachAsync(ctx, b, ct).ConfigureAwait(false);
             var p = await ctx.Game.PlaceAsync(b, block, ct).ConfigureAwait(false);
@@ -356,12 +432,23 @@ public sealed class LayFieldSkill : Skill
         return null;
     }
 
+    /// <summary>The farm layer itself must be tillable (dirt); the support below it can be any building block. -1: none.</summary>
+    private static int FillBlock(SkillContext ctx, FieldGeom g, BlockPos b) =>
+        b.Y == g.Y || ctx.Has(Blocks.Dirt) ? (ctx.Has(Blocks.Dirt) ? Blocks.Dirt : -1) : SkillWorld.BuildingBlock(ctx) ?? -1;
+
     // ------------------------------------------------------------------ trench
 
-    private static async Task<string?> CloseTrenchAsync(SkillContext ctx, FieldGeom g, List<BlockPos> trench, Tally t, CancellationToken ct)
+    private static async Task<string?> CloseTrenchAsync(SkillContext ctx, List<BlockPos> trench, Tally t, CancellationToken ct)
     {
-        var w = ctx.World;
-        // Dig the trench (a cell holding water or air is already dug).
+        if (await DigTrenchAsync(ctx, trench, t, ct).ConfigureAwait(false) is { } dug) return dug;
+        if (t.TrenchDug > 0) await FarmOps.CollectAsync(ctx, 8, ct).ConfigureAwait(false);
+        if (await CloseFloorAsync(ctx, trench, t, ct).ConfigureAwait(false) is { } floor) return floor;
+        return Leak(ctx, trench);
+    }
+
+    /// <summary>Digs the trench (a cell holding water or air is already dug).</summary>
+    private static async Task<string?> DigTrenchAsync(SkillContext ctx, List<BlockPos> trench, Tally t, CancellationToken ct)
+    {
         foreach (var c in trench)
         {
             ct.ThrowIfCancellationRequested();
@@ -373,8 +460,13 @@ public sealed class LayFieldSkill : Skill
             if (!d.Ok) return $"couldn't dig the trench at {SkillJson.Fmt(c)}: {d.Message}";
             t.TrenchDug++;
         }
-        if (t.TrenchDug > 0) await FarmOps.CollectAsync(ctx, 8, ct).ConfigureAwait(false);
-        // The floor must hold water: a solid block (or water) under every trench cell; fill a hole in it.
+        return null;
+    }
+
+    /// <summary>The floor must hold water: a solid block (or water) under every trench cell; fill a hole in it.</summary>
+    private static async Task<string?> CloseFloorAsync(SkillContext ctx, List<BlockPos> trench, Tally t, CancellationToken ct)
+    {
+        var w = ctx.World;
         foreach (var c in trench)
         {
             var floor = c.Down();
@@ -386,7 +478,13 @@ public sealed class LayFieldSkill : Skill
             if (!p.Ok) return $"couldn't close the trench floor at {SkillJson.Fmt(floor)}: {p.Message}";
             t.Floors++;
         }
-        // The two ends and both sides must be solid at the water layer before a drop goes in.
+        return null;
+    }
+
+    /// <summary>The two ends and both sides must be solid at the water layer before a drop goes in.</summary>
+    private static string? Leak(SkillContext ctx, List<BlockPos> trench)
+    {
+        var w = ctx.World;
         foreach (var c in trench)
             foreach (var o in SkillWorld.Horizontal)
             {
@@ -474,39 +572,46 @@ public sealed class LayFieldSkill : Skill
 
     // ------------------------------------------------------------------ tilling
 
-    private static async Task<string?> TillAsync(SkillContext ctx, FieldGeom g, HashSet<BlockPos> trench, int hoe, Tally t, CancellationToken ct)
+    private static async Task<string?> TillAsync(SkillContext ctx, FieldGeom g, int hoe, Tally t, CancellationToken ct)
     {
-        var trenchCols = g.TrenchColumns().ToHashSet();
-        // Rows from the far side toward the near side, serpentine along u: the bot stands on untilled ground behind it.
-        int botV = AlongV(g, ctx.Me);
-        var vs = Enumerable.Range(0, g.Width).Where(v => !trenchCols.Contains(v)).ToList();
-        if (botV > g.Width / 2) vs.Reverse();
-        vs.Reverse(); // far side first
         int row = 0;
-        foreach (int v in vs)
+        foreach (int v in RowsFarSideFirst(ctx, g))
         {
             var us = Enumerable.Range(0, g.Length);
             foreach (int u in row++ % 2 == 0 ? us : us.Reverse())
             {
                 ct.ThrowIfCancellationRequested();
-                var c = g.At(u, v);
-                int id = ctx.Block(c);
-                if (id == Blocks.Farmland) continue; // never re-hoe farmland
-                if (id is not (Blocks.Grass or Blocks.Dirt)) return $"{SkillJson.Fmt(c)} is {SkillWorld.Name(id)}, not tillable ground";
-                var up = c.Up();
-                if (Plantish(ctx.Block(up)))
-                {
-                    var d = await ctx.Game.DigAsync(up, ct).ConfigureAwait(false);
-                    if (!d.Ok) return $"couldn't clear {SkillWorld.Name(ctx.Block(up))} at {SkillJson.Fmt(up)}";
-                }
-                var reach = await ApproachAsync(ctx, c, ct).ConfigureAwait(false);
-                if (!reach.Ok) return $"can't reach {SkillJson.Fmt(c)}: {reach.Message}";
-                var r = await ctx.Game.UseOnBlockAsync(c, BlockFace.Top, hoe, ct).ConfigureAwait(false);
-                if (!r.Ok) return $"hoe at {SkillJson.Fmt(c)}: {r.Message}";
-                if (!await ctx.WaitBlockAsync(c, (b, _) => b == Blocks.Farmland, ct).ConfigureAwait(false)) return $"{SkillJson.Fmt(c)} didn't turn to farmland";
-                t.Tilled++;
+                if (await TillCellAsync(ctx, g.At(u, v), hoe, t, ct).ConfigureAwait(false) is { } failed) return failed;
             }
         }
+        return null;
+    }
+
+    /// <summary>Rows from the far side toward the near side (tilled serpentine along u): the bot stands on untilled ground behind it.</summary>
+    private static List<int> RowsFarSideFirst(SkillContext ctx, FieldGeom g)
+    {
+        var trenchCols = g.TrenchColumns().ToHashSet();
+        int botV = AlongV(g, ctx.Me);
+        var vs = Enumerable.Range(0, g.Width).Where(v => !trenchCols.Contains(v)).ToList();
+        if (botV > g.Width / 2) vs.Reverse();
+        vs.Reverse(); // far side first
+        return vs;
+    }
+
+    private static async Task<string?> TillCellAsync(SkillContext ctx, BlockPos c, int hoe, Tally t, CancellationToken ct)
+    {
+        int id = ctx.Block(c);
+        if (id == Blocks.Farmland) return null; // never re-hoe farmland
+        if (id is not (Blocks.Grass or Blocks.Dirt)) return $"{SkillJson.Fmt(c)} is {SkillWorld.Name(id)}, not tillable ground";
+        var up = c.Up();
+        if (Plantish(ctx.Block(up)) && !(await ctx.Game.DigAsync(up, ct).ConfigureAwait(false)).Ok)
+            return $"couldn't clear {SkillWorld.Name(ctx.Block(up))} at {SkillJson.Fmt(up)}";
+        var reach = await ApproachAsync(ctx, c, ct).ConfigureAwait(false);
+        if (!reach.Ok) return $"can't reach {SkillJson.Fmt(c)}: {reach.Message}";
+        var r = await ctx.Game.UseOnBlockAsync(c, BlockFace.Top, hoe, ct).ConfigureAwait(false);
+        if (!r.Ok) return $"hoe at {SkillJson.Fmt(c)}: {r.Message}";
+        if (!await ctx.WaitBlockAsync(c, (b, _) => b == Blocks.Farmland, ct).ConfigureAwait(false)) return $"{SkillJson.Fmt(c)} didn't turn to farmland";
+        t.Tilled++;
         return null;
     }
 
