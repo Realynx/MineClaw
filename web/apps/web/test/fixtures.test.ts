@@ -56,6 +56,7 @@ function storyWrites(): Partial<Record<RouteId, Ctx>> {
     'story.bills': w({ op: 'add', bench: benchPos(), bill: { recipe: 'sticks', mode: 'until', target: 64 } }),
     'story.workbenches': w({ op: 'designate', pos: benchPos() }),
     'story.options': w({ autoPlaceBenches: true }),
+    'story.pawns': w({ op: 'add', count: 1 }),
     'story.resume': w({}),
     'story.online': w({ pawns: null }),
     'story.directives': { params: {}, query: {}, body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'hi' }, requestId: 'r-12345678' } },

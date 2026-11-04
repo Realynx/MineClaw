@@ -63,6 +63,49 @@ public sealed class SupervisorStoryRouteTests
     }
 
     [Fact]
+    public async Task Pawns_are_added_and_removed_and_growing_zones_take_a_plant_with_the_exact_wire_shape()
+    {
+        var (r, _, w, _, _) = Make();
+        var id = await Colony(r);
+        var (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "add", count = 2 });
+        Assert.Equal(200, s);
+        Assert.Equal(4, j!["pawns"]!.AsArray().Count);
+        Assert.Equal(4, j["wanted"]!.GetValue<int>());
+        Assert.Empty(j["pending"]!.AsArray());
+        Assert.Empty(j["blocked"]!.AsArray());
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "add", count = 0 })).Status);
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "add", count = 9 })).Status); // past 12
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "kick" })).Status);
+        Assert.Equal(404, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "remove", pawn = "nobody" })).Status);
+        var gone = j["pawns"]![0]!.GetValue<string>();
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "remove", pawn = gone });
+        Assert.Equal(200, s);
+        Assert.Equal(3, j!["wanted"]!.GetValue<int>());
+        Assert.Equal(gone, j["leaving"]![0]!.GetValue<string>());
+
+        // A growing zone: a plant this version grows, update, seek seeds.
+        w.Blocks[new P3(10, 63, 0)] = (60, 0);
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones",
+            new { op = "add", kind = "farm", area = new[] { 10, 63, 0, 10, 63, 0 }, plant = "wheat" });
+        Assert.Equal(200, s);
+        var zone = j!["id"]!.GetValue<string>();
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/zones",
+            new { op = "add", kind = "farm", area = new[] { 10, 63, 0, 10, 63, 0 }, plant = "carrots" })).Status); // not in b1.8.1
+        Assert.Equal(200, (await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "update", id = zone, harvest = false })).Status);
+        var (_, state) = await Call(r, "GET", $"/api/story/colonies/{id}");
+        var z = state!["zones"]!.AsArray().Single(x => x!["id"]!.GetValue<string>() == zone)!;
+        Assert.Equal("wheat", z["plant"]!.GetValue<string>());
+        Assert.False(z["harvest"]!.GetValue<bool>());
+        Assert.Equal("seek_seeds", z["seeds"]!["action"]!.GetValue<string>());
+        Assert.Contains(state["plants"]!.AsArray(), p => p!["id"]!.GetValue<string>() == "wheat");
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "seek_seeds", id = zone })).Status); // no grass near
+        w.Blocks[new P3(12, 64, 3)] = (31, 1);
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "seek_seeds", id = zone });
+        Assert.Equal(200, s);
+        Assert.Equal(1, j!["count"]!.GetValue<int>());
+    }
+
+    [Fact]
     public async Task The_viewer_gate_the_token_and_AllowStory_guard_every_route()
     {
         var (off, _, _, _, _) = Make(o => o.Viewer.Enabled = false);
@@ -171,7 +214,7 @@ public sealed class SupervisorStoryRouteTests
         var build = st2!["builds"]![0]!;
         Assert.Equal("paused", build["status"]!.GetValue<string>());
         Assert.Equal(8 * 2 + 9, build["blocks_total"]!.GetValue<int>());
-        Assert.Equal(7, st2["ghosts"]!["blocks"]![0]!.AsArray().Count); // [x,y,z,id,meta,build_id,state]
+        Assert.Equal(8, st2["ghosts"]!["blocks"]![0]!.AsArray().Count); // [x,y,z,id,meta,build_id,state,dig|place]
         w.Blocks[new P3(1, 64, 1)] = (54, 0);
         var (ss, sj) = await Call(r, "POST", b + "storage", new { op = "assign_area", area = new[] { 0, 60, 0, 3, 70, 3 }, filter = new { allow = new[] { "wood" } }, priority = "critical" });
         Assert.Equal(200, ss);
@@ -281,8 +324,12 @@ public sealed class SupervisorStoryRouteTests
         var (_, st) = await Call(r, "GET", $"/api/story/colonies/{id}");
         Assert.Equal(new[] { 69, 64, 215 }, st!["home"]!.AsArray().Select(n => n!.GetValue<int>()).ToArray());
         Assert.Equal(new P3(69, 64, 215), r.Colonies.Get(id)!.Meta.Home);
-        // The pawns were far from the new home: no teleport on this host, so each walks there (a move order before any work).
-        Assert.All(r.Colonies.Get(id)!.Pawns.Values, p => Assert.Contains(p.Queue, o => o.Kind == "move" && o.At == new P3(69, 64, 215)));
+        // The pawns were far from the new home: no teleport on this host, so each walks there (a move order before any work), each to
+        // its own spot by home (never one cell for all).
+        var moves = r.Colonies.Get(id)!.Pawns.Values.Select(p => Assert.Single(p.Queue, o => o.Kind == "move").At!.Value).ToList();
+        Assert.Equal(new P3(69, 64, 215), moves[0]);
+        Assert.All(moves, m => Assert.True(Math.Abs(m.X - 69) <= 4 && Math.Abs(m.Z - 215) <= 4, m.ToString()));
+        Assert.Equal(moves.Count, moves.Distinct().Count());
 
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { })).Status);
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { home = new { x = 1, y = 64 } })).Status);

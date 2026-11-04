@@ -17,9 +17,11 @@ import {
   type StoryDirective,
   type StoryOnlineBlocked,
   type StoryPawn,
+  type StoryPlant,
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
+import { GrowPlantPicker } from './GrowingZones';
 import {
   ClipboardPaste,
   Copy,
@@ -195,11 +197,14 @@ export function ArchitectPanel({
   onTool,
   palette,
   onPick,
+  plants,
 }: {
   tool: MapTool;
   onTool: (t: MapTool) => void;
   palette?: StoryArchitectResponse;
   onPick?: (e: StoryArchitectEntry) => void;
+  /** What a growing zone can grow here (the plant picker under the Zones tools). */
+  plants?: readonly StoryPlant[] | null;
 }) {
   const [cat, setCat] = useState<ArchCat>(
     tool.kind === 'zone'
@@ -282,6 +287,9 @@ export function ArchitectPanel({
                 ),
               ]
             : null}
+          {cat === 'zones' && tool.kind === 'zone' && tool.id === 'farm' && tool.op === 'add' ? (
+            <GrowPlantPicker plants={plants} />
+          ) : null}
           {cat === 'structure'
             ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
             : null}

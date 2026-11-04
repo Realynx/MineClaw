@@ -323,7 +323,19 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         var grade = DesignerSave.GradeY(service, rec);
         if (grade is { } g && next.Box is { } nb)
             air.UnionWith(next.Air.Where(p => p.Y < g && p.X >= nb.Min.X && p.X <= nb.Max.X && p.Z >= nb.Min.Z && p.Z <= nb.Max.Z));
-        var (dsl, min, bad, why) = Draw(rec.Name, next, air, height, grade, DesignVersions.OfDsl(rec.Dsl));
+        string? dsl;
+        BlockPos min;
+        int bad;
+        string? why;
+        // A mine stays a mine: its dug cells (all its air) as clear boxes, its absolute y, entry, seed and preference kept.
+        if (Mine.MineDesign.HeaderOf(rec.Dsl) is { } mh)
+        {
+            var cells = next.Clone();
+            var plan0 = service.PlanOf(rec, out _, forWorld: false);
+            var entry = plan0?.Blueprint.Entry is { } e && plan0 != null ? new BlockPos(plan0.Origin.X + e.X, plan0.Origin.Y + e.Y, plan0.Origin.Z + e.Z) : (BlockPos?)null;
+            (dsl, min, bad, why) = Mine.MineDesign.Draw(rec.Name, cells, entry, mh.Seed, mh.PreferredFor, DesignVersions.OfDsl(rec.Dsl), height);
+        }
+        else (dsl, min, bad, why) = Draw(rec.Name, next, air, height, grade, DesignVersions.OfDsl(rec.Dsl));
         if (dsl == null) return (false, $"can't save #{rec.Id} as a revision: {why}");
         rec.Dsl = dsl;
         rec.Origin = min;

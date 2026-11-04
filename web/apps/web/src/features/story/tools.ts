@@ -570,7 +570,9 @@ export function designBlocks(json: unknown, depth = 0): DesignBlock[] {
  * to the box's corner. y stays on the studio's ground (0 = the first layer above the grass, below = dug into it) when the design
  * digs, so the clicked level is its ground floor and the basement goes under it; else its lowest layer is 0 (as `designBlocks`).
  */
-export function designCells(session: { blocks?: readonly number[][] | null; dug?: readonly number[][] | null } | null): DesignBlock[] {
+export function designCells(
+  session: { blocks?: readonly number[][] | null; dug?: readonly number[][] | null; kind?: string | null } | null,
+): DesignBlock[] {
   if (!session) return [];
   const out: DesignBlock[] = [
     ...(session.blocks ?? []).filter((b) => (b[3] ?? 0) > 0).map((b): DesignBlock => [b[0]!, b[1]!, b[2]!, b[3]!, b[4] ?? 0]),
@@ -580,18 +582,68 @@ export function designCells(session: { blocks?: readonly number[][] | null; dug?
   const mx = Math.min(...out.map((b) => b[0])),
     my = Math.min(...out.map((b) => b[1])),
     mz = Math.min(...out.map((b) => b[2]));
-  const dy = my < 0 ? 0 : my;
+  // A mine keeps its absolute y (ore heights matter); a build stands on the clicked level.
+  const dy = session.kind === 'mine' || my < 0 ? 0 : my;
   return out.map((b) => [b[0] - mx, b[1] - dy, b[2] - mz, b[3], b[4]]);
 }
 
-/** A design placed with its origin at `at`, turned by `facing` (n = as drawn, then clockwise). */
-export function placeDesign(blocks: readonly DesignBlock[], at: V3, facing: StoryFacing): DesignBlock[] {
+/** A mine design's y range and why it can't be placed (null = it can): it never digs below y 1 (the bedrock floor). */
+export function mineCheck(blocks: readonly DesignBlock[]): { min: number; max: number; refusal: string | null } {
+  let min = Infinity,
+    max = -Infinity,
+    lowDig = Infinity;
+  for (const b of blocks) {
+    min = Math.min(min, b[1]);
+    max = Math.max(max, b[1]);
+    if (b[3] === 0) lowDig = Math.min(lowDig, b[1]);
+  }
+  return {
+    min,
+    max,
+    refusal: lowDig < 1 ? `it digs down to y ${lowDig}: a mine stops at y 1 (bedrock below)` : null,
+  };
+}
+
+/**
+ * A design placed with its origin at `at`, turned by `facing` (n = as drawn, then clockwise). An `absolute` design (a mine)
+ * keeps its own y: only x and z follow the click.
+ */
+export function placeDesign(blocks: readonly DesignBlock[], at: V3, facing: StoryFacing, absolute = false): DesignBlock[] {
   const turns = FACINGS.indexOf(facing);
+  const y0 = absolute ? 0 : at[1];
   return blocks.map(([x, y, z, id, meta]) => {
     let dx = x, dz = z;
     for (let i = 0; i < turns; i++) [dx, dz] = [-dz, dx];
-    return [at[0] + dx, at[1] + y, at[2] + dz, id, meta];
+    return [at[0] + dx, y0 + y, at[2] + dz, id, meta];
   });
+}
+
+/**
+ * The build request for a placed mine design: `mine` items of one group, its dig cells top-down (the colony digs a cell once
+ * it is exposed) then the blocks put in once their cells are dug (`place`: torches, ladders), at most 4096 cells an item.
+ */
+export function mineItems(placed: readonly DesignBlock[], name?: string, group?: string): StoryBuildItem[] {
+  const dig = placed.filter((b) => b[3] === 0).sort((a, b) => b[1] - a[1] || a[0] - b[0] || a[2] - b[2]);
+  const put = placed.filter((b) => b[3] !== 0);
+  const tag = { group: (group ?? `m${Date.now().toString(36)}`).slice(0, 40), ...(name ? { name: name.slice(0, 40) } : {}) };
+  const items: StoryBuildItem[] = [];
+  for (let i = 0; i < dig.length; i += 4096)
+    items.push({ kind: 'mine', blocks: dig.slice(i, i + 4096).map((b): [number, number, number] => [b[0], b[1], b[2]]), ...tag });
+  // The blocks ride in the last dig item while it has room, the rest in items of their own.
+  let last = items[items.length - 1];
+  let k = 0;
+  while (k < put.length) {
+    const room = last ? 4096 - (last.blocks?.length ?? 0) - (last.place?.length ?? 0) : 0;
+    if (room <= 0) {
+      last = { kind: 'mine', blocks: [], ...tag };
+      items.push(last);
+      continue;
+    }
+    const take = put.slice(k, k + room).map((b): [number, number, number, number, number] => [b[0], b[1], b[2], b[3], b[4]]);
+    last!.place = [...(last!.place ?? []), ...take];
+    k += take.length;
+  }
+  return items.slice(0, 64);
 }
 
 /**

@@ -84,6 +84,7 @@ export const STORY_BUILD_KINDS = [
   'fence',
   'block',
   'remove',
+  'mine',
   'crafting_table',
   'furnace',
   'chest',
@@ -203,6 +204,12 @@ export const StoryAck = z.object({
     .array(z.union([z.string(), z.number()]))
     .nullish()
     .describe('zones remove: the zones removed'),
+  warnings: z
+    .array(z.string())
+    .nullish()
+    .describe('zones add/update (growing zones): what slows it, e.g. no water near'),
+  count: z.number().int().nullish().describe('zones seek_seeds: the tall grass designated (or seeds billed)'),
+  kind: z.string().nullish().describe('zones seek_seeds: cut | bill'),
 });
 export type StoryAck = z.infer<typeof StoryAck>;
 
@@ -282,6 +289,7 @@ export const StoryPawn = z.object({
   dim: z.number().int().nullish(),
   drafted: z.boolean().nullish(),
   state: z.string().nullish().describe(STORY_PAWN_STATES.join(' | ')),
+  leaving: z.boolean().nullish().describe('removed from the colony: storing its things, then it logs out'),
   offlineReason: z
     .string()
     .nullish()
@@ -306,8 +314,39 @@ export const StoryZone = z.object({
   /** The zone's name (the bot's field; houses are named home zones). */
   name: z.string().nullish(),
   label: z.string().nullish(),
+  /** A growing zone (kind `farm`): the plant it grows (a `plants` id; null = ripe crops and bare farmland only). */
+  plant: z.string().nullish(),
+  sow: z.boolean().nullish().describe('pawns till and sow it'),
+  harvest: z.boolean().nullish().describe('pawns harvest what is ripe'),
+  status: z.string().nullish().describe('a growing zone: "12/40 sown, 6 ripe"'),
+  seeds: z.lazy(() => StoryZoneSeeds).nullish(),
+  needsHoe: z.boolean().nullish().describe('there is dirt to till and no hoe anywhere'),
 });
 export type StoryZone = z.infer<typeof StoryZone>;
+
+/** A growing zone's seeds: what is sown, how many the colony has, how many empty cells wait, and where they come from. */
+export const StoryZoneSeeds = z.object({
+  item: z.string(),
+  have: z.number().int().default(0),
+  neededForEmpty: z.number().int().default(0),
+  sourceHint: z.string().nullish(),
+  missing: z.string().nullish().describe('null = there are seeds (or nothing to sow)'),
+  action: z.enum(['seek_seeds', 'craft_seeds']).nullish().describe('what the zone can do about it (explicit)'),
+});
+export type StoryZoneSeeds = z.infer<typeof StoryZoneSeeds>;
+
+/** What a growing zone can grow in this version (`plants` in the full state). */
+export const StoryPlant = z.object({
+  id: z.string(),
+  label: z.string(),
+  block: z.number().int().nullish(),
+  seed: z.string().describe('the item that is sown'),
+  seedItem: z.tuple([z.number().int(), z.number().int()]).nullish().describe('[id, meta]'),
+  soil: z.string().describe('farmland | sand | soul_sand | dirt | cane'),
+  harvest: z.string().describe('crop | fruit | stalk | tree'),
+  source: z.string().nullish(),
+});
+export type StoryPlant = z.infer<typeof StoryPlant>;
 
 /**
  * One designated target. The director writes `target` ([x,y,z] or {entity}) and `blocks` (a tree's logs); the mocks also send
@@ -410,8 +449,9 @@ export const StoryBuild = z.object({
 });
 export type StoryBuild = z.infer<typeof StoryBuild>;
 
-/** Ghost block [x, y, z, id, meta, build_id, state] (state: todo | leased | done | blocked | unsupported: a block pawns can't
- * place yet, shown and alerted, never a job). */
+/** Ghost block [x, y, z, id, meta, build_id, state, kind?] (state: todo | leased | done | blocked | unsupported: a block pawns
+ * can't place yet, shown and alerted, never a job; kind: dig | place — a dig ghost's id/meta is the live world's block there,
+ * the material the dig expects). */
 export const StoryGhostBlock = z.tuple([
   z.number().int(),
   z.number().int(),
@@ -420,6 +460,7 @@ export const StoryGhostBlock = z.tuple([
   z.number().int(),
   z.union([z.string(), z.number()]),
   z.string(),
+  z.enum(['dig', 'place']).optional(),
 ]);
 export type StoryGhostBlock = z.infer<typeof StoryGhostBlock>;
 
@@ -637,6 +678,7 @@ export const StoryColonyState = z.object({
   pawns: z.array(StoryPawn).default([]),
   seats: z.lazy(() => StorySeats).nullish(),
   zones: z.array(StoryZone).default([]),
+  plants: z.array(StoryPlant).nullish().describe('what growing zones can grow here (full state only)'),
   designations: z.array(StoryDesignation).default([]),
   orders: z.array(StoryOrder).default([]),
   alerts: z.array(StoryAlert).default([]),
@@ -669,8 +711,25 @@ export const StorySeats = z.object({
   wanted: z.number().int().default(0),
   capFree: z.number().int().nullish(),
   keptForRegulars: z.number().int().nullish(),
+  pending: z.number().int().nullish().describe('pawns added that are not here yet ("joining…")'),
 });
 export type StorySeats = z.infer<typeof StorySeats>;
+
+/** POST /api/story/colonies/{id}/pawns: + one or more pawns (as seats allow; the rest join later), or − one pawn. */
+export const StoryPawnsRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('add'), count: z.number().int().min(1).max(12) }).strict(),
+  z.object({ op: z.literal('remove'), pawn: z.string().min(1).max(64) }).strict(),
+]);
+export type StoryPawnsRequest = z.infer<typeof StoryPawnsRequest>;
+
+export const StoryPawnsResponse = z.object({
+  pawns: z.array(z.string()).default([]),
+  wanted: z.number().int(),
+  pending: z.array(z.object({ reason: z.string() })).default([]),
+  leaving: z.array(z.string()).default([]),
+  blocked: z.array(z.object({ reason: z.string() })).default([]),
+});
+export type StoryPawnsResponse = z.infer<typeof StoryPawnsResponse>;
 
 /**
  * POST /api/story/colonies/{id}/online: bring offline pawns in now (`pawns: null` = every offline pawn). `overCap` is the
@@ -769,9 +828,13 @@ export const StoryOrderRequest = z
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
 /** `remove` without a kind removes every zone overlapping the area. */
+const ZoneId = z.union([z.string().min(1).max(64), z.number().int()]);
+
 /**
  * Zones (houses are zones of kind `home`: any number, each with its own name): `add` an area (optionally named), `remove`
- * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it).
+ * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it). A growing zone
+ * (kind `farm`) takes a `plant` (from `plants`), `sow` and `harvest`; `update` changes them; `seek_seeds` designates tall grass to
+ * cut (wheat) or queues a seed bill (pumpkin, melon).
  */
 export const StoryZoneRequest = z.union([
   z
@@ -780,8 +843,21 @@ export const StoryZoneRequest = z.union([
       kind: StoryZoneKind.optional(),
       area: StoryArea,
       name: z.string().trim().max(40).optional(),
+      plant: z.string().min(1).max(32).optional(),
+      sow: z.boolean().optional(),
+      harvest: z.boolean().optional(),
     })
     .strict(),
+  z
+    .object({
+      op: z.literal('update'),
+      id: ZoneId,
+      plant: z.string().max(32).nullable().optional(),
+      sow: z.boolean().optional(),
+      harvest: z.boolean().optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal('seek_seeds'), id: ZoneId }).strict(),
   z.object({ op: z.literal('remove'), kind: StoryZoneKind.optional(), area: StoryArea }).strict(),
   z.object({ op: z.literal('remove'), id: z.union([z.string().min(1).max(64), z.number().int()]) }).strict(),
   z
@@ -852,6 +928,11 @@ export const StoryBuildItem = z
     kind: StoryBuildKind,
     area: StoryArea.optional(),
     blocks: z.array(Vec3i).max(4096).optional(),
+    place: z
+      .array(z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int(), z.number().int()]))
+      .max(4096)
+      .optional()
+      .describe('a mine item: blocks put in [x, y, z, id, meta] once their cell is dug (torches, ladders); `blocks` are its dig cells'),
     material: StoryMaterial.optional(),
     height: z.number().int().min(1).max(12).optional(),
     roof: StoryRoofSpec.optional(),
@@ -1279,6 +1360,15 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
       }
       break;
     }
+    case 'mine':
+      for (const [x, y, z] of cells) put(x, y, z, 0, 0);
+      for (const [x, y, z, pid, pm] of item.place ?? []) {
+        seen.delete(`${x},${y},${z}`);
+        const at = out.findIndex((c) => c[0] === x && c[1] === y && c[2] === z);
+        if (at >= 0) out.splice(at, 1);
+        put(x, y, z, pid, pm);
+      }
+      break;
     case 'block':
     case 'remove': {
       const bid = item.kind === 'remove' ? 0 : id,

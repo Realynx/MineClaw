@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using MineClaw.Agent.Llm;
+using MineClaw.Bot.Blueprints.Mine;
 using MineClaw.Data;
 using MineClaw.Data.Versioning;
 
@@ -42,6 +43,44 @@ public static class DesignerTools
         new("find_blocks", "Look up block names (words: name, colour, wood, category). Returns specs to use as b.",
             Obj("\"q\":" + Str0 + ",\"n\":{\"type\":\"integer\"}", "q")),
     ];
+
+    private const string Int0 = "{\"type\":\"integer\"}";
+
+    /// <summary>A mine canvas's tools: the build tools plus the mine templates (docs/web/api.md "Mine designs").</summary>
+    public static readonly IReadOnlyList<LlmToolDefinition> Mine =
+    [
+        .. All,
+        new("spiral_shaft", "Dig a walkable spiral staircase shaft (1 block down per step, 3 high) around a solid core; at = its NW corner [x,z]. top defaults to the surface over it.",
+            Obj("\"at\":{\"type\":\"array\",\"items\":" + Int0 + ",\"minItems\":2,\"maxItems\":2},\"size\":" + Int0 + ",\"core\":" + Int0 + ",\"top\":" + Int0
+                + ",\"bottom\":" + Int0 + ",\"dir\":{\"type\":\"string\",\"enum\":[\"cw\",\"ccw\"]},\"torch_every\":" + Int0
+                + ",\"landings\":{\"type\":\"array\",\"items\":" + Int0 + "}", "at", "bottom")),
+        new("strip_mine", "Dig a strip mine: a main corridor from at=[x,y,z] (y = feet) along axis, 1x2 branches every spacing+1 blocks on its sides.",
+            Obj("\"at\":" + P3 + ",\"axis\":{\"type\":\"string\",\"enum\":[\"x\",\"z\"]},\"length\":" + Int0 + ",\"corridor\":{\"type\":\"string\",\"enum\":[\"1x2\",\"2x3\"]},\"spacing\":"
+                + Int0 + ",\"branch_length\":" + Int0 + ",\"sides\":{\"type\":\"string\",\"enum\":[\"both\",\"left\",\"right\",\"none\"]},\"torch_every\":" + Int0, "at")),
+        new("mine_preset", "Apply a version-preferred mine preset by id (its shaft + strip mine).", Obj("\"id\":" + Str0, "id")),
+    ];
+
+    /// <summary>The tools for a canvas of this kind.</summary>
+    public static IReadOnlyList<LlmToolDefinition> For(DesignerCanvas canvas) => canvas.Mine ? Mine : All;
+
+    /// <summary>
+    /// The mine designer's cached system prompt (a mine canvas only; compact: the plot, the ore heights of the version, the presets
+    /// and the rules of a walkable mine). One text per version, seed and player.
+    /// </summary>
+    public static string MineSystem(string? player, DesignerCanvas canvas)
+    {
+        var pal = DesignPalette.For(canvas.Version);
+        var (lo, hi) = canvas.Terrain!.SurfaceRange();
+        var presets = string.Join(", ", MinePresets.For(canvas.Version).Select(p => p.Id));
+        return $"You are the Design Studio builder: you co-design an underground MINE for Minecraft {pal.Version} with {player ?? "the player"} on a sandbox " +
+        $"canvas over generated terrain (not the world). Plot x,z 0..63 (+x east, +z south), ABSOLUTE world y 1..127; the surface is y {lo}..{hi} here, " +
+        "bedrock y 0-4. The design is the cells to mine out: remove digs a box (never bedrock), \"earth\" fills dug cells back; blocks you " +
+        "place (torches, ladders, rails, chests) go in after their cell is dug. Prefer the templates: spiral_shaft (a walkable spiral " +
+        "staircase around a core, from the surface down), strip_mine (main corridor + 1x2 branches, spacing solid blocks apart), remove for " +
+        "rooms; tunnels 2 high, steps at most 1. Connect everything to the shaft. Ore heights: " + OreTable.Compact(canvas.Version) +
+        ". Presets (mine_preset): " + presets + ". Blocks by minecraft name (torch:wall=<side of the supporting block>, ladder:wall=<side>, rail, " +
+        "chest:<front>); unsure: find_blocks. Reply after the edits with ONE or two short sentences in plain words (no coordinates unless asked).";
+    }
 
     /// <summary>
     /// The cached system prompt: the plot, the ground, the conventions and the version's vocabulary as a compact category summary
@@ -88,6 +127,8 @@ public static class DesignerTools
                     }
                 case "describe":
                     return (input.TryGetProperty("y", out var y) && y.ValueKind == JsonValueKind.Number ? canvas.Layer(y.GetInt32()) : canvas.Describe(16), null, false);
+                case "spiral_shaft" or "strip_mine" or "mine_preset":
+                    return MineTool(canvas, name, input);
                 case "clear":
                     return Done(canvas, "clear", "cleared the canvas", canvas.Clear(), 0);
                 case "remove":
@@ -131,7 +172,8 @@ public static class DesignerTools
                         var aSpec = Str(input, "a");
                         (int Id, int Meta)? from = aSpec.Equals("any", StringComparison.OrdinalIgnoreCase) ? null : Block(input, "a");
                         var (id, meta) = Block(input, "b");
-                        ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) box = input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to")) : ((0, -DesignerCanvas.Depth, 0), (DesignerCanvas.Size - 1, DesignerCanvas.Height - 1, DesignerCanvas.Size - 1));
+                        ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) box = input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to"))
+                            : ((0, canvas.YRange.Min, 0), (DesignerCanvas.Size - 1, canvas.YRange.Max, DesignerCanvas.Size - 1));
                         var (lo, hi) = (box.Lo, box.Hi);
                         // Same block = same id and variant (wool colour, slab material; not its facing or half); a two-cell block
                         // (door, bed) is replaced by its first half only (the canvas pairs the second).
@@ -154,6 +196,51 @@ public static class DesignerTools
             return ("error: " + e.Message, null, true);
         }
     }
+
+    /// <summary>The mine templates on a mine canvas (spiral shaft, strip mine, a preset).</summary>
+    private static (string, DesignerOp?, bool) MineTool(DesignerCanvas canvas, string name, JsonElement input)
+    {
+        if (!canvas.Mine || canvas.Terrain is not { } terrain) return ($"error: {name} needs a mine canvas (switch the studio to Mine)", null, true);
+        MineCells m;
+        switch (name)
+        {
+            case "spiral_shaft":
+                {
+                    if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array || at.GetArrayLength() != 2) throw new ArgumentException("at: [x,z]");
+                    int x = at[0].GetInt32(), z = at[1].GetInt32();
+                    int size = Math.Clamp(OptInt(input, "size") ?? 4, MineTemplates.MinSize, MineTemplates.MaxSize);
+                    int top = OptInt(input, "top") ?? terrain.SurfaceOver(x, z, x + size - 1, z + size - 1);
+                    var landings = input.TryGetProperty("landings", out var l) && l.ValueKind == JsonValueKind.Array
+                        ? l.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Number).Select(e => e.GetInt32()).ToList() : null;
+                    m = MineTemplates.Spiral(new SpiralSpec(x, z, top, OptInt(input, "bottom") ?? 11, size, OptInt(input, "core") ?? 2,
+                        !(input.TryGetProperty("dir", out var d) && d.ValueKind == JsonValueKind.String && d.GetString() == "ccw"), OptInt(input, "torch_every") ?? 0, landings));
+                    break;
+                }
+            case "strip_mine":
+                {
+                    var (x, y, z) = P(input, "at");
+                    var corridor = input.TryGetProperty("corridor", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : "1x2";
+                    bool wide = corridor == "2x3";
+                    var axis = input.TryGetProperty("axis", out var a) && a.ValueKind == JsonValueKind.String && a.GetString() == "z" ? 'z' : 'x';
+                    var sides = input.TryGetProperty("sides", out var sd) && sd.ValueKind == JsonValueKind.String ? sd.GetString() ?? "both" : "both";
+                    m = MineTemplates.Strip(new StripSpec(x, y, z, axis, OptInt(input, "length") ?? 30, wide ? 2 : 1, wide ? 3 : 2, OptInt(input, "spacing") ?? 3,
+                        OptInt(input, "branch_length") ?? 12, sides, OptInt(input, "torch_every") ?? 0));
+                    break;
+                }
+            default:
+                {
+                    var id = Str(input, "id");
+                    if (MinePresets.Get(id) is not { } p) return ($"error: no preset '{id}'; {string.Join(", ", MinePresets.For(canvas.Version).Select(x => x.Id))}", null, true);
+                    m = MinePresets.Cells(p, terrain);
+                    break;
+                }
+        }
+        var changed = canvas.Apply(m.Cells, out var rej);
+        var res = Done(canvas, name, m.Label, changed, rej);
+        return res.Item2 == null ? res : (res.Item1 + string.Create(CultureInfo.InvariantCulture, $"; entry {m.Entry.X},{m.Entry.Y},{m.Entry.Z}"), res.Item2, res.Item3);
+    }
+
+    private static int? OptInt(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
 
     private static (string, DesignerOp?, bool) Done(DesignerCanvas canvas, string kind, string label, List<CanvasCell> changed, int rejected)
     {

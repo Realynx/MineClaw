@@ -134,6 +134,9 @@ export function ColonistBar({
   onBox,
   onJump,
   onBringAll,
+  pending = 0,
+  onAdd,
+  onRemove,
 }: {
   bodies: BarBody[];
   selected: readonly string[];
@@ -144,7 +147,15 @@ export function ColonistBar({
   onJump: (name: string) => void;
   /** Shown while any pawn is offline: bring every offline pawn in (null = no button: viewers can't). */
   onBringAll?: (() => void) | null;
+  /** Pawns added that aren't here yet: greyed "joining…" tiles. */
+  pending?: number;
+  /** + : add pawns (shift-click asks how many; null = no button: viewers can't). */
+  onAdd?: ((n: number) => void) | null;
+  /** − : remove the one selected pawn, after a confirm (null = no button). */
+  onRemove?: ((name: string) => void) | null;
 }) {
+  const [addMany, setAddMany] = useState<number | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const row = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ x0: number; x1: number; top: number } | null>(null);
   const [lift, setLift] = useState<{ name: string; x: number; top: number; height: number } | null>(null);
@@ -369,6 +380,100 @@ export function ColonistBar({
       aria-label="Colonists"
     >
       {pawns.map(portrait)}
+      {Array.from({ length: Math.max(0, pending) }, (_, i) => (
+        <div
+          key={`joining-${i}`}
+          className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale"
+          title="A new pawn joining: it comes as soon as a seat is free"
+          data-testid="bar-joining"
+        >
+          <Avatar name={`joining-${i}`} size={24} />
+          joining…
+        </div>
+      ))}
+      {onAdd || onRemove ? (
+        <div className="relative flex h-[58px] flex-col justify-center gap-1">
+          {onAdd ? (
+            <button
+              type="button"
+              onClick={(e) => (e.shiftKey ? setAddMany(2) : onAdd(1))}
+              className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg"
+              title="Add a pawn (Shift+click: add several)"
+              aria-label="Add a pawn"
+              data-testid="bar-add-pawn"
+            >
+              +
+            </button>
+          ) : null}
+          {onRemove ? (
+            <button
+              type="button"
+              disabled={pawns.filter((p) => sel.has(p.name)).length !== 1 || pawns.length <= 1}
+              onClick={() => setConfirmRemove(pawns.find((p) => sel.has(p.name))?.name ?? null)}
+              className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-40"
+              title="Remove the selected pawn (its items go to storage)"
+              aria-label="Remove the selected pawn"
+              data-testid="bar-remove-pawn"
+            >
+              −
+            </button>
+          ) : null}
+          {addMany !== null && onAdd ? (
+            <div className="absolute top-full left-0 z-40 mt-1 flex items-center gap-1 rounded-md border border-border bg-surface p-1.5 text-[11px] shadow-pop">
+              Add
+              <input
+                type="number"
+                min={1}
+                max={12}
+                value={addMany}
+                aria-label="How many pawns"
+                onChange={(e) => setAddMany(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
+                className="w-12 rounded border border-border bg-surface-2 px-1"
+              />
+              <button
+                type="button"
+                className="rounded bg-accent px-1.5 text-accent-fg"
+                onClick={() => {
+                  onAdd(addMany);
+                  setAddMany(null);
+                }}
+              >
+                Add
+              </button>
+              <button type="button" className="text-muted" onClick={() => setAddMany(null)}>
+                Cancel
+              </button>
+            </div>
+          ) : null}
+          {confirmRemove && onRemove ? (
+            <div
+              className="absolute top-full left-0 z-40 mt-1 w-max max-w-64 space-y-1 rounded-md border border-border bg-surface p-2 text-[11px] shadow-pop"
+              role="dialog"
+              aria-label="Remove a pawn"
+              data-testid="remove-pawn-confirm"
+            >
+              <div>
+                Remove {pawns.find((p) => p.name === confirmRemove)?.label ?? confirmRemove}? Their items go to storage.
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" className="text-muted" onClick={() => setConfirmRemove(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-danger px-1.5 text-white"
+                  onClick={() => {
+                    onRemove(confirmRemove);
+                    setConfirmRemove(null);
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {onBringAll && offlinePawns(bodies).length ? (
         <button
           type="button"

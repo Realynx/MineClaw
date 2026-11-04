@@ -28,5 +28,18 @@ internal sealed partial class JsRuntime
             if (status is not ("progress" or "done" or "failed")) throw ScriptSession.Bug("story.report status is progress|done|failed");
             return port.Report(s.Host.Username, job, status, Str(a, 2), Num(a, 3)) ? JsBoolean.True : JsBoolean.False;
         });
+        // story.during(job, fn): fn while the job is still this pawn's; cut at once when the director takes it back (an idle leg when
+        // real work comes up) → {ok:false, cancelled:true}. Not a failure: the next story.next() has the new job.
+        H(h, "storyDuring", a =>
+        {
+            var port = StoryPort ?? throw ScriptSession.Bug("story.during(): this body isn't a Story Mode pawn");
+            var job = Str(a, 0) ?? throw ScriptSession.Bug("story.during(job, fn) needs the job");
+            var fn = JsConvert.Arg(a, 1) as Jint.Native.Function.Function ?? throw ScriptSession.Bug("story.during(job, fn) needs a function");
+            var me = s.Host.Username;
+            var box = s.WhileHolds(() => port.Holds(me, job), () => new StrongBox(_e.Invoke(fn)));
+            if (box != null) return box.Value;
+            var cut = new JsonObject { ["ok"] = false, ["cancelled"] = true, ["msg"] = "cancelled: the colony has other work for it" };
+            return V(cut);
+        });
     }
 }

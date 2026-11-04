@@ -106,7 +106,9 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
         if (BudgetRefusal(m) is { } refusal) return new DesignerTurnResult("", [], 0, LlmUsage.Zero, m.Model, 0, refusal);
         // The session's version for the whole turn (names, rules, the summary): it flows into every await.
         using var scope = DesignVersions.Use(s.Canvas.Version);
-        var system = DesignerTools.System(player, s.Canvas.Version);
+        // A mine canvas gets its own compact prompt and the mine templates (only then: a build turn costs nothing more).
+        var system = s.Canvas.Mine ? DesignerTools.MineSystem(player, s.Canvas) : DesignerTools.System(player, s.Canvas.Version);
+        var tools = DesignerTools.For(s.Canvas);
         var messages = new List<LlmMessage>();
         foreach (var h in history.TakeLast(Math.Max(0, _o.HistoryTurns) * 2))
             messages.Add(h.Role == "assistant" ? LlmMessage.Assistant(h.Text.Length == 0 ? "(done)" : h.Text) : LlmMessage.User(h.Text));
@@ -127,7 +129,7 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
                 resp = await llm.CompleteAsync(new LlmRequest
                 {
                     Tier = m.Tier, Model = m.Model, Profile = m.Profile, MaxTokens = Math.Max(256, _o.MaxTokens), Purpose = "designer",
-                    System = [new LlmSystemBlock(system, Cache: true)], Tools = DesignerTools.All, Messages = messages.ToList(),
+                    System = [new LlmSystemBlock(system, Cache: true)], Tools = tools, Messages = messages.ToList(),
                     CacheHistory = true, Effort = string.IsNullOrWhiteSpace(_o.Effort) ? null : _o.Effort,
                 }, ct).ConfigureAwait(false);
             }

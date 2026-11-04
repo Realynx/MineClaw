@@ -52,6 +52,7 @@ public sealed partial class StoryColony
     {
         if (!live.Online) return Hold("offline", "offline");
         if (!Meta.Active) return Job("idle", "end", "colony released", null, null, "none", null, "idle", xp: 0); // the script ends cleanly
+        if (LeavingJob(p, live) is { } leave) return leave; // removed from the colony: store its things, then go (StoryColony.Roster.cs)
         if (Meta.Paused) return Hold("colony paused", "idle", s: 5);
         if (p.Drafted) return OrderJob(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
@@ -65,8 +66,8 @@ public sealed partial class StoryColony
         {
             case ScheduleBlocks.Sleep:
                 return SleepJob(p, live, hour, home);
-            case ScheduleBlocks.Free:
-                return Hold($"free time ({hour:00}:00)", "idle", home, 10, "schedule");
+            case ScheduleBlocks.Free: // idle behaviour (StoryColony.Idle.cs): wander the home area, else stay put (never all to one cell)
+                return IdleJob(p, live, "free", hour) ?? Hold($"free time ({hour:00}:00)", "idle", null, 10, "schedule");
             case ScheduleBlocks.Anything when live.Food <= 14 && FoodIn(live) != null:
                 return Job("need", "eat", "eating", null, null, "need", null, "eating", xp: 0);
         }
@@ -77,7 +78,9 @@ public sealed partial class StoryColony
             _idleAlert[p.Name] = Now;
             Alert("info", $"{p.Display} is idle: nothing to do", p.Name);
         }
-        return Hold(NothingToDo, "idle", home, StoryCharacter.IdleSeconds(p));
+        // ---- nothing to do: idle behaviour (StoryColony.Idle.cs). It wanders the home area, one leg at a time, and real work
+        // takes the leg back at once; with nowhere to go it holds where it is (never all pawns to the home cell).
+        return IdleJob(p, live, "work", hour) ?? Hold(NothingToDo, "idle", null, StoryCharacter.IdleSeconds(p));
     }
 
     // ---------------------------------------------------------------- back-off
@@ -126,7 +129,7 @@ public sealed partial class StoryColony
             var home = Home();
             var mob = Hostiles(live, 12)[0];
             // Away from the monster: home if it is the other way, else a dozen blocks straight away from it.
-            P3 to = home is { } h && h.Dist(mob.X, mob.Y, mob.Z) > h.Dist(live.X, live.Y, live.Z) ? h
+            P3 to = home is { } h && h.Dist(mob.X, mob.Y, mob.Z) > h.Dist(live.X, live.Y, live.Z) ? SpreadHome(p, live, h) ?? h
                 : new P3((int)(live.X + Math.Sign(live.X - mob.X) * 12), (int)live.Y, (int)(live.Z + Math.Sign(live.Z - mob.Z) * 12));
             return Job("need", "go", $"fleeing a {mob.Name}", to, null, "need", null, "fleeing", j => j["dist"] = 1, xp: 0);
         }
@@ -427,6 +430,8 @@ public sealed partial class StoryColony
     {
         var from = live.Block;
         foreach (var z in Zones.Where(z => z.Kind == "farm").OrderBy(z => z.Area.Center.Dist(from)))
+        {
+            if (z.Plant != null) { if (GrowJob(p, live, z) is { } grow) return grow; continue; } // a growing zone (StoryColony.Farming.cs)
             foreach (var t in ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)))
             {
                 if (t.Kind == "harvest")
@@ -445,6 +450,7 @@ public sealed partial class StoryColony
                 if (stored is { } st2) j2.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(16, st2.Stack.Count) }));
                 return j2;
             }
+        }
         return null;
     }
 
@@ -503,8 +509,9 @@ public sealed partial class StoryColony
             case "station" or "hand":
                 SupplyDone(p, j);
                 break;
-            case "zone" or "crop":
+            case "zone" or "crop" or "sow":
                 _zoneScan.Remove(j.SourceId ?? "");
+                _growScan.Remove(j.SourceId ?? "");
                 break;
         }
     }
