@@ -68,6 +68,9 @@ public interface IStoryHost
     /// Brings exactly these pawn accounts in: a hosted one is whitelisted again and retried now; another logs in, the player cap
     /// permitting (<paramref name="overCap"/>: the regulars' seats too). Never another account. (account, null = started | why not).
     /// </summary>
+    /// <summary>One pawn leaves the colony: it deposits, logs out and its account is released (whitelist removal through main).
+    /// Null = on its way; else why not.</summary>
+    string? ReleasePawn(string account, string why) => "releasing one pawn isn't available here";
     IReadOnlyList<(string Account, string? Why)> Bring(string colony, IReadOnlyList<string> accounts, bool overCap) =>
         accounts.Select(a => (a, (string?)"bringing pawns online isn't available here")).ToList();
 }

@@ -341,9 +341,10 @@ public sealed partial class StoryColony : IStoryPort
     /// <summary>Once a second or so: expired leases go back, a pawn whose script ended is restarted, benches are found, state saved.</summary>
     public void Tick()
     {
-        List<string> restart = new(), joined = new();
+        List<string> restart = new(), joined = new(), departing;
         lock (_lock)
         {
+            departing = ReadyToGo();
             foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
             {
                 var owner = _leases[k].Owner;
@@ -364,6 +365,7 @@ public sealed partial class StoryColony : IStoryPort
                 {
                     var live = Host.Live(p.Name);
                     if (!live.Online || live.ScriptRunning) continue;
+                    if (_leaving.TryGetValue(p.Name, out var lv) && lv.Done) continue; // it ended for good: released below
                     if (_started.TryGetValue(p.Name, out var at) && Now - at < TimeSpan.FromSeconds(5)) continue;
                     _started[p.Name] = Now;
                     if (_current.Remove(p.Name, out var stale)) Release(stale);
@@ -380,6 +382,7 @@ public sealed partial class StoryColony : IStoryPort
                 else if (!online) _online.Remove(p.Name);
             }
         }
+        foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
         if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
         foreach (var name in restart)
         {

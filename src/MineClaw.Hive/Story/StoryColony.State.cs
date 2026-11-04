@@ -95,6 +95,7 @@ public sealed partial class StoryColony
             ["name"] = p.Name, ["display"] = p.Display, ["kind"] = "pawn", ["online"] = live.Online, ["hp"] = live.Hp, ["food"] = live.Food,
             ["pos"] = new JsonArray(Math.Round(live.X, 2), Math.Round(live.Y, 2), Math.Round(live.Z, 2)), ["dim"] = live.Dim, ["drafted"] = p.Drafted,
             ["state"] = state,
+            ["leaving"] = _leaving.ContainsKey(p.Name),
             ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {
@@ -125,6 +126,7 @@ public sealed partial class StoryColony
         {
             ["online"] = Pawns.Values.Count(p => Host.Live(p.Name).Online),
             ["wanted"] = Math.Max(Meta.Wanted, Pawns.Count),
+            ["pending"] = Math.Max(0, Meta.Wanted - Pawns.Keys.Count(k => !_leaving.ContainsKey(k))), // asked for, not here yet ("joining…")
             ["cap_free"] = s?.Free, ["kept_for_regulars"] = s?.Kept,
         };
     }

@@ -58,6 +58,7 @@ import {
   StorageInspector,
 } from './StoryInspector';
 import { useFullscreen } from './useFullscreen';
+import { GrowingZonesPanel, growPlantNow } from './GrowingZones';
 import { StoryMap, type DragResult, type FormationMove, type MapTool, type StoryMapHandle } from './StoryMap';
 import {
   ArchitectPanel,
@@ -326,12 +327,14 @@ export function StoryMode() {
       await write(
         'story.zones',
         tool.op === 'add'
-          ? { op: 'add', kind: tool.id as never, area }
+          ? { op: 'add', kind: tool.id as never, area, ...(tool.id === 'farm' ? { plant: growPlantNow() } : {}) }
           : { op: 'remove', kind: tool.id as never, area },
       ).then(
-        () =>
+        (out) =>
           say(
-            `${tool.op === 'add' ? 'Zone painted' : 'Zone removed'}: ${r.rect[2] - r.rect[0] + 1} × ${r.rect[3] - r.rect[1] + 1}`,
+            `${tool.op === 'add' ? 'Zone painted' : 'Zone removed'}: ${r.rect[2] - r.rect[0] + 1} × ${r.rect[3] - r.rect[1] + 1}` +
+              (out.warnings?.length ? ` (${out.warnings.join('; ')})` : ''),
+            out.warnings?.length ? 'warn' : 'ok',
           ),
         (e) => say(errorText(e), 'warn'),
       );
@@ -790,7 +793,7 @@ export function StoryMode() {
   const panelEl = (() => {
     switch (tab) {
       case 'architect':
-        return <ArchitectPanel tool={tool} onTool={setTool} />;
+        return <ArchitectPanel tool={tool} onTool={setTool} plants={state?.plants} />;
       case 'work':
         return (
           <WorkPanel
@@ -826,6 +829,7 @@ export function StoryMode() {
         return <DirectivesPanel state={state} />;
       case 'colony':
         return (
+          <>
           <ColonyPanel
             state={state}
             colonies={list}
@@ -874,6 +878,32 @@ export function StoryMode() {
             onBringAll={(overCap) => void bringOnline(null, overCap)}
             displayOf={displayOf}
           />
+          {/* Growing zones (GrowingZones.tsx): plant, seeds, status, seek seeds. */}
+          <GrowingZonesPanel
+            state={state}
+            canWrite={canWrite}
+            onShow={(z) =>
+              map.current?.focus(
+                Math.floor((z.area[0] + z.area[3]) / 2),
+                Math.floor((z.area[2] + z.area[5]) / 2),
+                z.area[1],
+              )
+            }
+            onUpdate={(z, change) =>
+              void write('story.zones', { op: 'update', id: z.id, ...change }).then(
+                (out) => say(out.warnings?.length ? out.warnings.join('; ') : 'Growing zone updated', out.warnings?.length ? 'warn' : 'ok'),
+                (e) => say(errorText(e), 'warn'),
+              )
+            }
+            onSeek={(z) =>
+              void write('story.zones', { op: 'seek_seeds', id: z.id }).then(
+                (out) =>
+                  say(out.kind === 'bill' ? 'A bill for seeds was added' : `${out.count ?? 0} tall grass designated to cut`),
+                (e) => say(errorText(e), 'warn'),
+              )
+            }
+          />
+          </>
         );
       default:
         return null;
@@ -997,6 +1027,34 @@ export function StoryMode() {
                   canWrite && state.active !== false
                     ? // Refused by the cap: the Colony tab shows why, with the explicit "Use regulars' seats".
                       () => void bringOnline(null).then((b) => b.length && setTab('colony'))
+                    : null
+                }
+                pending={state.seats?.pending ?? 0}
+                onAdd={
+                  canWrite && state.active !== false
+                    ? (n) =>
+                        void write('story.pawns', { op: 'add', count: n }).then(
+                          (out) =>
+                            say(
+                              out.blocked.length
+                                ? `${n - out.pending.length} joining now; ${out.pending.length} wait: ${out.blocked[0]!.reason}`
+                                : `${n} pawn${n === 1 ? '' : 's'} joining`,
+                              out.blocked.length ? 'warn' : 'ok',
+                            ),
+                          (e) => say(errorText(e), 'warn'),
+                        )
+                    : null
+                }
+                onRemove={
+                  canWrite && state.active !== false
+                    ? (name) =>
+                        void write('story.pawns', { op: 'remove', pawn: name }).then(
+                          () => {
+                            say(`${displayOf(name)} is leaving: their items go to storage`);
+                            setSelection(EMPTY_SELECTION);
+                          },
+                          (e) => say(errorText(e), 'warn'),
+                        )
                     : null
                 }
               />

@@ -59,7 +59,7 @@ function work(j) {
     case 'till': {
       const there = reach(a, 3)
       if (!ok(there)) return there
-      hold_item(j.hoe)
+      skill('hold_item', j.hoe)
       return use(a)
     }
     case 'collect': {

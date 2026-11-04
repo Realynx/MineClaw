@@ -45,6 +45,7 @@ public sealed partial class StoryColony
     {
         if (!live.Online) return Hold("offline", "offline");
         if (!Meta.Active) return Job("idle", "end", "colony released", null, null, "none", null, "idle", xp: 0); // the script ends cleanly
+        if (LeavingJob(p, live) is { } leave) return leave; // removed from the colony: store its things, then go (StoryColony.Roster.cs)
         if (Meta.Paused) return Hold("colony paused", "idle", s: 5);
         if (p.Drafted) return OrderJob(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;

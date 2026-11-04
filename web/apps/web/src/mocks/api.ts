@@ -546,6 +546,7 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.release': (c) => run(() => storySim.release(id(c))),
     'story.resume': (c) => run(() => storySim.resume(id(c))),
     'story.online': (c) => run(() => storySim.online(id(c), b(c))),
+    'story.pawns': (c) => run(() => storySim.pawns(id(c), b(c))),
     'story.directives.list': () => run(() => ({ directives: storySim.directives() })),
     'story.directive': (c) => run(() => storySim.directiveDetail(id(c))),
     'story.beds': (c) => run(() => storySim.beds(id(c), b(c))),

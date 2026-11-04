@@ -49,6 +49,9 @@ import {
   type StoryOnlineRequest,
   type StoryOnlineResponse,
   type StoryPawn,
+  type StoryPawnsRequest,
+  type StoryPawnsResponse,
+  type StoryPlant,
   type StoryStorage,
   type StoryStorageRequest,
   type StoryWorkbench,
@@ -147,7 +150,31 @@ interface Colony {
   }>;
   seq: number;
   stock: Map<string, number>;
+  /** Pawns asked for (the + button): the ones not here yet are "joining…". */
+  wanted?: number;
 }
+
+/** What growing zones can grow (the mock speaks 1.12.2). */
+export const STORY_SIM_PLANTS: StoryPlant[] = [
+  { id: 'wheat', label: 'Wheat', block: 59, seed: 'wheat_seeds', seedItem: [295, 0], soil: 'farmland', harvest: 'crop', source: 'cut tall grass (seeds drop) or harvest wheat' },
+  { id: 'carrots', label: 'Carrots', block: 141, seed: 'carrot', seedItem: [391, 0], soil: 'farmland', harvest: 'crop', source: 'the carrot itself: harvests, zombie drops, village farms and chests' },
+  { id: 'potatoes', label: 'Potatoes', block: 142, seed: 'potato', seedItem: [392, 0], soil: 'farmland', harvest: 'crop', source: 'the potato itself: harvests, zombie drops, village farms and chests' },
+  { id: 'beetroot', label: 'Beetroot', block: 207, seed: 'beetroot_seeds', seedItem: [435, 0], soil: 'farmland', harvest: 'crop', source: 'harvest beetroot; village farms and chests' },
+  { id: 'pumpkin', label: 'Pumpkin', block: 104, seed: 'pumpkin_seeds', seedItem: [361, 0], soil: 'farmland', harvest: 'fruit', source: 'craft them from a pumpkin (a bill at a crafting table)' },
+  { id: 'melon', label: 'Melon', block: 105, seed: 'melon_seeds', seedItem: [362, 0], soil: 'farmland', harvest: 'fruit', source: 'craft them from a melon slice (a bill at a crafting table)' },
+  { id: 'sugar_cane', label: 'Sugar cane', block: 83, seed: 'reeds', seedItem: [338, 0], soil: 'cane', harvest: 'stalk', source: 'the cane itself: found by water' },
+  { id: 'cactus', label: 'Cactus', block: 81, seed: 'cactus', seedItem: [81, 0], soil: 'sand', harvest: 'stalk', source: 'the cactus itself: found in deserts' },
+  { id: 'oak', label: 'Oak sapling', block: 6, seed: 'sapling', seedItem: [6, 0], soil: 'dirt', harvest: 'tree', source: 'leaves of chopped oaks drop them' },
+  { id: 'birch', label: 'Birch sapling', block: 6, seed: 'birch_sapling', seedItem: [6, 2], soil: 'dirt', harvest: 'tree', source: 'leaves of chopped birches drop them' },
+];
+
+const SEED_HINT: Record<string, string> = {
+  wheat: 'No wheat seeds — cut tall grass to find some',
+  carrots: 'Needs carrots — none in storage (harvests, zombie drops, village farms)',
+  potatoes: 'Needs potatoes — none in storage (harvests, zombie drops, village farms)',
+  pumpkin: 'No pumpkin seeds — store a pumpkin and a crafting table makes them',
+  melon: 'No melon seeds — store a melon slice and a crafting table makes them',
+};
 
 const NAMES = ['Ash', 'Bryn', 'Cato', 'Dara', 'Elio', 'Fenn', 'Gwen', 'Hollis', 'Ivo', 'June', 'Kit', 'Lark'];
 const TRAITS = [
@@ -413,11 +440,13 @@ export class StorySim {
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
       seats: {
         online: [...c.pawns.values()].filter((p) => p.p.online).length,
-        wanted: c.pawns.size,
+        wanted: Math.max(c.wanted ?? 0, c.pawns.size),
         capFree: this.seatsOf(c).capFree,
         keptForRegulars: this.seatsOf(c).kept,
+        pending: Math.max(0, (c.wanted ?? 0) - [...c.pawns.values()].filter((p) => !p.p.leaving).length),
       },
-      zones: pick(c.zones),
+      zones: pick(c.zones).map((z) => this.growStatus(c, z)),
+      ...(full ? { plants: STORY_SIM_PLANTS } : {}),
       designations: pick(c.designations),
       orders: pick(c.orders),
       alerts: c.alerts
@@ -711,6 +740,7 @@ export class StorySim {
 
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
+    if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
     if (body.op === 'rename') {
       const f = c.zones.get(String(body.id));
       if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
@@ -738,6 +768,12 @@ export class StorySim {
         area: a,
         ...(body.name ? { name: body.name } : {}),
       };
+      if (body.plant || body.sow !== undefined || body.harvest !== undefined) {
+        if (z.kind !== 'farm') throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+        if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
+          throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), { status: 400 });
+        Object.assign(z, { plant: body.plant ?? null, sow: body.sow ?? true, harvest: body.harvest ?? true });
+      }
       c.zones.set(z.id, { rev: this.bump(c), v: z });
       if (z.kind === 'home') c.bedsRev = this.bump(c); // beds in it now belong to that house
       return { id: z.id, rev: c.rev };
@@ -749,6 +785,130 @@ export class StorySim {
         removed.push(f.v.id);
       }
     return { removed, rev: c.rev };
+  }
+
+  /** A growing zone's fields as the bot reports them (mock: nothing grows; seeds from the colony's stock). */
+  private growStatus(c: Colony, z: StoryZone): StoryZone {
+    const plant = z.kind === 'farm' && z.plant ? STORY_SIM_PLANTS.find((p) => p.id === z.plant) : undefined;
+    if (!plant) return z;
+    const [x1, , z1, x2, , z2] = z.area;
+    const cells = (x2 - x1 + 1) * (z2 - z1 + 1);
+    const have = c.stock.get(`${plant.seedItem![0]}:${plant.seedItem![1]}`) ?? 0;
+    return {
+      ...z,
+      status: `0/${cells} sown, 0 ripe`,
+      seeds: {
+        item: plant.seed,
+        have,
+        neededForEmpty: cells,
+        sourceHint: plant.source ?? null,
+        missing: have === 0 ? (SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`) : null,
+        action: have === 0 ? (plant.id === 'wheat' ? 'seek_seeds' : plant.harvest === 'fruit' ? 'craft_seeds' : null) : null,
+      },
+      needsHoe: plant.soil === 'farmland' && (c.stock.get('290:0') ?? 0) === 0,
+    };
+  }
+
+  private growOp(c: Colony, body: Extract<StoryZoneRequest, { op: 'update' | 'seek_seeds' }>) {
+    const f = c.zones.get(String(body.id));
+    if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+    if (body.op === 'update') {
+      if (f.v.kind !== 'farm') throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+      if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
+        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), { status: 400 });
+      f.v = {
+        ...f.v,
+        ...(body.plant !== undefined ? { plant: body.plant || null } : {}),
+        ...(body.sow !== undefined ? { sow: body.sow } : {}),
+        ...(body.harvest !== undefined ? { harvest: body.harvest } : {}),
+      };
+      f.rev = this.bump(c);
+      return { id: f.v.id, warnings: [], rev: c.rev };
+    }
+    const plant = STORY_SIM_PLANTS.find((p) => p.id === f.v.plant);
+    if (!plant) throw Object.assign(new Error('the zone grows nothing: set its plant first'), { status: 400 });
+    if (plant.id === 'wheat') {
+      const [x1, y1, z1, x2, , z2] = f.v.area;
+      const out = this.designations(c.id, {
+        op: 'add',
+        kind: 'cut',
+        area: [x1 - 24, y1 - 6, z1 - 24, x2 + 24, y1 + 6, z2 + 24],
+      } as never) as { count?: number };
+      return { count: out.count ?? 0, kind: 'cut', rev: c.rev };
+    }
+    if (plant.harvest === 'fruit') {
+      this.alert(c, 'info', `Added a bill for 4 ${plant.seed} at the crafting table.`);
+      return { count: 4, kind: 'bill', rev: c.rev };
+    }
+    throw Object.assign(new Error(SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`), {
+      status: 400,
+    });
+  }
+
+  // ------------------------------------------------------------------ pawns (+ / −)
+
+  /** POST /api/story/colonies/{id}/pawns: + joins as seats allow (the rest wait), − stores its things and leaves. */
+  pawns(id: string, body: StoryPawnsRequest): StoryPawnsResponse {
+    const c = this.colony(id);
+    const staying = () => [...c.pawns.values()].filter((p) => !p.p.leaving);
+    const answer = (why: string | null): StoryPawnsResponse => {
+      const here = staying().map((p) => p.p.name);
+      const pending = Math.max(0, (c.wanted ?? here.length) - here.length);
+      return {
+        pawns: here,
+        wanted: c.wanted ?? here.length,
+        pending: Array.from({ length: pending }, () => ({ reason: why ?? 'waiting for a seat' })),
+        leaving: [...c.pawns.values()].filter((p) => p.p.leaving).map((p) => p.p.name),
+        blocked: why && pending ? [{ reason: why }] : [],
+      };
+    };
+    if (body.op === 'add') {
+      if (c.released) throw Object.assign(new Error('the colony is released: resume it first'), { status: 400 });
+      const wanted = Math.max(c.wanted ?? 0, staying().length);
+      if (wanted + body.count > 12)
+        throw Object.assign(new Error(`a colony has at most 12 pawns (${wanted} now)`), { status: 400 });
+      c.wanted = wanted + body.count;
+      const now = Math.max(0, Math.min(body.count, c.capFree - c.kept));
+      for (let i = 0; i < now; i++) {
+        const k = c.pawns.size;
+        const display = NAMES[(k + 5) % NAMES.length]!;
+        const name = `maid_${c.id.replace('story-', 's')}_${display.toLowerCase()}${c.seq++}`;
+        const p = this.newPawn(c, name, display, k);
+        p.p.online = false;
+        p.p.state = 'offline';
+        p.p.offlineReason = 'connecting';
+        p.backAt = this.now() + 1500;
+        p.rev = this.bump(c);
+        c.pawns.set(name, p);
+      }
+      c.capFree -= now;
+      const why = now < body.count ? this.capReason(c) : null;
+      this.alert(
+        c,
+        'info',
+        `${body.count} pawn${body.count === 1 ? '' : 's'} joining${why ? ` (${body.count - now} wait: ${why})` : ''}.`,
+      );
+      return answer(why);
+    }
+    const p =
+      c.pawns.get(body.pawn) ?? [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === body.pawn.toLowerCase());
+    if (!p) throw Object.assign(new Error(`no pawn '${body.pawn}'`), { status: 404 });
+    if (p.p.leaving) return answer(null);
+    if (staying().length <= 1)
+      throw Object.assign(new Error("the last pawn can't be removed: release the colony instead"), { status: 400 });
+    this.drop(c, p);
+    p.p.leaving = true;
+    p.rev = this.bump(c);
+    c.wanted = Math.max(staying().length, (c.wanted ?? staying().length + 1) - 1);
+    for (const [k, b] of c.beds) if (b.pawn === p.p.name) c.beds.set(k, { ...b, pawn: null });
+    c.bedsRev = this.bump(c);
+    this.alert(c, 'info', `${p.p.display} is leaving the colony: its things go to storage first.`, p.p.name);
+    setTimeout(() => {
+      if (!c.pawns.delete(p.p.name)) return;
+      c.removed.push({ rev: this.bump(c), kind: 'pawns', key: p.p.name });
+      this.alert(c, 'info', `${p.p.display} left the colony.`);
+    }, 1500);
+    return answer(null);
   }
 
   /** Every target of a block tool in an area (capped). */

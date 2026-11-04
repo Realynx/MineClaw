@@ -79,6 +79,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/release` | `{}` → `{id, released}`. The pawns deposit and log out; the saved state is kept (`active:false`) |
 | POST | `/api/story/colonies/{id}/resume` | `{}` → `{id, pawns, note}`. A released colony spawns its pawns again, their old accounts first |
 | POST | `/api/story/colonies/{id}/online` | `{pawns:[name]\|null, over_cap?:bool}` → `{started:[account], blocked:[{pawn, reason}]}`; 400 on a bad body, 404 for an unknown colony or pawn. Offline pawns are whitelisted again and (re)started now, the player cap permitting (see "Offline pawns") |
+| POST | `/api/story/colonies/{id}/pawns` | `{op:"add", count:1..12}` \| `{op:"remove", pawn}` → `{pawns:[name], wanted, pending:[{reason}], leaving:[name], blocked:[{reason}]}`; 400 on a bad body, past 12, or the last pawn; 404 for an unknown colony or pawn. See "Adding and removing pawns" |
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
 | POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
@@ -86,7 +87,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id}, queue?:bool}` → `{ids:[order id]}` |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, name?}` → `{id}`; `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, name?, plant?, sow?, harvest?}` → `{id, warnings?}`; `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}` (see "Farming"); `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -104,7 +105,7 @@ storage is chests (see "Storage").
 ```
 {id, rev, since, full, at, time_of_day, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
- pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars}, zones:[{id, kind, area, name}], beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
+ pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, name, plant?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null},
@@ -118,7 +119,7 @@ watches.
 The **Pawn** object:
 
 ```
-{name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, offline_reason,
+{name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
  skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]] }
 ```
@@ -137,13 +138,14 @@ The **Pawn** object:
    - food ≤ 6 (skittish 8): eat. With no food on it, the pawn fetches some from storage first; with none anywhere, an alert.
 4. After a gathering job, or with ≤ 4 free slots, the pawn takes what it carries to storage.
 5. The schedule hour (1000 ticks an hour, tick 0 = 06:00):
-   - sleep: go home.
-   - free: idle at home.
+   - sleep: to its bed, else its own spot at home (see "Homes and beds").
+   - free: wander the home area (see "Idle behaviour").
    - anything: eat when food ≤ 14, else work.
    - work: work.
 6. Work. The work types with a priority of 1–4 go lowest number first. Equal priorities go in column order
    (`tie_break:"column"`, the default) or by the pawn's skill first (`"skill"`). Within a type, the nearest open target wins.
-   With nothing to do, the pawn idles and the colony gets an alert, at most every 5 minutes.
+   With nothing to do, the pawn wanders the home area (see "Idle behaviour") and the colony gets an alert, at most every 5
+   minutes.
 
 Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y,z`.
 - A lease lasts 90 s and progress reports renew it. It goes back when the job ends, fails or times out.
@@ -180,7 +182,8 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
   and takes the bed from whoever had it. Assignments are saved with the colony. The head half's position works as the bed too.
 - **Sleep.** In a pawn's `sleep` hours it goes to its own bed (while that is still a bed), else to the nearest free one (leased, so
   two pawns don't take the same one). At night it lies down in it (`use_block`), and by day it rests by it. With no bed it rests at
-  home, and the colony hears "X has no bed" once.
+  home, and the colony hears "X has no bed" once. That spot is its own (see "Idle behaviour"): resting pawns never stack on one
+  cell, and each keeps its spot between its rests.
 
 ### Time of day
 
@@ -252,6 +255,54 @@ Designations carry `retry_at` (when a resting, failed designation is tried again
 short label (one per cluster of adjacent designations with the same reason), the full text on hover and in its inspector (reason,
 fail count, next retry, Retry now / Cancel).
 
+### Idle behaviour (added 2026-11-03)
+
+Live 11-03 (Fox): "When there's nothing designated to do, they don't do anything at all. They tend to gather in the same spot." The
+cause: every idle hold, free-time hold and no-bed rest targeted the one home cell (`go(home, 2)`), and every teleport home went to
+one spot, so the pawns stood in a pile there.
+
+- **Wandering.** A pawn with nothing to do in its `work` or `anything` hours, and any pawn in its `free` hours, wanders. The director
+  hands it one leg at a time (kind `idle`, `wander:true`, label "Idle (wandering)" or "Free time (wandering)", state `idle`): a safe
+  cell of the home area to walk to (`go`, walking pace, `dist:0`) and linger on for 4–12 s. The home area is the home zones' columns
+  when the colony has any, else 14 blocks around the primary home. A leg 3–12 blocks off is preferred; a pawn far from home walks
+  back first. The script runs the leg as `story.idle(job)`.
+- **Real work interrupts at once.** Between legs the pawn asks again. During a leg the tick looks every 2 s (at once after new work)
+  for an urgent need or a job of its work types and hands it over in the same step, leased, so the next idle pawn sees it taken. The
+  pawn script's `story.during` sees its leg is gone and cuts the walk or the linger; nothing is stopped or restarted. A leg whose
+  hours are over (the schedule moved on to sleep) is taken back the same way. A cut, unreachable or failed leg is never a failure:
+  no back-off, no alert, no rest. An unreachable cell rests 60 s for everyone.
+- **Personal space.** Every idle, rest, flight and brought-home target is reserved per pawn. The reservation is light and short-lived
+  (until the leg should be over, and only while that job is the pawn's) and apart from the work leases, so it never blocks digging,
+  building or hauling. A new target keeps 2.5 blocks to every other pawn's reservation and standing spot (and any player's) when
+  there is room, then 2, then 1: never the same cell. A pawn that arrives where someone already stands (they met on the way) moves
+  on, and the director picks it another cell.
+- **Safe cells only.** Solid ground under two free cells: never water, lava, leaves, fire, cactus, magma, farmland, a crop, a fence
+  top, furniture or a bed. Nothing that hurts beside it, no door beside it (a doorway), no drop of three or more beside it. Loaded
+  columns only, the colony's dimension only. Never on, over or under a designated or build cell, never right in front of a storage
+  chest or a workbench, never in a forbidden area.
+- **Night.** After dark (19:00–06:00) idle pawns wander only cells that are inside (roofed, in a home zone) or lit (light 8 or more
+  after dark). With none, each stands at its own spread spot by home ("Idle (at home)") and stays there. Sleep hours are beds as
+  before.
+- **No home** (or another dimension): the pawn holds where it is ("idle: nothing to do"); new work cuts that hold as before.
+- **Spread spots.** A no-bed rest, a flight home and a teleport home (founding, migration, a join far away) each get the pawn's own
+  free cell nearest home, never one cell for all.
+
+### Adding and removing pawns (added 2026-11-03)
+
+Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
+
+- **+** (`POST …/pawns {op:"add", count}`): the colony's wanted size grows (at most 12, joining pawns included). As many as the free
+  seats allow come now (never the seats kept for offline regulars) through the usual spawn path: managed `maid_` accounts,
+  whitelisted through main. The rest are pending (`seats.pending`, `pending:[{reason}]`) and join with the seat retry as seats free
+  up. One log line and one alert per change.
+- **−** (`{op:"remove", pawn}`): the pawn's job, leases, idle reservation and bed go back at once and it is `leaving`. It takes what
+  it carries to storage by the filters (what no chest accepts goes with its logout's deposit, with an alert), its script ends, then
+  it logs out and its account is released (whitelist removal through main). It leaves the state (`removed.pawns`). An offline pawn
+  leaves at once; one that doesn't finish within 2 minutes is released anyway. The wanted size drops by one. The last pawn can't be
+  removed (release the colony instead).
+- **Web.** The colonist bar ends with **+** (Shift+click asks how many) and **−** (the one selected pawn, after "Remove Nils J.?
+  Their items go to storage."). Pending pawns show as greyed "joining…" tiles.
+
 ### Pawn bodies and the pawn script
 
 - **The group.** A colony is the hive group `story-<n>`, owned by main.
@@ -266,8 +317,11 @@ fail count, next retry, Retry now / Cancel).
 - **The SDK primitive** (module `story`):
   - `story.next(s=0)` returns the pawn's job, or null.
   - `story.report(job, 'done'|'failed'|'progress', note?)` reports on it.
+  - `story.during(job, fn)` runs `fn` while the job is still the pawn's; the moment the director takes it back the running action
+    is cut (`{ok:false, cancelled:true}`; the stale report that follows is ignored, never a failure).
+  - `story.idle(job)` is an idle leg (walk to its cell, linger) inside `story.during`.
 - **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`.
-  - Kinds: `go|chop|dig|harvest|collect|place|attack|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
+  - Kinds: `go|chop|dig|harvest|till|collect|place|attack|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
     `attack`, `eat`, `craft`, `smelt`, `collect_furnace`, `handTo`, `build`, `wait`), deposits the `stash` items and reports.
 
@@ -318,6 +372,49 @@ dimension) when it joins, when the colony is founded or resumed, or when the hom
 - **Another dimension.** A pawn can't be teleported across dimensions, so an alert asks for it to be walked through a portal.
 
 Each pawn moved logs one line (an alert): "X brought home to x,y,z from N blocks away (why)".
+
+## Farming (added 2026-11-03)
+
+Fox 11-03: "I don't see the ability to plant a specific type of plant, or how acquiring the seeds will work."
+
+A **growing zone** is a zone of kind `farm` with a `plant` (Zones tool → Growing zone, with a plant picker). Without a plant a farm
+zone works as before (ripe crops, bare farmland). `sow` and `harvest` (both on by default) switch tilling and sowing, and harvesting.
+
+**Plants** (`plants` in the full state: `{id, label, block, seed, seed_item:[id,meta], soil, harvest, source}`):
+
+| plant | versions | soil | harvest |
+|---|---|---|---|
+| wheat, pumpkin, melon | both | farmland (dirt or grass is tilled first) | wheat: ripe at age 7, sown again; pumpkin, melon: the fruit beside the stem (every other row is left for it) |
+| carrots, potatoes, beetroot | 1.12.2 | farmland | ripe (7, 7, 3), sown again |
+| sugar cane | both | sand, dirt or grass right beside water | cut above the bottom block |
+| cactus | both | sand with nothing solid beside it (a checkerboard) | cut above the bottom block |
+| nether wart | 1.12.2 | soul sand | ripe at 3, sown again |
+| oak, spruce, birch saplings (jungle, acacia, dark oak on 1.12.2) | both | dirt or grass, on a 3-block grid | the grown tree is chopped |
+
+**Jobs** (Farm work, by priority and schedule like any other): harvest what is ripe first, then sow the empty cells that suit the
+plant (the seed item is fetched from storage when the pawn has none; pending sow jobs reserve seeds), then till dirt and grass within
+4 of water (kind `till`: the pawn holds a hoe and uses it on the block). Tilling needs a hoe: carried, fetched from storage, else a
+count bill for a wooden hoe at the colony's crafting table (an alert when there is none). Produce goes to storage by the filters,
+like any gathering job.
+
+**Validation.** Adding or updating a growing zone is refused when the plant doesn't exist in this version or nothing in the zone can
+grow it ("Cactus grows on sand: there is none free in the zone"). It answers `warnings` for what only slows it ("no water within 4
+blocks of the zone: dirt there isn't tilled").
+
+**Seeds.** The zone's state says what it has and where seeds come from:
+`{plant, sow, harvest, status: "12/40 sown, 6 ripe[, N too far from water]", seeds: {item, have, needed_for_empty, source_hint, missing, action}, needs_hoe}`.
+`have` counts every storage and every pawn's inventory. With none and cells to sow, `missing` says what to do about it, and the
+colony gets an alert (at most every 10 minutes per zone):
+- wheat: "No wheat seeds — cut tall grass to find some". `action: "seek_seeds"`: `POST …/zones {op:"seek_seeds", id}` designates
+  `cut` on the tall grass and ferns within 24 blocks of the zone (up to 64, never flowers). Explicit, never automatic.
+- carrots, potatoes: "Needs carrots — none in storage". The crop itself is the seed: harvests, zombie drops, village farms.
+- beetroot: harvest beetroot, village chests. Sugar cane and cactus: the item itself. Saplings: leaves of chopped trees.
+- pumpkin, melon: `action: "craft_seeds"`. With a pumpkin (or a melon slice) stored, the colony adds a count bill for 4 seeds at its
+  crafting table: by itself when a pawn would sow, or on `seek_seeds`.
+
+**Web.** The Zones tool's Growing zone shows a plant picker (icons from the item atlas). The Colony tab opens a Growing zones window
+beside it: each zone's plant (changeable), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches,
+"needs a hoe", and the action button ("Designate grass cutting nearby" or "Craft seeds (a bill)").
 
 ## Construction
 

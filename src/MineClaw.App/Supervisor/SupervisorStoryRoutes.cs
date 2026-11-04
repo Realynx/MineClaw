@@ -181,6 +181,25 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 var why = colonies.Resume(c);
                 return Reply(200, new JsonObject { ["id"] = c.Id, ["pawns"] = c.Pawns.Count, ["note"] = why });
             }
+            case "pawns":
+            {
+                // {op:"add", count:1..12} | {op:"remove", pawn} → {pawns, wanted, pending:[{reason}], leaving, blocked:[{reason}]}.
+                var op = S(b, "op") ?? "";
+                if (op == "add")
+                {
+                    if (b["count"] is not JsonValue cv || !cv.TryGetValue<int>(out var n) || n is < 1 or > StoryColony.MaxPawns)
+                        return Bad($"count must be 1..{StoryColony.MaxPawns}");
+                    var (res, aerr) = colonies.AddPawns(c, n);
+                    return aerr != null ? Bad(aerr) : Reply(200, res!);
+                }
+                if (op == "remove")
+                {
+                    if (S(b, "pawn") is not { Length: > 0 } who) return Bad("pawn required");
+                    var (res, rerr, notFound) = colonies.RemovePawn(c, who);
+                    return rerr != null ? notFound ? Reply(404, new JsonObject { ["error"] = rerr }) : Bad(rerr) : Reply(200, res!);
+                }
+                return Bad("op must be add|remove");
+            }
             case "online":
             {
                 // {pawns:[name]|null, over_cap?:bool} → {started:[account], blocked:[{pawn, reason}]}; null = every offline pawn.

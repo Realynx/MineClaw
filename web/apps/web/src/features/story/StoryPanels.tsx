@@ -14,9 +14,11 @@ import {
   type StoryDirective,
   type StoryOnlineBlocked,
   type StoryPawn,
+  type StoryPlant,
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
+import { GrowPlantPicker } from './GrowingZones';
 import {
   ClipboardPaste,
   Copy,
@@ -109,7 +111,16 @@ export function TabBar({
 
 type ArchCat = 'orders' | 'zones' | 'structure' | 'furniture' | 'storage';
 
-export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: MapTool) => void }) {
+export function ArchitectPanel({
+  tool,
+  onTool,
+  plants,
+}: {
+  tool: MapTool;
+  onTool: (t: MapTool) => void;
+  /** What a growing zone can grow here (the plant picker under the Zones tools). */
+  plants?: readonly StoryPlant[] | null;
+}) {
   const [cat, setCat] = useState<ArchCat>(
     tool.kind === 'zone'
       ? 'zones'
@@ -182,6 +193,9 @@ export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: Ma
               btn({ kind: 'zone', id: 'home', op: 'remove' }, 'cancel', 'Remove zone', 'Drag over a zone to remove it'),
             ]
           : null}
+        {cat === 'zones' && tool.kind === 'zone' && tool.id === 'farm' && tool.op === 'add' ? (
+          <GrowPlantPicker plants={plants} />
+        ) : null}
         {cat === 'structure'
           ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
           : null}

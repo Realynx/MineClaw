@@ -41,6 +41,13 @@ public sealed class StoryHost : IStoryHost
 
     public int Release(string colony) => _hierarchy?.ReleaseGroup(colony, "story colony released") ?? 0;
 
+    public string? ReleasePawn(string account, string why)
+    {
+        if (_hierarchy is not { } h) return "the hive is off";
+        var r = h.Release(account, HiveTree.Root, why);
+        return r.StartsWith("ok", StringComparison.OrdinalIgnoreCase) ? null : r;
+    }
+
     /// <summary>Main is in game (null = assume so).</summary>
     public Func<bool>? MainInGame { get; init; }
     public bool InGame => MainInGame?.Invoke() ?? true;
