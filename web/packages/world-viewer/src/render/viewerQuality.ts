@@ -45,6 +45,8 @@ export interface ViewerQuality {
   xray: boolean;
   /** A small fps / frame-time readout over every interactive view. */
   perfOverlay: boolean;
+  /** Story Mode's queued builds as translucent block holograms in the world (off: flat outlines on the map). */
+  holograms: boolean;
 }
 
 /** Today's behaviour, except that entities reach as far as the ground (top-down / iso views zoomed out keep their mobs). */
@@ -66,6 +68,7 @@ export const DEFAULT_VIEWER_QUALITY: Readonly<ViewerQuality> = Object.freeze({
   bubbles: true,
   xray: true,
   perfOverlay: false,
+  holograms: true,
 });
 
 /** The bounds the renderer honours (the app's schema clamps to these too). */

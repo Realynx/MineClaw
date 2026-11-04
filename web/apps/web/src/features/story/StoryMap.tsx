@@ -8,6 +8,7 @@
  * software WebGL: no blur, no DOM per pawn, a few hundred canvas primitives.
  */
 import type { PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
+import { getViewerQuality } from '@mineclaw/world-viewer/settings';
 import { designationCells, targetPos, type StoryColonyState } from '@mineclaw/contracts';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
@@ -19,7 +20,6 @@ import {
   edgePan,
   isDrag,
   lineSlots,
-  nearest,
   project,
   rayAt,
   rayPlaneY,
@@ -34,6 +34,7 @@ import {
   type V3,
   type ViewMats,
 } from './math';
+import { anchorLift, bodyLook, hologramCells, type BodyLook } from './bodyLook';
 import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type PlacedLabel } from './failedLabels';
 import { type Selection } from './model';
 import {
@@ -198,6 +199,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const labelsEl = useRef<HTMLDivElement | null>(null);
   /** Where each failed designation's ring was drawn this frame, for clicks (id, the ids its cluster label stands for). */
   const failedAt = useRef<Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }>>([]);
+  /** What the viewer was last given for the holograms: the state's ghosts and builds (by identity) and the placement key. */
+  const holo = useRef<{ ghosts: unknown; builds: unknown; preview: string }>({ ghosts: null, builds: null, preview: '' });
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
@@ -290,6 +293,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       if (lastEngine.current !== e) {
         lastEngine.current = e;
         appliedCut.current = undefined;
+        holo.current = { ghosts: null, builds: null, preview: '' };
+        // The pawns and AI bodies are drawn as their player models; the overlay draws their names (no second label).
+        e.setBotLabels(false);
       }
       // Above the ground storey, the storeys below are dimmed for reference.
       const home = p.current.home;
@@ -300,6 +306,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         e.setLevelCut(p.current.cutY !== null || dim !== null ? { y: p.current.cutY ?? 1e6, dimBelow: dim } : null);
       }
       if (placed.current) e.rig.target.y = p.current.level + 1;
+      syncHolograms(e);
       const w = c.clientWidth,
         h = c.clientHeight;
       if (c.width !== w || c.height !== h) {
@@ -371,21 +378,68 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     return () => cancelAnimationFrame(raf);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Every selectable body with its screen point (pawns interpolated toward their reported positions). */
-  const bodies = (dt: number): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3 }> => {
+  /** [holograms] Hands the viewer the queued cells (only when the state's ghosts or builds changed) and the design being
+   * placed (only when its cell or turn changed). */
+  const syncHolograms = (e: WorldViewerEngine) => {
+    const st = p.current.state,
+      h = holo.current;
+    if (h.ghosts !== st?.ghosts || h.builds !== st?.builds) {
+      h.ghosts = st?.ghosts;
+      h.builds = st?.builds;
+      const { cells, rev } = hologramCells(st);
+      e.setHolograms(cells, rev);
+    }
+    const tool = p.current.tool,
+      hv = hover.current;
+    const a = tool.kind === 'design' && hv?.cell && !drag.current ? startCellOf(hv) : null;
+    if (a && tool.kind === 'design') {
+      const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}`;
+      if (key !== h.preview) {
+        h.preview = key;
+        e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing).slice(0, 4096).flat(), key);
+      }
+    } else if (h.preview) {
+      h.preview = '';
+      e.setHologramPreview(null);
+    }
+  };
+
+  /**
+   * Every selectable body with its screen point: where the viewer draws its model (the world store's interpolated position)
+   * when it has one, else its reported position eased toward. `look`: model (overlay marks only), token, or cut (a storey
+   * above the level cut); `r`: its hit radius in pixels.
+   */
+  const bodies = (dt: number): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> => {
     const m = mats.current;
     const st = p.current.state;
-    const out: Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3 }> = [];
+    const e = engine();
+    const ppb = m && e ? m.h / Math.max(1, e.rig.isoZoom) : 0;
+    const out: Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> = [];
     const k = Math.min(1, dt * 6);
     const add = (name: string, pos: readonly number[] | null | undefined, kind: 'pawn' | 'ai') => {
       if (!pos) return;
+      const live = e?.runtime.store.bot(name);
       const prev = shown.current.get(name);
       const next: V3 =
-        prev && Math.hypot(prev[0] - pos[0]!, prev[2] - pos[2]!) < 12
-          ? [prev[0] + (pos[0]! - prev[0]) * k, prev[1] + (pos[1]! - prev[1]) * k, prev[2] + (pos[2]! - prev[2]) * k]
-          : [pos[0]!, pos[1]!, pos[2]!];
+        live && live.dim === 0
+          ? [live.x, live.y, live.z]
+          : prev && Math.hypot(prev[0] - pos[0]!, prev[2] - pos[2]!) < 12
+            ? [prev[0] + (pos[0]! - prev[0]) * k, prev[1] + (pos[1]! - prev[1]) * k, prev[2] + (pos[2]! - prev[2]) * k]
+            : [pos[0]!, pos[1]!, pos[2]!];
       shown.current.set(name, next);
-      out.push({ key: name, at: m ? project(m, next[0], next[1] + 0.2, next[2]) : null, kind, pos: next });
+      const look = bodyLook({
+        detail: live ? (e?.runtime.entities.detailOf(live.name) ?? null) : null,
+        pxPerBlock: ppb,
+        feetY: next[1],
+        cutY: p.current.cutY,
+      });
+      const at = m ? project(m, next[0], next[1] + anchorLift(look), next[2]) : null;
+      let r = 18;
+      if (look === 'model' && m && at) {
+        const head = project(m, next[0], next[1] + 1.9, next[2]);
+        r = Math.max(14, head ? Math.abs(head.y - at.y) + 6 : 0, ppb * 0.6);
+      }
+      out.push({ key: name, at, kind, pos: next, look, r });
     };
     for (const pw of st?.pawns ?? []) if (pw.online !== false) add(pw.name, pw.pos, 'pawn');
     for (const a of st?.ai ?? []) if (a.online !== false && (a.dim ?? 0) === 0) add(a.name, a.pos, 'ai');
@@ -542,8 +596,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         ctx.strokeRect(at.x - 11, at.y - 11, 22, 22);
       }
     }
-    // Build ghosts: translucent blocks by state; anything above the level cut only as a faint outline (x-rayed).
-    const ghosts = st?.ghosts?.blocks ?? [];
+    // Build ghosts: translucent blocks by state; anything above the level cut only as a faint outline (x-rayed). With build
+    // holograms on (the viewer settings) the viewer draws them in the world instead (render/holograms.ts).
+    const holoOn = getViewerQuality().holograms;
+    const ghosts = holoOn ? [] : (st?.ghosts?.blocks ?? []);
     const angled = props.view === 'angled';
     const cube = (x: number, y: number, z: number, color: string, alpha: number, faint: boolean) => {
       if (!angled) {
@@ -760,7 +816,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
       ctx.setLineDash([]);
     }
-    const r = Math.max(7, Math.min(13, cell * 0.55));
+    const tokenR = Math.max(7, Math.min(13, cell * 0.55));
+    const names = getViewerQuality().labels;
     ctx.font = '600 11px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -770,6 +827,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const ai = b.kind === 'ai' ? st?.ai?.find((x) => x.name === b.key) : undefined;
       const color = b.kind === 'ai' ? COLORS.ai : pawnColor(b.key);
       const { x, y } = b.at;
+      // A body drawn as its model gets marks around it (no token over it); a storey above the cut shows a faint token.
+      const model = b.look === 'model';
+      const r = model ? Math.max(tokenR, b.r - 4) : tokenR;
+      ctx.globalAlpha = b.look === 'cut' ? 0.35 : 1;
       if (sel.has(b.key)) {
         ctx.strokeStyle = COLORS.select;
         ctx.lineWidth = 2;
@@ -788,17 +849,31 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         }
         ctx.stroke();
       }
-      ctx.fillStyle = 'rgba(10,12,16,0.78)';
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(x, y, r * 0.42, 0, Math.PI * 2);
-      ctx.fill();
+      if (model) {
+        // The body's colour as a ring on the ground at its feet.
+        const f = project(m, b.pos[0], b.pos[1] + 0.02, b.pos[2]),
+          fx = project(m, b.pos[0] + 0.5, b.pos[1] + 0.02, b.pos[2]),
+          fz = project(m, b.pos[0], b.pos[1] + 0.02, b.pos[2] + 0.5);
+        if (f && fx && fz) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.ellipse(f.x, f.y, Math.max(4, Math.hypot(fx.x - f.x, fx.y - f.y)), Math.max(2, Math.hypot(fz.x - f.x, fz.y - f.y)), 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      } else {
+        ctx.fillStyle = 'rgba(10,12,16,0.78)';
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, r * 0.42, 0, Math.PI * 2);
+        ctx.fill();
+      }
       if (pw?.drafted) {
         const g = glyph('drafted');
         if (g) {
@@ -824,12 +899,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         }
       }
       const danger = pw ? (pw.hp ?? 20) <= 8 || (pw.food ?? 20) <= 4 : false;
-      const label = pw?.display ?? (ai ? (ai.kind === 'main' ? 'main' : ai.name.replace(/^maid_chan_/, '')) : b.key);
-      const tw = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(10,12,16,0.7)';
-      ctx.fillRect(x - tw / 2 - 4, y + r + 3, tw + 8, 15);
-      ctx.fillStyle = danger ? COLORS.danger : b.kind === 'ai' ? '#d9ccff' : '#f4f6f8';
-      ctx.fillText(label, x, y + r + 4);
+      // Name tags (the viewer settings): off leaves the names of the selected bodies and those in danger.
+      if (names || sel.has(b.key) || danger) {
+        const label = pw?.display ?? (ai ? (ai.kind === 'main' ? 'main' : ai.name.replace(/^maid_chan_/, '')) : b.key);
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(10,12,16,0.7)';
+        ctx.fillRect(x - tw / 2 - 4, y + r + 3, tw + 8, 15);
+        ctx.fillStyle = danger ? COLORS.danger : b.kind === 'ai' ? '#d9ccff' : '#f4f6f8';
+        ctx.fillText(label, x, y + r + 4);
+      }
+      ctx.globalAlpha = 1;
     }
     // The drag: a selection box, a formation line, or a tool's grid rectangle with its live targets.
     const d = drag.current;
@@ -853,8 +932,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
     } else if (tool.kind === 'design' && hover.current?.cell && !d) {
       // A design follows the cursor (Q/E turns it) on the working level.
+      // With build holograms on, the viewer draws it in the world (green where it fits, red where blocked; syncHolograms).
       const a = startCellOf(hover.current);
-      if (a)
+      if (a && !holoOn)
         for (const b of placeDesign(tool.blocks, a, props.build.facing).slice(0, 2500))
           cube(b[0], b[1], b[2], '#7fd3ff', 0.38, false);
       if (a) label(ctx, hover.current.at, `${tool.name}: ${tool.blocks.length} blocks · click to queue`, true);
@@ -1301,7 +1381,20 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     if (d.moved && tool.kind === 'designate') rescan();
   };
 
-  const bodyAt = (pt: Pt) => nearest(bodies(0), pt, 18);
+  /** The body under a point: the nearest within its own hit radius (a model's covers its height). */
+  const bodyAt = (pt: Pt) => {
+    let best: ReturnType<typeof bodies>[number] | null = null,
+      bd = Infinity;
+    for (const b of bodies(0)) {
+      if (!b.at) continue;
+      const d = Math.hypot(b.at.x - pt.x, b.at.y - pt.y);
+      if (d <= b.r && d < bd) {
+        bd = d;
+        best = b;
+      }
+    }
+    return best;
+  };
 
   const onPointerUp = async (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
@@ -1578,6 +1671,14 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           ...(toPage(pos[0], pos[1] + 0.2, pos[2]) ?? { x: NaN, y: NaN }),
         })),
       fps: () => engine()?.stats().fps,
+      /** Each body: how it is shown (model, token, cut) and whether the viewer drew its model last frame. */
+      models: () =>
+        bodies(0).map((b) => ({ name: b.key, look: b.look, model: engine()?.runtime.entities.detailOf(b.key) ?? null })),
+      /** The viewer's player models drawn last frame. */
+      botModels: () => engine()?.runtime.entities.botModels ?? 0,
+      holograms: () => engine()?.hologramStats() ?? null,
+      hologramAt: (x: number, y: number, z: number) => engine()?.hologramAt(x, y, z) ?? false,
+      ghosts: () => p.current.state?.ghosts?.blocks ?? [],
       mode: () => engine()?.rig.mode,
       level: () => p.current.level,
       beds: () => p.current.state?.beds ?? [],
@@ -1594,7 +1695,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   const layers = useMemo(
     () => ({
-      bots: false,
+      bots: true,
       entities: true,
       claims: false,
       places: false,
