@@ -322,70 +322,86 @@ public sealed partial class CombatEngine
     {
         Interlocked.Exchange(ref _tick, tick);
         var ctx = new Ctx();
-        int heldNow = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
-        if (heldNow != _heldId) { if (_heldId != int.MinValue) { _heldChanged = tick; _heldChangedAt = Stopwatch.GetTimestamp(); } _heldId = heldNow; } // EntityPlayer.onUpdate resetCooldown
-        double mdx = phys.Position.X - _prevPos.X, mdz = phys.Position.Z - _prevPos.Z;
-        _walked = _tick0 ? 0 : Math.Sqrt(mdx * mdx + mdz * mdz) * 0.6; // distanceWalkedModified − prev (Entity.move)
-        _prevPos = phys.Position;
-        _tick0 = false;
+        TrackHeldItem(tick);
+        TrackWalked(phys);
         while (_signals.TryDequeue(out var sig)) Handle(sig, phys, ctx);
         TrackHealth(phys, ctx);
         ExpirePending(ctx);
 
         if (tick % 100 == 0) ForgetGoneMobs();
-        CombatStep step;
         if (Sheltering && _fight is { Explicit: false, Done: null, Kind: FightKind.Mob } sf) EndFight(sf, "boxed in", phys, ctx);
-        if (_fight is null && !Sheltering)
-        {
-            if (tick % 5 == 0 && Scan(phys) is { } found)
-            {
-                // 1.9+: a melee fight it would lose (bare hands vs a zombie: 2 dps against 20 hp while taking 3/s) is not started:
-                // box in with the blocks on hand instead (live 10-29 02:07, clone 69: "fight started: zombie", slain 3 s later).
-                string? lost = !found.Cover && MayBoxInstead(found.Why) ? Outmatched(phys, found.E) : null;
-                bool archer = CombatRules.ProfileOf(found.E).Tactic == MobTactic.Ranged;
-                if (lost is { } why && archer && CombatGeometry.HasLineOfSight(_w, Eye(found.E), phys.EyePosition))
-                {
-                    // 1.12.2, live 10-29: bodies with bare hands traded blows with skeletons in tree shade and were shot dead (102,
-                    // 117). An archer it can't beat: out of its sight (cover, else away), held until it has lost us.
-                    ctx.Abort = StartFight(FightKind.Mob, found.E, $"taking cover: can't win ({why})", phys, explicitDone: null);
-                    _fight!.Cover = true;
-                    _fight.Outmatched = true;
-                }
-                else if (lost is { } why2 && CanBoxIn is { } can && SafeAsk(can, MeleeThreats(phys.Position).Count))
-                {
-                    Sheltering = true;
-                    ctx.Shelter = true;
-                    ctx.Abort = true;
-                    Raise(CombatEventKind.Critical, $"{found.E.DisplayName} {found.E.Position.DistanceTo(phys.Position):0}m away and I can't win ({why2}): boxing in");
-                }
-                else
-                {
-                    ctx.Abort = StartFight(FightKind.Mob, found.E, found.Why, phys, explicitDone: null);
-                    if (found.Cover) _fight!.Cover = true;
-                }
-            }
-        }
-        if (_fight is { } f)
-        {
-            var input = f.Kind == FightKind.Spar ? SparTick(f, phys, ctx) : MobTick(f, phys, ctx);
-            step = new CombatStep(input, true, ctx.Attack, ctx.Block, ctx.Equip, ctx.Chat, ctx.Abort, ctx.Eat, ctx.Shelter);
-        }
-        else step = new CombatStep(proposed, false, Chat: ctx.Chat, Eat: ctx.Eat, Equip: ctx.Equip, AbortAction: ctx.Abort, Shelter: ctx.Shelter);
-
-        // Never meet an enderman's gaze (unless it is the one being fought).
-        var ender = _w.Entities.Nearby(phys.Position, 64, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Enderman
-                                                            && (_fight is null || e.Id != _fight.TargetId));
-        if (ender.Count > 0)
-        {
-            var centers = ender.Select(e => { var b = CombatRules.Hitbox(e); return b.Center; }).ToList();
-            float p = CombatRules.AvoidEndermanGaze(phys.EyePosition, step.Input.Yaw, step.Input.Pitch, centers);
-            step = step with { Input = step.Input with { Pitch = p } };
-        }
+        if (_fight is null && !Sheltering && tick % 5 == 0 && Scan(phys) is { } found) Engage(found, phys, ctx);
+        var step = AvoidEndermanGaze(phys, FightOrIdleStep(phys, proposed, ctx));
         if (step.AttackId >= 0) step = step with { Block = false };
         _blocking = step.Block;
         _engaged = _fight is not null;
         _status = Describe(phys);
         return step;
+    }
+
+    /// <summary>A new held item restarts the attack cooldown (EntityPlayer.onUpdate resetCooldown).</summary>
+    private void TrackHeldItem(long tick)
+    {
+        int heldNow = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
+        if (heldNow == _heldId) return;
+        if (_heldId != int.MinValue) { _heldChanged = tick; _heldChangedAt = Stopwatch.GetTimestamp(); }
+        _heldId = heldNow;
+    }
+
+    /// <summary>distanceWalkedModified − prev (Entity.move).</summary>
+    private void TrackWalked(PhysicsState phys)
+    {
+        double mdx = phys.Position.X - _prevPos.X, mdz = phys.Position.Z - _prevPos.Z;
+        _walked = _tick0 ? 0 : Math.Sqrt(mdx * mdx + mdz * mdz) * 0.6;
+        _prevPos = phys.Position;
+        _tick0 = false;
+    }
+
+    /// <summary>A threat the scan found: fights it, takes cover from an archer it can't beat, or boxes in from a melee fight it would
+    /// lose (1.9+: bare hands vs a zombie: 2 dps against 20 hp while taking 3/s; live 10-29 02:07, clone 69: "fight started: zombie",
+    /// slain 3 s later).</summary>
+    private void Engage((Entity E, string Why, bool Cover) found, PhysicsState phys, Ctx ctx)
+    {
+        string? lost = !found.Cover && MayBoxInstead(found.Why) ? Outmatched(phys, found.E) : null;
+        if (lost is { } why && CombatRules.ProfileOf(found.E).Tactic == MobTactic.Ranged && CombatGeometry.HasLineOfSight(_w, Eye(found.E), phys.EyePosition))
+        {
+            // 1.12.2, live 10-29: bodies with bare hands traded blows with skeletons in tree shade and were shot dead (102,
+            // 117). An archer it can't beat: out of its sight (cover, else away), held until it has lost us.
+            ctx.Abort = StartFight(FightKind.Mob, found.E, $"taking cover: can't win ({why})", phys, explicitDone: null);
+            _fight!.Cover = true;
+            _fight.Outmatched = true;
+        }
+        else if (lost is { } why2 && CanBoxIn is { } can && SafeAsk(can, MeleeThreats(phys.Position).Count))
+        {
+            Sheltering = true;
+            ctx.Shelter = true;
+            ctx.Abort = true;
+            Raise(CombatEventKind.Critical, $"{found.E.DisplayName} {found.E.Position.DistanceTo(phys.Position):0}m away and I can't win ({why2}): boxing in");
+        }
+        else
+        {
+            ctx.Abort = StartFight(FightKind.Mob, found.E, found.Why, phys, explicitDone: null);
+            if (found.Cover) _fight!.Cover = true;
+        }
+    }
+
+    private CombatStep FightOrIdleStep(PhysicsState phys, MoveInput proposed, Ctx ctx)
+    {
+        if (_fight is not { } f)
+            return new CombatStep(proposed, false, Chat: ctx.Chat, Eat: ctx.Eat, Equip: ctx.Equip, AbortAction: ctx.Abort, Shelter: ctx.Shelter);
+        var input = f.Kind == FightKind.Spar ? SparTick(f, phys, ctx) : MobTick(f, phys, ctx);
+        return new CombatStep(input, true, ctx.Attack, ctx.Block, ctx.Equip, ctx.Chat, ctx.Abort, ctx.Eat, ctx.Shelter);
+    }
+
+    /// <summary>Never meet an enderman's gaze (unless it is the one being fought).</summary>
+    private CombatStep AvoidEndermanGaze(PhysicsState phys, CombatStep step)
+    {
+        var ender = _w.Entities.Nearby(phys.Position, 64, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Enderman
+                                                            && (_fight is null || e.Id != _fight.TargetId));
+        if (ender.Count == 0) return step;
+        var centers = ender.Select(e => { var b = CombatRules.Hitbox(e); return b.Center; }).ToList();
+        float p = CombatRules.AvoidEndermanGaze(phys.EyePosition, step.Input.Yaw, step.Input.Pitch, centers);
+        return step with { Input = step.Input with { Pitch = p } };
     }
 
     private sealed class Ctx
@@ -402,48 +418,66 @@ public sealed partial class CombatEngine
     {
         switch (sig)
         {
-            case ChatSig c:
-                if (_fight is { Kind: FightKind.Spar } sf && SparWords.IsStop(c.Message, Options.StopWords))
-                    sf.StopRequest ??= $"{c.Sender} said \"{Trim(c.Message)}\"";
-                break;
-            case AnimSig a:
-                if (a.Anim == CombatRules.AnimSwing) _lastSwing[a.Id] = _tick;
-                else if (a.Anim == CombatRules.AnimHurt) OnHurt(a.Id, phys);
-                break;
-            case StatusSig s:
-                if (s.Status == CombatRules.StatusHurt) OnHurt(s.Id, phys);
-                else if (s.Status == CombatRules.StatusDead) _dead[s.Id] = _tick;
-                break;
-            case DangerSig d:
-                if (_fight is { Kind: FightKind.Spar } spar && d.Danger.Kind is not (DangerKind.Damage or DangerKind.HostileNearby or DangerKind.Recovered))
-                    spar.StopRequest ??= "danger: " + d.Danger.Message;
-                break;
+            case ChatSig c: OnChatSignal(c); break;
+            case AnimSig a: OnAnimSignal(a, phys); break;
+            case StatusSig s: OnStatusSignal(s, phys); break;
+            case DangerSig d: OnDangerSignal(d); break;
             case StopCmd stop:
                 if (_fight is { } f) f.StopRequest ??= stop.Reason;
                 break;
-            case SparCmd sc:
-                if (_fight is not null) { sc.Done.TrySetResult($"refused: already fighting {_fight.TargetName}"); break; }
-                if (_w.Entities.Get(sc.OpponentId) is not { Kind: EntityKind.Player } opp) { sc.Done.TrySetResult("refused: opponent not visible"); break; }
-                var zr = sc.Zone is { } given ? new SparZoneResult(given, null) : SparZone.Find(_w, sc.Center.BottomCenter, Options, [phys.Position, opp.Position]);
-                if (zr.Zone is not { } zone) { sc.Done.TrySetResult("refused: no safe arena: " + zr.Reason); break; }
-                StartFight(FightKind.Spar, opp, "spar", phys, sc.Done);
-                _fight!.Spar = new SparState
-                {
-                    Opponent = sc.Opponent, OpponentId = sc.OpponentId, Center = zone.Center, Zone = zone, Rounds = sc.Rounds,
-                    Model = new OpponentHpModel(Options, SparStartHealth(sc.Opponent), Rules),
-                    WeaponId = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id,
-                };
-                Log("spar_start", phys, opp.Position, new() { ["opponent"] = sc.Opponent, ["est_hp"] = _fight.Spar.Model.Estimate, ["center"] = sc.Center.ToString(), ["rounds"] = sc.Rounds });
-                break;
-            case AttackCmd ac:
-                if (_fight is not null) { ac.Done.TrySetResult($"refused: already fighting {_fight.TargetName}"); break; }
-                if (_w.Entities.Get(ac.TargetId) is not { } t) { ac.Done.TrySetResult("refused: target gone"); break; }
-                // A player only with the owner's permit for exactly that entity (MayAttack then lets each hit through).
-                if (t.Kind == EntityKind.Player ? !Permitted(t.Id) : !MayAttack(t)) { ac.Done.TrySetResult($"refused: won't attack {t.DisplayName}"); break; }
-                StartFight(FightKind.Mob, t, "told to attack", phys, ac.Done);
-                _fight!.Explicit = true;
-                break;
+            case SparCmd sc: OnSparCommand(sc, phys); break;
+            case AttackCmd ac: OnAttackCommand(ac, phys); break;
         }
+    }
+
+    private void OnChatSignal(ChatSig c)
+    {
+        if (_fight is { Kind: FightKind.Spar } sf && SparWords.IsStop(c.Message, Options.StopWords))
+            sf.StopRequest ??= $"{c.Sender} said \"{Trim(c.Message)}\"";
+    }
+
+    private void OnAnimSignal(AnimSig a, PhysicsState phys)
+    {
+        if (a.Anim == CombatRules.AnimSwing) _lastSwing[a.Id] = _tick;
+        else if (a.Anim == CombatRules.AnimHurt) OnHurt(a.Id, phys);
+    }
+
+    private void OnStatusSignal(StatusSig s, PhysicsState phys)
+    {
+        if (s.Status == CombatRules.StatusHurt) OnHurt(s.Id, phys);
+        else if (s.Status == CombatRules.StatusDead) _dead[s.Id] = _tick;
+    }
+
+    private void OnDangerSignal(DangerSig d)
+    {
+        if (_fight is { Kind: FightKind.Spar } spar && d.Danger.Kind is not (DangerKind.Damage or DangerKind.HostileNearby or DangerKind.Recovered))
+            spar.StopRequest ??= "danger: " + d.Danger.Message;
+    }
+
+    private void OnSparCommand(SparCmd sc, PhysicsState phys)
+    {
+        if (_fight is not null) { sc.Done.TrySetResult($"refused: already fighting {_fight.TargetName}"); return; }
+        if (_w.Entities.Get(sc.OpponentId) is not { Kind: EntityKind.Player } opp) { sc.Done.TrySetResult("refused: opponent not visible"); return; }
+        var zr = sc.Zone is { } given ? new SparZoneResult(given, null) : SparZone.Find(_w, sc.Center.BottomCenter, Options, [phys.Position, opp.Position]);
+        if (zr.Zone is not { } zone) { sc.Done.TrySetResult("refused: no safe arena: " + zr.Reason); return; }
+        StartFight(FightKind.Spar, opp, "spar", phys, sc.Done);
+        _fight!.Spar = new SparState
+        {
+            Opponent = sc.Opponent, OpponentId = sc.OpponentId, Center = zone.Center, Zone = zone, Rounds = sc.Rounds,
+            Model = new OpponentHpModel(Options, SparStartHealth(sc.Opponent), Rules),
+            WeaponId = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id,
+        };
+        Log("spar_start", phys, opp.Position, new() { ["opponent"] = sc.Opponent, ["est_hp"] = _fight.Spar.Model.Estimate, ["center"] = sc.Center.ToString(), ["rounds"] = sc.Rounds });
+    }
+
+    private void OnAttackCommand(AttackCmd ac, PhysicsState phys)
+    {
+        if (_fight is not null) { ac.Done.TrySetResult($"refused: already fighting {_fight.TargetName}"); return; }
+        if (_w.Entities.Get(ac.TargetId) is not { } t) { ac.Done.TrySetResult("refused: target gone"); return; }
+        // A player only with the owner's permit for exactly that entity (MayAttack then lets each hit through).
+        if (t.Kind == EntityKind.Player ? !Permitted(t.Id) : !MayAttack(t)) { ac.Done.TrySetResult($"refused: won't attack {t.DisplayName}"); return; }
+        StartFight(FightKind.Mob, t, "told to attack", phys, ac.Done);
+        _fight!.Explicit = true;
     }
 
     /// <summary>Hurt status/animation for an entity: confirms our pending swing, or is damage from something else.</summary>
@@ -746,35 +780,10 @@ public sealed partial class CombatEngine
         var me = phys.Position;
         var look = FaceAt(phys, target);
         bool seen = CombatGeometry.HasLineOfSight(_w, Eye(target), phys.EyePosition);
-        if (f.Outmatched)
-        {
-            // An archer it can't beat: stay hidden until it has lost us (2 s unseen) or we are out of its range; a shield faces it
-            // while exposed; keep moving away from it when there's no cover.
-            double far = Horizontal(me, target.Position);
-            if (!seen) { if (f.HiddenSince < 0) f.HiddenSince = _tick; } else f.HiddenSince = -1;
-            if (far > OutOfArcherRange || f.HiddenSince >= 0 && _tick - f.HiddenSince >= HiddenHoldTicks)
-            {
-                EndFight(f, $"took cover from {f.TargetName} ({(far > OutOfArcherRange ? "out of its range" : "out of its sight")})", phys, ctx);
-                return Hold(phys);
-            }
-            if (_tick - f.StartTick > OutmatchedCoverMaxTicks) { EndFight(f, $"kept away from {f.TargetName}", phys, ctx); return Hold(phys); }
-            if (!seen) return Hold(phys) with { Yaw = look.Yaw, Pitch = look.Pitch };
-            if (f.Stance is null || _tick > f.StanceUntil)
-            {
-                f.Stance = CombatGeometry.CoverCell(_w, me, Eye(target)) ?? CombatGeometry.RetreatCell(_w, me, [target.Position], 8, 10);
-                f.StanceUntil = _tick + 20;
-            }
-            var go = f.Stance is { } st ? MoveOrHold(phys, st, look, sneak: false) : look;
-            if (Options.Block && CanBlockNow(target)) { ctx.Block = true; return Slow(go); }
-            return go with { Sprint = f.Stance is not null && _w.Player.Food > 6 };
-        }
+        if (f.Outmatched) return OutmatchedCoverTick(f, phys, target, ctx, look, seen);
         if (!seen) { EndFight(f, $"took cover from {f.TargetName}", phys, ctx); return Hold(phys); }
         if (_tick - f.StartTick > Options.CoverMaxTicks) { EndFight(f, $"no cover from {f.TargetName} nearby, kept working", phys, ctx); return Hold(phys); }
-        if (f.Stance is null || _tick > f.StanceUntil)
-        {
-            f.Stance = CombatGeometry.CoverCell(_w, me, Eye(target)) ?? CombatGeometry.RetreatCell(_w, me, [target.Position], 6, 8);
-            f.StanceUntil = _tick + 20;
-        }
+        RefreshCoverStance(f, me, target, 6, 8);
         if (f.Stance is not { } c)
         {
             EndFight(f, $"no cover from {f.TargetName} nearby, kept working", phys, ctx);
@@ -782,6 +791,43 @@ public sealed partial class CombatEngine
         }
         if (Options.Block && CanBlockNow(target)) { ctx.Block = true; return Slow(MoveOrHold(phys, c, look, sneak: false)); }
         return MoveOrHold(phys, c, look, sneak: false);
+    }
+
+    /// <summary>An archer it can't beat: stay hidden until it has lost us (2 s unseen) or we are out of its range; a shield faces it
+    /// while exposed; keep moving away from it when there's no cover.</summary>
+    private MoveInput OutmatchedCoverTick(Fight f, PhysicsState phys, Entity target, Ctx ctx, MoveInput look, bool seen)
+    {
+        var me = phys.Position;
+        double far = Horizontal(me, target.Position);
+        if (!seen) { if (f.HiddenSince < 0) f.HiddenSince = _tick; } else f.HiddenSince = -1;
+        if (OutmatchedCoverEnded(f, phys, ctx, far)) return Hold(phys);
+        if (!seen) return Hold(phys) with { Yaw = look.Yaw, Pitch = look.Pitch };
+        RefreshCoverStance(f, me, target, 8, 10);
+        var go = f.Stance is { } st ? MoveOrHold(phys, st, look, sneak: false) : look;
+        if (Options.Block && CanBlockNow(target)) { ctx.Block = true; return Slow(go); }
+        return go with { Sprint = f.Stance is not null && _w.Player.Food > 6 };
+    }
+
+    /// <summary>Out of its range, or hidden long enough (it has lost us), or kept away long enough: the cover fight ends.</summary>
+    private bool OutmatchedCoverEnded(Fight f, PhysicsState phys, Ctx ctx, double far)
+    {
+        if (far > OutOfArcherRange || f.HiddenSince >= 0 && _tick - f.HiddenSince >= HiddenHoldTicks)
+        {
+            EndFight(f, $"took cover from {f.TargetName} ({(far > OutOfArcherRange ? "out of its range" : "out of its sight")})", phys, ctx);
+            return true;
+        }
+        if (_tick - f.StartTick <= OutmatchedCoverMaxTicks) return false;
+        EndFight(f, $"kept away from {f.TargetName}", phys, ctx);
+        return true;
+    }
+
+    /// <summary>The cover cell (out of its eyes' sight), else a retreat cell within <paramref name="radius"/> at least
+    /// <paramref name="minDistance"/> from it; looked for again once a second.</summary>
+    private void RefreshCoverStance(Fight f, Vec3d me, Entity target, int radius, double minDistance)
+    {
+        if (f.Stance is not null && _tick <= f.StanceUntil) return;
+        f.Stance = CombatGeometry.CoverCell(_w, me, Eye(target)) ?? CombatGeometry.RetreatCell(_w, me, [target.Position], radius, minDistance);
+        f.StanceUntil = _tick + 20;
     }
 
     /// <summary>Ticks until the next hit may land on <paramref name="id"/> (≤ 0 = now). 1.9+ also waits for the attack charge to

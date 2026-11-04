@@ -67,12 +67,28 @@ public sealed class SparZone
     /// </summary>
     public static SparZoneResult Find(IBlockAccess w, Vec3d near, CombatOptions o, IReadOnlyList<Vec3d>? players = null)
     {
-        const int EdgeDepth = 8;
         var origin = near.ToBlockPos() with { Y = (int)Math.Floor(near.Y + 1e-6) };
-        int r = o.ArenaSearchRadius, minEdge = Math.Max(1, o.MinEdgeDistance);
+        int minEdge = Math.Max(1, o.MinEdgeDistance);
         players ??= [near];
 
         // 1. Surface: the standable cell in each column closest to the reference level.
+        var floor = SurfaceFloor(w, origin, o.ArenaSearchRadius);
+        if (floor.Count == 0) return new(null, "no standable ground here");
+
+        // 2. Edge distance + hazards per surface cell (deadly-column lookups cached).
+        var search = new ArenaSearch(w, o);
+        var (edge, good, bestEdgeAny, hazards) = search.Rate(floor, minEdge);
+        if (good.Count == 0)
+            return new(null, hazards
+                ? $"no spot {minEdge}+ blocks from the void and {o.ArenaHazardRadius + 1}+ from lava/fire/cactus"
+                : $"island too small: the best spot is {bestEdgeAny} block(s) from the void, need {minEdge}");
+
+        // 3. Connected components (4-neighbour, step ≤ ArenaMaxStep with head room for the step).
+        return search.BestZone(good, edge, players, minEdge);
+    }
+
+    private static Dictionary<(int, int), int> SurfaceFloor(IBlockAccess w, BlockPos origin, int r)
+    {
         var floor = new Dictionary<(int, int), int>();
         for (int x = origin.X - r; x <= origin.X + r; x++)
         for (int z = origin.Z - r; z <= origin.Z + r; z++)
@@ -84,16 +100,23 @@ public sealed class SparZone
                 if (d > 0 && Safety.IsStandable(w, x, origin.Y - d, z)) { floor[(x, z)] = origin.Y - d; break; }
             }
         }
-        if (floor.Count == 0) return new(null, "no standable ground here");
+        return floor;
+    }
 
-        // 2. Edge distance + hazards per surface cell (deadly-column lookups cached).
-        var deadly = new Dictionary<(int, int, int), bool>();
-        bool Deadly(int x, int y, int z)
+    /// <summary>One <see cref="Find"/>: the world and options, and the deadly-column lookups cached across cells.</summary>
+    private sealed class ArenaSearch(IBlockAccess w, CombatOptions o)
+    {
+        private const int EdgeDepth = 8;
+        private static readonly (int Dx, int Dz)[] Neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+        private readonly Dictionary<(int, int, int), bool> _deadly = new();
+
+        private bool Deadly(int x, int y, int z)
         {
-            if (!deadly.TryGetValue((x, y, z), out bool v)) deadly[(x, y, z)] = v = Safety.IsDeadlyColumn(w, x, y, z, 3);
+            if (!_deadly.TryGetValue((x, y, z), out bool v)) _deadly[(x, y, z)] = v = Safety.IsDeadlyColumn(w, x, y, z, 3);
             return v;
         }
-        int Edge(int x, int y, int z)
+
+        private int Edge(int x, int y, int z)
         {
             for (int k = 1; k <= EdgeDepth; k++)
             for (int dx = -k; dx <= k; dx++)
@@ -101,7 +124,8 @@ public sealed class SparZone
                 if (Math.Max(Math.Abs(dx), Math.Abs(dz)) == k && Deadly(x + dx, y, z + dz)) return k;
             return EdgeDepth + 1;
         }
-        bool Hazard(int x, int y, int z)
+
+        private bool Hazard(int x, int y, int z)
         {
             int h = o.ArenaHazardRadius;
             for (int dx = -h; dx <= h; dx++)
@@ -111,32 +135,57 @@ public sealed class SparZone
             return false;
         }
 
-        var edge = new Dictionary<(int X, int Z), int>();
-        var good = new Dictionary<(int X, int Z), int>();
-        int bestEdgeAny = 0;
-        bool hazards = false;
-        foreach (var ((x, z), y) in floor)
+        /// <summary>Each surface cell's edge distance (lava pools count as drops too); the good ones: far enough from the edge, no
+        /// hazard near.</summary>
+        public (Dictionary<(int X, int Z), int> Edge, Dictionary<(int X, int Z), int> Good, int BestEdgeAny, bool Hazards) Rate(
+            Dictionary<(int, int), int> floor, int minEdge)
         {
-            int e = Edge(x, y, z);   // lava pools count as drops too
-            edge[(x, z)] = e;
-            bestEdgeAny = Math.Max(bestEdgeAny, e);
-            bool hazard = Hazard(x, y, z);
-            hazards |= hazard;
-            if (e >= minEdge && !hazard) good[(x, z)] = y;
+            var edge = new Dictionary<(int X, int Z), int>();
+            var good = new Dictionary<(int X, int Z), int>();
+            int bestEdgeAny = 0;
+            bool hazards = false;
+            foreach (var ((x, z), y) in floor)
+            {
+                int e = Edge(x, y, z);
+                edge[(x, z)] = e;
+                bestEdgeAny = Math.Max(bestEdgeAny, e);
+                bool hazard = Hazard(x, y, z);
+                hazards |= hazard;
+                if (e >= minEdge && !hazard) good[(x, z)] = y;
+            }
+            return (edge, good, bestEdgeAny, hazards);
         }
-        if (good.Count == 0)
-            return new(null, hazards
-                ? $"no spot {minEdge}+ blocks from the void and {o.ArenaHazardRadius + 1}+ from lava/fire/cactus"
-                : $"island too small: the best spot is {bestEdgeAny} block(s) from the void, need {minEdge}");
 
-        // 3. Connected components (4-neighbour, step ≤ ArenaMaxStep with head room for the step).
-        var seen = new HashSet<(int, int)>();
-        SparZone? best = null;
-        double bestScore = double.MinValue;
-        int largest = 0;
-        foreach (var start in good.Keys)
+        /// <summary>The best centre over every component big enough: deepest from the edge, then nearest the players.</summary>
+        public SparZoneResult BestZone(Dictionary<(int X, int Z), int> good, Dictionary<(int X, int Z), int> edge, IReadOnlyList<Vec3d> players,
+            int minEdge)
         {
-            if (!seen.Add(start)) continue;
+            var seen = new HashSet<(int, int)>();
+            SparZone? best = null;
+            double bestScore = double.MinValue;
+            int largest = 0;
+            foreach (var start in good.Keys)
+            {
+                if (!seen.Add(start)) continue;
+                var comp = Component(start, good, seen);
+                largest = Math.Max(largest, comp.Count);
+                if (comp.Count < o.ArenaMinCells) continue;
+                foreach (var ((x, z), y) in comp)
+                {
+                    double toPlayers = players.Average(p => Math.Sqrt((p.X - x - 0.5) * (p.X - x - 0.5) + (p.Z - z - 0.5) * (p.Z - z - 0.5)));
+                    double score = Math.Min(edge[(x, z)], EdgeDepth) * 4 - toPlayers;
+                    if (score <= bestScore) continue;
+                    bestScore = score;
+                    best = new SparZone(comp, edge, new BlockPos(x, y, z));
+                }
+            }
+            if (best is null)
+                return new(null, $"only {largest} connected cell(s) {minEdge}+ blocks from the void, need {o.ArenaMinCells}");
+            return new(best, null);
+        }
+
+        private Dictionary<(int X, int Z), int> Component((int X, int Z) start, Dictionary<(int X, int Z), int> good, HashSet<(int, int)> seen)
+        {
             var comp = new Dictionary<(int X, int Z), int> { [start] = good[start] };
             var queue = new Queue<(int X, int Z)>();
             queue.Enqueue(start);
@@ -144,37 +193,27 @@ public sealed class SparZone
             {
                 var c = queue.Dequeue();
                 int cy = good[c];
-                foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+                foreach (var (dx, dz) in Neighbours)
                 {
                     var n = (c.X + dx, c.Z + dz);
-                    if (!good.TryGetValue(n, out int ny) || seen.Contains(n)) continue;
-                    int step = ny - cy;
-                    if (Math.Abs(step) > o.ArenaMaxStep) continue;
-                    if (step != 0)
-                    {
-                        // The lower cell needs head room to jump up / drop down: clear at lower floor + 2.
-                        var (lx, lz, ly) = step > 0 ? (c.X, c.Z, cy) : (n.Item1, n.Item2, ny);
-                        if (BlockShapes.HasCollision(w, lx, ly + 2, lz)) continue;
-                    }
+                    if (!good.TryGetValue(n, out int ny) || seen.Contains(n) || !CanStep(c, cy, n, ny)) continue;
                     seen.Add(n);
                     comp[n] = ny;
                     queue.Enqueue(n);
                 }
             }
-            largest = Math.Max(largest, comp.Count);
-            if (comp.Count < o.ArenaMinCells) continue;
-            foreach (var ((x, z), y) in comp)
-            {
-                double toPlayers = players.Average(p => Math.Sqrt((p.X - x - 0.5) * (p.X - x - 0.5) + (p.Z - z - 0.5) * (p.Z - z - 0.5)));
-                double score = Math.Min(edge[(x, z)], EdgeDepth) * 4 - toPlayers;
-                if (score <= bestScore) continue;
-                bestScore = score;
-                best = new SparZone(comp, edge, new BlockPos(x, y, z));
-            }
+            return comp;
         }
-        if (best is null)
-            return new(null, $"only {largest} connected cell(s) {minEdge}+ blocks from the void, need {o.ArenaMinCells}");
-        return new(best, null);
+
+        /// <summary>A step of at most ArenaMaxStep; the lower cell needs head room to jump up / drop down: clear at lower floor + 2.</summary>
+        private bool CanStep((int X, int Z) c, int cy, (int X, int Z) n, int ny)
+        {
+            int step = ny - cy;
+            if (Math.Abs(step) > o.ArenaMaxStep) return false;
+            if (step == 0) return true;
+            var (lx, lz, ly) = step > 0 ? (c.X, c.Z, cy) : (n.X, n.Z, ny);
+            return !BlockShapes.HasCollision(w, lx, ly + 2, lz);
+        }
     }
 
     // ------------------------------------------------------------------ positioning during the spar

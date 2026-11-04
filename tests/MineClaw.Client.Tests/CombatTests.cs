@@ -867,7 +867,8 @@ public class CombatClientTests
         c.SignUpdated += (x, y, z, l) => got.Enqueue($"sign {x} {y} {z} {l[0]}");
         s.Send(new NamedEntitySpawnPacket { EntityId = 77, PlayerName = "kiwi", X = 9 * 32, Y = 64 * 32, Z = 8 * 32 });
         s.SpawnDrop(9, 64, 8, Harness.Stack(Blocks.Dirt, 1));
-        await Task.Delay(50);
+        // Waits for the drop to arrive (a fixed 50 ms lost the race under load in a full run).
+        Assert.True(await Harness.WaitAsync(() => c.World.Entities.All().Any(e => e.Kind == EntityKind.Item)), "the drop never arrived");
         int itemId = c.World.Entities.All().First(e => e.Kind == EntityKind.Item).Id;
         s.Send(new CollectItemPacket { CollectedEntityId = itemId, CollectorEntityId = 77 });
         s.Send(new EntityEquipmentPacket { EntityId = 77, Slot = 3, ItemId = (short)Items.IronChestplate, Damage = 5 });

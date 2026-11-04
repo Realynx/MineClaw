@@ -61,68 +61,108 @@ public sealed partial class MinecraftClient
         bool generator = false, bool noShears = false, bool floorGuard = false, bool requested = false)
     {
         int id = World.GetBlock(pos);
-        string name = BlockName(id, World.GetMeta(pos));
+        var d = new DigJob(pos, id, BlockName(id, World.GetMeta(pos)), allowPathing, ignoreProtection, generator, floorGuard, requested);
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
-        if (!ignoreProtection && IsBlockProtected(pos, id) && !(requested && EditYields?.Invoke(pos, id) == true))
-            return ActionResult.Fail(ProtectedRefusal(pos, id));
-        if (Blocks.Get(id).Hardness < 0) return ActionResult.Fail($"{name} is unbreakable");
-        if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
-        if (DigSafetyVeto(pos, name, generator, positioned: !allowPathing) is { } veto) return ActionResult.Fail(veto);
-        if (floorGuard && !generator && !OverridesSoft(pos, id) && WalkwayFloorVeto(pos, name) is { } floor) return ActionResult.Fail(floor);
+        if (DigRefusal(d) is { } no) return ActionResult.Fail(no);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
-        var aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
-        // Edge blocks are dug from the inward side; generators from a spot released lava can't reach.
-        bool reposition = aim is not null && allowPathing
-                          && (OnRimDiggingRim(pos) || (generator && (LavaPathToMe(pos) || LavaNearMe())));
-        if (aim is null || reposition)
-        {
-            if (!allowPathing) return ActionResult.Fail($"can't see/reach {name} at {Fmt(pos)}");
-            var g = await GotoReachSafelyAsync(pos, generator, ct).ConfigureAwait(false);
-            aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
-            if (aim is null) return ActionResult.Fail($"can't reach {name} at {Fmt(pos)}" + (g.Ok ? "" : $" ({g.Message})"));
-        }
-        if (DigSafetyVeto(pos, name, generator, positioned: true) is { } veto2) return ActionResult.Fail(veto2);
+        var (aim, unreachable) = await DigAimAsync(d, ct).ConfigureAwait(false);
+        if (unreachable is not null) return unreachable;
+        if (DigSafetyVeto(pos, d.Name, generator, positioned: true) is { } veto2) return ActionResult.Fail(veto2);
 
         int held = await SelectToolForAsync(id, ct, noShears).ConfigureAwait(false);
-        // Story Mode's pawns: an asked-for dig never breaks a block for nothing (iron ore with a wooden pickaxe, stone by hand).
-        if (StrictHarvest && requested && !Tools.CanHarvest(id, held) && HarvestNeed(id) is { } need)
-            return ActionResult.Fail($"needs {need}: digging {name} at {Fmt(pos)} without it would lose the drop");
+        if (StrictHarvestRefusal(d, held) is { } lose) return ActionResult.Fail(lose);
+        int ticks = DigTicksHere(pos, id);
+        if (ticks == int.MaxValue) return ActionResult.Fail($"{d.Name} can't be dug");
+        await DigForTicksAsync(pos, id, aim!.Value, ticks, ct).ConfigureAwait(false);
+        return await DigVerdictAsync(d, ticks, held, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>One dig's target and how it was asked for (see <see cref="DigCoreAsync"/>'s parameters).</summary>
+    private sealed record DigJob(BlockPos Pos, int Id, string Name, bool AllowPathing, bool IgnoreProtection, bool Generator, bool FloorGuard,
+        bool Requested);
+
+    /// <summary>Why the block must not be dug at all: protected, unbreakable, server-blocked, unsafe from where the bot stands (when it
+    /// won't move), or a walkway floor near the void (a free-standing dig).</summary>
+    private string? DigRefusal(DigJob d)
+    {
+        if (ProtectionRefusal(d) is { } prot) return prot;
+        if (Blocks.Get(d.Id).Hardness < 0) return $"{d.Name} is unbreakable";
+        if (EditBlocked(d.Pos)) return BlockedReason(d.Pos);
+        if (DigSafetyVeto(d.Pos, d.Name, d.Generator, positioned: !d.AllowPathing) is { } veto) return veto;
+        return d.FloorGuard && !d.Generator && !OverridesSoft(d.Pos, d.Id) ? WalkwayFloorVeto(d.Pos, d.Name) : null;
+    }
+
+    /// <summary>Protected, unless the dig ignores protection or an asked-for dig is where the editing context yields it.</summary>
+    private string? ProtectionRefusal(DigJob d) =>
+        d.IgnoreProtection || !IsBlockProtected(d.Pos, d.Id) || (d.Requested && EditYields?.Invoke(d.Pos, d.Id) == true)
+            ? null
+            : ProtectedRefusal(d.Pos, d.Id);
+
+    /// <summary>A visible face in reach, walking into reach first when none is (or the spot is wrong). Unreachable = the failure.</summary>
+    private async Task<(DigAim? Aim, ActionResult? Unreachable)> DigAimAsync(DigJob d, CancellationToken ct)
+    {
+        var aim = Aiming.FindDigAim(World, World.Player.EyePosition, d.Pos, Options.Reach);
+        bool reposition = aim is not null && d.AllowPathing && ShouldRepositionToDig(d);
+        if (aim is not null && !reposition) return (aim, null);
+        if (!d.AllowPathing) return (null, ActionResult.Fail($"can't see/reach {d.Name} at {Fmt(d.Pos)}"));
+        var g = await GotoReachSafelyAsync(d.Pos, d.Generator, ct).ConfigureAwait(false);
+        aim = Aiming.FindDigAim(World, World.Player.EyePosition, d.Pos, Options.Reach);
+        if (aim is not null) return (aim, null);
+        return (null, ActionResult.Fail($"can't reach {d.Name} at {Fmt(d.Pos)}" + (g.Ok ? "" : $" ({g.Message})")));
+    }
+
+    /// <summary>Edge blocks are dug from the inward side; generators from a spot released lava can't reach.</summary>
+    private bool ShouldRepositionToDig(DigJob d) => OnRimDiggingRim(d.Pos) || (d.Generator && (LavaPathToMe(d.Pos) || LavaNearMe()));
+
+    /// <summary>Story Mode's pawns: an asked-for dig never breaks a block for nothing (iron ore with a wooden pickaxe, stone by hand).</summary>
+    private string? StrictHarvestRefusal(DigJob d, int held) =>
+        StrictHarvest && d.Requested && !Tools.CanHarvest(d.Id, held) && HarvestNeed(d.Id) is { } need
+            ? $"needs {need}: digging {d.Name} at {Fmt(d.Pos)} without it would lose the drop"
+            : null;
+
+    /// <summary>Dig time from where the body is now (on the ground or not, eyes in water or not).</summary>
+    private int DigTicksHere(BlockPos pos, int id)
+    {
         var snap = World.Player.Snapshot;
         bool inWater = BlockShapes.IsWater(World.GetBlock((int)Math.Floor(snap.Position.X), (int)Math.Floor(snap.Position.Y + PlayerPhysics.EyeHeight), (int)Math.Floor(snap.Position.Z)));
-        int ticks = DigTicksNow(id, World.GetMeta(pos), snap.OnGround, inWater);
-        if (ticks == int.MaxValue) return ActionResult.Fail($"{name} can't be dug");
+        return DigTicksNow(id, World.GetMeta(pos), snap.OnGround, inWater);
+    }
 
-        var a = aim.Value;
+    /// <summary>Looks at the face, sends the start, swings every 4 ticks for the dig time (or until it breaks early), sends the finish.</summary>
+    private async Task DigForTicksAsync(BlockPos pos, int id, DigAim a, int ticks, CancellationToken ct)
+    {
         await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
         int eid = World.Player.EntityId;
         byte face = (byte)a.Face;
         Send(new AnimationPacket { EntityId = eid, Animation = 1 });
         Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusStarted, X = pos.X, Y = pos.Y, Z = pos.Z, Face = face });
-        if (ticks > 0)
+        if (ticks <= 0) return;
+        int total = ticks + 2; // small margin: the server counts its own ticks since the start packet
+        long startTick = TickCount;
+        int lastSwing = 0;
+        while (TickCount < startTick + total)
         {
-            int total = ticks + 2; // small margin: the server counts its own ticks since the start packet
-            long startTick = TickCount;
-            int lastSwing = 0;
-            while (TickCount < startTick + total)
-            {
-                await WaitUntilTickAsync(Math.Min(startTick + total, TickCount + 4), ct).ConfigureAwait(false);
-                if (Broke(pos, id)) break;
-                int elapsed = (int)(TickCount - startTick);
-                if (elapsed - lastSwing >= 4) { lastSwing = elapsed; Send(new AnimationPacket { EntityId = eid, Animation = 1 }); }
-            }
-            Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusFinished, X = pos.X, Y = pos.Y, Z = pos.Z, Face = face });
+            await WaitUntilTickAsync(Math.Min(startTick + total, TickCount + 4), ct).ConfigureAwait(false);
+            if (Broke(pos, id)) break;
+            int elapsed = (int)(TickCount - startTick);
+            if (elapsed - lastSwing >= 4) { lastSwing = elapsed; Send(new AnimationPacket { EntityId = eid, Animation = 1 }); }
         }
+        Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusFinished, X = pos.X, Y = pos.Y, Z = pos.Z, Face = face });
+    }
 
+    /// <summary>Waits for the server to break it (a revert is the macro's first failed edit: spawn protection, claims).</summary>
+    private async Task<ActionResult> DigVerdictAsync(DigJob d, int ticks, int held, CancellationToken ct)
+    {
         var wait = TimeSpan.FromMilliseconds(1500 + ticks * Options.TickInterval.TotalMilliseconds * 0.4);
-        if (!await WaitUntilAsync(() => Broke(pos, id), wait, ct).ConfigureAwait(false))
+        if (!await WaitUntilAsync(() => Broke(d.Pos, d.Id), wait, ct).ConfigureAwait(false))
         {
-            NoteEditReverted(pos, "dig"); // first edit of the macro: aborts it (spawn protection, claims)
-            return ActionResult.Fail($"{name} at {Fmt(pos)} didn't break" + SpawnProtectionHint(pos));
+            NoteEditReverted(d.Pos, "dig"); // first edit of the macro: aborts it (spawn protection, claims)
+            return ActionResult.Fail($"{d.Name} at {Fmt(d.Pos)} didn't break" + SpawnProtectionHint(d.Pos));
         }
-        NoteEditOk(pos);
-        return ActionResult.Success($"dug {name} at {Fmt(pos)} ({ticks} ticks, {(held > 0 ? ItemName(held) : "hand")})");
+        NoteEditOk(d.Pos);
+        return ActionResult.Success($"dug {d.Name} at {Fmt(d.Pos)} ({ticks} ticks, {(held > 0 ? ItemName(held) : "hand")})");
     }
 
     /// <summary>
@@ -175,60 +215,73 @@ public sealed partial class MinecraftClient
     private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing, int? damage = null,
         BlockFace? face = null)
     {
-        PlaceAim? FindAim() => face is { } f
-            ? FacePlaceAim(pos, f)
-            : Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
-        if (face is { } wf)
-        {
-            var n = wf.Normal();
-            var against = new BlockPos(pos.X - n.X, pos.Y - n.Y, pos.Z - n.Z);
-            int aid = World.GetBlock(against);
-            if (aid == 0 || BlockShapes.IsLiquid(aid) || !BlockShapes.HasCollision(World, against.X, against.Y, against.Z))
-                return ActionResult.Fail($"nothing solid at {Fmt(against)} to place against ({wf.ToString().ToLowerInvariant()} face)");
-            if (Blocks.Get(aid).Interactable) return ActionResult.Fail($"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block");
-        }
+        if (face is { } wf && FaceSupportProblem(pos, wf) is { } bad) return ActionResult.Fail(bad);
         // Unplaceable whatever the angle: say exactly why (live 10-27 16:36: "no solid neighbour face in reach" for a sapling at
         // 15,65,1, whose real problem was air under it) instead of walking around looking for a face.
         if (PlaceRules.SoilProblem(World, pos, itemId) is { } soil)
-        {
-            var alt = PlaceRules.NearestSoil(World, pos, itemId);
-            return ActionResult.Fail(soil + (alt is { } a2 ? $"; nearest free spot: {Fmt(a2)}" : ""));
-        }
+            return ActionResult.Fail(soil + (PlaceRules.NearestSoil(World, pos, itemId) is { } a2 ? $"; nearest free spot: {Fmt(a2)}" : ""));
         if (face is null && PlaceRules.NoSupportProblem(World, pos) is { } none) return ActionResult.Fail(none);
-        var aim = FindAim();
-        bool hiddenFace = false;
-        if (aim is null)
-        {
-            if (!allowPathing) return ActionResult.Fail($"no visible support face for {Fmt(pos)}");
-            await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
-                .ConfigureAwait(false);
-            aim = FindAim();
-            // An island edge cell whose only support is the outer face of the floor block beside it: that face is only in
-            // view when leaning out over the edge, never from a cell centre.
-            if (aim is null && face is null && await LeanForPlaceAsync(pos, ct).ConfigureAwait(false)) aim = FindAim();
-            if (aim is null && AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)))
-                return ActionResult.Fail($"can't place at {Fmt(pos)}: I'm standing in it ({Fmt(World.Player.Position)})");
-            // b1.8.1's server never raytraces 0x0F (distance only), so a support face hidden from every reachable spot (live
-            // 10-27 15:56: refilling 7,62,9 under the floor from inside its own hole, the only support the south face of
-            // 7,62,8) is still a valid click: aim at it unseen, the same last resort as BlindUseAim for containers.
-            if (aim is null && face is null && PlaceRules.BlindAim(World, World.Player.EyePosition, pos, Options.Reach) is { } blind)
-            {
-                Log($"place: no visible support face for {Fmt(pos)}; clicking {BlockName(World.GetBlock(blind.Against), World.GetMeta(blind.Against))} at {Fmt(blind.Against)} ({blind.Face.ToString().ToLowerInvariant()} face) unseen");
-                aim = blind;
-                hiddenFace = true;
-            }
-            if (aim is null)
-            {
-                if (face is { } f2)
-                    return ActionResult.Fail($"can't place at {Fmt(pos)} on the {f2.ToString().ToLowerInvariant()} face: not visible/in reach");
-                var d = PlaceRules.NearestSupportDistance(World, World.Player.EyePosition, pos);
-                return ActionResult.Fail($"can't place at {Fmt(pos)}: its nearest support face is {d:0.0} blocks from my eyes at {Fmt(World.Player.Position)} " +
-                    $"(reach {Options.Reach:0.#}) and I couldn't get closer");
-            }
-        }
+        if (PlaceAimFor(pos, face) is { } seen) return await PlaceWithAimAsync(pos, itemId, damage, seen, hiddenFace: false, ct).ConfigureAwait(false);
+        var (aim, hiddenFace, fail) = await ApproachPlaceAimAsync(pos, face, allowPathing, ct).ConfigureAwait(false);
+        if (fail is not null) return fail;
+        return await PlaceWithAimAsync(pos, itemId, damage, aim!.Value, hiddenFace, ct).ConfigureAwait(false);
+    }
 
+    /// <summary>A visible support face for <paramref name="pos"/> from here: the given face of its neighbour, else any.</summary>
+    private PlaceAim? PlaceAimFor(BlockPos pos, BlockFace? face) => face is { } f
+        ? FacePlaceAim(pos, f)
+        : Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
+
+    /// <summary>A wall-mounted placement on a given face: the neighbour behind it must be solid and must not open instead.</summary>
+    private string? FaceSupportProblem(BlockPos pos, BlockFace wf)
+    {
+        var n = wf.Normal();
+        var against = new BlockPos(pos.X - n.X, pos.Y - n.Y, pos.Z - n.Z);
+        int aid = World.GetBlock(against);
+        if (aid == 0 || BlockShapes.IsLiquid(aid) || !BlockShapes.HasCollision(World, against.X, against.Y, against.Z))
+            return $"nothing solid at {Fmt(against)} to place against ({wf.ToString().ToLowerInvariant()} face)";
+        if (Blocks.Get(aid).Interactable) return $"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block";
+        return null;
+    }
+
+    /// <summary>No support face in view from here: walks into reach (leaning out over an island edge when that is the only view),
+    /// then, as the last resort, clicks a hidden face blind. Fail = why no face can be clicked.</summary>
+    private async Task<(PlaceAim? Aim, bool HiddenFace, ActionResult? Fail)> ApproachPlaceAimAsync(BlockPos pos, BlockFace? face, bool allowPathing,
+        CancellationToken ct)
+    {
+        if (!allowPathing) return (null, false, ActionResult.Fail($"no visible support face for {Fmt(pos)}"));
+        await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
+            .ConfigureAwait(false);
+        var aim = PlaceAimFor(pos, face);
+        // An island edge cell whose only support is the outer face of the floor block beside it: that face is only in
+        // view when leaning out over the edge, never from a cell centre.
+        if (aim is null && face is null && await LeanForPlaceAsync(pos, ct).ConfigureAwait(false)) aim = PlaceAimFor(pos, face);
+        if (aim is not null) return (aim, false, null);
+        if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)))
+            return (null, false, ActionResult.Fail($"can't place at {Fmt(pos)}: I'm standing in it ({Fmt(World.Player.Position)})"));
+        // b1.8.1's server never raytraces 0x0F (distance only), so a support face hidden from every reachable spot (live
+        // 10-27 15:56: refilling 7,62,9 under the floor from inside its own hole, the only support the south face of
+        // 7,62,8) is still a valid click: aim at it unseen, the same last resort as BlindUseAim for containers.
+        if (face is null && PlaceRules.BlindAim(World, World.Player.EyePosition, pos, Options.Reach) is { } blind)
+        {
+            Log($"place: no visible support face for {Fmt(pos)}; clicking {BlockName(World.GetBlock(blind.Against), World.GetMeta(blind.Against))} at {Fmt(blind.Against)} ({blind.Face.ToString().ToLowerInvariant()} face) unseen");
+            return (blind, true, null);
+        }
+        return (null, false, ActionResult.Fail(NoPlaceAimReason(pos, face)));
+    }
+
+    private string NoPlaceAimReason(BlockPos pos, BlockFace? face)
+    {
+        if (face is { } f2) return $"can't place at {Fmt(pos)} on the {f2.ToString().ToLowerInvariant()} face: not visible/in reach";
+        var d = PlaceRules.NearestSupportDistance(World, World.Player.EyePosition, pos);
+        return $"can't place at {Fmt(pos)}: its nearest support face is {d:0.0} blocks from my eyes at {Fmt(World.Player.Position)} " +
+               $"(reach {Options.Reach:0.#}) and I couldn't get closer";
+    }
+
+    /// <summary>Holds the item, looks, clicks the face and waits for the block to appear (and the stack to shrink).</summary>
+    private async Task<ActionResult> PlaceWithAimAsync(BlockPos pos, int itemId, int? damage, PlaceAim a, bool hiddenFace, CancellationToken ct)
+    {
         if (await SelectItemAsync(itemId, damage, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId)}");
-        var a = aim.Value;
         await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
         // Vanilla World.mayPlace refuses a block whose box holds an entity: a pillar jump that fell back while the slot
         // switch/look ticked would otherwise be sent (and on a lenient server embed us in it).

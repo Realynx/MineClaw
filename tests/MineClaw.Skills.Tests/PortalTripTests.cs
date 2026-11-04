@@ -87,8 +87,10 @@ public class PortalTripTests(Xunit.Abstractions.ITestOutputHelper log)
         await using var _c = c;
         using var _s = s;
         Assert.True(PortalEntry.InPortal(c.World, c.World.Player.Position), "starts inside the exit portal, like live");
-        // The live failure first: standing in the sheet never travels (the cooldown refreshes every tick).
-        await Task.Delay(800);
+        // The live failure first: standing in the sheet never travels (the cooldown refreshes every tick). Waits on the server's
+        // tick count, not the wall clock: under load (a full test run) 800 ms held far fewer than 80 movement ticks.
+        var until = DateTime.UtcNow.AddSeconds(20);
+        while (sim.CooldownRefreshes <= 80 && c.World.Dimension == -1 && DateTime.UtcNow < until) await Task.Delay(20);
         Assert.Equal(-1, c.World.Dimension);
         Assert.True(sim.CooldownRefreshes > 80, $"cooldown refreshed {sim.CooldownRefreshes}x");
 

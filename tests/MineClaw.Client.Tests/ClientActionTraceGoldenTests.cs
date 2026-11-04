@@ -47,7 +47,29 @@ public class ClientActionTraceGoldenTests
             if (lines.Count == 0 || lines[^1] != line) lines.Add(line);
         }
         DropSneakBlips(lines);
+        SlotChangesBeforeSneaks(lines);
         return string.Join("\n", lines);
+    }
+
+    /// <summary>The tick loop sends a sneak press/release (it follows the action's sneak flag), while the action sends its hotbar
+    /// change itself: under load the two land in either order (a full Client.Tests run on main). In a run of nothing but slot
+    /// changes and sneak toggles the slot changes go first (stable), so the order between the two threads never decides the trace;
+    /// each one's place against every other packet (the sneak before the placement it covers) is still pinned.</summary>
+    private static void SlotChangesBeforeSneaks(List<string> lines)
+    {
+        static bool Slot(string l) => l.StartsWith("HoldingChangePacket ", StringComparison.Ordinal);
+        static bool Sneak(string l) => l.StartsWith("EntityActionPacket Action=1 ", StringComparison.Ordinal)
+                                       || l.StartsWith("EntityActionPacket Action=2 ", StringComparison.Ordinal);
+        for (int i = 0; i < lines.Count; i++)
+        {
+            int j = i;
+            while (j < lines.Count && (Slot(lines[j]) || Sneak(lines[j]))) j++;
+            if (j - i < 2) continue;
+            var run = lines.GetRange(i, j - i);
+            lines.RemoveRange(i, j - i);
+            lines.InsertRange(i, run.Where(Slot).Concat(run.Where(Sneak)));
+            i = j - 1;
+        }
     }
 
     /// <summary>A sneak released and pressed again with only a hotbar change in between (two sneaking actions back to back, a tick
@@ -112,7 +134,7 @@ public class ClientActionTraceGoldenTests
         var expected = modern ? ClientActionTraceGoldenData.Modern : ClientActionTraceGoldenData.Beta;
         if (expected.ReplaceLineEndings("\n") != trace)
         {
-            var path = Path.Combine(Path.GetTempPath(), $"mineclaw-trace-{(modern ? "1122" : "beta")}.txt");
+            var path = Path.Combine(Path.GetTempPath(), $"mineclaw-trace-{(modern ? "1122" : "beta")}-{DateTime.UtcNow:HHmmssfff}.txt");
             File.WriteAllText(path, trace);
             Assert.Fail($"action trace drifted (actual: {path})");
         }
