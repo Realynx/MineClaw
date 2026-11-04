@@ -108,6 +108,10 @@ export function WorldPane({
   // The stage (the world and every overlay on it) is what goes fullscreen: the shared canvas moves with it, no new context.
   const stage = useRef<HTMLDivElement>(null);
   const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
+  const stageRef = useCallback((el: HTMLDivElement | null) => {
+    stage.current = el;
+    setStageEl(el);
+  }, []);
   const [fullscreen, setFullscreen] = useState(false);
   const [locked, setLocked] = useState(false);
   const [aim, setAim] = useState<AimTarget | null>(null);
@@ -408,14 +412,7 @@ export function WorldPane({
           </Button>
         </Tooltip>
       </div>
-      <div
-        ref={(el) => {
-          stage.current = el;
-          setStageEl(el);
-        }}
-        className="relative min-h-0 flex-1 bg-canvas"
-        data-testid="world-stage"
-      >
+      <div ref={stageRef} className="relative min-h-0 flex-1 bg-canvas" data-testid="world-stage">
         <mod.WorldViewer
           ref={viewer}
           source={source}

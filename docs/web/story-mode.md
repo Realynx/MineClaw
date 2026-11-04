@@ -389,6 +389,13 @@ Filters:
 Storage: `{chest, double_with, label, priority, filter:{allow, deny}, contents:[[id,meta,count]], free_slots, known_at}`. The
 contents start from what the bot remembers of the chest. The director keeps them up to date after each deposit and withdrawal.
 
+Web (added 2026-11-03): clicking a chest opens its inspector with the storage settings and the chest's contents as the game's grid
+(27 or 54 slots) with how fresh they are ("Seen 3 min ago by maid_chan_102", "Open right now by …", "Story storage ledger", "Not
+opened yet by any bot"), from `GET /api/world/container` (api.md §6: a bot's live window, its last look, the world memory or this
+ledger, whichever is freshest); a furnace's bills inspector shows its input, fuel and output the same way. Zoomed in, every chest
+on the map carries a badge: its category (the label, else the filter's summary) and a fill bar from the hive's container
+knowledge (`GET /api/world/containers`, polled every 10 s over the chests in view) or, when that is older, from `free_slots`.
+
 Categories come in the full state as `categories`: `{id, label, children:[Category], items:[[id,meta]]}`, where meta −1 = any.
 - They are built per version from the item data plus a curated name list. Every item, and each dye colour, is in exactly one
   leaf; the rest are Misc.
