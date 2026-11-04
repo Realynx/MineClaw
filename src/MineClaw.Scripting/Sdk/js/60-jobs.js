@@ -16,9 +16,11 @@
     return n;
   };
 
+  const stashList = items => (Array.isArray(items) ? items
+    : typeof items === 'string' && items !== 'all-but-tools' && items !== 'all' ? [items] : null);
   /** stash(items | 'all-but-tools', {to}) - store items in chest to, else the known chests with room; 'all-but-tools' (default) keeps tools, armor, food. -> {ok, n, msg}; every chest full -> {ok:false, full:true, need, msg} (your call). */
   const stash = (items, o = {}) => {
-    const list = Array.isArray(items) ? items : typeof items === 'string' && items !== 'all-but-tools' && items !== 'all' ? [items] : null;
+    const list = stashList(items);
     const a = {};
     if (o.to) a.at = xyz(o.to);
     if (list) a.items = list;
@@ -53,6 +55,7 @@
     }
     return r;
   };
+  const genCall = c => call('gen', c.o.at ?? 'auto', Math.min(Math.max(1, c.o.per ?? 8), c.left()));
   const of = (c, via) => (c.src || (c.src = H.sources(c.what))).filter(s => s.via === via);
   const WAYS = {
     chests(c) {
@@ -108,7 +111,7 @@
       for (let i = 0; c.left() > 0 && i < c.rounds * 4; i++) {
         if (!c.room()) break;
         const before = c.left();
-        r = call('gen', c.o.at ?? 'auto', Math.min(Math.max(1, c.o.per ?? 8), c.left()));
+        r = genCall(c);
         if (c.left() < before) { dry = 0; continue; }
         if (!ok(r) && busy(r.msg) && ++waits <= 20) { H.wait(3); continue; }
         if (!ok(r) || ++dry >= 2) break;
@@ -117,6 +120,60 @@
     },
   };
 
+  // stash: a chest, or true/null = the known chests with room (so stash: P.chest works with no chest set); false/absent = keep them.
+  const stashTo = o => (o.stash === undefined || o.stash === false ? false : o.stash === null ? true : o.stash);
+  // A gather's state, handed to each route: what, how many are still to come (left), room in the bag (room), the chest it stashes
+  // into (st) and what it stashed so far, the stash that found every chest full (full).
+  const gatherCtx = (what, n, o) => {
+    const st = stashTo(o), more = !!(o.more || st);
+    const c = { what, o, more, st, n, stashed: 0, full: null, src: null, rounds: Math.max(1, Math.floor(o.rounds ?? 64)) };
+    c.have = () => H.inv(what) + c.stashed;
+    c.start = c.have();
+    c.goal = more ? c.start + n : n;
+    c.left = () => c.goal - c.have();
+    c.room = () => roomFor(c);
+    return c;
+  };
+  const unload = c => {
+    const before = H.inv(c.what);
+    const r = stash([c.what], { to: c.st === true ? undefined : c.st });
+    c.stashed += Math.max(0, before - H.inv(c.what));
+    if (!r.ok) c.full = r;
+    return r.ok;
+  };
+  const roomFor = c => {
+    if (c.full) return false;
+    H.prog(Math.min(100, (100 * (c.have() - c.start)) / Math.max(1, c.goal - c.start)));
+    return H.free() >= 2 || !c.st || unload(c);
+  };
+  // near: go first; tool: ensure (only when some are still to come).
+  const gatherPrep = c => {
+    if (c.left() > 0 && c.o.near) call('go', xyz(c.o.near));
+    if (c.left() > 0 && c.o.tool) ensure(c.o.tool);
+  };
+  const routesOf = c => (c.o.from == null ? (c.more ? ['source'] : ['chests', 'craft', 'source']) : [].concat(c.o.from));
+  const wayOf = via => (typeof via === 'function' ? cc => repeat(cc, via, cc.rounds) : WAYS[via]);
+  // Each route in order while some are still to come; a route's failure is noted for the result.
+  const tryRoutes = (c, notes) => {
+    for (const via of routesOf(c)) {
+      if (c.left() <= 0 || c.full) break;
+      const way = wayOf(via);
+      if (!way) H.fail(`gather: unknown route '${via}' (chests craft source harvest chop mine kill gen, or a fn)`);
+      const r = way(c);
+      if (r && !ok(r) && r.msg) notes.push(`${typeof via === 'function' ? 'fn' : via}: ${r.msg}`);
+    }
+  };
+  const gatherMsg = (c, h, got, done, notes) => {
+    if (c.full) return `${c.what} ${got}/${c.goal - c.start}: ${c.full.msg}`;
+    if (done) return `${c.more ? 'got' : 'have'} ${c.more ? got : h} ${c.what}`;
+    return `${c.what} ${c.more ? got + '/' + c.n : h + '/' + c.goal}` + (notes.length ? ` (${notes.join('; ')})` : '');
+  };
+  const gatherResult = (c, notes) => {
+    const h = c.have(), got = Math.max(0, h - c.start), done = h >= c.goal;
+    const r = { ok: done && !c.full, n: got, have: H.inv(c.what), msg: gatherMsg(c, h, got, done, notes) };
+    if (c.full) { r.full = true; r.need = c.full.need; }
+    return r;
+  };
   /**
    * gather(what, n=1, {from, more, stash, chest, near, tool, r, at, per}) - have n of an item by every known route, in order:
    * inventory, chests (chest, else every known one holding it), craft (if this version has a recipe), then its source per the
@@ -127,46 +184,11 @@
    */
   const gather = (what, n = 1, o = {}) => {
     if (typeof what !== 'string' || !what) H.fail('gather(what, n) needs an item name');
-    n = Math.max(1, Math.floor(n));
-    let stashed = 0, full = null;
-    // stash: a chest, or true/null = the known chests with room (so stash: P.chest works with no chest set); false/absent = keep them.
-    const st = o.stash === undefined || o.stash === false ? false : o.stash === null ? true : o.stash;
-    const more = !!(o.more || st);
-    const have = () => H.inv(what) + stashed, start = have(), goal = more ? start + n : n;
-    const unload = () => {
-      const before = H.inv(what);
-      const r = stash([what], { to: st === true ? undefined : st });
-      stashed += Math.max(0, before - H.inv(what));
-      if (!r.ok) full = r;
-      return r.ok;
-    };
-    const c = {
-      what, o, more, src: null, rounds: Math.max(1, Math.floor(o.rounds ?? 64)),
-      left: () => goal - have(),
-      room: () => {
-        if (full) return false;
-        H.prog(Math.min(100, (100 * (have() - start)) / Math.max(1, goal - start)));
-        return H.free() >= 2 || !st || unload();
-      },
-    };
-    const notes = [];
-    if (c.left() > 0 && o.near) call('go', xyz(o.near));
-    if (c.left() > 0 && o.tool) ensure(o.tool);
-    const routes = o.from == null ? (more ? ['source'] : ['chests', 'craft', 'source']) : [].concat(o.from);
-    for (const via of routes) {
-      if (c.left() <= 0 || full) break;
-      const way = typeof via === 'function' ? cc => repeat(cc, via, cc.rounds) : WAYS[via];
-      if (!way) H.fail(`gather: unknown route '${via}' (chests craft source harvest chop mine kill gen, or a fn)`);
-      const r = way(c);
-      if (r && !ok(r) && r.msg) notes.push(`${typeof via === 'function' ? 'fn' : via}: ${r.msg}`);
-    }
-    if (st && !full && H.inv(what) > 0) unload();
-    const h = have(), got = Math.max(0, h - start), done = h >= goal;
-    const msg = full ? `${what} ${got}/${goal - start}: ${full.msg}`
-      : done ? `${more ? 'got' : 'have'} ${more ? got : h} ${what}` : `${what} ${more ? got + '/' + n : h + '/' + goal}` + (notes.length ? ` (${notes.join('; ')})` : '');
-    const r = { ok: done && !full, n: got, have: H.inv(what), msg };
-    if (full) { r.full = true; r.need = full.need; }
-    return r;
+    const c = gatherCtx(what, Math.max(1, Math.floor(n)), o), notes = [];
+    gatherPrep(c);
+    tryRoutes(c, notes);
+    if (c.st && !c.full && H.inv(what) > 0) unload(c);
+    return gatherResult(c, notes);
   };
   def('gather', gather);
 
@@ -179,26 +201,31 @@
     return ok(r) ? { ok: k >= n, n: k, msg: `gave ${player} ${k} ${item}` + (k < n ? ` (${n - k} short)` : '') } : { ok: false, n: 0, msg: r.msg };
   });
 
+  const isArea = points => !Array.isArray(points) && isObj(points) && points.at != null && points.x == null;
+  // An area {at, r}: its 4 corners (at a remembered place's name: that place).
+  const areaCorners = points => {
+    const a = typeof points.at === 'string' ? (([x, y, z]) => ({ x: +x, y: +y, z: +z }))(points.at.split(',')) : points.at;
+    const r = Math.max(1, Math.floor(points.r ?? 8));
+    return isObj(a) && Number.isFinite(a.x) ? [[-r, -r], [r, -r], [r, r], [-r, r]].map(([dx, dz]) => ({ x: a.x + dx, y: a.y, z: a.z + dz })) : [points.at];
+  };
+  const patrolPoints = points => (isArea(points) ? areaCorners(points) : Array.isArray(points) ? points : [points]).filter(p => p != null);
+  // One round over the points -> true when it ends the patrol (until() met or fn said 'stop').
+  const patrolRound = (pts, f, o, pr) => {
+    for (const p of pts) {
+      if (o.until && o.until()) return true;
+      const g = call('go', xyz(p));
+      if (!ok(g)) { pr.miss = g.msg; H.idle(0.05); continue; }
+      pr.n++;
+      if (f && f(p, pr.n) === 'stop') return true;
+    }
+    return false;
+  };
   /** patrol(points | {at, r:8}, fn?, {rounds:1, until}) - walk the points (an area = its 4 corners), fn(p, i) at each, until until() or fn returns 'stop'. Guard = patrol + policies + on('mob.near'). -> {ok, n: reached, msg}. */
   def('patrol', (points, f, o = {}) => {
-    let pts = Array.isArray(points) ? points : [points];
-    if (!Array.isArray(points) && isObj(points) && points.at != null && points.x == null) {
-      const a = typeof points.at === 'string' ? (([x, y, z]) => ({ x: +x, y: +y, z: +z }))(points.at.split(',')) : points.at;
-      const r = Math.max(1, Math.floor(points.r ?? 8));
-      pts = isObj(a) && Number.isFinite(a.x) ? [[-r, -r], [r, -r], [r, r], [-r, r]].map(([dx, dz]) => ({ x: a.x + dx, y: a.y, z: a.z + dz })) : [points.at];
-    }
-    pts = pts.filter(p => p != null);
+    const pts = patrolPoints(points);
     if (!pts.length) return { ok: false, n: 0, msg: 'patrol: no points' };
-    const rounds = Math.max(1, Math.floor(o.rounds ?? 1));
-    let n = 0, miss = '', stop = false;
-    for (let round = 0; round < rounds && !stop; round++)
-      for (const p of pts) {
-        if (o.until && o.until()) { stop = true; break; }
-        const g = call('go', xyz(p));
-        if (!ok(g)) { miss = g.msg; H.idle(0.05); continue; }
-        n++;
-        if (f && f(p, n) === 'stop') { stop = true; break; }
-      }
-    return { ok: n > 0, n, msg: `reached ${n} point(s)` + (miss ? ` (last miss: ${miss})` : '') };
+    const rounds = Math.max(1, Math.floor(o.rounds ?? 1)), pr = { n: 0, miss: '' };
+    for (let round = 0; round < rounds; round++) if (patrolRound(pts, f, o, pr)) break;
+    return { ok: pr.n > 0, n: pr.n, msg: `reached ${pr.n} point(s)` + (pr.miss ? ` (last miss: ${pr.miss})` : '') };
   });
 }

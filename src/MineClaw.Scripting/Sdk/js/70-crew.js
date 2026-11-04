@@ -39,6 +39,46 @@
     const ids = jobs.map(j => (Array.isArray(j) ? spawnLane(j[0], j[1], j[2]) : spawnLane(j.body, j.role, j.args)).id);
     return H.laneJoin(ids, !!(o && o.keepGoing));
   });
+  // An everyBody run: the lanes running (live: body -> lane), what each body returned (by), failed tries and retry pauses per body.
+  const crewRun = (role, a, o) => ({
+    role, o, args: a == null ? H.runArgs() : a, // no args: every lane gets this run's params (its params() sees what the brain tuned)
+    retries: o.retries ?? 3, patience: o.wait ?? 120, by: {}, live: {}, tries: {}, next: {}, n: 0, bad: 0, busy: H.clock(),
+  });
+  // Late logins (bodies arrive seconds apart) and bodies whose retry pause is over get their lane now.
+  const startLanes = (E, here, now) => {
+    for (const b of here) if (!E.live[b] && !(b in E.by) && (E.next[b] ?? 0) <= now) E.live[b] = H.lane(b, E.role, E.args);
+  };
+  const untilMet = E => {
+    if (!(E.o.until && E.o.until())) return false;
+    Object.values(E.live).forEach(id => H.laneCancel(id, 'until met'));
+    return true;
+  };
+  // Every body in game is done: end, unless some are still logging in (or none came yet), then wait for them a while.
+  const allDone = (E, here, now) => {
+    if (Object.keys(E.live).length) { E.busy = now; return false; }
+    if (!here.every(b => b in E.by)) return false;
+    if (!H.pendingBodies() && (here.length || Object.keys(E.by).length)) return true;
+    return now - E.busy >= E.patience;
+  };
+  // A lane that returned: done, or a retry on its body after a pause (a failed one counts unless it hit a limit) till retries.
+  const laneEnded = (E, b, r) => {
+    delete E.live[b];
+    if (r.ok) { E.by[b] = r.msg; E.n++; return; }
+    if (!/\blimit\b/.test(r.msg)) E.tries[b] = (E.tries[b] || 0) + 1;
+    H.log(`lane ${b}: ${r.msg}`);
+    if (!H.bodies().includes(b)) return; // logged out / released: dropped (a new lane if it comes back)
+    if ((E.tries[b] || 0) > E.retries) { E.by[b] = 'failed: ' + r.msg; E.bad++; } else E.next[b] = H.clock() + (E.o.pause ?? 5) * (E.tries[b] || 1);
+  };
+  const reap = E => {
+    for (const b of Object.keys(E.live)) {
+      const r = H.laneEnd(E.live[b]);
+      if (r) laneEnded(E, b, r);
+    }
+  };
+  const everyResult = E => {
+    const ran = Object.keys(E.by);
+    return { ok: E.n > 0, n: E.n, failed: E.bad, by: E.by, msg: ran.length ? `${E.n}/${ran.length} bodies done (${ran.map(b => `${b} ${E.by[b]}`).join(', ')})` : 'no body came' };
+  };
   /**
    * everyBody(role, args, {retries:3, until, wait:120}) - role(args = this run's params) on every body, and each that joins later; a failed lane
    * re-runs on its body (retries), a body that left is dropped, a danger pauses a lane till its body is safe. Ends when all
@@ -46,34 +86,15 @@
    */
   def('everyBody', (role, a, o = {}) => {
     if (!H.hasCrew()) return { ok: false, n: 0, failed: 0, by: {}, msg: 'no crew here: this bot has one body' };
-    const args = a == null ? H.runArgs() : a; // no args: every lane gets this run's params (its params() sees what the brain tuned)
-    const retries = o.retries ?? 3, patience = o.wait ?? 120, by = {}, live = {}, tries = {}, next = {};
-    let n = 0, bad = 0, busy = H.clock();
+    const E = crewRun(role, a, o);
     for (;;) {
       const now = H.clock(), here = H.bodies();
-      // Late logins (bodies arrive seconds apart) and bodies whose retry pause is over get their lane now.
-      for (const b of here) if (!live[b] && !(b in by) && (next[b] ?? 0) <= now) live[b] = H.lane(b, role, args);
-      if (o.until && o.until()) { Object.values(live).forEach(id => H.laneCancel(id, 'until met')); break; }
-      if (Object.keys(live).length) busy = now;
-      else if (here.every(b => b in by)) {
-        // Every body in game is done: end, unless some are still logging in (or none came yet), then wait for them a while.
-        if (!H.pendingBodies() && (here.length || Object.keys(by).length)) break;
-        if (now - busy >= patience) break;
-      }
-      H.laneAny(Object.values(live), 2);
-      for (const b of Object.keys(live)) {
-        const r = H.laneEnd(live[b]);
-        if (!r) continue;
-        delete live[b];
-        if (r.ok) { by[b] = r.msg; n++; continue; }
-        if (!/\blimit\b/.test(r.msg)) tries[b] = (tries[b] || 0) + 1;
-        H.log(`lane ${b}: ${r.msg}`);
-        if (!H.bodies().includes(b)) continue; // logged out / released: dropped (a new lane if it comes back)
-        if ((tries[b] || 0) > retries) { by[b] = 'failed: ' + r.msg; bad++; } else next[b] = H.clock() + (o.pause ?? 5) * (tries[b] || 1);
-      }
+      startLanes(E, here, now);
+      if (untilMet(E) || allDone(E, here, now)) break;
+      H.laneAny(Object.values(E.live), 2);
+      reap(E);
     }
-    const ran = Object.keys(by);
-    return { ok: n > 0, n, failed: bad, by, msg: ran.length ? `${n}/${ran.length} bodies done (${ran.map(b => `${b} ${by[b]}`).join(', ')})` : 'no body came' };
+    return everyResult(E);
   });
   /**
    * crew.get(k) crew.set(k,v) crew.inc(k,by=1) - shared board (JSON, 4 KB); crew.send(body,msg) crew.recv(s=60) - per-body inbox;

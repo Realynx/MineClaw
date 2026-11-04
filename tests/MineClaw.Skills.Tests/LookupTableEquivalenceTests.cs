@@ -78,4 +78,25 @@ public class LookupTableEquivalenceTests
         }
         Assert.All(texts, t => Assert.Equal(texts[0], t));
     }
+
+    private static Func<int, bool>? OldDoorKind(string? kind) => kind?.ToLowerInvariant() switch
+    {
+        "door" => id => Openables.IsDoor(id) && id != Openables.IronDoor, "iron_door" or "iron door" => id => id == Openables.IronDoor,
+        "gate" or "fence_gate" => Openables.IsFenceGate, "trapdoor" or "hatch" => Openables.IsTrapdoor,
+        "iron_trapdoor" or "iron trapdoor" => id => id == Openables.IronTrapdoor, _ => null,
+    };
+
+    [Fact]
+    public void Door_kind_filter_matches_the_old_switch_for_every_kind_and_block()
+    {
+        string?[] kinds = [null, "door", "Door", "iron_door", "iron door", "IRON DOOR", "gate", "fence_gate", "trapdoor", "hatch", "iron_trapdoor",
+            "iron trapdoor", " door", "doors", "", "lever"];
+        foreach (var k in kinds)
+        {
+            var (old, now) = (OldDoorKind(k), DoorOps.KindFilter(k));
+            Assert.Equal(old is null, now is null);
+            if (old is null || now is null) continue;
+            for (int id = 0; id < 4096; id++) Assert.True(old(id) == now(id), $"kind '{k}' id {id}");
+        }
+    }
 }
