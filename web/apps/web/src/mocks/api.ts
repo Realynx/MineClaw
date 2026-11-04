@@ -681,7 +681,7 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
       throw new MockError(
         status,
         e instanceof Error ? e.message : 'story error',
-        status === 404 ? 'not_found' : 'bad_request',
+        status === 404 ? 'not_found' : status === 409 ? 'conflict' : 'bad_request',
       );
     }
   };
@@ -713,6 +713,9 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.bills': (c) => run(() => storySim.bills(id(c), b(c))),
     'story.workbenches': (c) => run(() => storySim.workbenches(id(c), b(c))),
     'story.options': (c) => run(() => storySim.options(id(c), b(c))),
+    'story.policies': (c) => run(() => storySim.policies(id(c), b(c))),
+    'story.materialRules': (c) => run(() => storySim.materialRules(id(c), b(c))),
+    'story.gear': (c) => run(() => storySim.gear(id(c), b(c))),
     'story.architect': (c) => run(() => storySim.architect(id(c))),
     'story.directives': (c) => run(() => storySim.directive(b(c))),
   };

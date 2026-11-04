@@ -89,6 +89,21 @@ public interface IGameClient
         Task.FromResult(ActionResult.Fail("fishing isn't available on this client"));
     Task<ActionResult> EatAsync(CancellationToken ct = default);
 
+    // ---- gear (Story Mode's pawns, scripts' hidden equip; <see cref="MinecraftClient"/> MinecraftClient.Gear.cs). Defaults: unsupported.
+
+    /// <summary>Holds the first carried stack matching <paramref name="match"/>.</summary>
+    Task<ActionResult> HoldAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("holding a chosen item isn't available on this client"));
+    /// <summary>Wears the first carried armour piece matching <paramref name="match"/>.</summary>
+    Task<ActionResult> WearAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("wearing armour isn't available on this client"));
+    /// <summary>Takes worn armour off (all, or the pieces matching) into the bag.</summary>
+    Task<ActionResult> UnwearAsync(Func<ItemStack, bool>? match = null, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("taking armour off isn't available on this client"));
+    /// <summary>Takes up to <paramref name="count"/> of the stacks matching <paramref name="match"/> out of a chest.</summary>
+    Task<ActionResult> WithdrawMatchingAsync(BlockPos container, Func<ItemStack, bool> match, int count, string label, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("taking an exact stack isn't available on this client"));
+
     /// <summary>Fell one tree (nearest / near <paramref name="at"/> / of a wood type), gather saplings, replant
     /// (<see cref="MinecraftClient.ChopTreeAsync"/>). Default: unsupported, so wrappers and fakes needn't implement it.</summary>
     Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) =>
@@ -213,6 +228,11 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> FishAsync(Vec3d target, TimeSpan session, int maxCatches = 64, CancellationToken ct = default) =>
         Inner.FishAsync(target, session, maxCatches, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Inner.EatAsync(ct);
+    public Task<ActionResult> HoldAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) => Inner.HoldAsync(match, label, ct);
+    public Task<ActionResult> WearAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) => Inner.WearAsync(match, label, ct);
+    public Task<ActionResult> UnwearAsync(Func<ItemStack, bool>? match = null, CancellationToken ct = default) => Inner.UnwearAsync(match, ct);
+    public Task<ActionResult> WithdrawMatchingAsync(BlockPos container, Func<ItemStack, bool> match, int count, string label, CancellationToken ct = default) =>
+        Inner.WithdrawMatchingAsync(container, match, count, label, ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => Inner.ChopTreeAsync(at, wood, null, ct);
     public Task<ActionResult> ChopThisTreeAsync(BlockPos at, CancellationToken ct = default) =>
         Inner.ChopTreeAsync(at, null, TreeChopOptions.Default with { OnlyThisTree = true }, ct);

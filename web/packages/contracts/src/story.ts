@@ -11,6 +11,16 @@
  */
 import { z } from 'zod';
 import { IsoDateTime, Vec3, Vec3i } from './common.js';
+import {
+  StoryEnchantedStack,
+  StoryEquipment,
+  StoryGearTask,
+  StoryMaterialInfo,
+  StoryMaterialRule,
+  StoryPolicy,
+  StorySpareTools,
+  StoryToolKind,
+} from './storyGear.js';
 
 // ------------------------------------------------------------------ vocabulary
 
@@ -252,6 +262,7 @@ export const StoryTargetOut = z.object({
   z: Num.nullish(),
   entity: z.number().int().nullish(),
   area: StoryArea.nullish(),
+  player: z.string().nullish().describe('an attack on a player or bot by name'),
 });
 export type StoryTargetOut = z.infer<typeof StoryTargetOut>;
 
@@ -339,6 +350,9 @@ export const StoryPawn = z.object({
     .int()
     .nullish()
     .describe('the experience level (earned mining ore, smelting, killing); enchanting and anvil bills spend it'),
+  equipment: StoryEquipment.nullish().describe('held item, worn armour, carried tools and weapons (durability, enchantments)'),
+  policy: z.string().nullish().describe("the pawn's gear policy id (null = the colony's default policy)"),
+  gearTasks: z.array(StoryGearTask).nullish().describe('pending gear work (arm, armor, pickup, return, tools, …)'),
 });
 export type StoryPawn = z.infer<typeof StoryPawn>;
 
@@ -442,6 +456,10 @@ export const StoryDesignation = z.object({
   reason: z.string().nullish().describe('why the last try failed'),
   fails: z.number().int().nullish(),
   retryAt: When.nullish().describe('when a resting (failed) designation is tried again; null when it is open'),
+  wait: z
+    .string()
+    .nullish()
+    .describe('why it waits without failing ("needs a stone pickaxe"): no pawn has, or can fetch, the right tool yet'),
 });
 export type StoryDesignation = z.infer<typeof StoryDesignation>;
 
@@ -570,6 +588,7 @@ export const StoryStorage = z.object({
   contents: z.array(StoryStack).default([]),
   freeSlots: z.number().int().nullish(),
   knownAt: When.nullish().describe('when a pawn last saw inside'),
+  enchanted: z.array(StoryEnchantedStack).nullish().describe('enchanted tools known to be in the chest'),
 });
 export type StoryStorage = z.infer<typeof StoryStorage>;
 
@@ -606,7 +625,7 @@ export const StoryBill = z.object({
   forBuild: z
     .union([z.string(), z.number()])
     .nullish()
-    .describe('an auto bill: the build it crafts for (cancel-only; it follows the build)'),
+    .describe('an auto bill: the build it crafts for, or "tools" (a tool a job or the spare-tools option needs); cancel-only'),
   forItem: z.string().nullish().describe("an auto bill: the build's item its chain ends in"),
   step: z.number().int().nullish().describe("an auto bill's place in the recipe chain (ingredients first)"),
   option: z.number().int().nullish().describe('an enchant bill: the highest offer (1–3) it takes; its lapis and levels'),
@@ -802,6 +821,9 @@ export const StoryColonyState = z.object({
     .describe('every bed the colony knows, in full whenever it is sent'),
   ai: z.array(StoryAiBody).nullish(),
   directives: z.array(StoryDirective).nullish(),
+  policies: z.array(StoryPolicy).nullish().describe('gear policies (always the default one)'),
+  materialRules: z.array(StoryMaterialRule).nullish().describe('per material / group: the tool, preferred tier, enchantment'),
+  materials: z.array(StoryMaterialInfo).nullish().describe('full state only: the rules editor catalog with each floor'),
   removed: StoryRemoved.nullish(),
 });
 export type StoryColonyState = z.infer<typeof StoryColonyState>;
@@ -919,6 +941,10 @@ export const StoryTarget = z.union([
   z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict(),
   z.object({ entity: z.number().int() }).strict(),
   z.object({ area: StoryArea }).strict(),
+  z
+    .object({ player: z.string().min(1).max(64) })
+    .strict()
+    .describe('an attack on a player or bot by name (AI bodies have no entity id in the viewer)'),
 ]);
 export type StoryTarget = z.infer<typeof StoryTarget>;
 
@@ -927,6 +953,10 @@ export const StoryOrderSpec = z
     kind: StoryOrderKind,
     target: StoryTarget.optional(),
     design: z.union([z.string().max(64), z.number().int()]).optional(),
+    confirm: z
+      .boolean()
+      .optional()
+      .describe('attack: required (true) for a player or another bot, else 409; mobs and animals need none'),
   })
   .strict();
 export type StoryOrderSpec = z.infer<typeof StoryOrderSpec>;
@@ -1232,6 +1262,8 @@ export const StoryColonyOptions = z.object({
     .enum(STORY_IDLE_MODES)
     .default('recreation')
     .describe('with nothing to do, in free hours and resting: recreation (pastimes), wander (strolls) or stay (hold)'),
+  autoCraftTools: z.boolean().default(true).describe('a job waiting for a tool gets an auto bill "for tools"'),
+  spareTools: StorySpareTools.default({ count: 0, kinds: [] }).describe('keep N spare tools of each kind in storage'),
 });
 export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
 /** POST /api/story/colonies/{id}/options: any of the flags and the idle mode. */
@@ -1240,6 +1272,11 @@ export const StoryOptionsRequest = z
     autoPlaceBenches: z.boolean().optional(),
     detectBenches: z.boolean().optional(),
     idle: z.enum(STORY_IDLE_MODES).optional(),
+    autoCraftTools: z.boolean().optional(),
+    spareTools: z
+      .object({ count: z.number().int().min(0).max(8), kinds: z.array(StoryToolKind).max(6) })
+      .strict()
+      .optional(),
   })
   .strict()
   .describe('any of them (the bot answers 400 for none)');

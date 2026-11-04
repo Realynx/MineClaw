@@ -313,6 +313,34 @@ public class CombatEngineTests
     }
 
     [Fact]
+    public void A_permitted_player_is_fought_only_on_an_explicit_attack_on_exactly_that_entity()
+    {
+        var r = new CombatRig(Opts());
+        var p = r.Player(77, "kiwi", 1.5, 0.5);
+        var other = r.Player(78, "fox", -1.5, 0.5);
+        var refused = r.E.StartAttack(p.Id);
+        r.Step();
+        Assert.StartsWith("refused", refused.Result); // no permit: never
+        r.E.Permit(p.Id, TimeSpan.FromMinutes(1));
+        Assert.True(r.E.Permitted(p.Id));
+        for (int i = 0; i < 20; i++) Assert.True(r.Step().AttackId < 0); // a permit alone starts nothing
+        Assert.False(r.E.MayAttack(p));
+        _ = r.E.StartAttack(p.Id);
+        bool hit = false;
+        for (int i = 0; i < 60 && !hit; i++)
+        {
+            var s = r.Step();
+            Assert.NotEqual(other.Id, s.AttackId);
+            hit = s.AttackId == p.Id;
+        }
+        Assert.True(hit, "the ordered player is attacked");
+        Assert.True(r.E.MayAttack(p));
+        Assert.False(r.E.MayAttack(other)); // the other player stays off limits
+        r.E.Revoke(p.Id);
+        Assert.False(r.E.MayAttack(p));
+    }
+
+    [Fact]
     public void Reflex_NeverAttacksPlayers_TamedWolves_OrPassiveMobs()
     {
         var r = new CombatRig(Opts());

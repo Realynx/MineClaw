@@ -44,6 +44,7 @@ public sealed partial class StoryColony
     internal ActiveJob Pick(PawnState p, PawnLive live)
     {
         _pickEnts = null; // the world's entities are read once per pick
+        _toolPlans.Clear(); // and each block's tool once per pick
         try { return PickCore(p, live); }
         finally { _pickEnts = null; }
     }
@@ -54,11 +55,14 @@ public sealed partial class StoryColony
         if (!Meta.Active) return Job("idle", "end", "colony released", null, null, "none", null, "idle", xp: 0); // the script ends cleanly
         if (LeavingJob(p, live) is { } leave) return leave; // removed from the colony: store its things, then go (StoryColony.Roster.cs)
         if (Meta.Paused) return Hold("colony paused", "idle", s: 5);
-        if (p.Drafted) return OrderJob(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
+        if (GearJob(p, live) is { } gear) return gear; // gear work first: arming, armour, fetches the owner asked for (StoryColony.Gear.cs)
+        if (p.Drafted)
+            return DraftedEngage(p, live) ?? OrderJob(p, live) ?? DraftedReturn(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
         if (Resting(p, live) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;
+        if (PolicyJob(p, live) is { } kit) return kit; // its gear policy: tools for its work, weapon, armour, food
         int hour = HourNow;
         var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
         var home = Home();
@@ -305,7 +309,7 @@ public sealed partial class StoryColony
             case WorkTypes.Farm:
                 return DesignationJob(p, live, from, type, "harvest", "harvest", "harvesting") ?? FarmZoneJob(p, live);
             case WorkTypes.Mine:
-                return DesignationJob(p, live, from, type, "mine", "dig", "mining") ?? ZoneJob(p, from, type, "mine");
+                return DesignationJob(p, live, from, type, "mine", "dig", "mining") ?? ZoneJob(p, from, type, "mine", live);
             case WorkTypes.Chop:
                 return DesignationJob(p, live, from, type, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, type, "cut", "dig", "cutting plants")
                     ?? ZoneJob(p, from, type, "chop");
@@ -322,6 +326,7 @@ public sealed partial class StoryColony
         // (live 11-03: "double_plant ... is busy: another hive bot is working on that part" when a mine and a cut box overlapped it).
         if (!Index().ByKind.TryGetValue(kind, out var list) || list.Count == 0) return null;
         bool digs = kind is "mine" or "deconstruct";
+        bool tooled = digs || kind == "cut"; // the dig takes its material's tool (StoryColony.Gear.cs): never a lost drop
         var w = World;
         HashSet<P3>? stoodOn = null;
         var mine = live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : [];
@@ -341,6 +346,8 @@ public sealed partial class StoryColony
                 // Never the block under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
                 if ((stoodOn ??= StoodOnByOthers(p.Name)).Contains(at)) continue;
             }
+            // No tool for its material (carried or stored): the target waits, said on the map, no failure.
+            if (tooled && w != null && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(x.D, why); continue; }
             best = x;
             bestScore = score;
         }
@@ -348,13 +355,15 @@ public sealed partial class StoryColony
         var target = best.Target;
         P3? stand = digs && w != null && mine.Contains(target)
             ? StandBeside(w, target, c => c == target || list.Any(o => o.Target == c)) : null;
-        return Job(type, scriptKind, d.Label ?? label, target, best.Key, "designation", d.Id, "working",
+        NoteWait(d, null);
+        var tool = tooled && w != null ? PlanTool(p, live, w.Block(target.X, target.Y, target.Z).Id) : null;
+        return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, best.Key, "designation", d.Id, "working",
             j =>
             {
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
                 if (stand is { } s) j["stand"] = s.ToString(); // it stands on its target: step off to the side first
-            }, xp: kind == "chop" ? 40 : 20);
+            }, xp: kind == "chop" ? 40 : 20));
     }
 
     /// <summary>A designation's lease (and rest) key: its entity, or its block (a tall plant's lower half).</summary>
@@ -424,16 +433,18 @@ public sealed partial class StoryColony
         return list;
     }
 
-    private ActiveJob? ZoneJob(PawnState p, P3 from, string type, string zoneKind)
+    private ActiveJob? ZoneJob(PawnState p, P3 from, string type, string zoneKind, PawnLive? live = null)
     {
         foreach (var z in Zones.Where(z => z.Kind == zoneKind).OrderBy(z => z.Area.Center.Dist(from)))
         {
-            var t = ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)).FirstOrDefault();
+            // Ores only with the pickaxe they need (carried or stored): never one dug for nothing.
+            ToolPlan? Tool((P3 Pos, string? Replant, string Kind) t) => zoneKind == "mine" && live != null ? PlanTool(p, live, DigBlockAt(t.Pos)) : null;
+            var t = ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos) && Tool(t) is not { Wait: not null }).OrderBy(t => t.Pos.Dist(from)).FirstOrDefault();
             if (t.Kind == null) continue;
             return zoneKind == "chop"
                 ? Job(type, "chop", "chopping a tree (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id,
                     fill: j => ChopFill(j, World is { } tw ? StoryBlocks.TreeFrom(tw, t.Pos) : null), xp: 40)
-                : Job(type, "dig", "mining ore (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id);
+                : WithTool(Tool(t), Job(type, "dig", "mining ore (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id));
         }
         return null;
     }
@@ -491,6 +502,7 @@ public sealed partial class StoryColony
     {
         foreach (var (chest, s) in j.Takes) if (StorageAt(chest) is { } st) TakeContents(st, s.Id, s.Meta, s.Count);
         foreach (var (chest, stacks) in j.Puts) if (StorageAt(chest) is { } st) foreach (var s in stacks) AddContents(st, s);
+        GearTakesEnded(j, done: true);
         if (WorkTypes.Known(j.Type) && j.Xp > 0 && StoryCharacter.Learn(p, j.Type, j.Xp, HourNow) > 0)
             Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
         _fails.Remove(p.Name);
@@ -520,6 +532,9 @@ public sealed partial class StoryColony
                 break;
             case "station" or "hand":
                 SupplyDone(p, j);
+                break;
+            case "gear" or "policy":
+                GearEnded(p, j, ok: true, note);
                 break;
             case "fish":
                 FishDone(j, note); // the catch counts toward the zone (StoryColony.Fishing.cs)
@@ -597,6 +612,8 @@ public sealed partial class StoryColony
         var why = string.IsNullOrWhiteSpace(note) ? "failed" : note.Trim();
         if (why.Length > 120) why = why[..119] + "…";
         _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
+        GearTakesEnded(j, done: false);
+        if (j.Source is "gear" or "policy") GearEnded(p, j, ok: false, why);
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
         if (j.Source == "designation" && j.Lease != null && Transient(why))

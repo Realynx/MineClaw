@@ -45,7 +45,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
@@ -275,11 +275,23 @@ export function DesignationInspector({
   return (
     <Shell
       title={`${d.label ?? d.kind}${at ? ` at ${at.join(', ')}` : ''}`}
-      sub={d.status === 'failed' ? `Failed: ${short.title}` : `Failing: ${short.title}`}
+      sub={
+        d.status === 'failed'
+          ? `Failed: ${short.title}`
+          : d.wait && !d.reason
+            ? `Waiting: ${shortReason(d.wait).title}`
+            : `Failing: ${short.title}`
+      }
       onClose={onClose}
       testid="designation-inspector"
     >
       <div className="space-y-2 text-xs">
+        {d.wait ? (
+          <div className="rounded-md border border-border bg-surface-2 px-2 py-1.5" data-testid="designation-wait">
+            <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Waiting (not a failure)</div>
+            <div className="break-words">{d.wait}</div>
+          </div>
+        ) : null}
         <div className="rounded-md bg-surface-2 px-2 py-1.5">
           <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Why it failed</div>
           <div className="break-words" data-testid="designation-reason">
@@ -344,7 +356,10 @@ export function PawnInspector({
   onClose,
   blocked = [],
   onBringOnline,
+  extra,
 }: {
+  /** The pawn's equipment and gear actions (assign/GearActions), under its overview. */
+  extra?: ReactNode;
   pawn: StoryPawn;
   bed?: StoryBed | null;
   canWrite: boolean;
@@ -432,6 +447,7 @@ export function PawnInspector({
             {pawn.drafted ? <ShieldOff className="size-3.5" /> : <Shield className="size-3.5" />}
             {pawn.drafted ? 'Undraft (R)' : 'Draft (R)'}
           </Button>
+          {extra}
         </div>
       ) : null}
       {tab === 'skills' ? (
@@ -575,7 +591,10 @@ export function GroupInspector({
   canWrite,
   onDraft,
   onClose,
+  extra,
 }: {
+  /** Bulk gear actions for the selected pawns (assign/GearActions). */
+  extra?: ReactNode;
   names: string[];
   state: StoryColonyState | undefined;
   canWrite: boolean;
@@ -619,6 +638,7 @@ export function GroupInspector({
           </Button>
         </div>
       ) : null}
+      {pawns.length ? extra : null}
     </Shell>
   );
 }
@@ -932,7 +952,7 @@ function AutoBillRow({
         <div className="flex items-center gap-1 truncate font-semibold">
           {label}
           <span className="rounded bg-accent-soft px-1 text-[10px] font-semibold text-fg">
-            for build #{String(bill.forBuild)}
+            {String(bill.forBuild) === 'tools' ? 'for tools' : `for build #${String(bill.forBuild)}`}
           </span>
         </div>
         <div className="text-[10.5px] text-muted">
@@ -947,7 +967,9 @@ function AutoBillRow({
         type="button"
         disabled={!canWrite}
         onClick={() => void write('story.bills', { op: 'remove', id: bill.id } as never)}
-        aria-label={`Cancel ${label} for build ${String(bill.forBuild)}`}
+        aria-label={
+          String(bill.forBuild) === 'tools' ? `Cancel ${label} for tools` : `Cancel ${label} for build ${String(bill.forBuild)}`
+        }
         title="Cancel: the build waits for this item instead of crafting it"
         className="rounded p-0.5 text-danger hover:bg-danger-soft"
       >

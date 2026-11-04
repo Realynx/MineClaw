@@ -47,6 +47,7 @@ export class MockStory {
       kind: e.kind as string,
       type: e.type as number | undefined,
       item: e.item as number | undefined,
+      name: (e.name as string | null | undefined) ?? null,
       x: e.x as number,
       y: e.y as number,
       z: e.z as number,
@@ -82,7 +83,8 @@ export class MockStory {
         status,
         json: {
           error: e instanceof Error ? e.message : 'story error',
-          code: status === 404 ? 'not_found' : 'bad_request',
+          code: status === 404 ? 'not_found' : status === 409 ? 'conflict' : 'bad_request',
+          ...((e as { confirm?: unknown }).confirm ? { confirm: (e as { confirm?: unknown }).confirm } : {}),
         },
       };
     }
@@ -143,6 +145,12 @@ export class MockStory {
         return s.workbenches(cid, body);
       case 'story.options':
         return s.options(cid, body);
+      case 'story.policies':
+        return s.policies(cid, body);
+      case 'story.materialRules':
+        return s.materialRules(cid, body);
+      case 'story.gear':
+        return s.gear(cid, body);
       case 'story.architect':
         return s.architect(cid);
       case 'story.directives':

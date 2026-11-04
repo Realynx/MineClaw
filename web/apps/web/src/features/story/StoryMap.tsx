@@ -158,6 +158,8 @@ export interface StoryMapProps {
   /** A material hovered in the material selector: the placement preview keeps showing at the last map cell meanwhile. */
   previewHold?: boolean;
   onHover?(info: string | null): void;
+  /** Drafted pawns are selected: an entity under the cursor (mob, animal, player, AI bot) shows the attack cursor. */
+  attackMode?: boolean;
 }
 
 const TOP_ZOOM = 44;
@@ -249,6 +251,7 @@ function designationModel(list: StoryColonyState['designations']): DesModel {
       const cell: V3 = [b[0], b[1], b[2]];
       marks.push({ d, cell, col: COLORS.designation[d.kind] ?? '#ffffff', ring, failed: isFailed });
       if (isFailed) failed.push({ id: d.id, kind: d.kind, reason: d.reason ?? '', cell });
+      else if (d.wait) failed.push({ id: d.id, kind: d.kind, reason: d.wait, cell, tone: 'wait' });
     }
   }
   const clusters = clusterFailed(failed);
@@ -662,6 +665,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
       const cl = pl.item;
       if (el.textContent !== cl.text) el.textContent = cl.text;
+      const tone = cl.tone ?? 'fail';
+      if (el.dataset.tone !== tone) {
+        el.dataset.tone = tone;
+        el.className = tone === 'wait' ? WAIT_LABEL_CLASS : LABEL_CLASS;
+      }
       const title = cl.ids.length > 1 ? `${cl.ids.length} designations: ${cl.reason}` : cl.reason;
       if (el.title !== title) el.title = title;
       const ids = JSON.stringify(cl.ids);
@@ -1446,8 +1454,38 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     return h.cell ? [h.cell[0], p.current.level + 1, h.cell[2]] : null;
   };
 
+  /** Is there something drafted pawns can attack under the point (a mob, an animal, a player, an AI bot; never a pawn)? */
+  const attackableAt = (pt: Pt): boolean => {
+    const b = bodyAt(pt);
+    if (b) return b.kind === 'ai';
+    const m = mats.current;
+    const e = engine();
+    if (!m || !e) return false;
+    const pawns = p.current.state?.pawns ?? [];
+    for (const x of e.runtime.store.entities(0)) {
+      if (x.kind !== 'mob' && x.kind !== 'player') continue;
+      if (x.kind === 'player' && pawns.some((pw) => pw.name === x.name)) continue;
+      const s = project(m, x.x, x.y + 0.4, x.z);
+      if (s && Math.hypot(s.x - pt.x, s.y - pt.y) <= 18) return true;
+    }
+    return false;
+  };
+  const attackAt = useRef(0);
+
   const updateHover = (pt: Pt) => {
     const now = performance.now();
+    const cv = canvas.current;
+    if (cv && p.current.attackMode && now - attackAt.current > 50) {
+      attackAt.current = now;
+      const on = attackableAt(pt);
+      if ((cv.dataset.attack === '1') !== on) {
+        cv.dataset.attack = on ? '1' : '';
+        cv.style.cursor = on ? ATTACK_CURSOR : '';
+      }
+    } else if (cv && !p.current.attackMode && cv.dataset.attack === '1') {
+      cv.dataset.attack = '';
+      cv.style.cursor = '';
+    }
     const cell = groundCell(pt);
     const h = hover.current ?? { at: pt, cell, face: null, pickAt: 0 };
     h.at = pt;
@@ -1903,6 +1941,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const e = engine();
     if (!m || !e) return null;
     const ents = e.runtime.store.entities(0);
+    // An AI body (a hive bot) under the cursor: attacked by name (bots have no entity id in the viewer). Pawns are never targets.
+    const body = bodyAt(pt);
+    if (body?.kind === 'ai')
+      return { kind: 'player', entity: null, name: body.key, bot: true, x: body.pos[0], y: body.pos[1], z: body.pos[2] };
     let best: Target | null = null;
     let bd = 18;
     for (const x of ents) {
@@ -1912,6 +1954,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       if (dd > bd) continue;
       bd = dd;
       if (x.kind === 'item') best = { kind: 'item', entity: x.id, name: x.name ?? 'the drop', x: x.x, y: x.y, z: x.z };
+      else if (x.kind === 'player' && x.name && !(st?.pawns ?? []).some((pw) => pw.name === x.name))
+        best = {
+          kind: 'player',
+          entity: x.id,
+          name: x.name,
+          bot: (st?.ai ?? []).some((a) => a.name === x.name),
+          x: x.x,
+          y: x.y,
+          z: x.z,
+        };
       else if (x.kind === 'mob')
         best = {
           kind: 'mob',
@@ -2020,6 +2072,17 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           ...(toPage(pos[0], pos[1] + 0.2, pos[2]) ?? { x: NaN, y: NaN }),
         })),
       fps: () => engine()?.stats().fps,
+      /** The viewer's mobs, players and drops with their page position (an attack's right-click). */
+      entities: () =>
+        (engine()?.runtime.store.entities(0) ?? []).map((x) => ({
+          id: x.id,
+          kind: x.kind,
+          name: x.name,
+          type: x.type,
+          ...(toPage(x.x, x.y + 0.4, x.z) ?? { x: NaN, y: NaN }),
+        })),
+      /** The canvas cursor is the attack cursor. */
+      attackCursor: () => canvas.current?.dataset.attack === '1',
       /** The view's world time and sky light subtraction (0 noon … 11 midnight) of its last frame. */
       sky: () => engine()?.sky() ?? null,
       /** Each body: how it is shown (model, token, cut) and whether the viewer drew its model last frame. */
@@ -2120,12 +2183,18 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   );
 });
 
+/** The attack cursor (crossed swords) while drafted pawns are selected and an attackable entity is under the pointer. */
+const ATTACK_CURSOR =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23e5484d' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M14.5 17.5 3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2M9.5 17.5 21 6V3h-3L6.5 14.5M11 19l-6-6M8 16l-4 4M5 21l-2-2'/%3E%3C/svg%3E\") 12 12, crosshair";
+
 /** Labels show from this zoom (px per block) in; the rings show at any zoom. */
 const LABEL_ZOOM = 14;
 /** A failed designation's label: a calm pill in the theme's colours, readable in light and dark, 11px. */
 const LABEL_CLASS =
   'pointer-events-auto absolute top-0 left-0 max-w-64 cursor-pointer truncate rounded-full border border-danger/50 bg-surface/90 px-2 ' +
   'py-px text-[11px] leading-[16px] font-semibold whitespace-nowrap text-fg shadow-sm hover:bg-surface';
+/** A designation waiting for a tool ("Needs a stone pickaxe"): the same pill, neutral (it isn't failing). */
+const WAIT_LABEL_CLASS = LABEL_CLASS.replace('border-danger/50', 'border-border-strong text-muted');
 const EMPTY_SEL: Selection = { bodies: [], chests: [], bench: null };
 const EMPTY_LIST: StoryColonyState['designations'] = [];
 

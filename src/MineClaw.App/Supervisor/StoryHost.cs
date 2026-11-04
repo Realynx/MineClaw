@@ -112,7 +112,30 @@ public sealed class StoryHost : IStoryHost
         var p = w.Player.Position;
         bool running = b.ScriptBridge?.Controller.Current is { IsLive: true };
         return new PawnLive(true, w.Player.Health, w.Player.Food, p.X, p.Y, p.Z, w.Dimension, held.IsEmpty ? null : World!.Data.Item(held.Id).Name, inv,
-            running, w.Inventory.EmptySlotCount(), w.Player.Snapshot.XpLevel);
+            running, w.Inventory.EmptySlotCount(), w.Player.Snapshot.XpLevel, GearOf(w), 36 + w.Player.HeldSlot);
+    }
+
+    /// <summary>The body's tools, weapons and armour slot by slot (armour 5..8, bag 9..44) with their enchantments.</summary>
+    private List<GearSlot> GearOf(WorldState w)
+    {
+        var d = World!.Data;
+        var list = new List<GearSlot>();
+        for (int slot = 5; slot <= 44; slot++)
+        {
+            var s = w.Inventory.GetPlayerSlot(slot);
+            if (s.IsEmpty || !StoryTools.IsGear(d, s.Id)) continue;
+            list.Add(new GearSlot(slot, s.Id, s.Damage, s.Count, MineClaw.Data.Enchantments.Of(s)));
+        }
+        return list;
+    }
+
+    public bool IsBot(string name) => _hierarchy?.Tree.Get(name) != null || _bodies()?.Find(name) != null;
+
+    /// <summary>The owner's confirmed order: the pawn's body may fight exactly that player entity (the client's hard gate), or no longer.</summary>
+    public void PermitAttack(string account, int entity, bool on)
+    {
+        if (Find(account)?.Client is not { } c) return;
+        if (on) c.Combat.Permit(entity, StoryColony.PermitTtl); else c.Combat.Revoke(entity);
     }
 
     public string? StartPawn(string account, string colony)
@@ -120,6 +143,12 @@ public sealed class StoryHost : IStoryHost
         if (Find(account) is not { ScriptBridge: { } lane } b) return "no such body";
         if (b.State != BodyState.Online) return "not online";
         if (lane.Controller.Current is { IsLive: true }) return null;
+        if (b.Client is { } pc)
+        {
+            // A pawn never digs a block for nothing (iron ore with a wooden pickaxe: refused) and keeps the tool the director chose.
+            pc.StrictHarvest = true;
+            pc.PreferHeldTool = true;
+        }
         var v = lane.Library.Resolve(StoryColonies.PawnScript, null, out var why);
         if (v == null) return why ?? "no saved story_pawn";
         var (s, err) = lane.StartLane(new ScriptRequest

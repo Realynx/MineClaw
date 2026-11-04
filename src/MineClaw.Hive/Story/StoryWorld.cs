@@ -33,8 +33,11 @@ public interface IStoryWorld
 /// <summary>A live pawn body as the director reads it each time it picks.</summary>
 /// <param name="Inventory">Totals by item; a 1.12.2 potion's meta is its potion type id (<see cref="MineClaw.Data.Brewing.TypeId"/>).</param>
 /// <param name="XpLevel">The body's experience level (it earns XP mining ore, smelting, killing): enchanting and anvil bills spend it.</param>
+/// <param name="Gear">Tools, weapons and armour slot by slot (armour 5..8, bag 9..44) with their enchantments; null = unknown (the
+/// director then reads them off <paramref name="Inventory"/>).</param>
+/// <param name="HeldSlot">The held hotbar slot as an inventory slot (36..44), or −1.</param>
 public sealed record PawnLive(bool Online, int Hp, int Food, double X, double Y, double Z, int Dim, string? Held, IReadOnlyList<Stack> Inventory,
-    bool ScriptRunning, int FreeSlots = 36, int XpLevel = 0)
+    bool ScriptRunning, int FreeSlots = 36, int XpLevel = 0, IReadOnlyList<GearSlot>? Gear = null, int HeldSlot = -1)
 {
     public P3 Block => new((int)Math.Floor(X), (int)Math.Floor(Y), (int)Math.Floor(Z));
     public static readonly PawnLive Offline = new(false, 0, 0, 0, 0, 0, 0, null, [], false, 0);
@@ -79,6 +82,13 @@ public interface IStoryHost
     string? ReleasePawn(string account, string why) => "releasing one pawn isn't available here";
     IReadOnlyList<(string Account, string? Why)> Bring(string colony, IReadOnlyList<string> accounts, bool overCap) =>
         accounts.Select(a => (a, (string?)"bringing pawns online isn't available here")).ToList();
+    /// <summary>Is this player name one of the hive's own bots (main, a hive, a body): an attack on it is an attack on a bot.</summary>
+    bool IsBot(string name) => false;
+    /// <summary>
+    /// The owner's confirmed order lets this pawn's body fight exactly that player entity (on), or no longer (off). Bodies never fight
+    /// a player without it (the client's hard gate).
+    /// </summary>
+    void PermitAttack(string account, int entity, bool on) { }
 }
 
 /// <param name="Hosted">The account is one of the colony's bodies right now (online, or its login is under way / looping).</param>

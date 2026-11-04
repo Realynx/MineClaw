@@ -36,8 +36,28 @@
       case 'enchant':
         return H.skill('enchant_item', { item: j.item, option: j.option || 3, prefer: j.prefer || '', prefer_only: !!j.prefer_only, pos: j.at });
       case 'anvil': return H.skill('use_anvil', { item: j.item, mode: j.mode || 'repair', pos: j.at });
+      case 'equip': return gear(j);
       default: return { ok: true };
     }
+  };
+  // Gear (Story Mode's tools and drafting): the hidden equip(item, mode, from, ench); never a null argument (its schema wants strings).
+  const equip = (item, mode, from, ench) => globalThis.equip(item, mode, from || '', ench || '');
+  // gear(job): armour off (j.unwear) or on (j.wear), then what to hold (j.hold, j.hold_ench).
+  const gear = j => {
+    const g = globalThis;
+    let r = j.unwear ? equip('all', 'unwear') : { ok: true };
+    for (const a of j.wear || []) { if (!g.ok(r)) break; r = equip(a, 'wear'); }
+    return g.ok(r) && j.hold ? equip(j.hold, 'hold', '', j.hold_ench) : r;
+  };
+  // fetch(job): the job's items out of their chests (a tool, weapon or armour piece exactly: f.ench, the enchanted one or a plain
+  // one; the rest by name), then the tool its material takes in hand (j.tool, j.tool_ench: the dig keeps it, never a lost drop).
+  const fetch = j => {
+    const g = globalThis;
+    for (const f of j.fetch || []) {
+      const r = f.ench ? equip(f.item, 'take', f.from, f.ench) : g.take(f.item, f.n, f.from);
+      if (!g.ok(r)) return r;
+    }
+    return j.tool ? equip(j.tool, 'hold', '', j.tool_ench) : { ok: true };
   };
   // till(job): hold the hoe (j.hoe) and use it on the dirt or grass at j.at, walking over first when it is far.
   const till = j => {
@@ -49,7 +69,7 @@
     g.skill('hold_item', j.hoe);
     return g.use_block(j.at);
   };
-  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle(job)|work(job) */
+  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle(job)|work(job)|fetch(job) */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report: (j, status, note, pct) => H.storyReport(String(id(j)), status, note == null ? null : String(note), pct),
@@ -57,5 +77,6 @@
     idle,
     work,
     till,
+    fetch,
   }));
 }

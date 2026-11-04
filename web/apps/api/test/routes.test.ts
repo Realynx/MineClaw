@@ -64,6 +64,9 @@ function storyOverrides(): typeof OVERRIDES {
     'story.options': { params: id, body: { autoPlaceBenches: true } },
     'story.architect': { params: id, query: {} },
     'story.directives': { body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'come here' }, requestId: 'r-story0001' } },
+    'story.policies': { params: id, body: { op: 'set', policy: { name: 'Miners', tools: ['pickaxe', 'shovel'], armor: 'none' } } },
+    'story.materialRules': { params: id, body: { op: 'set', rule: { material: 'iron_ore', tier: 'iron', enchant: 'fortune' } } },
+    'story.gear': { params: id, body: { op: 'arm', pawns } },
   };
 }
 
