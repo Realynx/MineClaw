@@ -25,7 +25,7 @@ public sealed partial class StoryColony
     public StorageState? BestChest(int id, int meta, P3 from, StorageState? except = null)
     {
         lock (_lock)
-            return Storages.Where(s => s != except && Accepts(s, id, meta) && HasRoom(s, id, meta))
+            return Storages.Where(s => s != except && ChestOpen(s.Chest) && Accepts(s, id, meta) && HasRoom(s, id, meta))
                 .OrderByDescending(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from)).FirstOrDefault();
     }
 
@@ -58,7 +58,7 @@ public sealed partial class StoryColony
     /// <summary>The nearest stored stack matching <paramref name="pick"/> (within <paramref name="radius"/> of <paramref name="near"/>).</summary>
     internal (StorageState Store, Stack Stack)? FindStored(Func<Stack, bool> pick, P3 near, int radius = int.MaxValue)
     {
-        foreach (var s in Storages.Where(s => s.Chest.Dist(near) <= radius).OrderBy(s => s.Chest.Dist(near)))
+        foreach (var s in Storages.Where(s => s.Chest.Dist(near) <= radius && ChestOpen(s.Chest)).OrderBy(s => s.Chest.Dist(near)))
             if (s.Contents.FirstOrDefault(pick) is { } st) return (s, st);
         return null;
     }

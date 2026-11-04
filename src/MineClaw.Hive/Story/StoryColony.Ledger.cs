@@ -119,7 +119,7 @@ public sealed partial class StoryColony
     private (StorageState Store, Stack Stack)? BestFood(PawnState p, PawnLive live, Func<Stack, bool> pick)
     {
         var d = World!.Data;
-        return Storages.Where(s => !Skipped($"needchest:{p.Name}@{s.Chest}"))
+        return Storages.Where(s => !Skipped($"needchest:{p.Name}@{s.Chest}") && ChestOpen(s.Chest))
             .SelectMany(s => s.Contents.Where(pick).Select(c => (Store: s, Stack: c)))
             .OrderByDescending(x => d.Food(x.Stack.Id, x.Stack.Meta)?.Hunger ?? 0).ThenBy(x => x.Store.Chest.Dist(live.Block))
             .Select(x => ((StorageState, Stack)?)x).FirstOrDefault();
@@ -133,6 +133,74 @@ public sealed partial class StoryColony
         int n = _needFails[p.Name] = _needFails.GetValueOrDefault(p.Name) + 1;
         _skip["need:" + p.Name] = Now + (n <= 1 ? TimeSpan.FromSeconds(15) : TimeSpan.FromSeconds(60));
         foreach (var (chest, _) in j.Takes) _skip[$"needchest:{p.Name}@{chest}"] = Now + TimeSpan.FromMinutes(2);
+    }
+
+    // ---------------------------------------------------------------- unreachable containers (live 11-04: 334 of 462 failed searches in 5
+    // minutes were "can't reach chest at 218,64,400 … no path to use": the rest went to the designation, not the chest, so each pawn tried
+    // that chest again for every fetch, each an A* run to its budget)
+
+    private static readonly Regex CantReach = new(@"can't reach (?:the )?(?<what>[a-z_ ]+?) at (?<x>-?\d+),(?<y>-?\d+),(?<z>-?\d+)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>The pawn whose job is being picked (its unreachable chests are left out of its plans), or null.</summary>
+    private string? _pickPawn;
+    private readonly Dictionary<(string Pawn, P3 Chest), int> _chestFails = new();
+    /// <summary>Chests no pawn gets to: their contents aren't stock until the time is up (or someone gets there).</summary>
+    private readonly Dictionary<P3, DateTimeOffset> _unreachable = new();
+    private readonly Dictionary<P3, DateTimeOffset> _unreachableSaid = new();
+
+    /// <summary>A chest's rest for one pawn after its n-th "can't reach": 2, then 5, then 10 minutes.</summary>
+    public static TimeSpan ChestRest(int n) => TimeSpan.FromMinutes(n <= 1 ? 2 : n == 2 ? 5 : 10);
+
+    /// <summary>No pawn gets to this chest (now).</summary>
+    internal bool ChestUnreachable(P3 chest) => _unreachable.TryGetValue(chest, out var until) && until > Now;
+
+    /// <summary>The chest is in this pick's plans: someone gets there, and the pawn picking hasn't just failed to.</summary>
+    internal bool ChestOpen(P3 chest) => !ChestUnreachable(chest) && (_pickPawn == null || !Skipped($"chestskip:{_pickPawn}@{chest}"));
+
+    /// <summary>
+    /// A job failed because the pawn couldn't reach a chest or a bench (not its target): that pawn leaves the chest out of every plan for
+    /// a while (2, 5, 10 minutes as it keeps failing), a bench likewise; when every pawn in game has failed it, the colony hears it once
+    /// and its contents aren't stock. True = it was that (never the target's failure, never a rest).
+    /// </summary>
+    internal bool ContainerUnreachable(PawnState p, string? note)
+    {
+        if (note == null || CantReach.Match(note) is not { Success: true } m) return false;
+        var at = new P3(int.Parse(m.Groups["x"].Value), int.Parse(m.Groups["y"].Value), int.Parse(m.Groups["z"].Value));
+        if (Benches.FirstOrDefault(b => b.Pos == at) is { } bench)
+        {
+            int nb = _chestFails[(p.Name, at)] = _chestFails.GetValueOrDefault((p.Name, at)) + 1;
+            _skip[PawnKey("bench:" + bench.Pos, p.Name)] = Now + ChestRest(nb);
+            return true;
+        }
+        if (StorageAt(at) is not { } st) return false;
+        var chest = st.Chest;
+        int n = _chestFails[(p.Name, chest)] = _chestFails.GetValueOrDefault((p.Name, chest)) + 1;
+        _skip[$"chestskip:{p.Name}@{chest}"] = Now + ChestRest(n);
+        var online = Pawns.Values.Where(o => Host.Live(o.Name).Online).ToList();
+        if (online.Count > 0 && online.All(o => Skipped($"chestskip:{o.Name}@{chest}")))
+        {
+            _unreachable[chest] = Now + TimeSpan.FromMinutes(10);
+            MaterialsChanged(); // its contents aren't stock any more
+            if (!_unreachableSaid.TryGetValue(chest, out var said) || Now - said > TimeSpan.FromMinutes(30))
+            {
+                _unreachableSaid[chest] = Now;
+                Alert("warn", $"Chest at {chest} is unreachable — pawns can't get to it");
+            }
+        }
+        return true;
+    }
+
+    /// <summary>A job that used chests finished: they are reachable (for that pawn, and so for the colony) again.</summary>
+    internal void ChestsReached(PawnState p, ActiveJob j)
+    {
+        foreach (var chest in j.Takes.Select(t => t.Chest).Concat(j.Puts.Select(x => x.Chest)).Distinct())
+        {
+            var key = StorageAt(chest)?.Chest ?? chest;
+            _chestFails.Remove((p.Name, key));
+            _skip.Remove($"chestskip:{p.Name}@{key}");
+            if (_unreachable.Remove(key)) MaterialsChanged();
+        }
     }
 
     private bool _purged;

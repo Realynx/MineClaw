@@ -257,7 +257,7 @@ public sealed partial class StoryColony
             // Whatever variants are stocked, several stacks if need be (vanilla's wildcard recipes take mixed planks; a family bill
             // takes any log): the most plentiful first, then the nearest. Live 11-04: "no oak wood planks" with birch in the chest.
             int left = need;
-            foreach (var (store, stack) in Storages.Where(s => s.Chest.Dist(bench.Pos) <= b.Radius)
+            foreach (var (store, stack) in Storages.Where(s => s.Chest.Dist(bench.Pos) <= b.Radius && ChestOpen(s.Chest))
                          .SelectMany(s => s.Contents.Where(Ok).Select(c => (Store: s, Stack: c)))
                          .OrderByDescending(x => x.Stack.Count).ThenBy(x => x.Store.Chest.Dist(bench.Pos)))
             {

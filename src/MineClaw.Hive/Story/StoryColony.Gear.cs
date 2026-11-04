@@ -176,7 +176,7 @@ public sealed partial class StoryColony
     {
         claims ??= GearClaims();
         var list = new List<Unit>();
-        foreach (var st in Storages.OrderBy(s => s.Chest.Dist(near)))
+        foreach (var st in Storages.Where(s => ChestOpen(s.Chest)).OrderBy(s => s.Chest.Dist(near)))
             foreach (var c in st.Contents)
             {
                 if (!pick(c.Id, c.Meta)) continue;
