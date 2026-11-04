@@ -71,7 +71,7 @@ function work(j) {
       if (j.clear) dig(a)
       if (j.stand) go(j.stand, 0)
       return place(j.block, a)
-    case 'attack': if (a) go(a, 3); return attack(j.mob)
+    case 'attack': if (a) go(a, 3); return attack('' + (j.target ?? j.mob))
     case 'eat': return eat()
     case 'craft': if (a) go(a, 2); return craft(j.item, j.n)
     case 'smelt': return smelt(j.item, j.n, j.fuel, false, a)
@@ -92,7 +92,7 @@ function pawn() {
     const j = story.next(20)
     if (!j) continue
     if (j.kind === 'end') { story.report(j.id, 'done'); return 'released: ' + (j.label || 'colony') }
-    let r = each(j.fetch, f => take(f.item, f.n, f.from))
+    let r = story.fetch(j)
     // Crafts first (a bench a build needs; at the table if need be).
     if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })
     if (ok(r)) r = work(j)

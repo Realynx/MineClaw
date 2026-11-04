@@ -133,6 +133,7 @@ public sealed partial class StoryColony
                             fb.Rev = Touch();
                             foreach (var other in Benches) other.Bills.RemoveAll(x => x.ForBuild == fb.Id && x.ForItem == fi && other.LoadedBill != x.Id);
                         }
+                        else if (bill.ForBuild == ToolsTag && bill.ForItem is { } ti) ToolCraftCancelled(ti); // that tool isn't made by itself again
                         MaterialsChanged();
                     }
                     else { bill.Paused = op == "pause"; if (op == "resume") { bill.SuspendedReason = null; _billFails.Remove(bill.Id); _noOffer.Remove(bill.Id); } }

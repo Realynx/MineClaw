@@ -467,6 +467,7 @@ public static class GameToolSet
         TreeTools.Register(tools, c, places);
         FishingTool.Register(tools, c); // hidden: scripts' fish(at, seconds) (Story Mode's fishing zones)
         AcquireTool.Register(tools, c); // hidden: scripts' ensure/acquire (no definition in any prefix)
+        EquipTool.Register(tools, c); // hidden: scripts' equip (hold / wear / take off / take one exact stack; Story Mode's pawns)
         FaceTool.Register(tools, c); // hidden: scripts' face{at} (Story pawns' body language)
     }
 

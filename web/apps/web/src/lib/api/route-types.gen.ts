@@ -116,6 +116,9 @@ export interface RouteTypes {
   'story.bills': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBillsRequest>; response: z.output<typeof C.StoryBillsResponse> };
   'story.workbenches': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryWorkbenchesRequest>; response: z.output<typeof C.StoryWorkbenchesResponse> };
   'story.options': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryOptionsRequest>; response: z.output<typeof C.StoryColonyOptions> };
+  'story.policies': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPoliciesRequest>; response: z.output<typeof C.StoryPoliciesResponse> };
+  'story.materialRules': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryMaterialRulesRequest>; response: z.output<typeof C.StoryMaterialRulesResponse> };
+  'story.gear': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryGearRequest>; response: z.output<typeof C.StoryGearResponse> };
   'story.architect': { params: z.input<typeof C.StoryColonyParams>; query: never; body: never; response: z.output<typeof C.StoryArchitectResponse> };
   'live.stream': { params: never; query: z.input<typeof C.LiveStreamQuery>; body: never; response: never };
   'designer.models': { params: never; query: never; body: never; response: z.output<typeof C.DesignerModelsResponse> };

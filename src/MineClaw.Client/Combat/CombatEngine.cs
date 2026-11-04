@@ -238,11 +238,27 @@ public sealed class CombatEngine
         return tcs.Task;
     }
 
+    private readonly ConcurrentDictionary<int, DateTime> _permits = new();
+
+    /// <summary>
+    /// The owner's explicit order to fight this player entity (Story Mode: a drafted pawn told to attack a player or another bot, the
+    /// owner having confirmed it), good until <paramref name="ttl"/> runs out. Only an explicit attack on exactly this entity may then
+    /// hit it; nothing ever starts a fight with a player by itself.
+    /// </summary>
+    public void Permit(int entityId, TimeSpan ttl) => _permits[entityId] = DateTime.UtcNow + ttl;
+
+    /// <summary>Withdraws a permit (undrafted, the order cancelled).</summary>
+    public void Revoke(int entityId) => _permits.TryRemove(entityId, out _);
+
+    /// <summary>An owner's permit to attack this player entity is in force (<see cref="Permit"/>).</summary>
+    public bool Permitted(int entityId) => _permits.TryGetValue(entityId, out var until) && until > DateTime.UtcNow;
+
     /// <summary>Hard gate used by the packet layer: may the bot hit this entity right now?</summary>
     public bool MayAttack(Entity e)
     {
         if (e.Kind == EntityKind.Player)
-            return _fight is { Kind: FightKind.Spar, Spar: { } s } && s.OpponentId == e.Id && _tick >= s.PauseUntil;
+            return _fight is { Kind: FightKind.Spar, Spar: { } s } && s.OpponentId == e.Id && _tick >= s.PauseUntil
+                || _fight is { Kind: FightKind.Mob, Explicit: true } f && f.TargetId == e.Id && Permitted(e.Id);
         if (e.Kind != EntityKind.Mob) return false;
         return !CombatRules.IsTamedWolf(e);
     }
@@ -392,7 +408,8 @@ public sealed class CombatEngine
             case AttackCmd ac:
                 if (_fight is not null) { ac.Done.TrySetResult($"refused: already fighting {_fight.TargetName}"); break; }
                 if (_w.Entities.Get(ac.TargetId) is not { } t) { ac.Done.TrySetResult("refused: target gone"); break; }
-                if (!MayAttack(t)) { ac.Done.TrySetResult($"refused: won't attack {t.DisplayName}"); break; }
+                // A player only with the owner's permit for exactly that entity (MayAttack then lets each hit through).
+                if (t.Kind == EntityKind.Player ? !Permitted(t.Id) : !MayAttack(t)) { ac.Done.TrySetResult($"refused: won't attack {t.DisplayName}"); break; }
                 StartFight(FightKind.Mob, t, "told to attack", phys, ac.Done);
                 _fight!.Explicit = true;
                 break;

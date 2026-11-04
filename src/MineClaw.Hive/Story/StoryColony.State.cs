@@ -69,6 +69,7 @@ public sealed partial class StoryColony
                         ["deny"] = new JsonArray(st.Filter.Deny.Select(a => (JsonNode)a!).ToArray()),
                     },
                     ["contents"] = new JsonArray(st.Contents.Select(c => (JsonNode)c.Json()).ToArray()), ["free_slots"] = st.FreeSlots, ["known_at"] = st.KnownAt,
+                    ["enchanted"] = EnchantedJson(st),
                 }).ToArray()),
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
                 {
@@ -80,6 +81,7 @@ public sealed partial class StoryColony
             };
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
             if (full && w != null) o["plants"] = StoryPlants.Json(w.Data); // what growing zones can grow here
+            GearStateJson(o, full); // policies, material_rules, materials (full only): StoryColony.Gear.cs
             if (!full)
             {
                 var removed = new JsonObject();
@@ -122,6 +124,7 @@ public sealed partial class StoryColony
             ["schedule"] = new JsonArray(p.Schedule.Select(b => (JsonNode)(b ?? ScheduleBlocks.Anything)!).ToArray()),
             ["held"] = live.Held,
             ["inventory"] = new JsonArray(live.Inventory.Select(s => (JsonNode)s.Json()).ToArray()),
+            ["equipment"] = EquipmentJson(live), ["policy"] = p.Gear.Policy, ["gear_tasks"] = GearTasksJson(p),
             ["xp_level"] = live.XpLevel,
         };
     }
@@ -154,6 +157,7 @@ public sealed partial class StoryColony
         ["target"] = d.Entity is { } e ? new JsonObject { ["entity"] = e } : d.At?.Json(),
         ["blocks"] = d.Blocks == null ? null : new JsonArray(d.Blocks.Select(b => (JsonNode)b.Json()).ToArray()),
         ["label"] = d.Label, ["created"] = d.Created, ["status"] = d.Status, ["reason"] = d.Reason, ["fails"] = d.Fails, ["retry_at"] = RetryAt(d),
+        ["wait"] = d.Wait,
     };
 
     private static JsonObject BillJson(BillState b) => new()

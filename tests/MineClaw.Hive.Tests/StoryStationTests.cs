@@ -301,6 +301,7 @@ public class StoryStationTests
     private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Library(FakeClock? clock = null, int pawns = 2)
     {
         var (c, h, w) = StoryRig.Make(pawns: pawns, data: Modern, time: clock);
+        foreach (var p in c.Pawns.Keys) h.Lives[p] = FakeStoryHost.Bare(0, 64, 0); // no pickaxe of their own: the chest's diamond ones only
         w.Set(3, 64, 0, Enchanting.TableBlock);
         w.Set(5, 64, 0, Enchanting.Bookshelf);
         w.Set(5, 65, 0, Enchanting.Bookshelf);

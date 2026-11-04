@@ -63,7 +63,7 @@ async function refreshEntities(): Promise<void> {
   try {
     const { createMockWorldSource } = await import('@/features/world/mockSource');
     const d = await createMockWorldSource().entities(0);
-    entityCache = d.entities.map((e) => ({ id: e.id ?? -1, kind: e.kind, type: e.type ?? undefined, item: e.item ?? undefined, x: e.x, y: e.y, z: e.z }));
+    entityCache = d.entities.map((e) => ({ id: e.id ?? -1, kind: e.kind, type: e.type ?? undefined, item: e.item ?? undefined, name: e.name ?? null, x: e.x, y: e.y, z: e.z }));
     botCache = d.bots.map((b) => ({ name: b.name, x: b.x, y: b.y, z: b.z, hp: b.hp, food: b.food, job: b.job ?? undefined }));
   } catch {
     /* node test env: no viewer module */
