@@ -1465,79 +1465,97 @@ export class StorySim {
     return out;
   }
 
-  designations(
-    id: string,
-    body: StoryDesignationRequest,
-  ): { ok: boolean; count: number; targets?: Array<[number, number, number]>; entities?: number[]; rev: number } {
+  designations(id: string, body: StoryDesignationRequest): DesignationsAck {
     const c = this.colony(id);
     const a = body.area ? normArea(body.area) : null;
-    if (body.op === 'retry') {
-      // The failed designations named by `ids` are tried again now (their rest is over).
-      const ids = (body.ids ?? []).map(String);
-      if (!ids.length) throw Object.assign(new Error('ids required'), { status: 400 });
-      const retried: Key[] = [];
-      for (const [k, f] of c.designations) {
-        if (!ids.includes(String(k))) continue;
-        f.v = { ...f.v, status: 'open', retryAt: null, state: 'todo' };
-        f.rev = this.bump(c);
-        retried.push(k);
-      }
-      return { ok: true, count: retried.length, retried, rev: c.rev } as never;
-    }
-    if (body.op === 'remove' || body.op === 'cancel') {
-      let n = 0;
-      for (const [k, f] of c.designations) {
-        const d = f.v;
-        if (body.kind && d.kind !== body.kind) continue;
-        const cells = d.targets ?? (d.block ? [d.block] : []);
-        const inArea = a
-          ? cells.some((p) => inside(a, p)) ||
-            (d.entity !== null && d.entity !== undefined && this.entityIn(d.entity, a))
-          : false;
-        const listed =
-          body.ids?.map(String).includes(String(k)) ||
-          body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) ||
-          (d.entity !== null && d.entity !== undefined && body.entities?.includes(d.entity));
-        if (!inArea && !listed) continue;
-        c.designations.delete(k);
-        c.removed.push({ rev: this.bump(c), kind: 'designations', key: k });
-        for (const p of c.pawns.values()) if (p.task?.ref === k) this.drop(c, p);
-        n++;
-      }
-      return { ok: true, count: n, rev: c.rev };
-    }
+    if (body.op === 'retry') return this.retryDesignations(c, body.ids);
+    if (body.op === 'remove' || body.op === 'cancel') return this.removeDesignations(c, body, a);
     const kind = body.kind ?? 'mine';
     const held = new Set(
       [...c.designations.values()].flatMap((f) => (f.v.targets ?? (f.v.block ? [f.v.block] : [])).map(keyOf)),
     );
+    if (designatesEntities(kind, body)) return this.designateEntities(c, body, kind, a, held);
+    return this.designateBlocks(c, body, kind, a, held);
+  }
+
+  /** The failed designations named by `ids` are tried again now (their rest is over). */
+  private retryDesignations(c: Colony, idList: StoryDesignationRequest['ids']): DesignationsAck {
+    const ids = (idList ?? []).map(String);
+    if (!ids.length) throw Object.assign(new Error('ids required'), { status: 400 });
+    const retried: Key[] = [];
+    for (const [k, f] of c.designations) {
+      if (!ids.includes(String(k))) continue;
+      f.v = { ...f.v, status: 'open', retryAt: null, state: 'todo' };
+      f.rev = this.bump(c);
+      retried.push(k);
+    }
+    return { ok: true, count: retried.length, retried, rev: c.rev } as never;
+  }
+
+  /** Cancels the designations (of a kind, if given) in the area or named by ids, blocks or entities; their pawns let go. */
+  private removeDesignations(c: Colony, body: StoryDesignationRequest, a: StoryArea | null): DesignationsAck {
+    let n = 0;
+    for (const [k, f] of c.designations) {
+      const d = f.v;
+      if (body.kind && d.kind !== body.kind) continue;
+      const cells = d.targets ?? (d.block ? [d.block] : []);
+      if (!this.designationInArea(d, cells, a) && !designationListed(d, k, cells, body)) continue;
+      c.designations.delete(k);
+      c.removed.push({ rev: this.bump(c), kind: 'designations', key: k });
+      for (const p of c.pawns.values()) if (p.task?.ref === k) this.drop(c, p);
+      n++;
+    }
+    return { ok: true, count: n, rev: c.rev };
+  }
+
+  private designationInArea(d: StoryDesignation, cells: ReadonlyArray<readonly number[]>, a: StoryArea | null): boolean {
+    if (!a) return false;
+    return cells.some((p) => inside(a, p)) || (d.entity !== null && d.entity !== undefined && this.entityIn(d.entity, a));
+  }
+
+  private addDesignation(c: Colony, d: Omit<StoryDesignation, 'id'>): void {
+    const des: StoryDesignation = { id: `d${c.seq++}`, ...d };
+    c.designations.set(des.id, { rev: this.bump(c), v: des });
+  }
+
+  /** Haul (drops), hunt (animals), forbid / allow over an area (drops, and doors too) or by entities; held ones skipped. */
+  private designateEntities(
+    c: Colony,
+    body: StoryDesignationRequest,
+    kind: StoryDesignationKind,
+    a: StoryArea | null,
+    held: ReadonlySet<string>,
+  ): DesignationsAck {
     const heldEnt = new Set(
       [...c.designations.values()].map((f) => f.v.entity).filter((e) => e !== null && e !== undefined),
     );
-    const add = (d: Omit<StoryDesignation, 'id'>) => {
-      const des: StoryDesignation = { id: `d${c.seq++}`, ...d };
-      c.designations.set(des.id, { rev: this.bump(c), v: des });
+    const ents = this.opts.world
+      .entities()
+      .filter((e) => (kind === 'hunt' ? e.kind === 'mob' && ANIMAL_TYPES.has(e.type ?? -1) : e.kind === 'item'))
+      .filter((e) => (a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id)));
+    const fresh = ents.filter((e) => !heldEnt.has(e.id));
+    for (const e of fresh)
+      this.addDesignation(c, { kind, entity: e.id, block: [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], state: 'todo' });
+    // Doors too, for forbid/allow over an area.
+    const doors = a && (kind === 'forbid' || kind === 'allow') ? this.scan(a, kind, undefined) : [];
+    for (const b of doors) if (!held.has(keyOf(b))) this.addDesignation(c, { kind, block: b, state: 'todo' });
+    return {
+      ok: true,
+      count: fresh.length + doors.length,
+      entities: fresh.map((e) => e.id),
+      targets: doors,
+      rev: c.rev,
     };
-    if (kind === 'haul' || kind === 'hunt' || ((kind === 'forbid' || kind === 'allow') && !body.blocks)) {
-      const ents = this.opts.world
-        .entities()
-        .filter((e) => (kind === 'hunt' ? e.kind === 'mob' && ANIMAL_TYPES.has(e.type ?? -1) : e.kind === 'item'))
-        .filter((e) =>
-          a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id),
-        );
-      const fresh = ents.filter((e) => !heldEnt.has(e.id));
-      for (const e of fresh)
-        add({ kind, entity: e.id, block: [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], state: 'todo' });
-      // Doors too, for forbid/allow over an area.
-      const doors = a && (kind === 'forbid' || kind === 'allow') ? this.scan(a, kind, undefined) : [];
-      for (const b of doors) if (!held.has(keyOf(b))) add({ kind, block: b, state: 'todo' });
-      return {
-        ok: true,
-        count: fresh.length + doors.length,
-        entities: fresh.map((e) => e.id),
-        targets: doors,
-        rev: c.rev,
-      };
-    }
+  }
+
+  /** A block tool over an area (scanned) or blocks; chop is one designation per tree (its touching log columns). */
+  private designateBlocks(
+    c: Colony,
+    body: StoryDesignationRequest,
+    kind: StoryDesignationKind,
+    a: StoryArea | null,
+    held: ReadonlySet<string>,
+  ): DesignationsAck {
     const cells = a
       ? this.scan(a, kind, body.filter)
       : (body.blocks ?? []).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
@@ -1545,16 +1563,11 @@ export class StorySim {
     if (kind === 'chop') {
       // One designation per tree: its log columns that touch, lowest log first.
       const byTree = groupTrees(fresh);
-      for (const logs of byTree) add({ kind, block: logs[0], targets: logs, state: 'todo' });
+      for (const logs of byTree) this.addDesignation(c, { kind, block: logs[0], targets: logs, state: 'todo' });
       return { ok: true, count: byTree.length, targets: fresh, rev: c.rev };
     }
-    for (const b of fresh)
-      add({
-        kind,
-        block: b,
-        state: 'todo',
-        ...(body.design !== null && body.design !== undefined ? { design: body.design } : {}),
-      });
+    const design = body.design !== null && body.design !== undefined ? { design: body.design } : {};
+    for (const b of fresh) this.addDesignation(c, { kind, block: b, state: 'todo', ...design });
     return { ok: true, count: fresh.length, targets: fresh, rev: c.rev };
   }
 
@@ -1567,96 +1580,70 @@ export class StorySim {
    * Water items (the director's checks, simplified): lava only while allowed; each cell open (air, plants, flowing liquid) or
    * dug first by its group's remove item; the expected flow beyond the drawn cells. Returns why not, or the warnings and flow.
    */
-  private checkWater(c: Colony, items: readonly StoryBuildItem[]) {
-    const w = this.opts.world;
-    const warnings: string[] = [];
-    const spread: Array<[number, number, number]> = [];
-    let cells = 0,
-      done = 0;
+  private checkWater(c: Colony, items: readonly StoryBuildItem[]): WaterCheck {
+    const r: WaterCheck = { error: null, warnings: [], spread: [], cells: 0, done: 0 };
     const dug: Array<[number, number, number]> = [];
     const queuedDigs = [...c.ghostCells.values()].flat().filter((g) => g[7] === 'dig' && g[6] !== 'done');
     for (const item of items) {
       if (item.kind === 'remove' && item.group) for (const b of expandBuildItem(item)) dug.push([b[0], b[1], b[2]]);
       if (item.kind !== 'water') continue;
-      const liquid = liquidOf(item.material);
-      if (!liquid) return { error: "a water item's material is water|lava", warnings, spread, cells, done };
-      if (liquid === 'lava' && !c.options.allowLava)
-        return { error: 'lava is off: turn on the colony option allow_lava first', warnings, spread, cells, done };
-      const own = expandBuildItem(item).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
-      cells += own.length;
-      const isDug = (x: number, y: number, z: number) =>
-        dug.some((d) => d[0] === x && d[1] === y && d[2] === z) || queuedDigs.some((g) => g[0] === x && g[1] === y && g[2] === z);
-      for (const [x, y, z] of own) {
-        const [bid, bm] = w.blockAt(x, y, z);
-        const want = liquid === 'lava' ? [10, 11] : [8, 9];
-        if (want.includes(bid) && bm === 0) {
-          done++;
-          continue;
-        }
-        const open = bid === 0 || [8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(bid);
-        if (!open && !isDug(x, y, z))
-          return {
-            error: `${x},${y},${z} holds ${storyItemLabel(bid, bm).toLowerCase()}: dig it first (a remove item in the same group, or the channel tool's "Dig the trench")`,
-            warnings,
-            spread,
-            cells,
-            done,
-          };
-      }
-      const f = liquidFlow((x, y, z) => w.blockAt(x, y, z), own, liquid === 'lava', dug);
-      spread.push(...f.spread);
-      if (f.spread.length)
-        warnings.push(
-          `the ${liquid} will spread to ${f.spread.length} cell${f.spread.length === 1 ? '' : 's'} beyond what was drawn (e.g. ${f.spread[0]!.join(',')}): place dam blocks first, or dig the channel into the ground`,
-        );
-      if (f.touches) warnings.push(f.touches);
+      const error = this.checkWaterItem(c, item, dug, queuedDigs, r);
+      if (error) return { error, warnings: r.warnings, spread: r.spread, cells: r.cells, done: r.done };
     }
-    return { error: null as string | null, warnings, spread, cells, done };
+    return r;
   }
 
-  builds(
-    id: string,
-    body: StoryBuildRequest,
-  ): {
-    ok: boolean;
-    ids?: Key[];
-    rev: number;
-    warnings?: string[];
-    flow?: { spread: number; cells: Array<[number, number, number]> };
-    cells?: number;
-    done?: number;
-    error?: string | null;
-    reopened?: number;
-    reasons?: Array<{ id: Key; reason: string }>;
-  } {
-    const c = this.colony(id);
-    if (body.op === 'retry' || body.op === 'retry_all') {
-      // Failed (blocked) cells start over: all of a build's, the given ones, or every build's.
-      const want = body.op === 'retry' ? new Set([body.id, ...(body.ids ?? [])].filter((x) => x !== undefined).map(String)) : null;
-      const cells = body.op === 'retry' && body.cells ? new Set(body.cells.map((p) => p.join(','))) : null;
-      if (want && ![...c.builds.keys()].some((k) => want.has(String(k)))) throw Object.assign(new Error('no such build'), { status: 400 });
-      let reopened = 0;
-      const ids: Key[] = [];
-      for (const [bid, list] of c.ghostCells) {
-        if (want && !want.has(String(bid))) continue;
-        ids.push(bid);
-        for (const g of list)
-          if ((g[6] === 'blocked' || (g[8] && g[6] !== 'done' && g[6] !== 'unsupported')) && (!cells || cells.has(`${g[0]},${g[1]},${g[2]}`))) {
-            g[6] = 'todo';
-            g.length = 8;
-            reopened++;
-          }
-        const f = c.builds.get(bid);
-        if (f && f.v.status === 'blocked') {
-          f.v.status = 'queued';
-          f.v.reason = null;
-          f.rev = this.bump(c);
-        }
+  /** One water item: its liquid allowed, its cells open or dug (counting those already full), its flow; why not, or null. */
+  private checkWaterItem(
+    c: Colony,
+    item: StoryBuildItem,
+    dug: Array<[number, number, number]>,
+    queuedDigs: readonly GhostCell[],
+    r: WaterCheck,
+  ): string | null {
+    const liquid = liquidOf(item.material);
+    if (!liquid) return "a water item's material is water|lava";
+    if (liquid === 'lava' && !c.options.allowLava) return 'lava is off: turn on the colony option allow_lava first';
+    const own = expandBuildItem(item).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
+    r.cells += own.length;
+    const blocked = this.unopenCell(own, liquid, dug, queuedDigs, r);
+    if (blocked) return blocked;
+    const f = liquidFlow((x, y, z) => this.opts.world.blockAt(x, y, z), own, liquid === 'lava', dug);
+    r.spread.push(...f.spread);
+    if (f.spread.length)
+      r.warnings.push(
+        `the ${liquid} will spread to ${f.spread.length} cell${f.spread.length === 1 ? '' : 's'} beyond what was drawn (e.g. ${f.spread[0]!.join(',')}): place dam blocks first, or dig the channel into the ground`,
+      );
+    if (f.touches) r.warnings.push(f.touches);
+    return null;
+  }
+
+  /** The first of a water item's cells it can't pour into (solid and not dug first), as the reason; cells already holding a
+   * source of the liquid count as done. */
+  private unopenCell(
+    own: ReadonlyArray<[number, number, number]>,
+    liquid: 'water' | 'lava',
+    dug: ReadonlyArray<[number, number, number]>,
+    queuedDigs: readonly GhostCell[],
+    r: WaterCheck,
+  ): string | null {
+    const want = liquid === 'lava' ? [10, 11] : [8, 9];
+    for (const [x, y, z] of own) {
+      const [bid, bm] = this.opts.world.blockAt(x, y, z);
+      if (want.includes(bid) && bm === 0) {
+        r.done++;
+        continue;
       }
-      c.ghostsRev = this.bump(c);
-      this.plan(c);
-      return { ok: true, ids, rev: c.rev, reopened, reasons: [] };
+      const open = bid === 0 || [8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(bid);
+      if (!open && !isDugCell(x, y, z, dug, queuedDigs))
+        return `${x},${y},${z} holds ${storyItemLabel(bid, bm).toLowerCase()}: dig it first (a remove item in the same group, or the channel tool's "Dig the trench")`;
     }
+    return null;
+  }
+
+  builds(id: string, body: StoryBuildRequest): BuildsAck {
+    const c = this.colony(id);
+    if (body.op === 'retry' || body.op === 'retry_all') return this.retryBuilds(c, body);
     if (body.op === 'preview') {
       const r = this.checkWater(c, body.items);
       return {
@@ -1669,92 +1656,14 @@ export class StorySim {
         flow: { spread: r.spread.length, cells: r.spread.slice(0, 256) },
       };
     }
-    if (body.op === 'add') {
-      const ids: Key[] = [];
-      const water = body.items.some((i) => i.kind === 'water') ? this.checkWater(c, body.items) : null;
-      if (water?.error) throw Object.assign(new Error(water.error), { status: 400 });
-      for (const item of body.items) {
-        const bid = `b${c.seq++}`;
-        const cells = expandBuildItem(item);
-        const [mid, mmeta] = materialKey(item.material);
-        const order = Math.max(0, ...[...c.builds.values()].map((f) => f.v.order)) + 1;
-        const need = cells.filter((b) => b[3] !== 0).length;
-        const have = c.stock.get(`${mid}:${mmeta}`) ?? 0;
-        const liquid = item.kind === 'water' ? liquidOf(item.material) : null;
-        const b: StoryBuild = {
-          id: bid,
-          kind: item.kind,
-          label: liquid
-            ? (item.name ??
-              (item.infinite
-                ? `infinite ${liquid} source (${cells.length} cells)`
-                : cells.length === 1
-                  ? `${liquid} source`
-                  : `${liquid} channel (${cells.length} sources)`))
-            : buildLabel(item.kind, cells.length, item.material),
-          status: 'queued',
-          ...(liquid ? { liquid, renewable: false } : {}),
-          reason:
-            have < need && item.kind !== 'remove' && item.kind !== 'mine' && item.kind !== 'water' && !(STORY_FURNITURE as readonly string[]).includes(item.kind)
-              ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}`
-              : null,
-          blocksTotal: cells.length,
-          blocksDone: 0,
-          material: item.material,
-          order,
-          created: this.iso(),
-          materials: [],
-        };
-        c.builds.set(bid, { rev: this.bump(c), v: b });
-        c.ghostCells.set(
-          bid,
-          cells.map(([x, y, z, bi, bm]) => {
-            // A pour cell with nothing under it (open ground, not dug by its group, not another cell): the mock's pawns fail it
-            // as the bot's did before its queue-time check, so the Retry tool and "Retry failed cells" have something to show.
-            const below = this.opts.world.blockAt(x, y - 1, z)[0];
-            const own = cells.some((o) => o[0] === x && o[1] === y - 1 && o[2] === z);
-            const dug = body.items.some((i) => i.kind === 'remove' && i.group && i.group === item.group && expandBuildItem(i).some((d) => d[0] === x && d[1] === y - 1 && d[2] === z));
-            if (liquid && !own && (dug || [0, 8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(below)))
-              return [x, y, z, bi, bm, bid, 'blocked', 'pour', `nothing under ${x},${y},${z} to hold the ${liquid}: it would pour down`];
-            return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place'];
-          }),
-        );
-        ids.push(bid);
-      }
-      c.ghostsRev = this.bump(c);
-      this.plan(c);
-      return {
-        ok: true,
-        ids,
-        rev: c.rev,
-        ...(water?.warnings.length ? { warnings: water.warnings } : {}),
-        ...(water ? { flow: { spread: water.spread.length, cells: water.spread.slice(0, 256) } } : {}),
-      };
-    }
+    if (body.op === 'add') return this.addBuilds(c, body.items);
     const ids = body.ids.map(String);
-    if (body.op === 'reorder') {
-      // The listed builds take the front of the queue in the listed order; the rest keep theirs after them.
-      const rest = [...c.builds.values()]
-        .map((f) => f.v)
-        .filter((b) => !ids.includes(String(b.id)))
-        .sort((x, y) => x.order - y.order);
-      const front = ids.map((i) => c.builds.get(i)?.v).filter((b): b is StoryBuild => !!b);
-      [...front, ...rest].forEach((b, i) => {
-        b.order = i + 1;
-        c.builds.set(b.id, { rev: this.bump(c), v: b });
-      });
-      this.plan(c);
-      return { ok: true, rev: c.rev };
-    }
+    if (body.op === 'reorder') return this.reorderBuilds(c, ids);
     for (const bid of ids) {
       const f = c.builds.get(bid);
       if (!f) continue;
-      if (body.op === 'remove') {
-        c.builds.delete(bid);
-        c.ghostCells.delete(bid);
-        c.removed.push({ rev: this.bump(c), kind: 'builds', key: bid });
-        for (const p of c.pawns.values()) if (p.task?.ref === bid) this.drop(c, p);
-      } else {
+      if (body.op === 'remove') this.removeBuild(c, bid);
+      else {
         f.v.status = body.op === 'pause' ? 'paused' : 'queued';
         f.rev = this.bump(c);
       }
@@ -1764,6 +1673,124 @@ export class StorySim {
     return { ok: true, rev: c.rev };
   }
 
+  /** Failed (blocked) cells start over: all of a build's, the given ones, or every build's. */
+  private retryBuilds(c: Colony, body: Extract<StoryBuildRequest, { op: 'retry' | 'retry_all' }>): BuildsAck {
+    const want =
+      body.op === 'retry' ? new Set([body.id, ...(body.ids ?? [])].filter((x) => x !== undefined).map(String)) : null;
+    const cells = body.op === 'retry' && body.cells ? new Set(body.cells.map((p) => p.join(','))) : null;
+    if (want && ![...c.builds.keys()].some((k) => want.has(String(k))))
+      throw Object.assign(new Error('no such build'), { status: 400 });
+    let reopened = 0;
+    const ids: Key[] = [];
+    for (const [bid, list] of c.ghostCells) {
+      if (want && !want.has(String(bid))) continue;
+      ids.push(bid);
+      reopened += reopenCells(list, cells);
+      const f = c.builds.get(bid);
+      if (f && f.v.status === 'blocked') {
+        f.v.status = 'queued';
+        f.v.reason = null;
+        f.rev = this.bump(c);
+      }
+    }
+    c.ghostsRev = this.bump(c);
+    this.plan(c);
+    return { ok: true, ids, rev: c.rev, reopened, reasons: [] };
+  }
+
+  private addBuilds(c: Colony, items: readonly StoryBuildItem[]): BuildsAck {
+    const ids: Key[] = [];
+    const water = items.some((i) => i.kind === 'water') ? this.checkWater(c, items) : null;
+    if (water?.error) throw Object.assign(new Error(water.error), { status: 400 });
+    for (const item of items) ids.push(this.addBuild(c, item, items));
+    c.ghostsRev = this.bump(c);
+    this.plan(c);
+    return {
+      ok: true,
+      ids,
+      rev: c.rev,
+      ...(water?.warnings.length ? { warnings: water.warnings } : {}),
+      ...(water ? { flow: { spread: water.spread.length, cells: water.spread.slice(0, 256) } } : {}),
+    };
+  }
+
+  /** Queues one build: its label, what it is short of, and its ghost cells (a pour with nothing under it fails at once). */
+  private addBuild(c: Colony, item: StoryBuildItem, items: readonly StoryBuildItem[]): Key {
+    const bid = `b${c.seq++}`;
+    const cells = expandBuildItem(item);
+    const [mid, mmeta] = materialKey(item.material);
+    const order = Math.max(0, ...[...c.builds.values()].map((f) => f.v.order)) + 1;
+    const need = cells.filter((b) => b[3] !== 0).length;
+    const have = c.stock.get(`${mid}:${mmeta}`) ?? 0;
+    const liquid = item.kind === 'water' ? liquidOf(item.material) : null;
+    const b: StoryBuild = {
+      id: bid,
+      kind: item.kind,
+      label: liquid ? waterBuildLabel(item, liquid, cells.length) : buildLabel(item.kind, cells.length, item.material),
+      status: 'queued',
+      ...(liquid ? { liquid, renewable: false } : {}),
+      reason: lacksMaterial(item, need, have) ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}` : null,
+      blocksTotal: cells.length,
+      blocksDone: 0,
+      material: item.material,
+      order,
+      created: this.iso(),
+      materials: [],
+    };
+    c.builds.set(bid, { rev: this.bump(c), v: b });
+    c.ghostCells.set(
+      bid,
+      cells.map((cell) => this.ghostOf(cell, cells, bid, item, items, liquid)),
+    );
+    return bid;
+  }
+
+  /** A pour cell with nothing under it (open ground, not dug by its group, not another cell): the mock's pawns fail it as the
+   * bot's did before its queue-time check, so the Retry tool and "Retry failed cells" have something to show. */
+  private ghostOf(
+    [x, y, z, bi, bm]: [number, number, number, number, number],
+    cells: ReadonlyArray<[number, number, number, number, number]>,
+    bid: Key,
+    item: StoryBuildItem,
+    items: readonly StoryBuildItem[],
+    liquid: 'water' | 'lava' | null,
+  ): GhostCell {
+    const below = this.opts.world.blockAt(x, y - 1, z)[0];
+    const own = cells.some((o) => o[0] === x && o[1] === y - 1 && o[2] === z);
+    const dug = items.some(
+      (i) =>
+        i.kind === 'remove' &&
+        i.group &&
+        i.group === item.group &&
+        expandBuildItem(i).some((d) => d[0] === x && d[1] === y - 1 && d[2] === z),
+    );
+    if (liquid && !own && (dug || [0, 8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(below)))
+      return [x, y, z, bi, bm, bid, 'blocked', 'pour', `nothing under ${x},${y},${z} to hold the ${liquid}: it would pour down`];
+    return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place'];
+  }
+
+  /** The listed builds take the front of the queue in the listed order; the rest keep theirs after them. */
+  private reorderBuilds(c: Colony, ids: string[]): BuildsAck {
+    const rest = [...c.builds.values()]
+      .map((f) => f.v)
+      .filter((b) => !ids.includes(String(b.id)))
+      .sort((x, y) => x.order - y.order);
+    const front = ids.map((i) => c.builds.get(i)?.v).filter((b): b is StoryBuild => !!b);
+    [...front, ...rest].forEach((b, i) => {
+      b.order = i + 1;
+      c.builds.set(b.id, { rev: this.bump(c), v: b });
+    });
+    this.plan(c);
+    return { ok: true, rev: c.rev };
+  }
+
+  private removeBuild(c: Colony, bid: string): void {
+    c.builds.delete(bid);
+    c.ghostCells.delete(bid);
+    c.removed.push({ rev: this.bump(c), kind: 'builds', key: bid });
+    for (const p of c.pawns.values()) if (p.task?.ref === bid) this.drop(c, p);
+  }
+
   /** Registers the chests and workbenches that stand in an area. */
   private discover(
     c: Colony,
@@ -1771,45 +1798,11 @@ export class StorySim {
     filter?: StoryFilter,
     priority?: string,
   ): Array<[number, number, number]> {
-    const w = this.opts.world;
     const a = normArea(area);
     const found: Array<[number, number, number]> = [];
     for (let x = a[0]; x <= a[3]; x++)
       for (let z = a[2]; z <= a[5]; z++)
-        for (let y = Math.max(1, a[1]); y <= Math.min(255, a[4]); y++) {
-          const [id] = w.blockAt(x, y, z);
-          if (CHEST_IDS.has(id)) found.push([x, y, z]);
-          else if (id === 26 && (w.blockAt(x, y, z)[1] & 8) === 0 && !c.beds.has(keyOf([x, y, z]))) {
-            c.beds.set(keyOf([x, y, z]), { pos: [x, y, z], dim: 0, pawn: null, zone: null });
-            c.bedsRev = this.bump(c);
-          } else if (id === 58 || id === 61 || id === 62 || id === 117 || id === 145 || id === 116) {
-            const k = keyOf([x, y, z]);
-            if (!c.benches.has(k)) {
-              const kind =
-                id === 58
-                  ? 'crafting_table'
-                  : id === 117
-                    ? 'brewing_stand'
-                    : id === 145
-                      ? 'anvil'
-                      : id === 116
-                        ? 'enchanting_table'
-                        : 'furnace';
-              c.benches.set(k, {
-                rev: this.bump(c),
-                v: {
-                  pos: [x, y, z],
-                  kind,
-                  label: null,
-                  supported: true,
-                  station: this.stationOf(kind, [x, y, z]),
-                  ...this.fuelOf(kind),
-                  bills: [],
-                },
-              });
-            }
-          }
-        }
+        for (let y = Math.max(1, a[1]); y <= Math.min(255, a[4]); y++) this.noteFurniture(c, x, y, z, found);
     if (filter === undefined && priority === undefined) return [];
     const out: Array<[number, number, number]> = [];
     const taken = new Set<string>();
@@ -1819,22 +1812,57 @@ export class StorySim {
       const other = found.find((q) => q !== p && Math.abs(q[0] - p[0]) + Math.abs(q[2] - p[2]) === 1 && q[1] === p[1]);
       if (other) taken.add(keyOf(other));
       taken.add(keyOf(p));
-      const k = keyOf(p);
-      const prev = c.storages.get(k)?.v;
-      const s: StoryStorage = {
-        chest: p,
-        doubleWith: other ?? null,
-        label: prev?.label ?? null,
-        priority: priority ?? prev?.priority ?? 'normal',
-        filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
-        contents: prev?.contents ?? this.stock(c, seedContents(p)),
-        freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
-        knownAt: this.iso(),
-      };
-      c.storages.set(k, { rev: this.bump(c), v: s });
+      this.registerStorage(c, p, other, filter, priority);
       out.push(p);
     }
     return out;
+  }
+
+  /** A block of the area: a chest (into `found`), a bed's foot (a bed the colony knows), or a workbench (the colony's). */
+  private noteFurniture(c: Colony, x: number, y: number, z: number, found: Array<[number, number, number]>): void {
+    const w = this.opts.world;
+    const [id] = w.blockAt(x, y, z);
+    const benchKind = BENCH_KIND_OF.get(id);
+    if (CHEST_IDS.has(id)) found.push([x, y, z]);
+    else if (id === 26 && (w.blockAt(x, y, z)[1] & 8) === 0 && !c.beds.has(keyOf([x, y, z]))) {
+      c.beds.set(keyOf([x, y, z]), { pos: [x, y, z], dim: 0, pawn: null, zone: null });
+      c.bedsRev = this.bump(c);
+    } else if (benchKind && !c.benches.has(keyOf([x, y, z]))) {
+      c.benches.set(keyOf([x, y, z]), {
+        rev: this.bump(c),
+        v: {
+          pos: [x, y, z],
+          kind: benchKind,
+          label: null,
+          supported: true,
+          station: this.stationOf(benchKind, [x, y, z]),
+          ...this.fuelOf(benchKind),
+          bills: [],
+        },
+      });
+    }
+  }
+
+  /** A chest (and its other half) as a storage: its settings as given, else as it was, else the defaults. */
+  private registerStorage(
+    c: Colony,
+    p: [number, number, number],
+    other: [number, number, number] | undefined,
+    filter: StoryFilter | undefined,
+    priority: string | undefined,
+  ): void {
+    const k = keyOf(p);
+    const prev = c.storages.get(k)?.v;
+    const s: StoryStorage = {
+      chest: p,
+      doubleWith: other ?? null,
+      label: prev?.label ?? null,
+      ...storageSettings(prev, filter, priority),
+      contents: prev?.contents ?? this.stock(c, seedContents(p)),
+      freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
+      knownAt: this.iso(),
+    };
+    c.storages.set(k, { rev: this.bump(c), v: s });
   }
 
   storage(
@@ -3267,4 +3295,124 @@ function enchantFields(recipe: SimRecipe, spec: BillSpec): Partial<StoryBill> {
 function fuelFields(recipe: SimRecipe, spec: BillSpec): Partial<StoryBill> {
   if (recipe.workbench !== 'furnace') return {};
   return { fuel: spec.fuel && spec.fuel !== 'inherit' ? spec.fuel : null };
+}
+
+// ------------------------------------------------------------------ designations, builds, storage
+
+type DesignationsAck = {
+  ok: boolean;
+  count: number;
+  targets?: Array<[number, number, number]>;
+  entities?: number[];
+  rev: number;
+};
+
+type BuildsAck = {
+  ok: boolean;
+  ids?: Key[];
+  rev: number;
+  warnings?: string[];
+  flow?: { spread: number; cells: Array<[number, number, number]> };
+  cells?: number;
+  done?: number;
+  error?: string | null;
+  reopened?: number;
+  reasons?: Array<{ id: Key; reason: string }>;
+};
+
+/** Water items checked: why not (null = fine), warnings, the expected spread, cells and those already full. */
+interface WaterCheck {
+  error: string | null;
+  warnings: string[];
+  spread: Array<[number, number, number]>;
+  cells: number;
+  done: number;
+}
+
+/** Designates entities (drops, animals) rather than blocks: haul, hunt, and forbid / allow without blocks. */
+function designatesEntities(kind: StoryDesignationKind, body: StoryDesignationRequest): boolean {
+  return kind === 'haul' || kind === 'hunt' || ((kind === 'forbid' || kind === 'allow') && !body.blocks);
+}
+
+/** Is a designation named by a remove request's ids, blocks or entities? */
+function designationListed(
+  d: StoryDesignation,
+  k: Key,
+  cells: ReadonlyArray<readonly number[]>,
+  body: StoryDesignationRequest,
+): boolean {
+  return !!(
+    body.ids?.map(String).includes(String(k)) ||
+    body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) ||
+    (d.entity !== null && d.entity !== undefined && body.entities?.includes(d.entity))
+  );
+}
+
+/** Reopens a build's failed cells (blocked, or with a failure's reason; only `cells` when given); how many. */
+function reopenCells(list: GhostCell[], cells: ReadonlySet<string> | null): number {
+  let n = 0;
+  for (const g of list)
+    if (reopenable(g) && (!cells || cells.has(`${g[0]},${g[1]},${g[2]}`))) {
+      g[6] = 'todo';
+      g.length = 8;
+      n++;
+    }
+  return n;
+}
+
+const reopenable = (g: GhostCell): boolean =>
+  g[6] === 'blocked' || (!!g[8] && g[6] !== 'done' && g[6] !== 'unsupported');
+
+/** Is a cell dug first: by a remove item in the request, or a dig already queued? */
+function isDugCell(
+  x: number,
+  y: number,
+  z: number,
+  dug: ReadonlyArray<[number, number, number]>,
+  queuedDigs: readonly GhostCell[],
+): boolean {
+  return (
+    dug.some((d) => d[0] === x && d[1] === y && d[2] === z) ||
+    queuedDigs.some((g) => g[0] === x && g[1] === y && g[2] === z)
+  );
+}
+
+/** A water build's label: its name, else an infinite source, a source, or a channel. */
+function waterBuildLabel(item: StoryBuildItem, liquid: string, cells: number): string {
+  if (item.name !== null && item.name !== undefined) return item.name;
+  if (item.infinite) return `infinite ${liquid} source (${cells} cells)`;
+  return cells === 1 ? `${liquid} source` : `${liquid} channel (${cells} sources)`;
+}
+
+/** A build short of its material at queue time (removals, mines, water and furniture never are). */
+function lacksMaterial(item: StoryBuildItem, need: number, have: number): boolean {
+  return (
+    have < need &&
+    item.kind !== 'remove' &&
+    item.kind !== 'mine' &&
+    item.kind !== 'water' &&
+    !(STORY_FURNITURE as readonly string[]).includes(item.kind)
+  );
+}
+
+/** Workbench block ids and their kinds. */
+const BENCH_KIND_OF: ReadonlyMap<number, string> = new Map([
+  [58, 'crafting_table'],
+  [61, 'furnace'],
+  [62, 'furnace'],
+  [117, 'brewing_stand'],
+  [145, 'anvil'],
+  [116, 'enchanting_table'],
+]);
+
+/** A storage's priority and filter: as given, else as it was, else normal and everything. */
+function storageSettings(
+  prev: StoryStorage | undefined,
+  filter: StoryFilter | undefined,
+  priority: string | undefined,
+): Pick<StoryStorage, 'priority' | 'filter'> {
+  return {
+    priority: priority ?? prev?.priority ?? 'normal',
+    filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
+  };
 }

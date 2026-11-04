@@ -578,4 +578,130 @@ describe('the mock director: a golden run', () => {
     const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
     expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
   });
+
+  it('designations and builds: every op and selector, refused and accepted (pins designations / builds)', () => {
+    const w = world();
+    // A door to forbid and allow.
+    const blockAt = w.blockAt.bind(w);
+    w.blockAt = (x, y, z) =>
+      x === -1 && z === 6 && (y === 64 || y === 65) ? [64, y === 65 ? 8 : 0] : blockAt(x, y, z);
+    const sim = new StorySim({ world: w, defaultHome: [0, 63, 0], now: () => t });
+    const trace: unknown[] = [];
+    const call = (label: string, f: () => unknown) => {
+      try {
+        trace.push([label, f() ?? null]);
+      } catch (e) {
+        const err = e as { status?: number; message?: string };
+        trace.push([label, 'error', err.status ?? null, err.message ?? String(e)]);
+      }
+    };
+    const { id } = sim.create({ name: 'Ops', pawns: 2 });
+    const des = (label: string, body: unknown) => call(label, () => sim.designations(id, body as never));
+    const bld = (label: string, body: unknown) => call(label, () => sim.builds(id, body as never));
+    const state = (label: string) => call(label, () => sim.state(id));
+    des('chop', { op: 'add', kind: 'chop', area: [8, 60, -2, 20, 80, 8] });
+    des('chop again', { op: 'add', kind: 'chop', area: [8, 60, -2, 20, 80, 8] });
+    des('mine blocks', {
+      op: 'add',
+      kind: 'mine',
+      blocks: [
+        [40, 60, 40],
+        [40, 59, 40],
+        [41, 60, 40],
+      ],
+      design: 7,
+    });
+    des('mine stone', { op: 'add', kind: 'mine', area: [44, 58, 44, 46, 62, 46], filter: 'stone' });
+    des('haul area', { op: 'add', kind: 'haul', area: [-6, 60, 0, 8, 70, 8] });
+    des('haul entities', { op: 'add', kind: 'haul', entities: [11, 7] });
+    des('hunt', { op: 'add', kind: 'hunt', area: [-20, 60, -20, 20, 70, 20] });
+    des('forbid area', { op: 'add', kind: 'forbid', area: [-3, 60, 4, 1, 70, 8] });
+    des('allow blocks', { op: 'add', kind: 'allow', blocks: [[-1, 64, 6]] });
+    des('cut', { op: 'add', kind: 'cut', area: [-8, 60, 12, -3, 70, 12] });
+    des('harvest none', { op: 'add', kind: 'harvest', area: [100, 60, 100, 101, 70, 101] });
+    des('too big', { op: 'add', kind: 'mine', area: [0, 60, 0, 200, 60, 200] });
+    des('default kind', { op: 'add', blocks: [[60, 62, 60]] });
+    state('after adds');
+    const ids = () => sim.state(id).designations.map((d) => d.id);
+    des('remove ids', { op: 'remove', ids: ids().slice(0, 1) });
+    des('remove blocks', { op: 'cancel', blocks: [[40, 59, 40]] });
+    des('remove entities', { op: 'remove', entities: [11] });
+    des('remove kind area', { op: 'remove', kind: 'hunt', area: [-20, 60, -20, 20, 70, 20] });
+    des('remove nothing', { op: 'remove', area: [500, 0, 500, 501, 10, 501] });
+    des('retry none', { op: 'retry' });
+    call('fail', () => sim.failDesignations(id, ids().slice(0, 2), 'blocked'));
+    des('retry', { op: 'retry', ids: ids().slice(0, 3) });
+    state('after removes');
+    bld('add', {
+      op: 'add',
+      items: [
+        { kind: 'wall', area: [-6, 64, 5, -3, 64, 8], material: 'cobblestone', height: 2 },
+        { kind: 'floor', area: [-6, 63, 5, -3, 63, 8], material: 'oak_planks' },
+        { kind: 'chest', blocks: [[-4, 64, 6]] },
+        { kind: 'remove', area: [30, 64, -5, 31, 64, -5], material: 'stone' },
+        { kind: 'mine', blocks: [[30, 62, -5]] },
+      ],
+    });
+    bld('water infinite', { op: 'add', items: [{ kind: 'water', blocks: [[22, 64, 21]], infinite: true }] });
+    bld('water named', {
+      op: 'add',
+      items: [
+        {
+          kind: 'water',
+          blocks: [
+            [23, 64, 21],
+            [24, 64, 21],
+          ],
+          name: 'Pond',
+        },
+      ],
+    });
+    bld('lava off', { op: 'add', items: [{ kind: 'water', blocks: [[23, 64, 22]], material: 'lava' }] });
+    bld('water bad material', { op: 'preview', items: [{ kind: 'water', blocks: [[23, 64, 22]], material: 'dirt' }] });
+    bld('water preview', {
+      op: 'preview',
+      items: [
+        {
+          kind: 'water',
+          blocks: [
+            [19, 64, 19],
+            [19, 64, 20],
+          ],
+        },
+      ],
+    });
+    bld('dug water', {
+      op: 'add',
+      items: [
+        {
+          kind: 'remove',
+          blocks: [
+            [0, 63, 30],
+            [0, 62, 30],
+          ],
+          material: 'stone',
+          group: 'g',
+        },
+        { kind: 'water', blocks: [[0, 63, 30]], group: 'g' },
+      ],
+    });
+    state('after builds');
+    const bids = () => (sim.state(id).builds ?? []).map((b) => b.id);
+    bld('pause', { op: 'pause', ids: bids().slice(0, 2) });
+    bld('resume', { op: 'resume', ids: bids().slice(0, 1) });
+    bld('retry none', { op: 'retry', id: 'b-none' });
+    bld('retry one', { op: 'retry', id: bids()[0], cells: [[-6, 64, 5]] });
+    bld('retry ids', { op: 'retry', ids: bids().slice(0, 3) });
+    bld('reorder', { op: 'reorder', ids: bids().slice(1, 3) });
+    bld('remove', { op: 'remove', ids: [bids()[0], 'b-none'] });
+    for (let i = 0; i < 60; i++) {
+      t += 500;
+      sim.step(500);
+    }
+    state('after work');
+    bld('retry all', { op: 'retry_all' });
+    state('end');
+    const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
+    expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
+  });
 });

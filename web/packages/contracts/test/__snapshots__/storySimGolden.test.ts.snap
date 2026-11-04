@@ -269,6 +269,175 @@ exports[`the mock director: a golden run > bills: every op, refused and accepted
 ]
 `;
 
+exports[`the mock director: a golden run > designations and builds: every op and selector, refused and accepted (pins designations / builds) 1`] = `
+[
+  [
+    "chop",
+    "5f5c552b831d5970",
+  ],
+  [
+    "chop again",
+    "aef0409b0ae9f461",
+  ],
+  [
+    "mine blocks",
+    "fe659372499b4a44",
+  ],
+  [
+    "mine stone",
+    "5705b5f0348bfb91",
+  ],
+  [
+    "haul area",
+    "1ae715f6b8443d1e",
+  ],
+  [
+    "haul entities",
+    "dad1bf9bb4ecea1e",
+  ],
+  [
+    "hunt",
+    "2d9ee4c59879c9e0",
+  ],
+  [
+    "forbid area",
+    "e6be784624c0f52b",
+  ],
+  [
+    "allow blocks",
+    "b8dc65b103a1a073",
+  ],
+  [
+    "cut",
+    "6386e62b38560c1d",
+  ],
+  [
+    "harvest none",
+    "7775c36deb1e93c9",
+  ],
+  [
+    "too big",
+    "7775c36deb1e93c9",
+  ],
+  [
+    "default kind",
+    "e2b068fa0d6cc4bb",
+  ],
+  [
+    "after adds",
+    "e0d3edd2e31a95ae",
+  ],
+  [
+    "remove ids",
+    "586b0a6f01f791cd",
+  ],
+  [
+    "remove blocks",
+    "bc60f08fd1ed39c5",
+  ],
+  [
+    "remove entities",
+    "8cd89cea291358fa",
+  ],
+  [
+    "remove kind area",
+    "e3a47b0a14980334",
+  ],
+  [
+    "remove nothing",
+    "41d9be871f9a6088",
+  ],
+  [
+    "retry none",
+    "cc73fde9bab312d7",
+  ],
+  [
+    "fail",
+    "1d8fc6ceb1f94c63",
+  ],
+  [
+    "retry",
+    "c0679691382e289b",
+  ],
+  [
+    "after removes",
+    "55a8c836717b7b22",
+  ],
+  [
+    "add",
+    "6d2c2ca0eccd366f",
+  ],
+  [
+    "water infinite",
+    "a62054285fd016b2",
+  ],
+  [
+    "water named",
+    "fe94468e8fe431cc",
+  ],
+  [
+    "lava off",
+    "67a702231b6999e1",
+  ],
+  [
+    "water bad material",
+    "8574312ba4d7facb",
+  ],
+  [
+    "water preview",
+    "ed0a2ca0f48b744f",
+  ],
+  [
+    "dug water",
+    "cb04b4f25acae6f2",
+  ],
+  [
+    "after builds",
+    "3ebbfb62d21c6f58",
+  ],
+  [
+    "pause",
+    "f47bf7e922c57045",
+  ],
+  [
+    "resume",
+    "fb3fee5eb8ea3926",
+  ],
+  [
+    "retry none",
+    "ce7995ebd5f804d7",
+  ],
+  [
+    "retry one",
+    "7fdfbb24e73aa82c",
+  ],
+  [
+    "retry ids",
+    "662b08c747ed730a",
+  ],
+  [
+    "reorder",
+    "681f42cc485712a3",
+  ],
+  [
+    "remove",
+    "2e37cd5b4244bf57",
+  ],
+  [
+    "after work",
+    "2882d09598bff137",
+  ],
+  [
+    "retry all",
+    "1fcc6d772da4c336",
+  ],
+  [
+    "end",
+    "87537e02db5a8bfc",
+  ],
+]
+`;
+
 exports[`the mock director: a golden run > materials: builds without benches, auto-placed stations, smelting, auto bills and their cancel (pins the plan pass) 1`] = `
 [
   [
