@@ -24,6 +24,8 @@ public interface IStoryWorld
     int Dimension => 0;
     /// <summary>The column at x,z is in the view (an unloaded one reads as air: never a spot to send a pawn to).</summary>
     bool Loaded(int x, int z) => true;
+    /// <summary>The light level at x,y,z after dark (0-15; mobs spawn at 7 or less), or null when the view doesn't know.</summary>
+    int? NightLight(int x, int y, int z) => null;
 }
 
 /// <summary>A live pawn body as the director reads it each time it picks.</summary>
@@ -82,6 +84,7 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
     public int Height => world()?.WorldHeight ?? 128;
     public int Dimension => world()?.Dimension ?? 0;
     public bool Loaded(int x, int z) => world()?.IsLoaded(x, z) ?? false;
+    public int? NightLight(int x, int y, int z) => world() is { } w ? w.Light.LightLevel(x, y, z, LightEngine.NightSubtracted) : null;
 
     public (int Id, int Meta) Block(int x, int y, int z) => world() is { } w ? (w.GetBlock(x, y, z), w.GetMeta(x, y, z)) : (0, 0);
 

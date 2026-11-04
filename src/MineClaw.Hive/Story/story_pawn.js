@@ -34,9 +34,9 @@ function chopTree(j) {
   }
   return { ok: true, partial: true, msg: 'partial: ' + got + ' log(s) taken; ' + ((r && r.msg) || 'the rest is out of reach') }
 }
-// Sleep at the bed (only at night: the server refuses a bed by day), else rest by it.
+// Sleep at the bed (only at night: the server refuses a bed by day), else rest by it; no bed: on its own spot.
 function sleepAt(j) {
-  const there = reach(j.bed || j.at, 2)
+  const there = j.bed ? reach(j.bed, 2) : j.at ? go(j.at, j.dist ?? 2) : { ok: true }
   if (j.bed && ok(there) && night()) use_block(j.bed)
   return wait(j.s || 5)
 }
@@ -73,8 +73,9 @@ function work(j) {
     case 'give': return handTo(j.to, j.item, j.n, { gather: false })
     case 'blueprint': return build(j.design)
     case 'sleep': return sleepAt(j)
-    case 'idle': case 'hold':
-      if (a) go(a, j.dist || 2)
+    case 'idle': return story.idle(j)
+    case 'hold':
+      if (a) go(a, j.dist ?? 2)
       return wait(j.s || 5)
     default: return { ok: true }
   }

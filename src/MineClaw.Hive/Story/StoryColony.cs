@@ -225,6 +225,14 @@ public sealed partial class StoryColony : IStoryPort
         {
             if (!_current.TryGetValue(body, out var cur) || cur.Id != job) return false;
             var p = Pawns.GetValueOrDefault(body);
+            if (cur.Source == "wander" && status != "progress")
+            {
+                // An idle leg ends (done, unreachable, cut): never a failure, so no back-off, alert or rest (StoryColony.Idle.cs).
+                _current.Remove(body);
+                WanderEnded(p, cur, status);
+                if (p != null) p.Rev = Bump();
+                return true;
+            }
             switch (status)
             {
                 case "progress":
@@ -362,6 +370,7 @@ public sealed partial class StoryColony : IStoryPort
                     restart.Add(p.Name);
                 }
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RetrySuspended(); } // missing ingredients may be stored by now
+            WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
             // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
             foreach (var p in Pawns.Values)
@@ -493,7 +502,7 @@ public sealed partial class StoryColony : IStoryPort
                     return 0;
                 }
                 _broughtHome[p.Name] = Now;
-                moves.Add((p, to, dist));
+                moves.Add((p, SpreadHome(p, live, home) ?? to, dist)); // each to its own spot: never all onto one cell
             }
         }
         foreach (var (p, to, dist) in moves)
