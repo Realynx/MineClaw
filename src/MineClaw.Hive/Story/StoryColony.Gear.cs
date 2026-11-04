@@ -1106,15 +1106,41 @@ public sealed partial class StoryColony
         var claims = GearClaims();
         var t = new GearTask { Id = NextId("g"), Op = "policy", Label = "gearing up" };
         var from = live.Block;
-        // What it carries beyond its policy goes back first: colony stock other pawns can take (live 11-04: one pawn held 13 stone
-        // pickaxes, crafted for spares and kept as its "own tools").
-        if (ExtrasOf(p, live, from) is { Count: > 0 } extras)
-        {
-            t.Extras.AddRange(extras);
-            t.Label = "returning extra gear";
-            gear = gear.Where(g => !extras.Any(x => x.Id == g.Id)).Concat(gear.Where(g => extras.Any(x => x.Id == g.Id))
-                .GroupBy(g => g.Id).SelectMany(grp => grp.OrderBy(g => g.Meta).Take(extras.First(x => x.Id == grp.Key).Keep))).ToList();
-        }
+        gear = KeepUpExtras(p, live, t, gear, from);
+        KeepUpTools(p, d, gear, t, from, claims);
+        KeepUpWeapon(pol, d, gear, t, from, claims);
+        KeepUpArmor(p, pol, d, gear, t, from, claims);
+        KeepUpFood(pol, w, live, t, from, claims);
+        if (NothingToGear(t)) return null;
+        _policyTasks[p.Name] = t;
+        return TaskJob(p, t, "policy");
+    }
+
+    private static bool NothingToGear(GearTask t) => t.Fetch.Count == 0 && t.Wear.Count == 0 && !t.Unwear && t.Store.Count == 0 && t.Extras.Count == 0;
+
+    /// <summary>A stored unit the policy fetches: claimed (no other plan counts it), one of it fetched.</summary>
+    private static void KeepUpFetch(Dictionary<(P3 Chest, int Id, int Meta), int> claims, GearTask t, Unit u)
+    {
+        claims[(u.Store.Chest, u.Id, u.Meta)] = claims.GetValueOrDefault((u.Store.Chest, u.Id, u.Meta)) + 1;
+        t.Fetch.Add(new GearFetch(u.Store.Chest, u.Id, u.Meta, 1, EnchWish(u.Ench)));
+    }
+
+    /// <summary>
+    /// What it carries beyond its policy goes back first: colony stock other pawns can take (live 11-04: one pawn held 13 stone pickaxes,
+    /// crafted for spares and kept as its "own tools"). The gear the rest of the check sees: what stays.
+    /// </summary>
+    private List<GearSlot> KeepUpExtras(PawnState p, PawnLive live, GearTask t, List<GearSlot> gear, P3 from)
+    {
+        if (ExtrasOf(p, live, from) is not { Count: > 0 } extras) return gear;
+        t.Extras.AddRange(extras);
+        t.Label = "returning extra gear";
+        return gear.Where(g => !extras.Any(x => x.Id == g.Id)).Concat(gear.Where(g => extras.Any(x => x.Id == g.Id))
+            .GroupBy(g => g.Id).SelectMany(grp => grp.OrderBy(g => g.Meta).Take(extras.First(x => x.Id == grp.Key).Keep))).ToList();
+    }
+
+    /// <summary>Each tool kind its work needs that it lacks (or only has worn): the best fresh one stored; the worn one goes back.</summary>
+    private void KeepUpTools(PawnState p, IGameData d, List<GearSlot> gear, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
         foreach (var kind in KindsFor(p))
         {
             var mine = gear.Where(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind).ToList();
@@ -1122,50 +1148,61 @@ public sealed partial class StoryColony
             var best = StoredUnits((id, meta) => StoryTools.ToolOf(d, id) == kind && !StoryTools.Worn(d, id, meta), from, claims)
                 .OrderBy(u => u.Ench is { Count: > 0 } ? 1 : 0).ThenByDescending(u => StoryTools.LevelOf(d, u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
             if (best == null) continue;
-            claims[(best.Store.Chest, best.Id, best.Meta)] = claims.GetValueOrDefault((best.Store.Chest, best.Id, best.Meta)) + 1;
-            t.Fetch.Add(new GearFetch(best.Store.Chest, best.Id, best.Meta, 1, EnchWish(best.Ench)));
+            KeepUpFetch(claims, t, best);
             // The worn one goes back to storage (a worn tool never breaks mid-job while a fresh one is around).
             foreach (var old in mine)
                 if (BestChest(old.Id, old.Meta, from) is { } st) t.Store.Add(new GearPut(st.Chest, old.Id, old.Meta, 1, old.Ench?.ToDictionary(e => e.Key, e => e.Value)));
         }
-        if (pol.Weapon != "none" && !gear.Any(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pol.Weapon) > 0 && !StoryTools.Worn(d, g.Id, g.Meta)))
-            if (StoredUnits((id, meta) => StoryTools.WeaponScore(d, id, pol.Weapon) > 0 && !StoryTools.Worn(d, id, meta), from, claims)
-                    .OrderByDescending(u => StoryTools.WeaponScore(d, u.Id, pol.Weapon)).FirstOrDefault() is { } wu && (pol.Weapon == "best" || StoryTools.WeaponScore(d, wu.Id, pol.Weapon) >= 200))
-            {
-                claims[(wu.Store.Chest, wu.Id, wu.Meta)] = claims.GetValueOrDefault((wu.Store.Chest, wu.Id, wu.Meta)) + 1;
-                t.Fetch.Add(new GearFetch(wu.Store.Chest, wu.Id, wu.Meta, 1, EnchWish(wu.Ench)));
-            }
+    }
+
+    /// <summary>No fresh weapon of its policy's kind carried: the best stored one (a "best" policy takes any; the others a real one).</summary>
+    private void KeepUpWeapon(GearPolicy pol, IGameData d, List<GearSlot> gear, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
+        if (pol.Weapon == "none" || gear.Any(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pol.Weapon) > 0 && !StoryTools.Worn(d, g.Id, g.Meta))) return;
+        if (StoredUnits((id, meta) => StoryTools.WeaponScore(d, id, pol.Weapon) > 0 && !StoryTools.Worn(d, id, meta), from, claims)
+                .OrderByDescending(u => StoryTools.WeaponScore(d, u.Id, pol.Weapon)).FirstOrDefault() is not { } wu
+            || pol.Weapon != "best" && StoryTools.WeaponScore(d, wu.Id, pol.Weapon) < 200) return;
+        KeepUpFetch(claims, t, wu);
+    }
+
+    /// <summary>Armour on now (always, or at night by a night policy), else off when it shouldn't be worn (kept in the bag).</summary>
+    private void KeepUpArmor(PawnState p, GearPolicy pol, IGameData d, List<GearSlot> gear, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
         bool night = HourNow is >= 13 and <= 22; // dusk..dawn (hour 0 = 06:00)
         bool wearNow = pol.Armor == "always" || pol.Armor == "night" && night;
         var worn = gear.Where(g => g.Slot is >= 5 and <= 8).ToList();
-        if (wearNow)
+        if (wearNow) KeepUpWear(d, gear, worn, t, from, claims);
+        else if (worn.Count > 0 && (pol.Armor is "none" or "night") && !p.Gear.DraftArmor) t.Unwear = true; // not now: off, kept in the bag
+    }
+
+    private static readonly string[] ArmorSlotOrder = ["head", "chest", "legs", "feet"];
+
+    /// <summary>Each armour slot it doesn't wear: its best piece in the bag, else the best stored one, fetched.</summary>
+    private void KeepUpWear(IGameData d, List<GearSlot> gear, List<GearSlot> worn, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
+        foreach (var slot in ArmorSlotOrder)
         {
-            foreach (var slot in new[] { "head", "chest", "legs", "feet" })
+            if (worn.Any(g => StoryTools.ArmorSlot(g.Id) == slot)) continue;
+            if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } bag)
+                t.Wear.Add(ItemName(bag.Id, bag.Meta));
+            else if (StoredUnits((id, meta) => StoryTools.ArmorSlot(id) == slot && !StoryTools.Worn(d, id, meta), from, claims)
+                         .OrderByDescending(u => StoryTools.ArmorRank(u.Id)).FirstOrDefault() is { } au)
             {
-                if (worn.Any(g => StoryTools.ArmorSlot(g.Id) == slot)) continue;
-                if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } bag)
-                    t.Wear.Add(ItemName(bag.Id, bag.Meta));
-                else if (StoredUnits((id, meta) => StoryTools.ArmorSlot(id) == slot && !StoryTools.Worn(d, id, meta), from, claims)
-                             .OrderByDescending(u => StoryTools.ArmorRank(u.Id)).FirstOrDefault() is { } au)
-                {
-                    claims[(au.Store.Chest, au.Id, au.Meta)] = claims.GetValueOrDefault((au.Store.Chest, au.Id, au.Meta)) + 1;
-                    t.Fetch.Add(new GearFetch(au.Store.Chest, au.Id, au.Meta, 1, EnchWish(au.Ench)));
-                    t.Wear.Add(ItemName(au.Id, au.Meta));
-                }
+                KeepUpFetch(claims, t, au);
+                t.Wear.Add(ItemName(au.Id, au.Meta));
             }
         }
-        else if (worn.Count > 0 && (pol.Armor is "none" or "night") && !p.Gear.DraftArmor) t.Unwear = true; // not now: off, kept in the bag
-        if (pol.Food > 0 && w.Data is { } fd)
-        {
-            int food = live.Inventory.Where(s => fd.Food(s.Id, s.Meta) != null && !Raw(w, s.Id)).Sum(s => s.Count);
-            if (food * 2 < pol.Food
-                && StoredUnits((id, meta) => fd.Food(id, meta) != null && !Raw(w, id), from, claims).Take(pol.Food - food).ToList() is { Count: > 0 } fu)
-                foreach (var g in fu.GroupBy(u => (u.Store.Chest, u.Id, u.Meta)))
-                    t.Fetch.Add(new GearFetch(g.Key.Chest, g.Key.Id, g.Key.Meta, g.Count(), null));
-        }
-        if (t.Fetch.Count == 0 && t.Wear.Count == 0 && !t.Unwear && t.Store.Count == 0 && t.Extras.Count == 0) return null;
-        _policyTasks[p.Name] = t;
-        return TaskJob(p, t, "policy");
+    }
+
+    /// <summary>Less than half its policy's food carried: stored food up to the policy's amount.</summary>
+    private void KeepUpFood(GearPolicy pol, IStoryWorld w, PawnLive live, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
+        if (pol.Food <= 0 || w.Data is not { } fd) return;
+        int food = live.Inventory.Where(s => fd.Food(s.Id, s.Meta) != null && !Raw(w, s.Id)).Sum(s => s.Count);
+        if (food * 2 >= pol.Food
+            || StoredUnits((id, meta) => fd.Food(id, meta) != null && !Raw(w, id), from, claims).Take(pol.Food - food).ToList() is not { Count: > 0 } fu) return;
+        foreach (var g in fu.GroupBy(u => (u.Store.Chest, u.Id, u.Meta)))
+            t.Fetch.Add(new GearFetch(g.Key.Chest, g.Key.Id, g.Key.Meta, g.Count(), null));
     }
 
     /// <summary>
