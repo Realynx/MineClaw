@@ -130,6 +130,20 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>Digs a block from where the body is (no pathing): in a column or on a planned stand.</summary>
+    /// <summary>
+    /// A dig to get out of a pit, a cave or a ravine (Story Mode's escape): with whatever is in hand even when the drop is lost (the
+    /// strict-harvest rule is for work targets only); every safety and protection rule still holds. Logged when the drop goes.
+    /// </summary>
+    public Task<ActionResult> DigForEscapeAsync(BlockPos pos, CancellationToken ct = default) =>
+        RunActionAsync("dig", ct, async c =>
+        {
+            int id = World.GetBlock(pos);
+            var r = await DigCoreAsync(pos, c, allowPathing: true, requested: false).ConfigureAwait(false);
+            if (r.Ok && HarvestNeed(id) is { } need && !Tools.CanHarvest(id, World.Inventory.HeldItem(World.Player.HeldSlot).Id))
+                Log($"escape: dug {BlockName(id, 0)} at {Fmt(pos)} without {need}: its drop is lost (getting out comes first)");
+            return r;
+        });
+
     public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default) =>
         RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, allowPathing: false, requested: true));
 

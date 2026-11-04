@@ -200,6 +200,39 @@ public sealed class StoryEscapeSdkTests
         Assert.All(rig.Norm().Where(c => c.StartsWith("dig ")), c => Assert.DoesNotContain(",64,", c));
     }
 
+    /// <summary>Live 11-04: "couldn't climb out … (needs a wooden pickaxe: digging stone … without it would lose the drop)" ×3, out
+    /// only by the teleport. Getting out is worth a lost drop: the escape digs with whatever it holds.</summary>
+    [Fact]
+    public async Task A_stone_pit_is_dug_out_of_by_hand_when_no_pickaxe_is_there_losing_the_drop()
+    {
+        var (rig, port) = Pit(w =>
+        {
+            for (int x = -12; x <= 12; x++)
+                for (int z = -12; z <= 12; z++)
+                    for (int y = 64; y <= 66; y++)
+                        if (!(x == 0 && z == 0 && y > 64)) w.SetBlock(x, y, z, Blocks.Stone, 0);
+        });
+        using var _ = rig;
+        var strict = rig.On["dig"];
+        rig.On["dig"] = (a, ct) =>
+        {
+            var p = Pos(a, "at");
+            return rig.World.GetBlock(p.X, p.Y, p.Z) == Blocks.Stone
+                ? Task.FromResult(ActResult.Fail($"needs a wooden pickaxe: digging stone at {p.X},{p.Y},{p.Z} without it would lose the drop"))
+                : strict(a, ct);
+        };
+        rig.On["escape_dig"] = (a, _) =>
+        {
+            var p = Pos(a, "at");
+            rig.World.SetBlock(p.X, p.Y, p.Z, 0, 0);
+            return Task.FromResult(ActResult.Success("dug (drop lost)"));
+        };
+        var outcome = await Run(rig, $"return JSON.stringify(story.go('{Far}', 1))");
+        Assert.Contains("\"ok\":true", outcome);
+        Assert.Contains(rig.Norm(), c => c.StartsWith("escape_dig "));
+        Assert.Empty(port.Stuck);
+    }
+
     // ================================================================ ravines (live 11-04: pawns on a ravine floor cycled tasks forever)
 
     private const string Home = "0,65,14";

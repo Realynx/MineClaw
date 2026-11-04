@@ -91,7 +91,8 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
 | POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
-| POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off) → `{ok}` |
+| POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off; a pawn with a role turns Custom) or `{pawns:[name], role: id\|null}` (null = Custom, the values kept) → `{ok}`; 400 for both at once, 404 for an unknown role. See "Roles" |
+| POST | `/api/story/colonies/{id}/roles` | `{op:"add", role:{name, icon?, priorities?}}` \| `{op:"update", role:{id, name?, icon?, priorities?}}` \| `{op:"remove", id}` \| `{op:"reset_defaults"}` → `{id, roles:[Role], removed?}`; 400 on a bad body (unknown op, work type or role, a name taken or not 1..40 chars, a priority past 0..4, an icon not `[a-z0-9-]{1,24}`). See "Roles" |
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
@@ -137,7 +138,7 @@ The **Pawn** object:
 ```
 {name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
- skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]],
+ skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, role, schedule:[24 × block], held, inventory:[[id,meta,count]],
  xp_level,
  equipment:{held, armor, tools, weapons}, policy, gear_tasks:[{id, op, label}] }
 ```
@@ -171,8 +172,10 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
-- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first). It rests
-  on its feet: idle legs about home (see "Idle behaviour"), never cutting the 15 s short.
+- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again, but only when it has nothing else to do: the back-off
+  rests the failed targets, never the pawn (Fox 11-04: "never idle on a work schedule if there are things to be done"). Orders and
+  urgent needs still come first. It rests on its feet: idle legs about home (see "Idle behaviour"). Work for it ends a resting leg at
+  once.
 - A designation that failed is kept on the map with `reason` and `fails`. Its first failure raises an alert saying why. After 3
   failures its `status` is `failed` and an alert says so (again every 3 failures). It is still retried after its rest until it is
   done or cancelled.
@@ -189,6 +192,45 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
   idle hold lasts a few seconds and the pawn picks again by itself. Only a pawn held idle for 8 s or more (walking home from far)
   is cut for it, at most once every 30 s. (Live 11-03: cutting every idle script on each work-panel click restarted ten scripts per
   click, several "cancelled … (new work)" lines a second, and no pawn got anywhere.)
+
+### Roles (added 2026-11-04)
+
+Fox 11-04: "It would be a lot easier to assign priorities if I could make predefined roles that have specific priorities — e.g. a
+Farmer whose biggest priority is farming, plus a couple of other things … I like the 1–4 priority grid, but I'd like to be able to
+set some of those rows to just predefined roles."
+
+- **A role** is a named priority template, saved with the colony: `Role = {id, name, icon, builtin, priorities:{type: 0..4}, pawns:[name]}`
+  (`pawns` = who has it; a work type missing from a role is off). The state carries `roles` whole with every answer, and each pawn's
+  `role` (its id, or null = **Custom**: its own priorities, the behaviour before roles).
+- **Effective priorities.** A pawn with a role works by the role's priorities. The director keeps them in the pawn's `priorities`
+  (rewritten whenever the role or the assignment changes, and again on load), so the job picker, hauling, gear and every other reader
+  use the effective values unchanged (`StoryColony.Roles.cs`, `EffectivePriorities`).
+- **Built-in roles** (seeded on first use, editable and removable; `reset_defaults` brings them back as shipped, re-adding removed
+  ones and resetting edited ones, and keeps own roles):
+
+  | role | 1 | 2 | 3 | 4 |
+  |---|---|---|---|---|
+  | Farmer (`wheat`) | farm | | cook, haul | doctor |
+  | Miner (`pickaxe`) | mine | | haul | build |
+  | Woodcutter (`axe`) | chop | | haul | |
+  | Builder (`brick`) | build | haul | craft | |
+  | Hauler (`package`) | haul | | chop (plant cutting) | |
+  | Crafter (`hammer`) | craft | cook | haul | |
+  | Cook (`pot`) | cook | | farm, haul | doctor |
+  | Fisher (`fish`) | fish | | cook, haul | |
+  | Guard / Hunter (`shield`) | guard, hunt | | haul | |
+  | Generalist (`shapes`) | | haul | everything else | |
+
+  Every other work type is off. Brewing is Cook and enchanting/anvil work is Craft, so they need no column of their own.
+- **Assigning.** `POST …/priorities {pawns, role}` gives the pawns the role (their values become the role's); `role: null` makes
+  them Custom with the values they have.
+- **Editing a role** (`update`) changes every pawn with it at once; `priorities` merge (only the given work types change).
+- **Customising a role row.** A cell edit (`POST …/priorities {pawns, work}`) on a pawn with a role detaches it: the role is cleared
+  and the pawn keeps the role's values plus that change (RimWorld-style; the grid offers an Undo, which sends the role again).
+- **Deleting a role** turns its pawns Custom with the same values.
+- Ids: built-ins keep theirs (`farmer`, `miner`, …); an added role's id comes from its name (`Night miner` → `night-miner`, `-2` when
+  taken), never a built-in's. Names are unique (case-insensitive); a reset whose built-in name an own role took names it
+  "… (built-in)".
 
 ### Homes and beds
 
@@ -358,14 +400,27 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
      same safe rules as above. Pillar when the wall can't be cut, dig for blocks when it has none. It stops level with home, and then
      walks home again;
   4. nothing works: `story.stuck`.
-- **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
-  `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
-  needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
+- **Help, fast (Fox 11-04: "they should teleport sooner").** A stuck pawn gets an escape budget: option `stuck_teleport_after_s`
+  (default 20 s, at least 5) from when the colony first saw it stuck, or 2 failed escape steps, whichever comes first. Then the colony
   **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
-  coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
-  why. Blocks are thrown into a pit only: a pawn with no way home from a ravine or a canyon is teleported at once, because a rescuer
-  would only walk in after it. A teleport counts once the pawn shows up at home. When it hasn't within 20 s (the server refused the
-  `/tp`), one warning says so and the colony doesn't try again.
+  coordinates). Blocks are tossed into a pit (kind `give`, 8 blocks, fetched from storage first when needed) only by a pawn that is idle
+  and within 16 blocks, and only within the budget. Otherwise the teleport comes straight away, as it does for a pawn with no way home
+  from a ravine or a canyon. A teleport counts once the pawn shows up at home. When it hasn't within 10 s (the server refused the
+  `/tp`), one warning says so and the colony doesn't try again. A teleport that can't be sent (option off, no op path) is said at most
+  every 10 minutes, and the pawn keeps trying to get out by itself. Each teleport is logged and said in an alert.
+- **Getting out beats a drop.** The no-tool rule ("needs a wooden pickaxe: digging stone … would lose the drop") is for work targets.
+  An escape that is refused for it digs with whatever the pawn holds (the hidden `escape_dig{at}`). Every other rule (protection, the
+  floor under someone, lava, the void) still holds, and the client logs the lost drop. In a pit, a pillar step with the blocks it
+  carries comes before any stair dig. Live 11-04: three pawns waited for the teleport in a stone hole they could have dug out of.
+- **Stuck spots keep work away.** For 5 minutes after a pawn gets stuck, no other pawn is sent to a target within 3 blocks of the spot
+  (4 up or down). Live 11-04: maid_chan_126, _118 and _105 were stuck in one hole, each sent after the work by it.
+- **Idle with work (the idle audit).** Every second the director checks each pawn in a work or anything hour that holds, wanders or
+  rests while the colony has work of a kind it does: designations, builds with cells to do, or bills that run. Such a pawn gets a
+  reason (`idle_reason` on its row): `stuck`, `back-off rest`, `work not taken yet` (an idle leg the next wake hands over),
+  `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target` or `build or bill waiting`. When there is work
+  only of kinds it doesn't do, the reason is `priority 0`. The supervisor's per-minute perf line adds
+  `idle-with-work N: <reason> <pawn-seconds>, …`. A pawn whose top work type is all leased, or waiting for a tool, takes its next
+  work type.
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.
@@ -1524,6 +1579,14 @@ stock errors while bills waited.
   potatoes while anything else exists; those only when starving, hunger ≤ 6, fetched and left to the body's own starving reflex, never
   an "eat" that refuses them). A food fetch that fails corrects that chest's record, makes that pawn wait 15 s (then 60 s) and skips
   that chest for it for 2 minutes (an unreachable chest too: another chest, or it waits). No food anywhere: one alert, and it waits.
+- **Unreachable chests (added 2026-11-04).** Live: 334 of 462 failed searches in 5 minutes were "can't reach chest at 218,64,400 …
+  no path to use", each an A* run to its 30k-node / 2 s budget, because the rest went to the designation and not the chest. Now a
+  pawn that can't reach a chest (or a bench) leaves it out of every plan of its own (fetches, deposits, food, ingredients) for 2, then
+  5, then 10 minutes as it keeps failing; the job is never the target's failure and nobody rests. When every pawn in game has failed
+  it, one alert says "Chest at x,y,z is unreachable — pawns can't get to it" and its contents aren't stock (builds and bills don't count
+  on them) for 10 minutes or until a pawn gets there. A body's goto also remembers its failed searches (`NoRouteCache`): the same search
+  from the same cell to the same goal with the same freedoms isn't run again for 15 s unless a block changes within 24 blocks of
+  either end or a chunk loads. `Bodies:MaxPathfinds` defaults to half the cores, 2..4.
 - **Missing stock is no failure:** a bill whose ingredient isn't there is suspended with why, with where the raw material comes from
   ("no planks within 32 blocks — needs logs (chop trees)"; with logs stored: "make them from the stored logs"), never attempted, and
   retried by itself every 30 s. A failure that was the plan's (the record said the item was there; "no … within", "reserved for",
@@ -1723,7 +1786,15 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a zones palette (see "Zones": work zones, overlay layers, Erase with its kind)
   - Work, Schedule and Colony panels
 - **Work panel.** A grid of pawns by work type. Click to cycle 1–4 and off, with skill shown as the cell tint and a
-  passion mark.
+  passion mark. Roles (see "Roles"):
+  - Each row starts with a role dropdown (Custom or a role, with the role's icon). A role row shows the role's priorities in
+    dashed, lighter "from role" cells; clicking one turns the pawn Custom with the role's values plus the change, and a line under
+    the grid says "… is now Custom (was Farmer) · Undo" for 8 s.
+  - A checkbox per row (the map's selected pawns come ticked; the header box ticks all) and "N selected · Set role: …" set a role
+    for several pawns at once.
+  - The **Roles** button opens the role editor below the grid: one row per role in the same 1–4 cell style (click cycles, every
+    pawn with the role follows at once), the icon (click for the next), rename, how many pawns have it, delete (two clicks; its
+    pawns turn Custom), "New role…" + Add, and "Reset built-in roles".
 - **Schedule panel.** A grid of pawns by the 24 clock hours (00–23, as the bot indexes them); the current hour's column
   follows the page's world clock. Paint with the brush (work, sleep, anything, free) by dragging
   across cells. Copy and paste between pawns.

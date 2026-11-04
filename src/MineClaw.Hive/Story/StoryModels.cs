@@ -188,8 +188,10 @@ public sealed class PawnState
     public string Display { get; set; } = "";
     public Dictionary<string, SkillState> Skills { get; set; } = new();
     public List<string> Traits { get; set; } = new();
-    /// <summary>work type → 0 (off) .. 4.</summary>
+    /// <summary>work type → 0 (off) .. 4: the effective values (its role's while it has one: StoryColony.Roles.cs).</summary>
     public Dictionary<string, int> Priorities { get; set; } = new();
+    /// <summary>Its work role's id (<see cref="ColonyMeta.Roles"/>); null = Custom (its own priorities).</summary>
+    public string? Role { get; set; }
     public string[] Schedule { get; set; } = new string[24];
     public bool Drafted { get; set; }
     public List<Order> Queue { get; set; } = new();
@@ -490,6 +492,9 @@ public sealed class ColonyMeta
     /// <summary>Blocks a pawn keeps to nerd-pole with (dirt first, then cobblestone, netherrack) out of its store trips: a kind it
     /// carries no more of than this stays with it (default 16; 0 = none). Fox 11-04: high blocks are reached from a pillar.</summary>
     public int PillarStack { get; set; } = 16;
+    /// <summary>Seconds a stuck pawn tries to get out by itself (or 2 failed escape steps) before the colony teleports it home
+    /// (default 20, at least 5). Fox 11-04: "When pawns are stuck, they should teleport sooner."</summary>
+    public int StuckTeleportAfterS { get; set; } = 20;
     /// <summary>Gear policies, material tool rules, tool auto-crafting and spare tools (StoryColony.Gear.cs).</summary>
     public GearSettings Gear { get; set; } = new();
     /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls
@@ -502,4 +507,6 @@ public sealed class ColonyMeta
     /// <summary>Pawns may pour lava from buckets (Architect "Lava source"; docs/web/story-mode.md "Water"). Off by default; never in a
     /// home zone or beside something that burns.</summary>
     public bool AllowLava { get; set; }
+    /// <summary>Work roles: named priority templates (StoryColony.Roles.cs). Null = an older save: the built-in roles are seeded.</summary>
+    public List<WorkRole>? Roles { get; set; }
 }

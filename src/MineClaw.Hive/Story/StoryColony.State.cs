@@ -89,6 +89,7 @@ public sealed partial class StoryColony
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
             if (full && w != null) o["plants"] = StoryPlants.Json(w.Data); // what growing zones can grow here
             GearStateJson(o, full); // policies, material_rules, materials (full only): StoryColony.Gear.cs
+            o["roles"] = RolesJson(); // work roles (StoryColony.Roles.cs)
             if (!full)
             {
                 var removed = new JsonObject();
@@ -113,6 +114,7 @@ public sealed partial class StoryColony
             ["state"] = state,
             ["leaving"] = _leaving.ContainsKey(p.Name),
             ["stuck"] = StuckJson(p.Name), // {since, at, reason, step, attempts} while it is stuck (StoryColony.Rescue.cs)
+            ["idle_reason"] = _idleReason.GetValueOrDefault(p.Name), // idle in its work hours with work about: why (StoryColony.IdleAudit.cs)
             ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {
@@ -128,6 +130,7 @@ public sealed partial class StoryColony
                 ["id"] = t!.Id, ["label"] = t.Label, ["effect"] = t.Effect,
             }).ToArray()),
             ["priorities"] = new JsonObject(WorkTypes.All.Select(t => new KeyValuePair<string, JsonNode?>(t, p.Priorities.GetValueOrDefault(t)))),
+            ["role"] = p.Role,
             ["schedule"] = new JsonArray(p.Schedule.Select(b => (JsonNode)(b ?? ScheduleBlocks.Anything)!).ToArray()),
             ["held"] = live.Held,
             ["inventory"] = new JsonArray(live.Inventory.Select(s => (JsonNode)s.Json()).ToArray()),

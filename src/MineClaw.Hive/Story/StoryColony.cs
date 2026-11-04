@@ -423,6 +423,7 @@ public sealed partial class StoryColony : IStoryPort
             WakeNow();
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
+            AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
             // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
             foreach (var p in Pawns.Values)
             {

@@ -56,7 +56,7 @@ public sealed partial class StoryColony
     {
         var pool = new Dictionary<(int, int), int>();
         void Add(int id, int meta, int n) { if (n != 0) pool[(id, meta)] = pool.GetValueOrDefault((id, meta)) + n; }
-        foreach (var s in Storages) foreach (var c in s.Contents) Add(c.Id, c.Meta, c.Count);
+        foreach (var s in Storages) if (!ChestUnreachable(s.Chest)) foreach (var c in s.Contents) Add(c.Id, c.Meta, c.Count); // nobody gets there: not stock
         var cats = StoryCategories.For(w.Data);
         foreach (var p in Pawns.Values)
         {

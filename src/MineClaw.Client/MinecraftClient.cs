@@ -43,6 +43,8 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         World.Inventory.CraftResult = (grid, width) => data.MatchRecipe(grid, width)?.Output ?? ItemStack.Empty;
         World.Inventory.WindowOpened += _ => Interlocked.Increment(ref _windowsOpened);
         World.BlockChanged += TrackPlacedBlock;
+        World.BlockChanged += c => NoRoutes.Changed(c.Pos); // a changed block near a failed search: it may go now
+        World.RegionUpdated += (_, _) => NoRoutes.Clear();  // a chunk (re)loaded: the map is new
         _eventPump = Task.Run(PumpEventsAsync);
     }
 

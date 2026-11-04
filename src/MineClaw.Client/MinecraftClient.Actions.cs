@@ -260,6 +260,10 @@ public sealed partial class MinecraftClient
                 if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
                 if (avoidMoves.Count > 0) popts = popts with { AvoidMoves = avoidMoves.ToHashSet() };
                 if (CreeperAvoidCells(goal) is { Count: > 0 } blast) popts = popts with { Avoid = blast };
+                // The same search failed a moment ago from this cell (nothing changed near it since): not run again (NoRouteCache).
+                var startCell = Pathfinder.StartCellFor(World, start) ?? start.ToBlockPos();
+                var routeKey = NoRouteCache.Key(startCell, goal, o);
+                if (replans == 0 && airWaits == 0 && lastFailure is null && NoRoutes.Get(routeKey) is { } known) return ActionResult.Fail(known);
                 var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
                 if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
                 {
@@ -281,8 +285,10 @@ public sealed partial class MinecraftClient
                         scaffoldBefore = ScaffoldSnapshot();
                         continue;
                     }
-                    return ActionResult.Fail($"no path to {goal} ({path.Reason ?? path.Status.ToString()}{(lastFailure is null ? "" : ", last: " + lastFailure)})"
-                                             + NoRouteHint(goal, o, start, token));
+                    var noRoute = $"no path to {goal} ({path.Reason ?? path.Status.ToString()}{(lastFailure is null ? "" : ", last: " + lastFailure)})"
+                                  + NoRouteHint(goal, o, start, token);
+                    if (path.Status == PathStatus.NoPath && replans == 0) NoRoutes.Put(routeKey, startCell, goal, noRoute);
+                    return ActionResult.Fail(noRoute);
                 }
 
                 stuck.Step = null;

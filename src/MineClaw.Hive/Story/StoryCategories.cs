@@ -109,7 +109,9 @@ public sealed class StoryCategories
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, StoryCategories> Cache = new();
 
-    public static StoryCategories For(IGameData d) => Cache.GetOrAdd(d.VersionId, _ => new StoryCategories(d));
+    /// <summary>The tree for a version: built once (no closure per call: the haulers ask for it per drop and chest).</summary>
+    public static StoryCategories For(IGameData d) =>
+        Cache.TryGetValue(d.VersionId, out var c) ? c : Cache.GetOrAdd(d.VersionId, static (_, dd) => new StoryCategories(dd), d);
 
     public Category? Get(string id) => _byId.GetValueOrDefault(id);
 
@@ -122,20 +124,50 @@ public sealed class StoryCategories
         if (category == "*") return true;
         var leaf = LeafOf(id, meta);
         if (leaf.Equals(category, StringComparison.OrdinalIgnoreCase)) return true;
-        return _byId.TryGetValue(category, out var c) && c.Children.Any(ch => ch.Id.Equals(leaf, StringComparison.OrdinalIgnoreCase));
+        if (!_byId.TryGetValue(category, out var c)) return false;
+        foreach (var ch in c.Children)
+            if (ch.Id.Equals(leaf, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     /// <summary>A filter entry: "*", a category id, "id" or "id:meta".</summary>
     public bool Covers(string entry, int id, int meta)
     {
-        var e = entry.Trim();
-        var m = Regex.Match(e, @"^(\d+)(?::(-?\d+))?$");
-        if (m.Success) return int.Parse(m.Groups[1].Value) == id && (!m.Groups[2].Success || int.Parse(m.Groups[2].Value) is var em && (em < 0 || em == meta));
-        return In(e, id, meta);
+        // Parsed by hand: a regex match per entry per stack per chest was most of a haul pick's garbage (live 11-04).
+        var e = entry.AsSpan().Trim();
+        if (e is "*") return true;
+        if (IdEntry(e) is { } x) return x.Id == id && (x.Meta is not { } em || em < 0 || em == meta);
+        return In(e.Length == entry.Length ? entry : e.ToString(), id, meta);
+    }
+
+    /// <summary>"id" or "id:meta" (meta may be negative: any), else null.</summary>
+    private static (int Id, int? Meta)? IdEntry(ReadOnlySpan<char> e)
+    {
+        static bool Digits(ReadOnlySpan<char> s)
+        {
+            if (s.IsEmpty) return false;
+            foreach (var ch in s) if (!char.IsAsciiDigit(ch)) return false;
+            return true;
+        }
+        int colon = e.IndexOf(':');
+        var head = colon < 0 ? e : e[..colon];
+        if (!Digits(head) || !int.TryParse(head, out int id)) return null;
+        if (colon < 0) return (id, null);
+        var tail = e[(colon + 1)..];
+        if (!Digits(tail.StartsWith("-") ? tail[1..] : tail) || !int.TryParse(tail, out int meta)) return null;
+        return (id, meta);
+    }
+
+    /// <summary>Does any entry cover the item (no closure: called per stack per chest)?</summary>
+    public bool AnyCovers(List<string> entries, int id, int meta)
+    {
+        foreach (var x in entries)
+            if (Covers(x, id, meta)) return true;
+        return false;
     }
 
     /// <summary>allow (any entry covers it) and not deny (no entry covers it).</summary>
-    public bool Accepts(StorageFilter f, int id, int meta) => f.Allow.Any(a => Covers(a, id, meta)) && !f.Deny.Any(x => Covers(x, id, meta));
+    public bool Accepts(StorageFilter f, int id, int meta) => AnyCovers(f.Allow, id, meta) && !AnyCovers(f.Deny, id, meta);
 
     /// <summary>A filter entry is known (a category, "*", or an item id).</summary>
     public bool Valid(string entry) => entry == "*" || _byId.ContainsKey(entry) || Regex.IsMatch(entry, @"^\d+(:-?\d+)?$");

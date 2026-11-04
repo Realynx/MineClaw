@@ -44,9 +44,10 @@ public sealed partial class StoryColony
     {
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick
+        _pickPawn = p.Name; _pickClaims = null; // chests this pawn can't reach are left out of its plans (StoryColony.Ledger.cs)
         PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
         try { return PillarHint(PickCore(p, live), live); } // a job up high: blocks to climb with (StoryColony.Reach.cs)
-        finally { _pickEnts = null; }
+        finally { _pickEnts = null; _pickPawn = null; }
     }
 
     private ActiveJob PickCore(PawnState p, PawnLive live)
@@ -61,7 +62,8 @@ public sealed partial class StoryColony
             return DraftedEngage(p, live) ?? OrderJob(p, live) ?? DraftedReturn(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
-        if (Resting(p, live) is { } rest) return rest;
+        // A back-off rests the failed targets; the pawn itself rests only when nothing else is there (Fox 11-04: never idle with work).
+        if (RestLeft(p) != null && Work(p, live) == null && Resting(p, live) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;
         if (PolicyJob(p, live) is { } kit) return kit; // its gear policy: tools for its work, weapon, armour, food
         int hour = HourNow;
@@ -231,7 +233,7 @@ public sealed partial class StoryColony
     private bool ForbiddenEntity(int id) => Index().ForbidEntities.Contains(id);
 
     private bool Open(string key, string pawn, P3? at) =>
-        Free(key, pawn) && !Skipped(key) && !Skipped(PawnKey(key, pawn)) && (at == null || !Forbidden(at.Value));
+        Free(key, pawn) && !Skipped(key) && !Skipped(PawnKey(key, pawn)) && (at == null || !Forbidden(at.Value) && !NearHazard(at.Value, pawn));
 
     /// <summary>The nearest available job of one work type for this pawn, or null.</summary>
     internal ActiveJob? Candidate(string type, PawnState p, PawnLive live)
@@ -462,6 +464,7 @@ public sealed partial class StoryColony
         foreach (var (chest, s) in j.Takes) if (StorageAt(chest) is { } st) TakeContents(st, s.Id, s.Meta, s.Count);
         foreach (var (chest, stacks) in j.Puts) if (StorageAt(chest) is { } st) foreach (var s in stacks) AddContents(st, s);
         GearTakesEnded(j, done: true);
+        ChestsReached(p, j);
         if (j.Source == "need") _needFails.Remove(p.Name);
         if (WorkTypes.Known(j.Type) && j.Xp > 0 && StoryCharacter.Learn(p, j.Type, j.Xp, HourNow) > 0)
             Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
@@ -586,7 +589,7 @@ public sealed partial class StoryColony
         if (j.Source == "need") NeedFailed(p, j); // a food fetch that failed: that pawn waits a little, that chest is skipped
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
-        if (StaleFetch(p, j, note) || ToolFailure(note)) return;
+        if (StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note)) return;
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure

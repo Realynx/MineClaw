@@ -44,10 +44,11 @@ public sealed partial class StoryColony
     // ---------------------------------------------------------------- options
 
     /// <summary>The hauling and rescue options (<c>POST …/options</c>). Null leaves one as it is.</summary>
-    public JsonObject SetHaulOptions(bool? rescueTeleport, bool? unfiltered, bool? keepDisallowed, int? pillarStack = null)
+    public JsonObject SetHaulOptions(bool? rescueTeleport, bool? unfiltered, bool? keepDisallowed, int? pillarStack = null, int? stuckTeleportAfterS = null)
     {
         lock (_lock)
         {
+            if (stuckTeleportAfterS is { } sts) { Meta.StuckTeleportAfterS = Math.Clamp(sts, 5, 3600); Touch(); }
             if (pillarStack is { } ps) { Meta.PillarStack = Math.Clamp(ps, 0, 64); Touch(); }
             if (rescueTeleport is { } r) Meta.RescueTeleport = r;
             if (unfiltered is { } u) Meta.UnfilteredTakesAnything = u;
@@ -64,6 +65,7 @@ public sealed partial class StoryColony
         o["unfiltered_storage_takes_anything"] = Meta.UnfilteredTakesAnything;
         o["keep_disallowed"] = Meta.KeepDisallowed;
         o["pillar_stack"] = Meta.PillarStack;
+        o["stuck_teleport_after_s"] = Meta.StuckTeleportAfterS;
     }
 
     // ---------------------------------------------------------------- destinations
@@ -77,7 +79,7 @@ public sealed partial class StoryColony
         return null;
     }
 
-    private bool Denied(StorageState s, int id, int meta) => Cats is { } c && !c.Accepts(new StorageFilter { Allow = ["*"], Deny = s.Filter.Deny }, id, meta);
+    private bool Denied(StorageState s, int id, int meta) => Cats is { } c && c.AnyCovers(s.Filter.Deny, id, meta);
 
     /// <summary>"Unfiltered storage takes anything": a chest with room that doesn't deny it, open ("*") chests first, then the lowest
     /// priority (general storage), then the nearest.</summary>
@@ -102,8 +104,9 @@ public sealed partial class StoryColony
     /// <summary>No storage takes this: one condition alert while any kind has nowhere to go (<c>unstored_kinds</c> lists them).</summary>
     private void Unstored(int id, int meta, string? pawn = null)
     {
+        if (_unstored.ContainsKey((id, meta))) return; // asked per drop per pick: no name built for one already listed
         bool first = _unstored.Count == 0;
-        if (!_unstored.TryAdd((id, meta), World?.Data.DisplayName(id, meta) ?? ItemName(id, meta))) return;
+        _unstored[(id, meta)] = World?.Data.DisplayName(id, meta) ?? ItemName(id, meta);
         if (first) Alert("warn", $"No storage for: {string.Join(", ", _unstored.Values)}", pawn);
     }
 

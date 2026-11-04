@@ -15,7 +15,7 @@ namespace MineClaw.App.Supervisor;
 /// <list type="bullet">
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
-/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
+/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|roles|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
 /// <item><c>GET /api/story/colonies/{id}/architect</c> → <c>{entries:[…], benches, tabs}</c> (the Architect palette with tiers)</item>
 /// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
@@ -271,7 +271,15 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             {
                 var (ps, err) = Pawns();
                 if (err != null) return Bad(err);
-                if (b["work"] is not JsonObject work) return Bad("work must be {type: 0..4}");
+                // {pawns, role: id|null}: the pawns take a role's priorities, or turn Custom with the values they have (Roles).
+                if (b.ContainsKey("role"))
+                {
+                    if (b["work"] != null) return Bad("role or work, not both");
+                    if (b["role"] != null && S(b, "role") is not { Length: > 0 }) return Bad("role must be a role id or null");
+                    var rerr = c.SetRole(ps, S(b, "role"));
+                    return rerr != null && rerr.StartsWith("role: no such", StringComparison.Ordinal) ? Reply(404, new JsonObject { ["error"] = rerr }) : Ok(rerr);
+                }
+                if (b["work"] is not JsonObject work) return Bad("work must be {type: 0..4} (or role: id|null)");
                 var map = work.ToDictionary(kv => kv.Key, kv => kv.Value is JsonValue x && x.TryGetValue<int>(out var i) ? i : -1);
                 return Ok(c.SetPriorities(ps, map));
             }
@@ -301,6 +309,8 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                     return Reply(409, new JsonObject { ["error"] = oe, ["confirm"] = given.Result?["confirm"]?.DeepClone() });
                 return Result(given);
             }
+            case "roles":
+                return Result(c.RolesOp(b)); // work roles: add|update|remove|reset_defaults (StoryColony.Roles.cs)
             case "policies":
                 return Result(c.PoliciesOp(b));
             case "material-rules":
@@ -383,17 +393,21 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 // pillar_stack: 0..64 blocks a pawn keeps to nerd-pole with (StoryColony.Reach.cs)
                 int? pillarStack = b["pillar_stack"] is null ? null : b["pillar_stack"] is JsonValue pv && pv.TryGetValue<int>(out var pn) && pn is >= 0 and <= 64
                     ? pn : throw new FormatException("pillar_stack must be 0..64");
+                // stuck_teleport_after_s: the escape budget before the teleport home (5..3600 s, StoryColony.Rescue.cs)
+                int? stuckAfter = b["stuck_teleport_after_s"] is null ? null : b["stuck_teleport_after_s"] is JsonValue stv && stv.TryGetValue<int>(out var stn) && stn is >= 5 and <= 3600
+                    ? stn : throw new FormatException("stuck_teleport_after_s must be 5..3600");
                 // speed: normal | fast | faster, speed_effect: bool (StoryColony.Speed.cs)
                 var speed = b["speed"] is null ? null : b["speed"] is JsonValue sv && sv.TryGetValue<string>(out var sm) ? sm : "";
                 var speedEffect = Flag("speed_effect");
                 if (auto == null && detect == null && idle == null && craftTools == null && spare == null && rescue == null && unfiltered == null && keep == null
-                    && pillarStack == null && speed == null && speedEffect == null && lava == null)
-                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools, spare_tools, rescue_teleport, unfiltered_storage_takes_anything, keep_disallowed, pillar_stack, speed, speed_effect or allow_lava required");
+                    && pillarStack == null && stuckAfter == null && speed == null && speedEffect == null && lava == null)
+                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools, spare_tools, rescue_teleport, unfiltered_storage_takes_anything, keep_disallowed, pillar_stack, stuck_teleport_after_s, speed, speed_effect or allow_lava required");
                 if (c.SetSpeed(speed, speedEffect) is { } speedErr) return Bad(speedErr);
                 if (lava != null) c.SetWaterOptions(lava);
                 if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 if ((craftTools != null || spare != null) && c.SetGearOptions(craftTools, spare) is { } gerr) return Bad(gerr);
-                if (rescue != null || unfiltered != null || keep != null || pillarStack != null) c.SetHaulOptions(rescue, unfiltered, keep, pillarStack);
+                if (rescue != null || unfiltered != null || keep != null || pillarStack != null || stuckAfter != null)
+                    c.SetHaulOptions(rescue, unfiltered, keep, pillarStack, stuckAfter);
                 return Reply(200, auto == null && detect == null ? c.OptionsNow() : c.SetOptions(auto, detect));
             }
             default:

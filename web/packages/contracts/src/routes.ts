@@ -193,6 +193,8 @@ import {
   StoryPawnsRequest,
   StoryPawnsResponse,
   StoryPrioritiesRequest,
+  StoryRolesRequest,
+  StoryRolesResponse,
   StoryRecipesQuery,
   StoryRecipesResponse,
   StoryScheduleRequest,
@@ -1338,7 +1340,20 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/priorities', 'POST'),
     supervisor: '/api/story/colonies/{id}/priorities',
     audit: 'story',
-    summary: 'Work priorities (0 off, 1-4) per pawn and work type.',
+    summary:
+      'Work priorities (0 off, 1-4) per pawn and work type (a pawn with a role turns Custom), or a role for the pawns (null = Custom).',
+  }),
+  'story.roles': post('/api/story/colonies/:id/roles', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryRolesRequest,
+    response: StoryRolesResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/roles', 'POST'),
+    supervisor: '/api/story/colonies/{id}/roles',
+    audit: 'story',
+    summary:
+      'Work roles (named priority templates): add, update (every pawn with the role follows), remove (its pawns keep the values as Custom), reset_defaults.',
   }),
   'story.schedule': post('/api/story/colonies/:id/schedule', {
     access: 'story',
