@@ -21,6 +21,8 @@ public sealed partial class Pathfinder
     /// <summary>The version's rules, captured once per search (multi-version P3): step-up height (b1.8.1 0.5, 1.12.2 0.6), body
     /// height (1.8) and world height (128 / 256).</summary>
     private readonly double _step, _height;
+    /// <summary>The version tramples farmland under a walker (b1.8.1): careful moves sneak; else they are walked gently.</summary>
+    private readonly bool _walkTramples;
     private readonly int _worldHeight;
     private readonly Dictionary<long, CellInfo> _cellCache = new();
     private readonly Dictionary<long, bool> _deadlyCache = new();
@@ -33,6 +35,7 @@ public sealed partial class Pathfinder
         _w = new Overlay(world);
         var rules = world.Physics;
         _step = rules.StepHeight;
+        _walkTramples = rules.WalkingTramplesFarmland;
         _height = rules.Height;
         _worldHeight = world.WorldHeight;
         _view = options.Mechanisms is { IsEmpty: false } v ? v : null;
@@ -217,7 +220,7 @@ public sealed partial class Pathfinder
         for (var n = end; n.Parent is not null; n = n.Parent)
         {
             var m = n.Move;
-            steps.Add(new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open, m.Jump, m.Trigger, n.Requires));
+            steps.Add(new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open, m.Jump, m.Trigger, n.Requires, m.Gentle));
         }
         steps.Reverse();
         // A plate walked over that no later step needs is just a walk (the follower doesn't wait on it).
@@ -239,7 +242,7 @@ public sealed partial class Pathfinder
     /// <param name="Time">Estimated ticks the move takes (negative = use <see cref="Cost"/>, which never underestimates).</param>
     private readonly record struct Candidate(int X, int Y, int Z, MoveKind Kind, double Floor, double Cost,
         IReadOnlyList<BlockPos> Break, BlockPos? Place, bool Sneak, IReadOnlyList<DoorToggle>? Open = null, ParkourPlan? Jump = null,
-        double Time = -1, TriggerUse? Trigger = null);
+        double Time = -1, TriggerUse? Trigger = null, bool Gentle = false);
 
     private static readonly (int Dx, int Dz)[] Cardinals = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     private static readonly (int Dx, int Dz)[] Diagonals = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -251,6 +254,7 @@ public sealed partial class Pathfinder
         if (!here.Ok) return; // e.g. a broken/placed block invalidated it
         bool hereEdge = IsEdge(x, y, z);
         _hereFarmland = OnFarmland(x, y, z);
+        _hereCareful = Careful(x, y, z);
 
         foreach (var (dx, dz) in Cardinals)
         {
@@ -378,6 +382,29 @@ public sealed partial class Pathfinder
 
     /// <summary>The node being expanded stands on farmland (set per <see cref="Expand"/>).</summary>
     private bool _hereFarmland;
+    /// <summary>The node being expanded is a planted cell of a growing zone, or beside one (<see cref="Careful"/>).</summary>
+    private bool _hereCareful;
+
+    /// <summary>Plants a walker in a growing zone sneaks past: sapling, wheat, sugar cane, pumpkin/melon stems, nether wart, cocoa,
+    /// carrots, potatoes, beetroot.</summary>
+    private static bool IsPlant(int id) => id is 6 or 59 or 83 or 104 or 105 or 115 or 127 or 141 or 142 or 207;
+
+    /// <summary>
+    /// Foot cell (x,y,z) is in a growing zone (<see cref="PathOptions.GrowZone"/>) and a plant is in the body's cells there or beside
+    /// them: the pawn crouch-walks (Fox 11-04). The zone is only the cheap filter; the live blocks decide, so a harvested or untilled
+    /// patch is walked at full speed.
+    /// </summary>
+    private bool Careful(int x, int y, int z)
+    {
+        if (_o.GrowZone is not { } zone || !zone(x, y, z)) return false;
+        for (int yy = y; yy <= y + 1; yy++)
+        {
+            if (IsPlant(_w.GetBlock(x, yy, z))) return true;
+            foreach (var (dx, dz) in Cardinals)
+                if (IsPlant(_w.GetBlock(x + dx, yy, z + dz))) return true;
+        }
+        return false;
+    }
 
     /// <summary>The goal of the running search (farmland is walked cheaply only near it).</summary>
     private Goal? _goal;
@@ -401,17 +428,19 @@ public sealed partial class Pathfinder
         if (t.Floor > here.Floor + 1e-6) cost += 0.5;
         bool sneak = (hereEdge || targetEdge) && !water;
         if (sneak) cost *= _o.EdgeCostMultiplier;
-        // Across a field: sneak (no trampling) and prefer the paths around it. Only a target ON the field (planting, harvesting)
-        // makes it worth walking: everywhere else crossing costs PathOptions.FarmlandWalkPenalty a step (a detour of ~9 blocks).
-        bool toFarm = OnFarmland(tx, ty, tz);
+        // Across a field: prefer the paths around it. Only a target ON the field (planting, harvesting) makes it worth walking:
+        // everywhere else crossing costs PathOptions.FarmlandWalkPenalty a step (a detour of ~9 blocks). How it is walked is the
+        // version's: b1.8.1 sneaks (a walker tramples), 1.12.2 walks without sprinting (only a landing tramples; Gentle).
+        bool toFarm = OnFarmland(tx, ty, tz), gentle = false;
         if (!water && (_hereFarmland || toFarm))
         {
-            if (!sneak) cost *= PathOptions.SneakFactor;
-            sneak = true;
+            TakeCare(ref sneak, ref gentle, ref cost);
             cost += NearGoal(tx, ty, tz) ? PathOptions.FarmlandPenalty : PathOptions.FarmlandWalkPenalty;
         }
         // Out of the water onto a field (the trench rim): the swimmer jumps out, and a jump lands on the soil.
         else if (water && toFarm && !NearGoal(tx, ty, tz)) cost += PathOptions.FarmlandJumpPenalty;
+        // Past the plants of a growing zone: the same care (no extra cost beyond a sneak's slower pace).
+        if (!water && (_hereCareful || Careful(tx, ty, tz))) TakeCare(ref sneak, ref gentle, ref cost);
         double time = cost + (breaks.Count > 0 ? DigCosts(breaks) : 0);
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         if (open is { Count: > 0 })
@@ -421,7 +450,17 @@ public sealed partial class Pathfinder
             kind = OpenKind(open);
         }
         else open = null;
-        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak, open, Time: time));
+        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak, open, Time: time,
+            Gentle: gentle));
+    }
+
+    /// <summary>A move over farmland or past a growing zone's plants, the version's way (<see cref="Versioning.IPhysicsRules.WalkingTramplesFarmland"/>):
+    /// sneaked (the slower pace costed once), or walked without sprinting.</summary>
+    private void TakeCare(ref bool sneak, ref bool gentle, ref double cost)
+    {
+        if (!_walkTramples) { gentle = true; return; }
+        if (!sneak) cost *= PathOptions.SneakFactor;
+        sneak = true;
     }
 
     private void AddJump(List<Candidate> output, CellInfo here, bool hereEdge, int tx, int ty, int tz, CellInfo t,
@@ -433,10 +472,13 @@ public sealed partial class Pathfinder
         if (sneak) cost *= _o.EdgeCostMultiplier;
         // Jumping onto/off a field: sneak through it like a walk (steps on farmland trample it), and avoid it when possible.
         // Landing on one is what tramples in 1.12 (BlockFarmland.onFallenUpon): costed so high that any walk round wins.
-        if (OnFarmland(tx, ty, tz)) { sneak = true; cost += PathOptions.FarmlandJumpPenalty; }
-        else if (_hereFarmland) { sneak = true; cost += PathOptions.FarmlandPenalty * 2; }
+        bool careful = false;
+        if (OnFarmland(tx, ty, tz)) { careful = true; cost += PathOptions.FarmlandJumpPenalty; }
+        else if (_hereFarmland) { careful = true; cost += PathOptions.FarmlandPenalty * 2; }
+        else if (_hereCareful || Careful(tx, ty, tz)) careful = true;
+        sneak |= careful && _walkTramples;
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
-        output.Add(new Candidate(tx, ty, tz, MoveKind.Jump, t.Floor, cost, breaks, null, sneak && !here.Water));
+        output.Add(new Candidate(tx, ty, tz, MoveKind.Jump, t.Floor, cost, breaks, null, sneak && !here.Water, Gentle: careful && !_walkTramples));
     }
 
     private bool TryDrop(List<Candidate> output, CellInfo here, int x, int y, int z, int dx, int dz)
@@ -483,8 +525,28 @@ public sealed partial class Pathfinder
             double cost = PathOptions.WalkCost + FallTicks[Math.Min((int)Math.Ceiling(fall), FallTicks.Length - 1)]
                           + HazardPenalty(tx, ty, tz);
             if (IsEdge(tx, ty, tz)) cost *= 1.5;
+            // Down into a ditch (a 1-deep trench or hole, dry or a water channel): it takes a jump to get back out.
+            if (fall <= 1.25 + 1e-6 && InDitch(tx, ty, tz)) cost += _o.DitchPenalty;
             output.Add(new Candidate(tx, ty, tz, c.Water ? MoveKind.Swim : MoveKind.Drop, c.Floor, cost, [], null, false));
             return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Foot cell (x,y,z) is the bottom of a ditch: along x or z there is a bank on both sides within 2 cells (a wall at the feet whose
+    /// top is a standable cell), so the body came down a block into it and must jump to get out (Story water's trenches and channels).
+    /// </summary>
+    private bool InDitch(int x, int y, int z) =>
+        (Bank(x, y, z, 1, 0) && Bank(x, y, z, -1, 0)) || (Bank(x, y, z, 0, 1) && Bank(x, y, z, 0, -1));
+
+    private bool Bank(int x, int y, int z, int dx, int dz)
+    {
+        for (int i = 1; i <= 2; i++)
+        {
+            int bx = x + dx * i, bz = z + dz * i;
+            if (HasCollisionAt(bx, y, bz)) return Cell(bx, y + 1, bz).Ok;
+            if (!Cell(bx, y, bz).Ok) return false;
         }
         return false;
     }

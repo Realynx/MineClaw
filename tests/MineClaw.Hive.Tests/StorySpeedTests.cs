@@ -47,18 +47,25 @@ public class StorySpeedTests
     }
 
     [Fact]
-    public void Speed_effects_are_renewed_on_1122_with_an_op_and_cleared_back_at_normal()
+    public void Speed_effects_are_a_toggle_on_1122_with_an_op_given_again_only_when_lost_and_cleared_back_at_normal()
     {
         var time = new ManualTime();
         var (c, h, _) = StoryRig.Make(1, MineClaw.Data.Versioning.Release1122GameData.Instance, time);
         h.EffectsAvailable = true;
         c.SetSpeed("fast", null);
         Assert.Equal([(c.P(), 1)], h.Effects);              // Speed II for Fast
+        for (int i = 0; i < 10; i++) { time.Now += TimeSpan.FromMinutes(1); c.Tick(); }
+        Assert.Equal([(c.P(), 1)], h.Effects);                           // a toggle: never renewed while the body has it (Fox 11-04: log spam)
+        h.ServerAmps.Remove(c.P());                         // it died: the effect is gone
         c.Tick();
-        Assert.Single(h.Effects);                           // not again before the renewal
-        time.Now += StoryColony.EffectRenew;
+        Assert.Equal(2, h.Effects.Count);                   // given again, once
+        h.ServerAmps.Remove(c.P());                         // the server hasn't shown it yet (or it died again at once)
         c.Tick();
-        Assert.Equal(2, h.Effects.Count);
+        Assert.Equal(2, h.Effects.Count);                   // not again within the recheck
+        time.Now += StoryColony.EffectRecheck;
+        c.Tick();
+        Assert.Equal(3, h.Effects.Count);
+        Assert.Equal(1_000_000, StoryColony.EffectSeconds);
         c.SetSpeed("faster", null);
         Assert.Equal((c.P(), 2), h.Effects[^1]);            // Speed III for Faster
         c.SetSpeed("normal", null);

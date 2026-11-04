@@ -63,10 +63,12 @@ public class FarmlandPathTests(Xunit.Abstractions.ITestOutputHelper output)
             if (surface == Farmland)
                 Assert.All(r.Steps.Where(s => OnField(w, s)), s =>
                 {
-                    Assert.True(s.Sneak);
+                    // 1.12.2 walking doesn't trample (only a landing does): walked, never sprinted (Fox 11-04), not sneaked.
+                    Assert.True(s.Gentle);
+                    Assert.False(s.Sneak);
                     double penalty = goal.Distance(s.X, s.Y, s.Z) <= PathOptions.FarmlandGoalRange
                         ? PathOptions.FarmlandPenalty : PathOptions.FarmlandWalkPenalty;
-                    Assert.True(s.Cost >= PathOptions.WalkCost * PathOptions.SneakFactor + penalty);
+                    Assert.True(s.Cost >= PathOptions.WalkCost + penalty);
                 });
             Follow(w, new Vec3d(0.5, 64, 0.5), r);
         }

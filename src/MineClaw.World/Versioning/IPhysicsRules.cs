@@ -26,6 +26,11 @@ public interface IPhysicsRules
     /// <summary>How far the sneak edge clamp probes below the box (b1.8.1 1.0; 1.12.2 the step height, 0.6): a sneaking player
     /// walks off an edge whose drop is deeper than this.</summary>
     double SneakEdgeProbe { get; }
+    /// <summary>Walking on farmland can turn it to dirt: b1.8.1 yes (mc-dev <c>BlockSoil.b</c>, 1 in 4 per step for a walker that
+    /// isn't sneaking, so a field is crossed sneaking); 1.12.2 no (only a landing from more than half a block,
+    /// <c>BlockFarmland.onFallenUpon</c>: walked normally, never sprinted, jumped or dropped onto). Fox 11-04: "In 1.12.2 we can walk on
+    /// wheat and not crush it. We can't sprint on it, but we don't have to crouch-walk either, like the beta version."</summary>
+    bool WalkingTramplesFarmland { get; }
 
     /// <summary>One 50 ms client tick of the local player.</summary>
     void Tick(IBlockAccess world, PhysicsState state, MoveInput input);
@@ -88,6 +93,7 @@ public sealed class Beta181PhysicsRules : IPhysicsRules
     public int WorldHeight => ChunkColumn.SizeY;
     public double JumpVelocity => PlayerPhysics.JumpVelocity;
     public double SneakEdgeProbe => 1.0;
+    public bool WalkingTramplesFarmland => true;
 
     public void Tick(IBlockAccess world, PhysicsState state, MoveInput input) => PlayerPhysics.TickBeta(world, state, input, PlayerPhysics.StepHeight);
 
@@ -132,6 +138,7 @@ public sealed class Release1122PhysicsRules : IPhysicsRules
     public int WorldHeight => ChunkColumn.MaxHeight;
     public double JumpVelocity => Physics1122.JumpVelocity;
     public double SneakEdgeProbe => Step;
+    public bool WalkingTramplesFarmland => false;
 
     public void Tick(IBlockAccess world, PhysicsState state, MoveInput input) => Physics1122.Tick(world, state, input);
 
