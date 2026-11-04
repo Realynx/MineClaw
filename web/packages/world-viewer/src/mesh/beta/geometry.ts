@@ -90,7 +90,7 @@ export class BetaBuilder {
   private flatOf(tile: number, f: number): number {
     if (tile >= 0) {
       const a = this.avg(tile);
-      if (a != null && tile !== TILE_WATER_STILL && tile !== TILE_WATER_FLOW && tile !== TILE_LAVA_STILL && tile !== TILE_LAVA_FLOW && tile !== TILE_FIRE_A && tile !== TILE_FIRE_B && tile !== TILE_PORTAL) return a;
+      if (a != null && !ANIMATED_TILES.has(tile)) return a;
     }
     if (this.id === 51) return 0xff9a20;
     if (this.id === 90) return 0x7a2bd9;
@@ -105,37 +105,33 @@ export class BetaBuilder {
   box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, tile: (f: number) => TileRef, layer = Layer.Opaque, cull = 0, xf: M4 | null = null, shade = true): Quad[] {
     const made: Quad[] = [];
     for (let f = 0; f < 6; f++) {
-      let p: number[];
-      switch (f) {
-        case 1: p = [x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0]; break;
-        case 0: p = [x0, y0, z1, x0, y0, z0, x1, y0, z0, x1, y0, z1]; break;
-        case 2: p = [x1, y1, z0, x1, y0, z0, x0, y0, z0, x0, y1, z0]; break;
-        case 3: p = [x0, y1, z1, x0, y0, z1, x1, y0, z1, x1, y1, z1]; break;
-        case 4: p = [x0, y1, z0, x0, y0, z0, x0, y0, z1, x0, y1, z1]; break;
-        default: p = [x1, y1, z1, x1, y0, z1, x1, y0, z0, x1, y1, z0];
-      }
-      const uv: number[] = [];
-      for (let k = 0; k < 4; k++) uv.push(...uvOn(f, p[k * 3], p[k * 3 + 1], p[k * 3 + 2]));
-      const t = tile(f);
-      const q = makeQuad(p, uv, {
-        c: t.tile >= 0 ? t.tile & 15 : 0,
-        r: t.tile >= 0 ? t.tile >> 4 : 0,
-        tint: this.tinted(t.tint),
-        ovC: t.overlay >= 0 ? t.overlay & 15 : -1,
-        ovR: t.overlay >= 0 ? t.overlay >> 4 : -1,
-        ovTint: this.tinted(t.overlayTint),
-        layer,
-        cull: (cull >> f) & 1 ? f : -1,
-        emissive: emissiveBeta(this.id),
-        flat: this.flatOf(t.tile, f),
-        textured: this.textured && t.tile >= 0,
-        shade: shade ? undefined : 1,
-      });
-      if (xf) transformQuad(q, xf, !shade);
+      const q = this.boxFace(f, boxFacePoints(f, x0, y0, z0, x1, y1, z1), tile(f), layer, cull, xf, shade);
       made.push(q);
       this.out.push(q);
     }
     return made;
+  }
+
+  /** One face of a box: its tile (cell, tint, overlay), cull bit, flat colour and optional transform. */
+  private boxFace(f: number, p: number[], t: TileRef, layer: Layer, cull: number, xf: M4 | null, shade: boolean): Quad {
+    const uv: number[] = [];
+    for (let k = 0; k < 4; k++) uv.push(...uvOn(f, p[k * 3], p[k * 3 + 1], p[k * 3 + 2]));
+    const q = makeQuad(p, uv, {
+      c: cellCol(t.tile, 0),
+      r: cellRow(t.tile, 0),
+      tint: this.tinted(t.tint),
+      ovC: cellCol(t.overlay, -1),
+      ovR: cellRow(t.overlay, -1),
+      ovTint: this.tinted(t.overlayTint),
+      layer,
+      cull: (cull >> f) & 1 ? f : -1,
+      emissive: emissiveBeta(this.id),
+      flat: this.flatOf(t.tile, f),
+      textured: this.textured && t.tile >= 0,
+      shade: shade ? undefined : 1,
+    });
+    if (xf) transformQuad(q, xf, !shade);
+    return q;
   }
 
   /** A two-sided plane a, b, c, d with tile UV (0,0) at a, (1,0) at d (uvA..uvC the rectangle). */
@@ -463,30 +459,10 @@ export class BetaBuilder {
   }
 
   private rail(id: number, meta: number): void {
-    let m = meta;
-    if (id !== 66) m &= 7;
-    const tile = id === 27 ? ((meta & 8) !== 0 ? 179 : 163) : id === 28 ? 195 : m >= 6 ? 112 : 128;
-    let vx = [1, 1, 0, 0], vz = [0, 1, 1, 0];
-    if (m === 1 || m === 2 || m === 3 || m === 7) {
-      vx = [1, 0, 0, 1];
-      vz = [1, 1, 0, 0];
-    } else if (m === 8) {
-      vx = [0, 0, 1, 1];
-      vz = [1, 0, 0, 1];
-    } else if (m === 9) {
-      vx = [0, 1, 1, 0];
-      vz = [0, 0, 1, 1];
-    }
-    const h = E;
-    const vy = [h, h, h, h];
-    if (m === 2 || m === 4) {
-      vy[0] += 1;
-      vy[3] += 1;
-    }
-    if (m === 3 || m === 5) {
-      vy[1] += 1;
-      vy[2] += 1;
-    }
+    const m = id !== 66 ? meta & 7 : meta;
+    const tile = railTile(id, meta, m);
+    const [vx, vz] = railCorners(m);
+    const vy = railHeights(m);
     const q = makeQuad([vx[0], vy[0], vz[0], vx[1], vy[1], vz[1], vx[2], vy[2], vz[2], vx[3], vy[3], vz[3]], [1, 0, 1, 1, 0, 1, 0, 0], {
       c: tile & 15, r: tile >> 4, layer: Layer.Cutout, twoSided: true, flat: this.flatOf(tile, 1), textured: this.textured, shade: 1, dir: -1,
     });
@@ -534,18 +510,13 @@ export class BetaBuilder {
 
   private lever(meta: number): void {
     const m = meta & 7, on = (meta & 8) !== 0;
-    const cob = () => ref1(16);
+    const pose = LEVER_POSES[m];
+    const b = pose.base;
+    this.box(b[0], b[1], b[2], b[3], b[4], b[5], () => ref1(16));
     const rad = 0.7 * (180 / Math.PI);
-    let stick: M4;
-    switch (m) {
-      case 1: this.box(0, 0.3125, 0.25, 0.1875, 0.6875, 0.75, cob); stick = chain(translate(0.19, 0.5, 0.5), rotate(on ? -rad : rad, 'z')); break;
-      case 2: this.box(0.8125, 0.3125, 0.25, 1, 0.6875, 0.75, cob); stick = chain(translate(0.81, 0.5, 0.5), rotate(on ? rad : -rad, 'z')); break;
-      case 3: this.box(0.25, 0.3125, 0, 0.75, 0.6875, 0.1875, cob); stick = chain(translate(0.5, 0.5, 0.19), rotate(on ? rad : -rad, 'x')); break;
-      case 4: this.box(0.25, 0.3125, 0.8125, 0.75, 0.6875, 1, cob); stick = chain(translate(0.5, 0.5, 0.81), rotate(on ? -rad : rad, 'x')); break;
-      default: this.box(0.3125, 0, 0.25, 0.6875, 0.1875, 0.75, cob); stick = chain(translate(0.5, 0.1, 0.5), rotate(on ? rad : -rad, 'x'));
-    }
+    const stick = chain(translate(pose.at[0], pose.at[1], pose.at[2]), rotate(on === pose.onNegative ? -rad : rad, pose.axis));
     // The handle points out of the base (local +y): turn it onto the base's outward axis first.
-    const align = m === 1 ? rotate(-90, 'z') : m === 2 ? rotate(90, 'z') : m === 3 ? rotate(90, 'x') : m === 4 ? rotate(-90, 'x') : translate(0, 0, 0);
+    const align = pose.align ? rotate(pose.align, pose.axis) : translate(0, 0, 0);
     this.box(-E, 0, -E, E, 10 * E, E, () => ref1(96), Layer.Cutout, 0, chain(stick, align));
   }
 
@@ -576,10 +547,13 @@ export class BetaBuilder {
 
   /** Panes / iron bars: arms toward panes, glass and opaque cubes; no neighbour = both full arms (vanilla). */
   private pane(nb: Nb, id: number): void {
-    const tile = id === 101 ? 85 : 49;
-    const c = (n: number) => n === id || n === 20 || opaqueBeta(n);
-    let wv = c(nb.id(-1, 0, 0)), ev = c(nb.id(1, 0, 0)), nv = c(nb.id(0, 0, -1)), sv = c(nb.id(0, 0, 1));
+    let wv = paneLinks(id, nb.id(-1, 0, 0)), ev = paneLinks(id, nb.id(1, 0, 0)), nv = paneLinks(id, nb.id(0, 0, -1)), sv = paneLinks(id, nb.id(0, 0, 1));
     if (!wv && !ev && !nv && !sv) wv = ev = nv = sv = true;
+    this.paneArms(id === 101 ? 85 : 49, wv, ev, nv, sv);
+  }
+
+  /** The pane's x arm (west/east halves) and z arm (north/south halves). */
+  private paneArms(tile: number, wv: boolean, ev: boolean, nv: boolean, sv: boolean): void {
     const a = 7 / 16, b = 9 / 16;
     const t = () => ref1(tile);
     if (wv || ev) this.box(wv ? 0 : a, 0, a, ev ? 1 : b, 1, b, t, Layer.Cutout);
@@ -616,6 +590,78 @@ export class BetaBuilder {
 }
 
 const ref1 = (tile: number): TileRef => (tile < 0 ? NO_TILE : { tile, tint: 0, overlay: -1, overlayTint: 0 });
+
+/** Tiles TextureFX animates (water, lava, fire, portal): never a flat average colour. */
+const ANIMATED_TILES = new Set([TILE_WATER_STILL, TILE_WATER_FLOW, TILE_LAVA_STILL, TILE_LAVA_FLOW, TILE_FIRE_A, TILE_FIRE_B, TILE_PORTAL]);
+
+/** A tile's atlas column / row, or `none` for no tile. */
+const cellCol = (tile: number, none: number) => (tile >= 0 ? tile & 15 : none);
+const cellRow = (tile: number, none: number) => (tile >= 0 ? tile >> 4 : none);
+
+/** A box face's corners (face order down, up, north, south, west, east). */
+function boxFacePoints(f: number, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): number[] {
+  switch (f) {
+    case 1: return [x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0];
+    case 0: return [x0, y0, z1, x0, y0, z0, x1, y0, z0, x1, y0, z1];
+    case 2: return [x1, y1, z0, x1, y0, z0, x0, y0, z0, x0, y1, z0];
+    case 3: return [x0, y1, z1, x0, y0, z1, x1, y0, z1, x1, y1, z1];
+    case 4: return [x0, y1, z0, x0, y0, z0, x0, y0, z1, x0, y1, z1];
+    default: return [x1, y1, z1, x1, y0, z1, x1, y0, z0, x1, y1, z0];
+  }
+}
+
+/** Rail tiles: powered (lit when on), detector, else the straight / curved rail. */
+function railTile(id: number, meta: number, m: number): number {
+  if (id === 27) return (meta & 8) !== 0 ? 179 : 163;
+  if (id === 28) return 195;
+  return m >= 6 ? 112 : 128;
+}
+
+const RAIL_NS: readonly [readonly number[], readonly number[]] = [[1, 1, 0, 0], [0, 1, 1, 0]];
+const RAIL_EW: readonly [readonly number[], readonly number[]] = [[1, 0, 0, 1], [1, 1, 0, 0]];
+const RAIL_8: readonly [readonly number[], readonly number[]] = [[0, 0, 1, 1], [1, 0, 0, 1]];
+const RAIL_9: readonly [readonly number[], readonly number[]] = [[0, 1, 1, 0], [0, 0, 1, 1]];
+
+/** The rail quad's corner x and z by shape. */
+function railCorners(m: number): readonly [readonly number[], readonly number[]] {
+  if (m === 1 || m === 2 || m === 3 || m === 7) return RAIL_EW;
+  if (m === 8) return RAIL_8;
+  if (m === 9) return RAIL_9;
+  return RAIL_NS;
+}
+
+/** The rail quad's corner heights: ascending shapes lift one edge a block. */
+function railHeights(m: number): number[] {
+  const vy = [E, E, E, E];
+  if (m === 2 || m === 4) {
+    vy[0] += 1;
+    vy[3] += 1;
+  }
+  if (m === 3 || m === 5) {
+    vy[1] += 1;
+    vy[2] += 1;
+  }
+  return vy;
+}
+
+/** Lever bases by facing (meta & 7: 1 east-facing on a west wall … 4, else on the floor): the base box, the stick's pivot,
+ * its turning axis, whether "on" turns it negative, and the handle's alignment turn (0 = none). */
+const LEVER_FLOOR = { base: [0.3125, 0, 0.25, 0.6875, 0.1875, 0.75], at: [0.5, 0.1, 0.5], axis: 'x', onNegative: false, align: 0 } as const;
+const LEVER_POSES: ReadonlyArray<{ base: readonly number[]; at: readonly number[]; axis: 'x' | 'z'; onNegative: boolean; align: number }> = [
+  LEVER_FLOOR,
+  { base: [0, 0.3125, 0.25, 0.1875, 0.6875, 0.75], at: [0.19, 0.5, 0.5], axis: 'z', onNegative: true, align: -90 },
+  { base: [0.8125, 0.3125, 0.25, 1, 0.6875, 0.75], at: [0.81, 0.5, 0.5], axis: 'z', onNegative: false, align: 90 },
+  { base: [0.25, 0.3125, 0, 0.75, 0.6875, 0.1875], at: [0.5, 0.5, 0.19], axis: 'x', onNegative: false, align: 90 },
+  { base: [0.25, 0.3125, 0.8125, 0.75, 0.6875, 1], at: [0.5, 0.5, 0.81], axis: 'x', onNegative: true, align: -90 },
+  LEVER_FLOOR,
+  LEVER_FLOOR,
+  LEVER_FLOOR,
+];
+
+/** Panes and iron bars link to their own kind, glass and opaque cubes. */
+function paneLinks(id: number, n: number): boolean {
+  return n === id || n === 20 || opaqueBeta(n);
+}
 
 /** Redstone wire's power colour: dark red unpowered, brighter and yellower with power. */
 function wireTint(meta: number): number {
