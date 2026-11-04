@@ -120,9 +120,9 @@ public sealed class StorySdkTests
         int hold = calls.FindIndex(c => c.StartsWith("skill:hold_item")), use = calls.FindIndex(c => c.StartsWith("use_block "));
         Assert.True(hold >= 0 && hold < use, string.Join(" | ", calls)); // the hoe in hand, then on the block
         var reports = port.Reports.ToList();
-        Assert.Equal("j1 done", reports[0]);
+        Assert.StartsWith("j1 done", reports[0]); // the pastime's own message rides along ("socialise")
         Assert.StartsWith("j2 done", reports[1]);
-        Assert.Equal("j3 done", reports[2]);
+        Assert.StartsWith("j3 done", reports[2]);
     }
 
     [Fact]

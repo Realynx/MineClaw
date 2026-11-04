@@ -80,7 +80,7 @@
     g.skill('hold_item', j.hoe);
     return g.use_block(j.at);
   };
-  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle(job)|fetch/place(job) - the job loop */
+  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle/fetch/place(job) - job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report,
