@@ -127,8 +127,22 @@ internal sealed class Release1122Smelting
     /// takes the first recipe of the item.</summary>
     public SmeltingRecipe? For(int id, int damage) => All.FirstOrDefault(r => r.MatchesInput(id, damage));
 
-    private static readonly HashSet<string> WoodDoors = ["wooden_door", "spruce_door", "birch_door", "jungle_door", "acacia_door", "dark_oak_door"];
-    private static readonly HashSet<string> Boats = ["boat", "spruce_boat", "birch_boat", "jungle_boat", "acacia_boat", "dark_oak_boat"];
+    /// <summary>The fuels <c>getItemBurnTime</c> names before its wood-material rule (wooden blocks that burn shorter).</summary>
+    private static readonly Dictionary<string, int> FuelBeforeWood = new()
+    {
+        ["wooden_slab"] = 150, ["wool"] = 100, ["carpet"] = 67, ["ladder"] = 300, ["wooden_button"] = 100,
+    };
+
+    /// <summary>The fuels after the wood-material rule.</summary>
+    private static readonly Dictionary<string, int> FuelAfterWood = new()
+    {
+        ["coal_block"] = 16000,
+        ["wooden_pickaxe"] = 200, ["wooden_axe"] = 200, ["wooden_shovel"] = 200, ["wooden_sword"] = 200, ["wooden_hoe"] = 200,
+        ["stick"] = 100, ["bow"] = 300, ["fishing_rod"] = 300, ["sign"] = 200, ["coal"] = 1600, ["lava_bucket"] = 20000,
+        ["sapling"] = 100, ["bowl"] = 100, ["blaze_rod"] = 2400,
+        ["wooden_door"] = 200, ["spruce_door"] = 200, ["birch_door"] = 200, ["jungle_door"] = 200, ["acacia_door"] = 200, ["dark_oak_door"] = 200,
+        ["boat"] = 400, ["spruce_boat"] = 400, ["birch_boat"] = 400, ["jungle_boat"] = 400, ["acacia_boat"] = 400, ["dark_oak_boat"] = 400,
+    };
 
     /// <summary><c>TileEntityFurnace.getItemBurnTime</c>, in its order: wooden slab 150, wool 100, carpet 67, ladder 300, wooden
     /// button 100, any other block item of wood material 300, coal block 16000, wooden tools/swords/hoes 200, stick 100,
@@ -137,32 +151,11 @@ internal sealed class Release1122Smelting
     public static int FuelTicks(Release1122GameData d, int itemId)
     {
         if (itemId <= 0 || d.NameOf(itemId) is not { } n) return 0;
-        switch (n)
-        {
-            case "wooden_slab": return 150;
-            case "wool": return 100;
-            case "carpet": return 67;
-            case "ladder": return 300;
-            case "wooden_button": return 100;
-        }
+        if (FuelBeforeWood.TryGetValue(n, out int ticks)) return ticks;
         // Block.getBlockFromItem(item).getDefaultState().getMaterial() == WOOD: block items, and the banner (an ItemBlock of the
         // standing banner past id 255).
         if (itemId < 256 && d.McBlockOf(itemId) is { Category: "wood" } || n == "banner") return 300;
-        if (n == "coal_block") return 16000;
-        if (n is "wooden_pickaxe" or "wooden_axe" or "wooden_shovel" or "wooden_sword" or "wooden_hoe") return 200;
-        return n switch
-        {
-            "stick" => 100,
-            "bow" or "fishing_rod" => 300,
-            "sign" => 200,
-            "coal" => 1600,
-            "lava_bucket" => 20000,
-            "sapling" or "bowl" => 100,
-            "blaze_rod" => 2400,
-            _ when WoodDoors.Contains(n) => 200,
-            _ when Boats.Contains(n) => 400,
-            _ => 0,
-        };
+        return FuelAfterWood.GetValueOrDefault(n);
     }
 }
 
@@ -171,130 +164,167 @@ internal sealed class Release1122Smelting
 /// <c>damageDropped</c> / <c>getDrops</c> / <c>dropBlockAsItemWithChance</c> / <c>harvestBlock</c> overrides (fortune and silk
 /// touch ignored; shears count where <c>harvestBlock</c> checks them). minecraft-data's <c>drops</c> field is not used: it
 /// is wrong for several blocks (reeds, doors, huge brown mushrooms). Random counts are ranges (Min..Max); one-in-n drops
-/// carry their chance.
+/// carry their chance. The overrides are a table keyed by block name (<see cref="Rules"/>); a block without one drops its own
+/// item (<c>Block.getItemDropped</c>, damageDropped 0) when it has one.
 /// </summary>
 internal static class Release1122Drops
 {
+    /// <summary>One break: the block, its meta and whether the held item is shears, with the drop builders the rules share.</summary>
+    private readonly record struct Ctx(Release1122GameData D, int BlockId, string Name, int Meta, bool Shears)
+    {
+        public int I(string name) => D.IdOrMinus(name);
+        public static Drop One(int id, int dmg = 0) => new(id, dmg, 1, 1);
+        public Drop[] Self(int dmg = 0) => [One(BlockId, dmg)];
+        public Drop[] Item(string name, int dmg = 0) => [One(I(name), dmg)];
+        public Drop[] Range(string name, int dmg, int min, int max) => [new(I(name), dmg, min, max)];
+        public Drop Chance(string name, int dmg, float chance) => new(I(name), dmg, 1, 1, chance);
+    }
+
+    /// <summary>The overrides by block name; a block can have only one.</summary>
+    private sealed class RuleTable : Dictionary<string, Func<Ctx, IReadOnlyList<Drop>>>
+    {
+        public void Each(Func<Ctx, IReadOnlyList<Drop>> rule, params string[] names)
+        {
+            foreach (var n in names) Add(n, rule);
+        }
+
+        public void ItemOf(string item, params string[] names) => Each(c => c.Item(item), names);
+        public void RangeOf(string item, int dmg, int min, int max, params string[] names) => Each(c => c.Range(item, dmg, min, max), names);
+    }
+
+    private static readonly RuleTable Rules = BuildRules();
+
     public static IReadOnlyList<Drop> For(Release1122GameData d, int blockId, int meta, int held)
     {
         if (blockId <= 0 || d.McBlockOf(blockId) is not { } block) return [];
         if (!d.CanHarvest(blockId, held)) return [];
-        int I(string name) => d.IdOrMinus(name);
-        bool shears = held > 0 && d.NameOf(held) == "shears";
-        Drop One(int id, int dmg = 0) => new(id, dmg, 1, 1);
-        Drop[] Self(int dmg = 0) => [One(blockId, dmg)];
-        Drop[] Item(string name, int dmg = 0) => [One(I(name), dmg)];
-
-        switch (block.Name)
-        {
-            // Nothing (quantityDropped 0, Items.AIR, BlockEmptyDrops, liquids, silk-touch-only blocks).
-            case "flowing_water": case "water": case "flowing_lava": case "lava": case "fire": case "portal": case "end_portal":
-            case "end_gateway": case "piston_head": case "piston_extension": case "mob_spawner": case "barrier": case "command_block":
-            case "repeating_command_block": case "chain_command_block": case "structure_block": case "structure_void":
-            case "glass": case "stained_glass": case "glass_pane": case "stained_glass_pane": case "ice": case "packed_ice":
-            case "frosted_ice": case "monster_egg": case "cake": case "chorus_flower": case "end_portal_frame": case "bedrock":
-                return [];
-
-            case "stone": return (meta & 7) == 0 ? Item("cobblestone") : Self(meta & 7);
-            case "grass": case "mycelium": case "grass_path": case "farmland": return Item("dirt");
-            case "dirt": return Self((meta & 3) == 2 ? 0 : meta & 3); // podzol drops dirt
-            case "gravel": return [new(blockId, 0, 1, 1, 0.9f), new(I("flint"), 0, 1, 1, 0.1f)];
-            case "coal_ore": return Item("coal");
-            case "diamond_ore": return Item("diamond");
-            case "emerald_ore": return Item("emerald");
-            case "quartz_ore": return Item("quartz");
-            case "lapis_ore": return [new(I("dye"), 4, 4, 8)];
-            case "redstone_ore": case "lit_redstone_ore": return [new(I("redstone"), 0, 4, 5)];
-            case "glowstone": return [new(I("glowstone_dust"), 0, 2, 4)];
-            case "sea_lantern": return [new(I("prismarine_crystals"), 0, 2, 3)];
-            case "melon_block": return [new(I("melon"), 0, 3, 7)];
-            case "bookshelf": return [new(I("book"), 0, 3, 3)];
-            case "clay": return [new(I("clay_ball"), 0, 4, 4)];
-            case "snow": return [new(I("snowball"), 0, 4, 4)];
-            case "snow_layer": { int n = (meta & 7) + 2; return [new(I("snowball"), 0, n, n)]; } // BlockSnow.harvestBlock: layers + 1
-            case "ender_chest": return [new(I("obsidian"), 0, 8, 8)];
-            case "brown_mushroom_block": return [new(I("brown_mushroom"), 0, 0, 2)];
-            case "red_mushroom_block": return [new(I("red_mushroom"), 0, 0, 2)];
-            case "chorus_plant": return [new(I("chorus_fruit"), 0, 0, 1)];
-
-            case "log": case "log2": return Self(meta & 3);
-            case "leaves":
-            {
-                int v = meta & 3;
-                if (shears) return Self(v);
-                var l = new List<Drop> { new(I("sapling"), v, 1, 1, v == 3 ? 1f / 40f : 1f / 20f) };
-                if (v == 0) l.Add(new(I("apple"), 0, 1, 1, 1f / 200f));
-                return l;
-            }
-            case "leaves2":
-            {
-                int v = meta & 3;
-                if (shears) return Self(v);
-                var l = new List<Drop> { new(I("sapling"), v + 4, 1, 1, 1f / 20f) };
-                if (v == 1) l.Add(new(I("apple"), 0, 1, 1, 1f / 200f));
-                return l;
-            }
-            case "tallgrass": return shears ? Self(meta & 3) : [new(I("wheat_seeds"), 0, 1, 1, 1f / 8f)];
-            case "deadbush": return shears ? Self() : [new(I("stick"), 0, 0, 2)];
-            case "web": return shears ? Self() : Item("string");
-            case "vine": return shears ? Self() : [];
-            case "double_plant":
-            {
-                if ((meta & 8) != 0) return []; // the upper half drops nothing; the lower half drops the plant
-                int v = meta & 7;
-                if (v == 2) return shears ? [new(I("tallgrass"), 1, 2, 2)] : [new(I("wheat_seeds"), 0, 1, 1, 1f / 8f)];
-                if (v == 3) return shears ? [new(I("tallgrass"), 2, 2, 2)] : [];
-                return Self(v);
-            }
-
-            case "planks": case "sand": case "sandstone": case "red_sandstone": case "stonebrick": case "prismarine": case "wool":
-            case "carpet": case "stained_hardened_clay": case "concrete": case "concrete_powder": case "cobblestone_wall": case "sponge":
-            case "red_flower":
-                return Self(meta & 15);
-            case "sapling": return Self(meta & 7);
-            case "quartz_block": return Self((meta & 7) is 3 or 4 ? 2 : meta & 7); // pillars drop the upright pillar
-            case "anvil": return Self(meta >> 2);
-            case "stone_slab": case "wooden_slab": return Self(meta & 7);
-            case "double_stone_slab": return [new(I("stone_slab"), meta & 7, 2, 2)];
-            case "double_wooden_slab": return [new(I("wooden_slab"), meta & 7, 2, 2)];
-            case "stone_slab2": return Self(0);
-            case "double_stone_slab2": return [new(I("stone_slab2"), 0, 2, 2)];
-            case "purpur_double_slab": return [new(I("purpur_slab"), 0, 2, 2)];
-
-            // The item form differs from the block.
-            case "bed": return (meta & 8) != 0 ? [One(I("bed"), 14)] : []; // the head half drops it; colour from the tile entity (default red)
-            case "wooden_door": case "iron_door": case "spruce_door": case "birch_door": case "jungle_door": case "acacia_door":
-            case "dark_oak_door":
-                return (meta & 8) != 0 ? [] : Item(block.Name);
-            case "standing_sign": case "wall_sign": return Item("sign");
-            case "standing_banner": case "wall_banner": return Item("banner");
-            case "redstone_wire": return Item("redstone");
-            case "unlit_redstone_torch": case "redstone_torch": return Item("redstone_torch");
-            case "unpowered_repeater": case "powered_repeater": return Item("repeater");
-            case "unpowered_comparator": case "powered_comparator": return Item("comparator");
-            case "lit_redstone_lamp": return Item("redstone_lamp");
-            case "daylight_detector_inverted": return Item("daylight_detector");
-            case "lit_furnace": return Item("furnace");
-            case "reeds": return Item("reeds");
-            case "brewing_stand": return Item("brewing_stand");
-            case "cauldron": return Item("cauldron");
-            case "flower_pot": return Item("flower_pot");
-            case "skull": return Item("skull");
-            case "tripwire": return Item("string");
-            case "nether_wart": return (meta & 3) >= 3 ? [new(I("nether_wart"), 0, 2, 4)] : Item("nether_wart");
-            case "cocoa": return (meta >> 2) >= 2 ? [new(I("dye"), 3, 3, 3)] : Item("dye", 3);
-
-            // Crops: the crop when ripe plus 3 tries at a seed (rand(2·maxAge) ≤ age), else one seed.
-            case "wheat": return (meta & 7) >= 7 ? [One(I("wheat")), new(I("wheat_seeds"), 0, 0, 3)] : Item("wheat_seeds");
-            case "carrots": return (meta & 7) >= 7 ? [new(I("carrot"), 0, 1, 4)] : Item("carrot");
-            case "potatoes":
-                return (meta & 7) >= 7 ? [new(I("potato"), 0, 1, 4), new(I("poisonous_potato"), 0, 1, 1, 1f / 50f)] : Item("potato");
-            case "beetroots": return (meta & 3) >= 3 ? [One(I("beetroot")), new(I("beetroot_seeds"), 0, 0, 3)] : Item("beetroot_seeds");
-            case "pumpkin_stem": return [new(I("pumpkin_seeds"), 0, 0, 3)];
-            case "melon_stem": return [new(I("melon_seeds"), 0, 0, 3)];
-        }
+        var c = new Ctx(d, blockId, block.Name, meta, held > 0 && d.NameOf(held) == "shears");
+        if (Rules.TryGetValue(block.Name, out var rule)) return rule(c);
         // Block.getItemDropped: the block's own item (damageDropped 0), when it has one.
-        return d.ItemExists(blockId) ? Self() : [];
+        return d.ItemExists(blockId) ? c.Self() : [];
+    }
+
+    private static RuleTable BuildRules()
+    {
+        var r = new RuleTable();
+
+        // Nothing (quantityDropped 0, Items.AIR, BlockEmptyDrops, liquids, silk-touch-only blocks).
+        r.Each(_ => [], "flowing_water", "water", "flowing_lava", "lava", "fire", "portal", "end_portal", "end_gateway", "piston_head",
+            "piston_extension", "mob_spawner", "barrier", "command_block", "repeating_command_block", "chain_command_block",
+            "structure_block", "structure_void", "glass", "stained_glass", "glass_pane", "stained_glass_pane", "ice", "packed_ice",
+            "frosted_ice", "monster_egg", "cake", "chorus_flower", "end_portal_frame", "bedrock");
+
+        r.Each(c => (c.Meta & 7) == 0 ? c.Item("cobblestone") : c.Self(c.Meta & 7), "stone");
+        r.ItemOf("dirt", "grass", "mycelium", "grass_path", "farmland");
+        r.Each(c => c.Self((c.Meta & 3) == 2 ? 0 : c.Meta & 3), "dirt"); // podzol drops dirt
+        r.Each(c => [new(c.BlockId, 0, 1, 1, 0.9f), c.Chance("flint", 0, 0.1f)], "gravel");
+        r.ItemOf("coal", "coal_ore");
+        r.ItemOf("diamond", "diamond_ore");
+        r.ItemOf("emerald", "emerald_ore");
+        r.ItemOf("quartz", "quartz_ore");
+        r.RangeOf("dye", 4, 4, 8, "lapis_ore");
+        r.RangeOf("redstone", 0, 4, 5, "redstone_ore", "lit_redstone_ore");
+        r.RangeOf("glowstone_dust", 0, 2, 4, "glowstone");
+        r.RangeOf("prismarine_crystals", 0, 2, 3, "sea_lantern");
+        r.RangeOf("melon", 0, 3, 7, "melon_block");
+        r.RangeOf("book", 0, 3, 3, "bookshelf");
+        r.RangeOf("clay_ball", 0, 4, 4, "clay");
+        r.RangeOf("snowball", 0, 4, 4, "snow");
+        r.Each(c => c.Range("snowball", 0, (c.Meta & 7) + 2, (c.Meta & 7) + 2), "snow_layer"); // BlockSnow.harvestBlock: layers + 1
+        r.RangeOf("obsidian", 0, 8, 8, "ender_chest");
+        r.RangeOf("brown_mushroom", 0, 0, 2, "brown_mushroom_block");
+        r.RangeOf("red_mushroom", 0, 0, 2, "red_mushroom_block");
+        r.RangeOf("chorus_fruit", 0, 0, 1, "chorus_plant");
+
+        AddPlants(r);
+        AddVariants(r);
+        AddItemForms(r);
+        AddCrops(r);
+        return r;
+    }
+
+    private static void AddPlants(RuleTable r)
+    {
+        r.Each(c => c.Self(c.Meta & 3), ["log", "log2"]);
+        r.Each(c => Leaves(c, saplingDamage: c.Meta & 3, appleVariant: 0, rareVariant: 3), ["leaves"]);
+        r.Each(c => Leaves(c, saplingDamage: (c.Meta & 3) + 4, appleVariant: 1, rareVariant: -1), ["leaves2"]);
+        r.Each(c => c.Shears ? c.Self(c.Meta & 3) : [c.Chance("wheat_seeds", 0, 1f / 8f)], ["tallgrass"]);
+        r.Each(c => c.Shears ? c.Self() : c.Range("stick", 0, 0, 2), ["deadbush"]);
+        r.Each(c => c.Shears ? c.Self() : c.Item("string"), ["web"]);
+        r.Each(c => c.Shears ? c.Self() : [], ["vine"]);
+        r.Each(DoublePlant, ["double_plant"]);
+    }
+
+    /// <summary>Leaves: themselves with shears, else a 1-in-20 sapling (1-in-40 for jungle) and, for oak / dark oak, a 1-in-200 apple.</summary>
+    private static IReadOnlyList<Drop> Leaves(Ctx c, int saplingDamage, int appleVariant, int rareVariant)
+    {
+        int v = c.Meta & 3;
+        if (c.Shears) return c.Self(v);
+        var l = new List<Drop> { c.Chance("sapling", saplingDamage, v == rareVariant ? 1f / 40f : 1f / 20f) };
+        if (v == appleVariant) l.Add(c.Chance("apple", 0, 1f / 200f));
+        return l;
+    }
+
+    /// <summary>The upper half drops nothing; the lower half drops the plant (tall grass and large fern: seeds, or two of the
+    /// small plant with shears).</summary>
+    private static IReadOnlyList<Drop> DoublePlant(Ctx c)
+    {
+        if ((c.Meta & 8) != 0) return [];
+        int v = c.Meta & 7;
+        if (v == 2) return c.Shears ? c.Range("tallgrass", 1, 2, 2) : [c.Chance("wheat_seeds", 0, 1f / 8f)];
+        if (v == 3) return c.Shears ? c.Range("tallgrass", 2, 2, 2) : [];
+        return c.Self(v);
+    }
+
+    private static void AddVariants(RuleTable r)
+    {
+        r.Each(c => c.Self(c.Meta & 15), ["planks", "sand", "sandstone", "red_sandstone", "stonebrick", "prismarine", "wool", "carpet",
+            "stained_hardened_clay", "concrete", "concrete_powder", "cobblestone_wall", "sponge", "red_flower"]);
+        r.Each(c => c.Self(c.Meta & 7), ["sapling", "stone_slab", "wooden_slab"]);
+        r.Each(c => c.Self((c.Meta & 7) is 3 or 4 ? 2 : c.Meta & 7), ["quartz_block"]); // pillars drop the upright pillar
+        r.Each(c => c.Self(c.Meta >> 2), ["anvil"]);
+        r.Each(c => c.Range("stone_slab", c.Meta & 7, 2, 2), ["double_stone_slab"]);
+        r.Each(c => c.Range("wooden_slab", c.Meta & 7, 2, 2), ["double_wooden_slab"]);
+        r.Each(c => c.Self(0), ["stone_slab2"]);
+        r.RangeOf("stone_slab2", 0, 2, 2, ["double_stone_slab2"]);
+        r.RangeOf("purpur_slab", 0, 2, 2, ["purpur_double_slab"]);
+    }
+
+    /// <summary>The item form differs from the block.</summary>
+    private static void AddItemForms(RuleTable r)
+    {
+        // The head half drops the bed; colour from the tile entity (default red).
+        r.Each(c => (c.Meta & 8) != 0 ? [Ctx.One(c.I("bed"), 14)] : [], ["bed"]);
+        r.Each(c => (c.Meta & 8) != 0 ? [] : c.Item(c.Name),
+            ["wooden_door", "iron_door", "spruce_door", "birch_door", "jungle_door", "acacia_door", "dark_oak_door"]);
+        r.ItemOf("sign", ["standing_sign", "wall_sign"]);
+        r.ItemOf("banner", ["standing_banner", "wall_banner"]);
+        r.ItemOf("redstone", ["redstone_wire"]);
+        r.ItemOf("redstone_torch", ["unlit_redstone_torch", "redstone_torch"]);
+        r.ItemOf("repeater", ["unpowered_repeater", "powered_repeater"]);
+        r.ItemOf("comparator", ["unpowered_comparator", "powered_comparator"]);
+        r.ItemOf("redstone_lamp", ["lit_redstone_lamp"]);
+        r.ItemOf("daylight_detector", ["daylight_detector_inverted"]);
+        r.ItemOf("furnace", ["lit_furnace"]);
+        r.ItemOf("reeds", "reeds");
+        r.ItemOf("brewing_stand", "brewing_stand");
+        r.ItemOf("cauldron", "cauldron");
+        r.ItemOf("flower_pot", "flower_pot");
+        r.ItemOf("skull", "skull");
+        r.ItemOf("string", ["tripwire"]);
+        r.Each(c => (c.Meta & 3) >= 3 ? c.Range("nether_wart", 0, 2, 4) : c.Item("nether_wart"), ["nether_wart"]);
+        r.Each(c => (c.Meta >> 2) >= 2 ? c.Range("dye", 3, 3, 3) : c.Item("dye", 3), ["cocoa"]);
+    }
+
+    /// <summary>Crops: the crop when ripe plus 3 tries at a seed (rand(2·maxAge) ≤ age), else one seed.</summary>
+    private static void AddCrops(RuleTable r)
+    {
+        r.Each(c => (c.Meta & 7) >= 7 ? [Ctx.One(c.I("wheat")), new(c.I("wheat_seeds"), 0, 0, 3)] : c.Item("wheat_seeds"), ["wheat"]);
+        r.Each(c => (c.Meta & 7) >= 7 ? c.Range("carrot", 0, 1, 4) : c.Item("carrot"), ["carrots"]);
+        r.Each(c => (c.Meta & 7) >= 7 ? [new(c.I("potato"), 0, 1, 4), c.Chance("poisonous_potato", 0, 1f / 50f)] : c.Item("potato"), ["potatoes"]);
+        r.Each(c => (c.Meta & 3) >= 3 ? [Ctx.One(c.I("beetroot")), new(c.I("beetroot_seeds"), 0, 0, 3)] : c.Item("beetroot_seeds"), ["beetroots"]);
+        r.RangeOf("pumpkin_seeds", 0, 0, 3, ["pumpkin_stem"]);
+        r.RangeOf("melon_seeds", 0, 0, 3, ["melon_stem"]);
     }
 }
 
@@ -303,19 +333,25 @@ internal static class Release1122Drops
 /// used: it lists the crop blocks (melon_block, carrots, potatoes) instead of the items and a saturation ratio, not the modifier.</summary>
 internal static class Release1122Foods
 {
+    /// <summary>The foods whose value doesn't depend on the damage (all but the fish types).</summary>
+    private static readonly Dictionary<string, (int Hunger, float Saturation)> Plain = new()
+    {
+        ["apple"] = (4, 0.3f), ["mushroom_stew"] = (6, 0.6f), ["bread"] = (5, 0.6f), ["porkchop"] = (3, 0.3f), ["cooked_porkchop"] = (8, 0.8f),
+        ["golden_apple"] = (4, 1.2f),
+        ["cookie"] = (2, 0.1f), ["melon"] = (2, 0.3f), ["beef"] = (3, 0.3f), ["cooked_beef"] = (8, 0.8f), ["chicken"] = (2, 0.3f),
+        ["cooked_chicken"] = (6, 0.6f), ["rotten_flesh"] = (4, 0.1f), ["spider_eye"] = (2, 0.8f), ["carrot"] = (3, 0.6f),
+        ["potato"] = (1, 0.3f), ["baked_potato"] = (5, 0.6f), ["poisonous_potato"] = (2, 0.3f), ["golden_carrot"] = (6, 1.2f),
+        ["pumpkin_pie"] = (8, 0.3f), ["rabbit"] = (3, 0.3f), ["cooked_rabbit"] = (5, 0.6f), ["rabbit_stew"] = (10, 0.6f),
+        ["mutton"] = (2, 0.3f), ["cooked_mutton"] = (6, 0.8f), ["chorus_fruit"] = (4, 0.3f), ["beetroot"] = (1, 0.6f),
+        ["beetroot_soup"] = (6, 0.6f),
+    };
+
     public static (int Hunger, float Saturation)? Food(string? name, int damage) => name switch
     {
-        "apple" => (4, 0.3f), "mushroom_stew" => (6, 0.6f), "bread" => (5, 0.6f), "porkchop" => (3, 0.3f), "cooked_porkchop" => (8, 0.8f),
-        "golden_apple" => (4, 1.2f),
+        null => null,
         "fish" => (damage & 3) switch { 0 or 1 => (2, 0.1f), _ => (1, 0.1f) }, // cod, salmon / clownfish, pufferfish
         "cooked_fish" => (damage & 3) switch { 0 => (5, 0.6f), 1 => (6, 0.8f), _ => null },
-        "cookie" => (2, 0.1f), "melon" => (2, 0.3f), "beef" => (3, 0.3f), "cooked_beef" => (8, 0.8f), "chicken" => (2, 0.3f),
-        "cooked_chicken" => (6, 0.6f), "rotten_flesh" => (4, 0.1f), "spider_eye" => (2, 0.8f), "carrot" => (3, 0.6f),
-        "potato" => (1, 0.3f), "baked_potato" => (5, 0.6f), "poisonous_potato" => (2, 0.3f), "golden_carrot" => (6, 1.2f),
-        "pumpkin_pie" => (8, 0.3f), "rabbit" => (3, 0.3f), "cooked_rabbit" => (5, 0.6f), "rabbit_stew" => (10, 0.6f),
-        "mutton" => (2, 0.3f), "cooked_mutton" => (6, 0.8f), "chorus_fruit" => (4, 0.3f), "beetroot" => (1, 0.6f),
-        "beetroot_soup" => (6, 0.6f),
-        _ => null,
+        _ => Plain.TryGetValue(name, out var food) ? food : null,
     };
 
     /// <summary>The <c>setPotionEffect</c> chances (hunger: raw chicken 0.3, rotten flesh 0.8; poison: spider eye 1.0, poisonous
