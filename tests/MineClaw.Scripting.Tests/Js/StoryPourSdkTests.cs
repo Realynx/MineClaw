@@ -54,9 +54,9 @@ public sealed class StoryPourSdkTests
         Assert.True(calls.Count(c => c.StartsWith("skill:fill_bucket ")) == 2, string.Join(" | ", calls) + " // " + string.Join(" | ", port.Reports));
         Assert.Contains("""skill:fill_bucket {"liquid":"water","pos":"9,63,9"}""", calls);
         Assert.DoesNotContain(calls, c => c.StartsWith("skill:empty_bucket") && c.Contains("2,64,1")); // already a source: not poured
-        int fill = calls.FindIndex(c => c.StartsWith("skill:fill_bucket")), back = calls.FindIndex(fill, c => c.StartsWith("goto ") && c.Contains("0,64,3")),
-            pour = calls.FindIndex(c => c.StartsWith("skill:empty_bucket"));
-        Assert.True(fill >= 0 && fill < back && back < pour, string.Join(" | ", calls)); // fill, back to the stand, pour
+        int fill = calls.FindIndex(c => c.StartsWith("skill:fill_bucket")), pour = calls.FindIndex(c => c.StartsWith("skill:empty_bucket"));
+        Assert.True(fill >= 0 && fill < pour, string.Join(" | ", calls)); // filled, then poured (empty_bucket finds its own dry stand)
+        Assert.Equal(2, calls.Count(c => c.StartsWith("skill:empty_bucket"))); // one pour a cell: a pour that worked isn't repeated
         Assert.Equal([
             "j1 progress cell 1,64,1 done",
             "j1 progress cell 2,64,1 done",
@@ -66,7 +66,7 @@ public sealed class StoryPourSdkTests
     }
 
     [Fact]
-    public async Task No_way_to_fill_a_bucket_fails_the_job_with_the_reason()
+    public async Task No_way_to_fill_a_bucket_ends_the_batch_and_names_the_source_for_the_director()
     {
         var port = new Director(Pour("1,64,1"), new JsonObject { ["id"] = "j2", ["kind"] = "end" });
         using var rig = Rig.Js();
@@ -76,6 +76,38 @@ public sealed class StoryPourSdkTests
         var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
         Assert.True(s.Ok, s.Outcome);
         Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("skill:empty_bucket"));
-        Assert.StartsWith("j1 failed no reachable visible source", port.Reports.First());
+        Assert.Equal(1, rig.Norm().Count(c => c.StartsWith("skill:fill_bucket"))); // no retry loop at an unreachable pond
+        Assert.Equal("j1 progress fill failed at 9,63,9: no reachable visible source in the pond at 9,63,9", port.Reports.First());
+        Assert.StartsWith("j1 done batch: 0/1 poured; no bucket filled", port.Reports.Skip(1).First()); // the cell goes back, no failure
+    }
+
+    [Fact]
+    public async Task A_cell_that_wont_take_the_pour_is_tried_twice_reported_failed_and_the_batch_moves_on()
+    {
+        var port = new Director(Pour("1,64,1", "3,64,1"), new JsonObject { ["id"] = "j2", ["kind"] = "end" });
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(326, 1, 0));
+        rig.On["skill:empty_bucket"] = (args, _) =>
+        {
+            var at = args.GetProperty("pos").GetString()!;
+            if (at == "1,64,1") return Task.FromResult(ActResult.Fail("can't get near 1,64,1: no dry spot with a face beside it in view (no path)"));
+            rig.World.SetBlock(3, 64, 1, 9, 0);
+            rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(325, 1, 0));
+            return Task.FromResult(ActResult.Success("poured water at " + at));
+        };
+        rig.On["skill:fill_bucket"] = (_, _) =>
+        {
+            rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(326, 1, 0));
+            return Task.FromResult(ActResult.Success("filled"));
+        };
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Equal(2, rig.Norm().Count(c => c.StartsWith("skill:empty_bucket") && c.Contains("1,64,1")));
+        Assert.Equal([
+            "j1 progress cell 1,64,1 failed: can't get near 1,64,1: no dry spot with a face beside it in view (no path)",
+            "j1 progress cell 3,64,1 done",
+            "j1 done batch: 1/2 poured",
+            "j2 done"], port.Reports);
     }
 }

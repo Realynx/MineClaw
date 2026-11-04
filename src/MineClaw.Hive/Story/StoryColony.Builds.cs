@@ -523,6 +523,7 @@ public sealed partial class StoryColony
             MaterialsChanged();
             return;
         }
+        if (note.StartsWith("fill failed at ", StringComparison.Ordinal)) { FillFailed(p, note); return; } // StoryColony.Water.cs
         if (!note.StartsWith("cell ", StringComparison.Ordinal) || j.Cells == null) return;
         int sp = note.IndexOf(' ', 5);
         if (sp < 0 || ParseCell(note[5..sp]) is not { } at) return;

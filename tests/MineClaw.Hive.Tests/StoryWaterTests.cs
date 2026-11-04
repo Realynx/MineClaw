@@ -341,4 +341,61 @@ public sealed class StoryWaterTests
         var line = Enumerable.Range(0, 5).Select(x => G(x, 0)).ToList();
         Assert.Equal([0, 2, 4, 1, 3], StoryColony.PourOrder(line).Select(g => g.At.X));
     }
+
+    // ------------------------------------------------------------------ live 11-04: "a really difficult time pouring water in the canals"
+
+    [Fact]
+    public void A_cell_with_nothing_under_it_is_refused_once_at_queue_time()
+    {
+        var (c, _, w) = Rig();
+        // A channel drawn in the air over a ledge (the floor under it is open): the source would pour down.
+        var r = Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 66, 12) });
+        Assert.Contains("nothing under 4,66,12 to hold the water", r.Error);
+        // A two-deep column dug by its group: the lower cell's floor is dug too, refused; one deep is fine.
+        var deep = new JsonObject { ["kind"] = "remove", ["blocks"] = Cells((4, 63, 12), (4, 62, 12)), ["group"] = "g" };
+        Assert.Contains("nothing under 4,63,12", Add(c, deep, new JsonObject { ["kind"] = "water", ["blocks"] = Cells((4, 63, 12)), ["group"] = "g" }).Error);
+        // A stack of the item's own cells holds itself (the lower one on stone).
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Cells((8, 64, 12), (8, 65, 12)) }).Error);
+        _ = w;
+    }
+
+    [Fact]
+    public void A_pond_without_dry_ground_beside_it_or_one_the_pawn_failed_at_is_not_a_fill_source()
+    {
+        var (c, h, w) = Rig(carried: new Stack(325, 0, 1));
+        var near = new P3(10, 64, 10);
+        // A pool at the bottom of a well: water at y 55 under 8 of air, stone all round it (nowhere dry to stand beside it).
+        for (int x = 15; x <= 17; x++) for (int z = 9; z <= 11; z++) { for (int y = 56; y <= 63; y++) w.Set(x, y, z, 0); w.Set(x, 55, z, 9); }
+        Assert.Null(c.FillSource(w, false, near, new HashSet<P3>(), c.P()));
+        // A lake at ground level with a bank: chosen; once the pawn reports it couldn't fill there, not for it (10 minutes).
+        Later();
+        Pool(w, 2, 20, 3);
+        var lake = c.FillSource(w, false, near, new HashSet<P3>(), c.P());
+        Assert.NotNull(lake);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 5, 64, 12) }).Error);
+        var job = c.Next();
+        Assert.Equal("pour", job["kind"]!.GetValue<string>());
+        var src = job["source"]!.GetValue<string>();
+        c.Report(c.P(), Id(job), "progress", $"fill failed at {src}: no reachable visible source in the pond at {src}: no path", null);
+        c.Report(c.P(), Id(job), "done", "batch: 0/2 poured; no bucket filled", null);
+        var b = c.Builds.Single();
+        Assert.All(b.Ghosts, g => Assert.Equal("todo", g.State)); // back to the queue, no failure
+        Assert.Null(c.FillSource(w, false, near, new HashSet<P3>(), c.P()));
+        Assert.NotNull(c.FillSource(w, false, near, new HashSet<P3>(), "someone_else"));
+        _ = h;
+    }
+
+    [Fact]
+    public void Two_water_builds_ask_for_one_bucket_between_them()
+    {
+        var (c, _, w) = Rig(Release1122GameData.Instance);
+        Pool(w, 0, 20);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 64, 12) }).Error);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 64, 14) }).Error);
+        c.Next();
+        var mats = c.Builds.Select(b => b.Materials.Single()).ToList();
+        Assert.All(mats, m => Assert.Equal(("bucket", 1), (m.Item, m.Need)));
+        Assert.Single(mats, m => m.Raw.Count > 0); // only the first says what is short
+        Assert.True(c.Alerts.Count(a => a.Text.Contains("bucket")) <= 1, string.Join(" | ", c.Alerts.Select(a => a.Text))); // said once, not per build
+    }
 }
