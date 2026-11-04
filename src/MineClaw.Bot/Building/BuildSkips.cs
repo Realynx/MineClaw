@@ -26,43 +26,64 @@ public static partial class BuildSkips
     /// <summary>The same group in a world with ground under everything (no void): too far from any support to scaffold.</summary>
     public const string NoSupport = "no support: past my scaffold limit";
 
+    private enum By { Starts, Contains }
+
+    // Labels resolved per reason: the void group depends on the world mode, a missing item names the item.
+    private const string VoidGroup = "\0void", MissingItem = "\0missing";
+
+    /// <summary>The reason groups, first match wins (the order matters: "no stand reaches scaffold cell" before "no stand").</summary>
+    private static readonly (By How, string Text, string Label)[] Groups =
+    [
+        (By.Starts, "not reached", "not reached (the run stopped first)"),
+        (By.Starts, Waiting, Waiting),
+        (By.Starts, "waits for an earlier step", Waiting),
+        (By.Starts, AboveReach, "no stand: above my reach (I can't climb)"),
+        (By.Starts, NotNear, NotNear),
+        (By.Starts, "no support within", VoidGroup),
+        (By.Starts, "no stand reaches scaffold cell", "no stand for its scaffold"),
+        (By.Starts, "no stand", "no stand in reach"),
+        (By.Contains, "water bucket", "below the floor: needs a water bucket"),
+        (By.Starts, "water descent", "no safe water column"),
+        (By.Starts, "climbing back up", "no safe water column"),
+        (By.Starts, "no edge with open space", "no safe water column"),
+        (By.Contains, "wall me in", "would wall me in"),
+        (By.Starts, "I'm not standing", "I'm not standing anywhere walkable"),
+        (By.Starts, Protected, Protected),
+        (By.Contains, "someone", "someone else's block there"),
+        (By.Contains, "not mine", "someone else's block there"),
+        (By.Starts, "not ours", "not mine: left"),
+        (By.Starts, "wrong block", "a wrong block there"),
+        (By.Starts, "missing ", MissingItem),
+        (By.Contains, "another lane", "waiting on another lane"),
+        (By.Starts, "needs step", "needs a skipped step"),
+        (By.Starts, "waited too long", "waited too long"),
+        (By.Starts, "goto:", "no path to its stand"),
+    ];
+
     /// <summary>The group a reason belongs to: a fixed label (coordinates, counts and details dropped).</summary>
     public static string Category(string? why)
     {
         if (string.IsNullOrWhiteSpace(why)) return "not reached";
         var w = why.Trim();
-        if (w.StartsWith("not reached", StringComparison.OrdinalIgnoreCase)) return "not reached (the run stopped first)";
-        if (w.StartsWith(Waiting, StringComparison.OrdinalIgnoreCase) || w.StartsWith("waits for an earlier step", StringComparison.OrdinalIgnoreCase))
-            return Waiting;
-        if (w.StartsWith(AboveReach, StringComparison.OrdinalIgnoreCase)) return "no stand: above my reach (I can't climb)";
-        if (w.StartsWith(NotNear, StringComparison.OrdinalIgnoreCase)) return NotNear;
-        if (w.StartsWith("no support within", StringComparison.OrdinalIgnoreCase))
-            return MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? OverVoid : NoSupport;
-        if (w.StartsWith("no stand reaches scaffold cell", StringComparison.OrdinalIgnoreCase)) return "no stand for its scaffold";
-        if (w.StartsWith("no stand", StringComparison.OrdinalIgnoreCase)) return "no stand in reach";
-        if (w.Contains("water bucket", StringComparison.OrdinalIgnoreCase)) return "below the floor: needs a water bucket";
-        if (w.StartsWith("water descent", StringComparison.OrdinalIgnoreCase) || w.StartsWith("climbing back up", StringComparison.OrdinalIgnoreCase)
-            || w.StartsWith("no edge with open space", StringComparison.OrdinalIgnoreCase)) return "no safe water column";
-        if (w.Contains("wall me in", StringComparison.OrdinalIgnoreCase)) return "would wall me in";
-        if (w.StartsWith("I'm not standing", StringComparison.OrdinalIgnoreCase)) return "I'm not standing anywhere walkable";
-        if (w.StartsWith(Protected, StringComparison.OrdinalIgnoreCase)) return Protected;
-        if (w.Contains("someone", StringComparison.OrdinalIgnoreCase) || w.Contains("not mine", StringComparison.OrdinalIgnoreCase)) return "someone else's block there";
-        if (w.StartsWith("not ours", StringComparison.OrdinalIgnoreCase)) return "not mine: left";
-        if (w.StartsWith("wrong block", StringComparison.OrdinalIgnoreCase)) return "a wrong block there";
-        if (w.StartsWith("missing ", StringComparison.OrdinalIgnoreCase)) return "no " + Detail().Replace("missing ", "") + " on hand";
-        if (w.Contains("another lane", StringComparison.OrdinalIgnoreCase)) return "waiting on another lane";
-        if (w.StartsWith("needs step", StringComparison.OrdinalIgnoreCase)) return "needs a skipped step";
-        if (w.StartsWith("waited too long", StringComparison.OrdinalIgnoreCase)) return "waited too long";
-        if (w.StartsWith("goto:", StringComparison.OrdinalIgnoreCase)) return "no path to its stand";
-        return "failed: " + Detail();
+        foreach (var (how, text, label) in Groups)
+            if (how == By.Starts ? w.StartsWith(text, StringComparison.OrdinalIgnoreCase) : w.Contains(text, StringComparison.OrdinalIgnoreCase))
+                return GroupLabel(label, w);
+        return "failed: " + ReasonHead(w);
+    }
 
-        // The reason's head without positions or counts ("missing cobblestone slab (need 40, have 0): ..." → "missing cobblestone slab").
-        string Detail()
-        {
-            var head = w.Split([';', '(', ':'], 2)[0].Trim();
-            head = Coords().Replace(head, "").Trim();
-            return head.Length > 48 ? head[..48] : head;
-        }
+    private static string GroupLabel(string label, string w) => label switch
+    {
+        VoidGroup => MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? OverVoid : NoSupport,
+        MissingItem => "no " + ReasonHead(w).Replace("missing ", "") + " on hand",
+        _ => label,
+    };
+
+    // The reason's head without positions or counts ("missing cobblestone slab (need 40, have 0): ..." → "missing cobblestone slab").
+    private static string ReasonHead(string w)
+    {
+        var head = w.Split([';', '(', ':'], 2)[0].Trim();
+        head = Coords().Replace(head, "").Trim();
+        return head.Length > 48 ? head[..48] : head;
     }
 
     [GeneratedRegex(@"-?\d+(,-?\d+){1,2}|#\d+|\d+")]
