@@ -34,7 +34,7 @@ import { cubeGeometry, InstancedDraw, modelGeometry, ShadowDraw, spriteGeometry,
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, DEATH_SHRINK_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion, stepMotion, wrapDeg, type Motion } from './entities/motion';
 import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine, type RootParams } from './entities/pose';
 import { canonical, MOB_NAMES, MODEL_BY_ID, mobLook, mobName, objectLook, objectName, playerLook } from './entities/registry';
-import type { Look, PoseCtx } from './entities/types';
+import type { Look, ModelDef, PoseCtx } from './entities/types';
 import { Variant } from './entities/variant';
 import { LabelFactory } from './labels';
 
@@ -63,25 +63,38 @@ export function mobInfo(type: number): [string, number, number, number] {
 export function entityLook(e: EntityView, version: GameVersion = '1.12.2'): { colour: number; w: number; h: number } {
   if (e.kind === 'player') return { colour: 0x4a7ad8, w: 0.6, h: 1.8 };
   if (e.kind === 'item') return { colour: 0xd8b040, w: 0.25, h: 0.25 };
-  if (e.kind === 'mob') {
-    const look = mobLook(version, e.type, e.name, e.dto.variant, e.id);
-    const def = MODEL_BY_ID[look.model];
-    const s = (look.scale ?? 1) * (e.dto.baby ? 0.5 : 1);
-    return { colour: look.colour, w: (def?.width ?? 0.6) * s, h: (def?.height ?? 1.8) * s };
-  }
+  if (e.kind === 'mob') return mobBox(e, version);
   return { colour: 0x9a9a9a, w: 0.5, h: 0.5 };
 }
 
-export function entityText(e: EntityView): string {
-  if (e.kind === 'item') return `${e.name ?? `item ${e.item}`}${e.count > 1 ? ` x${e.count}` : ''}`;
-  if (e.kind === 'player') return e.name ?? 'player';
-  if (e.kind === 'mob') return `${e.dto.baby ? 'baby ' : ''}${(MOB_NAMES[e.type] ?? e.name ?? 'mob').replace(/_/g, ' ')}`;
-  if (e.kind === 'painting') return e.dto.motive ? `painting · ${e.dto.motive}` : 'painting';
-  if (e.kind === 'item_frame') {
+/** A mob's look colour and hitbox (babies half size). */
+function mobBox(e: EntityView, version: GameVersion): { colour: number; w: number; h: number } {
+  const look = mobLook(version, e.type, e.name, e.dto.variant, e.id);
+  const def = MODEL_BY_ID[look.model];
+  const s = (look.scale ?? 1) * (e.dto.baby ? 0.5 : 1);
+  return { colour: look.colour, w: (def?.width ?? 0.6) * s, h: (def?.height ?? 1.8) * s };
+}
+
+/** Selected bodies (by key, or a bot by its short key) draw brighter. */
+function selectedBrightness(d: { key: string; botView: BotView | null }, selected: ReadonlySet<string>): number {
+  return selected.has(d.key) || (d.botView && selected.has(d.botView.dto.short)) ? 1.25 : 1;
+}
+
+/** entityText per entity kind (other kinds: the name, else the kind). */
+const KIND_TEXT = new Map<string, (e: EntityView) => string>([
+  ['item', (e) => `${e.name ?? `item ${e.item}`}${e.count > 1 ? ` x${e.count}` : ''}`],
+  ['player', (e) => e.name ?? 'player'],
+  ['mob', (e) => `${e.dto.baby ? 'baby ' : ''}${(MOB_NAMES[e.type] ?? e.name ?? 'mob').replace(/_/g, ' ')}`],
+  ['painting', (e) => (e.dto.motive ? `painting · ${e.dto.motive}` : 'painting')],
+  ['item_frame', (e) => {
     const n = e.dto.frameItem ? itemName(e.dto.frameItem[0]) : null;
     return n ? `item frame · ${n.replace(/_/g, ' ')}` : 'item frame';
-  }
-  return e.name ?? e.kind.replace(/_/g, ' ');
+  }],
+]);
+
+export function entityText(e: EntityView): string {
+  const text = KIND_TEXT.get(e.kind);
+  return text ? text(e) : (e.name ?? e.kind.replace(/_/g, ' '));
 }
 
 // ------------------------------------------------------------------------------------------------------------ internals
@@ -201,6 +214,35 @@ interface Drawn {
   frame: number;
   ent: EntityView | null;
   botView: BotView | null;
+}
+
+/** A body's hitbox (the look's model size × its scale, babies half) and box colour; no look: the default box. */
+function setHitbox(d: Drawn, look: Look | null, def: ModelDef | undefined): void {
+  const s = (look?.scale ?? 1) * (d.baby ? 0.5 : 1);
+  d.w = (def?.width ?? 0.6) * s;
+  d.h = (def?.height ?? 1.8) * s;
+  d.colour = look?.colour ?? 0x9a9a9a;
+}
+
+/** A bot's health (bots carry it, entities send hurt events): a drop flashes it hurt, 0 starts the death fall, a living hp
+ * again (respawn) ends it. */
+function trackBotHealth(d: Drawn, hp: number, now: number): void {
+  const m = d.motion;
+  if (Number.isFinite(m.hp) && hp < m.hp && hp > 0) m.hurtAt = now;
+  if (hp <= 0 && !m.deadAt) {
+    m.deadAt = now;
+    m.hurtAt = now;
+  }
+  if (hp > 0 && m.deadAt) {
+    m.deadAt = 0;
+    d.smoked = false;
+  }
+  m.hp = hp;
+}
+
+/** Armour from the wire's equipment, else the older material list on the entity's or bot's record. */
+function wornArmor(d: Drawn, eq: Equipment | null | undefined): ReadonlyArray<string | null> | null {
+  return armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {});
 }
 
 interface ModelEntry {
@@ -587,15 +629,21 @@ export class EntityLayer {
 
   /** The bot or entity an event is about: (dim, id), or a bot by `name` (bots carry no entity id on the wire). */
   private eventTarget(ev: EntityEvent): Drawn | null {
-    const name = (ev as { name?: unknown; bot?: unknown }).name ?? (ev as { bot?: unknown }).bot;
-    if (typeof name === 'string') {
-      const b = this.drawn.get(name);
-      if (b) return b;
-    }
+    const bot = this.namedBot(ev);
+    if (bot) return bot;
     if (ev.id == null) return null;
-    const d = this.drawn.get(`${ev.dim ?? 0}:${ev.id}`);
-    if (d) return d;
-    for (const x of this.drawn.values()) if (x.bot && (x.botView?.dto as { id?: number } | undefined)?.id === ev.id) return x;
+    return this.drawn.get(`${ev.dim ?? 0}:${ev.id}`) ?? this.botWithId(ev.id);
+  }
+
+  /** The bot an event names (`name`, or the older `bot`). */
+  private namedBot(ev: EntityEvent): Drawn | undefined {
+    const name = (ev as { name?: unknown; bot?: unknown }).name ?? (ev as { bot?: unknown }).bot;
+    return typeof name === 'string' ? this.drawn.get(name) : undefined;
+  }
+
+  /** A bot whose wire record carries this entity id. */
+  private botWithId(id: number): Drawn | null {
+    for (const x of this.drawn.values()) if (x.bot && (x.botView?.dto as { id?: number } | undefined)?.id === id) return x;
     return null;
   }
 
@@ -614,7 +662,7 @@ export class EntityLayer {
     for (const e of ents) this.listEntity(e, frame, timeMs);
     for (const [k, dm] of this.displays) this.listDisplay(k, dm, frame, timeMs);
     this.keepDying(frame, timeMs);
-    for (const [k, o] of this.botObjs) if (!this.drawn.get(k)?.bot) this.dropBot(k, o);
+    this.dropGoneBots();
     // Bones: one row per entity, then the particles (63 per row).
     this.particles.step(timeMs);
     this.lightning.update(timeMs);
@@ -623,12 +671,17 @@ export class EntityLayer {
     // Rows first: a body poses its riders' rows along with its own.
     for (let i = 0; i < list.length; i++) list[i].row = i;
     for (const d of list) {
-      d.bright = selected.has(d.key) || (d.botView && selected.has(d.botView.dto.short)) ? 1.25 : 1;
+      d.bright = selectedBrightness(d, selected);
       this.writeRow(d, timeMs);
     }
     this.particleRow = list.length;
     this.particles.list.forEach((p, i) => this.particles.bone(p, timeMs, this.bones, (this.particleRow + Math.floor(i / PER_ROW)) * ROW_FLOATS + (i % PER_ROW) * 12));
     if (this.boneTex) this.boneTex.needsUpdate = true;
+  }
+
+  /** Drops the bot objects (labels…) of bots no longer drawn. */
+  private dropGoneBots(): void {
+    for (const [k, o] of this.botObjs) if (!this.drawn.get(k)?.bot) this.dropBot(k, o);
   }
 
   private listBot(b: BotView, frame: number, timeMs: number, selected: ReadonlySet<string>): void {
@@ -709,10 +762,7 @@ export class EntityLayer {
     const def = look ? MODEL_BY_ID[look.model] : undefined;
     d.model = def && def.id !== 'box' && this.bundle ? this.entry(def) : null;
     d.kind = d.model ? 'model' : 'box';
-    const s = (look?.scale ?? 1) * (d.baby ? 0.5 : 1);
-    d.w = (def?.width ?? 0.6) * s;
-    d.h = (def?.height ?? 1.8) * s;
-    d.colour = look?.colour ?? 0x9a9a9a;
+    setHitbox(d, look, def);
   }
 
   private itemById(ref: ItemRef | EquipRef | undefined, fallbackId = 0): ItemLook | null {
@@ -760,7 +810,7 @@ export class EntityLayer {
   /** Elytra (1.12.2, on the renderers with LayerElytra) and armour (the wire's equipment, else an older material list). */
   private equipBody(d: Drawn, eq: Equipment | null | undefined): void {
     d.elytra = !this.beta && eq?.chest?.[0] === 443 && this.elytraWearer(d);
-    d.armor = d.armorLayer ? (armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {})) : null;
+    d.armor = d.armorLayer ? wornArmor(d, eq) : null;
     d.armorDye = d.armor ? armorDyes(eq) : null;
   }
 
@@ -800,31 +850,24 @@ export class EntityLayer {
       d.colour = botColour(b).getHex();
     }
     const m = d.motion;
-    const hp = b.dto.hp;
-    if (Number.isFinite(m.hp) && hp < m.hp && hp > 0) m.hurtAt = now;
-    if (hp <= 0 && !m.deadAt) {
-      m.deadAt = now;
-      m.hurtAt = now;
-    }
-    if (hp > 0 && m.deadAt) {
-      m.deadAt = 0;
-      d.smoked = false;
-    }
-    m.hp = hp;
+    trackBotHealth(d, b.dto.hp, now);
     const extra = b.dto as { equipment?: Equipment | null; flags?: number; headYaw?: number | null };
-    const held = b.dto.held ?? null;
-    const sigEq = `${held}|${JSON.stringify(extra.equipment ?? null)}`;
-    if (d.sig + sigEq !== d.eqSig) {
-      this.layersFor(d, 'player', null);
-      this.equip(d, extra.equipment, held ? this.heldLook(held) : null, held);
-      d.eqSig = d.sig + sigEq;
-    }
+    this.refreshBotGear(d, b.dto.held ?? null, extra.equipment);
     const flags = extra.flags ?? 0;
     d.burning = (flags & FLAG_ON_FIRE) !== 0;
     d.invisible = (flags & FLAG_INVISIBLE) !== 0;
     d.glowing = (flags & FLAG_GLOWING) !== 0;
     d.flash = 0;
     stepMotion(m, b.x, b.y, b.z, b.yaw, now, (flags & FLAG_SPRINTING) !== 0);
+  }
+
+  /** A bot's held item and equipment, resolved again only when they (or the look) changed. */
+  private refreshBotGear(d: Drawn, held: string | null, equipment: Equipment | null | undefined): void {
+    const sigEq = `${held}|${JSON.stringify(equipment ?? null)}`;
+    if (d.sig + sigEq === d.eqSig) return;
+    this.layersFor(d, 'player', null);
+    this.equip(d, equipment, held ? this.heldLook(held) : null, held);
+    d.eqSig = d.sig + sigEq;
   }
 
   private heldLook(held: string): ItemLook | null {
