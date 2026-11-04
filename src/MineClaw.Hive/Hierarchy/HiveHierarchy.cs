@@ -367,67 +367,88 @@ public sealed class HiveHierarchy : IHiveAccounts
         bool hasScript = !string.IsNullOrWhiteSpace(r.Script) || !string.IsNullOrWhiteSpace(r.Code);
         var (brain, brainProfile) = HiveKinds.ParseBrain(r.Brain);
         string? profile = brainProfile ?? (string.IsNullOrWhiteSpace(r.Profile) ? null : r.Profile.Trim());
-        // A hive spawned straight onto a script (Fox 10-30: "spawn up its bodies with a script already made, so its bodies just go
-        // straight to work"): a brain (or kind=hive) + bodies + a script = ONE hive whose bodies run the script as they log in, the
-        // coordinator started by C# with no brain turn; its brain supervises (wakes on the crew's result, a failure or chat).
-        bool crewHive = hasScript && r.Bodies is > 0 && string.IsNullOrWhiteSpace(r.Name)
-            && (kind == CloneKind.Hive || kind == null && (brain != null || profile != null));
+        bool crewHive = IsCrewHive(r, kind, hasScript, brain != null || profile != null);
         var k = crewHive ? CloneKind.Hive : kind ?? DefaultKind(owner, hasScript, brain != null || profile != null, r.Name);
+        var (done, kindProfile) = ByKind(k, r, owner, hasScript, brain, profile);
+        if (done != null) return done;
+        return SpawnClone(bodies, r, owner, k, brain, kindProfile, crewHive);
+    }
 
+    /// <summary>
+    /// A hive spawned straight onto a script (Fox 10-30: "spawn up its bodies with a script already made, so its bodies just go
+    /// straight to work"): a brain (or kind=hive) + bodies + a script = ONE hive whose bodies run the script as they log in, the
+    /// coordinator started by C# with no brain turn; its brain supervises (wakes on the crew's result, a failure or chat).
+    /// </summary>
+    private static bool IsCrewHive(SpawnRequest r, CloneKind? kind, bool hasScript, bool hasBrain) =>
+        hasScript && r.Bodies is > 0 && string.IsNullOrWhiteSpace(r.Name) && (kind == CloneKind.Hive || kind == null && hasBrain);
+
+    /// <summary>The kinds spawned their own way (a script hive, subhive bodies) answer here; a hive's brain fixes its profile.
+    /// Done = the answer (nothing more to spawn); else the profile to spawn with.</summary>
+    private (string? Done, string? Profile) ByKind(CloneKind k, SpawnRequest r, string owner, bool hasScript, BrainKind? brain, string? profile)
+    {
         switch (k)
         {
             case CloneKind.Script when hasScript && r.Bodies is > 0 && string.IsNullOrWhiteSpace(r.Name):
-                return SpawnScriptHive(owner, r);
+                return (SpawnScriptHive(owner, r), profile);
             case CloneKind.Script when !hasScript:
-                return "error: kind script needs script=<saved name> (or code)";
+                return ("error: kind script needs script=<saved name> (or code)", profile);
             case CloneKind.Subhive:
-                return SpawnSubhives(owner, r);
+                return (SpawnSubhives(owner, r), profile);
             case CloneKind.Hive when brain == BrainKind.DeepSeek:
-                profile = _cfg.DeepSeekProfile;
-                var bad = ProfileCheck is { } check ? check(profile) : "no model profiles here";
-                if (bad != null) return $"no: brain deepseek not available ({bad}); use brain opus; spawned nothing";
-                break;
+                var bad = ProfileCheck is { } check ? check(_cfg.DeepSeekProfile) : "no model profiles here";
+                return bad != null ? ($"no: brain deepseek not available ({bad}); use brain opus; spawned nothing", profile) : (null, _cfg.DeepSeekProfile);
             case CloneKind.Hive when brain == BrainKind.Opus:
-                profile = null; // the clone's own brain tier: Opus 5.5 (enforced at startup)
-                break;
+                return (null, null); // the clone's own brain tier: Opus 5.5 (enforced at startup)
+            default:
+                return (null, profile);
         }
+    }
+
+    /// <summary>One clone (a script runner, a hive with its own brain, or a hive driving N bodies in its process).</summary>
+    private string SpawnClone(IHiveBodies bodies, SpawnRequest r, string owner, CloneKind k, BrainKind? brain, string? profile, bool crewHive)
+    {
         if (r.Name is { Length: > 0 } named && owner != HiveTree.Root && !OwnedBy(named, owner))
             return $"no: {named} isn't one of {Short(owner)}'s clones";
-        string? crew = null;
-        if (crewHive)
-        {
-            if (CrewPrep is not { } prep) return "no: a hive can't start its bodies on a script here; spawned nothing";
-            var (cn, ce) = prep(r.Script, r.Code);
-            if (cn == null) return "error: " + (ce ?? "script not saved");
-            crew = cn;
-        }
-        int? hostBodies = null;
-        string note = "";
-        if (k == CloneKind.Hive && r.Bodies is > 0 and var asked)
-        {
-            // One hive process whose brain drives N bodies in its own process: as many as memory and the player cap allow.
-            int want = Math.Min(asked, Math.Max(1, MaxBodiesPerSpawn));
-            bool inproc = InProc(null, profile);
-            int fit = Resources?.BodiesThatFit(withHives: 1, inProcess: inproc) ?? int.MaxValue;
-            var facts = Facts(bodies);
-            var slot = SlotPolicy.CanSpawn(facts.Slots, facts.Regulars, facts.Pending);
-            int room = Math.Max(0, slot.Free - slot.Reserved - 1); // after the hive's own login
-            int n = Math.Min(want, Math.Min(fit, room));
-            if (n <= 0)
-                return $"no: no room for {asked} bodies ({(fit <= 0 ? Resources?.CanAdd(1, 1, inproc).Why ?? "memory" : $"player cap: {slot.Reason}")}); spawned nothing";
-            hostBodies = n;
-            if (n < asked)
-                note = $"; only {n} of {asked} bodies fit (" + (n == want && asked > want ? $"max {want} per spawn" : fit < want ? $"memory: room for {fit}" : $"player cap: {room} slot(s) after the hive") + ")";
-        }
+        var (crew, crewErr) = crewHive ? PrepareCrew(r) : (null, null);
+        if (crewErr != null) return crewErr;
+        var (hostBodies, note, noRoom) = k == CloneKind.Hive && r.Bodies is > 0 and var asked ? HostBodies(bodies, asked, profile) : (null, "", null);
+        if (noRoom != null) return noRoom;
         var opts = new HiveSpawnOptions(profile, crew != null ? null : r.Script, crew != null ? null : r.Code, r.Args, r.After)
             { Kind = HiveKinds.Name(k), Owner = owner, Bodies = hostBodies, Crew = crew };
         var text = bodies.Spawn(crew != null ? r.Task ?? $"crew {crew}" : r.Task ?? "", r.Name, r.Handover, opts);
-        if (hostBodies is { } hb && text.StartsWith("ok", StringComparison.Ordinal))
-            text += $"; ONE {(brain == BrainKind.DeepSeek ? "DeepSeek" : "Opus")} hive whose brain will drive {hb} subhive bod{(hb == 1 ? "y" : "ies")} " +
-                $"(none in game yet: they log in once it is in{Pacing(hb)})" +
-                (crew != null ? $"; they go straight to work on {crew} as they arrive (no brain turn first; its brain wakes on {crew}'s result)" : "") + note;
+        if (hostBodies is { } hb && text.StartsWith("ok", StringComparison.Ordinal)) text += HostedNote(hb, brain, crew) + note;
         return text;
     }
+
+    /// <summary>The crew script saved for the hive's bodies; an error when it can't be.</summary>
+    private (string? Crew, string? Error) PrepareCrew(SpawnRequest r)
+    {
+        if (CrewPrep is not { } prep) return (null, "no: a hive can't start its bodies on a script here; spawned nothing");
+        var (cn, ce) = prep(r.Script, r.Code);
+        return cn == null ? (null, "error: " + (ce ?? "script not saved")) : (cn, null);
+    }
+
+    /// <summary>One hive process whose brain drives N bodies in its own process: as many as memory and the player cap allow.
+    /// A note when fewer than asked fit; a refusal when none does.</summary>
+    private (int? Bodies, string Note, string? NoRoom) HostBodies(IHiveBodies bodies, int asked, string? profile)
+    {
+        int want = Math.Min(asked, Math.Max(1, MaxBodiesPerSpawn));
+        bool inproc = InProc(null, profile);
+        int fit = Resources?.BodiesThatFit(withHives: 1, inProcess: inproc) ?? int.MaxValue;
+        var facts = Facts(bodies);
+        var slot = SlotPolicy.CanSpawn(facts.Slots, facts.Regulars, facts.Pending);
+        int room = Math.Max(0, slot.Free - slot.Reserved - 1); // after the hive's own login
+        int n = Math.Min(want, Math.Min(fit, room));
+        if (n <= 0)
+            return (null, "", $"no: no room for {asked} bodies ({(fit <= 0 ? Resources?.CanAdd(1, 1, inproc).Why ?? "memory" : $"player cap: {slot.Reason}")}); spawned nothing");
+        if (n >= asked) return (n, "", null);
+        return (n, $"; only {n} of {asked} bodies fit (" + (n == want && asked > want ? $"max {want} per spawn" : fit < want ? $"memory: room for {fit}" : $"player cap: {room} slot(s) after the hive") + ")", null);
+    }
+
+    private string HostedNote(int hb, BrainKind? brain, string? crew) =>
+        $"; ONE {(brain == BrainKind.DeepSeek ? "DeepSeek" : "Opus")} hive whose brain will drive {hb} subhive bod{(hb == 1 ? "y" : "ies")} " +
+        $"(none in game yet: they log in once it is in{Pacing(hb)})" +
+        (crew != null ? $"; they go straight to work on {crew} as they arrive (no brain turn first; its brain wakes on {crew}'s result)" : "");
 
     /// <summary>
     /// No kind given: a script runs script-only; a named brain (or profile) is its own hive; a named clone keeps its kind; anything
