@@ -49,6 +49,27 @@ public sealed class StoryLookupGoldenTests
                     Assert.Equal(Old(q), StoryPlants.Produce(q));
     }
 
+    [Fact]
+    public void Enchant_preference_matches_the_old_switch_for_every_block_name()
+    {
+        static string Old(string material) => material.ToLowerInvariant() switch
+        {
+            var m when m.Contains("coal") || m.Contains("diamond") || m.Contains("emerald") || m.Contains("lapis") || m.Contains("redstone")
+                       || m.Contains("quartz") => "fortune",
+            var m when m.Contains("glass") || m.Contains("ice") || m.Contains("glowstone") || m.Contains("ender_chest") || m.Contains("grass")
+                       || m.Contains("mycelium") || m.Contains("bookshel") => "silk_touch",
+            _ => "efficiency",
+        };
+        var names = new List<string> { "", "Diamond_Ore", "group:ores", "PACKED_ICE", "x" };
+        foreach (var d in Versions)
+            for (int id = 0; id <= 2300; id++)
+            {
+                if (d.BlockExists(id)) names.Add(d.Block(id).Name);
+                if (d.ItemExists(id)) names.Add(d.Item(id).Name);
+            }
+        foreach (var n in names) Assert.Equal(Old(n), StoryEnchanting.PreferFor(n));
+    }
+
     /// <summary>A small forest: plain trees, a 2x2 trunk, a tree with branches and a crown, a floating log, leaves on their own, a
     /// stump over water; every block's tree base, the trees of several boxes, and every crop state.</summary>
     [Fact]
