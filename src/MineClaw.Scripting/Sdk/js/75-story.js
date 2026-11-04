@@ -21,6 +21,24 @@
     }
     return { ok: true, msg: j.act || 'idle' };
   });
+  // work(job): a station bill the pawn script hands over (1.12.2: brewing stand, enchanting table, anvil). A brew fills its glass
+  // bottles first (j.fill: a water source or cauldron); every other kind is nothing to do.
+  const work = j => {
+    const g = globalThis;
+    switch (j.kind) {
+      case 'brew': {
+        if (j.fill && j.fill.n > 0) {
+          const f = H.skill('fill_bottles', { pos: j.fill.at, count: j.fill.n });
+          if (!g.ok(f)) return f;
+        }
+        return H.skill('brew', { potion: j.potion, form: j.form, count: j.n, pos: j.at });
+      }
+      case 'enchant':
+        return H.skill('enchant_item', { item: j.item, option: j.option || 3, prefer: j.prefer || '', prefer_only: !!j.prefer_only, pos: j.at });
+      case 'anvil': return H.skill('use_anvil', { item: j.item, mode: j.mode || 'repair', pos: j.at });
+      default: return run(j); // escape, dump (below)
+    }
+  };
   // till(job): hold the hoe (j.hoe) and use it on the dirt or grass at j.at, walking over first when it is far.
   const till = j => {
     const g = globalThis;
@@ -85,7 +103,7 @@
     if (!g.ok(e)) return { ok: false, stuck: true, msg: r.msg + '; ' + e.msg };
     return e.out ? walk() : r;
   };
-  // run(job): the job kinds story_pawn hands over (its own switch is full). escape: the colony saw it stuck (a pit, a cave, a run of
+  // run(job): the colony's own kinds (story.work hands them over). escape: the colony saw it stuck (a pit, a cave, a run of
   // unreachable targets): out by itself, else to j.at (home); help is asked for when nothing works. dump: no storage takes these:
   // carry them to the drop spot and put them down.
   const run = j => {
@@ -111,7 +129,7 @@
       default: return { ok: true };
     }
   };
-  /** story.next(s)|report(job, status, note?)|during(job, fn)|idle|till|go(at, d)|escape() - the job loop */
+  /** story.next(s)|report(job, status, note?)|during(job, fn)|idle|work(job)|go(at, d)|escape() - the job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report: (j, status, note, pct) => H.storyReport(String(id(j)), status, note == null ? null : String(note), pct),
@@ -119,7 +137,7 @@
     idle,
     go,
     escape,
-    run,
+    work,
     till,
   }));
 }

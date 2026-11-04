@@ -22,6 +22,13 @@ export const STORY_ITEM_LABELS: Readonly<Record<string, string>> = {
   '349': 'Raw fish', '350': 'Cooked fish', '352': 'Bone', '353': 'Sugar', '355': 'Bed', '360': 'Melon slice', '363': 'Raw beef',
   '364': 'Steak', '365': 'Raw chicken', '366': 'Cooked chicken', '367': 'Rotten flesh', '368': 'Ender pearl', '375': 'Spider eye',
   '391': 'Carrot', '392': 'Potato', '393': 'Baked potato',
+  // 1.12.2 stations and what they take (a potion's meta is its potion type id).
+  '116': 'Enchanting table', '117': 'Brewing stand', '118': 'Cauldron', '145': 'Anvil', '340': 'Book', '348': 'Glowstone dust',
+  '351:4': 'Lapis lazuli', '370': 'Ghast tear', '372': 'Nether wart', '373': 'Potion', '373:1': 'Water bottle',
+  '373:4': 'Awkward potion', '373:14': 'Potion of Swiftness', '373:21': 'Potion of Healing', '374': 'Glass bottle',
+  '376': 'Fermented spider eye', '377': 'Blaze powder', '378': 'Magma cream', '379': 'Brewing stand', '380': 'Cauldron',
+  '382': 'Glistering melon', '396': 'Golden carrot', '403': 'Enchanted book', '414': "Rabbit's foot", '437': "Dragon's breath",
+  '438': 'Splash potion', '438:21': 'Splash potion of Healing', '441': 'Lingering potion',
 };
 
 /** A label for an item, a block or a category key ("17:-1"). */
@@ -63,7 +70,33 @@ const r = (
   fuel?: boolean,
 ): StoryRecipe => ({ id, label, workbench, workType, output, inputs, group, ...(fuel ? { fuel: true } : {}) });
 
-/** The mock recipe book (b1.8.1 recipes; the director has the real one). */
+const BOTTLES: StoryRecipe['inputs'][number] = { options: [[374, 0], [373, 1]], count: 3 };
+const LAPIS: StoryRecipe['inputs'][number] = { options: [[351, 4]], count: 3 };
+const BREW = { fuelItem: 'blaze_powder', water: true, note: '20 s a brew for up to 3 bottles; 1 blaze powder fuels 20 brews' };
+const ENCHANT = { xpLevels: 1, lapis: 3, note: "takes offer 1–3 (1–3 lapis and levels); the offer needs its own level (up to 30 with 15 bookshelves)" };
+const ONCE: StoryRecipe['modes'] = ['count', 'forever'];
+/** A station recipe (1.12.2 brewing stand, enchanting table, anvil). */
+const st = (
+  id: string,
+  label: string,
+  workbench: string,
+  workType: string,
+  output: [number, number, number],
+  inputs: StoryRecipe['inputs'],
+  group: string,
+  requires: NonNullable<StoryRecipe['requires']>,
+  chain?: string[] | null,
+  enchantments?: string[] | null,
+  modes?: StoryRecipe['modes'],
+): StoryRecipe => ({
+  ...r(id, label, workbench, workType, output, inputs, group, workbench === 'brewing_stand'),
+  requires,
+  ...(chain ? { chain } : {}),
+  ...(enchantments ? { enchantments } : {}),
+  ...(modes ? { modes } : {}),
+});
+
+/** The mock recipe book (b1.8.1 recipes, plus a sample of the 1.12.2 stations'; the director has the real one). */
 export const STORY_DEFAULT_RECIPES: StoryRecipe[] = [
   r('planks', 'Planks', 'crafting_table', 'craft', [5, 0, 4], [{ options: [[17, -1]], count: 1 }], 'wood'),
   r('sticks', 'Sticks', 'crafting_table', 'craft', [280, 0, 4], [{ category: 'wood', options: [[5, -1]], count: 2 }], 'wood'),
@@ -91,6 +124,25 @@ export const STORY_DEFAULT_RECIPES: StoryRecipe[] = [
   r('glass', 'Glass', 'furnace', 'craft', [20, 0, 1], [{ options: [[12, 0]], count: 1 }], 'building', true),
   r('stone', 'Smooth stone', 'furnace', 'craft', [1, 0, 1], [{ options: [[4, 0]], count: 1 }], 'stone', true),
   r('charcoal', 'Charcoal', 'furnace', 'craft', [263, 1, 1], [{ options: [[17, -1]], count: 1 }], 'ores', true),
+  // 1.12.2 stations: the director lists every potion, enchantable item and anvil job; a sample of each here.
+  st('brew:awkward', 'Brew Awkward Potion', 'brewing_stand', 'cook', [373, 4, 3], [BOTTLES, { options: [[372, 0]], count: 1 }], 'potions', BREW, [
+    'Water Bottle + Nether Wart → Awkward Potion',
+  ]),
+  st('brew:swiftness', 'Brew Potion of Swiftness', 'brewing_stand', 'cook', [373, 14, 3], [BOTTLES, { options: [[372, 0]], count: 1 }, { options: [[353, 0]], count: 1 }], 'potions', BREW, [
+    'Water Bottle + Nether Wart → Awkward Potion',
+    'Awkward Potion + Sugar → Potion of Swiftness',
+  ]),
+  st('brew:splash_healing', 'Brew Splash Potion of Healing', 'brewing_stand', 'cook', [438, 21, 3], [BOTTLES, { options: [[372, 0]], count: 1 }, { options: [[382, 0]], count: 1 }, { options: [[289, 0]], count: 1 }], 'potions', BREW, [
+    'Water Bottle + Nether Wart → Awkward Potion',
+    'Awkward Potion + Glistering Melon → Potion of Healing',
+    'Potion of Healing + Gunpowder → Splash Potion of Healing',
+  ]),
+  st('enchant:diamond_pickaxe', 'Enchant Diamond Pickaxe', 'enchanting_table', 'craft', [278, 0, 1], [{ options: [[278, -1]], count: 1 }, LAPIS], 'tools', ENCHANT, null, ['efficiency', 'silk_touch', 'unbreaking', 'fortune'], ONCE),
+  st('enchant:iron_sword', 'Enchant Iron Sword', 'enchanting_table', 'craft', [267, 0, 1], [{ options: [[267, -1]], count: 1 }, LAPIS], 'weapons', ENCHANT, null, ['sharpness', 'smite', 'bane_of_arthropods', 'knockback', 'fire_aspect', 'looting', 'sweeping', 'unbreaking'], ONCE),
+  st('enchant:book', 'Enchant Book', 'enchanting_table', 'craft', [403, 0, 1], [{ options: [[340, -1]], count: 1 }, LAPIS], 'enchanting', ENCHANT, null, ['efficiency', 'fortune', 'sharpness', 'protection', 'unbreaking'], ONCE),
+  st('repair:iron_pickaxe', 'Repair Iron Pickaxe (iron ingot)', 'anvil', 'craft', [257, 0, 1], [{ options: [[257, -1]], count: 1 }, { options: [[265, 0]], count: 1 }], 'tools', { xpLevels: 1, note: 'the most damaged one; a level per material unit (up to 4) plus its prior work' }, null, null, ONCE),
+  st('combine:bow', 'Combine two Bows', 'anvil', 'craft', [261, 0, 1], [{ options: [[261, -1]], count: 2 }], 'weapons', { xpLevels: 2, note: "2 levels when it mends, plus the second one's enchantments and both prior works" }, null, null, ONCE),
+  st('book:diamond_sword', 'Apply an enchanted book to Diamond Sword', 'anvil', 'craft', [276, 0, 1], [{ options: [[276, -1]], count: 1 }, { options: [[403, -1]], count: 1 }], 'weapons', { xpLevels: 1, note: "the book's enchantments (rarity × level, halved from a book) plus prior work" }, null, null, ONCE),
 ];
 
 /** Every item key a category covers, its children included ("id:meta" strings). */

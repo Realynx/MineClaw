@@ -47,11 +47,15 @@ public sealed class Window
 {
     internal readonly ItemStack[] Container;
     private readonly ItemStack[] _player; // window-0 array: 45 slots (b1.8.1) or 46 (1.12.2: + off hand)
-    private readonly short[] _properties = new short[8];
+    // 1.12.2's enchanting table sends ten (three offer levels, the seed, three hints and their levels).
+    private readonly short[] _properties = new short[16];
 
     public int Id { get; }
     public WindowType Type { get; }
     public string Title { get; }
+    /// <summary>1.12.2: the window's own kind (brewing_stand, enchanting_table, anvil, hopper, beacon...) when the canonical
+    /// <see cref="Type"/> folds it into a chest-like window; null otherwise (b1.8.1, chests, the four canonical types).</summary>
+    public string? Kind { get; init; }
     /// <summary>Number of non-player slots (the 0x64 slot count; for window 0 this is 9: output, grid, armor).</summary>
     public int ContainerSlots { get; }
     public int SlotCount => Type == WindowType.Player ? _player.Length : ContainerSlots + 36;

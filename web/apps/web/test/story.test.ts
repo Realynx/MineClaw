@@ -53,12 +53,16 @@ import {
   billSummary,
   buildTree,
   draftOf,
+  enchantLabel,
   itemAllowed,
   newDraft,
   nodeState,
   pasteBody,
+  recipeModes,
   reorderBills,
+  requiresLine,
   searchRecipes,
+  stationLines,
   toggleItem,
   toggleNode,
   updateBillBody,
@@ -634,6 +638,37 @@ describe('bills', () => {
     expect(billSummary({ mode: 'until', target: 64 })).toBe('Do until you have 64');
     expect(billSummary({ mode: 'forever', target: 1 })).toBe('Do forever');
     expect(billProgress({ mode: 'count', target: 8, done: 3 })).toBe('3/8');
+  });
+
+  it('station bills: modes per recipe, an enchant option and preference, the requirements and station facts', () => {
+    const pick = STORY_DEFAULT_RECIPES.find((r) => r.id === 'enchant:diamond_pickaxe')!;
+    const brew = STORY_DEFAULT_RECIPES.find((r) => r.id === 'brew:swiftness')!;
+    expect(recipeModes(pick)).toEqual(['count', 'forever']);
+    expect(recipeModes(brew)).toEqual(['count', 'until', 'forever']);
+    expect(newDraft(pick, 'until', 5).mode).toBe('count'); // no "until" for an enchanted item
+    const d = { ...newDraft(pick), prefer: 'fortune', preferOnly: true, option: 2 };
+    const add = addBillBody([3, 64, 0], d);
+    expect(add.bill).toMatchObject({ recipe: 'enchant:diamond_pickaxe', option: 2, prefer: 'fortune', preferOnly: true });
+    expect(StoryBillsRequest.safeParse(add).success).toBe(true);
+    expect(addBillBody([3, 64, 0], newDraft(brew)).bill).not.toHaveProperty('option');
+    const bill = {
+      id: 'b2', recipe: pick.id, mode: 'count', target: 1, done: 0, paused: false, ingredients: d.ingredients, radius: 32,
+      pawn: 'any', minSkill: null, store: 'best' as const, option: 2, prefer: 'fortune', preferOnly: true,
+    };
+    expect(updateBillBody(bill, { ...draftOf(bill), prefer: null, preferOnly: false })).toEqual({
+      op: 'update', id: 'b2', prefer: null, preferOnly: false,
+    });
+    expect(StoryBillsRequest.safeParse({ op: 'enchant_tools', material: 'diamond_ore' }).success).toBe(true);
+    expect(requiresLine(pick, 2)).toBe('XP level 2+ · 2 lapis');
+    expect(requiresLine(brew)).toBe('fuel: blaze powder · water nearby (source or cauldron)');
+    expect(requiresLine(sticks)).toBe('');
+    expect(enchantLabel('silk_touch')).toBe('Silk Touch');
+    expect(stationLines({ kind: 'enchanting_table', station: { bookshelves: 15, maxBookshelves: 15, topOffer: [30, 30] } })).toEqual([
+      'Bookshelves 15/15 · top offer level 30',
+    ]);
+    expect(stationLines({ kind: 'anvil', station: { present: false, condition: 'gone' } })).toEqual(['The anvil is gone', 'Condition: gone']);
+    expect(stationLines({ kind: 'brewing_stand', station: { water: [5, 64, 5], fuel: 18 } })).toEqual(['Water: 5, 64, 5', 'Fuel: 18 brews left']);
+    expect(stationLines({ kind: 'crafting_table', station: null })).toEqual([]);
   });
 
   it('recipe search matches labels and ingredients, grouped by category', () => {

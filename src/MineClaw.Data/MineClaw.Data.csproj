@@ -14,6 +14,8 @@
          knowledge pack also reads (written from the decompiled source), so the bot's tables and its knowledge agree. -->
     <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\recipes.json" LogicalName="mcdata.1.12.2.recipes.json" />
     <EmbeddedResource Include="..\..\shards\sources\1.12.2\smelting.json" LogicalName="facts.1.12.2.smelting.json" />
+    <!-- The enchantments (ids, max levels, weights = rarity, categories, exclusions): the enchanting table and anvil rules. -->
+    <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\enchantments.json" LogicalName="mcdata.1.12.2.enchantments.json" />
   </ItemGroup>
 
 </Project>

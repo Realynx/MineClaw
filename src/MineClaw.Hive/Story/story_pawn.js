@@ -84,7 +84,7 @@ function work(j) {
     case 'hold':
       if (a) go(a, j.dist ?? 2)
       return wait(j.s || 5)
-    default: return story.run(j)
+    default: return story.work(j)
   }
 }
 function pawn() {

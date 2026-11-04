@@ -313,7 +313,7 @@ public sealed class StoryFeatureTests
         Assert.Equal(WorkTypes.Craft, furnace.Single(r => r.Id == "smelt:iron_ore").WorkType);
         Assert.Equal(WorkTypes.Cook, furnace.Single(r => r.Id == "smelt:porkchop").WorkType);
         Assert.All(furnace, r => Assert.True(r.Fuel));
-        Assert.Empty(StoryRecipes.For(d, "anvil")); // no primitive yet
+        Assert.Equal(version == "1.12.2", StoryRecipes.For(d, "anvil").Count > 0); // the stations exist in 1.12.2 only (StoryStationTests)
         Assert.Equal(version == "1.12.2", table.Any(r => r.Output.Id == 145)); // anvils exist in 1.12.2 only
         Assert.All(table.Concat(furnace), r => Assert.DoesNotMatch(@"(^| )(?!of |and |with |on |a |the |into )[a-z]", r.Label));
     }

@@ -20,7 +20,7 @@ public static class Ids1122
         UpdateHealth = 0x41, SpawnPosition = 0x46, TimeUpdate = 0x47, CollectItem = 0x4B, EntityTeleport = 0x4C;
     // play, serverbound
     public const int TeleportConfirm = 0x00, ChatOut = 0x02, ClientStatus = 0x03, ClientSettings = 0x04, ConfirmTransactionOut = 0x05,
-        ClickWindow = 0x07, CloseWindowOut = 0x08, CustomPayload = 0x09, UseEntity = 0x0A, KeepAliveOut = 0x0B, Player = 0x0C,
+        EnchantItem = 0x06, ClickWindow = 0x07, CloseWindowOut = 0x08, CustomPayload = 0x09, UseEntity = 0x0A, KeepAliveOut = 0x0B, Player = 0x0C,
         PlayerPosition = 0x0D, PlayerPositionRotation = 0x0E, PlayerRotation = 0x0F, PlayerDigging = 0x14, EntityAction = 0x15,
         HeldItemChange = 0x1A, UpdateSign = 0x1C, Animation = 0x1D, PlaceBlock = 0x1F, UseItem = 0x20;
     /// <summary>Spawn Object type of an item entity (<c>NetHandlerPlayClient.handleSpawnObject</c>: 2 → EntityItem).</summary>
@@ -410,7 +410,7 @@ public sealed partial class Release1122Connection : IGameConnection
         HandshakePacket or KeepAlivePacket or KickPacket or ChatPacket or PlayerOnGroundPacket or PlayerPositionPacket
             or PlayerPositionLookPacket or PlayerLookPacket or EntityActionPacket or RespawnPacket or HoldingChangePacket
             or WindowClickPacket or TransactionPacket or CloseWindowPacket or PlayerDiggingPacket or PlayerBlockPlacementPacket
-            or UseEntityPacket or UpdateSignPacket => true,
+            or UseEntityPacket or UpdateSignPacket or EnchantItemPacket => true,
         AnimationPacket a => a.Animation == 1,
         _ => false,
     };

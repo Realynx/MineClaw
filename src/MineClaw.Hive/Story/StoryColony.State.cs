@@ -72,8 +72,9 @@ public sealed partial class StoryColony
                 }).ToArray()),
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
                 {
-                    ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label, ["supported"] = StoryRecipes.Supported.Contains(b.Kind),
-                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt,
+                    ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label,
+                    ["supported"] = w != null ? StoryRecipes.SupportedIn(w.Data, b.Kind) : StoryRecipes.Supported.Contains(b.Kind),
+                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b),
                     ["bills"] = new JsonArray(b.Bills.Select(x => (JsonNode)BillJson(x)).ToArray()),
                 }).ToArray()),
             };
@@ -121,6 +122,7 @@ public sealed partial class StoryColony
             ["schedule"] = new JsonArray(p.Schedule.Select(b => (JsonNode)(b ?? ScheduleBlocks.Anything)!).ToArray()),
             ["held"] = live.Held,
             ["inventory"] = new JsonArray(live.Inventory.Select(s => (JsonNode)s.Json()).ToArray()),
+            ["xp_level"] = live.XpLevel,
         };
     }
 
@@ -165,5 +167,6 @@ public sealed partial class StoryColony
         },
         ["radius"] = b.Radius, ["pawn"] = b.Pawn, ["min_skill"] = b.MinSkill, ["store"] = b.Store?.DeepClone(),
         ["for_build"] = b.ForBuild, ["for_item"] = b.ForItem, ["step"] = b.ForBuild != null ? b.Step : null,
+        ["option"] = b.Option, ["prefer"] = b.Prefer, ["prefer_only"] = b.PreferOnly ? true : null, ["xp_needed"] = b.XpNeeded, ["last"] = b.Last,
     };
 }

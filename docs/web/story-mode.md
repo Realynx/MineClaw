@@ -128,7 +128,8 @@ The **Pawn** object:
 ```
 {name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
- skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]] }
+ skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]],
+ xp_level }
 ```
 
 - `job.type` is the work type, or one of `need` (eating, fleeing), `order`, `schedule` (sleep, free time) or `idle`.
@@ -790,20 +791,32 @@ Workbenches (designated, added 2026-11-03):
   home) join by themselves every 30 s, as before. Off by default (`POST …/options {detect_benches}`); colonies saved before keep
   the benches they had.
 - Only designated benches unlock the Architect's tiers (below) and receive bills.
-- Brewing stands, anvils and enchanting tables are listed (`supported:false`) but take no bills yet: there is no primitive.
-- Workbench: `{pos, kind, label, supported, loaded, ready_at, bills:[Bill]}`.
+- Every interactive station takes bills (added 2026-11-03): crafting tables and furnaces on both versions; brewing stands, anvils
+  and enchanting tables on 1.12.2 (b1.8.1 has none of the three: listed with `supported:false`, an `add` answers 400). See
+  "Stations" below.
+- A station the colony's own build placed (the Architect's production tab) is the colony's at once.
+- Workbench: `{pos, kind, label, supported, loaded, ready_at, station, bills:[Bill]}`. `station` (the three 1.12.2 stations, else
+  null): `{present, bookshelves, max_bookshelves, top_offer:[min,max]}` for an enchanting table, `{present, condition:
+  intact|chipped|damaged|gone}` for an anvil, `{present, water:[x,y,z]|null, fuel}` for a brewing stand.
 
 Recipes: `GET /api/story/recipes?workbench=crafting_table|furnace|brewing_stand|anvil|enchanting_table` →
-`[{id, label, workbench, work_type: craft|cook, output:[id,meta,count], inputs:[{options:[[id,meta]], count}], fuel}]`.
-Ids are `craft:<output name>` and `smelt:<input name>`. Furnace food is Cook work; the rest is Craft.
+`[{id, label, workbench, work_type: craft|cook, output:[id,meta,count], inputs:[{options:[[id,meta]], count}], fuel}]`; a station
+recipe adds `requires:{xp_levels, lapis, fuel_item, water, note}`, `modes` (the bill modes it takes), `chain` (a brew's steps) and
+`enchantments` (what an enchant can prefer). Ids are `craft:<output name>`, `smelt:<input name>`, `brew:[splash_|lingering_]<potion
+type>`, `enchant:<item>`, `repair:<item>`, `combine:<item>` and `book:<item>`. Furnace food and brewing are Cook work; the rest
+(crafting, smelting, enchanting, the anvil) is Craft.
 
 `POST …/bills`:
 - `{op:"add", bench:[x,y,z], bill}` → `{id}`
 - `{op:"update", id, …bill fields}`, `{op:"remove"|"pause"|"resume", id}`
 - `{op:"reorder", bench, ids}` → `{ids}`. Bills run top to bottom per bench.
+- `{op:"enchant_tools", prefer?, material?, items?, count?, prefer_only?}` → `{ids, note}`: the tools system's hook (below).
 
 Bill: `{id, recipe, mode: count|until|forever, target, done, paused, suspended_reason, ingredients:{allow, deny}, radius, pawn: "any"|name,
-min_skill, store: "best"|{chest:[x,y,z]}}`. `until` counts the product in every storage plus the pawns' inventories.
+min_skill, store: "best"|{chest:[x,y,z]}, option, prefer, prefer_only, xp_needed, last}`. `until` counts the product in every storage
+plus the pawns' inventories. `option`/`prefer`/`prefer_only` are an enchant bill's (below); `xp_needed` is the XP level the last try
+needed (an offer's level, an anvil's price); `last` is what the last job made ("enchanted diamond pickaxe: Fortune II (offer #3,
+level 18)").
 
 Execution:
 - A pawn with the bill's work type on, and allowed by `pawn` and `min_skill`, takes the first runnable bill of the nearest free
@@ -815,6 +828,71 @@ Execution:
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
+
+### Stations: brewing stand, enchanting table, anvil (added 2026-11-03)
+
+1.12.2 only (b1.8.1 has none of these blocks). Each runs as one job at the station, through the pawn's skills (`brew`,
+`fill_bottles`, `enchant_item`, `use_anvil`; client primitives in `MinecraftClient.Stations.cs`) via the story SDK's `story.work(job)`
+(`Sdk/js/75-story.js`; `story_pawn.js` hands every kind it doesn't know to it). Items go into these windows by hand (pick up,
+place): the server routes a shift-click into them by item, which the chest-like window model can't predict.
+
+**Brewing stand** (Cook work). One recipe per potion, splash and lingering potion a chain from water bottles makes ("Brew Potion of
+Swiftness": water + nether wart → awkward, + sugar → swiftness; + redstone → extended, + glowstone → II, + fermented spider eye →
+corrupted, + gunpowder → splash, + dragon's breath → lingering). Output: 3 potions per job (a stand holds three bottles); count, until
+and forever all work (a 1.12.2 potion's type is NBT: the colony gives a potion of type T the meta T's registry id, water 1, awkward
+4, swiftness 14…, in pawn inventories and the storage ledger).
+- The job starts from the furthest stage of the chain the pawn holds (awkward potions skip the wart), else from water bottles it
+  holds, else from glass bottles (its own or from storage) it fills first at the nearest filled cauldron or water source block
+  (open above) within 16 blocks (4 up/down) of the stand: `fill:{at, n}`.
+- It brings each step's ingredient and, when the stand's fuel is short or unknown, a blaze powder (one fuels 20 brews; the colony
+  keeps the stand's `fuel` as it last left it). It stays at the stand through every brew (20 s each), checks the bottles after each
+  step, then stores the potions (the bill's chest, else the best).
+- Reasons: "no water (a source block or a filled cauldron) within 16 blocks of the brewing stand", "no glass bottles (or water
+  bottles) within N blocks", "no sugar within N blocks", "no blaze powder (the brewing stand's fuel)" (only when the stand is known
+  to be short), and from the stand "the stand won't brew …", "the brewing stand is busy brewing".
+
+**Enchanting table** (Craft work). "Enchant Diamond Pickaxe" for every item the table takes: pickaxes, axes, shovels, swords,
+armour, bow, fishing rod, book (hoes, shears and the rest only through an anvil). Modes count and forever (an enchanted item can't
+be told from a plain one in storage: no until).
+- Bill fields: `option` 1–3 (the highest offer it takes; offer k costs k lapis and k levels, default 3), `prefer` (an enchantment
+  the table can put on the item, validated), `prefer_only`.
+- The pawn brings the item (from storage first: its own may be its working tool, or enchanted already; the primitive only takes a
+  plain one) and `option` lapis. The table shows its three offers once the item is in (each needs its own level, up to 30 with 15
+  bookshelves); the pawn takes the highest offer hinting `prefer` it can pay, else (unless `prefer_only`) the highest it can pay.
+  The offers are fixed for that pawn and item until it enchants something: no reroll. A pawn whose table showed no offer for a
+  prefer-only bill leaves it to the others; when every pawn has tried, the bill waits: "no pawn's table shows Silk Touch for it".
+- The enchanted tool stays with the pawn unless the bill names a chest (pawns keep their gear); a book goes to storage.
+- The inspector shows the bookshelves (`Enchanting.Bookshelves`: the game's walk around the table, at most 15) and the top offer's
+  level range.
+
+**Anvil** (Craft work). Per damageable item: "Repair Iron Pickaxe (iron ingot)" (the most damaged one, the pawn's own first, with
+the material units that mend it, a quarter of its durability each), "Combine two Iron Pickaxes", "Apply an enchanted book to Iron
+Pickaxe". Modes count and forever. Prices (`Anvil`, the game's rules): prior work (doubles plus one each use) + 1 per material unit;
+2 when a combine mends + the right item's enchantments; a book's enchantments at half the rarity multiplier (common 1, uncommon 2,
+rare 4, very rare 8) × level; 1 per conflicting enchantment. 40 or more is refused ("too expensive", the bill is suspended).
+- Every use may wear the anvil (12%): the inspector shows `condition`; a job that reports "the anvil broke", or a bench whose block
+  is gone, suspends its bills: "the anvil at x,y,z is gone (worn through): place a new one and designate it".
+- Renaming isn't offered: it needs a typed name and a pawn has no use for one.
+
+**XP levels.** Pawns earn XP the game's way (mining ore, smelting, fighting); `xp_level` is in the pawn state (the pawn inspector's
+Skills tab shows it). An enchant needs at least `option` levels, a repair the units, a combine 2, or the bill's `xp_needed` when the
+last try needed more ("needs 18 XP levels (has 10)" from the station teaches the bill; it's not a failure). A pawn short of them
+leaves the bill to one that has them; when no pawn that may take it has them the bill waits: "needs 18 XP levels: no pawn has them
+(best: Ann 10)" (retried every 30 s).
+
+**Work types.** Brewing is Cook (RimWorld brews at the stove's skill); enchanting and the anvil are Craft. No new work type.
+
+**Tools hook** (for the tools/equipment system): `StoryColony.EnchantTools(prefer, items?, count = 1, preferOnly = false)` → `(ids,
+error)` adds count bills at the colony's enchanting table nearest home for `items` (default: every pickaxe kind the colony has)
+preferring `prefer`; an unfinished bill with the same recipe and preference isn't added twice. `StoryEnchanting.PreferFor(material)`
+picks the enchantment per mined material: fortune for coal, diamond, emerald, lapis, redstone and quartz ores; silk touch for
+glass, ice, glowstone, grass, mycelium, ender chests and bookshelves; efficiency otherwise. Over HTTP: `POST …/bills
+{op:"enchant_tools", prefer | material, items?, count?, prefer_only?}`.
+
+**Interactive blocks that take no bills** (`StoryRecipes.NotBenches`): chests (storage settings), hoppers, droppers and dispensers
+(containers; a "fill with X" order may come later), the cauldron (water for brewing: a level per bottle), the beacon (a one-time
+setup), the jukebox and the note block. The bench list is `StoryRecipes.Benches`: crafting table, furnace, brewing stand, anvil,
+enchanting table.
 
 ### Builds craft what they need (added 2026-11-03)
 
@@ -852,7 +930,7 @@ recipe chain and the raw shortfall on hover; the bench inspector lists the auto 
 
 ### Architect palette and tiers (added 2026-11-03)
 
-`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace}, tabs}`. Entries are every placeable the
+`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace, brewing_stand?, anvil?, enchanting_table?}, tabs}` (the designated benches per kind the version has). Entries are every placeable the
 version has (`StoryArchitect`: blocks, stairs, slabs, fences, doors, glass and panes, wool, beds, bookshelves, carpets, benches,
 chests, torches, glowstone, ladders…; variants the version lacks are left out), by tab: structure, furniture, production,
 storage, lighting, misc. Entry: `{id, label, tab, tier, unlocked, reason, item:[id,meta], material:[id,meta], kind, kinds, chain,
@@ -931,7 +1009,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   priority and a filter over a loot category tree. State: `categories` and `storages`.
 - **Bills.** Workbenches (crafting table, furnace, brewing stand, anvil, enchanting table) take bills: a recipe, repeat
   mode (count, until, forever), ingredient filter and radius, worker restriction, where the product goes. State:
-  `workbenches`; recipes come from `GET /api/story/recipes`.
+  `workbenches`; recipes come from `GET /api/story/recipes`. The bills inspector shows a station's facts (bookshelves and the top
+  offer, the anvil's wear, the stand's water and fuel); the bill dialog shows what a station recipe needs (XP level, lapis, fuel,
+  water, a brew's steps), offers only the modes the recipe takes, and an enchant's option, preferred enchantment and prefer-only.
 - **AI bodies.** Main, the hives and their bodies sit in the top bar after the pawns. With them in the selection, a tool,
   order, build or bill also goes to them as a directive (`POST /api/story/directives`) with the same payload; the chat bar
   talks to them as the signed-in player. State: `ai` and `directives`.

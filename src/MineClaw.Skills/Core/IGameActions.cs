@@ -117,4 +117,18 @@ public interface IGameActions
     /// <summary>Get out of the boat/minecart. Default: right-click it again (b1.8.1 mounting toggles).</summary>
     Task<ActionResult> DismountAsync(CancellationToken ct) =>
         RidingEntityId < 0 ? Task.FromResult(ActionResult.Success("not riding anything")) : UseEntityAsync(RidingEntityId, null, ct);
+
+    // ---- 1.12.2 work stations (Story Mode's bills; MinecraftClient.Stations.cs). Default: unsupported ----
+
+    /// <summary>Fills glass bottles at a water source block or a cauldron.</summary>
+    Task<ActionResult> FillBottlesAsync(BlockPos water, int count, CancellationToken ct) => NoStation("filling bottles");
+    /// <summary>Brews <paramref name="steps"/> at a brewing stand from up to three bottles of the base potion.</summary>
+    Task<ActionResult> BrewAsync(BlockPos stand, string baseType, int baseForm, IReadOnlyList<Brewing.Step> steps, int count, CancellationToken ct) =>
+        NoStation("brewing");
+    /// <summary>Enchants one plain item at an enchanting table (offer up to <paramref name="maxOption"/>, preferring an enchantment).</summary>
+    Task<ActionResult> EnchantAsync(BlockPos table, int itemId, int maxOption, int? preferId, bool preferOnly, CancellationToken ct) => NoStation("enchanting");
+    /// <summary>One anvil job (repair | combine | book) on an item.</summary>
+    Task<ActionResult> AnvilAsync(BlockPos anvil, string mode, int itemId, CancellationToken ct) => NoStation("the anvil");
+
+    private static Task<ActionResult> NoStation(string what) => Task.FromResult(ActionResult.Fail($"{what} isn't available on this body"));
 }
