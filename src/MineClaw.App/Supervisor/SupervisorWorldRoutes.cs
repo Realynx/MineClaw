@@ -58,6 +58,8 @@ public interface ISupervisorWorld
     string? Version => null;
     /// <summary>The world time (ticks) in <paramref name="dim"/>, null = unknown: the viewer's day/night light follows it.</summary>
     long? WorldTime(int dim) => null;
+    /// <summary>The server stopped the daylight cycle in <paramref name="dim"/> (the viewer then holds the time), null = unknown.</summary>
+    bool? WorldTimeFrozen(int dim) => null;
     /// <summary>Rain and thunder strengths (0..1) in <paramref name="dim"/>, null = unknown: the viewer's sky, light and rain follow them.</summary>
     (float Rain, float Thunder)? WorldWeather(int dim) => null;
     IReadOnlyList<WorldBot> Bots();
@@ -201,7 +203,7 @@ public sealed class SupervisorWorldRoutes
                             var cols = _world.Index(dim, cx0, cz0, cx1, cz1, (cx1 - cx0 + 1) * (cz1 - cz0 + 1), light);
                             var wx = _world.WorldWeather(dim);
                             return Json(200, new { dim, at = _time.GetUtcNow().ToUnixTimeMilliseconds(), columns = cols, version = _world.Version, time = _world.WorldTime(dim),
-                                rain = wx?.Rain, thunder = wx?.Thunder });
+                                time_frozen = _world.WorldTimeFrozen(dim), rain = wx?.Rain, thunder = wx?.Thunder });
                         }, ct)).ConfigureAwait(false);
                     }
                 case "chunks":

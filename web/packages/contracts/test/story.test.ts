@@ -111,10 +111,14 @@ describe('story contracts', () => {
   });
 
   it('hours and clock labels', () => {
-    expect(C.storyHour(0)).toBe(0);
-    expect(C.storyHour(23999)).toBe(23);
-    expect(C.storyClock(0)).toBe('06:00');
-    expect(C.storyClock(20)).toBe('02:00');
+    // The clock hour (the bot's StoryCharacter.Hour): tick 0 = 06:00, a schedule is indexed by it.
+    expect(C.storyHour(0)).toBe(6);
+    expect(C.storyHour(23999)).toBe(5);
+    expect(C.storyHour(18000)).toBe(0);
+    expect(C.storyHour(-6000)).toBe(12); // a stopped daylight cycle: the absolute value
+    expect(C.storyClock(0)).toBe('00:00');
+    expect(C.storyClock(6)).toBe('06:00');
+    expect(C.storyClock(20)).toBe('20:00');
   });
 
   it('time of day: ticks and clock times map both ways (0 = 06:00, 6000 noon, 18000 midnight)', () => {
@@ -262,6 +266,46 @@ describe('the mock director', () => {
     expect(() => sim.home('story-99', { home: { x: 1, y: 2, z: 3 } })).toThrow(
       expect.objectContaining({ status: 404 }),
     );
+  });
+
+  it('zones are cell sets painted RimWorld-style; growing zones take planting bills (docs/web/story-mode.md "Zones")', () => {
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 1 });
+    const farm = (area: C.StoryArea, plant = 'wheat') =>
+      sim.zones(id, { op: 'add', kind: 'farm', area, plant }) as C.StoryAck;
+    const a = farm([0, 63, 0, 4, 63, 2]);
+    const b = farm([3, 63, 1, 8, 63, 2]); // overlaps: one zone
+    expect(b).toMatchObject({ id: a.id, created: [], grown: [a.id] });
+    const zones = () => sim.state(id).zones;
+    expect(zones()).toHaveLength(1);
+    expect(zones()[0]!.cells).toBe(15 + 12 - 4);
+    expect(zones()[0]!.rows?.[0]).toEqual([0, 0, 4]);
+    // Another plant overwrites; a house over it is an overlay layer.
+    const c = farm([4, 63, 0, 4, 63, 2], 'carrots');
+    expect(c.split).toEqual([{ from: a.id, into: [expect.any(String)] }]);
+    sim.zones(id, { op: 'add', kind: 'home', area: [0, 63, 0, 8, 63, 2] });
+    expect(
+      zones()
+        .filter((z) => z.kind === 'farm')
+        .reduce((n, z) => n + (z.cells ?? 0), 0),
+    ).toBe(23);
+    // Erase any kind at another level: cells, not zones.
+    const e = sim.zones(id, { op: 'remove', area: [0, 90, 0, 0, 90, 2] }) as C.StoryAck;
+    expect(e.shrunk).toEqual(expect.arrayContaining([a.id]));
+    expect(C.StoryZoneRequest.safeParse({ op: 'remove', kind: 'any', area: [0, 0, 0, 1, 1, 1] }).success).toBe(true);
+    // Planting bills: the first unmet bill is sown; reorder and pause change it.
+    const zid = String(a.id);
+    const bill = sim.zones(id, { op: 'bill_add', id: zid, plant: 'potatoes' }) as C.StoryAck;
+    const st = () => zones().find((z) => String(z.id) === zid)!;
+    expect(st().bills?.map((x) => x.plant)).toEqual(['wheat', 'potatoes']);
+    expect(st().activePlant).toBe('wheat');
+    sim.zones(id, { op: 'bill_reorder', id: zid, ids: [bill.bill!] });
+    expect(st().activePlant).toBe('potatoes');
+    expect(st().plant).toBe('potatoes');
+    sim.zones(id, { op: 'bill_pause', id: zid, bill: bill.bill! });
+    expect(st().activePlant).toBe('wheat');
+    sim.zones(id, { op: 'bill_update', id: zid, bill: st().bills![1]!.id, mode: 'count', target: 1 });
+    expect(st().activePlant).toBe('wheat');
   });
 
   it('beds: found near home, one per pawn, in the house they stand in; houses are named home zones', () => {
@@ -421,7 +465,11 @@ describe('the mock director', () => {
     expect(b.noCraft).toContain('fence');
     expect(b.materials[0]).toMatchObject({ via: 'none', crafting: 0, short: 3 });
     expect(() => sim.workbenches(id, { op: 'designate', pos: [9, 64, 9] })).toThrow(/no workbench/);
-    expect(sim.options(id, { autoPlaceBenches: false })).toMatchObject({ autoPlaceBenches: false, detectBenches: false });
+    expect(sim.options(id, { autoPlaceBenches: false })).toMatchObject({
+      autoPlaceBenches: false,
+      detectBenches: false,
+      idle: 'recreation',
+    });
     expect(sim.state(id).options?.autoPlaceBenches).toBe(false);
   });
 });

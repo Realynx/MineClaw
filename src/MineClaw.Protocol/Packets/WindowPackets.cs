@@ -15,6 +15,9 @@ public sealed class OpenWindowPacket : IPacket
     public byte InventoryType { get; set; }
     public string Title { get; set; } = string.Empty;
     public byte SlotCount { get; set; }
+    /// <summary>1.12.2: the window's own type without "minecraft:" (brewing_stand, enchanting_table, anvil, hopper...), which the
+    /// canonical <see cref="InventoryType"/> folds into a chest-like window; null on b1.8.1 (not on its wire).</summary>
+    public string? Kind { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d)
     {
@@ -178,6 +181,30 @@ public sealed class UpdateProgressBarPacket : IPacket
         w.WriteSByte(WindowId);
         w.WriteShort(ProgressBar);
         w.WriteShort(Value);
+    }
+}
+
+/// <summary>
+/// Enchant Item (C→S, 1.12.2 0x06 <c>CPacketEnchantItem</c>: ubyte window, byte enchantment = the offer 0..2). b1.8.1 has no
+/// enchanting: its wire never carries it (the id is the later beta-protocol 0x6C, unregistered here).
+/// </summary>
+public sealed class EnchantItemPacket : IPacket
+{
+    public const byte PacketId = 0x6C;
+    public byte Id => PacketId;
+    public sbyte WindowId { get; set; }
+    public sbyte Enchantment { get; set; }
+
+    public void Read(MinecraftReader r, PacketDirection d)
+    {
+        WindowId = r.ReadSByte();
+        Enchantment = r.ReadSByte();
+    }
+
+    public void Write(MinecraftWriter w, PacketDirection d)
+    {
+        w.WriteSByte(WindowId);
+        w.WriteSByte(Enchantment);
     }
 }
 

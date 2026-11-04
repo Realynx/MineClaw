@@ -518,7 +518,8 @@ public sealed partial class StoryColony
             return new JsonObject
             {
                 ["entries"] = entries,
-                ["benches"] = new JsonObject { ["crafting_table"] = Benches.Count(b => b.Kind == "crafting_table"), ["furnace"] = Benches.Count(b => b.Kind == "furnace") },
+                ["benches"] = new JsonObject(StoryRecipes.Benches.Where(k => StoryRecipes.SupportedIn(w.Data, k))
+                    .Select(k => new KeyValuePair<string, JsonNode?>(k, Benches.Count(b => b.Kind == k)))),
                 ["tabs"] = new JsonArray(StoryArchitect.Tabs.Select(t => (JsonNode)t!).ToArray()),
             };
         }
@@ -541,7 +542,7 @@ public sealed partial class StoryColony
 
     internal JsonObject OptionsJson()
     {
-        var o = new JsonObject { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches };
+        var o = new JsonObject { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches, ["idle"] = Meta.Idle };
         foreach (var (k, v) in GearOptionsJson().ToList()) o[k] = v?.DeepClone(); // auto_craft_tools, spare_tools (StoryColony.Gear.cs)
         return o;
     }

@@ -7,10 +7,13 @@ namespace MineClaw.Hive.Story;
 /// <summary>The work types, in the fixed column order (docs/web/story-mode.md): a lower priority number first, ties by this order.</summary>
 public static class WorkTypes
 {
-    public const string Guard = "guard", Doctor = "doctor", Cook = "cook", Hunt = "hunt", Build = "build", Farm = "farm", Mine = "mine",
-        Chop = "chop", Craft = "craft", Haul = "haul";
+    public const string Guard = "guard", Doctor = "doctor", Cook = "cook", Hunt = "hunt", Fish = "fish", Build = "build", Farm = "farm",
+        Mine = "mine", Chop = "chop", Craft = "craft", Haul = "haul";
 
-    public static readonly IReadOnlyList<string> All = [Guard, Doctor, Cook, Hunt, Build, Farm, Mine, Chop, Craft, Haul];
+    public static readonly IReadOnlyList<string> All = [Guard, Doctor, Cook, Hunt, Fish, Build, Farm, Mine, Chop, Craft, Haul];
+
+    /// <summary>The work types before Fish (added 2026-11-03): a new pawn's skills are drawn in this order, so pawns stay who they were.</summary>
+    public static readonly IReadOnlyList<string> Drawn = [Guard, Doctor, Cook, Hunt, Build, Farm, Mine, Chop, Craft, Haul];
 
     public static int Column(string type) => All.IndexOf(type) is var i and >= 0 ? i : All.Count;
     public static bool Known(string? t) => t != null && All.Contains(t);
@@ -200,16 +203,74 @@ public sealed class ZoneState
     public string Id { get; set; } = "";
     /// <summary>chop | mine | farm | home | forbidden (storage is chests: see <see cref="StorageState"/>).</summary>
     public string Kind { get; set; } = "";
-    public Area Area { get; set; }
+    /// <summary>The cells' bounding box (x, z) and the zone's level range (y: what it was painted at; the union when zones merge).</summary>
+    public Area Area { get => _area; set { _area = value; if (_rows == null) _cells = null; } }
+    /// <summary>
+    /// The zone's columns as normalised row runs <c>[z, x1, x2]</c> (docs/web/story-mode.md "Zones"); null = a legacy rectangle (the
+    /// whole <see cref="Area"/>), migrated to rows when the store loads it.
+    /// </summary>
+    public List<int[]>? Rows { get => _rows; set { _rows = value; _cells = null; } }
     /// <summary>A name the browser gives it ("Main house", "Farmhouse"); null = none.</summary>
     public string? Name { get; set; }
     public long Rev { get; set; }
-    /// <summary>A growing zone's plant (a <see cref="StoryPlants"/> id, farm zones only); null = a plain farm zone (ripe crops, bare farmland).</summary>
+    /// <summary>
+    /// A growing zone's plant: the first planting bill's plant (a <see cref="StoryPlants"/> id, farm zones only; what painting calls the
+    /// zone's type). Null with no bills = a plain farm zone (ripe crops, bare farmland). Older saves only have this (migrated to a bill).
+    /// </summary>
     public string? Plant { get; set; }
+    /// <summary>A growing zone's planting bills, in order (null = not a growing zone). The first unpaused unmet one decides what is sown.</summary>
+    public List<GrowBill>? Bills { get; set; }
     /// <summary>A growing zone: pawns till and sow it.</summary>
     public bool Sow { get; set; } = true;
     /// <summary>A growing zone: pawns harvest what is ripe.</summary>
     public bool Harvest { get; set; } = true;
+    /// <summary>A fishing zone: the fish caught there so far.</summary>
+    public int Catches { get; set; }
+
+    private Area _area;
+    private List<int[]>? _rows;
+    private ZoneCells? _cells;
+
+    /// <summary>The columns as a hash set (built once from <see cref="Rows"/>, or the legacy rectangle).</summary>
+    [JsonIgnore]
+    public ZoneCells Cells => _cells ??= _rows != null ? ZoneCells.FromRows(_rows) : ZoneCells.Rect(_area);
+
+    /// <summary>Is the column (x, z) in the zone?</summary>
+    public bool Contains(int x, int z) => Cells.Contains(x, z);
+
+    /// <summary>Is the block in the zone: its column, within the level range (the keep-out test, as before cell sets).</summary>
+    public bool Contains(P3 p) => p.Y >= _area.Y1 && p.Y <= _area.Y2 && Cells.Contains(p.X, p.Z);
+
+    /// <summary>New cells (and level range): rows normalised, the area made their bounding box.</summary>
+    public void SetCells(ZoneCells cells, int y1, int y2)
+    {
+        var (x1, z1, x2, z2) = cells.Bounds();
+        _area = Area.Of(x1, y1, z1, x2, y2, z2);
+        _rows = cells.Rows();
+        _cells = cells;
+    }
+
+    /// <summary>A new zone with these settings (kind, name, growing settings and bills, fresh bill ids kept) and no cells.</summary>
+    public ZoneState CopySettings(string id) => new()
+    {
+        Id = id, Kind = Kind, Name = Name, Plant = Plant, Sow = Sow, Harvest = Harvest,
+        Bills = Bills?.Select(b => new GrowBill { Id = b.Id, Plant = b.Plant, Mode = b.Mode, Target = b.Target, Done = b.Done, Paused = b.Paused }).ToList(),
+    };
+}
+
+/// <summary>
+/// A growing zone's planting bill (docs/web/story-mode.md "Farming"): what to sow and for how long. forever; until (Target of the
+/// produce in storage); count (harvest Target, <see cref="Done"/> so far). The zone sows the first unpaused bill whose target isn't met.
+/// </summary>
+public sealed class GrowBill
+{
+    public string Id { get; set; } = "";
+    public string Plant { get; set; } = "";
+    /// <summary>forever | until | count.</summary>
+    public string Mode { get; set; } = "forever";
+    public int Target { get; set; } = 64;
+    public int Done { get; set; }
+    public bool Paused { get; set; }
 }
 
 /// <summary>One designated target: a block (tree base, crop, ore…) or an entity (a drop, an animal).</summary>
@@ -346,6 +407,16 @@ public sealed class BillState
     public string? ForItem { get; set; }
     /// <summary>An auto bill's place in its build's recipe chain (lower first: ingredients before products).</summary>
     public int Step { get; set; }
+    /// <summary>An enchant bill's highest offer to take (1–3: its lapis and the levels it costs); null = 3.</summary>
+    public int? Option { get; set; }
+    /// <summary>An enchant bill's preferred enchantment (fortune, silk_touch...): the offer hinting it first.</summary>
+    public string? Prefer { get; set; }
+    /// <summary>Only an offer hinting <see cref="Prefer"/> (else the highest one the pawn can pay).</summary>
+    public bool PreferOnly { get; set; }
+    /// <summary>The XP levels the last try needed (an offer's level, the anvil's price): pawns with fewer don't take it.</summary>
+    public int? XpNeeded { get; set; }
+    /// <summary>What the last job made ("enchanted diamond pickaxe: Fortune III", "brewed 3 Potion of Swiftness").</summary>
+    public string? Last { get; set; }
 }
 
 public sealed class WorkbenchState
@@ -359,6 +430,8 @@ public sealed class WorkbenchState
     public string? LoadedBill { get; set; }
     public int LoadedCount { get; set; }
     public DateTimeOffset? ReadyAt { get; set; }
+    /// <summary>A brewing stand's fuel (brews left) as the colony last left it; null = unknown.</summary>
+    public int? Fuel { get; set; }
     public long Rev { get; set; }
 }
 
@@ -388,4 +461,7 @@ public sealed class ColonyMeta
     public bool DetectBenches { get; set; }
     /// <summary>Gear policies, material tool rules, tool auto-crafting and spare tools (StoryColony.Gear.cs).</summary>
     public GearSettings Gear { get; set; } = new();
+    /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls
+    /// only) or stay (hold where they are).</summary>
+    public string Idle { get; set; } = "recreation";
 }

@@ -50,11 +50,17 @@ public static class StoryCharacter
         var r = new Seeded(name);
         var p = new PawnState { Name = name };
         p.Display = First[r.Int(First.Length)] + " " + (char)('A' + r.Int(26)) + ".";
-        foreach (var w in WorkTypes.All)
+        foreach (var w in WorkTypes.Drawn)
         {
             // Mostly middling, a few strong and a few weak: the sum of two dice-like draws.
             int level = Math.Clamp(r.Int(11) + r.Int(11) - 2, 0, 20);
             p.Skills[w] = new SkillState { Level = level, Passion = r.Int(5) == 0 };
+        }
+        // Work types added later draw from their own seed: everything above stays as it was.
+        foreach (var w in WorkTypes.All.Except(WorkTypes.Drawn))
+        {
+            var rw = new Seeded(name + "/" + w);
+            p.Skills[w] = new SkillState { Level = Math.Clamp(rw.Int(11) + rw.Int(11) - 2, 0, 20), Passion = rw.Int(5) == 0 };
         }
         int nTraits = 1 + r.Int(3);
         var pool = Traits.Select(t => t.Id).ToList();

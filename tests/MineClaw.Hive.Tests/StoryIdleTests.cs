@@ -224,10 +224,11 @@ public sealed class StoryIdleTests
         for (int i = 0; i < 3; i++)
         {
             var j = c.Next(i);
-            Assert.Equal("Idle (at home)", j["label"]!.GetValue<string>());
+            // Nothing indoors or lit: they potter about right by home, or look at the stars by it.
+            Assert.Contains(j["act"]!.GetValue<string>(), new[] { "wander", "stargaze", "socialise" });
             spots.Add(At(j));
         }
-        Assert.All(spots, s => Assert.True(StoryWander.Gap(s, new P3(0, 64, 0)) <= 5, s.ToString()));
+        Assert.All(spots, s => Assert.True(StoryWander.Gap(s, new P3(0, 64, 0)) <= 8, s.ToString()));
         Assert.Equal(3, spots.Distinct().Count());
         // Inside a roofed house zone it may move about at night, within the house only.
         for (int x = 20; x <= 26; x++) for (int z = 20; z <= 26; z++) w.Set(x, 68, z, 5);

@@ -373,8 +373,11 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 var craftTools = Flag("auto_craft_tools");
                 var spare = b["spare_tools"] as JsonObject;
                 if (b["spare_tools"] != null && spare == null) return Bad("spare_tools must be {count, kinds}");
-                if (auto == null && detect == null && craftTools == null && spare == null)
-                    return Bad("auto_place_benches, detect_benches, auto_craft_tools or spare_tools required");
+                // idle: recreation | wander | stay (what pawns do with nothing to do; StoryColony.Recreation.cs)
+                var idle = b["idle"] is null ? null : b["idle"] is JsonValue iv && iv.TryGetValue<string>(out var im) ? im : "";
+                if (auto == null && detect == null && idle == null && craftTools == null && spare == null)
+                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools or spare_tools required");
+                if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 if ((craftTools != null || spare != null) && c.SetGearOptions(craftTools, spare) is { } gerr) return Bad(gerr);
                 return Reply(200, auto == null && detect == null ? c.OptionsNow() : c.SetOptions(auto, detect));
             }

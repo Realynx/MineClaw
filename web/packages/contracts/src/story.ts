@@ -30,6 +30,7 @@ export const STORY_WORK_TYPES = [
   'doctor',
   'cook',
   'hunt',
+  'fish',
   'build',
   'farm',
   'mine',
@@ -40,7 +41,7 @@ export const STORY_WORK_TYPES = [
 export const StoryWorkType = z.enum(STORY_WORK_TYPES);
 export type StoryWorkType = z.infer<typeof StoryWorkType>;
 
-/** One schedule hour. Hour 0 = 06:00 (world time 0), 1000 ticks per hour. */
+/** One schedule hour. A schedule is indexed by the clock hour (0 = 00:00, the bot's StoryCharacter.Hour): world time 0 is 06:00, 1000 ticks an hour. */
 export const STORY_SCHEDULE_BLOCKS = ['work', 'sleep', 'anything', 'free'] as const;
 export const StoryScheduleBlock = z.enum(STORY_SCHEDULE_BLOCKS);
 export type StoryScheduleBlock = z.infer<typeof StoryScheduleBlock>;
@@ -61,7 +62,7 @@ export const StoryOrderKind = z.enum(STORY_ORDER_KINDS);
 export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
 
 /** Zone kinds. Loot goes into chests with storage settings (`storage`): the director refuses a `stockpile` zone. */
-export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'home', 'forbidden'] as const;
+export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'fish', 'home', 'forbidden'] as const;
 export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
 export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
 
@@ -213,7 +214,36 @@ export const StoryAck = z.object({
   removed: z
     .array(z.union([z.string(), z.number()]))
     .nullish()
-    .describe('zones remove: the zones removed'),
+    .describe('zones add/remove: the zones that went (= deleted)'),
+  created: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add: the new zone (the painted cells touched none of the type)'),
+  merged: z
+    .array(z.object({ into: z.union([z.string(), z.number()]), from: z.array(z.union([z.string(), z.number()])) }))
+    .nullish()
+    .describe('zones add: zones of the type the paint joined into the oldest (or the `into` zone)'),
+  grown: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add: the zone that took the cells'),
+  shrunk: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add/remove: zones that lost cells (overwritten or erased)'),
+  split: z
+    .array(z.object({ from: z.union([z.string(), z.number()]), into: z.array(z.union([z.string(), z.number()])) }))
+    .nullish()
+    .describe('zones add/remove: a zone cut in parts (it keeps the largest; the others are new zones)'),
+  deleted: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add/remove: zones left empty'),
+  bill: z.union([z.string(), z.number()]).nullish().describe('zones bill_add: the new planting bill'),
+  activeBill: z
+    .union([z.string(), z.number()])
+    .nullish()
+    .describe('zones bill_*: the bill that decides what is sown now'),
   warnings: z
     .array(z.string())
     .nullish()
@@ -312,24 +342,65 @@ export const StoryPawn = z.object({
   skills: z.record(z.string(), StorySkill).default({}),
   traits: z.array(StoryTrait).default([]),
   priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
-  schedule: z.array(z.string()).default([]).describe('24 blocks, hour 0 = 06:00'),
+  schedule: z.array(z.string()).default([]).describe('24 blocks by clock hour (index 0 = 00:00)'),
   held: z.string().nullish(),
-  inventory: z.array(StoryStack).default([]),
+  inventory: z.array(StoryStack).default([]).describe("a 1.12.2 potion's meta is its potion type id (water 1, awkward 4, …)"),
+  xpLevel: z
+    .number()
+    .int()
+    .nullish()
+    .describe('the experience level (earned mining ore, smelting, killing); enchanting and anvil bills spend it'),
   equipment: StoryEquipment.nullish().describe('held item, worn armour, carried tools and weapons (durability, enchantments)'),
   policy: z.string().nullish().describe("the pawn's gear policy id (null = the colony's default policy)"),
   gearTasks: z.array(StoryGearTask).nullish().describe('pending gear work (arm, armor, pickup, return, tools, …)'),
 });
 export type StoryPawn = z.infer<typeof StoryPawn>;
 
+/** A planting bill of a growing zone: what to sow and for how long (docs/web/story-mode.md "Farming"). */
+export const STORY_GROW_BILL_MODES = ['forever', 'until', 'count'] as const;
+export const StoryGrowBill = z.object({
+  id: z.union([z.string(), z.number()]),
+  plant: z.string(),
+  label: z.string().nullish(),
+  mode: z
+    .enum(STORY_GROW_BILL_MODES)
+    .describe('forever | until (target of the produce in storage) | count (harvest target)'),
+  target: z.number().int().default(64),
+  done: z.number().int().default(0).describe('count: harvested so far'),
+  stored: z.number().int().nullish().describe('until: the produce the colony has'),
+  paused: z.boolean().default(false),
+  met: z.boolean().nullish(),
+  active: z.boolean().nullish().describe('the first unpaused bill whose target is not met: what is sown now'),
+  seeds: z.lazy(() => StoryZoneSeeds).nullish(),
+  missing: z.string().nullish().describe('the plant does not grow in this version'),
+});
+export type StoryGrowBill = z.infer<typeof StoryGrowBill>;
+
+/** A zone row run: `[z, x1, x2]`. */
+export const StoryZoneRow = z.tuple([z.number().int(), z.number().int(), z.number().int()]);
+
 export const StoryZone = z.object({
   id: z.union([z.string(), z.number()]),
   kind: z.string(),
+  /** The cells' bounding box (x, z) and the zone's level range (y). */
   area: StoryArea,
+  /** The zone's cells as normalised row runs (null = the whole `area`: an older bot). */
+  rows: z.array(StoryZoneRow).nullish(),
+  cells: z.number().int().nullish().describe('how many cells (columns) the zone has'),
   /** The zone's name (the bot's field; houses are named home zones). */
   name: z.string().nullish(),
   label: z.string().nullish(),
-  /** A growing zone (kind `farm`): the plant it grows (a `plants` id; null = ripe crops and bare farmland only). */
+  /** A growing zone (kind `farm`): its type's plant, the first bill's (a `plants` id; null = ripe crops and bare farmland only). */
   plant: z.string().nullish(),
+  activePlant: z
+    .string()
+    .nullish()
+    .describe("a growing zone: what it sows now (the active bill's plant; null = all bills met)"),
+  bills: z.array(StoryGrowBill).nullish().describe('a growing zone: its planting bills, in order'),
+  activeBill: z.union([z.string(), z.number()]).nullish(),
+  waterCells: z.number().int().nullish().describe('a fishing zone: its still-water cells'),
+  fishers: z.array(z.string()).nullish().describe('a fishing zone: who is fishing there now'),
+  catches: z.number().int().nullish().describe('a fishing zone: fish caught there so far'),
   sow: z.boolean().nullish().describe('pawns till and sow it'),
   harvest: z.boolean().nullish().describe('pawns harvest what is ripe'),
   status: z.string().nullish().describe('a growing zone: "12/40 sown, 6 ripe"'),
@@ -557,16 +628,41 @@ export const StoryBill = z.object({
     .describe('an auto bill: the build it crafts for, or "tools" (a tool a job or the spare-tools option needs); cancel-only'),
   forItem: z.string().nullish().describe("an auto bill: the build's item its chain ends in"),
   step: z.number().int().nullish().describe("an auto bill's place in the recipe chain (ingredients first)"),
+  option: z.number().int().nullish().describe('an enchant bill: the highest offer (1–3) it takes; its lapis and levels'),
+  prefer: z.string().nullish().describe('an enchant bill: the enchantment it prefers (the offer hinting it first)'),
+  preferOnly: z.boolean().nullish().describe('only an offer hinting the preferred enchantment'),
+  xpNeeded: z
+    .number()
+    .int()
+    .nullish()
+    .describe('the XP levels the last try needed (an offer, an anvil price): pawns with fewer leave it'),
+  last: z.string().nullish().describe('what the last job made ("enchanted diamond pickaxe: Fortune II")'),
 });
 export type StoryBill = z.infer<typeof StoryBill>;
+
+/** A station's facts for the bench inspector (1.12.2 brewing stand, enchanting table, anvil). */
+export const StoryStationInfo = z.object({
+  present: z.boolean().nullish().describe('false: the block is gone (a worn-through anvil)'),
+  bookshelves: z.number().int().nullish().describe('an enchanting table: bookshelves powering it'),
+  maxBookshelves: z.number().int().nullish(),
+  topOffer: z.array(z.number().int()).nullish().describe("an enchanting table: the top offer's level range [min, max]"),
+  condition: z.string().nullish().describe('an anvil: intact | chipped | damaged | gone'),
+  water: Vec3i.nullish().describe('a brewing stand: the water source or cauldron its bottles are filled at'),
+  fuel: z.number().int().nullish().describe('a brewing stand: brews of fuel left, as the colony last left it'),
+});
+export type StoryStationInfo = z.infer<typeof StoryStationInfo>;
 
 export const StoryWorkbench = z.object({
   pos: Vec3i,
   kind: z.string(),
   label: z.string().nullish(),
-  supported: z.boolean().nullish().describe('false: listed, but no bills yet (brewing stand, anvil, enchanting table)'),
+  supported: z
+    .boolean()
+    .nullish()
+    .describe('false: this version has no such bills (b1.8.1: no brewing stand, anvil or enchanting table)'),
   loaded: z.unknown().optional().describe('a furnace: what is smelting'),
   readyAt: When.nullish(),
+  station: StoryStationInfo.nullish(),
   bills: z.array(StoryBill).default([]),
 });
 export type StoryWorkbench = z.infer<typeof StoryWorkbench>;
@@ -587,6 +683,19 @@ export const StoryRecipe = z.object({
   inputs: z.array(StoryRecipeInput).default([]),
   fuel: z.union([z.boolean(), z.number(), z.string()]).nullish(),
   group: z.string().nullish().describe('a loot category id for the picker (the web groups by it when present)'),
+  requires: z
+    .object({
+      xpLevels: z.number().int().nullish().describe('the least XP levels a pawn needs'),
+      lapis: z.number().int().nullish().describe('lapis per enchant (the bill option: 1–3)'),
+      fuelItem: z.string().nullish(),
+      water: z.boolean().nullish().describe('fills glass bottles at a water source or cauldron near the stand'),
+      note: z.string().nullish(),
+    })
+    .nullish()
+    .describe('a station recipe: what it asks of the pawn and the bench'),
+  chain: z.array(z.string()).nullish().describe("a brew's steps from water bottles"),
+  enchantments: z.array(z.string()).nullish().describe('an enchant: what it can prefer'),
+  modes: z.array(StoryBillMode).nullish().describe('the bill modes it takes (null: all)'),
 });
 export type StoryRecipe = z.infer<typeof StoryRecipe>;
 
@@ -688,8 +797,9 @@ export const StoryColonyState = z.object({
   tieBreak: z.string().nullish().describe('column | skill: equal priorities go by column order or by skill'),
   options: z.lazy(() => StoryColonyOptions).nullish(),
   version: z.union([z.string(), z.number()]).nullish(),
-  timeOfDay: z.number().nullish().describe('world ticks 0..24000'),
-  hour: z.number().int().nullish().describe('0..23, 0 = 06:00'),
+  timeOfDay: z.number().nullish().describe('world ticks 0..24000 (tick 0 = 06:00); negative = the daylight cycle is stopped'),
+  timeFrozen: z.boolean().nullish().describe('true = the server stopped the daylight cycle (doDaylightCycle false)'),
+  hour: z.number().int().nullish().describe('the clock hour 0..23 (0 = 00:00): the schedule column in force'),
   paused: z.boolean().nullish(),
   home: Vec3i.nullish(),
   workTypes: z.array(z.string()).default([...STORY_WORK_TYPES]),
@@ -856,14 +966,23 @@ export const StoryOrderRequest = z
   .strict();
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
-/** `remove` without a kind removes every zone overlapping the area. */
+/** `remove` with an area erases those cells from zones of the kind (no kind or `any`: every kind). */
 const ZoneId = z.union([z.string().min(1).max(64), z.number().int()]);
+const BillSpec = {
+  plant: z.string().min(1).max(32).optional(),
+  mode: z.enum(STORY_GROW_BILL_MODES).optional(),
+  target: z.number().int().min(1).max(100_000).optional(),
+  paused: z.boolean().optional(),
+};
 
 /**
- * Zones (houses are zones of kind `home`: any number, each with its own name): `add` an area (optionally named), `remove`
- * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it). A growing zone
- * (kind `farm`) takes a `plant` (from `plants`), `sow` and `harvest`; `update` changes them; `seek_seeds` designates tall grass to
- * cut (wheat) or queues a seed bill (pumpkin, melon).
+ * Zones are cell sets painted RimWorld-style (docs/web/story-mode.md "Zones"; houses are zones of kind `home`): `add` paints an
+ * area (cells touching a zone of the same type join it, several merge into the oldest; other work zones under it are overwritten;
+ * home and forbidden are overlay layers; `into` extends one zone), `remove` erases an area's cells from zones of a kind (or any;
+ * empty zones go, cut ones split) or deletes one zone by id, `rename` one zone (an empty name clears it). A growing zone (kind
+ * `farm`) takes a `plant` (from `plants`: its first planting bill), `sow` and `harvest`; `update` changes them; `bill_*` edit its
+ * planting bills (like a workbench's: add, update, remove, pause, resume, reorder); `seek_seeds` designates tall grass to cut
+ * (wheat) or queues a seed bill (pumpkin, melon). Answers what changed: created, merged, grown, shrunk, split, deleted.
  */
 export const StoryZoneRequest = z.union([
   z
@@ -871,6 +990,7 @@ export const StoryZoneRequest = z.union([
       op: z.literal('add'),
       kind: StoryZoneKind.optional(),
       area: StoryArea,
+      into: ZoneId.optional().describe('extend this zone: the painted cells take its type'),
       name: z.string().trim().max(40).optional(),
       plant: z.string().min(1).max(32).optional(),
       sow: z.boolean().optional(),
@@ -887,7 +1007,13 @@ export const StoryZoneRequest = z.union([
     })
     .strict(),
   z.object({ op: z.literal('seek_seeds'), id: ZoneId }).strict(),
-  z.object({ op: z.literal('remove'), kind: StoryZoneKind.optional(), area: StoryArea }).strict(),
+  z
+    .object({ op: z.literal('remove'), kind: z.union([StoryZoneKind, z.literal('any')]).optional(), area: StoryArea })
+    .strict(),
+  z.object({ op: z.literal('bill_add'), id: ZoneId, ...BillSpec, plant: z.string().min(1).max(32) }).strict(),
+  z.object({ op: z.literal('bill_update'), id: ZoneId, bill: ZoneId, ...BillSpec }).strict(),
+  z.object({ op: z.enum(['bill_remove', 'bill_pause', 'bill_resume']), id: ZoneId, bill: ZoneId }).strict(),
+  z.object({ op: z.literal('bill_reorder'), id: ZoneId, ids: z.array(ZoneId).min(1).max(16) }).strict(),
   z.object({ op: z.literal('remove'), id: z.union([z.string().min(1).max(64), z.number().int()]) }).strict(),
   z
     .object({
@@ -1070,6 +1196,9 @@ export const StoryBillSpec = z
     pawn: z.string().min(1).max(64).optional(),
     minSkill: z.number().int().min(0).max(20).optional(),
     store: StoryBillStore.optional(),
+    option: z.number().int().min(1).max(3).nullish().describe('an enchant bill: the highest offer to take (1–3)'),
+    prefer: z.string().max(40).nullish().describe('an enchant bill: the preferred enchantment (fortune, silk_touch…)'),
+    preferOnly: z.boolean().optional(),
   })
   .strict();
 export type StoryBillSpec = z.infer<typeof StoryBillSpec>;
@@ -1088,6 +1217,18 @@ export const StoryBillsRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('pause'), id: BillId }).strict(),
   z.object({ op: z.literal('resume'), id: BillId }).strict(),
   z.object({ op: z.literal('reorder'), bench: Vec3i, ids: z.array(BillId).min(1).max(64) }).strict(),
+  // The tools system's hook: enchant bills (count) at the colony's table for pickaxes (or `items`) preferring an enchantment,
+  // or the one a mined material wants (`material`: fortune for ores, silk touch for glass and ice, else efficiency).
+  z
+    .object({
+      op: z.literal('enchant_tools'),
+      prefer: z.string().max(40).optional(),
+      material: z.string().max(64).optional(),
+      items: z.array(z.string().max(64)).max(16).optional(),
+      count: z.number().int().min(1).max(64).optional(),
+      preferOnly: z.boolean().optional(),
+    })
+    .strict(),
 ]);
 export type StoryBillsRequest = z.infer<typeof StoryBillsRequest>;
 
@@ -1095,6 +1236,7 @@ export const StoryBillsResponse = z.object({
   ok: z.boolean().nullish(),
   id: z.union([z.string(), z.number()]).nullish().describe('the new bill (add)'),
   ids: z.array(z.union([z.string(), z.number()])).nullish(),
+  note: z.string().nullish(),
   rev: z.number().int().nullish(),
 });
 export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;
@@ -1108,19 +1250,28 @@ export type StoryWorkbenchesRequest = z.infer<typeof StoryWorkbenchesRequest>;
 export const StoryWorkbenchesResponse = z.object({ pos: Vec3i, kind: z.string(), designated: z.boolean() });
 export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
 
+/** What idle pawns do (docs/web/story-mode.md "Idle behaviour"). */
+export const STORY_IDLE_MODES = ['recreation', 'wander', 'stay'] as const;
+export type StoryIdleMode = (typeof STORY_IDLE_MODES)[number];
+
 /** The colony's options: auto-placing a bench a build needs (default on), detecting benches near home (default off). */
 export const StoryColonyOptions = z.object({
   autoPlaceBenches: z.boolean().default(true),
   detectBenches: z.boolean().default(false),
+  idle: z
+    .enum(STORY_IDLE_MODES)
+    .default('recreation')
+    .describe('with nothing to do, in free hours and resting: recreation (pastimes), wander (strolls) or stay (hold)'),
   autoCraftTools: z.boolean().default(true).describe('a job waiting for a tool gets an auto bill "for tools"'),
   spareTools: StorySpareTools.default({ count: 0, kinds: [] }).describe('keep N spare tools of each kind in storage'),
 });
 export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
-/** POST /api/story/colonies/{id}/options: either or both flags. */
+/** POST /api/story/colonies/{id}/options: any of the flags and the idle mode. */
 export const StoryOptionsRequest = z
   .object({
     autoPlaceBenches: z.boolean().optional(),
     detectBenches: z.boolean().optional(),
+    idle: z.enum(STORY_IDLE_MODES).optional(),
     autoCraftTools: z.boolean().optional(),
     spareTools: z
       .object({ count: z.number().int().min(0).max(8), kinds: z.array(StoryToolKind).max(6) })
@@ -1206,14 +1357,18 @@ export type StoryDirectiveResponse = z.infer<typeof StoryDirectiveResponse>;
 
 // ------------------------------------------------------------------ helpers (the web's preview and the mocks share them)
 
-/** Time of day (ticks) → schedule hour (0 = 06:00). */
+/**
+ * Time of day (ticks, tick 0 = 06:00) → the clock hour (0..23, 0 = midnight): the schedule column in force, as the bot's
+ * StoryCharacter.Hour. A negative time (1.12.2, daylight cycle stopped) counts by its absolute value.
+ */
 export function storyHour(timeOfDay: number): number {
-  return Math.floor((((timeOfDay % 24000) + 24000) % 24000) / 1000);
+  const t = Math.abs(Math.floor(timeOfDay)) % 24000;
+  return (Math.floor(t / 1000) + 6) % 24;
 }
 
-/** Schedule hour → clock label ("06:00"). */
+/** Clock hour (a schedule column) → its label ("06:00"). */
 export function storyClock(hour: number): string {
-  return `${String((hour + 6) % 24).padStart(2, '0')}:00`;
+  return `${String(((Math.floor(hour) % 24) + 24) % 24).padStart(2, '0')}:00`;
 }
 
 /** Time of day (ticks, 0 = 06:00, 1000 a game hour) → clock label to the minute ("13:30"). */
@@ -1279,6 +1434,10 @@ const SLAB = 44;
 const OAK_STAIRS = 53;
 const COBBLE_STAIRS = 67;
 const STAIRS_META: Record<StoryFacing, number> = { e: 0, w: 1, s: 2, n: 3 };
+/** Block ids that are a door, a fence or stairs themselves (b1.8.1 and 1.12.2): such a material is placed as it is. */
+const PLACED_DOOR_IDS = new Set([64, 71, 193, 194, 195, 196, 197]);
+const FENCE_IDS = new Set([85, 113, 188, 189, 190, 191, 192]);
+const STAIRS_IDS = new Set([53, 67, 108, 109, 114, 128, 134, 135, 136, 156, 163, 164, 180, 203]);
 
 /**
  * The reference expansion of a build item into blocks [x, y, z, id, meta] (the director owns the real one; the web uses this
@@ -1344,8 +1503,8 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
     }
     case 'door':
       for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
-        put(x, y, z, DOOR, STAIRS_META[item.facing ?? 's'] & 3);
-        put(x, y + 1, z, DOOR, 8);
+        put(x, y, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, STAIRS_META[item.facing ?? 's'] & 3);
+        put(x, y + 1, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, 8);
       }
       break;
     case 'window':
@@ -1355,11 +1514,11 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
           for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, 20, 0);
       break;
     case 'fence':
-      outline((x, z) => put(x, a![1], z, FENCE, 0));
-      for (const [x, y, z] of cells) put(x, y, z, FENCE, 0);
+      outline((x, z) => put(x, a![1], z, FENCE_IDS.has(id) ? id : FENCE, 0));
+      for (const [x, y, z] of cells) put(x, y, z, FENCE_IDS.has(id) ? id : FENCE, 0);
       break;
     case 'stairs': {
-      const sid = id === 4 ? COBBLE_STAIRS : OAK_STAIRS;
+      const sid = STAIRS_IDS.has(id) ? id : id === 4 ? COBBLE_STAIRS : OAK_STAIRS;
       const m = STAIRS_META[item.facing ?? 'n'];
       for (const [x, y, z] of cells) put(x, y, z, sid, m);
       if (a) {

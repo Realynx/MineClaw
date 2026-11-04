@@ -62,13 +62,14 @@ public sealed class Rig : IDisposable
                 new ScriptAction("harvest_generator", ["at", "count", "store", "stand"]),
                 new ScriptAction("attack", ["target"]),
                 new ScriptAction("equip", ["item", "mode", "from", "ench"], Atomic: true),
+                new ScriptAction("face", ["at"]),
             ],
             Act = (name, args, ct) =>
             {
                 Calls.Enqueue($"{name} {args.GetRawText()}");
                 return On.TryGetValue(name, out var f) ? f(args, ct) : Task.FromResult(ActResult.Success($"{name} ok"));
             },
-            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat", "excavate", "enter_portal", "strip_mine", "smelt_batch", "collect_furnace", "find_biome", "scout_biome"],
+            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat", "excavate", "enter_portal", "strip_mine", "smelt_batch", "collect_furnace", "find_biome", "scout_biome", "hold_item"],
             Skill = (name, args, ct) =>
             {
                 Calls.Enqueue($"skill:{name} {args.GetRawText()}");

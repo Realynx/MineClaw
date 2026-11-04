@@ -35,7 +35,19 @@ function mergeBy<T>(
 /** Applies a delta (or a whole state) to what the client holds. Older revisions are ignored. */
 export function mergeColony(prev: StoryColonyState | undefined, d: StoryColonyState): StoryColonyState {
   if (!prev || d.full || d.rev < (prev.rev ?? 0) - 1000) return d;
-  if (d.rev <= prev.rev) return prev;
+  if (d.rev <= prev.rev) {
+    // Nothing new in the colony, but the server's clock moved on: the time fields are always current (a quiet or paused
+    // colony keeps its revision while the world time runs).
+    const time = d.timeOfDay ?? null;
+    if (time === null || (time === prev.timeOfDay && (d.timeFrozen ?? null) === (prev.timeFrozen ?? null))) return prev;
+    return {
+      ...prev,
+      timeOfDay: time,
+      hour: d.hour ?? prev.hour,
+      timeFrozen: d.timeFrozen ?? null,
+      at: d.at ?? prev.at,
+    };
+  }
   const rm = d.removed ?? {};
   const id = (x: { id: Key }) => String(x.id);
   const alerts = mergeBy(prev.alerts, d.alerts, (a) => String(a.id ?? `${a.at}|${a.text}`), rm.alerts).slice(-40);
@@ -187,6 +199,7 @@ export const WORK_LABELS: Record<string, string> = {
   doctor: 'Doctor',
   cook: 'Cook',
   hunt: 'Hunt',
+  fish: 'Fish',
   build: 'Build',
   farm: 'Farm',
   mine: 'Mine',

@@ -14,6 +14,7 @@ import {
   STORY_DEFAULT_RECIPES,
   storyItemLabel,
 } from './storyData.js';
+import { cellKey, cellX, cellZ, eraseZones, paintZones, rectCells, zoneCellSet } from './storyZones.js';
 import {
   CHEST_IDS,
   expandBuildItem,
@@ -23,6 +24,7 @@ import {
   materialKey,
   normArea,
   storyHour,
+  type StoryGrowBill,
   STORY_FURNITURE,
   targetPos,
   STORY_WORK_TYPES,
@@ -281,6 +283,19 @@ export const STORY_SIM_PLANTS: StoryPlant[] = [
   },
 ];
 
+/** What an "until N in storage" planting bill counts (the produce's item id). */
+const SIM_PRODUCE: Record<string, number> = {
+  wheat: 296,
+  carrots: 391,
+  potatoes: 392,
+  beetroot: 434,
+  pumpkin: 86,
+  melon: 360,
+  sugar_cane: 338,
+  cactus: 81,
+  nether_wart: 372,
+};
+
 const SEED_HINT: Record<string, string> = {
   wheat: 'No wheat seeds — cut tall grass to find some',
   carrots: 'Needs carrots — none in storage (harvests, zombie drops, village farms)',
@@ -348,8 +363,9 @@ const TRAITS = [
   { id: 'green_thumb', label: 'Green thumb', effect: 'Farming skill grows faster' },
   { id: 'steady_hands', label: 'Steady hands', effect: 'Building skill grows faster' },
 ];
+/** By clock hour (index 0 = 00:00, as the bot): work 06–19, anything 20–21, free 22, sleep 23–05. */
 const DEFAULT_SCHEDULE = Array.from({ length: 24 }, (_, h) =>
-  h < 14 ? 'work' : h < 16 ? 'anything' : h < 17 ? 'free' : 'sleep',
+  h >= 6 && h < 20 ? 'work' : h < 6 || h === 23 ? 'sleep' : h < 22 ? 'anything' : 'free',
 );
 const SPEED = 4.3; // blocks per second
 const WORK_MS: Record<string, number> = {
@@ -505,7 +521,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false, autoCraftTools: true, spareTools: { count: 0, kinds: [] } },
+      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] } },
       gear: newSimGear(),
     };
     for (let i = 0; i < req.pawns; i++) {
@@ -524,7 +540,10 @@ export class StorySim {
     const r = rng(hash(name));
     const skills: StoryPawn['skills'] = {};
     for (const t of STORY_WORK_TYPES)
-      skills[t] = { level: Math.floor(r() * 15) + (r() < 0.2 ? 5 : 0), xp: 0, passion: r() < 0.25 };
+      if (t !== 'fish') skills[t] = { level: Math.floor(r() * 15) + (r() < 0.2 ? 5 : 0), xp: 0, passion: r() < 0.25 };
+    // Fish came later: drawn from its own seed so every other draw stays as it was.
+    const rf = rng(hash(`${name}/fish`));
+    skills.fish = { level: Math.floor(rf() * 15) + (rf() < 0.2 ? 5 : 0), xp: 0, passion: rf() < 0.25 };
     const priorities: Record<string, number> = {};
     for (const t of STORY_WORK_TYPES) {
       const lv = skills[t]!.level;
@@ -572,6 +591,7 @@ export class StorySim {
         equipment: seedEquipment(i),
         policy: i === 0 ? 'soldier' : null,
         gearTasks: [],
+        xpLevel: Math.floor(r() * 18),
       },
     };
   }
@@ -765,14 +785,8 @@ export class StorySim {
 
   private bedList(c: Colony): StoryBed[] {
     const zoneOf = (p: readonly number[]) =>
-      [...c.zones.values()].find(
-        (z) =>
-          z.v.kind === 'home' &&
-          p[0]! >= z.v.area[0] &&
-          p[0]! <= z.v.area[3] &&
-          p[2]! >= z.v.area[2] &&
-          p[2]! <= z.v.area[5],
-      )?.v.id ?? null;
+      [...c.zones.values()].find((z) => z.v.kind === 'home' && zoneCellSet(z.v).has(cellKey(p[0]!, p[2]!)))?.v.id ??
+      null;
     return [...c.beds.values()].map((b) => ({ ...b, zone: zoneOf(b.pos) }));
   }
 
@@ -915,6 +929,7 @@ export class StorySim {
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
     if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
+    if (body.op.startsWith('bill_')) return this.billOp(c, body as Extract<StoryZoneRequest, { op: `bill_${string}` }>);
     if (body.op === 'rename') {
       const f = c.zones.get(String(body.id));
       if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
@@ -922,68 +937,240 @@ export class StorySim {
       f.rev = this.bump(c);
       return { id: f.v.id, name: f.v.name ?? '', rev: c.rev };
     }
-    const drop = (k: Key, f: Fn<StoryZone>) => {
-      c.zones.delete(k);
-      c.removed.push({ rev: this.bump(c), kind: 'zones', key: k });
-      if (f.v.kind === 'home') c.bedsRev = this.bump(c);
-    };
+    const list = [...c.zones.values()].map((f) => f.v);
     if (body.op === 'remove' && 'id' in body) {
-      const f = c.zones.get(String(body.id));
-      if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
-      drop(String(body.id), f);
-      return { removed: [body.id], rev: c.rev };
+      if (!c.zones.has(String(body.id))) throw Object.assign(new Error('no such zone'), { status: 404 });
+      this.setZones(
+        c,
+        list.filter((z) => String(z.id) !== String(body.id)),
+      );
+      return { removed: [body.id], deleted: [body.id], rev: c.rev };
     }
     if (!('area' in body)) throw Object.assign(new Error('area must be [x1,y1,z1,x2,y2,z2]'), { status: 400 });
     const a = normArea(body.area);
-    if (body.op === 'add') {
-      const z: StoryZone = {
-        id: `z${c.seq++}`,
-        kind: body.kind ?? 'home',
-        area: a,
-        ...(body.name ? { name: body.name } : {}),
-      };
-      if (body.plant || body.sow !== undefined || body.harvest !== undefined) {
-        if (z.kind !== 'farm')
-          throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
-        if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
-          throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
-            status: 400,
-          });
-        Object.assign(z, { plant: body.plant ?? null, sow: body.sow ?? true, harvest: body.harvest ?? true });
-      }
-      c.zones.set(z.id, { rev: this.bump(c), v: z });
-      if (z.kind === 'home') c.bedsRev = this.bump(c); // beds in it now belong to that house
-      return { id: z.id, rev: c.rev };
+    const rect = [a[0], a[2], a[3], a[5]] as const;
+    const newId = () => `z${c.seq++}`;
+    if (body.op === 'remove') {
+      const out = eraseZones(list, body.kind, rect, newId);
+      this.setZones(c, out.zones);
+      return { ...out.result, removed: out.result.deleted, rev: c.rev };
     }
-    const removed: Array<string | number> = [];
-    for (const [k, f] of c.zones)
-      if ((!body.kind || f.v.kind === body.kind) && overlaps(f.v.area, a)) {
-        drop(k, f);
-        removed.push(f.v.id);
+    if (body.op !== 'add')
+      throw Object.assign(new Error('op must be add|remove|rename|update|seek_seeds|bill_*'), { status: 400 });
+    const into = body.into !== undefined ? c.zones.get(String(body.into))?.v : undefined;
+    if (body.into !== undefined && !into) throw Object.assign(new Error('into: no such zone'), { status: 400 });
+    const kind = into?.kind ?? body.kind ?? 'home';
+    if (!into && (body.plant || body.sow !== undefined || body.harvest !== undefined)) {
+      if (kind !== 'farm')
+        throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+      if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
+        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
+          status: 400,
+        });
+    }
+    const make = (k: string, plant: string | null): StoryZone =>
+      into
+        ? { ...into, id: newId(), name: null, rows: null }
+        : {
+            id: newId(),
+            kind: k,
+            area: a,
+            ...(body.name ? { name: body.name } : {}),
+            ...(k === 'farm' && plant
+              ? {
+                  plant,
+                  sow: body.sow ?? true,
+                  harvest: body.harvest ?? true,
+                  bills: [{ id: `gb${c.seq++}`, plant, mode: 'forever' as const, target: 64, done: 0, paused: false }],
+                }
+              : {}),
+          };
+    // A fishing zone keeps only still water (a source block, open above, near the level).
+    const water =
+      kind === 'fish'
+        ? new Set(
+            [...rectCells(rect[0], rect[1], rect[2], rect[3])].filter((k) =>
+              this.stillWaterAt(cellX(k), cellZ(k), a[1]),
+            ),
+          )
+        : null;
+    if (water && water.size + list.filter((z) => z.kind === 'fish').reduce((n, z) => n + (z.cells ?? 0), 0) < 4)
+      throw Object.assign(new Error('a fishing zone needs at least 4 water cells'), { status: 400 });
+    const out = paintZones(
+      list,
+      { kind, plant: body.plant ?? null, rect, y: [a[1], a[4]], into: body.into, cells: water },
+      make,
+      newId,
+    );
+    this.setZones(c, out.zones);
+    return { ...out.result, removed: out.result.deleted, rev: c.rev };
+  }
+
+  private stillWaterAt(x: number, z: number, level: number): boolean {
+    for (let y = level + 3; y >= level - 4; y--) {
+      const [id, meta] = this.opts.world.blockAt(x, y, z);
+      if (id === 8 || id === 9) return meta === 0;
+      if (id !== 0) return false;
+    }
+    return false;
+  }
+
+  /** The colony's zones become `next` (in order): unchanged objects keep their revision; changed and new ones are bumped. */
+  private setZones(c: Colony, next: StoryZone[]) {
+    const old = new Map(c.zones);
+    const keep = new Set(next.map((z) => String(z.id)));
+    let homes = false;
+    for (const [k, f] of old)
+      if (!keep.has(String(k))) {
+        c.removed.push({ rev: this.bump(c), kind: 'zones', key: k });
+        homes ||= f.v.kind === 'home';
       }
-    return { removed, rev: c.rev };
+    c.zones.clear();
+    for (const z of next) {
+      const f = old.get(String(z.id));
+      if (f && f.v === z) c.zones.set(String(z.id), f);
+      else {
+        c.zones.set(String(z.id), { rev: this.bump(c), v: z });
+        homes ||= z.kind === 'home';
+      }
+    }
+    if (homes) c.bedsRev = this.bump(c); // beds belong to the house they stand in
+  }
+
+  /** A planting bill met? until: the produce in stock; count: harvested (the mock grows nothing). */
+  private billMet(c: Colony, b: StoryGrowBill): boolean {
+    if (b.mode === 'count') return (b.done ?? 0) >= b.target;
+    if (b.mode === 'until') return this.produceStored(c, b.plant) >= b.target;
+    return false;
+  }
+
+  private produceStored(c: Colony, plant: string): number {
+    const item = SIM_PRODUCE[plant];
+    if (!item) return 0;
+    let n = 0;
+    for (const [k, v] of c.stock) if (k.startsWith(`${item}:`)) n += v;
+    return n;
+  }
+
+  private activeBill(c: Colony, z: StoryZone): StoryGrowBill | null {
+    return (
+      z.bills?.find((b) => !b.paused && STORY_SIM_PLANTS.some((p) => p.id === b.plant) && !this.billMet(c, b)) ?? null
+    );
+  }
+
+  /** A growing zone's planting bills: add, update, remove, pause, resume, reorder (docs/web/story-mode.md "Farming"). */
+  private billOp(c: Colony, body: Extract<StoryZoneRequest, { op: `bill_${string}` }>) {
+    const f = c.zones.get(String(body.id));
+    if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+    if (f.v.kind !== 'farm')
+      throw Object.assign(new Error('only farm (growing) zones take planting bills'), { status: 400 });
+    let bills = [...(f.v.bills ?? [])];
+    const known = (p: string) => {
+      if (!STORY_SIM_PLANTS.some((x) => x.id === p))
+        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((x) => x.id).join('|')}`), {
+          status: 400,
+        });
+    };
+    const find = (id: string | number) => {
+      const i = bills.findIndex((b) => String(b.id) === String(id));
+      if (i < 0) throw Object.assign(new Error('bill: no such bill in the zone'), { status: 400 });
+      return i;
+    };
+    let made: string | null = null;
+    if (body.op === 'bill_add') {
+      known(body.plant);
+      if (bills.length >= 16) throw Object.assign(new Error('a zone takes at most 16 bills'), { status: 400 });
+      made = `gb${c.seq++}`;
+      bills.push({
+        id: made,
+        plant: body.plant,
+        mode: body.mode ?? 'forever',
+        target: body.target ?? 64,
+        done: 0,
+        paused: body.paused ?? false,
+      });
+    } else if (body.op === 'bill_update') {
+      const i = find(body.bill);
+      const old = bills[i]!;
+      if (body.plant) known(body.plant);
+      const next = {
+        ...old,
+        ...(body.plant ? { plant: body.plant } : {}),
+        ...(body.mode ? { mode: body.mode } : {}),
+        ...(body.target !== undefined ? { target: body.target } : {}),
+        ...(body.paused !== undefined ? { paused: body.paused } : {}),
+      };
+      if (next.plant !== old.plant || next.mode !== old.mode) next.done = 0;
+      bills[i] = next;
+    } else if (body.op === 'bill_reorder') {
+      const order = body.ids.map((id) => bills[find(id)]!);
+      bills = [...new Set(order), ...bills.filter((b) => !order.includes(b))];
+    } else {
+      const i = find(body.bill);
+      if (body.op === 'bill_remove') bills.splice(i, 1);
+      else bills[i] = { ...bills[i]!, paused: body.op === 'bill_pause' };
+    }
+    f.v = { ...f.v, bills, plant: bills[0]?.plant ?? null };
+    f.rev = this.bump(c);
+    const active = this.activeBill(c, f.v);
+    return {
+      id: f.v.id,
+      ids: bills.map((b) => b.id),
+      activeBill: active?.id ?? null,
+      warnings: [],
+      ...(made ? { bill: made } : {}),
+      rev: c.rev,
+    };
   }
 
   /** A growing zone's fields as the bot reports them (mock: nothing grows; seeds from the colony's stock). */
   private growStatus(c: Colony, z: StoryZone): StoryZone {
-    const plant = z.kind === 'farm' && z.plant ? STORY_SIM_PLANTS.find((p) => p.id === z.plant) : undefined;
-    if (!plant) return z;
-    const [x1, , z1, x2, , z2] = z.area;
-    const cells = (x2 - x1 + 1) * (z2 - z1 + 1);
-    const have = c.stock.get(`${plant.seedItem![0]}:${plant.seedItem![1]}`) ?? 0;
-    return {
-      ...z,
-      status: `0/${cells} sown, 0 ripe`,
-      seeds: {
+    if (z.kind !== 'farm' || (!z.plant && !z.bills)) return z;
+    const cells = z.cells ?? (z.area[3] - z.area[0] + 1) * (z.area[5] - z.area[2] + 1);
+    const seedsOf = (plant: StoryPlant, needed: number) => {
+      const have = c.stock.get(`${plant.seedItem![0]}:${plant.seedItem![1]}`) ?? 0;
+      return {
         item: plant.seed,
         have,
-        neededForEmpty: cells,
+        neededForEmpty: needed,
         sourceHint: plant.source ?? null,
         missing:
           have === 0 ? (SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`) : null,
         action:
-          have === 0 ? (plant.id === 'wheat' ? 'seek_seeds' : plant.harvest === 'fruit' ? 'craft_seeds' : null) : null,
-      },
+          have === 0
+            ? plant.id === 'wheat'
+              ? ('seek_seeds' as const)
+              : plant.harvest === 'fruit'
+                ? ('craft_seeds' as const)
+                : null
+            : null,
+      };
+    };
+    const active = z.bills ? this.activeBill(c, z) : null;
+    const activePlantId = z.bills ? (active?.plant ?? null) : (z.plant ?? null);
+    const plant = STORY_SIM_PLANTS.find((p) => p.id === activePlantId);
+    const bills = z.bills?.map((b) => {
+      const p = STORY_SIM_PLANTS.find((x) => x.id === b.plant);
+      return {
+        ...b,
+        label: p?.label ?? b.plant,
+        met: this.billMet(c, b),
+        active: b === active,
+        ...(b.mode === 'until' ? { stored: this.produceStored(c, b.plant) } : {}),
+        ...(p ? { seeds: seedsOf(p, b === active ? cells : 0) } : {}),
+      };
+    });
+    const base = { ...z, ...(bills ? { bills, activeBill: active?.id ?? null } : {}), activePlant: plant?.id ?? null };
+    if (!plant)
+      return {
+        ...base,
+        status: `${z.bills?.length ? 'all bills met' : 'no planting bills'}: sowing nothing, 0 growing, 0 ripe`,
+        seeds: null,
+      };
+    return {
+      ...base,
+      status: `0/${cells} sown, 0 ripe`,
+      seeds: seedsOf(plant, cells),
       needsHoe: plant.soil === 'farmland' && (c.stock.get('290:0') ?? 0) === 0,
     };
   }
@@ -998,16 +1185,33 @@ export class StorySim {
         throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
           status: 400,
         });
+      const bills =
+        body.plant === undefined
+          ? f.v.bills
+          : !body.plant
+            ? null
+            : f.v.bills?.length
+              ? [{ ...f.v.bills[0]!, plant: body.plant }, ...f.v.bills.slice(1)]
+              : [
+                  {
+                    id: `gb${c.seq++}`,
+                    plant: body.plant,
+                    mode: 'forever' as const,
+                    target: 64,
+                    done: 0,
+                    paused: false,
+                  },
+                ];
       f.v = {
         ...f.v,
-        ...(body.plant !== undefined ? { plant: body.plant || null } : {}),
+        ...(body.plant !== undefined ? { plant: body.plant || null, bills } : {}),
         ...(body.sow !== undefined ? { sow: body.sow } : {}),
         ...(body.harvest !== undefined ? { harvest: body.harvest } : {}),
       };
       f.rev = this.bump(c);
       return { id: f.v.id, warnings: [], rev: c.rev };
     }
-    const plant = STORY_SIM_PLANTS.find((p) => p.id === f.v.plant);
+    const plant = STORY_SIM_PLANTS.find((p) => p.id === (this.activeBill(c, f.v)?.plant ?? f.v.plant));
     if (!plant) throw Object.assign(new Error('the zone grows nothing: set its plant first'), { status: 400 });
     if (plant.id === 'wheat') {
       const [x1, y1, z1, x2, , z2] = f.v.area;
@@ -1321,7 +1525,8 @@ export class StorySim {
                   pos: [x, y, z],
                   kind,
                   label: null,
-                  supported: kind === 'crafting_table' || kind === 'furnace',
+                  supported: true,
+                  station: this.stationOf(kind, [x, y, z]),
                   bills: [],
                 },
               });
@@ -1413,13 +1618,33 @@ export class StorySim {
     }
   }
 
-  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; ids?: Key[]; rev: number } {
+  /** The bench inspector's station facts (an enchanting table's bookshelves, an anvil's wear, a brewing stand's water). */
+  private stationOf(kind: string, pos: readonly number[]): StoryWorkbench['station'] {
+    const w = this.opts.world;
+    if (kind === 'enchanting_table') {
+      let n = 0;
+      for (let dx = -2; dx <= 2; dx++)
+        for (let dz = -2; dz <= 2; dz++)
+          for (let dy = 0; dy <= 1; dy++)
+            if (Math.max(Math.abs(dx), Math.abs(dz)) === 2 && w.blockAt(pos[0]! + dx, pos[1]! + dy, pos[2]! + dz)[0] === 47) n++;
+      n = Math.min(15, n);
+      return { present: true, bookshelves: n, maxBookshelves: 15, topOffer: [Math.max(1 + (n >> 1), n * 2), Math.max(8 + (n >> 1) + n, n * 2)] };
+    }
+    if (kind === 'anvil') {
+      const meta = w.blockAt(pos[0]!, pos[1]!, pos[2]!)[1];
+      return { present: true, condition: ['intact', 'chipped', 'damaged'][Math.min(2, (meta >> 2) & 3)]! };
+    }
+    if (kind === 'brewing_stand') return { present: true, water: null, fuel: null };
+    return null;
+  }
+
+  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; ids?: Key[]; rev: number; note?: string | null } {
     const c = this.colony(id);
     const benchAt = (pos: readonly number[]) => {
       const f = c.benches.get(keyOf(pos));
       if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
       if (f.v.supported === false)
-        throw Object.assign(new Error(`a ${f.v.kind.replace(/_/g, ' ')} takes no bills yet`), { status: 400 });
+        throw Object.assign(new Error(`this version has no ${f.v.kind.replace(/_/g, ' ')} bills`), { status: 400 });
       return f;
     };
     const holder = (billId: Key) => {
@@ -1428,6 +1653,26 @@ export class StorySim {
     };
     let f: Fn<StoryWorkbench>;
     let newId: Key | undefined;
+    if (body.op === 'enchant_tools') {
+      // The tools hook: a count bill per pickaxe kind at the colony's enchanting table, preferring the enchantment.
+      const table = [...c.benches.values()].find((x) => x.v.kind === 'enchanting_table');
+      if (!table) throw Object.assign(new Error('no enchanting table: place one and designate it'), { status: 400 });
+      const prefer = body.prefer ?? (body.material && /ore|coal|diamond|lapis|redstone|emerald|quartz/.test(body.material) ? 'fortune' : body.material && /glass|ice|glowstone/.test(body.material) ? 'silk_touch' : 'efficiency');
+      const ids: Key[] = [];
+      for (const item of body.items ?? ['diamond_pickaxe']) {
+        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === `enchant:${item}`);
+        if (!recipe || table.v.bills.some((b) => b.recipe === recipe.id && b.prefer === prefer)) continue;
+        const b: StoryBill = {
+          id: `bill${c.seq++}`, recipe: recipe.id, mode: 'count', target: body.count ?? 1, done: 0, paused: false, suspendedReason: null,
+          ingredients: { allow: ['*'], deny: [] }, radius: 32, pawn: 'any', minSkill: null, store: 'best', option: 3, prefer,
+          preferOnly: body.preferOnly ?? false,
+        };
+        table.v.bills.push(b);
+        ids.push(b.id);
+      }
+      table.rev = this.bump(c);
+      return { ok: true, ids, rev: c.rev };
+    }
     if (body.op !== 'add' && body.op !== 'reorder') {
       const auto = [...c.benches.values()]
         .flatMap((x) => x.v.bills)
@@ -1451,6 +1696,10 @@ export class StorySim {
         const spec = body.bill;
         const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === spec.recipe);
         if (!recipe) throw Object.assign(new Error('unknown recipe'), { status: 400 });
+        if (recipe.workbench !== f.v.kind)
+          throw Object.assign(new Error(`no recipe '${recipe.id}' at a ${f.v.kind}`), { status: 400 });
+        if (recipe.modes && !recipe.modes.includes(spec.mode))
+          throw Object.assign(new Error(`mode must be ${recipe.modes.join('|')} for this recipe`), { status: 400 });
         const b: StoryBill = {
           id: `bill${c.seq++}`,
           recipe: recipe.id,
@@ -1469,6 +1718,9 @@ export class StorySim {
           pawn: spec.pawn ?? 'any',
           minSkill: spec.minSkill ?? null,
           store: spec.store ?? 'best',
+          ...(recipe.workbench === 'enchanting_table'
+            ? { option: spec.option ?? 3, prefer: spec.prefer ?? null, preferOnly: spec.preferOnly ?? false }
+            : {}),
         };
         f.v.bills.push(b);
         newId = b.id;
@@ -1670,7 +1922,7 @@ export class StorySim {
     if (!kind) throw Object.assign(new Error('no workbench there'), { status: 400 });
     c.benches.set(k, {
       rev: this.bump(c),
-      v: { pos: body.pos, kind, label: null, supported: kind === 'crafting_table' || kind === 'furnace', bills: [] },
+      v: { pos: body.pos, kind, label: null, supported: true, station: this.stationOf(kind, body.pos), bills: [] },
     });
     this.plan(c);
     return { pos: body.pos, kind, designated: true };
@@ -1682,10 +1934,14 @@ export class StorySim {
     if (
       body.autoPlaceBenches === undefined &&
       body.detectBenches === undefined &&
+      body.idle === undefined &&
       body.autoCraftTools === undefined &&
       body.spareTools === undefined
     )
-      throw Object.assign(new Error('autoPlaceBenches, detectBenches, autoCraftTools or spareTools required'), { status: 400 });
+      throw Object.assign(new Error('autoPlaceBenches, detectBenches, idle, autoCraftTools or spareTools required'), {
+        status: 400,
+      });
+    if (body.idle !== undefined) c.options.idle = body.idle;
     if (body.autoCraftTools !== undefined) c.options.autoCraftTools = body.autoCraftTools;
     if (body.spareTools !== undefined) c.options.spareTools = { count: body.spareTools.count, kinds: [...body.spareTools.kinds] };
     if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
@@ -2000,7 +2256,7 @@ export class StorySim {
                 : pawn.drafted
                   ? 'drafted'
                   : 'working';
-      p.work -= dt * (pawn.traits.some((x) => x.id === 'night_owl') && storyHour(c.tod) >= 14 ? 1.25 : 1);
+      p.work -= dt * (pawn.traits.some((x) => x.id === 'night_owl') && (storyHour(c.tod) >= 20 || storyHour(c.tod) < 6) ? 1.25 : 1);
       if (p.work <= 0) this.finish(c, p);
     }
     pawn.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];
@@ -2259,10 +2515,6 @@ function inside(a: StoryArea, p: readonly number[], slackY = 0): boolean {
   return (
     p[0]! >= a[0] && p[0]! <= a[3] && p[2]! >= a[2] && p[2]! <= a[5] && p[1]! >= a[1] - slackY && p[1]! <= a[4] + slackY
   );
-}
-
-function overlaps(a: StoryArea, b: StoryArea): boolean {
-  return a[0] <= b[3] && b[0] <= a[3] && a[2] <= b[5] && b[2] <= a[5];
 }
 
 function groupTrees(logs: Array<[number, number, number]>): Array<Array<[number, number, number]>> {

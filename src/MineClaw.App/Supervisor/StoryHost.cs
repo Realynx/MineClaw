@@ -103,14 +103,16 @@ public sealed class StoryHost : IStoryHost
         {
             var s = w.Inventory.GetPlayerSlot(slot);
             if (s.IsEmpty) continue;
-            int i = inv.FindIndex(x => x.Id == s.Id && x.Meta == s.Damage);
-            if (i >= 0) inv[i] = inv[i] with { Count = inv[i].Count + s.Count }; else inv.Add(new Stack(s.Id, s.Damage, s.Count));
+            // A 1.12.2 potion's type is NBT (its damage is 0): the colony tells water bottles from awkward or swiftness potions by meta.
+            int meta = MineClaw.Data.Brewing.IsPotionItem(s.Id) && MineClaw.Data.Brewing.TypeId(s.Tag?.Potion) is >= 0 and var pt ? pt : s.Damage;
+            int i = inv.FindIndex(x => x.Id == s.Id && x.Meta == meta);
+            if (i >= 0) inv[i] = inv[i] with { Count = inv[i].Count + s.Count }; else inv.Add(new Stack(s.Id, meta, s.Count));
         }
         var held = w.Inventory.HeldItem(w.Player.HeldSlot);
         var p = w.Player.Position;
         bool running = b.ScriptBridge?.Controller.Current is { IsLive: true };
         return new PawnLive(true, w.Player.Health, w.Player.Food, p.X, p.Y, p.Z, w.Dimension, held.IsEmpty ? null : World!.Data.Item(held.Id).Name, inv,
-            running, w.Inventory.EmptySlotCount(), GearOf(w), 36 + w.Player.HeldSlot);
+            running, w.Inventory.EmptySlotCount(), w.Player.Snapshot.XpLevel, GearOf(w), 36 + w.Player.HeldSlot);
     }
 
     /// <summary>The body's tools, weapons and armour slot by slot (armour 5..8, bag 9..44) with their enchantments.</summary>

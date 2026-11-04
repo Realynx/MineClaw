@@ -45,8 +45,15 @@ There is one per colony. It holds:
   - `free` means idle near home.
   - `anything` means work, eat or rest as needed.
 
-  The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
+  The hour comes from the world time, at 1000 ticks per hour, with tick 0 = 06:00. A schedule is indexed by the clock hour
+  (index 0 = 00:00, `StoryCharacter.Hour`); the colony state's `hour` is that clock hour, the column in force. (Until
+  2026-11-03 the web labelled index 0 as 06:00: its schedule grid and HUD clock ran six hours ahead of the bot.)
 - **Zones,** painted as areas: chop, mine, farm, home, forbidden. Storage is chests with their own settings (see "Storage").
+
+  The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
+- **Zones,** painted on the map RimWorld-style as cell sets (see "Zones"): chop, mine, farm (growing zones), fish (see
+  "Fishing") are work zones;
+  home and forbidden are overlay layers. Storage is chests with their own settings (see "Storage").
 - **Designations,** per block or area: chop this tree, mine these blocks, harvest, haul these drops, build design N here,
   deconstruct.
 - **Orders,** per pawn or group: move to, attack, chop, mine, haul, build, hold position, stop, and queued orders
@@ -87,7 +94,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, name?, plant?, sow?, harvest?}` → `{id, warnings?}`; `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}` (see "Farming"); `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -106,9 +113,9 @@ storage is chests (see "Storage").
 ### The colony state
 
 ```
-{id, rev, since, full, at, time_of_day, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
+{id, rev, since, full, at, time_of_day, time_frozen, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
- pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, name, plant?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
+ pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null}, policies:[Policy], material_rules:[MaterialRule], materials:[MaterialInfo] (full only),
@@ -125,6 +132,7 @@ The **Pawn** object:
 {name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
  skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]],
+ xp_level,
  equipment:{held, armor, tools, weapons}, policy, gear_tasks:[{id, op, label}] }
 ```
 
@@ -156,7 +164,8 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
-- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first).
+- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first). It rests
+  on its feet: idle legs about home (see "Idle behaviour"), never cutting the 15 s short.
 - A designation that failed is kept on the map with `reason` and `fails`. Its first failure raises an alert saying why. After 3
   failures its `status` is `failed` and an alert says so (again every 3 failures). It is still retried after its rest until it is
   done or cancelled.
@@ -194,6 +203,20 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
 The minecraft server owns the clock, but an op account can set it. `time_control` (in `GET /api/story` and in every colony state)
 is `{available, by}`. It is available when an account this bot controls is op: main first, else the first op body. `by` names it.
 
+- **One clock on the page** (added 2026-11-03, `features/story/clock.ts`). The server's time is the only truth: the HUD
+  clock (HH:MM), its sun/moon, the time slider, the schedule grid's current column and the map's day/night light all read one
+  anchor, the newest server sample by receipt time: the colony state's `time_of_day` or the world index's `time` (the map's
+  viewer polls it every ~0.9 s). Between samples it advances at 20 ticks/s; each new sample re-anchors it, and when the colony
+  state is newer than the viewer's index the viewer is fed from it (and the other way round), so the light and the clock
+  agree to the second. Never the browser's wall clock. A sample older than a minute is stale: the clock dims (with a
+  tooltip) and stops advancing. A catch-up with no newer revision still carries the time (a paused colony's clock runs).
+- **Day and night** follow the bot: night is 19:00–05:59 (`StoryCharacter.Night`), about ticks 13000–23000, where vanilla's sky
+  goes dark. The map darkens with the sky light (`skylightSubtracted`, 0 at noon, 11 at midnight; torches and other block
+  light stay), the sky and fog colours with it.
+- **Frozen time.** A 1.12.2 server sends the time of day negative while `doDaylightCycle` is false (the absolute value is the
+  time). The bot reads it so (`TimeUpdatePacket.Frozen`, `WorldState.TimeFrozen`; `WorldState.TimeOfDay` never maps -6000 to
+  18000) and says `time_frozen` in the colony state and the world index. The web does not advance a frozen time and shows a
+  snowflake on the clock and "Time is frozen" under the slider.
 - **Op detection.** A 1.12.2 server tells each account its op level as Entity Status 24..28 on its own player, on login and on
   every /op and /deop (level = status − 24). Op means level 2 or more. A b1.8.1 server never says, so there an account is op only
   when `Supervisor:Viewer:OpAccounts` lists it. Otherwise it's unknown, and an unknown account doesn't count.
@@ -315,11 +338,35 @@ one spot, so the pawns stood in a pile there.
   columns only, the colony's dimension only. Never on, over or under a designated or build cell, never right in front of a storage
   chest or a workbench, never in a forbidden area.
 - **Night.** After dark (19:00–06:00) idle pawns wander only cells that are inside (roofed, in a home zone) or lit (light 8 or more
-  after dark). With none, each stands at its own spread spot by home ("Idle (at home)") and stays there. Sleep hours are beds as
-  before.
+  after dark). With none, they potter about within 5 blocks of home (or stargaze there). Sleep hours are beds as before.
 - **No home** (or another dimension): the pawn holds where it is ("idle: nothing to do"); new work cuts that hold as before.
 - **Spread spots.** A no-bed rest, a flight home and a teleport home (founding, migration, a join far away) each get the pawn's own
   free cell nearest home, never one cell for all.
+
+**Resting and recreation (added 2026-11-03, late).** Fox: "If a pawn is idle or resting, it should do recreation or something else
+instead of sitting in the same place."
+
+- **Resting wanders too.** The back-off after three failures ("resting") is idle legs about home (label "Resting (wandering)" or
+  "Resting: …"), not a hold. The legs never shorten it: work isn't handed to a resting pawn, and the leg in progress is taken back the
+  tick the back-off ends, so the pawn works at once. No other hold left a pawn standing still: blocked builds and missing materials
+  just mean no job, which is idle.
+- **Recreation** (the colony's `idle` option, default `recreation`) in free hours, when idle and while resting. Each leg is one
+  pastime, never the same one twice in a row when another is possible, all with the safe-cell and personal-space rules, all cut the
+  moment work comes up (the same step that hands the work over):
+
+  | `act` | where | looks at | label |
+  |---|---|---|---|
+  | `wander` | a cell 3–12 blocks off | a glance about | "Idle (wandering)", "Free time (wandering)", "Resting (wandering)" |
+  | `socialise` | 2–3 blocks from another idle pawn (never closer than 2 to anyone) | that pawn, which turns to it on its next leg | "Recreation: socialising with Dara" |
+  | `stargaze` | at night, under open sky (nothing overhead), within 8 of home or in a home zone | up, slowly round | "Recreation: stargazing" |
+  | `sit` | beside a chair (a stairs block), else two blocks from a colony workbench or chest (never in front of it) | the chair or table | "Recreation: resting by a chair" / "sitting by the crafting table" |
+  | `garden` | 1–2 blocks outside a growing zone, or beside flowers | the zone's middle or the flower | "Recreation: visiting the garden" |
+  | `sunset` | at dusk (18:00), the west edge of the home area | west | "Recreation: watching the sunset" |
+
+  The job carries `act`, `look:["x,y,z"]` (where it looks while it lingers, 8–16 s; strolls 4–12 s) and `with` (socialise). The
+  director only offers the pastimes; the SDK's `story.idle` walks, turns (`face`) and lingers.
+- **The option.** `POST …/options {idle: recreation|wander|stay}` (state `options.idle`): pastimes, strolls only, or hold where they
+  are (the old behaviour). The Colony tab has an "Idle pawns" picker beside the bench options.
 
 ### Adding and removing pawns (added 2026-11-03)
 
@@ -353,15 +400,18 @@ Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
   - `story.report(job, 'done'|'failed'|'progress', note?)` reports on it.
   - `story.during(job, fn)` runs `fn` while the job is still the pawn's; the moment the director takes it back the running action
     is cut (`{ok:false, cancelled:true}`; the stale report that follows is ignored, never a failure).
-  - `story.idle(job)` is an idle leg (walk to its cell, linger) inside `story.during`.
+  - `story.idle(job)` is an idle leg inside `story.during`: walk to its cell, then linger looking at each point of `look` in turn
+    (with the hidden `face{at}` action: turn the head, nothing else).
+  - `story.till(job)` holds the hoe and uses it on the block (walking over first when it is far).
 - **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`.
   - Kinds: `go|chop|dig|harvest|till|collect|place|attack|equip|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
     `attack`, `eat`, `craft`, `smelt`, `collect_furnace`, `handTo`, `build`, `wait`), deposits the `stash` items and reports.
-  - Gear (added 2026-11-03): a `fetch` entry with `ench` (a tool, weapon or armour piece) is taken exactly with the hidden
-    `equip(item, 'take', from, ench)`; a job's `tool`/`tool_ench` is held before the work (`equip(item, 'hold', null, ench)`); an
-    `equip` job takes armour off (`unwear`), wears `wear`, then holds `hold`/`hold_ench`. An `attack` job names its `target` (the
-    entity id) and the script attacks exactly that one.
+  - Gear (added 2026-11-03), in the SDK so the pawn script stays under its 4000-character cap: `story.fetch(job)` takes the
+    `fetch` items, an entry with `ench` (a tool, weapon or armour piece) exactly with the hidden `equip(item, 'take', from, ench)`,
+    then holds the job's `tool`/`tool_ench` (`equip(item, 'hold', '', ench)`); `story.work(job)` runs an `equip` job: armour off
+    (`unwear`), `wear`, then `hold`/`hold_ench`. An `attack` job names its `target` (the entity id) and the script attacks exactly
+    that one.
 
 ### Designations
 
@@ -412,6 +462,52 @@ dimension) when it joins, when the colony is founded or resumed, or when the hom
 
 Each pawn moved logs one line (an alert): "X brought home to x,y,z from N blocks away (why)".
 
+## Zones (cell sets, added 2026-11-03)
+
+Fox 11-03: "Removing zones doesn't seem to work either, and overlapping zones seem to create two zones over top of each other when
+they should just mesh into one zone. Overlapping zones of a different type should overwrite what was overlapped with the type of zone
+selected."
+
+Why remove failed: the web's Remove zone tool always sent `kind: "home"` (it erased only houses), and the bot matched the dragged box
+in 3D, so a zone painted while the map showed another level was never hit; it also removed whole zones, never cells.
+
+**Model.** A zone is a set of XZ columns plus its level range, with its settings (kind, name; growing zones: planting bills, sow,
+harvest). Zones are column-wise like the map they are painted on: overlap, merging and erasing ignore height. The level range
+(`area` y: what it was painted at; the union when zones merge) is what the scans that need a height read, as before: a quarry mines
+ores within it, a growing zone finds its soil near its bottom, a keep-out zone forbids blocks within it, beds are looked for 8 above
+and below a house. `area` x/z is the cells' bounding box. Stored as normalised row runs `rows: [[z, x1, x2], …]` (sorted by z then x,
+each run maximal; the state sends them with `cells`, the count). Older saves (one rectangle per zone) load as the same cells and are
+saved as rows at once; a growing zone's single `plant` becomes a one-bill list.
+
+**Painting (add, kind K).** RimWorld's rules:
+- Cells already in a zone of the same type stay. Painted cells that touch (4 neighbours) or overlap zones of the same type join them;
+  touching several merges them into the oldest (its id, name and settings; the others are reported in `merged` and leave the
+  state's `removed.zones`). Cells touching none make a new zone (`created`). A zone of more than 65 536 cells is refused.
+- Same type = the same kind, and for growing zones the same plant (the zone's first bill's). A growing zone of another plant is
+  another type: it overwrites. `into: id` (the web's Extend, or Shift-drag from inside a zone) paints into that zone: the cells take
+  its type and it keeps its id.
+- Work zones (farm, chop, mine, fish) are mutually exclusive: the painted cells leave every other work zone (`shrunk`; a zone left empty
+  is `deleted`, a zone cut in two `split`).
+- Home areas and keep-out areas are **overlay layers** (RimWorld's home area and allowed areas are layers too): painting one never
+  overwrites anything and work zones never overwrite them. A house can cover a field; a keep-out area can cover a quarry. Each
+  layer merges only with itself.
+
+**Erasing (remove with an area).** The cells leave the zones of the kind given (no kind, or `any`: every kind, overlays included).
+A zone left empty is deleted; a zone cut into parts keeps the largest part and its id, and each other part becomes a zone with the
+same settings, its name numbered " 2", " 3" (`split: [{from, into}]`). `{op: remove, id}` still deletes one whole zone.
+
+**Consumers read cells.** "At home", the bed's house and the idle wander area use a column index of the home zones (rebuilt when a
+zone changes); the picker's index holds the keep-out columns; quarries, woodlots, farm zones, growing zones, bed and bench scans
+walk the cells (a tree counts when its trunk stands in a cell).
+
+**Web.** The Architect's Zones tab: the work zones (Growing zone with its plant, Woodlot, Quarry, Fishing zone), the overlay layers (Home area,
+Keep out), and Erase zone with the kind it erases (Any by default). Zone tools stay in hand until Esc or a right-click (the genre's
+way); Shift-drag from inside a zone, or Extend in the Growing zones window, extends that zone. While dragging, the map previews
+the result with the same rules (`paintZones` / `eraseZones` in contracts): the zone the cells end up in (the merged shape) in the
+tool's colour, cells taken from other zones in red, and a line ("18 cells · merged 2 zones"). Zones are drawn by their cells with
+one outline around each zone: work zones tinted with a dashed edge (growing zones labelled with what they sow), houses with the
+home-area tint, a solid edge and the name, keep-out with red stripes. The Houses and Growing zones lists show each zone's cells.
+
 ## Farming (added 2026-11-03)
 
 Fox 11-03: "I don't see the ability to plant a specific type of plant, or how acquiring the seeds will work."
@@ -451,9 +547,61 @@ colony gets an alert (at most every 10 minutes per zone):
 - pumpkin, melon: `action: "craft_seeds"`. With a pumpkin (or a melon slice) stored, the colony adds a count bill for 4 seeds at its
   crafting table: by itself when a pawn would sow, or on `seek_seeds`.
 
-**Web.** The Zones tool's Growing zone shows a plant picker (icons from the item atlas). The Colony tab opens a Growing zones window
-beside it: each zone's plant (changeable), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches,
-"needs a hoe", and the action button ("Designate grass cutting nearby" or "Craft seeds (a bill)").
+**Planting bills (added 2026-11-03).** Fox: "I should be able to add harvest bills, or maybe planting bills, to zones — as a way to
+choose which types of seeds to plant there." A growing zone has an ordered list of bills, like a workbench's:
+`{id, plant, mode: forever | until | count, target, done, paused}`. `until` is met while the colony has `target` of the produce
+(wheat, the carrot, the potato, beetroot, the pumpkin, the melon slice, the cane, the cactus, the wart, a tree's logs) in storage and
+on pawns; `count` when `done` harvests reach `target` (each finished harvest in the zone counts toward the first unmet count bill of
+that plant). The **active bill** is the first unpaused bill whose target isn't met: it decides what is sown and tilled. When it is
+met sowing moves to the next bill; crops already in the ground are harvested as their own plant (sown again only if that is still
+what the zone sows), never ripped out. No active bill: the zone keeps harvesting and sows nothing (status "all bills met: …").
+A zone's `plant` is its first bill's (what painting calls its type; `update {plant}` changes the first bill). Ops on the zones
+route: `bill_add {id, plant, mode?, target?, paused?}`, `bill_update {id, bill, …}` (a new plant or mode restarts `done`),
+`bill_remove | bill_pause | bill_resume {id, bill}`, `bill_reorder {id, ids}` (16 bills at most). A bill's plant is validated like
+a zone's (this version, the zone's soil). State: `bills: [{id, plant, label, mode, target, done, stored?, paused, met, active,
+seeds: {item, have, needed_for_empty, source_hint, missing, action}}]`, `active_bill`, `active_plant`; `seeds` and `status` are the
+active plant's. The chain stays automatic: till (a hoe, else a hoe bill) → sow → harvest → replant or the next bill.
+
+**Web.** The Zones tool's Growing zone shows a plant picker (icons from the item atlas): the new zone's first bill. The Colony tab
+opens a Growing zones window beside it: each zone's cells, Extend, what it sows now ("Sowing: Carrots"), its planting bills (Add bill
+with the plant picker; mode and target; drag or the arrows to reorder; pause; remove; the active one marked "sowing", met ones
+"met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
+button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
+
+## Fishing (added 2026-11-03)
+
+Fox 11-03: "Make me a fishing zone where pawns can fish using fishing poles; it must be over water blocks."
+
+**Zone.** Kind `fish`, a work zone (painting it overwrites other work zones' cells, and theirs overwrite it). It keeps only still
+water: a column's top block near the painted level that is water with meta 0 (a source; flowing water and waterfalls are not
+fished) under open air. Painting over land ignores the land (a field on the bank stays). Refused with no still water ("no still
+water here"), fewer than 4 water cells (counting the fishing zones it joins), or no shore: a standable cell (solid floor, room for
+the head, no liquid at the feet or under them, nothing that hurts) within 3 blocks of the water. The web's preview scans the
+dragged rectangle for water (ids 8/9) and shows only the still-water cells; the mock director filters the same way.
+
+**Work.** A work type `fish` (the Work grid's Fish column, after Hunt; new pawns draw its skill from its own seed so every other
+draw stays as it was; older pawns start with it off). A pawn with Fish work picks the nearest fishing zone that wants fish, a shore
+cell at least 2 blocks from anyone already fishing (lease `fish:x,y,z`), and the nearest water cell to it. It needs a fishing rod:
+carried, else fetched from storage (the job's `fetch`), else a count bill for one at the colony's crafting table (3 sticks, 2
+string; with no string in storage the colony hears "spiders drop it" instead, at most every 10 minutes). The job is
+`{kind: "fish", at: shore, water, s: 150, max}`: the pawn script walks to the shore cell and calls `fish(water, s, max)`. The
+catch is delivered to storage like any gathering (raw fish counts as raw food: it is stored, and cooking bills turn it into cooked
+fish). A session's "N fish caught" counts toward the zone's `catches` and its first unmet count bill.
+
+**Bills.** Optional, on the zones route like planting bills (`bill_add {id, plant: "fish", mode, target}`, update, pause, resume,
+remove, reorder): `forever`, `until` N raw fish in storage, `count` N catches. No bills = fish forever; every bill met or paused =
+the zone rests ("all bills met: not fishing"). A session stops early once the active bill's remaining fish are caught.
+
+**State.** A fishing zone adds `{water_cells, fishers: [display name], catches, status, bills?}`. The Colony tab's Fishing zones
+window (beside the Growing zones) shows them, with "Fish until 20 stored" / "Catch 10" bills, pause and remove.
+
+**The primitive** (`MinecraftClient.FishAsync`, the hidden `fish {at, seconds, max}` tool, scripts' `fish(at, seconds, max)`):
+hold a rod (the least worn; one under 5% is swapped for a spare when there is one), face the water, cast (use item), find our
+bobber: an object of type 90 whose spawn data is our entity id (b1.8.1's 0x17 thrower, 1.12.2's Spawn Object owner). A bite
+(`BiteDetector`): once the bobber floats (its height still for 10 ticks), a fresh downward velocity of 0.12 blocks/tick or more
+(b1.8.1 EntityFishHook: `motionY -= 0.2`; 1.12.2: `motionY = -0.4 * rand(0.6, 1)`; both velocity-tracked) or a drop 0.2 under the
+floating height; the velocity held from the cast never counts. On a bite it reels in (use item again) and waits for the fish; no
+bite in 45 s reels in and casts again. The fake server (`FakeServer.Fishing`) serves rods on both wires for the tests.
 
 ## Construction
 
@@ -572,20 +720,32 @@ Workbenches (designated, added 2026-11-03):
   home) join by themselves every 30 s, as before. Off by default (`POST …/options {detect_benches}`); colonies saved before keep
   the benches they had.
 - Only designated benches unlock the Architect's tiers (below) and receive bills.
-- Brewing stands, anvils and enchanting tables are listed (`supported:false`) but take no bills yet: there is no primitive.
-- Workbench: `{pos, kind, label, supported, loaded, ready_at, bills:[Bill]}`.
+- Every interactive station takes bills (added 2026-11-03): crafting tables and furnaces on both versions; brewing stands, anvils
+  and enchanting tables on 1.12.2 (b1.8.1 has none of the three: listed with `supported:false`, an `add` answers 400). See
+  "Stations" below.
+- A station the colony's own build placed (the Architect's production tab) is the colony's at once.
+- Workbench: `{pos, kind, label, supported, loaded, ready_at, station, bills:[Bill]}`. `station` (the three 1.12.2 stations, else
+  null): `{present, bookshelves, max_bookshelves, top_offer:[min,max]}` for an enchanting table, `{present, condition:
+  intact|chipped|damaged|gone}` for an anvil, `{present, water:[x,y,z]|null, fuel}` for a brewing stand.
 
 Recipes: `GET /api/story/recipes?workbench=crafting_table|furnace|brewing_stand|anvil|enchanting_table` →
-`[{id, label, workbench, work_type: craft|cook, output:[id,meta,count], inputs:[{options:[[id,meta]], count}], fuel}]`.
-Ids are `craft:<output name>` and `smelt:<input name>`. Furnace food is Cook work; the rest is Craft.
+`[{id, label, workbench, work_type: craft|cook, output:[id,meta,count], inputs:[{options:[[id,meta]], count}], fuel}]`; a station
+recipe adds `requires:{xp_levels, lapis, fuel_item, water, note}`, `modes` (the bill modes it takes), `chain` (a brew's steps) and
+`enchantments` (what an enchant can prefer). Ids are `craft:<output name>`, `smelt:<input name>`, `brew:[splash_|lingering_]<potion
+type>`, `enchant:<item>`, `repair:<item>`, `combine:<item>` and `book:<item>`. Furnace food and brewing are Cook work; the rest
+(crafting, smelting, enchanting, the anvil) is Craft.
 
 `POST …/bills`:
 - `{op:"add", bench:[x,y,z], bill}` → `{id}`
 - `{op:"update", id, …bill fields}`, `{op:"remove"|"pause"|"resume", id}`
 - `{op:"reorder", bench, ids}` → `{ids}`. Bills run top to bottom per bench.
+- `{op:"enchant_tools", prefer?, material?, items?, count?, prefer_only?}` → `{ids, note}`: the tools system's hook (below).
 
 Bill: `{id, recipe, mode: count|until|forever, target, done, paused, suspended_reason, ingredients:{allow, deny}, radius, pawn: "any"|name,
-min_skill, store: "best"|{chest:[x,y,z]}}`. `until` counts the product in every storage plus the pawns' inventories.
+min_skill, store: "best"|{chest:[x,y,z]}, option, prefer, prefer_only, xp_needed, last}`. `until` counts the product in every storage
+plus the pawns' inventories. `option`/`prefer`/`prefer_only` are an enchant bill's (below); `xp_needed` is the XP level the last try
+needed (an offer's level, an anvil's price); `last` is what the last job made ("enchanted diamond pickaxe: Fortune II (offer #3,
+level 18)").
 
 Execution:
 - A pawn with the bill's work type on, and allowed by `pawn` and `min_skill`, takes the first runnable bill of the nearest free
@@ -597,6 +757,71 @@ Execution:
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
+
+### Stations: brewing stand, enchanting table, anvil (added 2026-11-03)
+
+1.12.2 only (b1.8.1 has none of these blocks). Each runs as one job at the station, through the pawn's skills (`brew`,
+`fill_bottles`, `enchant_item`, `use_anvil`; client primitives in `MinecraftClient.Stations.cs`) via the story SDK's `story.work(job)`
+(`Sdk/js/75-story.js`; `story_pawn.js` hands every kind it doesn't know to it). Items go into these windows by hand (pick up,
+place): the server routes a shift-click into them by item, which the chest-like window model can't predict.
+
+**Brewing stand** (Cook work). One recipe per potion, splash and lingering potion a chain from water bottles makes ("Brew Potion of
+Swiftness": water + nether wart → awkward, + sugar → swiftness; + redstone → extended, + glowstone → II, + fermented spider eye →
+corrupted, + gunpowder → splash, + dragon's breath → lingering). Output: 3 potions per job (a stand holds three bottles); count, until
+and forever all work (a 1.12.2 potion's type is NBT: the colony gives a potion of type T the meta T's registry id, water 1, awkward
+4, swiftness 14…, in pawn inventories and the storage ledger).
+- The job starts from the furthest stage of the chain the pawn holds (awkward potions skip the wart), else from water bottles it
+  holds, else from glass bottles (its own or from storage) it fills first at the nearest filled cauldron or water source block
+  (open above) within 16 blocks (4 up/down) of the stand: `fill:{at, n}`.
+- It brings each step's ingredient and, when the stand's fuel is short or unknown, a blaze powder (one fuels 20 brews; the colony
+  keeps the stand's `fuel` as it last left it). It stays at the stand through every brew (20 s each), checks the bottles after each
+  step, then stores the potions (the bill's chest, else the best).
+- Reasons: "no water (a source block or a filled cauldron) within 16 blocks of the brewing stand", "no glass bottles (or water
+  bottles) within N blocks", "no sugar within N blocks", "no blaze powder (the brewing stand's fuel)" (only when the stand is known
+  to be short), and from the stand "the stand won't brew …", "the brewing stand is busy brewing".
+
+**Enchanting table** (Craft work). "Enchant Diamond Pickaxe" for every item the table takes: pickaxes, axes, shovels, swords,
+armour, bow, fishing rod, book (hoes, shears and the rest only through an anvil). Modes count and forever (an enchanted item can't
+be told from a plain one in storage: no until).
+- Bill fields: `option` 1–3 (the highest offer it takes; offer k costs k lapis and k levels, default 3), `prefer` (an enchantment
+  the table can put on the item, validated), `prefer_only`.
+- The pawn brings the item (from storage first: its own may be its working tool, or enchanted already; the primitive only takes a
+  plain one) and `option` lapis. The table shows its three offers once the item is in (each needs its own level, up to 30 with 15
+  bookshelves); the pawn takes the highest offer hinting `prefer` it can pay, else (unless `prefer_only`) the highest it can pay.
+  The offers are fixed for that pawn and item until it enchants something: no reroll. A pawn whose table showed no offer for a
+  prefer-only bill leaves it to the others; when every pawn has tried, the bill waits: "no pawn's table shows Silk Touch for it".
+- The enchanted tool stays with the pawn unless the bill names a chest (pawns keep their gear); a book goes to storage.
+- The inspector shows the bookshelves (`Enchanting.Bookshelves`: the game's walk around the table, at most 15) and the top offer's
+  level range.
+
+**Anvil** (Craft work). Per damageable item: "Repair Iron Pickaxe (iron ingot)" (the most damaged one, the pawn's own first, with
+the material units that mend it, a quarter of its durability each), "Combine two Iron Pickaxes", "Apply an enchanted book to Iron
+Pickaxe". Modes count and forever. Prices (`Anvil`, the game's rules): prior work (doubles plus one each use) + 1 per material unit;
+2 when a combine mends + the right item's enchantments; a book's enchantments at half the rarity multiplier (common 1, uncommon 2,
+rare 4, very rare 8) × level; 1 per conflicting enchantment. 40 or more is refused ("too expensive", the bill is suspended).
+- Every use may wear the anvil (12%): the inspector shows `condition`; a job that reports "the anvil broke", or a bench whose block
+  is gone, suspends its bills: "the anvil at x,y,z is gone (worn through): place a new one and designate it".
+- Renaming isn't offered: it needs a typed name and a pawn has no use for one.
+
+**XP levels.** Pawns earn XP the game's way (mining ore, smelting, fighting); `xp_level` is in the pawn state (the pawn inspector's
+Skills tab shows it). An enchant needs at least `option` levels, a repair the units, a combine 2, or the bill's `xp_needed` when the
+last try needed more ("needs 18 XP levels (has 10)" from the station teaches the bill; it's not a failure). A pawn short of them
+leaves the bill to one that has them; when no pawn that may take it has them the bill waits: "needs 18 XP levels: no pawn has them
+(best: Ann 10)" (retried every 30 s).
+
+**Work types.** Brewing is Cook (RimWorld brews at the stove's skill); enchanting and the anvil are Craft. No new work type.
+
+**Tools hook** (for the tools/equipment system): `StoryColony.EnchantTools(prefer, items?, count = 1, preferOnly = false)` → `(ids,
+error)` adds count bills at the colony's enchanting table nearest home for `items` (default: every pickaxe kind the colony has)
+preferring `prefer`; an unfinished bill with the same recipe and preference isn't added twice. `StoryEnchanting.PreferFor(material)`
+picks the enchantment per mined material: fortune for coal, diamond, emerald, lapis, redstone and quartz ores; silk touch for
+glass, ice, glowstone, grass, mycelium, ender chests and bookshelves; efficiency otherwise. Over HTTP: `POST …/bills
+{op:"enchant_tools", prefer | material, items?, count?, prefer_only?}`.
+
+**Interactive blocks that take no bills** (`StoryRecipes.NotBenches`): chests (storage settings), hoppers, droppers and dispensers
+(containers; a "fill with X" order may come later), the cauldron (water for brewing: a level per bottle), the beacon (a one-time
+setup), the jukebox and the note block. The bench list is `StoryRecipes.Benches`: crafting table, furnace, brewing stand, anvil,
+enchanting table.
 
 ### Builds craft what they need (added 2026-11-03)
 
@@ -630,11 +855,11 @@ Build state gains `materials: [{item, label, need, have, crafting, short, via: c
 `no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
 recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
 
-`POST …/options` `{auto_place_benches?, detect_benches?}` → the options; the colony state carries `options`.
+`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay}` → the options (see "Idle behaviour" for `idle`); the colony state carries `options`.
 
 ### Architect palette and tiers (added 2026-11-03)
 
-`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace}, tabs}`. Entries are every placeable the
+`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace, brewing_stand?, anvil?, enchanting_table?}, tabs}` (the designated benches per kind the version has). Entries are every placeable the
 version has (`StoryArchitect`: blocks, stairs, slabs, fences, doors, glass and panes, wool, beds, bookshelves, carpets, benches,
 chests, torches, glowstone, ladders…; variants the version lacks are left out), by tab: structure, furniture, production,
 storage, lighting, misc. Entry: `{id, label, tab, tier, unlocked, reason, item:[id,meta], material:[id,meta], kind, kinds, chain,
@@ -649,6 +874,20 @@ The web's Architect (B) has tabs Orders, Zones, Structure, Furniture, Production
 where they were; beside them, the tab's placeables: icon, name, tier and "have N" / "craftable N from …" / "short: …". Locked ones
 are greyed with a lock and the reason; picking an unlocked one arms its build tool with it as the material (a furniture entry its
 furniture tool), and the queued build's auto bills craft what's missing.
+
+**The material selector** (added 2026-11-03, `MaterialBar.tsx`, `materials.ts`). One bar for every structure and furniture tool,
+docked bottom-left just above the tab bar (never a popup over the map; it takes pointer events only over itself, and works in
+full screen). It holds the tool's name, its materials, a search box, the recent row, and the tool's options as small segmented
+controls to the right: wall height, roof style and overhang, facing. The top options bar is for the other tools only.
+- **Materials per tool:** the palette entries whose `kinds` list the tool (wall, floor, roof, door, stairs, fence, single
+  block), each with its icon, name, tier, lock state (greyed with the reason) and stock; unlocked ones first. Until the palette
+  loads (it is fetched whenever such a tool is in hand), a static list with the stockpile counts.
+- **Memory:** each tool remembers its last material, and the recent row its last ones across tools (per device,
+  `localStorage` `mcx-story-materials`). Picking a placeable in the palette counts as choosing it.
+- **Keys:** Tab / Shift+Tab or ] / [ cycle the tool's unlocked materials (in the search's results), 1–5 pick a recent one.
+- **Preview:** hovering a material shows the placement in it at once, as a build hologram at the last map cell (and the
+  placement under the cursor or the drag is drawn in its material).
+- **Narrow maps** (under 760 px) fold the bar into one material chip that opens it.
 
 ## Tools and gear (added 2026-11-03)
 
@@ -798,7 +1037,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   priority and a filter over a loot category tree. State: `categories` and `storages`.
 - **Bills.** Workbenches (crafting table, furnace, brewing stand, anvil, enchanting table) take bills: a recipe, repeat
   mode (count, until, forever), ingredient filter and radius, worker restriction, where the product goes. State:
-  `workbenches`; recipes come from `GET /api/story/recipes`.
+  `workbenches`; recipes come from `GET /api/story/recipes`. The bills inspector shows a station's facts (bookshelves and the top
+  offer, the anvil's wear, the stand's water and fuel); the bill dialog shows what a station recipe needs (XP level, lapis, fuel,
+  water, a brew's steps), offers only the modes the recipe takes, and an enchant's option, preferred enchantment and prefer-only.
 - **AI bodies.** Main, the hives and their bodies sit in the top bar after the pawns. With them in the selection, a tool,
   order, build or bill also goes to them as a directive (`POST /api/story/directives`) with the same payload; the chat bar
   talks to them as the signed-in player. State: `ai` and `directives`.
@@ -877,18 +1118,19 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   per slot (the pawn's colour and initials) show where they go; a slot on an unstandable cell (water, a wall, no headroom)
   moves to the nearest standable one within 3 cells, never two pawns on one cell. Undrafted pawns in the selection are left
   out (the genre's rule; the toast says so). A right-click without a drag (under 5 px) is the order menu as before.
-- **Time of day.** A slider under the clock over one day (06:00 at tick 0; dawn, noon, dusk and midnight marked) sets the
-  world time on release, through the bot's op account. Without one it is disabled with "No op account — op the main bot
+- **Time of day.** A slider under the clock over one day (06:00 at tick 0; dawn, noon, dusk and midnight marked) follows
+  the page's one world clock (see "Time of day") and sets the world time on release, through the bot's op account. Without one it is disabled with "No op account — op the main bot
   to change time". Needs the `story` role.
 - **Bottom bar:**
   - pawn portraits with hp, food and job, where clicking selects (and centres the map when the pawn is off it) and a
     double-click always centres the map
   - a designate palette: chop, mine, harvest, haul, build, deconstruct, cancel
-  - a zones palette
+  - a zones palette (see "Zones": work zones, overlay layers, Erase with its kind)
   - Work, Schedule and Colony panels
 - **Work panel.** A grid of pawns by work type. Click to cycle 1–4 and off, with skill shown as the cell tint and a
   passion mark.
-- **Schedule panel.** A grid of pawns by the 24 hours. Paint with the brush (work, sleep, anything, free) by dragging
+- **Schedule panel.** A grid of pawns by the 24 clock hours (00–23, as the bot indexes them); the current hour's column
+  follows the page's world clock. Paint with the brush (work, sleep, anything, free) by dragging
   across cells. Copy and paste between pawns.
 - **Inspector.** The selected pawn's characteristics, skills, current job and queue, and orders.
 - **Houses and beds.** Any number of home zones (the Zones tool's Home area, or "Draw a house" in the Colony tab), each

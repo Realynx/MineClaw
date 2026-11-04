@@ -31,12 +31,12 @@ public sealed partial class StoryColony
             int hour = HourNow;
             var o = new JsonObject
             {
-                ["id"] = Id, ["rev"] = _rev, ["since"] = since, ["full"] = full, ["at"] = Now, ["time_of_day"] = w?.TimeOfDay, ["hour"] = hour,
+                ["id"] = Id, ["rev"] = _rev, ["since"] = since, ["full"] = full, ["at"] = Now, ["time_of_day"] = w?.TimeOfDay, ["time_frozen"] = w?.TimeFrozen, ["hour"] = hour,
                 ["paused"] = Meta.Paused, ["active"] = Meta.Active, ["home"] = Home()?.Json(), ["tie_break"] = Meta.TieBreak, ["options"] = OptionsJson(),
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
-                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
+                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish").Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),
@@ -72,8 +72,9 @@ public sealed partial class StoryColony
                 }).ToArray()),
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
                 {
-                    ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label, ["supported"] = StoryRecipes.Supported.Contains(b.Kind),
-                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt,
+                    ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label,
+                    ["supported"] = w != null ? StoryRecipes.SupportedIn(w.Data, b.Kind) : StoryRecipes.Supported.Contains(b.Kind),
+                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b),
                     ["bills"] = new JsonArray(b.Bills.Select(x => (JsonNode)BillJson(x)).ToArray()),
                 }).ToArray()),
             };
@@ -122,6 +123,7 @@ public sealed partial class StoryColony
             ["held"] = live.Held,
             ["inventory"] = new JsonArray(live.Inventory.Select(s => (JsonNode)s.Json()).ToArray()),
             ["equipment"] = EquipmentJson(live), ["policy"] = p.Gear.Policy, ["gear_tasks"] = GearTasksJson(p),
+            ["xp_level"] = live.XpLevel,
         };
     }
 
@@ -167,5 +169,6 @@ public sealed partial class StoryColony
         },
         ["radius"] = b.Radius, ["pawn"] = b.Pawn, ["min_skill"] = b.MinSkill, ["store"] = b.Store?.DeepClone(),
         ["for_build"] = b.ForBuild, ["for_item"] = b.ForItem, ["step"] = b.ForBuild != null ? b.Step : null,
+        ["option"] = b.Option, ["prefer"] = b.Prefer, ["prefer_only"] = b.PreferOnly ? true : null, ["xp_needed"] = b.XpNeeded, ["last"] = b.Last,
     };
 }

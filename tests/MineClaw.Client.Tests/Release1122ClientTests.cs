@@ -163,6 +163,17 @@ public class Release1122ClientTests
         server.Send(0x1E, w => w.WriteUByte(2).WriteFloat(0));
         await Until(() => !client.IsRaining && client.World.Rain == 0 && client.World.Thunder == 0);
 
+        // Time: a stopped daylight cycle (doDaylightCycle false) comes negative; its absolute value is the time of day
+        // (live 11-03: -6000 read as 18000, midnight, instead of noon), and the world says the time is frozen.
+        server.Send(0x47, w => w.WriteLong(500).WriteLong(-6000));
+        await Until(() => client.World.TimeFrozen);
+        Assert.Equal(6000, client.World.TimeOfDay);
+        Assert.False(client.World.IsNight);
+        server.Send(0x47, w => w.WriteLong(520).WriteLong(24000 * 3 + 13500));
+        await Until(() => !client.World.TimeFrozen);
+        Assert.Equal(13500, client.World.TimeOfDay);
+        Assert.True(client.World.IsNight);
+
         // Disconnect with a JSON reason.
         server.Send(0x1A, w => w.WriteString(ChatComponent.Translate("multiplayer.disconnect.kicked")));
         Assert.Equal("Kicked by an operator.", await kicked.Task.WaitAsync(TimeSpan.FromSeconds(10)));
