@@ -178,14 +178,16 @@ public sealed partial class StoryColony
         var list = new List<Unit>();
         foreach (var st in Storages.Where(s => ChestOpen(s.Chest)).OrderBy(s => s.Chest.Dist(near)))
             foreach (var c in st.Contents)
-            {
-                if (!pick(c.Id, c.Meta)) continue;
-                int free = c.Count - claims.GetValueOrDefault((st.Chest, c.Id, c.Meta));
-                if (free <= 0) continue;
-                var ench = st.Enchanted.Where(e => e.Id == c.Id && e.Meta == c.Meta).ToList();
-                for (int i = 0; i < free && i < 64; i++) list.Add(new Unit(st, c.Id, c.Meta, i < ench.Count ? ench[i].Ench : null));
-            }
+                if (pick(c.Id, c.Meta)) AddUnits(list, st, c, c.Count - claims.GetValueOrDefault((st.Chest, c.Id, c.Meta)));
         return list;
+    }
+
+    /// <summary>Up to 64 free units of one stack, its known enchantments handed out in order.</summary>
+    private static void AddUnits(List<Unit> list, StorageState st, Stack c, int free)
+    {
+        if (free <= 0) return;
+        var ench = st.Enchanted.Where(e => e.Id == c.Id && e.Meta == c.Meta).ToList();
+        for (int i = 0; i < free && i < 64; i++) list.Add(new Unit(st, c.Id, c.Meta, i < ench.Count ? ench[i].Ench : null));
     }
 
     private static bool Has(Dictionary<string, int>? ench, string? wish) =>
@@ -482,17 +484,9 @@ public sealed partial class StoryColony
         {
             if (spare["count"] != null && (StoryJson.Int(spare["count"]) is not { } c || c is < 0 or > 8)) return "spare_tools.count must be 0..8";
             count = StoryJson.Int(spare["count"]);
-            if (spare["kinds"] is JsonArray ka)
-            {
-                kinds = new List<string>();
-                foreach (var k in ka)
-                {
-                    var s = k is JsonValue kv && kv.TryGetValue<string>(out var ks) ? ks.Trim().ToLowerInvariant() : null;
-                    if (s == null || StoryTools.Kind(s) == null) return $"spare_tools.kinds: each one of {string.Join("|", StoryTools.Kinds)}";
-                    if (!kinds.Contains(s)) kinds.Add(s);
-                }
-            }
-            else if (spare["kinds"] != null) return "spare_tools.kinds must be [kind]";
+            string? err;
+            (kinds, err) = SpareKinds(spare["kinds"]);
+            if (err != null) return err;
         }
         lock (_lock)
         {
@@ -503,6 +497,20 @@ public sealed partial class StoryColony
             MaterialsChanged();
         }
         return null;
+    }
+
+    /// <summary>spare_tools.kinds: tool kinds (each once, as given), null when absent, or the error.</summary>
+    private static (List<string>? Kinds, string? Error) SpareKinds(JsonNode? node)
+    {
+        if (node is not JsonArray ka) return (null, node != null ? "spare_tools.kinds must be [kind]" : null);
+        var kinds = new List<string>();
+        foreach (var k in ka)
+        {
+            var s = k is JsonValue kv && kv.TryGetValue<string>(out var ks) ? ks.Trim().ToLowerInvariant() : null;
+            if (s == null || StoryTools.Kind(s) == null) return (null, $"spare_tools.kinds: each one of {string.Join("|", StoryTools.Kinds)}");
+            if (!kinds.Contains(s)) kinds.Add(s);
+        }
+        return (kinds, null);
     }
 
     /// <summary>The options as they stand (saved first).</summary>
@@ -544,38 +552,78 @@ public sealed partial class StoryColony
     {
         var need = StoryTools.For(d, blockId);
         var rule = RuleFor(d, blockId);
-        var kind = rule?.Tool is { } rt && StoryTools.Kind(rt) is { } rk ? rk : need.Hand ? ToolType.None : need.Kind;
+        var kind = ToolKindFor(need, rule);
         if (kind == ToolType.None) return null; // the hand drops it and nobody asked for a tool
         int min = Math.Max(Math.Max(need.Floor, StoryTools.Level(rule?.Tier)), 0);
         string? ench = d.VersionId == "b1.8.1" ? null : rule?.Enchant;
-        string label = StoryTools.Describe(kind, min);
-        bool Fits(int id) => StoryTools.ToolOf(d, id) == kind && StoryTools.LevelOf(d, id) >= min && (need.Hand || d.CanHarvest(blockId, id));
-        var carried = GearOf(live).Where(g => g.Slot >= 9 && Fits(g.Id)).ToList();
-        bool Fresh(int id, int meta) => !StoryTools.Worn(d, id, meta);
-        ToolPlan HoldIt(GearSlot g, string? e) => new(label, ItemName(g.Id, g.Meta), e ?? (g.Enchanted ? "any" : "none"), null, null, null);
-        Unit? StoredBest(Func<Unit, bool> ok) => StoredUnits((id, meta) => Fits(id) && Fresh(id, meta), live.Block).Where(ok)
-            .OrderBy(u => StoryTools.LevelOf(d, u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
-        if (ench != null)
-        {
-            if (carried.Where(g => g.Has(ench) && Fresh(g.Id, g.Meta)).OrderBy(g => g.Meta).FirstOrDefault() is { } eg) return HoldIt(eg, ench);
-            if (StoredBest(u => Has(u.Ench, ench)) is { } eu) return new ToolPlan(label, ItemName(eu.Id, eu.Meta), ench, eu, ench, null);
-            if (rule!.Fallback == "wait") return new ToolPlan(label, null, null, null, null, $"waiting for {label} with {ench.Replace('_', ' ')}");
-        }
-        // Plain: the lowest tier that does (good tools stay good), an enchanted one only when that's all there is.
-        if (carried.Where(g => Fresh(g.Id, g.Meta)).OrderBy(g => g.Enchanted ? 1 : 0).ThenBy(g => StoryTools.LevelOf(d, g.Id)).ThenBy(g => g.Meta)
-                .FirstOrDefault() is { } pg && (!pg.Enchanted || ench != null || StoredBest(u => u.Ench == null) == null))
-            return HoldIt(pg, pg.Enchanted ? "any" : "none");
-        if (StoredBest(u => u.Ench == null) is { } su)
-        {
-            // The plain tools of that kind it carries and the new one replaces (a wooden pickaxe for iron, a worn one) go back at once.
-            int lv = StoryTools.LevelOf(d, su.Id);
-            var swap = GearOf(live).Where(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind && !g.Enchanted && StoryTools.LevelOf(d, g.Id) <= lv).ToList();
-            return new ToolPlan(label, ItemName(su.Id, su.Meta), "none", su, "none", null, swap.Count > 0 ? swap : null);
-        }
-        if (carried.OrderBy(g => g.Meta).FirstOrDefault() is { } wg) return HoldIt(wg, null); // only worn ones: still better than losing the drop
+        var t = new ToolPick(this, live, d, blockId, need, kind, min);
+        if (ench != null && t.Enchanted(ench, rule!) is { } enchanted) return enchanted;
+        if (t.Plain(ench) is { } plain) return plain;
         if (need.Hand && rule?.Fallback != "wait") return null; // a rule's wish only: the hand will do
         NoteToolWant(kind, min);
-        return new ToolPlan(label, null, null, null, null, $"needs {label}");
+        return new ToolPlan(t.Label, null, null, null, null, $"needs {t.Label}");
+    }
+
+    /// <summary>The tool kind a dig takes: the owner's rule's, else the block's (none when the hand drops it).</summary>
+    private static ToolType ToolKindFor(StoryTools.Need need, MaterialRule? rule) =>
+        rule?.Tool is { } rt && StoryTools.Kind(rt) is { } rk ? rk : need.Hand ? ToolType.None : need.Kind;
+
+    /// <summary>The tools of one kind and at least one level that dig a block, carried and stored, and the plans that pick one.</summary>
+    private sealed class ToolPick
+    {
+        private readonly StoryColony _c;
+        private readonly PawnLive _live;
+        private readonly IGameData _d;
+        private readonly int _blockId, _min;
+        private readonly StoryTools.Need _need;
+        private readonly ToolType _kind;
+        private readonly List<GearSlot> _carried;
+        public readonly string Label;
+
+        public ToolPick(StoryColony c, PawnLive live, IGameData d, int blockId, StoryTools.Need need, ToolType kind, int min)
+        {
+            _c = c; _live = live; _d = d; _blockId = blockId; _need = need; _kind = kind; _min = min;
+            Label = StoryTools.Describe(kind, min);
+            _carried = c.GearOf(live).Where(g => g.Slot >= 9 && Fits(g.Id)).ToList();
+        }
+
+        private bool Fits(int id) => StoryTools.ToolOf(_d, id) == _kind && StoryTools.LevelOf(_d, id) >= _min && (_need.Hand || _d.CanHarvest(_blockId, id));
+
+        private bool Fresh(int id, int meta) => !StoryTools.Worn(_d, id, meta);
+
+        private ToolPlan HoldIt(GearSlot g, string? e) => new(Label, _c.ItemName(g.Id, g.Meta), e ?? (g.Enchanted ? "any" : "none"), null, null, null);
+
+        private Unit? StoredBest(Func<Unit, bool> ok) => _c.StoredUnits((id, meta) => Fits(id) && Fresh(id, meta), _live.Block).Where(ok)
+            .OrderBy(u => StoryTools.LevelOf(_d, u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
+
+        /// <summary>A rule's enchantment wish: an enchanted tool carried or stored, else (fallback wait) the target waits; null: a plain one.</summary>
+        public ToolPlan? Enchanted(string ench, MaterialRule rule)
+        {
+            if (_carried.Where(g => g.Has(ench) && Fresh(g.Id, g.Meta)).OrderBy(g => g.Meta).FirstOrDefault() is { } eg) return HoldIt(eg, ench);
+            if (StoredBest(u => Has(u.Ench, ench)) is { } eu) return new ToolPlan(Label, _c.ItemName(eu.Id, eu.Meta), ench, eu, ench, null);
+            if (rule.Fallback == "wait") return new ToolPlan(Label, null, null, null, null, $"waiting for {Label} with {ench.Replace('_', ' ')}");
+            return null;
+        }
+
+        /// <summary>Plain: the lowest tier that does (good tools stay good), an enchanted one only when that's all there is; then the
+        /// nearest stored; then a worn one carried. Null when there is none.</summary>
+        public ToolPlan? Plain(string? ench)
+        {
+            if (_carried.Where(g => Fresh(g.Id, g.Meta)).OrderBy(g => g.Enchanted ? 1 : 0).ThenBy(g => StoryTools.LevelOf(_d, g.Id)).ThenBy(g => g.Meta)
+                    .FirstOrDefault() is { } pg && (!pg.Enchanted || ench != null || StoredBest(u => u.Ench == null) == null))
+                return HoldIt(pg, pg.Enchanted ? "any" : "none");
+            if (StoredBest(u => u.Ench == null) is { } su) return FetchPlain(su);
+            if (_carried.OrderBy(g => g.Meta).FirstOrDefault() is { } wg) return HoldIt(wg, null); // only worn ones: still better than losing the drop
+            return null;
+        }
+
+        /// <summary>The plain tools of that kind it carries and the new one replaces (a wooden pickaxe for iron, a worn one) go back at once.</summary>
+        private ToolPlan FetchPlain(Unit su)
+        {
+            int lv = StoryTools.LevelOf(_d, su.Id);
+            var swap = _c.GearOf(_live).Where(g => g.Slot >= 9 && StoryTools.ToolOf(_d, g.Id) == _kind && !g.Enchanted && StoryTools.LevelOf(_d, g.Id) <= lv).ToList();
+            return new ToolPlan(Label, _c.ItemName(su.Id, su.Meta), "none", su, "none", null, swap.Count > 0 ? swap : null);
+        }
     }
 
     private void NoteToolWant(ToolType kind, int level)
@@ -832,16 +880,19 @@ public sealed partial class StoryColony
         else if (j.Source == "policy") t = _policyTasks.Remove(p.Name, out var pt) ? pt : null;
         p.Rev = Touch();
         if (t == null) return;
-        if (ok)
-        {
-            foreach (var x in t.Fetch.Where(x => x.Ench is { } e && e != "none"))
-                if (StorageAt(x.Chest) is { } st && st.Enchanted.FindIndex(e => e.Id == x.Id && e.Meta == x.Meta && Has(e.Ench, x.Ench)) is var i and >= 0)
-                { st.Enchanted.RemoveAt(i); st.Rev = Touch(); }
-            foreach (var x in t.Store.Where(x => x.Ench is { Count: > 0 }))
-                if (StorageAt(x.Chest) is { } st) { st.Enchanted.Add(new EnchStack(x.Id, x.Meta, x.Ench!)); st.Rev = Touch(); }
-        }
+        if (ok) MoveEnchantRecords(t);
         else if (j.Source == "gear") Alert("info", $"{p.Display} couldn't finish \"{t.Label}\": {note ?? "failed"}", p.Name);
         else _policyAt[p.Name] = Now + TimeSpan.FromMinutes(2); // a policy fetch that failed rests
+    }
+
+    /// <summary>A gear task done: the enchanted items it fetched leave their chests' records, the ones it stored join theirs.</summary>
+    private void MoveEnchantRecords(GearTask t)
+    {
+        foreach (var x in t.Fetch.Where(x => x.Ench is { } e && e != "none"))
+            if (StorageAt(x.Chest) is { } st && st.Enchanted.FindIndex(e => e.Id == x.Id && e.Meta == x.Meta && Has(e.Ench, x.Ench)) is var i and >= 0)
+            { st.Enchanted.RemoveAt(i); st.Rev = Touch(); }
+        foreach (var x in t.Store.Where(x => x.Ench is { Count: > 0 }))
+            if (StorageAt(x.Chest) is { } st) { st.Enchanted.Add(new EnchStack(x.Id, x.Meta, x.Ench!)); st.Rev = Touch(); }
     }
 
     private readonly Dictionary<string, GearTask> _policyTasks = new(StringComparer.OrdinalIgnoreCase);
@@ -1411,14 +1462,22 @@ public sealed partial class StoryColony
     {
         var t = new GearTask { Id = NextId("g"), Op = "draft", Label = "arming for the draft" };
         DraftWeapon(p, d, live, pol, gear, t);
-        bool night = HourNow >= 13 && HourNow <= 22;
-        if (pol.Armor is "drafted" or "always" || pol.Armor == "night" && night)
-        {
-            foreach (var slot in ArmorSlotOrder)
-                if (BagArmorFor(gear, slot) is { } a) t.Wear.Add(ItemName(a.Id, a.Meta));
-            p.Gear.DraftArmor = t.Wear.Count > 0 && pol.Armor == "drafted";
-        }
+        if (DraftArmorOn(pol)) DraftArmor(p, pol, gear, t);
         if (t.Hold != null || t.Wear.Count > 0) p.Gear.Tasks.Insert(0, t);
+    }
+
+    /// <summary>The policy puts armour on for a draft: when drafted, always, or at night by night.</summary>
+    private bool DraftArmorOn(GearPolicy pol)
+    {
+        bool night = HourNow >= 13 && HourNow <= 22;
+        return pol.Armor is "drafted" or "always" || pol.Armor == "night" && night;
+    }
+
+    private void DraftArmor(PawnState p, GearPolicy pol, List<GearSlot> gear, GearTask t)
+    {
+        foreach (var slot in ArmorSlotOrder)
+            if (BagArmorFor(gear, slot) is { } a) t.Wear.Add(ItemName(a.Id, a.Meta));
+        p.Gear.DraftArmor = t.Wear.Count > 0 && pol.Armor == "drafted";
     }
 
     private void DraftWeapon(PawnState p, IGameData d, PawnLive live, GearPolicy pol, List<GearSlot> gear, GearTask t)
