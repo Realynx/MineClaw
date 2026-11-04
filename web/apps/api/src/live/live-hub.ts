@@ -151,26 +151,21 @@ export class LiveHub {
 
   // ---------------------------------------------------------------- browsers
 
-  attach(req: IncomingMessage, res: ServerResponse, query: LiveStreamQuery | undefined, o: AttachOptions): void {
-    if (this.closed || this.clients.size >= this.opts.maxClients) {
-      sendApiError(res, Errors.busy(5000));
-      return;
-    }
+  /** Why a new stream for this user is refused (hub closed or full, or the user's limit reached); null to accept. */
+  private attachRefusal(username: string) {
+    if (this.closed || this.clients.size >= this.opts.maxClients) return Errors.busy(5000);
     let mine = 0;
-    for (const c of this.clients.values()) if (c.username === o.username) mine++;
-    if (mine >= this.opts.maxClientsPerUser) {
-      sendApiError(res, Errors.rateLimited(5000, 'too many live streams open'));
+    for (const c of this.clients.values()) if (c.username === username) mine++;
+    return mine >= this.opts.maxClientsPerUser ? Errors.rateLimited(5000, 'too many live streams open') : null;
+  }
+
+  attach(req: IncomingMessage, res: ServerResponse, query: LiveStreamQuery | undefined, o: AttachOptions): void {
+    const refused = this.attachRefusal(o.username);
+    if (refused) {
+      sendApiError(res, refused);
       return;
     }
-
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-    req.socket.setNoDelay(true);
-    req.socket.setKeepAlive(true, 30_000);
+    openEventStream(req, res);
 
     const client: Client = {
       id: this.nextClientId++,
@@ -192,20 +187,7 @@ export class LiveHub {
     res.on('error', drop);
 
     this.write(client, 'retry: 3000\n\n');
-
-    const lastHeader = req.headers['last-event-id'];
-    const last = Array.isArray(lastHeader) ? lastHeader[0] : lastHeader;
-    if (last !== undefined && last !== '') {
-      const n = Number(last);
-      if (!Number.isInteger(n) || n < this.evictedUpTo || n > this.seq) {
-        this.sendStatus(client, true, 'missed frames; re-fetch');
-      } else {
-        this.sendStatus(client, false);
-        for (const f of this.ring) if (f.id > n) this.deliver(client, f);
-      }
-    } else {
-      this.sendStatus(client, false);
-    }
+    this.resume(client, req.headers['last-event-id']);
 
     this.ensureTimers();
     if (this.lingerTimer) {
@@ -213,6 +195,22 @@ export class LiveHub {
       this.lingerTimer = undefined;
     }
     this.start();
+  }
+
+  /** The first status frame; a reconnect with a Last-Event-ID still in the ring replays what it missed, else resyncs. */
+  private resume(client: Client, lastHeader: string | string[] | undefined): void {
+    const last = Array.isArray(lastHeader) ? lastHeader[0] : lastHeader;
+    if (last === undefined || last === '') {
+      this.sendStatus(client, false);
+      return;
+    }
+    const n = Number(last);
+    if (!Number.isInteger(n) || n < this.evictedUpTo || n > this.seq) {
+      this.sendStatus(client, true, 'missed frames; re-fetch');
+      return;
+    }
+    this.sendStatus(client, false);
+    for (const f of this.ring) if (f.id > n) this.deliver(client, f);
   }
 
   private detach(c: Client): void {
@@ -419,41 +417,10 @@ export class LiveHub {
     let attempt = 0;
     while (this.wanted && !this.closed) {
       this.setUpstream(this.everConnected ? 'reconnecting' : 'connecting');
-      const ac = new AbortController();
-      this.abort = ac;
       try {
-        const res = await this.bridge.request({
-          method: 'GET',
-          target: '/v1/live/stream',
-          identity: NO_IDENTITY,
-          headers: {
-            Accept: 'text/event-stream',
-            ...(this.lastUpstreamId ? { 'Last-Event-ID': this.lastUpstreamId } : {}),
-          },
-          timeoutMs: 10_000,
-          idleTimeoutMs: this.opts.upstreamIdleMs,
-          stream: true,
-          signal: ac.signal,
-        });
-        const type = String(res.headers['content-type'] ?? '');
-        if (res.statusCode !== 200 || !type.includes('text/event-stream')) {
-          await readText(res, 64 * 1024).catch(() => '');
-          throw new Error(`bridge live stream answered ${res.statusCode}`);
-        }
-        this.upstreamConnects++;
-        const reconnect = this.everConnected;
-        this.everConnected = true;
+        const res = await this.openUpstream();
         attempt = 0;
-        this.setUpstream('connected', reconnect);
-        void this.health.check(true).then(() => this.broadcastStatus(false));
-        const parser = new SseParser((e) => this.onUpstreamEvent(e.event, e.data, e.id));
-        res.setEncoding('utf8');
-        await new Promise<void>((resolve) => {
-          res.on('data', (chunk: string) => parser.push(chunk));
-          res.on('end', resolve);
-          res.on('error', () => resolve());
-          res.on('close', resolve);
-        });
+        await this.follow(res);
       } catch (e) {
         if (!this.wanted || this.closed) break;
         this.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'bridge live stream failed');
@@ -466,6 +433,48 @@ export class LiveHub {
     }
   }
 
+  /** The bridge's `/v1/live/stream` (resuming from the last upstream id); anything but a 200 event stream throws. */
+  private async openUpstream(): Promise<IncomingMessage> {
+    const ac = new AbortController();
+    this.abort = ac;
+    const res = await this.bridge.request({
+      method: 'GET',
+      target: '/v1/live/stream',
+      identity: NO_IDENTITY,
+      headers: {
+        Accept: 'text/event-stream',
+        ...(this.lastUpstreamId ? { 'Last-Event-ID': this.lastUpstreamId } : {}),
+      },
+      timeoutMs: 10_000,
+      idleTimeoutMs: this.opts.upstreamIdleMs,
+      stream: true,
+      signal: ac.signal,
+    });
+    const type = String(res.headers['content-type'] ?? '');
+    if (res.statusCode !== 200 || !type.includes('text/event-stream')) {
+      await readText(res, 64 * 1024).catch(() => '');
+      throw new Error(`bridge live stream answered ${res.statusCode}`);
+    }
+    return res;
+  }
+
+  /** Connected: fans the upstream's events out until it ends. */
+  private async follow(res: IncomingMessage): Promise<void> {
+    this.upstreamConnects++;
+    const reconnect = this.everConnected;
+    this.everConnected = true;
+    this.setUpstream('connected', reconnect);
+    void this.health.check(true).then(() => this.broadcastStatus(false));
+    const parser = new SseParser((e) => this.onUpstreamEvent(e.event, e.data, e.id));
+    res.setEncoding('utf8');
+    await new Promise<void>((resolve) => {
+      res.on('data', (chunk: string) => parser.push(chunk));
+      res.on('end', resolve);
+      res.on('error', () => resolve());
+      res.on('close', resolve);
+    });
+  }
+
   close(): void {
     this.closed = true;
     this.stop();
@@ -474,4 +483,16 @@ export class LiveHub {
     if (this.lingerTimer) clearTimeout(this.lingerTimer);
     for (const c of [...this.clients.values()]) this.detach(c);
   }
+}
+
+/** SSE response headers, flushed at once; the socket kept alive with no Nagle delay. */
+function openEventStream(req: IncomingMessage, res: ServerResponse): void {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  req.socket.setNoDelay(true);
+  req.socket.setKeepAlive(true, 30_000);
 }

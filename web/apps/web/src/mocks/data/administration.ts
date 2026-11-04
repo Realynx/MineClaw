@@ -609,11 +609,29 @@ function same(a: SettingValue, b: SettingValue): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** A secret's state: whether it is set and its "…last4" hint (never the value). */
+function secretState(running: SettingValue) {
+  return { set: typeof running === 'string' && running.length > 0, hint: hint(running) };
+}
+
+/** The optional parts of a setting as the bot reports them (null when the definition has none). */
+function limitsOf(d: Def) {
+  return {
+    nullable: d.nullable ?? null,
+    options: d.type === 'model' ? ALLOWED_CLAUDE : (d.options ?? null),
+    min: d.min ?? null,
+    max: d.max ?? null,
+    unit: d.unit ?? null,
+    providerKey: d.providerKey ?? null,
+  };
+}
+
 function setting(d: Def): AdminSetting {
   const st = s();
   const overridden = st.override.has(d.key);
   const running = st.running.get(d.key) ?? null;
   const saved = savedValue(d);
+  const secret = !!d.secret;
   return {
     key: d.key,
     group: d.group,
@@ -622,21 +640,16 @@ function setting(d: Def): AdminSetting {
     description: d.description,
     type: d.type,
     apply: d.apply,
-    secret: !!d.secret,
+    secret,
     editable: !d.readOnly,
     readOnlyReason: d.readOnly ?? null,
-    default: d.secret ? null : d.def,
-    value: d.secret ? null : running,
-    secretState: d.secret ? { set: typeof running === 'string' && running.length > 0, hint: hint(running) } : null,
+    default: secret ? null : d.def,
+    value: secret ? null : running,
+    secretState: secret ? secretState(running) : null,
     source: overridden ? 'override' : (d.source ?? 'default'),
     overridden,
     pendingRestart: d.apply === 'restart' && !same(saved, running),
-    nullable: d.nullable ?? null,
-    options: d.type === 'model' ? ALLOWED_CLAUDE : (d.options ?? null),
-    min: d.min ?? null,
-    max: d.max ?? null,
-    unit: d.unit ?? null,
-    providerKey: d.providerKey ?? null,
+    ...limitsOf(d),
   };
 }
 
@@ -683,38 +696,46 @@ export class AdminMockError extends Error {
   }
 }
 
+type Checker = (d: Def, v: Exclude<SettingValue, null>, provider: (k: string) => SettingValue) => string | null;
+
+function checkNumber(d: Def, v: Exclude<SettingValue, null>): string | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 'must be a number';
+  if (d.type === 'int' && !Number.isInteger(v)) return 'must be a whole number';
+  if (d.min !== undefined && v < d.min) return `at least ${d.min}`;
+  if (d.max !== undefined && v > d.max) return `at most ${d.max}`;
+  return null;
+}
+
+function checkModel(d: Def, v: Exclude<SettingValue, null>, provider: (k: string) => SettingValue): string | null {
+  if (typeof v !== 'string' || !v.trim()) return 'pick a model';
+  const p = d.providerKey ? provider(d.providerKey) : 'anthropic';
+  if ((p ?? 'anthropic') === 'anthropic' && !ALLOWED_CLAUDE.includes(v))
+    return `Claude models must be 5.5-generation (${ALLOWED_CLAUDE.join(', ')})`;
+  return null;
+}
+
+/** The bot's check per setting type; any other type takes text. */
+const CHECKS: Partial<Record<Def['type'], Checker>> = {
+  bool: (_d, v) => (typeof v === 'boolean' ? null : 'must be true or false'),
+  int: checkNumber,
+  number: checkNumber,
+  enum: (d, v) =>
+    typeof v === 'string' && (d.options ?? []).includes(v) ? null : `one of ${(d.options ?? []).join(', ')}`,
+  list: (_d, v) => (Array.isArray(v) ? null : 'must be a list'),
+  url: (_d, v) => {
+    if (typeof v !== 'string') return 'must be text';
+    return v === '' || /^https?:\/\/[^\s/]+/i.test(v) ? null : 'must be an http(s) URL';
+  },
+  model: checkModel,
+};
+
 function check(d: Def | undefined, v: SettingValue, provider: (k: string) => SettingValue): string | null {
   if (!d) return 'no such setting';
   if (d.readOnly) return 'read-only: ' + d.readOnly;
   if (v === null) return null; // reset to the base config
-  switch (d.type) {
-    case 'bool':
-      return typeof v === 'boolean' ? null : 'must be true or false';
-    case 'int':
-    case 'number': {
-      if (typeof v !== 'number' || !Number.isFinite(v)) return 'must be a number';
-      if (d.type === 'int' && !Number.isInteger(v)) return 'must be a whole number';
-      if (d.min !== undefined && v < d.min) return `at least ${d.min}`;
-      if (d.max !== undefined && v > d.max) return `at most ${d.max}`;
-      return null;
-    }
-    case 'enum':
-      return typeof v === 'string' && (d.options ?? []).includes(v) ? null : `one of ${(d.options ?? []).join(', ')}`;
-    case 'list':
-      return Array.isArray(v) ? null : 'must be a list';
-    case 'url':
-      if (typeof v !== 'string') return 'must be text';
-      return v === '' || /^https?:\/\/[^\s/]+/i.test(v) ? null : 'must be an http(s) URL';
-    case 'model': {
-      if (typeof v !== 'string' || !v.trim()) return 'pick a model';
-      const p = d.providerKey ? provider(d.providerKey) : 'anthropic';
-      if ((p ?? 'anthropic') === 'anthropic' && !ALLOWED_CLAUDE.includes(v))
-        return `Claude models must be 5.5-generation (${ALLOWED_CLAUDE.join(', ')})`;
-      return null;
-    }
-    default:
-      return typeof v === 'string' ? null : 'must be text';
-  }
+  const checker = CHECKS[d.type];
+  if (checker) return checker(d, v, provider);
+  return typeof v === 'string' ? null : 'must be text';
 }
 
 export function save(
