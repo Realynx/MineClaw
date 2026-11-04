@@ -385,321 +385,34 @@ public sealed partial class BotAgent
     private async Task<RunResult> RunEpisodeAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct,
         string? preAck = null)
     {
-        var episode = new Episode(tier, _time.GetUtcNow()) { IsTest = batch.IsTest };
-        episode.Events.AddRange(batch.Events);
+        // TurnContext (AsyncLocal) is set by the synchronous PrepareEpisode / SetTurnContext in this frame, so it flows to every round.
+        var episode = NewEpisode(batch, tier);
         var (turnText, turnHead) = await BuildTurnTextAsync(batch, tier, canEscalate, mode, prelude, ct).ConfigureAwait(false);
-        episode.Messages.Add(LlmMessage.User(turnText));
-        var flow = _options.ChatDebounce ?? new ChatDebounceOptions();
-
-        string? whisperTo = batch.WhisperOnlyFrom;
-        var audience = batch.Waking.Where(e => e.Player != null).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var speaker = batch.Waking.FirstOrDefault(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote && e.Player != null)?.Player;
-        // Ambient for tools (and background tasks started from this turn): who asked, and whether it's injected test chat.
-        TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
-        _chat.MarkTurnStart(); // tools (watch_demo, ask_stand) stay quiet when the brain already said its line
-        var said = new List<string>();
-        string? held = null; // a later line from a round that still called tools: said at the end if nothing else was
-        var usage = LlmUsage.Zero;
-        decimal cost = 0;
-        int calls = 0;
-        var tools = ToolsFor(tier, canEscalate);
-        bool retry = RetryAsked(batch);
-        // A turn woken only by task/system events (a standing-order run finishing, a hive notice, an idle check-in): the brain's
-        // plain text is a private log line, never public chat (live 10-27 23:30: "I didn't say anything in chat." + a run report
-        // on every run). Only the say tool speaks there, and only while a player is engaged.
-        bool quiet = IsQuietBatch(batch);
-        // Woken only by a danger (a player getting hurt, my own low hp): the warning line is public, the rest of the turn's
-        // text is internal (live 10-28 01:3x: after "foxy!! u getting poked at the cactus farm, careful uwu" the same turn
-        // narrated "I warned Fox that... I'm also back on the cobble generator now..." into public chat).
-        bool warnOnly = !quiet && IsWarningBatch(batch);
-        try { if (quiet && SpeaksOn?.Invoke(batch) == true) quiet = false; } catch (Exception ex) { _log.LogDebug(ex, "speaks-on hook failed"); }
-        _turnStatusAsked = MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
-        // Snapshot per episode: a rename mid-turn applies from the next turn, keeping this turn's prefix byte-stable.
-        var system = SystemPrompt;
-        // Budget fallback 1 (Economy): the brain's turn runs on the worker model; same tools and history.
-        string? model = tier == ModelTier.Main && mode == BudgetMode.Economy ? _options.Llm.WorkerModel : null;
-        int maxOut = _options.Llm.MaxTokensFor(tier);
-        // Simple chat (a reflex, one clear job, small talk): a cheaper, faster effort for the WHOLE turn (an effort change
-        // resets the history cache, so it never flips between rounds). Planning/multi-step turns keep the configured effort.
-        bool chatTurn = batch.HasTypedChat;
-        var (effort, thinking) = TurnEffort(batch, tier, chatTurn, model);
-        Latency?.BeginTurn(chatTurn);
-        if (chatTurn) Latency?.NoteEffort(effort ?? _options.Llm.EffortFor(tier));
-        TurnStartedAt = _time.GetUtcNow();
-        _turnEvents = episode.Events; // the honesty guard checks counts against this turn's task results
-        // Two-phase replies: streamed brain lines go out as they finish; a quick ack if the brain is slow to say anything.
+        var turn = PrepareEpisode(episode, batch, tier, canEscalate, mode, turnText, turnHead);
         using var speech = new TurnSpeech(ct);
-        if (_instantThisTurn.Count > 0)
-        {
-            // The instant line is this turn's first line: no quick ack after it, and a brain line repeating it never goes out.
-            lock (speech.Lock) { speech.Ack = string.Join(" | ", _instantThisTurn.Select(i => i.Text)); speech.AckNoted = true; }
-            Voice?.Consume(_instantThisTurn);
-        }
-        var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
-        StartAck(speech, batch, tier, turnHead, preAck, whisperTo, audience.ToArray(), ct);
-        // A turn says at most its in-persona lines (live 10-28 05:27: a hand-over + death-notice turn said its thank-you with the
-        // say tool, then its final text, "I picked the drop tower build back up since Fox already approved it. ... I thanked him
-        // in chat and asked if he's ok.", went to public chat). After the say tool spoke, or once a turn no player typed in has
-        // said its line, the rest of the brain's plain text is its own recap: internal.
-        bool talked = batch.HasTypedChat, sayToolSpoke = false;
-        _turnSay = async (t, c) =>
-        {
-            var r = await SayToolAsync(t, quiet, warnOnly, episode.Events, speech, cx, c).ConfigureAwait(false);
-            if (r.Ok && r.Text == "said") sayToolSpoke = true;
-            return r;
-        };
+        StartEpisodeSpeech(turn, speech, preAck, ct);
         try
         {
-
-        for (int round = 0; round < _options.MaxToolRounds; round++)
-        {
-            var nowMode = _usage.CheckMode();
-            if (nowMode == BudgetMode.Paused || (tier == ModelTier.Main && nowMode == BudgetMode.CheapOnly && round > 0)) break;
-
-            if (!FitHardCap(tier, system, tools, episode.Messages, maxOut))
+            for (int round = 0; round < _options.MaxToolRounds; round++)
             {
-                _log.LogError("context can't fit under the {Cap} token hard cap; ending turn without a call", _context.Options.MaxTokens);
-                break;
-            }
-
-            speech.BeginRound();
-            AddAckNote(speech, episode.Messages);
-            // once the brain spoke, later rounds keep the held-line rule; a quiet turn never streams (its text isn't chat)
-            bool streamThis = tier == ModelTier.Main && said.Count == 0 && !quiet && !warnOnly;
-            var messages = _context.BuildMessages(tier, episode.Messages);
-            // A call that re-writes a big cold history is not cut for a new chat line: the cut call's cache write never lands,
-            // so its restart writes it all again (live 10-27 15:55: 2 × 38K). The new line joins at the next round instead.
-            bool coldBig = tier == ModelTier.Main && _context.EstimateTokens() * _context.TokenScale > 15_000
-                && Warmth.ColdReason(CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), effort, thinking), _time.GetUtcNow(), BlockCount(messages)) != null;
-            var request = new LlmRequest
-            {
-                Tier = tier,
-                Model = model,
-                System = system,
-                Tools = tools,
-                Messages = messages,
-                Purpose = tier == ModelTier.Cheap ? "chat" : "task",
-                Interruptible = round == 0 && CanRestart(flow) && !coldBig,
-                Effort = effort,
-                Thinking = thinking,
-                OnToolUse = EarlyStarter(tier, retry, model ?? _options.Llm.ModelFor(tier), ct),
-                OnTextDelta = streamThis ? StreamHook(speech, cx, ct) : null,
-            };
-            LastRequestTokens = EstimateRequestTokens(request, maxOut);
-            var variant = CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), effort, thinking);
-            var callAt = _time.GetUtcNow();
-            int reqBlocks = BlockCount(request.Messages);
-            bool compactedBefore = Interlocked.Exchange(ref _compactedSinceCall, 0) != 0;
-            string cacheCause = tier == ModelTier.Main
-                ? CacheWriteGuard.Cause(Warmth.Last, variant, Warmth.ColdReason(variant, callAt, reqBlocks), Warmth.LastCallAt, callAt, compactedBefore)
-                : "cheap-tier call (its own prefix: cold or new)";
-            if (tier == ModelTier.Main) { Warmth.Note(variant, callAt, reqBlocks); _lastMainVariant = (effort, thinking); }
-            LlmResponse response;
-            if (!request.Interruptible)
-            {
-                response = await _llm.CompleteAsync(request, ct).ConfigureAwait(false);
-            }
-            else
-            {
-                // (a) A player adds a line while the first response is still generating (no tool ran, nothing said yet):
-                // cancel the call, let them finish typing, and restart this round with every line in one user message.
-                // History is untouched (the cancelled call never enters it), so the prefix stays cached.
-                var call = await CompleteInterruptibleAsync(request, tier, maxOut, ct, speech.TryCut).ConfigureAwait(false);
-                if (call.Response is null)
+                var end = await RunRoundAsync(turn, round, ct).ConfigureAwait(false);
+                if (end == RoundEnd.Restart)
                 {
-                    Task pendingChain;
-                    lock (speech.Lock) { speech.Cut = true; pendingChain = speech.Chain; speech.AckNoted = false; }
-                    await DrainAsync(pendingChain).ConfigureAwait(false); // nothing of the cut call was sent: its text is dropped
-                    _restartsThisTurn++;
-                    DropEarlyStarts("restarted for new chat");
-                    if (call.Partial is { } partial)
-                    {
-                        calls++;
-                        usage = usage.Add(partial);
-                        cost += call.PartialCost;
-                        WarnCacheWrite(partial, tier, round, cacheCause, interrupted: true);
-                    }
-                    var more = await TakeAfterTypingAsync(flow, ct).ConfigureAwait(false);
-                    if (more != null)
-                    {
-                        LogChat(more);
-                        batch = new EventBatch([.. batch.Events, .. more.Events]);
-                        episode.Events.AddRange(more.Events);
-                        foreach (var p in more.Waking.Where(e => e.Player != null).Select(e => e.Player!))
-                            if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
-                        whisperTo = batch.WhisperOnlyFrom;
-                        retry |= RetryAsked(more);
-                        (quiet, warnOnly) = AfterJoined(quiet, warnOnly, more);
-                        talked |= more.HasTypedChat;
-                        _turnStatusAsked |= MetaSpeech.AsksStatus(more.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
-                        TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
-                    }
-                    turnHead = RefreshHere(turnHead, batch);
-                    episode.Messages[0] = LlmMessage.User((turnHead + batch.Format()).TrimEnd());
-                    _log.LogInformation("restarted turn for new chat ({Restarts}/{Max}); {Flow}", _restartsThisTurn, flow.MaxRestartsPerTurn, _events.Stats.Summary());
+                    // Cut for new chat: the same round again, with every line in one user message.
+                    if (await TakeRestartLinesAsync(turn, round, ct).ConfigureAwait(false)) SetTurnContext(turn);
+                    RebuildTurnMessage(turn);
                     round--;
-                    continue;
                 }
-                response = call.Response;
+                else if (end == RoundEnd.Escalate) return turn.Escalated!;
+                else if (end == RoundEnd.Stop) break;
             }
-            calls++;
-            Latency?.NoteRound();
-            _avgOutTokens = _avgOutTokens <= 0 ? response.Usage.OutputTokens : 0.8 * _avgOutTokens + 0.2 * response.Usage.OutputTokens;
-            usage = usage.Add(response.Usage);
-            cost += _usage.Record(response.Model, response.Usage, tier);
-            WarnCacheWrite(response.Usage, tier, round, cacheCause);
-            if (tier == ModelTier.Main) Calibrate(request, response.Usage);
-            _log.LogInformation("call {Label} ({Model}) round {Round}: {Usage} cache {Hit:P0}",
-                UsageTracker.TierLabel(_options.Llm.TierOfModel(response.Model) ?? tier), response.Model, round, response.Usage, UsageTracker.CacheHit(response.Usage));
-
-            var content = response.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
-            if (content.Count == 0) content.Add(new LlmText("(silent)"));
-            episode.Messages.Add(new LlmMessage(LlmRole.Assistant, content));
-
-            var text = response.Text.Trim();
-            bool streamed, wasCut;
-            Task streamChain;
-            lock (speech.Lock) { streamed = speech.SawDelta; wasCut = speech.Cut; streamChain = speech.Chain; }
-            if (streamed && !wasCut)
-            {
-                // Streamed round: its lines already went out (or go out now, in order); nothing is sent twice.
-                await FinishStreamAsync(speech, cx, ct).ConfigureAwait(false);
-                text = "";
-            }
-            else if (wasCut) await DrainAsync(streamChain).ConfigureAwait(false); // cut too late to cancel: nothing of it was sent, speak it whole
-            if (quiet && !IsSilent(text))
-            {
-                KeepInternal(text);
-                text = "";
-            }
-            if (!IsSilent(text) && (sayToolSpoke || (!talked && said.Count > 0)))
-            {
-                KeepInternal(text);
-                text = "";
-            }
-            if (!IsSilent(text) && whisperTo == null && SpeechGate != null)
-            {
-                string? gated;
-                try { gated = SpeechGate(new EventBatch(episode.Events), text, said.Count > 0); }
-                catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); gated = text; }
-                if (gated == null || IsSilent(gated.Trim()))
-                {
-                    _log.LogDebug("muted: {Text}", text);
-                    try { Muted?.Invoke(text); } catch (Exception) { }
-                    text = "";
-                }
-                else text = gated.Trim();
-            }
-            if (!IsSilent(text))
-            {
-                // Never narrate plumbing ("Delegating the craft.", "running script"): drop purely meta sentences.
-                text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked, AddresseeNames(audience));
-                foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
-            }
-            if (warnOnly && !IsSilent(text))
-            {
-                var (warning, rest) = WarningLine(text, said.Count > 0);
-                if (!IsSilent(rest)) KeepInternal(rest);
-                text = warning;
-            }
-            if (!IsSilent(text))
-            {
-                // One chat output per addressed message: never restate what this turn already said (paraphrase after a
-                // tool round), and no second line from a round that is still calling tools — it waits for the end.
-                text = SpeechDedupe.DropRepeats(text, said, out var dup);
-                foreach (var d in dup) _log.LogInformation("[repeat suppressed] {Line}", d);
-                if (!IsSilent(text) && said.Count > 0 && response.ToolUses.Any()) { held = text; text = ""; }
-            }
-            if (!IsSilent(text) && AckOf(speech) is { } ackLine && SameLine(text, ackLine)) text = ""; // the ack already said exactly this
-            if (!IsSilent(text)) text = LastLook(text, audience);
-            if (!IsSilent(text))
-            {
-                held = null;
-                await SayBrainAsync(speech, cx, text, ct).ConfigureAwait(false);
-            }
-
-            if (response.StopReason == StopReasons.MaxTokens)
-            {
-                var cappedUses = response.ToolUses.ToList();
-                if (cappedUses.Count > 0)
-                    episode.Messages.Add(new LlmMessage(LlmRole.User, (await TruncatedToolsAsync(cappedUses).ConfigureAwait(false)).ToList<LlmBlock>()));
-                _log.LogWarning("response truncated; remaining tools not executed");
-                break;
-            }
-
-            if (response.StopReason == StopReasons.Refusal)
-            {
-                _log.LogWarning("model refused");
-                break;
-            }
-
-            var uses = response.ToolUses.ToList();
-            if (uses.Count == 0) break;
-
-            var esc = uses.FirstOrDefault(u => u.Name == EscalateToolName);
-            if (esc != null && canEscalate)
-            {
-                // Discard the cheap exchange (its escalate call never enters history) and let the main tier redo the turn.
-                return new RunResult(tier, calls, usage, cost, said, new Escalation(esc.Input.Str("reason") ?? "needs planning", said));
-            }
-
-            IReadOnlyList<LlmToolResult> results;
-            using (ToolCaller.Push(tier, response.Model))
-                results = await ExecuteToolsAsync(uses, tier, retry, ct).ConfigureAwait(false);
-            var blocks = new List<LlmBlock>(results);
-
-            // (b) Let urgent/new events reach the model mid-turn: appended as a text block AFTER the tool results in the same user
-            // message, so tool_use/tool_result pairing stays valid and history stays append-only.
-            var fresh = _events.TryTakeUrgent(flow.Enabled && !flow.InjectMidTurn ? EventPriority.High : EventPriority.Normal);
-            if (fresh != null)
-            {
-                LogChat(fresh);
-                episode.Events.AddRange(fresh.Events);
-                if (flow.Enabled)
-                {
-                    blocks.Add(new LlmText(fresh.Format(fresh: true)));
-                    _events.Stats.Injected(fresh.Events.Count);
-                }
-                else blocks.Add(new LlmText("[new events]\n" + fresh.Format()));
-                foreach (var p in fresh.Waking.Where(e => e.Player != null).Select(e => e.Player!))
-                    if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
-                if (fresh.WhisperOnlyFrom == null && fresh.Waking.Any()) whisperTo = null;
-                retry |= RetryAsked(fresh);
-                // A player spoke mid-turn: from here on the turn answers them (its text is chat again).
-                (quiet, warnOnly) = AfterJoined(quiet, warnOnly, fresh);
-                talked |= fresh.HasTypedChat;
-                _turnStatusAsked |= MetaSpeech.AsksStatus(fresh.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
-            }
-            episode.Messages.Add(new LlmMessage(LlmRole.User, blocks));
-        }
-        if (held != null && SpeechDedupe.DropRepeats(held, said, out _) is { Length: > 0 } heldText && LastLook(heldText, audience) is { Length: > 0 } last
-            && !IsSilent(last))
-        {
-            await SayBrainAsync(speech, cx, last, ct).ConfigureAwait(false);
-        }
+            await SayHeldAsync(turn, ct).ConfigureAwait(false);
         }
         finally
         {
-            _turnSay = null;
-            _early.Clear();
-            Interlocked.Exchange(ref _earlyChains, 0);
-            TurnStartedAt = null;
-            _turnEvents = null;
-            // A speculative walk the brain neither adopted nor replaced: it decided otherwise (talk, a question) — stop it.
-            if (_activities.CancelSpeculative("not adopted by the brain")) _log.LogDebug("speculative step cancelled: not adopted");
-            Latency?.EndTurn(workPending: _activities.IsBusy);
-            try { TurnEnded?.Invoke(); } catch (Exception) { }
+            EndEpisodeTurn();
         }
-
-        lock (_handled)
-        {
-            _handled.Clear();
-            foreach (var e in episode.Events.Where(e => e.Wakes)) _handled.Add(HandledKey(e));
-        }
-        _context.Commit(episode);
-        string? ackSaid;
-        lock (speech.Lock) ackSaid = speech.Ack;
-        return new RunResult(tier, calls, usage, cost, ackSaid != null ? [ackSaid, .. said] : said, null);
+        return CommitEpisode(turn);
     }
 
     /// <summary>
