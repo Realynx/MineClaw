@@ -44,10 +44,11 @@ public sealed partial class StoryColony
     // ---------------------------------------------------------------- options
 
     /// <summary>The hauling and rescue options (<c>POST …/options</c>). Null leaves one as it is.</summary>
-    public JsonObject SetHaulOptions(bool? rescueTeleport, bool? unfiltered, bool? keepDisallowed)
+    public JsonObject SetHaulOptions(bool? rescueTeleport, bool? unfiltered, bool? keepDisallowed, int? pillarStack = null)
     {
         lock (_lock)
         {
+            if (pillarStack is { } ps) { Meta.PillarStack = Math.Clamp(ps, 0, 64); Touch(); }
             if (rescueTeleport is { } r) Meta.RescueTeleport = r;
             if (unfiltered is { } u) Meta.UnfilteredTakesAnything = u;
             if (keepDisallowed is { } k) Meta.KeepDisallowed = k;
@@ -62,6 +63,7 @@ public sealed partial class StoryColony
         o["rescue_teleport"] = Meta.RescueTeleport;
         o["unfiltered_storage_takes_anything"] = Meta.UnfilteredTakesAnything;
         o["keep_disallowed"] = Meta.KeepDisallowed;
+        o["pillar_stack"] = Meta.PillarStack;
     }
 
     // ---------------------------------------------------------------- destinations

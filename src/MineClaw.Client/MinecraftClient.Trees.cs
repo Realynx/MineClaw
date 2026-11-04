@@ -121,6 +121,11 @@ public sealed partial class MinecraftClient
     /// the last resort: the bot stands on its OWN pillar, never on the tree's leaves, and a placed log is in the placed-block
     /// log, so it never reads as part of the tree (<see cref="TreeScan"/>) and is always minable afterwards (rule 1).</summary>
     private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Log];
+    /// <summary>The same in a normal world, where dirt is everywhere: dirt before the logs.</summary>
+    private static readonly int[] PillarBlocksNormal = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Dirt, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Log];
+    /// <summary>How high a tree pillar may go in a normal world (Story Mode, Fox 11-04: "it should nerd-pole up to reach those blocks").</summary>
+    public const int TallTreePillar = 12;
+    private static int[] TreePillarBlocks => MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain ? PillarBlocks : PillarBlocksNormal;
 
     private sealed class ChopState(TreeInfo tree)
     {
@@ -444,7 +449,9 @@ public sealed partial class MinecraftClient
             // 4. A spot no closer to the void than the trunk (e.g. inside the trunk column of a rim tree).
             if ((await GotoSeeingAsync(st, lowest, ct, relaxedOnly: true).ConfigureAwait(false)).Ok && DiggableNow(remaining) is not null) continue;
             // 5. Short pillar (cheap block, never dirt), then jump from it if needed.
-            if (st.Pillar.Count < o.MaxPillar && await PillarUpAsync(st, remaining, ct).ConfigureAwait(false))
+            // A normal world has dirt to spare: a tall tree is climbed on a pillar (dug back down afterwards); skyblock keeps it short.
+            int maxPillar = MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain ? o.MaxPillar : Math.Max(o.MaxPillar, TallTreePillar);
+            if (st.Pillar.Count < maxPillar && await PillarUpAsync(st, remaining, ct).ConfigureAwait(false))
             {
                 if (DiggableNow(remaining) is null) await JumpDigAsync(st, remaining, ct).ConfigureAwait(false);
                 continue;
@@ -579,7 +586,7 @@ public sealed partial class MinecraftClient
 
     private int? PillarBlock()
     {
-        foreach (int id in PillarBlocks)
+        foreach (int id in TreePillarBlocks)
             if (!ReservedItems.Contains(id) && World.Inventory.CountItem(id) > 0) return id;
         return null;
     }
@@ -590,6 +597,16 @@ public sealed partial class MinecraftClient
     {
         if (PillarBlock() is not { } block) return false;
         var trunk = st.Tree.Base;
+        // Already on top of my own pillar with room above: the next step goes straight on (no walk; its top is an edge on all sides).
+        var at = Pathfinder.StartCellFor(World, World.Player.Position) ?? World.Player.Position.ToBlockPos();
+        if (st.Pillar.Contains(at.Down()) && !BlockShapes.HasCollision(World, at.X, at.Y + 1, at.Z) && !BlockShapes.HasCollision(World, at.X, at.Y + 2, at.Z)
+            && Safety.VoidNeighbourCount(World, at.X, at.Y, at.Z) == 0)
+        {
+            bool up = await PillarOnceAsync(at, block, ct).ConfigureAwait(false);
+            if (World.GetBlock(at) == block) { st.Pillar.Add(at); st.PillarIds[at] = block; }
+            Log($"chop: pillar {BlockName(block, 0)} at {Fmt(at)} (on my pillar): {(up ? "ok" : "failed")}");
+            return up && st.Pillar.Contains(at);
+        }
         var lowest = remaining.OrderBy(l => l.Y).Take(3).ToList();
         int feetY = Pathfinder.StartCellFor(World, World.Player.Position)?.Y ?? World.Player.Position.ToBlockPos().Y;
         bool Spot(int x, int y, int z, bool strictTrunk)
@@ -664,7 +681,11 @@ public sealed partial class MinecraftClient
         if (stage < 2) return false;
         // The server confirms with a block change (or reverts it, and we fall back down).
         await WaitTicksAsync(4, ct).ConfigureAwait(false);
-        return World.GetBlock(feet) == block && World.Player.Position.Y >= feet.Y + 1 - 1e-3;
+        bool held = World.GetBlock(feet) == block && World.Player.Position.Y >= feet.Y + 1 - 1e-3;
+        // Mine (rule 1: self-placed is always minable): the pillar is dug back down standing on it, one short step at a time, even
+        // when the server's echo of the placement never came (the prediction already shows it).
+        if (held) World.Placed.Note(feet, World.Dimension, block, Options.Username, DateTimeOffset.UtcNow);
+        return held;
     }
 
     /// <summary>Steps off the pillar and digs it back: only cells the bot itself placed this chop, only while they still
@@ -672,6 +693,18 @@ public sealed partial class MinecraftClient
     private async Task CleanupPillarAsync(ChopState st, CancellationToken ct)
     {
         st.Pillar.RemoveAll(p => !IsOwnPillarBlock(st, p));
+        if (st.Pillar.Count == 0) return;
+        // On top of a tall pillar: down the way it came up, digging the block under my feet (my own: a 1-block step each time).
+        for (int guard = 0; guard < 32; guard++)
+        {
+            var feet = Pathfinder.StartCellFor(World, World.Player.Position) ?? World.Player.Position.ToBlockPos();
+            var under = feet.Down();
+            if (!st.Pillar.Contains(under) || !IsOwnPillarBlock(st, under)) break;
+            var r = await DigCoreAsync(under, ct).ConfigureAwait(false);
+            if (!r.Ok) { Log($"chop: couldn't dig my pillar down at {Fmt(under)}: {r.Message}"); break; }
+            st.Pillar.Remove(under);
+            await WaitUntilAsync(() => World.Player.OnGround && World.Player.Position.Y < feet.Y - 0.5, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+        }
         if (st.Pillar.Count == 0) return;
         var bottom = st.Pillar.OrderBy(p => p.Y).First();
         Goal ground = new GoalFiltered(new GoalNear(bottom, 3),
@@ -689,7 +722,9 @@ public sealed partial class MinecraftClient
     private bool IsOwnPillarBlock(ChopState st, BlockPos p)
     {
         int id = World.GetBlock(p);
-        bool own = st.PillarIds.TryGetValue(p, out int placed) && placed == id && id is not (Blocks.Dirt or Blocks.Grass or Blocks.Farmland);
+        // Dirt only in a normal world, where the bot pillars with it (the cell is recorded as one it placed: never ground it found).
+        bool dirtOk = !MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain && id == Blocks.Dirt;
+        bool own = st.PillarIds.TryGetValue(p, out int placed) && placed == id && (dirtOk || id is not (Blocks.Dirt or Blocks.Grass or Blocks.Farmland));
         if (!own) Log($"chop: leaving {BlockName(id, World.GetMeta(p))} at {Fmt(p)}: not a pillar block I placed");
         return own;
     }
