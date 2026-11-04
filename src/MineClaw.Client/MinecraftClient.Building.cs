@@ -99,8 +99,7 @@ public sealed partial class MinecraftClient
     /// held, unloaded, kept air, occupied, protected), or null.</summary>
     private string? PlaceTargetRefusal(BlockPos target, BlockFace face, int itemId, int? damage, PlaceHalf half)
     {
-        if (Options.Profile.Data.HalvesFollowCursor && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && !PlaceCursor.FaceAllows(face, half))
-            return $"a {(half == PlaceHalf.Top ? "top" : "bottom")} {ItemName(itemId, damage ?? 0)} can't be placed by clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(target - face.Normal())}";
+        if (HalfRefusal(target, face, itemId, damage ?? 0, half) is { } wrongHalf) return wrongHalf;
         if (World.Inventory.CountItem(itemId, damage) == 0) return $"no {ItemName(itemId, damage ?? 0)} in inventory";
         if (!World.IsLoaded(target.X, target.Z)) return $"{Fmt(target)} is not loaded";
         // The box-in reflex and builds never wall a stair step or a mine room shut (live 10-30 01:44 "stop filling it in").
@@ -108,6 +107,14 @@ public sealed partial class MinecraftClient
         int existing = World.GetBlock(target);
         if (!Aiming.IsReplaceable(World, existing)) return $"{Fmt(target)} is occupied by {BlockName(existing, World.GetMeta(target))}";
         return EditBlocked(target) ? BlockedReason(target) : null;
+    }
+
+    /// <summary>1.12.2 (halves follow the cursor): a top half can't come from a top-face click, nor a bottom half from an underside
+    /// click.</summary>
+    private string? HalfRefusal(BlockPos target, BlockFace face, int itemId, int damage, PlaceHalf half)
+    {
+        if (!Options.Profile.Data.HalvesFollowCursor || !PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) || PlaceCursor.FaceAllows(face, half)) return null;
+        return $"a {(half == PlaceHalf.Top ? "top" : "bottom")} {ItemName(itemId, damage)} can't be placed by clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(target - face.Normal())}";
     }
 
     /// <summary>Why the block at <paramref name="against"/> can't take a placement click (nothing solid, or it would open), or null.</summary>

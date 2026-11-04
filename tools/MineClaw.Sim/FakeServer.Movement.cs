@@ -231,7 +231,7 @@ public partial class FakeServer
         double moved = _trLast is { } last ? Math.Sqrt((x - last.X) * (x - last.X) + (z - last.Z) * (z - last.Z)) : 0;
         _trLast = (x, z);
         string? how = !farm || !ground ? null : Modern ? LandedHow(y) : WalkedHow(moved);
-        _trPeak = ground ? y : _trGround ? Math.Max(y, _trPeak) : Math.Max(_trPeak, y);
+        _trPeak = NextPeak(y, ground);
         _trGround = ground;
         if (how != null) TrampleCell(under, how);
     }
@@ -246,6 +246,9 @@ public partial class FakeServer
             default: return false;
         }
     }
+
+    /// <summary>The highest feet height since the last ground contact (on the ground: here).</summary>
+    private double NextPeak(double y, bool ground) => ground ? y : _trGround ? Math.Max(y, _trPeak) : Math.Max(_trPeak, y);
 
     /// <summary>1.12.2: a landing on farmland after a fall of more than 0.5.</summary>
     private string? LandedHow(double y) => !_trGround && _trPeak - y > 0.5 ? $"landed from {_trPeak - y:0.00}" : null;

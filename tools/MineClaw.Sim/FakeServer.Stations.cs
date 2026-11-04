@@ -36,54 +36,82 @@ public partial class FakeServer
 
     public void SendXp() => Send(new ExperienceMessage { Bar = 0, Level = XpLevel, Total = XpLevel * 17 });
 
-    private bool HandleStations(IPacket p)
+    private bool HandleStations(IPacket p) => p switch
     {
-        var srv = _srv!;
-        switch (p)
-        {
-            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
-                                                        && BrewingStands.TryGetValue((place.X, place.Y, place.Z), out var slots):
-            {
-                SyncIn();
-                sbyte id = (sbyte)++_windowId;
-                var w = srv.Open(id, WindowType.Chest, "Brewing Stand", 5, "brewing_stand");
-                srv.SetWindowItems(id, slots.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
-                _openStand = (place.X, place.Y, place.Z);
-                Send(new OpenWindowPacket { WindowId = id, InventoryType = 0, Title = "Brewing Stand", SlotCount = 5, Kind = "brewing_stand" });
-                SendWindow(w);
-                Send(new UpdateProgressBarPacket { WindowId = id, ProgressBar = 1, Value = (short)_standFuel.GetValueOrDefault(_openStand.Value) });
-                return true;
-            }
-            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
-                                                        && EnchantingTables.Contains((place.X, place.Y, place.Z)):
-            {
-                SyncIn();
-                sbyte id = (sbyte)++_windowId;
-                var w = srv.Open(id, WindowType.Chest, "Enchant", 2, "enchanting_table");
-                srv.SetWindowItems(id, new[] { ItemStack.Empty, ItemStack.Empty }.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
-                _openTable = (place.X, place.Y, place.Z);
-                Send(new OpenWindowPacket { WindowId = id, InventoryType = 0, Title = "Enchant", SlotCount = 2, Kind = "enchanting_table" });
-                SendWindow(w);
-                return true;
-            }
-            case WindowClickPacket click when (_openStand != null || _openTable != null) && srv.OpenWindow is { } sw && sw.Id == click.WindowId:
-                HandleModern(p);
-                if (_openStand != null) StandTick(); else TableOffers();
-                SyncStations();
-                return true;
-            case EnchantItemPacket ei when _openTable != null && srv.OpenWindow is { } tw && tw.Id == ei.WindowId:
-                Enchant(tw, ei.Enchantment);
-                return true;
-            case CloseWindowPacket when _openStand != null || _openTable != null:
-                SyncStations();
-                // The table gives back what was left in it (ContainerEnchantment.onContainerClosed).
-                if (_openTable != null && srv.OpenWindow is { } cw)
-                    for (int i = 0; i < 2; i++)
-                        if (!cw.Get(i).IsEmpty) { GiveBack(cw.Get(i)); cw.Set(i, ItemStack.Empty); }
-                _openStand = _openTable = null;
-                return false; // HandleModern closes the window
-        }
+        PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection => OpenStation(place),
+        WindowClickPacket click => StationClick(click),
+        EnchantItemPacket ei => StationEnchant(ei),
+        CloseWindowPacket => StationClosed(),
+        _ => false,
+    };
+
+    private bool StationOpen => _openStand != null || _openTable != null;
+
+    /// <summary>A click on a brewing stand or an enchanting table opens its window; anything else isn't handled here.</summary>
+    private bool OpenStation(PlayerBlockPlacementPacket place)
+    {
+        var at = (place.X, place.Y, place.Z);
+        if (BrewingStands.TryGetValue(at, out var slots)) return OpenStand(at, slots);
+        return EnchantingTables.Contains(at) && OpenTable(at);
+    }
+
+    private bool OpenStand((int, int, int) at, ItemStack[] slots)
+    {
+        SyncIn();
+        sbyte id = (sbyte)++_windowId;
+        var w = _srv!.Open(id, WindowType.Chest, "Brewing Stand", 5, "brewing_stand");
+        _srv.SetWindowItems(id, slots.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
+        _openStand = at;
+        Send(new OpenWindowPacket { WindowId = id, InventoryType = 0, Title = "Brewing Stand", SlotCount = 5, Kind = "brewing_stand" });
+        SendWindow(w);
+        Send(new UpdateProgressBarPacket { WindowId = id, ProgressBar = 1, Value = (short)_standFuel.GetValueOrDefault(at) });
+        return true;
+    }
+
+    private bool OpenTable((int, int, int) at)
+    {
+        SyncIn();
+        sbyte id = (sbyte)++_windowId;
+        var w = _srv!.Open(id, WindowType.Chest, "Enchant", 2, "enchanting_table");
+        _srv.SetWindowItems(id, new[] { ItemStack.Empty, ItemStack.Empty }.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
+        _openTable = at;
+        Send(new OpenWindowPacket { WindowId = id, InventoryType = 0, Title = "Enchant", SlotCount = 2, Kind = "enchanting_table" });
+        SendWindow(w);
+        return true;
+    }
+
+    /// <summary>A click in the open stand or table: the 1.12.2 click, then the stand's brew tick or the table's offers.</summary>
+    private bool StationClick(WindowClickPacket click)
+    {
+        if (!StationOpen || _srv!.OpenWindow is not { } sw || sw.Id != click.WindowId) return false;
+        HandleModern(click);
+        if (_openStand != null) StandTick(); else TableOffers();
+        SyncStations();
+        return true;
+    }
+
+    private bool StationEnchant(EnchantItemPacket ei)
+    {
+        if (_openTable == null || _srv!.OpenWindow is not { } tw || tw.Id != ei.WindowId) return false;
+        Enchant(tw, ei.Enchantment);
+        return true;
+    }
+
+    /// <summary>Closing the stand or table: synced, and the table gives back what was left in it (ContainerEnchantment.onContainerClosed).
+    /// Not handled: HandleModern closes the window.</summary>
+    private bool StationClosed()
+    {
+        if (!StationOpen) return false;
+        SyncStations();
+        if (_openTable != null && _srv!.OpenWindow is { } cw) GiveBackTableItems(cw);
+        _openStand = _openTable = null;
         return false;
+    }
+
+    private void GiveBackTableItems(Window cw)
+    {
+        for (int i = 0; i < 2; i++)
+            if (!cw.Get(i).IsEmpty) { GiveBack(cw.Get(i)); cw.Set(i, ItemStack.Empty); }
     }
 
     private void SendWindow(Window w)

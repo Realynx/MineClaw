@@ -740,10 +740,17 @@ public partial class FakeServer : IDisposable
         bool fits = OutputFits(recipe, slots[2]);
         bool changed = fits && Refuel(ref st, slots, data);
         if (fits && st.Burn > 0) changed |= Cook(ref st, slots, recipe!, data, ticksPerStep);
-        else { st.Cook = 0; if (st.Burn > 0) st.Burn -= ticksPerStep; }
+        else CoolDown(ref st, ticksPerStep);
         if (st.Burn < 0) st.Burn = 0;
         _furnaceState[pos] = st;
         if (changed && fw != null) PushFurnaceSlots(fw, slots);
+    }
+
+    /// <summary>Nothing cooking: the progress resets and what still burns burns on.</summary>
+    private static void CoolDown(ref (int Burn, int Cook) st, int ticksPerStep)
+    {
+        st.Cook = 0;
+        if (st.Burn > 0) st.Burn -= ticksPerStep;
     }
 
     private Window? OpenFurnaceWindow((int, int, int) pos) =>
