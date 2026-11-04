@@ -21,7 +21,8 @@ public class ClientGatherTraceGoldenTests
 
     private static readonly Dictionary<string, (Action<FakeServer> Setup, bool Normal, Func<MinecraftClient, FakeServer, Task<ActionResult>> Act)> Scenarios = new()
     {
-        ["mine-sand"] = (Island, false, (c, _) => c.MineAsync("sand", 3)),
+        // No drops here: where the body stands after walking to a drop is tick timing, and it decides the next pick under load.
+        ["mine-sand"] = (s => { Island(s); s.DropOnDig = false; }, false, (c, _) => c.MineAsync("sand", 3)),
         ["mine-none"] = (Island, false, (c, _) => c.MineAsync("diamond_ore", 2)),
         ["mine-placed-cobble"] = (s =>
         {

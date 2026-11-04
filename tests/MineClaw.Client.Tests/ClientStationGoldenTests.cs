@@ -27,7 +27,40 @@ public class ClientStationGoldenTests
         int from = s.Snapshot().Count;
         var r = await act(c);
         await Task.Delay(100);
-        return r + "\n----\n" + ClientActionTraceGoldenTests.Trace(s.Snapshot().Skip(from));
+        return r + "\n----\n" + WithoutProbes(ClientActionTraceGoldenTests.Trace(s.Snapshot().Skip(from)));
+    }
+
+    /// <summary>
+    /// Under load a stand's slot update can race a click (the FakeServer brews on its own tick); the client then probes the window
+    /// with a deliberately mismatched shift-click (ClickedItem 1:32767, see ProbeCoreAsync) and the server resends it. That probe and
+    /// its transaction are the race, not the action: they are dropped and the action numbers renumbered in order, so every click the
+    /// action itself makes is still pinned with all its fields.
+    /// </summary>
+    internal static string WithoutProbes(string trace)
+    {
+        var lines = trace.Split('\n').ToList();
+        var probes = new HashSet<string>();
+        foreach (var l in lines)
+            if (l.StartsWith("WindowClickPacket ", StringComparison.Ordinal) && l.Contains(" ClickedItem=1:32767 ", StringComparison.Ordinal))
+                probes.Add(ActionNumber(l)!);
+        lines.RemoveAll(l => ActionNumber(l) is { } n && probes.Contains(n));
+        var renumber = new Dictionary<string, int>();
+        for (int i = 0; i < lines.Count; i++)
+            if (ActionNumber(lines[i]) is { } n)
+            {
+                if (!renumber.TryGetValue(n, out int k)) renumber[n] = k = renumber.Count + 1;
+                lines[i] = lines[i].Replace($"ActionNumber={n} ", $"ActionNumber={k} ", StringComparison.Ordinal);
+            }
+        return string.Join("\n", lines);
+    }
+
+    private static string? ActionNumber(string line)
+    {
+        if (!line.StartsWith("WindowClickPacket ", StringComparison.Ordinal) && !line.StartsWith("TransactionPacket ", StringComparison.Ordinal)) return null;
+        int at = line.IndexOf(" ActionNumber=", StringComparison.Ordinal);
+        if (at < 0) return null;
+        int start = at + " ActionNumber=".Length, end = line.IndexOf(' ', start);
+        return line[start..(end < 0 ? line.Length : end)];
     }
 
     private static void Anvil(FakeServer srv, params ItemStack[] items)

@@ -26,7 +26,7 @@ internal static class ClientGatherTraceGoldenData
 
             """,
         ["mine-sand"] = """
-            ok: mined 3 sand, +3 sand (have 3)
+            ok: mined 3 sand, +0 sand (have 0)
             ----
             dug 12 at 6,64,3
             dug 12 at 2,64,2
