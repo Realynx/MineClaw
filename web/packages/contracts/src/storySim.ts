@@ -994,7 +994,7 @@ export class StorySim {
     return { ok: true, rev: c.rev };
   }
 
-  zones(id: string, body: StoryZoneRequest) {
+  zones(id: string, body: StoryZoneRequest): ZonesAnswer {
     const c = this.colony(id);
     const edited = this.editZone(c, body);
     if (edited !== undefined) return edited;
@@ -3464,3 +3464,40 @@ function growingFields(c: Colony, body: ZoneAdd, plant: string): Partial<StoryZo
     bills: [{ id: `gb${c.seq++}`, plant, mode: 'forever' as const, target: 64, done: 0, paused: false }],
   };
 }
+
+/** What a zones request answers (one shape per op: a mode, seeds, irrigation, a bill, a rename, a delete, a paint). */
+type ZonesAnswer =
+  | { id: string | number; warnings: never[]; rev: number; count?: undefined; kind?: undefined }
+  | { count: number; kind: string; rev: number; id?: undefined; warnings?: undefined }
+  | {
+      rev: number;
+      cells: [number, number, number][];
+      dig: [number, number, number][];
+      axis: 'x' | 'z';
+      lines: number;
+      note: string;
+      id: string | number;
+    }
+  | {
+      rev: number;
+      bill?: string | undefined;
+      id: string | number;
+      ids: (string | number)[];
+      activeBill: string | number | null;
+      warnings: never[];
+    }
+  | { id: string | number; rev: number; name?: undefined; removed?: undefined; deleted?: undefined }
+  | { id: string | number; name: string; rev: number; removed?: undefined; deleted?: undefined }
+  | { removed: (string | number)[]; deleted: (string | number)[]; rev: number; id?: undefined; name?: undefined }
+  | {
+      removed: (string | number)[];
+      rev: number;
+      id?: string | number;
+      created: Array<string | number>;
+      merged: Array<{ into: string | number; from: Array<string | number> }>;
+      grown: Array<string | number>;
+      shrunk: Array<string | number>;
+      split: Array<{ from: string | number; into: Array<string | number> }>;
+      deleted: Array<string | number>;
+      name?: undefined;
+    };

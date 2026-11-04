@@ -375,142 +375,178 @@ export function gearOp(
     missing: [],
   }));
   const res = (name: string) => results.find((r) => r.pawn === name)!;
-  switch (body.op) {
-    case 'arm': {
-      const carried = ordered.map((x) => ({
-        name: x.p.name,
-        carried: [
-          ...(x.p.equipment?.weapons ?? []),
-          ...(x.p.equipment?.tools ?? []).filter((t) => t.kind === 'axe'),
-        ].map((w) => ({
-          from: `pawn:${x.p.name}`,
-          id: w.item[0],
-          meta: w.item[1],
-          score: weaponScore(w.item[0]),
-        })),
-      }));
-      for (const pick of distributeWeapons(carried, storedUnits(storages, weaponScore))) {
-        const p = ordered.find((x) => x.p.name === pick.pawn)!.p;
-        const e = equip(p);
-        if (pick.take) {
-          takeFrom(storages, pick.take);
-          const it = gearItem(pick.take.id, pick.take.meta);
-          e.weapons.push(it);
-          if (p.drafted) e.held = it;
-          res(p.name).got.push(it.label ?? 'a weapon');
-        } else if (pick.keeps) res(p.name).got.push(`keeps ${gearItem(pick.keeps.id, pick.keeps.meta).label}`);
-        else res(p.name).missing.push('no weapon in storage');
-      }
-      break;
-    }
-    case 'armor': {
-      const pool = storedUnits(storages, armorScore).sort((a, b) => b.score - a.score);
-      for (const slot of ['head', 'chest', 'legs', 'feet']) {
-        for (const x of ordered) {
-          const e = equip(x.p);
-          const worn = e.armor.find((a) => a.slot === slot);
-          const i = pool.findIndex(
-            (u) => ARMOR_SLOT[gearItemInfo(u.id)?.kind ?? ''] === slot && (!worn || u.score > armorScore(worn.item[0])),
-          );
-          if (i < 0) continue;
-          const u = pool.splice(i, 1)[0]!;
-          takeFrom(storages, u);
-          if (worn) {
-            e.armor = e.armor.filter((a) => a !== worn);
-            putInto(storages, worn.item[0], worn.item[1]);
-          }
-          const it = gearItem(u.id, u.meta);
-          e.armor.push(it);
-          res(x.p.name).got.push(it.label ?? 'armour');
-        }
-      }
-      for (const r of results) if (!r.got.length) r.missing.push('no better armour in storage');
-      break;
-    }
-    case 'pickup': {
-      if (!body.item) throw fail(400, 'pickup needs an item');
-      const [id, meta] = body.item;
-      const n = body.count ?? 1;
-      const name = label(id, meta);
-      for (const x of ordered) {
-        let got = 0;
-        for (const s of storages) {
-          while (got < n) {
-            const i = s.contents.findIndex(([a, b]) => a === id && (b === meta || meta < 0));
-            if (i < 0) break;
-            takeFrom(storages, {
-              from: `${s.chest[0]},${s.chest[1]},${s.chest[2]}`,
-              id,
-              meta: s.contents[i]![1],
-              score: 0,
-            });
-            got++;
-          }
-        }
-        const inv = x.p.inventory;
-        const j = inv.findIndex(([a, b]) => a === id && b === Math.max(0, meta));
-        if (got) {
-          if (j >= 0) inv[j] = [id, inv[j]![1], inv[j]![2] + got];
-          else inv.push([id, Math.max(0, meta), got]);
-          if (gearItemInfo(id)) {
-            const it = gearItem(id, Math.max(0, meta));
-            const e = equip(x.p);
-            if (weaponScore(id) >= 0 && it.kind !== 'axe') e.weapons.push(it);
-            else if (armorScore(id) >= 0) e.armor.push(it);
-            else e.tools.push(it);
-          }
-          res(x.p.name).got.push(`${got} ${name}`);
-        }
-        if (got < n) res(x.p.name).missing.push(`${n - got} ${name}`);
-      }
-      break;
-    }
-    case 'return': {
-      for (const x of ordered) {
-        const e = equip(x.p);
-        const all = [...e.armor, ...e.tools, ...e.weapons];
-        for (const it of all) putInto(storages, it.item[0], it.item[1]);
-        e.armor = [];
-        e.tools = [];
-        e.weapons = [];
-        e.held = null;
-        if (all.length) res(x.p.name).got.push(`returned ${all.length} item${all.length === 1 ? '' : 's'}`);
-        else res(x.p.name).missing.push('nothing to return');
-      }
-      break;
-    }
-    case 'tools': {
-      const pool = storedUnits(storages, (id) => {
-        const g = gearItemInfo(id);
-        return g && g.kind !== 'sword' && g.kind !== 'bow' && !ARMOR_SLOT[g.kind]
-          ? tierRank(g.tier === 'gold' ? 'wood' : g.tier) + 1
-          : -1;
-      }).sort((a, b) => b.score - a.score);
-      for (const x of ordered) {
-        const e = equip(x.p);
-        for (const kind of policyKinds(x.p, gear.policies)) {
-          if (e.tools.some((t) => t.kind === kind)) continue;
-          const i = pool.findIndex((u) => gearItemInfo(u.id)?.kind === kind);
-          if (i < 0) {
-            res(x.p.name).missing.push(`no ${kind} in storage`);
-            continue;
-          }
-          const u = pool.splice(i, 1)[0]!;
-          takeFrom(storages, u);
-          const it = gearItem(u.id, u.meta);
-          e.tools.push(it);
-          res(x.p.name).got.push(it.label ?? kind);
-        }
-      }
-      break;
-    }
-    default:
-      throw fail(400, 'op must be arm|armor|pickup|return|tools');
-  }
+  const run = GEAR_OPS.get(body.op);
+  if (!run) throw fail(400, 'op must be arm|armor|pickup|return|tools');
+  run({ gear, ordered, storages, body, label, res, results });
   for (const x of ordered)
     if (res(x.p.name).got.length) x.p.gearTasks = [{ id: `g${gear.seq++}`, op: body.op, label: `gear: ${body.op}` }];
   return { results, summary: gearSummary(results) };
 }
+
+/** One bulk gear op's inputs: the pawns in the fair order, the storages, the request, and each pawn's result. */
+interface GearRun {
+  gear: SimGear;
+  ordered: PawnRef[];
+  storages: StoryStorage[];
+  body: { op: string; item?: [number, number]; count?: number };
+  label: (id: number, meta: number) => string;
+  res: (name: string) => StoryGearResult;
+  results: StoryGearResult[];
+}
+
+/** Arm: the weapons (and axes) carried and stored, spread fairly; a drafted pawn holds its new weapon. */
+function armOp({ ordered, storages, res }: GearRun): void {
+  const carried = ordered.map((x) => ({
+    name: x.p.name,
+    carried: [...(x.p.equipment?.weapons ?? []), ...(x.p.equipment?.tools ?? []).filter((t) => t.kind === 'axe')].map(
+      (w) => ({
+        from: `pawn:${x.p.name}`,
+        id: w.item[0],
+        meta: w.item[1],
+        score: weaponScore(w.item[0]),
+      }),
+    ),
+  }));
+  for (const pick of distributeWeapons(carried, storedUnits(storages, weaponScore))) {
+    const p = ordered.find((x) => x.p.name === pick.pawn)!.p;
+    const e = equip(p);
+    if (pick.take) {
+      takeFrom(storages, pick.take);
+      const it = gearItem(pick.take.id, pick.take.meta);
+      e.weapons.push(it);
+      if (p.drafted) e.held = it;
+      res(p.name).got.push(it.label ?? 'a weapon');
+    } else if (pick.keeps) res(p.name).got.push(`keeps ${gearItem(pick.keeps.id, pick.keeps.meta).label}`);
+    else res(p.name).missing.push('no weapon in storage');
+  }
+}
+
+/** Equip armour: slot by slot, each pawn in turn takes the best stored piece better than what it wears (that goes back). */
+function armorOp({ ordered, storages, res, results }: GearRun): void {
+  const pool = storedUnits(storages, armorScore).sort((a, b) => b.score - a.score);
+  for (const slot of ['head', 'chest', 'legs', 'feet']) for (const x of ordered) wearBetter(x.p, slot, pool, storages, res);
+  for (const r of results) if (!r.got.length) r.missing.push('no better armour in storage');
+}
+
+function wearBetter(
+  p: StoryPawn,
+  slot: string,
+  pool: GearUnit[],
+  storages: StoryStorage[],
+  res: (name: string) => StoryGearResult,
+): void {
+  const e = equip(p);
+  const worn = e.armor.find((a) => a.slot === slot);
+  const i = pool.findIndex(
+    (u) => ARMOR_SLOT[gearItemInfo(u.id)?.kind ?? ''] === slot && (!worn || u.score > armorScore(worn.item[0])),
+  );
+  if (i < 0) return;
+  const u = pool.splice(i, 1)[0]!;
+  takeFrom(storages, u);
+  if (worn) {
+    e.armor = e.armor.filter((a) => a !== worn);
+    putInto(storages, worn.item[0], worn.item[1]);
+  }
+  const it = gearItem(u.id, u.meta);
+  e.armor.push(it);
+  res(p.name).got.push(it.label ?? 'armour');
+}
+
+/** Pick up: each pawn takes `count` of an item (any meta for -1) from the storages into its inventory (gear is worn). */
+function pickupOp({ ordered, storages, body, label, res }: GearRun): void {
+  if (!body.item) throw fail(400, 'pickup needs an item');
+  const [id, meta] = body.item;
+  const n = body.count ?? 1;
+  const name = label(id, meta);
+  for (const x of ordered) {
+    const got = takeUnits(storages, id, meta, n);
+    if (got) {
+      addPicked(x.p, id, meta, got);
+      res(x.p.name).got.push(`${got} ${name}`);
+    }
+    if (got < n) res(x.p.name).missing.push(`${n - got} ${name}`);
+  }
+}
+
+/** Takes up to `n` of an item (any meta for -1) out of the storages, in order; how many. */
+function takeUnits(storages: StoryStorage[], id: number, meta: number, n: number): number {
+  let got = 0;
+  for (const s of storages) {
+    while (got < n) {
+      const i = s.contents.findIndex(([a, b]) => a === id && (b === meta || meta < 0));
+      if (i < 0) break;
+      takeFrom(storages, { from: `${s.chest[0]},${s.chest[1]},${s.chest[2]}`, id, meta: s.contents[i]![1], score: 0 });
+      got++;
+    }
+  }
+  return got;
+}
+
+/** Picked-up items join the inventory; a weapon, armour piece or tool is equipped too. */
+function addPicked(p: StoryPawn, id: number, meta: number, got: number): void {
+  const inv = p.inventory;
+  const j = inv.findIndex(([a, b]) => a === id && b === Math.max(0, meta));
+  if (j >= 0) inv[j] = [id, inv[j]![1], inv[j]![2] + got];
+  else inv.push([id, Math.max(0, meta), got]);
+  if (!gearItemInfo(id)) return;
+  const it = gearItem(id, Math.max(0, meta));
+  const e = equip(p);
+  if (weaponScore(id) >= 0 && it.kind !== 'axe') e.weapons.push(it);
+  else if (armorScore(id) >= 0) e.armor.push(it);
+  else e.tools.push(it);
+}
+
+/** Return: every worn and carried piece goes back into the first storage. */
+function returnOp({ ordered, storages, res }: GearRun): void {
+  for (const x of ordered) {
+    const e = equip(x.p);
+    const all = [...e.armor, ...e.tools, ...e.weapons];
+    for (const it of all) putInto(storages, it.item[0], it.item[1]);
+    e.armor = [];
+    e.tools = [];
+    e.weapons = [];
+    e.held = null;
+    if (all.length) res(x.p.name).got.push(`returned ${all.length} item${all.length === 1 ? '' : 's'}`);
+    else res(x.p.name).missing.push('nothing to return');
+  }
+}
+
+/** Equip tools: each pawn takes the best stored tool of every kind its policy has it carry (and it lacks). */
+function toolsOp({ gear, ordered, storages, res }: GearRun): void {
+  const pool = storedUnits(storages, toolScore).sort((a, b) => b.score - a.score);
+  for (const x of ordered) {
+    const e = equip(x.p);
+    for (const kind of policyKinds(x.p, gear.policies)) {
+      if (e.tools.some((t) => t.kind === kind)) continue;
+      const i = pool.findIndex((u) => gearItemInfo(u.id)?.kind === kind);
+      if (i < 0) {
+        res(x.p.name).missing.push(`no ${kind} in storage`);
+        continue;
+      }
+      const u = pool.splice(i, 1)[0]!;
+      takeFrom(storages, u);
+      const it = gearItem(u.id, u.meta);
+      e.tools.push(it);
+      res(x.p.name).got.push(it.label ?? kind);
+    }
+  }
+}
+
+/** A stored tool's rank (gold counts as wood); -1 for weapons, armour and anything else. */
+function toolScore(id: number): number {
+  const g = gearItemInfo(id);
+  return g && g.kind !== 'sword' && g.kind !== 'bow' && !ARMOR_SLOT[g.kind]
+    ? tierRank(g.tier === 'gold' ? 'wood' : g.tier) + 1
+    : -1;
+}
+
+const GEAR_OPS: ReadonlyMap<string, (run: GearRun) => void> = new Map([
+  ['arm', armOp],
+  ['armor', armorOp],
+  ['pickup', pickupOp],
+  ['return', returnOp],
+  ['tools', toolsOp],
+]);
 
 /** On draft: the best weapon into the hand (what was held is remembered); on undraft: it comes back. */
 export function draftGear(gear: SimGear, p: StoryPawn, drafted: boolean): void {
