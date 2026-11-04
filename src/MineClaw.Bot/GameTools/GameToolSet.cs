@@ -231,7 +231,8 @@ public static class GameToolSet
                 if (i.Str("fuel") is { } f) { if (Items.ByName(f) is { } fi) fuel = fi.Id; else return ToolResult.Error($"unknown fuel '{f}'"); }
                 var at = OptionalAt(i, places, out var err);
                 if (err != null) return err;
-                int count = Math.Clamp(i.Int("count") ?? c.World.Inventory.CountItem(input.Id), 1, 576);
+                // An explicit count 0 only tops up the fuel for what the furnace holds (Story Mode's refuel of a load left without fuel).
+                int count = i.Int("count") is { } n ? Math.Clamp(n, 0, 576) : Math.Clamp(c.World.Inventory.CountItem(input.Id), 1, 576);
                 return R(await c.SmeltAsync(input.Id, count, fuel, i.Bool("wait") == true, at, ct));
             }, longRunning: true);
         tools.Register("collect_furnace", "Take finished items from a furnace (last used if omitted).",

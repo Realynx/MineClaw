@@ -757,8 +757,10 @@ public sealed partial class StoryColony
         GearOrNeedFailed(p, j, why);
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
-        if (StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note)) return;
+        // A furnace with nothing to collect yet, or a load left without fuel (a refuel follows): no failure (StoryColony.Refuel.cs).
+        if (StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note) || FurnaceNotReady(j, why)) return;
         if (DropsGone(j, why)) return; // someone else picked them up: nothing failed (StoryColony.Hauling.cs)
+        NoteDropMiss(p, j, why); // the spot it missed them at: several misses there and its drops rest, whatever their ids (StoryColony.DropSpots.cs)
         MarkFullChests(j, why);
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
         // (live 11-04: one pawn in a hole failed grass after grass for everyone; StoryColony.Rescue.cs).

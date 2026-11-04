@@ -121,7 +121,7 @@ public class StoryFuelTests
         Assert.Contains(("coal", 1), Fetched(j));
         c.Report(c.P(), j["id"]!.GetValue<string>(), "done", null, null);
         var bench = c.Benches.Single();
-        Assert.Equal(6, bench.FuelCredit, 3); // one coal smelts 8: 6 left after 2
+        Assert.Equal(6, c.FuelCreditNow(bench), 3); // one coal smelts 8: 6 left after 2 (while it burns: StoryFurnaceRefuelTests)
         Assert.Equal(6, c.State()["workbenches"]![0]!["fuel_credit"]!.GetValue<double>());
 
         // The next batch of 2 brings no fuel: the furnace still burns the coal.
@@ -135,7 +135,7 @@ public class StoryFuelTests
 
         // Short of fuel at the furnace after all: it holds nothing the colony knew of.
         c.Report(c.P(1), k["id"]!.GetValue<string>(), "failed", "not enough fuel (0 coal)", null);
-        Assert.Equal(0, bench.FuelCredit);
+        Assert.Equal(0, c.FuelCreditNow(bench));
     }
 
     [Fact]

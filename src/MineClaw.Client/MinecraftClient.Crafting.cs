@@ -426,8 +426,10 @@ public sealed partial class MinecraftClient
         var carried = World.Inventory.PlayerSlots().Skip(9).FirstOrDefault(st => !st.IsEmpty && st.Id == inputId);
         if (Smelting.ResultFor(inputId, carried.IsEmpty ? -1 : carried.Damage) is not { } recipe)
             return ActionResult.Fail($"{ItemName(inputId)} can't be smelted");
+        // count 0: fuel only, for what the furnace already holds (a load left without fuel: Story Mode's refuel job).
+        bool refuel = count <= 0;
         int have = World.Inventory.CountItem(inputId);
-        if (have == 0) return ActionResult.Fail($"no {ItemName(inputId)} to smelt");
+        if (have == 0 && !refuel) return ActionResult.Fail($"no {ItemName(inputId)} to smelt");
         count = Math.Min(count, have);
         var pos = furnace ?? FindFurnace();
         if (pos is null) return ActionResult.Fail($"no furnace within {StationSearchRadius:0} blocks");
@@ -438,7 +440,9 @@ public sealed partial class MinecraftClient
         var w = World.Inventory.OpenWindow!;
         try
         {
-            return await SmeltInWindowAsync(w, recipe, inputId, count, fuelId, wait, pos.Value, ct).ConfigureAwait(false);
+            return refuel
+                ? await RefuelInWindowAsync(w, fuelId, pos.Value, ct).ConfigureAwait(false)
+                : await SmeltInWindowAsync(w, recipe, inputId, count, fuelId, wait, pos.Value, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -446,7 +450,12 @@ public sealed partial class MinecraftClient
         }
     }
 
-    /// <summary>Loads the open furnace with the input and the fuel it needs, then (with <paramref name="wait"/>) stays and collects.</summary>
+    /// <summary>
+    /// Loads the open furnace with the fuel it needs, then the input that fuel covers, then (with <paramref name="wait"/>) stays and
+    /// collects. Fuel first: an input never goes in without the fuel to smelt it. Live 11-04 story-1: a log stood in the input slot with
+    /// no fuel ("collect_furnace … nothing to collect; … in=oak wood x1 fuel=-" every 20 s): the fuel was logs too, and the log about to
+    /// be loaded had been counted as the fuel.
+    /// </summary>
     private async Task<ActionResult> SmeltInWindowAsync(Window w, SmeltingRecipe recipe, int inputId, int count, int? fuelId, bool wait, BlockPos pos,
         CancellationToken ct)
     {
@@ -460,21 +469,53 @@ public sealed partial class MinecraftClient
         // Fuel: what's in the slot already counts; top it up with the chosen fuel.
         var fuelSlot = await ClearOtherFuelAsync(w, fuelId, ct).ConfigureAwait(false);
         int fuel = ChooseFuel(fuelId, fuelSlot, inputId);
-        if (PlanFuel(w, already, fuelSlot, fuel, ref count, out int fuelUnits) is { } noFuel) return ActionResult.Fail(noFuel);
+        if (PlanFuel(w, already, fuelSlot, fuel, inputId, ref count, out int fuelUnits) is { } noFuel) return ActionResult.Fail(noFuel);
+        int loaded = await LoadFuelAsync(w, fuel, fuelUnits, ct).ConfigureAwait(false);
+        count = Math.Min(count, Covered(w, BurnTicks(w, fuelSlot) + loaded * Smelting.FuelTicks(fuel)) - already);
+        if (count <= 0) return ActionResult.Fail($"not enough fuel ({World.Inventory.CountItem(fuel)} {ItemName(fuel)})");
 
         int putIn = await MoveIntoSlotAsync(w, s => s.Id == inputId, 0, count, ct).ConfigureAwait(false);
         if (putIn <= 0) return ActionResult.Fail("couldn't load the furnace");
-        if (fuelUnits > 0)
-        {
-            int f = await MoveIntoSlotAsync(w, s => s.Id == fuel, 1, fuelUnits, ct).ConfigureAwait(false);
-            if (f < fuelUnits) Log($"smelt: only loaded {f}/{fuelUnits} fuel");
-        }
         int queued = putIn + already;
         string outName = ItemName(recipe.OutputId, recipe.OutputDamage);
         if (!wait)
             return ActionResult.Success($"smelting {queued} {ItemName(inputId)} -> {outName} at {Fmt(pos)}, ready in ~{queued * 10}s", putIn);
         return await CollectSmeltedAsync(w, queued, outName, ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Fuel only, for the input the furnace already holds (a load left without fuel): the chosen fuel (else the best one carried), as
+    /// much as that input needs. Fails when the furnace holds no input or no fuel went in.
+    /// </summary>
+    private async Task<ActionResult> RefuelInWindowAsync(Window w, int? fuelId, BlockPos pos, CancellationToken ct)
+    {
+        var input = w.Get(0);
+        if (input.IsEmpty) return ActionResult.Fail("nothing to fuel: no input in the furnace; " + DescribeOpenWindow(200));
+        var fuelSlot = await ClearOtherFuelAsync(w, fuelId, ct).ConfigureAwait(false);
+        int fuel = ChooseFuel(fuelId, fuelSlot, input.Id), none = 0;
+        if (PlanFuel(w, input.Count, fuelSlot, fuel, -1, ref none, out int fuelUnits) is { } noFuel) return ActionResult.Fail(noFuel);
+        string what = $"{input.Count} {ItemName(input.Id, input.Damage)}";
+        if (fuelUnits == 0) return ActionResult.Success($"the furnace at {Fmt(pos)} has the fuel for its {what}", 0);
+        int loaded = await LoadFuelAsync(w, fuel, fuelUnits, ct).ConfigureAwait(false);
+        if (loaded <= 0) return ActionResult.Fail($"not enough fuel ({World.Inventory.CountItem(fuel)} {ItemName(fuel)})");
+        return ActionResult.Success($"fuelled the furnace at {Fmt(pos)}: {loaded} {ItemName(fuel)} for {what}, ready in ~{input.Count * 10}s", 0);
+    }
+
+    /// <summary>Moves <paramref name="units"/> of <paramref name="fuel"/> into the fuel slot; how many went in.</summary>
+    private async Task<int> LoadFuelAsync(Window w, int fuel, int units, CancellationToken ct)
+    {
+        if (units <= 0 || fuel <= 0) return 0;
+        int f = await MoveIntoSlotAsync(w, s => s.Id == fuel, 1, units, ct).ConfigureAwait(false);
+        if (f < units) Log($"smelt: only loaded {f}/{units} fuel");
+        return f;
+    }
+
+    /// <summary>Burn ticks the furnace has: what is burning plus what stands in the fuel slot.</summary>
+    private static int BurnTicks(Window w, ItemStack fuelSlot) =>
+        w.BurnTimeLeft + (fuelSlot.IsEmpty ? 0 : fuelSlot.Count * Smelting.FuelTicks(fuelSlot.Id));
+
+    /// <summary>Items <paramref name="burn"/> ticks of fuel smelt (the one in progress included).</summary>
+    private static int Covered(Window w, int burn) => (burn + (int)(w.SmeltProgress * Smelting.CookTicks)) / Smelting.CookTicks;
 
     /// <summary>A named fuel is the only one burnt (Story Mode's coal-only furnace never burns planks): another fuel left in the slot
     /// comes out first, and nothing else stands in when the named one runs short. Returns the fuel slot after.</summary>
@@ -499,26 +540,39 @@ public sealed partial class MinecraftClient
         return fuel;
     }
 
-    /// <summary>The fuel units to add so the whole load cooks; when the fuel carried covers less, <paramref name="count"/> shrinks to
-    /// what it does cover. Returns why it can't smelt at all, or null.</summary>
-    private string? PlanFuel(Window w, int already, ItemStack fuelSlot, int fuel, ref int count, out int fuelUnits)
+    /// <summary>
+    /// The fuel units to add so the whole load cooks; when the fuel carried covers less, <paramref name="count"/> shrinks to what it does
+    /// cover. The input is never counted as fuel: when both are one item (charcoal from logs burning logs) the carried logs are split
+    /// between the two. Returns why it can't smelt at all, or null.
+    /// </summary>
+    private string? PlanFuel(Window w, int already, ItemStack fuelSlot, int fuel, int inputId, ref int count, out int fuelUnits)
     {
-        int totalItems = count + already;
-        int burnTicksAvailable = w.BurnTimeLeft + (fuelSlot.IsEmpty ? 0 : fuelSlot.Count * Smelting.FuelTicks(fuelSlot.Id));
-        int ticksNeeded = totalItems * Smelting.CookTicks - (int)(w.SmeltProgress * Smelting.CookTicks);
+        int spare = BurnTicks(w, fuelSlot) + (int)(w.SmeltProgress * Smelting.CookTicks);
         fuelUnits = 0;
-        if (ticksNeeded <= burnTicksAvailable) return null;
+        if ((count + already) * Smelting.CookTicks <= spare) return null;
         if (fuel == 0) return "no fuel (coal, charcoal, planks, logs, sticks)";
         if (!fuelSlot.IsEmpty && fuelSlot.Id != fuel) return $"fuel slot holds {ItemName(fuelSlot.Id)}; not enough to finish and can't mix fuels";
-        fuelUnits = (int)Math.Ceiling((ticksNeeded - burnTicksAvailable) / (double)Smelting.FuelTicks(fuel));
-        int fuelHave = World.Inventory.CountItem(fuel);
-        if (fuelHave >= fuelUnits) return null;
-        // Smelt what the fuel covers.
-        int coverable = (burnTicksAvailable + fuelHave * Smelting.FuelTicks(fuel)) / Smelting.CookTicks - already;
-        if (coverable <= 0) return $"not enough fuel ({fuelHave} {ItemName(fuel)})";
+        int ticks = Smelting.FuelTicks(fuel);
+        if (fuel == inputId) count = SplitSameItem(fuel, count, already, spare, ticks);
+        int fuelHave = Math.Max(0, World.Inventory.CountItem(fuel) - (fuel == inputId ? count : 0));
+        fuelUnits = Math.Min(UnitsFor(count + already, spare, ticks), fuelHave);
+        // Smelt what the fuel covers (a refuel, count 0, takes what there is).
+        int coverable = (spare + fuelUnits * ticks) / Smelting.CookTicks - already;
+        if (coverable <= 0 && count > 0) return $"not enough fuel ({fuelHave} {ItemName(fuel)})";
         count = Math.Min(count, coverable);
-        fuelUnits = fuelHave;
         return null;
+    }
+
+    /// <summary>Fuel units for <paramref name="items"/> beyond <paramref name="spare"/> burn ticks.</summary>
+    private static int UnitsFor(int items, int spare, int ticks) =>
+        Math.Max(0, (int)Math.Ceiling((items * Smelting.CookTicks - spare) / (double)ticks));
+
+    /// <summary>The most of the carried <paramref name="item"/> that can go in as input with the rest of it as its fuel.</summary>
+    private int SplitSameItem(int item, int count, int already, int spare, int ticks)
+    {
+        int have = World.Inventory.CountItem(item);
+        while (count > 1 && count + UnitsFor(count + already, spare, ticks) > have) count--;
+        return count;
     }
 
     /// <summary>Stays by the furnace and shift-clicks the output out until the input and output slots are empty (or the time is up).</summary>

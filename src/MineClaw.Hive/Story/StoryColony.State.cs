@@ -79,7 +79,7 @@ public sealed partial class StoryColony
                     ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b), ["smelting"] = SmeltingJson(b),
                     ["fuel"] = b.Kind == "furnace" ? b.FuelSetting ?? StoryFuels.Auto : null,
                     ["fuel_choices"] = b.Kind == "furnace" && w != null ? new JsonArray(StoryFuels.ValidFor(w.Data).Select(f => (JsonNode)f!).ToArray()) : null,
-                    ["fuel_credit"] = b.Kind == "furnace" ? Math.Round(b.FuelCredit, 2) : (double?)null,
+                    ["fuel_credit"] = b.Kind == "furnace" ? Math.Round(FuelCreditNow(b), 2) : (double?)null,
                     ["bills"] = new JsonArray(b.Bills.Select(x => { var bj = BillJson(x); bj["fuel_need"] = FuelNeedJson(b, x); return (JsonNode)bj; }).ToArray()),
                 }).ToArray()),
             };

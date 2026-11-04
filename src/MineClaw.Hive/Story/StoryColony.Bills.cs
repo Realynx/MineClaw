@@ -415,9 +415,8 @@ public sealed partial class StoryColony
     {
         var key = "bench:" + bench.Pos;
         if (!Open(key, p.Name, null)) { NoteBenchInUse(w, bench, work); return null; }
-        // A loaded furnace that is done: collect (the bill's work type).
-        if (bench.LoadedBill is { } lb && bench.ReadyAt <= Now) return CollectJob(w, bench, lb, work, key);
-        if (bench.LoadedBill != null) return null; // still smelting
+        // A loaded furnace: fuel for a load left without it, collecting one that is done (the bill's work type), else still smelting.
+        if (bench.LoadedBill is { } lb) return LoadedFurnaceJob(w, live, work, bench, lb, key);
         if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) return null;
         foreach (var bill in bench.Bills)
             if (BillOnBench(w, p, live, work, bench, bill, key) is { } job) return job;
@@ -571,18 +570,30 @@ public sealed partial class StoryColony
             fetch.Add(new JsonObject { ["from"] = chest!.Value.ToString(), ["item"] = ItemName(st.Id, st.Meta), ["n"] = st.Count });
             job.Takes.Add((chest.Value, st));
         }
-        return bench.Kind == "furnace" ? FuelBatch(job, fetch, bench, bill, r, crafts, live, auto) : StashBatch(job, bench, bill, r, crafts);
+        if (bench.Kind != "furnace") return StashBatch(job, bench, bill, r, crafts);
+        var own = got.Where(g => g.Chest == null).Select(g => g.Stack).ToList(); // its input from its own pockets is no fuel too
+        return FuelBatch(job, bench, bill, r, crafts, live, auto, own);
     }
 
     /// <summary>
     /// Fuel (StoryColony.Fuel.cs): the bill's or the furnace's choice, topped up to what this batch needs beyond what the furnace still
-    /// holds; the pawn's own first, else a chest. None: an auto bill waits quietly (the build's materials say it), an owner's is suspended.
+    /// holds; the pawn's own first (beyond the input it carries), else a chest. None: an auto bill waits quietly (the build's materials
+    /// say it), an owner's is suspended.
     /// </summary>
-    private ActiveJob? FuelBatch(ActiveJob job, JsonArray fetch, WorkbenchState bench, BillState bill, StoryRecipe r, int crafts, PawnLive live, bool auto)
+    private ActiveJob? FuelBatch(ActiveJob job, WorkbenchState bench, BillState bill, StoryRecipe r, int crafts, PawnLive live, bool auto, IReadOnlyList<Stack> own)
     {
-        var (fuel, units, src, noFuel) = PickFuel(bench, bill, crafts, live);
+        var (fuel, units, src, noFuel) = PickFuel(bench, bill, crafts, live, own);
         if (noFuel != null && auto) return null;
         if (noFuel != null) { SuspendBill(bench, bill, r, noFuel); return null; }
+        AddFuel(job, fuel, units, src);
+        return job;
+    }
+
+    /// <summary>The fuel a furnace job brings: its fetch from a chest (none: the pawn's own), the only fuel it may load, the units.</summary>
+    private void AddFuel(ActiveJob job, StoryFuel? fuel, int units, (P3 Chest, Stack Stack)? src)
+    {
+        var fetch = job.Json["fetch"] as JsonArray ?? new JsonArray();
+        job.Json["fetch"] = fetch;
         if (src is { } fs)
         {
             fetch.Add(new JsonObject { ["from"] = fs.Chest.ToString(), ["item"] = TakeName(fs.Stack), ["n"] = fs.Stack.Count });
@@ -591,7 +602,6 @@ public sealed partial class StoryColony
         job.Json["fuel"] = fuel != null ? ItemName(fuel.Item.Id, 0) : null; // the only fuel the pawn loads
         job.Json["fuel_units"] = units;
         job.Json["fuel_per"] = fuel?.ItemsPerUnit;
-        return job;
     }
 
     /// <summary>The product goes to storage right after crafting: the bill's chest, else the best one.</summary>
@@ -614,6 +624,7 @@ public sealed partial class StoryColony
             FurnaceLoaded(fur, j);
             return;
         }
+        if (IsRefuel(j)) { Refuelled(j); return; } // StoryColony.Refuel.cs
         foreach (var bench in Benches)
         {
             if (CollectsFrom(j, bench)) { FurnaceCollected(p, bench, j, note); return; }
@@ -624,7 +635,8 @@ public sealed partial class StoryColony
     }
 
     /// <summary>A collect job at this furnace for what it smelts.</summary>
-    private static bool CollectsFrom(ActiveJob j, WorkbenchState bench) => j.Source == "furnace" && bench.LoadedBill == j.SourceId && j.At == bench.Pos;
+    private static bool CollectsFrom(ActiveJob j, WorkbenchState bench) =>
+        j is { Source: "furnace", Kind: "collect_furnace" } && bench.LoadedBill == j.SourceId && j.At == bench.Pos;
 
     /// <summary>The items a smelt job loaded (at least one).</summary>
     private static int SmeltItems(ActiveJob j) => Math.Max(1, j.Json["n"]?.GetValue<int>() ?? 1);
@@ -640,6 +652,8 @@ public sealed partial class StoryColony
         fur.LoadedAt = Now;
         fur.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * items);
         FuelLoaded(fur, j);
+        fur.RefuelCount = 0; // a load brings the fuel for what was waiting in the furnace too (the smelt primitive counts it)
+        fur.RefuelItem = null;
         fur.Rev = Touch();
     }
 
@@ -682,6 +696,7 @@ public sealed partial class StoryColony
 
     private void BillFailed(PawnState p, ActiveJob j, string why)
     {
+        if (IsRefuel(j)) { RefuelFailed(j, why); return; } // StoryColony.Refuel.cs
         foreach (var bench in Benches)
         {
             if (CollectsFrom(j, bench))
@@ -704,7 +719,7 @@ public sealed partial class StoryColony
             return;
         }
         // Short of fuel at the furnace: what the colony thought it still held isn't there (emptied, or another fuel taken out).
-        if (bench.Kind == "furnace" && why.Contains("fuel", StringComparison.OrdinalIgnoreCase)) bench.FuelCredit = 0;
+        if (bench.Kind == "furnace" && why.Contains("fuel", StringComparison.OrdinalIgnoreCase)) NoFuelLeft(bench);
         if ((_billFails[bill.Id] = _billFails.GetValueOrDefault(bill.Id) + 1) >= 3)
         {
             bill.SuspendedReason = why;

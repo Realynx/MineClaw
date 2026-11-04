@@ -1395,6 +1395,16 @@ limit the types of items allowed in a chest, pawns … should rearrange … Othe
   the colony's view any more (another pawn or a player picked them up on the way, they merged, they despawned) nothing failed. A drop
   still in view rests for that pawn only (30 s, 1 min, then 5 min) and the others may go; only when 3 pawns missed it does it rest for
   everyone. A drop the pawn's own safety checks wrote off ("; 1 drop(s) left near the void") rests for everyone at once, as before.
+- **Unreachable drops are kept by place (added 2026-11-04).** Live 11-04 (release 20261104-181056): "no reachable drops nearby" ×63 in
+  6 minutes all over the farm, each collect about 0.2 s. The rests above were keyed by the drop's entity id, so a drop that came back with
+  a new id at the same spot (another seed or egg, a merged stack, a re-drop) was new work every time, and a batch's other drops never
+  rested. Now (`StoryColony.DropSpots.cs`) each collect that found nothing counts a miss at the spot of every drop of it still in view
+  (any drop within a block counts there). 3 misses there (1 when the pawn wrote them off) and the spot rests for everyone, whatever lies
+  there: 5 min, then 15, then 30; after a rest one more miss rests it again. Before a drop is offered at all there must be somewhere to
+  stand by it: a cell beside it (its level, one under, one over when it lies high in its cell) with ground under it, room for the body
+  and the head out of water. A drop on a deep pond, in a wall or over the void is never offered. The idle audit says it: `waiting: drops at
+  6,64,6 unreachable`, or for a haul mark `no reachable target: haul …: drops there unreachable (…)`. The collect's failure now says what
+  it saw: "no reachable drops nearby (none in sight within 4 with room for it)", "(2 seen: 1 with no way to a pickup spot, 1 not picked up)".
 - **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a
   better-priority chest accepts moves up. One trip takes as many stacks out of one chest as the pawn has room for, each to its own
   chest. With no chest for it, the fallback chest takes it (option on). What the fallback put somewhere stays there. Else the stack is
@@ -1508,6 +1518,20 @@ A furnace's fuel is a bench setting with a per-bill override (`StoryFuels`, `Sto
 - What the furnace still holds counts: the colony keeps `fuel_credit` (items it can still smelt on the fuel it loaded, burn time
   and slot leftovers); a job tops up only what its batch needs beyond it (`fuel_units` 0 = none brought). A job that finds the
   furnace short of fuel resets the credit. The primitive itself counts the real fuel slot and burn time.
+- **A lit fuel burns out (changed 2026-11-04).** Only whole fuel items left in the slot keep; what is left of a lit one counts only
+  until it burns out (`BurnUntil`: a lit furnace burns on with nothing to smelt). Live 11-04: one-log charcoal batches on logs left
+  half a log's credit each time, the halves added up, and a batch came with no fuel.
+- **Fuel first (changed 2026-11-04).** The smelt primitive loads the fuel before the input and loads only the input that fuel covers; with
+  none it loads nothing ("not enough fuel"). The input is never counted as its own fuel: charcoal from logs on logs splits the carried
+  logs between the two, and the colony's fuel pick doesn't count the log a pawn carries for the input (live 11-04: "in=oak wood x1
+  fuel=-", the one log it had was both).
+- **A load left without fuel is refuelled (added 2026-11-04).** A collect that finds nothing to collect is no failure (no rest for the
+  pawn or the bench); what the furnace showed decides: its input with no fuel and not burning → the bench waits for a refuel
+  (`RefuelCount`), and the next pawn of the bill's work type brings the furnace's fuel for that input (kind `smelt` with `n` 0 and
+  `refuel` N: the primitive with count 0 tops up the fuel for what the furnace holds, "fuelled the furnace … ready in ~10s"); no fuel
+  anywhere: the idle audit says "waiting: the furnace at … holds 1 oak wood and no fuel: needs fuel: …". Empty (`in=-`): the load is
+  forgotten. Burning or fuelled: looked at again when its input should be done. Live 11-04: "collect_furnace 218,64,399 failed: nothing
+  to collect; … in=oak wood x1 fuel=- out=-" ×108, a collect every 20 s that rested pawns and the bench.
 - Rates come from the version's burn times: coal and charcoal 8 items each, planks and logs 1.5, a blaze rod 12, a lava bucket 100.
 - No allowed fuel: the bill waits with "needs fuel: no coal, charcoal, planks or logs within 32 blocks" (or the choice's own list).
 - The materials pass plans the builds' smelting with the furnace's choice too.

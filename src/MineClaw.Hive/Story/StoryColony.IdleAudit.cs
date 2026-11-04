@@ -153,16 +153,17 @@ public sealed partial class StoryColony
     /// or why). Counted per search without allocating; the most common one becomes the look's <see cref="Look.NoReach"/>, with the
     /// first such mark's kind and cell.
     /// </summary>
-    internal enum MarkPass { Buried, Underfoot, Cave, StuckSpot, Forbidden, LeftToSurface, OutOfSight }
+    internal enum MarkPass { Buried, Underfoot, Cave, StuckSpot, Forbidden, LeftToSurface, OutOfSight, DropUnreachable }
 
     private static readonly string[] MarkPassText =
     [
         "buried (dug once a cell over or beside it is gone)", "under someone's feet", "in a cave (colony-marked surface work)",
         "by a spot where a pawn got stuck", "forbidden", "left to a pawn up top (this one is under ground)", "out of sight",
+        "drops there unreachable (missed there, or nowhere to stand by them)",
     ];
 
     /// <summary>Passes the picker makes on purpose (a colony-marked cave plant, trees left to a pawn up top): never blocked work.</summary>
-    private static readonly bool[] ByDesign = [false, false, true, false, false, true, false];
+    private static readonly bool[] ByDesign = [false, false, true, false, false, true, false, false];
 
     private readonly int[] _passed = new int[MarkPassText.Length];
     private readonly (string Kind, P3? At)[] _passedFirst = new (string, P3?)[MarkPassText.Length];

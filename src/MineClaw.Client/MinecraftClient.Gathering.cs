@@ -18,12 +18,22 @@ public sealed partial class MinecraftClient
                           + (r.Stuck > 0 ? $"; {r.Stuck} drop(s) lying up on leaves (break the leaf under them; not lost)" : "");
             return r.Entities > 0 || r.Water > 0
                 ? ActionResult.Success($"picked up {r.Items} item(s){lost}", r.Items)
-                : ActionResult.Fail("no reachable drops nearby" + lost);
+                : ActionResult.Fail("no reachable drops nearby" + MissText(r, radius) + lost);
         });
 
     /// <param name="Hazard">Of <paramref name="Lost"/>: drops left in/next to lava or water (a generator's channel), not
     /// over the void.</param>
-    private readonly record struct CollectResult(int Entities, int Items, int Lost, int LostItems, int Stuck = 0, int Hazard = 0, int Water = 0);
+    /// <param name="Seen">Drops it looked at; <paramref name="NoWay"/> of them with no way to a pickup spot, <paramref name="NotTaken"/>
+    /// reached but not picked up.</param>
+    private readonly record struct CollectResult(int Entities, int Items, int Lost, int LostItems, int Stuck = 0, int Hazard = 0, int Water = 0,
+        int Seen = 0, int NoWay = 0, int NotTaken = 0);
+
+    /// <summary>Why a collect took nothing (no ';': Story Mode reads a ';' as drops the safety checks wrote off): " (none in sight within
+    /// 4 with room for it)", " (2 seen: 1 with no way to a pickup spot, 1 not picked up)". Live 11-04: ×63 bare "no reachable drops
+    /// nearby" said nothing.</summary>
+    private static string MissText(CollectResult r, double radius) =>
+        r.Seen == 0 ? $" (none in sight within {radius:0.#} with room for it)"
+            : r.NoWay + r.NotTaken == 0 ? "" : $" ({r.Seen} seen: {r.NoWay} with no way to a pickup spot, {r.NotTaken} not picked up)";
 
     /// <summary>"; 2 drop(s) left near the void (2 item(s) lost); 3 drop(s) left in lava/water (hazard, not chased)".</summary>
     private static string LostText(CollectResult r)
@@ -196,21 +206,23 @@ public sealed partial class MinecraftClient
                     && World.Inventory.RoomFor(e.Item) > 0)
                 .OrderBy(e => e.Position.DistanceSquaredTo(me)).FirstOrDefault();
             if (drop is null) break;
+            run.Seen.Add(drop.Id);
             // mc-dev pickup box (ItemEntityRules): an item one block below the feet is not in range.
             if (!ItemEntityRules.InPickupRange(me, drop.Position) && !await ReachDropAsync(drop, run, ct).ConfigureAwait(false)) continue;
             // A freshly thrown item (player hand-off) has a 40-tick pickup delay: wait it out on top of the usual 1.5 s.
             var wait = TimeSpan.FromSeconds(1.5) + ItemEntityRules.RemainingPickupDelay(DateTime.UtcNow - drop.SpawnedAt);
             if (await WaitUntilAsync(() => World.Entities.Get(drop.Id) is null, wait, ct).ConfigureAwait(false)) run.Picked++;
-            else run.Skip.Add(drop.Id);
+            else { run.Skip.Add(drop.Id); run.NotTaken++; }
         }
-        return new CollectResult(run.Picked, Math.Max(0, TotalItems() - startCount), run.Lost, run.LostItems, run.Stuck, run.Hazard, run.Water);
+        return new CollectResult(run.Picked, Math.Max(0, TotalItems() - startCount), run.Lost, run.LostItems, run.Stuck, run.Hazard, run.Water,
+            run.Seen.Count, run.NoWay, run.NotTaken);
     }
 
     /// <summary>One collect pass: the drops passed over and settled once, the counts, and the callers' report sets.</summary>
     private sealed class DropRun(ISet<int>? lostIds, ISet<int>? stuckIds, bool dryOnly)
     {
-        public readonly HashSet<int> Skip = new(), Settled = new();
-        public int Picked, Lost, LostItems, Stuck, Hazard, Water;
+        public readonly HashSet<int> Skip = new(), Settled = new(), Seen = new();
+        public int Picked, Lost, LostItems, Stuck, Hazard, Water, NoWay, NotTaken;
         public ISet<int>? LostIds => lostIds;
         public ISet<int>? StuckIds => stuckIds;
         public bool DryOnly => dryOnly;
@@ -268,7 +280,7 @@ public sealed partial class MinecraftClient
         var g = await GotoCoreAsync(SafePickupGoal(at, run.DryOnly), GotoOptions.Default with
             { Timeout = TimeSpan.FromSeconds(run.DryOnly ? 2 : 15), MaxReplans = run.DryOnly ? 0 : 1 }, ct)
             .ConfigureAwait(false);
-        if (!g.Ok && World.Entities.Get(id) is not null) { run.Skip.Add(id); return false; }
+        if (!g.Ok && World.Entities.Get(id) is not null) { run.Skip.Add(id); run.NoWay++; return false; }
         if (World.Entities.Get(id) is { } d2 && !ItemEntityRules.InPickupRange(World.Player.Position, d2.Position))
             await LeanToDropAsync(id, ct).ConfigureAwait(false);
         return true;
