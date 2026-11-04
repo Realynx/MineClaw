@@ -3230,20 +3230,21 @@ function directiveKindSummary(d: StoryDirectiveRequest['directive']): string {
   return `${d.kind[0]!.toUpperCase()}${d.kind.slice(1)}${area}${d.targets?.length ? ` (${d.targets.length} targets)` : ''}`;
 }
 
-function directiveSummary(d: StoryDirectiveRequest['directive']): string {
-  const builds = d.build?.length ?? 0;
-  switch (d.kind) {
-    case 'text':
-      return d.text ?? 'Message';
-    case 'build':
-      return `Build ${builds} item${builds === 1 ? '' : 's'}`;
-    case 'craft':
-      return `Craft ${d.bill?.recipe ?? 'items'}`;
-    case 'move':
-      return `Move to ${d.targets?.[0]?.join(', ') ?? 'the spot'}`;
-    default:
-      return directiveKindSummary(d);
-  }
+type DirectiveSpec = StoryDirectiveRequest['directive'];
+
+/** The summaries of the directive kinds that say more than their name. */
+const DIRECTIVE_SUMMARY: Partial<Record<string, (d: DirectiveSpec) => string>> = {
+  text: (d) => d.text ?? 'Message',
+  build: (d) => {
+    const n = d.build?.length ?? 0;
+    return `Build ${n} item${n === 1 ? '' : 's'}`;
+  },
+  craft: (d) => `Craft ${d.bill?.recipe ?? 'items'}`,
+  move: (d) => `Move to ${d.targets?.[0]?.join(', ') ?? 'the spot'}`,
+};
+
+function directiveSummary(d: DirectiveSpec): string {
+  return (DIRECTIVE_SUMMARY[d.kind] ?? directiveKindSummary)(d);
 }
 
 /** True when a world block is a log (exported for the mocks' world builders). */
