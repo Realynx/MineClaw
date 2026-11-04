@@ -1019,10 +1019,7 @@ export function tick(): Array<[string, unknown]> {
 function tickBot(b: MockBot, t: number): boolean {
   let changed = false;
   const ix = BOTS.indexOf(b);
-  if (b.script && !b.script.paused && t % 2 === 0) {
-    b.script.line = b.script.line >= Math.min(b.script.lines, 44) ? 6 : b.script.line + 1;
-    changed = true;
-  }
+  if (stepScript(b, t)) changed = true;
   if (b.kind !== 'script' && t % 9 === ix) {
     nextThought(b.name);
     changed = true;
@@ -1033,6 +1030,13 @@ function tickBot(b: MockBot, t: number): boolean {
   }
   if (b.kind !== 'main') b.pos = [b.pos[0] + Math.sin(t / 5 + b.pos[2]) * 0.4, b.pos[1], b.pos[2] + Math.cos(t / 7) * 0.4];
   return changed;
+}
+
+/** A running script moves a line every other tick (wrapping back to line 6). */
+function stepScript(b: MockBot, t: number): boolean {
+  if (!b.script || b.script.paused || t % 2 !== 0) return false;
+  b.script.line = b.script.line >= Math.min(b.script.lines, 44) ? 6 : b.script.line + 1;
+  return true;
 }
 
 function nextThought(name: string) {
