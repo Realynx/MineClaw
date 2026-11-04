@@ -330,18 +330,8 @@ public sealed partial class StoryColony
         }, null);
     }
 
-    /// <summary>Does any pawn carry a bucket (empty or full), or a chest hold a full one? (Liquid builds share one bucket.)</summary>
-    private bool BucketCarried()
-    {
-        foreach (var p in Pawns.Values)
-        {
-            var live = Host.Live(p.Name);
-            if (live.Online && live.Inventory.Any(s => s.Id is Items.Bucket or Items.WaterBucket or Items.LavaBucket)) return true;
-        }
-        return Storages.Any(s => s.Contents.Any(c => c.Id is Items.WaterBucket or Items.LavaBucket));
-    }
-
-    /// <summary>The colony's buckets: every pawn's and every chest's, empty or full.</summary>
+    /// <summary>The colony's buckets: every pawn's and every chest's, empty or full (live 11-04: a water bucket put in a chest still
+    /// had "Make Bucket" asking for iron; any of them is the one bucket liquid builds share).</summary>
     private int BucketsHeld()
     {
         int n = Storages.Sum(s => s.Contents.Where(c => c.Id is Items.Bucket or Items.WaterBucket or Items.LavaBucket).Sum(c => c.Count));

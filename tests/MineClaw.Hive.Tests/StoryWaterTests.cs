@@ -174,8 +174,8 @@ public sealed class StoryWaterTests
         var fetch = job["fetch"]!.AsArray().Single()!;
         Assert.Equal(("bucket", 2, Chest.ToString()), (fetch["item"]!.GetValue<string>(), fetch["n"]!.GetValue<int>(), fetch["from"]!.GetValue<string>()));
         Assert.Equal(2, job["buckets"]!.GetValue<int>());
-        // The last liquid cells: the buckets go back after.
-        Assert.Equal(Chest.ToString(), job["stash"]![0]!["to"]!.GetValue<string>());
+        // The pourer keeps its buckets (the colony's working bucket never goes back mid-job).
+        Assert.Null(job["stash"]);
 
         // No bucket anywhere: iron ingots in storage and a colony table → an auto bill makes one; the build waits for it.
         var (c2, h2, w2) = Rig(Release1122GameData.Instance);
@@ -569,5 +569,38 @@ public sealed class StoryWaterTests
         Assert.All(b.Ghosts, g => Assert.Equal(("todo", (string?)null), (g.State, g.Reason)));
         Assert.Equal("queued", b.Status);
         Assert.False(c.MigrateWaterFailures()); // once
+    }
+
+    /// <summary>Live 11-04: a pawn put a water bucket in a chest, yet the water build was "short of materials: need 1 bucket" and a
+    /// "Make Bucket" bill asked for iron. Any bucket, empty or full, stored or carried, is the colony's bucket; a full one is fetched
+    /// first and poured at once.</summary>
+    [Fact]
+    public void A_stored_water_bucket_is_the_colonys_bucket_fetched_first_and_poured_without_a_fill()
+    {
+        var (c, h, w) = Rig(Release1122GameData.Instance);
+        w.Set(Table.X, Table.Y, Table.Z, 58);
+        Assert.Null(c.WorkbenchOp("designate", Table).Error);
+        c.AddContents(c.StorageAt(Chest)!, new Stack(265, 0, 3)); // iron ingots: a bucket could be made, but none is needed
+        c.AddContents(c.StorageAt(Chest)!, new Stack(326, 0, 1)); // the water bucket the pawn put away
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 64, 12) }).Error);
+        var job = c.Next();
+        var mat = c.Builds.Single().Materials.Single();
+        Assert.Equal(("bucket", 1, 1, 0), (mat.Item, mat.Need, mat.Have, mat.Short));
+        Assert.Empty(c.Benches.SelectMany(x => x.Bills).Where(x => x.ForBuild != null)); // no "Make Bucket" for it
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("short of materials"));
+        // No water to fill from anywhere: the full bucket is fetched and poured straight away (one cell), no source needed.
+        Assert.Equal("pour", job["kind"]!.GetValue<string>());
+        Assert.Equal("water_bucket", job["fetch"]![0]!["item"]!.GetValue<string>());
+        Assert.Single(JobCells(job));
+        Assert.Null(job["source"]);
+        Assert.Null(job["stash"]);
+        // Carried by another pawn: still the colony's bucket.
+        var (c2, h2, _) = Rig(Release1122GameData.Instance);
+        h2.Lives["maid_chan_999"] = FakeStoryHost.Live(9, 64, 9, inv: new Stack(325, 0, 1));
+        c2.Joined(["maid_chan_999"]);
+        Assert.Null(Add(c2, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 64, 12) }).Error);
+        c2.RefreshMaterials();
+        Assert.Equal(1, c2.Builds.Single().Materials.Single().Have);
+        _ = h;
     }
 }
