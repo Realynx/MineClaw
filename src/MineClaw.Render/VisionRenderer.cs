@@ -116,61 +116,77 @@ public sealed class VisionRenderer
         slab.Meta = new byte[n * slab.Sy * n];
         slab.Loaded = new bool[n * n];
         slab.Below = new bool[n * n];
-        int height = s.Blocks.WorldHeight;
-        ulong h = 14695981039346656037UL;
-        void Mix(int v) { unchecked { for (int k = 0; k < 4; k++) { h ^= (byte)(v >> (8 * k)); h *= 1099511628211UL; } } }
-        Mix(slab.X0); Mix(slab.Y0); Mix(slab.Z0); Mix(n); Mix(slab.Sy);
+        var h = new Fnv64(14695981039346656037UL);
+        h.Int(slab.X0); h.Int(slab.Y0); h.Int(slab.Z0); h.Int(n); h.Int(slab.Sy);
         for (int iz = 0; iz < n; iz++)
             for (int ix = 0; ix < n; ix++)
-            {
-                int wx = slab.X0 + ix, wz = slab.Z0 + iz;
-                bool loaded = s.Blocks.IsLoaded(wx, wz);
-                slab.Loaded[iz * n + ix] = loaded;
-                if (!loaded) { Mix(-1); continue; }
-                for (int iy = 0; iy < slab.Sy; iy++)
-                {
-                    int wy = slab.Y0 + iy;
-                    if ((uint)wy >= height) continue;
-                    int id = s.Blocks.GetBlock(wx, wy, wz);
-                    byte b = (byte)Math.Clamp(id, 0, 255);
-                    slab.Cells[(iy * n + iz) * n + ix] = b;
-                    unchecked { h ^= b; h *= 1099511628211UL; }
-                    if (b != 0)
-                    {
-                        byte mb = (byte)(s.Blocks.GetMeta(wx, wy, wz) & 15);
-                        slab.Meta[(iy * n + iz) * n + ix] = mb;
-                        unchecked { h ^= mb; h *= 1099511628211UL; }
-                    }
-                }
-                bool below = false;
-                for (int wy = slab.Y0 - 1; wy >= 0 && !below; wy--) below = s.Blocks.GetBlock(wx, wy, wz) != 0;
-                slab.Below[iz * n + ix] = below;
-                Mix(below ? 1 : 0);
-            }
-        slab.Hash = h;
+                ExtractColumn(s, slab, ix, iz, ref h);
+        slab.Hash = h.Value;
         if (s.Roles is { } roles)
-        {
-            // Roles of every block in the window, plus the air of the feet layer and the one below (a refilling gen cell).
-            slab.Roles = new byte[slab.Cells.Length];
-            ulong rh = h;
-            for (int iy = 0; iy < slab.Sy; iy++)
-            {
-                int wy = slab.Y0 + iy;
-                bool feetLayers = wy == s.Cy || wy == s.Cy - 1;
-                for (int iz = 0; iz < n; iz++)
-                    for (int ix = 0; ix < n; ix++)
-                    {
-                        int k = (iy * n + iz) * n + ix;
-                        if (!slab.Loaded[iz * n + ix] || (slab.Cells[k] == 0 && !feetLayers)) continue;
-                        BlockRole role;
-                        try { role = roles(slab.X0 + ix, wy, slab.Z0 + iz); } catch (Exception) { role = BlockRole.None; }
-                        slab.Roles[k] = (byte)role;
-                        unchecked { rh ^= (byte)role; rh *= 1099511628211UL; }
-                    }
-            }
-            slab.Hash = rh; // a new never-break mark or a placed block changes the picture even when the ids don't
-        }
+            slab.Hash = ExtractRoles(s, slab, roles, h.Value); // a new never-break mark or a placed block changes the picture even when the ids don't
         return slab;
+    }
+
+    /// <summary>The FNV-1a hash the slab key is built from.</summary>
+    private struct Fnv64(ulong seed)
+    {
+        public ulong Value = seed;
+        public void Byte(byte b) { unchecked { Value ^= b; Value *= 1099511628211UL; } }
+        public void Int(int v) { for (int k = 0; k < 4; k++) Byte((byte)(v >> (8 * k))); }
+    }
+
+    /// <summary>One (x, z) column of the slab: loaded flag, ids and metas in the window, and whether anything lies below it.</summary>
+    private static void ExtractColumn(VisionScene s, Slab slab, int ix, int iz, ref Fnv64 h)
+    {
+        int n = slab.N, height = s.Blocks.WorldHeight;
+        int wx = slab.X0 + ix, wz = slab.Z0 + iz;
+        bool loaded = s.Blocks.IsLoaded(wx, wz);
+        slab.Loaded[iz * n + ix] = loaded;
+        if (!loaded) { h.Int(-1); return; }
+        for (int iy = 0; iy < slab.Sy; iy++)
+        {
+            int wy = slab.Y0 + iy;
+            if ((uint)wy >= height) continue;
+            int id = s.Blocks.GetBlock(wx, wy, wz);
+            byte b = (byte)Math.Clamp(id, 0, 255);
+            slab.Cells[(iy * n + iz) * n + ix] = b;
+            h.Byte(b);
+            if (b == 0) continue;
+            byte mb = (byte)(s.Blocks.GetMeta(wx, wy, wz) & 15);
+            slab.Meta[(iy * n + iz) * n + ix] = mb;
+            h.Byte(mb);
+        }
+        bool below = false;
+        for (int wy = slab.Y0 - 1; wy >= 0 && !below; wy--) below = s.Blocks.GetBlock(wx, wy, wz) != 0;
+        slab.Below[iz * n + ix] = below;
+        h.Int(below ? 1 : 0);
+    }
+
+    /// <summary>
+    /// Roles of every block in the window, plus the air of the feet layer and the one below (a refilling gen cell); returns
+    /// the slab hash continued over them.
+    /// </summary>
+    private static ulong ExtractRoles(VisionScene s, Slab slab, RoleMap roles, ulong hash)
+    {
+        int n = slab.N;
+        slab.Roles = new byte[slab.Cells.Length];
+        var rh = new Fnv64(hash);
+        for (int iy = 0; iy < slab.Sy; iy++)
+        {
+            int wy = slab.Y0 + iy;
+            bool feetLayers = wy == s.Cy || wy == s.Cy - 1;
+            for (int iz = 0; iz < n; iz++)
+                for (int ix = 0; ix < n; ix++)
+                {
+                    int k = (iy * n + iz) * n + ix;
+                    if (!slab.Loaded[iz * n + ix] || (slab.Cells[k] == 0 && !feetLayers)) continue;
+                    BlockRole role;
+                    try { role = roles(slab.X0 + ix, wy, slab.Z0 + iz); } catch (Exception) { role = BlockRole.None; }
+                    slab.Roles[k] = (byte)role;
+                    rh.Byte((byte)role);
+                }
+        }
+        return rh.Value;
     }
 
     private static ulong OverlayHash(VisionScene s)
@@ -362,30 +378,42 @@ public sealed class VisionRenderer
         var eye = EyeFor(w, h);
         var focus = s.Focus ?? (s.Cx, s.Cy, s.Cz);
         var rig = RigFor(s);
-        var ents = new List<VisionEntity>(s.Entities);
-        if (s.Self is { } me && !ents.Any(e => (int)Math.Floor(e.X) == me.X && (int)Math.Floor(e.Z) == me.Z))
-        {
-            var (yaw, _) = EyeScene.LookAt(me.X + 0.5, me.Y, me.Z + 0.5, focus.X + 0.5, focus.Y, focus.Z + 0.5);
-            ents.Add(new VisionEntity("self", "you", me.X + 0.5, me.Y, me.Z + 0.5, '@') { Yaw = Math.Abs(me.X - focus.X) + Math.Abs(me.Z - focus.Z) == 0 ? 0 : yaw });
-        }
         var input = new PerspectivePanel.Input
         {
-            World = s.Light ?? new BlockAccessVoxels(s.Blocks), Atlas = s.Atlas, Time = s.Time, Nether = s.Nether, Entities = ents, Marks = s.Marks,
+            World = s.Light ?? new BlockAccessVoxels(s.Blocks), Atlas = s.Atlas, Time = s.Time, Nether = s.Nether, Entities = MapEntities(s, focus), Marks = s.Marks,
             Focus = focus, Pointed = s.Pointed, Target = s.Target, Slab = slab, Cut = s.CutAway ? PerspectivePanel.Cut(slab, s.Cy) : null,
             Aids = new ReadingAids.Input { Focus = focus, FeetY = s.Cy, Radius = Math.Min(r, 10), Slab = slab, Rings = false },
             FeetY = s.Cy, Subject = s.Self is { } sb ? (sb.X + 0.5, sb.Y, sb.Z + 0.5) : null, Weather = s.Nether ? default : s.Weather,
         };
         var img = PerspectivePanel.Render(eye, rig, input, out var labels);
         var c = new Canvas(w, h, img.Pixels!);
+        return Finish(c, key, MapLegend(s, slab, r, w, h, img.Legend, focus), labels);
+    }
+
+    /// <summary>The scene's entities, plus "you" (facing the focus) when no entity stands on the self cell.</summary>
+    private static List<VisionEntity> MapEntities(VisionScene s, (int X, int Y, int Z) focus)
+    {
+        var ents = new List<VisionEntity>(s.Entities);
+        if (s.Self is { } me && !ents.Any(e => (int)Math.Floor(e.X) == me.X && (int)Math.Floor(e.Z) == me.Z))
+        {
+            var (yaw, _) = EyeScene.LookAt(me.X + 0.5, me.Y, me.Z + 0.5, focus.X + 0.5, focus.Y, focus.Z + 0.5);
+            ents.Add(new VisionEntity("self", "you", me.X + 0.5, me.Y, me.Z + 0.5, '@') { Yaw = Math.Abs(me.X - focus.X) + Math.Abs(me.Z - focus.Z) == 0 ? 0 : yaw });
+        }
+        return ents;
+    }
+
+    /// <summary>The single-view legend: view, centre, how to read the picture, then the marks, roles and drops in it.</summary>
+    private static string MapLegend(VisionScene s, Slab slab, int r, int w, int h, string? imgLegend, (int X, int Y, int Z) focus)
+    {
         string view = s.View.ToString().ToLowerInvariant();
         var legend = new StringBuilder();
-        legend.Append(CultureInfo.InvariantCulture, $"{view} r{r} centre {Fmt(s.Cx, s.Cy, s.Cz)}: {img.Legend}{(s.View == VisionView.Top && s.CutAway ? ", roofs above it cut away" : "")}, rendered like the game; N arrow bottom-right, {w}x{h}px ~{(w * h + 749) / 750}tok.");
+        legend.Append(CultureInfo.InvariantCulture, $"{view} r{r} centre {Fmt(s.Cx, s.Cy, s.Cz)}: {imgLegend}{(s.View == VisionView.Top && s.CutAway ? ", roofs above it cut away" : "")}, rendered like the game; N arrow bottom-right, {w}x{h}px ~{(w * h + 749) / 750}tok.");
         legend.Append(" Grid = 1 block (every 5th labelled with its X/Z), gold Y ruler at the centre.");
         if (s.Self is { } self) legend.Append(CultureInfo.InvariantCulture, $" @=you {Fmt(self.X, self.Y, self.Z)} (orange tag).");
         if (s.Focus is { } fl) legend.Append(CultureInfo.InvariantCulture, $" Cyan box=focus {Fmt(fl.X, fl.Y, fl.Z)}.");
         if (s.Pointed is { } pt) legend.Append(CultureInfo.InvariantCulture, $" Pink box=pointed {Fmt(pt.X, pt.Y, pt.Z)}{(s.PointedBy != null ? " by " + s.PointedBy : "")}.");
         if (BlockRoles.Legend(RolesIn(slab).Where(PerspectivePanel.Shown)) is { Length: > 0 } rl) legend.Append(" Roles: ").Append(rl).Append('.');
         if (PerspectivePanel.DropsText(s.Entities, focus) is { } drops) legend.Append(' ').Append(drops).Append('.');
-        return Finish(c, key, legend.ToString(), labels);
+        return legend.ToString();
     }
 }

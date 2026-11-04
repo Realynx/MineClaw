@@ -98,14 +98,18 @@ public sealed record GameEvent
     /// </summary>
     public string? Body { get; init; }
 
-    public static EventPriority DefaultPriority(EventKind kind) => kind switch
+    private static readonly Dictionary<EventKind, EventPriority> DefaultPriorities = new()
     {
-        EventKind.Death or EventKind.VoidFall => EventPriority.Critical,
-        EventKind.LowHealth => EventPriority.High,
-        EventKind.Whisper or EventKind.Chat or EventKind.Emote or EventKind.TaskFailed or EventKind.TaskCompleted => EventPriority.Normal,
-        EventKind.PlayerJoined or EventKind.IdleTick or EventKind.Notice or EventKind.Activity => EventPriority.Low,
-        _ => EventPriority.Background, // TaskProgress, PlayerLeft
+        [EventKind.Death] = EventPriority.Critical, [EventKind.VoidFall] = EventPriority.Critical,
+        [EventKind.LowHealth] = EventPriority.High,
+        [EventKind.Whisper] = EventPriority.Normal, [EventKind.Chat] = EventPriority.Normal, [EventKind.Emote] = EventPriority.Normal,
+        [EventKind.TaskFailed] = EventPriority.Normal, [EventKind.TaskCompleted] = EventPriority.Normal,
+        [EventKind.PlayerJoined] = EventPriority.Low, [EventKind.IdleTick] = EventPriority.Low, [EventKind.Notice] = EventPriority.Low,
+        [EventKind.Activity] = EventPriority.Low,
     };
+
+    /// <summary>Background for anything not listed (TaskProgress, PlayerLeft, Gesture).</summary>
+    public static EventPriority DefaultPriority(EventKind kind) => DefaultPriorities.GetValueOrDefault(kind, EventPriority.Background);
 
     public static GameEvent Chat(string player, string text, bool addressed = true) =>
         new(EventKind.Chat, text, player, addressed ? EventPriority.Normal : EventPriority.Background);
@@ -132,31 +136,29 @@ public sealed record GameEvent
     public static GameEvent Activity(string text, string? player = null, EventPriority priority = EventPriority.Low) =>
         new(EventKind.Activity, text, player, priority);
 
+    private static readonly Dictionary<EventKind, string> Tags = new()
+    {
+        [EventKind.Chat] = "chat", [EventKind.Whisper] = "whisper", [EventKind.TaskCompleted] = "task ok", [EventKind.TaskFailed] = "task failed",
+        [EventKind.TaskProgress] = "task", [EventKind.LowHealth] = "DANGER", [EventKind.VoidFall] = "DANGER", [EventKind.Death] = "DIED",
+        [EventKind.PlayerJoined] = "player", [EventKind.PlayerLeft] = "player", [EventKind.IdleTick] = "idle", [EventKind.Activity] = "noticed",
+        [EventKind.Emote] = "emote", [EventKind.Gesture] = "gesture",
+    };
+
     /// <summary>Compact one-line rendering for the model.</summary>
     public string Format()
     {
-        string tag = Kind switch
-        {
-            EventKind.Chat => Priority == EventPriority.Background ? "chat(not to you)" : "chat",
-            EventKind.Whisper => "whisper",
-            EventKind.TaskCompleted => "task ok",
-            EventKind.TaskFailed => "task failed",
-            EventKind.TaskProgress => "task",
-            EventKind.LowHealth or EventKind.VoidFall => "DANGER",
-            EventKind.Death => "DIED",
-            EventKind.PlayerJoined or EventKind.PlayerLeft => "player",
-            EventKind.IdleTick => "idle",
-            EventKind.Activity => "noticed",
-            EventKind.Emote => "emote",
-            EventKind.Gesture => "gesture",
-            _ => "note",
-        };
-        string body = Player != null ? $"{Player}: {Text}" : Text;
-        if (Kind is EventKind.PlayerJoined or EventKind.PlayerLeft or EventKind.Emote or EventKind.Gesture && Player != null) body = $"{Player} {Text}";
+        string tag = Kind == EventKind.Chat && Priority == EventPriority.Background ? "chat(not to you)" : Tags.GetValueOrDefault(Kind, "note");
         // One brain, many bodies: a non-main body's event says whose it is ("[67 task ok] ...", "[69 DANGER] hp 5/20").
         // Null (hive mode, main, brain-level) renders exactly as before.
         if (BodyTag(Body) is { } who && !Text.StartsWith("[bodies]", StringComparison.Ordinal)) tag = who + " " + tag;
-        return $"[{tag}] {body}" + (Count > 1 ? $" (x{Count})" : "");
+        return $"[{tag}] {FormatBody()}" + (Count > 1 ? $" (x{Count})" : "");
+    }
+
+    /// <summary>"Player: text", or "Player text" for joins, leaves, emotes and gestures; just the text without a player.</summary>
+    private string FormatBody()
+    {
+        if (Player == null) return Text;
+        return Kind is EventKind.PlayerJoined or EventKind.PlayerLeft or EventKind.Emote or EventKind.Gesture ? $"{Player} {Text}" : $"{Player}: {Text}";
     }
 
     /// <summary>The body prefix for <see cref="Format"/>: the short name of a non-main body, else null.</summary>

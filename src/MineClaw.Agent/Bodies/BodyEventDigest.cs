@@ -81,27 +81,49 @@ public sealed class BodyEventDigest
         // Danger passes as it is: the body's lane gate must still read it as danger (it pauses the lane and, for a crew lane,
         // keeps the brain asleep itself).
         if (IsDanger(e) || e.MustWake || EventQueue.IsTyped(e)) return e;
-        if (e.Wakes && Unattended is { } crewed && SafeCrewed(crewed, body)) { Held++; return e with { Wakes = false }; }
+        if (e.Wakes && Unattended is { } crewed && SafeCrewed(crewed, body)) return Hold(e);
         var now = _time.GetUtcNow();
+        if (CrewResult(e, body, now) is { } reported) return reported;
+        if (!e.Wakes) return e;
+        return Throttled(e, body, now);
+    }
+
+    private GameEvent Hold(GameEvent e)
+    {
+        Held++;
+        return e with { Wakes = false };
+    }
+
+    /// <summary>
+    /// A task result of a body started with others: held while the rest of its crew is busy, the last one wakes (null = not a
+    /// crew result, or one held back as context that goes on to the normal throttle).
+    /// </summary>
+    private GameEvent? CrewResult(GameEvent e, string body, DateTimeOffset now)
+    {
         lock (_lock)
         {
             _groups.RemoveAll(g => g.Until < now || g.Members.Count == 0);
-            if (e.Kind is EventKind.TaskCompleted or EventKind.TaskFailed && _groups.FirstOrDefault(g => g.Members.Contains(body)) is { } group)
-            {
-                group.Members.Remove(body);
-                bool others = group.Members.Any(m => SafeBusy(m));
-                if (!others) _groups.Remove(group);
-                if (others && e.Wakes) { Held++; return e with { Wakes = false }; }
-                if (!others) { _lastWake[body] = now; return e.Wakes ? e : e with { Wakes = e.Priority >= EventPriority.Normal }; }
-            }
+            if (e.Kind is not (EventKind.TaskCompleted or EventKind.TaskFailed) || _groups.FirstOrDefault(g => g.Members.Contains(body)) is not { } group)
+                return null;
+            group.Members.Remove(body);
+            bool others = group.Members.Any(m => SafeBusy(m));
+            if (!others) _groups.Remove(group);
+            if (others && e.Wakes) return Hold(e);
+            if (others) return null;
+            _lastWake[body] = now;
+            return e.Wakes ? e : e with { Wakes = e.Priority >= EventPriority.Normal };
         }
-        if (!e.Wakes) return e;
+    }
+
+    /// <summary>The focus body wakes freely; another body's waking events need Normal+ and a gap since its last wake.</summary>
+    private GameEvent Throttled(GameEvent e, string body, DateTimeOffset now)
+    {
         var focus = Norm(Focus()) ?? "main";
         if (body.Equals(focus, StringComparison.OrdinalIgnoreCase)) return e;
-        if (e.Priority <= EventPriority.Low) { Held++; return e with { Wakes = false }; }
+        if (e.Priority <= EventPriority.Low) return Hold(e);
         lock (_lock)
         {
-            if (_lastWake.TryGetValue(body, out var last) && now - last < MinWakeGap) { Held++; return e with { Wakes = false }; }
+            if (_lastWake.TryGetValue(body, out var last) && now - last < MinWakeGap) return Hold(e);
             _lastWake[body] = now;
         }
         return e;

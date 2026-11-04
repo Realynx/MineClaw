@@ -100,18 +100,19 @@ public static class ReadingAids
         double cx = s.EyeX < a.Focus.X + 0.5 ? a.Focus.X : a.Focus.X + 1, cz = s.EyeZ < a.Focus.Z + 0.5 ? a.Focus.Z : a.Focus.Z + 1;
         int y0 = a.FeetY - 2, y1 = a.FeetY + 3;
         r.Line3D(c, fr, s, (cx, y0, cz), (cx, y1, cz), Gold, hiddenDots: true, alpha: 0.85f);
-        for (int y = y0; y <= y1; y++)
-        {
-            if (r.ProjectF(s, cx, y, cz) is not { } p || p.X < 0 || p.Y < 0 || p.X >= fr.Width || p.Y >= fr.Height) continue;
-            int px = (int)p.X, py = (int)p.Y;
-            c.Line(px - 2, py, px + 2, py, Gold);
-            if ((y - a.FeetY) % 2 == 0)
-            {
-                string t = "Y" + y.ToString(CultureInfo.InvariantCulture);
-                int w = PixelFont.Width(t) + 2;
-                if (placer.FindNear(Math.Min(fr.Width - w, px + 4), py - 4, w, 9) is { } at) Outlined(c, at.X + 1, at.Y + 1, t, Gold);
-            }
-        }
+        for (int y = y0; y <= y1; y++) YRulerTick(r, c, fr, s, placer, cx, y, cz, (y - a.FeetY) % 2 == 0);
+    }
+
+    /// <summary>One ruler tick at height y (labelled "Y.." when asked and there's room), skipped off-picture.</summary>
+    private static void YRulerTick(EyeRenderer r, Canvas c, EyeRenderer.Frame fr, EyeScene s, VisionRenderer.Placer placer, double cx, int y, double cz, bool labelled)
+    {
+        if (r.ProjectF(s, cx, y, cz) is not { } p || p.X < 0 || p.Y < 0 || p.X >= fr.Width || p.Y >= fr.Height) return;
+        int px = (int)p.X, py = (int)p.Y;
+        c.Line(px - 2, py, px + 2, py, Gold);
+        if (!labelled) return;
+        string t = "Y" + y.ToString(CultureInfo.InvariantCulture);
+        int w = PixelFont.Width(t) + 2;
+        if (placer.FindNear(Math.Min(fr.Width - w, px + 4), py - 4, w, 9) is { } at) Outlined(c, at.X + 1, at.Y + 1, t, Gold);
     }
 
     /// <summary>Dashed rings on the body's floor at 2, 4 and 8 blocks (reach, danger range).</summary>
@@ -217,22 +218,36 @@ public static class ReadingAids
         foreach (var k in cands.OrderBy(k => k.Priority).ThenBy(k => (k.X - s.EyeX) * (k.X - s.EyeX) + (k.Z - s.EyeZ) * (k.Z - s.EyeZ)))
         {
             if (placed >= MaxLabels) break;
-            if (r.Project(s, k.X, k.Y, k.Z) is not { } p) continue;
-            bool visible = fr.Depth[p.Y * fr.Width + p.X] >= p.Dist - 0.7;
-            if (!visible && !k.KeepOccluded) continue;
-            string text = visible ? k.Text : k.Text + " (BEHIND)";
-            int w = PixelFont.Width(text) + 4, h = 11;
-            if (k.Priority == 0) crosshairs.Add((p.X, p.Y, k.Colour));
-            var at = placer.FindNear(p.X - w / 2, p.Y - h - 3, w, h) ?? placer.Find(p.X - 2, p.Y - 2, 4, 4, w, h);
-            if (at is not { } q) continue;
-            int cxl = Math.Clamp(p.X, q.X, q.X + w - 1), cyl = p.Y < q.Y ? q.Y : q.Y + h - 1;
-            if (Math.Abs(cxl - p.X) + Math.Abs(cyl - p.Y) > 6) c.Line(p.X, p.Y, cxl, cyl, visible ? k.Colour : Dim);
-            c.Chip(q.X, q.Y, text, visible ? k.Colour : Dim);
+            if (!PlaceLabel(r, c, fr, s, k, placer, crosshairs)) continue;
             placed++;
             if (k.Fact != null) facts.Add(k.Fact);
         }
         // Crosshairs last: no chip may cover the exact pixel of a key block.
         foreach (var (x, y, col) in crosshairs) Crosshair(c, x, y, col);
+    }
+
+    /// <summary>One label: skipped when off-picture or hidden (unless kept, then marked BEHIND); a key block's anchor queues a
+    /// crosshair; the chip goes near the anchor with a leader line when it had to move. False when nothing was drawn.</summary>
+    private static bool PlaceLabel(EyeRenderer r, Canvas c, EyeRenderer.Frame fr, EyeScene s, Cand k, VisionRenderer.Placer placer, List<(int X, int Y, uint C)> crosshairs)
+    {
+        if (r.Project(s, k.X, k.Y, k.Z) is not { } p) return false;
+        bool visible = fr.Depth[p.Y * fr.Width + p.X] >= p.Dist - 0.7;
+        if (!visible && !k.KeepOccluded) return false;
+        string text = visible ? k.Text : k.Text + " (BEHIND)";
+        int w = PixelFont.Width(text) + 4, h = 11;
+        if (k.Priority == 0) crosshairs.Add((p.X, p.Y, k.Colour));
+        var at = placer.FindNear(p.X - w / 2, p.Y - h - 3, w, h) ?? placer.Find(p.X - 2, p.Y - 2, 4, 4, w, h);
+        if (at is not { } q) return false;
+        LabelChip(c, p.X, p.Y, q.X, q.Y, w, h, text, visible ? k.Colour : Dim);
+        return true;
+    }
+
+    /// <summary>The chip at (qx, qy), with a leader line from the anchor when the chip sits more than 6 px away.</summary>
+    private static void LabelChip(Canvas c, int px, int py, int qx, int qy, int w, int h, string text, uint colour)
+    {
+        int cxl = Math.Clamp(px, qx, qx + w - 1), cyl = py < qy ? qy : qy + h - 1;
+        if (Math.Abs(cxl - px) + Math.Abs(cyl - py) > 6) c.Line(px, py, cxl, cyl, colour);
+        c.Chip(qx, qy, text, colour);
     }
 
     /// <summary>A target crosshair (a ring with ticks) at a pixel.</summary>

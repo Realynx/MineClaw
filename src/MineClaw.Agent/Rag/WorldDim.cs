@@ -25,15 +25,20 @@ public static class WorldDim
     {
         dim = current;
         var t = s?.Trim().ToLowerInvariant();
-        switch (t)
-        {
-            case null or "" or "here" or "current" or "this": return true;
-            case "overworld" or "ow" or "world" or "surface" or "0": dim = Overworld; return true;
-            case "nether" or "hell" or "-1": dim = Nether; return true;
-            case "any" or "all" or "both" or "*": dim = Any; return true;
-            default: return false;
-        }
+        if (t == null) return true;
+        if (!DimWords.TryGetValue(t, out var d)) return false;
+        dim = d ?? current;
+        return true;
     }
+
+    /// <summary>The <c>dim</c> words (trimmed, lower-case); null = the current dimension.</summary>
+    private static readonly Dictionary<string, int?> DimWords = new(StringComparer.Ordinal)
+    {
+        [""] = null, ["here"] = null, ["current"] = null, ["this"] = null,
+        ["overworld"] = Overworld, ["ow"] = Overworld, ["world"] = Overworld, ["surface"] = Overworld, ["0"] = Overworld,
+        ["nether"] = Nether, ["hell"] = Nether, ["-1"] = Nether,
+        ["any"] = Any, ["all"] = Any, ["both"] = Any, ["*"] = Any,
+    };
 
     /// <summary>" (overworld)" when a thing lives in another dimension than <paramref name="current"/>, else "".</summary>
     public static string Tag(int dim, int current) => dim == current ? "" : " (" + Name(dim) + ")";

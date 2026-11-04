@@ -52,18 +52,7 @@ public sealed record EventBatch(IReadOnlyList<GameEvent> Events)
     /// </summary>
     public string Format(bool fresh = false)
     {
-        static bool ChatLine(GameEvent e) => e.Kind is EventKind.Chat or EventKind.Whisper && e.Player != null;
-        static string GroupKey(GameEvent e) => $"{(int)e.Kind}|{(int)e.Priority}|{e.Player!.ToLowerInvariant()}";
-
-        var groups = new Dictionary<string, List<string>>();
-        foreach (var e in Events)
-        {
-            if (!ChatLine(e)) continue;
-            var k = GroupKey(e);
-            if (!groups.TryGetValue(k, out var parts)) groups[k] = parts = new List<string>();
-            parts.Add(e.Count > 1 ? $"{e.Text} (x{e.Count})" : e.Text);
-        }
-
+        var groups = ChatGroups();
         // One brain, many bodies: task results from two or more bodies read as one line at the first one's place
         // ("[bodies] 67 ok: 64 cobble; 69 failed: no free cell"), so N bodies finishing is one thing to read, not N.
         var bodyTasks = Events.Where(BodyTask).ToList();
@@ -73,25 +62,42 @@ public sealed record EventBatch(IReadOnlyList<GameEvent> Events)
         var done = new HashSet<string>();
         foreach (var e in Events)
         {
-            string line;
-            if (coalesce && BodyTask(e))
-            {
-                if (!done.Add("\u0001bodies")) continue;
-                line = BodiesLine(bodyTasks);
-            }
-            else if (ChatLine(e))
-            {
-                var k = GroupKey(e);
-                if (!done.Add(k)) continue;
-                line = (e with { Text = string.Join(" / ", groups[k]), Count = 1 }).Format();
-            }
-            else line = e.Format();
-            if (fresh && e.Wakes && e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote && line.StartsWith('['))
-                line = "[new " + line[1..];
+            if (LineOf(e, coalesce, bodyTasks, groups, done) is not { } line) continue;
+            if (fresh && IsFreshChat(e, line)) line = "[new " + line[1..];
             sb.AppendLine(line);
         }
         return sb.ToString().TrimEnd();
     }
+
+    private static bool ChatLine(GameEvent e) => e.Kind is EventKind.Chat or EventKind.Whisper && e.Player != null;
+    private static string GroupKey(GameEvent e) => $"{(int)e.Kind}|{(int)e.Priority}|{e.Player!.ToLowerInvariant()}";
+
+    /// <summary>Each speaker's chat lines (same kind and priority), in order, repeats as "(xN)".</summary>
+    private Dictionary<string, List<string>> ChatGroups()
+    {
+        var groups = new Dictionary<string, List<string>>();
+        foreach (var e in Events)
+        {
+            if (!ChatLine(e)) continue;
+            var k = GroupKey(e);
+            if (!groups.TryGetValue(k, out var parts)) groups[k] = parts = new List<string>();
+            parts.Add(e.Count > 1 ? $"{e.Text} (x{e.Count})" : e.Text);
+        }
+        return groups;
+    }
+
+    /// <summary>The event's line, or null when its group's line (a speaker's chat, the [bodies] line) is already written.</summary>
+    private static string? LineOf(GameEvent e, bool coalesce, List<GameEvent> bodyTasks, Dictionary<string, List<string>> groups, HashSet<string> done)
+    {
+        if (coalesce && BodyTask(e)) return done.Add("\u0001bodies") ? BodiesLine(bodyTasks) : null;
+        if (!ChatLine(e)) return e.Format();
+        var k = GroupKey(e);
+        return done.Add(k) ? (e with { Text = string.Join(" / ", groups[k]), Count = 1 }).Format() : null;
+    }
+
+    /// <summary>Waking chat/whisper/emote rendered as a tag line: a mid-turn injection tags it "[new ...]".</summary>
+    private static bool IsFreshChat(GameEvent e, string line) =>
+        e.Wakes && e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote && line.StartsWith('[');
 
     /// <summary>A task result of a non-main body (the [bodies] coalescing unit).</summary>
     public static bool BodyTask(GameEvent e) => e.Kind is EventKind.TaskCompleted or EventKind.TaskFailed && GameEvent.BodyTag(e.Body) != null;
@@ -367,30 +373,30 @@ public sealed class EventQueue
         var batch = _pending.OrderBy(e => e.At).ToList();
         _pending.Clear();
         foreach (var e in batch) _recentlyTaken[RepeatKey(e)] = now;
-        if (_recentlyTaken.Count > 200)
-        {
-            var cutoff = now - TimeSpan.FromSeconds(_options.DedupeWindowSeconds);
-            foreach (var k in _recentlyTaken.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList()) _recentlyTaken.Remove(k);
-        }
+        if (_recentlyTaken.Count > 200) PruneOlderThan(_recentlyTaken, now - TimeSpan.FromSeconds(_options.DedupeWindowSeconds));
 
         var typed = batch.Where(IsTyped).ToList();
-        if (_debounce is { Enabled: true } d && typed.Count > 0)
-        {
-            foreach (var e in typed) _takenChat[ChatKey(e)] = now;
-            if (_takenChat.Count > 100)
-            {
-                var cutoff = now - TimeSpan.FromSeconds(Math.Max(1, d.RepeatWindowSeconds));
-                foreach (var k in _takenChat.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList()) _takenChat.Remove(k);
-            }
-            int speakers = typed.Select(e => e.Player!.ToLowerInvariant()).Distinct().Count();
-            Stats.Merged(typed.Count - speakers);
-            if (afterWait && _firstWake is { } fw && !_fireNow) Stats.Debounced(now - fw);
-        }
+        if (_debounce is { Enabled: true } d && typed.Count > 0) NoteTypedTakenLocked(d, typed, now, afterWait);
         _firstWake = null;
         _firstLine.Clear();
         _lastLine.Clear(); _lastComplete.Clear();
         _fireNow = false;
         return new EventBatch(batch);
+    }
+
+    private static void PruneOlderThan<TKey>(Dictionary<TKey, DateTimeOffset> taken, DateTimeOffset cutoff) where TKey : notnull
+    {
+        foreach (var k in taken.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList()) taken.Remove(k);
+    }
+
+    /// <summary>Remembers the typed lines taken (repeat window) and counts merges and the debounce wait.</summary>
+    private void NoteTypedTakenLocked(ChatDebounceOptions d, List<GameEvent> typed, DateTimeOffset now, bool afterWait)
+    {
+        foreach (var e in typed) _takenChat[ChatKey(e)] = now;
+        if (_takenChat.Count > 100) PruneOlderThan(_takenChat, now - TimeSpan.FromSeconds(Math.Max(1, d.RepeatWindowSeconds)));
+        int speakers = typed.Select(e => e.Player!.ToLowerInvariant()).Distinct().Count();
+        Stats.Merged(typed.Count - speakers);
+        if (afterWait && _firstWake is { } fw && !_fireNow) Stats.Debounced(now - fw);
     }
 
     /// <summary>
@@ -407,25 +413,34 @@ public sealed class EventQueue
         if (_debounce is { Enabled: true } d)
         {
             if (_fireNow) return now;
-            var players = _pending.Where(IsTyped).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            if (players.Count > 0)
-            {
-                var quiet = TimeSpan.FromMilliseconds(Math.Max(0, d.QuietMs));
-                var max = TimeSpan.FromMilliseconds(Math.Max(0, d.MaxMs));
-                var ready = DateTimeOffset.MinValue;
-                foreach (var p in players)
-                {
-                    var last = _lastLine.TryGetValue(p, out var l) ? l : first;
-                    var pf = _firstLine.TryGetValue(p, out var f) ? f : first;
-                    var q = _lastComplete.TryGetValue(p, out var complete) && complete
-                        ? TimeSpan.FromMilliseconds(Math.Max(0, Math.Min(d.QuietMs, d.CompleteQuietMs))) : quiet;
-                    var r = Min(last + q, pf + max);
-                    if (r > ready) ready = r;
-                }
-                return Min(ready, first + max);
-            }
+            if (TypedReadyAtLocked(d, first) is { } typed) return typed;
         }
         return Min(_lastPost + TimeSpan.FromMilliseconds(_options.CoalesceWindowMs), first + TimeSpan.FromMilliseconds(_options.MaxBatchDelayMs));
+    }
+
+    /// <summary>When every typing speaker has been quiet long enough (each capped from their first line), or null with none typing.</summary>
+    private DateTimeOffset? TypedReadyAtLocked(ChatDebounceOptions d, DateTimeOffset first)
+    {
+        var players = _pending.Where(IsTyped).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (players.Count == 0) return null;
+        var quiet = TimeSpan.FromMilliseconds(Math.Max(0, d.QuietMs));
+        var max = TimeSpan.FromMilliseconds(Math.Max(0, d.MaxMs));
+        var ready = DateTimeOffset.MinValue;
+        foreach (var p in players)
+        {
+            var r = SpeakerReadyAtLocked(p, d, quiet, max, first);
+            if (r > ready) ready = r;
+        }
+        return Min(ready, first + max);
+    }
+
+    private DateTimeOffset SpeakerReadyAtLocked(string p, ChatDebounceOptions d, TimeSpan quiet, TimeSpan max, DateTimeOffset first)
+    {
+        var last = _lastLine.TryGetValue(p, out var l) ? l : first;
+        var pf = _firstLine.TryGetValue(p, out var f) ? f : first;
+        var q = _lastComplete.TryGetValue(p, out var complete) && complete
+            ? TimeSpan.FromMilliseconds(Math.Max(0, Math.Min(d.QuietMs, d.CompleteQuietMs))) : quiet;
+        return Min(last + q, pf + max);
     }
 
     /// <summary>Waits until a waking batch is pending and its debounce window has closed (see <see cref="ReadyAtLocked"/>).</summary>

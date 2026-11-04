@@ -503,25 +503,11 @@ public sealed class LayeredGraph : Control
         var fills = new Batch();
         var stripes = new Batch();
         var marks = new Batch();
-        int rows = L.Rows;
         var labels = new List<(int Slot, Rect R)>();
-        for (int row = 0; row < rows; row++)
+        for (int row = 0; row < L.Rows; row++)
         {
-            bool leafRow = row == L.LeafRow;
-            if (leafRow && !vp.ShowLeaves) { DrawLeafRuns(m, vp, th, fills, hits); continue; }
-            var (from, to) = Visible(vp, row);
-            var slots = L.RowSlots[row];
-            for (int i = from; i < to; i++)
-            {
-                int s = slots[i];
-                if (BandRect(vp, s) is not { } r) continue;
-                bool dim = _lit != null && !_lit.Contains(s);
-                RoundRect(fills[Fill(m, s, th, dim, row, rows)], r, leafRow ? 3 : 6);
-                if (r.Width >= 6 && r.Height >= 10)
-                    RoundRect(stripes[Stripe(m, s, th, dim)], new Rect(r.X, r.Y, r.Width, Math.Min(3, r.Height / 3)), 1.5);
-                if (m.Nodes[s].Dirty && r.Width >= 22 && r.Height >= 14) Circle(marks[GraphPalette.WithAlpha(GetColor(th.Warn), dim ? 0.3 : 0.75)], new Point(r.Right - 7, r.Y + 9), 2);
-                if ((r.Width >= 30 || (leafRow && r.Width >= 13)) && r.Height >= 15) labels.Add((s, r));
-            }
+            if (row == L.LeafRow && !vp.ShowLeaves) { DrawLeafRuns(m, vp, th, fills, hits); continue; }
+            IcicleRow(m, vp, th, row, new IcicleBatches(fills, stripes, marks), labels);
         }
         fills.Flush(ctx, c => Brush(c));
         stripes.Flush(ctx, c => Brush(c));
@@ -529,6 +515,39 @@ public sealed class LayeredGraph : Control
         foreach (var (s, r) in labels) DrawBandLabel(ctx, m, th, s, r);
         DrawHitsAndOutlines(ctx, m, vp, th, hits);
     }
+
+    private readonly record struct IcicleBatches(Batch Fills, Batch Stripes, Batch Marks);
+
+    /// <summary>One icicle row: each visible band (fill, top stripe, dirty mark), and the bands big enough to carry a label.</summary>
+    private void IcicleRow(GraphModel m, GraphViewport vp, Theme th, int row, IcicleBatches b, List<(int Slot, Rect R)> labels)
+    {
+        var L = m.Layout;
+        bool leafRow = row == L.LeafRow;
+        var (from, to) = Visible(vp, row);
+        var slots = L.RowSlots[row];
+        for (int i = from; i < to; i++)
+        {
+            int s = slots[i];
+            if (BandRect(vp, s) is not { } r) continue;
+            IcicleBand(m, th, s, r, row, leafRow, b);
+            if ((r.Width >= 30 || (leafRow && r.Width >= 13)) && r.Height >= 15) labels.Add((s, r));
+        }
+    }
+
+    private void IcicleBand(GraphModel m, Theme th, int s, Rect r, int row, bool leafRow, IcicleBatches b)
+    {
+        bool dim = Dimmed(s);
+        RoundRect(b.Fills[Fill(m, s, th, dim, row, m.Layout.Rows)], r, leafRow ? 3 : 6);
+        if (r.Width >= 6 && r.Height >= 10)
+            RoundRect(b.Stripes[Stripe(m, s, th, dim)], new Rect(r.X, r.Y, r.Width, Math.Min(3, r.Height / 3)), 1.5);
+        if (m.Nodes[s].Dirty && r.Width >= 22 && r.Height >= 14) Circle(b.Marks[GraphPalette.WithAlpha(GetColor(th.Warn), dim ? 0.3 : 0.75)], new Point(r.Right - 7, r.Y + 9), 2);
+    }
+
+    /// <summary>Outside the selection's lit set (when something is selected).</summary>
+    private bool Dimmed(int s) => _lit != null && !_lit.Contains(s);
+
+    /// <summary>An aggregated leaf run outside the lit set (a run with no single owner counts as outside).</summary>
+    private bool RunDimmed(int owner) => _lit != null && (owner < 0 || !_lit.Contains(owner));
 
     private static Color GetColor(IBrush b) => (b as ISolidColorBrush)?.Color ?? Colors.Orange;
 
@@ -545,22 +564,11 @@ public sealed class LayeredGraph : Control
             if (x1 < vp.Plot.X || x0 > vp.Plot.Right || x1 - x0 < GraphLod.MinBandPx) continue;
             x0 = Math.Max(x0, vp.Plot.X - 4);
             x1 = Math.Min(x1, vp.Plot.Right + 4);
-            bool dim = _lit != null && (owner < 0 || !_lit.Contains(owner));
+            bool dim = RunDimmed(owner);
             double gap = x1 - x0 > 4 ? 0.75 : 0;
             if (ColorBy == GraphColorBy.Kind && x1 - x0 >= 8)
             {
-                // Composition of the run: one segment per category in fixed order.
-                var mix = _runMix[i];
-                int total = mix.Sum();
-                double at = x0 + gap, w = x1 - x0 - 2 * gap;
-                for (int c = 0; c < 7; c++)
-                {
-                    if (mix[c] == 0) continue;
-                    double sw = w * mix[c] / total;
-                    var col = GraphPalette.WithAlpha(th.Palette.Category((MemoryCategory)c), dim ? 0.22 : 0.8);
-                    RoundRect(fills[col], new Rect(at, top, Math.Max(0.5, sw), h), 0);
-                    at += sw;
-                }
+                IcicleRunMix(th, fills, _runMix[i], x0 + gap, x1 - x0 - 2 * gap, top, h, dim);
                 continue;
             }
             var color = owner >= 0 ? BaseColor(m, owner, th) : th.Palette.Other;
@@ -568,30 +576,50 @@ public sealed class LayeredGraph : Control
         }
     }
 
+    /// <summary>Composition of a leaf run: one segment per category in fixed order.</summary>
+    private static void IcicleRunMix(Theme th, Batch fills, int[] mix, double at, double w, double top, double h, bool dim)
+    {
+        int total = mix.Sum();
+        for (int c = 0; c < 7; c++)
+        {
+            if (mix[c] == 0) continue;
+            double sw = w * mix[c] / total;
+            var col = GraphPalette.WithAlpha(th.Palette.Category((MemoryCategory)c), dim ? 0.22 : 0.8);
+            RoundRect(fills[col], new Rect(at, top, Math.Max(0.5, sw), h), 0);
+            at += sw;
+        }
+    }
+
     private void DrawBandLabel(DrawingContext ctx, GraphModel m, Theme th, int s, Rect r)
     {
         var g = m.Nodes[s];
-        bool dim = _lit != null && !_lit.Contains(s);
-        using var _ = ctx.PushOpacity(dim ? 0.55 : 1);
+        using var _ = ctx.PushOpacity(Dimmed(s) ? 0.55 : 1);
         double pad = 7, avail = r.Width - 2 * pad;
         double y = r.Y + 6;
-        if (g.IsLeaf)
+        if (g.IsLeaf) DrawLeafBandTitle(ctx, g, th, r, pad, avail, y);
+        else DrawInnerBandLabel(ctx, g, th, r, pad, avail, y);
+    }
+
+    private void DrawLeafBandTitle(DrawingContext ctx, GraphNode g, Theme th, Rect r, double pad, double avail, double y)
+    {
+        if (avail >= 60)
         {
-            if (avail >= 60)
-            {
-                var title = Text(g.Title, 10.5, false, th.Text, "t", Math.Floor(avail / 8) * 8, Math.Max(1, (int)((r.Height - 8) / 14)));
-                using (ctx.PushClip(r)) ctx.DrawText(title, new Point(r.X + pad, y));
-            }
-            else if (r.Width >= 13 && r.Height >= 60)
-            {
-                // Narrow, tall leaf: the title runs up the band.
-                var title = Text(g.Title, 10.5, false, th.Text, "t", Math.Floor((r.Height - 14) / 8) * 8, 1);
-                using (ctx.PushClip(r))
-                using (ctx.PushTransform(Matrix.CreateRotation(-Math.PI / 2) * Matrix.CreateTranslation(r.X + (r.Width - title.Height) / 2, r.Bottom - 7)))
-                    ctx.DrawText(title, new Point(0, 0));
-            }
-            return;
+            var title = Text(g.Title, 10.5, false, th.Text, "t", Math.Floor(avail / 8) * 8, Math.Max(1, (int)((r.Height - 8) / 14)));
+            using (ctx.PushClip(r)) ctx.DrawText(title, new Point(r.X + pad, y));
         }
+        else if (r.Width >= 13 && r.Height >= 60)
+        {
+            // Narrow, tall leaf: the title runs up the band.
+            var title = Text(g.Title, 10.5, false, th.Text, "t", Math.Floor((r.Height - 14) / 8) * 8, 1);
+            using (ctx.PushClip(r))
+            using (ctx.PushTransform(Matrix.CreateRotation(-Math.PI / 2) * Matrix.CreateTranslation(r.X + (r.Width - title.Height) / 2, r.Bottom - 7)))
+                ctx.DrawText(title, new Point(0, 0));
+        }
+    }
+
+    /// <summary>A summary band: its terms, then (room permitting) layer/id/leaf count and the preview.</summary>
+    private void DrawInnerBandLabel(DrawingContext ctx, GraphNode g, Theme th, Rect r, double pad, double avail, double y)
+    {
         var head = TermsFitting(g, avail, 12, th);
         if (head == null) return;
         ctx.DrawText(head, new Point(r.X + pad, y));
@@ -624,35 +652,43 @@ public sealed class LayeredGraph : Control
 
     private void DrawHitsAndOutlines(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, HashSet<int>? hits)
     {
-        var L = m.Layout;
-        if (hits != null)
-        {
-            var ticks = new Batch();
-            var accent = GetColor(th.Accent);
-            foreach (var s in hits)
-            {
-                bool leaf = L.Row[s] == L.LeafRow;
-                if (leaf && !vp.ShowLeaves)
-                {
-                    var (t, b) = vp.RowSpan(L.Row[s]);
-                    double x = vp.ScreenX((L.X0[s] + L.X1[s]) / 2);
-                    if (x < vp.Plot.X || x > vp.Plot.Right) continue;
-                    RoundRect(ticks[accent], new Rect(x - 1.25, t - 3, 2.5, b - t + 2), 1);
-                    continue;
-                }
-                if (BandRect(vp, s) is not { } r) continue;
-                ctx.DrawRectangle(null, th.HitPen, r.Deflate(0.5), 5, 5);
-                Circle(ticks[accent], new Point(r.X + 5, r.Bottom - 5), 2.5);
-            }
-            ticks.Flush(ctx, c => Brush(c));
-        }
-        if (_path != null)
-            foreach (var s in _path)
-                if (s != Sel(m) && BandRect(vp, s) is { } r) ctx.DrawRectangle(null, th.PathPen, r.Deflate(0.5), 6, 6);
+        if (hits != null) DrawIcicleHits(ctx, m, vp, th, hits);
+        DrawIciclePath(ctx, m, vp, th);
         DrawSoftParents(ctx, m, vp, th);
         if (_hover >= 0 && BandRect(vp, _hover) is { } hr) ctx.DrawRectangle(null, th.HoverPen, hr.Deflate(0.5), 6, 6);
         if (Sel(m) is var sel && sel >= 0 && BandRect(vp, sel) is { } sr) ctx.DrawRectangle(null, th.SelPen, sr.Inflate(0.5), 6, 6);
         if (CursorShown && BandRect(vp, _cursor) is { } cr) ctx.DrawRectangle(null, th.CursorPen, cr.Inflate(2), 7, 7);
+    }
+
+    /// <summary>Search hits: an outlined band with a dot, or a tick on the aggregated leaf strip.</summary>
+    private void DrawIcicleHits(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, HashSet<int> hits)
+    {
+        var L = m.Layout;
+        var ticks = new Batch();
+        var accent = GetColor(th.Accent);
+        foreach (var s in hits)
+        {
+            if (L.Row[s] == L.LeafRow && !vp.ShowLeaves)
+            {
+                var (t, b) = vp.RowSpan(L.Row[s]);
+                double x = vp.ScreenX((L.X0[s] + L.X1[s]) / 2);
+                if (x < vp.Plot.X || x > vp.Plot.Right) continue;
+                RoundRect(ticks[accent], new Rect(x - 1.25, t - 3, 2.5, b - t + 2), 1);
+                continue;
+            }
+            if (BandRect(vp, s) is not { } r) continue;
+            ctx.DrawRectangle(null, th.HitPen, r.Deflate(0.5), 5, 5);
+            Circle(ticks[accent], new Point(r.X + 5, r.Bottom - 5), 2.5);
+        }
+        ticks.Flush(ctx, c => Brush(c));
+    }
+
+    /// <summary>The selection's path to the top, outlined (the selection itself gets its own outline).</summary>
+    private void DrawIciclePath(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th)
+    {
+        if (_path == null) return;
+        foreach (var s in _path)
+            if (s != Sel(m) && BandRect(vp, s) is { } r) ctx.DrawRectangle(null, th.PathPen, r.Deflate(0.5), 6, 6);
     }
 
     private int Sel(GraphModel m) => m.TryGetSlot(SelectedIndex, out var s) ? s : -1;
@@ -790,140 +826,194 @@ public sealed class LayeredGraph : Control
 
     private void DrawRadial(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, HashSet<int>? hits)
     {
-        var L = m.Layout;
         var c = vp.Center;
         var clip = new Rect(Gutter - 4, 0, Bounds.Width - Gutter + 4, vp.Plot.Bottom + 2);
         var fills = new Batch();
         var stripes = new Batch();
         var labels = new List<(int Slot, double R, double A, double Arc, double Thick)>();
-        int rows = L.Rows;
-        for (int row = 0; row < rows; row++)
+        for (int row = 0; row < m.Layout.Rows; row++)
         {
             var (r0, r1) = vp.RingSpan(row);
             r0 += 1; r1 -= 1.5;
             if (r1 <= r0) continue;
-            if (row == L.LeafRow && !vp.ShowLeaves)
-            {
-                var runs = L.LeafRuns;
-                for (int i = 0; i < runs.Length; i++)
-                {
-                    var (u0, u1, owner) = runs[i];
-                    if (Arc(vp, u0, u1, r1) is not { } a || !SectorVisible(c, r0, r1, a.A0, a.A1, clip)) continue;
-                    bool dim = _lit != null && (owner < 0 || !_lit.Contains(owner));
-                    if (ColorBy == GraphColorBy.Kind && (a.A1 - a.A0) * r1 >= 8)
-                    {
-                        var mix = _runMix[i];
-                        int total = mix.Sum();
-                        double at = a.A0;
-                        for (int k = 0; k < 7; k++)
-                        {
-                            if (mix[k] == 0) continue;
-                            double sw = (a.A1 - a.A0) * mix[k] / total;
-                            Sector(fills[GraphPalette.WithAlpha(th.Palette.Category((MemoryCategory)k), dim ? 0.22 : 0.8)], c, r0, r1, at, at + sw);
-                            at += sw;
-                        }
-                        continue;
-                    }
-                    var color = owner >= 0 ? BaseColor(m, owner, th) : th.Palette.Other;
-                    Sector(fills[GraphPalette.WithAlpha(color, dim ? 0.22 : 0.75)], c, r0, r1, a.A0, a.A1);
-                }
-                continue;
-            }
-            var (from, to) = Visible(vp, row);
-            var slots = L.RowSlots[row];
-            for (int i = from; i < to; i++)
-            {
-                int s = slots[i];
-                if (Arc(vp, L.X0[s], L.X1[s], r1) is not { } a || !SectorVisible(c, r0, r1, a.A0, a.A1, clip)) continue;
-                bool dim = _lit != null && !_lit.Contains(s);
-                Sector(fills[Fill(m, s, th, dim, row, rows)], c, r0, r1, a.A0, a.A1);
-                if ((a.A1 - a.A0) * r0 > 5 && r1 - r0 > 8) Sector(stripes[Stripe(m, s, th, dim)], c, r0, r0 + 2.5, a.A0, a.A1);
-                double arcLen = (a.A1 - a.A0) * (r0 + r1) / 2;
-                if (arcLen > 34 && r1 - r0 > 14) labels.Add((s, (r0 + r1) / 2, (a.A0 + a.A1) / 2, arcLen, r1 - r0));
-            }
+            var ring = new Ring(c, r0, r1, clip);
+            if (row == m.Layout.LeafRow && !vp.ShowLeaves) RadialLeafRuns(m, vp, th, fills, ring);
+            else RadialRow(m, vp, th, row, ring, fills, stripes, labels);
         }
         fills.Flush(ctx, col => Brush(col));
         stripes.Flush(ctx, col => Brush(col));
 
         // Labels: horizontal, centred on the band's mid-arc, kept only when the whole text box sits inside the sector.
-        foreach (var (s, r, a, arcLen, thick) in labels)
-        {
-            var g = m.Nodes[s];
-            bool dim = _lit != null && !_lit.Contains(s);
-            var (r0, r1) = vp.RingSpan(L.Row[s]);
-            bool full = arcLen >= Math.PI * 2 * r - 1;
-            double ang = full ? 0 : a;
-            double half = full ? Math.PI : (arcLen / r) / 2;
-            var p = GraphViewport.Polar(c, r, ang);
-            for (int k = g.IsLeaf ? 1 : Math.Min(3, g.Terms.Length); k >= 1; k--)
-            {
-                var ft = g.IsLeaf ? Text(g.Title, 10, false, th.Text, "t", Math.Min(160, arcLen * 0.7), 1)
-                    : Text(string.Join(" · ", g.Terms.Take(k)), 11.5, true, th.Text, "t");
-                var box = new Rect(p.X - ft.Width / 2, p.Y - ft.Height / 2, ft.Width, ft.Height);
-                if (!InsideSector(box, c, r0 + 2, r1 - 2, ang - half, ang + half, full)) continue;
-                using (ctx.PushOpacity(dim ? 0.55 : 1)) ctx.DrawText(ft, box.TopLeft);
-                break;
-            }
-        }
+        foreach (var label in labels) RadialLabel(ctx, m, vp, th, label);
+        RadialCentre(ctx, m, vp, th);
+        RadialMarks(ctx, m, vp, th, hits);
+    }
 
-        // Centre: what the window shows.
+    /// <summary>A ring of the radial view: centre, inner and outer radius (inset), and the visible rect for culling.</summary>
+    private readonly record struct Ring(Point C, double R0, double R1, Rect Clip);
+
+    /// <summary>The aggregated leaf ring: one sector per run (split by category when colouring by kind and wide enough).</summary>
+    private void RadialLeafRuns(GraphModel m, GraphViewport vp, Theme th, Batch fills, Ring ring)
+    {
+        var runs = m.Layout.LeafRuns;
+        for (int i = 0; i < runs.Length; i++)
+        {
+            var (u0, u1, owner) = runs[i];
+            if (Arc(vp, u0, u1, ring.R1) is not { } a || !SectorVisible(ring.C, ring.R0, ring.R1, a.A0, a.A1, ring.Clip)) continue;
+            bool dim = RunDimmed(owner);
+            if (ColorBy == GraphColorBy.Kind && (a.A1 - a.A0) * ring.R1 >= 8)
+            {
+                RadialRunMix(th, fills, ring, _runMix[i], a.A0, a.A1, dim);
+                continue;
+            }
+            var color = owner >= 0 ? BaseColor(m, owner, th) : th.Palette.Other;
+            Sector(fills[GraphPalette.WithAlpha(color, dim ? 0.22 : 0.75)], ring.C, ring.R0, ring.R1, a.A0, a.A1);
+        }
+    }
+
+    /// <summary>Composition of a leaf run on the ring: one sub-sector per category in fixed order.</summary>
+    private static void RadialRunMix(Theme th, Batch fills, Ring ring, int[] mix, double a0, double a1, bool dim)
+    {
+        int total = mix.Sum();
+        double at = a0;
+        for (int k = 0; k < 7; k++)
+        {
+            if (mix[k] == 0) continue;
+            double sw = (a1 - a0) * mix[k] / total;
+            Sector(fills[GraphPalette.WithAlpha(th.Palette.Category((MemoryCategory)k), dim ? 0.22 : 0.8)], ring.C, ring.R0, ring.R1, at, at + sw);
+            at += sw;
+        }
+    }
+
+    /// <summary>One ring of bands: fill and inner stripe per visible sector, and the sectors long and thick enough for a label.</summary>
+    private void RadialRow(GraphModel m, GraphViewport vp, Theme th, int row, Ring ring, Batch fills, Batch stripes,
+        List<(int Slot, double R, double A, double Arc, double Thick)> labels)
+    {
+        var L = m.Layout;
+        double r0 = ring.R0, r1 = ring.R1;
+        var (from, to) = Visible(vp, row);
+        var slots = L.RowSlots[row];
+        for (int i = from; i < to; i++)
+        {
+            int s = slots[i];
+            if (Arc(vp, L.X0[s], L.X1[s], r1) is not { } a || !SectorVisible(ring.C, r0, r1, a.A0, a.A1, ring.Clip)) continue;
+            bool dim = Dimmed(s);
+            Sector(fills[Fill(m, s, th, dim, row, L.Rows)], ring.C, r0, r1, a.A0, a.A1);
+            if ((a.A1 - a.A0) * r0 > 5 && r1 - r0 > 8) Sector(stripes[Stripe(m, s, th, dim)], ring.C, r0, r0 + 2.5, a.A0, a.A1);
+            double arcLen = (a.A1 - a.A0) * (r0 + r1) / 2;
+            if (arcLen > 34 && r1 - r0 > 14) labels.Add((s, (r0 + r1) / 2, (a.A0 + a.A1) / 2, arcLen, r1 - r0));
+        }
+    }
+
+    /// <summary>The longest label (title, or 3..1 terms) whose box fits inside its sector, centred on the mid-arc.</summary>
+    private void RadialLabel(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, (int Slot, double R, double A, double Arc, double Thick) label)
+    {
+        var (s, r, a, arcLen, _) = label;
+        var c = vp.Center;
+        var g = m.Nodes[s];
+        bool dim = Dimmed(s);
+        var (r0, r1) = vp.RingSpan(m.Layout.Row[s]);
+        bool full = arcLen >= Math.PI * 2 * r - 1;
+        double ang = full ? 0 : a;
+        double half = full ? Math.PI : (arcLen / r) / 2;
+        var p = GraphViewport.Polar(c, r, ang);
+        for (int k = g.IsLeaf ? 1 : Math.Min(3, g.Terms.Length); k >= 1; k--)
+        {
+            var ft = g.IsLeaf ? Text(g.Title, 10, false, th.Text, "t", Math.Min(160, arcLen * 0.7), 1)
+                : Text(string.Join(" · ", g.Terms.Take(k)), 11.5, true, th.Text, "t");
+            var box = new Rect(p.X - ft.Width / 2, p.Y - ft.Height / 2, ft.Width, ft.Height);
+            if (!InsideSector(box, c, r0 + 2, r1 - 2, ang - half, ang + half, full)) continue;
+            using (ctx.PushOpacity(dim ? 0.55 : 1)) ctx.DrawText(ft, box.TopLeft);
+            break;
+        }
+    }
+
+    /// <summary>Centre: what the window shows (the focused node's first term, or all memory) and its leaf count.</summary>
+    private void RadialCentre(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th)
+    {
+        var c = vp.Center;
         var hole = vp.RingSpan(0).R0;
-        if (hole > 30)
-        {
-            string head = FocusIndex >= 0 && m.TryGetSlot(FocusIndex, out var fs) ? (m.Nodes[fs].Terms.Length > 0 ? m.Nodes[fs].Terms[0] : $"#{FocusIndex}") : "all memory";
-            int leaves = FocusIndex >= 0 && m.TryGetSlot(FocusIndex, out var fs2) ? m.Nodes[fs2].LeafCount : m.LayerCounts[0];
-            var t1 = Text(head, 12, true, th.Text, "t", hole * 1.7, 1);
-            var t2 = Text($"{leaves:N0} leaves", 10.5, false, th.Muted, "m");
-            ctx.DrawText(t1, new Point(c.X - t1.Width / 2, c.Y - t1.Height + 1));
-            ctx.DrawText(t2, new Point(c.X - t2.Width / 2, c.Y + 2));
-        }
+        if (hole <= 30) return;
+        string head = FocusIndex >= 0 && m.TryGetSlot(FocusIndex, out var fs) ? (m.Nodes[fs].Terms.Length > 0 ? m.Nodes[fs].Terms[0] : $"#{FocusIndex}") : "all memory";
+        int leaves = FocusIndex >= 0 && m.TryGetSlot(FocusIndex, out var fs2) ? m.Nodes[fs2].LeafCount : m.LayerCounts[0];
+        var t1 = Text(head, 12, true, th.Text, "t", hole * 1.7, 1);
+        var t2 = Text($"{leaves:N0} leaves", 10.5, false, th.Muted, "m");
+        ctx.DrawText(t1, new Point(c.X - t1.Width / 2, c.Y - t1.Height + 1));
+        ctx.DrawText(t2, new Point(c.X - t2.Width / 2, c.Y + 2));
+    }
 
-        // Search hits, path, hover, selection.
-        void Outline(int s, IPen pen, double grow)
-        {
-            var (r0, r1) = vp.RingSpan(L.Row[s]);
-            if (Arc(vp, L.X0[s], L.X1[s], r1) is not { } a) return;
-            var geo = new StreamGeometry();
-            using (var g = geo.Open()) Sector(g, c, Math.Max(0, r0 + 1 - grow), r1 - 1.5 + grow, a.A0, a.A1);
-            ctx.DrawGeometry(null, pen, geo);
-        }
-        if (hits != null)
-        {
-            var ticks = new Batch();
-            var accent = GetColor(th.Accent);
-            foreach (var s in hits)
-            {
-                if (L.Row[s] == L.LeafRow && !vp.ShowLeaves)
-                {
-                    var (r0, r1) = vp.RingSpan(L.LeafRow);
-                    double u = (L.X0[s] + L.X1[s]) / 2;
-                    if (u < vp.View.X0 || u > vp.View.X0 + vp.View.Span) continue;
-                    double ang = vp.Angle(u), w = 1.4 / Math.Max(1, r1);
-                    Sector(ticks[accent], c, r0 - 2, r1 + 3, ang - w, ang + w);
-                }
-                else Outline(s, th.HitPen, 0);
-            }
-            ticks.Flush(ctx, col => Brush(col));
-        }
-        if (_path != null) foreach (var s in _path) if (s != Sel(m)) Outline(s, th.PathPen, 0);
+    /// <summary>Search hits, path, soft parents, hover, selection and the keyboard cursor over the rings.</summary>
+    private void RadialMarks(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, HashSet<int>? hits)
+    {
+        if (hits != null) RadialHits(ctx, m, vp, th, hits);
+        if (_path != null) foreach (var s in _path) if (s != Sel(m)) RadialOutline(ctx, m, vp, s, th.PathPen, 0);
         DrawSoftParents(ctx, m, vp, th);
-        if (_hover >= 0) Outline(_hover, th.HoverPen, 0);
-        if (Sel(m) is var sel && sel >= 0) Outline(sel, th.SelPen, 0.5);
-        if (CursorShown) Outline(_cursor, th.CursorPen, 2);
+        if (_hover >= 0) RadialOutline(ctx, m, vp, _hover, th.HoverPen, 0);
+        if (Sel(m) is var sel && sel >= 0) RadialOutline(ctx, m, vp, sel, th.SelPen, 0.5);
+        if (CursorShown) RadialOutline(ctx, m, vp, _cursor, th.CursorPen, 2);
+    }
+
+    private void RadialHits(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, HashSet<int> hits)
+    {
+        var L = m.Layout;
+        var c = vp.Center;
+        var ticks = new Batch();
+        var accent = GetColor(th.Accent);
+        foreach (var s in hits)
+        {
+            if (L.Row[s] == L.LeafRow && !vp.ShowLeaves)
+            {
+                var (r0, r1) = vp.RingSpan(L.LeafRow);
+                double u = (L.X0[s] + L.X1[s]) / 2;
+                if (u < vp.View.X0 || u > vp.View.X0 + vp.View.Span) continue;
+                double ang = vp.Angle(u), w = 1.4 / Math.Max(1, r1);
+                Sector(ticks[accent], c, r0 - 2, r1 + 3, ang - w, ang + w);
+            }
+            else RadialOutline(ctx, m, vp, s, th.HitPen, 0);
+        }
+        ticks.Flush(ctx, col => Brush(col));
+    }
+
+    /// <summary>A band's sector outlined with a pen, grown outward by <paramref name="grow"/> px.</summary>
+    private static void RadialOutline(DrawingContext ctx, GraphModel m, GraphViewport vp, int s, IPen pen, double grow)
+    {
+        var L = m.Layout;
+        var (r0, r1) = vp.RingSpan(L.Row[s]);
+        if (Arc(vp, L.X0[s], L.X1[s], r1) is not { } a) return;
+        var geo = new StreamGeometry();
+        using (var g = geo.Open()) Sector(g, vp.Center, Math.Max(0, r0 + 1 - grow), r1 - 1.5 + grow, a.A0, a.A1);
+        ctx.DrawGeometry(null, pen, geo);
     }
 
     // ---- node-link
 
     private void DrawNodeLink(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, HashSet<int>? hits)
     {
-        var L = m.Layout;
-        int rows = L.Rows;
-        var drawn = new List<int>();
         int sel = Sel(m);
-        for (int row = 0; row < rows; row++)
+        var drawn = NodeLinkShown(m, vp, hits, sel);
+        var drawnSet = drawn.ToHashSet();
+        DrawNodeLinkEdges(ctx, m, vp, th, drawn, drawnSet);
+        var labelSlots = DrawNodeLinkNodes(ctx, m, vp, th, drawn);
+        foreach (var s in labelSlots) DrawNodeLinkLabel(ctx, m, vp, th, s);
+
+        if (hits != null)
+            foreach (var s in hits)
+                if (drawnSet.Contains(s)) NodeRing(ctx, vp, s, th.HitPen, 3);
+        DrawSoftParents(ctx, m, vp, th);
+        if (_hover >= 0) NodeRing(ctx, vp, _hover, th.HoverPen, 2);
+        if (sel >= 0) NodeRing(ctx, vp, sel, th.SelPen, 2.5);
+        if (CursorShown) NodeRing(ctx, vp, _cursor, th.CursorPen, 5);
+    }
+
+    /// <summary>The nodes worth drawing: wide enough on screen (with a little slack so edges to just-offscreen nodes still enter
+    /// the view), or important (selected, on the selection's path, a search hit); leaves only when not aggregated.</summary>
+    private List<int> NodeLinkShown(GraphModel m, GraphViewport vp, HashSet<int>? hits, int sel)
+    {
+        var L = m.Layout;
+        var drawn = new List<int>();
+        for (int row = 0; row < L.Rows; row++)
         {
             if (row == L.LeafRow && !vp.ShowLeaves) continue;
-            // A little slack so edges to just-offscreen nodes still enter the view.
             double slack = vp.View.Span * 0.15;
             var (from, to) = L.RowRange(row, vp.View.X0 - slack, vp.View.X0 + vp.View.Span + slack);
             var slots = L.RowSlots[row];
@@ -931,14 +1021,18 @@ public sealed class LayeredGraph : Control
             {
                 int s = slots[i];
                 double w = (L.X1[s] - L.X0[s]) / vp.View.Span * vp.Plot.Width;
-                bool important = s == sel || (_lit != null && _path!.Contains(s)) || (hits?.Contains(s) ?? false);
-                if (w < 3 && !important) continue;
+                if (w < 3 && !Important(s, sel, hits)) continue;
                 drawn.Add(s);
             }
         }
-        var drawnSet = drawn.ToHashSet();
+        return drawn;
+    }
 
-        // Edges: parent trunk shares its first control point, so siblings bundle into one stem before fanning out.
+    private bool Important(int s, int sel, HashSet<int>? hits) => s == sel || (_lit != null && _path!.Contains(s)) || (hits?.Contains(s) ?? false);
+
+    /// <summary>Edges: parent trunk shares its first control point, so siblings bundle into one stem before fanning out.</summary>
+    private void DrawNodeLinkEdges(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, List<int> drawn, HashSet<int> drawnSet)
+    {
         var normal = new StreamGeometry();
         var faint = new StreamGeometry();
         var lit = new StreamGeometry();
@@ -946,29 +1040,47 @@ public sealed class LayeredGraph : Control
         using (var gf = faint.Open())
         using (var gl = lit.Open())
         {
-            foreach (var s in drawn)
-            {
-                int p = m.Nodes[s].Parent;
-                if (p < 0 || !drawnSet.Contains(p)) continue;
-                var pc = vp.NodeCenter(p);
-                var cc = vp.NodeCenter(s);
-                if ((pc.X < vp.Plot.X && cc.X < vp.Plot.X) || (pc.X > vp.Plot.Right && cc.X > vp.Plot.Right)) continue;
-                double rp = vp.NodeRadius(p), rc = vp.NodeRadius(s);
-                var a = new Point(pc.X, pc.Y + rp);
-                var b = new Point(cc.X, cc.Y - rc);
-                double dy = b.Y - a.Y;
-                bool on = _lit != null && _lit.Contains(s) && _lit.Contains(p);
-                bool dim = _lit != null && !on;
-                var g = on ? gl : dim || m.Nodes[s].IsLeaf ? gf : gn;
-                g.BeginFigure(a, false);
-                g.CubicBezierTo(new Point(a.X, a.Y + dy * 0.55), new Point(b.X, b.Y - dy * 0.45), b);
-                g.EndFigure(false);
-            }
+            var edges = new EdgeSinks(gn, gf, gl);
+            foreach (var s in drawn) NodeLinkEdge(m, vp, s, drawnSet, edges);
         }
         ctx.DrawGeometry(null, th.EdgeDimPen, faint);
         ctx.DrawGeometry(null, th.EdgePen, normal);
         ctx.DrawGeometry(null, th.EdgeLitPen, lit);
+    }
 
+    /// <summary>Where edges go: normal, faint (dimmed or to a leaf), lit (inside the selection).</summary>
+    private readonly record struct EdgeSinks(StreamGeometryContext Normal, StreamGeometryContext Faint, StreamGeometryContext Lit);
+
+    private void NodeLinkEdge(GraphModel m, GraphViewport vp, int s, HashSet<int> drawnSet, EdgeSinks edges)
+    {
+        int p = m.Nodes[s].Parent;
+        if (p < 0 || !drawnSet.Contains(p)) return;
+        var pc = vp.NodeCenter(p);
+        var cc = vp.NodeCenter(s);
+        if (BothOffscreen(vp, pc, cc)) return;
+        double rp = vp.NodeRadius(p), rc = vp.NodeRadius(s);
+        var a = new Point(pc.X, pc.Y + rp);
+        var b = new Point(cc.X, cc.Y - rc);
+        double dy = b.Y - a.Y;
+        var g = EdgeSink(edges, s, p, m.Nodes[s].IsLeaf);
+        g.BeginFigure(a, false);
+        g.CubicBezierTo(new Point(a.X, a.Y + dy * 0.55), new Point(b.X, b.Y - dy * 0.45), b);
+        g.EndFigure(false);
+    }
+
+    private static bool BothOffscreen(GraphViewport vp, Point pc, Point cc) =>
+        (pc.X < vp.Plot.X && cc.X < vp.Plot.X) || (pc.X > vp.Plot.Right && cc.X > vp.Plot.Right);
+
+    private StreamGeometryContext EdgeSink(EdgeSinks edges, int s, int p, bool leaf)
+    {
+        bool on = _lit != null && _lit.Contains(s) && _lit.Contains(p);
+        bool dim = _lit != null && !on;
+        return on ? edges.Lit : dim || leaf ? edges.Faint : edges.Normal;
+    }
+
+    /// <summary>Node circles (opacity by token weight, dimmed outside the selection) and dirty marks; returns the slots drawn.</summary>
+    private List<int> DrawNodeLinkNodes(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, List<int> drawn)
+    {
         var fills = new Batch();
         var marks = new Batch();
         var labelSlots = new List<int>();
@@ -977,36 +1089,38 @@ public sealed class LayeredGraph : Control
             var cc = vp.NodeCenter(s);
             if (cc.X < vp.Plot.X - 20 || cc.X > vp.Plot.Right + 20) continue;
             double r = vp.NodeRadius(s);
-            bool dim = _lit != null && !_lit.Contains(s);
-            var col = th.Palette.Depth(BaseColor(m, s, th), L.Row[s], rows);
+            bool dim = Dimmed(s);
+            var col = th.Palette.Depth(BaseColor(m, s, th), m.Layout.Row[s], m.Layout.Rows);
             Circle(fills[GraphPalette.WithAlpha(col, (dim ? 0.3 : 0.62 + 0.38 * _weight[s]))], cc, r);
             if (m.Nodes[s].Dirty) Circle(marks[GetColor(th.Warn)], new Point(cc.X + r * 0.75, cc.Y - r * 0.75), 2.4);
             labelSlots.Add(s);
         }
         fills.Flush(ctx, c => Brush(c), th.CardRing);
         marks.Flush(ctx, c => Brush(c));
+        return labelSlots;
+    }
 
-        foreach (var s in labelSlots)
-        {
-            var g = m.Nodes[s];
-            double w = (L.X1[s] - L.X0[s]) / vp.View.Span * vp.Plot.Width;
-            var cc = vp.NodeCenter(s);
-            double r = vp.NodeRadius(s);
-            FormattedText? ft = g.IsLeaf
-                ? (w >= 40 ? Text(g.Title, 10, false, th.Muted, "m", Math.Min(w - 4, 160), 2) : null)
-                : TermsFitting(g, w - 6, 11, th);
-            if (ft == null) continue;
-            bool dim = _lit != null && !_lit.Contains(s);
-            using (ctx.PushOpacity(dim ? 0.45 : 1)) ctx.DrawText(ft, new Point(cc.X - ft.Width / 2, cc.Y + r + 3));
-        }
+    /// <summary>The label under a node: a leaf's title when it has room, an inner node's terms that fit.</summary>
+    private void DrawNodeLinkLabel(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, int s)
+    {
+        var L = m.Layout;
+        var g = m.Nodes[s];
+        double w = (L.X1[s] - L.X0[s]) / vp.View.Span * vp.Plot.Width;
+        var cc = vp.NodeCenter(s);
+        double r = vp.NodeRadius(s);
+        FormattedText? ft = g.IsLeaf
+            ? (w >= 40 ? Text(g.Title, 10, false, th.Muted, "m", Math.Min(w - 4, 160), 2) : null)
+            : TermsFitting(g, w - 6, 11, th);
+        if (ft == null) return;
+        using (ctx.PushOpacity(Dimmed(s) ? 0.45 : 1)) ctx.DrawText(ft, new Point(cc.X - ft.Width / 2, cc.Y + r + 3));
+    }
 
-        if (hits != null)
-            foreach (var s in hits)
-                if (drawnSet.Contains(s)) { var cc = vp.NodeCenter(s); double r = vp.NodeRadius(s) + 3; ctx.DrawEllipse(null, th.HitPen, cc, r, r); }
-        DrawSoftParents(ctx, m, vp, th);
-        if (_hover >= 0) { var cc = vp.NodeCenter(_hover); double r = vp.NodeRadius(_hover) + 2; ctx.DrawEllipse(null, th.HoverPen, cc, r, r); }
-        if (sel >= 0) { var cc = vp.NodeCenter(sel); double r = vp.NodeRadius(sel) + 2.5; ctx.DrawEllipse(null, th.SelPen, cc, r, r); }
-        if (CursorShown) { var cc = vp.NodeCenter(_cursor); double r = vp.NodeRadius(_cursor) + 5; ctx.DrawEllipse(null, th.CursorPen, cc, r, r); }
+    /// <summary>A ring around a node, <paramref name="grow"/> px outside its circle.</summary>
+    private static void NodeRing(DrawingContext ctx, GraphViewport vp, int s, IPen pen, double grow)
+    {
+        var cc = vp.NodeCenter(s);
+        double r = vp.NodeRadius(s) + grow;
+        ctx.DrawEllipse(null, pen, cc, r, r);
     }
 
     // ---- gutter, legend, minimap, tooltip
@@ -1053,59 +1167,77 @@ public sealed class LayeredGraph : Control
 
     private void DrawFooter(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th, HashSet<int>? hits)
     {
-        double y = vp.Plot.Bottom + 12;
-        double x = vp.Plot.X;
-        double limit = vp.Plot.Right - 190;
-        void Swatch(Color c, string label, bool round = false)
-        {
-            var ft = Text(label, 11, false, th.Muted, "m");
-            if (x + 16 + ft.Width > limit) return;
-            if (round) ctx.DrawEllipse(Brush(c), null, new Point(x + 4.5, y + 7), 3.5, 3.5);
-            else ctx.DrawRectangle(Brush(c), null, new Rect(x, y + 2, 10, 10), 3, 3);
-            ctx.DrawText(ft, new Point(x + 15, y));
-            x += 15 + ft.Width + 14;
-        }
-        var p = th.Palette;
+        var row = new FooterRow(this, ctx, th, vp.Plot.Bottom + 12, vp.Plot.Right - 190) { X = vp.Plot.X };
         switch (ColorBy)
         {
-            case GraphColorBy.Time:
-            {
-                if (m.MaxTime <= m.MinTime) break;
-                var older = Text(DateTimeOffset.FromUnixTimeMilliseconds(m.MinTime).ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture), 11, false, th.Muted, "m");
-                var newer = Text(DateTimeOffset.FromUnixTimeMilliseconds(m.MaxTime).ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) + "   newest leaf, by rank", 11, false, th.Muted, "m");
-                ctx.DrawText(older, new Point(x, y));
-                x += older.Width + 8;
-                var grad = new LinearGradientBrush
-                {
-                    StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
-                    GradientStops = { new GradientStop(p.TimeOld, 0), new GradientStop(p.TimeNew, 1) },
-                };
-                ctx.DrawRectangle(grad, null, new Rect(x, y + 3, 110, 8), 4, 4);
-                x += 118;
-                ctx.DrawText(newer, new Point(x, y));
-                x += newer.Width + 16;
-                break;
-            }
-            case GraphColorBy.Cluster:
-            {
-                var ranked = m.TopLevel.Where(s => _rootRank[s] >= 0).OrderBy(s => _rootRank[s]).ToList();
-                foreach (var s in ranked.Take(GraphPalette.ClusterSlots))
-                    Swatch(p.Cluster(_rootRank[s]), m.Nodes[s].Terms.Length > 0 ? m.Nodes[s].Terms[0] : $"#{m.Nodes[s].Index}");
-                if (ranked.Count > GraphPalette.ClusterSlots || m.TopLevel.Any(s => _rootRank[s] < 0)) Swatch(p.Other, "other");
-                break;
-            }
-            default:
-            {
-                var present = new bool[7];
-                foreach (var g in m.Nodes) if (g.IsLeaf) present[(int)g.Category] = true;
-                for (int c = 0; c < 7; c++) if (present[c]) Swatch(p.Category((MemoryCategory)c), GraphPalette.CategoryNames[c]);
-                break;
-            }
+            case GraphColorBy.Time: FooterTimeScale(ctx, m, th, row); break;
+            case GraphColorBy.Cluster: FooterClusters(m, th, row); break;
+            default: FooterKinds(m, th, row); break;
         }
-        if (m.Nodes.Any(g => g.Dirty)) Swatch(GetColor(th.Warn), "awaiting refresh", round: true);
-        if (hits is { Count: > 0 }) Swatch(GetColor(th.Accent), $"{hits.Count} search hits", round: true);
+        if (m.Nodes.Any(g => g.Dirty)) row.Swatch(GetColor(th.Warn), "awaiting refresh", round: true);
+        if (hits is { Count: > 0 }) row.Swatch(GetColor(th.Accent), $"{hits.Count} search hits", round: true);
+        DrawMinimap(ctx, m, vp, th);
+    }
 
-        // Minimap: only once zoomed in. The whole icicle in miniature with the visible window.
+    /// <summary>The footer legend being laid out left to right: swatches stop before the minimap's room.</summary>
+    private sealed class FooterRow(LayeredGraph owner, DrawingContext ctx, Theme th, double y, double limit)
+    {
+        public double X;
+        public double Y => y;
+
+        public void Swatch(Color c, string label, bool round = false)
+        {
+            var ft = owner.Text(label, 11, false, th.Muted, "m");
+            if (X + 16 + ft.Width > limit) return;
+            if (round) ctx.DrawEllipse(owner.Brush(c), null, new Point(X + 4.5, y + 7), 3.5, 3.5);
+            else ctx.DrawRectangle(owner.Brush(c), null, new Rect(X, y + 2, 10, 10), 3, 3);
+            ctx.DrawText(ft, new Point(X + 15, y));
+            X += 15 + ft.Width + 14;
+        }
+    }
+
+    /// <summary>Colouring by time: oldest and newest leaf times around the gradient.</summary>
+    private void FooterTimeScale(DrawingContext ctx, GraphModel m, Theme th, FooterRow row)
+    {
+        if (m.MaxTime <= m.MinTime) return;
+        var p = th.Palette;
+        double y = row.Y;
+        var older = Text(DateTimeOffset.FromUnixTimeMilliseconds(m.MinTime).ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture), 11, false, th.Muted, "m");
+        var newer = Text(DateTimeOffset.FromUnixTimeMilliseconds(m.MaxTime).ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) + "   newest leaf, by rank", 11, false, th.Muted, "m");
+        ctx.DrawText(older, new Point(row.X, y));
+        row.X += older.Width + 8;
+        var grad = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
+            GradientStops = { new GradientStop(p.TimeOld, 0), new GradientStop(p.TimeNew, 1) },
+        };
+        ctx.DrawRectangle(grad, null, new Rect(row.X, y + 3, 110, 8), 4, 4);
+        row.X += 118;
+        ctx.DrawText(newer, new Point(row.X, y));
+        row.X += newer.Width + 16;
+    }
+
+    /// <summary>Colouring by cluster: the ranked root clusters by their first term, then "other".</summary>
+    private void FooterClusters(GraphModel m, Theme th, FooterRow row)
+    {
+        var p = th.Palette;
+        var ranked = m.TopLevel.Where(s => _rootRank[s] >= 0).OrderBy(s => _rootRank[s]).ToList();
+        foreach (var s in ranked.Take(GraphPalette.ClusterSlots))
+            row.Swatch(p.Cluster(_rootRank[s]), m.Nodes[s].Terms.Length > 0 ? m.Nodes[s].Terms[0] : $"#{m.Nodes[s].Index}");
+        if (ranked.Count > GraphPalette.ClusterSlots || m.TopLevel.Any(s => _rootRank[s] < 0)) row.Swatch(p.Other, "other");
+    }
+
+    /// <summary>Colouring by kind: the categories present among the leaves, in fixed order.</summary>
+    private static void FooterKinds(GraphModel m, Theme th, FooterRow row)
+    {
+        var present = new bool[7];
+        foreach (var g in m.Nodes) if (g.IsLeaf) present[(int)g.Category] = true;
+        for (int c = 0; c < 7; c++) if (present[c]) row.Swatch(th.Palette.Category((MemoryCategory)c), GraphPalette.CategoryNames[c]);
+    }
+
+    /// <summary>Minimap: only once zoomed in. The whole icicle in miniature with the visible window.</summary>
+    private void DrawMinimap(DrawingContext ctx, GraphModel m, GraphViewport vp, Theme th)
+    {
         _minimapShown = vp.View.Span < 0.999;
         if (!_minimapShown) return;
         var L = m.Layout;
@@ -1133,44 +1265,73 @@ public sealed class LayeredGraph : Control
         if (s < 0 && CursorShown)
         {
             s = _cursor;
-            at = vp.Kind switch
-            {
-                GraphLayoutKind.Icicle => BandRect(vp, s) is { } r ? new Point(Math.Clamp(r.Center.X, vp.Plot.X, vp.Plot.Right), r.Bottom + 6) : vp.Plot.Center,
-                GraphLayoutKind.NodeLink => vp.NodeCenter(s) + new Vector(12, 12),
-                _ => Anchor(vp, s, top: false) + new Vector(10, 10),
-            };
+            at = CursorTipAnchor(vp, s);
         }
         if (s < 0 || _press != null && _moved) return;
-        var g = m.Nodes[s];
-        const double W = 320, Pad = 12;
+        var tip = TipTexts(m.Nodes[s], th);
+        var box = TipBox(at, tip);
+        ctx.DrawRectangle(new ImmutableSolidColorBrush(Color.FromArgb(th.Palette.Dark ? (byte)90 : (byte)28, 0, 0, 0)), null, box.Translate(new Vector(0, 3)).Inflate(1), 9, 9);
+        ctx.DrawRectangle(th.Card, new Pen(th.Border, 1), box, 8, 8);
+        // Category swatch in the corner ties the card to the band's colour.
+        ctx.DrawRectangle(Brush(BaseColor(m, s, th)), null, new Rect(box.X, box.Y + 10, 3, Math.Min(26, box.Height - 20)), 1.5, 1.5);
+        double x = box.X, ty = box.Y + TipPad;
+        ctx.DrawText(tip.Title, new Point(x + TipPad, ty)); ty += tip.Title.Height + 3;
+        ctx.DrawText(tip.Meta, new Point(x + TipPad, ty)); ty += tip.Meta.Height + 7;
+        ctx.DrawText(tip.Preview, new Point(x + TipPad, ty)); ty += tip.Preview.Height + 6;
+        if (tip.When != null) ctx.DrawText(tip.When, new Point(x + TipPad, ty));
+    }
+
+    private const double TipWidth = 320, TipPad = 12;
+
+    /// <summary>The tooltip card's lines: title (or terms), meta, preview and when (null when there's nothing to say).</summary>
+    private readonly record struct Tip(FormattedText Title, FormattedText Meta, FormattedText Preview, FormattedText? When);
+
+    /// <summary>Where the keyboard cursor's tooltip hangs: under its band, beside its circle, or off its ring edge.</summary>
+    private static Point CursorTipAnchor(GraphViewport vp, int s) => vp.Kind switch
+    {
+        GraphLayoutKind.Icicle => BandRect(vp, s) is { } r ? new Point(Math.Clamp(r.Center.X, vp.Plot.X, vp.Plot.Right), r.Bottom + 6) : vp.Plot.Center,
+        GraphLayoutKind.NodeLink => vp.NodeCenter(s) + new Vector(12, 12),
+        _ => Anchor(vp, s, top: false) + new Vector(10, 10),
+    };
+
+    private Tip TipTexts(GraphNode g, Theme th)
+    {
         string title = g.IsLeaf ? g.Title : g.Terms.Length > 0 ? string.Join(" · ", g.Terms) : g.Title;
-        var t1 = Text(title, 12.5, true, th.Text, "t", W - 2 * Pad, 2);
+        var t1 = Text(title, 12.5, true, th.Text, "t", TipWidth - 2 * TipPad, 2);
+        var t2 = Text(TipMeta(g), 10.5, false, th.Muted, "m", TipWidth - 2 * TipPad, 2);
+        var t3 = Text(g.Preview, 11.5, false, th.Text, "t", TipWidth - 2 * TipPad, 2);
+        string when = TipWhen(g);
+        var t4 = when.Length > 0 ? Text(when, 10.5, false, g.Dirty ? th.Warn : th.Faint, g.Dirty ? "w" : "f") : null;
+        return new Tip(t1, t2, t3, t4);
+    }
+
+    private static string TipMeta(GraphNode g)
+    {
         string meta = g.IsLeaf
             ? $"leaf #{g.Index} · {GraphPalette.CategoryNames[(int)g.Category]} · {g.Tokens:N0} tokens"
             : $"L{g.Layer} #{g.Index} · {g.ChildCount} children · {g.LeafCount:N0} leaves · {g.Tokens:N0} tokens";
         if (g.OtherParents.Length > 0) meta += $" · {g.OtherParents.Length + 1} parents";
-        var t2 = Text(meta, 10.5, false, th.Muted, "m", W - 2 * Pad, 2);
-        var t3 = Text(g.Preview, 11.5, false, th.Text, "t", W - 2 * Pad, 2);
+        return meta;
+    }
+
+    private static string TipWhen(GraphNode g)
+    {
         string when = g.Newest > 0 ? (g.IsLeaf ? "updated " : "newest leaf ") +
             DateTimeOffset.FromUnixTimeMilliseconds(g.Newest).ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : "";
         if (g.Dirty) when += (when.Length > 0 ? " · " : "") + "awaiting refresh";
-        var t4 = when.Length > 0 ? Text(when, 10.5, false, g.Dirty ? th.Warn : th.Faint, g.Dirty ? "w" : "f") : null;
-        double h = Pad + t1.Height + 3 + t2.Height + 7 + t3.Height + (t4 != null ? 6 + t4.Height : 0) + Pad;
-        double w = Math.Max(Math.Max(t1.Width, t2.Width), Math.Max(t3.Width, t4?.Width ?? 0)) + 2 * Pad;
-        w = Math.Min(W, Math.Max(180, w));
+        return when;
+    }
+
+    /// <summary>The card's rect: sized to its lines (180..320 wide), flipped left/up when it would leave the control.</summary>
+    private Rect TipBox(Point at, Tip tip)
+    {
+        double h = TipPad + tip.Title.Height + 3 + tip.Meta.Height + 7 + tip.Preview.Height + (tip.When != null ? 6 + tip.When.Height : 0) + TipPad;
+        double w = Math.Max(Math.Max(tip.Title.Width, tip.Meta.Width), Math.Max(tip.Preview.Width, tip.When?.Width ?? 0)) + 2 * TipPad;
+        w = Math.Min(TipWidth, Math.Max(180, w));
         double x = at.X, y = at.Y;
         if (x + w > Bounds.Width - 4) x = Math.Max(4, at.X - w - 24);
         if (y + h > Bounds.Height - 4) y = Math.Max(4, at.Y - h - 26);
-        var box = new Rect(x, y, w, h);
-        ctx.DrawRectangle(new ImmutableSolidColorBrush(Color.FromArgb(th.Palette.Dark ? (byte)90 : (byte)28, 0, 0, 0)), null, box.Translate(new Vector(0, 3)).Inflate(1), 9, 9);
-        ctx.DrawRectangle(th.Card, new Pen(th.Border, 1), box, 8, 8);
-        // Category swatch in the corner ties the card to the band's colour.
-        ctx.DrawRectangle(Brush(BaseColor(m, s, th)), null, new Rect(x, y + 10, 3, Math.Min(26, h - 20)), 1.5, 1.5);
-        double ty = y + Pad;
-        ctx.DrawText(t1, new Point(x + Pad, ty)); ty += t1.Height + 3;
-        ctx.DrawText(t2, new Point(x + Pad, ty)); ty += t2.Height + 7;
-        ctx.DrawText(t3, new Point(x + Pad, ty)); ty += t3.Height + 6;
-        if (t4 != null) ctx.DrawText(t4, new Point(x + Pad, ty));
+        return new Rect(x, y, w, h);
     }
 
     // ------------------------------------------------------------------ input
@@ -1199,14 +1360,7 @@ public sealed class LayeredGraph : Control
         }
         if (e.ClickCount == 2 && _vp is { } vp && Model is { } m)
         {
-            int s = vp.HitTest(p);
-            if (s >= 0)
-            {
-                int f = m.Nodes[s].Children.Length == 0 && m.Nodes[s].Parent >= 0 ? m.Nodes[s].Parent : s;
-                SelectedIndex = m.Nodes[s].Index;
-                if (FocusIndex == m.Nodes[f].Index) Fit();
-                else FocusIndex = m.Nodes[f].Index;
-            }
+            DoubleClick(m, vp.HitTest(p));
             e.Handled = true;
             return;
         }
@@ -1232,12 +1386,7 @@ public sealed class LayeredGraph : Control
         if (_dragMinimap) { CenterOnMinimap(p.X); return; }
         if (_press is { } d)
         {
-            if (!_moved && Math.Abs(p.X - d.X) + Math.Abs(p.Y - d.Y) > 4) _moved = true;
-            if (!_moved || _vp is not { } vp) return;
-            if (LayoutKind == GraphLayoutKind.Radial)
-                SetView(_pressView with { PanX = _pressView.PanX + p.X - d.X, PanY = _pressView.PanY + p.Y - d.Y }, false);
-            else
-                SetView(_pressView with { X0 = _pressView.X0 - (p.X - d.X) / vp.Plot.Width * _pressView.Span }, false);
+            DragTo(p, d);
             return;
         }
         int hit = _vp?.HitTest(p) ?? -1;
@@ -1246,6 +1395,27 @@ public sealed class LayeredGraph : Control
             _hover = hit;
             InvalidateVisual();
         }
+    }
+
+    /// <summary>A drag past 4 px pans: the radial view moves its centre, the others scroll the window along the tree.</summary>
+    private void DragTo(Point p, Point d)
+    {
+        if (!_moved && Math.Abs(p.X - d.X) + Math.Abs(p.Y - d.Y) > 4) _moved = true;
+        if (!_moved || _vp is not { } vp) return;
+        if (LayoutKind == GraphLayoutKind.Radial)
+            SetView(_pressView with { PanX = _pressView.PanX + p.X - d.X, PanY = _pressView.PanY + p.Y - d.Y }, false);
+        else
+            SetView(_pressView with { X0 = _pressView.X0 - (p.X - d.X) / vp.Plot.Width * _pressView.Span }, false);
+    }
+
+    /// <summary>Double-click on a node: select it and focus it (a leaf focuses its parent); again on the focus fits it.</summary>
+    private void DoubleClick(GraphModel m, int s)
+    {
+        if (s < 0) return;
+        int f = m.Nodes[s].Children.Length == 0 && m.Nodes[s].Parent >= 0 ? m.Nodes[s].Parent : s;
+        SelectedIndex = m.Nodes[s].Index;
+        if (FocusIndex == m.Nodes[f].Index) Fit();
+        else FocusIndex = m.Nodes[f].Index;
     }
 
     protected override void OnPointerExited(PointerEventArgs e)
@@ -1272,46 +1442,60 @@ public sealed class LayeredGraph : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         if (Model is not { } m || m.Nodes.Length == 0) { base.OnKeyDown(e); return; }
-        var L = m.Layout;
         if (_cursor < 0 || _cursor >= m.Nodes.Length) _cursor = Sel(m) >= 0 ? Sel(m) : m.TopLevel[0];
         int c = _cursor;
-        int next = c;
-        switch (e.Key)
-        {
-            case Key.Up: next = m.Nodes[c].Parent >= 0 ? m.Nodes[c].Parent : c; break;
-            case Key.Down: next = m.Nodes[c].Children.Length > 0 ? m.Nodes[c].Children[0] : c; break;
-            case Key.Left:
-            case Key.Right:
-            {
-                int row = L.Row[c];
-                int i = Array.BinarySearch(L.RowStarts[row], L.X0[c]);
-                if (i < 0) break;
-                i += e.Key == Key.Left ? -1 : 1;
-                if (i >= 0 && i < L.RowSlots[row].Length) next = L.RowSlots[row][i];
-                break;
-            }
-            case Key.Enter:
-                SelectedIndex = m.Nodes[c].Index;
-                e.Handled = true;
-                return;
-            case Key.Escape:
-                if (FocusIndex >= 0 && m.TryGetSlot(FocusIndex, out var fs))
-                    FocusIndex = m.Nodes[fs].Parent >= 0 ? m.Nodes[m.Nodes[fs].Parent].Index : -1;
-                else SetView(ViewState.Whole, true);
-                e.Handled = true;
-                return;
-            case Key.Home: Reset(); e.Handled = true; return;
-            case Key.F: Fit(); e.Handled = true; return;
-            case Key.OemPlus: case Key.Add: ZoomBy(1.5); e.Handled = true; return;
-            case Key.OemMinus: case Key.Subtract: ZoomBy(1 / 1.5); e.Handled = true; return;
-            default: base.OnKeyDown(e); return;
-        }
+        if (KeyCommand(e.Key, m, c)) { e.Handled = true; return; }
+        if (NavigateKey(e.Key, m, c) is not { } next) { base.OnKeyDown(e); return; }
         _cursor = next;
         _keyboardTip = true;
         _hover = -1;
         EnsureVisible(next);
         InvalidateVisual();
         e.Handled = true;
+    }
+
+    /// <summary>The keys that act rather than move the cursor: Enter selects, Esc steps the focus out, Home resets, F fits,
+    /// +/- zoom. False for any other key.</summary>
+    private bool KeyCommand(Key key, GraphModel m, int c)
+    {
+        switch (key)
+        {
+            case Key.Enter: SelectedIndex = m.Nodes[c].Index; return true;
+            case Key.Escape: FocusOut(m); return true;
+            case Key.Home: Reset(); return true;
+            case Key.F: Fit(); return true;
+            case Key.OemPlus: case Key.Add: ZoomBy(1.5); return true;
+            case Key.OemMinus: case Key.Subtract: ZoomBy(1 / 1.5); return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>Esc: focus the focused node's parent (none above a root), or zoom out to the whole tree when nothing is focused.</summary>
+    private void FocusOut(GraphModel m)
+    {
+        if (FocusIndex >= 0 && m.TryGetSlot(FocusIndex, out var fs))
+            FocusIndex = m.Nodes[fs].Parent >= 0 ? m.Nodes[m.Nodes[fs].Parent].Index : -1;
+        else SetView(ViewState.Whole, true);
+    }
+
+    /// <summary>Where an arrow key moves the cursor (up: parent, down: first child, left/right: the neighbour band in its row;
+    /// it stays put at an edge); null for a key that doesn't navigate.</summary>
+    private static int? NavigateKey(Key key, GraphModel m, int c) => key switch
+    {
+        Key.Up => m.Nodes[c].Parent >= 0 ? m.Nodes[c].Parent : c,
+        Key.Down => m.Nodes[c].Children.Length > 0 ? m.Nodes[c].Children[0] : c,
+        Key.Left => Neighbour(m.Layout, c, -1),
+        Key.Right => Neighbour(m.Layout, c, 1),
+        _ => null,
+    };
+
+    private static int Neighbour(PartitionLayout L, int c, int step)
+    {
+        int row = L.Row[c];
+        int i = Array.BinarySearch(L.RowStarts[row], L.X0[c]);
+        if (i < 0) return c;
+        i += step;
+        return i >= 0 && i < L.RowSlots[row].Length ? L.RowSlots[row][i] : c;
     }
 
     /// <summary>Pans (and if needed zooms) so the band is inside the window; leaves hidden by LOD get zoomed into view.</summary>
@@ -1328,13 +1512,21 @@ public sealed class LayeredGraph : Control
             if (outside) SetView(t with { X0 = 0, Span = 1 }, true);
             return;
         }
-        if (m.Nodes[s].IsLeaf && L.TotalLeaves > 0)
-        {
-            double plotW = Math.Max(100, Bounds.Width - Gutter - RightPad);
-            double need = plotW / (GraphLod.LeafDetailPx * 2.5) / L.TotalLeaves; // span at which each leaf gets 2.5× the threshold
-            if (span > need) { span = need; outside = true; }
-        }
-        if (!outside) return;
+        if (m.Nodes[s].IsLeaf && LeafDetailSpan(L) is { } need && span > need) { span = need; outside = true; }
+        if (outside) CentreOn(t, a, b, span);
+    }
+
+    /// <summary>The span at which each leaf gets 2.5× the leaf-detail threshold (null for an empty tree).</summary>
+    private double? LeafDetailSpan(PartitionLayout L)
+    {
+        if (L.TotalLeaves <= 0) return null;
+        double plotW = Math.Max(100, Bounds.Width - Gutter - RightPad);
+        return plotW / (GraphLod.LeafDetailPx * 2.5) / L.TotalLeaves;
+    }
+
+    /// <summary>Animates the window to centre on [a, b] at <paramref name="span"/> (widened to fit the band), unless it already is.</summary>
+    private void CentreOn(ViewState t, double a, double b, double span)
+    {
         if (b - a > span) span = Math.Min(1, (b - a) * 1.15);
         double x0 = (a + b) / 2 - span / 2;
         if (Math.Abs(span - t.Span) < 1e-12 && Math.Abs(x0 - t.X0) < 1e-12) return;

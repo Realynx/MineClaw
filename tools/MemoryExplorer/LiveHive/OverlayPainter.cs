@@ -36,78 +36,122 @@ public static class OverlayPainter
     public static List<OverlayLabel> Paint(EyeRenderer.Frame fr, ViewProjector cam, Overlay flags, OverlaysDto? ov, IReadOnlyList<BotDto> bots,
         IReadOnlyList<EntityDto> ents, HiveVoxels vox, DateTimeOffset now, double maxDist)
     {
-        var labels = new List<OverlayLabel>();
-        var p = new Painter(fr, cam, maxDist);
+        var sc = new Scene(fr, cam, maxDist, new List<OverlayLabel>());
         int dim = vox.Dim;
         if (flags.HasFlag(Overlay.Staleness)) StaleTint(fr, cam, vox, now);
         if (ov != null && ov.Dim == dim)
         {
-            if (flags.HasFlag(Overlay.Plans))
-            {
-                int drawn = 0;
-                foreach (var plan in ov.Plans)
-                    foreach (var b in plan.Blocks)
-                    {
-                        if (b.Length < 6 || drawn > 4000) continue;
-                        if (Math.Abs(b[0] + 0.5 - cam.Ox) + Math.Abs(b[2] + 0.5 - cam.Oz) > maxDist * 1.5) continue;
-                        bool done = b[5] != 0;
-                        if (done && vox.Block(b[0], b[1], b[2]) == b[3]) continue; // built as planned: nothing to show
-                        p.Box(b[0] + 0.03, b[1] + 0.03, b[2] + 0.03, b[0] + 0.97, b[1] + 0.97, b[2] + 0.97, done ? PlanDoneColour : PlanColour, 0.25f);
-                        drawn++;
-                    }
-                foreach (var plan in ov.Plans.Where(pl => pl.Blocks.Count > 0))
-                {
-                    var first = plan.Blocks[0];
-                    Label($"plan #{plan.Id} {plan.Name} ({plan.Status})", first[0] + 0.5, first[1] + 1.6, first[2] + 0.5, PlanColour, false);
-                }
-            }
-            if (flags.HasFlag(Overlay.Claims))
-                foreach (var c in ov.Claims) MarkBox(c, ClaimColour, $"{Short(c.Owner)}: {c.Text}", 0.0f, true);
-            if (flags.HasFlag(Overlay.Places))
-                foreach (var m in ov.Places) MarkBox(m, m.Kind == "waypoint" ? WaypointColour : PlaceColour, m.Text, 0.0f, true);
-            if (flags.HasFlag(Overlay.Chests))
-                foreach (var m in ov.Points)
-                {
-                    var (col, label) = m.Kind switch
-                    {
-                        "chest" => (ChestColour, false),
-                        "cobble_generator" => (GenColour, true),
-                        "farm" => (FarmColour, true),
-                        "portal" => (PortalColour, true),
-                        "key" => (GenColour, true),
-                        "island" => (0u, true),
-                        _ => (PlaceColour, false),
-                    };
-                    if (m.Kind == "island") { Label(m.Text, Mid(m, 0), m.Max[1] + 2.5, Mid(m, 2), PlaceColour, false); continue; }
-                    MarkBox(m, col, m.Kind == "key" ? m.Text : m.Kind.Replace('_', ' '), 0.02f, label);
-                }
-            if (flags.HasFlag(Overlay.Dangers))
-                foreach (var d in ov.Dangers) MarkBox(d, DangerColour, "! " + d.Text, -0.05f, true, xray: true);
+            PaintAreas(sc, flags, ov, vox);
+            PaintSpots(sc, flags, ov);
         }
-        if (flags.HasFlag(Overlay.Bots))
-        {
-            foreach (var b in bots.Where(b => b.Dim == dim))
-                Label(b.Main ? "main" : b.Short, b.X, b.Y + 2.2, b.Z, BotColour, true);
-            foreach (var e in ents.Where(e => e.Dim == dim && e.Kind == "player" && e.Name != null))
-                Label(e.Name!, e.X, e.Y + 2.2, e.Z, PlayerColour, true);
-        }
-        if (flags.HasFlag(Overlay.Drops))
-            foreach (var e in ents)
-                if (e.Dim == dim && e.Kind == "item")
-                    Label((e.Count ?? 1) > 1 ? $"{e.Name ?? "item"} x{e.Count}" : e.Name ?? "item", e.X, e.Y + 0.65, e.Z, DropColour, true);
-        return labels;
+        if (flags.HasFlag(Overlay.Bots)) PaintBodies(sc, bots, ents, dim);
+        if (flags.HasFlag(Overlay.Drops)) PaintDrops(sc, ents, dim);
+        return sc.Labels;
+    }
 
-        void MarkBox(MarkDto m, uint colour, string text, float inset, bool label, bool xray = false)
+    /// <summary>Build-plan ghost blocks with their labels, claims (owner: text) and places.</summary>
+    private static void PaintAreas(Scene sc, Overlay flags, OverlaysDto ov, HiveVoxels vox)
+    {
+        if (flags.HasFlag(Overlay.Plans)) PaintPlans(sc, ov.Plans, vox);
+        if (flags.HasFlag(Overlay.Claims))
+            foreach (var c in ov.Claims) sc.MarkBox(c, ClaimColour, $"{Short(c.Owner)}: {c.Text}", 0.0f, true);
+        if (flags.HasFlag(Overlay.Places))
+            foreach (var m in ov.Places) sc.MarkBox(m, m.Kind == "waypoint" ? WaypointColour : PlaceColour, m.Text, 0.0f, true);
+    }
+
+    /// <summary>Chests, gens and the other points of interest, then the danger boxes (x-ray: seen through walls).</summary>
+    private static void PaintSpots(Scene sc, Overlay flags, OverlaysDto ov)
+    {
+        if (flags.HasFlag(Overlay.Chests))
+            foreach (var m in ov.Points) PaintPoint(sc, m);
+        if (flags.HasFlag(Overlay.Dangers))
+            foreach (var d in ov.Dangers) sc.MarkBox(d, DangerColour, "! " + d.Text, -0.05f, true, xray: true);
+    }
+
+    /// <summary>Plan blocks not yet built as planned (at most ~4000, near the camera), then each plan's name over its first block.</summary>
+    private static void PaintPlans(Scene sc, List<PlanDto> plans, HiveVoxels vox)
+    {
+        int drawn = 0;
+        foreach (var plan in plans)
+            foreach (var b in plan.Blocks)
+            {
+                if (b.Length < 6 || drawn > 4000) continue;
+                if (PlanBlock(sc, b, vox)) drawn++;
+            }
+        foreach (var plan in plans.Where(pl => pl.Blocks.Count > 0))
+        {
+            var first = plan.Blocks[0];
+            sc.Label($"plan #{plan.Id} {plan.Name} ({plan.Status})", first[0] + 0.5, first[1] + 1.6, first[2] + 0.5, PlanColour, false);
+        }
+    }
+
+    /// <summary>One plan block [x, y, z, id, meta, done] as a ghost box; false when far or already built as planned.</summary>
+    private static bool PlanBlock(Scene sc, int[] b, HiveVoxels vox)
+    {
+        if (Math.Abs(b[0] + 0.5 - sc.Cam.Ox) + Math.Abs(b[2] + 0.5 - sc.Cam.Oz) > sc.MaxDist * 1.5) return false;
+        bool done = b[5] != 0;
+        if (done && vox.Block(b[0], b[1], b[2]) == b[3]) return false; // built as planned: nothing to show
+        sc.Painter.Box(b[0] + 0.03, b[1] + 0.03, b[2] + 0.03, b[0] + 0.97, b[1] + 0.97, b[2] + 0.97, done ? PlanDoneColour : PlanColour, 0.25f);
+        return true;
+    }
+
+    /// <summary>A point of interest: an island gets only its name; the others a box, labelled by kind (a key spot by its text).</summary>
+    private static void PaintPoint(Scene sc, MarkDto m)
+    {
+        var (col, label) = PointStyle(m.Kind);
+        if (m.Kind == "island") { sc.Label(m.Text, Mid(m, 0), m.Max[1] + 2.5, Mid(m, 2), PlaceColour, false); return; }
+        sc.MarkBox(m, col, m.Kind == "key" ? m.Text : m.Kind.Replace('_', ' '), 0.02f, label);
+    }
+
+    private static (uint Colour, bool Label) PointStyle(string kind) => kind switch
+    {
+        "chest" => (ChestColour, false),
+        "cobble_generator" => (GenColour, true),
+        "farm" => (FarmColour, true),
+        "portal" => (PortalColour, true),
+        "key" => (GenColour, true),
+        "island" => (0u, true),
+        _ => (PlaceColour, false),
+    };
+
+    /// <summary>Bot names ("main" for the main body) and named players in this dimension.</summary>
+    private static void PaintBodies(Scene sc, IReadOnlyList<BotDto> bots, IReadOnlyList<EntityDto> ents, int dim)
+    {
+        foreach (var b in bots.Where(b => b.Dim == dim))
+            sc.Label(b.Main ? "main" : b.Short, b.X, b.Y + 2.2, b.Z, BotColour, true);
+        foreach (var e in ents.Where(e => e.Dim == dim && e.Kind == "player" && e.Name != null))
+            sc.Label(e.Name!, e.X, e.Y + 2.2, e.Z, PlayerColour, true);
+    }
+
+    /// <summary>Dropped items: name, and "x12" when more than one.</summary>
+    private static void PaintDrops(Scene sc, IReadOnlyList<EntityDto> ents, int dim)
+    {
+        foreach (var e in ents)
+            if (e.Dim == dim && e.Kind == "item")
+                sc.Label((e.Count ?? 1) > 1 ? $"{e.Name ?? "item"} x{e.Count}" : e.Name ?? "item", e.X, e.Y + 0.65, e.Z, DropColour, true);
+    }
+
+    /// <summary>One paint pass: the frame, the camera, the labels collected, and the depth-tested line painter.</summary>
+    private readonly struct Scene(EyeRenderer.Frame fr, ViewProjector cam, double maxDist, List<OverlayLabel> labels)
+    {
+        public ViewProjector Cam => cam;
+        public double MaxDist => maxDist;
+        public List<OverlayLabel> Labels => labels;
+        public Painter Painter => new(fr, cam, maxDist);
+
+        /// <summary>A mark's box (inset; skipped when out of range) and, when asked, its text over the top.</summary>
+        public void MarkBox(MarkDto m, uint colour, string text, float inset, bool label, bool xray = false)
         {
             if (m.Min.Length < 3 || m.Max.Length < 3) return;
             double x0 = Math.Min(m.Min[0], m.Max[0]) + inset, y0 = Math.Min(m.Min[1], m.Max[1]) + inset, z0 = Math.Min(m.Min[2], m.Max[2]) + inset;
             double x1 = Math.Max(m.Min[0], m.Max[0]) + 1 - inset, y1 = Math.Max(m.Min[1], m.Max[1]) + 1 - inset, z1 = Math.Max(m.Min[2], m.Max[2]) + 1 - inset;
             if (Math.Max(Math.Abs((x0 + x1) / 2 - cam.Ox), Math.Abs((z0 + z1) / 2 - cam.Oz)) > maxDist + Math.Max(x1 - x0, z1 - z0)) return;
-            p.Box(x0, y0, z0, x1, y1, z1, colour, xray ? 0.45f : 0f);
+            Painter.Box(x0, y0, z0, x1, y1, z1, colour, xray ? 0.45f : 0f);
             if (label && text.Length > 0) Label(text, (x0 + x1) / 2, y1 + 0.6, (z0 + z1) / 2, colour, xray);
         }
 
-        void Label(string text, double x, double y, double z, uint colour, bool always)
+        /// <summary>A label at a world point: on screen (with a margin) and in range; behind a wall only when <paramref name="always"/>.</summary>
+        public void Label(string text, double x, double y, double z, uint colour, bool always)
         {
             if (!cam.Project(x, y, z, out var sx, out var sy, out var dist) || dist > maxDist * 1.25) return;
             if (sx < -40 || sy < -20 || sx > cam.W + 40 || sy > cam.H + 20) return;
@@ -178,19 +222,36 @@ public static class OverlayPainter
 
         public void Line(double ax, double ay, double az, double bx, double by, double bz, uint c, float hiddenAlpha)
         {
-            const double near = 0.1;
-            double fa = cam.Forward(ax, ay, az), fb = cam.Forward(bx, by, bz);
-            if (fa < near && fb < near) return;
-            if (fa < near) { double t = (near - fa) / (fb - fa); ax += (bx - ax) * t; ay += (by - ay) * t; az += (bz - az) * t; }
-            else if (fb < near) { double t = (near - fb) / (fa - fb); bx += (ax - bx) * t; by += (ay - by) * t; bz += (az - bz) * t; }
+            if (!ClipNear(ref ax, ref ay, ref az, ref bx, ref by, ref bz)) return;
             if (!cam.Project(ax, ay, az, out var sx0, out var sy0, out var d0) || !cam.Project(bx, by, bz, out var sx1, out var sy1, out var d1)) return;
             if (Math.Min(d0, d1) > maxDist) return;
             // Clip to the screen.
             double t0 = 0, t1 = 1, ddx = sx1 - sx0, ddy = sy1 - sy0;
-            if (!Clip(-ddx, sx0, ref t0, ref t1) || !Clip(ddx, cam.W - 1 - sx0, ref t0, ref t1)
-                || !Clip(-ddy, sy0, ref t0, ref t1) || !Clip(ddy, cam.H - 1 - sy0, ref t0, ref t1)) return;
+            if (!ClipScreen(sx0, sy0, ddx, ddy, ref t0, ref t1)) return;
             double px0 = sx0 + ddx * t0, py0 = sy0 + ddy * t0, px1 = sx0 + ddx * t1, py1 = sy0 + ddy * t1;
             double e0 = d0 + (d1 - d0) * t0, e1 = d0 + (d1 - d0) * t1;
+            Plot(px0, py0, px1, py1, e0, e1, c, hiddenAlpha);
+        }
+
+        /// <summary>Cuts the segment at the near plane (0.1 in front of the eye); false when it lies wholly behind it.</summary>
+        private bool ClipNear(ref double ax, ref double ay, ref double az, ref double bx, ref double by, ref double bz)
+        {
+            const double near = 0.1;
+            double fa = cam.Forward(ax, ay, az), fb = cam.Forward(bx, by, bz);
+            if (fa < near && fb < near) return false;
+            if (fa < near) { double t = (near - fa) / (fb - fa); ax += (bx - ax) * t; ay += (by - ay) * t; az += (bz - az) * t; }
+            else if (fb < near) { double t = (near - fb) / (fa - fb); bx += (ax - bx) * t; by += (ay - by) * t; bz += (az - bz) * t; }
+            return true;
+        }
+
+        /// <summary>Liang–Barsky against the screen rect: narrows [t0, t1]; false when the segment misses the screen.</summary>
+        private bool ClipScreen(double sx0, double sy0, double ddx, double ddy, ref double t0, ref double t1) =>
+            Clip(-ddx, sx0, ref t0, ref t1) && Clip(ddx, cam.W - 1 - sx0, ref t0, ref t1)
+            && Clip(-ddy, sy0, ref t0, ref t1) && Clip(ddy, cam.H - 1 - sy0, ref t0, ref t1);
+
+        /// <summary>Steps the clipped screen segment pixel by pixel: solid where in front of the depth buffer, blended where hidden.</summary>
+        private void Plot(double px0, double py0, double px1, double py1, double e0, double e1, uint c, float hiddenAlpha)
+        {
             int steps = (int)Math.Ceiling(Math.Max(Math.Abs(px1 - px0), Math.Abs(py1 - py0)));
             if (steps > 4096) return;
             int W = fr.Width;

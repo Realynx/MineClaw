@@ -36,44 +36,53 @@ public static class SignText
     public static List<SignRun> Runs(string s)
     {
         var runs = new List<SignRun>();
-        string? color = null;
-        bool bold = false, italic = false, under = false, strike = false, obf = false;
+        var style = default(SignStyle);
         var text = new System.Text.StringBuilder();
-        void Flush()
-        {
-            if (text.Length == 0) return;
-            var run = new SignRun(text.ToString(), color, bold ? true : null, italic ? true : null, under ? true : null, strike ? true : null, obf ? true : null);
-            text.Clear();
-            if (runs.Count > 0 && runs[^1] with { Text = "" } == run with { Text = "" }) runs[^1] = runs[^1] with { Text = runs[^1].Text + run.Text };
-            else runs.Add(run);
-        }
         for (int i = 0; i < s.Length; i++)
         {
             char c = s[i];
             if (c == '§' && i + 1 < s.Length)
             {
-                int code = "0123456789abcdefklmnor".IndexOf(char.ToLowerInvariant(s[++i]));
-                Flush();
-                if (code < 16)
-                {
-                    obf = bold = strike = under = italic = false;
-                    color = Colors[code < 0 ? 15 : code];
-                }
-                else if (code == 16) obf = true;
-                else if (code == 17) bold = true;
-                else if (code == 18) strike = true;
-                else if (code == 19) under = true;
-                else if (code == 20) italic = true;
-                else
-                {
-                    obf = bold = strike = under = italic = false;
-                    color = null;
-                }
+                Flush(runs, text, style);
+                style = style.After(s[++i]);
                 continue;
             }
             text.Append(c);
         }
-        Flush();
+        Flush(runs, text, style);
         return runs;
+    }
+
+    /// <summary>The pending text as a run in <paramref name="style"/>, merged into the last run when that has the same style.</summary>
+    private static void Flush(List<SignRun> runs, System.Text.StringBuilder text, SignStyle style)
+    {
+        if (text.Length == 0) return;
+        var run = style.Run(text.ToString());
+        text.Clear();
+        if (runs.Count > 0 && runs[^1] with { Text = "" } == run with { Text = "" }) runs[^1] = runs[^1] with { Text = runs[^1].Text + run.Text };
+        else runs.Add(run);
+    }
+
+    /// <summary>The style in force while reading a line (default = black, plain).</summary>
+    private readonly record struct SignStyle(string? Color, bool Bold, bool Italic, bool Under, bool Strike, bool Obf)
+    {
+        /// <summary>The style after a § code: a colour (an unknown code as white) resets the styles, k/l/m/n/o add one, r resets all.</summary>
+        public SignStyle After(char codeChar)
+        {
+            int code = "0123456789abcdefklmnor".IndexOf(char.ToLowerInvariant(codeChar));
+            return code switch
+            {
+                < 16 => new SignStyle(Colors[code < 0 ? 15 : code], false, false, false, false, false),
+                16 => this with { Obf = true },
+                17 => this with { Bold = true },
+                18 => this with { Strike = true },
+                19 => this with { Under = true },
+                20 => this with { Italic = true },
+                _ => default,
+            };
+        }
+
+        public SignRun Run(string text) =>
+            new(text, Color, Bold ? true : null, Italic ? true : null, Under ? true : null, Strike ? true : null, Obf ? true : null);
     }
 }

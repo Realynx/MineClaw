@@ -46,17 +46,26 @@ public sealed class ModelBaker
         using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
         var r = doc.RootElement;
         string? parent = r.TryGetProperty("parent", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        _defs[Normalize(name)] = new ModelDef(parent is null ? null : Normalize(parent), TextureVars(r), Elements(r));
+    }
+
+    /// <summary>The model's texture variables ("all" → "blocks/stone"), string values only.</summary>
+    private static Dictionary<string, string> TextureVars(JsonElement r)
+    {
         var textures = new Dictionary<string, string>(StringComparer.Ordinal);
         if (r.TryGetProperty("textures", out var t) && t.ValueKind == JsonValueKind.Object)
             foreach (var kv in t.EnumerateObject())
                 if (kv.Value.ValueKind == JsonValueKind.String) textures[kv.Name] = kv.Value.GetString()!;
-        List<ElementDef>? elements = null;
-        if (r.TryGetProperty("elements", out var els) && els.ValueKind == JsonValueKind.Array)
-        {
-            elements = [];
-            foreach (var e in els.EnumerateArray()) elements.Add(Element(e));
-        }
-        _defs[Normalize(name)] = new ModelDef(parent is null ? null : Normalize(parent), textures, elements);
+        return textures;
+    }
+
+    /// <summary>The model's own elements, or null when it has none (inherited from the parent).</summary>
+    private static List<ElementDef>? Elements(JsonElement r)
+    {
+        if (!r.TryGetProperty("elements", out var els) || els.ValueKind != JsonValueKind.Array) return null;
+        List<ElementDef> elements = [];
+        foreach (var e in els.EnumerateArray()) elements.Add(Element(e));
+        return elements;
     }
 
     public bool Has(string name) => _defs.ContainsKey(Normalize(name));

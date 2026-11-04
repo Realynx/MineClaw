@@ -189,14 +189,27 @@ public sealed partial class BotAgent
         var results = new ToolResult?[uses.Count];
         var tasks = new List<Task>();
         // Every planned call: one per use, or one per body when a use targets several (body:["67","69"] / "all").
+        var slots = PlanRound(uses, tier, retry, stopping, results, tasks, ct);
+        var slotResults = new ToolResult?[slots.Count];
+        StartRound(slots, slotResults, tasks, ct);
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        CollectUseResults(uses.Count, slots, slotResults, results);
+        return uses.Select((u, i) => ToLlmResult(u, results[i])).ToList();
+    }
+
+    /// <summary>Plans every use of the round in order (an early-started use just awaits its start); returns the planned calls.</summary>
+    private List<(int Use, Planned P)> PlanRound(List<LlmToolUse> uses, ModelTier tier, bool retry, bool stopping, ToolResult?[] results,
+        List<Task> tasks, CancellationToken ct)
+    {
         var slots = new List<(int Use, Planned P)>();
         var sigs = new List<string>();
-
         for (int i = 0; i < uses.Count; i++)
         {
             var u = uses[i];
             int idx = i;
-            if (!ReadOnlyTools.Contains(u.Name) && !IsBodyTool(u.Name) && u.Name != DoTool.ToolName) Latency?.NoteSequence(u.Name);
+            NoteRoundSequence(u.Name);
             if (_early.TryRemove(u.Id, out var early))
             {
                 tasks.Add(Task.Run(async () => results[idx] = await early.Result.ConfigureAwait(false), ct));
@@ -209,8 +222,17 @@ public sealed partial class BotAgent
                     sigs.AddRange(p.Steps.Where(s => s.Tool.IsLongRunning).Select(s => SigOf(p.Body, s.Tool.Name, s.Input)));
             }
         }
+        return slots;
+    }
 
-        var slotResults = new ToolResult?[slots.Count];
+    private void NoteRoundSequence(string name)
+    {
+        if (!ReadOnlyTools.Contains(name) && !IsBodyTool(name) && name != DoTool.ToolName) Latency?.NoteSequence(name);
+    }
+
+    /// <summary>Starts the round: held results stand, instant calls run at once, long-running calls form one activity chain per body.</summary>
+    private void StartRound(List<(int Use, Planned P)> slots, ToolResult?[] slotResults, List<Task> tasks, CancellationToken ct)
+    {
         // One activity per body for every long-running call of the round, in order (unrouted calls: main's, as before).
         var chains = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
         for (int k = 0; k < slots.Count; k++)
@@ -227,24 +249,30 @@ public sealed partial class BotAgent
             if (!chains.TryGetValue(key, out var list)) chains[key] = list = new List<int>();
             list.Add(k);
         }
-        if (chains.Count >= 2 && ActiveBodies is { } crew)
-        {
-            try { crew.Started(chains.Keys.ToList()); } catch (Exception ex) { _log.LogDebug(ex, "bodies: crew start hook failed"); }
-        }
-        foreach (var (key, list) in chains)
-        {
-            var acts = key == "main" ? _activities : ActiveBodies?.Activities(key) ?? _activities;
-            var parts = list.Select(k => slots[k].P).ToList();
-            tasks.Add(Task.Run(async () =>
-            {
-                var r = await RunChainAsync(parts, ct, acts).ConfigureAwait(false);
-                for (int n = 0; n < list.Count; n++) slotResults[list[n]] = r[n];
-            }, ct));
-        }
+        if (chains.Count >= 2 && ActiveBodies is { } crew) NotifyCrewStarted(crew, chains.Keys.ToList());
+        foreach (var (key, list) in chains) tasks.Add(StartChain(key, list, slots, slotResults, ct));
+    }
 
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+    private void NotifyCrewStarted(global::MineClaw.Agent.Bodies.IBodyDirectory crew, List<string> bodies)
+    {
+        try { crew.Started(bodies); } catch (Exception ex) { _log.LogDebug(ex, "bodies: crew start hook failed"); }
+    }
 
-        for (int i = 0; i < uses.Count; i++)
+    private Task StartChain(string key, List<int> list, List<(int Use, Planned P)> slots, ToolResult?[] slotResults, CancellationToken ct)
+    {
+        var acts = key == "main" ? _activities : ActiveBodies?.Activities(key) ?? _activities;
+        var parts = list.Select(k => slots[k].P).ToList();
+        return Task.Run(async () =>
+        {
+            var r = await RunChainAsync(parts, ct, acts).ConfigureAwait(false);
+            for (int n = 0; n < list.Count; n++) slotResults[list[n]] = r[n];
+        }, ct);
+    }
+
+    /// <summary>Each use's result: its one planned call's, or every body's combined; an early start already has its own.</summary>
+    private static void CollectUseResults(int uses, List<(int Use, Planned P)> slots, ToolResult?[] slotResults, ToolResult?[] results)
+    {
+        for (int i = 0; i < uses; i++)
         {
             if (results[i] != null) continue; // an early start
             var mine = Enumerable.Range(0, slots.Count).Where(k => slots[k].Use == i).ToList();
@@ -252,13 +280,13 @@ public sealed partial class BotAgent
             else if (mine.Count > 1)
                 results[i] = CombineBodies(mine.Select(k => (slots[k].P.Body ?? "main", slotResults[k] ?? ToolResult.Error("no result"))).ToList());
         }
+    }
 
-        return uses.Select((u, i) =>
-        {
-            var r = results[i] ?? ToolResult.Error("no result");
-            _log.LogDebug("tool {Name} → {Result}", u.Name, r);
-            return new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image };
-        }).ToList();
+    private LlmToolResult ToLlmResult(LlmToolUse u, ToolResult? result)
+    {
+        var r = result ?? ToolResult.Error("no result");
+        _log.LogDebug("tool {Name} → {Result}", u.Name, r);
+        return new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image };
     }
 
     /// <summary>A capped reply cannot authorize new work. Keep real early outcomes; movement is not a rollback.</summary>

@@ -247,9 +247,17 @@ public static class TextureLocator
     /// b1.8.1 one) is skipped.</summary>
     private static TextureAtlas? LoadModern(TextureOptions o, Action<string>? log, HttpClient? http)
     {
-        var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = CandidateJars(o).Where(j => !j.EndsWith(JarFile, StringComparison.OrdinalIgnoreCase)).ToList();
         if (o.AssetsDir is { Length: > 0 } dir) candidates.Add(Path.Combine(dir, ModernJarFile));
+        if (FirstModernJar(candidates, log) is { } found) return found;
+        if (!o.AllowDownload || string.IsNullOrWhiteSpace(o.AssetsDir)) return null;
+        return DownloadModern(o, log, http);
+    }
+
+    /// <summary>The first readable 1.12.2 jar among the candidates (each path tried once), or null.</summary>
+    private static TextureAtlas? FirstModernJar(List<string> candidates, Action<string>? log)
+    {
+        var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var jar in candidates)
         {
             if (!tried.Add(jar) || !File.Exists(jar) || !Models.Release1122Assets.IsModernJar(jar)) continue;
@@ -259,7 +267,12 @@ public static class TextureLocator
             }
             catch (Exception ex) { log?.Invoke($"textures: {jar} unreadable ({ex.Message})"); }
         }
-        if (!o.AllowDownload || string.IsNullOrWhiteSpace(o.AssetsDir)) return null;
+        return null;
+    }
+
+    /// <summary>Downloads the official 1.12.2 jar into the assets dir and reads it; null (logged) when that fails.</summary>
+    private static TextureAtlas? DownloadModern(TextureOptions o, Action<string>? log, HttpClient? http)
+    {
         try
         {
             var jar = DownloadAsync(o, http, CancellationToken.None, ModernJarFile).GetAwaiter().GetResult();
@@ -331,10 +344,7 @@ public static class TextureLocator
         try
         {
             using var manifest = JsonDocument.Parse(await http.GetStringAsync(o.ManifestUrl, ct).ConfigureAwait(false));
-            string? versionUrl = null;
-            foreach (var v in manifest.RootElement.GetProperty("versions").EnumerateArray())
-                if (v.GetProperty("id").GetString() == o.Version) { versionUrl = v.GetProperty("url").GetString(); break; }
-            if (versionUrl == null) return null;
+            if (VersionUrl(manifest, o.Version) is not { } versionUrl) return null;
             using var ver = JsonDocument.Parse(await http.GetStringAsync(versionUrl, ct).ConfigureAwait(false));
             var client = ver.RootElement.GetProperty("downloads").GetProperty("client");
             string url = client.GetProperty("url").GetString()!, sha1 = client.GetProperty("sha1").GetString()!;
@@ -351,6 +361,14 @@ public static class TextureLocator
         {
             if (own) http.Dispose();
         }
+    }
+
+    /// <summary>The version json URL the launcher manifest lists for a version id, or null.</summary>
+    private static string? VersionUrl(JsonDocument manifest, string? version)
+    {
+        foreach (var v in manifest.RootElement.GetProperty("versions").EnumerateArray())
+            if (v.GetProperty("id").GetString() == version) return v.GetProperty("url").GetString();
+        return null;
     }
 
     public static string Sha1(byte[] data) => Convert.ToHexString(SHA1.HashData(data)).ToLowerInvariant();

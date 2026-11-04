@@ -84,34 +84,56 @@ public sealed class BlockStateFile
     /// <param name="key">An exact variant key to prefer ("all" for seamless double slabs), else matched by properties.</param>
     public List<VariantRef> Select(IReadOnlyDictionary<string, string> state, string? key = null)
     {
+        if (_parts.Count > 0) return SelectParts(state);
         var list = new List<VariantRef>();
-        if (_parts.Count > 0)
-        {
-            foreach (var (when, apply) in _parts)
-                if (when is null || when.Any(c => c.All(kv => state.TryGetValue(kv.Key, out var v) && kv.Value.Contains(v))))
-                    list.AddRange(apply);
-            return list;
-        }
-        if (key != null)
-            foreach (var v in _variants)
-                if (v.Key == key) { list.Add(v.Model); return list; }
+        if (key != null && TryExactVariant(key, out var exact)) { list.Add(exact); return list; }
+        if (TryBestVariant(state, out var pick)) list.Add(pick);
+        else if (_variants.Count > 0) list.Add(_variants[0].Model);
+        return list;
+    }
+
+    /// <summary>Multipart: every case whose condition holds (or has none), in file order.</summary>
+    private List<VariantRef> SelectParts(IReadOnlyDictionary<string, string> state)
+    {
+        var list = new List<VariantRef>();
+        foreach (var (when, apply) in _parts)
+            if (when is null || when.Any(c => c.All(kv => state.TryGetValue(kv.Key, out var v) && kv.Value.Contains(v))))
+                list.AddRange(apply);
+        return list;
+    }
+
+    private bool TryExactVariant(string key, out VariantRef model)
+    {
+        foreach (var v in _variants)
+            if (v.Key == key) { model = v.Model; return true; }
+        model = default;
+        return false;
+    }
+
+    /// <summary>The first variant matching the most of the state's properties (none it contradicts).</summary>
+    private bool TryBestVariant(IReadOnlyDictionary<string, string> state, out VariantRef pick)
+    {
         int best = -1;
-        VariantRef pick = default;
+        pick = default;
         for (int i = 0; i < _variants.Count; i++)
         {
             var (_, props, model) = _variants[i];
-            int score = 0;
-            bool ok = true;
-            foreach (var (k, v) in props)
-            {
-                if (!state.TryGetValue(k, out var have)) continue;
-                if (have != v) { ok = false; break; }
-                score++;
-            }
-            if (ok && score > best) { best = score; pick = model; }
+            int score = VariantScore(props, state);
+            if (score > best) { best = score; pick = model; }
         }
-        if (best >= 0) list.Add(pick);
-        else if (_variants.Count > 0) list.Add(_variants[0].Model);
-        return list;
+        return best >= 0;
+    }
+
+    /// <summary>How many of a variant's properties the state shares, or -1 when it contradicts one.</summary>
+    private static int VariantScore(Dictionary<string, string> props, IReadOnlyDictionary<string, string> state)
+    {
+        int score = 0;
+        foreach (var (k, v) in props)
+        {
+            if (!state.TryGetValue(k, out var have)) continue;
+            if (have != v) return -1;
+            score++;
+        }
+        return score;
     }
 }

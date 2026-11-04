@@ -29,8 +29,23 @@ public sealed class PartitionLayout
         var x1 = new double[n];
         var row = new int[n];
         int total = m.TopLevel.Sum(s => m.Nodes[s].Leaves);
+        Split(m, total, x0, x1, row);
+        int rows = m.NumLayers + 1;
+        var bucket = Enumerable.Range(0, rows).Select(_ => new List<int>()).ToArray();
+        for (int s = 0; s < n; s++) bucket[row[s]].Add(s);
+        var rowSlots = bucket.Select(b => b.OrderBy(s => x0[s]).ThenBy(s => s).ToArray()).ToArray();
+        var rowStarts = rowSlots.Select(r => r.Select(s => x0[s]).ToArray()).ToArray();
+        return new PartitionLayout
+        {
+            X0 = x0, X1 = x1, Row = row, Rows = rows, RowSlots = rowSlots, RowStarts = rowStarts, LeafRuns = Runs(m, rowSlots[rows - 1], x0, x1),
+            TotalLeaves = total,
+        };
+    }
+
+    /// <summary>Top-down: the roots share [0, 1] by leaf count, then each node splits its band among its primary children the same way.</summary>
+    private static void Split(GraphModel m, int total, double[] x0, double[] x1, int[] row)
+    {
         double unit = total > 0 ? 1.0 / total : 1;
-        // Top-down: each node splits its band among its primary children by leaf count.
         var stack = new Stack<(int Slot, double A, double B)>();
         double cursor = 0;
         foreach (var s in m.TopLevel)
@@ -46,35 +61,35 @@ public sealed class PartitionLayout
             x0[s] = a;
             x1[s] = b;
             row[s] = m.NumLayers - g.Layer;
-            if (g.Children.Length == 0) continue;
-            int sum = g.Children.Sum(c => m.Nodes[c].Leaves);
-            double at = a;
-            for (int i = 0; i < g.Children.Length; i++)
-            {
-                int c = g.Children[i];
-                double end = i == g.Children.Length - 1 ? b : at + (b - a) * m.Nodes[c].Leaves / sum;
-                stack.Push((c, at, end));
-                at = end;
-            }
+            if (g.Children.Length > 0) PushChildren(m, g, a, b, stack);
         }
-        int rows = m.NumLayers + 1;
-        var bucket = Enumerable.Range(0, rows).Select(_ => new List<int>()).ToArray();
-        for (int s = 0; s < n; s++) bucket[row[s]].Add(s);
-        var rowSlots = bucket.Select(b => b.OrderBy(s => x0[s]).ThenBy(s => s).ToArray()).ToArray();
-        var rowStarts = rowSlots.Select(r => r.Select(s => x0[s]).ToArray()).ToArray();
+    }
 
+    private static void PushChildren(GraphModel m, GraphNode g, double a, double b, Stack<(int Slot, double A, double B)> stack)
+    {
+        int sum = g.Children.Sum(c => m.Nodes[c].Leaves);
+        double at = a;
+        for (int i = 0; i < g.Children.Length; i++)
+        {
+            int c = g.Children[i];
+            double end = i == g.Children.Length - 1 ? b : at + (b - a) * m.Nodes[c].Leaves / sum;
+            stack.Push((c, at, end));
+            at = end;
+        }
+    }
+
+    /// <summary>The leaf row as runs of adjacent leaves under one parent.</summary>
+    private static (double X0, double X1, int Owner)[] Runs(GraphModel m, int[] leafRow, double[] x0, double[] x1)
+    {
         var runs = new List<(double, double, int)>();
-        foreach (var s in rowSlots[rows - 1])
+        foreach (var s in leafRow)
         {
             int owner = m.Nodes[s].Parent;
             if (runs.Count > 0 && runs[^1].Item3 == owner && Math.Abs(runs[^1].Item2 - x0[s]) < 1e-12)
                 runs[^1] = (runs[^1].Item1, x1[s], owner);
             else runs.Add((x0[s], x1[s], owner));
         }
-        return new PartitionLayout
-        {
-            X0 = x0, X1 = x1, Row = row, Rows = rows, RowSlots = rowSlots, RowStarts = rowStarts, LeafRuns = runs.ToArray(), TotalLeaves = total,
-        };
+        return runs.ToArray();
     }
 
     /// <summary>The slot on <paramref name="row"/> whose band contains unit x <paramref name="ux"/>, or -1.</summary>
@@ -237,49 +252,55 @@ public sealed class GraphViewport
     }
 
     /// <summary>The node under a screen point, or -1. With leaves hidden (LOD) the leaf strip answers with the leaf's parent.</summary>
-    public int HitTest(Point p)
+    public int HitTest(Point p) => Kind switch
     {
-        switch (Kind)
+        GraphLayoutKind.Radial => HitRadial(p),
+        GraphLayoutKind.NodeLink => HitNodeLink(p),
+        _ => HitBands(p),
+    };
+
+    /// <summary>The band under the point on the row under it (icicle).</summary>
+    private int HitBands(Point p)
+    {
+        int row = RowAt(p.Y);
+        return row < 0 || p.X < Plot.X || p.X > Plot.Right ? -1 : Resolve(row, UnitX(p.X));
+    }
+
+    /// <summary>The ring under the point (by radius), then the band at its angle.</summary>
+    private int HitRadial(Point p)
+    {
+        var c = Center;
+        double dx = p.X - c.X, dy = p.Y - c.Y, r = Math.Sqrt(dx * dx + dy * dy);
+        double ang = Math.Atan2(dx, -dy);
+        if (ang < 0) ang += Math.PI * 2;
+        double ux = View.X0 + ang / (Math.PI * 2) * View.Span;
+        for (int row = 0; row < Rows; row++)
         {
-            case GraphLayoutKind.Radial:
-            {
-                var c = Center;
-                double dx = p.X - c.X, dy = p.Y - c.Y, r = Math.Sqrt(dx * dx + dy * dy);
-                double ang = Math.Atan2(dx, -dy);
-                if (ang < 0) ang += Math.PI * 2;
-                double ux = View.X0 + ang / (Math.PI * 2) * View.Span;
-                for (int row = 0; row < Rows; row++)
-                {
-                    var (r0, r1) = RingSpan(row);
-                    if (r >= r0 && r < r1) return Resolve(row, ux);
-                }
-                return -1;
-            }
-            case GraphLayoutKind.NodeLink:
-            {
-                int row = RowAt(p.Y);
-                if (row < 0) return -1;
-                if (row == Layout.LeafRow && !ShowLeaves) return -1;
-                double ux = UnitX(p.X);
-                double slack = View.Span * 24 / Math.Max(1, Plot.Width);
-                var (from, to) = Layout.RowRange(row, ux - slack, ux + slack);
-                int best = -1;
-                double bestD = double.MaxValue;
-                for (int i = from; i < to; i++)
-                {
-                    int s = Layout.RowSlots[row][i];
-                    var nc = NodeCenter(s);
-                    double rr = NodeRadius(s) + 4, d = (nc.X - p.X) * (nc.X - p.X) + (nc.Y - p.Y) * (nc.Y - p.Y);
-                    if (d <= rr * rr && d < bestD) { bestD = d; best = s; }
-                }
-                return best;
-            }
-            default:
-            {
-                int row = RowAt(p.Y);
-                return row < 0 || p.X < Plot.X || p.X > Plot.Right ? -1 : Resolve(row, UnitX(p.X));
-            }
+            var (r0, r1) = RingSpan(row);
+            if (r >= r0 && r < r1) return Resolve(row, ux);
         }
+        return -1;
+    }
+
+    /// <summary>The nearest node circle (4 px of slack) on the row under the point; leaves only when shown.</summary>
+    private int HitNodeLink(Point p)
+    {
+        int row = RowAt(p.Y);
+        if (row < 0) return -1;
+        if (row == Layout.LeafRow && !ShowLeaves) return -1;
+        double ux = UnitX(p.X);
+        double slack = View.Span * 24 / Math.Max(1, Plot.Width);
+        var (from, to) = Layout.RowRange(row, ux - slack, ux + slack);
+        int best = -1;
+        double bestD = double.MaxValue;
+        for (int i = from; i < to; i++)
+        {
+            int s = Layout.RowSlots[row][i];
+            var nc = NodeCenter(s);
+            double rr = NodeRadius(s) + 4, d = (nc.X - p.X) * (nc.X - p.X) + (nc.Y - p.Y) * (nc.Y - p.Y);
+            if (d <= rr * rr && d < bestD) { bestD = d; best = s; }
+        }
+        return best;
     }
 
     private int RowAt(double y)

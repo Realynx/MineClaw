@@ -14,6 +14,18 @@ public sealed partial class SafetyWarnings(Func<DateTimeOffset> now)
 
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.Ordinal);
 
+    /// <summary>Each threat's name and the word starts that name it, checked in order (anything else: the word minus a plural 's').</summary>
+    private static readonly (string Name, string[] Starts)[] ThreatNames =
+    [
+        ("zombie", ["zombie"]),
+        ("skeleton", ["skeleton", "arrow"]),
+        ("creeper", ["creeper", "hiss", "explo"]),
+        ("spider", ["spider"]),
+        ("lava", ["lava", "fire", "burn"]),
+        ("void", ["void", "fall", "edge"]),
+        ("death", ["die", "dying", "dead", "died"]),
+    ];
+
     /// <summary>The threat a warning line is about ("zombie", "creeper", "lava", "void", "death"), or null when it isn't one.</summary>
     public static string? Threat(string? text)
     {
@@ -22,18 +34,15 @@ public sealed partial class SafetyWarnings(Func<DateTimeOffset> now)
         if (!m.Success) return null;
         // A warning: urgency (an exclamation, "watch out"/"behind you"/"run"), or a threat acting on someone ("… is attacking you").
         if (!UrgentRx().IsMatch(t) && !t.Contains('!')) return null;
-        var w = m.Value.ToLowerInvariant();
-        return w switch
-        {
-            _ when w.StartsWith("zombie", StringComparison.Ordinal) => "zombie",
-            _ when w.StartsWith("skeleton", StringComparison.Ordinal) || w.StartsWith("arrow", StringComparison.Ordinal) => "skeleton",
-            _ when w.StartsWith("creeper", StringComparison.Ordinal) || w.StartsWith("hiss", StringComparison.Ordinal) || w.StartsWith("explo", StringComparison.Ordinal) => "creeper",
-            _ when w.StartsWith("spider", StringComparison.Ordinal) => "spider",
-            _ when w.StartsWith("lava", StringComparison.Ordinal) || w.StartsWith("fire", StringComparison.Ordinal) || w.StartsWith("burn", StringComparison.Ordinal) => "lava",
-            _ when w.StartsWith("void", StringComparison.Ordinal) || w.StartsWith("fall", StringComparison.Ordinal) || w.StartsWith("edge", StringComparison.Ordinal) => "void",
-            _ when w.StartsWith("die", StringComparison.Ordinal) || w.StartsWith("dying", StringComparison.Ordinal) || w.StartsWith("dead", StringComparison.Ordinal) || w.StartsWith("died", StringComparison.Ordinal) => "death",
-            _ => w.TrimEnd('s'),
-        };
+        return ThreatName(m.Value.ToLowerInvariant());
+    }
+
+    private static string ThreatName(string w)
+    {
+        foreach (var (name, starts) in ThreatNames)
+            foreach (var s in starts)
+                if (w.StartsWith(s, StringComparison.Ordinal)) return name;
+        return w.TrimEnd('s');
     }
 
     /// <summary>The line is a warning whose threat wasn't warned about within <see cref="Window"/> (no state change).</summary>

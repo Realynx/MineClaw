@@ -106,12 +106,18 @@ public sealed class LiveProviderTester : IProviderTester
         if (!Uri.TryCreate(endpoint.Trim(), UriKind.Absolute, out var u) || (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps))
             return "must be an absolute http:// or https:// URL";
         if (!string.IsNullOrEmpty(u.UserInfo)) return "credentials don't go in the URL";
-        if (u.Host.Equals("metadata.google.internal", StringComparison.OrdinalIgnoreCase)) return "that address is not allowed";
-        if (IPAddress.TryParse(u.Host.Trim('[', ']'), out var ip))
-        {
-            if (ip.AddressFamily == AddressFamily.InterNetwork && ip.GetAddressBytes() is [169, 254, ..]) return "link-local addresses are not allowed";
-            if (ip.AddressFamily == AddressFamily.InterNetworkV6 && ip.IsIPv6LinkLocal) return "link-local addresses are not allowed";
-        }
-        return null;
+        return ForbiddenHost(u);
     }
+
+    /// <summary>A cloud metadata name or a link-local address (IPv4 169.254/16, IPv6 fe80::/10): why not; else null.</summary>
+    private static string? ForbiddenHost(Uri u)
+    {
+        if (u.Host.Equals("metadata.google.internal", StringComparison.OrdinalIgnoreCase)) return "that address is not allowed";
+        if (!IPAddress.TryParse(u.Host.Trim('[', ']'), out var ip)) return null;
+        return IsLinkLocal(ip) ? "link-local addresses are not allowed" : null;
+    }
+
+    private static bool IsLinkLocal(IPAddress ip) =>
+        ip.AddressFamily == AddressFamily.InterNetwork ? ip.GetAddressBytes() is [169, 254, ..]
+        : ip.AddressFamily == AddressFamily.InterNetworkV6 && ip.IsIPv6LinkLocal;
 }
