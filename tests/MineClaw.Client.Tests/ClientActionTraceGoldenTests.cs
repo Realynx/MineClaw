@@ -109,17 +109,27 @@ public class ClientActionTraceGoldenTests
         await using var _ = c;
         using var __ = s;
         Assert.True(await Harness.WaitAsync(() => c.World.GetBlock(10, 64, 6) == Blocks.Chest));
+        // Two ticks after each action: the tick that releases an action's sneak lands before the next action's packets. Without it
+        // a tick already under way when the action ended (it read the sneak still held) could count as the next action's look tick,
+        // and a deposit done within one tick then went out before the release (a load race: 1 in ~20 runs).
+        async Task<string> Settled(Task<ActionResult> action)
+        {
+            var r = await action;
+            long t0 = c.TickCount;
+            await Harness.WaitAsync(() => c.TickCount >= t0 + 2);
+            return r.ToString();
+        }
         var results = new List<string>
         {
-            (await c.DigBlockAsync(9, 64, 9)).ToString(),
-            (await c.PlaceBlockAsync(9, 64, 9, Blocks.Dirt)).ToString(),
-            (await c.PlaceTurnedAsync(new BlockPos(7, 64, 7), Blocks.Furnace, null, 5)).ToString(),
-            (await c.DepositAllAsync(new BlockPos(10, 64, 6), st => st.Id == Blocks.Cobblestone)).ToString(),
-            (await c.WithdrawAsync(Blocks.Sand, 2, new BlockPos(10, 64, 6))).ToString(),
-            (await c.CraftAsync(Blocks.Planks, 0, 4)).ToString(),
-            (await c.HoldAsync(st => st.Id == Blocks.Dirt, "dirt")).ToString(),
-            (await c.JumpAsync()).ToString(),
-            (await c.SwingArmAsync(2)).ToString(),
+            await Settled(c.DigBlockAsync(9, 64, 9)),
+            await Settled(c.PlaceBlockAsync(9, 64, 9, Blocks.Dirt)),
+            await Settled(c.PlaceTurnedAsync(new BlockPos(7, 64, 7), Blocks.Furnace, null, 5)),
+            await Settled(c.DepositAllAsync(new BlockPos(10, 64, 6), st => st.Id == Blocks.Cobblestone)),
+            await Settled(c.WithdrawAsync(Blocks.Sand, 2, new BlockPos(10, 64, 6))),
+            await Settled(c.CraftAsync(Blocks.Planks, 0, 4)),
+            await Settled(c.HoldAsync(st => st.Id == Blocks.Dirt, "dirt")),
+            await Settled(c.JumpAsync()),
+            await Settled(c.SwingArmAsync(2)),
         };
         await Task.Delay(100);
         return string.Join("\n", results) + "\n----\n" + Trace(s.Snapshot());
