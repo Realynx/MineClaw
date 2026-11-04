@@ -38,7 +38,16 @@ import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type P
 import { type Selection } from './model';
 import {
   buildItem,
+  DragGate,
   entitiesIn,
+  hasHeight,
+  heightLabel,
+  heightQuery,
+  heightTargets,
+  MAX_DRAG_CELLS,
+  NOT_GROUND_IDS,
+  type HeightMode,
+  type HeightTargets,
   faceCell,
   placeDesign,
   type DesignBlock,
@@ -75,6 +84,10 @@ export interface DragResult {
   cells: V3[];
   entities: EntityLite[];
   count: number;
+  /** The pointer travelled past the drag threshold (else it was a click). */
+  moved?: boolean;
+  /** A Mine or Deconstruct drag: exactly the cells its height mode designates (sent as `blocks`). */
+  height?: HeightTargets;
 }
 
 export interface FormationMove {
@@ -96,6 +109,8 @@ export interface StoryMapHandle {
   onScreen(x: number, y: number, z: number): boolean;
   /** The top solid block of a column (trees and plants skipped), when its chunk is loaded. */
   surface(x: number, z: number): Promise<number | null>;
+  /** Esc: cancels a drag in progress (nothing happens on release). True when there was one. */
+  cancelDrag(): boolean;
 }
 
 export interface StoryMapProps {
@@ -104,6 +119,9 @@ export interface StoryMapProps {
   tool: MapTool;
   build: BuildOpts;
   mineFilter: 'all' | 'ores' | 'stone' | 'soil';
+  /** The active Mine / Deconstruct tool's height mode, and the Layers count. */
+  heightMode: HeightMode;
+  layers: number;
   level: number;
   cutY: number | null;
   view: 'top' | 'angled';
@@ -127,6 +145,8 @@ export interface StoryMapProps {
    * `ignored` = selected pawns that are not drafted (they keep working, as in the genre). */
   onFormation?: (moves: FormationMove[], queue: boolean, ignored: number) => void;
   onDropTool: () => void;
+  /** A drag was cancelled (Esc, the other mouse button, leaving full screen). */
+  onCancelled?: () => void;
   onHover?(info: string | null): void;
 }
 
@@ -147,6 +167,42 @@ function settleSpot(e: WorldViewerEngine, player: string | null | undefined): V3
   return me ? at(me.x, me.y, me.z) : null;
 }
 const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
+
+/** One column of a height-mode preview: x, z, its highest and lowest designated y, how many cells. */
+type ColumnSpan = [number, number, number, number, number];
+
+/** Groups a height drag's cells by column (once per scan, not per frame). */
+function columnSpans(cells: readonly V3[]): ColumnSpan[] {
+  const by = new Map<string, ColumnSpan>();
+  for (const [x, y, z] of cells) {
+    const k = `${x},${z}`;
+    const c = by.get(k);
+    if (!c) by.set(k, [x, z, y, y, 1]);
+    else {
+      c[2] = Math.max(c[2], y);
+      c[3] = Math.min(c[3], y);
+      c[4]++;
+    }
+  }
+  return [...by.values()];
+}
+
+/** The pointer-event `buttons` bit of a `button` (0 left → 1, 1 middle → 4, 2 right → 2). */
+const buttonBit = (b: number) => (b === 0 ? 1 : b === 1 ? 4 : b === 2 ? 2 : 1 << b);
+
+type KeyboardLock = { lock?: (codes: string[]) => Promise<void>; unlock?: () => void };
+/** In full screen, Esc is the browser's way out: while a drag is held it is locked (Keyboard Lock, Chromium) so Esc cancels
+ * the drag instead; holding Esc still leaves full screen. Elsewhere (or where the API is missing) leaving full screen
+ * cancels the drag instead (see the fullscreenchange listener). */
+function lockEsc(on: boolean) {
+  const kb = (navigator as unknown as { keyboard?: KeyboardLock }).keyboard;
+  try {
+    if (on && document.fullscreenElement) void kb?.lock?.(['Escape'])?.catch(() => undefined);
+    else if (!on) kb?.unlock?.();
+  } catch {
+    /* not supported */
+  }
+}
 
 interface Formation {
   a: P2;
@@ -174,9 +230,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const p = useRef(props);
   p.current = props;
   const drag = useRef<DragState | null>(null);
+  /** Esc / the other button cancel a drag; the release after a cancel does nothing (tools.ts `DragGate`). */
+  const gate = useRef(new DragGate());
   const hover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
   const shown = useRef(new Map<string, V3>());
-  const scan = useRef<{ key: string; busy: boolean; result: DragResult | null }>({
+  const scan = useRef<{ key: string; busy: boolean; result: (DragResult & { cols?: ColumnSpan[] }) | null }>({
     key: '',
     busy: false,
     result: null,
@@ -240,6 +298,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         y = hit.y - 0.001;
       }
       return null;
+    },
+    cancelDrag: () => {
+      if (!gate.current.escape()) return false;
+      dropDrag();
+      return true;
     },
   }));
 
@@ -1075,7 +1138,31 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     if (tool.kind === 'designate') {
       const res = scan.current.result;
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
-      if (res) {
+      if (res?.height && res.cols) {
+        // Exactly what will be designated: each column's top face outlined (fuller the deeper it goes), its bottom dashed.
+        const deep = res.height.layers > 1;
+        ctx.lineWidth = 1.2;
+        for (const [x, z, top, bottom, n] of res.cols.slice(0, 2500)) {
+          const qt = quad(x + 0.08, z + 0.08, x + 0.92, z + 0.92, top + 1.01);
+          if (!qt) continue;
+          poly(qt);
+          ctx.fillStyle = `${col}${n > 1 ? (n > 3 ? '66' : '44') : '22'}`;
+          ctx.fill();
+          ctx.strokeStyle = res.height.tooMany ? '#ff6b6b' : col;
+          ctx.stroke();
+          if (deep && bottom < top && props.view === 'angled') {
+            const qb = quad(x + 0.08, z + 0.08, x + 0.92, z + 0.92, bottom + 0.01);
+            if (qb) {
+              poly(qb);
+              ctx.setLineDash([3, 3]);
+              ctx.stroke();
+              ctx.setLineDash([]);
+            }
+          }
+        }
+        const mode = props.heightMode;
+        label(ctx, d.now, heightLabel(t.label, mode, res.height, props.layers), !res.height.tooMany && res.count > 0);
+      } else if (res) {
         for (const c of res.cells.slice(0, 1200)) {
           const s = project(m, c[0] + 0.5, c[1] + 1, c[2] + 0.5);
           if (s) {
@@ -1173,6 +1260,43 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     }
   };
 
+  /** What a designate drag's preview depends on: the rectangle, the tool and its filter, height mode and level. */
+  const scanKey = (rect: readonly number[], toolId: string): string => {
+    const pr = p.current;
+    return `${rect.join(',')}|${toolId}|${pr.mineFilter}|${pr.heightMode}|${pr.layers}|${pr.level}|${pr.cutY}`;
+  };
+
+  /** A Mine / Deconstruct drag's exact cells: each column's top and what its height mode takes under it. */
+  const heightScan = async (
+    e: WorldViewerEngine,
+    tool: 'mine' | 'deconstruct',
+    rect: readonly number[],
+  ): Promise<HeightTargets> => {
+    const pr = p.current;
+    const q = heightQuery(pr.heightMode, pr.level, pr.layers, pr.cutY);
+    const max = 4 * MAX_DRAG_CELLS;
+    const raw = await e.runtime.host.stacks(
+      0,
+      [rect[0]!, q.min, rect[1]!],
+      [rect[2]!, q.max, rect[3]!],
+      [...NOT_GROUND_IDS],
+      q.depth,
+      q.above,
+      max,
+    );
+    const t = heightTargets(tool, pr.heightMode, raw, pr.level, tool === 'mine' ? pr.mineFilter : 'all');
+    return raw.length >= max * 6 ? { ...t, tooMany: true } : t;
+  };
+
+  /** Drops the drag in progress (Esc, the other button, leaving full screen): no preview, nothing on release. */
+  const dropDrag = () => {
+    drag.current = null;
+    scan.current = { key: '', busy: false, result: null };
+    formationShown.current = null;
+    lockEsc(false);
+    p.current.onCancelled?.();
+  };
+
   /** Rescans a designate drag's targets (one scan in flight; the latest rectangle wins). */
   const rescan = () => {
     const d = drag.current,
@@ -1180,13 +1304,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const tool = p.current.tool;
     if (!d || !e || !d.startCell || !d.endCell || tool.kind !== 'designate') return;
     const rect = cellRect(d.startCell, d.endCell);
-    const key = rect.join(',') + tool.id + p.current.mineFilter;
+    const key = scanKey(rect, tool.id);
     if (scan.current.key === key || scan.current.busy) return;
     scan.current.key = key;
     const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
     const y = toolYRange(tool.id, p.current.level, p.current.build.height, p.current.cutY);
-    const finish = (cells: V3[], count: number, ents: EntityLite[]) => {
-      scan.current.result = { rect, a: d.startCell!, b: d.endCell!, cells, entities: ents, count };
+    const finish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets) => {
+      if (drag.current !== d) return; // cancelled meanwhile
+      scan.current.result = {
+        rect,
+        a: d.startCell!,
+        b: d.endCell!,
+        cells,
+        entities: ents,
+        count,
+        ...(height ? { height, cols: columnSpans(height.cells) } : {}),
+      };
     };
     if (t.entities) {
       const ents = entitiesIn(t, rect, entityList());
@@ -1202,27 +1335,40 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       return;
     }
     scan.current.busy = true;
-    void e.runtime.host
-      .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
-      .then((s) => {
-        const pv = previewTargets(tool.id, s, p.current.mineFilter);
-        finish(pv.cells, pv.count, []);
-      })
+    const job = hasHeight(tool.id)
+      ? heightScan(e, tool.id, rect).then((ht) => finish(ht.cells, ht.cells.length, [], ht))
+      : e.runtime.host
+          .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
+          .then((s) => {
+            const pv = previewTargets(tool.id, s, p.current.mineFilter);
+            finish(pv.cells, pv.count, []);
+          });
+    void job
       .catch(() => undefined)
       .finally(() => {
         scan.current.busy = false;
-        if (drag.current) {
-          const r2 =
-            drag.current.startCell && drag.current.endCell
-              ? cellRect(drag.current.startCell, drag.current.endCell).join(',') + tool.id + p.current.mineFilter
-              : '';
+        const dd = drag.current;
+        if (dd) {
+          const r2 = dd.startCell && dd.endCell ? scanKey(cellRect(dd.startCell, dd.endCell), tool.id) : '';
           if (r2 !== scan.current.key) rescan();
         }
       });
   };
 
+  /** Another button went down during a drag: right during a left drag (left during a right drag) cancels it. */
+  const chord = (button: number) => {
+    if (gate.current.chord(button)) dropDrag();
+  };
+
   const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
+    if (gate.current.button !== null && (ev.buttons & ~buttonBit(ev.button)) !== 0) {
+      // A second button while one is held (browsers that send it as a down, not a chorded move).
+      chord(ev.button);
+      return;
+    }
+    gate.current.start(ev.button);
+    if (ev.button !== 1) lockEsc(true);
     canvas.current?.setPointerCapture(ev.pointerId);
     canvas.current?.focus({ preventScroll: true });
     updateHover(pt);
@@ -1262,6 +1408,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
+    // A chorded press: pointer events report a second button going down as a move with `button` set.
+    if (ev.button >= 0 && (ev.buttons & buttonBit(ev.button)) !== 0 && gate.current.button !== null) chord(ev.button);
     const d = drag.current;
     if (d && d.button === 1) {
       // Middle-drag pans (Shift + middle-drag turns the angled view).
@@ -1305,6 +1453,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   const onPointerUp = async (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
+    if (gate.current.release(ev.buttons) !== 'act') return; // cancelled: the release (and the cancelling click) do nothing
+    lockEsc(false);
     const d = drag.current;
     drag.current = null;
     const props = p.current;
@@ -1465,11 +1615,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
       const rect = cellRect(d.startCell, end);
       const y = toolYRange(tool.id, props.level, props.build.height, props.cutY);
-      let res = scan.current.result;
-      if (!res || res.rect.join(',') !== rect.join(',')) {
+      let res: DragResult | null = scan.current.result;
+      if (!res || scan.current.key !== scanKey(rect, tool.id) || res.rect.join(',') !== rect.join(',')) {
         // A click, or the scan had not caught up: scan now.
         const e = engine();
-        if (t.entities) {
+        if (e && hasHeight(tool.id)) {
+          const ht = await heightScan(e, tool.id, rect).catch(() => null);
+          res = {
+            rect,
+            a: d.startCell,
+            b: end,
+            cells: ht?.cells ?? [],
+            entities: [],
+            count: ht?.cells.length ?? 0,
+            ...(ht ? { height: ht } : {}),
+          };
+        } else if (t.entities) {
           const ents = entitiesIn(t, rect, entityList());
           res = { rect, a: d.startCell, b: end, cells: [], entities: ents, count: ents.length };
         } else if (e && tool.id !== 'cancel') {
@@ -1481,11 +1642,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         } else res = { rect, a: d.startCell, b: end, cells: [], entities: [], count: 0 };
       }
       void toolArea;
-      props.onTool(res, ev.shiftKey);
+      props.onTool({ ...res, moved: d.moved }, ev.shiftKey);
       return;
     }
     props.onTool(
-      { rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0 },
+      { rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0, moved: d.moved },
       ev.shiftKey,
     );
   };
@@ -1547,6 +1708,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     e.rig.target.z = z.z;
   };
 
+  // Leaving full screen mid-drag (the browser's Esc where Esc can't be locked) cancels the drag too.
+  useEffect(() => {
+    const off = () => {
+      if (!document.fullscreenElement && gate.current.escape()) dropDrag();
+    };
+    document.addEventListener('fullscreenchange', off);
+    return () => document.removeEventListener('fullscreenchange', off);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** The pointer was taken away (a touch scroll, the window lost it): the drag ends with nothing done. */
+  const lost = () => {
+    if (gate.current.button === null) return;
+    gate.current = new DragGate();
+    if (drag.current) dropDrag();
+  };
+
   // The wheel must not scroll the page (a passive React listener cannot prevent it).
   useEffect(() => {
     const c = canvas.current;
@@ -1572,6 +1749,26 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         if (e) e.rig.target.set(x + 0.5, p.current.level + 1, z + 0.5);
       },
       ready: () => !!engine() && !!mats.current,
+      /** The live preview of the drag in progress (null = none): what its release would designate. */
+      preview: () => {
+        const r = scan.current.result;
+        if (!drag.current || !r) return null;
+        const t = DESIGNATE_TOOLS.find((x) => p.current.tool.kind === 'designate' && x.id === p.current.tool.id);
+        return {
+          count: r.count,
+          cells: r.cells.length,
+          label: r.height && t ? heightLabel(t.label, p.current.heightMode, r.height, p.current.layers) : null,
+          top: r.height?.top ?? null,
+          bottom: r.height?.bottom ?? null,
+        };
+      },
+      /** Block ids at points [[x, y, z], …] (-1 where nothing is held). */
+      blocks: async (pts: number[][]) => {
+        const e = engine();
+        if (!e) return [];
+        const r = await e.runtime.host.blocksAt(0, pts.flat());
+        return pts.map((_, i) => r[i * 3]!);
+      },
       bodies: () =>
         [...shown.current].map(([name, pos]) => ({
           name,
@@ -1639,6 +1836,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={(e) => void onPointerUp(e)}
+        onPointerCancel={lost}
+        onMouseDown={(e) => {
+          // Mouse events still report every button press (pointer events chord them into moves): a fallback for the cancel.
+          if (gate.current.button !== null && e.button !== gate.current.button) chord(e.button);
+        }}
         onPointerLeave={() => (hover.current = null)}
         onWheel={onWheel}
         onContextMenu={(e) => e.preventDefault()}

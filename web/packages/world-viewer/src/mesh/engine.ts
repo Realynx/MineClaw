@@ -107,6 +107,43 @@ export class MeshEngine {
     return out;
   }
 
+  /**
+   * Per column of the box's x/z rect, the column's top: the highest block in [min y, max y] that is neither air nor in `skip`
+   * (trees, plants, snow…), then the blocks down from it as [x, y, z, id, meta, below, …] (air left out): first whatever
+   * non-air stands on the top (up to `above` cells over it, never over max y: plants), then the top and up to `depth − 1` cells under it, never
+   * below min y. Columns with no top in the range, or not held, give nothing. Stops after `maxHits` blocks.
+   */
+  stacks(dim: number, min: V3, max: V3, skip: number[], depth: number, above = 2, maxHits = 8192): number[] {
+    const out: number[] = [];
+    const skipSet = new Set(skip);
+    const x1 = Math.floor(Math.min(min[0], max[0])), x2 = Math.floor(Math.max(min[0], max[0]));
+    const z1 = Math.floor(Math.min(min[2], max[2])), z2 = Math.floor(Math.max(min[2], max[2]));
+    const y1 = Math.max(0, Math.floor(Math.min(min[1], max[1]))), y2 = Math.floor(Math.max(min[1], max[1]));
+    const at = (x: number, y: number, z: number) => this.store.blockAt(dim, x, y, z);
+    for (let x = x1; x <= x2; x++)
+      for (let z = z1; z <= z2; z++) {
+        const col = this.store.get(dim, x >> 4, z >> 4);
+        if (!col) continue;
+        let top = -1;
+        for (let y = Math.min(y2, col.height - 1); y >= y1; y--) {
+          const id = at(x, y, z)?.id ?? 0;
+          if (id !== 0 && !skipSet.has(id)) {
+            top = y;
+            break;
+          }
+        }
+        if (top < 0) continue;
+        const lo = Math.max(y1, top - Math.max(1, depth) + 1);
+        for (let y = Math.min(col.height - 1, y2, top + above); y >= lo; y--) {
+          const b = at(x, y, z);
+          if (!b || b.id === 0) continue;
+          out.push(x, y, z, b.id, b.meta, y > 0 ? (at(x, y - 1, z)?.id ?? 0) : 0);
+          if (out.length >= maxHits * 6) return out;
+        }
+      }
+    return out;
+  }
+
   /** Packed light (sky << 4 | block) at each point (entities take the light of their cell); -1 = unknown. */
   lights(dim: number, pts: number[]): number[] {
     const out: number[] = [];

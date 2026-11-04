@@ -21,6 +21,7 @@ export type WorkerRequest =
   | { id: number; op: 'lights'; dim: number; pts: number[] }
   | { id: number; op: 'blocksAt'; dim: number; pts: number[] }
   | { id: number; op: 'scan'; dim: number; min: V3; max: V3; ids: number[]; maxHits?: number }
+  | { id: number; op: 'stacks'; dim: number; min: V3; max: V3; skip: number[]; depth: number; above?: number; maxHits?: number }
   | { id: number; op: 'blockEntities'; dim: number; cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> }
   | { id: number; op: 'clear' };
 
