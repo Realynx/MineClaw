@@ -80,6 +80,8 @@ import {
   designationDirective,
   designCells,
   designItems,
+  mineCheck,
+  mineItems,
   DESIGNATE_TOOLS,
   placeDesign,
   keyAction,
@@ -350,8 +352,8 @@ export function StoryMode() {
       return;
     }
     if (tool.kind === 'design') {
-      const placed = placeDesign(tool.blocks, r.a, build.facing);
-      const items = designItems(placed, tool.name);
+      const placed = placeDesign(tool.blocks, r.a, build.facing, !!tool.mine);
+      const items = tool.mine ? mineItems(placed, tool.name) : designItems(placed, tool.name);
       await run(
         { route: 'story.builds', body: { op: 'add', items } },
         { kind: 'build', build: items },
@@ -734,6 +736,13 @@ export function StoryMode() {
         if (s?.compat?.substituted.length)
           converted = ` (converted from ${s.compat.from}: ${s.compat.substituted.map((m) => `${m.count} ${m.name}`).join(', ')})`;
         blocks = designCells(s);
+        // A mine design keeps its absolute y: it is refused when it would dig into the bedrock floor.
+        if (s?.kind === 'mine' && blocks.length) {
+          const m = mineCheck(blocks);
+          if (m.refusal) return say(`${name}: ${m.refusal}`, 'warn');
+          setTool({ kind: 'design', id, name, blocks, mine: { min: m.min, max: m.max } });
+          return say(`${name}: a mine at y ${m.min}..${m.max}, absolute: move to a spot and click to queue it (Q/E turns)${converted}`);
+        }
       }
       if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
       setTool({ kind: 'design', id, name, blocks });

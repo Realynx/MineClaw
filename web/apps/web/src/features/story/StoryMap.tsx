@@ -62,7 +62,7 @@ export type MapTool =
   | { kind: 'designate'; id: DesignateId }
   | { kind: 'zone'; id: string; op: 'add' | 'remove' }
   | { kind: 'build'; id: BuildToolId }
-  | { kind: 'design'; id: number; name: string; blocks: DesignBlock[] }
+  | { kind: 'design'; id: number; name: string; blocks: DesignBlock[]; mine?: { min: number; max: number } }
   | { kind: 'storage' }
   | { kind: 'home' };
 
@@ -855,9 +855,17 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       // A design follows the cursor (Q/E turns it) on the working level.
       const a = startCellOf(hover.current);
       if (a)
-        for (const b of placeDesign(tool.blocks, a, props.build.facing).slice(0, 2500))
-          cube(b[0], b[1], b[2], '#7fd3ff', 0.38, false);
-      if (a) label(ctx, hover.current.at, `${tool.name}: ${tool.blocks.length} blocks · click to queue`, true);
+        for (const b of placeDesign(tool.blocks, a, props.build.facing, !!tool.mine).slice(0, 2500))
+          cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.38, false);
+      if (a)
+        label(
+          ctx,
+          hover.current.at,
+          tool.mine
+            ? `${tool.name}: y ${tool.mine.min}..${tool.mine.max} (absolute) · click to queue the mine`
+            : `${tool.name}: ${tool.blocks.length} blocks · click to queue`,
+          true,
+        );
     } else if (tool.kind === 'build' && hover.current?.cell && !d) {
       // The placement ghost under the cursor before a drag starts.
       const a = startCellOf(hover.current);
