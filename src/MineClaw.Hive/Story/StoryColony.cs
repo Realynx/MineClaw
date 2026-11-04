@@ -351,13 +351,14 @@ public sealed partial class StoryColony : IStoryPort
         if (!_wakePending) return;
         _wakePending = false;
         if (Meta.Paused || !Meta.Active) return;
+        long? stamp = null;
         foreach (var p in Pawns.Values)
         {
             if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "none" || cur.Label != NothingToDo) continue;
             if (Now - cur.Since < WakeAfter) continue;
             if (_woken.TryGetValue(p.Name, out var at) && Now - at < WakeCooldown) continue;
             var live = Host.Live(p.Name);
-            if (!live.Online || Work(p, live) == null) continue;
+            if (!live.Online || ProbeWork(p, live, stamp ??= WorkStamp()) == null) continue;
             _woken[p.Name] = Now;
             Supersede(p, "new work");
         }
@@ -419,11 +420,13 @@ public sealed partial class StoryColony : IStoryPort
                     restart.Add(p.Name);
                 }
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
+            _pickEnts = null; // the tick's searches read the world's entities once (and never a pick's old list)
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
+            _pickEnts = null;
             // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
             foreach (var p in Pawns.Values)
             {

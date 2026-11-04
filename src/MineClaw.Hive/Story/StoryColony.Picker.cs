@@ -46,7 +46,13 @@ public sealed partial class StoryColony
         _toolPlans.Clear(); // and each block's tool once per pick
         _pickPawn = p.Name; _pickClaims = null; // chests this pawn can't reach are left out of its plans (StoryColony.Ledger.cs)
         PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
-        try { return PillarHint(PickCore(p, live), live); } // a job up high: blocks to climb with (StoryColony.Reach.cs)
+        try
+        {
+            var job = PillarHint(PickCore(p, live), live); // a job up high: blocks to climb with (StoryColony.Reach.cs)
+            // Idle after an empty search: the wanderers' wake check need not search again until something changes (StoryColony.IdleAudit.cs).
+            if (job.Source is "none" or "wander" && _looks.TryGetValue(p.Name, out var look) && look.At == Now && !look.Found) _probed[p.Name] = (Now, WorkStamp());
+            return job;
+        }
         finally { _pickEnts = null; _pickPawn = null; }
     }
 
@@ -204,7 +210,23 @@ public sealed partial class StoryColony
             .ThenBy(t => Meta.TieBreak == "skill" ? -(p.Skills.GetValueOrDefault(t)?.Level ?? 0) : 0)
             .ThenBy(WorkTypes.Column).ToList();
 
+    /// <summary>The pawn's work now, or null; what it saw is kept for the idle audit (StoryColony.IdleAudit.cs: it never searches itself).</summary>
     private ActiveJob? Work(PawnState p, PawnLive live)
+    {
+        Searches++;
+        var outer = _blockedNotes;
+        var notes = new List<string>(0);
+        _blockedNotes = notes;
+        try
+        {
+            var job = WorkSearch(p, live);
+            _looks[p.Name] = new Look(Now, job != null, notes);
+            return job;
+        }
+        finally { _blockedNotes = outer; }
+    }
+
+    private ActiveJob? WorkSearch(PawnState p, PawnLive live)
     {
         int riskChecked = 0;
         foreach (var t in WorkOrder(p))

@@ -216,11 +216,16 @@ public sealed partial class StoryColony
     /// </summary>
     private void WakeWanderers()
     {
-        if (!_wakePending && Now - _wanderCheck < TimeSpan.FromSeconds(2)) return;
+        if (!_wakePending && Now - _wanderCheck < TimeSpan.FromSeconds(1)) return;
         _wanderCheck = Now;
         foreach (var k in _spots.Where(kv => kv.Value.Until <= Now).Select(kv => kv.Key).ToList()) _spots.Remove(k);
         if (Meta.Paused || !Meta.Active) return;
         int hour = HourNow;
+        // New work (a wake): every wanderer looks. Otherwise only one whose last empty search is out of date, one a tick
+        // (live 11-04: a full search per wanderer every 2 s, ~110 ms a tick with 4 idle pawns).
+        bool wake = _wakePending;
+        int budget = 1;
+        long stamp = WorkStamp();
         foreach (var p in Pawns.Values)
         {
             if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "wander") continue;
@@ -237,7 +242,8 @@ public sealed partial class StoryColony
                 p.Rev = Bump();
                 continue;
             }
-            var job = Urgent(p, live) ?? (workHours ? Work(p, live) : null); // a resting leg too: work never waits for a rest
+            // A resting leg too: work never waits for a rest.
+            var job = Urgent(p, live) ?? (workHours && (wake || ProbeDue(p, stamp, ref budget)) ? ProbeWork(p, live, stamp) : null);
             if (job == null) continue;
             if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
             foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
