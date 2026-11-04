@@ -290,78 +290,124 @@ public sealed partial class StoryColony
     public (JsonNode? Result, string? Error) PoliciesOp(JsonObject body)
     {
         var op = Str(body["op"]) ?? "";
-        if (op == "assign")
-        {
-            var id = Str(body["id"]);
-            var names = body["pawns"] is JsonArray a ? a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s : "").ToList() : null;
-            var (ps, err) = Resolve(names);
-            if (err != null) return (null, err);
-            lock (_lock)
-            {
-                EnsureDefaultPolicy();
-                if (Meta.Gear.Policies.FirstOrDefault(x => x.Id == id) is not { } pol) return (null, "id: no such policy");
-                foreach (var p in ps) { p.Gear.Policy = pol.Id == DefaultPolicy ? null : pol.Id; p.Rev = Touch(); _policyAt.Remove(p.Name); }
-                return (new JsonObject { ["id"] = pol.Id, ["pawns"] = new JsonArray(ps.Select(p => (JsonNode)p.Name!).ToArray()) }, null);
-            }
-        }
+        if (op == "assign") return AssignPolicy(body);
         lock (_lock)
         {
             EnsureDefaultPolicy();
-            if (op == "remove")
-            {
-                var id = Str(body["id"]);
-                if (id == DefaultPolicy) return (null, "the default policy can't be removed");
-                if (Meta.Gear.Policies.FirstOrDefault(x => x.Id == id) is not { } gone) return (null, "id: no such policy");
-                Meta.Gear.Policies.Remove(gone);
-                foreach (var p in Pawns.Values.Where(p => p.Gear.Policy == gone.Id)) { p.Gear.Policy = null; p.Rev = Touch(); }
-                Touch();
-                return (new JsonObject { ["id"] = gone.Id, ["removed"] = true }, null);
-            }
+            if (op == "remove") return RemovePolicy(Str(body["id"]));
             if (op != "set") return (null, "op must be set|remove|assign");
             if (body["policy"] is not JsonObject spec) return (null, "policy required");
-            var pid = Str(spec["id"]);
-            var pol = pid == null ? null : Meta.Gear.Policies.FirstOrDefault(x => x.Id == pid);
-            if (pid != null && pol == null) return (null, "id: no such policy");
-            var name = Str(spec["name"]) ?? pol?.Name;
-            if (name is not { Length: >= 1 and <= 40 }) return (null, "name: 1..40 characters");
-            var tools = pol?.Tools ?? new List<string>();
-            if (spec["tools"] is JsonArray ta)
-            {
-                tools = new List<string>();
-                foreach (var t in ta)
-                {
-                    var k = t is JsonValue tv && tv.TryGetValue<string>(out var ts) ? ts.Trim().ToLowerInvariant() : null;
-                    if (k == null || StoryTools.Kind(k) == null) return (null, $"tools: each one of {string.Join("|", StoryTools.Kinds)}");
-                    if (!tools.Contains(k)) tools.Add(k);
-                }
-            }
-            else if (spec["tools"] != null) return (null, "tools must be [kind]");
-            var weapon = Str(spec["weapon"]) ?? pol?.Weapon ?? "best";
-            if (!WeaponPrefs.Contains(weapon)) return (null, $"weapon must be {string.Join("|", WeaponPrefs)}");
-            var armor = Str(spec["armor"]) ?? pol?.Armor ?? "drafted";
-            if (!ArmorModes.Contains(armor)) return (null, $"armor must be {string.Join("|", ArmorModes)}");
-            int food = pol?.Food ?? 0;
-            if (spec["food"] != null && (StoryJson.Int(spec["food"]) is not { } f || f is < 0 or > 16)) return (null, "food must be 0..16");
-            if (spec["food"] != null) food = StoryJson.Int(spec["food"])!.Value;
-            bool spareOne = pol?.Spare ?? false;
-            if (spec["spare"] is JsonValue sv)
-            {
-                if (!sv.TryGetValue<bool>(out var sb)) return (null, "spare must be true|false");
-                spareOne = sb;
-            }
-            bool byWork = pol?.ToolsByWork ?? true;
-            if (spec["tools_by_work"] is JsonValue bw)
-            {
-                if (!bw.TryGetValue<bool>(out var b)) return (null, "tools_by_work must be true|false");
-                byWork = b;
-            }
-            pol ??= new GearPolicy { Id = NextId("pol") };
-            if (!Meta.Gear.Policies.Contains(pol)) Meta.Gear.Policies.Add(pol);
-            pol.Name = name; pol.Tools = tools; pol.Weapon = weapon; pol.Armor = armor; pol.Food = food; pol.ToolsByWork = byWork; pol.Spare = spareOne;
-            Touch();
-            _policyAt.Clear();
-            return (new JsonObject { ["id"] = pol.Id }, null);
+            return SetPolicy(spec);
         }
+    }
+
+    private (JsonNode? Result, string? Error) AssignPolicy(JsonObject body)
+    {
+        var id = Str(body["id"]);
+        var names = body["pawns"] is JsonArray a ? a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s : "").ToList() : null;
+        var (ps, err) = Resolve(names);
+        if (err != null) return (null, err);
+        lock (_lock)
+        {
+            EnsureDefaultPolicy();
+            if (Meta.Gear.Policies.FirstOrDefault(x => x.Id == id) is not { } pol) return (null, "id: no such policy");
+            foreach (var p in ps) { p.Gear.Policy = pol.Id == DefaultPolicy ? null : pol.Id; p.Rev = Touch(); _policyAt.Remove(p.Name); }
+            return (new JsonObject { ["id"] = pol.Id, ["pawns"] = new JsonArray(ps.Select(p => (JsonNode)p.Name!).ToArray()) }, null);
+        }
+    }
+
+    private (JsonNode? Result, string? Error) RemovePolicy(string? id)
+    {
+        if (id == DefaultPolicy) return (null, "the default policy can't be removed");
+        if (Meta.Gear.Policies.FirstOrDefault(x => x.Id == id) is not { } gone) return (null, "id: no such policy");
+        Meta.Gear.Policies.Remove(gone);
+        foreach (var p in Pawns.Values.Where(p => p.Gear.Policy == gone.Id)) { p.Gear.Policy = null; p.Rev = Touch(); }
+        Touch();
+        return (new JsonObject { ["id"] = gone.Id, ["removed"] = true }, null);
+    }
+
+    /// <summary>A new policy, or the one <c>id</c> names updated: fields not given keep their value (a new one's defaults).</summary>
+    private (JsonNode? Result, string? Error) SetPolicy(JsonObject spec)
+    {
+        var pid = Str(spec["id"]);
+        var pol = pid == null ? null : Meta.Gear.Policies.FirstOrDefault(x => x.Id == pid);
+        if (pid != null && pol == null) return (null, "id: no such policy");
+        var draft = new GearPolicy();
+        if ((PolicyName(spec, pol, draft) ?? PolicyTools(spec, pol, draft) ?? PolicyArms(spec, pol, draft) ?? PolicyAmounts(spec, pol, draft)) is { } err)
+            return (null, err);
+        pol ??= new GearPolicy { Id = NextId("pol") };
+        if (!Meta.Gear.Policies.Contains(pol)) Meta.Gear.Policies.Add(pol);
+        pol.Name = draft.Name; pol.Tools = draft.Tools; pol.Weapon = draft.Weapon; pol.Armor = draft.Armor; pol.Food = draft.Food;
+        pol.ToolsByWork = draft.ToolsByWork; pol.Spare = draft.Spare;
+        Touch();
+        _policyAt.Clear();
+        return (new JsonObject { ["id"] = pol.Id }, null);
+    }
+
+    private static string? PolicyName(JsonObject spec, GearPolicy? pol, GearPolicy draft)
+    {
+        var name = Str(spec["name"]) ?? pol?.Name;
+        if (name is not { Length: >= 1 and <= 40 }) return "name: 1..40 characters";
+        draft.Name = name;
+        return null;
+    }
+
+    private static string? PolicyTools(JsonObject spec, GearPolicy? pol, GearPolicy draft)
+    {
+        draft.Tools = pol?.Tools ?? new List<string>();
+        if (spec["tools"] is JsonArray ta) return PolicyToolList(ta, draft);
+        return spec["tools"] != null ? "tools must be [kind]" : null;
+    }
+
+    private static string? PolicyToolList(JsonArray ta, GearPolicy draft)
+    {
+        var tools = new List<string>();
+        foreach (var t in ta)
+        {
+            var k = t is JsonValue tv && tv.TryGetValue<string>(out var ts) ? ts.Trim().ToLowerInvariant() : null;
+            if (k == null || StoryTools.Kind(k) == null) return $"tools: each one of {string.Join("|", StoryTools.Kinds)}";
+            if (!tools.Contains(k)) tools.Add(k);
+        }
+        draft.Tools = tools;
+        return null;
+    }
+
+    private static string? PolicyArms(JsonObject spec, GearPolicy? pol, GearPolicy draft)
+    {
+        draft.Weapon = Str(spec["weapon"]) ?? pol?.Weapon ?? "best";
+        if (!WeaponPrefs.Contains(draft.Weapon)) return $"weapon must be {string.Join("|", WeaponPrefs)}";
+        draft.Armor = Str(spec["armor"]) ?? pol?.Armor ?? "drafted";
+        return ArmorModes.Contains(draft.Armor) ? null : $"armor must be {string.Join("|", ArmorModes)}";
+    }
+
+    private static string? PolicyAmounts(JsonObject spec, GearPolicy? pol, GearPolicy draft)
+    {
+        draft.Food = pol?.Food ?? 0;
+        if (spec["food"] != null)
+        {
+            if (StoryJson.Int(spec["food"]) is not { } f || f is < 0 or > 16) return "food must be 0..16";
+            draft.Food = f;
+        }
+        return PolicyFlags(spec, pol, draft);
+    }
+
+    private static string? PolicyFlags(JsonObject spec, GearPolicy? pol, GearPolicy draft)
+    {
+        if (PolicyFlag(spec["spare"], pol?.Spare ?? false, "spare must be true|false", out var spare) is { } serr) return serr;
+        draft.Spare = spare;
+        if (PolicyFlag(spec["tools_by_work"], pol?.ToolsByWork ?? true, "tools_by_work must be true|false", out var byWork) is { } berr) return berr;
+        draft.ToolsByWork = byWork;
+        return null;
+    }
+
+    /// <summary>A true|false field: given (a JSON value) it must be a bool; not given, the current value stays.</summary>
+    private static string? PolicyFlag(JsonNode? n, bool current, string error, out bool value)
+    {
+        value = current;
+        if (n is not JsonValue v) return null;
+        if (!v.TryGetValue<bool>(out var b)) return error;
+        value = b;
+        return null;
     }
 
     private JsonArray PoliciesJson()
@@ -738,186 +784,287 @@ public sealed partial class StoryColony
         var d = w.Data;
         (int Id, int Meta)? item = null;
         int count = 1;
-        if (op == "pickup")
-        {
-            if (body["item"] is JsonArray ia && ia.Count == 2 && StoryJson.Int(ia[0]) is { } iid && StoryJson.Int(ia[1]) is { } im) item = (iid, im);
-            else if (Str(body["item"]) is { } iname && d.ItemByNameWithDamage(iname) is { } hit) item = (hit.Item.Id, hit.Damage);
-            if (item is not { } it0 || !d.ItemExists(it0.Id)) return (null, "item must be [id, meta] (or an item name)");
-            if (body["count"] != null && (StoryJson.Int(body["count"]) is not { } c || c is < 1 or > 64)) return (null, "count must be 1..64");
-            count = StoryJson.Int(body["count"]) ?? 1;
-        }
-        var results = new JsonArray();
+        if (op == "pickup" && ParsePickup(d, body, out item, out count) is { } perr) return (null, perr);
         lock (_lock)
         {
-            var claims = GearClaims((p, t) => t.Op == op && pawns.Contains(p));
-            var order = op == "arm" || op == "armor" ? CombatOrder(pawns) : pawns.ToList();
-            var tasks = order.ToDictionary(p => p.Name, p => new GearTask { Id = NextId("g"), Op = op }, StringComparer.OrdinalIgnoreCase);
-            var gotBy = order.ToDictionary(p => p.Name, _ => new List<string>(), StringComparer.OrdinalIgnoreCase);
-            var missBy = order.ToDictionary(p => p.Name, _ => new List<string>(), StringComparer.OrdinalIgnoreCase);
-            void Claim(Unit u) => claims[(u.Store.Chest, u.Id, u.Meta)] = claims.GetValueOrDefault((u.Store.Chest, u.Id, u.Meta)) + 1;
-            string Label(int id, int meta, Dictionary<string, int>? ench) =>
-                d.DisplayName(id, meta) + (ench is { Count: > 0 } ? " (" + string.Join(", ", ench.Select(e => e.Key.Replace('_', ' ') + " " + e.Value)) + ")" : "");
-            var home = Home() ?? new P3(0, 64, 0);
-            switch (op)
-            {
-                case "arm":
-                {
-                    foreach (var p in order)
-                    {
-                        var live = Host.Live(p.Name);
-                        var pref = PolicyOf(p).Weapon is "none" ? "best" : PolicyOf(p).Weapon;
-                        var own = GearOf(live).Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0)
-                            .OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref)).ThenBy(g => g.Meta).FirstOrDefault();
-                        int ownScore = own == null ? 0 : StoryTools.WeaponScore(d, own.Id, pref);
-                        var best = StoredUnits((id, meta) => StoryTools.WeaponScore(d, id, pref) > 0 && !StoryTools.Worn(d, id, meta), live.Online ? live.Block : home, claims)
-                            .OrderByDescending(u => StoryTools.WeaponScore(d, u.Id, pref)).ThenBy(u => u.Meta).FirstOrDefault();
-                        var t = tasks[p.Name];
-                        if (best != null && StoryTools.WeaponScore(d, best.Id, pref) > ownScore)
-                        {
-                            Claim(best);
-                            t.Fetch.Add(new GearFetch(best.Store.Chest, best.Id, best.Meta, 1, EnchWish(best.Ench)));
-                            t.Hold = ItemName(best.Id, best.Meta);
-                            t.HoldEnch = EnchWish(best.Ench);
-                            gotBy[p.Name].Add(Label(best.Id, best.Meta, best.Ench));
-                        }
-                        else if (own != null)
-                        {
-                            t.Hold = ItemName(own.Id, own.Meta);
-                            t.HoldEnch = own.Enchanted ? "any" : "none";
-                            gotBy[p.Name].Add(Label(own.Id, own.Meta, own.Ench?.ToDictionary(e => e.Key, e => e.Value)) + " (own)");
-                        }
-                        else missBy[p.Name].Add("a weapon");
-                    }
-                    break;
-                }
-                case "armor":
-                {
-                    var slots = new[] { "head", "chest", "legs", "feet" };
-                    for (int si = 0; si < slots.Length; si++)
-                    {
-                        var slot = slots[si];
-                        // Rotate who is served first per slot: the best helmet and the best chestplate go to different pawns.
-                        var turn = order.Skip(si % Math.Max(1, order.Count)).Concat(order.Take(si % Math.Max(1, order.Count))).ToList();
-                        foreach (var p in turn)
-                        {
-                            var live = Host.Live(p.Name);
-                            var gear = GearOf(live);
-                            var worn = gear.FirstOrDefault(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot);
-                            var bag = gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault();
-                            int have = Math.Max(worn == null ? 0 : StoryTools.ArmorRank(worn.Id), bag == null ? 0 : StoryTools.ArmorRank(bag.Id));
-                            var best = StoredUnits((id, meta) => StoryTools.ArmorSlot(id) == slot && !StoryTools.Worn(d, id, meta), live.Online ? live.Block : home, claims)
-                                .OrderByDescending(u => StoryTools.ArmorRank(u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
-                            var t = tasks[p.Name];
-                            if (best != null && StoryTools.ArmorRank(best.Id) > have)
-                            {
-                                Claim(best);
-                                t.Fetch.Add(new GearFetch(best.Store.Chest, best.Id, best.Meta, 1, EnchWish(best.Ench)));
-                                t.Wear.Add(ItemName(best.Id, best.Meta));
-                                gotBy[p.Name].Add(Label(best.Id, best.Meta, best.Ench));
-                            }
-                            else if (bag != null && (worn == null || StoryTools.ArmorRank(bag.Id) > StoryTools.ArmorRank(worn.Id)))
-                            {
-                                t.Wear.Add(ItemName(bag.Id, bag.Meta));
-                                gotBy[p.Name].Add(Label(bag.Id, bag.Meta, null) + " (own)");
-                            }
-                            else if (worn == null) missBy[p.Name].Add("a " + (slot switch { "head" => "helmet", "chest" => "chestplate", "legs" => "pair of leggings", _ => "pair of boots" }));
-                        }
-                    }
-                    break;
-                }
-                case "pickup":
-                {
-                    var (iid, imeta) = item!.Value;
-                    foreach (var p in order)
-                    {
-                        var live = Host.Live(p.Name);
-                        var units = StoredUnits((id, meta) => id == iid && (imeta < 0 || meta == imeta), live.Online ? live.Block : home, claims).Take(count).ToList();
-                        var t = tasks[p.Name];
-                        foreach (var g in units.GroupBy(u => (u.Store.Chest, u.Id, u.Meta)))
-                        {
-                            foreach (var u in g) Claim(u);
-                            t.Fetch.Add(new GearFetch(g.Key.Chest, g.Key.Id, g.Key.Meta, g.Count(), StoryTools.IsGear(d, g.Key.Id) ? EnchWish(g.First().Ench) : null));
-                        }
-                        if (units.Count > 0) gotBy[p.Name].Add($"{units.Count} {d.DisplayName(iid, Math.Max(0, imeta))}");
-                        if (units.Count < count) missBy[p.Name].Add($"{count - units.Count} {d.DisplayName(iid, Math.Max(0, imeta))}");
-                        if (units.Count > 0 && StoryTools.IsGear(d, iid))
-                        {
-                            if (StoryTools.ArmorSlot(iid) != null) t.Wear.Add(ItemName(iid, Math.Max(0, imeta)));
-                            else if (StoryTools.IsWeapon(d, iid)) { t.Hold = ItemName(iid, Math.Max(0, imeta)); t.HoldEnch = EnchWish(units[0].Ench); }
-                        }
-                    }
-                    break;
-                }
-                case "return":
-                {
-                    foreach (var p in order)
-                    {
-                        var live = Host.Live(p.Name);
-                        var gear = GearOf(live);
-                        var t = tasks[p.Name];
-                        if (gear.Any(g => g.Slot is >= 5 and <= 8)) t.Unwear = true;
-                        foreach (var g in gear)
-                        {
-                            if (BestChest(g.Id, g.Meta, live.Online ? live.Block : home) is not { } st) { missBy[p.Name].Add($"a chest for {d.DisplayName(g.Id, g.Meta)}"); continue; }
-                            t.Store.Add(new GearPut(st.Chest, g.Id, g.Meta, g.Count, g.Ench?.ToDictionary(e => e.Key, e => e.Value)));
-                            gotBy[p.Name].Add(Label(g.Id, g.Meta, g.Ench?.ToDictionary(e => e.Key, e => e.Value)) + " stored");
-                        }
-                        if (gear.Count == 0) missBy[p.Name].Add("nothing to return");
-                    }
-                    break;
-                }
-                case "tools":
-                {
-                    // Kind by kind, the pawns that use it most first (their priority for the work that needs it, then skill).
-                    var wantsBy = order.ToDictionary(p => p.Name, p => KindsFor(p), StringComparer.OrdinalIgnoreCase);
-                    foreach (var kind in new[] { ToolType.Pickaxe, ToolType.Axe, ToolType.Shovel, ToolType.Hoe, ToolType.Shears, ToolType.Sword })
-                    {
-                        var users = order.Where(p => wantsBy[p.Name].Contains(kind)).OrderBy(p => UsePriority(p, kind)).ThenByDescending(p => UseSkill(p, kind))
-                            .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList();
-                        foreach (var p in users)
-                        {
-                            var live = Host.Live(p.Name);
-                            if (GearOf(live).Any(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind && !StoryTools.Worn(d, g.Id, g.Meta))) continue;
-                            var best = StoredUnits((id, meta) => StoryTools.ToolOf(d, id) == kind && !StoryTools.Worn(d, id, meta), live.Online ? live.Block : home, claims)
-                                .OrderBy(u => u.Ench is { Count: > 0 } ? 1 : 0).ThenByDescending(u => StoryTools.LevelOf(d, u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
-                            if (best == null) { missBy[p.Name].Add(StoryTools.Describe(kind, -1)); continue; }
-                            Claim(best);
-                            tasks[p.Name].Fetch.Add(new GearFetch(best.Store.Chest, best.Id, best.Meta, 1, EnchWish(best.Ench)));
-                            gotBy[p.Name].Add(Label(best.Id, best.Meta, best.Ench));
-                        }
-                    }
-                    foreach (var p in order) if (wantsBy[p.Name].Count == 0) missBy[p.Name].Add("no tools in its policy");
-                    break;
-                }
-            }
-            foreach (var p in order)
-            {
-                var t = tasks[p.Name];
-                t.Label = op switch
-                {
-                    "arm" => "arming", "armor" => "putting on armour", "pickup" => "picking up " + d.DisplayName(item!.Value.Id, Math.Max(0, item.Value.Meta)).ToLowerInvariant(),
-                    "return" => "returning gear", _ => "fetching tools",
-                };
-                bool any = t.Fetch.Count > 0 || t.Hold != null || t.Wear.Count > 0 || t.Unwear || t.Store.Count > 0;
-                if (any)
-                {
-                    p.Gear.Tasks.RemoveAll(x => x.Op == op); // the same op again replaces the pending one
-                    p.Gear.Tasks.Add(t);
-                    p.Rev = Touch();
-                    if (_current.TryGetValue(p.Name, out var cur) && cur.Source is "none") Supersede(p, "gear: " + t.Label);
-                }
-                results.Add(new JsonObject
-                {
-                    ["pawn"] = p.Name, ["display"] = p.Display,
-                    ["got"] = new JsonArray(gotBy[p.Name].Select(x => (JsonNode)x!).ToArray()),
-                    ["missing"] = new JsonArray(missBy[p.Name].Select(x => (JsonNode)x!).ToArray()),
-                });
-            }
-            var parts = order.Select(p => $"{p.Display}: " + (gotBy[p.Name].Count > 0 ? string.Join(", ", gotBy[p.Name]) : "nothing")
-                + (missBy[p.Name].Count > 0 && missBy[p.Name][0] != "nothing to return" ? $" (missing {string.Join(", ", missBy[p.Name])})" : "")).ToList();
-            var verb = op switch { "arm" => "Arm", "armor" => "Armour", "pickup" => "Pick up", "return" => "Return gear", _ => "Tools" };
-            return (new JsonObject { ["results"] = results, ["summary"] = $"{verb}: " + string.Join("; ", parts) }, null);
+            var run = NewGearRun(op, pawns, d);
+            RunGearOp(run, item, count);
+            return (GearCommit(run, item), null);
         }
+    }
+
+    /// <summary>The run for a bulk op: fighters first for arm and armour; what the same op's pending tasks claimed is free again.</summary>
+    private GearRun NewGearRun(string op, IReadOnlyList<PawnState> pawns, IGameData d)
+    {
+        var claims = GearClaims((p, t) => t.Op == op && pawns.Contains(p));
+        var order = op == "arm" || op == "armor" ? CombatOrder(pawns) : pawns.ToList();
+        return new GearRun(op, d, Home() ?? new P3(0, 64, 0), claims, order, NextId);
+    }
+
+    private void RunGearOp(GearRun run, (int Id, int Meta)? item, int count)
+    {
+        switch (run.Op)
+        {
+            case "arm": GearArm(run); break;
+            case "armor": GearArmor(run); break;
+            case "pickup": GearPickup(run, item!.Value, count); break;
+            case "return": GearReturn(run); break;
+            case "tools": GearTools(run); break;
+        }
+    }
+
+    /// <summary>A pickup's item ([id, meta] or a name) and count (1..64); the error, or null.</summary>
+    private static string? ParsePickup(IGameData d, JsonObject body, out (int Id, int Meta)? item, out int count)
+    {
+        count = 1;
+        item = PickupItem(d, body["item"]);
+        if (item is not { } it0 || !d.ItemExists(it0.Id)) return "item must be [id, meta] (or an item name)";
+        if (body["count"] != null && (StoryJson.Int(body["count"]) is not { } c || c is < 1 or > 64)) return "count must be 1..64";
+        count = StoryJson.Int(body["count"]) ?? 1;
+        return null;
+    }
+
+    private static (int Id, int Meta)? PickupItem(IGameData d, JsonNode? n)
+    {
+        if (n is JsonArray ia && ia.Count == 2 && StoryJson.Int(ia[0]) is { } iid && StoryJson.Int(ia[1]) is { } im) return (iid, im);
+        return Str(n) is { } iname && d.ItemByNameWithDamage(iname) is { } hit ? (hit.Item.Id, hit.Damage) : null;
+    }
+
+    /// <summary>
+    /// One bulk gear op in progress: the pawns in serving order, a task for each, what each got and what it was missing, and the
+    /// stock claimed so far (an item fetched for one pawn isn't offered to the next).
+    /// </summary>
+    private sealed class GearRun
+    {
+        public readonly string Op;
+        public readonly IGameData D;
+        public readonly P3 Home;
+        public readonly Dictionary<(P3 Chest, int Id, int Meta), int> Claims;
+        public readonly List<PawnState> Order;
+        public readonly Dictionary<string, GearTask> Tasks;
+        public readonly Dictionary<string, List<string>> Got, Missing;
+
+        public GearRun(string op, IGameData d, P3 home, Dictionary<(P3 Chest, int Id, int Meta), int> claims, List<PawnState> order, Func<string, string> nextId)
+        {
+            Op = op; D = d; Home = home; Claims = claims; Order = order;
+            Tasks = order.ToDictionary(p => p.Name, p => new GearTask { Id = nextId("g"), Op = op }, StringComparer.OrdinalIgnoreCase);
+            Got = order.ToDictionary(p => p.Name, _ => new List<string>(), StringComparer.OrdinalIgnoreCase);
+            Missing = order.ToDictionary(p => p.Name, _ => new List<string>(), StringComparer.OrdinalIgnoreCase);
+        }
+
+        public void Claim(Unit u) => Claims[(u.Store.Chest, u.Id, u.Meta)] = Claims.GetValueOrDefault((u.Store.Chest, u.Id, u.Meta)) + 1;
+
+        /// <summary>An item as the answer names it, with its enchantments ("Diamond Sword (sharpness 2)").</summary>
+        public string Label(int id, int meta, IReadOnlyDictionary<string, int>? ench) =>
+            D.DisplayName(id, meta) + (ench is { Count: > 0 } ? " (" + string.Join(", ", ench.Select(e => e.Key.Replace('_', ' ') + " " + e.Value)) + ")" : "");
+
+        /// <summary>A stored unit fetched for the pawn's task (claimed, labelled as got).</summary>
+        public GearTask Fetch(PawnState p, Unit u)
+        {
+            Claim(u);
+            var t = Tasks[p.Name];
+            t.Fetch.Add(new GearFetch(u.Store.Chest, u.Id, u.Meta, 1, EnchWish(u.Ench)));
+            Got[p.Name].Add(Label(u.Id, u.Meta, u.Ench));
+            return t;
+        }
+    }
+
+    /// <summary>Where a pawn's fetches start from: its body, or home while it is offline.</summary>
+    private P3 GearFrom(GearRun run, PawnLive live) => live.Online ? live.Block : run.Home;
+
+    /// <summary>Arm: one weapon each by the pawn's preference, best fighters first; a stored one only when it beats the pawn's own.</summary>
+    private void GearArm(GearRun run)
+    {
+        var d = run.D;
+        foreach (var p in run.Order)
+        {
+            var live = Host.Live(p.Name);
+            var pref = PolicyOf(p).Weapon is "none" ? "best" : PolicyOf(p).Weapon;
+            var own = GearOf(live).Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0)
+                .OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref)).ThenBy(g => g.Meta).FirstOrDefault();
+            int ownScore = own == null ? 0 : StoryTools.WeaponScore(d, own.Id, pref);
+            var best = StoredUnits((id, meta) => StoryTools.WeaponScore(d, id, pref) > 0 && !StoryTools.Worn(d, id, meta), GearFrom(run, live), run.Claims)
+                .OrderByDescending(u => StoryTools.WeaponScore(d, u.Id, pref)).ThenBy(u => u.Meta).FirstOrDefault();
+            if (best != null && StoryTools.WeaponScore(d, best.Id, pref) > ownScore) ArmWith(run, p, best);
+            else if (own != null) ArmOwn(run, p, own);
+            else run.Missing[p.Name].Add("a weapon");
+        }
+    }
+
+    private void ArmWith(GearRun run, PawnState p, Unit best)
+    {
+        var t = run.Fetch(p, best);
+        t.Hold = ItemName(best.Id, best.Meta);
+        t.HoldEnch = EnchWish(best.Ench);
+    }
+
+    private void ArmOwn(GearRun run, PawnState p, GearSlot own)
+    {
+        var t = run.Tasks[p.Name];
+        t.Hold = ItemName(own.Id, own.Meta);
+        t.HoldEnch = own.Enchanted ? "any" : "none";
+        run.Got[p.Name].Add(run.Label(own.Id, own.Meta, own.Ench?.ToDictionary(e => e.Key, e => e.Value)) + " (own)");
+    }
+
+    private static readonly string[] ArmorSlots = ["head", "chest", "legs", "feet"];
+
+    /// <summary>Armour slot by slot; who is served first rotates per slot, so the best helmet and the best chestplate go to different pawns.</summary>
+    private void GearArmor(GearRun run)
+    {
+        var order = run.Order;
+        for (int si = 0; si < ArmorSlots.Length; si++)
+        {
+            int first = si % Math.Max(1, order.Count);
+            foreach (var p in order.Skip(first).Concat(order.Take(first)).ToList()) ArmorSlotFor(run, p, ArmorSlots[si]);
+        }
+    }
+
+    /// <summary>One armour slot for one pawn: a better stored piece, else a better one in its bag, else (wearing none) missing.</summary>
+    private void ArmorSlotFor(GearRun run, PawnState p, string slot)
+    {
+        var d = run.D;
+        var live = Host.Live(p.Name);
+        var gear = GearOf(live);
+        var worn = gear.FirstOrDefault(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot);
+        var bag = gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault();
+        int have = Math.Max(worn == null ? 0 : StoryTools.ArmorRank(worn.Id), bag == null ? 0 : StoryTools.ArmorRank(bag.Id));
+        var best = StoredUnits((id, meta) => StoryTools.ArmorSlot(id) == slot && !StoryTools.Worn(d, id, meta), GearFrom(run, live), run.Claims)
+            .OrderByDescending(u => StoryTools.ArmorRank(u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
+        if (best != null && StoryTools.ArmorRank(best.Id) > have) run.Fetch(p, best).Wear.Add(ItemName(best.Id, best.Meta));
+        else if (bag != null && (worn == null || StoryTools.ArmorRank(bag.Id) > StoryTools.ArmorRank(worn.Id)))
+        {
+            run.Tasks[p.Name].Wear.Add(ItemName(bag.Id, bag.Meta));
+            run.Got[p.Name].Add(run.Label(bag.Id, bag.Meta, null) + " (own)");
+        }
+        else if (worn == null) run.Missing[p.Name].Add("a " + ArmorPieceName(slot));
+    }
+
+    private static string ArmorPieceName(string slot) => slot switch { "head" => "helmet", "chest" => "chestplate", "legs" => "pair of leggings", _ => "pair of boots" };
+
+    /// <summary>Pick up: up to <paramref name="count"/> of the item each (any meta when it is negative), worn or held when it is gear.</summary>
+    private void GearPickup(GearRun run, (int Id, int Meta) item, int count)
+    {
+        var d = run.D;
+        var (iid, imeta) = item;
+        var name = d.DisplayName(iid, Math.Max(0, imeta));
+        foreach (var p in run.Order)
+        {
+            var live = Host.Live(p.Name);
+            var units = StoredUnits((id, meta) => id == iid && (imeta < 0 || meta == imeta), GearFrom(run, live), run.Claims).Take(count).ToList();
+            var t = run.Tasks[p.Name];
+            foreach (var g in units.GroupBy(u => (u.Store.Chest, u.Id, u.Meta)))
+            {
+                foreach (var u in g) run.Claim(u);
+                t.Fetch.Add(new GearFetch(g.Key.Chest, g.Key.Id, g.Key.Meta, g.Count(), StoryTools.IsGear(d, g.Key.Id) ? EnchWish(g.First().Ench) : null));
+            }
+            if (units.Count > 0) run.Got[p.Name].Add($"{units.Count} {name}");
+            if (units.Count < count) run.Missing[p.Name].Add($"{count - units.Count} {name}");
+            if (units.Count > 0 && StoryTools.IsGear(d, iid)) PickedGear(d, t, iid, Math.Max(0, imeta), units[0]);
+        }
+    }
+
+    /// <summary>Picked-up gear goes on: armour worn, a weapon held.</summary>
+    private void PickedGear(IGameData d, GearTask t, int id, int meta, Unit first)
+    {
+        if (StoryTools.ArmorSlot(id) != null) t.Wear.Add(ItemName(id, meta));
+        else if (StoryTools.IsWeapon(d, id)) { t.Hold = ItemName(id, meta); t.HoldEnch = EnchWish(first.Ench); }
+    }
+
+    /// <summary>Return: armour off, every piece of gear into the best chest for it.</summary>
+    private void GearReturn(GearRun run)
+    {
+        foreach (var p in run.Order)
+        {
+            var live = Host.Live(p.Name);
+            var gear = GearOf(live);
+            var t = run.Tasks[p.Name];
+            if (gear.Any(g => g.Slot is >= 5 and <= 8)) t.Unwear = true;
+            foreach (var g in gear) ReturnOne(run, p, t, g, GearFrom(run, live));
+            if (gear.Count == 0) run.Missing[p.Name].Add("nothing to return");
+        }
+    }
+
+    private void ReturnOne(GearRun run, PawnState p, GearTask t, GearSlot g, P3 from)
+    {
+        if (BestChest(g.Id, g.Meta, from) is not { } st) { run.Missing[p.Name].Add($"a chest for {run.D.DisplayName(g.Id, g.Meta)}"); return; }
+        var ench = g.Ench?.ToDictionary(e => e.Key, e => e.Value);
+        t.Store.Add(new GearPut(st.Chest, g.Id, g.Meta, g.Count, ench));
+        run.Got[p.Name].Add(run.Label(g.Id, g.Meta, g.Ench?.ToDictionary(e => e.Key, e => e.Value)) + " stored");
+    }
+
+    private static readonly ToolType[] BulkToolKinds = [ToolType.Pickaxe, ToolType.Axe, ToolType.Shovel, ToolType.Hoe, ToolType.Shears, ToolType.Sword];
+
+    /// <summary>Tools: kind by kind, the pawns that use it most first (their priority for the work that needs it, then skill).</summary>
+    private void GearTools(GearRun run)
+    {
+        var wantsBy = run.Order.ToDictionary(p => p.Name, p => KindsFor(p), StringComparer.OrdinalIgnoreCase);
+        foreach (var kind in BulkToolKinds)
+        {
+            var users = run.Order.Where(p => wantsBy[p.Name].Contains(kind)).OrderBy(p => UsePriority(p, kind)).ThenByDescending(p => UseSkill(p, kind))
+                .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var p in users) ToolFor(run, p, kind);
+        }
+        foreach (var p in run.Order) if (wantsBy[p.Name].Count == 0) run.Missing[p.Name].Add("no tools in its policy");
+    }
+
+    /// <summary>One tool kind for one pawn that has no fresh one: the best stored (plain before enchanted), else missing.</summary>
+    private void ToolFor(GearRun run, PawnState p, ToolType kind)
+    {
+        var d = run.D;
+        var live = Host.Live(p.Name);
+        if (GearOf(live).Any(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind && !StoryTools.Worn(d, g.Id, g.Meta))) return;
+        var best = StoredUnits((id, meta) => StoryTools.ToolOf(d, id) == kind && !StoryTools.Worn(d, id, meta), GearFrom(run, live), run.Claims)
+            .OrderBy(u => u.Ench is { Count: > 0 } ? 1 : 0).ThenByDescending(u => StoryTools.LevelOf(d, u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
+        if (best == null) { run.Missing[p.Name].Add(StoryTools.Describe(kind, -1)); return; }
+        run.Fetch(p, best);
+    }
+
+    /// <summary>Each pawn's task goes in (replacing a pending one of the same op) when it has anything to do; the answer per pawn and
+    /// its summary line.</summary>
+    private JsonObject GearCommit(GearRun run, (int Id, int Meta)? item)
+    {
+        var results = new JsonArray();
+        foreach (var p in run.Order)
+        {
+            var t = run.Tasks[p.Name];
+            t.Label = GearTaskLabel(run, item);
+            if (HasGearWork(t)) QueueGearTask(p, t, run.Op);
+            results.Add(new JsonObject
+            {
+                ["pawn"] = p.Name, ["display"] = p.Display,
+                ["got"] = new JsonArray(run.Got[p.Name].Select(x => (JsonNode)x!).ToArray()),
+                ["missing"] = new JsonArray(run.Missing[p.Name].Select(x => (JsonNode)x!).ToArray()),
+            });
+        }
+        var parts = run.Order.Select(p => GearSummaryPart(run, p)).ToList();
+        return new JsonObject { ["results"] = results, ["summary"] = $"{GearVerb(run.Op)}: " + string.Join("; ", parts) };
+    }
+
+    private static string GearTaskLabel(GearRun run, (int Id, int Meta)? item) => run.Op switch
+    {
+        "arm" => "arming", "armor" => "putting on armour", "pickup" => "picking up " + run.D.DisplayName(item!.Value.Id, Math.Max(0, item.Value.Meta)).ToLowerInvariant(),
+        "return" => "returning gear", _ => "fetching tools",
+    };
+
+    private static string GearVerb(string op) => op switch { "arm" => "Arm", "armor" => "Armour", "pickup" => "Pick up", "return" => "Return gear", _ => "Tools" };
+
+    private static bool HasGearWork(GearTask t) => t.Fetch.Count > 0 || t.Hold != null || t.Wear.Count > 0 || t.Unwear || t.Store.Count > 0;
+
+    private void QueueGearTask(PawnState p, GearTask t, string op)
+    {
+        p.Gear.Tasks.RemoveAll(x => x.Op == op); // the same op again replaces the pending one
+        p.Gear.Tasks.Add(t);
+        p.Rev = Touch();
+        if (_current.TryGetValue(p.Name, out var cur) && cur.Source is "none") Supersede(p, "gear: " + t.Label);
+    }
+
+    /// <summary>"Display: what it got (missing …)"; nothing to return isn't called missing.</summary>
+    private static string GearSummaryPart(GearRun run, PawnState p)
+    {
+        var got = run.Got[p.Name];
+        var miss = run.Missing[p.Name];
+        return $"{p.Display}: " + (got.Count > 0 ? string.Join(", ", got) : "nothing")
+            + (miss.Count > 0 && miss[0] != "nothing to return" ? $" (missing {string.Join(", ", miss)})" : "");
     }
 
     private static string? EnchWish(IReadOnlyDictionary<string, int>? ench) => ench is { Count: > 0 } e ? e.Keys.First() : "none";
