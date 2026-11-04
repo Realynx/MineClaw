@@ -148,12 +148,12 @@ public sealed class StorySdkTests
         Assert.True(s.Ok, s.Outcome);
         var calls = rig.Norm();
         int take = calls.IndexOf("""equip {"ench":"none","from":"5,64,5","item":"stone_pickaxe","mode":"take"}""");
-        int hold = calls.IndexOf("""equip {"ench":"none","item":"stone_pickaxe","mode":"hold"}""");
+        int hold = calls.IndexOf("""equip {"ench":"none","from":"","item":"stone_pickaxe","mode":"hold"}""");
         int dig = calls.IndexOf("""dig {"at":"4,64,4"}""");
         Assert.True(take >= 0 && take < hold && hold < dig, string.Join(" | ", calls)); // taken exactly, held, then dug
         int off = calls.IndexOf("""equip {"item":"all","mode":"unwear"}""");
         int on = calls.IndexOf("""equip {"item":"iron_helmet","mode":"wear"}""");
-        int sword = calls.IndexOf("""equip {"ench":"any","item":"iron_sword","mode":"hold"}""");
+        int sword = calls.IndexOf("""equip {"ench":"any","from":"","item":"iron_sword","mode":"hold"}""");
         Assert.True(off >= 0 && off < on && on < sword, string.Join(" | ", calls));
         Assert.Contains("""attack {"target":"50"}""", calls);
         Assert.Equal(["maid_chan j1 done", "maid_chan j2 done", "maid_chan j3 done", "maid_chan j4 done"], port.Reports);

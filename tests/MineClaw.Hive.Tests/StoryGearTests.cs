@@ -407,9 +407,11 @@ public sealed class StoryGearTests
     {
         var (c, h, w) = StoryRig.Make(3);
         var ps = c.Pawns.Values.ToList();
-        ps[0].Skills[WorkTypes.Guard] = new SkillState { Level = 2 };
-        ps[1].Skills[WorkTypes.Guard] = new SkillState { Level = 10 };
-        ps[2].Skills[WorkTypes.Guard] = new SkillState { Level = 5 };
+        foreach (var (p, lvl) in ps.Zip(new[] { 2, 10, 5 }))
+        {
+            p.Skills[WorkTypes.Guard] = new SkillState { Level = lvl };
+            p.Skills[WorkTypes.Hunt] = new SkillState { Level = 0 }; // the fighter's rank is the better of guard and hunt
+        }
         foreach (var (p, i) in ps.Select((p, i) => (p, i))) h.Lives[p.Name] = FakeStoryHost.Bare(i, 64, 0);
         Store(c, new Stack(272, 0, 1), new Stack(267, 0, 1), new Stack(276, 0, 1)); // stone, iron, diamond swords
         var (r, err) = c.GearOp("arm", ps, new JsonObject());
@@ -442,6 +444,7 @@ public sealed class StoryGearTests
         var ps = c.Pawns.Values.ToList();
         ps[0].Skills[WorkTypes.Guard] = new SkillState { Level = 9 };
         ps[1].Skills[WorkTypes.Guard] = new SkillState { Level = 1 };
+        foreach (var p in ps) p.Skills[WorkTypes.Hunt] = new SkillState { Level = 0 };
         foreach (var p in ps) h.Lives[p.Name] = FakeStoryHost.Bare(0, 64, 0);
         Store(c, new Stack(310, 0, 1), new Stack(306, 0, 1), new Stack(311, 0, 1), new Stack(307, 0, 1));
         var (r, err) = c.GearOp("armor", ps, new JsonObject());

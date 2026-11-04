@@ -20,7 +20,7 @@ public sealed class SupervisorStoryGearRouteTests
     private static async Task<(int Status, JsonNode? Json)> Call(SupervisorStoryRoutes r, string method, string path, object? body = null)
     {
         var json = body == null ? null : System.Text.Json.JsonSerializer.Serialize(body);
-        var reply = await r.TryHandleAsync(new SupervisorRequest(method, path, new(), Token, json));
+        var reply = await r.TryHandleAsync(new SupervisorRequest(method, path, new Dictionary<string, string>(), Token, json));
         Assert.NotNull(reply);
         return (reply!.Status, reply.Body.Length > 0 ? JsonNode.Parse(reply.Text) : null);
     }

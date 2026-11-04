@@ -518,8 +518,10 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
             "iron ore mined: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason} {d.Wait}")) + " | " + x.Diag());
         Assert.Contains(srv.Dug, d => d.Id == 15 && d.X == 6 && d.Z == 4);
         Assert.True(srv.Inventory.Any(i => !i.IsEmpty && i.Id == 274), "the stone pickaxe came out of the chest");
-        Assert.True(await Until(() => srv.Inventory.Any(i => !i.IsEmpty && i.Id == 15) || InChest(srv, WoodChest, i => i.Id == 15) > 0, 10_000),
-            "the iron ore dropped and was picked up (dug with the right pickaxe)");
+        // Dug with the right pickaxe, it dropped (only Mine is on, so nobody hauls it: it lies there, or was picked up in passing).
+        Assert.True(await Until(() => srv.Inventory.Any(i => !i.IsEmpty && i.Id == 15) || InChest(srv, WoodChest, i => i.Id == 15) > 0
+                || c.Host.World!.Entities().Any(e => e.Kind == "item" && e.ItemId == 15), 10_000),
+            "the iron ore dropped (dug with the right pickaxe): " + x.Diag());
         Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("failed"));
     }, s =>
     {
