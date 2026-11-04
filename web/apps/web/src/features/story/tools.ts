@@ -872,6 +872,89 @@ export const SPEED_KEYS: Record<string, StorySpeed> = {
   Numpad3: 'faster',
 };
 
+/** The key event fields `keyAction` reads. */
+type KeyInput = { code: string; key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean };
+
+/** Keys that always mean the same action (with or without Shift / Alt). */
+const FIXED_KEYS: Record<string, KeyAction> = {
+  KeyR: 'draft',
+  Space: 'pause',
+  Escape: 'escape',
+  KeyT: 'chat',
+  Enter: 'chat',
+  KeyV: 'view',
+  KeyX: 'xray',
+  PageUp: 'levelUp',
+  PageDown: 'levelDown',
+  KeyQ: 'rotateCcw',
+  KeyE: 'rotateCw',
+  Home: 'focus',
+};
+
+/**
+ * Keys that act only with Shift: ? is help, Shift+F full screen (F alone is the Forbid tool; the browser's F11 shows the whole
+ * page, not the colony).
+ */
+const SHIFT_KEYS: Record<string, KeyAction> = { Slash: 'help', KeyF: 'fullscreen' };
+
+/** + / − raise or lower a structure tool's height. */
+const BUILD_HEIGHT_KEYS: Record<string, KeyAction> = {
+  Equal: 'heightUp',
+  NumpadAdd: 'heightUp',
+  Minus: 'heightDown',
+  NumpadSubtract: 'heightDown',
+};
+
+/** + / − change the Layers count while a height tool is in hand. */
+const LAYER_KEYS: Record<string, KeyAction> = {
+  Equal: 'layersUp',
+  NumpadAdd: 'layersUp',
+  Minus: 'layersDown',
+  NumpadSubtract: 'layersDown',
+};
+
+/** ] / [ cycle a structure tool's material (Tab / Shift+Tab too). */
+const MATERIAL_CYCLE_KEYS: Record<string, KeyAction> = { BracketRight: 'materialNext', BracketLeft: 'materialPrev' };
+
+const RECENT_KEY = /^(?:Digit|Numpad)([1-5])$/;
+
+const unmodified = (e: KeyInput) => !e.shiftKey && !e.altKey;
+
+/** 1 / 2 / 3 → the pawns' speed (no Shift / Alt). */
+function speedAction(e: KeyInput): KeyAction | null {
+  const speed = SPEED_KEYS[e.code];
+  return speed && unmodified(e) ? `speed:${speed}` : null;
+}
+
+/** A material tool's keys (never with Alt): Tab / ] / [ cycle the material, 1–5 pick a recent one. */
+function materialAction(e: KeyInput): KeyAction | null {
+  if (e.altKey) return null;
+  if (e.code === 'Tab') return e.shiftKey ? 'materialPrev' : 'materialNext';
+  const cycle = MATERIAL_CYCLE_KEYS[e.code];
+  if (cycle) return cycle;
+  const n = RECENT_KEY.exec(e.code);
+  return n && !e.shiftKey ? `recent:${Number(n[1])}` : null;
+}
+
+/** A height tool's keys: 1–5 pick the height mode, + / − set the Layers count. */
+function heightAction(e: KeyInput): KeyAction | null {
+  const mode = HEIGHT_MODES.find((h) => h.key === e.code || h.key.replace('Digit', 'Numpad') === e.code);
+  if (mode && unmodified(e)) return `height:${mode.id}`;
+  return LAYER_KEYS[e.code] ?? null;
+}
+
+/** The keys a tool in hand doesn't claim: fixed actions, Shift combos, a structure's height, the tools and the tabs. */
+function commonAction(e: KeyInput, buildTool: boolean): KeyAction | null {
+  const fixed = FIXED_KEYS[e.code];
+  if (fixed) return fixed;
+  if (e.shiftKey && SHIFT_KEYS[e.code]) return SHIFT_KEYS[e.code]!;
+  if (buildTool && BUILD_HEIGHT_KEYS[e.code]) return BUILD_HEIGHT_KEYS[e.code]!;
+  const tool = DESIGNATE_TOOLS.find((t) => t.key === e.code);
+  if (tool && !e.shiftKey) return `tool:${tool.id}`;
+  const tab = TAB_KEYS[e.code];
+  return tab ? `tab:${tab}` : null;
+}
+
 /**
  * A key on the map → its action, or null (WASD/arrows pan in the frame loop). 1–3 set the pawns' speed while no tool is in hand
  * (`speedKeys`); with a tool they stay the tool's: 1–5 pick the height mode while Mine or Deconstruct is the tool (whose + / −
@@ -879,7 +962,7 @@ export const SPEED_KEYS: Record<string, StorySpeed> = {
  * `isTyping` first).
  */
 export function keyAction(
-  e: { code: string; key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
+  e: KeyInput,
   buildTool: boolean,
   heightTool = false,
   /** A structure tool that takes a material: Tab / Shift+Tab and ] / [ cycle it, 1–5 pick a recent one. */
@@ -888,63 +971,15 @@ export function keyAction(
   speedKeys = false,
 ): KeyAction | null {
   if (e.ctrlKey || e.metaKey) return null;
-  if (speedKeys && !materialTool && !heightTool && !e.shiftKey && !e.altKey && SPEED_KEYS[e.code])
-    return `speed:${SPEED_KEYS[e.code]!}`;
-  if (materialTool && !e.altKey) {
-    if (e.code === 'Tab') return e.shiftKey ? 'materialPrev' : 'materialNext';
-    if (e.code === 'BracketRight') return 'materialNext';
-    if (e.code === 'BracketLeft') return 'materialPrev';
-    const n = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
-    if (n && !e.shiftKey) return `recent:${Number(n[1])}`;
-  }
-  if (heightTool) {
-    const mode = HEIGHT_MODES.find((h) => h.key === e.code || h.key.replace('Digit', 'Numpad') === e.code);
-    if (mode && !e.shiftKey && !e.altKey) return `height:${mode.id}`;
-    if (e.code === 'Equal' || e.code === 'NumpadAdd') return 'layersUp';
-    if (e.code === 'Minus' || e.code === 'NumpadSubtract') return 'layersDown';
-  }
-  switch (e.code) {
-    case 'KeyR':
-      return 'draft';
-    case 'Space':
-      return 'pause';
-    case 'Escape':
-      return 'escape';
-    case 'KeyT':
-    case 'Enter':
-      return 'chat';
-    case 'KeyV':
-      return 'view';
-    case 'KeyX':
-      return 'xray';
-    case 'PageUp':
-      return 'levelUp';
-    case 'PageDown':
-      return 'levelDown';
-    case 'KeyQ':
-      return 'rotateCcw';
-    case 'KeyE':
-      return 'rotateCw';
-    case 'Equal':
-    case 'NumpadAdd':
-      return buildTool ? 'heightUp' : null;
-    case 'Minus':
-    case 'NumpadSubtract':
-      return buildTool ? 'heightDown' : null;
-    case 'Slash':
-      return e.shiftKey ? 'help' : null;
-    case 'Home':
-      return 'focus';
-    case 'KeyF':
-      // Shift+F: full screen (F alone is the Forbid tool; the browser's F11 shows the whole page, not the colony).
-      if (e.shiftKey) return 'fullscreen';
-      break;
-  }
-  const tool = DESIGNATE_TOOLS.find((t) => t.key === e.code);
-  if (tool && !e.shiftKey) return `tool:${tool.id}`;
-  const tab = TAB_KEYS[e.code];
-  if (tab) return `tab:${tab}`;
-  return null;
+  return toolKeyAction(e, heightTool, materialTool, speedKeys) ?? commonAction(e, buildTool);
+}
+
+/** The keys the tool in hand claims first: a material tool's, then a height tool's; the speed keys with no tool. */
+function toolKeyAction(e: KeyInput, heightTool: boolean, materialTool: boolean, speedKeys: boolean): KeyAction | null {
+  const material = materialTool ? materialAction(e) : null;
+  if (material) return material;
+  if (heightTool) return heightAction(e);
+  return speedKeys && !materialTool ? speedAction(e) : null;
 }
 
 /** Keys the frame loop pans with. */

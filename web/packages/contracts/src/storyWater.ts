@@ -119,27 +119,25 @@ export function liquidFlow(
     }
   };
   const q: Array<[V3, number]> = [...cells].sort((p, r) => p[1] - r[1] || p[0] - r[0] || p[2] - r[2]).map((c) => [c, 0]);
-  while (q.length && spread.length < max) {
-    const [c, d] = q.shift()!;
-    const below: V3 = [c[0], c[1] - 1, c[2]];
-    if (open(below)) {
-      let f = below,
-        fallen = 1;
-      const mark = (x: V3) => {
-        if (seen.has(key(x))) return;
-        seen.add(key(x));
-        reachCell(x);
-      };
+  /** Falls straight down from `below` (12 at most); where it lands it spreads again. */
+  const fall = (below: V3) => {
+    let f = below,
+      fallen = 1;
+    const mark = (x: V3) => {
+      if (seen.has(key(x))) return;
+      seen.add(key(x));
+      reachCell(x);
+    };
+    mark(f);
+    while (fallen < maxFall && open([f[0], f[1] - 1, f[2]])) {
+      f = [f[0], f[1] - 1, f[2]];
       mark(f);
-      while (fallen < maxFall && open([f[0], f[1] - 1, f[2]])) {
-        f = [f[0], f[1] - 1, f[2]];
-        mark(f);
-        fallen++;
-      }
-      if (fallen < maxFall) q.push([f, 0]);
-      continue;
+      fallen++;
     }
-    if (d >= reach) continue;
+    if (fallen < maxFall) q.push([f, 0]);
+  };
+  /** Runs one step sideways into each open neighbour. */
+  const sideways = (c: V3, d: number) => {
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
       const n: V3 = [c[0] + dx, c[1], c[2] + dz];
       if (open(n) && !seen.has(key(n))) {
@@ -148,6 +146,12 @@ export function liquidFlow(
         q.push([n, d + 1]);
       }
     }
+  };
+  while (q.length && spread.length < max) {
+    const [c, d] = q.shift()!;
+    const below: V3 = [c[0], c[1] - 1, c[2]];
+    if (open(below)) fall(below);
+    else if (d < reach) sideways(c, d);
   }
   return { spread, touches };
 }
@@ -174,6 +178,82 @@ export interface IrrigationPlan {
   note: string;
 }
 
+/** The zone's columns (sorted by z then x) and how its channels run: along its longer side, `lo..hi` across it. */
+function channelFrame(zone: ZoneLike) {
+  const cols = [...zoneCellSet(zone)].map((k) => [cellX(k), cellZ(k)] as const).sort((p, q) => p[1] - q[1] || p[0] - q[0]);
+  const xs = cols.map((c) => c[0]),
+    zs = cols.map((c) => c[1]);
+  const x1 = Math.min(...xs),
+    x2 = Math.max(...xs),
+    z1 = Math.min(...zs),
+    z2 = Math.max(...zs);
+  const alongX = x2 - x1 >= z2 - z1;
+  return { cols, alongX, lo: alongX ? z1 : x1, hi: alongX ? z2 : x2 };
+}
+
+/** The channel lines across `lo..hi`: a centre line when it fits one spacing, else every `spacing` (+ the far edge if dry). */
+function channelLines(lo: number, hi: number, spacing: number, cover: number): number[] {
+  const across = hi - lo + 1;
+  if (across <= spacing) return [lo + Math.floor(across / 2)];
+  const lines: number[] = [];
+  for (let k = lo + cover; k <= hi; k += spacing) lines.push(k);
+  if (lines[lines.length - 1]! + cover < hi) lines.push(hi);
+  return lines;
+}
+
+interface Soil {
+  soilAt: (x: number, z: number) => number | null;
+  watered: (x: number, y: number, z: number) => boolean;
+}
+
+/** A line's soil cells, and whether any soil in its band (`cover` either side) is still dry. */
+function lineBand(
+  frame: ReturnType<typeof channelFrame>,
+  line: number,
+  cover: number,
+  soil: Soil,
+): { row: V3[]; dry: boolean } {
+  const row: V3[] = [];
+  let dry = false;
+  for (const [x, z] of frame.cols) {
+    const a = frame.alongX ? z : x;
+    if (Math.abs(a - line) > cover) continue;
+    const y = soil.soilAt(x, z);
+    if (y === null) continue;
+    if (!soil.watered(x, y, z)) dry = true;
+    if (a === line) row.push([x, y, z]);
+  }
+  return { row, dry };
+}
+
+/** Crops: farmland is watered within 4 blocks, so a channel every 9 rows; sugar cane needs water beside it, every 3. */
+const CROP_CHANNELS = { spacing: 9, cover: 4 };
+const CANE_CHANNELS = { spacing: 3, cover: 1 };
+
+/** Where the channels run, for the note. */
+function channelWhat(cane: boolean, narrow: boolean): string {
+  if (cane) return 'beside the sugar cane (every 3rd row)';
+  return narrow ? 'down the middle' : 'every 9th row';
+}
+
+/** A kept line's cells: those not water already become channel cells, dug out first unless water can take their block. */
+function channelRow(row: readonly V3[], holds: (x: number, y: number, z: number) => number, cells: V3[], dig: V3[]) {
+  for (const c of row) {
+    const id = holds(c[0], c[1], c[2]);
+    if (isWater(id)) continue;
+    cells.push(c);
+    if (!TAKES.has(id)) dig.push(c);
+  }
+}
+
+/** The plan's line for the owner. */
+function irrigationNote(p: { cells: number; dig: number; kept: number; axis: string; what: string }): string {
+  if (!p.cells) return 'the zone is watered already: every cell has water close enough';
+  const channels = `${p.kept} channel${p.kept === 1 ? '' : 's'}`;
+  const cells = `${p.cells} water cell${p.cells === 1 ? '' : 's'}`;
+  return `${channels} along ${p.axis} ${p.what}: ${cells}` + (p.dig ? `, ${p.dig} dug out first` : '');
+}
+
 /**
  * The water channels a growing zone wants (the director's planner): farmland needs water within 4 blocks, so for a crop a
  * channel at soil level along the zone's longer side every 9 rows (a centre line when it is 9 or narrower, one more by the far
@@ -188,53 +268,19 @@ export function irrigationPlan(
   watered: (x: number, y: number, z: number) => boolean,
   holds: (x: number, y: number, z: number) => number,
 ): IrrigationPlan {
-  const set = zoneCellSet(zone);
-  const cols = [...set].map((k) => [cellX(k), cellZ(k)] as const).sort((p, q) => p[1] - q[1] || p[0] - q[0]);
-  const xs = cols.map((c) => c[0]),
-    zs = cols.map((c) => c[1]);
-  const x1 = Math.min(...xs),
-    x2 = Math.max(...xs),
-    z1 = Math.min(...zs),
-    z2 = Math.max(...zs);
-  const spacing = cane ? 3 : 9,
-    cover = cane ? 1 : 4;
-  const alongX = x2 - x1 >= z2 - z1;
-  const lo = alongX ? z1 : x1,
-    hi = alongX ? z2 : x2,
-    across = hi - lo + 1;
-  const lines: number[] = [];
-  if (across <= spacing) lines.push(lo + Math.floor(across / 2));
-  else {
-    for (let k = lo + cover; k <= hi; k += spacing) lines.push(k);
-    if (lines[lines.length - 1]! + cover < hi) lines.push(hi);
-  }
+  const frame = channelFrame(zone);
+  const { spacing, cover } = cane ? CANE_CHANNELS : CROP_CHANNELS;
   const cells: V3[] = [],
     dig: V3[] = [];
   let kept = 0;
-  for (const line of lines) {
-    const row: V3[] = [];
-    let dry = false;
-    for (const [x, z] of cols) {
-      const a = alongX ? z : x;
-      if (Math.abs(a - line) > cover) continue;
-      const y = soilAt(x, z);
-      if (y === null) continue;
-      if (!watered(x, y, z)) dry = true;
-      if (a === line) row.push([x, y, z]);
-    }
+  for (const line of channelLines(frame.lo, frame.hi, spacing, cover)) {
+    const { row, dry } = lineBand(frame, line, cover, { soilAt, watered });
     if (!dry || !row.length) continue;
     kept++;
-    for (const c of row) {
-      const id = holds(c[0], c[1], c[2]);
-      if (isWater(id)) continue;
-      cells.push(c);
-      if (!TAKES.has(id)) dig.push(c);
-    }
+    channelRow(row, holds, cells, dig);
   }
-  const what = cane ? 'beside the sugar cane (every 3rd row)' : across <= spacing ? 'down the middle' : 'every 9th row';
-  const note = !cells.length
-    ? 'the zone is watered already: every cell has water close enough'
-    : `${kept} channel${kept === 1 ? '' : 's'} along ${alongX ? 'x' : 'z'} ${what}: ${cells.length} water cell${cells.length === 1 ? '' : 's'}` +
-      (dig.length ? `, ${dig.length} dug out first` : '');
-  return { cells, dig, axis: alongX ? 'x' : 'z', lines: kept, note };
+  const axis = frame.alongX ? 'x' : 'z';
+  const what = channelWhat(cane, frame.hi - frame.lo + 1 <= spacing);
+  const note = irrigationNote({ cells: cells.length, dig: dig.length, kept, axis, what });
+  return { cells, dig, axis, lines: kept, note };
 }
