@@ -1196,7 +1196,12 @@ into the ground stays put; a channel laid on open ground runs off ("the water wi
 4,64,11): place dam blocks first, or dig the channel into the ground").
 
 **The pour job** (Build work, batched like other builds; `PourJob`). A batch is up to 12 cells of one water build (the pawn's
-fair share), with one stand in reach of them:
+fair share), with one stand in reach of them (`StoryColony.WaterPour.cs`):
+- **Queue order.** Water builds are poured in queue order: a later one waits ("waits for … : water builds go in queue order") while
+  an earlier one still has cells to pour (a blocked one holds nobody up). Live 11-04 and the FakeServer canal: a pawn holding two full
+  buckets poured the canal before the pool queued ahead of it (the pool's dug cells still looked solid to the colony), then filled
+  its buckets from the canal itself ("scooped at 17,63,16"). A water build still being poured is never a fill source either: only a
+  finished build's cells that refill.
 - **Bucket.** The pawn's own (empty or full), else up to two from storage (empty first), else the build waits: the materials pass
   counts a liquid build's need as one bucket, not one per cell, and liquid builds share it; a bucket missing makes an auto bill
   "for build #N" (3 iron ingots at the crafting table), "waiting for a bucket (being crafted)", or "needs a bucket" blocked with
@@ -1263,6 +1268,14 @@ limit with 429 actions, and "server correction" ledger lines for every bucket. C
   SDK's progress note) rests 10 minutes for that pawn, with the cells of its batch back in the queue and no failure counted.
 - **No retry loops.** `story.pour` tries a cell twice at most, reports it, and moves on; a fill that fails ends the batch at once.
   In water, the pawn gets out (`story.escape`) before it fills or pours.
+- **A face to pour against (fixed 2026-11-04, later).** Live: 371 "nothing beside or under X to pour against" in 30 minutes, each cell
+  tried six times. A pour needs a solid block beside or under the cell that stays (the bucket's ray passes water): the queue-time check
+  now asks for one, and says "X sits on water already (the channel under it is full): draw it one block lower, in the trench" for a
+  channel drawn one above a filled trench; a cell that fails that way is blocked at once. The skill, finding no face in its own view,
+  walks to dry ground near the cell and looks again (a stale or unloaded column reads as air), and its refusal names what is under
+  and beside the cell. Once on load (`ColonyMeta.WaterCellsFixed`), pour cells sitting right above their own group's dug cells move
+  down into them (the channel's water goes in the dug cells: the web's dig and pour cells are the same cells) and those failures
+  start over.
 - **One bucket.** Water builds ask for the colony's bucket once: the first is crafting it (or short of iron, with the one alert);
   the others wait on it without a bill or an alert of their own.
 - **Ledger.** 1.12.2 answers every item use with the whole inventory (`sendContainerToPlayer`): a bucket filling or emptying in that
