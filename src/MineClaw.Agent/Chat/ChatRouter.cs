@@ -250,50 +250,76 @@ public sealed partial class ChatRouter
 
     private void HandleMessage(ChatMessage msg)
     {
+        if (!Heard(msg)) return;
         var player = msg.Player!;
-        if (IsSelf(player) || IsHive(player) || IsEcho(msg.Text) || msg.Text.Length == 0) return;
+        Observe(msg);
+        var decision = Decide(msg);
+        var reason = decision.Reason;
+        bool addressed = Arbitrate(msg, reason.IsAddressed());
+        RaiseDecided(msg, decision, addressed);
+        var missed = NoteAddressing(msg, reason, addressed);
+        // A line for a foreign bot (it calls it, uses its prefix, or continues its thread): main stays out, keeps a note.
+        string? foreign = addressed ? null : ForeignBotOf(decision);
+        if (msg.Kind == ChatKind.Public && !IsOtherBot(player)) NoteHumanLine(msg, addressed || decision.Addressed, decision.To, foreign);
+        if (!addressed && ShouldClassify(msg, reason))
+        {
+            _ = ClassifyThenDeliverAsync(msg);
+            return;
+        }
+        if (addressed && reason == AddressReason.Name) DeliverMissedLine(msg, missed);
+        Deliver(msg, addressed, reason, foreign);
+    }
+
+    /// <summary>A player's line we handle (not ours, a hive bot's, an echo or empty): they're online and it joins the recent lines.</summary>
+    private bool Heard(ChatMessage msg)
+    {
+        var player = msg.Player!;
+        if (IsSelf(player) || IsHive(player) || IsEcho(msg.Text) || msg.Text.Length == 0) return false;
         lock (_lock)
         {
             _online.Add(player);
             _recentHeard.Enqueue((player, msg.Text, Now));
             while (_recentHeard.Count > 24) _recentHeard.Dequeue();
         }
+        return true;
+    }
 
-        Observe(msg);
-        var decision = Decide(msg);
-        var reason = decision.Reason;
-        bool addressed = reason.IsAddressed();
-        if (Arbiter != null)
-        {
-            try { addressed = Arbiter(msg, addressed); }
-            catch (Exception) { /* arbiter failure: fall back to the local decision */ }
-        }
+    private void RaiseDecided(ChatMessage msg, AddressDecision decision, bool addressed)
+    {
         try { AddressDecided?.Invoke(msg, decision with { Why = addressed == decision.Addressed ? decision.Why : decision.Why + "; hive: another bot's" }); }
         catch (Exception) { }
-        var missed = NoteAddressing(msg, reason, addressed);
-        // A line for a foreign bot (it calls it, uses its prefix, or continues its thread): main stays out, keeps a note.
-        string? foreign = !addressed && decision.To is { } to && IsOtherBot(to) ? to : null;
-        if (msg.Kind == ChatKind.Public && !IsOtherBot(player))
-            lock (_lock)
-            {
-                bool toUs = addressed || decision.Addressed;
-                _lastHumanLine = (player, Now, toUs, decision.To, CommandPrefix(msg.Text));
-                _lastLineTo[player] = (Now, toUs ? _options.Username : decision.To);
-                if (toUs) { _lastToUs[player] = Now; _requestAt.Remove(player); } // their reply closes our open request
-                if (foreign != null) _partner[player] = (foreign, Now); // the thread goes on with each follow-up
-            }
-        if (!addressed && ShouldClassify(msg, reason))
+    }
+
+    private string? ForeignBotOf(AddressDecision decision) => decision.To is { } to && IsOtherBot(to) ? to : null;
+
+    /// <summary>"dump your stuff into a chest" then "maidchan": the bare name points at the line just before it.</summary>
+    private void DeliverMissedLine(ChatMessage msg, string? missed)
+    {
+        if (missed is not { } prev || !IsNameOnly(msg.Text)) return;
+        var player = msg.Player!;
+        _events.RemovePending(e => e.Kind == EventKind.Chat && !e.Wakes && player.Equals(e.Player, StringComparison.OrdinalIgnoreCase) && e.Text == prev);
+        Deliver(msg with { Text = prev, Raw = prev }, true, AddressReason.Name);
+    }
+
+    /// <summary>The hive arbiter's verdict (another bot may own the line); its failure falls back to the local decision.</summary>
+    private bool Arbitrate(ChatMessage msg, bool addressed)
+    {
+        if (Arbiter == null) return addressed;
+        try { return Arbiter(msg, addressed); }
+        catch (Exception) { return addressed; /* arbiter failure: fall back to the local decision */ }
+    }
+
+    /// <summary>A human's public line: where it went (us or whom), the open request it closes, the foreign thread it continues.</summary>
+    private void NoteHumanLine(ChatMessage msg, bool toUs, string? to, string? foreign)
+    {
+        var player = msg.Player!;
+        lock (_lock)
         {
-            _ = ClassifyThenDeliverAsync(msg);
-            return;
+            _lastHumanLine = (player, Now, toUs, to, CommandPrefix(msg.Text));
+            _lastLineTo[player] = (Now, toUs ? _options.Username : to);
+            if (toUs) { _lastToUs[player] = Now; _requestAt.Remove(player); } // their reply closes our open request
+            if (foreign != null) _partner[player] = (foreign, Now); // the thread goes on with each follow-up
         }
-        // "dump your stuff into a chest" then "maidchan": the bare name points at the line just before it.
-        if (addressed && reason == AddressReason.Name && missed is { } prev && IsNameOnly(msg.Text))
-        {
-            _events.RemovePending(e => e.Kind == EventKind.Chat && !e.Wakes && player.Equals(e.Player, StringComparison.OrdinalIgnoreCase) && e.Text == prev);
-            Deliver(msg with { Text = prev, Raw = prev }, true, AddressReason.Name);
-        }
-        Deliver(msg, addressed, reason, foreign);
     }
 
     /// <param name="foreignBot">The foreign bot this (unaddressed) line is for: no waiter takes it, and it rides along as a
@@ -302,50 +328,89 @@ public sealed partial class ChatRouter
     {
         var player = msg.Player!;
         double? confidence = addressed ? reason.Confidence() : null;
-        if (addressed) lock (_lock) _startupUntil = DateTimeOffset.MinValue; // a conversation: the startup cap is over
-        if (addressed) Accepted?.Invoke(msg);
-        if (_remote is { } remoteLine) NoteRemoteCommands(remoteLine, msg, addressed); // never Observe: no server framing to prove it
-        else if (Commands != null)
-        {
-            bool named = msg.Kind == ChatKind.Whisper || _identity.NameRegex.IsMatch(msg.Text);
-            if (!named && ExplicitlyAddressed != null)
-            {
-                try { named = ExplicitlyAddressed(msg); } catch (Exception) { }
-            }
-            Commands.Observe(msg, addressed, named);
-        }
-
+        if (addressed) AcceptConversation(msg);
+        ObserveCommands(msg, addressed);
         if (msg.Kind == ChatKind.Emote)
         {
-            if (!addressed && DropBackgroundChat) return;
-            // Emotes are personality/treatment signals, never answers to ask_player.
-            if (addressed && !AllowIncoming(player)) addressed = false;
-            Post(GameEvent.Emote(player, msg.Text, addressed) with { AddressConfidence = confidence });
-            if (addressed) lock (_lock) { _lastTalkedWith[player] = Now; if (!IsOtherBotLocked(player)) _lastAddressedAt = Now; }
+            DeliverEmote(msg, addressed, confidence);
             return;
         }
 
-        // Hive: another bot owns this conversation thread (it asked / is watching a demo), or the player named another bot:
-        // that reply is theirs; never let our own waiter eat it.
-        bool elsewhere = false;
-        if (OwnedElsewhere != null && _remote == null) // a remote line names its bot: nobody else's thread takes it
-        {
-            try { elsewhere = OwnedElsewhere(msg); } catch (Exception) { }
-        }
-        if (elsewhere || foreignBot != null) addressed = false;
-        else if (TryCompleteWaiter(player, msg.Text, addressed)) return;
-
-        if (addressed && !AllowIncoming(_remote is { } r ? RemoteBucket(player, r) : player)) addressed = false; // spam: keep as context only
+        if (StillAddressed(msg, addressed, foreignBot) is not { } still) return; // a waiter (ask_player) took it
+        addressed = still;
         if (!addressed && DropBackgroundChat) return;
+        PostLine(msg, addressed, confidence, foreignBot);
+        if (addressed) MarkTalkedWith(player);
+    }
 
+    /// <summary>
+    /// Hive: another bot owns this conversation thread (it asked / is watching a demo), or the player named another bot: that
+    /// reply is theirs; never let our own waiter eat it. Else a waiting ask_player takes it (null). Spam is kept as context only.
+    /// </summary>
+    private bool? StillAddressed(ChatMessage msg, bool addressed, string? foreignBot)
+    {
+        var player = msg.Player!;
+        if (OwnedByAnotherBot(msg) || foreignBot != null) addressed = false;
+        else if (TryCompleteWaiter(player, msg.Text, addressed)) return null;
+        return addressed && AllowIncoming(IncomingBucket(player));
+    }
+
+    private void AcceptConversation(ChatMessage msg)
+    {
+        lock (_lock) _startupUntil = DateTimeOffset.MinValue; // a conversation: the startup cap is over
+        Accepted?.Invoke(msg);
+    }
+
+    private string IncomingBucket(string player) => _remote is { } r ? RemoteBucket(player, r) : player;
+
+    private void PostLine(ChatMessage msg, bool addressed, double? confidence, string? foreignBot)
+    {
+        var player = msg.Player!;
         if (foreignBot != null && !addressed)
             Post(GameEvent.Notice($"{player} is instructing {foreignBot}: {msg.Text}", EventPriority.Background));
         else if (msg.Kind == ChatKind.Whisper && addressed)
             Post(GameEvent.Whisper(player, msg.Text) with { AddressConfidence = confidence });
         else
             Post(GameEvent.Chat(player, msg.Text, addressed) with { AddressConfidence = addressed ? confidence : null });
+    }
 
-        if (addressed) lock (_lock) { _lastTalkedWith[player] = Now; if (!IsOtherBotLocked(player)) _lastAddressedAt = Now; }
+    /// <summary>The command gate sees every delivered line (a remote line only as a remote request: no server framing to prove it).</summary>
+    private void ObserveCommands(ChatMessage msg, bool addressed)
+    {
+        if (_remote is { } remoteLine)
+        {
+            NoteRemoteCommands(remoteLine, msg, addressed); // never Observe: no server framing to prove it
+            return;
+        }
+        if (Commands == null) return;
+        bool named = msg.Kind == ChatKind.Whisper || _identity.NameRegex.IsMatch(msg.Text);
+        if (!named && ExplicitlyAddressed != null)
+        {
+            try { named = ExplicitlyAddressed(msg); } catch (Exception) { }
+        }
+        Commands.Observe(msg, addressed, named);
+    }
+
+    /// <summary>Emotes are personality/treatment signals, never answers to ask_player.</summary>
+    private void DeliverEmote(ChatMessage msg, bool addressed, double? confidence)
+    {
+        var player = msg.Player!;
+        if (!addressed && DropBackgroundChat) return;
+        if (addressed && !AllowIncoming(player)) addressed = false;
+        Post(GameEvent.Emote(player, msg.Text, addressed) with { AddressConfidence = confidence });
+        if (addressed) MarkTalkedWith(player);
+    }
+
+    /// <summary>The hive's thread owner check (a remote line names its bot: nobody else's thread takes it).</summary>
+    private bool OwnedByAnotherBot(ChatMessage msg)
+    {
+        if (OwnedElsewhere == null || _remote != null) return false;
+        try { return OwnedElsewhere(msg); } catch (Exception) { return false; }
+    }
+
+    private void MarkTalkedWith(string player)
+    {
+        lock (_lock) { _lastTalkedWith[player] = Now; if (!IsOtherBotLocked(player)) _lastAddressedAt = Now; }
     }
 
     private DateTimeOffset _lastAddressedAt = DateTimeOffset.MinValue;
@@ -697,114 +762,6 @@ public sealed partial class ChatRouter
     }
 
     // ---------- outgoing ----------
-
-    /// <summary>
-    /// Sends model text to chat: sanitised for b1.8.1, split into ≤100-char lines, capped at
-    /// <see cref="ChatOptions.MaxLinesPerReply"/>, paced. Whispers use <see cref="ChatOptions.WhisperFormat"/>.
-    /// Returns the lines actually sent.
-    /// </summary>
-    public async Task<IReadOnlyList<string>> SayAsync(string text, string? whisperTo = null, IEnumerable<string>? audience = null, CancellationToken ct = default)
-    {
-        var to = audience?.ToList() ?? [];
-        if (whisperTo != null && to.Count == 0) to.Add(whisperTo);
-        if (to.Count == 0) to.AddRange(InferAudience(text ?? ""));
-        // At most one food ask per player per 10 minutes, whoever writes the line (brain, tool, script).
-        text = Food.Filter(text ?? "", to, Now, PlayerAskedAboutFood);
-        text = Greeted.Filter(text, to, Now); // one hello per player per few minutes (join turn + their first line)
-        text = Deaths.Filter(text, to, out var stale); // "robin run to the chest" after "kiwi was slain by Zombie": stale
-        if (stale.Count > 0) try { StaleDropped?.Invoke(string.Join(" ", stale)); } catch (Exception) { }
-        string prefix = whisperTo != null ? string.Format(_options.WhisperFormat, whisperTo, "") : "";
-        int max = ChatText.MaxLineLength - prefix.Length;
-        // A line of model text starting with "/me " is an emote (sent as-is, always public); any other "/..." line would be a
-        // server command: logged and dropped. Everything else is chat, in order.
-        var lines = new List<(string Text, bool Emote)>();
-        var pending = new List<string>();
-        void FlushText()
-        {
-            if (pending.Count == 0) return;
-            var clean = ChatText.Sanitize(string.Join(" ", pending));
-            pending.Clear();
-            if (clean.Length > 0) lines.AddRange(ChatText.Split(clean, max).Select(l => (l, false)));
-        }
-        foreach (var segment in (text ?? "").Replace("\r", "").Split('\n').SelectMany(SplitInlineEmotes))
-        {
-            var t = segment.Trim();
-            if (t.Length == 0) continue;
-            if (t.StartsWith("/me ", StringComparison.OrdinalIgnoreCase))
-            {
-                FlushText();
-                var action = ChatText.Sanitize(t[4..]);
-                if (action.Length > 0) lines.Add(("/me " + TextUtilTruncate(action, ChatText.MaxLineLength - 4), true));
-            }
-            else if (t.StartsWith('/') && Commands != null && Commands.IsAlwaysAllowed(t) && !Commands.IsBlocked(t))
-            {
-                FlushText(); // e.g. "/tell kiwi psst": always-allowed commands from model text are sent as typed (one line)
-                lines.Add((TextUtilTruncate("/" + ChatText.Sanitize(t[1..]), ChatText.MaxLineLength), true));
-            }
-            else if (t.StartsWith('/'))
-            {
-                FlushText();
-                CommandBlocked?.Invoke(t);
-            }
-            else pending.Add(t);
-        }
-        FlushText();
-        if (lines.Count == 0) return [];
-        int cap = _options.MaxLinesPerReply;
-        // A safety warning (a mob on someone, a creeper, a death) is never capped as startup chatter (one per threat per 30 s).
-        bool warning = Warnings.Take(text, to);
-        lock (_lock)
-        {
-            if (Now < _startupUntil && !warning)
-            {
-                cap = Math.Min(cap, _startupLinesLeft);
-                _startupLinesLeft = Math.Max(0, _startupLinesLeft - lines.Count);
-            }
-        }
-        if (cap <= 0) return [];
-        try { Said?.Invoke(text); } catch (Exception) { /* listeners never break chat */ }
-        if (lines.Count > cap)
-        {
-            lines = lines.Take(cap).ToList();
-            var (last, emote) = lines[^1];
-            int lim = emote ? ChatText.MaxLineLength : max;
-            lines[^1] = (last.Length + 3 <= lim ? last + "..." : last[..(lim - 3)] + "...", emote);
-        }
-
-        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            foreach (var (line, emote) in lines)
-            {
-                var wait = _lastSend + TimeSpan.FromMilliseconds(_options.LineDelayMs) - Now;
-                if (wait > TimeSpan.Zero) await Task.Delay(wait, _time, ct).ConfigureAwait(false);
-                await _sendRaw(emote ? line : prefix + line, ct).ConfigureAwait(false);
-                _lastSend = Now;
-                lock (_lock)
-                {
-                    _recentSent.Enqueue((line, Now));
-                    while (_recentSent.Count > 20) _recentSent.Dequeue();
-                }
-            }
-        }
-        finally
-        {
-            _sendLock.Release();
-        }
-
-        if (!lines.Any(l => !l.Emote) && audience == null) to.Clear(); // an emote alone isn't talking to anyone
-        string[] spoke;
-        lock (_lock)
-        {
-            if (whisperTo != null) _lastTalkedWith[whisperTo] = Now;
-            foreach (var p in to) _lastTalkedWith[p] = Now;
-            spoke = [.. to, .. whisperTo != null ? [whisperTo] : Array.Empty<string>()];
-        }
-        NoteAsked(spoke, lines.Where(l => !l.Emote).Select(l => l.Text));
-        foreach (var p in spoke.Distinct(StringComparer.OrdinalIgnoreCase))
-            try { SpokeTo?.Invoke(p); } catch (Exception) { /* listeners never break chat */ }
-        return lines.Select(l => l.Text).ToList();
-    }
 
     /// <summary>The food-ask guard (one ask per player per 10 minutes).</summary>
     public FoodAsks Food { get; } = new();
