@@ -46,10 +46,16 @@ function entityKey(e: Pick<WorldEntity, 'dim' | 'id'>): string {
   return `${e.dim}:${e.id ?? 'x'}`;
 }
 
-/** Applies an entity delta. `full` (or no previous state) replaces the set; stale revs are ignored. */
+/**
+ * Applies an entity delta. `full` (or no previous state) replaces the set; stale revs are ignored. The bots are always the whole
+ * current list and not part of the revision: a newer frame at the same revision (only bots moved: the bridge sends one whenever
+ * a bot's pose changed) still moves them (live 11-04 such frames were dropped, so bots and pawns only moved when a mob or a drop
+ * did).
+ */
 export function mergeEntities(prev: WorldEntities | undefined, next: WorldEntities): WorldEntities {
   if (!prev || next.full || prev.rev === null || prev.rev === undefined) return next;
-  if (next.rev !== null && next.rev !== undefined && next.rev <= prev.rev) return prev;
+  if (next.rev !== null && next.rev !== undefined && next.rev <= prev.rev)
+    return next.rev === prev.rev && next.at > prev.at ? { ...prev, at: next.at, bots: next.bots } : prev;
   const map = new Map<string, WorldEntity>();
   for (const e of prev.entities) map.set(entityKey(e), e);
   for (const [dim, id] of next.removed ?? []) map.delete(`${dim}:${id}`);

@@ -36,6 +36,21 @@ public class LiveTests
     }
 
     [Fact]
+    public void Motion_topics_back_off_briefly_and_the_rest_as_before()
+    {
+        static List<double> Seq(LiveHub.BackoffPolicy p)
+        {
+            var list = new List<double>();
+            var b = TimeSpan.Zero;
+            for (int i = 0; i < 6; i++) list.Add((b = p.Next(b)).TotalMilliseconds);
+            return list;
+        }
+        // Live 11-04: one busy answer on the entity poll froze every body for 1, 2, 4… s.
+        Assert.Equal([100, 200, 400, 500, 500, 500], Seq(LiveHub.FastBackoff));
+        Assert.Equal([1000, 2000, 4000, 8000, 15000, 15000], Seq(LiveHub.SlowBackoff));
+    }
+
+    [Fact]
     public void Frames_are_event_id_data_with_a_blank_line()
     {
         Assert.Equal("event: feed\nid: 7\ndata: {\"lines\":[],\"last\":0}\n\n", LiveHub.Format("feed", 7, """{"lines":[],"last":0}"""));

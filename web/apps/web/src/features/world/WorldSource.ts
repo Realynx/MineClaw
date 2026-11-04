@@ -15,6 +15,7 @@ import { api, apiBlob } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
 import { subscribeBlocks } from './blocks';
 import { subscribeChat } from './chatBubbles';
+import { subscribeEntityFrames } from './entityFrames';
 
 export type { WorldSource };
 
@@ -67,6 +68,15 @@ export interface WorldSourceOptions {
 }
 
 export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {}): WorldSource {
+  // Each cached entity frame gets a number (the dispatcher replaces the cached object per stream frame): a runtime that already
+  // applied that number keeps its glides (several runtimes may share this source, so the store decides, not the source).
+  const frames = new WeakMap<WorldEntities, number>();
+  let frameSeq = 0;
+  const frameOf = (c: WorldEntities): number => {
+    let n = frames.get(c);
+    if (n === undefined) frames.set(c, (n = ++frameSeq));
+    return n;
+  };
   return {
     index: async (dim, x, z, r) => {
       const i = await api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } });
@@ -92,11 +102,14 @@ export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {
     async entities(since) {
       const cached = qc?.getQueryData<WorldEntities>(liveKeys.entities);
       if (cached && (cached.rev ?? 0) > 0) {
-        if (since === undefined || since === 0 || (cached.rev ?? 0) > since) return toDelta(cached, true);
-        return toDelta({ ...cached, entities: [], removed: [] }, false);
+        const frame = frameOf(cached);
+        if (since === undefined || since === 0 || (cached.rev ?? 0) > since) return { ...toDelta(cached, true), frame };
+        return { ...toDelta({ ...cached, entities: [], removed: [] }, false), frame };
       }
       return toDelta(await api('world.entities', { query: since ? { since } : {} }), !since);
     },
+
+    onEntities: qc ? (onFrame) => subscribeEntityFrames(onFrame) : undefined,
 
     overlays: (dim) => api('world.overlays', { query: { dim } }),
 

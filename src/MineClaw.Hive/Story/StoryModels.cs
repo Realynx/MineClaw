@@ -486,4 +486,7 @@ public sealed class ColonyMeta
     public string Speed { get; set; } = "normal";
     /// <summary>On 1.12.2 with an op account, Fast / Faster also ask the server for a Speed effect on the pawns (default on).</summary>
     public bool SpeedEffect { get; set; } = true;
+    /// <summary>Pawns may pour lava from buckets (Architect "Lava source"; docs/web/story-mode.md "Water"). Off by default; never in a
+    /// home zone or beside something that burns.</summary>
+    public bool AllowLava { get; set; }
 }

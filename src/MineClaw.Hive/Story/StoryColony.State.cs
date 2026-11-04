@@ -52,13 +52,14 @@ public sealed partial class StoryColony
                     ["materials"] = new JsonArray(b.Materials.Select(m => (JsonNode)m.Json()).ToArray()),
                     ["no_craft"] = new JsonArray(b.NoCraft.Select(n => (JsonNode)n!).ToArray()),
                     ["station"] = _station is { } st && st.Build == b.Id ? new JsonObject { ["kind"] = st.Kind, ["pos"] = st.Spot.Json() } : null,
+                    ["liquid"] = LiquidOfBuild(b), ["renewable"] = LiquidOfBuild(b) == "water" ? Renewable(b) : null,
                 }).ToArray()),
                 ["ghosts"] = new JsonObject
                 {
                     ["rev"] = _rev,
                     ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)).Select(g => (JsonNode)new JsonArray(
                         // The 8th element: dig (Id/Meta = the block expected there: the live world's when queued) or place.
-                        g.At.X, g.At.Y, g.At.Z, g.Id, g.Meta, b.Id, g.State, g.Remove ? "dig" : "place"))).ToArray()),
+                        g.At.X, g.At.Y, g.At.Z, g.Id, g.Meta, b.Id, g.State, g.Remove ? "dig" : StoryConstruction.IsLiquid(g) ? "pour" : "place"))).ToArray()),
                 },
                 ["storages"] = new JsonArray(Storages.Where(st => New(st.Rev)).Select(st => (JsonNode)new JsonObject
                 {
@@ -82,6 +83,8 @@ public sealed partial class StoryColony
                     ["bills"] = new JsonArray(b.Bills.Select(x => { var bj = BillJson(x); bj["fuel_need"] = FuelNeedJson(b, x); return (JsonNode)bj; }).ToArray()),
                 }).ToArray()),
             };
+            // The Architect palette's inputs as one number (StoryColony.Materials.cs): the browser refetches the palette when it moves.
+            o["architect_key"] = w != null ? ArchitectKey(w) : null;
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
             if (full && w != null) o["plants"] = StoryPlants.Json(w.Data); // what growing zones can grow here
             GearStateJson(o, full); // policies, material_rules, materials (full only): StoryColony.Gear.cs

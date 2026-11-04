@@ -35,12 +35,16 @@ public sealed partial class StoryColony
                     if (items is not { Count: > 0 }) return (null, "items required");
                     if (items.Count > 64) return (null, "at most 64 items per request");
                     var made = new List<BuildState>();
+                    var warnings = new List<string>();
+                    JsonObject? flow = null;
                     foreach (var n in items)
                     {
                         if (n is not JsonObject item) return (null, "each item is an object {kind, area|blocks, material, ...}");
                         var (ghosts, mat, err) = StoryConstruction.Expand(w.Data, item, w);
                         if (err != null) return (null, err);
                         if (ghosts.Count > 4096) return (null, "an item expands to at most 4096 blocks");
+                        // Liquids: the cells must take the water (open, or dug first by the item's group), lava only when allowed (StoryColony.Water.cs).
+                        if (ghosts.Count > 0 && StoryConstruction.IsLiquid(ghosts[0]) && CheckLiquid(w, item, ghosts, made, warnings) is { } lerr) return (null, lerr);
                         made.Add(new BuildState
                         {
                             Kind = item["kind"]!.GetValue<string>().ToLowerInvariant(), Spec = (JsonObject)item.DeepClone(), Ghosts = ghosts,
@@ -64,14 +68,20 @@ public sealed partial class StoryColony
                             if (g.Remove && id == 0 && w.Loaded(g.At.X, g.At.Z)) g.State = "done";
                         }
                         Builds.Add(b);
+                        if (b.Ghosts.Count > 0 && StoryConstruction.IsLiquid(b.Ghosts[0])) flow = LiquidAdded(w, b, flow); // its label, the expected flow
                         // Blocks the pawns can't place yet (crops, liquids, signs…): shown as ghosts and said once, never a stuck job.
                         if (b.Ghosts.Where(g => g.State == "unsupported").ToList() is { Count: > 0 } odd)
                             Alert("warn", $"Build {b.Id} ({b.Kind}): {odd.Count} block{(odd.Count == 1 ? "" : "s")} the pawns can't place yet, left as ghosts: "
                                           + string.Join("; ", odd.Select(g => g.Reason ?? "special placement").Distinct().Take(3)));
                     }
                     WakeIdle();
-                    return (new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
+                    var added = new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) };
+                    if (warnings.Count > 0) added["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray());
+                    if (flow != null) added["flow"] = flow;
+                    return (added, null);
                 }
+                case "preview":
+                    return LiquidPreview(w, items); // a water item's cells checked and its expected flow, nothing queued (StoryColony.Water.cs)
                 case "remove":
                 case "pause":
                 case "resume":
@@ -106,7 +116,7 @@ public sealed partial class StoryColony
                     return (new JsonObject { ["ids"] = new JsonArray(Builds.OrderBy(b => b.Order).Select(b => (JsonNode)b.Id!).ToArray()) }, null);
                 }
                 default:
-                    return (null, "op must be add|remove|reorder|pause|resume");
+                    return (null, "op must be add|preview|remove|reorder|pause|resume");
             }
         }
     }
@@ -183,6 +193,14 @@ public sealed partial class StoryColony
                     ClearBuildWait(b);
                     return Claim(b, [g], p.Name,
                         WithTool(dt, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10)));
+                }
+                // A liquid source: poured from a bucket filled at a still source (StoryColony.Water.cs).
+                if (StoryConstruction.IsLiquid(g))
+                {
+                    var (pj, wait) = PourJob(p, live, b, g, todo, builders);
+                    if (pj != null) return pj;
+                    if (wait) goto nextBuild;
+                    continue;
                 }
                 var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
                 if (cur != 0 && Matches(g, cur, curMeta)) { CellDone(b, g); continue; } // already there: done, never a job
@@ -267,6 +285,7 @@ public sealed partial class StoryColony
     /// <summary>A cell holds what the ghost wants: the same block and variant (a facing is the placement's own).</summary>
     internal static bool Matches(GhostState g, int id, int meta)
     {
+        if (StoryConstruction.IsLiquid(g)) return LiquidSource(g.Id, id, meta); // a source of its liquid, still or just poured (StoryColony.Water.cs)
         if (id != g.Id) return false;
         int mask = MineClaw.Bot.Blueprints.DesignFacing.VariantMask(id);
         return (meta & mask) == (g.Meta & mask);
@@ -514,7 +533,7 @@ public sealed partial class StoryColony
         var status = note[(sp + 1)..];
         // Done when the world agrees, or doesn't know yet (its copy of the block change can come a moment later); a cell that holds
         // something else (another variant: the script saw the block's name) still has to be cleared and built.
-        if (Built(p.Name, g) || status == "done" && View(p.Name, g) is var (vid, _) && OpenCell(vid)) { CellDone(b, g); return; }
+        if (Built(p.Name, g) || status == "done" && View(p.Name, g) is var (vid, _) && (StoryConstruction.IsLiquid(g) ? vid == 0 : OpenCell(vid))) { CellDone(b, g); return; }
         if (status == "done")
             status = $"failed: {g.At} is occupied by {(World?.Data is { } d && d.BlockExists(View(p.Name, g).Id) ? d.Block(View(p.Name, g).Id).Name : "another block")}";
         if (g.State == "leased") { g.State = "todo"; g.Rev = Touch(); }
@@ -567,6 +586,8 @@ public sealed partial class StoryColony
         {
             b.Status = "done"; b.Reason = null; b.Rev = Touch();
             Alert("info", $"Build {b.Id} ({b.Label}) is done");
+            // An infinite pool the colony made: pourers fill their buckets there from now on (StoryColony.Water.cs).
+            if (LiquidOfBuild(b) == "water" && Renewable(b)) Alert("info", $"Build {b.Id} ({b.Label}) refills: pawns fill their buckets there from now on");
         }
     }
 

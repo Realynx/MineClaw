@@ -59,7 +59,7 @@ import {
 import { useWorldClock, type WorldClock } from './clock';
 import { panel } from './StoryHud';
 import { BringOnlineBox } from './StoryInspector';
-import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS } from './tools';
+import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, WATER_TOOLS } from './tools';
 import type { MapTool } from './StoryMap';
 import { AiMark, Avatar, ItemIcon, ToolIcon } from './visuals';
 
@@ -117,7 +117,7 @@ export function TabBar({
 
 // ------------------------------------------------------------------ architect
 
-type ArchCat = 'orders' | 'zones' | 'structure' | 'furniture' | 'production' | 'storage' | 'lighting' | 'misc';
+type ArchCat = 'orders' | 'zones' | 'structure' | 'furniture' | 'production' | 'storage' | 'lighting' | 'water' | 'misc';
 
 const TIER_LABEL: Record<string, string> = {
   gathered: 'Gathered',
@@ -218,7 +218,9 @@ export function ArchitectPanel({
       : tool.kind === 'build'
         ? tool.id.startsWith('furniture:')
           ? 'furniture'
-          : 'structure'
+          : WATER_TOOLS.some((w) => w.id === tool.id)
+            ? 'water'
+            : 'structure'
         : tool.kind === 'storage'
           ? 'storage'
           : 'orders',
@@ -231,6 +233,7 @@ export function ArchitectPanel({
     ['production', 'Production'],
     ['storage', 'Storage'],
     ['lighting', 'Lighting'],
+    ['water', 'Water'],
     ['misc', 'Misc'],
   ];
   const active = (t: MapTool) => JSON.stringify(t) === JSON.stringify(tool);
@@ -298,6 +301,18 @@ export function ArchitectPanel({
                 ),
               )
             : null}
+          {cat === 'water'
+            ? WATER_TOOLS.filter(
+                // Lava only while the colony allows it (the palette lists it then).
+                (w) => w.id !== 'lava' || palette?.entries.some((e) => e.kind === 'lava'),
+              ).map((w) => btn({ kind: 'build', id: w.id }, w.id, w.label, w.hint))
+            : null}
+          {cat === 'water' ? (
+            <p className="w-56 text-[11px] leading-snug text-muted" data-testid="water-note">
+              Pawns bring a bucket (3 iron ingots at a crafting table), fill it at still water and pour each cell. Dig the
+              trench first for a canal; a 2×2 infinite source refills.
+            </p>
+          ) : null}
           {cat === 'storage' ? (
             <>
               {btn(

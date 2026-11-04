@@ -30,6 +30,8 @@ export class Backoff {
 export class Poller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
+  private inFlight = false;
+  private again = false;
   readonly backoff = new Backoff();
   constructor(private readonly fn: () => Promise<void>, public periodMs: number, private readonly onError?: (e: unknown) => void) {}
   start(): void {
@@ -39,12 +41,17 @@ export class Poller {
   }
   stop(): void {
     this.running = false;
+    this.again = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
-  /** Run now (e.g. the dimension changed). */
+  /** Run now (e.g. the dimension changed, a push said new data is ready); a run in flight runs once more when it ends. */
   kick(): void {
     if (!this.running) return;
+    if (this.inFlight) {
+      this.again = true;
+      return;
+    }
     if (this.timer) clearTimeout(this.timer);
     this.schedule(0);
   }
@@ -53,12 +60,20 @@ export class Poller {
       this.timer = null;
       if (!this.running) return;
       let next = this.periodMs;
+      this.inFlight = true;
       try {
         await this.fn();
         this.backoff.ok();
       } catch (e) {
         next = Math.max(next, this.backoff.fail(Date.now()));
+        this.again = false;
         this.onError?.(e);
+      } finally {
+        this.inFlight = false;
+      }
+      if (this.again) {
+        this.again = false;
+        next = 0;
       }
       if (this.running && !this.timer) this.schedule(next);
     }, ms);

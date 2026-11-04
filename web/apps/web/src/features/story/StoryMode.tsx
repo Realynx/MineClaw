@@ -7,6 +7,7 @@
  * bodies (one toast says what went where).
  */
 import {
+  isWaterTool,
   materialKey,
   normArea,
   STORY_FURNITURE,
@@ -14,9 +15,11 @@ import {
   type StoryAlert,
   type StoryColonyState,
   type StoryDirectiveSpec,
+  type StoryBuildItem,
   type StoryOnlineBlocked,
   type StoryZone,
   type StorySpeed,
+  waterItems,
 } from '@mineclaw/contracts';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -81,6 +84,7 @@ import {
 } from './StoryPanels';
 import {
   buildItem,
+  buildItems,
   cellsArea,
   clampHeight,
   clampLayers,
@@ -110,6 +114,7 @@ import {
   rotateFacing,
   toolArea,
   toolYRange,
+  WATER_TOOLS,
   ZONE_TOOLS,
   type BuildOpts,
   type HeightMode,
@@ -132,6 +137,7 @@ import {
 import type { StoryGearOp } from '@mineclaw/contracts';
 import { WorldClock } from './clock';
 import { MaterialBar } from './MaterialBar';
+import { pendingHolo, WaterBar, WaterConfirm, type PendingWater } from './WaterTools';
 import {
   cycleMaterial,
   defaultMaterial,
@@ -228,7 +234,7 @@ export function StoryMode() {
   const [tab, setTab] = useState<TabId | null>(null);
   // The material selector: a structure tool's materials (the palette is fetched while one is in hand, too).
   const matTool = materialToolOf(tool);
-  const architect = useArchitect(id, state?.rev, tab === 'architect' || matTool !== null);
+  const architect = useArchitect(id, state?.rev, tab === 'architect' || matTool !== null, state?.architectKey);
   const [matMemory, setMatMemory] = useState<MaterialMemory>(() => ({ last: {}, recent: [] }));
   useEffect(() => setMatMemory(loadMaterialMemory()), []);
   const [matQuery, setMatQuery] = useState('');
@@ -415,6 +421,57 @@ export function StoryMode() {
     setMenu(null);
   };
 
+  // Water (docs/web/story-mode.md "Water"): a placement is checked by the director first (its cells, where the water would
+  // run); one that would flood beyond what was drawn, or that the irrigation planner pre-filled, waits for the owner's Queue.
+  const [pendingWater, setPendingWater] = useState<PendingWater | null>(null);
+  const pendingWaterHolo = useMemo(
+    () => (pendingWater ? { key: `${pendingWater.label}|${pendingWater.cells}|${JSON.stringify(pendingWater.items.at(-1)?.blocks?.[0] ?? null)}`, blocks: pendingHolo(pendingWater) } : null),
+    [pendingWater],
+  );
+  const queueWater = async (p: PendingWater) => {
+    setPendingWater(null);
+    await run(
+      { route: 'story.builds', body: { op: 'add', items: p.items } },
+      { kind: 'build', build: p.items },
+      'queued',
+      (out) => {
+        const w = (out as { warnings?: string[] | null } | null)?.warnings;
+        return `Queued ${p.label}: ${p.cells} source${p.cells === 1 ? '' : 's'}${w?.length ? ` (${w[0]})` : ''}`;
+      },
+    );
+  };
+  const placeWater = async (items: StoryBuildItem[], label: string, confirm = false) => {
+    if (!canWrite) return say('Needs the story role', 'warn');
+    const cells = items.filter((i) => i.kind === 'water').reduce((n, i) => n + (i.blocks?.length ?? 0), 0);
+    try {
+      const out = await write('story.builds', { op: 'preview', items } as never);
+      if (out.error) return say(out.error, 'warn');
+      const pending: PendingWater = { label, items, cells, flow: out.flow ?? null, warnings: out.warnings ?? [] };
+      if (confirm || (out.flow?.spread ?? 0) > 0 || pending.warnings.length) setPendingWater(pending);
+      else await queueWater(pending);
+    } catch (e) {
+      say(errorText(e), 'warn');
+    }
+  };
+  const irrigate = async (z: StoryZone) => {
+    try {
+      const out = await write('story.zones', { op: 'irrigation', id: z.id } as never);
+      const cells = out.cells ?? [];
+      if (!cells.length) return say(out.note ?? 'Nothing to irrigate', 'ok');
+      const dig = out.dig ?? [];
+      const group = `irrigation-${String(z.id)}`.slice(0, 40);
+      const name = `irrigation (${z.name || z.label || `zone ${z.id}`})`;
+      const items: StoryBuildItem[] = [
+        ...(dig.length ? [{ kind: 'remove' as const, blocks: dig, group }] : []),
+        { ...waterItems('water_channel', cells, { dig: false, name })[0]!, ...(dig.length ? { group } : {}) },
+      ];
+      map.current?.focus(cells[0]![0], cells[0]![2], cells[0]![1]);
+      await placeWater(items, out.note ? `Irrigation: ${out.note}` : 'Irrigation', true);
+    } catch (e) {
+      say(errorText(e), 'warn');
+    }
+  };
+
   const onTool = async (r: DragResult, shift: boolean) => {
     // A click (under the drag threshold) paints no zone, and a box with nothing in it designates nothing: no request, the tool stays.
     const kind =
@@ -513,6 +570,11 @@ export function StoryMode() {
         'queued',
         () => `Queued ${tool.name}: ${placed.length} blocks`,
       );
+      return;
+    }
+    if (tool.kind === 'build' && isWaterTool(tool.id)) {
+      const items = buildItems(tool.id, r.a, r.b, build);
+      await placeWater(items, WATER_TOOLS.find((t) => t.id === tool.id)?.label ?? 'Water');
       return;
     }
     if (tool.kind === 'build') {
@@ -1111,6 +1173,7 @@ export function StoryMode() {
     <GrowingZonesPanel
       state={state}
       canWrite={canWrite}
+      onIrrigate={(z) => void irrigate(z)}
       onShow={(z) =>
         map.current?.focus(Math.floor((z.area[0] + z.area[3]) / 2), Math.floor((z.area[2] + z.area[5]) / 2), z.area[1])
       }
@@ -1151,6 +1214,11 @@ export function StoryMode() {
             palette={architect.data}
             onPick={(e) => {
               // A placeable: its default build tool, with it as the material (the build's auto bills craft what's missing).
+              if (isWaterTool(e.kind)) {
+                setTool({ kind: 'build', id: e.kind });
+                say(`${e.label}: ${e.kind === 'water_channel' ? 'drag a line or an area' : 'click a cell'} on the map`);
+                return;
+              }
               const furniture = (STORY_FURNITURE as readonly string[]).includes(e.kind);
               setTool({ kind: 'build', id: furniture ? `furniture:${e.kind}` : e.kind } as MapTool);
               if (!furniture) {
@@ -1321,6 +1389,7 @@ export function StoryMode() {
             tool={tool}
             build={matHover ? { ...build, material: matHover.material } : build}
             previewHold={matHover !== null}
+            holoPreview={pendingWaterHolo}
             mineFilter={mineFilter}
             heightMode={heightMode}
             layers={layers}
@@ -1517,7 +1586,24 @@ export function StoryMode() {
               ) : null}
             </div>
             {/* The universal material selector: docked here, above the tab bar, for every structure / furniture tool. */}
-            {tool.kind === 'build' ? (
+            {pendingWater ? (
+              <WaterConfirm
+                pending={pendingWater}
+                onQueue={() => void queueWater(pendingWater)}
+                onCancel={() => {
+                  setPendingWater(null);
+                  say('Water placement cancelled');
+                }}
+              />
+            ) : null}
+            {tool.kind === 'build' && isWaterTool(tool.id) ? (
+              <WaterBar
+                toolId={tool.id}
+                build={build}
+                onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
+                onClose={() => setTool({ kind: 'select' })}
+              />
+            ) : tool.kind === 'build' ? (
               <MaterialBar
                 toolId={tool.id}
                 options={matShown}

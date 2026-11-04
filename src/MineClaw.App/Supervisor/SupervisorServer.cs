@@ -91,6 +91,11 @@ public sealed class SupervisorServer : IAsyncDisposable
         _listener = l;
         _cts = new CancellationTokenSource();
         _loop = Task.Run(() => AcceptLoopAsync(l, _cts.Token));
+        _perfTimer = new Timer(_ =>
+        {
+            try { _log.LogInformation("supervisor: {Perf}", Perf.Summary()); }
+            catch (Exception ex) { _log.LogDebug(ex, "supervisor: perf line failed"); }
+        }, null, PerfEvery, PerfEvery);
         _log.LogInformation("supervisor: read-only viewer on {Prefix}{Auth}", Prefix, _token != null ? " (token required)" : "");
     }
 
@@ -106,9 +111,18 @@ public sealed class SupervisorServer : IAsyncDisposable
         }
     }
 
+    /// <summary>Request timings and the process's CPU, pool, GC and A* figures, logged once a minute (<see cref="SupervisorPerf"/>).</summary>
+    public SupervisorPerf Perf { get; } = new();
+
+    /// <summary>How often the perf line is logged while the listener runs.</summary>
+    public static readonly TimeSpan PerfEvery = TimeSpan.FromMinutes(1);
+
+    private Timer? _perfTimer;
+
     private async Task ServeAsync(HttpListenerContext ctx, CancellationToken ct)
     {
         var res = ctx.Response;
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
             SupervisorReply reply;
@@ -132,6 +146,8 @@ public sealed class SupervisorServer : IAsyncDisposable
                     reply = await HandleAsync(req, ct).ConfigureAwait(false);
                 }
                 finally { _connections.Release(); }
+            // The time a caller waited for the answer (a free slot included), by route; never the query (it may carry the token).
+            Perf.Record(ctx.Request.Url?.AbsolutePath ?? "/", System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
             res.StatusCode = reply.Status;
             res.ContentType = reply.ContentType;
             res.Headers["Cache-Control"] = "no-store";
@@ -316,6 +332,7 @@ public sealed class SupervisorServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts?.Cancel();
+        if (_perfTimer != null) await _perfTimer.DisposeAsync().ConfigureAwait(false);
         try { _listener?.Stop(); _listener?.Close(); } catch (Exception) { }
         if (_loop != null) { try { await _loop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (Exception) { } }
         Gate.Dispose();

@@ -99,3 +99,86 @@ describe('EntityStore interpolation (LiveHive/EntityStore.cs)', () => {
     expect(d.removed).toEqual([[0, 1]]);
   });
 });
+
+/**
+ * Live 11-04 "players are moving around slowly": a walking bot as the browser draws it. The bridge polls the bot at ~5 Hz (a
+ * frame every 200 ms plus the bot's answer time, 0..80 ms here), the frame lands 50 ms later. Before: the viewer polled its own
+ * cache every 200 ms and re-applied the last frame each time (every glide restarted, the interval EWMA measured the polls).
+ * After: each frame is read when it lands (`onEntities`) and numbered, so a read between frames changes nothing.
+ */
+describe('stream-driven motion (frames pushed, numbered)', () => {
+  function simulate(push: boolean) {
+    let seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const speed = 4.3 / 1000; // blocks per ms (walking)
+    let t = 0;
+    const s = new EntityStore(() => t);
+    // Frames: sampled at the bot, delivered 50 ms later.
+    const frames: Array<{ at: number; x: number; n: number }> = [];
+    for (let at = 0, n = 1; at < 12_000; n++) {
+      at += 200 + rnd() * 80;
+      frames.push({ at: at + 50, x: at * speed, n });
+    }
+    let latest: { x: number; n: number } | null = null;
+    let fi = 0;
+    let nextPoll = 37; // the viewer's poll phase is unrelated to the frames
+    const read = () => {
+      if (!latest) return;
+      s.apply({ rev: 1, full: false, bots: [bot(latest.x)], entities: [], removed: [], ...(push ? { frame: latest.n } : {}) });
+    };
+    const drawn: number[] = [];
+    const truth: number[] = [];
+    for (t = 0; t < 12_000; t += 1000 / 60) {
+      while (fi < frames.length && frames[fi].at <= t) {
+        latest = frames[fi++];
+        if (push) read();
+      }
+      if (t >= nextPoll) {
+        read();
+        nextPoll += push ? 1000 : 200;
+      }
+      if (t > 2000) {
+        drawn.push(s.bot('main')?.x ?? 0);
+        truth.push(t * speed);
+      }
+    }
+    const step = speed * (1000 / 60);
+    let stalls = 0;
+    const speeds: number[] = [];
+    for (let i = 1; i < drawn.length; i++) {
+      const d = drawn[i] - drawn[i - 1];
+      speeds.push(d / step);
+      if (d < step * 0.25) stalls++;
+    }
+    const mean = speeds.reduce((a, b) => a + b, 0) / speeds.length;
+    const sd = Math.sqrt(speeds.reduce((a, b) => a + (b - mean) ** 2, 0) / speeds.length);
+    const lagMs = truth.reduce((a, x, i) => a + (x - drawn[i]), 0) / truth.length / speed;
+    return { stallPct: (100 * stalls) / speeds.length, speedJitter: sd / mean, lagMs };
+  }
+
+  it('glides without stalls when frames are pushed and numbered', () => {
+    const before = simulate(false);
+    const after = simulate(true);
+    console.log(
+      `walking bot drawn at 60 fps: polled ${before.stallPct.toFixed(1)}% stalled frames, speed jitter ${before.speedJitter.toFixed(2)}, lag ${before.lagMs.toFixed(0)} ms; ` +
+        `pushed ${after.stallPct.toFixed(1)}% stalled, jitter ${after.speedJitter.toFixed(2)}, lag ${after.lagMs.toFixed(0)} ms`,
+    );
+    expect(after.stallPct).toBeLessThan(before.stallPct);
+    expect(after.stallPct).toBeLessThan(5);
+    expect(after.speedJitter).toBeLessThan(before.speedJitter);
+    expect(after.lagMs).toBeLessThan(before.lagMs);
+  });
+
+  it('a read between frames leaves the glide alone; a new frame number moves it', () => {
+    const { s, at } = clocked();
+    s.apply({ ...delta(1, [], { full: true, bots: [bot(0)] }), frame: 1 });
+    at(1200);
+    s.apply({ ...delta(1, [], { bots: [bot(4)] }), frame: 2 });
+    at(1300);
+    s.apply({ ...delta(1, [], { bots: [bot(4)] }), frame: 2 }); // the same frame read again: no restart
+    expect(s.bot('main')!.x).toBeCloseTo(2);
+    at(1400);
+    expect(s.bot('main')!.x).toBeCloseTo(4); // still arrives on time (a restart would put it at 3)
+    expect(s.intervalMs).toBeCloseTo(200);
+  });
+});

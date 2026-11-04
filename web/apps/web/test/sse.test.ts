@@ -137,6 +137,17 @@ describe('applyLiveEvent', () => {
     expect(mergeEntities(delta, { ...base, rev: 9, full: true }).entities).toHaveLength(2);
   });
 
+  it('a newer frame at the same revision moves the bots (only bots moved) and keeps the entities', () => {
+    const bot = (x: number) => ({ name: 'maid_chan', short: 'main', main: true, dim: 0, x, y: 64, z: 0, hp: 20, food: 20 }) as never;
+    const base = { at: 10, rev: 5, full: true, bots: [bot(0)], entities: [{ kind: 'mob', dim: 0, x: 0, y: 0, z: 0, id: 1 }] };
+    const moved = mergeEntities(base, { at: 11, rev: 5, full: false, bots: [bot(3)], entities: [], removed: [] });
+    expect(moved).not.toBe(base);
+    expect(moved.bots[0]!.x).toBe(3);
+    expect(moved.entities).toEqual(base.entities);
+    expect(moved.at).toBe(11);
+    expect(mergeEntities(moved, { at: 9, rev: 5, full: false, bots: [bot(1)], entities: [] })).toBe(moved); // an older frame
+  });
+
   it('appends memory activity events and replaces the in-context snapshot', () => {
     const qc = new QueryClient();
     const ev = (seq: number) => ({ seq, at, brain: 'main', memoryKind: 'note', memoryId: `doc:${seq}`, source: 'rag' as const });

@@ -69,7 +69,7 @@ public sealed class Rig : IDisposable
                 Calls.Enqueue($"{name} {args.GetRawText()}");
                 return On.TryGetValue(name, out var f) ? f(args, ct) : Task.FromResult(ActResult.Success($"{name} ok"));
             },
-            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat", "excavate", "enter_portal", "strip_mine", "smelt_batch", "collect_furnace", "find_biome", "scout_biome", "hold_item"],
+            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat", "excavate", "enter_portal", "strip_mine", "smelt_batch", "collect_furnace", "find_biome", "scout_biome", "hold_item", "fill_bucket", "empty_bucket", "move_lava"],
             Skill = (name, args, ct) =>
             {
                 Calls.Enqueue($"skill:{name} {args.GetRawText()}");
@@ -84,6 +84,9 @@ public sealed class Rig : IDisposable
                 : n == "strip_mine" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"site":{"type":"string"},"length":{"type":"integer"}}}""").RootElement.Clone()
                 : n is "find_biome" or "scout_biome" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"biome":{"type":"string"},"dir":{"type":"integer"},"max":{"type":"integer"},"min_chunks":{"type":"integer"},"leg":{"type":"integer"}}}""").RootElement.Clone()
                 : n == "harvest_wheat" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"},"replant":{"type":"boolean"},"part":{"type":"string"}}}""").RootElement.Clone()
+                : n == "fill_bucket" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"liquid":{"type":"string"},"pos":{"type":"string"}}}""").RootElement.Clone()
+                : n == "empty_bucket" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"pos":{"type":"string"}}}""").RootElement.Clone()
+                : n == "move_lava" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"to":{"type":"string"},"from":{"type":"string"}}}""").RootElement.Clone()
                 : null,
             Wake = (_, reason) => Wakes.Enqueue(reason),
             Say = (t, _) => { Said.Enqueue(t); return Task.FromResult(ActResult.Success("said")); },
