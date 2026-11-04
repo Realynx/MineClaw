@@ -73,13 +73,16 @@ public sealed partial class MinecraftClient
     private bool ShouldShelter(int threats, bool retreatFound)
     {
         var o = Options.Survival;
-        if (!o.Enabled || !o.ShelterEnabled || Brave || Volatile.Read(ref _sheltering) == 1 || ActiveVoidStep is not null) return false;
-        if (!EnoughToBoxIn()) return false;
+        if (ShelterOff(o) || !EnoughToBoxIn()) return false;
         bool low = World.Player.Health <= o.LowHealth;
         if (!low && threats < o.ShelterThreats) return false;
         if (Shelter.Enclosed(World, FeetCell())) return true;
         return !retreatFound || StrandedNow();
     }
+
+    /// <summary>Survival or the shelter is off, the brain is brave, a box is already going up, or a void step is planned.</summary>
+    private bool ShelterOff(SurvivalOptions o) =>
+        !o.Enabled || !o.ShelterEnabled || Brave || Volatile.Read(ref _sheltering) == 1 || ActiveVoidStep is not null;
 
     /// <summary>The combat engine's question when a 1.9+ melee fight can't be won: could the body box in now (blocks on hand)?</summary>
     private bool CanBoxIn(int threats)

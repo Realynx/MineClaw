@@ -50,6 +50,8 @@ public sealed partial class MinecraftClient
         return true;
     }
 
+    private bool BodyBusyForGesture() => _driver is not null || CurrentAction is not null || _crouchHold;
+
     /// <summary>An action, a drive, a held crouch or an action's sneak owns the body.</summary>
     private bool BodyHeldForGesture() => CurrentAction is not null || _driver is not null || _crouchHold || _idleSneak;
 
@@ -64,8 +66,7 @@ public sealed partial class MinecraftClient
     {
         if (i >= g.Plan.Frames.Count) return "done";
         if (SafetyEngaged || World.Player.IsDead) return "safety";
-        bool busy = _driver is not null || CurrentAction is not null;
-        if (g.Plan.UsesBody && (busy || _crouchHold)) return "body busy";
+        if (g.Plan.UsesBody && BodyBusyForGesture()) return "body busy";
         return _driver is not null && !phys.OnGround && !phys.InWater ? "airborne" : null;
     }
 
