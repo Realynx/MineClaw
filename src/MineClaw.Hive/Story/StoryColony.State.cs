@@ -37,7 +37,7 @@ public sealed partial class StoryColony
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
                 ["unstored_kinds"] = UnstoredKinds(), // a condition: drops and loot with nowhere to go (StoryColony.Hauling.cs)
-                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish").Select(z => (JsonNode)ZoneJson(z)).ToArray()),
+                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish" || IsQuarry(z)).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),
@@ -72,12 +72,16 @@ public sealed partial class StoryColony
                     ["contents"] = new JsonArray(st.Contents.Select(c => (JsonNode)c.Json()).ToArray()), ["free_slots"] = st.FreeSlots, ["known_at"] = st.KnownAt,
                     ["enchanted"] = EnchantedJson(st),
                 }).ToArray()),
+                ["reservations"] = ClaimsJson(), // who holds what (StoryColony.Claims.cs), every time: it moves with the stock
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
                 {
                     ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label,
                     ["supported"] = w != null ? StoryRecipes.SupportedIn(w.Data, b.Kind) : StoryRecipes.Supported.Contains(b.Kind),
-                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b),
-                    ["bills"] = new JsonArray(b.Bills.Select(x => (JsonNode)BillJson(x)).ToArray()),
+                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b), ["smelting"] = SmeltingJson(b),
+                    ["fuel"] = b.Kind == "furnace" ? b.FuelSetting ?? StoryFuels.Auto : null,
+                    ["fuel_choices"] = b.Kind == "furnace" && w != null ? new JsonArray(StoryFuels.ValidFor(w.Data).Select(f => (JsonNode)f!).ToArray()) : null,
+                    ["fuel_credit"] = b.Kind == "furnace" ? Math.Round(b.FuelCredit, 2) : (double?)null,
+                    ["bills"] = new JsonArray(b.Bills.Select(x => { var bj = BillJson(x); bj["fuel_need"] = FuelNeedJson(b, x); return (JsonNode)bj; }).ToArray()),
                 }).ToArray()),
             };
             // The Architect palette's inputs as one number (StoryColony.Materials.cs): the browser refetches the palette when it moves.
@@ -175,6 +179,6 @@ public sealed partial class StoryColony
         },
         ["radius"] = b.Radius, ["pawn"] = b.Pawn, ["min_skill"] = b.MinSkill, ["store"] = b.Store?.DeepClone(),
         ["for_build"] = b.ForBuild, ["for_item"] = b.ForItem, ["step"] = b.ForBuild != null ? b.Step : null,
-        ["option"] = b.Option, ["prefer"] = b.Prefer, ["prefer_only"] = b.PreferOnly ? true : null, ["xp_needed"] = b.XpNeeded, ["last"] = b.Last,
+        ["option"] = b.Option, ["prefer"] = b.Prefer, ["prefer_only"] = b.PreferOnly ? true : null, ["xp_needed"] = b.XpNeeded, ["last"] = b.Last, ["fuel"] = b.Fuel,
     };
 }

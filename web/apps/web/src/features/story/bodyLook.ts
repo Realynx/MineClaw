@@ -28,6 +28,12 @@ export function anchorLift(look: BodyLook): number {
   return look === 'model' ? 0.9 : 0.2;
 }
 
+/** Whether a ghost is a cell to dig: its 8th element says so (the bot since the mine designer: a dig ghost carries the block
+ * expected there), else id 0 (an older 7-element ghost). */
+export function ghostDigs(g: NonNullable<StoryColonyState['ghosts']>['blocks'][number]): boolean {
+  return g[7] === 'dig' || (g[7] === undefined && g[3] === 0);
+}
+
 /** The queued cells to draw as holograms (queue order: the ghosts' own order) and the revision that gates rebuilding. A
  * `place` ghost with id 0 (air) has nothing to draw and is left out. */
 export function hologramCells(st: Pick<StoryColonyState, 'ghosts' | 'builds'> | undefined): { cells: HoloCell[]; rev: string } {
@@ -39,7 +45,7 @@ export function hologramCells(st: Pick<StoryColonyState, 'ghosts' | 'builds'> | 
     // The 8th element (the bot since the mine designer): `dig` cells carry the block expected there (the world's when queued),
     // so they are told apart by kind, not by id 0; they draw as red outlines until the cell is air. Older 7-element ghosts:
     // id 0 = dig.
-    const dig = g[7] === 'dig' || (g[7] === undefined && g[3] === 0);
+    const dig = ghostDigs(g);
     if (!dig && g[3] === 0) continue;
     cells.push({ x: g[0], y: g[1], z: g[2], id: dig ? 0 : g[3], meta: dig ? 0 : g[4], build: g[5], state });
   }

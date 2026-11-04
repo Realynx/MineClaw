@@ -436,6 +436,25 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   expect(body(await pause)).toMatchObject({ op: 'pause' });
   if (shots) await page.screenshot({ path: `${shots}/story-bills.png` });
 
+  // The camp's furnace: coal only (the fuel picker), then a smelting bill shows its fuel table and its fuel need.
+  await page.keyboard.press('Escape');
+  const furnace = await pageAt(page, -2.5, -1.5);
+  await page.mouse.click(furnace.x, furnace.y);
+  await expect(bills).toBeVisible();
+  await expect(bills.getByTestId('fuel-picker')).toBeVisible();
+  const fuel = post(page, /\/workbenches$/);
+  await bills.getByRole('button', { name: 'Fuel: Coal', exact: true }).click();
+  expect(body(await fuel)).toMatchObject({ op: 'fuel', fuel: 'coal' });
+  await bills.getByRole('button', { name: 'Add bill' }).click();
+  await page.getByLabel('Search recipes').fill('iron');
+  await page.getByRole('button', { name: 'Recipe Iron ingot' }).click();
+  await expect(page.getByTestId('bill-fuels')).toContainText('coal 1 per 8 items');
+  const add3 = post(page, /\/bills$/);
+  await page.getByRole('button', { name: 'Add bill' }).last().click();
+  await add3;
+  await expect(bills.getByTestId('bill-fuel').first()).toContainText('1 coal');
+  if (shots) await page.screenshot({ path: `${shots}/story-furnace-fuel.png` });
+
   // The build queue: a 5×5 hut (walls 3 high, a door, a flat roof).
   await page.keyboard.press('Escape');
   await page.keyboard.press('b');
@@ -759,6 +778,35 @@ test('zones paint like RimWorld: overlapping growing zones are one, a woodlot ta
     .getByRole('button', { name: /^Colony/ })
     .click();
   await expect(page.getByTestId('growing-zones')).toHaveCount(0);
+});
+
+test('a quarry zone digs everything by default (Ores only is the other mode) and shows its stair and progress', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const [cx, , cz] = (await story(page, 'center')).map(Math.floor) as [number, number, number];
+  const lv = await story(page, 'level');
+  await page.keyboard.press('KeyB');
+  await page.getByRole('button', { name: 'Zones', exact: true }).click();
+  await page.getByRole('button', { name: 'Quarry', exact: true }).click();
+  const modes = page.getByTestId('quarry-mode');
+  await expect(modes.getByRole('radio', { name: 'Quarry (everything)' })).toHaveAttribute('aria-checked', 'true');
+  const zone = post(page, /\/zones$/);
+  await dragCells(page, [cx - 1, lv, cz - 1], [cx + 1, lv, cz + 1]);
+  await page.mouse.up();
+  expect(body(await zone)).toMatchObject({ op: 'add', kind: 'mine', mode: 'quarry' });
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page.getByTestId('tab-bar').getByRole('button', { name: /^Colony/ }).click();
+  const q = page.getByTestId('quarry-zones');
+  await expect(q.getByTestId('quarry-zone')).toHaveCount(1);
+  await expect(q.getByTestId('quarry-status')).toContainText('layer 1 of');
+  const update = post(page, /\/zones$/);
+  await q.getByLabel('Quarry mode').selectOption('ores');
+  expect(body(await update)).toMatchObject({ op: 'update', mode: 'ores' });
+  await expect(q.getByTestId('quarry-status')).toHaveCount(0);
 });
 
 // ------------------------------------------------------------------ the world under the HUD: models, holograms, notices

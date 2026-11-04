@@ -34,13 +34,14 @@ import {
   type V3,
   type ViewMats,
 } from './math';
-import { anchorLift, bodyLook, hologramCells, type BodyLook } from './bodyLook';
+import { anchorLift, bodyLook, ghostDigs, hologramCells, type BodyLook } from './bodyLook';
 import { chestBadge, drawChestBadge, useContainerBadges } from './chestBadges';
 import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type PlacedLabel } from './failedLabels';
 import type { WorldClock } from './clock';
 import { type Selection } from './model';
 import {
   buildItem,
+  buildItems,
   DragGate,
   entitiesIn,
   hasHeight,
@@ -71,6 +72,7 @@ import { COLORS, glyph, pawnColor } from './visuals';
 import { growPlantNow } from './GrowingZones';
 import { drawZonePreview, drawZones, zoneLabel } from './zones/zoneDraw';
 import { previewLabel, waterColumns, zoneInto, zonePreview } from './zones/zonePaint';
+import { drawQuarries, drawQuarryPreview, quarryModeNow } from './zones/quarry';
 
 export type MapTool =
   | { kind: 'select' }
@@ -591,7 +593,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const key = `b|${tool.id}|${ba.join(',')}|${bb.join(',')}|${JSON.stringify(o)}`;
       if (key !== h.preview) {
         h.preview = key;
-        e.setHologramPreview(buildPreview(buildItem(tool.id, ba, bb, o)).blocks.slice(0, 4096).flat(), key);
+        // Every item it queues: a water tool's trench (dug first: dig outlines) and its water.
+        const blocks = buildItems(tool.id, ba, bb, o).flatMap((it) => buildPreview(it).blocks);
+        e.setHologramPreview(blocks.slice(0, 4096).flat(), key);
       }
     } else if (h.preview) {
       h.preview = '';
@@ -738,6 +742,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     drawZones(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell, (z, houseNo) =>
       zoneLabel(z, houseNo, st?.plants),
     );
+    drawQuarries(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell); // the quarries' stairs (zones/quarry.tsx)
     // The colony's home: a house mark.
     const homeAt = props.home;
     if (homeAt) {
@@ -1352,7 +1357,17 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         drawZonePreview(ctx, out.zones, out.result.id, out.removedCells, col, props.level + 1.03, (x, y, z) =>
           project(m, x, y, z),
         );
-      label(ctx, d.now, previewLabel(tool, out, (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)), out !== null);
+      // A quarry: its spiral stair (step 1 at the top) and how deep it goes.
+      const stair =
+        out && tool.id === 'mine' && tool.op === 'add' && into === undefined && quarryModeNow() === 'quarry'
+          ? drawQuarryPreview(
+              ctx,
+              out.zones.find((z) => String(z.id) === String(out.result.id)),
+              props.level,
+              (x, y, z) => project(m, x, y, z),
+            )
+          : '';
+      label(ctx, d.now, previewLabel(tool, out, (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)) + stair, out !== null);
       return;
     }
     if (tool.kind === 'designate') {
@@ -2099,7 +2114,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       /** The viewer's player models drawn last frame. */
       botModels: () => engine()?.runtime.entities.botModels ?? 0,
       holograms: () => engine()?.hologramStats() ?? null,
-      hologramAt: (x: number, y: number, z: number) => engine()?.hologramAt(x, y, z) ?? false,
+      hologramAt: (x: number, y: number, z: number, kind?: 'block' | 'dig') => engine()?.hologramAt(x, y, z, kind) ?? false,
       /** Per build kind (wall, door, chest…): its cells still queued and how many of them draw as holograms now. */
       hologramKinds: () => {
         const e = engine(),
@@ -2110,10 +2125,12 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           if (g[6] === 'done') continue;
           const k = (out[kinds.get(String(g[5])) ?? '?'] ??= { queued: 0, shown: 0 });
           k.queued++;
-          if (e?.hologramAt(g[0], g[1], g[2])) k.shown++;
+          if (e?.hologramAt(g[0], g[1], g[2], ghostDigs(g) ? 'dig' : 'block')) k.shown++;
         }
         return out;
       },
+      /** The viewer's non-air blocks in a box, flat [x, y, z, id, meta, below-id, …] (e2e: find solid ground). */
+      scan: (min: V3, max: V3) => engine()?.runtime.host.scan(0, min, max, [], 4096) ?? Promise.resolve([]),
       ghosts: () => p.current.state?.ghosts?.blocks ?? [],
       mode: () => engine()?.rig.mode,
       level: () => p.current.level,

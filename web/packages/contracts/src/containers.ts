@@ -72,6 +72,10 @@ export const ContainerView = z.object({
   exact: z.boolean().describe('false = laid out from item counts (the slot order is not known)'),
   cells: z.array(BlockXYZ).describe("the container's blocks (two for a double chest)"),
   partial: z.boolean().nullish().describe('a double chest of which only one half was seen'),
+  estimated: z
+    .boolean()
+    .nullish()
+    .describe('a furnace seen a while ago: its slots are what it should hold by now (an item every 10 s while fuelled)'),
 });
 export type ContainerView = z.infer<typeof ContainerView>;
 

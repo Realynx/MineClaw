@@ -181,9 +181,9 @@ describe('HologramLayer', () => {
     const layer = new HologramLayer(host, createChunkUniforms());
     layer.setPreview([2, 64, 0, 5, 0, 3, 64, 0, 5, 0, 4, 63, 0, 0, 0], 'k1');
     await new Promise((r) => setTimeout(r, 20));
-    expect(layer.stats().preview).toEqual({ ok: 1, blocked: 1 });
+    expect(layer.stats().preview).toEqual({ ok: 1, blocked: 1, dig: 1 });
     layer.setPreview(null);
-    expect(layer.stats().preview).toEqual({ ok: 0, blocked: 0 });
+    expect(layer.stats().preview).toEqual({ ok: 0, blocked: 0, dig: 0 });
     layer.dispose();
   });
 });
@@ -285,6 +285,69 @@ describe('every queued block kind bakes a hologram', () => {
     await layer.idle;
     expect(layer.has(2, 64, 2)).toBe(false);
     expect(layer.stats().cells).toBe(3);
+    layer.dispose();
+  });
+});
+
+describe('a water trench: dig first, then pour', () => {
+  /** World: dirt at (0..2, 63, 0), air above. */
+  const ground: Array<[number, number, number, number]> = [
+    [0, 63, 0, 3],
+    [1, 63, 0, 3],
+    [2, 63, 0, 3],
+  ];
+  const trench = (state: HoloCell['state'] = 'todo'): HoloCell[] => [
+    // The remove build's dig cells and the water build's pour cells: the same cells, two builds.
+    ...[0, 1, 2].map((x): HoloCell => ({ x, y: 63, z: 0, id: 0, meta: 0, build: 'dig', state })),
+    ...[0, 1, 2].map((x): HoloCell => ({ x, y: 63, z: 0, id: 9, meta: 0, build: 'water', state })),
+  ];
+
+  it('the worker leaves a pour out while its cell is still solid, and shows it once dug', async () => {
+    const store = await storeWith([...ground, [3, 63, 0, 9]]);
+    const t = buildStateTable('b1.8.1', null, false);
+    const [rs] = meshHolograms(store, 0, t, [{ key: 'todo', blocks: [0, 63, 0, 9, 0, 3, 63, 0, 9, 0, 4, 63, 0, 9, 0], mode: 'build' }]);
+    // (0, 63, 0) is dirt (waits for its dig), (3, 63, 0) already holds the water (done), (4, 63, 0) is air: shown.
+    expect(rs.cells).toEqual([4, 63, 0, 9, 0]);
+  });
+
+  it('the layer shows the dig outlines over solid ground first, then the water once a cell is dug', async () => {
+    const host = await hostWith(ground);
+    const layer = new HologramLayer(host, createChunkUniforms());
+    layer.set(trench(), 'r1');
+    await layer.idle;
+    expect(layer.stats()).toMatchObject({ cells: 0, digs: 3 });
+    for (const x of [0, 1, 2]) {
+      expect(layer.has(x, 63, 0, 'dig')).toBe(true);
+      expect(layer.has(x, 63, 0, 'block')).toBe(false);
+    }
+    // The outline stands out of the cell (over the ground's surface), and the exposed tops get a fill just above y 64.
+    const marks = layer.group.children.flatMap((g) => g.children);
+    const lines = marks.find((o) => o.name === 'holo dig') as THREE.LineSegments;
+    const fill = marks.find((o) => o.name === 'holo dig fill') as THREE.Mesh;
+    const ly = (lines.geometry.getAttribute('position').array as Float32Array).filter((_, i) => i % 3 === 1);
+    expect(Math.max(...ly) + lines.position.y).toBeGreaterThan(64);
+    const fy = (fill.geometry.getAttribute('position').array as Float32Array).filter((_, i) => i % 3 === 1);
+    expect(fy.length).toBe(3 * 6);
+    expect(Math.min(...fy) + fill.position.y).toBeGreaterThan(64);
+    // A pawn digs (1, 63, 0): its outline goes, the water hologram shows there.
+    await host.patch(0, [[1, 63, 0, 0, 0]]);
+    layer.blocksChanged(0, [[1, 63, 0]]);
+    await layer.idle;
+    expect(layer.has(1, 63, 0, 'dig')).toBe(false);
+    expect(layer.has(1, 63, 0, 'block')).toBe(true);
+    expect(layer.stats()).toMatchObject({ cells: 1, digs: 2 });
+    layer.dispose();
+  });
+
+  it('a trench preview: dig outlines for the cells, and the water in them is not "blocked" by the ground it digs out', async () => {
+    const host = await hostWith(ground);
+    const layer = new HologramLayer(host, createChunkUniforms());
+    const blocks = [0, 1, 2].flatMap((x) => [x, 63, 0, 0, 0]).concat([0, 1, 2].flatMap((x) => [x, 63, 0, 9, 0]), [3, 63, 0, 8, 4]);
+    layer.setPreview(blocks, 'trench');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(layer.stats().preview).toEqual({ ok: 4, blocked: 0, dig: 3 });
+    const names = layer.group.children.flatMap((g) => g.children).map((o) => o.name);
+    expect(names).toEqual(expect.arrayContaining(['holo dig', 'holo dig fill', 'holo p:ok']));
     layer.dispose();
   });
 });

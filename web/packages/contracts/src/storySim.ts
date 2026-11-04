@@ -14,7 +14,21 @@ import {
   STORY_DEFAULT_RECIPES,
   storyItemLabel,
 } from './storyData.js';
-import { cellKey, cellX, cellZ, eraseZones, paintZones, rectCells, zoneCellSet } from './storyZones.js';
+import {
+  cellKey,
+  cellsTouch,
+  cellX,
+  cellZ,
+  eraseZones,
+  paintZones,
+  quarryRing,
+  quarryStep,
+  rectCells,
+  zoneCellSet,
+} from './storyZones.js';
+
+const QUARRY_TOO_NARROW =
+  'a quarry needs at least 2×2 (a 1-wide strip is a trench: paint it as Ores only, or designate Mine)';
 import { irrigationPlan, liquidFlow } from './storyWater.js';
 import {
   CHEST_IDS,
@@ -415,6 +429,9 @@ function rng(seed: number): () => number {
 const keyOf = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
 const dist = (a: readonly unknown[], b: readonly unknown[]) =>
   Math.hypot(Number(a[0]) - Number(b[0]), Number(a[2]) - Number(b[2]));
+
+/** The fuel choices the sim's (b1.8.1) furnaces burn. */
+const SIM_FUELS = ['auto', 'coal', 'charcoal', 'coal_or_charcoal', 'planks', 'logs', 'lava_bucket', 'any'] as const;
 
 export class StorySim {
   readonly colonies = new Map<string, Colony>();
@@ -932,6 +949,17 @@ export class StorySim {
 
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
+    if (body.op === 'update' && body.mode) {
+      // A mine zone's mode: quarry (everything to bedrock, a stair) or ores only.
+      const f = c.zones.get(String(body.id));
+      if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+      if (f.v.kind !== 'mine') throw Object.assign(new Error('only mine zones take a mode (ores | quarry)'), { status: 400 });
+      if (body.mode === 'quarry' && !quarryRing(zoneCellSet(f.v)))
+        throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
+      f.v = { ...f.v, mode: body.mode };
+      f.rev = this.bump(c);
+      return { id: f.v.id, rev: c.rev };
+    }
     if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
     if (body.op === 'irrigation') return this.irrigation(c, String(body.id));
     if (body.op.startsWith('bill_')) return this.billOp(c, body as Extract<StoryZoneRequest, { op: `bill_${string}` }>);
@@ -981,6 +1009,7 @@ export class StorySim {
             kind: k,
             area: a,
             ...(body.name ? { name: body.name } : {}),
+            ...(k === 'mine' ? { mode: body.mode ?? 'quarry' } : {}),
             ...(k === 'farm' && plant
               ? {
                   plant,
@@ -990,6 +1019,14 @@ export class StorySim {
                 }
               : {}),
           };
+    if (
+      kind === 'mine' &&
+      !into &&
+      (body.mode ?? 'quarry') === 'quarry' &&
+      (rect[0] === rect[2] || rect[1] === rect[3]) &&
+      !list.some((z) => z.kind === 'mine' && z.mode === 'quarry' && cellsTouch(zoneCellSet(z), rectCells(...rect)))
+    )
+      throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
     // A fishing zone keeps only still water (a source block, open above, near the level).
     const water =
       kind === 'fish'
@@ -1128,8 +1165,37 @@ export class StorySim {
     };
   }
 
+  /** A quarry's progress as the bot reports it (mock: nothing is dug yet; bedrock at y 0..2). */
+  private quarryStatus(z: StoryZone): StoryZone {
+    const mode = z.mode ?? 'ores';
+    if (mode !== 'quarry') return { ...z, mode };
+    const ring = quarryRing(zoneCellSet(z));
+    const top = z.area[1],
+      bottom = 3;
+    const stair = ring ? Array.from({ length: Math.max(0, top - bottom + 1) }, (_, k) => quarryStep(ring, top, k)) : [];
+    const cells = z.cells ?? zoneCellSet(z).size;
+    return {
+      ...z,
+      mode,
+      quarry: {
+        top,
+        bottom,
+        depth: top - bottom + 1,
+        layer: 0,
+        y: top,
+        cellsLeft: Math.max(0, cells - 1),
+        stairFixes: 0,
+        sealed: 0,
+        done: false,
+        stair,
+        status: `layer 1 of ${top - bottom + 1} (y ${top}), ${Math.max(0, cells - 1)} cell(s) left`,
+      },
+    };
+  }
+
   /** A growing zone's fields as the bot reports them (mock: nothing grows; seeds from the colony's stock). */
   private growStatus(c: Colony, z: StoryZone): StoryZone {
+    if (z.kind === 'mine') return this.quarryStatus(z);
     if (z.kind !== 'farm' || (!z.plant && !z.bills)) return z;
     const cells = z.cells ?? (z.area[3] - z.area[0] + 1) * (z.area[5] - z.area[2] + 1);
     const seedsOf = (plant: StoryPlant, needed: number) => {
@@ -1652,6 +1718,7 @@ export class StorySim {
                   label: null,
                   supported: true,
                   station: this.stationOf(kind, [x, y, z]),
+                  ...this.fuelOf(kind),
                   bills: [],
                 },
               });
@@ -1743,6 +1810,21 @@ export class StorySim {
     }
   }
 
+  /** A furnace's fuel setting (auto) and the choices the sim's version burns. */
+  private fuelOf(kind: string): Pick<StoryWorkbench, 'fuel' | 'fuelChoices' | 'fuelCredit'> {
+    return kind === 'furnace' ? { fuel: 'auto', fuelChoices: [...SIM_FUELS], fuelCredit: 0 } : {};
+  }
+
+  /** A furnace bill's fuel for its next batch (the sim's stock is not counted: have is what the storages list). */
+  private fuelNeedOf(b: StoryBill, choice: string): StoryBill['fuelNeed'] {
+    const items = Math.max(1, Math.min(8, b.mode === 'count' ? b.target - b.done : 8));
+    const fuel = choice === 'planks' ? { item: [5, -1] as [number, number], name: 'planks', per: 1.5 }
+      : choice === 'logs' ? { item: [17, -1] as [number, number], name: 'log', per: 1.5 }
+      : choice === 'lava_bucket' ? { item: [327, 0] as [number, number], name: 'lava_bucket', per: 100 }
+      : { item: [263, choice === 'charcoal' ? 1 : choice === 'coal' ? 0 : -1] as [number, number], name: choice === 'charcoal' ? 'charcoal' : 'coal', per: 8 };
+    return { choice, item: fuel.item, name: fuel.name, need: Math.ceil(items / fuel.per), have: 0, short: false, perItem: Math.round((1 / fuel.per) * 1000) / 1000 };
+  }
+
   /** The bench inspector's station facts (an enchanting table's bookshelves, an anvil's wear, a brewing stand's water). */
   private stationOf(kind: string, pos: readonly number[]): StoryWorkbench['station'] {
     const w = this.opts.world;
@@ -1798,6 +1880,10 @@ export class StorySim {
       table.rev = this.bump(c);
       return { ok: true, ids, rev: c.rev };
     }
+    if (body.op === 'release_claim') {
+      // The sim reserves nothing for builds' chains: a release is a no-op that says so.
+      return { ok: true, rev: c.rev, note: `build ${body.build} holds nothing for ${body.item}` };
+    }
     if (body.op !== 'add' && body.op !== 'reorder') {
       const auto = [...c.benches.values()]
         .flatMap((x) => x.v.bills)
@@ -1846,7 +1932,9 @@ export class StorySim {
           ...(recipe.workbench === 'enchanting_table'
             ? { option: spec.option ?? 3, prefer: spec.prefer ?? null, preferOnly: spec.preferOnly ?? false }
             : {}),
+          ...(recipe.workbench === 'furnace' ? { fuel: spec.fuel && spec.fuel !== 'inherit' ? spec.fuel : null } : {}),
         };
+        if (recipe.workbench === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
         f.v.bills.push(b);
         newId = b.id;
         break;
@@ -1855,7 +1943,10 @@ export class StorySim {
         f = holder(body.id);
         const b = f.v.bills.find((x) => String(x.id) === String(body.id))!;
         const { op: _op, id: _id, ...fields } = body;
-        Object.assign(b, fields);
+        if (fields.fuel !== undefined && f.v.kind !== 'furnace')
+          throw Object.assign(new Error('fuel is for furnace bills (a brewing stand burns blaze powder)'), { status: 400 });
+        Object.assign(b, { ...fields, ...(fields.fuel !== undefined ? { fuel: fields.fuel === 'inherit' ? null : fields.fuel } : {}) });
+        if (f.v.kind === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
         if (fields.paused === false) b.suspendedReason = null;
         break;
       }
@@ -2053,13 +2144,24 @@ export class StorySim {
       return { pos: body.pos, kind: f.v.kind, designated: false };
     }
     const have = c.benches.get(k);
+    if (body.op === 'fuel') {
+      // A furnace's fuel choice: the sim's version is b1.8.1 (no blaze rods).
+      const f = have ?? null;
+      if (!f || f.v.kind !== 'furnace')
+        throw Object.assign(new Error('only a furnace takes a fuel choice'), { status: 400 });
+      if (body.fuel === 'blaze_rod') throw Object.assign(new Error('fuel must be ' + SIM_FUELS.join('|')), { status: 400 });
+      f.v.fuel = body.fuel;
+      for (const b of f.v.bills) if (!b.fuel) b.fuelNeed = this.fuelNeedOf(b, body.fuel);
+      f.rev = this.bump(c);
+      return { pos: body.pos, kind: f.v.kind, designated: true, fuel: body.fuel };
+    }
     if (have) return { pos: body.pos, kind: have.v.kind, designated: true };
     const [bid] = this.opts.world.blockAt(body.pos[0], body.pos[1], body.pos[2]);
     const kind = BENCH_KIND[bid];
     if (!kind) throw Object.assign(new Error('no workbench there'), { status: 400 });
     c.benches.set(k, {
       rev: this.bump(c),
-      v: { pos: body.pos, kind, label: null, supported: true, station: this.stationOf(kind, body.pos), bills: [] },
+      v: { pos: body.pos, kind, label: null, supported: true, station: this.stationOf(kind, body.pos), ...this.fuelOf(kind), bills: [] },
     });
     this.plan(c);
     return { pos: body.pos, kind, designated: true };

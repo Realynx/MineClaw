@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { anchorLift, bodyLook, hologramCells, TOKEN_PX } from '@/features/story/bodyLook';
+import { anchorLift, bodyLook, ghostDigs, hologramCells, TOKEN_PX } from '@/features/story/bodyLook';
 
 describe('a body on the Story map: its model, or the 2D token', () => {
   const at = (o: Partial<Parameters<typeof bodyLook>[0]>) => bodyLook({ detail: true, pxPerBlock: 18, feetY: 65, cutY: null, ...o });
@@ -96,5 +96,31 @@ describe('queued builds as hologram cells', () => {
       [7, 64, 4, 0],
       [8, 64, 0, 0],
     ]);
+  });
+
+  it('a trench cell carries both its dig and its pour (two builds, one group): both reach the viewer', () => {
+    const st = {
+      builds: [
+        { id: 'r1', kind: 'remove', label: 'remove', status: 'active', blocksTotal: 2, blocksDone: 0 },
+        { id: 'w1', kind: 'water', label: 'water', status: 'queued', blocksTotal: 2, blocksDone: 0 },
+      ],
+      ghosts: {
+        rev: 4,
+        blocks: [
+          [0, 63, 0, 2, 0, 'r1', 'todo', 'dig'], // grass to dig out (the bot sends the block there)
+          [1, 63, 0, 3, 0, 'r1', 'todo', 'dig'],
+          [0, 63, 0, 9, 0, 'w1', 'todo', 'pour'],
+          [1, 63, 0, 9, 0, 'w1', 'todo', 'pour'],
+        ],
+      },
+    } as unknown as Parameters<typeof hologramCells>[0];
+    expect(hologramCells(st).cells.map((c) => [c.x, c.id, c.build])).toEqual([
+      [0, 0, 'r1'],
+      [1, 0, 'r1'],
+      [0, 9, 'w1'],
+      [1, 9, 'w1'],
+    ]);
+    expect(ghostDigs(st!.ghosts!.blocks[0]!)).toBe(true);
+    expect(ghostDigs(st!.ghosts!.blocks[2]!)).toBe(false);
   });
 });
