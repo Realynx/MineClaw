@@ -325,6 +325,22 @@ public class Release1122CombatEngineTests
     }
 
     [Fact]
+    public void Ticks_that_ran_ahead_of_real_time_do_not_count_toward_the_charge()
+    {
+        // The tick loop catches up in bursts (Windows sleeps in ~15.6 ms steps), but the server's ticksSinceLastSwing follows
+        // real time: 120 of our ticks in a burst are not 120 server ticks (the normal-world scenario's swings on our count landed at 0.75).
+        var rig = Rig(Items.WoodenPickaxe);
+        rig.E.TickInterval = TimeSpan.FromSeconds(10);
+        rig.Mob(1, MobTypes.Zombie, 1.9, 0.5);
+        var swings = SwingTicks(rig, 120);
+        Assert.Single(swings); // the charged first one; the next waits for 15 server ticks of real time
+        // Without the tick length (ticks only) the same burst swings every 15 ticks.
+        var ticksOnly = Rig(Items.WoodenPickaxe);
+        ticksOnly.Mob(1, MobTypes.Zombie, 1.9, 0.5);
+        Assert.True(SwingTicks(ticksOnly, 120).Count >= 3);
+    }
+
+    [Fact]
     public void An_emergency_swings_at_any_charge()
     {
         var rig = Rig(Items.WoodenAxe);

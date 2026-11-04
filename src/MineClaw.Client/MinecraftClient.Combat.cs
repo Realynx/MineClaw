@@ -29,7 +29,7 @@ public sealed partial class MinecraftClient
                 _telemetry = new CombatTelemetry(Options.Combat.TelemetryDirectory);
                 var e = new CombatEngine(World, Options.Combat, _telemetry)
                 {
-                    Username = Options.Username, Reserved = () => ReservedItems, Rules = Options.Profile.Combat,
+                    Username = Options.Username, Reserved = () => ReservedItems, Rules = Options.Profile.Combat, TickInterval = Options.TickInterval,
                     ShieldDisabled = () => ItemCooldownTicks(MineClaw.Client.Combat.Release1122CombatRules.ShieldId) > 0,
                 };
                 e.ShouldShelter = ShouldShelter;
