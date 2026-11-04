@@ -193,7 +193,7 @@ public sealed partial class StoryColony
         if (!_lastWork.TryGetValue(p.Name, out var type) || type == WorkTypes.Haul) return false; // a haul's drops go now
         if (p.Priorities.GetValueOrDefault(type) is < 1 or > 4) return false;
         int hour = HourNow;
-        var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
+        var block = ScheduleBlockAt(p, hour);
         if (block is not (ScheduleBlocks.Work or ScheduleBlocks.Anything)) return false; // bed or free time: unload first
         return Candidate(type, p, live) != null;
     }

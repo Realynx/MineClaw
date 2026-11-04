@@ -207,59 +207,109 @@ public sealed partial class StoryColony
     public (JsonNode? Result, string? Error) MaterialRulesOp(JsonObject body)
     {
         if (World is not { } w) return (null, "no world view yet");
-        var d = w.Data;
         var op = Str(body["op"]) ?? "";
         lock (_lock)
         {
-            if (op == "remove")
-            {
-                var m = Str(body["material"]) ?? "";
-                int n = Meta.Gear.Rules.RemoveAll(r => r.Material.Equals(m, StringComparison.OrdinalIgnoreCase));
-                if (n > 0) { Touch(); _toolPlans.Clear(); WakeIdle(); }
-                return (new JsonObject { ["removed"] = n > 0 }, null);
-            }
+            if (op == "remove") return RemoveMaterialRule(Str(body["material"]) ?? "");
             if (op != "set") return (null, "op must be set|remove");
             if (body["rule"] is not JsonObject r) return (null, "rule required");
-            var material = Str(r["material"])?.Trim() ?? "";
-            var group = StoryTools.Groups.FirstOrDefault(g => g.Id == material);
-            int? block = group == null ? StoryTools.BlockOf(d, material) : null;
-            if (group == null && block == null) return (null, $"unknown material '{material}'");
-            if (block is { } bid) material = d.Block(bid).Name;
-            var members = group != null ? group.Members.Where(d.BlockExists).ToList() : [block!.Value];
-            var tool = Str(r["tool"]);
-            ToolType? kind = tool == null ? null : StoryTools.Kind(tool);
-            if (tool != null && kind == null) return (null, $"tool must be {string.Join("|", StoryTools.Kinds)}");
-            var tier = Str(r["tier"]);
-            int level = StoryTools.Level(tier);
-            if (tier != null && level < 0) return (null, $"tier must be {string.Join("|", StoryTools.Tiers)}");
-            var enchant = Str(r["enchant"]);
-            if (enchant != null && !StoryTools.Enchants.Contains(enchant)) return (null, $"enchant must be {string.Join("|", StoryTools.Enchants)}");
-            if (enchant != null && w.Version == "b1.8.1") return (null, "b1.8.1 has no enchantments");
-            var fallback = Str(r["fallback"]) ?? "plain";
-            if (fallback is not ("plain" or "wait")) return (null, "fallback must be plain|wait");
-            // The floor: never below what the material needs to drop anything (a group: its lowest member's; each member keeps its own).
-            int floor = members.Select(m => StoryTools.For(d, m).Floor).DefaultIfEmpty(-1).Min();
-            if (level >= 0 && level < floor)
-            {
-                var first = members.First(m => StoryTools.For(d, m).Floor == floor);
-                return (null, $"{(group != null ? group.Label.ToLowerInvariant() : material)} needs at least {StoryTools.Describe(StoryTools.For(d, first).Kind, floor)}");
-            }
-            foreach (var m in members)
-            {
-                var need = StoryTools.For(d, m);
-                if (need.Hand || kind is not { } k) continue;
-                int lv = Math.Max(Math.Max(level, need.Floor), 0);
-                if (StoryTools.ItemFor(k, lv) is not { } id || !d.ItemExists(id) || !d.CanHarvest(m, id))
-                    return (null, $"{StoryTools.Describe(k, lv)} can't harvest {d.Block(m).Name} (it needs {need.Text})");
-            }
-            var rule = new MaterialRule { Material = material, Tool = kind is { } kk ? StoryTools.KindName(kk) : null, Tier = StoryTools.TierName(level), Enchant = enchant, Fallback = fallback };
-            Meta.Gear.Rules.RemoveAll(x => x.Material.Equals(material, StringComparison.OrdinalIgnoreCase));
-            Meta.Gear.Rules.Add(rule);
+            var (rule, err) = ParseMaterialRule(w, r);
+            if (err != null) return (null, err);
+            Meta.Gear.Rules.RemoveAll(x => x.Material.Equals(rule!.Material, StringComparison.OrdinalIgnoreCase));
+            Meta.Gear.Rules.Add(rule!);
             Touch();
             _toolPlans.Clear();
             WakeIdle();
-            return (new JsonObject { ["rule"] = RuleJson(d, rule) }, null);
+            return (new JsonObject { ["rule"] = RuleJson(w.Data, rule!) }, null);
         }
+    }
+
+    private (JsonNode? Result, string? Error) RemoveMaterialRule(string material)
+    {
+        int n = Meta.Gear.Rules.RemoveAll(r => r.Material.Equals(material, StringComparison.OrdinalIgnoreCase));
+        if (n > 0) { Touch(); _toolPlans.Clear(); WakeIdle(); }
+        return (new JsonObject { ["removed"] = n > 0 }, null);
+    }
+
+    /// <summary>What a rule is for: a material group or one block (its name), the blocks it covers, and how an answer names it.</summary>
+    private sealed record RuleTarget(string Material, List<int> Members, string Label);
+
+    /// <summary>A rule as the browser sent it, checked in order: material, tool, tier, enchant, fallback, then what can harvest it.</summary>
+    private static (MaterialRule? Rule, string? Error) ParseMaterialRule(IStoryWorld w, JsonObject r)
+    {
+        var d = w.Data;
+        var (target, err) = RuleTargetOf(d, Str(r["material"])?.Trim() ?? "");
+        if (err != null) return (null, err);
+        var (kind, level, toolErr) = RuleToolOf(r);
+        if (toolErr != null) return (null, toolErr);
+        var (enchant, fallback, restErr) = RuleRestOf(w, r);
+        if (restErr != null) return (null, restErr);
+        if (RuleHarvestError(d, target!, kind, level) is { } harvestErr) return (null, harvestErr);
+        return (new MaterialRule
+        {
+            Material = target!.Material, Tool = kind is { } kk ? StoryTools.KindName(kk) : null, Tier = StoryTools.TierName(level), Enchant = enchant,
+            Fallback = fallback,
+        }, null);
+    }
+
+    private static (RuleTarget? Target, string? Error) RuleTargetOf(IGameData d, string material)
+    {
+        var group = StoryTools.Groups.FirstOrDefault(g => g.Id == material);
+        int? block = group == null ? StoryTools.BlockOf(d, material) : null;
+        if (group == null && block == null) return (null, $"unknown material '{material}'");
+        if (block is { } bid) material = d.Block(bid).Name;
+        List<int> members = group != null ? group.Members.Where(d.BlockExists).ToList() : [block!.Value];
+        return (new RuleTarget(material, members, group != null ? group.Label.ToLowerInvariant() : material), null);
+    }
+
+    /// <summary>The rule's tool kind (null = any) and tier level (−1 = any).</summary>
+    private static (ToolType? Kind, int Level, string? Error) RuleToolOf(JsonObject r)
+    {
+        var tool = Str(r["tool"]);
+        ToolType? kind = tool == null ? null : StoryTools.Kind(tool);
+        if (tool != null && kind == null) return (null, -1, $"tool must be {string.Join("|", StoryTools.Kinds)}");
+        var tier = Str(r["tier"]);
+        int level = StoryTools.Level(tier);
+        if (tier != null && level < 0) return (null, -1, $"tier must be {string.Join("|", StoryTools.Tiers)}");
+        return (kind, level, null);
+    }
+
+    /// <summary>The rule's enchantment (b1.8.1 has none) and its fallback when no such tool is there (plain | wait).</summary>
+    private static (string? Enchant, string Fallback, string? Error) RuleRestOf(IStoryWorld w, JsonObject r)
+    {
+        var enchant = Str(r["enchant"]);
+        if (enchant != null && !StoryTools.Enchants.Contains(enchant)) return (null, "", $"enchant must be {string.Join("|", StoryTools.Enchants)}");
+        if (enchant != null && w.Version == "b1.8.1") return (null, "", "b1.8.1 has no enchantments");
+        var fallback = Str(r["fallback"]) ?? "plain";
+        if (fallback is not ("plain" or "wait")) return (null, "", "fallback must be plain|wait");
+        return (enchant, fallback, null);
+    }
+
+    /// <summary>
+    /// The floor: never below what the material needs to drop anything (a group: its lowest member's; each member keeps its own); and
+    /// the rule's tool must harvest every member.
+    /// </summary>
+    private static string? RuleHarvestError(IGameData d, RuleTarget target, ToolType? kind, int level)
+    {
+        int floor = target.Members.Select(m => StoryTools.For(d, m).Floor).DefaultIfEmpty(-1).Min();
+        if (level >= 0 && level < floor)
+        {
+            var first = target.Members.First(m => StoryTools.For(d, m).Floor == floor);
+            return $"{target.Label} needs at least {StoryTools.Describe(StoryTools.For(d, first).Kind, floor)}";
+        }
+        foreach (var m in target.Members)
+            if (MemberHarvestError(d, m, kind, level) is { } err) return err;
+        return null;
+    }
+
+    private static string? MemberHarvestError(IGameData d, int m, ToolType? kind, int level)
+    {
+        var need = StoryTools.For(d, m);
+        if (need.Hand || kind is not { } k) return null;
+        int lv = Math.Max(Math.Max(level, need.Floor), 0);
+        if (StoryTools.ItemFor(k, lv) is not { } id || !d.ItemExists(id) || !d.CanHarvest(m, id))
+            return $"{StoryTools.Describe(k, lv)} can't harvest {d.Block(m).Name} (it needs {need.Text})";
+        return null;
     }
 
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;

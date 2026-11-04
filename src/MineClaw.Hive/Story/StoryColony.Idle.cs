@@ -231,7 +231,7 @@ public sealed partial class StoryColony
             if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "wander") continue;
             var live = Host.Live(p.Name);
             if (!live.Online) continue;
-            var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
+            var block = ScheduleBlockAt(p, hour);
             bool workHours = block is ScheduleBlocks.Work or ScheduleBlocks.Anything;
             // A resting leg ends with the back-off, or the moment there is work for it (a rest never holds a pawn back from work).
             bool resting = cur.SourceId == "rest";

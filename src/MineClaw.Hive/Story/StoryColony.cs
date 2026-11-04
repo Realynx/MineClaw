@@ -382,43 +382,10 @@ public sealed partial class StoryColony : IStoryPort
         lock (_lock)
         {
             departing = ReadyToGo();
-            // A pawn still at its job keeps its lease (live 11-03: the script reports no progress, so a lease ran out after 90 s while
-            // the pawn was still walking there or digging; a second pawn got the same target and met the first one's hive claim:
-            // "busy: another hive bot is working on that part"). Up to JobMax, then the lease runs out as before.
-            foreach (var (owner, cur) in _current)
-                if (cur.Lease != null && Now - cur.Since < JobMax && _leases.TryGetValue(cur.Lease, out var l) && string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase)
-                    && l.Until - Now < LeaseTtl / 2 && Host.Live(owner) is { Online: true, ScriptRunning: true })
-                {
-                    _leases[cur.Lease] = (owner, Now + LeaseTtl);
-                    RenewCells(owner, cur);
-                    foreach (var k in cur.MoreLeases) _leases[k] = (owner, Now + LeaseTtl);
-                }
-            foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
-            {
-                var owner = _leases[k].Owner;
-                _leases.Remove(k);
-                if (_current.TryGetValue(owner, out var cur) && cur.Lease == k) { _current.Remove(owner); Release(cur); }
-            }
-            // A pawn that went offline holds nothing: its job and its leases go back at once (not after the 90 s lease).
-            foreach (var p in Pawns.Values)
-            {
-                if (!_current.ContainsKey(p.Name) && !_leases.Values.Any(l => l.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase))) continue;
-                if (Host.Live(p.Name).Online) continue;
-                if (_current.Remove(p.Name, out var gone)) Release(gone);
-                foreach (var k in _leases.Where(l => l.Value.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase)).Select(l => l.Key).ToList()) _leases.Remove(k);
-                p.Rev = Bump();
-            }
-            if (Meta.Active)
-                foreach (var p in Pawns.Values)
-                {
-                    var live = Host.Live(p.Name);
-                    if (!live.Online || live.ScriptRunning) continue;
-                    if (_leaving.TryGetValue(p.Name, out var lv) && lv.Done) continue; // it ended for good: released below
-                    if (_started.TryGetValue(p.Name, out var at) && Now - at < TimeSpan.FromSeconds(5)) continue;
-                    _started[p.Name] = Now;
-                    if (_current.Remove(p.Name, out var stale)) Release(stale);
-                    restart.Add(p.Name);
-                }
+            RenewHeldLeases();
+            ExpireLeases();
+            ReleaseOffline();
+            if (Meta.Active) CollectRestarts(restart);
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
             _pickEnts = null; // the tick's searches read the world's entities once (and never a pick's old list)
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
@@ -427,24 +394,94 @@ public sealed partial class StoryColony : IStoryPort
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
             _pickEnts = null;
-            // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
-            foreach (var p in Pawns.Values)
-            {
-                bool online = Host.Live(p.Name).Online;
-                if (online && _online.Add(p.Name)) joined.Add(p.Name);
-                else if (!online) _online.Remove(p.Name);
-            }
+            NoteJoined(joined);
         }
         SpeedTick(); // Fast / Faster on the pawn bodies, the Speed effects (StoryColony.Speed.cs)
         foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
         if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
+        StartPawns(restart);
+        Save();
+    }
+
+    /// <summary>
+    /// A pawn still at its job keeps its lease (live 11-03: the script reports no progress, so a lease ran out after 90 s while the pawn
+    /// was still walking there or digging; a second pawn got the same target and met the first one's hive claim: "busy: another hive
+    /// bot is working on that part"). Up to JobMax, then the lease runs out as before.
+    /// </summary>
+    private void RenewHeldLeases()
+    {
+        foreach (var (owner, cur) in _current)
+        {
+            if (!LeaseDueRenewal(owner, cur)) continue;
+            _leases[cur.Lease!] = (owner, Now + LeaseTtl);
+            RenewCells(owner, cur);
+            foreach (var k in cur.MoreLeases) _leases[k] = (owner, Now + LeaseTtl);
+        }
+    }
+
+    /// <summary>Its own lease on its job's target runs out within half a TTL while its script runs (and the job isn't over-long).</summary>
+    private bool LeaseDueRenewal(string owner, ActiveJob cur) =>
+        cur.Lease != null && Now - cur.Since < JobMax && _leases.TryGetValue(cur.Lease, out var l) && string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase)
+        && l.Until - Now < LeaseTtl / 2 && Host.Live(owner) is { Online: true, ScriptRunning: true };
+
+    /// <summary>Expired leases go back; a job whose lease it was ends with it.</summary>
+    private void ExpireLeases()
+    {
+        foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
+        {
+            var owner = _leases[k].Owner;
+            _leases.Remove(k);
+            if (_current.TryGetValue(owner, out var cur) && cur.Lease == k) { _current.Remove(owner); Release(cur); }
+        }
+    }
+
+    /// <summary>A pawn that went offline holds nothing: its job and its leases go back at once (not after the 90 s lease).</summary>
+    private void ReleaseOffline()
+    {
+        foreach (var p in Pawns.Values)
+        {
+            if (!_current.ContainsKey(p.Name) && !_leases.Values.Any(l => l.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase))) continue;
+            if (Host.Live(p.Name).Online) continue;
+            if (_current.Remove(p.Name, out var gone)) Release(gone);
+            foreach (var k in _leases.Where(l => l.Value.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase)).Select(l => l.Key).ToList()) _leases.Remove(k);
+            p.Rev = Bump();
+        }
+    }
+
+    /// <summary>The watchdog: an online pawn whose script ended is started again (at most every 5 s; never one that left for good).</summary>
+    private void CollectRestarts(List<string> restart)
+    {
+        foreach (var p in Pawns.Values)
+        {
+            var live = Host.Live(p.Name);
+            if (!live.Online || live.ScriptRunning) continue;
+            if (_leaving.TryGetValue(p.Name, out var lv) && lv.Done) continue; // it ended for good: released below
+            if (_started.TryGetValue(p.Name, out var at) && Now - at < TimeSpan.FromSeconds(5)) continue;
+            _started[p.Name] = Now;
+            if (_current.Remove(p.Name, out var stale)) Release(stale);
+            restart.Add(p.Name);
+        }
+    }
+
+    /// <summary>A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).</summary>
+    private void NoteJoined(List<string> joined)
+    {
+        foreach (var p in Pawns.Values)
+        {
+            bool online = Host.Live(p.Name).Online;
+            if (online && _online.Add(p.Name)) joined.Add(p.Name);
+            else if (!online) _online.Remove(p.Name);
+        }
+    }
+
+    private void StartPawns(List<string> restart)
+    {
         foreach (var name in restart)
         {
             string? err;
             try { err = Host.StartPawn(name, Id); } catch (Exception ex) { err = ex.Message; }
             if (err != null) _log.LogDebug("story {Colony}: {Pawn} didn't start: {Err}", Id, name, err);
         }
-        Save();
     }
 
     private DateTimeOffset _benchScan = DateTimeOffset.MinValue;
