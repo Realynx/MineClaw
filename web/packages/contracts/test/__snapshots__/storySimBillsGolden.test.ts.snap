@@ -1,0 +1,56 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`growing-zone bills (golden) > answers every bill op and reports the zones exactly as before 1`] = `
+[
+  [
+    "no zone",
+    "error",
+    404,
+    "id: no such zone",
+  ],
+  [
+    "not farm",
+    "error",
+    400,
+    "only farm (growing) zones take planting bills",
+  ],
+  [
+    "bad plant",
+    "error",
+    400,
+    "plant must be one of wheat|carrots|potatoes|beetroot|pumpkin|melon|sugar_cane|cactus|oak|birch",
+  ],
+  [
+    "update bad plant",
+    "error",
+    400,
+    "plant must be one of wheat|carrots|potatoes|beetroot|pumpkin|melon|sugar_cane|cactus|oak|birch",
+  ],
+  [
+    "update no bill",
+    "error",
+    400,
+    "bill: no such bill in the zone",
+  ],
+  [
+    "reorder bad",
+    "error",
+    400,
+    "bill: no such bill in the zone",
+  ],
+  [
+    "fill 15",
+    "error",
+    400,
+    "a zone takes at most 16 bills",
+  ],
+  [
+    "too many",
+    "error",
+    400,
+    "a zone takes at most 16 bills",
+  ],
+]
+`;
+
+exports[`growing-zone bills (golden) > answers every bill op and reports the zones exactly as before 2`] = `"616c64d26d23bab1fc102012ed86c02c19910e8d42028f4bfe3888070b0ae5ec"`;

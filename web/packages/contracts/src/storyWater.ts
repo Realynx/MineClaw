@@ -222,6 +222,26 @@ function lineBand(
   return { row, dry };
 }
 
+/** Crops: farmland is watered within 4 blocks, so a channel every 9 rows; sugar cane needs water beside it, every 3. */
+const CROP_CHANNELS = { spacing: 9, cover: 4 };
+const CANE_CHANNELS = { spacing: 3, cover: 1 };
+
+/** Where the channels run, for the note. */
+function channelWhat(cane: boolean, narrow: boolean): string {
+  if (cane) return 'beside the sugar cane (every 3rd row)';
+  return narrow ? 'down the middle' : 'every 9th row';
+}
+
+/** A kept line's cells: those not water already become channel cells, dug out first unless water can take their block. */
+function channelRow(row: readonly V3[], holds: (x: number, y: number, z: number) => number, cells: V3[], dig: V3[]) {
+  for (const c of row) {
+    const id = holds(c[0], c[1], c[2]);
+    if (isWater(id)) continue;
+    cells.push(c);
+    if (!TAKES.has(id)) dig.push(c);
+  }
+}
+
 /** The plan's line for the owner. */
 function irrigationNote(p: { cells: number; dig: number; kept: number; axis: string; what: string }): string {
   if (!p.cells) return 'the zone is watered already: every cell has water close enough';
@@ -245,8 +265,7 @@ export function irrigationPlan(
   holds: (x: number, y: number, z: number) => number,
 ): IrrigationPlan {
   const frame = channelFrame(zone);
-  const spacing = cane ? 3 : 9,
-    cover = cane ? 1 : 4;
+  const { spacing, cover } = cane ? CANE_CHANNELS : CROP_CHANNELS;
   const cells: V3[] = [],
     dig: V3[] = [];
   let kept = 0;
@@ -254,16 +273,10 @@ export function irrigationPlan(
     const { row, dry } = lineBand(frame, line, cover, { soilAt, watered });
     if (!dry || !row.length) continue;
     kept++;
-    for (const c of row) {
-      const id = holds(c[0], c[1], c[2]);
-      if (isWater(id)) continue;
-      cells.push(c);
-      if (!TAKES.has(id)) dig.push(c);
-    }
+    channelRow(row, holds, cells, dig);
   }
   const axis = frame.alongX ? 'x' : 'z';
-  const narrow = frame.hi - frame.lo + 1 <= spacing;
-  const what = cane ? 'beside the sugar cane (every 3rd row)' : narrow ? 'down the middle' : 'every 9th row';
+  const what = channelWhat(cane, frame.hi - frame.lo + 1 <= spacing);
   const note = irrigationNote({ cells: cells.length, dig: dig.length, kept, axis, what });
   return { cells, dig, axis, lines: kept, note };
 }

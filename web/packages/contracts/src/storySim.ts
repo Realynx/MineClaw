@@ -330,6 +330,105 @@ const SEED_HINT: Record<string, string> = {
   melon: 'No melon seeds — store a melon slice and a crafting table makes them',
 };
 
+/** What to do about missing seeds: seek wheat seeds (cut grass), craft a fruit's seeds, else nothing to offer. */
+function seedAction(plant: StoryPlant): 'seek_seeds' | 'craft_seeds' | null {
+  if (plant.id === 'wheat') return 'seek_seeds';
+  return plant.harvest === 'fruit' ? 'craft_seeds' : null;
+}
+
+/** A plant's seeds in storage (and what is missing when there are none) for `needed` empty cells. */
+function seedsOf(stock: ReadonlyMap<string, number>, plant: StoryPlant, needed: number) {
+  const have = stock.get(`${plant.seedItem![0]}:${plant.seedItem![1]}`) ?? 0;
+  const none = have === 0;
+  return {
+    item: plant.seed,
+    have,
+    neededForEmpty: needed,
+    sourceHint: plant.source ?? null,
+    missing: none ? (SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`) : null,
+    action: none ? seedAction(plant) : null,
+  };
+}
+
+type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
+type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
+
+const billError = (message: string) => Object.assign(new Error(message), { status: 400 });
+
+/** Refuses a plant the director doesn't grow. */
+function knownPlant(p: string): void {
+  if (!STORY_SIM_PLANTS.some((x) => x.id === p))
+    throw billError(`plant must be one of ${STORY_SIM_PLANTS.map((x) => x.id).join('|')}`);
+}
+
+/** The bill's index (refused when the zone has no such bill). */
+function billIndex(bills: readonly StoryGrowBill[], id: string | number): number {
+  const i = bills.findIndex((b) => String(b.id) === String(id));
+  if (i < 0) throw billError('bill: no such bill in the zone');
+  return i;
+}
+
+/** `bill_add`: a new bill at the end (16 at most); its id. */
+function addGrowBill(bills: StoryGrowBill[], body: BillOf<'bill_add'>, newId: () => string): string {
+  knownPlant(body.plant);
+  if (bills.length >= 16) throw billError('a zone takes at most 16 bills');
+  const id = newId();
+  bills.push({
+    id,
+    plant: body.plant,
+    mode: body.mode ?? 'forever',
+    target: body.target ?? 64,
+    done: 0,
+    paused: body.paused ?? false,
+  });
+  return id;
+}
+
+/** `bill_update`: the fields given change; a new plant or mode starts the count again. */
+function updateGrowBill(bills: StoryGrowBill[], body: BillOf<'bill_update'>): void {
+  const i = billIndex(bills, body.bill);
+  const old = bills[i]!;
+  if (body.plant) knownPlant(body.plant);
+  const next = {
+    ...old,
+    ...(body.plant ? { plant: body.plant } : {}),
+    ...(body.mode ? { mode: body.mode } : {}),
+    ...(body.target !== undefined ? { target: body.target } : {}),
+    ...(body.paused !== undefined ? { paused: body.paused } : {}),
+  };
+  if (next.plant !== old.plant || next.mode !== old.mode) next.done = 0;
+  bills[i] = next;
+}
+
+/** `bill_reorder`: the named bills first (in that order), the rest after. */
+function reorderGrowBills(bills: StoryGrowBill[], ids: ReadonlyArray<string | number>): StoryGrowBill[] {
+  const order = ids.map((id) => bills[billIndex(bills, id)]!);
+  return [...new Set(order), ...bills.filter((b) => !order.includes(b))];
+}
+
+/** Applies a bill op to the zone's bills (a copy); `made` is a new bill's id. */
+function applyBillOp(
+  bills: StoryGrowBill[],
+  body: BillRequest,
+  newId: () => string,
+): { bills: StoryGrowBill[]; made: string | null } {
+  switch (body.op) {
+    case 'bill_add':
+      return { bills, made: addGrowBill(bills, body, newId) };
+    case 'bill_update':
+      updateGrowBill(bills, body);
+      return { bills, made: null };
+    case 'bill_reorder':
+      return { bills: reorderGrowBills(bills, body.ids), made: null };
+    default: {
+      const i = billIndex(bills, body.bill);
+      if (body.op === 'bill_remove') bills.splice(i, 1);
+      else bills[i] = { ...bills[i]!, paused: body.op === 'bill_pause' };
+      return { bills, made: null };
+    }
+  }
+}
+
 const BENCH_KIND: Record<number, string> = {
   58: 'crafting_table',
   61: 'furnace',
@@ -1150,57 +1249,12 @@ export class StorySim {
   }
 
   /** A growing zone's planting bills: add, update, remove, pause, resume, reorder (docs/web/story-mode.md "Farming"). */
-  private billOp(c: Colony, body: Extract<StoryZoneRequest, { op: `bill_${string}` }>) {
+  private billOp(c: Colony, body: BillRequest) {
     const f = c.zones.get(String(body.id));
     if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
     if (f.v.kind !== 'farm')
       throw Object.assign(new Error('only farm (growing) zones take planting bills'), { status: 400 });
-    let bills = [...(f.v.bills ?? [])];
-    const known = (p: string) => {
-      if (!STORY_SIM_PLANTS.some((x) => x.id === p))
-        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((x) => x.id).join('|')}`), {
-          status: 400,
-        });
-    };
-    const find = (id: string | number) => {
-      const i = bills.findIndex((b) => String(b.id) === String(id));
-      if (i < 0) throw Object.assign(new Error('bill: no such bill in the zone'), { status: 400 });
-      return i;
-    };
-    let made: string | null = null;
-    if (body.op === 'bill_add') {
-      known(body.plant);
-      if (bills.length >= 16) throw Object.assign(new Error('a zone takes at most 16 bills'), { status: 400 });
-      made = `gb${c.seq++}`;
-      bills.push({
-        id: made,
-        plant: body.plant,
-        mode: body.mode ?? 'forever',
-        target: body.target ?? 64,
-        done: 0,
-        paused: body.paused ?? false,
-      });
-    } else if (body.op === 'bill_update') {
-      const i = find(body.bill);
-      const old = bills[i]!;
-      if (body.plant) known(body.plant);
-      const next = {
-        ...old,
-        ...(body.plant ? { plant: body.plant } : {}),
-        ...(body.mode ? { mode: body.mode } : {}),
-        ...(body.target !== undefined ? { target: body.target } : {}),
-        ...(body.paused !== undefined ? { paused: body.paused } : {}),
-      };
-      if (next.plant !== old.plant || next.mode !== old.mode) next.done = 0;
-      bills[i] = next;
-    } else if (body.op === 'bill_reorder') {
-      const order = body.ids.map((id) => bills[find(id)]!);
-      bills = [...new Set(order), ...bills.filter((b) => !order.includes(b))];
-    } else {
-      const i = find(body.bill);
-      if (body.op === 'bill_remove') bills.splice(i, 1);
-      else bills[i] = { ...bills[i]!, paused: body.op === 'bill_pause' };
-    }
+    const { bills, made } = applyBillOp([...(f.v.bills ?? [])], body, () => `gb${c.seq++}`);
     f.v = { ...f.v, bills, plant: bills[0]?.plant ?? null };
     f.rev = this.bump(c);
     const active = this.activeBill(c, f.v);
@@ -1247,39 +1301,10 @@ export class StorySim {
     if (z.kind === 'mine') return this.quarryStatus(z);
     if (z.kind !== 'farm' || (!z.plant && !z.bills)) return z;
     const cells = z.cells ?? (z.area[3] - z.area[0] + 1) * (z.area[5] - z.area[2] + 1);
-    const seedsOf = (plant: StoryPlant, needed: number) => {
-      const have = c.stock.get(`${plant.seedItem![0]}:${plant.seedItem![1]}`) ?? 0;
-      return {
-        item: plant.seed,
-        have,
-        neededForEmpty: needed,
-        sourceHint: plant.source ?? null,
-        missing:
-          have === 0 ? (SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`) : null,
-        action:
-          have === 0
-            ? plant.id === 'wheat'
-              ? ('seek_seeds' as const)
-              : plant.harvest === 'fruit'
-                ? ('craft_seeds' as const)
-                : null
-            : null,
-      };
-    };
     const active = z.bills ? this.activeBill(c, z) : null;
     const activePlantId = z.bills ? (active?.plant ?? null) : (z.plant ?? null);
     const plant = STORY_SIM_PLANTS.find((p) => p.id === activePlantId);
-    const bills = z.bills?.map((b) => {
-      const p = STORY_SIM_PLANTS.find((x) => x.id === b.plant);
-      return {
-        ...b,
-        label: p?.label ?? b.plant,
-        met: this.billMet(c, b),
-        active: b === active,
-        ...(b.mode === 'until' ? { stored: this.produceStored(c, b.plant) } : {}),
-        ...(p ? { seeds: seedsOf(p, b === active ? cells : 0) } : {}),
-      };
-    });
+    const bills = z.bills?.map((b) => this.growBillRow(c, b, active, cells));
     const base = { ...z, ...(bills ? { bills, activeBill: active?.id ?? null } : {}), activePlant: plant?.id ?? null };
     if (!plant)
       return {
@@ -1290,8 +1315,21 @@ export class StorySim {
     return {
       ...base,
       status: `0/${cells} sown, 0 ripe`,
-      seeds: seedsOf(plant, cells),
+      seeds: seedsOf(c.stock, plant, cells),
       needsHoe: plant.soil === 'farmland' && (c.stock.get('290:0') ?? 0) === 0,
+    };
+  }
+
+  /** A planting bill as the zone reports it: its label, met / active, the stored produce (until), its seeds. */
+  private growBillRow(c: Colony, b: StoryGrowBill, active: StoryGrowBill | null, cells: number) {
+    const p = STORY_SIM_PLANTS.find((x) => x.id === b.plant);
+    return {
+      ...b,
+      label: p?.label ?? b.plant,
+      met: this.billMet(c, b),
+      active: b === active,
+      ...(b.mode === 'until' ? { stored: this.produceStored(c, b.plant) } : {}),
+      ...(p ? { seeds: seedsOf(c.stock, p, b === active ? cells : 0) } : {}),
     };
   }
 
