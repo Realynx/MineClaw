@@ -194,6 +194,9 @@ public sealed partial class StoryColony
         bool after = _lastSource.TryGetValue(p.Name, out var src) && Gathering.Contains(src);
         if (!after && !force && live.FreeSlots > 4) return null;
         if (Skipped("deliver:" + p.Name)) return null; // its last delivery failed: not again right away
+        // The genre's way: it keeps what it gathers and goes on to the next target of that work; one trip to storage later
+        // (inventory nearly full, that work done, its hours over). Live 11-04 (Fox): miners walked every block to the chest.
+        if (!force && after && src is "designation" or "zone" or "crop" or "fish" && KeepGathering(p, live)) return null;
         var items = Deliverables(live);
         if (items.Count == 0) { _lastSource.Remove(p.Name); return null; }
         _lastSource.Remove(p.Name);
@@ -474,6 +477,7 @@ public sealed partial class StoryColony
         _fails.Remove(p.Name);
         if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
         Reached(p, j); // it isn't stuck; a rescue's blocks arrived (StoryColony.Rescue.cs)
+        if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         switch (j.Source)
         {
