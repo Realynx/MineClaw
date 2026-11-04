@@ -75,38 +75,54 @@ public sealed partial class VisionHub
     {
         var t = s.Trim();
         if (t.Length == 0) return null;
-        int sp = t.IndexOfAny([' ', ':']);
-        string kind = (sp < 0 ? t : t[..sp]).Trim().ToLowerInvariant(), rest = sp < 0 ? "" : t[(sp + 1)..].Trim();
-        if (kind is "camera" or "freecam") kind = "cam";
+        var (kind, rest) = KindAndRest(t);
         var words = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
         // Camera adjustments ride as key=value words anywhere after the kind: "iso yaw=200 pitch=50", "cam tower NE pitch=60".
         var cam = CamParams.Extract(words);
         rest = string.Join(' ', words);
-        switch (kind)
+        return kind switch
         {
-            case "eye": return new PanelRequest("eye", rest.Length > 0 ? rest : null);
-            case "follow": return rest.Length > 0 ? new PanelRequest("follow", rest) : null;
-            case "cam":
-            {
-                double? dist = null;
-                string? from = null;
-                if (words.Count > 1 && double.TryParse(words[^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) { dist = d; words.RemoveAt(words.Count - 1); }
-                if (words.Count > 1 && Compass.Contains(words[^1])) { from = words[^1]; words.RemoveAt(words.Count - 1); }
-                return words.Count == 0 ? null : new PanelRequest("cam", string.Join(' ', words), from, dist, Cam: cam);
-            }
-            case "orbit":
-            {
-                int n = 1;
-                if (words.Count > 1 && int.TryParse(words[^1], out var k)) { n = k; words.RemoveAt(words.Count - 1); }
-                else if (words.Count == 1 && int.TryParse(words[0], out var k1)) { n = k1; words.Clear(); }
-                if (words.Count == 0) return n > 1 ? new PanelRequest("orbit", "", N: n, Cam: cam) : new PanelRequest("orbit", Cam: cam);
-                return new PanelRequest("orbit", string.Join(' ', words), N: n, Cam: cam);
-            }
-            default:
-                if (!ContactSheet.Known.Contains(kind)) return null;
-                return new PanelRequest(kind, rest.Length > 0 ? rest : null, Cam: cam);
-        }
+            "cam" => CamPanel(words, cam),
+            "orbit" => OrbitPanel(words, cam),
+            _ => NamedPanel(kind, rest, cam),
+        };
     }
+
+    /// <summary>"cam tower NE" → ("cam", "tower NE"); "eye:67" → ("eye", "67"); camera/freecam are cam.</summary>
+    private static (string Kind, string Args) KindAndRest(string t)
+    {
+        int sp = t.IndexOfAny([' ', ':']);
+        string kind = (sp < 0 ? t : t[..sp]).Trim().ToLowerInvariant(), rest = sp < 0 ? "" : t[(sp + 1)..].Trim();
+        return (kind is "camera" or "freecam" ? "cam" : kind, rest);
+    }
+
+    /// <summary>"cam &lt;at&gt; [side] [dist]": the trailing number is the distance, then a compass side.</summary>
+    private static PanelRequest? CamPanel(List<string> words, CamParams cam)
+    {
+        double? dist = null;
+        string? from = null;
+        if (words.Count > 1 && double.TryParse(words[^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) { dist = d; words.RemoveAt(words.Count - 1); }
+        if (words.Count > 1 && Compass.Contains(words[^1])) { from = words[^1]; words.RemoveAt(words.Count - 1); }
+        return words.Count == 0 ? null : new PanelRequest("cam", string.Join(' ', words), from, dist, Cam: cam);
+    }
+
+    /// <summary>"orbit [at] [n]".</summary>
+    private static PanelRequest OrbitPanel(List<string> words, CamParams cam)
+    {
+        int n = 1;
+        if (words.Count > 1 && int.TryParse(words[^1], out var k)) { n = k; words.RemoveAt(words.Count - 1); }
+        else if (words.Count == 1 && int.TryParse(words[0], out var k1)) { n = k1; words.Clear(); }
+        if (words.Count == 0) return n > 1 ? new PanelRequest("orbit", "", N: n, Cam: cam) : new PanelRequest("orbit", Cam: cam);
+        return new PanelRequest("orbit", string.Join(' ', words), N: n, Cam: cam);
+    }
+
+    /// <summary>"eye [body]", "follow &lt;name&gt;", or a named view of the contact sheet (null = unknown).</summary>
+    private static PanelRequest? NamedPanel(string kind, string rest, CamParams cam) => kind switch
+    {
+        "eye" => new PanelRequest("eye", rest.Length > 0 ? rest : null),
+        "follow" => rest.Length > 0 ? new PanelRequest("follow", rest) : null,
+        _ => ContactSheet.Known.Contains(kind) ? new PanelRequest(kind, rest.Length > 0 ? rest : null, Cam: cam) : null,
+    };
 
     private static PanelRequest? ParseObject(JsonElement o)
     {
@@ -115,28 +131,41 @@ public sealed partial class VisionHub
             var kind = prop.Name.ToLowerInvariant();
             var val = prop.Value;
             if (val.ValueKind == JsonValueKind.String) return ParseString(kind + " " + val.GetString());
-            if (val.ValueKind == JsonValueKind.Object)
-            {
-                string? at = val.Str("at"), from = val.Str("from");
-                double? dist = val.TryGetProperty("dist", out var dv) && dv.ValueKind == JsonValueKind.Number ? dv.GetDouble() : null;
-                int n = val.Int("n") ?? 1;
-                // {"iso":{"yaw":200,"pitch":50,"zoom":1.3}}, {"top":{"zoom":2,"dx":3}}: the same keys as the string form.
-                var cam = new CamParams();
-                foreach (var k in val.EnumerateObject())
-                    if (CamParams.Keys.Contains(k.Name) && !(kind is "cam" or "camera" && k.Name == "dist"))
-                        CamParams.TryToken(k.Name + "=" + (k.Value.ValueKind == JsonValueKind.String ? k.Value.GetString() : k.Value.GetRawText()), ref cam);
-                return kind switch
-                {
-                    "cam" or "camera" => at == null ? null : new PanelRequest("cam", at, from, dist, Cam: cam),
-                    "orbit" => new PanelRequest("orbit", at ?? "", N: n, Cam: cam),
-                    "eye" => new PanelRequest("eye", at ?? val.Str("body")),
-                    "follow" => at == null ? null : new PanelRequest("follow", at),
-                    _ => ContactSheet.Known.Contains(kind) ? new PanelRequest(kind, at, Cam: cam) : null,
-                };
-            }
+            if (val.ValueKind == JsonValueKind.Object) return ObjectPanel(kind, val);
             if (val.ValueKind == JsonValueKind.True && ContactSheet.Known.Contains(kind)) return new PanelRequest(kind);
         }
         return null;
+    }
+
+    /// <summary>{"cam":{"at":"tower","from":"NE","dist":14}}, {"orbit":{"at":"gen","n":3}}, {"eye":{"body":"67"}}...</summary>
+    private static PanelRequest? ObjectPanel(string kind, JsonElement val)
+    {
+        string? at = val.Str("at"), from = val.Str("from");
+        double? dist = val.TryGetProperty("dist", out var dv) && dv.ValueKind == JsonValueKind.Number ? dv.GetDouble() : null;
+        int n = val.Int("n") ?? 1;
+        var cam = ObjectCam(kind, val);
+        return kind switch
+        {
+            "cam" or "camera" => at == null ? null : new PanelRequest("cam", at, from, dist, Cam: cam),
+            "orbit" => new PanelRequest("orbit", at ?? "", N: n, Cam: cam),
+            "eye" => new PanelRequest("eye", at ?? val.Str("body")),
+            _ => FollowOrNamed(kind, at, cam),
+        };
+    }
+
+    private static PanelRequest? FollowOrNamed(string kind, string? at, CamParams cam) =>
+        kind == "follow" ? (at == null ? null : new PanelRequest("follow", at))
+        : ContactSheet.Known.Contains(kind) ? new PanelRequest(kind, at, Cam: cam) : null;
+
+    /// <summary>{"iso":{"yaw":200,"pitch":50,"zoom":1.3}}, {"top":{"zoom":2,"dx":3}}: the same keys as the string form (a cam's
+    /// dist is its distance, not a camera key).</summary>
+    private static CamParams ObjectCam(string kind, JsonElement val)
+    {
+        var cam = new CamParams();
+        foreach (var k in val.EnumerateObject())
+            if (CamParams.Keys.Contains(k.Name) && !(kind is "cam" or "camera" && k.Name == "dist"))
+                CamParams.TryToken(k.Name + "=" + (k.Value.ValueKind == JsonValueKind.String ? k.Value.GetString() : k.Value.GetRawText()), ref cam);
+        return cam;
     }
 
     /// <summary>A body by name: main ("me", its name), a clone (its live pose over the view IPC, else its snapshot), or a player.</summary>
