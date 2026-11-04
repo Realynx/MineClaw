@@ -46,7 +46,8 @@ There is one per colony. It holds:
   - `anything` means work, eat or rest as needed.
 
   The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
-- **Zones,** painted on the map RimWorld-style as cell sets (see "Zones"): chop, mine, farm (growing zones) are work zones;
+- **Zones,** painted on the map RimWorld-style as cell sets (see "Zones"): chop, mine, farm (growing zones), fish (see
+  "Fishing") are work zones;
   home and forbidden are overlay layers. Storage is chests with their own settings (see "Storage").
 - **Designations,** per block or area: chop this tree, mine these blocks, harvest, haul these drops, build design N here,
   deconstruct.
@@ -88,7 +89,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id}, queue?:bool}` → `{ids:[order id]}` |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -428,7 +429,7 @@ saved as rows at once; a growing zone's single `plant` becomes a one-bill list.
 - Same type = the same kind, and for growing zones the same plant (the zone's first bill's). A growing zone of another plant is
   another type: it overwrites. `into: id` (the web's Extend, or Shift-drag from inside a zone) paints into that zone: the cells take
   its type and it keeps its id.
-- Work zones (farm, chop, mine) are mutually exclusive: the painted cells leave every other work zone (`shrunk`; a zone left empty
+- Work zones (farm, chop, mine, fish) are mutually exclusive: the painted cells leave every other work zone (`shrunk`; a zone left empty
   is `deleted`, a zone cut in two `split`).
 - Home areas and keep-out areas are **overlay layers** (RimWorld's home area and allowed areas are layers too): painting one never
   overwrites anything and work zones never overwrite them. A house can cover a field; a keep-out area can cover a quarry. Each
@@ -442,7 +443,7 @@ same settings, its name numbered " 2", " 3" (`split: [{from, into}]`). `{op: rem
 zone changes); the picker's index holds the keep-out columns; quarries, woodlots, farm zones, growing zones, bed and bench scans
 walk the cells (a tree counts when its trunk stands in a cell).
 
-**Web.** The Architect's Zones tab: the work zones (Growing zone with its plant, Woodlot, Quarry), the overlay layers (Home area,
+**Web.** The Architect's Zones tab: the work zones (Growing zone with its plant, Woodlot, Quarry, Fishing zone), the overlay layers (Home area,
 Keep out), and Erase zone with the kind it erases (Any by default). Zone tools stay in hand until Esc or a right-click (the genre's
 way); Shift-drag from inside a zone, or Extend in the Growing zones window, extends that zone. While dragging, the map previews
 the result with the same rules (`paintZones` / `eraseZones` in contracts): the zone the cells end up in (the merged shape) in the
@@ -509,6 +510,41 @@ opens a Growing zones window beside it: each zone's cells, Extend, what it sows 
 with the plant picker; mode and target; drag or the arrows to reorder; pause; remove; the active one marked "sowing", met ones
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
+
+## Fishing (added 2026-11-03)
+
+Fox 11-03: "Make me a fishing zone where pawns can fish using fishing poles; it must be over water blocks."
+
+**Zone.** Kind `fish`, a work zone (painting it overwrites other work zones' cells, and theirs overwrite it). It keeps only still
+water: a column's top block near the painted level that is water with meta 0 (a source; flowing water and waterfalls are not
+fished) under open air. Painting over land ignores the land (a field on the bank stays). Refused with no still water ("no still
+water here"), fewer than 4 water cells (counting the fishing zones it joins), or no shore: a standable cell (solid floor, room for
+the head, no liquid at the feet or under them, nothing that hurts) within 3 blocks of the water. The web's preview scans the
+dragged rectangle for water (ids 8/9) and shows only the still-water cells; the mock director filters the same way.
+
+**Work.** A work type `fish` (the Work grid's Fish column, after Hunt; new pawns draw its skill from its own seed so every other
+draw stays as it was; older pawns start with it off). A pawn with Fish work picks the nearest fishing zone that wants fish, a shore
+cell at least 2 blocks from anyone already fishing (lease `fish:x,y,z`), and the nearest water cell to it. It needs a fishing rod:
+carried, else fetched from storage (the job's `fetch`), else a count bill for one at the colony's crafting table (3 sticks, 2
+string; with no string in storage the colony hears "spiders drop it" instead, at most every 10 minutes). The job is
+`{kind: "fish", at: shore, water, s: 150, max}`: the pawn script walks to the shore cell and calls `fish(water, s, max)`. The
+catch is delivered to storage like any gathering (raw fish counts as raw food: it is stored, and cooking bills turn it into cooked
+fish). A session's "N fish caught" counts toward the zone's `catches` and its first unmet count bill.
+
+**Bills.** Optional, on the zones route like planting bills (`bill_add {id, plant: "fish", mode, target}`, update, pause, resume,
+remove, reorder): `forever`, `until` N raw fish in storage, `count` N catches. No bills = fish forever; every bill met or paused =
+the zone rests ("all bills met: not fishing"). A session stops early once the active bill's remaining fish are caught.
+
+**State.** A fishing zone adds `{water_cells, fishers: [display name], catches, status, bills?}`. The Colony tab's Fishing zones
+window (beside the Growing zones) shows them, with "Fish until 20 stored" / "Catch 10" bills, pause and remove.
+
+**The primitive** (`MinecraftClient.FishAsync`, the hidden `fish {at, seconds, max}` tool, scripts' `fish(at, seconds, max)`):
+hold a rod (the least worn; one under 5% is swapped for a spare when there is one), face the water, cast (use item), find our
+bobber: an object of type 90 whose spawn data is our entity id (b1.8.1's 0x17 thrower, 1.12.2's Spawn Object owner). A bite
+(`BiteDetector`): once the bobber floats (its height still for 10 ticks), a fresh downward velocity of 0.12 blocks/tick or more
+(b1.8.1 EntityFishHook: `motionY -= 0.2`; 1.12.2: `motionY = -0.4 * rand(0.6, 1)`; both velocity-tracked) or a drop 0.2 under the
+floating height; the velocity held from the cast never counts. On a bite it reels in (use item again) and waits for the fish; no
+bite in 45 s reels in and casts again. The fake server (`FakeServer.Fishing`) serves rods on both wires for the tests.
 
 ## Construction
 
