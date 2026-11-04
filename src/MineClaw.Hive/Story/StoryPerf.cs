@@ -18,6 +18,21 @@ public static class StoryPerf
 
     public readonly record struct Stats(long Picks, TimeSpan PickTime, long Ticks, TimeSpan TickTime);
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> IdleReasons = new(StringComparer.Ordinal);
+
+    /// <summary>A pawn idle in its work hours while there was work of its kinds (the idle audit, once a second per pawn).</summary>
+    internal static void NoteIdle(string why) => IdleReasons.AddOrUpdate(why, 1, (_, n) => n + 1);
+
+    /// <summary>"idle-with-work N: all targets leased 40, back-off rest 12" since the last call (pawn-seconds), or null; starts over.</summary>
+    public static string? TakeIdle()
+    {
+        var snap = IdleReasons.ToArray();
+        foreach (var (k, _) in snap) IdleReasons.TryRemove(k, out _);
+        long n = snap.Sum(kv => kv.Value);
+        if (n == 0) return null;
+        return $"idle-with-work {n}: " + string.Join(", ", snap.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}"));
+    }
+
     /// <summary>The counters since the last call, and starts them over.</summary>
     public static Stats Take() => new(Interlocked.Exchange(ref Picks, 0), TimeSpan.FromTicks(Interlocked.Exchange(ref PickTicks, 0)),
         Interlocked.Exchange(ref Ticks, 0), TimeSpan.FromTicks(Interlocked.Exchange(ref TickTicks, 0)));

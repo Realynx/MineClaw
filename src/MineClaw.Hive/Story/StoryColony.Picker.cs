@@ -61,7 +61,8 @@ public sealed partial class StoryColony
             return DraftedEngage(p, live) ?? OrderJob(p, live) ?? DraftedReturn(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
-        if (Resting(p, live) is { } rest) return rest;
+        // A back-off rests the failed targets; the pawn itself rests only when nothing else is there (Fox 11-04: never idle with work).
+        if (RestLeft(p) != null && Work(p, live) == null && Resting(p, live) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;
         if (PolicyJob(p, live) is { } kit) return kit; // its gear policy: tools for its work, weapon, armour, food
         int hour = HourNow;
@@ -231,7 +232,7 @@ public sealed partial class StoryColony
     private bool ForbiddenEntity(int id) => Index().ForbidEntities.Contains(id);
 
     private bool Open(string key, string pawn, P3? at) =>
-        Free(key, pawn) && !Skipped(key) && !Skipped(PawnKey(key, pawn)) && (at == null || !Forbidden(at.Value));
+        Free(key, pawn) && !Skipped(key) && !Skipped(PawnKey(key, pawn)) && (at == null || !Forbidden(at.Value) && !NearHazard(at.Value, pawn));
 
     /// <summary>The nearest available job of one work type for this pawn, or null.</summary>
     internal ActiveJob? Candidate(string type, PawnState p, PawnLive live)

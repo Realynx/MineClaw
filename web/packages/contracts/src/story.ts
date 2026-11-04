@@ -341,6 +341,7 @@ export const StoryPawn = z.object({
   drafted: z.boolean().nullish(),
   state: z.string().nullish().describe(STORY_PAWN_STATES.join(' | ')),
   leaving: z.boolean().nullish().describe('removed from the colony: storing its things, then it logs out'),
+  idleReason: z.string().nullish().describe('idle in its work hours while there is work of its kinds: why (the idle audit)'),
   stuck: z
     .object({ since: z.string().nullish(), at: Vec3i.nullish(), reason: z.string().nullish(), step: z.string().nullish(), attempts: z.number().int().nullish() })
     .nullish()
@@ -1332,6 +1333,8 @@ export const StoryColonyOptions = z.object({
   unfilteredStorageTakesAnything: z.boolean().default(true),
   /** A chest keeps what its filter no longer allows (off: dropped beside it, like the genre). */
   keepDisallowed: z.boolean().default(false),
+  /** Seconds a stuck pawn tries to get out by itself (or 2 failed escape steps) before the teleport home (default 20, at least 5). */
+  stuckTeleportAfterS: z.number().int().default(20),
   idle: z
     .enum(STORY_IDLE_MODES)
     .default('recreation')
@@ -1359,6 +1362,7 @@ export const StoryOptionsRequest = z
     rescueTeleport: z.boolean().optional(),
     unfilteredStorageTakesAnything: z.boolean().optional(),
     keepDisallowed: z.boolean().optional(),
+    stuckTeleportAfterS: z.number().int().min(5).max(3600).optional(),
     idle: z.enum(STORY_IDLE_MODES).optional(),
     autoCraftTools: z.boolean().optional(),
     spareTools: z

@@ -57,6 +57,7 @@ public sealed class StoryStuckPawnTests
         int grass = Field(c, w);
         Assert.Equal(grass, c.Designations.Count);
         string stuck = c.P(0);
+        h.Lives[stuck] = FakeStoryHost.Live(40, 64, 40); // stuck somewhere else (its spot keeps the others away from work by it)
         int idleWhileWork = 0, stuckFails = 0, rounds = 0;
         var watch = System.Diagnostics.Stopwatch.StartNew();
         while (c.Designations.Count > 0 && rounds++ < 200)
@@ -235,6 +236,7 @@ public sealed class StoryStuckPawnTests
         var clock = NewClock();
         var (c, h, w) = StoryRig.Make(1, time: clock);
         Only(c, WorkTypes.Chop);
+        c.SetHaulOptions(false, null, null); // no teleport here: it keeps escaping (the budget has its own test)
         Field(c, w, 6);
         h.Lives[c.P()] = FakeStoryHost.Live(30, 64, 30);
         for (int i = 0; i < 3; i++)
@@ -288,6 +290,178 @@ public sealed class StoryStuckPawnTests
         Assert.Single(c.Alerts, a => a.Text.Contains("teleport home didn't take"));
         Assert.StartsWith("nobody can help", c.Stuck(c.P(0), "no way home: still"));
         Assert.Single(h.Teleported);
+    }
+
+    // ================================================================ the escape budget (Fox 11-04: "they should teleport sooner")
+
+    /// <summary>Stuck after three targets out of reach; the escape job it gets.</summary>
+    private static JsonObject StuckPawn(StoryColony c, FakeStoryHost h)
+    {
+        h.Lives[c.P()] = FakeStoryHost.Live(30, 64, 30);
+        for (int i = 0; i < 3; i++) c.Report(c.P(), Id(c.Next()), "failed", NoPath, null);
+        Assert.True(c.IsStuck(c.P()));
+        var esc = c.Next();
+        Assert.Equal("escape", Kind(esc));
+        return esc;
+    }
+
+    [Fact]
+    public void Two_failed_escape_steps_and_the_pawn_is_teleported_home()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Chop);
+        Field(c, w, 6);
+        var esc = StuckPawn(c, h);
+        c.Report(c.P(), Id(esc), "failed", "no way home (couldn't climb out below home at 30,49,30)", null);
+        esc = c.Next();
+        Assert.Equal("escape", Kind(esc));
+        Assert.Empty(h.Teleported);
+        c.Report(c.P(), Id(esc), "failed", "no way home (couldn't climb out below home at 30,49,30)", null);
+        var wait = c.Next();
+        Assert.Equal("hold", Kind(wait)); // teleported: arriving
+        Assert.Equal(c.P(), Assert.Single(h.Teleported).Account);
+        // It shows up at home: out, and to work.
+        h.Lives[c.P()] = FakeStoryHost.Live(1, 64, 1);
+        c.Report(c.P(), Id(wait), "done", null, null);
+        clock.Now += TimeSpan.FromSeconds(31);
+        Assert.Equal("dig", Kind(c.Next()));
+        Assert.False(c.IsStuck(c.P()));
+    }
+
+    [Fact]
+    public void Twenty_seconds_of_escaping_and_the_pawn_is_teleported_home_and_the_budget_is_an_option()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Chop);
+        Field(c, w, 6);
+        var esc = StuckPawn(c, h);
+        clock.Now += TimeSpan.FromSeconds(12);
+        c.Report(c.P(), Id(esc), "progress", "trying a staircase toward home", null);
+        Assert.Empty(h.Teleported);
+        clock.Now += TimeSpan.FromSeconds(9); // 21 s since the colony saw it stuck
+        c.Report(c.P(), Id(esc), "failed", "no way home (still climbing)", null);
+        Assert.Equal("hold", Kind(c.Next()));
+        Assert.Single(h.Teleported);
+        Assert.Equal(20, c.State()["options"]!["stuck_teleport_after_s"]!.GetValue<int>());
+        c.SetHaulOptions(null, null, null, stuckTeleportAfterS: 2);
+        Assert.Equal(5, c.State()["options"]!["stuck_teleport_after_s"]!.GetValue<int>()); // at least 5 s
+    }
+
+    [Fact]
+    public void A_far_or_busy_colleague_never_goes_to_toss_blocks_the_teleport_comes_instead()
+    {
+        var (c, h, w) = StoryRig.Make(2, time: NewClock());
+        Only(c, WorkTypes.Chop);
+        c.StorageOp("set", [new P3(2, 64, 0)], null, null, null);
+        c.AddContents(c.StorageAt(new P3(2, 64, 0))!, new Stack(4, 0, 32));
+        h.Lives[c.P(0)] = FakeStoryHost.Live(40, 62, 40); // 56 blocks from its idle colleague
+        Assert.Equal("teleported home", c.Stuck(c.P(0), "stuck in a pit at 40,62,40"));
+        Assert.NotEqual("give", Kind(c.Next(1)));
+    }
+
+    /// <summary>Live 11-04: maid_chan_126, _118 and _105 all stuck in one hole at 243,53,427: the work by it sent one after another.</summary>
+    [Fact]
+    public void Work_by_a_spot_where_a_pawn_got_stuck_goes_to_no_other_pawn_for_a_while()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(2, time: clock);
+        Only(c, WorkTypes.Chop);
+        w.Set(20, 64, 20, 31, 1); // by the hole
+        w.Set(30, 64, 30, 31, 1); // elsewhere
+        c.Designate("add", "cut", null, [new P3(20, 64, 20), new P3(30, 64, 30)], null);
+        h.Lives[c.P(0)] = FakeStoryHost.Live(21, 62, 20);
+        h.Lives[c.P(1)] = FakeStoryHost.Live(18, 64, 18);
+        c.Stuck(c.P(0), "stuck in a pit at 21,62,20");
+        var j = c.Next(1);
+        Assert.Equal("30,64,30", j["at"]!.GetValue<string>()); // the nearer one is by the stuck spot: not for now
+        c.Report(c.P(1), Id(j), "failed", "whatever", null);
+        clock.Now += StoryColony.HazardFor + TimeSpan.FromSeconds(1);
+        Assert.Equal("20,64,20", c.Next(1)["at"]!.GetValue<string>());
+    }
+
+    // ================================================================ never idle with work about (Fox 11-04)
+
+    [Fact]
+    public void A_pawn_whose_top_work_is_all_leased_or_waiting_for_a_tool_takes_its_next_work_type()
+    {
+        var (c, h, w) = StoryRig.Make(2, time: NewClock());
+        foreach (var p in c.Pawns.Values) { foreach (var t in WorkTypes.All) p.Priorities[t] = 0; p.Priorities[WorkTypes.Mine] = 1; p.Priorities[WorkTypes.Chop] = 2; }
+        w.Set(20, 64, 20, 49); // obsidian: nobody has a diamond pickaxe, it waits for one
+        w.Set(21, 64, 20, 3);  // dirt: one target, the first pawn takes it
+        c.Designate("add", "mine", null, [new P3(20, 64, 20), new P3(21, 64, 20)], "all");
+        Field(c, w, 4);
+        var a = c.Next(0);
+        Assert.Equal("21,64,20", a["at"]!.GetValue<string>());
+        var b = c.Next(1);
+        Assert.Equal("dig", Kind(b)); // its mine targets are leased or waiting: it cuts grass instead of idling
+        Assert.Equal(3, b["at"]!.GetValue<string>().Split(',').Length);
+        Assert.Equal(64, int.Parse(b["at"]!.GetValue<string>().Split(',')[1]));
+        Assert.NotEqual("21,64,20", b["at"]!.GetValue<string>());
+        Assert.NotEqual("20,64,20", b["at"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void Ten_pawns_with_a_mixed_queue_none_idles_while_work_is_left_for_it()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(10, time: clock);
+        foreach (var p in c.Pawns.Values) { foreach (var t in WorkTypes.All) p.Priorities[t] = 0; p.Priorities[WorkTypes.Mine] = 1; p.Priorities[WorkTypes.Chop] = 2; }
+        for (int x = 20; x < 23; x++) w.Set(x, 64, 20, 3);
+        c.Designate("add", "mine", null, [new P3(20, 64, 20), new P3(21, 64, 20), new P3(22, 64, 20)], "all");
+        Field(c, w, 20);
+        int idle = 0;
+        for (int round = 0; round < 6; round++)
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                var j = c.Next(i);
+                if (Kind(j) != "dig") { if (c.Designations.Count > 10) idle++; c.Report(c.P(i), Id(j), "done", null, null); continue; }
+                // Pawn 0 fails everything it touches (a bad spot): it backs off those targets, never the work.
+                if (i == 0) { c.Report(c.P(i), Id(j), "failed", "too hard to dig", null); continue; }
+                var at = At(j);
+                w.Set(at.X, at.Y, at.Z, 0);
+                c.Report(c.P(i), Id(j), "done", null, null);
+            }
+            clock.Now += TimeSpan.FromSeconds(2);
+            c.Tick();
+        }
+        Assert.Equal(0, idle);
+    }
+
+    [Fact]
+    public void The_idle_audit_says_why_a_pawn_is_idle_with_work_about()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(2, time: clock);
+        foreach (var p in c.Pawns.Values) { foreach (var t in WorkTypes.All) p.Priorities[t] = 0; p.Priorities[WorkTypes.Mine] = 1; }
+        w.Set(21, 64, 20, 3);
+        c.Designate("add", "mine", null, [new P3(21, 64, 20)], "all");
+        Assert.Equal("dig", Kind(c.Next(0)));
+        Assert.NotEqual("dig", Kind(c.Next(1))); // its only target is the other pawn's
+        c.Tick();
+        Assert.Equal("all targets leased", c.IdleReasonOf(c.P(1)));
+        Assert.Null(c.IdleReasonOf(c.P(0)));
+        Assert.Equal("all targets leased", c.State()["pawns"]!.AsArray().First(x => x!["name"]!.GetValue<string>() == c.P(1))!["idle_reason"]!.GetValue<string>());
+        Assert.Contains("idle-with-work", StoryPerf.TakeIdle());
+        // Obsidian it has no pickaxe for: "tool waiting".
+        w.Set(21, 64, 20, 0); // dug
+        c.Report(c.P(0), c.CurrentOf(c.P(0))!.Id, "done", null, null);
+        w.Set(22, 64, 20, 49);
+        c.Designate("add", "mine", null, [new P3(22, 64, 20)], "all");
+        c.Report(c.P(1), c.CurrentOf(c.P(1))!.Id, "done", null, null);
+        Assert.NotEqual("dig", Kind(c.Next(1)));
+        clock.Now += TimeSpan.FromSeconds(2);
+        c.Tick();
+        Assert.Equal("tool waiting", c.IdleReasonOf(c.P(1)));
+        // Work only of kinds it doesn't do: "priority 0".
+        w.Set(5, 64, 5, 31, 1);
+        c.Designate("add", "cut", null, [new P3(5, 64, 5)], null);
+        c.Designations.RemoveAll(d => d.Kind == "mine");
+        clock.Now += TimeSpan.FromSeconds(2);
+        c.Tick();
+        Assert.Equal("priority 0", c.IdleReasonOf(c.P(1)));
     }
 
     // ================================================================ defending: fresh, reachable monsters only

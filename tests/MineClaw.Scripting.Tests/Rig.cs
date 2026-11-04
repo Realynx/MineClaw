@@ -53,6 +53,7 @@ public sealed class Rig : IDisposable
                 new ScriptAction("chop_tree", ["at"]),
                 new ScriptAction("deposit", ["at", "items"], Atomic: true),
                 new ScriptAction("dig", ["at"], Atomic: true),
+                new ScriptAction("escape_dig", ["at"], Atomic: true),
                 new ScriptAction("craft", ["item", "count"], Atomic: true),
                 new ScriptAction("smelt", ["item", "count", "fuel"], Atomic: true),
                 new ScriptAction("withdraw", ["item", "count", "at"], Atomic: true),

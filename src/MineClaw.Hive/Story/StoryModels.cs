@@ -471,6 +471,9 @@ public sealed class ColonyMeta
     /// <summary>Blocks a pawn keeps to nerd-pole with (dirt first, then cobblestone, netherrack) out of its store trips: a kind it
     /// carries no more of than this stays with it (default 16; 0 = none). Fox 11-04: high blocks are reached from a pillar.</summary>
     public int PillarStack { get; set; } = 16;
+    /// <summary>Seconds a stuck pawn tries to get out by itself (or 2 failed escape steps) before the colony teleports it home
+    /// (default 20, at least 5). Fox 11-04: "When pawns are stuck, they should teleport sooner."</summary>
+    public int StuckTeleportAfterS { get; set; } = 20;
     /// <summary>Gear policies, material tool rules, tool auto-crafting and spare tools (StoryColony.Gear.cs).</summary>
     public GearSettings Gear { get; set; } = new();
     /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls
