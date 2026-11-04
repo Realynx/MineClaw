@@ -424,6 +424,15 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.
+- **Ditches (added 2026-11-04).** Fox: "The pawns are very bad at navigating one-drop-level holes. I have channels for water to flow,
+  one level down … They fall into it when they're walking, and they can't walk out because they have to jump once to get out."
+  A step down into a ditch (a 1-deep trench or hole, dry or a water channel, with a bank on both sides within 2 cells) costs
+  `DitchPenalty` (15 ticks, about 3 blocks), and a level gap jump over one only `DitchJumpPenalty` (6, instead of 30: a miss lands in
+  it and climbs out), so a pawn walks round a short channel or jumps a 1-wide one rather than wading through. A long one is still
+  crossed through it: down, then a jump out (out of water: jump held while pushing into the bank, vanilla's collided-in-liquid hop).
+  A body knocked off a level step into a ditch beside it jumps straight back out onto the step (it used to push into the wall until
+  "stuck" 4 s later and then avoid that move); one that lands farther away re-plans from there at once. The goto's own escape for
+  "stuck twice here" hops toward the step holding jump in water (one tap only floated the body off the floor).
 - **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
   Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
   ignored (see Defending).
@@ -807,6 +816,20 @@ opens a Growing zones window beside it: each zone's cells, Extend, what it sows 
 with the plant picker; mode and target; drag or the arrows to reorder; pause; remove; the active one marked "sowing", met ones
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
+
+**Walking fields (added 2026-11-04).** Fox: "The pawns need to crouch-walk through growing zones, so they don't crush plants or
+tilled ground", "If the ground in a grow zone isn't planted or tilled, they don't have to crouch-walk — better for speed", and "In
+the version we're using now (1.12.2) we can walk on wheat and not crush it. We can't sprint on it, but we don't have to crouch-walk
+either, like the beta version." Each director tick hands every online pawn's body the colony's growing zones
+(`IStoryHost.SetGrowZone`: the zones' cells at their painted level ± 2, an immutable filter rebuilt only when a zone changes). A move
+takes care when it is onto or off farmland (anywhere, zone or not), or onto, off or past a planted cell inside a zone (a crop,
+sapling, stem, cane, wart, cocoa in or beside the body's cells), read from the live blocks, so a harvested or untilled patch is
+walked at full speed. The care is the version's (`IPhysicsRules.WalkingTramplesFarmland`): b1.8.1 tramples under a walker that
+isn't sneaking (mc-dev `BlockSoil.b`, 1 in 4 per step), so those moves are sneaked (the server sees the entity action; a sneaking
+body is never sped up); 1.12.2 tramples only on a landing from more than half a block (`BlockFarmland.onFallenUpon`), so they are
+walked at normal speed, never sprinted (`PathStep.Gentle`). On both, a path prefers an aisle to the soil, no drop and no gap jump
+ever lands on farmland, and a hop onto it (only out of an irrigation trench, a fall of about 0.3) costs as much as a 20-block walk
+round.
 
 ## Quarries (added 2026-11-04)
 

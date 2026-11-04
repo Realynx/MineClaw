@@ -200,8 +200,14 @@ public sealed partial class MinecraftClient
             ParkourCache = _parkourCache,
             MaxHeadUnderSteps = o.MaxHeadUnderSteps,
             HeadUnderStepCost = o.HeadUnderStepCost,
+            GrowZone = GrowZone,
         };
     }
+
+    /// <summary>The growing zones this body works in (Story Mode sets it per pawn; foot cell x,y,z → inside one), or null. Every goto
+    /// crouch-walks past their plants (<see cref="PathOptions.GrowZone"/>). Read on the planner's thread: the setter hands over an
+    /// immutable predicate.</summary>
+    public Func<int, int, int, bool>? GrowZone { get; set; }
 
     private readonly Dictionary<(BlockPos From, BlockPos To), DateTime> _recentBlockedJumps = new();
 
@@ -464,16 +470,19 @@ public sealed partial class MinecraftClient
             await DriveAsync(phys =>
             {
                 ticks++;
-                if (!phys.OnGround) left = true;
+                // In water a jump is a swim up (0.04 a tick): held while pushing into the bank, the edge lifts the body out (vanilla's
+                // collided-in-liquid hop). One tap only floats it off the floor (Fox 11-04: pawns stuck in 1-deep water channels).
+                bool water = phys.InWater;
+                if (!phys.OnGround && !water) left = true;
                 bool done = Moved() >= 0.5 || ticks > maxTicks || (jump && left && phys.OnGround);
-                return new DriverStep(new MoveInput(Forward: 1, Jump: jump && !left && phys.OnGround, Sneak: sneak, Yaw: yaw, Pitch: 0), Done: done);
+                return new DriverStep(new MoveInput(Forward: 1, Jump: jump && (water || !left && phys.OnGround), Sneak: sneak, Yaw: yaw, Pitch: 0), Done: done);
             }, ct).ConfigureAwait(false);
             await WaitTicksAsync(2, ct).ConfigureAwait(false);
             return Moved() >= 0.3;
         }
 
         var toward = PlayerPhysics.YawPitchTo(start, step.Target with { Y = start.Y }).Yaw;
-        if (hits.Count > 0 && !hits.Any(h => h.Head) && await Push(toward, jump: true, sneak: false, maxTicks: 14).ConfigureAwait(false))
+        if (hits.Count > 0 && !hits.Any(h => h.Head) && await Push(toward, jump: true, sneak: false, maxTicks: World.Player.Physics.InWater ? 40 : 14).ConfigureAwait(false))
             return $"hopped toward {Fmt(step.Pos)}";
         // Step off any free way but the stuck one (nearest to the step target first: the re-plan continues from there).
         double sdx = step.Target.X - start.X, sdz = step.Target.Z - start.Z, slen = Math.Sqrt(sdx * sdx + sdz * sdz);

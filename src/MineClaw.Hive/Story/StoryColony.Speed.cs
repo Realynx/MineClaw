@@ -94,6 +94,7 @@ public sealed partial class StoryColony
                 bool leaving = _leaving.ContainsKey(p.Name);
                 double target = leaving ? 1 : want;
                 Host.SetSpeed(p.Name, target);
+                Host.SetGrowZone(p.Name, leaving || !Meta.Active ? null : GrowZoneFilter());
                 var now = Host.Speed(p.Name);
                 double eff = Math.Min(target, now?.Effective ?? target);
                 if (now != null && target > 1 && now.Effective < target - 0.001) downs.Add((p.Name, now.Effective));
@@ -140,6 +141,7 @@ public sealed partial class StoryColony
             try
             {
                 Host.SetSpeed(pawn, 1);
+                Host.SetGrowZone(pawn, null);
                 if (effect) Host.SpeedEffect(pawn, -1, $"story {Id}: normal speed");
             }
             catch (Exception ex) { _log.LogDebug(ex, "story {Colony}: resetting {Pawn}'s speed", Id, pawn); }

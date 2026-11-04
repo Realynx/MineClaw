@@ -387,7 +387,19 @@ public sealed partial class PathFollower
         bool jump = false;
         float moveYaw = yaw;
 
-        switch (step.Kind)
+        // Knocked or slid off a level step into a ditch beside it (a 1-deep trench or water channel: Fox 11-04 "they can't walk out
+        // because they have to jump once"): the step's floor is a jump up from here. Next to its cell: jump out onto it, as a Jump
+        // step would. Farther: re-plan from the ditch at once (walking into its wall only ends as "stuck" after 4 s).
+        var kind = step.Kind;
+        if (kind is MoveKind.Walk or MoveKind.Diagonal && (s.OnGround || s.InWater) && pos.Y < step.Floor - 0.65 && pos.Y >= step.Floor - 1.3)
+        {
+            int cx = (int)Math.Floor(pos.X), cz = (int)Math.Floor(pos.Z);
+            if (Math.Abs(step.X - cx) > 1 || Math.Abs(step.Z - cz) > 1) return Fail(idle, "fell off the path into a ditch");
+            kind = MoveKind.Jump;
+            sneak = false;
+        }
+
+        switch (kind)
         {
             case MoveKind.Jump:
                 jump = (s.OnGround || s.InWater) && pos.Y < step.Floor - 0.3 && (s.CollidedHorizontally || dist < 1.3);
@@ -420,7 +432,7 @@ public sealed partial class PathFollower
         if (s.InWater && step.Kind != MoveKind.Swim && step.Floor >= pos.Y - 0.2) jump = true;
 
         // A boosted body (Story Mode's Fast / Faster) keeps sprinting on a straight line: cells go by in a tick or two.
-        bool sprint = _o.AllowSprint && !sneak && forward > 0 && step.Kind is MoveKind.Walk or MoveKind.Diagonal
+        bool sprint = _o.AllowSprint && !sneak && !step.Gentle && forward > 0 && kind is MoveKind.Walk or MoveKind.Diagonal
                       && StepIndex + 3 < _steps.Count && (dist > 0.8 || _o.Boosted?.Invoke() == true && BoostRoom(s) >= 0.8);
         return Move(new MoveInput(forward, 0, jump, sneak, sprint, moveYaw, 0));
     }
