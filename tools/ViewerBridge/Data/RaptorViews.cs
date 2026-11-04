@@ -99,15 +99,20 @@ public static class RaptorViews
         var doc = bank.DocOf(n.Index);
         var one = n.Text.ReplaceLineEndings(" ");
         string title = n.IsLeaf ? (doc != null ? $"{doc.Kind} · {Trim(doc.Title, 70)}" : $"leaf #{n.Index}") : Trim(one, 90);
-        // Primary parent first (the graph's partition parent), then the other soft-cluster parents.
+        return new RaptorTreeNodeDto(n.Index, n.Layer, n.IsLeaf, title, n.IsLeaf ? doc?.Kind ?? n.Kind ?? "leaf" : $"L{n.Layer}", n.TokenCount, n.Children.Count,
+            n.IsLeaf ? 1 : LeafIndexes(t, n.Index).Count, n.Dirty || n.SummaryPending, ParentsOf(g, n), kids, doc?.Ref);
+    }
+
+    /// <summary>Primary parent first (the graph's partition parent), then the other soft-cluster parents.</summary>
+    private static List<int> ParentsOf(GraphModel? g, RaptorNode n)
+    {
         var parents = n.Parents.ToList();
         if (g != null && g.TryGetSlot(n.Index, out var s) && g.Nodes[s].Parent >= 0)
         {
             int primary = g.Nodes[g.Nodes[s].Parent].Index;
             if (parents.Remove(primary)) parents.Insert(0, primary);
         }
-        return new RaptorTreeNodeDto(n.Index, n.Layer, n.IsLeaf, title, n.IsLeaf ? doc?.Kind ?? n.Kind ?? "leaf" : $"L{n.Layer}", n.TokenCount, n.Children.Count,
-            n.IsLeaf ? 1 : LeafIndexes(t, n.Index).Count, n.Dirty || n.SummaryPending, parents, kids, doc?.Ref);
+        return parents;
     }
 
     private static long? Ms(DateTimeOffset t) => t.Year >= 1971 ? t.ToUnixTimeMilliseconds() : t.ToUnixTimeMilliseconds();

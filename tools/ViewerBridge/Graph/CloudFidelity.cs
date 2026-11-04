@@ -28,21 +28,7 @@ public static class CloudFidelity
             vecs[i] = VectorMath.Normalized(pts[i].Vector);
             xy[i] = positions[pts[i].Index];
         }
-        long all = (long)n * (n - 1) / 2;
-        var pairs = new List<(int A, int B)>((int)Math.Min(all, maxPairs));
-        if (all <= maxPairs)
-        {
-            for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) pairs.Add((a, b));
-        }
-        else
-        {
-            var rng = new Rng(seed);
-            while (pairs.Count < maxPairs)
-            {
-                int a = rng.NextInt(n), b = rng.NextInt(n);
-                if (a != b) pairs.Add((a, b));
-            }
-        }
+        var pairs = Pairs(n, maxPairs, seed);
         int m = pairs.Count;
         var delta = new double[m];
         var drawn = new double[m];
@@ -62,6 +48,25 @@ public static class CloudFidelity
         for (int k = 0; k < m; k++) res += Math.Pow(delta[k] - alpha * drawn[k], 2);
         double stress = sdl2 > 0 ? Math.Sqrt(res / sdl2) : 0;
         return new CloudFidelityDto("cosine", R(stress), R(Pearson(delta, drawn)), R(Pearson(Ranks(delta), Ranks(drawn))), Math.Round(alpha, 6), m, varianceExplained);
+    }
+
+    /// <summary>Every pair when they fit in <paramref name="maxPairs"/>, else that many seeded random pairs (a ≠ b).</summary>
+    private static List<(int A, int B)> Pairs(int n, int maxPairs, long seed)
+    {
+        long all = (long)n * (n - 1) / 2;
+        var pairs = new List<(int A, int B)>((int)Math.Min(all, maxPairs));
+        if (all <= maxPairs)
+        {
+            for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) pairs.Add((a, b));
+            return pairs;
+        }
+        var rng = new Rng(seed);
+        while (pairs.Count < maxPairs)
+        {
+            int a = rng.NextInt(n), b = rng.NextInt(n);
+            if (a != b) pairs.Add((a, b));
+        }
+        return pairs;
     }
 
     public static double Pearson(double[] a, double[] b)

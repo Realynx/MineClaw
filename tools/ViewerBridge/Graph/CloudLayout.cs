@@ -147,25 +147,10 @@ public static class CloudLayout
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int dims = Dimension(leaves);
         var usable = leaves.Where(l => l.Vector.Length == dims && dims > 0).ToList();
-        bool full = previous == null || previous.BuildId != buildId || previous.Version != o.Version || previous.Dimensions != dims
-            || previous.Arrangement != o.Arrangement;
+        bool full = NeedsFit(previous, buildId, o, dims);
         var anchors = full ? Fit(buildId, usable, dims, o, tree, ct) : previous!;
-        var anchorSlot = new Dictionary<int, int>(anchors.Index.Length);
-        for (int i = 0; i < anchors.Index.Length; i++) anchorSlot[anchors.Index[i]] = i;
-
         var pos = new Dictionary<int, (float X, float Y)>(leaves.Count);
-        var toPlace = new List<(CloudLeaf Leaf, float[] V, ulong H)>();
-        foreach (var l in usable)
-        {
-            var v = VectorMath.Normalized(l.Vector);
-            ulong h = LeafHash(v, l.Index, o, tree);
-            if (anchorSlot.TryGetValue(l.Index, out var s) && anchors.Hash[s] == h)
-                pos[l.Index] = (anchors.Xy[2 * s], anchors.Xy[2 * s + 1]);
-            else if (anchors.Placed.TryGetValue(l.Index, out var p) && p.Hash == h)
-                pos[l.Index] = (p.X, p.Y);
-            else
-                toPlace.Add((l, v, h));
-        }
+        var toPlace = Unplaced(anchors, usable, o, tree, pos);
         var placed = new (float X, float Y)[toPlace.Count];
         Parallel.For(0, toPlace.Count, new ParallelOptions { CancellationToken = ct, TaskScheduler = TaskScheduler.Current }, i =>
             placed[i] = PlaceAny(anchors, toPlace[i].V, toPlace[i].Leaf.Index, o, tree));
@@ -178,6 +163,32 @@ public static class CloudLayout
             pos[toPlace[i].Leaf.Index] = placed[i];
         }
         return new CloudLayoutResult(anchors, pos, toPlace.Count, full, sw.Elapsed.TotalMilliseconds);
+    }
+
+    /// <summary>A new fit: no anchors yet, or they are of another build, layout version, dimension or arrangement.</summary>
+    private static bool NeedsFit(CloudAnchors? previous, long buildId, CloudLayoutOptions o, int dims) =>
+        previous == null || previous.BuildId != buildId || previous.Version != o.Version || previous.Dimensions != dims
+        || previous.Arrangement != o.Arrangement;
+
+    /// <summary>Puts every leaf whose position is known (an unchanged anchor or placement) into <paramref name="pos"/>; returns the rest.</summary>
+    private static List<(CloudLeaf Leaf, float[] V, ulong H)> Unplaced(CloudAnchors anchors, List<CloudLeaf> usable, CloudLayoutOptions o, CloudTreeInput? tree,
+        Dictionary<int, (float X, float Y)> pos)
+    {
+        var anchorSlot = new Dictionary<int, int>(anchors.Index.Length);
+        for (int i = 0; i < anchors.Index.Length; i++) anchorSlot[anchors.Index[i]] = i;
+        var toPlace = new List<(CloudLeaf Leaf, float[] V, ulong H)>();
+        foreach (var l in usable)
+        {
+            var v = VectorMath.Normalized(l.Vector);
+            ulong h = LeafHash(v, l.Index, o, tree);
+            if (anchorSlot.TryGetValue(l.Index, out var s) && anchors.Hash[s] == h)
+                pos[l.Index] = (anchors.Xy[2 * s], anchors.Xy[2 * s + 1]);
+            else if (anchors.Placed.TryGetValue(l.Index, out var p) && p.Hash == h)
+                pos[l.Index] = (p.X, p.Y);
+            else
+                toPlace.Add((l, v, h));
+        }
+        return toPlace;
     }
 
     /// <summary>The most common vector length (a stray mis-sized vector never decides it).</summary>
@@ -198,90 +209,104 @@ public static class CloudLayout
         return pool;
     }
 
+    /// <summary>The anchors a fit fills in: the pool's leaves, their vectors and hashes, and the positions written into <see cref="Xy"/>.</summary>
+    private sealed class FitFrame(long buildId, CloudLayoutOptions o, int dims, int[] index, float[][] vecs, ulong[] hashes)
+    {
+        private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
+        public int N => vecs.Length;
+        public float[][] Vecs => vecs;
+        public int[] Index => index;
+        public float[] Xy { get; } = new float[vecs.Length * 2];
+        public double Ms => _sw.Elapsed.TotalMilliseconds;
+
+        /// <summary>The anchors with <paramref name="raw"/> normalised into the unit square.</summary>
+        public CloudAnchors Make(double[] raw) => Anchors(N >= 1 ? Normalise(raw, Xy) : (1, 0, 0));
+
+        public CloudAnchors Anchors((double S, double Ox, double Oy) t) => new()
+        {
+            BuildId = buildId, Arrangement = o.Arrangement, Version = o.Version, Dimensions = dims, Index = index, Vectors = vecs, Xy = Xy, Hash = hashes,
+            FitMs = Ms, Transform = t,
+        };
+    }
+
     private static CloudAnchors Fit(long buildId, List<CloudLeaf> usable, int dims, CloudLayoutOptions o, CloudTreeInput? tree, CancellationToken ct)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        int max = o.Arrangement switch
-        {
-            CloudArrangements.Umap => Math.Clamp(o.MaxUmapPoints, 3, CloudLayoutOptions.UmapSequentialLimit),
-            CloudArrangements.Pca => Math.Max(3, o.MaxPcaPoints),
-            CloudArrangements.Tree => int.MaxValue, // a spring per link and grid repulsion: linear in the leaves
-            _ => Math.Clamp(o.MaxMdsPoints, 3, CloudLayoutOptions.MdsAllPairsLimit),
-        };
-        var pool = AnchorPool(usable, max);
+        var pool = AnchorPool(usable, MaxAnchors(o));
         var vecs = pool.Select(l => VectorMath.Normalized(l.Vector)).ToArray();
-        int n = vecs.Length;
-        var xy = new float[n * 2];
-        var hashes = new ulong[n];
-        for (int i = 0; i < n; i++) hashes[i] = LeafHash(vecs[i], pool[i].Index, o, tree);
-        var index = pool.Select(l => l.Index).ToArray();
-        CloudAnchors Make(double[] raw, Func<CloudAnchors, CloudAnchors>? extra = null)
+        var hashes = new ulong[vecs.Length];
+        for (int i = 0; i < vecs.Length; i++) hashes[i] = LeafHash(vecs[i], pool[i].Index, o, tree);
+        var f = new FitFrame(buildId, o, dims, pool.Select(l => l.Index).ToArray(), vecs, hashes);
+        if (f.N < 3)
         {
-            var t = n >= 1 ? Normalise(raw, xy) : (1, 0, 0);
-            var a = new CloudAnchors
-            {
-                BuildId = buildId, Arrangement = o.Arrangement, Version = o.Version, Dimensions = dims, Index = index, Vectors = vecs, Xy = xy, Hash = hashes,
-                FitMs = sw.Elapsed.TotalMilliseconds, Transform = t,
-            };
-            return extra?.Invoke(a) ?? a;
-        }
-        if (n < 3)
-        {
-            var raw = new double[n * 2];
-            for (int i = 0; i < n; i++) { raw[2 * i] = 0.3 + 0.4 * i; raw[2 * i + 1] = 0.5; }
-            return Make(raw);
+            var raw = new double[f.N * 2];
+            for (int i = 0; i < f.N; i++) { raw[2 * i] = 0.3 + 0.4 * i; raw[2 * i + 1] = 0.5; }
+            return f.Make(raw);
         }
         ct.ThrowIfCancellationRequested();
-        switch (o.Arrangement)
+        return o.Arrangement switch
         {
-            case CloudArrangements.Umap:
-            {
-                var umap = new UmapReducer(new UmapOptions { NNeighbors = Math.Min(o.NNeighbors, n - 1), NComponents = 2, MinDist = o.MinDist, Seed = o.Seed });
-                return Make(umap.FitTransform(vecs));
-            }
-            case CloudArrangements.Pca:
-            {
-                var fit = CloudPca.Fit(vecs, o.Seed, ct);
-                var raw = new double[n * 2];
-                for (int i = 0; i < n; i++) (raw[2 * i], raw[2 * i + 1]) = fit.Project(vecs[i]);
-                return Make(raw, a => new CloudAnchors
-                {
-                    BuildId = a.BuildId, Arrangement = a.Arrangement, Version = a.Version, Dimensions = a.Dimensions, Index = a.Index, Vectors = a.Vectors, Xy = a.Xy,
-                    Hash = a.Hash, FitMs = sw.Elapsed.TotalMilliseconds, Transform = a.Transform, Mean = fit.Mean, Axes = fit.Axes, VarianceExplained = fit.VarianceExplained,
-                });
-            }
-            case CloudArrangements.Tree:
-            {
-                var fit = CloudTreeLayout.Fit(index, tree!, o, ct);
-                var raw = new double[n * 2];
-                for (int i = 0; i < n; i++) (raw[2 * i], raw[2 * i + 1]) = fit.Leaves[index[i]];
-                // Leaves and summaries share one frame: normalise over both.
-                var all = new double[(n + fit.Summaries.Count) * 2];
-                Array.Copy(raw, all, raw.Length);
-                int k = n;
-                var sIds = fit.Summaries.Keys.OrderBy(x => x).ToArray();
-                foreach (var s in sIds) { all[2 * k] = fit.Summaries[s].X; all[2 * k + 1] = fit.Summaries[s].Y; k++; }
-                var allXy = new float[all.Length];
-                var t = Normalise(all, allXy);
-                Array.Copy(allXy, xy, xy.Length);
-                var sxy = new Dictionary<int, (float X, float Y)>(sIds.Length);
-                for (int j = 0; j < sIds.Length; j++) sxy[sIds[j]] = (allXy[2 * (n + j)], allXy[2 * (n + j) + 1]);
-                return new CloudAnchors
-                {
-                    BuildId = buildId, Arrangement = o.Arrangement, Version = o.Version, Dimensions = dims, Index = index, Vectors = vecs, Xy = xy, Hash = hashes,
-                    FitMs = sw.Elapsed.TotalMilliseconds, Transform = t, SummaryXy = sxy, LeafRadius = fit.LeafLength * t.S,
-                };
-            }
-            default:
-            {
-                var fit = CloudMds.Fit(vecs, o, ct);
-                return Make(fit.Xy, a => new CloudAnchors
-                {
-                    BuildId = a.BuildId, Arrangement = a.Arrangement, Version = a.Version, Dimensions = a.Dimensions, Index = a.Index, Vectors = a.Vectors, Xy = a.Xy,
-                    Hash = a.Hash, FitMs = sw.Elapsed.TotalMilliseconds, Transform = a.Transform, FitStress = fit.Stress, FitIterations = fit.Iterations,
-                });
-            }
-        }
+            CloudArrangements.Umap => f.Make(new UmapReducer(new UmapOptions { NNeighbors = Math.Min(o.NNeighbors, f.N - 1), NComponents = 2, MinDist = o.MinDist, Seed = o.Seed })
+                .FitTransform(vecs)),
+            CloudArrangements.Pca => FitPca(f, o, ct),
+            CloudArrangements.Tree => FitTree(f, tree!, o, ct),
+            _ => FitMds(f, o, ct),
+        };
+    }
+
+    /// <summary>How many build leaves the arrangement fits itself (the rest are placed).</summary>
+    private static int MaxAnchors(CloudLayoutOptions o) => o.Arrangement switch
+    {
+        CloudArrangements.Umap => Math.Clamp(o.MaxUmapPoints, 3, CloudLayoutOptions.UmapSequentialLimit),
+        CloudArrangements.Pca => Math.Max(3, o.MaxPcaPoints),
+        CloudArrangements.Tree => int.MaxValue, // a spring per link and grid repulsion: linear in the leaves
+        _ => Math.Clamp(o.MaxMdsPoints, 3, CloudLayoutOptions.MdsAllPairsLimit),
+    };
+
+    private static CloudAnchors FitPca(FitFrame f, CloudLayoutOptions o, CancellationToken ct)
+    {
+        var fit = CloudPca.Fit(f.Vecs, o.Seed, ct);
+        var raw = new double[f.N * 2];
+        for (int i = 0; i < f.N; i++) (raw[2 * i], raw[2 * i + 1]) = fit.Project(f.Vecs[i]);
+        var a = f.Make(raw);
+        return new CloudAnchors
+        {
+            BuildId = a.BuildId, Arrangement = a.Arrangement, Version = a.Version, Dimensions = a.Dimensions, Index = a.Index, Vectors = a.Vectors, Xy = a.Xy,
+            Hash = a.Hash, FitMs = f.Ms, Transform = a.Transform, Mean = fit.Mean, Axes = fit.Axes, VarianceExplained = fit.VarianceExplained,
+        };
+    }
+
+    /// <summary>The tree arrangement: leaves and summaries share one frame, normalised over both.</summary>
+    private static CloudAnchors FitTree(FitFrame f, CloudTreeInput tree, CloudLayoutOptions o, CancellationToken ct)
+    {
+        int n = f.N;
+        var fit = CloudTreeLayout.Fit(f.Index, tree, o, ct);
+        var all = new double[(n + fit.Summaries.Count) * 2];
+        for (int i = 0; i < n; i++) (all[2 * i], all[2 * i + 1]) = fit.Leaves[f.Index[i]];
+        int k = n;
+        var sIds = fit.Summaries.Keys.OrderBy(x => x).ToArray();
+        foreach (var s in sIds) { all[2 * k] = fit.Summaries[s].X; all[2 * k + 1] = fit.Summaries[s].Y; k++; }
+        var allXy = new float[all.Length];
+        var t = Normalise(all, allXy);
+        Array.Copy(allXy, f.Xy, f.Xy.Length);
+        var sxy = new Dictionary<int, (float X, float Y)>(sIds.Length);
+        for (int j = 0; j < sIds.Length; j++) sxy[sIds[j]] = (allXy[2 * (n + j)], allXy[2 * (n + j) + 1]);
+        var a = f.Anchors(t);
+        return new CloudAnchors
+        {
+            BuildId = a.BuildId, Arrangement = a.Arrangement, Version = a.Version, Dimensions = a.Dimensions, Index = a.Index, Vectors = a.Vectors, Xy = a.Xy,
+            Hash = a.Hash, FitMs = a.FitMs, Transform = t, SummaryXy = sxy, LeafRadius = fit.LeafLength * t.S,
+        };
+    }
+
+    private static CloudAnchors FitMds(FitFrame f, CloudLayoutOptions o, CancellationToken ct)
+    {
+        var fit = CloudMds.Fit(f.Vecs, o, ct);
+        var a = f.Make(fit.Xy);
+        return new CloudAnchors
+        {
+            BuildId = a.BuildId, Arrangement = a.Arrangement, Version = a.Version, Dimensions = a.Dimensions, Index = a.Index, Vectors = a.Vectors, Xy = a.Xy,
+            Hash = a.Hash, FitMs = f.Ms, Transform = a.Transform, FitStress = fit.Stress, FitIterations = fit.Iterations,
+        };
     }
 
     /// <summary>Uniform scale into [0.02, 0.98]² (aspect kept, centred), rounded to 1e-4 so the wire stays small. Returns the transform.</summary>
