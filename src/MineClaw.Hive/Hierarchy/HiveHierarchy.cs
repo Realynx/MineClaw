@@ -609,6 +609,12 @@ public sealed class HiveHierarchy : IHiveAccounts
         var started = host.Start(id, name, r.Args, () => Members(id), (ok, line) => ScriptEnded(id, ok, line));
         if (!started.StartsWith("ok", StringComparison.Ordinal)) return NotStarted(id, started);
         _log.LogInformation("hive: hive script {Id} ({Script}) over {N} bodies: {Names}", id, name, got.Count, string.Join(", ", got));
+        return ScriptHiveStarted(id, got, asked, why);
+    }
+
+    /// <summary>The hive script's ok line: its bodies, the pacing, how it ends, and why fewer bodies than asked.</summary>
+    private string ScriptHiveStarted(string id, List<string> got, int asked, string? why)
+    {
         var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
         return $"ok: hive script {id}: ONE script drives {got.Count} bod{(got.Count == 1 ? "y" : "ies")} ({names}), no brain; " +
             $"none in game yet{Pacing(got.Count)}; when it ends they deposit and log out " +
