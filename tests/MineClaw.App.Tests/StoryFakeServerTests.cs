@@ -395,7 +395,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Equal(0, srv.Blocks.GetValueOrDefault((16, 64, 8)));
         Assert.Contains(srv.Dug, d => d.Y >= 62 && Math.Abs(d.X - 8) + Math.Abs(d.Z - 8) == 1); // a stair step out of the hole
         Assert.DoesNotContain(srv.Dug, d => d.X == 8 && d.Z == 8 && d.Y < 62);                // never down
-        Assert.DoesNotContain(c.Alerts, a => a.Level == "warn");
+        Assert.DoesNotContain(c.Alerts, a => a.Level == "warn" && !a.Text.StartsWith("No storage for")); // the stair's dirt has no chest here: that is said
     }, s =>
     {
         EmptyHanded(s);

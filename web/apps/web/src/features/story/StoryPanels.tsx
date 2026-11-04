@@ -864,7 +864,14 @@ export function ColonyPanel({
   onBringAll?: (overCap: boolean) => void;
   displayOf?: (account: string) => string;
   /** Colony options (auto-place benches builds need, detect benches near home). */
-  onOptions?: (o: { autoPlaceBenches?: boolean; detectBenches?: boolean; idle?: StoryIdleMode }) => void;
+  onOptions?: (o: {
+    autoPlaceBenches?: boolean;
+    detectBenches?: boolean;
+    idle?: StoryIdleMode;
+    rescueTeleport?: boolean;
+    unfilteredStorageTakesAnything?: boolean;
+    keepDisallowed?: boolean;
+  }) => void;
 }) {
   const offline = (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').length;
   const opts = state?.options;
