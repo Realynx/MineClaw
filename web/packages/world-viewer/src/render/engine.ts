@@ -220,9 +220,10 @@ export class WorldViewerEngine implements RuntimeView {
     return this.runtime.hologramsOf(this.id)?.stats() ?? null;
   }
 
-  /** [holograms] Whether the queued cell at (x, y, z) is drawn as a hologram now (a built one is not). */
-  hologramAt(x: number, y: number, z: number): boolean {
-    return this.runtime.hologramsOf(this.id)?.has(x, y, z) ?? false;
+  /** [holograms] Whether the queued cell at (x, y, z) is drawn as a hologram now (a built one is not): as a block, as a dig
+   * outline, or (no kind) either. */
+  hologramAt(x: number, y: number, z: number, kind?: 'block' | 'dig'): boolean {
+    return this.runtime.hologramsOf(this.id)?.has(x, y, z, kind) ?? false;
   }
 
   /** The cut a pick should honour (the level cut, else the roof cut), centred where this view looks. */
