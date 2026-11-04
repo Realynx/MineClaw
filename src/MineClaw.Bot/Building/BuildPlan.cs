@@ -242,21 +242,38 @@ public sealed class BuildPlan
     public string Summary()
     {
         var parts = new List<string> { $"{Placements} placements" };
-        int pillar = Steps.Count(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar);
-        int stair = Steps.Count(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Stair);
-        var climb = string.Join(", ", new[] { pillar > 0 ? $"{pillar} pillar" : null, stair > 0 ? $"{stair} stair" : null }.Where(x => x != null));
-        if (Scaffolds > 0) parts.Add($"{Scaffolds} scaffold" + (climb.Length > 0 ? $" ({pillar + stair} to climb: {climb})" : ""));
+        if (Scaffolds > 0) parts.Add(ScaffoldText());
         int hidden = Steps.Count(s => s.Technique == Technique.Hidden);
         if (Columns.Count > 0) parts.Add($"{Columns.Count} water descent{(Columns.Count > 1 ? "s" : "")}");
         if (hidden > 0) parts.Add($"{hidden} underside/hidden-face");
-        var needs = Needs().OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value} {kv.Key}").ToList();
-        var mins = EstSeconds / 60;
-        var text = string.Join(", ", parts) + (needs.Count > 0 ? ", needs: " + string.Join(", ", needs.Take(4)) : "")
-                   + string.Create(CultureInfo.InvariantCulture, $"; est. {(mins < 1 ? "<1" : Math.Round(mins).ToString(CultureInfo.InvariantCulture))} min");
+        var text = string.Join(", ", parts) + NeedsText() + EstText();
         if (Lanes.Count > 1) text += "; " + CrewText();
         if (Infeasible.Count > 0)
             text += $"; can't place {Infeasible.Count}: " + BuildSkips.WithFloor(BuildSkips.Line(Infeasible.Select(i => (i.Pos, (string?)i.Why))), Foundation);
         return text;
+    }
+
+    /// <summary>"6 scaffold (4 to climb: 3 pillar, 1 stair)".</summary>
+    private string ScaffoldText()
+    {
+        int pillar = Steps.Count(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar);
+        int stair = Steps.Count(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Stair);
+        var climb = string.Join(", ", new[] { pillar > 0 ? $"{pillar} pillar" : null, stair > 0 ? $"{stair} stair" : null }.Where(x => x != null));
+        return $"{Scaffolds} scaffold" + (climb.Length > 0 ? $" ({pillar + stair} to climb: {climb})" : "");
+    }
+
+    /// <summary>", needs: 86 cobblestone, 1 water bucket" (the four biggest), or "".</summary>
+    private string NeedsText()
+    {
+        var needs = Needs().OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value} {kv.Key}").ToList();
+        return needs.Count > 0 ? ", needs: " + string.Join(", ", needs.Take(4)) : "";
+    }
+
+    /// <summary>"; est. 6 min" ("&lt;1" under a minute).</summary>
+    private string EstText()
+    {
+        var mins = EstSeconds / 60;
+        return string.Create(CultureInfo.InvariantCulture, $"; est. {(mins < 1 ? "<1" : Math.Round(mins).ToString(CultureInfo.InvariantCulture))} min");
     }
 
     /// <summary>"with 3 bodies (main, 67, 69) ≈2 min instead of 6 alone": the crew's benefit, from the plan's own estimates.</summary>
