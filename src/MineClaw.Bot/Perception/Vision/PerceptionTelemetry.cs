@@ -87,50 +87,58 @@ public sealed class PerceptionTelemetry(ILogger? log = null, string? directory =
     {
         try
         {
-            var r = a.Raw;
             lock (_lock)
             {
-                if (a.Cached) { CacheHits++; }
-                else
-                {
-                    Calls++;
-                    if (a.Error != null) Errors++;
-                    if (source.StartsWith("auto", StringComparison.Ordinal)) Auto++;
-                    Checked += a.Checked;
-                    Mismatched += a.Mismatched;
-                    Dropped += a.Dropped;
-                    Corrected += a.Corrected;
-                    if (a.Error == null && a.Checked == 0) NoClaims++;
-                    if (a.Error == null) Window(a.Checked, a.Mismatched);
-                    if (r != null)
-                    {
-                        InputTokens += r.Usage.InputTokens + r.Usage.CacheReadTokens + r.Usage.CacheWriteTokens;
-                        OutputTokens += r.Usage.OutputTokens;
-                        _latency.Add(r.LatencyMs);
-                        if (_latency.Count > 500) _latency.RemoveAt(0);
-                    }
-                    Usd += usd;
-                }
+                if (a.Cached) CacheHits++;
+                else Count(a, source, usd);
             }
-            if (a.Cached) return;
-            log?.LogInformation("perception ({Source}) {Model} {Ms}ms in {In} out {Out} ${Usd:0.0000}: {Checked} checked, {Bad} wrong, {Dropped} dropped, {Fixed} fixed; halluc {Rate:P0} (run {Run:P0}) | {Q}",
-                source, r?.Model, r?.LatencyMs, r?.Usage.InputTokens, r?.Usage.OutputTokens, usd, a.Checked, a.Mismatched, a.Dropped, a.Corrected,
-                a.HallucinationRate, HallucinationRate, a.Question);
-            if (directory == null) return;
-            var now = _time.GetUtcNow();
-            var line = JsonSerializer.Serialize(new
-            {
-                at = now.ToString("O"), source, q = a.Question, model = r?.Model, provider = r?.Provider, ms = r?.LatencyMs,
-                @in = r?.Usage.InputTokens, @out = r?.Usage.OutputTokens, usd, facts = a.Facts.Count, @checked = a.Checked,
-                mismatched = a.Mismatched, dropped = a.Dropped, corrected = a.Corrected, error = a.Error, text = a.Text,
-            });
-            lock (_lock)
-            {
-                Directory.CreateDirectory(directory);
-                File.AppendAllText(Path.Combine(directory, $"perception-{now:yyyy-MM-dd}.jsonl"), line + "\n");
-            }
+            if (!a.Cached) Report(a, source, usd);
         }
         catch (Exception) { /* telemetry never breaks the bot */ }
+    }
+
+    /// <summary>Counts one model call (caller holds _lock).</summary>
+    private void Count(VerifiedAnswer a, string source, decimal usd)
+    {
+        Calls++;
+        if (a.Error != null) Errors++;
+        if (source.StartsWith("auto", StringComparison.Ordinal)) Auto++;
+        Checked += a.Checked;
+        Mismatched += a.Mismatched;
+        Dropped += a.Dropped;
+        Corrected += a.Corrected;
+        if (a.Error == null && a.Checked == 0) NoClaims++;
+        if (a.Error == null) Window(a.Checked, a.Mismatched);
+        if (a.Raw is { } r)
+        {
+            InputTokens += r.Usage.InputTokens + r.Usage.CacheReadTokens + r.Usage.CacheWriteTokens;
+            OutputTokens += r.Usage.OutputTokens;
+            _latency.Add(r.LatencyMs);
+            if (_latency.Count > 500) _latency.RemoveAt(0);
+        }
+        Usd += usd;
+    }
+
+    /// <summary>The call's log line, and (with a directory) its jsonl record.</summary>
+    private void Report(VerifiedAnswer a, string source, decimal usd)
+    {
+        var r = a.Raw;
+        log?.LogInformation("perception ({Source}) {Model} {Ms}ms in {In} out {Out} ${Usd:0.0000}: {Checked} checked, {Bad} wrong, {Dropped} dropped, {Fixed} fixed; halluc {Rate:P0} (run {Run:P0}) | {Q}",
+            source, r?.Model, r?.LatencyMs, r?.Usage.InputTokens, r?.Usage.OutputTokens, usd, a.Checked, a.Mismatched, a.Dropped, a.Corrected,
+            a.HallucinationRate, HallucinationRate, a.Question);
+        if (directory == null) return;
+        var now = _time.GetUtcNow();
+        var line = JsonSerializer.Serialize(new
+        {
+            at = now.ToString("O"), source, q = a.Question, model = r?.Model, provider = r?.Provider, ms = r?.LatencyMs,
+            @in = r?.Usage.InputTokens, @out = r?.Usage.OutputTokens, usd, facts = a.Facts.Count, @checked = a.Checked,
+            mismatched = a.Mismatched, dropped = a.Dropped, corrected = a.Corrected, error = a.Error, text = a.Text,
+        });
+        lock (_lock)
+        {
+            Directory.CreateDirectory(directory);
+            File.AppendAllText(Path.Combine(directory, $"perception-{now:yyyy-MM-dd}.jsonl"), line + "\n");
+        }
     }
 
     /// <summary>"perception: 12 calls (3 auto, 4 cached), p50 1.8s, halluc 9%, $0.021".</summary>

@@ -49,11 +49,7 @@ public static class GenLayout
         var causes = new List<string>();
         if (CellCause(cell, w.GetBlock(cell.X, cell.Y, cell.Z)) is { } changed) causes.Add(changed);
 
-        Structure? gen = null;
-        try { gen = memory == null ? null : DigCells.GeneratorNear(memory, dim, cell); }
-        catch (Exception) { /* memory busy: geometry only */ }
-        var layout = gen?.KeyBlocks.Where(k => IsLayoutLabel(k.Label)
-                && Math.Abs(k.X - cell.X) + Math.Abs(k.Y - cell.Y) + Math.Abs(k.Z - cell.Z) == 1).ToList() ?? [];
+        var layout = TaughtLayout(memory, dim, cell);
         if (layout.Count > 0)
         {
             foreach (var k in layout)
@@ -64,6 +60,16 @@ public static class GenLayout
         else if (BlockDescriber.GenCellRejection(w, cell) is { } why && !why.StartsWith("it's", StringComparison.Ordinal))
             causes.Add($"{Fmt(cell)}: {why} (no taught layout to compare)");
         return causes.Count == 0 ? null : string.Join("; ", causes);
+    }
+
+    /// <summary>The taught lava/water key blocks right next to the cell (none when memory is busy or no gen is saved).</summary>
+    private static List<KeyBlock> TaughtLayout(MemoryStore? memory, int dim, WPos cell)
+    {
+        Structure? gen = null;
+        try { gen = memory == null ? null : DigCells.GeneratorNear(memory, dim, cell); }
+        catch (Exception) { /* memory busy: geometry only */ }
+        return gen?.KeyBlocks.Where(k => IsLayoutLabel(k.Label)
+            && Math.Abs(k.X - cell.X) + Math.Abs(k.Y - cell.Y) + Math.Abs(k.Z - cell.Z) == 1).ToList() ?? [];
     }
 
     /// <summary>The cell turned to obsidian or to something that isn't output, air or fluid; else null.</summary>

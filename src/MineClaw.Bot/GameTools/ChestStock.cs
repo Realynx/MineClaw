@@ -38,20 +38,29 @@ public sealed class ChestStock
                 var pos = new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ));
                 s.Known++;
                 if (exclude?.Contains(pos) == true || Private(row.Annotation) || skip?.Invoke(pos) != null) continue;
-                var items = obs.Contents(row.Id).Where(i => i.Count > 0 && MineClaw.Data.Items.Exists(i.ItemId)).ToList();
-                if (items.Count > 0) s.Chests.Add(new Chest(pos, dist, items));
+                s.AddKnown(obs, row, pos, dist);
             }
         }
         catch (Exception) { s.Chests.Clear(); return s; } // db busy
-        foreach (var id in KeepLast)
-        {
-            var far = s.Chests.LastOrDefault(ch => ch.Items.Any(i => i.ItemId == id));
-            if (far == null) continue;
-            int at = far.Items.FindIndex(i => i.ItemId == id);
-            var it = far.Items[at];
-            if (it.Count <= 1) far.Items.RemoveAt(at); else far.Items[at] = it with { Count = it.Count - 1 };
-        }
+        foreach (var id in KeepLast) s.KeepOneBack(id);
         return s;
+    }
+
+    /// <summary>A usable chest with what memory says it holds (empty ones aren't listed).</summary>
+    private void AddKnown(ObservationStore obs, ObservationRow row, BlockPos pos, double dist)
+    {
+        var items = obs.Contents(row.Id).Where(i => i.Count > 0 && MineClaw.Data.Items.Exists(i.ItemId)).ToList();
+        if (items.Count > 0) Chests.Add(new Chest(pos, dist, items));
+    }
+
+    /// <summary>One of <paramref name="id"/> stays in the farthest chest holding it (never taken).</summary>
+    private void KeepOneBack(int id)
+    {
+        var far = Chests.LastOrDefault(ch => ch.Items.Any(i => i.ItemId == id));
+        if (far == null) return;
+        int at = far.Items.FindIndex(i => i.ItemId == id);
+        var it = far.Items[at];
+        if (it.Count <= 1) far.Items.RemoveAt(at); else far.Items[at] = it with { Count = it.Count - 1 };
     }
 
     /// <summary>A player's label that says hands off ("private", "Fox's, don't take").</summary>

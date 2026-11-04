@@ -128,39 +128,51 @@ public sealed class PerceptionService
             _calls.Enqueue(now);
             if (auto) _auto.Enqueue(now);
         }
+        var r = await CallModelAsync(_model, look, ct).ConfigureAwait(false);
+        decimal usd = r.Usage != LlmUsage.Zero ? Book(r) : 0;
+        var verified = PerceptionVerifier.Verify(look.Question, r, look.World, look.Roles, look.Focus, look.Radius);
+        if (verified.Error == null) verified = Settle(look, verified);
+        Telemetry.Record(verified, look.Source, usd);
+        return verified;
+    }
+
+    /// <summary>The model's reading of the sheet; a failure reads as an empty result carrying the error.</summary>
+    private static async Task<PerceptionResult> CallModelAsync(IPerceptionModel model, PerceptionLook look, CancellationToken ct)
+    {
         var q = new PerceptionQuery(look.Sheet.Png, look.Sheet.Width, look.Sheet.Height, look.Question, look.Sheet.Legend);
-        PerceptionResult r;
-        try { r = await _model.AskAsync(q, ct).ConfigureAwait(false); }
+        try { return await model.AskAsync(q, ct).ConfigureAwait(false); }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            r = new PerceptionResult([], null, "", LlmUsage.Zero, _model.Model, _model.Provider, 0, ex.GetType().Name + ": " + ex.Message);
+            return new PerceptionResult([], null, "", LlmUsage.Zero, model.Model, model.Provider, 0, ex.GetType().Name + ": " + ex.Message);
         }
-        decimal usd = 0;
-        if (r.Usage != LlmUsage.Zero)
-        {
-            try { usd = _usage?.Record(r.Model, r.Usage, label: UsageTracker.PerceptionLabel) ?? _prices.Cost(r.Model, r.Usage); }
-            catch (Exception ex) { _log?.LogDebug(ex, "perception usage not booked"); }
-        }
-        var verified = PerceptionVerifier.Verify(look.Question, r, look.World, look.Roles, look.Focus, look.Radius);
-        if (verified.Error == null && verified.Checked == 0)
+    }
+
+    /// <summary>Books the call's usage; its cost in USD (0 when the booking failed).</summary>
+    private decimal Book(PerceptionResult r)
+    {
+        try { return _usage?.Record(r.Model, r.Usage, label: UsageTracker.PerceptionLabel) ?? _prices.Cost(r.Model, r.Usage); }
+        catch (Exception ex) { _log?.LogDebug(ex, "perception usage not booked"); return 0; }
+    }
+
+    /// <summary>A verified answer: a shape with no checkable claim is answered from voxels next time; the text gets the role
+    /// grounding and goes into the cache.</summary>
+    private VerifiedAnswer Settle(PerceptionLook look, VerifiedAnswer verified)
+    {
+        if (verified.Checked == 0)
         {
             lock (_lock) _lowValue.Add(Shape(look.Question));
             _log?.LogInformation("perception: no checkable claim for \"{Q}\" (low value): that question shape is answered from voxels next time", look.Question);
         }
-        if (verified.Error == null)
+        var grounding = Grounding(look.World, look.Roles, look.Focus, look.Radius, verified.Facts);
+        verified = verified with
         {
-            var grounding = Grounding(look.World, look.Roles, look.Focus, look.Radius, verified.Facts);
-            verified = verified with
-            {
-                Text = PerceptionVerifier.Format(look.Question, verified.Answer, verified.Facts, verified.Dropped, false, grounding),
-            };
-            lock (_lock)
-            {
-                _cache.AddFirst((Key(look.Sheet.Key, look.Question), verified));
-                while (_cache.Count > Math.Max(1, _o.CacheEntries)) _cache.RemoveLast();
-            }
+            Text = PerceptionVerifier.Format(look.Question, verified.Answer, verified.Facts, verified.Dropped, false, grounding),
+        };
+        lock (_lock)
+        {
+            _cache.AddFirst((Key(look.Sheet.Key, look.Question), verified));
+            while (_cache.Count > Math.Max(1, _o.CacheEntries)) _cache.RemoveLast();
         }
-        Telemetry.Record(verified, look.Source, usd);
         return verified;
     }
 

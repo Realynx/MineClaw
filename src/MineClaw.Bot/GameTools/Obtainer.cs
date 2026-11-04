@@ -35,8 +35,7 @@ public sealed class Obtainer(IGameClient c, AcquisitionSources? sources = null)
 
         var parts = new List<string>();
         var chests = ChestStock.Read(c, _s?.Observations, _s?.SkipChest);
-        if (chests.Count(id, dmg ?? -1) > 0 && await FromChestsAsync(id, dmg, count, name, chests, parts, ct).ConfigureAwait(false) is { } done)
-            return done;
+        if (await FromChestsAsync(id, dmg, count, name, chests, parts, ct).ConfigureAwait(false) is { } done) return done;
 
         if (Recipes.ForOutput(id, dmg ?? -1).Count > 0) return await CraftRestAsync(id, dmg, count, parts, ct).ConfigureAwait(false);
         parts.Add($"need {count - Have(id, dmg)} more {name} (no recipe); {NoRecipeWhere(id, dmg, chests)}");
@@ -56,6 +55,7 @@ public sealed class Obtainer(IGameClient c, AcquisitionSources? sources = null)
     /// <summary>Withdraws what storage holds; the result when that settles it (enough, or the inventory filled up), else null.</summary>
     private async Task<ObtainResult?> FromChestsAsync(int id, int? dmg, int count, string name, ChestStock chests, List<string> parts, CancellationToken ct)
     {
+        if (chests.Count(id, dmg ?? -1) <= 0) return null;
         int start = Have(id, dmg);
         var took = await WithdrawAsync(id, dmg, count - start, chests, ct).ConfigureAwait(false);
         if (took.Count > 0) parts.Add("took " + string.Join("; ", took));

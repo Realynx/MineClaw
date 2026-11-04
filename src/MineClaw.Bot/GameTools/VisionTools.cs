@@ -90,36 +90,44 @@ public static class VisionTools
         var w = c.World;
         foreach (var e in w.Entities.Nearby(new Vec3d(centre.X + 0.5, centre.Y, centre.Z + 0.5), radius * 1.5 + 2))
         {
-            switch (e.Kind)
+            var v = e.Kind switch
             {
-                case EntityKind.Player:
-                    if (e.Name == null || e.Name.Equals(c.Username, StringComparison.OrdinalIgnoreCase)) continue;
-                    bool hive = isHive?.Invoke(e.Name) == true;
-                    list.Add(new VisionEntity(hive ? "hive" : "player", e.Name, e.Position.X, e.Position.Y, e.Position.Z, hive ? HiveGlyph(e.Name) : null)
-                    {
-                        Yaw = e.Yaw, Pitch = e.Pitch, Vx = e.Velocity.X, Vz = e.Velocity.Z, Sneaking = e.IsCrouched, HeldItem = e.HeldItem, Seed = e.Id,
-                        Burning = (e.Flags & 1) != 0,
-                    });
-                    break;
-                case EntityKind.Mob:
-                    list.Add(new VisionEntity("mob", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z)
-                    {
-                        Mob = MobTypes.Name(e.TypeId), Yaw = e.Yaw, Pitch = e.Pitch, Vx = e.Velocity.X, Vz = e.Velocity.Z, Variant = e.MetaInt(16) ?? 0, Seed = e.Id,
-                        Burning = (e.Flags & 1) != 0, Sneaking = e.IsCrouched,
-                    });
-                    break;
-                case EntityKind.Item:
-                    // A dropped stack (0x15): the 3D views draw it like RenderItem, the sheet legend and the router name it.
-                    list.Add(new VisionEntity("item", e.Item.IsEmpty ? null : EyeRenderer.ItemName(e.Item.Id), e.Position.X, e.Position.Y, e.Position.Z)
-                    {
-                        ItemId = e.Item.Id, ItemCount = e.Item.Count, ItemDamage = e.Item.Damage, Seed = e.Id,
-                        Age = Math.Max(0, (DateTime.UtcNow - e.SpawnedAt).TotalSeconds * 20),
-                    });
-                    break;
-            }
+                EntityKind.Player => PlayerView(c, e, isHive),
+                EntityKind.Mob => MobView(e),
+                EntityKind.Item => ItemView(e),
+                _ => null,
+            };
+            if (v != null) list.Add(v);
         }
         return list;
     }
+
+    /// <summary>Another player (a hive bot gets its glyph); null for this bot or a nameless one.</summary>
+    private static VisionEntity? PlayerView(IGameClient c, Entity e, Func<string, bool>? isHive)
+    {
+        if (e.Name == null || e.Name.Equals(c.Username, StringComparison.OrdinalIgnoreCase)) return null;
+        bool hive = isHive?.Invoke(e.Name) == true;
+        return new VisionEntity(hive ? "hive" : "player", e.Name, e.Position.X, e.Position.Y, e.Position.Z, hive ? HiveGlyph(e.Name) : null)
+        {
+            Yaw = e.Yaw, Pitch = e.Pitch, Vx = e.Velocity.X, Vz = e.Velocity.Z, Sneaking = e.IsCrouched, HeldItem = e.HeldItem, Seed = e.Id,
+            Burning = (e.Flags & 1) != 0,
+        };
+    }
+
+    private static VisionEntity MobView(Entity e) =>
+        new("mob", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z)
+        {
+            Mob = MobTypes.Name(e.TypeId), Yaw = e.Yaw, Pitch = e.Pitch, Vx = e.Velocity.X, Vz = e.Velocity.Z, Variant = e.MetaInt(16) ?? 0, Seed = e.Id,
+            Burning = (e.Flags & 1) != 0, Sneaking = e.IsCrouched,
+        };
+
+    /// <summary>A dropped stack (0x15): the 3D views draw it like RenderItem, the sheet legend and the router name it.</summary>
+    private static VisionEntity ItemView(Entity e) =>
+        new("item", e.Item.IsEmpty ? null : EyeRenderer.ItemName(e.Item.Id), e.Position.X, e.Position.Y, e.Position.Z)
+        {
+            ItemId = e.Item.Id, ItemCount = e.Item.Count, ItemDamage = e.Item.Damage, Seed = e.Id,
+            Age = Math.Max(0, (DateTime.UtcNow - e.SpawnedAt).TotalSeconds * 20),
+        };
 
     /// <summary>Hive bot glyph like the TUI roster: first digit of the numeric suffix (maid_chan_67 → 6), else 'M'.</summary>
     public static char HiveGlyph(string name)
@@ -137,13 +145,17 @@ public static class VisionTools
         foreach (var s in sts)
         {
             if (s.Min == null) continue;
-            var mx = s.Max ?? s.Min;
-            var m = new VisionMark(s.Name, Math.Min(s.Min.X, mx.X), Math.Min(s.Min.Y, mx.Y), Math.Min(s.Min.Z, mx.Z),
-                Math.Max(s.Min.X, mx.X), Math.Max(s.Min.Y, mx.Y), Math.Max(s.Min.Z, mx.Z), Box: true);
-            if (Near(m.CentreX, m.CentreZ) || (m.MaxX >= cx - r && m.MinX <= cx + r && m.MaxZ >= cz - r && m.MinZ <= cz + r)) list.Add(m);
+            var m = StructureMark(s.Name, s.Min, s.Max ?? s.Min);
+            if (Near(m.CentreX, m.CentreZ) || Overlaps(m, cx, cz, r)) list.Add(m);
         }
         foreach (var w in wps) if (Near(w.X, w.Z)) list.Add(VisionMark.At(w.Name, w.X, w.Y, w.Z));
     }
+
+    private static VisionMark StructureMark(string name, MineClaw.Agent.Memory.BlockPos min, MineClaw.Agent.Memory.BlockPos mx) =>
+        new(name, Math.Min(min.X, mx.X), Math.Min(min.Y, mx.Y), Math.Min(min.Z, mx.Z),
+            Math.Max(min.X, mx.X), Math.Max(min.Y, mx.Y), Math.Max(min.Z, mx.Z), Box: true);
+
+    private static bool Overlaps(VisionMark m, int cx, int cz, int r) => m.MaxX >= cx - r && m.MinX <= cx + r && m.MaxZ >= cz - r && m.MinZ <= cz + r;
 
     /// <summary>Indexed things near the view, unless a mark already stands there (a box, or the same label).</summary>
     private static void IndexedMarks(AgentRuntime rt, int cx, int cy, int cz, int r, List<VisionMark> list)

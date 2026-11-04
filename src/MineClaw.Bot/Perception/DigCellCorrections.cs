@@ -122,9 +122,7 @@ public sealed partial class DigCellCorrections
                 }
                 if (st.History.Count > 40) st.History.RemoveRange(0, st.History.Count - 40);
             });
-        int marks = 0;
-        if (Marks is { } mk && mk.NeverAt(cell, dim) is { } never && (middle || !never.Exact || never.Label.Contains("middle", StringComparison.OrdinalIgnoreCase)))
-            marks = mk.Unmark(dim, [(cell, cell)]).Count;
+        int marks = UnmarkNever(cell, dim, middle);
         if (removed.Count == 0 && marks == 0) return null;
         _cells.Register(cell, by);
         _cells.Invalidate();
@@ -132,6 +130,14 @@ public sealed partial class DigCellCorrections
                    + (removed.Count > 0 ? ": " + string.Join("; ", removed) : "") + (marks > 0 ? $" (+{marks} never-break mark(s))" : "");
         try { Changed?.Invoke(line); } catch (Exception) { }
         return line;
+    }
+
+    /// <summary>A vague never-break mark on the cell (or any, for "the middle one") goes; how many marks were removed.</summary>
+    private int UnmarkNever(WPos cell, int dim, bool middle)
+    {
+        if (Marks is not { } mk || mk.NeverAt(cell, dim) is not { } never) return 0;
+        if (!middle && never.Exact && !never.Label.Contains("middle", StringComparison.OrdinalIgnoreCase)) return 0;
+        return mk.Unmark(dim, [(cell, cell)]).Count;
     }
 
     /// <summary>
@@ -158,19 +164,22 @@ public sealed partial class DigCellCorrections
         foreach (var row in observations.OfKind("cobble_generator", dim))
         {
             if (row.FieldsJson is not { Length: > 0 } f) continue;
-            try
-            {
-                using var j = System.Text.Json.JsonDocument.Parse(f);
-                var root = j.RootElement;
-                if (!root.TryGetProperty("confirmed", out var conf) || conf.ValueKind != System.Text.Json.JsonValueKind.True) continue;
-                if (!root.TryGetProperty("dig", out var dig) || dig.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
-                foreach (var e in dig.EnumerateArray())
-                    if (e.ValueKind == System.Text.Json.JsonValueKind.Array && e.GetArrayLength() == 3)
-                        list.Add(new WPos(e[0].GetInt32(), e[1].GetInt32(), e[2].GetInt32()));
-            }
+            try { AddConfirmedDigCells(f, list); }
             catch (System.Text.Json.JsonException) { }
         }
         return list.Distinct().ToList();
+    }
+
+    /// <summary>The <c>dig</c> cells of a generator row whose <c>confirmed</c> is true.</summary>
+    private static void AddConfirmedDigCells(string json, List<WPos> list)
+    {
+        using var j = System.Text.Json.JsonDocument.Parse(json);
+        var root = j.RootElement;
+        if (!root.TryGetProperty("confirmed", out var conf) || conf.ValueKind != System.Text.Json.JsonValueKind.True) return;
+        if (!root.TryGetProperty("dig", out var dig) || dig.ValueKind != System.Text.Json.JsonValueKind.Array) return;
+        foreach (var e in dig.EnumerateArray())
+            if (e.ValueKind == System.Text.Json.JsonValueKind.Array && e.GetArrayLength() == 3)
+                list.Add(new WPos(e[0].GetInt32(), e[1].GetInt32(), e[2].GetInt32()));
     }
 
     /// <summary>The yield guard proved a cell wrong: retract its keys (no replacement).</summary>
@@ -209,30 +218,11 @@ public sealed partial class DigCellCorrections
         var at = _time.GetUtcNow();
         string stamp = at.ToLocalTime().ToString("MM-dd HH:mm");
         static string F(WPos p) => $"{p.X},{p.Y},{p.Z}";
-        static bool Names(string text, WPos p) => Regex.IsMatch(text, $@"(?<![\d-]){p.X}\s*,\s*{p.Y}\s*,\s*{p.Z}(?!\d)");
         string line = "";
         _memory!.UpsertStructure(structure, s =>
         {
             int version = s.History.Count + 2; // v1 = as first taught
-            foreach (var p in stale)
-            {
-                foreach (var k in s.KeyBlocks.Where(k => k.X == p.X && k.Y == p.Y && k.Z == p.Z && DigCells.IsDigLabel(k.Label)).ToList())
-                {
-                    s.KeyBlocks.Remove(k);
-                    s.RetiredKeys.Add(new KeyBlock { Label = $"{k.Label} [retracted v{version} {stamp} by {by}: {why}]", X = k.X, Y = k.Y, Z = k.Z });
-                }
-                // Steps/notes that point at a retracted cell are history now, not instructions.
-                foreach (var st in s.Steps.Where(x => Names(x, p)).ToList())
-                {
-                    s.Steps.Remove(st);
-                    s.History.Add($"v{version - 1} step (retracted {stamp}): {st}");
-                }
-                if (s.Note is { } note && Names(note, p))
-                {
-                    s.History.Add($"v{version - 1} note (retracted {stamp}): {note}");
-                    s.Note = Regex.Replace(note, $@"(?<![\d-]){p.X}\s*,\s*{p.Y}\s*,\s*{p.Z}(?!\d)", $"{F(p)} (retracted: wrong cell)");
-                }
-            }
+            foreach (var p in stale) RetractCell(s, p, version, stamp, $"by {by}: {why}");
             foreach (var p in added)
                 s.KeyBlocks.Add(new KeyBlock { Label = $"mine_here (taught by {by}, v{version})", X = p.X, Y = p.Y, Z = p.Z });
             var digs = s.KeyBlocks.Where(k => DigCells.IsDigLabel(k.Label)).Select(k => $"{k.X},{k.Y},{k.Z}").ToList();
@@ -247,4 +237,27 @@ public sealed partial class DigCellCorrections
         try { Changed?.Invoke($"{structure}: {line}"); } catch (Exception) { }
         return line;
     }
+
+    /// <summary>A wrong dig cell leaves the structure: its keys retire (labelled with the version and why), and steps/notes that
+    /// point at it are history now, not instructions.</summary>
+    private static void RetractCell(Structure s, WPos p, int version, string stamp, string byWhy)
+    {
+        foreach (var k in s.KeyBlocks.Where(k => k.X == p.X && k.Y == p.Y && k.Z == p.Z && DigCells.IsDigLabel(k.Label)).ToList())
+        {
+            s.KeyBlocks.Remove(k);
+            s.RetiredKeys.Add(new KeyBlock { Label = $"{k.Label} [retracted v{version} {stamp} {byWhy}]", X = k.X, Y = k.Y, Z = k.Z });
+        }
+        foreach (var st in s.Steps.Where(x => NamesPos(x, p)).ToList())
+        {
+            s.Steps.Remove(st);
+            s.History.Add($"v{version - 1} step (retracted {stamp}): {st}");
+        }
+        if (s.Note is { } note && NamesPos(note, p))
+        {
+            s.History.Add($"v{version - 1} note (retracted {stamp}): {note}");
+            s.Note = Regex.Replace(note, $@"(?<![\d-]){p.X}\s*,\s*{p.Y}\s*,\s*{p.Z}(?!\d)", $"{p.X},{p.Y},{p.Z} (retracted: wrong cell)");
+        }
+    }
+
+    private static bool NamesPos(string text, WPos p) => Regex.IsMatch(text, $@"(?<![\d-]){p.X}\s*,\s*{p.Y}\s*,\s*{p.Z}(?!\d)");
 }

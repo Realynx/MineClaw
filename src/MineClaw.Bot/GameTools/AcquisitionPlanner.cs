@@ -56,10 +56,8 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         try
         {
             var (got, kind) = await GetNeedAsync(need, ct).ConfigureAwait(false);
-            if (got == null && _shortfall == null && kind is { Craftable.Length: > 0 })
-                _shortfall = NewCrafter().Shortfall(kind.Craftable[0], -1, 1); // what a stone one still lacks
-            return Result(top, got != null, got ?? _shortfall
-                ?? $"no {need} (inventory, chests, hive, crafting{(need.Depth == AcquireDepth.Full ? ", bootstrap" : "")})");
+            if (got == null) NoteToolShortfall(kind);
+            return Result(top, got != null, got ?? _shortfall ?? NoneText(need));
         }
         catch (OutOfBudget e) { return Result(top, false, e.Message); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return Result(top, false, "cancelled"); }
@@ -70,6 +68,15 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
                 try { await c.CloseWindowAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* best effort */ }
         }
     }
+
+    /// <summary>What a stone one of the tool kind still lacks, when nothing better explained the miss.</summary>
+    private void NoteToolShortfall(Loadout.Kind? kind)
+    {
+        if (_shortfall == null && kind is { Craftable.Length: > 0 }) _shortfall = NewCrafter().Shortfall(kind.Craftable[0], -1, 1);
+    }
+
+    private static string NoneText(Need need) =>
+        $"no {need} (inventory, chests, hive, crafting{(need.Depth == AcquireDepth.Full ? ", bootstrap" : "")})";
 
     /// <summary>A tool kind or an item (by name, with its variant); an unknown name is out of budget.</summary>
     private async Task<(string? Got, Loadout.Kind? Kind)> GetNeedAsync(Need need, CancellationToken ct)

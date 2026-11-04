@@ -229,12 +229,7 @@ public static class ChestStore
                 var p = new BlockPos(near.X + dx, near.Y + dy, near.Z + dz);
                 if (ChestSpot(c, p)) spots.Add(p);
             }
-        if (spots.Count == 0) return null;
-        if (w.Inventory.CountItem(Blocks.Chest) <= 0)
-        {
-            var made = await new Crafter(c) { Observations = obs }.CraftAsync("chest", 1, ct).ConfigureAwait(false);
-            if (!made.Ok || w.Inventory.CountItem(Blocks.Chest) <= 0) return null;
-        }
+        if (spots.Count == 0 || !await HaveChestAsync(c, obs, ct).ConfigureAwait(false)) return null;
         var me = w.Player.Position;
         foreach (var p in spots.OrderBy(s => s.Center.DistanceSquaredTo(me)).Take(4))
         {
@@ -243,6 +238,14 @@ public static class ChestStore
             if (r.Ok && Ids1122.IsChest(w.GetBlock(p))) return p;
         }
         return null;
+    }
+
+    /// <summary>A chest carried, or crafted now.</summary>
+    private static async Task<bool> HaveChestAsync(IGameClient c, ObservationStore? obs, CancellationToken ct)
+    {
+        if (c.World.Inventory.CountItem(Blocks.Chest) > 0) return true;
+        var made = await new Crafter(c) { Observations = obs }.CraftAsync("chest", 1, ct).ConfigureAwait(false);
+        return made.Ok && c.World.Inventory.CountItem(Blocks.Chest) > 0;
     }
 
     /// <summary>Two free cells on solid ground, no chest beside (it would pair), no fluid beside or under, not protected.</summary>

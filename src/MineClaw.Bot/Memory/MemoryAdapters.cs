@@ -107,13 +107,7 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
     {
         // Only places in the bot's dimension: a nether waypoint's coordinates mean nothing here (goto plans portals instead).
         if (memory.GetWaypoint(name) is { } w) return w.Dimension == Dim ? new WPos(w.X, w.Y, w.Z) : null;
-        if (memory.GetStructure(name) is { } s && s.Dimension == Dim)
-        {
-            if (keyHint != null && s.KeyBlocks.FirstOrDefault(k => k.Label.Contains(keyHint, StringComparison.OrdinalIgnoreCase)) is { } kb)
-                return new WPos(kb.X, kb.Y, kb.Z);
-            if (s.KeyBlocks.Count > 0 && s.Min == null) return new WPos(s.KeyBlocks[0].X, s.KeyBlocks[0].Y, s.KeyBlocks[0].Z);
-            if (s.Min is { } m) return ToW(m);
-        }
+        if (memory.GetStructure(name) is { } s && s.Dimension == Dim && StructureSpot(s, keyHint) is { } spot) return spot;
         // Indexed world: "cobble_gen", "chest", "furnace", "farm"... → the nearest one.
         if (observations == null || IndexKinds.FromAlias(name) is not { } kind) return null;
         var here = position?.Invoke() ?? new WPos(0, 64, 0);
@@ -121,26 +115,43 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
         return row == null ? null : RowPosition(row, keyHint);
     }
 
+    /// <summary>A saved structure's spot: the key block the hint names, else its first key block (no box), else its min corner.</summary>
+    private static WPos? StructureSpot(Structure s, string? keyHint)
+    {
+        if (keyHint != null && s.KeyBlocks.FirstOrDefault(k => k.Label.Contains(keyHint, StringComparison.OrdinalIgnoreCase)) is { } kb)
+            return new WPos(kb.X, kb.Y, kb.Z);
+        if (s.KeyBlocks.Count > 0 && s.Min == null) return new WPos(s.KeyBlocks[0].X, s.KeyBlocks[0].Y, s.KeyBlocks[0].Z);
+        return s.Min is { } m ? ToW(m) : null;
+    }
+
     /// <summary>Best block of an observation for a purpose: generator dig cell (hint mine/output) or stand spot (hint stand).</summary>
     public static WPos? RowPosition(ObservationRow row, string? keyHint)
     {
-        if (row.FieldsJson is { } json)
-        {
-            try
-            {
-                var root = JsonDocument.Parse(json).RootElement;
-                string? field = keyHint?.ToLowerInvariant() switch { "stand" => "stand", "mine" or "output" or "dig" => "dig", _ => row.Kind == IndexKinds.Generator ? "dig" : null };
-                if (field != null && root.TryGetProperty(field, out var v))
-                {
-                    var arr = v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0 && v[0].ValueKind == JsonValueKind.Array ? v[0] : v;
-                    if (arr.ValueKind == JsonValueKind.Array && arr.GetArrayLength() == 3)
-                        return new WPos(arr[0].GetInt32(), arr[1].GetInt32(), arr[2].GetInt32());
-                }
-            }
-            catch (JsonException) { }
-        }
+        if (row.FieldsJson is { } json && FieldPosition(json, PositionField(row, keyHint)) is { } fromFields) return fromFields;
         if (Locations.ParseCoords(row.Key) is { } k) return k;
         return row.Bounds is { } b ? new WPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ)) : null;
+    }
+
+    /// <summary>"stand" for a stand hint, "dig" for a mine/output/dig hint (and a generator by default), else none.</summary>
+    private static string? PositionField(ObservationRow row, string? keyHint) => keyHint?.ToLowerInvariant() switch
+    {
+        "stand" => "stand",
+        "mine" or "output" or "dig" => "dig",
+        _ => row.Kind == IndexKinds.Generator ? "dig" : null,
+    };
+
+    /// <summary>The x,y,z the row's fields hold under <paramref name="field"/> (the first of a list), or null.</summary>
+    private static WPos? FieldPosition(string json, string? field)
+    {
+        if (field == null) return null;
+        try
+        {
+            var root = JsonDocument.Parse(json).RootElement;
+            if (!root.TryGetProperty(field, out var v)) return null;
+            var arr = v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0 && v[0].ValueKind == JsonValueKind.Array ? v[0] : v;
+            return arr.ValueKind == JsonValueKind.Array && arr.GetArrayLength() == 3 ? new WPos(arr[0].GetInt32(), arr[1].GetInt32(), arr[2].GetInt32()) : null;
+        }
+        catch (JsonException) { return null; }
     }
 
     public IReadOnlyList<WPos> Positions(string name)
@@ -149,18 +160,21 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
         if (s != null && s.Dimension != Dim) return [];
         if (s == null)
         {
-            if (observations != null && IndexKinds.FromAlias(name) is IndexKinds.Chest)
-            {
-                var here = position?.Invoke() ?? new WPos(0, 64, 0);
-                var chests = observations.Nearest(IndexKinds.Chest, here.X, here.Y, here.Z, 8, 24).Select(t => RowPosition(t.Row, null))
-                    .Where(p => p != null).Select(p => p!.Value).ToList();
-                if (chests.Count > 0) return chests;
-            }
+            if (NearbyChests(name) is { Count: > 0 } chests) return chests;
             return Resolve(name) is { } p ? [p] : [];
         }
         var list = s.KeyBlocks.Select(k => new WPos(k.X, k.Y, k.Z)).ToList();
         if (list.Count == 0 && s.Min != null) list.Add(ToW(s.Min));
         return list;
+    }
+
+    /// <summary>"chest(s)": the indexed chests near me (up to 8 within 24), or null.</summary>
+    private List<WPos>? NearbyChests(string name)
+    {
+        if (observations == null || IndexKinds.FromAlias(name) is not IndexKinds.Chest) return null;
+        var here = position?.Invoke() ?? new WPos(0, 64, 0);
+        return observations.Nearest(IndexKinds.Chest, here.X, here.Y, here.Z, 8, 24).Select(t => RowPosition(t.Row, null))
+            .Where(p => p != null).Select(p => p!.Value).ToList();
     }
 
     /// <summary>
@@ -199,6 +213,8 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
     [GeneratedRegex(@"^(?:reserve|keep|save)\s*:?\s+(?:the\s+|my\s+|our\s+)?([a-z_ ,]+?)\.?$", RegexOptions.IgnoreCase)]
     private static partial Regex ReserveLine();
 
+    private static readonly HashSet<string> ReserveSubjects = new(StringComparer.Ordinal) { "reserved", "reserve", "keep", "reserved_items", "reserved items" };
+
     /// <summary>Items memory says to keep: notes with subject "reserved"/"keep" (comma list), or "don't use the X" / "reserve X".</summary>
     public IReadOnlyCollection<string> ReservedItemNames()
     {
@@ -207,7 +223,7 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
         {
             foreach (var n in d.Notes)
             {
-                if (n.Subject.Trim().ToLowerInvariant() is "reserved" or "reserve" or "keep" or "reserved_items" or "reserved items")
+                if (ReserveSubjects.Contains(n.Subject.Trim().ToLowerInvariant()))
                     foreach (var part in n.Text.Split(',', ';')) Add(part);
                 if (DontUse().Match(n.Text) is { Success: true } m) Add(m.Groups[1].Value);
                 if (ReserveLine().Match(n.Text.Trim()) is { Success: true } r) foreach (var part in r.Groups[1].Value.Split(',')) Add(part);
