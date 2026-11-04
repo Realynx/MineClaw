@@ -11,34 +11,37 @@ import { fluidQuads, isFluid } from '../fluids';
 import type { Nb } from '../models/states';
 import { emissiveBeta, NO_TILE, tileFor, FOLIAGE_TINT, TILE_FIRE_A, TILE_FIRE_B, TILE_LAVA_FLOW, TILE_LAVA_STILL, TILE_PORTAL, TILE_WATER_FLOW, TILE_WATER_STILL, type TileRef } from './textures';
 
+/** RenderBlocks render types by b1.8.1 id (unlisted ids: 0, the standard cube). */
+const RENDER_TYPE_IDS: ReadonlyArray<readonly [number, readonly number[]]> = [
+  [-1, [0, 63, 68, 36]],
+  [1, [6, 30, 31, 32, 37, 38, 39, 40, 83]],
+  [2, [50, 75, 76]],
+  [3, [51]],
+  [4, [8, 9, 10, 11]],
+  [5, [55]],
+  [6, [59]],
+  [7, [64, 71]],
+  [8, [65]],
+  [9, [66, 27, 28]],
+  [10, [53, 67, 108, 109]],
+  [11, [85]],
+  [12, [69]],
+  [13, [81]],
+  [14, [26]],
+  [15, [93, 94]],
+  [16, [29, 33]],
+  [17, [34]],
+  [18, [101, 102]],
+  [19, [104, 105]],
+  [20, [106]],
+  [21, [107]],
+];
+const RENDER_TYPES = new Int8Array(256);
+for (const [type, ids] of RENDER_TYPE_IDS) for (const id of ids) RENDER_TYPES[id] = type;
+
 /** RenderBlocks render type of a b1.8.1 id (0 = standard cube; -1 = tile-entity model or invisible). */
 export function renderType(id: number): number {
-  switch (id) {
-    case 0: return -1;
-    case 6: case 30: case 31: case 32: case 37: case 38: case 39: case 40: case 83: return 1;
-    case 50: case 75: case 76: return 2;
-    case 51: return 3;
-    case 8: case 9: case 10: case 11: return 4;
-    case 55: return 5;
-    case 59: return 6;
-    case 64: case 71: return 7;
-    case 65: return 8;
-    case 66: case 27: case 28: return 9;
-    case 53: case 67: case 108: case 109: return 10;
-    case 85: return 11;
-    case 69: return 12;
-    case 81: return 13;
-    case 26: return 14;
-    case 93: case 94: return 15;
-    case 29: case 33: return 16;
-    case 34: return 17;
-    case 101: case 102: return 18;
-    case 104: case 105: return 19;
-    case 106: return 20;
-    case 107: return 21;
-    case 63: case 68: case 36: return -1;
-    default: return 0;
-  }
+  return RENDER_TYPES[id] ?? 0;
 }
 
 const PARTIAL_CUBE = new Set([44, 78, 70, 72, 60, 96, 92, 77, 90]);
@@ -66,6 +69,12 @@ export const opaqueBeta = (id: number) => id > 0 && id < 256 && classifyBeta(id)
 export type TileAverage = (tile: number) => number | null;
 
 const E = 1 / 16;
+/** Faces tagged in a cull mask are culled by the mesher against an opaque neighbour on that side (the C# `skip`). */
+const SKIP = 0b111111;
+/** A piston head's facing (0 down, 1 up, 2 north, 3 south, 4 west, 5 east) as a unit step. */
+const PISTON_N = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
+
+type BlockBuild = (b: BetaBuilder, id: number, meta: number, nb: Nb) => void;
 
 export class BetaBuilder {
   private out: Quad[] = [];
@@ -148,130 +157,169 @@ export class BetaBuilder {
     return q;
   }
 
+  /** The geometry of each render type (0, the standard cube, and −1, tile-entity models, are not here). */
+  private static readonly BY_RENDER_TYPE: ReadonlyArray<BlockBuild | undefined> = [
+    undefined,
+    (b, id, meta, nb) => b.crossed(nb, id, meta),
+    (b, id, meta) => b.torch(id, meta),
+    (b) => b.fire(),
+    (b, id, _meta, nb) => b.fluid(nb, id),
+    (b, _id, meta, nb) => b.wire(nb, meta),
+    (b, _id, meta) => b.crops(meta),
+    (b, id, meta) => b.door(id, meta),
+    (b, _id, meta) => b.ladder(meta),
+    (b, id, meta) => b.rail(id, meta),
+    (b, id, meta) => b.stairs(id, meta, SKIP),
+    (b, _id, _meta, nb) => b.fence(nb),
+    (b, _id, meta) => b.lever(meta),
+    (b, id, meta) => b.cactus(id, meta),
+    (b, _id, meta) => b.bed(meta, SKIP),
+    (b, id, meta) => b.repeater(id, meta, SKIP),
+    (b, id, meta) => b.piston(id, meta),
+    (b, _id, meta) => b.pistonHead(meta),
+    (b, id, _meta, nb) => b.pane(nb, id),
+    (b, _id, meta) => b.stem(meta),
+    (b, _id, meta) => b.vine(meta),
+    (b, _id, meta) => b.gate(meta),
+  ];
+
+  /** Standard-cube render types that are not full cubes (or not drawn: 36, the moving piston). */
+  private static readonly PARTIAL_BLOCKS = new Map<number, BlockBuild>([
+    [36, () => {}],
+    [44, (b, id, meta) => b.slab(id, meta)],
+    [78, (b, id, meta) => b.snow(id, meta)],
+    [70, (b, id, meta) => b.pressurePlate(id, meta)],
+    [72, (b, id, meta) => b.pressurePlate(id, meta)],
+    [60, (b, id, meta) => b.farmland(id, meta)],
+    [96, (b, id, meta) => b.trapdoor(id, meta)],
+    [92, (b, _id, meta) => b.cake(meta)],
+    [77, (b, _id, meta) => b.button(meta)],
+    [90, (b, _id, _meta, nb) => b.portal(nb)],
+  ]);
+
   build(id: number, meta: number, nb: Nb, out: Quad[]): void {
     this.out = out;
     this.id = id;
     this.meta = meta;
-    // Faces tagged in a cull mask are culled by the mesher against an opaque neighbour on that side (the C# `skip`).
-    const skip = 0b111111;
-    const N = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
-    const std = (f: number) => tileFor(id, meta, f, this.fancy);
-    switch (renderType(id)) {
-      case 1: return this.crossed(nb, id, meta);
-      case 2: return this.torch(id, meta);
-      case 3: return this.fire();
-      case 4: return this.fluid(nb, id);
-      case 5: return this.wire(nb, meta);
-      case 6: return this.crops(meta);
-      case 7: return this.door(id, meta);
-      case 8: {
-        const o = 0.05;
-        const t = 83;
-        switch (meta) {
-          case 5: this.plane([o, 1, 1, o, 0, 1, o, 0, 0, o, 1, 0], t, 0); break;
-          case 4: this.plane([1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o, 1, 1], t, 0); break;
-          case 3: this.plane([0, 1, o, 0, 0, o, 1, 0, o, 1, 1, o], t, 0); break;
-          default: this.plane([1, 1, 1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o], t, 0);
-        }
-        return;
-      }
-      case 9: return this.rail(id, meta);
-      case 10: return this.stairs(id, meta, skip);
-      case 11: return this.fence(nb);
-      case 12: return this.lever(meta);
-      case 13: {
-        // Top and bottom from the box; the sides are planes 1/16 inside the cell (the spines are transparent texels).
-        this.box(0, 0, 0, 1, 1, 1, std, Layer.Opaque, skip & 0b000011);
-        out.splice(out.length - 4, 4);
-        this.plane([1, 1, E, 1, 0, E, 0, 0, E, 0, 1, E], 70, 0, Layer.Cutout, 0.8);
-        this.plane([0, 1, 1 - E, 0, 0, 1 - E, 1, 0, 1 - E, 1, 1, 1 - E], 70, 0, Layer.Cutout, 0.8);
-        this.plane([E, 1, 0, E, 0, 0, E, 0, 1, E, 1, 1], 70, 0, Layer.Cutout, 0.6);
-        this.plane([1 - E, 1, 1, 1 - E, 0, 1, 1 - E, 0, 0, 1 - E, 1, 0], 70, 0, Layer.Cutout, 0.6);
-        return;
-      }
-      case 14: return this.bed(meta, skip);
-      case 15: return this.repeater(id, meta, skip);
-      case 16: {
-        const facing = meta & 7, ext = (meta & 8) !== 0;
-        this.box(0, 0, 0, 1, 1, 1, (f) => ref1(f === facing ? (ext ? 110 : id === 29 ? 106 : 107) : f === (facing ^ 1) ? 109 : 108), Layer.Opaque, skip);
-        return;
-      }
-      case 17: {
-        const [nx, ny, nz] = N[meta & 7];
-        const x0 = nx > 0 ? 0.75 : 0, x1 = nx < 0 ? 0.25 : 1, y0 = ny > 0 ? 0.75 : 0, y1 = ny < 0 ? 0.25 : 1, z0 = nz > 0 ? 0.75 : 0, z1 = nz < 0 ? 0.25 : 1;
-        this.box(x0, y0, z0, x1, y1, z1, () => ref1(107));
-        return;
-      }
-      case 18: return this.pane(nb, id);
-      case 19: {
-        const h = Math.min(1, (meta * 2 + 2) / 16);
-        const tint = ((meta * 32) << 16) | ((255 - meta * 8) << 8) | (meta * 4);
-        this.crossAt(0.5, 0, 0.5, h, 111, tint, [0, 1 - h], [1, 1]);
-        return;
-      }
-      case 20: return this.vine(meta);
-      case 21: return this.gate(meta);
-    }
+    const byType = BetaBuilder.BY_RENDER_TYPE[renderType(id)];
+    if (byType) return byType(this, id, meta, nb);
     if (id === 63 || id === 68) return this.sign(id, meta);
-    switch (id) {
-      case 36: return;
-      case 44:
-        if ((meta & 8) !== 0) this.box(0, 0.5, 0, 1, 1, 1, std, Layer.Opaque, skip & ~1);
-        else this.box(0, 0, 0, 1, 0.5, 1, std, Layer.Opaque, skip & ~2);
-        return;
-      case 78:
-        this.box(0, 0, 0, 1, ((meta & 7) + 1) / 8, 1, std, Layer.Opaque, skip & ~2);
-        return;
-      case 70:
-      case 72: {
-        const h = meta === 1 ? 1 / 32 : 1 / 16;
-        this.box(E, 0, E, 15 * E, h, 15 * E, std, Layer.Opaque, skip & 1);
-        return;
-      }
-      case 60:
-        this.box(0, 0, 0, 1, 15 * E, 1, std, Layer.Opaque, skip & ~2);
-        return;
-      case 96: {
-        const t = 3 * E;
-        if ((meta & 4) === 0) this.box(0, 0, 0, 1, t, 1, std, Layer.Cutout, skip & 1);
-        else
-          switch (meta & 3) {
-            case 0: this.box(0, 0, 1 - t, 1, 1, 1, std, Layer.Cutout); break;
-            case 1: this.box(0, 0, 0, 1, 1, t, std, Layer.Cutout); break;
-            case 2: this.box(1 - t, 0, 0, 1, 1, 1, std, Layer.Cutout); break;
-            default: this.box(0, 0, 0, t, 1, 1, std, Layer.Cutout);
-          }
-        return;
-      }
-      case 92: {
-        const x0 = (1 + meta * 2) / 16;
-        this.box(x0, 0, E, 15 * E, 0.5, 15 * E, (f) => ref1(f === 1 ? 121 : f === 0 ? 124 : f === 4 && meta > 0 ? 123 : 122), Layer.Cutout, skip & 1);
-        return;
-      }
-      case 77: {
-        const i1 = meta & 7;
-        const f3 = (meta & 8) !== 0 ? E : 0.125;
-        const a = 0.375, b = 0.625, c = 0.1875;
-        const bx: Record<number, number[]> = { 1: [0, a, 0.5 - c, f3, b, 0.5 + c], 2: [1 - f3, a, 0.5 - c, 1, b, 0.5 + c], 3: [0.5 - c, a, 0, 0.5 + c, b, f3] };
-        const v = bx[i1] ?? [0.5 - c, a, 1 - f3, 0.5 + c, b, 1];
-        this.box(v[0], v[1], v[2], v[3], v[4], v[5], () => ref1(1));
-        return;
-      }
-      case 90: {
-        const n = (dx: number) => nb.id(dx, 0, 0);
-        const alongX = n(-1) === 90 || n(-1) === 49 || n(1) === 90 || n(1) === 49;
-        const t = () => ref1(TILE_PORTAL);
-        if (alongX) this.box(0, 0, 0.375, 1, 1, 0.625, t, Layer.Translucent, skip);
-        else this.box(0.375, 0, 0, 0.625, 1, 1, t, Layer.Translucent, skip);
-        return;
-      }
-    }
-    // A full cube; glass/ice/spawners are culled against themselves by the mesher's self-cull flag.
+    const partial = BetaBuilder.PARTIAL_BLOCKS.get(id);
+    if (partial) return partial(this, id, meta, nb);
+    this.cube(id, meta, nb);
+  }
+
+  /** The block's own tiles (fancy or fast leaves). */
+  private std(id: number, meta: number): (f: number) => TileRef {
+    return (f: number) => tileFor(id, meta, f, this.fancy);
+  }
+
+  /** A full cube; glass/ice/spawners are culled against themselves by the mesher's self-cull flag. */
+  private cube(id: number, meta: number, nb: Nb): void {
     const shape = classifyBeta(id);
     const layer = shape === BetaShape.CutoutCube && !(id === 18 && !this.fancy) ? Layer.Cutout : shape === BetaShape.TranslucentCube ? Layer.Translucent : Layer.Opaque;
-    const tf = id === 54 ? (f: number) => ref1(chestTile(nb, f)) : std;
-    const qs = this.box(0, 0, 0, 1, 1, 1, tf, layer, skip);
+    const tf = id === 54 ? (f: number) => ref1(chestTile(nb, f)) : this.std(id, meta);
+    const qs = this.box(0, 0, 0, 1, 1, 1, tf, layer, SKIP);
     if (id === 79 && !this.textured) for (const q of qs) q.alpha = 0.62;
+  }
+
+  private ladder(meta: number): void {
+    const o = 0.05;
+    const t = 83;
+    switch (meta) {
+      case 5: this.plane([o, 1, 1, o, 0, 1, o, 0, 0, o, 1, 0], t, 0); break;
+      case 4: this.plane([1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o, 1, 1], t, 0); break;
+      case 3: this.plane([0, 1, o, 0, 0, o, 1, 0, o, 1, 1, o], t, 0); break;
+      default: this.plane([1, 1, 1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o], t, 0);
+    }
+  }
+
+  /** Top and bottom from the box; the sides are planes 1/16 inside the cell (the spines are transparent texels). */
+  private cactus(id: number, meta: number): void {
+    this.box(0, 0, 0, 1, 1, 1, this.std(id, meta), Layer.Opaque, SKIP & 0b000011);
+    this.out.splice(this.out.length - 4, 4);
+    this.plane([1, 1, E, 1, 0, E, 0, 0, E, 0, 1, E], 70, 0, Layer.Cutout, 0.8);
+    this.plane([0, 1, 1 - E, 0, 0, 1 - E, 1, 0, 1 - E, 1, 1, 1 - E], 70, 0, Layer.Cutout, 0.8);
+    this.plane([E, 1, 0, E, 0, 0, E, 0, 1, E, 1, 1], 70, 0, Layer.Cutout, 0.6);
+    this.plane([1 - E, 1, 1, 1 - E, 0, 1, 1 - E, 0, 0, 1 - E, 1, 0], 70, 0, Layer.Cutout, 0.6);
+  }
+
+  /** A piston base: its face (extended, sticky or plain), back and sides. */
+  private piston(id: number, meta: number): void {
+    const facing = meta & 7, ext = (meta & 8) !== 0;
+    const front = ext ? 110 : id === 29 ? 106 : 107;
+    this.box(0, 0, 0, 1, 1, 1, (f) => ref1(f === facing ? front : f === (facing ^ 1) ? 109 : 108), Layer.Opaque, SKIP);
+  }
+
+  /** A piston head: the quarter-block plate on its facing side. */
+  private pistonHead(meta: number): void {
+    const [nx, ny, nz] = PISTON_N[meta & 7];
+    const x0 = nx > 0 ? 0.75 : 0, x1 = nx < 0 ? 0.25 : 1, y0 = ny > 0 ? 0.75 : 0, y1 = ny < 0 ? 0.25 : 1, z0 = nz > 0 ? 0.75 : 0, z1 = nz < 0 ? 0.25 : 1;
+    this.box(x0, y0, z0, x1, y1, z1, () => ref1(107));
+  }
+
+  /** A pumpkin/melon stem: crossed planes growing with its age, green to yellow. */
+  private stem(meta: number): void {
+    const h = Math.min(1, (meta * 2 + 2) / 16);
+    const tint = ((meta * 32) << 16) | ((255 - meta * 8) << 8) | (meta * 4);
+    this.crossAt(0.5, 0, 0.5, h, 111, tint, [0, 1 - h], [1, 1]);
+  }
+
+  private slab(id: number, meta: number): void {
+    if ((meta & 8) !== 0) this.box(0, 0.5, 0, 1, 1, 1, this.std(id, meta), Layer.Opaque, SKIP & ~1);
+    else this.box(0, 0, 0, 1, 0.5, 1, this.std(id, meta), Layer.Opaque, SKIP & ~2);
+  }
+
+  private snow(id: number, meta: number): void {
+    this.box(0, 0, 0, 1, ((meta & 7) + 1) / 8, 1, this.std(id, meta), Layer.Opaque, SKIP & ~2);
+  }
+
+  private pressurePlate(id: number, meta: number): void {
+    const h = meta === 1 ? 1 / 32 : 1 / 16;
+    this.box(E, 0, E, 15 * E, h, 15 * E, this.std(id, meta), Layer.Opaque, SKIP & 1);
+  }
+
+  private farmland(id: number, meta: number): void {
+    this.box(0, 0, 0, 1, 15 * E, 1, this.std(id, meta), Layer.Opaque, SKIP & ~2);
+  }
+
+  /** A trapdoor: flat on the floor when shut, against its wall when open. */
+  private trapdoor(id: number, meta: number): void {
+    const t = 3 * E, std = this.std(id, meta);
+    if ((meta & 4) === 0) {
+      this.box(0, 0, 0, 1, t, 1, std, Layer.Cutout, SKIP & 1);
+      return;
+    }
+    switch (meta & 3) {
+      case 0: this.box(0, 0, 1 - t, 1, 1, 1, std, Layer.Cutout); break;
+      case 1: this.box(0, 0, 0, 1, 1, t, std, Layer.Cutout); break;
+      case 2: this.box(1 - t, 0, 0, 1, 1, 1, std, Layer.Cutout); break;
+      default: this.box(0, 0, 0, t, 1, 1, std, Layer.Cutout);
+    }
+  }
+
+  /** A cake, eaten from the west by its bites. */
+  private cake(meta: number): void {
+    const x0 = (1 + meta * 2) / 16;
+    this.box(x0, 0, E, 15 * E, 0.5, 15 * E, (f) => ref1(f === 1 ? 121 : f === 0 ? 124 : f === 4 && meta > 0 ? 123 : 122), Layer.Cutout, SKIP & 1);
+  }
+
+  /** A stone button on its wall, pressed in when powered. */
+  private button(meta: number): void {
+    const i1 = meta & 7;
+    const f3 = (meta & 8) !== 0 ? E : 0.125;
+    const a = 0.375, b = 0.625, c = 0.1875;
+    const bx: Record<number, number[]> = { 1: [0, a, 0.5 - c, f3, b, 0.5 + c], 2: [1 - f3, a, 0.5 - c, 1, b, 0.5 + c], 3: [0.5 - c, a, 0, 0.5 + c, b, f3] };
+    const v = bx[i1] ?? [0.5 - c, a, 1 - f3, 0.5 + c, b, 1];
+    this.box(v[0], v[1], v[2], v[3], v[4], v[5], () => ref1(1));
+  }
+
+  /** A portal pane along the frame it stands in (obsidian or more portal on its x sides: along x). */
+  private portal(nb: Nb): void {
+    const alongX = nb.id(-1, 0, 0) === 90 || nb.id(-1, 0, 0) === 49 || nb.id(1, 0, 0) === 90 || nb.id(1, 0, 0) === 49;
+    const t = () => ref1(TILE_PORTAL);
+    if (alongX) this.box(0, 0, 0.375, 1, 1, 0.625, t, Layer.Translucent, SKIP);
+    else this.box(0.375, 0, 0, 0.625, 1, 1, t, Layer.Translucent, SKIP);
   }
 
   // ------------------------------------------------------------------------------------------------------------ shapes
