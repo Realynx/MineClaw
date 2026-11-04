@@ -481,6 +481,17 @@ const spareToolsCopy = (t: NonNullable<StoryOptionsRequest['spareTools']>) => ({
 
 const SPEED_MULTIPLIER: Record<StorySpeed, number> = { normal: 1, fast: 2, faster: 3 };
 
+/** A time of day in ticks (an integer 0..23999). */
+const isTick = (t: unknown): t is number => typeof t === 'number' && Number.isInteger(t) && t >= 0 && t <= 23999;
+
+/** What a retry reopens: these builds (null: all) and only these cells of them (null: all their failed cells). */
+function retryTargets(body: Extract<StoryBuildRequest, { op: 'retry' | 'retry_all' }>) {
+  if (body.op !== 'retry') return { want: null, cells: null };
+  const want = new Set([body.id, ...(body.ids ?? [])].filter((x) => x !== undefined).map(String));
+  const cells = body.cells ? new Set(body.cells.map((p) => p.join(','))) : null;
+  return { want, cells };
+}
+
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
 
@@ -726,8 +737,7 @@ export class StorySim {
   /** Sets every colony's time of day (as the bot does through its op account): at most once a second. */
   time(body: { time?: unknown }) {
     const t = body?.time;
-    if (typeof t !== 'number' || !Number.isInteger(t) || t < 0 || t > 23999)
-      throw Object.assign(new Error('time must be an integer 0..23999'), { status: 400 });
+    if (!isTick(t)) throw Object.assign(new Error('time must be an integer 0..23999'), { status: 400 });
     const tc = this.timeControl();
     if (!tc.available) throw Object.assign(new Error('no op account'), { status: 409 });
     const now = this.now();
@@ -1862,10 +1872,16 @@ export class StorySim {
   }
 
   /** Failed (blocked) cells start over: all of a build's, the given ones, or every build's. */
+  /** A blocked build is queued again (its reason cleared). */
+  private unblockBuild(c: Colony, f: Fn<StoryBuild> | undefined): void {
+    if (!f || f.v.status !== 'blocked') return;
+    f.v.status = 'queued';
+    f.v.reason = null;
+    f.rev = this.bump(c);
+  }
+
   private retryBuilds(c: Colony, body: Extract<StoryBuildRequest, { op: 'retry' | 'retry_all' }>): BuildsAck {
-    const want =
-      body.op === 'retry' ? new Set([body.id, ...(body.ids ?? [])].filter((x) => x !== undefined).map(String)) : null;
-    const cells = body.op === 'retry' && body.cells ? new Set(body.cells.map((p) => p.join(','))) : null;
+    const { want, cells } = retryTargets(body);
     if (want && ![...c.builds.keys()].some((k) => want.has(String(k))))
       throw Object.assign(new Error('no such build'), { status: 400 });
     let reopened = 0;
@@ -1874,12 +1890,7 @@ export class StorySim {
       if (want && !want.has(String(bid))) continue;
       ids.push(bid);
       reopened += reopenCells(list, cells);
-      const f = c.builds.get(bid);
-      if (f && f.v.status === 'blocked') {
-        f.v.status = 'queued';
-        f.v.reason = null;
-        f.rev = this.bump(c);
-      }
+      this.unblockBuild(c, c.builds.get(bid));
     }
     c.ghostsRev = this.bump(c);
     this.plan(c);
@@ -2671,26 +2682,28 @@ export class StorySim {
 
   /** Advances every colony by `dtMs`. */
   step(dtMs: number): void {
-    for (const c of this.colonies.values()) {
-      if (c.released) continue;
-      const before = c.rev;
-      c.tod = (c.tod + dtMs / 50) % 24000;
-      if (c.builds.size) this.plan(c); // stock and ghosts move: the builds' materials and auto bills follow
-      for (const p of c.pawns.values()) {
-        if (p.p.online) continue;
-        // An offline pawn comes back when its re-add / login is through (backAt); one waiting for a seat stays out.
-        if (p.backAt !== null && p.backAt !== undefined && this.now() >= p.backAt) {
-          p.backAt = null;
-          p.p.online = true;
-          p.p.state = 'idle';
-          p.p.offlineReason = null;
-          p.rev = this.bump(c);
-        }
-      }
-      if (!c.paused) for (const p of c.pawns.values()) if (p.p.online) this.stepPawn(c, p, dtMs);
-      this.prune(c);
-      if (c.rev !== before) this.emit(c);
-    }
+    for (const c of this.colonies.values()) if (!c.released) this.stepColony(c, dtMs);
+  }
+
+  /** One colony's step: the clock, the builds' plan, pawns coming back, the pawns' work; listeners hear of a change. */
+  private stepColony(c: Colony, dtMs: number): void {
+    const before = c.rev;
+    c.tod = (c.tod + dtMs / 50) % 24000;
+    if (c.builds.size) this.plan(c); // stock and ghosts move: the builds' materials and auto bills follow
+    for (const p of c.pawns.values()) if (!p.p.online) this.comeBack(c, p);
+    if (!c.paused) for (const p of c.pawns.values()) if (p.p.online) this.stepPawn(c, p, dtMs);
+    this.prune(c);
+    if (c.rev !== before) this.emit(c);
+  }
+
+  /** An offline pawn comes back when its re-add / login is through (backAt); one waiting for a seat stays out. */
+  private comeBack(c: Colony, p: PawnSim): void {
+    if (p.backAt === null || p.backAt === undefined || this.now() < p.backAt) return;
+    p.backAt = null;
+    p.p.online = true;
+    p.p.state = 'idle';
+    p.p.offlineReason = null;
+    p.rev = this.bump(c);
   }
 
   private emit(c: Colony): void {
