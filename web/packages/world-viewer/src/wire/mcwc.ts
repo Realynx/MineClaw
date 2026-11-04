@@ -50,37 +50,69 @@ export function decodeMcwc(buf: ArrayBuffer | Uint8Array): McwcPayload {
   const dim = dv.getInt32(8, true);
   const count = dv.getInt32(12, true);
   if (count < 0 || count > MCWC_MAX_COLUMNS) throw new McwcError(`column payload count ${count} out of range`);
-  const need = (at: number, k: number) => {
-    if (k < 0 || at + k > n) throw new McwcError('column payload truncated');
-  };
+  const c = new Cursor(bytes, dv, HEADER);
   const entries: McwcEntry[] = new Array(count);
-  let o = HEADER;
-  for (let i = 0; i < count; i++) {
-    need(o, 4 + 4 + 8 + 8 + 1 + 1);
-    const cx = dv.getInt32(o, true); o += 4;
-    const cz = dv.getInt32(o, true); o += 4;
-    const hash = dv.getBigInt64(o, true); o += 8;
-    const seenMs = Number(dv.getBigInt64(o, true)); o += 8;
-    const live = bytes[o++];
-    if (live > 1) throw new McwcError('column payload: bad live flag');
-    const nameLen = bytes[o++];
-    need(o, nameLen + 4);
-    const by = nameLen === 0 ? null : utf8.decode(bytes.subarray(o, o + nameLen)); o += nameLen;
-    const len = dv.getInt32(o, true); o += 4;
-    if (len < 0 || len > MCWC_MAX_COLUMN_BYTES) throw new McwcError(`column payload: column size ${len} out of range`);
-    need(o, len);
-    const data = bytes.subarray(o, o + len); o += len;
-    let light: Uint8Array | null = null;
-    if (version === MCWC_VERSION_LIGHT) {
-      need(o, 4);
-      const ll = dv.getInt32(o, true); o += 4;
-      if (ll < 0 || ll > MCWC_MAX_COLUMN_BYTES) throw new McwcError(`column payload: light size ${ll} out of range`);
-      need(o, ll);
-      if (ll > 0) light = bytes.subarray(o, o + ll);
-      o += ll;
-    }
-    entries[i] = { cx, cz, hash, seenMs, live: live === 1, by, data, light };
-  }
-  if (o !== n) throw new McwcError('column payload: trailing bytes');
+  for (let i = 0; i < count; i++) entries[i] = readEntry(c, version === MCWC_VERSION_LIGHT);
+  if (c.o !== n) throw new McwcError('column payload: trailing bytes');
   return { version, dim, entries };
+}
+
+/** A read position in a payload; every read past its end throws "truncated". */
+class Cursor {
+  constructor(
+    readonly bytes: Uint8Array,
+    readonly dv: DataView,
+    public o: number,
+  ) {}
+  need(k: number): void {
+    if (k < 0 || this.o + k > this.bytes.byteLength) throw new McwcError('column payload truncated');
+  }
+  i32(): number {
+    const v = this.dv.getInt32(this.o, true);
+    this.o += 4;
+    return v;
+  }
+  i64(): bigint {
+    const v = this.dv.getBigInt64(this.o, true);
+    this.o += 8;
+    return v;
+  }
+  u8(): number {
+    return this.bytes[this.o++];
+  }
+  take(len: number): Uint8Array {
+    const v = this.bytes.subarray(this.o, this.o + len);
+    this.o += len;
+    return v;
+  }
+}
+
+function readEntry(c: Cursor, withLight: boolean): McwcEntry {
+  c.need(4 + 4 + 8 + 8 + 1 + 1);
+  const cx = c.i32();
+  const cz = c.i32();
+  const hash = c.i64();
+  const seenMs = Number(c.i64());
+  const live = c.u8();
+  if (live > 1) throw new McwcError('column payload: bad live flag');
+  const nameLen = c.u8();
+  c.need(nameLen + 4);
+  const name = c.take(nameLen);
+  const by = nameLen === 0 ? null : utf8.decode(name);
+  const len = c.i32();
+  if (len < 0 || len > MCWC_MAX_COLUMN_BYTES) throw new McwcError(`column payload: column size ${len} out of range`);
+  c.need(len);
+  const data = c.take(len);
+  const light = withLight ? readLight(c) : null;
+  return { cx, cz, hash, seenMs, live: live === 1, by, data, light };
+}
+
+/** A version-2 column's light bytes (null when empty). */
+function readLight(c: Cursor): Uint8Array | null {
+  c.need(4);
+  const ll = c.i32();
+  if (ll < 0 || ll > MCWC_MAX_COLUMN_BYTES) throw new McwcError(`column payload: light size ${ll} out of range`);
+  c.need(ll);
+  const light = c.take(ll);
+  return ll > 0 ? light : null;
 }
