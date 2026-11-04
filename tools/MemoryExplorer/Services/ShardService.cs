@@ -56,18 +56,20 @@ public static class ShardService
     public static string ShardsDir => System.IO.Path.Combine(ExplorerPaths.DataDir, "shards");
 
     /// <summary>Browser kind key → shard record kind (null = not exportable: world observations, chat, activity, routines).</summary>
-    public static string? KindOf(string browserKey) => browserKey switch
+    public static string? KindOf(string browserKey) => browserKey != null && ShardKindOf.TryGetValue(browserKey, out var kind) ? kind : null;
+
+    private static readonly Dictionary<string, string> ShardKindOf = new(StringComparer.Ordinal)
     {
-        "facts" => ShardKinds.Fact,
-        "claims" or "beliefs" => ShardKinds.Claim,
-        "personality" => ShardKinds.Trait,
-        "structures" => ShardKinds.Structure,
-        "places" => ShardKinds.Place,
-        "lessons" => ShardKinds.Lesson,
-        "episodes" => ShardKinds.Episode,
-        "recipes" => ShardKinds.GameData,
-        "knowledge" => ShardKinds.Knowledge,
-        _ => null,
+        ["facts"] = ShardKinds.Fact,
+        ["claims"] = ShardKinds.Claim,
+        ["beliefs"] = ShardKinds.Claim,
+        ["personality"] = ShardKinds.Trait,
+        ["structures"] = ShardKinds.Structure,
+        ["places"] = ShardKinds.Place,
+        ["lessons"] = ShardKinds.Lesson,
+        ["episodes"] = ShardKinds.Episode,
+        ["recipes"] = ShardKinds.GameData,
+        ["knowledge"] = ShardKinds.Knowledge,
     };
 
     /// <summary>"PoofimaFox (fox, foxy, master)" style choices: every configured player with the names the bot and players use.</summary>
@@ -138,38 +140,54 @@ public static class ShardService
         foreach (var e in index.Packs)
         {
             var path = System.IO.Path.Combine(dir, e.File);
-            string? error = null;
-            if (!File.Exists(path)) error = "missing: " + e.File + " (rebuild with tools/ShardPacks)";
-            else
-                try
-                {
-                    var m = ShardFile.ReadManifest(path);
-                    if (m.ContentHash != e.ContentHash) error = "the file doesn't match index.json (rebuild with tools/ShardPacks)";
-                }
-                catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { error = ex.Message; }
-            list.Add(new DefaultPackInfo(e, path, error));
+            list.Add(new DefaultPackInfo(e, path, IndexedPackError(path, e)));
         }
         foreach (var path in Directory.EnumerateFiles(dir, "*" + ShardFile.Extension).Order(StringComparer.OrdinalIgnoreCase))
-        {
-            var file = System.IO.Path.GetFileName(path);
-            if (index.Packs.Any(p => p.File.Equals(file, StringComparison.OrdinalIgnoreCase))) continue;
-            try
-            {
-                var m = ShardFile.ReadManifest(path);
-                var pi = m.Pack;
-                list.Add(new DefaultPackInfo(new PackIndexEntry
-                {
-                    File = file, Name = pi?.Name ?? m.Name, Kind = pi?.Kind ?? (m.Selection.PackMode != null ? ShardPackInfo.ModeKind : ShardPackInfo.VersionKind),
-                    Version = pi?.Version ?? m.PackVersion ?? "?", Mode = pi?.Mode ?? m.Selection.PackMode, Description = m.Description,
-                    Counts = new SortedDictionary<string, int>(m.Counts, StringComparer.Ordinal), Records = m.Total, Bytes = new FileInfo(path).Length,
-                    Vectors = m.Embeddings?.Count ?? 0, EmbeddingModel = m.Embeddings?.Model, Dims = m.Embeddings?.Dims ?? 0, Files = pi?.Files ?? [],
-                    SourceHash = pi?.SourceHash, ContentHash = m.ContentHash, Builder = pi?.Builder ?? "not in index.json",
-                }, path, m.Kind == "pack" ? null : "not a knowledge pack"));
-            }
-            catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { }
-        }
+            if (UnindexedPack(index, path) is { } info) list.Add(info);
         return list.OrderBy(p => p.IsMode).ThenBy(p => p.Entry.Version, StringComparer.Ordinal).ThenBy(p => p.Name, StringComparer.Ordinal).ToList();
     }
+
+    private static bool Unreadable(Exception ex) => ex is ShardFormatException or IOException or InvalidDataException;
+
+    /// <summary>Why an index.json entry's file can't be used (missing, not matching the index, unreadable); null = fine.</summary>
+    private static string? IndexedPackError(string path, PackIndexEntry e)
+    {
+        if (!File.Exists(path)) return "missing: " + e.File + " (rebuild with tools/ShardPacks)";
+        try
+        {
+            var m = ShardFile.ReadManifest(path);
+            return m.ContentHash != e.ContentHash ? "the file doesn't match index.json (rebuild with tools/ShardPacks)" : null;
+        }
+        catch (Exception ex) when (Unreadable(ex)) { return ex.Message; }
+    }
+
+    /// <summary>A shard in the folder that index.json doesn't list, described from its own manifest (null = listed, or unreadable).</summary>
+    private static DefaultPackInfo? UnindexedPack(PackIndex index, string path)
+    {
+        var file = System.IO.Path.GetFileName(path);
+        if (index.Packs.Any(p => p.File.Equals(file, StringComparison.OrdinalIgnoreCase))) return null;
+        try
+        {
+            var m = ShardFile.ReadManifest(path);
+            return new DefaultPackInfo(EntryOf(file, path, m), path, m.Kind == "pack" ? null : "not a knowledge pack");
+        }
+        catch (Exception ex) when (Unreadable(ex)) { return null; }
+    }
+
+    private static PackIndexEntry EntryOf(string file, string path, ShardManifest m)
+    {
+        var pi = m.Pack;
+        return new PackIndexEntry
+        {
+            File = file, Name = pi?.Name ?? m.Name, Kind = PackKindOf(m),
+            Version = pi?.Version ?? m.PackVersion ?? "?", Mode = pi?.Mode ?? m.Selection.PackMode, Description = m.Description,
+            Counts = new SortedDictionary<string, int>(m.Counts, StringComparer.Ordinal), Records = m.Total, Bytes = new FileInfo(path).Length,
+            Vectors = m.Embeddings?.Count ?? 0, EmbeddingModel = m.Embeddings?.Model, Dims = m.Embeddings?.Dims ?? 0, Files = pi?.Files ?? [],
+            SourceHash = pi?.SourceHash, ContentHash = m.ContentHash, Builder = pi?.Builder ?? "not in index.json",
+        };
+    }
+
+    private static string PackKindOf(ShardManifest m) => m.Pack?.Kind ?? (m.Selection.PackMode != null ? ShardPackInfo.ModeKind : ShardPackInfo.VersionKind);
 
     /// <summary>A file name for a new shard: data/shards/{slug}-{yyyyMMdd-HHmm}.mcshard.</summary>
     public static string SuggestPath(string name)

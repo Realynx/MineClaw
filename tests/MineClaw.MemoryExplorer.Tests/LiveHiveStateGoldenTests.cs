@@ -19,6 +19,7 @@ namespace MineClaw.MemoryExplorer.Tests;
 /// cells, and the vision panel's state after scripted polls and compose-from-sheet. The dumps that format local times are
 /// compared only in the time zone they were recorded in. Set EXPLORER_GOLDEN_OUT to a directory to write the dumps out.
 /// </summary>
+[Collection("avalonia")] // the vision panel is an Avalonia view model: kept off the shared dispatcher's toes
 public sealed class LiveHiveStateGoldenTests(ITestOutputHelper output)
 {
     private static string Hash(string s) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s)))[..20];
