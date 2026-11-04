@@ -1040,7 +1040,7 @@ export class EntityLayer {
   private rootFor(d: Drawn, now: number, body: number, sneaking: boolean): RootParams {
     const def = d.model!.built.def;
     // RenderEnderman: a screaming enderman jitters (gaussian 0.02 on x and z).
-    const screaming = d.look?.model === 'enderman' && d.v.has('screaming');
+    const screaming = isScreaming(d);
     const isPlayer = d.bot || d.ent?.kind === 'player';
     return {
       x: d.x + (screaming ? gaussian() * 0.02 : 0),
@@ -1797,67 +1797,105 @@ export class EntityLayer {
   }
 
   private pushDetail(d: Drawn, dist: number): void {
-    // No blob under spawner display mobs, hanging entities or the invisible.
-    if (this.shadows && dist < this.detailDistance && !d.display && !d.hang && !d.invisible && !d.parent) {
-      const r = d.kind === 'item' ? 0.15 : Math.min(3, Math.max(0.25, d.w * 0.5 + 0.1));
-      this.shadowDraw.push(d.x, d.y, d.z, r * deathScale(d.motion, this.now), d.motion.deadAt ? 0.2 : 0.45);
+    if (this.castsShadow(d, dist)) this.pushShadow(d);
+    if (d.kind === 'model') this.pushModel(d);
+    else this.pushObject(d);
+  }
+
+  /** No blob under spawner display mobs, hanging entities, riders or the invisible. */
+  private castsShadow(d: Drawn, dist: number): boolean {
+    return this.shadows && dist < this.detailDistance && !d.display && !d.hang && !d.invisible && !d.parent;
+  }
+
+  private pushShadow(d: Drawn): void {
+    const r = d.kind === 'item' ? 0.15 : Math.min(3, Math.max(0.25, d.w * 0.5 + 0.1));
+    this.shadowDraw.push(d.x, d.y, d.z, r * deathScale(d.motion, this.now), d.motion.deadAt ? 0.2 : 0.45);
+  }
+
+  /** A posed model: its body and layers, what it wears and holds, elytra and fire (a box without its texture). */
+  private pushModel(d: Drawn): void {
+    const e = d.model!, look = d.look!;
+    const tex = this.rect(look.texture);
+    if (!tex) return this.pushBox(d);
+    // Invisible (0x20): no body, but armour and held items still show (vanilla draws them).
+    if (!d.invisible) this.pushBody(d, e, look, tex);
+    if (e.built.parts.length <= CONTENT_SLOT) {
+      this.pushWorn(d, e);
+      this.pushModelExtras(d, e);
     }
-    if (d.kind === 'model') {
-      const e = d.model!, look = d.look!;
-      const tex = this.rect(look.texture);
-      if (!tex) return this.pushBox(d);
-      // Invisible (0x20): no body, but armour and held items still show (vanilla draws them).
-      if (!d.invisible) {
-        const i = this.base(d, 0, 0);
-        i.tex = tex;
-        tint(i, look.tint, d.bright);
-        if (!look.translucent) this.ghostFlags(d, i, e.opaque);
-        (look.translucent ? this.translucentOf(e) : e.opaque).push(i);
-        for (const l of look.layers ?? []) {
-          const lt = this.rect(l.texture);
-          if (!lt) continue;
-          const li = this.base(d, 0, l.layer ? (e.built.layers[l.layer] ?? 0) : 0);
-          li.tex = lt;
-          tint(li, l.tint, d.bright);
-          if (l.emissive) li.flags |= F_EMISSIVE;
-          if (l.scroll) li.flags |= F_SCROLL;
-          (l.translucent ? this.translucentOf(e) : e.opaque).push(li);
-        }
-      }
-      if (e.built.parts.length <= CONTENT_SLOT) {
-        if (d.armor) this.pushArmor(d, e);
-        if (d.held) this.pushItem(d, d.held, HELD_SLOT, false, d.heldGlint);
-        if (d.heldOff) this.pushItem(d, d.heldOff, OFF_SLOT, false, d.heldOffGlint);
-        if (d.skull >= 0) this.pushSkull(d);
-        else if (d.headBlock) this.pushItem(d, d.headBlock, HEAD_SLOT, false, d.headGlint);
-        else if (d.headItem) this.pushItem(d, d.headItem, HEAD_SLOT, false, d.headGlint);
-        else if (this.snowPumpkin(d)) {
-          const l = this.pumpkinLook();
-          if (l) this.pushItem(d, l, HEAD_SLOT, false);
-        }
-        if (this.mushrooms(d) && e.built.parts.length <= MUSHROOM_SLOT) {
-          const l = this.mushroomLook();
-          if (l) for (let s = 0; s < 6; s++) this.pushItem(d, l, MUSHROOM_SLOT + s, false);
-        }
-        if (d.item && d.look?.model === 'minecart') this.pushItem(d, d.item, CONTENT_SLOT, false);
-        if (d.carried && e.built.parts.length <= MUSHROOM_SLOT) {
-          if (d.carried.kind === 'cube') this.pushItem(d, d.carried, CONTENT_SLOT, false);
-          else for (let s = 0; s < 2; s++) this.pushItem(d, d.carried, MUSHROOM_SLOT + s, false);
-        }
-        if (d.roseAt && this.now - d.roseAt < 400 * 50 && e.built.parts.length <= MUSHROOM_SLOT) {
-          const l = this.roseLook();
-          if (l) for (let s = 0; s < 2; s++) this.pushItem(d, l, MUSHROOM_SLOT + s, false);
-        }
-      }
-      if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.pushElytra(d);
-      if (d.burning) this.pushFire(d);
-      return;
+    if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.pushElytra(d);
+    if (d.burning) this.pushFire(d);
+  }
+
+  private pushBody(d: Drawn, e: ModelEntry, look: Look, tex: [number, number, number, number]): void {
+    const i = this.base(d, 0, 0);
+    i.tex = tex;
+    tint(i, look.tint, d.bright);
+    if (!look.translucent) this.ghostFlags(d, i, e.opaque);
+    (look.translucent ? this.translucentOf(e) : e.opaque).push(i);
+    if (look.layers) for (const l of look.layers) this.pushLayer(d, e, l);
+  }
+
+  private pushLayer(d: Drawn, e: ModelEntry, l: NonNullable<Look['layers']>[number]): void {
+    const lt = this.rect(l.texture);
+    if (!lt) return;
+    const li = this.base(d, 0, l.layer ? (e.built.layers[l.layer] ?? 0) : 0);
+    li.tex = lt;
+    tint(li, l.tint, d.bright);
+    if (l.emissive) li.flags |= F_EMISSIVE;
+    if (l.scroll) li.flags |= F_SCROLL;
+    (l.translucent ? this.translucentOf(e) : e.opaque).push(li);
+  }
+
+  /** Armour, hand items and the head item (a skull, a block, a flat item, or a snow golem's pumpkin). */
+  private pushWorn(d: Drawn, e: ModelEntry): void {
+    if (d.armor) this.pushArmor(d, e);
+    if (d.held) this.pushItem(d, d.held, HELD_SLOT, false, d.heldGlint);
+    if (d.heldOff) this.pushItem(d, d.heldOff, OFF_SLOT, false, d.heldOffGlint);
+    if (d.skull >= 0) this.pushSkull(d);
+    else if (d.headBlock) this.pushItem(d, d.headBlock, HEAD_SLOT, false, d.headGlint);
+    else if (d.headItem) this.pushItem(d, d.headItem, HEAD_SLOT, false, d.headGlint);
+    else if (this.snowPumpkin(d)) {
+      const l = this.pumpkinLook();
+      if (l) this.pushItem(d, l, HEAD_SLOT, false);
     }
-    if (d.kind === 'item' && d.item) {
-      const n = copies(d.count, this.version === 'b1.8.1');
-      for (let k = 0; k < n; k++) this.pushItem(d, d.item, k, this.version === 'b1.8.1', d.itemGlint);
-    } else if (d.kind === 'block' && d.item) this.pushItem(d, d.item, 0, false);
-    else if (d.kind === 'sprite' && d.item) this.pushItem(d, d.item, 0, true);
+  }
+
+  /** Mooshroom mushrooms, minecart contents, an enderman's block, an iron golem's rose. */
+  private pushModelExtras(d: Drawn, e: ModelEntry): void {
+    const roomy = e.built.parts.length <= MUSHROOM_SLOT;
+    if (this.mushrooms(d) && roomy) this.pushPlanes(d, this.mushroomLook(), 6);
+    if (d.item && d.look?.model === 'minecart') this.pushItem(d, d.item, CONTENT_SLOT, false);
+    if (d.carried && roomy) this.pushCarried(d, d.carried);
+    if (this.holdsRose(d) && roomy) this.pushPlanes(d, this.roseLook(), 2);
+  }
+
+  /** `n` crossed-plane sprites from the first mushroom slot. */
+  private pushPlanes(d: Drawn, l: ItemLook | null, n: number): void {
+    if (l) for (let s = 0; s < n; s++) this.pushItem(d, l, MUSHROOM_SLOT + s, false);
+  }
+
+  /** LayerHeldBlock: a cube, or a plant as two crossed planes. */
+  private pushCarried(d: Drawn, carried: ItemLook): void {
+    if (carried.kind === 'cube') this.pushItem(d, carried, CONTENT_SLOT, false);
+    else this.pushPlanes(d, carried, 2);
+  }
+
+  /** LayerIronGolemFlower: for 400 ticks from when the wire first said so. */
+  private holdsRose(d: Drawn): boolean {
+    return !!d.roseAt && this.now - d.roseAt < 400 * 50;
+  }
+
+  /** A dropped stack: 1–4 (b1.8.1) / 1–5 copies by its size, b1.8.1 ones as billboards. */
+  private pushDrop(d: Drawn, item: ItemLook): void {
+    const n = copies(d.count, this.version === 'b1.8.1');
+    for (let k = 0; k < n; k++) this.pushItem(d, item, k, this.version === 'b1.8.1', d.itemGlint);
+  }
+
+  /** Drops, falling blocks, fireworks, orbs, paintings, item frames; then fire. */
+  private pushObject(d: Drawn): void {
+    if (d.kind === 'item' && d.item) this.pushDrop(d, d.item);
+    else if ((d.kind === 'block' || d.kind === 'sprite') && d.item) this.pushItem(d, d.item, 0, d.kind === 'sprite');
     else if (d.kind === 'orb') this.pushOrb(d);
     else if (d.kind === 'painting') this.pushPainting(d);
     else if (d.kind === 'frame') this.pushFrame(d);
@@ -2227,6 +2265,10 @@ function creeperSwell(sc: [number, number, number], f: number): void {
   sc[0] *= h;
   sc[1] *= i;
   sc[2] *= h;
+}
+
+function isScreaming(d: Drawn): boolean {
+  return d.look?.model === 'enderman' && d.v.has('screaming');
 }
 
 /** RenderZombieVillager: a converting one shakes its yaw by cos(ticks · 3.25) · π/4 degrees. */
