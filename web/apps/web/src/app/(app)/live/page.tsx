@@ -48,6 +48,72 @@ function EventsCard() {
   );
 }
 
+type Status = ReturnType<typeof useStatus>['data'];
+type Bot = NonNullable<Status>['bots'][number];
+
+/** The bodies with the main one first, then by name. */
+function mainFirst(data: Status): Bot[] {
+  const main = data?.main;
+  return [...(data?.bots ?? [])].sort((a, b) => (a.name === main ? -1 : b.name === main ? 1 : a.name.localeCompare(b.name)));
+}
+
+/** The bot cards (skeletons while the hive answers; a note when no body is online). */
+function BotsGrid({ pending, bots, main, tree }: { pending: boolean; bots: Bot[]; main: string; tree: ReturnType<typeof useHiveIndex> }) {
+  return (
+    <WorldHost>
+      {pending ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {Array.from({ length: 4 }, (_, i) => (
+            <Skeleton key={i} className="h-[23rem] rounded-card" />
+          ))}
+        </div>
+      ) : (
+        <HiveGrid bots={bots} main={main} tree={tree} />
+      )}
+      {!pending && bots.length === 0 ? (
+        <Card>
+          <EmptyState title="No bots online" hint="Bodies appear here as soon as they connect." />
+        </Card>
+      ) : null}
+    </WorldHost>
+  );
+}
+
+/** The 3D world following a body (the first by default); a body clicked in it opens its panel. */
+function WorldView(p: {
+  bots: Bot[];
+  follow: string;
+  setFollow: (name: string) => void;
+  panel: string | null;
+  setPanel: (name: string | null) => void;
+}) {
+  const { bots, panel, setPanel, setFollow } = p;
+  const followed = p.follow || bots[0]?.name || '';
+  const closePanel = useCallback(() => setPanel(null), [setPanel]);
+  return (
+    <Card className="h-[min(74vh,52rem)] overflow-hidden">
+      <WorldHost>
+        {followed ? (
+          <WorldPane
+            follow={followed}
+            onBodyClick={setPanel}
+            overlay={panel ? <BodyPanel bot={panel} onClose={closePanel} className="absolute right-3 bottom-3 z-10 max-h-[calc(100%-4.5rem)]" /> : null}
+            toolbarStart={
+              <Select aria-label="Follow bot" value={followed} onChange={(e) => setFollow(e.target.value)} className="h-8 min-w-40">
+                {bots.map((b) => (
+                  <option key={b.name} value={b.name}>
+                    {b.name}
+                  </option>
+                ))}
+              </Select>
+            }
+          />
+        ) : null}
+      </WorldHost>
+    </Card>
+  );
+}
+
 function LiveInner() {
   const params = useSearchParams();
   const router = useRouter();
@@ -55,15 +121,10 @@ function LiveInner() {
   const setView = (v: View) => router.replace(v === 'grid' ? '/live' : `/live?view=${v}`, { scroll: false });
   const status = useStatus();
   const hive = useHiveIndex();
-  const bots = useMemo(() => {
-    const list = status.data?.bots ?? [];
-    return [...list].sort((a, b) => (a.name === status.data?.main ? -1 : b.name === status.data?.main ? 1 : a.name.localeCompare(b.name)));
-  }, [status.data]);
+  const bots = useMemo(() => mainFirst(status.data), [status.data]);
   const [follow, setFollow] = useState<string>('');
-  const followed = follow || bots[0]?.name || '';
   // The body clicked in the world view: its panel (inventory polled only while it is open).
   const [panel, setPanel] = useState<string | null>(null);
-  const closePanel = useCallback(() => setPanel(null), []);
   const online = bots.filter((b) => b.status === 'online').length;
 
   return (
@@ -89,48 +150,14 @@ function LiveInner() {
           <ErrorState error={status.error} onRetry={() => void status.refetch()} title="Could not reach the hive" />
         </Card>
       ) : view === 'grid' ? (
-        <WorldHost>
-          {status.isPending ? (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-              {Array.from({ length: 4 }, (_, i) => (
-                <Skeleton key={i} className="h-[23rem] rounded-card" />
-              ))}
-            </div>
-          ) : (
-            <HiveGrid bots={bots} main={status.data?.main ?? ''} tree={hive} />
-          )}
-          {!status.isPending && bots.length === 0 ? (
-            <Card>
-              <EmptyState title="No bots online" hint="Bodies appear here as soon as they connect." />
-            </Card>
-          ) : null}
-        </WorldHost>
+        <BotsGrid pending={status.isPending} bots={bots} main={status.data?.main ?? ''} tree={hive} />
       ) : view === 'tree' ? (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <HiveTreeView />
           <EventsCard />
         </div>
       ) : (
-        <Card className="h-[min(74vh,52rem)] overflow-hidden">
-          <WorldHost>
-            {followed ? (
-              <WorldPane
-                follow={followed}
-                onBodyClick={setPanel}
-                overlay={panel ? <BodyPanel bot={panel} onClose={closePanel} className="absolute right-3 bottom-3 z-10 max-h-[calc(100%-4.5rem)]" /> : null}
-                toolbarStart={
-                  <Select aria-label="Follow bot" value={followed} onChange={(e) => setFollow(e.target.value)} className="h-8 min-w-40">
-                    {bots.map((b) => (
-                      <option key={b.name} value={b.name}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </Select>
-                }
-              />
-            ) : null}
-          </WorldHost>
-        </Card>
+        <WorldView bots={bots} follow={follow} setFollow={setFollow} panel={panel} setPanel={setPanel} />
       )}
     </PageBody>
   );
