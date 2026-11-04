@@ -86,6 +86,9 @@ public sealed partial class MinecraftClient
         if (DigSafetyVeto(pos, name, generator, positioned: true) is { } veto2) return ActionResult.Fail(veto2);
 
         int held = await SelectToolForAsync(id, ct, noShears).ConfigureAwait(false);
+        // Story Mode's pawns: an asked-for dig never breaks a block for nothing (iron ore with a wooden pickaxe, stone by hand).
+        if (StrictHarvest && requested && !Tools.CanHarvest(id, held) && HarvestNeed(id) is { } need)
+            return ActionResult.Fail($"needs {need}: digging {name} at {Fmt(pos)} without it would lose the drop");
         var snap = World.Player.Snapshot;
         bool inWater = BlockShapes.IsWater(World.GetBlock((int)Math.Floor(snap.Position.X), (int)Math.Floor(snap.Position.Y + PlayerPhysics.EyeHeight), (int)Math.Floor(snap.Position.Z)));
         int ticks = DigTicksNow(id, World.GetMeta(pos), snap.OnGround, inWater);
@@ -466,6 +469,11 @@ public sealed partial class MinecraftClient
         var usable = new ItemStack[45];
         for (int i = 0; i < 45; i++) usable[i] = i >= 9 && !(noShears && slots[i].Id == Items.Shears) ? slots[i] : ItemStack.Empty;
         int best = Tools.BestToolIndex(blockId, usable);
+        // The tool the body was told to hold (Story Mode: the plain pickaxe for stone, the Fortune one for ores) stays in hand when it
+        // harvests the block and beats the bare hand.
+        if (PreferHeldTool && best >= 0 && HeldStack() is { IsEmpty: false } h0 && Items.Exists(h0.Id) && Items.Get(h0.Id).Tool is not (ToolType.None or ToolType.Hoe)
+            && (Tools.CanHarvest(blockId, h0.Id) || !Tools.CanHarvest(blockId, usable[best].Id)) && Tools.DigTicks(blockId, h0.Id) < Tools.DigTicks(blockId, -1))
+            return h0.Id;
         if (best >= 0)
         {
             var tool = usable[best];

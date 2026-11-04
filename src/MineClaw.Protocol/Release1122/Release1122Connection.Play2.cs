@@ -35,7 +35,11 @@ public sealed partial class Release1122Connection
                 int slots = r.ReadUByte();
                 var (ct, n) = Codec1122.WindowType(type, slots);
                 _windowTypes[wid] = ct;
-                return new OpenWindowPacket { WindowId = (sbyte)wid, InventoryType = ct, Title = ChatComponent.ToPlain(title, Lang), SlotCount = (byte)Math.Min(n, 255) };
+                return new OpenWindowPacket
+                {
+                    WindowId = (sbyte)wid, InventoryType = ct, Title = ChatComponent.ToPlain(title, Lang), SlotCount = (byte)Math.Min(n, 255),
+                    Kind = type.StartsWith("minecraft:", StringComparison.Ordinal) ? type[10..] : type,
+                };
             }
             case Ids1122.CloseWindow:
             {
@@ -114,6 +118,9 @@ public sealed partial class Release1122Connection
             case WindowClickPacket c:
                 SendWire(WireWriter.ForPacket(Ids1122.ClickWindow).WriteUByte((byte)c.WindowId).WriteShort(c.Slot).WriteSByte(c.EffectiveButton)
                     .WriteShort(c.ActionNumber).WriteVarInt(c.EffectiveMode).WriteSlot(c.ClickedItem), packet);
+                return true;
+            case EnchantItemPacket ei:
+                SendWire(WireWriter.ForPacket(Ids1122.EnchantItem).WriteUByte((byte)ei.WindowId).WriteSByte(ei.Enchantment), packet);
                 return true;
             case TransactionPacket t:
                 SendWire(WireWriter.ForPacket(Ids1122.ConfirmTransactionOut).WriteSByte(t.WindowId).WriteShort(t.ActionNumber).WriteBool(t.Accepted), packet);

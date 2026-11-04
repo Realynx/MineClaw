@@ -177,11 +177,19 @@ public sealed partial class StoryColony
                 if (g.Remove)
                 {
                     if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z)) { g.State = "done"; g.Rev = Touch(); continue; }
+                    // A dug cell takes its material's tool (a mine design's ore: the right pickaxe), else the build waits for one.
+                    var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
+                    if (dt is { Wait: { } why }) { NoteBuildWait(b, why); continue; }
+                    ClearBuildWait(b);
                     return Claim(b, [g], p.Name,
-                        Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10));
+                        WithTool(dt, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10)));
                 }
                 var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
                 if (cur != 0 && Matches(g, cur, curMeta)) { CellDone(b, g); continue; } // already there: done, never a job
+                // A block in the way is dug first: with its tool (stone in a wall's line takes a pickaxe). The batch clears only cells
+                // of that same block (one tool per job).
+                var clearTool = !StoryBlocks.Replaceable.Contains(cur) ? PlanTool(p, live, cur) : null;
+                if (clearTool is { Wait: { } cwhy }) { NoteBuildWait(b, cwhy); continue; }
                 var item = g.Item ?? w.Data.Item(g.Id).Name;
                 var ik = KeyOfItem(w, item, g.Id);
                 int have = live.Inventory.Where(s => s.Id == ik.Id && s.Meta == ik.Meta).Sum(s => s.Count);
@@ -218,7 +226,7 @@ public sealed partial class StoryColony
                 // The pawn's fair share of what is open (ten builders on one floor each get a part), no more than it can get items for.
                 int openCells = todo.Count(x => (x.Item ?? "") == item); // open or in a batch now: every builder's share of the whole
                 int cap = mine ? 1 : Math.Min(Math.Clamp((int)Math.Ceiling(openCells / (double)builders), 1, BatchMax), have + stored);
-                var (cells, stand) = Batch(w, b, g, cap, from, p.Name);
+                var (cells, stand) = Batch(w, b, g, cap, from, p.Name, StoryBlocks.Replaceable.Contains(cur) ? -1 : cur);
                 int fetchN = Math.Max(0, cells.Count - have);
                 var fetch = new JsonArray();
                 var takes = new List<(P3, Stack)>();
@@ -244,7 +252,7 @@ public sealed partial class StoryColony
                     if (fetch.Count > 0) f["fetch"] = fetch;
                 }, xp: Math.Min(60, 8 + 4 * cells.Count));
                 job.Takes.AddRange(takes);
-                return Claim(b, cells, p.Name, job);
+                return Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
             }
             nextBuild:;
         }
@@ -316,7 +324,7 @@ public sealed partial class StoryColony
     /// batches are taken along instead of becoming one-block jobs); within each, touching something solid or a cell placed before it,
     /// nearest the last (along the row).
     /// </summary>
-    private (List<GhostState> Cells, P3? Stand) Batch(IStoryWorld w, BuildState b, GhostState seed, int cap, P3 from, string pawn)
+    private (List<GhostState> Cells, P3? Stand) Batch(IStoryWorld w, BuildState b, GhostState seed, int cap, P3 from, string pawn, int clearId)
     {
         // One level: the next goes up once this one stands (b1.8.1 FakeServer: a roof row laid early, over a wall still going up, had
         // no visible support face, and its builder climbed onto the wall and was shut in).
@@ -329,6 +337,7 @@ public sealed partial class StoryColony
                 if (!Open($"g:{b.Id}|{x.At}", pawn, x.At) || Occupied(x.At)) continue;
                 var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
                 if (cur != 0 && Matches(x, cur, curMeta)) { CellDone(b, x); continue; }
+                if (!StoryBlocks.Replaceable.Contains(cur) && cur != clearId) continue; // another block to clear: another tool, another job
                 cand.Add(x);
             }
         var stand = StandFor(w, b, seed, cand.Where(x => Math.Abs(x.At.X - seed.At.X) <= BatchRadius && Math.Abs(x.At.Z - seed.At.Z) <= BatchRadius).ToList(), from);
@@ -550,6 +559,7 @@ public sealed partial class StoryColony
         g.State = "done";
         g.Rev = Touch();
         MaterialsChanged();
+        StationBuilt(g); // a brewing stand, anvil or enchanting table the colony built is its own (StoryColony.Stations.cs)
         // A door's / bed's other half came with it.
         foreach (var other in b.Ghosts.Where(o => !o.Job && o.State != "done" && Math.Abs(o.At.X - g.At.X) + Math.Abs(o.At.Y - g.At.Y) + Math.Abs(o.At.Z - g.At.Z) == 1))
         { other.State = "done"; other.Rev = g.Rev; }

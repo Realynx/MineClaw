@@ -53,7 +53,7 @@ There is one per colony. It holds:
   The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
 - **Zones,** painted on the map RimWorld-style as cell sets (see "Zones"): chop, mine, farm (growing zones), fish (see
   "Fishing") are work zones;
-  home and forbidden are overlay layers. Storage is chests with their own settings (see "Storage").
+  home, forbidden and dump (the drop spot when the colony has no storage, see "Hauling") are overlay layers. Storage is chests with their own settings (see "Storage").
 - **Designations,** per block or area: chop this tree, mine these blocks, harvest, haul these drops, build design N here,
   deconstruct.
 - **Orders,** per pawn or group: move to, attack, chop, mine, haul, build, hold position, stop, and queued orders
@@ -93,13 +93,16 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off) → `{ok}` |
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
-| POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id}, queue?:bool}` → `{ids:[order id]}` |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
+| POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
 | POST | `/api/story/colonies/{id}/storage` | See "Storage" |
 | POST | `/api/story/colonies/{id}/bills` | See "Workbenches & bills" |
+| POST | `/api/story/colonies/{id}/policies` | See "Tools and gear" |
+| POST | `/api/story/colonies/{id}/material-rules` | See "Tools and gear" |
+| POST | `/api/story/colonies/{id}/gear` | See "Tools and gear" (bulk gear ops) |
 | GET | `/api/story/recipes?workbench=<kind>` | `[Recipe]` (every bench when omitted) |
 | POST | `/api/story/directives` | See "AI hives" |
 | GET | `/api/story/directives` · `/api/story/directives/{id}` | `{directives:[Directive]}` · one directive with its `line`, `delivered` and `detail` |
@@ -115,7 +118,7 @@ storage is chests (see "Storage").
  pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
- time_control:{available: bool, by: account|null},
+ time_control:{available: bool, by: account|null}, policies:[Policy], material_rules:[MaterialRule], materials:[MaterialInfo] (full only),
  removed:{zones:[id], designations:[id], builds:[id], storages:["x,y,z"]} (delta only)}
 ```
 
@@ -128,7 +131,9 @@ The **Pawn** object:
 ```
 {name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
- skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]] }
+ skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]],
+ xp_level,
+ equipment:{held, armor, tools, weapons}, policy, gear_tasks:[{id, op, label}] }
 ```
 
 - `job.type` is the work type, or one of `need` (eating, fleeing), `order`, `schedule` (sleep, free time) or `idle`.
@@ -143,7 +148,8 @@ The **Pawn** object:
 3. Urgent needs:
    - hp ≤ 8 (brave 4, skittish 12) with a monster within 12 blocks: flee home, or away from it.
    - food ≤ 6 (skittish 8): eat. With no food on it, the pawn fetches some from storage first; with none anywhere, an alert.
-4. After a gathering job, or with ≤ 4 free slots, the pawn takes what it carries to storage.
+4. With ≤ 4 free slots, or after a gathering job once that run is over (see "Keeping loot while gathering"), the pawn takes what it
+   carries to storage.
 5. The schedule hour (1000 ticks an hour, tick 0 = 06:00):
    - sleep: to its bed, else its own spot at home (see "Homes and beds").
    - free: wander the home area (see "Idle behaviour").
@@ -307,6 +313,81 @@ on it" ×6, and the bot at ~70% CPU. Fixed:
   10 pawns, 500 mine designations): a pick round of all 10 pawns 15.7 → 2.0 ms; a director tick with every pawn finishing a job, the
   watchdog tick and a state delta 6.7 → 3.1 ms.
 
+### Stuck pawns (added 2026-11-04)
+
+Live 11-04 (release 20261103-204549, `story-1`): maid_chan_114 stood in a hole two deep ("no path … it's 2 blocks up; unreachable even
+by pillaring/bridging" ×5) and failed grass after grass. Each failure rested that grass for the whole colony (and counted against it),
+so the other pawns stood idle in front of a field of work. Fox also saw pawns stuck in waterfalls and in caves.
+
+- **A failure is the pawn's own** when the target is out of reach from where it stands: "no path", "no route", "unreachable", or a
+  monster it couldn't find ("no skeleton within 16"). The target rests for that pawn only (30 s, 1 min, then 5 min) and the others take
+  it. Only when 3 different pawns couldn't reach it (fewer when fewer are online) is it the target's failure, with its reason, fail
+  count and alert as before. "can't reach" at the target (a soft refusal) rests it 15 s for that pawn only. A stuck pawn's failures
+  never count against a target, and an escape job never counts as a failure.
+- **Getting out is the pawn's.** `story.go(at, d)` is the usual `go`; when it finds no way, `story.escape(at)` runs before the job's own
+  retry, and then the walk is tried again. `story.escape` reads `storyPit` (zero tokens): **pit** (nothing over the body, and walking
+  reaches at most 30 cells and never 8 blocks away; a room under a build's roof is never a pit), **cave** (natural ground over the
+  body) or **water**. Then, in order:
+  1. walk to the exit, if there is one (the nearest bank out of the water; the nearest cell with open sky in a cave);
+  2. dig a staircase: the blocks in the way of a 1-block jump onto a neighbour, toward the target first. Never below the feet, never a
+     block with liquid beside or over it, never one with sand or gravel on top, never a container or anything as hard as obsidian;
+  3. nerd-pole with blocks it carries (cobblestone, dirt, planks, stone, netherrack, sandstone, stone bricks, logs): `place(block,
+     <its own feet>)` is a pillar step (jump, place under itself, land on it);
+  4. with no blocks, dig the pit's walls for some (dirt by hand; stone, cobble, netherrack with a pickaxe), head height first, then
+     pole;
+  5. ask the colony for help (`story.stuck`).
+- **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute, or a pawn under ground (three blocks of
+  natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and with no queued order: the
+  pawn's next job is `escape` (label "stuck: getting out", "stuck? heading home", "under ground: heading back up"). It gets out by
+  itself, else walks home, else asks for help. A pawn that moved more than 4 blocks from where it got stuck is free again.
+- **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
+  `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
+  needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
+  **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
+  coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
+  why.
+- **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
+  followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
+  from the light the server sent, so a surface route wins over a cave one.
+- **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
+  Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
+  ignored (see Defending).
+- The pawn's row carries `stuck` (why, or null).
+
+### Keeping loot while gathering (added 2026-11-04)
+
+Fox 11-04: "they bring the block they mined back to the chest right away. They shouldn't. They can dump their inventory all at once
+later while they keep mining until the job is done or their inventory is full."
+
+- After a gathering job (a designation, a zone task, a crop, a catch, a furnace's output), the pawn keeps what it picked up and goes on
+  to its next job. That is its next target of the same work when there is one.
+- One trip later takes everything to storage, by the usual rules (every chest of the load in one trip). That trip comes when:
+  - it has 2 free slots or fewer;
+  - no target of that work is left for it;
+  - its hours turn to sleep or free time;
+  - nothing is left to do at all.
+- Exceptions:
+  - A hauler's pick-ups still go at once (they are batched already).
+  - A drafted pawn keeps what it carries.
+  - A build that needs what a pawn carries takes it from its pockets (no fetch).
+- Benchmark (`StoryLootBatchingTests`, 24 dirt cells, the chest 9 blocks away, simulated time): about 6.5 → 18 blocks a minute.
+- **Tool rules between blocks.** Every block is its own job, and its tool is planned when it is handed out. A material rule or gear
+  policy changed while a pawn works takes effect at its next block: it fetches the newly wanted tool from storage on the way, or holds
+  the one it carries. The block under way finishes as it started (never cut mid-swing). A rule that now waits (an enchantment that isn't
+  there, fallback `wait`) leaves the rest of the field waiting with that reason and no failure.
+
+### Defending (added 2026-11-04)
+
+Live 11-04: "attack failed: no skeleton within 16" ×15, creeper ×8, zombie ×7 for one pawn (82 failures). The merged view showed every
+body's monsters, including cave mobs under home, and each one sent a pawn walking for nothing. A guard goes only after a monster
+that meets all of these:
+- **Fresh:** some body had news of it in the last 45 s (`seen_at`, the freshest copy across bodies).
+- **At home:** in a home area.
+- **Reachable:** within 8 blocks of home's ground level, or within 3 of the pawn, and not under ground.
+- **Not just missed by this pawn.** One it couldn't find rests 60 s for that pawn only. That is not a failure: no alert, no rest.
+
+Among guards with nothing better to do (idle or wandering), the nearest goes. Drafted pawns' attack orders are separate and unchanged.
+
 ### Idle behaviour (added 2026-11-03)
 
 Live 11-03 (Fox): "When there's nothing designated to do, they don't do anything at all. They tend to gather in the same spot." The
@@ -402,9 +483,14 @@ Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
     reports each one.
 - **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`; a build job adds
     `cells`, `want`, `clear` and `stand` (see "Building fast").
-  - Kinds: `go|chop|dig|harvest|till|collect|place|attack|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
+  - Kinds: `go|chop|dig|harvest|till|collect|place|attack|equip|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
     `attack`, `eat`, `craft`, `smelt`, `collect_furnace`, `handTo`, `build`, `wait`), deposits the `stash` items and reports.
+  - Gear (added 2026-11-03), in the SDK so the pawn script stays under its 4000-character cap: `story.fetch(job)` takes the
+    `fetch` items, an entry with `ench` (a tool, weapon or armour piece) exactly with the hidden `equip(item, 'take', from, ench)`,
+    then holds the job's `tool`/`tool_ench` (`equip(item, 'hold', '', ench)`); `story.work(job)` runs an `equip` job: armour off
+    (`unwear`), `wear`, then `hold`/`hold_ench`. An `attack` job names its `target` (the entity id) and the script attacks exactly
+    that one.
 
 ### Designations
 
@@ -426,7 +512,8 @@ The area expands at designation time to the matching targets in the bot's world 
 | deconstruct | Blocks the world doesn't make by itself (planks, glass, doors…) | build |
 | forbid / allow | Drops and doors pawns may not use, or may use again | — |
 
-Designation: `{id, kind, work_type, target:[x,y,z]|{entity}, blocks, label, created, status: open|failed, reason, fails}`.
+Designation: `{id, kind, work_type, target:[x,y,z]|{entity}, blocks, label, created, status: open|failed, reason, fails, wait}` (`wait`: why it
+waits without failing, "needs a stone pickaxe": see "Tools and gear").
 
 A chop designation, order or zone means whole trees. Any log or leaf of a tree stands for it: the canopy top a top-down click lands
 on (or the air just above it), a branch, or a box drawn only over the crowns. Each resolves to the tree's trunk base (the lowest log
@@ -752,7 +839,8 @@ over the runs). The fake clients tick every 5 ms, so that is about 20 s of game 
 
 ## Storage
 
-Storage is chests; there are no ground stockpiles. `POST …/storage`:
+Storage is chests; there are no ground stockpiles (a `dump` zone is only where loot goes when the colony has no storage at all, see
+"Hauling"). `POST …/storage`:
 - `{op:"set", chests:[[x,y,z]], filter?:{allow:[…], deny:[…]}, priority?, label?}`. A double chest is one storage: its other half
   is found from the world.
 - `{op:"remove", chests}`, `{op:"copy", from:[x,y,z], to:[[x,y,z]]}` or `{op:"assign_area", area, filter?, priority?, label?}`
@@ -784,13 +872,40 @@ Categories come in the full state as `categories`: `{id, label, children:[Catego
   - ores_metals: ores, ingots, nuggets, metal & gem blocks
   - gems_minerals, tools, weapons, armour, mob_drops, redstone_mech, misc
 
-Hauling:
-- A pawn that carries loot (after chopping, mining, harvesting, hunting or picking up drops) delivers each stack to the
-  accepting chest with the highest priority, then the nearest, that has room. A full chest is skipped.
-- When nothing accepts a stack, the colony gets an alert "No storage accepts X" and the pawn keeps it. Loot is never dropped.
-- Tools, weapons, armour and one food stack stay with the pawn.
-- Background haul jobs, after every other haul: higher-priority chests pull matching items out of lower-priority ones, and a
-  chest whose filter changed gives up what it no longer accepts.
+Hauling (reworked 2026-11-04; Fox: "Dropped items should be auto-hauled by pawns that have hauling with high priority" and "if I
+limit the types of items allowed in a chest, pawns … should rearrange … Otherwise they end up dropped on the ground"):
+- **Where a stack goes:** the accepting chest with the highest priority, then the nearest, that has room (a full chest is skipped).
+  Else, with the option `unfiltered_storage_takes_anything` (default on), any chest with room whose filter doesn't *deny* it: open
+  (`"*"`) chests first, then the lowest priority, then the nearest. Else, when the colony has no storage at all, the **drop spot**: the
+  nearest `dump` zone (a zone kind), else a standable spot by home. Else nowhere.
+- **Nowhere** is a condition, not a stream of alerts: one alert "No storage for: Oak Wood, Dirt…" when the first kind has nowhere to go,
+  and the state's `unstored_kinds` lists them (a kind drops off the list as soon as a chest takes it). A pawn keeps loot that has
+  nowhere to go.
+- **Deliveries:** a pawn that carries loot (after chopping, mining, harvesting, hunting or picking up drops) takes every stack to
+  its chest in one trip (`stash` lists each chest, filter-accepted ones first). With no storage at all it drops them at the drop spot
+  (job kind `dump`, `drop:[{item, n}]`). Tools, weapons, armour and one food stack stay with the pawn.
+- **Drops on the ground** are a standing haul task when they meet all of these:
+  - Not forbidden.
+  - At home, or within 48 blocks of home or of colony work (a designation, a zone, a build).
+  - Within 12 blocks of the pawn's or home's height, and not under ground.
+  - Not within 4 blocks of a monster.
+  - Not dropped by a player (not a pawn) at their feet in the last 10 s.
+  - Not lying at the drop spot with nowhere better to go.
+  - Somewhere to go.
+  Designated drops come first. Then come drops at despawn risk: older than 3 of their 5 minutes (age from the first sighting by any
+  body), labelled "hauling Oak Wood (despawns in 95s)". Then the nearest.
+- **Priority:** hauling follows the pawn's Haul priority like any work type. Within one priority, a drop at despawn risk is hauled
+  before the other work types of that priority. A working pawn is cut for a haul only when a drop despawns within 30 s, nobody hauls it,
+  and the pawn's Haul priority is at least as important as its current work's. This never cuts an order, a need, an escape or a haul.
+  It is the nearest such pawn, once per drop, at most one every 5 s.
+- **Batching:** a trip picks up the drops within 6 blocks of the first one that go to the same place, up to the pawn's free slots
+  (`collect` with a radius; each drop is leased, so no other pawn is sent to them; label "(+2 more)").
+- **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a
+  better-priority chest accepts moves up. One trip takes as many stacks out of one chest as the pawn has room for, each to its own
+  chest. With no chest for it, the fallback chest takes it (option on). What the fallback put somewhere stays there. Else the stack is
+  dropped beside its chest (job kind `dump`) and the condition alert names it. Like the genre, it then despawns unless a chest takes it
+  and a hauler picks it up. Option `keep_disallowed` (default off) leaves it in the chest instead.
+- Options (`POST …/options`): `rescue_teleport`, `unfiltered_storage_takes_anything`, `keep_disallowed` (booleans, in `options`).
 
 ## Workbenches & bills
 
@@ -804,20 +919,32 @@ Workbenches (designated, added 2026-11-03):
   home) join by themselves every 30 s, as before. Off by default (`POST …/options {detect_benches}`); colonies saved before keep
   the benches they had.
 - Only designated benches unlock the Architect's tiers (below) and receive bills.
-- Brewing stands, anvils and enchanting tables are listed (`supported:false`) but take no bills yet: there is no primitive.
-- Workbench: `{pos, kind, label, supported, loaded, ready_at, bills:[Bill]}`.
+- Every interactive station takes bills (added 2026-11-03): crafting tables and furnaces on both versions; brewing stands, anvils
+  and enchanting tables on 1.12.2 (b1.8.1 has none of the three: listed with `supported:false`, an `add` answers 400). See
+  "Stations" below.
+- A station the colony's own build placed (the Architect's production tab) is the colony's at once.
+- Workbench: `{pos, kind, label, supported, loaded, ready_at, station, bills:[Bill]}`. `station` (the three 1.12.2 stations, else
+  null): `{present, bookshelves, max_bookshelves, top_offer:[min,max]}` for an enchanting table, `{present, condition:
+  intact|chipped|damaged|gone}` for an anvil, `{present, water:[x,y,z]|null, fuel}` for a brewing stand.
 
 Recipes: `GET /api/story/recipes?workbench=crafting_table|furnace|brewing_stand|anvil|enchanting_table` →
-`[{id, label, workbench, work_type: craft|cook, output:[id,meta,count], inputs:[{options:[[id,meta]], count}], fuel}]`.
-Ids are `craft:<output name>` and `smelt:<input name>`. Furnace food is Cook work; the rest is Craft.
+`[{id, label, workbench, work_type: craft|cook, output:[id,meta,count], inputs:[{options:[[id,meta]], count}], fuel}]`; a station
+recipe adds `requires:{xp_levels, lapis, fuel_item, water, note}`, `modes` (the bill modes it takes), `chain` (a brew's steps) and
+`enchantments` (what an enchant can prefer). Ids are `craft:<output name>`, `smelt:<input name>`, `brew:[splash_|lingering_]<potion
+type>`, `enchant:<item>`, `repair:<item>`, `combine:<item>` and `book:<item>`. Furnace food and brewing are Cook work; the rest
+(crafting, smelting, enchanting, the anvil) is Craft.
 
 `POST …/bills`:
 - `{op:"add", bench:[x,y,z], bill}` → `{id}`
 - `{op:"update", id, …bill fields}`, `{op:"remove"|"pause"|"resume", id}`
 - `{op:"reorder", bench, ids}` → `{ids}`. Bills run top to bottom per bench.
+- `{op:"enchant_tools", prefer?, material?, items?, count?, prefer_only?}` → `{ids, note}`: the tools system's hook (below).
 
 Bill: `{id, recipe, mode: count|until|forever, target, done, paused, suspended_reason, ingredients:{allow, deny}, radius, pawn: "any"|name,
-min_skill, store: "best"|{chest:[x,y,z]}}`. `until` counts the product in every storage plus the pawns' inventories.
+min_skill, store: "best"|{chest:[x,y,z]}, option, prefer, prefer_only, xp_needed, last}`. `until` counts the product in every storage
+plus the pawns' inventories. `option`/`prefer`/`prefer_only` are an enchant bill's (below); `xp_needed` is the XP level the last try
+needed (an offer's level, an anvil's price); `last` is what the last job made ("enchanted diamond pickaxe: Fortune II (offer #3,
+level 18)").
 
 Execution:
 - A pawn with the bill's work type on, and allowed by `pawn` and `min_skill`, takes the first runnable bill of the nearest free
@@ -829,6 +956,71 @@ Execution:
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
+
+### Stations: brewing stand, enchanting table, anvil (added 2026-11-03)
+
+1.12.2 only (b1.8.1 has none of these blocks). Each runs as one job at the station, through the pawn's skills (`brew`,
+`fill_bottles`, `enchant_item`, `use_anvil`; client primitives in `MinecraftClient.Stations.cs`) via the story SDK's `story.work(job)`
+(`Sdk/js/75-story.js`; `story_pawn.js` hands every kind it doesn't know to it). Items go into these windows by hand (pick up,
+place): the server routes a shift-click into them by item, which the chest-like window model can't predict.
+
+**Brewing stand** (Cook work). One recipe per potion, splash and lingering potion a chain from water bottles makes ("Brew Potion of
+Swiftness": water + nether wart → awkward, + sugar → swiftness; + redstone → extended, + glowstone → II, + fermented spider eye →
+corrupted, + gunpowder → splash, + dragon's breath → lingering). Output: 3 potions per job (a stand holds three bottles); count, until
+and forever all work (a 1.12.2 potion's type is NBT: the colony gives a potion of type T the meta T's registry id, water 1, awkward
+4, swiftness 14…, in pawn inventories and the storage ledger).
+- The job starts from the furthest stage of the chain the pawn holds (awkward potions skip the wart), else from water bottles it
+  holds, else from glass bottles (its own or from storage) it fills first at the nearest filled cauldron or water source block
+  (open above) within 16 blocks (4 up/down) of the stand: `fill:{at, n}`.
+- It brings each step's ingredient and, when the stand's fuel is short or unknown, a blaze powder (one fuels 20 brews; the colony
+  keeps the stand's `fuel` as it last left it). It stays at the stand through every brew (20 s each), checks the bottles after each
+  step, then stores the potions (the bill's chest, else the best).
+- Reasons: "no water (a source block or a filled cauldron) within 16 blocks of the brewing stand", "no glass bottles (or water
+  bottles) within N blocks", "no sugar within N blocks", "no blaze powder (the brewing stand's fuel)" (only when the stand is known
+  to be short), and from the stand "the stand won't brew …", "the brewing stand is busy brewing".
+
+**Enchanting table** (Craft work). "Enchant Diamond Pickaxe" for every item the table takes: pickaxes, axes, shovels, swords,
+armour, bow, fishing rod, book (hoes, shears and the rest only through an anvil). Modes count and forever (an enchanted item can't
+be told from a plain one in storage: no until).
+- Bill fields: `option` 1–3 (the highest offer it takes; offer k costs k lapis and k levels, default 3), `prefer` (an enchantment
+  the table can put on the item, validated), `prefer_only`.
+- The pawn brings the item (from storage first: its own may be its working tool, or enchanted already; the primitive only takes a
+  plain one) and `option` lapis. The table shows its three offers once the item is in (each needs its own level, up to 30 with 15
+  bookshelves); the pawn takes the highest offer hinting `prefer` it can pay, else (unless `prefer_only`) the highest it can pay.
+  The offers are fixed for that pawn and item until it enchants something: no reroll. A pawn whose table showed no offer for a
+  prefer-only bill leaves it to the others; when every pawn has tried, the bill waits: "no pawn's table shows Silk Touch for it".
+- The enchanted tool stays with the pawn unless the bill names a chest (pawns keep their gear); a book goes to storage.
+- The inspector shows the bookshelves (`Enchanting.Bookshelves`: the game's walk around the table, at most 15) and the top offer's
+  level range.
+
+**Anvil** (Craft work). Per damageable item: "Repair Iron Pickaxe (iron ingot)" (the most damaged one, the pawn's own first, with
+the material units that mend it, a quarter of its durability each), "Combine two Iron Pickaxes", "Apply an enchanted book to Iron
+Pickaxe". Modes count and forever. Prices (`Anvil`, the game's rules): prior work (doubles plus one each use) + 1 per material unit;
+2 when a combine mends + the right item's enchantments; a book's enchantments at half the rarity multiplier (common 1, uncommon 2,
+rare 4, very rare 8) × level; 1 per conflicting enchantment. 40 or more is refused ("too expensive", the bill is suspended).
+- Every use may wear the anvil (12%): the inspector shows `condition`; a job that reports "the anvil broke", or a bench whose block
+  is gone, suspends its bills: "the anvil at x,y,z is gone (worn through): place a new one and designate it".
+- Renaming isn't offered: it needs a typed name and a pawn has no use for one.
+
+**XP levels.** Pawns earn XP the game's way (mining ore, smelting, fighting); `xp_level` is in the pawn state (the pawn inspector's
+Skills tab shows it). An enchant needs at least `option` levels, a repair the units, a combine 2, or the bill's `xp_needed` when the
+last try needed more ("needs 18 XP levels (has 10)" from the station teaches the bill; it's not a failure). A pawn short of them
+leaves the bill to one that has them; when no pawn that may take it has them the bill waits: "needs 18 XP levels: no pawn has them
+(best: Ann 10)" (retried every 30 s).
+
+**Work types.** Brewing is Cook (RimWorld brews at the stove's skill); enchanting and the anvil are Craft. No new work type.
+
+**Tools hook** (for the tools/equipment system): `StoryColony.EnchantTools(prefer, items?, count = 1, preferOnly = false)` → `(ids,
+error)` adds count bills at the colony's enchanting table nearest home for `items` (default: every pickaxe kind the colony has)
+preferring `prefer`; an unfinished bill with the same recipe and preference isn't added twice. `StoryEnchanting.PreferFor(material)`
+picks the enchantment per mined material: fortune for coal, diamond, emerald, lapis, redstone and quartz ores; silk touch for
+glass, ice, glowstone, grass, mycelium, ender chests and bookshelves; efficiency otherwise. Over HTTP: `POST …/bills
+{op:"enchant_tools", prefer | material, items?, count?, prefer_only?}`.
+
+**Interactive blocks that take no bills** (`StoryRecipes.NotBenches`): chests (storage settings), hoppers, droppers and dispensers
+(containers; a "fill with X" order may come later), the cauldron (water for brewing: a level per bottle), the beacon (a one-time
+setup), the jukebox and the note block. The bench list is `StoryRecipes.Benches`: crafting table, furnace, brewing stand, anvil,
+enchanting table.
 
 ### Builds craft what they need (added 2026-11-03)
 
@@ -866,7 +1058,7 @@ recipe chain and the raw shortfall on hover; the bench inspector lists the auto 
 
 ### Architect palette and tiers (added 2026-11-03)
 
-`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace}, tabs}`. Entries are every placeable the
+`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace, brewing_stand?, anvil?, enchanting_table?}, tabs}` (the designated benches per kind the version has). Entries are every placeable the
 version has (`StoryArchitect`: blocks, stairs, slabs, fences, doors, glass and panes, wool, beds, bookshelves, carpets, benches,
 chests, torches, glowstone, ladders…; variants the version lacks are left out), by tab: structure, furniture, production,
 storage, lighting, misc. Entry: `{id, label, tab, tier, unlocked, reason, item:[id,meta], material:[id,meta], kind, kinds, chain,
@@ -895,6 +1087,105 @@ controls to the right: wall height, roof style and overhang, facing. The top opt
 - **Preview:** hovering a material shows the placement in it at once, as a build hologram at the last map cell (and the
   placement under the cursor or the drag is drawn in its material).
 - **Narrow maps** (under 760 px) fold the bar into one material chip that opens it.
+
+## Tools and gear (added 2026-11-03)
+
+Fox: "Pawns must always use the correct tools to mine mat types so we don't lose the mat." Every dig a pawn does takes at least the
+tool its material needs to drop anything, from the version's own data (`StoryTools`, `IGameData.CanHarvest`; both versions):
+
+| Material | Minimum (the floor) | Faster with | Kept with |
+|---|---|---|---|
+| stone, cobblestone, sandstone, netherrack, coal ore, quartz ore | wooden pickaxe | | |
+| iron ore, lapis ore | stone pickaxe | | |
+| gold ore, diamond ore, redstone ore, emerald ore | iron pickaxe | | |
+| obsidian | diamond pickaxe | | |
+| snow (b1.8.1) | wooden shovel | | |
+| cobweb | sword or shears | | |
+| dirt, grass, sand, gravel, clay, farmland | the hand | shovel | |
+| logs, planks | the hand | axe | |
+| leaves, vines, tall grass | the hand | | shears (the block itself) |
+| wool | the hand | shears | |
+
+- **The gate.** A mine, deconstruct or cut designation, a mine zone's ore, a mine order and a build's dug cell (a design's basement,
+  a mine design's dig cells: the block found at the cell, else the cell's expected material) go only to a pawn that carries the tool
+  or can fetch one: the job then carries `tool` (held before the dig) and a `fetch` entry for it. A pawn with neither leaves it, and
+  the target **waits** with why: a designation gets `wait: "needs a stone pickaxe"` (on the map as a neutral label, no failure count,
+  no alert), a build is `waiting` with that reason, a mine order's block is dropped with one alert. Another pawn with the tool still
+  takes it at once.
+- **The primitive refuses too.** A Story pawn's body has `StrictHarvest` on: an asked-for dig that the tool in hand can't harvest is
+  refused ("needs a stone pickaxe: digging iron ore at … without it would lose the drop") rather than broken for nothing. Its
+  `PreferHeldTool` keeps the tool the director chose in hand (the plain pickaxe for stone, the Fortune one for ores) instead of
+  swapping to the fastest one carried.
+- **Choosing.** The lowest tier that does (good tools stay good), fresh before worn: a tool under 10 % durability is swapped for a
+  fresh one carried or stored, and a worn one is used only when there is nothing else (never a lost drop). Never another pawn's
+  pocket: storage only.
+- **Auto bills "for tools".** A tool a waiting job needs becomes an auto bill on the colony's crafting table, the builds' mechanism
+  (`for_build: "tools"`, `for_item` the tool; listed first on the bench; reserved before the builds' materials): a wooden pickaxe asked
+  for is made of stone when there is cobblestone. It goes when the tool exists (stored or carried). Cancelling one stops that tool
+  being made by itself (`no_craft`). `options.auto_craft_tools` (default on) turns it off. **Spare tools:**
+  `options.spare_tools: {count 0..8, kinds}` keeps that many of each kind in storage: iron from stored ingots (never smelted for),
+  else stone, else wood.
+
+### Material rules
+
+`POST …/material-rules` `{op:"set", rule:{material, tool?, tier?, enchant?, fallback?}}` → `{rule}` · `{op:"remove", material}` →
+`{removed}`. `material` is a block name or a group: `group:ores`, `group:stone`, `group:soil`, `group:logs`, `group:leaves`,
+`group:wool`, `group:web`; a block's own rule wins over its group's.
+- **The floor always holds.** A tier below the material's floor is refused (400 "iron_ore needs at least a stone pickaxe"); for a
+  group, below its lowest member's floor, and each member keeps its own floor when dug (an ores rule at "wood" still takes a stone
+  pickaxe for iron). A tool that can't harvest the material is refused ("a stone shovel can't harvest iron_ore").
+- **Marked materials.** `enchant: fortune | silk_touch | any` (1.12.2 only; b1.8.1 answers 400 "b1.8.1 has no enchantments"): a
+  matching enchanted tool carried, else one stored, is used; with none, `fallback: "plain"` (default) uses a plain tool ≥ the tier,
+  `"wait"` waits ("waiting for an iron pickaxe with fortune"). Unmarked materials take plain tools first, so the Fortune pickaxe isn't
+  worn down on stone. The colony knows which stored tools are enchanted when its own pawns stored them (`storages[].enchanted`).
+- The full state carries `materials`: the editor's catalog `[{id, label, group, tool, floor, keep_tool, members}]`, groups first.
+
+### Gear policies
+
+`POST …/policies` `{op:"set", policy:{id?, name, tools_by_work?, tools?, weapon?, armor?, food?}}` → `{id}` · `{op:"remove", id}` ·
+`{op:"assign", id, pawns}`. Policy: `{id, name, default, tools_by_work, tools:[kind], weapon: none|best|sword|axe|bow,
+armor: none|drafted|always|night, food: 0..16}`. The default policy (`default`, never removed) carries the tools of the pawn's work
+(mine: pickaxe + shovel, chop: axe, farm: hoe, build: pickaxe + axe), no weapon, armour when drafted.
+- **Kept up when idle.** About every 20 s, when nothing more urgent is on, a pawn's gear is checked against its policy: a missing or
+  worn tool kind is fetched (the worn one goes back to storage), a weapon, armour to wear now (always, or at night) or to take off
+  (none, night by day), food below half the policy's. Storage only, unclaimed items only; a failed fetch rests 2 min.
+- Pawn state: `policy` (id, null = default), `equipment: {held, armor, tools, weapons}` (each `{item, name, label, kind, tier,
+  durability, ench, slot}`), `gear_tasks: [{id, op, label}]`.
+
+### Bulk gear
+
+`POST …/gear` `{op: arm|armor|pickup|return|tools, pawns, item?:[id,meta], count?:1..64}` → `{results:[{pawn, display, got, missing}],
+summary}`: one op for a whole selection (the web shows the summary as one toast). Each pawn gets a gear task, run before its orders
+and work; the same op again replaces it.
+- **arm**: one weapon each, best fighters first (guard/hunt skill, then guard priority, then name): a stored weapon better than the
+  pawn's own, else its own in hand.
+- **armor**: per slot the best stored pieces go round the selection, starting with a different pawn each slot, so the best helmet
+  and the best chestplate land on different pawns.
+- **pickup**: `count` of `item` each, from storage, in order; what ran out is said.
+- **return**: armour off, tools, weapons and armour into the chests that take them.
+- **tools**: per kind, the tools each pawn's policy wants, to the pawns with that work highest in their priorities first.
+- **Reservations.** Every fetched item is claimed for its pawn (pending gear tasks and jobs in flight), so two pawns never go for
+  the same sword.
+
+## Drafted combat (added 2026-11-03)
+
+Fox: "When drafted I couldn't make them attack players, bots or mobs." The attack order took a mob type name and the client refused
+players outright.
+- **Any entity.** `POST …/orders` `{order:{kind:"attack", target:{entity}, confirm?}}` on a monster, an animal, a player or another
+  bot (hive bodies included) sends every ordered pawn at exactly that entity (no lease: they gang up), with the best weapon carried;
+  the client's fight engine follows it if it moves and ends when it dies or leaves. Undrafting (or stop) ends it. One of the colony's
+  own pawns is refused (400); a drop or an unseen entity too.
+- **Players and bots need the owner's word.** Without `confirm: true` the route answers **409** `{error, confirm:{entity, name, kind:
+  "player"|"bot"}}`; the web asks once per target per session ("Attack PoofimaFox?") and resends. Only then does the director give that
+  pawn's body a permit for exactly that entity (`CombatEngine.Permit`, 3 min, renewed with each attack job, withdrawn on undraft or
+  stop): the client's hard gate still refuses every other player, and nothing ever starts a fight with a player by itself. No
+  commands are involved.
+- **Draft and undraft.** Drafting puts the best carried weapon in hand (by the policy's weapon preference) and, when the policy says
+  "when drafted" (or always, or at night by night), the carried armour on; what was held is remembered. Undrafting holds it again and
+  takes the draft's armour off.
+- **Holding a post.** A drafted pawn's move order sets its post (the formation slot). With no order (or a hold), it engages a monster
+  within 6 blocks of itself or its post, then walks back. Monsters that hit it are fought by the body's own defence reflex. Players
+  and animals are never engaged without an order.
 
 ## AI hives
 
@@ -945,7 +1236,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   priority and a filter over a loot category tree. State: `categories` and `storages`.
 - **Bills.** Workbenches (crafting table, furnace, brewing stand, anvil, enchanting table) take bills: a recipe, repeat
   mode (count, until, forever), ingredient filter and radius, worker restriction, where the product goes. State:
-  `workbenches`; recipes come from `GET /api/story/recipes`.
+  `workbenches`; recipes come from `GET /api/story/recipes`. The bills inspector shows a station's facts (bookshelves and the top
+  offer, the anvil's wear, the stand's water and fuel); the bill dialog shows what a station recipe needs (XP level, lapis, fuel,
+  water, a brew's steps), offers only the modes the recipe takes, and an enchant's option, preferred enchantment and prefer-only.
 - **AI bodies.** Main, the hives and their bodies sit in the top bar after the pawns. With them in the selection, a tool,
   order, build or bill also goes to them as a directive (`POST /api/story/directives`) with the same payload; the chat bar
   talks to them as the signed-in player. State: `ai` and `directives`.

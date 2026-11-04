@@ -3,9 +3,10 @@ using MineClaw.World;
 
 namespace MineClaw.Hive.Story;
 
-/// <summary>Something the colony sees: a drop, an animal or monster, a player.</summary>
+/// <summary>Something the colony sees: a drop, an animal or monster, a player. <paramref name="SeenAt"/>: the last update any body got for
+/// it (null = unknown: counts as fresh); <paramref name="FirstSeen"/>: when a body first tracked it (a drop's age: it despawns at 5 min).</summary>
 public sealed record StoryEntity(int Id, string Kind, string Name, double X, double Y, double Z, bool Hostile = false, int ItemId = -1, int ItemMeta = 0,
-    int Count = 0)
+    int Count = 0, DateTimeOffset? SeenAt = null, DateTimeOffset? FirstSeen = null)
 {
     public P3 Block => new((int)Math.Floor(X), (int)Math.Floor(Y), (int)Math.Floor(Z));
 }
@@ -31,8 +32,13 @@ public interface IStoryWorld
 }
 
 /// <summary>A live pawn body as the director reads it each time it picks.</summary>
+/// <param name="Inventory">Totals by item; a 1.12.2 potion's meta is its potion type id (<see cref="MineClaw.Data.Brewing.TypeId"/>).</param>
+/// <param name="XpLevel">The body's experience level (it earns XP mining ore, smelting, killing): enchanting and anvil bills spend it.</param>
+/// <param name="Gear">Tools, weapons and armour slot by slot (armour 5..8, bag 9..44) with their enchantments; null = unknown (the
+/// director then reads them off <paramref name="Inventory"/>).</param>
+/// <param name="HeldSlot">The held hotbar slot as an inventory slot (36..44), or −1.</param>
 public sealed record PawnLive(bool Online, int Hp, int Food, double X, double Y, double Z, int Dim, string? Held, IReadOnlyList<Stack> Inventory,
-    bool ScriptRunning, int FreeSlots = 36)
+    bool ScriptRunning, int FreeSlots = 36, int XpLevel = 0, IReadOnlyList<GearSlot>? Gear = null, int HeldSlot = -1)
 {
     public P3 Block => new((int)Math.Floor(X), (int)Math.Floor(Y), (int)Math.Floor(Z));
     public static readonly PawnLive Offline = new(false, 0, 0, 0, 0, 0, 0, null, [], false, 0);
@@ -77,6 +83,13 @@ public interface IStoryHost
     string? ReleasePawn(string account, string why) => "releasing one pawn isn't available here";
     IReadOnlyList<(string Account, string? Why)> Bring(string colony, IReadOnlyList<string> accounts, bool overCap) =>
         accounts.Select(a => (a, (string?)"bringing pawns online isn't available here")).ToList();
+    /// <summary>Is this player name one of the hive's own bots (main, a hive, a body): an attack on it is an attack on a bot.</summary>
+    bool IsBot(string name) => false;
+    /// <summary>
+    /// The owner's confirmed order lets this pawn's body fight exactly that player entity (on), or no longer (off). Bodies never fight
+    /// a player without it (the client's hard gate).
+    /// </summary>
+    void PermitAttack(string account, int entity, bool on) { }
 }
 
 /// <param name="Hosted">The account is one of the colony's bodies right now (online, or its login is under way / looping).</param>
@@ -102,16 +115,19 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
         var list = new List<StoryEntity>();
         foreach (var e in w.Entities.All())
         {
+            DateTimeOffset seen = DateTime.SpecifyKind(e.UpdatedAt, DateTimeKind.Utc), first = DateTime.SpecifyKind(e.SpawnedAt, DateTimeKind.Utc);
             switch (e.Kind)
             {
                 case EntityKind.Item when e.Item is { IsEmpty: false } it:
-                    list.Add(new StoryEntity(e.Id, "item", data.Item(it.Id).Name, e.Position.X, e.Position.Y, e.Position.Z, false, it.Id, it.Damage, it.Count));
+                    list.Add(new StoryEntity(e.Id, "item", data.Item(it.Id).Name, e.Position.X, e.Position.Y, e.Position.Z, false, it.Id, it.Damage, it.Count,
+                        seen, first));
                     break;
                 case EntityKind.Mob:
-                    list.Add(new StoryEntity(e.Id, "mob", e.DisplayName.ToLowerInvariant(), e.Position.X, e.Position.Y, e.Position.Z, e.IsHostileMob));
+                    list.Add(new StoryEntity(e.Id, "mob", e.DisplayName.ToLowerInvariant(), e.Position.X, e.Position.Y, e.Position.Z, e.IsHostileMob,
+                        SeenAt: seen, FirstSeen: first));
                     break;
                 case EntityKind.Player:
-                    list.Add(new StoryEntity(e.Id, "player", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z));
+                    list.Add(new StoryEntity(e.Id, "player", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z, SeenAt: seen, FirstSeen: first));
                     break;
             }
         }
@@ -162,14 +178,21 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
 
     public int? NightLight(int x, int y, int z) => At(x, z) is { } w ? w.Light.LightLevel(x, y, z, LightEngine.NightSubtracted) : null;
 
+    /// <summary>Every body's entities by id: the freshest copy (the body nearest it gets its moves) with the earliest first sighting
+    /// (a drop's age). A mob only one body's tracker still holds keeps that body's last update, so the colony can tell it is stale.</summary>
     public IReadOnlyList<StoryEntity> Entities()
     {
-        var seen = new HashSet<int>();
+        var byId = new Dictionary<int, int>();
         var list = new List<StoryEntity>();
         void Add(WorldState w)
         {
             foreach (var e in new WorldStateStoryWorld(() => w, data).Entities())
-                if (seen.Add(e.Id)) list.Add(e);
+            {
+                if (!byId.TryGetValue(e.Id, out var i)) { byId[e.Id] = list.Count; list.Add(e); continue; }
+                var old = list[i];
+                var first = old.FirstSeen is { } a && e.FirstSeen is { } b ? (a < b ? a : b) : old.FirstSeen ?? e.FirstSeen;
+                list[i] = (e.SeenAt > old.SeenAt ? e : old) with { FirstSeen = first };
+            }
         }
         if (main() is { } m) Add(m);
         foreach (var w in Others()) Add(w);

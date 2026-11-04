@@ -193,6 +193,8 @@ public sealed class PawnState
     public string[] Schedule { get; set; } = new string[24];
     public bool Drafted { get; set; }
     public List<Order> Queue { get; set; } = new();
+    /// <summary>Its gear policy, what it held before a draft, its post, pending gear work (StoryColony.Gear.cs).</summary>
+    public PawnGear Gear { get; set; } = new();
     public long Rev { get; set; }
 }
 
@@ -290,6 +292,8 @@ public sealed class DesignationState
     public string Status { get; set; } = "open";
     /// <summary>Why it last failed (null while it hasn't).</summary>
     public string? Reason { get; set; }
+    /// <summary>Why it waits without failing ("needs a stone pickaxe"): no pawn that picked it had or could fetch the tool; not saved.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public string? Wait { get; set; }
     public long Rev { get; set; }
 }
 
@@ -316,6 +320,8 @@ public sealed class StorageState
     public List<Stack> Contents { get; set; } = new();
     public int FreeSlots { get; set; } = 27;
     public DateTimeOffset? KnownAt { get; set; }
+    /// <summary>Enchanted gear known to be in this chest (put there by the colony's pawns): the contents list can't tell them apart.</summary>
+    public List<EnchStack> Enchanted { get; set; } = new();
     public long Rev { get; set; }
     public int Slots => DoubleWith != null ? 54 : 27;
 }
@@ -401,6 +407,16 @@ public sealed class BillState
     public string? ForItem { get; set; }
     /// <summary>An auto bill's place in its build's recipe chain (lower first: ingredients before products).</summary>
     public int Step { get; set; }
+    /// <summary>An enchant bill's highest offer to take (1–3: its lapis and the levels it costs); null = 3.</summary>
+    public int? Option { get; set; }
+    /// <summary>An enchant bill's preferred enchantment (fortune, silk_touch...): the offer hinting it first.</summary>
+    public string? Prefer { get; set; }
+    /// <summary>Only an offer hinting <see cref="Prefer"/> (else the highest one the pawn can pay).</summary>
+    public bool PreferOnly { get; set; }
+    /// <summary>The XP levels the last try needed (an offer's level, the anvil's price): pawns with fewer don't take it.</summary>
+    public int? XpNeeded { get; set; }
+    /// <summary>What the last job made ("enchanted diamond pickaxe: Fortune III", "brewed 3 Potion of Swiftness").</summary>
+    public string? Last { get; set; }
 }
 
 public sealed class WorkbenchState
@@ -414,6 +430,8 @@ public sealed class WorkbenchState
     public string? LoadedBill { get; set; }
     public int LoadedCount { get; set; }
     public DateTimeOffset? ReadyAt { get; set; }
+    /// <summary>A brewing stand's fuel (brews left) as the colony last left it; null = unknown.</summary>
+    public int? Fuel { get; set; }
     public long Rev { get; set; }
 }
 
@@ -441,6 +459,17 @@ public sealed class ColonyMeta
     /// <summary>Workbenches near home and in houses join the colony by themselves. Off by default: only designated benches (the owner's
     /// "Use as colony crafting table", a bill added at a bench, a bench the colony placed) are used, never another player's.</summary>
     public bool DetectBenches { get; set; }
+    /// <summary>A pawn stuck where nothing gets it out (no stairs to dig, no blocks to pillar, nobody to bring some) is teleported home
+    /// through the op command path (default on; never on b1.8.1, whose /tp takes no coordinates).</summary>
+    public bool RescueTeleport { get; set; } = true;
+    /// <summary>Loot no chest's filter accepts goes into any chest with room that doesn't deny it (default on). Off: it stays with the
+    /// pawn (or on the ground) until a chest accepts it.</summary>
+    public bool UnfilteredTakesAnything { get; set; } = true;
+    /// <summary>A chest keeps what its filter no longer allows until a compatible chest exists (default off: like the genre, the haulers
+    /// take it out and drop it by the chest, where it despawns unless it is hauled).</summary>
+    public bool KeepDisallowed { get; set; }
+    /// <summary>Gear policies, material tool rules, tool auto-crafting and spare tools (StoryColony.Gear.cs).</summary>
+    public GearSettings Gear { get; set; } = new();
     /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls
     /// only) or stay (hold where they are).</summary>
     public string Idle { get; set; } = "recreation";

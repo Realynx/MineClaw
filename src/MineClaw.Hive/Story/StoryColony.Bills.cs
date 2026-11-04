@@ -97,7 +97,8 @@ public sealed partial class StoryColony
                         if (StoryRecipes.BenchOf(w.Block(at.X, at.Y, at.Z).Id) is not { } kind) return (null, "no workbench there");
                         Benches.Add(bench = new WorkbenchState { Pos = at, Kind = kind, Rev = Touch() });
                     }
-                    if (!StoryRecipes.Supported.Contains(bench.Kind)) return (null, $"{bench.Kind} bills aren't supported yet (no primitive)");
+                    if (!StoryRecipes.SupportedIn(w.Data, bench.Kind))
+                        return (null, $"{w.Data.VersionId} has no {Pretty(bench.Kind)} bills (b1.8.1 has no brewing stands, anvils or enchanting tables)");
                     if (body["bill"] is not JsonObject spec) return (null, "bill required");
                     var (bill, err) = ParseBill(w, spec, bench, null);
                     if (bill == null) return (null, err);
@@ -132,9 +133,10 @@ public sealed partial class StoryColony
                             fb.Rev = Touch();
                             foreach (var other in Benches) other.Bills.RemoveAll(x => x.ForBuild == fb.Id && x.ForItem == fi && other.LoadedBill != x.Id);
                         }
+                        else if (bill.ForBuild == ToolsTag && bill.ForItem is { } ti) ToolCraftCancelled(ti); // that tool isn't made by itself again
                         MaterialsChanged();
                     }
-                    else { bill.Paused = op == "pause"; if (op == "resume") { bill.SuspendedReason = null; _billFails.Remove(bill.Id); } }
+                    else { bill.Paused = op == "pause"; if (op == "resume") { bill.SuspendedReason = null; _billFails.Remove(bill.Id); _noOffer.Remove(bill.Id); } }
                     bench!.Rev = Touch();
                     return (new JsonObject { ["id"] = bill.Id }, null);
                 }
@@ -149,8 +151,18 @@ public sealed partial class StoryColony
                     bench.Rev = Touch();
                     return (new JsonObject { ["ids"] = new JsonArray(bench.Bills.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
                 }
+                case "enchant_tools":
+                {
+                    // The tools system's hook (StoryEnchanting.cs EnchantTools): {prefer, items?, count?, prefer_only?}.
+                    var prefer = body["prefer"]?.GetValue<string>() ?? (body["material"]?.GetValue<string>() is { } mat ? StoryEnchanting.PreferFor(mat) : null);
+                    if (prefer == null) return (null, "prefer (an enchantment) or material required");
+                    var items = body["items"] is JsonArray ia ? ia.Select(x => x?.GetValue<string>() ?? "").Where(x => x.Length > 0).ToList() : null;
+                    var (ids, err) = EnchantTools(prefer, items, body["count"]?.GetValue<int>() ?? 1, body["prefer_only"]?.GetValue<bool>() ?? false);
+                    if (err != null && ids.Count == 0) return (null, err);
+                    return (new JsonObject { ["ids"] = new JsonArray(ids.Select(i => (JsonNode)i!).ToArray()), ["note"] = err }, null);
+                }
                 default:
-                    return (null, "op must be add|update|remove|pause|resume|reorder");
+                    return (null, "op must be add|update|remove|pause|resume|reorder|enchant_tools");
             }
         }
     }
@@ -191,6 +203,24 @@ public sealed partial class StoryColony
             else return (null, "store must be \"best\" or {chest:[x,y,z]}");
         }
         if (spec["paused"] is { } pz) bill.Paused = pz.GetValue<bool>();
+        if (StoryRecipes.Get(w.Data, bill.Recipe)?.Station is { } station)
+        {
+            // Station bills (StoryColony.Stations.cs): the modes the product allows, an enchant's option and preference.
+            if (!station.Modes.Contains(bill.Mode))
+                return (null, $"mode must be {string.Join("|", station.Modes)} for this recipe (an enchanted or repaired item can't be told apart in storage)");
+            if (spec.ContainsKey("option")) bill.Option = spec["option"] is { } opt ? Math.Clamp(opt.GetValue<int>(), 1, 3) : null;
+            if (spec.ContainsKey("prefer"))
+            {
+                var pref = spec["prefer"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(pref)) bill.Prefer = null;
+                else if (station.Kind != "enchant") return (null, "prefer is for enchanting bills");
+                else if (MineClaw.Data.Enchanting.ByName(pref) is not { } e) return (null, $"unknown enchantment '{pref}'");
+                else if (!MineClaw.Data.Enchanting.Fits(e, station.Item)) return (null, $"{e.DisplayName} doesn't go on {Pretty(station.Item)} at a table");
+                else bill.Prefer = e.Name;
+            }
+            if (spec["prefer_only"] is { } po) bill.PreferOnly = po.GetValue<bool>();
+            if (spec.ContainsKey("prefer") || spec.ContainsKey("option") || spec.ContainsKey("prefer_only")) _noOffer.Remove(bill.Id);
+        }
         return (bill, null);
     }
 
@@ -243,11 +273,23 @@ public sealed partial class StoryColony
                 return Job(work, "collect_furnace", "collecting the furnace", bench.Pos, key, "furnace", lb, xp: 10, count: bench.LoadedCount);
             }
             if (bench.LoadedBill != null) continue; // still smelting
+            if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) continue;
             foreach (var bill in bench.Bills)
             {
                 if (bill.Paused || bill.SuspendedReason != null) continue;
                 if (StoryRecipes.Get(w.Data, bill.Recipe) is not { } r || r.WorkType != work || !MayTake(bill, p, work)) continue;
                 if (!Wanted(bill, r)) continue;
+                if (r.Station != null)
+                {
+                    // Brewing stand, enchanting table, anvil (StoryColony.Stations.cs): their own jobs, XP levels and reasons.
+                    var (sj, why) = StationJob(p, live, work, bench, bill, r, key);
+                    if (sj != null) return sj;
+                    if (why == null || bill.ForBuild != null) continue;
+                    bill.SuspendedReason = why;
+                    bench.Rev = Touch();
+                    if (_billAlerted.GetValueOrDefault(bill.Id) != why) { _billAlerted[bill.Id] = why; Alert("warn", $"Bill {r.Label} suspended: {why}"); }
+                    continue;
+                }
                 int left = bill.Mode == "count" ? bill.Target - bill.Done : bill.Mode == "until" ? bill.Target - CountItem(r.Output.Id, r.Output.Meta) : 64;
                 int crafts = Math.Clamp((int)Math.Ceiling(Math.Max(1, left) / (double)Math.Max(1, r.Output.Count)), 1, bench.Kind == "furnace" ? 8 : 16);
                 var (got, missing) = Ingredients(bill, r, crafts, bench, live);
@@ -321,7 +363,7 @@ public sealed partial class StoryColony
         return null;
     }
 
-    private void BillDone(PawnState p, ActiveJob j)
+    private void BillDone(PawnState p, ActiveJob j, string? note = null)
     {
         foreach (var bench in Benches)
         {
@@ -345,6 +387,7 @@ public sealed partial class StoryColony
                 bench.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * Math.Max(1, j.Json["n"]?.GetValue<int>() ?? 1));
             }
             else bill.Done += j.Count;
+            if (StoryRecipes.Stations.Contains(bench.Kind)) StationDone(bench, bill, j, note);
             bench.Rev = Touch();
             return;
         }
@@ -361,6 +404,11 @@ public sealed partial class StoryColony
                 return;
             }
             if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is not { } bill) continue;
+            if (StoryRecipes.Stations.Contains(bench.Kind) && StationFailed(p, bench, bill, why))
+            {
+                bench.Rev = Touch();
+                return;
+            }
             if ((_billFails[bill.Id] = _billFails.GetValueOrDefault(bill.Id) + 1) >= 3)
             {
                 bill.SuspendedReason = why;

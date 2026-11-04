@@ -1195,6 +1195,91 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   await expect(page.getByTestId('bills-inspector')).toBeVisible();
 });
 
+test('drafted pawns attack a right-clicked mob; a player needs a confirm; bulk Arm is one gear op', async ({ page }) => {
+  type Ent = { id: number; kind: string; name: string | null; x: number; y: number };
+  const call = <T,>(m: string, ...a: unknown[]) =>
+    page.evaluate(
+      ([mm, aa]) => (window as unknown as { __story: Record<string, (...x: unknown[]) => unknown> }).__story[mm]!(...aa),
+      [m, a] as const,
+    ) as Promise<T>;
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const bar = page.getByTestId('colonist-bar');
+  const names = await bar
+    .locator('[data-kind="pawn"]')
+    .evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.portrait!));
+  await bar.locator(`[data-portrait="${names[0]}"]`).click();
+  for (const n of names.slice(1)) await bar.locator(`[data-portrait="${n}"]`).click({ modifiers: ['Shift'] });
+  await expect(page.getByTestId('inspector')).toContainText('3 selected');
+
+  // Bulk Arm: ONE gear request for the whole selection; its summary is the toast.
+  const gearReq = post(page, /\/api\/story\/colonies\/[^/]+\/gear$/);
+  await page.getByTestId('gear-actions').locator('[data-gear="arm"]').click();
+  const g = body(await gearReq);
+  expect(g.op).toBe('arm');
+  expect((g.pawns as string[]).sort()).toEqual([...names].sort());
+  await expect(page.getByTestId('story-toast')).toBeVisible();
+
+  await page.mouse.move(700, 500);
+  await page.keyboard.press('r');
+  await expect(bar.locator('[data-kind="pawn"][data-drafted="true"]')).toHaveCount(3);
+
+  const orders: Request[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/api\/story\/colonies\/[^/]+\/orders$/.test(new URL(r.url()).pathname))
+      orders.push(r);
+  });
+  const onScreen = (e: Ent) => Number.isFinite(e.x) && e.x > 80 && e.x < 1360 && e.y > 120 && e.y < 780;
+
+  // A mob: the attack cursor shows over it, and a right-click attacks with the drafted pawns (no menu).
+  await call('focus', -6, -22);
+  await page.waitForTimeout(800);
+  const mob = (await call<Ent[]>('entities')).find((e) => e.kind === 'mob' && onScreen(e));
+  expect(mob, 'a mob on screen').toBeTruthy();
+  await page.mouse.move(mob!.x, mob!.y);
+  await expect.poll(() => call<boolean>('attackCursor')).toBe(true);
+  const fresh = (await call<Ent[]>('entities')).find((e) => e.id === mob!.id)!;
+  await page.mouse.click(fresh.x, fresh.y, { button: 'right' });
+  await expect.poll(() => orders.length).toBe(1);
+  expect(body(orders[0]!)).toMatchObject({ order: { kind: 'attack', target: { entity: mob!.id } } });
+  expect(body(orders[0]!).order).not.toHaveProperty('confirm');
+  expect((body(orders[0]!).pawns as string[]).sort()).toEqual([...names].sort());
+  await expect(page.getByTestId('order-menu')).toHaveCount(0);
+
+  // A player: asked first ("Attack poofimafox?"), then sent with confirm: true.
+  await call('focus', -2, 12);
+  await page.waitForTimeout(800);
+  const player = (await call<Ent[]>('entities')).find((e) => e.kind === 'player' && e.name === 'poofimafox')!;
+  expect(onScreen(player)).toBe(true);
+  await page.mouse.click(player.x, player.y, { button: 'right' });
+  const dialog = page.getByRole('dialog', { name: 'Attack poofimafox?' });
+  await expect(dialog).toBeVisible();
+  expect(orders).toHaveLength(1); // nothing sent before the confirm
+  if (shots) await page.screenshot({ path: `${shots}/story-attack-confirm.png` });
+  await dialog.getByTestId('attack-confirm').click();
+  await expect.poll(() => orders.length).toBe(2);
+  expect(body(orders[1]!)).toMatchObject({ order: { kind: 'attack', target: { entity: player.id }, confirm: true } });
+  await expect(page.getByTestId('story-toast')).toContainText('attacking poofimafox');
+  // Confirmed once per target per session: the next right-click on the same player goes straight out.
+  const again = (await call<Ent[]>('entities')).find((e) => e.id === player.id)!;
+  await page.mouse.click(again.x, again.y, { button: 'right' });
+  await expect.poll(() => orders.length).toBe(3);
+  await expect(dialog).toHaveCount(0);
+
+  // The Assign tab: the policy grid and the tool rules, with tiers below the floor disabled.
+  await page.getByTestId('tab-bar').getByRole('button', { name: /Assign/ }).click();
+  await expect(page.getByTestId('assign-grid')).toBeVisible();
+  await page.getByRole('tab', { name: 'Tool rules' }).click();
+  const add = post(page, /\/material-rules$/);
+  await page.getByLabel('Material to add a rule for').selectOption('iron_ore');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  expect(body(await add)).toMatchObject({ op: 'set', rule: { material: 'iron_ore' } });
+  const tier = page.getByLabel('Tier for iron_ore');
+  await expect(tier.locator('option[value="wood"]')).toBeDisabled();
+  if (shots) await page.screenshot({ path: `${shots}/story-assign-rules.png` });
+});
+
 /** Drags the time of day slider to a fraction of the day (0 = 06:00) and waits for its one POST. */
 async function setTime(page: Page, at: number): Promise<number> {
   const slider = page.getByLabel('Time of day');

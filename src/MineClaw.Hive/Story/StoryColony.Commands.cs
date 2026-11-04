@@ -5,7 +5,7 @@ namespace MineClaw.Hive.Story;
 /// <summary>What the browser asks of a colony: priorities, schedules, drafting, orders, zones and designations.</summary>
 public sealed partial class StoryColony
 {
-    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "fish", "home", "forbidden"];
+    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "fish", "home", "forbidden", "dump"];
     public static readonly IReadOnlyList<string> OrderKinds = ["move", "attack", "chop", "mine", "haul", "build", "hold", "stop"];
     public static readonly IReadOnlyList<string> DesignationKinds = ["chop", "cut", "harvest", "mine", "haul", "hunt", "deconstruct", "forbid", "allow"];
 
@@ -68,6 +68,7 @@ public sealed partial class StoryColony
                 if (p.Drafted == drafted) continue;
                 p.Drafted = drafted;
                 if (!drafted) p.Queue.Clear(); // undrafted pawns go back to the job picker
+                OnDraftChanged(p, drafted); // weapon in hand (and armour, by its policy); undrafted: the old item back (StoryColony.Gear.cs)
                 p.Rev = Touch();
                 Supersede(p, drafted ? "drafted" : "undrafted");
             }
@@ -84,6 +85,11 @@ public sealed partial class StoryColony
         if (order["target"] is JsonNode t)
         {
             if (t is JsonObject to && to["entity"] is { } en) entity = StoryJson.Int(en);
+            else if (t is JsonObject tp && tp["player"] is JsonValue pv && pv.TryGetValue<string>(out var pn)) // a player or bot by name (the map has no id for a bot)
+            {
+                entity = World?.Entities().FirstOrDefault(e => e.Kind == "player" && e.Name.Equals(pn, StringComparison.OrdinalIgnoreCase))?.Id;
+                if (entity == null) return (null, $"no player named {pn} in view");
+            }
             else if (t is JsonObject ta && ta["area"] is { } an) area = Area.Parse(an) ?? (Area?)null;
             else at = P3.Parse(t);
             if (at == null && entity == null && area == null) return (null, "target must be {x,y,z} | {entity:id} | {area:[x1,y1,z1,x2,y2,z2]}");
@@ -94,13 +100,17 @@ public sealed partial class StoryColony
         if (kind == "haul" && entity == null && at == null && area == null) return (null, "haul needs a target");
         if (kind == "build" && design == null && at == null) return (null, "build needs a design (or a target)");
         if (area is { Volume: > 32_768 }) return (null, "area too large for an order (max 32768 blocks)");
+        if (kind == "attack")
+            lock (_lock)
+                if (AttackCheck(entity, order["confirm"]) is { Error: { } aerr } check)
+                    return (check.Confirm is { } cf ? new JsonObject { ["confirm"] = cf } : null, aerr); // a player or bot: the owner confirms (409)
         // A chop order on a tree's canopy (a top-down click) or a branch means the tree: its trunk base.
         if (kind == "chop" && at is { } ca && World is { } cw && StoryBlocks.TreeBaseOf(cw, ca) is { } cb) at = cb;
         var ids = new JsonArray();
         lock (_lock)
             foreach (var p in pawns)
             {
-                if (kind == "stop") { p.Queue.Clear(); p.Rev = Touch(); Supersede(p, "stop"); continue; }
+                if (kind == "stop") { p.Queue.Clear(); p.Rev = Touch(); Supersede(p, "stop"); NoteOrder(p, new Order { Kind = "stop" }); continue; }
                 var o = new Order { Id = NextId("o"), Kind = kind, At = at, Entity = entity, Area = area, Design = design, Given = Now };
                 if (area is { } a && World is { } w)
                     o.Targets = kind switch
@@ -112,6 +122,7 @@ public sealed partial class StoryColony
                 if (!queue) { p.Queue.Clear(); Supersede(p, "new order"); }
                 if (p.Queue.Count >= 32) return (null, "queue full (32 orders)");
                 p.Queue.Add(o);
+                NoteOrder(p, o); // a drafted pawn's move sets its post
                 p.Rev = Touch();
                 ids.Add(o.Id);
             }
@@ -141,10 +152,10 @@ public sealed partial class StoryColony
             return o.Kind switch
             {
                 "move" => Job(type, "go", $"moving to {at}", at ?? o.Area?.Center, null, src, o.Id, "moving", j => j["dist"] = 0, xp: 0),
-                "attack" => Job(type, "attack", $"attacking {e?.Name ?? "target"}", at, e != null ? "e:" + e.Id : null, src, o.Id, "fighting", j => j["mob"] = e?.Name ?? "", xp: 0),
+                "attack" => AttackJob(p, o, e, at), // the exact entity, every ordered pawn at once (StoryColony.Combat.cs)
                 "chop" => Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, src, o.Id,
                     fill: j => ChopFill(j, at is { } ct && World is { } ow ? StoryBlocks.TreeFrom(ow, ct) : null), xp: 40),
-                "mine" => Job(WorkTypes.Mine, "dig", "mining (order)", at, at is { } m ? "b:" + m : null, src, o.Id),
+                "mine" => MineOrderJob(p, live, o, at),
                 "haul" => Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, src, o.Id, "working", j => j["r"] = 4, xp: 5),
                 "build" when o.Design is { } d => Job(WorkTypes.Build, "blueprint", $"building design #{d}", at, "design:" + d, src, o.Id, "working", j => j["design"] = d.ToString(), xp: 60),
                 "hold" => Job(type, "hold", "holding position", at, null, src, o.Id, p.Drafted ? "drafted" : "idle", j => j["s"] = 5, xp: 0),
@@ -159,6 +170,7 @@ public sealed partial class StoryColony
         var o = p.Queue.FirstOrDefault(x => x.Id == j.SourceId);
         if (o == null) return;
         if (o.Kind == "hold" && ok) return; // holds until the next order (or undraft)
+        if (!ok && AttackRetry(o, note)) return; // "busy: fighting …": the attack order stays for another go
         if (o.Targets is { } ts && j.At is { } at)
         {
             ts.Remove(at);
@@ -204,6 +216,7 @@ public sealed partial class StoryColony
                     _skip.Remove(key);
                     _leaseFails.Remove(key);
                     _softFails.Remove(key);
+                    ForgetPawnFails(key);
                     d.Status = "open";
                     d.Rev = Touch();
                 }
@@ -236,6 +249,7 @@ public sealed partial class StoryColony
                 _skip.Remove(key);
                 _leaseFails.Remove(key);
                 _softFails.Remove(key);
+                ForgetPawnFails(key);
                 d.Status = "open";
                 d.Rev = Touch();
                 revived++;

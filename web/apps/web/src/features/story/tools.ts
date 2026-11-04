@@ -15,6 +15,7 @@ import {
   type StoryBuildItem,
   type StoryDesignationKind,
   type StoryDirectiveSpec,
+  type StoryGearOp,
   type StoryFacing,
   type StoryMaterial,
   type StoryMineFilter,
@@ -392,6 +393,7 @@ export const ZONE_TOOLS: ReadonlyArray<{ id: StoryZoneKind; label: string; hint:
   { id: 'mine', label: 'Quarry', hint: 'Pawns mine here when idle', color: '#9aa3ad' },
   { id: 'fish', label: 'Fishing zone', hint: 'Pawns fish here with rods (still water only)', color: '#3fb8d9' },
   { id: 'forbidden', label: 'Keep out', hint: 'Pawns never walk here', color: '#e0525a' },
+  { id: 'dump', label: 'Drop spot', hint: 'Loot goes here while the colony has no storage', color: '#c8a46a' },
 ];
 
 export function zoneColor(kind: string): string {
@@ -680,6 +682,8 @@ export type Target =
   | { kind: 'block'; x: number; y: number; z: number; id: number; name: string }
   | { kind: 'mob'; entity: number; name: string; animal: boolean; x: number; y: number; z: number }
   | { kind: 'item'; entity: number; name: string; x: number; y: number; z: number }
+  /** A player (an entity) or an AI bot (no entity id in the viewer: attacked by name). Never the colony's own pawns. */
+  | { kind: 'player'; entity: number | null; name: string; bot: boolean; x: number; y: number; z: number }
   | { kind: 'ghost'; build: string | number; label: string; x: number; y: number; z: number }
   | { kind: 'ground'; x: number; y: number; z: number };
 
@@ -689,9 +693,22 @@ export interface MenuItem {
   hint?: string;
   order?: StoryOrderSpec;
   /** A non-order action (ghost cancel/prioritise, open storage…). */
-  action?: 'cancel-build' | 'first-build' | 'storage' | 'bills';
+  action?: 'cancel-build' | 'first-build' | 'storage' | 'bills' | 'gear';
   directive?: StoryDirectiveSpec;
+  /** action 'gear': the bulk gear op for the selected pawns. */
+  gear?: StoryGearOp;
+  /** An attack on a player or bot: confirmed once per target per session before it is sent. */
+  confirm?: { name: string; kind: 'player' | 'bot'; entity: number | null };
 }
+
+/** The bulk gear items of the right-click menu (selected pawns only). */
+export const GEAR_MENU: ReadonlyArray<{ op: StoryGearOp; label: string }> = [
+  { op: 'arm', label: 'Arm (best weapon)' },
+  { op: 'armor', label: 'Equip armour' },
+  { op: 'pickup', label: 'Pick up…' },
+  { op: 'return', label: 'Return gear' },
+  { op: 'tools', label: 'Equip tools for their work' },
+];
 
 /** The genre's context menu: what the selected pawns can do to the thing under the cursor. */
 export function contextMenu(t: Target, hasPawns: boolean, hasAi: boolean): MenuItem[] {
@@ -709,6 +726,18 @@ export function contextMenu(t: Target, hasPawns: boolean, hasAi: boolean): MenuI
       break;
     case 'mob':
       order('attack', t.animal ? `Hunt ${t.name}` : `Attack ${t.name}`, { kind: 'attack', target: { entity: t.entity } }, { kind: t.animal ? 'hunt' : 'attack', entities: [t.entity] });
+      order('move', 'Go here', { kind: 'move', target: at }, { kind: 'move', targets: [p] });
+      break;
+    case 'player':
+      if (hasPawns || hasAi)
+        out.push({
+          id: 'attack',
+          label: `Attack ${t.name}`,
+          hint: 'asks to confirm once',
+          order: { kind: 'attack', target: t.entity !== null ? { entity: t.entity } : { player: t.name } },
+          directive: { kind: 'attack', ...(t.entity !== null ? { entities: [t.entity] } : { text: `attack ${t.name}` }) },
+          confirm: { name: t.name, kind: t.bot ? 'bot' : 'player', entity: t.entity },
+        });
       order('move', 'Go here', { kind: 'move', target: at }, { kind: 'move', targets: [p] });
       break;
     case 'item':
@@ -732,6 +761,7 @@ export function contextMenu(t: Target, hasPawns: boolean, hasAi: boolean): MenuI
     out.push({ id: 'hold', label: 'Hold position', order: { kind: 'hold' }, directive: { kind: 'guard' } });
     out.push({ id: 'stop', label: 'Stop', order: { kind: 'stop' }, directive: { kind: 'text', text: 'stop what you are doing' } });
   }
+  if (hasPawns) for (const g of GEAR_MENU) out.push({ id: `gear-${g.op}`, label: g.label, action: 'gear', gear: g.op });
   return out;
 }
 

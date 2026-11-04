@@ -301,7 +301,7 @@ public sealed partial class MinecraftClient
 
             // ---- windows ----
             case OpenWindowPacket ow:
-                w.Inventory.Open(ow.WindowId, (WindowType)ow.InventoryType, ow.Title, ow.SlotCount);
+                w.Inventory.Open(ow.WindowId, (WindowType)ow.InventoryType, ow.Title, ow.SlotCount, ow.Kind);
                 if (_lastActivated is { } act && Environment.TickCount64 - act.At <= 5000)
                 {
                     _lastActivated = null;

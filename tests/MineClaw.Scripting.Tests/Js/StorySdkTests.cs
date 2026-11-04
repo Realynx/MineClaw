@@ -212,6 +212,36 @@ public sealed class StorySdkTests
     }
 
     [Fact]
+    public async Task The_pawn_script_takes_and_holds_a_jobs_tool_runs_gear_jobs_and_attacks_the_exact_entity()
+    {
+        var port = new FakeDirector(
+            J("j1", "dig", j =>
+            {
+                j["at"] = "4,64,4"; j["tool"] = "stone_pickaxe"; j["tool_ench"] = "none";
+                j["fetch"] = new JsonArray(new JsonObject { ["from"] = "5,64,5", ["item"] = "stone_pickaxe", ["n"] = 1, ["ench"] = "none" });
+            }),
+            J("j2", "equip", j => { j["unwear"] = true; j["wear"] = new JsonArray("iron_helmet"); j["hold"] = "iron_sword"; j["hold_ench"] = "any"; }),
+            J("j3", "attack", j => { j["at"] = "6,64,6"; j["mob"] = "zombie"; j["target"] = 50; }),
+            J("j4", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.On["dig"] = (_, _) => { rig.World.SetBlock(4, 64, 4, 0, 0); return Task.FromResult(ActResult.Success("dug")); };
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        int take = calls.IndexOf("""equip {"ench":"none","from":"5,64,5","item":"stone_pickaxe","mode":"take"}""");
+        int hold = calls.IndexOf("""equip {"ench":"none","from":"","item":"stone_pickaxe","mode":"hold"}""");
+        int dig = calls.IndexOf("""dig {"at":"4,64,4"}""");
+        Assert.True(take >= 0 && take < hold && hold < dig, string.Join(" | ", calls)); // taken exactly, held, then dug
+        int off = calls.IndexOf("""equip {"ench":"","from":"","item":"all","mode":"unwear"}""");
+        int on = calls.IndexOf("""equip {"ench":"","from":"","item":"iron_helmet","mode":"wear"}""");
+        int sword = calls.IndexOf("""equip {"ench":"any","from":"","item":"iron_sword","mode":"hold"}""");
+        Assert.True(off >= 0 && off < on && on < sword, string.Join(" | ", calls));
+        Assert.Contains("""attack {"target":"50"}""", calls);
+        Assert.Equal(["maid_chan j1 done", "maid_chan j2 done", "maid_chan j3 done", "maid_chan j4 done"], port.Reports);
+    }
+
+    [Fact]
     public async Task Story_calls_without_a_director_fail_the_script_plainly()
     {
         using var rig = Rig.Js();

@@ -105,6 +105,9 @@ public sealed partial class StoryColony
         void Column(int x, int z, int refY, bool inZone)
         {
             if (!seen.Add((x, z)) || StoryWander.GroundNear(w, x, z, refY) is not { } at) return;
+            // Never a cave cell (live 11-04: pawns wandered into caves and couldn't get back out); a home zone's own floors (a basement
+            // at the zone's height) still count.
+            if (StoryWander.Underground(w, at) && !(inZone && at.Y >= refY - 1)) return;
             if (night && !(inZone && StoryWander.Roofed(w, at)) && !(w.NightLight(at.X, at.Y, at.Z) is >= 8)) return;
             cells.Add(at);
         }
@@ -224,6 +227,7 @@ public sealed partial class StoryColony
             var job = Urgent(p, live) ?? (workHours && !resting ? Work(p, live) : null);
             if (job == null) continue;
             if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
+            foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
             job.Assign?.Invoke(); // a build batch leases its cells now (as Next does)
             _current[p.Name] = job;
             p.Rev = Bump();

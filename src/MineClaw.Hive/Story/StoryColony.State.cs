@@ -36,6 +36,7 @@ public sealed partial class StoryColony
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
+                ["unstored_kinds"] = UnstoredKinds(), // a condition: drops and loot with nowhere to go (StoryColony.Hauling.cs)
                 ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish").Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
@@ -68,16 +69,19 @@ public sealed partial class StoryColony
                         ["deny"] = new JsonArray(st.Filter.Deny.Select(a => (JsonNode)a!).ToArray()),
                     },
                     ["contents"] = new JsonArray(st.Contents.Select(c => (JsonNode)c.Json()).ToArray()), ["free_slots"] = st.FreeSlots, ["known_at"] = st.KnownAt,
+                    ["enchanted"] = EnchantedJson(st),
                 }).ToArray()),
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
                 {
-                    ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label, ["supported"] = StoryRecipes.Supported.Contains(b.Kind),
-                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt,
+                    ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label,
+                    ["supported"] = w != null ? StoryRecipes.SupportedIn(w.Data, b.Kind) : StoryRecipes.Supported.Contains(b.Kind),
+                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b),
                     ["bills"] = new JsonArray(b.Bills.Select(x => (JsonNode)BillJson(x)).ToArray()),
                 }).ToArray()),
             };
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
             if (full && w != null) o["plants"] = StoryPlants.Json(w.Data); // what growing zones can grow here
+            GearStateJson(o, full); // policies, material_rules, materials (full only): StoryColony.Gear.cs
             if (!full)
             {
                 var removed = new JsonObject();
@@ -101,6 +105,7 @@ public sealed partial class StoryColony
             ["pos"] = new JsonArray(Math.Round(live.X, 2), Math.Round(live.Y, 2), Math.Round(live.Z, 2)), ["dim"] = live.Dim, ["drafted"] = p.Drafted,
             ["state"] = state,
             ["leaving"] = _leaving.ContainsKey(p.Name),
+            ["stuck"] = _stuck.TryGetValue(p.Name, out var stuck) ? stuck.Why : null, // why it is stuck (StoryColony.Rescue.cs)
             ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {
@@ -119,6 +124,8 @@ public sealed partial class StoryColony
             ["schedule"] = new JsonArray(p.Schedule.Select(b => (JsonNode)(b ?? ScheduleBlocks.Anything)!).ToArray()),
             ["held"] = live.Held,
             ["inventory"] = new JsonArray(live.Inventory.Select(s => (JsonNode)s.Json()).ToArray()),
+            ["equipment"] = EquipmentJson(live), ["policy"] = p.Gear.Policy, ["gear_tasks"] = GearTasksJson(p),
+            ["xp_level"] = live.XpLevel,
         };
     }
 
@@ -150,6 +157,7 @@ public sealed partial class StoryColony
         ["target"] = d.Entity is { } e ? new JsonObject { ["entity"] = e } : d.At?.Json(),
         ["blocks"] = d.Blocks == null ? null : new JsonArray(d.Blocks.Select(b => (JsonNode)b.Json()).ToArray()),
         ["label"] = d.Label, ["created"] = d.Created, ["status"] = d.Status, ["reason"] = d.Reason, ["fails"] = d.Fails, ["retry_at"] = RetryAt(d),
+        ["wait"] = d.Wait,
     };
 
     private static JsonObject BillJson(BillState b) => new()
@@ -163,5 +171,6 @@ public sealed partial class StoryColony
         },
         ["radius"] = b.Radius, ["pawn"] = b.Pawn, ["min_skill"] = b.MinSkill, ["store"] = b.Store?.DeepClone(),
         ["for_build"] = b.ForBuild, ["for_item"] = b.ForItem, ["step"] = b.ForBuild != null ? b.Step : null,
+        ["option"] = b.Option, ["prefer"] = b.Prefer, ["prefer_only"] = b.PreferOnly ? true : null, ["xp_needed"] = b.XpNeeded, ["last"] = b.Last,
     };
 }

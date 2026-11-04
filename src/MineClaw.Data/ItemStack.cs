@@ -53,6 +53,12 @@ public sealed class ItemTag : IEquatable<ItemTag>
     /// <summary>A potion's NBT names effects (a "Potion" type other than water, mundane, thick, awkward or empty, or
     /// "CustomPotionEffects"): a potion glints (<c>ItemPotion.hasEffect</c>). The viewer's looks only.</summary>
     public bool PotionEffects { get; init; }
+    /// <summary>A potion's type (1.12.2 "Potion" without "minecraft:": water, awkward, swiftness, long_swiftness...), or null.</summary>
+    public string? Potion { get; init; }
+    /// <summary>An enchanted book's enchantments ("StoredEnchantments": id → level); empty for anything else.</summary>
+    public IReadOnlyDictionary<int, int> StoredEnchantments { get; init; } = new Dictionary<int, int>();
+    /// <summary>The anvil's prior-work penalty ("RepairCost"), 0 when absent.</summary>
+    public int RepairCost { get; init; }
 
     public int EnchantmentLevel(int id) => Enchantments.TryGetValue(id, out int l) ? l : 0;
 

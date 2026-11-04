@@ -45,7 +45,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
@@ -59,6 +59,10 @@ import {
   allowAll,
   billProgress,
   billSummary,
+  enchantLabel,
+  recipeModes,
+  requiresLine,
+  stationLines,
   buildTree,
   CLEAR_FILTER,
   draftOf,
@@ -271,11 +275,23 @@ export function DesignationInspector({
   return (
     <Shell
       title={`${d.label ?? d.kind}${at ? ` at ${at.join(', ')}` : ''}`}
-      sub={d.status === 'failed' ? `Failed: ${short.title}` : `Failing: ${short.title}`}
+      sub={
+        d.status === 'failed'
+          ? `Failed: ${short.title}`
+          : d.wait && !d.reason
+            ? `Waiting: ${shortReason(d.wait).title}`
+            : `Failing: ${short.title}`
+      }
       onClose={onClose}
       testid="designation-inspector"
     >
       <div className="space-y-2 text-xs">
+        {d.wait ? (
+          <div className="rounded-md border border-border bg-surface-2 px-2 py-1.5" data-testid="designation-wait">
+            <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Waiting (not a failure)</div>
+            <div className="break-words">{d.wait}</div>
+          </div>
+        ) : null}
         <div className="rounded-md bg-surface-2 px-2 py-1.5">
           <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Why it failed</div>
           <div className="break-words" data-testid="designation-reason">
@@ -340,7 +356,10 @@ export function PawnInspector({
   onClose,
   blocked = [],
   onBringOnline,
+  extra,
 }: {
+  /** The pawn's equipment and gear actions (assign/GearActions), under its overview. */
+  extra?: ReactNode;
   pawn: StoryPawn;
   bed?: StoryBed | null;
   canWrite: boolean;
@@ -428,6 +447,7 @@ export function PawnInspector({
             {pawn.drafted ? <ShieldOff className="size-3.5" /> : <Shield className="size-3.5" />}
             {pawn.drafted ? 'Undraft (R)' : 'Draft (R)'}
           </Button>
+          {extra}
         </div>
       ) : null}
       {tab === 'skills' ? (
@@ -449,6 +469,14 @@ export function PawnInspector({
               </li>
             );
           })}
+          <li
+            className="flex items-center gap-1.5 pt-1"
+            data-testid="pawn-xp"
+            title="Experience level: earned mining ore, smelting and fighting; enchanting and anvil bills spend it"
+          >
+            <span className="w-14 text-muted">XP level</span>
+            <span className="tabular-nums">{pawn.xpLevel ?? 0}</span>
+          </li>
         </ul>
       ) : null}
       {tab === 'orders' ? (
@@ -563,7 +591,10 @@ export function GroupInspector({
   canWrite,
   onDraft,
   onClose,
+  extra,
 }: {
+  /** Bulk gear actions for the selected pawns (assign/GearActions). */
+  extra?: ReactNode;
   names: string[];
   state: StoryColonyState | undefined;
   canWrite: boolean;
@@ -607,6 +638,7 @@ export function GroupInspector({
           </Button>
         </div>
       ) : null}
+      {pawns.length ? extra : null}
     </Shell>
   );
 }
@@ -920,7 +952,7 @@ function AutoBillRow({
         <div className="flex items-center gap-1 truncate font-semibold">
           {label}
           <span className="rounded bg-accent-soft px-1 text-[10px] font-semibold text-fg">
-            for build #{String(bill.forBuild)}
+            {String(bill.forBuild) === 'tools' ? 'for tools' : `for build #${String(bill.forBuild)}`}
           </span>
         </div>
         <div className="text-[10.5px] text-muted">
@@ -935,7 +967,9 @@ function AutoBillRow({
         type="button"
         disabled={!canWrite}
         onClick={() => void write('story.bills', { op: 'remove', id: bill.id } as never)}
-        aria-label={`Cancel ${label} for build ${String(bill.forBuild)}`}
+        aria-label={
+          String(bill.forBuild) === 'tools' ? `Cancel ${label} for tools` : `Cancel ${label} for build ${String(bill.forBuild)}`
+        }
         title="Cancel: the build waits for this item instead of crafting it"
         className="rounded p-0.5 text-danger hover:bg-danger-soft"
       >
@@ -1031,10 +1065,19 @@ export function BillsInspector({
         {bench.supported === false ? (
           <p
             className="rounded-md bg-surface-2 px-2 py-1.5 text-muted"
-            title="The colony has no way to work this bench yet"
+            title="b1.8.1 has no brewing stands, anvils or enchanting tables"
           >
-            A {bench.kind.replace(/_/g, ' ')} takes no bills yet.
+            This version has no {bench.kind.replace(/_/g, ' ')} bills.
           </p>
+        ) : null}
+        {stationLines(bench).length ? (
+          <ul className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-[11px] text-muted" data-testid="station-facts">
+            {stationLines(bench).map((l) => (
+              <li key={l} className={l.includes('gone') || l.startsWith('No water') ? 'text-danger' : undefined}>
+                {l}
+              </li>
+            ))}
+          </ul>
         ) : null}
         {bench.kind === 'furnace' || bench.kind === 'brewing_stand' ? (
           <ContainerContents target={{ dim: 0, x: pos[0], y: pos[1], z: pos[2] }} heading />
@@ -1045,7 +1088,7 @@ export function BillsInspector({
             variant="primary"
             disabled={!canWrite || bench.supported === false}
             onClick={() => setPicker(true)}
-            title={bench.supported === false ? 'Not supported yet' : undefined}
+            title={bench.supported === false ? 'This version has no such bills' : undefined}
           >
             <Plus className="size-3.5" /> Add bill
           </Button>
@@ -1117,6 +1160,14 @@ export function BillsInspector({
                       ? ` · ${(state?.pawns ?? []).find((p) => p.name === b.pawn)?.display ?? b.pawn} only`
                       : ''}
                   </div>
+                  {b.prefer || b.xpNeeded ? (
+                    <div className="text-[10.5px] text-muted">
+                      {b.prefer ? `prefers ${enchantLabel(b.prefer)}${b.preferOnly ? ' only' : ''}` : ''}
+                      {b.prefer && b.xpNeeded ? ' · ' : ''}
+                      {b.xpNeeded ? `needs XP level ${b.xpNeeded}` : ''}
+                    </div>
+                  ) : null}
+                  {b.last ? <div className="truncate text-[10.5px] text-subtle">Last: {b.last}</div> : null}
                   {b.suspendedReason ? (
                     <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div>
                   ) : null}
@@ -1347,9 +1398,11 @@ export function BillDialog({
               }
               className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
             >
-              <option value="count">Do X times</option>
-              <option value="until">Do until you have X</option>
-              <option value="forever">Do forever</option>
+              {recipeModes(recipe).map((m) => (
+                <option key={m} value={m}>
+                  {m === 'count' ? 'Do X times' : m === 'until' ? 'Do until you have X' : 'Do forever'}
+                </option>
+              ))}
             </select>
             {d.mode !== 'forever' ? (
               <Stepper label="Target" value={d.target} min={1} max={9999} onChange={(v) => set({ target: v })} />
@@ -1357,6 +1410,69 @@ export function BillDialog({
             <span className="text-xs text-muted">{billSummary(d)}</span>
           </div>
         </fieldset>
+        {recipe?.requires ? (
+          <div className="space-y-1 rounded-md bg-surface-2 px-2 py-1.5 text-xs" data-testid="bill-requires">
+            <div>
+              <span className="font-semibold">Needs:</span> {requiresLine(recipe, d.option)}
+            </div>
+            {recipe.requires.note ? <div className="text-muted">{recipe.requires.note}</div> : null}
+            {recipe.chain?.length ? (
+              <ol className="list-decimal pl-4 text-muted" aria-label="Brewing steps">
+                {recipe.chain.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ol>
+            ) : null}
+          </div>
+        ) : null}
+        {recipe?.workbench === 'enchanting_table' ? (
+          <fieldset className="space-y-1.5 text-xs">
+            <legend className="text-xs font-semibold">Enchanting</legend>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1">
+                Up to offer
+                <select
+                  aria-label="Enchant option"
+                  value={d.option ?? 3}
+                  onChange={(e) => set({ option: Number(e.target.value) })}
+                  className="h-7 rounded border border-border bg-surface-2 px-1"
+                >
+                  <option value={1}>1 (1 lapis, 1 level)</option>
+                  <option value={2}>2 (2 lapis, 2 levels)</option>
+                  <option value={3}>3 (3 lapis, 3 levels)</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-1">
+                Prefer
+                <select
+                  aria-label="Preferred enchantment"
+                  value={d.prefer ?? ''}
+                  onChange={(e) => set({ prefer: e.target.value || null, preferOnly: e.target.value ? d.preferOnly : false })}
+                  className="h-7 rounded border border-border bg-surface-2 px-1"
+                >
+                  <option value="">The highest offer</option>
+                  {(recipe.enchantments ?? []).map((e) => (
+                    <option key={e} value={e}>
+                      {enchantLabel(e)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={d.preferOnly}
+                  disabled={!d.prefer}
+                  onChange={(e) => set({ preferOnly: e.target.checked })}
+                />{' '}
+                Only that one
+              </label>
+            </div>
+            <p className="text-[10.5px] text-muted">
+              The table shows its offers once the item is in; a pawn's offers only change after it enchants something.
+            </p>
+          </fieldset>
+        ) : null}
         <fieldset>
           <legend className="mb-1 text-xs font-semibold">Ingredients</legend>
           <FilterTree tree={tree} filter={d.ingredients} onChange={(f) => set({ ingredients: f })} />
@@ -1385,7 +1501,8 @@ export function BillDialog({
             <option value="any">Anyone</option>
             {pawns.map((p) => (
               <option key={p.name} value={p.name}>
-                {p.display} (craft {p.skills.craft?.level ?? 0})
+                {p.display} ({recipe?.workType ?? 'craft'} {p.skills[recipe?.workType ?? 'craft']?.level ?? 0}
+                {recipe?.requires?.xpLevels ? `, XP ${p.xpLevel ?? 0}` : ''})
               </option>
             ))}
           </select>

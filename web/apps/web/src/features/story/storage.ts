@@ -11,6 +11,7 @@ import {
   type StoryFilter,
   type StoryRecipe,
   type StoryStoragePriority,
+  type StoryWorkbench,
 } from '@mineclaw/contracts';
 
 type V3 = [number, number, number];
@@ -198,6 +199,10 @@ export interface BillDraft {
   pawn: string;
   minSkill: number | null;
   store: 'best' | { chest: V3 };
+  /** An enchant bill: the highest offer (1–3), the preferred enchantment, prefer-only. Null for other bills. */
+  option: number | null;
+  prefer: string | null;
+  preferOnly: boolean;
 }
 
 export function draftOf(b: StoryBill): BillDraft {
@@ -211,14 +216,18 @@ export function draftOf(b: StoryBill): BillDraft {
     pawn: b.pawn,
     minSkill: b.minSkill ?? null,
     store: b.store === 'best' ? 'best' : { chest: b.store.chest },
+    option: b.option ?? null,
+    prefer: b.prefer ?? null,
+    preferOnly: b.preferOnly ?? false,
   };
 }
 
 /** A new bill's defaults for a recipe (its ingredient options all allowed). */
 export function newDraft(r: StoryRecipe, mode: BillDraft['mode'] = 'count', target = 1): BillDraft {
+  const modes = recipeModes(r);
   return {
     recipe: r.id,
-    mode,
+    mode: modes.includes(mode) ? mode : modes[0]!,
     target,
     paused: false,
     ingredients: { allow: r.inputs.flatMap((i) => (i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`))), deny: [] },
@@ -226,6 +235,9 @@ export function newDraft(r: StoryRecipe, mode: BillDraft['mode'] = 'count', targ
     pawn: 'any',
     minSkill: null,
     store: 'best',
+    option: r.workbench === 'enchanting_table' ? 3 : null,
+    prefer: null,
+    preferOnly: false,
   };
 }
 
@@ -240,6 +252,9 @@ export function specOf(d: BillDraft): StoryBillSpec {
     pawn: d.pawn,
     ...((d.minSkill !== null && d.minSkill !== undefined) ? { minSkill: d.minSkill } : {}),
     store: d.store,
+    ...(d.option !== null && d.option !== undefined ? { option: Math.max(1, Math.min(3, Math.round(d.option))) } : {}),
+    ...(d.prefer ? { prefer: d.prefer } : {}),
+    ...(d.preferOnly ? { preferOnly: true } : {}),
   };
 }
 
@@ -254,6 +269,8 @@ export function updateBillBody(bill: StoryBill, d: BillDraft) {
   const spec: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(after)) if (JSON.stringify(before[k]) !== JSON.stringify(v)) spec[k] = v;
   if (d.minSkill === null && (bill.minSkill !== null && bill.minSkill !== undefined)) spec.minSkill = 0;
+  if (!d.prefer && bill.prefer) spec.prefer = null;
+  if (!d.preferOnly && bill.preferOnly) spec.preferOnly = false;
   if (Object.keys(spec).length === 0) return null;
   return { op: 'update' as const, id: bill.id, ...spec };
 }
@@ -284,6 +301,54 @@ export function searchRecipes(recipes: readonly StoryRecipe[], q: string, tree?:
     groups.set(g, [...(groups.get(g) ?? []), r]);
   }
   return [...groups].map(([group, rs]) => ({ group, label: labels.get(group) ?? group.replace(/_/g, ' '), recipes: rs }));
+}
+
+/** The bill modes a recipe takes (an enchanted or repaired item can't be told apart in storage: no "until"). */
+export function recipeModes(r: Pick<StoryRecipe, 'modes'> | undefined): Array<BillDraft['mode']> {
+  const all: Array<BillDraft['mode']> = ['count', 'until', 'forever'];
+  const modes = r?.modes;
+  return modes?.length ? all.filter((m) => modes.includes(m)) : all;
+}
+
+/** "silk_touch" → "Silk Touch". */
+export function enchantLabel(name: string): string {
+  return name
+    .split('_')
+    .map((w) => (w === 'of' ? w : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(' ');
+}
+
+/** What a station recipe asks: "XP 1+ · lapis 1–3 · fuel: blaze powder · water nearby" (empty for crafting and smelting). */
+export function requiresLine(r: StoryRecipe | undefined, option?: number | null): string {
+  const q = r?.requires;
+  if (!q) return '';
+  const parts: string[] = [];
+  if (q.xpLevels) parts.push(`XP level ${Math.max(q.xpLevels, option ?? 0)}+`);
+  if (q.lapis) parts.push(option ? `${option} lapis` : `lapis 1–${q.lapis}`);
+  if (q.fuelItem) parts.push(`fuel: ${q.fuelItem.replace(/_/g, ' ')}`);
+  if (q.water) parts.push('water nearby (source or cauldron)');
+  return parts.join(' · ');
+}
+
+/** The bench inspector's station line: bookshelves and the top offer, an anvil's wear, a stand's water and fuel. */
+export function stationLines(bench: Pick<StoryWorkbench, 'kind' | 'station'>): string[] {
+  const s = bench.station;
+  if (!s) return [];
+  const out: string[] = [];
+  if (s.present === false) out.push(`The ${bench.kind.replace(/_/g, ' ')} is gone`);
+  if (s.bookshelves !== null && s.bookshelves !== undefined) {
+    const [lo, hi] = s.topOffer ?? [];
+    out.push(
+      `Bookshelves ${s.bookshelves}/${s.maxBookshelves ?? 15}` +
+        (lo !== undefined && hi !== undefined ? ` · top offer level ${lo === hi ? lo : `${lo}–${hi}`}` : ''),
+    );
+  }
+  if (s.condition) out.push(`Condition: ${s.condition}`);
+  if (bench.kind === 'brewing_stand') {
+    out.push(s.water ? `Water: ${s.water.join(', ')}` : 'No water nearby (a source block or a filled cauldron)');
+    if (s.fuel !== null && s.fuel !== undefined) out.push(`Fuel: ${s.fuel} brew${s.fuel === 1 ? '' : 's'} left`);
+  }
+  return out;
 }
 
 /** "2 planks + 1 coal → 4 torches". */

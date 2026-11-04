@@ -293,6 +293,7 @@ public partial class FakeServer : IDisposable
         if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
         if (Buckets && HandleBucket(p)) return;
         if (Fishing && HandleFishing(p)) return; // FakeServer.Fishing.cs
+        if (Modern && HandleStations(p)) return; // brewing stands, enchanting tables (FakeServer.Stations.cs)
         if (Modern && HandleModern(p)) return;
         if (CraftingEnabled && HandleCrafting(p)) return;
         switch (p)

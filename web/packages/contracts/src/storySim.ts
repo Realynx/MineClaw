@@ -67,6 +67,20 @@ import {
   type StoryZone,
   type StoryZoneRequest,
 } from './story.js';
+import type { StoryGearRequest, StoryMaterialRulesRequest, StoryPoliciesRequest } from './storyGear.js';
+import {
+  checkAttack,
+  draftGear,
+  gearOp,
+  materialRulesOp,
+  newSimGear,
+  policiesOp,
+  seedEquipment,
+  SIM_ARMORY,
+  SIM_MATERIALS,
+  type AttackTarget,
+  type SimGear,
+} from './storySimGear.js';
 
 // The package builds without DOM or Node typings; both runtimes have these.
 declare function setTimeout(fn: () => void, ms: number): unknown;
@@ -162,6 +176,7 @@ interface Colony {
   /** Pawns asked for (the + button): the ones not here yet are "joining…". */
   wanted?: number;
   options: StoryColonyOptions;
+  gear: SimGear;
 }
 
 /** What growing zones can grow (the mock speaks 1.12.2). */
@@ -506,7 +521,8 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation' },
+      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false },
+      gear: newSimGear(),
     };
     for (let i = 0; i < req.pawns; i++) {
       const display = NAMES[(i + n * 3) % NAMES.length]!;
@@ -572,6 +588,10 @@ export class StorySim {
         schedule: [...DEFAULT_SCHEDULE],
         held: null,
         inventory: [],
+        equipment: seedEquipment(i),
+        policy: i === 0 ? 'soldier' : null,
+        gearTasks: [],
+        xpLevel: Math.floor(r() * 18),
       },
     };
   }
@@ -630,6 +650,9 @@ export class StorySim {
       ...(full || c.bedsRev > s ? { beds: this.bedList(c) } : {}),
       ai: this.opts.world.ai?.() ?? [],
       directives: pick(c.directives),
+      policies: c.gear.policies.map((x) => ({ ...x, tools: [...x.tools] })),
+      materialRules: c.gear.rules.map((x) => ({ ...x })),
+      ...(full ? { materials: SIM_MATERIALS } : {}),
       ...(Object.keys(removed).length ? { removed } : {}),
     };
   }
@@ -851,6 +874,7 @@ export class StorySim {
   draft(id: string, body: { pawns: string[]; drafted: boolean }) {
     const c = this.colony(id);
     for (const p of this.pawnsOf(c, body.pawns)) {
+      if (p.p.drafted !== body.drafted) draftGear(c.gear, p.p, body.drafted);
       p.p.drafted = body.drafted;
       this.drop(c, p);
       if (!body.drafted) p.p.queue = [];
@@ -863,6 +887,7 @@ export class StorySim {
   orders(id: string, body: StoryOrderRequest) {
     const c = this.colony(id);
     const pawns = this.pawnsOf(c, body.pawns);
+    if (body.order.kind === 'attack') checkAttack(this.attackTarget(c, body.order.target), body.order.confirm);
     pawns.forEach((p, i) => {
       const o: StoryOrder = {
         id: `o${c.seq++}`,
@@ -1500,7 +1525,8 @@ export class StorySim {
                   pos: [x, y, z],
                   kind,
                   label: null,
-                  supported: kind === 'crafting_table' || kind === 'furnace',
+                  supported: true,
+                  station: this.stationOf(kind, [x, y, z]),
                   bills: [],
                 },
               });
@@ -1524,7 +1550,7 @@ export class StorySim {
         label: prev?.label ?? null,
         priority: priority ?? prev?.priority ?? 'normal',
         filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
-        contents: prev?.contents ?? seedContents(p),
+        contents: prev?.contents ?? this.stock(c, seedContents(p)),
         freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
         knownAt: this.iso(),
       };
@@ -1592,13 +1618,33 @@ export class StorySim {
     }
   }
 
-  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; ids?: Key[]; rev: number } {
+  /** The bench inspector's station facts (an enchanting table's bookshelves, an anvil's wear, a brewing stand's water). */
+  private stationOf(kind: string, pos: readonly number[]): StoryWorkbench['station'] {
+    const w = this.opts.world;
+    if (kind === 'enchanting_table') {
+      let n = 0;
+      for (let dx = -2; dx <= 2; dx++)
+        for (let dz = -2; dz <= 2; dz++)
+          for (let dy = 0; dy <= 1; dy++)
+            if (Math.max(Math.abs(dx), Math.abs(dz)) === 2 && w.blockAt(pos[0]! + dx, pos[1]! + dy, pos[2]! + dz)[0] === 47) n++;
+      n = Math.min(15, n);
+      return { present: true, bookshelves: n, maxBookshelves: 15, topOffer: [Math.max(1 + (n >> 1), n * 2), Math.max(8 + (n >> 1) + n, n * 2)] };
+    }
+    if (kind === 'anvil') {
+      const meta = w.blockAt(pos[0]!, pos[1]!, pos[2]!)[1];
+      return { present: true, condition: ['intact', 'chipped', 'damaged'][Math.min(2, (meta >> 2) & 3)]! };
+    }
+    if (kind === 'brewing_stand') return { present: true, water: null, fuel: null };
+    return null;
+  }
+
+  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; ids?: Key[]; rev: number; note?: string | null } {
     const c = this.colony(id);
     const benchAt = (pos: readonly number[]) => {
       const f = c.benches.get(keyOf(pos));
       if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
       if (f.v.supported === false)
-        throw Object.assign(new Error(`a ${f.v.kind.replace(/_/g, ' ')} takes no bills yet`), { status: 400 });
+        throw Object.assign(new Error(`this version has no ${f.v.kind.replace(/_/g, ' ')} bills`), { status: 400 });
       return f;
     };
     const holder = (billId: Key) => {
@@ -1607,6 +1653,26 @@ export class StorySim {
     };
     let f: Fn<StoryWorkbench>;
     let newId: Key | undefined;
+    if (body.op === 'enchant_tools') {
+      // The tools hook: a count bill per pickaxe kind at the colony's enchanting table, preferring the enchantment.
+      const table = [...c.benches.values()].find((x) => x.v.kind === 'enchanting_table');
+      if (!table) throw Object.assign(new Error('no enchanting table: place one and designate it'), { status: 400 });
+      const prefer = body.prefer ?? (body.material && /ore|coal|diamond|lapis|redstone|emerald|quartz/.test(body.material) ? 'fortune' : body.material && /glass|ice|glowstone/.test(body.material) ? 'silk_touch' : 'efficiency');
+      const ids: Key[] = [];
+      for (const item of body.items ?? ['diamond_pickaxe']) {
+        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === `enchant:${item}`);
+        if (!recipe || table.v.bills.some((b) => b.recipe === recipe.id && b.prefer === prefer)) continue;
+        const b: StoryBill = {
+          id: `bill${c.seq++}`, recipe: recipe.id, mode: 'count', target: body.count ?? 1, done: 0, paused: false, suspendedReason: null,
+          ingredients: { allow: ['*'], deny: [] }, radius: 32, pawn: 'any', minSkill: null, store: 'best', option: 3, prefer,
+          preferOnly: body.preferOnly ?? false,
+        };
+        table.v.bills.push(b);
+        ids.push(b.id);
+      }
+      table.rev = this.bump(c);
+      return { ok: true, ids, rev: c.rev };
+    }
     if (body.op !== 'add' && body.op !== 'reorder') {
       const auto = [...c.benches.values()]
         .flatMap((x) => x.v.bills)
@@ -1630,6 +1696,10 @@ export class StorySim {
         const spec = body.bill;
         const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === spec.recipe);
         if (!recipe) throw Object.assign(new Error('unknown recipe'), { status: 400 });
+        if (recipe.workbench !== f.v.kind)
+          throw Object.assign(new Error(`no recipe '${recipe.id}' at a ${f.v.kind}`), { status: 400 });
+        if (recipe.modes && !recipe.modes.includes(spec.mode))
+          throw Object.assign(new Error(`mode must be ${recipe.modes.join('|')} for this recipe`), { status: 400 });
         const b: StoryBill = {
           id: `bill${c.seq++}`,
           recipe: recipe.id,
@@ -1648,6 +1718,9 @@ export class StorySim {
           pawn: spec.pawn ?? 'any',
           minSkill: spec.minSkill ?? null,
           store: spec.store ?? 'best',
+          ...(recipe.workbench === 'enchanting_table'
+            ? { option: spec.option ?? 3, prefer: spec.prefer ?? null, preferOnly: spec.preferOnly ?? false }
+            : {}),
         };
         f.v.bills.push(b);
         newId = b.id;
@@ -1849,7 +1922,7 @@ export class StorySim {
     if (!kind) throw Object.assign(new Error('no workbench there'), { status: 400 });
     c.benches.set(k, {
       rev: this.bump(c),
-      v: { pos: body.pos, kind, label: null, supported: kind === 'crafting_table' || kind === 'furnace', bills: [] },
+      v: { pos: body.pos, kind, label: null, supported: true, station: this.stationOf(kind, body.pos), bills: [] },
     });
     this.plan(c);
     return { pos: body.pos, kind, designated: true };
@@ -1858,14 +1931,72 @@ export class StorySim {
   /** POST …/options. */
   options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
     const c = this.colony(id);
-    if (body.autoPlaceBenches === undefined && body.detectBenches === undefined && body.idle === undefined)
-      throw Object.assign(new Error('autoPlaceBenches, detectBenches or idle required'), { status: 400 });
+    if (Object.values(body).every((v) => v === undefined))
+      throw Object.assign(new Error('autoPlaceBenches, detectBenches, idle, autoCraftTools, spareTools, rescueTeleport, unfilteredStorageTakesAnything or keepDisallowed required'), { status: 400 });
     if (body.idle !== undefined) c.options.idle = body.idle;
+    if (body.autoCraftTools !== undefined) c.options.autoCraftTools = body.autoCraftTools;
+    if (body.spareTools !== undefined) c.options.spareTools = { count: body.spareTools.count, kinds: [...body.spareTools.kinds] };
     if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
     if (body.detectBenches !== undefined) c.options.detectBenches = body.detectBenches;
+    if (body.rescueTeleport !== undefined) c.options.rescueTeleport = body.rescueTeleport;
+    if (body.unfilteredStorageTakesAnything !== undefined) c.options.unfilteredStorageTakesAnything = body.unfilteredStorageTakesAnything;
+    if (body.keepDisallowed !== undefined) c.options.keepDisallowed = body.keepDisallowed;
     this.bump(c);
     this.plan(c);
     return { ...c.options };
+  }
+
+  /** The first chest the colony takes over also holds its armory (weapons, armour, spare tools) for the gear ops. */
+  private stock(c: Colony, contents: Array<[number, number, number]>): Array<[number, number, number]> {
+    if (c.gear.stocked) return contents;
+    c.gear.stocked = true;
+    return [...contents, ...SIM_ARMORY.map((x) => [...x] as [number, number, number])];
+  }
+
+  /** Who an attack order is on: a player or bot (confirm needed), one of the colony's pawns (refused), or a mob. */
+  private attackTarget(c: Colony, t: StoryOrderRequest['order']['target']): AttackTarget | null {
+    if (!t || typeof t !== 'object') return null;
+    const ai = this.opts.world.ai?.() ?? [];
+    const kindOf = (name: string): AttackTarget['kind'] =>
+      c.pawns.has(name) || [...c.pawns.values()].some((p) => p.p.display === name)
+        ? 'pawn'
+        : ai.some((a) => a.name === name)
+          ? 'bot'
+          : 'player';
+    if ('player' in t) return { name: t.player, kind: kindOf(t.player) };
+    if ('entity' in t) {
+      const e = this.opts.world.entities().find((x) => x.id === t.entity);
+      if (e?.kind === 'player') return { name: e.name ?? `#${e.id}`, kind: kindOf(e.name ?? '') };
+      return null;
+    }
+    return null;
+  }
+
+  /** POST …/policies. */
+  policies(id: string, body: StoryPoliciesRequest) {
+    const c = this.colony(id);
+    const out = policiesOp(c.gear, c.pawns, body);
+    for (const p of c.pawns.values()) p.rev = this.bump(c);
+    return out;
+  }
+
+  /** POST …/material-rules. */
+  materialRules(id: string, body: StoryMaterialRulesRequest) {
+    const c = this.colony(id);
+    const out = materialRulesOp(c.gear, body, null);
+    this.bump(c);
+    return out;
+  }
+
+  /** POST …/gear: one op for the selection (fair spread, each stored unit to one pawn). */
+  gear(id: string, body: StoryGearRequest) {
+    const c = this.colony(id);
+    const pawns = this.pawnsOf(c, body.pawns);
+    const stores = [...c.storages.values()].map((f) => f.v);
+    const out = gearOp(c.gear, pawns, stores, body, (i, m) => storyItemLabel(i, Math.max(0, m)).toLowerCase());
+    for (const f of c.storages.values()) f.rev = this.bump(c);
+    for (const p of pawns) p.rev = this.bump(c);
+    return out;
   }
 
   /** GET …/architect: the sim catalog with tiers unlocked by the colony's designated benches. */
@@ -2029,6 +2160,11 @@ export class StorySim {
     const skittish = pawn.traits.some((t) => t.id === 'skittish');
     let changed = false;
     pawn.food = Math.max(0, (pawn.food ?? 20) - dt / 40000);
+    // Gear work (a bulk gear op) is done in a few seconds.
+    if (pawn.gearTasks?.length && Math.random() < dt / 3000) {
+      pawn.gearTasks = [];
+      changed = true;
+    }
     if ((pawn.hp ?? 20) < 20 && Math.random() < dt / 8000) pawn.hp = Math.min(20, (pawn.hp ?? 20) + 1);
     // 1. urgent needs (not while drafted)
     if (!pawn.drafted && (pawn.food ?? 20) <= (skittish ? 9 : brave ? 4 : 6) && p.task?.kind !== 'eat') {

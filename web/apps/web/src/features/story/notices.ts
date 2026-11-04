@@ -229,6 +229,17 @@ export function conditions(st: StoryColonyState | undefined, opts: { mainOp?: bo
     if ((st.zones ?? []).some((z) => z.kind === 'farm') && !has(SEEDS))
       out.push({ key: 'seeds', level: 'warn', text: 'No seeds for the growing zone', pawns: [], tab: 'storage' });
   }
+  const unstored = st.unstoredKinds ?? [];
+  if (unstored.length)
+    out.push({ key: 'unstored', level: 'warn', text: `No storage for: ${unstored.join(', ')}`, pawns: [], tab: 'storage' });
+  const stuck = pawns.filter((p) => p.online !== false && p.stuck);
+  if (stuck.length)
+    out.push({
+      key: 'stuck',
+      level: 'warn',
+      text: stuck.length === 1 ? `${stuck[0]!.display} is stuck` : `${stuck.length} pawns are stuck`,
+      pawns: stuck.map((p) => p.name),
+    });
   const op = opts.mainOp ?? st.timeControl?.available;
   if (op === false) out.push({ key: 'op', level: 'warn', text: "Main isn't op: time of day and commands are off", pawns: [] });
   return out;
