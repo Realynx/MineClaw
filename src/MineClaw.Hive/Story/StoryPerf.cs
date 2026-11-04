@@ -30,7 +30,11 @@ public static class StoryPerf
         foreach (var (k, _) in snap) IdleReasons.TryRemove(k, out _);
         long n = snap.Sum(kv => kv.Value);
         if (n == 0) return null;
-        return $"idle-with-work {n}: " + string.Join(", ", snap.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}"));
+        // The six biggest reasons (a "waiting: build b3: need 24 block of iron" each is specific); the rest summed.
+        var top = snap.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).ToList();
+        var text = string.Join(", ", top.Take(6).Select(kv => $"{kv.Key} {kv.Value}"));
+        if (top.Count > 6) text += $", {top.Count - 6} more reasons {top.Skip(6).Sum(kv => kv.Value)}";
+        return $"idle-with-work {n}: " + text;
     }
 
     /// <summary>The counters since the last call, and starts them over.</summary>

@@ -240,6 +240,20 @@ export function conditions(st: StoryColonyState | undefined, opts: { mainOp?: bo
       text: stuck.length === 1 ? `${stuck[0]!.display} is stuck` : `${stuck.length} pawns are stuck`,
       pawns: stuck.map((p) => p.name),
     });
+  // Idle pawns with work about (the idle audit), by why: stuck ones have their own condition, "not taken yet" passes by itself.
+  const blocked = (st.blockedWork ?? []).filter((b) => b.reason !== 'stuck' && b.reason !== 'work not taken yet' && b.count > 0);
+  if (blocked.length) {
+    const n = blocked.reduce((a, b) => a + b.count, 0);
+    const why = blocked[0]!.reason.replace(/^waiting: /, '');
+    const more = blocked.length > 1 ? ` (+${blocked.length - 1} more reason${blocked.length > 2 ? 's' : ''})` : '';
+    out.push({
+      key: 'idle-work',
+      level: 'warn',
+      text: `${n === 1 ? '1 pawn' : `${n} pawns`} idle: ${why}${more}`,
+      pawns: blocked.flatMap((b) => b.pawns),
+      tab: 'work',
+    });
+  }
   const op = opts.mainOp ?? st.timeControl?.available;
   if (op === false) out.push({ key: 'op', level: 'warn', text: "Main isn't op: time of day and commands are off", pawns: [] });
   return out;

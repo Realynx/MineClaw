@@ -149,6 +149,9 @@ public sealed partial class StoryColony
     /// Several builders split a build into disjoint batches (each cell leased to one pawn); the batch size is the pawn's fair share
     /// of what is open, so ten pawns on a floor each get a part.
     /// </summary>
+    /// <summary>The blocked reason each build last alerted (a build that turns active between gets no second alert for it).</summary>
+    private readonly Dictionary<string, string> _buildBlockSaid = new(StringComparer.Ordinal);
+
     private ActiveJob? GhostJob(PawnState p, PawnLive live)
     {
         if (World is not { } w) return null;
@@ -163,12 +166,12 @@ public sealed partial class StoryColony
             var todo = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
             if (todo.Count == 0)
             {
-                if (b.Ghosts.Any(g => g.Job && g.State == "blocked")) continue;
+                if (b.Ghosts.Count(g => g.Job && g.State == "blocked") is var stuckCells and > 0) { Blocked($"build {b.Id}: {stuckCells} blocks can't be placed"); continue; }
                 b.Status = "done"; b.Rev = Touch();
                 continue;
             }
             // A design placed with a basement: its blocks wait until the ground is dug out (dig, then place).
-            if (DigFirst(b)) continue;
+            if (DigFirst(b)) { Blocked($"build {b.Id}: its ground is dug out first"); continue; }
             // Support first: a level waits for the one below, blocked blocks included (it never builds over a gap). Digging goes
             // the other way: top-down (a buried cell opens once the one above it is gone).
             var left = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").ToList();
@@ -180,6 +183,11 @@ public sealed partial class StoryColony
             var open = mine ? todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList() : todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
             // Spread out: a cell next to another pawn's batch comes after the rest (its neighbours are leased anyway).
             var busy = b.Ghosts.Where(g => g.State == "leased").Select(g => g.At).ToList();
+            // A material that is out holds only its own cells: the level's other blocks go on (live 11-04: a design with one missing
+            // material stood still as a whole when the first seed was that material, and its reservations held the queue behind it).
+            HashSet<string>? outOf = null;
+            (string Status, string Reason, bool Alert, string Note)? held = null;
+            bool inFlight = false;
             foreach (var g in mine ? open.OrderByDescending(g => g.At.Y).ThenBy(g => g.Remove ? 0 : 1).ThenBy(g => g.At.Dist(from)) : Seeds(open, busy, from))
             {
                 var key = $"g:{b.Id}|{g.At}";
@@ -189,7 +197,7 @@ public sealed partial class StoryColony
                     if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z)) { g.State = "done"; g.Rev = Touch(); continue; }
                     // A dug cell takes its material's tool (a mine design's ore: the right pickaxe), else the build waits for one.
                     var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
-                    if (dt is { Wait: { } why }) { NoteBuildWait(b, why); continue; }
+                    if (dt is { Wait: { } why }) { NoteBuildWait(b, why); Blocked($"build {b.Id}: {b.Reason}"); continue; }
                     ClearBuildWait(b);
                     return Claim(b, [g], p.Name,
                         WithTool(dt, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10)));
@@ -199,7 +207,7 @@ public sealed partial class StoryColony
                 {
                     var (pj, wait) = PourJob(p, live, b, g, todo, builders);
                     if (pj != null) return pj;
-                    if (wait) goto nextBuild;
+                    if (wait) { Blocked($"build {b.Id}: {b.Reason ?? "waiting for water"}"); goto nextBuild; }
                     continue;
                 }
                 var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
@@ -207,8 +215,9 @@ public sealed partial class StoryColony
                 // A block in the way is dug first: with its tool (stone in a wall's line takes a pickaxe). The batch clears only cells
                 // of that same block (one tool per job).
                 var clearTool = !StoryBlocks.Replaceable.Contains(cur) ? PlanTool(p, live, cur) : null;
-                if (clearTool is { Wait: { } cwhy }) { NoteBuildWait(b, cwhy); continue; }
+                if (clearTool is { Wait: { } cwhy }) { NoteBuildWait(b, cwhy); Blocked($"build {b.Id}: {b.Reason}"); continue; }
                 var item = g.Item ?? w.Data.Item(g.Id).Name;
+                if (outOf?.Contains(item) == true) continue;
                 var ik = KeyOfItem(w, item, g.Id);
                 int have = live.Inventory.Where(s => s.Id == ik.Id && s.Meta == ik.Meta).Sum(s => s.Count);
                 var mat = b.Materials.FirstOrDefault(m => m.Item == item);
@@ -218,9 +227,13 @@ public sealed partial class StoryColony
                 int stored = stores.Sum(s => s.N);
                 if (have == 0 && stored == 0)
                 {
+                    (outOf ??= new(StringComparer.Ordinal)).Add(item);
                     // Another builder carries this build's items (its batch is in flight): no job here now, and nothing is blocked.
                     if (_current.Values.Any(j => j.Source == "ghost" && j.Cells is { Count: > 0 } && j.SourceId?.StartsWith(b.Id + "|", StringComparison.Ordinal) == true))
-                        goto nextBuild;
+                    {
+                        inFlight = true;
+                        continue;
+                    }
                     int need = b.Ghosts.Count(x => x.Job && x.State is "todo" or "leased" && (x.Item ?? "") == item);
                     var display = w.Data.DisplayName(ik.Id, ik.Meta).ToLowerInvariant();
                     string status = "blocked", reason;
@@ -233,12 +246,8 @@ public sealed partial class StoryColony
                         reason = $"need {need} {display}";
                         alert = mat is not { Short: > 0 }; // the materials pass already said what's short and why
                     }
-                    if (b.Status != status || b.Reason != reason)
-                    {
-                        b.Status = status; b.Reason = reason; b.Rev = Touch();
-                        if (alert) Alert("warn", $"Build {b.Id} ({b.Kind}) is blocked: {reason}");
-                    }
-                    goto nextBuild;
+                    held ??= (status, reason, alert, $"build {b.Id}: {reason}{ShortSource(mat)}");
+                    continue; // the level's other materials may still go in
                 }
                 if (b.Status != "active") { b.Status = "active"; b.Reason = null; b.Rev = Touch(); }
                 // The pawn's fair share of what is open (ten builders on one floor each get a part), no more than it can get items for.
@@ -272,6 +281,21 @@ public sealed partial class StoryColony
                 job.Takes.AddRange(takes);
                 return Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
             }
+            // Nothing here for this pawn: a material is out, the open cells are another builder's, or the level below isn't built yet.
+            if (held is { } h)
+            {
+                if (b.Status != h.Status || b.Reason != h.Reason)
+                {
+                    b.Status = h.Status; b.Reason = h.Reason; b.Rev = Touch();
+                    // Said once per reason (the build turns active between, while its other materials go in).
+                    if (h.Alert && _buildBlockSaid.GetValueOrDefault(b.Id) != h.Reason) Alert("warn", $"Build {b.Id} ({b.Kind}) is blocked: {h.Reason}");
+                    _buildBlockSaid[b.Id] = h.Reason;
+                }
+                Blocked(h.Note);
+            }
+            else if (inFlight) Blocked($"build {b.Id}: its last items are on their way with another builder");
+            else if (open.Count == 0) Blocked($"build {b.Id}: the level below is still being built");
+            else Blocked($"build {b.Id}: its open cells are taken or backing off");
             nextBuild:;
         }
         return null;

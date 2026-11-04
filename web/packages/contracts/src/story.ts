@@ -905,6 +905,14 @@ export const StoryRemoved = z.object({
 });
 export type StoryRemoved = z.infer<typeof StoryRemoved>;
 
+/** Idle pawns with work about, grouped by why (the idle audit): "4 pawns idle: build b3: need 48 block of iron". */
+export const StoryBlockedWork = z.object({
+  reason: z.string(),
+  count: z.number().int(),
+  pawns: z.array(z.string()).default([]),
+});
+export type StoryBlockedWork = z.infer<typeof StoryBlockedWork>;
+
 /** GET /api/story/colonies/{id}[?since=rev]. */
 export const StoryColonyState = z.object({
   id: z.string().nullish(),
@@ -932,6 +940,7 @@ export const StoryColonyState = z.object({
   pawns: z.array(StoryPawn).default([]),
   seats: z.lazy(() => StorySeats).nullish(),
   unstoredKinds: z.array(z.string()).nullish().describe('item kinds no storage takes (a condition: "No storage for: …")'),
+  blockedWork: z.array(StoryBlockedWork).nullish().describe('idle pawns with work about, by why, most first (a condition: "4 pawns idle: …")'),
   zones: z.array(StoryZone).default([]),
   plants: z.array(StoryPlant).nullish().describe('what growing zones can grow here (full state only)'),
   designations: z.array(StoryDesignation).default([]),

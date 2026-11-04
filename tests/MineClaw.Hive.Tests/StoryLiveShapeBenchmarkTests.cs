@@ -30,6 +30,8 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         private readonly PawnLiveCache _live = new();
         public readonly Dictionary<P3, List<Stack>> Chests = new();
         public int LiveCalls;
+        /// <summary>Simulated time (null = the wall clock): one simulated second per round of <see cref="Run"/>.</summary>
+        public SimClock? Clock;
 
         public LiveShapeHost(WorldState main, IGameData data)
         {
@@ -92,7 +94,7 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         w.ApplyChunkRegion(cx * 16, 0, cz * 16, 16, 128, 16, ids, null, null, sky);
     }
 
-    internal static (StoryColony C, LiveShapeHost H) Rig(int pawns = 10, int viewChunks = 5)
+    internal static (StoryColony C, LiveShapeHost H) Rig(int pawns = 10, int viewChunks = 5, bool busy = true, bool simTime = false)
     {
         var data = Beta181GameData.Instance;
         var store = new SharedChunkStore(128);
@@ -148,13 +150,15 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         }
         foreach (var w in h.Bodies.Values) foreach (var a in ents) a(w);
 
-        var c = new StoryColony(new ColonyMeta { Id = "story-1", Name = "Bench", Home = Home }, h) { DoneGrace = TimeSpan.Zero };
+        if (simTime) h.Clock = new SimClock();
+        var c = new StoryColony(new ColonyMeta { Id = "story-1", Name = "Bench", Home = Home }, h, h.Clock) { DoneGrace = TimeSpan.Zero };
         c.Joined(names);
         foreach (var p in c.Pawns.Values)
         {
             foreach (var t in WorkTypes.All) p.Priorities[t] = 3;
             p.Schedule = Enumerable.Repeat(ScheduleBlocks.Anything, 24).ToArray();
         }
+        if (!busy) return (c, h);
         // ~200 designations: a mine box, trees to chop, grass to cut; a farm; three storages with stock; a wall to build.
         Assert.Null(c.Designate("add", "mine", Area.Of(Home.X + 20, 55, Home.Z - 10, Home.X + 29, 59, Home.Z - 8), null, "all").Error);
         var trees = new List<P3>();
@@ -174,6 +178,12 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         Assert.Null(c.BuildsOp("add", new JsonArray(
             new JsonObject { ["kind"] = "wall", ["area"] = new JsonArray(Home.X - 8, 64, Home.Z - 8, Home.X - 2, 64, Home.Z - 2), ["material"] = "cobblestone", ["height"] = 3 }), null).Error);
         return (c, h);
+    }
+
+    internal sealed class SimClock : TimeProvider
+    {
+        public DateTimeOffset Now = new(2026, 11, 4, 12, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     internal sealed record Numbers(double PickMs, double ReportMs, double TickMs, double StateMs, double ArchitectMs, double ArchitectP95, double StateP95,
@@ -196,6 +206,7 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         var all = Stopwatch.StartNew();
         for (int s = 0; s < seconds; s++)
         {
+            if (h.Clock is { } clock) clock.Now += TimeSpan.FromSeconds(1);
             for (int i = 0; i < names.Count; i++)
             {
                 var n = names[i];
@@ -271,5 +282,54 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         // Allocations don't depend on the machine: 11-04 a pick allocated 158 KB here (a merged entity read per pick, a closure per
         // block lookup main couldn't answer, a regex per filter entry per chest per drop), now well under 100 KB.
         Assert.True(n.PickKb < 120, Format(n));
+    }
+
+    /// <summary>
+    /// The live shape at 11-04 03:30 ("story 60 ticks 6717 ms, idle-with-work 228: build or bill waiting 227"): ten pawns with nothing
+    /// they can do (a build short of iron with no iron anywhere, chests with stock), every one idle. The watchdog tick ran a full job
+    /// search per idle pawn every second (the idle audit) on top of the wanderers' wake check.
+    /// </summary>
+    [Fact]
+    public void Ten_idle_pawns_with_a_blocked_build_tick_cheaply()
+    {
+        var (c, h) = Rig(busy: false, simTime: true);
+        var chests = new[] { new P3(Home.X + 2, 64, Home.Z), new P3(Home.X + 4, 64, Home.Z) };
+        foreach (var ch in chests)
+        {
+            foreach (var w in h.Bodies.Values.Append(h.Main)) w.SetBlock(ch.X, ch.Y, ch.Z, 54, 0);
+            h.Chests[ch] = [new Stack(4, 0, 64), new Stack(5, 0, 64), new Stack(3, 0, 64), new Stack(280, 0, 20), new Stack(263, 0, 16)];
+        }
+        Assert.Null(c.StorageOp("set", chests, null, "normal", null).Error);
+        // A table whose bill is met (sticks until 10: 40 in stock) and a furnace whose iron bill has no ore anywhere.
+        P3 table = new(Home.X - 2, 64, Home.Z + 3), furnace = new(Home.X, 64, Home.Z + 3);
+        foreach (var w in h.Bodies.Values.Append(h.Main)) { w.SetBlock(table.X, table.Y, table.Z, 58, 0); w.SetBlock(furnace.X, furnace.Y, furnace.Z, 61, 0); }
+        Assert.Null(c.WorkbenchOp("designate", table).Error);
+        Assert.Null(c.WorkbenchOp("designate", furnace).Error);
+        Assert.Null(c.BillsOp("add", new JsonObject { ["bench"] = table.Json(), ["bill"] = new JsonObject { ["recipe"] = "craft:stick", ["mode"] = "until", ["target"] = 10 } }).Error);
+        Assert.Null(c.BillsOp("add", new JsonObject { ["bench"] = furnace.Json(), ["bill"] = new JsonObject { ["recipe"] = "smelt:iron_ore", ["target"] = 5 } }).Error);
+        Assert.Null(c.BuildsOp("add", new JsonArray(
+            new JsonObject { ["kind"] = "wall", ["area"] = new JsonArray(Home.X - 8, 64, Home.Z - 8, Home.X - 2, 64, Home.Z - 2), ["material"] = "iron_block", ["height"] = 2 }), null).Error);
+        Run(c, h, 10); // warm-up
+        StoryPerf.TakeIdle();
+        var n = Run(c, h, 60);
+        output.WriteLine(Format(n));
+        output.WriteLine("idle: " + string.Join(" | ", c.Pawns.Keys.Select(k => c.IdleReasonOf(k) ?? "-")));
+        output.WriteLine(StoryPerf.TakeIdle() ?? "no idle-with-work");
+        Assert.True(n.TickMs < 25, Format(n));
+        // Why they're idle says what blocks the work: the build's missing material and what it comes from (11-04 before: "build or
+        // bill waiting" for all ten, a bill whose count was met counted as work).
+        var reasons = c.Pawns.Keys.Select(c.IdleReasonOf).Where(r => r != null).ToList();
+        Assert.NotEmpty(reasons);
+        Assert.All(reasons, r => Assert.StartsWith("waiting: ", r));
+        Assert.Contains(reasons, r => r!.Contains("build b", StringComparison.Ordinal) && r.Contains("iron", StringComparison.OrdinalIgnoreCase));
+        var blocked = c.State()["blocked_work"]!.AsArray();
+        Assert.Equal(reasons.Count, blocked.Sum(x => x!["count"]!.GetValue<int>()));
+        // The tick itself never searches per pawn per second: with nothing changing, a wanderer is looked at again every 10 s at most
+        // (11-04 before: the audit searched for each idle pawn every second, the wake check each wanderer every 2 s).
+        long before = c.Searches;
+        for (int s = 0; s < 30; s++) { h.Clock!.Now += TimeSpan.FromSeconds(1); c.Tick(); }
+        long searches = c.Searches - before;
+        output.WriteLine($"30 ticks, nothing changing: {searches} searches");
+        Assert.True(searches <= 40, $"{searches} searches in 30 ticks");
     }
 }

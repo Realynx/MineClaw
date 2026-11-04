@@ -38,7 +38,7 @@ public sealed partial class StoryColony
     public static readonly TimeSpan MaterialsEvery = TimeSpan.FromSeconds(3);
 
     /// <summary>Something a build counts on changed (storage, the queue, benches, bills): the next pick plans again.</summary>
-    internal void MaterialsChanged() => _materialsDirty = true;
+    internal void MaterialsChanged() { _materialsDirty = true; _workEvents++; } // _workEvents: the wake check's stamp (StoryColony.IdleAudit.cs)
 
     /// <summary>Runs the materials pass when it is due (callers hold the lock).</summary>
     internal void EnsureMaterials()

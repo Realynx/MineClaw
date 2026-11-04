@@ -140,4 +140,16 @@ describe('conditions from the colony state', () => {
     expect(c[1]!.pawns).toEqual(['ann']);
     expect(conditions(st({ unstoredKinds: [], pawns: [pawn('ann')] }))).toEqual([]);
   });
+
+  it('idle pawns with blocked work are one condition: how many, and the biggest why', () => {
+    const blockedWork = [
+      { reason: 'waiting: build b3: need 48 block of iron (short: 432 Iron Ore)', count: 3, pawns: ['ann', 'bob', 'cid'] },
+      { reason: 'all targets leased', count: 1, pawns: ['dot'] },
+      { reason: 'work not taken yet', count: 1, pawns: ['eve'] },
+    ];
+    const c = conditions(st({ blockedWork, pawns: [pawn('ann')] }));
+    expect(c.map((x) => [x.key, x.text])).toEqual([['idle-work', '4 pawns idle: build b3: need 48 block of iron (short: 432 Iron Ore) (+1 more reason)']]);
+    expect(c[0]!.pawns).toEqual(['ann', 'bob', 'cid', 'dot']);
+    expect(conditions(st({ blockedWork: [{ reason: 'stuck', count: 1, pawns: ['ann'] }], pawns: [pawn('ann')] }))).toEqual([]);
+  });
 });
