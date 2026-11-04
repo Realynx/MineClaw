@@ -11,6 +11,7 @@ import {
   type StoryDirectiveSpec,
   type StoryPawn,
   type StoryScheduleBlock,
+  type StorySpeed,
 } from '@mineclaw/contracts';
 
 type Key = string | number;
@@ -325,4 +326,20 @@ export function directiveStatusTone(status: string): 'info' | 'ok' | 'warn' | 'd
     default:
       return 'muted';
   }
+}
+
+const SPEED_ORDER: readonly StorySpeed[] = ['normal', 'fast', 'faster'];
+
+/**
+ * The slowest speed an online pawn actually runs at (a body the server kept pushing back steps itself down), or null when every
+ * online pawn runs at what was asked (docs/web/story-mode.md "Speed").
+ */
+export function slowestSpeed(pawns: readonly StoryPawn[]): StorySpeed | null {
+  let slowest: StorySpeed | null = null;
+  for (const p of pawns) {
+    const s = p.speed;
+    if (!p.online || !s || s.multiplier >= s.requested - 0.001) continue;
+    if (slowest === null || SPEED_ORDER.indexOf(s.level) < SPEED_ORDER.indexOf(slowest)) slowest = s.level;
+  }
+  return slowest;
 }

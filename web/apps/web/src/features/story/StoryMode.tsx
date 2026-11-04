@@ -16,6 +16,7 @@ import {
   type StoryDirectiveSpec,
   type StoryOnlineBlocked,
   type StoryZone,
+  type StorySpeed,
 } from '@mineclaw/contracts';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -34,6 +35,7 @@ import {
   EMPTY_SELECTION,
   orderAi,
   orderPawns,
+  slowestSpeed,
   splitBodies,
   type DirectorCall,
   type Selection,
@@ -680,6 +682,25 @@ export function StoryMode() {
     );
   }, [state, canWrite, write, say]);
 
+  // Fast / Faster: a movement-speed boost for the colony's pawns (docs/web/story-mode.md "Speed").
+  const setSpeed = useCallback(
+    (speed: StorySpeed) => {
+      if (!state || !canWrite || state.options?.speed === speed) return;
+      void write('story.options', { speed }).then(
+        () =>
+          say(
+            speed === 'normal'
+              ? 'Normal speed'
+              : speed === 'fast'
+                ? 'Fast: pawns move about twice as fast'
+                : 'Faster: pawns move about three times as fast',
+          ),
+        (e) => say(errorText(e), 'warn'),
+      );
+    },
+    [state, canWrite, write, say],
+  );
+
   const pickChest = useCallback(
     () =>
       new Promise<V3 | null>((resolve) => {
@@ -699,7 +720,7 @@ export function StoryMode() {
         e.preventDefault();
         return;
       }
-      const a = keyAction(e, tool.kind === 'build', heightTool !== null, matTool !== null);
+      const a = keyAction(e, tool.kind === 'build', heightTool !== null, matTool !== null, tool.kind === 'select');
       if (!a) return;
       e.preventDefault();
       if (a === 'materialNext' || a === 'materialPrev' || a.startsWith('recent:')) {
@@ -734,6 +755,7 @@ export function StoryMode() {
         lastDraft.current = { key, drafted: anyUndrafted, at: Date.now() };
         void draft(split.pawns, anyUndrafted);
       } else if (a === 'pause') togglePause();
+      else if (a.startsWith('speed:')) setSpeed(a.slice(6) as StorySpeed);
       else if (a === 'escape') {
         // A drag in progress is cancelled first (nothing happens on release); the key goes no further.
         if (map.current?.cancelDrag()) {
@@ -800,6 +822,7 @@ export function StoryMode() {
     selection,
     draft,
     togglePause,
+    setSpeed,
     focusBody,
     xrayOn,
     toggleFullscreen,
@@ -1327,6 +1350,9 @@ export function StoryMode() {
                 paused={!!state.paused}
                 canWrite={canWrite}
                 onPause={togglePause}
+                speed={state.options?.speed ?? 'normal'}
+                speedEffective={slowestSpeed(state.pawns)}
+                onSpeed={setSpeed}
                 view={view}
                 onView={() => setView((v) => (v === 'top' ? 'angled' : 'top'))}
                 level={lv}

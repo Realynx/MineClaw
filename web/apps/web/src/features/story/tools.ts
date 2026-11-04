@@ -13,6 +13,7 @@ import {
   matchesTool,
   type StoryArea,
   type StoryBuildItem,
+  type StorySpeed,
   type StoryDesignationKind,
   type StoryDirectiveSpec,
   type StoryGearOp,
@@ -794,6 +795,7 @@ export type KeyAction =
   | 'materialNext'
   | 'materialPrev'
   | `recent:${number}`
+  | `speed:${StorySpeed}`
   | `height:${HeightMode}`
   | `tool:${DesignateId}`
   | `tab:${string}`;
@@ -801,10 +803,21 @@ export type KeyAction =
 /** Bottom tab hotkeys. */
 export const TAB_KEYS: Record<string, string> = { KeyB: 'architect', KeyP: 'work', KeyY: 'schedule', KeyU: 'queue', KeyI: 'colony', KeyO: 'directives' };
 
+/** The speed keys (RimWorld's): 1 normal, 2 fast, 3 faster — only with no tool in hand (a tool's own 1–5 come first). */
+export const SPEED_KEYS: Record<string, StorySpeed> = {
+  Digit1: 'normal',
+  Digit2: 'fast',
+  Digit3: 'faster',
+  Numpad1: 'normal',
+  Numpad2: 'fast',
+  Numpad3: 'faster',
+};
+
 /**
- * A key on the map → its action, or null (WASD/arrows pan in the frame loop; 1–9 stay free, except 1–5 pick the height mode
- * while Mine or Deconstruct is the tool, whose + / − then set the Layers count). Typing in a field never reaches here (the
- * caller checks `isTyping` first).
+ * A key on the map → its action, or null (WASD/arrows pan in the frame loop). 1–3 set the pawns' speed while no tool is in hand
+ * (`speedKeys`); with a tool they stay the tool's: 1–5 pick the height mode while Mine or Deconstruct is the tool (whose + / −
+ * then set the Layers count), or a recent material for a structure tool. Typing in a field never reaches here (the caller checks
+ * `isTyping` first).
  */
 export function keyAction(
   e: { code: string; key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
@@ -812,8 +825,12 @@ export function keyAction(
   heightTool = false,
   /** A structure tool that takes a material: Tab / Shift+Tab and ] / [ cycle it, 1–5 pick a recent one. */
   materialTool = false,
+  /** No tool in hand (the select tool): 1 / 2 / 3 set the speed. */
+  speedKeys = false,
 ): KeyAction | null {
   if (e.ctrlKey || e.metaKey) return null;
+  if (speedKeys && !materialTool && !heightTool && !e.shiftKey && !e.altKey && SPEED_KEYS[e.code])
+    return `speed:${SPEED_KEYS[e.code]!}`;
   if (materialTool && !e.altKey) {
     if (e.code === 'Tab') return e.shiftKey ? 'materialPrev' : 'materialNext';
     if (e.code === 'BracketRight') return 'materialNext';

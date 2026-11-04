@@ -1391,3 +1391,45 @@ test('the material selector: docked bottom-left with the tool options, keyboard 
   await expect.poll(chosen).toBe(key);
   await expect(page.getByTestId('recent-materials').locator(`[data-recent="${key}"]`)).toBeVisible();
 });
+
+test('speed: ▶▶ beside Pause posts speed fast; keys 1 / 3 with no tool in hand, the Mine tool keeps its own', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  const control = page.getByTestId('story-controls').getByRole('radiogroup', { name: 'Pawn speed' });
+  await expect(control.getByRole('radio', { name: 'Normal speed' })).toHaveAttribute('aria-checked', 'true');
+  await expect(control.getByRole('radio', { name: 'Fast', exact: true })).toHaveAttribute('title', /movement-speed boost/);
+
+  // Click ▶▶: one options POST with speed fast; the control follows the colony's state.
+  let sent = post(page, /\/api\/story\/colonies\/[^/]+\/options$/);
+  await control.getByRole('radio', { name: 'Fast', exact: true }).click();
+  expect(body(await sent)).toEqual({ speed: 'fast' });
+  await expect(control.getByRole('radio', { name: 'Fast', exact: true })).toHaveAttribute('aria-checked', 'true');
+
+  // 3 with no tool in hand: faster.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  sent = post(page, /\/api\/story\/colonies\/[^/]+\/options$/);
+  await page.keyboard.press('3');
+  expect(body(await sent)).toEqual({ speed: 'faster' });
+  await expect(control.getByRole('radio', { name: 'Faster' })).toHaveAttribute('aria-checked', 'true');
+  if (shots) await page.screenshot({ path: `${shots}/story-speed.png` });
+
+  // With the Mine tool in hand, 1 is its Surface height mode: no options POST.
+  const posts: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/options$/.test(new URL(r.url()).pathname)) posts.push(r.url());
+  });
+  await page.keyboard.press('m');
+  await page.keyboard.press('1');
+  await page.waitForTimeout(500);
+  expect(posts).toEqual([]);
+  await expect(control.getByRole('radio', { name: 'Faster' })).toHaveAttribute('aria-checked', 'true');
+
+  // Esc drops the tool; 1 is normal speed again.
+  await page.keyboard.press('Escape');
+  sent = post(page, /\/api\/story\/colonies\/[^/]+\/options$/);
+  await page.keyboard.press('1');
+  expect(body(await sent)).toEqual({ speed: 'normal' });
+});
