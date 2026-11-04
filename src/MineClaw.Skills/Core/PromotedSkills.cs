@@ -62,37 +62,63 @@ public sealed class PromotedSkill(SkillSpec spec, Func<SkillContext, JsonElement
 
     private static readonly Regex Pos = new(@"(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)", RegexOptions.Compiled);
 
+    private enum StepKind { None, Go, Dig, Use, Collect }
+
+    // A step's verb (its first word) -> what it does.
+    private static readonly (string[] Verbs, StepKind Kind)[] StepVerbs =
+    [
+        (["stand", "go", "walk"], StepKind.Go),
+        (["mine", "break", "dig"], StepKind.Dig),
+        (["open", "use", "press", "right", "pull", "flip"], StepKind.Use),
+        (["collect", "pick up"], StepKind.Collect),
+    ];
+
+    private static StepKind KindOf(string s)
+    {
+        foreach (var (verbs, kind) in StepVerbs)
+            if (verbs.Any(v => s.StartsWith(v))) return kind;
+        return StepKind.None;
+    }
+
+    private static BlockPos? StepPos(string s)
+    {
+        var m = Pos.Match(s);
+        return m.Success ? new BlockPos(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value)) : null;
+    }
+
     internal static async Task<SkillResult?> RunStepAsync(SkillContext ctx, string step, CancellationToken ct)
     {
         var s = step.Trim().ToLowerInvariant();
-        var m = Pos.Match(s);
-        BlockPos? p = m.Success ? new BlockPos(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value)) : null;
+        BlockPos? p = StepPos(s);
         if (Regex.Match(s, @"wait\s+(\d+)") is { Success: true } w)
         {
             await ctx.Game.WaitTicksAsync(Math.Clamp(int.Parse(w.Groups[1].Value), 1, 60) * 20, ct);
             return SkillResult.Success("waited");
         }
         if (p is not { } pos) return null;
-        if (s.StartsWith("stand") || s.StartsWith("go") || s.StartsWith("walk"))
-            return SkillResult.From(await ctx.Game.GotoAsync(new GoalBlock(pos), null, ct));
-        if (s.StartsWith("mine") || s.StartsWith("break") || s.StartsWith("dig"))
+        return KindOf(s) switch
         {
-            int n = Regex.Match(s, @"(\d+)\s*(x|times)") is { Success: true } c ? int.Parse(c.Groups[1].Value) : s.Contains("repeat") ? 16 : 1;
-            var last = SkillResult.Success("nothing to dig");
-            for (int i = 0; i < Math.Clamp(n, 1, 64); i++)
-            {
-                if (SkillWorld.Replaceable(ctx.World, pos)) { await ctx.Game.WaitTicksAsync(10, ct); if (SkillWorld.Replaceable(ctx.World, pos)) continue; }
-                last = SkillResult.From(await ctx.Game.DigAsync(pos, ct));
-                if (!last.Ok) return last;
-            }
-            await ctx.Game.CollectDropsAsync(6, ct);
-            return last;
+            StepKind.Go => SkillResult.From(await ctx.Game.GotoAsync(new GoalBlock(pos), null, ct)),
+            StepKind.Dig => await DigStepAsync(ctx, s, pos, ct),
+            StepKind.Use => SkillResult.From(await ctx.Game.ActivateAsync(pos, ct)),
+            StepKind.Collect => SkillResult.From(await ctx.Game.CollectDropsAsync(8, ct)),
+            _ => null,
+        };
+    }
+
+    // "mine/break/dig <block> at x,y,z [repeatedly|N times]": a cell already empty is waited on once (a generator refilling).
+    private static async Task<SkillResult> DigStepAsync(SkillContext ctx, string s, BlockPos pos, CancellationToken ct)
+    {
+        int n = Regex.Match(s, @"(\d+)\s*(x|times)") is { Success: true } c ? int.Parse(c.Groups[1].Value) : s.Contains("repeat") ? 16 : 1;
+        var last = SkillResult.Success("nothing to dig");
+        for (int i = 0; i < Math.Clamp(n, 1, 64); i++)
+        {
+            if (SkillWorld.Replaceable(ctx.World, pos)) { await ctx.Game.WaitTicksAsync(10, ct); if (SkillWorld.Replaceable(ctx.World, pos)) continue; }
+            last = SkillResult.From(await ctx.Game.DigAsync(pos, ct));
+            if (!last.Ok) return last;
         }
-        if (s.StartsWith("open") || s.StartsWith("use") || s.StartsWith("press") || s.StartsWith("right") || s.StartsWith("pull") || s.StartsWith("flip"))
-            return SkillResult.From(await ctx.Game.ActivateAsync(pos, ct));
-        if (s.StartsWith("collect") || s.StartsWith("pick up"))
-            return SkillResult.From(await ctx.Game.CollectDropsAsync(8, ct));
-        return null;
+        await ctx.Game.CollectDropsAsync(6, ct);
+        return last;
     }
 
     private static string Trim(string s) => s.Length <= 60 ? s : s[..57] + "...";
