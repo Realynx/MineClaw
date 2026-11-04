@@ -16,6 +16,9 @@ public partial class FakeServer
     /// <summary>Serve water/lava buckets like the vanilla server (see the class remarks). Off by default.</summary>
     public bool Buckets { get; set; }
 
+    /// <summary>Every scoop: the source an empty bucket took.</summary>
+    public System.Collections.Concurrent.ConcurrentQueue<(int X, int Y, int Z)> Scoops { get; } = new();
+
     /// <summary>Every pour: where the liquid went.</summary>
     public System.Collections.Concurrent.ConcurrentQueue<(int X, int Y, int Z)> Pours { get; } = new();
 
@@ -34,6 +37,9 @@ public partial class FakeServer
             case PlayerBlockPlacementPacket u when u.HeldItem.Id is Items.WaterBucket or Items.LavaBucket:
                 if (u.Direction == PlayerBlockPlacementPacket.NoDirection) Pour(u.HeldItem.Id == Items.LavaBucket);
                 return true; // with a face: onItemUse passes, nothing happens
+            case PlayerBlockPlacementPacket u when u.HeldItem.Id == Items.Bucket:
+                if (u.Direction == PlayerBlockPlacementPacket.NoDirection) Scoop();
+                return true;
             default:
                 return false;
         }
@@ -62,12 +68,42 @@ public partial class FakeServer
                 int at = Blocks.GetValueOrDefault(cell);
                 if (at != 0 && at is not (>= 8 and <= 11) && at != 31) return; // tryPlaceContainedLiquid: a solid block there
                 SetBlock(cell.Item1, cell.Item2, cell.Item3, lava ? 11 : 9);
+                Mirror?.Invoke(cell.Item1, cell.Item2, cell.Item3, lava ? 11 : 9, 0);
                 Pours.Enqueue(cell);
                 Inventory[36 + _heldSlot] = new ItemStack((short)Items.Bucket, 1, 0);
                 Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = Inventory[36 + _heldSlot] });
                 return;
             }
             prev = c;
+        }
+    }
+
+    /// <summary>An empty bucket used (ItemBucket.onItemRightClick, b1.8.1 and 1.12.2): the server's raytrace from the eye with liquids on
+    /// stops at the first liquid SOURCE (meta 0) or block with a box; a source becomes air and the bucket a full one.</summary>
+    private void Scoop()
+    {
+        var (fx, fy, fz) = _feet ?? SpawnAt;
+        double ex = fx, ey = fy + (Modern && _sneaking ? 1.62 - 0.08 : 1.62), ez = fz;
+        double yr = -_yaw * 0.017453292f - Math.PI, pr = -_pitch * 0.017453292f;
+        double dx = Math.Sin(yr) * -Math.Cos(pr), dy = Math.Sin(pr), dz = Math.Cos(yr) * -Math.Cos(pr);
+        var prev = ((int)Math.Floor(ex), (int)Math.Floor(ey), (int)Math.Floor(ez));
+        for (double t = 0.001; t <= 5.0; t += 0.001)
+        {
+            var c = ((int)Math.Floor(ex + dx * t), (int)Math.Floor(ey + dy * t), (int)Math.Floor(ez + dz * t));
+            if (c == prev) continue;
+            prev = c;
+            int id = Blocks.GetValueOrDefault(c);
+            if (id is >= 8 and <= 11)
+            {
+                if (Metas.GetValueOrDefault(c) != 0) continue; // flowing liquid: the ray passes
+                SetBlock(c.Item1, c.Item2, c.Item3, 0);
+                Mirror?.Invoke(c.Item1, c.Item2, c.Item3, 0, 0);
+                Scoops.Enqueue(c);
+                Inventory[36 + _heldSlot] = new ItemStack((short)(id >= 10 ? Items.LavaBucket : Items.WaterBucket), 1, 0);
+                Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = Inventory[36 + _heldSlot] });
+                return;
+            }
+            if (id != 0 && !(Modern && id is 31 or 37 or 38 or 50)) return; // a block: nothing to scoop
         }
     }
 }

@@ -17,6 +17,7 @@ public sealed partial class StoryColony
     {
         if (name is { Length: > 40 }) return (null, "name: at most 40 characters");
         if (op is "update" or "seek_seeds") return GrowZoneOp(op, id, grow); // growing zones (StoryColony.Farming.cs)
+        if (op == "irrigation") return Irrigation(id); // water channels the zone wants (StoryColony.Water.cs)
         if (op.StartsWith("bill_", StringComparison.Ordinal)) return GrowBillOp(op, id, grow);
         if (kind == "grow" || kind == null && op == "add" && grow?["plant"] != null) kind = "farm";
         if (kind == "any") kind = null;

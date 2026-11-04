@@ -15,9 +15,11 @@ import {
   storyItemLabel,
 } from './storyData.js';
 import { cellKey, cellX, cellZ, eraseZones, paintZones, rectCells, zoneCellSet } from './storyZones.js';
+import { irrigationPlan, liquidFlow } from './storyWater.js';
 import {
   CHEST_IDS,
   expandBuildItem,
+  liquidOf,
   LOG_IDS,
   matchesTool,
   ANIMAL_TYPES,
@@ -39,6 +41,7 @@ import {
   type StoryArchitectResponse,
   type StoryBuild,
   type StoryBuildMaterial,
+  type StoryBuildItem,
   type StoryBuildRequest,
   type StoryColonyOptions,
   type StoryOptionsRequest,
@@ -158,7 +161,7 @@ interface Colony {
   designations: Map<Key, Fn<StoryDesignation>>;
   orders: Map<Key, Fn<StoryOrder>>;
   builds: Map<Key, Fn<StoryBuild>>;
-  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string, ('dig' | 'place')?]>>;
+  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string, ('dig' | 'place' | 'pour')?]>>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
@@ -521,7 +524,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false, speed: 'normal', speedEffect: true },
+      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false, speed: 'normal', speedEffect: true, allowLava: false },
       gear: newSimGear(),
     };
     for (let i = 0; i < req.pawns; i++) {
@@ -930,6 +933,7 @@ export class StorySim {
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
     if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
+    if (body.op === 'irrigation') return this.irrigation(c, String(body.id));
     if (body.op.startsWith('bill_')) return this.billOp(c, body as Extract<StoryZoneRequest, { op: `bill_${string}` }>);
     if (body.op === 'rename') {
       const f = c.zones.get(String(body.id));
@@ -1176,6 +1180,34 @@ export class StorySim {
     };
   }
 
+  /** zones irrigation (docs/web/story-mode.md "Water"): the channels a growing zone wants, at soil level; nothing queued. */
+  private irrigation(c: Colony, id: string) {
+    const z = c.zones.get(id)?.v;
+    if (!z) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+    if (z.kind !== 'farm') throw Object.assign(new Error('irrigation is for growing zones'), { status: 400 });
+    const w = this.opts.world;
+    const water = (x: number, y: number, z2: number) => {
+      const id2 = w.blockAt(x, y, z2)[0];
+      return id2 === 8 || id2 === 9;
+    };
+    const cane = (z.activePlant ?? z.plant) === 'sugar_cane';
+    const plan = irrigationPlan(
+      z,
+      cane,
+      (x, z2) => w.ground(x, z2),
+      (x, y, z2) => {
+        const r = cane ? 1 : 4;
+        for (let dx = -r; dx <= r; dx++)
+          for (let dz = -r; dz <= r; dz++)
+            if (cane ? Math.abs(dx) + Math.abs(dz) === 1 : true)
+              for (let dy = 0; dy <= (cane ? 0 : 1); dy++) if (water(x + dx, y + dy, z2 + dz)) return true;
+        return false;
+      },
+      (x, y, z2) => w.blockAt(x, y, z2)[0],
+    );
+    return { id: z.id, ...plan, rev: c.rev };
+  }
+
   private growOp(c: Colony, body: Extract<StoryZoneRequest, { op: 'update' | 'seek_seeds' }>) {
     const f = c.zones.get(String(body.id));
     if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
@@ -1418,10 +1450,87 @@ export class StorySim {
     return !!e && inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2);
   }
 
-  builds(id: string, body: StoryBuildRequest): { ok: boolean; ids?: Key[]; rev: number } {
+  /**
+   * Water items (the director's checks, simplified): lava only while allowed; each cell open (air, plants, flowing liquid) or
+   * dug first by its group's remove item; the expected flow beyond the drawn cells. Returns why not, or the warnings and flow.
+   */
+  private checkWater(c: Colony, items: readonly StoryBuildItem[]) {
+    const w = this.opts.world;
+    const warnings: string[] = [];
+    const spread: Array<[number, number, number]> = [];
+    let cells = 0,
+      done = 0;
+    const dug: Array<[number, number, number]> = [];
+    const queuedDigs = [...c.ghostCells.values()].flat().filter((g) => g[7] === 'dig' && g[6] !== 'done');
+    for (const item of items) {
+      if (item.kind === 'remove' && item.group) for (const b of expandBuildItem(item)) dug.push([b[0], b[1], b[2]]);
+      if (item.kind !== 'water') continue;
+      const liquid = liquidOf(item.material);
+      if (!liquid) return { error: "a water item's material is water|lava", warnings, spread, cells, done };
+      if (liquid === 'lava' && !c.options.allowLava)
+        return { error: 'lava is off: turn on the colony option allow_lava first', warnings, spread, cells, done };
+      const own = expandBuildItem(item).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
+      cells += own.length;
+      const isDug = (x: number, y: number, z: number) =>
+        dug.some((d) => d[0] === x && d[1] === y && d[2] === z) || queuedDigs.some((g) => g[0] === x && g[1] === y && g[2] === z);
+      for (const [x, y, z] of own) {
+        const [bid, bm] = w.blockAt(x, y, z);
+        const want = liquid === 'lava' ? [10, 11] : [8, 9];
+        if (want.includes(bid) && bm === 0) {
+          done++;
+          continue;
+        }
+        const open = bid === 0 || [8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(bid);
+        if (!open && !isDug(x, y, z))
+          return {
+            error: `${x},${y},${z} holds ${storyItemLabel(bid, bm).toLowerCase()}: dig it first (a remove item in the same group, or the channel tool's "Dig the trench")`,
+            warnings,
+            spread,
+            cells,
+            done,
+          };
+      }
+      const f = liquidFlow((x, y, z) => w.blockAt(x, y, z), own, liquid === 'lava', dug);
+      spread.push(...f.spread);
+      if (f.spread.length)
+        warnings.push(
+          `the ${liquid} will spread to ${f.spread.length} cell${f.spread.length === 1 ? '' : 's'} beyond what was drawn (e.g. ${f.spread[0]!.join(',')}): place dam blocks first, or dig the channel into the ground`,
+        );
+      if (f.touches) warnings.push(f.touches);
+    }
+    return { error: null as string | null, warnings, spread, cells, done };
+  }
+
+  builds(
+    id: string,
+    body: StoryBuildRequest,
+  ): {
+    ok: boolean;
+    ids?: Key[];
+    rev: number;
+    warnings?: string[];
+    flow?: { spread: number; cells: Array<[number, number, number]> };
+    cells?: number;
+    done?: number;
+    error?: string | null;
+  } {
     const c = this.colony(id);
+    if (body.op === 'preview') {
+      const r = this.checkWater(c, body.items);
+      return {
+        ok: true,
+        rev: c.rev,
+        cells: r.cells,
+        done: r.done,
+        error: r.error,
+        warnings: r.warnings,
+        flow: { spread: r.spread.length, cells: r.spread.slice(0, 256) },
+      };
+    }
     if (body.op === 'add') {
       const ids: Key[] = [];
+      const water = body.items.some((i) => i.kind === 'water') ? this.checkWater(c, body.items) : null;
+      if (water?.error) throw Object.assign(new Error(water.error), { status: 400 });
       for (const item of body.items) {
         const bid = `b${c.seq++}`;
         const cells = expandBuildItem(item);
@@ -1429,13 +1538,22 @@ export class StorySim {
         const order = Math.max(0, ...[...c.builds.values()].map((f) => f.v.order)) + 1;
         const need = cells.filter((b) => b[3] !== 0).length;
         const have = c.stock.get(`${mid}:${mmeta}`) ?? 0;
+        const liquid = item.kind === 'water' ? liquidOf(item.material) : null;
         const b: StoryBuild = {
           id: bid,
           kind: item.kind,
-          label: buildLabel(item.kind, cells.length, item.material),
+          label: liquid
+            ? (item.name ??
+              (item.infinite
+                ? `infinite ${liquid} source (${cells.length} cells)`
+                : cells.length === 1
+                  ? `${liquid} source`
+                  : `${liquid} channel (${cells.length} sources)`))
+            : buildLabel(item.kind, cells.length, item.material),
           status: 'queued',
+          ...(liquid ? { liquid, renewable: false } : {}),
           reason:
-            have < need && item.kind !== 'remove' && item.kind !== 'mine' && !(STORY_FURNITURE as readonly string[]).includes(item.kind)
+            have < need && item.kind !== 'remove' && item.kind !== 'mine' && item.kind !== 'water' && !(STORY_FURNITURE as readonly string[]).includes(item.kind)
               ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}`
               : null,
           blocksTotal: cells.length,
@@ -1448,13 +1566,19 @@ export class StorySim {
         c.builds.set(bid, { rev: this.bump(c), v: b });
         c.ghostCells.set(
           bid,
-          cells.map(([x, y, z, bi, bm]) => [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : 'place']),
+          cells.map(([x, y, z, bi, bm]) => [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place']),
         );
         ids.push(bid);
       }
       c.ghostsRev = this.bump(c);
       this.plan(c);
-      return { ok: true, ids, rev: c.rev };
+      return {
+        ok: true,
+        ids,
+        rev: c.rev,
+        ...(water?.warnings.length ? { warnings: water.warnings } : {}),
+        ...(water ? { flow: { spread: water.spread.length, cells: water.spread.slice(0, 256) } } : {}),
+      };
     }
     const ids = body.ids.map(String);
     if (body.op === 'reorder') {
@@ -1781,6 +1905,18 @@ export class StorySim {
     for (const f of [...c.builds.values()].sort((a, b) => a.v.order - b.v.order)) {
       const b = f.v;
       if (b.status === 'done' || b.status === 'paused' || b.kind === 'remove') continue;
+      if (b.kind === 'water') {
+        // A liquid build needs one bucket (kept, never used up), not one per cell.
+        const buckets = (pool.get('325:0') ?? 0) + (pool.get('326:0') ?? 0) + (pool.get('327:0') ?? 0);
+        const mats: StoryBuildMaterial[] = [
+          { item: 'bucket', label: 'Bucket', need: 1, have: buckets > 0 ? 1 : 0, crafting: 0, short: buckets > 0 ? 0 : 1, via: 'craft', chain: ['craft 1 Bucket from 3 Iron Ingot (table)'], raw: buckets > 0 ? [] : ['3 Iron Ingot'] },
+        ];
+        if (JSON.stringify(mats) !== JSON.stringify(b.materials)) {
+          b.materials = mats;
+          f.rev = this.bump(c);
+        }
+        continue;
+      }
       // What the build places: its ghosts' block (a fence's fence, a door's door), else its material.
       const cells = (c.ghostCells.get(b.id) ?? []).filter((g) => g[3] !== 0);
       const [mid, mmeta] = cells[0] ? [cells[0][3], cells[0][4]] : materialKey(b.material);
@@ -1942,6 +2078,7 @@ export class StorySim {
     if (body.rescueTeleport !== undefined) c.options.rescueTeleport = body.rescueTeleport;
     if (body.unfilteredStorageTakesAnything !== undefined) c.options.unfilteredStorageTakesAnything = body.unfilteredStorageTakesAnything;
     if (body.keepDisallowed !== undefined) c.options.keepDisallowed = body.keepDisallowed;
+    if (body.allowLava !== undefined) c.options.allowLava = body.allowLava;
     if (body.speedEffect !== undefined) c.options.speedEffect = body.speedEffect;
     if (body.speed !== undefined) {
       // Fast / Faster: every online pawn's body runs at the multiplier (the mock server never rejects it).
@@ -2054,10 +2191,36 @@ export class StorySim {
         };
       },
     );
+    // The Water tab (docs/web/story-mode.md "Water"): the bucket's tier; a bucket in storage unlocks them whatever the benches.
+    const buckets = (c.stock.get('325:0') ?? 0) + (c.stock.get('326:0') ?? 0) + (c.stock.get('327:0') ?? 0);
+    const ingots = c.stock.get('265:0') ?? 0;
+    const water = (eid: string, label: string, kind: string, item: [number, number], block: number): StoryArchitectEntry => ({
+      id: eid,
+      label,
+      tab: 'water',
+      tier: 'workbench',
+      unlocked: buckets > 0 || table,
+      reason: buckets > 0 || table ? null : 'Needs a bucket — 3 iron ingots at a crafting table (place one or designate an existing one)',
+      item,
+      material: [block, 0],
+      kind,
+      kinds: [kind],
+      chain: ['craft Bucket from Iron Ingot (table)'],
+      have: buckets,
+      craftable: buckets > 0 ? 0 : Math.floor(ingots / 3),
+      from: buckets === 0 && ingots >= 3 ? ['3 Iron Ingot'] : [],
+      short: buckets === 0 && ingots < 3 ? ['3 Iron Ingot'] : [],
+    });
+    entries.push(
+      water('water_source', 'Water source', 'water', [326, 0], 9),
+      water('water_channel', 'Water channel', 'water_channel', [326, 0], 9),
+      water('infinite_water', 'Infinite water source', 'infinite_water', [326, 0], 9),
+      ...(c.options.allowLava ? [water('lava_source', 'Lava source', 'lava', [327, 0], 11)] : []),
+    );
     return {
       entries,
       benches: { crafting_table: table ? 1 : 0, furnace: furnace ? 1 : 0 },
-      tabs: ['structure', 'furniture', 'production', 'storage', 'lighting', 'misc'],
+      tabs: ['structure', 'furniture', 'production', 'storage', 'lighting', 'water', 'misc'],
     };
   }
 

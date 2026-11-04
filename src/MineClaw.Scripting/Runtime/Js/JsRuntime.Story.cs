@@ -43,6 +43,16 @@ internal sealed partial class JsRuntime
             var at = (Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null) ?? throw ScriptSession.Bug("storyReach(at) needs a position");
             return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at));
         });
+        // story.pour's eyes: the liquid at a cell -> "water" | "lava" (a source: what a poured bucket leaves), "flowing_water" |
+        // "flowing_lava" (a flow level, or falling), "" (no liquid). Zero tokens, no action.
+        H(h, "storyLiquid", a =>
+        {
+            s.SafePoint();
+            var p = ScriptSession.PosOf(JsConvert.ToNode(JsConvert.Arg(a, 0), 1)) ?? throw ScriptSession.Bug("storyLiquid(pos) needs a position");
+            int id = s.Host.World.GetBlock(p.X, p.Y, p.Z), meta = s.Host.World.GetMeta(p.X, p.Y, p.Z);
+            string what = id is 8 or 9 ? "water" : id is 10 or 11 ? "lava" : "";
+            return new JsString(what.Length == 0 || meta == 0 ? what : "flowing_" + what);
+        });
         // story.escape found no way out by itself: the colony sends help (blocks, a rescuer) or teleports it home. → what happens.
         H(h, "storyStuck", a =>
         {

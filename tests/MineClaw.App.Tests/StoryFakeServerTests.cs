@@ -342,6 +342,38 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(60), $"took {sw.Elapsed.TotalSeconds:0} s");
     }, s => s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Planks, 64, 0));
 
+    /// <summary>
+    /// Water (docs/web/story-mode.md "Water"): a 3-long canal queued as a dig and a pour in one group. The pawn digs the trench, fills
+    /// its bucket at the 2×2 pool (vanilla buckets on the fake server: the use-item raytrace scoops the source it looks at), pours each
+    /// cell aimed at the trench floor, and each cell is done once the world shows a water source there.
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_pawn_digs_a_canal_fills_its_bucket_at_a_pool_and_pours_each_cell_a_source(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        Only(x, WorkTypes.Build);
+        var canal = new JsonArray(new JsonArray(15, 63, 16), new JsonArray(16, 63, 16), new JsonArray(17, 63, 16));
+        var add = c.BuildsOp("add", new JsonArray(
+            new JsonObject { ["kind"] = "remove", ["blocks"] = canal.DeepClone(), ["group"] = "canal" },
+            new JsonObject { ["kind"] = "water", ["blocks"] = canal.DeepClone(), ["group"] = "canal" }), null);
+        Assert.Null(add.Error);
+        var water = c.Builds.Single(b => b.Kind == "water");
+        Assert.True(await Until(() => water.Status == "done", 150_000), $"canal: {water.BlocksDone}/{water.BlocksTotal} {water.Status} {water.Reason}: " + x.Diag());
+        var srv = x.Servers[x.Pawns[0]];
+        foreach (var g in water.Ghosts) Assert.Equal(9, srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)));
+        Assert.NotEmpty(srv.Scoops); // filled at the pool
+        Assert.All(srv.Scoops, s => Assert.InRange(s.X, 4, 5));
+        Assert.Equal(3, srv.Pours.Count(p => p.Z == 16 && p.X is >= 15 and <= 17));
+        Assert.Contains(c.Alerts, a => a.Text.Contains("is done") && a.Text.Contains("water channel"));
+    }, s =>
+    {
+        s.Buckets = true;
+        foreach (var (px, pz) in new[] { (4, 16), (5, 16), (4, 17), (5, 17) }) s.Blocks[(px, 63, pz)] = Blocks.Water;
+        s.Inventory[38] = new ItemStack((short)Items.Bucket, 1, 0);
+    });
+
     [Theory]
     [InlineData("b1.8.1")]
     [InlineData("1.12.2")]

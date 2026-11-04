@@ -98,6 +98,7 @@ export const STORY_BUILD_KINDS = [
   'block',
   'remove',
   'mine',
+  'water',
   'crafting_table',
   'furnace',
   'chest',
@@ -252,6 +253,13 @@ export const StoryAck = z.object({
     .describe('zones add/update (growing zones): what slows it, e.g. no water near'),
   count: z.number().int().nullish().describe('zones seek_seeds: the tall grass designated (or seeds billed)'),
   kind: z.string().nullish().describe('zones seek_seeds: cut | bill'),
+  cells: z
+    .array(Vec3i)
+    .nullish()
+    .describe('zones irrigation: the water cells a growing zone wants (soil level; nothing queued)'),
+  dig: z.array(Vec3i).nullish().describe('zones irrigation: the cells among them that hold soil (dug first, one group)'),
+  axis: z.string().nullish().describe('zones irrigation: x | z, the way the channels run'),
+  lines: z.number().int().nullish().describe('zones irrigation: how many channels'),
 });
 export type StoryAck = z.infer<typeof StoryAck>;
 
@@ -545,12 +553,14 @@ export const StoryBuild = z.object({
     .object({ kind: z.string(), pos: Vec3i })
     .nullish()
     .describe('a bench the colony is making and placing for this build'),
+  liquid: z.string().nullish().describe('a water build: water | lava (its cells are sources poured from a bucket)'),
+  renewable: z.boolean().nullish().describe('a water build whose poured sources refill (an infinite pool): pawns fill there'),
 });
 export type StoryBuild = z.infer<typeof StoryBuild>;
 
 /** Ghost block [x, y, z, id, meta, build_id, state, kind?] (state: todo | leased | done | blocked | unsupported: a block pawns
- * can't place yet, shown and alerted, never a job; kind: dig | place — a dig ghost's id/meta is the live world's block there,
- * the material the dig expects). */
+ * can't place yet, shown and alerted, never a job; kind: dig | place | pour — a dig ghost's id/meta is the live world's block
+ * there, the material the dig expects; a pour ghost is a liquid source, water 9 or lava 11, poured from a bucket). */
 export const StoryGhostBlock = z.tuple([
   z.number().int(),
   z.number().int(),
@@ -559,7 +569,7 @@ export const StoryGhostBlock = z.tuple([
   z.number().int(),
   z.union([z.string(), z.number()]),
   z.string(),
-  z.enum(['dig', 'place']).optional(),
+  z.enum(['dig', 'place', 'pour']).optional(),
 ]);
 export type StoryGhostBlock = z.infer<typeof StoryGhostBlock>;
 
@@ -1027,6 +1037,10 @@ export const StoryZoneRequest = z.union([
     .strict(),
   z.object({ op: z.literal('seek_seeds'), id: ZoneId }).strict(),
   z
+    .object({ op: z.literal('irrigation'), id: ZoneId })
+    .strict()
+    .describe('the water channels a growing zone wants (cells at soil level, those to dig first); nothing is queued'),
+  z
     .object({ op: z.literal('remove'), kind: z.union([StoryZoneKind, z.literal('any')]).optional(), area: StoryArea })
     .strict(),
   z.object({ op: z.literal('bill_add'), id: ZoneId, ...BillSpec, plant: z.string().min(1).max(32) }).strict(),
@@ -1118,12 +1132,21 @@ export const StoryBuildItem = z
       .max(40)
       .optional()
       .describe("one placed design's items: its blocks wait until the group's dig item (queued first) is done"),
+    infinite: z.boolean().optional().describe('a water item: an infinite source (a pool that refills; pawns fill there)'),
+    indoor: z
+      .boolean()
+      .optional()
+      .describe('a water item: pouring indoors in a house is allowed (the Water source tool\'s explicit click)'),
   })
   .strict();
 export type StoryBuildItem = z.infer<typeof StoryBuildItem>;
 
 export const StoryBuildRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('add'), items: z.array(StoryBuildItem).min(1).max(64) }).strict(),
+  z
+    .object({ op: z.literal('preview'), items: z.array(StoryBuildItem).min(1).max(64) })
+    .strict()
+    .describe('water items checked and their expected flow; nothing is queued'),
   z
     .object({
       op: z.literal('remove'),
@@ -1163,10 +1186,22 @@ export const StoryBuildRequest = z.discriminatedUnion('op', [
 ]);
 export type StoryBuildRequest = z.infer<typeof StoryBuildRequest>;
 
+/** Where poured liquid would run beyond the drawn cells (a preview after the game's flow rules): how many cells, and some. */
+export const StoryLiquidFlow = z.object({
+  spread: z.number().int().default(0),
+  cells: z.array(Vec3i).default([]),
+});
+export type StoryLiquidFlow = z.infer<typeof StoryLiquidFlow>;
+
 export const StoryBuildResponse = z.object({
   ok: z.boolean().nullish(),
   ids: z.array(z.union([z.string(), z.number()])).nullish(),
   rev: z.number().int().nullish(),
+  warnings: z.array(z.string()).nullish().describe('add / preview of water items: the liquid will spread, or meet lava'),
+  flow: StoryLiquidFlow.nullish().describe('add / preview of water items: where the liquid would run'),
+  cells: z.number().int().nullish().describe('preview: the water cells'),
+  done: z.number().int().nullish().describe('preview: cells already holding the source'),
+  error: z.string().nullish().describe('preview: why the items would be refused'),
 });
 export type StoryBuildResponse = z.infer<typeof StoryBuildResponse>;
 
@@ -1313,6 +1348,7 @@ export const StoryColonyOptions = z.object({
     .boolean()
     .default(true)
     .describe('1.12.2 with an op account: fast / faster also give the pawns a Speed effect (/effect, renewed)'),
+  allowLava: z.boolean().default(false).describe('pawns may pour lava (never at home or beside what burns)'),
 });
 export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
 /** POST /api/story/colonies/{id}/options: any of the flags and the idle mode. */
@@ -1331,12 +1367,13 @@ export const StoryOptionsRequest = z
       .optional(),
     speed: z.enum(STORY_SPEEDS).optional(),
     speedEffect: z.boolean().optional(),
+    allowLava: z.boolean().optional(),
   })
   .strict()
   .describe('any of them (the bot answers 400 for none)');
 export type StoryOptionsRequest = z.infer<typeof StoryOptionsRequest>;
 
-export const STORY_ARCHITECT_TABS = ['structure', 'furniture', 'production', 'storage', 'lighting', 'misc'] as const;
+export const STORY_ARCHITECT_TABS = ['structure', 'furniture', 'production', 'storage', 'lighting', 'water', 'misc'] as const;
 export const STORY_TIERS = ['gathered', 'hand', 'workbench', 'furnace'] as const;
 
 /**
@@ -1473,6 +1510,16 @@ export const STORY_MATERIALS: ReadonlyArray<{ name: string; label: string; id: n
 
 /** Furniture the Architect places through the build queue (each is its own build kind). */
 export const STORY_FURNITURE = ['crafting_table', 'furnace', 'chest', 'bed', 'torch'] as const;
+
+/** The liquid a water item pours: its material "water" (default) or "lava" (or a block id 8–11); null for anything else. */
+export function liquidOf(m: StoryMaterial | null | undefined): 'water' | 'lava' | null {
+  if (m === undefined || m === null) return 'water';
+  if (Array.isArray(m)) return m[0] === 8 || m[0] === 9 ? 'water' : m[0] === 10 || m[0] === 11 ? 'lava' : null;
+  const n = m.trim().toLowerCase();
+  if (n === 'water' || n === 'still_water' || n === 'flowing_water' || n === 'water_bucket') return 'water';
+  if (n === 'lava' || n === 'still_lava' || n === 'flowing_lava' || n === 'lava_bucket') return 'lava';
+  return null;
+}
 
 /** Resolves a material to [id, meta] (unknown names → stone). */
 export function materialKey(m: StoryMaterial | null | undefined): [number, number] {
@@ -1613,6 +1660,15 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
         put(x, y, z, pid, pm);
       }
       break;
+    case 'water': {
+      // Each cell a still source of its liquid (water 9, lava 11), poured from a bucket.
+      const lid = liquidOf(item.material) === 'lava' ? 11 : 9;
+      for (const [x, y, z] of cells) put(x, y, z, lid, 0);
+      if (a)
+        for (let x = a[0]; x <= a[3]; x++)
+          for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, lid, 0);
+      break;
+    }
     case 'block':
     case 'remove': {
       const bid = item.kind === 'remove' ? 0 : id,
