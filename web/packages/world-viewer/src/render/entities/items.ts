@@ -67,73 +67,48 @@ const DYES = 'white orange magenta light_blue yellow lime pink gray silver cyan 
 const DYE_ITEMS = 'black red green brown blue purple cyan silver gray pink lime yellow light_blue magenta orange white'.split(' ');
 const WOODS = 'oak spruce birch jungle acacia dark_oak'.split(' ');
 
+/** `names[d]`, or `fallback` past the list. */
+const nth = (names: readonly string[], fallback: string) => (d: number) => names[d] ?? fallback;
+const woods = (suffix: string, index: (d: number) => number) => (d: number) => `${WOODS[index(d)]}_${suffix}`;
+const dyed = (suffix: string) => (d: number) => `${DYES[d]}_${suffix}`;
+
+/** 1.12.2 item model names of variant stacks: id → model name by damage (& 15). */
+const VARIANTS_1122 = new Map<number, (d: number) => string>([
+  [1, nth(['stone', 'granite', 'granite_smooth', 'diorite', 'diorite_smooth', 'andesite', 'andesite_smooth'], 'stone')],
+  [3, nth(['dirt', 'coarse_dirt', 'podzol'], 'dirt')],
+  [5, woods('planks', (d) => d % 6)],
+  [6, woods('sapling', (d) => d % 6)],
+  [12, (d) => (d === 1 ? 'red_sand' : 'sand')],
+  [17, woods('log', (d) => d & 3)],
+  [162, woods('log', (d) => 4 + (d & 1))],
+  [18, woods('leaves', (d) => d & 3)],
+  [161, woods('leaves', (d) => 4 + (d & 1))],
+  [24, nth(['sandstone', 'chiseled_sandstone', 'smooth_sandstone'], 'sandstone')],
+  [31, (d) => (d === 2 ? 'fern' : 'tall_grass')],
+  [35, dyed('wool')],
+  [95, dyed('stained_glass')],
+  [159, dyed('stained_hardened_clay')],
+  [171, dyed('carpet')],
+  [251, dyed('concrete')],
+  [252, dyed('concrete_powder')],
+  [38, nth(['poppy', 'blue_orchid', 'allium', 'houstonia', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'oxeye_daisy'], 'poppy')],
+  [37, () => 'dandelion'],
+  [44, (d) => ['stone_slab', 'sandstone_slab', 'stone_slab', 'cobblestone_slab', 'brick_slab', 'stone_brick_slab', 'nether_brick_slab', 'quartz_slab'][d & 7]],
+  [126, woods('slab', (d) => d % 6)],
+  [98, (d) => ['stonebrick', 'mossy_stonebrick', 'cracked_stonebrick', 'chiseled_stonebrick'][d & 3]],
+  [175, nth(['sunflower', 'syringa', 'double_grass', 'double_fern', 'double_rose', 'paeonia'], 'sunflower')],
+  [145, (d) => ['anvil_intact', 'anvil_slightly_damaged', 'anvil_very_damaged'][(d >> 2) & 3] ?? 'anvil_intact'],
+  [263, (d) => (d === 1 ? 'charcoal' : 'coal')],
+  [349, (d) => ['cod', 'salmon', 'clownfish', 'pufferfish'][d & 3]],
+  [350, (d) => (d === 1 ? 'cooked_salmon' : 'cooked_cod')],
+  [351, (d) => `dye_${DYE_ITEMS[d]}`],
+  [397, nth(['skull_skeleton', 'skull_wither', 'skull_zombie', 'skull_char', 'skull_creeper', 'skull_dragon'], 'skull_skeleton')],
+]);
+
 /** 1.12.2 item model names of variant stacks (id → by damage). */
 function variant1122(id: number, damage: number): string | null {
-  const d = damage & 15;
-  switch (id) {
-    case 1:
-      return ['stone', 'granite', 'granite_smooth', 'diorite', 'diorite_smooth', 'andesite', 'andesite_smooth'][d] ?? 'stone';
-    case 3:
-      return ['dirt', 'coarse_dirt', 'podzol'][d] ?? 'dirt';
-    case 5:
-      return `${WOODS[d % 6]}_planks`;
-    case 6:
-      return `${WOODS[d % 6]}_sapling`;
-    case 12:
-      return d === 1 ? 'red_sand' : 'sand';
-    case 17:
-      return `${WOODS[d & 3]}_log`;
-    case 162:
-      return `${WOODS[4 + (d & 1)]}_log`;
-    case 18:
-      return `${WOODS[d & 3]}_leaves`;
-    case 161:
-      return `${WOODS[4 + (d & 1)]}_leaves`;
-    case 24:
-      return ['sandstone', 'chiseled_sandstone', 'smooth_sandstone'][d] ?? 'sandstone';
-    case 31:
-      return d === 2 ? 'fern' : 'tall_grass';
-    case 35:
-      return `${DYES[d]}_wool`;
-    case 95:
-      return `${DYES[d]}_stained_glass`;
-    case 159:
-      return `${DYES[d]}_stained_hardened_clay`;
-    case 171:
-      return `${DYES[d]}_carpet`;
-    case 251:
-      return `${DYES[d]}_concrete`;
-    case 252:
-      return `${DYES[d]}_concrete_powder`;
-    case 38:
-      return ['poppy', 'blue_orchid', 'allium', 'houstonia', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'oxeye_daisy'][d] ?? 'poppy';
-    case 37:
-      return 'dandelion';
-    case 44:
-      return ['stone_slab', 'sandstone_slab', 'stone_slab', 'cobblestone_slab', 'brick_slab', 'stone_brick_slab', 'nether_brick_slab', 'quartz_slab'][d & 7];
-    case 126:
-      return `${WOODS[d % 6]}_slab`;
-    case 98:
-      return ['stonebrick', 'mossy_stonebrick', 'cracked_stonebrick', 'chiseled_stonebrick'][d & 3];
-    case 175:
-      return ['sunflower', 'syringa', 'double_grass', 'double_fern', 'double_rose', 'paeonia'][d] ?? 'sunflower';
-    case 145:
-      return ['anvil_intact', 'anvil_slightly_damaged', 'anvil_very_damaged'][(d >> 2) & 3] ?? 'anvil_intact';
-    case 263:
-      return d === 1 ? 'charcoal' : 'coal';
-    case 349:
-      return ['cod', 'salmon', 'clownfish', 'pufferfish'][d & 3];
-    case 350:
-      return d === 1 ? 'cooked_salmon' : 'cooked_cod';
-    case 351:
-      return `dye_${DYE_ITEMS[d]}`;
-    case 397:
-      return ['skull_skeleton', 'skull_wither', 'skull_zombie', 'skull_char', 'skull_creeper', 'skull_dragon'][d] ?? 'skull_skeleton';
-    default:
-      return null;
-  }
+  return VARIANTS_1122.get(id)?.(damage & 15) ?? null;
 }
-
 const ALIASES_1122: Record<string, string> = {
   yellow_flower: 'dandelion',
   red_flower: 'poppy',
@@ -189,89 +164,139 @@ function resolveTex(tex: Record<string, string>, ref: string | undefined): strin
   return r && !r.startsWith('#') ? r : null;
 }
 
-/** Follows an item model's parent chain: a generated sprite (layer0) or the block model's cube faces. */
-export function look1122(pack: Pack1122, modelName: string): ItemLook | null {
+/** Parents that make an item a flat generated sprite. */
+const GENERATED_PARENTS = new Set(['item/generated', 'item/handheld', 'builtin/generated', 'item/handheld_rod']);
+
+/** An item model with its parent chain folded in: the textures (nearest first), the first elements, and whether it ends in a
+ * generated sprite. */
+interface ResolvedModel {
+  textures: Record<string, string>;
+  elements: ModelJson['elements'] | undefined;
+  generated: boolean;
+}
+
+function resolveModel(pack: Pack1122, first: ModelJson): ResolvedModel {
   const models = pack.itemModels as Record<string, ModelJson>, blocks = pack.models as Record<string, ModelJson>;
-  let cur: ModelJson | undefined = models[`item/${modelName}`];
-  if (!cur) return null;
-  const textures: Record<string, string> = {};
-  let elements: ModelJson['elements'] | undefined;
-  let generated = false;
+  const out: ResolvedModel = { textures: {}, elements: undefined, generated: false };
+  let cur: ModelJson | undefined = first;
   for (let guard = 0; cur && guard < 16; guard++) {
-    for (const [k, v] of Object.entries(cur.textures ?? {})) if (!(k in textures)) textures[k] = v;
-    if (!elements && cur.elements) elements = cur.elements;
+    mergeTextures(out.textures, cur.textures);
+    if (!out.elements && cur.elements) out.elements = cur.elements;
     const parent: string | undefined = cur.parent;
-    if (!parent) break;
-    if (parent === 'item/generated' || parent === 'item/handheld' || parent === 'builtin/generated' || parent === 'item/handheld_rod') {
-      generated = true;
+    if (!parent || parent === 'builtin/entity') break;
+    if (GENERATED_PARENTS.has(parent)) {
+      out.generated = true;
       break;
     }
-    if (parent === 'builtin/entity') break;
     cur = parent.startsWith('block/') ? blocks[parent] : models[parent];
   }
-  const cellOf = (name: string | null): { atlas: 'items' | 'blocks'; cell: number } | null => {
-    if (!name) return null;
-    const it = pack.items.tiles[name];
-    if (it) return { atlas: 'items', cell: it[1] * pack.items.columns + it[0] };
-    const bl = pack.blocks.tiles[name];
-    if (bl) return { atlas: 'blocks', cell: bl[1] * pack.blocks.columns + bl[0] };
-    return null;
-  };
-  if (generated || (!elements && textures.layer0)) {
-    const layer0 = resolveTex(textures, textures.layer0 ?? '#layer0');
-    const layer1 = textures.layer1 ? resolveTex(textures, textures.layer1) : null;
-    // Potions (and tipped arrows): layer0 is the tinted liquid, layer1 the bottle drawn over it.
-    if (layer0 === 'items/potion_overlay' && layer1) {
-      const top = cellOf(layer1), liquid = cellOf(layer0);
-      if (top) return { kind: 'sprite', atlas: top.atlas, cell: top.cell, tint: 0, ...(liquid ? { under: { ...liquid, tint: POTION_TINT } } : {}) };
-    }
-    const c = cellOf(layer0);
-    if (!c) return null;
-    const tint = /grass|fern|vine|leaves|lily/.test(modelName) && !/dead/.test(modelName) ? (modelName.includes('leaves') ? FOLIAGE_TINT : GRASS_TINT) : 0;
-    return { kind: 'sprite', atlas: c.atlas, cell: c.cell, tint };
-  }
-  if (elements?.length) {
-    // The largest element stands for the block (stairs/slabs/fences become a mini cube: close enough at item size).
-    let best = elements[0], vol = -1;
-    for (const e of elements) {
-      const f = e.from ?? [0, 0, 0], t = e.to ?? [16, 16, 16];
-      const v = Math.abs((t[0] - f[0]) * (t[1] - f[1]) * (t[2] - f[2]));
-      if (v > vol) {
-        vol = v;
-        best = e;
-      }
-    }
-    const faces: number[] = [];
-    let mask = 0;
-    for (let f = 0; f < 6; f++) {
-      const face = best.faces?.[FACE_NAMES[f]] ?? Object.values(best.faces ?? {})[0];
-      const c = cellOf(resolveTex(textures, face?.texture ?? '#particle'));
-      faces.push(c && c.atlas === 'blocks' ? c.cell : -1);
-      if (face?.tintindex != null && face.tintindex >= 0) mask |= 1 << f;
-    }
-    if (faces.every((f) => f < 0)) return null;
-    const fill = faces.find((f) => f >= 0)!;
-    const tint = mask ? (/leaves/.test(modelName) ? FOLIAGE_TINT : GRASS_TINT) : 0;
-    return { kind: 'cube', faces: faces.map((f) => (f < 0 ? fill : f)) as [number, number, number, number, number, number], tint, tintMask: mask };
-  }
-  // builtin/entity (chests, banners, shields, skulls): a plank cube for chests, the shield's front face, else nothing.
-  if (/chest/.test(modelName)) {
-    const c = cellOf('blocks/planks_oak');
-    if (c) return { kind: 'cube', faces: [c.cell, c.cell, c.cell, c.cell, c.cell, c.cell], tint: 0, tintMask: 0 };
-  }
-  if (modelName === 'shield' || modelName === 'shield_blocking') {
-    // ModelShield's plate (12×22×1 at texture offset 0,0): its front face is the 64×64 texture's (1, 1, 12, 22). The 3D view
-    // keeps the GUI's shield outline sprite as its stand-in.
-    const r = pack.entity.rects['entity/shield_base_nopattern'];
-    const slot = cellOf('items/empty_armor_slot_shield');
-    if (r && slot) {
-      const k = r[2] / 64;
-      return { kind: 'sprite', atlas: slot.atlas, cell: slot.cell, tint: 0, entityRect: [r[0] + k, r[1] + k, 12 * k, 22 * k] };
-    }
-  }
+  return out;
+}
+
+/** Adds the texture variables a child model doesn't already define. */
+function mergeTextures(into: Record<string, string>, textures: Record<string, string> | undefined): void {
+  if (!textures) return;
+  for (const [k, v] of Object.entries(textures)) if (!(k in into)) into[k] = v;
+}
+
+/** A texture's cell in the items atlas, else the blocks atlas. */
+function cellOf(pack: Pack1122, name: string | null): { atlas: 'items' | 'blocks'; cell: number } | null {
+  if (!name) return null;
+  const it = pack.items.tiles[name];
+  if (it) return { atlas: 'items', cell: it[1] * pack.items.columns + it[0] };
+  const bl = pack.blocks.tiles[name];
+  if (bl) return { atlas: 'blocks', cell: bl[1] * pack.blocks.columns + bl[0] };
   return null;
 }
 
+/** Follows an item model's parent chain: a generated sprite (layer0) or the block model's cube faces. */
+export function look1122(pack: Pack1122, modelName: string): ItemLook | null {
+  const first = (pack.itemModels as Record<string, ModelJson>)[`item/${modelName}`];
+  if (!first) return null;
+  const { textures, elements, generated } = resolveModel(pack, first);
+  if (generated || (!elements && textures.layer0)) return spriteLook(pack, textures, modelName);
+  if (elements?.length) return cubeLook(pack, textures, elements, modelName);
+  return builtinLook(pack, modelName);
+}
+
+/** item/generated: layer0 as a sprite (grass and leaves tinted); potions and tipped arrows draw layer1 over the liquid. */
+function spriteLook(pack: Pack1122, textures: Record<string, string>, modelName: string): ItemLook | null {
+  const layer0 = resolveTex(textures, textures.layer0 ?? '#layer0');
+  const layer1 = textures.layer1 ? resolveTex(textures, textures.layer1) : null;
+  // Potions (and tipped arrows): layer0 is the tinted liquid, layer1 the bottle drawn over it.
+  if (layer0 === 'items/potion_overlay' && layer1) {
+    const top = cellOf(pack, layer1), liquid = cellOf(pack, layer0);
+    if (top) return { kind: 'sprite', atlas: top.atlas, cell: top.cell, tint: 0, ...(liquid ? { under: { ...liquid, tint: POTION_TINT } } : {}) };
+  }
+  const c = cellOf(pack, layer0);
+  if (!c) return null;
+  return { kind: 'sprite', atlas: c.atlas, cell: c.cell, tint: spriteTint(modelName) };
+}
+
+/** Grass, ferns, vines, leaves and lily pads take the biome tint (leaves the foliage one); dead plants don't. */
+function spriteTint(modelName: string): number {
+  if (!/grass|fern|vine|leaves|lily/.test(modelName) || /dead/.test(modelName)) return 0;
+  return modelName.includes('leaves') ? FOLIAGE_TINT : GRASS_TINT;
+}
+
+/** The largest element stands for the block (stairs/slabs/fences become a mini cube: close enough at item size). */
+function largestElement(elements: NonNullable<ModelJson['elements']>): NonNullable<ModelJson['elements']>[number] {
+  let best = elements[0], vol = -1;
+  for (const e of elements) {
+    const f = e.from ?? [0, 0, 0], t = e.to ?? [16, 16, 16];
+    const v = Math.abs((t[0] - f[0]) * (t[1] - f[1]) * (t[2] - f[2]));
+    if (v > vol) {
+      vol = v;
+      best = e;
+    }
+  }
+  return best;
+}
+
+/** A block item as a cube: the largest element's face textures (blocks atlas), tinted faces by their tint index. */
+function cubeLook(pack: Pack1122, textures: Record<string, string>, elements: NonNullable<ModelJson['elements']>, modelName: string): ItemLook | null {
+  const best = largestElement(elements);
+  const faces: number[] = [];
+  let mask = 0;
+  for (let f = 0; f < 6; f++) {
+    const face = elementFace(best, f);
+    faces.push(faceTile(pack, textures, face));
+    if (face?.tintindex != null && face.tintindex >= 0) mask |= 1 << f;
+  }
+  if (faces.every((f) => f < 0)) return null;
+  const fill = faces.find((f) => f >= 0)!;
+  const tint = mask ? (/leaves/.test(modelName) ? FOLIAGE_TINT : GRASS_TINT) : 0;
+  return { kind: 'cube', faces: faces.map((f) => (f < 0 ? fill : f)) as [number, number, number, number, number, number], tint, tintMask: mask };
+}
+
+type ElementFace = NonNullable<NonNullable<ModelJson['elements']>[number]['faces']>[string];
+
+/** An element's face `f` (down, up, north, south, west, east), else its first face. */
+function elementFace(e: NonNullable<ModelJson['elements']>[number], f: number): ElementFace | undefined {
+  return e.faces?.[FACE_NAMES[f]] ?? Object.values(e.faces ?? {})[0];
+}
+
+/** The face's texture as a blocks-atlas cell (−1 = none: items-atlas or missing textures). */
+function faceTile(pack: Pack1122, textures: Record<string, string>, face: ElementFace | undefined): number {
+  const c = cellOf(pack, resolveTex(textures, face?.texture ?? '#particle'));
+  return c && c.atlas === 'blocks' ? c.cell : -1;
+}
+
+/** builtin/entity (chests, banners, shields, skulls): a plank cube for chests, the shield's front face, else nothing. */
+function builtinLook(pack: Pack1122, modelName: string): ItemLook | null {
+  if (/chest/.test(modelName)) {
+    const c = cellOf(pack, 'blocks/planks_oak');
+    if (c) return { kind: 'cube', faces: [c.cell, c.cell, c.cell, c.cell, c.cell, c.cell], tint: 0, tintMask: 0 };
+  }
+  if (modelName !== 'shield' && modelName !== 'shield_blocking') return null;
+  // ModelShield's plate (12×22×1 at texture offset 0,0): its front face is the 64×64 texture's (1, 1, 12, 22). The 3D view
+  // keeps the GUI's shield outline sprite as its stand-in.
+  const r = pack.entity.rects['entity/shield_base_nopattern'];
+  const slot = cellOf(pack, 'items/empty_armor_slot_shield');
+  if (!r || !slot) return null;
+  const k = r[2] / 64;
+  return { kind: 'sprite', atlas: slot.atlas, cell: slot.cell, tint: 0, entityRect: [r[0] + k, r[1] + k, 12 * k, 22 * k] };
+}
 // ------------------------------------------------------------------------------------------------------------ b1.8.1
 
 /** b1.8.1 Item icon indices (gui/items.png cell = y·16 + x) of items 256+. */
@@ -318,89 +343,76 @@ const FLAT_BETA: Record<number, (meta: number) => number> = {
   106: () => 143,
 };
 
-/** Terrain tiles [down, up, north, south, west, east] of a b1.8.1 block drawn as a cube (−1 = no tile). */
-function cubeBeta(id: number, m: number): [number, number, number, number, number, number] | null {
-  const all = (t: number) => [t, t, t, t, t, t] as [number, number, number, number, number, number];
-  const tb = (top: number, side: number, bottom = top) => [bottom, top, side, side, side, side] as [number, number, number, number, number, number];
-  const front = (top: number, side: number, face: number) => [top, top, side, face, side, side] as [number, number, number, number, number, number];
-  switch (id) {
-    case 1: return all(1);
-    case 2: return tb(0, 3, 2);
-    case 3: return all(2);
-    case 4: return all(16);
-    case 5: return all(4);
-    case 7: return all(17);
-    case 12: return all(18);
-    case 13: return all(19);
-    case 14: return all(32);
-    case 15: return all(33);
-    case 16: return all(34);
-    case 17: return tb(21, [20, 116, 117][m & 3] ?? 20);
-    case 18: return all((m & 3) === 1 ? 132 : 52);
-    case 19: return all(48);
-    case 20: return all(49);
-    case 21: return all(160);
-    case 22: return all(144);
-    case 23: return front(62, 45, 46);
-    case 24: return tb(176, 192, 208);
-    case 25: return all(74);
-    case 35: return all(WOOL_BETA[m & 15]);
-    case 41: return all(23);
-    case 42: return all(22);
-    case 43:
-    case 44: return [[6, 5], [176, 192], [4, 4], [16, 16]].map(([t, s]) => tb(t, s))[m & 3] ?? tb(6, 5);
-    case 45: return all(7);
-    case 46: return tb(9, 8, 10);
-    case 47: return tb(4, 35);
-    case 48: return all(36);
-    case 49: return all(37);
-    case 52: return all(65);
-    case 53: return all(4);
-    case 54: return front(25, 26, 27);
-    case 56: return all(50);
-    case 57: return all(24);
-    case 58: return [4, 43, 60, 59, 60, 59];
-    case 60: return tb(m > 0 ? 86 : 87, 2, 2);
-    case 61: return front(62, 45, 44);
-    case 62: return front(62, 45, 61);
-    case 67: return all(16);
-    case 73:
-    case 74: return all(51);
-    case 78:
-    case 80: return all(66);
-    case 79: return all(67);
-    case 81: return tb(69, 70, 71);
-    case 82: return all(72);
-    case 84: return tb(75, 74);
-    case 85: return all(4);
-    case 86: return front(102, 118, 119);
-    case 87: return all(103);
-    case 88: return all(104);
-    case 89: return all(105);
-    case 91: return front(102, 118, 120);
-    case 96: return all(84);
-    case 98: return all([54, 100, 101][m & 3] ?? 54);
-    case 103: return tb(137, 136);
-    case 107: return all(4);
-    case 108: return all(7);
-    case 109: return all(54);
-    default: return null;
-  }
-}
+type Faces = [number, number, number, number, number, number];
+/** One tile on every face. */
+const all = (t: number): Faces => [t, t, t, t, t, t];
+/** Top (and bottom, unless given) and sides. */
+const tb = (top: number, side: number, bottom = top): Faces => [bottom, top, side, side, side, side];
+/** Top and bottom, sides, and a front face (south: the item view's front). */
+const front = (top: number, side: number, face: number): Faces => [top, top, side, face, side, side];
 
+/** b1.8.1 blocks with one terrain tile on every face: [id, tile]. */
+const CUBE_ALL_BETA: ReadonlyArray<readonly [number, number]> = [
+  [1, 1], [3, 2], [4, 16], [5, 4], [7, 17], [12, 18], [13, 19], [14, 32], [15, 33], [16, 34], [19, 48], [20, 49], [21, 160],
+  [22, 144], [25, 74], [41, 23], [42, 22], [45, 7], [48, 36], [49, 37], [52, 65], [53, 4], [56, 50], [57, 24], [67, 16],
+  [73, 51], [74, 51], [78, 66], [80, 66], [79, 67], [82, 72], [85, 4], [87, 103], [88, 104], [89, 105], [96, 84], [107, 4],
+  [108, 7], [109, 54],
+];
+
+/** Slabs (and double slabs) by material: stone, sandstone, wood, cobblestone ([top, side]). */
+const SLABS_BETA: ReadonlyArray<readonly [number, number]> = [[6, 5], [176, 192], [4, 4], [16, 16]];
+
+/** Terrain tiles [down, up, north, south, west, east] of the b1.8.1 blocks drawn as a cube, by id (from the metadata). */
+const CUBES_BETA = new Map<number, (m: number) => Faces>([
+  ...CUBE_ALL_BETA.map(([id, t]) => [id, () => all(t)] as const),
+  [2, () => tb(0, 3, 2)],
+  [17, (m) => tb(21, [20, 116, 117][m & 3] ?? 20)],
+  [18, (m) => all((m & 3) === 1 ? 132 : 52)],
+  [23, () => front(62, 45, 46)],
+  [24, () => tb(176, 192, 208)],
+  [35, (m) => all(WOOL_BETA[m & 15])],
+  [43, (m) => tb(...SLABS_BETA[m & 3])],
+  [44, (m) => tb(...SLABS_BETA[m & 3])],
+  [46, () => tb(9, 8, 10)],
+  [47, () => tb(4, 35)],
+  [54, () => front(25, 26, 27)],
+  [58, () => [4, 43, 60, 59, 60, 59]],
+  [60, (m) => tb(m > 0 ? 86 : 87, 2, 2)],
+  [61, () => front(62, 45, 44)],
+  [62, () => front(62, 45, 61)],
+  [81, () => tb(69, 70, 71)],
+  [84, () => tb(75, 74)],
+  [86, () => front(102, 118, 119)],
+  [91, () => front(102, 118, 120)],
+  [98, (m) => all([54, 100, 101][m & 3] ?? 54)],
+  [103, () => tb(137, 136)],
+]);
+
+/** Terrain tiles [down, up, north, south, west, east] of a b1.8.1 block drawn as a cube (−1 = no tile). */
+function cubeBeta(id: number, m: number): Faces | null {
+  return CUBES_BETA.get(id)?.(m) ?? null;
+}
 function lookBeta(id: number, damage: number): ItemLook | null {
   if (id <= 0) return null;
-  if (id < 256) {
-    const flat = FLAT_BETA[id];
-    if (flat) return { kind: 'sprite', atlas: 'blocks', cell: flat(damage), tint: id === 31 && (damage & 3) !== 0 ? GRASS_TINT : id === 106 ? FOLIAGE_TINT : 0 };
-    const faces = cubeBeta(id, damage);
-    if (!faces) return null;
-    const mask = id === 2 ? 1 << 1 : id === 18 ? 63 : 0;
-    return { kind: 'cube', faces, tint: id === 2 ? GRASS_TINT : id === 18 ? FOLIAGE_TINT : 0, tintMask: mask };
-  }
+  if (id < 256) return blockLookBeta(id, damage);
   if (id === 351) return { kind: 'sprite', atlas: 'items', cell: 78 + ((damage & 15) % 8) * 16 + Math.floor((damage & 15) / 8), tint: 0 };
   const icon = ICONS_BETA[id];
   return icon == null ? null : { kind: 'sprite', atlas: 'items', cell: icon, tint: 0 };
+}
+
+/** A b1.8.1 block item: a flat sprite (cross / flat render types; tall grass and vines tinted) or a cube (grass tops and
+ * leaves tinted). */
+function blockLookBeta(id: number, damage: number): ItemLook | null {
+  const flat = FLAT_BETA[id];
+  if (flat) return { kind: 'sprite', atlas: 'blocks', cell: flat(damage), tint: flatTintBeta(id, damage) };
+  const faces = cubeBeta(id, damage);
+  if (!faces) return null;
+  const mask = id === 2 ? 1 << 1 : id === 18 ? 63 : 0;
+  return { kind: 'cube', faces, tint: id === 2 ? GRASS_TINT : id === 18 ? FOLIAGE_TINT : 0, tintMask: mask };
+}
+
+function flatTintBeta(id: number, damage: number): number {
+  return id === 31 && (damage & 3) !== 0 ? GRASS_TINT : id === 106 ? FOLIAGE_TINT : 0;
 }
 
 // ------------------------------------------------------------------------------------------------------------ entry points
