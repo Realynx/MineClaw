@@ -59,17 +59,24 @@ public sealed partial class StoryColony
                 {
                     int x = c.X + dx, z = c.Z + dz;
                     if (cols.Contains((x, z)) || !seen.Add((x, z)) || !w.Loaded(x, z)) continue;
-                    for (int y = c.Y + 3; y >= c.Y; y--)
-                    {
-                        if (!StoryWander.Standable(w, x, y, z)) continue;
-                        int below = w.Block(x, y - 1, z).Id, feet = w.Block(x, y, z).Id;
-                        if (StoryBlocks.Liquids.Contains(below) || StoryBlocks.Liquids.Contains(feet) || StoryWander.Hurts(below)) break;
-                        list.Add(new P3(x, y, z));
-                        if (list.Count >= max) return list;
-                        break;
-                    }
+                    if (ShoreCell(w, x, z, c.Y) is not { } cell) continue;
+                    list.Add(cell);
+                    if (list.Count >= max) return list;
                 }
         return list;
+    }
+
+    /// <summary>A column's highest standable cell up to 3 above the water, unless it stands in or over liquid or something that hurts.</summary>
+    private static P3? ShoreCell(IStoryWorld w, int x, int z, int waterY)
+    {
+        for (int y = waterY + 3; y >= waterY; y--)
+        {
+            if (!StoryWander.Standable(w, x, y, z)) continue;
+            int below = w.Block(x, y - 1, z).Id, feet = w.Block(x, y, z).Id;
+            if (StoryBlocks.Liquids.Contains(below) || StoryBlocks.Liquids.Contains(feet) || StoryWander.Hurts(below)) return null;
+            return new P3(x, y, z);
+        }
+        return null;
     }
 
     /// <summary>A fishing zone's water (cached 10 s; a finished session clears it).</summary>

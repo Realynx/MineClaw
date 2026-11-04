@@ -33,6 +33,19 @@ public sealed class StoryLookupGoldenTests
         GoldenHash("tool-needs", sb.ToString());
     }
 
+    /// <summary>Every bench's recipes on both versions ("any" family bills first), with their labels, inputs and flags.</summary>
+    [Fact]
+    public void Recipes_per_bench()
+    {
+        var sb = new StringBuilder();
+        foreach (var d in Versions)
+            foreach (var bench in StoryRecipes.Benches)
+                foreach (var r in StoryRecipes.For(d, bench))
+                    sb.Append(d.VersionId).Append(' ').Append(bench).Append(' ').Append(r.Json().ToJsonString()).Append(' ').Append(r.Any).Append(' ')
+                        .Append(r.Family).Append(' ').Append(r.AnyOutput).Append(' ').Append(r.ToolItem).Append('\n');
+        GoldenHash("recipes", sb.ToString());
+    }
+
     [Fact]
     public void Produce_table_matches_the_old_switch_for_every_plant()
     {
