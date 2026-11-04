@@ -127,129 +127,171 @@ function find(users: UserRecord[], name: string): number {
   return i;
 }
 
+/** One command's inputs: the users file (read once), its paths, the arguments after the command and the time stamp. */
+interface CommandCtx {
+  cmd: string;
+  name: string | undefined;
+  rest: string[];
+  data: ReturnType<typeof readUsersFile>;
+  file: string;
+  db: string | undefined;
+  now: string;
+  io: CliIo;
+  save: () => void;
+}
+
+type Command = (c: CommandCtx) => Promise<number> | number;
+
+function requirePlayerName(player: string | null | undefined): void {
+  if (player !== undefined && player !== null && !PLAYER_RE.test(player))
+    throw new CliError('player names are 1-16 chars of A-Z a-z 0-9 _');
+}
+
+function listUsers({ data, file, io }: CommandCtx): number {
+  if (data.users.length === 0) io.out(`(no users in ${file})`);
+  for (const u of data.users) {
+    io.out(
+      `${u.username.padEnd(16)} roles=${u.roles.join(',').padEnd(28)} player=${(u.player ?? '-').padEnd(16)} totp=${u.totp ? 'on' : 'off'}${u.disabled ? ' DISABLED' : ''}`,
+    );
+  }
+  return 0;
+}
+
+async function addUser({ name, rest, data, now, io, save }: CommandCtx): Promise<number> {
+  if (!name) throw new CliError('usage: add <user> --roles viewer,chat [--player <name>]');
+  const username = normalizeUsername(name);
+  if (!USERNAME_RE.test(username)) throw new CliError('usernames are 1-64 chars of a-z 0-9 _ . -');
+  if (data.users.some((u) => u.username === username))
+    throw new CliError(`user "${username}" exists (use passwd/roles)`);
+  const roles = parseRoles(flag(rest, '--roles'));
+  const player = flag(rest, '--player');
+  requirePlayerName(player);
+  const passwordHash = await hashPassword(await newPassword(rest, io));
+  data.users.push({
+    username,
+    passwordHash,
+    roles,
+    player: player ?? null,
+    totp: null,
+    disabled: false,
+    createdAt: now,
+    updatedAt: now,
+  });
+  save();
+  io.out(`added ${username} (${roles.join(',')}${player ? `, player ${player}` : ''})`);
+  return 0;
+}
+
+async function changePassword({ name, rest, data, db, now, io, save }: CommandCtx): Promise<number> {
+  if (!name) throw new CliError('usage: passwd <user>');
+  const i = find(data.users, name);
+  const u = data.users[i]!;
+  data.users[i] = { ...u, passwordHash: await hashPassword(await newPassword(rest, io)), updatedAt: now };
+  save();
+  revokeSessions(db, u.username, io);
+  io.out(`password changed for ${u.username}`);
+  return 0;
+}
+
+function setRoles({ name, rest, data, now, io, save }: CommandCtx): number {
+  if (!name || !rest[0]) throw new CliError('usage: roles <user> viewer,chat,commands,admin,story');
+  const i = find(data.users, name);
+  data.users[i] = { ...data.users[i]!, roles: parseRoles(rest[0]), updatedAt: now };
+  save();
+  io.out(`roles of ${data.users[i].username}: ${data.users[i].roles.join(',')}`);
+  return 0;
+}
+
+function setPlayer({ name, rest, data, now, io, save }: CommandCtx): number {
+  if (!name || !rest[0]) throw new CliError('usage: player <user> <mc name | ->');
+  const i = find(data.users, name);
+  const player = rest[0] === '-' ? null : rest[0];
+  requirePlayerName(player);
+  data.users[i] = { ...data.users[i]!, player, updatedAt: now };
+  save();
+  io.out(
+    player ? `${data.users[i].username} is linked to ${player}` : `${data.users[i].username} has no linked player`,
+  );
+  return 0;
+}
+
+function totpCommand(c: CommandCtx): Promise<number> | number {
+  const sub = c.rest[0];
+  if (!c.name || (sub !== 'enroll' && sub !== 'disable')) throw new CliError('usage: totp <user> enroll|disable');
+  const i = find(c.data.users, c.name);
+  return sub === 'disable' ? totpDisable(c, i) : totpEnroll(c, i);
+}
+
+function totpDisable({ data, now, io, save }: CommandCtx, i: number): number {
+  const u = data.users[i]!;
+  data.users[i] = { ...u, totp: null, updatedAt: now };
+  save();
+  io.out(`TOTP disabled for ${u.username}`);
+  return 0;
+}
+
+/** Prints the otpauth URL and secret once; saves the secret only after a matching code. */
+async function totpEnroll({ rest, data, now, io, save }: CommandCtx, i: number): Promise<number> {
+  const u = data.users[i]!;
+  const codeArg = flag(rest, '--code');
+  const secret = newTotpSecret();
+  io.out(`otpauth URL (shown once): ${otpauthUrl(secret, u.username)}`);
+  io.out(`secret (manual entry):    ${secret}`);
+  const code = codeArg ?? (io.code ? await io.code() : await promptLine('Enter the 6-digit code from the app: '));
+  if (verifyTotp(secret, code.trim(), io.now?.() ?? Date.now()) === null)
+    throw new CliError('code did not match; TOTP not enabled');
+  data.users[i] = { ...u, totp: { secret, enrolledAt: now }, updatedAt: now };
+  save();
+  io.out(`TOTP enabled for ${u.username}`);
+  return 0;
+}
+
+/** `disable` / `enable`; disabling also ends the user's sessions. */
+function setDisabled({ cmd, name, data, db, now, io, save }: CommandCtx): number {
+  if (!name) throw new CliError(`usage: ${cmd} <user>`);
+  const i = find(data.users, name);
+  data.users[i] = { ...data.users[i]!, disabled: cmd === 'disable', updatedAt: now };
+  save();
+  if (cmd === 'disable') revokeSessions(db, data.users[i].username, io);
+  io.out(`${data.users[i].username} ${cmd}d`);
+  return 0;
+}
+
+function removeUser({ name, data, db, io, save }: CommandCtx): number {
+  if (!name) throw new CliError('usage: remove <user>');
+  const i = find(data.users, name);
+  const [u] = data.users.splice(i, 1);
+  save();
+  revokeSessions(db, u!.username, io);
+  io.out(`removed ${u!.username}`);
+  return 0;
+}
+
+const COMMANDS: Record<string, Command> = {
+  list: listUsers,
+  add: addUser,
+  passwd: changePassword,
+  roles: setRoles,
+  player: setPlayer,
+  totp: totpCommand,
+  disable: setDisabled,
+  enable: setDisabled,
+  remove: removeUser,
+};
+
 export async function runUsersCli(argv: readonly string[], io: CliIo): Promise<number> {
   const args = [...argv];
   try {
     const { file, db } = resolvePaths(args);
-    const [cmd, name, ...rest] = args;
+    const [cmd = '', name, ...rest] = args;
     const now = new Date(io.now?.() ?? Date.now()).toISOString();
     const data = readUsersFile(file);
-    const save = () => writeUsersFile(file, data);
-
-    switch (cmd) {
-      case 'list': {
-        if (data.users.length === 0) io.out(`(no users in ${file})`);
-        for (const u of data.users) {
-          io.out(
-            `${u.username.padEnd(16)} roles=${u.roles.join(',').padEnd(28)} player=${(u.player ?? '-').padEnd(16)} totp=${u.totp ? 'on' : 'off'}${u.disabled ? ' DISABLED' : ''}`,
-          );
-        }
-        return 0;
-      }
-      case 'add': {
-        if (!name) throw new CliError('usage: add <user> --roles viewer,chat [--player <name>]');
-        const username = normalizeUsername(name);
-        if (!USERNAME_RE.test(username)) throw new CliError('usernames are 1-64 chars of a-z 0-9 _ . -');
-        if (data.users.some((u) => u.username === username))
-          throw new CliError(`user "${username}" exists (use passwd/roles)`);
-        const roles = parseRoles(flag(rest, '--roles'));
-        const player = flag(rest, '--player');
-        if (player !== undefined && !PLAYER_RE.test(player))
-          throw new CliError('player names are 1-16 chars of A-Z a-z 0-9 _');
-        const passwordHash = await hashPassword(await newPassword(rest, io));
-        data.users.push({
-          username,
-          passwordHash,
-          roles,
-          player: player ?? null,
-          totp: null,
-          disabled: false,
-          createdAt: now,
-          updatedAt: now,
-        });
-        save();
-        io.out(`added ${username} (${roles.join(',')}${player ? `, player ${player}` : ''})`);
-        return 0;
-      }
-      case 'passwd': {
-        if (!name) throw new CliError('usage: passwd <user>');
-        const i = find(data.users, name);
-        const u = data.users[i]!;
-        data.users[i] = { ...u, passwordHash: await hashPassword(await newPassword(rest, io)), updatedAt: now };
-        save();
-        revokeSessions(db, u.username, io);
-        io.out(`password changed for ${u.username}`);
-        return 0;
-      }
-      case 'roles': {
-        if (!name || !rest[0]) throw new CliError('usage: roles <user> viewer,chat,commands,admin,story');
-        const i = find(data.users, name);
-        data.users[i] = { ...data.users[i]!, roles: parseRoles(rest[0]), updatedAt: now };
-        save();
-        io.out(`roles of ${data.users[i].username}: ${data.users[i].roles.join(',')}`);
-        return 0;
-      }
-      case 'player': {
-        if (!name || !rest[0]) throw new CliError('usage: player <user> <mc name | ->');
-        const i = find(data.users, name);
-        const player = rest[0] === '-' ? null : rest[0];
-        if (player !== null && !PLAYER_RE.test(player))
-          throw new CliError('player names are 1-16 chars of A-Z a-z 0-9 _');
-        data.users[i] = { ...data.users[i]!, player, updatedAt: now };
-        save();
-        io.out(
-          player
-            ? `${data.users[i].username} is linked to ${player}`
-            : `${data.users[i].username} has no linked player`,
-        );
-        return 0;
-      }
-      case 'totp': {
-        const sub = rest[0];
-        if (!name || (sub !== 'enroll' && sub !== 'disable')) throw new CliError('usage: totp <user> enroll|disable');
-        const i = find(data.users, name);
-        const u = data.users[i]!;
-        if (sub === 'disable') {
-          data.users[i] = { ...u, totp: null, updatedAt: now };
-          save();
-          io.out(`TOTP disabled for ${u.username}`);
-          return 0;
-        }
-        const codeArg = flag(rest, '--code');
-        const secret = newTotpSecret();
-        io.out(`otpauth URL (shown once): ${otpauthUrl(secret, u.username)}`);
-        io.out(`secret (manual entry):    ${secret}`);
-        const code = codeArg ?? (io.code ? await io.code() : await promptLine('Enter the 6-digit code from the app: '));
-        if (verifyTotp(secret, code.trim(), io.now?.() ?? Date.now()) === null)
-          throw new CliError('code did not match; TOTP not enabled');
-        data.users[i] = { ...u, totp: { secret, enrolledAt: now }, updatedAt: now };
-        save();
-        io.out(`TOTP enabled for ${u.username}`);
-        return 0;
-      }
-      case 'disable':
-      case 'enable': {
-        if (!name) throw new CliError(`usage: ${cmd} <user>`);
-        const i = find(data.users, name);
-        data.users[i] = { ...data.users[i]!, disabled: cmd === 'disable', updatedAt: now };
-        save();
-        if (cmd === 'disable') revokeSessions(db, data.users[i].username, io);
-        io.out(`${data.users[i].username} ${cmd}d`);
-        return 0;
-      }
-      case 'remove': {
-        if (!name) throw new CliError('usage: remove <user>');
-        const i = find(data.users, name);
-        const [u] = data.users.splice(i, 1);
-        save();
-        revokeSessions(db, u!.username, io);
-        io.out(`removed ${u!.username}`);
-        return 0;
-      }
-      default:
-        io.err('usage: users <add|passwd|roles|player|totp|disable|enable|remove|list> ... (see src/cli/users.ts)');
-        return 2;
+    const command = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : undefined;
+    if (!command) {
+      io.err('usage: users <add|passwd|roles|player|totp|disable|enable|remove|list> ... (see src/cli/users.ts)');
+      return 2;
     }
+    return await command({ cmd, name, rest, data, file, db, now, io, save: () => writeUsersFile(file, data) });
   } catch (e) {
     io.err(e instanceof CliError ? e.message : `error: ${(e as Error).message}`);
     return 1;

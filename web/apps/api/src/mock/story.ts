@@ -15,6 +15,71 @@ export interface StoryReply {
   json: unknown;
 }
 
+/** As the bridge does: the sender of a directive is the signed player; the body never names one. */
+function directiveRefusal(rawBody: Buffer, player: string): StoryReply | null {
+  const raw = rawBody.length ? (JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>) : {};
+  if ('player' in raw || 'allow_commands' in raw)
+    return { status: 400, json: { error: 'player and allow_commands are set by the bridge', code: 'bad_request' } };
+  if (!player) return { status: 403, json: { error: 'no Minecraft player is linked to this account', code: 'forbidden' } };
+  return null;
+}
+
+const ERROR_CODES: Record<number, string> = { 404: 'not_found', 409: 'conflict' };
+
+/** A sim error as the bridge's error reply (its status, a code for it, and the confirm prompt when it has one). */
+function storyError(e: unknown): StoryReply {
+  const status = (e as { status?: number }).status ?? 500;
+  const confirm = (e as { confirm?: unknown }).confirm;
+  return {
+    status,
+    json: {
+      error: e instanceof Error ? e.message : 'story error',
+      code: ERROR_CODES[status] ?? 'bad_request',
+      ...(confirm ? { confirm } : {}),
+    },
+  };
+}
+
+type StoryOp = (s: StorySim, cid: string, query: URLSearchParams, body: never) => unknown;
+
+/** route id -> the sim call that answers it. */
+const STORY_OPS: Partial<Record<RouteId, StoryOp>> = {
+  'story.list': (s) => s.list(),
+  'story.recipes': (s, _cid, query) => s.recipes(query.get('workbench') ?? undefined),
+  'story.create': (s, _cid, _query, body) => s.create(body),
+  'story.get': (s, cid, query) => {
+    const since = query.get('since');
+    return s.state(cid, since ? Number(since) : undefined);
+  },
+  'story.release': (s, cid) => s.release(cid),
+  'story.resume': (s, cid) => s.resume(cid),
+  'story.online': (s, cid, _query, body) => s.online(cid, body),
+  'story.pawns': (s, cid, _query, body) => s.pawns(cid, body),
+  'story.directives.list': (s) => ({ directives: s.directives() }),
+  'story.directive': (s, cid) => s.directiveDetail(cid),
+  'story.beds': (s, cid, _query, body) => s.beds(cid, body),
+  'story.time': (s, _cid, _query, body) => s.time(body),
+  'story.home': (s, cid, _query, body) => s.home(cid, body),
+  'story.pause': (s, cid, _query, body) => s.pause(cid, (body as { paused: boolean }).paused),
+  'story.priorities': (s, cid, _query, body) => s.priorities(cid, body),
+  'story.roles': (s, cid, _query, body) => s.roles(cid, body),
+  'story.schedule': (s, cid, _query, body) => s.schedule(cid, body),
+  'story.draft': (s, cid, _query, body) => s.draft(cid, body),
+  'story.orders': (s, cid, _query, body) => s.orders(cid, body),
+  'story.zones': (s, cid, _query, body) => s.zones(cid, body),
+  'story.designations': (s, cid, _query, body) => s.designations(cid, body),
+  'story.builds': (s, cid, _query, body) => s.builds(cid, body),
+  'story.storage': (s, cid, _query, body) => s.storage(cid, body),
+  'story.bills': (s, cid, _query, body) => s.bills(cid, body),
+  'story.workbenches': (s, cid, _query, body) => s.workbenches(cid, body),
+  'story.options': (s, cid, _query, body) => s.options(cid, body),
+  'story.policies': (s, cid, _query, body) => s.policies(cid, body),
+  'story.materialRules': (s, cid, _query, body) => s.materialRules(cid, body),
+  'story.gear': (s, cid, _query, body) => s.gear(cid, body),
+  'story.architect': (s, cid) => s.architect(cid),
+  'story.directives': (s, _cid, _query, body) => s.directive(body),
+};
+
 export class MockStory {
   readonly sim: StorySim;
   private readonly sent = new Map<string, number>();
@@ -62,104 +127,22 @@ export class MockStory {
     rawBody: Buffer,
     player = '',
   ): StoryReply {
-    if (id === 'story.directives') {
-      // As the bridge does: the sender is the signed player; the body never names one.
-      const raw = rawBody.length ? (JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>) : {};
-      if ('player' in raw || 'allow_commands' in raw)
-        return { status: 400, json: { error: 'player and allow_commands are set by the bridge', code: 'bad_request' } };
-      if (!player)
-        return { status: 403, json: { error: 'no Minecraft player is linked to this account', code: 'forbidden' } };
-    }
+    const refused = id === 'story.directives' ? directiveRefusal(rawBody, player) : null;
+    if (refused) return refused;
     const body = rawBody.length
       ? toCamel<never>(JSON.parse(rawBody.toString('utf8')), { opaque: REQUEST_OPAQUE_KEYS })
       : ({} as never);
-    const cid = params.id ?? '';
     try {
-      const out = this.run(id, cid, query, body);
-      return { json: toSnake(out) };
+      return { json: toSnake(this.run(id, params.id ?? '', query, body)) };
     } catch (e) {
-      const status = (e as { status?: number }).status ?? 500;
-      return {
-        status,
-        json: {
-          error: e instanceof Error ? e.message : 'story error',
-          code: status === 404 ? 'not_found' : status === 409 ? 'conflict' : 'bad_request',
-          ...((e as { confirm?: unknown }).confirm ? { confirm: (e as { confirm?: unknown }).confirm } : {}),
-        },
-      };
+      return storyError(e);
     }
   }
 
   private run(id: RouteId, cid: string, query: URLSearchParams, body: never): unknown {
-    const s = this.sim;
-    switch (id) {
-      case 'story.list':
-        return s.list();
-      case 'story.recipes':
-        return s.recipes(query.get('workbench') ?? undefined);
-      case 'story.create':
-        return s.create(body);
-      case 'story.get': {
-        const since = query.get('since');
-        return s.state(cid, since ? Number(since) : undefined);
-      }
-      case 'story.release':
-        return s.release(cid);
-      case 'story.resume':
-        return s.resume(cid);
-      case 'story.online':
-        return s.online(cid, body);
-      case 'story.pawns':
-        return s.pawns(cid, body);
-      case 'story.directives.list':
-        return { directives: s.directives() };
-      case 'story.directive':
-        return s.directiveDetail(cid);
-      case 'story.beds':
-        return s.beds(cid, body);
-      case 'story.time':
-        return s.time(body);
-      case 'story.home':
-        return s.home(cid, body);
-      case 'story.pause':
-        return s.pause(cid, (body as { paused: boolean }).paused);
-      case 'story.priorities':
-        return s.priorities(cid, body);
-      case 'story.roles':
-        return s.roles(cid, body);
-      case 'story.schedule':
-        return s.schedule(cid, body);
-      case 'story.draft':
-        return s.draft(cid, body);
-      case 'story.orders':
-        return s.orders(cid, body);
-      case 'story.zones':
-        return s.zones(cid, body);
-      case 'story.designations':
-        return s.designations(cid, body);
-      case 'story.builds':
-        return s.builds(cid, body);
-      case 'story.storage':
-        return s.storage(cid, body);
-      case 'story.bills':
-        return s.bills(cid, body);
-      case 'story.workbenches':
-        return s.workbenches(cid, body);
-      case 'story.options':
-        return s.options(cid, body);
-      case 'story.policies':
-        return s.policies(cid, body);
-      case 'story.materialRules':
-        return s.materialRules(cid, body);
-      case 'story.gear':
-        return s.gear(cid, body);
-      case 'story.architect':
-        return s.architect(cid);
-      case 'story.directives':
-        return s.directive(body);
-      default:
-        throw Object.assign(new Error('not a story route'), { status: 404 });
-    }
+    const op = Object.hasOwn(STORY_OPS, id) ? STORY_OPS[id] : undefined;
+    if (!op) throw Object.assign(new Error('not a story route'), { status: 404 });
+    return op(this.sim, cid, query, body);
   }
 
   /** `story` frames (snake_case, with the colony id) for every colony whose revision moved since the last call. */

@@ -43,6 +43,11 @@ export function clip(text: string, max = AUDIT_SUMMARY_MAX): string {
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
+/** An optional column: SQL NULL when absent. */
+function orNull<T>(v: T | null | undefined): T | null {
+  return v ?? null;
+}
+
 export class AuditService {
   private readonly insert: StatementSync;
 
@@ -59,18 +64,18 @@ export class AuditService {
   record(r: AuditRecord): void {
     this.insert.run(
       this.clock.now(),
-      r.username ?? null,
-      r.player ?? null,
+      orNull(r.username),
+      orNull(r.player),
       r.ip,
-      r.userAgent?.slice(0, 300) ?? null,
+      orNull(r.userAgent?.slice(0, 300)),
       r.kind,
-      r.method ?? null,
-      r.route ?? null,
+      orNull(r.method),
+      orNull(r.route),
       r.target ? clip(r.target, 200) : null,
       r.ok ? 1 : 0,
-      r.status ?? null,
+      orNull(r.status),
       clip(r.summary),
-      r.requestId ?? null,
+      orNull(r.requestId),
     );
   }
 

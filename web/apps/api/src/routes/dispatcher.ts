@@ -191,43 +191,25 @@ export class RouteDispatcher {
   }
 
   private async parseInput(route: RouteDef, req: RoutedRequest): Promise<Input> {
-    const rawParams: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.params ?? {})) rawParams[k] = Array.isArray(v) ? v.join('/') : v;
-    let params: Record<string, unknown> = rawParams;
-    if (route.params) {
-      const p = route.params.safeParse(rawParams);
-      if (!p.success) throw Errors.badRequest(issues(p.error));
-      params = p.data as Record<string, unknown>;
-    }
-    let query: Record<string, unknown> | undefined;
-    if (route.query) {
-      const q = route.query.safeParse(parseQuery(req.url));
-      if (!q.success) throw Errors.badRequest(issues(q.error));
-      query = q.data as Record<string, unknown>;
-    }
+    const params = parseParams(route, req);
+    const query = route.query ? (parsed(route.query, parseQuery(req.url)) as Record<string, unknown>) : undefined;
     if (route.method === 'GET' || !route.body) return { params, query, body: undefined };
+    if (route.bodyKind === 'multipart') return parseUpload(route.body, req, params, query);
+    const json = await this.readJsonBody(req);
+    return { params, query, body: parsed(route.body, json) };
+  }
 
-    if (route.bodyKind === 'multipart') {
-      const upload = await parseShardUpload(req);
-      const o = route.body.safeParse(upload.options);
-      if (!o.success) throw Errors.badRequest(issues(o.error).map((i) => ({ ...i, path: `options.${i.path}` })));
-      return { params, query, body: o.data, upload };
-    }
-
+  /** The JSON request body ({} when empty); a body needs `application/json` and has to parse. */
+  private async readJsonBody(req: RoutedRequest): Promise<unknown> {
     const raw = await readBody(req, this.d.bodyLimitBytes);
-    let json: unknown = {};
-    if (raw.length > 0) {
-      const type = header(req, 'content-type') ?? '';
-      if (!/^application\/json\b/i.test(type)) throw Errors.badRequest(undefined, 'expected application/json');
-      try {
-        json = JSON.parse(raw.toString('utf8')) as unknown;
-      } catch {
-        throw Errors.badRequest(undefined, 'body is not valid JSON');
-      }
+    if (raw.length === 0) return {};
+    const type = header(req, 'content-type') ?? '';
+    if (!/^application\/json\b/i.test(type)) throw Errors.badRequest(undefined, 'expected application/json');
+    try {
+      return JSON.parse(raw.toString('utf8')) as unknown;
+    } catch {
+      throw Errors.badRequest(undefined, 'body is not valid JSON');
     }
-    const b = route.body.safeParse(json);
-    if (!b.success) throw Errors.badRequest(issues(b.error));
-    return { params, query, body: b.data };
   }
 
   private validate(id: RouteId, schema: z.ZodType | null | undefined, data: unknown): void {
@@ -251,7 +233,10 @@ export class RouteDispatcher {
       const payload = { bot: input.params.bot, text: b.text, request_id: b.requestId };
       return { body: Buffer.from(JSON.stringify(payload), 'utf8'), contentType: 'application/json' };
     }
-    return { body: Buffer.from(JSON.stringify(toSnake(input.body, { opaque: REQUEST_OPAQUE_KEYS })), 'utf8'), contentType: 'application/json' };
+    return {
+      body: Buffer.from(JSON.stringify(toSnake(input.body, { opaque: REQUEST_OPAQUE_KEYS })), 'utf8'),
+      contentType: 'application/json',
+    };
   }
 
   private auditTarget(input: Input): string | null {
@@ -275,18 +260,17 @@ export class RouteDispatcher {
     return clip(`${id}${body}`);
   }
 
-  private async forward(
+  /** Records the route's audit kind (if it has one) for this request. */
+  private auditor(
     id: RouteId,
     route: RouteDef,
     req: IncomingMessage,
-    res: ServerResponse,
     ctx: RequestContext,
-    s: Signed,
+    user: UserRecord,
     input: Input,
-  ): Promise<void> {
+  ) {
     const auditKind: WebAuditKind | null = route.audit;
-    const user: UserRecord = s.user;
-    const audit = (ok: boolean, status: number, note?: string) => {
+    return (ok: boolean, status: number, note?: string) => {
       if (!auditKind) return;
       this.d.audit.record({
         kind: auditKind,
@@ -303,110 +287,211 @@ export class RouteDispatcher {
         requestId: ctx.requestId,
       });
     };
+  }
 
+  /** Chat needs a linked player and a token from the per-user chat limiter. */
+  private checkChat(user: UserRecord): void {
+    if (!user.player) throw Errors.forbidden('no Minecraft player is linked to this account');
+    const wait = this.d.chatLimiter.take(user.username);
+    if (wait > 0) throw Errors.rateLimited(wait, 'too many chat lines; slow down');
+  }
+
+  private async forward(
+    id: RouteId,
+    route: RouteDef,
+    req: IncomingMessage,
+    res: ServerResponse,
+    ctx: RequestContext,
+    s: Signed,
+    input: Input,
+  ): Promise<void> {
+    const user: UserRecord = s.user;
+    const audit = this.auditor(id, route, req, ctx, user, input);
     try {
-      if (id === 'bots.chat') {
-        if (!user.player) throw Errors.forbidden('no Minecraft player is linked to this account');
-        const wait = this.d.chatLimiter.take(user.username);
-        if (wait > 0) throw Errors.rateLimited(wait, 'too many chat lines; slow down');
-      }
-
-      const target = bridgePath(id, input.params, input.query);
-      const { body, contentType } = this.bridgeBody(id, input);
-      const extra: Record<string, string> = {};
+      if (id === 'bots.chat') this.checkChat(user);
       const inm = header(req, 'if-none-match');
-      if (route.method === 'GET' && inm) extra['If-None-Match'] = inm;
-      const upstream = await this.d.bridge.request({
-        method: route.bridge!.method,
-        target,
-        identity: identityOf(user),
-        body,
-        contentType,
-        headers: extra,
-        requestId: ctx.requestId,
-        ...(route.timeoutMs ? { timeoutMs: route.timeoutMs } : {}),
-      });
+      const upstream = await this.requestBridge(id, route, ctx, user, input, inm);
       const status = upstream.statusCode ?? 502;
-
-      if (status === 304) {
-        upstream.resume();
-        res.statusCode = 304;
-        const etag = upstream.headers.etag;
-        if (etag) res.setHeader('ETag', etag);
-        res.setHeader('Cache-Control', cacheControl(id, route.responseKind !== 'json', etag ?? inm));
-        res.end();
-        audit(true, 304);
-        return;
-      }
-
-      if (status < 200 || status >= 300) {
-        const text = await readText(upstream, 256 * 1024);
-        if (id === 'admin.memoryEdit' && status === 400) {
-          // A supervisor MemoryEditResult refusal passes through as 400 with that body (api.md §1).
-          try {
-            const parsed = toCamel(parseBridgeJson(text));
-            if (route.response?.safeParse(parsed).success) {
-              sendJson(res, 400, parsed);
-              audit(false, 400, 'refused');
-              return;
-            }
-          } catch {
-            // fall through to the generic mapping
-          }
-        }
-        throw mapUpstreamError(status, upstream.headers, text, this.d.log);
-      }
-
-      const type = String(upstream.headers['content-type'] ?? '');
-      const jsonReply = route.responseKind === 'json' || /^application\/(problem\+)?json\b/i.test(type);
-      if (jsonReply) {
-        const text = await readText(upstream, MAX_JSON_BYTES);
-        let data: unknown;
-        try {
-          data = toCamel(parseBridgeJson(text));
-        } catch {
-          throw Errors.upstreamError(502, 'upstream sent invalid JSON');
-        }
-        this.validate(id, route.responseKind === 'json' ? route.response : ALT_JSON[id], data);
-        if (id === 'bots.list') this.d.hub.learn(data);
-        const outStatus = route.status ?? status;
-        if (route.method === 'GET' && upstream.headers.etag) res.setHeader('ETag', upstream.headers.etag);
-        sendJson(res, outStatus, data, cacheControl(id, false, upstream.headers.etag));
-        if (id === 'bots.chat') {
-          const accepted = (data as { accepted?: unknown }).accepted === true;
-          const note = (data as { note?: unknown }).note;
-          audit(accepted, outStatus, accepted ? undefined : typeof note === 'string' ? note : 'not accepted');
-        } else {
-          audit(true, outStatus);
-        }
-        return;
-      }
-
-      // Binary (MCWC chunks, PNGs, shard zips): headers through, bytes streamed unchanged, never buffered.
-      res.statusCode = route.status ?? status;
-      for (const h of BINARY_PASSTHROUGH) {
-        const v = upstream.headers[h];
-        if (v !== undefined) res.setHeader(h, v);
-      }
-      res.setHeader('Cache-Control', cacheControl(id, true, upstream.headers.etag));
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-      await new Promise<void>((resolve) => {
-        const done = () => resolve();
-        upstream.on('error', () => {
-          res.destroy();
-          done();
-        });
-        res.on('close', () => {
-          if (!upstream.complete) upstream.destroy();
-          done();
-        });
-        res.on('finish', done);
-        upstream.pipe(res);
-      });
+      if (status === 304) return relayNotModified(id, route, upstream, res, inm, audit);
+      if (status < 200 || status >= 300) return await this.relayError(id, route, upstream, status, res, audit);
+      if (isJsonReply(route, upstream)) return await this.relayJson(id, route, upstream, status, res, audit);
+      await relayBinary(id, route, upstream, status, res);
       audit(res.writableFinished, res.statusCode);
     } catch (e) {
       if (e instanceof ApiHttpError) audit(false, e.status, e.body.code);
       throw e;
     }
   }
+
+  /** The signed bridge request for a route (a GET passes the browser's If-None-Match through). */
+  private requestBridge(
+    id: RouteId,
+    route: RouteDef,
+    ctx: RequestContext,
+    user: UserRecord,
+    input: Input,
+    inm: string | undefined,
+  ): Promise<IncomingMessage> {
+    const target = bridgePath(id, input.params, input.query);
+    const { body, contentType } = this.bridgeBody(id, input);
+    const extra: Record<string, string> = {};
+    if (route.method === 'GET' && inm) extra['If-None-Match'] = inm;
+    return this.d.bridge.request({
+      method: route.bridge!.method,
+      target,
+      identity: identityOf(user),
+      body,
+      contentType,
+      headers: extra,
+      requestId: ctx.requestId,
+      ...(route.timeoutMs ? { timeoutMs: route.timeoutMs } : {}),
+    });
+  }
+
+  /** A non-2xx reply: a supervisor MemoryEditResult refusal passes through as 400 with that body (api.md §1), else mapped. */
+  private async relayError(
+    id: RouteId,
+    route: RouteDef,
+    upstream: IncomingMessage,
+    status: number,
+    res: ServerResponse,
+    audit: Audit,
+  ): Promise<void> {
+    const text = await readText(upstream, 256 * 1024);
+    if (id === 'admin.memoryEdit' && status === 400 && relayRefusal(route, text, res)) {
+      audit(false, 400, 'refused');
+      return;
+    }
+    throw mapUpstreamError(status, upstream.headers, text, this.d.log);
+  }
+
+  /** A JSON reply: camelCased, validated, sent with the route's status; chat audits whether the bot took the line. */
+  private async relayJson(
+    id: RouteId,
+    route: RouteDef,
+    upstream: IncomingMessage,
+    status: number,
+    res: ServerResponse,
+    audit: Audit,
+  ): Promise<void> {
+    const data = await readUpstreamJson(upstream);
+    this.validate(id, route.responseKind === 'json' ? route.response : ALT_JSON[id], data);
+    if (id === 'bots.list') this.d.hub.learn(data);
+    const outStatus = route.status ?? status;
+    if (route.method === 'GET' && upstream.headers.etag) res.setHeader('ETag', upstream.headers.etag);
+    sendJson(res, outStatus, data, cacheControl(id, false, upstream.headers.etag));
+    if (id === 'bots.chat') {
+      const accepted = (data as { accepted?: unknown }).accepted === true;
+      audit(accepted, outStatus, accepted ? undefined : chatRefusalNote(data));
+    } else {
+      audit(true, outStatus);
+    }
+  }
+}
+
+type Audit = (ok: boolean, status: number, note?: string) => void;
+
+/** A JSON route, or a JSON (problem) reply on a binary one (`vision.render?meta=1`). */
+function isJsonReply(route: RouteDef, upstream: IncomingMessage): boolean {
+  const type = String(upstream.headers['content-type'] ?? '');
+  return route.responseKind === 'json' || /^application\/(problem\+)?json\b/i.test(type);
+}
+
+function parsed<T>(schema: z.ZodType<T>, data: unknown): T {
+  const r = schema.safeParse(data);
+  if (!r.success) throw Errors.badRequest(issues(r.error));
+  return r.data;
+}
+
+/** Path params (a catch-all joined with `/`), validated when the route has a schema for them. */
+function parseParams(route: RouteDef, req: RoutedRequest): Record<string, unknown> {
+  const rawParams: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req.params ?? {})) rawParams[k] = Array.isArray(v) ? v.join('/') : v;
+  return route.params ? (parsed(route.params, rawParams) as Record<string, unknown>) : rawParams;
+}
+
+/** A multipart shard upload: its options validated (issue paths under `options.`), the file kept as bytes. */
+async function parseUpload(
+  schema: z.ZodType,
+  req: RoutedRequest,
+  params: Record<string, unknown>,
+  query: Record<string, unknown> | undefined,
+): Promise<Input> {
+  const upload = await parseShardUpload(req);
+  const o = schema.safeParse(upload.options);
+  if (!o.success) throw Errors.badRequest(issues(o.error).map((i) => ({ ...i, path: `options.${i.path}` })));
+  return { params, query, body: o.data, upload };
+}
+
+function relayNotModified(
+  id: RouteId,
+  route: RouteDef,
+  upstream: IncomingMessage,
+  res: ServerResponse,
+  inm: string | undefined,
+  audit: Audit,
+): void {
+  upstream.resume();
+  res.statusCode = 304;
+  const etag = upstream.headers.etag;
+  if (etag) res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', cacheControl(id, route.responseKind !== 'json', etag ?? inm));
+  res.end();
+  audit(true, 304);
+}
+
+/** Sends a MemoryEditResult refusal as 400 when the body is one; false (nothing sent) otherwise. */
+function relayRefusal(route: RouteDef, text: string, res: ServerResponse): boolean {
+  try {
+    const parsedBody = toCamel(parseBridgeJson(text));
+    if (!route.response?.safeParse(parsedBody).success) return false;
+    sendJson(res, 400, parsedBody);
+    return true;
+  } catch {
+    return false; // fall through to the generic mapping
+  }
+}
+
+async function readUpstreamJson(upstream: IncomingMessage): Promise<unknown> {
+  const text = await readText(upstream, MAX_JSON_BYTES);
+  try {
+    return toCamel(parseBridgeJson(text));
+  } catch {
+    throw Errors.upstreamError(502, 'upstream sent invalid JSON');
+  }
+}
+
+function chatRefusalNote(data: unknown): string {
+  const note = (data as { note?: unknown }).note;
+  return typeof note === 'string' ? note : 'not accepted';
+}
+
+/** Binary (MCWC chunks, PNGs, shard zips): headers through, bytes streamed unchanged, never buffered. */
+async function relayBinary(
+  id: RouteId,
+  route: RouteDef,
+  upstream: IncomingMessage,
+  status: number,
+  res: ServerResponse,
+): Promise<void> {
+  res.statusCode = route.status ?? status;
+  for (const h of BINARY_PASSTHROUGH) {
+    const v = upstream.headers[h];
+    if (v !== undefined) res.setHeader(h, v);
+  }
+  res.setHeader('Cache-Control', cacheControl(id, true, upstream.headers.etag));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  await new Promise<void>((resolve) => {
+    const done = () => resolve();
+    upstream.on('error', () => {
+      res.destroy();
+      done();
+    });
+    res.on('close', () => {
+      if (!upstream.complete) upstream.destroy();
+      done();
+    });
+    res.on('finish', done);
+    upstream.pipe(res);
+  });
 }

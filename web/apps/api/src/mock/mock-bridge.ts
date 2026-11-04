@@ -11,7 +11,6 @@
  * - `GET /v1/live/stream` is a synthetic stream: vitals and positions drift, the `now` snapshot cycles thoughts and tools,
  *   mobs wander, events and memory accesses trickle in, and a viewer chat line gets a `said` reply from the bot ~1.5 s later.
  */
-import { createHash } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -27,15 +26,15 @@ import {
   type RouteId,
   type SseEventName,
 } from '@mineclaw/contracts';
-import { mockContainer, mockContainers, mockInventory } from '@mineclaw/contracts/testing';
 import { SignatureVerifier, type BridgeIdentity } from '../bridge/signing.js';
-import { makeMcwc, makePng, makeZip } from './binary.js';
+import { makePng } from './binary.js';
 import { generate } from './generate.js';
 import { MockHive } from './hive.js';
 import { Replay } from './replay.js';
 import { MockStory } from './story.js';
+import { replyFor, type MockEnv, type Reply } from './mock-routes.js';
 import { drainBlockChanges } from './terrain.js';
-import { cloudMockDistance, memoryCloudMock, type CloudMockNode } from '@mineclaw/contracts/testing';
+import { memoryCloudMock, type CloudMockNode } from '@mineclaw/contracts/testing';
 import type { CloudArrangement, MemoryCloudResponse } from '@mineclaw/contracts';
 
 type Obj = Record<string, unknown>;
@@ -107,6 +106,30 @@ interface Matcher {
   queryParams: Array<[string, string]>;
 }
 
+/** The route a request targets, with its path and query `{param}`s; null when none matches. */
+function matchRoute(
+  matchers: Matcher[],
+  method: string | undefined,
+  url: URL,
+): { id: RouteId; params: Record<string, string> } | null {
+  for (const m of matchers) {
+    if (m.method !== method) continue;
+    const match = m.re.exec(url.pathname);
+    if (!match) continue;
+    const params: Record<string, string> = {};
+    m.names.forEach((n, i) => (params[n] = decodeURIComponent(match[i + 1]!)));
+    for (const [q, n] of m.queryParams) {
+      const val = url.searchParams.get(q);
+      if (val !== null) params[n] = val;
+    }
+    return { id: m.id, params };
+  }
+  return null;
+}
+
+/** The bridge's admin-only paths. */
+const isAdminPath = (path: string) => path.startsWith('/v1/sup/admin/') || path.startsWith('/v1/admin/nodes');
+
 function buildMatchers(): Matcher[] {
   const out: Matcher[] = [];
   for (const id of Object.keys(ROUTES) as RouteId[]) {
@@ -135,15 +158,6 @@ function buildMatchers(): Matcher[] {
     out.push({ id, method: r.bridge.method, re, names, queryParams });
   }
   return out;
-}
-
-interface Reply {
-  status?: number;
-  json?: unknown;
-  raw?: string;
-  bytes?: Buffer;
-  type?: string;
-  headers?: Record<string, string>;
 }
 
 /**
@@ -207,15 +221,8 @@ const THOUGHTS: Array<{ text: string; thinking: string; tool: string; args: stri
   },
 ];
 
-const REPLIES = [
-  'On it.',
-  'Sure, give me a moment.',
-  'Done! Anything else?',
-  'I can do that after this stack of cobble.',
-];
-
 /** Shared state so REST replies and the stream agree. */
-class MockWorld {
+export class MockWorld {
   feedSeq = 2000;
   eventId = 1000;
   activitySeq = 100;
@@ -352,7 +359,49 @@ function send(res: ServerResponse, r: Reply): void {
   res.end(text);
 }
 
-const etagOf = (b: Buffer | string) => `"${createHash('sha256').update(b).digest('hex').slice(0, 16)}"`;
+type Frame = (event: SseEventName, data: unknown) => void;
+
+/**
+ * One tenth of a mock second on the stream. Production rates (the bridge's pollers): entities and blocks 5 Hz, `now` 2 Hz per
+ * body, events and memory activity 2 Hz, the hive tree every 3 s.
+ */
+function streamTick(world: MockWorld, n: number, frame: Frame): void {
+  world.hive.advance();
+  world.story.sim.step(100);
+  if (n % 5 === 0) for (const f of world.story.frames()) frame('story', f);
+  if (n % 2 === 0) {
+    frame('entities', world.entities());
+    frame('blocks', world.blocks());
+  }
+  if (n % 5 === 0) {
+    for (const b of world.botNames()) frame('now', world.now(b));
+    frame('event', world.event());
+    frame('memoryActivity', world.activity());
+  }
+  if (n % 30 === 0) frame('hive', world.tree());
+}
+
+/** One mock second: bots 1 Hz; feed lines and pings as the bot makes them. */
+function streamSecond(world: MockWorld, ping: () => void, frame: Frame): void {
+  world.tick++;
+  const t = world.tick;
+  frame('bots', world.status());
+  if (t % 9 === 0)
+    world.pushFeed({
+      bot: 'maid_chan_109',
+      kind: 'chat',
+      from: 'kiwi',
+      text: 'the sand pit is past the oak tree',
+    });
+  if (t % 7 === 0)
+    world.pushFeed({
+      bot: 'maid_chan',
+      kind: 'internal',
+      from: 'maid_chan',
+      text: '(the chest by the door is nearly full)',
+    });
+  if (t % 15 === 0) ping();
+}
 
 export async function startMockBridge(key: string, opts: { streamIntervalMs?: number } = {}): Promise<MockBridge> {
   const fx = loadFixtures();
@@ -369,42 +418,6 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
   const interval = opts.streamIntervalMs ?? 1000;
   // The Design Studio: the shared fake designer (contracts), replies snake-cased like the bot's.
   const designer = createDesignerMock(100);
-  const camel = (b: Buffer): Obj => {
-    const raw = JSON.parse(b.toString('utf8') || '{}') as Obj;
-    const out: Obj = {};
-    for (const [k, v] of Object.entries(raw)) out[k.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase())] = v;
-    return out;
-  };
-  const designerReply = (id: RouteId, params: Record<string, string>, body: Buffer, identity: BridgeIdentity): Reply | null => {
-    const sid = Number(params.id);
-    const who = identity.player || identity.user || 'poofimafox';
-    const write = id !== 'designer.models' && id !== 'designer.get';
-    if (write && !identity.roles.split(',').some((r) => r === 'design' || r === 'admin'))
-      return { status: 403, json: { error: 'design role required', code: 'forbidden' } };
-    try {
-      switch (id) {
-        case 'designer.models':
-          return { json: toSnake(designer.models()) };
-        case 'designer.create':
-          return { json: toSnake(designer.create(camel(body) as Parameters<typeof designer.create>[0], who)) };
-        case 'designer.version':
-          return { json: toSnake(designer.version(sid, camel(body) as never)) };
-        case 'designer.get':
-          return { json: toSnake(designer.get(sid)) };
-        case 'designer.message':
-          return { json: toSnake(designer.message(sid, camel(body) as never)) };
-        case 'designer.canvas':
-          return { json: toSnake(designer.canvas(sid, camel(body) as never)) };
-        case 'designer.save':
-          return { json: toSnake(designer.save(sid, camel(body) as never, who)) };
-        default:
-          return null;
-      }
-    } catch (e) {
-      return { status: 400, json: { error: e instanceof Error ? e.message : 'bad request', code: 'bad_request' } };
-    }
-  };
-
   const clouds = new Map<CloudArrangement, MemoryCloudResponse>();
   const cloudOf = (a: CloudArrangement) => clouds.get(a) ?? (clouds.set(a, syntheticCloud(a)), clouds.get(a)!);
   const dataFor = (id: RouteId, params: Record<string, string>): unknown => {
@@ -416,232 +429,13 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     return route.response ? toSnake(generate(route.response)) : {};
   };
 
-  const handle = (
-    id: RouteId,
-    req: IncomingMessage,
-    identity: BridgeIdentity,
-    params: Record<string, string>,
-    query: URLSearchParams,
-    body: Buffer,
-  ): Reply => {
-    const route: RouteDef = ROUTES[id];
-    const inm = req.headers['if-none-match'];
-    const conditional = (bytes: Buffer, type: string, headers: Record<string, string> = {}): Reply => {
-      const etag = etagOf(bytes);
-      if (inm === etag) return { status: 304, raw: '', headers: { ETag: etag } };
-      return { bytes, type, headers: { ETag: etag, ...headers } };
-    };
-    if (id.startsWith('story.')) {
-      // Like the real bridge: Story Mode writes need the story or the admin role.
-      const roles = identity.roles.split(',');
-      if (route.method === 'POST' && !roles.includes('story') && !roles.includes('admin'))
-        return { status: 403, json: { error: 'story role required', code: 'forbidden' } };
-      const r = world.story.handle(id, params, query, body, identity.player);
-      return { status: r.status, json: r.json };
-    }
-    const replay = world.replay;
-    if (replay) {
-      const cols = () =>
-        (query.get('cols') ?? '0,0').split(';').map((p) => p.split(',').map(Number) as [number, number]);
-      const dim = Number(query.get('dim') ?? 0);
-      const captured: Partial<Record<RouteId, string>> = {
-        'bots.list': 'bots',
-        'bodies.scripts': 'scripts',
-        'world.overlays': 'overlays',
-        events: 'events',
-      };
-      const name = captured[id];
-      if (name && replay.get(name)) return { json: replay.get(name) };
-      if (id === 'world.index' && replay.text('index')) return { raw: replay.text('index') };
-      if (id === 'world.chunks') return conditional(replay.chunks(dim, cols()), 'application/octet-stream');
-      if (id === 'world.blockEntities') return { json: replay.blockEntityColumns(dim, cols()) };
-    }
-    if (id.startsWith('designer.')) {
-      const r = designerReply(id, params, body, identity);
-      if (r) return r;
-    }
-    if (id === 'designs.list') {
-      const base = dataFor(id, params) as { items?: Obj[]; total?: number };
-      const saved = designer.saved.map((d) => ({
-        id: d.id, name: d.name, status: 'accepted', requester: d.requester, rev: d.revisions[0]?.rev ?? 1, revisions: d.revisions.length,
-        updated: d.updated, has_picture: false, version: d.version ?? null, kind: d.kind ?? null,
-      }));
-      return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
-    }
-    switch (id) {
-      case 'memoryActivity.cloud': {
-        const a = query.get('arrangement') ?? 'mds';
-        if (!['mds', 'umap', 'pca', 'tree'].includes(a))
-          return { status: 400, json: { error: 'arrangement must be one of mds|umap|pca|tree', code: 'bad_request' } };
-        return { json: toSnake(cloudOf(a as CloudArrangement)) };
-      }
-      case 'memoryActivity.cloudDistance': {
-        // Like the bridge: the viewer role, two integer ids, 404 for an unknown memory.
-        const roles = identity.roles.split(',');
-        if (!roles.includes('viewer') && !roles.includes('admin'))
-          return { status: 403, json: { error: 'viewer role required', code: 'forbidden' } };
-        const a = Number(query.get('a'));
-        const b = Number(query.get('b'));
-        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0)
-          return { status: 400, json: { error: 'a and b required', code: 'bad_request' } };
-        const d = cloudMockDistance(cloudOf('mds'), a, b);
-        return d ? { json: toSnake(d) } : { status: 404, json: { error: 'no such memory', code: 'not_found' } };
-      }
-      case 'bots.now':
-        return { json: world.now(params.bot ?? query.get('bot') ?? 'maid_chan') };
-      case 'bots.inventory': {
-        // Like the bridge in front of the bot: any body by login or short name (snake_case); unknown = the ApiError 404.
-        const found = world.hive.find(params.bot ?? '');
-        if (!found) return { status: 404, json: { error: 'no such body', code: 'not_found' } };
-        const index = world.hive.names().indexOf(found.name);
-        return { json: toSnake(mockInventory(found.name, index, world.tick)) };
-      }
-      case 'world.container':
-      case 'world.containers': {
-        // Both public routes reach the bot's one /api/world/containers: a box (x0..z1) lists, x/y/z answers one container.
-        const n = (k: string) => Number(query.get(k) ?? 0);
-        const dim = n('dim');
-        if (query.has('x0')) {
-          const box = { x0: n('x0'), z0: n('z0'), x1: n('x1'), z1: n('z1'), ...(query.has('y0') ? { y0: n('y0') } : {}), ...(query.has('y1') ? { y1: n('y1') } : {}) };
-          if (Math.abs(box.x1 - box.x0) > 512 || Math.abs(box.z1 - box.z0) > 512)
-            return { status: 400, json: { error: 'containers box is at most 512 blocks wide', code: 'bad_request' } };
-          return { json: toSnake(mockContainers(dim, box, query.has('limit') ? n('limit') : undefined, world.tick)) };
-        }
-        return { json: toSnake(mockContainer(dim, n('x'), n('y'), n('z'), world.tick)) };
-      }
-      case 'bots.list':
-        return { json: world.hive.tiles() };
-      case 'status':
-        return { json: world.status() };
-      case 'hive.tree':
-        return { json: world.tree() };
-      case 'bodies.scripts':
-        return { json: world.hive.scripts() };
-      case 'world.entities':
-        return { json: { ...world.entities(), full: true } };
-      case 'world.blocks':
-        return { json: { at: Date.now(), rev: world.blocksRev, full: true, more: false, blocks: {}, columns: [] } };
-      case 'feed':
-        return { json: world.feedSince(Number(query.get('since') ?? 0)) };
-      case 'bots.chat': {
-        if (!identity.player) return { status: 403, json: { error: 'no player', code: 'forbidden' } };
-        const b = JSON.parse(body.toString('utf8') || '{}') as Obj;
-        if ('player' in b || 'allow_commands' in b)
-          return { status: 400, json: { error: 'player/allow_commands are not accepted', code: 'bad_request' } };
-        const bot = typeof b.bot === 'string' ? b.bot : 'maid_chan';
-        const line = world.pushFeed({
-          bot,
-          kind: 'viewer',
-          from: identity.player,
-          text: typeof b.text === 'string' ? b.text : '',
-          origin: 'viewer',
-          request_id: b.request_id,
-        });
-        const t = setTimeout(
-          () => {
-            world.pushFeed({
-              bot,
-              kind: 'said',
-              from: bot,
-              text: REPLIES[(line.seq as number) % REPLIES.length],
-              origin: 'game',
-              reply_to: line.seq,
-            });
-          },
-          Number(process.env.MOCK_CHAT_REPLY_MS) || 1500,
-        ); // a slow bot: MOCK_CHAT_REPLY_MS
-        t.unref();
-        return { status: 202, json: { accepted: true, id: line.seq, feed_seq: line.seq } };
-      }
-      case 'world.index':
-        if (typeof fx.live.worldIndexRaw === 'string') return { raw: fx.live.worldIndexRaw };
-        break;
-      case 'world.chunks': {
-        const dim = Number(query.get('dim') ?? 0);
-        const cols = (query.get('cols') ?? '0,0').split(';').map((p) => p.split(',').map(Number) as [number, number]);
-        const bytes = makeMcwc(dim, cols, Date.UTC(2026, 10, 2, 10));
-        return conditional(bytes, 'application/octet-stream');
-      }
-      case 'world.blockEntities': {
-        // A sign and a red bed in the first column asked for; other columns have none.
-        const [cx = 0, cz = 0] = (query.get('cols') ?? '0,0').split(';', 1)[0]?.split(',').map(Number) ?? [];
-        const x = cx * 16 + 4,
-          z = cz * 16 + 4;
-        return {
-          json: {
-            dim: Number(query.get('dim') ?? 0),
-            columns: [
-              {
-                cx,
-                cz,
-                hash: 1,
-                entities: [
-                  { x, y: 65, z, kind: 'sign', lines: ['Mock sign', 'line 2', '', ''] },
-                  { x: x + 2, y: 65, z, kind: 'bed', color: 14 },
-                ],
-              },
-            ],
-          },
-        };
-      }
-      case 'vision.render':
-        if (query.get('meta') === '1') {
-          return {
-            json: {
-              width: 320,
-              height: 180,
-              tokens: 77,
-              bytes: 5120,
-              legend: 'S stone · G grass · @ you',
-              facts: ['creeper 4 m north-east'],
-              seen: iso(),
-            },
-          };
-        }
-        return {
-          bytes: png(320, 180, 3),
-          type: 'image/png',
-          headers: {
-            'X-Tokens': '77',
-            'X-Width': '320',
-            'X-Height': '180',
-            'X-Sha256': etagOf(png(320, 180, 3)).replace(/"/g, ''),
-          },
-        };
-      case 'shards.export': {
-        const manifest = { format_version: 1, name: 'mock export', created_at: iso(), counts: { facts: 1 } };
-        const zip = makeZip({
-          'manifest.json': JSON.stringify(manifest, null, 2),
-          'records/facts.jsonl': '{"id":"note:12","text":"Fox prefers daytime"}\n',
-          'summaries.jsonl': '',
-          'embeddings.bin': Buffer.alloc(0),
-        });
-        return {
-          bytes: zip,
-          type: 'application/zip',
-          headers: { 'Content-Disposition': 'attachment; filename="mock-export-20261102-1000.mcshard"' },
-        };
-      }
-      case 'shards.importPreview':
-      case 'admin.shardImport':
-        if (!/^multipart\/form-data/.test(String(req.headers['content-type'])) || !body.includes('name="shard"')) {
-          return { status: 400, json: { error: 'expected a multipart shard upload', code: 'bad_request' } };
-        }
-        break;
-      default:
-        break;
-    }
-    if (route.responseKind === 'png') {
-      const seed = [...Object.values(params).join('')].reduce((n, c) => n + c.charCodeAt(0), 0);
-      const bytes = png(128, 128, seed);
-      return conditional(bytes, 'image/png', {
-        'X-Width': '128',
-        'X-Height': '128',
-        'X-Tokens': '40',
-        'X-Sha256': etagOf(bytes).replace(/"/g, ''),
-      });
-    }
-    return { status: route.status ?? 200, json: dataFor(id, params) };
+  const env: MockEnv = {
+    world,
+    designer,
+    worldIndexRaw: fx.live.worldIndexRaw,
+    png,
+    cloudOf,
+    dataFor,
   };
 
   const stream = (req: IncomingMessage, res: ServerResponse) => {
@@ -655,44 +449,13 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     frame('hive', world.tree());
     for (const b of world.botNames()) frame('now', world.now(b));
     const off = world.on(frame);
-    // Production rates (the bridge's pollers): entities and blocks 5 Hz, `now` 2 Hz per body, bots 1 Hz, events and memory
-    // activity 2 Hz, the hive tree every 3 s; feed lines and pings as the bot makes them. `interval` = one second of mock time.
+    // streamTick / streamSecond: the production rates. `interval` = one second of mock time.
     let n = 0;
     const timer = setInterval(
       () => {
         n++;
-        world.hive.advance();
-        world.story.sim.step(100);
-        if (n % 5 === 0) for (const f of world.story.frames()) frame('story', f);
-        if (n % 2 === 0) {
-          frame('entities', world.entities());
-          frame('blocks', world.blocks());
-        }
-        if (n % 5 === 0) {
-          for (const b of world.botNames()) frame('now', world.now(b));
-          frame('event', world.event());
-          frame('memoryActivity', world.activity());
-        }
-        if (n % 30 === 0) frame('hive', world.tree());
-        if (n % 10 !== 0) return;
-        world.tick++;
-        const t = world.tick;
-        frame('bots', world.status());
-        if (t % 9 === 0)
-          world.pushFeed({
-            bot: 'maid_chan_109',
-            kind: 'chat',
-            from: 'kiwi',
-            text: 'the sand pit is past the oak tree',
-          });
-        if (t % 7 === 0)
-          world.pushFeed({
-            bot: 'maid_chan',
-            kind: 'internal',
-            from: 'maid_chan',
-            text: '(the chest by the door is nearly full)',
-          });
-        if (t % 15 === 0) res.write(': ping\n\n');
+        streamTick(world, n, frame);
+        if (n % 10 === 0) streamSecond(world, () => res.write(': ping\n\n'), frame);
       },
       Math.max(1, interval / 10),
     );
@@ -704,38 +467,30 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     res.on('close', stop);
   };
 
+  /** A verified request's reply: health, the admin-path gate, then the routed reply (404 when no route matches). */
+  const gatewayReply = (req: IncomingMessage, url: URL, identity: BridgeIdentity, body: Buffer): Reply => {
+    const path = url.pathname;
+    if (path === '/v1/health') return { json: { ok: true, version: 'mock', supervisor: 'up' } };
+    if (isAdminPath(path) && !identity.roles.split(',').includes('admin'))
+      return { status: 403, json: { error: 'admin role required', code: 'forbidden' } };
+    const route = matchRoute(matchers, req.method, url);
+    if (!route) return { status: 404, json: { error: 'not found', code: 'not_found' } };
+    return replyFor(env, { ...route, req, identity, query: url.searchParams, body });
+  };
+  const serve = async (req: IncomingMessage, res: ServerResponse) => {
+    const body = await readAll(req);
+    const rawTarget = req.url ?? '/';
+    const v = verifier.verify({ method: req.method ?? 'GET', rawTarget, headers: req.headers, body });
+    if (!v.ok) return send(res, { status: 401, json: { error: 'unauthorized', code: 'unauthorized' } });
+    const url = new URL(rawTarget, 'http://mock');
+    if (url.pathname === '/v1/live/stream' && req.method === 'GET') return stream(req, res);
+    send(res, gatewayReply(req, url, v.identity, body));
+  };
+
   const server: Server = createServer((req, res) => {
-    void (async () => {
-      try {
-        const body = await readAll(req);
-        const rawTarget = req.url ?? '/';
-        const v = verifier.verify({ method: req.method ?? 'GET', rawTarget, headers: req.headers, body });
-        if (!v.ok) return send(res, { status: 401, json: { error: 'unauthorized', code: 'unauthorized' } });
-        const url = new URL(rawTarget, 'http://mock');
-        const path = url.pathname;
-        if (path === '/v1/health') return send(res, { json: { ok: true, version: 'mock', supervisor: 'up' } });
-        if (path === '/v1/live/stream' && req.method === 'GET') return stream(req, res);
-        if ((path.startsWith('/v1/sup/admin/') || path.startsWith('/v1/admin/nodes')) && !v.identity.roles.split(',').includes('admin')) {
-          return send(res, { status: 403, json: { error: 'admin role required', code: 'forbidden' } });
-        }
-        for (const m of matchers) {
-          if (m.method !== req.method) continue;
-          const match = m.re.exec(path);
-          if (!match) continue;
-          const params: Record<string, string> = {};
-          m.names.forEach((n, i) => (params[n] = decodeURIComponent(match[i + 1]!)));
-          for (const [q, n] of m.queryParams) {
-            const val = url.searchParams.get(q);
-            if (val !== null) params[n] = val;
-          }
-          const reply = handle(m.id, req, v.identity, params, url.searchParams, body);
-          return send(res, reply);
-        }
-        send(res, { status: 404, json: { error: 'not found', code: 'not_found' } });
-      } catch (e) {
-        send(res, { status: 500, json: { error: e instanceof Error ? e.message : 'mock error' } });
-      }
-    })();
+    serve(req, res).catch((e: unknown) => {
+      send(res, { status: 500, json: { error: e instanceof Error ? e.message : 'mock error' } });
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;

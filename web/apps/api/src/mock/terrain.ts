@@ -40,10 +40,13 @@ function tree(x: number, z: number, h = 5): void {
 /** Where the mock colony settles by default (the camp's middle). */
 export const CAMP: [number, number, number] = [20, 63, 10];
 
-(function build() {
-  // The grove: twelve oaks on a jittered grid east of the camp.
+/** The grove: twelve oaks on a jittered grid east of the camp. */
+function plantGrove(): void {
   for (let i = 0; i < 12; i++) tree(30 + (i % 4) * 5 + ((i * 7) % 3) - 1, 6 + Math.floor(i / 4) * 5 + ((i * 5) % 3) - 1, 4 + (i % 3));
-  // A ripe wheat field south of the camp (farmland + fully grown wheat), a water channel in the middle.
+}
+
+/** A ripe wheat field south of the camp (farmland + fully grown wheat), a water channel in the middle. */
+function sowWheat(): void {
   for (let x = 12; x <= 19; x++)
     for (let z = 18; z <= 23; z++) {
       const t = topAt(x, z);
@@ -54,13 +57,22 @@ export const CAMP: [number, number, number] = [20, 63, 10];
       put(x, t, z, 60, 7);
       put(x, t + 1, z, 59, (x + z) % 4 === 0 ? 4 : 7);
     }
-  // Tall grass and flowers to cut, west of the camp.
+}
+
+/** Tall grass and flowers to cut, west of the camp. */
+function growGrass(): void {
   for (let x = 4; x <= 12; x++)
     for (let z = 2; z <= 9; z++) {
       const n = (x * 7 + z * 13) % 5;
       if (n === 0) put(x, topAt(x, z) + 1, z, 31, 1);
       else if (n === 2) put(x, topAt(x, z) + 1, z, (x & 1) === 0 ? 37 : 38);
     }
+}
+
+(function build() {
+  plantGrove();
+  sowWheat();
+  growGrass();
   // The camp: a crafting table, a furnace, a double chest and a single chest.
   const [cx, , cz] = CAMP;
   put(cx - 3, topAt(cx - 3, cz - 3) + 1, cz - 3, 58);
@@ -81,15 +93,22 @@ const changes: Array<[number, number, number, number, number]> = [];
 /** The block at a position. */
 export function mockBlock(x: number, y: number, z: number): Cell {
   const key = ck(x, z);
-  const o = overrides.get(key)?.get(y) ?? features.get(key)?.get(y);
-  if (o) return o;
+  return overrides.get(key)?.get(y) ?? features.get(key)?.get(y) ?? naturalBlock(x, y, z);
+}
+
+/** The generated terrain: air above the ground, grass on top, two layers of dirt, stone with ores, bedrock at 0. */
+function naturalBlock(x: number, y: number, z: number): Cell {
   if (y < 0 || y > 127) return [0, 0];
   const top = topAt(x, z);
   if (y > top) return [0, 0];
   if (y === 0) return [7, 0];
   if (y === top) return [2, 0];
   if (y >= top - 2) return [3, 0];
-  const lx = x & 15, lz = z & 15;
+  return stoneBlock(x & 15, z & 15, y);
+}
+
+/** Stone with diamonds (below 16) and coal sprinkled through it. */
+function stoneBlock(lx: number, lz: number, y: number): Cell {
   if (y < 16 && (lx * 7 + lz * 13 + y) % 41 === 0) return [56, 0];
   if ((lx * 5 + lz * 3 + y) % 23 === 0) return [16, 0];
   return [1, 0];
