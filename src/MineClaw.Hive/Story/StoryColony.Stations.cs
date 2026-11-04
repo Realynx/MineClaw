@@ -29,7 +29,9 @@ public sealed partial class StoryColony
             int want = need - own;
             var src = c.FindStored(s => Ok(s) && s.Count >= want, near, bill.Radius) ?? c.FindStored(Ok, near, bill.Radius);
             int got = src is { } s0 ? Math.Min(want, s0.Stack.Count) : 0;
-            if (got > 0 && bill.ForBuild == null && c._reserved.Count > 0 && c.Unreserved((id, meta) => pick(new Stack(id, meta, 1))) < got)
+            // Only an item something holds is checked against what is free (any count: the pick looks at the item, not the stack).
+            bool Held(int id, int meta) => pick(new Stack(id, meta, int.MaxValue));
+            if (got > 0 && bill.ForBuild == null && c._reserved.Any(kv => kv.Value > 0 && Held(kv.Key.Id, kv.Key.Meta)) && c.Unreserved(Held) < got)
             {
                 Missing = $"the {label} in storage is reserved for builds";
                 return 0;

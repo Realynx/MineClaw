@@ -191,6 +191,14 @@ describe('water UI', () => {
       [5, 64, 4, 8, 4],
       [3, 64, 4, 8, 4],
     ]);
+    // A trench (dig first, the irrigation helper's shape too): its cells show as dig cells (id 0) besides the water.
+    const trench = waterItems('water_channel', [[4, 63, 4], [5, 63, 4]], { dig: true, group: 'g' });
+    expect(pendingHolo({ ...pending, items: trench, cells: 2, flow: null })).toEqual([
+      [4, 63, 4, 0, 0],
+      [5, 63, 4, 0, 0],
+      [4, 63, 4, 9, 0],
+      [5, 63, 4, 9, 0],
+    ]);
     const onQueue = vi.fn(),
       onCancel = vi.fn();
     render(<WaterConfirm pending={pending} onQueue={onQueue} onCancel={onCancel} />);

@@ -354,8 +354,15 @@ public sealed partial class MinecraftClient
 
             // Fuel: what's in the slot already counts; top it up with the chosen fuel.
             var fuelSlot = w.Get(1);
+            // A named fuel is the only one burnt (Story Mode's coal-only furnace never burns planks): another fuel left in the slot comes
+            // out first, and nothing else stands in when the named one runs short.
+            if (fuelId is { } only && !fuelSlot.IsEmpty && fuelSlot.Id != only)
+            {
+                await ClickCoreAsync(1, false, true, ct).ConfigureAwait(false);
+                fuelSlot = w.Get(1);
+            }
             int fuel = fuelId ?? (fuelSlot.IsEmpty ? 0 : fuelSlot.Id);
-            if (fuel == 0 || World.Inventory.CountItem(fuel) == 0 && fuelSlot.IsEmpty)
+            if (fuelId is null && (fuel == 0 || World.Inventory.CountItem(fuel) == 0 && fuelSlot.IsEmpty))
             {
                 var candidates = World.Inventory.PlayerSlots().Skip(9)
                     .Where(s => !s.IsEmpty && s.Id != inputId && !ReservedItems.Contains(s.Id) && s.Id != Items.LavaBucket);

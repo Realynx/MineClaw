@@ -329,6 +329,20 @@ export type StorySkill = z.infer<typeof StorySkill>;
 export const StoryTrait = z.object({ id: z.string(), label: z.string(), effect: z.string().nullish() });
 export type StoryTrait = z.infer<typeof StoryTrait>;
 
+/**
+ * A work role: a named priority template (docs/web/story-mode.md "Roles"). A pawn with a role works by the role's priorities;
+ * editing the role changes every pawn that has it.
+ */
+export const StoryRole = z.object({
+  id: z.string(),
+  name: z.string(),
+  icon: z.string().nullish().describe('an icon key (wheat, pickaxe, axe, brick, package, hammer, pot, fish, shield, shapes, …)'),
+  builtin: z.boolean().default(false).describe('one of the shipped roles (reset_defaults restores it)'),
+  priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
+  pawns: z.array(z.string()).default([]).describe('the pawns that have this role'),
+});
+export type StoryRole = z.infer<typeof StoryRole>;
+
 export const StoryPawn = z.object({
   name: z.string().describe('the body (account) name'),
   display: z.string(),
@@ -355,7 +369,11 @@ export const StoryPawn = z.object({
   queue: z.array(StoryOrder).default([]),
   skills: z.record(z.string(), StorySkill).default({}),
   traits: z.array(StoryTrait).default([]),
-  priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
+  priorities: z
+    .record(z.string(), z.number().int())
+    .default({})
+    .describe("work type → 0 (off) .. 4: the effective values (its role's while it has one)"),
+  role: z.string().nullish().describe("its work role's id (null = Custom: its own priorities)"),
   schedule: z.array(z.string()).default([]).describe('24 blocks by clock hour (index 0 = 00:00)'),
   held: z.string().nullish(),
   inventory: z.array(StoryStack).default([]).describe("a 1.12.2 potion's meta is its potion type id (water 1, awkward 4, …)"),
@@ -394,6 +412,22 @@ export const StoryGrowBill = z.object({
 });
 export type StoryGrowBill = z.infer<typeof StoryGrowBill>;
 
+/** A quarry's progress and its stair (docs/web/story-mode.md "Quarries"). */
+export const StoryQuarry = z.object({
+  top: z.number().int().describe('the y digging starts at (the first step)'),
+  bottom: z.number().int().describe('the lowest y it digs (over the bedrock)'),
+  depth: z.number().int().describe('layers from top to bottom'),
+  layer: z.number().int().describe('the layer being dug (0 = the top)'),
+  y: z.number().int(),
+  cellsLeft: z.number().int().default(0),
+  stairFixes: z.number().int().default(0).describe('steps waiting for a block (air, liquid, sand or gravel)'),
+  sealed: z.number().int().default(0).describe('cells left standing beside lava or water'),
+  done: z.boolean().default(false),
+  stair: z.array(z.tuple([z.number().int(), z.number().int(), z.number().int()])).default([]).describe('the steps, top first'),
+  status: z.string().nullish(),
+});
+export type StoryQuarry = z.infer<typeof StoryQuarry>;
+
 /** A zone row run: `[z, x1, x2]`. */
 export const StoryZoneRow = z.tuple([z.number().int(), z.number().int(), z.number().int()]);
 
@@ -419,6 +453,8 @@ export const StoryZone = z.object({
   waterCells: z.number().int().nullish().describe('a fishing zone: its still-water cells'),
   fishers: z.array(z.string()).nullish().describe('a fishing zone: who is fishing there now'),
   catches: z.number().int().nullish().describe('a fishing zone: fish caught there so far'),
+  mode: z.enum(['ores', 'quarry']).nullish().describe('a mine zone: quarry (everything to bedrock, a stair) or ores only'),
+  quarry: z.lazy(() => StoryQuarry).nullish(),
   sow: z.boolean().nullish().describe('pawns till and sow it'),
   harvest: z.boolean().nullish().describe('pawns harvest what is ripe'),
   status: z.string().nullish().describe('a growing zone: "12/40 sown, 6 ripe"'),
@@ -629,6 +665,47 @@ export type StoryBillMode = z.infer<typeof StoryBillMode>;
 export const StoryBillStore = z.union([z.literal('best'), z.object({ chest: Vec3i }).strict()]);
 export type StoryBillStore = z.infer<typeof StoryBillStore>;
 
+/** A furnace's fuel choices (only what the version burns is valid: b1.8.1 has no blaze rods). */
+export const STORY_FUELS = [
+  'auto',
+  'coal',
+  'charcoal',
+  'coal_or_charcoal',
+  'planks',
+  'logs',
+  'lava_bucket',
+  'blaze_rod',
+  'any',
+] as const;
+export const StoryFuelChoice = z.enum(STORY_FUELS);
+export type StoryFuelChoice = z.infer<typeof StoryFuelChoice>;
+
+/** One fuel of a recipe's fuel table: its item and how many items (a brew: brews) one unit smelts. */
+export const StoryFuelEntry = z.object({ item: StoryItemKey, name: z.string(), itemsPerUnit: z.number() });
+export type StoryFuelEntry = z.infer<typeof StoryFuelEntry>;
+
+/** A bill's fuel for its next batch: the fuel it would burn, the units, the colony's stock of it, short when none covers it. */
+export const StoryFuelNeed = z.object({
+  choice: z.string(),
+  item: StoryItemKey.nullish(),
+  name: z.string().nullish(),
+  need: z.number().int(),
+  have: z.number().int(),
+  short: z.boolean(),
+  perItem: z.number().nullish().describe('fuel units per smelted item (coal 0.125, planks 0.667; blaze powder 0.05 per brew)'),
+});
+export type StoryFuelNeed = z.infer<typeof StoryFuelNeed>;
+
+/** A build's claim on the colony's stock (docs/web/story-mode.md "Reservations"). */
+export const StoryReservation = z.object({
+  item: StoryItemKey,
+  count: z.number().int(),
+  build: z.string(),
+  forItem: z.string(),
+  chain: z.boolean().describe('an input of the chain that crafts the build item (else the build item itself)'),
+});
+export type StoryReservation = z.infer<typeof StoryReservation>;
+
 export const StoryBill = z.object({
   id: z.union([z.string(), z.number()]),
   recipe: z.string(),
@@ -657,6 +734,8 @@ export const StoryBill = z.object({
     .nullish()
     .describe('the XP levels the last try needed (an offer, an anvil price): pawns with fewer leave it'),
   last: z.string().nullish().describe('what the last job made ("enchanted diamond pickaxe: Fortune II")'),
+  fuel: z.string().nullish().describe("a furnace bill's fuel override (STORY_FUELS); null = the furnace's setting"),
+  fuelNeed: StoryFuelNeed.nullish().describe("the fuel this bill's next batch burns: need / have / short"),
 });
 export type StoryBill = z.infer<typeof StoryBill>;
 
@@ -683,6 +762,20 @@ export const StoryWorkbench = z.object({
   loaded: z.unknown().optional().describe('a furnace: what is smelting'),
   readyAt: When.nullish(),
   station: StoryStationInfo.nullish(),
+  fuel: z.string().nullish().describe("a furnace's fuel choice (STORY_FUELS; default auto)"),
+  fuelChoices: z.array(z.string()).nullish().describe('the fuel choices this version burns'),
+  fuelCredit: z.number().nullish().describe('items the furnace can still smelt on the fuel the colony loaded'),
+  smelting: z
+    .object({
+      recipe: z.string().nullish(),
+      input: StoryStack.nullish(),
+      output: StoryStack.nullish(),
+      loadedAt: When.nullish(),
+      readyAt: When.nullish(),
+      estimated: z.boolean().nullish(),
+    })
+    .nullish()
+    .describe('a loaded furnace as expected (an item every 10 s since loading): what is left to smelt and what is out'),
   bills: z.array(StoryBill).default([]),
 });
 export type StoryWorkbench = z.infer<typeof StoryWorkbench>;
@@ -719,6 +812,10 @@ export const StoryRecipe = z.object({
   chain: z.array(z.string()).nullish().describe("a brew's steps from water bottles"),
   enchantments: z.array(z.string()).nullish().describe('an enchant: what it can prefer'),
   modes: z.array(StoryBillMode).nullish().describe('the bill modes it takes (null: all)'),
+  fuels: z
+    .array(StoryFuelEntry)
+    .nullish()
+    .describe('a furnace recipe: the fuels it can burn and how many items one smelts; a brew: blaze powder (brews per unit)'),
 });
 export type StoryRecipe = z.infer<typeof StoryRecipe>;
 
@@ -844,6 +941,10 @@ export const StoryColonyState = z.object({
   categories: z.array(StoryCategory).nullish(),
   storages: z.array(StoryStorage).nullish(),
   workbenches: z.array(StoryWorkbench).nullish(),
+  reservations: z
+    .array(StoryReservation)
+    .nullish()
+    .describe("who holds what: a build's own item, or an input of the chain that crafts it (a bill making that chain's step may use it)"),
   beds: z
     .array(z.lazy(() => StoryBed))
     .nullish()
@@ -851,6 +952,7 @@ export const StoryColonyState = z.object({
   ai: z.array(StoryAiBody).nullish(),
   directives: z.array(StoryDirective).nullish(),
   policies: z.array(StoryPolicy).nullish().describe('gear policies (always the default one)'),
+  roles: z.array(StoryRole).nullish().describe('work roles: named priority templates (sent whole with every answer)'),
   materialRules: z.array(StoryMaterialRule).nullish().describe('per material / group: the tool, preferred tier, enchantment'),
   materials: z.array(StoryMaterialInfo).nullish().describe('full state only: the rules editor catalog with each floor'),
   removed: StoryRemoved.nullish(),
@@ -952,10 +1054,51 @@ export const StoryHomeResponse = z.object({ home: Vec3i });
 export type StoryHomeResponse = z.infer<typeof StoryHomeResponse>;
 
 /** `work`: type → 0 (off) .. 4; types left out keep their value. */
-export const StoryPrioritiesRequest = z
-  .object({ pawns: PawnList, work: z.partialRecord(StoryWorkType, z.number().int().min(0).max(4)) })
-  .strict();
+/** Set cells (a pawn with a role turns Custom, its other values kept), or give the pawns a role (null = Custom, values kept). */
+export const StoryPrioritiesRequest = z.union([
+  z.object({ pawns: PawnList, work: z.partialRecord(StoryWorkType, z.number().int().min(0).max(4)) }).strict(),
+  z.object({ pawns: PawnList, role: z.string().min(1).max(64).nullable() }).strict(),
+]);
 export type StoryPrioritiesRequest = z.infer<typeof StoryPrioritiesRequest>;
+
+const RolePriorities = z.partialRecord(StoryWorkType, z.number().int().min(0).max(4));
+const RoleIcon = z
+  .string()
+  .max(24)
+  .regex(/^[a-z0-9-]+$/);
+
+/** POST /api/story/colonies/{id}/roles: add, update (priorities merge; its pawns follow), remove (its pawns turn Custom), reset_defaults. */
+export const StoryRolesRequest = z.discriminatedUnion('op', [
+  z
+    .object({
+      op: z.literal('add'),
+      role: z.object({ name: z.string().min(1).max(40), icon: RoleIcon.nullish(), priorities: RolePriorities.optional() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('update'),
+      role: z
+        .object({
+          id: z.string().min(1).max(64),
+          name: z.string().min(1).max(40).optional(),
+          icon: RoleIcon.nullish(),
+          priorities: RolePriorities.optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z.object({ op: z.literal('remove'), id: z.string().min(1).max(64) }).strict(),
+  z.object({ op: z.literal('reset_defaults') }).strict(),
+]);
+export type StoryRolesRequest = z.infer<typeof StoryRolesRequest>;
+
+export const StoryRolesResponse = z.object({
+  id: z.string().nullish().describe('the role added, updated or removed'),
+  removed: z.boolean().nullish(),
+  roles: z.array(StoryRole).default([]),
+});
+export type StoryRolesResponse = z.infer<typeof StoryRolesResponse>;
 
 export const STORY_HOURS = Array.from({ length: 24 }, (_, i) => String(i)) as [string, ...string[]];
 export const StoryScheduleRequest = z
@@ -1020,6 +1163,7 @@ export const StoryZoneRequest = z.union([
       kind: StoryZoneKind.optional(),
       area: StoryArea,
       into: ZoneId.optional().describe('extend this zone: the painted cells take its type'),
+      mode: z.enum(['ores', 'quarry']).optional().describe('a mine zone: quarry (default) or ores only'),
       name: z.string().trim().max(40).optional(),
       plant: z.string().min(1).max(32).optional(),
       sow: z.boolean().optional(),
@@ -1033,6 +1177,7 @@ export const StoryZoneRequest = z.union([
       plant: z.string().max(32).nullable().optional(),
       sow: z.boolean().optional(),
       harvest: z.boolean().optional(),
+      mode: z.enum(['ores', 'quarry']).optional().describe('a mine zone: quarry or ores only'),
     })
     .strict(),
   z.object({ op: z.literal('seek_seeds'), id: ZoneId }).strict(),
@@ -1253,6 +1398,10 @@ export const StoryBillSpec = z
     option: z.number().int().min(1).max(3).nullish().describe('an enchant bill: the highest offer to take (1–3)'),
     prefer: z.string().max(40).nullish().describe('an enchant bill: the preferred enchantment (fortune, silk_touch…)'),
     preferOnly: z.boolean().optional(),
+    fuel: z
+      .union([StoryFuelChoice, z.literal('inherit')])
+      .nullish()
+      .describe("a furnace bill's fuel override; inherit or null = the furnace's setting"),
   })
   .strict();
 export type StoryBillSpec = z.infer<typeof StoryBillSpec>;
@@ -1271,6 +1420,8 @@ export const StoryBillsRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('pause'), id: BillId }).strict(),
   z.object({ op: z.literal('resume'), id: BillId }).strict(),
   z.object({ op: z.literal('reorder'), bench: Vec3i, ids: z.array(BillId).min(1).max(64) }).strict(),
+  // Frees what a build holds for one of its items: a chain claim cancels its crafting, its own item pauses the build.
+  z.object({ op: z.literal('release_claim'), build: z.string().max(80), item: z.string().max(64) }).strict(),
   // The tools system's hook: enchant bills (count) at the colony's table for pickaxes (or `items`) preferring an enchantment,
   // or the one a mined material wants (`material`: fortune for ores, silk touch for glass and ice, else efficiency).
   z
@@ -1299,9 +1450,19 @@ export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;
  * POST /api/story/colonies/{id}/workbenches: the owner marks a placed crafting table / furnace (any bench kind) as the
  * colony's (`designate`) or gives it back (`release`). Only designated benches take bills and unlock the Architect's tiers.
  */
-export const StoryWorkbenchesRequest = z.object({ op: z.enum(['designate', 'release']), pos: Vec3i }).strict();
+export const StoryWorkbenchesRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('designate'), pos: Vec3i }).strict(),
+  z.object({ op: z.literal('release'), pos: Vec3i }).strict(),
+  // A furnace's fuel choice (docs/web/story-mode.md "Fuel").
+  z.object({ op: z.literal('fuel'), pos: Vec3i, fuel: StoryFuelChoice }).strict(),
+]);
 export type StoryWorkbenchesRequest = z.infer<typeof StoryWorkbenchesRequest>;
-export const StoryWorkbenchesResponse = z.object({ pos: Vec3i, kind: z.string(), designated: z.boolean() });
+export const StoryWorkbenchesResponse = z.object({
+  pos: Vec3i,
+  kind: z.string(),
+  designated: z.boolean(),
+  fuel: z.string().nullish(),
+});
 export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
 
 /** Movement speed of the colony's pawns (docs/web/story-mode.md "Speed"): normal, fast (×2), faster (×3). */

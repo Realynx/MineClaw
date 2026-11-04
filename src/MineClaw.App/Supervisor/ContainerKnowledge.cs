@@ -14,7 +14,7 @@ namespace MineClaw.App.Supervisor;
 /// from item counts (the real slot order is not known). <paramref name="Partial"/> = a double chest of which only one half was seen.
 /// </summary>
 public sealed record ContainerView(int[] Pos, int Dim, string Kind, int Size, IReadOnlyList<InventorySlot> Slots, long? SeenAt, string? SeenBy,
-    string Source, string? Version, bool Exact, IReadOnlyList<int[]> Cells, bool? Partial = null);
+    string Source, string? Version, bool Exact, IReadOnlyList<int[]> Cells, bool? Partial = null, bool? Estimated = null);
 
 /// <summary>An item total of a container summary.</summary>
 public sealed record ContainerItemCount(int Id, int Meta, string Name, int Count);
@@ -116,11 +116,42 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
         string kind = Kind(blockId, best.MemKind, size);
         var slots = best.Slots ?? Pack(best.Counts ?? [], size);
         if (best.Slots != null && slots.Length < size) slots = [.. slots, .. Enumerable.Repeat(ItemStack.Empty, size - slots.Length)];
+        // A furnace smelts on unseen: between looks its slots are estimated (an item every 10 s while fuelled), marked as such.
+        bool estimated = false;
+        if (kind == "furnace" && best.Source != "live" && best.Exact && best.At is { } seenAt)
+            (estimated, slots) = EstimateFurnace(slots, Now - seenAt, id);
         var list = new List<InventorySlot>();
         for (int i = 0; i < slots.Length; i++)
             if (BodyInventories.Slot(i, slots[i]) is { } s) list.Add(s);
         return new ContainerView(P(cells[0]), dim, kind, size, list, best.At, best.By, best.Source, version(), best.Exact, cells.Select(P).ToList(),
-            best.Partial ? true : null);
+            best.Partial ? true : null, estimated ? true : null);
+    }
+
+    /// <summary>
+    /// A furnace's slots <paramref name="elapsedMs"/> after a look: the input goes down and the output up by an item every 10 s (200
+    /// ticks), as far as the fuel goes (what was in the fuel slot; a furnace lit now burns on), the output never past a stack or onto a
+    /// different item. Unchanged (false) when nothing would have smelted.
+    /// </summary>
+    internal static (bool Estimated, ItemStack[] Slots) EstimateFurnace(ItemStack[] slots, long elapsedMs, int blockNow)
+    {
+        if (slots.Length < 3 || slots[0].IsEmpty || elapsedMs < 10_000) return (false, slots);
+        if (Smelting.ResultFor(slots[0].Id, slots[0].Damage) is not { } rec) return (false, slots);
+        var output = slots[2];
+        if (!output.IsEmpty && (output.Id != rec.OutputId || output.Damage != rec.OutputDamage)) return (false, slots);
+        var fuel = slots[1];
+        double per = fuel.IsEmpty ? 0 : Smelting.ItemsPerFuel(fuel.Id);
+        double byFuel = blockNow == Blocks.LitFurnace ? double.MaxValue : fuel.Count * per + 8; // a unit (a coal) may have been burning
+        int n = (int)Math.Min(Math.Min(slots[0].Count, elapsedMs / 10_000), Math.Min(byFuel, 64 - (output.IsEmpty ? 0 : output.Count)));
+        if (n <= 0) return (false, slots);
+        var next = (ItemStack[])slots.Clone();
+        next[0] = slots[0].Count - n <= 0 ? ItemStack.Empty : slots[0] with { Count = (byte)(slots[0].Count - n) };
+        next[2] = new ItemStack((short)rec.OutputId, (byte)((output.IsEmpty ? 0 : output.Count) + n), (short)rec.OutputDamage);
+        if (!fuel.IsEmpty && per > 0)
+        {
+            int used = Math.Min(fuel.Count, (int)Math.Ceiling(Math.Max(0, n - 1) / per));
+            next[1] = fuel.Count - used <= 0 ? ItemStack.Empty : fuel with { Count = (byte)(fuel.Count - used) };
+        }
+        return (true, next);
     }
 
     /// <summary>Every known container with a block in the box (inclusive), newest look first, at most <paramref name="limit"/>.</summary>

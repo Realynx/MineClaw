@@ -15,7 +15,7 @@ namespace MineClaw.App.Supervisor;
 /// <list type="bullet">
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
-/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
+/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|roles|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
 /// <item><c>GET /api/story/colonies/{id}/architect</c> → <c>{entries:[…], benches, tabs}</c> (the Architect palette with tiers)</item>
 /// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
@@ -106,7 +106,7 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                     if (colonies.Host.World is not { } w) return Reply(503, new JsonObject { ["error"] = "no world view yet" });
                     var bench = Q(r, "workbench");
                     if (bench != null && !StoryRecipes.Benches.Contains(bench)) return Bad($"workbench must be {string.Join("|", StoryRecipes.Benches)}");
-                    return Reply(200, new JsonArray(StoryRecipes.For(w.Data, bench).Select(x => (JsonNode)x.Json()).ToArray()));
+                    return Reply(200, new JsonArray(StoryRecipes.For(w.Data, bench).Select(x => (JsonNode)x.Json(w.Data)).ToArray()));
                 }
                 case ["colonies"]:
                     return post ? Create(body) : NotAllowed("POST");
@@ -271,7 +271,15 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             {
                 var (ps, err) = Pawns();
                 if (err != null) return Bad(err);
-                if (b["work"] is not JsonObject work) return Bad("work must be {type: 0..4}");
+                // {pawns, role: id|null}: the pawns take a role's priorities, or turn Custom with the values they have (Roles).
+                if (b.ContainsKey("role"))
+                {
+                    if (b["work"] != null) return Bad("role or work, not both");
+                    if (b["role"] != null && S(b, "role") is not { Length: > 0 }) return Bad("role must be a role id or null");
+                    var rerr = c.SetRole(ps, S(b, "role"));
+                    return rerr != null && rerr.StartsWith("role: no such", StringComparison.Ordinal) ? Reply(404, new JsonObject { ["error"] = rerr }) : Ok(rerr);
+                }
+                if (b["work"] is not JsonObject work) return Bad("work must be {type: 0..4} (or role: id|null)");
                 var map = work.ToDictionary(kv => kv.Key, kv => kv.Value is JsonValue x && x.TryGetValue<int>(out var i) ? i : -1);
                 return Ok(c.SetPriorities(ps, map));
             }
@@ -301,6 +309,8 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                     return Reply(409, new JsonObject { ["error"] = oe, ["confirm"] = given.Result?["confirm"]?.DeepClone() });
                 return Result(given);
             }
+            case "roles":
+                return Result(c.RolesOp(b)); // work roles: add|update|remove|reset_defaults (StoryColony.Roles.cs)
             case "policies":
                 return Result(c.PoliciesOp(b));
             case "material-rules":
@@ -356,9 +366,9 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 return Result(c.BillsOp(S(b, "op") ?? "", b));
             case "workbenches":
             {
-                // {op: designate|release, pos:[x,y,z]} → {pos, kind, designated}
+                // {op: designate|release, pos:[x,y,z]} → {pos, kind, designated}; {op: fuel, pos, fuel} → + fuel (a furnace's fuel choice)
                 if (P3.Parse(b["pos"]) is not { } pos) return Bad("pos must be [x,y,z]");
-                return Result(c.WorkbenchOp(S(b, "op") ?? "", pos));
+                return Result(c.WorkbenchOp(S(b, "op") ?? "", pos, S(b, "fuel")));
             }
             case "options":
             {

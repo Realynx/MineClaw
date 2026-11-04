@@ -703,6 +703,7 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.home': (c) => run(() => storySim.home(id(c), b(c))),
     'story.pause': (c) => run(() => storySim.pause(id(c), (c.body as { paused: boolean }).paused)),
     'story.priorities': (c) => run(() => storySim.priorities(id(c), b(c))),
+    'story.roles': (c) => run(() => storySim.roles(id(c), b(c))),
     'story.schedule': (c) => run(() => storySim.schedule(id(c), b(c))),
     'story.draft': (c) => run(() => storySim.draft(id(c), b(c))),
     'story.orders': (c) => run(() => storySim.orders(id(c), b(c))),

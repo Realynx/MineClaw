@@ -58,19 +58,19 @@
       "mode": "sdk-js",
       "description": "sdk-js mode pack (every version): the JavaScript scripting SDK as memory: each module and helper with its doc comment, the game functions a script calls (per game version) and worked examples. Generated from MineClaw.Scripting/Sdk/js and the bot's tools.",
       "counts": {
-        "knowledge": 222
+        "knowledge": 223
       },
-      "records": 222,
-      "bytes": 32541,
+      "records": 223,
+      "bytes": 32640,
       "vectors": 0,
-      "needs_embedding": 222,
+      "needs_embedding": 223,
       "dims": 0,
       "files": [
         "sdk-js.md"
       ],
       "source": "MineClaw.Scripting SDK modules (core,world,flow,machine,policies,jobs,dig,crew,story,character) + game functions (b1.8.1, 1.12.2) + ScriptPrompts examples",
-      "source_hash": "29138e494a3d756124092672e4ae0565186e15995a093936daa74974cb55e70d",
-      "content_hash": "3f4407baa43a071a05e5505df86544f3ee55986f00adeb3f82b0175c06a8c47c",
+      "source_hash": "21635dfd186322b025bd8d8e53782d7ff70cfc0e677229278cc9e7b0e27a1fad",
+      "content_hash": "ff02c33c4ef3468027b8664473ba162a69456e7c1dae15693a875053f7ecaa09",
       "builder": "ShardPacks/1"
     },
     {

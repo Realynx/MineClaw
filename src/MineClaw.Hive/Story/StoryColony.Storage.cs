@@ -36,6 +36,7 @@ public sealed partial class StoryColony
         s.KnownAt = Now;
         s.Rev = Touch();
         MaterialsChanged(); // what the builds can count on changed
+        _stockChanged = true; // the waiting bills try again (StoryColony.StockCheck.cs)
     }
 
     internal void AddContents(StorageState s, Stack add)
@@ -127,6 +128,7 @@ public sealed partial class StoryColony
         {
             s = new StorageState { Chest = c, DoubleWith = DoubleHalf(c) };
             if (Host.KnownChest(c) is { } known) { s.Contents = known.ToList(); }
+            try { if (Host.SeenChest(c) is { } seen) s.SeenAt = seen.At; } catch (Exception) { /* no memory */ }
             Storages.Add(s);
             Recount(s);
         }

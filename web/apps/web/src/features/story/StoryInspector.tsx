@@ -20,6 +20,7 @@ import {
   type StoryFilter,
   type StoryPawn,
   type StoryRecipe,
+  type StoryReservation,
   type StoryStorage,
   type StoryWorkbench,
 } from '@mineclaw/contracts';
@@ -60,6 +61,14 @@ import {
   allowAll,
   billProgress,
   billSummary,
+  FUEL_CHOICES,
+  fuelBody,
+  fuelLabel,
+  fuelLine,
+  fuelTable,
+  reservationLine,
+  reservationRows,
+  smeltingLine,
   enchantLabel,
   recipeModes,
   requiresLine,
@@ -867,6 +876,12 @@ export function StorageInspector({
         {chests.length === 1 ? (
           <ContainerContents target={{ dim: 0, x: keys[0]![0], y: keys[0]![1], z: keys[0]![2] }} heading />
         ) : null}
+        <ReservationList
+          reservations={state?.reservations}
+          items={new Set(list.flatMap((st) => (st?.contents ?? []).map(([i, m]) => `${i}:${m}`)))}
+          canWrite={canWrite}
+          write={write}
+        />
         {!registered ? (
           <Button
             size="sm"
@@ -1049,6 +1064,86 @@ export function UndesignatedBench({
   );
 }
 
+/** A furnace's fuel choice: one icon button per fuel the version burns (the pressed one is the setting). */
+/** What builds hold of these items (the colony's reservations), each with a Release that frees that build's claim. */
+export function ReservationList({
+  reservations,
+  items,
+  canWrite,
+  write,
+}: {
+  reservations: readonly StoryReservation[] | null | undefined;
+  items: ReadonlySet<string>;
+  canWrite: boolean;
+  write: StoryWrite;
+}) {
+  const rows = reservationRows(reservations, items);
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-0.5" data-testid="reservations">
+      <div className="text-[11px] font-semibold text-muted">Reserved for builds</div>
+      <ul className="space-y-0.5">
+        {rows.map((r) => (
+          <li key={`${r.build}|${r.forItem}|${r.label}`} className="flex items-center gap-1.5 rounded bg-surface-2 px-1.5 py-0.5 text-[11px]">
+            <ItemIcon id={r.item[0]} meta={Math.max(0, r.item[1])} size={14} />
+            <span className="min-w-0 flex-1 truncate" title={r.chain ? 'an input of the chain that crafts it' : undefined}>
+              {reservationLine(r)}
+            </span>
+            <button
+              type="button"
+              disabled={!canWrite}
+              onClick={() => void write('story.bills', { op: 'release_claim', build: r.build, item: r.forItem } as never)}
+              className="rounded px-1 text-[10.5px] text-accent hover:bg-surface-3"
+              title={r.chain ? 'Stop crafting it for the build (the build waits for it)' : 'Pause the build: it lets go of what it holds'}
+            >
+              Release
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function FuelPicker({
+  value,
+  choices,
+  disabled,
+  onPick,
+}: {
+  value: string;
+  choices: readonly string[];
+  disabled?: boolean;
+  onPick: (fuel: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1" data-testid="fuel-picker" role="group" aria-label="Furnace fuel">
+      <span className="mr-1 text-[11px] font-semibold text-muted">Fuel</span>
+      {choices.map((f) => {
+        const c = FUEL_CHOICES[f];
+        return (
+          <button
+            key={f}
+            type="button"
+            disabled={disabled}
+            aria-pressed={f === value}
+            aria-label={`Fuel: ${fuelLabel(f)}`}
+            title={fuelLabel(f)}
+            onClick={() => f !== value && onPick(f)}
+            className={cn(
+              'flex items-center gap-0.5 rounded border px-1 py-0.5 text-[10.5px]',
+              f === value ? 'border-accent bg-accent-soft' : 'border-border hover:bg-surface-3',
+            )}
+          >
+            {c ? <ItemIcon id={c.icon[0]} meta={c.icon[1]} size={14} /> : null}
+            {f === 'auto' ? 'Auto' : f === 'any' ? 'Any' : f === 'coal_or_charcoal' ? 'Coal/charcoal' : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function BillsInspector({
   bench,
   state,
@@ -1097,6 +1192,19 @@ export function BillsInspector({
             This version has no {bench.kind.replace(/_/g, ' ')} bills.
           </p>
         ) : null}
+        {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
+          <FuelPicker
+            value={bench.fuel ?? 'auto'}
+            choices={bench.fuelChoices}
+            disabled={!canWrite}
+            onPick={(f) => void write('story.workbenches', fuelBody(pos, f) as never)}
+          />
+        ) : null}
+        {smeltingLine(bench) ? (
+          <p className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted" data-testid="furnace-smelting">
+            {smeltingLine(bench)}
+          </p>
+        ) : null}
         {stationLines(bench).length ? (
           <ul className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-[11px] text-muted" data-testid="station-facts">
             {stationLines(bench).map((l) => (
@@ -1129,6 +1237,12 @@ export function BillsInspector({
             Release
           </Button>
         </div>
+        <ReservationList
+          reservations={state?.reservations}
+          items={new Set((recipes.data ?? []).filter((r) => bench.bills.some((b) => b.recipe === r.id)).flatMap((r) => r.inputs.flatMap((i) => (i.options ?? []).map(([a, m]) => `${a}:${m}`))))}
+          canWrite={canWrite}
+          write={write}
+        />
         <ol className="space-y-1" data-testid="bills">
           {bench.bills.map((b, i) => {
             const r = recipeOf(b.recipe);
@@ -1194,11 +1308,39 @@ export function BillsInspector({
                       {b.xpNeeded ? `needs XP level ${b.xpNeeded}` : ''}
                     </div>
                   ) : null}
+                  {b.fuelNeed ? (
+                    <div className={cn('text-[10.5px]', b.fuelNeed.short ? 'text-danger' : 'text-muted')} data-testid="bill-fuel">
+                      {fuelLine(b.fuelNeed)}
+                    </div>
+                  ) : null}
                   {b.last ? <div className="truncate text-[10.5px] text-subtle">Last: {b.last}</div> : null}
                   {b.suspendedReason ? (
                     <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div>
                   ) : null}
                 </button>
+                {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
+                  <select
+                    aria-label={`Fuel for ${r?.label ?? b.recipe}`}
+                    title="Fuel for this bill (the furnace's unless set)"
+                    disabled={!canWrite}
+                    value={b.fuel ?? ''}
+                    onChange={(e) =>
+                      void write('story.bills', { op: 'update', id: b.id, fuel: e.target.value || 'inherit' } as never)
+                    }
+                    className={cn(
+                      'h-6 max-w-[6.5rem] rounded border border-border bg-surface px-0.5 text-[10.5px]',
+                      b.fuel && 'border-accent',
+                    )}
+                    data-testid="bill-fuel-chip"
+                  >
+                    <option value="">Furnace's ({fuelLabel(bench.fuel).split(' (')[0]})</option>
+                    {bench.fuelChoices.map((f) => (
+                      <option key={f} value={f}>
+                        {fuelLabel(f)}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
                 <button
                   type="button"
                   disabled={!canWrite}
@@ -1442,12 +1584,19 @@ export function BillDialog({
             <span className="text-xs text-muted">{billSummary(d)}</span>
           </div>
         </fieldset>
-        {recipe?.requires ? (
+        {recipe?.requires || recipe?.fuels?.length ? (
           <div className="space-y-1 rounded-md bg-surface-2 px-2 py-1.5 text-xs" data-testid="bill-requires">
-            <div>
-              <span className="font-semibold">Needs:</span> {requiresLine(recipe, d.option)}
-            </div>
-            {recipe.requires.note ? <div className="text-muted">{recipe.requires.note}</div> : null}
+            {recipe.requires ? (
+              <div>
+                <span className="font-semibold">Needs:</span> {requiresLine(recipe, d.option)}
+              </div>
+            ) : null}
+            {recipe.fuels?.length ? (
+              <div data-testid="bill-fuels">
+                <span className="font-semibold">Fuel:</span> {fuelTable(recipe)}
+              </div>
+            ) : null}
+            {recipe.requires?.note ? <div className="text-muted">{recipe.requires.note}</div> : null}
             {recipe.chain?.length ? (
               <ol className="list-decimal pl-4 text-muted" aria-label="Brewing steps">
                 {recipe.chain.map((c) => (
@@ -1457,7 +1606,25 @@ export function BillDialog({
             ) : null}
           </div>
         ) : null}
-        {recipe?.workbench === 'enchanting_table' ? (
+        {recipe?.workbench === 'furnace' ? (
+          <label className="flex items-center gap-2 text-xs">
+            <span className="w-28 font-semibold">Fuel</span>
+            <select
+              aria-label="Bill fuel"
+              value={d.fuel ?? ''}
+              onChange={(e) => set({ fuel: e.target.value || null })}
+              className="h-7 rounded border border-border bg-surface-2 px-1"
+            >
+              <option value="">The furnace's</option>
+              {Object.keys(FUEL_CHOICES).map((f) => (
+                <option key={f} value={f}>
+                  {fuelLabel(f)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+                {recipe?.workbench === 'enchanting_table' ? (
           <fieldset className="space-y-1.5 text-xs">
             <legend className="text-xs font-semibold">Enchanting</legend>
             <div className="flex flex-wrap items-center gap-2">

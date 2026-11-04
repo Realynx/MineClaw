@@ -91,11 +91,12 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
 | POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
-| POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off) → `{ok}` |
+| POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off; a pawn with a role turns Custom) or `{pawns:[name], role: id\|null}` (null = Custom, the values kept) → `{ok}`; 400 for both at once, 404 for an unknown role. See "Roles" |
+| POST | `/api/story/colonies/{id}/roles` | `{op:"add", role:{name, icon?, priorities?}}` \| `{op:"update", role:{id, name?, icon?, priorities?}}` \| `{op:"remove", id}` \| `{op:"reset_defaults"}` → `{id, roles:[Role], removed?}`; 400 on a bad body (unknown op, work type or role, a name taken or not 1..40 chars, a priority past 0..4, an icon not `[a-z0-9-]{1,24}`). See "Roles" |
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: irrigation, id}` → `{id, cells, dig, axis, lines, note}` (see "Water"); `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, mode? (mine: quarry|ores), name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: irrigation, id}` → `{id, cells, dig, axis, lines, note}` (see "Water"); `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -137,7 +138,7 @@ The **Pawn** object:
 ```
 {name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
- skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]],
+ skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, role, schedule:[24 × block], held, inventory:[[id,meta,count]],
  xp_level,
  equipment:{held, armor, tools, weapons}, policy, gear_tasks:[{id, op, label}] }
 ```
@@ -189,6 +190,45 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
   idle hold lasts a few seconds and the pawn picks again by itself. Only a pawn held idle for 8 s or more (walking home from far)
   is cut for it, at most once every 30 s. (Live 11-03: cutting every idle script on each work-panel click restarted ten scripts per
   click, several "cancelled … (new work)" lines a second, and no pawn got anywhere.)
+
+### Roles (added 2026-11-04)
+
+Fox 11-04: "It would be a lot easier to assign priorities if I could make predefined roles that have specific priorities — e.g. a
+Farmer whose biggest priority is farming, plus a couple of other things … I like the 1–4 priority grid, but I'd like to be able to
+set some of those rows to just predefined roles."
+
+- **A role** is a named priority template, saved with the colony: `Role = {id, name, icon, builtin, priorities:{type: 0..4}, pawns:[name]}`
+  (`pawns` = who has it; a work type missing from a role is off). The state carries `roles` whole with every answer, and each pawn's
+  `role` (its id, or null = **Custom**: its own priorities, the behaviour before roles).
+- **Effective priorities.** A pawn with a role works by the role's priorities. The director keeps them in the pawn's `priorities`
+  (rewritten whenever the role or the assignment changes, and again on load), so the job picker, hauling, gear and every other reader
+  use the effective values unchanged (`StoryColony.Roles.cs`, `EffectivePriorities`).
+- **Built-in roles** (seeded on first use, editable and removable; `reset_defaults` brings them back as shipped, re-adding removed
+  ones and resetting edited ones, and keeps own roles):
+
+  | role | 1 | 2 | 3 | 4 |
+  |---|---|---|---|---|
+  | Farmer (`wheat`) | farm | | cook, haul | doctor |
+  | Miner (`pickaxe`) | mine | | haul | build |
+  | Woodcutter (`axe`) | chop | | haul | |
+  | Builder (`brick`) | build | haul | craft | |
+  | Hauler (`package`) | haul | | chop (plant cutting) | |
+  | Crafter (`hammer`) | craft | cook | haul | |
+  | Cook (`pot`) | cook | | farm, haul | doctor |
+  | Fisher (`fish`) | fish | | cook, haul | |
+  | Guard / Hunter (`shield`) | guard, hunt | | haul | |
+  | Generalist (`shapes`) | | haul | everything else | |
+
+  Every other work type is off. Brewing is Cook and enchanting/anvil work is Craft, so they need no column of their own.
+- **Assigning.** `POST …/priorities {pawns, role}` gives the pawns the role (their values become the role's); `role: null` makes
+  them Custom with the values they have.
+- **Editing a role** (`update`) changes every pawn with it at once; `priorities` merge (only the given work types change).
+- **Customising a role row.** A cell edit (`POST …/priorities {pawns, work}`) on a pawn with a role detaches it: the role is cleared
+  and the pawn keeps the role's values plus that change (RimWorld-style; the grid offers an Undo, which sends the role again).
+- **Deleting a role** turns its pawns Custom with the same values.
+- Ids: built-ins keep theirs (`farmer`, `miner`, …); an added role's id comes from its name (`Night miner` → `night-miner`, `-2` when
+  taken), never a built-in's. Names are unique (case-insensitive); a reset whose built-in name an own role took names it
+  "… (built-in)".
 
 ### Homes and beds
 
@@ -753,6 +793,38 @@ with the plant picker; mode and target; drag or the arrows to reorder; pause; re
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
 
+## Quarries (added 2026-11-04)
+
+Fox 11-04: "The quarry zone didn't make sense — nothing happened." (A mine zone only offered its ores: a square of stone and dirt
+had no work at all.) A mine zone now has a mode: `quarry` (the default for new ones) or `ores` (the old behaviour; zones from before
+keep it). `{op: add, kind: mine, area, mode?}`, `{op: update, id, mode}`.
+
+**Digging.** A quarry digs everything in its columns, layer by layer from its top (its highest ground when first seen, not trees;
+kept as `quarry_top`) down to bedrock: never bedrock, never y 0; each column stops one over its highest bedrock (b1.8.1 and 1.12.2
+put it at y 0..4). A layer is offered once the one above has nothing left to dig (cells resting after failures don't hold it back),
+so it goes top-down. Mine work; only exposed cells (a face open), never one someone stands on, the pickaxe its material needs (tool
+floors and rules, StoryColony.Gear.cs), loot batched like any gathering. A cell beside lava or water (or a liquid cell itself) is
+left standing as a seal, with an alert ("N cell(s) at y Y left standing beside lava or water").
+
+**The stair.** Along the inside of the zone's edge: the edge cells in a ring, clockwise from the north-west-most one; layer k
+(y = top − k) leaves ring cell k mod n standing as a step. So the steps go down one block per cell around the ring, a helix from
+the surface to the bottom: each step is beside the last and one lower, and the next step in the same column is n ≥ 4 layers up, so
+the 2 cells over every step (and the one over those, for the jump) stay open. A 2×2 zone's ring is its 4 cells: a spiral shaft,
+1 step and 3 dug cells per layer. 3×3 and larger use the edge ring (the middle is all dug). A 1-wide zone has no ring: painting one
+as a quarry is refused ("a quarry needs at least 2×2 (a 1-wide strip is a trench…)"); Ores only still works there. Steps are the
+existing blocks; a step that is air, liquid or would fall (sand, gravel, concrete powder) gets a cheap block placed first (cobblestone,
+dirt, netherrack, planks, stone, sandstone: carried, else fetched from storage; none: an alert), before the layer under it is dug
+(the cell under a step waiting for a block is held back). The quarry never digs its own steps. Repainting a quarry recomputes the
+ring (its top stays).
+
+**State.** A mine zone has `mode`; a quarry adds `quarry: {top, bottom, depth, layer, y, cells_left, stair_fixes, sealed, done,
+stair: [[x,y,z], …] (top first), status}` ("layer 3 of 61 (y 61), 34 cell(s) left", "done: down to bedrock").
+
+**Web.** The Zones tool's Quarry shows a mode picker (Quarry (everything) / Ores only). While dragging a quarry, the map draws the
+stair ring as numbered steps (step 1 at the top) and the label says how many steps a turn and about how deep it goes. Quarry zones
+draw their ring with the step being worked highlighted. The Colony tab's Quarries window: progress (a bar, the status), from y to y,
+the stair's length, steps waiting for a block, sealed cells, and the mode (switchable).
+
 ## Fishing (added 2026-11-03)
 
 Fox 11-03: "Make me a fishing zone where pawns can fish using fishing poles; it must be over water blocks."
@@ -1015,7 +1087,11 @@ entries at the bucket's tier ("workbench"; a bucket anywhere in the colony unloc
 into the ground, a `remove` item of the same group first). The placement shows as water holograms; on release the director
 previews it: water that would run beyond the drawn cells (or an irrigation suggestion) waits in a confirm bar ("Water channel: 4
 sources · spreads to 23 more cells", the director's warnings, Queue / Cancel) with the flow drawn as flowing-water holograms;
-otherwise it is queued at once. The Growing zones window says when cells are dry ("40 cells have no water within 4 blocks") with
+otherwise it is queued at once. The trench's cells (the `remove` item) show as red dig cells in the drag preview and the confirm
+bar alike, apart from the water and its flow; queued, a trench cell shows its dig outline while the ground is there and its
+water hologram once it is dug (a pour in a still-solid cell waits underground: fixed 2026-11-04, Fox: "The holograms for
+digging the water trenches don't show up"; the dig outlines sat just inside the cell, so the ground around them hid them, and
+the previews left the dig out). The Growing zones window says when cells are dry ("40 cells have no water within 4 blocks") with
 Add irrigation: the planner's channels, pre-filled as a pending placement to confirm. The mock director (`storySim`) and
 `@mineclaw/contracts` (`storyWater.ts`: `waterToolCells`, `waterItems`, `liquidFlow`, `pourOrder`, `irrigationPlan`) carry
 reference copies of these rules.
@@ -1165,11 +1241,79 @@ Execution:
   bench. One pawn works a bench at a time.
 - It fetches the ingredients from storages within `radius` of the bench (the ingredient filter applies), crafts, and stores the
   product in the bill's chest, else by the storage rules.
-- A furnace is loaded and left to smelt (10 s an item). Its fuel comes from storage: coal or charcoal, then planks, then logs.
-  A later job of the same work type collects it, and the output is stored.
+- A furnace is loaded and left to smelt (10 s an item) with the fuel its choice allows (see "Fuel" below). A later job of the same
+  work type collects it, and the output is stored.
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
+
+### Reservations (added 2026-11-04)
+
+The materials pass records who holds what (`StoryColony.Claims.cs`): a build's own item in storage (planks it will place), or an input
+of the chain that crafts it (the 3 iron ore a water build's bucket is smelted from, with the chain's step outputs). The state carries
+`reservations: [{item, count, build, for_item, chain}]`.
+- **A step of the chain is the chain's.** An owner's bill that makes one of a chain's step outputs may use that chain's reserved input
+  (smelting the bucket's iron ore into ingots is what the build needs): its product lands in storage or the furnace and the build's
+  next pass counts it (the furnace's load too), reserving the ingots instead. While an owner's live bill makes a step, the build adds
+  no automatic bill for it (no double smelting).
+- **Partial batches.** Only what is free (plus what the pawn holds) is used: a bill runs a smaller batch when some is free and waits
+  only when none is, naming the builds and the amounts: "3 iron ore reserved for build b12 (iron ore) — 0 free".
+- **Release.** `POST …/bills {op:"release_claim", build, item}` → `{build, item, done}`: a chain claim cancels the build's crafting of
+  that item (it waits for it, as cancelling its auto bill does); the build's own item pauses the build. The storage and bench inspectors
+  list what builds hold of their items, each with a Release.
+
+### Bills see the chests (added 2026-11-04)
+
+Live 11-04: "Make Stick (from any planks) suspended: no planks within 32 blocks" with planks in the chest beside the table. The colony's
+record of a chest only changed with its own pawns' takes and puts, so a player's deposit was invisible. Now (`StoryColony.StockCheck.cs`):
+- A body's look inside a chest (the bot's memory: any body, any reason) newer than the record's last change replaces it
+  (`StorageState.SeenAt`). Checked before a bill waits and every 30 s.
+- Before an owner's bill waits for a missing ingredient, a pawn looks into the nearest chest within the bill's radius of the bench that
+  nobody has looked into for 10 minutes (a `look` job: `peek_container`, each chest at most every 2 minutes).
+- Every change of the stock (a deposit, a take, a corrected record) retries the waiting bills on the next pick, not on a timer.
+- The reason says what was looked at and who carries some: "no planks: checked 6 chests within 32 of the bench (2 not looked into
+  lately); Ann carries 4 (stored soon) — needs logs (chop trees)". The radius is the bill's, from the bench.
+- "From any planks" ingredients match every plank (and the ingredient filter's `id:-1` entries every meta) in the stock check, the
+  reservation and the fetch.
+
+### Furnaces are collected (added 2026-11-04)
+
+- A furnace load lands on the furnace whatever became of its bill (an auto bill the build stopped wanting while the pawn walked: live
+  11-04, three ingots smelted and never collected). An auto bill with a job in flight stays until that job ends.
+- `done` counts on collection, never on loading: the collect job's "collected N" is what the bill gets; "still smelting K" keeps the
+  rest loaded and collects it later. The pawn stores what it took out by the storage rules (a build fetches it from there).
+- The furnace's expected progress (an item every 10 s since it was loaded) is in the workbench state, `smelting: {recipe, input,
+  output, loaded_at, ready_at, estimated}`; the materials pass counts the load's output for the builds.
+- The container panel estimates a furnace's slots between looks the same way (`estimated: true`, "estimated (smelting since)"): the
+  input goes down and the output up while it was fuelled (its fuel slot, plus a coal's worth that may have been burning; a lit furnace
+  burns on). A fresh look by any body replaces the estimate.
+
+### Fuel (added 2026-11-04)
+
+A furnace's fuel is a bench setting with a per-bill override (`StoryFuels`, `StoryColony.Fuel.cs`):
+- Choices: `auto` (the default: coal or charcoal, then planks, then logs), `coal`, `charcoal`, `coal_or_charcoal`, `planks`, `logs`,
+  `lava_bucket`, `blaze_rod` (1.12.2 only), `any` (auto plus blaze rods and lava buckets). The workbench state lists the version's
+  `fuel_choices`.
+- `POST …/workbenches {op:"fuel", pos, fuel}` → `{pos, kind, designated, fuel}` sets a furnace's choice (400 for another bench kind, or a
+  fuel the version doesn't burn); `POST …/bills {op:"update", id, fuel}` overrides it for one bill (`inherit` or null clears it; furnace
+  bills only).
+- A named fuel is the only one burnt: the pawn brings only it, and the smelt primitive takes another fuel out of the fuel slot
+  first and never stands another fuel in when it runs short (`MinecraftClient.SmeltAsync` with a fuel). Auto and any leave stock the
+  builds or bills reserved (planks a build needs) unless nothing else is there.
+- What the furnace still holds counts: the colony keeps `fuel_credit` (items it can still smelt on the fuel it loaded, burn time
+  and slot leftovers); a job tops up only what its batch needs beyond it (`fuel_units` 0 = none brought). A job that finds the
+  furnace short of fuel resets the credit. The primitive itself counts the real fuel slot and burn time.
+- Rates come from the version's burn times: coal and charcoal 8 items each, planks and logs 1.5, a blaze rod 12, a lava bucket 100.
+- No allowed fuel: the bill waits with "needs fuel: no coal, charcoal, planks or logs within 32 blocks" (or the choice's own list).
+- The materials pass plans the builds' smelting with the furnace's choice too.
+
+State: a furnace bench carries `fuel` (its choice), `fuel_choices` and `fuel_credit`; every bill `fuel` (its override) and `fuel_need:
+{choice, item, name, need, have, short, per_item}` for its next batch (a brew: blaze powder, one per 20 brews; `need` 0 when the stand's
+fuel is known to last). Furnace recipes carry `fuels:[{item, name, items_per_unit}]` (the version's table), a brew its blaze powder.
+
+The web: the furnace inspector has a fuel picker (an icon per choice) at the top; each furnace bill row a fuel chip (the furnace's,
+or an override) and its fuel need ("fuel: 1 coal (have 12)", red when short); the bill dialog lists the fuel table and takes an
+override; the recipe picker shows "+ fuel" in a smelting recipe's line.
 
 ### Stations: brewing stand, enchanting table, anvil (added 2026-11-03)
 
@@ -1549,7 +1693,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - **Build holograms (added 2026-11-03).** Queued cells show in the world as translucent holograms of the block they
     will become: the block's own model and texture (variant and facing) in a calm tint, about 40 % opaque, with static
     scanlines and a thin edge line. Cyan to do, brighter while a pawn builds it, grey-blue while its build waits (paused,
-    missing materials), striped red when blocked or unsupported. Cells to dig are faint red outlines. A built cell's
+    missing materials), striped red when blocked or unsupported. Cells to dig are red outlines just outside the cell with a faint red fill over
+    the exposed top, lifted a little above the ground around them (an outline on or inside the cell's own edges is hidden by the
+    ground the cell is in). A water or lava cell still filled by a solid block is not drawn (its dig shows there). A built cell's
     hologram goes as soon as the block appears (matched by cell in the mesh worker). The cells are meshed in the worker,
     one merged mesh per state, rebuilt only when the ghosts or builds change or a block change lands on a queued cell. At
     most 20,000 cells draw; past that, and below 3 px per block, each build is one outline box. They are drawn after the
@@ -1623,7 +1769,15 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a zones palette (see "Zones": work zones, overlay layers, Erase with its kind)
   - Work, Schedule and Colony panels
 - **Work panel.** A grid of pawns by work type. Click to cycle 1–4 and off, with skill shown as the cell tint and a
-  passion mark.
+  passion mark. Roles (see "Roles"):
+  - Each row starts with a role dropdown (Custom or a role, with the role's icon). A role row shows the role's priorities in
+    dashed, lighter "from role" cells; clicking one turns the pawn Custom with the role's values plus the change, and a line under
+    the grid says "… is now Custom (was Farmer) · Undo" for 8 s.
+  - A checkbox per row (the map's selected pawns come ticked; the header box ticks all) and "N selected · Set role: …" set a role
+    for several pawns at once.
+  - The **Roles** button opens the role editor below the grid: one row per role in the same 1–4 cell style (click cycles, every
+    pawn with the role follows at once), the icon (click for the next), rename, how many pawns have it, delete (two clicks; its
+    pawns turn Custom), "New role…" + Add, and "Reset built-in roles".
 - **Schedule panel.** A grid of pawns by the 24 clock hours (00–23, as the bot indexes them); the current hour's column
   follows the page's world clock. Paint with the brush (work, sleep, anything, free) by dragging
   across cells. Copy and paste between pawns.

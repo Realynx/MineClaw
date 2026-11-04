@@ -101,6 +101,7 @@ export function ContainerContents({
           >
             {freshnessText(v, now)}
             {!v.exact && v.source !== 'unknown' ? ' · counts only' : ''}
+            {v.estimated ? ' · estimated (smelting since)' : ''}
           </p>
           {v.source === 'unknown' ? (
             <p className="py-2 text-sm text-muted" data-testid="container-unknown">

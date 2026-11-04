@@ -5,7 +5,7 @@
  * first), and the confirm bar for a placement whose water would run beyond what was drawn (the director's flow preview), or that
  * the irrigation planner pre-filled. Pure UI: StoryMode owns the requests.
  */
-import type { StoryBuildItem, StoryLiquidFlow, WaterToolId } from '@mineclaw/contracts';
+import { expandBuildItem, type StoryBuildItem, type StoryLiquidFlow, type WaterToolId } from '@mineclaw/contracts';
 import { Droplets } from 'lucide-react';
 import { Button } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
@@ -23,9 +23,11 @@ export interface PendingWater {
   warnings: string[];
 }
 
-/** The hologram cells a pending placement shows: its sources, and where the water would run (flowing water, level 4). */
+/** The hologram cells a pending placement shows: the cells it digs first (id 0: red dig outlines, the trench), its sources, and
+ * where the water would run (flowing water, level 4). */
 export function pendingHolo(p: PendingWater): Array<[number, number, number, number, number]> {
   const out: Array<[number, number, number, number, number]> = [];
+  for (const it of p.items) if (it.kind === 'remove') for (const [x, y, z] of expandBuildItem(it)) out.push([x, y, z, 0, 0]);
   for (const it of p.items)
     if (it.kind === 'water')
       for (const [x, y, z] of it.blocks ?? []) out.push([x, y, z, it.material === 'lava' ? 11 : 9, 0]);
