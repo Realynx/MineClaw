@@ -89,6 +89,28 @@ public sealed class StoryGoldenTests
                 }
     }
 
+    private static bool OldPassable(int id) =>
+        id == 0 || StoryBlocks.Plants.Contains(id) && id != 106 && id != 111 || id is 50 or 78 or 171 or 66 or 27 or 28 or 157 or 55 or 76 or 75;
+
+    private static bool OldFloorOk(int id) =>
+        !OldPassable(id) && !StoryBlocks.Liquids.Contains(id) && !StoryBlocks.Leaves.Contains(id) && !StoryWander.Hurts(id) && !StoryBlocks.IsDoor(id)
+        && id is not (30 or 60 or 26 or 54 or 146 or 58 or 61 or 62 or 85 or 107 or 113 or 139 or 96 or 167 or 101 or 102 or 160 or 65 or 106)
+        && id is not (>= 183 and <= 192)
+        && id is not (59 or 141 or 142 or 207 or 115 or 83 or 104 or 105 or 63 or 68 or 69 or 70 or 72 or 77 or 143 or 147 or 148 or 131 or 132
+            or 93 or 94 or 149 or 150 or 176 or 177);
+
+    [Fact]
+    public void Wander_floor_and_passable_tables_match_the_old_switches_for_every_id()
+    {
+        var w = new FakeStoryWorld();
+        for (int id = -2; id < 4100; id++)
+        {
+            Assert.Equal(OldPassable(id), StoryWander.Passable(id));
+            w.Set(0, 63, 0, id);
+            Assert.True(OldFloorOk(id) == StoryWander.Standable(w, 0, 64, 0), $"floor {id}");
+        }
+    }
+
     [Fact]
     public void Placing_item_and_liquid_names_for_every_state()
     {
