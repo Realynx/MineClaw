@@ -153,21 +153,35 @@ public static class IsoPalette
     private static int Darker(int idx, uint rgb, IsoColours c, int avoid1, int avoid2 = -1)
     {
         int start = idx;
-        if (c == IsoColours.Ansi16)
-            for (int k = 0; k < 4 && (idx == avoid1 || idx == avoid2); k++) idx = Darker16(idx);
-        else
-        {
-            float f = 0.8f;
-            for (int k = 0; k < 6 && (idx == avoid1 || idx == avoid2); k++, f *= 0.8f) idx = To256(Scale(rgb, f));
-        }
+        idx = c == IsoColours.Ansi16 ? StepDarker16(idx, avoid1, avoid2) : StepDarker256(idx, rgb, avoid1, avoid2);
         if (idx != avoid1 && idx != avoid2) return idx;
         // Still clashing (e.g. black): the nearest other entry.
-        int n = c == IsoColours.Ansi16 ? 16 : 256, best = start;
+        return Nearest(rgb, c, start, avoid1, avoid2);
+    }
+
+    private static int StepDarker16(int idx, int avoid1, int avoid2)
+    {
+        for (int k = 0; k < 4 && (idx == avoid1 || idx == avoid2); k++) idx = Darker16(idx);
+        return idx;
+    }
+
+    private static int StepDarker256(int idx, uint rgb, int avoid1, int avoid2)
+    {
+        float f = 0.8f;
+        for (int k = 0; k < 6 && (idx == avoid1 || idx == avoid2); k++, f *= 0.8f) idx = To256(Scale(rgb, f));
+        return idx;
+    }
+
+    /// <summary>The palette entry nearest <paramref name="rgb"/> other than the two to avoid (<paramref name="start"/> if none is nearer).</summary>
+    private static int Nearest(uint rgb, IsoColours c, int start, int avoid1, int avoid2)
+    {
+        bool ansi16 = c == IsoColours.Ansi16;
+        int n = ansi16 ? 16 : 256, best = start;
         long bd = long.MaxValue;
-        for (int i = c == IsoColours.Ansi16 ? 0 : 16; i < n; i++)
+        for (int i = ansi16 ? 0 : 16; i < n; i++)
         {
             if (i == avoid1 || i == avoid2) continue;
-            long d = Dist(rgb, c == IsoColours.Ansi16 ? Ansi16Rgb[i] : Rgb256(i));
+            long d = Dist(rgb, ansi16 ? Ansi16Rgb[i] : Rgb256(i));
             if (d < bd) { bd = d; best = i; }
         }
         return best;

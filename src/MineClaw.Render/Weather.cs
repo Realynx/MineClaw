@@ -60,17 +60,20 @@ public readonly record struct Weather(float Rain, float Thunder)
     }
 
     /// <summary>1.12.2 biome ids that never rain (deserts, savannas, mesas, hell, the End, the void).</summary>
-    public static bool Dry(int biome) => biome is 2 or 17 or 130 or 35 or 36 or 163 or 164 or 37 or 38 or 39 or 165 or 166 or 167 or 8 or 9 or 127;
+    public static bool Dry(int biome) => DryBiomes.Contains(biome);
+
+    private static readonly HashSet<int> DryBiomes = [2, 17, 130, 35, 36, 163, 164, 37, 38, 39, 165, 166, 167, 8, 9, 127];
 
     /// <summary>A 1.12.2 biome's base temperature for the rain/snow choice (only the cold ones matter; −1 unknown = mild).</summary>
-    public static float Temperature(int biome) => biome switch
+    public static float Temperature(int biome) => Temperatures.TryGetValue(biome, out var t) ? t : 0.8f;
+
+    private static readonly Dictionary<int, float> Temperatures = new()
     {
-        10 or 11 or 12 or 13 or 140 => 0f,
-        26 => 0.05f,
-        30 or 31 or 158 => -0.5f,
-        3 or 20 or 25 or 34 or 131 or 162 => 0.2f,
-        5 or 19 or 133 or 160 or 161 => 0.25f,
-        _ => 0.8f,
+        [10] = 0f, [11] = 0f, [12] = 0f, [13] = 0f, [140] = 0f,
+        [26] = 0.05f,
+        [30] = -0.5f, [31] = -0.5f, [158] = -0.5f,
+        [3] = 0.2f, [20] = 0.2f, [25] = 0.2f, [34] = 0.2f, [131] = 0.2f, [162] = 0.2f,
+        [5] = 0.25f, [19] = 0.25f, [133] = 0.25f, [160] = 0.25f, [161] = 0.25f,
     };
 
     /// <summary>What falls in a column of <paramref name="biome"/> at height <paramref name="y"/> (no wind, no noise).</summary>

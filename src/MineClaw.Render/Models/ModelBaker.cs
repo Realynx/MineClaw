@@ -72,6 +72,21 @@ public sealed class ModelBaker
     {
         var from = Vec(e.GetProperty("from"));
         var to = Vec(e.GetProperty("to"));
+        var (origin, axis, angle, rescale) = RotationOf(e);
+        bool shade = !(e.TryGetProperty("shade", out var sh) && sh.ValueKind == JsonValueKind.False);
+        var faces = new FaceDef?[6];
+        if (e.TryGetProperty("faces", out var fs))
+            foreach (var f in fs.EnumerateObject())
+            {
+                int dir = FaceOf(f.Name);
+                if (dir >= 0) faces[dir] = FaceDefOf(f.Value);
+            }
+        return new ElementDef(from, to, origin, axis, angle, rescale, shade, faces);
+    }
+
+    /// <summary>An element's rotation: origin, axis, angle and rescale (default: none about the centre).</summary>
+    private static (Vector3 Origin, char Axis, float Angle, bool Rescale) RotationOf(JsonElement e)
+    {
         Vector3 origin = new(8, 8, 8);
         char axis = 'y';
         float angle = 0;
@@ -83,23 +98,17 @@ public sealed class ModelBaker
             if (rot.TryGetProperty("angle", out var an)) angle = an.GetSingle();
             rescale = rot.TryGetProperty("rescale", out var rs) && rs.ValueKind == JsonValueKind.True;
         }
-        bool shade = !(e.TryGetProperty("shade", out var sh) && sh.ValueKind == JsonValueKind.False);
-        var faces = new FaceDef?[6];
-        if (e.TryGetProperty("faces", out var fs))
-            foreach (var f in fs.EnumerateObject())
-            {
-                int dir = FaceOf(f.Name);
-                if (dir < 0) continue;
-                var v = f.Value;
-                float[]? uv = v.TryGetProperty("uv", out var u) ? u.EnumerateArray().Select(x => x.GetSingle()).ToArray() : null;
-                int cull = v.TryGetProperty("cullface", out var c) && c.GetString() is { } cs ? FaceOf(cs) : -1;
-                int rotation = v.TryGetProperty("rotation", out var r) ? r.GetInt32() : 0;
-                int tint = v.TryGetProperty("tintindex", out var ti) ? ti.GetInt32() : -1;
-                faces[dir] = new FaceDef(uv is { Length: 4 } ? uv : null, v.TryGetProperty("texture", out var tx) ? tx.GetString() ?? "" : "", cull, rotation, tint);
-            }
-        return new ElementDef(from, to, origin, axis, angle, rescale, shade, faces);
+        return (origin, axis, angle, rescale);
     }
 
+    private static FaceDef FaceDefOf(JsonElement v)
+    {
+        float[]? uv = v.TryGetProperty("uv", out var u) ? u.EnumerateArray().Select(x => x.GetSingle()).ToArray() : null;
+        int cull = v.TryGetProperty("cullface", out var c) && c.GetString() is { } cs ? FaceOf(cs) : -1;
+        int rotation = v.TryGetProperty("rotation", out var r) ? r.GetInt32() : 0;
+        int tint = v.TryGetProperty("tintindex", out var ti) ? ti.GetInt32() : -1;
+        return new FaceDef(uv is { Length: 4 } ? uv : null, v.TryGetProperty("texture", out var tx) ? tx.GetString() ?? "" : "", cull, rotation, tint);
+    }
     private static Vector3 Vec(JsonElement a)
     {
         var v = a.EnumerateArray().Select(x => x.GetSingle()).ToArray();
@@ -206,8 +215,7 @@ public sealed class ModelBaker
     public void Bake(string model, int xRot, int yRot, bool uvlock, List<ModelQuad> dst)
     {
         var (textures, elements) = Resolve(model);
-        var vr = VariantRotation(xRot, yRot);
-        bool rotated = xRot % 360 != 0 || yRot % 360 != 0;
+        var v = new Variant(VariantRotation(xRot, yRot), xRot % 360 != 0 || yRot % 360 != 0, uvlock);
         Span<Vector3> pos = stackalloc Vector3[4];
         Span<Vector2> uv = stackalloc Vector2[4];
         foreach (var el in elements)
@@ -216,32 +224,60 @@ public sealed class ModelBaker
             for (int face = 0; face < 6; face++)
             {
                 if (el.Faces[face] is not { } fd) continue;
-                var r = fd.Uv ?? DefaultUv(face, el.From, el.To);
-                for (int i = 0; i < 4; i++)
-                {
-                    var c = Corners[face][i];
-                    var p = new Vector3(c.X == 0 ? el.From.X : el.To.X, c.Y == 0 ? el.From.Y : el.To.Y, c.Z == 0 ? el.From.Z : el.To.Z);
-                    if (el.Angle != 0) p = Vector3.Transform(p - el.Origin, erot) * scale + el.Origin;
-                    pos[i] = rotated ? Vector3.Transform(p, vr) : p;
-                    int k = (i + fd.Rotation / 90) % 4;
-                    uv[i] = new Vector2(k is 0 or 1 ? r[0] : r[2], k is 0 or 3 ? r[1] : r[3]);
-                }
-                // EnumFaceDirection's vertex order: (P1 − P0) × (P3 − P0) points out of the face (as GeoQuad.Normal).
-                var n = Vector3.Normalize(Vector3.Cross(pos[1] - pos[0], pos[3] - pos[0]));
-                if (float.IsNaN(n.X)) n = rotated ? Vector3.TransformNormal(Normals[face], vr) : Normals[face];
-                int dir = DirOf(n);
-                if (uvlock && rotated && dir >= 0 && el.Angle == 0)
-                    for (int i = 0; i < 4; i++) uv[i] = Project(dir, pos[i]);
-                int cull = fd.Cull;
-                if (cull >= 0 && rotated) cull = DirOf(Vector3.TransformNormal(Normals[cull], vr));
-                var q = GeoQuad.Make(pos[0] / 16f, pos[1] / 16f, pos[2] / 16f, pos[3] / 16f, uv[0] / 16f, uv[1] / 16f, uv[2] / 16f, uv[3] / 16f);
-                q.Tex = QuadTex.Block;
-                q.Tile = (short)_tex.IndexOf(ResolveTexture(textures, fd.Texture));
-                q.Shade = el.Shade ? FaceShade(dir >= 0 ? dir : NearestDir(n)) : 1f;
-                q.LightFace = (sbyte)(dir >= 0 && OnBoundary(dir, pos) ? dir : -1);
-                dst.Add(new ModelQuad { Q = q, TintIndex = (sbyte)fd.TintIndex, Cull = (sbyte)cull, Dir = (sbyte)dir });
+                Corners4(el, face, fd, erot, scale, v, pos, uv);
+                dst.Add(BakeFace(el, face, fd, v, textures, pos, uv));
             }
         }
+    }
+
+    /// <summary>The variant rotation (on 0..16 positions), whether it turns anything, and uv lock.</summary>
+    private readonly record struct Variant(Matrix4x4 Rotation, bool Rotated, bool UvLock);
+
+    /// <summary>A face's four corners (element rotation, then the variant's) and their uvs (the face's uv rotation applied).</summary>
+    private static void Corners4(ElementDef el, int face, FaceDef fd, Matrix4x4 erot, Vector3 scale, Variant v, Span<Vector3> pos, Span<Vector2> uv)
+    {
+        var r = fd.Uv ?? DefaultUv(face, el.From, el.To);
+        for (int i = 0; i < 4; i++)
+        {
+            var c = Corners[face][i];
+            var p = CornerOf(el, c);
+            if (el.Angle != 0) p = Vector3.Transform(p - el.Origin, erot) * scale + el.Origin;
+            pos[i] = v.Rotated ? Vector3.Transform(p, v.Rotation) : p;
+            int k = (i + fd.Rotation / 90) % 4;
+            uv[i] = new Vector2(k is 0 or 1 ? r[0] : r[2], k is 0 or 3 ? r[1] : r[3]);
+        }
+    }
+
+    private static Vector3 CornerOf(ElementDef el, (int X, int Y, int Z) c) =>
+        new(c.X == 0 ? el.From.X : el.To.X, c.Y == 0 ? el.From.Y : el.To.Y, c.Z == 0 ? el.From.Z : el.To.Z);
+
+    /// <summary>The baked quad of one face from its corners: direction, uv lock, cull face, texture, shade and light face.</summary>
+    private ModelQuad BakeFace(ElementDef el, int face, FaceDef fd, Variant v, Dictionary<string, string> textures, Span<Vector3> pos, Span<Vector2> uv)
+    {
+        // EnumFaceDirection's vertex order: (P1 − P0) × (P3 − P0) points out of the face (as GeoQuad.Normal).
+        var n = Vector3.Normalize(Vector3.Cross(pos[1] - pos[0], pos[3] - pos[0]));
+        if (float.IsNaN(n.X)) n = TurnedNormal(face, v);
+        int dir = DirOf(n);
+        if (v.UvLock && v.Rotated && dir >= 0 && el.Angle == 0) LockUv(dir, pos, uv);
+        int cull = CullDir(fd.Cull, v);
+        var q = GeoQuad.Make(pos[0] / 16f, pos[1] / 16f, pos[2] / 16f, pos[3] / 16f, uv[0] / 16f, uv[1] / 16f, uv[2] / 16f, uv[3] / 16f);
+        q.Tex = QuadTex.Block;
+        q.Tile = (short)_tex.IndexOf(ResolveTexture(textures, fd.Texture));
+        q.Shade = el.Shade ? FaceShade(dir >= 0 ? dir : NearestDir(n)) : 1f;
+        q.LightFace = (sbyte)(dir >= 0 && OnBoundary(dir, pos) ? dir : -1);
+        return new ModelQuad { Q = q, TintIndex = (sbyte)fd.TintIndex, Cull = (sbyte)cull, Dir = (sbyte)dir };
+    }
+
+    /// <summary>A face's normal turned with the variant (a degenerate quad's fallback).</summary>
+    private static Vector3 TurnedNormal(int face, Variant v) => v.Rotated ? Vector3.TransformNormal(Normals[face], v.Rotation) : Normals[face];
+
+    /// <summary>The cull face turned with the variant.</summary>
+    private static int CullDir(int cull, Variant v) => cull >= 0 && v.Rotated ? DirOf(Vector3.TransformNormal(Normals[cull], v.Rotation)) : cull;
+
+    /// <summary>uv lock: the uvs follow the rotated face's position in the block, not the element.</summary>
+    private static void LockUv(int dir, Span<Vector3> pos, Span<Vector2> uv)
+    {
+        for (int i = 0; i < 4; i++) uv[i] = Project(dir, pos[i]);
     }
 
     private static bool OnBoundary(int dir, ReadOnlySpan<Vector3> p)
