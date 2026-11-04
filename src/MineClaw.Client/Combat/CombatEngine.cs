@@ -917,11 +917,21 @@ public sealed partial class CombatEngine
     private MoveInput SparTick(Fight f, PhysicsState phys, Ctx ctx)
     {
         var s = f.Spar!;
-        var me = phys.Position;
         var face = Hold(phys);
         var opp = _w.Entities.Get(s.OpponentId) ?? _w.Entities.FindPlayer(s.Opponent);
         if (opp is not null) s.OpponentId = opp.Id;
+        if (SparStopReason(f, s, phys, opp) is { } stop) { EndFight(f, stop, phys, ctx); return face; }
+        if (opp is null) return face;
 
+        Sample(f, phys, opp);
+        var look = FaceAt(phys, opp);
+        if (SparBetweenRounds(f, s, phys, ctx, opp, look, face) is { } between) return between;
+        return SparFightTick(f, s, phys, ctx, opp, look, face);
+    }
+
+    /// <summary>Why the spar stops now: the request, the opponent out of sight for 2 s, or <see cref="SparStopCheck"/>.</summary>
+    private string? SparStopReason(Fight f, SparState s, PhysicsState phys, Entity? opp)
+    {
         string? stop = f.StopRequest;
         if (stop is null && opp is null)
         {
@@ -929,14 +939,12 @@ public sealed partial class CombatEngine
             else if (_tick - s.MissingSince > 40) stop = "opponent out of sight";
         }
         else if (opp is not null) s.MissingSince = -1;
-        stop ??= SparStopCheck(f, s, phys, opp);
-        if (stop is not null) { EndFight(f, stop, phys, ctx); return face; }
-        if (opp is null) return face;
+        return stop ?? SparStopCheck(f, s, phys, opp);
+    }
 
-        Sample(f, phys, opp);
-        var look = FaceAt(phys, opp);
-
-        // Rounds: first to N confirmed hits; short pause between rounds.
+    /// <summary>Rounds: first to N confirmed hits; short pause between rounds (back to the centre, "go!" as it ends). Null = fighting.</summary>
+    private MoveInput? SparBetweenRounds(Fight f, SparState s, PhysicsState phys, Ctx ctx, Entity opp, MoveInput look, MoveInput face)
+    {
         if (s.Rounds is { } rounds && (s.RoundBot >= Options.SparRoundHits || s.RoundOpp >= Options.SparRoundHits))
         {
             string score = $"me {s.RoundBot} - {s.Opponent} {s.RoundOpp}";
@@ -948,67 +956,95 @@ public sealed partial class CombatEngine
             s.PauseUntil = _tick + 60;
             return face;
         }
-        if (_tick < s.PauseUntil)
-        {
-            if (s.PauseUntil - _tick == 1) ctx.Chat = "go!";
-            return MoveOrHold(phys, new BlockPos(s.Center.X, s.Center.Y, s.Center.Z), look, sneak: false);
-        }
+        if (_tick >= s.PauseUntil) return null;
+        if (s.PauseUntil - _tick == 1) ctx.Chat = "go!";
+        return MoveOrHold(phys, new BlockPos(s.Center.X, s.Center.Y, s.Center.Z), look, sneak: false);
+    }
 
+    private MoveInput SparFightTick(Fight f, SparState s, PhysicsState phys, Ctx ctx, Entity opp, MoveInput look, MoveInput face)
+    {
+        var me = phys.Position;
         double reach = CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(opp));
-        Vec3d? moveTo = null;
         // Positioning: my knockback (away from them) and theirs (away from me) should both point into the zone.
         // A sprinting player's hit throws ~4x further (b1.8 sprint knockback, CombatRules.SprintKnockbackHorizontal).
         double myDepth = opp.IsSprinting ? Math.Max(Options.KnockbackDepth, Options.SprintKnockbackDepth) : Options.KnockbackDepth;
         bool myBackUnsafe = CombatGeometry.EdgeBehind(_w, me, opp.Position, myDepth);
         bool theirBackUnsafe = CombatGeometry.EdgeBehind(_w, opp.Position, me, Options.KnockbackDepth);
-        if (myBackUnsafe || theirBackUnsafe || (s.Stance is not null && _tick <= s.StanceUntil))
-        {
-            if (s.Stance is null || _tick > s.StanceUntil || CombatGeometry.EdgeBehind(_w, s.Stance.Value.BottomCenter, opp.Position, myDepth))
-            {
-                s.Stance = s.Zone.Stance(_w, me, opp.Position, myDepth);
-                s.StanceUntil = _tick + 20;
-                Log("reposition", phys, opp.Position, new() { ["to"] = s.Stance?.ToString() ?? "none", ["why"] = myBackUnsafe ? "edge behind me" : "edge behind them" });
-            }
-            if (s.Stance is { } st && Horizontal(me, st.BottomCenter) > 0.3) moveTo = st.BottomCenter;
-        }
-        else if (reach > Options.Reach - 0.3 && SafeApproachPoint(me, opp.Position, 2.2) is { } p && s.Zone.Contains(p))
-            moveTo = p;
+        var moveTo = SparMoveTo(s, phys, opp, reach, myDepth, myBackUnsafe, theirBackUnsafe);
 
         int cooldown = Cooldown(opp.Id);
         bool inReach = reach <= Options.Reach && CombatGeometry.HasLineOfSight(_w, phys.EyePosition, CombatRules.AimPoint(opp));
-        if (inReach && cooldown <= 0 && phys.OnGround)
-        {
-            // The opponent's knockback must land on safe ground too; and never a hit that could be fatal.
-            int weapon = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
-            double worst = s.Model.WorstHit(weapon, couldCrit: false, Armor(opp));
-            if (s.Model.NextHitRisky(worst)) { EndFight(f, "next hit could be dangerous for the opponent", phys, ctx); return face; }
-            int oppEdge = SparZone.EdgeAt(_w, opp.Position);
-            if (oppEdge <= Options.SparNoSwingEdge)
-                Log("hold_fire", phys, opp.Position, new() { ["why"] = $"opponent {oppEdge} from an edge" });
-            else if (theirBackUnsafe)
-                Log("hold_fire", phys, opp.Position, new() { ["why"] = "opponent's knockback would carry them near an edge" });
-            else Swing(f, opp, phys, ctx);
-        }
+        if (inReach && cooldown <= 0 && phys.OnGround && SparSwingEnded(f, s, phys, ctx, opp, theirBackUnsafe)) return face;
         return moveTo is { } m ? CombatGeometry.SteerTo(me, m, look.Yaw, look.Pitch) : look;
     }
 
-    private string? SparStopCheck(Fight f, SparState s, PhysicsState phys, Entity? opp)
+    /// <summary>Where to stand: a stance with both knockbacks into the zone while an edge is behind either of us (or the last stance
+    /// still holds), else closer in on safe ground inside the zone.</summary>
+    private Vec3d? SparMoveTo(SparState s, PhysicsState phys, Entity opp, double reach, double myDepth, bool myBackUnsafe, bool theirBackUnsafe)
+    {
+        if (myBackUnsafe || theirBackUnsafe || (s.Stance is not null && _tick <= s.StanceUntil))
+            return SparStance(s, phys, opp, myDepth, myBackUnsafe);
+        if (reach > Options.Reach - 0.3 && SafeApproachPoint(phys.Position, opp.Position, 2.2) is { } p && s.Zone.Contains(p)) return p;
+        return null;
+    }
+
+    private Vec3d? SparStance(SparState s, PhysicsState phys, Entity opp, double myDepth, bool myBackUnsafe)
     {
         var me = phys.Position;
+        if (s.Stance is null || _tick > s.StanceUntil || CombatGeometry.EdgeBehind(_w, s.Stance.Value.BottomCenter, opp.Position, myDepth))
+        {
+            s.Stance = s.Zone.Stance(_w, me, opp.Position, myDepth);
+            s.StanceUntil = _tick + 20;
+            Log("reposition", phys, opp.Position, new() { ["to"] = s.Stance?.ToString() ?? "none", ["why"] = myBackUnsafe ? "edge behind me" : "edge behind them" });
+        }
+        return s.Stance is { } st && Horizontal(me, st.BottomCenter) > 0.3 ? st.BottomCenter : null;
+    }
+
+    /// <summary>The opponent's knockback must land on safe ground too; and never a hit that could be fatal (that ends the spar: true).
+    /// Otherwise swings, or holds fire with the opponent near an edge.</summary>
+    private bool SparSwingEnded(Fight f, SparState s, PhysicsState phys, Ctx ctx, Entity opp, bool theirBackUnsafe)
+    {
+        int weapon = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
+        double worst = s.Model.WorstHit(weapon, couldCrit: false, Armor(opp));
+        if (s.Model.NextHitRisky(worst)) { EndFight(f, "next hit could be dangerous for the opponent", phys, ctx); return true; }
+        int oppEdge = SparZone.EdgeAt(_w, opp.Position);
+        if (oppEdge <= Options.SparNoSwingEdge)
+            Log("hold_fire", phys, opp.Position, new() { ["why"] = $"opponent {oppEdge} from an edge" });
+        else if (theirBackUnsafe)
+            Log("hold_fire", phys, opp.Position, new() { ["why"] = "opponent's knockback would carry them near an edge" });
+        else Swing(f, opp, phys, ctx);
+        return false;
+    }
+
+    private string? SparStopCheck(Fight f, SparState s, PhysicsState phys, Entity? opp) =>
+        SparHealthStop(opp) ?? s.Model.StopReason() ?? SparArenaStop(s, phys, opp) ?? SparIntrusionStop(f, s);
+
+    /// <summary>My hp at the threshold, or the opponent's next (critical) hit could bring me to 1.</summary>
+    private string? SparHealthStop(Entity? opp)
+    {
         int hp = _w.Player.Health;
         if (hp <= Options.SparSelfStopHealth) return $"my hp {hp} at threshold";
-        if (opp is not null)
-        {
-            int incoming = (int)Math.Ceiling(Rules.DamageAfterArmor(Rules.CritDamage(Rules.AttackDamage(opp.HeldItem)),
-                Enumerable.Range(5, 4).Select(i => _w.Inventory.GetPlayerSlot(i))) - 1e-9);
-            if (hp - incoming <= 1) return $"my hp {hp}: their next hit could take {incoming}";
-        }
-        if (s.Model.StopReason() is { } r) return r;
+        if (opp is null) return null;
+        int incoming = (int)Math.Ceiling(Rules.DamageAfterArmor(Rules.CritDamage(Rules.AttackDamage(opp.HeldItem)),
+            Enumerable.Range(5, 4).Select(i => _w.Inventory.GetPlayerSlot(i))) - 1e-9);
+        return hp - incoming <= 1 ? $"my hp {hp}: their next hit could take {incoming}" : null;
+    }
+
+    /// <summary>Either of us too close to an edge, or out of the arena.</summary>
+    private string? SparArenaStop(SparState s, PhysicsState phys, Entity? opp)
+    {
+        var me = phys.Position;
         int stopEdge = Options.MinEdgeDistance - 1;
         if (phys.OnGround && SparZone.EdgeAt(_w, me) <= stopEdge) return "I got too close to the edge";
         if (opp is not null && SparZone.EdgeAt(_w, opp.Position) <= stopEdge) return $"{s.Opponent} got too close to the edge";
         if (s.Zone.OutsideDistance(me) > Options.ArenaLeaveSlack) return "I left the arena";
         if (opp is not null && s.Zone.OutsideDistance(opp.Position) > Options.ArenaLeaveSlack) return $"{s.Opponent} left the arena";
+        return null;
+    }
+
+    /// <summary>A mob near the arena, or the time limit.</summary>
+    private string? SparIntrusionStop(Fight f, SparState s)
+    {
         var center = s.Center.BottomCenter;
         var mob = _w.Entities.Nearest(center, 16, e => e.Kind == EntityKind.Mob
             && (CombatRules.IsThreat(e) || s.Zone.OutsideDistance(e.Position) <= 2));
