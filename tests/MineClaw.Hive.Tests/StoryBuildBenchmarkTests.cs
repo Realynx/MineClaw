@@ -7,7 +7,7 @@ namespace MineClaw.Hive.Tests;
 /// <summary>
 /// Building throughput (docs/web/story-mode.md "Building fast"; live 11-03: "Building floors and placing blocks seems to go very
 /// slowly", pawns' shifts were ~90% <c>wait</c>). A simulated colony on simulated time: 10 pawns with only Build on run the director's
-/// jobs the way <c>story_pawn</c> does (walk at 3.3 blocks/s in a straight line, a chest session of 2.5 s with the chest held, a
+/// jobs the way <c>story_pawn</c> does (walk at 3.3 blocks/s in a straight line, a chest session of 1.5 s with the chest held, a
 /// placement of 0.6 s within reach, 0.5 s per job for asking and reporting, a hold's seconds), over a 16×16 planks floor and a 4×4×3 cobblestone wall ring, with the materials split over two chests.
 /// It reports blocks per minute and the share of pawn time spent waiting.
 /// </summary>
@@ -44,7 +44,7 @@ public sealed class StoryBuildBenchmarkTests(ITestOutputHelper output)
         private void Merge() => Inv = Inv.Where(s => s.Count > 0).GroupBy(s => (s.Id, s.Meta)).Select(g => new Stack(g.Key.Id, g.Key.Meta, g.Sum(s => s.Count))).ToList();
     }
 
-    private const double Walk = 3.3, Reach = 4.5, ChestSession = 2.5, PlaceTime = 0.6, JobOverhead = 0.5;
+    private const double Walk = 3.3, Reach = 4.5, ChestSession = 1.5, PlaceTime = 0.6, JobOverhead = 0.5;
 
     /// <summary>Runs the colony until its builds are done (or the cap). <paramref name="chestWaits"/>: a withdraw at a chest another
     /// body holds waits its turn (up to 30 s: the client's 12 s wait plus the script's retries) instead of failing "busy".</summary>
@@ -176,25 +176,31 @@ public sealed class StoryBuildBenchmarkTests(ITestOutputHelper output)
         return new SimResult(placed, total, secs, idlePct, failures, busy, occupied, failLines, jobs, sessions);
     }
 
-    internal static void FloorAndWalls(StoryColony c, FakeStoryWorld w, FakeStoryHost h)
+    /// <summary>The scenario: a 16×16 planks floor and a 4×4×3 cobblestone wall ring, the materials split over two chests. Exact:
+    /// what the builds need and no more (what the builds' auto bills make); else plenty (320 planks, 42 cobblestone).</summary>
+    internal static Action<StoryColony, FakeStoryWorld, FakeStoryHost> FloorAndWalls(bool exact) => (c, w, h) =>
     {
         P3 a = new(4, 64, 8), b = new(8, 64, 4);
         w.Set(a.X, a.Y, a.Z, 54); w.Set(b.X, b.Y, b.Z, 54);
-        h.Chests[a] = [new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(4, 0, 18)];
-        h.Chests[b] = [new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(4, 0, 24)];
+        h.Chests[a] = exact ? [new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(4, 0, 18)]
+            : [new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(4, 0, 18)];
+        h.Chests[b] = exact ? [new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(4, 0, 18)]
+            : [new Stack(5, 0, 64), new Stack(5, 0, 64), new Stack(4, 0, 24)];
         Assert.Null(c.StorageOp("set", [a, b], null, "normal", null).Error);
         Assert.Null(c.BuildsOp("add", new JsonArray(
             new JsonObject { ["kind"] = "floor", ["area"] = new JsonArray(10, 64, 10, 25, 64, 25), ["material"] = "planks" },
             new JsonObject { ["kind"] = "wall", ["area"] = new JsonArray(30, 64, 10, 33, 64, 13), ["material"] = "cobblestone", ["height"] = 3 }), null).Error);
-    }
+    };
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void Ten_pawns_lay_a_16x16_floor_and_a_wall_ring_from_two_chests(bool chestWaits)
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public void Ten_pawns_lay_a_16x16_floor_and_a_wall_ring_from_two_chests(bool chestWaits, bool exact)
     {
-        var r = Run(10, FloorAndWalls, chestWaits: chestWaits);
-        output.WriteLine($"chest waits {chestWaits}; 10 pawns, 16x16 floor + 4x4x3 walls: {r.Placed}/{r.Total} in {r.Seconds:0} s = {r.PerMinute:0.0} blocks/min, idle {r.IdlePct:0}%, " +
+        var r = Run(10, FloorAndWalls(exact), chestWaits: chestWaits);
+        output.WriteLine($"stock {(exact ? "exact" : "plenty")}, chest waits {chestWaits}; 10 pawns, 16x16 floor + 4x4x3 walls: {r.Placed}/{r.Total} in {r.Seconds:0} s = {r.PerMinute:0.0} blocks/min, idle {r.IdlePct:0}%, " +
                          $"{r.Failures} failed jobs ({r.Busy} chest busy, {r.Occupied} occupied), {r.Jobs} jobs, {r.ChestSessions} chest sessions");
         foreach (var l in r.FailLines) output.WriteLine("  " + l);
         Assert.Equal(r.Total, r.Placed);
