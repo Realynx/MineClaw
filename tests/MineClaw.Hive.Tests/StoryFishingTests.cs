@@ -77,6 +77,11 @@ public sealed class StoryFishingTests
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: [new Stack(StoryColony.FishingRod, 0, 1), new Stack(StoryColony.RawFish, 0, 3)]);
         c.Report(c.P(), a["id"]!.GetValue<string>(), "done", "fished: 4 cast(s), 3 bite(s), 3 fish caught", null);
         Assert.Equal(3, c.Zones.Single(z => z.Id == id).Catches);
+        // It keeps its catch and fishes on (StoryLootBatchingTests); with its pockets nearly full it takes it all to storage.
+        var more = c.Next(0);
+        Assert.Equal("fish", more["kind"]!.GetValue<string>());
+        h.Lives[c.P()] = h.Lives[c.P()] with { FreeSlots = 2 };
+        c.Report(c.P(), more["id"]!.GetValue<string>(), "done", "fished: 1 cast(s), 0 bite(s), 0 fish caught", null);
         var next = c.Next(0);
         Assert.NotNull(next["stash"]);
         Assert.Contains(w.Data.Item(StoryColony.RawFish).Name, next["stash"]![0]!["items"]!.ToJsonString());

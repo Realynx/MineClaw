@@ -169,6 +169,30 @@ public sealed partial class StoryColony
         return j;
     }
 
+    // ---------------------------------------------------------------- keeping loot while gathering
+
+    /// <summary>A pawn this close to full unloads before its next target.</summary>
+    public const int NearlyFull = 2;
+    private readonly Dictionary<string, string> _lastWork = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The old way (benchmarks only): every gathering job is followed by a trip to storage.</summary>
+    internal bool DepositEachJob { get; set; }
+
+    /// <summary>
+    /// After a gathering job the pawn keeps its loot and goes on when: it has more than <see cref="NearlyFull"/> free slots, its hours
+    /// are still work (or anything), and there is another target of the same work for it. Otherwise one trip takes everything to
+    /// storage. A drafted pawn never gets here (it keeps what it has); a build that needs what it carries takes it from its pockets.
+    /// </summary>
+    private bool KeepGathering(PawnState p, PawnLive live)
+    {
+        if (DepositEachJob || live.FreeSlots <= NearlyFull) return false;
+        if (!_lastWork.TryGetValue(p.Name, out var type) || type == WorkTypes.Haul) return false; // a haul's drops go now
+        if (p.Priorities.GetValueOrDefault(type) is < 1 or > 4) return false;
+        int hour = HourNow;
+        var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
+        if (block is not (ScheduleBlocks.Work or ScheduleBlocks.Anything)) return false; // bed or free time: unload first
+        return Candidate(type, p, live) != null;
+    }
+
     // ---------------------------------------------------------------- drops on the ground
 
     /// <summary>A drop's age: from the first sighting by any body (or by the colony).</summary>

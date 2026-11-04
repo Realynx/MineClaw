@@ -148,7 +148,8 @@ The **Pawn** object:
 3. Urgent needs:
    - hp ≤ 8 (brave 4, skittish 12) with a monster within 12 blocks: flee home, or away from it.
    - food ≤ 6 (skittish 8): eat. With no food on it, the pawn fetches some from storage first; with none anywhere, an alert.
-4. After a gathering job, or with ≤ 4 free slots, the pawn takes what it carries to storage.
+4. With ≤ 4 free slots, or after a gathering job once that run is over (see "Keeping loot while gathering"), the pawn takes what it
+   carries to storage.
 5. The schedule hour (1000 ticks an hour, tick 0 = 06:00):
    - sleep: to its bed, else its own spot at home (see "Homes and beds").
    - free: wander the home area (see "Idle behaviour").
@@ -352,6 +353,28 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
   ignored (see Defending).
 - The pawn's row carries `stuck` (why, or null).
+
+### Keeping loot while gathering (added 2026-11-04)
+
+Fox 11-04: "they bring the block they mined back to the chest right away. They shouldn't. They can dump their inventory all at once
+later while they keep mining until the job is done or their inventory is full."
+
+- After a gathering job (a designation, a zone task, a crop, a catch, a furnace's output), the pawn keeps what it picked up and goes on
+  to its next job. That is its next target of the same work when there is one.
+- One trip later takes everything to storage, by the usual rules (every chest of the load in one trip). That trip comes when:
+  - it has 2 free slots or fewer;
+  - no target of that work is left for it;
+  - its hours turn to sleep or free time;
+  - nothing is left to do at all.
+- Exceptions:
+  - A hauler's pick-ups still go at once (they are batched already).
+  - A drafted pawn keeps what it carries.
+  - A build that needs what a pawn carries takes it from its pockets (no fetch).
+- Benchmark (`StoryLootBatchingTests`, 24 dirt cells, the chest 9 blocks away, simulated time): about 6.5 → 18 blocks a minute.
+- **Tool rules between blocks.** Every block is its own job, and its tool is planned when it is handed out. A material rule or gear
+  policy changed while a pawn works takes effect at its next block: it fetches the newly wanted tool from storage on the way, or holds
+  the one it carries. The block under way finishes as it started (never cut mid-swing). A rule that now waits (an enchantment that isn't
+  there, fallback `wait`) leaves the rest of the field waiting with that reason and no failure.
 
 ### Defending (added 2026-11-04)
 
