@@ -405,4 +405,67 @@ describe('the mock director: a golden run', () => {
     const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
     expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
   });
+
+  it('materials: builds without benches, auto-placed stations, smelting, auto bills and their cancel (pins the plan pass)', () => {
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => t });
+    const trace: unknown[] = [];
+    const call = (label: string, f: () => unknown) => {
+      try {
+        trace.push([label, f() ?? null]);
+      } catch (e) {
+        const err = e as { status?: number; message?: string };
+        trace.push([label, 'error', err.status ?? null, err.message ?? String(e)]);
+      }
+    };
+    const { id } = sim.create({ name: 'Plan', pawns: 2 });
+    const builds = () => call('builds', () => sim.state(id).builds);
+    const benches = () => call('benches', () => sim.state(id).workbenches);
+    call('release table', () => sim.workbenches(id, { op: 'release', pos: [-2, 64, -2] }));
+    call('add', () =>
+      sim.builds(id, {
+        op: 'add',
+        items: [
+          { kind: 'fence', area: [3, 64, 3, 6, 64, 3] },
+          { kind: 'wall', area: [8, 64, 8, 10, 64, 10], material: 'stone', height: 2 },
+          { kind: 'window', blocks: [[0, 65, 9]], material: 'glass' },
+          { kind: 'door', blocks: [[1, 64, 9]], material: 'oak_planks' },
+          { kind: 'floor', area: [0, 63, 12, 2, 63, 13], material: 'cobblestone' },
+          { kind: 'water', blocks: [[22, 63, 21]], material: 'water' },
+        ],
+      } as never),
+    );
+    builds();
+    call('no auto place', () => sim.options(id, { autoPlaceBenches: false }));
+    call('add more', () =>
+      sim.builds(id, { op: 'add', items: [{ kind: 'block', blocks: [[5, 64, 5]], material: 'bricks' }] } as never),
+    );
+    builds();
+    call('auto place', () => sim.options(id, { autoPlaceBenches: true }));
+    call('designate table', () => sim.workbenches(id, { op: 'designate', pos: [-2, 64, -2] }));
+    builds();
+    benches();
+    call('designate furnace', () => sim.workbenches(id, { op: 'designate', pos: [-3, 64, -2] }));
+    builds();
+    benches();
+    const auto = (sim.state(id).workbenches ?? []).flatMap((b) => b.bills).filter((b) => (b.forBuild ?? null) !== null);
+    if (auto[0]) call('cancel auto', () => sim.bills(id, { op: 'remove', id: auto[0]!.id }));
+    builds();
+    benches();
+    for (let i = 0; i < 6; i++) {
+      for (let k = 0; k < 40; k++) {
+        t += 500;
+        sim.step(500);
+      }
+      builds();
+      benches();
+    }
+    call('reorder', () =>
+      sim.builds(id, { op: 'reorder', ids: (sim.state(id).builds ?? []).map((b) => b.id).reverse() } as never),
+    );
+    builds();
+    benches();
+    expect(JSON.stringify(trace)).toMatch(/waiting|blocked/);
+    const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
+    expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
+  });
 });

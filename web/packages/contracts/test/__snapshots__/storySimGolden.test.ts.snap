@@ -1,5 +1,134 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`the mock director: a golden run > materials: builds without benches, auto-placed stations, smelting, auto bills and their cancel (pins the plan pass) 1`] = `
+[
+  [
+    "release table",
+    "3ba5a136a3f62236",
+  ],
+  [
+    "add",
+    "addd02bbd2170c4a",
+  ],
+  [
+    "builds",
+    "e4f459181e395a89",
+  ],
+  [
+    "no auto place",
+    "54cfb1a8af1f56fb",
+  ],
+  [
+    "add more",
+    "c562d4b313eeb522",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "auto place",
+    "1920ddae38d9ac8e",
+  ],
+  [
+    "designate table",
+    "251e57a70805520f",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "designate furnace",
+    "74d7c25cff050f09",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "cancel auto",
+    "a6be1227bba9e1d9",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "reorder",
+    "2157d74fd3a1a380",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+]
+`;
+
 exports[`the mock director: a golden run > records every request and the colony as it works (pins storySim.ts) 1`] = `
 [
   [

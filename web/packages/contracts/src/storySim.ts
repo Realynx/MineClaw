@@ -2071,145 +2071,171 @@ export class StorySim {
    */
   private plan(c: Colony): void {
     const pool = new Map(c.stock);
-    const hasTable = this.hasBench(c, 'crafting_table');
-    const hasFurnace = this.hasBench(c, 'furnace');
-    const wants: Array<{ build: Key; item: string; recipe: string; n: number; bench: string }> = [];
+    const benches: PlanBenches = { table: this.hasBench(c, 'crafting_table'), furnace: this.hasBench(c, 'furnace') };
+    const wants: PlanWant[] = [];
     for (const f of [...c.builds.values()].sort((a, b) => a.v.order - b.v.order)) {
       const b = f.v;
       if (b.status === 'done' || b.status === 'paused' || b.kind === 'remove') continue;
-      if (b.kind === 'water') {
-        // A liquid build needs one bucket (kept, never used up), not one per cell.
-        const buckets = (pool.get('325:0') ?? 0) + (pool.get('326:0') ?? 0) + (pool.get('327:0') ?? 0);
-        const mats: StoryBuildMaterial[] = [
-          { item: 'bucket', label: 'Bucket', need: 1, have: buckets > 0 ? 1 : 0, crafting: 0, short: buckets > 0 ? 0 : 1, via: 'craft', chain: ['craft 1 Bucket from 3 Iron Ingot (table)'], raw: buckets > 0 ? [] : ['3 Iron Ingot'] },
-        ];
-        if (JSON.stringify(mats) !== JSON.stringify(b.materials)) {
-          b.materials = mats;
-          f.rev = this.bump(c);
-        }
-        continue;
-      }
-      // What the build places: its ghosts' block (a fence's fence, a door's door), else its material.
-      const cells = (c.ghostCells.get(b.id) ?? []).filter((g) => g[3] !== 0);
-      const [mid, mmeta] = cells[0] ? [cells[0][3], cells[0][4]] : materialKey(b.material);
-      const left = cells.filter((g) => g[6] !== 'done').length;
-      const cat =
-        SIM_ARCHITECT.find((e) => e[5][0] === mid && e[5][1] === mmeta) ??
-        SIM_ARCHITECT.find((e) => e[4][0] === mid) ??
-        SIM_ARCHITECT.find((e) => e[5][0] === mid);
-      const key = cat ? `${cat[4][0]}:${cat[4][1]}` : `${mid}:${mmeta}`;
-      const have = Math.min(left, pool.get(key) ?? 0);
-      pool.set(key, (pool.get(key) ?? 0) - have);
-      const label = cat?.[1] ?? storyItemLabel(mid, mmeta);
-      const short0 = left - have;
-      let crafting = 0;
-      let via = 'none';
-      const chain: string[] = [];
-      const raw: string[] = [];
-      let station: StoryBuild['station'] = null;
-      if (short0 > 0 && cat && cat[7] && !(b.noCraft ?? []).includes(cat[0])) {
-        const [rid, rmeta] = cat[7].split(':').map(Number) as [number, number];
-        const smelt = cat[3] === 'furnace';
-        via = smelt ? 'smelt' : 'craft';
-        chain.push(
-          `${smelt ? 'smelt' : 'craft'} ${short0} ${label} from ${storyItemLabel(rid, rmeta)}${cat[3] === 'workbench' ? ' (table)' : ''}`,
-        );
-        const rawHave = pool.get(cat[7]) ?? 0;
-        const can = Math.min(short0, Math.floor(rawHave * cat[8]));
-        const needsTable = cat[3] === 'workbench' || cat[0] === 'glass_pane';
-        const benchOk = (!needsTable || hasTable) && (!smelt || hasFurnace);
-        if (can > 0) {
-          pool.set(cat[7], rawHave - Math.ceil(can / cat[8]));
-          crafting = can;
-          if (benchOk) {
-            const recipe = STORY_DEFAULT_RECIPES.find((r) => r.output[0] === cat[4][0])?.id ?? `craft:${cat[0]}`;
-            wants.push({ build: b.id, item: cat[0], recipe, n: can, bench: smelt ? 'furnace' : 'crafting_table' });
-          }
-        }
-        if (!benchOk && c.options.autoPlaceBenches)
-          station = { kind: !hasTable ? 'crafting_table' : 'furnace', pos: [c.home[0] + 2, c.home[1], c.home[2]] };
-        if (short0 - can > 0) raw.push(`${Math.ceil((short0 - can) / cat[8])} ${storyItemLabel(rid, rmeta)}`);
-      } else if (short0 > 0) raw.push(`${short0} ${label}`);
-      const mats: StoryBuildMaterial[] = left
-        ? [{ item: cat?.[0] ?? key, label, need: left, have, crafting, short: short0 - crafting, via, chain, raw }]
-        : [];
-      const status =
-        b.status === 'queued' || b.status === 'blocked' || b.status === 'waiting'
-          ? short0 === 0
-            ? 'queued'
-            : crafting > 0
-              ? 'waiting'
-              : 'blocked'
-          : b.status;
-      const reason =
-        short0 === 0
-          ? null
-          : crafting > 0
-            ? `waiting for ${crafting} ${label.toLowerCase()} (being crafted)`
-            : `need ${short0} ${label.toLowerCase()}`;
-      if (
-        JSON.stringify([mats, station, status, reason]) !==
-        JSON.stringify([b.materials, b.station ?? null, b.status, b.reason ?? null])
-      ) {
-        b.materials = mats;
-        b.station = station;
-        b.status = status;
-        b.reason = reason;
-        f.rev = this.bump(c);
-      }
+      if (b.kind === 'water') this.planWater(c, f, pool);
+      else this.planBuild(c, f, pool, benches, wants);
     }
     // Auto bills follow the wants: targets track the shortfall, the rest go, new ones join the bench's front.
-    for (const f of c.benches.values()) {
-      let changed = false;
-      const kept: StoryBill[] = [];
-      for (const bill of f.v.bills) {
-        if ((bill.forBuild ?? null) === null) {
-          kept.push(bill);
-          continue;
-        }
-        const w = wants.find(
-          (x) => String(x.build) === String(bill.forBuild) && x.recipe === bill.recipe && x.bench === f.v.kind,
-        );
-        if (!w) {
-          changed = true;
-          continue;
-        }
-        wants.splice(wants.indexOf(w), 1);
-        if (bill.target !== bill.done + w.n) {
-          bill.target = bill.done + w.n;
-          changed = true;
-        }
-        kept.push(bill);
-      }
-      for (const w of wants.filter((x) => x.bench === f.v.kind)) {
-        kept.unshift({
-          id: `bill${c.seq++}`,
-          recipe: w.recipe,
-          mode: 'count',
-          target: w.n,
-          done: 0,
-          paused: false,
-          suspendedReason: null,
-          ingredients: { allow: ['*'], deny: [] },
-          radius: 256,
-          pawn: 'any',
-          minSkill: null,
-          store: 'best',
-          forBuild: w.build,
-          forItem: w.item,
-          step: 0,
-        });
-        changed = true;
-      }
-      for (let i = wants.length - 1; i >= 0; i--) if (wants[i]!.bench === f.v.kind) wants.splice(i, 1);
-      if (changed) {
-        f.v.bills = [
-          ...kept.filter((x) => (x.forBuild ?? null) !== null),
-          ...kept.filter((x) => (x.forBuild ?? null) === null),
-        ];
-        f.rev = this.bump(c);
-      }
+    for (const f of c.benches.values()) this.syncAutoBills(c, f, wants);
+  }
+
+  /** A liquid build needs one bucket (kept, never used up), not one per cell. */
+  private planWater(c: Colony, f: Fn<StoryBuild>, pool: Map<string, number>): void {
+    const b = f.v;
+    const buckets = (pool.get('325:0') ?? 0) + (pool.get('326:0') ?? 0) + (pool.get('327:0') ?? 0);
+    const mats: StoryBuildMaterial[] = [
+      {
+        item: 'bucket',
+        label: 'Bucket',
+        need: 1,
+        have: buckets > 0 ? 1 : 0,
+        crafting: 0,
+        short: buckets > 0 ? 0 : 1,
+        via: 'craft',
+        chain: ['craft 1 Bucket from 3 Iron Ingot (table)'],
+        raw: buckets > 0 ? [] : ['3 Iron Ingot'],
+      },
+    ];
+    if (JSON.stringify(mats) === JSON.stringify(b.materials)) return;
+    b.materials = mats;
+    f.rev = this.bump(c);
+  }
+
+  /** One build's materials: stock reserved from the pool, the shortfall crafted (an auto bill) or short; its status. */
+  private planBuild(c: Colony, f: Fn<StoryBuild>, pool: Map<string, number>, benches: PlanBenches, wants: PlanWant[]): void {
+    const b = f.v;
+    const { left, cat, key, label } = this.placedOf(c, b);
+    const have = Math.min(left, pool.get(key) ?? 0);
+    pool.set(key, (pool.get(key) ?? 0) - have);
+    const short0 = left - have;
+    const m = this.planShortfall(c, b, cat, label, short0, pool, benches, wants);
+    const mats: StoryBuildMaterial[] = left
+      ? [
+          {
+            item: cat?.[0] ?? key,
+            label,
+            need: left,
+            have,
+            crafting: m.crafting,
+            short: short0 - m.crafting,
+            via: m.via,
+            chain: m.chain,
+            raw: m.raw,
+          },
+        ]
+      : [];
+    const status = planStatus(b.status, short0, m.crafting);
+    const reason = planReason(short0, m.crafting, label);
+    if (
+      JSON.stringify([mats, m.station, status, reason]) ===
+      JSON.stringify([b.materials, b.station ?? null, b.status, b.reason ?? null])
+    )
+      return;
+    b.materials = mats;
+    b.station = m.station;
+    b.status = status;
+    b.reason = reason;
+    f.rev = this.bump(c);
+  }
+
+  /** What a build places and how many are left: its ghosts' block (a fence's fence, a door's door), else its material. */
+  private placedOf(c: Colony, b: StoryBuild): { left: number; cat: ArchitectEntry | undefined; key: string; label: string } {
+    const cells = (c.ghostCells.get(b.id) ?? []).filter((g) => g[3] !== 0);
+    const [mid, mmeta] = cells[0] ? [cells[0][3], cells[0][4]] : materialKey(b.material);
+    const left = cells.filter((g) => g[6] !== 'done').length;
+    const cat = architectEntryOf(mid, mmeta);
+    const key = cat ? `${cat[4][0]}:${cat[4][1]}` : `${mid}:${mmeta}`;
+    return { left, cat, key, label: cat?.[1] ?? storyItemLabel(mid, mmeta) };
+  }
+
+  /** A build's shortfall: crafted from its raw material when there is a recipe (and the build allows it), else short. */
+  private planShortfall(
+    c: Colony,
+    b: StoryBuild,
+    cat: ArchitectEntry | undefined,
+    label: string,
+    short0: number,
+    pool: Map<string, number>,
+    benches: PlanBenches,
+    wants: PlanWant[],
+  ): PlanCraft {
+    const out: PlanCraft = { crafting: 0, via: 'none', chain: [], raw: [], station: null };
+    if (short0 <= 0) return out;
+    if (cat && cat[7] && !(b.noCraft ?? []).includes(cat[0])) this.planCraft(c, b, cat, label, short0, pool, benches, wants, out);
+    else out.raw.push(`${short0} ${label}`);
+    return out;
+  }
+
+  /** Crafts (or smelts) what the raw stock allows: an auto bill when its bench is designated, else a bench to make and place
+   * (when the colony auto-places benches); the rest is short in raw material. */
+  private planCraft(
+    c: Colony,
+    b: StoryBuild,
+    cat: ArchitectEntry,
+    label: string,
+    short0: number,
+    pool: Map<string, number>,
+    benches: PlanBenches,
+    wants: PlanWant[],
+    out: PlanCraft,
+  ): void {
+    const raw = cat[7]!;
+    const [rid, rmeta] = raw.split(':').map(Number) as [number, number];
+    const smelt = cat[3] === 'furnace';
+    out.via = smelt ? 'smelt' : 'craft';
+    out.chain.push(`${out.via} ${short0} ${label} from ${storyItemLabel(rid, rmeta)}${cat[3] === 'workbench' ? ' (table)' : ''}`);
+    const rawHave = pool.get(raw) ?? 0;
+    const can = Math.min(short0, Math.floor(rawHave * cat[8]));
+    const benchOk = benchReady(cat, smelt, benches);
+    if (can > 0) {
+      pool.set(raw, rawHave - Math.ceil(can / cat[8]));
+      out.crafting = can;
+      if (benchOk)
+        wants.push({ build: b.id, item: cat[0], recipe: recipeOf(cat), n: can, bench: smelt ? 'furnace' : 'crafting_table' });
     }
+    if (!benchOk && c.options.autoPlaceBenches)
+      out.station = { kind: !benches.table ? 'crafting_table' : 'furnace', pos: [c.home[0] + 2, c.home[1], c.home[2]] };
+    if (short0 - can > 0) out.raw.push(`${Math.ceil((short0 - can) / cat[8])} ${storyItemLabel(rid, rmeta)}`);
+  }
+
+  /** A bench's auto bills follow the wants (taken from `wants`): targets track the shortfall, the rest go, new ones join its
+   * front. */
+  private syncAutoBills(c: Colony, f: Fn<StoryWorkbench>, wants: PlanWant[]): void {
+    let changed = false;
+    const kept: StoryBill[] = [];
+    for (const bill of f.v.bills) changed = keepAutoBill(bill, f.v.kind, wants, kept) || changed;
+    for (const w of wants.filter((x) => x.bench === f.v.kind)) {
+      kept.unshift(this.autoBill(c, w));
+      changed = true;
+    }
+    for (let i = wants.length - 1; i >= 0; i--) if (wants[i]!.bench === f.v.kind) wants.splice(i, 1);
+    if (!changed) return;
+    f.v.bills = [...kept.filter((x) => (x.forBuild ?? null) !== null), ...kept.filter((x) => (x.forBuild ?? null) === null)];
+    f.rev = this.bump(c);
+  }
+
+  private autoBill(c: Colony, w: PlanWant): StoryBill {
+    return {
+      id: `bill${c.seq++}`,
+      recipe: w.recipe,
+      mode: 'count',
+      target: w.n,
+      done: 0,
+      paused: false,
+      suspendedReason: null,
+      ingredients: { allow: ['*'], deny: [] },
+      radius: 256,
+      pawn: 'any',
+      minSkill: null,
+      store: 'best',
+      forBuild: w.build,
+      forItem: w.item,
+      step: 0,
+    };
   }
 
   /** POST …/workbenches: designate a placed bench as the colony's, or release it. */
@@ -2981,3 +3007,79 @@ function directiveSummary(d: StoryDirectiveRequest['directive']): string {
 
 /** True when a world block is a log (exported for the mocks' world builders). */
 export const isLog = (id: number) => LOG_IDS.has(id);
+
+// ------------------------------------------------------------------ the materials pass (plan)
+
+/** A catalogue entry: id, label, group, tier, item [id, meta], placed block [id, meta], build kinds, raw item, yield per raw. */
+type ArchitectEntry = (typeof SIM_ARCHITECT)[number];
+/** Which benches the colony has designated. */
+interface PlanBenches {
+  table: boolean;
+  furnace: boolean;
+}
+/** A build's shortfall to craft at a bench (an auto bill). */
+interface PlanWant {
+  build: Key;
+  item: string;
+  recipe: string;
+  n: number;
+  bench: string;
+}
+/** How a build's shortfall is covered: crafted (via, the chain), short in raw material, a bench to make first. */
+interface PlanCraft {
+  crafting: number;
+  via: string;
+  chain: string[];
+  raw: string[];
+  station: StoryBuild['station'];
+}
+
+/** The catalogue entry of a placed block: by block and meta, else by item id, else by block id. */
+function architectEntryOf(mid: number, mmeta: number): ArchitectEntry | undefined {
+  return (
+    SIM_ARCHITECT.find((e) => e[5][0] === mid && e[5][1] === mmeta) ??
+    SIM_ARCHITECT.find((e) => e[4][0] === mid) ??
+    SIM_ARCHITECT.find((e) => e[5][0] === mid)
+  );
+}
+
+/** The recipe an auto bill crafts an entry with. */
+function recipeOf(cat: ArchitectEntry): string {
+  return STORY_DEFAULT_RECIPES.find((r) => r.output[0] === cat[4][0])?.id ?? `craft:${cat[0]}`;
+}
+
+/** Is the bench an entry is made at designated (a crafting table for workbench recipes and panes, a furnace to smelt)? */
+function benchReady(cat: ArchitectEntry, smelt: boolean, benches: PlanBenches): boolean {
+  const needsTable = cat[3] === 'workbench' || cat[0] === 'glass_pane';
+  return (!needsTable || benches.table) && (!smelt || benches.furnace);
+}
+
+/** A waiting build's status from its shortfall: queued (nothing short), waiting (being crafted), blocked; others keep theirs. */
+function planStatus(status: StoryBuild['status'], short0: number, crafting: number): StoryBuild['status'] {
+  if (status !== 'queued' && status !== 'blocked' && status !== 'waiting') return status;
+  return short0 === 0 ? 'queued' : crafting > 0 ? 'waiting' : 'blocked';
+}
+
+function planReason(short0: number, crafting: number, label: string): string | null {
+  if (short0 === 0) return null;
+  return crafting > 0
+    ? `waiting for ${crafting} ${label.toLowerCase()} (being crafted)`
+    : `need ${short0} ${label.toLowerCase()}`;
+}
+
+/** Keeps a bench's bill in a materials pass (its want taken from `wants`); true when that changed it (dropped or retargeted). */
+function keepAutoBill(bill: StoryBill, bench: string, wants: PlanWant[], kept: StoryBill[]): boolean {
+  if ((bill.forBuild ?? null) === null) {
+    kept.push(bill);
+    return false;
+  }
+  const w = wants.find(
+    (x) => String(x.build) === String(bill.forBuild) && x.recipe === bill.recipe && x.bench === bench,
+  );
+  if (!w) return true;
+  wants.splice(wants.indexOf(w), 1);
+  kept.push(bill);
+  if (bill.target === bill.done + w.n) return false;
+  bill.target = bill.done + w.n;
+  return true;
+}
