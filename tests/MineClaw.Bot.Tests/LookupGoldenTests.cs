@@ -19,6 +19,8 @@ public class LookupGoldenTests
         return sb.ToString();
     }
 
+    private static readonly string[] Intents = ["thanks", "come", "banter", "greeting", "made.up"];
+
     private static readonly string[] Aliases =
     [
         "gen", "generator", "Cobble Gen", "cobblegen", "cobblestone_generator", "stone_generator", "generators", "workbench", "crafting",
@@ -38,6 +40,8 @@ public class LookupGoldenTests
             ["IsFarmPlant"] = Ids(Protection.IsFarmPlant),
             ["IsUseItem"] = Ids(Gestures.IsUseItem),
             ["FromAlias"] = string.Join("\n", Aliases.Select(a => a + "=" + (IndexKinds.FromAlias(a) ?? "null"))),
+            ["BindingExample"] = string.Join("\n", MineClaw.Scripting.Events.GameEventCatalog.Names.Concat(Intents)
+                .SelectMany(ev => new[] { null, "Robin" }.Select(pl => ev + "/" + (pl ?? "-") + "=" + MineClaw.Bot.GameTools.ScriptBridge.Example(ev, pl).ToJsonString()))),
         };
         var outDir = Environment.GetEnvironmentVariable("WP03_GOLDEN_OUT");
         var actual = dumps.Select(kv => $"{kv.Key} {Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(kv.Value)))[..24]}").ToList();
@@ -57,5 +61,6 @@ public class LookupGoldenTests
         "IsFarmPlant 4A9C29AC841190E739143E0F",
         "IsUseItem 063210FD905CB06BF0116B13",
         "FromAlias 99F69159EEC47D10227DE465",
+        "BindingExample 1B01993246505D77C5498DA2",
     ];
 }

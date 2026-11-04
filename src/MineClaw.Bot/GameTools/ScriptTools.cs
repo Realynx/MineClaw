@@ -582,7 +582,21 @@ public sealed partial class ScriptBridge
 
     private void OnEnded(ScriptSession s)
     {
-        // An open interrupt ends with the run: replaced/cancelled by the brain, or failed (then measured until the next start).
+        CloseInterruptOnEnd(s);
+        var l = L(s);
+        LogEnded(s);
+        try { RecordRunStats(s); }
+        catch (Exception ex) { _log?.LogWarning(ex, "script stats for {Name} failed", s.Name); }
+        MaybeHousekeep();
+        // Detached from a worker and never adopted as an activity: nobody else will report it.
+        if (l.DetachedFromWorker && !l.Attached && !l.PlannerEnded)
+            PostOwn(s.Ok ? GameEvent.TaskDone(s.Outcome ?? "") : GameEvent.TaskFail(s.Outcome ?? "", wakes: s.Status != ScriptStatus.Cancelled));
+    }
+
+    /// <summary>An open interrupt ends with the run: replaced/cancelled by the brain, or failed (then measured until the next start).
+    /// A plain failure that wakes the brain (no patch tried) opens the full path, until the brain starts something again.</summary>
+    private void CloseInterruptOnEnd(ScriptSession s)
+    {
         var ikey = ScriptPatcher.Key(s);
         if (_rt.Interrupts.IsOpen(ikey))
         {
@@ -591,41 +605,37 @@ public sealed partial class ScriptBridge
         }
         else if (s.Status == ScriptStatus.Failed && s.Request.Role == null)
         {
-            // A plain failure that wakes the brain (no patch tried): the full path, until the brain starts something again.
             _rt.Interrupts.Open(ikey, s.Name, "failed", "full", Body);
             Interlocked.Exchange(ref _failedKey, ikey);
         }
-        var l = L(s);
+    }
+
+    private void LogEnded(ScriptSession s) =>
         _log?.LogInformation("script {Name}{Version} ({Lang}) by {Author} {Status}: {Actions} actions in {Seconds:0}s — {Outcome} | params {Params} | timings {Timings}{State}", s.Name,
             s.Request.Version is { } v ? " v" + v : "", ScriptLanguages.Tag(s.Language), s.Request.Author ?? "c#", s.Status, s.Actions, s.Elapsed.TotalSeconds, s.Outcome,
             s.ParamsJson ?? "-", ScriptController.TimingText(s) ?? "-", s.MachineState is { } ms ? $" | state {ms} ({s.Transitions} moves)" : "");
-        try
+
+    /// <summary>A crew lane's run is part of its coordinator's run: it doesn't count as a run of the saved script.</summary>
+    private void RecordRunStats(ScriptSession s)
+    {
+        var saved = Library.Get(s.Name);
+        if (saved?.Script is not { } sc || s.Status == ScriptStatus.Cancelled || s.Request.Role != null) return;
+        ScriptLibrary.Active(sc);
+        // Stats go to the version that ran (by number, else by identical code); ad-hoc code under a saved name doesn't count.
+        var ran = s.Request.Version is { } rv ? sc.Versions.FirstOrDefault(x => x.V == rv) : sc.Versions.LastOrDefault(x => x.Code == s.Code);
+        if (ran != null && ran.Code == s.Code) RecordVersionRun(s, ran);
+    }
+
+    private void RecordVersionRun(ScriptSession s, ScriptVersion ran)
+    {
+        var stats = Library.RecordRun(s.Name, ran.V, s.Ok, s.Elapsed, s.Actions, s.Outcome ?? "", s.ItemsGained, s.Reason,
+            s.ParamsJson, ScriptController.TimingText(s), out var revert);
+        if (revert != null)
         {
-            var saved = Library.Get(s.Name);
-            // A crew lane's run is part of its coordinator's run: it doesn't count as a run of the saved script.
-            if (saved?.Script is { } sc && s.Status != ScriptStatus.Cancelled && s.Request.Role == null)
-            {
-                ScriptLibrary.Active(sc);
-                // Stats go to the version that ran (by number, else by identical code); ad-hoc code under a saved name doesn't count.
-                var ran = s.Request.Version is { } rv ? sc.Versions.FirstOrDefault(x => x.V == rv) : sc.Versions.LastOrDefault(x => x.Code == s.Code);
-                if (ran != null && ran.Code == s.Code)
-                {
-                    var stats = Library.RecordRun(s.Name, ran.V, s.Ok, s.Elapsed, s.Actions, s.Outcome ?? "", s.ItemsGained, s.Reason,
-                        s.ParamsJson, ScriptController.TimingText(s), out var revert);
-                    if (revert != null)
-                    {
-                        _log?.LogWarning("{Note}", revert);
-                        PostOwn(GameEvent.Notice("script " + revert, EventPriority.Background));
-                    }
-                    if (stats is { PromotedAs: null } && Library.Proven(ScriptLibrary.Active(stats))) Promote(s.Name);
-                }
-            }
+            _log?.LogWarning("{Note}", revert);
+            PostOwn(GameEvent.Notice("script " + revert, EventPriority.Background));
         }
-        catch (Exception ex) { _log?.LogWarning(ex, "script stats for {Name} failed", s.Name); }
-        MaybeHousekeep();
-        // Detached from a worker and never adopted as an activity: nobody else will report it.
-        if (l.DetachedFromWorker && !l.Attached && !l.PlannerEnded)
-            PostOwn(s.Ok ? GameEvent.TaskDone(s.Outcome ?? "") : GameEvent.TaskFail(s.Outcome ?? "", wakes: s.Status != ScriptStatus.Cancelled));
+        if (stats is { PromotedAs: null } && Library.Proven(ScriptLibrary.Active(stats))) Promote(s.Name);
     }
 
     // ------------------------------------------------------------------ the tool
@@ -633,66 +643,76 @@ public sealed partial class ScriptBridge
     internal async Task<ToolResult> ExecuteAsync(JsonElement input, CancellationToken ct)
     {
         var op = DefaultOp(input);
-        switch (op)
-        {
-            case "show":
-            {
-                var n = ToolInput.Str(input, "name");
-                if (string.IsNullOrWhiteSpace(n)) return ToolResult.Error("show needs name");
-                var v = Library.Resolve(CleanRef(n), IsScriptable, out var why);
-                if (v == null) return ToolResult.Error(why ?? $"no saved script '{n}'");
-                return ToolResult.Success($"{ScriptLibrary.ParseRef(CleanRef(n)).Name} v{v.V}: " + Clip(v.Code, ShowChars));
-            }
-            case "status":
-                return ToolResult.Success(StatusWithCrews());
-            case "pause":
-            {
-                var s = Controller.Current;
-                if (s == null) return ToolResult.Error("no script running");
-                Controller.Pause();
-                try { await s.WhenSettled(ct).WaitAsync(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false); } catch (Exception) when (!ct.IsCancellationRequested) { }
-                return ToolResult.Success((s.Status == ScriptStatus.Paused ? "paused: " : "pausing after current action: ") + s.State());
-            }
-            case "resume":
-            {
-                var s = Controller.Current;
-                if (s == null) return ToolResult.Error("no script to resume");
-                if (s.Status != ScriptStatus.Paused) return ToolResult.Success("not paused: " + s.State());
-                // The answer to a script's ask("brain", q) rides in code (no extra schema field).
-                s.Resume(ToolInput.Str(input, "code"));
-                return await FollowAsync(s, ct).ConfigureAwait(false);
-            }
-            case "cancel":
-            {
-                if (await CancelCrewAsync(input, ct).ConfigureAwait(false) is { } crewCancelled) return crewCancelled;
-                var s = Controller.Current;
-                if (s == null) return ToolResult.Error("no script running");
-                L(s).PlannerEnded = true;
-                s.Stop("cancelled by planner");
-                try { await s.Completion.WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false); }
-                catch (TimeoutException) { return ToolResult.Success($"cancelling script {s.Name} (an atomic action is finishing)"); }
-                return ToolResult.Success(s.Outcome ?? "cancelled");
-            }
-            case "run" or "replace":
-                return await RunOrReplaceAsync(op == "replace", input, ct).ConfigureAwait(false);
-            case "save":
-                return await SaveOpAsync(input, ct).ConfigureAwait(false);
-            case "rollback":
-            {
-                var n = ToolInput.Str(input, "name");
-                if (string.IsNullOrWhiteSpace(n)) return ToolResult.Error("rollback needs name (x, or x@v2 for a version)");
-                var (r, msg) = Library.Rollback(CleanRef(n));
-                return r != null ? ToolResult.Success(msg) : ToolResult.Error(msg);
-            }
-            case "list":
-                return ToolResult.Success(Library.Catalog());
-            case "bind" or "unbind" or "bindings":
-                return await BindingOpAsync(op, input, ct).ConfigureAwait(false); // ScriptTools.Bindings.cs
-            default:
-                return ToolResult.Error("op is " + string.Join("|", ScriptPrompts.Ops.Concat(ScriptPrompts.BindOps)));
-        }
+        if (!OpHandlers.TryGetValue(op, out var handler))
+            return ToolResult.Error("op is " + string.Join("|", ScriptPrompts.Ops.Concat(ScriptPrompts.BindOps)));
+        return await handler(this, op, input, ct).ConfigureAwait(false);
     }
 
+    /// <summary>The script tool's ops (bind/unbind/bindings live in ScriptTools.Bindings.cs).</summary>
+    private static readonly Dictionary<string, Func<ScriptBridge, string, JsonElement, CancellationToken, Task<ToolResult>>> OpHandlers = new(StringComparer.Ordinal)
+    {
+        ["show"] = (b, _, input, _) => Task.FromResult(b.ShowOp(input)),
+        ["status"] = (b, _, _, _) => Task.FromResult(ToolResult.Success(b.StatusWithCrews())),
+        ["pause"] = (b, _, _, ct) => b.PauseOpAsync(ct),
+        ["resume"] = (b, _, input, ct) => b.ResumeOpAsync(input, ct),
+        ["cancel"] = (b, _, input, ct) => b.CancelOpAsync(input, ct),
+        ["run"] = (b, _, input, ct) => b.RunOrReplaceAsync(false, input, ct),
+        ["replace"] = (b, _, input, ct) => b.RunOrReplaceAsync(true, input, ct),
+        ["save"] = (b, _, input, ct) => b.SaveOpAsync(input, ct),
+        ["rollback"] = (b, _, input, _) => Task.FromResult(b.RollbackOp(input)),
+        ["list"] = (b, _, _, _) => Task.FromResult(ToolResult.Success(b.Library.Catalog())),
+        ["bind"] = (b, op, input, ct) => b.BindingOpAsync(op, input, ct),
+        ["unbind"] = (b, op, input, ct) => b.BindingOpAsync(op, input, ct),
+        ["bindings"] = (b, op, input, ct) => b.BindingOpAsync(op, input, ct),
+    };
+
+    private ToolResult ShowOp(JsonElement input)
+    {
+        var n = ToolInput.Str(input, "name");
+        if (string.IsNullOrWhiteSpace(n)) return ToolResult.Error("show needs name");
+        var v = Library.Resolve(CleanRef(n), IsScriptable, out var why);
+        if (v == null) return ToolResult.Error(why ?? $"no saved script '{n}'");
+        return ToolResult.Success($"{ScriptLibrary.ParseRef(CleanRef(n)).Name} v{v.V}: " + Clip(v.Code, ShowChars));
+    }
+
+    private async Task<ToolResult> PauseOpAsync(CancellationToken ct)
+    {
+        var s = Controller.Current;
+        if (s == null) return ToolResult.Error("no script running");
+        Controller.Pause();
+        try { await s.WhenSettled(ct).WaitAsync(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false); } catch (Exception) when (!ct.IsCancellationRequested) { }
+        return ToolResult.Success((s.Status == ScriptStatus.Paused ? "paused: " : "pausing after current action: ") + s.State());
+    }
+
+    private async Task<ToolResult> ResumeOpAsync(JsonElement input, CancellationToken ct)
+    {
+        var s = Controller.Current;
+        if (s == null) return ToolResult.Error("no script to resume");
+        if (s.Status != ScriptStatus.Paused) return ToolResult.Success("not paused: " + s.State());
+        // The answer to a script's ask("brain", q) rides in code (no extra schema field).
+        s.Resume(ToolInput.Str(input, "code"));
+        return await FollowAsync(s, ct).ConfigureAwait(false);
+    }
+
+    private async Task<ToolResult> CancelOpAsync(JsonElement input, CancellationToken ct)
+    {
+        if (await CancelCrewAsync(input, ct).ConfigureAwait(false) is { } crewCancelled) return crewCancelled;
+        var s = Controller.Current;
+        if (s == null) return ToolResult.Error("no script running");
+        L(s).PlannerEnded = true;
+        s.Stop("cancelled by planner");
+        try { await s.Completion.WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false); }
+        catch (TimeoutException) { return ToolResult.Success($"cancelling script {s.Name} (an atomic action is finishing)"); }
+        return ToolResult.Success(s.Outcome ?? "cancelled");
+    }
+
+    private ToolResult RollbackOp(JsonElement input)
+    {
+        var n = ToolInput.Str(input, "name");
+        if (string.IsNullOrWhiteSpace(n)) return ToolResult.Error("rollback needs name (x, or x@v2 for a version)");
+        var (r, msg) = Library.Rollback(CleanRef(n));
+        return r != null ? ToolResult.Success(msg) : ToolResult.Error(msg);
+    }
     /// <summary>No op: code -> run, goal -> save (author + save, no run), a name -> run it, else status.</summary>
     internal static string DefaultOp(JsonElement input) =>
         (ToolInput.Str(input, "op") ?? (ToolInput.Str(input, "code") != null ? "run" : ToolInput.Str(input, "goal") != null ? "save"
@@ -728,74 +748,107 @@ public sealed partial class ScriptBridge
 
     private async Task<ToolResult> RunOrReplaceAsync(bool replace, JsonElement input, CancellationToken ct)
     {
-        var code = ToolInput.Str(input, "code");
         var rawName = ToolInput.Str(input, "name");
         var reference = CleanRef(rawName ?? (replace ? Controller.Current?.Name : null) ?? "script");
         var name = ScriptLibrary.ParseRef(reference).Name;
-        string? author = ToolCaller.Current?.Tag;
-        int? version = null;
-        var notes = new List<string>();
-        string? warnings = null;
-        var lang = ScriptLanguage.Js;
-        if (string.IsNullOrWhiteSpace(code) && ToolInput.Str(input, "goal") is { } goal && !string.IsNullOrWhiteSpace(goal))
-        {
-            // The separate Opus author writes, lints, revises and saves it; the brain gets only the summary (then it runs).
-            var w = await AuthorScriptAsync(name, goal, input, ct).ConfigureAwait(false);
-            if (!w.Ok) return ToolResult.Error(w.Summary);
-            code = w.Code!;
-            version = w.Version;
-            author = w.Author;
-            notes.Add(w.Summary);
-        }
-        else if (string.IsNullOrWhiteSpace(code))
-        {
-            // A saved script (or name@v2) runs as saved: its own author and version, args from the call.
-            var v = Library.Resolve(reference, IsScriptable, out var why);
-            if (v == null) return ToolResult.Error(rawName == null ? "need a goal (or the name of a saved script)" : why ?? $"no saved script '{name}'");
-            code = v.Code;
-            version = Library.Get(name)?.Script is { Migrated: true } ? null : v.V;
-            author = v.Author;
-            lang = v.IsLua && !LooksJs(name) ? ScriptLanguage.Lua : ScriptLanguage.Js;
-            if (lang == ScriptLanguage.Lua && !Options.LegacyLua)
-                return ToolResult.Error($"{name} v{v.V} is legacy Lua and not migrated to JS yet (Scripting:LegacyLua=false); rewrite it: script{{name:{name}, goal:...}}");
-        }
-        else
-        {
-            lang = LanguageOf(code);
-            if (lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) return ToolResult.Error(ScriptPrompts.JsOnly);
-            var lint = Lint(code, lang);
-            if (lint.HasErrors) return ToolResult.Error(lint.Format(LintSeverity.Error, 300));
-            warnings = lint.Format(LintSeverity.Warning);
-            if (rawName != null && ToolInput.Bool(input, "save") != false)
-            {
-                // A named run with code is saved (versioned; same code = same version). save:false opts out; a near-duplicate
-                // of another saved script runs unsaved and says so.
-                var (saved, note) = SaveChecked(name, code, author, ToolInput.Str(input, "force"), lang);
-                if (note != null) notes.Add(note);
-                if (saved?.Script is { } sc) version = sc.Version;
-            }
-        }
-        string? argsJson = ArgsOf(input);
-        var (role, crewId) = LaneOf(argsJson);
-        var req = new ScriptRequest
-        {
-            Name = name, Code = code, Language = lang, ArgsJson = argsJson, ParamsJson = ParamsOf(input), Role = role, CrewId = crewId,
-            ResumeFrom = ToolInput.Str(input, "resume_from"), Author = author, Version = version,
-            LintWarnings = string.IsNullOrEmpty(warnings) ? null : warnings,
-        };
+        var src = await SourceOfAsync(input, name, reference, rawName, ct).ConfigureAwait(false);
+        if (src.Error != null) return src.Error;
+        var req = RequestOf(input, name, src);
         // A crew script over a body list or "all" (the planner resolved them): ONE bodiless coordinator, this body stays free.
         if (CrewBodiesOf(input) is { } crewBodies)
-        {
-            var crew = await RunCrewAsync(req, crewBodies, replace, ct).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(warnings)) notes.Add(warnings);
-            return notes.Count == 0 || !crew.Ok ? crew : crew with { Text = crew.Text + " | " + string.Join(" | ", notes) };
-        }
-        if (replace && Controller.Current is { } old) L(old).PlannerEnded = true;
-        var (s, err) = replace ? await Controller.ReplaceAsync(req, ct).ConfigureAwait(false) : Controller.Start(req);
+            return src.Annotate(await RunCrewAsync(req, crewBodies, replace, ct).ConfigureAwait(false), onlyIfOk: true);
+        var (s, err) = await StartRunAsync(req, replace, ct).ConfigureAwait(false);
         if (s == null) return ToolResult.Error(err ?? "can't start");
-        var result = await FollowAsync(s, ct).ConfigureAwait(false);
-        if (!string.IsNullOrEmpty(warnings)) notes.Add(warnings);
-        return notes.Count == 0 ? result : result with { Text = result.Text + " | " + string.Join(" | ", notes) };
+        return src.Annotate(await FollowAsync(s, ct).ConfigureAwait(false), onlyIfOk: false);
+    }
+
+    private async Task<(ScriptSession? Session, string? Error)> StartRunAsync(ScriptRequest req, bool replace, CancellationToken ct)
+    {
+        if (replace && Controller.Current is { } old) L(old).PlannerEnded = true;
+        return replace ? await Controller.ReplaceAsync(req, ct).ConfigureAwait(false) : Controller.Start(req);
+    }
+
+    /// <summary>What a run executes: its code, language, version and author, and the notes and lint warnings that go with it.</summary>
+    private sealed class ScriptSource
+    {
+        public string Code = "";
+        public int? Version;
+        public string? Author;
+        public ScriptLanguage Lang = ScriptLanguage.Js;
+        public string? Warnings;
+        public readonly List<string> Notes = new();
+        public ToolResult? Error;
+
+        /// <summary>The result with the notes and lint warnings after it (a crew's only when it started).</summary>
+        public ToolResult Annotate(ToolResult result, bool onlyIfOk)
+        {
+            if (!string.IsNullOrEmpty(Warnings)) Notes.Add(Warnings);
+            return Notes.Count == 0 || (onlyIfOk && !result.Ok) ? result : result with { Text = result.Text + " | " + string.Join(" | ", Notes) };
+        }
+    }
+
+    /// <summary>The code to run: authored from a goal, a saved script by name, or the call's own code (linted, saved when named).</summary>
+    private async Task<ScriptSource> SourceOfAsync(JsonElement input, string name, string reference, string? rawName, CancellationToken ct)
+    {
+        var code = ToolInput.Str(input, "code");
+        var src = new ScriptSource { Author = ToolCaller.Current?.Tag };
+        if (string.IsNullOrWhiteSpace(code) && ToolInput.Str(input, "goal") is { } goal && !string.IsNullOrWhiteSpace(goal))
+            await AuthoredSourceAsync(src, name, goal, input, ct).ConfigureAwait(false);
+        else if (string.IsNullOrWhiteSpace(code)) SavedSource(src, name, reference, rawName);
+        else InlineSource(src, code, name, rawName, input);
+        return src;
+    }
+
+    /// <summary>The separate Opus author writes, lints, revises and saves it; the brain gets only the summary (then it runs).</summary>
+    private async Task AuthoredSourceAsync(ScriptSource src, string name, string goal, JsonElement input, CancellationToken ct)
+    {
+        var w = await AuthorScriptAsync(name, goal, input, ct).ConfigureAwait(false);
+        if (!w.Ok) { src.Error = ToolResult.Error(w.Summary); return; }
+        src.Code = w.Code!;
+        src.Version = w.Version;
+        src.Author = w.Author;
+        src.Notes.Add(w.Summary);
+    }
+
+    /// <summary>A saved script (or name@v2) runs as saved: its own author and version, args from the call.</summary>
+    private void SavedSource(ScriptSource src, string name, string reference, string? rawName)
+    {
+        var v = Library.Resolve(reference, IsScriptable, out var why);
+        if (v == null) { src.Error = ToolResult.Error(rawName == null ? "need a goal (or the name of a saved script)" : why ?? $"no saved script '{name}'"); return; }
+        src.Code = v.Code;
+        src.Version = Library.Get(name)?.Script is { Migrated: true } ? null : v.V;
+        src.Author = v.Author;
+        src.Lang = v.IsLua && !LooksJs(name) ? ScriptLanguage.Lua : ScriptLanguage.Js;
+        if (src.Lang == ScriptLanguage.Lua && !Options.LegacyLua)
+            src.Error = ToolResult.Error($"{name} v{v.V} is legacy Lua and not migrated to JS yet (Scripting:LegacyLua=false); rewrite it: script{{name:{name}, goal:...}}");
+    }
+
+    private void InlineSource(ScriptSource src, string code, string name, string? rawName, JsonElement input)
+    {
+        src.Code = code;
+        src.Lang = LanguageOf(code);
+        if (src.Lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) { src.Error = ToolResult.Error(ScriptPrompts.JsOnly); return; }
+        var lint = Lint(code, src.Lang);
+        if (lint.HasErrors) { src.Error = ToolResult.Error(lint.Format(LintSeverity.Error, 300)); return; }
+        src.Warnings = lint.Format(LintSeverity.Warning);
+        if (rawName == null || ToolInput.Bool(input, "save") == false) return;
+        // A named run with code is saved (versioned; same code = same version). save:false opts out; a near-duplicate of another
+        // saved script runs unsaved and says so.
+        var (saved, note) = SaveChecked(name, code, src.Author, ToolInput.Str(input, "force"), src.Lang);
+        if (note != null) src.Notes.Add(note);
+        if (saved?.Script is { } sc) src.Version = sc.Version;
+    }
+
+    private static ScriptRequest RequestOf(JsonElement input, string name, ScriptSource src)
+    {
+        string? argsJson = ArgsOf(input);
+        var (role, crewId) = LaneOf(argsJson);
+        return new ScriptRequest
+        {
+            Name = name, Code = src.Code, Language = src.Lang, ArgsJson = argsJson, ParamsJson = ParamsOf(input), Role = role, CrewId = crewId,
+            ResumeFrom = ToolInput.Str(input, "resume_from"), Author = src.Author, Version = src.Version,
+            LintWarnings = string.IsNullOrEmpty(src.Warnings) ? null : src.Warnings,
+        };
     }
 
     /// <summary>"Cobble Loop@v2" → "cobble_loop@v2" (CleanName would turn '@' into '_').</summary>
@@ -816,45 +869,60 @@ public sealed partial class ScriptBridge
     /// </summary>
     internal Agent.Human.OrderCheck CheckOrder(Agent.Memory.StandingOrder o)
     {
-        if (!string.Equals(o.Tool, ScriptTools.ToolName, StringComparison.OrdinalIgnoreCase) || o.Input.ValueKind != JsonValueKind.Object)
+        if (!IsScriptRunOrder(o) || System.Text.Json.Nodes.JsonNode.Parse(o.Input.GetRawText()) is not System.Text.Json.Nodes.JsonObject node)
             return default;
-        if (DefaultOp(o.Input) is not ("run" or "replace")) return default;
-        if (System.Text.Json.Nodes.JsonNode.Parse(o.Input.GetRawText()) is not System.Text.Json.Nodes.JsonObject node) return default;
         var notes = new List<string>();
         var rawName = ToolInput.Str(o.Input, "name");
         var code = ToolInput.Str(o.Input, "code");
         bool named = !string.IsNullOrWhiteSpace(rawName);
-        if (!string.IsNullOrWhiteSpace(code))
-        {
-            if (named && Library.Get(ScriptLibrary.ParseRef(CleanRef(rawName!)).Name)?.Script is { Code.Length: > 0 })
-            {
-                node.Remove("code");
-                node.Remove("save");
-                notes.Add("inline code dropped, runs the saved script");
-            }
-            else
-                return Agent.Human.OrderCheck.Invalid(LanguageOf(code!) == ScriptLanguage.Lua
-                    ? "its call carries inline legacy Lua code (scripts are JS now) and no saved script by that name"
-                    : "its call carries inline code, which C# can't re-run (only the brain writes code); name a saved script");
-        }
-        if (!named)
-            return Agent.Human.OrderCheck.Invalid(ToolInput.Str(o.Input, "goal") is { Length: > 0 }
-                ? "its call commissions a new script (goal) instead of naming a saved one" : "its call names no saved script");
+        if (!string.IsNullOrWhiteSpace(code) && DropInlineCode(node, rawName, named, code!, notes) is { } inline) return inline;
+        if (!named) return Unnamed(o);
         var reference = CleanRef(rawName!);
         var (name, ver) = ScriptLibrary.ParseRef(reference);
         if (Library.Get(name) == null) return Agent.Human.OrderCheck.Invalid($"no saved script '{name}' any more");
         // A pinned older version is Lua by its own row (the script's "js" marks only the active one, e.g. the migrated v2).
-        if (ver != null && (Library.Resolve(reference, IsScriptable, out _) is not { } pinned
-                            || (pinned.V != Library.Get(name)?.Script?.Version ? pinned.IsLua : pinned.IsLua && !LooksJs(name))))
+        if (ver != null && PinIsStale(reference, name))
         {
             node["name"] = name;
             notes.Add($"{reference} re-resolved to {name}'s newest version");
         }
+        return CheckResolvedOrder(o, node, reference, name, notes);
+    }
+
+    private static bool IsScriptRunOrder(Agent.Memory.StandingOrder o) =>
+        string.Equals(o.Tool, ScriptTools.ToolName, StringComparison.OrdinalIgnoreCase) && o.Input.ValueKind == JsonValueKind.Object
+        && DefaultOp(o.Input) is "run" or "replace";
+
+    /// <summary>Inline code is dropped when a saved script of that name exists (null = dropped); otherwise the order can't run.</summary>
+    private Agent.Human.OrderCheck? DropInlineCode(System.Text.Json.Nodes.JsonObject node, string? rawName, bool named, string code, List<string> notes)
+    {
+        if (named && Library.Get(ScriptLibrary.ParseRef(CleanRef(rawName!)).Name)?.Script is { Code.Length: > 0 })
+        {
+            node.Remove("code");
+            node.Remove("save");
+            notes.Add("inline code dropped, runs the saved script");
+            return null;
+        }
+        return Agent.Human.OrderCheck.Invalid(LanguageOf(code) == ScriptLanguage.Lua
+            ? "its call carries inline legacy Lua code (scripts are JS now) and no saved script by that name"
+            : "its call carries inline code, which C# can't re-run (only the brain writes code); name a saved script");
+    }
+
+    private static Agent.Human.OrderCheck Unnamed(Agent.Memory.StandingOrder o) =>
+        Agent.Human.OrderCheck.Invalid(ToolInput.Str(o.Input, "goal") is { Length: > 0 }
+            ? "its call commissions a new script (goal) instead of naming a saved one" : "its call names no saved script");
+
+    /// <summary>A pinned version that is gone or still Lua re-resolves to the saved script's newest version.</summary>
+    private bool PinIsStale(string reference, string name) =>
+        Library.Resolve(reference, IsScriptable, out _) is not { } pinned
+        || (pinned.V != Library.Get(name)?.Script?.Version ? pinned.IsLua : pinned.IsLua && !LooksJs(name));
+
+    private Agent.Human.OrderCheck CheckResolvedOrder(Agent.Memory.StandingOrder o, System.Text.Json.Nodes.JsonObject node, string reference,
+        string name, List<string> notes)
+    {
         var v = Library.Resolve(CleanRef(node["name"]?.GetValue<string>() ?? reference), IsScriptable, out var why);
         if (v == null) return Agent.Human.OrderCheck.Invalid(why ?? $"no saved script '{name}'");
-        if (v.IsLua && !LooksJs(name) && !Options.LegacyLua)
-            return Agent.Human.OrderCheck.Invalid($"{name} v{v.V} is legacy Lua and wasn't migrated to JS ({Library.Get(name)?.Script?.Migration ?? "migration pending"}); " +
-                $"rewrite it: script{{name:{name}, goal:...}}");
+        if (UnmigratedLua(v, name) is { } lua) return lua;
         if (ToolInput.Str(o.Input, "resume_from") is { Length: > 0 } label && !ScriptSession.HasCheckpoint(v.Code, label.Trim()))
         {
             node.Remove("resume_from");
@@ -862,6 +930,12 @@ public sealed partial class ScriptBridge
         }
         return notes.Count == 0 ? default : Agent.Human.OrderCheck.Rewrite(JsonSerializer.SerializeToElement(node), string.Join("; ", notes));
     }
+
+    private Agent.Human.OrderCheck? UnmigratedLua(ScriptVersion v, string name) =>
+        v.IsLua && !LooksJs(name) && !Options.LegacyLua
+            ? Agent.Human.OrderCheck.Invalid($"{name} v{v.V} is legacy Lua and wasn't migrated to JS ({Library.Get(name)?.Script?.Migration ?? "migration pending"}); " +
+                $"rewrite it: script{{name:{name}, goal:...}}")
+            : null;
 
     /// <summary>Lint with this bot's action/skill names (so unchecked-result warnings know what an action is).</summary>
     internal LintReport Lint(string code) => Lint(code, LanguageOf(code));
