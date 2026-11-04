@@ -125,6 +125,40 @@ public class SeeGoldenTests
         Check(sb.ToString(), "see-sheets.txt", ExpectedSheets);
     }
 
+    [Fact]
+    public async Task Legacy_single_view_pictures_are_byte_identical()
+    {
+        var (h, _) = Bot("direct");
+        h.Client.World.Entities.SpawnPlayer(901, "Fox", new Vec3d(8.5, 65, 10.5), 135, 15);
+        object[] inputs =
+        [
+            new { view = "eye" },
+            new { view = "EYE", focus = "5,65,7" },
+            new { view = "eye", focus = "Fox" },
+            new { view = "iso", focus = "5,65,7", radius = 30 },
+            new { view = "top", focus = "fox", radius = 2 },
+            new { view = "side", focus = "player" },
+            new { view = "top", focus = "me" },
+            new { view = "top", focus = "You" },
+            new { view = "weird", focus = " 2,65,3 " },
+            new { view = "top", focus = "nowhere" },
+            // Composites: bodies, cams, orbits, views at their own spot, and the errors.
+            new { views = new[] { "eye Fox", "top" }, focus = "5,65,7" },
+            new { views = new[] { "follow Fox" } },
+            new { views = new[] { "cam 5,65,7 NE 8", "cam 2,65,3 above" } },
+            new { views = new[] { "orbit 3", "side" }, focus = "5,65,7" },
+            new { views = new[] { "orbit 5,65,7", "iso 2,65,3", "layers 5,65,7" } },
+            new { views = new[] { "orbit 2,65,3 2", "eye", "high", "shoulder" }, focus = "5,65,7", aids = false },
+            new { views = new[] { "cam nowhere N" } },
+            new { views = new[] { "eye nobody" } },
+            new { views = new[] { "follow nobody" } },
+        ];
+        var sb = new StringBuilder();
+        foreach (var input in inputs) sb.Append(Line(await h.Run("see", input))).Append('\n');
+        // The eye legend states its render time ("18ms"): masked.
+        Check(System.Text.RegularExpressions.Regex.Replace(sb.ToString(), @"\b\d+ms\b", "Nms"), "see-legacy.txt", ExpectedLegacy);
+    }
+
     private static void Check(string dump, string file, string expected)
     {
         dump = dump.Replace("\r\n", "\n");
@@ -137,4 +171,5 @@ public class SeeGoldenTests
     private const string ExpectedDirect = "742BF7D6730E9845EBAE136D";
     private const string ExpectedPerception = "D4D6B8BC3A89FCBED764117F";
     private const string ExpectedSheets = "46B32783F3A0E926B91A81FE";
+    private const string ExpectedLegacy = "88E5893EE41D2D6AC62B1DD3";
 }

@@ -306,31 +306,49 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
                 var a = r.A;
                 if (a.Kind == DemoActionKind.UseBlock)
                 {
-                    bool explained = false;
-                    for (int j = i + 1; j < raw.Count && !explained; j++)
-                    {
-                        var b = raw[j].A;
-                        var dt = b.At - a.At;
-                        if (b.Kind == DemoActionKind.BlockBroken && b.Detail == null && b.X == a.X && b.Y == a.Y && b.Z == a.Z && dt <= TimeSpan.FromSeconds(15))
-                            explained = true;
-                        else if (b.Kind == DemoActionKind.BlockPlaced && b.Detail == null && dt <= TimeSpan.FromSeconds(1.5) && r.Held > 0 && r.Held < 256 &&
-                                 Math.Abs(b.X - a.X) + Math.Abs(b.Y - a.Y) + Math.Abs(b.Z - a.Z) <= 1)
-                            explained = true;
-                    }
-                    if (explained) continue;
-                    // Live 10-27: "right-clicked cobblestone on cobblestone" were two PUNCHES with cobblestone in hand. A swing
-                    // with a block in hand that placed nothing is a left-click (pointing/digging), not a use.
-                    if (r.Held is > 0 and < 256 && a.Detail != Perception.Gestures.Punched
-                        && !(a.Block is { } bn && Blocks.ByName(bn) is { } bi && BlockShapes.IsLiquid(bi.Id)))
-                        a = a with { Detail = Perception.Gestures.Punched };
+                    if (ExplainedByLater(raw, i)) continue;
+                    a = AsPunch(r, a);
                 }
-                if (a.Kind == DemoActionKind.OpenContainer && keep.Count > 0 && keep.FindLast(k => k.Kind == DemoActionKind.OpenContainer) is { } prev &&
-                    prev.X == a.X && prev.Y == a.Y && prev.Z == a.Z && a.At - prev.At < TimeSpan.FromSeconds(3))
-                    continue;
+                if (a.Kind == DemoActionKind.OpenContainer && IsRepeatOpen(keep, a)) continue;
                 keep.Add(a);
             }
             return keep;
         }
+
+        /// <summary>A swing explained by a later change: the break of that block within 15 s, or (block in hand) a block placed
+        /// next to it within 1.5 s.</summary>
+        private static bool ExplainedByLater(List<Raw> raw, int i)
+        {
+            var r = raw[i];
+            var a = r.A;
+            for (int j = i + 1; j < raw.Count; j++)
+            {
+                var b = raw[j].A;
+                var dt = b.At - a.At;
+                if (b.Kind == DemoActionKind.BlockBroken && b.Detail == null && b.X == a.X && b.Y == a.Y && b.Z == a.Z && dt <= TimeSpan.FromSeconds(15))
+                    return true;
+                if (b.Kind == DemoActionKind.BlockPlaced && b.Detail == null && dt <= TimeSpan.FromSeconds(1.5) && HoldsBlock(r) &&
+                    Math.Abs(b.X - a.X) + Math.Abs(b.Y - a.Y) + Math.Abs(b.Z - a.Z) <= 1)
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool HoldsBlock(Raw r) => r.Held > 0 && r.Held < 256;
+
+        /// <summary>Live 10-27: "right-clicked cobblestone on cobblestone" were two PUNCHES with cobblestone in hand. A swing with a
+        /// block in hand that placed nothing is a left-click (pointing/digging), not a use (a liquid target stays a use).</summary>
+        private static DemoAction AsPunch(Raw r, DemoAction a)
+        {
+            if (!HoldsBlock(r) || a.Detail == Perception.Gestures.Punched) return a;
+            if (a.Block is { } bn && Blocks.ByName(bn) is { } bi && BlockShapes.IsLiquid(bi.Id)) return a;
+            return a with { Detail = Perception.Gestures.Punched };
+        }
+
+        /// <summary>The same container opened again within 3 s of the last kept open.</summary>
+        private static bool IsRepeatOpen(List<DemoAction> keep, DemoAction a) =>
+            keep.Count > 0 && keep.FindLast(k => k.Kind == DemoActionKind.OpenContainer) is { } prev &&
+            prev.X == a.X && prev.Y == a.Y && prev.Z == a.Z && a.At - prev.At < TimeSpan.FromSeconds(3);
 
         public ValueTask DisposeAsync()
         {

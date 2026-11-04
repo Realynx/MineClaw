@@ -222,6 +222,20 @@ public sealed class DangerMonitor
     {
         var now = _time.GetUtcNow();
         var t = T(p.Name);
+        UpdateMotion(t, p, now);
+        bool building = now - t.LastEdgeWork <= TimeSpan.FromSeconds(_o.EdgeWorkSeconds);
+        var exit = TimeSpan.FromMilliseconds(_o.ExitMs);
+        CheckFall(t, p, now, exit);
+        FlushFalls(now);
+        CheckKnockback(t, p, building, now, exit);
+        EndFightIfOver(t, p, now);
+        t.Hurt.Update(DangerLevel.None, now, TimeSpan.Zero, exit);
+        CheckDeaths(now);
+    }
+
+    /// <summary>Velocity from the last sample; position, time, and edge work while sneaking at an edge.</summary>
+    private void UpdateMotion(Track t, PlayerSample p, DateTimeOffset now)
+    {
         if (t.At != default)
         {
             double dt = Math.Max(0.02, (now - t.At).TotalSeconds);
@@ -232,30 +246,32 @@ public sealed class DangerMonitor
         t.At = now;
         t.Vanished = false;
         if (p.Crouched && NearEdge(p.Pos)) t.LastEdgeWork = now;
-        bool building = now - t.LastEdgeWork <= TimeSpan.FromSeconds(_o.EdgeWorkSeconds);
-        var exit = TimeSpan.FromMilliseconds(_o.ExitMs);
+    }
 
-        // Falling: fast descent with nothing below for FallEnterMs; below the island's bottom is critical.
-        var level = DangerLevel.None;
-        if (p.VehicleId < 0 && t.Vy < -_o.FallSpeed && OverVoid(p.Pos))
-        {
-            level = DangerLevel.Danger;
-            var c = Cell(p.Pos);
-            if (IslandBottom?.Invoke(c.X, c.Z) is { } bottom && p.Pos.Y < bottom - 2) level = DangerLevel.Critical;
-        }
+    /// <summary>Falling: fast descent with nothing below; below the island's bottom is critical.</summary>
+    private DangerLevel FallLevel(Track t, PlayerSample p)
+    {
+        if (p.VehicleId >= 0 || !(t.Vy < -_o.FallSpeed) || !OverVoid(p.Pos)) return DangerLevel.None;
+        var c = Cell(p.Pos);
+        return IslandBottom?.Invoke(c.X, c.Z) is { } bottom && p.Pos.Y < bottom - 2 ? DangerLevel.Critical : DangerLevel.Danger;
+    }
+
+    /// <summary>Falling for FallEnterMs raises the alarm. One fall, one wake: entering danger starts a held alarm (a death inside
+    /// the window merges into it); going critical mid-fall doesn't re-alarm. On safe ground, the island they're on is noted.</summary>
+    private void CheckFall(Track t, PlayerSample p, DateTimeOffset now, TimeSpan exit)
+    {
+        var level = FallLevel(t, p);
         if (level == DangerLevel.None && !OverVoid(p.Pos) && PlaceAt?.Invoke(Cell(p.Pos)) is { Kind: IndexKinds.Island } isl) t.LastIsland = isl;
-        // One fall, one wake: entering danger starts a held alarm (a death inside the window merges into it); going
-        // critical mid-fall doesn't re-alarm.
-        if (t.Fall.Update(level, now, TimeSpan.FromMilliseconds(_o.FallEnterMs), exit) is { } fx && fx.From < DangerLevel.Danger && fx.To >= DangerLevel.Danger
-            && t.PendingFall == null)
-        {
-            var edge = EdgeOf(t.LastIsland, p.Pos);
-            t.PendingFall = ($"{p.Name} is falling into the void{(edge.Length > 0 ? $" ({edge})" : Where(p.Pos))}", now, edge);
-            t.LastEdge = edge;
-        }
-        FlushFalls(now);
+        if (t.Fall.Update(level, now, TimeSpan.FromMilliseconds(_o.FallEnterMs), exit) is not { } fx || fx.From >= DangerLevel.Danger || fx.To < DangerLevel.Danger
+            || t.PendingFall != null) return;
+        var edge = EdgeOf(t.LastIsland, p.Pos);
+        t.PendingFall = ($"{p.Name} is falling into the void{(edge.Length > 0 ? $" ({edge})" : Where(p.Pos))}", now, edge);
+        t.LastEdge = edge;
+    }
 
-        // Knockback toward an edge right after a hit (never while they're deliberately working the edge).
+    /// <summary>Knockback toward an edge right after a hit (never while they're deliberately working the edge).</summary>
+    private void CheckKnockback(Track t, PlayerSample p, bool building, DateTimeOffset now, TimeSpan exit)
+    {
         var kl = DangerLevel.None;
         if (!building && now - t.LastHurt <= TimeSpan.FromMilliseconds(_o.KnockbackWindowMs) && t.HVel.HorizontalLength >= _o.KnockbackSpeed)
         {
@@ -265,21 +281,20 @@ public sealed class DangerMonitor
         }
         if (t.Knock.Update(kl, now, TimeSpan.Zero, exit) is { } kx && kx.To > kx.From && kx.To >= DangerLevel.Danger)
             Post(p.Name, "knockback", kx.To, $"{p.Name} was knocked toward the void edge{Where(p.Pos)}", EventPriority.High);
+    }
 
-        // Fight sessions end quietly.
-        if (t.Fight is { } f)
+    /// <summary>Fight sessions end quietly (no hostile mob near, or quiet for MobSessionEndSeconds); one at an edge escalates.</summary>
+    private void EndFightIfOver(Track t, PlayerSample p, DateTimeOffset now)
+    {
+        if (t.Fight is not { } f) return;
+        bool mobGone = _world.Entities.Nearby(p.Pos, 8, e => e.IsHostileMob).Count == 0;
+        if (now - f.Last > TimeSpan.FromSeconds(_o.MobSessionEndSeconds) || mobGone)
         {
-            bool mobGone = _world.Entities.Nearby(p.Pos, 8, e => e.IsHostileMob).Count == 0;
-            if (now - f.Last > TimeSpan.FromSeconds(_o.MobSessionEndSeconds) || mobGone)
-            {
-                Activity?.Invoke(new ActivityEvent(p.Name, ActivityKinds.Fought, now, 0.9)
-                    { Detail = f.Mob, Count = f.Hits, Pos = Cell(p.Pos), Place = PlaceAt?.Invoke(Cell(p.Pos)) });
-                t.Fight = null;
-            }
-            else if (NearEdge(p.Pos)) { f.NearEdge = true; Escalate(p.Name, t, f, now); }
+            Activity?.Invoke(new ActivityEvent(p.Name, ActivityKinds.Fought, now, 0.9)
+                { Detail = f.Mob, Count = f.Hits, Pos = Cell(p.Pos), Place = PlaceAt?.Invoke(Cell(p.Pos)) });
+            t.Fight = null;
         }
-        t.Hurt.Update(DangerLevel.None, now, TimeSpan.Zero, exit);
-        CheckDeaths(now);
+        else if (NearEdge(p.Pos)) { f.NearEdge = true; Escalate(p.Name, t, f, now); }
     }
 
     /// <summary>"east edge of main island" from where the player left the island's box.</summary>

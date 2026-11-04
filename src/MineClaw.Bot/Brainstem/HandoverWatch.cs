@@ -200,35 +200,54 @@ public sealed class HandoverWatch(TimeProvider? time = null)
     /// </summary>
     public PendingPromise? OnBotLine(string text, Func<int, int> have)
     {
-        if (string.IsNullOrWhiteSpace(text)) return null;
-        var m = PromiseAfter.Match(text);
-        if (!m.Success) m = PromiseBefore.Match(text);
-        if (!m.Success) return null;
-        string act = Clean(m.Groups["act"].Value), cond = Clean(m.Groups["cond"].Value);
-        if (act.Length == 0 || cond.Length == 0) return null;
+        if (PromiseParts(text) is not { } parts) return null;
+        var (act, cond) = parts;
         var now = _time.GetUtcNow();
         lock (_lock)
         {
             string? partner = _partner is { } pt && now - pt.At <= TimeSpan.FromMinutes(3) ? pt.Player : null;
             bool handover = HandoverCond.IsMatch(cond);
-            int? item = null;
             int min = 1;
-            if (!handover && GetCond.Match(cond) is { Success: true } g)
-            {
-                item = HandoffItem(g.Groups["what"].Value);
-                if (int.TryParse(g.Groups["n"].Value.Trim(), out var n) && n > 0) min = n;
-            }
-            item ??= Perception.HandoffIntent.ItemIn(cond) is { } c && !IsProductOf(act, c) ? c : null;
+            int? item = handover ? null : GottenItem(cond, ref min);
             // "make bread when you hand it over": the item is the one the partner offered ("I have wheat"), else the recipe's input.
-            if (item is null && partner is not null && _lastLine.TryGetValue(partner, out var line) && now - line.At <= TimeSpan.FromMinutes(3))
-                item = ItemsIn(line.Text).FirstOrDefault(i => !IsProductOf(act, i), -1) is var li and >= 0 ? li : null;
-            item ??= RecipeInput(act);
+            item ??= ItemNamedIn(act, cond) ?? PartnerOffered(act, partner, now) ?? RecipeInput(act);
             if (!handover && item is null) return null; // "once I'm done" etc.: nothing concrete to watch for
             var p = new PendingPromise(act, cond, handover ? partner : null, item, min, item is { } id ? have(id) : 0, now) { ByHandover = handover };
             _promises.RemoveAll(x => x.ItemId == p.ItemId && string.Equals(x.From, p.From, StringComparison.OrdinalIgnoreCase));
             _promises.Add(p);
             return p;
         }
+    }
+
+    /// <summary>The promised act and its condition ("make bread" / "you hand it over"), either order; null when the line holds none.</summary>
+    private static (string Act, string Cond)? PromiseParts(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var m = PromiseAfter.Match(text);
+        if (!m.Success) m = PromiseBefore.Match(text);
+        if (!m.Success) return null;
+        string act = Clean(m.Groups["act"].Value), cond = Clean(m.Groups["cond"].Value);
+        return act.Length == 0 || cond.Length == 0 ? null : (act, cond);
+    }
+
+    /// <summary>"once I get 3 logs": the item (and how many, into <paramref name="min"/>) the bot itself gets.</summary>
+    private static int? GottenItem(string cond, ref int min)
+    {
+        if (GetCond.Match(cond) is not { Success: true } g) return null;
+        var item = HandoffItem(g.Groups["what"].Value);
+        if (int.TryParse(g.Groups["n"].Value.Trim(), out var n) && n > 0) min = n;
+        return item;
+    }
+
+    /// <summary>An item the condition names, unless it's what the act makes.</summary>
+    private static int? ItemNamedIn(string act, string cond) =>
+        Perception.HandoffIntent.ItemIn(cond) is { } c && !IsProductOf(act, c) ? c : null;
+
+    /// <summary>The item the partner offered in their last line (within 3 minutes), unless it's what the act makes.</summary>
+    private int? PartnerOffered(string act, string? partner, DateTimeOffset now)
+    {
+        if (partner is null || !_lastLine.TryGetValue(partner, out var line) || now - line.At > TimeSpan.FromMinutes(3)) return null;
+        return ItemsIn(line.Text).FirstOrDefault(i => !IsProductOf(act, i), -1) is var li and >= 0 ? li : null;
     }
 
     public IReadOnlyList<PendingPromise> Promises { get { lock (_lock) return _promises.ToList(); } }

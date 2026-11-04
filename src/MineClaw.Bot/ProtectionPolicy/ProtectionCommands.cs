@@ -128,71 +128,84 @@ public sealed partial class ProtectionCommands
     {
         if (string.IsNullOrWhiteSpace(player) || Parse(text) is not { } intent) return null;
         var now = _time.GetUtcNow();
-        if (intent.Kind == ProtectionIntentKind.Confirm)
-        {
-            lock (_pending)
-            {
-                if (!_pending.Remove(player, out var p) || p.Until < now) return null;
-                return Grant(p.Draft, p.Unmark, p.Count);
-            }
-        }
-        if (intent.Kind == ProtectionIntentKind.Never)
-        {
-            if (Resolve(player, intent) is not { } nt || nt.Boxes.Count == 0) return null;
-            // Live 10-27: a vague "don't mine the middle one" took one of the gen's three regen cells away for good. A gen cell
-            // takes a never-break mark only when the player names that exact cell (coordinates or a punch).
-            if (nt.GenCell && intent.Coords is null)
-            {
-                var no = $"[protect] not marking {nt.Label} never-break from '{intent.Target}': generator cells are what I mine; name the exact cell (x,y,z) to keep me off one";
-                Notice?.Invoke(no);
-                return "ignored: " + no;
-            }
-            var mark = _marks.Add(MarkKind.Never, Dim, nt.Boxes, nt.Label, player, null, nt.Exact);
-            var line = $"[protect] {player} marked {nt.Label} never-break (hard: no command overrides it; a trusted 'you can break it' unmarks it)";
-            Notice?.Invoke(line);
-            return line;
-        }
+        if (intent.Kind == ProtectionIntentKind.Confirm) return OnConfirm(player, now);
+        if (intent.Kind == ProtectionIntentKind.Never) return OnNever(player, intent);
         if (!IsTrusted(player))
         {
             var line = $"[protect] {player} asked to break protected blocks, but only {string.Join("/", Trusted())} can unlock them";
             Notice?.Invoke(line);
             return "ignored: " + line;
         }
-        if (Resolve(player, intent) is not { } t)
-        {
-            if (intent.Target is not null)
-            {
-                var note = $"[protect] couldn't resolve '{intent.Target}': name a block kind near me, a place, or x,y,z";
-                Notice?.Invoke(note);
-                return "ask: " + note;
-            }
-            // A stale refusal may refer to a block that is already gone. Ask for a current target.
-            return AskWhich(player);
-        }
+        if (Resolve(player, intent) is not { } t) return Unresolved(player, intent);
         if (t.Already is { } already)
         {
             Say?.Invoke(already);
             return "nothing to unlock: " + already;
         }
-        if (intent.Kind == ProtectionIntentKind.Allow && GenCellAllowed is { } allowed)
+        if (intent.Kind == ProtectionIntentKind.Allow) AllowGenCells(player, intent, t);
+        return Unlock(player, intent, t, now);
+    }
+
+    /// <summary>"yes" to a pending big unlock (within its two minutes).</summary>
+    private string? OnConfirm(string player, DateTimeOffset now)
+    {
+        lock (_pending)
         {
-            var cells = GenCells?.Invoke() ?? [];
-            foreach (var (a, b) in t.Boxes)
-                if (a == b && (t.GenCell || cells.Contains(a)))
-                    try { allowed(a, player, t.GenCell && intent.Coords is null); } catch (Exception) { /* memory busy */ }
+            if (!_pending.Remove(player, out var p) || p.Until < now) return null;
+            return Grant(p.Draft, p.Unmark, p.Count);
         }
+    }
+
+    /// <summary>Anyone's "never break X": a hard mark. Live 10-27: a vague "don't mine the middle one" took one of the gen's three
+    /// regen cells away for good. A gen cell takes a never-break mark only when the player names that exact cell (coordinates or
+    /// a punch).</summary>
+    private string? OnNever(string player, ProtectionIntent intent)
+    {
+        if (Resolve(player, intent) is not { } nt || nt.Boxes.Count == 0) return null;
+        if (nt.GenCell && intent.Coords is null)
+        {
+            var no = $"[protect] not marking {nt.Label} never-break from '{intent.Target}': generator cells are what I mine; name the exact cell (x,y,z) to keep me off one";
+            Notice?.Invoke(no);
+            return "ignored: " + no;
+        }
+        _marks.Add(MarkKind.Never, Dim, nt.Boxes, nt.Label, player, null, nt.Exact);
+        var line = $"[protect] {player} marked {nt.Label} never-break (hard: no command overrides it; a trusted 'you can break it' unmarks it)";
+        Notice?.Invoke(line);
+        return line;
+    }
+
+    /// <summary>A target that didn't resolve: ask for a name, a place or x,y,z; no target at all (a stale refusal may refer to a
+    /// block that is already gone): ask which one now.</summary>
+    private string Unresolved(string player, ProtectionIntent intent)
+    {
+        if (intent.Target is null) return AskWhich(player);
+        var note = $"[protect] couldn't resolve '{intent.Target}': name a block kind near me, a place, or x,y,z";
+        Notice?.Invoke(note);
+        return "ask: " + note;
+    }
+
+    /// <summary>"You can break it" on generator cells: each single cell (or a known gen cell) is unmarked as a gen cell.</summary>
+    private void AllowGenCells(string player, ProtectionIntent intent, Target t)
+    {
+        if (GenCellAllowed is not { } allowed) return;
+        var cells = GenCells?.Invoke() ?? [];
+        foreach (var (a, b) in t.Boxes)
+            if (a == b && (t.GenCell || cells.Contains(a)))
+                try { allowed(a, player, t.GenCell && intent.Coords is null); } catch (Exception) { /* memory busy */ }
+    }
+
+    /// <summary>A permit for the target: granted now, or (above ConfirmAboveBlocks) after the player confirms.</summary>
+    private string Unlock(string player, ProtectionIntent intent, Target t, DateTimeOffset now)
+    {
         var draft = new ProtectionMark(0, MarkKind.Permit, Dim, t.Boxes, t.Label, player, now, null, t.Exact);
         int count = CountBlocks(t.Boxes);
         if (count == 0) return AskWhich(player);
         bool unmark = intent.Kind == ProtectionIntentKind.Allow;
-        if (count > _o.ConfirmAboveBlocks)
-        {
-            lock (_pending) _pending[player] = (draft, unmark, now + TimeSpan.FromMinutes(2), count);
-            var ask = $"that's {count} blocks ({t.Label}): say 'yes' to confirm I may break all of it";
-            Say?.Invoke(ask);
-            return "confirm: " + ask;
-        }
-        return Grant(draft, unmark, count);
+        if (count <= _o.ConfirmAboveBlocks) return Grant(draft, unmark, count);
+        lock (_pending) _pending[player] = (draft, unmark, now + TimeSpan.FromMinutes(2), count);
+        var ask = $"that's {count} blocks ({t.Label}): say 'yes' to confirm I may break all of it";
+        Say?.Invoke(ask);
+        return "confirm: " + ask;
     }
 
     private string Grant(ProtectionMark draft, bool unmark, int count)
