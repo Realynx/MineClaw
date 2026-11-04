@@ -9,6 +9,7 @@
 import {
   materialKey,
   normArea,
+  STORY_FURNITURE,
   tickClock,
   type StoryAlert,
   type StoryColonyState,
@@ -55,6 +56,7 @@ import {
   GroupInspector,
   PawnInspector,
   StorageInspector,
+  UndesignatedBench,
 } from './StoryInspector';
 import { useFullscreen } from './useFullscreen';
 import type { Condition } from './notices';
@@ -106,7 +108,7 @@ import {
   type Target,
 } from './tools';
 import type { StorageClip } from './storage';
-import { catchUp, colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
+import { catchUp, colonyKey, useArchitect, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -181,6 +183,7 @@ export function StoryMode() {
   const [xray, setXray] = useState<'auto' | 'on' | 'off'>('auto');
   const [view, setView] = useState<'top' | 'angled'>('top');
   const [tab, setTab] = useState<TabId | null>(null);
+  const architect = useArchitect(id, state?.rev, tab === 'architect');
   const [menu, setMenu] = useState<{
     at: { x: number; y: number };
     title: string;
@@ -723,7 +726,9 @@ export function StoryMode() {
           onPickChest={pickChest}
           onClose={close}
         />
-      ) : null;
+      ) : (
+        <UndesignatedBench pos={selection.bench} canWrite={canWrite} write={write} onClose={close} />
+      );
     }
     if (selection.bed) {
       const bed = (state?.beds ?? []).find((b) => k3(b.pos) === k3(selection.bed!));
@@ -864,7 +869,20 @@ export function StoryMode() {
   const panelEl = (() => {
     switch (tab) {
       case 'architect':
-        return <ArchitectPanel tool={tool} onTool={setTool} />;
+        return (
+          <ArchitectPanel
+            tool={tool}
+            onTool={setTool}
+            palette={architect.data}
+            onPick={(e) => {
+              // A placeable: its default build tool, with it as the material (the build's auto bills craft what's missing).
+              const furniture = (STORY_FURNITURE as readonly string[]).includes(e.kind);
+              setTool({ kind: 'build', id: furniture ? `furniture:${e.kind}` : e.kind } as MapTool);
+              if (!furniture) setBuild((b) => ({ ...b, material: [e.material[0], e.material[1]] }));
+              say(`${e.label}: drag on the map to place`);
+            }}
+          />
+        );
       case 'work':
         return (
           <WorkPanel
@@ -937,6 +955,7 @@ export function StoryMode() {
               )
             }
             onPause={togglePause}
+            onOptions={(o) => void write('story.options', o).catch((e) => say(errorText(e), 'warn'))}
             onRelease={() => void write('story.release', {}).then(() => say('Pawns released; the colony is saved'))}
             onResume={() =>
               void write('story.resume', {}).then(

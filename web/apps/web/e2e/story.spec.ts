@@ -969,3 +969,64 @@ test('story map frame rate and main-thread time on software WebGL (10 pawns, hun
   await measure('labels', () => page.waitForTimeout(5000));
   console.warn(`STORY_PERF ${JSON.stringify(out)}`);
 });
+
+test('the Architect palette: tiers unlock with designated benches; builds list their materials; release and designate', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  await story(page, 'focus', 1, -3);
+  await story(page, 'setZoom', 36);
+  await page.waitForTimeout(800);
+
+  // The camp's table is the colony's (found at founding): the workbench tier is open, the furnace tier isn't.
+  await page.keyboard.press('b');
+  const arch = page.getByTestId('architect');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  const pal = page.getByTestId('architect-palette');
+  await expect(pal.locator('[data-entry="fence"]')).toHaveAttribute('data-unlocked', 'true');
+  await expect(pal.locator('[data-entry="glass"]')).toHaveAttribute('data-tier', 'furnace'); // the camp has a furnace too
+  await expect(pal.locator('[data-entry="planks"]')).toContainText('Hand');
+  await arch.getByRole('button', { name: 'Lighting' }).click();
+  await expect(pal.locator('[data-entry="torch"]')).toBeVisible();
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  // Picking the fence arms the fence tool; a fence queued from it lists its materials (crafted from logs at the table).
+  await pal.locator('[data-entry="fence"]').click();
+  await expect(arch.getByRole('button', { name: 'Fence' })).toHaveAttribute('aria-pressed', 'true');
+  const lv = await story(page, 'level');
+  const fence = post(page, /\/builds$/);
+  await dragCells(page, [-8, lv, 2], [-6, lv, 2]);
+  await page.mouse.up();
+  expect((body(await fence) as { items: Array<{ kind: string }> }).items[0]?.kind).toBe('fence');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('u');
+  const queue = page.getByTestId('queue-panel');
+  await expect(queue.locator('[data-material="fence"]')).toBeVisible();
+  await expect(queue.locator('[data-material="fence"] [data-crafting]')).toBeVisible();
+  if (shots) await page.screenshot({ path: `${shots}/story-materials.png` });
+
+  // The table's inspector: the fence's auto bill, cancel-only; release the bench, then designate it again.
+  await page.keyboard.press('Escape');
+  const table = await pageAt(page, -3.5, -1.5);
+  await page.mouse.click(table.x, table.y);
+  const bills = page.getByTestId('bills-inspector');
+  await expect(bills.locator('[data-auto-bill]')).toHaveCount(1);
+  await expect(bills.locator('[data-auto-bill]')).toContainText(/for build #/);
+  const release = post(page, /\/workbenches$/);
+  await bills.getByRole('button', { name: 'Release' }).click();
+  expect(body(await release)).toMatchObject({ op: 'release' });
+  // Without the table the workbench tier locks, with the reason.
+  await page.keyboard.press('b');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  await expect(pal.locator('[data-entry="fence"]')).toHaveAttribute('data-unlocked', 'false');
+  await expect(pal.locator('[data-entry="fence"]')).toContainText('Needs a crafting table');
+  await page.keyboard.press('Escape');
+  const designate = page.getByTestId('bench-designate');
+  await page.mouse.click(table.x, table.y);
+  await expect(designate).toBeVisible();
+  const again = post(page, /\/workbenches$/);
+  await designate.getByRole('button', { name: 'Use as colony workbench' }).click();
+  expect(body(await again)).toMatchObject({ op: 'designate' });
+  await expect(page.getByTestId('bills-inspector')).toBeVisible();
+});

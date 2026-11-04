@@ -391,6 +391,39 @@ describe('the mock director', () => {
     expect(st.doubleWith).toEqual([2, 64, -2]);
     expect(st.priority).toBe('preferred');
   });
+
+  it('builds craft what they need at designated benches; tiers unlock with them; auto bills are cancel-only', () => {
+    const w = world();
+    const sim = new StorySim({ world: w, defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 1 });
+    // The camp's table was found at founding; release it: nothing designated.
+    expect(sim.state(id).workbenches?.map((x) => x.pos)).toEqual([[-2, 64, -2]]);
+    expect(sim.workbenches(id, { op: 'release', pos: [-2, 64, -2] }).designated).toBe(false);
+    expect(sim.state(id, 1).removed?.workbenches).toContainEqual([-2, 64, -2]);
+    const fence = () => sim.architect(id).entries.find((e) => e.id === 'fence')!;
+    expect(fence()).toMatchObject({ tier: 'workbench', unlocked: false });
+    expect(fence().reason).toMatch(/^Needs a crafting table/);
+    expect(sim.architect(id).entries.find((e) => e.id === 'planks')).toMatchObject({ tier: 'hand', unlocked: true });
+    // A fence build with no table: the colony makes one (auto-placing is on), and the fence waits.
+    const built = sim.builds(id, { op: 'add', items: [{ kind: 'fence', area: [3, 64, 3, 5, 64, 3] }] });
+    let b = sim.state(id).builds!.find((x) => x.id === built.ids![0])!;
+    expect(b.materials[0]).toMatchObject({ need: 3, have: 0, crafting: 3, short: 0, via: 'craft' });
+    expect(b.station?.kind).toBe('crafting_table');
+    // Designated: the tier unlocks and the build's auto bill lands on the bench.
+    expect(sim.workbenches(id, { op: 'designate', pos: [-2, 64, -2] }).designated).toBe(true);
+    expect(fence().unlocked).toBe(true);
+    const bench = sim.state(id).workbenches!.find((x) => x.pos[0] === -2)!;
+    const auto = bench.bills.find((x) => x.forBuild === built.ids![0])!;
+    expect(auto).toMatchObject({ recipe: 'fence', mode: 'count', target: 3, forItem: 'fence' });
+    expect(() => sim.bills(id, { op: 'pause', id: auto.id })).toThrow(/only be cancelled/);
+    sim.bills(id, { op: 'remove', id: auto.id });
+    b = sim.state(id).builds!.find((x) => x.id === built.ids![0])!;
+    expect(b.noCraft).toContain('fence');
+    expect(b.materials[0]).toMatchObject({ via: 'none', crafting: 0, short: 3 });
+    expect(() => sim.workbenches(id, { op: 'designate', pos: [9, 64, 9] })).toThrow(/no workbench/);
+    expect(sim.options(id, { autoPlaceBenches: false })).toEqual({ autoPlaceBenches: false, detectBenches: false });
+    expect(sim.state(id).options?.autoPlaceBenches).toBe(false);
+  });
 });
 
 describe('story fixtures', () => {
