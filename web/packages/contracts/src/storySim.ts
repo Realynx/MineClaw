@@ -1556,57 +1556,66 @@ export class StorySim {
   /** POST /api/story/colonies/{id}/pawns: + joins as seats allow (the rest wait), − stores its things and leaves. */
   pawns(id: string, body: StoryPawnsRequest): StoryPawnsResponse {
     const c = this.colony(id);
-    const staying = () => [...c.pawns.values()].filter((p) => !p.p.leaving);
-    const answer = (why: string | null): StoryPawnsResponse => {
-      const here = staying().map((p) => p.p.name);
-      const pending = Math.max(0, (c.wanted ?? here.length) - here.length);
-      return {
-        pawns: here,
-        wanted: c.wanted ?? here.length,
-        pending: Array.from({ length: pending }, () => ({ reason: why ?? 'waiting for a seat' })),
-        leaving: [...c.pawns.values()].filter((p) => p.p.leaving).map((p) => p.p.name),
-        blocked: why && pending ? [{ reason: why }] : [],
-      };
+    if (body.op === 'add') return this.pawnsAnswer(c, this.addPawns(c, body.count));
+    const p = this.pawnNamed(c, body.pawn);
+    if (!p.p.leaving) this.removePawn(c, p);
+    return this.pawnsAnswer(c, null);
+  }
+
+  /** The pawns that are not leaving. */
+  private staying(c: Colony) {
+    return [...c.pawns.values()].filter((p) => !p.p.leaving);
+  }
+
+  /** The pawns route's answer: who is here, wanted, the seats still waiting (and why), who is leaving. */
+  private pawnsAnswer(c: Colony, why: string | null): StoryPawnsResponse {
+    const here = this.staying(c).map((p) => p.p.name);
+    const pending = Math.max(0, (c.wanted ?? here.length) - here.length);
+    return {
+      pawns: here,
+      wanted: c.wanted ?? here.length,
+      pending: Array.from({ length: pending }, () => ({ reason: why ?? 'waiting for a seat' })),
+      leaving: [...c.pawns.values()].filter((p) => p.p.leaving).map((p) => p.p.name),
+      blocked: why && pending ? [{ reason: why }] : [],
     };
-    if (body.op === 'add') {
-      if (c.released) throw Object.assign(new Error('the colony is released: resume it first'), { status: 400 });
-      const wanted = Math.max(c.wanted ?? 0, staying().length);
-      if (wanted + body.count > 12)
-        throw Object.assign(new Error(`a colony has at most 12 pawns (${wanted} now)`), { status: 400 });
-      c.wanted = wanted + body.count;
-      const now = Math.max(0, Math.min(body.count, c.capFree - c.kept));
-      for (let i = 0; i < now; i++) {
-        const k = c.pawns.size;
-        const display = NAMES[(k + 5) % NAMES.length]!;
-        const name = `maid_${c.id.replace('story-', 's')}_${display.toLowerCase()}${c.seq++}`;
-        const p = this.newPawn(c, name, display, k);
-        p.p.online = false;
-        p.p.state = 'offline';
-        p.p.offlineReason = 'connecting';
-        p.backAt = this.now() + 1500;
-        p.rev = this.bump(c);
-        c.pawns.set(name, p);
-      }
-      c.capFree -= now;
-      const why = now < body.count ? this.capReason(c) : null;
-      this.alert(
-        c,
-        'info',
-        `${body.count} pawn${body.count === 1 ? '' : 's'} joining${why ? ` (${body.count - now} wait: ${why})` : ''}.`,
-      );
-      return answer(why);
-    }
-    const p =
-      c.pawns.get(body.pawn) ??
-      [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === body.pawn.toLowerCase());
-    if (!p) throw Object.assign(new Error(`no pawn '${body.pawn}'`), { status: 404 });
-    if (p.p.leaving) return answer(null);
-    if (staying().length <= 1)
+  }
+
+  /** pawns add: up to 12 wanted; as many join now as the seats allow (the rest wait); why some wait (null: none do). */
+  private addPawns(c: Colony, count: number): string | null {
+    if (c.released) throw Object.assign(new Error('the colony is released: resume it first'), { status: 400 });
+    const wanted = Math.max(c.wanted ?? 0, this.staying(c).length);
+    if (wanted + count > 12) throw Object.assign(new Error(`a colony has at most 12 pawns (${wanted} now)`), { status: 400 });
+    c.wanted = wanted + count;
+    const now = Math.max(0, Math.min(count, c.capFree - c.kept));
+    for (let i = 0; i < now; i++) this.joinPawn(c);
+    c.capFree -= now;
+    const why = now < count ? this.capReason(c) : null;
+    this.alert(c, 'info', `${count} pawn${count === 1 ? '' : 's'} joining${why ? ` (${count - now} wait: ${why})` : ''}.`);
+    return why;
+  }
+
+  /** A new pawn, connecting. */
+  private joinPawn(c: Colony): void {
+    const k = c.pawns.size;
+    const display = NAMES[(k + 5) % NAMES.length]!;
+    const name = `maid_${c.id.replace('story-', 's')}_${display.toLowerCase()}${c.seq++}`;
+    const p = this.newPawn(c, name, display, k);
+    p.p.online = false;
+    p.p.state = 'offline';
+    p.p.offlineReason = 'connecting';
+    p.backAt = this.now() + 1500;
+    p.rev = this.bump(c);
+    c.pawns.set(name, p);
+  }
+
+  /** pawns remove: the pawn leaves (its things go to storage first; its bed is free); gone 1.5 s later. Not the last one. */
+  private removePawn(c: Colony, p: ReturnType<StorySim['pawnNamed']>): void {
+    if (this.staying(c).length <= 1)
       throw Object.assign(new Error("the last pawn can't be removed: release the colony instead"), { status: 400 });
     this.drop(c, p);
     p.p.leaving = true;
     p.rev = this.bump(c);
-    c.wanted = Math.max(staying().length, (c.wanted ?? staying().length + 1) - 1);
+    c.wanted = Math.max(this.staying(c).length, (c.wanted ?? this.staying(c).length + 1) - 1);
     for (const [k, b] of c.beds) if (b.pawn === p.p.name) c.beds.set(k, { ...b, pawn: null });
     c.bedsRev = this.bump(c);
     this.alert(c, 'info', `${p.p.display} is leaving the colony: its things go to storage first.`, p.p.name);
@@ -1615,8 +1624,8 @@ export class StorySim {
       c.removed.push({ rev: this.bump(c), kind: 'pawns', key: p.p.name });
       this.alert(c, 'info', `${p.p.display} left the colony.`);
     }, 1500);
-    return answer(null);
   }
+
 
   /** Every target of a block tool in an area (capped). */
   private scan(
