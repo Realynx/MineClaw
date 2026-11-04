@@ -396,4 +396,226 @@ public sealed class StoryOpsGoldenTests
         s.State("end", null);
         Golden("ops-orders", s.Sb.ToString());
     }
+
+    /// <summary>The branches <see cref="Orders_and_designations"/> misses: re-marking failed targets, retry, removal by blocks and by
+    /// entity, allow by area, every mine filter, the target caps; orders by area, position and player, hold, stop, a full queue.</summary>
+    [Fact]
+    public void Orders_and_designations_more()
+    {
+        var s = Make(3);
+        var ps = s.Ps;
+        s.W.Tree(4, 4); s.W.Tree(8, 2, 6);
+        for (int x = 0; x < 3; x++) s.W.Set(x, 64, -6, 31, 1); // tall grass
+        s.W.Set(5, 64, -6, 18); // a leaf block
+        s.W.Set(0, 63, 3, 60); s.W.Set(1, 63, 3, 60); s.W.Set(0, 64, 3, 59, 7); s.W.Set(1, 64, 3, 59, 3); // ripe and unripe wheat
+        s.W.Set(-2, 64, 0, 64); s.W.Set(-2, 65, 0, 64, 8); // a wooden door
+        s.W.Set(2, 63, 2, 16); s.W.Set(3, 62, 2, 3); s.W.Set(3, 61, 2, 13); // coal ore, dirt, gravel
+        s.W.Set(6, 64, 6, 4); s.W.Set(6, 65, 6, 5); // placed cobblestone and planks
+        s.W.Ents.Add(new StoryEntity(70, "mob", "pig", 2, 64, 2));
+        s.W.Ents.Add(new StoryEntity(71, "item", "stick", 1.5, 64, 1.5, ItemId: 280, Count: 2));
+        s.W.Ents.Add(new StoryEntity(72, "item", "cobblestone", 3.5, 65, 1.5, ItemId: 4, Count: 1));
+        s.W.Ents.Add(new StoryEntity(73, "mob", "creeper", 4, 64, 3, Hostile: true));
+        s.W.Ents.Add(new StoryEntity(74, "player", "Fox", 3, 64, -2));
+        void D(string op, string? kind, Area? area, IReadOnlyList<P3>? blocks, string? filter, IReadOnlyList<string>? ids = null) =>
+            s.Rec($"designate {op} {kind} {area?.Json().ToJsonString()} {(blocks == null ? "-" : string.Join(";", blocks))} {filter} {(ids == null ? "-" : string.Join(",", ids))}",
+                s.C.Designate(op, kind, area, blocks, filter, ids));
+        D("add", "chop", null, [new P3(4, 67, 4), new P3(4, 68, 4), new P3(9, 9, 9)], null);
+        D("add", "chop", Area.Of(0, 60, 0, 10, 80, 10), null, null);
+        D("add", "cut", Area.Of(0, 64, -6, 5, 64, -6), null, null);
+        D("add", "harvest", Area.Of(0, 64, 3, 1, 64, 3), null, null);
+        foreach (var f in new[] { "soil", "stone", "ores", "all" }) D("add", "mine", Area.Of(2, 61, 2, 3, 63, 2), null, f);
+        D("add", "deconstruct", Area.Of(6, 64, 6, 6, 65, 6), null, null);
+        D("add", "haul", null, [new P3(1, 64, 1)], null);
+        D("add", "haul", Area.Of(3, 66, 1, 3, 66, 1), null, null);
+        D("add", "hunt", null, [new P3(2, 64, 2)], null);
+        D("add", "hunt", Area.Of(0, 60, 0, 10, 70, 10), null, null);
+        D("add", "forbid", Area.Of(-3, 63, -1, 2, 66, 2), null, null);
+        D("add", "allow", Area.Of(-2, 64, 0, -2, 64, 0), null, null);
+        D("add", "allow", null, [new P3(1, 64, 1)], null);
+        D("add", "mine", Area.Of(0, 0, 0, 100, 30, 100), null, null);
+        D("add", "mine", Area.Of(0, 40, 0, 63, 59, 63), null, null);
+        D("add", "cut", null, [], null);
+        s.State("designated");
+        // A failed cut is marked again: tried again now (revived), the others stay as they are.
+        foreach (var d in s.C.Designations.Where(d => d.Kind == "cut").Take(2)) { d.Status = "failed"; d.Fails = 3; }
+        D("add", "cut", Area.Of(0, 64, -6, 5, 64, -6), null, null);
+        foreach (var d in s.C.Designations.Where(d => d.Kind == "harvest")) d.Status = "failed";
+        D("retry", null, null, null, null);
+        D("retry", null, null, null, null, []);
+        D("retry", null, null, null, null, [s.C.Designations.First(d => d.Kind == "harvest").Id!, "nope"]);
+        D("remove", "mine", null, [new P3(2, 63, 2)], null);
+        D("remove", "hunt", Area.Of(1, 63, 1, 3, 64, 3), null, null);
+        D("remove", "haul", Area.Of(1, 63, 1, 3, 65, 3), null, null);
+        D("cancel", "chop", null, null, null, [s.C.Designations.First(d => d.Kind == "cut").Id!]);
+        D("remove", null, null, null, null);
+        s.State("after removals");
+        void O(int[] who, JsonObject order, bool queue) =>
+            s.Rec($"order {string.Join(",", who)} {order.ToJsonString()} {queue}", s.C.GiveOrder(who.Select(i => ps[i]).ToList(), order, queue));
+        O([0], new JsonObject { ["kind"] = " MOVE ", ["target"] = new JsonObject { ["area"] = A(10, 64, 10, 14, 64, 14) } }, false);
+        O([0], new JsonObject { ["kind"] = "move", ["target"] = new JsonObject { ["area"] = A(0, 0, 0, 40, 40, 40) } }, true);
+        O([0], new JsonObject { ["kind"] = "move", ["target"] = new JsonObject { ["area"] = "x" } }, true);
+        O([0], new JsonObject { ["kind"] = "move", ["target"] = new JsonObject { ["player"] = 5 } }, true);
+        O([1], new JsonObject { ["kind"] = "attack", ["target"] = new JsonObject { ["x"] = 4, ["y"] = 64, ["z"] = 3 } }, false);
+        O([1], new JsonObject { ["kind"] = "attack", ["target"] = new JsonObject { ["player"] = "Fox" } }, true);
+        O([1], new JsonObject { ["kind"] = "attack" }, true);
+        O([1, 2], new JsonObject { ["kind"] = "haul", ["target"] = new JsonObject { ["area"] = A(0, 63, 0, 4, 66, 4) } }, true);
+        O([2], new JsonObject { ["kind"] = "chop", ["target"] = new JsonObject { ["area"] = A(30, 60, 30, 34, 70, 34) } }, false);
+        O([2], new JsonObject { ["kind"] = "chop", ["target"] = new JsonObject { ["x"] = 8, ["y"] = 64, ["z"] = 2 } }, true);
+        O([2], new JsonObject { ["kind"] = "mine" }, true);
+        O([0], new JsonObject { ["kind"] = "hold", ["target"] = new JsonObject { ["x"] = 1, ["y"] = 64, ["z"] = 1 } }, true);
+        O([0], new JsonObject { ["kind"] = "hold" }, true);
+        O([0], new JsonObject { ["kind"] = "build", ["target"] = new JsonObject { ["x"] = 1, ["y"] = 64, ["z"] = 1 } }, true);
+        O([0], new JsonObject { ["kind"] = "build", ["design"] = "7" }, true);
+        s.State("after orders");
+        s.Run(4, "orders");
+        O([0, 1], new JsonObject { ["kind"] = "stop" }, true);
+        for (int k = 0; k < 34; k++) O([2], new JsonObject { ["kind"] = "move", ["target"] = new JsonObject { ["x"] = k, ["y"] = 64, ["z"] = 0 } }, true);
+        s.Run(4, "work");
+        s.State("end", null);
+        Golden("ops-orders2", s.Sb.ToString());
+    }
+
+    // ================================================================ roles
+
+    [Fact]
+    public void Roles()
+    {
+        var s = Make(3);
+        var ps = s.Ps;
+        JsonObject Op(string op, JsonNode? role = null, string? id = null)
+        {
+            var o = new JsonObject { ["op"] = op };
+            if (role != null) o["role"] = role;
+            if (id != null) o["id"] = id;
+            return o;
+        }
+        JsonObject P(params (string T, JsonNode? V)[] v) => new(v.Select(x => new KeyValuePair<string, JsonNode?>(x.T, x.V)));
+        s.Line("set role farmer", s.C.SetRole([ps[0], ps[1]], "farmer"));
+        s.Line("set role nope", s.C.SetRole([ps[2]], "nope"));
+        foreach (var body in new[]
+                 {
+                     Op("add", new JsonObject { ["name"] = "Night miner", ["icon"] = "pickaxe-2", ["priorities"] = P(("mine", 1), ("guard", 2)) }),
+                     Op("add", new JsonObject { ["name"] = "night MINER" }), Op("add", new JsonObject { ["name"] = "" }),
+                     Op("add", new JsonObject { ["name"] = "x".PadRight(41, 'x') }), Op("add", new JsonObject { ["name"] = 5 }),
+                     Op("add", new JsonObject { ["name"] = "Icon", ["icon"] = "Big Icon" }), Op("add", new JsonObject { ["name"] = "Icon", ["icon"] = new JsonObject() }),
+                     Op("add", new JsonObject { ["name"] = "Icon", ["icon"] = "x".PadRight(25, 'x') }),
+                     Op("add", new JsonObject { ["name"] = "No icon", ["icon"] = null }),
+                     Op("add", new JsonObject { ["name"] = "Bad", ["priorities"] = P(("dance", 1)) }),
+                     Op("add", new JsonObject { ["name"] = "Bad", ["priorities"] = P(("mine", 5)) }),
+                     Op("add", new JsonObject { ["name"] = "Bad", ["priorities"] = P(("mine", "x")) }),
+                     Op("add", new JsonObject { ["name"] = "Bad", ["priorities"] = new JsonArray(1) }),
+                     Op("add", new JsonObject { ["name"] = "!!!" }), Op("add", new JsonObject { ["name"] = "Farmer!" }),
+                     Op("add", new JsonObject { ["name"] = "A very long role name that goes on" }),
+                     Op("add"), Op("add", "x"), Op("explode"), new JsonObject(),
+                     Op("update", new JsonObject { ["name"] = "Z" }), Op("update", new JsonObject { ["id"] = "nope" }),
+                     Op("update", new JsonObject { ["id"] = "farmer", ["priorities"] = P(("farm", 2), ("chop", 1)) }),
+                     Op("update", new JsonObject { ["id"] = "farmer", ["priorities"] = P(("farm", 2), ("chop", 1)) }),
+                     Op("update", new JsonObject { ["name"] = "Deep miner", ["icon"] = "drill" }, id: "night-miner"),
+                     Op("update", new JsonObject { ["id"] = "miner", ["name"] = "Night Miner" }),
+                     Op("update", new JsonObject { ["id"] = "farmer", ["name"] = "Hauler" }),
+                     Op("update", new JsonObject { ["id"] = "night-miner", ["name"] = "Cook" }),
+                     Op("remove"), Op("remove", id: "nope"), Op("remove", id: "farmer"), Op("remove", id: "guard"),
+                     Op("add", new JsonObject { ["name"] = "Guard / Hunter" }),
+                     Op("reset_defaults"),
+                     Op("remove", new JsonObject { ["id"] = "night-miner" }),
+                 })
+        {
+            s.Rec("roles " + body.ToJsonString(), s.C.RolesOp(body));
+            s.Sb.Append("  pawns ").Append(string.Join(" ", ps.Select(p => (p.Role ?? "-") + ":" + string.Join(",", WorkTypes.All.Select(t => p.Priorities.GetValueOrDefault(t)))))).Append('\n');
+        }
+        s.Line("set role custom", s.C.SetRole([ps[0]], null));
+        s.State("end", null);
+        Golden("ops-roles", s.Sb.ToString());
+    }
+
+    // ================================================================ growing cells
+
+    /// <summary>Every growing-zone cell class: each plant × soil × what is on it × what is beside it × the cell's place in the zone grid.</summary>
+    [Fact]
+    public void Grow_cells()
+    {
+        var (c, _, _) = StoryRig.Make(1, Release1122GameData.Instance);
+        var z = new ZoneState { Id = "z1", Kind = "farm", Area = Area.Of(0, 63, 0, 10, 63, 10) };
+        var sb = new StringBuilder();
+        foreach (var plant in StoryPlants.For(Release1122GameData.Instance))
+            foreach (var soil in new[] { 60, 2, 3, 88, 12, 1 })
+                foreach (var (above, meta) in new[] { (0, 0), (31, 1), (9, 0), (1, 0), (17, 0), (6, 0), (plant.Block, 0), (plant.Block, plant.Ripe), (plant.Fruit, 0) })
+                    for (int env = 0; env < 16; env++)
+                        for (int xo = 0; xo < 3; xo++)
+                            for (int zo = 0; zo < 2; zo++)
+                            {
+                                var w = new FakeStoryWorld(Release1122GameData.Instance);
+                                var at = new P3(xo, 64, zo);
+                                w.Set(at.X, 63, at.Z, soil);
+                                w.Set(at.X, 64, at.Z, above, meta);
+                                if ((env & 1) != 0) w.Set(at.X, 63, at.Z + 1, 9); // water beside the soil
+                                if ((env & 2) != 0) w.Set(at.X + 4, 64, at.Z, 9); // water near, one up
+                                if ((env & 4) != 0) w.Set(at.X - 1, 64, at.Z, plant.Fruit != 0 ? plant.Fruit : 1); // its fruit (or a solid block) beside
+                                if ((env & 8) != 0) w.Set(at.X, 65, at.Z, plant.Block); // the plant again on top
+                                var cell = c.Classify(w, plant, z, new P3(at.X, 63, at.Z));
+                                sb.Append(plant.Id).Append(" s").Append(soil).Append(" a").Append(above).Append(':').Append(meta).Append(" e").Append(env)
+                                    .Append(" x").Append(xo).Append(" z").Append(zo).Append(" => ").Append(cell.State).Append(' ').Append(cell.At)
+                                    .Append(' ').Append(cell.Soil).Append(' ').Append(cell.Clear).Append(' ').Append(cell.Plant).Append('\n');
+                            }
+        GoldenHash("grow-cells", sb.ToString());
+    }
+
+    // ================================================================ the tick and the idle audit
+
+    [Fact]
+    public void Tick_and_idle_audit()
+    {
+        var s = Make(5);
+        var ps = s.Ps;
+        s.W.Tree(6, 6); s.W.Tree(-6, 6); s.W.Tree(6, -6);
+        foreach (var p in ps.Take(3)) foreach (var t in WorkTypes.All) p.Priorities[t] = 0;
+        ps[0].Priorities[WorkTypes.Chop] = 1;
+        ps[1].Priorities[WorkTypes.Mine] = 2; // no mine work: "priority 0"
+        ps[2].Priorities[WorkTypes.Build] = 1; // a build short of gold: "waiting: …"
+        ps[4].Schedule = Enumerable.Repeat(ScheduleBlocks.Sleep, 24).ToArray();
+        for (int i = 0; i < ps.Count; i++) s.H.Lives[ps[i].Name] = FakeStoryHost.Live(i * 2, 64, 0);
+        s.Rec("designate chop", s.C.Designate("add", "chop", Area.Of(-8, 60, -8, 8, 80, 8), null, null));
+        s.Rec("build gold", s.C.BuildsOp("add", new JsonArray(new JsonObject { ["kind"] = "block", ["area"] = A(20, 64, 20, 21, 64, 20), ["material"] = "gold_block" }), null));
+        var held = new Dictionary<string, string>();
+        void Audit(string tag)
+        {
+            s.Sb.Append(tag).Append(" idle ").Append(string.Join(" ", ps.Select(p => p.Name + "=" + (s.C.IdleReasonOf(p.Name) ?? "-")))).Append('\n');
+            s.Sb.Append("  current ").Append(string.Join(" ", ps.Select(p => s.C.CurrentOf(p.Name) is { } j ? $"{j.Source}/{j.Kind}/{j.Label}" : "-"))).Append('\n');
+            s.Sb.Append("  leases ").Append(string.Join(" ", s.C.Leases().OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "=" + kv.Value))).Append('\n');
+            s.Sb.Append("  started ").Append(string.Join(",", s.H.Started)).Append(" interrupted ").Append(string.Join(",", s.H.Interrupted))
+                .Append(" teleported ").Append(string.Join(",", s.H.Teleported.Select(t => t.Account + ">" + t.To))).Append('\n');
+            s.H.Started.Clear(); s.H.Interrupted.Clear(); s.H.Teleported.Clear();
+        }
+        for (int r = 0; r < 14; r++)
+        {
+            for (int i = 0; i < ps.Count; i++)
+            {
+                var name = ps[i].Name;
+                if (!s.H.Live(name).Online) continue;
+                if (held.TryGetValue(name, out var keep) && s.C.CurrentOf(name)?.Id == keep) continue; // still at it: no report
+                var job = s.C.Next(name);
+                s.Line($"r{r} {name} job", job);
+                if (job?["id"]?.GetValue<string>() is not { } id) continue;
+                if (i == 3 && r is 1 or 2 || i == 0 && r is 10 or 11 or 12) { held[name] = id; continue; } // this one keeps its lease (no report)
+                if (job["type"]?.GetValue<string>() is "idle" or "schedule") continue; // it stays on its idle leg: the audit looks at it
+                bool fail = (r + i) % 4 == 3;
+                s.Sb.Append("  report ").Append(s.C.Report(name, id, fail ? "failed" : "done", fail ? "can't reach the log" : null, null)).Append('\n');
+            }
+            if (r == 3) s.H.Lives[ps[3].Name] = PawnLive.Offline;
+            if (r == 6) s.H.Lives[ps[3].Name] = FakeStoryHost.Live(40, 64, 40);
+            if (r == 5) s.H.Lives[ps[0].Name] = s.H.Lives[ps[0].Name] with { ScriptRunning = false };
+            if (r == 7) s.H.Lives[ps[0].Name] = s.H.Lives[ps[0].Name] with { ScriptRunning = true };
+            if (r == 8) s.C.Draft([ps[1]], true);
+            if (r == 9) { s.C.Draft([ps[1]], false); s.T.Now += TimeSpan.FromSeconds(100); } // leases run out
+            if (r == 10) s.T.Now += TimeSpan.FromSeconds(50); // a held lease is renewed
+            if (r == 11) s.C.Designate("add", "chop", Area.Of(-8, 60, -8, 8, 80, 8), null, null);
+            if (r == 12) { s.H.Lives[ps[0].Name] = s.H.Lives[ps[0].Name] with { ScriptRunning = false }; s.T.Now += TimeSpan.FromSeconds(100); } // its lease runs out
+            if (r == 13) s.H.Lives[ps[0].Name] = s.H.Lives[ps[0].Name] with { ScriptRunning = true };
+            s.C.Tick();
+            Audit($"r{r}");
+            s.T.Now += TimeSpan.FromSeconds(r == 4 ? 12 : 1);
+        }
+        s.State("end", null);
+        Golden("tick-audit", s.Sb.ToString());
+    }
 }

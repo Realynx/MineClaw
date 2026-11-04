@@ -70,7 +70,7 @@ public sealed partial class StoryColony
         return null;
     }
 
-    private GrowCell Classify(IStoryWorld w, StoryPlant plant, ZoneState z, P3 soil)
+    internal GrowCell Classify(IStoryWorld w, StoryPlant plant, ZoneState z, P3 soil)
     {
         var at = soil.Add(0, 1, 0);
         int s = w.Block(soil.X, soil.Y, soil.Z).Id;
