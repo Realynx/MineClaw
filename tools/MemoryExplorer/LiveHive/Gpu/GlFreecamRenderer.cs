@@ -115,37 +115,48 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         _gl.BindVertexArray(_vao);
         while (n < maxUploads && (Stopwatch.GetTimestamp() - t0) * FreecamStats.TickMs < budgetMs && store.Ready.TryDequeue(out var up))
         {
-            try
-            {
-                if (up.DropAll)
-                {
-                    foreach (var s in scene.Sections.Values) { Free(ref s.SolidVbo); Free(ref s.TransVbo); }
-                    scene.Sections.Clear();
-                }
-                else if (up.DropColumn)
-                {
-                    for (int sy = 0; sy < SectionStore.Sections; sy++)
-                        if (scene.Sections.Remove(new SectionKey(up.Key.Cx, sy, up.Key.Cz), out var s)) { Free(ref s.SolidVbo); Free(ref s.TransVbo); }
-                }
-                else if (up.SolidCount + up.TranslucentCount == 0)
-                {
-                    if (scene.Sections.Remove(up.Key, out var s)) { Free(ref s.SolidVbo); Free(ref s.TransVbo); }
-                }
-                else
-                {
-                    if (!scene.Sections.TryGetValue(up.Key, out var s)) scene.Sections[up.Key] = s = new GpuSection { Key = up.Key };
-                    Upload(ref s.SolidVbo, up.Solid, up.SolidCount, Gl.STATIC_DRAW);
-                    Upload(ref s.TransVbo, up.Translucent, up.TranslucentCount, Gl.STATIC_DRAW);
-                    s.SolidCount = up.SolidCount;
-                    s.TransCount = up.TranslucentCount;
-                }
-            }
+            try { Apply(up, scene); }
             finally { up.Release(); }
             n++;
         }
         if (n > 0) FreecamStats.Shared.UploadMs.Add((Stopwatch.GetTimestamp() - t0) * FreecamStats.TickMs);
         Interlocked.Exchange(ref FreecamStats.Shared.SectionsLive, scene.Sections.Count);
         return n;
+    }
+
+    /// <summary>One queued change: drop everything, drop a column, drop an emptied section, or upload a section's meshes.</summary>
+    private void Apply(MeshUpload up, FrameScene scene)
+    {
+        if (up.DropAll)
+        {
+            foreach (var s in scene.Sections.Values) FreeSection(s);
+            scene.Sections.Clear();
+        }
+        else if (up.DropColumn)
+        {
+            for (int sy = 0; sy < SectionStore.Sections; sy++)
+                if (scene.Sections.Remove(new SectionKey(up.Key.Cx, sy, up.Key.Cz), out var s)) FreeSection(s);
+        }
+        else if (up.SolidCount + up.TranslucentCount == 0)
+        {
+            if (scene.Sections.Remove(up.Key, out var s)) FreeSection(s);
+        }
+        else UploadSection(up, scene);
+    }
+
+    private void FreeSection(GpuSection s)
+    {
+        Free(ref s.SolidVbo);
+        Free(ref s.TransVbo);
+    }
+
+    private void UploadSection(MeshUpload up, FrameScene scene)
+    {
+        if (!scene.Sections.TryGetValue(up.Key, out var s)) scene.Sections[up.Key] = s = new GpuSection { Key = up.Key };
+        Upload(ref s.SolidVbo, up.Solid, up.SolidCount, Gl.STATIC_DRAW);
+        Upload(ref s.TransVbo, up.Translucent, up.TranslucentCount, Gl.STATIC_DRAW);
+        s.SolidCount = up.SolidCount;
+        s.TransCount = up.TranslucentCount;
     }
 
     private void Target(int w, int h)
@@ -187,6 +198,29 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
 
     public int Draw(FrameScene sc, int fb, int w, int h)
     {
+        BeginFrame(w, h);
+        var (top, horizon, voidC) = sc.Sky; // day/night: the CPU eye's sky at the world time
+        int draws = DrawSky(sc, top, horizon, voidC);
+        draws += DrawSolids(sc, horizon);
+        draws += DrawBodies(sc);
+        draws += DrawLines(sc);
+        draws += DrawTranslucent(sc);
+        draws += DrawPrecipitation(sc);
+        _gl.DepthMask(1);
+        _gl.Disable(Gl.BLEND);
+        _gl.Disable(Gl.DEPTH_TEST);
+        if (ShotPath is { } shot)
+        {
+            ShotPath = null;
+            SaveShot(shot, w, h);
+        }
+        Present(fb, w, h);
+        return draws;
+    }
+
+    /// <summary>Our framebuffer at the frame size, cleared, with the default state.</summary>
+    private void BeginFrame(int w, int h)
+    {
         var gl = _gl;
         Target(w, h);
         gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
@@ -200,10 +234,11 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.ClearDepth(1);
         gl.Clear(Gl.COLOR_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT);
         gl.BindVertexArray(_vao);
-        int draws = 0;
-        var (top, horizon, voidC) = sc.Sky; // day/night: the CPU eye's sky at the world time
+    }
 
-        // Sky.
+    private int DrawSky(FrameScene sc, uint top, uint horizon, uint voidC)
+    {
+        var gl = _gl;
         gl.Disable(Gl.DEPTH_TEST);
         gl.Disable(Gl.BLEND);
         DisableAttribs();
@@ -216,9 +251,13 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         (r, g, b) = Rgb(horizon); _x.Uniform3f(_sHorizon, r, g, b);
         (r, g, b) = Rgb(voidC); _x.Uniform3f(_sVoid, r, g, b);
         gl.DrawArrays(Gl.TRIANGLES, 0, 3);
-        draws++;
+        return 1;
+    }
 
-        // World.
+    /// <summary>The world program (atlas, stale tint, fog in the horizon colour) and the opaque sections, x-rayed.</summary>
+    private int DrawSolids(FrameScene sc, uint horizon)
+    {
+        var gl = _gl;
         EnableAttribs();
         gl.UseProgram(_world);
         var vp = sc.ViewProj;
@@ -227,7 +266,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.BindTexture(Gl.TEXTURE_2D, _tex);
         gl.Uniform1i(_uTex, 0);
         _x.Uniform3f(_uGrid, GpuAtlas.Cols, _gridRows, 0);
-        (r, g, b) = Rgb(OverlayPainter.StaleColour); _x.Uniform3f(_uStaleColour, r, g, b);
+        var (r, g, b) = Rgb(OverlayPainter.StaleColour); _x.Uniform3f(_uStaleColour, r, g, b);
         (r, g, b) = Rgb(horizon); _x.Uniform3f(_uFogColour, r, g, b);
         _x.Uniform3f(_uFog, sc.MaxDistance * 0.6f, sc.MaxDistance, 0);
         gl.Enable(Gl.DEPTH_TEST);
@@ -236,6 +275,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.Uniform1f(_uOpaque, 1);
         XRay(sc, true);
         gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
+        int draws = 0;
         foreach (var s in sc.SolidDraw)
         {
             Section(sc, s);
@@ -243,45 +283,57 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
             gl.DrawElements(Gl.TRIANGLES, s.SolidCount / 4 * 6, Gl.UNSIGNED_INT, 0);
             draws++;
         }
-        // Entities (camera-relative already): never x-rayed (the bodies are what the cut is for).
+        return draws;
+    }
+
+    /// <summary>Entities (camera-relative already): never x-rayed (the bodies are what the cut is for).</summary>
+    private int DrawBodies(FrameScene sc)
+    {
+        var gl = _gl;
         XRay(sc, false);
         gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
-        if (sc.DynSolid.Count > 0)
-        {
-            Dyn(_dynSolid, sc.DynSolid);
-            gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
-            Attribs(_dynSolid);
-            gl.DrawElements(Gl.TRIANGLES, sc.DynSolid.Count / 4 * 6, Gl.UNSIGNED_INT, 0);
-            draws++;
-        }
-        // Overlay lines: visible parts opaque, hidden parts blended with their own alpha (plans 0.25, dangers 0.45).
-        if (sc.LinesChanged)
-        {
-            sc.LinesChanged = false;
-            _lineCount = sc.Lines.Count;
-            if (_lineCount > 0)
-            {
-                gl.BindBuffer(Gl.ARRAY_BUFFER, _lines);
-                fixed (GpuVertex* p = sc.Lines.V) gl.BufferData(Gl.ARRAY_BUFFER, _lineCount * GpuVertex.Size, (nint)p, Gl.STATIC_DRAW);
-            }
-        }
-        if (_lineCount > 0)
-        {
-            _x.Uniform3f(_uOrigin, (float)(sc.LinesOrigin.X - sc.Pose.X), (float)(sc.LinesOrigin.Y - sc.Pose.Y), (float)(sc.LinesOrigin.Z - sc.Pose.Z));
-            Attribs(_lines);
-            gl.Uniform1f(_uAlphaTest, 0);
-            gl.DrawArrays(Gl.LINES, 0, _lineCount);
-            gl.DepthFunc(Gl.GREATER);
-            gl.DepthMask(0);
-            gl.Enable(Gl.BLEND);
-            _x.BlendFuncSeparate(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA, 0, 1);
-            gl.Uniform1f(_uOpaque, 0);
-            gl.Uniform1f(_uAlphaTest, 0.01f);
-            gl.DrawArrays(Gl.LINES, 0, _lineCount);
-            gl.DepthFunc(Gl.LEQUAL);
-            draws += 2;
-        }
-        // Translucent: water/ice/portal sections far to near, then shadows; no depth writes.
+        if (sc.DynSolid.Count == 0) return 0;
+        Dyn(_dynSolid, sc.DynSolid);
+        gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
+        Attribs(_dynSolid);
+        gl.DrawElements(Gl.TRIANGLES, sc.DynSolid.Count / 4 * 6, Gl.UNSIGNED_INT, 0);
+        return 1;
+    }
+
+    /// <summary>Overlay lines: visible parts opaque, hidden parts blended with their own alpha (plans 0.25, dangers 0.45).</summary>
+    private int DrawLines(FrameScene sc)
+    {
+        var gl = _gl;
+        if (sc.LinesChanged) UploadLines(sc);
+        if (_lineCount <= 0) return 0;
+        _x.Uniform3f(_uOrigin, (float)(sc.LinesOrigin.X - sc.Pose.X), (float)(sc.LinesOrigin.Y - sc.Pose.Y), (float)(sc.LinesOrigin.Z - sc.Pose.Z));
+        Attribs(_lines);
+        gl.Uniform1f(_uAlphaTest, 0);
+        gl.DrawArrays(Gl.LINES, 0, _lineCount);
+        gl.DepthFunc(Gl.GREATER);
+        gl.DepthMask(0);
+        gl.Enable(Gl.BLEND);
+        _x.BlendFuncSeparate(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA, 0, 1);
+        gl.Uniform1f(_uOpaque, 0);
+        gl.Uniform1f(_uAlphaTest, 0.01f);
+        gl.DrawArrays(Gl.LINES, 0, _lineCount);
+        gl.DepthFunc(Gl.LEQUAL);
+        return 2;
+    }
+
+    private void UploadLines(FrameScene sc)
+    {
+        sc.LinesChanged = false;
+        _lineCount = sc.Lines.Count;
+        if (_lineCount <= 0) return;
+        _gl.BindBuffer(Gl.ARRAY_BUFFER, _lines);
+        fixed (GpuVertex* p = sc.Lines.V) _gl.BufferData(Gl.ARRAY_BUFFER, _lineCount * GpuVertex.Size, (nint)p, Gl.STATIC_DRAW);
+    }
+
+    /// <summary>Translucent: water/ice/portal sections far to near, then shadows; no depth writes.</summary>
+    private int DrawTranslucent(FrameScene sc)
+    {
+        var gl = _gl;
         gl.Enable(Gl.BLEND);
         _x.BlendFuncSeparate(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA, 0, 1);
         gl.DepthMask(0);
@@ -289,6 +341,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.Uniform1f(_uAlphaTest, 0.004f);
         gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
         XRay(sc, true);
+        int draws = 0;
         foreach (var s in sc.TransDraw)
         {
             Section(sc, s);
@@ -297,56 +350,57 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
             draws++;
         }
         XRay(sc, false);
-        if (sc.DynTrans.Count > 0)
-        {
-            gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
-            Dyn(_dynTrans, sc.DynTrans);
-            gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
-            Attribs(_dynTrans);
-            gl.DrawElements(Gl.TRIANGLES, sc.DynTrans.Count / 4 * 6, Gl.UNSIGNED_INT, 0);
-            draws++;
-        }
-        // Rain/snow streaks: depth-tested lines, blended, no depth writes (a roof or a tunnel keeps them out).
-        if (sc.Precipitation.Count > 0)
-        {
-            gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
-            gl.BindBuffer(Gl.ARRAY_BUFFER, _rain);
-            fixed (GpuVertex* p = sc.Precipitation.V) gl.BufferData(Gl.ARRAY_BUFFER, sc.Precipitation.Count * GpuVertex.Size, (nint)p, Gl.STREAM_DRAW);
-            Attribs(_rain);
-            gl.Uniform1f(_uAlphaTest, 0.01f);
-            gl.DrawArrays(Gl.LINES, 0, sc.Precipitation.Count);
-            draws++;
-        }
-        gl.DepthMask(1);
-        gl.Disable(Gl.BLEND);
-        gl.Disable(Gl.DEPTH_TEST);
+        if (sc.DynTrans.Count == 0) return draws;
+        gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
+        Dyn(_dynTrans, sc.DynTrans);
+        gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
+        Attribs(_dynTrans);
+        gl.DrawElements(Gl.TRIANGLES, sc.DynTrans.Count / 4 * 6, Gl.UNSIGNED_INT, 0);
+        return draws + 1;
+    }
 
-        if (ShotPath is { } shot)
-        {
-            ShotPath = null;
-            try
-            {
-                var buf = new byte[w * h * 4];
-                fixed (byte* p = buf) _x.ReadPixels(0, 0, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
-                var px = new uint[w * h];
-                for (int y = 0; y < h; y++)
-                    for (int x = 0; x < w; x++)
-                    {
-                        int i = ((h - 1 - y) * w + x) * 4;
-                        px[y * w + x] = (uint)(buf[i] << 16 | buf[i + 1] << 8 | buf[i + 2]);
-                    }
-                File.WriteAllBytes(shot, Png.Encode(px, w, h));
-            }
-            catch (Exception) { }
-        }
+    /// <summary>Rain/snow streaks: depth-tested lines, blended, no depth writes (a roof or a tunnel keeps them out).</summary>
+    private int DrawPrecipitation(FrameScene sc)
+    {
+        if (sc.Precipitation.Count == 0) return 0;
+        var gl = _gl;
+        gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
+        gl.BindBuffer(Gl.ARRAY_BUFFER, _rain);
+        fixed (GpuVertex* p = sc.Precipitation.V) gl.BufferData(Gl.ARRAY_BUFFER, sc.Precipitation.Count * GpuVertex.Size, (nint)p, Gl.STREAM_DRAW);
+        Attribs(_rain);
+        gl.Uniform1f(_uAlphaTest, 0.01f);
+        gl.DrawArrays(Gl.LINES, 0, sc.Precipitation.Count);
+        return 1;
+    }
 
-        // Present: our FBO → the control's.
+    /// <summary>Reads our framebuffer back (bottom-up RGBA) and writes it as a PNG; a failed shot is skipped.</summary>
+    private void SaveShot(string shot, int w, int h)
+    {
+        try
+        {
+            var buf = new byte[w * h * 4];
+            fixed (byte* p = buf) _x.ReadPixels(0, 0, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
+            var px = new uint[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    int i = ((h - 1 - y) * w + x) * 4;
+                    px[y * w + x] = (uint)(buf[i] << 16 | buf[i + 1] << 8 | buf[i + 2]);
+                }
+            File.WriteAllBytes(shot, Png.Encode(px, w, h));
+        }
+        catch (Exception) { }
+    }
+
+    /// <summary>Present: our FBO → the control's.</summary>
+    private void Present(int fb, int w, int h)
+    {
+        var gl = _gl;
         gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo);
         gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, fb);
         gl.BlitFramebuffer(0, 0, w, h, 0, 0, w, h, Gl.COLOR_BUFFER_BIT, Gl.NEAREST);
         gl.BindFramebuffer(Gl.FRAMEBUFFER, fb);
         gl.BindVertexArray(0);
-        return draws;
     }
 
     /// <summary>The x-ray cones (<see cref="FrameScene.XRaySubjects"/>) on for world geometry, off for bodies, drops and lines.</summary>

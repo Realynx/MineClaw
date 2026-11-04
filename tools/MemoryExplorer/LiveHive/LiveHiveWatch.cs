@@ -20,71 +20,109 @@ internal static class LiveHiveWatch
     {
         if (o.ProfileSize is { } sz) { window.Width = sz.W; window.Height = sz.H; }
         var lh = vm.LiveHive;
-        var clock = Stopwatch.StartNew();
-        var errors = new ConcurrentDictionary<string, int>();
-        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
-        {
-            var k = e.Exception.GetType().Name + ": " + (e.Exception.Message.Length > 120 ? e.Exception.Message[..120] : e.Exception.Message);
-            errors.AddOrUpdate(k, 1, (_, n) => n + 1);
-        };
+        var run = new WatchRun(window, lh, o);
         Dispatcher.UIThread.Post(() => { vm.Navigate("live"); lh.SelectedTab = o.ProfileTab == "freecam" ? 1 : 0; }, DispatcherPriority.Background);
-        var timeline = new List<object>();
-        double lastBeat = 0, worstGap = 0, worstGapAll = 0;
-        int gapsOver250 = 0;
-        var mapSeen = new Dictionary<string, object?>();
-        var mapUpdates = new Dictionary<string, int>();
-        var lastShown = new Dictionary<FrameView, int>();
-        long lastGl = 0;
-        double lastSecond = 0, seconds = Math.Clamp(o.ProfileSeconds, 5, 600);
-        var beat = new DispatcherTimer(TimeSpan.FromMilliseconds(10), DispatcherPriority.Background, (_, _) =>
+        var beat = new DispatcherTimer(TimeSpan.FromMilliseconds(10), DispatcherPriority.Background, (_, _) => run.Tick());
+        beat.Start();
+    }
+
+    /// <summary>One watch: a 10 ms heartbeat that tracks UI gaps and map pictures, and a timeline entry each second.</summary>
+    private sealed class WatchRun
+    {
+        private readonly Window _window;
+        private readonly LiveHiveViewModel _lh;
+        private readonly StartupOptions _o;
+        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private readonly ConcurrentDictionary<string, int> _errors = new();
+        private readonly List<object> _timeline = [];
+        private readonly Dictionary<string, object?> _mapSeen = [];
+        private readonly Dictionary<string, int> _mapUpdates = [];
+        private readonly Dictionary<FrameView, int> _lastShown = [];
+        private readonly double _seconds;
+        private double _lastBeat, _worstGap, _worstGapAll, _lastSecond;
+        private int _gapsOver250;
+        private long _lastGl;
+
+        public WatchRun(Window window, LiveHiveViewModel lh, StartupOptions o)
         {
-            double now = clock.Elapsed.TotalMilliseconds;
-            if (lastBeat > 0)
+            _window = window;
+            _lh = lh;
+            _o = o;
+            AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
             {
-                double gap = now - lastBeat;
-                worstGap = Math.Max(worstGap, gap);
-                worstGapAll = Math.Max(worstGapAll, gap);
-                if (gap > 250) gapsOver250++;
+                var k = e.Exception.GetType().Name + ": " + (e.Exception.Message.Length > 120 ? e.Exception.Message[..120] : e.Exception.Message);
+                _errors.AddOrUpdate(k, 1, (_, n) => n + 1);
+            };
+            _seconds = Math.Clamp(o.ProfileSeconds, 5, 600);
+        }
+
+        public void Tick()
+        {
+            double now = _clock.Elapsed.TotalMilliseconds;
+            Beat(now);
+            CountMapUpdates();
+            if (now - _lastSecond < 1000) return;
+            _lastSecond = now;
+            RecordSecond(now);
+            if (now / 1000 >= _seconds) Finish();
+        }
+
+        /// <summary>The UI-thread gap since the last heartbeat (worst this second, worst overall, how many over 250 ms).</summary>
+        private void Beat(double now)
+        {
+            if (_lastBeat > 0)
+            {
+                double gap = now - _lastBeat;
+                _worstGap = Math.Max(_worstGap, gap);
+                _worstGapAll = Math.Max(_worstGapAll, gap);
+                if (gap > 250) _gapsOver250++;
             }
-            lastBeat = now;
-            foreach (var t in lh.AllTiles)
-                if (!ReferenceEquals(mapSeen.GetValueOrDefault(t.Key), t.MapImage))
+            _lastBeat = now;
+        }
+
+        /// <summary>A map tile's picture counts as updated when it is a different image object than last seen.</summary>
+        private void CountMapUpdates()
+        {
+            foreach (var t in _lh.AllTiles)
+                if (!ReferenceEquals(_mapSeen.GetValueOrDefault(t.Key), t.MapImage))
                 {
-                    mapSeen[t.Key] = t.MapImage;
-                    mapUpdates[t.Key] = mapUpdates.GetValueOrDefault(t.Key) + 1;
+                    _mapSeen[t.Key] = t.MapImage;
+                    _mapUpdates[t.Key] = _mapUpdates.GetValueOrDefault(t.Key) + 1;
                 }
-            if (now - lastSecond < 1000) return;
-            lastSecond = now;
+        }
+
+        private void RecordSecond(double now)
+        {
             var tiles = new Dictionary<string, object>();
-            foreach (var fv in window.GetVisualDescendants().OfType<FrameView>())
+            foreach (var fv in _window.GetVisualDescendants().OfType<FrameView>())
             {
                 if (fv is FreecamView || fv.DataContext is not BotTileViewModel t) continue;
-                int shown = fv.FramesShown - lastShown.GetValueOrDefault(fv);
-                lastShown[fv] = fv.FramesShown;
+                int shown = fv.FramesShown - _lastShown.GetValueOrDefault(fv);
+                _lastShown[fv] = fv.FramesShown;
                 tiles[t.Key] = new { eye_frames = shown, visible = fv.IsEffectivelyVisible };
             }
-            foreach (var (k, n) in mapUpdates) tiles[k + ":map"] = n;
-            mapUpdates.Clear();
+            foreach (var (k, n) in _mapUpdates) tiles[k + ":map"] = n;
+            _mapUpdates.Clear();
             long gl = Interlocked.Read(ref FreecamStats.Shared.Presented);
-            timeline.Add(new
+            _timeline.Add(new
             {
-                t = Math.Round(now / 1000, 1), state = lh.StateText, ui_worst_gap_ms = Math.Round(worstGap), tiles,
-                gl_frames = gl - lastGl, cached = lh.CachedColumns, gc2 = GC.CollectionCount(2),
+                t = Math.Round(now / 1000, 1), state = _lh.StateText, ui_worst_gap_ms = Math.Round(_worstGap), tiles,
+                gl_frames = gl - _lastGl, cached = _lh.CachedColumns, gc2 = GC.CollectionCount(2),
             });
-            lastGl = gl;
-            worstGap = 0;
-            if (now / 1000 >= seconds)
+            _lastGl = gl;
+            _worstGap = 0;
+        }
+
+        private void Finish()
+        {
+            var path = Path.GetFullPath(_o.LiveHiveWatch!);
+            File.WriteAllText(path, JsonSerializer.Serialize(new
             {
-                var path = Path.GetFullPath(o.LiveHiveWatch!);
-                File.WriteAllText(path, JsonSerializer.Serialize(new
-                {
-                    seconds, ui_worst_gap_ms = Math.Round(worstGapAll), ui_gaps_over_250ms = gapsOver250,
-                    errors = errors.OrderByDescending(kv => kv.Value).Take(30).ToDictionary(kv => kv.Key, kv => kv.Value), timeline,
-                }, new JsonSerializerOptions { WriteIndented = true }));
-                Console.WriteLine(path);
-                (Avalonia.Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
-            }
-        });
-        beat.Start();
+                seconds = _seconds, ui_worst_gap_ms = Math.Round(_worstGapAll), ui_gaps_over_250ms = _gapsOver250,
+                errors = _errors.OrderByDescending(kv => kv.Value).Take(30).ToDictionary(kv => kv.Key, kv => kv.Value), timeline = _timeline,
+            }, new JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine(path);
+            (Avalonia.Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
+        }
     }
 }
