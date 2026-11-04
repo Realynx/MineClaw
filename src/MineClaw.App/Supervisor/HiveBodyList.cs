@@ -116,84 +116,128 @@ public sealed class HiveBodyList
 
     private IReadOnlyList<BodyRow> Build(DateTimeOffset now)
     {
-        HiveTree? tree = null;
-        try { tree = _tree(); } catch (Exception) { }
-        var list = new List<BodyRow>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rows = new RowList(this, Try(_tree, null), now);
+        var hive = Try(_hiveBots, []);
+        var slots = Try(() => _slots().ToList(), []);
+        var slotOf = slots.GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-        string? OwnerOf(string name, string fallback)
+        // main first, then its own in-process bodies
+        rows.AddMain(hive, _mainScript);
+        rows.AddLocal(Try(_local, null));
+        // each hive clone, followed by its own subhive bodies
+        rows.AddHubClones(hive, slotOf);
+        rows.AddSlots(slots);
+        // the tree's nodes not in game yet (a hive's bodies still being allocated, logging in, or releasing)
+        rows.AddTreeNodes();
+        return rows.List;
+    }
+
+    /// <summary>A source's answer, or <paramref name="fallback"/> when it throws (every source is read best-effort).</summary>
+    private static T Try<T>(Func<T> source, T fallback)
+    {
+        try { return source(); }
+        catch (Exception) { return fallback; }
+    }
+
+    /// <summary>The rows being built: each body once (the first source to name it wins), kind and owner from the tree when it knows them.</summary>
+    private sealed class RowList(HiveBodyList owner, HiveTree? tree, DateTimeOffset now)
+    {
+        private readonly HashSet<string> _seen = new(StringComparer.OrdinalIgnoreCase);
+        private string Main => owner._main;
+
+        public List<BodyRow> List { get; } = new();
+
+        private string? OwnerOf(string name, string fallback)
         {
             if (tree?.Get(name) is not { } n) return fallback;
-            return n.Owner.Equals(HiveTree.Root, StringComparison.OrdinalIgnoreCase) ? _main : n.Owner;
+            return OwnerName(n);
         }
-        string KindOf(string name, string fallback) => tree?.Get(name) is { } n ? HiveKinds.Name(n.Kind) : fallback;
-        string Driven(string? owner) => "driven by " + (owner == null || IsMain(owner) ? "main" : HiveVision.ShortName(owner));
-        BodyRow FromBrief(BodyBrief b, string owner)
+
+        private string OwnerName(HiveNode n) => n.Owner.Equals(HiveTree.Root, StringComparison.OrdinalIgnoreCase) ? Main : n.Owner;
+
+        private string KindOf(string name, string fallback) => tree?.Get(name) is { } n ? HiveKinds.Name(n.Kind) : fallback;
+
+        private string Driven(string? o) => "driven by " + (o == null || owner.IsMain(o) ? "main" : HiveVision.ShortName(o));
+
+        private BodyRow FromBrief(BodyBrief b, string fallbackOwner)
         {
-            var o = OwnerOf(b.Name, owner);
+            var o = OwnerOf(b.Name, fallbackOwner);
             return new BodyRow(b.Name, HiveVision.ShortName(b.Name), KindOf(b.Name, "subhive"), o, false, b.Playing, b.Dimension, b.X, b.Y, b.Z, b.Hp, b.Food,
                 b.Task, Driven(o), b.Script, b.At, true, tree?.Get(b.Name)?.State);
         }
 
-        IReadOnlyList<HiveBotState> hive = [];
-        try { hive = _hiveBots(); } catch (Exception) { }
-        List<SlotView> slots = [];
-        try { slots = _slots().ToList(); } catch (Exception) { }
-        var slotOf = slots.GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-
-        // main first, then its own in-process bodies
-        if (hive.FirstOrDefault(b => b.IsMain) is { } m && seen.Add(m.Name))
+        public void AddMain(IReadOnlyList<HiveBotState> hive, Func<BodyScriptBrief?> mainScript)
         {
-            BodyScriptBrief? ms = null;
-            try { ms = _mainScript(); } catch (Exception) { }
-            list.Add(new BodyRow(m.Name, "main", "main", null, true, true, m.Dim, R(m.X), R(m.Y), R(m.Z), m.Hp, m.Food, m.Job, m.Brain, ms, m.At));
+            if (hive.FirstOrDefault(b => b.IsMain) is not { } m || !_seen.Add(m.Name)) return;
+            var ms = Try(mainScript, null);
+            List.Add(new BodyRow(m.Name, "main", "main", null, true, true, m.Dim, R(m.X), R(m.Y), R(m.Z), m.Hp, m.Food, m.Job, m.Brain, ms, m.At));
         }
-        IEnumerable<BodyBrief>? local = null;
-        try { local = _local(); } catch (Exception) { }
-        foreach (var b in local ?? [])
-            if (!IsMain(b.Name) && seen.Add(b.Name)) list.Add(FromBrief(b, _main));
 
-        // each hive clone, followed by its own subhive bodies
-        void AddBodiesOf(SlotView s)
+        public void AddLocal(IEnumerable<BodyBrief>? local)
+        {
+            foreach (var b in local ?? [])
+                if (!owner.IsMain(b.Name) && _seen.Add(b.Name)) List.Add(FromBrief(b, Main));
+        }
+
+        /// <summary>A connected hive's own subhive bodies, streamed with its snapshot.</summary>
+        private void AddBodiesOf(SlotView s)
         {
             if (!s.Connected || s.Snapshot?.Bodies is not { } bodies) return;
             foreach (var b in bodies)
-                if (seen.Add(b.Name)) list.Add(FromBrief(b, s.Name));
-        }
-        foreach (var hb in hive.Where(b => !b.IsMain))
-        {
-            if (!seen.Add(hb.Name)) continue;
-            slotOf.TryGetValue(hb.Name, out var s);
-            list.Add(new BodyRow(hb.Name, hb.Short, KindOf(hb.Name, "hive"), OwnerOf(hb.Name, _main), false, true, hb.Dim, R(hb.X), R(hb.Y), R(hb.Z), hb.Hp,
-                hb.Food, hb.Job, hb.Brain, SlotScript(hb.Brain), hb.At, true, tree?.Get(hb.Name)?.State));
-            if (s != null) AddBodiesOf(s);
-        }
-        foreach (var s in slots)
-        {
-            // connected without a position yet, or launching: listed (offline) when the tree or a task says it's meant to be here
-            var node = tree?.Get(s.Name);
-            if (!seen.Contains(s.Name) && (s.Connected || s.Starting || node != null))
-            {
-                seen.Add(s.Name);
-                var snap = s.Snapshot;
-                list.Add(new BodyRow(s.Name, HiveVision.ShortName(s.Name), KindOf(s.Name, "hive"), OwnerOf(s.Name, _main), false, false, snap?.Dimension ?? 0,
-                    snap?.Pos?.X ?? 0, snap?.Pos?.Y ?? 0, snap?.Pos?.Z ?? 0, snap?.Hp ?? 0, snap?.Food ?? 0, snap?.Task ?? s.Task ?? node?.Task ?? node?.State,
-                    snap?.Brain, SlotScript(snap?.Brain), snap?.At ?? now, snap?.Pos != null, node?.State));
-            }
-            AddBodiesOf(s);
+                if (_seen.Add(b.Name)) List.Add(FromBrief(b, s.Name));
         }
 
-        // the tree's nodes not in game yet (a hive's bodies still being allocated, logging in, or releasing)
-        if (tree != null)
-            foreach (var n in tree.All().OrderBy(n => n.Account, StringComparer.OrdinalIgnoreCase))
+        public void AddHubClones(IReadOnlyList<HiveBotState> hive, Dictionary<string, SlotView> slotOf)
+        {
+            foreach (var hb in hive.Where(b => !b.IsMain))
             {
-                if (!seen.Add(n.Account)) continue;
-                var owner = n.Owner.Equals(HiveTree.Root, StringComparison.OrdinalIgnoreCase) ? _main : n.Owner;
-                var kind = HiveKinds.Name(n.Kind);
-                list.Add(new BodyRow(n.Account, n.Short, kind, owner, false, false, 0, 0, 0, 0, 0, 0, n.Kind == CloneKind.Script ? n.Script : n.Task ?? n.State,
-                    kind == "subhive" ? Driven(owner) : null, null, n.Since == default ? now : n.Since, false, n.State));
+                if (!_seen.Add(hb.Name)) continue;
+                slotOf.TryGetValue(hb.Name, out var s);
+                List.Add(new BodyRow(hb.Name, hb.Short, KindOf(hb.Name, "hive"), OwnerOf(hb.Name, Main), false, true, hb.Dim, R(hb.X), R(hb.Y), R(hb.Z), hb.Hp,
+                    hb.Food, hb.Job, hb.Brain, SlotScript(hb.Brain), hb.At, true, tree?.Get(hb.Name)?.State));
+                if (s != null) AddBodiesOf(s);
             }
-        return list;
+        }
+
+        /// <summary>Connected without a position yet, or launching: listed (offline) when the tree or a task says it's meant to be here.</summary>
+        public void AddSlots(List<SlotView> slots)
+        {
+            foreach (var s in slots)
+            {
+                var node = tree?.Get(s.Name);
+                if (!_seen.Contains(s.Name) && (s.Connected || s.Starting || node != null))
+                {
+                    _seen.Add(s.Name);
+                    List.Add(OfflineSlot(s, node));
+                }
+                AddBodiesOf(s);
+            }
+        }
+
+        private BodyRow OfflineSlot(SlotView s, HiveNode? node)
+        {
+            var snap = s.Snapshot;
+            return new BodyRow(s.Name, HiveVision.ShortName(s.Name), KindOf(s.Name, "hive"), OwnerOf(s.Name, Main), false, false, snap?.Dimension ?? 0,
+                snap?.Pos?.X ?? 0, snap?.Pos?.Y ?? 0, snap?.Pos?.Z ?? 0, snap?.Hp ?? 0, snap?.Food ?? 0, SlotJob(s, node),
+                snap?.Brain, SlotScript(snap?.Brain), snap?.At ?? now, snap?.Pos != null, node?.State);
+        }
+
+        private static string? SlotJob(SlotView s, HiveNode? node) => s.Snapshot?.Task ?? s.Task ?? node?.Task ?? node?.State;
+
+        public void AddTreeNodes()
+        {
+            if (tree == null) return;
+            foreach (var n in tree.All().OrderBy(n => n.Account, StringComparer.OrdinalIgnoreCase))
+                if (_seen.Add(n.Account)) List.Add(TreeNode(n));
+        }
+
+        private BodyRow TreeNode(HiveNode n)
+        {
+            var o = OwnerName(n);
+            var kind = HiveKinds.Name(n.Kind);
+            return new BodyRow(n.Account, n.Short, kind, o, false, false, 0, 0, 0, 0, 0, 0, n.Kind == CloneKind.Script ? n.Script : n.Task ?? n.State,
+                kind == "subhive" ? Driven(o) : null, null, n.Since == default ? now : n.Since, false, n.State);
+        }
     }
 
     /// <summary>A clone's script from its brain state ("asleep (script cobble_loop 34%)"): no line over this path.</summary>
