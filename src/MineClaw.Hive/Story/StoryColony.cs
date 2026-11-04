@@ -52,6 +52,8 @@ public sealed partial class StoryColony : IStoryPort
     private int _jobSeq;
 
     public static readonly TimeSpan LeaseTtl = TimeSpan.FromSeconds(90);
+    /// <summary>A job's lease is kept alive while its pawn's script runs, up to this long.</summary>
+    public static readonly TimeSpan JobMax = TimeSpan.FromMinutes(10);
     public const int MaxPawns = 12;
 
     public StoryColony(ColonyMeta meta, IStoryHost host, TimeProvider? time = null, StoryStore? store = null, ILogger? log = null)
@@ -219,12 +221,35 @@ public sealed partial class StoryColony : IStoryPort
         }
     }
 
+    /// <summary>How long a "done" waits for the world to agree (a block change still on its way) before it counts as a failure.</summary>
+    public TimeSpan DoneGrace { get; set; } = TimeSpan.FromSeconds(1.5);
+
     public bool Report(string body, string job, string status, string? note, double? pct)
     {
+        if (status == "done" && DoneGrace > TimeSpan.Zero)
+        {
+            // The pawn's script thread waits here (never under the lock) until the world agrees or the grace is over.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (true)
+            {
+                lock (_lock)
+                    if (!_current.TryGetValue(body, out var c0) || c0.Id != job || c0.Source != "designation" || Left(c0, body) == null) break;
+                if (sw.Elapsed >= DoneGrace) break;
+                Thread.Sleep(TimeSpan.FromMilliseconds(Math.Min(100, Math.Max(5, DoneGrace.TotalMilliseconds / 10))));
+            }
+        }
         lock (_lock)
         {
             if (!_current.TryGetValue(body, out var cur) || cur.Id != job) return false;
             var p = Pawns.GetValueOrDefault(body);
+            if (cur.Source == "wander" && status != "progress")
+            {
+                // An idle leg ends (done, unreachable, cut): never a failure, so no back-off, alert or rest (StoryColony.Idle.cs).
+                _current.Remove(body);
+                WanderEnded(p, cur, status);
+                if (p != null) p.Rev = Bump();
+                return true;
+            }
             switch (status)
             {
                 case "progress":
@@ -232,7 +257,7 @@ public sealed partial class StoryColony : IStoryPort
                     if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
                     if (p != null) p.Rev = Bump();
                     return true;
-                case "done" when p != null && cur.Source == "designation" && StillThere(cur) is { } left:
+                case "done" when p != null && cur.Source == "designation" && Left(cur, body) is { } left:
                     // Live 11-03: harvest and cut designations vanished with no line in the log: the script's dig on a block out of
                     // its view did nothing and said ok. A designation is done only when the world agrees.
                     _current.Remove(body);
@@ -333,9 +358,17 @@ public sealed partial class StoryColony : IStoryPort
     /// <summary>Once a second or so: expired leases go back, a pawn whose script ended is restarted, benches are found, state saved.</summary>
     public void Tick()
     {
-        List<string> restart = new(), joined = new();
+        List<string> restart = new(), joined = new(), departing;
         lock (_lock)
         {
+            departing = ReadyToGo();
+            // A pawn still at its job keeps its lease (live 11-03: the script reports no progress, so a lease ran out after 90 s while
+            // the pawn was still walking there or digging; a second pawn got the same target and met the first one's hive claim:
+            // "busy: another hive bot is working on that part"). Up to JobMax, then the lease runs out as before.
+            foreach (var (owner, cur) in _current)
+                if (cur.Lease != null && Now - cur.Since < JobMax && _leases.TryGetValue(cur.Lease, out var l) && string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase)
+                    && l.Until - Now < LeaseTtl / 2 && Host.Live(owner) is { Online: true, ScriptRunning: true })
+                    _leases[cur.Lease] = (owner, Now + LeaseTtl);
             foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
             {
                 var owner = _leases[k].Owner;
@@ -356,12 +389,14 @@ public sealed partial class StoryColony : IStoryPort
                 {
                     var live = Host.Live(p.Name);
                     if (!live.Online || live.ScriptRunning) continue;
+                    if (_leaving.TryGetValue(p.Name, out var lv) && lv.Done) continue; // it ended for good: released below
                     if (_started.TryGetValue(p.Name, out var at) && Now - at < TimeSpan.FromSeconds(5)) continue;
                     _started[p.Name] = Now;
                     if (_current.Remove(p.Name, out var stale)) Release(stale);
                     restart.Add(p.Name);
                 }
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RetrySuspended(); } // missing ingredients may be stored by now
+            WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
             // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
             foreach (var p in Pawns.Values)
@@ -371,6 +406,7 @@ public sealed partial class StoryColony : IStoryPort
                 else if (!online) _online.Remove(p.Name);
             }
         }
+        foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
         if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
         foreach (var name in restart)
         {
@@ -493,7 +529,7 @@ public sealed partial class StoryColony : IStoryPort
                     return 0;
                 }
                 _broughtHome[p.Name] = Now;
-                moves.Add((p, to, dist));
+                moves.Add((p, SpreadHome(p, live, home) ?? to, dist)); // each to its own spot: never all onto one cell
             }
         }
         foreach (var (p, to, dist) in moves)

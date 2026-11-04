@@ -137,6 +137,11 @@ the one observe hook, and don't touch BotAgent.Quiet, Prompts, EventQueue/GameEv
 5. **Body inventories (added 2026-11-03).** `GET /api/viewer/bodies/{name}/inventory`: any in-process body's hotbar (held
    slot), main inventory, armour and off hand as a read-only snapshot (`Supervisor/BodyInventories`, registered where each
    client is built; api.md §6 has the shape and the slot mapping). The Live hive shows it in the body's panel.
+6. **Container contents (added 2026-11-03).** `GET /api/world/containers?dim&x&y&z` (and a box form for map badges): what the
+   hive knows is in a chest, furnace, hopper… Every in-process body's container windows are recorded as they open, change and
+   close (`Supervisor/ContainerWatch` → `World/ContainerSightings`, bounded, in memory); `Supervisor/ContainerKnowledge` answers
+   live while a body has it open, else the freshest of the last look, the world memory's item counts and Story's storage
+   ledger, joins a double chest's halves, and says `unknown` when nobody looked (api.md §6).
 
 Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test project).
 
@@ -210,6 +215,13 @@ and caching. It never reshapes domain data beyond camelCase conversion.
     item from the bundled atlases of the body's own version (2D canvas, cached), stack counts, durability bars, a CSS glint
     clipped to the icon, a tooltip (name, id:meta, durability). It polls `GET /api/bots/:bot/inventory` every 2 s only while
     mounted and the tab is visible, keeps the last snapshot while refetching, and pulses changed slots once. No WebGL.
+  - **Container panel (added 2026-11-03).** In every world pane (the Live world view, a body's view), a click on a chest,
+    furnace, hopper, dispenser, dropper, brewing stand, shulker or ender chest (in free cam: a click or E with the crosshair on
+    it; E again closes) opens a floating panel inside the stage (`features/world/ContainerPanel`): the game's grid for that
+    block (27 / 54 slots, the furnace's input → output with fuel, 3×3, a hopper row) with the inventory panel's slot cells, and
+    the freshness line ("Seen 3 min ago by maid_chan_102", "Open right now by …", "Not opened yet by any bot"). It polls
+    `GET /api/world/container` every 3 s only while open; Esc or × closes it. Story Mode's chest inspector embeds the same
+    contents above its storage filters, and its map draws a category + fill badge on each chest when zoomed in.
   - **Chat bubbles (added 2026-11-03).** What players and bots say also shows as a speech bubble over the speaker's head
     in every world view: the pane in each camera, fullscreen, the hive-card thumbnails (one small bubble) and any page that
     shows the world under `WorldHost`. Lines come from the shared stream's `feed` frames only
@@ -473,8 +485,10 @@ when storage is unavailable. Other tabs follow through the `storage` event.
     distance, always).
   - Animated textures (the atlas animation pass stops on its current frame), clouds (Auto: off in software), weather (rain,
     snow, the rainy sky), ambient occlusion (a `uAo` shader uniform over the mesher's corner term: no re-mesh), fog (pushed out
-    of reach), detailed models (the entity layer's model distance; Auto 24 software / 64 GPU), name tags, chat bubbles, x-ray
-    silhouettes.
+    of reach), detailed models (the entity layer's model distance; Auto 24 software / 64 GPU; bots keep their model to at
+    least 96 blocks unless it is 0), name tags, chat bubbles, x-ray silhouettes.
+  - Build holograms (default on): Story Mode's queued builds as translucent block holograms in the world
+    (`render/holograms.ts`, `engine.setHolograms`); off, the map draws its flat ghosts.
   - Frame rate overlay: a small fps / frame time / resolution / distance / entity count readout in the top-right corner of
     every interactive view (`WorldViewer`). The panel also shows the measured fps of the last interactive view and whether
     WebGL is software-rendered (`WEBGL_debug_renderer_info`: SwiftShader, llvmpipe and the like).

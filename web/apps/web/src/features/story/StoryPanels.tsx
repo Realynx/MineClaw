@@ -9,20 +9,26 @@ import {
   STORY_HOURS,
   storyClock,
   type StoryAiBody,
+  type StoryArchitectEntry,
+  type StoryArchitectResponse,
   type StoryBuild,
+  type StoryBuildMaterial,
   type StoryColonyState,
   type StoryDirective,
   type StoryOnlineBlocked,
   type StoryPawn,
+  type StoryPlant,
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
+import { GrowPlantPicker } from './GrowingZones';
 import {
   ClipboardPaste,
   Copy,
   Flame,
   GripVertical,
   Home,
+  Lock,
   MapPin,
   Pause,
   Pencil,
@@ -52,7 +58,7 @@ import { panel } from './StoryHud';
 import { BringOnlineBox } from './StoryInspector';
 import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, ZONE_TOOLS } from './tools';
 import type { MapTool } from './StoryMap';
-import { AiMark, Avatar, ToolIcon } from './visuals';
+import { AiMark, Avatar, ItemIcon, ToolIcon } from './visuals';
 
 export type TabId = 'architect' | 'work' | 'schedule' | 'queue' | 'directives' | 'colony';
 
@@ -107,9 +113,98 @@ export function TabBar({
 
 // ------------------------------------------------------------------ architect
 
-type ArchCat = 'orders' | 'zones' | 'structure' | 'furniture' | 'storage';
+type ArchCat = 'orders' | 'zones' | 'structure' | 'furniture' | 'production' | 'storage' | 'lighting' | 'misc';
 
-export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: MapTool) => void }) {
+const TIER_LABEL: Record<string, string> = {
+  gathered: 'Gathered',
+  hand: 'Hand',
+  workbench: 'Workbench',
+  furnace: 'Furnace',
+};
+
+/** What the colony has of a placeable, can make, or is short of (one line under its name). */
+export function stockLine(e: StoryArchitectEntry): string {
+  if (e.have > 0) return `have ${e.have}`;
+  if (e.craftable > 0)
+    return `craftable ${e.craftable}${e.from.length ? ` from ${e.from.join(', ').toLowerCase()}` : ''}`;
+  if (e.short.length) return `short: ${e.short.join(', ').toLowerCase()}`;
+  return e.tier === 'gathered' ? 'none stored' : '';
+}
+
+/**
+ * The Architect's placeables for one tab (the bot's palette: every block and piece of furniture the version has), each with
+ * its tier and whether the colony unlocked it. Locked ones are greyed with a lock and the reason; picking an unlocked one
+ * arms its build tool with it as the material.
+ */
+export function ArchitectPalette({
+  entries,
+  tab,
+  onPick,
+}: {
+  entries: readonly StoryArchitectEntry[];
+  tab: string;
+  onPick: (e: StoryArchitectEntry) => void;
+}) {
+  const list = entries.filter((e) => e.tab === tab);
+  if (!list.length) return null;
+  return (
+    <section
+      className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[22rem] overflow-auto p-2')}
+      aria-label="Placeables"
+      data-testid="architect-palette"
+    >
+      <div className="grid grid-cols-2 gap-1">
+        {list.map((e) => (
+          <button
+            key={e.id}
+            type="button"
+            data-entry={e.id}
+            data-tier={e.tier}
+            data-unlocked={e.unlocked ? 'true' : 'false'}
+            disabled={!e.unlocked}
+            onClick={() => onPick(e)}
+            title={
+              [e.reason, e.chain.length ? `Made: ${e.chain.join(' → ')}` : null].filter(Boolean).join('\n') || e.label
+            }
+            className={cn(
+              'flex min-w-0 items-center gap-1.5 rounded-md border px-1.5 py-1 text-left text-[11px]',
+              e.unlocked
+                ? 'border-border bg-surface-2 hover:border-border-strong'
+                : 'cursor-not-allowed border-dashed border-border bg-surface-1 opacity-50',
+            )}
+          >
+            <ItemIcon id={e.item[0]} meta={e.item[1]} size={20} />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-1 truncate font-semibold">
+                {e.unlocked ? null : <Lock className="size-3 shrink-0" aria-label="locked" />}
+                <span className="truncate">{e.label}</span>
+              </span>
+              <span className="block truncate text-[10px] text-muted">
+                {TIER_LABEL[e.tier] ?? e.tier}
+                {e.unlocked ? (stockLine(e) ? ` · ${stockLine(e)}` : '') : ` · ${e.reason ?? 'locked'}`}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function ArchitectPanel({
+  tool,
+  onTool,
+  palette,
+  onPick,
+  plants,
+}: {
+  tool: MapTool;
+  onTool: (t: MapTool) => void;
+  palette?: StoryArchitectResponse;
+  onPick?: (e: StoryArchitectEntry) => void;
+  /** What a growing zone can grow here (the plant picker under the Zones tools). */
+  plants?: readonly StoryPlant[] | null;
+}) {
   const [cat, setCat] = useState<ArchCat>(
     tool.kind === 'zone'
       ? 'zones'
@@ -126,7 +221,10 @@ export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: Ma
     ['zones', 'Zones'],
     ['structure', 'Structure'],
     ['furniture', 'Furniture'],
+    ['production', 'Production'],
     ['storage', 'Storage'],
+    ['lighting', 'Lighting'],
+    ['misc', 'Misc'],
   ];
   const active = (t: MapTool) => JSON.stringify(t) === JSON.stringify(tool);
   const btn = (t: MapTool, icon: string, label: string, hint: string, key?: string) => (
@@ -149,68 +247,84 @@ export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: Ma
     </button>
   );
   return (
-    <section
-      className={cn(panel, 'pointer-events-auto flex w-[34rem] gap-2 p-2')}
-      aria-label="Architect"
-      data-testid="architect"
-    >
-      <div className="flex w-24 flex-col gap-0.5">
-        {cats.map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setCat(id)}
-            aria-pressed={cat === id}
-            className={cn(
-              'rounded px-2 py-1.5 text-left text-xs font-semibold',
-              cat === id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2',
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <div className="flex flex-1 flex-wrap content-start gap-1.5">
-        {cat === 'orders'
-          ? DESIGNATE_TOOLS.map((t) =>
-              btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', '')),
-            )
-          : null}
-        {cat === 'zones'
-          ? [
-              ...ZONE_TOOLS.map((z) => btn({ kind: 'zone', id: z.id, op: 'add' }, 'zone', z.label, z.hint)),
-              btn({ kind: 'zone', id: 'home', op: 'remove' }, 'cancel', 'Remove zone', 'Drag over a zone to remove it'),
-            ]
-          : null}
-        {cat === 'structure'
-          ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
-          : null}
-        {cat === 'furniture'
-          ? FURNITURE_TOOLS.map((f) =>
-              btn(
-                { kind: 'build', id: `furniture:${f.id}` },
-                f.id,
-                f.label,
-                `Place a ${f.label.toLowerCase()} (Q/E turns)`,
-              ),
-            )
-          : null}
-        {cat === 'storage' ? (
-          <>
-            {btn(
-              { kind: 'storage' },
-              'storage',
-              'Register chests',
-              'Drag over chests: every chest in the area becomes storage',
-            )}
-            <p className="w-56 text-[11px] leading-snug text-muted">
-              Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to choose
-              what it keeps and how much it matters.
-            </p>
-          </>
-        ) : null}
-      </div>
-    </section>
+    <div className="flex items-end gap-2">
+      <section
+        className={cn(panel, 'pointer-events-auto flex w-[34rem] gap-2 p-2')}
+        aria-label="Architect"
+        data-testid="architect"
+      >
+        <div className="flex w-24 flex-col gap-0.5">
+          {cats.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setCat(id)}
+              aria-pressed={cat === id}
+              className={cn(
+                'rounded px-2 py-1.5 text-left text-xs font-semibold',
+                cat === id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-1 flex-wrap content-start gap-1.5">
+          {cat === 'orders'
+            ? DESIGNATE_TOOLS.map((t) =>
+                btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', '')),
+              )
+            : null}
+          {cat === 'zones'
+            ? [
+                ...ZONE_TOOLS.map((z) => btn({ kind: 'zone', id: z.id, op: 'add' }, 'zone', z.label, z.hint)),
+                btn(
+                  { kind: 'zone', id: 'home', op: 'remove' },
+                  'cancel',
+                  'Remove zone',
+                  'Drag over a zone to remove it',
+                ),
+              ]
+            : null}
+          {cat === 'zones' && tool.kind === 'zone' && tool.id === 'farm' && tool.op === 'add' ? (
+            <GrowPlantPicker plants={plants} />
+          ) : null}
+          {cat === 'structure'
+            ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
+            : null}
+          {cat === 'furniture'
+            ? FURNITURE_TOOLS.map((f) =>
+                btn(
+                  { kind: 'build', id: `furniture:${f.id}` },
+                  f.id,
+                  f.label,
+                  `Place a ${f.label.toLowerCase()} (Q/E turns)`,
+                ),
+              )
+            : null}
+          {cat === 'storage' ? (
+            <>
+              {btn(
+                { kind: 'storage' },
+                'storage',
+                'Register chests',
+                'Drag over chests: every chest in the area becomes storage',
+              )}
+              <p className="w-56 text-[11px] leading-snug text-muted">
+                Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to
+                choose what it keeps and how much it matters.
+              </p>
+            </>
+          ) : null}
+          {(cat === 'production' || cat === 'lighting' || cat === 'misc') && !palette ? (
+            <p className="w-56 text-[11px] leading-snug text-muted">Loading what the colony can make…</p>
+          ) : null}
+        </div>
+      </section>
+      {palette && onPick && cat !== 'orders' && cat !== 'zones' ? (
+        <ArchitectPalette entries={palette.entries} tab={cat} onPick={onPick} />
+      ) : null}
+    </div>
   );
 }
 
@@ -484,6 +598,39 @@ export function SchedulePanel({
 
 // ------------------------------------------------------------------ build queue
 
+/** One item a build still needs: have / crafting / short, the recipe chain and the raw shortfall on hover. */
+export function MaterialRow({ m }: { m: StoryBuildMaterial }) {
+  const tip = [
+    m.chain.length
+      ? `Recipe: ${m.chain.join(' → ')}`
+      : m.via === 'none'
+        ? 'No recipe (or its crafting was cancelled)'
+        : null,
+    m.raw.length ? `Short of: ${m.raw.join(', ')}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return (
+    <div
+      className="flex items-center gap-1.5 text-[10.5px] tabular-nums"
+      data-material={m.item}
+      data-short={m.short}
+      title={tip || undefined}
+    >
+      <span className="min-w-0 flex-1 truncate text-muted">{m.label ?? m.item.replace(/_/g, ' ')}</span>
+      <span className="text-subtle">
+        {m.have}/{m.need}
+      </span>
+      {m.crafting > 0 ? (
+        <span className="rounded bg-accent-soft px-1 text-fg" data-crafting={m.crafting}>
+          {m.via === 'smelt' ? 'smelting' : 'crafting'} {m.crafting}
+        </span>
+      ) : null}
+      {m.short > 0 ? <span className="rounded bg-danger-soft px-1 text-danger">short {m.short}</span> : null}
+    </div>
+  );
+}
+
 export function QueuePanel({
   builds,
   canWrite,
@@ -549,8 +696,18 @@ export function QueuePanel({
                 </span>
               </div>
               {b.reason || b.status === 'blocked' ? (
-                <div className="text-[10.5px] text-danger">{b.reason ?? 'blocked'}</div>
+                <div className={cn('text-[10.5px]', b.status === 'waiting' ? 'text-muted' : 'text-danger')}>
+                  {b.reason ?? 'blocked'}
+                </div>
               ) : null}
+              {b.station ? (
+                <div className="text-[10.5px] text-muted">
+                  making a {b.station.kind.replace(/_/g, ' ')} at {b.station.pos.join(', ')}
+                </div>
+              ) : null}
+              {(b.materials ?? []).map((m) => (
+                <MaterialRow key={m.item} m={m} />
+              ))}
             </div>
             <span
               className={cn(
@@ -677,6 +834,7 @@ export function ColonyPanel({
   blocked = [],
   onBringAll,
   displayOf,
+  onOptions,
 }: {
   state: StoryColonyState | undefined;
   colonies: Array<{ id: string; name: string; pawns: string[]; paused?: boolean | null }>;
@@ -705,8 +863,11 @@ export function ColonyPanel({
   /** Bring every offline pawn in (overCap: the regulars' seats too). */
   onBringAll?: (overCap: boolean) => void;
   displayOf?: (account: string) => string;
+  /** Colony options (auto-place benches builds need, detect benches near home). */
+  onOptions?: (o: { autoPlaceBenches?: boolean; detectBenches?: boolean }) => void;
 }) {
   const offline = (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').length;
+  const opts = state?.options;
   const seats = state?.seats;
   return (
     <section
@@ -755,6 +916,34 @@ export function ColonyPanel({
               Resume colony
             </Button>
           ) : null}
+        </div>
+      ) : null}
+      {state && opts && onOptions ? (
+        <div className="space-y-1" data-testid="colony-options">
+          <label
+            className="flex items-center gap-2"
+            title="A build that needs a crafting table or furnace the colony hasn't got: a pawn crafts one and places it near home"
+          >
+            <input
+              type="checkbox"
+              disabled={!canWrite}
+              checked={opts.autoPlaceBenches}
+              onChange={(e) => onOptions({ autoPlaceBenches: e.target.checked })}
+            />
+            Builds may place the benches they need
+          </label>
+          <label
+            className="flex items-center gap-2"
+            title="Off: only benches you designate (inspector: Use as colony workbench) are used, never another player's"
+          >
+            <input
+              type="checkbox"
+              disabled={!canWrite}
+              checked={opts.detectBenches}
+              onChange={(e) => onOptions({ detectBenches: e.target.checked })}
+            />
+            Use any bench near home (no designation)
+          </label>
         </div>
       ) : null}
       {state && seats ? (

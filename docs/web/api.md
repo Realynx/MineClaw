@@ -344,6 +344,8 @@ Notes on specific routes:
 | `world.overlays` | `GET /api/world/overlays` | viewer | query `DimQuery` | `WorldOverlays` | `GET /v1/sup/world/overlays` | /api/world/overlays | – |
 | `world.blocks` | `GET /api/world/blocks` | viewer | query `WorldBlocksQuery` | `WorldBlockDeltas` | `GET /v1/sup/world/blocks` | /api/world/blocks | – |
 | `world.blockEntities` | `GET /api/world/blockentities` | viewer | query `WorldBlockEntitiesQuery` | `WorldBlockEntities` | `GET /v1/sup/world/blockentities` | /api/world/blockentities | – |
+| `world.container` | `GET /api/world/container` | viewer | query `ContainerQuery` | `ContainerView` | `GET /v1/sup/world/containers` | /api/world/containers?dim&x&y&z | – |
+| `world.containers` | `GET /api/world/containers` | viewer | query `ContainerBoxQuery` | `ContainerList` | `GET /v1/sup/world/containers` | /api/world/containers?dim&x0&y0&z0&x1&y1&z1&limit | – |
 | `bots.tile` | `GET /api/bots/:bot/tile.png` | viewer | params `BotParams`<br>query `TileQuery` | png | `GET /v1/render/tile/{bot}.png` | /view/{bot}?mode&radius&xray | – |
 | `bots.now` | `GET /api/bots/:bot/now` | viewer | params `BotParams` | `BotNow` | `GET /v1/sup/viewer/now?bot={bot}` | /api/viewer/now?bot= | – |
 | `bots.inventory` | `GET /api/bots/:bot/inventory` | viewer | params `BotParams` | `BodyInventory` | `GET /v1/sup/viewer/bodies/{bot}/inventory` | /api/viewer/bodies/{name}/inventory | – |
@@ -377,6 +379,7 @@ Notes on specific routes:
 | `story.release` | `POST /api/story/colonies/:id/release` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/release` | /api/story/colonies/{id}/release | story |
 | `story.resume` | `POST /api/story/colonies/:id/resume` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/resume` | /api/story/colonies/{id}/resume | story |
 | `story.online` | `POST /api/story/colonies/:id/online` | story | params `StoryColonyParams`<br>body `StoryOnlineRequest` | `StoryOnlineResponse` | `POST /v1/sup/story/colonies/{id}/online` | /api/story/colonies/{id}/online | story |
+| `story.pawns` | `POST /api/story/colonies/:id/pawns` | story | params `StoryColonyParams`<br>body `StoryPawnsRequest` | `StoryPawnsResponse` | `POST /v1/sup/story/colonies/{id}/pawns` | /api/story/colonies/{id}/pawns | story |
 | `story.pause` | `POST /api/story/colonies/:id/pause` | story | params `StoryColonyParams`<br>body `StoryPauseRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/pause` | /api/story/colonies/{id}/pause | story |
 | `story.home` | `POST /api/story/colonies/:id/home` | story | params `StoryColonyParams`<br>body `StoryHomeRequest` | `StoryHomeResponse` | `POST /v1/sup/story/colonies/{id}/home` | /api/story/colonies/{id}/home | story |
 | `story.beds` | `POST /api/story/colonies/:id/beds` | story | params `StoryColonyParams`<br>body `StoryBedsRequest` | `StoryBedsResponse` | `POST /v1/sup/story/colonies/{id}/beds` | /api/story/colonies/{id}/beds | story |
@@ -389,6 +392,9 @@ Notes on specific routes:
 | `story.builds` | `POST /api/story/colonies/:id/builds` | story | params `StoryColonyParams`<br>body `StoryBuildRequest` | `StoryBuildResponse` | `POST /v1/sup/story/colonies/{id}/builds` | /api/story/colonies/{id}/builds | story |
 | `story.storage` | `POST /api/story/colonies/:id/storage` | story | params `StoryColonyParams`<br>body `StoryStorageRequest` | `StoryStorageResponse` | `POST /v1/sup/story/colonies/{id}/storage` | /api/story/colonies/{id}/storage | story |
 | `story.bills` | `POST /api/story/colonies/:id/bills` | story | params `StoryColonyParams`<br>body `StoryBillsRequest` | `StoryBillsResponse` | `POST /v1/sup/story/colonies/{id}/bills` | /api/story/colonies/{id}/bills | story |
+| `story.workbenches` | `POST /api/story/colonies/:id/workbenches` | story | params `StoryColonyParams`<br>body `StoryWorkbenchesRequest` | `StoryWorkbenchesResponse` | `POST /v1/sup/story/colonies/{id}/workbenches` | /api/story/colonies/{id}/workbenches | story |
+| `story.options` | `POST /api/story/colonies/:id/options` | story | params `StoryColonyParams`<br>body `StoryOptionsRequest` | `StoryColonyOptions` | `POST /v1/sup/story/colonies/{id}/options` | /api/story/colonies/{id}/options | story |
+| `story.architect` | `GET /api/story/colonies/:id/architect` | viewer | params `StoryColonyParams` | `StoryArchitectResponse` | `GET /v1/sup/story/colonies/{id}/architect` | /api/story/colonies/{id}/architect | – |
 
 ### Live stream
 
@@ -565,6 +571,35 @@ These are the bot-side additions from architecture.md, in their wire form. They 
   - **Cost.** A read is one copy of the player window under the inventory's own lock, never on or waiting for the game tick;
     viewers asking within 500 ms share one snapshot. The web polls it only while a body's panel is open (2 s, paused while
     the tab is hidden).
+
+- **`GET /api/world/containers?dim&x&y&z`** (`ContainerView`, added 2026-11-03; public `GET /api/world/container`, role
+  `viewer`). What the hive knows is in a container, by any of its blocks (either half of a double chest). Response:
+
+  ```
+  {pos:[x,y,z], dim, kind: chest|trapped_chest|double_chest|furnace|hopper|dispenser|dropper|shulker_box|ender_chest|brewing_stand,
+   size, slots:[{slot, id, meta, count, name, display, durability?, enchanted}], seen_at?, seen_by?,
+   source: live|memory|story|unknown, version, exact, cells:[[x,y,z]…], partial?}
+  ```
+
+  - **Slots** are the container's own (non-empty only): a chest 0–26, a double chest 0–53 (the west/north half first, vanilla's
+    `InventoryLargeChest`), a furnace 0 input · 1 fuel · 2 output, a dispenser/dropper 0–8, a hopper 0–4, a brewing stand
+    0–2 bottles · 3 ingredient · 4 fuel. The slot fields are the inventory route's. `pos` is the container's canonical cell (a
+    double chest's west/north half); `cells` all its blocks.
+  - **How it is known.** Every in-process body's client (`BodyInventories.Attach` → `ContainerWatch`) records its container
+    windows in `ContainerSightings`: when a window opens for the block the body right-clicked (`ContainerOpened`), again on slot
+    changes (deposits, withdrawals; at most every 250 ms) and when it closes. Bounded (4096 containers, oldest looks dropped),
+    in memory; what persists across restarts is the world memory's container rows (the indexer's item counts with when/by whom).
+  - **Freshness.** `live` = a body has the window open now (a copy of the window, `seen_at` = now). Otherwise the newest of the
+    last exact look, the world memory's counts and Story Mode's storage ledger (`seen_by` = the colony); a count-only source
+    wins only when it is newer by more than 10 s and holds different totals. Count-only answers are laid out in slot order
+    (`exact: false`). Two looks taken while each half of a double chest was a single are joined (`seen_at` = the older);
+    one half only → `partial: true`. Nobody looked → `source: "unknown"`, no slots (the UI: "Not opened yet by any bot").
+    A loaded block that holds nothing (stone, a crafting table) → 404.
+  - **Box** (`ContainerList`; public `GET /api/world/containers?dim&x0&z0&x1&z1[&y0&y1&limit]`, ≤ 512 blocks wide, `limit`
+    default 200, max 500): `{dim, containers:[{pos, dim, kind, size, used, total, top:[{id, meta, name, count}] (≤ 5), seen_at,
+    seen_by, source, cells}], capped}`, newest look first, shared for 1 s. Story Mode's map badges read it.
+  - **Cost.** Rate-capped like the other world routes (10/s, burst 20, 429 + Retry-After). The web polls one container every
+    3 s only while its panel is open and the tab is visible, and the box every 10 s while the Story map is open.
 
 - **`GET /api/viewer/memory-activity?since&brain`** (`MemoryActivityResponse`). Response:
 

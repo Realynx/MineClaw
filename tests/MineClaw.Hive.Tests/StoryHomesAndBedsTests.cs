@@ -78,7 +78,8 @@ public sealed class StoryHomesAndBedsTests
         var none = c.Next(2); // the only free bed is taken for the night: rest at home
         Assert.Equal("sleep", none["kind"]!.GetValue<string>());
         Assert.Null(none["bed"]);
-        Assert.Equal("0,64,0", none["at"]!.GetValue<string>());
+        var rest = P3.Parse(new System.Text.Json.Nodes.JsonArray(none["at"]!.GetValue<string>().Split(',').Select(n => (System.Text.Json.Nodes.JsonNode)int.Parse(n)).ToArray()))!.Value;
+        Assert.True(c.InHome(rest) && StoryWander.Gap(rest, new P3(0, 64, 0)) >= 2, rest.ToString()); // at home, its own spot (not on the others)
         c.Report(c.P(2), none["id"]!.GetValue<string>(), "done", null, null);
         c.Next(2);
         Assert.Single(c.Alerts, a => a.Text.Contains("has no bed"));

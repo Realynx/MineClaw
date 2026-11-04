@@ -224,6 +224,7 @@ function ViewerQualitySection() {
           <SwitchRow label="Name tags" hint="Names over bots, players, mobs and drops." checked={f.labels} onChange={(v) => set('labels', v)} />
           <SwitchRow label="Chat bubbles" hint="What players and bots say, over their heads." checked={f.bubbles} onChange={(v) => set('bubbles', v)} />
           <SwitchRow label="X-ray silhouettes" hint="Bots and players hidden behind blocks show as outlines." checked={f.xray} onChange={(v) => set('xray', v)} />
+          <SwitchRow label="Build holograms" hint="Story Mode's queued builds as see-through blocks in the world; off: flat outlines on the map." checked={f.holograms} onChange={(v) => set('holograms', v)} />
           <SwitchRow label="Frame rate overlay" hint="A small fps and frame-time readout in the corner of every world view." checked={s.perfOverlay} onChange={setPerfOverlay} />
         </Group>
       </div>

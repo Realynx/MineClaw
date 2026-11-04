@@ -79,6 +79,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/release` | `{}` → `{id, released}`. The pawns deposit and log out; the saved state is kept (`active:false`) |
 | POST | `/api/story/colonies/{id}/resume` | `{}` → `{id, pawns, note}`. A released colony spawns its pawns again, their old accounts first |
 | POST | `/api/story/colonies/{id}/online` | `{pawns:[name]\|null, over_cap?:bool}` → `{started:[account], blocked:[{pawn, reason}]}`; 400 on a bad body, 404 for an unknown colony or pawn. Offline pawns are whitelisted again and (re)started now, the player cap permitting (see "Offline pawns") |
+| POST | `/api/story/colonies/{id}/pawns` | `{op:"add", count:1..12}` \| `{op:"remove", pawn}` → `{pawns:[name], wanted, pending:[{reason}], leaving:[name], blocked:[{reason}]}`; 400 on a bad body, past 12, or the last pawn; 404 for an unknown colony or pawn. See "Adding and removing pawns" |
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
 | POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
@@ -86,7 +87,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id}, queue?:bool}` → `{ids:[order id]}` |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, name?}` → `{id}`; `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, name?, plant?, sow?, harvest?}` → `{id, warnings?}`; `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}` (see "Farming"); `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -104,7 +105,7 @@ storage is chests (see "Storage").
 ```
 {id, rev, since, full, at, time_of_day, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
- pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars}, zones:[{id, kind, area, name}], beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
+ pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, name, plant?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null},
@@ -118,7 +119,7 @@ watches.
 The **Pawn** object:
 
 ```
-{name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, offline_reason,
+{name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
  skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]] }
 ```
@@ -137,16 +138,17 @@ The **Pawn** object:
    - food ≤ 6 (skittish 8): eat. With no food on it, the pawn fetches some from storage first; with none anywhere, an alert.
 4. After a gathering job, or with ≤ 4 free slots, the pawn takes what it carries to storage.
 5. The schedule hour (1000 ticks an hour, tick 0 = 06:00):
-   - sleep: go home.
-   - free: idle at home.
+   - sleep: to its bed, else its own spot at home (see "Homes and beds").
+   - free: wander the home area (see "Idle behaviour").
    - anything: eat when food ≤ 14, else work.
    - work: work.
 6. Work. The work types with a priority of 1–4 go lowest number first. Equal priorities go in column order
    (`tie_break:"column"`, the default) or by the pawn's skill first (`"skill"`). Within a type, the nearest open target wins.
-   With nothing to do, the pawn idles and the colony gets an alert, at most every 5 minutes.
+   With nothing to do, the pawn wanders the home area (see "Idle behaviour") and the colony gets an alert, at most every 5
+   minutes.
 
 Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y,z`.
-- A lease lasts 90 s and progress reports renew it. It goes back when the job ends, fails or times out.
+- A lease lasts 90 s; progress reports renew it, and so does the tick while the pawn's script still runs (up to 10 minutes per job). It goes back when the job ends, fails or times out.
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
@@ -180,7 +182,8 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
   and takes the bed from whoever had it. Assignments are saved with the colony. The head half's position works as the bed too.
 - **Sleep.** In a pawn's `sleep` hours it goes to its own bed (while that is still a bed), else to the nearest free one (leased, so
   two pawns don't take the same one). At night it lies down in it (`use_block`), and by day it rests by it. With no bed it rests at
-  home, and the colony hears "X has no bed" once.
+  home, and the colony hears "X has no bed" once. That spot is its own (see "Idle behaviour"): resting pawns never stack on one
+  cell, and each keeps its spot between its rests.
 
 ### Time of day
 
@@ -252,6 +255,84 @@ Designations carry `retry_at` (when a resting, failed designation is tried again
 short label (one per cluster of adjacent designations with the same reason), the full text on hover and in its inspector (reason,
 fail count, next retry, Retry now / Cancel).
 
+### Digging that sticks (added 2026-11-03, late)
+
+Live 11-03 after 23:41 (`story-1`, 1.12.2, 10 pawns): "reported done, but the tallgrass is still there" ×54 (flowers ×13, dirt/grass
+×27), a tall plant "busy: another hive bot is working on that part" ×11, "can't reach dirt/grass" ×46, "won't dig: someone is standing
+on it" ×6, and the bot at ~70% CPU. Fixed:
+
+- **Done is checked where the dig happened.** A pawn's "done" is checked against its own body's view (its connection carried the
+  server's answer) when that view holds the cell, else main's; main's copy of a block change can come a moment later and is no failure.
+  The check waits up to 1.5 s for the world to agree (`DoneGrace`; the pawn's script thread waits, never the director's lock). A block
+  that is still there after that is a failure whose reason says which view saw it ("… still there (in its own view)").
+- **The dig primitive finishes the block.** A block that turned into its other form while being dug (exposed dirt → grass, grass → dirt,
+  redstone ore lighting up when punched) used to count as broken; the client now waits until it is really gone. `story_pawn` digs a
+  block that an ok dig left in place once more after a second.
+- **A tall plant is one target for every kind.** Cut, mine and deconstruct designations over a 1.12.2 double plant are all made on
+  its lower half and lease the same key, so a cut box and a mine box over one plant never send two pawns to its two halves.
+- **Leases last as long as the job.** The pawn script reports no progress, so a lease ran out after 90 s while the pawn was still
+  walking there or digging and a second pawn was sent to the same target. A pawn whose script still runs keeps its lease (renewed by
+  the tick) up to 10 minutes per job.
+- **Only exposed blocks are handed out.** A mine or deconstruct target is offered only when a face of it touches an open cell (air,
+  a plant, a liquid, snow), so a multi-layer box is dug top-down and from the outside in; a buried cell just waits, uncounted. Among
+  open targets the nearest wins, higher cells a little earlier.
+- **Nobody digs a block someone stands on.** A block under another pawn's or a player's feet is skipped; a pawn's own floor comes
+  last, and when it is the pawn's target anyway the job carries `stand` (a cell beside it) and the script steps off first.
+- **Transient refusals aren't failures.** "can't reach", "someone is standing on it", "busy"/a hive claim and "not loaded" rest the
+  target 15 s with no fail count and no alert; only the 5th in a row counts as a failure (with its reason and alert as before).
+- **CPU.** A pick reads designations from an index rebuilt only when a designation or zone changed (by kind, with lease keys and
+  targets; forbidden cells, drops and zones as sets) and the world's entities once per pick. Benchmark (`StoryPickerBenchmarkTests`,
+  10 pawns, 500 mine designations): a pick round of all 10 pawns 15.7 → 2.0 ms; a director tick with every pawn finishing a job, the
+  watchdog tick and a state delta 6.7 → 3.1 ms.
+
+### Idle behaviour (added 2026-11-03)
+
+Live 11-03 (Fox): "When there's nothing designated to do, they don't do anything at all. They tend to gather in the same spot." The
+cause: every idle hold, free-time hold and no-bed rest targeted the one home cell (`go(home, 2)`), and every teleport home went to
+one spot, so the pawns stood in a pile there.
+
+- **Wandering.** A pawn with nothing to do in its `work` or `anything` hours, and any pawn in its `free` hours, wanders. The director
+  hands it one leg at a time (kind `idle`, `wander:true`, label "Idle (wandering)" or "Free time (wandering)", state `idle`): a safe
+  cell of the home area to walk to (`go`, walking pace, `dist:0`) and linger on for 4–12 s. The home area is the home zones' columns
+  when the colony has any, else 14 blocks around the primary home. A leg 3–12 blocks off is preferred; a pawn far from home walks
+  back first. The script runs the leg as `story.idle(job)`.
+- **Real work interrupts at once.** Between legs the pawn asks again. During a leg the tick looks every 2 s (at once after new work)
+  for an urgent need or a job of its work types and hands it over in the same step, leased, so the next idle pawn sees it taken. The
+  pawn script's `story.during` sees its leg is gone and cuts the walk or the linger; nothing is stopped or restarted. A leg whose
+  hours are over (the schedule moved on to sleep) is taken back the same way. A cut, unreachable or failed leg is never a failure:
+  no back-off, no alert, no rest. An unreachable cell rests 60 s for everyone.
+- **Personal space.** Every idle, rest, flight and brought-home target is reserved per pawn. The reservation is light and short-lived
+  (until the leg should be over, and only while that job is the pawn's) and apart from the work leases, so it never blocks digging,
+  building or hauling. A new target keeps 2.5 blocks to every other pawn's reservation and standing spot (and any player's) when
+  there is room, then 2, then 1: never the same cell. A pawn that arrives where someone already stands (they met on the way) moves
+  on, and the director picks it another cell.
+- **Safe cells only.** Solid ground under two free cells: never water, lava, leaves, fire, cactus, magma, farmland, a crop, a fence
+  top, furniture or a bed. Nothing that hurts beside it, no door beside it (a doorway), no drop of three or more beside it. Loaded
+  columns only, the colony's dimension only. Never on, over or under a designated or build cell, never right in front of a storage
+  chest or a workbench, never in a forbidden area.
+- **Night.** After dark (19:00–06:00) idle pawns wander only cells that are inside (roofed, in a home zone) or lit (light 8 or more
+  after dark). With none, each stands at its own spread spot by home ("Idle (at home)") and stays there. Sleep hours are beds as
+  before.
+- **No home** (or another dimension): the pawn holds where it is ("idle: nothing to do"); new work cuts that hold as before.
+- **Spread spots.** A no-bed rest, a flight home and a teleport home (founding, migration, a join far away) each get the pawn's own
+  free cell nearest home, never one cell for all.
+
+### Adding and removing pawns (added 2026-11-03)
+
+Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
+
+- **+** (`POST …/pawns {op:"add", count}`): the colony's wanted size grows (at most 12, joining pawns included). As many as the free
+  seats allow come now (never the seats kept for offline regulars) through the usual spawn path: managed `maid_` accounts,
+  whitelisted through main. The rest are pending (`seats.pending`, `pending:[{reason}]`) and join with the seat retry as seats free
+  up. One log line and one alert per change.
+- **−** (`{op:"remove", pawn}`): the pawn's job, leases, idle reservation and bed go back at once and it is `leaving`. It takes what
+  it carries to storage by the filters (what no chest accepts goes with its logout's deposit, with an alert), its script ends, then
+  it logs out and its account is released (whitelist removal through main). It leaves the state (`removed.pawns`). An offline pawn
+  leaves at once; one that doesn't finish within 2 minutes is released anyway. The wanted size drops by one. The last pawn can't be
+  removed (release the colony instead).
+- **Web.** The colonist bar ends with **+** (Shift+click asks how many) and **−** (the one selected pawn, after "Remove Nils J.?
+  Their items go to storage."). Pending pawns show as greyed "joining…" tiles.
+
 ### Pawn bodies and the pawn script
 
 - **The group.** A colony is the hive group `story-<n>`, owned by main.
@@ -266,8 +347,11 @@ fail count, next retry, Retry now / Cancel).
 - **The SDK primitive** (module `story`):
   - `story.next(s=0)` returns the pawn's job, or null.
   - `story.report(job, 'done'|'failed'|'progress', note?)` reports on it.
+  - `story.during(job, fn)` runs `fn` while the job is still the pawn's; the moment the director takes it back the running action
+    is cut (`{ok:false, cancelled:true}`; the stale report that follows is ignored, never a failure).
+  - `story.idle(job)` is an idle leg (walk to its cell, linger) inside `story.during`.
 - **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`.
-  - Kinds: `go|chop|dig|harvest|collect|place|attack|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
+  - Kinds: `go|chop|dig|harvest|till|collect|place|attack|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
     `attack`, `eat`, `craft`, `smelt`, `collect_furnace`, `handTo`, `build`, `wait`), deposits the `stash` items and reports.
 
@@ -318,6 +402,49 @@ dimension) when it joins, when the colony is founded or resumed, or when the hom
 - **Another dimension.** A pawn can't be teleported across dimensions, so an alert asks for it to be walked through a portal.
 
 Each pawn moved logs one line (an alert): "X brought home to x,y,z from N blocks away (why)".
+
+## Farming (added 2026-11-03)
+
+Fox 11-03: "I don't see the ability to plant a specific type of plant, or how acquiring the seeds will work."
+
+A **growing zone** is a zone of kind `farm` with a `plant` (Zones tool → Growing zone, with a plant picker). Without a plant a farm
+zone works as before (ripe crops, bare farmland). `sow` and `harvest` (both on by default) switch tilling and sowing, and harvesting.
+
+**Plants** (`plants` in the full state: `{id, label, block, seed, seed_item:[id,meta], soil, harvest, source}`):
+
+| plant | versions | soil | harvest |
+|---|---|---|---|
+| wheat, pumpkin, melon | both | farmland (dirt or grass is tilled first) | wheat: ripe at age 7, sown again; pumpkin, melon: the fruit beside the stem (every other row is left for it) |
+| carrots, potatoes, beetroot | 1.12.2 | farmland | ripe (7, 7, 3), sown again |
+| sugar cane | both | sand, dirt or grass right beside water | cut above the bottom block |
+| cactus | both | sand with nothing solid beside it (a checkerboard) | cut above the bottom block |
+| nether wart | 1.12.2 | soul sand | ripe at 3, sown again |
+| oak, spruce, birch saplings (jungle, acacia, dark oak on 1.12.2) | both | dirt or grass, on a 3-block grid | the grown tree is chopped |
+
+**Jobs** (Farm work, by priority and schedule like any other): harvest what is ripe first, then sow the empty cells that suit the
+plant (the seed item is fetched from storage when the pawn has none; pending sow jobs reserve seeds), then till dirt and grass within
+4 of water (kind `till`: the pawn holds a hoe and uses it on the block). Tilling needs a hoe: carried, fetched from storage, else a
+count bill for a wooden hoe at the colony's crafting table (an alert when there is none). Produce goes to storage by the filters,
+like any gathering job.
+
+**Validation.** Adding or updating a growing zone is refused when the plant doesn't exist in this version or nothing in the zone can
+grow it ("Cactus grows on sand: there is none free in the zone"). It answers `warnings` for what only slows it ("no water within 4
+blocks of the zone: dirt there isn't tilled").
+
+**Seeds.** The zone's state says what it has and where seeds come from:
+`{plant, sow, harvest, status: "12/40 sown, 6 ripe[, N too far from water]", seeds: {item, have, needed_for_empty, source_hint, missing, action}, needs_hoe}`.
+`have` counts every storage and every pawn's inventory. With none and cells to sow, `missing` says what to do about it, and the
+colony gets an alert (at most every 10 minutes per zone):
+- wheat: "No wheat seeds — cut tall grass to find some". `action: "seek_seeds"`: `POST …/zones {op:"seek_seeds", id}` designates
+  `cut` on the tall grass and ferns within 24 blocks of the zone (up to 64, never flowers). Explicit, never automatic.
+- carrots, potatoes: "Needs carrots — none in storage". The crop itself is the seed: harvests, zombie drops, village farms.
+- beetroot: harvest beetroot, village chests. Sugar cane and cactus: the item itself. Saplings: leaves of chopped trees.
+- pumpkin, melon: `action: "craft_seeds"`. With a pumpkin (or a melon slice) stored, the colony adds a count bill for 4 seeds at its
+  crafting table: by itself when a pawn would sow, or on `seek_seeds`.
+
+**Web.** The Zones tool's Growing zone shows a plant picker (icons from the item atlas). The Colony tab opens a Growing zones window
+beside it: each zone's plant (changeable), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches,
+"needs a hoe", and the action button ("Designate grass cutting nearby" or "Craft seeds (a bill)").
 
 ## Construction
 
@@ -389,6 +516,13 @@ Filters:
 Storage: `{chest, double_with, label, priority, filter:{allow, deny}, contents:[[id,meta,count]], free_slots, known_at}`. The
 contents start from what the bot remembers of the chest. The director keeps them up to date after each deposit and withdrawal.
 
+Web (added 2026-11-03): clicking a chest opens its inspector with the storage settings and the chest's contents as the game's grid
+(27 or 54 slots) with how fresh they are ("Seen 3 min ago by maid_chan_102", "Open right now by …", "Story storage ledger", "Not
+opened yet by any bot"), from `GET /api/world/container` (api.md §6: a bot's live window, its last look, the world memory or this
+ledger, whichever is freshest); a furnace's bills inspector shows its input, fuel and output the same way. Zoomed in, every chest
+on the map carries a badge: its category (the label, else the filter's summary) and a fill bar from the hive's container
+knowledge (`GET /api/world/containers`, polled every 10 s over the chests in view) or, when that is older, from `free_slots`.
+
 Categories come in the full state as `categories`: `{id, label, children:[Category], items:[[id,meta]]}`, where meta −1 = any.
 - They are built per version from the item data plus a curated name list. Every item, and each dye colour, is in exactly one
   leaf; the rest are Misc.
@@ -410,9 +544,16 @@ Hauling:
 
 ## Workbenches & bills
 
-Workbenches:
-- Crafting tables and furnaces in the home zone (or 12 blocks around home) are found every 30 s, or registered by their first
-  bill.
+Workbenches (designated, added 2026-11-03):
+- The colony uses only the benches it was given. A bench becomes the colony's when the owner designates it (the bench
+  inspector's "Use as colony workbench" → `POST …/workbenches {op:"designate", pos:[x,y,z]}`), when the owner adds its first
+  bill, or when the colony places one for a build (below). `{op:"release", pos}` gives it back: its bills go with it, the
+  builds' auto bills move to another bench or wait. Answer `{pos, kind, designated}`; 400 for no bench at `pos`, or releasing one
+  that isn't the colony's. Another player's table near home is never used.
+- Detection is a colony option: with `detect_benches` on, crafting tables and furnaces in the home zones (or 12 blocks around
+  home) join by themselves every 30 s, as before. Off by default (`POST …/options {detect_benches}`); colonies saved before keep
+  the benches they had.
+- Only designated benches unlock the Architect's tiers (below) and receive bills.
 - Brewing stands, anvils and enchanting tables are listed (`supported:false`) but take no bills yet: there is no primitive.
 - Workbench: `{pos, kind, label, supported, loaded, ready_at, bills:[Bill]}`.
 
@@ -436,6 +577,60 @@ Execution:
 - A furnace is loaded and left to smelt (10 s an item). Its fuel comes from storage: coal or charcoal, then planks, then logs.
   A later job of the same work type collects it, and the output is stored.
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
+- An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
+  with "the … in storage is reserved for builds".
+
+### Builds craft what they need (added 2026-11-03)
+
+A queued build whose items aren't in storage or in the pawns' pockets has them crafted, colony-sim style. The director's
+materials pass runs whenever storage, the queue, benches or bills change (and every 3 s otherwise, for the pawns' pockets):
+- **Reservations, queue order.** Each live build (not paused or done) reserves what the colony has of its items: storage plus
+  the pawns' pockets (tools, weapons and armour excluded), minus what jobs in flight already took from a chest, plus what a
+  furnace is smelting. A later build never counts on what an earlier one reserved; a builder fetches only its own build's share
+  ("waiting: the … in storage is reserved for an earlier build").
+- **The shortfall goes through the recipes** of the colony's version (`RecipePlanner`, smelting allowed), against what is still
+  unreserved: logs → planks → sticks → fence, cobblestone → stairs, sand → glass (fuel: coal or charcoal 1 per 8, planks or logs
+  1 per 1.5) → panes. What the stock covers (the most, by a binary search; fuel included) is crafted; its ingredients are
+  reserved too, so two builds or an owner's bill never take the same planks.
+- **Auto bills.** Each step is a `count` bill "for build #N" (`for_build`, `for_item`, `step`) on the colony's crafting table or
+  furnace nearest home, listed first on the bench (build order, then step: ingredients before products), radius 256. Its target
+  is `done` + what is still to make, so it follows the build and goes when nothing is left to make (a loaded furnace's bill stays
+  until collected). A step whose ingredient isn't there yet waits quietly (an earlier step makes it). The owner can only cancel an
+  auto bill (`update`, `pause`, `resume`, `reorder` answer 400): the build then waits for that item (`no_craft`).
+- **2×2 recipes** run in a pawn's own grid while the colony has no crafting table (a `craft` job with no bench, Craft work).
+- **No bench.** A chain that needs a crafting table (or a furnace, which is made at a table) the colony hasn't got: with
+  `auto_place_benches` (a colony option, default on) a pawn with Craft on fetches the materials, crafts the bench and places it
+  on a free cell near home (solid ground, headroom, not a build's cell); it becomes the colony's. One at a time; the build shows
+  it as `station`. Off, or nothing to make one from: an alert "Build bN needs a crafting table: place one or designate an
+  existing one".
+- **Short raw materials** are said once per change, per build: "Build b3 (fence) is short of materials: need 3 oak fence (short
+  of raw materials: 2 Wood)". Nothing is designated by itself (no surprise chopping).
+- A build waiting for crafted items is `waiting` with "waiting for N … (being crafted)" and no alert; one with nothing to craft
+  from is `blocked` ("need N …").
+
+Build state gains `materials: [{item, label, need, have, crafting, short, via: craft|smelt|none, chain:[step], raw:[missing]}]`,
+`no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
+recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
+
+`POST …/options` `{auto_place_benches?, detect_benches?}` → the options; the colony state carries `options`.
+
+### Architect palette and tiers (added 2026-11-03)
+
+`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace}, tabs}`. Entries are every placeable the
+version has (`StoryArchitect`: blocks, stairs, slabs, fences, doors, glass and panes, wool, beds, bookshelves, carpets, benches,
+chests, torches, glowstone, ladders…; variants the version lacks are left out), by tab: structure, furniture, production,
+storage, lighting, misc. Entry: `{id, label, tab, tier, unlocked, reason, item:[id,meta], material:[id,meta], kind, kinds, chain,
+have, craftable, from, short}`.
+- `tier` from the recipes: `gathered` (no recipe), `hand` (2×2 only), `workbench` (a 3×3 step), `furnace` (a smelting step).
+- `unlocked`: gathered and hand always; workbench with a designated crafting table; furnace with a designated furnace (and a
+  table when its chain has a 3×3 step). Else `reason`: "Needs a crafting table — place one or designate an existing one".
+- `have` = unreserved stock, `craftable` = how many (up to 64) the unreserved stock makes now, `from` = what one takes, `short`
+  = what one is short of when neither.
+
+The web's Architect (B) has tabs Orders, Zones, Structure, Furniture, Production, Storage, Lighting, Misc. The build tools stay
+where they were; beside them, the tab's placeables: icon, name, tier and "have N" / "craftable N from …" / "short: …". Locked ones
+are greyed with a lock and the reason; picking an unlocked one arms its build tool with it as the material (a furniture entry its
+furniture tool), and the queued build's auto bills craft what's missing.
 
 ## AI hives
 
@@ -480,7 +675,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   hovered face.
 - **Designate tools** work by area the genre's way: pick a tool, drag a grid rectangle, every matching target lights up with a
   live count, release designates (Shift keeps the tool). Kinds gain `cut`, `hunt`, `forbid`, `allow` and a mine `filter`; the
-  director expands an area to its targets and answers the count.
+  director expands an area to its targets and answers the count. Mine and Deconstruct send the exact cells instead (`blocks`):
+  see "Mining height" under the Story Mode tab.
 - **Storage is chests.** There is no ground stockpile (loose loot despawns). Chests get the genre's storage settings: a
   priority and a filter over a loot category tree. State: `categories` and `storages`.
 - **Bills.** Workbenches (crafting table, furnace, brewing stand, anvil, enchanting table) take bills: a recipe, repeat
@@ -503,6 +699,26 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
     blocks of zoom).
   - With no colony yet, the map opens over the main bot (else the signed-in user's player), not the world origin.
   - Pawns draw with name labels and job icons, and zones and designations are coloured overlays.
+  - **Bodies as models (added 2026-11-03).** Every pawn and AI body is drawn as its Minecraft player model (skin, held
+    item, armour, walking), like the Live view. They are bots of the world store; the server leaves bot players out of the
+    entity list, and the map had mounted the viewer with bots off, so only mobs showed. Bots keep the full model out to at
+    least 96 blocks of apparent distance, so the top-down camera hanging far above still gets models; the detailed-model
+    setting at 0 still means boxes. The overlay draws only its marks on a model: selection brackets, a colour ring at the
+    feet, the name (name tags setting; off keeps selected and endangered names), drafted and job marks. The hit area covers
+    the model's height. Zoomed out below 9 px per block, or with no model for the body (not loaded, beyond the entity
+    distance, a far box), the flat token is drawn as before. A body on a storey above the level cut is hidden like the
+    blocks there (a faint token stays clickable), and bodies below a dimmed storey are dimmed.
+  - **Build holograms (added 2026-11-03).** Queued cells show in the world as translucent holograms of the block they
+    will become: the block's own model and texture (variant and facing) in a calm tint, about 40 % opaque, with static
+    scanlines and a thin edge line. Cyan to do, brighter while a pawn builds it, grey-blue while its build waits (paused,
+    missing materials), striped red when blocked or unsupported. Cells to dig are faint red outlines. A built cell's
+    hologram goes as soon as the block appears (matched by cell in the mesh worker). The cells are meshed in the worker,
+    one merged mesh per state, rebuilt only when the ghosts or builds change or a block change lands on a queued cell. At
+    most 20,000 cells draw; past that, and below 3 px per block, each build is one outline box. They are drawn after the
+    opaque world with depth test on and depth writes off, and follow the level cut. A design being placed shows the same
+    way, green where it fits and red where a block is in the way. The viewer setting "Build holograms" (default on) turns
+    them off; the map then draws the flat ghosts as before. Measured (SwiftShader, 1440 × 900, top view at the default
+    zoom, the mock colony): 58 fps before, 48 fps with a 2,000-cell build queued, 41 fps in the angled view.
 - **Selection.**
   - A left-drag box selects many pawns, or objects (trees, blocks, drops) in designation mode.
   - A click selects one, shift adds, a double-click selects every visible pawn of the same kind, and Esc clears.
@@ -511,6 +727,32 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a mob gives attack
   - a drop gives haul
   - a design gives build
+- **Mining height (added 2026-11-03).** Live 11-03: Fox flattening the ground mined too deep, because a Mine drag took a whole
+  storey (level − 1 to the wall height) and nothing showed how deep. A Mine or Deconstruct drag now has an explicit height mode,
+  picked on the tool's options bar or with 1–5 while the tool is active:
+  - **Surface** (Mine's default): the top block of each column (trees, leaves, plants and snow looked through) and the plants
+    standing on it. Exactly one layer.
+  - **Level**: only the blocks at the working level (PgUp / PgDn).
+  - **Down to level**: from the surface down to and including the working level (terrace down to a height).
+  - **Flatten here**: everything above the working level, the plants on a column already at the level included, so the ground
+    comes out flat at the level. This is "make a surface level".
+  - **Layers: N**: N blocks deep from each column's top, with a 1–8 stepper (+ / − while the tool is active).
+
+  Deconstruct takes the same modes over placed blocks only (default Down to level: a building and its floor); Cut, Harvest
+  and Chop target plants and trees as before. Air and liquids are never designated, nothing goes below the mode's bottom, and
+  Surface and Layers see what the level's x-ray cut leaves (Down to level and Flatten here take the whole column above the
+  level either way). While dragging, each affected column's top face is outlined (fuller the deeper it goes; the bottom dashed
+  in the angled view) and the label says `Mine (Surface): y 64 → 62 · 3 layers · 48 blocks`. The release sends exactly those
+  cells as `blocks`, never an area the director could expand deeper. One drag takes at most 4096 cells: over that the label turns
+  red ("too many") and the release only says so. The columns come from the viewer engine's `stacks` query (each column's top and
+  the cells under it, in the mesh worker), so the preview reads the same world the map shows.
+- **Cancelling a drag (added 2026-11-03).** Esc, or a press of the other mouse button (right during a left drag, left during a
+  right-drag formation line), cancels the drag in progress the genre's way: the preview goes, a small "Cancelled" toast shows,
+  and the release does nothing, not even the right-click's usual "put the tool down". A middle-drag pan is never cancelled.
+  A click under the drag threshold (5 px) paints no zone, and a designate box with nothing in it posts nothing (the tool
+  stays). In full screen Esc is normally the browser's way out: while a drag is held, the map locks Esc (Keyboard Lock, Chromium:
+  holding Esc still leaves full screen) so it cancels the drag instead. Where Esc can't be locked (other browsers), leaving full
+  screen also cancels the drag. Right-click cancel works the same in full screen.
 - **Draft.** A draft toggle, with R as the hotkey. Shift queues orders.
 - **Formations.** With drafted pawns selected, a right-drag draws a line; on release every drafted pawn gets its own move
   order (`POST .../orders`, one pawn each) to a distinct standable cell spread evenly along it, at least a cell apart. Pawns
@@ -541,6 +783,18 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   click the spot) asks for a confirm, then home moves to that column (its surface) and far pawns are brought there. The
   map marks home with a house.
 - **Alerts.** A feed of alerts, such as a pawn in danger or idle with nothing to do.
+- **Notifications (added 2026-11-03).** On the right edge, the genre's split:
+  - **Alerts** are ongoing conditions derived from the state: pawns offline, pawns without a bed, no food in storage, no
+    seeds for a growing zone (both once storage contents are known), main not op. They clear themselves and are never
+    clicked away. A click selects the pawns or opens the storage.
+  - **Messages** are the colony's alerts as they arrive. Info expires after 6 s and warn after 12 s; danger stays until
+    dismissed. Hovering holds the timers. Repeats of a kind (the text with its positions and numbers taken out) collapse
+    into one message with a ×count, and each repeat refreshes its timer. At most four show; "+N more" opens the log.
+    "Dismiss all" and Esc on the stack clear them. An alert is taken in once (by id), so a state poll never shows it again;
+    alerts older than a minute when the page first sees them go to the log only.
+  - **Log**: the last 200 messages and the page's own toasts, coalesced the same way, filterable (all, problems, events)
+    and searchable. A click jumps to the pawn, the alert's fix or the place named in the text. An unread badge counts new
+    entries while it is closed.
 - **Full screen (added 2026-11-03).** The button at the top right or Shift+F (F alone is the Forbid tool) puts the whole Story
   Mode element in full screen, the Live world pane's way: the map and the whole HUD (colonist bar, tabs, inspector, alerts,
   clock, toasts, menus). Esc (the browser's) or Shift+F leaves it. The map follows the new size every frame; drags, box
@@ -549,15 +803,23 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 - **Offline pawns and failed designations** see "Offline pawns" and "A pawn's own claim" above.
 - **Permissions.** Needs the `admin` role, or a new `story` role, for writes. Viewers can watch.
 - **Performance.** It must stay smooth with software WebGL at 40 fps or more. It uses the shared renderer, and the
-  overlays are cheap.
+  overlays are cheap. Live 11-03 it lagged with 10 pawns and a few hundred designations. Since then the designations' marks and
+  the failed ones' clusters are worked out once per state (not per frame), each mark is stamped from a cached sprite and skipped
+  off screen, the pawn portraits and the viewer's element are memoised (the page re-renders on every state poll), and the map
+  centre reaches the page only while the Colony tab or the new-colony card needs it. Measured with `STORY_PERF=1` in
+  `e2e/story.spec.ts` (the mock's `busy` seed: 10 pawns, 600 surface mine designations plus the cuts and chops of a 41×41 box, 120 failed; Chromium with SwiftShader, dev
+  build, 1440×900), before → after: panning 35 → 40 fps (p95 frame 50 → 33 ms) and main-thread script 263–299 → 178 ms/s;
+  idle 43 → 40 fps (noise; p95 33 ms both), script 199–245 → 211 ms/s; zoomed in on the failed labels 51 → 57 fps, script
+  213–219 → 175 ms/s. In the CPU profile React's render work fell 981 → 371 ms and the overlay's draw 779 → 491 ms per 12 s.
+  `STORY_PROFILE=<file>` also saves the CPU profile.
 
 ## Construction (added 2026-11-03)
 
 Building is queued, colony-sim style. Pawns with Build enabled fill queued builds in queue order, bottom-up.
 - **Architect palette:** wall (height 1–12), floor, door, window, stairs, fence, roof (flat, slab, gable or none, with an
   optional overhang), single block, and deconstruct. Each takes a material.
-- **Placement:** drag on the map to place, and Q/E rotates. Blueprints draw as ghost blocks, coloured todo, leased, done
-  or blocked.
+- **Placement:** drag on the map to place, and Q/E rotates. Queued blueprints draw as block holograms in the world (see
+  "Build holograms" above), or as flat ghost blocks with the setting off.
 - **Build queue panel:** progress, the reason a build is blocked (such as missing materials), reorder, pause and cancel.
 - **Multi-floor levels:** PgUp/PgDn change the working level. Everything above it, roofs included, is x-rayed in
   top-down, and the level below is dimmed.

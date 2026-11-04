@@ -7,6 +7,7 @@ import type { PatchResult, TouchCol } from './engine';
 import type { CutParams, SectionMesh } from './mesher';
 import type { PickHit, V3, ViewInfo } from './query';
 import type { MeshAssets } from './source';
+import type { HoloRequest, HoloResult } from './holo';
 
 export type WorkerRequest =
   | { id: number; op: 'configure'; version: GameVersion; assets: MeshAssets | null; textured: boolean; fastLeaves?: boolean }
@@ -21,9 +22,11 @@ export type WorkerRequest =
   | { id: number; op: 'lights'; dim: number; pts: number[] }
   | { id: number; op: 'blocksAt'; dim: number; pts: number[] }
   | { id: number; op: 'scan'; dim: number; min: V3; max: V3; ids: number[]; maxHits?: number }
+  | { id: number; op: 'stacks'; dim: number; min: V3; max: V3; skip: number[]; depth: number; above?: number; maxHits?: number }
   | { id: number; op: 'blockEntities'; dim: number; cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> }
+  | { id: number; op: 'holo'; dim: number; reqs: HoloRequest[] }
   | { id: number; op: 'clear' };
 
 export type WorkerResponse =
-  | { id: number; ok: true; result: null | ApplyResult | SectionMesh[] | PickHit | ViewInfo | Array<[number, number, number]> | PatchResult | number[] | boolean[] }
+  | { id: number; ok: true; result: null | ApplyResult | SectionMesh[] | PickHit | ViewInfo | Array<[number, number, number]> | PatchResult | number[] | boolean[] | HoloResult[] }
   | { id: number; ok: false; error: string };

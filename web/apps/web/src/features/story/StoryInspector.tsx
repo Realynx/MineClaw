@@ -9,7 +9,6 @@
 import {
   regularsSeatsWouldHelp,
   STORY_STORAGE_PRIORITIES,
-  storyItemLabel,
   type StoryAiBody,
   type StoryDesignation,
   type StoryOnlineBlocked,
@@ -50,6 +49,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
+import { ContainerContents } from '@/features/world/ContainerPanel';
 import { retryIn, shortReason } from './failedLabels';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
@@ -806,6 +806,9 @@ export function StorageInspector({
       testid="storage-inspector"
     >
       <div className="space-y-2 text-xs">
+        {chests.length === 1 ? (
+          <ContainerContents target={{ dim: 0, x: keys[0]![0], y: keys[0]![1], z: keys[0]![2] }} heading />
+        ) : null}
         {!registered ? (
           <Button
             size="sm"
@@ -870,28 +873,6 @@ export function StorageInspector({
               />
             ) : null}
             <FilterTree tree={tree} filter={filter} onChange={(f) => canWrite && set({ filter: f })} />
-            {chests.length === 1 && first ? (
-              <div>
-                <div className="mb-1 flex items-center text-[10.5px] font-semibold tracking-wide text-subtle uppercase">
-                  Contents
-                  <span className="ml-auto font-normal normal-case">
-                    {first.knownAt ? `seen ${new Date(String(first.knownAt)).toLocaleTimeString()}` : 'not seen yet'}
-                  </span>
-                </div>
-                <ul className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-                  {first.contents.map(([id, meta, n], i) => (
-                    <li key={i} className="flex items-center gap-1">
-                      <ItemIcon id={id} meta={meta} size={16} />
-                      <span className="truncate">{storyItemLabel(id, meta)}</span>
-                      <span className="ml-auto tabular-nums text-muted">{n}</span>
-                    </li>
-                  ))}
-                </ul>
-                {first.freeSlots !== null && first.freeSlots !== undefined ? (
-                  <div className="mt-1 text-[10.5px] text-subtle">{first.freeSlots} free slots</div>
-                ) : null}
-              </div>
-            ) : null}
             <Button
               size="sm"
               variant="ghost"
@@ -908,6 +889,105 @@ export function StorageInspector({
 }
 
 // ------------------------------------------------------------------ bills
+
+/** A build's auto bill: tagged with its build, progress only; the one thing the owner can do is cancel it (the build then waits). */
+function AutoBillRow({
+  bill,
+  label,
+  output,
+  state,
+  canWrite,
+  write,
+}: {
+  bill: StoryBill;
+  label: string;
+  output: readonly number[] | undefined;
+  state: StoryColonyState | undefined;
+  canWrite: boolean;
+  write: StoryWrite;
+}) {
+  const build = (state?.builds ?? []).find((b) => String(b.id) === String(bill.forBuild));
+  return (
+    <li
+      data-bill={bill.id}
+      data-auto-bill={String(bill.forBuild)}
+      className="flex items-center gap-1.5 rounded-md border border-dashed border-border bg-surface-2 px-1.5 py-1"
+      title="Made automatically for a queued build: it follows the build's shortfall and goes when the build no longer needs it"
+    >
+      <span className="w-3" aria-hidden />
+      {output ? <ItemIcon id={output[0]!} meta={output[1] ?? 0} size={18} /> : null}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1 truncate font-semibold">
+          {label}
+          <span className="rounded bg-accent-soft px-1 text-[10px] font-semibold text-fg">
+            for build #{String(bill.forBuild)}
+          </span>
+        </div>
+        <div className="text-[10.5px] text-muted">
+          {bill.done}/{bill.target}
+          {build ? ` · ${build.label}` : ''}
+        </div>
+        {bill.suspendedReason ? (
+          <div className="text-[10.5px] text-danger">Suspended: {bill.suspendedReason}</div>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        disabled={!canWrite}
+        onClick={() => void write('story.bills', { op: 'remove', id: bill.id } as never)}
+        aria-label={`Cancel ${label} for build ${String(bill.forBuild)}`}
+        title="Cancel: the build waits for this item instead of crafting it"
+        className="rounded p-0.5 text-danger hover:bg-danger-soft"
+      >
+        <Trash2 className="size-3.5" />
+      </button>
+    </li>
+  );
+}
+
+/** A crafting table / furnace the colony doesn't use yet (another player's, or not designated): designate it here. */
+export function UndesignatedBench({
+  pos,
+  canWrite,
+  write,
+  onClose,
+}: {
+  pos: V3;
+  canWrite: boolean;
+  write: StoryWrite;
+  onClose: () => void;
+}) {
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <Shell
+      title="Workbench"
+      sub={`${pos[0]}, ${pos[1]}, ${pos[2]} · not the colony's`}
+      onClose={onClose}
+      testid="bench-designate"
+    >
+      <div className="space-y-2 text-xs">
+        <p className="text-muted">
+          The colony only uses benches it was given: designated ones take bills, receive the builds' crafts and unlock
+          the Architect&apos;s tiers. Other players&apos; benches are left alone.
+        </p>
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={!canWrite}
+          onClick={() =>
+            void write('story.workbenches', { op: 'designate', pos } as never).then(
+              () => setErr(null),
+              (e: unknown) => setErr(e instanceof Error ? e.message : 'failed'),
+            )
+          }
+        >
+          Use as colony workbench
+        </Button>
+        {err ? <p className="text-danger">{err}</p> : null}
+      </div>
+    </Shell>
+  );
+}
 
 export function BillsInspector({
   bench,
@@ -956,18 +1036,44 @@ export function BillsInspector({
             A {bench.kind.replace(/_/g, ' ')} takes no bills yet.
           </p>
         ) : null}
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={!canWrite || bench.supported === false}
-          onClick={() => setPicker(true)}
-          title={bench.supported === false ? 'Not supported yet' : undefined}
-        >
-          <Plus className="size-3.5" /> Add bill
-        </Button>
+        {bench.kind === 'furnace' || bench.kind === 'brewing_stand' ? (
+          <ContainerContents target={{ dim: 0, x: pos[0], y: pos[1], z: pos[2] }} heading />
+        ) : null}
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={!canWrite || bench.supported === false}
+            onClick={() => setPicker(true)}
+            title={bench.supported === false ? 'Not supported yet' : undefined}
+          >
+            <Plus className="size-3.5" /> Add bill
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!canWrite}
+            onClick={() => void write('story.workbenches', { op: 'release', pos } as never).then(onClose)}
+            title="Stop using this bench: its bills go with it, the builds' crafts move to another bench or wait"
+          >
+            Release
+          </Button>
+        </div>
         <ol className="space-y-1" data-testid="bills">
           {bench.bills.map((b, i) => {
             const r = recipeOf(b.recipe);
+            if ((b.forBuild ?? null) !== null)
+              return (
+                <AutoBillRow
+                  key={b.id}
+                  bill={b}
+                  label={r?.label ?? b.recipe}
+                  output={r?.output}
+                  state={state}
+                  canWrite={canWrite}
+                  write={write}
+                />
+              );
             return (
               <li
                 key={b.id}
@@ -979,13 +1085,16 @@ export function BillsInspector({
                   const from = dragFrom.current;
                   dragFrom.current = null;
                   if (from === null || from === i) return;
+                  // Auto bills (listed first) follow their builds' order: only the owner's bills reorder.
+                  const auto = bench.bills.filter((x) => (x.forBuild ?? null) !== null).length;
+                  if (from < auto || i < auto) return;
                   void write(
                     'story.bills',
                     reorderBills(
                       pos,
-                      bench.bills.map((x) => x.id),
-                      from,
-                      i,
+                      bench.bills.filter((x) => (x.forBuild ?? null) === null).map((x) => x.id),
+                      from - auto,
+                      i - auto,
                     ) as never,
                   );
                 }}

@@ -43,8 +43,16 @@ public sealed partial class StoryColony
     /// <summary>The job for <paramref name="p"/> now. Never null: with nothing to do it idles (and the colony hears about it).</summary>
     internal ActiveJob Pick(PawnState p, PawnLive live)
     {
+        _pickEnts = null; // the world's entities are read once per pick
+        try { return PickCore(p, live); }
+        finally { _pickEnts = null; }
+    }
+
+    private ActiveJob PickCore(PawnState p, PawnLive live)
+    {
         if (!live.Online) return Hold("offline", "offline");
         if (!Meta.Active) return Job("idle", "end", "colony released", null, null, "none", null, "idle", xp: 0); // the script ends cleanly
+        if (LeavingJob(p, live) is { } leave) return leave; // removed from the colony: store its things, then go (StoryColony.Roster.cs)
         if (Meta.Paused) return Hold("colony paused", "idle", s: 5);
         if (p.Drafted) return OrderJob(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
@@ -58,8 +66,8 @@ public sealed partial class StoryColony
         {
             case ScheduleBlocks.Sleep:
                 return SleepJob(p, live, hour, home);
-            case ScheduleBlocks.Free:
-                return Hold($"free time ({hour:00}:00)", "idle", home, 10, "schedule");
+            case ScheduleBlocks.Free: // idle behaviour (StoryColony.Idle.cs): wander the home area, else stay put (never all to one cell)
+                return IdleJob(p, live, "free", hour) ?? Hold($"free time ({hour:00}:00)", "idle", null, 10, "schedule");
             case ScheduleBlocks.Anything when live.Food <= 14 && FoodIn(live) != null:
                 return Job("need", "eat", "eating", null, null, "need", null, "eating", xp: 0);
         }
@@ -70,7 +78,9 @@ public sealed partial class StoryColony
             _idleAlert[p.Name] = Now;
             Alert("info", $"{p.Display} is idle: nothing to do", p.Name);
         }
-        return Hold(NothingToDo, "idle", home, StoryCharacter.IdleSeconds(p));
+        // ---- nothing to do: idle behaviour (StoryColony.Idle.cs). It wanders the home area, one leg at a time, and real work
+        // takes the leg back at once; with nowhere to go it holds where it is (never all pawns to the home cell).
+        return IdleJob(p, live, "work", hour) ?? Hold(NothingToDo, "idle", null, StoryCharacter.IdleSeconds(p));
     }
 
     // ---------------------------------------------------------------- back-off
@@ -109,7 +119,7 @@ public sealed partial class StoryColony
     private static bool Raw(IStoryWorld w, int id) => id is 319 or 363 or 365 or 411 or 423;
 
     private IReadOnlyList<StoryEntity> Hostiles(PawnLive live, double r) =>
-        World?.Entities().Where(e => e.Kind == "mob" && e.Hostile && Math.Abs(e.X - live.X) <= r && Math.Abs(e.Z - live.Z) <= r && Math.Abs(e.Y - live.Y) <= 6).ToList() ?? [];
+        Ents().Where(e => e.Kind == "mob" && e.Hostile && Math.Abs(e.X - live.X) <= r && Math.Abs(e.Z - live.Z) <= r && Math.Abs(e.Y - live.Y) <= 6).ToList();
 
     private ActiveJob? Urgent(PawnState p, PawnLive live)
     {
@@ -119,7 +129,7 @@ public sealed partial class StoryColony
             var home = Home();
             var mob = Hostiles(live, 12)[0];
             // Away from the monster: home if it is the other way, else a dozen blocks straight away from it.
-            P3 to = home is { } h && h.Dist(mob.X, mob.Y, mob.Z) > h.Dist(live.X, live.Y, live.Z) ? h
+            P3 to = home is { } h && h.Dist(mob.X, mob.Y, mob.Z) > h.Dist(live.X, live.Y, live.Z) ? SpreadHome(p, live, h) ?? h
                 : new P3((int)(live.X + Math.Sign(live.X - mob.X) * 12), (int)live.Y, (int)(live.Z + Math.Sign(live.Z - mob.Z) * 12));
             return Job("need", "go", $"fleeing a {mob.Name}", to, null, "need", null, "fleeing", j => j["dist"] = 1, xp: 0);
         }
@@ -217,10 +227,15 @@ public sealed partial class StoryColony
 
     private bool Skipped(string key) => _skip.TryGetValue(key, out var until) && until > Now;
 
-    private bool Forbidden(P3 at) => Zones.Any(z => z.Kind == "forbidden" && z.Area.Contains(at))
-        || Designations.Any(d => d.Kind == "forbid" && d.At == at);
+    private bool Forbidden(P3 at)
+    {
+        var ix = Index();
+        if (ix.ForbidCells.Contains(at)) return true;
+        foreach (var a in ix.ForbidZones) if (a.Contains(at)) return true;
+        return false;
+    }
 
-    private bool ForbiddenEntity(int id) => Designations.Any(d => d.Kind == "forbid" && d.Entity == id);
+    private bool ForbiddenEntity(int id) => Index().ForbidEntities.Contains(id);
 
     private bool Open(string key, string pawn, P3? at) => Free(key, pawn) && !Skipped(key) && (at == null || !Forbidden(at.Value));
 
@@ -234,7 +249,7 @@ public sealed partial class StoryColony
             {
                 var home = Home();
                 if (home == null) return null;
-                var mob = World?.Entities().Where(e => e.Kind == "mob" && e.Hostile && InHome(e.Block, home.Value) && Open("e:" + e.Id, p.Name, null))
+                var mob = Ents().Where(e => e.Kind == "mob" && e.Hostile && InHome(e.Block, home.Value) && Open("e:" + e.Id, p.Name, null))
                     .OrderBy(e => e.Block.Dist(from)).FirstOrDefault();
                 return mob == null ? null : Job(type, "attack", $"guarding: {mob.Name}", mob.Block, "e:" + mob.Id, "guard", mob.Id.ToString(), "fighting",
                     j => j["mob"] = mob.Name, xp: 25);
@@ -265,10 +280,10 @@ public sealed partial class StoryColony
             case WorkTypes.Cook:
                 return BillJob(p, live, WorkTypes.Cook);
             case WorkTypes.Craft:
-                return BillJob(p, live, WorkTypes.Craft);
+                return BillJob(p, live, WorkTypes.Craft) ?? SupplyJob(p, live); // the builds' own crafts (a bench to place, a 2×2 craft)
             case WorkTypes.Hunt:
             {
-                var ents = World?.Entities().ToDictionary(e => e.Id) ?? new Dictionary<int, StoryEntity>();
+                var ents = Ents().ToDictionary(e => e.Id);
                 var d = Designations.Where(x => x.Kind == "hunt" && x.Entity is { } id && ents.ContainsKey(id) && Open("e:" + id, p.Name, null))
                     .OrderBy(x => ents[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
                 if (d == null) return null;
@@ -276,13 +291,13 @@ public sealed partial class StoryColony
                 return Job(type, "attack", $"hunting a {e.Name}", e.Block, "e:" + e.Id, "designation", d.Id, "fighting", j => j["mob"] = e.Name, xp: 30);
             }
             case WorkTypes.Build:
-                return GhostJob(p, live) ?? DesignationJob(p, from, type, "deconstruct", "dig", "deconstructing");
+                return GhostJob(p, live) ?? DesignationJob(p, live, from, type, "deconstruct", "dig", "deconstructing");
             case WorkTypes.Farm:
-                return DesignationJob(p, from, type, "harvest", "harvest", "harvesting") ?? FarmZoneJob(p, live);
+                return DesignationJob(p, live, from, type, "harvest", "harvest", "harvesting") ?? FarmZoneJob(p, live);
             case WorkTypes.Mine:
-                return DesignationJob(p, from, type, "mine", "dig", "mining") ?? ZoneJob(p, from, type, "mine");
+                return DesignationJob(p, live, from, type, "mine", "dig", "mining") ?? ZoneJob(p, from, type, "mine");
             case WorkTypes.Chop:
-                return DesignationJob(p, from, type, "chop", "chop", "chopping a tree") ?? DesignationJob(p, from, type, "cut", "dig", "cutting plants")
+                return DesignationJob(p, live, from, type, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, type, "cut", "dig", "cutting plants")
                     ?? ZoneJob(p, from, type, "chop");
             case WorkTypes.Haul:
                 return HaulJob(p, from) ?? RebalanceJob(p, from);
@@ -291,24 +306,50 @@ public sealed partial class StoryColony
     }
 
     /// <summary>A block designation of <paramref name="kind"/> (nearest open first).</summary>
-    private ActiveJob? DesignationJob(PawnState p, P3 from, string type, string kind, string scriptKind, string label)
+    private ActiveJob? DesignationJob(PawnState p, PawnLive live, P3 from, string type, string kind, string scriptKind, string label)
     {
-        // A tall plant's two halves are one target: its lower half (breaking it drops the upper), leased once, so two pawns never split it.
-        P3 T(P3 at) => kind == "cut" ? PlantBase(at) : at;
-        var d = Designations.Where(x => x.Kind == kind && x.At is { } at && Open("b:" + T(at), p.Name, T(at))).OrderBy(x => x.At!.Value.Dist(from)).FirstOrDefault();
-        if (d == null) return null;
-        var at = T(d.At!.Value);
-        return Job(type, scriptKind, d.Label ?? label, at, "b:" + at, "designation", d.Id, "working",
+        // A tall plant's two halves are one target (its lower half: breaking either drops both), leased once, so two pawns never split it
+        // (live 11-03: "double_plant ... is busy: another hive bot is working on that part" when a mine and a cut box overlapped it).
+        if (!Index().ByKind.TryGetValue(kind, out var list) || list.Count == 0) return null;
+        bool digs = kind is "mine" or "deconstruct";
+        var w = World;
+        HashSet<P3>? stoodOn = null;
+        var mine = live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : [];
+        (DesignationState D, string Key, P3 Target) best = default;
+        double bestScore = double.MaxValue;
+        foreach (var x in list)
+        {
+            var at = x.Target;
+            // Nearest first, higher cells a little earlier (top-down), its own floor last (it would have to step off first).
+            double score = at.Dist(from) - 0.25 * at.Y + (mine.Contains(at) ? 1000 : 0);
+            if (score >= bestScore) continue;
+            if (!Open(x.Key, p.Name, at)) continue;
+            if (digs && w != null)
+            {
+                // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone.
+                if (!Exposed(w, at)) continue;
+                // Never the block under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
+                if ((stoodOn ??= StoodOnByOthers(p.Name)).Contains(at)) continue;
+            }
+            best = x;
+            bestScore = score;
+        }
+        if (best.D is not { } d) return null;
+        var target = best.Target;
+        P3? stand = digs && w != null && mine.Contains(target)
+            ? StandBeside(w, target, c => c == target || list.Any(o => o.Target == c)) : null;
+        return Job(type, scriptKind, d.Label ?? label, target, best.Key, "designation", d.Id, "working",
             j =>
             {
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
+                if (stand is { } s) j["stand"] = s.ToString(); // it stands on its target: step off to the side first
             }, xp: kind == "chop" ? 40 : 20);
     }
 
     /// <summary>A designation's lease (and rest) key: its entity, or its block (a tall plant's lower half).</summary>
     internal string DesignationKey(DesignationState d) =>
-        d.Entity is { } e ? "e:" + e : d.At is { } at ? "b:" + (d.Kind == "cut" ? PlantBase(at) : at) : "d:" + d.Id;
+        d.Entity is { } e ? "e:" + e : d.At is { } at ? "b:" + BlockTarget(d.Kind, at) : "d:" + d.Id;
 
     /// <summary>When a resting (failed) designation is tried again, or null when it is open now.</summary>
     internal DateTimeOffset? RetryAt(DesignationState d) => _skip.TryGetValue(DesignationKey(d), out var until) && until > Now ? until : null;
@@ -389,6 +430,8 @@ public sealed partial class StoryColony
     {
         var from = live.Block;
         foreach (var z in Zones.Where(z => z.Kind == "farm").OrderBy(z => z.Area.Center.Dist(from)))
+        {
+            if (z.Plant != null) { if (GrowJob(p, live, z) is { } grow) return grow; continue; } // a growing zone (StoryColony.Farming.cs)
             foreach (var t in ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)))
             {
                 if (t.Kind == "harvest")
@@ -407,6 +450,7 @@ public sealed partial class StoryColony
                 if (stored is { } st2) j2.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(16, st2.Stack.Count) }));
                 return j2;
             }
+        }
         return null;
     }
 
@@ -416,7 +460,7 @@ public sealed partial class StoryColony
     {
         if (World is not { } w) return null;
         if (Storages.Count == 0) return null; // hauling delivers into chests only: no loot left on the ground in a pile
-        var ents = w.Entities().Where(e => e.Kind == "item" && !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
+        var ents = Ents().Where(e => e.Kind == "item" && !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
         var d = Designations.Where(x => x.Kind == "haul" && x.Entity is { } id && ents.ContainsKey(id) && Open("e:" + id, p.Name, null))
             .OrderBy(x => ents[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
         StoryEntity? e = d != null ? ents[d.Entity!.Value] : null;
@@ -438,7 +482,7 @@ public sealed partial class StoryColony
         if (WorkTypes.Known(j.Type) && j.Xp > 0 && StoryCharacter.Learn(p, j.Type, j.Xp, HourNow) > 0)
             Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
         _fails.Remove(p.Name);
-        if (j.Lease != null) _leaseFails.Remove(j.Lease);
+        if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         switch (j.Source)
         {
@@ -462,8 +506,12 @@ public sealed partial class StoryColony
             case "order":
                 OrderDone(p, j, ok: true, note);
                 break;
-            case "zone" or "crop":
+            case "station" or "hand":
+                SupplyDone(p, j);
+                break;
+            case "zone" or "crop" or "sow":
                 _zoneScan.Remove(j.SourceId ?? "");
+                _growScan.Remove(j.SourceId ?? "");
                 break;
         }
     }
@@ -472,9 +520,9 @@ public sealed partial class StoryColony
     /// What of a designation's target the colony's view still sees after the pawn said done (null = it's done, or the view can't tell:
     /// not loaded). chop: the trunk's base log; cut: the plant; harvest: the ripe crop; mine, deconstruct: the block; haul, hunt: the entity.
     /// </summary>
-    private string? StillThere(ActiveJob j)
+    private string? StillThere(ActiveJob j, IStoryWorld? view = null)
     {
-        if (World is not { } w || Designations.FirstOrDefault(d => d.Id == j.SourceId) is not { } d) return null;
+        if ((view ?? World) is not { } w || Designations.FirstOrDefault(d => d.Id == j.SourceId) is not { } d) return null;
         if (d.Entity is { } eid)
             return d.Kind is "haul" or "hunt" && w.Entities().FirstOrDefault(e => e.Id == eid) is { } e ? $"the {e.Name} is still there" : null;
         if (d.At is not { } at || !w.Loaded(at.X, at.Z)) return null;
@@ -490,10 +538,43 @@ public sealed partial class StoryColony
         };
     }
 
+    /// <summary>
+    /// What is left of a designation's target after <paramref name="pawn"/> said done, as that pawn's own body sees it when its view holds
+    /// the cell (its connection carried the server's answer to its dig), else as the colony (main) sees it. Live 11-03: "reported done,
+    /// but the tallgrass is still there" ×54: the check read main's view, whose copy of the block change can come a moment after the
+    /// pawn's; main's view lagging behind is no failure.
+    /// </summary>
+    private string? Left(ActiveJob j, string pawn)
+    {
+        IStoryWorld? own = null;
+        try { own = Host.ViewOf(pawn); } catch (Exception) { /* no view: main's */ }
+        if (own != null && j.At is { } at && own.Loaded(at.X, at.Z))
+        {
+            var left = StillThere(j, own);
+            return left == null ? null : left + " (in its own view)";
+        }
+        return StillThere(j);
+    }
+
     /// <summary>Failures after which a designation shows as failed (it stays, with its reason).</summary>
     public const int DesignationFailLimit = 3;
 
     private static string Short(string s) => s.Length > 160 ? s[..159] + "…" : s;
+
+    private readonly Dictionary<string, int> _softFails = new(StringComparer.Ordinal);
+
+    /// <summary>Transient refusals of a target in a row before they count as a failure.</summary>
+    public const int SoftLimit = 5;
+    /// <summary>How long a target rests after a transient refusal (someone stands on it, another bot is at it, it can't be reached yet).</summary>
+    public static readonly TimeSpan SoftRest = TimeSpan.FromSeconds(15);
+
+    /// <summary>A refusal that says "not now" rather than "can't be done": unreachable from here yet, someone standing on it, a hive
+    /// claim (another body is at it), not loaded.</summary>
+    internal static bool Transient(string why) =>
+        why.Contains("can't reach", StringComparison.OrdinalIgnoreCase) || why.Contains("can't see/reach", StringComparison.OrdinalIgnoreCase)
+        || why.Contains("someone is standing on it", StringComparison.OrdinalIgnoreCase) || why.Contains("is busy", StringComparison.OrdinalIgnoreCase)
+        || why.StartsWith("busy", StringComparison.OrdinalIgnoreCase) || why.Contains("a hive claim", StringComparison.OrdinalIgnoreCase)
+        || why.Contains("is not loaded", StringComparison.OrdinalIgnoreCase);
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
@@ -502,6 +583,19 @@ public sealed partial class StoryColony
         _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
+        if (j.Source == "designation" && j.Lease != null && Transient(why))
+        {
+            // Not now, not a failure (live 11-03: "can't reach dirt" ×46, "someone is standing on it" ×6, a tall plant "busy" ×11 all
+            // counted, alerted and backed off as failures): the target rests a little, no fail count, no alert; only when it keeps
+            // happening (SoftLimit times in a row) does it count as a real failure.
+            int soft = _softFails[j.Lease] = _softFails.GetValueOrDefault(j.Lease) + 1;
+            if (soft < SoftLimit)
+            {
+                _skip[j.Lease] = Now + SoftRest;
+                return;
+            }
+            _softFails.Remove(j.Lease);
+        }
         NoteFailure(p);
         if (j.Lease != null)
         {

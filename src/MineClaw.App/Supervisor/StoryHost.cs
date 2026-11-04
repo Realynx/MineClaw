@@ -31,7 +31,9 @@ public sealed class StoryHost : IStoryHost
         _bodies = bodies;
         _scripts = scripts;
         _log = log ?? NullLogger.Instance;
-        World = new WorldStateStoryWorld(world, data);
+        // Main's sight plus every online body's (pawns load the chunks around a far home that main may not).
+        World = new MergedStoryWorld(world, () => (_bodies()?.All ?? []).OfType<Body>().Where(b => b.State == BodyState.Online)
+            .Select(b => b.Adapter.World).ToList(), data);
     }
 
     public IStoryWorld? World { get; }
@@ -40,6 +42,13 @@ public sealed class StoryHost : IStoryHost
         _hierarchy is { } h ? h.SpawnGroup(colony, n, StoryColonies.PawnScript, prefer) : ([], "the hive is off: Story Mode needs Hive:Enabled and Hive:Subhives:Enabled");
 
     public int Release(string colony) => _hierarchy?.ReleaseGroup(colony, "story colony released") ?? 0;
+
+    public string? ReleasePawn(string account, string why)
+    {
+        if (_hierarchy is not { } h) return "the hive is off";
+        var r = h.Release(account, HiveTree.Root, why);
+        return r.StartsWith("ok", StringComparison.OrdinalIgnoreCase) ? null : r;
+    }
 
     /// <summary>Main is in game (null = assume so).</summary>
     public Func<bool>? MainInGame { get; init; }
@@ -71,6 +80,19 @@ public sealed class StoryHost : IStoryHost
             : accounts.Select(a => (a, (string?)"the hive is off: Story Mode needs Hive:Enabled and Hive:Subhives:Enabled")).ToList();
 
     private Body? Find(string account) => _bodies()?.Find(account) as Body;
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (WorldState World, IStoryWorld View)> _views = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The pawn body's own view (its connection's world): a dig it reported done is checked there first.</summary>
+    public IStoryWorld? ViewOf(string account)
+    {
+        if (Find(account) is not { State: BodyState.Online } b || World is not { } main) return null;
+        var w = b.Adapter.World;
+        if (_views.TryGetValue(account, out var v) && ReferenceEquals(v.World, w)) return v.View;
+        var view = new WorldStateStoryWorld(() => w, main.Data);
+        _views[account] = (w, view);
+        return view;
+    }
 
     public PawnLive Live(string account)
     {

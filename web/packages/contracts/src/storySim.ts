@@ -33,8 +33,15 @@ import {
   type StoryBedsRequest,
   type StoryBill,
   type StoryBillsRequest,
+  type StoryArchitectEntry,
+  type StoryArchitectResponse,
   type StoryBuild,
+  type StoryBuildMaterial,
   type StoryBuildRequest,
+  type StoryColonyOptions,
+  type StoryOptionsRequest,
+  type StoryWorkbenchesRequest,
+  type StoryWorkbenchesResponse,
   type StoryColonyState,
   type StoryCreateRequest,
   type StoryDesignation,
@@ -49,6 +56,9 @@ import {
   type StoryOnlineRequest,
   type StoryOnlineResponse,
   type StoryPawn,
+  type StoryPawnsRequest,
+  type StoryPawnsResponse,
+  type StoryPlant,
   type StoryStorage,
   type StoryStorageRequest,
   type StoryWorkbench,
@@ -147,7 +157,172 @@ interface Colony {
   }>;
   seq: number;
   stock: Map<string, number>;
+  /** Pawns asked for (the + button): the ones not here yet are "joining…". */
+  wanted?: number;
+  options: StoryColonyOptions;
 }
+
+/** What growing zones can grow (the mock speaks 1.12.2). */
+export const STORY_SIM_PLANTS: StoryPlant[] = [
+  {
+    id: 'wheat',
+    label: 'Wheat',
+    block: 59,
+    seed: 'wheat_seeds',
+    seedItem: [295, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'cut tall grass (seeds drop) or harvest wheat',
+  },
+  {
+    id: 'carrots',
+    label: 'Carrots',
+    block: 141,
+    seed: 'carrot',
+    seedItem: [391, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'the carrot itself: harvests, zombie drops, village farms and chests',
+  },
+  {
+    id: 'potatoes',
+    label: 'Potatoes',
+    block: 142,
+    seed: 'potato',
+    seedItem: [392, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'the potato itself: harvests, zombie drops, village farms and chests',
+  },
+  {
+    id: 'beetroot',
+    label: 'Beetroot',
+    block: 207,
+    seed: 'beetroot_seeds',
+    seedItem: [435, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'harvest beetroot; village farms and chests',
+  },
+  {
+    id: 'pumpkin',
+    label: 'Pumpkin',
+    block: 104,
+    seed: 'pumpkin_seeds',
+    seedItem: [361, 0],
+    soil: 'farmland',
+    harvest: 'fruit',
+    source: 'craft them from a pumpkin (a bill at a crafting table)',
+  },
+  {
+    id: 'melon',
+    label: 'Melon',
+    block: 105,
+    seed: 'melon_seeds',
+    seedItem: [362, 0],
+    soil: 'farmland',
+    harvest: 'fruit',
+    source: 'craft them from a melon slice (a bill at a crafting table)',
+  },
+  {
+    id: 'sugar_cane',
+    label: 'Sugar cane',
+    block: 83,
+    seed: 'reeds',
+    seedItem: [338, 0],
+    soil: 'cane',
+    harvest: 'stalk',
+    source: 'the cane itself: found by water',
+  },
+  {
+    id: 'cactus',
+    label: 'Cactus',
+    block: 81,
+    seed: 'cactus',
+    seedItem: [81, 0],
+    soil: 'sand',
+    harvest: 'stalk',
+    source: 'the cactus itself: found in deserts',
+  },
+  {
+    id: 'oak',
+    label: 'Oak sapling',
+    block: 6,
+    seed: 'sapling',
+    seedItem: [6, 0],
+    soil: 'dirt',
+    harvest: 'tree',
+    source: 'leaves of chopped oaks drop them',
+  },
+  {
+    id: 'birch',
+    label: 'Birch sapling',
+    block: 6,
+    seed: 'birch_sapling',
+    seedItem: [6, 2],
+    soil: 'dirt',
+    harvest: 'tree',
+    source: 'leaves of chopped birches drop them',
+  },
+];
+
+const SEED_HINT: Record<string, string> = {
+  wheat: 'No wheat seeds — cut tall grass to find some',
+  carrots: 'Needs carrots — none in storage (harvests, zombie drops, village farms)',
+  potatoes: 'Needs potatoes — none in storage (harvests, zombie drops, village farms)',
+  pumpkin: 'No pumpkin seeds — store a pumpkin and a crafting table makes them',
+  melon: 'No melon seeds — store a melon slice and a crafting table makes them',
+};
+
+const BENCH_KIND: Record<number, string> = {
+  58: 'crafting_table',
+  61: 'furnace',
+  62: 'furnace',
+  117: 'brewing_stand',
+  145: 'anvil',
+  116: 'enchanting_table',
+};
+
+/**
+ * The sim's Architect catalog: [id, label, tab, tier, item, block material, kinds, raw "id:meta" it is made from, outputs per
+ * raw]. Tiers as the bot's (gathered | hand | workbench | furnace); the bot derives them from the version's recipes.
+ */
+const SIM_ARCHITECT: Array<
+  [string, string, string, string, [number, number], [number, number], string[], string | null, number]
+> = [
+  ['planks', 'Oak Planks', 'structure', 'hand', [5, 0], [5, 0], ['wall', 'floor', 'block', 'roof'], '17:0', 4],
+  ['cobblestone', 'Cobblestone', 'structure', 'gathered', [4, 0], [4, 0], ['wall', 'floor', 'block', 'roof'], null, 1],
+  ['stone', 'Stone', 'structure', 'furnace', [1, 0], [1, 0], ['wall', 'floor', 'block', 'roof'], '4:0', 1],
+  [
+    'stonebrick',
+    'Stone Bricks',
+    'structure',
+    'furnace',
+    [98, 0],
+    [98, 0],
+    ['wall', 'floor', 'block', 'roof'],
+    '4:0',
+    1,
+  ],
+  ['log', 'Oak Wood', 'structure', 'gathered', [17, 0], [17, 0], ['wall', 'floor', 'block'], null, 1],
+  ['dirt', 'Dirt', 'structure', 'gathered', [3, 0], [3, 0], ['wall', 'floor', 'block'], null, 1],
+  ['glass', 'Glass', 'structure', 'furnace', [20, 0], [20, 0], ['window', 'wall', 'block'], '12:0', 1],
+  ['glass_pane', 'Glass Pane', 'structure', 'furnace', [102, 0], [102, 0], ['window', 'block'], '12:0', 2],
+  ['oak_stairs', 'Oak Wood Stairs', 'structure', 'workbench', [53, 0], [53, 0], ['stairs'], '17:0', 2],
+  ['stone_stairs', 'Cobblestone Stairs', 'structure', 'workbench', [67, 0], [67, 0], ['stairs'], '4:0', 0.66],
+  ['stone_slab', 'Stone Slab', 'structure', 'workbench', [44, 0], [44, 0], ['floor', 'block', 'roof'], '4:0', 2],
+  ['fence', 'Oak Fence', 'structure', 'workbench', [85, 0], [85, 0], ['fence'], '17:0', 1.5],
+  ['wooden_door', 'Oak Door', 'structure', 'workbench', [324, 0], [64, 0], ['door'], '17:0', 1.5],
+  ['wool', 'White Wool', 'structure', 'hand', [35, 0], [35, 0], ['wall', 'floor', 'block'], '287:0', 0.25],
+  ['bed', 'Bed', 'furniture', 'workbench', [355, 0], [26, 0], ['bed'], '35:0', 0.33],
+  ['bookshelf', 'Bookshelf', 'furniture', 'workbench', [47, 0], [47, 0], ['wall', 'block'], '17:0', 0.5],
+  ['crafting_table', 'Crafting Table', 'production', 'hand', [58, 0], [58, 0], ['crafting_table'], '17:0', 1],
+  ['furnace', 'Furnace', 'production', 'workbench', [61, 0], [61, 0], ['furnace'], '4:0', 0.125],
+  ['chest', 'Chest', 'storage', 'workbench', [54, 0], [54, 0], ['chest'], '17:0', 0.5],
+  ['torch', 'Torch', 'lighting', 'hand', [50, 0], [50, 0], ['torch'], '263:0', 4],
+  ['glowstone', 'Glowstone', 'lighting', 'gathered', [89, 0], [89, 0], ['wall', 'floor', 'block'], null, 1],
+  ['ladder', 'Ladder', 'misc', 'workbench', [65, 0], [65, 0], ['block'], '17:0', 2],
+];
 
 const NAMES = ['Ash', 'Bryn', 'Cato', 'Dara', 'Elio', 'Fenn', 'Gwen', 'Hollis', 'Ivo', 'June', 'Kit', 'Lark'];
 const TRAITS = [
@@ -315,6 +490,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
+      options: { autoPlaceBenches: true, detectBenches: false },
     };
     for (let i = 0; i < req.pawns; i++) {
       const display = NAMES[(i + n * 3) % NAMES.length]!;
@@ -407,17 +583,20 @@ export class StorySim {
       active: !c.released,
       since: since ?? null,
       tieBreak: 'column',
+      options: { ...c.options },
       timeControl: this.timeControl(),
       home: c.home,
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
       seats: {
         online: [...c.pawns.values()].filter((p) => p.p.online).length,
-        wanted: c.pawns.size,
+        wanted: Math.max(c.wanted ?? 0, c.pawns.size),
         capFree: this.seatsOf(c).capFree,
         keptForRegulars: this.seatsOf(c).kept,
+        pending: Math.max(0, (c.wanted ?? 0) - [...c.pawns.values()].filter((p) => !p.p.leaving).length),
       },
-      zones: pick(c.zones),
+      zones: pick(c.zones).map((z) => this.growStatus(c, z)),
+      ...(full ? { plants: STORY_SIM_PLANTS } : {}),
       designations: pick(c.designations),
       orders: pick(c.orders),
       alerts: c.alerts
@@ -711,6 +890,7 @@ export class StorySim {
 
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
+    if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
     if (body.op === 'rename') {
       const f = c.zones.get(String(body.id));
       if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
@@ -738,6 +918,15 @@ export class StorySim {
         area: a,
         ...(body.name ? { name: body.name } : {}),
       };
+      if (body.plant || body.sow !== undefined || body.harvest !== undefined) {
+        if (z.kind !== 'farm')
+          throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+        if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
+          throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
+            status: 400,
+          });
+        Object.assign(z, { plant: body.plant ?? null, sow: body.sow ?? true, harvest: body.harvest ?? true });
+      }
       c.zones.set(z.id, { rev: this.bump(c), v: z });
       if (z.kind === 'home') c.bedsRev = this.bump(c); // beds in it now belong to that house
       return { id: z.id, rev: c.rev };
@@ -749,6 +938,136 @@ export class StorySim {
         removed.push(f.v.id);
       }
     return { removed, rev: c.rev };
+  }
+
+  /** A growing zone's fields as the bot reports them (mock: nothing grows; seeds from the colony's stock). */
+  private growStatus(c: Colony, z: StoryZone): StoryZone {
+    const plant = z.kind === 'farm' && z.plant ? STORY_SIM_PLANTS.find((p) => p.id === z.plant) : undefined;
+    if (!plant) return z;
+    const [x1, , z1, x2, , z2] = z.area;
+    const cells = (x2 - x1 + 1) * (z2 - z1 + 1);
+    const have = c.stock.get(`${plant.seedItem![0]}:${plant.seedItem![1]}`) ?? 0;
+    return {
+      ...z,
+      status: `0/${cells} sown, 0 ripe`,
+      seeds: {
+        item: plant.seed,
+        have,
+        neededForEmpty: cells,
+        sourceHint: plant.source ?? null,
+        missing:
+          have === 0 ? (SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`) : null,
+        action:
+          have === 0 ? (plant.id === 'wheat' ? 'seek_seeds' : plant.harvest === 'fruit' ? 'craft_seeds' : null) : null,
+      },
+      needsHoe: plant.soil === 'farmland' && (c.stock.get('290:0') ?? 0) === 0,
+    };
+  }
+
+  private growOp(c: Colony, body: Extract<StoryZoneRequest, { op: 'update' | 'seek_seeds' }>) {
+    const f = c.zones.get(String(body.id));
+    if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+    if (body.op === 'update') {
+      if (f.v.kind !== 'farm')
+        throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+      if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
+        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
+          status: 400,
+        });
+      f.v = {
+        ...f.v,
+        ...(body.plant !== undefined ? { plant: body.plant || null } : {}),
+        ...(body.sow !== undefined ? { sow: body.sow } : {}),
+        ...(body.harvest !== undefined ? { harvest: body.harvest } : {}),
+      };
+      f.rev = this.bump(c);
+      return { id: f.v.id, warnings: [], rev: c.rev };
+    }
+    const plant = STORY_SIM_PLANTS.find((p) => p.id === f.v.plant);
+    if (!plant) throw Object.assign(new Error('the zone grows nothing: set its plant first'), { status: 400 });
+    if (plant.id === 'wheat') {
+      const [x1, y1, z1, x2, , z2] = f.v.area;
+      const out = this.designations(c.id, {
+        op: 'add',
+        kind: 'cut',
+        area: [x1 - 24, y1 - 6, z1 - 24, x2 + 24, y1 + 6, z2 + 24],
+      } as never) as { count?: number };
+      return { count: out.count ?? 0, kind: 'cut', rev: c.rev };
+    }
+    if (plant.harvest === 'fruit') {
+      this.alert(c, 'info', `Added a bill for 4 ${plant.seed} at the crafting table.`);
+      return { count: 4, kind: 'bill', rev: c.rev };
+    }
+    throw Object.assign(new Error(SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`), {
+      status: 400,
+    });
+  }
+
+  // ------------------------------------------------------------------ pawns (+ / −)
+
+  /** POST /api/story/colonies/{id}/pawns: + joins as seats allow (the rest wait), − stores its things and leaves. */
+  pawns(id: string, body: StoryPawnsRequest): StoryPawnsResponse {
+    const c = this.colony(id);
+    const staying = () => [...c.pawns.values()].filter((p) => !p.p.leaving);
+    const answer = (why: string | null): StoryPawnsResponse => {
+      const here = staying().map((p) => p.p.name);
+      const pending = Math.max(0, (c.wanted ?? here.length) - here.length);
+      return {
+        pawns: here,
+        wanted: c.wanted ?? here.length,
+        pending: Array.from({ length: pending }, () => ({ reason: why ?? 'waiting for a seat' })),
+        leaving: [...c.pawns.values()].filter((p) => p.p.leaving).map((p) => p.p.name),
+        blocked: why && pending ? [{ reason: why }] : [],
+      };
+    };
+    if (body.op === 'add') {
+      if (c.released) throw Object.assign(new Error('the colony is released: resume it first'), { status: 400 });
+      const wanted = Math.max(c.wanted ?? 0, staying().length);
+      if (wanted + body.count > 12)
+        throw Object.assign(new Error(`a colony has at most 12 pawns (${wanted} now)`), { status: 400 });
+      c.wanted = wanted + body.count;
+      const now = Math.max(0, Math.min(body.count, c.capFree - c.kept));
+      for (let i = 0; i < now; i++) {
+        const k = c.pawns.size;
+        const display = NAMES[(k + 5) % NAMES.length]!;
+        const name = `maid_${c.id.replace('story-', 's')}_${display.toLowerCase()}${c.seq++}`;
+        const p = this.newPawn(c, name, display, k);
+        p.p.online = false;
+        p.p.state = 'offline';
+        p.p.offlineReason = 'connecting';
+        p.backAt = this.now() + 1500;
+        p.rev = this.bump(c);
+        c.pawns.set(name, p);
+      }
+      c.capFree -= now;
+      const why = now < body.count ? this.capReason(c) : null;
+      this.alert(
+        c,
+        'info',
+        `${body.count} pawn${body.count === 1 ? '' : 's'} joining${why ? ` (${body.count - now} wait: ${why})` : ''}.`,
+      );
+      return answer(why);
+    }
+    const p =
+      c.pawns.get(body.pawn) ??
+      [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === body.pawn.toLowerCase());
+    if (!p) throw Object.assign(new Error(`no pawn '${body.pawn}'`), { status: 404 });
+    if (p.p.leaving) return answer(null);
+    if (staying().length <= 1)
+      throw Object.assign(new Error("the last pawn can't be removed: release the colony instead"), { status: 400 });
+    this.drop(c, p);
+    p.p.leaving = true;
+    p.rev = this.bump(c);
+    c.wanted = Math.max(staying().length, (c.wanted ?? staying().length + 1) - 1);
+    for (const [k, b] of c.beds) if (b.pawn === p.p.name) c.beds.set(k, { ...b, pawn: null });
+    c.bedsRev = this.bump(c);
+    this.alert(c, 'info', `${p.p.display} is leaving the colony: its things go to storage first.`, p.p.name);
+    setTimeout(() => {
+      if (!c.pawns.delete(p.p.name)) return;
+      c.removed.push({ rev: this.bump(c), kind: 'pawns', key: p.p.name });
+      this.alert(c, 'info', `${p.p.display} left the colony.`);
+    }, 1500);
+    return answer(null);
   }
 
   /** Every target of a block tool in an area (capped). */
@@ -895,6 +1214,7 @@ export class StorySim {
           material: item.material,
           order,
           created: this.iso(),
+          materials: [],
         };
         c.builds.set(bid, { rev: this.bump(c), v: b });
         c.ghostCells.set(
@@ -904,6 +1224,7 @@ export class StorySim {
         ids.push(bid);
       }
       c.ghostsRev = this.bump(c);
+      this.plan(c);
       return { ok: true, ids, rev: c.rev };
     }
     const ids = body.ids.map(String);
@@ -918,6 +1239,7 @@ export class StorySim {
         b.order = i + 1;
         c.builds.set(b.id, { rev: this.bump(c), v: b });
       });
+      this.plan(c);
       return { ok: true, rev: c.rev };
     }
     for (const bid of ids) {
@@ -934,6 +1256,7 @@ export class StorySim {
       }
     }
     c.ghostsRev = this.bump(c);
+    this.plan(c);
     return { ok: true, rev: c.rev };
   }
 
@@ -1081,6 +1404,23 @@ export class StorySim {
     };
     let f: Fn<StoryWorkbench>;
     let newId: Key | undefined;
+    if (body.op !== 'add' && body.op !== 'reorder') {
+      const auto = [...c.benches.values()]
+        .flatMap((x) => x.v.bills)
+        .find((x) => String(x.id) === String(body.id) && (x.forBuild ?? null) !== null);
+      if (auto && body.op !== 'remove')
+        throw Object.assign(new Error(`an auto bill (for build ${auto.forBuild}) can only be cancelled`), {
+          status: 400,
+        });
+      if (auto) {
+        // Cancelled: that build waits for the item instead of crafting it.
+        const bf = c.builds.get(String(auto.forBuild)) ?? c.builds.get(auto.forBuild!);
+        if (bf && auto.forItem) {
+          bf.v.noCraft = [...(bf.v.noCraft ?? []), auto.forItem];
+          bf.rev = this.bump(c);
+        }
+      }
+    }
     switch (body.op) {
       case 'add': {
         f = benchAt(body.bench);
@@ -1141,7 +1481,238 @@ export class StorySim {
       }
     }
     f.rev = this.bump(c);
+    if (body.op === 'remove') this.plan(c);
     return { ok: true, ...(newId ? { id: newId } : {}), rev: c.rev };
+  }
+
+  // ------------------------------------------------------------------ builds craft what they need; designated benches; tiers
+
+  private hasBench(c: Colony, kind: string): boolean {
+    return [...c.benches.values()].some((f) => f.v.kind === kind);
+  }
+
+  /**
+   * The sim's materials pass (the bot's, simplified to one raw material per item): builds reserve stock in queue order; a
+   * shortfall with a recipe at a designated bench becomes an auto bill ("for build bN", count = what is still to make); a
+   * missing bench is made and placed near home when the colony allows it; what can't be made is short, with its raw material.
+   */
+  private plan(c: Colony): void {
+    const pool = new Map(c.stock);
+    const hasTable = this.hasBench(c, 'crafting_table');
+    const hasFurnace = this.hasBench(c, 'furnace');
+    const wants: Array<{ build: Key; item: string; recipe: string; n: number; bench: string }> = [];
+    for (const f of [...c.builds.values()].sort((a, b) => a.v.order - b.v.order)) {
+      const b = f.v;
+      if (b.status === 'done' || b.status === 'paused' || b.kind === 'remove') continue;
+      // What the build places: its ghosts' block (a fence's fence, a door's door), else its material.
+      const cells = (c.ghostCells.get(b.id) ?? []).filter((g) => g[3] !== 0);
+      const [mid, mmeta] = cells[0] ? [cells[0][3], cells[0][4]] : materialKey(b.material);
+      const left = cells.filter((g) => g[6] !== 'done').length;
+      const cat =
+        SIM_ARCHITECT.find((e) => e[5][0] === mid && e[5][1] === mmeta) ??
+        SIM_ARCHITECT.find((e) => e[4][0] === mid) ??
+        SIM_ARCHITECT.find((e) => e[5][0] === mid);
+      const key = cat ? `${cat[4][0]}:${cat[4][1]}` : `${mid}:${mmeta}`;
+      const have = Math.min(left, pool.get(key) ?? 0);
+      pool.set(key, (pool.get(key) ?? 0) - have);
+      const label = cat?.[1] ?? storyItemLabel(mid, mmeta);
+      const short0 = left - have;
+      let crafting = 0;
+      let via = 'none';
+      const chain: string[] = [];
+      const raw: string[] = [];
+      let station: StoryBuild['station'] = null;
+      if (short0 > 0 && cat && cat[7] && !(b.noCraft ?? []).includes(cat[0])) {
+        const [rid, rmeta] = cat[7].split(':').map(Number) as [number, number];
+        const smelt = cat[3] === 'furnace';
+        via = smelt ? 'smelt' : 'craft';
+        chain.push(
+          `${smelt ? 'smelt' : 'craft'} ${short0} ${label} from ${storyItemLabel(rid, rmeta)}${cat[3] === 'workbench' ? ' (table)' : ''}`,
+        );
+        const rawHave = pool.get(cat[7]) ?? 0;
+        const can = Math.min(short0, Math.floor(rawHave * cat[8]));
+        const needsTable = cat[3] === 'workbench' || cat[0] === 'glass_pane';
+        const benchOk = (!needsTable || hasTable) && (!smelt || hasFurnace);
+        if (can > 0) {
+          pool.set(cat[7], rawHave - Math.ceil(can / cat[8]));
+          crafting = can;
+          if (benchOk) {
+            const recipe = STORY_DEFAULT_RECIPES.find((r) => r.output[0] === cat[4][0])?.id ?? `craft:${cat[0]}`;
+            wants.push({ build: b.id, item: cat[0], recipe, n: can, bench: smelt ? 'furnace' : 'crafting_table' });
+          }
+        }
+        if (!benchOk && c.options.autoPlaceBenches)
+          station = { kind: !hasTable ? 'crafting_table' : 'furnace', pos: [c.home[0] + 2, c.home[1], c.home[2]] };
+        if (short0 - can > 0) raw.push(`${Math.ceil((short0 - can) / cat[8])} ${storyItemLabel(rid, rmeta)}`);
+      } else if (short0 > 0) raw.push(`${short0} ${label}`);
+      const mats: StoryBuildMaterial[] = left
+        ? [{ item: cat?.[0] ?? key, label, need: left, have, crafting, short: short0 - crafting, via, chain, raw }]
+        : [];
+      const status =
+        b.status === 'queued' || b.status === 'blocked' || b.status === 'waiting'
+          ? short0 === 0
+            ? 'queued'
+            : crafting > 0
+              ? 'waiting'
+              : 'blocked'
+          : b.status;
+      const reason =
+        short0 === 0
+          ? null
+          : crafting > 0
+            ? `waiting for ${crafting} ${label.toLowerCase()} (being crafted)`
+            : `need ${short0} ${label.toLowerCase()}`;
+      if (
+        JSON.stringify([mats, station, status, reason]) !==
+        JSON.stringify([b.materials, b.station ?? null, b.status, b.reason ?? null])
+      ) {
+        b.materials = mats;
+        b.station = station;
+        b.status = status;
+        b.reason = reason;
+        f.rev = this.bump(c);
+      }
+    }
+    // Auto bills follow the wants: targets track the shortfall, the rest go, new ones join the bench's front.
+    for (const f of c.benches.values()) {
+      let changed = false;
+      const kept: StoryBill[] = [];
+      for (const bill of f.v.bills) {
+        if ((bill.forBuild ?? null) === null) {
+          kept.push(bill);
+          continue;
+        }
+        const w = wants.find(
+          (x) => String(x.build) === String(bill.forBuild) && x.recipe === bill.recipe && x.bench === f.v.kind,
+        );
+        if (!w) {
+          changed = true;
+          continue;
+        }
+        wants.splice(wants.indexOf(w), 1);
+        if (bill.target !== bill.done + w.n) {
+          bill.target = bill.done + w.n;
+          changed = true;
+        }
+        kept.push(bill);
+      }
+      for (const w of wants.filter((x) => x.bench === f.v.kind)) {
+        kept.unshift({
+          id: `bill${c.seq++}`,
+          recipe: w.recipe,
+          mode: 'count',
+          target: w.n,
+          done: 0,
+          paused: false,
+          suspendedReason: null,
+          ingredients: { allow: ['*'], deny: [] },
+          radius: 256,
+          pawn: 'any',
+          minSkill: null,
+          store: 'best',
+          forBuild: w.build,
+          forItem: w.item,
+          step: 0,
+        });
+        changed = true;
+      }
+      for (let i = wants.length - 1; i >= 0; i--) if (wants[i]!.bench === f.v.kind) wants.splice(i, 1);
+      if (changed) {
+        f.v.bills = [
+          ...kept.filter((x) => (x.forBuild ?? null) !== null),
+          ...kept.filter((x) => (x.forBuild ?? null) === null),
+        ];
+        f.rev = this.bump(c);
+      }
+    }
+  }
+
+  /** POST …/workbenches: designate a placed bench as the colony's, or release it. */
+  workbenches(id: string, body: StoryWorkbenchesRequest): StoryWorkbenchesResponse {
+    const c = this.colony(id);
+    const k = keyOf(body.pos);
+    if (body.op === 'release') {
+      const f = c.benches.get(k);
+      if (!f) throw Object.assign(new Error("that workbench isn't the colony's"), { status: 400 });
+      c.benches.delete(k);
+      c.removed.push({ rev: this.bump(c), kind: 'workbenches', key: body.pos });
+      this.plan(c);
+      return { pos: body.pos, kind: f.v.kind, designated: false };
+    }
+    const have = c.benches.get(k);
+    if (have) return { pos: body.pos, kind: have.v.kind, designated: true };
+    const [bid] = this.opts.world.blockAt(body.pos[0], body.pos[1], body.pos[2]);
+    const kind = BENCH_KIND[bid];
+    if (!kind) throw Object.assign(new Error('no workbench there'), { status: 400 });
+    c.benches.set(k, {
+      rev: this.bump(c),
+      v: { pos: body.pos, kind, label: null, supported: kind === 'crafting_table' || kind === 'furnace', bills: [] },
+    });
+    this.plan(c);
+    return { pos: body.pos, kind, designated: true };
+  }
+
+  /** POST …/options. */
+  options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
+    const c = this.colony(id);
+    if (body.autoPlaceBenches === undefined && body.detectBenches === undefined)
+      throw Object.assign(new Error('autoPlaceBenches or detectBenches required'), { status: 400 });
+    if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
+    if (body.detectBenches !== undefined) c.options.detectBenches = body.detectBenches;
+    this.bump(c);
+    this.plan(c);
+    return { ...c.options };
+  }
+
+  /** GET …/architect: the sim catalog with tiers unlocked by the colony's designated benches. */
+  architect(id: string): StoryArchitectResponse {
+    const c = this.colony(id);
+    const table = this.hasBench(c, 'crafting_table');
+    const furnace = this.hasBench(c, 'furnace');
+    const entries: StoryArchitectEntry[] = SIM_ARCHITECT.map(
+      ([eid, label, tab, tier, item, material, kinds, rawKey, per]) => {
+        const needsTable = tier === 'workbench' || eid === 'glass_pane';
+        const reason =
+          needsTable && !table
+            ? 'Needs a crafting table — place one or designate an existing one'
+            : tier === 'furnace' && !furnace
+              ? 'Needs a furnace — place one or designate an existing one'
+              : null;
+        const have = c.stock.get(`${item[0]}:${item[1]}`) ?? 0;
+        const rawHave = rawKey ? (c.stock.get(rawKey) ?? 0) : 0;
+        const craftable = have > 0 || !rawKey ? 0 : Math.min(64, Math.floor(rawHave * per));
+        const [rid, rmeta] = rawKey ? (rawKey.split(':').map(Number) as [number, number]) : [0, 0];
+        return {
+          id: eid,
+          label,
+          tab,
+          tier,
+          unlocked: reason === null,
+          reason,
+          item,
+          material,
+          kind: kinds[0]!,
+          kinds,
+          chain: rawKey
+            ? [`${tier === 'furnace' ? 'smelt' : 'craft'} ${label} from ${storyItemLabel(rid, rmeta)}`]
+            : [],
+          have,
+          craftable,
+          from: rawKey && craftable > 0 ? [`${Math.max(1, Math.ceil(1 / per))} ${storyItemLabel(rid, rmeta)}`] : [],
+          short:
+            have > 0 || craftable > 0
+              ? []
+              : rawKey
+                ? [`${Math.max(1, Math.ceil(1 / per))} ${storyItemLabel(rid, rmeta)}`]
+                : [`1 ${label}`],
+        };
+      },
+    );
+    return {
+      entries,
+      benches: { crafting_table: table ? 1 : 0, furnace: furnace ? 1 : 0 },
+      tabs: ['structure', 'furniture', 'production', 'storage', 'lighting', 'misc'],
+    };
   }
 
   /** Every directive of every colony (newest last). */
@@ -1190,6 +1761,7 @@ export class StorySim {
       if (c.released) continue;
       const before = c.rev;
       c.tod = (c.tod + dtMs / 50) % 24000;
+      if (c.builds.size) this.plan(c); // stock and ghosts move: the builds' materials and auto bills follow
       for (const p of c.pawns.values()) {
         if (p.p.online) continue;
         // An offline pawn comes back when its re-add / login is through (backAt); one waiting for a seat stays out.

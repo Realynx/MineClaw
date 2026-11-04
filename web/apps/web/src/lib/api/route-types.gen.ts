@@ -71,6 +71,8 @@ export interface RouteTypes {
   'world.overlays': { params: never; query: z.input<typeof C.DimQuery>; body: never; response: z.output<typeof C.WorldOverlays> };
   'world.blocks': { params: never; query: z.input<typeof C.WorldBlocksQuery>; body: never; response: z.output<typeof C.WorldBlockDeltas> };
   'world.blockEntities': { params: never; query: z.input<typeof C.WorldBlockEntitiesQuery>; body: never; response: z.output<typeof C.WorldBlockEntities> };
+  'world.container': { params: never; query: z.input<typeof C.ContainerQuery>; body: never; response: z.output<typeof C.ContainerView> };
+  'world.containers': { params: never; query: z.input<typeof C.ContainerBoxQuery>; body: never; response: z.output<typeof C.ContainerList> };
   'bots.tile': { params: z.input<typeof C.BotParams>; query: z.input<typeof C.TileQuery>; body: never; response: never };
   'bots.now': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BotNow> };
   'bots.inventory': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BodyInventory> };
@@ -99,6 +101,7 @@ export interface RouteTypes {
   'story.release': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.resume': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.online': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryOnlineRequest>; response: z.output<typeof C.StoryOnlineResponse> };
+  'story.pawns': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPawnsRequest>; response: z.output<typeof C.StoryPawnsResponse> };
   'story.pause': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPauseRequest>; response: z.output<typeof C.StoryAck> };
   'story.home': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryHomeRequest>; response: z.output<typeof C.StoryHomeResponse> };
   'story.beds': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBedsRequest>; response: z.output<typeof C.StoryBedsResponse> };
@@ -111,6 +114,9 @@ export interface RouteTypes {
   'story.builds': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBuildRequest>; response: z.output<typeof C.StoryBuildResponse> };
   'story.storage': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryStorageRequest>; response: z.output<typeof C.StoryStorageResponse> };
   'story.bills': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBillsRequest>; response: z.output<typeof C.StoryBillsResponse> };
+  'story.workbenches': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryWorkbenchesRequest>; response: z.output<typeof C.StoryWorkbenchesResponse> };
+  'story.options': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryOptionsRequest>; response: z.output<typeof C.StoryColonyOptions> };
+  'story.architect': { params: z.input<typeof C.StoryColonyParams>; query: never; body: never; response: z.output<typeof C.StoryArchitectResponse> };
   'live.stream': { params: never; query: z.input<typeof C.LiveStreamQuery>; body: never; response: never };
   'designer.models': { params: never; query: never; body: never; response: z.output<typeof C.DesignerModelsResponse> };
   'designer.create': { params: never; query: never; body: z.input<typeof C.DesignerCreateRequest>; response: z.output<typeof C.DesignerSession> };

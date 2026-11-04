@@ -203,6 +203,12 @@ export const StoryAck = z.object({
     .array(z.union([z.string(), z.number()]))
     .nullish()
     .describe('zones remove: the zones removed'),
+  warnings: z
+    .array(z.string())
+    .nullish()
+    .describe('zones add/update (growing zones): what slows it, e.g. no water near'),
+  count: z.number().int().nullish().describe('zones seek_seeds: the tall grass designated (or seeds billed)'),
+  kind: z.string().nullish().describe('zones seek_seeds: cut | bill'),
 });
 export type StoryAck = z.infer<typeof StoryAck>;
 
@@ -282,6 +288,7 @@ export const StoryPawn = z.object({
   dim: z.number().int().nullish(),
   drafted: z.boolean().nullish(),
   state: z.string().nullish().describe(STORY_PAWN_STATES.join(' | ')),
+  leaving: z.boolean().nullish().describe('removed from the colony: storing its things, then it logs out'),
   offlineReason: z
     .string()
     .nullish()
@@ -306,8 +313,39 @@ export const StoryZone = z.object({
   /** The zone's name (the bot's field; houses are named home zones). */
   name: z.string().nullish(),
   label: z.string().nullish(),
+  /** A growing zone (kind `farm`): the plant it grows (a `plants` id; null = ripe crops and bare farmland only). */
+  plant: z.string().nullish(),
+  sow: z.boolean().nullish().describe('pawns till and sow it'),
+  harvest: z.boolean().nullish().describe('pawns harvest what is ripe'),
+  status: z.string().nullish().describe('a growing zone: "12/40 sown, 6 ripe"'),
+  seeds: z.lazy(() => StoryZoneSeeds).nullish(),
+  needsHoe: z.boolean().nullish().describe('there is dirt to till and no hoe anywhere'),
 });
 export type StoryZone = z.infer<typeof StoryZone>;
+
+/** A growing zone's seeds: what is sown, how many the colony has, how many empty cells wait, and where they come from. */
+export const StoryZoneSeeds = z.object({
+  item: z.string(),
+  have: z.number().int().default(0),
+  neededForEmpty: z.number().int().default(0),
+  sourceHint: z.string().nullish(),
+  missing: z.string().nullish().describe('null = there are seeds (or nothing to sow)'),
+  action: z.enum(['seek_seeds', 'craft_seeds']).nullish().describe('what the zone can do about it (explicit)'),
+});
+export type StoryZoneSeeds = z.infer<typeof StoryZoneSeeds>;
+
+/** What a growing zone can grow in this version (`plants` in the full state). */
+export const StoryPlant = z.object({
+  id: z.string(),
+  label: z.string(),
+  block: z.number().int().nullish(),
+  seed: z.string().describe('the item that is sown'),
+  seedItem: z.tuple([z.number().int(), z.number().int()]).nullish().describe('[id, meta]'),
+  soil: z.string().describe('farmland | sand | soul_sand | dirt | cane'),
+  harvest: z.string().describe('crop | fruit | stalk | tree'),
+  source: z.string().nullish(),
+});
+export type StoryPlant = z.infer<typeof StoryPlant>;
 
 /**
  * One designated target. The director writes `target` ([x,y,z] or {entity}) and `blocks` (a tree's logs); the mocks also send
@@ -368,17 +406,45 @@ export const StoryAlert = z.object({
 });
 export type StoryAlert = z.infer<typeof StoryAlert>;
 
+/**
+ * One item a build still needs (the director's materials pass, in queue order): `have` = what the colony has for it (reserved
+ * for this build), `crafting` = what its auto bills are making, `short` = what can't be made from what there is (`raw` says
+ * which raw materials are missing). `via`: craft | smelt (the chain has a furnace step) | none (no recipe, or its crafting was
+ * cancelled). `chain` = the recipe steps, ingredients first.
+ */
+export const StoryBuildMaterial = z.object({
+  item: z.string(),
+  label: z.string().nullish(),
+  need: z.number().int(),
+  have: z.number().int().default(0),
+  crafting: z.number().int().default(0),
+  short: z.number().int().default(0),
+  via: z.string().default('none').describe('craft | smelt | none'),
+  chain: z.array(z.string()).default([]),
+  raw: z.array(z.string()).default([]).describe('raw materials short, e.g. "6 Wood"'),
+});
+export type StoryBuildMaterial = z.infer<typeof StoryBuildMaterial>;
+
 export const StoryBuild = z.object({
   id: z.union([z.string(), z.number()]),
   kind: z.string(),
   label: z.string(),
-  status: z.string().describe('queued | active | paused | blocked | done'),
+  status: z.string().describe('queued | active | waiting (its materials are being crafted) | paused | blocked | done'),
   reason: z.string().nullish(),
   blocksTotal: z.number().int().default(0),
   blocksDone: z.number().int().default(0),
   material: StoryMaterial.nullish(),
   order: z.number().int().default(0),
   created: When.nullish(),
+  materials: z.array(StoryBuildMaterial).default([]),
+  noCraft: z
+    .array(z.string())
+    .nullish()
+    .describe('items whose auto-crafting the owner cancelled: the build waits for them'),
+  station: z
+    .object({ kind: z.string(), pos: Vec3i })
+    .nullish()
+    .describe('a bench the colony is making and placing for this build'),
 });
 export type StoryBuild = z.infer<typeof StoryBuild>;
 
@@ -463,6 +529,12 @@ export const StoryBill = z.object({
   pawn: z.string().default('any').describe('"any" or a pawn name'),
   minSkill: z.number().int().nullish(),
   store: z.union([z.literal('best'), z.object({ chest: Vec3i })]).default('best'),
+  forBuild: z
+    .union([z.string(), z.number()])
+    .nullish()
+    .describe('an auto bill: the build it crafts for (cancel-only; it follows the build)'),
+  forItem: z.string().nullish().describe("an auto bill: the build's item its chain ends in"),
+  step: z.number().int().nullish().describe("an auto bill's place in the recipe chain (ingredients first)"),
 });
 export type StoryBill = z.infer<typeof StoryBill>;
 
@@ -592,6 +664,7 @@ export const StoryColonyState = z.object({
   since: z.number().int().nullish(),
   active: z.boolean().nullish(),
   tieBreak: z.string().nullish().describe('column | skill: equal priorities go by column order or by skill'),
+  options: z.lazy(() => StoryColonyOptions).nullish(),
   version: z.union([z.string(), z.number()]).nullish(),
   timeOfDay: z.number().nullish().describe('world ticks 0..24000'),
   hour: z.number().int().nullish().describe('0..23, 0 = 06:00'),
@@ -601,6 +674,7 @@ export const StoryColonyState = z.object({
   pawns: z.array(StoryPawn).default([]),
   seats: z.lazy(() => StorySeats).nullish(),
   zones: z.array(StoryZone).default([]),
+  plants: z.array(StoryPlant).nullish().describe('what growing zones can grow here (full state only)'),
   designations: z.array(StoryDesignation).default([]),
   orders: z.array(StoryOrder).default([]),
   alerts: z.array(StoryAlert).default([]),
@@ -633,8 +707,25 @@ export const StorySeats = z.object({
   wanted: z.number().int().default(0),
   capFree: z.number().int().nullish(),
   keptForRegulars: z.number().int().nullish(),
+  pending: z.number().int().nullish().describe('pawns added that are not here yet ("joining…")'),
 });
 export type StorySeats = z.infer<typeof StorySeats>;
+
+/** POST /api/story/colonies/{id}/pawns: + one or more pawns (as seats allow; the rest join later), or − one pawn. */
+export const StoryPawnsRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('add'), count: z.number().int().min(1).max(12) }).strict(),
+  z.object({ op: z.literal('remove'), pawn: z.string().min(1).max(64) }).strict(),
+]);
+export type StoryPawnsRequest = z.infer<typeof StoryPawnsRequest>;
+
+export const StoryPawnsResponse = z.object({
+  pawns: z.array(z.string()).default([]),
+  wanted: z.number().int(),
+  pending: z.array(z.object({ reason: z.string() })).default([]),
+  leaving: z.array(z.string()).default([]),
+  blocked: z.array(z.object({ reason: z.string() })).default([]),
+});
+export type StoryPawnsResponse = z.infer<typeof StoryPawnsResponse>;
 
 /**
  * POST /api/story/colonies/{id}/online: bring offline pawns in now (`pawns: null` = every offline pawn). `overCap` is the
@@ -733,9 +824,13 @@ export const StoryOrderRequest = z
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
 /** `remove` without a kind removes every zone overlapping the area. */
+const ZoneId = z.union([z.string().min(1).max(64), z.number().int()]);
+
 /**
  * Zones (houses are zones of kind `home`: any number, each with its own name): `add` an area (optionally named), `remove`
- * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it).
+ * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it). A growing zone
+ * (kind `farm`) takes a `plant` (from `plants`), `sow` and `harvest`; `update` changes them; `seek_seeds` designates tall grass to
+ * cut (wheat) or queues a seed bill (pumpkin, melon).
  */
 export const StoryZoneRequest = z.union([
   z
@@ -744,8 +839,21 @@ export const StoryZoneRequest = z.union([
       kind: StoryZoneKind.optional(),
       area: StoryArea,
       name: z.string().trim().max(40).optional(),
+      plant: z.string().min(1).max(32).optional(),
+      sow: z.boolean().optional(),
+      harvest: z.boolean().optional(),
     })
     .strict(),
+  z
+    .object({
+      op: z.literal('update'),
+      id: ZoneId,
+      plant: z.string().max(32).nullable().optional(),
+      sow: z.boolean().optional(),
+      harvest: z.boolean().optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal('seek_seeds'), id: ZoneId }).strict(),
   z.object({ op: z.literal('remove'), kind: StoryZoneKind.optional(), area: StoryArea }).strict(),
   z.object({ op: z.literal('remove'), id: z.union([z.string().min(1).max(64), z.number().int()]) }).strict(),
   z
@@ -952,6 +1060,65 @@ export const StoryBillsResponse = z.object({
   rev: z.number().int().nullish(),
 });
 export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;
+
+/**
+ * POST /api/story/colonies/{id}/workbenches: the owner marks a placed crafting table / furnace (any bench kind) as the
+ * colony's (`designate`) or gives it back (`release`). Only designated benches take bills and unlock the Architect's tiers.
+ */
+export const StoryWorkbenchesRequest = z.object({ op: z.enum(['designate', 'release']), pos: Vec3i }).strict();
+export type StoryWorkbenchesRequest = z.infer<typeof StoryWorkbenchesRequest>;
+export const StoryWorkbenchesResponse = z.object({ pos: Vec3i, kind: z.string(), designated: z.boolean() });
+export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
+
+/** The colony's options: auto-placing a bench a build needs (default on), detecting benches near home (default off). */
+export const StoryColonyOptions = z.object({
+  autoPlaceBenches: z.boolean().default(true),
+  detectBenches: z.boolean().default(false),
+});
+export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
+/** POST /api/story/colonies/{id}/options: either or both flags. */
+export const StoryOptionsRequest = z
+  .object({ autoPlaceBenches: z.boolean().optional(), detectBenches: z.boolean().optional() })
+  .strict()
+  .describe('either or both (the bot answers 400 for neither)');
+export type StoryOptionsRequest = z.infer<typeof StoryOptionsRequest>;
+
+export const STORY_ARCHITECT_TABS = ['structure', 'furniture', 'production', 'storage', 'lighting', 'misc'] as const;
+export const STORY_TIERS = ['gathered', 'hand', 'workbench', 'furnace'] as const;
+
+/**
+ * One Architect placeable: its tab and tier (gathered = no recipe; hand = a pawn's 2×2 grid; workbench = a crafting table;
+ * furnace = a furnace step in its chain), whether the colony unlocked it (a designated bench of that tier), and the colony's
+ * stock: `have` (unreserved), `craftable` now from unreserved stock (max 64), `from` (what one takes), `short` (raw missing
+ * for one, when neither). `material` is the block it places ([id, meta]: the build item's material), `kind` the default
+ * build tool, `kinds` every tool it fits.
+ */
+export const StoryArchitectEntry = z.object({
+  id: z.string(),
+  label: z.string(),
+  tab: z.string(),
+  tier: z.string().describe('gathered | hand | workbench | furnace'),
+  unlocked: z.boolean(),
+  reason: z.string().nullish(),
+  item: StoryItemKey,
+  material: StoryItemKey,
+  kind: z.string(),
+  kinds: z.array(z.string()).default([]),
+  chain: z.array(z.string()).default([]),
+  have: z.number().int().default(0),
+  craftable: z.number().int().default(0),
+  from: z.array(z.string()).default([]),
+  short: z.array(z.string()).default([]),
+});
+export type StoryArchitectEntry = z.infer<typeof StoryArchitectEntry>;
+
+/** GET /api/story/colonies/{id}/architect. */
+export const StoryArchitectResponse = z.object({
+  entries: z.array(StoryArchitectEntry).default([]),
+  benches: z.record(z.string(), z.number().int()).default({}),
+  tabs: z.array(z.string()).default([...STORY_ARCHITECT_TABS]),
+});
+export type StoryArchitectResponse = z.infer<typeof StoryArchitectResponse>;
 
 /**
  * POST /api/story/directives: the same payload a colony tool sends the director, addressed to AI bodies (they work it out

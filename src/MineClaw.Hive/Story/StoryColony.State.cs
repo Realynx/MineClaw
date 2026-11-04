@@ -23,6 +23,7 @@ public sealed partial class StoryColony
     {
         lock (_lock)
         {
+            EnsureMaterials(); // builds' materials and auto bills current (it may stamp a new revision: before "rev")
             long s = since ?? -1;
             bool full = since == null;
             bool New(long rev) => full || rev > s;
@@ -31,14 +32,11 @@ public sealed partial class StoryColony
             var o = new JsonObject
             {
                 ["id"] = Id, ["rev"] = _rev, ["since"] = since, ["full"] = full, ["at"] = Now, ["time_of_day"] = w?.TimeOfDay, ["hour"] = hour,
-                ["paused"] = Meta.Paused, ["active"] = Meta.Active, ["home"] = Home()?.Json(), ["tie_break"] = Meta.TieBreak,
+                ["paused"] = Meta.Paused, ["active"] = Meta.Active, ["home"] = Home()?.Json(), ["tie_break"] = Meta.TieBreak, ["options"] = OptionsJson(),
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
-                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev)).Select(z => (JsonNode)new JsonObject
-                {
-                    ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(), ["name"] = z.Name,
-                }).ToArray()),
+                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),
@@ -50,6 +48,9 @@ public sealed partial class StoryColony
                 {
                     ["id"] = b.Id, ["kind"] = b.Kind, ["label"] = b.Label, ["status"] = b.Status, ["reason"] = b.Reason, ["blocks_total"] = b.BlocksTotal,
                     ["blocks_done"] = b.BlocksDone, ["material"] = b.Material, ["order"] = b.Order, ["created"] = b.Created,
+                    ["materials"] = new JsonArray(b.Materials.Select(m => (JsonNode)m.Json()).ToArray()),
+                    ["no_craft"] = new JsonArray(b.NoCraft.Select(n => (JsonNode)n!).ToArray()),
+                    ["station"] = _station is { } st && st.Build == b.Id ? new JsonObject { ["kind"] = st.Kind, ["pos"] = st.Spot.Json() } : null,
                 }).ToArray()),
                 ["ghosts"] = new JsonObject
                 {
@@ -75,11 +76,12 @@ public sealed partial class StoryColony
                 }).ToArray()),
             };
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
+            if (full && w != null) o["plants"] = StoryPlants.Json(w.Data); // what growing zones can grow here
             if (!full)
             {
                 var removed = new JsonObject();
                 foreach (var g in _removed.Where(r => r.Rev > s).GroupBy(r => r.Kind))
-                    removed[g.Key + "s"] = new JsonArray(g.Select(r => (JsonNode)r.Id!).ToArray());
+                    removed[g.Key == "workbench" ? "workbenches" : g.Key + "s"] =new JsonArray(g.Select(r => (JsonNode)r.Id!).ToArray());
                 o["removed"] = removed;
             }
             return o;
@@ -97,6 +99,7 @@ public sealed partial class StoryColony
             ["name"] = p.Name, ["display"] = p.Display, ["kind"] = "pawn", ["online"] = live.Online, ["hp"] = live.Hp, ["food"] = live.Food,
             ["pos"] = new JsonArray(Math.Round(live.X, 2), Math.Round(live.Y, 2), Math.Round(live.Z, 2)), ["dim"] = live.Dim, ["drafted"] = p.Drafted,
             ["state"] = state,
+            ["leaving"] = _leaving.ContainsKey(p.Name),
             ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {
@@ -127,6 +130,7 @@ public sealed partial class StoryColony
         {
             ["online"] = Pawns.Values.Count(p => Host.Live(p.Name).Online),
             ["wanted"] = Math.Max(Meta.Wanted, Pawns.Count),
+            ["pending"] = Math.Max(0, Meta.Wanted - Pawns.Keys.Count(k => !_leaving.ContainsKey(k))), // asked for, not here yet ("joining…")
             ["cap_free"] = s?.Free, ["kept_for_regulars"] = s?.Kept,
         };
     }
@@ -157,5 +161,6 @@ public sealed partial class StoryColony
             ["deny"] = new JsonArray(b.Ingredients.Deny.Select(a => (JsonNode)a!).ToArray()),
         },
         ["radius"] = b.Radius, ["pawn"] = b.Pawn, ["min_skill"] = b.MinSkill, ["store"] = b.Store?.DeepClone(),
+        ["for_build"] = b.ForBuild, ["for_item"] = b.ForItem, ["step"] = b.ForBuild != null ? b.Step : null,
     };
 }

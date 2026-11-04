@@ -56,7 +56,13 @@ interface MockUser {
 }
 
 const USERS: MockUser[] = [
-  { username: 'fox', password: 'fox', player: 'poofimafox', roles: ['viewer', 'chat', 'commands', 'admin'], totp: '123456' },
+  {
+    username: 'fox',
+    password: 'fox',
+    player: 'poofimafox',
+    roles: ['viewer', 'chat', 'commands', 'admin'],
+    totp: '123456',
+  },
   { username: 'robin', password: 'robin', player: 'kiwi', roles: ['viewer', 'chat'], totp: null },
   { username: 'guest', password: 'guest', player: null, roles: ['viewer'], totp: null },
 ];
@@ -208,7 +214,8 @@ function adminCall<T>(f: () => T): T {
   try {
     return f();
   } catch (e) {
-    if (e instanceof admin.AdminMockError) throw new MockError(e.status, e.message, e.code, e.details ? { details: e.details } : {});
+    if (e instanceof admin.AdminMockError)
+      throw new MockError(e.status, e.message, e.code, e.details ? { details: e.details } : {});
     throw e;
   }
 }
@@ -245,7 +252,10 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     if (users().length === 0) throw new MockError(409, 'first-run setup is not complete; open /setup', 'conflict');
     const u = users().find((x) => x.username === b.username && x.password === b.password);
     if (!u) throw new MockError(401, 'Invalid credentials', 'unauthorized');
-    if (u.totp && !b.totp) throw new MockError(401, 'Enter the code from your authenticator', 'unauthorized', { details: [{ path: 'totp', message: 'required' }] });
+    if (u.totp && !b.totp)
+      throw new MockError(401, 'Enter the code from your authenticator', 'unauthorized', {
+        details: [{ path: 'totp', message: 'required' }],
+      });
     if (u.totp && b.totp !== u.totp) throw new MockError(401, 'Invalid credentials', 'unauthorized');
     writeSession({ username: u.username, created: Date.now() });
     writeStepUp(null);
@@ -261,14 +271,20 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'auth.me': () => me(),
   'auth.totpEnroll': ({ body }) => {
     const u = users().find((x) => x.username === me()?.username);
-    if (!u || u.password !== (body as { password: string }).password) throw new MockError(401, 'Invalid credentials', 'unauthorized');
-    return { otpauthUrl: `otpauth://totp/MineClaw:${u.username}?secret=JBSWY3DPEHPK3PXP&issuer=MineClaw`, secret: 'JBSWY3DPEHPK3PXP', expiresAt: iso(Date.now() + 600_000) };
+    if (!u || u.password !== (body as { password: string }).password)
+      throw new MockError(401, 'Invalid credentials', 'unauthorized');
+    return {
+      otpauthUrl: `otpauth://totp/MineClaw:${u.username}?secret=JBSWY3DPEHPK3PXP&issuer=MineClaw`,
+      secret: 'JBSWY3DPEHPK3PXP',
+      expiresAt: iso(Date.now() + 600_000),
+    };
   },
   'auth.totpVerify': ({ body }) => {
     const list = users();
     const u = list.find((x) => x.username === me()?.username);
     if (!u) throw new MockError(401, 'Not signed in', 'unauthorized');
-    if ((body as { code: string }).code !== '123456') throw new MockError(400, 'That code did not match', 'bad_request');
+    if ((body as { code: string }).code !== '123456')
+      throw new MockError(400, 'That code did not match', 'bad_request');
     u.totp = '123456';
     persistUsers(list);
     return { ok: true, totpEnrolled: true };
@@ -277,7 +293,9 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     const b = body as { code?: string; password?: string };
     const u = users().find((x) => x.username === me()?.username);
     if (!u) throw new MockError(401, 'Not signed in', 'unauthorized');
-    const ok = u.totp ? b.code !== undefined && b.code === u.totp : b.password !== undefined && b.password === u.password;
+    const ok = u.totp
+      ? b.code !== undefined && b.code === u.totp
+      : b.password !== undefined && b.password === u.password;
     if (!ok) throw new MockError(401, 'invalid credentials', 'unauthorized');
     mockStepUp(true);
     return { ok: true, stepUpUntil: iso(readStepUp()!) };
@@ -311,12 +329,29 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
       elapsedMs: 38 + q.length,
       hits,
       treeHits: hits.slice(0, 5).flatMap((h, i) => [
-        { list: 'collapsed' as const, index: h.raptorLeaf ?? 0, layer: 0, score: 0.81 - i * 0.03, preview: h.snippet.slice(0, 80) },
-        { list: 'traversal' as const, index: h.raptorPath[1]?.index ?? 0, layer: h.raptorPath[1]?.layer ?? 2, score: 0.74 - i * 0.04, preview: h.raptorPath[1]?.label ?? '' },
+        {
+          list: 'collapsed' as const,
+          index: h.raptorLeaf ?? 0,
+          layer: 0,
+          score: 0.81 - i * 0.03,
+          preview: h.snippet.slice(0, 80),
+        },
+        {
+          list: 'traversal' as const,
+          index: h.raptorPath[1]?.index ?? 0,
+          layer: h.raptorPath[1]?.layer ?? 2,
+          score: 0.74 - i * 0.04,
+          preview: h.raptorPath[1]?.label ?? '',
+        },
       ]),
     };
   },
-  'raptor.graph': ({ query }) => raptor.graph(query.layout as never, query.colorBy as never, query.focus === undefined ? undefined : num(query.focus)),
+  'raptor.graph': ({ query }) =>
+    raptor.graph(
+      query.layout as never,
+      query.colorBy as never,
+      query.focus === undefined ? undefined : num(query.focus),
+    ),
   'raptor.leaves': ({ params }) => raptor.leavesResponse(num(params.id)),
   'raptor.node': ({ params }) => {
     const d = raptor.nodeDetail(num(params.id)) ?? cloud.extraDetail(num(params.id));
@@ -330,12 +365,16 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     const name = (body as { name: string }).name.replace(/[^a-z0-9-]+/gi, '-').toLowerCase();
     const bytes = new Uint8Array([0x50, 0x4b, 0x05, 0x06, ...new Array<number>(18).fill(0)]);
     return new Response(bytes, {
-      headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${name}-20261102-1015.mcshard"` },
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${name}-20261102-1015.mcshard"`,
+      },
     });
   },
   'shards.importPreview': () => misc.importPreview(),
   'scripts.list': ({ query }) => ({ at: nowIso(), source: query.source, scripts: scripts.library() }),
-  'scripts.diff': ({ params, query }) => scripts.diff(String(params.name), num(query.a), num(query.b), num(query.context)),
+  'scripts.diff': ({ params, query }) =>
+    scripts.diff(String(params.name), num(query.a), num(query.b), num(query.context)),
   'scripts.lint': ({ params, query }) => {
     const l = scripts.lint(String(params.name), query.v === undefined ? undefined : num(query.v));
     if (!l) throw new MockError(404, 'No such script', 'not_found');
@@ -348,10 +387,16 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
   'designs.list': ({ query }) => misc.designList(query.q as string | undefined),
   'designs.picture': ({ params }) =>
-    new Response(blockSheetSvg(num(params.id), 640, 400, `design #${String(params.id)}`), { headers: { 'Content-Type': 'image/svg+xml' } }),
+    new Response(blockSheetSvg(num(params.id), 640, 400, `design #${String(params.id)}`), {
+      headers: { 'Content-Type': 'image/svg+xml' },
+    }),
   'designs.diff': ({ params, query }) => {
     const d = misc.designDetail(num(params.id));
-    return misc.designDiff(num(params.id), (query.a as string | undefined) ?? d?.defaultDiff.a ?? '1', (query.b as string | undefined) ?? d?.defaultDiff.b ?? '2');
+    return misc.designDiff(
+      num(params.id),
+      (query.a as string | undefined) ?? d?.defaultDiff.a ?? '1',
+      (query.b as string | undefined) ?? d?.defaultDiff.b ?? '2',
+    );
   },
   'designs.get': ({ params }) => {
     const d = misc.designDetail(num(params.id));
@@ -361,14 +406,22 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
 
   // The Design Studio: the shared fake designer (a little house, a door, a roof) over an in-memory canvas.
   'designer.models': () => designer.models(),
-  'designer.create': ({ body }) => designer.create(body as Parameters<typeof designer.create>[0], me()?.player ?? me()?.username ?? 'poofimafox'),
-  'designer.version': ({ params, body }) => designer.version(num(params.id), body as Parameters<typeof designer.version>[1]),
+  'designer.create': ({ body }) =>
+    designer.create(body as Parameters<typeof designer.create>[0], me()?.player ?? me()?.username ?? 'poofimafox'),
+  'designer.version': ({ params, body }) =>
+    designer.version(num(params.id), body as Parameters<typeof designer.version>[1]),
   'designer.get': ({ params }) => designer.get(num(params.id)),
-  'designer.message': ({ params, body }) => designer.message(num(params.id), body as Parameters<typeof designer.message>[1]),
-  'designer.canvas': ({ params, body }) => designer.canvas(num(params.id), body as Parameters<typeof designer.canvas>[1]),
+  'designer.message': ({ params, body }) =>
+    designer.message(num(params.id), body as Parameters<typeof designer.message>[1]),
+  'designer.canvas': ({ params, body }) =>
+    designer.canvas(num(params.id), body as Parameters<typeof designer.canvas>[1]),
   'designer.save': ({ params, body }) => {
     try {
-      return designer.save(num(params.id), body as Parameters<typeof designer.save>[1], me()?.player ?? me()?.username ?? 'poofimafox');
+      return designer.save(
+        num(params.id),
+        body as Parameters<typeof designer.save>[1],
+        me()?.player ?? me()?.username ?? 'poofimafox',
+      );
     } catch (e) {
       throw new MockError(400, e instanceof Error ? e.message : 'save failed', 'bad_request');
     }
@@ -386,7 +439,8 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'admin.schema': () => misc.editSchema,
   'admin.memoryEdit': ({ body }) => {
     const b = body as { op: string; kind: string; id?: string; fields: Record<string, string | null> };
-    if (b.op !== 'add' && b.id === '999') throw new MockError(400, 'refused', undefined, { ok: false, message: 'refused: id not found' });
+    if (b.op !== 'add' && b.id === '999')
+      throw new MockError(400, 'refused', undefined, { ok: false, message: 'refused: id not found' });
     return {
       ok: true,
       message: `${b.op === 'add' ? 'Added' : b.op === 'delete' ? 'Deleted' : 'Updated'} ${b.kind}${b.id ? ` ${b.id}` : ''}`,
@@ -399,8 +453,24 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'admin.rebuildEstimate': ({ body }) => {
     const b = body as { scope: string; kind?: string };
     return b.kind === 'lesson'
-      ? { summaries: 0, inputTokens: 0, outputTokens: 0, embeddingTokens: 0, usd: 0, model: 'claude-haiku-5-5', note: 'nothing is dirty' }
-      : { summaries: 6, inputTokens: 18400, outputTokens: 1300, embeddingTokens: 900, usd: 0.034, model: 'claude-haiku-5-5', note: '6 summaries in 2 sections' };
+      ? {
+          summaries: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          embeddingTokens: 0,
+          usd: 0,
+          model: 'claude-haiku-5-5',
+          note: 'nothing is dirty',
+        }
+      : {
+          summaries: 6,
+          inputTokens: 18400,
+          outputTokens: 1300,
+          embeddingTokens: 900,
+          usd: 0.034,
+          model: 'claude-haiku-5-5',
+          note: '6 summaries in 2 sections',
+        };
   },
   'admin.rebuildStart': () => {
     const id = `job-${Date.now().toString(36)}`;
@@ -455,7 +525,21 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
 
   'bots.list': () => ({
     at: nowIso(),
-    bots: live.BOTS.map((b) => ({ name: b.name, short: b.short, main: b.main, dim: b.dim, x: b.pos[0], y: b.pos[1], z: b.pos[2], hp: b.hp, food: b.food, job: b.task, brain: b.brain, ageSeconds: 0.4, claims: b.claims })),
+    bots: live.BOTS.map((b) => ({
+      name: b.name,
+      short: b.short,
+      main: b.main,
+      dim: b.dim,
+      x: b.pos[0],
+      y: b.pos[1],
+      z: b.pos[2],
+      hp: b.hp,
+      food: b.food,
+      job: b.task,
+      brain: b.brain,
+      ageSeconds: 0.4,
+      claims: b.claims,
+    })),
   }),
   'hive.tree': () => live.hiveTree(),
   status: ({ query }) => live.statusResponse(query.bot as string | undefined),
@@ -477,7 +561,28 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'world.entities': ({ query }) => live.entitiesSince(query.since === undefined ? undefined : num(query.since)),
   'world.overlays': ({ query }) => live.overlays(num(query.dim)),
   'world.blockEntities': () => ({ columns: [] }),
-  'world.blocks': ({ query }) => ({ at: Date.now(), rev: Math.max(1, num(query.since)), full: num(query.since) === 0, more: false, blocks: {}, columns: [] }),
+  'world.container': ({ query }) => live.container(num(query.dim), num(query.x), num(query.y), num(query.z)),
+  'world.containers': ({ query }) =>
+    live.containers(
+      num(query.dim),
+      {
+        x0: num(query.x0),
+        z0: num(query.z0),
+        x1: num(query.x1),
+        z1: num(query.z1),
+        ...(query.y0 === undefined ? {} : { y0: num(query.y0) }),
+        ...(query.y1 === undefined ? {} : { y1: num(query.y1) }),
+      },
+      query.limit === undefined ? undefined : num(query.limit),
+    ),
+  'world.blocks': ({ query }) => ({
+    at: Date.now(),
+    rev: Math.max(1, num(query.since)),
+    full: num(query.since) === 0,
+    more: false,
+    blocks: {},
+    columns: [],
+  }),
   'bots.tile': () => {
     throw new MockError(410, 'Server tiles are not used by this client', 'not_found');
   },
@@ -500,7 +605,13 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     while (chatTimes.length && now - chatTimes[0]! > 10_000) chatTimes.shift();
     if (chatTimes.length >= 5) {
       const wait = 10_000 - (now - chatTimes[0]!);
-      throw new MockError(429, 'Slow down a little', 'rate_limited', { retryAfterMs: wait }, { 'Retry-After': String(Math.ceil(wait / 1000)) });
+      throw new MockError(
+        429,
+        'Slow down a little',
+        'rate_limited',
+        { retryAfterMs: wait },
+        { 'Retry-After': String(Math.ceil(wait / 1000)) },
+      );
     }
     chatTimes.push(now);
     const req = body as { text: string; requestId: string };
@@ -509,18 +620,38 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     return { accepted: true, id: req.requestId, feedSeq: line.seq, note: null };
   },
   feed: ({ query }) => live.feedSince(num(query.since)),
-  'blueprints.list': () => ({ designs: misc.designList().items.map((d) => ({ id: d.id, name: d.name, status: d.status, requester: d.requester, rev: d.rev, updated: d.updated })) }),
-  'blueprints.get': ({ params }) => ({ id: num(params.id), bill: { cobblestone: 240, glass: 12 }, blocks: mockDesignBlocks() }),
+  'blueprints.list': () => ({
+    designs: misc
+      .designList()
+      .items.map((d) => ({
+        id: d.id,
+        name: d.name,
+        status: d.status,
+        requester: d.requester,
+        rev: d.rev,
+        updated: d.updated,
+      })),
+  }),
+  'blueprints.get': ({ params }) => ({
+    id: num(params.id),
+    bill: { cobblestone: 240, glass: 12 },
+    blocks: mockDesignBlocks(),
+  }),
   'buildplans.get': ({ params }) => ({ id: num(params.id), parts: [] }),
   'bodies.scripts': () => live.bodyScripts(),
   'bodies.script': ({ params, query }) => live.bodyScript(String(params.body), query.code === true),
   'bodies.controller': ({ params }) => live.controller(String(params.body)),
-  'vision.render': ({ params }) => new Response(blockSheetSvg(String(params.body).length * 3, 1024, 640, 'render'), { headers: { 'Content-Type': 'image/svg+xml' } }),
+  'vision.render': ({ params }) =>
+    new Response(blockSheetSvg(String(params.body).length * 3, 1024, 640, 'render'), {
+      headers: { 'Content-Type': 'image/svg+xml' },
+    }),
   'vision.png': ({ params }) =>
     new Response(blockSheetSvg(num(params.id), 1024, 640, `sheet #${String(params.id)}`), {
       headers: { 'Content-Type': 'image/svg+xml', 'X-Tokens': '870', 'X-Width': '1024', 'X-Height': '640' },
     }),
-  'vision.sheet': ({ params }) => live.visionList(String(params.body)).sheets.find((s) => s.id === num(params.id)) ?? live.visionList(String(params.body)).sheets[0],
+  'vision.sheet': ({ params }) =>
+    live.visionList(String(params.body)).sheets.find((s) => s.id === num(params.id)) ??
+    live.visionList(String(params.body)).sheets[0],
   'vision.list': ({ params }) => live.visionList(String(params.body)),
   'brains.context': ({ params, query }) => live.brainContext(String(params.brain), num(query.since)),
   'brains.turn': ({ params }) => live.brainTurn(String(params.brain), num(params.n)),
@@ -547,7 +678,11 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
       return f();
     } catch (e) {
       const status = (e as { status?: number }).status ?? 500;
-      throw new MockError(status, e instanceof Error ? e.message : 'story error', status === 404 ? 'not_found' : 'bad_request');
+      throw new MockError(
+        status,
+        e instanceof Error ? e.message : 'story error',
+        status === 404 ? 'not_found' : 'bad_request',
+      );
     }
   };
   const id = (c: Ctx) => String(c.params.id);
@@ -560,6 +695,7 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.release': (c) => run(() => storySim.release(id(c))),
     'story.resume': (c) => run(() => storySim.resume(id(c))),
     'story.online': (c) => run(() => storySim.online(id(c), b(c))),
+    'story.pawns': (c) => run(() => storySim.pawns(id(c), b(c))),
     'story.directives.list': () => run(() => ({ directives: storySim.directives() })),
     'story.directive': (c) => run(() => storySim.directiveDetail(id(c))),
     'story.beds': (c) => run(() => storySim.beds(id(c), b(c))),
@@ -575,6 +711,9 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.builds': (c) => run(() => storySim.builds(id(c), b(c))),
     'story.storage': (c) => run(() => storySim.storage(id(c), b(c))),
     'story.bills': (c) => run(() => storySim.bills(id(c), b(c))),
+    'story.workbenches': (c) => run(() => storySim.workbenches(id(c), b(c))),
+    'story.options': (c) => run(() => storySim.options(id(c), b(c))),
+    'story.architect': (c) => run(() => storySim.architect(id(c))),
     'story.directives': (c) => run(() => storySim.directive(b(c))),
   };
 }
@@ -593,7 +732,11 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'designs.diff': { params: { id: 12 }, query: {}, body: null },
   'designer.get': { params: { id: 1 }, query: {}, body: null },
   'designer.message': { params: { id: 1 }, query: {}, body: { text: 'build a little house', canvas: { rev: 0 } } },
-  'designer.canvas': { params: { id: 1 }, query: {}, body: { rev: 0, ops: [{ kind: 'place', cells: [[1, 0, 1, 4, 0]] }] } },
+  'designer.canvas': {
+    params: { id: 1 },
+    query: {},
+    body: { rev: 0, ops: [{ kind: 'place', cells: [[1, 0, 1, 4, 0]] }] },
+  },
   'designer.save': { params: { id: 1 }, query: {}, body: { name: 'mock hut' } },
   'designer.version': { params: { id: 1 }, query: {}, body: { version: '1.12.2' } },
   'bots.now': { params: { bot: 'maid_chan' }, query: {}, body: null },
@@ -606,6 +749,8 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'brains.turn': { params: { brain: 'main', n: 104 }, query: {}, body: null },
   'world.index': { params: {}, query: { x: 4, z: 6 }, body: null },
   'world.blockEntities': { params: {}, query: { dim: 0, cols: '0,0;1,0' }, body: null },
+  'world.container': { params: {}, query: { dim: 0, x: 3, y: 74, z: -4 }, body: null },
+  'world.containers': { params: {}, query: { dim: 0, x0: -16, z0: -40, x1: 32, z1: 8 }, body: null },
   'world.overlays': { params: {}, query: {}, body: null },
   'admin.rebuildJob': { params: { jobId: 'job-x' }, query: {}, body: null },
   'admin.memoryEdit': { params: {}, query: {}, body: { op: 'update', kind: 'fact', id: '3', fields: { text: 'x' } } },
@@ -613,16 +758,29 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'admin.compact': { params: {}, query: {}, body: { dryRun: true } },
   'auth.stepUp': { params: {}, query: {}, body: { code: '123456' } },
   'admin.settings': { params: { node: 'local' }, query: {}, body: null },
-  'admin.settingsSave': { params: { node: 'local' }, query: {}, body: { changes: [{ key: 'Supervisor:Viewer:PerMinute', value: 10 }], reason: 'fixture test' } },
-  'admin.settingsTest': { params: { node: 'local' }, query: {}, body: { kind: 'ollama', endpoint: 'http://10.1.2.50:11434' } },
+  'admin.settingsSave': {
+    params: { node: 'local' },
+    query: {},
+    body: { changes: [{ key: 'Supervisor:Viewer:PerMinute', value: 10 }], reason: 'fixture test' },
+  },
+  'admin.settingsTest': {
+    params: { node: 'local' },
+    query: {},
+    body: { kind: 'ollama', endpoint: 'http://10.1.2.50:11434' },
+  },
   'admin.ollamaModels': { params: { node: 'local' }, query: {}, body: null },
   'admin.restartSafety': { params: { node: 'local' }, query: {}, body: null },
   'admin.restart': { params: { node: 'local' }, query: {}, body: { reason: 'fixture test' } },
   'admin.settingsAudit': { params: { node: 'local' }, query: {}, body: null },
-  'shards.exportPreview': { params: {}, query: {}, body: { name: 'kiwi', selection: { mode: 'person', people: ['kiwi'] } } },
+  'shards.exportPreview': {
+    params: {},
+    query: {},
+    body: { name: 'kiwi', selection: { mode: 'person', people: ['kiwi'] } },
+  },
   locate: { params: {}, query: { q: 'home' }, body: null },
   'blueprints.get': { params: { id: 12 }, query: {}, body: null },
   'buildplans.get': { params: { id: 12 }, query: {}, body: null },
   'story.get': { params: { id: 'story-1' }, query: {}, body: null },
   'story.recipes': { params: {}, query: { workbench: 'crafting_table' }, body: null },
+  'story.architect': { params: { id: 'story-1' }, query: {}, body: null },
 };

@@ -139,13 +139,7 @@ import {
 } from './memory.js';
 import { Overview } from './overview.js';
 import { PersonalityQuery, PersonalityResponse } from './personality.js';
-import {
-  RaptorGraph,
-  RaptorGraphQuery,
-  RaptorLeavesResponse,
-  RaptorNodeDetail,
-  RaptorNodeParams,
-} from './raptor.js';
+import { RaptorGraph, RaptorGraphQuery, RaptorLeavesResponse, RaptorNodeDetail, RaptorNodeParams } from './raptor.js';
 import {
   BodyParams,
   BodyScriptQuery,
@@ -164,6 +158,11 @@ import {
 import { SearchQuery, SearchResponse } from './search.js';
 import {
   StoryAck,
+  StoryArchitectResponse,
+  StoryColonyOptions,
+  StoryOptionsRequest,
+  StoryWorkbenchesRequest,
+  StoryWorkbenchesResponse,
   StoryBillsRequest,
   StoryBillsResponse,
   StoryBuildRequest,
@@ -191,6 +190,8 @@ import {
   StoryPauseRequest,
   StoryOnlineRequest,
   StoryOnlineResponse,
+  StoryPawnsRequest,
+  StoryPawnsResponse,
   StoryPrioritiesRequest,
   StoryRecipesQuery,
   StoryRecipesResponse,
@@ -211,6 +212,7 @@ import {
 import { LiveStreamQuery } from './sse.js';
 import { ChatAccepted, ChatRequest, FeedQuery, FeedResponse, BotNow } from './viewer.js';
 import { BodyInventory } from './inventory.js';
+import { ContainerBoxQuery, ContainerList, ContainerQuery, ContainerView } from './containers.js';
 import { VisionList, VisionListQuery, VisionRenderQuery, VisionSheetInfo, VisionSheetParams } from './vision.js';
 
 export type HttpMethod = 'GET' | 'POST';
@@ -294,7 +296,8 @@ export const ROUTES = {
     bridge: null,
     supervisor: null,
     audit: null,
-    summary: 'First-run setup: `needed` while the users file has no users; `allowedHere` for a direct LAN/loopback client.',
+    summary:
+      'First-run setup: `needed` while the users file has no users; `allowedHere` for a direct LAN/loopback client.',
   }),
   'setup.create': post('/api/setup', {
     access: 'public',
@@ -795,7 +798,8 @@ export const ROUTES = {
     supervisor: '/api/admin/settings/test',
     audit: 'admin_settings',
     timeoutMs: 45_000,
-    summary: 'Tests a provider without saving: an Anthropic key against a 5.5-generation model (free models call), an Ollama endpoint (`/api/tags`).',
+    summary:
+      'Tests a provider without saving: an Anthropic key against a 5.5-generation model (free models call), an Ollama endpoint (`/api/tags`).',
   }),
   'admin.ollamaModels': get('/api/admin/nodes/:node/ollama/models', {
     access: 'admin',
@@ -807,7 +811,8 @@ export const ROUTES = {
     supervisor: '/api/admin/ollama/models',
     audit: null,
     timeoutMs: 30_000,
-    summary: "An Ollama endpoint's models (`/api/tags`, capabilities from `/api/show`); the running endpoint when none is given.",
+    summary:
+      "An Ollama endpoint's models (`/api/tags`, capabilities from `/api/show`); the running endpoint when none is given.",
   }),
   'admin.restartSafety': get('/api/admin/nodes/:node/restart/safety', {
     access: 'admin',
@@ -951,7 +956,29 @@ export const ROUTES = {
     bridge: b('/v1/sup/world/blockentities'),
     supervisor: '/api/world/blockentities',
     audit: null,
-    summary: 'Block entities (sign text, bed colours, banners, skulls, flower pots, spawners) of some columns, hashed per column.',
+    summary:
+      'Block entities (sign text, bed colours, banners, skulls, flower pots, spawners) of some columns, hashed per column.',
+  }),
+  'world.container': get('/api/world/container', {
+    access: 'viewer',
+    query: ContainerQuery,
+    response: ContainerView,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/containers'),
+    supervisor: '/api/world/containers?dim&x&y&z',
+    audit: null,
+    summary:
+      "One container's contents by any of its blocks (live while a body has it open, else the freshest look, memory or Story ledger; source unknown = never opened).",
+  }),
+  'world.containers': get('/api/world/containers', {
+    access: 'viewer',
+    query: ContainerBoxQuery,
+    response: ContainerList,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/containers'),
+    supervisor: '/api/world/containers?dim&x0&y0&z0&x1&y1&z1&limit',
+    audit: null,
+    summary: 'Known containers in a box (≤ 512 wide) with their top items, fill and freshness, for map badges; capped.',
   }),
   'bots.tile': get('/api/bots/:bot/tile.png', {
     access: 'viewer',
@@ -982,7 +1009,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/viewer/bodies/{bot}/inventory'),
     supervisor: '/api/viewer/bodies/{name}/inventory',
     audit: null,
-    summary: "A body's inventory (hotbar + held slot, main, armour, off hand) as a read-only snapshot; online:false = last known.",
+    summary:
+      "A body's inventory (hotbar + held slot, main, armour, off hand) as a read-only snapshot; online:false = last known.",
   }),
   'bots.chat': post('/api/bots/:bot/chat', {
     access: 'chat',
@@ -1168,7 +1196,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/time', 'POST'),
     supervisor: '/api/story/time',
     audit: 'story',
-    summary: 'Sets the world time of day (0..23999 ticks, 0 = 06:00) through an op account; 409 without one, 429 above ~1/s.',
+    summary:
+      'Sets the world time of day (0..23999 ticks, 0 = 06:00) through an op account; 409 without one, 429 above ~1/s.',
   }),
   'story.directives': post('/api/story/directives', {
     access: 'story',
@@ -1230,7 +1259,7 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/resume', 'POST'),
     supervisor: '/api/story/colonies/{id}/resume',
     audit: 'story',
-    summary: 'Spawns a released colony\'s pawns again (their old accounts first).',
+    summary: "Spawns a released colony's pawns again (their old accounts first).",
   }),
   'story.online': post('/api/story/colonies/:id/online', {
     access: 'story',
@@ -1244,6 +1273,20 @@ export const ROUTES = {
     summary:
       'Brings offline pawns in now (null = every offline one): whitelisted again through main and (re)started, the player cap ' +
       'permitting; overCap uses the seats kept for offline regulars (can lock a regular out until a pawn leaves). 404 unknown colony or pawn.',
+  }),
+  'story.pawns': post('/api/story/colonies/:id/pawns', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryPawnsRequest,
+    response: StoryPawnsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/pawns', 'POST'),
+    supervisor: '/api/story/colonies/{id}/pawns',
+    audit: 'story',
+    summary:
+      'Adds pawns (as many as the free seats allow now, never the seats kept for regulars; the rest join as seats free up; at most 12) ' +
+      'or removes one (its claims and bed go back, it stores its things, logs out and its account is released). The last pawn ' +
+      'cannot be removed. 404 unknown colony or pawn.',
   }),
   'story.pause': post('/api/story/colonies/:id/pause', {
     access: 'story',
@@ -1331,7 +1374,9 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/zones', 'POST'),
     supervisor: '/api/story/colonies/{id}/zones',
     audit: 'story',
-    summary: 'Adds, removes or renames zones (home zones are the houses).',
+    summary:
+      'Adds, removes or renames zones (home zones are the houses); growing zones take a plant, sow and harvest (update), ' +
+      'and seek_seeds designates tall grass to cut (wheat) or queues a seed bill (pumpkin, melon).',
   }),
   'story.designations': post('/api/story/colonies/:id/designations', {
     access: 'story',
@@ -1377,6 +1422,38 @@ export const ROUTES = {
     audit: 'story',
     summary: 'Workbench bills: add, update, remove, pause, resume, reorder.',
   }),
+  'story.workbenches': post('/api/story/colonies/:id/workbenches', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryWorkbenchesRequest,
+    response: StoryWorkbenchesResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/workbenches', 'POST'),
+    supervisor: '/api/story/colonies/{id}/workbenches',
+    audit: 'story',
+    summary: "Designate a placed crafting table / furnace as the colony's, or release it.",
+  }),
+  'story.options': post('/api/story/colonies/:id/options', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryOptionsRequest,
+    response: StoryColonyOptions,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/options', 'POST'),
+    supervisor: '/api/story/colonies/{id}/options',
+    audit: 'story',
+    summary: 'Colony options: auto-place benches builds need, detect benches near home.',
+  }),
+  'story.architect': get('/api/story/colonies/:id/architect', {
+    access: 'viewer',
+    params: StoryColonyParams,
+    response: StoryArchitectResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/architect'),
+    supervisor: '/api/story/colonies/{id}/architect',
+    audit: null,
+    summary: 'The Architect palette: placeables by tab with tier, unlock state and the colony stock.',
+  }),
 
   // ---------- live stream ----------
   'live.stream': get('/api/live/stream', {
@@ -1399,7 +1476,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/designer/models'),
     supervisor: '/api/designer/models',
     audit: null,
-    summary: 'The models the bot is configured to use (its tiers and usable profiles, 5.5 Claude only), the default, the server version.',
+    summary:
+      'The models the bot is configured to use (its tiers and usable profiles, 5.5 Claude only), the default, the server version.',
   }),
   'designer.create': post('/api/designer/sessions', {
     access: 'design',
@@ -1431,7 +1509,8 @@ export const ROUTES = {
     supervisor: '/api/designer/sessions/{id}/messages',
     audit: 'design',
     timeoutMs: 240_000,
-    summary: "A message to the model (with pending canvas edits and the selection); returns its reply and the ops it applied. Booked on the bot's budget.",
+    summary:
+      "A message to the model (with pending canvas edits and the selection); returns its reply and the ops it applied. Booked on the bot's budget.",
   }),
   'designer.canvas': post('/api/designer/sessions/:id/canvas', {
     access: 'design',
@@ -1453,7 +1532,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/designer/sessions/{id}/save', 'POST'),
     supervisor: '/api/designer/sessions/{id}/save',
     audit: 'design',
-    summary: 'Saves the canvas as a design: a new one, or the next revision of the loaded one (Git-style, never locked).',
+    summary:
+      'Saves the canvas as a design: a new one, or the next revision of the loaded one (Git-style, never locked).',
   }),
   'designer.version': post('/api/designer/sessions/:id/version', {
     access: 'design',

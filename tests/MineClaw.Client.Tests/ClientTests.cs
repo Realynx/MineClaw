@@ -359,6 +359,45 @@ public class ActionTests
     }
 
     [Fact]
+    public async Task A_dirt_block_that_turns_to_grass_mid_dig_is_dug_until_it_is_gone()
+    {
+        // Live 11-03 (Story, 1.12.2): "mine … reported done, but the dirt is still there": exposed dirt turned to grass while it was
+        // dug and the client took "not dirt any more" for the break.
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Blocks[(9, 64, 8)] = Blocks.Dirt;
+            srv.Hook = pkt =>
+            {
+                if (pkt is PlayerDiggingPacket { Status: PlayerDiggingPacket.StatusStarted, X: 9, Y: 64, Z: 8 })
+                {
+                    srv.Blocks[(9, 64, 8)] = Blocks.Grass;
+                    srv.Send(new BlockChangePacket { X = 9, Y = 64, Z = 8, BlockId = (byte)Blocks.Grass });
+                    return true;
+                }
+                if (pkt is PlayerDiggingPacket { Status: PlayerDiggingPacket.StatusFinished, X: 9, Y: 64, Z: 8 })
+                {
+                    var late = Task.Run(async () =>
+                    {
+                        await Task.Delay(200); // the server's answer takes a moment
+                        srv.Blocks.Remove((9, 64, 8));
+                        srv.Send(new BlockChangePacket { X = 9, Y = 64, Z = 8, BlockId = 0 });
+                    });
+                    return true;
+                }
+                return false;
+            };
+        });
+        await using var _ = c;
+        using var __ = s;
+        var r = await c.DigBlockAsync(9, 64, 8);
+        Assert.True(r.Ok, r.ToString());
+        Assert.Equal(0, c.World.GetBlock(9, 64, 8)); // it said dug only once the block was really gone
+        Assert.True(MinecraftClient.SameDigForm(Blocks.Dirt, Blocks.Grass));
+        Assert.True(MinecraftClient.SameDigForm(73, 74)); // redstone ore lights up when punched
+        Assert.False(MinecraftClient.SameDigForm(Blocks.Dirt, 0));
+    }
+
+    [Fact]
     public async Task DigRefusesTheBlockHoldingMeOverTheVoid()
     {
         var (c, s) = await Harness.StartAsync(srv =>

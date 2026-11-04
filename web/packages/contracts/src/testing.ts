@@ -9,3 +9,4 @@ export {
   type CloudMockOptions,
 } from './cloudMock.js';
 export { mockInventory } from './mockInventory.js';
+export { mockContainer, mockContainers, MOCK_CONTAINERS } from './mockContainers.js';
