@@ -20,7 +20,7 @@
 
 import * as THREE from 'three';
 import type { AssetBundle, Pack } from '../assets/bundle';
-import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type EquipRef, type Equipment, type ItemRef } from '../types';
+import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type EquipRef, type EquipSlot, type Equipment, type ItemRef } from '../types';
 import { stuckArrows, type ArrowSpot } from './entities/arrows';
 import type { GameVersion } from '../world/blocks';
 import type { BotView, EntityView } from '../world/entities';
@@ -512,10 +512,7 @@ export class EntityLayer {
   /** Starts the death fall, then the body shrinks away (it stays drawn for that long even when the entity is removed). */
   kill(key: string, now = performance.now()): void {
     const m = this.motionOf(key);
-    if (m && !m.deadAt) {
-      m.deadAt = now;
-      m.hurtAt = now;
-    }
+    if (m) startDeath(m, now);
   }
 
   /**
@@ -545,43 +542,47 @@ export class EntityLayer {
   /** The entity event animations: swings, hurts, deaths, sparks, eating, teleport puffs, lightning bolts. */
   applyEvents(events: EntityEvent[], now: number): void {
     for (const ev of events) {
-      const dim = ev.dim ?? 0;
       if (ev.kind === 'lightning') {
-        if (ev.x != null && ev.y != null && ev.z != null) this.lightning.strike(dim, ev.x, ev.y, ev.z, now, ev.at || now);
+        if (hasPos(ev)) this.lightning.strike(ev.dim ?? 0, ev.x, ev.y, ev.z, now, ev.at || now);
         continue;
       }
-      const d = this.eventTarget(ev);
-      const m = d?.motion;
-      switch (ev.kind) {
-        case 'swing':
-          if (m) m.attackAt = now;
-          break;
-        case 'swing_off':
-          if (m) m.attackOffAt = now;
-          break;
-        case 'hurt':
-          if (m) m.hurtAt = now;
-          break;
-        case 'death':
-          if (m && !m.deadAt) {
-            m.deadAt = now;
-            m.hurtAt = now;
-          }
-          break;
-        case 'eat':
-          if (m) m.eatAt = now;
-          break;
-        case 'crit':
-        case 'magic_crit':
-          if (d) this.particles.burst(ev.kind, d.dim, d.x, d.y + d.h * 0.6, d.z, now);
-          else if (ev.x != null && ev.y != null && ev.z != null) this.particles.burst(ev.kind, dim, ev.x, ev.y + 1, ev.z, now);
-          break;
-        case 'teleport':
-          if (ev.x != null && ev.y != null && ev.z != null) this.particles.burst('teleport', dim, ev.x, ev.y + 1, ev.z, now);
-          if (d) this.particles.burst('teleport', d.dim, d.x, d.y + d.h * 0.5, d.z, now);
-          break;
-      }
+      const handle = EntityLayer.EVENTS.get(ev.kind);
+      if (handle) handle(this, ev, this.eventTarget(ev), now);
     }
+  }
+
+  /** What each entity event does to the body it is about (or, for sparks and puffs, at its position). */
+  private static readonly EVENTS = new Map<string, (l: EntityLayer, ev: EntityEvent, d: Drawn | null, now: number) => void>([
+    ['swing', (_l, _ev, d, now) => {
+      if (d) d.motion.attackAt = now;
+    }],
+    ['swing_off', (_l, _ev, d, now) => {
+      if (d) d.motion.attackOffAt = now;
+    }],
+    ['hurt', (_l, _ev, d, now) => {
+      if (d) d.motion.hurtAt = now;
+    }],
+    ['eat', (_l, _ev, d, now) => {
+      if (d) d.motion.eatAt = now;
+    }],
+    ['death', (_l, _ev, d, now) => {
+      if (d) startDeath(d.motion, now);
+    }],
+    ['crit', (l, ev, d, now) => l.sparks(ev, d, now)],
+    ['magic_crit', (l, ev, d, now) => l.sparks(ev, d, now)],
+    ['teleport', (l, ev, d, now) => l.teleportPuffs(ev, d, now)],
+  ]);
+
+  /** Crit / magic-crit sparks around the body, else where the event says. */
+  private sparks(ev: EntityEvent, d: Drawn | null, now: number): void {
+    if (d) this.particles.burst(ev.kind, d.dim, d.x, d.y + d.h * 0.6, d.z, now);
+    else if (hasPos(ev)) this.particles.burst(ev.kind, ev.dim ?? 0, ev.x, ev.y + 1, ev.z, now);
+  }
+
+  /** Teleport puffs where the event says and around the body. */
+  private teleportPuffs(ev: EntityEvent, d: Drawn | null, now: number): void {
+    if (hasPos(ev)) this.particles.burst('teleport', ev.dim ?? 0, ev.x, ev.y + 1, ev.z, now);
+    if (d) this.particles.burst('teleport', d.dim, d.x, d.y + d.h * 0.5, d.z, now);
   }
 
   /** The bot or entity an event is about: (dim, id), or a bot by `name` (bots carry no entity id on the wire). */
@@ -609,51 +610,10 @@ export class EntityLayer {
     this.mats.shared.uTime.value = timeMs / 1000;
     const list = this.list;
     list.length = 0;
-    for (const b of bots) {
-      const d = this.drawnFor(b.name, true, b.x, b.y, b.z, b.yaw, timeMs);
-      d.frame = frame;
-      d.botView = b;
-      d.ent = null;
-      d.dim = b.dim;
-      this.refreshBot(d, b, timeMs);
-      list.push(d);
-      this.botLabel(b, selected, timeMs);
-    }
-    for (const e of ents) {
-      const d = this.drawnFor(e.key, false, e.x, e.y, e.z, e.yaw, timeMs);
-      d.frame = frame;
-      d.ent = e;
-      d.botView = null;
-      d.dim = e.dim;
-      this.refreshEntity(d, e, timeMs);
-      list.push(d);
-      if (d.riders)
-        for (const r of d.riders) {
-          r.frame = frame;
-          r.dim = d.dim;
-          r.x = d.x;
-          r.y = d.y;
-          r.z = d.z;
-          r.posed = false;
-          list.push(r);
-        }
-    }
-    for (const [k, dm] of this.displays) {
-      const d = this.drawnFor(`display:${k}`, false, dm.x, dm.y, dm.z, 0, timeMs);
-      d.frame = frame;
-      d.dim = dm.dim;
-      d.display = dm;
-      this.refreshDisplay(d, dm);
-      list.push(d);
-    }
-    for (const [k, d] of this.drawn) {
-      if (d.frame === frame) continue;
-      // The dying stay until their body has shrunk away (the server usually removes them right after the death event).
-      if (d.motion.deadAt && timeMs - d.motion.deadAt < DEATH_GONE_MS) {
-        d.frame = frame;
-        list.push(d);
-      } else this.drawn.delete(k);
-    }
+    for (const b of bots) this.listBot(b, frame, timeMs, selected);
+    for (const e of ents) this.listEntity(e, frame, timeMs);
+    for (const [k, dm] of this.displays) this.listDisplay(k, dm, frame, timeMs);
+    this.keepDying(frame, timeMs);
     for (const [k, o] of this.botObjs) if (!this.drawn.get(k)?.bot) this.dropBot(k, o);
     // Bones: one row per entity, then the particles (63 per row).
     this.particles.step(timeMs);
@@ -669,6 +629,59 @@ export class EntityLayer {
     this.particleRow = list.length;
     this.particles.list.forEach((p, i) => this.particles.bone(p, timeMs, this.bones, (this.particleRow + Math.floor(i / PER_ROW)) * ROW_FLOATS + (i % PER_ROW) * 12));
     if (this.boneTex) this.boneTex.needsUpdate = true;
+  }
+
+  private listBot(b: BotView, frame: number, timeMs: number, selected: ReadonlySet<string>): void {
+    const d = this.drawnFor(b.name, true, b.x, b.y, b.z, b.yaw, timeMs);
+    d.frame = frame;
+    d.botView = b;
+    d.ent = null;
+    d.dim = b.dim;
+    this.refreshBot(d, b, timeMs);
+    this.list.push(d);
+    this.botLabel(b, selected, timeMs);
+  }
+
+  /** An entity and, right after it, its riders (at its position, posed by it). */
+  private listEntity(e: EntityView, frame: number, timeMs: number): void {
+    const d = this.drawnFor(e.key, false, e.x, e.y, e.z, e.yaw, timeMs);
+    d.frame = frame;
+    d.ent = e;
+    d.botView = null;
+    d.dim = e.dim;
+    this.refreshEntity(d, e, timeMs);
+    this.list.push(d);
+    if (!d.riders) return;
+    for (const r of d.riders) {
+      r.frame = frame;
+      r.dim = d.dim;
+      r.x = d.x;
+      r.y = d.y;
+      r.z = d.z;
+      r.posed = false;
+      this.list.push(r);
+    }
+  }
+
+  private listDisplay(k: string, dm: DisplayMob, frame: number, timeMs: number): void {
+    const d = this.drawnFor(`display:${k}`, false, dm.x, dm.y, dm.z, 0, timeMs);
+    d.frame = frame;
+    d.dim = dm.dim;
+    d.display = dm;
+    this.refreshDisplay(d, dm);
+    this.list.push(d);
+  }
+
+  /** Drops what this frame no longer lists, except the dying: they stay until their body has shrunk away (the server
+   * usually removes them right after the death event). */
+  private keepDying(frame: number, timeMs: number): void {
+    for (const [k, d] of this.drawn) {
+      if (d.frame === frame) continue;
+      if (d.motion.deadAt && timeMs - d.motion.deadAt < DEATH_GONE_MS) {
+        d.frame = frame;
+        this.list.push(d);
+      } else this.drawn.delete(k);
+    }
   }
 
   private drawnFor(key: string, bot: boolean, x: number, y: number, z: number, yaw: number, now: number): Drawn {
@@ -710,40 +723,59 @@ export class EntityLayer {
 
   /** Hands, head items, armour and elytra from wire equipment (ids in the world's version). */
   private equip(d: Drawn, eq: Equipment | null | undefined, mainFallback: ItemLook | null, mainName: string | null): void {
-    const beta = this.version === 'b1.8.1';
+    this.equipHands(d, eq, mainFallback, mainName);
+    this.equipHead(d, eq);
+    this.equipBody(d, eq);
+    this.equipGlints(d, eq);
+  }
+
+  private equipHands(d: Drawn, eq: Equipment | null | undefined, mainFallback: ItemLook | null, mainName: string | null): void {
     d.held = eq?.main ? this.itemById(eq.main) : mainFallback;
-    d.heldTool = eq?.main ? isHandheld(itemName(eq.main[0]) ?? '') : !!mainName && isHandheld(parseHeld(mainName).name);
+    d.heldTool = mainHandTool(eq, mainName);
     d.heldOff = eq?.off ? this.itemById(eq.off) : null;
     d.heldOffTool = !!eq?.off && isHandheld(itemName(eq.off[0]) ?? '');
-    d.bow = eq?.main?.[0] === 261 || (!!mainName && parseHeld(mainName).name === 'bow');
-    // LayerCustomHead: a skull (1.12.2 item 397, its meta the type) as the skull model; any other head item that is not a
-    // helmet as its item (blocks as a block, 1.12.2 flat items with their "head" transform). b1.8.1's RenderPlayer draws
-    // only blocks.
+    d.bow = holdsBow(eq, mainName);
+  }
+
+  /**
+   * LayerCustomHead: a skull (1.12.2 item 397, its meta the type) as the skull model; any other head item that is not a
+   * helmet as its item (blocks as a block, 1.12.2 flat items with their "head" transform). b1.8.1's RenderPlayer draws
+   * only blocks.
+   */
+  private equipHead(d: Drawn, eq: Equipment | null | undefined): void {
     d.headBlock = d.headItem = null;
     d.skull = -1;
     const head = eq?.head;
-    if (head && d.headLayer && armorMaterial(head[0], 'helmet') == null) {
-      if (!beta && head[0] === 397) d.skull = head[1] >= 0 && head[1] <= 5 ? head[1] : 0;
-      else {
-        const l = this.itemById(head);
-        if (l?.kind === 'cube') d.headBlock = l;
-        else if (l && !beta) d.headItem = l;
-      }
-    }
-    d.elytra = !beta && eq?.chest?.[0] === 443 && this.elytraWearer(d);
+    if (!head || !d.headLayer || armorMaterial(head[0], 'helmet') != null) return;
+    if (!this.beta && head[0] === 397) d.skull = head[1] >= 0 && head[1] <= 5 ? head[1] : 0;
+    else this.wearHeadItem(d, head);
+  }
+
+  private wearHeadItem(d: Drawn, head: NonNullable<EquipRef>): void {
+    const l = this.itemById(head);
+    if (l?.kind === 'cube') d.headBlock = l;
+    else if (l && !this.beta) d.headItem = l;
+  }
+
+  /** Elytra (1.12.2, on the renderers with LayerElytra) and armour (the wire's equipment, else an older material list). */
+  private equipBody(d: Drawn, eq: Equipment | null | undefined): void {
+    d.elytra = !this.beta && eq?.chest?.[0] === 443 && this.elytraWearer(d);
     d.armor = d.armorLayer ? (armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {})) : null;
     d.armorDye = d.armor ? armorDyes(eq) : null;
-    // The glint: the wire's flag (NBT), or the item's own (Item.hasEffect by id).
-    const g = eq?.glint ?? null;
-    const shiny = (slot: 'main' | 'off' | 'head' | 'chest' | 'legs' | 'feet') => {
-      const ref = eq?.[slot];
-      return !!ref && (!!g?.[slot] || glintsById(this.version, ref[0], ref[1]));
-    };
-    d.heldGlint = !!d.held && (eq?.main ? shiny('main') : false);
-    d.heldOffGlint = !!d.heldOff && shiny('off');
-    d.headGlint = (!!d.headBlock || !!d.headItem) && shiny('head');
-    d.elytraGlint = d.elytra && shiny('chest');
-    d.armorGlint = d.armor ? [shiny('head'), shiny('chest'), shiny('legs'), shiny('feet')] : null;
+  }
+
+  private equipGlints(d: Drawn, eq: Equipment | null | undefined): void {
+    d.heldGlint = !!d.held && (eq?.main ? this.shiny(eq, 'main') : false);
+    d.heldOffGlint = !!d.heldOff && this.shiny(eq, 'off');
+    d.headGlint = (!!d.headBlock || !!d.headItem) && this.shiny(eq, 'head');
+    d.elytraGlint = d.elytra && this.shiny(eq, 'chest');
+    d.armorGlint = d.armor ? [this.shiny(eq, 'head'), this.shiny(eq, 'chest'), this.shiny(eq, 'legs'), this.shiny(eq, 'feet')] : null;
+  }
+
+  /** The glint: the wire's flag (NBT), or the item's own (Item.hasEffect by id). */
+  private shiny(eq: Equipment | null | undefined, slot: EquipSlot): boolean {
+    const ref = eq?.[slot];
+    return !!ref && (!!eq?.glint?.[slot] || glintsById(this.version, ref[0], ref[1]));
   }
 
   private elytraWearer(d: Drawn): boolean {
@@ -977,13 +1009,28 @@ export class EntityLayer {
     if (d.parent) return; // its body poses it
     const off = d.row * ROW_FLOATS;
     const m = d.motion;
-    const yaw = d.hang ? d.hang.yaw : d.fixedYaw ?? (d.kind === 'model' ? m.body : d.ent?.yaw ?? 0);
-    // LOD box: translate · rotY · scale(w, h, w).
+    this.writeBox(d, off + BOX_SLOT * 12, now);
+    const light = this.lightAt?.(d.dim, d.x, d.y + d.h * 0.5, d.z) ?? null;
+    d.sky = light ? light[0] : 15;
+    d.block = light ? light[1] : 0;
+    d.hurt = hurtAmount(m, now);
+    if (m.deadAt && !d.smoked && now - m.deadAt > DEATH_SHRINK_MS) {
+      d.smoked = true;
+      this.particles.burst('death', d.dim, d.x, d.y + 0.3, d.z, now);
+    }
+    d.posed = false;
+    if (!this.near(d)) return;
+    this.poseKind(d, now, off);
+    d.posed = d.kind !== 'box';
+  }
+
+  /** The LOD box: translate · rotY · scale(w, h, w), shrinking in death. */
+  private writeBox(d: Drawn, bo: number, now: number): void {
+    const yaw = d.hang ? d.hang.yaw : d.fixedYaw ?? (d.kind === 'model' ? d.motion.body : d.ent?.yaw ?? 0);
     const a = (yaw * Math.PI) / 180;
     const b = this.bones;
-    const bo = off + BOX_SLOT * 12;
     const c = Math.cos(a), s = Math.sin(a);
-    const k = deathScale(m, now);
+    const k = deathScale(d.motion, now);
     b[bo] = c * d.w * k;
     b[bo + 1] = 0;
     b[bo + 2] = s * d.w * k;
@@ -996,22 +1043,15 @@ export class EntityLayer {
     b[bo + 9] = 0;
     b[bo + 10] = c * d.w * k;
     b[bo + 11] = d.z;
-    const light = this.lightAt?.(d.dim, d.x, d.y + d.h * 0.5, d.z) ?? null;
-    d.sky = light ? light[0] : 15;
-    d.block = light ? light[1] : 0;
-    d.hurt = hurtAmount(m, now);
-    if (m.deadAt && !d.smoked && now - m.deadAt > DEATH_SHRINK_MS) {
-      d.smoked = true;
-      this.particles.burst('death', d.dim, d.x, d.y + 0.3, d.z, now);
-    }
-    d.posed = false;
-    if (!this.near(d)) return;
+  }
+
+  /** The posed parts of what it draws (models, drops, blocks, billboards, hanging entities). */
+  private poseKind(d: Drawn, now: number, off: number): void {
     if (d.kind === 'model' && d.model && d.look) this.poseModel(d, now, off);
     else if (d.kind === 'item') this.poseDrop(d, off);
     else if (d.kind === 'block') this.poseBlock(d, off);
     else if (d.kind === 'orb' || d.kind === 'sprite') this.poseOrb(d, off);
     else if (d.kind === 'painting' || d.kind === 'frame') this.poseHanging(d, off);
-    d.posed = d.kind !== 'box';
   }
 
   private near(d: Drawn): boolean {
@@ -2319,6 +2359,28 @@ export function copies(count: number, beta: boolean): number {
 function objectKind(name: string): string {
   const n = canonical(name);
   return ({ falling_sand: 'falling_block', primed_tnt: 'tnt', tnt_primed: 'tnt', xp_orb: 'xp_orb', experience_orb: 'xp_orb', fireworks_rocket: 'firework', fireworks_rocket_entity: 'firework', minecart_chest: 'chest_minecart', minecart_furnace: 'furnace_minecart', minecart_tnt: 'tnt_minecart', minecart_hopper: 'hopper_minecart', minecart_spawner: 'spawner_minecart', minecart_command_block: 'command_block_minecart', minecart_rideable: 'minecart', ender_crystal: 'ender_crystal', thrown_egg: 'egg', snowball: 'snowball', item_frame: 'item_frame', painting: 'painting', armor_stand: 'armor_stand' } as Record<string, string>)[n] ?? n;
+}
+
+/** Whether an event carries a position. */
+function hasPos(ev: EntityEvent): ev is EntityEvent & { x: number; y: number; z: number } {
+  return ev.x != null && ev.y != null && ev.z != null;
+}
+
+/** Starts the death fall (once). */
+function startDeath(m: Motion, now: number): void {
+  if (m.deadAt) return;
+  m.deadAt = now;
+  m.hurtAt = now;
+}
+
+/** The main hand holds a tool (drawn like one): by the wire's item, else the held item's name. */
+function mainHandTool(eq: Equipment | null | undefined, mainName: string | null): boolean {
+  if (eq?.main) return isHandheld(itemName(eq.main[0]) ?? '');
+  return !!mainName && isHandheld(parseHeld(mainName).name);
+}
+
+function holdsBow(eq: Equipment | null | undefined, mainName: string | null): boolean {
+  return eq?.main?.[0] === 261 || (!!mainName && parseHeld(mainName).name === 'bow');
 }
 
 /** An entity's kind; objects by their type (or wire type name). */
