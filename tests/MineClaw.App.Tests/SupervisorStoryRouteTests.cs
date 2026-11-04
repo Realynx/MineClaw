@@ -435,6 +435,8 @@ public sealed class SupervisorStoryRouteTests
         Assert.False(gate.ArmManagedSpeed("/effect poofimafox minecraft:speed 30 1 true", "x"));       // a player: never
         Assert.False(gate.ArmManagedSpeed("/effect maid_chan_101 minecraft:strength 30 1 true", "x")); // only speed
         Assert.False(gate.ArmManagedSpeed("/effect maid_chan_101 minecraft:speed 30 9 true", "x"));    // amplifier 0..4
+        Assert.True(gate.ArmManagedSpeed("/effect maid_chan_101 minecraft:speed 1000000 2 true", "story story-1: faster speed")); // the toggle's length
+        Assert.True(gate.AllowOutgoing("/effect maid_chan_101 minecraft:speed 1000000 2 true"));
         Assert.False(gate.ArmManagedSpeed("/effect @a minecraft:speed 30 1 true", "x"));
         Assert.False(gate.ArmManagedSpeed("/effect maid_chan_101 clear", "x"));
         var strict = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions { Blocked = ["/effect"] }, () => ["poofimafox"])

@@ -61,7 +61,11 @@ public sealed partial class StoryColony
         public int Attempts;
         /// <summary>The colony sent it home by /tp: it is out once it shows up there (else the server refused it).</summary>
         public DateTimeOffset? TeleportedAt;
-        public bool TeleportFailed;
+        /// <summary>Teleports sent that didn't take; retried <see cref="TeleportRetry"/> apart, given up after <see cref="MaxTeleportTries"/>
+        /// (live 11-04: one /tp dropped in a backed-up chat queue left a pawn on "escape attempt 6" with no second try).</summary>
+        public int TeleportMisses;
+        public DateTimeOffset TeleportRetryAt;
+        public bool TeleportFailed => TeleportMisses >= MaxTeleportTries;
         /// <summary>Escape jobs that failed (each one a full try: out by itself, walk home, climb).</summary>
         public int Failed;
         /// <summary>Why the last teleport home couldn't be sent (option off, no op path, the pawn offline…).</summary>
@@ -70,6 +74,9 @@ public sealed partial class StoryColony
 
     /// <summary>How long a teleport home has to show in the pawn's position before the colony takes it as refused.</summary>
     public static readonly TimeSpan TeleportCheck = TimeSpan.FromSeconds(10);
+    /// <summary>A teleport that didn't take is sent again this much later, up to <see cref="MaxTeleportTries"/> times.</summary>
+    public static readonly TimeSpan TeleportRetry = TimeSpan.FromSeconds(30);
+    public const int MaxTeleportTries = 3;
 
     /// <summary>The pawn's stuck state for the browser: {since, at, reason, step, attempts}, or null.</summary>
     private JsonObject? StuckJson(string pawn) => _stuck.TryGetValue(pawn, out var st)
@@ -197,9 +204,16 @@ public sealed partial class StoryColony
                 }
                 if (Now - sent < TeleportCheck) return Hold("stuck: teleported home, arriving", "moving", s: 3, type: "need");
                 st.TeleportedAt = null;
-                st.TeleportFailed = true;
-                _log.LogWarning("story {Colony}: {Pawn}'s teleport home didn't take (still at {At}): the server refused /tp?", Id, p.Name, live.Block);
-                Alert("warn", $"{p.Display}'s teleport home didn't take (still at {live.Block}): is the bot op, and /tp allowed by the command gate?", p.Name);
+                st.TeleportMisses++;
+                st.TeleportRetryAt = Now + TeleportRetry;
+                if (st.TeleportFailed)
+                {
+                    _log.LogWarning("story {Colony}: {Pawn}'s teleport home didn't take {N} times (still at {At}): the server refused /tp?", Id, p.Name, st.TeleportMisses, live.Block);
+                    Alert("warn", $"{p.Display}'s teleport home didn't take {st.TeleportMisses} times (still at {live.Block}): is the bot op, and /tp allowed by the command gate?", p.Name);
+                }
+                else
+                    _log.LogInformation("story {Colony}: {Pawn}'s teleport home didn't take (still at {At}): trying again in {S} s ({N}/{Max})", Id, p.Name, live.Block,
+                        (int)TeleportRetry.TotalSeconds, st.TeleportMisses, MaxTeleportTries);
             }
             // The budget is spent (time, or failed escape steps): home at once, by /tp (rescue_teleport).
             if (BudgetOver(st) && TeleportHome(p, live, st, $"escape budget spent ({(int)(Now - st.Since).TotalSeconds} s, {st.Failed} failed step(s))"))
@@ -315,7 +329,7 @@ public sealed partial class StoryColony
     /// </summary>
     private bool TeleportHome(PawnState p, PawnLive live, StuckState st, string why)
     {
-        if (st.TeleportFailed || st.TeleportedAt != null) return false;
+        if (st.TeleportFailed || st.TeleportedAt != null || Now < st.TeleportRetryAt) return false;
         st.TeleportError = null;
         string? err = !Meta.RescueTeleport ? "rescue teleport is off" : null;
         P3? to = null;

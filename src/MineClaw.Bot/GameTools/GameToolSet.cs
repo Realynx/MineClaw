@@ -466,6 +466,7 @@ public static class GameToolSet
             async (_, ct) => R(await FoodSupply.EatAsync(c, ct)), longRunning: true);
         TreeTools.Register(tools, c, places);
         FishingTool.Register(tools, c); // hidden: scripts' fish(at, seconds) (Story Mode's fishing zones)
+        TurnedPlaceTool.Register(tools, c); // hidden: scripts' place_turned(block, at, meta) (Story Mode's designs: facing, axis, half)
         AcquireTool.Register(tools, c); // hidden: scripts' ensure/acquire (no definition in any prefix)
         EquipTool.Register(tools, c); // hidden: scripts' equip (hold / wear / take off / take one exact stack; Story Mode's pawns)
         FaceTool.Register(tools, c); // hidden: scripts' face{at} (Story pawns' body language)

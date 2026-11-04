@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 using MineClaw.Data;
 using MineClaw.Data.Versioning;
 
@@ -66,6 +67,16 @@ public sealed partial class StoryColony
         return meta == 0 && (lava ? IsLavaId(id) : IsWaterId(id));
     }
 
+    /// <summary>What is under a liquid cell holds it: a block that stays (not dug first), another cell of the item, or a source of the
+    /// same liquid.</summary>
+    private static bool Held(IStoryWorld w, P3 below, int ghostId, HashSet<P3> own, IReadOnlySet<P3> dug)
+    {
+        if (own.Contains(below)) return true;
+        var (id, meta) = w.Block(below.X, below.Y, below.Z);
+        if (LiquidSource(ghostId, id, meta)) return true;
+        return !dug.Contains(below) && !TakesLiquid(id);
+    }
+
     /// <summary>A cell holding something liquid can't go in (a block to dig first).</summary>
     private static bool TakesLiquid(int id) => TakesLiquidIds.Contains(id) || StoryBlocks.Liquids.Contains(id);
 
@@ -115,6 +126,7 @@ public sealed partial class StoryColony
         if (lava && !Meta.AllowLava) return "lava is off: turn on the colony option allow_lava first";
         bool indoor = item["indoor"] is JsonValue iv && iv.TryGetValue<bool>(out var ib) && ib;
         var dug = DugFirst(item, made);
+        var own = ghosts.Select(g => g.At).ToHashSet();
         foreach (var g in ghosts)
         {
             if (!w.Loaded(g.At.X, g.At.Z)) return $"{g.At} isn't in the colony's view yet";
@@ -124,6 +136,10 @@ public sealed partial class StoryColony
                 return $"{g.At} holds {(lava ? "water" : "lava")}: {liquid} there would turn it to {(meta == 0 ? "obsidian" : "cobblestone")}";
             if (!TakesLiquid(id) && !dug.Contains(g.At))
                 return $"{g.At} holds {BlockLabel(w, id)}: dig it first (a remove item in the same group, or the channel tool's \"Dig the trench\")";
+            // Nothing under it: the source would pour down (and a pawn has no floor face to aim at). Live 11-04: "no block face to
+            // pour against" cell after cell; said once here instead.
+            if (!Held(w, g.At.Add(0, -1, 0), g.Id, own, dug))
+                return $"nothing under {g.At} to hold the {liquid}: it would pour down. Dig the channel into the ground, or lay a floor under it first";
             if (HomeZoneAt(g.At.X, g.At.Z) is { } house)
             {
                 if (lava) return $"{g.At} is in the home area ({house.Name ?? house.Id}): no lava at home";
@@ -305,22 +321,38 @@ public sealed partial class StoryColony
     /// pools before a lake; else one with another source beside it), never a lone puddle, never water the colony poured that doesn't
     /// refill, never a cell of this batch; lava from any lava source the colony didn't pour. Nearest within each kind; null = none.
     /// </summary>
-    internal P3? FillSource(IStoryWorld w, bool lava, P3 near, IReadOnlySet<P3> exclude)
+    internal P3? FillSource(IStoryWorld w, bool lava, P3 near, IReadOnlySet<P3> exclude, string? pawn = null)
     {
+        var unreachable = pawn == null ? [] : _fillMisses.Where(m => m.Key.Pawn == pawn && m.Value > Now).Select(m => m.Key.At).ToList();
         var placed = new HashSet<P3>();
         var own = new HashSet<P3>();
+        var pools = new HashSet<P3>(); // the colony's infinite sources (built for it): before a channel that happens to refill
         foreach (var b in Builds)
+        {
+            bool pool = b.Spec?["infinite"] is JsonValue iv && iv.TryGetValue<bool>(out var inf) && inf;
             foreach (var g in b.Ghosts)
-                if (StoryConstruction.IsLiquid(g) && g.State == "done") (Refills(w, g.At) ? own : placed).Add(g.At);
+                if (StoryConstruction.IsLiquid(g) && g.State == "done")
+                {
+                    bool refills = Refills(w, g.At);
+                    (refills ? own : placed).Add(g.At);
+                    if (refills && pool) pools.Add(g.At);
+                }
+        }
         P3? best = null;
         double bestScore = double.MaxValue;
         foreach (var s in SourcesNear(w, near, lava))
         {
             if (exclude.Contains(s) || placed.Contains(s) || !IsSourceAt(w, s, lava)) continue; // the scan is up to 10 s old
-            double score = s.Dist(near);
+            // A pond this pawn couldn't get to (or fill at) lately: its other cells too.
+            if (unreachable.Any(u => Math.Abs(u.X - s.X) <= 6 && Math.Abs(u.Z - s.Z) <= 6 && Math.Abs(u.Y - s.Y) <= 3)) continue;
+            // Filled from dry land beside it (live 11-04: "no path to any reach (227,54,406)": a pond down a pit). Its own pool counts
+            // anyway: the colony made it where its pawns work.
+            if (!own.Contains(s) && !HasBank(w, s)) continue;
+            double score = s.Dist(near) + 3 * Math.Abs(s.Y - near.Y);
             if (!lava)
             {
-                if (own.Contains(s)) score -= 1000;
+                if (pools.Contains(s)) score -= 2000;
+                else if (own.Contains(s)) score -= 1000;
                 else if (Refills(w, s)) score -= 500;
                 else if (!Sides.Any(o => IsSourceAt(w, s.Add(o.Dx, 0, o.Dz), false)) && !IsSourceAt(w, s.Add(0, 1, 0), false) && !IsSourceAt(w, s.Add(0, -1, 0), false))
                     continue; // a lone puddle: scooping it uses it up
@@ -328,6 +360,36 @@ public sealed partial class StoryColony
             if (score < bestScore) { bestScore = score; best = s; }
         }
         return best;
+    }
+
+    /// <summary>Somewhere dry to stand beside a source, looking down at it: a side neighbour that is solid ground with two open, dry
+    /// cells over it (or open ground one step up).</summary>
+    private static bool HasBank(IStoryWorld w, P3 s)
+    {
+        bool Dry(P3 c) { int id = w.Block(c.X, c.Y, c.Z).Id; return OpenCell(id) && !StoryBlocks.Liquids.Contains(id); }
+        bool Ground(P3 c) { int id = w.Block(c.X, c.Y, c.Z).Id; return !OpenCell(id) && !StoryBlocks.Liquids.Contains(id); }
+        foreach (var (dx, dz) in Sides)
+        {
+            var n = s.Add(dx, 0, dz);
+            if (Ground(n) && Dry(n.Add(0, 1, 0)) && Dry(n.Add(0, 2, 0))) return true;           // the bank at water level
+            if (Dry(n) && Dry(n.Add(0, 1, 0)) && Ground(n.Add(0, -1, 0))) return true;          // a shallow step beside it
+        }
+        return false;
+    }
+
+    /// <summary>Ponds a pawn failed to fill at (unreachable, protected, nothing visible), until when: skipped for that pawn.</summary>
+    private readonly Dictionary<(string Pawn, P3 At), DateTimeOffset> _fillMisses = new();
+
+    /// <summary>A pour job's <c>fill failed at x,y,z: why</c>: that pond rests 10 minutes for this pawn (the batch's other cells went
+    /// back without a failure); the next pour job fills elsewhere.</summary>
+    private void FillFailed(PawnState p, string note)
+    {
+        int colon = note.IndexOf(':', "fill failed at ".Length);
+        var at = ParseCell(colon > 0 ? note["fill failed at ".Length..colon] : note["fill failed at ".Length..]);
+        if (at is not { } a) return;
+        _fillMisses[(p.Name, a)] = Now + TimeSpan.FromMinutes(10);
+        foreach (var k in _fillMisses.Where(kv => kv.Value <= Now).Select(kv => kv.Key).ToList()) _fillMisses.Remove(k);
+        _log.LogInformation("story {Colony}: {Pawn} couldn't fill a bucket at {At}: {Why}", Id, p.Name, a, colon > 0 ? note[(colon + 1)..].Trim() : "");
     }
 
     /// <summary>A channel's cells in pouring order: every other cell first (no two side by side), then the ones between, which a game
@@ -406,11 +468,12 @@ public sealed partial class StoryColony
         P3? source = null;
         if (full < cells.Count)
         {
-            source = FillSource(w, lava, seed.At, cells.Select(c => c.At).ToHashSet());
+            source = FillSource(w, lava, seed.At, cells.Select(c => c.At).ToHashSet(), p.Name);
             if (source == null && full == 0)
             {
+                bool missed = _fillMisses.Any(m => m.Key.Pawn == p.Name && m.Value > Now);
                 var reason = lava ? $"no lava source within {SourceRadius} blocks to fill a bucket from"
-                    : $"no still water within {SourceRadius} blocks to fill a bucket from (a lake, a pool of 2 or more, or an infinite source; a lone puddle would be used up)";
+                    : $"no still water within {SourceRadius} blocks {(missed ? "that the pawns can reach " : "")}to fill a bucket from (a lake or pool with dry ground beside it, or an infinite source; a lone puddle would be used up)";
                 if (b.Status != "blocked" || b.Reason != reason)
                 {
                     b.Status = "blocked"; b.Reason = reason; b.Rev = Touch();

@@ -87,6 +87,8 @@ import {
   buildItem,
   buildItems,
   cellsArea,
+  failedByBuild,
+  failedCells,
   clampHeight,
   clampLayers,
   contextMenu,
@@ -473,6 +475,26 @@ export function StoryMode() {
     }
   };
 
+  // Retry (docs/web/story-mode.md "Retrying failed build cells"): designations and failed build cells together; a build whose
+  // reason still holds says it at once.
+  const retryFailed = async (ids: Array<string | number>, builds: Array<{ id: string | number; cells?: Array<[number, number, number]> }> | 'all') => {
+    try {
+      if (ids.length) await write('story.designations', { op: 'retry', ids });
+      const outs = builds === 'all'
+        ? [await write('story.builds', { op: 'retry_all' } as never)]
+        : await Promise.all(builds.map((b) => write('story.builds', { op: 'retry', id: b.id, ...(b.cells ? { cells: b.cells } : {}) } as never)));
+      const cells = outs.reduce((n, o) => n + (o.reopened ?? 0), 0);
+      const still = outs.flatMap((o) => o.reasons ?? []);
+      const parts = [ids.length ? `${ids.length} designation${ids.length === 1 ? '' : 's'}` : '', cells ? `${cells} build cell${cells === 1 ? '' : 's'}` : '']
+        .filter(Boolean)
+        .join(' and ');
+      if (still.length) say(`${parts ? `Trying ${parts} again; ` : ''}build ${still[0]!.id} still can't: ${still[0]!.reason}`, 'warn');
+      else say(parts ? `Trying ${parts} again now` : 'Nothing failed there');
+    } catch (e) {
+      say(errorText(e), 'warn');
+    }
+  };
+
   const onTool = async (r: DragResult, shift: boolean) => {
     // A click (under the drag threshold) paints no zone, and a box with nothing in it designates nothing: no request, the tool stays.
     const kind =
@@ -490,14 +512,14 @@ export function StoryMode() {
     }
     if (!shift && tool.kind !== 'zone') setTool({ kind: 'select' }); // zone tools stay in hand (Shift extends a zone)
     if (tool.kind === 'designate' && tool.id === 'retry') {
-      // Failed or resting designations under the box (any height) are tried again now; nothing new is designated.
-      const ids = stalledIn(state?.designations ?? [], [r.rect[0], r.rect[1], r.rect[2], r.rect[3]]);
-      if (!ids.length) return say('No failed or resting designations there');
+      // Failed or resting designations and failed build cells under the box (any height) are tried again now; nothing new is
+      // designated.
+      const rect = [r.rect[0], r.rect[1], r.rect[2], r.rect[3]] as const;
+      const ids = stalledIn(state?.designations ?? [], rect);
+      const cells = failedByBuild(failedCells(state?.ghosts?.blocks ?? [], rect));
+      if (!ids.length && !cells.size) return say('No failed or resting designations or build cells there');
       if (!canWrite) return say('Needs the story role', 'warn');
-      await write('story.designations', { op: 'retry', ids }).then(
-        () => say(`Trying ${ids.length} designation${ids.length === 1 ? '' : 's'} again now`),
-        (e) => say(errorText(e), 'warn'),
-      );
+      await retryFailed(ids, [...cells.values()]);
       return;
     }
     if (tool.kind === 'designate' && hasHeight(tool.id) && r.height) {
@@ -580,7 +602,8 @@ export function StoryMode() {
     }
     if (tool.kind === 'build') {
       const item = buildItem(tool.id, r.a, r.b, build);
-      const pv = preview(item, stock.get(materialKey(item.material).join(':')));
+      // A turned single block keeps its stock key (the item, not the facing meta).
+      const pv = preview(item, stock.get(materialKey(item.kind === 'block' ? build.material : item.material).join(':')));
       if (!pv.valid) return say(pv.reason ?? 'cannot place that', 'warn');
       await run(
         { route: 'story.builds', body: { op: 'add', items: [item] } },
@@ -1284,6 +1307,8 @@ export function StoryMode() {
           <QueuePanel
             builds={state?.builds ?? []}
             canWrite={canWrite}
+            failed={new Map([...failedByBuild(failedCells(state?.ghosts?.blocks ?? []))].map(([k, v]) => [k, v.cells.length]))}
+            onRetry={(bid) => void retryFailed([], [{ id: bid }])}
             onOp={(op, ids) => void write('story.builds', { op, ids }).catch((e) => say(errorText(e), 'warn'))}
           />
         );
@@ -1554,14 +1579,12 @@ export function StoryMode() {
               layers={layers}
               onLayers={(n) => setLayers(clampLayers(n))}
               level={lv}
-              stalled={stalledIn(state?.designations ?? [], null).length}
+              stalled={stalledIn(state?.designations ?? [], null).length + failedCells(state?.ghosts?.blocks ?? []).length}
               onRetryAll={() => {
                 const ids = stalledIn(state?.designations ?? [], null);
-                if (!ids.length) return say('No failed or resting designations');
-                void write('story.designations', { op: 'retry', ids }).then(
-                  () => say(`Trying all ${ids.length} failed designation${ids.length === 1 ? '' : 's'} again now`),
-                  (e) => say(errorText(e), 'warn'),
-                );
+                const cells = failedCells(state?.ghosts?.blocks ?? []).length;
+                if (!ids.length && !cells) return say('No failed or resting designations or build cells');
+                void retryFailed(ids, cells ? 'all' : []);
               }}
               onClose={() => setTool({ kind: 'select' })}
             />

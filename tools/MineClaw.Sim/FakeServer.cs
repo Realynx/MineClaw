@@ -288,7 +288,9 @@ public partial class FakeServer : IDisposable
     private void Handle(IPacket p)
     {
         if (p is PlayerOnGroundPacket or PlayerPositionPacket or PlayerLookPacket or PlayerPositionLookPacket) Interlocked.Increment(ref _flyingPackets);
+        TrackPlacer(p); // the look and feet a placed block's facing reads (FakeServer.Placement.cs)
         if (Hook?.Invoke(p) == true) return;
+        if (TrampleFarmland) TrackTrample(p); // farmland back to dirt under a careless walker / a hard landing (FakeServer.Movement.cs)
         if (MovementChecks && CheckMovement(p)) return; // vanilla "moved too quickly" / "moved wrongly" (FakeServer.Movement.cs)
         HandleMobs(p); // P4: the bot's melee on mobs (server-side charge and crit), orb pickups
         if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
@@ -452,9 +454,10 @@ public partial class FakeServer : IDisposable
                     int placed = place.HeldItem.Id == 295 ? 59 : place.HeldItem.Id; // seeds on farmland plant wheat crops
                     if (placed == 59 && Blocks.GetValueOrDefault((x, y, z)) != 0) break;
                     Blocks[(x, y, z)] = placed;
-                    int meta = place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage
+                    int meta = OrientedMeta(place, placed, place.HeldItem.Damage, x, y, z) // facing, axis, half (FakeServer.Placement.cs)
+                        ?? (place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage
                         : place.HeldItem.Id == MineClaw.Data.Blocks.Torch ? MineClaw.World.PlaceRules.TorchMeta((MineClaw.World.BlockFace)place.Direction) // BlockTorch.postPlace
-                        : 0;
+                        : 0);
                     if (meta != 0) Metas[(x, y, z)] = meta;
                     else Metas.Remove((x, y, z));
                     RegisterStation(x, y, z, placed);

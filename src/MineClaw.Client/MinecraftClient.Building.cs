@@ -51,8 +51,10 @@ public sealed partial class MinecraftClient
         RunActionAsync("place", ct, c => PlaceAgainstCoreAsync(target, face, itemId, damage, yaw, allowHidden, c, half));
 
     /// <summary><see cref="PlaceAgainstAsync"/> under the caller's action lock (the shelter reflex places its box with it).</summary>
+    /// <param name="cursor">An exact cursor (1.12.2: a trapdoor's half, a door's hinge; <see cref="BlockOrientation.Solve"/>) instead of
+    /// the half's or the aim's.</param>
     private async Task<ActionResult> PlaceAgainstCoreAsync(BlockPos target, BlockFace face, int itemId, int? damage, float? yaw, bool allowHidden,
-        CancellationToken c, PlaceHalf half = PlaceHalf.Auto)
+        CancellationToken c, PlaceHalf half = PlaceHalf.Auto, (float X, float Y, float Z)? cursor = null)
         {
             if (Options.Profile.Data.HalvesFollowCursor && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && !PlaceCursor.FaceAllows(face, half))
                 return ActionResult.Fail($"a {(half == PlaceHalf.Top ? "top" : "bottom")} {ItemName(itemId, damage ?? 0)} can't be placed by clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(target - face.Normal())}");
@@ -100,7 +102,7 @@ public sealed partial class MinecraftClient
                 if (yaw is { } want) SendLookNow(want, aimPitch);
                 Send(new PlayerBlockPlacementPacket
                 {
-                    X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(), Cursor = CursorFor(against, face, point,
+                    X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(), Cursor = cursor ?? CursorFor(against, face, point,
                         half == PlaceHalf.Auto && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && face != BlockFace.Bottom ? PlaceHalf.Bottom : half),
                 });
                 Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });

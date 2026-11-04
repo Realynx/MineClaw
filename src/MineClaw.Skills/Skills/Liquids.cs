@@ -187,13 +187,26 @@ public static class BucketOps
     private static readonly (double U, double V)[] FaceGrid =
         [(0, 0), (-0.3, 0), (0.3, 0), (0, -0.3), (0, 0.3), (-0.3, -0.3), (0.3, 0.3), (-0.3, 0.3), (0.3, -0.3)];
 
+    /// <summary>
+    /// A source an empty bucket may take: protection (a farm's irrigation, a generator's fluid, a colony's pool) keeps a source that
+    /// would be used up, never one that refills (an infinite pool's cell comes back at once: Story live 11-04, the colony's own 2×2
+    /// "pawns fill their buckets there" was refused as protected). Lava never refills.
+    /// </summary>
+    public static bool Scoopable(SkillContext ctx, BlockPos p, bool lava) =>
+        FluidRules.IsSource(ctx.World, p, lava) && (!ctx.Protected(p) || !lava && FluidRules.Refills(ctx.World, p));
+
+    /// <summary>A dry place to stand: feet and head out of any liquid, on something that isn't liquid (a bucket job never walks into
+    /// a pond or a channel: live 11-04, pawns pouring a canal walked into it and nearly drowned).</summary>
+    public static bool DryStand(IBlockAccess w, int x, int y, int z) =>
+        !BlockShapes.IsLiquid(w.GetBlock(x, y, z)) && !BlockShapes.IsLiquid(w.GetBlock(x, y + 1, z)) && !BlockShapes.IsLiquid(w.GetBlock(x, y - 1, z));
+
     /// <summary>The source to scoop: <paramref name="pos"/> itself, the source above it (its floor was given), the nearest
     /// unprotected source of the same pool (a flowing cell was given), or the nearest one around me; infinite-pool cells
     /// (they refill) first. The error says why nothing fits (only flowing water / protected sources).</summary>
     public static (BlockPos? Src, string? Why) PickSource(SkillContext ctx, BlockPos? pos, bool lava)
     {
         string what = lava ? "lava" : "water";
-        bool Usable(BlockPos p) => FluidRules.IsSource(ctx.World, p, lava) && !ctx.Protected(p);
+        bool Usable(BlockPos p) => Scoopable(ctx, p, lava);
         double far = Math.Max(12.0, ctx.Options.SearchRadius);
         if (pos is { } p0)
         {
@@ -215,7 +228,7 @@ public static class BucketOps
 
     private static BlockPos? Nearest(SkillContext ctx, Vec3d at, double r, bool lava)
     {
-        var all = ctx.World.FindBlocks(at, r, (i, m) => FluidRules.IsSource(i, m, lava), 256).Where(f => !ctx.Protected(f.Pos)).ToList();
+        var all = ctx.World.FindBlocks(at, r, (i, m) => FluidRules.IsSource(i, m, lava), 256).Where(f => Scoopable(ctx, f.Pos, lava)).ToList();
         if (all.Count == 0) return null;
         // An infinite-pool cell refills, so prefer it over a lone source someone placed (irrigation, a demo).
         return all.OrderBy(f => !lava && FluidRules.Refills(ctx.World, f.Pos) ? 0 : 1).ThenBy(f => f.DistanceSquared).First().Pos;
@@ -236,13 +249,19 @@ public static class BucketOps
         if (!BlockShapes.IsLiquid(id)) return SkillResult.Fail($"no liquid at {SkillJson.Fmt(src)} ({ctx.BlockName(src)})");
         if (ctx.Meta(src) != 0) return SkillResult.Fail($"{SkillJson.Fmt(src)} is {FluidRules.Describe(id, ctx.Meta(src))}, not a source");
         if (!ctx.Has(Items.Bucket)) return SkillResult.Fail("no empty bucket");
-        if (ctx.Protected(src)) return SkillResult.Fail(ctx.ProtectedText(src, $"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)}"));
+        if (!Scoopable(ctx, src, lava)) return SkillResult.Fail(ctx.ProtectedText(src, $"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)}"));
         double reach = Math.Min(4.5, ctx.Game.Reach);
         var sources = lava ? new List<BlockPos> { src } : PoolSources(ctx, src, lava);
+        // Never trade a source that comes back for one that doesn't: when the asked source refills, only it and other refilling
+        // cells of its pool are taken (from the bank another cell of a channel can be the one in view: its end, used up for good).
+        if (!lava && FluidRules.Refills(ctx.World, src))
+            sources = sources.Where(s => s == src || FluidRules.Refills(ctx.World, s)).ToList();
+        // Unprotected sources first; a protected one only because it refills.
+        sources = sources.OrderBy(s => s == src ? 0 : 1).ThenBy(s => ctx.Protected(s) ? 1 : 0).ToList();
         (BlockPos Src, Vec3d Point)? Visible()
         {
             foreach (var s in sources)
-                if (!ctx.Protected(s) && FluidRules.IsSource(ctx.World, s, lava)
+                if (Scoopable(ctx, s, lava) && DryStand(ctx.World, ctx.Me.X, ctx.Me.Y, ctx.Me.Z)
                     && SourceAim(ctx.World, ctx.World.Player.EyePosition, s, reach) is { } a) return (s, a);
             return null;
         }
@@ -252,7 +271,7 @@ public static class BucketOps
             // Distance alone can be satisfied behind a bank or lid. Path to a dry stand with a bucket ray,
             // allowing any unprotected source connected to this pond, not unrelated irrigation nearby.
             var goals = sources.Select(s => (Goal)new GoalFiltered(new GoalWithinReach(s, reach),
-                (x, y, z) => !BlockShapes.IsLiquid(ctx.World.GetBlock(x, y, z))
+                (x, y, z) => DryStand(ctx.World, x, y, z)
                     && SourceAim(ctx.World, GoalUseBlock.EyeAt(ctx.World, x, y, z), s, reach - 0.3) is not null,
                 $"visible source {s}")).ToArray();
             var walk = await ctx.Game.GotoAsync(new GoalAny(goals), GotoOptions.Default, ct).ConfigureAwait(false);
@@ -279,7 +298,7 @@ public static class BucketOps
         queue.Enqueue(src);
         while (queue.TryDequeue(out var p) && seen.Count <= 256)
         {
-            if (FluidRules.IsSource(ctx.World, p, lava) && !ctx.Protected(p)) sources.Add(p);
+            if (Scoopable(ctx, p, lava)) sources.Add(p);
             foreach (var f in BlockFaceExtensions.All)
             {
                 var n = p.Offset(f);
@@ -291,6 +310,10 @@ public static class BucketOps
         return sources;
     }
 
+    /// <summary>A solid face beside or under the cell to click (the pour lands on that face's side: the cell).</summary>
+    public static bool HasPourFace(IBlockAccess w, BlockPos cell) =>
+        BlockFaceExtensions.All.Any(f => cell.Offset(f) is var n && BlockShapes.HasCollision(w, n.X, n.Y, n.Z) && !Aiming.IsReplaceable(w, w.GetBlock(n.X, n.Y, n.Z)));
+
     /// <summary>Pours a full bucket into the empty cell <paramref name="cell"/> by clicking a neighbour's face.</summary>
     public static async Task<SkillResult> EmptyAsync(SkillContext ctx, BlockPos cell, bool lava, CancellationToken ct, Func<string?>? veto = null)
     {
@@ -301,14 +324,22 @@ public static class BucketOps
         if (ctx.Protected(cell)) return SkillResult.Fail(ctx.ProtectedText(cell, SkillJson.Fmt(cell)));
         // The server pours along its own raytrace of my look (from a lower eye while sneaking on 1.12.2): the pour aim keeps the
         // water in the cell from either eye, rather than on the rim of a dug hole.
-        var aim = Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5);
+        if (!HasPourFace(ctx.World, cell))
+            return SkillResult.Fail($"nothing beside or under {SkillJson.Fmt(cell)} to pour against (the {(lava ? "lava" : "water")} would have nothing to hold it)");
+        var me = ctx.Me;
+        var aim = DryStand(ctx.World, me.X, me.Y, me.Z) ? Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5) : null;
         if (aim is null)
         {
-            // Step right next to it: from the side the face you need (often the floor of a hole) is usually hidden.
-            var g = await ctx.Game.GotoAsync(new GoalWithinReach(cell, 2.0), null, ct).ConfigureAwait(false);
-            if (!g.Ok) return SkillResult.Fail($"can't get near {SkillJson.Fmt(cell)}: {g.Message}");
-            aim = Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5);
-            if (aim is null) return SkillResult.Fail($"no block face to pour against at {SkillJson.Fmt(cell)}");
+            // A dry stand from which a face beside the cell is in view (a 1-deep trench: the bank, looking down at its floor, or
+            // across at its far wall). The cell's flowing water never hides a face: the full bucket's ray passes liquids.
+            var stand = new GoalFiltered(new GoalWithinReach(cell, 4.2),
+                (x, y, z) => DryStand(ctx.World, x, y, z) && Aiming.FindPourAim(ctx.World, GoalUseBlock.EyeAt(ctx.World, x, y, z), cell, 4.4) is not null,
+                $"pour stand for {SkillJson.Fmt(cell)}");
+            var g = await ctx.Game.GotoAsync(stand, null, ct).ConfigureAwait(false);
+            me = ctx.Me;
+            aim = DryStand(ctx.World, me.X, me.Y, me.Z) ? Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5) : null;
+            if (aim is null)
+                return SkillResult.Fail($"can't get near {SkillJson.Fmt(cell)}: no dry spot with a face beside it in view ({g.Message})");
         }
         if (veto?.Invoke() is { } why) return SkillResult.Fail($"won't pour from here: {why}");
         await ctx.Game.LookAtAsync(aim.Value.Point, ct).ConfigureAwait(false);

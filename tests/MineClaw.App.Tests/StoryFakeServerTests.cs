@@ -343,35 +343,101 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
     }, s => s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Planks, 64, 0));
 
     /// <summary>
-    /// Water (docs/web/story-mode.md "Water"): a 3-long canal queued as a dig and a pour in one group. The pawn digs the trench, fills
-    /// its bucket at the 2×2 pool (vanilla buckets on the fake server: the use-item raytrace scoops the source it looks at), pours each
-    /// cell aimed at the trench floor, and each cell is done once the world shows a water source there.
+    /// Rotation (docs/web/story-mode.md "Rotation"; Fox 11-04: "they don't take into consideration the direction they're facing when
+    /// they place it"): a pawn builds a small design with a furnace facing east, stairs rising each way, a wall torch and (1.12.2) a log
+    /// on its side, on a fake server that turns placed blocks by the vanilla rules. The world ends with exactly the designed metas.
     /// </summary>
     [Theory]
     [InlineData("b1.8.1")]
     [InlineData("1.12.2")]
-    public Task A_pawn_digs_a_canal_fills_its_bucket_at_a_pool_and_pours_each_cell_a_source(string version) => Colony(version, 1, async x =>
+    public Task A_pawn_builds_a_design_with_each_block_turned_as_drawn(string version) => Colony(version, 1, async x =>
     {
         var c = x.C;
         Only(x, WorkTypes.Build);
-        var canal = new JsonArray(new JsonArray(15, 63, 16), new JsonArray(16, 63, 16), new JsonArray(17, 63, 16));
-        var add = c.BuildsOp("add", new JsonArray(
-            new JsonObject { ["kind"] = "remove", ["blocks"] = canal.DeepClone(), ["group"] = "canal" },
-            new JsonObject { ["kind"] = "water", ["blocks"] = canal.DeepClone(), ["group"] = "canal" }), null);
-        Assert.Null(add.Error);
-        var water = c.Builds.Single(b => b.Kind == "water");
-        Assert.True(await Until(() => water.Status == "done", 150_000), $"canal: {water.BlocksDone}/{water.BlocksTotal} {water.Status} {water.Reason}: " + x.Diag());
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Wood").Error);
+        var chest = c.StorageAt(WoodChest)!;
+        c.AddContents(chest, new Stack(Blocks.Furnace, 0, 1));
+        c.AddContents(chest, new Stack(Blocks.WoodenStairs, 0, 4));
+        c.AddContents(chest, new Stack(Blocks.Torch, 0, 1));
+        c.AddContents(chest, new Stack(Blocks.Log, 0, 1));
+        // The design: [x, y, z, id, meta] (the posts at 13,64,17 and 18,64,17 are the log's and the torch's walls).
+        var want = new List<(int X, int Y, int Z, int Id, int Meta)>
+        {
+            (15, 64, 15, Blocks.Furnace, 5),                                    // front east
+            (17, 64, 15, Blocks.WoodenStairs, 0), (18, 64, 15, Blocks.WoodenStairs, 1), // rising east, west
+            (19, 64, 15, Blocks.WoodenStairs, 2), (20, 64, 15, Blocks.WoodenStairs, 3), // south, north
+            (17, 64, 17, Blocks.Torch, 2),                                      // on the east wall
+        };
+        if (x.Modern) want.Add((14, 64, 17, Blocks.Log, 4));                     // along x
+        var items = new JsonArray(want.Select(w => (JsonNode)new JsonObject
+        {
+            ["kind"] = "block", ["blocks"] = new JsonArray(new JsonArray(w.X, w.Y, w.Z)), ["material"] = new JsonArray(w.Id, w.Meta), ["name"] = "turned",
+        }).ToArray());
+        Assert.Null(c.BuildsOp("add", items, null).Error);
+        Assert.True(await Until(() => c.Builds.All(b => b.Status == "done"), 180_000),
+            string.Join("; ", c.Builds.Select(b => $"{b.Label} {b.Status} {b.Reason}")) + " | " + x.Diag());
         var srv = x.Servers[x.Pawns[0]];
-        foreach (var g in water.Ghosts) Assert.Equal(9, srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)));
-        Assert.NotEmpty(srv.Scoops); // filled at the pool
-        Assert.All(srv.Scoops, s => Assert.InRange(s.X, 4, 5));
-        Assert.Equal(3, srv.Pours.Count(p => p.Z == 16 && p.X is >= 15 and <= 17));
-        Assert.Contains(c.Alerts, a => a.Text.Contains("is done") && a.Text.Contains("water channel"));
+        foreach (var w in want)
+        {
+            Assert.Equal(w.Id, srv.Blocks.GetValueOrDefault((w.X, w.Y, w.Z)));
+            Assert.True(srv.Metas.GetValueOrDefault((w.X, w.Y, w.Z)) == w.Meta, $"{w}: meta {srv.Metas.GetValueOrDefault((w.X, w.Y, w.Z))}");
+        }
+        Assert.DoesNotContain(c.Builds.SelectMany(b => b.Ghosts), g => g.State == "misrotated");
+    }, s =>
+    {
+        s.OrientBlocks = true;
+        s.Blocks[(13, 64, 17)] = Blocks.Cobblestone;
+        s.Blocks[(18, 64, 17)] = Blocks.Cobblestone;
+        var box = s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)];
+        box[0] = new ItemStack((short)Blocks.Furnace, 1, 0);
+        box[1] = new ItemStack((short)Blocks.WoodenStairs, 4, 0);
+        box[2] = new ItemStack((short)Blocks.Torch, 1, 0);
+        box[3] = new ItemStack((short)Blocks.Log, 1, 0);
+    });
+
+    /// <summary>
+    /// Water (docs/web/story-mode.md "Water"; live 11-04 "the pawns have a really difficult time pouring water in the canals"). The
+    /// pawn, holding two full buckets, digs and pours a 2×2 infinite pool (two corners: the fake server's water settles the other two),
+    /// then digs a 4-long canal and pours it every other cell, filling its buckets at the colony's own pool (which refills). The
+    /// first pass runs flowing water into the canal's end before the second pass pours into it: a cell holding flowing water takes
+    /// the pour (aimed at the trench floor from the bank) and becomes a source. Every cell ends a water source; nothing is refused
+    /// as "no block face" or "protected".
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_pawn_pours_an_infinite_pool_then_a_canal_every_other_cell_filling_at_its_own_pool(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        Only(x, WorkTypes.Build);
+        JsonArray Cells(params (int X, int Z)[] cs) => new(cs.Select(p => (JsonNode)new JsonArray(p.X, 63, p.Z)).ToArray());
+        var pool = Cells((4, 16), (5, 16), (4, 17), (5, 17));
+        var canal = Cells((15, 16), (16, 16), (17, 16), (18, 16));
+        Assert.Null(c.BuildsOp("add", new JsonArray(
+            new JsonObject { ["kind"] = "remove", ["blocks"] = pool.DeepClone(), ["group"] = "pool" },
+            new JsonObject { ["kind"] = "water", ["blocks"] = pool.DeepClone(), ["group"] = "pool", ["infinite"] = true },
+            new JsonObject { ["kind"] = "remove", ["blocks"] = canal.DeepClone(), ["group"] = "canal" },
+            new JsonObject { ["kind"] = "water", ["blocks"] = canal.DeepClone(), ["group"] = "canal" }), null).Error);
+        var waters = c.Builds.Where(b => b.Kind == "water").ToList();
+        Assert.True(await Until(() => waters.All(b => b.Status == "done"), 300_000), // generous: the whole Story suite runs beside it
+            string.Join("; ", waters.Select(b => $"{b.Label}: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason}")) + ": " + x.Diag());
+        var srv = x.Servers[x.Pawns[0]];
+        foreach (var g in waters.SelectMany(b => b.Ghosts))
+            Assert.True(srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)) == 9 && srv.Metas.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)) == 0, $"{g.At} is a source");
+        Assert.True(c.Renewable(waters[0]), "the pool refills");
+        Assert.NotEmpty(srv.Scoops); // the canal's buckets were filled at the colony's own pool
+        Assert.All(srv.Scoops, s => Assert.True(s.X is 4 or 5 && s.Z is 16 or 17, $"scooped at {s}"));
+        Assert.Contains(srv.PouredInto, p => p.Z == 16 && p.X is >= 15 and <= 18 && p.Id is 8 or 9 && p.Meta != 0); // into flowing water
+        Assert.True(srv.Pours.Count(p => p.Z == 16 && p.X is >= 15 and <= 18) < 4, "the cell between two sources filled by itself");
+        List<string> lines;
+        lock (x.Log) lines = x.Log.Where(l => l.Contains("no block face") || l.Contains("protected water") || l.Contains("drown")).ToList();
+        Assert.True(lines.Count == 0, string.Join(" | ", lines));
     }, s =>
     {
         s.Buckets = true;
-        foreach (var (px, pz) in new[] { (4, 16), (5, 16), (4, 17), (5, 17) }) s.Blocks[(px, 63, pz)] = Blocks.Water;
-        s.Inventory[38] = new ItemStack((short)Items.Bucket, 1, 0);
+        s.LiquidFlow = true;
+        s.Inventory[38] = new ItemStack((short)Items.WaterBucket, 1, 0);
+        s.Inventory[39] = new ItemStack((short)Items.WaterBucket, 1, 0);
     });
 
     [Theory]

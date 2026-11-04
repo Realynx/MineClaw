@@ -387,9 +387,10 @@ public sealed class GhostState
     /// <summary>False = placed with another ghost (a door's top half): drawn, never a job of its own.</summary>
     public bool Job { get; set; } = true;
     public bool Remove { get; set; }
-    /// <summary>todo | leased | blocked | done | unsupported (a block pawns can't place yet: shown and alerted, never a job).</summary>
+    /// <summary>todo | leased | blocked | done | unsupported (a block pawns can't place yet: shown and alerted, never a job) | misrotated
+    /// (placed, but turned another way than the design: shown over the block with the reason, finished for the build).</summary>
     public string State { get; set; } = "todo";
-    /// <summary>Why an unsupported ghost can't be placed ("crops are planted, not placed").</summary>
+    /// <summary>Why an unsupported ghost can't be placed ("crops are planted, not placed"), or how a misrotated one stands.</summary>
     public string? Reason { get; set; }
     public long Rev { get; set; }
 }
@@ -507,6 +508,8 @@ public sealed class ColonyMeta
     /// <summary>Pawns may pour lava from buckets (Architect "Lava source"; docs/web/story-mode.md "Water"). Off by default; never in a
     /// home zone or beside something that burns.</summary>
     public bool AllowLava { get; set; }
+    /// <summary>The 11-04 canal fix reopened this colony's blocked water cells once on load (StoryColony.BuildRetry.cs); false for older saves.</summary>
+    public bool WaterRetried { get; set; }
     /// <summary>Work roles: named priority templates (StoryColony.Roles.cs). Null = an older save: the built-in roles are seeded.</summary>
     public List<WorkRole>? Roles { get; set; }
 }

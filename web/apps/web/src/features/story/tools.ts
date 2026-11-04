@@ -28,6 +28,7 @@ import {
   waterToolCells,
   type WaterToolId,
 } from '@mineclaw/contracts';
+import { hasFacing, withFacing, type Dir } from '../studio/facing';
 
 type V3 = [number, number, number];
 
@@ -67,7 +68,7 @@ export const DESIGNATE_TOOLS: readonly DesignateTool[] = [
   { id: 'hunt', label: 'Hunt', key: 'KeyN', hint: 'Hunt the animals in the area', entities: 'animal', noun: ['animal', 'animals'] },
   { id: 'deconstruct', label: 'Deconstruct', key: 'KeyK', hint: 'Take apart placed blocks', noun: ['block', 'blocks'] },
   { id: 'cancel', label: 'Cancel', key: 'KeyZ', hint: 'Remove designations in the area', noun: ['designation', 'designations'] },
-  { id: 'retry', label: 'Retry failed', key: 'KeyO', hint: 'Try failed or resting designations in the area again now', noun: ['designation', 'designations'] },
+  { id: 'retry', label: 'Retry failed', key: 'KeyO', hint: 'Try failed or resting designations and failed build cells in the area again now', noun: ['designation', 'designations'] },
   { id: 'forbid', label: 'Forbid', key: 'KeyF', hint: 'Pawns leave these items and doors alone', entities: 'item', noun: ['thing', 'things'] },
   { id: 'allow', label: 'Allow', key: 'KeyJ', hint: 'Undo a forbid', entities: 'item', noun: ['thing', 'things'] },
 ];
@@ -431,7 +432,7 @@ export const STRUCTURE_TOOLS: ReadonlyArray<{ id: StructureId; label: string; hi
   { id: 'window', label: 'Window', hint: 'Click wall cells (drag for a row)', drag: 'line' },
   { id: 'stairs', label: 'Stairs', hint: 'Drag a run; Q/E turns', drag: 'line' },
   { id: 'fence', label: 'Fence', hint: 'Drag a rectangle', drag: 'rect' },
-  { id: 'block', label: 'Single block', hint: 'Click, or drag a box', drag: 'box' },
+  { id: 'block', label: 'Single block', hint: 'Click, or drag a box; Q/E turns a block that faces', drag: 'box' },
   { id: 'remove', label: 'Deconstruct', hint: 'Drag a box to clear', drag: 'box' },
 ];
 
@@ -471,6 +472,19 @@ export interface BuildOpts {
 }
 
 export const FACINGS: readonly StoryFacing[] = ['n', 'e', 's', 'w'];
+
+const FACING_DIR: Record<StoryFacing, Dir> = { n: 'north', e: 'east', s: 'south', w: 'west' };
+
+/** Whether a single block of this material turns with Q / E (it has a facing: a furnace, stairs, a pumpkin, a trapdoor…). */
+export function materialTurns(m: StoryMaterial | null | undefined): boolean {
+  return m !== null && m !== undefined && hasFacing(materialKey(m)[0]);
+}
+
+/** The material as the block faces `facing` ([id, meta]); one with no facing unchanged. */
+export function turnedMaterial(m: StoryMaterial, facing: StoryFacing): StoryMaterial {
+  const [id, meta] = materialKey(m);
+  return hasFacing(id) ? [id, withFacing(id, meta, FACING_DIR[facing])] : m;
+}
 
 /** Q / E: turn the facing (counter)clockwise. */
 export function rotateFacing(f: StoryFacing, dir: 1 | -1): StoryFacing {
@@ -520,8 +534,12 @@ export function buildItem(tool: BuildToolId, a: V3, b: V3, o: BuildOpts): StoryB
       return { kind: 'stairs', area: flat, material: o.material, facing: o.facing };
     case 'fence':
       return { kind: 'fence', area: flat, material: o.material };
-    case 'block':
-      return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] ? { kind: 'block', blocks: [a], material: o.material } : { kind: 'block', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material: o.material };
+    case 'block': {
+      // A block that faces somewhere (a furnace, stairs, a pumpkin…) takes the Q/E turn as its meta: the hologram shows it and the
+      // pawn places it that way.
+      const material = turnedMaterial(o.material, o.facing);
+      return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] ? { kind: 'block', blocks: [a], material } : { kind: 'block', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material };
+    }
     case 'remove':
       return { kind: 'remove', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material: 'stone' };
   }
@@ -942,6 +960,42 @@ export const PAN_KEYS: Record<string, [number, number]> = {
 };
 
 /** A designation that failed or is resting (its target waits out a back-off): what Retry picks up. */
+/** A failed build cell (blocked after its failures, or with a failure's reason): the map's marker and the Retry tool's catch. */
+export interface FailedCell {
+  build: string | number;
+  cell: V3;
+  reason: string;
+}
+
+type GhostLike = readonly [number, number, number, number, number, string | number, string, (string | null)?, (string | null)?];
+
+/** The failed cells among the state's ghosts (never done or unsupported ones), in a grid rect [x1, z1, x2, z2] when given. */
+export function failedCells(ghosts: readonly GhostLike[], rect: readonly [number, number, number, number] | null = null): FailedCell[] {
+  const out: FailedCell[] = [];
+  for (const g of ghosts) {
+    const state = g[6];
+    if (state === 'done' || state === 'unsupported') continue;
+    const reason = g[8] ?? null;
+    if (state !== 'blocked' && !reason) continue;
+    if (rect && (g[0] < Math.min(rect[0], rect[2]) || g[0] > Math.max(rect[0], rect[2]) || g[2] < Math.min(rect[1], rect[3]) || g[2] > Math.max(rect[1], rect[3])))
+      continue;
+    out.push({ build: g[5], cell: [g[0], g[1], g[2]], reason: reason ?? 'blocked after repeated failures' });
+  }
+  return out;
+}
+
+/** Failed cells by build: one retry request per build (`{op:"retry", id, cells}`). */
+export function failedByBuild(cells: readonly FailedCell[]): Map<string, { id: string | number; cells: V3[] }> {
+  const m = new Map<string, { id: string | number; cells: V3[] }>();
+  for (const f of cells) {
+    const k = String(f.build);
+    const e = m.get(k) ?? { id: f.build, cells: [] };
+    e.cells.push(f.cell);
+    m.set(k, e);
+  }
+  return m;
+}
+
 export function isStalled(d: { status?: string | null; retryAt?: unknown; fails?: number | null }): boolean {
   return (d.status !== null && d.status !== undefined && d.status !== 'open') || (d.retryAt !== null && d.retryAt !== undefined) || (d.fails ?? 0) > 0;
 }
