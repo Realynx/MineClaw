@@ -32,4 +32,42 @@ public sealed class StoryLookupGoldenTests
             if (StoryTools.ArmorRank(id) is var r and not 0) sb.Append("rank ").Append(id).Append(' ').Append(r).Append('\n');
         GoldenHash("tool-needs", sb.ToString());
     }
+
+    /// <summary>A small forest: plain trees, a 2x2 trunk, a tree with branches and a crown, a floating log, leaves on their own, a
+    /// stump over water; every block's tree base, the trees of several boxes, and every crop state.</summary>
+    [Fact]
+    public void Tree_bases_trees_in_areas_and_crops()
+    {
+        var w = new FakeStoryWorld();
+        w.Tree(0, 0); w.Tree(3, 0, 6); w.Tree(-4, 2, 2);
+        foreach (var (x, z) in new[] { (8, 8), (9, 8), (8, 9), (9, 9) }) w.Tree(x, z, 7); // a 2x2 trunk
+        for (int y = 64; y < 70; y++) w.Set(0, y, 8, 17); // a tree with branches and a crown
+        w.Set(1, 67, 8, 17); w.Set(2, 68, 8, 17); w.Set(-1, 68, 8, 17); w.Set(0, 69, 9, 17);
+        for (int dx = -2; dx <= 2; dx++) for (int dz = 6; dz <= 10; dz++) if (w.Block(dx, 70, dz).Id == 0) w.Set(dx, 70, dz, 18);
+        w.Set(5, 70, 5, 17); // a floating log
+        w.Set(6, 66, -3, 18); w.Set(6, 67, -3, 161); // leaves on their own
+        w.Set(-6, 63, -6, 9); w.Set(-6, 64, -6, 17); w.Set(-6, 65, -6, 17); // a stump over water
+        var sb = new StringBuilder();
+        for (int x = -7; x <= 10; x++)
+            for (int z = -4; z <= 10; z++)
+                for (int y = 63; y <= 72; y++)
+                    if (StoryBlocks.TreeBaseOf(w, new P3(x, y, z)) is { } b) sb.Append("base ").Append(new P3(x, y, z)).Append(" => ").Append(b).Append('\n');
+        foreach (var a in new[] { Area.Of(-7, 64, -4, 10, 72, 10), Area.Of(-1, 70, 6, 1, 70, 10), Area.Of(8, 66, 8, 9, 66, 9), Area.Of(4, 60, 4, 6, 72, 6),
+                     Area.Of(-7, 64, -7, -5, 66, -5), Area.Of(-3, 71, -3, 3, 71, 3) })
+            foreach (var (below, max) in new[] { (32, 512), (0, 512), (32, 2) })
+                sb.Append("trees ").Append(a.Json().ToJsonString()).Append(' ').Append(below).Append(' ').Append(max).Append(" => ")
+                    .Append(string.Join(" ", StoryBlocks.TreesIn(w, a, below, max))).Append('\n');
+        var cw = new FakeStoryWorld(Release1122GameData.Instance);
+        foreach (var id in new[] { 0, 1, 59, 141, 142, 207, 115, 127, 103, 86, 83, 81, 17 })
+            for (int meta = 0; meta < 16; meta++)
+                foreach (var under in new[] { 0, id })
+                {
+                    cw.Set(0, 64, 0, id, meta);
+                    cw.Set(0, 63, 0, under);
+                    var c = StoryBlocks.Crop(cw, 0, 64, 0);
+                    sb.Append("crop ").Append(id).Append(':').Append(meta).Append(" on ").Append(under).Append(" => ")
+                        .Append(c is { } cc ? $"{cc.Ripe} {cc.Replant}" : "-").Append('\n');
+                }
+        Golden("trees-crops", sb.ToString());
+    }
 }
