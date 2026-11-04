@@ -343,6 +343,8 @@ Notes on specific routes:
 | `world.overlays` | `GET /api/world/overlays` | viewer | query `DimQuery` | `WorldOverlays` | `GET /v1/sup/world/overlays` | /api/world/overlays | – |
 | `world.blocks` | `GET /api/world/blocks` | viewer | query `WorldBlocksQuery` | `WorldBlockDeltas` | `GET /v1/sup/world/blocks` | /api/world/blocks | – |
 | `world.blockEntities` | `GET /api/world/blockentities` | viewer | query `WorldBlockEntitiesQuery` | `WorldBlockEntities` | `GET /v1/sup/world/blockentities` | /api/world/blockentities | – |
+| `world.container` | `GET /api/world/container` | viewer | query `ContainerQuery` | `ContainerView` | `GET /v1/sup/world/containers` | /api/world/containers?dim&x&y&z | – |
+| `world.containers` | `GET /api/world/containers` | viewer | query `ContainerBoxQuery` | `ContainerList` | `GET /v1/sup/world/containers` | /api/world/containers?dim&x0&y0&z0&x1&y1&z1&limit | – |
 | `bots.tile` | `GET /api/bots/:bot/tile.png` | viewer | params `BotParams`<br>query `TileQuery` | png | `GET /v1/render/tile/{bot}.png` | /view/{bot}?mode&radius&xray | – |
 | `bots.now` | `GET /api/bots/:bot/now` | viewer | params `BotParams` | `BotNow` | `GET /v1/sup/viewer/now?bot={bot}` | /api/viewer/now?bot= | – |
 | `bots.inventory` | `GET /api/bots/:bot/inventory` | viewer | params `BotParams` | `BodyInventory` | `GET /v1/sup/viewer/bodies/{bot}/inventory` | /api/viewer/bodies/{name}/inventory | – |
