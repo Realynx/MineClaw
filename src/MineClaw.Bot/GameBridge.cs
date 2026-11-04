@@ -216,13 +216,20 @@ public sealed class GameBridge : IDisposable
         // A spawn that names a clone is a new job for a body already out (live 10-29: "the order to 101 was refused because it's
         // night and there's no food"): only spawns that bring fresh bodies into the night are held.
         bool spawns = steps.Count > 0 && steps.All(s => BotAgent.IsCloneSpawn(s.Tool, s.Input));
-        if (spawns && steps.All(s => NamesBody(s.Input))) return null;
-        if (!night && (spawns || !HostileNear(w))) return null;
-        if (!spawns && FitToGo(w)) return null;
-        if (FoodSupply.HasReady(_c) || steps.All(s => SafeAtNight(s.Tool, s.Input, w))) return null;
+        if (!MustHold(steps, w, night, spawns)) return null;
         string what = FeedFirst();
         if (spawns) return $"night + no food: {what}; not spawning clones into the night now (they'd be pinned at once); at day, or once there is food";
         return $"{(night ? "night" : "mobs near")} + no food: {what}; not starting {steps[0].Tool} now (home ground only: eat, chests, gen)";
+    }
+
+    /// <summary>The job is held: fresh bodies into the night, or (night / mobs near) a hurt or hungry body leaving home ground
+    /// with no safe food.</summary>
+    private bool MustHold(IReadOnlyList<(string Tool, System.Text.Json.JsonElement Input)> steps, WorldState w, bool night, bool spawns)
+    {
+        if (spawns && steps.All(s => NamesBody(s.Input))) return false;
+        if (!night && (spawns || !HostileNear(w))) return false;
+        if (!spawns && FitToGo(w)) return false;
+        return !FoodSupply.HasReady(_c) && !steps.All(s => SafeAtNight(s.Tool, s.Input, w));
     }
 
     private static bool NamesBody(System.Text.Json.JsonElement input) =>
@@ -266,11 +273,18 @@ public sealed class GameBridge : IDisposable
         if (tool is not ("goto" or "follow") || input.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
         if (w.Player.Health <= LowHealthLine) return false;
         var me = w.Player.Position;
-        string? Prop(string n) => input.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() : null;
-        var to = (tool == "follow" ? Prop("player") : Prop("to"))?.Trim();
+        var to = StrProp(input, tool == "follow" ? "player" : "to")?.Trim();
         if (string.IsNullOrEmpty(to)) return false;
         if (w.Entities.FindPlayer(to) is { } pe) return pe.Position.DistanceTo(me) <= PlayerHelpRadius;
-        if (tool != "goto") return false;
+        return tool == "goto" && PointNearPlayer(to, w, me);
+    }
+
+    private static string? StrProp(System.Text.Json.JsonElement input, string n) =>
+        input.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>"x,y,z" within <see cref="PlayerHelpRadius"/> with another player within 6 of it.</summary>
+    private bool PointNearPlayer(string to, WorldState w, Vec3d me)
+    {
         var parts = to.Split(',', StringSplitOptions.TrimEntries);
         if (parts.Length != 3 || !double.TryParse(parts[0], System.Globalization.CultureInfo.InvariantCulture, out var x)
             || !double.TryParse(parts[1], System.Globalization.CultureInfo.InvariantCulture, out var y)
@@ -291,12 +305,14 @@ public sealed class GameBridge : IDisposable
         if (input.ValueKind != System.Text.Json.JsonValueKind.Object || !input.TryGetProperty("to", out var to) || to.ValueKind != System.Text.Json.JsonValueKind.String)
             return false;
         var t = (to.GetString() ?? "").Trim().ToLowerInvariant();
-        if (t is "home" or "spawn" or "bed" or "house" or "the house" or "the chest" or "chest") return true;
+        if (HomeWords.Contains(t)) return true;
         var parts = t.Split(',', StringSplitOptions.TrimEntries);
         if (parts.Length != 3 || !int.TryParse(parts[0], out var x) || !int.TryParse(parts[2], out var z)) return false;
         var sp = w.Spawn;
         return (x - sp.X) * (x - sp.X) + (z - sp.Z) * (z - sp.Z) <= HomeRadius * HomeRadius;
     }
+
+    private static readonly HashSet<string> HomeWords = new(StringComparer.Ordinal) { "home", "spawn", "bed", "house", "the house", "the chest", "chest" };
 
     /// <summary>Food into the inventory (chests, crafting, cooking), no eating at a full bar: the night gate's reflex.</summary>
     private async Task FetchFoodAsync()
@@ -455,25 +471,36 @@ public sealed class GameBridge : IDisposable
         }
         if (IsClone)
         {
-            // Only main's account chats and main's router hears public chat (main sees the same lines): a clone keeps just the
-            // whispers to its own account, for the brain, tagged with this body.
-            try
-            {
-                var wm = _rt.Chat.Parse(raw);
-                if (wm.Kind == Agent.Chat.ChatKind.Whisper && wm.Player is { Length: > 0 } who && !who.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)
-                    && _rt.Chat.IsHiveBot?.Invoke(who) != true && wm.Text.Length > 0)
-                    Post(GameEvent.Whisper(who, wm.Text) with { AddressConfidence = 1 });
-            }
-            catch (Exception ex) { _log.LogDebug(ex, "clone whisper routing failed for {Line}", raw); }
+            CloneWhisper(raw);
             return;
         }
-        if (Hunger is { } h && PlayerLine.Match(MineClaw.Client.ChatText.StripColours(raw)) is { Success: true } m
-            && !m.Groups[1].Value.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) && _rt.Chat.IsHiveBot?.Invoke(m.Groups[1].Value) != true
-            && h.OnChat(m.Groups[2].Value))
-            _log.LogInformation("hunger acknowledged by {Player}: {Text}", m.Groups[1].Value, m.Groups[2].Value);
+        if (Hunger is { } h) HungerAck(h, raw);
         try { _rt.Chat.OnServerChat(raw); }
         catch (Exception ex) { _log.LogWarning(ex, "chat routing failed for {Line}", raw); }
     }
+
+    /// <summary>Only main's account chats and main's router hears public chat (main sees the same lines): a clone keeps just the
+    /// whispers to its own account, for the brain, tagged with this body.</summary>
+    private void CloneWhisper(string raw)
+    {
+        try
+        {
+            var wm = _rt.Chat.Parse(raw);
+            if (wm.Kind == Agent.Chat.ChatKind.Whisper && wm.Player is { Length: > 0 } who && !IsSelfOrHive(who) && wm.Text.Length > 0)
+                Post(GameEvent.Whisper(who, wm.Text) with { AddressConfidence = 1 });
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "clone whisper routing failed for {Line}", raw); }
+    }
+
+    /// <summary>A player's line may acknowledge the hunger ask.</summary>
+    private void HungerAck(HungerLatch h, string raw)
+    {
+        if (PlayerLine.Match(MineClaw.Client.ChatText.StripColours(raw)) is { Success: true } m && !IsSelfOrHive(m.Groups[1].Value)
+            && h.OnChat(m.Groups[2].Value))
+            _log.LogInformation("hunger acknowledged by {Player}: {Text}", m.Groups[1].Value, m.Groups[2].Value);
+    }
+
+    private bool IsSelfOrHive(string who) => who.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) || _rt.Chat.IsHiveBot?.Invoke(who) == true;
 
     private void Post(GameEvent? e)
     {
@@ -521,18 +548,23 @@ public sealed class GameBridge : IDisposable
     {
         DangerKind.FallingIntoVoid => GameEvent.VoidFall(y),
         DangerKind.HighFall => GameEvent.Notice(d.Message, EventPriority.High), // fall damage ahead, not the void
-        DangerKind.LowHealth => new GameEvent(EventKind.LowHealth, d.Message.Contains("/20") ? d.Message : $"hp {health}/20 {d.Message}",
-            priority: d.Critical ? EventPriority.Critical : EventPriority.High),
+        DangerKind.LowHealth => LowHealthEvent(d, health),
         DangerKind.Lava => new GameEvent(EventKind.LowHealth, $"hp {health}/20 {d.Message}", priority: EventPriority.High),
         // The reflex is already surfacing: the brain hears why its job stopped (the cause is in the text).
         DangerKind.Drowning => new GameEvent(EventKind.LowHealth, $"hp {health}/20 {d.Message}", priority: EventPriority.High),
         DangerKind.HostileNearby => GameEvent.Notice(d.Message, EventPriority.Low),
         // Survival reflex "hungry, no food" (re-sent only when it gets worse): 1 hungry, 2 starving, 3 food 0. It wakes the brain
         // but never interrupts a job (live 2026-10-27: "starving" cancelled 67's mining): only hp at the low line makes it urgent.
-        DangerKind.Hunger => GameEvent.Notice(d.Message, d.Level >= 3 && health <= HungerLatch.LowHealth ? EventPriority.High
-            : d.Level >= 2 ? EventPriority.Normal : EventPriority.Low),
+        DangerKind.Hunger => GameEvent.Notice(d.Message, HungerPriority(d.Level, health)),
         _ => GameEvent.Notice(d.Message, EventPriority.Background), // Damage: context only
     };
+
+    private static GameEvent LowHealthEvent(DangerEvent d, int health) =>
+        new(EventKind.LowHealth, d.Message.Contains("/20") ? d.Message : $"hp {health}/20 {d.Message}",
+            priority: d.Critical ? EventPriority.Critical : EventPriority.High);
+
+    private static EventPriority HungerPriority(int level, int health) =>
+        level >= 3 && health <= HungerLatch.LowHealth ? EventPriority.High : level >= 2 ? EventPriority.Normal : EventPriority.Low;
 
     /// <summary>Kicks ride along as context (the host reconnects; there is nothing to say while offline).</summary>
     public static GameEvent MapKick(string reason) => GameEvent.Notice($"kicked: {reason}; reconnecting", EventPriority.Background);
@@ -548,11 +580,19 @@ public sealed class GameBridge : IDisposable
         var vitals = c.VitalsKnown ? SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems, null, w.Player.Effects) : "hp/food loading…";
         var s = $"pos {Locations.Fmt(p.Position)} {vitals} held {heldText} {(w.IsNight ? "night" : "day")}";
         if (w.Dimension != 0) s = $"IN THE {DimName(w.Dimension).ToUpperInvariant()} " + s; // never mistaken for the island
-        // Breath (both versions): only while the head is under water or the air is short (live 10-29: drowned, never shown).
+        s += BreathAndGround(c, w, p.Position);
+        if (c.CurrentAction is { } a) s += " | doing " + a;
+        return s;
+    }
+
+    /// <summary>Breath (both versions): only while the head is under water or the air is short (live 10-29: drowned, never
+    /// shown); then ground loading / over the void.</summary>
+    private static string BreathAndGround(IGameClient c, WorldState w, Vec3d pos)
+    {
+        var s = "";
         if (w.Player.HeadUnderWater || w.Player.Air < Breath.MaxAir) s += " " + Breath.Text(w.Player.Air) + (w.Player.HeadUnderWater ? " HEAD UNDER WATER" : "");
         if (!c.GroundKnown) s += " ground loading…";
-        else if (w.IsPlayerOverVoid(p.Position)) s += " OVER VOID";
-        if (c.CurrentAction is { } a) s += " | doing " + a;
+        else if (w.IsPlayerOverVoid(pos)) s += " OVER VOID";
         return s;
     }
 }

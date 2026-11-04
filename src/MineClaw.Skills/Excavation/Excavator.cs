@@ -75,16 +75,23 @@ public sealed class ExcavateReport
         var sb = new System.Text.StringBuilder($"{what}: dug {Dug}");
         if (Tunnel > 0) sb.Append($" (incl. {Tunnel} access)");
         sb.Append($", sealed {Sealed}, torches {Torches}, left {Left.Count}");
+        AppendDetails(sb);
+        if (Unchanged) sb.Append("; 0 changes: target volume already clear");
+        if (Stop != null) sb.Append($"; stopped: {Stop}");
+        if (Gained.Length > 0) sb.Append($" ({Gained})");
+        return sb.ToString();
+    }
+
+    private bool Unchanged => Dug == 0 && Sealed == 0 && Torches == 0 && Left.Count == 0 && Stop == null;
+
+    /// <summary>The two commonest reasons cells were left, the openings not sealed, the ores taken.</summary>
+    private void AppendDetails(System.Text.StringBuilder sb)
+    {
         if (Left.Count > 0)
             sb.Append(" (").Append(string.Join("; ", Left.GroupBy(l => l.Value).OrderByDescending(g => g.Count()).Take(2)
                 .Select(g => $"{g.Count()} {g.Key} e.g. {SkillJson.Fmt(g.First().Key)}"))).Append(')');
         if (Unsealed.Count > 0) sb.Append($"; {Unsealed.Count} opening{(Unsealed.Count == 1 ? "" : "s")} not sealed e.g. {SkillJson.Fmt(Unsealed[0])}");
         if (Ores.Count > 0) sb.Append("; ores: ").Append(string.Join(", ", Ores.OrderByDescending(o => o.Value).Select(o => $"{o.Key} {o.Value}")));
-        if (Dug == 0 && Sealed == 0 && Torches == 0 && Left.Count == 0 && Stop == null)
-            sb.Append("; 0 changes: target volume already clear");
-        if (Stop != null) sb.Append($"; stopped: {Stop}");
-        if (Gained.Length > 0) sb.Append($" ({Gained})");
-        return sb.ToString();
     }
 }
 
@@ -144,8 +151,7 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
             await DigLoopAsync(ct).ConfigureAwait(false);
             if (_o.Seal)
                 foreach (var c in vol.Phase.Where(kv => kv.Value <= _reached).Select(kv => kv.Key).Where(Clear))
-                    foreach (var f in BlockFaceExtensions.All)
-                        if (IsOpening(c.Offset(f))) _pending.Add(c.Offset(f)); // cells that were already open (a cave the box cut)
+                    QueueOpenings(c); // cells that were already open (a cave the box cut)
             if (_o.Seal && _pending.Count > 0) await SealAllAsync(_pending.ToList(), ct).ConfigureAwait(false);
             if (_o.Torches && _dug.Count > 0) await LightAsync(ct).ConfigureAwait(false);
         }
@@ -204,126 +210,205 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
 
     // ------------------------------------------------------------------ the dig loop
 
+    private int _stopPhase = int.MaxValue, _consecutive, _tunnels, _litAt;
+    private int? _lastPhase;
+
+    /// <summary>Digs step by step until no target cell is left, the dig cap or time budget is used, or a step stops it.</summary>
     private async Task DigLoopAsync(CancellationToken ct)
     {
         var until = DateTime.UtcNow + _o.Budget;
-        int stopPhase = int.MaxValue, consecutive = 0, tunnels = 0, litAt = 0;
-        int? lastPhase = null;
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            if (_r.Dug >= _o.MaxDigs) { _r.Stop = $"dig cap {_o.MaxDigs} reached (run again to go on)"; return; }
-            if (DateTime.UtcNow > until) { _r.Stop = $"time budget {_o.Budget.TotalMinutes:0} min used (run again to go on)"; return; }
-            var todo = new List<BlockPos>();
-            foreach (var (c, k) in vol.Phase)
-            {
-                if (k > stopPhase || _r.Left.ContainsKey(c) || Clear(c)) continue;
-                if (BlockShapes.IsLiquid(W.GetBlock(c))) { _r.Left[c] = "liquid in it"; continue; }
-                if (!W.IsLoaded(c.X, c.Z)) { _r.Left[c] = "not loaded"; continue; }
-                todo.Add(c);
-            }
-            if (todo.Count == 0) return;
-            int phase = vol.Ordered ? todo.Min(c => vol.Phase[c]) : int.MaxValue;
-            if (vol.Ordered && lastPhase is { } lp && phase > lp && _o.Torches && _dug.Count - litAt >= 12)
-            {
-                await LightAsync(ct).ConfigureAwait(false); // a finished stretch of stairs is lit before going deeper
-                litAt = _dug.Count;
-            }
-            if (vol.Ordered && phase != lastPhase && !await FloorsAsync(phase, ct).ConfigureAwait(false)) stopPhase = phase;
-            lastPhase = phase;
-            _reached = vol.Ordered ? phase : int.MaxValue;
-            var eligible = vol.Ordered ? todo.Where(c => vol.Phase[c] == phase).ToList() : todo;
-            var me = StartCell();
-            var flood = Pathfinder.Explore(W, me, Walk, 4000, ct);
-            var pick = Choose(eligible, flood);
-            if (pick is null)
-            {
-                if (_o.Tunnel && tunnels < 4 && PlanTunnel(flood, eligible) is { Count: > 0 } tunnel)
-                {
-                    tunnels++;
-                    int at = vol.Ordered ? phase : 0;
-                    foreach (var c in tunnel) { vol.Add(c, at); vol.Access.Add(c); }
-                    W.KeepAir.Add(vol.Label, Dim, tunnel);
-                    _r.Tunnel += tunnel.Count(c => !Clear(c));
-                    continue;
-                }
-                foreach (var c in eligible) _r.Left[c] = "no stand reaches it";
-                if (vol.Ordered) stopPhase = phase;
-                continue;
-            }
-            var (cell, stand) = pick.Value;
-            if (stand != me)
-            {
-                var g = await ctx.Game.GotoAsync(new GoalBlock(stand), WalkGoto, ct).ConfigureAwait(false);
-                if (!g.Ok)
-                {
-                    _badStands.Add(stand);
-                    if (++consecutive >= 8) { _r.Stop = $"can't move inside the dig: {g.Message}"; return; }
-                    continue;
-                }
-                if (StartCell() != stand) { _badStands.Add(stand); continue; }
-            }
-            // Fall rule: probe the floor before opening a cell onto it.
-            BlockPos? hole = null;
-            var floor = cell.Down();
-            if (!vol.Contains(floor) && Open(floor) && !Excluded(floor))
-            {
-                var hazard = Hazard(floor);
-                if (!(_o.Seal && Block() is not null) && hazard != null)
-                {
-                    _r.Left[cell] = hazard + (_o.Seal ? ", no block to seal it" : "");
-                    if (vol.Ordered) stopPhase = vol.Phase[cell];
-                    continue;
-                }
-                hole = floor;
-            }
-            // The pick broke mid-dig (live 10-30: 98 → 64 on one failed job): another from chests/crafting, else stop rather
-            // than hand-dig rock for nothing.
-            if (_hadPick && NeedsPick(W.GetBlock(cell)) && !HasPick())
-            {
-                await PickaxeAsync(ctx, ct).ConfigureAwait(false);
-                if (!HasPick()) { _r.Stop = "no pickaxe left (the last one broke)"; return; }
-            }
-            var r = await ctx.Game.DigAsync(cell, ct).ConfigureAwait(false);
-            if (!r.Ok)
-            {
-                _fails[cell] = _fails.GetValueOrDefault(cell) + 1;
-                if (Permanent(r.Message) || _fails[cell] >= 2) _r.Left[cell] = Short(r.Message);
-                if (++consecutive >= 8) { _r.Stop = Short(r.Message); return; }
-                continue;
-            }
-            consecutive = 0;
-            if (!Clear(cell))
-            {
-                // Something fell in (gravel/sand above): dig it again next round, up to 8 times.
-                _r.Refills++;
-                if ((_refills[cell] = _refills.GetValueOrDefault(cell) + 1) > 8) _r.Left[cell] = "keeps refilling (gravel/sand above)";
-                continue;
-            }
-            _r.Dug++;
-            _dug.Add(cell);
-            if (_oreAt.Remove(cell, out var ore)) _r.Ores[ore] = _r.Ores.GetValueOrDefault(ore) + 1;
-            if (_o.Ores) FollowOres(cell);
-            if (hole is { } h && Open(h))
-            {
-                if (!await SealAsync(h, ct).ConfigureAwait(false))
-                {
-                    _r.Left[cell] = $"floor hole at {SkillJson.Fmt(h)} ({Hazard(h) ?? "drop 1"}) not sealed";
-                    if (vol.Ordered) stopPhase = vol.Phase[cell];
-                }
-            }
-            if (_o.Seal)
-            {
-                foreach (var f in BlockFaceExtensions.All)
-                    if (IsOpening(cell.Offset(f))) _pending.Add(cell.Offset(f));
-                await SealNearbyAsync(ct).ConfigureAwait(false);
-            }
-            if (!vol.Ordered && _o.Torches && _dug.Count - litAt >= 32)
-            {
-                await LightAsync(ct).ConfigureAwait(false);
-                litAt = _dug.Count;
-            }
+            if (OutOfBudget(until)) return;
+            var todo = Todo();
+            if (todo.Count == 0 || !await DigStepAsync(todo, ct).ConfigureAwait(false)) return;
         }
+    }
+
+    private bool OutOfBudget(DateTime until)
+    {
+        if (_r.Dug >= _o.MaxDigs) _r.Stop = $"dig cap {_o.MaxDigs} reached (run again to go on)";
+        else if (DateTime.UtcNow > until) _r.Stop = $"time budget {_o.Budget.TotalMinutes:0} min used (run again to go on)";
+        else return false;
+        return true;
+    }
+
+    /// <summary>The target cells still to dig this round (a liquid or an unloaded cell is left with why).</summary>
+    private List<BlockPos> Todo()
+    {
+        var todo = new List<BlockPos>();
+        foreach (var (c, k) in vol.Phase)
+        {
+            if (k > _stopPhase || _r.Left.ContainsKey(c) || Clear(c)) continue;
+            if (BlockShapes.IsLiquid(W.GetBlock(c))) _r.Left[c] = "liquid in it";
+            else if (!W.IsLoaded(c.X, c.Z)) _r.Left[c] = "not loaded";
+            else todo.Add(c);
+        }
+        return todo;
+    }
+
+    /// <summary>Picks the next cell and its stand, walks there, probes its floor and digs it; false stops the dig.</summary>
+    private async Task<bool> DigStepAsync(List<BlockPos> todo, CancellationToken ct)
+    {
+        int phase = vol.Ordered ? todo.Min(c => vol.Phase[c]) : int.MaxValue;
+        await EnterPhaseAsync(phase, ct).ConfigureAwait(false);
+        var eligible = vol.Ordered ? todo.Where(c => vol.Phase[c] == phase).ToList() : todo;
+        var me = StartCell();
+        var flood = Pathfinder.Explore(W, me, Walk, 4000, ct);
+        if (Choose(eligible, flood) is not { } pick)
+        {
+            NoStand(flood, eligible, phase);
+            return true;
+        }
+        var (cell, stand) = pick;
+        if (stand != me && await WalkToStandAsync(stand, ct).ConfigureAwait(false) is { } walked) return walked;
+        if (!ProbeFloor(cell, out var hole)) return true;
+        if (!await EnsurePickAsync(cell, ct).ConfigureAwait(false)) return false;
+        var r = await ctx.Game.DigAsync(cell, ct).ConfigureAwait(false);
+        if (!r.Ok) return DigFailed(cell, r.Message);
+        _consecutive = 0;
+        if (!Clear(cell))
+        {
+            Refilled(cell);
+            return true;
+        }
+        await AfterDugAsync(cell, hole, ct).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>Entering a phase of an ordered volume: a finished stretch of stairs is lit before going deeper, and open floors
+    /// of the new phase are sealed (or the descent stops there).</summary>
+    private async Task EnterPhaseAsync(int phase, CancellationToken ct)
+    {
+        if (StretchToLight(phase))
+        {
+            await LightAsync(ct).ConfigureAwait(false);
+            _litAt = _dug.Count;
+        }
+        if (vol.Ordered && phase != _lastPhase && !await FloorsAsync(phase, ct).ConfigureAwait(false)) _stopPhase = phase;
+        _lastPhase = phase;
+        _reached = vol.Ordered ? phase : int.MaxValue;
+    }
+
+    private bool StretchToLight(int phase) =>
+        vol.Ordered && _lastPhase is { } lp && phase > lp && _o.Torches && _dug.Count - _litAt >= 12;
+
+    /// <summary>No stand reaches any eligible cell: tunnel in (up to 4 passages), else leave them and stop descending.</summary>
+    private void NoStand(Dictionary<BlockPos, double> flood, List<BlockPos> eligible, int phase)
+    {
+        if (_o.Tunnel && _tunnels < 4 && PlanTunnel(flood, eligible) is { Count: > 0 } tunnel)
+        {
+            AddTunnel(tunnel, phase);
+            return;
+        }
+        foreach (var c in eligible) _r.Left[c] = "no stand reaches it";
+        if (vol.Ordered) _stopPhase = phase;
+    }
+
+    private void AddTunnel(List<BlockPos> tunnel, int phase)
+    {
+        _tunnels++;
+        int at = vol.Ordered ? phase : 0;
+        foreach (var c in tunnel) { vol.Add(c, at); vol.Access.Add(c); }
+        W.KeepAir.Add(vol.Label, Dim, tunnel);
+        _r.Tunnel += tunnel.Count(c => !Clear(c));
+    }
+
+    /// <summary>Walks to the chosen stand: null when there, true to pick again (a bad stand), false to stop (8 failed walks).</summary>
+    private async Task<bool?> WalkToStandAsync(BlockPos stand, CancellationToken ct)
+    {
+        var g = await ctx.Game.GotoAsync(new GoalBlock(stand), WalkGoto, ct).ConfigureAwait(false);
+        if (g.Ok && StartCell() == stand) return null;
+        _badStands.Add(stand);
+        if (g.Ok || ++_consecutive < 8) return true;
+        _r.Stop = $"can't move inside the dig: {g.Message}";
+        return false;
+    }
+
+    /// <summary>Fall rule: probe the floor before opening a cell onto it. False leaves the cell (a hazard I can't seal);
+    /// <paramref name="hole"/> is the open floor to seal right after the dig.</summary>
+    private bool ProbeFloor(BlockPos cell, out BlockPos? hole)
+    {
+        hole = null;
+        var floor = cell.Down();
+        if (!OpenForeignFloor(floor)) return true;
+        var hazard = Hazard(floor);
+        if (!(_o.Seal && Block() is not null) && hazard != null)
+        {
+            _r.Left[cell] = Unsealable(hazard);
+            if (vol.Ordered) _stopPhase = vol.Phase[cell];
+            return false;
+        }
+        hole = floor;
+        return true;
+    }
+
+    /// <summary>An open floor cell outside the volume, its openings and must-be-air: a drop to check before digging over it.</summary>
+    private bool OpenForeignFloor(BlockPos floor) => !vol.Contains(floor) && Open(floor) && !Excluded(floor);
+
+    private string Unsealable(string hazard) => hazard + (_o.Seal ? ", no block to seal it" : "");
+
+    /// <summary>The pick broke mid-dig (live 10-30: 98 → 64 on one failed job): another from chests/crafting, else stop rather
+    /// than hand-dig rock for nothing.</summary>
+    private async Task<bool> EnsurePickAsync(BlockPos cell, CancellationToken ct)
+    {
+        if (!_hadPick || !NeedsPick(W.GetBlock(cell)) || HasPick()) return true;
+        await PickaxeAsync(ctx, ct).ConfigureAwait(false);
+        if (HasPick()) return true;
+        _r.Stop = "no pickaxe left (the last one broke)";
+        return false;
+    }
+
+    /// <summary>A refused dig: the cell is left after 2 tries (at once when the refusal is permanent); 8 in a row stop the dig.</summary>
+    private bool DigFailed(BlockPos cell, string message)
+    {
+        _fails[cell] = _fails.GetValueOrDefault(cell) + 1;
+        if (Permanent(message) || _fails[cell] >= 2) _r.Left[cell] = Short(message);
+        if (++_consecutive < 8) return true;
+        _r.Stop = Short(message);
+        return false;
+    }
+
+    /// <summary>Something fell in (gravel/sand above): dig it again next round, up to 8 times.</summary>
+    private void Refilled(BlockPos cell)
+    {
+        _r.Refills++;
+        if ((_refills[cell] = _refills.GetValueOrDefault(cell) + 1) > 8) _r.Left[cell] = "keeps refilling (gravel/sand above)";
+    }
+
+    /// <summary>A cell is dug: count it (and its ore), follow ores, seal its floor hole and the openings beside it, torch every 32.</summary>
+    private async Task AfterDugAsync(BlockPos cell, BlockPos? hole, CancellationToken ct)
+    {
+        _r.Dug++;
+        _dug.Add(cell);
+        if (_oreAt.Remove(cell, out var ore)) _r.Ores[ore] = _r.Ores.GetValueOrDefault(ore) + 1;
+        if (_o.Ores) FollowOres(cell);
+        if (hole is { } h && Open(h)) await SealHoleAsync(cell, h, ct).ConfigureAwait(false);
+        if (_o.Seal)
+        {
+            QueueOpenings(cell);
+            await SealNearbyAsync(ct).ConfigureAwait(false);
+        }
+        if (!vol.Ordered && _o.Torches && _dug.Count - _litAt >= 32)
+        {
+            await LightAsync(ct).ConfigureAwait(false);
+            _litAt = _dug.Count;
+        }
+    }
+
+    private async Task SealHoleAsync(BlockPos cell, BlockPos h, CancellationToken ct)
+    {
+        if (await SealAsync(h, ct).ConfigureAwait(false)) return;
+        _r.Left[cell] = $"floor hole at {SkillJson.Fmt(h)} ({Hazard(h) ?? "drop 1"}) not sealed";
+        if (vol.Ordered) _stopPhase = vol.Phase[cell];
+    }
+
+    /// <summary>Openings into foreign air around <paramref name="cell"/>, queued to seal.</summary>
+    private void QueueOpenings(BlockPos cell)
+    {
+        foreach (var f in BlockFaceExtensions.All)
+            if (IsOpening(cell.Offset(f))) _pending.Add(cell.Offset(f));
     }
 
     /// <summary>
@@ -337,9 +422,9 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
         {
             if (k != phase || !Clear(c)) continue;
             var floor = c.Down();
-            if (vol.Contains(floor) || !Open(floor) || Excluded(floor)) continue;
+            if (!OpenForeignFloor(floor)) continue;
             if (_o.Seal && await SealAsync(floor, ct).ConfigureAwait(false)) continue;
-            if (Hazard(floor) is { } h) { _r.Left[c] = $"{h}{(_o.Seal ? ", no block to seal it" : "")}"; return false; }
+            if (Hazard(floor) is { } h) { _r.Left[c] = Unsealable(h); return false; }
         }
         return true;
     }
@@ -357,94 +442,152 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
         {
             if (!Exposed(t)) continue;
             double tier = 3 * (top - t.Y);
-            if (tier >= bestScore) continue;
-            for (int dx = -4; dx <= 4; dx++)
-            for (int dy = -5; dy <= 3; dy++)
-            for (int dz = -4; dz <= 4; dz++)
-            {
-                var s = t.Offset(dx, dy, dz);
-                if (!flood.TryGetValue(s, out double g) || _badStands.Contains(s)) continue;
-                if (s == t || s.Up() == t || s.Down() == t) continue;
-                double score = g + tier;
-                if (score >= bestScore) continue;
-                var eye = new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5);
-                if (eye.DistanceTo(t.Center) > reach + 0.9) continue;
-                if (Aiming.FindDigAim(W, eye, t, reach) is null) continue;
-                best = (t, s);
-                bestScore = score;
-            }
+            if (tier < bestScore) BestStand(t, tier, flood, reach, ref best, ref bestScore);
         }
         return best;
+    }
+
+    /// <summary>The cheapest stand within 4 (5 below, 3 above) of <paramref name="t"/> that beats <paramref name="bestScore"/>.</summary>
+    private void BestStand(BlockPos t, double tier, Dictionary<BlockPos, double> flood, double reach,
+        ref (BlockPos, BlockPos)? best, ref double bestScore)
+    {
+        for (int dx = -4; dx <= 4; dx++)
+        for (int dy = -5; dy <= 3; dy++)
+        for (int dz = -4; dz <= 4; dz++)
+        {
+            var s = t.Offset(dx, dy, dz);
+            if (!flood.TryGetValue(s, out double g) || _badStands.Contains(s) || OnColumn(s, t)) continue;
+            double score = g + tier;
+            if (score >= bestScore || !SeesToDig(s, t, reach)) continue;
+            best = (t, s);
+            bestScore = score;
+        }
+    }
+
+    /// <summary>The stand is the cell, or right above or below it.</summary>
+    private static bool OnColumn(BlockPos s, BlockPos t) => s == t || s.Up() == t || s.Down() == t;
+
+    private bool SeesToDig(BlockPos s, BlockPos t, double reach)
+    {
+        var eye = new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5);
+        return eye.DistanceTo(t.Center) <= reach + 0.9 && Aiming.FindDigAim(W, eye, t, reach) is not null;
     }
 
     /// <summary>
     /// A 1×2 passage (flat, a 3-high step down, or a step up) from any cell I can walk to, to the nearest target cell: the
     /// fewest blocks dug, never a floor of another excavation, a protected, unbreakable or liquid cell, or one beside lava.
     /// </summary>
-    private List<BlockPos>? PlanTunnel(Dictionary<BlockPos, double> flood, List<BlockPos> targets)
+    private List<BlockPos>? PlanTunnel(Dictionary<BlockPos, double> flood, List<BlockPos> targets) =>
+        new TunnelSearch(this, targets, ctx.Me).Find(flood);
+
+    /// <summary>Dijkstra over 1×2 passage steps from the walkable cells to a remaining target, cost = blocks dug.</summary>
+    private sealed class TunnelSearch
     {
-        var near = new HashSet<BlockPos>();
-        foreach (var t in targets) foreach (var f in BlockFaceExtensions.All) near.Add(t.Offset(f));
-        var (bmin, bmax) = DigVolume.Bounds(targets.Append(ctx.Me));
-        bool Inside(BlockPos p) => p.X >= bmin.X - 12 && p.X <= bmax.X + 12 && p.Y >= bmin.Y - 6 && p.Y <= bmax.Y + 6
-                                   && p.Z >= bmin.Z - 12 && p.Z <= bmax.Z + 12 && p.Y > 0 && p.Y < W.WorldHeight - 2;
-        var tset = targets.ToHashSet();
-        // Reach a remaining target (not just any dug cell of the volume: that dug holes under finished corridors).
-        bool Goal(BlockPos f) => tset.Contains(f) || tset.Contains(f.Up()) || near.Contains(f) || near.Contains(f.Up());
-        var dist = new Dictionary<BlockPos, int>();
-        var prev = new Dictionary<BlockPos, (BlockPos From, BlockPos[] Dig)>();
-        var pq = new PriorityQueue<BlockPos, int>();
-        foreach (var s in flood.Keys)
-            if (Inside(s)) { dist[s] = 0; pq.Enqueue(s, 0); }
-        int nodes = 0;
-        while (pq.TryDequeue(out var f, out int d))
+        private static readonly int[] Dys = [0, -1, 1];
+        private readonly Excavator _x;
+        private readonly HashSet<BlockPos> _near = new();
+        private readonly HashSet<BlockPos> _targets;
+        private readonly BlockPos _min, _max;
+        private readonly int _height;
+        private readonly Dictionary<BlockPos, int> _dist = new();
+        private readonly Dictionary<BlockPos, (BlockPos From, BlockPos[] Dig)> _prev = new();
+        private readonly PriorityQueue<BlockPos, int> _pq = new();
+
+        public TunnelSearch(Excavator x, List<BlockPos> targets, BlockPos me)
         {
-            if (d > dist[f] || ++nodes > 20000) { if (nodes > 20000) break; continue; }
-            if (d > 0 && Goal(f))
+            _x = x;
+            foreach (var t in targets) foreach (var f in BlockFaceExtensions.All) _near.Add(t.Offset(f));
+            (_min, _max) = DigVolume.Bounds(targets.Append(me));
+            _targets = targets.ToHashSet();
+            _height = x.W.WorldHeight;
+        }
+
+        private bool Inside(BlockPos p) => NearBox(p) && p.Y > 0 && p.Y < _height - 2;
+
+        private bool NearBox(BlockPos p) => p.X >= _min.X - 12 && p.X <= _max.X + 12 && p.Y >= _min.Y - 6 && p.Y <= _max.Y + 6
+                                            && p.Z >= _min.Z - 12 && p.Z <= _max.Z + 12;
+
+        /// <summary>Reach a remaining target (not just any dug cell of the volume: that dug holes under finished corridors).</summary>
+        private bool Goal(BlockPos f) => _targets.Contains(f) || _targets.Contains(f.Up()) || _near.Contains(f) || _near.Contains(f.Up());
+
+        public List<BlockPos>? Find(Dictionary<BlockPos, double> flood)
+        {
+            foreach (var s in flood.Keys)
+                if (Inside(s)) { _dist[s] = 0; _pq.Enqueue(s, 0); }
+            int nodes = 0;
+            while (_pq.TryDequeue(out var f, out int d))
             {
-                var path = new List<BlockPos>();
-                for (var c = f; prev.TryGetValue(c, out var p); c = p.From) path.InsertRange(0, p.Dig);
-                return path.Distinct().Where(c => !Clear(c)).ToList();
+                if (d > _dist[f]) continue;
+                if (++nodes > 20000) break;
+                if (d > 0 && Goal(f)) return Path(f);
+                Expand(f, d);
             }
+            return null;
+        }
+
+        private List<BlockPos> Path(BlockPos f)
+        {
+            var path = new List<BlockPos>();
+            for (var c = f; _prev.TryGetValue(c, out var p); c = p.From) path.InsertRange(0, p.Dig);
+            return path.Distinct().Where(c => !_x.Clear(c)).ToList();
+        }
+
+        private void Expand(BlockPos f, int d)
+        {
             foreach (var o in SkillWorld.Horizontal)
-            foreach (int dy in new[] { 0, -1, 1 })
+            foreach (int dy in Dys)
             {
                 var g = new BlockPos(f.X + o.X, f.Y + dy, f.Z + o.Z);
-                if (!Inside(g) || dist.ContainsKey(g) && dist[g] <= d) continue;
-                BlockPos[] cells = dy switch
-                {
-                    0 => [g, g.Up()],
-                    -1 => [g.Up(2), g.Up(), g],          // step down: the next column is open 3 high
-                    _ => [f.Up(2), g, g.Up()],           // step up: head room over me, then the next column
-                };
-                if (!BlockShapes.HasCollision(W, g.X, g.Y - 1, g.Z) || cells.Contains(g.Down())) continue;
-                int cost = 0;
-                bool ok = true;
-                foreach (var c in cells)
-                {
-                    if (Clear(c)) continue;
-                    if (!Diggable(c)) { ok = false; break; }
-                    cost++;
-                }
-                if (!ok) continue;
+                if (!Inside(g) || _dist.ContainsKey(g) && _dist[g] <= d) continue;
+                var cells = Passage(f, g, dy);
+                if (!Floored(g, cells) || Cost(cells) is not { } cost) continue;
                 int nd = d + cost * 2 + 1;
-                if (dist.TryGetValue(g, out int old) && old <= nd) continue;
-                dist[g] = nd;
-                prev[g] = (f, cells);
-                pq.Enqueue(g, nd);
+                if (_dist.TryGetValue(g, out int old) && old <= nd) continue;
+                _dist[g] = nd;
+                _prev[g] = (f, cells);
+                _pq.Enqueue(g, nd);
             }
         }
-        return null;
+
+        private static BlockPos[] Passage(BlockPos f, BlockPos g, int dy) => dy switch
+        {
+            0 => [g, g.Up()],
+            -1 => [g.Up(2), g.Up(), g],          // step down: the next column is open 3 high
+            _ => [f.Up(2), g, g.Up()],           // step up: head room over me, then the next column
+        };
+
+        /// <summary>Solid ground under the step that the passage itself doesn't dig.</summary>
+        private bool Floored(BlockPos g, BlockPos[] cells) => BlockShapes.HasCollision(_x.W, g.X, g.Y - 1, g.Z) && !cells.Contains(g.Down());
+
+        /// <summary>Blocks to dig for the passage; null when one can't be dug.</summary>
+        private int? Cost(BlockPos[] cells)
+        {
+            int cost = 0;
+            foreach (var c in cells)
+            {
+                if (_x.Clear(c)) continue;
+                if (!_x.Diggable(c)) return null;
+                cost++;
+            }
+            return cost;
+        }
     }
 
     private bool Diggable(BlockPos c)
     {
-        if (!W.IsLoaded(c.X, c.Z) || c.Y <= 0 || _keepSolid.Contains(c) || W.KeepAir.Owner(c, Dim) is { } o && o != vol.Label) return false;
+        if (!W.IsLoaded(c.X, c.Z) || c.Y <= 0 || ReservedSolid(c)) return false;
         int id = W.GetBlock(c);
         if (BlockShapes.IsLiquid(id) || Blocks.Get(id).Hardness < 0 || Blocks.Get(id).Interactable) return false;
-        if (ctx.Protected(c)) return false;
-        foreach (var f in BlockFaceExtensions.All) if (BlockShapes.IsLava(W.GetBlock(c.Offset(f)))) return false;
-        return true;
+        return !ctx.Protected(c) && !NextToLava(c);
+    }
+
+    /// <summary>Another excavation's floor or must-be-air cell.</summary>
+    private bool ReservedSolid(BlockPos c) => _keepSolid.Contains(c) || W.KeepAir.Owner(c, Dim) is { } o && o != vol.Label;
+
+    private bool NextToLava(BlockPos c)
+    {
+        foreach (var f in BlockFaceExtensions.All) if (BlockShapes.IsLava(W.GetBlock(c.Offset(f)))) return true;
+        return false;
     }
 
     /// <summary>A dug cell exposes ores: add them (and so the rest of the vein, as each is dug) while under the cap.</summary>
@@ -524,23 +667,29 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
     {
         if (!Aiming.IsReplaceable(W, W.GetBlock(n))) return true;
         if (Block() is null) return false;
-        if (PlaceAim(EyeNow(), n) is null)
-        {
-            var flood = Pathfinder.Explore(W, StartCell(), Walk, 4000, ct);
-            BlockPos? stand = null;
-            double best = double.MaxValue;
-            foreach (var (s, g) in flood)
-            {
-                if (g >= best || s == n || s.Up() == n || s.Down() == n || s.ManhattanTo(n) > 7) continue;
-                if (PlaceAim(new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5), n, s) is null) continue;
-                stand = s;
-                best = g;
-            }
-            if (stand is not { } st) return false;
-            var g2 = await ctx.Game.GotoAsync(new GoalBlock(st), WalkGoto, ct).ConfigureAwait(false);
-            if (!g2.Ok) return false;
-        }
+        if (PlaceAim(EyeNow(), n) is null && !await WalkToSealAsync(n, ct).ConfigureAwait(false)) return false;
         return await PlaceSealAsync(n, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Walks (inside the dug space) to the cheapest stand within 7 that can place <paramref name="n"/>.</summary>
+    private async Task<bool> WalkToSealAsync(BlockPos n, CancellationToken ct)
+    {
+        if (SealStand(n, Pathfinder.Explore(W, StartCell(), Walk, 4000, ct)) is not { } st) return false;
+        return (await ctx.Game.GotoAsync(new GoalBlock(st), WalkGoto, ct).ConfigureAwait(false)).Ok;
+    }
+
+    private BlockPos? SealStand(BlockPos n, Dictionary<BlockPos, double> flood)
+    {
+        BlockPos? stand = null;
+        double best = double.MaxValue;
+        foreach (var (s, g) in flood)
+        {
+            if (g >= best || OnColumn(s, n) || s.ManhattanTo(n) > 7) continue;
+            if (PlaceAim(new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5), n, s) is null) continue;
+            stand = s;
+            best = g;
+        }
+        return stand;
     }
 
     private async Task<bool> PlaceSealAsync(BlockPos n, CancellationToken ct)
@@ -568,40 +717,56 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
     /// only inside the excavation), reaching each spot from a stand in the dug space.</summary>
     public async Task LightAsync(CancellationToken ct)
     {
-        var cells = _dug.Count > 0 ? _dug : vol.Cells.Where(Clear).ToHashSet();
-        if (cells.Count == 0) return;
-        var (lo, hi) = DigVolume.Bounds(cells);
-        var region = new LightPlan.Region(lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z, vol.Label);
-        var dark = LightPlan.Dark(W, region, null, _o.LightLevel, out _).Where(cells.Contains).ToList();
-        if (dark.Count == 0) return;
-        bool Allowed(BlockPos c) => (vol.Contains(c) || _home.Contains(c)) && W.GetBlock(c) == 0;
-        var plan = LightPlan.Cover(W, region, dark, null, _o.LightLevel, Allowed, ctx.Feet, 64);
-        if (plan.Torches.Count == 0) return;
-        if (ctx.Count(Blocks.Torch) < plan.Torches.Count && ctx.Registry.Obtain is { } obtain)
-        {
-            try { await obtain(ctx, Blocks.Torch, plan.Torches.Count, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception e) { ctx.Log?.Invoke($"excavate torches: {e.Message}"); }
-        }
+        if (TorchPlan() is not { } plan) return;
+        await ObtainTorchesAsync(plan.Torches.Count, ct).ConfigureAwait(false);
         foreach (var spot in plan.Torches)
         {
             ct.ThrowIfCancellationRequested();
             if (!ctx.Has(Blocks.Torch)) { _r.Stop ??= "out of torches"; return; }
-            var c = spot.Pos;
-            if (!SkillWorld.Replaceable(W, c)) continue;
-            var faces = PlaceRules.AttachFaces(W, c, Blocks.Torch);
-            if (faces.Count == 0) continue;
-            if (EyeNow().DistanceTo(c.Center) > ctx.Game.Reach - 0.5)
-            {
-                var flood = Pathfinder.Explore(W, StartCell(), Walk, 4000, ct);
-                var stand = flood.Where(kv => kv.Key != c && kv.Key.Up() != c
-                        && new Vec3d(kv.Key.X + 0.5, kv.Key.Y + PlayerPhysics.EyeHeight, kv.Key.Z + 0.5).DistanceTo(c.Center) <= ctx.Game.Reach - 0.5)
-                    .OrderBy(kv => kv.Value).Select(kv => (BlockPos?)kv.Key).FirstOrDefault();
-                if (stand is not { } st || !(await ctx.Game.GotoAsync(new GoalBlock(st), WalkGoto, ct).ConfigureAwait(false)).Ok) continue;
-            }
-            var r = await ctx.Game.PlaceAsync(c, Blocks.Torch, faces[0], ct).ConfigureAwait(false);
-            if (r.Ok && W.GetBlock(c) == Blocks.Torch) _r.Torches++;
+            await PlaceTorchAsync(spot.Pos, ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>The fewest torches inside the excavation that light its dark dug cells; null when nothing needs one.</summary>
+    private LightPlan.Plan? TorchPlan()
+    {
+        var cells = _dug.Count > 0 ? _dug : vol.Cells.Where(Clear).ToHashSet();
+        if (cells.Count == 0) return null;
+        var (lo, hi) = DigVolume.Bounds(cells);
+        var region = new LightPlan.Region(lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z, vol.Label);
+        var dark = LightPlan.Dark(W, region, null, _o.LightLevel, out _).Where(cells.Contains).ToList();
+        if (dark.Count == 0) return null;
+        bool Allowed(BlockPos c) => (vol.Contains(c) || _home.Contains(c)) && W.GetBlock(c) == 0;
+        var plan = LightPlan.Cover(W, region, dark, null, _o.LightLevel, Allowed, ctx.Feet, 64);
+        return plan.Torches.Count == 0 ? null : plan;
+    }
+
+    private async Task ObtainTorchesAsync(int need, CancellationToken ct)
+    {
+        if (ctx.Count(Blocks.Torch) >= need || ctx.Registry.Obtain is not { } obtain) return;
+        try { await obtain(ctx, Blocks.Torch, need, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception e) { ctx.Log?.Invoke($"excavate torches: {e.Message}"); }
+    }
+
+    /// <summary>One torch on the first face it can hang on, walking to a stand in the dug space when it's out of reach.</summary>
+    private async Task PlaceTorchAsync(BlockPos c, CancellationToken ct)
+    {
+        if (!SkillWorld.Replaceable(W, c)) return;
+        var faces = PlaceRules.AttachFaces(W, c, Blocks.Torch);
+        if (faces.Count == 0) return;
+        if (EyeNow().DistanceTo(c.Center) > ctx.Game.Reach - 0.5 && !await WalkToTorchAsync(c, ct).ConfigureAwait(false)) return;
+        var r = await ctx.Game.PlaceAsync(c, Blocks.Torch, faces[0], ct).ConfigureAwait(false);
+        if (r.Ok && W.GetBlock(c) == Blocks.Torch) _r.Torches++;
+    }
+
+    private async Task<bool> WalkToTorchAsync(BlockPos c, CancellationToken ct)
+    {
+        var flood = Pathfinder.Explore(W, StartCell(), Walk, 4000, ct);
+        var stand = flood.Where(kv => kv.Key != c && kv.Key.Up() != c
+                && new Vec3d(kv.Key.X + 0.5, kv.Key.Y + PlayerPhysics.EyeHeight, kv.Key.Z + 0.5).DistanceTo(c.Center) <= ctx.Game.Reach - 0.5)
+            .OrderBy(kv => kv.Value).Select(kv => (BlockPos?)kv.Key).FirstOrDefault();
+        return stand is { } st && (await ctx.Game.GotoAsync(new GoalBlock(st), WalkGoto, ct).ConfigureAwait(false)).Ok;
     }
 
     // ------------------------------------------------------------------ tools
@@ -665,20 +830,23 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
         var (lo, hi) = DigVolume.Bounds(vol.Cells.Append(ctx.Me));
         var seen = new HashSet<BlockPos>();
         var q = new Queue<BlockPos>();
-        foreach (var s in new[] { ctx.Me, ctx.Me.Up() }) if (Open(s) && !vol.Contains(s) && seen.Add(s)) q.Enqueue(s);
+        foreach (var s in new[] { ctx.Me, ctx.Me.Up() }) VisitHome(s, seen, q);
         while (q.Count > 0 && seen.Count < 3000)
         {
             var c = q.Dequeue();
             foreach (var f in BlockFaceExtensions.All)
-            {
-                var n = c.Offset(f);
-                if (n.X < lo.X - 24 || n.X > hi.X + 24 || n.Z < lo.Z - 24 || n.Z > hi.Z + 24 || n.Y < lo.Y - 24 || n.Y > hi.Y + 24) continue;
-                if (vol.Contains(n) || !Open(n) || !seen.Add(n)) continue;
-                q.Enqueue(n);
-            }
+                if (c.Offset(f) is var n && !Beyond(n, lo, hi, 24)) VisitHome(n, seen, q);
         }
         return seen;
     }
+
+    private void VisitHome(BlockPos n, HashSet<BlockPos> seen, Queue<BlockPos> q)
+    {
+        if (!vol.Contains(n) && Open(n) && seen.Add(n)) q.Enqueue(n);
+    }
+
+    private static bool Beyond(BlockPos n, BlockPos lo, BlockPos hi, int margin) =>
+        n.X < lo.X - margin || n.X > hi.X + margin || n.Z < lo.Z - margin || n.Z > hi.Z + margin || n.Y < lo.Y - margin || n.Y > hi.Y + margin;
 
     /// <summary>Floors of every other excavation near this one (a stair's treads): never dug, never planned through.</summary>
     public static HashSet<BlockPos> KeepSolid(WorldState w, DigVolume vol)

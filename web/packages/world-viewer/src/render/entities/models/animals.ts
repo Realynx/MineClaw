@@ -334,59 +334,77 @@ export const OCELOT: ModelDef = {
    * ≥ 4 with bit 1) or walking. */
   pose: (p, c) => {
     look(p.head, c.headYaw, c.pitch);
-    const f = c.swing, a = c.amount;
-    const sprint = (c.flags & 0x08) !== 0, sit = c.v.has('sitting', 'sit') || (!c.v.isString && c.v.num >= 4 && (c.v.num & 1) !== 0);
-    if (c.sneaking) {
-      p.body.py += 1;
-      p.head.py += 2;
-      p.tail.py += 1;
-      p.tail2.py += -4;
-      p.tail2.pz += 2;
-      p.tail.rx = p.tail2.rx = PI / 2;
-    } else if (sprint) {
+    const sprint = (c.flags & 0x08) !== 0, sit = ocelotSits(c.v);
+    if (c.sneaking) ocelotSneak(p);
+    else if (sprint) {
       p.tail2.py = p.tail.py;
       p.tail2.pz += 2;
       p.tail.rx = p.tail2.rx = PI / 2;
     } else if (sit) {
-      p.body.rx = PI / 4;
-      p.body.py += -4;
-      p.body.pz += 5;
-      p.head.py += -3.3;
-      p.head.pz += 1;
-      p.tail.py += 8;
-      p.tail.pz += -2;
-      p.tail2.py += 2;
-      p.tail2.pz += -0.8;
-      p.tail.rx = 1.7278761;
-      p.tail2.rx = 2.670354;
-      for (const n of ['frontLeftLeg', 'frontRightLeg']) {
-        p[n].rx = -0.15707964;
-        p[n].py = 15.8;
-        p[n].pz = -7;
-      }
-      for (const n of ['backLeftLeg', 'backRightLeg']) {
-        p[n].rx = -PI / 2;
-        p[n].py = 21;
-        p[n].pz = 1;
-      }
+      ocelotSit(p);
       return;
     }
     p.body.rx = PI / 2;
-    if (sprint) {
-      p.backLeftLeg.rx = Math.cos(f * 0.6662) * a;
-      p.backRightLeg.rx = Math.cos(f * 0.6662 + 0.3) * a;
-      p.frontLeftLeg.rx = Math.cos(f * 0.6662 + PI + 0.3) * a;
-      p.frontRightLeg.rx = Math.cos(f * 0.6662 + PI) * a;
-      p.tail2.rx = 1.7278761 + 0.31415927 * Math.cos(f) * a;
-    } else {
-      p.backLeftLeg.rx = Math.cos(f * 0.6662) * a;
-      p.backRightLeg.rx = Math.cos(f * 0.6662 + PI) * a;
-      p.frontLeftLeg.rx = Math.cos(f * 0.6662 + PI) * a;
-      p.frontRightLeg.rx = Math.cos(f * 0.6662) * a;
-      p.tail2.rx = 1.7278761 + (c.sneaking ? 0.47123894 : 0.7853982) * Math.cos(f) * a;
-    }
+    if (sprint) ocelotSprintLegs(p, c.swing, c.amount);
+    else ocelotWalkLegs(p, c.swing, c.amount, c.sneaking);
   },
 };
+
+/** Sitting: the "sitting" token, or the older Mob16 flags (≥ 4) with bit 1. */
+function ocelotSits(v: Variant): boolean {
+  return v.has('sitting', 'sit') || (!v.isString && v.num >= 4 && (v.num & 1) !== 0);
+}
+
+function ocelotSneak(p: Record<string, PartState>): void {
+  p.body.py += 1;
+  p.head.py += 2;
+  p.tail.py += 1;
+  p.tail2.py += -4;
+  p.tail2.pz += 2;
+  p.tail.rx = p.tail2.rx = PI / 2;
+}
+
+function ocelotSit(p: Record<string, PartState>): void {
+  p.body.rx = PI / 4;
+  p.body.py += -4;
+  p.body.pz += 5;
+  p.head.py += -3.3;
+  p.head.pz += 1;
+  p.tail.py += 8;
+  p.tail.pz += -2;
+  p.tail2.py += 2;
+  p.tail2.pz += -0.8;
+  p.tail.rx = 1.7278761;
+  p.tail2.rx = 2.670354;
+  for (const n of ['frontLeftLeg', 'frontRightLeg']) {
+    p[n].rx = -0.15707964;
+    p[n].py = 15.8;
+    p[n].pz = -7;
+  }
+  for (const n of ['backLeftLeg', 'backRightLeg']) {
+    p[n].rx = -PI / 2;
+    p[n].py = 21;
+    p[n].pz = 1;
+  }
+}
+
+/** The sprint gallop: legs paired front and back, offset 0.3, a lifted tail tip (f = swing, a = amount). */
+function ocelotSprintLegs(p: Record<string, PartState>, f: number, a: number): void {
+  p.backLeftLeg.rx = Math.cos(f * 0.6662) * a;
+  p.backRightLeg.rx = Math.cos(f * 0.6662 + 0.3) * a;
+  p.frontLeftLeg.rx = Math.cos(f * 0.6662 + PI + 0.3) * a;
+  p.frontRightLeg.rx = Math.cos(f * 0.6662 + PI) * a;
+  p.tail2.rx = 1.7278761 + 0.31415927 * Math.cos(f) * a;
+}
+
+/** The walk: diagonal legs together; the tail tip swings less when sneaking. */
+function ocelotWalkLegs(p: Record<string, PartState>, f: number, a: number, sneaking: boolean): void {
+  p.backLeftLeg.rx = Math.cos(f * 0.6662) * a;
+  p.backRightLeg.rx = Math.cos(f * 0.6662 + PI) * a;
+  p.frontLeftLeg.rx = Math.cos(f * 0.6662 + PI) * a;
+  p.frontRightLeg.rx = Math.cos(f * 0.6662) * a;
+  p.tail2.rx = 1.7278761 + (sneaking ? 0.47123894 : 0.7853982) * Math.cos(f) * a;
+}
 
 // ------------------------------------------------------------------------------------------------------------ bat
 
@@ -725,17 +743,32 @@ function horseArmour(v: Variant): string | null {
  * (horses only) as layers over the base geometry. */
 function horseLook(model: string, texture: string, colour: number, v: Variant, opts: { markings?: boolean; armour?: boolean; chest?: boolean; scale?: number } = {}): Look {
   const layers: LayerUse[] = [];
-  if (opts.markings) {
-    const m = horseMarkings(v);
-    if (m >= 1 && m <= 4) layers.push({ texture: `entity/horse/horse_markings_${MARKINGS[m - 1]}` });
-  }
+  if (opts.markings) pushMarkings(layers, v);
   if (v.has('saddle', 'saddled')) layers.push({ layer: 'saddle', texture });
   if (opts.chest && v.has('chest', 'chested')) layers.push({ layer: 'chest', texture });
-  if (opts.armour) {
-    const a = horseArmour(v);
-    if (a) layers.push({ texture: `entity/horse/armor/horse_armor_${a}` });
-  }
+  if (opts.armour) pushArmour(layers, v);
   return look1(model, texture, colour, { layers, ...(opts.scale ? { scale: opts.scale } : {}) });
+}
+
+/** The horse's markings layer, when it has markings. */
+function pushMarkings(layers: LayerUse[], v: Variant): void {
+  const m = horseMarkings(v);
+  if (m >= 1 && m <= 4) layers.push({ texture: `entity/horse/horse_markings_${MARKINGS[m - 1]}` });
+}
+
+/** The horse's armour layer, when it wears armour. */
+function pushArmour(layers: LayerUse[], v: Variant): void {
+  const a = horseArmour(v);
+  if (a) layers.push({ texture: `entity/horse/armor/horse_armor_${a}` });
+}
+
+/** The cat type the variant names (0 wild ocelot .. 3; −1 = none): a type or skin token, else a plain number below 4 (the
+ * older Mob16 flags ≥ 4 name no type). */
+function catType(v: Variant): number {
+  let t = v.pick(CAT_NAMES, 'type');
+  if (t < 0) t = v.pick(['wild', 'tuxedo', 'ginger', 'siamese']);
+  if (t < 0 && !v.isString && !(v.num >= 4) && said(v)) t = Math.max(0, Math.min(3, v.num));
+  return t;
 }
 
 const LLAMA_NAMES = ['creamy', 'white', 'brown', 'gray'];
@@ -800,10 +833,8 @@ export const LOOKS: Record<string, LookFn> = {
   // Ocelots and cats: the type 0..3 (0 wild ocelot) or its name; "tame" without a type picks a cat skin from the id. The older
   // Mob16 flags (numbers ≥ 4: bit 4 tamed, bit 1 sitting) still work. Cats draw at 0.8.
   ocelot: (v, _b, id) => {
-    let t = v.pick(CAT_NAMES, 'type');
-    if (t < 0) t = v.pick(['wild', 'tuxedo', 'ginger', 'siamese']);
+    let t = catType(v);
     const legacy = !v.isString && v.num >= 4;
-    if (t < 0 && !v.isString && !legacy && said(v)) t = Math.max(0, Math.min(3, v.num));
     const tame = v.has('tame', 'tamed') || (legacy && (v.num & 4) !== 0) || t > 0;
     if (tame && t <= 0) t = 1 + (((id % 3) + 3) % 3);
     if (t <= 0) return look1('ocelot', 'entity/cat/ocelot', CAT_COLOURS[0]);

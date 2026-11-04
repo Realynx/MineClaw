@@ -26,7 +26,7 @@ public class ExcavationFakeServerTests(Xunit.Abstractions.ITestOutputHelper outp
     }
 
     /// <summary>Stone x 2..14, y 54..63, z 2..14 (the fake server's chunks are 128 high on both versions) with a pocket at 8,60..61,8.</summary>
-    private static FakeServer Rock(bool release1122)
+    internal static FakeServer Rock(bool release1122)
     {
         var s = new FakeServer(release1122);
         s.Blocks.Clear();
@@ -42,7 +42,7 @@ public class ExcavationFakeServerTests(Xunit.Abstractions.ITestOutputHelper outp
         return s;
     }
 
-    private static async Task<MinecraftClient> Connect(FakeServer s, bool release1122)
+    internal static async Task<MinecraftClient> Connect(FakeServer s, bool release1122)
     {
         var o = new ClientOptions
         {

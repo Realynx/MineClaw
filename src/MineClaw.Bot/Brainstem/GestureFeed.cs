@@ -77,24 +77,33 @@ public sealed class GestureFeed
             if (!_answersOnly && Due(player, kind + "@" + at, BackgroundEvery)) Post(player, what, EventPriority.Background);
             return;                                  // their nod at another bot answers that bot
         }
-        if (kind is "nod" or "shake")
-        {
-            var answer = _chat.AnswerGesture(player, kind == "nod", atMe);
-            if (answer != GestureAnswer.None)
-            {
-                Ack(player);
-                Due(player, "aimed", AimedWakeEvery); // the nodding goes on a moment: no second wake for it
-                // A waiter's own path (the ask_player result, its follow-up chat) brings "yes (nod)" to the brain.
-                if (answer == GestureAnswer.Question) Post(player, what + " (answering your question)", EventPriority.Normal);
-                return;
-            }
-        }
-        else if (kind == "point" && _chat.AwaitsAnswerFrom(player))
-        {
-            Post(player, what + " (answering you)", EventPriority.Normal);
-            return;
-        }
-        if (_answersOnly) return;
+        if (TryAnswer(player, kind, atMe, what) || _answersOnly) return;
+        Notice(player, kind, atMe, what);
+    }
+
+    /// <summary>A nod/shake or point that answers a pending question from this player; true when it did.</summary>
+    private bool TryAnswer(string player, string kind, bool atMe, string what)
+    {
+        if (kind is "nod" or "shake") return TryNodAnswer(player, kind == "nod", atMe, what);
+        if (kind != "point" || !_chat.AwaitsAnswerFrom(player)) return false;
+        Post(player, what + " (answering you)", EventPriority.Normal);
+        return true;
+    }
+
+    private bool TryNodAnswer(string player, bool yes, bool atMe, string what)
+    {
+        var answer = _chat.AnswerGesture(player, yes, atMe);
+        if (answer == GestureAnswer.None) return false;
+        Ack(player);
+        Due(player, "aimed", AimedWakeEvery); // the nodding goes on a moment: no second wake for it
+        // A waiter's own path (the ask_player result, its follow-up chat) brings "yes (nod)" to the brain.
+        if (answer == GestureAnswer.Question) Post(player, what + " (answering your question)", EventPriority.Normal);
+        return true;
+    }
+
+    /// <summary>A gesture that answers nothing: an aimed one wakes the brain (rate-limited), the rest go to the background.</summary>
+    private void Notice(string player, string kind, bool atMe, string what)
+    {
         if (atMe && kind != "stare" && Due(player, "aimed", AimedWakeEvery))
         {
             Post(player, what, EventPriority.Low);
@@ -130,29 +139,31 @@ public sealed class GestureFeed
     /// <summary>"nods yes at you", "shakes no", "crouch-bobs at 67", "points at the chest (4,64,-2)": present tense, no pronouns.</summary>
     public static string Describe(string kind, string? at, JsonObject d)
     {
-        string verb = kind switch
-        {
-            "nod" => "nods yes",
-            "shake" => "shakes no",
-            "bob" => "crouch-bobs",
-            "wave" => "waves",
-            "jump" => "jumps around",
-            "spin" => "spins around",
-            "stare" => "stares",
-            "point" => "points",
-            _ => kind,
-        };
-        if (kind == "point")
-        {
-            var name = EventFilter.Str(d, "block") ?? EventFilter.Str(d, "entity") ?? "something";
-            string where = d["target"] is JsonObject t ? $" ({EventFilter.Str(t, "x")},{EventFilter.Str(t, "y")},{EventFilter.Str(t, "z")})" : "";
-            return $"points at the {name.Replace('_', ' ')}{where}";
-        }
+        if (kind == "point") return PointText(d);
+        string verb = GestureVerbs.GetValueOrDefault(kind, kind);
         return at switch
         {
             "me" => verb + " at you",
             { Length: > 0 } other => $"{verb} at {GameEvent.BodyTag(other) ?? other}",
             _ => verb,
         };
+    }
+
+    private static readonly Dictionary<string, string> GestureVerbs = new(StringComparer.Ordinal)
+    {
+        ["nod"] = "nods yes",
+        ["shake"] = "shakes no",
+        ["bob"] = "crouch-bobs",
+        ["wave"] = "waves",
+        ["jump"] = "jumps around",
+        ["spin"] = "spins around",
+        ["stare"] = "stares",
+    };
+
+    private static string PointText(JsonObject d)
+    {
+        var name = EventFilter.Str(d, "block") ?? EventFilter.Str(d, "entity") ?? "something";
+        string where = d["target"] is JsonObject t ? $" ({EventFilter.Str(t, "x")},{EventFilter.Str(t, "y")},{EventFilter.Str(t, "z")})" : "";
+        return $"points at the {name.Replace('_', ' ')}{where}";
     }
 }

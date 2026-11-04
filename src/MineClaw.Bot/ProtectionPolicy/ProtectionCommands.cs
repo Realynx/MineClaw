@@ -234,21 +234,7 @@ public sealed partial class ProtectionCommands
     private Target? Resolve(string player, ProtectionIntent intent)
     {
         if (intent.Coords is { } c) return new([Column(c)], $"the {BlockName(c)} at {Locations.Fmt(c)}", true);
-        if (intent.Target is null)
-        {
-            if (PointedBy?.Invoke(player) is { } pointed)
-            {
-                if (_world.GetBlock(pointed.Pos) != 0)
-                    return new([Column(pointed.Pos)], $"the {BlockName(pointed.Pos)} column at {Locations.Fmt(pointed.Pos)} (pointed)", true);
-                // The punch broke it (tall grass, a flower): they mean that kind of block, around the spot.
-                if (pointed.Id != 0 && SameKindAround(pointed.Pos, pointed.Id) is { } kind) return kind;
-            }
-            // Only use a refusal whose block is still present.
-            if (_policy.LastRefusal is { } r && _time.GetUtcNow() - r.At <= TimeSpan.FromMinutes(Math.Max(1, _o.RefusalContextMinutes))
-                && _world.GetBlock(r.Pos) == r.Id)
-                return new([Column(r.Pos)], $"the {BlockName(r.Pos)} column at {Locations.Fmt(r.Pos)} (the one I refused)", true);
-            return null;
-        }
+        if (intent.Target is null) return PointedTarget(player) ?? RefusedTarget();
         var name = Regex.Replace(intent.Target, @"^(?:the|my|our|your|that|this|those|these)\s+", "").Trim();
         if (name.Length == 0) return null;
         if (Regex.IsMatch(name, @"^(?:middle|center|centre)(?:\s+(?:one|cell|block))?$") && GenCells?.Invoke() is { Count: > 0 } cells)
@@ -262,6 +248,25 @@ public sealed partial class ProtectionCommands
         return null;
     }
 
+    /// <summary>The block column the player just pointed at; a punch that broke it (tall grass, a flower) means that kind of
+    /// block, around the spot.</summary>
+    private Target? PointedTarget(string player)
+    {
+        if (PointedBy?.Invoke(player) is not { } pointed) return null;
+        if (_world.GetBlock(pointed.Pos) != 0)
+            return new([Column(pointed.Pos)], $"the {BlockName(pointed.Pos)} column at {Locations.Fmt(pointed.Pos)} (pointed)", true);
+        return pointed.Id != 0 ? SameKindAround(pointed.Pos, pointed.Id) : null;
+    }
+
+    /// <summary>The block I last refused, while recent and still present.</summary>
+    private Target? RefusedTarget()
+    {
+        if (_policy.LastRefusal is { } r && _time.GetUtcNow() - r.At <= TimeSpan.FromMinutes(Math.Max(1, _o.RefusalContextMinutes))
+            && _world.GetBlock(r.Pos) == r.Id)
+            return new([Column(r.Pos)], $"the {BlockName(r.Pos)} column at {Locations.Fmt(r.Pos)} (the one I refused)", true);
+        return null;
+    }
+
     private Target? NamedBlocks(string name)
     {
         // Keep the named kind separate from its qualifiers. Previously the entire sentence (including "next to the
@@ -272,51 +277,69 @@ public sealed partial class ProtectionCommands
         var age = Regex.Match(parts[0], @"\b(?:unripe|ripe|growing)\b", RegexOptions.IgnoreCase).Value;
         if (age.Length > 0 && !CropKinds.IsCrop(id)) return null;
         bool water = Regex.IsMatch(name, @"\bwater\s+holes?\b", RegexOptions.IgnoreCase);
-        var origin = _world.Player.Position;
-        if (!water && parts.Length > 1)
-        {
-            var landmark = Regex.Replace(parts[1], @"^(?:the|each)\s+", "").Trim();
-            if (NamedArea?.Invoke(landmark) is { } area)
-                origin = new Vec3d((area.Min.X + area.Max.X + 1) / 2.0, (area.Min.Y + area.Max.Y) / 2.0, (area.Min.Z + area.Max.Z + 1) / 2.0);
-        }
-        var found = _world.FindBlocks(origin, 6, (b, meta) => b == id
-            && (age.Length == 0 || CropKinds.Ripe(b, meta) == age.Equals("ripe", StringComparison.OrdinalIgnoreCase)), 256)
-            .Select(f => f.Pos).Where(p => _policy.IsProtected(p, id)).ToList();
+        var found = ProtectedNear(SearchOrigin(water, parts), id, age);
         bool one = Regex.IsMatch(parts[0], @"\bone\b", RegexOptions.IgnoreCase);
-        var faces = new[] { BlockFace.North, BlockFace.South, BlockFace.East, BlockFace.West };
-        var holes = new Dictionary<BlockPos, BlockPos?>();
-        BlockPos? WaterHole(BlockPos start)
+        var holes = new WaterHoles(_world, one);
+        if (water) found = found.Where(p => holes.WaterAt(p) != null).ToList();
+        if (one)
+            found = water ? found.GroupBy(p => holes.WaterAt(p)).Select(g => g.First()).ToList() : found.Take(1).ToList();
+        return found.Count == 0 ? null : new(found.Select(p => (p, p)).ToList(), $"the {Blocks.Get(id).Name.Replace('_', ' ')} near { (water ? "the water holes" : "me") }", false);
+    }
+
+    /// <summary>Protected blocks of <paramref name="id"/> within 6 (of the named growth stage, when one was named).</summary>
+    private List<BlockPos> ProtectedNear(Vec3d origin, int id, string age) =>
+        _world.FindBlocks(origin, 6, (b, meta) => b == id
+                && (age.Length == 0 || CropKinds.Ripe(b, meta) == age.Equals("ripe", StringComparison.OrdinalIgnoreCase)), 256)
+            .Select(f => f.Pos).Where(p => _policy.IsProtected(p, id)).ToList();
+
+    /// <summary>The water beside a block (same level or one down); with <paramref name="one"/>, the hole it belongs to (its
+    /// west/north-most cell), so "one per water hole" groups by hole.</summary>
+    private sealed class WaterHoles(WorldState world, bool one)
+    {
+        private static readonly BlockFace[] Faces = [BlockFace.North, BlockFace.South, BlockFace.East, BlockFace.West];
+        private readonly Dictionary<BlockPos, BlockPos?> _holes = new();
+
+        public BlockPos? WaterAt(BlockPos p)
         {
-            if (holes.TryGetValue(start, out var known)) return known;
-            // One hole can contain several horizontally connected water cells. Bound the scan and decline large bodies
-            // of water rather than treating an arbitrary truncated piece as a separate hole.
+            foreach (var face in Faces)
+                for (int dy = -1; dy <= 0; dy++)
+                {
+                    var q = p.Offset(face) with { Y = p.Y + dy };
+                    if (BlockShapes.IsWater(world.GetBlock(q))) return one ? Hole(q) : q;
+                }
+            return null;
+        }
+
+        /// <summary>One hole can contain several horizontally connected water cells. Bound the scan and decline large bodies
+        /// of water rather than treating an arbitrary truncated piece as a separate hole.</summary>
+        private BlockPos? Hole(BlockPos start)
+        {
+            if (_holes.TryGetValue(start, out var known)) return known;
             var cells = new HashSet<BlockPos> { start };
             var queue = new Queue<BlockPos>();
             queue.Enqueue(start);
             while (queue.TryDequeue(out var p) && cells.Count <= 256)
-                foreach (var face in faces)
+                foreach (var face in Faces)
                 {
                     var q = p.Offset(face);
-                    if (BlockShapes.IsWater(_world.GetBlock(q)) && cells.Add(q)) queue.Enqueue(q);
+                    if (BlockShapes.IsWater(world.GetBlock(q)) && cells.Add(q)) queue.Enqueue(q);
                 }
             BlockPos? key = cells.Count > 256 ? null : cells.OrderBy(p => p.X).ThenBy(p => p.Z).First();
-            foreach (var p in cells) holes[p] = key;
+            foreach (var p in cells) _holes[p] = key;
             return key;
         }
-        BlockPos? WaterAt(BlockPos p)
-        {
-            foreach (var face in faces)
-                for (int dy = -1; dy <= 0; dy++)
-                {
-                    var q = p.Offset(face) with { Y = p.Y + dy };
-                    if (BlockShapes.IsWater(_world.GetBlock(q))) return one ? WaterHole(q) : q;
-                }
-            return null;
-        }
-        if (water) found = found.Where(p => WaterAt(p) != null).ToList();
-        if (one)
-            found = water ? found.GroupBy(p => WaterAt(p)).Select(g => g.First()).ToList() : found.Take(1).ToList();
-        return found.Count == 0 ? null : new(found.Select(p => (p, p)).ToList(), $"the {Blocks.Get(id).Name.Replace('_', ' ')} near { (water ? "the water holes" : "me") }", false);
+    }
+
+    /// <summary>Around the named landmark ("the wheat next to the gen"), else around me (always for water holes).</summary>
+    private Vec3d SearchOrigin(bool water, string[] parts) =>
+        water || parts.Length <= 1 ? _world.Player.Position : LandmarkCentre(parts[1]) ?? _world.Player.Position;
+
+    /// <summary>The centre of a named area ("the gen", "each farm"), or null.</summary>
+    private Vec3d? LandmarkCentre(string phrase)
+    {
+        var landmark = Regex.Replace(phrase, @"^(?:the|each)\s+", "").Trim();
+        if (NamedArea?.Invoke(landmark) is not { } area) return null;
+        return new Vec3d((area.Min.X + area.Max.X + 1) / 2.0, (area.Min.Y + area.Max.Y) / 2.0, (area.Min.Z + area.Max.Z + 1) / 2.0);
     }
 
     private static int? ResolveBlock(string name)

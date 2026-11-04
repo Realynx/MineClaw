@@ -146,14 +146,36 @@ public sealed class ExpandIslandSkill : Skill
             return AreaFill.ParseArea(area) is { } rect ? await AreaFill.RunAsync(ctx, args, rect, ct) : Fail("area must be x0,z0,x1,z1");
         if (SkillWorld.BuildingBlock(ctx, args.Str("block")) is not { } block) return Fail("no building blocks");
         int rows = Clamp(args.Int("rows"), 1, 1, 4), max = Clamp(args.Int("max"), 32, 1, 128);
-        var dir = args.Str("side")?.ToLowerInvariant() switch
-        {
-            "east" or "e" or "+x" => new BlockPos(1, 0, 0), "west" or "w" or "-x" => new BlockPos(-1, 0, 0),
-            "south" or "s" or "+z" => new BlockPos(0, 0, 1), "north" or "n" or "-z" => new BlockPos(0, 0, -1),
-            _ => (BlockPos?)null,
-        };
-        int y = ctx.Me.Y - 1; // the floor layer I'm standing on
-        if (!SkillWorld.Solid(ctx.World, ctx.Me.Down()) && Safety.SupportBlocks(ctx.World, ctx.Feet).FirstOrDefault() is { } sup) y = sup.Y;
+        var dir = args.Str("side")?.ToLowerInvariant() is { } side && Sides.TryGetValue(side, out var d) ? d : (BlockPos?)null;
+        int y = FloorY(ctx);
+        var (placed, missed, stop) = await GrowAsync(ctx, block, rows, max, dir, y, ct);
+        missed.RemoveWhere(c => !SkillWorld.Air(ctx.World, c));
+        string text = (MineClaw.Data.Versioning.WorldMode.Current.Islands ? $"expanded island by {placed} block(s)" : $"extended the floor by {placed} block(s)") + $" at y {y}" + (missed.Count > 0 ? $", skipped {missed.Count}" : "") + (stop is null ? "" : $" ({stop})")
+                      + $"; {ctx.Count(block)} {SkillWorld.Name(block)} left";
+        return new SkillResult(placed > 0, text);
+    }
+
+    /// <summary>side= names → the direction grown in.</summary>
+    private static readonly Dictionary<string, BlockPos> Sides = new()
+    {
+        ["east"] = new(1, 0, 0), ["e"] = new(1, 0, 0), ["+x"] = new(1, 0, 0),
+        ["west"] = new(-1, 0, 0), ["w"] = new(-1, 0, 0), ["-x"] = new(-1, 0, 0),
+        ["south"] = new(0, 0, 1), ["s"] = new(0, 0, 1), ["+z"] = new(0, 0, 1),
+        ["north"] = new(0, 0, -1), ["n"] = new(0, 0, -1), ["-z"] = new(0, 0, -1),
+    };
+
+    /// <summary>The floor layer I'm standing on (the block my feet are supported by when I'm on an edge).</summary>
+    private static int FloorY(SkillContext ctx)
+    {
+        if (!SkillWorld.Solid(ctx.World, ctx.Me.Down()) && Safety.SupportBlocks(ctx.World, ctx.Feet).FirstOrDefault() is { } sup) return sup.Y;
+        return ctx.Me.Y - 1;
+    }
+
+    /// <summary>Up to <paramref name="rows"/> rings of edge cells around where I started (one side when <paramref name="dir"/> is
+    /// set), stopped by a veto, running out or a void/danger refusal.</summary>
+    private static async Task<(int Placed, HashSet<BlockPos> Missed, string? Stop)> GrowAsync(SkillContext ctx, int block, int rows, int max,
+        BlockPos? dir, int y, CancellationToken ct)
+    {
         int placed = 0;
         string? stop = null;
         var start = ctx.Feet;
@@ -162,17 +184,14 @@ public sealed class ExpandIslandSkill : Skill
         {
             var edge = EdgeCells(ctx, start, y, dir).Take(max - placed).ToList();
             if (edge.Count == 0) { if (ring == 0) stop = "no open edge on that side"; break; }
-            if (BuildOps.HostileVeto(ctx) is { } h) { stop = h; break; }
-            if (ctx.SurvivalVeto("expand_island", SafetyClass.Edge) is { } sv) { stop = sv; break; }
+            stop = BuildOps.HostileVeto(ctx) ?? ctx.SurvivalVeto("expand_island", SafetyClass.Edge);
+            if (stop != null) break;
             var r = await FillRowAsync(ctx, edge, block, c => !SkillWorld.Solid(ctx.World, c - (dir ?? Inward(ctx.World, c))), ct);
             placed += r.Placed;
             missed.UnionWith(r.Missed);
             stop = r.Error;
         }
-        missed.RemoveWhere(c => !SkillWorld.Air(ctx.World, c));
-        string text = (MineClaw.Data.Versioning.WorldMode.Current.Islands ? $"expanded island by {placed} block(s)" : $"extended the floor by {placed} block(s)") + $" at y {y}" + (missed.Count > 0 ? $", skipped {missed.Count}" : "") + (stop is null ? "" : $" ({stop})")
-                      + $"; {ctx.Count(block)} {SkillWorld.Name(block)} left";
-        return new SkillResult(placed > 0, text);
+        return (placed, missed, stop);
     }
 
     /// <summary>
@@ -290,33 +309,43 @@ public sealed class PillarDownSkill : Skill
         foreach (var o in SkillWorld.Horizontal)
         {
             // Check the whole staircase first: every step needs a solid floor that isn't over the void, and no liquids.
-            bool ok = true;
-            for (int i = 1; i <= depth && ok; i++)
-            {
-                var c = start + new BlockPos(o.X * i, -i, o.Z * i);
-                var floor = c.Down();
-                ok = SkillWorld.Solid(ctx.World, floor) && !SkillWorld.OverVoid(ctx.World, floor.Down())
-                     && !BlockShapes.IsLiquid(ctx.Block(c)) && !BlockShapes.IsLiquid(ctx.Block(c.Up()))
-                     && !ctx.Protected(c) && !ctx.Protected(c.Up()) && !ctx.Protected(c.Up(2))
-                     && FluidRules.LavaContact(ctx.World, c, false) is null
-                     && !FallsIn(ctx, c.Up(3));
-            }
-            if (!ok) continue;
+            if (!SafeStair(ctx, start, o, depth)) continue;
             for (int i = 1; i <= depth; i++)
-            {
-                var c = start + new BlockPos(o.X * i, -i, o.Z * i);
-                foreach (var b in new[] { c.Up(2), c.Up(), c })
-                    if (!SkillWorld.Replaceable(ctx.World, b))
-                    {
-                        var d = await ctx.Game.DigAsync(b, ct);
-                        if (!d.Ok) return Fail($"stair {i}: {d.Message}");
-                    }
-                var g = await ctx.Game.GotoAsync(new GoalBlock(c), null, ct);
-                if (!g.Ok) return Fail($"stair {i}: {g.Message}");
-            }
+                if (await StepDownAsync(ctx, start + new BlockPos(o.X * i, -i, o.Z * i), ct) is { } failed) return Fail($"stair {i}: {failed}");
             return Ok($"down {depth} to y {ctx.Me.Y}");
         }
         return Fail($"no safe staircase {depth} down from here (void, liquid, sand/gravel above or protected)");
+    }
+
+    private static bool SafeStair(SkillContext ctx, BlockPos start, BlockPos o, int depth)
+    {
+        for (int i = 1; i <= depth; i++)
+            if (!SafeStep(ctx, start + new BlockPos(o.X * i, -i, o.Z * i))) return false;
+        return true;
+    }
+
+    /// <summary>A solid floor not over the void, dry and unprotected head room, no lava beside it, nothing that falls in from above.</summary>
+    private static bool SafeStep(SkillContext ctx, BlockPos c)
+    {
+        var floor = c.Down();
+        return SkillWorld.Solid(ctx.World, floor) && !SkillWorld.OverVoid(ctx.World, floor.Down())
+               && !BlockShapes.IsLiquid(ctx.Block(c)) && !BlockShapes.IsLiquid(ctx.Block(c.Up()))
+               && !ctx.Protected(c) && !ctx.Protected(c.Up()) && !ctx.Protected(c.Up(2))
+               && FluidRules.LavaContact(ctx.World, c, false) is null
+               && !FallsIn(ctx, c.Up(3));
+    }
+
+    /// <summary>Digs the step's 3 cells (top down) and walks onto it; the failure, or null.</summary>
+    private static async Task<string?> StepDownAsync(SkillContext ctx, BlockPos c, CancellationToken ct)
+    {
+        foreach (var b in new[] { c.Up(2), c.Up(), c })
+        {
+            if (SkillWorld.Replaceable(ctx.World, b)) continue;
+            var d = await ctx.Game.DigAsync(b, ct);
+            if (!d.Ok) return d.Message;
+        }
+        var g = await ctx.Game.GotoAsync(new GoalBlock(c), null, ct);
+        return g.Ok ? null : g.Message;
     }
 
     /// <summary>Sand/gravel (anything that falls) right above a stair's headroom: digging under it buries the stair.</summary>

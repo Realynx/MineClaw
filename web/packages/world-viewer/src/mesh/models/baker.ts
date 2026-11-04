@@ -164,59 +164,92 @@ export class ModelBaker {
   /** Bakes one model under a variant rotation, appending block-local quads (0..1). */
   bake(model: string, xRot: number, yRot: number, uvlock: boolean, out: BakedFace[]): void {
     const { textures, elements, ao } = this.resolve(model);
-    const rotated = xRot % 360 !== 0 || yRot % 360 !== 0;
-    for (const el of elements) {
+    const v: VariantRot = { xRot, yRot, uvlock, rotated: xRot % 360 !== 0 || yRot % 360 !== 0 };
+    for (const el of elements)
       for (let face = 0; face < 6; face++) {
         const fd = el.faces[face];
-        if (!fd) continue;
-        const r = fd.uv ?? defaultUv(face, el.from, el.to);
-        const pos: number[][] = [];
-        const uv: number[][] = [];
-        for (let i = 0; i < 4; i++) {
-          const c = CORNERS[face][i];
-          let p = [c[0] ? el.to[0] : el.from[0], c[1] ? el.to[1] : el.from[1], c[2] ? el.to[2] : el.from[2]];
-          if (el.angle !== 0) p = rotatePart(p, el);
-          pos.push(rotated ? variantRotate(p, xRot, yRot) : p);
-          const k = (i + ((fd.rotation / 90) | 0)) % 4;
-          uv.push([k === 0 || k === 1 ? r[0] : r[2], k === 0 || k === 3 ? r[1] : r[3]]);
-        }
-        const flatP = pos.flat().map((v) => v / 16);
-        const n = normal(pos);
-        const dir = dirOf(n);
-        if (uvlock && rotated && dir >= 0 && el.angle === 0) for (let i = 0; i < 4; i++) uv[i] = project(dir, pos[i]);
-        let cull = fd.cull;
-        if (cull >= 0 && rotated) cull = variantRotateDir(cull, xRot, yRot);
-        const texName = resolveTexture(textures, fd.texture);
-        const cell = this.tiles.cell(texName);
-        const info = this.tiles.info(texName);
-        out.push({
-          p: flatP,
-          uv: uv.flat().map((v) => v / 16),
-          c: cell ? cell[0] : 0,
-          r: cell ? cell[1] : 0,
-          span: 0,
-          wrap: false,
-          tint: TINT_NONE,
-          ovC: -1,
-          ovR: -1,
-          ovTint: TINT_NONE,
-          shade: el.shade ? FACE_SHADE[dir >= 0 ? dir : nearestDir(n)] : 1,
-          dir,
-          cull,
-          flush: dir >= 0 && onBoundary(dir, flatP),
-          layer: Layer.Opaque,
-          twoSided: false,
-          ao,
-          emissive: false,
-          flat: cell ? (info?.[2] ?? 0x808080) : 0xff00ff,
-          alpha: 1,
-          textured: !!cell,
-          texture: texName,
-          tintindex: fd.tintindex,
-        });
+        if (fd) out.push(this.bakeFace(el, face, fd, textures, ao, v));
       }
-    }
   }
+
+  private bakeFace(el: ElementDef, face: number, fd: FaceDef, textures: Record<string, string>, ao: boolean, v: VariantRot): BakedFace {
+    const { pos, uv } = faceCorners(el, face, fd, v);
+    const flatP = pos.flat().map((x) => x / 16);
+    const n = normal(pos);
+    const dir = dirOf(n);
+    lockUv(uv, pos, dir, el, v);
+    const cull = fd.cull >= 0 && v.rotated ? variantRotateDir(fd.cull, v.xRot, v.yRot) : fd.cull;
+    const texName = resolveTexture(textures, fd.texture);
+    const cell = this.tiles.cell(texName);
+    return {
+      p: flatP,
+      uv: uv.flat().map((x) => x / 16),
+      c: cell ? cell[0] : 0,
+      r: cell ? cell[1] : 0,
+      span: 0,
+      wrap: false,
+      tint: TINT_NONE,
+      ovC: -1,
+      ovR: -1,
+      ovTint: TINT_NONE,
+      shade: el.shade ? FACE_SHADE[dir >= 0 ? dir : nearestDir(n)] : 1,
+      dir,
+      cull,
+      flush: dir >= 0 && onBoundary(dir, flatP),
+      layer: Layer.Opaque,
+      twoSided: false,
+      ao,
+      emissive: false,
+      flat: this.flatOf(texName, cell),
+      alpha: 1,
+      textured: !!cell,
+      texture: texName,
+      tintindex: fd.tintindex,
+    };
+  }
+
+  /** A face's untextured colour: its tile's average, grey when the tile has none, magenta when the atlas lacks it. */
+  private flatOf(texName: string, cell: ReturnType<TileLookup['cell']>): number {
+    if (!cell) return 0xff00ff;
+    return this.tiles.info(texName)?.[2] ?? 0x808080;
+  }
+}
+
+/** A variant's rotation (degrees about x, then y) and whether the textures stay locked to the world. */
+interface VariantRot {
+  xRot: number;
+  yRot: number;
+  uvlock: boolean;
+  rotated: boolean;
+}
+
+/** The face's four corners (element rotation, then the variant's) and their texture coordinates (the face's uv rect,
+ * turned by its rotation). */
+function faceCorners(el: ElementDef, face: number, fd: FaceDef, v: VariantRot): { pos: number[][]; uv: number[][] } {
+  const r = fd.uv ?? defaultUv(face, el.from, el.to);
+  const pos: number[][] = [];
+  const uv: number[][] = [];
+  for (let i = 0; i < 4; i++) {
+    const p = cornerPos(el, CORNERS[face][i]);
+    pos.push(v.rotated ? variantRotate(p, v.xRot, v.yRot) : p);
+    uv.push(cornerUv(r, (i + ((fd.rotation / 90) | 0)) % 4));
+  }
+  return { pos, uv };
+}
+
+function cornerPos(el: ElementDef, c: readonly number[]): number[] {
+  const p = [c[0] ? el.to[0] : el.from[0], c[1] ? el.to[1] : el.from[1], c[2] ? el.to[2] : el.from[2]];
+  return el.angle !== 0 ? rotatePart(p, el) : p;
+}
+
+function cornerUv(r: number[], k: number): number[] {
+  return [k === 0 || k === 1 ? r[0] : r[2], k === 0 || k === 3 ? r[1] : r[3]];
+}
+
+/** uvlock on a rotated variant: an axis-aligned face's uv is projected from its world position (unrotated elements only). */
+function lockUv(uv: number[][], pos: number[][], dir: number, el: ElementDef, v: VariantRot): void {
+  if (!(v.uvlock && v.rotated && dir >= 0 && el.angle === 0)) return;
+  for (let i = 0; i < 4; i++) uv[i] = project(dir, pos[i]);
 }
 
 function normal(p: number[][]): number[] {
@@ -258,24 +291,27 @@ function element(e: RawElement): ElementDef {
   const faces: Array<FaceDef | null> = [null, null, null, null, null, null];
   for (const [name, f] of Object.entries(e.faces ?? {})) {
     const d = faceOf(name);
-    if (d < 0) continue;
-    faces[d] = {
-      uv: f.uv && f.uv.length === 4 ? f.uv : null,
-      texture: f.texture ?? '',
-      cull: f.cullface ? faceOf(f.cullface) : -1,
-      rotation: f.rotation ?? 0,
-      tintindex: f.tintindex ?? -1,
-    };
+    if (d >= 0) faces[d] = faceDef(f);
   }
-  const rt = e.rotation;
+  return { from: e.from, to: e.to, ...rotationOf(e.rotation), shade: e.shade !== false, faces };
+}
+
+/** An element's rotation (none: 0° about y through the block centre). */
+function rotationOf(rt: RawElement['rotation']): Pick<ElementDef, 'origin' | 'axis' | 'angle' | 'rescale'> {
   return {
-    from: e.from,
-    to: e.to,
     origin: rt?.origin ?? [8, 8, 8],
     axis: (rt?.axis as 'x' | 'y' | 'z') ?? 'y',
     angle: rt?.angle ?? 0,
     rescale: rt?.rescale === true,
-    shade: e.shade !== false,
-    faces,
+  };
+}
+
+function faceDef(f: NonNullable<RawElement['faces']>[string]): FaceDef {
+  return {
+    uv: f.uv && f.uv.length === 4 ? f.uv : null,
+    texture: f.texture ?? '',
+    cull: f.cullface ? faceOf(f.cullface) : -1,
+    rotation: f.rotation ?? 0,
+    tintindex: f.tintindex ?? -1,
   };
 }

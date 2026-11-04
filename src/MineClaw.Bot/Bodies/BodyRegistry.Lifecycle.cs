@@ -162,28 +162,9 @@ public sealed partial class BodyRegistry
         Account acc;
         lock (_life)
         {
-            if (name != null)
-            {
-                var a = Acc(name);
-                if (a == null) return BodySpawnResult.No($"error: no body called {name} (bodies: {string.Join(", ", _accounts.Values.Select(x => x.Short))})");
-                if (a.Live && a.Despawning == 0 && a.Body != null) return new BodySpawnResult(true, a.Body, $"ok: {a.Short} is already online");
-                if (Blocker(a, confirmVoid) is { } why)
-                {
-                    var free = _accounts.Values.Where(x => x != a && !x.Live && Blocker(x, false) == null).Select(x => x.Short).ToList();
-                    return BodySpawnResult.No($"no: {a.Short} {why}" + (free.Count > 0 ? $"; {string.Join(", ", free)} {(free.Count == 1 ? "is" : "are")} free" : ""));
-                }
-                acc = a;
-            }
-            else
-            {
-                var pick = _accounts.Values.FirstOrDefault(x => !x.Live && Blocker(x, confirmVoid) == null);
-                if (pick == null)
-                {
-                    var why = string.Join("; ", _accounts.Values.Where(x => !x.Live).Select(x => $"{x.Short} {Blocker(x, confirmVoid)}"));
-                    return BodySpawnResult.No("no: no free body" + (why.Length > 0 ? ": " + why : " (all online)"));
-                }
-                acc = pick;
-            }
+            var (picked, refusal) = name != null ? Named(name, confirmVoid) : FirstFree(confirmVoid);
+            if (refusal != null) return refusal;
+            acc = picked!;
             // Pending: logging in, not in game (and not on the tab list) yet.
             var slot = Host.CanSpawn(acc.Name, _accounts.Values.Count(x => x.Live && x.Body is { } pb && !pb.Adapter.IsPlaying));
             if (!slot.Ok) return BodySpawnResult.No($"no: {slot.Reason}");
@@ -199,6 +180,27 @@ public sealed partial class BodyRegistry
         return new BodySpawnResult(true, acc.Body, $"ok: {acc.Short} spawning");
     }
 
+    /// <summary>The named account to log in, or the answer instead (unknown, already online, or blocked: then which are free).
+    /// Caller holds _life.</summary>
+    private (Account? Acc, BodySpawnResult? Refusal) Named(string name, bool confirmVoid)
+    {
+        var a = Acc(name);
+        if (a == null) return (null, BodySpawnResult.No($"error: no body called {name} (bodies: {string.Join(", ", _accounts.Values.Select(x => x.Short))})"));
+        if (a.Live && a.Despawning == 0 && a.Body != null) return (null, new BodySpawnResult(true, a.Body, $"ok: {a.Short} is already online"));
+        if (Blocker(a, confirmVoid) is not { } why) return (a, null);
+        var free = _accounts.Values.Where(x => x != a && !x.Live && Blocker(x, false) == null).Select(x => x.Short).ToList();
+        return (null, BodySpawnResult.No($"no: {a.Short} {why}" + (free.Count > 0 ? $"; {string.Join(", ", free)} {(free.Count == 1 ? "is" : "are")} free" : "")));
+    }
+
+    /// <summary>The first free offline account, or "no free body" with why each is blocked. Caller holds _life.</summary>
+    private (Account? Acc, BodySpawnResult? Refusal) FirstFree(bool confirmVoid)
+    {
+        var pick = _accounts.Values.FirstOrDefault(x => !x.Live && Blocker(x, confirmVoid) == null);
+        if (pick != null) return (pick, null);
+        var why = string.Join("; ", _accounts.Values.Where(x => !x.Live).Select(x => $"{x.Short} {Blocker(x, confirmVoid)}"));
+        return (null, BodySpawnResult.No("no: no free body" + (why.Length > 0 ? ": " + why : " (all online)")));
+    }
+
     /// <summary>Why an offline account can't be logged in now (null = free).</summary>
     private string? Blocker(Account a, bool confirmVoid)
     {
@@ -207,19 +209,23 @@ public sealed partial class BodyRegistry
         if (now < a.OccupiedUntil)
             return $"is in use by a player's viewer (someone else logged in as {a.Name}); left alone for {Math.Max(1, (int)Math.Ceiling((a.OccupiedUntil - now).TotalMinutes))} more min";
         if (!a.Live && now - a.GoneAt >= TimeSpan.FromSeconds(Math.Max(0, _o.OwnLogoutGraceSeconds)) && OnServer(a.Name))
-        {
-            if (a.ExternalSince == default)
-            {
-                a.ExternalSince = now;
-                Post(GameEvent.Notice($"[bodies] {a.Short} is in use by a player's viewer ({a.Name} is online but isn't one of ours); using other bodies",
-                    EventPriority.Background));
-            }
-            return $"is in use by a player's viewer ({a.Name} is online but isn't one of ours)";
-        }
+            return ExternalLogin(a, now);
         a.ExternalSince = default;
         if (!confirmVoid && now >= a.VoidConfirmedUntil && SafeVoidSpot(a.Name) is { } spot)
             return $"would log in over the void at {spot} (its saved login spot): ask a trusted player to /tp {a.Name} once it's in, then spawn it again";
         return null;
+    }
+
+    /// <summary>Someone else is on the account (a player's viewer): told once, then other bodies are used.</summary>
+    private string ExternalLogin(Account a, DateTimeOffset now)
+    {
+        if (a.ExternalSince == default)
+        {
+            a.ExternalSince = now;
+            Post(GameEvent.Notice($"[bodies] {a.Short} is in use by a player's viewer ({a.Name} is online but isn't one of ours); using other bodies",
+                EventPriority.Background));
+        }
+        return $"is in use by a player's viewer ({a.Name} is online but isn't one of ours)";
     }
 
     private bool OnServer(string name)
@@ -383,30 +389,10 @@ public sealed partial class BodyRegistry
         {
             body.StateOverride = BodyState.Yielding;
             PauseJob(body, "logging out: " + reason);
-            var limit = timeout ?? TimeSpan.FromSeconds(_o.DepositTimeoutSeconds);
-            BodyDeposit report;
-            if (!body.Adapter.IsPlaying) report = BodyDeposit.Nothing(ItemCount(body), "not in game");
-            else
-            {
-                try
-                {
-                    using var dcts = new CancellationTokenSource(limit + TimeSpan.FromSeconds(5));
-                    report = await Host.DepositAsync(body, limit, dcts.Token).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "bodies: {Name}: deposit failed", body.Name);
-                    report = BodyDeposit.Nothing(ItemCount(body), "deposit failed: " + ex.Message);
-                }
-            }
-            // Never log out on a stale "empty": the inventory itself decides.
-            int left = ItemCount(body);
-            if (left > 0 && report.Empty) report = report with { Empty = false, Remaining = left, Text = $"{left} item(s) still held" };
+            var report = await DepositBeforeLogoutAsync(body, timeout ?? TimeSpan.FromSeconds(_o.DepositTimeoutSeconds)).ConfigureAwait(false);
             try { Host.Stranded(body, "logout: " + reason, report.Empty ? 0 : report.Remaining); } catch (Exception ex) { _log.LogWarning(ex, "bodies: stranded record failed"); }
             _log.LogInformation("bodies: {Name}: deposit before logout: {Text}", body.Name, report.Text);
-            if (acc.Runner is { } runner) await runner.StopAsync().ConfigureAwait(false);
-            try { await Host.DisconnectAsync(body, "Bye!").WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch (Exception) { }
-            try { if (body.Scripts?.Current != null) body.Scripts.Cancel("logged out"); } catch (Exception) { } // its checkpoint stays
+            await LogOutAsync(acc, body).ConfigureAwait(false);
             acc.GoneAt = Now;
             acc.LastExit = reason;
             if (Remove(body)) RaiseChanged(body, false);
@@ -416,6 +402,36 @@ public sealed partial class BodyRegistry
             return $"ok: {acc.Short} logged out ({reason}): {report.Text}";
         }
         finally { Volatile.Write(ref acc.Despawning, 0); }
+    }
+
+    /// <summary>Deposits everything (within <paramref name="limit"/>); never a stale "empty": the inventory itself decides.</summary>
+    private async Task<BodyDeposit> DepositBeforeLogoutAsync(Body body, TimeSpan limit)
+    {
+        BodyDeposit report;
+        if (!body.Adapter.IsPlaying) report = BodyDeposit.Nothing(ItemCount(body), "not in game");
+        else
+        {
+            try
+            {
+                using var dcts = new CancellationTokenSource(limit + TimeSpan.FromSeconds(5));
+                report = await Host.DepositAsync(body, limit, dcts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "bodies: {Name}: deposit failed", body.Name);
+                report = BodyDeposit.Nothing(ItemCount(body), "deposit failed: " + ex.Message);
+            }
+        }
+        int left = ItemCount(body);
+        return left > 0 && report.Empty ? report with { Empty = false, Remaining = left, Text = $"{left} item(s) still held" } : report;
+    }
+
+    /// <summary>Stops the runner, disconnects (5 s at most) and cancels the script (its checkpoint stays).</summary>
+    private async Task LogOutAsync(Account acc, Body body)
+    {
+        if (acc.Runner is { } runner) await runner.StopAsync().ConfigureAwait(false);
+        try { await Host.DisconnectAsync(body, "Bye!").WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch (Exception) { }
+        try { if (body.Scripts?.Current != null) body.Scripts.Cancel("logged out"); } catch (Exception) { } // its checkpoint stays
     }
 
     /// <summary>Main shutting down: every clone body deposits and logs out in parallel, within <paramref name="timeout"/>.</summary>
@@ -567,24 +583,26 @@ public sealed partial class BodyRegistry
         lock (_life) all = _accounts.Values.ToList();
         if (all.Count == 0) return "no clone bodies configured";
         var now = Now;
-        var parts = new List<string>();
-        foreach (var a in all)
-        {
-            if (a.Retired) { parts.Add($"{a.Short} retired ({a.LastExit})"); continue; }
-            if (now < a.OccupiedUntil) { parts.Add($"{a.Short} in use by a player's viewer ({(int)Math.Ceiling((a.OccupiedUntil - now).TotalMinutes)} min)"); continue; }
-            if (a.Live && a.Body is { } b)
-            {
-                if (b.State is BodyState.Connecting) { parts.Add($"{a.Short} logging in"); continue; }
-                if (b.State is BodyState.Yielding) { parts.Add($"{a.Short} logging out"); continue; }
-                var p = b.Adapter.World.Player;
-                string job = b.Activities.Describe() ?? (b.Scripts?.Current is { } s ? "script " + s.Name : null) ?? "idle";
-                string hold = a.VoidHold is { } v ? $" HOLDING over the void at {Fmt(v.At)}" : "";
-                parts.Add($"{a.Short} {job} @{Fmt(p.Position)} hp{p.Health} f{p.Food}{hold}");
-                continue;
-            }
-            parts.Add(SafeVoidSpot(a.Name) is { } spot ? $"{a.Short} off (login spot over the void at {spot})" : $"{a.Short} off");
-        }
-        return string.Join(" | ", parts);
+        return string.Join(" | ", all.Select(a => ListLine(a, now)));
+    }
+
+    private string ListLine(Account a, DateTimeOffset now)
+    {
+        if (a.Retired) return $"{a.Short} retired ({a.LastExit})";
+        if (now < a.OccupiedUntil) return $"{a.Short} in use by a player's viewer ({(int)Math.Ceiling((a.OccupiedUntil - now).TotalMinutes)} min)";
+        if (a.Live && a.Body is { } b) return LiveLine(a, b);
+        return SafeVoidSpot(a.Name) is { } spot ? $"{a.Short} off (login spot over the void at {spot})" : $"{a.Short} off";
+    }
+
+    /// <summary>"126 mining @3,64,-2 hp20 f18", or logging in/out.</summary>
+    private static string LiveLine(Account a, Body b)
+    {
+        if (b.State is BodyState.Connecting) return $"{a.Short} logging in";
+        if (b.State is BodyState.Yielding) return $"{a.Short} logging out";
+        var p = b.Adapter.World.Player;
+        string job = b.Activities.Describe() ?? (b.Scripts?.Current is { } s ? "script " + s.Name : null) ?? "idle";
+        string hold = a.VoidHold is { } v ? $" HOLDING over the void at {Fmt(v.At)}" : "";
+        return $"{a.Short} {job} @{Fmt(p.Position)} hp{p.Health} f{p.Food}{hold}";
     }
 
     /// <summary>Per-body "tick behind" counts (GC pauses / CPU starvation stall every body at once): logged when they grew.</summary>

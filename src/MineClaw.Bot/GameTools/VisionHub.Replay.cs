@@ -23,27 +23,39 @@ public sealed partial class VisionHub
         draw ??= f => Task.FromResult(f());
         var target = ResolveTarget(i.Str("focus"));
         if (target.Error != null) return (null, target.Error);
-        if (target.HiveView)
-        {
-            var hive = await draw(() =>
-            {
-                var h = HiveOverview(image: true);
-                return h.Image is { } hi ? new VisionImage(hi.Data, hi.Width, hi.Height, 0, h.Text, []) : new VisionImage([], 0, 0, 0, h.Text, []);
-            }).ConfigureAwait(false);
-            return hive.Png.Length > 0 ? (hive, null) : (null, "no hive picture");
-        }
+        if (target.HiveView) return await HivePictureAsync(draw).ConfigureAwait(false);
         int radius = Math.Clamp(i.Int("radius") ?? _o.SheetRadius, 3, 12);
         bool aids = i.Bool("aids") ?? true;
         var reqs = ParseViews(i, out var viewError);
         if (viewError != null) return (null, viewError);
-        var focus = target.Focus;
-        if (WantsComposite(reqs))
+        if (WantsComposite(reqs)) return await CompositeSeeAsync(reqs!, target.Focus, target.Dim, radius, aids, s, draw, ct).ConfigureAwait(false);
+        return await SheetSeeAsync(target, reqs, radius, aids, s, draw, ct).ConfigureAwait(false);
+    }
+
+    private async Task<(VisionImage? Image, string? Error)> HivePictureAsync(Func<Func<VisionImage>, Task<VisionImage>> draw)
+    {
+        var hive = await draw(() =>
         {
-            var (jobs, notes, error) = await PanelsAsync(reqs!, focus, target.Dim, radius, aids, ct).ConfigureAwait(false);
-            if (error != null) return (null, error);
-            if (jobs.Count == 0) return (null, "no panels to render");
-            return (await draw(() => Composite(jobs, focus, notes, s)).ConfigureAwait(false), null);
-        }
+            var h = HiveOverview(image: true);
+            return h.Image is { } hi ? new VisionImage(hi.Data, hi.Width, hi.Height, 0, h.Text, []) : new VisionImage([], 0, 0, 0, h.Text, []);
+        }).ConfigureAwait(false);
+        return hive.Png.Length > 0 ? (hive, null) : (null, "no hive picture");
+    }
+
+    private async Task<(VisionImage? Image, string? Error)> CompositeSeeAsync(List<PanelRequest> reqs, BlockPos focus, int dim, int radius, bool aids,
+        ContactSheet s, Func<Func<VisionImage>, Task<VisionImage>> draw, CancellationToken ct)
+    {
+        var (jobs, notes, error) = await PanelsAsync(reqs, focus, dim, radius, aids, ct).ConfigureAwait(false);
+        if (error != null) return (null, error);
+        if (jobs.Count == 0) return (null, "no panels to render");
+        return (await draw(() => Composite(jobs, focus, notes, s)).ConfigureAwait(false), null);
+    }
+
+    /// <summary>The plain contact sheet (known view kinds only), from a clone's live pose when the focus is one.</summary>
+    private async Task<(VisionImage? Image, string? Error)> SheetSeeAsync(VisionTarget target, List<PanelRequest>? reqs, int radius, bool aids,
+        ContactSheet s, Func<Func<VisionImage>, Task<VisionImage>> draw, CancellationToken ct)
+    {
+        var focus = target.Focus;
         var views = reqs?.Select(r => r.Kind).ToList() ?? [];
         var bad = views.Where(x => !ContactSheet.Known.Contains(x.Trim())).ToList();
         if (bad.Count > 0) return (null, $"unknown view '{bad[0]}'");

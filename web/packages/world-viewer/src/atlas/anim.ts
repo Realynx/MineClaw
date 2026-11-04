@@ -100,27 +100,39 @@ export class SpriteAnimator {
     let done = 0, last = -1;
     for (let i = 0; i < n && done < max; i++) {
       const j = (this.cursor + i) % n;
-      const a = this.anims[j];
-      if (budget.visible && !budget.visible.has(a.cell[1] * this.columns + a.cell[0])) continue;
-      const f = frameAt(a.frames, tick, a.interpolate && !!this.sheet);
-      const key = f.weight >= 1 ? f.frame : f.frame * 1e6 + f.next * 1e3 + Math.round(f.weight * 255);
-      if (this.shown[j] === key) continue;
-      this.shown[j] = key;
-      const size = a.size ?? 16;
-      if (f.weight >= 1 || !this.sheet) w.fromSheet(a.cell[0], a.cell[1], f.frame * size, a.row * 16, size);
-      else {
-        const stride = this.sheet.width * 4;
-        let px = this.scratch.get(size);
-        if (!px) this.scratch.set(size, (px = new Uint8Array(size * size * 4)));
-        blendFrames(this.sheet.data, a.row * 16 * stride + f.frame * size * 4, this.sheet.data, a.row * 16 * stride + f.next * size * 4, stride, f.weight, px, size);
-        w.fromPixels(a.cell[0], a.cell[1], px, size);
-      }
+      if (!this.refresh(j, tick, w, budget.visible)) continue;
       done++;
       last = j;
     }
     // Round-robin: under a budget the next tick starts after the last cell written.
     if (done && done >= max) this.cursor = (last + 1) % n;
     return done;
+  }
+
+  /** Writes animation j's frame for `tick` when its cell is visible and shows another frame; true when written. */
+  private refresh(j: number, tick: number, w: CellWriter, visible: AnimBudget['visible']): boolean {
+    const a = this.anims[j];
+    if (visible && !visible.has(a.cell[1] * this.columns + a.cell[0])) return false;
+    const f = frameAt(a.frames, tick, a.interpolate && !!this.sheet);
+    const key = f.weight >= 1 ? f.frame : f.frame * 1e6 + f.next * 1e3 + Math.round(f.weight * 255);
+    if (this.shown[j] === key) return false;
+    this.shown[j] = key;
+    this.writeFrame(a, f, w);
+    return true;
+  }
+
+  /** A whole frame straight from the sheet, or (interpolated) two frames blended. */
+  private writeFrame(a: AnimSpec, f: ReturnType<typeof frameAt>, w: CellWriter): void {
+    const size = a.size ?? 16;
+    if (f.weight >= 1 || !this.sheet) {
+      w.fromSheet(a.cell[0], a.cell[1], f.frame * size, a.row * 16, size);
+      return;
+    }
+    const stride = this.sheet.width * 4;
+    let px = this.scratch.get(size);
+    if (!px) this.scratch.set(size, (px = new Uint8Array(size * size * 4)));
+    blendFrames(this.sheet.data, a.row * 16 * stride + f.frame * size * 4, this.sheet.data, a.row * 16 * stride + f.next * size * 4, stride, f.weight, px, size);
+    w.fromPixels(a.cell[0], a.cell[1], px, size);
   }
 
   /** Forget what was uploaded (the texture was recreated). */

@@ -88,27 +88,35 @@ const LARGE_CHEST = [
 
 const facingIndex = (f: string) => ({ down: 0, up: 1, north: 2, south: 3, west: 4, east: 5 })[f] ?? 3;
 
+/** The yaw a wall-mounted model turns by for its facing index (2 north 180°, 4 west 90°, 5 east −90°, else 0). */
+function wallYaw(f: number): number {
+  return f === 2 ? 180 : f === 4 ? 90 : f === 5 ? -90 : 0;
+}
+
 /** TileEntityChestRenderer: translate(0, 1, 1) · scale(1, −1, −1) · centre-rotate by the facing (2 → 180, 4 → 90, 5 → −90). */
 function chestQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   const kind = s.props.kind ?? 'normal';
   const f = facingIndex(s.props.facing);
-  const k = f === 2 ? 180 : f === 4 ? 90 : f === 5 ? -90 : 0;
   const pair = s.props.pair ? (s.props.pair.split(',').map(Number) as [number, number]) : null;
-  if (!pair) {
-    const sheet = sheets(`entity/chest/${kind}`);
-    if (!sheet) return;
-    const m = chain(translate(0, 1, 1), scale(1, -1, -1), translate(0.5, 0.5, 0.5), rotate(k, 'y'), translate(-0.5, -0.5, -0.5));
-    for (const part of CHEST) partQuads(sheet, part, m, out);
-    return;
-  }
+  if (pair) doubleChestQuads(kind, f, pair, sheets, out);
+  else singleChestQuads(kind, f, sheets, out);
+}
+
+function singleChestQuads(kind: string, f: number, sheets: SheetLookup, out: Quad[]): void {
+  const sheet = sheets(`entity/chest/${kind}`);
+  if (!sheet) return;
+  const m = chain(translate(0, 1, 1), scale(1, -1, -1), translate(0.5, 0.5, 0.5), rotate(wallYaw(f), 'y'), translate(-0.5, -0.5, -0.5));
+  for (const part of CHEST) partQuads(sheet, part, m, out);
+}
+
+/** The master (west/north cell) draws the 30-wide model; every cell keeps the half inside its own cell. */
+function doubleChestQuads(kind: string, f: number, pair: [number, number], sheets: SheetLookup, out: Quad[]): void {
   const sheet = sheets(`entity/chest/${kind}_double`);
   if (!sheet) return;
-  // The master (west/north cell) draws the 30-wide model; every cell keeps the half inside its own cell.
   const masterHere = pair[0] > 0 || pair[1] > 0;
   const mx = masterHere ? 0 : pair[0], mz = masterHere ? 0 : pair[1];
   const alongX = pair[0] !== 0;
-  const extra = f === 2 && alongX ? translate(1, 0, 0) : f === 5 && !alongX ? translate(0, 0, -1) : translate(0, 0, 0);
-  const m = chain(translate(0, 1, 1), scale(1, -1, -1), translate(0.5, 0.5, 0.5), extra, rotate(k, 'y'), translate(-0.5, -0.5, -0.5));
+  const m = chain(translate(0, 1, 1), scale(1, -1, -1), translate(0.5, 0.5, 0.5), doubleChestShift(f, alongX), rotate(wallYaw(f), 'y'), translate(-0.5, -0.5, -0.5));
   const all: Quad[] = [];
   for (const part of LARGE_CHEST) partQuads(sheet, part, m, all);
   for (const q of all) {
@@ -118,32 +126,40 @@ function chestQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   }
 }
 
+function doubleChestShift(f: number, alongX: boolean): M4 {
+  if (f === 2 && alongX) return translate(1, 0, 0);
+  return f === 5 && !alongX ? translate(0, 0, -1) : translate(0, 0, 0);
+}
+
+/** A bed piece's turn about z and the shift that keeps it in its cell, by facing ([angle, x, z]; north none). */
+const BED_TURN: Record<string, [number, number, number]> = { south: [180, 1, 1], west: [-90, 0, 1], east: [90, 1, 0] };
+/** The facing as a horizontal step ([x, z]; east when unknown). */
+const BED_STEP: Record<string, [number, number]> = { north: [0, -1], south: [0, 1], west: [-1, 0] };
+
 /** TileEntityBedRenderer + ModelBed: the head or foot piece (16×16×6 turned flat) and its two legs. */
 function bedQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   const sheet = sheets(`entity/bed/${s.props.color ?? 'red'}`) ?? sheets('entity/bed/red');
   if (!sheet) return;
   const head = s.props.part === 'head';
   const f = s.props.facing;
-  let a = 0, f1 = 0, f2 = 0;
-  if (f === 'south') {
-    a = 180;
-    f1 = 1;
-    f2 = 1;
-  } else if (f === 'west') {
-    a = -90;
-    f2 = 1;
-  } else if (f === 'east') {
-    a = 90;
-    f1 = 1;
-  }
+  const [a, f1, f2] = BED_TURN[f] ?? [0, 0, 0];
   const m = chain(translate(f1, 0.5625, f2), rotate(90, 'x'), rotate(a, 'z'));
   partQuads(sheet, head ? { u: 0, v: 0, box: [0, 0, 0, 16, 16, 6] } : { u: 0, v: 22, box: [0, 0, 0, 16, 16, 6] }, m, out);
   // The two 3×3×3 legs (texture rows 50,0 / 50,6 / 50,12 / 50,18) at the corners of this piece's outer end: toward the
   // facing for the head, away from it for the foot.
-  const [fx, fz] = f === 'north' ? [0, -1] : f === 'south' ? [0, 1] : f === 'west' ? [-1, 0] : [1, 0];
-  const sx = head ? fx : -fx, sz = head ? fz : -fz;
-  const corners: Array<[number, number]> = sx !== 0 ? [[sx < 0 ? 0 : 13, 0], [sx < 0 ? 0 : 13, 13]] : [[0, sz < 0 ? 0 : 13], [13, sz < 0 ? 0 : 13]];
+  const [fx, fz] = BED_STEP[f] ?? [1, 0];
+  const corners = legCorners(head ? fx : -fx, head ? fz : -fz);
   corners.forEach(([x, z], i) => partQuads(sheet, { u: 50, v: (head ? 6 : 0) + i * 12, box: [x, 0, z, 3, 3, 3] }, scale(1, 1, 1), out));
+}
+
+/** The two leg corners of a bed piece's end toward (sx, sz). */
+function legCorners(sx: number, sz: number): Array<[number, number]> {
+  if (sx !== 0) {
+    const x = sx < 0 ? 0 : 13;
+    return [[x, 0], [x, 13]];
+  }
+  const z = sz < 0 ? 0 : 13;
+  return [[0, z], [13, z]];
 }
 
 /** TileEntitySignRenderer + ModelSign: board 24×12×2 (and the 2×14 stick when standing) at 2/3 scale. */
@@ -156,7 +172,7 @@ function signQuads(id: number, s: StateRef, sheets: SheetLookup, out: Quad[]): v
   if (standing) m = chain(translate(0.5, 0.5, 0.5), rotate((-(+s.props.rotation || 0) * 360) / 16, 'y'), scale(k, -k, -k));
   else {
     const f = facingIndex(s.props.facing);
-    const a = f === 2 ? 180 : f === 4 ? 90 : f === 5 ? -90 : 0;
+    const a = wallYaw(f);
     m = chain(translate(0.5, 0.5, 0.5), rotate(-a, 'y'), translate(0, -0.3125, -0.4375), scale(k, -k, -k));
   }
   partQuads(sheet, { u: 0, v: 0, box: [-12, -14, -1, 24, 12, 2] }, m, out, { layer: Layer.Opaque });
@@ -173,7 +189,7 @@ function bannerQuads(id: number, s: StateRef, sheets: SheetLookup, out: Quad[]):
   if (standing) m = chain(translate(0.5, 0.5, 0.5), rotate((-(+s.props.rotation || 0) * 360) / 16, 'y'), scale(k, -k, -k));
   else {
     const f = facingIndex(s.props.facing);
-    const a = f === 2 ? 180 : f === 4 ? 90 : f === 5 ? -90 : 0;
+    const a = wallYaw(f);
     m = chain(translate(0.5, -0.16666667, 0.5), rotate(-a, 'y'), translate(0, -0.3125, -0.4375), scale(k, -k, -k));
   }
   partQuads(sheet, { u: 0, v: 0, box: [-10, 0, -2, 20, 40, 1], rp: [0, -32, 0] }, m, out);
@@ -202,21 +218,23 @@ const DRAGON_HEAD: Part[] = [
   { u: 176, v: 65, box: [-6, 0, -16, 12, 4, 16], rp: [0, 4, -8] },
 ];
 
+/** A wall skull's offset from its wall and its fixed yaw, by facing ([x, z, yaw]; north keeps the 16-step rotation). */
+const WALL_SKULL: Record<string, [number, number, number | null]> = { north: [0.5, 0.74, null], south: [0.5, 0.26, 180], west: [0.74, 0.5, 270], east: [0.26, 0.5, 90] };
+
 /** TileEntitySkullRenderer: the type's head (ModelSkeletonHead; ModelHumanoidHead adds the hat layer for zombie and player
  * heads; ModelDragonHead for the dragon), on the floor turned by the 16-step rotation, on a wall by its facing. */
+/** Where the head sits in its cell and its yaw: against a wall by the facing, else on the floor by the 16-step rotation. */
+function skullPlacement(s: StateRef): [M4, number] {
+  const wall = WALL_SKULL[s.props.facing];
+  const pos = wall ? translate(wall[0], 0.25, wall[1]) : translate(0.5, 0, 0.5);
+  return [pos, wall?.[2] ?? ((+s.props.rotation || 0) * 360) / 16];
+}
+
 function skullQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   const type = s.props.type ?? 'skeleton';
   const sheet = sheets(SKULL_TEXTURE[type] ?? SKULL_TEXTURE.skeleton) ?? sheets(SKULL_TEXTURE.skeleton);
   if (!sheet) return;
-  const f = s.props.facing;
-  let pos: M4, yaw = ((+s.props.rotation || 0) * 360) / 16;
-  switch (f) {
-    case 'north': pos = translate(0.5, 0.25, 0.74); break;
-    case 'south': pos = translate(0.5, 0.25, 0.26); yaw = 180; break;
-    case 'west': pos = translate(0.74, 0.25, 0.5); yaw = 270; break;
-    case 'east': pos = translate(0.26, 0.25, 0.5); yaw = 90; break;
-    default: pos = translate(0.5, 0, 0.5);
-  }
+  const [pos, yaw] = skullPlacement(s);
   const m = chain(pos, scale(-1, -1, 1));
   if (type === 'dragon' && sheet.wc >= 16) {
     // The head is a parent with the jaw as its child: the yaw turns both about the head's origin.
@@ -262,22 +280,29 @@ function voidQuads(id: number, out: Quad[]): void {
   C.forEach((c, f) => out.push(makeQuad(c.flat(), [0, 0, 0, 1, 1, 1, 1, 0], { ...opt, cull: f })));
 }
 
+type BuiltinDraw = (id: number, s: StateRef, sheets: SheetLookup, out: Quad[]) => void;
+
+/** The built-in geometry of each id (moving pistons, end gateways' frames and structure voids draw nothing). */
+const BUILTINS: Array<BuiltinDraw | undefined> = (() => {
+  const t = new Array<BuiltinDraw | undefined>(256);
+  const set = (ids: number[], f: BuiltinDraw) => ids.forEach((id) => (t[id] = f));
+  set([54, 130, 146], (_id, s, sheets, out) => chestQuads(s, sheets, out));
+  set([26], (_id, s, sheets, out) => bedQuads(s, sheets, out));
+  set([63, 68], signQuads);
+  set([176, 177], bannerQuads);
+  set([144], (_id, s, sheets, out) => skullQuads(s, sheets, out));
+  set([119, 209], (id, _s, _sheets, out) => voidQuads(id, out));
+  set([36, 166, 217], () => undefined);
+  for (let id = 219; id <= 234; id++) t[id] = (_id, s, sheets, out) => shulkerQuads(s, sheets, out);
+  return t;
+})();
+
 /** Appends the quads of a built-in state; true when handled (fluids are drawn by the fluid mesher, not here). */
 export function builtinQuads(id: number, s: StateRef, _nb: Nb | null, sheets: SheetLookup, out: Quad[]): boolean {
-  switch (id) {
-    case 54: case 130: case 146: chestQuads(s, sheets, out); return true;
-    case 26: bedQuads(s, sheets, out); return true;
-    case 63: case 68: signQuads(id, s, sheets, out); return true;
-    case 176: case 177: bannerQuads(id, s, sheets, out); return true;
-    case 144: skullQuads(s, sheets, out); return true;
-    case 119: case 209: voidQuads(id, out); return true;
-    case 36: case 166: case 217: return true;
-  }
-  if (id >= 219 && id <= 234) {
-    shulkerQuads(s, sheets, out);
-    return true;
-  }
-  return false;
+  const draw = BUILTINS[id];
+  if (!draw) return false;
+  draw(id, s, sheets, out);
+  return true;
 }
 
 export { cloneQuad };

@@ -23,11 +23,16 @@ public static class MinePlanner
 
     public static string DirName(BlockPos d) => (d.X, d.Z) switch { (1, _) => "east", (-1, _) => "west", (_, 1) => "south", _ => "north" };
 
-    public static BlockPos? ParseDir(string? s) => s?.Trim().ToLowerInvariant() switch
+    /// <summary>Direction names (a letter, the word, or the axis sign) → <see cref="Dirs"/>.</summary>
+    private static readonly Dictionary<string, BlockPos> DirNames = new()
     {
-        "e" or "east" or "+x" => Dirs[0], "w" or "west" or "-x" => Dirs[1], "s" or "south" or "+z" => Dirs[2], "n" or "north" or "-z" => Dirs[3],
-        _ => null,
+        ["e"] = Dirs[0], ["east"] = Dirs[0], ["+x"] = Dirs[0],
+        ["w"] = Dirs[1], ["west"] = Dirs[1], ["-x"] = Dirs[1],
+        ["s"] = Dirs[2], ["south"] = Dirs[2], ["+z"] = Dirs[2],
+        ["n"] = Dirs[3], ["north"] = Dirs[3], ["-z"] = Dirs[3],
     };
+
+    public static BlockPos? ParseDir(string? s) => s?.Trim().ToLowerInvariant() is { } k && DirNames.TryGetValue(k, out var d) ? d : null;
 
     /// <summary>
     /// Landings of a structure at feet level <paramref name="y"/>: dug cells with head room whose floor stays solid (a stair step
@@ -48,55 +53,88 @@ public static class MinePlanner
     {
         var landings = Landings(w, s, y, near);
         if (landings.Count == 0) return (null, $"no stair landing at y{y} (the structure has no dug cell standing on a floor there)");
-        var treads = DigPattern.Floors(s);
-        bool Bad(BlockPos c)
-        {
-            if (s.Contains(c) || treads.Contains(c) || !w.IsLoaded(c.X, c.Z) || c.Y <= 0 || c.Y >= w.WorldHeight - 1) return true;
-            if (w.KeepAir.Owner(c, w.Dimension) is { } o && !string.Equals(o, owner, StringComparison.OrdinalIgnoreCase)) return true;
-            int id = w.GetBlock(c);
-            if (id != 0 && (Blocks.Get(id).Hardness < 0 || Blocks.Get(id).Interactable)) return true;
-            return isProtected?.Invoke(c) == true;
-        }
-        RoomPlan? best = null;
-        double bestScore = double.MaxValue;
+        var search = new RoomSearch(w, s, width, depth, height, gap, isProtected, owner, landings);
         foreach (var l in landings.Take(4))
         foreach (var d in Dirs)
+            if ((side is not { } sd || sd == d) && !s.Contains(l + d)) search.Try(l, d); // never inward, into the stair itself
+        return search.Best is { } best ? (best, null) : (null, NoRoom(width, depth, height, landings.Count, y, side));
+    }
+
+    private static string NoRoom(int width, int depth, int height, int landings, int y, BlockPos? side) =>
+        $"no {width}×{depth}×{height} room fits beside the landing{(landings > 1 ? "s" : "")} at y{y} without cutting the stair or another dig{(side is { } x ? $" on the {DirName(x)} side" : "")}";
+
+    /// <summary>The rooms tried beside the landings, keeping the best: least air to dig, centred on the landing, nearest landing.</summary>
+    private sealed class RoomSearch(WorldState w, IReadOnlySet<BlockPos> s, int width, int depth, int height, int gap,
+        Func<BlockPos, bool>? isProtected, string? owner, List<BlockPos> landings)
+    {
+        private readonly HashSet<BlockPos> _treads = DigPattern.Floors(s);
+        private double _bestScore = double.MaxValue;
+        public RoomPlan? Best { get; private set; }
+
+        /// <summary>A cell no room may take: the structure, its treads, unloaded or out of the world, another dig's, an
+        /// unbreakable or interactable block, a protected one.</summary>
+        private bool Bad(BlockPos c)
         {
-            if (side is { } sd && sd != d) continue;
-            if (s.Contains(l + d)) continue; // inward, into the stair itself
-            var p = new BlockPos(d.Z, 0, d.X); // across
-            var door = new List<BlockPos>();
-            bool ok = true;
-            for (int i = 1; i <= gap && ok; i++)
-                foreach (var c in new[] { l + Mul(d, i), (l + Mul(d, i)).Up() })
-                    if (Bad(c)) ok = false; else door.Add(c);
-            if (!ok) continue;
-            for (int o = -(width - 1); o <= 0; o++)
-            {
-                var room = new HashSet<BlockPos>();
-                int air = 0;
-                for (int i = 0; i < depth && ok; i++)
-                for (int j = 0; j < width && ok; j++)
-                for (int k = 0; k < height && ok; k++)
-                {
-                    var c = l + Mul(d, gap + 1 + i) + Mul(p, o + j) + new BlockPos(0, k, 0);
-                    if (Bad(c)) { ok = false; break; }
-                    if (gap > 0 && BlockFaceExtensions.All.Any(f => s.Contains(c.Offset(f)))) { ok = false; break; }
-                    if (!BlockShapes.HasCollision(w, c.X, c.Y, c.Z)) air++;
-                    room.Add(c);
-                }
-                if (!ok) { ok = true; continue; }
-                // The doorway (or, gap 0, the room's first layer) meets the landing at its floor and head cells: walk straight off the step.
-                var entry = l + Mul(d, gap + 1);
-                if (!room.Contains(entry) || !room.Contains(entry.Up())) continue;
-                double score = air * 2 + Math.Abs(o + (width - 1) / 2.0) + 0.5 * landings.IndexOf(l);
-                if (score >= bestScore) continue;
-                var (lo, hi) = DigVolume.Bounds(room);
-                bestScore = score;
-                best = new RoomPlan(room, door, l, d, lo, hi);
-            }
+            if (s.Contains(c) || _treads.Contains(c) || !w.IsLoaded(c.X, c.Z) || c.Y <= 0 || c.Y >= w.WorldHeight - 1) return true;
+            if (w.KeepAir.Owner(c, w.Dimension) is { } o && !string.Equals(o, owner, StringComparison.OrdinalIgnoreCase)) return true;
+            return Unbreakable(w.GetBlock(c)) || isProtected?.Invoke(c) == true;
         }
-        return best is null ? (null, $"no {width}×{depth}×{height} room fits beside the landing{(landings.Count > 1 ? "s" : "")} at y{y} without cutting the stair or another dig{(side is { } x ? $" on the {DirName(x)} side" : "")}") : (best, null);
+
+        private static bool Unbreakable(int id) => id != 0 && (Blocks.Get(id).Hardness < 0 || Blocks.Get(id).Interactable);
+
+        /// <summary>Every width offset of a room off landing <paramref name="l"/> in direction <paramref name="d"/>.</summary>
+        public void Try(BlockPos l, BlockPos d)
+        {
+            if (Door(l, d) is not { } door) return;
+            var p = new BlockPos(d.Z, 0, d.X); // across
+            for (int o = -(width - 1); o <= 0; o++) Consider(l, d, p, o, door);
+        }
+
+        /// <summary>The 1×2 doorway cells straight out from the landing (none with gap 0); null when one is bad.</summary>
+        private List<BlockPos>? Door(BlockPos l, BlockPos d)
+        {
+            var door = new List<BlockPos>();
+            for (int i = 1; i <= gap; i++)
+                foreach (var c in new[] { l + Mul(d, i), (l + Mul(d, i)).Up() })
+                {
+                    if (Bad(c)) return null;
+                    door.Add(c);
+                }
+            return door;
+        }
+
+        private void Consider(BlockPos l, BlockPos d, BlockPos p, int o, List<BlockPos> door)
+        {
+            if (Cells(l, d, p, o, out int air) is not { } room) return;
+            // The doorway (or, gap 0, the room's first layer) meets the landing at its floor and head cells: walk straight off the step.
+            var entry = l + Mul(d, gap + 1);
+            if (!room.Contains(entry) || !room.Contains(entry.Up())) return;
+            double score = air * 2 + Math.Abs(o + (width - 1) / 2.0) + 0.5 * landings.IndexOf(l);
+            if (score >= _bestScore) return;
+            var (lo, hi) = DigVolume.Bounds(room);
+            _bestScore = score;
+            Best = new RoomPlan(room, door, l, d, lo, hi);
+        }
+
+        /// <summary>The room's cells at width offset <paramref name="o"/> and how many are already air; null when one is bad or
+        /// (with a wall to keep) touches the structure.</summary>
+        private HashSet<BlockPos>? Cells(BlockPos l, BlockPos d, BlockPos p, int o, out int air)
+        {
+            var room = new HashSet<BlockPos>();
+            air = 0;
+            for (int i = 0; i < depth; i++)
+            for (int j = 0; j < width; j++)
+            for (int k = 0; k < height; k++)
+            {
+                var c = l + Mul(d, gap + 1 + i) + Mul(p, o + j) + new BlockPos(0, k, 0);
+                if (Bad(c) || gap > 0 && Touches(c)) return null;
+                if (!BlockShapes.HasCollision(w, c.X, c.Y, c.Z)) air++;
+                room.Add(c);
+            }
+            return room;
+        }
+
+        private bool Touches(BlockPos c) => BlockFaceExtensions.All.Any(f => s.Contains(c.Offset(f)));
     }
 
     private static BlockPos Mul(BlockPos d, int n) => new(d.X * n, d.Y * n, d.Z * n);
@@ -114,7 +152,6 @@ public static class MinePlanner
     {
         if (room.Count == 0) return (null, "the room has no cells");
         var (lo, hi) = DigVolume.Bounds(room);
-        int floor = lo.Y;
         var d = dir ?? away ?? Dirs[0];
         var keepSolid = new HashSet<BlockPos>();
         foreach (var o in w.KeepAir.Owners)
@@ -122,39 +159,43 @@ public static class MinePlanner
         bool Bad(BlockPos c) => room.Contains(c) || keepSolid.Contains(c) || !w.IsLoaded(c.X, c.Z)
                                 || w.KeepAir.Owner(c, w.Dimension) is { } o && !string.Equals(o, owner, StringComparison.OrdinalIgnoreCase)
                                 || w.GetBlock(c) is var id && id != 0 && (Blocks.Get(id).Hardness < 0 || Blocks.Get(id).Interactable);
-        // Mouth: the cell just outside the room's wall on side d, in the middle of that wall, at floor level.
-        int cx = (lo.X + hi.X) / 2, cz = (lo.Z + hi.Z) / 2;
-        var mouth = d.X switch
-        {
-            1 => new BlockPos(hi.X + 1, floor, cz), -1 => new BlockPos(lo.X - 1, floor, cz),
-            _ => d.Z == 1 ? new BlockPos(cx, floor, hi.Z + 1) : new BlockPos(cx, floor, lo.Z - 1),
-        };
+        bool Blocked(BlockPos c) => Enumerable.Range(0, height).Any(k => Bad(c.Up(k)));
+        var mouth = Mouth(lo, hi, d);
         var cells = new Dictionary<BlockPos, int>();
-        int main = 0;
-        for (int i = 0; i < length; i++)
-        {
-            var c = mouth + Mul(d, i);
-            if (Enumerable.Range(0, height).Any(k => Bad(c.Up(k)))) break;
-            for (int k = 0; k < height; k++) cells[c.Up(k)] = 0;
-            main++;
-        }
+        int main = Corridor(cells, mouth, d, length, height, 0, Blocked);
         if (main == 0) return (null, $"the {DirName(d)} wall of the room is against another dig");
         var across = new BlockPos(d.Z, 0, d.X);
         int branches = 0;
         for (int i = spacing; i < main; i += spacing + 1)
             foreach (var side in new[] { across, Mul(across, -1) })
-            {
-                int n = 0;
-                for (int j = 1; j <= branch; j++)
-                {
-                    var c = mouth + Mul(d, i) + Mul(side, j);
-                    if (Enumerable.Range(0, height).Any(k => Bad(c.Up(k)))) break;
-                    // Branches stay apart: never beside a cell of another branch or the room.
-                    for (int k = 0; k < height; k++) cells.TryAdd(c.Up(k), 1);
-                    n++;
-                }
-                if (n > 0) branches++;
-            }
+                if (Corridor(cells, mouth + Mul(d, i) + side, side, branch, height, 1, Blocked) > 0) branches++;
         return (new StripPlan(cells, mouth, d, branches, main), null);
+    }
+
+    /// <summary>The cell just outside the room's wall on side <paramref name="d"/>, in the middle of that wall, at floor level.</summary>
+    private static BlockPos Mouth(BlockPos lo, BlockPos hi, BlockPos d)
+    {
+        int cx = (lo.X + hi.X) / 2, cz = (lo.Z + hi.Z) / 2;
+        return d.X switch
+        {
+            1 => new BlockPos(hi.X + 1, lo.Y, cz), -1 => new BlockPos(lo.X - 1, lo.Y, cz),
+            _ => d.Z == 1 ? new BlockPos(cx, lo.Y, hi.Z + 1) : new BlockPos(cx, lo.Y, lo.Z - 1),
+        };
+    }
+
+    /// <summary>Up to <paramref name="count"/> columns <paramref name="height"/> high from <paramref name="start"/> along
+    /// <paramref name="step"/>, ending early at a blocked one; their cells added with <paramref name="phase"/> (a cell already in
+    /// keeps its phase: branches stay apart from the main corridor). The columns dug.</summary>
+    private static int Corridor(Dictionary<BlockPos, int> cells, BlockPos start, BlockPos step, int count, int height, int phase, Func<BlockPos, bool> blocked)
+    {
+        int n = 0;
+        for (int j = 0; j < count; j++)
+        {
+            var c = start + Mul(step, j);
+            if (blocked(c)) break;
+            for (int k = 0; k < height; k++) cells.TryAdd(c.Up(k), phase);
+            n++;
+        }
+        return n;
     }
 }

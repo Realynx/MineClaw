@@ -417,17 +417,20 @@ public sealed class DangerMonitor
         var now = _time.GetUtcNow();
         if (_deathPosted.TryGetValue(player, out var posted) && now - posted <= TimeSpan.FromSeconds(_o.DeathDedupeSeconds * 3))
             return null; // this death was already reported (dedupe across sources)
-        if (!_deaths.TryGetValue(player, out var d))
-        {
-            d = new PendingDeath { Player = player, At = now };
-            if (_tracks.TryGetValue(player, out var t) && t.At != default)
-            {
-                d.Pos = Cell(t.Pos);
-                d.Tracked = !t.Vanished || now - t.VanishedAt <= TimeSpan.FromSeconds(_o.DeathDedupeSeconds);
-            }
-            _deaths[player] = d;
-        }
+        if (!_deaths.TryGetValue(player, out var d)) _deaths[player] = d = NewDeath(player, now);
         if (cause != null && (d.Cause == null || d.Cause == "fell into the void" && !d.Chat)) d.Cause = cause;
+        return d;
+    }
+
+    /// <summary>A new pending death, at the player's last tracked spot (tracked = seen until moments ago).</summary>
+    private PendingDeath NewDeath(string player, DateTimeOffset now)
+    {
+        var d = new PendingDeath { Player = player, At = now };
+        if (_tracks.TryGetValue(player, out var t) && t.At != default)
+        {
+            d.Pos = Cell(t.Pos);
+            d.Tracked = !t.Vanished || now - t.VanishedAt <= TimeSpan.FromSeconds(_o.DeathDedupeSeconds);
+        }
         return d;
     }
 

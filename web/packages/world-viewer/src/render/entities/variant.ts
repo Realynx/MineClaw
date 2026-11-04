@@ -18,6 +18,15 @@ export function dyeOf(s: string | undefined): number {
   return DYES.indexOf(DYE_ALIASES[n] ?? n);
 }
 
+/** A string variant and the look as tokens: lower case, '-' and whitespace as '_', no "minecraft:" prefix. */
+function variantTokens(raw: number | string | null, look: string | null | undefined): string[] {
+  const text = [typeof raw === 'string' ? raw : '', look ?? ''].filter(Boolean).join(',');
+  return text
+    .split(/[,;|]/)
+    .map((t) => t.trim().toLowerCase().replace(/[\s-]+/g, '_').replace(/^minecraft:/, ''))
+    .filter(Boolean);
+}
+
 export class Variant {
   /** The numeric variant: the wire number, or the first bare-number token of a string; 0 when none. */
   readonly num: number;
@@ -30,11 +39,14 @@ export class Variant {
       this.tokens = [];
       return;
     }
-    const text = [typeof raw === 'string' ? raw : '', look ?? ''].filter(Boolean).join(',');
-    const toks = text
-      .split(/[,;|]/)
-      .map((t) => t.trim().toLowerCase().replace(/[\s-]+/g, '_').replace(/^minecraft:/, ''))
-      .filter(Boolean);
+    const toks = variantTokens(raw, look);
+    const num = this.readTokens(toks);
+    this.num = typeof raw === 'number' && Number.isFinite(raw) ? raw : num;
+    this.tokens = toks;
+  }
+
+  /** Files the "key=value" / "key:value" tokens by key; the first bare-number token (0 when none). */
+  private readTokens(toks: readonly string[]): number {
     let num = 0, found = false;
     for (const t of toks) {
       const i = t.search(/[:=]/);
@@ -44,8 +56,7 @@ export class Variant {
         found = true;
       }
     }
-    this.num = typeof raw === 'number' && Number.isFinite(raw) ? raw : num;
-    this.tokens = toks;
+    return num;
   }
 
   static readonly NONE = new Variant(null);

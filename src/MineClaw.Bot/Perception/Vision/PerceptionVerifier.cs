@@ -222,20 +222,9 @@ public static partial class PerceptionVerifier
         // Only voxel-verified coordinates ever leave the verifier: any other x,y,z in a claim or answer text becomes "?" (the
         // brain or a worker must never act on a perception coordinate the world didn't confirm).
         var verified = facts.Where(f => f.Status is FactStatus.Verified or FactStatus.Corrected).SelectMany(f => f.Coords).ToHashSet();
-        string Scrub(string t) => TripleRx().Replace(t, m =>
-            verified.Contains((int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value))) ? m.Value : "?");
         var sb = new StringBuilder("[vision] ");
-        if (!string.IsNullOrWhiteSpace(answer)) sb.Append(Trunc(Scrub(answer.Trim().TrimEnd('.')), 120)).Append(". ");
-        var parts = new List<string>();
-        foreach (var f in facts.Take(5))
-        {
-            var claim = Trunc(Scrub(f.Claim.Trim().TrimEnd('.')), 80);
-            var coords = f.Coords.Where(c => !claim.Contains($"{c.X},{c.Y},{c.Z}", StringComparison.Ordinal)).Take(3).ToList();
-            var s = claim + (coords.Count > 0 ? " @" + string.Join(" ", coords.Select(c => $"{c.X},{c.Y},{c.Z}")) : "");
-            if (f.Status == FactStatus.Unverified) s += " (uncertain)";
-            else if (f.Status == FactStatus.Corrected && f.Note != "some coords dropped") s += " (coords fixed)";
-            parts.Add(s);
-        }
+        if (!string.IsNullOrWhiteSpace(answer)) sb.Append(Trunc(Scrub(answer.Trim().TrimEnd('.'), verified), 120)).Append(". ");
+        var parts = facts.Take(5).Select(f => FactText(f, verified)).ToList();
         if (parts.Count > 0) sb.Append("seen: ").Append(string.Join("; ", parts));
         if (dropped > 0) sb.Append(CultureInfo.InvariantCulture, $" [{dropped} wrong claim{(dropped == 1 ? "" : "s")} dropped]");
         if (parts.Count == 0 && string.IsNullOrWhiteSpace(answer)) sb.Append("nothing verifiable seen; use look map");
@@ -243,6 +232,21 @@ public static partial class PerceptionVerifier
         var text = sb.ToString().Trim();
         if (!string.IsNullOrWhiteSpace(grounding)) text += " | " + grounding;
         return text.Length <= MaxChars ? text : text[..(MaxChars - 1)] + "…";
+    }
+
+    /// <summary>Any x,y,z the voxels didn't confirm becomes "?".</summary>
+    private static string Scrub(string t, HashSet<(int X, int Y, int Z)> verified) => TripleRx().Replace(t, m =>
+        verified.Contains((int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value))) ? m.Value : "?");
+
+    /// <summary>"claim @x,y,z (uncertain)": the claim's coords not already in its text (≤ 3), and its status.</summary>
+    private static string FactText(VerifiedFact f, HashSet<(int X, int Y, int Z)> verified)
+    {
+        var claim = Trunc(Scrub(f.Claim.Trim().TrimEnd('.'), verified), 80);
+        var coords = f.Coords.Where(c => !claim.Contains($"{c.X},{c.Y},{c.Z}", StringComparison.Ordinal)).Take(3).ToList();
+        var s = claim + (coords.Count > 0 ? " @" + string.Join(" ", coords.Select(c => $"{c.X},{c.Y},{c.Z}")) : "");
+        if (f.Status == FactStatus.Unverified) s += " (uncertain)";
+        else if (f.Status == FactStatus.Corrected && f.Note != "some coords dropped") s += " (coords fixed)";
+        return s;
     }
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
@@ -268,21 +272,24 @@ public static partial class PerceptionVerifier
     private static bool RoleMatches(IBlockAccess w, BlockRole expected, BlockRole actual, int id, (int X, int Y, int Z) c)
     {
         if (expected == actual) return true;
-        bool solid = id != 0 && w.Info(id).Solid;
-        return expected switch
-        {
-            // Geometry roles: the semantic role may be more specific (a protected floor, an own-placed wall).
-            // Floor vs wall is a matter of words (the floor under a gen cell has a block on top): any solid non-gen, non-portal block.
-            BlockRole.Floor or BlockRole.Wall => solid && actual is not (BlockRole.GenCell or BlockRole.Portal),
-            BlockRole.Water => Blocks.IsWater(id),
-            BlockRole.Lava => Blocks.IsLava(id),
-            BlockRole.Station => MineClaw.Bot.WorldIndex.IndexKinds.StationKind(id) != null,
-            BlockRole.SoftProtected => actual is BlockRole.NeverBreak or BlockRole.PlayerBuild or BlockRole.Portal,
-            BlockRole.Void => id == 0 && actual == BlockRole.Void,
-            BlockRole.None => id == 0,
-            _ => false,
-        };
+        // Geometry roles: the semantic role may be more specific (a protected floor, an own-placed wall).
+        // Floor vs wall is a matter of words (the floor under a gen cell has a block on top): any solid non-gen, non-portal block.
+        if (expected is BlockRole.Floor or BlockRole.Wall) return id != 0 && w.Info(id).Solid && actual is not (BlockRole.GenCell or BlockRole.Portal);
+        return BlockRoleMatches(expected, actual, id);
     }
+
+    private static bool BlockRoleMatches(BlockRole expected, BlockRole actual, int id) => expected switch
+    {
+        BlockRole.Water => Blocks.IsWater(id),
+        BlockRole.Lava => Blocks.IsLava(id),
+        BlockRole.Station => MineClaw.Bot.WorldIndex.IndexKinds.StationKind(id) != null,
+        BlockRole.SoftProtected => IsSoftProtected(actual),
+        BlockRole.Void => id == 0 && actual == BlockRole.Void,
+        BlockRole.None => id == 0,
+        _ => false,
+    };
+
+    private static bool IsSoftProtected(BlockRole actual) => actual is BlockRole.NeverBreak or BlockRole.PlayerBuild or BlockRole.Portal;
 
     private static bool SameFamily(int expected, int actual)
     {
@@ -303,23 +310,27 @@ public static partial class PerceptionVerifier
     private static (int, int, int)? Snap(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) c, BlockRole? role, int? block, bool air, bool solid,
         BlockRole? negRole, (int X, int Y, int Z) focus, int radius, IReadOnlyList<(int X, int Y, int Z)> claimed)
     {
-        // Negative and shape-only claims are true where they point or wrong: nothing to snap to.
-        if (negRole != null || (role == null && block == null)) return null;
-        // Generic geometry (floor, wall, void, plain blocks) nearly always has a matching neighbour: snapping it would "fix" a
-        // false claim into a different true one. Only distinctive targets are snapped.
-        if (role is null or BlockRole.Floor or BlockRole.Wall or BlockRole.Void or BlockRole.None) return null;
+        if (!Snappable(role, block, negRole)) return null;
         (int, int, int)? found = null;
         foreach (var (dx, dy, dz) in new[] { (0, -1, 0), (0, 1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1) })
         {
             var n = (c.X + dx, c.Y + dy, c.Z + dz);
-            if (claimed.Contains(n) || !Plausible(w, n, focus, radius)) continue;
-            if (!Matches(w, roles, n, role, block, air, solid, null)) continue;
+            if (claimed.Contains(n) || !Plausible(w, n, focus, radius) || !Matches(w, roles, n, role, block, air, solid, null)) continue;
             if (found != null && dy == 0) return null; // two horizontal candidates: ambiguous, don't guess
             found ??= n;
             if (dy != 0) return found;
         }
         return found;
     }
+
+    /// <summary>
+    /// Negative and shape-only claims are true where they point or wrong: nothing to snap to. Generic geometry (floor, wall,
+    /// void, plain blocks) nearly always has a matching neighbour: snapping it would "fix" a false claim into a different true
+    /// one. Only distinctive targets are snapped.
+    /// </summary>
+    private static bool Snappable(BlockRole? role, int? block, BlockRole? negRole) =>
+        negRole == null && (role != null || block != null)
+        && role is not (null or BlockRole.Floor or BlockRole.Wall or BlockRole.Void or BlockRole.None);
 
     /// <summary>What the voxels say is at <paramref name="c"/>, in the claim's terms ("gen cell", "water", "cobblestone").</summary>
     private static string Canonical(IBlockAccess w, BlockRole? role, bool air, bool solid, (int X, int Y, int Z) c)
@@ -329,6 +340,12 @@ public static partial class PerceptionVerifier
             return RoleClassifier.CropText(w.GetBlock(c.X, c.Y, c.Z), w.GetMeta(c.X, c.Y, c.Z)) ?? BlockRoles.Name(role.Value);
         if (role is { } r && r is not (BlockRole.None or BlockRole.Floor or BlockRole.Wall)) return BlockRoles.Name(r);
         if (air) return "air";
+        return BlockWords(w, role, solid, c);
+    }
+
+    /// <summary>The block's own name: "solid face (cobblestone)", "floor (planks)", "dirt", "air".</summary>
+    private static string BlockWords(IBlockAccess w, BlockRole? role, bool solid, (int X, int Y, int Z) c)
+    {
         int id = w.GetBlock(c.X, c.Y, c.Z);
         var name = id == 0 ? "air" : Blocks.Get(id).Name.Replace('_', ' ');
         if (solid) return $"solid face ({name})";
@@ -338,15 +355,22 @@ public static partial class PerceptionVerifier
     private static BlockRole? RoleFromClaim(string claim)
     {
         var c = claim.ToLowerInvariant();
-        if (c.Contains("gen cell") || c.Contains("generator cell") || c.Contains("dig cell") || c.Contains("mine here")) return BlockRole.GenCell;
-        if (c.Contains("portal")) return BlockRole.Portal;
-        if (c.Contains("void")) return BlockRole.Void;
-        if (c.Contains("never-break") || c.Contains("never break")) return BlockRole.NeverBreak;
+        foreach (var (words, role) in ClaimWords)
+            if (words.Any(word => c.Contains(word))) return role;
         if (Regex.IsMatch(c, @"\b(unripe|not ripe|not fully grown|growing|immature|young)\b")) return BlockRole.CropGrowing;
         if (Regex.IsMatch(c, @"\b(ripe|fully grown|mature)\b")) return BlockRole.CropRipe;
         if (Regex.IsMatch(c, @"\bfloor\b")) return BlockRole.Floor;
         return null;
     }
+
+    /// <summary>Plain words naming a role, checked in order before the crop/floor patterns.</summary>
+    private static readonly (string[] Words, BlockRole Role)[] ClaimWords =
+    [
+        (["gen cell", "generator cell", "dig cell", "mine here"], BlockRole.GenCell),
+        (["portal"], BlockRole.Portal),
+        (["void"], BlockRole.Void),
+        (["never-break", "never break"], BlockRole.NeverBreak),
+    ];
 
     private static int? BlockFromClaim(string claim)
     {

@@ -320,52 +320,59 @@ export function tableFor(version: GameVersion): Table {
   return version === 'b1.8.1' ? TABLE_B181 : TABLE_1122;
 }
 
+/** Slab variants (b1.8.1: 0 stone, 1 sandstone, 2 wood, 3 cobble; 1.12.2 adds 4 brick, 5 stone brick, 6 nether brick, 7 quartz). */
+const SLAB: number[] = [0xa8a8a8, 0xd5c88f, 0xb38c55, 0x7d7d7d, 0x9b4b3b, 0x7f7f7f, 0x2c1418, 0xece6dc];
+
+/** A face colour that depends on the state: (table entry, meta, top face, 1.12.2). */
+type Variant = (d: BlockDef, meta: number, up: boolean, modern: boolean) => number;
+
+const planks: Variant = (d, meta, _up, modern) => (modern ? PLANKS[(meta & 7) % 6] : d.top);
+const dyed: Variant = (_d, meta) => DYE[meta & 15];
+const stainedGlass: Variant = (d, meta, _up, modern) => (modern ? DYE[meta & 15] : d.top);
+const topOnly: Variant = (d) => d.top;
+
+/** Dirt: 1.12.2 coarse dirt (1) and podzol (2). */
+const dirt: Variant = (d, meta, _up, modern) => {
+  if (!modern) return d.top;
+  const v = meta & 3;
+  return v === 2 ? 0x5a3d1e : v === 1 ? 0x77553b : d.top;
+};
+
+/** Leaves: spruce (1) and birch (2). */
+const leaves: Variant = (d, meta) => {
+  const v = meta & 3;
+  return v === 1 ? 0x3f6a3f : v === 2 ? 0x5f8a3e : d.top;
+};
+
+/** The meta-dependent variants, by id; ids absent use the table's top / side colour. */
+const VARIANTS: Array<Variant | undefined> = (() => {
+  const t = new Array<Variant | undefined>(256);
+  const set = (ids: number[], f: Variant) => ids.forEach((id) => (t[id] = f));
+  set([1], (d, meta, _up, modern) => (modern ? (STONE[meta % 7] ?? STONE[0]) : d.top));
+  set([3], dirt);
+  set([5, 125, 126], planks);
+  set([12], (d, meta, _up, modern) => (modern && meta === 1 ? 0xa95821 : d.top)); // red sand
+  set([17], (d, meta, up, modern) => (up ? (modern ? PLANKS[meta & 3] : d.top) : LOG_SIDE[meta & 3]));
+  set([162], (_d, meta, up) => (up ? PLANKS[4 + (meta & 1)] : LOG2_SIDE[meta & 1]));
+  set([18], leaves);
+  set([161], () => 0x3d8c2c);
+  set([35, 171], dyed);
+  set([95, 160], stainedGlass);
+  set([159], (_d, meta) => TERRACOTTA[meta & 15]);
+  set([251], (_d, meta) => scaleRgb(DYE[meta & 15], 0.85)); // concrete
+  set([252], (_d, meta) => scaleRgb(DYE[meta & 15], 1.0)); // concrete powder
+  set([43, 44], (_d, meta) => SLAB[meta & 7]);
+  set([24, 179], topOnly);
+  return t;
+})();
+
 /** Flat colour of a state's face (0xRRGGBB): the meta-dependent variants first, then the table. */
 export function flatColour(version: GameVersion, id: number, meta: number, up: boolean): number {
   const d = tableFor(version)[id];
   if (!d) return 0x808080;
-  const modern = version === '1.12.2';
-  switch (id) {
-    case 1:
-      return modern ? STONE[meta % 7] ?? STONE[0] : d.top;
-    case 3:
-      return modern && (meta & 3) === 2 ? 0x5a3d1e : modern && (meta & 3) === 1 ? 0x77553b : d.top;
-    case 5:
-    case 125:
-    case 126:
-      return modern ? PLANKS[(meta & 7) % 6] : d.top;
-    case 12:
-      return modern && meta === 1 ? 0xa95821 : d.top;
-    case 17:
-      return up ? (modern ? PLANKS[meta & 3] : d.top) : LOG_SIDE[meta & 3];
-    case 162:
-      return up ? PLANKS[4 + (meta & 1)] : LOG2_SIDE[meta & 1];
-    case 18:
-      return (meta & 3) === 1 ? 0x3f6a3f : (meta & 3) === 2 ? 0x5f8a3e : d.top;
-    case 161:
-      return 0x3d8c2c;
-    case 35:
-    case 171:
-      return DYE[meta & 15];
-    case 95:
-    case 160:
-      return modern ? DYE[meta & 15] : d.top;
-    case 159:
-      return TERRACOTTA[meta & 15];
-    case 251:
-      return scaleRgb(DYE[meta & 15], 0.85);
-    case 252:
-      return scaleRgb(DYE[meta & 15], 1.0);
-    case 43:
-    case 44:
-      // Slab variants (b1.8.1: 0 stone, 1 sandstone, 2 wood, 3 cobble; 1.12.2 adds 4 brick, 5 stone brick, 6 nether brick, 7 quartz).
-      return [0xa8a8a8, 0xd5c88f, 0xb38c55, 0x7d7d7d, 0x9b4b3b, 0x7f7f7f, 0x2c1418, 0xece6dc][meta & 7];
-    case 24:
-    case 179:
-      return d.top;
-    default:
-      return up ? d.top : d.side;
-  }
+  const variant = VARIANTS[id];
+  if (variant) return variant(d, meta, up, version === '1.12.2');
+  return up ? d.top : d.side;
 }
 
 export function scaleRgb(rgb: number, k: number): number {

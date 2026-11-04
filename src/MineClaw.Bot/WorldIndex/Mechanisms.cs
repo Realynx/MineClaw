@@ -127,7 +127,7 @@ public sealed partial class MechanismWatcher : IDisposable
         bool trigger = TriggerWords().IsMatch(text);
         if (DemoWords().IsMatch(text) || (trigger && Regex.IsMatch(text, @"\b(opens?|works?|controls?)\b", RegexOptions.IgnoreCase)))
             Learner.NoteDemonstration(player);
-        if (!trigger || Graph.Question is not { } q || q.Dim != _world.Dimension || _time.GetUtcNow() - q.At > TimeSpan.FromMinutes(5)) return null;
+        if (!trigger || OpenQuestion() is not { } q) return null;
         var at = TriggerNamed(text, q.Subject);
         if (at is null) return null;
         var link = Graph.Teach(_world, at.Value, [q.Subject], _world.Dimension, player, _time.GetUtcNow());
@@ -136,15 +136,23 @@ public sealed partial class MechanismWatcher : IDisposable
         return link;
     }
 
-    private BlockPos? TriggerNamed(string text, BlockPos subject)
+    /// <summary>The bot's pending "how do I open this?" in this dimension, asked within 5 minutes; else null.</summary>
+    private (BlockPos Subject, int Dim, DateTimeOffset At)? OpenQuestion() =>
+        Graph.Question is { } q && q.Dim == _world.Dimension && _time.GetUtcNow() - q.At <= TimeSpan.FromMinutes(5) ? q : null;
+
+    /// <summary>A trigger named by its coordinates in the line.</summary>
+    private BlockPos? CoordTrigger(string text)
     {
         var m = Coords().Match(text);
-        if (m.Success)
-        {
-            var p = new BlockPos(int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture),
-                int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture));
-            if (Mechanisms.KindOf(_world.GetBlock(p)) is not null) return p;
-        }
+        if (!m.Success) return null;
+        var p = new BlockPos(int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture),
+            int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture));
+        return Mechanisms.KindOf(_world.GetBlock(p)) is not null ? p : null;
+    }
+
+    private BlockPos? TriggerNamed(string text, BlockPos subject)
+    {
+        if (CoordTrigger(text) is { } named) return named;
         int? want = text.Contains("lever", StringComparison.OrdinalIgnoreCase) ? Openables.Lever
             : text.Contains("plate", StringComparison.OrdinalIgnoreCase) ? null : Openables.StoneButton;
         bool plate = text.Contains("plate", StringComparison.OrdinalIgnoreCase);

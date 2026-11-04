@@ -28,15 +28,8 @@ public static class PortalTravel
         if (route == null) return ToolResult.Error($"no known portal to {WorldDim.Name(targetDim)}");
 
         var entry = route.Entry;
-        var portal = PortalCellNear(c.World, new BlockPos(entry.X, entry.Y, entry.Z));
-        if (portal == null)
-        {
-            // Out of sight: walk there first (the sheet's blocks are only known once its chunk is loaded).
-            var g = await c.GotoAsync(new GoalNear(entry.X, entry.Y, entry.Z, 3), options, ct).ConfigureAwait(false);
-            if (!g.Ok && c.World.Dimension == here) return ToolResult.Error($"can't reach the portal at {entry.Pos}: {g.Message}");
-            portal = PortalCellNear(c.World, new BlockPos(entry.X, entry.Y, entry.Z));
-            if (portal == null && c.World.Dimension == here) return ToolResult.Error($"no lit portal at {entry.Pos} any more");
-        }
+        var (portal, error) = await FindEntryAsync(c, entry, options, here, ct).ConfigureAwait(false);
+        if (error != null) return error;
         if (c.World.Dimension == here)
         {
             // b1.8.1: step out first if standing in it, walk in, ~4 s standing in the sheet, then 0x09 Respawn with the
@@ -56,6 +49,20 @@ public static class PortalTravel
         var r = await c.GotoAsync(goal, options, ct).ConfigureAwait(false);
         var via = $"via portal {entry.Pos} -> {WorldDim.Name(targetDim)} {route.Exit.Pos}";
         return r.Ok ? ToolResult.Success($"{via}: {r.Message}") : ToolResult.Error($"{via}, then: {r.Message}");
+    }
+
+    /// <summary>The entry portal's sheet cell; out of sight, walk there first (the sheet's blocks are only known once its chunk
+    /// is loaded). An error when it can't be reached or isn't lit any more (unless the walk already changed dimension).</summary>
+    private static async Task<(BlockPos? Portal, ToolResult? Error)> FindEntryAsync(IGameClient c, PortalEnd entry, GotoOptions? options, int here,
+        CancellationToken ct)
+    {
+        var portal = PortalCellNear(c.World, new BlockPos(entry.X, entry.Y, entry.Z));
+        if (portal != null) return (portal, null);
+        var g = await c.GotoAsync(new GoalNear(entry.X, entry.Y, entry.Z, 3), options, ct).ConfigureAwait(false);
+        if (!g.Ok && c.World.Dimension == here) return (null, ToolResult.Error($"can't reach the portal at {entry.Pos}: {g.Message}"));
+        portal = PortalCellNear(c.World, new BlockPos(entry.X, entry.Y, entry.Z));
+        if (portal == null && c.World.Dimension == here) return (null, ToolResult.Error($"no lit portal at {entry.Pos} any more"));
+        return (portal, null);
     }
 
     /// <summary>Walks into the portal holding <paramref name="portal"/> and stands still until the dimension changes

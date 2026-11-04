@@ -77,36 +77,7 @@ public static class LightPlan
     {
         var index = new Dictionary<BlockPos, int>(dark.Count);
         for (int i = 0; i < dark.Count; i++) index[dark[i]] = i;
-        var spots = new List<Spot>();
-        var cover = new List<int[]>();
-        if (dark.Count > 0)
-        {
-            // Candidates: the region grown by one (walls at its rim, a torch one above/below the spawn level).
-            int reach = TorchLight - level; // how far a torch still gives ≥ level
-            int x0 = Math.Max(r.X0 - 1, dark.Min(d => d.X) - reach), x1 = Math.Min(r.X1 + 1, dark.Max(d => d.X) + reach);
-            int z0 = Math.Max(r.Z0 - 1, dark.Min(d => d.Z) - reach), z1 = Math.Min(r.Z1 + 1, dark.Max(d => d.Z) + reach);
-            int y0 = Math.Max(1, r.Y0 - 1), y1 = Math.Min(w.WorldHeight - 2, r.Y1 + 1);
-            var field = new Field(reach);
-            for (int x = x0; x <= x1; x++)
-            for (int z = z0; z <= z1; z++)
-            {
-                if (!w.IsLoaded(x, z)) continue;
-                for (int y = y0; y <= y1; y++)
-                {
-                    var c = new BlockPos(x, y, z);
-                    int id = w.GetBlock(c);
-                    if (!Aiming.IsReplaceable(w, id) || BlockShapes.IsLiquid(id)) continue;
-                    if (ex != null && ex.Contains(c)) continue;
-                    var faces = PlaceRules.AttachFaces(w, c, Blocks.Torch);
-                    if (faces.Count == 0 || Safety.IsOverVoid(w, c.X, c.Y, c.Z)) continue;
-                    if (allowed != null && !allowed(c)) continue;
-                    var lit = field.Lit(w, c, level, index);
-                    if (lit.Length == 0) continue;
-                    spots.Add(new Spot(c, faces[0], StandNear(w, c)));
-                    cover.Add(lit);
-                }
-            }
-        }
+        var (spots, cover) = Candidates(w, r, dark, ex, level, allowed, index);
         // Two greedy passes (max new coverage; and "hardest cell first": the uncovered cell with the fewest torch spots, then
         // the spot that lights most of the rest), each pruned of torches the others make redundant; the smaller plan wins.
         double Bias(int i)
@@ -118,13 +89,64 @@ public static class LightPlan
         }
         var a = Prune(Greedy(spots.Count, cover, dark.Count, maxTorches, Bias, hardestFirst: false), cover, dark.Count);
         var b = Prune(Greedy(spots.Count, cover, dark.Count, maxTorches, Bias, hardestFirst: true), cover, dark.Count);
-        var pick = Covered(b, cover, dark.Count) > Covered(a, cover, dark.Count)
-                   || (Covered(b, cover, dark.Count) == Covered(a, cover, dark.Count) && b.Count < a.Count) ? b : a;
+        var pick = Better(a, b, cover, dark.Count);
+        return new Plan(Tour(pick.Select(t => spots[t]).ToList(), me), dark, Unlit(pick, cover, dark));
+    }
+
+    /// <summary>Candidate torch spots and the dark cells each lights: the region grown by one (walls at its rim, a torch one
+    /// above/below the spawn level), within a torch's reach of a dark cell.</summary>
+    private static (List<Spot> Spots, List<int[]> Cover) Candidates(WorldState w, Region r, List<BlockPos> dark, Exclusion? ex, int level,
+        Func<BlockPos, bool>? allowed, Dictionary<BlockPos, int> index)
+    {
+        var spots = new List<Spot>();
+        var cover = new List<int[]>();
+        if (dark.Count == 0) return (spots, cover);
+        int reach = TorchLight - level; // how far a torch still gives ≥ level
+        int x0 = Math.Max(r.X0 - 1, dark.Min(d => d.X) - reach), x1 = Math.Min(r.X1 + 1, dark.Max(d => d.X) + reach);
+        int z0 = Math.Max(r.Z0 - 1, dark.Min(d => d.Z) - reach), z1 = Math.Min(r.Z1 + 1, dark.Max(d => d.Z) + reach);
+        int y0 = Math.Max(1, r.Y0 - 1), y1 = Math.Min(w.WorldHeight - 2, r.Y1 + 1);
+        var field = new Field(reach);
+        for (int x = x0; x <= x1; x++)
+        for (int z = z0; z <= z1; z++)
+        {
+            if (!w.IsLoaded(x, z)) continue;
+            for (int y = y0; y <= y1; y++)
+            {
+                var c = new BlockPos(x, y, z);
+                if (TorchFace(w, c, ex, allowed) is not { } face) continue;
+                var lit = field.Lit(w, c, level, index);
+                if (lit.Length == 0) continue;
+                spots.Add(new Spot(c, face, StandNear(w, c)));
+                cover.Add(lit);
+            }
+        }
+        return (spots, cover);
+    }
+
+    /// <summary>The face a torch in <paramref name="c"/> would hang on: an empty, dry, allowed cell, not excluded, not over the void.</summary>
+    private static BlockFace? TorchFace(WorldState w, BlockPos c, Exclusion? ex, Func<BlockPos, bool>? allowed)
+    {
+        int id = w.GetBlock(c);
+        if (!Aiming.IsReplaceable(w, id) || BlockShapes.IsLiquid(id)) return null;
+        if (ex != null && ex.Contains(c)) return null;
+        var faces = PlaceRules.AttachFaces(w, c, Blocks.Torch);
+        if (faces.Count == 0 || Safety.IsOverVoid(w, c.X, c.Y, c.Z)) return null;
+        if (allowed != null && !allowed(c)) return null;
+        return faces[0];
+    }
+
+    /// <summary>The plan that lights more cells; on a tie the one with fewer torches (the first pass wins a full tie).</summary>
+    private static List<int> Better(List<int> a, List<int> b, List<int[]> cover, int darkCount) =>
+        Covered(b, cover, darkCount) > Covered(a, cover, darkCount)
+        || (Covered(b, cover, darkCount) == Covered(a, cover, darkCount) && b.Count < a.Count) ? b : a;
+
+    private static List<BlockPos> Unlit(List<int> pick, List<int[]> cover, List<BlockPos> dark)
+    {
         var done = new bool[dark.Count];
         foreach (var t in pick) foreach (var d in cover[t]) done[d] = true;
         var unlit = new List<BlockPos>();
         for (int i = 0; i < dark.Count; i++) if (!done[i]) unlit.Add(dark[i]);
-        return new Plan(Tour(pick.Select(t => spots[t]).ToList(), me), dark, unlit);
+        return unlit;
     }
 
     private static List<int> Greedy(int n, List<int[]> cover, int darkCount, int maxTorches, Func<int, double> bias, bool hardestFirst)
@@ -132,9 +154,7 @@ public static class LightPlan
         var uncovered = new bool[darkCount];
         Array.Fill(uncovered, true);
         int left = darkCount;
-        var by = new List<int>[darkCount]; // dark cell → spots that light it
-        for (int d = 0; d < darkCount; d++) by[d] = new List<int>();
-        for (int i = 0; i < n; i++) foreach (var d in cover[i]) by[d].Add(i);
+        var by = SpotsByCell(n, cover, darkCount);
         var used = new bool[n];
         var chosen = new List<int>();
         while (left > 0 && chosen.Count < maxTorches)
@@ -142,23 +162,11 @@ public static class LightPlan
             IEnumerable<int> pool = Enumerable.Range(0, n);
             if (hardestFirst)
             {
-                int hard = -1;
-                for (int d = 0; d < darkCount; d++)
-                    if (uncovered[d] && by[d].Count > 0 && (hard < 0 || by[d].Count < by[hard].Count)) hard = d;
+                int hard = Hardest(uncovered, by);
                 if (hard < 0) break;
                 pool = by[hard];
             }
-            int best = -1;
-            double bestScore = 0;
-            foreach (var i in pool)
-            {
-                if (used[i]) continue;
-                int gain = 0;
-                foreach (var d in cover[i]) if (uncovered[d]) gain++;
-                if (gain == 0) continue;
-                double score = gain + bias(i) * Math.Max(1, gain);
-                if (best < 0 || score > bestScore) { best = i; bestScore = score; }
-            }
+            int best = MostGain(pool, used, cover, uncovered, bias);
             if (best < 0) break;
             used[best] = true;
             chosen.Add(best);
@@ -166,6 +174,47 @@ public static class LightPlan
                 if (uncovered[d]) { uncovered[d] = false; left--; }
         }
         return chosen;
+    }
+
+    /// <summary>Dark cell → the spots that light it.</summary>
+    private static List<int>[] SpotsByCell(int n, List<int[]> cover, int darkCount)
+    {
+        var by = new List<int>[darkCount];
+        for (int d = 0; d < darkCount; d++) by[d] = new List<int>();
+        for (int i = 0; i < n; i++) foreach (var d in cover[i]) by[d].Add(i);
+        return by;
+    }
+
+    /// <summary>The uncovered cell the fewest spots light (some do); -1 when none is left.</summary>
+    private static int Hardest(bool[] uncovered, List<int>[] by)
+    {
+        int hard = -1;
+        for (int d = 0; d < uncovered.Length; d++)
+            if (uncovered[d] && by[d].Count > 0 && (hard < 0 || by[d].Count < by[hard].Count)) hard = d;
+        return hard;
+    }
+
+    /// <summary>The unused spot of <paramref name="pool"/> with the best biased new coverage; -1 when none adds any.</summary>
+    private static int MostGain(IEnumerable<int> pool, bool[] used, List<int[]> cover, bool[] uncovered, Func<int, double> bias)
+    {
+        int best = -1;
+        double bestScore = 0;
+        foreach (var i in pool)
+        {
+            if (used[i]) continue;
+            int gain = Gain(cover[i], uncovered);
+            if (gain == 0) continue;
+            double score = gain + bias(i) * Math.Max(1, gain);
+            if (best < 0 || score > bestScore) { best = i; bestScore = score; }
+        }
+        return best;
+    }
+
+    private static int Gain(int[] lit, bool[] uncovered)
+    {
+        int gain = 0;
+        foreach (var d in lit) if (uncovered[d]) gain++;
+        return gain;
     }
 
     /// <summary>Drops torches whose every cell another chosen torch also lights (latest picks first).</summary>
@@ -242,6 +291,9 @@ public static class LightPlan
         private readonly List<BlockPos>[] _buckets = Enumerable.Range(0, TorchLight + 1).Select(_ => new List<BlockPos>()).ToArray();
         private readonly List<int> _hits = new();
 
+        /// <summary>The six neighbours in spreading order: +x, -x, +y, -y, +z, -z.</summary>
+        private static readonly (int X, int Y, int Z)[] Steps = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
+
         public int[] Lit(WorldState w, BlockPos src, int level, Dictionary<BlockPos, int> dark)
         {
             _gen++;
@@ -258,20 +310,26 @@ public static class LightPlan
                     var c = bucket[i];
                     if (Best(src, c) != l) continue;
                     if (dark.TryGetValue(c, out int di)) _hits.Add(di);
-                    for (int n = 0; n < 6; n++)
-                    {
-                        var nb = n switch { 0 => c.Offset(1, 0, 0), 1 => c.Offset(-1, 0, 0), 2 => c.Offset(0, 1, 0), 3 => c.Offset(0, -1, 0), 4 => c.Offset(0, 0, 1), _ => c.Offset(0, 0, -1) };
-                        if (Math.Abs(nb.X - src.X) > radius || Math.Abs(nb.Y - src.Y) > radius || Math.Abs(nb.Z - src.Z) > radius) continue;
-                        if ((uint)nb.Y >= h || !w.IsLoaded(nb.X, nb.Z)) continue;
-                        int op = w.Physics.LightOpacity(w.GetBlock(nb));
-                        int v = l - Math.Max(1, op);
-                        if (v < level) continue;
-                        if (Visit(src, nb, v)) _buckets[v].Add(nb);
-                    }
+                    Spread(w, h, src, c, l, level);
                 }
             }
             return _hits.Distinct().ToArray();
         }
+
+        /// <summary>Light <paramref name="l"/> at <paramref name="c"/> reaches each loaded neighbour in the box less max(1, its opacity).</summary>
+        private void Spread(WorldState w, int h, BlockPos src, BlockPos c, int l, int level)
+        {
+            foreach (var (dx, dy, dz) in Steps)
+            {
+                var nb = c.Offset(dx, dy, dz);
+                if (!InBox(src, nb) || (uint)nb.Y >= h || !w.IsLoaded(nb.X, nb.Z)) continue;
+                int v = l - Math.Max(1, w.Physics.LightOpacity(w.GetBlock(nb)));
+                if (v >= level && Visit(src, nb, v)) _buckets[v].Add(nb);
+            }
+        }
+
+        private bool InBox(BlockPos src, BlockPos nb) =>
+            Math.Abs(nb.X - src.X) <= radius && Math.Abs(nb.Y - src.Y) <= radius && Math.Abs(nb.Z - src.Z) <= radius;
 
         private int Slot(BlockPos src, BlockPos c) =>
             ((c.X - src.X + radius) * _side + (c.Y - src.Y + radius)) * _side + (c.Z - src.Z + radius);
@@ -303,56 +361,84 @@ public static class LightPlan
     {
         var ex = new Exclusion();
         DesignRegion? design = null;
-        Region? r = null;
-        var me = ctx.Me;
+        Region? r;
+        string? error;
         string? dsg = args.Str("design");
-        if (!string.IsNullOrWhiteSpace(dsg))
-        {
-            if (ctx.Registry.Design is not { } find) return (null, ex, null, "no design list here");
-            design = SafeFind(find, dsg);
-            if (design is null) return (null, ex, null, $"no design '{dsg}'");
-            int pad = Math.Clamp(args.Int("pad") ?? 4, 0, 16);
-            var (y0, y1) = Band(args, design.Min.Y - 2, design.Min.Y + 2, ctx.World.WorldHeight);
-            r = new Region(design.Min.X - pad, y0, design.Min.Z - pad, design.Max.X + pad, y1, design.Max.Z + pad, $"{design.Label} floor");
-        }
-        else if (args.Str("area") is { } area && !string.IsNullOrWhiteSpace(area))
-        {
-            var v = Ints(area);
-            if (v is { Length: 4 })
-            {
-                var (y0, y1) = Band(args, me.Y - 6, me.Y + 3, ctx.World.WorldHeight);
-                r = new Region(Math.Min(v[0], v[2]), y0, Math.Min(v[1], v[3]), Math.Max(v[0], v[2]), y1, Math.Max(v[1], v[3]), "area");
-            }
-            else if (v is { Length: 6 })
-                r = new Region(Math.Min(v[0], v[3]), Math.Min(v[1], v[4]), Math.Min(v[2], v[5]), Math.Max(v[0], v[3]), Math.Max(v[1], v[4]), Math.Max(v[2], v[5]), "area");
-            else return (null, ex, null, "area must be x0,z0,x1,z1 (with y=) or x0,y0,z0,x1,y1,z1");
-        }
-        else
-        {
-            var at = me;
-            string label = "around me";
-            if (args.Str("around") is { } around && !string.IsNullOrWhiteSpace(around) && around != "me")
-            {
-                if (Ints(around) is { Length: 3 } p) { at = new BlockPos(p[0], p[1], p[2]); label = $"around {around}"; }
-                else if (ctx.World.Entities.FindPlayer(around) is { } pl) { at = pl.Position.ToBlockPos(); label = $"around {pl.Name}"; }
-                else return (null, ex, null, $"around '{around}': not a position or a player I can see");
-            }
-            int rad = Math.Clamp(args.Int("radius") ?? 12, 2, 32);
-            var (y0, y1) = Band(args, at.Y - 4, at.Y + 3, ctx.World.WorldHeight);
-            r = new Region(at.X - rad, y0, at.Z - rad, at.X + rad, y1, at.Z + rad, label);
-        }
-        if (r.Columns > MaxColumns) return (null, ex, design, $"{r.Box} is {r.Columns} columns; at most {MaxColumns} per call");
-        if (r.Y1 - r.Y0 + 1 > MaxBand) return (null, ex, design, $"y {r.Y0}..{r.Y1} spans more than {MaxBand} levels");
+        if (!string.IsNullOrWhiteSpace(dsg)) (r, design, error) = ForDesign(ctx, args, dsg);
+        else if (args.Str("area") is { } area && !string.IsNullOrWhiteSpace(area)) (r, error) = ForArea(ctx, args, area);
+        else (r, error) = Around(ctx, args);
+        if (r is null) return (null, ex, null, error);
+        if (TooBig(r) is { } big) return (null, ex, design, big);
+        if (Exclusions(ctx, args, design, ex) is { } bad) return (null, ex, design, bad);
+        return (r, ex, design, null);
+    }
 
-        // Exclusions: explicit ones, else a design target's own decks (a mob farm's spawning floor is never lit by default).
+    /// <summary>A design's footprint ± <c>pad</c> (4), feet levels base−2..base+2.</summary>
+    private static (Region? R, DesignRegion? Design, string? Error) ForDesign(SkillContext ctx, JsonElement args, string dsg)
+    {
+        if (ctx.Registry.Design is not { } find) return (null, null, "no design list here");
+        var design = SafeFind(find, dsg);
+        if (design is null) return (null, null, $"no design '{dsg}'");
+        int pad = Math.Clamp(args.Int("pad") ?? 4, 0, 16);
+        var (y0, y1) = Band(args, design.Min.Y - 2, design.Min.Y + 2, ctx.World.WorldHeight);
+        return (new Region(design.Min.X - pad, y0, design.Min.Z - pad, design.Max.X + pad, y1, design.Max.Z + pad, $"{design.Label} floor"), design, null);
+    }
+
+    /// <summary>"x0,z0,x1,z1" (feet levels from <c>y</c>, else around mine) or "x0,y0,z0,x1,y1,z1".</summary>
+    private static (Region? R, string? Error) ForArea(SkillContext ctx, JsonElement args, string area)
+    {
+        var me = ctx.Me;
+        var v = Ints(area);
+        if (v is { Length: 4 })
+        {
+            var (y0, y1) = Band(args, me.Y - 6, me.Y + 3, ctx.World.WorldHeight);
+            return (new Region(Math.Min(v[0], v[2]), y0, Math.Min(v[1], v[3]), Math.Max(v[0], v[2]), y1, Math.Max(v[1], v[3]), "area"), null);
+        }
+        if (v is { Length: 6 })
+            return (new Region(Math.Min(v[0], v[3]), Math.Min(v[1], v[4]), Math.Min(v[2], v[5]), Math.Max(v[0], v[3]), Math.Max(v[1], v[4]), Math.Max(v[2], v[5]), "area"), null);
+        return (null, "area must be x0,z0,x1,z1 (with y=) or x0,y0,z0,x1,y1,z1");
+    }
+
+    /// <summary><c>around</c> (x,y,z or a player I can see; me by default) + <c>radius</c> (12).</summary>
+    private static (Region? R, string? Error) Around(SkillContext ctx, JsonElement args)
+    {
+        var at = ctx.Me;
+        string label = "around me";
+        if (args.Str("around") is { } around && !string.IsNullOrWhiteSpace(around) && around != "me")
+        {
+            if (Centre(ctx, around) is not { } found) return (null, $"around '{around}': not a position or a player I can see");
+            (at, label) = found;
+        }
+        int rad = Math.Clamp(args.Int("radius") ?? 12, 2, 32);
+        var (y0, y1) = Band(args, at.Y - 4, at.Y + 3, ctx.World.WorldHeight);
+        return (new Region(at.X - rad, y0, at.Z - rad, at.X + rad, y1, at.Z + rad, label), null);
+    }
+
+    private static (BlockPos At, string Label)? Centre(SkillContext ctx, string around)
+    {
+        if (Ints(around) is { Length: 3 } p) return (new BlockPos(p[0], p[1], p[2]), $"around {around}");
+        if (ctx.World.Entities.FindPlayer(around) is { } pl) return (pl.Position.ToBlockPos(), $"around {pl.Name}");
+        return null;
+    }
+
+    private static string? TooBig(Region r)
+    {
+        if (r.Columns > MaxColumns) return $"{r.Box} is {r.Columns} columns; at most {MaxColumns} per call";
+        if (r.Y1 - r.Y0 + 1 > MaxBand) return $"y {r.Y0}..{r.Y1} spans more than {MaxBand} levels";
+        return null;
+    }
+
+    /// <summary>Exclusions: explicit ones, else a design target's own decks (a mob farm's spawning floor is never lit by default).</summary>
+    private static string? Exclusions(SkillContext ctx, JsonElement args, DesignRegion? design, Exclusion ex)
+    {
         var spec = args.Str("exclude")?.Trim();
         bool none = string.Equals(spec, "none", StringComparison.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(spec) && !none)
             foreach (var part in spec.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                if (AddExclusion(ctx, part, design, ex) is { } err) return (null, ex, design, err);
+                if (AddExclusion(ctx, part, design, ex) is { } err) return err;
         if (design != null && !none && (string.IsNullOrWhiteSpace(spec) || !spec.Contains("deck", StringComparison.OrdinalIgnoreCase)))
             AddDecks(design, ex);
-        return (r, ex, design, null);
+        return null;
     }
 
     private static (int, int) Band(JsonElement args, int dy0, int dy1, int worldHeight)
@@ -453,58 +539,94 @@ public sealed class LightAreaSkill : Skill
         if (error != null || region is null) return Fail(error ?? "no area");
         int level = Math.Clamp(args.Int("level") ?? 8, 8, 14);
         int max = Math.Clamp(args.Int("max") ?? 64, 1, 256);
-        var w = ctx.World;
-        var dark = LightPlan.Dark(w, region, ex, level, out int exDark);
-        int was = dark.Count;
-        string excl = ex.Notes.Count == 0 ? "" : $"; excluded {string.Join(", ", ex.Notes.Take(2))}" + (exDark > 0 ? $" ({exDark} dark there, left alone)" : "");
-        if (was == 0) return Ok($"{region.Label} ({region.Box}): no spawnable cells after dark{excl}");
+        var dark = LightPlan.Dark(ctx.World, region, ex, level, out int exDark);
+        string excl = Excluded(ex, exDark);
+        if (dark.Count == 0) return Ok($"{region.Label} ({region.Box}): no spawnable cells after dark{excl}");
+        var job = new Lighter(ctx, region, ex, level, max, dark);
+        await job.RunAsync(ct).ConfigureAwait(false);
+        return job.Result(excl);
+    }
 
-        int placed = 0, failed = 0;
-        string? stop = null, note = null, lastFail = null;
-        var tried = new HashSet<BlockPos>();
-        for (int round = 0; round < 3 && placed < max && stop == null; round++)
+    private static string Excluded(LightPlan.Exclusion ex, int exDark) =>
+        ex.Notes.Count == 0 ? "" : $"; excluded {string.Join(", ", ex.Notes.Take(2))}" + (exDark > 0 ? $" ({exDark} dark there, left alone)" : "");
+
+    /// <summary>Up to 3 rounds of plan → obtain → place, re-measuring the dark cells after each.</summary>
+    private sealed class Lighter(SkillContext ctx, LightPlan.Region region, LightPlan.Exclusion ex, int level, int max, List<BlockPos> dark)
+    {
+        private readonly WorldState _w = ctx.World;
+        private readonly int _was = dark.Count;
+        private readonly HashSet<BlockPos> _tried = new();
+        private List<BlockPos> _dark = dark;
+        private int _placed, _failed;
+        private string? _stop, _note, _lastFail;
+
+        public async Task RunAsync(CancellationToken ct)
         {
-            // A torch goes into air (nothing is broken): protection only matters for a plant it would replace.
-            var plan = LightPlan.Cover(w, region, dark, ex, level, c => !tried.Contains(c) && (ctx.Block(c) == 0 || !ctx.Protected(c)), ctx.Feet, max - placed);
-            if (plan.Torches.Count == 0) break;
-            if (round == 0 && ctx.Count(Blocks.Torch) < plan.Torches.Count && ctx.Registry.Obtain is { } obtain)
+            for (int round = 0; round < 3 && _placed < max && _stop == null; round++)
             {
-                try { note = await obtain(ctx, Blocks.Torch, plan.Torches.Count, ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception e) { ctx.Log?.Invoke($"light_area obtain threw: {e.Message}"); }
+                // A torch goes into air (nothing is broken): protection only matters for a plant it would replace.
+                var plan = LightPlan.Cover(_w, region, _dark, ex, level, c => !_tried.Contains(c) && (ctx.Block(c) == 0 || !ctx.Protected(c)), ctx.Feet, max - _placed);
+                if (plan.Torches.Count == 0) break;
+                if (round == 0) await ObtainAsync(plan.Torches.Count, ct).ConfigureAwait(false);
+                await PlaceAllAsync(plan.Torches, ct).ConfigureAwait(false);
+                _dark = LightPlan.Dark(_w, region, ex, level, out _);
+                if (_dark.Count == 0) break;
             }
-            foreach (var spot in plan.Torches)
+        }
+
+        private async Task ObtainAsync(int need, CancellationToken ct)
+        {
+            if (ctx.Count(Blocks.Torch) >= need || ctx.Registry.Obtain is not { } obtain) return;
+            try { _note = await obtain(ctx, Blocks.Torch, need, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception e) { ctx.Log?.Invoke($"light_area obtain threw: {e.Message}"); }
+        }
+
+        private async Task PlaceAllAsync(List<LightPlan.Spot> torches, CancellationToken ct)
+        {
+            foreach (var spot in torches)
             {
                 ct.ThrowIfCancellationRequested();
-                if (placed >= max) break;
-                if (!ctx.Has(Blocks.Torch)) { stop = $"out of torches (~{plan.Torches.Count - plan.Torches.IndexOf(spot)} more needed{(note is null ? "" : $": {note}")})"; break; }
-                // Mobs are why we're here: only one in my face at a void edge stops the job (the client's combat reflex
-                // handles the rest; a ground torch isn't edge work).
-                if (BuildOps.HostileVeto(ctx, 3) is { } h && NearVoid(w, ctx.Me)) { stop = h; break; }
-                var c = spot.Pos;
-                tried.Add(c);
-                if (!SkillWorld.Replaceable(w, c)) continue;
-                var faces = PlaceRules.AttachFaces(w, c, Blocks.Torch);
-                if (faces.Count == 0) continue;
-                await ctx.ReachAsync(c, ct).ConfigureAwait(false);
-                var r = await ctx.Game.PlaceAsync(c, Blocks.Torch, faces[0], ct).ConfigureAwait(false);
-                if (r.Ok && await ctx.WaitBlockAsync(c, (id, _) => id == Blocks.Torch, ct).ConfigureAwait(false)) placed++;
-                else { failed++; lastFail = r.Message; }
+                if (_placed >= max || Stopped(torches, spot)) break;
+                await PlaceAsync(spot.Pos, ct).ConfigureAwait(false);
             }
-            dark = LightPlan.Dark(w, region, ex, level, out exDark);
-            if (dark.Count == 0) break;
         }
-        var unlit = dark;
-        var sb = new System.Text.StringBuilder();
-        sb.Append($"lit {region.Label} ({region.Box}): placed {placed} torch{(placed == 1 ? "" : "es")}");
-        if (failed > 0) sb.Append($" ({failed} failed{(lastFail is null ? "" : $": {lastFail}")})");
-        sb.Append($"; {unlit.Count} spawnable cells left (was {was})");
-        if (unlit.Count > 0) sb.Append($", e.g. {LightPlan.Sample(unlit, 2)}");
-        if (stop != null) sb.Append($"; stopped: {stop}");
-        sb.Append(excl);
-        if (note != null && placed == 0 && stop == null) sb.Append($"; torches: {note}");
-        sb.Append($"; {ctx.Count(Blocks.Torch)} torches left");
-        return new SkillResult(placed > 0 || unlit.Count == 0, sb.ToString());
+
+        private bool Stopped(List<LightPlan.Spot> torches, LightPlan.Spot spot)
+        {
+            if (!ctx.Has(Blocks.Torch)) _stop = $"out of torches (~{torches.Count - torches.IndexOf(spot)} more needed{(_note is null ? "" : $": {_note}")})";
+            // Mobs are why we're here: only one in my face at a void edge stops the job (the client's combat reflex
+            // handles the rest; a ground torch isn't edge work).
+            else if (BuildOps.HostileVeto(ctx, 3) is { } h && NearVoid(_w, ctx.Me)) _stop = h;
+            return _stop != null;
+        }
+
+        private async Task PlaceAsync(BlockPos c, CancellationToken ct)
+        {
+            _tried.Add(c);
+            if (!SkillWorld.Replaceable(_w, c)) return;
+            var faces = PlaceRules.AttachFaces(_w, c, Blocks.Torch);
+            if (faces.Count == 0) return;
+            await ctx.ReachAsync(c, ct).ConfigureAwait(false);
+            var r = await ctx.Game.PlaceAsync(c, Blocks.Torch, faces[0], ct).ConfigureAwait(false);
+            if (r.Ok && await ctx.WaitBlockAsync(c, (id, _) => id == Blocks.Torch, ct).ConfigureAwait(false)) _placed++;
+            else { _failed++; _lastFail = r.Message; }
+        }
+
+        public SkillResult Result(string excl)
+        {
+            var unlit = _dark;
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"lit {region.Label} ({region.Box}): placed {_placed} torch{(_placed == 1 ? "" : "es")}");
+            if (_failed > 0) sb.Append($" ({_failed} failed{(_lastFail is null ? "" : $": {_lastFail}")})");
+            sb.Append($"; {unlit.Count} spawnable cells left (was {_was})");
+            if (unlit.Count > 0) sb.Append($", e.g. {LightPlan.Sample(unlit, 2)}");
+            if (_stop != null) sb.Append($"; stopped: {_stop}");
+            sb.Append(excl);
+            if (_note != null && _placed == 0 && _stop == null) sb.Append($"; torches: {_note}");
+            sb.Append($"; {ctx.Count(Blocks.Torch)} torches left");
+            return new SkillResult(_placed > 0 || unlit.Count == 0, sb.ToString());
+        }
     }
 
     private static bool NearVoid(IBlockAccess w, BlockPos me)
@@ -546,14 +668,22 @@ public sealed class SpawnMapSkill : Skill
         int now = LightPlan.Dark(w, region, ex, 8, out _, w.TimeOfDay).Count;
         var sb = new System.Text.StringBuilder($"{region.Label} ({region.Box}): {dark.Count} spawnable cells after dark");
         if (now != dark.Count) sb.Append($" ({now} now)");
-        if (dark.Count > 0)
-        {
-            var plan = LightPlan.Cover(w, region, dark, ex, level, c => ctx.Block(c) == 0 || !ctx.Protected(c), ctx.Feet);
-            sb.Append($", e.g. {LightPlan.Sample(dark)}; {plan.Torches.Count} torch{(plan.Torches.Count == 1 ? "" : "es")} would light")
-              .Append(plan.Unlit.Count == 0 ? " all" : $" all but {plan.Unlit.Count}");
-        }
-        if (ex.Notes.Count > 0) sb.Append($"; excluded {string.Join(", ", ex.Notes.Take(2))}" + (exDark > 0 ? $": {exDark} dark there" : ""));
+        if (dark.Count > 0) AppendPlan(ctx, sb, region, ex, level, dark);
+        AppendExcluded(sb, ex, exDark);
         if (!w.IsLoaded(region.X0, region.Z0) || !w.IsLoaded(region.X1, region.Z1)) sb.Append("; part of it isn't loaded");
         return SkillResult.Success(sb.ToString());
+    }
+
+    private static void AppendExcluded(System.Text.StringBuilder sb, LightPlan.Exclusion ex, int exDark)
+    {
+        if (ex.Notes.Count > 0) sb.Append($"; excluded {string.Join(", ", ex.Notes.Take(2))}" + (exDark > 0 ? $": {exDark} dark there" : ""));
+    }
+
+    /// <summary>", e.g. a b c …; 6 torches would light all (but N)".</summary>
+    private static void AppendPlan(SkillContext ctx, System.Text.StringBuilder sb, LightPlan.Region region, LightPlan.Exclusion ex, int level, List<BlockPos> dark)
+    {
+        var plan = LightPlan.Cover(ctx.World, region, dark, ex, level, c => ctx.Block(c) == 0 || !ctx.Protected(c), ctx.Feet);
+        sb.Append($", e.g. {LightPlan.Sample(dark)}; {plan.Torches.Count} torch{(plan.Torches.Count == 1 ? "" : "es")} would light")
+          .Append(plan.Unlit.Count == 0 ? " all" : $" all but {plan.Unlit.Count}");
     }
 }

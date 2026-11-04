@@ -101,15 +101,7 @@ public sealed class GestureDetector
         lock (_lock)
         {
             var k = TrackOf(player, t);
-            double raw = ((yaw % 360) + 360) % 360;
-            if (k.LastRawYaw is { } last)
-            {
-                double d = raw - last;
-                if (d > 180) d -= 360; else if (d < -180) d += 360;
-                k.YawU += d;
-            }
-            else k.YawU = raw;
-            k.LastRawYaw = raw;
+            UnwrapYaw(k, yaw);
             var s = new Sample(t, pos, k.YawU, Pitch(pitch), sneak, ground, aim);
             // An update arriving with the one before it (look + move in one b1.8.1 packet, the 1.12.2 head look right after the
             // look) is one sample.
@@ -118,15 +110,34 @@ public sealed class GestureDetector
             if (aim != null) k.LastBodyGaze = (aim, t);
             Prune(k, t);
             SneakLocked(k, t, sneak);
-
-            if (Oscillation(k, player, t, pitchAxis: true) is { } nod) fired.Add(nod);
-            else if (Oscillation(k, player, t, pitchAxis: false) is { } shake) fired.Add(shake);
-            if (Spin(k, player, t) is { } spin) fired.Add(spin);
-            if (Jumps(k, player, t) is { } jump) fired.Add(jump);
-            if (Bob(k, player, t) is { } bob) fired.Add(bob);
-            if (fired.Any(g => g.Kind == "nod") && PointFrom(k, player, t) is { } point) fired.Add(point);
+            DetectMotion(k, player, t, fired);
         }
         return fired;
+    }
+
+    /// <summary>Continuous yaw (no wrap at 0/360), so a spin keeps counting past a full turn.</summary>
+    private static void UnwrapYaw(Track k, float yaw)
+    {
+        double raw = ((yaw % 360) + 360) % 360;
+        if (k.LastRawYaw is { } last)
+        {
+            double d = raw - last;
+            if (d > 180) d -= 360; else if (d < -180) d += 360;
+            k.YawU += d;
+        }
+        else k.YawU = raw;
+        k.LastRawYaw = raw;
+    }
+
+    /// <summary>The sample-driven detectors (caller holds _lock): nod else shake, spin, jump, bob, and a point a nod confirmed.</summary>
+    private void DetectMotion(Track k, string player, DateTimeOffset t, List<SeenGesture> fired)
+    {
+        if (Oscillation(k, player, t, pitchAxis: true) is { } nod) fired.Add(nod);
+        else if (Oscillation(k, player, t, pitchAxis: false) is { } shake) fired.Add(shake);
+        if (Spin(k, player, t) is { } spin) fired.Add(spin);
+        if (Jumps(k, player, t) is { } jump) fired.Add(jump);
+        if (Bob(k, player, t) is { } bob) fired.Add(bob);
+        if (fired.Any(g => g.Kind == "nod") && PointFrom(k, player, t) is { } point) fired.Add(point);
     }
 
     /// <summary>The sneak flag seen from another source (b1.8.1's crouch animation 104/105): a toggle when it differs.</summary>
@@ -184,27 +195,35 @@ public sealed class GestureDetector
                 Prune(k, now);
                 if (Wave(k, player, now) is { } w) fired.Add(w);
                 if (look == null || k.S.Count == 0) continue;
-                var last = k.S[^1];
-                LookHit? hit = null;
-                try { hit = look(player, last); } catch (Exception) { }
-                string key = hit?.Key ?? "";
-                if (key != k.GazeKey) { k.GazeKey = key; k.GazeSince = now; k.StareFired = false; }
-                if (hit is not { } h) continue;
-                if (h.IsBody)
-                {
-                    k.LastBodyGaze = (h.Kind == "me" ? "me" : h.Name, now);
-                    if (!k.StareFired && h.Dist <= StareBlocks && now - k.GazeSince >= StareHold && Ready(k, "stare", now, StareCooldown))
-                    {
-                        k.StareFired = true;
-                        double held = (now - k.GazeSince).TotalSeconds;
-                        fired.Add(Fire(k, player, "stare", Math.Clamp(0.5 + 0.25 * (held - 1) + 0.03 * (StareBlocks - h.Dist), 0.3, 1), h.Kind == "me" ? "me" : h.Name, last.Pos, now));
-                    }
-                }
-                else if (h.Dist > PointMinBlocks && now - k.GazeSince >= PointHold)
-                    k.PointReady = (h, now + TimeSpan.FromSeconds(2));
+                if (Gaze(k, player, now, look) is { } stare) fired.Add(stare);
             }
         }
         return fired;
+    }
+
+    /// <summary>Where the player's look rests now: a held gaze on a body is a stare (once per gaze); one on a far block or
+    /// entity readies a point.</summary>
+    private SeenGesture? Gaze(Track k, string player, DateTimeOffset now, Func<string, Sample, LookHit?> look)
+    {
+        var last = k.S[^1];
+        LookHit? hit = null;
+        try { hit = look(player, last); } catch (Exception) { }
+        string key = hit?.Key ?? "";
+        if (key != k.GazeKey) { k.GazeKey = key; k.GazeSince = now; k.StareFired = false; }
+        if (hit is not { } h) return null;
+        if (h.IsBody) return Stare(k, player, h, last, now);
+        if (h.Dist > PointMinBlocks && now - k.GazeSince >= PointHold) k.PointReady = (h, now + TimeSpan.FromSeconds(2));
+        return null;
+    }
+
+    private SeenGesture? Stare(Track k, string player, LookHit h, Sample last, DateTimeOffset now)
+    {
+        string body = h.Kind == "me" ? "me" : h.Name;
+        k.LastBodyGaze = (body, now);
+        if (k.StareFired || h.Dist > StareBlocks || now - k.GazeSince < StareHold || !Ready(k, "stare", now, StareCooldown)) return null;
+        k.StareFired = true;
+        double held = (now - k.GazeSince).TotalSeconds;
+        return Fire(k, player, "stare", Math.Clamp(0.5 + 0.25 * (held - 1) + 0.03 * (StareBlocks - h.Dist), 0.3, 1), body, last.Pos, now);
     }
 
     // ------------------------------------------------------------------ detectors (caller holds _lock)
@@ -275,25 +294,20 @@ public sealed class GestureDetector
         int dir = 0, ext = 0;
         for (int i = 1; i < v.Count; i++)
         {
-            if (dir == 0)
-            {
-                if (v[i] - v[0] >= h) { dir = 1; ext = i; }
-                else if (v[0] - v[i] >= h) { dir = -1; ext = i; }
-                else if (Math.Abs(v[i] - v[0]) > Math.Abs(v[ext] - v[0])) ext = i;
-            }
-            else if (dir == 1)
-            {
-                if (v[i] > v[ext]) ext = i;
-                else if (v[ext] - v[i] >= h) { piv.Add(ext); dir = -1; ext = i; }
-            }
-            else
-            {
-                if (v[i] < v[ext]) ext = i;
-                else if (v[i] - v[ext] >= h) { piv.Add(ext); dir = 1; ext = i; }
-            }
+            if (dir == 0) FirstMove(v, i, h, ref dir, ref ext);
+            else if (dir * (v[i] - v[ext]) > 0) ext = i;                        // further the same way: a new extreme
+            else if (dir * (v[ext] - v[i]) >= h) { piv.Add(ext); dir = -dir; ext = i; } // came back h: the extreme was a turn
         }
         if (dir != 0) piv.Add(ext);
         return piv;
+    }
+
+    /// <summary>Before the first move of h: the direction once it comes, meanwhile the farthest sample from the start.</summary>
+    private static void FirstMove(IReadOnlyList<double> v, int i, double h, ref int dir, ref int ext)
+    {
+        if (v[i] - v[0] >= h) { dir = 1; ext = i; }
+        else if (v[0] - v[i] >= h) { dir = -1; ext = i; }
+        else if (Math.Abs(v[i] - v[0]) > Math.Abs(v[ext] - v[0])) ext = i;
     }
 
     /// <summary>nod (pitch) or shake (yaw): see the class summary for every bound.</summary>
@@ -310,36 +324,51 @@ public sealed class GestureDetector
         if (strokes < 4) return null;
         // The strokes: the last up-to-6 (an ongoing gesture keeps its newest cycles).
         var use = piv.Skip(Math.Max(0, piv.Count - 7)).ToList();
-        var amps = new List<double>();
-        for (int i = 1; i < use.Count; i++)
-        {
-            var from0 = w[use[i - 1]].T;
-            if (i == 1 && use[0] == 0)
-            {
-                // The window's first sample is no turning point: the stroke starts when the head left that rest (a player who
-                // stood still before nodding sent nothing in between).
-                int j = use[1] - 1;
-                while (j > 0 && Math.Abs(main[j] - main[0]) > 3) j--;
-                from0 = w[j].T;
-            }
-            if ((w[use[i]].T - from0).TotalSeconds > 0.7) return null; // a slow look up then down is not a nod
-            amps.Add(Math.Abs(main[use[i]] - main[use[i - 1]]));
-        }
+        if (StrokeAmplitudes(w, main, use) is not { } amps) return null;
         amps.Sort();
         double a = amps[amps.Count / 2];
         if (a < MinStroke || a > 80) return null;
         var span = w.Skip(use[0]).Take(use[^1] - use[0] + 1).ToList();
-        var other = span.Select(s => pitchAxis ? s.Yaw : s.Pitch).ToList();
-        double r = other.Max() - other.Min();
-        double maxR = Math.Min(25, Math.Max(10, a * 0.5));
-        if (r > maxR) return null; // looking around: both axes move
-        if (Spread(span) > 1.5) return null; // walking while turning
-        var sw = k.Swings.Where(x => x.T >= span[0].T - TimeSpan.FromSeconds(0.3) && x.T <= t).ToList();
-        if (sw.Count > 1 || sw.Any(x => !x.Clean)) return null; // digging / building: the head follows the work
+        if (!HeadOnly(k, span, t, pitchAxis, a, out double r, out double maxR)) return null;
         double strength = 0.5 + 0.08 * (amps.Count - 4) + 0.25 * Math.Clamp((a - MinStroke) / 30, 0, 1) + 0.15 * (1 - r / maxR);
         var g = Fire(k, player, kind, strength, AtOf(k, span, t), span[^1].Pos, t);
         k.Consumed[pitchAxis ? "shake" : "nod"] = t; // one head gesture per motion
         return g;
+    }
+
+    /// <summary>Each stroke's amplitude between turning points; null when one took over 0.7 s (a slow look up then down).</summary>
+    private static List<double>? StrokeAmplitudes(List<Sample> w, List<double> main, List<int> use)
+    {
+        var amps = new List<double>();
+        for (int i = 1; i < use.Count; i++)
+        {
+            var from0 = i == 1 && use[0] == 0 ? w[RestEnd(main, use[1])].T : w[use[i - 1]].T;
+            if ((w[use[i]].T - from0).TotalSeconds > 0.7) return null; // a slow look up then down is not a nod
+            amps.Add(Math.Abs(main[use[i]] - main[use[i - 1]]));
+        }
+        return amps;
+    }
+
+    /// <summary>The window's first sample is no turning point: the stroke starts when the head left that rest (a player who
+    /// stood still before nodding sent nothing in between).</summary>
+    private static int RestEnd(List<double> main, int firstPivot)
+    {
+        int j = firstPivot - 1;
+        while (j > 0 && Math.Abs(main[j] - main[0]) > 3) j--;
+        return j;
+    }
+
+    /// <summary>Only the head moved: the other axis stayed (not looking around), the feet stayed (not walking while turning),
+    /// and no work swings (digging / building: the head follows the work).</summary>
+    private static bool HeadOnly(Track k, List<Sample> span, DateTimeOffset t, bool pitchAxis, double a, out double r, out double maxR)
+    {
+        var other = span.Select(s => pitchAxis ? s.Yaw : s.Pitch).ToList();
+        r = other.Max() - other.Min();
+        maxR = Math.Min(25, Math.Max(10, a * 0.5));
+        if (r > maxR) return false; // looking around: both axes move
+        if (Spread(span) > 1.5) return false; // walking while turning
+        var sw = k.Swings.Where(x => x.T >= span[0].T - TimeSpan.FromSeconds(0.3) && x.T <= t).ToList();
+        return sw.Count <= 1 && sw.All(x => x.Clean); // digging / building: the head follows the work
     }
 
     /// <summary>Horizontal extent (blocks) of the samples' positions.</summary>
@@ -382,23 +411,32 @@ public sealed class GestureDetector
         int i = 0;
         while (i < w.Count)
         {
-            var b = w[i];
-            if (b.Ground == false) { i++; continue; } // a rise must start from a floor (when the floor is known)
-            int top = -1, land = -1;
-            for (int j = i + 1; j < w.Count && (w[j].T - b.T).TotalSeconds <= 1.1; j++)
-            {
-                if (top < 0)
-                {
-                    if (w[j].Pos.Y < b.Pos.Y - 0.25) break;   // stepped down
-                    if (w[j].Pos.Y >= b.Pos.Y + 0.5) top = j;
-                }
-                else if (w[j].Pos.Y <= b.Pos.Y + 0.25 && w[j].Pos.Y >= b.Pos.Y - 0.25) { land = j; break; }
-            }
-            if (top >= 0 && land >= 0) { hops++; i = land; }
+            // A rise must start from a floor (when the floor is known).
+            int land = w[i].Ground == false ? -1 : HopLanding(w, i);
+            if (land >= 0) { hops++; i = land; }
             else i++;
         }
         if (hops < 3) return null;
         return Fire(k, player, "jump", 0.5 + 0.15 * (hops - 3), AtOf(k, w, t), w[^1].Pos, t);
+    }
+
+    /// <summary>The sample where a hop from sample <paramref name="i"/> landed back (rose ≥ 0.5 and came back within 0.25 inside
+    /// 1.1 s, without first stepping down), or -1.</summary>
+    private static int HopLanding(List<Sample> w, int i)
+    {
+        var b = w[i];
+        bool rose = false;
+        for (int j = i + 1; j < w.Count && (w[j].T - b.T).TotalSeconds <= 1.1; j++)
+        {
+            double y = w[j].Pos.Y;
+            if (!rose)
+            {
+                if (y < b.Pos.Y - 0.25) return -1;   // stepped down
+                if (y >= b.Pos.Y + 0.5) rose = true;
+            }
+            else if (y <= b.Pos.Y + 0.25 && y >= b.Pos.Y - 0.25) return j;
+        }
+        return -1;
     }
 
     private SeenGesture? Bob(Track k, string player, DateTimeOffset t)

@@ -115,7 +115,17 @@ export class BlockAtlas {
     const steps = this.lastTick < 0 ? 1 : Math.min(4, tick - this.lastTick);
     this.lastTick = tick;
     const gameTick = Math.floor((nowMs / 1000) * 20);
-    const writer: CellWriter = {
+    const writer = this.cellWriter(renderer);
+    if (this.sprites) {
+      this.sprites.update(gameTick, writer, { maxCells: this.animCellsPerTick, visible: this.visible });
+      return;
+    }
+    this.stepEffects(steps, hz, writer);
+  }
+
+  /** Writes animated cells into the atlas: a region of the anim sheet, or CPU pixels through a scratch texture per size. */
+  private cellWriter(renderer: THREE.WebGLRenderer): CellWriter {
+    return {
       fromSheet: (c, r, sx, sy, size) => {
         if (!this.sheetTex) return;
         this.region.min.set(sx, sy);
@@ -133,11 +143,10 @@ export class BlockAtlas {
         this.writes++;
       },
     };
-    if (this.sprites) {
-      this.sprites.update(gameTick, writer, { maxCells: this.animCellsPerTick, visible: this.visible });
-      return;
-    }
-    // b1.8.1: every effect advances each tick (its state is a recurrence); uploads honour the budget and visibility.
+  }
+
+  /** b1.8.1: every effect advances each tick (its state is a recurrence); uploads honour the budget and visibility. */
+  private stepEffects(steps: number, hz: number, writer: CellWriter): void {
     for (const f of this.fx) for (let s = 0; s < steps * (20 / hz); s++) f.tick();
     const n = this.fx.length;
     const max = this.animCellsPerTick > 0 ? this.animCellsPerTick : n;

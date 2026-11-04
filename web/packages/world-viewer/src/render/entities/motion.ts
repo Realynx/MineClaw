@@ -64,19 +64,25 @@ export function stepMotion(m: Motion, x: number, y: number, z: number, look: num
   const target = Math.min(1, m.speed * 4);
   m.amount += (target - m.amount) * (1 - Math.pow(0.6, ticks));
   m.swing += m.amount * ticks * (sprinting ? 1.25 : 1);
-  // Body yaw: turn toward the walk direction (walking backwards keeps facing forward), then keep the head within 75°.
-  let goal = m.body;
-  if (m.speed > 0.02 && dist > 0) {
-    goal = (Math.atan2(dz, dx) * 180) / Math.PI - 90;
-    if (Math.abs(wrapDeg(goal - look)) > 95) goal += 180;
-  }
-  m.body += wrapDeg(goal - m.body) * (1 - Math.pow(0.7, ticks));
+  // Body yaw: turn toward the walk direction, then keep the head within 75°.
+  m.body += wrapDeg(walkGoal(m, dx, dz, dist, look) - m.body) * (1 - Math.pow(0.7, ticks));
+  keepHeadOnBody(m, look, ticks);
+  m.body = wrapDeg(m.body);
+}
+
+/** The body yaw a walk turns toward: the walk direction (walking backwards keeps facing forward); standing, the body. */
+function walkGoal(m: Motion, dx: number, dz: number, dist: number, look: number): number {
+  if (!(m.speed > 0.02 && dist > 0)) return m.body;
+  const goal = (Math.atan2(dz, dx) * 180) / Math.PI - 90;
+  return Math.abs(wrapDeg(goal - look)) > 95 ? goal + 180 : goal;
+}
+
+/** Keeps the head within 75° of the body; idle, the body slowly follows the head (players turn their body after it). */
+function keepHeadOnBody(m: Motion, look: number, ticks: number): void {
   const head = wrapDeg(look - m.body);
   if (head > 75) m.body = look - 75;
   else if (head < -75) m.body = look + 75;
-  // Idle: the body slowly follows the head (players turn their body after the head).
   else if (m.speed <= 0.02 && Math.abs(head) > 50) m.body += wrapDeg(look - m.body) * (1 - Math.pow(0.9, ticks));
-  m.body = wrapDeg(m.body);
 }
 
 /** Eating lasts 32 ticks (EntityLivingBase item use of food). */

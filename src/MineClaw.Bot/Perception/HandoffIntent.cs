@@ -35,15 +35,24 @@ public static class HandoffIntent
         foreach (Match m in PassTo.Matches(text))
             if (Resolve(m.Groups["who"].Value, known, selfSet) is { } who) return new(who, ItemIn(m.Groups["what"].Value) ?? ItemIn(text));
         foreach (Match m in ForWho.Matches(text))
-        {
-            if (Resolve(m.Groups["who"].Value, known, selfSet) is not { } who) continue;
-            int? item = ItemIn(m.Groups["what"].Value);
-            // "this is for 67" / "bread for 67": an item or a deictic word before "for"; "wait for 67" is not a hand-off.
-            if (item != null || m.Groups["what"].Value.ToLowerInvariant() is "this" or "that" or "these" or "it" or "them" or "those")
-                return new(who, item ?? ItemIn(text));
-        }
+            if (Resolve(m.Groups["who"].Value, known, selfSet) is { } who && ForWhoHandoff(m.Groups["what"].Value, who, text) is { } match)
+                return match;
         return null;
     }
+
+    /// <summary>"this is for 67" / "bread for 67": an item or a deictic word before "for"; "wait for 67" is not a hand-off.</summary>
+    private static HandoffIntentMatch? ForWhoHandoff(string what, string who, string text)
+    {
+        int? item = ItemIn(what);
+        if (item == null && !Deictic.Contains(what.ToLowerInvariant())) return null;
+        return new(who, item ?? ItemIn(text));
+    }
+
+    private static readonly HashSet<string> Deictic = new(StringComparer.Ordinal) { "this", "that", "these", "it", "them", "those" };
+
+    /// <summary>Words never read as an item name.</summary>
+    private static readonly HashSet<string> NotItems = new(StringComparer.Ordinal)
+        { "this", "that", "these", "those", "them", "the", "some", "and", "for", "pass", "give", "hand" };
 
     private static string? Resolve(string word, IReadOnlyList<string> known, HashSet<string> self)
     {
@@ -63,7 +72,7 @@ public static class HandoffIntent
         foreach (Match w in Regex.Matches(phrase.ToLowerInvariant(), "[a-z_]{3,}"))
         {
             var word = w.Value;
-            if (word is "this" or "that" or "these" or "those" or "them" or "the" or "some" or "and" or "for" or "pass" or "give" or "hand") continue;
+            if (NotItems.Contains(word)) continue;
             foreach (var cand in new[] { word, word.TrimEnd('s'), word.EndsWith("es") ? word[..^2] : word })
                 if (cand.Length >= 3 && Items.ByName(cand) is { } info) return info.Id;
         }

@@ -66,15 +66,9 @@ public sealed class MoveItemsSkill : Skill
         if (!args.TryGetProperty("moves", out var arr) || arr.ValueKind != JsonValueKind.Array) return Fail("moves required");
         foreach (var m in arr.EnumerateArray())
         {
-            if (SkillJson.Item(m.Str("item")) is not { } it) return Fail($"unknown item '{m.Str("item")}'");
-            var from = Endpoint.Parse(ctx, m.Str("from"), null);
-            var to = Endpoint.Parse(ctx, m.Str("to"), m.Int("slot"));
-            if (from is null) return Fail($"unknown source '{m.Str("from")}'");
-            if (to is null) return Fail($"unknown destination '{m.Str("to")}'");
-            int? count = m.Str("count") is { } c && !c.Equals("all", StringComparison.OrdinalIgnoreCase) && int.TryParse(c, out var n) ? n : null;
-            if (from.IsPlayer && ctx.Game.ReservedItems.Contains(it.Id) && !to.IsPlayer) return Fail($"{Item(it.Id)} is reserved; won't move it out");
-            int? dmg = it.Damage < 0 || Items.Get(it.Id).MaxDamage > 0 ? null : it.Damage;
-            moves.Add(new MoveSpec(it.Id, dmg, count, from, to));
+            var (spec, error) = ParseMove(ctx, m);
+            if (spec is null) return Fail(error!);
+            moves.Add(spec);
         }
         if (moves.Count == 0) return Fail("no moves");
         var run = new InventoryRun(ctx);
@@ -82,18 +76,40 @@ public sealed class MoveItemsSkill : Skill
         {
             var error = await new MovePlanner(ctx, run).RunAsync(moves, ct);
             var close = await run.CloseAsync(ct);
-            int done = moves.Count(m => m.Finished);
-            run.Moves = done;
-            string tail = Tail(ctx, moves);
-            if (error is not null || close is not null)
-                return Fail($"{done}/{moves.Count} moves done, {run.Summary(tail)}; {error ?? close}");
-            return Ok(run.Summary(tail));
+            return Outcome(ctx, run, moves, error ?? close);
         }
         catch
         {
             await run.CloseAsync(CancellationToken.None);
             throw;
         }
+    }
+
+    /// <summary>One move of the batch, or why it can't be done (unknown item or endpoint, a reserved item leaving me).</summary>
+    private static (MoveSpec? Spec, string? Error) ParseMove(SkillContext ctx, JsonElement m)
+    {
+        if (SkillJson.Item(m.Str("item")) is not { } it) return (null, $"unknown item '{m.Str("item")}'");
+        var from = Endpoint.Parse(ctx, m.Str("from"), null);
+        var to = Endpoint.Parse(ctx, m.Str("to"), m.Int("slot"));
+        if (from is null) return (null, $"unknown source '{m.Str("from")}'");
+        if (to is null) return (null, $"unknown destination '{m.Str("to")}'");
+        if (from.IsPlayer && ctx.Game.ReservedItems.Contains(it.Id) && !to.IsPlayer) return (null, $"{Item(it.Id)} is reserved; won't move it out");
+        return (new MoveSpec(it.Id, Damage(it), Count(m), from, to), null);
+    }
+
+    /// <summary>A number, or null for "all" (or no count).</summary>
+    private static int? Count(JsonElement m) =>
+        m.Str("count") is { } c && !c.Equals("all", StringComparison.OrdinalIgnoreCase) && int.TryParse(c, out var n) ? n : null;
+
+    /// <summary>The damage to match: none for tools (any wear) or an unspecified one.</summary>
+    private static int? Damage((int Id, int Damage) it) => it.Damage < 0 || Items.Get(it.Id).MaxDamage > 0 ? null : it.Damage;
+
+    private static SkillResult Outcome(SkillContext ctx, InventoryRun run, List<MoveSpec> moves, string? failure)
+    {
+        int done = moves.Count(m => m.Finished);
+        run.Moves = done;
+        string tail = Tail(ctx, moves);
+        return failure is not null ? Fail($"{done}/{moves.Count} moves done, {run.Summary(tail)}; {failure}") : Ok(run.Summary(tail));
     }
 
     private static string Tail(SkillContext ctx, List<MoveSpec> moves)
@@ -109,14 +125,7 @@ internal sealed class MovePlanner(SkillContext ctx, InventoryRun run)
 {
     public async Task<string?> RunAsync(List<MoveSpec> moves, CancellationToken ct)
     {
-        // 1) Inventory-only moves (e.g. inv → hotbar) in the player window.
-        foreach (var m in moves.Where(m => m.From.IsPlayer && m.To.IsPlayer))
-        {
-            await run.CloseAsync(ct);
-            int want = m.Count ?? run.Snapshot().Count(m.Id, m.Damage, m.From.Slots(run.Snapshot()));
-            m.Done += await run.TransferAsync(m.Id, m.Damage, want, w => Except(m.From.Slots(w), m.To.Slots(w)), m.To.Slots, ct, Pinned(m, run.Snapshot()));
-            m.Finished = m.Done >= want;
-        }
+        await InventoryMovesAsync(moves, ct);
         // 2) Container legs, nearest container with doable work first.
         var skipped = new HashSet<BlockPos>();
         for (int visit = 0; visit < 4 * moves.Count + 4; visit++)
@@ -130,39 +139,91 @@ internal sealed class MovePlanner(SkillContext ctx, InventoryRun run)
             var chest = work[0];
             var err = await run.OpenAsync(chest, ct);
             if (err is not null) { skipped.Add(chest); run.Notes.Add(err); continue; }
-            bool progress = false;
             // Deposits first (frees inventory for withdrawals), then withdrawals.
-            foreach (var m in pending.Where(m => m.To.Container == chest))
-            {
-                int have = run.Snapshot().Count(m.Id, m.Damage, run.Snapshot().SlotsOf(Region.Player));
-                if (have == 0) continue;
-                int want = m.From.IsPlayer ? Math.Min(have, (m.Count ?? have) - m.Done) : Math.Min(have, m.Carried);
-                if (want <= 0) continue;
-                int n = await run.TransferAsync(m.Id, m.Damage, want, w => w.SlotsOf(Region.Player).ToArray(), m.To.Slots, ct, Pinned(m, run.Snapshot()));
-                if (n > 0) progress = true;
-                m.Done += n;
-                if (!m.From.IsPlayer) m.Carried -= n;
-                if (n < want) run.Notes.Add($"{m.To.Label} full");
-                if (m.From.IsPlayer ? m.Count is null || m.Done >= m.Count : m.Carried == 0 && m.Count is { } cc && m.Done >= cc) m.Finished = true;
-                if (m.From.IsPlayer && m.Count is null) m.Finished = true;
-            }
-            foreach (var m in pending.Where(m => m.From.Container == chest && m.Carried == 0 && !m.Finished))
-            {
-                var snap = run.Snapshot();
-                int there = snap.Count(m.Id, m.Damage, snap.SlotsOf(Region.Container));
-                int want = Math.Min(there, (m.Count ?? there) - m.Done);
-                if (want <= 0) { m.Finished = true; continue; }
-                var dest = m.To.IsPlayer ? m.To : new Endpoint(null, Region.Player, null, "inv");
-                int n = await run.TransferAsync(m.Id, m.Damage, want, w => w.SlotsOf(Region.Container).ToArray(), dest.Slots, ct,
-                    m.To.IsPlayer ? Pinned(m, snap) : null);
-                if (n > 0) progress = true;
-                if (m.To.IsPlayer) { m.Done += n; m.Finished = m.Count is null || m.Done >= m.Count || n < want; }
-                else { m.Carried += n; if (n == 0) m.Finished = true; }
-                if (n < want) run.Notes.Add("inventory full");
-            }
-            if (!progress) skipped.Add(chest);
+            bool deposited = await DepositsAsync(chest, pending, ct);
+            bool withdrew = await WithdrawalsAsync(chest, pending, ct);
+            if (!deposited && !withdrew) skipped.Add(chest);
         }
         return "too many container visits";
+    }
+
+    /// <summary>1) Inventory-only moves (e.g. inv → hotbar) in the player window.</summary>
+    private async Task InventoryMovesAsync(List<MoveSpec> moves, CancellationToken ct)
+    {
+        foreach (var m in moves.Where(m => m.From.IsPlayer && m.To.IsPlayer))
+        {
+            await run.CloseAsync(ct);
+            int want = m.Count ?? run.Snapshot().Count(m.Id, m.Damage, m.From.Slots(run.Snapshot()));
+            m.Done += await run.TransferAsync(m.Id, m.Damage, want, w => Except(m.From.Slots(w), m.To.Slots(w)), m.To.Slots, ct, Pinned(m, run.Snapshot()));
+            m.Finished = m.Done >= want;
+        }
+    }
+
+    private async Task<bool> DepositsAsync(BlockPos chest, List<MoveSpec> pending, CancellationToken ct)
+    {
+        bool progress = false;
+        foreach (var m in pending.Where(m => m.To.Container == chest))
+            if (await DepositAsync(m, ct)) progress = true;
+        return progress;
+    }
+
+    /// <summary>Into the open chest from my inventory: what the move still wants (or what I carry for it); true when any moved.</summary>
+    private async Task<bool> DepositAsync(MoveSpec m, CancellationToken ct)
+    {
+        int have = run.Snapshot().Count(m.Id, m.Damage, run.Snapshot().SlotsOf(Region.Player));
+        if (have == 0) return false;
+        int want = DepositWant(m, have);
+        if (want <= 0) return false;
+        int n = await run.TransferAsync(m.Id, m.Damage, want, w => w.SlotsOf(Region.Player).ToArray(), m.To.Slots, ct, Pinned(m, run.Snapshot()));
+        m.Done += n;
+        if (!m.From.IsPlayer) m.Carried -= n;
+        if (n < want) run.Notes.Add($"{m.To.Label} full");
+        if (DepositDone(m)) m.Finished = true;
+        return n > 0;
+    }
+
+    private static int DepositWant(MoveSpec m, int have) =>
+        m.From.IsPlayer ? Math.Min(have, (m.Count ?? have) - m.Done) : Math.Min(have, m.Carried);
+
+    /// <summary>From my inventory: "all" is done after one deposit, a count when reached; carried from a chest: when all of it is in.</summary>
+    private static bool DepositDone(MoveSpec m) =>
+        m.From.IsPlayer ? m.Count is null || m.Done >= m.Count : m.Carried == 0 && m.Count is { } cc && m.Done >= cc;
+
+    private async Task<bool> WithdrawalsAsync(BlockPos chest, List<MoveSpec> pending, CancellationToken ct)
+    {
+        bool progress = false;
+        foreach (var m in pending.Where(m => m.From.Container == chest && m.Carried == 0 && !m.Finished))
+            if (await WithdrawAsync(m, ct)) progress = true;
+        return progress;
+    }
+
+    /// <summary>Out of the open chest: into the move's player slots, or carried in my inventory to its destination chest.</summary>
+    private async Task<bool> WithdrawAsync(MoveSpec m, CancellationToken ct)
+    {
+        var snap = run.Snapshot();
+        int there = snap.Count(m.Id, m.Damage, snap.SlotsOf(Region.Container));
+        int want = Math.Min(there, (m.Count ?? there) - m.Done);
+        if (want <= 0) { m.Finished = true; return false; }
+        var dest = m.To.IsPlayer ? m.To : new Endpoint(null, Region.Player, null, "inv");
+        int n = await run.TransferAsync(m.Id, m.Damage, want, w => w.SlotsOf(Region.Container).ToArray(), dest.Slots, ct,
+            m.To.IsPlayer ? Pinned(m, snap) : null);
+        Withdrew(m, n, want);
+        if (n < want) run.Notes.Add("inventory full");
+        return n > 0;
+    }
+
+    private static void Withdrew(MoveSpec m, int n, int want)
+    {
+        if (m.To.IsPlayer)
+        {
+            m.Done += n;
+            m.Finished = m.Count is null || m.Done >= m.Count || n < want;
+        }
+        else
+        {
+            m.Carried += n;
+            if (n == 0) m.Finished = true;
+        }
     }
 
     private static IEnumerable<BlockPos> Stops(MoveSpec m)
@@ -191,19 +252,30 @@ public sealed class ArrangeChestSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         var name = args.Str("chest") ?? "";
-        var chest = ctx.Directory.Resolve(ctx, name) ?? (name.Length == 0 ? ctx.Find((id, _) => StorageOps.IsChest(id), 6, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault() : null);
-        if (chest is not { } pos) return Fail($"no chest '{name}'");
-        var layoutText = args.Str("layout") ?? ctx.Layouts.Get(pos) ?? "by_category";
-        if (layoutText.Equals("saved", StringComparison.OrdinalIgnoreCase))
-            layoutText = ctx.Layouts.Get(pos) ?? (string?)null ?? "";
+        if (FindChest(ctx, name) is not { } pos) return Fail($"no chest '{name}'");
+        var layoutText = LayoutFor(ctx, args, pos);
         if (layoutText.Length == 0) return Fail($"no saved layout for chest {P(pos)}");
         var run = new InventoryRun(ctx);
         var r = await ArrangeAsync(ctx, run, pos, layoutText, ct);
         var close = await run.CloseAsync(ct);
         if (r.Error is null && args.Flag("save", true)) ctx.Layouts.Save(pos, r.Final);
-        if (r.Error is not null || close is not null) return Fail($"chest {P(pos)}: {r.Error ?? close}; {run.Summary()}");
-        return Ok($"chest {P(pos)} arranged ({layoutText.Split(' ')[0]}): {run.Summary(r.Mismatch > 0 ? $"{r.Mismatch} slots off" : r.Unplaced > 0 ? $"{r.Unplaced} stacks didn't fit the template" : "")}");
+        if ((r.Error ?? close) is { } failure) return Fail($"chest {P(pos)}: {failure}; {run.Summary()}");
+        return Ok($"chest {P(pos)} arranged ({layoutText.Split(' ')[0]}): {run.Summary(Off(r.Mismatch, r.Unplaced))}");
     }
+
+    /// <summary>The named chest, or the nearest one within 6 when no name is given.</summary>
+    private static BlockPos? FindChest(SkillContext ctx, string name) =>
+        ctx.Directory.Resolve(ctx, name) ?? (name.Length == 0 ? ctx.Find((id, _) => StorageOps.IsChest(id), 6, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault() : null);
+
+    /// <summary>The layout asked for, else the chest's saved one, else by_category; "saved" with none saved is "".</summary>
+    private static string LayoutFor(SkillContext ctx, JsonElement args, BlockPos pos)
+    {
+        var layoutText = args.Str("layout") ?? ctx.Layouts.Get(pos) ?? "by_category";
+        return layoutText.Equals("saved", StringComparison.OrdinalIgnoreCase) ? ctx.Layouts.Get(pos) ?? "" : layoutText;
+    }
+
+    private static string Off(int mismatch, int unplaced) =>
+        mismatch > 0 ? $"{mismatch} slots off" : unplaced > 0 ? $"{unplaced} stacks didn't fit the template" : "";
 
     public static async Task<(string? Error, string Final, int Mismatch, int Unplaced)> ArrangeAsync(SkillContext ctx, InventoryRun run, BlockPos pos,
         string layoutText, CancellationToken ct)
@@ -260,7 +332,21 @@ public sealed class OrganizeStorageSkill : Skill
         var chests = Pick(ctx, scope);
         if (chests.Count == 0) return Fail($"no chests for '{scope}'");
         var run = new InventoryRun(ctx);
-        // 1) Survey: one opening per chest (also consolidates partial stacks in it).
+        var contents = await SurveyAsync(ctx, run, chests, ct);
+        if (contents.Count == 0) return Fail(run.Summary("no chest could be opened"));
+        var cat = Categorize(ctx, contents);
+        var moves = StrayMoves(contents, cat);
+        string? error = moves.Count > 0 ? await new MovePlanner(ctx, run).RunAsync(moves, ct) : null;
+        run.Moves = moves.Count(m => m.Finished);
+        await SortAsync(ctx, run, cat, args.Str("scheme") ?? "by_category", ct);
+        var close = await run.CloseAsync(ct);
+        string summary = Summary(ctx, args, run, cat);
+        return (error ?? close) is { } failure ? Fail($"{summary}; {failure}") : Ok(summary);
+    }
+
+    /// <summary>1) Survey: one opening per chest, nearest first (also consolidates partial stacks in it).</summary>
+    private static async Task<Dictionary<BlockPos, ItemStack[]>> SurveyAsync(SkillContext ctx, InventoryRun run, List<BlockPos> chests, CancellationToken ct)
+    {
         var contents = new Dictionary<BlockPos, ItemStack[]>();
         foreach (var c in chests.OrderBy(c => c.DistanceSquaredTo(ctx.Me)))
         {
@@ -270,48 +356,60 @@ public sealed class OrganizeStorageSkill : Skill
             contents[c] = run.ContainerContents();
         }
         await run.CloseAsync(ct);
-        if (contents.Count == 0) return Fail(run.Summary("no chest could be opened"));
+        return contents;
+    }
 
-        // 2) Categories: label/assignment first, then the majority of contents, then what's left in order.
+    /// <summary>2) Categories: label/assignment first, then the majority of contents, then what's left in order (assigned in the
+    /// directory).</summary>
+    private static Dictionary<BlockPos, string> Categorize(SkillContext ctx, Dictionary<BlockPos, ItemStack[]> contents)
+    {
         var cat = new Dictionary<BlockPos, string>();
         foreach (var (c, s) in contents)
             if (ctx.Directory.CategoryOf(ctx, c) is { } known) cat[c] = known;
         foreach (var (c, s) in contents.Where(kv => !cat.ContainsKey(kv.Key)))
-        {
-            var major = s.Where(x => !x.IsEmpty).GroupBy(x => StorageCategory.Of(x.Id, x.Damage)).OrderByDescending(g => g.Sum(x => x.Count)).FirstOrDefault()?.Key;
-            if (major is not null && !cat.ContainsValue(major)) cat[c] = major;
-        }
+            if (Majority(s) is { } major && !cat.ContainsValue(major)) cat[c] = major;
         var remaining = StorageCategory.Order.Where(o => !cat.ContainsValue(o)).ToQueue();
         foreach (var c in contents.Keys.Where(c => !cat.ContainsKey(c))) cat[c] = remaining.Count > 0 ? remaining.Dequeue() : "misc";
         foreach (var (c, k) in cat) ctx.Directory.Assign(c, k);
+        return cat;
+    }
 
-        // 3) Stray stacks → their category chest (or "misc" when that category has no chest).
+    private static string? Majority(ItemStack[] s) =>
+        s.Where(x => !x.IsEmpty).GroupBy(x => StorageCategory.Of(x.Id, x.Damage)).OrderByDescending(g => g.Sum(x => x.Count)).FirstOrDefault()?.Key;
+
+    /// <summary>3) Stray stacks → their category chest (or "misc" when that category has no chest).</summary>
+    private static List<MoveSpec> StrayMoves(Dictionary<BlockPos, ItemStack[]> contents, Dictionary<BlockPos, string> cat)
+    {
         var moves = new List<MoveSpec>();
         foreach (var (c, s) in contents)
         foreach (var g in s.Where(x => !x.IsEmpty).GroupBy(x => (x.Id, x.Damage)))
         {
             var k = StorageCategory.Of(g.Key.Id, g.Key.Damage);
-            if (cat[c] == k) continue;
-            var home = cat.Where(kv => kv.Value == k).Select(kv => (BlockPos?)kv.Key).FirstOrDefault()
-                       ?? cat.Where(kv => kv.Value == "misc").Select(kv => (BlockPos?)kv.Key).FirstOrDefault();
-            if (home is not { } h || h == c) continue;
+            if (cat[c] == k || Home(cat, k) is not { } h || h == c) continue;
             moves.Add(new MoveSpec(g.Key.Id, Items.Get(g.Key.Id).MaxDamage > 0 ? null : g.Key.Damage, g.Sum(x => x.Count),
                 new Endpoint(c, Region.Container, null, $"chest@{P(c)}"), new Endpoint(h, Region.Container, null, $"storage:{k}")));
         }
-        string? error = moves.Count > 0 ? await new MovePlanner(ctx, run).RunAsync(moves, ct) : null;
-        run.Moves = moves.Count(m => m.Finished);
+        return moves;
+    }
 
-        // 4) Sort each chest by category/id.
-        var scheme = args.Str("scheme") ?? "by_category";
+    private static BlockPos? Home(Dictionary<BlockPos, string> cat, string k) =>
+        cat.Where(kv => kv.Value == k).Select(kv => (BlockPos?)kv.Key).FirstOrDefault()
+        ?? cat.Where(kv => kv.Value == "misc").Select(kv => (BlockPos?)kv.Key).FirstOrDefault();
+
+    /// <summary>4) Sort each chest by category/id (its saved layout when it has one), nearest first.</summary>
+    private static async Task SortAsync(SkillContext ctx, InventoryRun run, Dictionary<BlockPos, string> cat, string scheme, CancellationToken ct)
+    {
         foreach (var c in cat.Keys.OrderBy(c => c.DistanceSquaredTo(ctx.Me)))
         {
             var r = await ArrangeChestSkill.ArrangeAsync(ctx, run, c, ctx.Layouts.Get(c) ?? scheme, ct);
             if (r.Error is not null) run.Notes.Add(r.Error);
         }
-        var close = await run.CloseAsync(ct);
+    }
+
+    private static string Summary(SkillContext ctx, JsonElement args, InventoryRun run, Dictionary<BlockPos, string> cat)
+    {
         string labels = args.Flag("label") && !ctx.Game.Supported.HasFlag(Primitive.WriteSign) ? "labels skipped (needs write_sign)" : "";
-        string summary = run.Summary(string.Join(", ", cat.Select(kv => $"{kv.Value}@{P(kv.Key)}")) + (labels.Length > 0 ? "; " + labels : ""));
-        return error is null && close is null ? Ok(summary) : Fail($"{summary}; {error ?? close}");
+        return run.Summary(string.Join(", ", cat.Select(kv => $"{kv.Value}@{P(kv.Key)}")) + (labels.Length > 0 ? "; " + labels : ""));
     }
 
     private static List<BlockPos> Pick(SkillContext ctx, string scope)
