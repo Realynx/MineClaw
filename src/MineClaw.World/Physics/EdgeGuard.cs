@@ -99,7 +99,7 @@ public sealed class EdgeGuardStats
 /// Always-on void protection below every action. Each tick, <see cref="Filter"/> takes the proposed movement input and
 /// returns one that provably keeps the player out of the void, using the exact same physics as the real tick:
 /// <list type="number">
-/// <item>Near a deadly drop (void, lava, or deeper than <see cref="EdgeGuardOptions.MaxSafeFall"/>) on ground: force sneak
+/// <item>Near a fatal drop (the void, lava, water over the void: <see cref="Safety.IsFatalColumn"/>) on ground: force sneak
 /// (vanilla edge clamping then also applies to knockback) and stop sprinting.</item>
 /// <item>Jumps only when the simulated landing is solid, non-void and within the safe fall.</item>
 /// <item>Accept the input only if after one tick of it the "brake" (no input, sneak) settles safely without the hitbox
@@ -137,8 +137,26 @@ public sealed class EdgeGuard
 
     // ------------------------------------------------------------------ queries
 
-    /// <summary>Any column within <see cref="EdgeGuardOptions.EdgeMargin"/> of the hitbox is a deadly drop at feet level.</summary>
-    public bool IsNearEdge(IBlockAccess w, PhysicsState s) => IsNearEdge(w, s.Position, Options.EdgeMargin, Options.MaxSafeFall);
+    /// <summary>
+    /// Any column within <see cref="EdgeGuardOptions.EdgeMargin"/> of the hitbox is a deadly drop at feet level that is also fatal
+    /// (<see cref="Safety.IsFatalColumn"/>: the void, lava). This is the edge that forces sneak and stops sprint; beside a pit with a
+    /// floor (a quarry stair) the body walks normally and the simulation still keeps it from stepping off.
+    /// </summary>
+    public bool IsNearEdge(IBlockAccess w, PhysicsState s) => IsNearFatalEdge(w, s.Position, Options.EdgeMargin, Options.MaxSafeFall);
+
+    /// <summary>Within <paramref name="margin"/> of a deadly drop that is fatal: the void, lava, water over the void.</summary>
+    public static bool IsNearFatalEdge(IBlockAccess w, Vec3d feet, double margin = 1.0, double maxFall = 3.0) =>
+        AnyColumnNear(feet, margin, (x, y, z) => Safety.IsDeadlyColumn(w, x, y, z, maxFall) && Safety.IsFatalColumn(w, x, y, z));
+
+    private static bool AnyColumnNear(Vec3d feet, double margin, Func<int, int, int, bool> test)
+    {
+        var bb = AABB.ForPlayer(feet);
+        int y = (int)Math.Floor(feet.Y + 1e-6);
+        for (int x = (int)Math.Floor(bb.MinX - margin); x <= (int)Math.Ceiling(bb.MaxX + margin) - 1; x++)
+            for (int z = (int)Math.Floor(bb.MinZ - margin); z <= (int)Math.Ceiling(bb.MaxZ + margin) - 1; z++)
+                if (test(x, y, z)) return true;
+        return false;
+    }
 
     public static bool IsNearEdge(IBlockAccess w, Vec3d feet, double margin = 1.0, double maxFall = 3.0)
     {

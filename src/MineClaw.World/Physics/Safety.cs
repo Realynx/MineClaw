@@ -66,6 +66,26 @@ public static class Safety
     /// void, into lava, into water that hangs over the void, or further than <paramref name="maxFall"/> blocks.
     /// A wall (collision at feet level) is not a drop. Unloaded columns are deadly (unknown = unsafe).
     /// </summary>
+    /// <summary>
+    /// A fall at (x, z) from <paramref name="feetY"/> would be fatal whatever its height: the void, lava, or water over the void
+    /// (unloaded counts as fatal). A pit with a floor (a quarry, a ravine, a cliff) is not: falling there hurts, and the edge guard's
+    /// simulation never lets the body step off it, so it is walked normally (no forced sneak, no edge cost). Live 11-04: pawns
+    /// crouch-walked a quarry's stair beside its pit all the way down.
+    /// </summary>
+    public static bool IsFatalColumn(IBlockAccess w, int x, int feetY, int z)
+    {
+        if (!w.IsLoaded(x, z)) return true;
+        for (int yy = Math.Min(feetY - 1, w.WorldHeight - 1); yy >= 0; yy--)
+        {
+            int id = w.GetBlock(x, yy, z);
+            if (id == 0) continue;
+            if (BlockShapes.IsLava(id)) return true;
+            if (BlockShapes.IsWater(id)) return IsOverVoid(w, x, yy, z);
+            if (BlockShapes.HasCollision(w, x, yy, z)) return false;
+        }
+        return true;
+    }
+
     public static bool IsDeadlyColumn(IBlockAccess w, int x, int feetY, int z, double maxFall)
     {
         if (!w.IsLoaded(x, z)) return true;
