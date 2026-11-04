@@ -81,43 +81,63 @@ public sealed partial class StoryColony
     public (JsonNode? Result, string? Error) StorageOp(string op, IReadOnlyList<P3>? chests, StorageFilter? filter, string? priority, string? label,
         P3? from = null, Area? area = null)
     {
-        if (priority != null && !StoragePriority.Known(priority)) return (null, "priority must be low|normal|preferred|important|critical");
+        if (StorageArgsError(filter, priority) is { } err) return (null, err);
+        lock (_lock)
+            return op switch
+            {
+                "set" => SetChests(chests, filter, priority, label),
+                "remove" => RemoveChests(chests),
+                "copy" => CopyChests(from, chests),
+                "assign_area" => AssignChestArea(area, filter, priority, label),
+                _ => (null, "op must be set|remove|copy|assign_area"),
+            };
+    }
+
+    private string? StorageArgsError(StorageFilter? filter, string? priority)
+    {
+        if (priority != null && !StoragePriority.Known(priority)) return "priority must be low|normal|preferred|important|critical";
         if (filter != null && Cats is { } cats)
             foreach (var e in filter.Allow.Concat(filter.Deny))
-                if (!cats.Valid(e)) return (null, $"unknown filter entry '{e}' (a category id, *, id or id:meta)");
-        lock (_lock)
-        {
-            switch (op)
-            {
-                case "set":
-                    if (chests is not { Count: > 0 }) return (null, "chests required");
-                    foreach (var c in chests) Set(c, filter, priority, label);
-                    WakeIdle();
-                    return (Done(chests), null);
-                case "remove":
-                    if (chests is not { Count: > 0 }) return (null, "chests required");
-                    foreach (var c in chests)
-                        if (StorageAt(c) is { } s) { Storages.Remove(s); Removed("storage", s.Chest.ToString()); }
-                    return (Done(chests), null);
-                case "copy":
-                    if (from is not { } f || StorageAt(f) is not { } src) return (null, "from must be a registered chest");
-                    if (chests is not { Count: > 0 }) return (null, "to required");
-                    foreach (var c in chests) Set(c, new StorageFilter { Allow = [.. src.Filter.Allow], Deny = [.. src.Filter.Deny] }, src.Priority, null);
-                    return (Done(chests), null);
-                case "assign_area":
-                {
-                    if (area is not { } a) return (null, "area required");
-                    if (a.Volume > 200_000) return (null, "area too large (max 200000 blocks)");
-                    if (World is not { } w) return (null, "no world view yet");
-                    var found = a.Blocks().Where(p => w.Block(p.X, p.Y, p.Z).Id is 54 or 146).ToList();
-                    foreach (var c in found) Set(c, filter, priority, label);
-                    return (Done(found.Select(c => StorageAt(c)?.Chest ?? c).Distinct().ToList()), null);
-                }
-                default:
-                    return (null, "op must be set|remove|copy|assign_area");
-            }
-        }
-        static JsonNode Done(IEnumerable<P3> cs) => new JsonObject { ["chests"] = new JsonArray(cs.Select(c => (JsonNode)c.Json()).ToArray()) };
+                if (!cats.Valid(e)) return $"unknown filter entry '{e}' (a category id, *, id or id:meta)";
+        return null;
+    }
+
+    private static JsonNode ChestsAnswer(IEnumerable<P3> cs) => new JsonObject { ["chests"] = new JsonArray(cs.Select(c => (JsonNode)c.Json()).ToArray()) };
+
+    private (JsonNode? Result, string? Error) SetChests(IReadOnlyList<P3>? chests, StorageFilter? filter, string? priority, string? label)
+    {
+        if (chests is not { Count: > 0 }) return (null, "chests required");
+        foreach (var c in chests) Set(c, filter, priority, label);
+        WakeIdle();
+        return (ChestsAnswer(chests), null);
+    }
+
+    private (JsonNode? Result, string? Error) RemoveChests(IReadOnlyList<P3>? chests)
+    {
+        if (chests is not { Count: > 0 }) return (null, "chests required");
+        foreach (var c in chests)
+            if (StorageAt(c) is { } s) { Storages.Remove(s); Removed("storage", s.Chest.ToString()); }
+        return (ChestsAnswer(chests), null);
+    }
+
+    /// <summary>The <paramref name="from"/> chest's filter and priority onto each chest.</summary>
+    private (JsonNode? Result, string? Error) CopyChests(P3? from, IReadOnlyList<P3>? chests)
+    {
+        if (from is not { } f || StorageAt(f) is not { } src) return (null, "from must be a registered chest");
+        if (chests is not { Count: > 0 }) return (null, "to required");
+        foreach (var c in chests) Set(c, new StorageFilter { Allow = [.. src.Filter.Allow], Deny = [.. src.Filter.Deny] }, src.Priority, null);
+        return (ChestsAnswer(chests), null);
+    }
+
+    /// <summary>Every chest (and trapped chest) in the area becomes storage.</summary>
+    private (JsonNode? Result, string? Error) AssignChestArea(Area? area, StorageFilter? filter, string? priority, string? label)
+    {
+        if (area is not { } a) return (null, "area required");
+        if (a.Volume > 200_000) return (null, "area too large (max 200000 blocks)");
+        if (World is not { } w) return (null, "no world view yet");
+        var found = a.Blocks().Where(p => w.Block(p.X, p.Y, p.Z).Id is 54 or 146).ToList();
+        foreach (var c in found) Set(c, filter, priority, label);
+        return (ChestsAnswer(found.Select(c => StorageAt(c)?.Chest ?? c).Distinct().ToList()), null);
     }
 
     /// <summary>Registers (or updates) a chest; its double half is found from the world and treated as the same storage.</summary>

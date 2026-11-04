@@ -586,64 +586,79 @@ public sealed partial class StoryColony : IStoryPort
         lock (_lock)
         {
             if (Home() is not { } home || World is not { } w || !Meta.Active) return 0;
-            P3? spot = null;
-            bool looked = false;
-            foreach (var p in Pawns.Values)
-            {
-                if (only != null && !only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)) continue;
-                var live = Host.Live(p.Name);
-                if (!live.Online) continue;
-                if (_broughtHome.TryGetValue(p.Name, out var at) && Now - at < BringHomeCooldown) continue;
-                if (live.Dim != w.Dimension)
-                {
-                    if (!_homeAlert.TryGetValue("dim:" + p.Name, out var last) || Now - last > TimeSpan.FromMinutes(10))
-                    {
-                        _homeAlert["dim:" + p.Name] = Now;
-                        Alert("warn", $"{p.Display} is in another dimension and can't be brought home from there: walk it through a portal", p.Name);
-                    }
-                    continue;
-                }
-                double dist = home.Dist(live.X, live.Y, live.Z);
-                if (dist <= HomeRange) continue;
-                if (!looked) { looked = true; spot = SafeSpot(w, home); }
-                if (spot is not { } to)
-                {
-                    if (!_homeAlert.TryGetValue("spot", out var last) || Now - last > TimeSpan.FromMinutes(5))
-                    {
-                        _homeAlert["spot"] = Now;
-                        Alert("warn", $"no safe spot to bring pawns to at home {home} (not loaded in the bot's view, or no ground there)");
-                    }
-                    return 0;
-                }
-                _broughtHome[p.Name] = Now;
-                moves.Add((p, SpreadHome(p, live, home) ?? to, dist)); // each to its own spot: never all onto one cell
-            }
+            if (!PlanHomeMoves(only, home, w, moves)) return 0;
         }
-        foreach (var (p, to, dist) in moves)
-        {
-            string? err;
-            try { err = Host.Teleport(p.Name, to, $"story {Id}: {why}"); } catch (Exception ex) { err = ex.Message; }
-            lock (_lock)
-            {
-                if (err == null)
-                {
-                    Supersede(p, "brought home"); // whatever it was doing over there is cut; it picks again at home
-                    Alert("info", $"{p.Display} brought home to {to} from {dist:0} blocks away ({why})", p.Name);
-                }
-                else
-                {
-                    // Walk it there instead: a move order runs before any work.
-                    if (!p.Queue.Any(o => o.Kind == "move" && o.At == to))
-                    {
-                        p.Queue.Insert(0, new Order { Id = NextId("o"), Kind = "move", At = to, Given = Now });
-                        p.Rev = Touch();
-                        Supersede(p, "walking home");
-                    }
-                    Alert("info", $"{p.Display} walks home to {to} from {dist:0} blocks away ({why}; no teleport: {err})", p.Name);
-                }
-            }
-        }
+        foreach (var (p, to, dist) in moves) SendHome(p, to, dist, why);
         return moves.Count;
+    }
+
+    /// <summary>The pawns to bring home (online, far from home, not just brought): each to its own spot by home. False = no safe spot
+    /// at home (said, at most every 5 minutes): nobody is moved.</summary>
+    private bool PlanHomeMoves(IReadOnlyCollection<string>? only, P3 home, IStoryWorld w, List<(PawnState P, P3 To, double Dist)> moves)
+    {
+        P3? spot = null;
+        bool looked = false;
+        foreach (var p in Pawns.Values)
+        {
+            if (only != null && !only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)) continue;
+            var live = Host.Live(p.Name);
+            if (!HomeDue(p, live, w)) continue;
+            double dist = home.Dist(live.X, live.Y, live.Z);
+            if (dist <= HomeRange) continue;
+            if (!looked) { looked = true; spot = SafeSpot(w, home); }
+            if (spot is not { } to)
+            {
+                if (HomeAlertDue("spot", TimeSpan.FromMinutes(5)))
+                    Alert("warn", $"no safe spot to bring pawns to at home {home} (not loaded in the bot's view, or no ground there)");
+                return false;
+            }
+            _broughtHome[p.Name] = Now;
+            moves.Add((p, SpreadHome(p, live, home) ?? to, dist)); // each to its own spot: never all onto one cell
+        }
+        return true;
+    }
+
+    /// <summary>Online, not brought home a moment ago, and in the colony's dimension (one elsewhere can't be teleported across: said).</summary>
+    private bool HomeDue(PawnState p, PawnLive live, IStoryWorld w)
+    {
+        if (!live.Online) return false;
+        if (_broughtHome.TryGetValue(p.Name, out var at) && Now - at < BringHomeCooldown) return false;
+        if (live.Dim == w.Dimension) return true;
+        if (HomeAlertDue("dim:" + p.Name, TimeSpan.FromMinutes(10)))
+            Alert("warn", $"{p.Display} is in another dimension and can't be brought home from there: walk it through a portal", p.Name);
+        return false;
+    }
+
+    /// <summary>A bring-home alert of this key is due (none within <paramref name="every"/>): noted as said now.</summary>
+    private bool HomeAlertDue(string key, TimeSpan every)
+    {
+        if (_homeAlert.TryGetValue(key, out var last) && Now - last <= every) return false;
+        _homeAlert[key] = Now;
+        return true;
+    }
+
+    /// <summary>Teleported home (whatever it was doing over there is cut; it picks again at home), else walked there by a move order.</summary>
+    private void SendHome(PawnState p, P3 to, double dist, string why)
+    {
+        string? err;
+        try { err = Host.Teleport(p.Name, to, $"story {Id}: {why}"); } catch (Exception ex) { err = ex.Message; }
+        lock (_lock)
+        {
+            if (err == null)
+            {
+                Supersede(p, "brought home");
+                Alert("info", $"{p.Display} brought home to {to} from {dist:0} blocks away ({why})", p.Name);
+                return;
+            }
+            // Walk it there instead: a move order runs before any work.
+            if (!p.Queue.Any(o => o.Kind == "move" && o.At == to))
+            {
+                p.Queue.Insert(0, new Order { Id = NextId("o"), Kind = "move", At = to, Given = Now });
+                p.Rev = Touch();
+                Supersede(p, "walking home");
+            }
+            Alert("info", $"{p.Display} walks home to {to} from {dist:0} blocks away ({why}; no teleport: {err})", p.Name);
+        }
     }
 
     /// <summary>
