@@ -108,6 +108,25 @@ public static class DesignerTools
         "words (no coordinates unless asked).";
     }
 
+    /// <summary>One canvas tool: (text for the model, the op applied or null, whether it was an error).</summary>
+    private delegate (string Text, DesignerOp? Op, bool Error) CanvasTool(DesignerCanvas canvas, JsonElement input);
+
+    /// <summary>The tools by name (the mine templates refuse a build canvas themselves).</summary>
+    private static readonly Dictionary<string, CanvasTool> Tools = new()
+    {
+        ["find_blocks"] = FindBlocksTool,
+        ["describe"] = DescribeTool,
+        ["spiral_shaft"] = (c, i) => MineTool(c, "spiral_shaft", i),
+        ["strip_mine"] = (c, i) => MineTool(c, "strip_mine", i),
+        ["mine_preset"] = (c, i) => MineTool(c, "mine_preset", i),
+        ["clear"] = (c, _) => Done(c, "clear", "cleared the canvas", c.Clear(), 0),
+        ["remove"] = RemoveTool,
+        ["place"] = PlaceTool,
+        ["box"] = BoxTool,
+        ["line"] = LineTool,
+        ["replace"] = ReplaceTool,
+    };
+
     /// <summary>Runs one tool call on the canvas: (text for the model, the op applied or null, whether it was an error).</summary>
     public static (string Text, DesignerOp? Op, bool Error) Run(DesignerCanvas canvas, string name, JsonElement input)
     {
@@ -115,81 +134,7 @@ public static class DesignerTools
         using var scope = DesignVersions.Use(canvas.Version);
         try
         {
-            switch (name)
-            {
-                case "find_blocks":
-                    {
-                        var q = Str(input, "q");
-                        int n = input.TryGetProperty("n", out var nv) && nv.ValueKind == JsonValueKind.Number ? Math.Clamp(nv.GetInt32(), 1, 40) : 15;
-                        var hits = canvas.Palette.Find(q, n);
-                        if (hits.Count == 0) return ($"no {canvas.Version} block matches '{q}'" + (canvas.Palette.DidYouMean(q) is { Count: > 0 } dm ? "; did you mean " + string.Join(", ", dm) : ""), null, false);
-                        return (string.Join("\n", hits.Select(e => $"{e.Spec} = {e.Name} ({e.Category}{(e.Facing ? ", facing" : "")})")), null, false);
-                    }
-                case "describe":
-                    return (input.TryGetProperty("y", out var y) && y.ValueKind == JsonValueKind.Number ? canvas.Layer(y.GetInt32()) : canvas.Describe(16), null, false);
-                case "spiral_shaft" or "strip_mine" or "mine_preset":
-                    return MineTool(canvas, name, input);
-                case "clear":
-                    return Done(canvas, "clear", "cleared the canvas", canvas.Clear(), 0);
-                case "remove":
-                    {
-                        var (a, b) = (P(input, "from"), P(input, "to"));
-                        return Done(canvas, "remove", $"removed {Box(a, b)}", canvas.Apply(Cells(a, b, (_, _, _) => true, 0, 0), out var rej), rej);
-                    }
-                case "place":
-                    {
-                        var (id, meta) = Block(input, "b");
-                        if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array) throw new ArgumentException("at: [[x,y,z],...]");
-                        var cells = at.EnumerateArray().Select(e => V(e)).Select(p => new CanvasCell(p.X, p.Y, p.Z, id, meta)).ToList();
-                        return Done(canvas, "place", $"placed {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
-                    }
-                case "box":
-                    {
-                        var (id, meta) = Block(input, "b");
-                        var (a, b) = (P(input, "from"), P(input, "to"));
-                        var mode = input.TryGetProperty("mode", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() ?? "fill" : "fill";
-                        var (lo, hi) = Norm(a, b);
-                        Func<int, int, int, bool> shell = mode switch
-                        {
-                            "hollow" => (x, yy, z) => x == lo.X || x == hi.X || yy == lo.Y || yy == hi.Y || z == lo.Z || z == hi.Z,
-                            "walls" => (x, _, z) => x == lo.X || x == hi.X || z == lo.Z || z == hi.Z,
-                            _ => (_, _, _) => true,
-                        };
-                        // hollow/walls: the inside becomes air (an open interior, as the DSL's own primitives draw it).
-                        var cells = mode is "hollow" or "walls"
-                            ? Cells(a, b, (x, yy, z) => true, 0, 0).Select(c => shell(c.X, c.Y, c.Z) ? c with { Id = id, Meta = meta } : c)
-                            : Cells(a, b, shell, id, meta);
-                        return Done(canvas, mode == "fill" ? "fill" : mode, $"{(mode == "fill" ? "filled" : mode)} {Box(a, b)} with {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
-                    }
-                case "line":
-                    {
-                        var (id, meta) = Block(input, "b");
-                        var (a, b) = (P(input, "from"), P(input, "to"));
-                        return Done(canvas, "line", $"line of {Name(id, meta)}", canvas.Apply(Line(a, b).Select(p => new CanvasCell(p.X, p.Y, p.Z, id, meta)), out var rej), rej);
-                    }
-                case "replace":
-                    {
-                        var aSpec = Str(input, "a");
-                        (int Id, int Meta)? from = aSpec.Equals("any", StringComparison.OrdinalIgnoreCase) ? null : Block(input, "a");
-                        var (id, meta) = Block(input, "b");
-                        ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) box = input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to"))
-                            : ((0, canvas.YRange.Min, 0), (DesignerCanvas.Size - 1, canvas.YRange.Max, DesignerCanvas.Size - 1));
-                        var (lo, hi) = (box.Lo, box.Hi);
-                        // Same block = same id and variant (wool colour, slab material; not its facing or half); a two-cell block
-                        // (door, bed) is replaced by its first half only (the canvas pairs the second).
-                        bool Matches(int cid, int cmeta) => from == null ? !DesignFacing.TwoCell(cid)
-                            : cid == from.Value.Id && (cmeta & DesignFacing.VariantMask(cid)) == (from.Value.Meta & DesignFacing.VariantMask(cid)) && !DesignFacing.SecondHalf(cid, cmeta);
-                        var famTo = DesignFacing.FamilyOf(id);
-                        var cells = canvas.Blocks.Where(kv => kv.Key.X >= lo.X && kv.Key.X <= hi.X && kv.Key.Y >= lo.Y && kv.Key.Y <= hi.Y && kv.Key.Z >= lo.Z && kv.Key.Z <= hi.Z)
-                            .Where(kv => Matches(kv.Value.Id, kv.Value.Meta))
-                            // A facing block replaced by one of its family keeps its facing (stairs for stairs, chest for furnace).
-                            .Select(kv => new CanvasCell(kv.Key.X, kv.Key.Y, kv.Key.Z, id, DesignFacing.HasFacing(famTo) && DesignFacing.FamilyOf(kv.Value.Id) == famTo
-                                && canvas.RefusalOf(id, (kv.Value.Meta & ~DesignFacing.VariantMask(id)) | (meta & DesignFacing.VariantMask(id))) == null
-                                ? (kv.Value.Meta & ~DesignFacing.VariantMask(id)) | (meta & DesignFacing.VariantMask(id)) : meta)).ToList();
-                        return Done(canvas, "replace", $"replaced {aSpec} with {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
-                    }
-            }
-            return ($"error: no tool '{name}'", null, true);
+            return Tools.TryGetValue(name, out var tool) ? tool(canvas, input) : ($"error: no tool '{name}'", null, true);
         }
         catch (Exception e) when (e is ArgumentException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
         {
@@ -197,50 +142,140 @@ public static class DesignerTools
         }
     }
 
+    private static (string, DesignerOp?, bool) FindBlocksTool(DesignerCanvas canvas, JsonElement input)
+    {
+        var q = Str(input, "q");
+        int n = input.TryGetProperty("n", out var nv) && nv.ValueKind == JsonValueKind.Number ? Math.Clamp(nv.GetInt32(), 1, 40) : 15;
+        var hits = canvas.Palette.Find(q, n);
+        if (hits.Count == 0) return ($"no {canvas.Version} block matches '{q}'" + (canvas.Palette.DidYouMean(q) is { Count: > 0 } dm ? "; did you mean " + string.Join(", ", dm) : ""), null, false);
+        return (string.Join("\n", hits.Select(e => $"{e.Spec} = {e.Name} ({e.Category}{(e.Facing ? ", facing" : "")})")), null, false);
+    }
+
+    private static (string, DesignerOp?, bool) DescribeTool(DesignerCanvas canvas, JsonElement input) =>
+        (input.TryGetProperty("y", out var y) && y.ValueKind == JsonValueKind.Number ? canvas.Layer(y.GetInt32()) : canvas.Describe(16), null, false);
+
+    private static (string, DesignerOp?, bool) RemoveTool(DesignerCanvas canvas, JsonElement input)
+    {
+        var (a, b) = (P(input, "from"), P(input, "to"));
+        return Done(canvas, "remove", $"removed {Box(a, b)}", canvas.Apply(Cells(a, b, (_, _, _) => true, 0, 0), out var rej), rej);
+    }
+
+    private static (string, DesignerOp?, bool) PlaceTool(DesignerCanvas canvas, JsonElement input)
+    {
+        var (id, meta) = Block(input, "b");
+        if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array) throw new ArgumentException("at: [[x,y,z],...]");
+        var cells = at.EnumerateArray().Select(e => V(e)).Select(p => new CanvasCell(p.X, p.Y, p.Z, id, meta)).ToList();
+        return Done(canvas, "place", $"placed {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
+    }
+
+    private static (string, DesignerOp?, bool) BoxTool(DesignerCanvas canvas, JsonElement input)
+    {
+        var (id, meta) = Block(input, "b");
+        var (a, b) = (P(input, "from"), P(input, "to"));
+        var mode = OptStr(input, "mode") ?? "fill";
+        // hollow/walls: the inside becomes air (an open interior, as the DSL's own primitives draw it); any other mode fills.
+        IEnumerable<CanvasCell> cells;
+        if (mode is "hollow" or "walls")
+        {
+            var shell = ShellOf(mode, Norm(a, b));
+            cells = Cells(a, b, (_, _, _) => true, 0, 0).Select(c => shell(c.X, c.Y, c.Z) ? c with { Id = id, Meta = meta } : c);
+        }
+        else cells = Cells(a, b, (_, _, _) => true, id, meta);
+        return Done(canvas, mode, $"{(mode == "fill" ? "filled" : mode)} {Box(a, b)} with {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
+    }
+
+    /// <summary>The cells of a hollow box (its shell) or of its walls (4 sides, no floor or roof).</summary>
+    private static Func<int, int, int, bool> ShellOf(string mode, ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) box)
+    {
+        var (lo, hi) = box;
+        if (mode == "hollow") return (x, y, z) => x == lo.X || x == hi.X || y == lo.Y || y == hi.Y || z == lo.Z || z == hi.Z;
+        return (x, _, z) => x == lo.X || x == hi.X || z == lo.Z || z == hi.Z;
+    }
+
+    private static (string, DesignerOp?, bool) LineTool(DesignerCanvas canvas, JsonElement input)
+    {
+        var (id, meta) = Block(input, "b");
+        var (a, b) = (P(input, "from"), P(input, "to"));
+        return Done(canvas, "line", $"line of {Name(id, meta)}", canvas.Apply(Line(a, b).Select(p => new CanvasCell(p.X, p.Y, p.Z, id, meta)), out var rej), rej);
+    }
+
+    private static (string, DesignerOp?, bool) ReplaceTool(DesignerCanvas canvas, JsonElement input)
+    {
+        var aSpec = Str(input, "a");
+        (int Id, int Meta)? from = aSpec.Equals("any", StringComparison.OrdinalIgnoreCase) ? null : Block(input, "a");
+        var (id, meta) = Block(input, "b");
+        var (lo, hi) = ReplaceBox(canvas, input);
+        var famTo = DesignFacing.FamilyOf(id);
+        var cells = canvas.Blocks.Where(kv => InBox(kv.Key, lo, hi))
+            .Where(kv => Matches(from, kv.Value.Id, kv.Value.Meta))
+            .Select(kv => new CanvasCell(kv.Key.X, kv.Key.Y, kv.Key.Z, id, ReplacedMeta(canvas, kv.Value, id, meta, famTo))).ToList();
+        return Done(canvas, "replace", $"replaced {aSpec} with {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
+    }
+
+    /// <summary>The replace box: from..to, else the whole canvas.</summary>
+    private static ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) ReplaceBox(DesignerCanvas canvas, JsonElement input) =>
+        input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to"))
+            : ((0, canvas.YRange.Min, 0), (DesignerCanvas.Size - 1, canvas.YRange.Max, DesignerCanvas.Size - 1));
+
+    private static bool InBox(MineClaw.World.BlockPos p, (int X, int Y, int Z) lo, (int X, int Y, int Z) hi) =>
+        p.X >= lo.X && p.X <= hi.X && p.Y >= lo.Y && p.Y <= hi.Y && p.Z >= lo.Z && p.Z <= hi.Z;
+
+    /// <summary>Same block = same id and variant (wool colour, slab material; not its facing or half); a two-cell block (door, bed)
+    /// is replaced by its first half only (the canvas pairs the second). "any" (null) = every block but a second half.</summary>
+    private static bool Matches((int Id, int Meta)? from, int cid, int cmeta) => from is not { } f ? !DesignFacing.TwoCell(cid)
+        : cid == f.Id && (cmeta & DesignFacing.VariantMask(cid)) == (f.Meta & DesignFacing.VariantMask(cid)) && !DesignFacing.SecondHalf(cid, cmeta);
+
+    /// <summary>A facing block replaced by one of its family keeps its facing (stairs for stairs, chest for furnace), else the new meta.</summary>
+    private static int ReplacedMeta(DesignerCanvas canvas, (int Id, int Meta) old, int id, int meta, DesignFamily famTo)
+    {
+        int kept = (old.Meta & ~DesignFacing.VariantMask(id)) | (meta & DesignFacing.VariantMask(id));
+        return DesignFacing.HasFacing(famTo) && DesignFacing.FamilyOf(old.Id) == famTo && canvas.RefusalOf(id, kept) == null ? kept : meta;
+    }
+
     /// <summary>The mine templates on a mine canvas (spiral shaft, strip mine, a preset).</summary>
     private static (string, DesignerOp?, bool) MineTool(DesignerCanvas canvas, string name, JsonElement input)
     {
         if (!canvas.Mine || canvas.Terrain is not { } terrain) return ($"error: {name} needs a mine canvas (switch the studio to Mine)", null, true);
         MineCells m;
-        switch (name)
+        if (name == "spiral_shaft") m = SpiralOf(input, terrain);
+        else if (name == "strip_mine") m = StripOf(input);
+        else
         {
-            case "spiral_shaft":
-                {
-                    if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array || at.GetArrayLength() != 2) throw new ArgumentException("at: [x,z]");
-                    int x = at[0].GetInt32(), z = at[1].GetInt32();
-                    int size = Math.Clamp(OptInt(input, "size") ?? 4, MineTemplates.MinSize, MineTemplates.MaxSize);
-                    int top = OptInt(input, "top") ?? terrain.SurfaceOver(x, z, x + size - 1, z + size - 1);
-                    var landings = input.TryGetProperty("landings", out var l) && l.ValueKind == JsonValueKind.Array
-                        ? l.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Number).Select(e => e.GetInt32()).ToList() : null;
-                    m = MineTemplates.Spiral(new SpiralSpec(x, z, top, OptInt(input, "bottom") ?? 11, size, OptInt(input, "core") ?? 2,
-                        !(input.TryGetProperty("dir", out var d) && d.ValueKind == JsonValueKind.String && d.GetString() == "ccw"), OptInt(input, "torch_every") ?? 0, landings));
-                    break;
-                }
-            case "strip_mine":
-                {
-                    var (x, y, z) = P(input, "at");
-                    var corridor = input.TryGetProperty("corridor", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : "1x2";
-                    bool wide = corridor == "2x3";
-                    var axis = input.TryGetProperty("axis", out var a) && a.ValueKind == JsonValueKind.String && a.GetString() == "z" ? 'z' : 'x';
-                    var sides = input.TryGetProperty("sides", out var sd) && sd.ValueKind == JsonValueKind.String ? sd.GetString() ?? "both" : "both";
-                    m = MineTemplates.Strip(new StripSpec(x, y, z, axis, OptInt(input, "length") ?? 30, wide ? 2 : 1, wide ? 3 : 2, OptInt(input, "spacing") ?? 3,
-                        OptInt(input, "branch_length") ?? 12, sides, OptInt(input, "torch_every") ?? 0));
-                    break;
-                }
-            default:
-                {
-                    var id = Str(input, "id");
-                    if (MinePresets.Get(id) is not { } p) return ($"error: no preset '{id}'; {string.Join(", ", MinePresets.For(canvas.Version).Select(x => x.Id))}", null, true);
-                    m = MinePresets.Cells(p, terrain);
-                    break;
-                }
+            var id = Str(input, "id");
+            if (MinePresets.Get(id) is not { } p) return ($"error: no preset '{id}'; {string.Join(", ", MinePresets.For(canvas.Version).Select(x => x.Id))}", null, true);
+            m = MinePresets.Cells(p, terrain);
         }
         var changed = canvas.Apply(m.Cells, out var rej);
         var res = Done(canvas, name, m.Label, changed, rej);
         return res.Item2 == null ? res : (res.Item1 + string.Create(CultureInfo.InvariantCulture, $"; entry {m.Entry.X},{m.Entry.Y},{m.Entry.Z}"), res.Item2, res.Item3);
     }
 
+    private static MineCells SpiralOf(JsonElement input, MineTerrain terrain)
+    {
+        if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array || at.GetArrayLength() != 2) throw new ArgumentException("at: [x,z]");
+        int x = at[0].GetInt32(), z = at[1].GetInt32();
+        int size = Math.Clamp(OptInt(input, "size") ?? 4, MineTemplates.MinSize, MineTemplates.MaxSize);
+        int top = OptInt(input, "top") ?? terrain.SurfaceOver(x, z, x + size - 1, z + size - 1);
+        var landings = input.TryGetProperty("landings", out var l) && l.ValueKind == JsonValueKind.Array
+            ? l.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Number).Select(e => e.GetInt32()).ToList() : null;
+        return MineTemplates.Spiral(new SpiralSpec(x, z, top, OptInt(input, "bottom") ?? 11, size, OptInt(input, "core") ?? 2,
+            OptStr(input, "dir") != "ccw", OptInt(input, "torch_every") ?? 0, landings));
+    }
+
+    private static MineCells StripOf(JsonElement input)
+    {
+        var (x, y, z) = P(input, "at");
+        bool wide = (OptStr(input, "corridor") ?? "1x2") == "2x3";
+        var axis = OptStr(input, "axis") == "z" ? 'z' : 'x';
+        var sides = OptStr(input, "sides") ?? "both";
+        return MineTemplates.Strip(new StripSpec(x, y, z, axis, OptInt(input, "length") ?? 30, wide ? 2 : 1, wide ? 3 : 2, OptInt(input, "spacing") ?? 3,
+            OptInt(input, "branch_length") ?? 12, sides, OptInt(input, "torch_every") ?? 0));
+    }
+
     private static int? OptInt(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
+
+    /// <summary>An optional string argument (null when missing or not a string).</summary>
+    private static string? OptStr(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private static (string, DesignerOp?, bool) Done(DesignerCanvas canvas, string kind, string label, List<CanvasCell> changed, int rejected)
     {
@@ -283,17 +318,30 @@ public static class DesignerTools
     internal static (int Id, int Meta)? Attached(string s)
     {
         var parts = s.Split(':', 2);
-        if (parts.Length < 2 || parts[0] is not ("torch" or "ladder")) return null;
-        int id = parts[0] == "torch" ? Blocks.Torch : Blocks.Ladder;
+        if (parts.Length < 2 || AttachedId(parts[0]) is not { } id) return null;
         var arg = parts[1].Trim();
-        if (id == Blocks.Torch && arg is "floor" or "ground" or "up" or "standing") return (id, 5);
-        int eq = arg.IndexOfAny(['=', '_', '-']);
-        if (eq > 0 && arg[..eq] is "wall" or "on" or "against" or "support") arg = arg[(eq + 1)..];
-        else if (eq > 0 || Dirs.Parse(arg) == null) return null; // "torch:north" / "ladder:south": the side the block is on
-        if (Dirs.Parse(arg) is not { } d) throw new ArgumentException($"'{s}': the side is north, east, south or west (where the supporting block is)");
-        var wall = d switch { Dir.West => (-1, 0), Dir.East => (1, 0), Dir.North => (0, -1), _ => (0, 1) };
-        return (id, DesignerCanvas.MetaOn(id, wall));
+        if (id == Blocks.Torch && FloorWords.Contains(arg)) return (id, 5);
+        if (SideOf(arg) is not { } side) return null;
+        if (Dirs.Parse(side) is not { } d) throw new ArgumentException($"'{s}': the side is north, east, south or west (where the supporting block is)");
+        return (id, DesignerCanvas.MetaOn(id, WallSide(d)));
     }
+
+    private static readonly HashSet<string> FloorWords = ["floor", "ground", "up", "standing"];
+    private static readonly HashSet<string> WallWords = ["wall", "on", "against", "support"];
+
+    private static int? AttachedId(string name) => name switch { "torch" => Blocks.Torch, "ladder" => Blocks.Ladder, _ => null };
+
+    /// <summary>The side named in "wall=west" / "on-west" (any word of <see cref="WallWords"/>) or a bare side ("torch:north" /
+    /// "ladder:south": the side the block is on); null = not a side spelling (numeric metas go the usual way).</summary>
+    private static string? SideOf(string arg)
+    {
+        int eq = arg.IndexOfAny(['=', '_', '-']);
+        if (eq > 0 && WallWords.Contains(arg[..eq])) return arg[(eq + 1)..];
+        return eq > 0 || Dirs.Parse(arg) == null ? null : arg;
+    }
+
+    /// <summary>The (dx, dz) of the supporting block on side <paramref name="d"/>.</summary>
+    private static (int Dx, int Dz) WallSide(Dir d) => d switch { Dir.West => (-1, 0), Dir.East => (1, 0), Dir.North => (0, -1), _ => (0, 1) };
 
     private static (int X, int Y, int Z) V(JsonElement a)
     {
