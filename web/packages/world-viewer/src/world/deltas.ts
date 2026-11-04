@@ -117,11 +117,7 @@ export class BlockDeltaFeed {
       this.pending = new Map();
       const cols = this.stale;
       this.stale = [];
-      let reindex = this.fallbackDue;
-      if (this.fallbackDue) {
-        this.fallbackDue = false;
-        this.fallbacks++;
-      }
+      let reindex = this.takeFallback();
       for (const [dim, blocks] of batches) if (await this.applyBatch(dim, blocks)) reindex = true;
       for (const c of cols) if (await this.applyStale(c)) reindex = true;
       if (reindex) this.sync.reindexNow();
@@ -130,6 +126,14 @@ export class BlockDeltaFeed {
     } finally {
       this.flushing = false;
     }
+  }
+
+  /** A fallback asked for: counted, and the index re-runs. */
+  private takeFallback(): boolean {
+    if (!this.fallbackDue) return false;
+    this.fallbackDue = false;
+    this.fallbacks++;
+    return true;
   }
 
   /** One dimension's changes on the worker; true when some fell in columns not held (yet): the index fetches them when they
