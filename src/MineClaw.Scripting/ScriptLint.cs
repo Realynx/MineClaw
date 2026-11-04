@@ -55,10 +55,16 @@ public static class ScriptLint
         var toks = JsLint.Tokens(code).ToList();
         var set = new HashSet<string>(StringComparer.Ordinal);
         for (int i = 0; i + 1 < toks.Count; i++)
-            if (toks[i].Kind == 'i' && toks[i + 1].Text == "(" && !(i > 0 && toks[i - 1].Text == ".") && toks[i].Text is not ("function" or "if" or "while" or "for" or "switch" or "catch"))
-                set.Add(toks[i].Text);
+            if (IsJsCallee(toks, i)) set.Add(toks[i].Text);
         return set;
     }
+
+    /// <summary>Keywords followed by '(' that aren't calls.</summary>
+    private static readonly HashSet<string> NotCallees = new(StringComparer.Ordinal) { "function", "if", "while", "for", "switch", "catch" };
+
+    /// <summary>A name followed by '(' that isn't a member (<c>a.f(</c>) or a keyword.</summary>
+    private static bool IsJsCallee(List<(char Kind, string Text)> toks, int i) =>
+        toks[i].Kind == 'i' && toks[i + 1].Text == "(" && !(i > 0 && toks[i - 1].Text == ".") && !NotCallees.Contains(toks[i].Text);
 
     /// <summary>
     /// 0..1 similarity: Jaccard over token 3-grams of the normalized shape (85%) plus Jaccard of purpose tags (called names +
@@ -95,16 +101,19 @@ public static class ScriptLint
         {
             var l = raw.Trim();
             if (l.Length == 0) continue;
-            string? body = l.StartsWith("--", StringComparison.Ordinal) ? l.TrimStart('-')
-                : l.StartsWith("//", StringComparison.Ordinal) ? l.TrimStart('/')
-                : l.StartsWith("/*", StringComparison.Ordinal) ? l.TrimStart('/', '*').Replace("*/", "") : null;
-            if (body == null) return null;
+            if (CommentBody(l) is not { } body) return null;
             var p = Regex.Replace(body.Trim(), @"^(?:purpose|does|job)\s*:\s*", "", RegexOptions.IgnoreCase).Trim();
             if (p.StartsWith("migrated from routine", StringComparison.Ordinal)) return null;
             return p.Length == 0 ? null : (p.Length <= 60 ? p : p[..57] + "...");
         }
         return null;
     }
+
+    /// <summary>The text of a comment line (<c>--</c>, <c>//</c> or <c>/* */</c>), or null when the line isn't a comment.</summary>
+    private static string? CommentBody(string l) =>
+        l.StartsWith("--", StringComparison.Ordinal) ? l.TrimStart('-')
+        : l.StartsWith("//", StringComparison.Ordinal) ? l.TrimStart('/')
+        : l.StartsWith("/*", StringComparison.Ordinal) ? l.TrimStart('/', '*').Replace("*/", "") : null;
 
     /// <summary>Arg names the script reads (<c>args.n</c>, <c>args["cell"]</c>) and the tunables it declares (<c>params({n: 16})</c>), in order.</summary>
     public static IReadOnlyList<string> ArgNames(string code)

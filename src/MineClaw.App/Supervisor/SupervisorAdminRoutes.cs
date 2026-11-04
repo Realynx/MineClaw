@@ -59,9 +59,16 @@ public static class SupervisorAdminRoutes
             if (o is not { AllowAdminWrites: true } || string.IsNullOrEmpty(o.Token) || !TokenOk(req.Headers["X-Supervisor-Token"], o.Token)) return null;
             cap = ShardMaxBodyBytes;
         }
+        return await SupervisorAdminRoutes.ReadCappedAsync(req, cap, 81920, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>A request body read up to <paramref name="cap"/> bytes (<see cref="TooLarge"/> past it: by Content-Length, or once
+    /// more arrived), in chunks of <paramref name="bufferSize"/>.</summary>
+    internal static async Task<string> ReadCappedAsync(HttpListenerRequest req, long cap, int bufferSize, CancellationToken ct)
+    {
         if (req.ContentLength64 > cap) return TooLarge;
         using var ms = new MemoryStream();
-        var buf = new byte[81920];
+        var buf = new byte[bufferSize];
         while (true)
         {
             int r = await req.InputStream.ReadAsync(buf, ct).ConfigureAwait(false);
@@ -82,87 +89,118 @@ public static class SupervisorAdminRoutes
 
     public static async Task<SupervisorReply> HandleAsync(SupervisorRequest r, SupervisorOptions o, ISupervisorAdmin? admin, CancellationToken ct)
     {
+        if (Denied(r, o, admin) is { } denied) return denied;
+        var call = new AdminCall(r, admin!, r.Path.TrimEnd('/')[Prefix.Length..].ToLowerInvariant(), ct);
+        try
+        {
+            return await RouteAsync(call).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException or KeyNotFoundException) { return Json(400, new { error = "bad request body: " + ex.Message }); }
+        catch (OperationCanceledException) { return Json(503, new { error = "cancelled" }); }
+        catch (Exception ex) { return Json(500, new { error = ex.Message }); }
+    }
+
+    /// <summary>The gate, in order: the flag, a configured token, the token header, an admin service, the body size; null = through.</summary>
+    private static SupervisorReply? Denied(SupervisorRequest r, SupervisorOptions o, ISupervisorAdmin? admin)
+    {
         if (!o.AllowAdminWrites) return Json(403, new { error = "admin writes are off (Supervisor:AllowAdminWrites)" });
         if (string.IsNullOrEmpty(o.Token)) return Json(403, new { error = "admin writes need Supervisor:Token" });
         if (!TokenOk(r.TokenHeader, o.Token)) return Json(403, new { error = "X-Supervisor-Token header required" });
         if (admin == null) return Json(403, new { error = "admin writes are not available in this process" });
         if (r.Body == TooLarge) return Json(413, new { error = $"body over {(IsShardPath(r.Path) ? ShardMaxBodyBytes : MaxBodyBytes)} bytes" });
+        return null;
+    }
 
-        var tail = r.Path.TrimEnd('/')[Prefix.Length..].ToLowerInvariant();
-        bool post = r.Method.Equals("POST", StringComparison.OrdinalIgnoreCase);
-        bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+    /// <summary>One admin request past the gate; <see cref="Tail"/> is the lower-cased path after <see cref="Prefix"/>.</summary>
+    private readonly record struct AdminCall(SupervisorRequest R, ISupervisorAdmin Admin, string Tail, CancellationToken Ct)
+    {
+        public bool Post => R.Method.Equals("POST", StringComparison.OrdinalIgnoreCase);
+        public bool Get => R.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || R.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A fixed admin route: POST (else GET/HEAD) and its handler.</summary>
+    private sealed record AdminRoute(bool Post, Func<AdminCall, Task<SupervisorReply>> Handle);
+
+    private static readonly IReadOnlyDictionary<string, AdminRoute> Routes = new Dictionary<string, AdminRoute>(StringComparer.Ordinal)
+    {
+        ["/memory"] = new(true, MemoryAsync),
+        ["/rebuild/estimate"] = new(true, c => Task.FromResult(Json(200, c.Admin.Estimate(ParseRebuild(c.R.Body))))),
+        ["/rebuild"] = new(true, c => Task.FromResult(StartRebuild(c))),
+        ["/backup"] = new(true, c => Task.FromResult(Json(200, new { path = c.Admin.Backup(Who(c.R.Body)) }))),
+        ["/audit"] = new(false, c => Task.FromResult(Audit(c))),
+        ["/shard/import/preview"] = new(true, ShardAsync),
+        ["/shard/import"] = new(true, ShardAsync),
+        ["/activity/compact"] = new(true, CompactAsync),
+        ["/schema"] = new(false, c => Task.FromResult(Schema(c))),
+    };
+
+    private static async Task<SupervisorReply> RouteAsync(AdminCall c)
+    {
+        if (Routes.TryGetValue(c.Tail, out var route))
+        {
+            if (route.Post ? !c.Post : !c.Get) return NotAllowed(route.Post ? "POST" : "GET");
+            return await route.Handle(c).ConfigureAwait(false);
+        }
+        return c.Tail.StartsWith("/rebuild/", StringComparison.Ordinal) ? JobRoute(c) : Json(404, new { error = "not found" });
+    }
+
+    private static async Task<SupervisorReply> MemoryAsync(AdminCall c)
+    {
+        var res = await c.Admin.ApplyAsync(ParseEdit(c.R.Body), c.Ct).ConfigureAwait(false);
+        return Json(res.Ok ? 200 : 400, res);
+    }
+
+    private static SupervisorReply StartRebuild(AdminCall c)
+    {
+        try { return Json(202, new { job_id = c.Admin.StartRebuild(ParseRebuild(c.R.Body)) }); }
+        catch (InvalidOperationException ex) { return Json(409, new { error = ex.Message }); }
+    }
+
+    private static SupervisorReply Audit(AdminCall c)
+    {
+        int max = c.R.Query.TryGetValue("max", out var m) && int.TryParse(m, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mv) ? Math.Clamp(mv, 1, 5000) : 200;
+        return Json(200, new { target = c.Admin.Target, entries = c.Admin.Audit(max) });
+    }
+
+    private static async Task<SupervisorReply> ShardAsync(AdminCall c)
+    {
+        if (!c.Admin.SupportsShards) return Json(403, new { error = "memory shards are not available in this process" });
+        var (bytes, options) = ParseShard(c.R.Body);
         try
         {
-            switch (tail)
-            {
-                case "/memory":
-                    if (!post) return NotAllowed("POST");
-                    {
-                        var res = await admin.ApplyAsync(ParseEdit(r.Body), ct).ConfigureAwait(false);
-                        return Json(res.Ok ? 200 : 400, res);
-                    }
-                case "/rebuild/estimate":
-                    return post ? Json(200, admin.Estimate(ParseRebuild(r.Body))) : NotAllowed("POST");
-                case "/rebuild":
-                    if (!post) return NotAllowed("POST");
-                    try { return Json(202, new { job_id = admin.StartRebuild(ParseRebuild(r.Body)) }); }
-                    catch (InvalidOperationException ex) { return Json(409, new { error = ex.Message }); }
-                case "/backup":
-                    if (!post) return NotAllowed("POST");
-                    return Json(200, new { path = admin.Backup(Who(r.Body)) });
-                case "/audit":
-                    if (!get) return NotAllowed("GET");
-                    {
-                        int max = r.Query.TryGetValue("max", out var m) && int.TryParse(m, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mv) ? Math.Clamp(mv, 1, 5000) : 200;
-                        return Json(200, new { target = admin.Target, entries = admin.Audit(max) });
-                    }
-                case "/shard/import/preview":
-                case "/shard/import":
-                {
-                    if (!post) return NotAllowed("POST");
-                    if (!admin.SupportsShards) return Json(403, new { error = "memory shards are not available in this process" });
-                    var (bytes, options) = ParseShard(r.Body);
-                    try
-                    {
-                        if (tail == "/shard/import/preview") return Json(200, admin.PreviewShard(bytes, options));
-                        var res = await admin.ImportShardAsync(bytes, options, ct).ConfigureAwait(false);
-                        return Json(res.Ok ? 200 : 400, res);
-                    }
-                    catch (ShardFormatException ex) { return Json(400, new { error = "shard refused: " + ex.Message }); }
-                }
-                case "/activity/compact":
-                    if (!post) return NotAllowed("POST");
-                    {
-                        var e = string.IsNullOrWhiteSpace(r.Body) ? default : Root(r.Body);
-                        bool dry = e.ValueKind == JsonValueKind.Object && e.TryGetProperty("dry_run", out var dv) && dv.ValueKind == JsonValueKind.True;
-                        var res = await admin.CompactActivityAsync(dry, Who(r.Body), ct).ConfigureAwait(false);
-                        return Json(res.Ok ? 200 : 400, res);
-                    }
-                case "/schema":
-                    if (!get) return NotAllowed("GET");
-                    return Json(200, new
-                    {
-                        target = admin.Target,
-                        kinds = MemoryKinds.All.ToDictionary(k => k, k => new { ops = MemoryEditSchema.Ops(k), fields = MemoryEditSchema.For(k) }),
-                    });
-            }
-            if (tail.StartsWith("/rebuild/", StringComparison.Ordinal))
-            {
-                var rest = r.Path.TrimEnd('/')[(Prefix.Length + "/rebuild/".Length)..];
-                if (rest.EndsWith("/cancel", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!post) return NotAllowed("POST");
-                    var id = rest[..^"/cancel".Length];
-                    return admin.CancelJob(id) ? Json(200, new { job_id = id, cancelled = true }) : Json(404, new { error = "no running job " + id });
-                }
-                if (!get) return NotAllowed("GET");
-                return admin.Job(rest) is { } job ? Json(200, job) : Json(404, new { error = "no such job" });
-            }
-            return Json(404, new { error = "not found" });
+            if (c.Tail == "/shard/import/preview") return Json(200, c.Admin.PreviewShard(bytes, options));
+            var res = await c.Admin.ImportShardAsync(bytes, options, c.Ct).ConfigureAwait(false);
+            return Json(res.Ok ? 200 : 400, res);
         }
-        catch (Exception ex) when (ex is JsonException or FormatException or KeyNotFoundException) { return Json(400, new { error = "bad request body: " + ex.Message }); }
-        catch (OperationCanceledException) { return Json(503, new { error = "cancelled" }); }
-        catch (Exception ex) { return Json(500, new { error = ex.Message }); }
+        catch (ShardFormatException ex) { return Json(400, new { error = "shard refused: " + ex.Message }); }
+    }
+
+    private static async Task<SupervisorReply> CompactAsync(AdminCall c)
+    {
+        var e = string.IsNullOrWhiteSpace(c.R.Body) ? default : Root(c.R.Body);
+        bool dry = e.ValueKind == JsonValueKind.Object && e.TryGetProperty("dry_run", out var dv) && dv.ValueKind == JsonValueKind.True;
+        var res = await c.Admin.CompactActivityAsync(dry, Who(c.R.Body), c.Ct).ConfigureAwait(false);
+        return Json(res.Ok ? 200 : 400, res);
+    }
+
+    private static SupervisorReply Schema(AdminCall c) => Json(200, new
+    {
+        target = c.Admin.Target,
+        kinds = MemoryKinds.All.ToDictionary(k => k, k => new { ops = MemoryEditSchema.Ops(k), fields = MemoryEditSchema.For(k) }),
+    });
+
+    /// <summary><c>GET /rebuild/{job_id}</c> → the job; <c>POST /rebuild/{job_id}/cancel</c>.</summary>
+    private static SupervisorReply JobRoute(AdminCall c)
+    {
+        var rest = c.R.Path.TrimEnd('/')[(Prefix.Length + "/rebuild/".Length)..];
+        if (rest.EndsWith("/cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!c.Post) return NotAllowed("POST");
+            var id = rest[..^"/cancel".Length];
+            return c.Admin.CancelJob(id) ? Json(200, new { job_id = id, cancelled = true }) : Json(404, new { error = "no running job " + id });
+        }
+        if (!c.Get) return NotAllowed("GET");
+        return c.Admin.Job(rest) is { } job ? Json(200, job) : Json(404, new { error = "no such job" });
     }
 
     private static SupervisorReply NotAllowed(string allow) => Json(405, new { error = $"use {allow}" }, new Dictionary<string, string> { ["Allow"] = allow });

@@ -276,44 +276,70 @@ public sealed class HarvestWheatSkill : Skill
     private async Task HarvestCellsAsync(SkillContext ctx, List<BlockPos> cells, bool replant, Tally st, CancellationToken ct)
     {
         var ripe = cells.Select(p => new FoundBlock(p, Blocks.Crops, 7, p.Center.DistanceSquaredTo(ctx.Feet))).OrderBy(f => f.DistanceSquared).ToList();
-        bool canHoe = replant && (ctx.Game.Supported & Primitive.UseOnBlock) != 0;
-        if (!st.HoeChecked)
-        {
-            st.HoeChecked = true;
-            if (canHoe && ctx.FirstOwned(FarmOps.Hoes) is null && ctx.Registry.AcquireMissing is { } acquire)
-            {
-                try { st.HoeNote = await acquire(ctx, Spec, FarmOps.Hoes, ct); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception ex) { ctx.Log?.Invoke($"harvest_wheat: hoe acquisition threw: {ex.Message}"); }
-            }
-            st.Hoe = canHoe ? ctx.FirstOwned(FarmOps.Hoes) : null;
-        }
-        int? hoe = st.Hoe;
+        if (!st.HoeChecked) await CheckHoeAsync(ctx, replant, st, ct);
         foreach (var c in ripe)
         {
             ct.ThrowIfCancellationRequested();
-            int crop = ctx.Block(c.Pos);
-            if (!CropKinds.Ripe(crop, ctx.Meta(c.Pos)) || ctx.Protected(c.Pos)) continue;
-            var d = await ctx.Game.DigAsync(c.Pos, ct);                                        // 1. harvest
-            if (!d.Ok) continue;
-            st.Cut++;
-            if (crop != Blocks.Crops) st.OtherCrops = true;
-            st.Harvested.Add(c.Pos);
-            st.DropItems.Add(CropKinds.Seed(crop));
-            if (crop == Blocks.Crops) st.DropItems.Add(Items.Wheat);
-            if (!replant) continue;
-            var soil = c.Pos.Down();
-            await CollectHarvestDropsAsync(ctx, st, 3, ct);
-            if (hoe is { } h && ctx.Block(soil) is Blocks.Farmland or Blocks.Dirt or Blocks.Grass && SkillWorld.Air(ctx.World, c.Pos))
-            {
-                bool wasSoil = ctx.Block(soil) != Blocks.Farmland;
-                var u = await ctx.Game.UseOnBlockAsync(soil, BlockFace.Top, h, ct);           // 2. hoe (always)
-                if (u.Ok && wasSoil && await ctx.WaitBlockAsync(soil, (id, _) => id == Blocks.Farmland, ct)) st.Tilled++;
-            }
-            int seed = CropKinds.Seed(crop);
-            if (!ctx.Has(seed)) seed = Items.Seeds;
-            if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, seed, ct)) st.Planted++; // 3. plant (the same crop)
+            await HarvestCellAsync(ctx, c.Pos, replant, st.Hoe, st, ct);
         }
+    }
+
+    /// <summary>Once per job: the hoe to re-till with (acquired through the planner when there's none), when replanting can hoe.</summary>
+    private async Task CheckHoeAsync(SkillContext ctx, bool replant, Tally st, CancellationToken ct)
+    {
+        bool canHoe = replant && (ctx.Game.Supported & Primitive.UseOnBlock) != 0;
+        st.HoeChecked = true;
+        if (canHoe && ctx.FirstOwned(FarmOps.Hoes) is null) await AcquireHoeAsync(ctx, st, ct);
+        st.Hoe = canHoe ? ctx.FirstOwned(FarmOps.Hoes) : null;
+    }
+
+    private async Task AcquireHoeAsync(SkillContext ctx, Tally st, CancellationToken ct)
+    {
+        if (ctx.Registry.AcquireMissing is not { } acquire) return;
+        try { st.HoeNote = await acquire(ctx, Spec, FarmOps.Hoes, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { ctx.Log?.Invoke($"harvest_wheat: hoe acquisition threw: {ex.Message}"); }
+    }
+
+    /// <summary>1. harvest, 2. hoe (always), 3. plant the same crop.</summary>
+    private static async Task HarvestCellAsync(SkillContext ctx, BlockPos pos, bool replant, int? hoe, Tally st, CancellationToken ct)
+    {
+        int crop = ctx.Block(pos);
+        if (!CropKinds.Ripe(crop, ctx.Meta(pos)) || ctx.Protected(pos)) return;
+        var d = await ctx.Game.DigAsync(pos, ct);                                        // 1. harvest
+        if (!d.Ok) return;
+        Cut(st, pos, crop);
+        if (!replant) return;
+        var soil = pos.Down();
+        await CollectHarvestDropsAsync(ctx, st, 3, ct);
+        if (hoe is { } h) await HoeAsync(ctx, pos, soil, h, st, ct);
+        await ReplantAsync(ctx, soil, crop, st, ct);
+    }
+
+    private static void Cut(Tally st, BlockPos pos, int crop)
+    {
+        st.Cut++;
+        if (crop != Blocks.Crops) st.OtherCrops = true;
+        st.Harvested.Add(pos);
+        st.DropItems.Add(CropKinds.Seed(crop));
+        if (crop == Blocks.Crops) st.DropItems.Add(Items.Wheat);
+    }
+
+    /// <summary>2. hoe the soil under the cut crop (farmland too: it stays farmland); a re-tilled dirt/grass cell is counted.</summary>
+    private static async Task HoeAsync(SkillContext ctx, BlockPos pos, BlockPos soil, int hoe, Tally st, CancellationToken ct)
+    {
+        if (ctx.Block(soil) is not (Blocks.Farmland or Blocks.Dirt or Blocks.Grass) || !SkillWorld.Air(ctx.World, pos)) return;
+        bool wasSoil = ctx.Block(soil) != Blocks.Farmland;
+        var u = await ctx.Game.UseOnBlockAsync(soil, BlockFace.Top, hoe, ct);
+        if (u.Ok && wasSoil && await ctx.WaitBlockAsync(soil, (id, _) => id == Blocks.Farmland, ct)) st.Tilled++;
+    }
+
+    /// <summary>3. plant the same crop (wheat seeds when its own seed is gone) on farmland.</summary>
+    private static async Task ReplantAsync(SkillContext ctx, BlockPos soil, int crop, Tally st, CancellationToken ct)
+    {
+        int seed = CropKinds.Seed(crop);
+        if (!ctx.Has(seed)) seed = Items.Seeds;
+        if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, seed, ct)) st.Planted++;
     }
 
     private async Task<SkillResult> FinishAsync(SkillContext ctx, Tally st, int growing, bool replant, int radius, Func<BlockPos, bool> fillable,

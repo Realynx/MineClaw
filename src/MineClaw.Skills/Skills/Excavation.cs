@@ -16,19 +16,34 @@ public static class ExcavationOps
 {
     public const int MaxBoxCells = 4096;
 
-    public static Task<SkillResult> RunAsync(SkillContext ctx, string? op, JsonElement args, CancellationToken ct) =>
-        (op ?? args.Str("op") ?? "dig").Trim().ToLowerInvariant() switch
-        {
-            "dig" or "box" or "pattern" or "extend" => DigAsync(ctx, args, ct),
-            "seal" => SealAsync(ctx, args, ct),
-            "room" => RoomAsync(ctx, args, ct),
-            "strip" or "strip_mine" or "branch" => StripAsync(ctx, args, ct),
-            "learn" or "remember" => Task.FromResult(Learn(ctx, args)),
-            "light" or "torch" => LightAsync(ctx, args, ct),
-            "list" => Task.FromResult(List(ctx)),
-            "forget" or "delete" => Task.FromResult(Forget(ctx, args)),
-            var o => Task.FromResult(SkillResult.Fail($"excavate: unknown op '{o}' (dig|seal|room|strip|learn|light|list|forget)")),
-        };
+    private delegate Task<SkillResult> Op(SkillContext ctx, JsonElement args, CancellationToken ct);
+
+    /// <summary>Every op name and alias → its handler.</summary>
+    private static readonly Dictionary<string, Op> Ops = Table(
+        (DigAsync, ["dig", "box", "pattern", "extend"]),
+        (SealAsync, ["seal"]),
+        (RoomAsync, ["room"]),
+        (StripAsync, ["strip", "strip_mine", "branch"]),
+        ((c, a, _) => Task.FromResult(Learn(c, a)), ["learn", "remember"]),
+        (LightAsync, ["light", "torch"]),
+        ((c, _, _) => Task.FromResult(List(c)), ["list"]),
+        ((c, a, _) => Task.FromResult(Forget(c, a)), ["forget", "delete"]));
+
+    private static Dictionary<string, Op> Table(params (Op Handler, string[] Names)[] ops)
+    {
+        var table = new Dictionary<string, Op>();
+        foreach (var (handler, names) in ops)
+            foreach (var n in names) table[n] = handler;
+        return table;
+    }
+
+    public static Task<SkillResult> RunAsync(SkillContext ctx, string? op, JsonElement args, CancellationToken ct)
+    {
+        var o = (op ?? args.Str("op") ?? "dig").Trim().ToLowerInvariant();
+        return Ops.TryGetValue(o, out var handler)
+            ? handler(ctx, args, ct)
+            : Task.FromResult(SkillResult.Fail($"excavate: unknown op '{o}' (dig|seal|room|strip|learn|light|list|forget)"));
+    }
 
     private static ExcavateOptions Options(JsonElement a) => new()
     {
@@ -63,45 +78,17 @@ public static class ExcavationOps
     /// pattern, saved as <c>name</c>). Repeats are dug strictly in order (a stair never digs ahead) and the site remembers how far
     /// it got.
     /// </summary>
+    /// <summary>The pattern a dig extends: its name, the site that remembers it (null for a new one) and the repeats already dug.</summary>
+    private sealed record PatternTarget(DigPattern Pattern, string Name, DigSite? Site, int From);
+
     private static async Task<SkillResult> PatternAsync(SkillContext ctx, JsonElement a, CancellationToken ct)
     {
         var w = ctx.World;
-        DigSite? site = null;
-        DigPattern pattern;
-        string name;
-        int from = 0;
-        if (a.Str("rule") is { Length: > 0 } rule)
-        {
-            var at = a.Pos("at") ?? ctx.Me;
-            if (DigPattern.Parse(rule, at, out var err) is not { } p) return SkillResult.Fail($"rule: {err}");
-            pattern = p;
-            name = a.Str("name") ?? $"pattern at {SkillJson.Fmt(at)}";
-            if (ctx.Registry.Sites.Find(name) is { Rule: { } r0 } old && old.Anchor == at && r0 == p.Rule) { site = old; from = old.Repeats; }
-        }
-        else if (SiteArg(a) is { Length: > 0 } sname)
-        {
-            site = Resolve(ctx, sname, out var why);
-            if (site is null) return SkillResult.Fail(why!);
-            if (site.Pattern is not { } p) return SkillResult.Fail($"{site.Name} is a {site.Kind}, not a pattern (learn one with op=learn)");
-            if (a.Pos("at") is { } at)
-            {
-                pattern = p.At(at, a.Int("turn") ?? 0);
-                name = a.Str("name") ?? $"{site.Name} at {SkillJson.Fmt(at)}";
-                site = ctx.Registry.Sites.Find(name) is { } again && again.Anchor == at ? again : null;
-                from = site?.Repeats ?? 0;
-            }
-            else { pattern = p; name = site.Name; from = site.Repeats; }
-        }
-        else return SkillResult.Fail("excavate needs box (x0,y0,z0,x1,y1,z1), site (a remembered dig) or rule+at");
-
-        int n;
-        if (a.Int("to") is { } y)
-        {
-            if (pattern.RepeatsTo(y) is not { } k) return SkillResult.Fail($"{name} doesn't go up or down; say repeats:N");
-            n = k;
-        }
-        else n = from + Math.Clamp(a.Int("repeats") ?? 4, 1, 256);
-        n = Math.Min(n, from + 256);
+        var (target, why) = Target(ctx, a);
+        if (target is null) return SkillResult.Fail(why!);
+        var (pattern, name, site, from) = target;
+        var (to, bad) = RepeatsWanted(a, target);
+        if (to is not { } n) return SkillResult.Fail(bad!);
         if (n <= from) return SkillResult.Success($"{name} already reaches that far ({from} repeats, lowest y{LowestY(pattern, from)})");
 
         var vol = new DigVolume(name) { Ordered = true };
@@ -118,6 +105,48 @@ public static class ExcavationOps
         Save(ctx, saved, extra: vol.Cells.Where(c => Clear(w, c)));
         var what = $"{name} repeats {from}→{done} of {n} (down to y{LowestY(pattern, done)})";
         return Result(rep, what);
+    }
+
+    /// <summary><c>rule</c> + <c>at</c> (new, or the same rule remembered there), or a remembered <c>site</c> (re-applied
+    /// <c>at</c> another anchor when given); null + why.</summary>
+    private static (PatternTarget? Target, string? Why) Target(SkillContext ctx, JsonElement a)
+    {
+        if (a.Str("rule") is { Length: > 0 } rule) return RuleTarget(ctx, a, rule);
+        if (SiteArg(a) is { Length: > 0 } sname) return SiteTarget(ctx, a, sname);
+        return (null, "excavate needs box (x0,y0,z0,x1,y1,z1), site (a remembered dig) or rule+at");
+    }
+
+    private static (PatternTarget? Target, string? Why) RuleTarget(SkillContext ctx, JsonElement a, string rule)
+    {
+        var at = a.Pos("at") ?? ctx.Me;
+        if (DigPattern.Parse(rule, at, out var err) is not { } p) return (null, $"rule: {err}");
+        var name = a.Str("name") ?? $"pattern at {SkillJson.Fmt(at)}";
+        if (ctx.Registry.Sites.Find(name) is { Rule: { } r0 } old && old.Anchor == at && r0 == p.Rule) return (new PatternTarget(p, name, old, old.Repeats), null);
+        return (new PatternTarget(p, name, null, 0), null);
+    }
+
+    private static (PatternTarget? Target, string? Why) SiteTarget(SkillContext ctx, JsonElement a, string sname)
+    {
+        var site = Resolve(ctx, sname, out var why);
+        if (site is null) return (null, why);
+        if (site.Pattern is not { } p) return (null, $"{site.Name} is a {site.Kind}, not a pattern (learn one with op=learn)");
+        if (a.Pos("at") is not { } at) return (new PatternTarget(p, site.Name, site, site.Repeats), null);
+        var name = a.Str("name") ?? $"{site.Name} at {SkillJson.Fmt(at)}";
+        var there = ctx.Registry.Sites.Find(name) is { } again && again.Anchor == at ? again : null;
+        return (new PatternTarget(p.At(at, a.Int("turn") ?? 0), name, there, there?.Repeats ?? 0), null);
+    }
+
+    /// <summary>The repeat count to reach: <c>to</c> (a y), else <c>repeats</c> (4) more; at most 256 more per call.</summary>
+    private static (int? N, string? Why) RepeatsWanted(JsonElement a, PatternTarget t)
+    {
+        int n;
+        if (a.Int("to") is { } y)
+        {
+            if (t.Pattern.RepeatsTo(y) is not { } k) return (null, $"{t.Name} doesn't go up or down; say repeats:N");
+            n = k;
+        }
+        else n = t.From + Math.Clamp(a.Int("repeats") ?? 4, 1, 256);
+        return (Math.Min(n, t.From + 256), null);
     }
 
     // ------------------------------------------------------------------ room / strip
@@ -159,18 +188,8 @@ public static class ExcavationOps
         var room = Parent(ctx, a, out var why);
         if (room is null) return SkillResult.Fail(why!);
         var cells = room.Air();
-        BlockPos? away = null;
-        if (room.Parent is { } pn && ctx.Registry.Sites.Find(pn) is { } shaft && shaft.Air() is { Count: > 0 } sa && cells.Count > 0)
-        {
-            var (slo, shi) = DigVolume.Bounds(sa);
-            var (rlo, rhi) = DigVolume.Bounds(cells);
-            double dx = (rlo.X + rhi.X - slo.X - shi.X) / 2.0, dz = (rlo.Z + rhi.Z - slo.Z - shi.Z) / 2.0;
-            away = Math.Abs(dx) >= Math.Abs(dz) ? new BlockPos(Math.Sign(dx) is 0 ? 1 : Math.Sign(dx), 0, 0) : new BlockPos(0, 0, Math.Sign(dz));
-        }
-        var dir = MinePlanner.ParseDir(a.Str("dir") ?? a.Str("side"));
         var name0 = a.Str("name");
-        var (plan, err) = MinePlanner.Strip(w, cells, dir, away, Math.Clamp(a.Int("length") ?? 16, 2, 64), Math.Clamp(a.Int("spacing") ?? 3, 1, 8),
-            Math.Clamp(a.Int("branch") ?? 8, 0, 32), Math.Clamp(a.Int("height") ?? 2, 2, 3), name0 ?? $"{room.Name} strip");
+        var (plan, err) = StripPlan(ctx, a, room, cells, name0);
         if (plan is null) return SkillResult.Fail(err!);
         var name = name0 ?? $"{room.Name} strip {MinePlanner.DirName(plan.Dir)}";
         var vol = new DigVolume(name);
@@ -188,6 +207,21 @@ public static class ExcavationOps
         });
         var r = Result(rep, $"strip mine {MinePlanner.DirName(plan.Dir)} off {room.Name}: main {plan.Length}, {plan.Branches} branches");
         return signs.Length > 0 ? r with { Text = r.Text + "; " + signs } : r;
+    }
+
+    private static (MinePlanner.StripPlan? Plan, string? Why) StripPlan(SkillContext ctx, JsonElement a, DigSite room, HashSet<BlockPos> cells, string? name0) =>
+        MinePlanner.Strip(ctx.World, cells, MinePlanner.ParseDir(a.Str("dir") ?? a.Str("side")), AwayFromShaft(ctx, room, cells),
+            Math.Clamp(a.Int("length") ?? 16, 2, 64), Math.Clamp(a.Int("spacing") ?? 3, 1, 8),
+            Math.Clamp(a.Int("branch") ?? 8, 0, 32), Math.Clamp(a.Int("height") ?? 2, 2, 3), name0 ?? $"{room.Name} strip");
+
+    /// <summary>The direction from the room's parent shaft to the room (the strip goes on away from the stair); null without one.</summary>
+    private static BlockPos? AwayFromShaft(SkillContext ctx, DigSite room, HashSet<BlockPos> cells)
+    {
+        if (room.Parent is not { } pn || ctx.Registry.Sites.Find(pn) is not { } shaft || shaft.Air() is not { Count: > 0 } sa || cells.Count == 0) return null;
+        var (slo, shi) = DigVolume.Bounds(sa);
+        var (rlo, rhi) = DigVolume.Bounds(cells);
+        double dx = (rlo.X + rhi.X - slo.X - shi.X) / 2.0, dz = (rlo.Z + rhi.Z - slo.Z - shi.Z) / 2.0;
+        return Math.Abs(dx) >= Math.Abs(dz) ? new BlockPos(Math.Sign(dx) is 0 ? 1 : Math.Sign(dx), 0, 0) : new BlockPos(0, 0, Math.Sign(dz));
     }
 
     /// <summary>A sign per resource type on the room's walls near the corridor mouth: "iron ore / x5 / y12". Signs through the

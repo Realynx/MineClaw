@@ -125,38 +125,10 @@ public sealed class SupervisorServer : IAsyncDisposable
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
-            SupervisorReply reply;
-            if (!await _connections.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false))
-                reply = Json(503, new { error = "busy" });
-            else
-                try
-                {
-                    var q = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    var nv = ctx.Request.QueryString;
-                    foreach (var k in nv.AllKeys) if (k != null && nv[k] is { } v) q[k] = v;
-                    var body = await AdminSettingsRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
-                        ?? await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct, _o).ConfigureAwait(false)
-                        ?? await SupervisorViewerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
-                        ?? await DesignerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
-                        ?? await SupervisorStoryRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false);
-                    Dictionary<string, string>? identity = null;
-                    foreach (var h in new[] { AdminSettingsRoutes.UserHeader, AdminSettingsRoutes.RolesHeader })
-                        if (ctx.Request.Headers[h] is { Length: > 0 } hv) (identity ??= new(StringComparer.OrdinalIgnoreCase))[h] = hv;
-                    var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"], body, identity);
-                    reply = await HandleAsync(req, ct).ConfigureAwait(false);
-                }
-                finally { _connections.Release(); }
+            var reply = await AnswerAsync(ctx.Request, ct).ConfigureAwait(false);
             // The time a caller waited for the answer (a free slot included), by route; never the query (it may carry the token).
             Perf.Record(ctx.Request.Url?.AbsolutePath ?? "/", System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-            res.StatusCode = reply.Status;
-            res.ContentType = reply.ContentType;
-            res.Headers["Cache-Control"] = "no-store";
-            res.Headers["X-Content-Type-Options"] = "nosniff";
-            res.Headers["Referrer-Policy"] = "no-referrer";
-            if (reply.Headers != null) foreach (var (k, v) in reply.Headers) res.Headers[k] = v;
-            res.ContentLength64 = reply.Body.Length;
-            if (!ctx.Request.HttpMethod.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
-                await res.OutputStream.WriteAsync(reply.Body, ct).ConfigureAwait(false);
+            await WriteAsync(ctx, reply, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpListenerException or IOException or ObjectDisposedException or OperationCanceledException) { }
         catch (Exception ex) { _log.LogDebug(ex, "supervisor: request failed"); } // never log the URL: it may carry the token
@@ -166,94 +138,80 @@ public sealed class SupervisorServer : IAsyncDisposable
         }
     }
 
+    /// <summary>The reply, once a connection slot is free (503 busy after two seconds).</summary>
+    private async Task<SupervisorReply> AnswerAsync(HttpListenerRequest request, CancellationToken ct)
+    {
+        if (!await _connections.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false)) return Json(503, new { error = "busy" });
+        try
+        {
+            return await HandleAsync(await RequestOfAsync(request, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
+        }
+        finally { _connections.Release(); }
+    }
+
+    private async Task<SupervisorRequest> RequestOfAsync(HttpListenerRequest request, CancellationToken ct)
+    {
+        var q = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var nv = request.QueryString;
+        foreach (var k in nv.AllKeys) if (k != null && nv[k] is { } v) q[k] = v;
+        var body = await BodyOfAsync(request, ct).ConfigureAwait(false);
+        return new SupervisorRequest(request.HttpMethod, request.Url?.AbsolutePath ?? "/", q, request.Headers["X-Supervisor-Token"], body, IdentityOf(request));
+    }
+
+    /// <summary>The body of a write route (each route set reads only its own POST/PUT bodies, under its own cap); null = none.</summary>
+    private async Task<string?> BodyOfAsync(HttpListenerRequest request, CancellationToken ct) =>
+        await AdminSettingsRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false)
+        ?? await SupervisorAdminRoutes.ReadBodyAsync(request, ct, _o).ConfigureAwait(false)
+        ?? await SupervisorViewerRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false)
+        ?? await DesignerRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false)
+        ?? await SupervisorStoryRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false);
+
+    /// <summary>The bridge's identity headers (user, roles), or null without them.</summary>
+    private static Dictionary<string, string>? IdentityOf(HttpListenerRequest request)
+    {
+        Dictionary<string, string>? identity = null;
+        foreach (var h in new[] { AdminSettingsRoutes.UserHeader, AdminSettingsRoutes.RolesHeader })
+            if (request.Headers[h] is { Length: > 0 } hv) (identity ??= new(StringComparer.OrdinalIgnoreCase))[h] = hv;
+        return identity;
+    }
+
+    private static async Task WriteAsync(HttpListenerContext ctx, SupervisorReply reply, CancellationToken ct)
+    {
+        var res = ctx.Response;
+        res.StatusCode = reply.Status;
+        res.ContentType = reply.ContentType;
+        res.Headers["Cache-Control"] = "no-store";
+        res.Headers["X-Content-Type-Options"] = "nosniff";
+        res.Headers["Referrer-Policy"] = "no-referrer";
+        if (reply.Headers != null) foreach (var (k, v) in reply.Headers) res.Headers[k] = v;
+        res.ContentLength64 = reply.Body.Length;
+        if (!ctx.Request.HttpMethod.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
+            await res.OutputStream.WriteAsync(reply.Body, ct).ConfigureAwait(false);
+    }
+
     // ------------------------------------------------------------------ routing (no sockets: the tests call this)
 
     public async Task<SupervisorReply> HandleAsync(SupervisorRequest r, CancellationToken ct = default)
     {
-        if (AdminSettingsRoutes.IsSettingsPath(r.Path)) // AllowAdminWrites + the token header + the bridge's admin identity
-            return Settings != null ? await Settings.HandleAsync(r, ct).ConfigureAwait(false) : Json(404, new { error = "not found" });
-        if (SupervisorAdminRoutes.IsAdminPath(r.Path)) return await SupervisorAdminRoutes.HandleAsync(r, _o, Admin, ct).ConfigureAwait(false);
-        if (SupervisorViewerRoutes.IsViewerPath(r.Path)) // own gate: Supervisor:Viewer:Enabled (else 404) + the token header (else 403)
-            return Viewer != null ? await Viewer.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
-        if (DesignerRoutes.IsDesignerPath(r.Path)) // the Design Studio: Viewer:Enabled + Viewer:Designer:Enabled (else 404) + the token header
-            return Designer != null ? await Designer.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
-        if (SupervisorStoryRoutes.IsStoryPath(r.Path)) // the viewer's gate (404/403) + AllowStory for writes
-            return Story != null ? await Story.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
-        bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
-        if (!get) return Json(405, new { error = "read-only: GET only" }, new Dictionary<string, string> { ["Allow"] = "GET, HEAD" });
+        if (await GatedRoutesAsync(r, ct).ConfigureAwait(false) is { } gated) return gated;
+        if (!IsGet(r.Method)) return Json(405, new { error = "read-only: GET only" }, new Dictionary<string, string> { ["Allow"] = "GET, HEAD" });
         var path = r.Path.TrimEnd('/');
-        if (path.Length == 0 || path == "/index.html") return new SupervisorReply(200, "text/html; charset=utf-8", Page());
-        if (path == "/favicon.ico") return new SupervisorReply(204, "image/x-icon", []);
-        if (Scripts != null && await Scripts.TryHandleAsync(r, ct).ConfigureAwait(false) is { } scriptReply) return scriptReply;
-        if (Vision != null && await Vision.TryHandleAsync(r, ct).ConfigureAwait(false) is { } visionReply) return visionReply;
-        if (Controller != null && await Controller.TryHandleAsync(r, ct).ConfigureAwait(false) is { } controllerReply) return controllerReply;
+        if (StaticReply(path) is { } page) return page;
+        if (await OpenRoutesAsync(r, ct).ConfigureAwait(false) is { } open) return open;
         if (!Authorized(r)) return Json(401, new { error = "token required (X-Supervisor-Token header or ?token=)" });
+        return await TokenRoutesAsync(r, path, ct).ConfigureAwait(false);
+    }
+
+    private static bool IsGet(string method) =>
+        method.Equals("GET", StringComparison.OrdinalIgnoreCase) || method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The routes behind the token: the Live Hive's world routes, then the hive's own (errors mapped to statuses).</summary>
+    private async Task<SupervisorReply> TokenRoutesAsync(SupervisorRequest r, string path, CancellationToken ct)
+    {
         if (World != null && await World.TryHandleAsync(r, path, ct).ConfigureAwait(false) is { } worldReply) return worldReply;
         try
         {
-            switch (path)
-            {
-                case "/api/bots":
-                    return Json(200, new { at = _time.GetUtcNow(), bots = _data.Bots() });
-                case "/api/hive/tree":
-                    return Json(200, HiveTree?.Invoke() ?? new { id = "main", name = "main", kind = "main", state = "running", children = Array.Empty<object>() });
-                case "/api/status":
-                    return Json(200, _data.Status(Q(r, "bot")));
-                case "/api/events":
-                    return Json(200, Events(long.TryParse(Q(r, "since"), out var since) ? since : 0));
-                case "/api/locate":
-                    return Q(r, "q") is { Length: > 0 } query && _data.Locate(query) is { } hit ? Json(200, hit) : Json(404, new { error = "not found" });
-                case "/view/hive":
-                    {
-                        var img = await _cache.GetAsync("hive", TimeSpan.FromMilliseconds(_o.HiveCacheMs), () => _data.HiveAsync(Gate, ct)).ConfigureAwait(false);
-                        return Image(img, r);
-                    }
-                case "/camera":
-                    {
-                        if (CameraQueryOf(r) is not { } cq) return Json(400, new { error = "camera needs x, y, z (yaw, pitch, dim, w, h optional)" });
-                        var key = string.Create(CultureInfo.InvariantCulture, $"cam:{cq.Dim}:{cq.X:0.0}:{cq.Y:0.0}:{cq.Z:0.0}:{cq.Yaw:0.0}:{cq.Pitch:0.0}:{cq.W}x{cq.H}");
-                        var img = await _cache.GetAsync(key, TimeSpan.FromMilliseconds(_o.CacheMs), () => _data.CameraAsync(cq, Gate, ct)).ConfigureAwait(false);
-                        return Image(img, r);
-                    }
-            }
-            // Designs (blueprints): the list, one design's bill/eval as JSON, its preview PNG (meta=1 = the bill).
-            if (path == "/api/blueprints") return Json(200, new { designs = _data.Designs() });
-            if (path.StartsWith("/api/blueprints/", StringComparison.Ordinal))
-                return long.TryParse(path["/api/blueprints/".Length..], out var bid) && _data.DesignBill(bid) is { } bill ? Json(200, bill) : Json(404, new { error = "no such design" });
-            // Build plans: the slicer's steps, techniques, scaffolding and progress (HTML page; ?meta=1 = the data).
-            if (path.StartsWith("/view/buildplan/", StringComparison.Ordinal) || path.StartsWith("/api/buildplans/", StringComparison.Ordinal))
-            {
-                var tail = path[(path.IndexOf('/', 1) + 1)..];
-                tail = tail[(tail.IndexOf('/') + 1)..];
-                if (!long.TryParse(tail, out var pid)) return Json(400, new { error = "design id?" });
-                if (path.StartsWith("/api/", StringComparison.Ordinal) || Q(r, "meta") is "1" or "true")
-                    return _data.BuildPlanData(pid) is { } data ? Json(200, data) : Json(404, new { error = "no build plan for that design" });
-                return _data.BuildPlanPage(pid) is { } html
-                    ? new SupervisorReply(200, "text/html; charset=utf-8", System.Text.Encoding.UTF8.GetBytes(html), null)
-                    : Json(404, new { error = "no build plan for that design" });
-            }
-            if (path.StartsWith("/view/blueprint/", StringComparison.Ordinal))
-            {
-                if (!long.TryParse(path["/view/blueprint/".Length..], out var bid)) return Json(400, new { error = "design id?" });
-                if (Q(r, "meta") is "1" or "true") return _data.DesignBill(bid) is { } bill ? Json(200, bill) : Json(404, new { error = "no such design" });
-                return _data.DesignPicture(bid) is { } pic ? Image(pic, r) : Json(404, new { error = "no preview for that design" });
-            }
-            if (path.StartsWith("/view/", StringComparison.Ordinal))
-            {
-                var bot = Uri.UnescapeDataString(path["/view/".Length..]);
-                var mode = (Q(r, "mode") ?? "sheet").Trim().ToLowerInvariant();
-                if (!Modes.Contains(mode)) return Json(400, new { error = $"unknown mode '{mode}' ({string.Join("|", Modes)})" });
-                int radius = Math.Clamp(int.TryParse(Q(r, "radius"), out var rr) ? rr : _o.Radius, 3, 12);
-                if (!_data.Bots().Any(b => b.Name.Equals(bot, StringComparison.OrdinalIgnoreCase) || b.Short.Equals(bot, StringComparison.OrdinalIgnoreCase)))
-                    return Json(404, new { error = $"no bot '{bot}' online" });
-                // xray=on|off: the Explorer's x-ray toggle for the outside cameras (iso, orbit, high); default auto, the AI's rule.
-                var xray = (Q(r, "xray") ?? "").Trim().ToLowerInvariant() switch { "on" or "1" or "true" => MineClaw.Render.XRay.On, "off" or "0" or "false" => MineClaw.Render.XRay.Off, _ => MineClaw.Render.XRay.Auto };
-                var key = $"view:{bot.ToLowerInvariant()}:{(mode == "brain" ? "sheet" : mode)}:{radius}{(xray == MineClaw.Render.XRay.Auto ? "" : ":" + xray)}";
-                var img = await _cache.GetAsync(key, TimeSpan.FromMilliseconds(_o.CacheMs), async () =>
-                    await _data.ViewAsync(bot, mode, radius, xray, Gate, ct).ConfigureAwait(false) ?? throw new KeyNotFoundException(bot)).ConfigureAwait(false);
-                return Image(img, r);
-            }
-            return Json(404, new { error = "not found" });
+            return await ExactRouteAsync(r, path, ct).ConfigureAwait(false) ?? await PrefixRouteAsync(r, path, ct).ConfigureAwait(false);
         }
         catch (RenderBusyException) { return Json(503, new { error = "renderer busy, retry" }, new Dictionary<string, string> { ["Retry-After"] = "1" }); }
         catch (KeyNotFoundException) { return Json(404, new { error = "not found" }); }
@@ -264,6 +222,143 @@ public sealed class SupervisorServer : IAsyncDisposable
             return Json(500, new { error = ex.Message });
         }
     }
+
+    private static SupervisorReply NotFound() => Json(404, new { error = "not found" });
+
+    private static async Task<SupervisorReply> OrNotFound(Task<SupervisorReply?>? reply) =>
+        reply == null ? NotFound() : await reply.ConfigureAwait(false) ?? NotFound();
+
+    /// <summary>The route sets with their own gates (any method): settings, admin, viewer, designer, story; null = none of them.</summary>
+    private async Task<SupervisorReply?> GatedRoutesAsync(SupervisorRequest r, CancellationToken ct)
+    {
+        if (AdminSettingsRoutes.IsSettingsPath(r.Path)) // AllowAdminWrites + the token header + the bridge's admin identity
+            return Settings != null ? await Settings.HandleAsync(r, ct).ConfigureAwait(false) : NotFound();
+        if (SupervisorAdminRoutes.IsAdminPath(r.Path)) return await SupervisorAdminRoutes.HandleAsync(r, _o, Admin, ct).ConfigureAwait(false);
+        if (SupervisorViewerRoutes.IsViewerPath(r.Path)) // own gate: Supervisor:Viewer:Enabled (else 404) + the token header (else 403)
+            return await OrNotFound(Viewer?.TryHandleAsync(r, ct)).ConfigureAwait(false);
+        if (DesignerRoutes.IsDesignerPath(r.Path)) // the Design Studio: Viewer:Enabled + Viewer:Designer:Enabled (else 404) + the token header
+            return await OrNotFound(Designer?.TryHandleAsync(r, ct)).ConfigureAwait(false);
+        if (SupervisorStoryRoutes.IsStoryPath(r.Path)) // the viewer's gate (404/403) + AllowStory for writes
+            return await OrNotFound(Story?.TryHandleAsync(r, ct)).ConfigureAwait(false);
+        return null;
+    }
+
+    /// <summary>The page and the favicon (no token).</summary>
+    private static SupervisorReply? StaticReply(string path)
+    {
+        if (path.Length == 0 || path == "/index.html") return new SupervisorReply(200, "text/html; charset=utf-8", Page());
+        if (path == "/favicon.ico") return new SupervisorReply(204, "image/x-icon", []);
+        return null;
+    }
+
+    /// <summary>The read-only route sets that check the token themselves (scripts, vision, controller); null = none of them.</summary>
+    private async Task<SupervisorReply?> OpenRoutesAsync(SupervisorRequest r, CancellationToken ct)
+    {
+        if (Scripts != null && await Scripts.TryHandleAsync(r, ct).ConfigureAwait(false) is { } scriptReply) return scriptReply;
+        if (Vision != null && await Vision.TryHandleAsync(r, ct).ConfigureAwait(false) is { } visionReply) return visionReply;
+        if (Controller != null && await Controller.TryHandleAsync(r, ct).ConfigureAwait(false) is { } controllerReply) return controllerReply;
+        return null;
+    }
+
+    /// <summary>The routes matched by their whole path; null = none.</summary>
+    private async Task<SupervisorReply?> ExactRouteAsync(SupervisorRequest r, string path, CancellationToken ct)
+    {
+        switch (path)
+        {
+            case "/api/bots":
+                return Json(200, new { at = _time.GetUtcNow(), bots = _data.Bots() });
+            case "/api/hive/tree":
+                return Json(200, HiveTreeOrMain());
+            case "/api/status":
+                return Json(200, _data.Status(Q(r, "bot")));
+            case "/api/events":
+                return Json(200, Events(long.TryParse(Q(r, "since"), out var since) ? since : 0));
+            case "/api/locate":
+                return Locate(r);
+            case "/view/hive":
+                return Image(await _cache.GetAsync("hive", TimeSpan.FromMilliseconds(_o.HiveCacheMs), () => _data.HiveAsync(Gate, ct)).ConfigureAwait(false), r);
+            case "/camera":
+                return await CameraAsync(r, ct).ConfigureAwait(false);
+            // Designs (blueprints): the list.
+            case "/api/blueprints":
+                return Json(200, new { designs = _data.Designs() });
+            default:
+                return null;
+        }
+    }
+
+    private object HiveTreeOrMain() =>
+        HiveTree?.Invoke() ?? new { id = "main", name = "main", kind = "main", state = "running", children = Array.Empty<object>() };
+
+    private SupervisorReply Locate(SupervisorRequest r) =>
+        Q(r, "q") is { Length: > 0 } query && _data.Locate(query) is { } hit ? Json(200, hit) : NotFound();
+
+    private async Task<SupervisorReply> CameraAsync(SupervisorRequest r, CancellationToken ct)
+    {
+        if (CameraQueryOf(r) is not { } cq) return Json(400, new { error = "camera needs x, y, z (yaw, pitch, dim, w, h optional)" });
+        var key = string.Create(CultureInfo.InvariantCulture, $"cam:{cq.Dim}:{cq.X:0.0}:{cq.Y:0.0}:{cq.Z:0.0}:{cq.Yaw:0.0}:{cq.Pitch:0.0}:{cq.W}x{cq.H}");
+        var img = await _cache.GetAsync(key, TimeSpan.FromMilliseconds(_o.CacheMs), () => _data.CameraAsync(cq, Gate, ct)).ConfigureAwait(false);
+        return Image(img, r);
+    }
+
+    /// <summary>The routes matched by a path prefix (a design's bill and preview, build plans, a bot's view); 404 otherwise.</summary>
+    private async Task<SupervisorReply> PrefixRouteAsync(SupervisorRequest r, string path, CancellationToken ct)
+    {
+        // One design's bill/eval as JSON.
+        if (path.StartsWith("/api/blueprints/", StringComparison.Ordinal)) return DesignBill(path["/api/blueprints/".Length..]);
+        // Build plans: the slicer's steps, techniques, scaffolding and progress (HTML page; ?meta=1 = the data).
+        if (path.StartsWith("/view/buildplan/", StringComparison.Ordinal) || path.StartsWith("/api/buildplans/", StringComparison.Ordinal)) return BuildPlan(r, path);
+        // A design's preview PNG (meta=1 = the bill).
+        if (path.StartsWith("/view/blueprint/", StringComparison.Ordinal)) return DesignPreview(r, path["/view/blueprint/".Length..]);
+        if (path.StartsWith("/view/", StringComparison.Ordinal)) return await ViewAsync(r, Uri.UnescapeDataString(path["/view/".Length..]), ct).ConfigureAwait(false);
+        return NotFound();
+    }
+
+    private static bool Meta(SupervisorRequest r) => Q(r, "meta") is "1" or "true";
+
+    private SupervisorReply DesignBill(string id) =>
+        long.TryParse(id, out var bid) && _data.DesignBill(bid) is { } bill ? Json(200, bill) : Json(404, new { error = "no such design" });
+
+    private SupervisorReply BuildPlan(SupervisorRequest r, string path)
+    {
+        var tail = path[(path.IndexOf('/', 1) + 1)..];
+        tail = tail[(tail.IndexOf('/') + 1)..];
+        if (!long.TryParse(tail, out var pid)) return Json(400, new { error = "design id?" });
+        if (path.StartsWith("/api/", StringComparison.Ordinal) || Meta(r))
+            return _data.BuildPlanData(pid) is { } data ? Json(200, data) : Json(404, new { error = "no build plan for that design" });
+        return _data.BuildPlanPage(pid) is { } html
+            ? new SupervisorReply(200, "text/html; charset=utf-8", System.Text.Encoding.UTF8.GetBytes(html), null)
+            : Json(404, new { error = "no build plan for that design" });
+    }
+
+    private SupervisorReply DesignPreview(SupervisorRequest r, string id)
+    {
+        if (!long.TryParse(id, out var bid)) return Json(400, new { error = "design id?" });
+        if (Meta(r)) return _data.DesignBill(bid) is { } bill ? Json(200, bill) : Json(404, new { error = "no such design" });
+        return _data.DesignPicture(bid) is { } pic ? Image(pic, r) : Json(404, new { error = "no preview for that design" });
+    }
+
+    private async Task<SupervisorReply> ViewAsync(SupervisorRequest r, string bot, CancellationToken ct)
+    {
+        var mode = (Q(r, "mode") ?? "sheet").Trim().ToLowerInvariant();
+        if (!Modes.Contains(mode)) return Json(400, new { error = $"unknown mode '{mode}' ({string.Join("|", Modes)})" });
+        int radius = Math.Clamp(int.TryParse(Q(r, "radius"), out var rr) ? rr : _o.Radius, 3, 12);
+        if (!_data.Bots().Any(b => b.Name.Equals(bot, StringComparison.OrdinalIgnoreCase) || b.Short.Equals(bot, StringComparison.OrdinalIgnoreCase)))
+            return Json(404, new { error = $"no bot '{bot}' online" });
+        var xray = XRayOf(Q(r, "xray"));
+        var key = $"view:{bot.ToLowerInvariant()}:{(mode == "brain" ? "sheet" : mode)}:{radius}{(xray == MineClaw.Render.XRay.Auto ? "" : ":" + xray)}";
+        var img = await _cache.GetAsync(key, TimeSpan.FromMilliseconds(_o.CacheMs), async () =>
+            await _data.ViewAsync(bot, mode, radius, xray, Gate, ct).ConfigureAwait(false) ?? throw new KeyNotFoundException(bot)).ConfigureAwait(false);
+        return Image(img, r);
+    }
+
+    /// <summary>xray=on|off: the Explorer's x-ray toggle for the outside cameras (iso, orbit, high); default auto, the AI's rule.</summary>
+    private static MineClaw.Render.XRay XRayOf(string? q) => (q ?? "").Trim().ToLowerInvariant() switch
+    {
+        "on" or "1" or "true" => MineClaw.Render.XRay.On,
+        "off" or "0" or "false" => MineClaw.Render.XRay.Off,
+        _ => MineClaw.Render.XRay.Auto,
+    };
 
     public static readonly IReadOnlyList<string> Modes = ["sheet", "brain", "eye", "iso", "shoulder", "orbit", "high", "top", "side", "layers"];
 
