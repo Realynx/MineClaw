@@ -380,45 +380,69 @@ public sealed partial class StoryColony
         // (live 11-03: "double_plant ... is busy: another hive bot is working on that part" when a mine and a cut box overlapped it).
         if (!Index().ByKind.TryGetValue(kind, out var list) || list.Count == 0) return null;
         bool digs = kind is "mine" or "deconstruct";
-        bool tooled = digs || kind == "cut"; // the dig takes its material's tool (StoryColony.Gear.cs): never a lost drop
-        var w = World;
+        // The dig takes its material's tool (StoryColony.Gear.cs): never a lost drop.
+        var s = new MarkSearch(kind, digs, digs || kind == "cut", World, live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : []);
+        var best = NearestMark(p, live, from, list, s);
+        if (best.D == null) return null;
+        return MarkJob(p, live, type, scriptKind, label, list, best, s);
+    }
+
+    /// <summary>One designation search: its kind, whether it digs (and takes a tool), the world, the cells the pawn stands on.</summary>
+    private readonly record struct MarkSearch(string Kind, bool Digs, bool Tooled, IStoryWorld? W, HashSet<P3> Mine);
+
+    /// <summary>The best open mark: nearest first, higher cells a little earlier (top-down), its own floor last (it would have to step
+    /// off first). None (default) when no mark is open and in reach.</summary>
+    private (DesignationState D, string Key, P3 Target) NearestMark(PawnState p, PawnLive live, P3 from, List<(DesignationState D, string Key, P3 Target)> list,
+        MarkSearch s)
+    {
         HashSet<P3>? stoodOn = null;
-        var mine = live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : [];
         (DesignationState D, string Key, P3 Target) best = default;
         double bestScore = double.MaxValue;
         foreach (var x in list)
         {
             var at = x.Target;
-            // Nearest first, higher cells a little earlier (top-down), its own floor last (it would have to step off first).
-            double score = at.Dist(from) - 0.25 * at.Y + (mine.Contains(at) ? 1000 : 0);
+            double score = at.Dist(from) - 0.25 * at.Y + (s.Mine.Contains(at) ? 1000 : 0);
             if (score >= bestScore) continue;
-            if (!Open(x.Key, p.Name, at)) continue;
-            // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
-            if (kind is "cut" or "harvest" && w != null && StoryWander.Underground(w, at)) continue;
-            if (digs && w != null)
-            {
-                // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone.
-                if (!Exposed(w, at)) continue;
-                // Never the block under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
-                if ((stoodOn ??= StoodOnByOthers(p.Name)).Contains(at)) continue;
-            }
-            // No tool for its material (carried or stored): the target waits, said on the map, no failure.
-            if (tooled && w != null && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(x.D, why); continue; }
+            if (!Open(x.Key, p.Name, at) || !MarkWorkable(p, live, x.D, at, s, ref stoodOn)) continue;
             best = x;
             bestScore = score;
         }
-        if (best.D is not { } d) return null;
-        var target = best.Target;
-        P3? stand = digs && w != null && mine.Contains(target)
-            ? StandBeside(w, target, c => c == target || list.Any(o => o.Target == c)) : null;
+        return best;
+    }
+
+    /// <summary>Can the pawn work this mark now: surface work out of caves, a dig only exposed and not under someone's feet, a tool for
+    /// it (else the mark waits, said on the map, no failure).</summary>
+    private bool MarkWorkable(PawnState p, PawnLive live, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
+    {
+        if (s.W is not { } w) return true;
+        // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
+        if (s.Kind is "cut" or "harvest" && StoryWander.Underground(w, at)) return false;
+        // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone. Never the block
+        // under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
+        if (s.Digs && DigBlocked(w, at, p.Name, ref stoodOn)) return false;
+        // No tool for its material (carried or stored): the target waits, said on the map, no failure.
+        if (s.Tooled && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(d, why); return false; }
+        return true;
+    }
+
+    private bool DigBlocked(IStoryWorld w, P3 at, string pawn, ref HashSet<P3>? stoodOn) =>
+        !Exposed(w, at) || (stoodOn ??= StoodOnByOthers(pawn)).Contains(at);
+
+    private ActiveJob MarkJob(PawnState p, PawnLive live, string type, string scriptKind, string label, List<(DesignationState D, string Key, P3 Target)> list,
+        (DesignationState D, string Key, P3 Target) best, MarkSearch s)
+    {
+        var (d, key, target) = best;
+        P3? stand = s.Digs && s.W != null && s.Mine.Contains(target)
+            ? StandBeside(s.W, target, c => c == target || list.Any(o => o.Target == c)) : null;
         NoteWait(d, null);
-        var tool = tooled && w != null ? PlanTool(p, live, w.Block(target.X, target.Y, target.Z).Id) : null;
-        return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, best.Key, "designation", d.Id, "working",
+        var tool = s.Tooled && s.W != null ? PlanTool(p, live, s.W.Block(target.X, target.Y, target.Z).Id) : null;
+        string kind = s.Kind;
+        return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, key, "designation", d.Id, "working",
             j =>
             {
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
-                if (stand is { } s) j["stand"] = s.ToString(); // it stands on its target: step off to the side first
+                if (stand is { } st) j["stand"] = st.ToString(); // it stands on its target: step off to the side first
             }, xp: kind == "chop" ? 40 : 20));
     }
 
