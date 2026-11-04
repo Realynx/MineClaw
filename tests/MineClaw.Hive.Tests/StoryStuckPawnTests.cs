@@ -445,16 +445,16 @@ public sealed class StoryStuckPawnTests
         Assert.Null(c.IdleReasonOf(c.P(0)));
         Assert.Equal("all targets leased", c.State()["pawns"]!.AsArray().First(x => x!["name"]!.GetValue<string>() == c.P(1))!["idle_reason"]!.GetValue<string>());
         Assert.Contains("idle-with-work", StoryPerf.TakeIdle());
-        // Obsidian it has no pickaxe for: "tool waiting".
+        // An ore it has no pickaxe for: "tool waiting".
         w.Set(21, 64, 20, 0); // dug
         c.Report(c.P(0), c.CurrentOf(c.P(0))!.Id, "done", null, null);
-        w.Set(22, 64, 20, 49);
+        w.Set(22, 64, 20, 56); // diamond ore: no iron pickaxe anywhere
         c.Designate("add", "mine", null, [new P3(22, 64, 20)], "all");
         c.Report(c.P(1), c.CurrentOf(c.P(1))!.Id, "done", null, null);
         Assert.NotEqual("dig", Kind(c.Next(1)));
         clock.Now += TimeSpan.FromSeconds(2);
         c.Tick();
-        Assert.Equal("tool waiting", c.IdleReasonOf(c.P(1)));
+        Assert.True(c.IdleReasonOf(c.P(1)) == "tool waiting", $"{c.IdleReasonOf(c.P(1))} | {c.CurrentOf(c.P(1))?.Source} {c.CurrentOf(c.P(1))?.Label} | " + string.Join(", ", c.Designations.Select(d => $"{d.Kind}:{d.Status}:{d.Wait}")));
         // Work only of kinds it doesn't do: "priority 0".
         w.Set(5, 64, 5, 31, 1);
         c.Designate("add", "cut", null, [new P3(5, 64, 5)], null);

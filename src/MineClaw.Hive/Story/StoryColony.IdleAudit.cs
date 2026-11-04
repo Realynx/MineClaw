@@ -73,7 +73,7 @@ public sealed partial class StoryColony
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var d in Designations)
-            if (d.Status is null or "open" && WorkOf(d.Kind) is { Length: > 0 } t) set.Add(t);
+            if (d.Status is null or "open" or "waiting" && WorkOf(d.Kind) is { Length: > 0 } t) set.Add(t); // waiting: for a tool
         if (Builds.Any(b => b.Status is "active" or "queued" && b.Ghosts.Any(g => g.Job && g.State is "todo"))) set.Add(WorkTypes.Build);
         foreach (var bench in Benches)
             foreach (var bill in bench.Bills)

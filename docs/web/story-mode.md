@@ -368,6 +368,12 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   from a ravine or a canyon. A teleport counts once the pawn shows up at home. When it hasn't within 10 s (the server refused the
   `/tp`), one warning says so and the colony doesn't try again. A teleport that can't be sent (option off, no op path) is said at most
   every 10 minutes, and the pawn keeps trying to get out by itself. Each teleport is logged and said in an alert.
+- **Getting out beats a drop.** The no-tool rule ("needs a wooden pickaxe: digging stone … would lose the drop") is for work targets.
+  An escape that is refused for it digs with whatever the pawn holds (the hidden `escape_dig{at}`). Every other rule (protection, the
+  floor under someone, lava, the void) still holds, and the client logs the lost drop. In a pit, a pillar step with the blocks it
+  carries comes before any stair dig. Live 11-04: three pawns waited for the teleport in a stone hole they could have dug out of.
+- **Stuck spots keep work away.** For 5 minutes after a pawn gets stuck, no other pawn is sent to a target within 3 blocks of the spot
+  (4 up or down). Live 11-04: maid_chan_126, _118 and _105 were stuck in one hole, each sent after the work by it.
 - **Idle with work (the idle audit).** Every second the director checks each pawn in a work or anything hour that holds, wanders or
   rests while the colony has work of a kind it does: designations, builds with cells to do, or bills that run. Such a pawn gets a
   reason (`idle_reason` on its row): `stuck`, `back-off rest`, `work not taken yet` (an idle leg the next wake hands over),
