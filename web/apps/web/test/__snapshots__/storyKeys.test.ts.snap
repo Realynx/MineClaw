@@ -1,0 +1,688 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`keyAction (golden: every key × modifier × tool state) > maps every key exactly as before 1`] = `
+"# -
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Equal: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+Minus: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+NumpadAdd: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+NumpadSubtract: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# heightTool
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=height:surface
+Digit2: -=height:level
+Digit3: -=height:down
+Digit4: -=height:flatten
+Digit5: -=height:layers
+Numpad1: -=height:surface
+Numpad2: -=height:level
+Numpad3: -=height:down
+Numpad4: -=height:flatten
+Numpad5: -=height:layers
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool+heightTool
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=height:surface
+Digit2: -=height:level
+Digit3: -=height:down
+Digit4: -=height:flatten
+Digit5: -=height:layers
+Numpad1: -=height:surface
+Numpad2: -=height:level
+Numpad3: -=height:down
+Numpad4: -=height:flatten
+Numpad5: -=height:layers
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# materialTool
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool+materialTool
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Equal: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+Minus: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+NumpadAdd: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+NumpadSubtract: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# heightTool+materialTool
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool+heightTool+materialTool
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=speed:normal
+Digit2: -=speed:fast
+Digit3: -=speed:faster
+Numpad1: -=speed:normal
+Numpad2: -=speed:fast
+Numpad3: -=speed:faster
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool+speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=speed:normal
+Digit2: -=speed:fast
+Digit3: -=speed:faster
+Numpad1: -=speed:normal
+Numpad2: -=speed:fast
+Numpad3: -=speed:faster
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Equal: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+Minus: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+NumpadAdd: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+NumpadSubtract: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# heightTool+speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=height:surface
+Digit2: -=height:level
+Digit3: -=height:down
+Digit4: -=height:flatten
+Digit5: -=height:layers
+Numpad1: -=height:surface
+Numpad2: -=height:level
+Numpad3: -=height:down
+Numpad4: -=height:flatten
+Numpad5: -=height:layers
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool+heightTool+speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=height:surface
+Digit2: -=height:level
+Digit3: -=height:down
+Digit4: -=height:flatten
+Digit5: -=height:layers
+Numpad1: -=height:surface
+Numpad2: -=height:level
+Numpad3: -=height:down
+Numpad4: -=height:flatten
+Numpad5: -=height:layers
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# materialTool+speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool+materialTool+speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Equal: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+Minus: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+NumpadAdd: -=heightUp shift=heightUp alt=heightUp shift+alt=heightUp
+NumpadSubtract: -=heightDown shift=heightDown alt=heightDown shift+alt=heightDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# heightTool+materialTool+speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown
+# buildTool+heightTool+materialTool+speedKeys
+KeyB: -=tab:architect shift=tab:architect alt=tab:architect shift+alt=tab:architect
+KeyC: -=tool:chop alt=tool:chop
+KeyE: -=rotateCw shift=rotateCw alt=rotateCw shift+alt=rotateCw
+KeyF: -=tool:forbid shift=fullscreen alt=tool:forbid shift+alt=fullscreen
+KeyG: -=tool:cut alt=tool:cut
+KeyH: -=tool:harvest alt=tool:harvest
+KeyI: -=tab:colony shift=tab:colony alt=tab:colony shift+alt=tab:colony
+KeyJ: -=tool:allow alt=tool:allow
+KeyK: -=tool:deconstruct alt=tool:deconstruct
+KeyL: -=tool:haul alt=tool:haul
+KeyM: -=tool:mine alt=tool:mine
+KeyN: -=tool:hunt alt=tool:hunt
+KeyO: -=tool:retry shift=tab:directives alt=tool:retry shift+alt=tab:directives
+KeyP: -=tab:work shift=tab:work alt=tab:work shift+alt=tab:work
+KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
+KeyR: -=draft shift=draft alt=draft shift+alt=draft
+KeyT: -=chat shift=chat alt=chat shift+alt=chat
+KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
+KeyV: -=view shift=view alt=view shift+alt=view
+KeyX: -=xray shift=xray alt=xray shift+alt=xray
+KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
+KeyZ: -=tool:cancel alt=tool:cancel
+Digit1: -=recent:1
+Digit2: -=recent:2
+Digit3: -=recent:3
+Digit4: -=recent:4
+Digit5: -=recent:5
+Numpad1: -=recent:1
+Numpad2: -=recent:2
+Numpad3: -=recent:3
+Numpad4: -=recent:4
+Numpad5: -=recent:5
+Space: -=pause shift=pause alt=pause shift+alt=pause
+Escape: -=escape shift=escape alt=escape shift+alt=escape
+Enter: -=chat shift=chat alt=chat shift+alt=chat
+Tab: -=materialNext shift=materialPrev
+BracketLeft: -=materialPrev shift=materialPrev
+BracketRight: -=materialNext shift=materialNext
+Equal: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+Minus: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+NumpadAdd: -=layersUp shift=layersUp alt=layersUp shift+alt=layersUp
+NumpadSubtract: -=layersDown shift=layersDown alt=layersDown shift+alt=layersDown
+Slash: shift=help shift+alt=help
+Home: -=focus shift=focus alt=focus shift+alt=focus
+PageUp: -=levelUp shift=levelUp alt=levelUp shift+alt=levelUp
+PageDown: -=levelDown shift=levelDown alt=levelDown shift+alt=levelDown"
+`;

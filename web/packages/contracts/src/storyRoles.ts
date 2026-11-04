@@ -72,49 +72,79 @@ const slug = (name: string) =>
     .replace(/^-+|-+$/g, '')
     .slice(0, 24) || 'role';
 
+type RoleSpec = { name?: string; icon?: string | null; priorities?: Partial<Record<string, number>> };
+
+const isBuiltin = (id: string) => STORY_DEFAULT_ROLES.some((d) => d.id === id);
+
+/** The pawns that follow the role take its values again. */
+const follow = (pawns: SimPawn[], r: SimRole) => pawns.filter((p) => p.role === r.id).forEach((p) => applyRole(p, r));
+
+/** A new role's id: its name's slug, numbered past the roles and built-ins that have it. */
+function newRoleId(roles: readonly SimRole[], name: string): string {
+  const base = slug(name);
+  let id = base;
+  for (let n = 2; roles.some((x) => x.id === id) || isBuiltin(id); n++) id = `${base}-${n}`;
+  return id;
+}
+
+/** The role's name (the spec's, else its own), checked: 1..40 characters, not another role's. */
+function roleName(roles: readonly SimRole[], r: SimRole | undefined, spec: RoleSpec): string {
+  const name = (spec.name ?? r?.name ?? '').trim();
+  if (name.length < 1 || name.length > 40) throw err('role.name: 1..40 characters');
+  if (roles.some((x) => x !== r && x.name.toLowerCase() === name.toLowerCase())) throw err(`role.name: '${name}' is taken`);
+  return name;
+}
+
+/** `add` / `update`: the role named or a new one; only the icon and priorities given change; its pawns follow. */
+function upsertRole(roles: SimRole[], pawns: SimPawn[], existing: SimRole | undefined, spec: RoleSpec): { id: string } {
+  let r = existing;
+  const name = roleName(roles, r, spec);
+  if (!r) {
+    r = { id: newRoleId(roles, name), name, icon: null, builtin: false, priorities: full({}) };
+    roles.push(r);
+  }
+  r.name = name;
+  if (spec.icon !== undefined) r.icon = spec.icon ?? null;
+  for (const [t, v] of Object.entries(spec.priorities ?? {})) if (v !== undefined) r.priorities[t] = v;
+  follow(pawns, r);
+  return { id: r.id };
+}
+
+/** `remove`: its pawns keep the same values as Custom. */
+function removeRole(roles: SimRole[], pawns: SimPawn[], id: string): { id: string; removed: boolean } {
+  const i = roles.findIndex((x) => x.id === id);
+  if (i < 0) throw err(`id: no such role '${id}'`);
+  roles.splice(i, 1);
+  for (const p of pawns) if (p.role === id) p.role = null; // Custom, the same values
+  return { id, removed: true };
+}
+
+/** `reset_defaults`: the built-ins as shipped (a custom role with a built-in's name keeps it: the built-in is "(built-in)"). */
+function resetDefaultRoles(roles: SimRole[], pawns: SimPawn[]): { id: null } {
+  defaultRoles().forEach((d, i) => {
+    if (roles.some((x) => x.id !== d.id && x.name.toLowerCase() === d.name.toLowerCase())) d.name += ' (built-in)';
+    const have = roles.find((x) => x.id === d.id);
+    if (have) Object.assign(have, d);
+    else roles.splice(Math.min(i, roles.length), 0, d);
+    follow(pawns, have ?? d);
+  });
+  return { id: null };
+}
+
 /** The mock director's `POST …/roles` (the bot's RolesOp): mutates `roles` and the pawns, returns the reply's id. */
 export function rolesOp(roles: SimRole[], pawns: SimPawn[], body: StoryRolesRequest): { id: string | null; removed?: boolean } {
-  const builtin = (id: string) => STORY_DEFAULT_ROLES.some((d) => d.id === id);
-  const follow = (r: SimRole) => pawns.filter((p) => p.role === r.id).forEach((p) => applyRole(p, r));
   switch (body.op) {
     case 'add':
+      return upsertRole(roles, pawns, undefined, body.role);
     case 'update': {
-      const spec = body.role;
-      let r = body.op === 'update' ? roles.find((x) => x.id === body.role.id) : undefined;
-      if (body.op === 'update' && !r) throw err(`role.id: no such role '${body.role.id}'`);
-      const name = (spec.name ?? r?.name ?? '').trim();
-      if (name.length < 1 || name.length > 40) throw err('role.name: 1..40 characters');
-      if (roles.some((x) => x !== r && x.name.toLowerCase() === name.toLowerCase())) throw err(`role.name: '${name}' is taken`);
-      if (!r) {
-        const base = slug(name);
-        let id = base;
-        for (let n = 2; roles.some((x) => x.id === id) || builtin(id); n++) id = `${base}-${n}`;
-        r = { id, name, icon: null, builtin: false, priorities: full({}) };
-        roles.push(r);
-      }
-      r.name = name;
-      if (spec.icon !== undefined) r.icon = spec.icon ?? null;
-      for (const [t, v] of Object.entries(spec.priorities ?? {})) if (v !== undefined) r.priorities[t] = v;
-      follow(r);
-      return { id: r.id };
+      const r = roles.find((x) => x.id === body.role.id);
+      if (!r) throw err(`role.id: no such role '${body.role.id}'`);
+      return upsertRole(roles, pawns, r, body.role);
     }
-    case 'remove': {
-      const i = roles.findIndex((x) => x.id === body.id);
-      if (i < 0) throw err(`id: no such role '${body.id}'`);
-      roles.splice(i, 1);
-      for (const p of pawns) if (p.role === body.id) p.role = null; // Custom, the same values
-      return { id: body.id, removed: true };
-    }
-    case 'reset_defaults': {
-      defaultRoles().forEach((d, i) => {
-        if (roles.some((x) => x.id !== d.id && x.name.toLowerCase() === d.name.toLowerCase())) d.name += ' (built-in)';
-        const have = roles.find((x) => x.id === d.id);
-        if (have) Object.assign(have, d);
-        else roles.splice(Math.min(i, roles.length), 0, d);
-        follow(have ?? d);
-      });
-      return { id: null };
-    }
+    case 'remove':
+      return removeRole(roles, pawns, body.id);
+    case 'reset_defaults':
+      return resetDefaultRoles(roles, pawns);
   }
 }
 
