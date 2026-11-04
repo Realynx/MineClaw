@@ -292,19 +292,11 @@ export function DesignationInspector({
   onCancel: (ids: Array<string | number>) => void;
   onClose: () => void;
 }) {
-  const at = designationAt(d);
-  const short = shortReason(d.reason);
   const many = cluster.length > 1;
   return (
     <Shell
-      title={`${d.label ?? d.kind}${at ? ` at ${at.join(', ')}` : ''}`}
-      sub={
-        d.status === 'failed'
-          ? `Failed: ${short.title}`
-          : d.wait && !d.reason
-            ? `Waiting: ${shortReason(d.wait).title}`
-            : `Failing: ${short.title}`
-      }
+      title={designationTitle(d)}
+      sub={designationSub(d)}
       onClose={onClose}
       testid="designation-inspector"
     >
@@ -358,6 +350,19 @@ export function DesignationInspector({
       </div>
     </Shell>
   );
+}
+
+/** "Chop at 4, 64, 2". */
+function designationTitle(d: StoryDesignation): string {
+  const at = designationAt(d);
+  return `${d.label ?? d.kind}${at ? ` at ${at.join(', ')}` : ''}`;
+}
+
+/** Failed / Waiting (a wait with no failure) / Failing, with the short reason. */
+function designationSub(d: StoryDesignation): string {
+  if (d.status === 'failed') return `Failed: ${shortReason(d.reason).title}`;
+  if (d.wait && !d.reason) return `Waiting: ${shortReason(d.wait).title}`;
+  return `Failing: ${shortReason(d.reason).title}`;
 }
 
 function designationAt(d: StoryDesignation): number[] | null {
@@ -510,6 +515,8 @@ function PawnOrders({ pawn, canWrite, onClearQueue }: { pawn: StoryPawn; canWrit
   );
 }
 
+const isOffline = (p: StoryPawn) => p.online === false || p.state === 'offline';
+
 /** An offline pawn: why, and Bring online. */
 function PawnOffline({
   pawn,
@@ -562,11 +569,11 @@ export function PawnInspector({
   onBringOnline?: (overCap: boolean) => void;
 }) {
   const [tab, setTab] = useState<PawnTab>('overview');
-  const offline = pawn.online === false || pawn.state === 'offline';
+  const offline = isOffline(pawn);
   return (
     <Shell
       title={pawn.display}
-      sub={offline ? 'offline' : `${pawn.state ?? 'idle'}`}
+      sub={offline ? 'offline' : (pawn.state ?? 'idle')}
       onClose={onClose}
       avatar={<Avatar name={pawn.name} size={30} />}
       wide={tab === 'inventory'}
