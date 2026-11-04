@@ -1306,6 +1306,24 @@ exports[`the memory cloud renderer (golden frames) > hover, lasso drag and zoom 
 ]
 `;
 
+exports[`the memory cloud renderer (golden frames) > keys: fit, zoom, pan and Escape (every key the canvas handles) 1`] = `
+{
+  "+": "handled gl.uniform2f(loc:u_scale,1105.44,1105.44) gl.uniform2f(loc:u_off,42.28,-252.72)",
+  "-": "handled gl.uniform2f(loc:u_scale,564,564) gl.uniform2f(loc:u_off,313,18)",
+  "=": "handled gl.uniform2f(loc:u_scale,1105.44,1105.44) gl.uniform2f(loc:u_off,42.28,-252.72)",
+  "ArrowDown": "handled gl.uniform2f(loc:u_scale,789.6,789.6) gl.uniform2f(loc:u_off,200.2,-154.8)",
+  "ArrowLeft": "handled gl.uniform2f(loc:u_scale,789.6,789.6) gl.uniform2f(loc:u_off,260.2,-94.8)",
+  "ArrowRight": "handled gl.uniform2f(loc:u_scale,789.6,789.6) gl.uniform2f(loc:u_off,140.2,-94.8)",
+  "ArrowUp": "handled gl.uniform2f(loc:u_scale,789.6,789.6) gl.uniform2f(loc:u_off,200.2,-34.8)",
+  "Enter": "ignored ",
+  "F": "handled gl.uniform2f(loc:u_scale,564,564) gl.uniform2f(loc:u_off,313,18)",
+  "Home": "handled gl.uniform2f(loc:u_scale,564,564) gl.uniform2f(loc:u_off,313,18)",
+  "_": "handled gl.uniform2f(loc:u_scale,564,564) gl.uniform2f(loc:u_off,313,18)",
+  "f": "handled gl.uniform2f(loc:u_scale,564,564) gl.uniform2f(loc:u_off,313,18)",
+  "x": "ignored ",
+}
+`;
+
 exports[`the memory cloud renderer (golden frames) > one pane, light: links, a highlight search, the selection ring, the lasso and pulses 1`] = `
 [
   "gl.setTransform(2,0,0,2,0,0)",

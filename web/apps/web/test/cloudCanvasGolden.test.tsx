@@ -221,6 +221,34 @@ describe('the memory cloud renderer (golden frames)', () => {
     expect(el.dataset.scale0).toMatch(/\|/);
   });
 
+  it('keys: fit, zoom, pan and Escape (every key the canvas handles)', () => {
+    const keys = ['f', 'F', 'Home', '+', '=', '-', '_', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'x', 'Enter'];
+    const seen: Record<string, string> = {};
+    for (const key of keys) {
+      const { container, unmount } = setup();
+      flush();
+      const el = container.firstElementChild as HTMLElement;
+      fireEvent.keyDown(el, { key: '+' }); // a zoomed start, so fit shows
+      flush();
+      const handled = !fireEvent.keyDown(el, { key });
+      const frame = flush();
+      const view = frame.filter((l) => l.startsWith('gl.uniform2f(loc:u_scale') || l.startsWith('gl.uniform2f(loc:u_off'));
+      seen[key] = `${handled ? 'handled' : 'ignored'} ${view.slice(0, 2).join(' ')}`;
+      unmount();
+    }
+    expect(seen).toMatchSnapshot();
+    const onLasso = vi.fn();
+    const onSelect = vi.fn();
+    const a = setup({ lasso: [1], onLasso, onSelect });
+    fireEvent.keyDown(a.container.firstElementChild!, { key: 'Escape' });
+    expect(onLasso).toHaveBeenCalledWith([]);
+    expect(onSelect).not.toHaveBeenCalled();
+    a.unmount();
+    const b = setup({ onLasso, onSelect });
+    expect(fireEvent.keyDown(b.container.firstElementChild!, { key: 'Escape' })).toBe(false);
+    expect(onSelect).toHaveBeenCalledWith(null);
+  });
+
   it('keeps a hidden cluster out of the mask', () => {
     const cloud = memoryCloud('mds');
     expect(visibleMask(cloud, new Set([1])).some((v) => !v)).toBe(true);
