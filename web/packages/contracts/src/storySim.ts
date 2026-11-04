@@ -506,6 +506,27 @@ function followRole(p: StoryPawn, role: Omit<StoryRole, 'pawns'> | null): void {
   if (role) applyRole(p, role);
 }
 
+/** A new pawn's skill (three draws: level, a +5 bonus one time in five, passion one time in four). */
+const rollSkill = (r: () => number) => ({ level: Math.floor(r() * 15) + (r() < 0.2 ? 5 : 0), xp: 0, passion: r() < 0.25 });
+
+/** The starting priority for a skill level: 12+ → 1, 8+ → 2, 4+ → 3, else off. */
+function skillPriority(lv: number): number {
+  if (lv >= 12) return 1;
+  if (lv >= 8) return 2;
+  return lv >= 4 ? 3 : 0;
+}
+
+/** One to three random traits (never brave and skittish together: skittish goes). */
+function rollTraits(r: () => number) {
+  const traits = [...TRAITS].sort(() => r() - 0.5).slice(0, 1 + Math.floor(r() * 3));
+  if (traits.some((t) => t.id === 'brave') && traits.some((t) => t.id === 'skittish'))
+    traits.splice(
+      traits.findIndex((t) => t.id === 'skittish'),
+      1,
+    );
+  return traits;
+}
+
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
 
@@ -823,23 +844,13 @@ export class StorySim {
   private newPawn(c: Colony, name: string, display: string, i: number): PawnSim {
     const r = rng(hash(name));
     const skills: StoryPawn['skills'] = {};
-    for (const t of STORY_WORK_TYPES)
-      if (t !== 'fish') skills[t] = { level: Math.floor(r() * 15) + (r() < 0.2 ? 5 : 0), xp: 0, passion: r() < 0.25 };
+    for (const t of STORY_WORK_TYPES) if (t !== 'fish') skills[t] = rollSkill(r);
     // Fish came later: drawn from its own seed so every other draw stays as it was.
-    const rf = rng(hash(`${name}/fish`));
-    skills.fish = { level: Math.floor(rf() * 15) + (rf() < 0.2 ? 5 : 0), xp: 0, passion: rf() < 0.25 };
+    skills.fish = rollSkill(rng(hash(`${name}/fish`)));
     const priorities: Record<string, number> = {};
-    for (const t of STORY_WORK_TYPES) {
-      const lv = skills[t]!.level;
-      priorities[t] = lv >= 12 ? 1 : lv >= 8 ? 2 : lv >= 4 ? 3 : 0;
-    }
+    for (const t of STORY_WORK_TYPES) priorities[t] = skillPriority(skills[t]!.level);
     priorities.haul = Math.max(priorities.haul ?? 0, 3);
-    const traits = [...TRAITS].sort(() => r() - 0.5).slice(0, 1 + Math.floor(r() * 3));
-    if (traits.some((t) => t.id === 'brave') && traits.some((t) => t.id === 'skittish'))
-      traits.splice(
-        traits.findIndex((t) => t.id === 'skittish'),
-        1,
-      );
+    const traits = rollTraits(r);
     const x = c.home[0] + ((i % 4) - 1.5) * 1.6 + 0.5;
     const z = c.home[2] + (Math.floor(i / 4) - 1) * 1.6 + 0.5;
     const y = this.opts.world.ground(Math.floor(x), Math.floor(z)) + 1;
