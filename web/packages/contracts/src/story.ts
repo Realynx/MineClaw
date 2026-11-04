@@ -84,6 +84,7 @@ export const STORY_BUILD_KINDS = [
   'fence',
   'block',
   'remove',
+  'mine',
   'crafting_table',
   'furnace',
   'chest',
@@ -448,8 +449,9 @@ export const StoryBuild = z.object({
 });
 export type StoryBuild = z.infer<typeof StoryBuild>;
 
-/** Ghost block [x, y, z, id, meta, build_id, state] (state: todo | leased | done | blocked | unsupported: a block pawns can't
- * place yet, shown and alerted, never a job). */
+/** Ghost block [x, y, z, id, meta, build_id, state, kind?] (state: todo | leased | done | blocked | unsupported: a block pawns
+ * can't place yet, shown and alerted, never a job; kind: dig | place — a dig ghost's id/meta is the live world's block there,
+ * the material the dig expects). */
 export const StoryGhostBlock = z.tuple([
   z.number().int(),
   z.number().int(),
@@ -458,6 +460,7 @@ export const StoryGhostBlock = z.tuple([
   z.number().int(),
   z.union([z.string(), z.number()]),
   z.string(),
+  z.enum(['dig', 'place']).optional(),
 ]);
 export type StoryGhostBlock = z.infer<typeof StoryGhostBlock>;
 
@@ -924,6 +927,11 @@ export const StoryBuildItem = z
     kind: StoryBuildKind,
     area: StoryArea.optional(),
     blocks: z.array(Vec3i).max(4096).optional(),
+    place: z
+      .array(z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int(), z.number().int()]))
+      .max(4096)
+      .optional()
+      .describe('a mine item: blocks put in [x, y, z, id, meta] once their cell is dug (torches, ladders); `blocks` are its dig cells'),
     material: StoryMaterial.optional(),
     height: z.number().int().min(1).max(12).optional(),
     roof: StoryRoofSpec.optional(),
@@ -1343,6 +1351,15 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
       }
       break;
     }
+    case 'mine':
+      for (const [x, y, z] of cells) put(x, y, z, 0, 0);
+      for (const [x, y, z, pid, pm] of item.place ?? []) {
+        seen.delete(`${x},${y},${z}`);
+        const at = out.findIndex((c) => c[0] === x && c[1] === y && c[2] === z);
+        if (at >= 0) out.splice(at, 1);
+        put(x, y, z, pid, pm);
+      }
+      break;
     case 'block':
     case 'remove': {
       const bid = item.kind === 'remove' ? 0 : id,

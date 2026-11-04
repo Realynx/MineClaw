@@ -58,10 +58,11 @@ import { Hotbar, PaletteDrawer, type IconOf, type IconSheet } from './BlockBar';
 import {
   boxOf,
   connected,
-  DEPTH,
+  EARTH,
   extend,
   invert,
   maskSelection,
+  plotMode,
   type Selection,
   selectAll,
   sizeOf,
@@ -69,6 +70,10 @@ import {
   type Cell,
 } from './canvas';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
+import { MinePanel } from './MinePanel';
+import { xrayCells } from './mine/mineStats';
+import type { MineCells } from './mine/mineTemplates';
+import type { MinePreset } from './mine/presets';
 import { dirOfMcYaw, type Dir, hasFacing, placeMeta, turn, type Version } from './facing';
 import { defaultHotbar, entryKey, type PaletteEntry, pushRecent } from './palette';
 import { Studio, type StudioApi, type StudioSnapshot } from './studio';
@@ -97,6 +102,8 @@ import {
   selectionShape,
   toggleUnder,
   underCut,
+  underRange,
+  UNDER_DEFAULT,
 } from './tools';
 
 type Mod = typeof ViewerMod;
@@ -158,6 +165,18 @@ const realApi: StudioApi = {
 
 const hitOf = aimHit;
 
+/** A mine's first hotbar slot: "fill back" (a dug cell becomes ground again; anything else is left alone). */
+const GROUND: PaletteEntry = {
+  id: EARTH,
+  meta: 0,
+  name: 'Ground (fill back)',
+  facing: false,
+  spec: 'earth',
+  cat: 'Misc',
+  family: 'none',
+  icon: null,
+};
+
 export function StudioPage() {
   const params = useSearchParams();
   const router = useRouter();
@@ -211,12 +230,13 @@ export function StudioPage() {
     );
   return (
     <StudioBody
-      key={`${session.id}:${session.version}`}
+      key={`${session.id}:${session.version}:${session.kind ?? 'build'}:${session.seed ?? ''}`}
       session={session}
       onSession={setSession}
       mod={mod}
       models={models.data?.models ?? []}
       defaultModel={models.data?.default ?? null}
+      serverSeed={models.data?.serverSeed ?? null}
       canWrite={canWrite}
       canChat={canChat}
       player={me.player ?? me.username}
@@ -231,11 +251,13 @@ function StudioBody({
   mod,
   models,
   defaultModel,
+  serverSeed,
   canWrite,
   canChat,
   player,
   invalidate,
 }: {
+  serverSeed: string | null;
   session: DesignerSession;
   /** A new session state (another version: the body remounts on it). */
   onSession: (s: DesignerSession) => void;
@@ -249,8 +271,14 @@ function StudioBody({
 }) {
   const version: Version = session.version === '1.12.2' ? '1.12.2' : 'b1.8.1';
   const studio = useMemo(() => new Studio(session, realApi), [session]);
-  const world = useMemo(() => new mod.StudioWorld(version, studio.canvas), [mod, version, studio]);
-  const overlay = useMemo(() => new mod.Overlay3D(64), [mod]);
+  /** A mine session: generated terrain at absolute y (its ground always editable, the side panel, the X-ray). */
+  const mine = studio.terrain !== null;
+  const surface = useMemo(() => studio.terrain?.surfaceRange() ?? null, [studio]);
+  const world = useMemo(
+    () => new mod.StudioWorld(version, studio.canvas, undefined, studio.terrain),
+    [mod, version, studio],
+  );
+  const overlay = useMemo(() => new mod.Overlay3D(64, surface ? surface.max + 1 : undefined), [mod, surface]);
   const snap: StudioSnapshot = useSyncExternalStore(studio.subscribe, studio.snapshot, studio.snapshot);
   const viewer = useRef<WorldViewerHandle>(null);
   const chat = useRef<ChatPanelHandle>(null);
@@ -264,12 +292,15 @@ function StudioBody({
   const [brushSize, setBrushSize] = useState(3);
   const [brushMode, setBrushMode] = useState<BrushMode>('add');
   const [extrudeN, setExtrudeN] = useState(1);
-  const [slots, setSlots] = useState<Array<PaletteEntry | null>>(() => defaultHotbar(session.palette));
+  const [slots, setSlots] = useState<Array<PaletteEntry | null>>(() =>
+    session.kind === 'mine' ? [GROUND, ...defaultHotbar(session.palette).slice(0, 8)] : defaultHotbar(session.palette),
+  );
   const [active, setActive] = useState(0);
   const [facing, setFacing] = useState<Dir | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [hud, setHud] = useState(true);
-  const [grid, setGrid] = useState(true);
+  // A mine's hills would hide under a grid floating over its highest ground: off there until asked for.
+  const [grid, setGrid] = useState(session.kind !== 'mine');
   /** Underground mode: null = off, else the highest layer still shown (canvas y; everything above it is cut away). */
   const [under, setUnder] = useState<number | null>(null);
   const [withSel, setWithSel] = useState(true);
@@ -288,6 +319,12 @@ function StudioBody({
   );
   const [revisions, setRevisions] = useState<DesignRevision[]>(session.revisions);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Underground's first level: a mine's highest ground, a build's grass layer. */
+  const underFirst = useRef(surface ? surface.max : UNDER_DEFAULT);
+  const [xray, setXray] = useState(false);
+  const [preferred, setPreferred] = useState<string | null>(session.preferredFor ?? null);
+  /** A kind switch of a full canvas waits for the user's word (the canvas is cleared). */
+  const [kindAsk, setKindAsk] = useState<'build' | 'mine' | null>(null);
   const bots = useApi('bots.list', {}, { enabled: canChat });
   const mainBot = bots.data?.bots.find((b) => b.main)?.name ?? bots.data?.bots[0]?.name ?? null;
 
@@ -322,7 +359,11 @@ function StudioBody({
   const icon: IconOf = useCallback(
     (id, meta, hint) => {
       void iconTick;
-      return bundle.current ? mod.blockIconUrl(bundle.current, id, meta, 32, hint ?? hints.get(`${id}:${meta}`) ?? null) : null;
+      // The mine's "fill back" slot shows dirt.
+      const [iid, im] = id === EARTH ? [3, 0] : [id, meta];
+      return bundle.current
+        ? mod.blockIconUrl(bundle.current, iid, im, 32, hint ?? hints.get(`${iid}:${im}`) ?? null)
+        : null;
     },
     [mod, iconTick, hints],
   );
@@ -330,6 +371,56 @@ function StudioBody({
   // The game version: a dropdown; an empty canvas switches, a full one is checked and converted on the user's word.
   const [versionAsk, setVersionAsk] = useState<{ target: Version; report: DesignerCompatReport } | null>(null);
   const [versionBusy, setVersionBusy] = useState(false);
+  // Build <-> mine: an empty canvas switches at once, a full one asks first (it is cleared). A mine's seed: a new terrain.
+  const changeKind = async (kind: 'build' | 'mine', apply = false) => {
+    if (kind === (session.kind ?? 'build') && !apply) return;
+    setVersionBusy(true);
+    try {
+      await studio.flush();
+      const r = await api('designer.version', {
+        params: { id: session.id },
+        body: { version, kind, ...(apply ? { apply } : {}) },
+      });
+      if (r.changed && r.session) {
+        setKindAsk(null);
+        onSession(r.session);
+      } else if (r.needsClear) setKindAsk(kind);
+    } catch (e) {
+      setNotice(`Couldn't switch to ${kind}: ${errorText(e)}`);
+    } finally {
+      setVersionBusy(false);
+    }
+  };
+  const changeSeed = async (seed: string) => {
+    setVersionBusy(true);
+    try {
+      await studio.flush();
+      const r = await api('designer.version', { params: { id: session.id }, body: { version, seed } });
+      if (r.session) onSession(r.session);
+    } catch (e) {
+      setNotice(`Couldn't change the seed: ${errorText(e)}`);
+    } finally {
+      setVersionBusy(false);
+    }
+  };
+  /** A template's cells as one undoable edit; a shaft's entry becomes the design's anchor (its top). */
+  const insertMine = (m: MineCells, kind = 'template') => {
+    const changed = studio.edit(m.cells, kind, m.label);
+    if (changed.length === 0) return setNotice(`${m.label}: nothing to dig there`);
+    if (m.label.startsWith('spiral') || kind === 'preset') void studio.setAnchor(m.entry).catch(() => undefined);
+    setNotice(`${m.label}: ${changed.length} cells`);
+  };
+  const applyPreset = async (p: MinePreset, m: MineCells) => {
+    insertMine(m, 'preset');
+    try {
+      await studio.flush();
+      await api('designer.version', { params: { id: session.id }, body: { version, preferredFor: p.version } });
+      setPreferred(p.version);
+    } catch (e) {
+      setNotice(`Couldn't tag it preferred for ${p.version}: ${errorText(e)}`);
+    }
+  };
+
   const changeVersion = async (target: Version, apply = false) => {
     if (target === version && !apply) return;
     setVersionBusy(true);
@@ -393,8 +484,13 @@ function StudioBody({
   // Mock mode only: the e2e reads the canvas and points the camera (the clicks themselves are real input).
   useEffect(() => {
     if (process.env.NEXT_PUBLIC_MOCK !== '1') return;
-    (window as unknown as { __studio?: unknown }).__studio = { studio, engine: () => viewer.current?.engine() ?? null };
-  }, [studio]);
+    (window as unknown as { __studio?: unknown }).__studio = {
+      studio,
+      world,
+      overlay,
+      engine: () => viewer.current?.engine() ?? null,
+    };
+  }, [studio, world, overlay]);
 
   // The world follows the canvas; the AI's cells flash as they land.
   useEffect(
@@ -417,7 +513,7 @@ function StudioBody({
         attached = true;
         // Start over the plot's south-east corner, looking down at its centre.
         e.rig.flyYaw = 135;
-        e.focus(31, 63, 31, { distance: 34, pitch: 38 });
+        e.focus(31, surface ? surface.max : 63, 31, { distance: surface ? 44 : 34, pitch: 38 });
         setReady(true);
       }
       overlay.tick(performance.now());
@@ -428,9 +524,14 @@ function StudioBody({
       cancelAnimationFrame(raf);
       overlay.dispose();
     };
-  }, [overlay]);
+  }, [overlay, surface]);
 
   useEffect(() => overlay.setSelection(snap.selection), [overlay, snap.selection]);
+  // The X-ray: a mine's ores through the stone (the window above the cut level, else every ore but coal).
+  useEffect(() => {
+    if (!studio.terrain || !xray) return overlay.setXray(null);
+    overlay.setXray(xrayCells(studio.terrain, under !== null ? { lo: under - 12, hi: under } : null));
+  }, [overlay, studio, xray, under]);
   useEffect(() => overlay.setAnchor(snap.anchor), [overlay, snap.anchor]);
   useEffect(() => overlay.setGrid(grid), [overlay, grid]);
   // Underground: the view cuts away every layer above the chosen one (the pick looks through the cut too).
@@ -464,7 +565,9 @@ function StudioBody({
       const b = (drag.button === 2 && (tool === 'box' || tool === 'line') ? h.place : (h.hit ?? h.place)) ?? drag.a;
       const box = boxOf(drag.a, b);
       overlay.setDrag(
-        tool === 'select' ? { min: box.min, max: [box.max[0], Math.min(47, box.max[1] + drag.dy), box.max[2]] } : box,
+        tool === 'select'
+          ? { min: box.min, max: [box.max[0], Math.min(plotMode().maxY, box.max[1] + drag.dy), box.max[2]] }
+          : box,
       );
     } else overlay.setDrag(null);
     if (tool === 'brush' && h) {
@@ -565,7 +668,7 @@ function StudioBody({
           e?.id ?? 4,
           e?.meta ?? 0,
           target,
-          s.under !== null,
+          s.under !== null || plotMode().kind === 'mine',
         ),
         'brush',
         `brush ${mode}`,
@@ -660,7 +763,7 @@ function StudioBody({
       const e = s.slots[s.active];
       const b = (button === 2 ? h?.place : (h?.hit ?? h?.place)) ?? d.a;
       if (s.tool === 'select') {
-        const top: V3 = [b[0], Math.min(47, Math.max(b[1], d.a[1]) + d.dy), b[2]];
+        const top: V3 = [b[0], Math.min(plotMode().maxY, Math.max(b[1], d.a[1]) + d.dy), b[2]];
         studio.setSelection(mods.shift ? extend(studio.selection, d.a, top) : boxOf(d.a, top));
         return;
       }
@@ -759,7 +862,9 @@ function StudioBody({
       if (s.drag) {
         ev.preventDefault();
         ev.stopPropagation();
-        setDrag((d) => (d ? { ...d, dy: Math.max(-47, Math.min(47, d.dy + (ev.deltaY < 0 ? 1 : -1))) } : d));
+        setDrag((d) =>
+          d ? { ...d, dy: Math.max(-plotMode().maxY, Math.min(plotMode().maxY, d.dy + (ev.deltaY < 0 ? 1 : -1))) } : d,
+        );
       } else if (studio.selection) {
         ev.preventDefault();
         ev.stopPropagation();
@@ -767,7 +872,11 @@ function StudioBody({
         studio.setSelection({
           ...cur,
           mask: null,
-          max: [cur.max[0], Math.max(cur.min[1], Math.min(47, cur.max[1] + (ev.deltaY < 0 ? 1 : -1))), cur.max[2]],
+          max: [
+            cur.max[0],
+            Math.max(cur.min[1], Math.min(plotMode().maxY, cur.max[1] + (ev.deltaY < 0 ? 1 : -1))),
+            cur.max[2],
+          ],
         });
       }
     };
@@ -869,7 +978,11 @@ function StudioBody({
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (studio.selection) {
           stop();
-          studio.edit(erase(studio.canvas, studio.selection, s.under !== null), 'remove', 'deleted the selection');
+          studio.edit(
+            erase(studio.canvas, studio.selection, s.under !== null || plotMode().kind === 'mine'),
+            'remove',
+            'deleted the selection',
+          );
         }
         return;
       }
@@ -901,7 +1014,7 @@ function StudioBody({
         return setPaletteOpen((v) => !v);
       }
       if (e.code === 'KeyH') return setGrid((v) => !v);
-      if (e.code === 'KeyK') return setUnder(toggleUnder);
+      if (e.code === 'KeyK') return setUnder((u) => toggleUnder(u, underFirst.current));
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -985,7 +1098,7 @@ function StudioBody({
     [sel, studio, snap.rev, snap.blocks],
   ); // eslint-disable-line react-hooks/exhaustive-deps
   const bounds = useMemo(() => studio.canvas.bounds(), [studio, snap.blocks, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
-  const over = !!bounds && sizeOf(bounds).some((n) => n > 32);
+  const over = !mine && !!bounds && sizeOf(bounds).some((n) => n > 32);
   const selMaterials = useMemo(() => {
     const ids = new Map<number, string>();
     if (sel)
@@ -1036,6 +1149,23 @@ function StudioBody({
             ))}
           </select>
         </label>
+        <label
+          className="flex items-center gap-1 text-xs text-muted"
+          title="Build: on flat grass. Mine: dug into generated terrain, kept at absolute y (pawns mine it out)."
+        >
+          Kind
+          <select
+            aria-label="Design kind"
+            value={session.kind ?? 'build'}
+            disabled={!canWrite || versionBusy || snap.busy}
+            onChange={(e) => void changeKind(e.target.value as 'build' | 'mine')}
+            className="h-7 rounded-md border border-border bg-surface px-1.5 text-xs text-fg"
+            data-testid="kind-select"
+          >
+            <option value="build">Build</option>
+            <option value="mine">Mine</option>
+          </select>
+        </label>
         {session.serverVersion && session.serverVersion !== version ? (
           <span
             className="rounded bg-warn-soft px-1.5 py-0.5 text-[11px] text-warn"
@@ -1068,7 +1198,7 @@ function StudioBody({
           <Button
             size="sm"
             onClick={() => void doSave(false)}
-            disabled={!canWrite || saving || snap.blocks === 0}
+            disabled={!canWrite || saving || (snap.blocks === 0 && snap.dug === 0)}
             loading={saving}
           >
             {snap.designId ? 'Save as new revision' : 'Save'}
@@ -1078,7 +1208,7 @@ function StudioBody({
               size="sm"
               variant="secondary"
               onClick={() => void doSave(true)}
-              disabled={!canWrite || saving || snap.blocks === 0}
+              disabled={!canWrite || saving || (snap.blocks === 0 && snap.dug === 0)}
             >
               Save as new design
             </Button>
@@ -1115,6 +1245,11 @@ function StudioBody({
           data-testid="saved-bar"
         >
           <span>{saved.text || `Design #${saved.designId}${saved.rev ? ` r${saved.rev}` : ''}`}</span>
+          {mine && bounds ? (
+            <span className="rounded bg-surface px-1.5 py-0.5 font-mono text-fg" data-testid="mine-range">
+              y {bounds.min[1]}..{bounds.max[1]} · anchor absolute{preferred ? ` · preferred for ${preferred}` : ''}
+            </span>
+          ) : null}
           <span className="ml-auto" />
           <Link
             href={`/story?design=${saved.designId}`}
@@ -1143,6 +1278,29 @@ function StudioBody({
         <p className="border-b border-border bg-info-soft px-3 py-1 text-xs text-info" role="status">
           {notice}
         </p>
+      ) : null}
+      {kindAsk ? (
+        <div
+          role="dialog"
+          aria-label="Change the kind"
+          className="flex flex-col gap-2 border-b border-border bg-warn-soft px-3 py-2 text-xs text-fg"
+          data-testid="kind-dialog"
+        >
+          <p>
+            Switch this design to <b>{kindAsk === 'mine' ? 'a mine' : 'a build'}</b>? The canvas is cleared ({snap.blocks} blocks,{' '}
+            {snap.dug} dug cells):{' '}
+            {kindAsk === 'mine' ? 'a mine is dug into generated terrain at absolute y' : 'a build stands on flat grass'}. Save it
+            first to keep it.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => void changeKind(kindAsk, true)} loading={versionBusy}>
+              Clear and switch
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setKindAsk(null)} disabled={versionBusy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
       ) : null}
       {versionAsk ? (
         <div
@@ -1210,7 +1368,7 @@ function StudioBody({
             >
               <div className="rounded bg-black/55 px-2 py-0.5">
                 {h?.hit
-                  ? `${h.hit.join(', ')}${h.hit[1] < 0 ? ' (underground)' : ''}`
+                  ? `${h.hit.join(', ')}${mine ? ' (y absolute)' : h.hit[1] < 0 ? ' (underground)' : ''}`
                   : h?.place
                     ? `ground · ${h.place.join(', ')}`
                     : '—'}{' '}
@@ -1224,7 +1382,7 @@ function StudioBody({
                       : ''}
               </div>
               <div className="rounded bg-black/55 px-2 py-0.5">
-                {snap.blocks} blocks{bounds ? ` · ${sizeOf(bounds).join('×')}` : ''} · r{snap.rev}
+                {snap.blocks} blocks{snap.dug ? ` · ${snap.dug} dug` : ''}{bounds ? ` · ${sizeOf(bounds).join('×')}` : ''} · r{snap.rev}
                 {snap.pending ? ` · ${snap.pending} unsent` : ''} · {fps} fps
               </div>
               {over ? (
@@ -1293,7 +1451,7 @@ function StudioBody({
             </button>
             <button
               type="button"
-              onClick={() => setUnder(toggleUnder)}
+              onClick={() => setUnder((u) => toggleUnder(u, underFirst.current))}
               aria-pressed={under !== null}
               aria-label="Underground"
               title="Underground: dig the ground and see below it [K]"
@@ -1314,8 +1472,14 @@ function StudioBody({
             </button>
           </div>
           {/* Tool options and the selection's actions */}
-          <div className="absolute top-3 right-3 flex max-w-[52%] flex-col items-end gap-1.5 text-[11px] text-white">
-            {under !== null ? (
+          {/* A mine's stage sits between two panels: its options start under the HUD (its level slider is in the mine panel). */}
+          <div
+            className={cn(
+              'absolute right-3 flex flex-col items-end gap-1.5 text-[11px] text-white',
+              mine ? 'top-20 max-w-[calc(100%-4.5rem)]' : 'top-3 max-w-[52%]',
+            )}
+          >
+            {under !== null && !mine ? (
               <label
                 className="flex items-center gap-1.5 rounded bg-black/55 px-2 py-1"
                 title="Layers above this one are cut away"
@@ -1323,8 +1487,8 @@ function StudioBody({
                 Underground: show to y
                 <input
                   type="range"
-                  min={-DEPTH}
-                  max={0}
+                  min={underRange().min}
+                  max={underRange().max}
                   value={under}
                   onChange={(e) => setUnder(Number(e.target.value))}
                   aria-label="Underground level"
@@ -1584,6 +1748,27 @@ function StudioBody({
             </div>
           ) : null}
         </div>
+        {mine && studio.terrain ? (
+          <MinePanel
+            terrain={studio.terrain}
+            version={version}
+            seed={session.seed ?? studio.terrain.seed}
+            serverSeed={serverSeed}
+            preferredFor={preferred}
+            dug={() => studio.canvas.holes()}
+            rev={snap}
+            level={under}
+            onLevel={(y) => setUnder(y)}
+            xray={xray}
+            onXray={setXray}
+            at={sel ? sel.min : null}
+            canWrite={canWrite}
+            busy={snap.busy || versionBusy}
+            onSeed={(seed) => void changeSeed(seed)}
+            onInsert={(m) => insertMine(m)}
+            onPreset={(p, m) => void applyPreset(p, m)}
+          />
+        ) : null}
         <ChatPanel
           ref={chat}
           messages={snap.messages}

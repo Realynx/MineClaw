@@ -237,7 +237,9 @@ public static class BlueprintNormalizer
         if (bp.DrawnFront != Dir.South)
             issues.Add(new(IssueLevel.Info, "facing", $"door(s) drawn on the {bp.Facing.Name()} side: built as drawn (facing {bp.Facing.Name()} doesn't turn it)"));
 
-        if (states.Count == 0) Err("empty", "the blueprint places no blocks");
+        // A mine may be nothing but cells to dig (its forced air).
+        bool digs = bp.Mine && Enumerable.Range(0, W).Any(x => Enumerable.Range(0, H).Any(y => Enumerable.Range(0, D).Any(z => grid[x, y, z] == Air)));
+        if (states.Count == 0 && !digs) Err("empty", "the blueprint places no blocks");
         if (states.Count > MaxBlocks) Err("size", $"{states.Count} blocks: at most {MaxBlocks} per blueprint");
 
         // World placement: rotate from the drawn front to the facing (Blueprint.Quarters), then offset by the origin.
@@ -265,7 +267,7 @@ public static class BlueprintNormalizer
                 for (int x = 0; x < W; x++)
                     if (grid[x, y, z] == Air && !states.ContainsKey((x, y, z))) plan.Air.Add(ToWorld(x, y, z));
         if (origin.Y < 1 || origin.Y + H > worldHeight) Err("bounds", $"build y {origin.Y}..{origin.Y + H - 1} leaves the world (1..{worldHeight - 1})");
-        return (issues.Any(i => i.Level == IssueLevel.Error) && states.Count == 0 ? null : plan, issues);
+        return (issues.Any(i => i.Level == IssueLevel.Error) && states.Count == 0 && plan.Air.Count == 0 ? null : plan, issues);
     }
 
     /// <summary>
