@@ -65,27 +65,31 @@ public static class ChestStore
             var off = OffLimits(c, obs);
             foreach (var chest in GeneratorLoop.Candidates(c, obs, asked ?? NearestChest(c), storing))
             {
-                // Only a chest the caller named is opened whatever its marks; fallbacks honour never-touch and "private".
-                if (_tried.Contains(chest) || chest != asked && (off.Contains(chest) || skip?.Invoke(chest) != null)) continue;
+                if (!ShouldOpen(chest, off, skip)) continue;
                 if (++_opened > MaxChests) break;
                 // Both halves of a double chest are one window (ChestPairs): never open it twice. Only the real other half: a trapped
                 // chest beside a normal one (1.12.2) is a chest of its own (was: every side was marked tried).
                 foreach (var cell in ChestPairs.Cells(c.World, chest)) _tried.Add(cell);
-                var (r, moved, _) = await DepositIntoAsync(chest, ct).ConfigureAwait(false);
-                if (r.Ok && moved == 0) moved = r.Count;
-                if (r.Ok || moved > 0)
-                {
-                    if (Took(chest, moved, r)) { Done = true; break; }
-                    continue;
-                }
-                if (r.Message.StartsWith("nothing to deposit", StringComparison.Ordinal))
-                {
-                    if (_went.Count == 0) return ToolResult.Success(r.Message);
-                    Done = true;
-                    break;
-                }
-                NoteRefusal(chest, r.Message);
+                if (await TryChestAsync(chest, ct).ConfigureAwait(false) is { } nothing) return nothing;
+                if (Done) break;
             }
+            return null;
+        }
+
+        /// <summary>Only a chest the caller named is opened whatever its marks; fallbacks honour never-touch and "private".</summary>
+        private bool ShouldOpen(BlockPos chest, HashSet<BlockPos> off, Func<BlockPos, string?>? skip) =>
+            !_tried.Contains(chest) && (chest == asked || !off.Contains(chest) && skip?.Invoke(chest) == null);
+
+        /// <summary>One deposit: what the chest took (<see cref="Done"/> when it had room for the rest), or why it refused.
+        /// "nothing to deposit" before anything went anywhere is the result itself.</summary>
+        private async Task<ToolResult?> TryChestAsync(BlockPos chest, CancellationToken ct)
+        {
+            var (r, moved, _) = await DepositIntoAsync(chest, ct).ConfigureAwait(false);
+            if (r.Ok && moved == 0) moved = r.Count;
+            if (r.Ok || moved > 0) { Done = Took(chest, moved, r); return null; }
+            if (!r.Message.StartsWith("nothing to deposit", StringComparison.Ordinal)) { NoteRefusal(chest, r.Message); return null; }
+            if (_went.Count == 0) return ToolResult.Success(r.Message);
+            Done = true;
             return null;
         }
 
@@ -162,9 +166,7 @@ public static class ChestStore
         {
             // The only chest there is refused for another reason (claimed, no path): the client's own words, as before.
             if (overflow == null && _opened == 1 && _went.Count == 0 && _full.Count == 0 && _firstFail != null) return ToolResult.Error(_firstFail);
-            if (Total(left) == 0)
-                return _went.Count > 0 ? ToolResult.Success(StoredLine(_stored, _storedItems, _went))
-                    : _tried.Count == 0 ? ToolResult.Error("no chest nearby") : ToolResult.Success("nothing to deposit");
+            if (Total(left) == 0) return AllAway();
             var parts = new List<string> { FailHead() };
             if (overflow != null) parts.Add(overflow);
             if (_went.Count > 0) parts.Add(StoredLine(_stored, _storedItems, _went));
@@ -172,6 +174,11 @@ public static class ChestStore
             parts.Add(Advice(c) + " or keep carrying");
             return ToolResult.Error(string.Join("; ", parts));
         }
+
+        /// <summary>Nothing storable left in the bag.</summary>
+        private ToolResult AllAway() =>
+            _went.Count > 0 ? ToolResult.Success(StoredLine(_stored, _storedItems, _went))
+            : _tried.Count == 0 ? ToolResult.Error("no chest nearby") : ToolResult.Success("nothing to deposit");
 
         private string FailHead() =>
             _tried.Count == 0 ? "no known chest"

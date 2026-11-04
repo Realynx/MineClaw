@@ -15,19 +15,21 @@ public static partial class VisionRouter
         var q = new ThingsQuestion(question.ToLowerInvariant());
         var parts = new List<string>();
         if (q.Asked("tree", "log", "trunk", "canopy", "wood")) TreeParts(w, scan, f, r, parts);
-        if (q.Asked("sapling", "tree"))
-        {
-            var planted = scan.Saplings.Where(s => w.GetBlock(s.X, s.Y - 1, s.Z) is Blocks.Dirt or Blocks.Grass).ToList();
-            parts.Add(planted.Count == 0 ? "no planted sapling" : $"{planted.Count} sapling{(planted.Count == 1 ? "" : "s")}: " + scan.List(planted));
-        }
+        if (q.Asked("sapling", "tree")) parts.Add(Saplings(w, scan));
         if (q.Asked("crop", "wheat", "farm", "ripe", "unripe", "grown", "mature", "harvest", "replant"))
             parts.Add(Crops(scan.Crops, scan.Farmland, scan.List));
         if (q.Asked("chest") && Chests(w, scan.Chests, scan.Distance) is { } ch) parts.Add(ch);
         else if (q.Asked("chest") && !q.All) parts.Add("no chest");
         NamedParts(scan, q, parts);
-        if (q.Text.Contains("chest") && (q.Text.Contains("item") || q.Text.Contains("in it") || q.Text.Contains("contain")))
-            parts.Add("contents aren't visible from outside: open it or check the chest memory");
+        if (q.AsksChestContents) parts.Add("contents aren't visible from outside: open it or check the chest memory");
         return parts.Count == 0 ? $"nothing of that within {r} of {P(f)}" : string.Join(" | ", parts) + $" (within {r} of {P(f)})";
+    }
+
+    /// <summary>Saplings planted on dirt or grass.</summary>
+    private static string Saplings(IBlockAccess w, ThingsScan scan)
+    {
+        var planted = scan.Saplings.Where(s => w.GetBlock(s.X, s.Y - 1, s.Z) is Blocks.Dirt or Blocks.Grass).ToList();
+        return planted.Count == 0 ? "no planted sapling" : $"{planted.Count} sapling{(planted.Count == 1 ? "" : "s")}: " + scan.List(planted);
     }
 
     /// <summary>A Things question: which kinds it names (none named = all of them).</summary>
@@ -37,6 +39,10 @@ public static partial class VisionRouter
         public bool All { get; } = !ThingsRx().IsMatch(lower);
 
         public bool Asked(params string[] words) => All || words.Any(word => Regex.IsMatch(Text, $@"\b{word}"));
+
+        /// <summary>What's inside a chest: never visible from outside.</summary>
+        public bool AsksChestContents =>
+            Text.Contains("chest") && (Text.Contains("item") || Text.Contains("in it") || Text.Contains("contain"));
     }
 
     /// <summary>Grown trees (ours left unfinished first), then bare log columns without a crown or soil.</summary>

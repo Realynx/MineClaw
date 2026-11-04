@@ -26,11 +26,8 @@ internal sealed class HarvestGeneratorTool(IGameClient c, IPlaceResolver places,
         var (cell, note, standingBy) = await PickOrQueueAsync(g, ct).ConfigureAwait(false);
         if (standingBy != null) return standingBy;
         if (cell is not { } pick) return ToolResult.Error(note ?? $"no free dig cell at {Locations.Fmt(g)}");
-        if (autoNote != null) note = note == null ? autoNote : autoNote + "; " + note;
-        // Only a generator cell (lava + water next to it, or a taught/regen-confirmed one) is ever dug here.
-        // (A named place is a taught key; the yield guard still stops on a wrong one.)
-        if (Locations.ParseCoords(at) != null && !GameToolSet.IsGeneratorCell(c, pick, generatorCells))
-            return ToolResult.Error($"{Locations.Fmt(pick)} isn't a generator cell (no lava and water next to it): need the right cell");
+        note = AutoFirst(autoNote, note);
+        if (NotACell(at, pick) is { } notCell) return notCell;
         var (store, storeError) = ResolveStore(i.Str("store"), at);
         if (storeError != null) return storeError;
         // Taught stand spot (B12/B21): dig the cell only from where the player stood in the demo, staying put there.
@@ -44,6 +41,17 @@ internal sealed class HarvestGeneratorTool(IGameClient c, IPlaceResolver places,
         r = GameToolSet.AskOnceIfEnclosed(r, pick);
         return note == null ? r : r with { Text = note + "; " + r.Text };
     }
+
+    /// <summary>The auto pick's note leads the cell note.</summary>
+    private static string? AutoFirst(string? autoNote, string? note) =>
+        autoNote == null ? note : note == null ? autoNote : autoNote + "; " + note;
+
+    /// <summary>Only a generator cell (lava + water next to it, or a taught/regen-confirmed one) is ever dug at coordinates.
+    /// (A named place is a taught key; the yield guard still stops on a wrong one.)</summary>
+    private ToolResult? NotACell(string at, BlockPos pick) =>
+        Locations.ParseCoords(at) != null && !GameToolSet.IsGeneratorCell(c, pick, generatorCells)
+            ? ToolResult.Error($"{Locations.Fmt(pick)} isn't a generator cell (no lava and water next to it): need the right cell")
+            : null;
 
     /// <summary>The asked generator cell, or for at=auto a distinct free taught/confirmed one through the claim board (several bots
     /// running one script, live 10-28: hive_acff51 hardcoded 5,64,7 for all three clones). <c>At</c> is the auto cell's coords.</summary>

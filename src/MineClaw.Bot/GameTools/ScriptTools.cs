@@ -362,49 +362,71 @@ public sealed partial class ScriptBridge
     internal GameEvent? Gate(GameEvent e)
     {
         var s = Controller.Current;
-        // A crew this brain coordinates bodiless (script{name, body:"all"}, a hive spawned onto a script): its idle check-ins are
-        // dropped as for its own running script; everything else wakes as usual (it isn't asleep: it may talk and work meanwhile).
-        if (s == null && !_posting && Body == null && e.Kind == EventKind.IdleTick && !_crewRuns.IsEmpty) return null;
+        if (DropsCrewIdle(s, e)) return null;
         if (s == null || _posting) return e;
         var se = Map(e);
         // Several bodies: another body's event, or chat that isn't this lane's, is not this lane's to sleep on.
-        if (se == null && (Body != null || Addressed != null))
-        {
-            bool chat = e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote;
-            if (chat ? OwnChat(e) != ChatOwner.Named || Body != null : !OwnBody(e)) return e;
-        }
+        if (se == null && NotThisLane(e)) return e;
         if (se != null)
         {
-            if (se.Kind is not ScriptEventKind.Stop and not ScriptEventKind.Join && s.Status != ScriptStatus.Paused && s.HasHandler(se))
-            {
-                s.Deliver(se);
-                return e with { Wakes = false }; // the script handles it; brain stays asleep (it's context next time)
-            }
-            // A danger the script will try to fix inline (onInterrupt / learned handler / patch turn): the brain's wake waits for
-            // the outcome; an escalation pauses as before and its "script paused" notice wakes the brain with this event as context.
-            if (se.Kind == ScriptEventKind.Danger && s.Status != ScriptStatus.Paused
-                && (s.PatchingKind is { } fixing ? string.Equals(fixing, se.Topic ?? "danger", StringComparison.OrdinalIgnoreCase) && se.Player == null
-                    : s.WouldPatch(new ScriptInterrupt(se.Topic ?? "danger", se.Text, se.Player))))
-            {
-                s.Deliver(se);
-                return e with { Wakes = false };
-            }
-            // A trusted player's line that tweaks the running job ("make it 32", "use the other chest"): a patch retunes it.
-            if (se.Kind == ScriptEventKind.Chat && s.Status != ScriptStatus.Paused && Trusted(se.Player)
-                && ScriptPatcher.LooksLikeTweak(se.Text, ParamNames(s)) && s.WouldPatch(new ScriptInterrupt("chat", se.Text, se.Player))
-                && Hold(s, "chat", e) && s.RequestInterrupt(new ScriptInterrupt("chat", se.Text, se.Player), cut: false))
-                return e with { Wakes = false };
+            if (se.Kind != ScriptEventKind.Join) return GateScriptEvent(s, se, e);
             s.Deliver(se);
-            // An unattended run (a crew lane) pauses on its body's danger and carries on by itself once the reflexes let go: the
-            // coordinator's business, not a brain wake (20 bodies fighting zombies were 20 wakes).
-            if (se.Kind == ScriptEventKind.Danger && s.Unattended) return e with { Wakes = false };
-            if (se.Kind != ScriptEventKind.Join) return e;
         }
-        // The stall watchdog on a running script: a patch may unstick it (restart the step, step aside) before the brain hears it.
-        if (e.Kind == EventKind.Notice && e.Text.StartsWith("stalled: ", StringComparison.Ordinal) && s.Status != ScriptStatus.Paused
-            && s.Patching == null && s.WouldPatch(new ScriptInterrupt("stuck", e.Text))
-            && Hold(s, "stuck", e with { Wakes = true }) && s.RequestInterrupt(new ScriptInterrupt("stuck", e.Text), cut: true))
+        return GateOther(s, e);
+    }
+
+    /// <summary>A crew this brain coordinates bodiless (script{name, body:"all"}, a hive spawned onto a script): its idle check-ins
+    /// are dropped as for its own running script; everything else wakes as usual (it isn't asleep: it may talk and work meanwhile).</summary>
+    private bool DropsCrewIdle(ScriptSession? s, GameEvent e) =>
+        s == null && !_posting && Body == null && e.Kind == EventKind.IdleTick && !_crewRuns.IsEmpty;
+
+    private bool NotThisLane(GameEvent e)
+    {
+        if (Body == null && Addressed == null) return false;
+        bool chat = e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote;
+        return chat ? OwnChat(e) != ChatOwner.Named || Body != null : !OwnBody(e);
+    }
+
+    /// <summary>An event the running script maps (not a join): its handler, an inline danger fix or a job tweak keep the brain
+    /// asleep; anything else is delivered and wakes as usual.</summary>
+    private GameEvent GateScriptEvent(ScriptSession s, ScriptEvent se, GameEvent e)
+    {
+        if (se.Kind != ScriptEventKind.Stop && s.Status != ScriptStatus.Paused && s.HasHandler(se))
+        {
+            s.Deliver(se);
+            return e with { Wakes = false }; // the script handles it; brain stays asleep (it's context next time)
+        }
+        if (FixesDangerInline(s, se))
+        {
+            s.Deliver(se);
             return e with { Wakes = false };
+        }
+        if (TweaksJob(s, se, e)) return e with { Wakes = false };
+        s.Deliver(se);
+        // An unattended run (a crew lane) pauses on its body's danger and carries on by itself once the reflexes let go: the
+        // coordinator's business, not a brain wake (20 bodies fighting zombies were 20 wakes).
+        if (se.Kind == ScriptEventKind.Danger && s.Unattended) return e with { Wakes = false };
+        return e;
+    }
+
+    /// <summary>A danger the script will try to fix inline (onInterrupt / learned handler / patch turn): the brain's wake waits for
+    /// the outcome; an escalation pauses as before and its "script paused" notice wakes the brain with this event as context.</summary>
+    private static bool FixesDangerInline(ScriptSession s, ScriptEvent se) =>
+        se.Kind == ScriptEventKind.Danger && s.Status != ScriptStatus.Paused
+        && (s.PatchingKind is { } fixing ? string.Equals(fixing, se.Topic ?? "danger", StringComparison.OrdinalIgnoreCase) && se.Player == null
+            : s.WouldPatch(new ScriptInterrupt(se.Topic ?? "danger", se.Text, se.Player)));
+
+    /// <summary>A trusted player's line that tweaks the running job ("make it 32", "use the other chest"): a patch retunes it.</summary>
+    private bool TweaksJob(ScriptSession s, ScriptEvent se, GameEvent e) =>
+        se.Kind == ScriptEventKind.Chat && s.Status != ScriptStatus.Paused && Trusted(se.Player)
+        && ScriptPatcher.LooksLikeTweak(se.Text, ParamNames(s)) && s.WouldPatch(new ScriptInterrupt("chat", se.Text, se.Player))
+        && Hold(s, "chat", e) && s.RequestInterrupt(new ScriptInterrupt("chat", se.Text, se.Player), cut: false);
+
+    /// <summary>Everything the script doesn't map (or a join): a stall patch, task ends and real wakes wake the brain; idle
+    /// check-ins are dropped; the rest stays queued as non-waking context.</summary>
+    private GameEvent? GateOther(ScriptSession s, GameEvent e)
+    {
+        if (StallPatched(s, e)) return e with { Wakes = false };
         if (s.Status == ScriptStatus.Paused) return e; // a paused script means the brain is awake
         if (e.Kind == EventKind.IdleTick) return null;
         if (e.Kind is EventKind.TaskCompleted or EventKind.TaskFailed) return e;
@@ -413,36 +435,55 @@ public sealed partial class ScriptBridge
         return e.Wakes ? e with { Wakes = false } : e;
     }
 
+    /// <summary>The stall watchdog on a running script: a patch may unstick it (restart the step, step aside) before the brain hears it.</summary>
+    private bool StallPatched(ScriptSession s, GameEvent e) =>
+        e.Kind == EventKind.Notice && e.Text.StartsWith("stalled: ", StringComparison.Ordinal) && s.Status != ScriptStatus.Paused
+        && s.Patching == null && s.WouldPatch(new ScriptInterrupt("stuck", e.Text))
+        && Hold(s, "stuck", e with { Wakes = true }) && s.RequestInterrupt(new ScriptInterrupt("stuck", e.Text), cut: true);
+
     // ------------------------------------------------------------------ events → interrupt policy
 
     private ScriptEvent? Map(GameEvent e)
     {
         if (e.Kind is EventKind.TaskCompleted or EventKind.TaskFailed or EventKind.TaskProgress) return null;
         if (e.Kind == EventKind.PlayerJoined && e.Player != null) return new ScriptEvent(ScriptEventKind.Join, e.Text, e.Player);
-        bool chat = e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote;
-        if (chat)
-        {
-            if (!e.Wakes || e.Priority < EventPriority.Normal || e.Player == null) return null;
-            if (string.Equals(e.Player, _client.Username, StringComparison.OrdinalIgnoreCase) || _rt.Chat.IsHiveBot?.Invoke(e.Player) == true) return null;
-            // Several bodies: "67 stop" is lane 67's only; a line for 69 never pauses 67; a plain trusted "stop" stops every lane.
-            var owner = OwnChat(e);
-            if (owner == ChatOwner.Other) return null;
-            bool trusted = _rt.Options.Self.TrustedPlayers.Any(p => string.Equals(p, e.Player, StringComparison.OrdinalIgnoreCase));
-            // "claudechan stop" / "wait!" / "both of you stop": the bot's name and filler don't hide a trusted stop.
-            string[] names = Body is { Length: > 0 } me ? [me, _client.Username, .. LaneNames(me)] : [_rt.Chat.Username, _rt.Chat.DisplayName, .. _rt.Chat.Aliases];
-            bool stop = trusted && (StopWord.IsMatch(e.Text) || StopWord.IsMatch(Agent.Brainstem.IntentMatcher.Normalize(e.Text, names))
-                || Agent.Brainstem.IntentMatcher.Reflex(e.Text, names).Kind == Agent.Brainstem.IntentKind.Stop);
-            if (owner == ChatOwner.Unnamed && !stop) return null; // chat for the brain: a clone lane keeps working
-            return new ScriptEvent(stop ? ScriptEventKind.Stop : ScriptEventKind.Chat, e.Text, e.Player);
-        }
+        if (e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote) return MapChat(e);
+        return MapDanger(e);
+    }
+
+    private ScriptEvent? MapChat(GameEvent e)
+    {
+        if (!e.Wakes || e.Priority < EventPriority.Normal || e.Player == null) return null;
+        if (string.Equals(e.Player, _client.Username, StringComparison.OrdinalIgnoreCase) || _rt.Chat.IsHiveBot?.Invoke(e.Player) == true) return null;
+        // Several bodies: "67 stop" is lane 67's only; a line for 69 never pauses 67; a plain trusted "stop" stops every lane.
+        var owner = OwnChat(e);
+        if (owner == ChatOwner.Other) return null;
+        bool stop = TrustedStop(e);
+        if (owner == ChatOwner.Unnamed && !stop) return null; // chat for the brain: a clone lane keeps working
+        return new ScriptEvent(stop ? ScriptEventKind.Stop : ScriptEventKind.Chat, e.Text, e.Player);
+    }
+
+    /// <summary>"claudechan stop" / "wait!" / "both of you stop" from a trusted player: the bot's name and filler don't hide it.</summary>
+    private bool TrustedStop(GameEvent e)
+    {
+        if (!Trusted(e.Player)) return false;
+        string[] names = Body is { Length: > 0 } me ? [me, _client.Username, .. LaneNames(me)] : [_rt.Chat.Username, _rt.Chat.DisplayName, .. _rt.Chat.Aliases];
+        return StopWord.IsMatch(e.Text) || StopWord.IsMatch(Agent.Brainstem.IntentMatcher.Normalize(e.Text, names))
+            || Agent.Brainstem.IntentMatcher.Reflex(e.Text, names).Kind == Agent.Brainstem.IntentKind.Stop;
+    }
+
+    private ScriptEvent? MapDanger(GameEvent e)
+    {
         // Several bodies: only this lane's own body's danger interrupts it (69's danger never pauses 67's script).
         if ((Body != null || Addressed != null) && !OwnBody(e)) return null;
         bool danger = e.Kind is EventKind.LowHealth or EventKind.VoidFall or EventKind.Death
             || (e.Wakes && e.Priority >= _rt.Options.InterruptPriority);
-        // The topic lets a machine or policy react to the kind of danger (on: {lowhp: 'retreat', void: 'flee', died: 'regroup'}).
-        var topic = e.Kind switch { EventKind.LowHealth => "lowhp", EventKind.VoidFall => "void", EventKind.Death => "died", _ => null };
-        return danger ? new ScriptEvent(ScriptEventKind.Danger, e.Format(), e.Player, topic) : null;
+        return danger ? new ScriptEvent(ScriptEventKind.Danger, e.Format(), e.Player, DangerTopic(e.Kind)) : null;
     }
+
+    /// <summary>The topic lets a machine or policy react to the kind of danger (on: {lowhp: 'retreat', void: 'flee', died: 'regroup'}).</summary>
+    private static string? DangerTopic(EventKind kind) =>
+        kind switch { EventKind.LowHealth => "lowhp", EventKind.VoidFall => "void", EventKind.Death => "died", _ => null };
 
     private bool Trusted(string? player) =>
         player != null && _rt.Options.Self.TrustedPlayers.Any(p => string.Equals(p, player, StringComparison.OrdinalIgnoreCase));
