@@ -22,8 +22,9 @@ public sealed partial class StoryColony
     private readonly Dictionary<string, string> _idleReason = new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset _idleAudit = DateTimeOffset.MinValue;
 
-    /// <summary>What a pawn's last work search saw: when, whether it found a job, and what held work of its kinds back.</summary>
-    private sealed record Look(DateTimeOffset At, bool Found, List<string> Blocked);
+    /// <summary>What a pawn's last work search saw: when, whether it found a job, what held work of its kinds back, and why it passed
+    /// over designations that are free and not resting (<see cref="NoReach"/>: the audit's "no reachable target: …").</summary>
+    private sealed record Look(DateTimeOffset At, bool Found, List<string> Blocked, string? NoReach = null);
 
     private readonly Dictionary<string, Look> _looks = new(StringComparer.OrdinalIgnoreCase);
 
@@ -70,7 +71,7 @@ public sealed partial class StoryColony
         if (_stuck.ContainsKey(p.Name)) return "stuck";
         var look = FreshLook(p.Name);
         if (look is { Found: true }) return "work not taken yet";
-        if (MarksIdleReason(p) is { } why) return why;
+        if (MarksIdleReason(p, look) is { } why) return why;
         // What its last search found held back: a build short of something, a suspended bill, a busy bench.
         if (look is { Blocked: [var first, ..] }) return "waiting: " + first;
         kinds ??= WorkKindsWithWork();
@@ -107,12 +108,13 @@ public sealed partial class StoryColony
     [Flags]
     private enum MarkSeen { None = 0, Waiting = 1, Leased = 2, BackingOff = 4, Open = 8 }
 
-    /// <summary>Its designations: why none of them is for it (null = it has none to do).</summary>
-    private string? MarksIdleReason(PawnState p)
+    /// <summary>Its designations: why none of them is for it (null = it has none to do). Free, not resting, yet not taken: what its
+    /// own last search passed them over for (<see cref="MarkPass"/>), else plain "no reachable target".</summary>
+    private string? MarksIdleReason(PawnState p, Look? look)
     {
         var seen = MarkSeen.None;
         foreach (var d in Designations) seen |= MarkSeenBy(p, d);
-        if ((seen & MarkSeen.Open) != 0) return RestLeft(p) != null ? "back-off rest" : "no reachable target";
+        if ((seen & MarkSeen.Open) != 0) return RestLeft(p) != null ? "back-off rest" : look?.NoReach ?? "no reachable target";
         if ((seen & MarkSeen.BackingOff) != 0) return "targets backing off";
         if ((seen & MarkSeen.Waiting) != 0) return "tool waiting";
         if ((seen & MarkSeen.Leased) != 0) return "all targets leased";
@@ -132,6 +134,55 @@ public sealed partial class StoryColony
     /// <summary>An open (or tool-waiting) designation of a work type the pawn does.</summary>
     private static bool MarkOfItsWork(PawnState p, DesignationState d) =>
         d.Status is null or "open" or "waiting" && WorkOf(d.Kind) is { Length: > 0 } wt && p.Priorities.GetValueOrDefault(wt) is >= 1 and <= 4;
+
+    // ---------------------------------------------------------------- why a search passed over open marks
+
+    /// <summary>
+    /// Why a work search passed over a designation that is free and not resting: what the audit's one pass over the designations
+    /// can't see (live 11-04 story-1: "no reachable target" 150-340 pawn-seconds a minute, all evening, with nothing to say which marks
+    /// or why). Counted per search without allocating; the most common one becomes the look's <see cref="Look.NoReach"/>, with the
+    /// first such mark's kind and cell.
+    /// </summary>
+    internal enum MarkPass { Buried, Underfoot, Cave, StuckSpot, Forbidden, LeftToSurface, OutOfSight }
+
+    private static readonly string[] MarkPassText =
+    [
+        "buried (dug once a cell over or beside it is gone)", "under someone's feet", "in a cave (surface work)",
+        "by a spot where a pawn got stuck", "forbidden", "left to a pawn up top (this one is under ground)", "out of sight",
+    ];
+
+    private readonly int[] _passed = new int[MarkPassText.Length];
+    private readonly (string Kind, P3? At)[] _passedFirst = new (string, P3?)[MarkPassText.Length];
+    private readonly Dictionary<(MarkPass, string, P3?), string> _noReachText = new();
+
+    /// <summary>A search passed over an open mark of <paramref name="kind"/> (at <paramref name="at"/>, when it has a cell).</summary>
+    private void PassedMark(MarkPass why, string kind, P3? at)
+    {
+        int i = (int)why;
+        if (_passed[i]++ == 0) _passedFirst[i] = (kind, at);
+    }
+
+    /// <summary>"no reachable target: mine 4,60,2: buried (…)": the search's most common pass (null = it passed over none).</summary>
+    private string? NoReachNote()
+    {
+        int best = -1;
+        for (int i = 0; i < _passed.Length; i++) if (_passed[i] > 0 && (best < 0 || _passed[i] > _passed[best])) best = i;
+        if (best < 0) return null;
+        var (kind, at) = _passedFirst[best];
+        var key = ((MarkPass)best, kind, at);
+        if (_noReachText.TryGetValue(key, out var text)) return text;
+        if (_noReachText.Count > 256) _noReachText.Clear();
+        return _noReachText[key] = $"no reachable target: {kind}{(at is { } c ? " " + c : "")}: {MarkPassText[best]}";
+    }
+
+    /// <summary>Entity marks of <paramref name="kind"/> (haul, hunt) whose entity isn't in <paramref name="inView"/> (null: none is) or is
+    /// forbidden: the audit counts them open, the search never sees them.</summary>
+    private void PassedEntityMarks(string kind, IReadOnlyDictionary<int, StoryEntity>? inView)
+    {
+        foreach (var d in Designations)
+            if (d.Kind == kind && d.Entity is { } id && (inView == null || !inView.ContainsKey(id) || ForbiddenEntity(id)))
+                PassedMark(ForbiddenEntity(id) ? MarkPass.Forbidden : MarkPass.OutOfSight, kind, d.At);
+    }
 
     /// <summary>The work types the colony has something to do for now: designations, builds with cells to do, bills that are wanted.</summary>
     private HashSet<string> WorkKindsWithWork()

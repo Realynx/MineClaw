@@ -280,12 +280,13 @@ public sealed partial class StoryColony
         var from = live.Block;
         var ents = Ents();
         var items = ents.Where(e => e.Kind == "item").ToList();
-        if (items.Count == 0) return null;
+        if (items.Count == 0) { if (!riskOnly) PassedEntityMarks("haul", null); return null; }
         if (!riskOnly)
         {
             var byId = items.Where(e => !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
             var d = Designations.Where(x => x.Kind == "haul" && x.Entity is { } id && byId.ContainsKey(id) && Open("e:" + id, p.Name, null))
                 .OrderBy(x => byId[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
+            if (d == null) PassedEntityMarks("haul", byId); // marked drops out of sight: the idle audit says so
             if (d != null)
             {
                 var de = byId[d.Entity!.Value];
@@ -326,6 +327,39 @@ public sealed partial class StoryColony
             j => j["r"] = Math.Clamp((int)Math.Ceiling(reach) + 2, 3, 8), xp: 5);
         foreach (var c in batch) job.MoreLeases.Add("e:" + c.E.Id);
         return job;
+    }
+
+    // ---------------------------------------------------------------- a collect that found nothing
+
+    /// <summary>A drop collect (the standing task or a haul designation) that got there and picked up nothing ("no reachable drops
+    /// nearby").</summary>
+    internal static bool NoDropReached(ActiveJob j, string why) =>
+        j is { Kind: "collect", Source: "drop" or "designation" } && why.StartsWith("no reachable drops", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Nothing picked up and nothing written off by the pawn's own safety checks (no "; 1 drop(s) left near the void"): it may
+    /// be this pawn's miss (where it got to, its pockets), so the drop rests for it first (<see cref="MissOf"/>).</summary>
+    internal static bool DropMissed(ActiveJob j, string why) => NoDropReached(j, why) && !why.Contains(';');
+
+    /// <summary>
+    /// A collect that found nothing because none of its drops is in the colony's view any more (another pawn or a player picked them
+    /// up on the way, they merged into another stack, they despawned): nothing failed, no rest for the pawn or the drops (live 11-04
+    /// story-1: "collect … failed: no reachable drops nearby" ×36 in 4 minutes on the farm, each one a failure the pawn rested for).
+    /// One still in view is the pawn's own miss first (<see cref="MissOf"/>): only when several pawns can't reach it does it rest for all.
+    /// </summary>
+    private bool DropsGone(ActiveJob j, string why)
+    {
+        if (!NoDropReached(j, why) || World is not { } w || j.Lease is not { } lease) return false;
+        var ents = w.Entities();
+        if (DropInView(ents, lease)) return false;
+        foreach (var more in j.MoreLeases) if (DropInView(ents, more)) return false;
+        return true;
+    }
+
+    private static bool DropInView(IReadOnlyList<StoryEntity> ents, string lease)
+    {
+        if (!lease.StartsWith("e:", StringComparison.Ordinal) || !int.TryParse(lease.AsSpan(2), out var id)) return true; // not a drop: can't tell
+        foreach (var e in ents) if (e.Id == id) return true;
+        return false;
     }
 
     // ---------------------------------------------------------------- re-sorting chests
