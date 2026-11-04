@@ -350,6 +350,12 @@ function seedsOf(stock: ReadonlyMap<string, number>, plant: StoryPlant, needed: 
   };
 }
 
+/** A growing zone with a plant or bills (else it reports nothing). */
+const isGrowing = (z: StoryZone) => z.kind === 'farm' && (!!z.plant || !!z.bills);
+
+/** A zone's cell count (its area's when it has no cell set). */
+const zoneCellCount = (z: StoryZone) => z.cells ?? (z.area[3] - z.area[0] + 1) * (z.area[5] - z.area[2] + 1);
+
 /** The plant a growing zone sows now: its active bill's (with bills), else its plant. */
 function sownPlant(z: StoryZone, active: StoryGrowBill | null): StoryPlant | undefined {
   const id = z.bills ? (active?.plant ?? null) : (z.plant ?? null);
@@ -1324,13 +1330,18 @@ export class StorySim {
   /** A growing zone's fields as the bot reports them (mock: nothing grows; seeds from the colony's stock). */
   private growStatus(c: Colony, z: StoryZone): StoryZone {
     if (z.kind === 'mine') return this.quarryStatus(z);
-    if (z.kind !== 'farm' || (!z.plant && !z.bills)) return z;
-    const cells = z.cells ?? (z.area[3] - z.area[0] + 1) * (z.area[5] - z.area[2] + 1);
+    if (!isGrowing(z)) return z;
+    const cells = zoneCellCount(z);
     const active = z.bills ? this.activeBill(c, z) : null;
     const plant = sownPlant(z, active);
-    const bills = z.bills?.map((b) => this.growBillRow(c, b, active, cells));
-    const base = { ...z, ...(bills ? { bills, activeBill: active?.id ?? null } : {}), activePlant: plant?.id ?? null };
+    const base = { ...this.withBillRows(c, z, active, cells), activePlant: plant?.id ?? null };
     return plant ? sowingStatus(base, c.stock, plant, cells) : idleGrowStatus(base, z.bills?.length ?? 0);
+  }
+
+  /** The zone with its bills as rows and the active bill's id (a zone without bills as it is). */
+  private withBillRows(c: Colony, z: StoryZone, active: StoryGrowBill | null, cells: number): StoryZone {
+    if (!z.bills) return { ...z };
+    return { ...z, bills: z.bills.map((b) => this.growBillRow(c, b, active, cells)), activeBill: active?.id ?? null };
   }
 
   /** A planting bill as the zone reports it: its label, met / active, the stored produce (until), its seeds. */
