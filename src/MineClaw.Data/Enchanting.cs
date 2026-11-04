@@ -79,25 +79,42 @@ public static class Enchanting
     {
         if (e.Treasure && !anvil) return false;
         if (item is "book" or "enchanted_book") return true;
-        bool sword = Is(item, "sword"), tool = Tools.Any(t => Is(item, t)) || anvil && item == "shears" && e.Name == "efficiency";
-        bool damageable = sword || tool || IsArmour(item) || item is "bow" or "fishing_rod" or "shears" or "flint_and_steel" or "carrot_on_a_stick"
-            or "elytra" or "shield" || Is(item, "hoe");
-        return e.Category switch
-        {
-            "armor" => IsArmour(item),
-            "armor_feet" => Is(item, "boots"),
-            "armor_head" => Is(item, "helmet"),
-            "armor_chest" => Is(item, "chestplate"),
-            "wearable" => IsArmour(item) || item is "elytra" or "pumpkin" or "skull",
-            "weapon" => sword || anvil && Is(item, "axe") && e.Name is "sharpness" or "smite" or "bane_of_arthropods",
-            "digger" => tool,
-            "breakable" => damageable,
-            "bow" => item == "bow",
-            "fishing_rod" => item == "fishing_rod",
-            "vanishable" => damageable || item is "pumpkin" or "skull",
-            _ => false,
-        };
+        return e.Category is { } category && CategoryFits.TryGetValue(category, out var fits) && fits(new FitCheck(e, item, anvil));
     }
+
+    /// <summary>One enchantment against one item, with the item kinds the categories ask about.</summary>
+    private readonly record struct FitCheck(EnchantmentInfo E, string Item, bool Anvil)
+    {
+        public bool Sword => Is(Item, "sword");
+
+        /// <summary>A digging tool (efficiency also goes on shears through an anvil).</summary>
+        public bool Tool => IsTool(Item) || Anvil && Item == "shears" && E.Name == "efficiency";
+
+        public bool Damageable => Sword || Tool || IsArmour(Item) || OtherDamageable.Contains(Item) || Is(Item, "hoe");
+
+        public bool Armour => IsArmour(Item);
+    }
+
+    private static bool IsTool(string item) => Tools.Any(t => Is(item, t));
+
+    private static readonly HashSet<string> OtherDamageable = ["bow", "fishing_rod", "shears", "flint_and_steel", "carrot_on_a_stick", "elytra", "shield"];
+    private static readonly HashSet<string> SwordOnlyOnAxes = ["sharpness", "smite", "bane_of_arthropods"];
+
+    /// <summary>What each enchantment category goes on.</summary>
+    private static readonly Dictionary<string, Func<FitCheck, bool>> CategoryFits = new()
+    {
+        ["armor"] = f => f.Armour,
+        ["armor_feet"] = f => Is(f.Item, "boots"),
+        ["armor_head"] = f => Is(f.Item, "helmet"),
+        ["armor_chest"] = f => Is(f.Item, "chestplate"),
+        ["wearable"] = f => f.Armour || f.Item is "elytra" or "pumpkin" or "skull",
+        ["weapon"] = f => f.Sword || f.Anvil && Is(f.Item, "axe") && SwordOnlyOnAxes.Contains(f.E.Name),
+        ["digger"] = f => f.Tool,
+        ["breakable"] = f => f.Damageable,
+        ["bow"] = f => f.Item == "bow",
+        ["fishing_rod"] = f => f.Item == "fishing_rod",
+        ["vanishable"] = f => f.Damageable || f.Item is "pumpkin" or "skull",
+    };
 
     /// <summary>The enchantments the table can put on <paramref name="item"/>.</summary>
     public static IEnumerable<EnchantmentInfo> TableEnchantments(string item) => All.Where(e => Fits(e, item));

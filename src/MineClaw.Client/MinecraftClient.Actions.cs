@@ -233,98 +233,143 @@ public sealed partial class MinecraftClient
         if (!o.AllowPlace && GoalOverVoid(goal) is { } overVoid) return ActionResult.Fail(overVoid);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(o.Timeout);
-        var token = timeout.Token;
-        int replans = 0, airWaits = 0;
-        string? lastFailure = null;
         // Jumps that failed in the last few gotos stay avoided (live 10-28, 67: three gotos in a row climbed out of the basement
         // and took the same gap jump that dropped it back down).
-        var blockedJumps = RecentBlockedJumps();
-        var lockedDoors = new HashSet<BlockPos>();
-        var jumps = new List<ParkourPlan>();
-        // Moves the body got stuck on (live 10-28: every re-plan chose the same step off the gen slab into a leaf block at head
-        // height): never planned again this goto; the second stuck at the same spot also tries an escape move.
-        var avoidMoves = new HashSet<(BlockPos From, BlockPos To)>();
-        var stuck = new StuckNote();
-        Vec3d? stuckSpot = null;
-        int stuckHere = 0;
-        var scaffoldBefore = o.AllowPlace ? ScaffoldSnapshot() : null;
-        string crafted = "";
-        string Built() => scaffoldBefore is null ? "" : crafted + ScaffoldUsed(scaffoldBefore, ScaffoldSnapshot());
-        bool craftedPlanks = false;
+        var run = new GotoRun(goal, o, timeout.Token, RecentBlockedJumps()) { ScaffoldBefore = o.AllowPlace ? ScaffoldSnapshot() : null };
         try
         {
             while (true)
-            {
-                var start = World.Player.Position;
-                if (goal.IsReached(Pathfinder.StartCellFor(World, start) ?? start.ToBlockPos()))
-                    return ActionResult.Success($"arrived at {Fmt(start)}{JumpSummary(jumps)}{Built()}");
-
-                var popts = BuildPathOptions(o, lockedDoors);
-                if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
-                if (avoidMoves.Count > 0) popts = popts with { AvoidMoves = avoidMoves.ToHashSet() };
-                if (CreeperAvoidCells(goal) is { Count: > 0 } blast) popts = popts with { Avoid = blast };
-                // The same search failed a moment ago from this cell (nothing changed near it since): not run again (NoRouteCache).
-                var startCell = Pathfinder.StartCellFor(World, start) ?? start.ToBlockPos();
-                var routeKey = NoRouteCache.Key(startCell, goal, o);
-                if (replans == 0 && airWaits == 0 && lastFailure is null && NoRoutes.Get(routeKey) is { } known) return ActionResult.Fail(known);
-                var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
-                if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
-                {
-                    if (path.Status == PathStatus.InvalidStart && airWaits < 12)
-                    {
-                        // Usually mid-air (a pillar jump, a stuck re-plan mid-hop) or a chunk not yet loaded: wait a moment and
-                        // retry. Its own budget: landing must never use up the re-plans.
-                        airWaits++;
-                        // Embedded in a block (a placement that landed in my own feet cell): jump out on top of it.
-                        await EscapeEmbeddedAsync(token).ConfigureAwait(false);
-                        await WaitTicksAsync(10, token).ConfigureAwait(false);
-                        continue;
-                    }
-                    // Short on blocks to climb with but carrying logs: 1 log = 4 planks (2x2 grid, no table), once.
-                    if (o.AllowPlace && !craftedPlanks && await CraftPlanksToBuildAsync(goal, o, start, token).ConfigureAwait(false) is { } made)
-                    {
-                        craftedPlanks = true;
-                        crafted = "; " + made;
-                        scaffoldBefore = ScaffoldSnapshot();
-                        continue;
-                    }
-                    var noRoute = $"no path to {goal} ({path.Reason ?? path.Status.ToString()}{(lastFailure is null ? "" : ", last: " + lastFailure)})"
-                                  + NoRouteHint(goal, o, start, token);
-                    if (path.Status == PathStatus.NoPath && replans == 0) NoRoutes.Put(routeKey, startCell, goal, noRoute);
-                    return ActionResult.Fail(noRoute);
-                }
-                path = await CheckRouteAsync(path, start, goal, o, popts, replans, token).ConfigureAwait(false);
-
-                stuck.Step = null;
-                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors, jumps, stuck).ConfigureAwait(false);
-                if (r is null)
-                {
-                    if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}{JumpSummary(jumps)}{Built()}");
-                    if (++replans > o.MaxReplans) return ActionResult.Fail($"only got partway to {goal}; now at {Fmt(World.Player.Position)}");
-                    continue;
-                }
-                if (r.Contains("void", StringComparison.Ordinal)) return ActionResult.Fail(r);
-                if (r == "stuck" && stuck.Step is { } stuckStep)
-                {
-                    var at = World.Player.Position;
-                    if (stuckSpot is { } sp && Math.Abs(sp.X - at.X) + Math.Abs(sp.Y - at.Y) + Math.Abs(sp.Z - at.Z) < 0.4) stuckHere++;
-                    else { stuckSpot = at; stuckHere = 1; }
-                    if (Pathfinder.StartCellFor(World, at) is { } fromCell) avoidMoves.Add((fromCell, stuckStep.Pos));
-                    if (stuck.From is { } prev) avoidMoves.Add((prev, stuckStep.Pos));
-                    r = "stuck " + DescribeStuck(at, stuckStep);
-                    if (stuckHere >= 2 && await UnstickAsync(stuckStep, token).ConfigureAwait(false) is { } escaped)
-                        r += $" ({stuckHere}x here; {escaped})";
-                }
-                lastFailure = r;
-                if (++replans > o.MaxReplans) return ActionResult.Fail($"{r} (after {replans - 1} re-plans) at {Fmt(World.Player.Position)}");
-                Log($"goto: {r}, re-planning");
-                await WaitTicksAsync(2, token).ConfigureAwait(false);
-            }
+                if (await GotoLegAsync(run).ConfigureAwait(false) is { } done) return done;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             return ActionResult.Fail($"timed out going to {goal}; at {Fmt(World.Player.Position)}");
         }
+    }
+
+    /// <summary>One goto's state across its re-plans.</summary>
+    private sealed class GotoRun(Goal goal, GotoOptions o, CancellationToken token, HashSet<(BlockPos From, BlockPos To)> blockedJumps)
+    {
+        public readonly Goal Goal = goal;
+        public readonly GotoOptions O = o;
+        public readonly CancellationToken Token = token;
+        public readonly HashSet<(BlockPos From, BlockPos To)> BlockedJumps = blockedJumps;
+        public readonly HashSet<BlockPos> LockedDoors = new();
+        public readonly List<ParkourPlan> Jumps = new();
+        /// <summary>Moves the body got stuck on (live 10-28: every re-plan chose the same step off the gen slab into a leaf block at
+        /// head height): never planned again this goto; the second stuck at the same spot also tries an escape move.</summary>
+        public readonly HashSet<(BlockPos From, BlockPos To)> AvoidMoves = new();
+        public readonly StuckNote Stuck = new();
+        public int Replans, AirWaits, StuckHere;
+        public string? LastFailure;
+        public Vec3d? StuckSpot;
+        public Dictionary<int, int>? ScaffoldBefore;
+        public string Crafted = "";
+        public bool CraftedPlanks;
+    }
+
+    /// <summary>What the goto built on the way (planks it crafted, scaffold blocks it used).</summary>
+    private string GotoBuilt(GotoRun run) => run.ScaffoldBefore is null ? "" : run.Crafted + ScaffoldUsed(run.ScaffoldBefore, ScaffoldSnapshot());
+
+    private BlockPos GotoStartCell(Vec3d start) => Pathfinder.StartCellFor(World, start) ?? start.ToBlockPos();
+
+    /// <summary>One plan and walk; null = re-plan, else the goto's result.</summary>
+    private async Task<ActionResult?> GotoLegAsync(GotoRun run)
+    {
+        var start = World.Player.Position;
+        if (run.Goal.IsReached(GotoStartCell(start)))
+            return ActionResult.Success($"arrived at {Fmt(start)}{JumpSummary(run.Jumps)}{GotoBuilt(run)}");
+        var popts = GotoPathOptions(run);
+        // The same search failed a moment ago from this cell (nothing changed near it since): not run again (NoRouteCache).
+        var startCell = GotoStartCell(start);
+        var routeKey = NoRouteCache.Key(startCell, run.Goal, run.O);
+        if (KnownNoRoute(run, routeKey) is { } known) return ActionResult.Fail(known);
+        var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, run.Goal, popts, run.Token), run.Token).ConfigureAwait(false);
+        if (IsNoPath(path)) return await GotoNoPathAsync(run, path, start, startCell, routeKey).ConfigureAwait(false);
+        path = await CheckRouteAsync(path, start, run.Goal, run.O, popts, run.Replans, run.Token).ConfigureAwait(false);
+
+        run.Stuck.Step = null;
+        var r = await FollowPathAsync(path.Steps, run.O, run.Token, run.BlockedJumps, run.LockedDoors, run.Jumps, run.Stuck).ConfigureAwait(false);
+        if (r is null) return GotoWalked(run, path);
+        return await GotoLegFailedAsync(run, r).ConfigureAwait(false);
+    }
+
+    private PathOptions GotoPathOptions(GotoRun run)
+    {
+        var popts = BuildPathOptions(run.O, run.LockedDoors);
+        if (run.BlockedJumps.Count > 0) popts = popts with { AvoidJumps = run.BlockedJumps.ToHashSet() };
+        if (run.AvoidMoves.Count > 0) popts = popts with { AvoidMoves = run.AvoidMoves.ToHashSet() };
+        if (CreeperAvoidCells(run.Goal) is { Count: > 0 } blast) popts = popts with { Avoid = blast };
+        return popts;
+    }
+
+    /// <summary>The cached no-route answer, only for the goto's first search.</summary>
+    private string? KnownNoRoute(GotoRun run, string routeKey) =>
+        run.Replans == 0 && run.AirWaits == 0 && run.LastFailure is null ? NoRoutes.Get(routeKey) : null;
+
+    private static bool IsNoPath(PathResult path) =>
+        path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0;
+
+    /// <summary>No route: mid-air or embedded (wait and retry), short on blocks to climb with but carrying logs (craft planks, once),
+    /// else the failure (cached when it was the first search).</summary>
+    private async Task<ActionResult?> GotoNoPathAsync(GotoRun run, PathResult path, Vec3d start, BlockPos startCell, string routeKey)
+    {
+        if (path.Status == PathStatus.InvalidStart && run.AirWaits < 12)
+        {
+            // Usually mid-air (a pillar jump, a stuck re-plan mid-hop) or a chunk not yet loaded: wait a moment and
+            // retry. Its own budget: landing must never use up the re-plans.
+            run.AirWaits++;
+            // Embedded in a block (a placement that landed in my own feet cell): jump out on top of it.
+            await EscapeEmbeddedAsync(run.Token).ConfigureAwait(false);
+            await WaitTicksAsync(10, run.Token).ConfigureAwait(false);
+            return null;
+        }
+        // Short on blocks to climb with but carrying logs: 1 log = 4 planks (2x2 grid, no table), once.
+        if (run.O.AllowPlace && !run.CraftedPlanks && await CraftPlanksToBuildAsync(run.Goal, run.O, start, run.Token).ConfigureAwait(false) is { } made)
+        {
+            run.CraftedPlanks = true;
+            run.Crafted = "; " + made;
+            run.ScaffoldBefore = ScaffoldSnapshot();
+            return null;
+        }
+        var noRoute = $"no path to {run.Goal} ({path.Reason ?? path.Status.ToString()}{(run.LastFailure is null ? "" : ", last: " + run.LastFailure)})"
+                      + NoRouteHint(run.Goal, run.O, start, run.Token);
+        if (path.Status == PathStatus.NoPath && run.Replans == 0) NoRoutes.Put(routeKey, startCell, run.Goal, noRoute);
+        return ActionResult.Fail(noRoute);
+    }
+
+    /// <summary>The walk ended where the path did: arrived when the path reached the goal, else (a partial path) re-plan.</summary>
+    private ActionResult? GotoWalked(GotoRun run, PathResult path)
+    {
+        if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}{JumpSummary(run.Jumps)}{GotoBuilt(run)}");
+        if (++run.Replans > run.O.MaxReplans) return ActionResult.Fail($"only got partway to {run.Goal}; now at {Fmt(World.Player.Position)}");
+        return null;
+    }
+
+    /// <summary>The walk failed: the void ends the goto; a stuck move is avoided from now on; else re-plan (within the budget).</summary>
+    private async Task<ActionResult?> GotoLegFailedAsync(GotoRun run, string r)
+    {
+        if (r.Contains("void", StringComparison.Ordinal)) return ActionResult.Fail(r);
+        if (r == "stuck" && run.Stuck.Step is { } stuckStep) r = await GotoStuckAsync(run, stuckStep).ConfigureAwait(false);
+        run.LastFailure = r;
+        if (++run.Replans > run.O.MaxReplans) return ActionResult.Fail($"{r} (after {run.Replans - 1} re-plans) at {Fmt(World.Player.Position)}");
+        Log($"goto: {r}, re-planning");
+        await WaitTicksAsync(2, run.Token).ConfigureAwait(false);
+        return null;
+    }
+
+    /// <summary>Stuck on a step: the move is never planned again; the second time at the same spot an escape move is tried.</summary>
+    private async Task<string> GotoStuckAsync(GotoRun run, PathStep stuckStep)
+    {
+        var at = World.Player.Position;
+        if (run.StuckSpot is { } sp && Math.Abs(sp.X - at.X) + Math.Abs(sp.Y - at.Y) + Math.Abs(sp.Z - at.Z) < 0.4) run.StuckHere++;
+        else { run.StuckSpot = at; run.StuckHere = 1; }
+        if (Pathfinder.StartCellFor(World, at) is { } fromCell) run.AvoidMoves.Add((fromCell, stuckStep.Pos));
+        if (run.Stuck.From is { } prev) run.AvoidMoves.Add((prev, stuckStep.Pos));
+        var r = "stuck " + DescribeStuck(at, stuckStep);
+        if (run.StuckHere >= 2 && await UnstickAsync(stuckStep, run.Token).ConfigureAwait(false) is { } escaped)
+            r += $" ({run.StuckHere}x here; {escaped})";
+        return r;
     }
 
     /// <summary>
