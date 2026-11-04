@@ -586,16 +586,32 @@ These are the bot-side additions from architecture.md, in their wire form. They 
 in_context, staleness_s, evicted}]}`.
   - **Decay.** `heat = 0.5^((at − last_access_at)/half_life_s)`. The client re-decays between refreshes with `decayHeat`.
 
-- **Memory cloud** (`MemoryCloudResponse`, added 2026-11-03): `GET /v1/memory-activity/cloud`. Every RAPTOR leaf at a 2-D
-  position from the bot's own UMAP (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded single-threaded SGD) over the
-  stored leaf embeddings, in the unit square:
-  - **Never blocks.** The first request for a tree state starts the layout in the background (`Bridge:CloudThreads`, default
-    1) and answers at once with `status: "computing"` and the previous layout (or none); the client polls. `ready` layouts are
-    cached per tree state; `empty` = no tree; `error` = the layout failed (logged, not retried for that state).
-  - **Stable.** UMAP runs on the build's leaves (`InsertedSeq == 0`; an even index-ordered sample of 2000 above that), and
-    every other leaf is placed at the softmax(cos/0.04)-weighted mean of its 6 most similar anchors plus a tiny offset from
-    its id. Placement depends on the anchors only, so incremental refreshes and a bridge restart give the same picture;
-    only a new RAPTOR build (or a removed build leaf) lays it out again.
+- **Memory cloud** (`MemoryCloudResponse`, added 2026-11-03; arrangements 2026-11-03): `GET /v1/memory-activity/cloud?arrangement=`.
+  Every RAPTOR leaf at a 2-D position in the unit square, in one of four arrangements of the stored leaf embeddings
+  (`arrangement`, default `mds`; anything else is a 400):
+  - `mds` **Distances**: metric MDS on cosine distance (1 − cos): landmark MDS start, all-pairs SMACOF on ≤ 3000 build leaves
+    (`Bridge:CloudMaxMdsPoints`), every other leaf minimising its own stress against them. Drawn distance ≈ embedding distance.
+  - `umap` **Neighbourhoods**: the bot's own UMAP (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded single-threaded SGD)
+    on ≤ 2000 build leaves; every other leaf at the softmax(cos/0.04)-weighted mean of its 6 most similar anchors plus a tiny
+    id-seeded offset. Neighbourhoods only: gaps between islands mean nothing.
+  - `pca`: the top two principal axes (≤ 5000 build leaves fit them; every leaf is an exact projection);
+    `fidelity.variance_explained` per axis.
+  - `tree`: force-directed along the RAPTOR parent links (leaves and summaries are nodes; `summaries.xy` are their own
+    positions here, not their children's mean), started from the MDS picture; inserted leaves sit next to their parent.
+  - **Fidelity** (`fidelity`, every arrangement, the same measure): on a seeded sample of 20 000 leaf pairs (all pairs when
+    fewer), `pearson` / `spearman` between cosine distance and drawn distance, `stress` = √(Σ(δ − αd)²/Σδ²) after the best
+    scale α, and `unit_distance` = α (the cosine distance one unit of the unit square stands for: the scale bar, the hover).
+  - **Never blocks.** The first request for an arrangement and tree state queues it on one background job
+    (`Bridge:CloudThreads`, default 1; one arrangement at a time; `tree` computes `mds` first) and answers at once with
+    `status: "computing"` and that arrangement's previous layout (or none); the client polls. `arrangements` lists all four
+    with their state for this tree (`ready`, `computing`, `queued`, `error`, `idle` = not asked for). `ready` layouts are cached
+    per tree state; `empty` = no tree; `error` = the layout failed (logged, not retried for that state).
+  - **Stable.** Every arrangement is fitted on the build's leaves (`InsertedSeq == 0`) under a fixed seed and places every other
+    leaf from that fit and its own vector only, so incremental refreshes and a bridge restart give the same picture; only a new
+    RAPTOR build (or a removed build leaf) lays it out again.
+- **Embedding distance** (`CloudDistanceResponse`): `GET /v1/memory-activity/cloud/distance?a=&b=` (viewer role): the cosine
+  distance and similarity of two nodes' stored embeddings, computed in the bridge (vectors never leave it); 404 for an unknown
+  node or one without a vector, 400 without two integer ids. The cloud's hover asks it for the selected and the hovered memory.
   - **Columns.** `points` and `summaries` are parallel arrays (`id`, `xy` interleaved, `cluster`, `kind`, `title`,
     `parents`, `inserted`) to keep tens of thousands of points small (the live db's 2466 leaves are 208 KiB).
   - **Clusters** are the bot's own: the summary layer with ≥ 6 nodes nearest the top (`cluster_layer`), each leaf under its
@@ -780,7 +796,7 @@ filename="<slug>-<yyyyMMdd-HHmm>.mcshard"`. The format is `ShardFile` FormatVers
 | 6   | `memory-activity` pass-through       | `viewer/memory-activity` was added to the GET allow-list.                                                                                                                                                                                               |
 | 7   | i64 world hashes                     | They are strings on the public API, via `parseBridgeJson`, because JSON.parse would lose precision past 2^53.                                                                                                                                           |
 | 8   | Opaque maps during case conversion   | The `OPAQUE_KEYS` list (§1) applies. Script params and blackboards keep their own keys.                                                                                                                                                                 |
-| 9   | Routes the architecture did not list | These bridge routes are added: `/v1/raptor/node/{id}/leaves` ("show leaves under"), `/v1/shards/export/preview` (the export dialog's preview), `/v1/designs/{id}/picture.png`, `/v1/memory-activity/heat`, `/v1/memory-activity/cloud`, `/v1/groom/preview` (phase 2), `/v1/health`. `/v1/raptor/tree` was removed with the RAPTOR tree page (2026-11-03). |
+| 9   | Routes the architecture did not list | These bridge routes are added: `/v1/raptor/node/{id}/leaves` ("show leaves under"), `/v1/shards/export/preview` (the export dialog's preview), `/v1/designs/{id}/picture.png`, `/v1/memory-activity/heat`, `/v1/memory-activity/cloud`, `/v1/memory-activity/cloud/distance`, `/v1/groom/preview` (phase 2), `/v1/health`. `/v1/raptor/tree` was removed with the RAPTOR tree page (2026-11-03). |
 | 10  | Script source                        | One public route takes `source=live                                                                                                                                                                                                                     | db`. The bridge's `/v1/scripts*` picks the supervisor (live) or its own db reader (db). |
 | 11  | Import preview                       | It is bridge-native (`ShardImporter.Preview` on the read-only db), as the architecture lists. Apply goes to the bot (`/api/admin/shard/import`). The supervisor's own preview route is not exposed.                                                     |
 | 12  | Vision PNG path                      | The public path is `/api/bodies/:body/vision/:id/image.png`, so it cannot collide with `/vision/:id`. The bridge path keeps the supervisor's `{id}.png`.                                                                                                |

@@ -3,7 +3,16 @@
  * route's response schema), a Response (binary, errors), or throw MockError. Auth, CSRF, roles and chat rate limiting
  * behave like the real server so the UI's error paths can be exercised.
  */
-import { hasRole, ROUTES, STEP_UP_MS, type MemoryKindKey, type Me, type Role, type RouteId } from '@mineclaw/contracts';
+import {
+  hasRole,
+  ROUTES,
+  STEP_UP_MS,
+  type CloudArrangement,
+  type MemoryKindKey,
+  type Me,
+  type Role,
+  type RouteId,
+} from '@mineclaw/contracts';
 import { blockSheetSvg, iso, nowIso } from './util';
 import * as admin from './data/administration';
 import * as live from './data/live';
@@ -366,7 +375,12 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
 
   'memoryActivity.heat': ({ query }) => live.memoryHeat(query.brain as string | undefined, num(query.windowS), raptor.STATE_KEY),
-  'memoryActivity.cloud': () => cloud.memoryCloud(),
+  'memoryActivity.cloud': ({ query }) => cloud.memoryCloud((query.arrangement as CloudArrangement | undefined) ?? 'mds'),
+  'memoryActivity.cloudDistance': ({ query }) => {
+    const d = cloud.cloudDistance(num(query.a), num(query.b));
+    if (!d) throw new MockError(404, 'No such memory', 'not_found');
+    return d;
+  },
   'memoryActivity.list': ({ query }) => live.memoryActivitySince(num(query.since), query.brain as string | undefined),
 
   'admin.schema': () => misc.editSchema,
