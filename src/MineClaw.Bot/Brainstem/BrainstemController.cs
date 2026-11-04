@@ -428,58 +428,73 @@ public sealed class BrainstemController : IDisposable
         var w = _c.World;
         var me = w.Player.Position;
 
-        // A "thinking" fidget while the brain's turn runs long and the body has nothing to do.
-        if (Social.ThinkingFidgetAfterMs > 0 && _rt.Agent.TurnStartedAt is { } started
-            && now - started >= TimeSpan.FromMilliseconds(Social.ThinkingFidgetAfterMs) && now - _lastFidget >= TimeSpan.FromSeconds(4))
-        {
-            _lastFidget = now;
-            bool swing = (_fidgets++ % 3) == 2;
-            if (swing ? _c.SwingIdle() : _c.FaceIdle(LookAround(w, me, _fidgets % 2 == 0 ? 25 : -25))) return "thinking";
-        }
+        if (ThinkingFidget(now, w, me) is { } fidget) return fidget;
+        var pe = ConversationPartner(now, w);
+        if (LooseFollow(pe, w, me) is { } follow) return follow;
+        if (LookHeld(now)) return null; // still looking at the pointed block / the speaker
+        if (GlanceAtNewcomer(now, w, me) is { } glance) return glance;
+        return TrackHead(pe, w, me);
+    }
 
+    /// <summary>A "thinking" fidget while the brain's turn runs long and the body has nothing to do.</summary>
+    private string? ThinkingFidget(DateTimeOffset now, WorldState w, Vec3d me)
+    {
+        if (Social.ThinkingFidgetAfterMs <= 0 || _rt.Agent.TurnStartedAt is not { } started) return null;
+        if (now - started < TimeSpan.FromMilliseconds(Social.ThinkingFidgetAfterMs) || now - _lastFidget < TimeSpan.FromSeconds(4)) return null;
+        _lastFidget = now;
+        bool swing = (_fidgets++ % 3) == 2;
+        return (swing ? _c.SwingIdle() : _c.FaceIdle(LookAround(w, me, _fidgets % 2 == 0 ? 25 : -25))) ? "thinking" : null;
+    }
+
+    /// <summary>The player we're talking with (within the conversation window), if they're in view.</summary>
+    private Entity? ConversationPartner(DateTimeOffset now, WorldState w)
+    {
         (string Player, DateTimeOffset At)? partner;
         lock (_lock) partner = _partner is { } pp && now - pp.At <= TimeSpan.FromSeconds(Social.ConversationSeconds) ? pp : null;
-        var pe = partner is { } pa ? w.Entities.FindPlayer(pa.Player) : null;
+        return partner is { } pa ? w.Entities.FindPlayer(pa.Player) : null;
+    }
 
-        // Loose follow: the partner walked off mid-conversation; idle body, both on safe ground, no parkour, no building.
-        if (Social.LooseFollow && pe != null && _rt.Agent.TurnStartedAt == null)
-        {
-            double d = pe.Position.DistanceTo(me);
-            if (d > Social.FollowStartBlocks && d <= Social.FollowMaxBlocks && SafeToFollow(w, me, pe.Position) && _rt.Tools.TryGet("goto", out var go))
-            {
-                var input = Json(new { to = pe.Name, dist = Social.FollowStopBlocks, build = false, allow_parkour = "off" });
-                if (_acts.TryStartFiller(ActivityKind.Social, [(go, input)], "social:follow")) return "follow " + pe.Name;
-            }
-        }
+    /// <summary>Loose follow: the partner walked off mid-conversation; idle body, both on safe ground, no parkour, no building.</summary>
+    private string? LooseFollow(Entity? pe, WorldState w, Vec3d me)
+    {
+        if (!Social.LooseFollow || pe == null || _rt.Agent.TurnStartedAt != null) return null;
+        double d = pe.Position.DistanceTo(me);
+        if (d <= Social.FollowStartBlocks || d > Social.FollowMaxBlocks || !SafeToFollow(w, me, pe.Position)) return null;
+        if (!_rt.Tools.TryGet("goto", out var go)) return null;
+        var input = Json(new { to = pe.Name, dist = Social.FollowStopBlocks, build = false, allow_parkour = "off" });
+        return _acts.TryStartFiller(ActivityKind.Social, [(go, input)], "social:follow") ? "follow " + pe.Name : null;
+    }
 
+    private bool LookHeld(DateTimeOffset now)
+    {
         (Vec3d Point, DateTimeOffset Until)? hold;
         lock (_lock) hold = _lookHold;
-        if (hold is { } h && h.Until > now) return null; // still looking at the pointed block / the speaker
+        return hold is { } h && h.Until > now;
+    }
 
-        // Glance at a player who just came near.
-        if (Social.Glance)
-        {
-            var nearby = w.Entities.Nearby(me, Social.GlanceRadius, e => e.Kind == EntityKind.Player && e.Name != null
-                && !e.Name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) && !_isBot(e.Name)).ToList();
-            var fresh = nearby.FirstOrDefault(e => !_near.Contains(e.Name!));
-            _near.Clear();
-            foreach (var e in nearby) _near.Add(e.Name!);
-            if (fresh != null && _c.FaceIdle(Eye(fresh.Position)))
-            {
-                lock (_lock) _lookHold = (Eye(fresh.Position), now + TimeSpan.FromSeconds(1.5));
-                return "glance " + fresh.Name;
-            }
-        }
+    /// <summary>Another (human) player: not me and not one of our bots.</summary>
+    private bool IsOtherHuman(Entity e) => e.Kind == EntityKind.Player && e.Name != null
+        && !e.Name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) && !_isBot(e.Name);
 
-        // Head tracking: the conversation partner, else the nearest player.
-        if (Social.HeadTracking)
-        {
-            var target = pe != null && pe.Position.DistanceTo(me) <= 16 ? pe
-                : w.Entities.Nearest(me, 8, e => e.Kind == EntityKind.Player && e.Name != null
-                    && !e.Name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) && !_isBot(e.Name));
-            if (target != null && _c.FaceIdle(Eye(target.Position))) return "track " + target.Name;
-        }
-        return null;
+    /// <summary>Glance at a player who just came near.</summary>
+    private string? GlanceAtNewcomer(DateTimeOffset now, WorldState w, Vec3d me)
+    {
+        if (!Social.Glance) return null;
+        var nearby = w.Entities.Nearby(me, Social.GlanceRadius, IsOtherHuman).ToList();
+        var fresh = nearby.FirstOrDefault(e => !_near.Contains(e.Name!));
+        _near.Clear();
+        foreach (var e in nearby) _near.Add(e.Name!);
+        if (fresh == null || !_c.FaceIdle(Eye(fresh.Position))) return null;
+        lock (_lock) _lookHold = (Eye(fresh.Position), now + TimeSpan.FromSeconds(1.5));
+        return "glance " + fresh.Name;
+    }
+
+    /// <summary>Head tracking: the conversation partner, else the nearest player.</summary>
+    private string? TrackHead(Entity? pe, WorldState w, Vec3d me)
+    {
+        if (!Social.HeadTracking) return null;
+        var target = pe != null && pe.Position.DistanceTo(me) <= 16 ? pe : w.Entities.Nearest(me, 8, IsOtherHuman);
+        return target != null && _c.FaceIdle(Eye(target.Position)) ? "track " + target.Name : null;
     }
 
     /// <summary>Loose follow only between safe spots: neither of us over the void, and the partner on the same level.</summary>
