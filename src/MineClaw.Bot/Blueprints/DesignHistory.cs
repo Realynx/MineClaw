@@ -78,11 +78,19 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         {
             if (SnapshotOf(rec, world) is not { } snap) return null;
             var head = revisions.Head(rec.Id);
-            if (head != null && head.Dsl == rec.Dsl && head.Origin == rec.Origin && (blocksOnly || head.Hash == snap.Hash())) return head;
-            if (head != null && blocksOnly && revisions.Snapshot(rec.Id, head.Rev) is { } hs && DesignDiff.Between(hs, snap).Empty) return head;
+            if (Unchanged(rec, head, snap, blocksOnly)) return head;
             return revisions.Add(rec.Id, snap, rec.Dsl, rec.Origin, rec.Dim, author, kind, message);
         }
         catch (Exception) { return null; } // history is best effort: a save never fails on it
+    }
+
+    /// <summary>HEAD already is this save: the same DSL and origin and block set (<paramref name="blocksOnly"/>: the same blocks,
+    /// whatever the DSL says).</summary>
+    private bool Unchanged(BlueprintRecord rec, DesignRevision? head, DesignSnapshot snap, bool blocksOnly)
+    {
+        if (head == null) return false;
+        if (head.Dsl == rec.Dsl && head.Origin == rec.Origin && (blocksOnly || head.Hash == snap.Hash())) return true;
+        return blocksOnly && revisions.Snapshot(rec.Id, head.Rev) is { } hs && DesignDiff.Between(hs, snap).Empty;
     }
 
     // ------------------------------------------------------------------ reading
@@ -126,22 +134,35 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         if (Ensure(rec) == null) return $"#{rec.Id} \"{rec.Name}\" has no revisions";
         var parts = (what ?? "").Replace("..", " ").Split([' ', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(p => !p.Equals("vs", StringComparison.OrdinalIgnoreCase) && !p.Equals("world", StringComparison.OrdinalIgnoreCase)).ToList();
-        if (parts.Count >= 2)
-        {
-            if (revisions.Resolve(rec.Id, parts[0]) is not { } a || revisions.Resolve(rec.Id, parts[1]) is not { } b) return $"no such revision ({what}); design log{{id={rec.Id}}} lists them";
-            if (a.Rev > b.Rev) (a, b) = (b, a);
-            var (sa, sb) = (revisions.Snapshot(rec.Id, a.Rev)!, revisions.Snapshot(rec.Id, b.Rev)!);
-            // Both on the same ground: a revision that dug a basement under the design moved its drawing's bottom, not the house.
-            var (ga, gb) = (GradeOf(rec, a), GradeOf(rec, b));
-            if (ga != gb) sb = Shifted(sb, ga - gb);
-            var d = DesignDiff.Between(sa, sb);
-            var dug = sb.Air.Count(p => p.Y < ga && !sa.Air.Contains(p) && !sb.Blocks.ContainsKey(p));
-            var filled = sa.Air.Count(p => p.Y < ga && !sb.Air.Contains(p) && !sb.Blocks.ContainsKey(p));
-            var ground = (dug > 0 ? $", dug {dug} below ground" : "") + (filled > 0 ? $", filled {filled} back" : "");
-            if (d.Empty && ground.Length > 0) return $"r{a.Rev}→r{b.Rev}: {ground[2..]}";
-            return $"r{a.Rev}→r{b.Rev}: {d.Text()}{ground}" + (d.Empty ? "" : "; " + d.Cells(6));
-        }
-        var spec = parts.FirstOrDefault();
+        return parts.Count >= 2 ? DiffBetween(rec, what, parts[0], parts[1]) : DiffWithWorld(rec, parts.FirstOrDefault());
+    }
+
+    /// <summary>"r1→r3: +12 stone, −3 planks, dug 4 below ground; 154,40,276 −stone; …" (older → newer, whichever order they came in).</summary>
+    private string DiffBetween(BlueprintRecord rec, string? what, string first, string second)
+    {
+        if (revisions.Resolve(rec.Id, first) is not { } a || revisions.Resolve(rec.Id, second) is not { } b) return $"no such revision ({what}); design log{{id={rec.Id}}} lists them";
+        if (a.Rev > b.Rev) (a, b) = (b, a);
+        var (sa, sb) = (revisions.Snapshot(rec.Id, a.Rev)!, revisions.Snapshot(rec.Id, b.Rev)!);
+        // Both on the same ground: a revision that dug a basement under the design moved its drawing's bottom, not the house.
+        var (ga, gb) = (GradeOf(rec, a), GradeOf(rec, b));
+        if (ga != gb) sb = Shifted(sb, ga - gb);
+        var d = DesignDiff.Between(sa, sb);
+        var ground = GroundChanges(sa, sb, ga);
+        if (d.Empty && ground.Length > 0) return $"r{a.Rev}→r{b.Rev}: {ground[2..]}";
+        return $"r{a.Rev}→r{b.Rev}: {d.Text()}{ground}" + (d.Empty ? "" : "; " + d.Cells(6));
+    }
+
+    /// <summary>", dug 4 below ground, filled 2 back": the ground cells (under <paramref name="grade"/>) dug or filled from a to b.</summary>
+    private static string GroundChanges(DesignSnapshot sa, DesignSnapshot sb, int grade)
+    {
+        var dug = sb.Air.Count(p => p.Y < grade && !sa.Air.Contains(p) && !sb.Blocks.ContainsKey(p));
+        var filled = sa.Air.Count(p => p.Y < grade && !sb.Air.Contains(p) && !sb.Blocks.ContainsKey(p));
+        return (dug > 0 ? $", dug {dug} below ground" : "") + (filled > 0 ? $", filled {filled} back" : "");
+    }
+
+    /// <summary>"r2→world: −3 stone (Fox 2, me 1); 154,40,276 −stone; …" (empty spec = HEAD).</summary>
+    private string DiffWithWorld(BlueprintRecord rec, string? spec)
+    {
         if (revisions.Resolve(rec.Id, spec) is not { } r) return $"no such revision '{spec}'; design log{{id={rec.Id}}} lists them";
         if (AgainstWorld(rec, spec) is not { } aw) return $"r{r.Rev}: the world isn't in view (come closer)";
         var dw = aw.Diff;
@@ -178,11 +199,41 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         if (Ensure(rec) is not { } head || revisions.Snapshot(rec.Id, head.Rev) is not { } snap) return (false, $"#{rec.Id} has no revisions to commit onto");
         if (World() is not { } w) return (false, "the build isn't in view: come closer so I can see what changed");
         var d = DesignDiff.Against(snap, w);
-        if (d.Empty) return (false, $"nothing to commit: the world matches r{head.Rev}" + (d.Unknown > 0 ? $" ({d.Unknown} cells not loaded)" : ""));
-        bool trusted = Edits?.IsTrusted(by) ?? service.IsTrusted(by);
-        if (!trusted && !(by == null && AllOwn?.Invoke(rec.Id, d) == true))
-            return (false, $"committing #{rec.Id} needs a trusted player's word ({by ?? "nobody"} asked); the change stays uncommitted ({d.Text()})");
+        if (d.Empty) return (false, $"nothing to commit: the world matches r{head.Rev}" + NotLoaded(d));
+        bool trusted = TrustedWord(by);
+        if (!trusted && !OwnChange(rec.Id, by, d)) return (false, Uncommitted(rec, by, d));
         var who = Causes?.Invoke(rec.Id, d);
+        var (next, skipped) = Applied(snap, d, w);
+        var (tag, msg) = TagOf(message);
+        return Save(rec, next, InteriorAir(next), by ?? BotName(), trusted ? RevisionAuthor.Player : RevisionAuthor.Bot, msg ?? WorldChanges(who), tag,
+            r => $"committed #{rec.Id} {rec.Name} as r{r.Rev}: {d.Text()}" + (skipped > 0 ? $" ({skipped} not buildable, left out)" : ""));
+    }
+
+    /// <summary>A trusted player's word (the editing context's list, else the service's).</summary>
+    private bool TrustedWord(string? by) => Edits?.IsTrusted(by) ?? service.IsTrusted(by);
+
+    /// <summary>Nobody asked, and every drifted cell was the hive's own doing (the bot's own requested edit).</summary>
+    private bool OwnChange(long design, string? by, DesignDiff d) => by == null && AllOwn?.Invoke(design, d) == true;
+
+    private static string Uncommitted(BlueprintRecord rec, string? by, DesignDiff d) =>
+        NeedsWord("committing", rec.Id, by) + $"; the change stays uncommitted ({d.Text()})";
+
+    /// <summary>"reverting #12 needs a trusted player's word (griefer asked)".</summary>
+    private static string NeedsWord(string verb, long design, string? by) => $"{verb} #{design} needs a trusted player's word ({by ?? "nobody"} asked)";
+
+    /// <summary>" (4 cells not loaded)" when the world view lacks some of the design's cells, else "".</summary>
+    private static string NotLoaded(DesignDiff d) => d.Unknown > 0 ? $" ({d.Unknown} cells not loaded)" : "";
+
+    private static string WorldChanges(string? who) => who is { Length: > 0 } ? $"world changes ({who})" : "world changes";
+
+    /// <summary>A revert's answer once its revision is saved: building it now, or why the build can't start.</summary>
+    private static (bool Ok, string Text) Started(string text, string? refusal) =>
+        refusal == null ? (true, text + "; building it now, a [task] reports the end") : (false, text + $"; saved, but can't start: {refusal}");
+
+    /// <summary>HEAD plus the world's changes: removed cells dropped (air where the world has air), added and changed ones taken as the
+    /// world has them when they are design blocks (a bed, a sign, terrain: left out, counted), the world's air around it.</summary>
+    private static (DesignSnapshot Next, int Skipped) Applied(DesignSnapshot snap, DesignDiff d, IBlockAccess w)
+    {
         var next = snap.Clone();
         int skipped = 0;
         foreach (var c in d.Removed) { next.Blocks.Remove(c.Pos); if (c.ToId == 0) next.Air.Add(c.Pos); }
@@ -194,10 +245,7 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
             else { next.Blocks.Remove(c.Pos); skipped++; } // a bed, a sign, terrain: not a design block (don't-care from now on)
         }
         next.AddWorldAir(w);
-        var (tag, msg) = TagOf(message);
-        var text = msg ?? (who is { Length: > 0 } ? $"world changes ({who})" : "world changes");
-        return Save(rec, next, InteriorAir(next), by ?? BotName(), trusted ? RevisionAuthor.Player : RevisionAuthor.Bot, text, tag,
-            r => $"committed #{rec.Id} {rec.Name} as r{r.Rev}: {d.Text()}" + (skipped > 0 ? $" ({skipped} not buildable, left out)" : ""));
+        return (next, skipped);
     }
 
     private static (string? Tag, string? Message) TagOf(string? message)
@@ -221,23 +269,15 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
     /// </summary>
     public (bool Ok, string Text) Revert(BlueprintRecord rec, string? what, string? by)
     {
-        if (!(Edits?.IsTrusted(by) ?? service.IsTrusted(by)))
-            return (false, $"reverting #{rec.Id} needs a trusted player's word ({by ?? "nobody"} asked)");
+        if (!TrustedWord(by)) return (false, NeedsWord("reverting", rec.Id, by));
         if (Ensure(rec) is not { } head || revisions.Snapshot(rec.Id, head.Rev) is not { } headSnap) return (false, $"#{rec.Id} has no revisions");
-        var spec = string.IsNullOrWhiteSpace(what) ? "previous" : what;
-        // "put it back" with no older revision = HEAD again (restore damage); "undo the last revision" on r1 = nothing before it.
-        var target = revisions.Resolve(rec.Id, spec) ?? (string.IsNullOrWhiteSpace(what) ? head : null);
-        if (target == null) return (false, $"no revision '{what}' of #{rec.Id}; design log{{id={rec.Id}}} lists them");
+        if (RevertTarget(rec, what, head) is not { } target) return (false, $"no revision '{what}' of #{rec.Id}; design log{{id={rec.Id}}} lists them");
         if (revisions.Snapshot(rec.Id, target.Rev) is not { } snap) return (false, $"r{target.Rev} has no block set");
         if (World() is not { } w) return (false, "the build isn't in view: come closer first");
         var d = DesignDiff.Against(snap, w);
-        // Blocks HEAD has that the target doesn't: dug too (they stand where the target has nothing to say).
-        var clear = d.Added.Select(c => c.Pos).ToHashSet();
-        foreach (var p in headSnap.Blocks.Keys)
-            if (!snap.Blocks.ContainsKey(p) && w.IsLoaded(p.X, p.Z) && w.GetBlock(p.X, p.Y, p.Z) is var id && id != 0 && !DesignDiff.Drifts(id)) clear.Add(p);
-        var work = d.Inverse();
-        foreach (var p in clear.Where(p => !d.Added.Any(a => a.Pos == p))) work.Removed.Add(new DiffCell(p, w.GetBlock(p.X, p.Y, p.Z), w.GetMeta(p.X, p.Y, p.Z), 0, 0));
-        if (work.Empty) return (false, $"#{rec.Id} already matches r{target.Rev}" + (d.Unknown > 0 ? $" ({d.Unknown} cells not loaded)" : ""));
+        var clear = ToClear(d, headSnap, snap, w);
+        var work = RevertWork(d, clear, w);
+        if (work.Empty) return (false, $"#{rec.Id} already matches r{target.Rev}" + NotLoaded(d));
         var next = snap.Clone();
         next.Air.UnionWith(clear);
         var air = InteriorAir(next);
@@ -247,21 +287,50 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         if (!res.Ok) return res;
         // Turned blocks (stairs facing another way): the job takes them down first, the plan puts them back facing right.
         service.Refit(rec.Id, d.Changed.Where(c => c.FromId == c.ToId).Select(c => c.Pos));
-        // Build it in place now: the plan's gate is the trusted word that asked for it (no second "is this right?").
+        ApproveGate(rec, by);
+        var refusal = service.StartBuild(rec.Id, null);
+        return Started(res.Text, refusal);
+    }
+
+    /// <summary>The revision to go back to (default: the one before HEAD): "put it back" with no older revision = HEAD again (restore
+    /// damage); "undo the last revision" on r1 = nothing before it (null).</summary>
+    private DesignRevision? RevertTarget(BlueprintRecord rec, string? what, DesignRevision head)
+    {
+        bool unnamed = string.IsNullOrWhiteSpace(what);
+        return revisions.Resolve(rec.Id, unnamed ? "previous" : what) ?? (unnamed ? head : null);
+    }
+
+    /// <summary>The cells a revert digs: what the world added over the target, and blocks HEAD has that the target doesn't (they stand
+    /// where the target has nothing to say).</summary>
+    private static HashSet<BlockPos> ToClear(DesignDiff d, DesignSnapshot headSnap, DesignSnapshot snap, IBlockAccess w)
+    {
+        var clear = d.Added.Select(c => c.Pos).ToHashSet();
+        foreach (var p in headSnap.Blocks.Keys)
+            if (!snap.Blocks.ContainsKey(p) && w.IsLoaded(p.X, p.Z) && w.GetBlock(p.X, p.Y, p.Z) is var id && id != 0 && !DesignDiff.Drifts(id)) clear.Add(p);
+        return clear;
+    }
+
+    /// <summary>The revert's work: the world's diff turned around, plus the HEAD-only blocks it digs.</summary>
+    private static DesignDiff RevertWork(DesignDiff d, HashSet<BlockPos> clear, IBlockAccess w)
+    {
+        var work = d.Inverse();
+        foreach (var p in clear.Where(p => !d.Added.Any(a => a.Pos == p))) work.Removed.Add(new DiffCell(p, w.GetBlock(p.X, p.Y, p.Z), w.GetMeta(p.X, p.Y, p.Z), 0, 0));
+        return work;
+    }
+
+    /// <summary>Build it in place now: the plan's gate is the trusted word that asked for it (no second "is this right?").</summary>
+    private void ApproveGate(BlueprintRecord rec, string? by)
+    {
         try
         {
             service.PlanSummary(rec);
-            if (service.Plans?.Get(rec.Id, 0) is { } bp)
-            {
-                bp.Gate.State = Building.GateState.Approved;
-                bp.Gate.ApprovedBy = by;
-                bp.Gate.HeldBy = null;
-                service.Plans.Save(bp);
-            }
+            if (service.Plans?.Get(rec.Id, 0) is not { } bp) return;
+            bp.Gate.State = Building.GateState.Approved;
+            bp.Gate.ApprovedBy = by;
+            bp.Gate.HeldBy = null;
+            service.Plans.Save(bp);
         }
         catch (Exception) { /* the build plans it again */ }
-        var refusal = service.StartBuild(rec.Id, null);
-        return refusal == null ? (true, res.Text + "; building it now, a [task] reports the end") : (false, res.Text + $"; saved, but can't start: {refusal}");
     }
 
     // ------------------------------------------------------------------ drawing a revision as the design's DSL
@@ -298,19 +367,28 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         var r = new CaptureResult { Name = name, Min = min, Max = max, Version = DesignVersions.Normalize(version) };
         foreach (var (p, s) in snap.Blocks) r.Cells[p] = s;
         foreach (var p in air) if (!snap.Blocks.ContainsKey(p)) r.Air.Add(p);
-        var dsl = StructureCapture.Dsl(r);
-        if (gradeY is { } g && g > min.Y)
-        {
-            int at = dsl.IndexOf("\nfacing ", StringComparison.Ordinal);
-            var line = string.Create(CultureInfo.InvariantCulture, $"\nground {Math.Min(g - min.Y, hy)}");
-            dsl = at >= 0 ? dsl.Insert(at, line) : dsl + line.TrimStart('\n') + "\n";
-        }
+        var dsl = WithGround(StructureCapture.Dsl(r), gradeY, min.Y, hy);
+        var (bad, why) = DrawnAs(dsl, snap, min, height);
+        return why == null ? (dsl, min, bad, null) : (null, min, 0, why);
+    }
+
+    /// <summary>The DSL with its <c>ground N</c> line (before its facing line) when the design reaches under <paramref name="gradeY"/>.</summary>
+    private static string WithGround(string dsl, int? gradeY, int minY, int height)
+    {
+        if (gradeY is not { } g || g <= minY) return dsl;
+        int at = dsl.IndexOf("\nfacing ", StringComparison.Ordinal);
+        var line = string.Create(CultureInfo.InvariantCulture, $"\nground {Math.Min(g - minY, height)}");
+        return at >= 0 ? dsl.Insert(at, line) : dsl + line.TrimStart('\n') + "\n";
+    }
+
+    /// <summary>The DSL parsed back and normalized at <paramref name="min"/>: the cells it draws differently (stand-ins), or why it doesn't draw.</summary>
+    private static (int Bad, string? Why) DrawnAs(string dsl, DesignSnapshot snap, BlockPos min, int height)
+    {
         var (bp, issues) = BlueprintParser.Parse(dsl);
-        if (issues.FirstOrDefault(i => i.Level == IssueLevel.Error) is { } perr) return (null, min, 0, "it doesn't draw as a design: " + perr);
+        if (issues.FirstOrDefault(i => i.Level == IssueLevel.Error) is { } perr) return (0, "it doesn't draw as a design: " + perr);
         var (plan, more) = BlueprintNormalizer.Normalize(bp, min, height);
-        if (plan == null || more.Any(i => i.Level == IssueLevel.Error)) return (null, min, 0, "it doesn't normalize: " + string.Join("; ", more.Where(i => i.Level == IssueLevel.Error).Take(2)));
-        int bad = snap.Blocks.Count(kv => !plan.Blocks.TryGetValue(kv.Key, out var b) || b.Id != kv.Value.Id || b.Meta != kv.Value.Meta);
-        return (dsl, min, bad, null);
+        if (plan == null || more.Any(i => i.Level == IssueLevel.Error)) return (0, "it doesn't normalize: " + string.Join("; ", more.Where(i => i.Level == IssueLevel.Error).Take(2)));
+        return (snap.Blocks.Count(kv => !plan.Blocks.TryGetValue(kv.Key, out var b) || b.Id != kv.Value.Id || b.Meta != kv.Value.Meta), null);
     }
 
     /// <summary>Draws the new HEAD, saves the design (DSL, origin, a reset gate transform: it is drawn as built), adds the revision,
@@ -323,19 +401,7 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         var grade = DesignerSave.GradeY(service, rec);
         if (grade is { } g && next.Box is { } nb)
             air.UnionWith(next.Air.Where(p => p.Y < g && p.X >= nb.Min.X && p.X <= nb.Max.X && p.Z >= nb.Min.Z && p.Z <= nb.Max.Z));
-        string? dsl;
-        BlockPos min;
-        int bad;
-        string? why;
-        // A mine stays a mine: its dug cells (all its air) as clear boxes, its absolute y, entry, seed and preference kept.
-        if (Mine.MineDesign.HeaderOf(rec.Dsl) is { } mh)
-        {
-            var cells = next.Clone();
-            var plan0 = service.PlanOf(rec, out _, forWorld: false);
-            var entry = plan0?.Blueprint.Entry is { } e && plan0 != null ? new BlockPos(plan0.Origin.X + e.X, plan0.Origin.Y + e.Y, plan0.Origin.Z + e.Z) : (BlockPos?)null;
-            (dsl, min, bad, why) = Mine.MineDesign.Draw(rec.Name, cells, entry, mh.Seed, mh.PreferredFor, DesignVersions.OfDsl(rec.Dsl), height);
-        }
-        else (dsl, min, bad, why) = Draw(rec.Name, next, air, height, grade, DesignVersions.OfDsl(rec.Dsl));
+        var (dsl, min, bad, why) = DrawRevision(rec, next, air, height, grade);
         if (dsl == null) return (false, $"can't save #{rec.Id} as a revision: {why}");
         rec.Dsl = dsl;
         rec.Origin = min;
@@ -345,16 +411,30 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
             rec.AcceptedBy = accept;
         }
         service.Store.Update(rec);
-        // The DSL is drawn as it stands: a gate correction (turn/shift) from an earlier build must not apply on top of it.
-        if (service.Plans?.Get(rec.Id, 0) is { Transform.IsNone: false } bp)
-        {
-            bp.Transform = Building.BuildTransform.None;
-            service.Plans.Save(bp);
-        }
+        ResetTransform(rec.Id);
         var r = revisions.Add(rec.Id, next, dsl, min, rec.Dim, author, kind, message, tag);
         if (Memory != null && next.Box is { } box) MoveLink(Memory, rec, box.Min, box.Max, r.Rev);
         Edits?.Touch(rec.Id, $"{author} made r{r.Rev}");
         return (true, text(r) + (bad > 0 ? $" ({bad} cells drawn as stand-ins)" : ""));
+    }
+
+    /// <summary>The new HEAD drawn as the design's DSL; a mine stays a mine (its dug cells, all its air, as clear boxes, its absolute
+    /// y, entry, seed and preference kept).</summary>
+    private (string? Dsl, BlockPos Min, int Mismatched, string? Why) DrawRevision(BlueprintRecord rec, DesignSnapshot next, HashSet<BlockPos> air, int height, int? grade)
+    {
+        if (Mine.MineDesign.HeaderOf(rec.Dsl) is not { } mh) return Draw(rec.Name, next, air, height, grade, DesignVersions.OfDsl(rec.Dsl));
+        var cells = next.Clone();
+        var plan0 = service.PlanOf(rec, out _, forWorld: false);
+        var entry = plan0?.Blueprint.Entry is { } e && plan0 != null ? new BlockPos(plan0.Origin.X + e.X, plan0.Origin.Y + e.Y, plan0.Origin.Z + e.Z) : (BlockPos?)null;
+        return Mine.MineDesign.Draw(rec.Name, cells, entry, mh.Seed, mh.PreferredFor, DesignVersions.OfDsl(rec.Dsl), height);
+    }
+
+    /// <summary>The DSL is drawn as it stands: a gate correction (turn/shift) from an earlier build must not apply on top of it.</summary>
+    private void ResetTransform(long design)
+    {
+        if (service.Plans?.Get(design, 0) is not { Transform.IsNone: false } bp) return;
+        bp.Transform = Building.BuildTransform.None;
+        service.Plans.Save(bp);
     }
 
     /// <summary>The remembered structure that links the design follows its new box (protection guards what the design is now).</summary>

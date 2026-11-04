@@ -74,50 +74,97 @@ public static class CrewSlicer
     public static BuildPlan? Strips(VoxelPlan plan, IBlockAccess world, IReadOnlyList<CrewMember> crew, BuildPart part, BuildPlannerOptions o,
         BuildPlan? previous)
     {
-        if (o.StripsAbove <= 0 || o.GateBlocks > 0 && previous?.Gate.State is null or GateState.Pending) return null;
-        if (previous?.Columns.Any(c => c.Poured && !c.Removed) == true) return null;
-        var todo = plan.Blocks.Values.Where(b => part.Cells.Contains(b.Pos) && !b.UpperDoor
-            && !(world.IsLoaded(b.Pos.X, b.Pos.Z) && DesignChecks.SameState(b, world.GetBlock(b.Pos.X, b.Pos.Y, b.Pos.Z), world.GetMeta(b.Pos.X, b.Pos.Y, b.Pos.Z)))).ToList();
+        if (!StripsMayApply(o, previous)) return null;
+        var todo = ToPlace(plan, world, part);
         if (plan.Blocks.Count < o.StripsAbove || todo.Count == 0) return null;
-        bool alongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;
-        int lo = alongX ? plan.Min.X : plan.Min.Z, hi = alongX ? plan.Max.X : plan.Max.Z;
-        int Axis(BlockPos p) => alongX ? p.X : p.Z;
-        var per = new int[hi - lo + 1];
-        foreach (var b in todo) per[Math.Clamp(Axis(b.Pos), lo, hi) - lo]++;
-        int n = Math.Min(crew.Count, (hi - lo + 1) / MinStripWidth);
-        if (n < 2) return null;
-        // Contiguous runs of columns balanced by what is left to place; the most strips whose balanced cut leaves every one at least
-        // MinStripWidth wide (a pyramid's middle columns hold the most blocks, so its middle strips are the narrow ones).
-        List<(int A, int B)>? bounds = null;
-        for (; n >= 2 && bounds == null; n--)
-        {
-            var cut = Balanced(per, lo, n);
-            if (cut.Count == n && cut.All(r => r.B - r.A + 1 >= MinStripWidth)) bounds = cut;
-        }
-        if (bounds == null) return null;
-        n = bounds.Count;
-        var parts = bounds.Select((r, i) =>
-        {
-            int axisLo = i == 0 ? int.MinValue : r.A, axisHi = i == n - 1 ? int.MaxValue : r.B;
-            var cells = part.Cells.Where(p => Axis(p) >= r.A && Axis(p) <= r.B).ToHashSet();
-            return new BuildPart(i, n, cells, part.Claim, axisLo, axisHi, alongX ? 'x' : 'z');
-        }).ToList();
+        var axis = new LongAxis(plan);
+        if (StripBounds(todo, axis, crew.Count) is not { } bounds) return null;
+        int n = bounds.Count;
+        var parts = bounds.Select((r, i) => axis.Strip(part, r, i, n)).ToList();
         var blocks = parts.Select(p => todo.Count(b => p.Cells.Contains(b.Pos))).ToArray();
         // Bodies: whoever reaches a strip and finishes it soonest (the slowest strip minimised).
-        var cost = new double[crew.Count, n];
+        var pick = Choose(StripCosts(plan, crew, bounds, blocks, axis), crew.Count, n);
+        var plans = PlanStrips(plan, world, crew, part, o, previous, parts, pick);
+        if (plans.Any(p => p.Infeasible.Count > 0 || p.Columns.Count > 0)) return null;
+        return MergeStrips(plans, plan, crew, part, previous, pick);
+    }
+
+    /// <summary>Strips only when asked for, with no gate still to show and no water column still standing.</summary>
+    private static bool StripsMayApply(BuildPlannerOptions o, BuildPlan? previous)
+    {
+        if (o.StripsAbove <= 0 || o.GateBlocks > 0 && previous?.Gate.State is null or GateState.Pending) return false;
+        return previous?.Columns.Any(c => c.Poured && !c.Removed) != true;
+    }
+
+    /// <summary>The part's design blocks that don't stand as planned yet.</summary>
+    private static List<PlannedBlock> ToPlace(VoxelPlan plan, IBlockAccess world, BuildPart part) =>
+        plan.Blocks.Values.Where(b => part.Cells.Contains(b.Pos) && !b.UpperDoor
+            && !(world.IsLoaded(b.Pos.X, b.Pos.Z) && DesignChecks.SameState(b, world.GetBlock(b.Pos.X, b.Pos.Y, b.Pos.Z), world.GetMeta(b.Pos.X, b.Pos.Y, b.Pos.Z)))).ToList();
+
+    /// <summary>The footprint's longer axis (x on a tie): where a cell lies along it, and across it.</summary>
+    private readonly record struct LongAxis
+    {
+        public LongAxis(VoxelPlan plan)
+        {
+            AlongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;
+            (Lo, Hi) = AlongX ? (plan.Min.X, plan.Max.X) : (plan.Min.Z, plan.Max.Z);
+        }
+
+        public bool AlongX { get; }
+        public int Lo { get; }
+        public int Hi { get; }
+        public int Of(BlockPos p) => AlongX ? p.X : p.Z;
+        public int Main(BlockPos p) => Math.Clamp(Of(p), Lo, Hi);
+        public int Cross(BlockPos p) => AlongX ? p.Z : p.X;
+
+        /// <summary>Strip <paramref name="i"/> of <paramref name="n"/>: its cells; the end strips reach on past the footprint.</summary>
+        public BuildPart Strip(BuildPart part, (int A, int B) r, int i, int n)
+        {
+            var self = this;
+            int axisLo = i == 0 ? int.MinValue : r.A, axisHi = i == n - 1 ? int.MaxValue : r.B;
+            var cells = part.Cells.Where(p => self.Of(p) >= r.A && self.Of(p) <= r.B).ToHashSet();
+            return new BuildPart(i, n, cells, part.Claim, axisLo, axisHi, AlongX ? 'x' : 'z');
+        }
+    }
+
+    /// <summary>Contiguous runs of columns balanced by what is left to place; the most strips (one per body at most) whose balanced
+    /// cut leaves every one at least <see cref="MinStripWidth"/> wide (a pyramid's middle columns hold the most blocks, so its
+    /// middle strips are the narrow ones). Null = fewer than two.</summary>
+    private static List<(int A, int B)>? StripBounds(List<PlannedBlock> todo, LongAxis axis, int bodies)
+    {
+        var per = new int[axis.Hi - axis.Lo + 1];
+        foreach (var b in todo) per[axis.Main(b.Pos) - axis.Lo]++;
+        for (int n = Math.Min(bodies, (axis.Hi - axis.Lo + 1) / MinStripWidth); n >= 2; n--)
+        {
+            var cut = Balanced(per, axis.Lo, n);
+            if (cut.Count == n && cut.All(r => r.B - r.A + 1 >= MinStripWidth)) return cut;
+        }
+        return null;
+    }
+
+    /// <summary>Member × strip: the walk to the strip's nearest column plus its blocks.</summary>
+    private static double[,] StripCosts(VoxelPlan plan, IReadOnlyList<CrewMember> crew, List<(int A, int B)> bounds, int[] blocks, LongAxis axis)
+    {
+        var cost = new double[crew.Count, bounds.Count];
         for (int m = 0; m < crew.Count; m++)
-            for (int g = 0; g < n; g++)
+            for (int g = 0; g < bounds.Count; g++)
             {
-                int a = Math.Clamp(Axis(crew[m].Start), bounds[g].A, bounds[g].B);
-                var near = alongX ? new BlockPos(a, crew[m].Start.Y, Math.Clamp(crew[m].Start.Z, plan.Min.Z, plan.Max.Z))
-                    : new BlockPos(Math.Clamp(crew[m].Start.X, plan.Min.X, plan.Max.X), crew[m].Start.Y, a);
-                cost[m, g] = Walk(crew[m].Start, near) + blocks[g] * 8.0;
+                var s = crew[m].Start;
+                int a = Math.Clamp(axis.Of(s), bounds[g].A, bounds[g].B);
+                var near = axis.AlongX ? new BlockPos(a, s.Y, Math.Clamp(s.Z, plan.Min.Z, plan.Max.Z)) : new BlockPos(Math.Clamp(s.X, plan.Min.X, plan.Max.X), s.Y, a);
+                cost[m, g] = Walk(s, near) + blocks[g] * 8.0;
             }
-        var pick = Choose(cost, crew.Count, n);
-        // Every strip is planned on its own world (the real one + its own steps), so none counts on another's blocks either way.
+        return cost;
+    }
+
+    /// <summary>Every strip planned on its own world (the real one + its own steps), so none counts on another's blocks either way:
+    /// from its body's feet, standing only inside its strip, never walking through another strip's design cells.</summary>
+    private static BuildPlan[] PlanStrips(VoxelPlan plan, IBlockAccess world, IReadOnlyList<CrewMember> crew, BuildPart part, BuildPlannerOptions o,
+        BuildPlan? previous, List<BuildPart> parts, int[] pick)
+    {
         var designCells = plan.Blocks.Keys.Where(part.Cells.Contains).ToList();
-        var plans = new BuildPlan[n];
-        var tasks = Enumerable.Range(0, n).Select(g => Task.Run(() =>
+        var plans = new BuildPlan[parts.Count];
+        var tasks = Enumerable.Range(0, parts.Count).Select(g => Task.Run(() =>
         {
             var mine = parts[g];
             var avoid = designCells.Where(p => !mine.Cells.Contains(p)).ToHashSet();
@@ -129,40 +176,49 @@ public static class CrewSlicer
             plans[g] = BuildPlanner.Plan(plan, world, crew[pick[g]].Start, mine, lane, ForStrip(previous, mine, g == 0));
         })).ToArray();
         Task.WaitAll(tasks);
-        if (plans.Any(p => p.Infeasible.Count > 0 || p.Columns.Count > 0)) return null;
+        return plans;
+    }
 
-        // One plan: the strips' steps one after another (the first keeps the history), each strip a lane.
-        var first = plans[0];
-        var bp = new BuildPlan
-        {
-            Part = part.Index, Parts = part.Count, Version = first.Version, Format = first.Format, Origin = first.Origin, Facing = first.Facing,
-            Gate = previous?.Gate ?? first.Gate, Home = BuildPlanner.HomeFor(plan, crew[0].Start, previous), BlueprintId = previous?.BlueprintId ?? 0,
-            Placed = previous?.Placed.Distinct().ToList() ?? new(), Transform = previous?.Transform ?? BuildTransform.None,
-            Replans = previous != null ? previous.Replans + 1 : 0, Exit = previous?.Exit.ToList() ?? new(),
-            SliceId = Guid.NewGuid().ToString("N")[..12],
-        };
+    /// <summary>One plan: the strips' steps one after another (the first keeps the history), each strip a lane.</summary>
+    private static BuildPlan MergeStrips(BuildPlan[] plans, VoxelPlan plan, IReadOnlyList<CrewMember> crew, BuildPart part, BuildPlan? previous, int[] pick)
+    {
+        var bp = StripsPlan(plans[0], plan, crew, part, previous);
         var lanes = new List<PlanLane>();
-        for (int g = 0; g < n; g++)
-        {
-            int offset = bp.Steps.Count;
-            var lane = new PlanLane { Index = g, Body = crew[pick[g]].Name };
-            foreach (var st in plans[g].Steps)
-            {
-                st.Index += offset;
-                for (int k = 0; k < st.Deps.Count; k++) st.Deps[k] += offset;
-                st.Lane = st.Finished ? 0 : g;
-                if (!st.Finished) lane.Steps.Add(st.Index);
-                bp.Steps.Add(st);
-            }
-            foreach (var c in plans[g].ScaffoldUp) if (!bp.ScaffoldUp.Contains(c)) bp.ScaffoldUp.Add(c);
-            lane.EstTicks = LaneTicks(lane.Steps.Select(i => bp.Steps[i]), crew[pick[g]].Start);
-            lanes.Add(lane);
-        }
+        for (int g = 0; g < plans.Length; g++) lanes.Add(AppendStrip(bp, plans[g], g, crew[pick[g]]));
         bp.Lanes = lanes;
         bp.CrewTicks = lanes.Max(l => l.EstTicks);
         // One body alone: every strip in turn, walking from the end of one to the start of the next.
         bp.SoloTicks = LaneTicks(lanes.SelectMany(l => l.Steps).Select(i => bp.Steps[i]), crew[0].Start);
         return bp;
+    }
+
+    /// <summary>The merged plan's head: the first strip's format, the last plan's ledger, gate, corrections and exit.</summary>
+    private static BuildPlan StripsPlan(BuildPlan first, VoxelPlan plan, IReadOnlyList<CrewMember> crew, BuildPart part, BuildPlan? previous) => new()
+    {
+        Part = part.Index, Parts = part.Count, Version = first.Version, Format = first.Format, Origin = first.Origin, Facing = first.Facing,
+        Gate = previous?.Gate ?? first.Gate, Home = BuildPlanner.HomeFor(plan, crew[0].Start, previous), BlueprintId = previous?.BlueprintId ?? 0,
+        Placed = previous?.Placed.Distinct().ToList() ?? new(), Transform = previous?.Transform ?? BuildTransform.None,
+        Replans = previous != null ? previous.Replans + 1 : 0, Exit = previous?.Exit.ToList() ?? new(),
+        SliceId = Guid.NewGuid().ToString("N")[..12],
+    };
+
+    /// <summary>A strip's steps appended to the merged plan (indices and dependencies shifted), its unfinished ones as lane
+    /// <paramref name="g"/>, its standing scaffold added.</summary>
+    private static PlanLane AppendStrip(BuildPlan bp, BuildPlan strip, int g, CrewMember body)
+    {
+        int offset = bp.Steps.Count;
+        var lane = new PlanLane { Index = g, Body = body.Name };
+        foreach (var st in strip.Steps)
+        {
+            st.Index += offset;
+            for (int k = 0; k < st.Deps.Count; k++) st.Deps[k] += offset;
+            st.Lane = st.Finished ? 0 : g;
+            if (!st.Finished) lane.Steps.Add(st.Index);
+            bp.Steps.Add(st);
+        }
+        foreach (var c in strip.ScaffoldUp) if (!bp.ScaffoldUp.Contains(c)) bp.ScaffoldUp.Add(c);
+        lane.EstTicks = LaneTicks(lane.Steps.Select(i => bp.Steps[i]), body.Start);
+        return lane;
     }
 
     /// <summary>Cuts columns <paramref name="lo"/>.. (counts <paramref name="per"/>) into <paramref name="n"/> contiguous runs of about
@@ -182,17 +238,21 @@ public static class CrewSlicer
             if (!room) break;
             if (over || hi - c == left)
             {
-                bool back = over && c > start && acc - per[c - lo] > 0 && target - (acc - per[c - lo]) < acc - target;
+                bool back = over && c > start && CloserBefore(acc, per[c - lo], target);
                 int end = back ? c - 1 : c;
                 bounds.Add((start, end));
-                done += back ? acc - per[c - lo] : acc;
-                acc = back ? per[c - lo] : 0;
+                long run = back ? acc - per[c - lo] : acc; // the run cut off; this column carries over when it ends before it
+                done += run;
+                acc -= run;
                 start = end + 1;
             }
         }
         bounds.Add((start, hi));
         return bounds;
     }
+
+    /// <summary>The run ending before this column (its <paramref name="col"/> blocks) is non-empty and closer to the share.</summary>
+    private static bool CloserBefore(long acc, int col, double target) => acc - col > 0 && target - (acc - col) < acc - target;
 
     /// <summary>What a strip's own plan carries over from the last one: the ledger, gate and corrections for all; the finished
     /// steps (history) once; the scaffold still standing in that strip.</summary>
@@ -224,78 +284,26 @@ public static class CrewSlicer
             return;
         }
 
-        bool IsWater(PlanStep s) => s.Column >= 0 || s.Action is StepAction.PourWater or StepAction.PickupWater;
-        var finale = pending.Where(s => s.Action == StepAction.RemoveScaffold && !IsWater(s)).ToList();
-        static bool IsStair(PlanStep s) => s.Action == StepAction.Scaffold && s.Technique == Technique.Stair;
-        var water = pending.Where(IsWater).ToList();
-        var stair = pending.Where(s => !IsWater(s) && IsStair(s)).ToList();
-        var regular = pending.Where(s => !IsWater(s) && s.Action != StepAction.RemoveScaffold && !IsStair(s)).ToList();
+        var finale = pending.Where(s => s.Action == StepAction.RemoveScaffold && !IsWaterStep(s)).ToList();
+        var water = pending.Where(IsWaterStep).ToList();
+        var stair = pending.Where(s => !IsWaterStep(s) && IsStairStep(s)).ToList();
+        var regular = pending.Where(s => !IsWaterStep(s) && s.Action != StepAction.RemoveScaffold && !IsStairStep(s)).ToList();
 
-        // Regions: sweep the footprint's columns along the longer axis, cut into contiguous runs of equal step count.
-        bool alongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;
-        int lo = alongX ? plan.Min.X : plan.Min.Z, hi = alongX ? plan.Max.X : plan.Max.Z;
-        int Main(BlockPos p) => Math.Clamp(alongX ? p.X : p.Z, lo, hi);
-        int Cross(BlockPos p) => alongX ? p.Z : p.X;
-        (int, int) Column(PlanStep s) => (Main(s.Target), Cross(s.Target));
-        var sorted = regular.OrderBy(s => Main(s.Target)).ThenBy(s => Cross(s.Target)).ThenBy(s => s.Target.Y).ThenBy(s => s.Index).ToList();
-        int n = Math.Clamp(Math.Min(crew.Count, sorted.Count), 1, crew.Count);
-        var segments = new List<List<PlanStep>>();
-        int at = 0;
-        for (int k = 0; k < n; k++)
-        {
-            int end = k == n - 1 ? sorted.Count : (int)Math.Round((k + 1) * (double)sorted.Count / n);
-            if (k < n - 1)
-            {
-                // Prefer a column boundary close to the ideal cut (a column split between lanes means one waits on the other).
-                int tol = (int)Math.Floor(0.06 * sorted.Count / n), best = -1;
-                for (int d = 0; d <= tol && best < 0; d++)
-                    foreach (var j in new[] { end - d, end + d })
-                        if (j > at && j < sorted.Count && Column(sorted[j - 1]) != Column(sorted[j])) { best = j; break; }
-                if (best > 0) end = best;
-                end = Math.Clamp(end, at + 1, sorted.Count - (n - 1 - k));
-            }
-            segments.Add(sorted.GetRange(at, Math.Max(0, end - at)));
-            at = end;
-        }
-
+        var axis = new LongAxis(plan);
+        var segments = Segments(regular, axis, crew.Count);
         // Bodies: the assignment whose slowest lane finishes soonest (travel from where each body stands + its lane).
-        var cost = new double[crew.Count, segments.Count];
-        for (int m = 0; m < crew.Count; m++)
-            for (int g = 0; g < segments.Count; g++)
-                cost[m, g] = LaneTicks(segments[g].OrderBy(s => s.Index), crew[m].Start);
-        var pick = Choose(cost, crew.Count, segments.Count);
-
+        var pick = Choose(SegmentCosts(segments, crew), crew.Count, segments.Count);
         var lanes = new List<PlanLane>();
         var laneOf = new Dictionary<int, int>();
         for (int g = 0; g < segments.Count; g++)
         {
-            var lane = new PlanLane { Index = g, Body = crew[pick[g]].Name, Steps = segments[g].Select(s => s.Index).ToList() };
-            lanes.Add(lane);
-            foreach (var s in segments[g]) laneOf[s.Index] = g;
+            lanes.Add(new PlanLane { Index = g, Body = crew[pick[g]].Name });
+            AddToLane(lanes, laneOf, g, segments[g]);
         }
-        if (water.Count > 0)
-        {
-            // One body rides the columns (one bucket, one column at a time): the one carrying the bucket, else the lane nearest them.
-            int w = -1;
-            for (int g = 0; g < lanes.Count && w < 0; g++) if (crew[pick[g]].Water) w = g;
-            if (w < 0)
-            {
-                var c = Centroid(water.Select(s => s.Target));
-                w = Enumerable.Range(0, lanes.Count).OrderBy(g => segments[g].Count == 0 ? double.MaxValue
-                    : Centroid(segments[g].Select(s => s.Target)).DistanceSquaredTo(c)).First();
-            }
-            foreach (var s in water) { lanes[w].Steps.Add(s.Index); laneOf[s.Index] = w; }
-        }
-        if (stair.Count > 0)
-        {
-            // The shared stair is one lane's: the strip it starts in (nearest by the long axis).
-            int at0 = Main(stair[0].Target);
-            int sl = Enumerable.Range(0, lanes.Count).OrderBy(g => segments[g].Count == 0 ? int.MaxValue : segments[g].Min(s => Math.Abs(Main(s.Target) - at0))).First();
-            foreach (var s in stair) { lanes[sl].Steps.Add(s.Index); laneOf[s.Index] = sl; }
-        }
-        foreach (var l in lanes) l.Steps.Sort();
-        foreach (var s in finale) s.Lane = -1;
-        foreach (var (i, g) in laneOf) bp.Steps[i].Lane = g;
+        // One body rides the columns (one bucket, one column at a time); the shared stair is one lane's.
+        if (water.Count > 0) AddToLane(lanes, laneOf, WaterLane(water, segments, crew, pick), water);
+        if (stair.Count > 0) AddToLane(lanes, laneOf, StairLane(stair, segments, axis), stair);
+        Seal(bp, lanes, laneOf, finale);
 
         Waits(bp, lanes, laneOf, plan.Min.Y);
         bp.Lanes = lanes;
@@ -304,48 +312,151 @@ public static class CrewSlicer
         for (int g = 0; g < lanes.Count; g++) lanes[g].EstTicks = perLane[g];
     }
 
+    /// <summary>Each lane in plan order; every step marked with its lane (scaffold removal: nobody's, the finale's).</summary>
+    private static void Seal(BuildPlan bp, List<PlanLane> lanes, Dictionary<int, int> laneOf, List<PlanStep> finale)
+    {
+        foreach (var l in lanes) l.Steps.Sort();
+        foreach (var s in finale) s.Lane = -1;
+        foreach (var (i, g) in laneOf) bp.Steps[i].Lane = g;
+    }
+
+    private static bool IsWaterStep(PlanStep s) => s.Column >= 0 || s.Action is StepAction.PourWater or StepAction.PickupWater;
+
+    private static bool IsStairStep(PlanStep s) => s.Action == StepAction.Scaffold && s.Technique == Technique.Stair;
+
+    private static void AddToLane(List<PlanLane> lanes, Dictionary<int, int> laneOf, int g, List<PlanStep> steps)
+    {
+        foreach (var s in steps) { lanes[g].Steps.Add(s.Index); laneOf[s.Index] = g; }
+    }
+
+    /// <summary>Regions: the footprint's columns swept along the longer axis, cut into contiguous runs of equal step count.</summary>
+    private static List<List<PlanStep>> Segments(List<PlanStep> regular, LongAxis axis, int bodies)
+    {
+        var sorted = regular.OrderBy(s => axis.Main(s.Target)).ThenBy(s => axis.Cross(s.Target)).ThenBy(s => s.Target.Y).ThenBy(s => s.Index).ToList();
+        int n = Math.Clamp(Math.Min(bodies, sorted.Count), 1, bodies);
+        var segments = new List<List<PlanStep>>();
+        int at = 0;
+        for (int k = 0; k < n; k++)
+        {
+            int end = k == n - 1 ? sorted.Count : CutAt(sorted, at, k, n, axis);
+            segments.Add(sorted.GetRange(at, Math.Max(0, end - at)));
+            at = end;
+        }
+        return segments;
+    }
+
+    /// <summary>Where run <paramref name="k"/> ends: the ideal cut, moved to a column boundary close to it (a column split between
+    /// lanes means one waits on the other), leaving a step for every run after it.</summary>
+    private static int CutAt(List<PlanStep> sorted, int at, int k, int n, LongAxis axis)
+    {
+        int end = (int)Math.Round((k + 1) * (double)sorted.Count / n);
+        int tol = (int)Math.Floor(0.06 * sorted.Count / n);
+        for (int d = 0; d <= tol; d++)
+            foreach (var j in new[] { end - d, end + d })
+                if (j > at && j < sorted.Count && ColumnOf(sorted[j - 1], axis) != ColumnOf(sorted[j], axis))
+                    return Math.Clamp(j, at + 1, sorted.Count - (n - 1 - k));
+        return Math.Clamp(end, at + 1, sorted.Count - (n - 1 - k));
+    }
+
+    private static (int, int) ColumnOf(PlanStep s, LongAxis axis) => (axis.Main(s.Target), axis.Cross(s.Target));
+
+    private static double[,] SegmentCosts(List<List<PlanStep>> segments, IReadOnlyList<CrewMember> crew)
+    {
+        var cost = new double[crew.Count, segments.Count];
+        for (int m = 0; m < crew.Count; m++)
+            for (int g = 0; g < segments.Count; g++)
+                cost[m, g] = LaneTicks(segments[g].OrderBy(s => s.Index), crew[m].Start);
+        return cost;
+    }
+
+    /// <summary>The water lane: the one whose body carries the bucket, else the lane nearest the columns.</summary>
+    private static int WaterLane(List<PlanStep> water, List<List<PlanStep>> segments, IReadOnlyList<CrewMember> crew, int[] pick)
+    {
+        for (int g = 0; g < segments.Count; g++) if (crew[pick[g]].Water) return g;
+        var c = Centroid(water.Select(s => s.Target));
+        return Enumerable.Range(0, segments.Count).OrderBy(g => segments[g].Count == 0 ? double.MaxValue
+            : Centroid(segments[g].Select(s => s.Target)).DistanceSquaredTo(c)).First();
+    }
+
+    /// <summary>The stair's lane: the strip it starts in (nearest by the long axis).</summary>
+    private static int StairLane(List<PlanStep> stair, List<List<PlanStep>> segments, LongAxis axis)
+    {
+        int at0 = axis.Main(stair[0].Target);
+        return Enumerable.Range(0, segments.Count).OrderBy(g => segments[g].Count == 0 ? int.MaxValue : segments[g].Min(s => Math.Abs(axis.Main(s.Target) - at0))).First();
+    }
+
     /// <summary>The lanes' cross-lane waits (only to earlier steps, so they never cycle).</summary>
     private static void Waits(BuildPlan bp, List<PlanLane> lanes, Dictionary<int, int> laneOf, int baseY)
     {
-        var stairs = laneOf.Keys.Where(i => bp.Steps[i].Action == StepAction.Scaffold && bp.Steps[i].Technique == Technique.Stair).OrderBy(i => i).ToList();
-        // The stair's walk space (above each tread: feet, head, the jump): a block there cuts the way up for whoever still walks it.
-        var walkSpace = new HashSet<BlockPos>(stairs.SelectMany(j => new[] { bp.Steps[j].Target.Up(), bp.Steps[j].Target.Up(2), bp.Steps[j].Target.Up(3) }));
-        var elevated = laneOf.Keys.Where(i => bp.Steps[i].Column < 0 && bp.Steps[i].Stand != default && bp.Steps[i].Stand.Y > baseY + 1).OrderBy(i => i).ToList();
-        var byTarget = new Dictionary<BlockPos, List<int>>();
-        var placedAt = new Dictionary<BlockPos, List<int>>();
-        var clearedAt = new Dictionary<BlockPos, List<int>>();
-        var standIn = new Dictionary<BlockPos, List<int>>();
-        static void Add(Dictionary<BlockPos, List<int>> d, BlockPos p, int i) { if (!d.TryGetValue(p, out var l)) d[p] = l = new(); l.Add(i); }
-        foreach (var i in laneOf.Keys)
-        {
-            var s = bp.Steps[i];
-            Add(byTarget, s.Target, i);
-            if (s.IsPlacement) Add(placedAt, s.Target, i);
-            if (s.Action is StepAction.Clear or StepAction.RemoveScaffold) Add(clearedAt, s.Target, i);
-            if (s.Column < 0 && s.Stand != default) { Add(standIn, s.Stand, i); Add(standIn, s.Stand.Up(), i); }
-        }
+        var index = new WaitIndex(bp, laneOf, baseY);
         foreach (var lane in lanes)
             foreach (var i in lane.Steps)
+                if (index.For(lane.Index, i) is { Count: > 0 } set) lane.Waits[i] = set.ToList();
+    }
+
+    /// <summary>What each step of the crew plan may have to wait for: who targets, places, clears or stands in each cell, the
+    /// shared stair's treads and walk space, the steps standing above the base.</summary>
+    private sealed class WaitIndex
+    {
+        private readonly BuildPlan _bp;
+        private readonly Dictionary<int, int> _laneOf;
+        private readonly int _baseY;
+        private readonly List<int> _stairs, _elevated;
+        private readonly HashSet<BlockPos> _walkSpace;
+        private readonly Dictionary<BlockPos, List<int>> _byTarget = new(), _placedAt = new(), _clearedAt = new(), _standIn = new();
+
+        public WaitIndex(BuildPlan bp, Dictionary<int, int> laneOf, int baseY)
+        {
+            (_bp, _laneOf, _baseY) = (bp, laneOf, baseY);
+            _stairs = laneOf.Keys.Where(i => IsStairStep(bp.Steps[i])).OrderBy(i => i).ToList();
+            // The stair's walk space (above each tread: feet, head, the jump): a block there cuts the way up for whoever still walks it.
+            _walkSpace = new HashSet<BlockPos>(_stairs.SelectMany(j => new[] { bp.Steps[j].Target.Up(), bp.Steps[j].Target.Up(2), bp.Steps[j].Target.Up(3) }));
+            _elevated = laneOf.Keys.Where(i => Elevated(bp.Steps[i])).OrderBy(i => i).ToList();
+            foreach (var i in laneOf.Keys) Note(i, bp.Steps[i]);
+        }
+
+        private static bool Stands(PlanStep s) => s.Column < 0 && s.Stand != default;
+        private bool Elevated(PlanStep s) => Stands(s) && s.Stand.Y > _baseY + 1;
+
+        private static void Add(Dictionary<BlockPos, List<int>> d, BlockPos p, int i)
+        {
+            if (!d.TryGetValue(p, out var l)) d[p] = l = new();
+            l.Add(i);
+        }
+
+        private void Note(int i, PlanStep s)
+        {
+            Add(_byTarget, s.Target, i);
+            if (s.IsPlacement) Add(_placedAt, s.Target, i);
+            if (s.Action is StepAction.Clear or StepAction.RemoveScaffold) Add(_clearedAt, s.Target, i);
+            if (Stands(s)) { Add(_standIn, s.Stand, i); Add(_standIn, s.Stand.Up(), i); }
+        }
+
+        /// <summary>The other lanes' earlier steps step <paramref name="i"/> of lane <paramref name="lane"/> waits for.</summary>
+        public SortedSet<int> For(int lane, int i)
+        {
+            var s = _bp.Steps[i];
+            var set = new SortedSet<int>();
+            void From(IEnumerable<int>? js)
             {
-                var s = bp.Steps[i];
-                var set = new SortedSet<int>();
-                void From(IEnumerable<int>? js) { if (js != null) foreach (var j in js) if (j < i && laneOf.TryGetValue(j, out var g) && g != lane.Index) set.Add(j); }
-                From(s.Deps);
-                From(byTarget.GetValueOrDefault(s.Target));
-                if (s.Column < 0 && s.Stand != default)
-                {
-                    From(placedAt.GetValueOrDefault(s.Stand.Down()));
-                    From(clearedAt.GetValueOrDefault(s.Stand));
-                    From(clearedAt.GetValueOrDefault(s.Stand.Up()));
-                }
-                if (s.IsPlacement) From(standIn.GetValueOrDefault(s.Target));
-                // Up on the shared stair: its treads below this stand first (another lane builds them).
-                if (s.Column < 0 && s.Stand != default && s.Stand.Y > baseY + 1)
-                    From(stairs.Where(j => j < i && bp.Steps[j].Target.Y < s.Stand.Y));
-                // Filling the stair's walk space: only once the other lanes' earlier steps up there are done.
-                if (s.IsPlacement && walkSpace.Contains(s.Target)) From(elevated.Where(j => j < i));
-                if (set.Count > 0) lane.Waits[i] = set.ToList();
+                if (js == null) return;
+                foreach (var j in js) if (j < i && _laneOf.TryGetValue(j, out var g) && g != lane) set.Add(j);
             }
+            From(s.Deps);
+            From(_byTarget.GetValueOrDefault(s.Target));
+            if (Stands(s))
+            {
+                From(_placedAt.GetValueOrDefault(s.Stand.Down()));
+                From(_clearedAt.GetValueOrDefault(s.Stand));
+                From(_clearedAt.GetValueOrDefault(s.Stand.Up()));
+            }
+            if (s.IsPlacement) From(_standIn.GetValueOrDefault(s.Target));
+            // Up on the shared stair: its treads below this stand first (another lane builds them).
+            if (Elevated(s)) From(_stairs.Where(j => j < i && _bp.Steps[j].Target.Y < s.Stand.Y));
+            // Filling the stair's walk space: only once the other lanes' earlier steps up there are done.
+            if (s.IsPlacement && _walkSpace.Contains(s.Target)) From(_elevated.Where(j => j < i));
+            return set;
+        }
     }
 
     /// <summary>Lane → member: the permutation with the smallest slowest lane (ties: the smallest total); greedy past 8 bodies.</summary>

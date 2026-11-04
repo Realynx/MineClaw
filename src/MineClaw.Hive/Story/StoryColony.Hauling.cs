@@ -193,7 +193,7 @@ public sealed partial class StoryColony
         if (!_lastWork.TryGetValue(p.Name, out var type) || type == WorkTypes.Haul) return false; // a haul's drops go now
         if (p.Priorities.GetValueOrDefault(type) is < 1 or > 4) return false;
         int hour = HourNow;
-        var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
+        var block = ScheduleBlockAt(p, hour);
         if (block is not (ScheduleBlocks.Work or ScheduleBlocks.Anything)) return false; // bed or free time: unload first
         return Candidate(type, p, live) != null;
     }
@@ -235,16 +235,7 @@ public sealed partial class StoryColony
     /// <summary>A drop a pawn may go for now (see the class summary), with where it goes.</summary>
     private (StorageState? Chest, P3? Dump, bool Fallback)? Haulable(StoryEntity e, PawnState p, P3 from, IReadOnlyList<StoryEntity> ents)
     {
-        if (ForbiddenEntity(e.Id) || Forbidden(e.Block) || !Open("e:" + e.Id, p.Name, null)) return null;
-        if (!InHaulArea(e.Block)) return null;
-        if (Math.Abs(e.Block.Y - from.Y) > 12 && Math.Abs(e.Block.Y - (Home()?.Y ?? from.Y)) > 12) return null;
-        if (World is { } w && StoryWander.Underground(w, e.Block)) return null;
-        foreach (var o in ents)
-        {
-            if (o.Kind == "mob" && o.Hostile && Fresh(o) && Math.Abs(o.X - e.X) <= 4 && Math.Abs(o.Z - e.Z) <= 4 && Math.Abs(o.Y - e.Y) <= 3) return null;
-            if (o.Kind == "player" && !Pawns.ContainsKey(o.Name) && Math.Abs(o.X - e.X) <= 2 && Math.Abs(o.Z - e.Z) <= 2 && Math.Abs(o.Y - e.Y) <= 3
-                && Age(e) < PlayerDropGrace) return null; // a player just dropped it at their feet
-        }
+        if (!HaulReach(e, p, from) || DropGuarded(e, ents)) return null;
         if (HaulDest(e.ItemId, e.ItemMeta, e.Block) is not { } dest)
         {
             Unstored(e.ItemId, e.ItemMeta);
@@ -253,6 +244,30 @@ public sealed partial class StoryColony
         if (dest.Dump != null && AtDump(e.Block)) return null; // already where it can go
         return dest;
     }
+
+    /// <summary>Not forbidden, not leased, in the haul area, near its level (or home's), not under ground.</summary>
+    private bool HaulReach(StoryEntity e, PawnState p, P3 from)
+    {
+        if (ForbiddenEntity(e.Id) || Forbidden(e.Block) || !Open("e:" + e.Id, p.Name, null)) return false;
+        if (!InHaulArea(e.Block)) return false;
+        if (Math.Abs(e.Block.Y - from.Y) > 12 && Math.Abs(e.Block.Y - (Home()?.Y ?? from.Y)) > 12) return false;
+        return World is not { } w || !StoryWander.Underground(w, e.Block);
+    }
+
+    /// <summary>A fresh monster beside the drop, or a player who just dropped it at their feet.</summary>
+    private bool DropGuarded(StoryEntity e, IReadOnlyList<StoryEntity> ents)
+    {
+        foreach (var o in ents)
+            if (MobBeside(o, e) || PlayerJustDropped(o, e)) return true;
+        return false;
+    }
+
+    private bool MobBeside(StoryEntity o, StoryEntity e) => o.Kind == "mob" && o.Hostile && Fresh(o) && Within(o, e, 4, 3);
+
+    private bool PlayerJustDropped(StoryEntity o, StoryEntity e) =>
+        o.Kind == "player" && !Pawns.ContainsKey(o.Name) && Within(o, e, 2, 3) && Age(e) < PlayerDropGrace;
+
+    private static bool Within(StoryEntity o, StoryEntity e, double r, double dy) => Math.Abs(o.X - e.X) <= r && Math.Abs(o.Z - e.Z) <= r && Math.Abs(o.Y - e.Y) <= dy;
 
     /// <summary>
     /// A haul of drops for this pawn: a designated drop first, then the standing task (despawn risk first, then nearest), batched
@@ -265,12 +280,13 @@ public sealed partial class StoryColony
         var from = live.Block;
         var ents = Ents();
         var items = ents.Where(e => e.Kind == "item").ToList();
-        if (items.Count == 0) return null;
+        if (items.Count == 0) { if (!riskOnly) PassedEntityMarks("haul", null); return null; }
         if (!riskOnly)
         {
             var byId = items.Where(e => !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
             var d = Designations.Where(x => x.Kind == "haul" && x.Entity is { } id && byId.ContainsKey(id) && Open("e:" + id, p.Name, null))
                 .OrderBy(x => byId[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
+            if (d == null) PassedEntityMarks("haul", byId); // marked drops out of sight: the idle audit says so
             if (d != null)
             {
                 var de = byId[d.Entity!.Value];
@@ -311,6 +327,39 @@ public sealed partial class StoryColony
             j => j["r"] = Math.Clamp((int)Math.Ceiling(reach) + 2, 3, 8), xp: 5);
         foreach (var c in batch) job.MoreLeases.Add("e:" + c.E.Id);
         return job;
+    }
+
+    // ---------------------------------------------------------------- a collect that found nothing
+
+    /// <summary>A drop collect (the standing task or a haul designation) that got there and picked up nothing ("no reachable drops
+    /// nearby").</summary>
+    internal static bool NoDropReached(ActiveJob j, string why) =>
+        j is { Kind: "collect", Source: "drop" or "designation" } && why.StartsWith("no reachable drops", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Nothing picked up and nothing written off by the pawn's own safety checks (no "; 1 drop(s) left near the void"): it may
+    /// be this pawn's miss (where it got to, its pockets), so the drop rests for it first (<see cref="MissOf"/>).</summary>
+    internal static bool DropMissed(ActiveJob j, string why) => NoDropReached(j, why) && !why.Contains(';');
+
+    /// <summary>
+    /// A collect that found nothing because none of its drops is in the colony's view any more (another pawn or a player picked them
+    /// up on the way, they merged into another stack, they despawned): nothing failed, no rest for the pawn or the drops (live 11-04
+    /// story-1: "collect … failed: no reachable drops nearby" ×36 in 4 minutes on the farm, each one a failure the pawn rested for).
+    /// One still in view is the pawn's own miss first (<see cref="MissOf"/>): only when several pawns can't reach it does it rest for all.
+    /// </summary>
+    private bool DropsGone(ActiveJob j, string why)
+    {
+        if (!NoDropReached(j, why) || World is not { } w || j.Lease is not { } lease) return false;
+        var ents = w.Entities();
+        if (DropInView(ents, lease)) return false;
+        foreach (var more in j.MoreLeases) if (DropInView(ents, more)) return false;
+        return true;
+    }
+
+    private static bool DropInView(IReadOnlyList<StoryEntity> ents, string lease)
+    {
+        if (!lease.StartsWith("e:", StringComparison.Ordinal) || !int.TryParse(lease.AsSpan(2), out var id)) return true; // not a drop: can't tell
+        foreach (var e in ents) if (e.Id == id) return true;
+        return false;
     }
 
     // ---------------------------------------------------------------- re-sorting chests
@@ -416,30 +465,53 @@ public sealed partial class StoryColony
         if (Now - _haulTick < TimeSpan.FromSeconds(5) || World is not { } w || Meta.Paused || !Meta.Active) return;
         _haulTick = Now;
         var ents = w.Entities();
-        var ids = ents.Select(e => e.Id).ToHashSet();
-        foreach (var k in _itemSeen.Keys.Where(k => !ids.Contains(k)).ToList()) _itemSeen.Remove(k);
-        _despawnCut.RemoveWhere(k => !ids.Contains(k));
+        ForgetGoneItems(ents);
         foreach (var e in ents)
         {
-            if (e.Kind != "item" || _despawnCut.Contains(e.Id) || DespawnAfter - Age(e) > DespawnCut || _leases.ContainsKey("e:" + e.Id)) continue;
-            PawnState? best = null;
-            double bestD = double.MaxValue;
-            foreach (var p in Pawns.Values)
-            {
-                if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || !WorkTypes.Known(cur.Type) || cur.Type == WorkTypes.Haul) continue;
-                if (cur.Source is "order" or "need" or "escape" or "deliver") continue;
-                int haul = p.Priorities.GetValueOrDefault(WorkTypes.Haul);
-                if (haul is < 1 or > 4 || haul > p.Priorities.GetValueOrDefault(cur.Type, 4)) continue;
-                var live = Host.Live(p.Name);
-                if (!live.Online || Haulable(e, p, live.Block, ents) == null) continue;
-                double d = e.Block.Dist(live.X, live.Y, live.Z);
-                if (d < bestD) { bestD = d; best = p; }
-            }
-            if (best == null) continue;
+            if (!AtDespawnRisk(e) || NearestFreeHauler(e, ents) is not { } best) continue;
             _despawnCut.Add(e.Id);
             _log.LogInformation("story {Colony}: {Pawn} leaves its work for a {Item} that {Despawns}", Id, best.Name, e.Name, Despawns(e));
             Supersede(best, "a drop is about to despawn");
             return; // one per tick
         }
     }
+
+    private void ForgetGoneItems(IReadOnlyList<StoryEntity> ents)
+    {
+        var ids = ents.Select(e => e.Id).ToHashSet();
+        foreach (var k in _itemSeen.Keys.Where(k => !ids.Contains(k)).ToList()) _itemSeen.Remove(k);
+        _despawnCut.RemoveWhere(k => !ids.Contains(k));
+    }
+
+    /// <summary>A drop that despawns soon, not cut for yet, that nobody is hauling.</summary>
+    private bool AtDespawnRisk(StoryEntity e) =>
+        e.Kind == "item" && !_despawnCut.Contains(e.Id) && DespawnAfter - Age(e) <= DespawnCut && !_leases.ContainsKey("e:" + e.Id);
+
+    /// <summary>The nearest online pawn that may leave its work for the drop and could haul it.</summary>
+    private PawnState? NearestFreeHauler(StoryEntity e, IReadOnlyList<StoryEntity> ents)
+    {
+        PawnState? best = null;
+        double bestD = double.MaxValue;
+        foreach (var p in Pawns.Values)
+        {
+            if (!MayLeaveForDrop(p)) continue;
+            var live = Host.Live(p.Name);
+            if (!live.Online || Haulable(e, p, live.Block, ents) == null) continue;
+            double d = e.Block.Dist(live.X, live.Y, live.Z);
+            if (d < bestD) { bestD = d; best = p; }
+        }
+        return best;
+    }
+
+    /// <summary>At work of a type other than hauling (never an order, a need, an escape or a delivery), with a Haul priority at least
+    /// that work's.</summary>
+    private bool MayLeaveForDrop(PawnState p)
+    {
+        if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || !WorkTypes.Known(cur.Type) || cur.Type == WorkTypes.Haul) return false;
+        if (KeptSource(cur.Source)) return false;
+        int haul = p.Priorities.GetValueOrDefault(WorkTypes.Haul);
+        return haul is >= 1 and <= 4 && haul <= p.Priorities.GetValueOrDefault(cur.Type, 4);
+    }
+
+    private static bool KeptSource(string source) => source is "order" or "need" or "escape" or "deliver";
 }

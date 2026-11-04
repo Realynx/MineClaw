@@ -246,28 +246,42 @@ public sealed partial class BuildPlanner
     {
         foreach (var p in _part.Cells.Where(c => _s.Sim.IsLoaded(c.X, c.Z)).OrderByDescending(c => c.Y))
         {
-            int id = _s.Sim.Get(p);
-            if (id == 0 || BlockShapes.IsLiquid(id) || _o.Keep.Contains(p)) continue;
-            if (_plan.Blocks.TryGetValue(p, out var want) && DesignChecks.SameState(want, id, _s.Sim.GetMeta(p.X, p.Y, p.Z))) continue;
-            // A cell whose block is held back (shortfall) keeps what stands there until the block can be placed.
-            if (_plan.Blocks.TryGetValue(p, out var held) && _o.Hold.Contains(BuildBlocks.ItemFor(held.Id, held.Meta))) continue;
-            // My own scaffold still up in one of the design's air cells (a pillar in the shaft from the last run): it is the
-            // climb, not an obstruction; it comes down top-first at the end with a way down (live 10-28: the drop tower's
-            // re-plan dug its own pillar from under the body first and stranded it in the shaft: "won't dig the cobblestone I'm
-            // standing on").
-            if (_s.Scaffold.Contains(p)) continue;
+            if (!Obstructs(p, out int id)) continue;
             var dig = BestDig(p);
             if (dig == null && StandsOn(_s.Land, p)) { _underfoot.Add(p); continue; }
-            Add(new PlanStep
-            {
-                Action = StepAction.Clear, Target = p, Id = id, Stand = dig?.Stand ?? _s.Land, Column = dig?.Column ?? -1,
-                Technique = dig is { Column: >= 0 } ? Technique.Water : Technique.Normal, Cost = (dig?.Cost ?? 0) + DigTicks(id, false),
-                Deps = dig is { Column: >= 0 } d0 ? [PourStepOf(d0.Column)] : [],
-            });
-            _s.Sim.Set(p, 0);
-            if (dig is { } d) MoveTo(d.Stand, d.Column);
+            AddClear(p, id, dig, null);
         }
         Reflood();
+    }
+
+    /// <summary>A block in a cell of the part that has to go before the design goes in: not air or liquid, not kept, not already the
+    /// design's block, not a cell whose block is held back (shortfall: what stands there stays until it can be placed), not my own
+    /// scaffold.</summary>
+    private bool Obstructs(BlockPos p, out int id)
+    {
+        id = _s.Sim.Get(p);
+        if (id == 0 || BlockShapes.IsLiquid(id) || _o.Keep.Contains(p)) return false;
+        if (_plan.Blocks.TryGetValue(p, out var want)
+            && (DesignChecks.SameState(want, id, _s.Sim.GetMeta(p.X, p.Y, p.Z)) || _o.Hold.Contains(BuildBlocks.ItemFor(want.Id, want.Meta)))) return false;
+        // My own scaffold still up in one of the design's air cells (a pillar in the shaft from the last run): it is the
+        // climb, not an obstruction; it comes down top-first at the end with a way down (live 10-28: the drop tower's
+        // re-plan dug its own pillar from under the body first and stranded it in the shaft: "won't dig the cobblestone I'm
+        // standing on").
+        return !_s.Scaffold.Contains(p);
+    }
+
+    /// <summary>A clear step for the block at <paramref name="p"/>: from the dig's stand (or where the body is), the cell set to air
+    /// and the body moved there.</summary>
+    private void AddClear(BlockPos p, int id, Dig? dig, string? note)
+    {
+        Add(new PlanStep
+        {
+            Action = StepAction.Clear, Target = p, Id = id, Stand = dig?.Stand ?? _s.Land, Column = dig?.Column ?? -1,
+            Technique = dig is { Column: >= 0 } ? Technique.Water : Technique.Normal, Cost = (dig?.Cost ?? 0) + DigTicks(id, false),
+            Deps = dig is { Column: >= 0 } d0 ? [PourStepOf(d0.Column)] : [], Note = note,
+        });
+        _s.Sim.Set(p, 0);
+        if (dig is { } d) MoveTo(d.Stand, d.Column);
     }
 
     /// <summary>The body standing in <paramref name="feet"/> is held up by <paramref name="p"/>.</summary>
@@ -287,15 +301,7 @@ public sealed partial class BuildPlanner
             int id = _s.Sim.Get(p);
             if (id == 0 || BlockShapes.IsLiquid(id)) continue;
             var dig = BestDig(p);
-            Add(new PlanStep
-            {
-                Action = StepAction.Clear, Target = p, Id = id, Stand = dig?.Stand ?? _s.Land, Column = dig?.Column ?? -1,
-                Technique = dig is { Column: >= 0 } ? Technique.Water : Technique.Normal, Cost = (dig?.Cost ?? 0) + DigTicks(id, false),
-                Deps = dig is { Column: >= 0 } d0 ? [PourStepOf(d0.Column)] : [],
-                Note = dig == null ? "no stand beside it: the client aims from where it can" : null,
-            });
-            _s.Sim.Set(p, 0);
-            if (dig is { } d) MoveTo(d.Stand, d.Column);
+            AddClear(p, id, dig, dig == null ? "no stand beside it: the client aims from where it can" : null);
         }
     }
 
@@ -319,47 +325,65 @@ public sealed partial class BuildPlanner
         var helps = new Dictionary<BlockPos, int>(); // techniques tried on a block for another stuck one's sake
         while (todo.Count > 0)
         {
-            int layer = todo.Min(b => b.Pos.Y);
-            int cls = todo.Where(b => b.Pos.Y == layer).Min(Class);
-            var group = todo.Where(b => b.Pos.Y == layer && Class(b) == cls).ToList();
-            bool gating = _out.Gate.State == GateState.Pending && _s.Placements < _o.GateBlocks;
-            var ready = group.Where(b => Supported(T(b))).ToList();
-            var order = gating ? ready.Where(b => gate.Contains(b.Pos)).OrderBy(b => gate.IndexOf(b.Pos)).Concat(ready.Where(b => !gate.Contains(b.Pos))).ToList()
-                : ready.OrderBy(b => Near(b.Pos)).ToList();
-            bool placed = false;
-            foreach (var b in order.Take(gating ? order.Count : _o.Candidates))
-            {
-                if (LocalTry(() => TryPlace(T(b), gating && _s.Placements < _o.GateBlocks)))
-                {
-                    todo.Remove(b);
-                    placed = true;
-                    break;
-                }
-                if (gating && gate.Contains(b.Pos)) continue; // the next gate cell, else any ready block
-            }
-            if (placed) continue;
-
-            // Stuck: resolve the nearest remaining block with a technique, else report it.
-            var stuck = group.OrderBy(b => Supported(T(b)) ? 0 : 1).ThenBy(b => Near(b.Pos)).First();
-            int n = tries[stuck.Pos] = tries.GetValueOrDefault(stuck.Pos) + 1;
-            _cover = group.Select(b => b.Pos).ToList();
-            if (n <= 2 && Resolve(T(stuck), out _)) continue;
-            // Before giving up on it: a ready block of the layer farther away that can be placed now goes first (it may be the
-            // floor this one is reached from: a platform bridged out from its middle).
-            if (!gating && order.Skip(_o.Candidates).FirstOrDefault(b => b.Pos != stuck.Pos && LocalTry(() => TryPlace(T(b), false))) is { } other)
-            {
-                todo.Remove(other);
-                continue;
-            }
-            // Or another ready block's technique (a climb up beside it) brings this one into reach later.
-            if (!gating && ready.Where(b => b.Pos != stuck.Pos).OrderBy(b => Near(b.Pos)).Take(3)
-                    .FirstOrDefault(b => tries.GetValueOrDefault(b.Pos) < 2 && (helps[b.Pos] = helps.GetValueOrDefault(b.Pos) + 1) <= 2 && Resolve(T(b), out _)) != null)
-                continue;
-            Resolve(T(stuck), out var why, dryRun: true);
-            Fail(stuck.Pos, stuck.Id, why ?? "no stand reaches a support face");
-            todo.Remove(stuck);
+            var round = NextRound(todo, gate);
+            if (!PlaceReady(round, todo)) Unstick(round, todo, tries, helps);
         }
     }
+
+    /// <summary>One round of the placement loop: the lowest layer's easiest class of blocks, those with a face to click now, in the
+    /// order they are tried (the gate cells first while the gate is pending, else the nearest), and whether the gate is pending.</summary>
+    private sealed record Round(List<PlannedBlock> Group, List<PlannedBlock> Ready, List<PlannedBlock> Order, bool Gating);
+
+    private Round NextRound(List<PlannedBlock> todo, List<BlockPos> gate)
+    {
+        int layer = todo.Min(b => b.Pos.Y);
+        int cls = todo.Where(b => b.Pos.Y == layer).Min(Class);
+        var group = todo.Where(b => b.Pos.Y == layer && Class(b) == cls).ToList();
+        bool gating = _out.Gate.State == GateState.Pending && _s.Placements < _o.GateBlocks;
+        var ready = group.Where(b => Supported(T(b))).ToList();
+        var order = gating ? ready.Where(b => gate.Contains(b.Pos)).OrderBy(b => gate.IndexOf(b.Pos)).Concat(ready.Where(b => !gate.Contains(b.Pos))).ToList()
+            : ready.OrderBy(b => Near(b.Pos)).ToList();
+        return new Round(group, ready, order, gating);
+    }
+
+    /// <summary>Places the first block of the round that can be (every ready block while gating: the next gate cell, else any).</summary>
+    private bool PlaceReady(Round r, List<PlannedBlock> todo)
+    {
+        foreach (var b in r.Order.Take(r.Gating ? r.Order.Count : _o.Candidates))
+        {
+            if (!LocalTry(() => TryPlace(T(b), r.Gating && _s.Placements < _o.GateBlocks))) continue;
+            todo.Remove(b);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Stuck: resolve the nearest remaining block with a technique, else report it.</summary>
+    private void Unstick(Round r, List<PlannedBlock> todo, Dictionary<BlockPos, int> tries, Dictionary<BlockPos, int> helps)
+    {
+        var stuck = r.Group.OrderBy(b => Supported(T(b)) ? 0 : 1).ThenBy(b => Near(b.Pos)).First();
+        int n = tries[stuck.Pos] = tries.GetValueOrDefault(stuck.Pos) + 1;
+        _cover = r.Group.Select(b => b.Pos).ToList();
+        if (n <= 2 && Resolve(T(stuck), out _)) return;
+        // Before giving up on it: a ready block of the layer farther away that can be placed now goes first (it may be the
+        // floor this one is reached from: a platform bridged out from its middle).
+        if (!r.Gating && r.Order.Skip(_o.Candidates).FirstOrDefault(b => b.Pos != stuck.Pos && LocalTry(() => TryPlace(T(b), false))) is { } other)
+        {
+            todo.Remove(other);
+            return;
+        }
+        // Or another ready block's technique (a climb up beside it) brings this one into reach later.
+        if (!r.Gating && HelpedBy(r, stuck, tries, helps)) return;
+        Resolve(T(stuck), out var why, dryRun: true);
+        Fail(stuck.Pos, stuck.Id, why ?? "no stand reaches a support face");
+        todo.Remove(stuck);
+    }
+
+    /// <summary>A technique on one of the three nearest other ready blocks (each tried at most twice on its own and twice for
+    /// others) that succeeds.</summary>
+    private bool HelpedBy(Round r, PlannedBlock stuck, Dictionary<BlockPos, int> tries, Dictionary<BlockPos, int> helps) =>
+        r.Ready.Where(b => b.Pos != stuck.Pos).OrderBy(b => Near(b.Pos)).Take(3)
+            .FirstOrDefault(b => tries.GetValueOrDefault(b.Pos) < 2 && (helps[b.Pos] = helps.GetValueOrDefault(b.Pos) + 1) <= 2 && Resolve(T(b), out _)) != null;
 
     /// <summary>A main-loop placement: its own re-flood may stop early (<see cref="Reflood"/>).</summary>
     private bool LocalTry(Func<bool> place)
@@ -399,19 +423,35 @@ public sealed partial class BuildPlanner
     /// <summary>Faces that may be clicked for this block (on the neighbour at target − normal).</summary>
     private IEnumerable<BlockFace> Faces(Target t)
     {
-        if (t.Kind == BuildKind.Door) { if (BuildBlocks.NormalCube(_s.Sim.Get(t.Pos.Down()))) yield return BlockFace.Top; yield break; }
-        if (t.Id == Blocks.Ladder)
-        {
-            var f = ConstructionPlanner.StepFor(new PlannedBlock(t.Pos, t.Id, t.Meta)).Face!.Value;
-            if (BuildBlocks.NormalCube(_s.Sim.Get(t.Pos - f.Normal()))) yield return f;
-            yield break;
-        }
-        if (t.Id == Blocks.Torch && t.Meta is >= 1 and <= 5)
-        {
-            var f = t.Meta switch { 1 => BlockFace.East, 2 => BlockFace.West, 3 => BlockFace.South, 4 => BlockFace.North, _ => BlockFace.Top };
-            if (Solid(t.Pos - f.Normal())) yield return f;
-            yield break;
-        }
+        if (t.Kind == BuildKind.Door) return DoorFaces(t);
+        if (t.Id == Blocks.Ladder) return LadderFaces(t);
+        if (t.Id == Blocks.Torch && t.Meta is >= 1 and <= 5) return TorchFaces(t);
+        return SolidFaces(t);
+    }
+
+    /// <summary>A door: the top of a full cube under it.</summary>
+    private IEnumerable<BlockFace> DoorFaces(Target t)
+    {
+        if (BuildBlocks.NormalCube(_s.Sim.Get(t.Pos.Down()))) yield return BlockFace.Top;
+    }
+
+    /// <summary>A ladder: only its wall's face, on a full cube.</summary>
+    private IEnumerable<BlockFace> LadderFaces(Target t)
+    {
+        var f = ConstructionPlanner.StepFor(new PlannedBlock(t.Pos, t.Id, t.Meta)).Face!.Value;
+        if (BuildBlocks.NormalCube(_s.Sim.Get(t.Pos - f.Normal()))) yield return f;
+    }
+
+    /// <summary>A torch (meta 1..5): only the face of the block it hangs on (or stands on).</summary>
+    private IEnumerable<BlockFace> TorchFaces(Target t)
+    {
+        var f = t.Meta switch { 1 => BlockFace.East, 2 => BlockFace.West, 3 => BlockFace.South, 4 => BlockFace.North, _ => BlockFace.Top };
+        if (Solid(t.Pos - f.Normal())) yield return f;
+    }
+
+    /// <summary>Any face of a solid neighbour (where halves follow the cursor, only faces that give the block its half).</summary>
+    private IEnumerable<BlockFace> SolidFaces(Target t)
+    {
         bool halves = _o.HalvesFollowCursor && PlaceCursor.HasHalves(t.Id);
         foreach (var f in BlockFaceExtensions.All)
             if (Solid(t.Pos - f.Normal()) && (!halves || PlaceCursor.FaceAllows(f, PlaceCursor.HalfOf(t.Id, t.Meta)))) yield return f;
@@ -431,12 +471,7 @@ public sealed partial class BuildPlanner
         {
             if (partial && pl.Cost >= bound) break;
             seen++;
-            if (pl.Column < 0 && _escapeCheck && !t.Scaffold)
-            {
-                var fork = _s.Sim.Overlay();
-                ApplyBlock(fork, t);
-                if (!CanLeave(fork, pl.Stand, _outside, t.Pos, placing: true)) continue; // would wall me in: another stand (or block) first
-            }
+            if (WallsMeIn(t, pl)) continue; // would wall me in: another stand (or block) first
             Commit(t, pl, gateStep);
             return true;
         }
@@ -445,23 +480,26 @@ public sealed partial class BuildPlanner
         return TryPlace(t, gateStep);
     }
 
+    /// <summary>Placing <paramref name="t"/> from a walkable stand would leave the body no way out (scaffold and hover stands never ask).</summary>
+    private bool WallsMeIn(Target t, Placement pl)
+    {
+        if (pl.Column >= 0 || !_escapeCheck || t.Scaffold) return false;
+        var fork = _s.Sim.Overlay();
+        ApplyBlock(fork, t);
+        return !CanLeave(fork, pl.Stand, _outside, t.Pos, placing: true);
+    }
+
     private void Commit(Target t, Placement pl, bool gateStep)
     {
         var item = BuildBlocks.ItemFor(t.Id, t.Meta);
-        var against = t.Pos - pl.Face.Normal();
         var step = new PlanStep
         {
             Action = t.Scaffold ? StepAction.Scaffold : StepAction.Place, Target = t.Pos, Id = t.Id, Meta = t.Meta,
             Item = t.Scaffold ? ConstructionPlanner.Scaffold : item.Item, Damage = t.Scaffold ? 0 : item.Damage,
             Stand = pl.Stand, Column = pl.Column, Face = pl.Face, HiddenFace = pl.Hidden, Yaw = pl.Yaw, Cost = pl.Cost,
-            Technique = pl.Column >= 0 ? Technique.Water : pl.Hidden ? (pl.Edge ? Technique.Edge : Technique.Hidden) : pl.Edge ? Technique.Edge : Technique.Normal,
-            Gate = gateStep && !t.Scaffold,
+            Technique = TechniqueOf(pl), Gate = gateStep && !t.Scaffold,
         };
-        if (_s.PlacedBy.TryGetValue(against, out var dep)) step.Deps.Add(dep);
-        // Stands before use: a stand on scaffold of mine (a stair tread, a walkway) waits for the step that put it there.
-        if (pl.Column < 0 && _s.PlacedBy.TryGetValue(pl.Stand.Down(), out var floor) && _s.Steps[floor].Action == StepAction.Scaffold && !step.Deps.Contains(floor))
-            step.Deps.Add(floor);
-        if (pl.Column >= 0) step.Deps.Add(PourStepOf(pl.Column));
+        AddDeps(step, t.Pos - pl.Face.Normal(), pl);
         Add(step);
         _s.PlacedBy[t.Pos] = _s.Steps.Count - 1;
         if (!t.Scaffold) _s.Placements++;
@@ -469,6 +507,24 @@ public sealed partial class BuildPlanner
         ApplyBlock(_s.Sim, t);
         CutColumns(t.Pos);
         MoveTo(pl.Stand, pl.Column);
+    }
+
+    /// <summary>Water (from a column), else edge (sneaking at a drop), hidden (a face the eyes can't see), or normal.</summary>
+    private static Technique TechniqueOf(Placement pl) =>
+        pl.Column >= 0 ? Technique.Water : pl.Edge ? Technique.Edge : pl.Hidden ? Technique.Hidden : Technique.Normal;
+
+    /// <summary>A placement's dependencies: the step that placed the block it is clicked against; a stand on scaffold of mine (a stair
+    /// tread, a walkway) waits for the step that put it there; a hover stand for its column's pour.</summary>
+    private void AddDeps(PlanStep step, BlockPos against, Placement pl)
+    {
+        if (_s.PlacedBy.TryGetValue(against, out var dep)) step.Deps.Add(dep);
+        if (pl.Column >= 0)
+        {
+            step.Deps.Add(PourStepOf(pl.Column));
+            return;
+        }
+        if (_s.PlacedBy.TryGetValue(pl.Stand.Down(), out var floor) && _s.Steps[floor].Action == StepAction.Scaffold && !step.Deps.Contains(floor))
+            step.Deps.Add(floor);
     }
 
     private int PourStepOf(int column) => _s.Steps.FindIndex(s => s.Action == StepAction.PourWater && s.Column == column) is var i and >= 0 ? i : 0;
@@ -516,8 +572,17 @@ public sealed partial class BuildPlanner
         float? yaw = look is { } l ? DirYaw(l) : null;
         double fromColumn = _s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0;
         var block = AABB.Block(t.Pos.X, t.Pos.Y, t.Pos.Z);
-        // Walkable stands near the target: feet up to 6 below (eyes 1.62 up, the bottom face within 4.5: a floor at y63 reaches
-        // the y70 layer; live 10-28 the drop tower's -27,70,16 was cut off by a 5-below window) and 3 above.
+        foreach (var pl in StandPlacements(t, faces, block, yaw, look, fromColumn)) yield return pl;
+        foreach (var pl in HoverPlacements(t, faces, block, yaw, look, fromColumn)) yield return pl;
+    }
+
+    /// <summary>
+    /// Walkable stands near the target: feet up to 6 below (eyes 1.62 up, the bottom face within 4.5: a floor at y63 reaches the y70
+    /// layer; live 10-28 the drop tower's -27,70,16 was cut off by a 5-below window) and 3 above; never inside the block or standing
+    /// on it. A stand at an edge costs one more.
+    /// </summary>
+    private IEnumerable<Placement> StandPlacements(Target t, List<BlockFace> faces, AABB block, float? yaw, Dir? look, double fromColumn)
+    {
         for (int dy = -(int)Math.Floor(_o.Reach + PlayerPhysics.EyeHeight); dy <= 3; dy++)
         for (int dz = -5; dz <= 5; dz++)
         for (int dx = -5; dx <= 5; dx++)
@@ -525,33 +590,52 @@ public sealed partial class BuildPlanner
             var s = new BlockPos(t.Pos.X + dx, t.Pos.Y + dy, t.Pos.Z + dz);
             if (!_s.Flood.TryGetValue(s, out var travel)) continue; // partial in the main loop: TryPlace vouches for the pick
             if (_o.StandOk?.Invoke(s) == false) continue;
-            var eye = GoalUseBlock.EyeAt(_s.Sim, s.X, s.Y, s.Z);
-            var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
-            if (AABB.ForPlayer(feet).Intersects(block)) continue;
-            if (t.Pos == s.Down() || Safety.SupportBlocks(_s.Sim, feet).Contains(t.Pos)) continue;
+            if (!StandClear(t, s, block, out var eye)) continue;
             bool edge = EdgeOf(s) != StandEdge.None;
             foreach (var pl in FaceOptions(t, faces, eye, _o.Reach, yaw, look))
                 yield return pl with { Stand = s, Column = -1, Cost = travel + fromColumn + pl.Cost + (edge ? 1 : 0), Edge = edge };
         }
-        // Hover cells of poured columns.
+    }
+
+    /// <summary>The body standing at <paramref name="s"/> is neither inside the block's cell nor held up by it (its eyes out).</summary>
+    private bool StandClear(Target t, BlockPos s, AABB block, out Vec3d eye)
+    {
+        eye = GoalUseBlock.EyeAt(_s.Sim, s.X, s.Y, s.Z);
+        var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
+        if (AABB.ForPlayer(feet).Intersects(block)) return false;
+        return t.Pos != s.Down() && !Safety.SupportBlocks(_s.Sim, feet).Contains(t.Pos);
+    }
+
+    /// <summary>Hover cells of poured columns (never the target's own column): down the water from the source to 4 below the target,
+    /// up to 3 above it, the swimmer's box clear of the block.</summary>
+    private IEnumerable<Placement> HoverPlacements(Target t, List<BlockFace> faces, AABB block, float? yaw, Dir? look, double fromColumn)
+    {
         foreach (var c in _s.Columns.Where(c => c.Poured && !c.Removed))
         {
             if (c.Source.X == t.Pos.X && c.Source.Z == t.Pos.Z) continue; // never in my own column
             for (int y = c.Source.Y - 1; y >= Math.Max(1, t.Pos.Y - 4); y--)
             {
                 var cell = new BlockPos(c.Source.X, y, c.Source.Z);
-                if (!BlockShapes.IsWater(_s.Sim.Get(cell)) || !BlockShapes.IsWater(_s.Sim.GetBlock(cell.X, y - 1, cell.Z)) && !Solid(cell.Down())) break;
+                if (!Hoverable(cell)) break;
                 if (y > t.Pos.Y + 3) continue;
                 var eye = new Vec3d(cell.X + 0.5, y + PlayerPhysics.EyeHeight, cell.Z + 0.5);
                 var box = new AABB(cell.X + 0.2, y - SwimSim.HoverBand - 0.05, cell.Z + 0.2, cell.X + 0.8, y + PlayerPhysics.Height + SwimSim.HoverBand, cell.Z + 0.8);
                 if (box.Intersects(block)) continue;
-                double travel = _s.Col == c.Index ? Math.Abs(_s.ColY - y) * 12
-                    : (_s.Col >= 0 ? fromColumn : 0) + (_s.Flood.TryGetValue(c.Entry, out var e) ? e : 200) + 30 + (c.Source.Y - y) * 12;
+                double travel = HoverTravel(c, y, fromColumn);
                 foreach (var pl in FaceOptions(t, faces, eye, _o.Reach - 0.3, yaw, look))
                     yield return pl with { Stand = cell, Column = c.Index, Cost = travel + pl.Cost, Edge = false };
             }
         }
     }
+
+    /// <summary>Water in the column with water or something solid under it (a swimmer holds there).</summary>
+    private bool Hoverable(BlockPos cell) =>
+        BlockShapes.IsWater(_s.Sim.Get(cell)) && (BlockShapes.IsWater(_s.Sim.GetBlock(cell.X, cell.Y - 1, cell.Z)) || Solid(cell.Down()));
+
+    /// <summary>The way to hover at <paramref name="y"/> in column <paramref name="c"/>: along it when already in it, else out of the
+    /// current column, to its entry, in and down.</summary>
+    private double HoverTravel(PlanColumn c, int y, double fromColumn) => _s.Col == c.Index ? Math.Abs(_s.ColY - y) * 12
+        : (_s.Col >= 0 ? fromColumn : 0) + (_s.Flood.TryGetValue(c.Entry, out var e) ? e : 200) + 30 + (c.Source.Y - y) * 12;
 
     /// <summary>What lies beside a stand: nothing deadly; a drop past the safe fall onto solid ground (the design's own platform at
     /// height over the floor: allowed, the client's EdgeGuard sneaks there and cancels unverified jumps, so the body never walks

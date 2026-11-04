@@ -52,10 +52,24 @@ public sealed class CrewReport
         var text = $"{what}: placed {placed} with {Math.Max(1, lanes.Count)} bod{(lanes.Count == 1 ? "y" : "ies")}";
         if (lanes.Count > 0) text += " (" + string.Join("; ", lanes.Select(l => l.Text)) + ")";
         if (Rebalances > 0) text += $", re-balanced {Rebalances}×";
+        return text + FinishText() + StatusText();
+    }
+
+    /// <summary>The finale's part of <see cref="Text"/>: what it placed and took down, what's missing, why cells are left.</summary>
+    private string FinishText()
+    {
+        var text = "";
         if (Finale is { } f && (f.ScaffoldRemoved > 0 || f.Placed > 0)) text += $"; finish: placed {f.Placed}, scaffold removed {f.ScaffoldRemoved}";
         if (Finale?.Missing.Count > 0) text += $", {Finale.Missing.Count} missing";
         // The build's skip reasons: the finale's (every cell left), else the plan's own (it never got that far).
         if ((Finale?.Skips ?? (Plan != null ? BuildSkips.OfPlan(Plan) : null)) is { } skips) text += " — " + skips;
+        return text;
+    }
+
+    /// <summary>The tail of <see cref="Text"/>: material put back, the section, why it stopped.</summary>
+    private string StatusText()
+    {
+        var text = "";
         if (Returned > 0) text += $"; {Returned} put back in storage";
         if (Section.N > 1) text += Complete && Section.K == Section.N ? $" ({Section.N} sections)" : $"; section {Section.K}/{Section.N}";
         if (Stopped != null) text += "; stopped: " + Stopped;
@@ -174,7 +188,7 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
             current = bp;
             report.Plan = bp;
             report.Rounds.Add(bp);
-            if (bp.Lanes.Count <= 1 || !bp.Lanes.Any(l => l.Steps.Any(i => !bp.Steps[i].Finished))) break;
+            if (!HasLaneWork(bp)) break;
             var ctx = new CrewContext(id, voxel, bp, single.Plans, ownsPlan: true, single.Options0.StorageBodies, _time) { Coordinator = bodies[0].Name };
             var runs = bp.Lanes.Select(l => Start(ctx, l, crew.First(b => b.Name == l.Body), ct)).ToList();
             var (next, lastBody) = await CoordinateAsync(ctx, runs, crew, report, live, ct).ConfigureAwait(false);
@@ -189,12 +203,17 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
             Progress?.Invoke($"re-slicing the rest over {string.Join(", ", crew.Select(b => LaneReport.Short(b.Name)))}");
         }
         // Finale: whoever finished last takes the scaffolding down and does what's left.
-        var fin = last is { Available: true } ? last : crew.FirstOrDefault(b => b.Available) ?? bodies[0];
-        var f = await single.RunAsync(id, design, BuildPart.Whole(design, dim), fin, ct, previous: current).ConfigureAwait(false);
+        var f = await single.RunAsync(id, design, BuildPart.Whole(design, dim), Finisher(last, crew, bodies), ct, previous: current).ConfigureAwait(false);
         report.Finale = f;
         report.Plan = f.Plan;
         report.Stopped = f.Stopped;
     }
+
+    /// <summary>More than one lane, and some lane still has a step to do.</summary>
+    private static bool HasLaneWork(BuildPlan bp) => bp.Lanes.Count > 1 && bp.Lanes.Any(l => l.Steps.Any(i => !bp.Steps[i].Finished));
+
+    private static IBuildBody Finisher(IBuildBody? last, List<IBuildBody> crew, IReadOnlyList<IBuildBody> bodies) =>
+        last is { Available: true } ? last : crew.FirstOrDefault(b => b.Available) ?? bodies[0];
 
     /// <summary>
     /// What <paramref name="dropped"/> bodies still carry of this design's materials goes back into storage (the nearest chests
@@ -248,16 +267,29 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
         var w = crew[0].World;
         int dim = w.Dimension;
         var (voxel, vpart) = ConstructionExecutor.Shape(design, BuildPart.Whole(design, dim), prev?.Transform ?? BuildTransform.None, dim);
-        if (resume && prev is { Lanes.Count: > 1 } && prev.SliceId.Length > 0 && prev.State is not ("done" or "undone")
-            && SameNames(prev.Lanes.Select(l => l.Body), crew.Select(b => b.Name)))
+        if (resume && Resumable(prev, crew))
         {
-            Reverify(prev, voxel, w);
-            foreach (var l in prev.Lanes) l.State = "planned";
+            Reverify(prev!, voxel, w);
+            foreach (var l in prev!.Lanes) l.State = "planned";
             prev.State = "building";
             plans?.Save(prev);
             Progress?.Invoke($"resuming the crew build: {prev.LaneProgress()}");
             return (prev, voxel);
         }
+        return (Slice(id, design, crew, vpart, voxel, prev), voxel);
+    }
+
+    /// <summary>An unfinished crew slicing of the same crew: its lanes resume from their own progress.</summary>
+    private static bool Resumable(BuildPlan? prev, IReadOnlyList<IBuildBody> crew) =>
+        prev is { Lanes.Count: > 1 } && prev.SliceId.Length > 0 && prev.State is not ("done" or "undone")
+        && SameNames(prev.Lanes.Select(l => l.Body), crew.Select(b => b.Name));
+
+    /// <summary>A fresh slice of what remains over <paramref name="crew"/>, saved.</summary>
+    private BuildPlan Slice(long id, VoxelPlan design, IReadOnlyList<IBuildBody> crew, BuildPart vpart, VoxelPlan voxel, BuildPlan? prev)
+    {
+        var plans = single.Plans;
+        var w = crew[0].World;
+        int dim = w.Dimension;
         var members = crew.Select(b => new CrewMember(b.Name, ConstructionExecutor.StartCell(b.World), b.Count(Items.WaterBucket, 0) > 0)).ToList();
         var o = single.Options(crew[0], vpart, prev) with
         {
@@ -275,7 +307,7 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
         if (bp.Lanes.Count > 1) Progress?.Invoke($"split into {bp.Lanes.Count} lanes: {bp.CrewText()}");
         log?.LogInformation("blueprint #{Id}: {Lanes} lane(s) over {Crew}; {Text}", id, bp.Lanes.Count, string.Join(",", crew.Select(b => b.Name)),
             bp.Lanes.Count > 1 ? bp.CrewText() : "one body");
-        return (bp, voxel);
+        return bp;
     }
 
     /// <summary>A resumed plan: finished placements that no longer stand go back to pending (someone took one, a creeper).</summary>
@@ -310,64 +342,84 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
     private async Task<(List<IBuildBody>? Next, IBuildBody? Last)> CoordinateAsync(CrewContext ctx, List<Run> runs, List<IBuildBody> crew,
         CrewReport report, Func<IReadOnlyList<IBuildBody>>? live, CancellationToken ct)
     {
-        var active = runs.ToList();
-        var handled = new HashSet<Task<LaneReport>>();
-        IBuildBody? last = null;
-        List<IBuildBody>? next = null;
-        var names = crew.Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var round = new RoundWatch(runs.ToList(), crew.Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase));
         try
         {
-        while (true)
-        {
-            var open = active.Where(r => !r.Task.IsCompleted).Select(r => (Task)r.Task).ToList();
-            if (open.Count == 0 && active.All(r => handled.Contains(r.Task))) break;
-            if (open.Count > 0) await Task.WhenAny(open.Append(Task.Delay(Poll * 4, _time, ct))).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-            if (next == null && live?.Invoke() is { } now)
+            while (true)
             {
-                var avail = now.Where(b => b.Available).ToList();
-                if (avail.Count > 0 && !SameNames(avail.Select(b => b.Name), names))
-                {
-                    Progress?.Invoke($"crew changed ({string.Join(", ", avail.Select(b => LaneReport.Short(b.Name)))}): re-slicing the rest");
-                    next = avail;
-                    ctx.Yield = true;
-                }
+                var open = round.Active.Where(r => !r.Task.IsCompleted).Select(r => (Task)r.Task).ToList();
+                if (open.Count == 0 && round.Active.All(r => round.Handled.Contains(r.Task))) break;
+                if (open.Count > 0) await Task.WhenAny(open.Append(Task.Delay(Poll * 4, _time, ct))).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                round.Next ??= CrewChange(ctx, live, round.Names);
+                await HandleFinishedAsync(ctx, round, crew, report, ct).ConfigureAwait(false);
             }
-            foreach (var r in active.Where(r => r.Task.IsCompleted && !handled.Contains(r.Task)).ToList())
-            {
-                handled.Add(r.Task);
-                var rep = await r.Task.ConfigureAwait(false);
-                report.Lanes.Add(rep);
-                if (rep.State == "done") { last = r.Body; continue; }
-                if (rep.State is not ("lost" or "stuck") || next != null) continue;
-                if (rep.State == "lost" && ShouldWait(ctx, r, active))
-                {
-                    Progress?.Invoke($"{LaneReport.Short(r.Body.Name)} is down: waiting for it (faster than re-balancing)");
-                    var back = r.Body.BackInSeconds ?? 0;
-                    var until = _time.GetUtcNow() + TimeSpan.FromSeconds(back * 2 + 10);
-                    while (!r.Body.Available && _time.GetUtcNow() < until) await Task.Delay(Poll, _time, ct).ConfigureAwait(false);
-                    if (r.Body.Available)
-                    {
-                        active.Add(Start(ctx, r.Lane, r.Body, ct));
-                        continue;
-                    }
-                }
-                // Re-balance: the others stop at their next step, the rest is sliced again without this body.
-                Progress?.Invoke($"{LaneReport.Short(r.Body.Name)} {rep.State} ({rep.Why}): re-balancing its steps to the others");
-                next = crew.Where(b => !ReferenceEquals(b, r.Body) && b.Available).ToList();
-                if (next.Count == 0) next = null; // nobody left: the finale (anyone available) does the rest
-                ctx.Yield = true;
-            }
-        }
         }
         catch (OperationCanceledException)
         {
             // Every lane writes its last checkpoint before the build reports "cancelled" (resume per lane).
-            try { await Task.WhenAll(active.Select(r => (Task)r.Task)).ConfigureAwait(false); } catch (Exception) { }
+            try { await Task.WhenAll(round.Active.Select(r => (Task)r.Task)).ConfigureAwait(false); } catch (Exception) { }
             throw;
         }
         lock (ctx.Plan) foreach (var l in ctx.Plan.Lanes) if (l.State == "building") l.State = "yielded";
-        return (next, last);
+        return (round.Next, round.Last);
+    }
+
+    /// <summary>One round's lanes as <see cref="CoordinateAsync"/> watches them: the runs (restarted ones added), those already
+    /// handled, the body that finished last, the next round's crew (null: none yet).</summary>
+    private sealed class RoundWatch(List<Run> active, HashSet<string> names)
+    {
+        public List<Run> Active => active;
+        public HashSet<string> Names => names;
+        public HashSet<Task<LaneReport>> Handled { get; } = new();
+        public IBuildBody? Last { get; set; }
+        public List<IBuildBody>? Next { get; set; }
+    }
+
+    /// <summary>The live crew differs from this round's: the next round re-slices over it (the lanes yield); null = no change.</summary>
+    private List<IBuildBody>? CrewChange(CrewContext ctx, Func<IReadOnlyList<IBuildBody>>? live, HashSet<string> names)
+    {
+        if (live?.Invoke() is not { } now) return null;
+        var avail = now.Where(b => b.Available).ToList();
+        if (avail.Count == 0 || SameNames(avail.Select(b => b.Name), names)) return null;
+        Progress?.Invoke($"crew changed ({string.Join(", ", avail.Select(b => LaneReport.Short(b.Name)))}): re-slicing the rest");
+        ctx.Yield = true;
+        return avail;
+    }
+
+    /// <summary>Books every lane that ended since the last look: done (the last to finish noted), or lost/stuck: waited for (a quick
+    /// respawn) or re-balanced to the others.</summary>
+    private async Task HandleFinishedAsync(CrewContext ctx, RoundWatch round, List<IBuildBody> crew, CrewReport report, CancellationToken ct)
+    {
+        foreach (var r in round.Active.Where(r => r.Task.IsCompleted && !round.Handled.Contains(r.Task)).ToList())
+        {
+            round.Handled.Add(r.Task);
+            var rep = await r.Task.ConfigureAwait(false);
+            report.Lanes.Add(rep);
+            if (rep.State == "done") { round.Last = r.Body; continue; }
+            if (rep.State is not ("lost" or "stuck") || round.Next != null) continue;
+            if (rep.State == "lost" && await WaitedForAsync(ctx, r, round.Active, ct).ConfigureAwait(false))
+            {
+                round.Active.Add(Start(ctx, r.Lane, r.Body, ct));
+                continue;
+            }
+            // Re-balance: the others stop at their next step, the rest is sliced again without this body.
+            Progress?.Invoke($"{LaneReport.Short(r.Body.Name)} {rep.State} ({rep.Why}): re-balancing its steps to the others");
+            var next = crew.Where(b => !ReferenceEquals(b, r.Body) && b.Available).ToList();
+            round.Next = next.Count == 0 ? null : next; // nobody left: the finale (anyone available) does the rest
+            ctx.Yield = true;
+        }
+    }
+
+    /// <summary>A downed body is waited for when that's faster than re-balancing; true = it's back.</summary>
+    private async Task<bool> WaitedForAsync(CrewContext ctx, Run r, List<Run> active, CancellationToken ct)
+    {
+        if (!ShouldWait(ctx, r, active)) return false;
+        Progress?.Invoke($"{LaneReport.Short(r.Body.Name)} is down: waiting for it (faster than re-balancing)");
+        var back = r.Body.BackInSeconds ?? 0;
+        var until = _time.GetUtcNow() + TimeSpan.FromSeconds(back * 2 + 10);
+        while (!r.Body.Available && _time.GetUtcNow() < until) await Task.Delay(Poll, _time, ct).ConfigureAwait(false);
+        return r.Body.Available;
     }
 
     /// <summary>Waiting for a downed body vs. slicing its steps over the others: whichever finishes sooner.</summary>
@@ -608,76 +660,23 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
     private DateTimeOffset _reloadedAt;
     private BlockPos _home;
 
+    // The run's loop state (a runner runs its lane once).
+    private List<int> _queue = new();
+    private readonly Dictionary<int, int> _tries = new();
+    private DateTimeOffset _idleSince;
+    private bool _parked;
+    private int _since, _fails;
+
     public async Task<LaneReport> RunAsync(CancellationToken ct)
     {
         using var scope = body.Enter();
         lock (Bp) lane.State = "building";
         _home = ConstructionExecutor.StartCell(W);
         await TakeStandAsync(_home, W.Dimension, ct).ConfigureAwait(false); // where it stands now is its own until it moves
-        int since = 0, fails = 0;
         try
         {
             await PrefetchAsync(ct).ConfigureAwait(false);
-            // The lane's steps in plan order; each round does the first one that is ready (its waits met, its stand free, not
-            // filling a cell an earlier step of this lane still has to stand in), so one late support never holds up the rest.
-            var queue = lane.Steps.Where(i => !Bp.Steps[i].Finished).ToList();
-            var tries = new Dictionary<int, int>();
-            var idleSince = x.Time.GetUtcNow();
-            bool parked = false;
-            while (queue.Count > 0)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (c.Yield) { _r.State = "yielded"; return _r; }
-                if (!body.Available) { _r.State = "lost"; _r.Why = "body not in the game"; return _r; }
-                if (x.Single.HoldNow(c.Id) is { } rule) { _r.State = "held"; _r.Why = rule; break; }
-                PlanStep? pick = null;
-                string? whyNot = null;
-                var earlier = new HashSet<BlockPos>();
-                foreach (var i in queue.ToList())
-                {
-                    var s = Bp.Steps[i];
-                    if (s.Finished) { queue.Remove(i); continue; }
-                    var ready = Ready(i, s);
-                    if (ready == false) { queue.Remove(i); continue; } // needs a skipped step: the finale's
-                    bool fillsEarlierStand = s.IsPlacement && earlier.Contains(s.Target);
-                    if (s.Column < 0 && s.Stand != default) { earlier.Add(s.Stand); earlier.Add(s.Stand.Up()); }
-                    if (ready == null) { whyNot ??= $"#{i} waits for another lane's step"; continue; }
-                    if (fillsEarlierStand) { whyNot ??= $"#{i} would fill a stand this lane still needs"; continue; }
-                    if (!await TryReserveAsync(s, ct).ConfigureAwait(false)) { whyNot ??= $"#{i}'s stand or cell is another body's"; continue; }
-                    pick = s;
-                    break;
-                }
-                if (pick == null)
-                {
-                    if (queue.Count == 0) break;
-                    var waited = x.Time.GetUtcNow() - idleSince;
-                    if (waited > x.WaitLimit)
-                    {
-                        foreach (var i in queue) Bp.Steps[i].Note = "waited too long: " + (whyNot ?? "nothing ready");
-                        break; // what's left goes to the finale
-                    }
-                    if (!parked && waited > x.ParkAfter && InTheWay()) { parked = true; await ParkAsync(ct).ConfigureAwait(false); }
-                    Reload();
-                    await Task.Delay(x.Poll, x.Time, ct).ConfigureAwait(false);
-                    continue;
-                }
-                parked = false;
-                var o = await StepAsync(pick, ct).ConfigureAwait(false);
-                idleSince = x.Time.GetUtcNow();
-                if (o == Outcome.Done) BuildPulse.Beat(c.Coordinator);
-                if (o == Outcome.Failed)
-                {
-                    if ((tries[pick.Index] = tries.GetValueOrDefault(pick.Index) + 1) >= 3) queue.Remove(pick.Index);
-                    if (++fails >= x.StuckAfter) { _r.State = "stuck"; _r.Why = pick.Note; return _r; }
-                }
-                else
-                {
-                    queue.Remove(pick.Index);
-                    if (o == Outcome.Done) fails = 0;
-                }
-                if (++since >= x.CheckpointEvery || pick.Action != StepAction.Place) { since = 0; Checkpoint(); }
-            }
-            _r.State = "done";
+            if (await LoopAsync(ct).ConfigureAwait(false)) _r.State = "done";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -685,31 +684,156 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
         }
         finally
         {
-            try
-            {
-                if (_column >= 0 && body.Available) await LeaveColumnAsync(CancellationToken.None).ConfigureAwait(false);
-                if (_r.State is "done" or "held")
-                {
-                    await ParkAsync(ct).ConfigureAwait(false);
-                    // Never strand the body up on the build (its lane done, the way down gone): its pillar or a stair down.
-                    if (body.Available && await ConstructionExecutor.LeaveSafelyAsync(body, Bp, c.Voxel, null, ct, null, x.Log).ConfigureAwait(false) is { } exit)
-                        _r.Why ??= exit;
-                }
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} wrap-up failed", lane.Index); }
-            if (body.Claims is { } b) foreach (var k in _claims) try { await b.ReleaseAsync(k, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            _r.Left = lane.Steps.Count(i => !Bp.Steps[i].Finished);
-            try
-            {
-                var left = lane.Steps.Where(i => i >= 0 && i < Bp.Steps.Count && (!Bp.Steps[i].Finished || Bp.Steps[i].Status == StepStatus.Skipped)).ToList();
-                if (left.Count > 0)
-                    _r.Skips = BuildSkips.Line(left.Select(i => Bp.Steps[i]).Select(s => (s.Target, s.Note ?? (s.Finished ? null : "not reached: " + _r.State))));
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} skip reasons failed", lane.Index); }
-            lock (Bp) { lane.State = _r.State; lane.Note = _r.Why; }
-            Checkpoint(final: true);
+            await WrapUpAsync(ct).ConfigureAwait(false);
         }
         return _r;
+    }
+
+    /// <summary>
+    /// The lane's steps in plan order; each round does the first one that is ready (its waits met, its stand free, not filling a
+    /// cell an earlier step of this lane still has to stand in), so one late support never holds up the rest. True = the lane ran
+    /// its course (done: what's left goes to the finale); false = it ended early (<see cref="LaneReport.State"/> says why).
+    /// </summary>
+    private async Task<bool> LoopAsync(CancellationToken ct)
+    {
+        _queue = lane.Steps.Where(i => !Bp.Steps[i].Finished).ToList();
+        _idleSince = x.Time.GetUtcNow();
+        while (_queue.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (EndsNow() is { } ran) return ran;
+            var (pick, whyNot) = await PickAsync(ct).ConfigureAwait(false);
+            if (pick == null)
+            {
+                if (!await IdleAsync(whyNot, ct).ConfigureAwait(false)) break;
+                continue;
+            }
+            if (!await RunPickedAsync(pick, ct).ConfigureAwait(false)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>The lane stops before its next step: yielded or the body gone (false: ended early), a standing rule's hold (true:
+    /// it ran its course, the rule noted); null = carry on.</summary>
+    private bool? EndsNow()
+    {
+        if (c.Yield) { _r.State = "yielded"; return false; }
+        if (!body.Available) { _r.State = "lost"; _r.Why = "body not in the game"; return false; }
+        if (x.Single.HoldNow(c.Id) is not { } rule) return null;
+        _r.State = "held";
+        _r.Why = rule;
+        return true;
+    }
+
+    /// <summary>The first queued step that is ready and reserved for this body (null: none now, and why not).</summary>
+    private async Task<(PlanStep? Pick, string? WhyNot)> PickAsync(CancellationToken ct)
+    {
+        string? whyNot = null;
+        var earlier = new HashSet<BlockPos>();
+        foreach (var i in _queue.ToList())
+        {
+            var s = Bp.Steps[i];
+            var ready = s.Finished ? false : Ready(i, s);
+            if (ready == false) { _queue.Remove(i); continue; } // finished, or needs a skipped step: the finale's
+            bool fillsEarlierStand = s.IsPlacement && earlier.Contains(s.Target);
+            if (s.Column < 0 && s.Stand != default) { earlier.Add(s.Stand); earlier.Add(s.Stand.Up()); }
+            if (await BlockedAsync(i, s, ready, fillsEarlierStand, ct).ConfigureAwait(false) is { } why) { whyNot ??= why; continue; }
+            return (s, whyNot);
+        }
+        return (null, whyNot);
+    }
+
+    /// <summary>Why a queued step can't run now (its waits, a stand this lane still needs, another body's stand); null = reserved.</summary>
+    private async Task<string?> BlockedAsync(int i, PlanStep s, bool? ready, bool fillsEarlierStand, CancellationToken ct)
+    {
+        if (ready == null) return $"#{i} waits for another lane's step";
+        if (fillsEarlierStand) return $"#{i} would fill a stand this lane still needs";
+        return await TryReserveAsync(s, ct).ConfigureAwait(false) ? null : $"#{i}'s stand or cell is another body's";
+    }
+
+    /// <summary>Nothing ready: wait a poll (out of the others' way after a while); false = stop waiting (nothing queued, or waited
+    /// too long: what's left goes to the finale).</summary>
+    private async Task<bool> IdleAsync(string? whyNot, CancellationToken ct)
+    {
+        if (_queue.Count == 0) return false;
+        var waited = x.Time.GetUtcNow() - _idleSince;
+        if (waited > x.WaitLimit)
+        {
+            foreach (var i in _queue) Bp.Steps[i].Note = "waited too long: " + (whyNot ?? "nothing ready");
+            return false;
+        }
+        if (!_parked && waited > x.ParkAfter && InTheWay()) { _parked = true; await ParkAsync(ct).ConfigureAwait(false); }
+        Reload();
+        await Task.Delay(x.Poll, x.Time, ct).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>Runs the picked step and books its outcome; false = the lane is stuck (too many failures in a row).</summary>
+    private async Task<bool> RunPickedAsync(PlanStep pick, CancellationToken ct)
+    {
+        _parked = false;
+        var o = await StepAsync(pick, ct).ConfigureAwait(false);
+        _idleSince = x.Time.GetUtcNow();
+        if (o == Outcome.Done) BuildPulse.Beat(c.Coordinator);
+        if (o == Outcome.Failed)
+        {
+            if (Stuck(pick)) return false;
+        }
+        else
+        {
+            _queue.Remove(pick.Index);
+            if (o == Outcome.Done) _fails = 0;
+        }
+        if (++_since >= x.CheckpointEvery || pick.Action != StepAction.Place) { _since = 0; Checkpoint(); }
+        return true;
+    }
+
+    /// <summary>A failed step: dropped after its third try; the lane is stuck after <see cref="CrewExecutor.StuckAfter"/> in a row.</summary>
+    private bool Stuck(PlanStep pick)
+    {
+        if ((_tries[pick.Index] = _tries.GetValueOrDefault(pick.Index) + 1) >= 3) _queue.Remove(pick.Index);
+        if (++_fails < x.StuckAfter) return false;
+        _r.State = "stuck";
+        _r.Why = pick.Note;
+        return true;
+    }
+
+    /// <summary>The lane's end, however it ended: out of the water, parked and down off the build (done or held), its claims
+    /// released, why the steps left are left, the lane row saved.</summary>
+    private async Task WrapUpAsync(CancellationToken ct)
+    {
+        try { await LeaveBuildAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} wrap-up failed", lane.Index); }
+        await ReleaseClaimsAsync().ConfigureAwait(false);
+        _r.Left = lane.Steps.Count(i => !Bp.Steps[i].Finished);
+        try { NoteSkips(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} skip reasons failed", lane.Index); }
+        lock (Bp) { lane.State = _r.State; lane.Note = _r.Why; }
+        Checkpoint(final: true);
+    }
+
+    private async Task LeaveBuildAsync(CancellationToken ct)
+    {
+        if (_column >= 0 && body.Available) await LeaveColumnAsync(CancellationToken.None).ConfigureAwait(false);
+        if (_r.State is not ("done" or "held")) return;
+        await ParkAsync(ct).ConfigureAwait(false);
+        // Never strand the body up on the build (its lane done, the way down gone): its pillar or a stair down.
+        if (body.Available && await ConstructionExecutor.LeaveSafelyAsync(body, Bp, c.Voxel, null, ct, null, x.Log).ConfigureAwait(false) is { } exit)
+            _r.Why ??= exit;
+    }
+
+    private async Task ReleaseClaimsAsync()
+    {
+        if (body.Claims is not { } b) return;
+        foreach (var k in _claims)
+            try { await b.ReleaseAsync(k, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+    }
+
+    private void NoteSkips()
+    {
+        var left = lane.Steps.Where(i => i >= 0 && i < Bp.Steps.Count && (!Bp.Steps[i].Finished || Bp.Steps[i].Status == StepStatus.Skipped)).ToList();
+        if (left.Count > 0)
+            _r.Skips = BuildSkips.Line(left.Select(i => Bp.Steps[i]).Select(s => (s.Target, s.Note ?? (s.Finished ? null : "not reached: " + _r.State))));
     }
 
     // ---------------------------------------------------------------- waits
@@ -866,120 +990,162 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
 
     // ---------------------------------------------------------------- one step
 
-    private async Task<Outcome> StepAsync(PlanStep s, CancellationToken ct)
+    private Task<Outcome> StepAsync(PlanStep s, CancellationToken ct) => s.Action switch
+    {
+        StepAction.Clear => ClearAsync(s, ct),
+        StepAction.Place or StepAction.Scaffold => PlaceAsync(s, ct),
+        StepAction.RemoveScaffold => RemoveScaffoldAsync(s, ct),
+        StepAction.PourWater => PourAsync(s, ct),
+        StepAction.PickupWater => PickupAsync(s, ct),
+        _ => Task.FromResult(Outcome.Done),
+    };
+
+    private Task<ActionResult> DigAsync(BlockPos p, bool here, CancellationToken ct) => here ? body.DigHereAsync(p, ct) : body.DigAsync(p, ct);
+
+    /// <summary>A failed action: the step keeps its short reason and is tried again later.</summary>
+    private static Outcome Failed(PlanStep s, ActionResult r)
+    {
+        s.Note = ConstructionExecutor.Short(r.Message);
+        return Outcome.Failed;
+    }
+
+    private async Task<Outcome> ClearAsync(PlanStep s, CancellationToken ct)
+    {
+        int id = W.GetBlock(s.Target);
+        if (id == 0 || BlockShapes.IsLiquid(id)) { Set(s, StepStatus.Verified); return Outcome.Done; }
+        if (body.IsProtected(s.Target, id))
+        {
+            _r.Deviations.Add($"{BuildBlocks.Name(id, 0)} at {c.Voxel.Local(s.Target)} is protected: left");
+            Set(s, StepStatus.Skipped, "protected");
+            return Outcome.Done;
+        }
+        // From its own reserved stand (a crew never lets the client path somewhere another body may stand).
+        if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
+        var r = await DigAsync(s.Target, s.Column >= 0, ct).ConfigureAwait(false);
+        if (!r.Ok) { _r.Failed++; return Failed(s, r); }
+        _r.Cleared++;
+        Set(s, StepStatus.Verified);
+        return Outcome.Done;
+    }
+
+    private async Task<Outcome> RemoveScaffoldAsync(PlanStep s, CancellationToken ct)
     {
         var w = W;
-        var voxel = c.Voxel;
-        switch (s.Action)
+        int id = w.GetBlock(s.Target);
+        if (id == 0 || c.Voxel.Blocks.ContainsKey(s.Target)) { lock (Bp) Bp.ScaffoldUp.Remove(s.Target); Set(s, StepStatus.Verified); return Outcome.Done; }
+        if (!IsOurScaffold(s.Target, id)) { Set(s, StepStatus.Skipped, "not ours"); return Outcome.Done; }
+        // From the planned stand (a pillar from on top of it, a stair from the step below), else the client's own aim.
+        bool planned = s.Column >= 0 || s.Stand != default && s.Note?.StartsWith("no stand sees it", StringComparison.Ordinal) != true;
+        if (!await MoveAsync(s, needStand: planned, ct).ConfigureAwait(false)) return Outcome.Failed;
+        bool here = s.Column >= 0 || planned && ConstructionExecutor.StartCell(W) == s.Stand;
+        var r = await DigAsync(s.Target, here, ct).ConfigureAwait(false);
+        if (!r.Ok) return Failed(s, r);
+        lock (Bp) { Bp.ScaffoldUp.Remove(s.Target); s.Status = StepStatus.Verified; }
+        return Outcome.Done;
+    }
+
+    /// <summary>Our own scaffold (the plan's list, or the placed-block log): only that comes down.</summary>
+    private bool IsOurScaffold(BlockPos p, int id)
+    {
+        bool ours;
+        lock (Bp) ours = Bp.ScaffoldUp.Contains(p);
+        return ours || W.Placed.IsPlaced(p, W.Dimension, id);
+    }
+
+    private async Task<Outcome> PourAsync(PlanStep s, CancellationToken ct)
+    {
+        if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
+        var r = await body.PourWaterAsync(s.Target, s.Face ?? BlockFace.Top, ct).ConfigureAwait(false);
+        if (!r.Ok) return Failed(s, r);
+        Set(s, StepStatus.Done);
+        x.Progress?.Invoke($"{LaneReport.Short(body.Name)} poured a water column to build down ({s.Note})");
+        return Outcome.Done;
+    }
+
+    private async Task<Outcome> PickupAsync(PlanStep s, CancellationToken ct)
+    {
+        if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
+        var r = await body.PickupWaterAsync(s.Target, ct).ConfigureAwait(false);
+        if (!r.Ok) return Failed(s, r);
+        lock (Bp)
         {
-            case StepAction.Clear:
-                {
-                    int id = w.GetBlock(s.Target);
-                    if (id == 0 || BlockShapes.IsLiquid(id)) { Set(s, StepStatus.Verified); return Outcome.Done; }
-                    if (body.IsProtected(s.Target, id))
-                    {
-                        _r.Deviations.Add($"{BuildBlocks.Name(id, 0)} at {voxel.Local(s.Target)} is protected: left");
-                        Set(s, StepStatus.Skipped, "protected");
-                        return Outcome.Done;
-                    }
-                    // From its own reserved stand (a crew never lets the client path somewhere another body may stand).
-                    if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
-                    var r = s.Column >= 0 ? await body.DigHereAsync(s.Target, ct).ConfigureAwait(false) : await body.DigAsync(s.Target, ct).ConfigureAwait(false);
-                    if (!r.Ok) { s.Note = ConstructionExecutor.Short(r.Message); _r.Failed++; return Outcome.Failed; }
-                    _r.Cleared++;
-                    Set(s, StepStatus.Verified);
-                    return Outcome.Done;
-                }
-            case StepAction.Place:
-            case StepAction.Scaffold:
-                return await PlaceAsync(s, ct).ConfigureAwait(false);
-            case StepAction.RemoveScaffold:
-                {
-                    int id = w.GetBlock(s.Target);
-                    if (id == 0 || voxel.Blocks.ContainsKey(s.Target)) { lock (Bp) Bp.ScaffoldUp.Remove(s.Target); Set(s, StepStatus.Verified); return Outcome.Done; }
-                    bool ours;
-                    lock (Bp) ours = Bp.ScaffoldUp.Contains(s.Target);
-                    if (!ours && !w.Placed.IsPlaced(s.Target, w.Dimension, id)) { Set(s, StepStatus.Skipped, "not ours"); return Outcome.Done; }
-                    // From the planned stand (a pillar from on top of it, a stair from the step below), else the client's own aim.
-                    bool planned = s.Column >= 0 || s.Stand != default && s.Note?.StartsWith("no stand sees it", StringComparison.Ordinal) != true;
-                    if (!await MoveAsync(s, needStand: planned, ct).ConfigureAwait(false)) return Outcome.Failed;
-                    bool here = s.Column >= 0 || planned && ConstructionExecutor.StartCell(W) == s.Stand;
-                    var r = here ? await body.DigHereAsync(s.Target, ct).ConfigureAwait(false) : await body.DigAsync(s.Target, ct).ConfigureAwait(false);
-                    if (!r.Ok) { s.Note = ConstructionExecutor.Short(r.Message); return Outcome.Failed; }
-                    lock (Bp) { Bp.ScaffoldUp.Remove(s.Target); s.Status = StepStatus.Verified; }
-                    return Outcome.Done;
-                }
-            case StepAction.PourWater:
-                {
-                    if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
-                    var r = await body.PourWaterAsync(s.Target, s.Face ?? BlockFace.Top, ct).ConfigureAwait(false);
-                    if (!r.Ok) { s.Note = ConstructionExecutor.Short(r.Message); return Outcome.Failed; }
-                    Set(s, StepStatus.Done);
-                    x.Progress?.Invoke($"{LaneReport.Short(body.Name)} poured a water column to build down ({s.Note})");
-                    return Outcome.Done;
-                }
-            case StepAction.PickupWater:
-                {
-                    if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
-                    var r = await body.PickupWaterAsync(s.Target, ct).ConfigureAwait(false);
-                    if (!r.Ok) { s.Note = ConstructionExecutor.Short(r.Message); return Outcome.Failed; }
-                    lock (Bp)
-                    {
-                        s.Status = StepStatus.Verified;
-                        foreach (var col in Bp.Columns.Where(col => col.Source == s.Target)) col.Removed = true;
-                    }
-                    return Outcome.Done;
-                }
+            s.Status = StepStatus.Verified;
+            foreach (var col in Bp.Columns.Where(col => col.Source == s.Target)) col.Removed = true;
         }
         return Outcome.Done;
     }
 
     private async Task<Outcome> PlaceAsync(PlanStep s, CancellationToken ct)
     {
-        var w = W;
-        var voxel = c.Voxel;
         bool scaffold = s.Action == StepAction.Scaffold;
-        if (!scaffold && voxel.Blocks.TryGetValue(s.Target, out var want) && DesignChecks.SameState(want, w.GetBlock(s.Target), w.GetMeta(s.Target)))
-        { _r.Already++; Set(s, StepStatus.Verified); return Outcome.Done; }
-        if (scaffold && BuildBlocks.Supports(w.GetBlock(s.Target))) { Set(s, StepStatus.Verified); return Outcome.Done; }
+        if (AlreadyStands(s, scaffold)) return Outcome.Done;
+        if (Obstructed(s)) return Outcome.Missing; // stays pending: the finale re-plans around it
+        if (await ItemForAsync(s, scaffold, ct).ConfigureAwait(false) is not { } got) return Outcome.Missing;
+        var (item, dmg) = got;
+        if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
+        var r = await PutAsync(s, scaffold, item, dmg, ct).ConfigureAwait(false);
+        if (!r.Ok) { _r.Failed++; return Failed(s, r); }
+        Ledger(s, scaffold);
+        if (scaffold) { _r.Scaffolded++; return Outcome.Done; }
+        _r.Placed++;
+        if (StandsAsPlanned(s.Target)) Set(s, StepStatus.Verified);
+        return Outcome.Done;
+    }
+
+    private Task<ActionResult> PutAsync(PlanStep s, bool scaffold, int item, int dmg, CancellationToken ct) =>
+        scaffold && s.Technique == Technique.Pillar
+            ? body.PillarAsync(s.Target, item, ct)
+            : body.PlaceAsync(new BuildStep(scaffold ? StepKind.Scaffold : StepKind.Place, s.Target, scaffold ? item : s.Id, scaffold ? 0 : s.Meta,
+                null, s.Face, s.HiddenFace, s.Yaw), item, dmg, ct);
+
+    private bool StandsAsPlanned(BlockPos p) =>
+        c.Voxel.Blocks.TryGetValue(p, out var want) && DesignChecks.SameState(want, W.GetBlock(p), W.GetMeta(p));
+
+    /// <summary>The planned block already stands there (a scaffold step: anything solid does).</summary>
+    private bool AlreadyStands(PlanStep s, bool scaffold)
+    {
+        if (!scaffold && StandsAsPlanned(s.Target)) { _r.Already++; Set(s, StepStatus.Verified); return true; }
+        if (scaffold && BuildBlocks.Supports(W.GetBlock(s.Target))) { Set(s, StepStatus.Verified); return true; }
+        return false;
+    }
+
+    /// <summary>Someone built there (or it's the wrong block): never dig it from a lane; the finale re-plans around it.</summary>
+    private bool Obstructed(PlanStep s)
+    {
+        var w = W;
         int existing = w.GetBlock(s.Target);
-        if (!Aiming.IsReplaceable(w, existing))
-        {
-            // Someone built there (or it's the wrong block): never dig it from a lane; the finale re-plans around it.
-            bool ours;
-            lock (Bp) ours = Bp.Placed.Contains(s.Target);
-            ours |= w.Placed.IsPlaced(s.Target, w.Dimension, existing);
-            _r.Deviations.Add($"{voxel.Local(s.Target)} holds {BuildBlocks.Name(existing, w.GetMeta(s.Target))}{(ours ? "" : " (not mine: someone built there)")}");
-            s.Note = ours ? "wrong block" : "someone built there";
-            return Outcome.Missing; // stays pending: the finale re-plans around it
-        }
-        int item, dmg;
+        if (Aiming.IsReplaceable(w, existing)) return false;
+        bool ours;
+        lock (Bp) ours = Bp.Placed.Contains(s.Target);
+        ours |= w.Placed.IsPlaced(s.Target, w.Dimension, existing);
+        _r.Deviations.Add($"{c.Voxel.Local(s.Target)} holds {BuildBlocks.Name(existing, w.GetMeta(s.Target))}{(ours ? "" : " (not mine: someone built there)")}");
+        s.Note = ours ? "wrong block" : "someone built there";
+        return true;
+    }
+
+    /// <summary>The item to place (scaffold: a clutch block); null = none on hand: the step stays pending, everything else goes
+    /// on and the finale asks/pauses.</summary>
+    private async Task<(int Item, int Damage)?> ItemForAsync(PlanStep s, bool scaffold, CancellationToken ct)
+    {
         if (scaffold)
         {
+            int item;
             lock (Bp) item = ConstructionExecutor.ScaffoldItem(body, Bp);
-            dmg = 0;
-            if (item == 0) { s.Note = "missing scaffold blocks (cobblestone or planks)"; return Outcome.Missing; }
+            if (item != 0) return (item, 0);
+            s.Note = "missing scaffold blocks (cobblestone or planks)";
+            return null;
         }
-        else
+        if (body.Count(s.Item, s.Damage) == 0 && !await HaveAsync(s.Item, s.Damage, ct).ConfigureAwait(false))
         {
-            (item, dmg) = (s.Item, s.Damage);
-            if (body.Count(item, dmg) == 0 && !await HaveAsync(item, dmg, ct).ConfigureAwait(false))
-            {
-                s.Note = "missing " + ConstructionExecutor.Name(item, dmg);
-                return Outcome.Missing; // stays pending: everything else goes on, the finale asks/pauses
-            }
+            s.Note = "missing " + ConstructionExecutor.Name(s.Item, s.Damage);
+            return null;
         }
-        if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
-        var r = scaffold && s.Technique == Technique.Pillar
-            ? await body.PillarAsync(s.Target, item, ct).ConfigureAwait(false)
-            : await body.PlaceAsync(new BuildStep(scaffold ? StepKind.Scaffold : StepKind.Place, s.Target, scaffold ? item : s.Id, scaffold ? 0 : s.Meta,
-                null, s.Face, s.HiddenFace, s.Yaw), item, dmg, ct).ConfigureAwait(false);
-        if (!r.Ok)
-        {
-            _r.Failed++;
-            s.Note = ConstructionExecutor.Short(r.Message);
-            return Outcome.Failed;
-        }
+        return (s.Item, s.Damage);
+    }
+
+    /// <summary>A placement goes in the shared plan's ledger (a door's upper half too; scaffold in the scaffold list).</summary>
+    private void Ledger(PlanStep s, bool scaffold)
+    {
         lock (Bp)
         {
             s.Status = scaffold ? StepStatus.Verified : StepStatus.Done;
@@ -987,11 +1153,6 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
             if (!scaffold && BuildBlocks.KindOf(s.Id) == BuildKind.Door) Bp.Placed.Add(s.Target.Up());
             if (scaffold && !Bp.ScaffoldUp.Contains(s.Target)) Bp.ScaffoldUp.Add(s.Target);
         }
-        if (scaffold) { _r.Scaffolded++; return Outcome.Done; }
-        _r.Placed++;
-        if (voxel.Blocks.TryGetValue(s.Target, out var planned) && DesignChecks.SameState(planned, w.GetBlock(s.Target), w.GetMeta(s.Target)))
-            Set(s, StepStatus.Verified);
-        return Outcome.Done;
     }
 
     private void Set(PlanStep s, StepStatus status, string? note = null)
@@ -1006,17 +1167,7 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
     /// <summary>To the step's stand: out of (or into, down to the depth of) a water column first.</summary>
     private async Task<bool> MoveAsync(PlanStep s, bool needStand, CancellationToken ct)
     {
-        var bp = Bp;
-        if (s.Column >= 0 && s.Column < bp.Columns.Count)
-        {
-            var col = bp.Columns[s.Column];
-            if (_column >= 0 && _column != s.Column && !await LeaveColumnAsync(ct).ConfigureAwait(false)) return false;
-            var r = await body.SwimToDepthAsync(col.Swim, col.Entry, s.Stand.Y, ct).ConfigureAwait(false);
-            if (!r.Ok) { s.Note = "water column: " + ConstructionExecutor.Short(r.Message); return false; }
-            _column = s.Column;
-            await ArriveAsync(s.Stand).ConfigureAwait(false);
-            return true;
-        }
+        if (s.Column >= 0 && s.Column < Bp.Columns.Count) return await IntoColumnAsync(s, ct).ConfigureAwait(false);
         if (_column >= 0 && !await LeaveColumnAsync(ct).ConfigureAwait(false)) return false;
         if (!needStand || s.Stand == default) return true;
         if (ConstructionExecutor.StartCell(W) == s.Stand) { await ArriveAsync(s.Stand).ConfigureAwait(false); return true; }
@@ -1024,6 +1175,17 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
         if (!g.Ok) s.Note = "goto: " + ConstructionExecutor.Short(g.Message);
         else await ArriveAsync(s.Stand).ConfigureAwait(false);
         return true; // the action itself says whether it worked from here
+    }
+
+    private async Task<bool> IntoColumnAsync(PlanStep s, CancellationToken ct)
+    {
+        var col = Bp.Columns[s.Column];
+        if (_column >= 0 && _column != s.Column && !await LeaveColumnAsync(ct).ConfigureAwait(false)) return false;
+        var r = await body.SwimToDepthAsync(col.Swim, col.Entry, s.Stand.Y, ct).ConfigureAwait(false);
+        if (!r.Ok) { s.Note = "water column: " + ConstructionExecutor.Short(r.Message); return false; }
+        _column = s.Column;
+        await ArriveAsync(s.Stand).ConfigureAwait(false);
+        return true;
     }
 
     private async Task<bool> LeaveColumnAsync(CancellationToken ct)

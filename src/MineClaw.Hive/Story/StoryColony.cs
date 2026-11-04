@@ -242,18 +242,7 @@ public sealed partial class StoryColony : IStoryPort
 
     public bool Report(string body, string job, string status, string? note, double? pct)
     {
-        if (status == "done" && DoneGrace > TimeSpan.Zero)
-        {
-            // The pawn's script thread waits here (never under the lock) until the world agrees or the grace is over.
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            while (true)
-            {
-                lock (_lock)
-                    if (!_current.TryGetValue(body, out var c0) || c0.Id != job || c0.Source != "designation" || Left(c0, body) == null) break;
-                if (sw.Elapsed >= DoneGrace) break;
-                Thread.Sleep(TimeSpan.FromMilliseconds(Math.Min(100, Math.Max(5, DoneGrace.TotalMilliseconds / 10))));
-            }
-        }
+        if (status == "done" && DoneGrace > TimeSpan.Zero) AwaitDoneGrace(body, job);
         lock (_lock)
         {
             if (!_current.TryGetValue(body, out var cur) || cur.Id != job) return false;
@@ -269,37 +258,68 @@ public sealed partial class StoryColony : IStoryPort
             switch (status)
             {
                 case "progress":
-                    cur.Progress = pct;
-                    if (cur.Source == "escape" && note != null) EscapeStep(body, note); // what a stuck pawn tries now
-                    if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
-                    if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
-                    if (p != null) p.Rev = Bump();
-                    return true;
-                case "done" when p != null && cur.Source == "designation" && Left(cur, body) is { } left:
-                    // Live 11-03: harvest and cut designations vanished with no line in the log: the script's dig on a block out of
-                    // its view did nothing and said ok. A designation is done only when the world agrees.
-                    _current.Remove(body);
-                    Release(cur);
-                    Failed(p, cur, $"reported done, but {left}");
-                    _lastSource[body] = "failed";
-                    p.Rev = Bump();
-                    return true;
+                    ReportProgress(body, p, cur, note, pct);
+                    break;
                 case "done":
-                    _current.Remove(body);
-                    Release(cur);
-                    if (p != null) Done(p, cur, note);
-                    _lastSource[body] = cur.Source;
-                    if (p != null) p.Rev = Touch(); // its experience is saved
-                    return true;
+                    ReportDone(body, p, cur, note);
+                    break;
                 default:
-                    _current.Remove(body);
-                    Release(cur);
-                    if (p != null) Failed(p, cur, note);
-                    _lastSource[body] = "failed";
-                    if (p != null) p.Rev = Bump();
-                    return true;
+                    ReportFailed(body, p, cur, note);
+                    break;
             }
+            return true;
         }
+    }
+
+    /// <summary>The pawn's script thread waits here (never under the lock) until the world agrees with a designation's "done" or the
+    /// grace is over.</summary>
+    private void AwaitDoneGrace(string body, string job)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            lock (_lock)
+                if (!_current.TryGetValue(body, out var c0) || c0.Id != job || c0.Source != "designation" || Left(c0, body) == null) return;
+            if (sw.Elapsed >= DoneGrace) return;
+            Thread.Sleep(TimeSpan.FromMilliseconds(Math.Min(100, Math.Max(5, DoneGrace.TotalMilliseconds / 10))));
+        }
+    }
+
+    private void ReportProgress(string body, PawnState? p, ActiveJob cur, string? note, double? pct)
+    {
+        cur.Progress = pct;
+        if (cur.Source == "escape" && note != null) EscapeStep(body, note); // what a stuck pawn tries now
+        if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
+        if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
+        if (p != null) p.Rev = Bump();
+    }
+
+    private void ReportDone(string body, PawnState? p, ActiveJob cur, string? note)
+    {
+        // Live 11-03: harvest and cut designations vanished with no line in the log: the script's dig on a block out of its view did
+        // nothing and said ok. A designation is done only when the world agrees.
+        var left = p != null && cur.Source == "designation" ? Left(cur, body) : null;
+        _current.Remove(body);
+        Release(cur);
+        if (left != null)
+        {
+            Failed(p!, cur, $"reported done, but {left}");
+            _lastSource[body] = "failed";
+            p!.Rev = Bump();
+            return;
+        }
+        if (p != null) Done(p, cur, note);
+        _lastSource[body] = cur.Source;
+        if (p != null) p.Rev = Touch(); // its experience is saved
+    }
+
+    private void ReportFailed(string body, PawnState? p, ActiveJob cur, string? note)
+    {
+        _current.Remove(body);
+        Release(cur);
+        if (p != null) Failed(p, cur, note);
+        _lastSource[body] = "failed";
+        if (p != null) p.Rev = Bump();
     }
 
     private bool HoldsLease(string key, string owner) =>
@@ -382,43 +402,10 @@ public sealed partial class StoryColony : IStoryPort
         lock (_lock)
         {
             departing = ReadyToGo();
-            // A pawn still at its job keeps its lease (live 11-03: the script reports no progress, so a lease ran out after 90 s while
-            // the pawn was still walking there or digging; a second pawn got the same target and met the first one's hive claim:
-            // "busy: another hive bot is working on that part"). Up to JobMax, then the lease runs out as before.
-            foreach (var (owner, cur) in _current)
-                if (cur.Lease != null && Now - cur.Since < JobMax && _leases.TryGetValue(cur.Lease, out var l) && string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase)
-                    && l.Until - Now < LeaseTtl / 2 && Host.Live(owner) is { Online: true, ScriptRunning: true })
-                {
-                    _leases[cur.Lease] = (owner, Now + LeaseTtl);
-                    RenewCells(owner, cur);
-                    foreach (var k in cur.MoreLeases) _leases[k] = (owner, Now + LeaseTtl);
-                }
-            foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
-            {
-                var owner = _leases[k].Owner;
-                _leases.Remove(k);
-                if (_current.TryGetValue(owner, out var cur) && cur.Lease == k) { _current.Remove(owner); Release(cur); }
-            }
-            // A pawn that went offline holds nothing: its job and its leases go back at once (not after the 90 s lease).
-            foreach (var p in Pawns.Values)
-            {
-                if (!_current.ContainsKey(p.Name) && !_leases.Values.Any(l => l.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase))) continue;
-                if (Host.Live(p.Name).Online) continue;
-                if (_current.Remove(p.Name, out var gone)) Release(gone);
-                foreach (var k in _leases.Where(l => l.Value.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase)).Select(l => l.Key).ToList()) _leases.Remove(k);
-                p.Rev = Bump();
-            }
-            if (Meta.Active)
-                foreach (var p in Pawns.Values)
-                {
-                    var live = Host.Live(p.Name);
-                    if (!live.Online || live.ScriptRunning) continue;
-                    if (_leaving.TryGetValue(p.Name, out var lv) && lv.Done) continue; // it ended for good: released below
-                    if (_started.TryGetValue(p.Name, out var at) && Now - at < TimeSpan.FromSeconds(5)) continue;
-                    _started[p.Name] = Now;
-                    if (_current.Remove(p.Name, out var stale)) Release(stale);
-                    restart.Add(p.Name);
-                }
+            RenewHeldLeases();
+            ExpireLeases();
+            ReleaseOffline();
+            if (Meta.Active) CollectRestarts(restart);
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
             _pickEnts = null; // the tick's searches read the world's entities once (and never a pick's old list)
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
@@ -427,24 +414,94 @@ public sealed partial class StoryColony : IStoryPort
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
             _pickEnts = null;
-            // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
-            foreach (var p in Pawns.Values)
-            {
-                bool online = Host.Live(p.Name).Online;
-                if (online && _online.Add(p.Name)) joined.Add(p.Name);
-                else if (!online) _online.Remove(p.Name);
-            }
+            NoteJoined(joined);
         }
         SpeedTick(); // Fast / Faster on the pawn bodies, the Speed effects (StoryColony.Speed.cs)
         foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
         if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
+        StartPawns(restart);
+        Save();
+    }
+
+    /// <summary>
+    /// A pawn still at its job keeps its lease (live 11-03: the script reports no progress, so a lease ran out after 90 s while the pawn
+    /// was still walking there or digging; a second pawn got the same target and met the first one's hive claim: "busy: another hive
+    /// bot is working on that part"). Up to JobMax, then the lease runs out as before.
+    /// </summary>
+    private void RenewHeldLeases()
+    {
+        foreach (var (owner, cur) in _current)
+        {
+            if (!LeaseDueRenewal(owner, cur)) continue;
+            _leases[cur.Lease!] = (owner, Now + LeaseTtl);
+            RenewCells(owner, cur);
+            foreach (var k in cur.MoreLeases) _leases[k] = (owner, Now + LeaseTtl);
+        }
+    }
+
+    /// <summary>Its own lease on its job's target runs out within half a TTL while its script runs (and the job isn't over-long).</summary>
+    private bool LeaseDueRenewal(string owner, ActiveJob cur) =>
+        cur.Lease != null && Now - cur.Since < JobMax && _leases.TryGetValue(cur.Lease, out var l) && string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase)
+        && l.Until - Now < LeaseTtl / 2 && Host.Live(owner) is { Online: true, ScriptRunning: true };
+
+    /// <summary>Expired leases go back; a job whose lease it was ends with it.</summary>
+    private void ExpireLeases()
+    {
+        foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
+        {
+            var owner = _leases[k].Owner;
+            _leases.Remove(k);
+            if (_current.TryGetValue(owner, out var cur) && cur.Lease == k) { _current.Remove(owner); Release(cur); }
+        }
+    }
+
+    /// <summary>A pawn that went offline holds nothing: its job and its leases go back at once (not after the 90 s lease).</summary>
+    private void ReleaseOffline()
+    {
+        foreach (var p in Pawns.Values)
+        {
+            if (!_current.ContainsKey(p.Name) && !_leases.Values.Any(l => l.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase))) continue;
+            if (Host.Live(p.Name).Online) continue;
+            if (_current.Remove(p.Name, out var gone)) Release(gone);
+            foreach (var k in _leases.Where(l => l.Value.Owner.Equals(p.Name, StringComparison.OrdinalIgnoreCase)).Select(l => l.Key).ToList()) _leases.Remove(k);
+            p.Rev = Bump();
+        }
+    }
+
+    /// <summary>The watchdog: an online pawn whose script ended is started again (at most every 5 s; never one that left for good).</summary>
+    private void CollectRestarts(List<string> restart)
+    {
+        foreach (var p in Pawns.Values)
+        {
+            var live = Host.Live(p.Name);
+            if (!live.Online || live.ScriptRunning) continue;
+            if (_leaving.TryGetValue(p.Name, out var lv) && lv.Done) continue; // it ended for good: released below
+            if (_started.TryGetValue(p.Name, out var at) && Now - at < TimeSpan.FromSeconds(5)) continue;
+            _started[p.Name] = Now;
+            if (_current.Remove(p.Name, out var stale)) Release(stale);
+            restart.Add(p.Name);
+        }
+    }
+
+    /// <summary>A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).</summary>
+    private void NoteJoined(List<string> joined)
+    {
+        foreach (var p in Pawns.Values)
+        {
+            bool online = Host.Live(p.Name).Online;
+            if (online && _online.Add(p.Name)) joined.Add(p.Name);
+            else if (!online) _online.Remove(p.Name);
+        }
+    }
+
+    private void StartPawns(List<string> restart)
+    {
         foreach (var name in restart)
         {
             string? err;
             try { err = Host.StartPawn(name, Id); } catch (Exception ex) { err = ex.Message; }
             if (err != null) _log.LogDebug("story {Colony}: {Pawn} didn't start: {Err}", Id, name, err);
         }
-        Save();
     }
 
     private DateTimeOffset _benchScan = DateTimeOffset.MinValue;
@@ -529,64 +586,79 @@ public sealed partial class StoryColony : IStoryPort
         lock (_lock)
         {
             if (Home() is not { } home || World is not { } w || !Meta.Active) return 0;
-            P3? spot = null;
-            bool looked = false;
-            foreach (var p in Pawns.Values)
-            {
-                if (only != null && !only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)) continue;
-                var live = Host.Live(p.Name);
-                if (!live.Online) continue;
-                if (_broughtHome.TryGetValue(p.Name, out var at) && Now - at < BringHomeCooldown) continue;
-                if (live.Dim != w.Dimension)
-                {
-                    if (!_homeAlert.TryGetValue("dim:" + p.Name, out var last) || Now - last > TimeSpan.FromMinutes(10))
-                    {
-                        _homeAlert["dim:" + p.Name] = Now;
-                        Alert("warn", $"{p.Display} is in another dimension and can't be brought home from there: walk it through a portal", p.Name);
-                    }
-                    continue;
-                }
-                double dist = home.Dist(live.X, live.Y, live.Z);
-                if (dist <= HomeRange) continue;
-                if (!looked) { looked = true; spot = SafeSpot(w, home); }
-                if (spot is not { } to)
-                {
-                    if (!_homeAlert.TryGetValue("spot", out var last) || Now - last > TimeSpan.FromMinutes(5))
-                    {
-                        _homeAlert["spot"] = Now;
-                        Alert("warn", $"no safe spot to bring pawns to at home {home} (not loaded in the bot's view, or no ground there)");
-                    }
-                    return 0;
-                }
-                _broughtHome[p.Name] = Now;
-                moves.Add((p, SpreadHome(p, live, home) ?? to, dist)); // each to its own spot: never all onto one cell
-            }
+            if (!PlanHomeMoves(only, home, w, moves)) return 0;
         }
-        foreach (var (p, to, dist) in moves)
-        {
-            string? err;
-            try { err = Host.Teleport(p.Name, to, $"story {Id}: {why}"); } catch (Exception ex) { err = ex.Message; }
-            lock (_lock)
-            {
-                if (err == null)
-                {
-                    Supersede(p, "brought home"); // whatever it was doing over there is cut; it picks again at home
-                    Alert("info", $"{p.Display} brought home to {to} from {dist:0} blocks away ({why})", p.Name);
-                }
-                else
-                {
-                    // Walk it there instead: a move order runs before any work.
-                    if (!p.Queue.Any(o => o.Kind == "move" && o.At == to))
-                    {
-                        p.Queue.Insert(0, new Order { Id = NextId("o"), Kind = "move", At = to, Given = Now });
-                        p.Rev = Touch();
-                        Supersede(p, "walking home");
-                    }
-                    Alert("info", $"{p.Display} walks home to {to} from {dist:0} blocks away ({why}; no teleport: {err})", p.Name);
-                }
-            }
-        }
+        foreach (var (p, to, dist) in moves) SendHome(p, to, dist, why);
         return moves.Count;
+    }
+
+    /// <summary>The pawns to bring home (online, far from home, not just brought): each to its own spot by home. False = no safe spot
+    /// at home (said, at most every 5 minutes): nobody is moved.</summary>
+    private bool PlanHomeMoves(IReadOnlyCollection<string>? only, P3 home, IStoryWorld w, List<(PawnState P, P3 To, double Dist)> moves)
+    {
+        P3? spot = null;
+        bool looked = false;
+        foreach (var p in Pawns.Values)
+        {
+            if (only != null && !only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)) continue;
+            var live = Host.Live(p.Name);
+            if (!HomeDue(p, live, w)) continue;
+            double dist = home.Dist(live.X, live.Y, live.Z);
+            if (dist <= HomeRange) continue;
+            if (!looked) { looked = true; spot = SafeSpot(w, home); }
+            if (spot is not { } to)
+            {
+                if (HomeAlertDue("spot", TimeSpan.FromMinutes(5)))
+                    Alert("warn", $"no safe spot to bring pawns to at home {home} (not loaded in the bot's view, or no ground there)");
+                return false;
+            }
+            _broughtHome[p.Name] = Now;
+            moves.Add((p, SpreadHome(p, live, home) ?? to, dist)); // each to its own spot: never all onto one cell
+        }
+        return true;
+    }
+
+    /// <summary>Online, not brought home a moment ago, and in the colony's dimension (one elsewhere can't be teleported across: said).</summary>
+    private bool HomeDue(PawnState p, PawnLive live, IStoryWorld w)
+    {
+        if (!live.Online) return false;
+        if (_broughtHome.TryGetValue(p.Name, out var at) && Now - at < BringHomeCooldown) return false;
+        if (live.Dim == w.Dimension) return true;
+        if (HomeAlertDue("dim:" + p.Name, TimeSpan.FromMinutes(10)))
+            Alert("warn", $"{p.Display} is in another dimension and can't be brought home from there: walk it through a portal", p.Name);
+        return false;
+    }
+
+    /// <summary>A bring-home alert of this key is due (none within <paramref name="every"/>): noted as said now.</summary>
+    private bool HomeAlertDue(string key, TimeSpan every)
+    {
+        if (_homeAlert.TryGetValue(key, out var last) && Now - last <= every) return false;
+        _homeAlert[key] = Now;
+        return true;
+    }
+
+    /// <summary>Teleported home (whatever it was doing over there is cut; it picks again at home), else walked there by a move order.</summary>
+    private void SendHome(PawnState p, P3 to, double dist, string why)
+    {
+        string? err;
+        try { err = Host.Teleport(p.Name, to, $"story {Id}: {why}"); } catch (Exception ex) { err = ex.Message; }
+        lock (_lock)
+        {
+            if (err == null)
+            {
+                Supersede(p, "brought home");
+                Alert("info", $"{p.Display} brought home to {to} from {dist:0} blocks away ({why})", p.Name);
+                return;
+            }
+            // Walk it there instead: a move order runs before any work.
+            if (!p.Queue.Any(o => o.Kind == "move" && o.At == to))
+            {
+                p.Queue.Insert(0, new Order { Id = NextId("o"), Kind = "move", At = to, Given = Now });
+                p.Rev = Touch();
+                Supersede(p, "walking home");
+            }
+            Alert("info", $"{p.Display} walks home to {to} from {dist:0} blocks away ({why}; no teleport: {err})", p.Name);
+        }
     }
 
     /// <summary>

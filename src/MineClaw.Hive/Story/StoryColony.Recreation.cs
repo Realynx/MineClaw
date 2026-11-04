@@ -45,8 +45,15 @@ public sealed partial class StoryColony
         var mode = IdleModes.Contains(Meta.Idle) ? Meta.Idle : IdleRecreation;
         if (mode == IdleStay) return null;
         if (World is not { } w || live.Dim != w.Dimension || Home() is not { } home) return null;
-        bool night = StoryCharacter.Night(hour);
         var from = live.Block;
+        return IdlePick(p, mode, hour, w, home, from) is { } leg ? IdleLegJob(p, leg, why, from) : null;
+    }
+
+    /// <summary>The offers (a wander; with recreation: company, the stars at night, a seat, a garden, the sunset at six) in a shuffled
+    /// order, the last activity only when nothing else is possible.</summary>
+    private Leg? IdlePick(PawnState p, string mode, int hour, IStoryWorld w, P3 home, P3 from)
+    {
+        bool night = StoryCharacter.Night(hour);
         var busy = Busy();
         var taken = Taken(p.Name);
         bool Free(P3 c) => c != from && !busy(c) && !Skipped("wander:" + c);
@@ -65,24 +72,26 @@ public sealed partial class StoryColony
             offers.Add(() => GardenLeg(open, taken, w));
             if (!night && hour == 18) offers.Add(() => SunsetLeg(open, taken));
         }
-        // Variety: shuffled, the last activity only when nothing else is possible.
-        var last = _lastAct.GetValueOrDefault(p.Name);
-        Leg? leg = null, repeat = null;
+        return VariedLeg(offers, _lastAct.GetValueOrDefault(p.Name));
+    }
+
+    /// <summary>Variety: the offers shuffled, the first that gives a leg; the last activity only when nothing else is possible.</summary>
+    private Leg? VariedLeg(List<Func<Leg?>> offers, string? last)
+    {
+        Leg? repeat = null;
         foreach (var offer in offers.OrderBy(_ => Rng.Next()))
         {
             if (offer() is not { } l) continue;
             if (l.Act == last && offers.Count > 1) { repeat ??= l; continue; }
-            leg = l;
-            break;
+            return l;
         }
-        leg ??= repeat;
-        if (leg == null) return null;
+        return repeat;
+    }
 
+    private ActiveJob IdleLegJob(PawnState p, Leg leg, string why, P3 from)
+    {
         int linger = leg.Act == "wander" ? Rng.Next(4, 13) : Rng.Next(8, 17);
-        string label = leg.Act == "wander"
-            ? why switch { "free" => "Free time (wandering)", "rest" => "Resting (wandering)", _ => "Idle (wandering)" }
-            : (why == "rest" ? "Resting: " : "Recreation: ") + leg.Text;
-        var job = Job("idle", "idle", label, leg.At, null, "wander", why, "idle", j =>
+        var job = Job("idle", "idle", IdleLabel(leg, why), leg.At, null, "wander", why, "idle", j =>
         {
             j["s"] = linger;
             j["dist"] = 0;
@@ -97,6 +106,10 @@ public sealed partial class StoryColony
         if (leg.With is { } partner) _socialWith[partner.Name] = (p.Name, Now + TimeSpan.FromSeconds(40));
         return job;
     }
+
+    private static string IdleLabel(Leg leg, string why) => leg.Act == "wander"
+        ? why switch { "free" => "Free time (wandering)", "rest" => "Resting (wandering)", _ => "Idle (wandering)" }
+        : (why == "rest" ? "Resting: " : "Recreation: ") + leg.Text;
 
     private Leg? PickLeg(List<P3> cells, List<P3> taken, string act, Func<P3, IReadOnlyList<(double, double, double)>> look, string text,
         double[]? rooms = null)
