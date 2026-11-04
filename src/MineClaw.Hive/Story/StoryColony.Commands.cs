@@ -185,35 +185,47 @@ public sealed partial class StoryColony
         while (p.Queue.Count > 0)
         {
             var o = p.Queue[0];
-            var at = o.At;
-            if (o.Targets is { } ts)
-            {
-                if (ts.Count == 0) { p.Queue.RemoveAt(0); p.Rev = Touch(); continue; }
-                at = ts.OrderBy(t => t.Dist(live.Block)).First();
-            }
-            StoryEntity? e = null;
-            if (o.Entity is { } eid)
-            {
-                e = World?.Entities().FirstOrDefault(x => x.Id == eid);
-                if (e == null) { p.Queue.RemoveAt(0); Alert("info", $"{p.Display}: the {o.Kind} target is gone", p.Name); p.Rev = Touch(); continue; }
-                at = e.Block;
-            }
-            string type = "order", src = "order";
-            return o.Kind switch
-            {
-                "move" => Job(type, "go", $"moving to {at}", at ?? o.Area?.Center, null, src, o.Id, "moving", j => j["dist"] = 0, xp: 0),
-                "attack" => AttackJob(p, o, e, at), // the exact entity, every ordered pawn at once (StoryColony.Combat.cs)
-                "chop" => Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, src, o.Id,
-                    fill: j => ChopFill(j, at is { } ct && World is { } ow ? StoryBlocks.TreeFrom(ow, ct) : null), xp: 40),
-                "mine" => MineOrderJob(p, live, o, at),
-                "haul" => Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, src, o.Id, "working", j => j["r"] = 4, xp: 5),
-                "build" when o.Design is { } d => Job(WorkTypes.Build, "blueprint", $"building design #{d}", at, "design:" + d, src, o.Id, "working", j => j["design"] = d.ToString(), xp: 60),
-                "hold" => Job(type, "hold", "holding position", at, null, src, o.Id, p.Drafted ? "drafted" : "idle", j => j["s"] = 5, xp: 0),
-                _ => Job(type, "hold", "waiting", at, null, src, o.Id, "idle", j => j["s"] = 3, xp: 0),
-            };
+            if (OrderTarget(p, live, o, out var at, out var e)) return OrderKindJob(p, live, o, at, e);
         }
         return null;
     }
+
+    /// <summary>Where the first order goes: its nearest target left, its entity, or its spot. False when it has nothing left (its last
+    /// target done, its entity gone): the order is dropped.</summary>
+    private bool OrderTarget(PawnState p, PawnLive live, Order o, out P3? at, out StoryEntity? e)
+    {
+        at = o.At;
+        e = null;
+        if (o.Targets is { } ts)
+        {
+            if (ts.Count == 0) { p.Queue.RemoveAt(0); p.Rev = Touch(); return false; }
+            at = ts.OrderBy(t => t.Dist(live.Block)).First();
+        }
+        if (o.Entity is not { } eid) return true;
+        e = World?.Entities().FirstOrDefault(x => x.Id == eid);
+        if (e == null) { p.Queue.RemoveAt(0); Alert("info", $"{p.Display}: the {o.Kind} target is gone", p.Name); p.Rev = Touch(); return false; }
+        at = e.Block;
+        return true;
+    }
+
+    private ActiveJob? OrderKindJob(PawnState p, PawnLive live, Order o, P3? at, StoryEntity? e) => o.Kind switch
+    {
+        "move" => Job("order", "go", $"moving to {at}", at ?? o.Area?.Center, null, "order", o.Id, "moving", j => j["dist"] = 0, xp: 0),
+        "attack" => AttackJob(p, o, e, at), // the exact entity, every ordered pawn at once (StoryColony.Combat.cs)
+        "chop" => ChopOrderJob(o, at),
+        "mine" => MineOrderJob(p, live, o, at),
+        "haul" => HaulOrderJob(o, at, e),
+        "build" when o.Design is { } d => Job(WorkTypes.Build, "blueprint", $"building design #{d}", at, "design:" + d, "order", o.Id, "working", j => j["design"] = d.ToString(), xp: 60),
+        "hold" => Job("order", "hold", "holding position", at, null, "order", o.Id, p.Drafted ? "drafted" : "idle", j => j["s"] = 5, xp: 0),
+        _ => Job("order", "hold", "waiting", at, null, "order", o.Id, "idle", j => j["s"] = 3, xp: 0),
+    };
+
+    private ActiveJob HaulOrderJob(Order o, P3? at, StoryEntity? e) =>
+        Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, "order", o.Id, "working", j => j["r"] = 4, xp: 5);
+
+    private ActiveJob ChopOrderJob(Order o, P3? at) =>
+        Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, "order", o.Id,
+            fill: j => ChopFill(j, at is { } ct && World is { } ow ? StoryBlocks.TreeFrom(ow, ct) : null), xp: 40);
 
     private void OrderDone(PawnState p, ActiveJob j, bool ok, string? note)
     {
@@ -221,14 +233,17 @@ public sealed partial class StoryColony
         if (o == null) return;
         if (o.Kind == "hold" && ok) return; // holds until the next order (or undraft)
         if (!ok && AttackRetry(o, note)) return; // "busy: fighting …": the attack order stays for another go
-        if (o.Targets is { } ts && j.At is { } at)
-        {
-            ts.Remove(at);
-            if (ts.Count > 0 && (ok || !string.IsNullOrEmpty(note))) { p.Rev = Touch(); return; }
-        }
+        if (o.Targets is { } ts && j.At is { } at && TargetsLeft(ts, at, ok, note)) { p.Rev = Touch(); return; }
         p.Queue.Remove(o);
         if (!ok) Alert("warn", $"{p.Display} couldn't {o.Kind}: {note}", p.Name);
         p.Rev = Touch();
+    }
+
+    /// <summary>One of an order's targets is finished with: the order goes on while others are left (a failure without a reason ends it).</summary>
+    private static bool TargetsLeft(List<P3> ts, P3 at, bool ok, string? note)
+    {
+        ts.Remove(at);
+        return ts.Count > 0 && (ok || !string.IsNullOrEmpty(note));
     }
 
     // ---------------------------------------------------------------- zones: StoryColony.Zones.cs

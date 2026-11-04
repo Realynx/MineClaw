@@ -77,23 +77,26 @@ public static class SkillJson
     public static BlockPos? Pos(this JsonElement e, string name = "pos")
     {
         if (Prop(e, name) is not { } v) return null;
-        switch (v.ValueKind)
+        return v.ValueKind switch
         {
-            case JsonValueKind.String:
-            {
-                var parts = v.GetString()!.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries);
-                return parts.Length == 3 && int.TryParse(parts[0], out var x) && int.TryParse(parts[1], out var y) && int.TryParse(parts[2], out var z)
-                    ? new BlockPos(x, y, z) : null;
-            }
-            case JsonValueKind.Array:
-            {
-                var a = v.EnumerateArray().Select(n => n.TryGetInt32(out var i) ? (int?)i : null).ToArray();
-                return a.Length == 3 && a.All(i => i != null) ? new BlockPos(a[0]!.Value, a[1]!.Value, a[2]!.Value) : null;
-            }
-            case JsonValueKind.Object:
-                return v.Int("x") is { } ox && v.Int("y") is { } oy && v.Int("z") is { } oz ? new BlockPos(ox, oy, oz) : null;
-        }
-        return null;
+            JsonValueKind.String => PosFromText(v.GetString()!),
+            JsonValueKind.Array => PosFromArray(v),
+            JsonValueKind.Object => v.Int("x") is { } ox && v.Int("y") is { } oy && v.Int("z") is { } oz ? new BlockPos(ox, oy, oz) : null,
+            _ => null,
+        };
+    }
+
+    private static BlockPos? PosFromText(string text)
+    {
+        var parts = text.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 3 && int.TryParse(parts[0], out var x) && int.TryParse(parts[1], out var y) && int.TryParse(parts[2], out var z)
+            ? new BlockPos(x, y, z) : null;
+    }
+
+    private static BlockPos? PosFromArray(JsonElement v)
+    {
+        var a = v.EnumerateArray().Select(n => n.TryGetInt32(out var i) ? (int?)i : null).ToArray();
+        return a.Length == 3 && a.All(i => i != null) ? new BlockPos(a[0]!.Value, a[1]!.Value, a[2]!.Value) : null;
     }
 
     /// <summary>Item id by name ("water bucket", "seeds", "bone meal"), with its damage when it is a variant.</summary>

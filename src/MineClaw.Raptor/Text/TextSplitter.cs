@@ -32,44 +32,46 @@ public static partial class TextSplitter
             var sentence = mode == SplitMode.Reference ? sentences[si] : sentences[si].Trim();
             int tokenCount = nTokens[si];
             if (string.IsNullOrWhiteSpace(sentence)) continue;
-
             if (tokenCount > maxTokens)
             {
-                var subs = SubDelims().Split(sentence).Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
-                var subCounts = subs.Select(s => tokenizer.Count(" " + s)).ToArray();
-                var sub = new List<string>();
-                int subLength = 0;
-                for (int t = 0; t < subs.Length; t++)
-                {
-                    if (subLength + subCounts[t] > maxTokens && sub.Count > 0)
-                    {
-                        chunks.Add(string.Join(" ", sub));
-                        sub = overlap > 0 ? sub.Skip(Math.Max(0, sub.Count - overlap)).ToList() : [];
-                        // reference: sum(sub_token_counts[max(0, len(sub_chunk) - overlap):len(sub_chunk)])
-                        subLength = SumRange(subCounts, Math.Max(0, sub.Count - overlap), sub.Count);
-                    }
-                    sub.Add(subs[t]);
-                    subLength += subCounts[t];
-                }
-                if (sub.Count > 0) chunks.Add(string.Join(" ", sub));
+                SplitLongSentence(sentence, tokenizer, maxTokens, overlap, chunks);
+                continue;
             }
-            else if (currentLength + tokenCount > maxTokens)
-            {
-                chunks.Add(string.Join(" ", current));
-                current = overlap > 0 ? current.Skip(Math.Max(0, current.Count - overlap)).ToList() : [];
-                // reference: sum(n_tokens[max(0, len(current_chunk) - overlap):len(current_chunk)])
-                currentLength = SumRange(nTokens, Math.Max(0, current.Count - overlap), current.Count);
-                current.Add(sentence);
-                currentLength += tokenCount;
-            }
-            else
-            {
-                current.Add(sentence);
-                currentLength += tokenCount;
-            }
+            if (currentLength + tokenCount > maxTokens)
+                currentLength = Flush(chunks, ref current, nTokens, overlap);
+            current.Add(sentence);
+            currentLength += tokenCount;
         }
         if (current.Count > 0) chunks.Add(string.Join(" ", current));
         return chunks;
+    }
+
+    /// <summary>
+    /// Emits the current chunk and keeps the overlap tail; returns the reference's carried length
+    /// sum(n_tokens[max(0, len(current_chunk) - overlap):len(current_chunk)]).
+    /// </summary>
+    private static int Flush(List<string> chunks, ref List<string> current, int[] counts, int overlap)
+    {
+        chunks.Add(string.Join(" ", current));
+        current = overlap > 0 ? current.Skip(Math.Max(0, current.Count - overlap)).ToList() : [];
+        return SumRange(counts, Math.Max(0, current.Count - overlap), current.Count);
+    }
+
+    /// <summary>A sentence over max_tokens: split on ", ; :" and pack the pieces the same way.</summary>
+    private static void SplitLongSentence(string sentence, ITokenCounter tokenizer, int maxTokens, int overlap, List<string> chunks)
+    {
+        var subs = SubDelims().Split(sentence).Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
+        var subCounts = subs.Select(s => tokenizer.Count(" " + s)).ToArray();
+        var sub = new List<string>();
+        int subLength = 0;
+        for (int t = 0; t < subs.Length; t++)
+        {
+            if (subLength + subCounts[t] > maxTokens && sub.Count > 0)
+                subLength = Flush(chunks, ref sub, subCounts, overlap);
+            sub.Add(subs[t]);
+            subLength += subCounts[t];
+        }
+        if (sub.Count > 0) chunks.Add(string.Join(" ", sub));
     }
 
     private static string[] SplitPreserving(string text) => PreservingDelims().Split(text);

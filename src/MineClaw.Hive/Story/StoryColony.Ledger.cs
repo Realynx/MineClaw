@@ -30,19 +30,9 @@ public sealed partial class StoryColony
         if (StorageAt(at) is not { } st) return false;
         var name = m.Groups["item"].Value.Trim();
         var item = w.Data.ItemByNameWithDamage(name);
-        bool changed = false;
+        bool changed;
         if (m.Groups["empty"].Success) { changed = st.Contents.Count > 0; st.Contents.Clear(); st.Enchanted.Clear(); }
-        else if (item is { } it)
-        {
-            changed = st.Contents.RemoveAll(c => c.Id == it.Item.Id) > 0;
-            st.Enchanted.RemoveAll(e => e.Id == it.Item.Id);
-            // A full listing (no "+N more") is what the chest holds: the record becomes it.
-            if (m.Groups["had"].Success && !m.Groups["had"].Value.Contains("more", StringComparison.Ordinal) && Listing(w, m.Groups["had"].Value) is { } seen)
-            {
-                changed |= !seen.SequenceEqual(st.Contents);
-                st.Contents = seen;
-            }
-        }
+        else if (item is { } it) changed = ForgetTaken(w, st, it.Item.Id, m.Groups["had"]);
         else return false;
         if (changed) Recount(st); else st.Rev = Touch();
         _log_StaleFetch(p, name, at);
@@ -77,6 +67,20 @@ public sealed partial class StoryColony
 
     private readonly Dictionary<string, int> _needFails = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>The item wasn't there: the chest's record loses it; a full listing (no "+N more") is what the chest holds, and the
+    /// record becomes it. True when the record changed.</summary>
+    private static bool ForgetTaken(IStoryWorld w, StorageState st, int itemId, Group had)
+    {
+        bool changed = st.Contents.RemoveAll(c => c.Id == itemId) > 0;
+        st.Enchanted.RemoveAll(e => e.Id == itemId);
+        if (had.Success && !had.Value.Contains("more", StringComparison.Ordinal) && Listing(w, had.Value) is { } seen)
+        {
+            changed |= !seen.SequenceEqual(st.Contents);
+            st.Contents = seen;
+        }
+        return changed;
+    }
+
     /// <summary>
     /// A hungry pawn's meal: food it carries (not rotten flesh, unless starving with nothing else), else the best stored food (most
     /// nourishing first; never a chest that just failed this pawn; never while its last fetch's back-off runs), else, starving, the bad
@@ -96,23 +100,30 @@ public sealed partial class StoryColony
         {
             var got = BestFood(p, live, s => Edible(s) && !BadFood(s.Id) && !Raw(w, s.Id)) ?? BestFood(p, live, s => Edible(s) && !BadFood(s.Id))
                 ?? (starving ? BestFood(p, live, Edible) : null);
-            if (got is { } g)
-            {
-                bool bad = BadFood(g.Stack.Id);
-                var j = bad
-                    ? Job("need", "hold", "fetching rotten food (starving)", null, null, "need", null, "eating", f => { f["fetch"] = Fetch(g.Store.Chest, g.Stack, 4); f["s"] = 5; }, xp: 0)
-                    : Job("need", "eat", "fetching food", null, null, "need", null, "eating", f => f["fetch"] = Fetch(g.Store.Chest, g.Stack, 4), xp: 0);
-                j.Takes.Add((g.Store.Chest, g.Stack with { Count = Math.Min(4, g.Stack.Count) }));
-                return j;
-            }
+            if (got is { } g) return FoodFetchJob(g);
         }
         else return null; // waiting out a failed fetch: no attempt
-        if (!_idleAlert.TryGetValue("food:" + p.Name, out var last) || Now - last > TimeSpan.FromMinutes(5))
-        {
-            _idleAlert["food:" + p.Name] = Now;
-            Alert("warn", $"{p.Display} is hungry and there is no food in storage", p.Name);
-        }
+        NoFoodAlert(p);
         return null;
+    }
+
+    /// <summary>Fetching stored food (4): eaten at once, or (rotten flesh, starving) held for the body's reflex.</summary>
+    private ActiveJob FoodFetchJob((StorageState Store, Stack Stack) g)
+    {
+        bool bad = BadFood(g.Stack.Id);
+        var j = bad
+            ? Job("need", "hold", "fetching rotten food (starving)", null, null, "need", null, "eating", f => { f["fetch"] = Fetch(g.Store.Chest, g.Stack, 4); f["s"] = 5; }, xp: 0)
+            : Job("need", "eat", "fetching food", null, null, "need", null, "eating", f => f["fetch"] = Fetch(g.Store.Chest, g.Stack, 4), xp: 0);
+        j.Takes.Add((g.Store.Chest, g.Stack with { Count = Math.Min(4, g.Stack.Count) }));
+        return j;
+    }
+
+    /// <summary>Hungry with no food in storage: said at most every 5 minutes.</summary>
+    private void NoFoodAlert(PawnState p)
+    {
+        if (_idleAlert.TryGetValue("food:" + p.Name, out var last) && Now - last <= TimeSpan.FromMinutes(5)) return;
+        _idleAlert["food:" + p.Name] = Now;
+        Alert("warn", $"{p.Display} is hungry and there is no food in storage", p.Name);
     }
 
     /// <summary>The most nourishing stored food matching <paramref name="pick"/> (then the nearest), skipping chests that failed this pawn.</summary>
@@ -248,18 +259,24 @@ public sealed partial class StoryColony
         _benchCheckAt = Now;
         foreach (var kind in new[] { "crafting_table", "furnace" })
         {
-            var benches = Benches.Where(b => b.Kind == kind).ToList();
-            if (benches.Count != 1) continue;
-            int waiting = benches[0].Bills.Count(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } r && Wanted(b, r));
-            if (waiting < 4) continue;
-            var work = kind == "furnace" ? WorkTypes.Cook : WorkTypes.Craft;
-            bool idleCrafter = Pawns.Values.Any(p => p.Priorities.GetValueOrDefault(work) is >= 1 and <= 4
-                && Host.Live(p.Name).Online && (!_current.TryGetValue(p.Name, out var cur) || cur.Source == "none"));
-            if (!idleCrafter) continue;
+            if (BenchBacklog(w, kind) is not { } waiting) continue;
             _benchAlertAt = Now;
             Alert("info", $"{waiting} bills waiting on 1 {(kind == "furnace" ? "furnace" : "crafting table")} — place another to {(kind == "furnace" ? "smelt" : "craft")} in parallel");
             return;
         }
+    }
+
+    /// <summary>The runnable bills (4 or more) waiting on the only bench of a kind while a crafter for it is idle; else null.</summary>
+    private int? BenchBacklog(IStoryWorld w, string kind)
+    {
+        var benches = Benches.Where(b => b.Kind == kind).ToList();
+        if (benches.Count != 1) return null;
+        int waiting = benches[0].Bills.Count(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } r && Wanted(b, r));
+        if (waiting < 4) return null;
+        var work = kind == "furnace" ? WorkTypes.Cook : WorkTypes.Craft;
+        bool idleCrafter = Pawns.Values.Any(p => p.Priorities.GetValueOrDefault(work) is >= 1 and <= 4
+            && Host.Live(p.Name).Online && (!_current.TryGetValue(p.Name, out var cur) || cur.Source == "none"));
+        return idleCrafter ? waiting : null;
     }
 
     /// <summary>"dirt x333, egg x24" as stacks (null when a name doesn't resolve: the record then keeps the rest as it was).</summary>

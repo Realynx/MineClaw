@@ -79,38 +79,58 @@ public sealed class StoryColonies : IDisposable
     public void RetrySeats(StoryColony c, bool force = false)
     {
         if (!c.Meta.Active || !_host.InGame) return;
-        var now = _time.GetUtcNow();
-        lock (_nextRetry)
-        {
-            if (!force && _nextRetry.TryGetValue(c.Id, out var at) && now < at) return;
-            _nextRetry[c.Id] = now + RetryEvery;
-        }
-        var missing = new List<string>();
-        foreach (var a in c.PawnNames())
-        {
-            if (_host.Live(a).Online) { c.NoteTrouble(a, null); continue; }
-            var seat = _host.Seat(a);
-            if (!seat.Hosted) missing.Add(a);
-            else c.NoteTrouble(a, seat.Why is { } w && w.StartsWith("not whitelisted — ", StringComparison.Ordinal) && !w.EndsWith("re-adding", StringComparison.Ordinal) ? w : null);
-        }
+        if (!RetryDue(c, force)) return;
+        var missing = UnhostedPawns(c);
         if (missing.Count > 0)
         {
             var res = _host.Bring(c.Id, missing, overCap: false);
             Came(c, res);
             return;
         }
-        int short_ = c.Meta.Wanted - c.PawnNames().Count;
-        if (short_ > 0 && _host.Seats() is { } s && s.Free - 1 >= s.Kept)
+        GrowToWanted(c);
+    }
+
+    /// <summary>The colony's retry is due (or forced): the next one is set <see cref="RetryEvery"/> from now.</summary>
+    private bool RetryDue(StoryColony c, bool force)
+    {
+        var now = _time.GetUtcNow();
+        lock (_nextRetry)
         {
-            (IReadOnlyList<string> Accounts, string? Why) r;
-            try { r = _host.Spawn(c.Id, short_, null); } catch (Exception ex) { r = ([], ex.Message); }
-            if (r.Accounts.Count > 0)
-            {
-                c.Joined(r.Accounts);
-                c.Alert("info", $"{r.Accounts.Count} more pawn(s) joined now that seats are free ({string.Join(", ", r.Accounts.Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf))})");
-                c.Save(force: true);
-            }
+            if (!force && _nextRetry.TryGetValue(c.Id, out var at) && now < at) return false;
+            _nextRetry[c.Id] = now + RetryEvery;
+            return true;
         }
+    }
+
+    /// <summary>The pawns not in game whose bodies aren't hosted; the hosted ones' login trouble is noted (or cleared).</summary>
+    private List<string> UnhostedPawns(StoryColony c)
+    {
+        var missing = new List<string>();
+        foreach (var a in c.PawnNames())
+        {
+            if (_host.Live(a).Online) { c.NoteTrouble(a, null); continue; }
+            var seat = _host.Seat(a);
+            if (!seat.Hosted) missing.Add(a);
+            else c.NoteTrouble(a, OwnerTrouble(seat.Why));
+        }
+        return missing;
+    }
+
+    /// <summary>Login trouble that needs the owner: main can't whitelist the body (and isn't re-adding it).</summary>
+    private static string? OwnerTrouble(string? why) =>
+        why is { } w && w.StartsWith("not whitelisted — ", StringComparison.Ordinal) && !w.EndsWith("re-adding", StringComparison.Ordinal) ? w : null;
+
+    /// <summary>A colony founded short grows to its wanted size as seats free up (never the seats kept for regulars).</summary>
+    private void GrowToWanted(StoryColony c)
+    {
+        int short_ = c.Meta.Wanted - c.PawnNames().Count;
+        if (short_ <= 0 || _host.Seats() is not { } s || s.Free - 1 < s.Kept) return;
+        (IReadOnlyList<string> Accounts, string? Why) r;
+        try { r = _host.Spawn(c.Id, short_, null); } catch (Exception ex) { r = ([], ex.Message); }
+        if (r.Accounts.Count == 0) return;
+        c.Joined(r.Accounts);
+        c.Alert("info", $"{r.Accounts.Count} more pawn(s) joined now that seats are free ({string.Join(", ", r.Accounts.Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf))})");
+        c.Save(force: true);
     }
 
     private void Came(StoryColony c, IReadOnlyList<(string Account, string? Why)> res)
@@ -202,29 +222,35 @@ public sealed class StoryColonies : IDisposable
         if (wanted + n > StoryColony.MaxPawns)
             return (null, $"a colony has at most {StoryColony.MaxPawns} pawns ({wanted} now{(wanted > staying ? $", {wanted - staying} of them joining" : "")})");
         c.Meta.Wanted = wanted + n;
-        int now = n;
-        string? why = null;
-        if (_host.Seats() is { } s)
-        {
-            now = Math.Clamp(s.Free - s.Kept, 0, n);
-            if (now < n) why = $"server full (player cap: {s.Free} free, {s.Kept} kept for regulars)";
-        }
+        var (now, why) = SeatsNow(n);
         var came = new List<string>();
-        if (now > 0)
-        {
-            (IReadOnlyList<string> Accounts, string? Why) r;
-            try { r = _host.Spawn(c.Id, now, null); } catch (Exception ex) { r = ([], ex.Message); }
-            came.AddRange(r.Accounts);
-            if (r.Accounts.Count < now) why ??= r.Why ?? "no account free";
-            c.Joined(r.Accounts);
-            Scripting.Crew.Crews.Open(c.Id);
-        }
+        if (now > 0) why = SpawnInto(c, now, came, why);
         _log.LogInformation("story {Colony}: + {N} pawn(s): {Came} now, wanted {Wanted} {Why}", c.Id, n, came.Count, c.Meta.Wanted, why ?? "");
         c.Alert("info", came.Count == n ? $"{n} pawn(s) joining: {string.Join(", ", came.Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf))}"
             : $"{came.Count} of {n} new pawn(s) joining now; the rest come when seats free up ({why})");
         c.Save(force: true);
         if (came.Count > 0) c.BringHome("joined", came);
         return (Roster(c, why), null);
+    }
+
+    /// <summary>How many of <paramref name="n"/> new pawns the free seats take now (never the seats kept for regulars), and why not all.</summary>
+    private (int Now, string? Why) SeatsNow(int n)
+    {
+        if (_host.Seats() is not { } s) return (n, null);
+        int now = Math.Clamp(s.Free - s.Kept, 0, n);
+        return (now, now < n ? $"server full (player cap: {s.Free} free, {s.Kept} kept for regulars)" : null);
+    }
+
+    /// <summary>Spawns <paramref name="now"/> pawns into the colony (added to <paramref name="came"/>); the reason when fewer came.</summary>
+    private string? SpawnInto(StoryColony c, int now, List<string> came, string? why)
+    {
+        (IReadOnlyList<string> Accounts, string? Why) r;
+        try { r = _host.Spawn(c.Id, now, null); } catch (Exception ex) { r = ([], ex.Message); }
+        came.AddRange(r.Accounts);
+        if (r.Accounts.Count < now) why ??= r.Why ?? "no account free";
+        c.Joined(r.Accounts);
+        Scripting.Crew.Crews.Open(c.Id);
+        return why;
     }
 
     /// <summary>

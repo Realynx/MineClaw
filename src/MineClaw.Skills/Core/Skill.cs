@@ -53,13 +53,16 @@ public static class SkillWorld
         foreach (int id in MineClaw.Client.MinecraftClient.ScaffoldBlocks)
         {
             // Dirt is everywhere in a normal world: a fine building block, before the logs (skyblock never spends it).
-            if (id == Blocks.Log && !MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain
-                && !ctx.Game.ReservedItems.Contains(Blocks.Dirt) && ctx.Has(Blocks.Dirt)) return Blocks.Dirt;
+            if (id == Blocks.Log && DirtUsable(ctx)) return Blocks.Dirt;
             if (!ctx.Game.ReservedItems.Contains(id) && ctx.Has(id)) return id;
         }
-        if (!MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain && !ctx.Game.ReservedItems.Contains(Blocks.Dirt) && ctx.Has(Blocks.Dirt)) return Blocks.Dirt;
+        if (DirtUsable(ctx)) return Blocks.Dirt;
         return null;
     }
+
+    /// <summary>Dirt to build with: a normal world (not scarce terrain), not reserved, and in the inventory.</summary>
+    private static bool DirtUsable(SkillContext ctx) =>
+        !MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain && !ctx.Game.ReservedItems.Contains(Blocks.Dirt) && ctx.Has(Blocks.Dirt);
 
     public static ActionResult Ensure(bool ok, string fail) => ok ? ActionResult.Success("ok") : ActionResult.Fail(fail);
 }

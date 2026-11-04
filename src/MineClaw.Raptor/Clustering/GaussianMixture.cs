@@ -166,7 +166,7 @@ public sealed class GaussianMixture
         for (int c = 0; c < k; c++) nk[c] += 10 * Eps;
         var means = new double[k * d];
         var covs = new double[k * d * d];
-        void Comp(int c)
+        void CompMean(int c)
         {
             for (int i = 0; i < n; i++)
             {
@@ -175,6 +175,9 @@ public sealed class GaussianMixture
                 for (int j = 0; j < d; j++) means[c * d + j] += r * x[i * d + j];
             }
             for (int j = 0; j < d; j++) means[c * d + j] /= nk[c];
+        }
+        void CompCovariance(int c)
+        {
             Span<double> diff = stackalloc double[d];
             int pc = c * d * d;
             for (int i = 0; i < n; i++)
@@ -197,6 +200,11 @@ public sealed class GaussianMixture
                 }
             for (int a = 0; a < d; a++) covs[pc + a * d + a] += reg;
         }
+        void Comp(int c)
+        {
+            CompMean(c);
+            CompCovariance(c);
+        }
         if ((long)n * d * d > 200_000 && k > 1) Parallel.For(0, k, Comp);
         else for (int c = 0; c < k; c++) Comp(c);
 
@@ -216,35 +224,45 @@ public sealed class GaussianMixture
         for (int c = 0; c < k; c++)
         {
             int pc = c * d * d;
-            // lower Cholesky
-            Array.Clear(l);
-            for (int i = 0; i < d; i++)
-                for (int j = 0; j <= i; j++)
-                {
-                    double s = covs[pc + i * d + j];
-                    for (int t = 0; t < j; t++) s -= l[i * d + t] * l[j * d + t];
-                    if (i == j)
-                    {
-                        if (!(s > 0) || double.IsNaN(s))
-                            throw new GmmFitException("Fitting the mixture model failed because some components have ill-defined empirical covariance (for instance caused by singleton or collapsed samples). Try to decrease the number of components, or increase reg_covar.");
-                        l[i * d + i] = Math.Sqrt(s);
-                    }
-                    else l[i * d + j] = s / l[j * d + j];
-                }
-            // inv = L^-1 (lower), solve_triangular(L, I, lower=True)
-            Array.Clear(inv);
-            for (int col = 0; col < d; col++)
-                for (int i = col; i < d; i++)
-                {
-                    double s = i == col ? 1.0 : 0.0;
-                    for (int t = col; t < i; t++) s -= l[i * d + t] * inv[t * d + col];
-                    inv[i * d + col] = s / l[i * d + i];
-                }
+            CholeskyLower(covs, pc, d, l);
+            InvertLower(l, d, inv);
             // precisions_chol = inv.T (upper)
             for (int i = 0; i < d; i++)
                 for (int j = 0; j < d; j++) prec[pc + i * d + j] = inv[j * d + i];
         }
         return prec;
+    }
+
+    /// <summary>Lower Cholesky factor of the covariance at offset pc into l; throws on a non-positive pivot.</summary>
+    private static void CholeskyLower(double[] covs, int pc, int d, double[] l)
+    {
+        Array.Clear(l);
+        for (int i = 0; i < d; i++)
+            for (int j = 0; j <= i; j++)
+            {
+                double s = covs[pc + i * d + j];
+                for (int t = 0; t < j; t++) s -= l[i * d + t] * l[j * d + t];
+                if (i == j)
+                {
+                    if (!(s > 0) || double.IsNaN(s))
+                        throw new GmmFitException("Fitting the mixture model failed because some components have ill-defined empirical covariance (for instance caused by singleton or collapsed samples). Try to decrease the number of components, or increase reg_covar.");
+                    l[i * d + i] = Math.Sqrt(s);
+                }
+                else l[i * d + j] = s / l[j * d + j];
+            }
+    }
+
+    /// <summary>inv = L^-1 (lower), solve_triangular(L, I, lower=True).</summary>
+    private static void InvertLower(double[] l, int d, double[] inv)
+    {
+        Array.Clear(inv);
+        for (int col = 0; col < d; col++)
+            for (int i = col; i < d; i++)
+            {
+                double s = i == col ? 1.0 : 0.0;
+                for (int t = col; t < i; t++) s -= l[i * d + t] * inv[t * d + col];
+                inv[i * d + col] = s / l[i * d + i];
+            }
     }
 }
 

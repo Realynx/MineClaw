@@ -40,13 +40,16 @@ public enum PatchThen
 
 public static class PatchThens
 {
-    public static PatchThen Parse(string? s) => (s ?? "").Trim().ToLowerInvariant().Replace('-', '_') switch
+    private static readonly Dictionary<string, PatchThen> Words = new(StringComparer.Ordinal)
     {
-        "" or "resume" or "continue" or "ok" => PatchThen.Resume,
-        "restart_step" or "restart" or "retry" or "redo" => PatchThen.RestartStep,
-        "stop" or "cancel" or "end" => PatchThen.Stop,
-        _ => PatchThen.Escalate, // "escalate", "brain", "pass", anything unknown
+        [""] = PatchThen.Resume, ["resume"] = PatchThen.Resume, ["continue"] = PatchThen.Resume, ["ok"] = PatchThen.Resume,
+        ["restart_step"] = PatchThen.RestartStep, ["restart"] = PatchThen.RestartStep, ["retry"] = PatchThen.RestartStep, ["redo"] = PatchThen.RestartStep,
+        ["stop"] = PatchThen.Stop, ["cancel"] = PatchThen.Stop, ["end"] = PatchThen.Stop,
     };
+
+    /// <summary>The word (any case, '-' as '_'); "escalate", "brain", "pass" and anything unknown escalate.</summary>
+    public static PatchThen Parse(string? s) =>
+        Words.TryGetValue((s ?? "").Trim().ToLowerInvariant().Replace('-', '_'), out var then) ? then : PatchThen.Escalate;
 
     public static string Tag(PatchThen t) => t switch
     {

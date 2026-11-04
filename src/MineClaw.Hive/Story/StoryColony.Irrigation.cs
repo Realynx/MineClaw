@@ -71,12 +71,15 @@ public sealed partial class StoryColony
         foreach (var (x, z) in zone.Cells.Sorted())
         {
             int a = shape.AlongX ? z : x;
-            if (Math.Abs(a - line) > shape.Cover || !w.Loaded(x, z) || SoilIn(w, x, z, zone.Area.Y1) is not { } soil) continue;
+            if (Math.Abs(a - line) > shape.Cover || IrrigationSoil(w, zone, x, z) is not { } soil) continue;
             dry |= !(shape.Cane ? StoryPlants.WaterBeside(w, soil) : StoryPlants.WaterNear(w, soil));
             if (a == line && !Indoors(w, soil)) row.Add(soil);
         }
         return dry && row.Count > 0 ? row : null;
     }
+
+    /// <summary>A loaded column's soil near the zone's level.</summary>
+    private static P3? IrrigationSoil(IStoryWorld w, ZoneState zone, int x, int z) => w.Loaded(x, z) ? SoilIn(w, x, z, zone.Area.Y1) : null;
 
     private static void AddIrrigationRow(IStoryWorld w, List<P3> row, List<P3> cells, List<P3> dig)
     {
