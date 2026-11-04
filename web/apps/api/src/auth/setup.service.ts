@@ -41,6 +41,12 @@ export function isSetupPath(path: string): boolean {
   return path === '/setup' || path.startsWith('/setup/');
 }
 
+/** In setup mode every page goes to `/setup`; once a user exists `/setup` goes to `/login`; null stays. */
+function setupRedirect(needed: boolean, path: string): string | null {
+  if (needed) return isSetupPath(path) ? null : '/setup';
+  return isSetupPath(path) ? '/login' : null;
+}
+
 export class SetupService {
   private readonly attempts: WindowLimiter;
 
@@ -147,8 +153,7 @@ export class SetupService {
       if (req.method !== 'GET' && req.method !== 'HEAD') return next();
       const path = (req.url ?? '/').split('?')[0] ?? '/';
       if (!isPagePath(path)) return next();
-      const needed = this.needed();
-      const to = needed && !isSetupPath(path) ? '/setup' : !needed && isSetupPath(path) ? '/login' : null;
+      const to = setupRedirect(this.needed(), path);
       if (!to) return next();
       res.statusCode = 302;
       res.setHeader('Location', to);
