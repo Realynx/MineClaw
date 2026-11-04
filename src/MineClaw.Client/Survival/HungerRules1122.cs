@@ -79,40 +79,47 @@ public sealed class FoodStats1122
     /// <summary>One <c>onUpdate</c>.</summary>
     public void Tick()
     {
-        if (Exhaustion > 4.0f)
-        {
-            Exhaustion -= 4.0f;
-            if (Saturation > 0.0f) Saturation = Math.Max(Saturation - 1.0f, 0.0f);
-            else if (Difficulty != 0) Food = Math.Max(Food - 1, 0);
-        }
-        if (NaturalRegeneration && Saturation > 0.0f && ShouldHeal && Food >= 20)
-        {
-            if (++Timer >= 10)
-            {
-                float f = Math.Min(Saturation, 6.0f);
-                Health = Math.Min(MaxHealth, Health + f / 6.0f);
-                AddExhaustion(f);
-                Timer = 0;
-            }
-        }
-        else if (NaturalRegeneration && Food >= 18 && ShouldHeal)
-        {
-            if (++Timer >= 80)
-            {
-                Health = Math.Min(MaxHealth, Health + 1.0f);
-                AddExhaustion(6.0f);
-                Timer = 0;
-            }
-        }
-        else if (Food <= 0)
-        {
-            if (++Timer >= 80)
-            {
-                if (Health > 10.0f || Difficulty >= 3 || (Health > 1.0f && Difficulty == 2))
-                    Health -= 1.0f; // STARVE bypasses armor: its hungerDamage is 0 (DamageSource.setDamageBypassesArmor)
-                Timer = 0;
-            }
-        }
+        SpendExhaustion();
+        if (NaturalRegeneration && Saturation > 0.0f && ShouldHeal && Food >= 20) SaturatedHeal();
+        else if (NaturalRegeneration && Food >= 18 && ShouldHeal) FoodHeal();
+        else if (Food <= 0) Starve();
         else Timer = 0;
+    }
+
+    /// <summary>Every 4 exhaustion costs a saturation point, or (none left, not peaceful) a food point.</summary>
+    private void SpendExhaustion()
+    {
+        if (Exhaustion <= 4.0f) return;
+        Exhaustion -= 4.0f;
+        if (Saturation > 0.0f) Saturation = Math.Max(Saturation - 1.0f, 0.0f);
+        else if (Difficulty != 0) Food = Math.Max(Food - 1, 0);
+    }
+
+    /// <summary>Full food with saturation: every 10 ticks heal by the saturation spent (at most 6 → 1 hp).</summary>
+    private void SaturatedHeal()
+    {
+        if (++Timer < 10) return;
+        float f = Math.Min(Saturation, 6.0f);
+        Health = Math.Min(MaxHealth, Health + f / 6.0f);
+        AddExhaustion(f);
+        Timer = 0;
+    }
+
+    /// <summary>Food 18+: 1 hp every 80 ticks for 6 exhaustion.</summary>
+    private void FoodHeal()
+    {
+        if (++Timer < 80) return;
+        Health = Math.Min(MaxHealth, Health + 1.0f);
+        AddExhaustion(6.0f);
+        Timer = 0;
+    }
+
+    /// <summary>Food 0: 1 hp every 80 ticks, down to 10 (easy), 1 (normal) or death (hard).</summary>
+    private void Starve()
+    {
+        if (++Timer < 80) return;
+        if (Health > 10.0f || Difficulty >= 3 || (Health > 1.0f && Difficulty == 2))
+            Health -= 1.0f; // STARVE bypasses armor: its hungerDamage is 0 (DamageSource.setDamageBypassesArmor)
+        Timer = 0;
     }
 }

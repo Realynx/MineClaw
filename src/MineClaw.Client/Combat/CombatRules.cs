@@ -172,23 +172,27 @@ public static class CombatRules
         return ((int)((impact * impact + impact) / 2 * 8 * radius + 1), impact);
     }
 
-    public static MobProfile Profile(int type) => type switch
+    public static MobProfile Profile(int type) => KnownMobs.TryGetValue(type, out var m)
+        ? new(type, m.Width, m.Height, m.MaxHealth, m.MeleeDamage, m.Tactic, m.Hostile)
+        : new(type, 0.6, 1.8, 20, 0, MobTactic.Ignore, MobTypes.IsHostile(type));
+
+    /// <summary>b1.8.1's mobs the reflexes know: box, health, melee damage, tactic, hostility (a fresh profile per call).</summary>
+    private static readonly Dictionary<int, (double Width, double Height, int MaxHealth, int MeleeDamage, MobTactic Tactic, bool Hostile)> KnownMobs = new()
     {
-        MobTypes.Zombie => new(type, 0.6, 1.8, 20, 5, MobTactic.Melee, true),
-        MobTypes.Skeleton => new(type, 0.6, 1.8, 20, 4, MobTactic.Ranged, true),
-        MobTypes.Spider => new(type, 1.4, 0.9, 20, 2, MobTactic.Melee, true),        // EntityMonster: health 20, damage 2
-        MobTypes.CaveSpider => new(type, 0.7, 0.5, 20, 2, MobTactic.Melee, true),    // + poison 7 s normal / 15 s hard
-        MobTypes.Creeper => new(type, 0.6, 1.8, 20, 49, MobTactic.Creeper, true),    // point-blank explosion (ExplosionDamage(3, 0))
-        MobTypes.Enderman => new(type, 0.6, 2.9, 20, 5, MobTactic.Enderman, true),   // EntityEnderman.java:14 (40 hp came later)
-        MobTypes.Slime => new(type, 0.6, 0.6, 1, 0, MobTactic.Melee, true), // scaled by size (metadata 16)
-        MobTypes.Silverfish => new(type, 0.3, 0.7, 20, 0, MobTactic.Melee, true),   // damage 0: only easy (0/3+1) hurts
-        MobTypes.PigZombie => new(type, 0.6, 1.8, 20, 5, MobTactic.Melee, false),
-        MobTypes.Wolf => new(type, 0.8, 0.8, 8, 2, MobTactic.Melee, false),
-        MobTypes.Pig => new(type, 0.9, 0.9, 10, 0, MobTactic.Melee, false),
-        MobTypes.Cow => new(type, 0.9, 1.3, 10, 0, MobTactic.Melee, false),
-        MobTypes.Sheep => new(type, 0.9, 1.3, 10, 0, MobTactic.Melee, false),        // EntityLiving default health 10
-        MobTypes.Chicken => new(type, 0.3, 0.7, 4, 0, MobTactic.Melee, false),       // EntityChicken.java:16
-        _ => new(type, 0.6, 1.8, 20, 0, MobTactic.Ignore, MobTypes.IsHostile(type)),
+        [MobTypes.Zombie] = (0.6, 1.8, 20, 5, MobTactic.Melee, true),
+        [MobTypes.Skeleton] = (0.6, 1.8, 20, 4, MobTactic.Ranged, true),
+        [MobTypes.Spider] = (1.4, 0.9, 20, 2, MobTactic.Melee, true),        // EntityMonster: health 20, damage 2
+        [MobTypes.CaveSpider] = (0.7, 0.5, 20, 2, MobTactic.Melee, true),    // + poison 7 s normal / 15 s hard
+        [MobTypes.Creeper] = (0.6, 1.8, 20, 49, MobTactic.Creeper, true),    // point-blank explosion (ExplosionDamage(3, 0))
+        [MobTypes.Enderman] = (0.6, 2.9, 20, 5, MobTactic.Enderman, true),   // EntityEnderman.java:14 (40 hp came later)
+        [MobTypes.Slime] = (0.6, 0.6, 1, 0, MobTactic.Melee, true), // scaled by size (metadata 16)
+        [MobTypes.Silverfish] = (0.3, 0.7, 20, 0, MobTactic.Melee, true),   // damage 0: only easy (0/3+1) hurts
+        [MobTypes.PigZombie] = (0.6, 1.8, 20, 5, MobTactic.Melee, false),
+        [MobTypes.Wolf] = (0.8, 0.8, 8, 2, MobTactic.Melee, false),
+        [MobTypes.Pig] = (0.9, 0.9, 10, 0, MobTactic.Melee, false),
+        [MobTypes.Cow] = (0.9, 1.3, 10, 0, MobTactic.Melee, false),
+        [MobTypes.Sheep] = (0.9, 1.3, 10, 0, MobTactic.Melee, false),        // EntityLiving default health 10
+        [MobTypes.Chicken] = (0.3, 0.7, 4, 0, MobTactic.Melee, false),       // EntityChicken.java:16
     };
 
     /// <summary>Slime size from metadata 16 (1, 2, 4); 1 if unknown.</summary>

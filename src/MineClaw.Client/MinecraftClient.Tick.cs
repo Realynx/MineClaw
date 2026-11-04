@@ -60,12 +60,14 @@ public sealed partial class MinecraftClient
             next += interval;
             try
             {
+                _inTick = true;
                 TickOnce(s);
             }
             catch (Exception ex)
             {
                 Log($"tick error: {ex}");
             }
+            finally { _inTick = false; }
             var wait = next - sw.Elapsed;
             if (wait > TimeSpan.Zero) Thread.Sleep(wait);
             else
@@ -266,6 +268,7 @@ public sealed partial class MinecraftClient
     private void EndTick()
     {
         _gNow = null;
+        _inTick = false;
         Interlocked.Increment(ref _tickCount);
         _changed.Pulse();
     }
@@ -413,8 +416,18 @@ public sealed partial class MinecraftClient
         await d.Tcs.Task.ConfigureAwait(false);
     }
 
-    /// <summary>Waits <paramref name="ticks"/> client ticks.</summary>
-    private Task WaitTicksAsync(int ticks, CancellationToken ct) => WaitUntilTickAsync(TickCount + Math.Max(1, ticks), ct);
+    /// <summary>A tick is under way (it may have read the input before the caller changed it).</summary>
+    private volatile bool _inTick;
+
+    /// <summary>Waits <paramref name="ticks"/> client ticks that all start after the call: a tick already under way read its input
+    /// (sneak, look) before the caller's change, so it doesn't count (it let a placement go out before the tick that pressed sneak
+    /// for it, and an action's sneak release land after the next action). The flag is read before the counter, so a tick ending in
+    /// between only costs one extra tick.</summary>
+    private Task WaitTicksAsync(int ticks, CancellationToken ct)
+    {
+        bool underWay = _inTick;
+        return WaitUntilTickAsync(TickCount + Math.Max(1, ticks) + (underWay ? 1 : 0), ct);
+    }
 
     /// <summary>Waits until the tick counter reaches <paramref name="target"/>.</summary>
     private async Task WaitUntilTickAsync(long target, CancellationToken ct)
