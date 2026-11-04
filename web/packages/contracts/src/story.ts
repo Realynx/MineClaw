@@ -703,6 +703,9 @@ export const StoryRecipe = z.object({
   inputs: z.array(StoryRecipeInput).default([]),
   fuel: z.union([z.boolean(), z.number(), z.string()]).nullish(),
   group: z.string().nullish().describe('a loot category id for the picker (the web groups by it when present)'),
+  any: z.boolean().nullish().describe('takes any variant of a material family (planks, logs, sand, coal): listed first, with an "any" badge'),
+  family: z.string().nullish().describe('the family its any-variant input is: logs | planks | sand | coal'),
+  anyOutput: z.boolean().nullish().describe("the output's variant follows the input (planks of the log's wood): its stock counts every variant"),
   requires: z
     .object({
       xpLevels: z.number().int().nullish().describe('the least XP levels a pawn needs'),
@@ -816,6 +819,11 @@ export const StoryColonyState = z.object({
   active: z.boolean().nullish(),
   tieBreak: z.string().nullish().describe('column | skill: equal priorities go by column order or by skill'),
   options: z.lazy(() => StoryColonyOptions).nullish(),
+  architectKey: z
+    .number()
+    .int()
+    .nullish()
+    .describe('the Architect palette inputs (free stock, benches, version) as one number: refetch the palette when it moves'),
   version: z.union([z.string(), z.number()]).nullish(),
   timeOfDay: z.number().nullish().describe('world ticks 0..24000 (tick 0 = 06:00); negative = the daylight cycle is stopped'),
   timeFrozen: z.boolean().nullish().describe('true = the server stopped the daylight cycle (doDaylightCycle false)'),

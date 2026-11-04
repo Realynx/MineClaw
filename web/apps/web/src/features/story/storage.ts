@@ -300,7 +300,9 @@ export function searchRecipes(recipes: readonly StoryRecipe[], q: string, tree?:
     const g = r.group ?? r.workType;
     groups.set(g, [...(groups.get(g) ?? []), r]);
   }
-  return [...groups].map(([group, rs]) => ({ group, label: labels.get(group) ?? group.replace(/_/g, ' '), recipes: rs }));
+  // "Any" recipes (planks from any logs, sticks from any planks) first in their group, the exact variants below (stable).
+  const anyFirst = (rs: StoryRecipe[]) => [...rs.filter((r) => r.any), ...rs.filter((r) => !r.any)];
+  return [...groups].map(([group, rs]) => ({ group, label: labels.get(group) ?? group.replace(/_/g, ' '), recipes: anyFirst(rs) }));
 }
 
 /** The bill modes a recipe takes (an enchanted or repaired item can't be told apart in storage: no "until"). */

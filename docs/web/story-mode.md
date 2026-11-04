@@ -128,7 +128,9 @@ That holds for `ghosts.blocks` too: a delta lists only the ghosts that changed (
 what it holds by build and cell, and a build in `removed.builds` takes its ghosts with it (fixed 2026-11-04: the web replaced
 the whole list with each delta's, so the holograms and flat ghosts vanished a few seconds after the page loaded).
 Pass the answer's `rev` back as the next `since`. This is the `story` event source the bridge polls, at 2 Hz while a client
-watches.
+watches. Every answer also carries `architect_key` (the Architect palette's inputs as one number: fetch the palette again when it
+moves). The page's own `since=rev` catch-up (every 3 s) runs only while no `story` frame arrived for 5 s (a quiet colony or a
+reconnecting stream); while frames flow it would fetch the same delta again.
 
 The **Pawn** object:
 
@@ -1251,6 +1253,11 @@ have, craftable, from, short}`.
   table when its chain has a 3×3 step). Else `reason`: "Needs a crafting table — place one or designate an existing one".
 - `have` = unreserved stock, `craftable` = how many (up to 64) the unreserved stock makes now, `from` = what one takes, `short`
   = what one is short of when neither.
+- **Fetched when it changes (2026-11-04).** The colony state carries `architect_key`: everything the palette reads (the free stock
+  after reservations, the designated benches by kind, the version) folded to one number. The bot keeps the palette it built for a
+  key and answers from it until the key moves (the recipe chain per placeable is planned once per version); the web keys its
+  query on it and fetches only while the Architect (or a material selector) is open. Live 11-04 the web refetched every ~4 s
+  (the colony revision / 20), ~200 ms each under the colony lock.
 
 The web's Architect (B) has tabs Orders, Zones, Structure, Furniture, Production, Storage, Lighting, Water, Misc. The build tools stay
 where they were; beside them, the tab's placeables: icon, name, tier and "have N" / "craftable N from …" / "short: …". Locked ones
@@ -1295,6 +1302,14 @@ tool its material needs to drop anything, from the version's own data (`StoryToo
   the target **waits** with why: a designation gets `wait: "needs a stone pickaxe"` (on the map as a neutral label, no failure count,
   no alert), a build is `waiting` with that reason, a mine order's block is dropped with one alert. Another pawn with the tool still
   takes it at once.
+- **Never touched without the tool (added 2026-11-04).** Fox: "it must stop acquiring a lock on the block and then airing it out for 10
+  minutes because it couldn't mine it. Obviously it shouldn't be touching it." A target is offered, and leased, only to a pawn that
+  holds the tool or can fetch a verified one (fresh stock, the record corrected by what pawns see, not claimed by another pawn). With
+  none, the designation's `status` is `waiting` and its `wait` says what the colony does about it: "needs a stone pickaxe — crafting
+  one" / "— no cobblestone for it" / "— no crafting table for it" / "— auto-crafting tools is off". No lease, no fail count, no
+  back-off: it is offered again at the next pick once a tool exists. A tool's trouble (the strict dig's refusal, a tool that couldn't
+  be held or broke, a fetch that found no tool) is never the target's failure, never a back-off and never a pawn's rest; the next
+  pick plans again. After a load, designations whose recorded failures were the tool's or the record's start clean.
 - **The primitive refuses too.** A Story pawn's body has `StrictHarvest` on: an asked-for dig that the tool in hand can't harvest is
   refused ("needs a stone pickaxe: digging iron ore at … without it would lose the drop") rather than broken for nothing. Its
   `PreferHeldTool` keeps the tool the director chose in hand (the plain pickaxe for stone, the Fortune one for ores) instead of
@@ -1327,13 +1342,67 @@ tool its material needs to drop anything, from the version's own data (`StoryToo
 
 `POST …/policies` `{op:"set", policy:{id?, name, tools_by_work?, tools?, weapon?, armor?, food?}}` → `{id}` · `{op:"remove", id}` ·
 `{op:"assign", id, pawns}`. Policy: `{id, name, default, tools_by_work, tools:[kind], weapon: none|best|sword|axe|bow,
-armor: none|drafted|always|night, food: 0..16}`. The default policy (`default`, never removed) carries the tools of the pawn's work
+armor: none|drafted|always|night, food: 0..16, spare}`. The default policy (`default`, never removed) carries the tools of the pawn's work
 (mine: pickaxe + shovel, chop: axe, farm: hoe, build: pickaxe + axe), no weapon, armour when drafted.
 - **Kept up when idle.** About every 20 s, when nothing more urgent is on, a pawn's gear is checked against its policy: a missing or
   worn tool kind is fetched (the worn one goes back to storage), a weapon, armour to wear now (always, or at night) or to take off
   (none, night by day), food below half the policy's. Storage only, unclaimed items only; a failed fetch rests 2 min.
 - Pawn state: `policy` (id, null = default), `equipment: {held, armor, tools, weapons}` (each `{item, name, label, kind, tier,
   durability, ench, slot}`), `gear_tasks: [{id, op, label}]`.
+
+### Tools are colony stock (added 2026-11-04)
+
+Live 11-04 (Fox): "one pawn holding 13 stone pickaxes". Spare-tool bills counted only storage, so while the crafted pickaxes sat in a
+pocket (a pawn's tools were always "its own" and never stored) the colony kept crafting. Now:
+- **A pawn keeps what its policy needs:** what it wears; per tool kind its work (or a material rule) uses, the best fresh one, plus a
+  plain one beside an enchanted one when a rule marks a material, plus one spare when its policy says `spare: true`; its best weapon;
+  per armour slot it doesn't wear, its best piece unless its armour mode is none. One stray tool of a kind its work doesn't use may stay,
+  unless another pawn whose policy wants that kind has none and storage has none: then it goes at once. Everything else is **extra**
+  (a hoard always goes back): its next gear check
+  (when idle, about every 20 s, and right after the colony loads) stores the extras in the chests that take them, keeping the
+  freshest of each item it keeps (the job's `store: [{to, item, keep}]`, the hidden `equip(item, 'store', chest, '', keep)`), so the
+  other pawns' policies fetch them from storage. A pawn whose job fetches a better tool returns the plain one it replaces into the
+  same chest (a wooden pickaxe for iron, a worn one).
+- **Crafted tools are stock:** a tool bill's product goes into storage like any bill's; a crafter that needs one fetches it back by
+  its policy.
+- **Targets count every pocket:** spare-tool and auto-tool bills count storage plus every pawn's pocket, so they stop at the target.
+- **A record that lies is corrected (StoryColony.Ledger.cs).** Live 11-04: "no wooden pickaxe in the chest at 218,64,400" and "no
+  stone hoe in the chest at 223,64,400 (it had: dirt x333, …)" over and over: the colony's record said the item was there, someone had
+  taken it, and every pick planned the same fetch. A fetch that finds its item missing now corrects that chest's record from what the
+  pawn saw (the item gone; "it is empty" empties it; a full "it had:" listing replaces it), the job is not counted as failed, one
+  alert says so, and the next pick plans from real stock: another chest, a pawn with one to spare, else the target waits ("needs a
+  wooden pickaxe") and an auto bill makes one (a farm's hoe: farming's own wooden-hoe bill). The same fetch is never planned again
+  until a deposit puts the item back on the record.
+
+### Any-variant recipes and bill planning (added 2026-11-04)
+
+Fox: "we really shouldn't care which type of wood we turn into planks … anything that follows this pattern should repeat it." Live
+11-04: "craft failed: no oak wood planks in the chest" with birch planks there, "stone_pickaxe until 10 done 11", pawns resting from
+stock errors while bills waited.
+- **Any-variant bills (StoryRecipeFamilies).** Vanilla takes any planks for sticks, crafting tables, chests and wooden tools, any coal
+  (coal or charcoal) for torches and any sand for glass: those recipes say "(from any planks)" and carry `any: true`. Where vanilla
+  has one recipe per variant of a material family (logs, sand, coal), one bill takes the union, derived from the version's recipes:
+  `craft:planks_any` "Planks (from any logs)" (each craft takes whatever log is stocked and makes that wood's planks; `any_output`:
+  its stock counts every plank variant) and `smelt:charcoal_any` "Charcoal (from any logs)". Mixed families (slabs of stone,
+  sandstone, bricks) never merge; b1.8.1 has one plank type, so nothing merges there. The bill picker lists the any recipes first in
+  their group with an "any" badge, the exact variants below. Variant-specific recipes (oak stairs, birch fence…) keep their wood.
+- **Fetching takes what's there:** an ingredient is gathered across stacks and variants, the most plentiful first (two spruce and
+  one oak planks make a pickaxe); a furnace load stays one item.
+- **Auto bills never stall on a wood:** a build's or a tool's chain uses the any bill for an intermediate step (planks for sticks);
+  the item a build itself asks for (oak planks for an oak floor) stays exact.
+- **Stock counts:** "until" bills count every chest and pocket, every variant of a family product, every wear state of a tool (a
+  used pickaxe still counts).
+- **Eating from real stock.** Live 11-04: "eat failed: no rotten flesh in the chest at 224,64,398: it is empty" ×784 in 10 minutes. A
+  hungry pawn eats food it carries; else it fetches the most nourishing stored food (never rotten flesh, spider eyes or poisonous
+  potatoes while anything else exists; those only when starving, hunger ≤ 6, fetched and left to the body's own starving reflex, never
+  an "eat" that refuses them). A food fetch that fails corrects that chest's record, makes that pawn wait 15 s (then 60 s) and skips
+  that chest for it for 2 minutes (an unreachable chest too: another chest, or it waits). No food anywhere: one alert, and it waits.
+- **Missing stock is no failure:** a bill whose ingredient isn't there is suspended with why, with where the raw material comes from
+  ("no planks within 32 blocks — needs logs (chop trees)"; with logs stored: "make them from the stored logs"), never attempted, and
+  retried by itself every 30 s. A failure that was the plan's (the record said the item was there; "no … within", "reserved for",
+  "not enough") never makes a pawn rest.
+- **One pawn per bench** (the genre's rule). With 4+ runnable bills on the only crafting table (or furnace) and a crafter idle, the
+  colony hears it at most every 10 minutes: "12 bills waiting on 1 crafting table — place another to craft in parallel".
 
 ### Bulk gear
 

@@ -112,7 +112,8 @@
     }
   };
   // Gear (Story Mode's tools and drafting): the hidden equip(item, mode, from, ench); never a null argument (its schema wants strings).
-  const equip = (item, mode, from, ench) => globalThis.equip(item, mode, from || '', ench || '');
+  const equip = (item, mode, from, ench, keep) => mode === 'store'
+    ? globalThis.equip(item, mode, from || '', ench || '', keep || 0) : globalThis.equip(item, mode, from || '', ench || '');
   // gear(job): armour off (j.unwear) or on (j.wear), then what to hold (j.hold, j.hold_ench).
   const gear = j => {
     const g = globalThis;
@@ -121,7 +122,8 @@
     return g.ok(r) && j.hold ? equip(j.hold, 'hold', '', j.hold_ench) : r;
   };
   // fetch(job): the job's items out of their chests (a tool, weapon or armour piece exactly: f.ench, the enchanted one or a plain
-  // one; the rest by name), then the tool its material takes in hand (j.tool, j.tool_ench: the dig keeps it, never a lost drop).
+  // one; the rest by name), its extra gear into a chest (j.store: {to, item, keep}: the `keep` freshest stay; a pawn carries what its
+  // policy needs, the rest is colony stock), then the tool its material takes in hand (j.tool, j.tool_ench: never a lost drop).
   // A busy chest is waited for (2, 4 s) and tried again; a build batch goes on with what it already carries and says when its items
   // are out of the chests ("fetched").
   const fetch = j => {
@@ -138,6 +140,10 @@
       else if (!j.cells || !(H.inv(j.block) > 0)) return r;
     }
     if (got && j.cells) report(j, 'progress', 'fetched');
+    for (const s of j.store || []) {
+      const r = equip(s.item, 'store', s.to, '', s.keep);
+      if (!g.ok(r)) return r;
+    }
     return j.tool ? equip(j.tool, 'hold', '', j.tool_ench) : { ok: true };
   };
   // till(job): hold the hoe (j.hoe) and use it on the dirt or grass at j.at, walking over first when it is far.

@@ -1299,6 +1299,11 @@ export function RecipePicker({
                   >
                     <ItemIcon id={r.output[0]} meta={r.output[1]} size={22} />
                     <span className="font-medium">{r.label}</span>
+                    {r.any ? (
+                      <span className="rounded bg-accent-soft px-1 text-[10px] font-semibold uppercase" title={`any ${r.family ?? 'variant'}`}>
+                        any
+                      </span>
+                    ) : null}
                     <span className="ml-auto text-xs text-muted">{recipeLine(r)}</span>
                   </button>
                 </li>

@@ -106,6 +106,7 @@ export const DEFAULT_POLICIES: StoryPolicy[] = [
     weapon: 'best',
     armor: 'drafted',
     food: 2,
+    spare: false,
   },
   {
     id: 'soldier',
@@ -116,6 +117,7 @@ export const DEFAULT_POLICIES: StoryPolicy[] = [
     weapon: 'best',
     armor: 'always',
     food: 4,
+    spare: false,
   },
 ];
 
@@ -216,11 +218,13 @@ export function policiesOp(
         weapon: 'best',
         armor: 'drafted',
         food: 0,
+        spare: false,
       };
       gear.policies.push(p);
     }
     p.name = name;
     if (spec.toolsByWork !== undefined) p.toolsByWork = spec.toolsByWork;
+    if (spec.spare !== undefined) p.spare = spec.spare;
     if (spec.tools !== undefined) p.tools = [...spec.tools];
     if (spec.weapon !== undefined) p.weapon = spec.weapon;
     if (spec.armor !== undefined) p.armor = spec.armor;

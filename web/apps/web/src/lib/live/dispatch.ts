@@ -15,8 +15,10 @@ import type {
   WorldBlockDeltas,
   WorldEntities,
 } from '@mineclaw/contracts';
+import { noteStoryFrame } from '@/features/story/frames';
 import { mergeColony } from '@/features/story/model';
 import { publishBlocks } from '@/features/world/blocks';
+import { publishEntityFrame } from '@/features/world/entityFrames';
 import { publishFeed } from '@/features/world/chatBubbles';
 import { qk } from '../api/query';
 import { mergeEntities, mergeEvents, mergeFeed, mergeMemoryActivity } from './merge';
@@ -53,6 +55,7 @@ export function applyLiveEvent(qc: QueryClient, event: LiveEventName, data: unkn
       break;
     case 'entities':
       qc.setQueryData<WorldEntities>(liveKeys.entities, (prev) => mergeEntities(prev, data as WorldEntities));
+      publishEntityFrame(); // the world viewers read the merged frame at once (features/world/entityFrames.ts)
       break;
     case 'hive':
       qc.setQueryData<HiveTreeNode>(liveKeys.hive, data as HiveTreeNode);
@@ -72,6 +75,7 @@ export function applyLiveEvent(qc: QueryClient, event: LiveEventName, data: unkn
     case 'story': {
       // One colony's delta: merged into that colony's state query (fetched once by the Story Mode page).
       const f = data as StoryColonyFrame;
+      noteStoryFrame(f.id);
       qc.setQueryData(qk('story.get', { id: f.id }), (prev: StoryColonyFrame | undefined) => (prev ? mergeColony(prev, f) : prev));
       break;
     }

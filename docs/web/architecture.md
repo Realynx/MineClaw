@@ -174,8 +174,19 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   - The world viewer's textures ship with `@mineclaw/world-viewer` (committed assets, atlas built client-side), so the
     bridge serves no atlas.
 - **Live.** `GET /v1/live/stream` is SSE. The bridge polls the supervisor on loopback (status 1 Hz, events 2 Hz, feed
-  2 Hz, `viewer/now` 2 Hz per watched bot, entity deltas 5 Hz) and emits typed events: `bots`, `event`, `feed`, `now`,
-  `entities`, `hive`. Nest holds one upstream stream and fans it out to browsers.
+  2 Hz, `viewer/now` 2 Hz per watched bot (1 Hz for subhive and script-only bodies: Story pawns), entity deltas 5 Hz) and
+  emits typed events: `bots`, `event`, `feed`, `now`, `entities`, `hive`. Nest holds one upstream stream and fans it out to
+  browsers. A failed poll backs off 1 → 15 s, except the motion topics (entities, blocks): 0.1 → 0.5 s, so one busy answer
+  never freezes the bodies for seconds.
+- **Motion path (2026-11-04).** Bodies' poses ride the `entities` frames (`bots` is always the whole list; it is not part of the
+  entity revision, so a frame where only bots moved keeps the revision and the web's cache merge still takes its bots). The
+  dispatcher pushes each frame to the world viewers (`WorldSource.onEntities`): a runtime reads it at once and glides at the
+  frames' pace; its own poll is a 1 s backstop, and the cache-backed source numbers frames (`EntityDelta.frame`) so a read
+  between frames never restarts the glides. On the bot the entity delta has its own two-slot lane beside the heavy world reads
+  (chunk batches, the index): it never queues behind them.
+- **Perf line (2026-11-04).** The supervisor logs once a minute: process CPU, thread pool (threads, queued items), GC
+  (collections, pause, MB/s), the A* gate (searches, busy seconds, longest, time bodies waited), the Story director (picks and
+  ticks with their time) and per route (ids folded) count and p50/p95/max of the time callers waited.
 
 Nest's public `/api` mirrors these one-to-one under friendlier paths, typed by `packages/contracts`. Examples:
 `/api/memory/:kind`, `/api/live/stream`, `/api/bots/:bot/chat`, `/api/world/chunks`. Nest adds auth, RBAC, CSRF, audit
@@ -441,7 +452,9 @@ server.
      - The browser patches the block in the shared store. It then re-meshes only that section, plus the neighbouring
        section when the block sits on a boundary. Changes are batched per animation frame, so a burst such as tunnel
        digging re-meshes each section once.
-  2. **Hash diff (backstop).** Each column's hash in `/api/world/index` changes with any block change. On a rev gap,
+  2. **Hash diff (backstop).** Each column's hash in `/api/world/index` changes with any block change (the bot keeps a live
+     column's hash and its encoded payload with the column's write version, `ChunkColumn.Version`, so an index over quiet
+     columns costs lookups, not 64 KB walks: 18 ms → 0.25 ms for 235 live columns, 2026-11-04). On a rev gap,
      `full:true` (the ring overflowed) or a reconnect, the client refetches only the columns whose hash changed.
 - **Render parity (decided 2026-11-02).** The repo is private and unreleased, so the Minecraft assets are committed:
   1.12.2 blockstates, models, textures and .mcmeta animations, the b1.8.1 terrain, items and mob textures, and both

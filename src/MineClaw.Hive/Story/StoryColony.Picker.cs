@@ -44,6 +44,7 @@ public sealed partial class StoryColony
     {
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick
+        PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
         try { return PillarHint(PickCore(p, live), live); } // a job up high: blocks to climb with (StoryColony.Reach.cs)
         finally { _pickEnts = null; }
     }
@@ -146,22 +147,8 @@ public sealed partial class StoryColony
                 : new P3((int)(live.X + Math.Sign(live.X - mob.X) * 12), (int)live.Y, (int)(live.Z + Math.Sign(live.Z - mob.Z) * 12));
             return Job("need", "go", $"fleeing a {mob.Name}", to, null, "need", null, "fleeing", j => j["dist"] = 1, xp: 0);
         }
-        if (live.Food <= eat || live.Hp <= flee && live.Food < 20)
-        {
-            if (FoodIn(live) != null || live.Inventory.Any(s => World?.Data.Food(s.Id, s.Meta) != null))
-                return Job("need", "eat", "eating", null, null, "need", null, "eating", xp: 0);
-            if (FindStored(s => World?.Data.Food(s.Id, s.Meta) != null && !Raw(World!, s.Id), live.Block) is { } got)
-            {
-                var j = Job("need", "eat", "fetching food", null, null, "need", null, "eating", f => f["fetch"] = Fetch(got.Store.Chest, got.Stack, 4), xp: 0);
-                j.Takes.Add((got.Store.Chest, got.Stack with { Count = Math.Min(4, got.Stack.Count) }));
-                return j;
-            }
-            if (!_idleAlert.TryGetValue("food:" + p.Name, out var last) || Now - last > TimeSpan.FromMinutes(5))
-            {
-                _idleAlert["food:" + p.Name] = Now;
-                Alert("warn", $"{p.Display} is hungry and there is no food in storage", p.Name);
-            }
-        }
+        // Good food first, rotten flesh only when starving, a failed fetch backs off (StoryColony.Ledger.cs EatJob).
+        if (live.Food <= eat || live.Hp <= flee && live.Food < 20) return EatJob(p, live);
         return null;
     }
 
@@ -474,6 +461,7 @@ public sealed partial class StoryColony
         foreach (var (chest, s) in j.Takes) if (StorageAt(chest) is { } st) TakeContents(st, s.Id, s.Meta, s.Count);
         foreach (var (chest, stacks) in j.Puts) if (StorageAt(chest) is { } st) foreach (var s in stacks) AddContents(st, s);
         GearTakesEnded(j, done: true);
+        if (j.Source == "need") _needFails.Remove(p.Name);
         if (WorkTypes.Known(j.Type) && j.Xp > 0 && StoryCharacter.Learn(p, j.Type, j.Xp, HourNow) > 0)
             Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
         _fails.Remove(p.Name);
@@ -590,6 +578,10 @@ public sealed partial class StoryColony
         _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
         GearTakesEnded(j, done: false);
         if (j.Source is "gear" or "policy") GearEnded(p, j, ok: false, why);
+        if (j.Source == "need") NeedFailed(p, j); // a food fetch that failed: that pawn waits a little, that chest is skipped
+        // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
+        // target failure, back-off or rest (StoryColony.Ledger.cs).
+        if (StaleFetch(p, j, note) || ToolFailure(note)) return;
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
@@ -609,7 +601,7 @@ public sealed partial class StoryColony
             }
             _softFails.Remove(j.Lease);
         }
-        NoteFailure(p);
+        if (!PlanningError(why)) NoteFailure(p); // stock and ledger errors are the plan's, not the pawn's: no resting (StoryColony.Ledger.cs)
         if (j.Lease != null)
         {
             // Not this target again right away; one that keeps failing (an unreachable drop) rests longer each time (up to 10 minutes).

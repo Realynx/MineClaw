@@ -55,8 +55,10 @@ public sealed class StoryColonies : IDisposable
     {
         foreach (var c in All)
         {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             try { c.Tick(); }
             catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: tick failed", c.Id); } // a timer callback never throws
+            finally { StoryPerf.Note(ref StoryPerf.Ticks, ref StoryPerf.TickTicks, t0); }
             try { RetrySeats(c); }
             catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: seat retry failed", c.Id); }
         }

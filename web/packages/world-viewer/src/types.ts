@@ -207,6 +207,9 @@ export interface EntityDelta {
   removed?: Array<[number, number]> | null;
   /** Swings, hurts, deaths, crits, eating, teleports and lightning since `since` (oldest first). */
   events?: EntityEvent[] | null;
+  /** The number of the stream frame this read reflects (a cache-backed source): a store that already applied this frame leaves
+   * every glide alone, so reads between frames never restart them. Absent = always applied. */
+  frame?: number;
 }
 
 /** A block entity (`GET api/world/blockentities?dim&cols=`): what the block id/meta can't say. Tolerant: unknown fields are
@@ -321,6 +324,10 @@ export interface WorldSource {
   index(dim: Dim, x: number, z: number, r: number): Promise<WorldIndex>;
   chunks(dim: Dim, cols: Array<[number, number]>): Promise<ArrayBuffer>;
   entities(since?: number): Promise<EntityDelta>;
+  /** Push hook: call `onFrame` whenever new entity data is ready (a stream frame landed), and the viewer reads `entities()`
+   * at once instead of on its next poll; the poll then only backs the push up. Returns an unsubscribe function. A source with
+   * this hook should number its frames (`EntityDelta.frame`), so a read between frames keeps the glides at their pace. */
+  onEntities?(onFrame: () => void): () => void;
   overlays(dim: Dim): Promise<Overlays>;
   /** Deprecated and ignored: blocks are textured from the bundled atlas (RuntimeOptions.textures = false for flat colours). */
   atlas?(): Promise<AtlasResource | null>;

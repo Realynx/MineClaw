@@ -80,6 +80,8 @@ public sealed partial class StoryColony
                     ["bills"] = new JsonArray(b.Bills.Select(x => (JsonNode)BillJson(x)).ToArray()),
                 }).ToArray()),
             };
+            // The Architect palette's inputs as one number (StoryColony.Materials.cs): the browser refetches the palette when it moves.
+            o["architect_key"] = w != null ? ArchitectKey(w) : null;
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
             if (full && w != null) o["plants"] = StoryPlants.Json(w.Data); // what growing zones can grow here
             GearStateJson(o, full); // policies, material_rules, materials (full only): StoryColony.Gear.cs
