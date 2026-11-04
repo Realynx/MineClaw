@@ -50,7 +50,37 @@ exports[`growing-zone bills (golden) > answers every bill op and reports the zon
     400,
     "a zone takes at most 16 bills",
   ],
+  [
+    "update not farm",
+    "error",
+    400,
+    "only farm (growing) zones take plant, sow and harvest",
+  ],
+  [
+    "update bad plant",
+    "error",
+    400,
+    "plant must be one of wheat|carrots|potatoes|beetroot|pumpkin|melon|sugar_cane|cactus|oak|birch",
+  ],
+  [
+    "seek potatoes",
+    "error",
+    400,
+    "Needs potatoes — none in storage (harvests, zombie drops, village farms)",
+  ],
+  [
+    "seek nothing",
+    "error",
+    400,
+    "the zone grows nothing: set its plant first",
+  ],
+  [
+    "seek no zone",
+    "error",
+    404,
+    "id: no such zone",
+  ],
 ]
 `;
 
-exports[`growing-zone bills (golden) > answers every bill op and reports the zones exactly as before 2`] = `"616c64d26d23bab1fc102012ed86c02c19910e8d42028f4bfe3888070b0ae5ec"`;
+exports[`growing-zone bills (golden) > answers every bill op and reports the zones exactly as before 2`] = `"22b88d522ad1ec578a00e4999ae38d1873403ac77b582190a278c6677c543cfd"`;

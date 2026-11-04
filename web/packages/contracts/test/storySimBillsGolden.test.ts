@@ -71,6 +71,21 @@ describe('growing-zone bills (golden)', () => {
     zone('too many', { op: 'bill_add', id: cane, plant: 'cactus' });
     for (const b of bills()) zone(`pause ${b}`, { op: 'bill_pause', id: farm, bill: b });
     for (const b of bills()) zone(`remove ${b}`, { op: 'bill_remove', id: farm, bill: b });
+    // zones update / seek_seeds (growOp): the plant replaces the first bill's, starts a first bill, or clears them.
+    zone('update not farm', { op: 'update', id: chop, plant: 'wheat' });
+    zone('update bad plant', { op: 'update', id: cane, plant: 'rice' });
+    zone('update plant', { op: 'update', id: cane, plant: 'cactus', sow: false });
+    zone('update clear', { op: 'update', id: farm, plant: null, harvest: false });
+    zone('update first', { op: 'update', id: farm, plant: 'melon' });
+    zone('update sow', { op: 'update', id: farm, sow: true });
+    zone('seek melon', { op: 'seek_seeds', id: farm });
+    zone('update wheat', { op: 'update', id: farm, plant: 'wheat' });
+    zone('seek wheat', { op: 'seek_seeds', id: farm });
+    zone('update potatoes', { op: 'update', id: farm, plant: 'potatoes' });
+    zone('seek potatoes', { op: 'seek_seeds', id: farm });
+    zone('update empty', { op: 'update', id: farm, plant: '' });
+    zone('seek nothing', { op: 'seek_seeds', id: farm });
+    zone('seek no zone', { op: 'seek_seeds', id: 'nope' });
     const text = JSON.stringify(trace);
     if (process.env.STORY_GOLDEN_DUMP) writeFileSync(`${process.env.STORY_GOLDEN_DUMP}.bills`, text);
     expect(trace.filter((e) => (e as unknown[])[1] === 'error')).toMatchSnapshot();
