@@ -138,12 +138,17 @@ public sealed class Window
         if (slot >= MainStart) return slot >= HotbarStart ? SlotKind.Hotbar : SlotKind.Main;
         return Type switch
         {
-            WindowType.Player => slot == 0 ? SlotKind.CraftOutput : slot <= 4 ? SlotKind.CraftGrid : SlotKind.Armor,
+            WindowType.Player => PlayerCraftOrArmor(slot),
             WindowType.Workbench => slot == 0 ? SlotKind.CraftOutput : SlotKind.CraftGrid,
-            WindowType.Furnace => slot switch { 0 => SlotKind.FurnaceInput, 1 => SlotKind.FurnaceFuel, _ => SlotKind.FurnaceOutput },
+            WindowType.Furnace => FurnaceSlot(slot),
             _ => SlotKind.Container,
         };
     }
+
+    /// <summary>The player window's slots before the inventory: the crafting output 0, the 2x2 grid 1..4, the armor 5..8.</summary>
+    private static SlotKind PlayerCraftOrArmor(int slot) => slot == 0 ? SlotKind.CraftOutput : slot <= 4 ? SlotKind.CraftGrid : SlotKind.Armor;
+
+    private static SlotKind FurnaceSlot(int slot) => slot switch { 0 => SlotKind.FurnaceInput, 1 => SlotKind.FurnaceFuel, _ => SlotKind.FurnaceOutput };
 
     /// <summary>Container slots only (chest/dispenser contents, furnace slots...).</summary>
     public IEnumerable<(int Slot, ItemStack Item)> ContainerContents()

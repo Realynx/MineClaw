@@ -163,9 +163,14 @@ public sealed class DirectiveStore
         foreach (var r in replaced) _index?.Delete(r.DocRef);
         IndexDoc(rule);
         try { Added?.Invoke(rule); } catch (Exception) { /* listeners never break storing */ }
+        return new(true, SavedMessage(rule, replaced), rule, replaced);
+    }
+
+    private string SavedMessage(Directive rule, List<Directive> replaced)
+    {
         var msg = $"{rule.Ref} saved: standing rule from {Name(rule.Player)} ({rule.Scope.Describe()}); it shows where it applies";
         if (replaced.Count > 0) msg += "; replaces " + string.Join(", ", replaced.Select(r => $"{r.Ref} \"{TextUtil.Truncate(r.Text, 50)}\""));
-        return new(true, msg, rule, replaced);
+        return msg;
     }
 
     /// <summary>
@@ -175,15 +180,24 @@ public sealed class DirectiveStore
     internal static bool Supersedes(Directive newer, Directive older)
     {
         bool sameDesign = newer.Scope.Kind == DirectiveScopeKind.Design && older.Scope.Key == newer.Scope.Key;
-        if (newer.Scope.Kind == DirectiveScopeKind.Design && !sameDesign) return false;
-        if (newer.Scope.Kind == DirectiveScopeKind.Place && older.Scope.Key != newer.Scope.Key) return false;
+        if (!ScopeCovers(newer, older, sameDesign)) return false;
         // Both are about the same main activity ("mine cobble every night" never replaces "only build in daytime; at night mine").
-        bool topic = sameDesign || (Primary(newer) is { } pn && older.Topics.Contains(pn) && Primary(older) is { } po && newer.Topics.Contains(po));
-        if (!topic) return false;
+        if (!sameDesign && !SharePrimary(newer, older)) return false;
         var nt = DirectiveParser.TimeWords(newer.Text);
         bool condition = nt.Count > 0 && nt.Overlaps(DirectiveParser.TimeWords(older.Text));
         return condition || DirectiveParser.IsRevocation(newer.Text);
     }
+
+    /// <summary>A design rule only covers the same design; a place rule only the same place.</summary>
+    private static bool ScopeCovers(Directive newer, Directive older, bool sameDesign)
+    {
+        if (newer.Scope.Kind == DirectiveScopeKind.Design && !sameDesign) return false;
+        return !(newer.Scope.Kind == DirectiveScopeKind.Place && older.Scope.Key != newer.Scope.Key);
+    }
+
+    /// <summary>Each one's main activity is among the other's topics.</summary>
+    private static bool SharePrimary(Directive newer, Directive older) =>
+        Primary(newer) is { } pn && older.Topics.Contains(pn) && Primary(older) is { } po && newer.Topics.Contains(po);
 
     /// <summary>The activity a rule is mainly about: its activity scope, "build" for a design, else its first topic.</summary>
     private static string? Primary(Directive d) => d.Scope.Kind switch

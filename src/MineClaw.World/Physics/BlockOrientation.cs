@@ -50,54 +50,77 @@ public static class BlockOrientation
         Trapdoor, Button, Lever, Hook,
     }
 
-    private static Rule RuleOf(int id, bool modern) => id switch
+    private static Rule RuleOf(int id, bool modern) =>
+        (uint)id < RuleTableSize ? (modern ? ModernRules : BetaRules)[id] : Rule.None;
+
+    private const int RuleTableSize = 256;
+    private static readonly Rule[] BetaRules = BuildRules(modern: false), ModernRules = BuildRules(modern: true);
+
+    private static Rule[] BuildRules(bool modern)
     {
-        53 or 67 or 108 or 109 or 114 or 128 or 134 or 135 or 136 or 156 or 163 or 164 or 180 or 203 => Rule.Stairs,
-        44 or 126 or 182 or 205 => modern ? Rule.Slab : Rule.None,
-        17 or 162 => modern ? Rule.Log : Rule.None,
-        170 or 202 or 216 => Rule.Pillar,
-        155 => modern ? Rule.Quartz : Rule.None,
-        64 or 71 or 193 or 194 or 195 or 196 or 197 => Rule.Door,
-        26 => Rule.Bed,
-        50 or 75 or 76 => Rule.Torch,
-        65 => Rule.Ladder,
-        54 or 146 or 61 or 62 => Rule.Front,
-        23 => modern ? Rule.Facing6 : Rule.Front, // b1.8.1 BlockDispenser.postPlace: the furnace's rule (no up/down)
-        158 or 29 or 33 => Rule.Facing6,
-        218 => Rule.Observer,
-        198 => Rule.OnFace,
-        >= 219 and <= 234 => Rule.OnFace,
-        154 => Rule.Hopper,
-        86 or 91 or 93 or 94 or 149 or 150 => Rule.Away,
-        >= 235 and <= 250 => Rule.Away,
-        107 or 183 or 184 or 185 or 186 or 187 => Rule.Look,
-        145 => Rule.Anvil,
-        96 or 167 => Rule.Trapdoor,
-        77 or 143 => Rule.Button,
-        69 => Rule.Lever,
-        131 => Rule.Hook,
-        _ => Rule.None,
-    };
+        var r = new Rule[RuleTableSize];
+        void Set(Rule rule, params int[] ids) { foreach (int id in ids) r[id] = rule; }
+        void Range(Rule rule, int first, int last) { for (int id = first; id <= last; id++) r[id] = rule; }
+        Set(Rule.Stairs, 53, 67, 108, 109, 114, 128, 134, 135, 136, 156, 163, 164, 180, 203);
+        if (modern)
+        {
+            Set(Rule.Slab, 44, 126, 182, 205);
+            Set(Rule.Log, 17, 162);
+            Set(Rule.Quartz, 155);
+        }
+        Set(Rule.Pillar, 170, 202, 216);
+        Set(Rule.Door, 64, 71, 193, 194, 195, 196, 197);
+        Set(Rule.Bed, 26);
+        Set(Rule.Torch, 50, 75, 76);
+        Set(Rule.Ladder, 65);
+        Set(Rule.Front, 54, 146, 61, 62);
+        Set(modern ? Rule.Facing6 : Rule.Front, 23); // b1.8.1 BlockDispenser.postPlace: the furnace's rule (no up/down)
+        Set(Rule.Facing6, 158, 29, 33);
+        Set(Rule.Observer, 218);
+        Set(Rule.OnFace, 198);
+        Range(Rule.OnFace, 219, 234);
+        Set(Rule.Hopper, 154);
+        Set(Rule.Away, 86, 91, 93, 94, 149, 150);
+        Range(Rule.Away, 235, 250);
+        Set(Rule.Look, 107, 183, 184, 185, 186, 187);
+        Set(Rule.Anvil, 145);
+        Set(Rule.Trapdoor, 96, 167);
+        Set(Rule.Button, 77, 143);
+        Set(Rule.Lever, 69);
+        Set(Rule.Hook, 131);
+        return r;
+    }
 
     /// <summary>The block an item places, where they differ (doors, beds, repeaters, comparators, sugar cane), else the id.</summary>
-    public static int BlockOf(int itemId) => itemId switch
+    public static int BlockOf(int itemId) => ItemBlocks.TryGetValue(itemId, out int block) ? block : PlaceRules.BlockOf(itemId);
+
+    private static readonly Dictionary<int, int> ItemBlocks = new()
     {
-        324 => 64, 330 => 71, 427 => 193, 428 => 194, 429 => 195, 430 => 196, 431 => 197, 355 => 26, 356 => 93, 404 => 149,
-        _ => PlaceRules.BlockOf(itemId),
+        [324] = 64, [330] = 71, [427] = 193, [428] = 194, [429] = 195, [430] = 196, [431] = 197, [355] = 26, [356] = 93, [404] = 149,
     };
 
     /// <summary>The meta bits the placement decides (the facing, axis or half), compared after placing; 0 = none.</summary>
     public static int Mask(int id, bool modern) => RuleOf(id, modern) switch
     {
         Rule.Stairs => modern ? 7 : 3,
-        Rule.Slab => 8,
-        Rule.Log or Rule.Pillar => 12,
-        Rule.Quartz => 15,
-        Rule.Door or Rule.Bed or Rule.Away or Rule.Look or Rule.Anvil or Rule.Hook => 3,
         Rule.Trapdoor => modern ? 11 : 3,
-        Rule.Torch or Rule.Ladder or Rule.Front or Rule.Facing6 or Rule.Observer or Rule.OnFace or Rule.Hopper or Rule.Button or Rule.Lever => 7,
-        _ => 0,
+        var rule => RuleMasks[(int)rule],
     };
+
+    /// <summary>The meta bits each rule decides (stairs and trapdoors are per version, above).</summary>
+    private static readonly int[] RuleMasks = BuildRuleMasks();
+
+    private static int[] BuildRuleMasks()
+    {
+        var m = new int[(int)Rule.Hook + 1];
+        foreach (var r in new[] { Rule.Door, Rule.Bed, Rule.Away, Rule.Look, Rule.Anvil, Rule.Hook }) m[(int)r] = 3;
+        foreach (var r in new[] { Rule.Torch, Rule.Ladder, Rule.Front, Rule.Facing6, Rule.Observer, Rule.OnFace, Rule.Hopper, Rule.Button, Rule.Lever })
+            m[(int)r] = 7;
+        m[(int)Rule.Slab] = 8;
+        m[(int)Rule.Log] = m[(int)Rule.Pillar] = 12;
+        m[(int)Rule.Quartz] = 15;
+        return m;
+    }
 
     /// <summary>Whether placing (id, meta) has to aim for its facing: the click decides some of it, and that state can be reached by a
     /// click (a log's all-bark axis, a b1.8.1 dispenser facing up, a torch meta 0 can't; any click is then as good).</summary>
@@ -150,22 +173,31 @@ public static class BlockOrientation
     /// </summary>
     private static int TowardPlayer3D(int x, int y, int z, PlaceInput i, bool modern)
     {
-        if (modern)
-        {
-            if (Math.Abs(i.Feet.X - (x + 0.5f)) < 2.0 && Math.Abs(i.Feet.Z - (z + 0.5f)) < 2.0)
-            {
-                double eye = i.Feet.Y + (i.Sneaking ? 1.54 : 1.62);
-                if (eye - y > 2.0) return 1;
-                if (y - eye > 0.0) return 0;
-            }
-        }
-        else if (Math.Abs((float)i.Feet.X - x) < 2.0f && Math.Abs((float)i.Feet.Z - z) < 2.0f)
-        {
-            double d0 = i.Feet.Y + 1.82; // locY + 1.82 - height (the server's player has height 0: locY is the feet)
-            if (d0 - y > 2.0) return 1;
-            if (y - d0 > 0.0) return 0;
-        }
-        return Opp(FaceOfQuarter[Quarter(i.Yaw)]);
+        int vertical = modern ? VerticalModern(x, y, z, i) : VerticalBeta(x, y, z, i);
+        return vertical >= 0 ? vertical : Opp(FaceOfQuarter[Quarter(i.Yaw)]);
+    }
+
+    /// <summary>1.12.2: up or down (face index) when the player stands within 2 of the block's centre, else −1 (horizontal).</summary>
+    private static int VerticalModern(int x, int y, int z, PlaceInput i)
+    {
+        if (!(Math.Abs(i.Feet.X - (x + 0.5f)) < 2.0 && Math.Abs(i.Feet.Z - (z + 0.5f)) < 2.0)) return -1;
+        double eye = i.Feet.Y + (i.Sneaking ? 1.54 : 1.62);
+        return VerticalFromEye(eye, y);
+    }
+
+    /// <summary>b1.8.1 BlockPiston.c: measured from the block's corner, the eyes counted as feet + 1.82.</summary>
+    private static int VerticalBeta(int x, int y, int z, PlaceInput i)
+    {
+        if (!(Math.Abs((float)i.Feet.X - x) < 2.0f && Math.Abs((float)i.Feet.Z - z) < 2.0f)) return -1;
+        double d0 = i.Feet.Y + 1.82; // locY + 1.82 - height (the server's player has height 0: locY is the feet)
+        return VerticalFromEye(d0, y);
+    }
+
+    private static int VerticalFromEye(double eye, int y)
+    {
+        if (eye - y > 2.0) return 1;
+        if (y - eye > 0.0) return 0;
+        return -1;
     }
 
     /// <summary>
@@ -175,45 +207,87 @@ public static class BlockOrientation
     /// </summary>
     public static int? Predict(int id, int damage, BlockPos at, PlaceInput i, bool modern)
     {
-        int q = Quarter(i.Yaw), face = (int)i.Face;
-        bool side = Horizontal(i.Face);
-        switch (RuleOf(id, modern))
+        var rule = RuleOf(id, modern);
+        if (rule == Rule.None) return null;
+        int q = Quarter(i.Yaw);
+        if (rule <= Rule.Bed) return PredictShape(rule, damage, i, q, modern);
+        if (rule <= Rule.Hopper) return PredictFacing(rule, at, i, q, modern);
+        return PredictTurned(rule, damage, i, q, modern);
+    }
+
+    /// <summary>Stairs, slabs, logs, pillars, quartz, doors and beds: the look's quarter, the clicked face's axis or half.</summary>
+    private static int? PredictShape(Rule rule, int damage, PlaceInput i, int q, bool modern) => rule switch
+    {
+        Rule.Stairs => (5 - FaceOfQuarter[q]) | StairsHalfBit(i, modern),
+        Rule.Slab => (damage & 7) | SlabHalfBit(i),
+        Rule.Log => (damage & 3) | Axis(i.Face),
+        Rule.Pillar => Axis(i.Face),
+        Rule.Quartz => damage != 2 ? damage : QuartzAxis(i.Face),
+        Rule.Door => OnTop(i, (q + 1) & 3), // E0 S1 W2 N3: the look
+        _ => OnTop(i, q),                   // a bed, S0 W1 N2 E3: foot → head along the look
+    };
+
+    /// <summary>1.12.2 stairs placed upside down (bit 4) by the face and cursor height; b1.8.1 stairs are never.</summary>
+    private static int StairsHalfBit(PlaceInput i, bool modern) => modern && TopHalf(i.Face, i.CursorY) ? 4 : 0;
+
+    private static int SlabHalfBit(PlaceInput i) => TopHalf(i.Face, i.CursorY) ? 8 : 0;
+
+    private static int QuartzAxis(BlockFace f) => Axis(f) switch { 4 => 3, 8 => 4, _ => 2 };
+
+    /// <summary>Doors and beds stand on the top face of the block below: any other face can't place them.</summary>
+    private static int? OnTop(PlaceInput i, int meta) => i.Face == BlockFace.Top ? meta : null;
+
+    /// <summary>Torches, ladders, furnace-likes, pistons, observers, on-face blocks and hoppers: the clicked face or the player.</summary>
+    private static int? PredictFacing(Rule rule, BlockPos at, PlaceInput i, int q, bool modern)
+    {
+        int face = (int)i.Face;
+        return rule switch
         {
-            case Rule.Stairs: return (5 - FaceOfQuarter[q]) | (modern && TopHalf(i.Face, i.CursorY) ? 4 : 0);
-            case Rule.Slab: return (damage & 7) | (TopHalf(i.Face, i.CursorY) ? 8 : 0);
-            case Rule.Log: return (damage & 3) | Axis(i.Face);
-            case Rule.Pillar: return Axis(i.Face);
-            case Rule.Quartz: return damage != 2 ? damage : Axis(i.Face) switch { 4 => 3, 8 => 4, _ => 2 };
-            case Rule.Door: return i.Face == BlockFace.Top ? (q + 1) & 3 : null; // E0 S1 W2 N3: the look
-            case Rule.Bed: return i.Face == BlockFace.Top ? q : null;          // S0 W1 N2 E3: foot → head along the look
-            case Rule.Torch: return i.Face switch { BlockFace.Top => 5, BlockFace.East => 1, BlockFace.West => 2, BlockFace.South => 3, BlockFace.North => 4, _ => null };
-            case Rule.Ladder: return side ? face : null;
-            case Rule.Front: return Opp(FaceOfQuarter[q]);
-            case Rule.Facing6: return TowardPlayer3D(at.X, at.Y, at.Z, i, modern);
-            case Rule.Observer: return Opp(TowardPlayer3D(at.X, at.Y, at.Z, i, modern));
-            case Rule.OnFace: return face;
-            case Rule.Hopper: return Opp(face) == 1 ? 0 : Opp(face);
-            case Rule.Away: return (q + 2) & 3;
-            case Rule.Look: return q;
-            case Rule.Anvil: return ((q + 1) & 3) | (damage & 12);
-            case Rule.Hook: return side ? QuarterOfFace(face) : null;
-            case Rule.Trapdoor:
-            {
-                static int Wall(int f) => f switch { 2 => 0, 3 => 1, 4 => 2, _ => 3 }; // BlockTrapDoor.getMetaForFacing: N0 S1 W2 E3
-                if (side) return Wall(face) | (modern && i.CursorY > 0.5f ? 8 : 0);
-                if (!modern) return null; // b1.8.1 canPlace: a side face only
-                return Wall(Opp(FaceOfQuarter[q])) | (i.Face == BlockFace.Top ? 0 : 8);
-            }
-            case Rule.Button:
-                if (side) return ButtonFace(face);
-                return modern ? (i.Face == BlockFace.Bottom ? 0 : 5) : null;
-            case Rule.Lever:
-                if (side) return ButtonFace(face);
-                if (!modern) return null; // b1.8.1: the floor is 5 or 6 at random, never the ceiling
-                bool xAxis = q is 1 or 3;
-                return i.Face == BlockFace.Top ? (xAxis ? 6 : 5) : (xAxis ? 0 : 7);
-            default: return null;
-        }
+            Rule.Torch => TorchMeta(i.Face),
+            Rule.Ladder => Horizontal(i.Face) ? face : null,
+            Rule.Front => Opp(FaceOfQuarter[q]),
+            Rule.Facing6 => TowardPlayer3D(at.X, at.Y, at.Z, i, modern),
+            Rule.Observer => Opp(TowardPlayer3D(at.X, at.Y, at.Z, i, modern)),
+            Rule.OnFace => face,
+            _ => Opp(face) == 1 ? 0 : Opp(face), // a hopper
+        };
+    }
+
+    private static int? TorchMeta(BlockFace f) =>
+        f switch { BlockFace.Top => 5, BlockFace.East => 1, BlockFace.West => 2, BlockFace.South => 3, BlockFace.North => 4, _ => null };
+
+    /// <summary>Away-facing blocks, gates, anvils, trapdoors, buttons, levers and hooks.</summary>
+    private static int? PredictTurned(Rule rule, int damage, PlaceInput i, int q, bool modern) => rule switch
+    {
+        Rule.Away => (q + 2) & 3,
+        Rule.Look => q,
+        Rule.Anvil => ((q + 1) & 3) | (damage & 12),
+        Rule.Trapdoor => TrapdoorMeta(i, q, modern),
+        Rule.Button => ButtonMeta(i, modern),
+        Rule.Lever => LeverMeta(i, q, modern),
+        _ => Horizontal(i.Face) ? QuarterOfFace((int)i.Face) : null, // a tripwire hook
+    };
+
+    private static int? TrapdoorMeta(PlaceInput i, int q, bool modern)
+    {
+        static int Wall(int f) => f switch { 2 => 0, 3 => 1, 4 => 2, _ => 3 }; // BlockTrapDoor.getMetaForFacing: N0 S1 W2 E3
+        if (Horizontal(i.Face)) return Wall((int)i.Face) | (modern && i.CursorY > 0.5f ? 8 : 0);
+        if (!modern) return null; // b1.8.1 canPlace: a side face only
+        return Wall(Opp(FaceOfQuarter[q])) | (i.Face == BlockFace.Top ? 0 : 8);
+    }
+
+    private static int? ButtonMeta(PlaceInput i, bool modern)
+    {
+        if (Horizontal(i.Face)) return ButtonFace((int)i.Face);
+        return modern ? (i.Face == BlockFace.Bottom ? 0 : 5) : null;
+    }
+
+    private static int? LeverMeta(PlaceInput i, int q, bool modern)
+    {
+        if (Horizontal(i.Face)) return ButtonFace((int)i.Face);
+        if (!modern) return null; // b1.8.1: the floor is 5 or 6 at random, never the ceiling
+        bool xAxis = q is 1 or 3;
+        return i.Face == BlockFace.Top ? (xAxis ? 6 : 5) : (xAxis ? 0 : 7);
     }
 
     private static int ButtonFace(int face) => face switch { 5 => 1, 4 => 2, 3 => 3, _ => 4 }; // E1 W2 S3 N4
@@ -238,10 +312,13 @@ public static class BlockOrientation
     {
         17 or 162 => meta & 3,
         44 or 126 or 182 or 205 => meta & 7,
-        155 => meta is >= 2 and <= 4 ? 2 : meta,
+        155 => QuartzDamage(meta),
         145 => meta & 12,
         _ => 0,
     };
+
+    /// <summary>Quartz: the pillar (2..4, any axis) is placed from damage 2; chiseled and plain keep theirs.</summary>
+    private static int QuartzDamage(int meta) => meta is >= 2 and <= 4 ? 2 : meta;
 
     /// <summary>
     /// Every click that gives (id, meta) from a player whose feet are at <paramref name="feet"/>, over the faces
@@ -310,23 +387,47 @@ public static class BlockOrientation
     /// <summary>"facing east", "axis x", "top half"… for messages; null when the meta says nothing the placement decides.</summary>
     public static string? Describe(int id, int meta, bool modern)
     {
-        static string Dir(int face) => face switch { 0 => "down", 1 => "up", 2 => "north", 3 => "south", 4 => "west", _ => "east" };
-        static string Q(int q) => (q & 3) switch { 0 => "south", 1 => "west", 2 => "north", _ => "east" };
-        switch (RuleOf(id, modern))
-        {
-            case Rule.Stairs: return $"rising {Q(new[] { 3, 1, 0, 2 }[meta & 3])}" + (modern && (meta & 4) != 0 ? ", upside down" : "");
-            case Rule.Slab: return (meta & 8) != 0 ? "top half" : "bottom half";
-            case Rule.Log: case Rule.Pillar: return (meta & 12) switch { 0 => "upright", 4 => "along x", 8 => "along z", _ => "bark all round" };
-            case Rule.Quartz: return meta switch { 3 => "along x", 4 => "along z", _ => "upright" };
-            case Rule.Door: return $"facing {Q(((modern ? meta : DoorLook(meta)) + 3) & 3)}";
-            case Rule.Bed: case Rule.Look: case Rule.Away: case Rule.Hook: case Rule.Anvil: return $"facing {Q(meta)}";
-            case Rule.Torch: return meta switch { 1 => "on the west wall", 2 => "on the east wall", 3 => "on the north wall", 4 => "on the south wall", _ => "on the floor" };
-            case Rule.Button: case Rule.Lever:
-                return (meta & 7) switch { 1 => "facing east", 2 => "facing west", 3 => "facing south", 4 => "facing north", 0 or 7 => "on the ceiling", _ => "on the floor" };
-            case Rule.Trapdoor: return $"against the {new[] { "south", "north", "east", "west" }[meta & 3]} side" + (modern && (meta & 8) != 0 ? ", top half" : "");
-            case Rule.Ladder: case Rule.Front: case Rule.Facing6: case Rule.Observer: case Rule.OnFace: case Rule.Hopper:
-                return $"facing {Dir(meta & 7)}";
-            default: return null;
-        }
+        var rule = RuleOf(id, modern);
+        if (rule == Rule.None) return null;
+        if (rule <= Rule.Bed) return DescribeShape(rule, meta, modern);
+        return DescribeAttached(rule, meta, modern);
     }
+
+    private static string DirName(int face) => face switch { 0 => "down", 1 => "up", 2 => "north", 3 => "south", 4 => "west", _ => "east" };
+    private static string QuarterName(int q) => (q & 3) switch { 0 => "south", 1 => "west", 2 => "north", _ => "east" };
+    private static readonly int[] StairRise = [3, 1, 0, 2];
+    private static readonly string[] TrapdoorSide = ["south", "north", "east", "west"];
+
+    private static string DescribeShape(Rule rule, int meta, bool modern) => rule switch
+    {
+        Rule.Stairs => $"rising {QuarterName(StairRise[meta & 3])}" + UpsideDownWords(meta, modern),
+        Rule.Slab => SlabWords(meta),
+        Rule.Log or Rule.Pillar => AxisWords(meta),
+        Rule.Quartz => QuartzWords(meta),
+        Rule.Door => $"facing {QuarterName((DoorFacing(meta, modern) + 3) & 3)}",
+        _ => $"facing {QuarterName(meta)}", // a bed
+    };
+
+    private static string UpsideDownWords(int meta, bool modern) => modern && (meta & 4) != 0 ? ", upside down" : "";
+    private static string SlabWords(int meta) => (meta & 8) != 0 ? "top half" : "bottom half";
+    private static string AxisWords(int meta) => (meta & 12) switch { 0 => "upright", 4 => "along x", 8 => "along z", _ => "bark all round" };
+    private static string QuartzWords(int meta) => meta switch { 3 => "along x", 4 => "along z", _ => "upright" };
+    private static int DoorFacing(int meta, bool modern) => modern ? meta : DoorLook(meta);
+
+    private static string DescribeAttached(Rule rule, int meta, bool modern) => rule switch
+    {
+        Rule.Torch => TorchWords(meta),
+        Rule.Button or Rule.Lever => SwitchPlace(meta & 7),
+        Rule.Trapdoor => $"against the {TrapdoorSide[meta & 3]} side" + TopHalfWords(meta, modern),
+        Rule.Look or Rule.Away or Rule.Hook or Rule.Anvil => $"facing {QuarterName(meta)}",
+        _ => $"facing {DirName(meta & 7)}", // ladders, furnace-likes, pistons, observers, on-face blocks, hoppers
+    };
+
+    private static string TorchWords(int meta) =>
+        meta switch { 1 => "on the west wall", 2 => "on the east wall", 3 => "on the north wall", 4 => "on the south wall", _ => "on the floor" };
+
+    private static string TopHalfWords(int meta, bool modern) => modern && (meta & 8) != 0 ? ", top half" : "";
+
+    private static string SwitchPlace(int m) =>
+        m switch { 1 => "facing east", 2 => "facing west", 3 => "facing south", 4 => "facing north", 0 or 7 => "on the ceiling", _ => "on the floor" };
 }

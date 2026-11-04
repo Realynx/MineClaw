@@ -19,15 +19,25 @@ public static class BrainSplit
         {
             if (t.Name is WorkerAgent.ToolName or MemoryAgent.ToolName) continue; // brain-only by construction
             var current = tools.TiersOf(t);
-            var tiers = current & ToolTiers.Cheap;
-            bool b = brain.Contains(t.Name), w = worker.Contains(t.Name);
-            if (b) tiers |= ToolTiers.Main;
-            if (w) tiers |= ToolTiers.Worker;
-            // A brain macro reached through `do` (follow, act): no definition of its own for anyone (do runs it).
-            bool viaDo = brain.Contains(DoTool.ToolName) && DoTool.Actions.Contains(t.Name, StringComparer.OrdinalIgnoreCase);
-            if (!b && !w && viaDo) { }
-            else if (!b && !w) tiers |= current.HasFlag(ToolTiers.Worker) ? ToolTiers.Worker : current & ToolTiers.Main;
+            var tiers = TiersFor(t.Name, current, brain, worker);
             if (tiers != current) tools.SetTiers(t.Name, tiers);
         }
     }
+
+    /// <summary>
+    /// The cheap flag as it was, plus the listed tiers; an unlisted tool keeps the worker if it had it, else its main flag — except
+    /// a brain macro reached through <c>do</c> (follow, act): no definition of its own for anyone (do runs it).
+    /// </summary>
+    private static ToolTiers TiersFor(string name, ToolTiers current, HashSet<string> brain, HashSet<string> worker)
+    {
+        var tiers = current & ToolTiers.Cheap;
+        bool b = brain.Contains(name), w = worker.Contains(name);
+        if (b) tiers |= ToolTiers.Main;
+        if (w) tiers |= ToolTiers.Worker;
+        if (b || w || ViaDo(name, brain)) return tiers;
+        return tiers | (current.HasFlag(ToolTiers.Worker) ? ToolTiers.Worker : current & ToolTiers.Main);
+    }
+
+    private static bool ViaDo(string name, HashSet<string> brain) =>
+        brain.Contains(DoTool.ToolName) && DoTool.Actions.Contains(name, StringComparer.OrdinalIgnoreCase);
 }

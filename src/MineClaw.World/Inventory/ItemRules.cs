@@ -40,16 +40,19 @@ public sealed class ItemRules
     {
         if (DataInt(id, "MaxStack") is int m && m > 0) return m;
         if (id < 256) return 64;
-        if (IsToolOrArmor(id)) return 1;
+        if (IsToolOrArmor(id) || Unstackable.Contains(id)) return 1;
         return id switch
         {
-            282 or 323 or 324 or 325 or 326 or 327 or 328 or 329 or 330 or 333 or 335 or 342 or 343 or 346
-                or 354 or 355 or 358 or 359 or 2256 or 2257 => 1,
-            332 or 344 => 16,
-            357 => 8,
+            332 or 344 => 16, // snowball, egg
+            357 => 8,         // cookie
             _ => 64,
         };
     }
+
+    /// <summary>b1.8.1 items that don't stack besides tools and armor: stew, signs, doors, buckets, minecarts, saddle, boat, maps, cake,
+    /// bed, records…</summary>
+    private static readonly IdSet Unstackable = IdSet.Of(
+        [282, 323, 324, 325, 326, 327, 328, 329, 330, 333, 335, 342, 343, 346, 354, 355, 358, 359, 2256, 2257]);
 
     public static bool DefaultIsDamageable(int id)
     {
@@ -57,13 +60,14 @@ public sealed class ItemRules
         return IsToolOrArmor(id);
     }
 
-    public static bool DefaultHasSubtypes(int id) =>
-        id is 6 or 17 or 18 or 31 or 35 or 43 or 44 or 98 or 263 or 351 or 97;
+    public static bool DefaultHasSubtypes(int id) => WithSubtypes.Contains(id);
+
+    private static readonly IdSet WithSubtypes = IdSet.Of([6, 17, 18, 31, 35, 43, 44, 98, 263, 351, 97]);
 
     /// <summary>b1.8.1 tool/weapon/armor item ids.</summary>
-    public static bool IsToolOrArmor(int id) =>
-        id is >= 256 and <= 259 or 261 or >= 267 and <= 279 or >= 283 and <= 286 or >= 290 and <= 294
-            or >= 298 and <= 317 or 346 or 359;
+    public static bool IsToolOrArmor(int id) => ToolsAndArmor.Contains(id);
+
+    private static readonly IdSet ToolsAndArmor = IdSet.Of([261, 346, 359], (256, 259), (267, 279), (283, 286), (290, 294), (298, 317));
 
     /// <summary>Armor slot (0 helmet .. 3 boots) for an armor item id, or -1.</summary>
     public static int ArmorType(int id) => id is >= 298 and <= 317 ? (id - 298) % 4 : -1;

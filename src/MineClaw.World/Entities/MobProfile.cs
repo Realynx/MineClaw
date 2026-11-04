@@ -41,13 +41,13 @@ public static class PotionEffects
         Blindness = 15, NightVision = 16, Hunger = 17, Weakness = 18, Poison = 19, Wither = 20, HealthBoost = 21, Absorption = 22,
         Saturation = 23, Glowing = 24, Levitation = 25, Luck = 26, BadLuck = 27;
 
-    public static string Name(int id) => id switch
-    {
-        Speed => "speed", Slowness => "slowness", Haste => "haste", MiningFatigue => "mining fatigue", Strength => "strength",
-        InstantHealth => "instant health", InstantDamage => "instant damage", JumpBoost => "jump boost", Nausea => "nausea",
-        Regeneration => "regeneration", Resistance => "resistance", FireResistance => "fire resistance", WaterBreathing => "water breathing",
-        Invisibility => "invisibility", Blindness => "blindness", NightVision => "night vision", Hunger => "hunger", Weakness => "weakness",
-        Poison => "poison", Wither => "wither", HealthBoost => "health boost", Absorption => "absorption", Saturation => "saturation",
-        Glowing => "glowing", Levitation => "levitation", Luck => "luck", BadLuck => "bad luck", _ => $"effect {id}",
-    };
+    public static string Name(int id) => (uint)id < (uint)Names.Length && Names[id] is { } name ? name : $"effect {id}";
+
+    /// <summary>Effect names by id (1 speed .. 27 bad luck).</summary>
+    private static readonly string?[] Names =
+    [
+        null, "speed", "slowness", "haste", "mining fatigue", "strength", "instant health", "instant damage", "jump boost", "nausea",
+        "regeneration", "resistance", "fire resistance", "water breathing", "invisibility", "blindness", "night vision", "hunger",
+        "weakness", "poison", "wither", "health boost", "absorption", "saturation", "glowing", "levitation", "luck", "bad luck",
+    ];
 }

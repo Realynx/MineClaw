@@ -145,10 +145,10 @@ public sealed class PromptTelemetry : IDisposable
         var purpose = PromptPurpose.Normalize(request.Purpose);
         TurnInput? turn = purpose == PromptPurpose.ChatTurn ? FindTurn(request) : null;
         var (est, round) = PromptSections.Estimate(request, turn);
-        string model = response?.Model ?? request.Model ?? _agent.Llm.ModelFor(request.Tier);
+        string model = ModelOf(request, response);
         var u = response?.Usage ?? LlmUsage.Zero;
         long prompt = u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens;
-        decimal cost = response != null ? _agent.Prices.Cost(model, u) : 0;
+        decimal cost = CostOf(response, model, u);
         int maxOut = request.MaxTokens ?? _agent.Llm.MaxTokensFor(request.Tier);
         int limit = _agent.Context.MaxTokens;
         var sections = PromptSections.Calibrate(est, prompt);
@@ -157,7 +157,7 @@ public sealed class PromptTelemetry : IDisposable
             Ts = _time.GetUtcNow(),
             Bot = Bot,
             Body = BodyOf(),
-            Tier = UsageTracker.TierLabel(request.Tier == ModelTier.Worker ? ModelTier.Worker : _agent.Llm.TierOfModel(model) ?? request.Tier),
+            Tier = TierLabelOf(request, model),
             Model = model,
             Provider = response?.Provider ?? _agent.Llm.ProviderFor(request),
             Profile = request.Profile ?? _agent.Llm.ProfileOfModel(model),
@@ -174,18 +174,32 @@ public sealed class PromptTelemetry : IDisposable
             Sections = sections,
             EstimatedTokens = est.Values.Sum(),
             ContextLimit = limit,
-            ContextPct = limit > 0 ? Math.Round((double)(prompt + maxOut) / limit, 4) : 0,
+            ContextPct = ContextPct(prompt, maxOut, limit),
             MaxOutputTokens = maxOut,
             Compactions = Interlocked.Exchange(ref _compactions, 0),
             LatencyMs = latencyMs,
             StopReason = response?.StopReason ?? "error",
             ToolCalls = response?.ToolUses.Select(t => t.Name).ToArray() ?? [],
-            Error = error == null ? null : error.GetType().Name + ": " + Tools.TextUtil.Truncate(error.Message, 200),
+            Error = ErrorText(error),
         };
         if (response != null && purpose == PromptPurpose.ChatTurn) Thoughts.OnBrainResponse(response);
         Publish(record);
         return record;
     }
+
+    /// <summary>The model that answered, else the one asked for, else the tier's.</summary>
+    private string ModelOf(LlmRequest request, LlmResponse? response) => response?.Model ?? request.Model ?? _agent.Llm.ModelFor(request.Tier);
+
+    private decimal CostOf(LlmResponse? response, string model, LlmUsage u) => response != null ? _agent.Prices.Cost(model, u) : 0;
+
+    /// <summary>The worker tier stays the worker; anything else is the tier its model belongs to, else the requested one.</summary>
+    private string TierLabelOf(LlmRequest request, string model) =>
+        UsageTracker.TierLabel(request.Tier == ModelTier.Worker ? ModelTier.Worker : _agent.Llm.TierOfModel(model) ?? request.Tier);
+
+    private static double ContextPct(long prompt, int maxOut, int limit) => limit > 0 ? Math.Round((double)(prompt + maxOut) / limit, 4) : 0;
+
+    private static string? ErrorText(Exception? error) =>
+        error == null ? null : error.GetType().Name + ": " + Tools.TextUtil.Truncate(error.Message, 200);
 
     /// <summary>Stores, writes and broadcasts a record (also used by fake/remote sources).</summary>
     public void Publish(PromptUsageRecord record)

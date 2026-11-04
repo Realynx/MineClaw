@@ -136,25 +136,32 @@ public static class MobTypes
     public static bool IsHostile(int t) => t is Creeper or Skeleton or Spider or Giant or Zombie or Slime or Ghast
         or Enderman or CaveSpider or Silverfish;
 
-    public static string Name(int t) => t switch
+    public static string Name(int t) => BetaNames.TryGetValue(t, out var name) ? name
+        : Versioning.Release1122EntityRules.Known(t) is { Name: { } mobName } ? mobName : $"mob_{t}"; // 1.12.2 types (b1.8.1 never sends them)
+
+    /// <summary>The b1.8.1 mobs, in type order.</summary>
+    private static readonly Dictionary<int, string> BetaNames = new()
     {
-        Creeper => "creeper", Skeleton => "skeleton", Spider => "spider", Giant => "giant", Zombie => "zombie",
-        Slime => "slime", Ghast => "ghast", PigZombie => "zombie_pigman", Enderman => "enderman",
-        CaveSpider => "cave_spider", Silverfish => "silverfish", Pig => "pig", Sheep => "sheep", Cow => "cow",
-        Chicken => "chicken", Squid => "squid", Wolf => "wolf",
-        _ => Versioning.Release1122EntityRules.Known(t) is { Name: { } mobName } ? mobName : $"mob_{t}", // 1.12.2 types (b1.8.1 never sends them)
+        [Creeper] = "creeper", [Skeleton] = "skeleton", [Spider] = "spider", [Giant] = "giant", [Zombie] = "zombie",
+        [Slime] = "slime", [Ghast] = "ghast", [PigZombie] = "zombie_pigman", [Enderman] = "enderman",
+        [CaveSpider] = "cave_spider", [Silverfish] = "silverfish", [Pig] = "pig", [Sheep] = "sheep", [Cow] = "cow",
+        [Chicken] = "chicken", [Squid] = "squid", [Wolf] = "wolf",
+    };
+
+    /// <summary>The everyday names of 1.12.2 registry names ("vindicator" for vindication_illager).</summary>
+    private static readonly Dictionary<string, string> RegistryAliases = new(StringComparer.Ordinal)
+    {
+        ["vindicator"] = "vindication_illager", ["evoker"] = "evocation_illager", ["illusioner"] = "illusion_illager",
+        ["iron_golem"] = "villager_golem", ["golem"] = "villager_golem", ["snow_golem"] = "snowman", ["magma"] = "magma_cube",
     };
 
     public static int? ByName(string name)
     {
-        foreach (var t in new[] { 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 90, 91, 92, 93, 94, 95 })
+        foreach (var t in BetaNames.Keys)
             if (string.Equals(Name(t), name, StringComparison.OrdinalIgnoreCase)) return t;
-        // 1.12.2 names, and the everyday ones of its registry names ("vindicator" for vindication_illager).
-        string n = name.ToLowerInvariant() switch
-        {
-            "vindicator" => "vindication_illager", "evoker" => "evocation_illager", "illusioner" => "illusion_illager",
-            "iron_golem" or "golem" => "villager_golem", "snow_golem" => "snowman", "magma" => "magma_cube", var x => x,
-        };
+        // 1.12.2 names, and the everyday ones of its registry names.
+        string lower = name.ToLowerInvariant();
+        string n = RegistryAliases.TryGetValue(lower, out var registry) ? registry : lower;
         foreach (var p in Versioning.Release1122EntityRules.All)
             if (string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase)) return p.Type;
         return null;
@@ -164,10 +171,12 @@ public static class MobTypes
 /// <summary>b1.8.1 object/vehicle type ids (0x17 Add Object/Vehicle).</summary>
 public static class ObjectTypes
 {
-    public static string Name(int t) => t switch
+    public static string Name(int t) => Names.TryGetValue(t, out var name) ? name : $"object_{t}";
+
+    private static readonly Dictionary<int, string> Names = new()
     {
-        1 => "boat", 10 => "minecart", 11 => "storage_minecart", 12 => "powered_minecart", 50 => "primed_tnt",
-        60 => "arrow", 61 => "snowball", 62 => "egg", 63 => "fireball", 70 => "falling_sand", 71 => "falling_gravel",
-        90 => "fishing_float", _ => $"object_{t}",
+        [1] = "boat", [10] = "minecart", [11] = "storage_minecart", [12] = "powered_minecart", [50] = "primed_tnt",
+        [60] = "arrow", [61] = "snowball", [62] = "egg", [63] = "fireball", [70] = "falling_sand", [71] = "falling_gravel",
+        [90] = "fishing_float",
     };
 }

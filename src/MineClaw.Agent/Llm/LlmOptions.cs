@@ -216,11 +216,23 @@ public sealed class LlmOptions
         if (!Profiles.TryGetValue(name, out var p))
             return $"no profile '{name}' (have {string.Join(", ", Profiles.Keys.Where(k => CheckProfile(k) == null))})";
         if (_disabled.TryGetValue(name, out var why)) return $"profile '{name}' is unavailable: {why}";
+        return ProfileSetupProblem(name, p) ?? SubProfileProblem(name, p);
+    }
+
+    /// <summary>The profile's own setup: a model, a known provider, and that provider configured.</summary>
+    private string? ProfileSetupProblem(string name, LlmProfile p)
+    {
         if (string.IsNullOrWhiteSpace(p.Model)) return $"profile '{name}' isn't configured (no model)";
         var provider = LlmProviders.Normalize(p.Provider);
         if (!LlmProviders.IsKnown(provider)) return $"profile '{name}' has an invalid provider '{p.Provider}' (anthropic|ollama|mock)";
         if (!ProviderConfigured(provider))
             return provider == LlmProviders.Ollama ? $"profile '{name}' needs Agent:Llm:Ollama:Endpoint" : $"profile '{name}' needs an Anthropic API key";
+        return null;
+    }
+
+    /// <summary>The first unusable worker/memory sub-profile it names (itself excepted).</summary>
+    private string? SubProfileProblem(string name, LlmProfile p)
+    {
         foreach (var sub in new[] { p.Worker, p.Memory })
             if (!string.IsNullOrWhiteSpace(sub) && !string.Equals(sub, name, StringComparison.OrdinalIgnoreCase) && CheckProfile(sub) is { } e)
                 return $"profile '{name}': {e}";
@@ -266,44 +278,73 @@ public sealed class LlmOptions
         if (!string.IsNullOrWhiteSpace(p.Thinking)) MainThinking = p.Thinking!;
         MainProfile = name.Trim();
         BrainAuthorsScripts = IsOpus55(MainModel) && MainProvider == LlmProviders.Anthropic;
-        if (Profile(p.Worker) is { } w)
-        {
-            WorkerModel = w.Model.Trim();
-            WorkerProvider = LlmProviders.Normalize(w.Provider);
-            if (w.MaxTokens is { } wmt and > 0) WorkerMaxTokens = wmt;
-        }
-        if (Profile(p.Memory) is { } c)
-        {
-            CheapModel = c.Model.Trim();
-            CheapProvider = LlmProviders.Normalize(c.Provider);
-            if (c.MaxTokens is { } cmt and > 0) CheapMaxTokens = cmt;
-        }
+        if (Profile(p.Worker) is { } w) ApplyWorkerProfile(w);
+        if (Profile(p.Memory) is { } c) ApplyCheapProfile(c);
         return null;
+    }
+
+    private void ApplyWorkerProfile(LlmProfile w)
+    {
+        WorkerModel = w.Model.Trim();
+        WorkerProvider = LlmProviders.Normalize(w.Provider);
+        if (w.MaxTokens is { } wmt and > 0) WorkerMaxTokens = wmt;
+    }
+
+    private void ApplyCheapProfile(LlmProfile c)
+    {
+        CheapModel = c.Model.Trim();
+        CheapProvider = LlmProviders.Normalize(c.Provider);
+        if (c.MaxTokens is { } cmt and > 0) CheapMaxTokens = cmt;
     }
 
     /// <summary>Config problems of the provider settings (empty = fine). With nothing set to ollama this is always empty.</summary>
     public List<string> ValidateProviders()
     {
         var p = new List<string>();
-        foreach (var (key, value) in new[] { ("MainProvider", MainProvider), ("WorkerProvider", WorkerProvider), ("CheapProvider", CheapProvider) })
-            if (!LlmProviders.IsKnown(LlmProviders.Normalize(value))) p.Add($"Agent:Llm:{key} '{value}' is not a provider (anthropic|ollama|mock)");
-        foreach (var (tier, key) in new[] { (ModelTier.Main, "MainProvider"), (ModelTier.Worker, "WorkerProvider"), (ModelTier.Cheap, "CheapProvider") })
-            if (ProviderFor(tier) == LlmProviders.Ollama && !Ollama.IsConfigured)
-                p.Add($"Agent:Llm:{key} is ollama but Agent:Llm:Ollama:Endpoint is empty");
-        foreach (var (name, prof) in Profiles)
-            if (!string.IsNullOrWhiteSpace(prof.Model) && !LlmProviders.IsKnown(LlmProviders.Normalize(prof.Provider)))
-                p.Add($"Agent:Llm:Profiles:{name}:Provider '{prof.Provider}' is not a provider (anthropic|ollama|mock)");
+        UnknownTierProviders(p);
+        OllamaTiersWithoutEndpoint(p);
+        UnknownProfileProviders(p);
         if (Ollama.IsConfigured && !Uri.TryCreate(Ollama.Endpoint.Trim(), UriKind.Absolute, out _))
             p.Add($"Agent:Llm:Ollama:Endpoint '{Ollama.Endpoint}' is not an absolute URL");
         // Anthropic tiers and profiles run only on the 5.5 generation (user rule, 2026-10-28).
+        OldTierModels(p);
+        OldProfileModels(p);
+        return p;
+    }
+
+    private void UnknownTierProviders(List<string> p)
+    {
+        foreach (var (key, value) in new[] { ("MainProvider", MainProvider), ("WorkerProvider", WorkerProvider), ("CheapProvider", CheapProvider) })
+            if (!LlmProviders.IsKnown(LlmProviders.Normalize(value))) p.Add($"Agent:Llm:{key} '{value}' is not a provider (anthropic|ollama|mock)");
+    }
+
+    private void OllamaTiersWithoutEndpoint(List<string> p)
+    {
+        foreach (var (tier, key) in new[] { (ModelTier.Main, "MainProvider"), (ModelTier.Worker, "WorkerProvider"), (ModelTier.Cheap, "CheapProvider") })
+            if (ProviderFor(tier) == LlmProviders.Ollama && !Ollama.IsConfigured)
+                p.Add($"Agent:Llm:{key} is ollama but Agent:Llm:Ollama:Endpoint is empty");
+    }
+
+    private void UnknownProfileProviders(List<string> p)
+    {
+        foreach (var (name, prof) in Profiles)
+            if (!string.IsNullOrWhiteSpace(prof.Model) && !LlmProviders.IsKnown(LlmProviders.Normalize(prof.Provider)))
+                p.Add($"Agent:Llm:Profiles:{name}:Provider '{prof.Provider}' is not a provider (anthropic|ollama|mock)");
+    }
+
+    private void OldTierModels(List<string> p)
+    {
         foreach (var (tier, key) in new[] { (ModelTier.Main, "MainModel"), (ModelTier.Worker, "WorkerModel"), (ModelTier.Cheap, "CheapModel") })
             if (ProviderFor(tier) == LlmProviders.Anthropic && !ModelProfiles.IsCurrentGeneration(ModelFor(tier)))
                 p.Add($"Agent:Llm:{key} '{ModelFor(tier)}' is older than the 5.5 generation (use one of {string.Join(", ", ModelProfiles.CurrentGeneration)})");
+    }
+
+    private void OldProfileModels(List<string> p)
+    {
         foreach (var (name, prof) in Profiles)
             if (!string.IsNullOrWhiteSpace(prof.Model) && LlmProviders.Normalize(prof.Provider) == LlmProviders.Anthropic
                 && !ModelProfiles.IsCurrentGeneration(prof.Model))
                 p.Add($"Agent:Llm:Profiles:{name}:Model '{prof.Model}' is older than the 5.5 generation");
-        return p;
     }
 
     public string ModelFor(ModelTier tier) => tier switch { ModelTier.Cheap => CheapModel, ModelTier.Worker => WorkerModel, _ => MainModel };
