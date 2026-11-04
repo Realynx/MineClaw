@@ -198,6 +198,7 @@ public sealed partial class StoryColony
         bool hasTable = Benches.Any(b => b.Kind == "crafting_table"), hasFurnace = Benches.Any(b => b.Kind == "furnace");
         List<MaterialNeed> Used(IReadOnlyList<MaterialNeed> used, Dictionary<(int Id, int Meta), int> after) { pool = after; return used.ToList(); }
         pool = ToolCrafts(w, pool, reserved, wants, hasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
+        bool bucketCovered = BucketCarried(); // liquid builds need one bucket between them, not one per cell (StoryColony.Water.cs)
         foreach (var b in Builds.OrderBy(b => b.Order))
         {
             if (!Builds_Live(b)) { if (b.Materials.Count > 0) { b.Materials = new(); b.Rev = Bump(); } continue; }
@@ -208,10 +209,12 @@ public sealed partial class StoryColony
                 .GroupBy(g => g.Item ?? (w.Data.ItemExists(g.Id) ? w.Data.Item(g.Id).Name : g.Id.ToString()));
             foreach (var grp in groups)
             {
-                var item = grp.Key;
-                var key = KeyOfItem(w, item, grp.First().Id);
-                int need = grp.Count();
-                int have = Take(pool, key, need);
+                // Liquid sources take a bucket (kept, never used up): one for all the colony's liquid builds (StoryColony.Water.cs).
+                bool liquid = StoryConstruction.IsLiquid(grp.First());
+                var item = liquid ? "bucket" : grp.Key;
+                var key = liquid ? (Id: Items.Bucket, Meta: 0) : KeyOfItem(w, item, grp.First().Id);
+                int need = liquid ? 1 : grp.Count();
+                int have = liquid && bucketCovered ? 1 : Take(pool, key, need);
                 Reserve(reserved, key, have);
                 int shortN = need - have, crafting = 0;
                 string via = "none";
@@ -269,6 +272,7 @@ public sealed partial class StoryColony
                 }
                 else if (shortN > 0) raw.Add($"{shortN} {Display(w, key.Id, key.Meta)}");
                 mats.Add(new BuildMaterial(item, Display(w, key.Id, key.Meta), need, have, crafting, shortN - crafting, via, chain, raw));
+                if (liquid && have + crafting > 0) bucketCovered = true; // in hand, in storage or being crafted: later liquid builds share it
             }
             // A bench this build's chain needs and the colony hasn't got: the colony makes one (one at a time), or the owner is asked.
             string? alert = null;
@@ -515,6 +519,7 @@ public sealed partial class StoryColony
                     ["short"] = new JsonArray(shortList.Select(s => (JsonNode)s!).ToArray()),
                 });
             }
+            WaterEntries(w, entries, hasTable); // the Water tab: sources, channels, an infinite source (StoryColony.Water.cs)
             return new JsonObject
             {
                 ["entries"] = entries,
@@ -545,6 +550,7 @@ public sealed partial class StoryColony
         var o = new JsonObject { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches, ["idle"] = Meta.Idle };
         HaulOptionsJson(o); // rescue teleport, unfiltered storage, keeping disallowed items (StoryColony.Hauling.cs)
         foreach (var (k, v) in GearOptionsJson().ToList()) o[k] = v?.DeepClone(); // auto_craft_tools, spare_tools (StoryColony.Gear.cs)
+        o["allow_lava"] = Meta.AllowLava; // pouring lava (StoryColony.Water.cs)
         return o;
     }
 }

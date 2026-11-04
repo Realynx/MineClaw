@@ -379,8 +379,10 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 var rescue = Flag("rescue_teleport");
                 var unfiltered = Flag("unfiltered_storage_takes_anything");
                 var keep = Flag("keep_disallowed");
-                if (auto == null && detect == null && idle == null && craftTools == null && spare == null && rescue == null && unfiltered == null && keep == null)
-                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools, spare_tools, rescue_teleport, unfiltered_storage_takes_anything or keep_disallowed required");
+                var lava = Flag("allow_lava"); // pawns may pour lava (StoryColony.Water.cs)
+                if (auto == null && detect == null && idle == null && craftTools == null && spare == null && rescue == null && unfiltered == null && keep == null && lava == null)
+                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools, spare_tools, rescue_teleport, unfiltered_storage_takes_anything, keep_disallowed or allow_lava required");
+                if (lava != null) c.SetWaterOptions(lava);
                 if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 if ((craftTools != null || spare != null) && c.SetGearOptions(craftTools, spare) is { } gerr) return Bad(gerr);
                 if (rescue != null || unfiltered != null || keep != null) c.SetHaulOptions(rescue, unfiltered, keep);

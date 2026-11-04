@@ -13,7 +13,7 @@ public sealed record ArchitectEntry(string Id, string Label, string Tab, int Ite
 /// </summary>
 public static class StoryArchitect
 {
-    public static readonly IReadOnlyList<string> Tabs = ["structure", "furniture", "production", "storage", "lighting", "misc"];
+    public static readonly IReadOnlyList<string> Tabs = ["structure", "furniture", "production", "storage", "lighting", "water", "misc"];
 
     private static readonly string[] Solid = ["wall", "floor", "block", "roof"];
 

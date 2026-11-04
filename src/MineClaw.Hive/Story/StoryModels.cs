@@ -473,4 +473,7 @@ public sealed class ColonyMeta
     /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls
     /// only) or stay (hold where they are).</summary>
     public string Idle { get; set; } = "recreation";
+    /// <summary>Pawns may pour lava from buckets (Architect "Lava source"; docs/web/story-mode.md "Water"). Off by default; never in a
+    /// home zone or beside something that burns.</summary>
+    public bool AllowLava { get; set; }
 }
