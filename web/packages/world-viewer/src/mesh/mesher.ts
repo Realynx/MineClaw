@@ -100,56 +100,66 @@ function fill(store: ColumnStore, dim: number, cx: number, sy: number, cz: numbe
     const cDz = pz < 0 ? -1 : pz > 15 ? 1 : 0;
     for (let px = -2; px < 18; px++) {
       const cDx = px < 0 ? -1 : px > 15 ? 1 : 0;
-      const c = cols[(cDz + 1) * 3 + (cDx + 1)];
-      const lx = px & 15, lz = pz & 15;
-      const wx = baseX + px, wz = baseZ + pz;
-      if (c?.light?.biomes && px >= -1 && px <= 16 && pz >= -1 && pz <= 16) {
-        bio[(pz + 1) * 18 + px + 1] = c.light.biomes[lz * 16 + lx];
-        hasBiomes = true;
-      }
-      const cutCol = cut ? (wx + 0.5 - cut.x) ** 2 + (wz + 0.5 - cut.z) ** 2 <= cut.r * cut.r : false;
-      for (let py = -1; py < 17; py++) {
-        const y = baseY + py;
-        const p = P(px, py, pz);
-        if (!c) {
-          sky[p] = 15;
-          continue;
-        }
-        if (y < 0) {
-          ids[p] = 7; // under the world: treat as bedrock so bottom faces are not drawn
-          sky[p] = 0;
-          continue;
-        }
-        if (y >= c.height) continue;
-        const i = cellIndex(lx, y, lz);
-        let id = c.ids[i];
-        if (cutCol && cut && y >= cut.y && id !== 0) {
-          cutMark[p] = 1;
-          id = 0;
-        }
-        ids[p] = id;
-        metas[p] = id === 0 ? 0 : c.meta[i];
-        if (c.light) {
-          const v = lightPacked(c.light, lx, y, lz);
-          sky[p] = v >> 4;
-          blk[p] = v & 15;
-        } else {
-          const top = c.top[lx * 16 + lz];
-          if (y > top) {
-            sky[p] = 15;
-            blk[p] = 0;
-          } else {
-            sky[p] = -1;
-            blk[p] = -1;
-          }
-        }
-        if (cutMark[p]) {
-          sky[p] = 15;
-          if (blk[p] < 0) blk[p] = 0;
-        }
-      }
+      fillColumn(cols[(cDz + 1) * 3 + (cDx + 1)], px, pz, cut);
     }
   }
+}
+
+/** One column of the padded neighbourhood (px, pz): its biome, and every cell from y −1 to 16 of the section. */
+function fillColumn(c: StoredColumn | undefined, px: number, pz: number, cut: CutParams | null | undefined): void {
+  const lx = px & 15, lz = pz & 15;
+  if (px >= -1 && px <= 16 && pz >= -1 && pz <= 16) copyBiome(c, px, pz);
+  // The roof cut-away opens this column from cut.y up when its centre is within the cut's radius.
+  const cutY = cut && (baseX + px + 0.5 - cut.x) ** 2 + (baseZ + pz + 0.5 - cut.z) ** 2 <= cut.r * cut.r ? cut.y : Infinity;
+  for (let py = -1; py < 17; py++) fillCell(c, P(px, py, pz), baseY + py, lx, lz, cutY);
+}
+
+/** The biome of a column within one cell of the section (the 3×3 tint blend reads them). */
+function copyBiome(c: StoredColumn | undefined, px: number, pz: number): void {
+  const biomes = c?.light?.biomes;
+  if (!biomes) return;
+  bio[(pz + 1) * 18 + px + 1] = biomes[(pz & 15) * 16 + (px & 15)];
+  hasBiomes = true;
+}
+
+function fillCell(c: StoredColumn | undefined, p: number, y: number, lx: number, lz: number, cutY: number): void {
+  if (!c) {
+    sky[p] = 15;
+    return;
+  }
+  if (y < 0) {
+    ids[p] = 7; // under the world: treat as bedrock so bottom faces are not drawn
+    sky[p] = 0;
+    return;
+  }
+  if (y >= c.height) return;
+  const i = cellIndex(lx, y, lz);
+  let id = c.ids[i];
+  if (y >= cutY && id !== 0) {
+    cutMark[p] = 1;
+    id = 0;
+  }
+  ids[p] = id;
+  metas[p] = id === 0 ? 0 : c.meta[i];
+  cellLight(c, p, y, lx, lz);
+  if (cutMark[p]) {
+    sky[p] = 15;
+    blk[p] = Math.max(0, blk[p]);
+  }
+}
+
+/** A cell's sky and block light: the payload's, or (a remembered column without light) full sky above the opaque top and
+ * unknown (−1) below it. */
+function cellLight(c: StoredColumn, p: number, y: number, lx: number, lz: number): void {
+  if (c.light) {
+    const v = lightPacked(c.light, lx, y, lz);
+    sky[p] = v >> 4;
+    blk[p] = v & 15;
+    return;
+  }
+  const above = y > c.top[lx * 16 + lz];
+  sky[p] = above ? 15 : -1;
+  blk[p] = above ? 0 : -1;
 }
 
 const opaqueAt = (p: number) => ids[p] !== 0 && (T.flags[(ids[p] << 4) | metas[p]] & F_OPAQUE) !== 0;
@@ -203,24 +213,42 @@ const vl = new Float32Array(4 * 3);
 /** Smooth light + AO of the four corners (CUBE_CORNERS order) of a face of direction f whose front cell is q. */
 function cornerLights(f: number, q: number): boolean {
   const [ta, tb] = TANGENTS[f];
-  const step = [1, PX * PZ, PX];
   const corners = CUBE_CORNERS[f];
   for (let k = 0; k < 4; k++) {
     const c = corners[k];
     const sa = c[ta] * 2 - 1, sb = c[tb] * 2 - 1;
-    const A = q + sa * step[ta], B = q + sb * step[tb], C = A + sb * step[tb];
-    const oa = opaqueAt(A), ob = opaqueAt(B), oc = opaqueAt(C);
-    const ao = oa && ob ? 3 : +oa + +ob + +oc;
-    let ss = 0, bs = 0, n = 0;
-    if (sky[q] >= 0) { ss += sky[q]; bs += blk[q]; n++; }
-    if (!oa && sky[A] >= 0) { ss += sky[A]; bs += blk[A]; n++; }
-    if (!ob && sky[B] >= 0) { ss += sky[B]; bs += blk[B]; n++; }
-    if (!oc && !(oa && ob) && sky[C] >= 0) { ss += sky[C]; bs += blk[C]; n++; }
-    cl[k * 3] = n ? ss / n : 15;
-    cl[k * 3 + 1] = n ? bs / n : 0;
-    cl[k * 3 + 2] = AO[ao];
+    const A = q + sa * AXIS_STEP[ta], B = q + sb * AXIS_STEP[tb], C = A + sb * AXIS_STEP[tb];
+    cornerLight(k, q, A, B, C);
   }
   return sky[q] < 0;
+}
+
+const AXIS_STEP = [1, PX * PZ, PX];
+
+/** Running sums of the corner being lit: sky, block, cells counted. */
+let sumSky = 0, sumBlk = 0, sumN = 0;
+
+/** Adds a cell's light to the corner's sums, when it is known. */
+function addLight(p: number): void {
+  if (sky[p] < 0) return;
+  sumSky += sky[p];
+  sumBlk += blk[p];
+  sumN++;
+}
+
+/** Corner k of a face in front of cell q, with side cells A and B and the diagonal C: the average light of the open cells
+ * (the diagonal only when a side is open) and the occlusion level. */
+function cornerLight(k: number, q: number, A: number, B: number, C: number): void {
+  const oa = opaqueAt(A), ob = opaqueAt(B), oc = opaqueAt(C);
+  const ao = oa && ob ? 3 : +oa + +ob + +oc;
+  sumSky = sumBlk = sumN = 0;
+  addLight(q);
+  if (!oa) addLight(A);
+  if (!ob) addLight(B);
+  if (!oc && !(oa && ob)) addLight(C);
+  cl[k * 3] = sumN ? sumSky / sumN : 15;
+  cl[k * 3 + 1] = sumN ? sumBlk / sumN : 0;
+  cl[k * 3 + 2] = AO[ao];
 }
 
 /** The cell an inner face takes its light from: its own, or the brighter non-opaque cell it faces (slabs, stairs and other
@@ -235,73 +263,110 @@ function lightCell(p: number, dir: number): number {
 }
 
 function emit(q: Quad, x: number, y: number, z: number, p: number, id: number, sflags: number): void {
-  if (q.cull >= 0) {
-    const n = p + STEP[q.cull];
-    const nid = ids[n];
-    if (nid !== 0 && (T.flags[(nid << 4) | metas[n]] & F_OPAQUE || (sflags & F_SELF_CULL && nid === id))) return;
-  }
-  const sink = q.layer === Layer.Translucent ? trans : solid;
+  if (q.cull >= 0 && culled(p + STEP[q.cull], id, sflags)) return;
+  const sink = sinkFor(q.layer);
   const emissive = q.emissive || (sflags & F_EMISSIVE) !== 0;
-  let lf = remembered | (emissive ? LF_EMISSIVE : 0);
-  const pts = q.p;
-  if (q.dir >= 0) {
-    const d = q.dir;
-    const lc = q.flush ? p + STEP[d] : lightCell(p, d);
-    if (cornerLights(d, lc)) lf |= LF_UNKNOWN;
-    if (q.flush && cutMark[lc]) lf |= LF_CUT;
-    const [ta, tb] = TANGENTS[d];
-    const corners = CUBE_CORNERS[d];
-    const noAo = !q.ao || emissive;
-    for (let k = 0; k < 4; k++) {
-      const a = Math.min(1, Math.max(0, pts[k * 3 + ta])), b = Math.min(1, Math.max(0, pts[k * 3 + tb]));
-      let s = 0, bl = 0, ao = 0;
-      for (let j = 0; j < 4; j++) {
-        const c = corners[j];
-        const w = (c[ta] ? a : 1 - a) * (c[tb] ? b : 1 - b);
-        if (w === 0) continue;
-        s += w * cl[j * 3];
-        bl += w * cl[j * 3 + 1];
-        ao += w * cl[j * 3 + 2];
-      }
-      vl[k * 3] = s;
-      vl[k * 3 + 1] = bl;
-      vl[k * 3 + 2] = noAo ? 1 : ao;
-    }
-  } else {
-    const lc = lightCell(p, 1);
-    const known = sky[lc] >= 0;
-    if (!known) lf |= LF_UNKNOWN;
-    for (let k = 0; k < 4; k++) {
-      vl[k * 3] = known ? sky[lc] : 15;
-      vl[k * 3 + 1] = known ? blk[lc] : 0;
-      vl[k * 3 + 2] = 1;
-    }
-  }
-  const tint = resolveTint(q.tint, x, z);
-  const rgb = mul(q.textured ? tint : mulRgb(q.flat, tint), q.shade);
-  const tex = q.textured ? TEX_TEXTURED | (q.wrap ? TEX_WRAP : 0) | (q.fx ?? 0) : 0;
+  const lf = lightQuad(q, p, remembered | (emissive ? LF_EMISSIVE : 0), emissive);
   const flip = vl[2] + vl[8] < vl[5] + vl[11];
-  // Only closed, fully covered geometry has a meaningful inside for the cut-away cap (see VertexSink).
-  const v = sink.begin(flip, q.layer !== Layer.Opaque || q.twoSided);
+  const v = sink.begin(flip, openInside(q));
+  writeCorners(sink, v, q, x, y, z, lf);
+  sink.quadAttrs(v, q.c, q.r, texBits(q), quadRgb(q, x, z), q.alpha, x, y, z, q.span);
+  if (q.twoSided) sink.mirror(v);
+  if (q.textured) noteAnimated(q.r * T.source.columns + q.c);
+  if (q.ovC >= 0 && q.textured) emitOverlay(q, x, y, z, lf, flip);
+}
+
+const sinkFor = (layer: Layer): VertexSink => (layer === Layer.Translucent ? trans : solid);
+
+/** Only closed, fully covered geometry has a meaningful inside for the cut-away cap (see VertexSink). */
+const openInside = (q: Quad): boolean => q.layer !== Layer.Opaque || q.twoSided;
+
+/** A face against an opaque cube neighbour (or, for glass, ice and the like, the same block) is not drawn. */
+function culled(n: number, id: number, sflags: number): boolean {
+  const nid = ids[n];
+  if (nid === 0) return false;
+  return (T.flags[(nid << 4) | metas[n]] & F_OPAQUE) !== 0 || ((sflags & F_SELF_CULL) !== 0 && nid === id);
+}
+
+/** Fills `vl` with the quad's per-vertex light; returns its light flags. */
+function lightQuad(q: Quad, p: number, lf: number, emissive: boolean): number {
+  return q.dir >= 0 ? faceLight(q, p, lf, emissive) : flatLight(p, lf);
+}
+
+/** An axis-aligned quad: the smooth light + AO of the face plane it lies in, interpolated to each vertex. */
+function faceLight(q: Quad, p: number, lf: number, emissive: boolean): number {
+  const d = q.dir;
+  const lc = q.flush ? p + STEP[d] : lightCell(p, d);
+  if (cornerLights(d, lc)) lf |= LF_UNKNOWN;
+  if (q.flush && cutMark[lc]) lf |= LF_CUT;
+  interpolateCorners(q.p, d, !q.ao || emissive);
+  return lf;
+}
+
+/** Each vertex's light: the face corners' light weighted bilinearly by where the vertex lies in the face. */
+function interpolateCorners(pts: ArrayLike<number>, d: number, noAo: boolean): void {
+  const [ta, tb] = TANGENTS[d];
+  const corners = CUBE_CORNERS[d];
+  for (let k = 0; k < 4; k++) {
+    const a = Math.min(1, Math.max(0, pts[k * 3 + ta])), b = Math.min(1, Math.max(0, pts[k * 3 + tb]));
+    let s = 0, bl = 0, ao = 0;
+    for (let j = 0; j < 4; j++) {
+      const c = corners[j];
+      const w = (c[ta] ? a : 1 - a) * (c[tb] ? b : 1 - b);
+      if (w === 0) continue;
+      s += w * cl[j * 3];
+      bl += w * cl[j * 3 + 1];
+      ao += w * cl[j * 3 + 2];
+    }
+    vl[k * 3] = s;
+    vl[k * 3 + 1] = bl;
+    vl[k * 3 + 2] = noAo ? 1 : ao;
+  }
+}
+
+/** A rotated quad (plants): its cell's light, flat. */
+function flatLight(p: number, lf: number): number {
+  const lc = lightCell(p, 1);
+  const known = sky[lc] >= 0;
+  if (!known) lf |= LF_UNKNOWN;
+  for (let k = 0; k < 4; k++) {
+    vl[k * 3] = known ? sky[lc] : 15;
+    vl[k * 3 + 1] = known ? blk[lc] : 0;
+    vl[k * 3 + 2] = 1;
+  }
+  return lf;
+}
+
+/** The quad's colour: the tint over its texture (or over its flat colour), shaded by its face. */
+function quadRgb(q: Quad, x: number, z: number): number {
+  const tint = resolveTint(q.tint, x, z);
+  return mul(q.textured ? tint : mulRgb(q.flat, tint), q.shade);
+}
+
+function texBits(q: Quad): number {
+  if (!q.textured) return 0;
+  return TEX_TEXTURED | (q.wrap ? TEX_WRAP : 0) | (q.fx ?? 0);
+}
+
+function writeCorners(sink: VertexSink, v: number, q: Quad, x: number, y: number, z: number, lf: number): void {
+  const pts = q.p;
   for (let k = 0; k < 4; k++) {
     sink.vertex(v + k, x + pts[k * 3], y + pts[k * 3 + 1], z + pts[k * 3 + 2], q.uv[k * 2], q.uv[k * 2 + 1]);
     sink.lightAt(v + k, vl[k * 3], vl[k * 3 + 1], vl[k * 3 + 2], lf);
   }
-  sink.quadAttrs(v, q.c, q.r, tex, rgb, q.alpha, x, y, z, q.span);
-  if (q.twoSided) sink.mirror(v);
-  if (q.textured) {
-    const cell = q.r * T.source.columns + q.c;
-    if (T.source.animated.has(cell)) anim.add(cell);
-  }
-  if (q.ovC >= 0 && q.textured) {
-    const os = q.layer === Layer.Translucent ? trans : solid;
-    const w = os.begin(flip, true); // the fringe over its host face: the host closes the solid
-    for (let k = 0; k < 4; k++) {
-      os.vertex(w + k, x + pts[k * 3], y + pts[k * 3 + 1], z + pts[k * 3 + 2], q.uv[k * 2], q.uv[k * 2 + 1]);
-      os.lightAt(w + k, vl[k * 3], vl[k * 3 + 1], vl[k * 3 + 2], lf);
-    }
-    os.quadAttrs(w, q.ovC, q.ovR, TEX_TEXTURED, mul(resolveTint(q.ovTint, x, z), q.shade), 1, x, y, z, 0);
-  }
+}
+
+/** An animated atlas cell this section samples (the atlas animation's visible-only hook). */
+function noteAnimated(cell: number): void {
+  if (T.source.animated.has(cell)) anim.add(cell);
+}
+
+/** The overlay fringe over its host face (grass sides): the host closes the solid. */
+function emitOverlay(q: Quad, x: number, y: number, z: number, lf: number, flip: boolean): void {
+  const os = sinkFor(q.layer);
+  const w = os.begin(flip, true);
+  writeCorners(os, w, q, x, y, z, lf);
+  os.quadAttrs(w, q.ovC, q.ovR, TEX_TEXTURED, mul(resolveTint(q.ovTint, x, z), q.shade), 1, x, y, z, 0);
 }
 
 // ---------------------------------------------------------------------------------------------------------------- entry
@@ -310,18 +375,25 @@ export function emptySection(cx: number, sy: number, cz: number): SectionMesh {
   return { cx, sy, cz, solid: null, translucent: null, quads: 0 };
 }
 
+/** Whether the column has section sy and it holds any block (checked before building the neighbourhood). */
+function hasBlocks(centre: StoredColumn, sy: number): boolean {
+  return sy >= 0 && sy * 16 < centre.height && !sectionEmpty(centre, sy);
+}
+
+/** Whether a stored section holds nothing but air. */
+function sectionEmpty(centre: StoredColumn, sy: number): boolean {
+  for (let x = 0; x < 16; x++)
+    for (let z = 0; z < 16; z++) {
+      const i = cellIndex(x, sy * 16, z);
+      for (let y = 0; y < 16; y++) if (centre.ids[i + y] !== 0) return false;
+    }
+  return true;
+}
+
 /** Meshes section (cx, sy, cz) of `dim` from the store. `cut` = the roof cut-away (null = none). */
 export function meshSection(store: ColumnStore, dim: number, cx: number, sy: number, cz: number, table: StateTable, cut?: CutParams | null): SectionMesh {
   const centre = store.get(dim, cx, cz);
-  if (!centre || sy < 0 || sy * 16 >= centre.height) return emptySection(cx, sy, cz);
-  // Fast empty check before building the neighbourhood.
-  let any = false;
-  for (let x = 0; x < 16 && !any; x++)
-    for (let z = 0; z < 16 && !any; z++) {
-      const i = cellIndex(x, sy * 16, z);
-      for (let y = 0; y < 16; y++) if (centre.ids[i + y] !== 0) { any = true; break; }
-    }
-  if (!any) return emptySection(cx, sy, cz);
+  if (!centre || !hasBlocks(centre, sy)) return emptySection(cx, sy, cz);
   T = table;
   curStore = store;
   curDim = dim;
@@ -331,44 +403,53 @@ export function meshSection(store: ColumnStore, dim: number, cx: number, sy: num
   anim.clear();
   solid.reset();
   trans.reset();
-  const src = T.source;
-  for (let y = 0; y < 16; y++)
-    for (let z = 0; z < 16; z++)
-      for (let x = 0; x < 16; x++) {
-        const p = P(x, y, z);
-        const id = ids[p];
-        if (id === 0) continue;
-        const s = (id << 4) | metas[p];
-        if (T.shape[s] === 0) continue;
-        let quads: Quad[];
-        if (src.dynamic[s]) {
-          nb.p = p;
-          nb.wx = baseX + x;
-          nb.wy = baseY + y;
-          nb.wz = baseZ + z;
-          scratch.length = 0;
-          src.build(id, s & 15, nb, scratch);
-          quads = scratch;
-        } else quads = src.quads(s);
-        const sflags = T.flags[s];
-        for (let i = 0; i < quads.length; i++) emit(quads[i], x, y, z, p, id, sflags);
-      }
-  if (sy === 0 && centre.ids[cellIndex(0, 0, 0)] !== 0) {
-    // Close the world's floor with one downward quad per column (the per-cell bottoms are culled against the void): the
-    // cut-away cap pass needs a back face under solid rock to paint, or a cut would show the sky through the ground.
-    const v = solid.begin(false);
-    const pts = [[0, 0, 16], [0, 0, 0], [16, 0, 0], [16, 0, 16]];
-    for (let k = 0; k < 4; k++) {
-      solid.vertex(v + k, pts[k][0], 0, pts[k][2], pts[k][0] / 16, pts[k][2] / 16);
-      solid.lightAt(v + k, 0, 0, 1, remembered);
-    }
-    solid.quadAttrs(v, 0, 0, 0, 0x151515, 1, 0, 0, 0, 0);
-  }
+  for (let y = 0; y < 16; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) meshCell(x, y, z);
+  if (sy === 0 && centre.ids[cellIndex(0, 0, 0)] !== 0) closeFloor();
+  return finishSection(cx, sy, cz);
+}
+
+/** The section's two passes as written (and the animated cells it samples). */
+function finishSection(cx: number, sy: number, cz: number): SectionMesh {
   const sm = solid.finish();
   const tm = trans.finish();
   const out: SectionMesh = { cx, sy, cz, solid: sm, translucent: tm, quads: (sm?.quads ?? 0) + (tm?.quads ?? 0) };
   if (anim.size) out.animCells = [...anim];
   return out;
+}
+
+/** Every quad of the block at section cell (x, y, z): its source's fixed quads, or (neighbour-dependent) built now. */
+function meshCell(x: number, y: number, z: number): void {
+  const p = P(x, y, z);
+  const id = ids[p];
+  if (id === 0) return;
+  const s = (id << 4) | metas[p];
+  if (T.shape[s] === 0) return;
+  const quads = T.source.dynamic[s] ? buildQuads(p, x, y, z, id, s) : T.source.quads(s);
+  const sflags = T.flags[s];
+  for (let i = 0; i < quads.length; i++) emit(quads[i], x, y, z, p, id, sflags);
+}
+
+function buildQuads(p: number, x: number, y: number, z: number, id: number, s: number): Quad[] {
+  nb.p = p;
+  nb.wx = baseX + x;
+  nb.wy = baseY + y;
+  nb.wz = baseZ + z;
+  scratch.length = 0;
+  T.source.build(id, s & 15, nb, scratch);
+  return scratch;
+}
+
+const FLOOR = [[0, 0, 16], [0, 0, 0], [16, 0, 0], [16, 0, 16]];
+
+/** Closes the world's floor with one downward quad per column (the per-cell bottoms are culled against the void): the
+ * cut-away cap pass needs a back face under solid rock to paint, or a cut would show the sky through the ground. */
+function closeFloor(): void {
+  const v = solid.begin(false);
+  for (let k = 0; k < 4; k++) {
+    solid.vertex(v + k, FLOOR[k][0], 0, FLOOR[k][2], FLOOR[k][0] / 16, FLOOR[k][2] / 16);
+    solid.lightAt(v + k, 0, 0, 1, remembered);
+  }
+  solid.quadAttrs(v, 0, 0, 0, 0x151515, 1, 0, 0, 0, 0);
 }
 
 /** Exposed for tests. */

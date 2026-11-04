@@ -117,6 +117,76 @@ function frameOf(standing: boolean, meta: number, banner: boolean): M4 {
   return chain(translate(0.5, banner ? -0.16666667 : 0.5, 0.5), rotate(-a, 'y'), translate(0, -0.3125, -0.4375));
 }
 
+/** The layer's kind of each block-entity kind it draws, and the block ids that must hold it (anything else is stale). */
+const KIND_OF: Record<string, Obj['kind']> = { sign: 'sign', banner: 'banner', mob_spawner: 'spawner' };
+const BLOCK_IDS: Record<Obj['kind'], readonly number[]> = { sign: [63, 68], banner: [176, 177], spawner: [52] };
+
+/** The object already drawn for this cell still matches its block and block entity. */
+function sameObj(old: Obj, id: number, meta: number, be: BlockEntityDto): boolean {
+  return old.id === id && old.meta === meta && JSON.stringify(old.be) === JSON.stringify(be);
+}
+
+/** A 2D canvas (offscreen where the browser has one). */
+function canvas2d(width: number, height: number): OffscreenCanvas | HTMLCanvasElement {
+  return typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(width, height) : Object.assign(document.createElement('canvas'), { width, height });
+}
+
+/** Sign text texture height in font pixels (the width follows the lines). */
+const TEXT_H = 42;
+
+/** The bitmap font: each line's glyphs from font.png at one texel per font pixel (two when italic text needs the half-pixel
+ * shear), coloured by the § codes (black by default), magnified with nearest sampling. */
+function fontText(lines: string[], font: { table: FontTable; pixels: FontPixels }, seed: number): { tex: THREE.Texture; W: number } {
+  const H = TEXT_H;
+  const laid = signLayout(lines, font.table).map((l, j) => ({ ...layoutLine(font.table, l.text, l.x, 0, seed + j), y: l.y, x0: l.x }));
+  // Wide enough for every line (b1.8.1 lines are not cut), with room for underlines, bold and italic.
+  const W = 2 * Math.ceil(Math.max(48, ...laid.map((l) => Math.max(2 - l.x0, l.x0 + l.width + 2))));
+  const S = laid.some((l) => l.glyphs.some((g) => g.italic)) ? 2 : 1;
+  const data = new Uint8Array(W * S * H * S * 4);
+  for (const l of laid) rasterLine(data, W * S, H * S, S, font.pixels, l, W / 2, l.y + H / 2);
+  const t = new THREE.DataTexture(data, W * S, H * S, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.needsUpdate = true;
+  return { tex: t, W };
+}
+
+/** No font in the pack: a system monospace font at the font's 8 px height in the vanilla advances, cut to opaque (null
+ * without a 2D context). */
+function canvasText(lines: string[]): { tex: THREE.Texture; W: number } | null {
+  const W = 96, H = TEXT_H;
+  const canvas = canvas2d(W, H);
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+  if (!ctx) return null;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#000';
+  ctx.textBaseline = 'top';
+  ctx.font = `bold 8px "Lucida Console", "DejaVu Sans Mono", monospace`;
+  for (const l of signLayout(lines)) {
+    let x = l.x + W / 2;
+    for (const ch of l.text) {
+      const w = charWidthOf(ch);
+      ctx.fillText(ch, x + (w - 1) / 2 - ctx.measureText(ch).width / 2, l.y + H / 2);
+      x += w;
+    }
+  }
+  const img = ctx.getImageData(0, 0, W, H);
+  for (let i = 3; i < img.data.length; i += 4) img.data[i] = img.data[i] >= 96 ? 255 : 0;
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas as HTMLCanvasElement);
+  tex.flipY = false;
+  return { tex, W };
+}
+
+/** The text's quad: W × H font pixels centred on the origin, uv over the whole texture. */
+function textQuad(W: number, H: number): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  const corners = [[-W / 2, -H / 2], [-W / 2, H / 2], [W / 2, H / 2], [W / 2, -H / 2]];
+  g.setAttribute('position', new THREE.Float32BufferAttribute(corners.flatMap(([x, y]) => [x, y, 0]), 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(corners.flatMap(([x, y]) => [(x + W / 2) / W, (y + H / 2) / H]), 2));
+  g.setAttribute('aShade', new THREE.Float32BufferAttribute([1, 1, 1, 1], 1));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  return g;
+}
+
 const m4 = (m: M4) => new THREE.Matrix4().set(...(m as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]));
 
 export interface BlockEntityLayerUpdate {
@@ -203,61 +273,83 @@ export class BlockEntityLayer {
     this.signDistance = p.software ? 24 : 48;
     this.detailDistance = p.software ? 40 : 96;
     this.maxTextures = p.software ? 24 : 96;
-    if ((blockEntities.revision !== this.revision || p.dim !== this.dim) && !this.building) void this.rebuild(blockEntities, p.dim);
-    if (p.now - this.lightAt > 3000 && !this.building && this.objs.size) this.refreshLight(p.dim, p.now);
+    this.upkeep(blockEntities, p);
     const c = p.centre;
-    let texts = 0;
-    const seen = new Set<string>();
+    this.texts = 0;
+    this.seen.clear();
     const dt = Math.min(0.25, Math.max(0, (p.now - this.lastNow) / 1000));
     this.lastNow = p.now;
     const beta = this.version === 'b1.8.1';
     for (const o of this.objs.values()) {
-      const x = o.be.x + 0.5, y = o.be.y + 0.5, z = o.be.z + 0.5;
-      const d = Math.hypot(x - c.x, y - c.y, z - c.z);
-      if (o.kind === 'spawner') {
-        if (d <= this.detailDistance && p.displayMobs?.showDisplayMob) {
-          // The cached entity defaults to a pig (b1.8.1's client never learns the type: every spawner shows one).
-          const mob = o.be.mob ? String(o.be.mob) : 'pig';
-          // It spins, and the block smokes and flickers with flames, only while a player is within 16 blocks of its centre;
-          // the mob is drawn either way.
-          if (!p.playerNear || p.playerNear(p.dim, x, y, z, 16)) {
-            o.spin = ((o.spin ?? 0) + dt * SPAWNER_SPIN_RAD_S) % (Math.PI * 2);
-            o.ticks = (o.ticks ?? 0) + dt * 20;
-            const n = Math.floor(o.ticks);
-            if (n > 0) {
-              o.ticks -= n;
-              p.displayMobs.spawnerParticles?.(p.dim, o.be.x, o.be.y, o.be.z, Math.min(n, 4), p.now);
-            }
-          }
-          const spin = o.spin ?? 0;
-          const [fx, fy, fz] = spawnerMobFeet(spin, beta);
-          p.displayMobs.showDisplayMob(o.key, p.dim, x + fx, o.be.y + fy, z + fz, mob, spawnerMobScale(mob, beta), spin, -30);
-          seen.add(o.key);
-        }
-        continue;
-      }
-      const vis = d <= (o.kind === 'sign' ? this.signDistance : this.detailDistance);
-      o.group.visible = vis;
-      if (!vis) continue;
-      o.usedAt = p.now;
-      if (o.kind === 'sign' && o.text && o.obfuscated && p.now - (o.textAt ?? 0) >= (p.software ? 100 : 50) && texts < 4) {
-        // FontRenderer draws obfuscated text with a new random glyph of the same width every frame: redraw it often.
-        this.dropText(o);
-      }
-      if (o.kind === 'sign' && !o.text) {
-        if (texts++ < 4) this.buildText(o, p.now); // a few new text textures a frame
-      }
-      if (o.slate) {
-        // TileEntityBannerRenderer: (−0.0125 + 0.01·cos(f·π·0.02))·π, f = x·7 + y·9 + z·13 + world time.
-        const f = o.be.x * 7 + o.be.y * 9 + o.be.z * 13 + p.ticks;
-        o.slate.rotation.x = (-0.0125 + 0.01 * Math.cos(f * Math.PI * 0.02)) * Math.PI;
-      }
+      const d = Math.hypot(o.be.x + 0.5 - c.x, o.be.y + 0.5 - c.y, o.be.z + 0.5 - c.z);
+      if (o.kind === 'spawner') this.updateSpawner(o, d, dt, beta, p);
+      else this.updateBoard(o, d, p);
     }
-    // Spawner mobs out of range or gone.
-    for (const k of this.shown) if (!seen.has(k)) p.displayMobs?.hideDisplayMob?.(k);
-    this.shown.clear();
-    for (const k of seen) this.shown.add(k);
+    this.hideGoneMobs(p);
     this.trimTextures();
+  }
+
+  /** Signs with text built this frame (a few a frame), and the spawner mobs shown this frame. */
+  private texts = 0;
+  private readonly seen = new Set<string>();
+
+  /** Rebuilt when the store's revision or the dimension changed; the light refreshed every few seconds. */
+  private upkeep(blockEntities: { revision: number; all(dim: Dim): Iterable<BlockEntityDto> }, p: BlockEntityLayerUpdate): void {
+    if ((blockEntities.revision !== this.revision || p.dim !== this.dim) && !this.building) void this.rebuild(blockEntities, p.dim);
+    if (p.now - this.lightAt > 3000 && !this.building && this.objs.size) this.refreshLight(p.dim, p.now);
+  }
+
+  /** A spawner's display mob within the detail distance (the cached entity defaults to a pig: b1.8.1's client never learns
+   * the type, so every spawner shows one). It spins, and the block smokes and flickers with flames, only while a player is
+   * within 16 blocks of its centre; the mob is drawn either way. */
+  private updateSpawner(o: Obj, d: number, dt: number, beta: boolean, p: BlockEntityLayerUpdate): void {
+    const show = p.displayMobs?.showDisplayMob;
+    if (d > this.detailDistance || !show) return;
+    const mob = o.be.mob ? String(o.be.mob) : 'pig';
+    const x = o.be.x + 0.5, y = o.be.y + 0.5, z = o.be.z + 0.5;
+    if (!p.playerNear || p.playerNear(p.dim, x, y, z, 16)) this.spinSpawner(o, dt, p);
+    const spin = o.spin ?? 0;
+    const [fx, fy, fz] = spawnerMobFeet(spin, beta);
+    show.call(p.displayMobs, o.key, p.dim, x + fx, o.be.y + fy, z + fz, mob, spawnerMobScale(mob, beta), spin, -30);
+    this.seen.add(o.key);
+  }
+
+  private spinSpawner(o: Obj, dt: number, p: BlockEntityLayerUpdate): void {
+    o.spin = ((o.spin ?? 0) + dt * SPAWNER_SPIN_RAD_S) % (Math.PI * 2);
+    o.ticks = (o.ticks ?? 0) + dt * 20;
+    const n = Math.floor(o.ticks);
+    if (n <= 0) return;
+    o.ticks -= n;
+    p.displayMobs?.spawnerParticles?.(p.dim, o.be.x, o.be.y, o.be.z, Math.min(n, 4), p.now);
+  }
+
+  /** A sign or banner: shown within its distance, its text built (a few a frame) or redrawn, a banner's slate swaying. */
+  private updateBoard(o: Obj, d: number, p: BlockEntityLayerUpdate): void {
+    const vis = d <= (o.kind === 'sign' ? this.signDistance : this.detailDistance);
+    o.group.visible = vis;
+    if (!vis) return;
+    o.usedAt = p.now;
+    // FontRenderer draws obfuscated text with a new random glyph of the same width every frame: redraw it often.
+    if (this.obfuscatedDue(o, p)) this.dropText(o);
+    if (o.kind === 'sign' && !o.text && this.texts++ < 4) this.buildText(o, p.now); // a few new text textures a frame
+    if (o.slate) {
+      // TileEntityBannerRenderer: (−0.0125 + 0.01·cos(f·π·0.02))·π, f = x·7 + y·9 + z·13 + world time.
+      const f = o.be.x * 7 + o.be.y * 9 + o.be.z * 13 + p.ticks;
+      o.slate.rotation.x = (-0.0125 + 0.01 * Math.cos(f * Math.PI * 0.02)) * Math.PI;
+    }
+  }
+
+  /** Obfuscated sign text due for new stand-in glyphs (every 50 ms, 100 in software; within this frame's text budget). */
+  private obfuscatedDue(o: Obj, p: BlockEntityLayerUpdate): boolean {
+    if (o.kind !== 'sign' || !o.text || !o.obfuscated) return false;
+    return p.now - (o.textAt ?? 0) >= (p.software ? 100 : 50) && this.texts < 4;
+  }
+
+  /** Spawner mobs out of range or gone. */
+  private hideGoneMobs(p: BlockEntityLayerUpdate): void {
+    for (const k of this.shown) if (!this.seen.has(k)) p.displayMobs?.hideDisplayMob?.(k);
+    this.shown.clear();
+    for (const k of this.seen) this.shown.add(k);
   }
 
   private async rebuild(store: { revision: number; all(dim: Dim): Iterable<BlockEntityDto> }, dim: Dim): Promise<void> {
@@ -270,13 +362,12 @@ export class BlockEntityLayer {
       const keep = new Set<string>();
       want.forEach((be, i) => {
         const id = info[i * 3], meta = info[i * 3 + 1], light = info[i * 3 + 2];
-        const kind = be.kind === 'sign' ? 'sign' : be.kind === 'banner' ? 'banner' : 'spawner';
-        const ok = kind === 'sign' ? id === 63 || id === 68 : kind === 'banner' ? id === 176 || id === 177 : id === 52;
-        if (!ok) return;
+        const kind = KIND_OF[be.kind];
+        if (!BLOCK_IDS[kind].includes(id)) return;
         const key = `${dim},${be.x},${be.y},${be.z}`;
         keep.add(key);
         const old = this.objs.get(key);
-        if (old && old.id === id && old.meta === meta && JSON.stringify(old.be) === JSON.stringify(be)) return;
+        if (old && sameObj(old, id, meta, be)) return;
         if (old) this.remove(old);
         const o = this.create(key, be, id, meta, kind);
         if (light >= 0) o.light.set(light >> 4, light & 15);
@@ -323,7 +414,7 @@ export class BlockEntityLayer {
     const table = b ? fontTable(b.pack.font, b.version === 'b1.8.1') : null;
     if (!img || !table) return null;
     try {
-      const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(img.width, img.height) : Object.assign(document.createElement('canvas'), { width: img.width, height: img.height });
+      const canvas = canvas2d(img.width, img.height);
       const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
       if (!ctx) return null;
       ctx.drawImage(img, 0, 0);
@@ -344,45 +435,9 @@ export class BlockEntityLayer {
       return;
     }
     const font = this.font();
-    let W = 96;
-    const H = 42;
-    let tex: THREE.Texture;
-    if (font) {
-      // The bitmap font: each line's glyphs from font.png at one texel per font pixel (two when italic text needs the
-      // half-pixel shear), coloured by the § codes (black by default), magnified with nearest sampling.
-      const seed = o.be.x * 31 + o.be.z * 17 + (o.obfuscated ? Math.floor(now / 50) * 7919 : 0);
-      const laid = signLayout(lines, font.table).map((l, j) => ({ ...layoutLine(font.table, l.text, l.x, 0, seed + j), y: l.y, x0: l.x }));
-      // Wide enough for every line (b1.8.1 lines are not cut), with room for underlines, bold and italic.
-      W = 2 * Math.ceil(Math.max(48, ...laid.map((l) => Math.max(2 - l.x0, l.x0 + l.width + 2))));
-      const S = laid.some((l) => l.glyphs.some((g) => g.italic)) ? 2 : 1;
-      const data = new Uint8Array(W * S * H * S * 4);
-      for (const l of laid) rasterLine(data, W * S, H * S, S, font.pixels, l, W / 2, l.y + H / 2);
-      const t = new THREE.DataTexture(data, W * S, H * S, THREE.RGBAFormat, THREE.UnsignedByteType);
-      t.needsUpdate = true;
-      tex = t;
-    } else {
-      // No font in the pack: a system monospace font at the font's 8 px height in the vanilla advances, cut to opaque.
-      const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H });
-      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-      if (!ctx) return;
-      ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = '#000';
-      ctx.textBaseline = 'top';
-      ctx.font = `bold 8px "Lucida Console", "DejaVu Sans Mono", monospace`;
-      for (const l of signLayout(lines)) {
-        let x = l.x + W / 2;
-        for (const ch of l.text) {
-          const w = charWidthOf(ch);
-          ctx.fillText(ch, x + (w - 1) / 2 - ctx.measureText(ch).width / 2, l.y + H / 2);
-          x += w;
-        }
-      }
-      const img = ctx.getImageData(0, 0, W, H);
-      for (let i = 3; i < img.data.length; i += 4) img.data[i] = img.data[i] >= 96 ? 255 : 0;
-      ctx.putImageData(img, 0, 0);
-      tex = new THREE.CanvasTexture(canvas as HTMLCanvasElement);
-      tex.flipY = false;
-    }
+    const drawn = font ? fontText(lines, font, o.be.x * 31 + o.be.z * 17 + (o.obfuscated ? Math.floor(now / 50) * 7919 : 0)) : canvasText(lines);
+    if (!drawn) return;
+    const { tex, W } = drawn;
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter;
     tex.generateMipmaps = false;
@@ -391,15 +446,9 @@ export class BlockEntityLayer {
     // (b1.8.1: 0.01666667 × 2/3 = 1/90).
     const k = this.version === 'b1.8.1' ? 0.016666668 * 0.6666667 : 0.010416667;
     const m = chain(frameOf(o.id === 63, o.meta, false), translate(0, 0.33333334, 0.046666667 + 0.002), scale(k, -k, k));
-    const g = new THREE.BufferGeometry();
-    const corners = [[-W / 2, -H / 2], [-W / 2, H / 2], [W / 2, H / 2], [W / 2, -H / 2]];
-    g.setAttribute('position', new THREE.Float32BufferAttribute(corners.flatMap(([x, y]) => [x, y, 0]), 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(corners.flatMap(([x, y]) => [(x + W / 2) / W, (y + H / 2) / H]), 2));
-    g.setAttribute('aShade', new THREE.Float32BufferAttribute([1, 1, 1, 1], 1));
-    g.setIndex([0, 1, 2, 0, 2, 3]);
     const mat = this.material(tex, o.light);
     mat.transparent = false;
-    const mesh = new THREE.Mesh(g, mat);
+    const mesh = new THREE.Mesh(textQuad(W, TEXT_H), mat);
     mesh.matrixAutoUpdate = false;
     mesh.matrix.copy(m4(m));
     o.group.add(mesh);
@@ -431,7 +480,7 @@ export class BlockEntityLayer {
     if (this.pixels || !this.bundle) return this.pixels;
     try {
       const img = this.bundle.entity;
-      const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(img.width, img.height) : Object.assign(document.createElement('canvas'), { width: img.width, height: img.height });
+      const canvas = canvas2d(img.width, img.height);
       const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
       if (!ctx) return null;
       ctx.drawImage(img, 0, 0);

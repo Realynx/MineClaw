@@ -112,6 +112,38 @@ export function buildModel(def: ModelDef): BuiltModel {
 }
 
 /** Collects cuboid faces (vanilla box UVs normalised by `tex`) tagged with a bone slot + 256 × layer. */
+/** A cube's 8 corners (inflated; x swapped when mirrored), in the order CORNERS indexes. */
+function cubeCorners(c: CubeDef): V3[] {
+  const g = c.inflate ?? 0;
+  let x0 = c.o[0] - g, x1 = c.o[0] + c.s[0] + g;
+  const y0 = c.o[1] - g, y1 = c.o[1] + c.s[1] + g, z0 = c.o[2] - g, z1 = c.o[2] + c.s[2] + g;
+  if (c.mirror) [x0, x1] = [x1, x0];
+  return [
+    [x0, y0, z0],
+    [x1, y0, z0],
+    [x1, y1, z0],
+    [x0, y1, z0],
+    [x0, y0, z1],
+    [x1, y0, z1],
+    [x1, y1, z1],
+    [x0, y1, z1],
+  ];
+}
+
+/** Face k's uv rectangle: its own (a face left out is not drawn: null), else the vanilla box layout. */
+function faceRect(c: CubeDef, k: number): readonly [number, number, number, number] | null {
+  if (!c.faces) return boxFaceUv(c, k);
+  return c.faces[FACE_KEYS[k]] || null;
+}
+
+/** A quad's normal (from its first or, when that is degenerate, its second triangle); null when it has no area. */
+function faceNormal(q: V3[]): V3 | null {
+  const n = cross(sub(q[1], q[0]), sub(q[2], q[0]));
+  if (!(Math.hypot(n[0], n[1], n[2]) < 1e-9)) return n;
+  const m = cross(sub(q[2], q[0]), sub(q[3], q[0]));
+  return Math.hypot(m[0], m[1], m[2]) < 1e-9 ? null : m;
+}
+
 export class CubeSink {
   private pos: number[] = [];
   private nor: number[] = [];
@@ -122,59 +154,43 @@ export class CubeSink {
   constructor(private readonly tex: readonly [number, number]) {}
 
   cube(c: CubeDef, tag: number): void {
-    const [tw, th] = this.tex;
-    const { pos, nor, uv, pid, idx } = this;
-    const g = c.inflate ?? 0;
-    let x0 = c.o[0] - g, x1 = c.o[0] + c.s[0] + g;
-    const y0 = c.o[1] - g, y1 = c.o[1] + c.s[1] + g, z0 = c.o[2] - g, z1 = c.o[2] + c.s[2] + g;
-    if (c.mirror) [x0, x1] = [x1, x0];
-    const v: V3[] = [
-      [x0, y0, z0],
-      [x1, y0, z0],
-      [x1, y1, z0],
-      [x0, y1, z0],
-      [x0, y0, z1],
-      [x1, y0, z1],
-      [x1, y1, z1],
-      [x0, y1, z1],
-    ];
+    const v = cubeCorners(c);
     for (let k = 0; k < 6; k++) {
-      let rect: readonly [number, number, number, number];
-      if (c.faces) {
-        const r = c.faces[FACE_KEYS[k]];
-        if (!r) continue;
-        rect = r;
-      } else rect = boxFaceUv(c, k);
+      const rect = faceRect(c, k);
+      if (!rect) continue;
       const q = CORNERS[k].map((i) => v[i]);
       // Skip faces with no area (the edges of a zero-thickness box).
-      let n = cross(sub(q[1], q[0]), sub(q[2], q[0]));
-      if (Math.hypot(n[0], n[1], n[2]) < 1e-9) {
-        n = cross(sub(q[2], q[0]), sub(q[3], q[0]));
-        if (Math.hypot(n[0], n[1], n[2]) < 1e-9) continue;
-      }
+      const n = faceNormal(q);
+      if (!n) continue;
       const nom = NOMINAL[k];
-      const out: V3 = c.mirror && k < 2 ? [-nom[0], nom[1], nom[2]] : nom;
-      const [u1, v1, u2, v2] = rect;
-      this.uvRects.push([Math.min(u1, u2), Math.min(v1, v2), Math.max(u1, u2), Math.max(v1, v2)]);
-      // Vertex 0 (u2, v1), 1 (u1, v1), 2 (u1, v2), 3 (u2, v2), pulled in by INSET.
-      const su = Math.sign(u2 - u1) * INSET, sv = Math.sign(v2 - v1) * INSET;
-      let corners: Array<[V3, number, number]> = [
-        [q[0], u2 - su, v1 + sv],
-        [q[1], u1 + su, v1 + sv],
-        [q[2], u1 + su, v2 - sv],
-        [q[3], u2 - su, v2 - sv],
-      ];
-      if (dot(n, out) < 0) corners = [corners[0], corners[3], corners[2], corners[1]];
-      const base = pos.length / 3;
-      for (const [p, cu, cv] of corners) {
-        pos.push(p[0], p[1], p[2]);
-        nor.push(out[0], out[1], out[2]);
-        uv.push(cu / tw, cv / th);
-        pid.push(tag);
-      }
-      // Counter-clockwise seen from outside in a right-handed frame: (0, 1, 2), (0, 2, 3).
-      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      this.face(q, rect, n, c.mirror && k < 2 ? [-nom[0], nom[1], nom[2]] : nom, tag);
     }
+  }
+
+  /** One quad: corners q with the uv rectangle, wound so its normal agrees with the nominal one (`out`). */
+  private face(q: V3[], rect: readonly [number, number, number, number], n: V3, out: V3, tag: number): void {
+    const [tw, th] = this.tex;
+    const { pos, nor, uv, pid, idx } = this;
+    const [u1, v1, u2, v2] = rect;
+    this.uvRects.push([Math.min(u1, u2), Math.min(v1, v2), Math.max(u1, u2), Math.max(v1, v2)]);
+    // Vertex 0 (u2, v1), 1 (u1, v1), 2 (u1, v2), 3 (u2, v2), pulled in by INSET.
+    const su = Math.sign(u2 - u1) * INSET, sv = Math.sign(v2 - v1) * INSET;
+    let corners: Array<[V3, number, number]> = [
+      [q[0], u2 - su, v1 + sv],
+      [q[1], u1 + su, v1 + sv],
+      [q[2], u1 + su, v2 - sv],
+      [q[3], u2 - su, v2 - sv],
+    ];
+    if (dot(n, out) < 0) corners = [corners[0], corners[3], corners[2], corners[1]];
+    const base = pos.length / 3;
+    for (const [p, cu, cv] of corners) {
+      pos.push(p[0], p[1], p[2]);
+      nor.push(out[0], out[1], out[2]);
+      uv.push(cu / tw, cv / th);
+      pid.push(tag);
+    }
+    // Counter-clockwise seen from outside in a right-handed frame: (0, 1, 2), (0, 2, 3).
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
 
   finish(id: string): Pick<BuiltModel, 'positions' | 'normals' | 'uvs' | 'partIds' | 'indices' | 'uvRects'> {

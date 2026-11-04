@@ -34,7 +34,7 @@ import { cubeGeometry, InstancedDraw, modelGeometry, ShadowDraw, spriteGeometry,
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, DEATH_SHRINK_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion, stepMotion, wrapDeg, type Motion } from './entities/motion';
 import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine, type RootParams } from './entities/pose';
 import { canonical, MOB_NAMES, MODEL_BY_ID, mobLook, mobName, objectLook, objectName, playerLook } from './entities/registry';
-import type { Look, PoseCtx } from './entities/types';
+import type { Look, ModelDef, PoseCtx } from './entities/types';
 import { Variant } from './entities/variant';
 import { LabelFactory } from './labels';
 
@@ -63,25 +63,63 @@ export function mobInfo(type: number): [string, number, number, number] {
 export function entityLook(e: EntityView, version: GameVersion = '1.12.2'): { colour: number; w: number; h: number } {
   if (e.kind === 'player') return { colour: 0x4a7ad8, w: 0.6, h: 1.8 };
   if (e.kind === 'item') return { colour: 0xd8b040, w: 0.25, h: 0.25 };
-  if (e.kind === 'mob') {
-    const look = mobLook(version, e.type, e.name, e.dto.variant, e.id);
-    const def = MODEL_BY_ID[look.model];
-    const s = (look.scale ?? 1) * (e.dto.baby ? 0.5 : 1);
-    return { colour: look.colour, w: (def?.width ?? 0.6) * s, h: (def?.height ?? 1.8) * s };
-  }
+  if (e.kind === 'mob') return mobBox(e, version);
   return { colour: 0x9a9a9a, w: 0.5, h: 0.5 };
 }
 
-export function entityText(e: EntityView): string {
-  if (e.kind === 'item') return `${e.name ?? `item ${e.item}`}${e.count > 1 ? ` x${e.count}` : ''}`;
-  if (e.kind === 'player') return e.name ?? 'player';
-  if (e.kind === 'mob') return `${e.dto.baby ? 'baby ' : ''}${(MOB_NAMES[e.type] ?? e.name ?? 'mob').replace(/_/g, ' ')}`;
-  if (e.kind === 'painting') return e.dto.motive ? `painting · ${e.dto.motive}` : 'painting';
-  if (e.kind === 'item_frame') {
+/** A mob's look colour and hitbox (babies half size). */
+function mobBox(e: EntityView, version: GameVersion): { colour: number; w: number; h: number } {
+  const look = mobLook(version, e.type, e.name, e.dto.variant, e.id);
+  const def = MODEL_BY_ID[look.model];
+  const s = (look.scale ?? 1) * (e.dto.baby ? 0.5 : 1);
+  return { colour: look.colour, w: (def?.width ?? 0.6) * s, h: (def?.height ?? 1.8) * s };
+}
+
+/** How far (blocks) an entity's label shows: players 64, drops 12, the rest 24. */
+function labelRange(kind: string): number {
+  if (kind === 'player') return 64;
+  return kind === 'item' ? 12 : 24;
+}
+
+/** Bodies that get a silhouette when hidden: visible bots and players. */
+function ghostable(d: Drawn): boolean {
+  return !d.invisible && (d.bot || d.ent?.kind === 'player');
+}
+
+/** The experience orb icon (0..10) by its value (EntityXPOrb.getTextureByXP). */
+export function xpOrbIcon(v: number): number {
+  for (let k = 0; k < ORB_STEPS.length; k++) if (v >= ORB_STEPS[k]) return ORB_STEPS.length - k;
+  return 0;
+}
+
+/** The smallest value of icons 10 down to 1. */
+const ORB_STEPS = [2477, 1237, 617, 307, 149, 73, 37, 17, 7, 3];
+
+/** The shoulder parrots part of a rider signature: "left|right" colours, empty where none. */
+function shoulderSig(shoulders: EntityDto['shoulders']): string {
+  return `${shoulders?.left ?? ''}|${shoulders?.right ?? ''}`;
+}
+
+/** Selected bodies (by key, or a bot by its short key) draw brighter. */
+function selectedBrightness(d: { key: string; botView: BotView | null }, selected: ReadonlySet<string>): number {
+  return selected.has(d.key) || (d.botView && selected.has(d.botView.dto.short)) ? 1.25 : 1;
+}
+
+/** entityText per entity kind (other kinds: the name, else the kind). */
+const KIND_TEXT = new Map<string, (e: EntityView) => string>([
+  ['item', (e) => `${e.name ?? `item ${e.item}`}${e.count > 1 ? ` x${e.count}` : ''}`],
+  ['player', (e) => e.name ?? 'player'],
+  ['mob', (e) => `${e.dto.baby ? 'baby ' : ''}${(MOB_NAMES[e.type] ?? e.name ?? 'mob').replace(/_/g, ' ')}`],
+  ['painting', (e) => (e.dto.motive ? `painting · ${e.dto.motive}` : 'painting')],
+  ['item_frame', (e) => {
     const n = e.dto.frameItem ? itemName(e.dto.frameItem[0]) : null;
     return n ? `item frame · ${n.replace(/_/g, ' ')}` : 'item frame';
-  }
-  return e.name ?? e.kind.replace(/_/g, ' ');
+  }],
+]);
+
+export function entityText(e: EntityView): string {
+  const text = KIND_TEXT.get(e.kind);
+  return text ? text(e) : (e.name ?? e.kind.replace(/_/g, ' '));
 }
 
 // ------------------------------------------------------------------------------------------------------------ internals
@@ -203,6 +241,35 @@ interface Drawn {
   botView: BotView | null;
 }
 
+/** A body's hitbox (the look's model size × its scale, babies half) and box colour; no look: the default box. */
+function setHitbox(d: Drawn, look: Look | null, def: ModelDef | undefined): void {
+  const s = (look?.scale ?? 1) * (d.baby ? 0.5 : 1);
+  d.w = (def?.width ?? 0.6) * s;
+  d.h = (def?.height ?? 1.8) * s;
+  d.colour = look?.colour ?? 0x9a9a9a;
+}
+
+/** A bot's health (bots carry it, entities send hurt events): a drop flashes it hurt, 0 starts the death fall, a living hp
+ * again (respawn) ends it. */
+function trackBotHealth(d: Drawn, hp: number, now: number): void {
+  const m = d.motion;
+  if (Number.isFinite(m.hp) && hp < m.hp && hp > 0) m.hurtAt = now;
+  if (hp <= 0 && !m.deadAt) {
+    m.deadAt = now;
+    m.hurtAt = now;
+  }
+  if (hp > 0 && m.deadAt) {
+    m.deadAt = 0;
+    d.smoked = false;
+  }
+  m.hp = hp;
+}
+
+/** Armour from the wire's equipment, else the older material list on the entity's or bot's record. */
+function wornArmor(d: Drawn, eq: Equipment | null | undefined): ReadonlyArray<string | null> | null {
+  return armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {});
+}
+
 interface ModelEntry {
   built: BuiltModel;
   skel: Skeleton;
@@ -252,6 +319,8 @@ const HEAD_SLOT = 59;
 const CONTENT_SLOT = 58;
 /** A worn skull: its head at 58, the dragon's jaw at 59 (never together with a head block or minecart contents). */
 const SKULL_SLOT = CONTENT_SLOT;
+/** LayerCustomHead's skull scale (and the villager lift in px). */
+const SKULL_SCALE = 1.1875;
 /** Elytra wings: left 56, right 57 (models with at most 56 parts). */
 const ELYTRA_SLOT = 56;
 /** A mooshroom's mushrooms: 3 × 2 crossed planes at 50..55 (an enderman's carried plant and an iron golem's poppy: 50, 51). */
@@ -587,15 +656,21 @@ export class EntityLayer {
 
   /** The bot or entity an event is about: (dim, id), or a bot by `name` (bots carry no entity id on the wire). */
   private eventTarget(ev: EntityEvent): Drawn | null {
-    const name = (ev as { name?: unknown; bot?: unknown }).name ?? (ev as { bot?: unknown }).bot;
-    if (typeof name === 'string') {
-      const b = this.drawn.get(name);
-      if (b) return b;
-    }
+    const bot = this.namedBot(ev);
+    if (bot) return bot;
     if (ev.id == null) return null;
-    const d = this.drawn.get(`${ev.dim ?? 0}:${ev.id}`);
-    if (d) return d;
-    for (const x of this.drawn.values()) if (x.bot && (x.botView?.dto as { id?: number } | undefined)?.id === ev.id) return x;
+    return this.drawn.get(`${ev.dim ?? 0}:${ev.id}`) ?? this.botWithId(ev.id);
+  }
+
+  /** The bot an event names (`name`, or the older `bot`). */
+  private namedBot(ev: EntityEvent): Drawn | undefined {
+    const name = (ev as { name?: unknown; bot?: unknown }).name ?? (ev as { bot?: unknown }).bot;
+    return typeof name === 'string' ? this.drawn.get(name) : undefined;
+  }
+
+  /** A bot whose wire record carries this entity id. */
+  private botWithId(id: number): Drawn | null {
+    for (const x of this.drawn.values()) if (x.bot && (x.botView?.dto as { id?: number } | undefined)?.id === id) return x;
     return null;
   }
 
@@ -614,7 +689,7 @@ export class EntityLayer {
     for (const e of ents) this.listEntity(e, frame, timeMs);
     for (const [k, dm] of this.displays) this.listDisplay(k, dm, frame, timeMs);
     this.keepDying(frame, timeMs);
-    for (const [k, o] of this.botObjs) if (!this.drawn.get(k)?.bot) this.dropBot(k, o);
+    this.dropGoneBots();
     // Bones: one row per entity, then the particles (63 per row).
     this.particles.step(timeMs);
     this.lightning.update(timeMs);
@@ -623,12 +698,17 @@ export class EntityLayer {
     // Rows first: a body poses its riders' rows along with its own.
     for (let i = 0; i < list.length; i++) list[i].row = i;
     for (const d of list) {
-      d.bright = selected.has(d.key) || (d.botView && selected.has(d.botView.dto.short)) ? 1.25 : 1;
+      d.bright = selectedBrightness(d, selected);
       this.writeRow(d, timeMs);
     }
     this.particleRow = list.length;
     this.particles.list.forEach((p, i) => this.particles.bone(p, timeMs, this.bones, (this.particleRow + Math.floor(i / PER_ROW)) * ROW_FLOATS + (i % PER_ROW) * 12));
     if (this.boneTex) this.boneTex.needsUpdate = true;
+  }
+
+  /** Drops the bot objects (labels…) of bots no longer drawn. */
+  private dropGoneBots(): void {
+    for (const [k, o] of this.botObjs) if (!this.drawn.get(k)?.bot) this.dropBot(k, o);
   }
 
   private listBot(b: BotView, frame: number, timeMs: number, selected: ReadonlySet<string>): void {
@@ -709,10 +789,7 @@ export class EntityLayer {
     const def = look ? MODEL_BY_ID[look.model] : undefined;
     d.model = def && def.id !== 'box' && this.bundle ? this.entry(def) : null;
     d.kind = d.model ? 'model' : 'box';
-    const s = (look?.scale ?? 1) * (d.baby ? 0.5 : 1);
-    d.w = (def?.width ?? 0.6) * s;
-    d.h = (def?.height ?? 1.8) * s;
-    d.colour = look?.colour ?? 0x9a9a9a;
+    setHitbox(d, look, def);
   }
 
   private itemById(ref: ItemRef | EquipRef | undefined, fallbackId = 0): ItemLook | null {
@@ -760,7 +837,7 @@ export class EntityLayer {
   /** Elytra (1.12.2, on the renderers with LayerElytra) and armour (the wire's equipment, else an older material list). */
   private equipBody(d: Drawn, eq: Equipment | null | undefined): void {
     d.elytra = !this.beta && eq?.chest?.[0] === 443 && this.elytraWearer(d);
-    d.armor = d.armorLayer ? (armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {})) : null;
+    d.armor = d.armorLayer ? wornArmor(d, eq) : null;
     d.armorDye = d.armor ? armorDyes(eq) : null;
   }
 
@@ -800,31 +877,24 @@ export class EntityLayer {
       d.colour = botColour(b).getHex();
     }
     const m = d.motion;
-    const hp = b.dto.hp;
-    if (Number.isFinite(m.hp) && hp < m.hp && hp > 0) m.hurtAt = now;
-    if (hp <= 0 && !m.deadAt) {
-      m.deadAt = now;
-      m.hurtAt = now;
-    }
-    if (hp > 0 && m.deadAt) {
-      m.deadAt = 0;
-      d.smoked = false;
-    }
-    m.hp = hp;
+    trackBotHealth(d, b.dto.hp, now);
     const extra = b.dto as { equipment?: Equipment | null; flags?: number; headYaw?: number | null };
-    const held = b.dto.held ?? null;
-    const sigEq = `${held}|${JSON.stringify(extra.equipment ?? null)}`;
-    if (d.sig + sigEq !== d.eqSig) {
-      this.layersFor(d, 'player', null);
-      this.equip(d, extra.equipment, held ? this.heldLook(held) : null, held);
-      d.eqSig = d.sig + sigEq;
-    }
+    this.refreshBotGear(d, b.dto.held ?? null, extra.equipment);
     const flags = extra.flags ?? 0;
     d.burning = (flags & FLAG_ON_FIRE) !== 0;
     d.invisible = (flags & FLAG_INVISIBLE) !== 0;
     d.glowing = (flags & FLAG_GLOWING) !== 0;
     d.flash = 0;
     stepMotion(m, b.x, b.y, b.z, b.yaw, now, (flags & FLAG_SPRINTING) !== 0);
+  }
+
+  /** A bot's held item and equipment, resolved again only when they (or the look) changed. */
+  private refreshBotGear(d: Drawn, held: string | null, equipment: Equipment | null | undefined): void {
+    const sigEq = `${held}|${JSON.stringify(equipment ?? null)}`;
+    if (d.sig + sigEq === d.eqSig) return;
+    this.layersFor(d, 'player', null);
+    this.equip(d, equipment, held ? this.heldLook(held) : null, held);
+    d.eqSig = d.sig + sigEq;
   }
 
   private heldLook(held: string): ItemLook | null {
@@ -1245,28 +1315,36 @@ export class EntityLayer {
   /** The parrots on a player's shoulders and the arrows stuck in it: rider rows, kept while the wire says so. */
   private syncRiders(d: Drawn, e: EntityView, now: number): void {
     if (e.kind !== 'player' && !d.riders) return;
-    const dto = e.dto;
-    const shoulders = e.kind === 'player' && this.version === '1.12.2' ? dto.shoulders : null;
-    const arrows = e.kind === 'player' && this.version === '1.12.2' ? (dto.arrows ?? 0) : 0;
+    const modern = e.kind === 'player' && this.version === '1.12.2';
+    const shoulders = modern ? e.dto.shoulders : null;
+    const arrows = modern ? (e.dto.arrows ?? 0) : 0;
     const slim = d.look?.model === 'player_slim';
-    const sig = `${this.version}|${!!this.bundle}|${shoulders?.left ?? ''}|${shoulders?.right ?? ''}|${arrows}|${slim}|${e.id}`;
+    const sig = `${this.version}|${!!this.bundle}|${shoulderSig(shoulders)}|${arrows}|${slim}|${e.id}`;
     if (sig === d.ridersSig) return;
     d.ridersSig = sig;
+    const riders = this.makeRiders(d, e.id, shoulders, arrows, slim, now);
+    d.riders = riders.length ? riders : null;
+  }
+
+  /** Rider rows: a parrot per shoulder that has one, then the stuck arrows (their spots on the model). */
+  private makeRiders(d: Drawn, id: number, shoulders: EntityDto['shoulders'], arrows: number, slim: boolean, now: number): Drawn[] {
     const riders: Drawn[] = [];
-    const rider = (suffix: string, ride: NonNullable<Drawn['ride']>, look: Look | null): void => {
-      const r = this.drawnFor(`${d.key}#${suffix}`, false, d.x, d.y, d.z, 0, now);
-      r.parent = d;
-      r.ride = ride;
-      this.setLook(r, look);
-      riders.push(r);
-    };
     for (const [left, colour] of [[true, shoulders?.left], [false, shoulders?.right]] as const)
-      if (colour) rider(left ? 'shoulder_left' : 'shoulder_right', { kind: 'shoulder', left }, mobLook(this.version, 105, 'parrot', Variant.of(null, colour), 0));
+      if (colour) riders.push(this.rider(d, left ? 'shoulder_left' : 'shoulder_right', { kind: 'shoulder', left }, mobLook(this.version, 105, 'parrot', Variant.of(null, colour), 0), now));
     if (arrows > 0) {
       const look = objectLook(this.version, 'arrow', Variant.NONE, 0);
-      stuckArrows(e.id, arrows, slim).forEach((spot, j) => rider(`arrow${j}`, { kind: 'arrow', spot }, look));
+      stuckArrows(id, arrows, slim).forEach((spot, j) => riders.push(this.rider(d, `arrow${j}`, { kind: 'arrow', spot }, look, now)));
     }
-    d.riders = riders.length ? riders : null;
+    return riders;
+  }
+
+  /** One rider of `d` (its own drawn record, keyed under the body's). */
+  private rider(d: Drawn, suffix: string, ride: NonNullable<Drawn['ride']>, look: Look | null, now: number): Drawn {
+    const r = this.drawnFor(`${d.key}#${suffix}`, false, d.x, d.y, d.z, 0, now);
+    r.parent = d;
+    r.ride = ride;
+    this.setLook(r, look);
+    return r;
   }
 
   /**
@@ -1277,7 +1355,6 @@ export class EntityLayer {
    *   with its yaw and pitch (our arrow's yaw and pitch are vanilla's negated).
    */
   private poseRiders(d: Drawn, e: ModelEntry, sneaking: boolean): void {
-    const c = this.ctx;
     for (const r of d.riders!) {
       if (!r.model || !r.look || !r.ride) continue;
       r.sky = d.sky;
@@ -1286,40 +1363,50 @@ export class EntityLayer {
       r.bright = d.bright;
       r.invisible = false;
       const off = r.row * ROW_FLOATS;
-      if (r.ride.kind === 'shoulder') {
-        const t = identity(this.tmpA);
-        t[3] = r.ride.left ? 6.4 : -6.4;
-        t[7] = (sneaking ? -1.3 : -1.5) * 16;
-        mul(this.tmpB, this.rootBase, t);
-        r.model.skel.pose(c, this.tmpB, this.bones, off);
-      } else {
-        const spot = r.ride.spot;
-        const pi = spot.part != null ? e.built.index[spot.part] : undefined;
-        let frame: Float32Array;
-        if (pi != null) frame = this.layerFrame(new Float32Array(12), e.skel.partMatrix(pi));
-        else {
-          const t = identity(this.tmpA);
-          t[3] = spot.pivot[0];
-          t[7] = spot.pivot[1];
-          t[11] = spot.pivot[2];
-          frame = this.layerFrame(new Float32Array(12), mul(this.tmpB, this.rootBase, t));
-        }
-        const at = identity(this.tmpA);
-        at[3] = spot.at[0];
-        at[7] = spot.at[1];
-        at[11] = spot.at[2];
-        const placed = mul(new Float32Array(12), frame, at);
-        const def = r.model.built.def, s0 = def.scale ?? 1, k = r.look.scale ?? 1;
-        const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
-        rootMatrix(this.tmpC, { x: 0, y: 0, z: 0, yaw: -spot.yaw, death: 0, scale: sc, offset: def.offset ?? ZERO3 });
-        mul(this.tmpD, placed, this.tmpC);
-        const pitch = c.pitch;
-        c.pitch = -spot.pitch;
-        r.model.skel.pose(c, this.tmpD, this.bones, off);
-        c.pitch = pitch;
-      }
+      if (r.ride.kind === 'shoulder') this.poseShoulder(r.model, r.ride.left, sneaking, off);
+      else this.poseArrow(r.model, r.look, r.ride.spot, e, off);
       r.posed = true;
     }
+  }
+
+  /** A shoulder parrot: translate(±0.4, sneaking −1.3 : −1.5, 0) blocks in the body's model frame. */
+  private poseShoulder(m: ModelEntry, left: boolean, sneaking: boolean, off: number): void {
+    const t = identity(this.tmpA);
+    t[3] = left ? 6.4 : -6.4;
+    t[7] = (sneaking ? -1.3 : -1.5) * 16;
+    mul(this.tmpB, this.rootBase, t);
+    m.skel.pose(this.ctx, this.tmpB, this.bones, off);
+  }
+
+  /** A stuck arrow: the spot's part frame (or its pivot in the root frame), translate(spot), the arrow's own root (scale,
+   * yaw) and its pitch. */
+  private poseArrow(m: ModelEntry, look: Look, spot: ArrowSpot, e: ModelEntry, off: number): void {
+    const c = this.ctx;
+    const frame = this.arrowFrame(spot, e);
+    const at = identity(this.tmpA);
+    at[3] = spot.at[0];
+    at[7] = spot.at[1];
+    at[11] = spot.at[2];
+    const placed = mul(new Float32Array(12), frame, at);
+    const def = m.built.def, s0 = def.scale ?? 1, k = look.scale ?? 1;
+    const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
+    rootMatrix(this.tmpC, { x: 0, y: 0, z: 0, yaw: -spot.yaw, death: 0, scale: sc, offset: def.offset ?? ZERO3 });
+    mul(this.tmpD, placed, this.tmpC);
+    const pitch = c.pitch;
+    c.pitch = -spot.pitch;
+    m.skel.pose(c, this.tmpD, this.bones, off);
+    c.pitch = pitch;
+  }
+
+  /** The layer frame an arrow spot hangs in: its part's (postRender), else its pivot in the body's root frame. */
+  private arrowFrame(spot: ArrowSpot, e: ModelEntry): Float32Array {
+    const pi = spot.part != null ? e.built.index[spot.part] : undefined;
+    if (pi != null) return this.layerFrame(new Float32Array(12), e.skel.partMatrix(pi));
+    const t = identity(this.tmpA);
+    t[3] = spot.pivot[0];
+    t[7] = spot.pivot[1];
+    t[11] = spot.pivot[2];
+    return this.layerFrame(new Float32Array(12), mul(this.tmpB, this.rootBase, t));
   }
 
   private get beta(): boolean {
@@ -1342,59 +1429,67 @@ export class EntityLayer {
     const frame = this.tmpC;
     frame.set(e.skel.partMatrix(hi));
     const def = e.built.def;
-    if (d.baby && def.baby && !d.villagerHead) {
-      // root · T(0, 0.5) · S(0.7 / headScale) · root⁻¹ · head (the child head already carries the model's own layout).
-      const hs = typeof def.baby.headScale === 'number' ? def.baby.headScale : def.baby.headScale[1];
-      const adj = identity(this.tmpA);
-      adj[0] = adj[5] = adj[10] = 0.7 / hs;
-      adj[7] = 0.5;
-      invert(this.tmpB, this.root);
-      mul(this.tmpD, adj, this.tmpB);
-      mul(this.tmpB, this.root, this.tmpD);
-      mul(this.tmpD, this.tmpB, frame);
-      frame.set(this.tmpD);
-    }
+    if (d.baby && def.baby && !d.villagerHead) this.babyHeadFrame(frame, def.baby);
     const l = identity(this.tmpA);
-    if (d.skull >= 0) {
-      const k = 1.1875;
-      if (d.skull === 5) {
-        // ModelDragonHead inside the skull frame: T(0, −0.374375 blocks) · S(0.75), all × 1.1875.
-        l[0] = l[5] = l[10] = k * 0.75;
-        l[7] = -k * 0.374375 * 16 - (d.villagerHead ? k : 0);
-        mul(this.tmpB, frame, l);
-        this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
-        // The jaw: its pivot (0, 4, −8) in the head, rotX((sin(limbSwing·π·0.2) + 1)·0.2).
-        partLocal(this.tmpD, 0, 4, -8, (Math.sin(swing * Math.PI * 0.2) + 1) * 0.2, 0, 0);
-        mul(this.tmpA, this.tmpB, this.tmpD);
-        this.bones.set(this.tmpA, off + (SKULL_SLOT + 1) * 12);
-        return;
-      }
-      l[0] = l[5] = l[10] = k;
-      l[7] = d.villagerHead ? -k : 0;
-      mul(this.tmpB, frame, l);
-      this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
-      return;
-    }
-    if (d.headBlock) {
-      // Cube geometry: x, z ±0.5, y 0..1 → centred, then diag(−10, −10, 10) px (b1.8.1: turned 180°, its pumpkin face is
-      // the south one), up 4 px (+1.875 for villagers).
-      const s = 10;
-      l[0] = this.beta ? s : -s;
-      l[5] = -s;
-      l[10] = this.beta ? -s : s;
-      l[7] = s * 0.5 - 4 - (d.villagerHead ? 1.875 : 0);
-      mul(this.tmpB, frame, l);
-      this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
-      return;
-    }
-    // A flat item (the sprite: x −0.5..0.5, y 0..1): x' = 10x, y' = −10y − 7.125, z' = 4.375 px (villagers 1.875 higher).
-    l[0] = 10;
-    l[5] = -10;
-    l[10] = -10;
-    l[7] = -7.125 - (d.villagerHead ? 1.875 : 0);
-    l[11] = 4.375;
+    if (d.skull === 5) this.poseDragonSkull(frame, l, off, swing, d.villagerHead);
+    else if (d.skull >= 0) this.poseSkull(frame, l, off, d.villagerHead);
+    else if (d.headBlock) this.poseHeadBlock(frame, l, off, d.villagerHead);
+    else this.poseHeadItem(frame, l, off, d.villagerHead);
+  }
+
+  /** A skull: scale(1.1875) about the neck, villagers 1.1875 px higher. */
+  private poseSkull(frame: Float32Array, l: Float32Array, off: number, villager: boolean): void {
+    this.poseHeadPiece(frame, l, off + SKULL_SLOT * 12, SKULL_SCALE, SKULL_SCALE, SKULL_SCALE, villager ? -SKULL_SCALE : 0, 0);
+  }
+
+  /** A block: the cube (x, z ±0.5, y 0..1) centred, then diag(−10, −10, 10) px (b1.8.1: turned 180°, its pumpkin face is the
+   * south one), up 4 px (+1.875 for villagers). */
+  private poseHeadBlock(frame: Float32Array, l: Float32Array, off: number, villager: boolean): void {
+    const s = 10;
+    this.poseHeadPiece(frame, l, off + HEAD_SLOT * 12, this.beta ? s : -s, -s, this.beta ? -s : s, s * 0.5 - 4 - (villager ? 1.875 : 0), 0);
+  }
+
+  /** A flat item (the sprite: x −0.5..0.5, y 0..1): x' = 10x, y' = −10y − 7.125, z' = 4.375 px (villagers 1.875 higher). */
+  private poseHeadItem(frame: Float32Array, l: Float32Array, off: number, villager: boolean): void {
+    this.poseHeadPiece(frame, l, off + HEAD_SLOT * 12, 10, -10, -10, -7.125 - (villager ? 1.875 : 0), 4.375);
+  }
+
+  /** The child head's frame: root · T(0, 0.5) · S(0.7 / headScale) · root⁻¹ · head (the child head already carries the
+   * model's own layout). */
+  private babyHeadFrame(frame: Float32Array, baby: NonNullable<ModelDef['baby']>): void {
+    const hs = typeof baby.headScale === 'number' ? baby.headScale : baby.headScale[1];
+    const adj = identity(this.tmpA);
+    adj[0] = adj[5] = adj[10] = 0.7 / hs;
+    adj[7] = 0.5;
+    invert(this.tmpB, this.root);
+    mul(this.tmpD, adj, this.tmpB);
+    mul(this.tmpB, this.root, this.tmpD);
+    mul(this.tmpD, this.tmpB, frame);
+    frame.set(this.tmpD);
+  }
+
+  /** A head piece in the head frame: diag(sx, sy, sz) and translate(0, ty, tz) px, written at bone offset `at`. */
+  private poseHeadPiece(frame: Float32Array, l: Float32Array, at: number, sx: number, sy: number, sz: number, ty: number, tz: number): void {
+    l[0] = sx;
+    l[5] = sy;
+    l[10] = sz;
+    l[7] = ty;
+    l[11] = tz;
     mul(this.tmpB, frame, l);
-    this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
+    this.bones.set(this.tmpB, at);
+  }
+
+  /** ModelDragonHead inside the skull frame: T(0, −0.374375 blocks) · S(0.75), all × 1.1875; its jaw: the pivot (0, 4, −8)
+   * in the head, rotX((sin(limbSwing·π·0.2) + 1)·0.2). */
+  private poseDragonSkull(frame: Float32Array, l: Float32Array, off: number, swing: number, villager: boolean): void {
+    const k = SKULL_SCALE;
+    l[0] = l[5] = l[10] = k * 0.75;
+    l[7] = -k * 0.374375 * 16 - (villager ? k : 0);
+    mul(this.tmpB, frame, l);
+    this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
+    partLocal(this.tmpD, 0, 4, -8, (Math.sin(swing * Math.PI * 0.2) + 1) * 0.2, 0, 0);
+    mul(this.tmpA, this.tmpB, this.tmpD);
+    this.bones.set(this.tmpA, off + (SKULL_SLOT + 1) * 12);
   }
 
   /** LayerSnowmanHead: a pumpkin unless the wire says it was sheared off (1.12.2 snow golems only). */
@@ -1495,22 +1590,7 @@ export class EntityLayer {
     const l = this.tmpA, out = this.tmpB;
     const item = left ? d.heldOff! : d.held!, tool = left ? d.heldOffTool : d.heldTool;
     // Arm space: pixels, y down the arm, −z forward; the fist is around (∓1, 10, 0). Item geometry is y-up (0..1).
-    const h = HELD_POSES[item.kind === 'cube' ? 'block' : tool ? 'tool' : 'flat'];
-    // Columns: where the item's x (right), y (up) and z (normal) axes go in arm space, times its size. The left hand mirrors
-    // across x (and flips the item's right axis so the basis stays right-handed).
-    const mx = left ? -1 : 1;
-    for (let r = 0; r < 3; r++) {
-      const sx = r === 0 ? mx : 1;
-      l[r * 4] = h.right[r] * h.size * sx * mx;
-      l[r * 4 + 1] = h.up[r] * h.size * sx;
-      l[r * 4 + 2] = h.normal[r] * h.size * sx;
-      l[r * 4 + 3] = h.at[r] * sx;
-    }
-    // Pre-translate in item units (centre the cube / put the grip at the fist).
-    const px = h.pre[0] * mx;
-    l[3] += l[0] * px + l[1] * h.pre[1] + l[2] * h.pre[2];
-    l[7] += l[4] * px + l[5] * h.pre[1] + l[6] * h.pre[2];
-    l[11] += l[8] * px + l[9] * h.pre[1] + l[10] * h.pre[2];
+    heldBasis(l, HELD_POSES[item.kind === 'cube' ? 'block' : tool ? 'tool' : 'flat'], left ? -1 : 1);
     mul(out, am, l);
     this.bones.set(out, off + (left ? OFF_SLOT : HELD_SLOT) * 12);
   }
@@ -1820,13 +1900,17 @@ export class EntityLayer {
   /** Flags the body's base instance for the silhouette pass (when this view found it hidden) and makes the draw's ghost twin. */
   private ghostFlags(d: Drawn, i: InstanceData, draw: InstancedDraw): void {
     const a = this.ghostMap?.get(d.key) ?? 0;
-    if (a < 0.02 || d.invisible || (!d.bot && d.ent?.kind !== 'player')) return;
-    const sel = this.ghostSelected;
-    const selected = d.bot && !!sel && (d.key === sel || this.botObjs.get(d.key)?.root.userData.short === sel);
-    i.flags |= GHOST_FLAG | (d.bot ? (selected ? GHOST_SELECTED : 0) : GHOST_PLAYER);
+    if (a < 0.02 || !ghostable(d)) return;
+    i.flags |= GHOST_FLAG | (d.bot ? (this.ghostIsSelected(d) ? GHOST_SELECTED : 0) : GHOST_PLAYER);
     i.flags += Math.max(1, Math.min(15, Math.round(a * 15))) * GHOST_LEVEL;
     const g = draw.ghostMesh(this.mats.ghost);
     if (g.created) this.group.add(g.mesh);
+  }
+
+  /** The view's selected bot, by name or short key. */
+  private ghostIsSelected(d: Drawn): boolean {
+    const sel = this.ghostSelected;
+    return !!sel && (d.key === sel || this.botObjs.get(d.key)?.root.userData.short === sel);
   }
 
   private rect(key: string): [number, number, number, number] | null {
@@ -2042,16 +2126,23 @@ export class EntityLayer {
     const i = this.base(d, slot, 0);
     const shiny = glint && !!this.mats.shared.uGlint.value;
     if (shiny) i.flags |= GLINT_FLAG;
-    if (l.kind === 'cube') {
-      i.tex = [0, 0, 1, 1];
-      i.flags |= F_BLOCKS;
-      i.faces = l.faces;
-      i.tintMask = l.tint ? l.tintMask : 0;
-      tint(i, l.tint || undefined, d.bright);
-      if (shiny) this.glintTwin(this.cubes, this.mats.glintTile);
-      this.cubes.push(i);
-      return;
-    }
+    if (l.kind === 'cube') this.pushCubeItem(d, l, i, shiny);
+    else this.pushSpriteItem(d, l, i, shiny, billboard, p);
+  }
+
+  /** A block item: the cube with its face cells (tinted faces by mask). */
+  private pushCubeItem(d: Drawn, l: Extract<ItemLook, { kind: 'cube' }>, i: InstanceData, shiny: boolean): void {
+    i.tex = [0, 0, 1, 1];
+    i.flags |= F_BLOCKS;
+    i.faces = l.faces;
+    i.tintMask = l.tint ? l.tintMask : 0;
+    tint(i, l.tint || undefined, d.bright);
+    if (shiny) this.glintTwin(this.cubes, this.mats.glintTile);
+    this.cubes.push(i);
+  }
+
+  /** A flat item: its atlas cell (items or blocks sheet) as a sprite, inset a little; billboarded for drops. */
+  private pushSpriteItem(d: Drawn, l: Extract<ItemLook, { kind: 'sprite' }>, i: InstanceData, shiny: boolean, billboard: boolean, p: Pack): void {
     if (shiny) this.glintTwin(this.sprites, this.mats.glintTile);
     const [cols, rows] = l.atlas === 'items' ? this.itemsGrid(p) : this.blocksGrid(p);
     const cx = l.cell % cols, cy = Math.floor(l.cell / cols);
@@ -2108,7 +2199,7 @@ export class EntityLayer {
     const key = this.version === 'b1.8.1' ? 'item/xporb' : 'entity/experience_orb';
     const r = this.rect(key);
     if (!r) return this.pushBox(d);
-    const v = d.count, icon = v >= 2477 ? 10 : v >= 1237 ? 9 : v >= 617 ? 8 : v >= 307 ? 7 : v >= 149 ? 6 : v >= 73 ? 5 : v >= 37 ? 4 : v >= 17 ? 3 : v >= 7 ? 2 : v >= 3 ? 1 : 0;
+    const icon = xpOrbIcon(d.count);
     const i = this.base(d, 0, 0);
     i.tex = [r[0] + ((icon % 4) / 4) * r[2], r[1] + (Math.floor(icon / 4) / 4) * r[3], r[2] / 4, r[3] / 4];
     const t = d.age / 2;
@@ -2144,39 +2235,53 @@ export class EntityLayer {
   // ------------------------------------------------------------------------------------------------------------ labels
 
   private botLabel(b: BotView, selected: ReadonlySet<string>, timeMs: number): void {
-    let o = this.botObjs.get(b.name);
-    if (!o) {
-      const ring = new THREE.Mesh(this.ringGeo, this.ringMat.clone());
-      ring.renderOrder = 9;
-      const root = new THREE.Group();
-      root.userData = { name: b.name, short: b.dto.short };
-      root.add(ring);
-      this.group.add(root);
-      this.botObjs.set(b.name, (o = { root, ring, label: null, labelText: '' }));
-    }
+    const o = this.botObjFor(b);
     o.root.position.set(b.x, b.y, b.z);
     const sel = selected.has(b.name) || selected.has(b.dto.short);
     (o.ring.material as THREE.MeshBasicMaterial).opacity = 0.6 + 0.3 * Math.sin(timeMs / 250);
     const held = b.dto.held ? `holding ${b.dto.held}` : b.dto.job ? b.dto.job : null;
     const text = `${b.name}${b.dto.main ? ' · main' : ''}`;
     const lt = `${text}|${held ?? ''}|${sel}`;
-    if (o.labelText !== lt) {
-      if (o.label) {
-        o.root.remove(o.label);
-        this.labels.release(o.label);
-      }
-      o.label = this.labels.create(text, { fg: '#ffffff', bg: sel ? 'rgba(30,60,120,0.85)' : 'rgba(0,0,0,0.6)', sub: held, border: sel ? '#9ec5ff' : null }, true);
-      o.label.position.set(0, 2.2, 0);
-      o.root.add(o.label);
-      o.labelText = lt;
+    if (o.labelText !== lt) this.relabelBot(o, text, held, sel, lt);
+  }
+
+  /** A bot's ring and label root, made on first sight. */
+  private botObjFor(b: BotView): BotObj {
+    const o = this.botObjs.get(b.name);
+    if (o) return o;
+    const ring = new THREE.Mesh(this.ringGeo, this.ringMat.clone());
+    ring.renderOrder = 9;
+    const root = new THREE.Group();
+    root.userData = { name: b.name, short: b.dto.short };
+    root.add(ring);
+    this.group.add(root);
+    const made: BotObj = { root, ring, label: null, labelText: '' };
+    this.botObjs.set(b.name, made);
+    return made;
+  }
+
+  /** Replaces a bot's name label (`sub`: what it holds or its job; selected bots get a blue plate). */
+  private relabelBot(o: BotObj, text: string, held: string | null, sel: boolean, lt: string): void {
+    if (o.label) {
+      o.root.remove(o.label);
+      this.labels.release(o.label);
     }
+    o.label = this.labels.create(text, { fg: '#ffffff', bg: sel ? 'rgba(30,60,120,0.85)' : 'rgba(0,0,0,0.6)', sub: held, border: sel ? '#9ec5ff' : null }, true);
+    o.label.position.set(0, 2.2, 0);
+    o.root.add(o.label);
+    o.labelText = lt;
   }
 
   private entityLabel(d: Drawn, e: EntityView, dist: number, want: Set<string>): void {
-    const near = e.kind === 'player' ? 64 : e.kind === 'item' ? 12 : 24;
-    if (dist > near) return;
+    if (dist > labelRange(e.kind)) return;
     want.add(e.key);
-    const text = entityText(e);
+    const l = this.entLabelFor(e, entityText(e));
+    const bob = e.kind === 'item' ? 0.35 : 0.25;
+    l.sprite.position.set(d.x, d.y + (d.hang ? d.h / 2 : d.h) + bob, d.z);
+  }
+
+  /** An entity's label sprite for `text` (a changed text replaces it). */
+  private entLabelFor(e: EntityView, text: string): Label {
     let l = this.entLabels.get(e.key);
     if (l && l.text !== text) {
       this.group.remove(l.sprite);
@@ -2184,13 +2289,12 @@ export class EntityLayer {
       this.entLabels.delete(e.key);
       l = undefined;
     }
-    if (!l) {
-      const sprite = this.labels.create(text, { fg: e.kind === 'player' ? '#cfe0ff' : '#ffffff', bg: 'rgba(0,0,0,0.45)' }, e.kind === 'player', e.kind === 'item' ? 0.7 : 0.85);
-      this.group.add(sprite);
-      this.entLabels.set(e.key, (l = { sprite, text }));
-    }
-    const bob = e.kind === 'item' ? 0.35 : 0.25;
-    l.sprite.position.set(d.x, d.y + (d.hang ? d.h / 2 : d.h) + bob, d.z);
+    if (l) return l;
+    const sprite = this.labels.create(text, { fg: e.kind === 'player' ? '#cfe0ff' : '#ffffff', bg: 'rgba(0,0,0,0.45)' }, e.kind === 'player', e.kind === 'item' ? 0.7 : 0.85);
+    this.group.add(sprite);
+    l = { sprite, text };
+    this.entLabels.set(e.key, l);
+    return l;
   }
 
   // ------------------------------------------------------------------------------------------------------------ queries
@@ -2253,17 +2357,15 @@ export class EntityLayer {
     return this.drawn.get(key)?.detail ?? null;
   }
 
-  private dropBot(k: string, o: BotObj): void {
-    this.group.remove(o.root);
-    if (o.label) this.labels.release(o.label);
-    (o.ring.material as THREE.Material).dispose();
-    this.botObjs.delete(k);
-  }
-
-  dispose(): void {
+  /** Bot rings and labels, entity labels. */
+  private disposeLabels(): void {
     for (const [k, o] of this.botObjs) this.dropBot(k, o);
     for (const l of this.entLabels.values()) this.labels.release(l.sprite);
     this.entLabels.clear();
+  }
+
+  /** The per-model draws (opaque, translucent, armour), skulls, elytra and the extra geometries. */
+  private disposeModelDraws(): void {
     for (const e of this.models.values()) {
       e.opaque.dispose();
       e.translucent?.dispose();
@@ -2275,6 +2377,18 @@ export class EntityLayer {
     this.skullDraws.clear();
     this.elytraDraw?.dispose();
     for (const g of this.extraGeos) g.dispose();
+  }
+
+  private dropBot(k: string, o: BotObj): void {
+    this.group.remove(o.root);
+    if (o.label) this.labels.release(o.label);
+    (o.ring.material as THREE.Material).dispose();
+    this.botObjs.delete(k);
+  }
+
+  dispose(): void {
+    this.disposeLabels();
+    this.disposeModelDraws();
     this.sprites.dispose();
     this.cubes.dispose();
     this.shadowDraw.dispose();
@@ -2348,6 +2462,23 @@ export const HELD_POSES: Record<'block' | 'tool' | 'flat', { at: [number, number
   tool: { at: [-1, 9.5, -1], right: [0, -0.944, 0.33], up: UP_F, normal: [1, 0, 0], size: 10, pre: [0.35, -0.15, 0] },
   flat: { at: [-1, 9.5, -1.5], right: [0, -0.944, 0.33], up: UP_F, normal: [1, 0, 0], size: 7, pre: [0, -0.1, 0] },
 };
+
+/** A held item's local transform in arm space into `l`. Columns: where the item's x (right), y (up) and z (normal) axes go,
+ * times its size; the left hand (mx −1) mirrors across x (and flips the item's right axis so the basis stays right-handed).
+ * Then the pre-translate in item units (centre the cube / put the grip at the fist). */
+function heldBasis(l: Float32Array, h: (typeof HELD_POSES)['block'], mx: number): void {
+  for (let r = 0; r < 3; r++) {
+    const sx = r === 0 ? mx : 1;
+    l[r * 4] = h.right[r] * h.size * sx * mx;
+    l[r * 4 + 1] = h.up[r] * h.size * sx;
+    l[r * 4 + 2] = h.normal[r] * h.size * sx;
+    l[r * 4 + 3] = h.at[r] * sx;
+  }
+  const px = h.pre[0] * mx;
+  l[3] += l[0] * px + l[1] * h.pre[1] + l[2] * h.pre[2];
+  l[7] += l[4] * px + l[5] * h.pre[1] + l[6] * h.pre[2];
+  l[11] += l[8] * px + l[9] * h.pre[1] + l[10] * h.pre[2];
+}
 
 /** RenderEntityItem copies by stack size (b1.8.1: 1, 2 (>1), 3 (>5), 4 (>20); 1.12.2: up to 5 at >48). */
 export function copies(count: number, beta: boolean): number {

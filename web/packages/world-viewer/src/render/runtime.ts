@@ -166,6 +166,60 @@ export const newViewId = () => nextViewId++;
 
 /** Silhouettes: how often a view re-tests which bodies are hidden, how far it looks, and the fade (seconds). */
 const GHOST_TEST_MS = 200, GHOST_RANGE = 96, GHOST_FADE_S = 0.18;
+const NO_OUTLINES: NonNullable<ViewSetup['outlines']> = [];
+
+/** Per view: which bodies the last occlusion test found hidden, and each one's silhouette strength (faded in and out). */
+interface GhostView {
+  busy: boolean;
+  at: number;
+  t: number;
+  hidden: Set<string>;
+  alpha: Map<string, number>;
+}
+
+/** Fades each silhouette toward its last test's answer (in over GHOST_FADE_S, out likewise, then forgotten). */
+function fadeGhosts(st: GhostView, now: number): void {
+  const step = Math.min(0.25, Math.max(0, (now - st.t) / 1000)) / GHOST_FADE_S;
+  st.t = now;
+  for (const k of st.hidden) if (!st.alpha.has(k)) st.alpha.set(k, 0);
+  for (const [k, a] of st.alpha) {
+    const want = st.hidden.has(k);
+    const v = want ? Math.min(1, a + step) : Math.max(0, a - step);
+    if (!want && v <= 0) st.alpha.delete(k);
+    else st.alpha.set(k, v);
+  }
+}
+
+/** Software WebGL (hardware acceleration off) gets its own profile; a forced quality skips the probe. */
+function probeFor(opts: RuntimeOptions): RendererProbe {
+  return opts.quality && opts.quality !== 'auto' ? { software: opts.quality === 'software', renderer: 'forced', reason: `quality: ${opts.quality}` } : probeRendererOnce();
+}
+
+function profileFor(opts: RuntimeOptions, probe: RendererProbe): QualityProfile {
+  if (opts.quality && opts.quality !== 'auto') return PROFILES[opts.quality];
+  return PROFILES[probe.software ? 'software' : 'gpu'];
+}
+
+/** The GPU's name as WebGL reports it (unmasked when the browser allows), 'webgl2' when it can't be read. */
+function gpuName(renderer: THREE.WebGLRenderer): string {
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+  } catch {
+    return 'webgl2';
+  }
+}
+
+/** The world time and weather of the view being drawn. */
+interface ViewSky {
+  nether: boolean;
+  time: number | null;
+  /** Weather shown (the view's layer and the viewer setting). */
+  weather: boolean;
+  rain: number;
+  thunder: number;
+}
 
 export class WorldRuntime {
   readonly renderer: THREE.WebGLRenderer;
@@ -258,8 +312,8 @@ export class WorldRuntime {
     this.source = source;
     this.opts = opts;
     // Software WebGL (hardware acceleration off) gets its own profile: no MSAA, 1× pixels, shorter draw distance, 25 ms target.
-    this.probe = opts.quality && opts.quality !== 'auto' ? { software: opts.quality === 'software', renderer: 'forced', reason: `quality: ${opts.quality}` } : probeRendererOnce();
-    const profile = PROFILES[opts.quality && opts.quality !== 'auto' ? opts.quality : this.probe.software ? 'software' : 'gpu'];
+    this.probe = probeFor(opts);
+    const profile = profileFor(opts, this.probe);
     this.baseProfile = profile;
     this.quality = new QualityController(profile);
     this.renderer = new THREE.WebGLRenderer({ antialias: (opts.antialias ?? true) && profile.antialias, powerPreference: 'high-performance', preserveDrawingBuffer: false });
@@ -268,15 +322,7 @@ export class WorldRuntime {
     this.canvas = this.renderer.domElement;
     this.canvas.tabIndex = 0;
     Object.assign(this.canvas.style, { display: 'block', width: '100%', height: '100%', outline: 'none', touchAction: 'none' });
-    let gpu = 'webgl2';
-    try {
-      const gl = this.renderer.getContext();
-      const ext = gl.getExtension('WEBGL_debug_renderer_info');
-      gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
-    } catch {
-      /* keep the default */
-    }
-    this.gpu = gpu;
+    this.gpu = gpuName(this.renderer);
     this.scene.background = new THREE.Color(0x78a7ff);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x555566, 2.2));
     const sun = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -715,6 +761,25 @@ export class WorldRuntime {
   /** (Re)configures the mesher when the version changed: flat at once, then textured when the version's bundle has loaded
    * (the bundled atlas replaces the bridge's; `source.atlas` is not read). Every section is meshed again. */
   private async configure(): Promise<void> {
+    const c = this.meshConfig();
+    const { v, ready, fastLeaves } = c;
+    // While the version's textures load, sections wait instead of meshing flat first and textured again.
+    this.setMeshHold(c.want && !ready);
+    if (c.key === this.configKey) return;
+    this.configKey = c.key;
+    this.version = v;
+    // The version's bundled assets: sky and entities here, the block atlas in loadBlockAtlas (one fetch, cached).
+    this.loadSkyBundle(v);
+    this.loadEntityBundle(v); // [entity models]
+    this.uniforms.uTextured.value = ready ? 1 : 0;
+    await this.host.configure(v, ready ? meshAssets(this.blockAtlas!.bundle.pack) : null, ready, fastLeaves);
+    for (const s of this.sections.values()) s.clear();
+    for (const h of this.holoViews.values()) h.refresh(); // [holograms] the new atlas cells
+    if (c.want && !ready && this.atlasFor !== v) void this.loadBlockAtlas(v);
+  }
+
+  /** The mesher configuration the world calls for: its version, textures wanted and ready, leaves, and their key. */
+  private meshConfig(): { v: GameVersion; want: boolean; ready: boolean; fastLeaves: boolean; key: string } {
     const v = this.cache.detectedVersion() ?? 'b1.8.1';
     const want = this.opts.textures !== false;
     const ready = want && this.blockAtlas?.bundle.version === v;
@@ -722,12 +787,10 @@ export class WorldRuntime {
     // SwiftShader on the dense fixture (within run-to-run noise), so the software profile keeps fancy leaves.
     const fastLeaves = ready && this.opts.fastLeaves === true;
     const key = `${v}|${ready ? 'atlas' : 'flat'}|${fastLeaves ? 'fast' : 'fancy'}`;
-    // While the version's textures load, sections wait instead of meshing flat first and textured again.
-    this.setMeshHold(want && !ready);
-    if (key === this.configKey) return;
-    this.configKey = key;
-    this.version = v;
-    // The version's bundled assets: sky and entities here, the block atlas in loadBlockAtlas (one fetch, cached).
+    return { v, want, ready, fastLeaves, key };
+  }
+
+  private loadSkyBundle(v: GameVersion): void {
     loadBundle(v)
       .then((b) => {
         if (this.disposed || this.version !== v) return;
@@ -735,12 +798,6 @@ export class WorldRuntime {
         this.sky.setBundle(b);
       })
       .catch((e) => this.opts.onError?.('assets', e));
-    this.loadEntityBundle(v); // [entity models]
-    this.uniforms.uTextured.value = ready ? 1 : 0;
-    await this.host.configure(v, ready ? meshAssets(this.blockAtlas!.bundle.pack) : null, ready, fastLeaves);
-    for (const s of this.sections.values()) s.clear();
-    for (const h of this.holoViews.values()) h.refresh(); // [holograms] the new atlas cells
-    if (want && !ready && this.atlasFor !== v) void this.loadBlockAtlas(v);
   }
 
   // [entity models] The entity layer textures its models from the bundled sheets of the world's version.
@@ -802,49 +859,63 @@ export class WorldRuntime {
   /** One frame: shared upkeep, then every due view (the primary last, so its picture is what the canvas shows). */
   step(now: number, dt: number): void {
     this.applyQuality();
+    this.updateBodies(now);
+    this.blockEntities.tick(now);
+    this.updateBlockEntityLayer(now);
+    void this.deltas.flush(); // a frame's worth of block changes, applied together
+    this.animateAtlas(now);
+    this.maintainSections(now);
+    this.renderViews(now, dt);
+  }
+
+  /** Entities, overlays, bubbles and entity light; entity events animate (swings, hurt flashes, deaths…), lightning also
+   * flashes the world. */
+  private updateBodies(now: number): void {
     const selected = new Set<string>();
     for (const v of this.views.values()) for (const s of v.selectedBots()) selected.add(s);
     this.entities.update(this.store.bots(this.botsBuf), this.store.entities(null, this.entsBuf), now, selected);
     this.overlays.tick(now);
     this.bubbles.update(now, this.botsBuf, this.entsBuf);
     this.refreshEntityLight(now);
-    // Entity events: the entity layer animates them (swings, hurt flashes, deaths…); lightning also flashes the world.
     const events = this.store.drainEvents();
-    if (events.length) {
-      for (const ev of events) if (ev.kind === 'lightning') this.lightningFlash = 0.7;
-      this.entities.onEvents?.(events, now);
-    }
-    this.blockEntities.tick(now);
-    {
-      // [blocks] the block-entity layer around the primary view (else the first view): sign text, banners, spawner mobs.
-      const v = this.primary?.view ?? this.views.values().next().value;
-      const c = v?.centre();
-      if (c) {
-        this.beCentre.set(c.x, c.y, c.z);
-        this.blockEntityLayer.update(this.blockEntities, {
-          dim: c.dim,
-          centre: this.beCentre,
-          software: this.quality.state.profile.name === 'software',
-          now,
-          ticks: this.cache.timeNow(c.dim, Date.now()) ?? now / 50,
-          displayMobs: this.entities as unknown as BlockEntityLayerUpdate['displayMobs'],
-          playerNear: this.playerNear,
-        });
-      }
-    }
-    void this.deltas.flush(); // a frame's worth of block changes, applied together
-    // Animated textures off (viewer settings): the atlas keeps the frame it shows.
-    if (this.uniforms.uTextured.value > 0 && this.blockAtlas && this.q.animatedTextures) {
-      // [blocks] atlas animation: the profile's tick rate and cell budget, only the cells the drawn sections sample.
-      const p = this.quality.state.profile;
-      this.blockAtlas.animHz = p.animHz;
-      this.blockAtlas.animCellsPerTick = p.animCellsPerTick;
-      this.blockAtlas.starLayers = 17; // vanilla's own distance-based layer count on every profile
-      const cells = new Set<number>();
-      for (const s of this.sections.values()) s.visibleAnimCells(cells);
-      this.blockAtlas.setVisible(cells);
-      this.blockAtlas.update(this.renderer, now);
-    }
+    if (!events.length) return;
+    for (const ev of events) if (ev.kind === 'lightning') this.lightningFlash = 0.7;
+    this.entities.onEvents?.(events, now);
+  }
+
+  /** [blocks] The block-entity layer around the primary view (else the first view): sign text, banners, spawner mobs. */
+  private updateBlockEntityLayer(now: number): void {
+    const v = this.primary?.view ?? this.views.values().next().value;
+    const c = v?.centre();
+    if (!c) return;
+    this.beCentre.set(c.x, c.y, c.z);
+    this.blockEntityLayer.update(this.blockEntities, {
+      dim: c.dim,
+      centre: this.beCentre,
+      software: this.quality.state.profile.name === 'software',
+      now,
+      ticks: this.cache.timeNow(c.dim, Date.now()) ?? now / 50,
+      displayMobs: this.entities as unknown as BlockEntityLayerUpdate['displayMobs'],
+      playerNear: this.playerNear,
+    });
+  }
+
+  /** [blocks] Atlas animation: the profile's tick rate and cell budget, only the cells the drawn sections sample. Animated
+   * textures off (viewer settings): the atlas keeps the frame it shows. */
+  private animateAtlas(now: number): void {
+    if (!(this.uniforms.uTextured.value > 0 && this.blockAtlas && this.q.animatedTextures)) return;
+    const p = this.quality.state.profile;
+    this.blockAtlas.animHz = p.animHz;
+    this.blockAtlas.animCellsPerTick = p.animCellsPerTick;
+    this.blockAtlas.starLayers = 17; // vanilla's own distance-based layer count on every profile
+    const cells = new Set<number>();
+    for (const s of this.sections.values()) s.visibleAnimCells(cells);
+    this.blockAtlas.setVisible(cells);
+    this.blockAtlas.update(this.renderer, now);
+  }
+
+  /** World sync follows every view's interest; sections are kept around every view's centre (per dimension). */
+  private maintainSections(now: number): void {
     const interests: Record<string, Interest> = {};
     const centres = new Map<Dim, Centre[]>();
     for (const v of this.views.values()) {
@@ -859,6 +930,10 @@ export class WorldRuntime {
     }
     this.sync.setInterests(interests);
     for (const [dim, cs] of centres) this.sectionsFor(dim).maintain(cs, now);
+  }
+
+  /** Every view that wants a picture this frame, most overdue first and the primary last. */
+  private renderViews(now: number, dt: number): void {
     let primarySetup: ViewSetup | null = null;
     const timed = this.quality.due(now);
     const t0 = performance.now();
@@ -871,15 +946,18 @@ export class WorldRuntime {
       if (this.isPrimary(v)) primarySetup = s;
       else this.render(s, now);
     }
-    if (primarySetup) this.render(primarySetup, now);
-    // Once a second the whole frame is timed to completion (gl.finish): CPU and GPU (or the software rasteriser) together,
-    // so a throttled background tab (slow rAF, cheap frames) never lowers the quality.
-    if (timed && primarySetup) {
-      // gl.finish returns early on ANGLE/SwiftShader; reading one pixel back really waits for the frame to be drawn.
-      const gl = this.renderer.getContext();
-      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel);
-      this.quality.sample(now, performance.now() - t0);
-    }
+    if (!primarySetup) return;
+    this.render(primarySetup, now);
+    if (timed) this.sampleFrame(now, t0);
+  }
+
+  /** Once a second the whole frame is timed to completion (gl.finish): CPU and GPU (or the software rasteriser) together,
+   * so a throttled background tab (slow rAF, cheap frames) never lowers the quality. */
+  private sampleFrame(now: number, t0: number): void {
+    // gl.finish returns early on ANGLE/SwiftShader; reading one pixel back really waits for the frame to be drawn.
+    const gl = this.renderer.getContext();
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel);
+    this.quality.sample(now, performance.now() - t0);
   }
 
   /** After a primary render: the page-wide viewer status (fps over half-second windows, the levers, the entity reach). */
@@ -1007,79 +1085,109 @@ export class WorldRuntime {
   }
 
   /** Per view: which bodies the last occlusion test found hidden, and each one's silhouette strength (faded in and out). */
-  private readonly ghostViews = new Map<number, { busy: boolean; at: number; t: number; hidden: Set<string>; alpha: Map<string, number> }>();
+  private readonly ghostViews = new Map<number, GhostView>();
 
   /** The view's silhouette strengths. The worker ray-tests every bot and player near the camera a few times a second
    * (opaque blocks and leaves hide, plants and glass don't); the ghost pass itself is per pixel (depth GREATER), so a stale
    * answer only decides who may get one, never where it shows. */
   private ghostsFor(s: ViewSetup, now: number): Map<string, number> {
-    const id = s.viewId ?? 0;
+    const st = this.ghostView(s.viewId ?? 0, now);
+    if (!st.busy && now - st.at >= GHOST_TEST_MS) this.testGhosts(st, s, now);
+    fadeGhosts(st, now);
+    return st.alpha;
+  }
+
+  private ghostView(id: number, now: number): GhostView {
     let g = this.ghostViews.get(id);
     if (!g) {
       g = { busy: false, at: -Infinity, t: now, hidden: new Set(), alpha: new Map() };
       this.ghostViews.set(id, g);
     }
-    const st = g;
-    const cam = s.camera.position;
-    if (!st.busy && now - st.at >= GHOST_TEST_MS) {
-      st.at = now;
-      const cands = s.layers.bots || s.layers.entities ? this.entities.ghostCandidates(s.dim, cam, Math.min(s.drawDistance, GHOST_RANGE)) : [];
-      if (cands.length) {
-        st.busy = true;
-        this.host
-          .occluded(s.dim, [cam.x, cam.y, cam.z], cands.flatMap((c) => [c.x, c.y, c.z]))
-          .then((r) => {
-            st.hidden = new Set(cands.filter((_, i) => r[i]).map((c) => c.key));
-          })
-          .catch(() => undefined)
-          .finally(() => {
-            st.busy = false;
-          });
-      } else st.hidden.clear();
-    }
-    const step = Math.min(0.25, Math.max(0, (now - st.t) / 1000)) / GHOST_FADE_S;
-    st.t = now;
-    for (const k of st.hidden) if (!st.alpha.has(k)) st.alpha.set(k, 0);
-    for (const [k, a] of st.alpha) {
-      const want = st.hidden.has(k);
-      const v = want ? Math.min(1, a + step) : Math.max(0, a - step);
-      if (!want && v <= 0) st.alpha.delete(k);
-      else st.alpha.set(k, v);
-    }
-    return st.alpha;
+    return g;
   }
 
-  private render(s: ViewSetup, now: number): void {
-    const u = this.uniforms;
-    const r = this.renderer;
-    const primary = s.target === 'primary';
-    const q = this.q;
+  /** Asks the worker which bots and players near the camera blocks hide (answered a frame or more later). */
+  private testGhosts(st: GhostView, s: ViewSetup, now: number): void {
+    st.at = now;
+    const cam = s.camera.position;
+    const cands = s.layers.bots || s.layers.entities ? this.entities.ghostCandidates(s.dim, cam, Math.min(s.drawDistance, GHOST_RANGE)) : [];
+    if (!cands.length) {
+      st.hidden.clear();
+      return;
+    }
+    st.busy = true;
+    this.host
+      .occluded(s.dim, [cam.x, cam.y, cam.z], cands.flatMap((c) => [c.x, c.y, c.z]))
+      .then((r) => {
+        st.hidden = new Set(cands.filter((_, i) => r[i]).map((c) => c.key));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        st.busy = false;
+      });
+  }
+
+  /** Draws one view: the shared scene sized, lit, cut and filtered for it, then copied out when it is not the primary. */
+  private render(setup: ViewSetup, now: number): void {
+    const primary = setup.target === 'primary';
     // The controller's draw distance (software rendering, slow frames) applies to the interactive view.
     // A top-down / iso view's visible ground is drawn whatever the lever says (the render scale gives way instead).
-    const cover = s.cover ?? 0;
-    const plainDistance = primary ? this.quality.drawDistance(s.drawDistance) : s.drawDistance;
-    s = { ...s, drawDistance: Math.max(cover, plainDistance) };
+    const cover = setup.cover ?? 0;
+    const plainDistance = primary ? this.quality.drawDistance(setup.drawDistance) : setup.drawDistance;
+    const s = { ...setup, drawDistance: Math.max(cover, plainDistance) };
     // Entities (viewer settings): as far as the ground by default, measured across it from the look-at point in top-down /
     // iso views (far ones are cheap instanced boxes, frustum-culled and capped in number); or the user's own distance.
-    const reach = entityReach(q, cover, s.drawDistance);
-    // Size: the primary owns the canvas; other views use its bottom-left corner (the canvas grows when nobody owns it).
-    let w = s.width, h = s.height;
+    const reach = entityReach(this.q, cover, s.drawDistance);
+    this.fitViewport(s, primary);
+    const sky = this.skyState(s);
+    this.applySky(s, cover, sky);
+    this.applyWeather(s, primary, now, sky);
+    const cones = this.applyCutaways(s);
+    this.showSections(s, cover, cones);
+    this.showBodies(s, now, reach.radius, reach.fromCentre);
+    this.showBubbles(s, this.vpH);
+    this.showViewLayers(s, now);
+    this.draw(s, primary, now, reach.radius);
+  }
+
+  /** The drawn size of the view in the canvas (set by fitViewport). */
+  private vpW = 1;
+  private vpH = 1;
+
+  /** Sizes the canvas for a view: the primary owns it; other views use its bottom-left corner (the canvas grows when nobody
+   * owns it). Sets the camera's aspect and the starfield's viewport to the drawn size (`vpW` × `vpH`). */
+  private fitViewport(s: ViewSetup, primary: boolean): void {
+    const r = this.renderer;
     const cw = this.canvas.width, ch = this.canvas.height;
     if (primary) {
-      if (cw !== w || ch !== h) r.setSize(w, h, false);
-    } else if (!this.primary && (cw < w || ch < h)) r.setSize(Math.max(cw, w), Math.max(ch, h), false);
-    const fw = this.canvas.width, fh = this.canvas.height;
-    w = Math.min(w, fw);
-    h = Math.min(h, fh);
+      if (cw !== s.width || ch !== s.height) r.setSize(s.width, s.height, false);
+    } else if (!this.primary && (cw < s.width || ch < s.height)) r.setSize(Math.max(cw, s.width), Math.max(ch, s.height), false);
+    const w = Math.min(s.width, this.canvas.width), h = Math.min(s.height, this.canvas.height);
+    this.vpW = w;
+    this.vpH = h;
     s.camera.aspect = w / h;
     s.camera.updateProjectionMatrix();
     this.uniforms.uViewport.value.set(w, h); // [blocks] the starfield's screen-space projection
-    // World uniforms for this view.
-    const nether = s.dim === -1;
-    const time = this.cache.timeNow(s.dim, Date.now());
+  }
+
+  /** The world time and weather of the view being drawn (one record, reused every view). */
+  private readonly viewSky: ViewSky = { nether: false, time: null, weather: false, rain: 0, thunder: 0 };
+
+  private skyState(s: ViewSetup): ViewSky {
+    const st = this.viewSky;
+    st.nether = s.dim === -1;
+    st.time = this.cache.timeNow(s.dim, Date.now());
     const wx = this.cache.weatherIn(s.dim);
-    const weather = s.layers.weather && q.weather;
-    const rain = weather ? wx.rain : 0, thunder = weather ? wx.thunder : 0;
+    st.weather = s.layers.weather && this.q.weather;
+    st.rain = st.weather ? wx.rain : 0;
+    st.thunder = st.weather ? wx.thunder : 0;
+    return st;
+  }
+
+  /** World uniforms for this view: sky light, sky and fog colours, the fog range, the staleness tint. */
+  private applySky(s: ViewSetup, cover: number, st: ViewSky): void {
+    const u = this.uniforms;
+    const { nether, time, rain, thunder } = st;
     u.uSkySub.value = nether || time == null ? 0 : skylightSubtractedSmooth(time, rain, thunder);
     this.lastSky.set(s.viewId ?? -1, { time, skySub: u.uSkySub.value });
     u.uBase.value = nether ? 0.1 : 0;
@@ -1089,15 +1197,25 @@ export class WorldRuntime {
     u.uFogCentre.value.copy(s.centre);
     // Fog starts past the picture's own ground in top-down / iso views (in the others cover is 0: the usual 72 %).
     // Fog off (viewer settings): pushed out of reach, so the drawn world simply ends.
-    const fogStart = q.fog ? Math.max(s.drawDistance * 0.72, cover) : 1e7;
+    const fogStart = this.q.fog ? Math.max(s.drawDistance * 0.72, cover) : 1e7;
     u.uFogRange.value.set(fogStart, Math.max(s.drawDistance, fogStart + 16));
     u.uStale.value = s.layers.staleness ? 1 : 0;
+  }
+
+  /** Clouds and stars, rain or snow around the primary view's camera, and the lightning flash. */
+  private applyWeather(s: ViewSetup, primary: boolean, now: number, st: ViewSky): void {
+    const { nether, time, weather, rain, thunder } = st;
     this.sky.update(s.camera.position, time, rain, nether, s.layers.weather && this.quality.state.profile.clouds, now, s.camera.far * 0.8);
-    if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, weather && !nether, s.precip ?? 'rain');
-    this.weather.object.visible = primary && weather && !nether && rain > 0.01;
+    const falls = weather && !nether;
+    if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, falls, s.precip ?? 'rain');
+    this.weather.object.visible = primary && falls && rain > 0.01;
     this.lightningFlash = Math.max(0, this.lightningFlash - 0.03);
-    u.uFlash.value = (primary ? this.flash : 0) + this.lightningFlash;
-    // Per-view cut-aways (uniforms only; the cap pass shows what they open).
+    this.uniforms.uFlash.value = (primary ? this.flash : 0) + this.lightningFlash;
+  }
+
+  /** Per-view cut-aways (uniforms only; the cap pass shows what they open). Returns the number of x-ray cones in use. */
+  private applyCutaways(s: ViewSetup): number {
+    const u = this.uniforms;
     const cam = s.camera.position;
     let n = 0;
     for (const c of s.cones) {
@@ -1114,60 +1232,83 @@ export class WorldRuntime {
     this.materials.cap.visible = n > 0 || !!s.roof;
     this.backstop.position.set(Math.round(cam.x), 0, Math.round(cam.z));
     this.backstop.updateMatrixWorld();
-    // Shared scene, this view's slice of it.
+    return n;
+  }
+
+  /** Shared scene, this view's slice of it: the sections of the view's dimension around its centre. */
+  private showSections(s: ViewSetup, cover: number, cones: number): void {
+    const profile = this.quality.state.profile;
     for (const [dim, sec] of this.sections) {
       sec.group.visible = dim === s.dim;
-      if (dim === s.dim)
-        sec.showAround(s.centre.x, s.centre.z, s.drawDistance, {
-          // Cave culling, unless a cut-away is opening the rock for this view.
-          cull: this.quality.state.profile.caveCulling && n === 0 && !s.roof ? { viewKey: s.viewId ?? 0, cam: s.camera.position, dir: s.camera.getWorldDirection(this.tmpDir), ymax: 16 } : null,
-          translucentDistance: Math.max(cover, this.quality.state.profile.translucentDistance),
-          floorY: s.depthFloor ?? null,
-        });
+      if (dim !== s.dim) continue;
+      sec.showAround(s.centre.x, s.centre.z, s.drawDistance, {
+        // Cave culling, unless a cut-away is opening the rock for this view.
+        cull: profile.caveCulling && cones === 0 && !s.roof ? { viewKey: s.viewId ?? 0, cam: s.camera.position, dir: s.camera.getWorldDirection(this.tmpDir), ymax: 16 } : null,
+        translucentDistance: Math.max(cover, profile.translucentDistance),
+        floorY: s.depthFloor ?? null,
+      });
     }
+  }
+
+  /** Bots, players, mobs and drops this view shows (their labels and silhouettes too), culled to its frustum. */
+  private showBodies(s: ViewSetup, now: number, radius: number, fromCentre: boolean): void {
+    const q = this.q;
     this.entities.detailDistance = this.quality.state.profile.entityDetailDistance; // posed models near, boxes beyond
     const ghosts = s.ghosts && q.xray ? this.ghostsFor(s, now) : null;
     const labels = s.labels && q.labels;
     s.camera.updateMatrixWorld();
     this.frustum.setFromProjectionMatrix(this.projView.multiplyMatrices(s.camera.projectionMatrix, s.camera.matrixWorldInverse));
-    this.entities.showFor(s.dim, cam, {
+    this.entities.showFor(s.dim, s.camera.position, {
       bots: s.layers.bots,
       entities: s.layers.entities,
       labels,
       botLabels: labels && s.botLabels !== false,
       cut: s.entityCut ?? null,
       selected: s.selected,
-      drawDistance: reach.radius,
-      centre: reach.fromCentre ? s.centre : null,
+      drawDistance: radius,
+      centre: fromCentre ? s.centre : null,
       drops: q.drops,
       frustum: this.frustum,
       fov: s.camera.fov,
       ghosts,
     });
-    // After the entities: the name labels this view shows decide where the bubbles sit.
-    const bubbles = q.bubbles ? (s.bubbles ?? (s.labels ? 'full' : 'compact')) : 'off';
+  }
+
+  /** After the entities: the name labels this view shows decide where the bubbles sit. */
+  private showBubbles(s: ViewSetup, h: number): void {
+    const fallback = s.labels ? 'full' : 'compact';
+    const mode = this.q.bubbles ? (s.bubbles ?? fallback) : 'off';
     this.bubbles.showFor(
-      { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode: bubbles, bots: s.layers.bots, players: s.layers.entities, labelLift: this.labelLift },
+      { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode, bots: s.layers.bots, players: s.layers.entities, labelLift: this.labelLift },
       s.viewId ?? 0,
     );
+  }
+
+  /** The view's overlays, change flashes, block entities, its own holograms, reading aids and outline boxes. */
+  private showViewLayers(s: ViewSetup, now: number): void {
     this.overlays.group.visible = s.overlays;
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);
     this.blockEntityLayer.showFor(s.dim); // [blocks]
     for (const [id, h] of this.holoViews) {
-      h.group.visible = q.holograms && id === s.viewId;
+      h.group.visible = this.q.holograms && id === s.viewId;
       if (h.group.visible) h.show(s.holoPx ?? null);
     }
     this.aids.showAt(s.aids ?? null);
-    this.showOutlines(s.outlines ?? []);
+    this.showOutlines(s.outlines ?? NO_OUTLINES);
+  }
+
+  /** Renders the scene into the view's corner of the canvas; a secondary view's picture is copied into its own canvas. */
+  private draw(s: ViewSetup, primary: boolean, now: number, radius: number): void {
+    const r = this.renderer;
+    const w = this.vpW, h = this.vpH;
     r.setViewport(0, 0, w, h);
     r.setScissor(0, 0, w, h);
     r.render(this.scene, s.camera);
-    if (primary) this.report(now, s, reach.radius);
+    if (primary) this.report(now, s, radius);
     if (s.target !== 'primary') {
       const ctx = s.target;
-      const tw = ctx.canvas.width, th = ctx.canvas.height;
-      ctx.drawImage(this.canvas, 0, fh - h, w, h, 0, 0, tw, th);
+      ctx.drawImage(this.canvas, 0, this.canvas.height - h, w, h, 0, 0, ctx.canvas.width, ctx.canvas.height);
     }
   }
 }

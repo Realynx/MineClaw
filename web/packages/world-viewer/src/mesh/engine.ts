@@ -26,6 +26,35 @@ export interface TouchCol {
   live: boolean;
 }
 
+/** A query box's whole-cell bounds (y from 0). */
+interface Box {
+  x1: number;
+  x2: number;
+  y1: number;
+  y2: number;
+  z1: number;
+  z2: number;
+}
+
+function boxOf(min: V3, max: V3): Box {
+  return {
+    x1: Math.floor(Math.min(min[0], max[0])),
+    x2: Math.floor(Math.max(min[0], max[0])),
+    y1: Math.max(0, Math.floor(Math.min(min[1], max[1]))),
+    y2: Math.floor(Math.max(min[1], max[1])),
+    z1: Math.floor(Math.min(min[2], max[2])),
+    z2: Math.floor(Math.max(min[2], max[2])),
+  };
+}
+
+/** One box query in progress: its hits (flat, six numbers each) and the most numbers it may hold. */
+interface BoxQuery {
+  dim: number;
+  box: Box;
+  out: number[];
+  cap: number;
+}
+
 export class MeshEngine {
   readonly store = new ColumnStore();
   table: StateTable = buildStateTable('b1.8.1', null);
@@ -90,27 +119,35 @@ export class MeshEngine {
    * (below-id = the block under it: crops on farmland, cane on cane). At most `max` hits; columns not held are skipped.
    */
   scan(dim: number, min: V3, max: V3, ids: number[], maxHits = 4096): number[] {
-    const out: number[] = [];
+    const q: BoxQuery = { dim, box: boxOf(min, max), out: [], cap: maxHits * 6 };
     const want = ids.length ? new Set(ids) : null;
-    const x1 = Math.floor(Math.min(min[0], max[0])), x2 = Math.floor(Math.max(min[0], max[0]));
-    const z1 = Math.floor(Math.min(min[2], max[2])), z2 = Math.floor(Math.max(min[2], max[2]));
-    const y1 = Math.max(0, Math.floor(Math.min(min[1], max[1]))), y2 = Math.floor(Math.max(min[1], max[1]));
-    for (let x = x1; x <= x2; x++)
-      for (let z = z1; z <= z2; z++) {
+    for (let x = q.box.x1; x <= q.box.x2; x++)
+      for (let z = q.box.z1; z <= q.box.z2; z++) {
         const col = this.store.get(dim, x >> 4, z >> 4);
-        if (!col) continue;
-        let below = y1 > 0 ? (this.store.blockAt(dim, x, y1 - 1, z)?.id ?? 0) : 0;
-        for (let y = y1; y <= Math.min(y2, col.height - 1); y++) {
-          const b = this.store.blockAt(dim, x, y, z);
-          const id = b?.id ?? 0;
-          if (id !== 0 && (!want || want.has(id))) {
-            out.push(x, y, z, id, b!.meta, below);
-            if (out.length >= maxHits * 6) return out;
-          }
-          below = id;
-        }
+        if (col && this.scanColumn(q, x, z, col.height, want)) return q.out;
       }
-    return out;
+    return q.out;
+  }
+
+  /** One column of a scan; true when the hit cap is reached. */
+  private scanColumn(q: BoxQuery, x: number, z: number, height: number, want: Set<number> | null): boolean {
+    const { y1, y2 } = q.box;
+    let below = y1 > 0 ? this.idAt(q.dim, x, y1 - 1, z) : 0;
+    for (let y = y1; y <= Math.min(y2, height - 1); y++) {
+      const b = this.store.blockAt(q.dim, x, y, z);
+      const id = b?.id ?? 0;
+      if (id !== 0 && (!want || want.has(id))) {
+        q.out.push(x, y, z, id, b!.meta, below);
+        if (q.out.length >= q.cap) return true;
+      }
+      below = id;
+    }
+    return false;
+  }
+
+  /** The block id at a cell (0 for air or not held). */
+  private idAt(dim: number, x: number, y: number, z: number): number {
+    return this.store.blockAt(dim, x, y, z)?.id ?? 0;
   }
 
   /**
@@ -120,34 +157,37 @@ export class MeshEngine {
    * below min y. Columns with no top in the range, or not held, give nothing. Stops after `maxHits` blocks.
    */
   stacks(dim: number, min: V3, max: V3, skip: number[], depth: number, above = 2, maxHits = 8192): number[] {
-    const out: number[] = [];
+    const q: BoxQuery = { dim, box: boxOf(min, max), out: [], cap: maxHits * 6 };
     const skipSet = new Set(skip);
-    const x1 = Math.floor(Math.min(min[0], max[0])), x2 = Math.floor(Math.max(min[0], max[0]));
-    const z1 = Math.floor(Math.min(min[2], max[2])), z2 = Math.floor(Math.max(min[2], max[2]));
-    const y1 = Math.max(0, Math.floor(Math.min(min[1], max[1]))), y2 = Math.floor(Math.max(min[1], max[1]));
-    const at = (x: number, y: number, z: number) => this.store.blockAt(dim, x, y, z);
-    for (let x = x1; x <= x2; x++)
-      for (let z = z1; z <= z2; z++) {
+    for (let x = q.box.x1; x <= q.box.x2; x++)
+      for (let z = q.box.z1; z <= q.box.z2; z++) {
         const col = this.store.get(dim, x >> 4, z >> 4);
         if (!col) continue;
-        let top = -1;
-        for (let y = Math.min(y2, col.height - 1); y >= y1; y--) {
-          const id = at(x, y, z)?.id ?? 0;
-          if (id !== 0 && !skipSet.has(id)) {
-            top = y;
-            break;
-          }
-        }
-        if (top < 0) continue;
-        const lo = Math.max(y1, top - Math.max(1, depth) + 1);
-        for (let y = Math.min(col.height - 1, y2, top + above); y >= lo; y--) {
-          const b = at(x, y, z);
-          if (!b || b.id === 0) continue;
-          out.push(x, y, z, b.id, b.meta, y > 0 ? (at(x, y - 1, z)?.id ?? 0) : 0);
-          if (out.length >= maxHits * 6) return out;
-        }
+        const top = this.columnTop(q, x, z, col.height, skipSet);
+        if (top >= 0 && this.stackColumn(q, x, z, col.height, top, depth, above)) return q.out;
       }
-    return out;
+    return q.out;
+  }
+
+  /** The highest cell of the column in the box's height range that is neither air nor skipped (−1: none). */
+  private columnTop(q: BoxQuery, x: number, z: number, height: number, skip: Set<number>): number {
+    for (let y = Math.min(q.box.y2, height - 1); y >= q.box.y1; y--) {
+      const id = this.idAt(q.dim, x, y, z);
+      if (id !== 0 && !skip.has(id)) return y;
+    }
+    return -1;
+  }
+
+  /** The column's stack from `above` cells over its top down `depth` cells; true when the hit cap is reached. */
+  private stackColumn(q: BoxQuery, x: number, z: number, height: number, top: number, depth: number, above: number): boolean {
+    const lo = Math.max(q.box.y1, top - Math.max(1, depth) + 1);
+    for (let y = Math.min(height - 1, q.box.y2, top + above); y >= lo; y--) {
+      const b = this.store.blockAt(q.dim, x, y, z);
+      if (!b || b.id === 0) continue;
+      q.out.push(x, y, z, b.id, b.meta, y > 0 ? this.idAt(q.dim, x, y - 1, z) : 0);
+      if (q.out.length >= q.cap) return true;
+    }
+    return false;
   }
 
   /** Packed light (sky << 4 | block) at each point (entities take the light of their cell); -1 = unknown. */

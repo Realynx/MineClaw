@@ -68,21 +68,18 @@ export function parseLight(b: Uint8Array): ColumnLight {
   if (sections !== 8 && sections !== 16) throw new McwcError(`light snapshot: ${sections} sections`);
   const uniform = new Uint8Array(sections);
   const full: Array<Uint8Array | null> = new Array(sections).fill(null);
+  const block = (len: number) => {
+    if (o + len > b.length) throw new McwcError('truncated light snapshot');
+    o += len;
+    return b.slice(o - len, o);
+  };
   for (let s = 0; s < sections; s++) {
     const kind = byte();
     if (kind === 0) uniform[s] = byte();
-    else if (kind === 1) {
-      if (o + SECTION_CELLS > b.length) throw new McwcError('truncated light snapshot');
-      full[s] = b.slice(o, o + SECTION_CELLS);
-      o += SECTION_CELLS;
-    } else throw new McwcError('light snapshot: bad section kind');
+    else if (kind === 1) full[s] = block(SECTION_CELLS);
+    else throw new McwcError('light snapshot: bad section kind');
   }
-  let biomes: Uint8Array | null = null;
-  if (flags & 1) {
-    if (o + 256 > b.length) throw new McwcError('truncated light snapshot');
-    biomes = b.slice(o, o + 256);
-    o += 256;
-  }
+  const biomes = flags & 1 ? block(256) : null;
   if (o !== b.length) throw new McwcError('light snapshot too long');
   return { sections, uniform, full, biomes };
 }

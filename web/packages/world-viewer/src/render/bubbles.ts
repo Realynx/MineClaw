@@ -49,46 +49,77 @@ export function cleanText(text: string): string {
  * does not fit ends the last line with an ellipsis.
  */
 export function wrapText(text: string, width: number = BUBBLE.wrap, maxLines: number = BUBBLE.maxLines): string[] {
-  const words = cleanText(text).split(' ').filter(Boolean);
-  const lines: string[] = [];
-  let cur = '';
-  let cut = false;
-  const push = (l: string): boolean => {
-    if (lines.length >= maxLines) {
-      cut = true;
+  const wrap = new LineWrap(width, maxLines);
+  for (const w of cleanText(text).split(' ').filter(Boolean)) if (!wrap.addWord(w)) break;
+  return wrap.finish();
+}
+
+/** wrapText's state: the finished lines, the line being filled, and whether text was cut because the lines ran out. */
+class LineWrap {
+  readonly lines: string[] = [];
+  private cur = '';
+  private cut = false;
+
+  constructor(
+    private readonly width: number,
+    private readonly maxLines: number,
+  ) {}
+
+  /** Adds one word to the current line, or starts a new line with it; false once the lines are full. */
+  addWord(word: string): boolean {
+    let w: string | null = word;
+    // A word longer than a line: fill the current line, then whole lines of it.
+    while ([...w].length > this.width) {
+      w = this.breakLong(w);
+      if (w === null) return false;
+    }
+    if (!w) return true;
+    const next = this.cur ? `${this.cur} ${w}` : w;
+    if ([...next].length <= this.width) {
+      this.cur = next;
+      return true;
+    }
+    if (!this.push(this.cur)) return false;
+    this.cur = w;
+    return true;
+  }
+
+  /** The text that does not fit ends the last line with an ellipsis. */
+  finish(): string[] {
+    const lines = this.lines;
+    if (this.cur && !this.cut) this.push(this.cur);
+    if (this.cut && lines.length) {
+      const last = [...lines[lines.length - 1]!];
+      lines[lines.length - 1] = `${last.slice(0, Math.min(last.length, this.width - 1)).join('').trimEnd()}…`;
+    }
+    return lines;
+  }
+
+  /** One line's worth of a long word: its head fills the current line (or a nearly full line is closed first). The rest of
+   * the word, or null once the lines are full. */
+  private breakLong(w: string): string | null {
+    const cur = this.cur;
+    const room = cur ? this.width - [...cur].length - 1 : this.width;
+    if (room < 4 && cur) {
+      if (!this.push(cur)) return null;
+      this.cur = '';
+      return w;
+    }
+    const head = [...w].slice(0, room).join('');
+    if (!this.push(cur ? `${cur} ${head}` : head)) return null;
+    this.cur = '';
+    return [...w].slice(room).join('');
+  }
+
+  /** Adds a finished line; false (and the text is cut) once there are maxLines. */
+  private push(l: string): boolean {
+    if (this.lines.length >= this.maxLines) {
+      this.cut = true;
       return false;
     }
-    lines.push(l);
+    this.lines.push(l);
     return true;
-  };
-  outer: for (let w of words) {
-    // A word longer than a line: fill the current line, then whole lines of it.
-    while ([...w].length > width) {
-      const room = cur ? width - [...cur].length - 1 : width;
-      if (room >= 4 || !cur) {
-        const head = [...w].slice(0, room).join('');
-        if (!push(cur ? `${cur} ${head}` : head)) break outer;
-        w = [...w].slice(room).join('');
-        cur = '';
-      } else {
-        if (!push(cur)) break outer;
-        cur = '';
-      }
-    }
-    if (!w) continue;
-    const next = cur ? `${cur} ${w}` : w;
-    if ([...next].length <= width) cur = next;
-    else {
-      if (!push(cur)) break;
-      cur = w;
-    }
   }
-  if (cur && !cut) push(cur);
-  if (cut && lines.length) {
-    const last = [...lines[lines.length - 1]!];
-    lines[lines.length - 1] = `${last.slice(0, Math.min(last.length, width - 1)).join('').trimEnd()}…`;
-  }
-  return lines;
 }
 
 /** How long a message of `lines` lines stays fully visible (ms), before its fade. */
@@ -128,22 +159,10 @@ export class ChatBubbles {
     const key = name.trim().toLowerCase();
     const lines = wrapText(text);
     if (!key || !lines.length) return null;
-    let list = this.bySpeaker.get(key);
-    const newest = list?.[list.length - 1];
-    if (newest && newest.text === cleanText(text) && now - newest.at < BUBBLE.dedupeMs) return null;
-    if (!list) {
-      list = [];
-      this.bySpeaker.set(key, list);
-      if (this.bySpeaker.size > BUBBLE.maxSpeakers) {
-        const oldest = this.bySpeaker.keys().next().value as string;
-        this.drop(oldest);
-      }
-    } else {
-      // Most recent speakers last (the map's order is the eviction order).
-      this.bySpeaker.delete(key);
-      this.bySpeaker.set(key, list);
-    }
-    const m: BubbleMessage = { id: nextId++, speaker: name.trim(), text: cleanText(text), lines, kind, at: now };
+    const clean = cleanText(text);
+    if (this.isRepeat(key, clean, now)) return null;
+    const list = this.listFor(key);
+    const m: BubbleMessage = { id: nextId++, speaker: name.trim(), text: clean, lines, kind, at: now };
     list.push(m);
     // Shift first: with no onDrop an optional call would skip its argument and never shorten the list.
     while (list.length > BUBBLE.stack) {
@@ -151,6 +170,31 @@ export class ChatBubbles {
       this.onDrop?.(old);
     }
     return m;
+  }
+
+  /** Whether `text` repeats the speaker's newest line within the dedupe window (several bots heard the same line). */
+  private isRepeat(key: string, text: string, now: number): boolean {
+    const list = this.bySpeaker.get(key);
+    const newest = list?.[list.length - 1];
+    return !!newest && newest.text === text && now - newest.at < BUBBLE.dedupeMs;
+  }
+
+  /** The speaker's message list, moved to the end of the eviction order (a new speaker may evict the oldest one). */
+  private listFor(key: string): BubbleMessage[] {
+    let list = this.bySpeaker.get(key);
+    if (list) {
+      // Most recent speakers last (the map's order is the eviction order).
+      this.bySpeaker.delete(key);
+      this.bySpeaker.set(key, list);
+      return list;
+    }
+    list = [];
+    this.bySpeaker.set(key, list);
+    if (this.bySpeaker.size > BUBBLE.maxSpeakers) {
+      const oldest = this.bySpeaker.keys().next().value as string;
+      this.drop(oldest);
+    }
+    return list;
   }
 
   /** Drops expired messages. */
@@ -226,14 +270,20 @@ export interface Speaker {
 export function findSpeaker(name: string, bots: readonly SpeakerBot[], ents: readonly SpeakerEntity[]): Speaker | null {
   const k = name.trim().toLowerCase();
   if (!k) return null;
+  const b = botNamed(k, bots);
+  if (b) return { key: b.name, bot: true, dim: b.dim, x: b.x, y: b.y, z: b.z };
+  for (const e of ents) if (e.kind === 'player' && e.name?.toLowerCase() === k) return { key: e.key, bot: false, dim: e.dim, x: e.x, y: e.y, z: e.z };
+  return null;
+}
+
+/** The bot named k (lower case), else the first whose short key is k. */
+function botNamed(k: string, bots: readonly SpeakerBot[]): SpeakerBot | null {
   let byShort: SpeakerBot | null = null;
   for (const b of bots) {
-    if (b.name.toLowerCase() === k) return { key: b.name, bot: true, dim: b.dim, x: b.x, y: b.y, z: b.z };
-    if (!byShort && b.dto.short && b.dto.short.toLowerCase() === k) byShort = b;
+    if (b.name.toLowerCase() === k) return b;
+    if (!byShort && b.dto.short?.toLowerCase() === k) byShort = b;
   }
-  if (byShort) return { key: byShort.name, bot: true, dim: byShort.dim, x: byShort.x, y: byShort.y, z: byShort.z };
-  for (const e of ents) if (e.kind === 'player' && e.name && e.name.toLowerCase() === k) return { key: e.key, bot: false, dim: e.dim, x: e.x, y: e.y, z: e.z };
-  return null;
+  return byShort;
 }
 
 // ------------------------------------------------------------------------------------------------------- layout
@@ -421,7 +471,31 @@ interface Drawn {
   held: Map<string, TexEntry<THREE.CanvasTexture>>;
 }
 
+/** A message drawn in a view this frame: its sprite, the texture variant it shows and its opacity. */
+interface LiveBubble {
+  m: BubbleMessage;
+  d: Drawn;
+  e: TexEntry<THREE.CanvasTexture>;
+  alpha: number;
+}
+
 const GAP_PX = 3, BASE_GAP_PX = 4;
+
+/** Shows one bubble's sprite at the anchor (x, y, z), `offset` world units above it in screen space. */
+function placeSprite({ d, e, alpha }: LiveBubble, x: number, y: number, z: number, scale: number, offset: number): void {
+  const sp = d.sprite;
+  const mat = sp.material as THREE.SpriteMaterial;
+  if (mat.map !== e.tex) {
+    if (!mat.map) mat.needsUpdate = true; // a map appearing changes the program; swapping maps does not
+    mat.map = e.tex;
+  }
+  mat.opacity = alpha;
+  const w = e.w * scale, h = e.h * scale;
+  sp.scale.set(w, h, 1);
+  sp.position.set(x, y, z);
+  sp.center.set(0.5, -offset / h); // screen-aligned lift: stacks read the same from the side and from above
+  sp.visible = true;
+}
 
 export class BubbleLayer {
   readonly group = new THREE.Group();
@@ -506,62 +580,67 @@ export class BubbleLayer {
     const cssH = o.height / Math.max(0.01, o.pxScale), cssW = cssH * cam.aspect;
     for (const [k, s] of this.speakersNow) {
       if (s.dim !== o.dim || (s.bot ? !o.bots : !o.players)) continue;
-      const msgs = this.model.messages(k);
-      if (!msgs.length) continue;
-      const ay = s.y + (s.bot ? HEAD_Y.bot : HEAD_Y.player);
-      // On screen? The anchor in view space (in front of the camera) and inside the frustum (a little margin).
-      this.v.set(s.x, ay, s.z).applyMatrix4(cam.matrixWorldInverse);
-      const depth = -this.v.z;
-      if (depth < cam.near) continue;
-      this.v.set(s.x, ay, s.z).project(cam);
-      if (Math.abs(this.v.x) > 1.02 || this.v.y < -1.02 || this.v.y > 1.0) continue;
-      // World units per CSS pixel at that depth.
-      const wpp = (2 * depth * tanHalf) / cssH;
-      const scale = (linePx(depth, o.mode) / TEX_LINE) * wpp; // world units per texture pixel
-      const lift = o.labelLift?.(s.key, s.bot) ?? 0;
-      // Newest first (bottom, with the tail), each fully faded one skipped; then stacked upward in screen space.
-      const list = o.mode === 'compact' ? msgs.slice(-1) : msgs;
-      const live: Array<{ m: BubbleMessage; d: Drawn; e: TexEntry<THREE.CanvasTexture>; alpha: number }> = [];
-      for (let i = list.length - 1; i >= 0; i--) {
-        const m = list[i]!;
-        const alpha = bubbleAlpha(this.now - m.at, m.lines.length);
-        if (alpha <= 0) continue;
-        const d = this.drawnFor(m);
-        live.push({ m, d, e: this.texture(d, o.mode === 'compact' ? 'compact' : live.length === 0 ? 'full' : 'stacked'), alpha });
-      }
-      if (!live.length) continue;
-      const offsets = stackOffsets(live.map((l) => l.e.h * scale), lift + BASE_GAP_PX * wpp, GAP_PX * wpp);
-      live.forEach(({ d, e, alpha }, i) => {
-        const sp = d.sprite;
-        const mat = sp.material as THREE.SpriteMaterial;
-        if (mat.map !== e.tex) {
-          if (!mat.map) mat.needsUpdate = true; // a map appearing changes the program; swapping maps does not
-          mat.map = e.tex;
-        }
-        mat.opacity = alpha;
-        const w = e.w * scale, h = e.h * scale;
-        sp.scale.set(w, h, 1);
-        sp.position.set(s.x, ay, s.z);
-        sp.center.set(0.5, -offsets[i]! / h); // screen-aligned lift: stacks read the same from the side and from above
-        sp.visible = true;
-      });
-      const top = live[0]!;
-      const ax = ((this.v.x + 1) / 2) * cssW, ayPx = ((1 - this.v.y) / 2) * cssH;
-      const last = live.length - 1;
-      const first: ShownBubble = {
-        speaker: top.m.speaker,
-        key: s.key,
-        x: ax,
-        y: ayPx,
-        w: (top.e.w * scale) / wpp,
-        h: (top.e.h * scale) / wpp,
-        bottom: ayPx - offsets[0]! / wpp,
-        top: ayPx - (offsets[last]! + live[last]!.e.h * scale) / wpp,
-        lines: top.m.lines,
-        stacked: live.length,
-      };
-      if (first) report.push(first);
+      const shown = this.showSpeaker(o, k, s, tanHalf, cssH, cssW);
+      if (shown) report.push(shown);
     }
+  }
+
+  /** Places one speaker's stack in a view: null when it has no live message or its anchor is off screen. */
+  private showSpeaker(o: BubbleViewOptions, k: string, s: Speaker, tanHalf: number, cssH: number, cssW: number): ShownBubble | null {
+    const msgs = this.model.messages(k);
+    if (!msgs.length) return null;
+    const ay = s.y + (s.bot ? HEAD_Y.bot : HEAD_Y.player);
+    const depth = this.anchorDepth(o.camera, s.x, ay, s.z);
+    if (depth === null) return null;
+    // World units per CSS pixel at that depth.
+    const wpp = (2 * depth * tanHalf) / cssH;
+    const scale = (linePx(depth, o.mode) / TEX_LINE) * wpp; // world units per texture pixel
+    const lift = o.labelLift?.(s.key, s.bot) ?? 0;
+    const live = this.liveBubbles(msgs, o.mode);
+    if (!live.length) return null;
+    const offsets = stackOffsets(live.map((l) => l.e.h * scale), lift + BASE_GAP_PX * wpp, GAP_PX * wpp);
+    for (let i = 0; i < live.length; i++) placeSprite(live[i]!, s.x, ay, s.z, scale, offsets[i]!);
+    const top = live[0]!;
+    const ax = ((this.v.x + 1) / 2) * cssW, ayPx = ((1 - this.v.y) / 2) * cssH;
+    const last = live.length - 1;
+    return {
+      speaker: top.m.speaker,
+      key: s.key,
+      x: ax,
+      y: ayPx,
+      w: (top.e.w * scale) / wpp,
+      h: (top.e.h * scale) / wpp,
+      bottom: ayPx - offsets[0]! / wpp,
+      top: ayPx - (offsets[last]! + live[last]!.e.h * scale) / wpp,
+      lines: top.m.lines,
+      stacked: live.length,
+    };
+  }
+
+  /** On screen? The anchor's depth in front of the camera, leaving its projection in `v`; null when it is behind the near
+   * plane or outside the frustum (a little margin). */
+  private anchorDepth(cam: THREE.PerspectiveCamera, x: number, y: number, z: number): number | null {
+    this.v.set(x, y, z).applyMatrix4(cam.matrixWorldInverse);
+    const depth = -this.v.z;
+    if (depth < cam.near) return null;
+    this.v.set(x, y, z).project(cam);
+    if (Math.abs(this.v.x) > 1.02 || this.v.y < -1.02 || this.v.y > 1.0) return null;
+    return depth;
+  }
+
+  /** A stack's visible messages, newest first (bottom, with the tail), each fully faded one skipped; compact views only the
+   * newest. Acquires their sprites and texture variants. */
+  private liveBubbles(msgs: readonly BubbleMessage[], mode: BubbleMode): LiveBubble[] {
+    const list = mode === 'compact' ? msgs.slice(-1) : msgs;
+    const live: LiveBubble[] = [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i]!;
+      const alpha = bubbleAlpha(this.now - m.at, m.lines.length);
+      if (alpha <= 0) continue;
+      const d = this.drawnFor(m);
+      live.push({ m, d, e: this.texture(d, mode === 'compact' ? 'compact' : live.length === 0 ? 'full' : 'stacked'), alpha });
+    }
+    return live;
   }
 
   /** The bubbles the last `showFor` of a view drew. */

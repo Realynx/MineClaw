@@ -64,6 +64,7 @@ function project(x: number, y: number, z: number, s: number, ox: number, oy: num
 /** Draws one baked quad: its texture (or flat colour) mapped onto its projected parallelogram, shaded and tinted. */
 function drawQuad(g: CanvasRenderingContext2D, bundle: AssetBundle, cols: number, q: Quad, s: number, ox: number, oy: number): void {
   const P = [0, 1, 2, 3].map((i) => project(q.p[i * 3], q.p[i * 3 + 1], q.p[i * 3 + 2], s, ox, oy));
+  void cols;
   g.save();
   g.beginPath();
   g.moveTo(P[0][0], P[0][1]);
@@ -71,31 +72,31 @@ function drawQuad(g: CanvasRenderingContext2D, bundle: AssetBundle, cols: number
   g.closePath();
   g.clip();
   const shade = q.shade > 0 ? q.shade : 1;
-  if (!q.textured) {
-    let rgb = q.flat;
-    if (q.tint !== TINT_NONE) {
-      const t = tintColour(q.tint);
-      rgb = (((((rgb >> 16) & 255) * ((t >> 16) & 255)) / 255) << 16) | (((((rgb >> 8) & 255) * ((t >> 8) & 255)) / 255) << 8) | (((rgb & 255) * (t & 255)) / 255);
-    }
-    g.fillStyle = hex(rgb);
-    g.globalAlpha = 1;
-    g.filter = shade < 1 ? `brightness(${shade})` : 'none';
-    g.fill();
-    g.restore();
-    return;
-  }
-  const ts = bundle.pack.tileSize;
-  void cols;
-  // Texture pixels of three corners (uv in cell units from the quad's cell) → their screen points: one affine map.
-  const tx = (i: number) => (q.c + q.uv[i * 2]) * ts;
-  const ty = (i: number) => (q.r + q.uv[i * 2 + 1]) * ts;
-  const [u0, v0, u1, v1, u3, v3] = [tx(0), ty(0), tx(1), ty(1), tx(3), ty(3)];
+  if (q.textured) drawTexturedQuad(g, bundle, q, P, shade);
+  else fillFlatQuad(g, q, shade);
+  g.restore();
+}
+
+/** A per-channel product of two colours (the tint over a flat colour). */
+const multiplyRgb = (rgb: number, t: number): number =>
+  (((((rgb >> 16) & 255) * ((t >> 16) & 255)) / 255) << 16) | (((((rgb >> 8) & 255) * ((t >> 8) & 255)) / 255) << 8) | (((rgb & 255) * (t & 255)) / 255);
+
+/** An untextured quad: its flat colour (tinted), shaded. */
+function fillFlatQuad(g: CanvasRenderingContext2D, q: Quad, shade: number): void {
+  g.fillStyle = hex(q.tint !== TINT_NONE ? multiplyRgb(q.flat, tintColour(q.tint)) : q.flat);
+  g.globalAlpha = 1;
+  g.filter = shade < 1 ? `brightness(${shade})` : 'none';
+  g.fill();
+}
+
+/** A textured quad: texture pixels of three corners (uv in cell units from the quad's cell) → their screen points P, one
+ * affine map; then the covered part of the atlas (a degenerate uv draws nothing). */
+function drawTexturedQuad(g: CanvasRenderingContext2D, bundle: AssetBundle, q: Quad, P: Array<[number, number]>, shade: number): void {
+  const ts = bundle.pack.tileSize, uv = q.uv;
+  const u0 = (q.c + uv[0]) * ts, v0 = (q.r + uv[1]) * ts, u1 = (q.c + uv[2]) * ts, v1 = (q.r + uv[3]) * ts, u3 = (q.c + uv[6]) * ts, v3 = (q.r + uv[7]) * ts;
   const du1 = u1 - u0, dv1 = v1 - v0, du3 = u3 - u0, dv3 = v3 - v0;
   const det = du1 * dv3 - du3 * dv1;
-  if (Math.abs(det) < 1e-9) {
-    g.restore();
-    return;
-  }
+  if (Math.abs(det) < 1e-9) return;
   const [x0, y0] = P[0], [x1, y1] = P[1], [x3, y3] = P[3];
   const a = ((x1 - x0) * dv3 - (x3 - x0) * dv1) / det;
   const c = ((x3 - x0) * du1 - (x1 - x0) * du3) / det;
@@ -106,21 +107,23 @@ function drawQuad(g: CanvasRenderingContext2D, bundle: AssetBundle, cols: number
   g.filter = shade < 0.999 ? `brightness(${shade.toFixed(2)})` : 'none';
   const sx = Math.floor(Math.min(u0, u1, u3, u0 + du1 + du3)), sy = Math.floor(Math.min(v0, v1, v3, v0 + dv1 + dv3));
   const sw = Math.ceil(Math.max(u0, u1, u3, u0 + du1 + du3)) - sx, sh = Math.ceil(Math.max(v0, v1, v3, v0 + dv1 + dv3)) - sy;
-  if (sw > 0 && sh > 0) {
-    if (q.tint !== TINT_NONE && !q.span) {
-      const cell = tintedCell(bundle.blocks, q.c * ts, q.r * ts, ts, tintColour(q.tint), `${bundle.version}:${q.c}:${q.r}:${q.tint}`);
-      g.drawImage(cell, sx - q.c * ts, sy - q.r * ts, sw, sh, sx, sy, sw, sh);
-    } else g.drawImage(bundle.blocks, sx, sy, sw, sh, sx, sy, sw, sh);
-    // The grass side's fringe (an overlay cell over the same face).
-    if (q.ovC >= 0) {
-      const ovt = q.ovTint !== TINT_NONE ? tintColour(q.ovTint) : 0;
-      const src = ovt ? tintedCell(bundle.blocks, q.ovC * ts, q.ovR * ts, ts, ovt, `${bundle.version}:${q.ovC}:${q.ovR}:${q.ovTint}`) : null;
-      const dx = (q.ovC - q.c) * ts, dy = (q.ovR - q.r) * ts;
-      if (src) g.drawImage(src, sx - q.c * ts, sy - q.r * ts, sw, sh, sx, sy, sw, sh);
-      else g.drawImage(bundle.blocks, sx + dx, sy + dy, sw, sh, sx, sy, sw, sh);
-    }
-  }
-  g.restore();
+  if (sw > 0 && sh > 0) blitQuadCells(g, bundle, q, sx, sy, sw, sh);
+}
+
+/** The atlas rectangle (sx, sy, sw, sh) of a quad's cell, tinted per cell (unless it spans cells), then the grass side's
+ * fringe: an overlay cell over the same face. */
+function blitQuadCells(g: CanvasRenderingContext2D, bundle: AssetBundle, q: Quad, sx: number, sy: number, sw: number, sh: number): void {
+  const ts = bundle.pack.tileSize;
+  if (q.tint !== TINT_NONE && !q.span) {
+    const cell = tintedCell(bundle.blocks, q.c * ts, q.r * ts, ts, tintColour(q.tint), `${bundle.version}:${q.c}:${q.r}:${q.tint}`);
+    g.drawImage(cell, sx - q.c * ts, sy - q.r * ts, sw, sh, sx, sy, sw, sh);
+  } else g.drawImage(bundle.blocks, sx, sy, sw, sh, sx, sy, sw, sh);
+  if (q.ovC < 0) return;
+  const ovt = q.ovTint !== TINT_NONE ? tintColour(q.ovTint) : 0;
+  const src = ovt ? tintedCell(bundle.blocks, q.ovC * ts, q.ovR * ts, ts, ovt, `${bundle.version}:${q.ovC}:${q.ovR}:${q.ovTint}`) : null;
+  const dx = (q.ovC - q.c) * ts, dy = (q.ovR - q.r) * ts;
+  if (src) g.drawImage(src, sx - q.c * ts, sy - q.r * ts, sw, sh, sx, sy, sw, sh);
+  else g.drawImage(bundle.blocks, sx + dx, sy + dy, sw, sh, sx, sy, sw, sh);
 }
 
 /** Visible from the icon's camera (+x, +y, +z), or drawn from both sides. */
@@ -147,33 +150,56 @@ function drawSprite(g: CanvasRenderingContext2D, img: CanvasImageSource, sx: num
  * b1.8.1 items.png cell); without one (or when it doesn't resolve) the block's own geometry.
  */
 export function drawBlockIcon(g: CanvasRenderingContext2D, bundle: AssetBundle, id: number, meta: number, size: number, ox = 0, oy = 0, icon?: string | null): void {
-  const s = size / 32;
-  // b1.8.1 item sprites.
-  if (icon && icon.startsWith('item:') && bundle.version === 'b1.8.1') {
+  if (icon && drawHintSprite(g, bundle, icon, size, ox, oy)) return;
+  if (drawFlatBeta(g, bundle, id, meta, size, ox, oy)) return;
+  drawGeometry(g, bundle, id, meta, size, ox, oy);
+}
+
+/** The palette's hint as a sprite: a b1.8.1 items.png cell ("item:43"), or a 1.12.2 item model that is a sprite (doors, beds,
+ * signs, plants…). False when the hint doesn't resolve to one. */
+function drawHintSprite(g: CanvasRenderingContext2D, bundle: AssetBundle, icon: string, size: number, ox: number, oy: number): boolean {
+  const item = icon.startsWith('item:');
+  if (item && bundle.version === 'b1.8.1') {
     const n = Number(icon.slice(5));
     const ts = bundle.pack.tileSize;
-    return drawSprite(g, bundle.items, (n % 16) * ts, Math.floor(n / 16) * ts, ts, size, ox, oy, 0, `bi:${n}`);
+    drawSprite(g, bundle.items, (n % 16) * ts, Math.floor(n / 16) * ts, ts, size, ox, oy, 0, `bi:${n}`);
+    return true;
   }
-  // 1.12.2 item models that are sprites (doors, beds, signs, plants…).
-  if (icon && bundle.version === '1.12.2' && !icon.startsWith('item:')) {
-    const pack = bundle.pack as Pack1122;
-    const look = look1122(pack, icon);
-    if (look && look.kind === 'sprite') {
-      const cols = look.atlas === 'items' ? pack.items.columns : pack.blocks.columns;
-      const ts = pack.tileSize;
-      const img = look.atlas === 'items' ? bundle.items : bundle.blocks;
-      return drawSprite(g, img, (look.cell % cols) * ts, Math.floor(look.cell / cols) * ts, ts, size, ox, oy, look.tint, `${look.atlas}:${look.cell}:${look.tint}`);
-    }
-  }
-  // b1.8.1 flat render types: the front tile.
-  if (bundle.version === 'b1.8.1' && FLAT_BETA.has(id)) {
-    const t = tileFor(id, meta, 3);
-    const ts = bundle.pack.tileSize;
-    if (t.tile >= 0) {
-      const tint = t.tint ? (id === 106 || id === 18 ? FOLIAGE_TINT : GRASS_TINT) : 0;
-      return drawSprite(g, bundle.blocks, (t.tile % 16) * ts, Math.floor(t.tile / 16) * ts, ts, size, ox, oy, tint, `bt:${t.tile}:${tint}`);
-    }
-  }
+  if (item || bundle.version !== '1.12.2') return false;
+  const pack = bundle.pack as Pack1122;
+  const look = look1122(pack, icon);
+  if (look?.kind !== 'sprite') return false;
+  const items = look.atlas === 'items';
+  const cols = items ? pack.items.columns : pack.blocks.columns;
+  const ts = pack.tileSize;
+  drawSprite(g, items ? bundle.items : bundle.blocks, (look.cell % cols) * ts, Math.floor(look.cell / cols) * ts, ts, size, ox, oy, look.tint, `${look.atlas}:${look.cell}:${look.tint}`);
+  return true;
+}
+
+/** b1.8.1 flat render types: the front tile (foliage-tinted for vines and leaves, else grass-tinted when tinted). False for
+ * other blocks, or when the state has no tile. */
+function drawFlatBeta(g: CanvasRenderingContext2D, bundle: AssetBundle, id: number, meta: number, size: number, ox: number, oy: number): boolean {
+  if (bundle.version !== 'b1.8.1' || !FLAT_BETA.has(id)) return false;
+  const t = tileFor(id, meta, 3);
+  if (t.tile < 0) return false;
+  const ts = bundle.pack.tileSize;
+  const tint = t.tint ? (id === 106 || id === 18 ? FOLIAGE_TINT : GRASS_TINT) : 0;
+  drawSprite(g, bundle.blocks, (t.tile % 16) * ts, Math.floor(t.tile / 16) * ts, ts, size, ox, oy, tint, `bt:${t.tile}:${tint}`);
+  return true;
+}
+
+/** The sum of a quad's corner coordinates: larger is nearer the icon's camera (+x +y +z). */
+function quadDepth(q: Quad): number {
+  let d = 0;
+  for (let i = 0; i < 4; i++) d += q.p[i * 3] + q.p[i * 3 + 1] + q.p[i * 3 + 2];
+  return d;
+}
+
+const farthestFirst = (a: Quad, b: Quad): number => quadDepth(a) - quadDepth(b);
+
+/** The block's own baked quads that face the camera, in painter's order (farthest first); a flat colour square when none do. */
+function drawGeometry(g: CanvasRenderingContext2D, bundle: AssetBundle, id: number, meta: number, size: number, ox: number, oy: number): void {
+  const s = size / 32;
   const table = tableOf(bundle);
   const quads = table.source.quads((id << 4) | (meta & 15)).filter(facesCamera);
   if (quads.length === 0) {
@@ -181,13 +207,7 @@ export function drawBlockIcon(g: CanvasRenderingContext2D, bundle: AssetBundle, 
     g.fillRect(ox + 6 * s, oy + 6 * s, 20 * s, 20 * s);
     return;
   }
-  // Painter's order: farthest from the camera (+x +y +z) first.
-  const depth = (q: Quad) => {
-    let d = 0;
-    for (let i = 0; i < 4; i++) d += q.p[i * 3] + q.p[i * 3 + 1] + q.p[i * 3 + 2];
-    return d;
-  };
-  quads.sort((a, b) => depth(a) - depth(b));
+  quads.sort(farthestFirst);
   for (const q of quads) drawQuad(g, bundle, table.cols, q, s, ox, oy);
 }
 

@@ -210,6 +210,24 @@ export function boxLines(
 /** How far a dig cell's outline and top fill stand out of the cell (over the ground surface around it). */
 const DIG_LIFT = 0.03;
 
+/** Adds the "x,y,z" key of every cell in a flat [x, y, z, id, meta, …] list. */
+function addCellKeys(into: Set<string>, cells: readonly number[]): void {
+  for (let i = 0; i + 4 < cells.length + 1; i += 5) into.add(`${cells[i]},${cells[i + 1]},${cells[i + 2]}`);
+}
+
+/** A placement's cells split into the blocks it places and the cells it digs (id 0), both flat [x, y, z, id, meta, …]. */
+function splitDigCells(blocks: readonly number[]): { solid: number[]; dig: number[] } {
+  const solid: number[] = [], dig: number[] = [];
+  for (let i = 0; i + 4 < blocks.length; i += 5) (blocks[i + 3] === 0 ? dig : solid).push(...blocks.slice(i, i + 5));
+  return { solid, dig };
+}
+
+/** The preview's worker request: the cells it digs first are no obstacle to what goes into them (a trench, then its water). */
+function placeRequest(solid: number[], dig: number[]): HoloRequest {
+  const clear = dig.flatMap((_, i) => (i % 5 < 3 ? [dig[i]] : []));
+  return { key: 'p', blocks: solid, mode: 'place', clear };
+}
+
 export interface HologramStats {
   /** Cells drawn as blocks (after the world left out the built ones). */
   cells: number;
@@ -408,9 +426,9 @@ export class HologramLayer {
     const shown = new Set<string>(), shownDig = new Set<string>();
     let cells = 0, digs = 0;
     for (const r of rs) {
-      const into = r.key === 'dig' ? shownDig : shown;
-      for (let i = 0; i + 4 < r.cells.length + 1; i += 5) into.add(`${r.cells[i]},${r.cells[i + 1]},${r.cells[i + 2]}`);
-      if (r.key === 'dig') {
+      const dig = r.key === 'dig';
+      addCellKeys(dig ? shownDig : shown, r.cells);
+      if (dig) {
         digs = r.cells.length / 5;
         if (digs) this.cellsGroup.add(...this.digMarks(r.cells));
         continue;
@@ -420,25 +438,28 @@ export class HologramLayer {
     }
     this.shown = shown;
     this.shownDig = shownDig;
-    // Outline boxes: every build (far zoom), the capped ones marked to show always.
-    const all = plan.boxes.map((b) => ({ min: b.min, max: b.max, rgb: BOX_RGB[b.state], cy: b.min[1], capped: plan.capped.has(b.build) }));
-    if (all.length) {
-      const origin = all[0].min;
-      const capped = all.filter((b) => b.capped), rest = all.filter((b) => !b.capped);
-      for (const [list, name] of [[capped, 'capped'], [rest, 'all']] as const) {
-        if (!list.length) continue;
-        const l = new THREE.LineSegments(boxLines(list, origin, -0.02), this.boxMat);
-        l.name = name;
-        l.position.set(origin[0], origin[1], origin[2]);
-        l.frustumCulled = false;
-        l.renderOrder = 6;
-        this.boxGroup.add(l);
-      }
-    }
+    this.addBoxes(plan);
     this.st.cells = cells;
     this.st.digs = digs;
     this.st.boxes = plan.boxes.length;
     this.show(this.lod ? 0 : null);
+  }
+
+  /** Outline boxes: every build (far zoom), the capped ones marked to show always. */
+  private addBoxes(plan: HoloPlan): void {
+    const all = plan.boxes.map((b) => ({ min: b.min, max: b.max, rgb: BOX_RGB[b.state], cy: b.min[1], capped: plan.capped.has(b.build) }));
+    if (!all.length) return;
+    const origin = all[0].min;
+    const capped = all.filter((b) => b.capped), rest = all.filter((b) => !b.capped);
+    for (const [list, name] of [[capped, 'capped'], [rest, 'all']] as const) {
+      if (!list.length) continue;
+      const l = new THREE.LineSegments(boxLines(list, origin, -0.02), this.boxMat);
+      l.name = name;
+      l.position.set(origin[0], origin[1], origin[2]);
+      l.frustumCulled = false;
+      l.renderOrder = 6;
+      this.boxGroup.add(l);
+    }
   }
 
   private async runPreview(): Promise<void> {
@@ -450,31 +471,33 @@ export class HologramLayer {
         const blocks = this.previewBlocks;
         const key = this.previewKey;
         if (!blocks) break;
-        const solid: number[] = [], dig: number[] = [];
-        for (let i = 0; i + 4 < blocks.length; i += 5) (blocks[i + 3] === 0 ? dig : solid).push(...blocks.slice(i, i + 5));
+        const { solid, dig } = splitDigCells(blocks);
         let rs: HoloResult[];
         try {
-          // The cells it digs first are no obstacle to what goes into them (a trench, then its water).
-          const clear = dig.flatMap((_, i) => (i % 5 < 3 ? [dig[i]] : []));
-          rs = await this.host.holo(this.dim, [{ key: 'p', blocks: solid, mode: 'place', clear }]);
+          rs = await this.host.holo(this.dim, [placeRequest(solid, dig)]);
         } catch {
           rs = [];
         }
         if (this.disposed || key !== this.previewKey) continue;
-        this.clearGroup(this.previewGroup);
-        let ok = 0, blocked = 0;
-        for (const r of rs) {
-          const bad = r.key.endsWith(':blocked');
-          if (bad) blocked += r.cells.length / 5;
-          else ok += r.cells.length / 5;
-          if (r.mesh) this.previewGroup.add(this.mesh(r, bad ? this.mats.placeBlocked : this.mats.place));
-        }
-        if (dig.length) this.previewGroup.add(...this.digMarks(dig));
-        this.st.preview = { ok, blocked, dig: dig.length / 5 };
+        this.showPreview(rs, dig);
       }
     } finally {
       this.previewBusy = false;
     }
+  }
+
+  /** Draws a preview's answer: fitting and blocked cells in their two looks, and outlines for the cells it digs. */
+  private showPreview(rs: HoloResult[], dig: number[]): void {
+    this.clearGroup(this.previewGroup);
+    let ok = 0, blocked = 0;
+    for (const r of rs) {
+      const bad = r.key.endsWith(':blocked');
+      if (bad) blocked += r.cells.length / 5;
+      else ok += r.cells.length / 5;
+      if (r.mesh) this.previewGroup.add(this.mesh(r, bad ? this.mats.placeBlocked : this.mats.place));
+    }
+    if (dig.length) this.previewGroup.add(...this.digMarks(dig));
+    this.st.preview = { ok, blocked, dig: dig.length / 5 };
   }
 
   private mesh(r: HoloResult, mat: THREE.ShaderMaterial): THREE.Mesh {
