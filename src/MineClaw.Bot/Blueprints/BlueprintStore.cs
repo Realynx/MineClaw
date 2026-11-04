@@ -159,14 +159,20 @@ public sealed class BlueprintStore
     {
         Id = r.GetInt64(0), Name = r.GetString(1), Description = r.GetString(2), Requester = AgentDb.StrOrNull(r, 3), Bot = r.GetString(4),
         Dsl = r.GetString(5), Status = r.GetString(6), Dim = r.GetInt32(7),
-        Site = new BlockPos(r.IsDBNull(8) ? 0 : r.GetInt32(8), r.IsDBNull(9) ? 0 : r.GetInt32(9), r.IsDBNull(10) ? 0 : r.GetInt32(10)),
+        Site = new BlockPos(IntOrZero(r, 8), IntOrZero(r, 9), IntOrZero(r, 10)),
         Origin = r.IsDBNull(11) ? null : new BlockPos(r.GetInt32(11), r.GetInt32(12), r.GetInt32(13)),
-        Rev = r.GetInt32(14), Summary = AgentDb.StrOrNull(r, 15) ?? "", Eval = AgentDb.StrOrNull(r, 16) ?? "", Critique = AgentDb.StrOrNull(r, 17) ?? "",
-        Bill = AgentDb.StrOrNull(r, 18) is { Length: > 0 } b ? JsonSerializer.Deserialize<List<BillRow>>(b) ?? new() : new(),
+        Rev = r.GetInt32(14), Summary = StrOrEmpty(r, 15), Eval = StrOrEmpty(r, 16), Critique = StrOrEmpty(r, 17), Bill = BillOf(r, 18),
         CostUsd = (decimal)r.GetDouble(19), Iterations = r.GetInt32(20), AcceptedBy = AgentDb.StrOrNull(r, 21),
         Created = AgentDb.FromUnixMs(r.GetInt64(22)), Updated = AgentDb.FromUnixMs(r.GetInt64(23)), HasPicture = r.GetInt64(24) != 0,
-        Anchor = AgentDb.StrOrNull(r, 25) ?? "",
+        Anchor = StrOrEmpty(r, 25),
     };
+
+    private static int IntOrZero(Microsoft.Data.Sqlite.SqliteDataReader r, int i) => r.IsDBNull(i) ? 0 : r.GetInt32(i);
+
+    private static string StrOrEmpty(Microsoft.Data.Sqlite.SqliteDataReader r, int i) => AgentDb.StrOrNull(r, i) ?? "";
+
+    private static List<BillRow> BillOf(Microsoft.Data.Sqlite.SqliteDataReader r, int i) =>
+        AgentDb.StrOrNull(r, i) is { Length: > 0 } b ? JsonSerializer.Deserialize<List<BillRow>>(b) ?? new() : new();
 
     // ------------------------------------------------------------------ build progress
 
