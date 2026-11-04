@@ -33,6 +33,22 @@ public sealed class StoryLookupGoldenTests
         GoldenHash("tool-needs", sb.ToString());
     }
 
+    [Fact]
+    public void Produce_table_matches_the_old_switch_for_every_plant()
+    {
+        static (int, int) Old(StoryPlant p) => p.Id switch
+        {
+            "wheat" => (296, -1), "carrots" => (391, -1), "potatoes" => (392, -1), "beetroot" => (434, -1), "pumpkin" => (86, -1),
+            "melon" => (360, -1), "sugar_cane" => (338, -1), "cactus" => (81, -1), "nether_wart" => (372, -1),
+            _ when p.Harvest == "tree" => p.SeedMeta < 4 ? (17, p.SeedMeta) : (162, p.SeedMeta - 4),
+            _ => (p.SeedId, -1),
+        };
+        foreach (var d in Versions)
+            foreach (var p in StoryPlants.For(d))
+                foreach (var q in new[] { p, p with { Id = "x" }, p with { Harvest = "tree" }, p with { Harvest = "tree", SeedMeta = 5 } })
+                    Assert.Equal(Old(q), StoryPlants.Produce(q));
+    }
+
     /// <summary>A small forest: plain trees, a 2x2 trunk, a tree with branches and a crown, a floating log, leaves on their own, a
     /// stump over water; every block's tree base, the trees of several boxes, and every crop state.</summary>
     [Fact]
