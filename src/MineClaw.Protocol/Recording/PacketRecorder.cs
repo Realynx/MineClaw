@@ -246,31 +246,40 @@ public sealed class PacketRecording
         Stream body = gzip ? new GZipStream(input, CompressionMode.Decompress, leaveOpen: true) : input;
         body = new BufferedStream(body, 64 * 1024);
         var frames = new List<RecordedFrame>();
-        bool truncated = false;
-        long t = 0;
-        try
-        {
-            while (true)
-            {
-                int dir = body.ReadByte();
-                if (dir < 0) break;
-                long delta = RecordingFormat.ReadVarInt(body, eofOk: false);
-                long len = RecordingFormat.ReadVarInt(body, eofOk: false);
-                if (len > 16 * 1024 * 1024) throw new InvalidDataException("frame too large");
-                var raw = new byte[len];
-                body.ReadExactly(raw);
-                t += delta;
-                frames.Add(new RecordedFrame(t, dir == 0 ? PacketDirection.ClientBound : PacketDirection.ServerBound, raw));
-            }
-        }
-        catch (Exception ex) when (ex is EndOfStreamException or InvalidDataException or IOException)
-        {
-            truncated = true;
-        }
+        bool truncated = !ReadFrames(body, frames);
         return new PacketRecording
         {
             Start = DateTimeOffset.FromUnixTimeMilliseconds(ms), Gzip = gzip, Meta = Encoding.UTF8.GetString(meta), Frames = frames,
             Truncated = truncated,
         };
+    }
+
+    /// <summary>Reads frames to the end of <paramref name="body"/>; false when it was cut off mid-frame (the frames before stay).</summary>
+    private static bool ReadFrames(Stream body, List<RecordedFrame> frames)
+    {
+        long t = 0;
+        try
+        {
+            while (ReadFrame(body, ref t) is { } frame) frames.Add(frame);
+            return true;
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or InvalidDataException or IOException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>One frame (direction byte, time delta, length, bytes), or null at a clean end.</summary>
+    private static RecordedFrame? ReadFrame(Stream body, ref long t)
+    {
+        int dir = body.ReadByte();
+        if (dir < 0) return null;
+        long delta = RecordingFormat.ReadVarInt(body, eofOk: false);
+        long len = RecordingFormat.ReadVarInt(body, eofOk: false);
+        if (len > 16 * 1024 * 1024) throw new InvalidDataException("frame too large");
+        var raw = new byte[len];
+        body.ReadExactly(raw);
+        t += delta;
+        return new RecordedFrame(t, dir == 0 ? PacketDirection.ClientBound : PacketDirection.ServerBound, raw);
     }
 }

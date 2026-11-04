@@ -33,36 +33,45 @@ public static class EntityMeta1122
             var r = new WireReader(data[pos..]);
             int type = r.ReadVarInt();
             pos += r.Position;
-            if (type == 5)
-            {
-                list.Add(new(index, 5, Codec1122.ReadSlot(data, ref pos)));
-                continue;
-            }
-            if (type == 13)
-            {
-                var tag = Nbt.ReadRoot(data[pos..], out int used);
-                pos += used;
-                list.Add(new(index, 13, tag));
-                continue;
-            }
-            r = new WireReader(data[pos..]);
-            object? v = type switch
-            {
-                0 => r.ReadUByte(),
-                1 or 10 or 12 => r.ReadVarInt(),
-                2 => r.ReadFloat(),
-                3 or 4 => r.ReadString(),
-                6 => r.ReadBool(),
-                7 => (r.ReadFloat(), r.ReadFloat(), r.ReadFloat()),
-                8 => r.ReadLong(),
-                9 => r.ReadBool() ? r.ReadLong() : null,
-                11 => r.ReadBool() ? r.ReadUuid() : null,
-                _ => throw new ProtocolException($"entity metadata serializer {type} unknown"),
-            };
-            pos += r.Position;
-            list.Add(new(index, type, v));
+            list.Add(new(index, type, ReadValue(data, ref pos, type)));
         }
     }
+
+    /// <summary>One value of serializer <paramref name="type"/> at <paramref name="pos"/> (advanced past it).</summary>
+    private static object? ReadValue(ReadOnlySpan<byte> data, ref int pos, int type)
+    {
+        if (type == 5) return Codec1122.ReadSlot(data, ref pos);
+        if (type == 13)
+        {
+            var tag = Nbt.ReadRoot(data[pos..], out int used);
+            pos += used;
+            return tag;
+        }
+        var r = new WireReader(data[pos..]);
+        object? v = ReadPlainValue(ref r, type);
+        pos += r.Position;
+        return v;
+    }
+
+    private static object? ReadPlainValue(ref WireReader r, int type) => type switch
+    {
+        0 => r.ReadUByte(),
+        1 or 10 or 12 => r.ReadVarInt(),
+        2 => r.ReadFloat(),
+        3 or 4 => r.ReadString(),
+        6 => r.ReadBool(),
+        _ => ReadCompositeValue(ref r, type),
+    };
+
+    /// <summary>Rotation, position, optional position, optional UUID.</summary>
+    private static object? ReadCompositeValue(ref WireReader r, int type) => type switch
+    {
+        7 => (r.ReadFloat(), r.ReadFloat(), r.ReadFloat()),
+        8 => r.ReadLong(),
+        9 => r.ReadBool() ? r.ReadLong() : null,
+        11 => r.ReadBool() ? r.ReadUuid() : null,
+        _ => throw new ProtocolException($"entity metadata serializer {type} unknown"),
+    };
 
     /// <summary><c>EntityDataManager.writeEntries</c> (the serializers the fake server needs: byte, VarInt, float, string, slot,
     /// bool, rotation, optional block state, NBT), then the 0xFF end.</summary>
@@ -71,20 +80,35 @@ public static class EntityMeta1122
         foreach (var e in entries)
         {
             w.WriteUByte((byte)e.Index).WriteVarInt(e.Serializer);
-            switch (e.Serializer)
-            {
-                case 0: w.WriteUByte(Convert.ToByte(e.Value)); break;
-                case 1: case 10: case 12: w.WriteVarInt(Convert.ToInt32(e.Value)); break;
-                case 2: w.WriteFloat(Convert.ToSingle(e.Value)); break;
-                case 3: case 4: w.WriteString((string)e.Value!); break;
-                case 5: w.WriteSlot(e.Value is ItemStack s ? s : ItemStack.Empty); break;
-                case 6: w.WriteBool((bool)e.Value!); break;
-                case 7: { var (a, b, c) = ((float, float, float))e.Value!; w.WriteFloat(a).WriteFloat(b).WriteFloat(c); break; }
-                case 13: Nbt.WriteRoot(w, e.Value as NbtCompound ?? new NbtCompound()); break;
-                default: throw new NotSupportedException($"writing metadata serializer {e.Serializer}");
-            }
+            if (!WriteNumericValue(w, e)) WriteObjectValue(w, e);
         }
         return w.WriteUByte(0xFF);
+    }
+
+    /// <summary>Byte, VarInt (facing, optional block state), float and bool values; false for the other serializers.</summary>
+    private static bool WriteNumericValue(WireWriter w, Meta1122 e)
+    {
+        switch (e.Serializer)
+        {
+            case 0: w.WriteUByte(Convert.ToByte(e.Value)); return true;
+            case 1: case 10: case 12: w.WriteVarInt(Convert.ToInt32(e.Value)); return true;
+            case 2: w.WriteFloat(Convert.ToSingle(e.Value)); return true;
+            case 6: w.WriteBool((bool)e.Value!); return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>String / chat, slot, rotation and NBT values.</summary>
+    private static void WriteObjectValue(WireWriter w, Meta1122 e)
+    {
+        switch (e.Serializer)
+        {
+            case 3: case 4: w.WriteString((string)e.Value!); break;
+            case 5: w.WriteSlot(e.Value is ItemStack s ? s : ItemStack.Empty); break;
+            case 7: { var (a, b, c) = ((float, float, float))e.Value!; w.WriteFloat(a).WriteFloat(b).WriteFloat(c); break; }
+            case 13: Nbt.WriteRoot(w, e.Value as NbtCompound ?? new NbtCompound()); break;
+            default: throw new NotSupportedException($"writing metadata serializer {e.Serializer}");
+        }
     }
 
     // ------------------------------------------------------------------ layouts
@@ -211,20 +235,26 @@ public static class EntityMeta1122
                 outList.Add(MetadataEntry.FromByte(EntityMeta.HandStates, (sbyte)h));
                 continue;
             }
-            foreach (var rule in rules)
-            {
-                if (rule.Wire != e.Index) continue;
-                if (ToEntry(rule, e.Value) is { } m) outList.Add(m);
-                break;
-            }
+            if (RuleEntry(rules, e) is { } m) outList.Add(m);
         }
-        if (flagsChanged)
-        {
-            int flags = rawFlags & ~EntityMeta.FlagUsingItem;
-            if ((handStates & EntityMeta.HandActive) != 0) flags |= EntityMeta.FlagUsingItem;
-            outList.Insert(0, MetadataEntry.FromByte(EntityMeta.Flags, (sbyte)flags));
-        }
+        if (flagsChanged) outList.Insert(0, ComposedFlags(rawFlags, handStates));
         return new EntityMetadata(outList);
+    }
+
+    /// <summary>The canonical entry of the first rule for the entry's wire index, or null (no rule, or a mistyped value).</summary>
+    private static MetadataEntry? RuleEntry(Rule[] rules, Meta1122 e)
+    {
+        foreach (var rule in rules)
+            if (rule.Wire == e.Index) return ToEntry(rule, e.Value);
+        return null;
+    }
+
+    /// <summary>The canonical flags: the wire flags with 0x10 = an item in use (from the hand states).</summary>
+    private static MetadataEntry ComposedFlags(int rawFlags, int handStates)
+    {
+        int flags = rawFlags & ~EntityMeta.FlagUsingItem;
+        if ((handStates & EntityMeta.HandActive) != 0) flags |= EntityMeta.FlagUsingItem;
+        return MetadataEntry.FromByte(EntityMeta.Flags, (sbyte)flags);
     }
 
     private static int Deg(float f) => float.IsFinite(f) ? (int)MathF.Round(f) : 0;
@@ -232,23 +262,35 @@ public static class EntityMeta1122
     private static MetadataEntry? ToEntry(Rule rule, object? v)
     {
         byte i = (byte)rule.Canon;
-        return (rule.Conv, v) switch
+        return v switch
         {
-            (Conv.Byte, byte b) => MetadataEntry.FromByte(i, (sbyte)b),
-            (Conv.Bool, bool b) => MetadataEntry.FromByte(i, b ? (sbyte)1 : (sbyte)0),
-            (Conv.NonZero, byte b) => MetadataEntry.FromByte(i, b != 0 ? (sbyte)1 : (sbyte)0),
-            (Conv.Bit0, byte b) => MetadataEntry.FromByte(i, (b & 1) != 0 ? (sbyte)1 : (sbyte)0),
-            (Conv.ByteInt, byte b) => MetadataEntry.FromInt(i, b),
-            (Conv.VarInt, int n) => MetadataEntry.FromInt(i, n),
-            (Conv.Float, float x) => MetadataEntry.FromFloat(i, x),
-            (Conv.Slot, ItemStack s) => MetadataEntry.FromItem(i, s),
-            (Conv.Rotation, ValueTuple<float, float, float> t) => MetadataEntry.FromVector(i, new MetadataVector(Deg(t.Item1), Deg(t.Item2), Deg(t.Item3))),
-            (Conv.BlockState, int n) => MetadataEntry.FromInt(i, n),
-            (Conv.Shoulder, NbtCompound c) => MetadataEntry.FromInt(i, ShoulderParrot(c)),
-            (Conv.Shoulder, null) => MetadataEntry.FromInt(i, -1),
-            _ => null,
+            byte b => FromWireByte(rule.Conv, i, b),
+            int n => rule.Conv is Conv.VarInt or Conv.BlockState ? MetadataEntry.FromInt(i, n) : null,
+            _ => FromWireObject(rule.Conv, i, v),
         };
     }
+
+    /// <summary>A wire byte entry under a byte conversion (anything else: no canonical entry).</summary>
+    private static MetadataEntry? FromWireByte(Conv conv, byte i, byte b) => conv switch
+    {
+        Conv.Byte => MetadataEntry.FromByte(i, (sbyte)b),
+        Conv.NonZero => MetadataEntry.FromByte(i, b != 0 ? (sbyte)1 : (sbyte)0),
+        Conv.Bit0 => MetadataEntry.FromByte(i, (b & 1) != 0 ? (sbyte)1 : (sbyte)0),
+        Conv.ByteInt => MetadataEntry.FromInt(i, b),
+        _ => null,
+    };
+
+    /// <summary>A bool, float, slot, rotation or NBT wire entry under its conversion (anything else: no canonical entry).</summary>
+    private static MetadataEntry? FromWireObject(Conv conv, byte i, object? v) => (conv, v) switch
+    {
+        (Conv.Bool, bool b) => MetadataEntry.FromByte(i, b ? (sbyte)1 : (sbyte)0),
+        (Conv.Float, float x) => MetadataEntry.FromFloat(i, x),
+        (Conv.Slot, ItemStack s) => MetadataEntry.FromItem(i, s),
+        (Conv.Rotation, ValueTuple<float, float, float> t) => MetadataEntry.FromVector(i, new MetadataVector(Deg(t.Item1), Deg(t.Item2), Deg(t.Item3))),
+        (Conv.Shoulder, NbtCompound c) => MetadataEntry.FromInt(i, ShoulderParrot(c)),
+        (Conv.Shoulder, null) => MetadataEntry.FromInt(i, -1),
+        _ => null,
+    };
 
     /// <summary>A shoulder entity's parrot colour (<c>LayerEntityOnShoulder</c>: an <c>id</c> of minecraft:parrot, its <c>Variant</c>);
     /// −1 for an empty compound or any other entity.</summary>
@@ -264,37 +306,55 @@ public static class EntityMeta1122
         bool handGiven = md.Get(EntityMeta.HandStates) is not null;
         foreach (var e in md)
         {
-            if (e.Index == EntityMeta.Flags && e.AsInt() is { } f)
-            {
-                list.Add(new(0, 0, (byte)(f & ~EntityMeta.FlagUsingItem & 0xFF)));
-                if (IsLiving(kind) && !handGiven) list.Add(new(HandStatesIndex, 0, (f & EntityMeta.FlagUsingItem) != 0 ? (byte)1 : (byte)0));
-                continue;
-            }
-            if (e.Index == EntityMeta.HandStates && IsLiving(kind) && e.AsInt() is { } h) { list.Add(new(HandStatesIndex, 0, (byte)h)); continue; }
+            if (AddFlagsFromCanonical(list, kind, e, handGiven)) continue;
             foreach (var rule in rules)
             {
                 if (rule.Canon != e.Index) continue;
-                object? wire = rule.Conv switch
-                {
-                    Conv.Byte or Conv.NonZero or Conv.Bit0 => (byte)(e.AsInt() ?? 0),
-                    Conv.Bool => (e.AsInt() ?? 0) != 0,
-                    Conv.ByteInt => (byte)(e.AsInt() ?? 0),
-                    Conv.VarInt => e.AsInt() ?? 0,
-                    Conv.Float => e.Value is float x ? x : (float)(e.AsInt() ?? 0),
-                    Conv.Slot => e.Value is ItemStack s ? s : ItemStack.Empty,
-                    Conv.Rotation => e.Value is MetadataVector v ? ((float)v.X, (float)v.Y, (float)v.Z) : (0f, 0f, 0f),
-                    Conv.BlockState => e.AsInt() ?? 0,
-                    Conv.Shoulder => e.AsInt() is int p && p >= 0 ? new NbtCompound { ["id"] = "minecraft:parrot", ["Variant"] = p } : new NbtCompound(),
-                    _ => null,
-                };
-                int ser = rule.Conv switch
-                {
-                    Conv.Bool => 6, Conv.VarInt => 1, Conv.Float => 2, Conv.Slot => 5, Conv.Rotation => 7, Conv.BlockState => 12, Conv.Shoulder => 13, _ => 0,
-                };
-                list.Add(new(rule.Wire, ser, wire));
+                list.Add(new(rule.Wire, SerializerOf[(int)rule.Conv], WireValue(rule.Conv, e)));
                 break;
             }
         }
         return list;
     }
+
+    /// <summary>Canonical flags → the wire flags (and hand states 1 for an item in use unless they're given); canonical hand
+    /// states → the wire's. False for any other entry.</summary>
+    private static bool AddFlagsFromCanonical(List<Meta1122> list, EntityWireKind kind, MetadataEntry e, bool handGiven)
+    {
+        if (e.Index == EntityMeta.Flags && e.AsInt() is { } f)
+        {
+            list.Add(new(0, 0, (byte)(f & ~EntityMeta.FlagUsingItem & 0xFF)));
+            if (IsLiving(kind) && !handGiven) list.Add(new(HandStatesIndex, 0, (f & EntityMeta.FlagUsingItem) != 0 ? (byte)1 : (byte)0));
+            return true;
+        }
+        if (e.Index != EntityMeta.HandStates || !IsLiving(kind) || e.AsInt() is not { } h) return false;
+        list.Add(new(HandStatesIndex, 0, (byte)h));
+        return true;
+    }
+
+    /// <summary>The <c>DataSerializers</c> id each conversion writes, indexed by <see cref="Conv"/>: byte 0, VarInt 1, float 2,
+    /// slot 5, bool 6, rotation 7, optional block state 12, NBT 13.</summary>
+    private static readonly int[] SerializerOf = [0, 6, 0, 0, 0, 1, 2, 5, 7, 12, 13];
+
+    /// <summary>A canonical entry's value in the wire type of <paramref name="conv"/> (missing or mistyped values become 0 / empty).</summary>
+    private static object? WireValue(Conv conv, MetadataEntry e) => conv switch
+    {
+        Conv.Float => e.Value is float x ? x : (float)(e.AsInt() ?? 0),
+        Conv.Slot => e.Value is ItemStack s ? s : ItemStack.Empty,
+        Conv.Rotation => e.Value is MetadataVector v ? ((float)v.X, (float)v.Y, (float)v.Z) : (0f, 0f, 0f),
+        Conv.Shoulder => ShoulderTag(e),
+        _ => WireNumber(conv, e.AsInt() ?? 0),
+    };
+
+    /// <summary>A parrot colour (−1 none) → the shoulder entity's NBT (empty = none).</summary>
+    private static NbtCompound ShoulderTag(MetadataEntry e) =>
+        e.AsInt() is int p && p >= 0 ? new NbtCompound { ["id"] = "minecraft:parrot", ["Variant"] = p } : new NbtCompound();
+
+    private static object? WireNumber(Conv conv, int n) => conv switch
+    {
+        Conv.Byte or Conv.NonZero or Conv.Bit0 or Conv.ByteInt => (byte)n,
+        Conv.Bool => n != 0,
+        Conv.VarInt or Conv.BlockState => n,
+        _ => null,
+    };
 }

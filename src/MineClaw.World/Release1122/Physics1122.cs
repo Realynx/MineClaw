@@ -210,42 +210,73 @@ public static class Physics1122
     public static void Move(IBlockAccess w, PhysicsState s, double x, double y, double z)
     {
         var list = _boxes ??= new List<AABB>(32);
-        if (s.InWeb)
-        {
-            s.InWeb = false;
-            x *= 0.25;
-            y *= 0.05000000074505806;
-            z *= 0.25;
-            s.Velocity = Vec3d.Zero;
-        }
+        if (s.InWeb) SlowInWeb(s, ref x, ref y, ref z);
         double f = x, g = y, h = z;
         var box = s.BoundingBox;
         double step = StepHeight;
 
-        if (s.OnGround && s.Sneaking)
-        {
-            const double d = 0.05;
-            while (x != 0 && Empty(w, box.Offset(x, -step, 0), list))
-            {
-                if (x < d && x >= -d) x = 0; else if (x > 0) x -= d; else x += d;
-                f = x;
-            }
-            while (z != 0 && Empty(w, box.Offset(0, -step, z), list))
-            {
-                if (z < d && z >= -d) z = 0; else if (z > 0) z -= d; else z += d;
-                h = z;
-            }
-            while (x != 0 && z != 0 && Empty(w, box.Offset(x, -step, z), list))
-            {
-                if (x < d && x >= -d) x = 0; else if (x > 0) x -= d; else x += d;
-                f = x;
-                if (z < d && z >= -d) z = 0; else if (z > 0) z -= d; else z += d;
-                h = z;
-            }
-        }
+        if (s.OnGround && s.Sneaking) ClampToEdge(w, box, step, list, ref x, ref z, ref f, ref h);
 
         Shapes1122.GetCollidingBoxes(w, box.Expand(x, y, z), list);
         var start = box;
+        Collide(list, ref box, ref x, ref y, ref z);
+
+        if (ShouldStep(s.OnGround, f, g, h, x, y, z)) StepUp(w, start, step, f, h, ref box, ref x, ref y, ref z);
+
+        s.Position = new Vec3d((box.MinX + box.MaxX) / 2.0, box.MinY, (box.MinZ + box.MaxZ) / 2.0);
+        s.CollidedHorizontally = f != x || h != z;
+        s.CollidedVertically = g != y;
+        s.OnGround = s.CollidedVertically && g < 0;
+
+        int landId = LandedOn(w, s);
+        UpdateFallState(w, s, y, landId);
+        s.Velocity = VelocityAfterMove(s, landId, f != x, g != y, h != z);
+        DoBlockCollisions(w, s);
+    }
+
+    /// <summary><c>Entity.move</c>'s web: the motion is cut (0.25, 0.05, 0.25) and the velocity stopped.</summary>
+    private static void SlowInWeb(PhysicsState s, ref double x, ref double y, ref double z)
+    {
+        s.InWeb = false;
+        x *= 0.25;
+        y *= 0.05000000074505806;
+        z *= 0.25;
+        s.Velocity = Vec3d.Zero;
+    }
+
+    /// <summary>Sneaking on the ground: the motion is cut back in 0.05 steps until the box still has floor under it.</summary>
+    private static void ClampToEdge(IBlockAccess w, AABB box, double step, List<AABB> list, ref double x, ref double z, ref double f, ref double h)
+    {
+        while (x != 0 && Empty(w, box.Offset(x, -step, 0), list))
+        {
+            x = TowardZero(x);
+            f = x;
+        }
+        while (z != 0 && Empty(w, box.Offset(0, -step, z), list))
+        {
+            z = TowardZero(z);
+            h = z;
+        }
+        while (x != 0 && z != 0 && Empty(w, box.Offset(x, -step, z), list))
+        {
+            x = TowardZero(x);
+            f = x;
+            z = TowardZero(z);
+            h = z;
+        }
+    }
+
+    /// <summary>One 0.05 sneak-clamp step toward 0 (0 once within it).</summary>
+    private static double TowardZero(double v)
+    {
+        const double d = 0.05;
+        if (v < d && v >= -d) return 0;
+        return v > 0 ? v - d : v + d;
+    }
+
+    /// <summary>The motion clipped against the boxes, y first, then x, then z (the box moves after each axis).</summary>
+    private static void Collide(List<AABB> list, ref AABB box, ref double x, ref double y, ref double z)
+    {
         if (y != 0)
         {
             foreach (var b in list) y = b.CalculateYOffset(box, y);
@@ -261,74 +292,89 @@ public static class Physics1122
             foreach (var b in list) z = b.CalculateZOffset(box, z);
             if (z != 0) box = box.Offset(0, 0, z);
         }
+    }
 
-        bool canStep = s.OnGround || (g != y && g < 0);
-        if (canStep && (f != x || h != z))
-        {
-            double bq = x, o = y, p = z;
-            var bb1 = box;
-            var steps = _boxes2 ??= new List<AABB>(32);
-            Shapes1122.GetCollidingBoxes(w, start.Expand(f, step, h), steps);
+    /// <summary>The step-up is tried when the body was on the ground (or just landed) and a horizontal axis was blocked.</summary>
+    private static bool ShouldStep(bool onGround, double f, double g, double h, double x, double y, double z)
+    {
+        bool canStep = onGround || (g != y && g < 0);
+        return canStep && (f != x || h != z);
+    }
 
-            // A: rise as far as the horizontally expanded box allows, then move.
-            var bb2 = start;
-            var bb3 = bb2.Expand(f, 0, h);
-            double q = step;
-            foreach (var b in steps) q = b.CalculateYOffset(bb3, q);
-            bb2 = bb2.Offset(0, q, 0);
-            double bw = f;
-            foreach (var b in steps) bw = b.CalculateXOffset(bb2, bw);
-            bb2 = bb2.Offset(bw, 0, 0);
-            double by = h;
-            foreach (var b in steps) by = b.CalculateZOffset(bb2, by);
-            bb2 = bb2.Offset(0, 0, by);
+    /// <summary>The step-up: two tries (rise as far as the horizontally expanded box allows, or as far as the box itself
+    /// allows), the farther-reaching one wins, settled back down; kept only when it beats the plain move.</summary>
+    private static void StepUp(IBlockAccess w, AABB start, double step, double f, double h, ref AABB box, ref double x, ref double y, ref double z)
+    {
+        double bq = x, o = y, p = z;
+        var bb1 = box;
+        var steps = _boxes2 ??= new List<AABB>(32);
+        Shapes1122.GetCollidingBoxes(w, start.Expand(f, step, h), steps);
 
-            // B: rise as far as the box itself allows, then move.
-            var bb4 = start;
-            double ca = step;
-            foreach (var b in steps) ca = b.CalculateYOffset(bb4, ca);
-            var bb5 = bb4.Offset(0, ca, 0);
-            double cb = f;
-            foreach (var b in steps) cb = b.CalculateXOffset(bb5, cb);
-            var bb6 = bb5.Offset(cb, 0, 0);
-            double cc = h;
-            foreach (var b in steps) cc = b.CalculateZOffset(bb6, cc);
-            var bb7 = bb6.Offset(0, 0, cc);
+        var bb2 = StepRiseExpanded(steps, start, step, f, h, out double q, out double bw, out double by);
+        var bb7 = StepRiseInPlace(steps, start, step, f, h, out double ca, out double cb, out double cc);
 
-            if (bw * bw + by * by > cb * cb + cc * cc) { x = bw; z = by; y = -q; box = bb2; }
-            else { x = cb; z = cc; y = -ca; box = bb7; }
-            foreach (var b in steps) y = b.CalculateYOffset(box, y);
-            box = box.Offset(0, y, 0);
-            if (bq * bq + p * p >= x * x + z * z) { x = bq; y = o; z = p; box = bb1; }
-        }
+        if (bw * bw + by * by > cb * cb + cc * cc) { x = bw; z = by; y = -q; box = bb2; }
+        else { x = cb; z = cc; y = -ca; box = bb7; }
+        foreach (var b in steps) y = b.CalculateYOffset(box, y);
+        box = box.Offset(0, y, 0);
+        if (bq * bq + p * p >= x * x + z * z) { x = bq; y = o; z = p; box = bb1; }
+    }
 
-        s.Position = new Vec3d((box.MinX + box.MaxX) / 2.0, box.MinY, (box.MinZ + box.MaxZ) / 2.0);
-        s.CollidedHorizontally = f != x || h != z;
-        s.CollidedVertically = g != y;
-        s.OnGround = s.CollidedVertically && g < 0;
+    /// <summary>Step try A: rise as far as the horizontally expanded box allows, then move.</summary>
+    private static AABB StepRiseExpanded(List<AABB> steps, AABB start, double step, double f, double h, out double q, out double bw, out double by)
+    {
+        var bb2 = start;
+        var bb3 = bb2.Expand(f, 0, h);
+        q = step;
+        foreach (var b in steps) q = b.CalculateYOffset(bb3, q);
+        bb2 = bb2.Offset(0, q, 0);
+        bw = f;
+        foreach (var b in steps) bw = b.CalculateXOffset(bb2, bw);
+        bb2 = bb2.Offset(bw, 0, 0);
+        by = h;
+        foreach (var b in steps) by = b.CalculateZOffset(bb2, by);
+        return bb2.Offset(0, 0, by);
+    }
 
-        // The block landed on: under the feet (posY − 0.2), or the fence/wall/gate below an air cell.
+    /// <summary>Step try B: rise as far as the box itself allows, then move.</summary>
+    private static AABB StepRiseInPlace(List<AABB> steps, AABB start, double step, double f, double h, out double ca, out double cb, out double cc)
+    {
+        var bb4 = start;
+        ca = step;
+        foreach (var b in steps) ca = b.CalculateYOffset(bb4, ca);
+        var bb5 = bb4.Offset(0, ca, 0);
+        cb = f;
+        foreach (var b in steps) cb = b.CalculateXOffset(bb5, cb);
+        var bb6 = bb5.Offset(cb, 0, 0);
+        cc = h;
+        foreach (var b in steps) cc = b.CalculateZOffset(bb6, cc);
+        return bb6.Offset(0, 0, cc);
+    }
+
+    /// <summary>The block landed on: under the feet (posY − 0.2), or the fence/wall/gate below an air cell.</summary>
+    private static int LandedOn(IBlockAccess w, PhysicsState s)
+    {
         int px = (int)Math.Floor(s.Position.X), pz = (int)Math.Floor(s.Position.Z), py = (int)Math.Floor(s.Position.Y - 0.20000000298023224);
         int landId = w.GetBlock(px, py, pz);
-        if (landId == 0)
-        {
-            int below = w.GetBlock(px, py - 1, pz);
-            if (Shapes1122.IsFence(below) || Shapes1122.IsWall(below) || Shapes1122.IsFenceGate(below)) landId = below;
-        }
+        if (landId != 0) return landId;
+        int below = w.GetBlock(px, py - 1, pz);
+        return Shapes1122.IsFence(below) || Shapes1122.IsWall(below) || Shapes1122.IsFenceGate(below) ? below : landId;
+    }
 
-        UpdateFallState(w, s, y, landId);
+    /// <summary>The velocity after the move: blocked axes stop, a landing applies the block's <c>onLanded</c>, and
+    /// (canTriggerWalking &amp;&amp; !(onGround &amp;&amp; sneaking)) <c>onEntityWalk</c> — slime slows a walker that isn't bouncing.</summary>
+    private static Vec3d VelocityAfterMove(PhysicsState s, int landId, bool stoppedX, bool stoppedY, bool stoppedZ)
+    {
         var v = s.Velocity;
-        if (f != x) v = v with { X = 0 };
-        if (h != z) v = v with { Z = 0 };
-        if (g != y) v = OnLanded(landId, s.Sneaking, v);
-        // canTriggerWalking && !(onGround && sneaking): onEntityWalk (slime slows a walker that isn't bouncing).
+        if (stoppedX) v = v with { X = 0 };
+        if (stoppedZ) v = v with { Z = 0 };
+        if (stoppedY) v = OnLanded(landId, s.Sneaking, v);
         if (s.OnGround && !s.Sneaking && landId == Shapes1122.Slime && Math.Abs(v.Y) < 0.1)
         {
             double d = 0.4 + Math.Abs(v.Y) * 0.2;
             v = new Vec3d(v.X * d, v.Y, v.Z * d);
         }
-        s.Velocity = v;
-        DoBlockCollisions(w, s);
+        return v;
     }
 
     private static bool Empty(IBlockAccess w, AABB box, List<AABB> list) => Shapes1122.GetCollidingBoxes(w, box, list).Count == 0;

@@ -28,17 +28,29 @@ public static class VersionResolver
         {
             result = await ping(ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is ServerPingException or IOException or TimeoutException or System.Net.Sockets.SocketException
-                                       || (ex is OperationCanceledException && !ct.IsCancellationRequested))
+        catch (Exception ex) when (IsUnanswered(ex, ct))
         {
-            var fallback = lastKnown ?? GameVersion.Beta181;
-            return new VersionResolution(fallback,
-                $"server didn't answer the ping ({ex.Message}); using {(lastKnown is null ? "the default" : "the last detected version")} {fallback.Id}",
-                Detected: false);
+            return Fallback(ex, lastKnown);
         }
-        var v = result.Version ?? throw new UnsupportedVersionException(
-            $"the server is {result.VersionName ?? "an unknown version"}{(result.Protocol is { } p ? $" (protocol {p})" : "")}; " +
-            $"MineClaw speaks {string.Join(", ", GameVersion.Known.Select(k => k.ToString()))}. Set Bot:Server:Version to force one.");
+        var v = result.Version ?? throw Unsupported(result);
         return new VersionResolution(v, "detected by " + result.Describe(), Detected: true, result);
     }
+
+    /// <summary>The ping failed the way an offline server does (not a cancellation the caller asked for).</summary>
+    private static bool IsUnanswered(Exception ex, CancellationToken ct) =>
+        ex is ServerPingException or IOException or TimeoutException or System.Net.Sockets.SocketException
+        || (ex is OperationCanceledException && !ct.IsCancellationRequested);
+
+    /// <summary>No answer: the last version detected for this server, else b1.8.1.</summary>
+    private static VersionResolution Fallback(Exception ex, GameVersion? lastKnown)
+    {
+        var fallback = lastKnown ?? GameVersion.Beta181;
+        return new VersionResolution(fallback,
+            $"server didn't answer the ping ({ex.Message}); using {(lastKnown is null ? "the default" : "the last detected version")} {fallback.Id}",
+            Detected: false);
+    }
+
+    private static UnsupportedVersionException Unsupported(ServerPingResult result) => new(
+        $"the server is {result.VersionName ?? "an unknown version"}{(result.Protocol is { } p ? $" (protocol {p})" : "")}; " +
+        $"MineClaw speaks {string.Join(", ", GameVersion.Known.Select(k => k.ToString()))}. Set Bot:Server:Version to force one.");
 }

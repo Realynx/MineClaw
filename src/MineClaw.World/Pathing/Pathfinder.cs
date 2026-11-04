@@ -115,6 +115,20 @@ public sealed partial class Pathfinder
         public BlockPos Pos => new(X, Y, Z);
     }
 
+    /// <summary>The working state of one A* search, passed by reference through its steps.</summary>
+    private struct SearchState
+    {
+        public Dictionary<(long, int), Node> Nodes;
+        public PriorityQueue<(Node N, double G), double> Open;
+        public List<Candidate> Moves;
+        public Node Start, Best;
+        public int Explored, TooSlow;
+        public string? Reason;
+        public Stopwatch Sw;
+        public Goal Goal;
+        public CancellationToken Ct;
+    }
+
     private PathResult Search(BlockPos start, Goal goal, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -126,92 +140,143 @@ public sealed partial class Pathfinder
             return new PathResult(PathStatus.InvalidStart, [], 0, 0, sw.Elapsed, 0, $"start {start} is not a standable cell");
         _fromSurface = _o.SkyLight is { } sky && Math.Max(sky(start.X, start.Y, start.Z), sky(start.X, start.Y + 1, start.Z)) >= 8;
 
-        var nodes = new Dictionary<(long, int), Node>();
-        var open = new PriorityQueue<(Node N, double G), double>();
+        var st = NewSearch(start, startCell, goal, ct, sw);
+        return RunSearch(ref st) ?? Unfinished(ref st);
+    }
+
+    private SearchState NewSearch(BlockPos start, CellInfo startCell, Goal goal, CancellationToken ct, Stopwatch sw)
+    {
         var s = new Node(start.X, start.Y, start.Z)
         {
             G = 0, H = goal.Distance(start.X, start.Y, start.Z), Mods = _baseMods,
             Under = Breath.HeadUnderAt(_w, start.X, startCell.Floor, start.Z) ? 1 : 0,
         };
-        nodes[(Key(start.X, start.Y, start.Z), 0)] = s;
-        open.Enqueue((s, 0), s.H * PathOptions.WalkCost);
-        Node best = s;
-        int explored = 0, tooSlow = 0;
-        var moves = new List<Candidate>(32);
-        string? reason = null;
-
-        while (open.Count > 0)
+        var st = new SearchState
         {
-            var (n, g) = open.Dequeue();
+            Nodes = new Dictionary<(long, int), Node>(), Open = new PriorityQueue<(Node N, double G), double>(), Moves = new List<Candidate>(32),
+            Start = s, Best = s, Sw = sw, Goal = goal, Ct = ct,
+        };
+        st.Nodes[(Key(start.X, start.Y, start.Z), 0)] = s;
+        st.Open.Enqueue((s, 0), s.H * PathOptions.WalkCost);
+        return st;
+    }
+
+    /// <summary>The A* loop: the path once the goal is closed, or null when the open set ran dry or a budget stopped it
+    /// (<see cref="SearchState.Reason"/>).</summary>
+    private PathResult? RunSearch(ref SearchState st)
+    {
+        while (st.Open.Count > 0)
+        {
+            var (n, g) = st.Open.Dequeue();
             if (n.Closed || g > n.G) continue;
-            n.Closed = true;
-            explored++;
-            if (_collect is { } col && !col.ContainsKey(n.Pos)) col[n.Pos] = n.G;
-
-            if (goal.IsReached(n.X, n.Y, n.Z) && !InPulseSolid(n))
-                return Build(PathStatus.Found, n, explored, sw.Elapsed, null);
-
-            if (n.H < best.H || (n.H == best.H && n.G < best.G)) best = n;
-
-            if (explored >= _o.MaxNodes) { reason = "node budget exhausted"; break; }
-            if ((explored & 63) == 0) // often enough that a slow expansion (a GC pause, a busy world lock) can't run far past the budget
-            {
-                if (sw.Elapsed > _o.Timeout) { reason = "timeout"; break; }
-                if (ct.IsCancellationRequested) { reason = "cancelled"; break; }
-            }
-
-            moves.Clear();
+            if (Close(ref st, n) is { } found) return found;
+            if (StopReason(ref st) is { } why) { st.Reason = why; return null; }
+            st.Moves.Clear();
             _w.Mods = n.Mods;
             _w.Pulse = n.Pulse?.Mods;
-            Expand(n, moves);
-            foreach (var mv in moves)
-            {
-                var m = mv;
-                if (_o.Avoid is { } avoid && avoid.Contains(new BlockPos(m.X, m.Y, m.Z))) continue;
-                if (m.Kind is MoveKind.Jump or MoveKind.SprintJump or MoveKind.JumpGap && _o.AvoidJumps is { } aj && aj.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
-                if (_o.AvoidMoves is { } am && am.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
-                int scaffold = n.Scaffold + (m.Place is null ? 0 : 1);
-                if (scaffold > _o.ScaffoldBudget && m.Place is not null) continue;
-                // Mechanisms: pulse windows, plates walked onto, lever/button effects.
-                if (!MechanismStep(n, ref m, out var pulse, out var levers, out var requires, out double time)) { tooSlow++; continue; }
-                long k = Key(m.X, m.Y, m.Z);
-                var key = (k, StateKey(pulse, levers, n.T + time));
-                if (!nodes.TryGetValue(key, out var t))
-                {
-                    t = new Node(m.X, m.Y, m.Z) { H = goal.Distance(m.X, m.Y, m.Z) };
-                    nodes[key] = t;
-                }
-                if (t.Closed) continue;
-                // Breath: each consecutive step with the head under water costs more than the last, and a plan never holds the
-                // breath longer than MaxHeadUnderSteps (air lasts 15 s): the surface route wins (live 10-29, main drowned on a
-                // ravine lake's bed at 126,52,295).
-                int under = Breath.HeadUnderAt(_w, m.X, m.Floor, m.Z) ? n.Under + 1 : 0;
-                if (under > _o.MaxHeadUnderSteps && m.Y <= n.Y) continue; // rising toward the air is always allowed
-                double ng = n.G + m.Cost + under * _o.HeadUnderStepCost + TerrainPenalty(m.X, m.Y, m.Z);
-                if (ng >= t.G) continue;
-                t.G = ng;
-                t.Under = under;
-                t.T = n.T + time;
-                t.Parent = n;
-                t.Scaffold = scaffold;
-                Mod? mods = n.Mods;
-                foreach (var b in m.Break) mods = new Mod(b, 0, mods);
-                if (m.Place is { } p) mods = new Mod(p, _o.ScaffoldBlockId, mods);
-                if (m.Open is { } opens) foreach (var tg in opens) mods = ToggleMods(tg, mods);
-                if (m.Trigger is { Link.IsPulse: false } lever) mods = LeverMods(lever, mods);
-                t.Mods = mods;
-                t.Pulse = pulse;
-                t.Levers = levers;
-                t.Move = m;
-                t.Requires = requires;
-                open.Enqueue((t, ng), ng + t.H * PathOptions.WalkCost);
-            }
+            Expand(n, st.Moves);
+            foreach (var m in st.Moves) Relax(ref st, n, m);
         }
+        return null;
+    }
 
-        reason ??= tooSlow > 0 && _view is not null ? "no route (mechanism pulses too short to make it)" : "no route";
-        if (_o.AllowPartial && best != s)
-            return Build(PathStatus.Partial, best, explored, sw.Elapsed, reason);
-        return new PathResult(PathStatus.NoPath, [], 0, explored, sw.Elapsed, 0, reason);
+    /// <summary>Closes a node: the path when it is the goal; else it may be the best partial end so far.</summary>
+    private PathResult? Close(ref SearchState st, Node n)
+    {
+        n.Closed = true;
+        st.Explored++;
+        if (_collect is { } col && !col.ContainsKey(n.Pos)) col[n.Pos] = n.G;
+        if (st.Goal.IsReached(n.X, n.Y, n.Z) && !InPulseSolid(n))
+            return Build(PathStatus.Found, n, st.Explored, st.Sw.Elapsed, null);
+        if (n.H < st.Best.H || (n.H == st.Best.H && n.G < st.Best.G)) st.Best = n;
+        return null;
+    }
+
+    private string? StopReason(ref SearchState st)
+    {
+        if (st.Explored >= _o.MaxNodes) return "node budget exhausted";
+        // Often enough that a slow expansion (a GC pause, a busy world lock) can't run far past the budget.
+        if ((st.Explored & 63) != 0) return null;
+        if (st.Sw.Elapsed > _o.Timeout) return "timeout";
+        if (st.Ct.IsCancellationRequested) return "cancelled";
+        return null;
+    }
+
+    /// <summary>Relaxes the move <paramref name="m"/> out of <paramref name="n"/>: a cheaper way into its node (with the
+    /// world edits, mechanism state and breath it carries) re-opens that node.</summary>
+    private void Relax(ref SearchState st, Node n, Candidate m)
+    {
+        if (Avoided(n, m)) return;
+        int scaffold = ScaffoldAfter(n, m);
+        if (scaffold < 0) return;
+        // Mechanisms: pulse windows, plates walked onto, lever/button effects.
+        if (!MechanismStep(n, ref m, out var pulse, out var levers, out var requires, out double time)) { st.TooSlow++; return; }
+        var t = NodeFor(ref st, m, StateKey(pulse, levers, n.T + time));
+        if (t.Closed) return;
+        // Breath: each consecutive step with the head under water costs more than the last, and a plan never holds the
+        // breath longer than MaxHeadUnderSteps (air lasts 15 s): the surface route wins (live 10-29, main drowned on a
+        // ravine lake's bed at 126,52,295).
+        int under = Breath.HeadUnderAt(_w, m.X, m.Floor, m.Z) ? n.Under + 1 : 0;
+        if (under > _o.MaxHeadUnderSteps && m.Y <= n.Y) return; // rising toward the air is always allowed
+        double ng = n.G + m.Cost + under * _o.HeadUnderStepCost + TerrainPenalty(m.X, m.Y, m.Z);
+        if (ng >= t.G) return;
+        t.G = ng;
+        t.Under = under;
+        t.T = n.T + time;
+        t.Parent = n;
+        t.Scaffold = scaffold;
+        t.Mods = ModsAfter(n.Mods, m);
+        t.Pulse = pulse;
+        t.Levers = levers;
+        t.Move = m;
+        t.Requires = requires;
+        st.Open.Enqueue((t, ng), ng + t.H * PathOptions.WalkCost);
+    }
+
+    /// <summary>The caller's vetoes: avoided cells, jumps and moves.</summary>
+    private bool Avoided(Node n, Candidate m)
+    {
+        if (_o.Avoid is { } avoid && avoid.Contains(new BlockPos(m.X, m.Y, m.Z))) return true;
+        if (m.Kind is MoveKind.Jump or MoveKind.SprintJump or MoveKind.JumpGap && _o.AvoidJumps is { } aj
+            && aj.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) return true;
+        return _o.AvoidMoves is { } am && am.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)));
+    }
+
+    /// <summary>Scaffold blocks placed so far with this move; −1 when a placement would go over the budget.</summary>
+    private int ScaffoldAfter(Node n, Candidate m)
+    {
+        int scaffold = n.Scaffold + (m.Place is null ? 0 : 1);
+        return scaffold > _o.ScaffoldBudget && m.Place is not null ? -1 : scaffold;
+    }
+
+    private static Node NodeFor(ref SearchState st, Candidate m, int state)
+    {
+        var key = (Key(m.X, m.Y, m.Z), state);
+        if (!st.Nodes.TryGetValue(key, out var t))
+        {
+            t = new Node(m.X, m.Y, m.Z) { H = st.Goal.Distance(m.X, m.Y, m.Z) };
+            st.Nodes[key] = t;
+        }
+        return t;
+    }
+
+    /// <summary>The world edits after the move: blocks broken, the scaffold placed, openables toggled, a lever flipped.</summary>
+    private Mod? ModsAfter(Mod? mods, Candidate m)
+    {
+        foreach (var b in m.Break) mods = new Mod(b, 0, mods);
+        if (m.Place is { } p) mods = new Mod(p, _o.ScaffoldBlockId, mods);
+        if (m.Open is { } opens) foreach (var tg in opens) mods = ToggleMods(tg, mods);
+        if (m.Trigger is { Link.IsPulse: false } lever) mods = LeverMods(lever, mods);
+        return mods;
+    }
+
+    /// <summary>No path to the goal: the best partial path when allowed, else none (with why).</summary>
+    private PathResult Unfinished(ref SearchState st)
+    {
+        st.Reason ??= st.TooSlow > 0 && _view is not null ? "no route (mechanism pulses too short to make it)" : "no route";
+        if (_o.AllowPartial && st.Best != st.Start)
+            return Build(PathStatus.Partial, st.Best, st.Explored, st.Sw.Elapsed, st.Reason);
+        return new PathResult(PathStatus.NoPath, [], 0, st.Explored, st.Sw.Elapsed, 0, st.Reason);
     }
 
     private static PathResult Build(PathStatus status, Node end, int explored, TimeSpan elapsed, string? reason)
@@ -247,6 +312,11 @@ public sealed partial class Pathfinder
     private static readonly (int Dx, int Dz)[] Cardinals = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     private static readonly (int Dx, int Dz)[] Diagonals = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
 
+    /// <summary>
+    /// The moves out of node <paramref name="n"/>, in a fixed order (the search's tie-breaking depends on it): the four cardinal
+    /// neighbours (walk / step up / jump, then for a blocked or open one: open through, drop, mine, bridge), the diagonals, up and
+    /// down (ladders, water, a hatch), a pillar, gap jumps and known mechanisms.
+    /// </summary>
     private void Expand(Node n, List<Candidate> output)
     {
         int x = n.X, y = n.Y, z = n.Z;
@@ -256,104 +326,16 @@ public sealed partial class Pathfinder
         _hereFarmland = OnFarmland(x, y, z);
         _hereCareful = Careful(x, y, z);
 
-        foreach (var (dx, dz) in Cardinals)
-        {
-            int tx = x + dx, tz = z + dz;
-            var t = WalkCell(tx, y, tz, here.Floor, out int ty);
-            bool walked = false;
-
-            // Doors and trapdoors are thin panels on a cell edge: the centred boxes never touch them, so the move
-            // between the cells is checked too (closed = obstacle, or an Open* step when allowed).
-            List<DoorToggle>? opens = null;
-            bool transit = !t.Ok || TransitOk(x, z, tx, tz, y, Math.Max(here.Floor, t.Floor), out opens);
-
-            // Same level (with ≤0.5 step-ups, or a <1 block step down e.g. slab → ground). The body crosses the cell edge at
-            // the higher of the two floors, so both columns must be clear there: stepping north off the gen slab 7,64,6 (feet
-            // 64.5, head 66.3) the head hit a leaf block at 7,66,5 that the target cell's own check (floor 64) never saw
-            // (live 10-28: three bots stuck at 7.5,64.5,6.3, every re-plan chose the same step).
-            double edge = Math.Max(here.Floor, t.Floor);
-            if (t.Ok && t.Floor - here.Floor <= _step + 1e-6 && BodyClear(x, z, edge) && BodyClear(tx, tz, edge))
-            {
-                if (transit) AddWalk(output, here, hereEdge, tx, ty, tz, t, MoveKind.Walk, 1.0, [], opens);
-                walked = true;
-            }
-            else if (t.Ok && t.Floor - here.Floor <= 1.25 && BodyClear(x, z, t.Floor))
-            {
-                if (!transit || opens != null) continue;
-                // Higher partial block (including a farmland bank beside a water trench): needs a jump.
-                AddJump(output, here, hereEdge, tx, ty, tz, t, []);
-                walked = true;
-            }
-
-            // Jump up one block.
-            var up = Cell(tx, y + 1, tz);
-            if (up.Ok && up.Floor - here.Floor > _step && up.Floor - here.Floor <= 1.25 + 1e-6 && BodyClear(x, z, up.Floor)
-                && TransitOk(x, z, tx, tz, y, up.Floor, out var jumpOpens) && jumpOpens == null)
-                AddJump(output, here, hereEdge, tx, y + 1, tz, up, []);
-            else if (!up.Ok && _o.AllowBreak && !here.Water)
-                TryBreakJump(output, here, hereEdge, x, y, z, tx, tz);
-
-            if (walked) continue;
-
-            // A closed fence gate in the target cell, or a closed trapdoor at head height: open it and walk through.
-            if (!t.Ok && _o.AllowOpenDoors) TryOpenThrough(output, here, hereEdge, x, y, z, tx, tz);
-
-            // Drop down.
-            TryDrop(output, here, x, y, z, dx, dz);
-
-            // Mine through.
-            if (!t.Ok && _o.AllowBreak) TryBreakWalk(output, here, hereEdge, x, y, z, tx, tz);
-
-            // Bridge over a gap / the void.
-            if (!t.Ok && _o.AllowPlace) TryBridge(output, here, x, y, z, tx, tz);
-        }
-
-        if (_o.AllowDiagonal)
-        {
-            foreach (var (dx, dz) in Diagonals)
-            {
-                int tx = x + dx, tz = z + dz;
-                var t = Cell(tx, y, tz);
-                if (!t.Ok || Math.Abs(t.Floor - here.Floor) > 0.01 || t.Water || t.Climb || here.Climb) continue;
-                // No corner cutting: both orthogonal cells must be safe, clear floor at the same height.
-                var a = Cell(tx, y, z);
-                var b = Cell(x, y, tz);
-                if (!a.Ok || !b.Ok || Math.Abs(a.Floor - here.Floor) > 0.01 || Math.Abs(b.Floor - here.Floor) > 0.01) continue;
-                if (IsDeadly(tx, y, z) || IsDeadly(x, y, tz)) continue;
-                // Never cut a corner past a door/trapdoor panel.
-                if (HasPanels(x, z, tx, tz, y, y + 2) || HasPanels(tx, z, x, tz, y, y + 2)) continue;
-                AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Diagonal, Math.Sqrt(2), []);
-            }
-        }
-
+        foreach (var (dx, dz) in Cardinals) ExpandCardinal(output, here, hereEdge, x, y, z, dx, dz);
+        ExpandDiagonals(output, here, hereEdge, x, y, z);
         // Vertical: ladders and water.
-        var above = Cell(x, y + 1, z);
-        if (above.Ok && BodyClear(x, z, y + 1))
-        {
-            if (_o.AllowClimb && here.Climb)
-                output.Add(new Candidate(x, y + 1, z, MoveKind.ClimbUp, above.Floor, PathOptions.ClimbUpCost, [], null, false));
-            else if (_o.AllowSwim && here.Water && (above.Water || above.Climb))
-                output.Add(new Candidate(x, y + 1, z, MoveKind.Swim, above.Floor, PathOptions.SwimCost, [], null, false));
-        }
-        else if (_o.AllowOpenDoors && _o.AllowClimb && here.Climb && y + 2 < _worldHeight)
-            TryClimbHatch(output, x, y, z);
-        var below = Cell(x, y - 1, z);
-        if (below.Ok && Math.Abs(here.Floor - y) < 1e-6)
-        {
-            if (_o.AllowClimb && below.Climb)
-                output.Add(new Candidate(x, y - 1, z, MoveKind.ClimbDown, below.Floor, PathOptions.ClimbDownCost, [], null, false));
-            else if (_o.AllowSwim && below.Water && here.Water)
-                output.Add(new Candidate(x, y - 1, z, MoveKind.Swim, below.Floor, PathOptions.SwimCost, [], null, false));
-        }
+        ExpandUp(output, here, x, y, z);
+        ExpandDown(output, here, x, y, z);
 
         // Pillar: jump and place a block in the current foot cell.
-        if (_o.AllowPlace && !here.Water && !here.Climb && Math.Abs(here.Floor - y) < 1e-6
-            && CanPlaceScaffold(new BlockPos(x, y, z))
-            && Aiming.IsReplaceable(_w, _w.GetBlock(x, y, z)) && BodyClear(x, z, y + 1) && y + 2 < _worldHeight)
-        {
+        if (CanPillar(here, x, y, z))
             output.Add(new Candidate(x, y + 1, z, MoveKind.Pillar, y + 1, _o.PlaceCost + PathOptions.JumpExtra + 4, [],
                 new BlockPos(x, y, z), hereEdge));
-        }
 
         // Gap jumps (sprint / plain), each validated by forward physics simulation.
         if (_o.AllowParkour && here.Ground && !here.Water && !here.Climb) TryParkour(output, here, x, y, z);
@@ -361,6 +343,134 @@ public sealed partial class Pathfinder
         // Known mechanisms: press a button / flip a lever within reach.
         if (_view is not null) TryTriggers(output, n, here);
     }
+
+    /// <summary>What a cardinal level move did: nothing, a walk/step (no other way into that cell is tried), or a blocked
+    /// transit that rules the direction out altogether.</summary>
+    private enum LevelMove : byte { None, Walked, Skip }
+
+    private void ExpandCardinal(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int dx, int dz)
+    {
+        int tx = x + dx, tz = z + dz;
+        var t = WalkCell(tx, y, tz, here.Floor, out int ty);
+
+        // Doors and trapdoors are thin panels on a cell edge: the centred boxes never touch them, so the move
+        // between the cells is checked too (closed = obstacle, or an Open* step when allowed).
+        List<DoorToggle>? opens = null;
+        bool transit = !t.Ok || TransitOk(x, z, tx, tz, y, Math.Max(here.Floor, t.Floor), out opens);
+
+        var level = AddLevelMove(output, here, hereEdge, x, z, tx, ty, tz, t, transit, opens);
+        if (level == LevelMove.Skip) return;
+        AddJumpUp(output, here, hereEdge, x, y, z, tx, tz);
+        if (level == LevelMove.Walked) return;
+        AddBlockedMoves(output, here, hereEdge, x, y, z, dx, dz, t.Ok);
+    }
+
+    /// <summary>
+    /// Same level (with ≤0.5 step-ups, or a &lt;1 block step down e.g. slab → ground), or a higher partial block that needs a jump.
+    /// The body crosses the cell edge at the higher of the two floors, so both columns must be clear there: stepping north off the
+    /// gen slab 7,64,6 (feet 64.5, head 66.3) the head hit a leaf block at 7,66,5 that the target cell's own check (floor 64) never
+    /// saw (live 10-28: three bots stuck at 7.5,64.5,6.3, every re-plan chose the same step).
+    /// </summary>
+    private LevelMove AddLevelMove(List<Candidate> output, CellInfo here, bool hereEdge, int x, int z, int tx, int ty, int tz, CellInfo t,
+        bool transit, List<DoorToggle>? opens)
+    {
+        if (LevelWalkable(here, t, x, z, tx, tz))
+        {
+            if (transit) AddWalk(output, here, hereEdge, tx, ty, tz, t, MoveKind.Walk, 1.0, [], opens);
+            return LevelMove.Walked;
+        }
+        if (t.Ok && t.Floor - here.Floor <= 1.25 && BodyClear(x, z, t.Floor))
+        {
+            if (!transit || opens != null) return LevelMove.Skip;
+            // Higher partial block (including a farmland bank beside a water trench): needs a jump.
+            AddJump(output, here, hereEdge, tx, ty, tz, t, []);
+            return LevelMove.Walked;
+        }
+        return LevelMove.None;
+    }
+
+    private bool LevelWalkable(CellInfo here, CellInfo t, int x, int z, int tx, int tz)
+    {
+        double edge = Math.Max(here.Floor, t.Floor);
+        return t.Ok && t.Floor - here.Floor <= _step + 1e-6 && BodyClear(x, z, edge) && BodyClear(tx, tz, edge);
+    }
+
+    /// <summary>Jump up one block (or mine the way up when that cell is solid).</summary>
+    private void AddJumpUp(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int tx, int tz)
+    {
+        var up = Cell(tx, y + 1, tz);
+        if (up.Ok && up.Floor - here.Floor > _step && up.Floor - here.Floor <= 1.25 + 1e-6 && BodyClear(x, z, up.Floor)
+            && TransitOk(x, z, tx, tz, y, up.Floor, out var jumpOpens) && jumpOpens == null)
+            AddJump(output, here, hereEdge, tx, y + 1, tz, up, []);
+        else if (!up.Ok && _o.AllowBreak && !here.Water)
+            TryBreakJump(output, here, hereEdge, x, y, z, tx, tz);
+    }
+
+    /// <summary>A cardinal neighbour that can't be walked into: open through it, drop down, mine through, bridge over.</summary>
+    private void AddBlockedMoves(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int dx, int dz, bool targetOk)
+    {
+        int tx = x + dx, tz = z + dz;
+        // A closed fence gate in the target cell, or a closed trapdoor at head height: open it and walk through.
+        if (!targetOk && _o.AllowOpenDoors) TryOpenThrough(output, here, hereEdge, x, y, z, tx, tz);
+        TryDrop(output, here, x, y, z, dx, dz);
+        if (!targetOk && _o.AllowBreak) TryBreakWalk(output, here, hereEdge, x, y, z, tx, tz);
+        if (!targetOk && _o.AllowPlace) TryBridge(output, here, x, y, z, tx, tz);
+    }
+
+    private void ExpandDiagonals(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z)
+    {
+        if (!_o.AllowDiagonal) return;
+        foreach (var (dx, dz) in Diagonals)
+        {
+            int tx = x + dx, tz = z + dz;
+            var t = Cell(tx, y, tz);
+            if (!t.Ok || Math.Abs(t.Floor - here.Floor) > 0.01 || t.Water || t.Climb || here.Climb) continue;
+            if (!DiagonalCornersClear(here, x, y, z, tx, tz)) continue;
+            AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Diagonal, Math.Sqrt(2), []);
+        }
+    }
+
+    /// <summary>No corner cutting: both orthogonal cells must be safe, clear floor at the same height, and no door/trapdoor
+    /// panel on the corner.</summary>
+    private bool DiagonalCornersClear(CellInfo here, int x, int y, int z, int tx, int tz)
+    {
+        var a = Cell(tx, y, z);
+        var b = Cell(x, y, tz);
+        if (!a.Ok || !b.Ok || Math.Abs(a.Floor - here.Floor) > 0.01 || Math.Abs(b.Floor - here.Floor) > 0.01) return false;
+        if (IsDeadly(tx, y, z) || IsDeadly(x, y, tz)) return false;
+        return !(HasPanels(x, z, tx, tz, y, y + 2) || HasPanels(tx, z, x, tz, y, y + 2));
+    }
+
+    private void ExpandUp(List<Candidate> output, CellInfo here, int x, int y, int z)
+    {
+        var above = Cell(x, y + 1, z);
+        if (above.Ok && BodyClear(x, z, y + 1)) AddRise(output, here, above, x, y, z);
+        else if (_o.AllowOpenDoors && _o.AllowClimb && here.Climb && y + 2 < _worldHeight)
+            TryClimbHatch(output, x, y, z);
+    }
+
+    private void AddRise(List<Candidate> output, CellInfo here, CellInfo above, int x, int y, int z)
+    {
+        if (_o.AllowClimb && here.Climb)
+            output.Add(new Candidate(x, y + 1, z, MoveKind.ClimbUp, above.Floor, PathOptions.ClimbUpCost, [], null, false));
+        else if (_o.AllowSwim && here.Water && (above.Water || above.Climb))
+            output.Add(new Candidate(x, y + 1, z, MoveKind.Swim, above.Floor, PathOptions.SwimCost, [], null, false));
+    }
+
+    private void ExpandDown(List<Candidate> output, CellInfo here, int x, int y, int z)
+    {
+        var below = Cell(x, y - 1, z);
+        if (!below.Ok || !(Math.Abs(here.Floor - y) < 1e-6)) return;
+        if (_o.AllowClimb && below.Climb)
+            output.Add(new Candidate(x, y - 1, z, MoveKind.ClimbDown, below.Floor, PathOptions.ClimbDownCost, [], null, false));
+        else if (_o.AllowSwim && below.Water && here.Water)
+            output.Add(new Candidate(x, y - 1, z, MoveKind.Swim, below.Floor, PathOptions.SwimCost, [], null, false));
+    }
+
+    private bool CanPillar(CellInfo here, int x, int y, int z) =>
+        _o.AllowPlace && !here.Water && !here.Climb && Math.Abs(here.Floor - y) < 1e-6
+        && CanPlaceScaffold(new BlockPos(x, y, z))
+        && Aiming.IsReplaceable(_w, _w.GetBlock(x, y, z)) && BodyClear(x, z, y + 1) && y + 2 < _worldHeight;
 
     private CellInfo WalkCell(int x, int y, int z, double floor, out int ty)
     {

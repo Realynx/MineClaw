@@ -295,15 +295,32 @@ public sealed partial class PathFollower
         if (dist > 0.05) yaw = PlayerPhysics.YawPitchTo(pos, target with { Y = pos.Y }).Yaw;
         bool sneak = step.Sneak && step.Kind != MoveKind.Drop;
         var idle = new MoveInput(Yaw: s.Yaw, Pitch: s.Pitch, Sneak: sneak);
+        if (DangerCheck(w, s, step, idle) is { } danger) return danger;
+        if (StallCheck(w, s, step, idle, dist) is { } stalled) return stalled;
+        if (StepAction(w, s, step, idle, sneak, yaw, dist) is { } action) return action;
+        return Walk(w, s, step, idle, sneak, yaw, dist);
+    }
 
-        // ---- danger / failure checks ----
-        if (!s.OnGround && !s.InWater && !s.OnLadder && s.Velocity.Y < -0.2 && Safety.IsPlayerOverVoid(w, pos))
-            return Fail(idle, "falling into the void");
+    // ---- danger / failure checks ----
+
+    private FollowerOutput? DangerCheck(IBlockAccess w, PhysicsState s, PathStep step, MoveInput idle)
+    {
+        var pos = s.Position;
+        if (FallingIntoVoid(w, s)) return Fail(idle, "falling into the void");
         double lowest = Math.Min(step.Floor, _segmentStart!.Value.Y);
         if (pos.Y < lowest - (step.Kind == MoveKind.Drop ? 1.0 : 1.5) && (s.OnGround || s.InWater))
             return Fail(idle, "fell below the path");
-        if (SegmentDeviation(pos, _segmentStart.Value, target) > _o.MaxDeviation)
+        if (SegmentDeviation(pos, _segmentStart.Value, step.Target) > _o.MaxDeviation)
             return Fail(idle, "off path");
+        return null;
+    }
+
+    private static bool FallingIntoVoid(IBlockAccess w, PhysicsState s) =>
+        !s.OnGround && !s.InWater && !s.OnLadder && s.Velocity.Y < -0.2 && Safety.IsPlayerOverVoid(w, s.Position);
+
+    /// <summary>A jump the edge guard keeps refusing, a mechanism's passage that closed again, or no progress for too long.</summary>
+    private FollowerOutput? StallCheck(IBlockAccess w, PhysicsState s, PathStep step, MoveInput idle, double dist)
+    {
         if (step.Kind == MoveKind.Jump && _jumpCancels >= _o.JumpCancelLimit && _jumpFrom is { } from)
         {
             BlockedJump = (from, step.Pos);
@@ -314,14 +331,28 @@ public sealed partial class PathFollower
             PulseMissed = rq;
             return Fail(idle, $"the passage of the {rq} closed again before I got through");
         }
-        double progressMetric = dist + Math.Abs(pos.Y - step.Floor);
+        double progressMetric = dist + Math.Abs(s.Position.Y - step.Floor);
         if (progressMetric < _bestDist - 0.05) { _bestDist = progressMetric; _noProgress = 0; }
         else if (++_noProgress > _o.StuckTicks) return Fail(idle, "stuck");
+        return null;
+    }
 
-        // ---- action: fire a known mechanism (button/lever from here, or stand on its plate) and wait for its effects ----
+    // ---- actions ----
+
+    /// <summary>What the step needs done before walking it: fire its mechanism, open its doors, break its blocks, place its block.</summary>
+    private FollowerOutput? StepAction(IBlockAccess w, PhysicsState s, PathStep step, MoveInput idle, bool sneak, float yaw, double dist)
+    {
+        // Fire a known mechanism (button/lever from here, or stand on its plate) and wait for its effects.
         if (step.Trigger is { } trig && !trig.Fired(w) && TriggerAction(w, s, step, trig, idle, dist) is { } fired) return fired;
+        if (OpenAction(w, step, idle) is { } open) return open;
+        if (BreakAction(w, step, idle) is { } dig) return dig;
+        if (step.Place is { } p && Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z))) return PlaceAction(w, s, step, p, idle, sneak, yaw);
+        return null;
+    }
 
-        // ---- actions: doors/gates/trapdoors to open (state read from the world's metadata, never by bumping) ----
+    /// <summary>Doors/gates/trapdoors to open (state read from the world's metadata, never by bumping).</summary>
+    private FollowerOutput? OpenAction(IBlockAccess w, PathStep step, MoveInput idle)
+    {
         foreach (var tg in step.Opens)
         {
             if (tg.Done(w)) continue;
@@ -338,104 +369,142 @@ public sealed partial class PathFollower
                 return Fail(idle, $"{Openables.Name(tg.Id)} at {tg.Pos} won't open (locked?)");
             return new FollowerOutput(FollowerStatus.NeedsAction, idle, new FollowerAction(FollowerActionKind.Activate, click));
         }
+        return null;
+    }
 
-        // ---- actions: blocks to break first ----
+    /// <summary>Blocks to break first.</summary>
+    private FollowerOutput? BreakAction(IBlockAccess w, PathStep step, MoveInput idle)
+    {
         foreach (var b in step.Break)
             if (BlockPresent(w, b))
             {
                 _noProgress = 0;
                 return new FollowerOutput(FollowerStatus.NeedsAction, idle, new FollowerAction(FollowerActionKind.Break, b));
             }
+        return null;
+    }
 
-        // ---- actions: place ----
-        if (step.Place is { } p && Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z)))
+    /// <summary>A block to place: a pillar's under the feet, a bridge's ahead (sneak toward the target until the support
+    /// face becomes visible, then place).</summary>
+    private FollowerOutput PlaceAction(IBlockAccess w, PhysicsState s, PathStep step, BlockPos p, MoveInput idle, bool sneak, float yaw)
+    {
+        if (step.Kind == MoveKind.Pillar) return PillarAction(w, s, p, idle, sneak);
+        if (Aiming.FindPlaceAim(w, s.EyePosition, p, _o.Reach, s.BoundingBox) is not null && s.OnGround)
         {
-            if (step.Kind == MoveKind.Pillar)
-            {
-                var box = s.BoundingBox;
-                bool clear = !box.Intersects(AABB.Block(p.X, p.Y, p.Z));
-                if (clear && Aiming.FindPlaceAim(w, s.EyePosition, p, _o.Reach, box) is not null)
-                {
-                    _noProgress = 0;
-                    return new FollowerOutput(FollowerStatus.NeedsAction, idle with { Pitch = 90 },
-                        new FollowerAction(FollowerActionKind.Place, p));
-                }
-                // Center on the column, then jump.
-                var c = new Vec3d(p.X + 0.5, pos.Y, p.Z + 0.5);
-                double cd = Math.Sqrt(Math.Pow(c.X - pos.X, 2) + Math.Pow(c.Z - pos.Z, 2));
-                float cy = cd > 0.05 ? PlayerPhysics.YawPitchTo(pos, c).Yaw : s.Yaw;
-                bool centered = cd < 0.2;
-                _noProgress = Math.Max(0, _noProgress - 1);
-                return Move(new MoveInput(Forward: cd > 0.1 + Speed(s) * 2.2 ? 1 : 0, Jump: centered && s.OnGround,
-                    Sneak: sneak, Yaw: cy, Pitch: 90));
-            }
-
-            // Bridge: sneak toward the target until the support face becomes visible, then place.
-            if (Aiming.FindPlaceAim(w, s.EyePosition, p, _o.Reach, s.BoundingBox) is not null && s.OnGround)
-            {
-                _noProgress = 0;
-                return new FollowerOutput(FollowerStatus.NeedsAction, idle with { Sneak = true },
-                    new FollowerAction(FollowerActionKind.Place, p));
-            }
-            return Move(new MoveInput(Forward: 1, Sneak: true, Yaw: yaw, Pitch: s.Pitch));
+            _noProgress = 0;
+            return new FollowerOutput(FollowerStatus.NeedsAction, idle with { Sneak = true },
+                new FollowerAction(FollowerActionKind.Place, p));
         }
+        return Move(new MoveInput(Forward: 1, Sneak: true, Yaw: yaw, Pitch: s.Pitch));
+    }
 
-        // ---- movement ----
+    private FollowerOutput PillarAction(IBlockAccess w, PhysicsState s, BlockPos p, MoveInput idle, bool sneak)
+    {
+        var pos = s.Position;
+        var box = s.BoundingBox;
+        bool clear = !box.Intersects(AABB.Block(p.X, p.Y, p.Z));
+        if (clear && Aiming.FindPlaceAim(w, s.EyePosition, p, _o.Reach, box) is not null)
+        {
+            _noProgress = 0;
+            return new FollowerOutput(FollowerStatus.NeedsAction, idle with { Pitch = 90 },
+                new FollowerAction(FollowerActionKind.Place, p));
+        }
+        // Center on the column, then jump.
+        var c = new Vec3d(p.X + 0.5, pos.Y, p.Z + 0.5);
+        double cd = Math.Sqrt(Math.Pow(c.X - pos.X, 2) + Math.Pow(c.Z - pos.Z, 2));
+        float cy = cd > 0.05 ? PlayerPhysics.YawPitchTo(pos, c).Yaw : s.Yaw;
+        bool centered = cd < 0.2;
+        _noProgress = Math.Max(0, _noProgress - 1);
+        return Move(new MoveInput(Forward: cd > 0.1 + Speed(s) * 2.2 ? 1 : 0, Jump: centered && s.OnGround,
+            Sneak: sneak, Yaw: cy, Pitch: 90));
+    }
+
+    // ---- movement ----
+
+    /// <summary>The movement keys of one tick, shaped per step kind.</summary>
+    private struct Gait
+    {
+        public float Forward;
+        public bool Jump;
+        public bool Sneak;
+        public float Yaw;
+    }
+
+    private FollowerOutput Walk(IBlockAccess w, PhysicsState s, PathStep step, MoveInput idle, bool sneak, float yaw, double dist)
+    {
+        var pos = s.Position;
         bool precise = NeedsPrecision(step);
         double speed = Speed(s);
-        float forward = !precise || dist > Math.Max(0.08, speed * 2.2) ? 1 : 0;
-        bool jump = false;
-        float moveYaw = yaw;
+        var g = new Gait { Forward = !precise || dist > Math.Max(0.08, speed * 2.2) ? 1 : 0, Sneak = sneak, Yaw = yaw };
 
         // Knocked or slid off a level step into a ditch beside it (a 1-deep trench or water channel: Fox 11-04 "they can't walk out
         // because they have to jump once"): the step's floor is a jump up from here. Next to its cell: jump out onto it, as a Jump
         // step would. Farther: re-plan from the ditch at once (walking into its wall only ends as "stuck" after 4 s).
         var kind = step.Kind;
-        if (kind is MoveKind.Walk or MoveKind.Diagonal && (s.OnGround || s.InWater) && pos.Y < step.Floor - 0.65 && pos.Y >= step.Floor - 1.3)
+        if (InDitchBeside(s, step))
         {
             int cx = (int)Math.Floor(pos.X), cz = (int)Math.Floor(pos.Z);
             if (Math.Abs(step.X - cx) > 1 || Math.Abs(step.Z - cz) > 1) return Fail(idle, "fell off the path into a ditch");
             kind = MoveKind.Jump;
-            sneak = false;
+            g.Sneak = false;
         }
+        KindGait(ref g, w, s, step, kind, dist, speed);
+        if (s.InWater && step.Kind != MoveKind.Swim && step.Floor >= pos.Y - 0.2) g.Jump = true;
+        bool sprint = ShouldSprint(s, step, kind, g, dist);
+        return Move(new MoveInput(g.Forward, 0, g.Jump, g.Sneak, sprint, g.Yaw, 0));
+    }
 
+    private static bool InDitchBeside(PhysicsState s, PathStep step) =>
+        step.Kind is MoveKind.Walk or MoveKind.Diagonal && (s.OnGround || s.InWater) && s.Position.Y < step.Floor - 0.65
+        && s.Position.Y >= step.Floor - 1.3;
+
+    private static void KindGait(ref Gait g, IBlockAccess w, PhysicsState s, PathStep step, MoveKind kind, double dist, double speed)
+    {
+        var pos = s.Position;
         switch (kind)
         {
             case MoveKind.Jump:
-                jump = (s.OnGround || s.InWater) && pos.Y < step.Floor - 0.3 && (s.CollidedHorizontally || dist < 1.3);
-                forward = 1;
+                g.Jump = JumpNow(s, step, dist);
+                g.Forward = 1;
                 break;
             case MoveKind.ClimbUp:
-            {
-                // Push into the wall the ladder hangs on: collidedHorizontally on a ladder → climb at 0.2/tick.
-                var wall = LadderWall(w, (int)Math.Floor(pos.X), (int)Math.Floor(pos.Y + 0.01), (int)Math.Floor(pos.Z));
-                if (wall is { } wd && dist < 0.35)
-                    moveYaw = PlayerPhysics.YawPitchTo(pos, new Vec3d(pos.X + wd.X, pos.Y, pos.Z + wd.Z)).Yaw;
-                forward = 1;
-                jump = s.OnGround;
+                ClimbUpGait(ref g, w, s, dist);
                 break;
-            }
             case MoveKind.ClimbDown:
-                forward = dist > 0.15 ? 1 : 0;
-                sneak = false;
+                g.Forward = dist > 0.15 ? 1 : 0;
+                g.Sneak = false;
                 break;
             case MoveKind.Swim:
-                jump = target.Y >= pos.Y - 0.2 || !s.InWater;
-                forward = dist > 0.1 ? 1 : 0;
+                g.Jump = step.Target.Y >= pos.Y - 0.2 || !s.InWater;
+                g.Forward = dist > 0.1 ? 1 : 0;
                 break;
             case MoveKind.Drop:
-                sneak = false;
+                g.Sneak = false;
                 // Arrive gently: in the air keep homing on the landing cell center, never accelerate past it.
-                if (!s.OnGround) forward = dist > Math.Max(0.1, speed * 4) ? 1 : 0;
+                if (!s.OnGround) g.Forward = dist > Math.Max(0.1, speed * 4) ? 1 : 0;
                 break;
         }
-        if (s.InWater && step.Kind != MoveKind.Swim && step.Floor >= pos.Y - 0.2) jump = true;
-
-        // A boosted body (Story Mode's Fast / Faster) keeps sprinting on a straight line: cells go by in a tick or two.
-        bool sprint = _o.AllowSprint && !sneak && !step.Gentle && forward > 0 && kind is MoveKind.Walk or MoveKind.Diagonal
-                      && StepIndex + 3 < _steps.Count && (dist > 0.8 || _o.Boosted?.Invoke() == true && BoostRoom(s) >= 0.8);
-        return Move(new MoveInput(forward, 0, jump, sneak, sprint, moveYaw, 0));
     }
+
+    /// <summary>A Jump step jumps once standing (or swimming) below its floor, against the wall or close to it.</summary>
+    private static bool JumpNow(PhysicsState s, PathStep step, double dist) =>
+        (s.OnGround || s.InWater) && s.Position.Y < step.Floor - 0.3 && (s.CollidedHorizontally || dist < 1.3);
+
+    /// <summary>Push into the wall the ladder hangs on: collidedHorizontally on a ladder → climb at 0.2/tick.</summary>
+    private static void ClimbUpGait(ref Gait g, IBlockAccess w, PhysicsState s, double dist)
+    {
+        var pos = s.Position;
+        var wall = LadderWall(w, (int)Math.Floor(pos.X), (int)Math.Floor(pos.Y + 0.01), (int)Math.Floor(pos.Z));
+        if (wall is { } wd && dist < 0.35)
+            g.Yaw = PlayerPhysics.YawPitchTo(pos, new Vec3d(pos.X + wd.X, pos.Y, pos.Z + wd.Z)).Yaw;
+        g.Forward = 1;
+        g.Jump = s.OnGround;
+    }
+
+    /// <summary>A boosted body (Story Mode's Fast / Faster) keeps sprinting on a straight line: cells go by in a tick or two.</summary>
+    private bool ShouldSprint(PhysicsState s, PathStep step, MoveKind kind, Gait g, double dist) =>
+        _o.AllowSprint && !g.Sneak && !step.Gentle && g.Forward > 0 && kind is MoveKind.Walk or MoveKind.Diagonal
+        && StepIndex + 3 < _steps.Count && (dist > 0.8 || _o.Boosted?.Invoke() == true && BoostRoom(s) >= 0.8);
 
     // ------------------------------------------------------------------ gap jumps
 
@@ -469,95 +538,137 @@ public sealed partial class PathFollower
     /// </summary>
     private FollowerOutput DriveParkour(IBlockAccess w, PhysicsState s, PathStep step, ParkourPlan plan)
     {
-        var pos = s.Position;
         var idle = new MoveInput(Yaw: s.Yaw, Pitch: s.Pitch, Sneak: true);
         _pk.Ticks++;
-        switch (_pk.Phase)
+        return _pk.Phase switch
         {
-            case ParkourPhase.Align:
-            {
-                if (_pk.Ticks > _o.StuckTicks) return Fail(idle, "stuck lining up a gap jump");
-                if (!s.OnGround) return Move(idle);
-                var start = plan.Start;
-                double dx = start.X - pos.X, dz = start.Z - pos.Z;
-                double dist = Math.Sqrt(dx * dx + dz * dz);
-                if (dist > 1.6 || Math.Abs(pos.Y - plan.FromFloor) > 0.05) return Fail(idle, "not at the takeoff of the planned jump");
-                double speed = Speed(s);
-                if (dist > 0.07)
-                {
-                    float yaw = PlayerPhysics.YawPitchTo(pos, start with { Y = pos.Y }).Yaw;
-                    return Move(new MoveInput(Forward: dist > Math.Max(0.05, speed * 2.5) ? 1 : 0, Sneak: true, Yaw: yaw, Pitch: s.Pitch));
-                }
-                if (speed > 0.003) return Move(idle);
-                if (plan.Schedule.Sprint && !(_o.CanSprint?.Invoke() ?? true)) return Fail(idle, "too hungry to sprint-jump");
-                var check = Parkour.Check(w, s, new ParkourCommit(plan, 0), record: true);
-                if (!check.Ok || check.Margin < plan.RequiredMargin)
-                    return Abort(idle, plan, $"jump to {plan.To} no longer safe ({check.Reason ?? $"margin {check.Margin:0.00}"})");
-                _pk.Nominal = check.Track;
-                _pk.Phase = ParkourPhase.Run;
-                _pk.Tick = 0;
-                _pk.Rejected = false;
-                goto case ParkourPhase.Run;
-            }
-            case ParkourPhase.Run:
-            {
-                int k = _pk.Tick;
-                var sch = plan.Schedule;
-                if (k <= sch.JumpTick)
-                {
-                    if (_pk.Rejected) return Abort(idle, plan, "the edge guard refused the run-up");
-                    if (_pk.Nominal is { } nom && k < nom.Count)
-                    {
-                        var e = nom[k];
-                        double dev = Math.Sqrt(Math.Pow(e.X - pos.X, 2) + Math.Pow(e.Y - pos.Y, 2) + Math.Pow(e.Z - pos.Z, 2));
-                        if (dev > _o.ParkourDeviation) return Abort(idle, plan, $"run-up off its line by {dev:0.00}");
-                    }
-                    if (sch.Sprint && k >= 1 && !s.Sprinting) return Abort(idle, plan, "lost sprint on the run-up");
-                    if (sch.Sprint && !(_o.CanSprint?.Invoke() ?? true)) return Abort(idle, plan, "too hungry to keep sprinting");
-                    if (!s.OnGround) return Abort(idle, plan, "left the ground before the takeoff");
-                    if (k > 0)
-                    {
-                        var chk = Parkour.Check(w, s, new ParkourCommit(plan, k));
-                        if (!chk.Ok || chk.Margin < plan.RequiredMargin)
-                            return Abort(idle, plan, $"landing no longer safe ({chk.Reason ?? $"margin {chk.Margin:0.00}"})");
-                    }
-                }
-                else if (s.OnGround || s.InWater || s.OnLadder)
-                {
-                    // Touched down: verify the landing — at the target floor (a stair's lower half counts), near the
-                    // planned touchdown or on the target cell; the landed phase then brakes onto the cell centre.
-                    var tgt = step.Target;
-                    double off = Math.Sqrt((tgt.X - pos.X) * (tgt.X - pos.X) + (tgt.Z - pos.Z) * (tgt.Z - pos.Z));
-                    double fromNominal = _pk.Nominal is { } nm && k < nm.Count
-                        ? Math.Sqrt(Math.Pow(nm[k].X - pos.X, 2) + Math.Pow(nm[k].Z - pos.Z, 2)) : double.MaxValue;
-                    bool onTarget = (int)Math.Floor(pos.X) == step.X && (int)Math.Floor(pos.Z) == step.Z;
-                    if (pos.Y < step.Floor - 0.55 || pos.Y > step.Floor + 0.05 || s.InWater || s.OnLadder
-                        || !(onTarget || (fromNominal < 0.5 && off < 3.2)))
-                    {
-                        BlockedJump = (plan.From, plan.To);
-                        return Fail(idle, $"gap jump missed: landed at {pos} instead of {step.Pos}");
-                    }
-                    _pk.Phase = ParkourPhase.Landed;
-                    _pk.Ticks = 0;
-                    goto default;
-                }
-                else if (k - sch.JumpTick > Parkour.MaxFlightTicks) return Fail(idle, "gap jump: still in the air");
-                var input = sch.InputAt(k, s);
-                Commitment = new ParkourCommit(plan, k);
-                _pk.Tick = k + 1;
-                _noProgress = 0;
-                return Move(input);
-            }
-            default:
-            {
-                // Never planned again (live 10-28, 67: the same jump by the main house re-planned 4x per goto, 3 gotos, each
-                // "stuck after a gap jump" at 8.4,64.2,-8.3): the re-plan routes around it (door, ladder, stairs).
-                if (_pk.Ticks > Parkour.SettleTicks + 20) { BlockedJump = (plan.From, plan.To); return Fail(idle, "stuck after a gap jump"); }
-                if (!s.OnGround && !s.InWater && s.Velocity.Y < -0.2 && Safety.IsPlayerOverVoid(w, pos))
-                    return Fail(idle, "falling into the void");
-                return Move(plan.Schedule.InputAt(plan.Schedule.JumpTick + 1, s));
-            }
+            ParkourPhase.Align => ParkourAlign(w, s, step, plan, idle),
+            ParkourPhase.Run => ParkourRunTick(w, s, step, plan, idle),
+            _ => ParkourLanded(w, s, plan, idle),
+        };
+    }
+
+    /// <summary>(1) Sneak onto the takeoff cell centre and stand still, then re-validate the jump from the actual state.</summary>
+    private FollowerOutput ParkourAlign(IBlockAccess w, PhysicsState s, PathStep step, ParkourPlan plan, MoveInput idle)
+    {
+        var pos = s.Position;
+        if (_pk.Ticks > _o.StuckTicks) return Fail(idle, "stuck lining up a gap jump");
+        if (!s.OnGround) return Move(idle);
+        var start = plan.Start;
+        double dx = start.X - pos.X, dz = start.Z - pos.Z;
+        double dist = Math.Sqrt(dx * dx + dz * dz);
+        if (dist > 1.6 || Math.Abs(pos.Y - plan.FromFloor) > 0.05) return Fail(idle, "not at the takeoff of the planned jump");
+        double speed = Speed(s);
+        if (dist > 0.07) return WalkToTakeoff(s, start, dist, speed);
+        if (speed > 0.003) return Move(idle);
+        if (plan.Schedule.Sprint && !(_o.CanSprint?.Invoke() ?? true)) return Fail(idle, "too hungry to sprint-jump");
+        return StartRun(w, s, step, plan, idle);
+    }
+
+    private static FollowerOutput WalkToTakeoff(PhysicsState s, Vec3d start, double dist, double speed)
+    {
+        var pos = s.Position;
+        float yaw = PlayerPhysics.YawPitchTo(pos, start with { Y = pos.Y }).Yaw;
+        return Move(new MoveInput(Forward: dist > Math.Max(0.05, speed * 2.5) ? 1 : 0, Sneak: true, Yaw: yaw, Pitch: s.Pitch));
+    }
+
+    /// <summary>Lined up and still: the jump is re-checked (recording its nominal track) and the run starts this tick.</summary>
+    private FollowerOutput StartRun(IBlockAccess w, PhysicsState s, PathStep step, ParkourPlan plan, MoveInput idle)
+    {
+        var check = Parkour.Check(w, s, new ParkourCommit(plan, 0), record: true);
+        if (!check.Ok || check.Margin < plan.RequiredMargin)
+            return Abort(idle, plan, $"jump to {plan.To} no longer safe ({check.Reason ?? $"margin {check.Margin:0.00}"})");
+        _pk.Nominal = check.Track;
+        _pk.Phase = ParkourPhase.Run;
+        _pk.Tick = 0;
+        _pk.Rejected = false;
+        return ParkourRunTick(w, s, step, plan, idle);
+    }
+
+    /// <summary>(2) Feed the plan's schedule tick by tick, aborting a run-up that went wrong; verify the touchdown.</summary>
+    private FollowerOutput ParkourRunTick(IBlockAccess w, PhysicsState s, PathStep step, ParkourPlan plan, MoveInput idle)
+    {
+        int k = _pk.Tick;
+        var sch = plan.Schedule;
+        if (k <= sch.JumpTick)
+        {
+            if (RunUpProblem(w, s, plan, idle, k) is { } stop) return stop;
         }
+        else if (s.OnGround || s.InWater || s.OnLadder) return TouchDown(w, s, step, plan, idle, k);
+        else if (k - sch.JumpTick > Parkour.MaxFlightTicks) return Fail(idle, "gap jump: still in the air");
+        var input = sch.InputAt(k, s);
+        Commitment = new ParkourCommit(plan, k);
+        _pk.Tick = k + 1;
+        _noProgress = 0;
+        return Move(input);
+    }
+
+    /// <summary>Why the run-up must stop before the takeoff (null = carry on).</summary>
+    private FollowerOutput? RunUpProblem(IBlockAccess w, PhysicsState s, ParkourPlan plan, MoveInput idle, int k)
+    {
+        if (_pk.Rejected) return Abort(idle, plan, "the edge guard refused the run-up");
+        if (_pk.Nominal is { } nom && k < nom.Count)
+        {
+            var e = nom[k];
+            var pos = s.Position;
+            double dev = Math.Sqrt(Math.Pow(e.X - pos.X, 2) + Math.Pow(e.Y - pos.Y, 2) + Math.Pow(e.Z - pos.Z, 2));
+            if (dev > _o.ParkourDeviation) return Abort(idle, plan, $"run-up off its line by {dev:0.00}");
+        }
+        if (SprintProblem(s, plan.Schedule, k) is { } why) return Abort(idle, plan, why);
+        if (!s.OnGround) return Abort(idle, plan, "left the ground before the takeoff");
+        return k > 0 ? LandingStillSafe(w, s, plan, idle, k) : null;
+    }
+
+    private string? SprintProblem(PhysicsState s, ParkourSchedule sch, int k)
+    {
+        if (sch.Sprint && k >= 1 && !s.Sprinting) return "lost sprint on the run-up";
+        if (sch.Sprint && !(_o.CanSprint?.Invoke() ?? true)) return "too hungry to keep sprinting";
+        return null;
+    }
+
+    private FollowerOutput? LandingStillSafe(IBlockAccess w, PhysicsState s, ParkourPlan plan, MoveInput idle, int k)
+    {
+        var chk = Parkour.Check(w, s, new ParkourCommit(plan, k));
+        if (!chk.Ok || chk.Margin < plan.RequiredMargin)
+            return Abort(idle, plan, $"landing no longer safe ({chk.Reason ?? $"margin {chk.Margin:0.00}"})");
+        return null;
+    }
+
+    /// <summary>Touched down: verify the landing — at the target floor (a stair's lower half counts), near the planned
+    /// touchdown or on the target cell; the landed phase then brakes onto the cell centre.</summary>
+    private FollowerOutput TouchDown(IBlockAccess w, PhysicsState s, PathStep step, ParkourPlan plan, MoveInput idle, int k)
+    {
+        if (LandedWrong(s, step, k))
+        {
+            BlockedJump = (plan.From, plan.To);
+            return Fail(idle, $"gap jump missed: landed at {s.Position} instead of {step.Pos}");
+        }
+        _pk.Phase = ParkourPhase.Landed;
+        _pk.Ticks = 0;
+        return ParkourLanded(w, s, plan, idle);
+    }
+
+    private bool LandedWrong(PhysicsState s, PathStep step, int k)
+    {
+        var pos = s.Position;
+        var tgt = step.Target;
+        double off = Math.Sqrt((tgt.X - pos.X) * (tgt.X - pos.X) + (tgt.Z - pos.Z) * (tgt.Z - pos.Z));
+        double fromNominal = _pk.Nominal is { } nm && k < nm.Count
+            ? Math.Sqrt(Math.Pow(nm[k].X - pos.X, 2) + Math.Pow(nm[k].Z - pos.Z, 2)) : double.MaxValue;
+        bool onTarget = (int)Math.Floor(pos.X) == step.X && (int)Math.Floor(pos.Z) == step.Z;
+        return pos.Y < step.Floor - 0.55 || pos.Y > step.Floor + 0.05 || s.InWater || s.OnLadder
+               || !(onTarget || (fromNominal < 0.5 && off < 3.2));
+    }
+
+    /// <summary>(3) Landed: brake onto the cell centre with the schedule's post-takeoff input.</summary>
+    private FollowerOutput ParkourLanded(IBlockAccess w, PhysicsState s, ParkourPlan plan, MoveInput idle)
+    {
+        // Never planned again (live 10-28, 67: the same jump by the main house re-planned 4x per goto, 3 gotos, each
+        // "stuck after a gap jump" at 8.4,64.2,-8.3): the re-plan routes around it (door, ladder, stairs).
+        if (_pk.Ticks > Parkour.SettleTicks + 20) { BlockedJump = (plan.From, plan.To); return Fail(idle, "stuck after a gap jump"); }
+        if (!s.OnGround && !s.InWater && s.Velocity.Y < -0.2 && Safety.IsPlayerOverVoid(w, s.Position))
+            return Fail(idle, "falling into the void");
+        return Move(plan.Schedule.InputAt(plan.Schedule.JumpTick + 1, s));
     }
 
     /// <summary>Gives up on a jump before the takeoff: brake with sneak (vanilla edge clamping stops at the edge) and
