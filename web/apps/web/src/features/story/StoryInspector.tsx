@@ -31,11 +31,8 @@ import {
   ClipboardPaste,
   Copy,
   Flame,
-  GripVertical,
   MessageSquare,
   Minus,
-  Pause,
-  Play,
   Plus,
   Power,
   RotateCcw,
@@ -53,18 +50,17 @@ import { cn } from '@/lib/utils';
 import { ContainerContents } from '@/features/world/ContainerPanel';
 import { InventorySection } from '@/features/live/inventory/InventoryPanel';
 import { retryIn, shortReason } from './failedLabels';
+import { BillRow } from './inspector/BillRow';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
 import { DirectiveList } from './StoryPanels';
 import {
   addBillBody,
   allowAll,
-  billProgress,
   billSummary,
   FUEL_CHOICES,
   fuelBody,
   fuelLabel,
-  fuelLine,
   fuelTable,
   reservationLine,
   reservationRows,
@@ -296,19 +292,11 @@ export function DesignationInspector({
   onCancel: (ids: Array<string | number>) => void;
   onClose: () => void;
 }) {
-  const at = designationAt(d);
-  const short = shortReason(d.reason);
   const many = cluster.length > 1;
   return (
     <Shell
-      title={`${d.label ?? d.kind}${at ? ` at ${at.join(', ')}` : ''}`}
-      sub={
-        d.status === 'failed'
-          ? `Failed: ${short.title}`
-          : d.wait && !d.reason
-            ? `Waiting: ${shortReason(d.wait).title}`
-            : `Failing: ${short.title}`
-      }
+      title={designationTitle(d)}
+      sub={designationSub(d)}
       onClose={onClose}
       testid="designation-inspector"
     >
@@ -364,6 +352,19 @@ export function DesignationInspector({
   );
 }
 
+/** "Chop at 4, 64, 2". */
+function designationTitle(d: StoryDesignation): string {
+  const at = designationAt(d);
+  return `${d.label ?? d.kind}${at ? ` at ${at.join(', ')}` : ''}`;
+}
+
+/** Failed / Waiting (a wait with no failure) / Failing, with the short reason. */
+function designationSub(d: StoryDesignation): string {
+  if (d.status === 'failed') return `Failed: ${shortReason(d.reason).title}`;
+  if (d.wait && !d.reason) return `Waiting: ${shortReason(d.wait).title}`;
+  return `Failing: ${shortReason(d.reason).title}`;
+}
+
 function designationAt(d: StoryDesignation): number[] | null {
   const t = d.target;
   if (Array.isArray(t)) return t.map((n) => Math.floor(n));
@@ -372,6 +373,175 @@ function designationAt(d: StoryDesignation): number[] | null {
 }
 
 // ------------------------------------------------------------------ pawn
+
+type PawnTab = 'overview' | 'inventory' | 'skills' | 'orders';
+
+/** What the pawn is doing (its job's progress), or drafted / nothing. */
+function PawnDoing({ pawn }: { pawn: StoryPawn }) {
+  const progress = pawn.job?.progress;
+  return (
+    <div className="rounded-md bg-surface-2 px-2 py-1.5">
+      <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Doing</div>
+      <div className="font-medium">{pawn.job?.label ?? (pawn.drafted ? 'Drafted: awaiting orders' : 'Nothing')}</div>
+      {progress !== null && progress !== undefined ? (
+        <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-3">
+          <span className="block h-full bg-accent" style={{ width: `${progress * 100}%` }} />
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** The pawn's own bed (Show centres the map on it). */
+function PawnBedRow({ bed, onShowBed }: { bed?: StoryBed | null; onShowBed?: () => void }) {
+  return (
+    <div className="flex items-center gap-2 rounded-md bg-surface-2 px-2 py-1.5" data-testid="pawn-bed">
+      <BedDouble className="size-3.5 text-muted" aria-hidden />
+      <span className="min-w-0 flex-1 truncate">{bed ? `Bed at ${bed.pos[0]}, ${bed.pos[2]}` : 'No bed of its own'}</span>
+      {bed && onShowBed ? (
+        <Button size="sm" variant="ghost" onClick={onShowBed}>
+          Show
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Overview: doing, health, food, traits, held item, bed, draft, and the equipment / gear actions (`extra`). */
+function PawnOverview({
+  pawn,
+  bed,
+  canWrite,
+  onDraft,
+  onShowBed,
+  extra,
+}: {
+  pawn: StoryPawn;
+  bed?: StoryBed | null;
+  canWrite: boolean;
+  onDraft: (d: boolean) => void;
+  onShowBed?: () => void;
+  extra?: ReactNode;
+}) {
+  return (
+    <div className="space-y-2 text-xs">
+      <PawnDoing pawn={pawn} />
+      <Bar value={pawn.hp ?? 20} color="#e5484d" label="Health" />
+      <Bar value={pawn.food ?? 20} color="#e2a336" label="Food" />
+      <div>
+        <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Traits</div>
+        <ul className="flex flex-wrap gap-1">
+          {pawn.traits.map((t) => (
+            <li key={t.id} className="rounded bg-surface-2 px-1.5 py-0.5" title={t.effect ?? undefined}>
+              {t.label}
+            </li>
+          ))}
+        </ul>
+      </div>
+      {pawn.held ? <div className="text-muted">Holding {pawn.held}</div> : null}
+      <PawnBedRow bed={bed} onShowBed={onShowBed} />
+      <Button
+        size="sm"
+        variant={pawn.drafted ? 'subtle' : 'secondary'}
+        disabled={!canWrite}
+        onClick={() => onDraft(!pawn.drafted)}
+      >
+        {pawn.drafted ? <ShieldOff className="size-3.5" /> : <Shield className="size-3.5" />}
+        {pawn.drafted ? 'Undraft (R)' : 'Draft (R)'}
+      </Button>
+      {extra}
+    </div>
+  );
+}
+
+/** One skill row: its level bar and passion. */
+function SkillRow({ t, pawn }: { t: (typeof WORK_TYPES)[number]; pawn: StoryPawn }) {
+  const s = pawn.skills[t];
+  const level = s?.level ?? 0;
+  return (
+    <li className="flex items-center gap-1.5">
+      <span className="w-14 text-muted">{WORK_LABELS[t]}</span>
+      <span className="block h-2 flex-1 overflow-hidden rounded-full bg-surface-3">
+        <span className="block h-full bg-accent" style={{ width: `${(level / 20) * 100}%` }} />
+      </span>
+      <span className="w-5 text-right tabular-nums">{level}</span>
+      {s?.passion ? <Flame className="size-3 text-[#ff9f43]" aria-label="passion" /> : <span className="w-3" />}
+    </li>
+  );
+}
+
+/** Skills: every work type's level and passion, and the XP level. */
+function PawnSkills({ pawn }: { pawn: StoryPawn }) {
+  return (
+    <ul className="space-y-1 text-xs">
+      {WORK_TYPES.map((t) => (
+        <SkillRow key={t} t={t} pawn={pawn} />
+      ))}
+      <li
+        className="flex items-center gap-1.5 pt-1"
+        data-testid="pawn-xp"
+        title="Experience level: earned mining ore, smelting and fighting; enchanting and anvil bills spend it"
+      >
+        <span className="w-14 text-muted">XP level</span>
+        <span className="tabular-nums">{pawn.xpLevel ?? 0}</span>
+      </li>
+    </ul>
+  );
+}
+
+/** Orders: the queued orders, and clearing them. */
+function PawnOrders({ pawn, canWrite, onClearQueue }: { pawn: StoryPawn; canWrite: boolean; onClearQueue: () => void }) {
+  return (
+    <div className="space-y-1 text-xs">
+      {pawn.queue.length === 0 ? (
+        <p className="text-muted">No queued orders. Right-click the map with this pawn selected (Shift queues).</p>
+      ) : null}
+      <ol className="space-y-0.5">
+        {pawn.queue.map((o, i) => (
+          <li key={String(o.id ?? i)} className="flex items-center gap-1.5 rounded bg-surface-2 px-1.5 py-1">
+            <span className="w-4 text-subtle">{i + 1}</span>
+            <span className="font-medium capitalize">{o.kind}</span>
+            <span className="text-muted">{orderWhere(o.target)}</span>
+            <span className="ml-auto text-subtle">{o.state}</span>
+          </li>
+        ))}
+      </ol>
+      {pawn.queue.length ? (
+        <Button size="sm" variant="ghost" disabled={!canWrite} onClick={onClearQueue}>
+          Clear orders
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+const isOffline = (p: StoryPawn) => p.online === false || p.state === 'offline';
+
+/** An offline pawn: why, and Bring online. */
+function PawnOffline({
+  pawn,
+  blocked,
+  canWrite,
+  onBringOnline,
+}: {
+  pawn: StoryPawn;
+  blocked: readonly StoryOnlineBlocked[];
+  canWrite: boolean;
+  onBringOnline: (overCap: boolean) => void;
+}) {
+  return (
+    <div className="mb-2">
+      <BringOnlineBox
+        reason={pawn.offlineReason ?? 'offline'}
+        blocked={blocked}
+        canWrite={canWrite}
+        label="Bring online"
+        onBring={onBringOnline}
+        testid="pawn-offline"
+      />
+    </div>
+  );
+}
 
 export function PawnInspector({
   pawn,
@@ -398,29 +568,20 @@ export function PawnInspector({
   blocked?: readonly StoryOnlineBlocked[];
   onBringOnline?: (overCap: boolean) => void;
 }) {
-  const [tab, setTab] = useState<'overview' | 'inventory' | 'skills' | 'orders'>('overview');
-  const offline = pawn.online === false || pawn.state === 'offline';
+  const [tab, setTab] = useState<PawnTab>('overview');
+  const offline = isOffline(pawn);
   return (
     <Shell
       title={pawn.display}
-      sub={offline ? 'offline' : `${pawn.state ?? 'idle'}`}
+      sub={offline ? 'offline' : (pawn.state ?? 'idle')}
       onClose={onClose}
       avatar={<Avatar name={pawn.name} size={30} />}
       wide={tab === 'inventory'}
     >
       {offline && onBringOnline ? (
-        <div className="mb-2">
-          <BringOnlineBox
-            reason={pawn.offlineReason ?? 'offline'}
-            blocked={blocked}
-            canWrite={canWrite}
-            label="Bring online"
-            onBring={onBringOnline}
-            testid="pawn-offline"
-          />
-        </div>
+        <PawnOffline pawn={pawn} blocked={blocked} canWrite={canWrite} onBringOnline={onBringOnline} />
       ) : null}
-      <TabRow<'overview' | 'inventory' | 'skills' | 'orders'>
+      <TabRow<PawnTab>
         tabs={[
           ['overview', 'Overview'],
           ['inventory', 'Inventory'],
@@ -431,110 +592,15 @@ export function PawnInspector({
         onChange={setTab}
       />
       {tab === 'overview' ? (
-        <div className="space-y-2 text-xs">
-          <div className="rounded-md bg-surface-2 px-2 py-1.5">
-            <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Doing</div>
-            <div className="font-medium">
-              {pawn.job?.label ?? (pawn.drafted ? 'Drafted: awaiting orders' : 'Nothing')}
-            </div>
-            {pawn.job?.progress !== null && pawn.job?.progress !== undefined ? (
-              <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-3">
-                <span className="block h-full bg-accent" style={{ width: `${pawn.job.progress * 100}%` }} />
-              </span>
-            ) : null}
-          </div>
-          <Bar value={pawn.hp ?? 20} color="#e5484d" label="Health" />
-          <Bar value={pawn.food ?? 20} color="#e2a336" label="Food" />
-          <div>
-            <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Traits</div>
-            <ul className="flex flex-wrap gap-1">
-              {pawn.traits.map((t) => (
-                <li key={t.id} className="rounded bg-surface-2 px-1.5 py-0.5" title={t.effect ?? undefined}>
-                  {t.label}
-                </li>
-              ))}
-            </ul>
-          </div>
-          {pawn.held ? <div className="text-muted">Holding {pawn.held}</div> : null}
-          <div className="flex items-center gap-2 rounded-md bg-surface-2 px-2 py-1.5" data-testid="pawn-bed">
-            <BedDouble className="size-3.5 text-muted" aria-hidden />
-            <span className="min-w-0 flex-1 truncate">
-              {bed ? `Bed at ${bed.pos[0]}, ${bed.pos[2]}` : 'No bed of its own'}
-            </span>
-            {bed && onShowBed ? (
-              <Button size="sm" variant="ghost" onClick={onShowBed}>
-                Show
-              </Button>
-            ) : null}
-          </div>
-          <Button
-            size="sm"
-            variant={pawn.drafted ? 'subtle' : 'secondary'}
-            disabled={!canWrite}
-            onClick={() => onDraft(!pawn.drafted)}
-          >
-            {pawn.drafted ? <ShieldOff className="size-3.5" /> : <Shield className="size-3.5" />}
-            {pawn.drafted ? 'Undraft (R)' : 'Draft (R)'}
-          </Button>
-          {extra}
-        </div>
+        <PawnOverview pawn={pawn} bed={bed} canWrite={canWrite} onDraft={onDraft} onShowBed={onShowBed} extra={extra} />
       ) : null}
-      {tab === 'skills' ? (
-        <ul className="space-y-1 text-xs">
-          {WORK_TYPES.map((t) => {
-            const s = pawn.skills[t];
-            return (
-              <li key={t} className="flex items-center gap-1.5">
-                <span className="w-14 text-muted">{WORK_LABELS[t]}</span>
-                <span className="block h-2 flex-1 overflow-hidden rounded-full bg-surface-3">
-                  <span className="block h-full bg-accent" style={{ width: `${((s?.level ?? 0) / 20) * 100}%` }} />
-                </span>
-                <span className="w-5 text-right tabular-nums">{s?.level ?? 0}</span>
-                {s?.passion ? (
-                  <Flame className="size-3 text-[#ff9f43]" aria-label="passion" />
-                ) : (
-                  <span className="w-3" />
-                )}
-              </li>
-            );
-          })}
-          <li
-            className="flex items-center gap-1.5 pt-1"
-            data-testid="pawn-xp"
-            title="Experience level: earned mining ore, smelting and fighting; enchanting and anvil bills spend it"
-          >
-            <span className="w-14 text-muted">XP level</span>
-            <span className="tabular-nums">{pawn.xpLevel ?? 0}</span>
-          </li>
-        </ul>
-      ) : null}
+      {tab === 'skills' ? <PawnSkills pawn={pawn} /> : null}
       {tab === 'inventory' ? (
         // The pawn's own window (armour, offhand, 27 main slots, hotbar with the held slot), polled while open: the same
         // panel the Live hive shows for any body (bots.inventory answers for colony pawns by login).
         <InventorySection bot={pawn.name} compact />
       ) : null}
-      {tab === 'orders' ? (
-        <div className="space-y-1 text-xs">
-          {pawn.queue.length === 0 ? (
-            <p className="text-muted">No queued orders. Right-click the map with this pawn selected (Shift queues).</p>
-          ) : null}
-          <ol className="space-y-0.5">
-            {pawn.queue.map((o, i) => (
-              <li key={String(o.id ?? i)} className="flex items-center gap-1.5 rounded bg-surface-2 px-1.5 py-1">
-                <span className="w-4 text-subtle">{i + 1}</span>
-                <span className="font-medium capitalize">{o.kind}</span>
-                <span className="text-muted">{orderWhere(o.target)}</span>
-                <span className="ml-auto text-subtle">{o.state}</span>
-              </li>
-            ))}
-          </ol>
-          {pawn.queue.length ? (
-            <Button size="sm" variant="ghost" disabled={!canWrite} onClick={onClearQueue}>
-              Clear orders
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
+      {tab === 'orders' ? <PawnOrders pawn={pawn} canWrite={canWrite} onClearQueue={onClearQueue} /> : null}
     </Shell>
   );
 }
@@ -542,6 +608,41 @@ export function PawnInspector({
 // ------------------------------------------------------------------ several bodies, AI
 
 /** A selected bed: who sleeps in it, and a picker to give it to a pawn (their other bed is freed) or clear it. */
+/** The house zone a bed is in (when it is in one). */
+function bedZone(state: StoryColonyState | undefined, bed: StoryBed) {
+  if (bed.zone === null || bed.zone === undefined) return undefined;
+  return state?.zones.find((z) => String(z.id) === String(bed.zone));
+}
+
+/** "x, y, z · Main house". */
+function bedSub(state: StoryColonyState | undefined, bed: StoryBed): string {
+  const zone = bedZone(state, bed);
+  return `${bed.pos[0]}, ${bed.pos[1]}, ${bed.pos[2]}${zone ? ` · ${zone.name || zone.label || 'a house'}` : ''}`;
+}
+
+/** Who sleeps in the bed (nobody). */
+function BedOwner({ bed, state }: { bed: StoryBed; state: StoryColonyState | undefined }) {
+  const owner = bed.pawn ? state?.pawns.find((p) => p.name === bed.pawn) : undefined;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-muted">Owner</span>
+      {owner || bed.pawn ? (
+        <span className="flex items-center gap-1.5 font-medium">
+          <Avatar name={bed.pawn!} size={18} />
+          {owner?.display ?? bed.pawn}
+        </span>
+      ) : (
+        <span className="text-subtle">nobody</span>
+      )}
+    </div>
+  );
+}
+
+/** A pawn as a bed owner choice ("Ann (moves from their bed)" when she has another bed). */
+function bedOwnerLabel(p: StoryPawn, bed: StoryBed, beds: readonly StoryBed[]): string {
+  return `${p.display}${beds.some((b) => b.pawn === p.name && b !== bed) ? ' (moves from their bed)' : ''}`;
+}
+
 export function BedInspector({
   bed,
   state,
@@ -556,36 +657,22 @@ export function BedInspector({
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const owner = bed.pawn ? state?.pawns.find((p) => p.name === bed.pawn) : undefined;
-  const zone =
-    bed.zone !== null && bed.zone !== undefined
-      ? state?.zones.find((z) => String(z.id) === String(bed.zone))
-      : undefined;
   const pos = { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] };
   const run = (body: Parameters<StoryWrite>[1]) => {
     setBusy(true);
     void write('story.beds', body as never).finally(() => setBusy(false));
   };
+  const beds = state?.beds ?? [];
   return (
     <Shell
       title="Bed"
-      sub={`${bed.pos[0]}, ${bed.pos[1]}, ${bed.pos[2]}${zone ? ` · ${zone.name || zone.label || 'a house'}` : ''}`}
+      sub={bedSub(state, bed)}
       onClose={onClose}
       testid="bed-inspector"
       avatar={<BedDouble className="size-6 text-muted" />}
     >
       <div className="space-y-2 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="text-muted">Owner</span>
-          {owner || bed.pawn ? (
-            <span className="flex items-center gap-1.5 font-medium">
-              <Avatar name={bed.pawn!} size={18} />
-              {owner?.display ?? bed.pawn}
-            </span>
-          ) : (
-            <span className="text-subtle">nobody</span>
-          )}
-        </div>
+        <BedOwner bed={bed} state={state} />
         <label className="flex items-center gap-2">
           <span className="text-muted">Set owner</span>
           <select
@@ -600,8 +687,7 @@ export function BedInspector({
             <option value="">nobody</option>
             {(state?.pawns ?? []).map((p) => (
               <option key={p.name} value={p.name}>
-                {p.display}
-                {(state?.beds ?? []).some((b) => b.pawn === p.name && b !== bed) ? ' (moves from their bed)' : ''}
+                {bedOwnerLabel(p, bed, beds)}
               </option>
             ))}
           </select>
@@ -828,6 +914,109 @@ export function FilterTree({
   );
 }
 
+type StoragePatch = { filter?: StoryFilter; priority?: string; label?: string };
+
+/** The storage a chest belongs to (either half of a double chest). */
+const storageOf = (storages: readonly StoryStorage[], c: V3) =>
+  storages.find((s) => k3(s.chest) === k3(c) || (s.doubleWith && k3(s.doubleWith) === k3(c)));
+
+/** "3 chests", the chest's label, "Double chest" or "Chest". */
+function storageTitle(chests: readonly V3[], first: StoryStorage | undefined): string {
+  if (chests.length > 1) return `${chests.length} chests`;
+  return first?.label || (first?.doubleWith ? 'Double chest' : 'Chest');
+}
+
+/** "Storage · High · Everything" (or "Not storage yet"). */
+function storageSub(registered: boolean, first: StoryStorage | undefined, tree: TreeNode[], filter: StoryFilter): string {
+  if (!registered) return 'Not storage yet';
+  const priority = PRIORITY_LABELS[(first?.priority ?? 'normal') as keyof typeof PRIORITY_LABELS] ?? first?.priority;
+  return `Storage · ${priority} · ${filterSummary(tree, filter)}`;
+}
+
+/** A registered storage's settings: priority, copy / paste, label, the item filter, stop using it. */
+function StorageSettings({
+  first,
+  single,
+  keys,
+  tree,
+  filter,
+  canWrite,
+  clip,
+  onClip,
+  set,
+  write,
+}: {
+  first: StoryStorage | undefined;
+  single: boolean;
+  keys: V3[];
+  tree: TreeNode[];
+  filter: StoryFilter;
+  canWrite: boolean;
+  clip: StorageClip | null;
+  onClip: (c: StorageClip) => void;
+  set: (patch: StoragePatch) => void;
+  write: StoryWrite;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-1.5">
+        <label className="flex items-center gap-1">
+          Priority
+          <select
+            aria-label="Storage priority"
+            value={first?.priority ?? 'normal'}
+            disabled={!canWrite}
+            onChange={(e) => set({ priority: e.target.value })}
+            className="h-6 rounded border border-border bg-surface-2 px-1"
+          >
+            {STORY_STORAGE_PRIORITIES.map((p) => (
+              <option key={p} value={p}>
+                {PRIORITY_LABELS[p]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => onClip({ filter, priority: first?.priority ?? 'normal' })}
+          className="ml-auto inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3"
+          title="Copy these settings"
+        >
+          <Copy className="size-3" /> Copy
+        </button>
+        <button
+          type="button"
+          disabled={!clip || !canWrite}
+          onClick={() => clip && set({ filter: clip.filter, priority: clip.priority })}
+          className="inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3 disabled:opacity-40"
+          title="Paste copied settings onto the selected chests"
+        >
+          <ClipboardPaste className="size-3" /> Paste
+        </button>
+      </div>
+      {single ? (
+        <Input
+          aria-label="Chest label"
+          defaultValue={first?.label ?? ''}
+          placeholder="Label (optional)"
+          maxLength={40}
+          className="h-6 text-[11px]"
+          onBlur={(e) => e.target.value !== (first?.label ?? '') && set({ label: e.target.value })}
+        />
+      ) : null}
+      <FilterTree tree={tree} filter={filter} onChange={(f) => canWrite && set({ filter: f })} />
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={!canWrite}
+        onClick={() => void write('story.storage', { op: 'remove', chests: keys } as never)}
+      >
+        Stop using as storage
+      </Button>
+    </>
+  );
+}
+
 export function StorageInspector({
   chests,
   state,
@@ -845,29 +1034,23 @@ export function StorageInspector({
   onClip: (c: StorageClip) => void;
   onClose: () => void;
 }) {
-  const tree = useMemo(() => buildTree(state?.categories), [state?.categories]);
-  const list = chests.map((c) =>
-    (state?.storages ?? []).find((s) => k3(s.chest) === k3(c) || (s.doubleWith && k3(s.doubleWith) === k3(c))),
-  );
+  const categories = state?.categories;
+  const tree = useMemo(() => buildTree(categories), [categories]);
+  const storages = state?.storages ?? [];
+  const list = chests.map((c) => storageOf(storages, c));
   const first = list.find((s): s is StoryStorage => !!s);
   const [pending, setPending] = useState<StoryFilter | null>(null);
   const filter = pending ?? first?.filter ?? CLEAR_FILTER;
   const registered = list.every(Boolean);
   const keys = chests.map((c, i) => list[i]?.chest ?? c);
-  const set = (patch: { filter?: StoryFilter; priority?: string; label?: string }) => {
+  const set = (patch: StoragePatch) => {
     if (patch.filter) setPending(patch.filter);
     void write('story.storage', storageSetBody(keys, patch) as never).finally(() => setPending(null));
   };
-  const title =
-    chests.length > 1 ? `${chests.length} chests` : first?.label || (first?.doubleWith ? 'Double chest' : 'Chest');
   return (
     <Shell
-      title={title}
-      sub={
-        registered
-          ? `Storage · ${PRIORITY_LABELS[(first?.priority ?? 'normal') as keyof typeof PRIORITY_LABELS] ?? first?.priority} · ${filterSummary(tree, filter)}`
-          : 'Not storage yet'
-      }
+      title={storageTitle(chests, first)}
+      sub={storageSub(registered, first, tree, filter)}
       onClose={onClose}
       testid="storage-inspector"
       wide
@@ -882,7 +1065,20 @@ export function StorageInspector({
           canWrite={canWrite}
           write={write}
         />
-        {!registered ? (
+        {registered ? (
+          <StorageSettings
+            first={first}
+            single={chests.length === 1}
+            keys={keys}
+            tree={tree}
+            filter={filter}
+            canWrite={canWrite}
+            clip={clip}
+            onClip={onClip}
+            set={set}
+            write={write}
+          />
+        ) : (
           <Button
             size="sm"
             variant="primary"
@@ -898,63 +1094,6 @@ export function StorageInspector({
           >
             Use as storage
           </Button>
-        ) : (
-          <>
-            <div className="flex items-center gap-1.5">
-              <label className="flex items-center gap-1">
-                Priority
-                <select
-                  aria-label="Storage priority"
-                  value={first?.priority ?? 'normal'}
-                  disabled={!canWrite}
-                  onChange={(e) => set({ priority: e.target.value })}
-                  className="h-6 rounded border border-border bg-surface-2 px-1"
-                >
-                  {STORY_STORAGE_PRIORITIES.map((p) => (
-                    <option key={p} value={p}>
-                      {PRIORITY_LABELS[p]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={() => onClip({ filter, priority: first?.priority ?? 'normal' })}
-                className="ml-auto inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3"
-                title="Copy these settings"
-              >
-                <Copy className="size-3" /> Copy
-              </button>
-              <button
-                type="button"
-                disabled={!clip || !canWrite}
-                onClick={() => clip && set({ filter: clip.filter, priority: clip.priority })}
-                className="inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3 disabled:opacity-40"
-                title="Paste copied settings onto the selected chests"
-              >
-                <ClipboardPaste className="size-3" /> Paste
-              </button>
-            </div>
-            {chests.length === 1 ? (
-              <Input
-                aria-label="Chest label"
-                defaultValue={first?.label ?? ''}
-                placeholder="Label (optional)"
-                maxLength={40}
-                className="h-6 text-[11px]"
-                onBlur={(e) => e.target.value !== (first?.label ?? '') && set({ label: e.target.value })}
-              />
-            ) : null}
-            <FilterTree tree={tree} filter={filter} onChange={(f) => canWrite && set({ filter: f })} />
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={!canWrite}
-              onClick={() => void write('story.storage', { op: 'remove', chests: keys } as never)}
-            >
-              Stop using as storage
-            </Button>
-          </>
         )}
       </div>
     </Shell>
@@ -1144,6 +1283,57 @@ export function FuelPicker({
   );
 }
 
+/** What a bench says before its bills: an unsupported kind, a furnace's fuel and smelting, station facts, its contents. */
+function BenchFacts({ bench, canWrite, write }: { bench: StoryWorkbench; canWrite: boolean; write: StoryWrite }) {
+  const pos = bench.pos;
+  return (
+    <>
+      {bench.supported === false ? (
+        <p
+          className="rounded-md bg-surface-2 px-2 py-1.5 text-muted"
+          title="b1.8.1 has no brewing stands, anvils or enchanting tables"
+        >
+          This version has no {bench.kind.replace(/_/g, ' ')} bills.
+        </p>
+      ) : null}
+      {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
+        <FuelPicker
+          value={bench.fuel ?? 'auto'}
+          choices={bench.fuelChoices}
+          disabled={!canWrite}
+          onPick={(f) => void write('story.workbenches', fuelBody(pos, f) as never)}
+        />
+      ) : null}
+      {smeltingLine(bench) ? (
+        <p className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted" data-testid="furnace-smelting">
+          {smeltingLine(bench)}
+        </p>
+      ) : null}
+      {stationLines(bench).length ? (
+        <ul className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-[11px] text-muted" data-testid="station-facts">
+          {stationLines(bench).map((l) => (
+            <li key={l} className={l.includes('gone') || l.startsWith('No water') ? 'text-danger' : undefined}>
+              {l}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {bench.kind === 'furnace' || bench.kind === 'brewing_stand' ? (
+        <ContainerContents target={{ dim: 0, x: pos[0], y: pos[1], z: pos[2] }} heading />
+      ) : null}
+    </>
+  );
+}
+
+/** The items the bench's bills take (`id:meta`), for the reservations they hold. */
+function billInputs(recipes: readonly StoryRecipe[], bills: readonly StoryBill[]): Set<string> {
+  return new Set(
+    recipes
+      .filter((r) => bills.some((b) => b.recipe === r.id))
+      .flatMap((r) => r.inputs.flatMap((i) => (i.options ?? []).map(([a, m]) => `${a}:${m}`))),
+  );
+}
+
 export function BillsInspector({
   bench,
   state,
@@ -1174,6 +1364,23 @@ export function BillsInspector({
   };
   const pos = bench.pos;
   const recipeOf = (id: string) => recipes.data?.find((r) => r.id === id);
+  /** A bill dropped on row `i`: the owner's bills reorder (auto bills, listed first, follow their builds' order). */
+  const dropBill = (i: number) => {
+    const from = dragFrom.current;
+    dragFrom.current = null;
+    if (from === null || from === i) return;
+    const auto = bench.bills.filter((x) => (x.forBuild ?? null) !== null).length;
+    if (from < auto || i < auto) return;
+    void write(
+      'story.bills',
+      reorderBills(
+        pos,
+        bench.bills.filter((x) => (x.forBuild ?? null) === null).map((x) => x.id),
+        from - auto,
+        i - auto,
+      ) as never,
+    );
+  };
   const label = bench.label ?? bench.kind.replace(/_/g, ' ');
   return (
     <Shell
@@ -1184,39 +1391,7 @@ export function BillsInspector({
       wide
     >
       <div className="space-y-2 text-xs">
-        {bench.supported === false ? (
-          <p
-            className="rounded-md bg-surface-2 px-2 py-1.5 text-muted"
-            title="b1.8.1 has no brewing stands, anvils or enchanting tables"
-          >
-            This version has no {bench.kind.replace(/_/g, ' ')} bills.
-          </p>
-        ) : null}
-        {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
-          <FuelPicker
-            value={bench.fuel ?? 'auto'}
-            choices={bench.fuelChoices}
-            disabled={!canWrite}
-            onPick={(f) => void write('story.workbenches', fuelBody(pos, f) as never)}
-          />
-        ) : null}
-        {smeltingLine(bench) ? (
-          <p className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted" data-testid="furnace-smelting">
-            {smeltingLine(bench)}
-          </p>
-        ) : null}
-        {stationLines(bench).length ? (
-          <ul className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-[11px] text-muted" data-testid="station-facts">
-            {stationLines(bench).map((l) => (
-              <li key={l} className={l.includes('gone') || l.startsWith('No water') ? 'text-danger' : undefined}>
-                {l}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {bench.kind === 'furnace' || bench.kind === 'brewing_stand' ? (
-          <ContainerContents target={{ dim: 0, x: pos[0], y: pos[1], z: pos[2] }} heading />
-        ) : null}
+        <BenchFacts bench={bench} canWrite={canWrite} write={write} />
         <div className="flex items-center gap-1.5">
           <Button
             size="sm"
@@ -1239,7 +1414,7 @@ export function BillsInspector({
         </div>
         <ReservationList
           reservations={state?.reservations}
-          items={new Set((recipes.data ?? []).filter((r) => bench.bills.some((b) => b.recipe === r.id)).flatMap((r) => r.inputs.flatMap((i) => (i.options ?? []).map(([a, m]) => `${a}:${m}`))))}
+          items={billInputs(recipes.data ?? [], bench.bills)}
           canWrite={canWrite}
           write={write}
         />
@@ -1259,107 +1434,18 @@ export function BillsInspector({
                 />
               );
             return (
-              <li
+              <BillRow
                 key={b.id}
-                data-bill={b.id}
-                draggable={canWrite}
+                bill={b}
+                recipe={r}
+                bench={bench}
+                state={state}
+                canWrite={canWrite}
+                write={write}
                 onDragStart={() => (dragFrom.current = i)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => {
-                  const from = dragFrom.current;
-                  dragFrom.current = null;
-                  if (from === null || from === i) return;
-                  // Auto bills (listed first) follow their builds' order: only the owner's bills reorder.
-                  const auto = bench.bills.filter((x) => (x.forBuild ?? null) !== null).length;
-                  if (from < auto || i < auto) return;
-                  void write(
-                    'story.bills',
-                    reorderBills(
-                      pos,
-                      bench.bills.filter((x) => (x.forBuild ?? null) === null).map((x) => x.id),
-                      from - auto,
-                      i - auto,
-                    ) as never,
-                  );
-                }}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-1.5 py-1',
-                  b.paused && 'opacity-60',
-                )}
-              >
-                <GripVertical className="size-3 cursor-grab text-subtle" aria-hidden />
-                {r ? <ItemIcon id={r.output[0]} meta={r.output[1]} size={18} /> : null}
-                <button
-                  type="button"
-                  onClick={() => setEditing({ bill: b, draft: draftOf(b), key: 0 })}
-                  className="min-w-0 flex-1 text-left"
-                >
-                  <div className="truncate font-semibold">{r?.label ?? b.recipe}</div>
-                  <div className="text-[10.5px] text-muted">
-                    {billSummary(b)} · {billProgress(b)}
-                    {b.pawn !== 'any'
-                      ? ` · ${(state?.pawns ?? []).find((p) => p.name === b.pawn)?.display ?? b.pawn} only`
-                      : ''}
-                  </div>
-                  {b.prefer || b.xpNeeded ? (
-                    <div className="text-[10.5px] text-muted">
-                      {b.prefer ? `prefers ${enchantLabel(b.prefer)}${b.preferOnly ? ' only' : ''}` : ''}
-                      {b.prefer && b.xpNeeded ? ' · ' : ''}
-                      {b.xpNeeded ? `needs XP level ${b.xpNeeded}` : ''}
-                    </div>
-                  ) : null}
-                  {b.fuelNeed ? (
-                    <div className={cn('text-[10.5px]', b.fuelNeed.short ? 'text-danger' : 'text-muted')} data-testid="bill-fuel">
-                      {fuelLine(b.fuelNeed)}
-                    </div>
-                  ) : null}
-                  {b.last ? <div className="truncate text-[10.5px] text-subtle">Last: {b.last}</div> : null}
-                  {b.suspendedReason ? (
-                    <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div>
-                  ) : null}
-                </button>
-                {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
-                  <select
-                    aria-label={`Fuel for ${r?.label ?? b.recipe}`}
-                    title="Fuel for this bill (the furnace's unless set)"
-                    disabled={!canWrite}
-                    value={b.fuel ?? ''}
-                    onChange={(e) =>
-                      void write('story.bills', { op: 'update', id: b.id, fuel: e.target.value || 'inherit' } as never)
-                    }
-                    className={cn(
-                      'h-6 max-w-[6.5rem] rounded border border-border bg-surface px-0.5 text-[10.5px]',
-                      b.fuel && 'border-accent',
-                    )}
-                    data-testid="bill-fuel-chip"
-                  >
-                    <option value="">Furnace's ({fuelLabel(bench.fuel).split(' (')[0]})</option>
-                    {bench.fuelChoices.map((f) => (
-                      <option key={f} value={f}>
-                        {fuelLabel(f)}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                <button
-                  type="button"
-                  disabled={!canWrite}
-                  onClick={() => void write('story.bills', { op: b.paused ? 'resume' : 'pause', id: b.id } as never)}
-                  aria-label={b.paused ? `Resume ${r?.label ?? b.recipe}` : `Pause ${r?.label ?? b.recipe}`}
-                  className="rounded p-0.5 hover:bg-surface-3"
-                >
-                  {b.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-                </button>
-                <button
-                  type="button"
-                  disabled={!canWrite}
-                  onClick={() => void write('story.bills', { op: 'remove', id: b.id } as never)}
-                  aria-label={`Delete ${r?.label ?? b.recipe}`}
-                  className="rounded p-0.5 text-danger hover:bg-danger-soft"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
-              </li>
+                onDrop={() => dropBill(i)}
+                onEdit={() => setEditing({ bill: b, draft: draftOf(b), key: 0 })}
+              />
             );
           })}
         </ol>
@@ -1502,6 +1588,237 @@ function Stepper({
   );
 }
 
+type DraftSet = (p: Partial<BillDraft>) => void;
+type DraftProps = { d: BillDraft; set: DraftSet; recipe: StoryRecipe | undefined };
+
+const MODE_LABEL: Record<string, string> = { count: 'Do X times', until: 'Do until you have X' };
+
+/** The ingredient tree: only the categories and items the recipe can use. */
+function useIngredientTree(recipe: StoryRecipe | undefined, categories: StoryColonyState['categories'] | undefined) {
+  return useMemo(() => {
+    const full = buildTree(categories);
+    const allowed = new Set(
+      (recipe?.inputs ?? []).flatMap((i) => [
+        ...(i.category ? [i.category] : []),
+        ...(i.options ?? []).map(([a, m]) => `${a}:${m}`),
+      ]),
+    );
+    const keep = (n: TreeNode): TreeNode | null => {
+      if (allowed.has(n.id)) return n;
+      const items = n.items.filter((it) => allowed.has(it.key));
+      const children = n.children.map(keep).filter((c): c is TreeNode => !!c);
+      return items.length || children.length ? { ...n, items, children } : null;
+    };
+    return full.map(keep).filter((n): n is TreeNode => !!n);
+  }, [recipe, categories]);
+}
+
+/** Repeat: the mode (Do X times / until you have X / forever) and its target. */
+function BillRepeat({ d, set, recipe }: DraftProps) {
+  return (
+    <fieldset className="space-y-1.5">
+      <legend className="text-xs font-semibold">Repeat</legend>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          aria-label="Repeat mode"
+          value={d.mode}
+          onChange={(e) =>
+            set({
+              mode: e.target.value as BillDraft['mode'],
+              target: e.target.value === 'until' && d.target < 2 ? 64 : d.target,
+            })
+          }
+          className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
+        >
+          {recipeModes(recipe).map((m) => (
+            <option key={m} value={m}>
+              {MODE_LABEL[m] ?? 'Do forever'}
+            </option>
+          ))}
+        </select>
+        {d.mode !== 'forever' ? (
+          <Stepper label="Target" value={d.target} min={1} max={9999} onChange={(v) => set({ target: v })} />
+        ) : null}
+        <span className="text-xs text-muted">{billSummary(d)}</span>
+      </div>
+    </fieldset>
+  );
+}
+
+/** What the recipe needs: a station's requirements, its fuels, a note, a brewing chain. */
+function BillRequires({ recipe, option }: { recipe: StoryRecipe | undefined; option: BillDraft['option'] }) {
+  if (!recipe?.requires && !recipe?.fuels?.length) return null;
+  return (
+    <div className="space-y-1 rounded-md bg-surface-2 px-2 py-1.5 text-xs" data-testid="bill-requires">
+      {recipe.requires ? (
+        <div>
+          <span className="font-semibold">Needs:</span> {requiresLine(recipe, option)}
+        </div>
+      ) : null}
+      {recipe.fuels?.length ? (
+        <div data-testid="bill-fuels">
+          <span className="font-semibold">Fuel:</span> {fuelTable(recipe)}
+        </div>
+      ) : null}
+      <RecipeNotes recipe={recipe} />
+    </div>
+  );
+}
+
+/** The recipe's note and its brewing steps. */
+function RecipeNotes({ recipe }: { recipe: StoryRecipe }) {
+  return (
+    <>
+      {recipe.requires?.note ? <div className="text-muted">{recipe.requires.note}</div> : null}
+      {recipe.chain?.length ? (
+        <ol className="list-decimal pl-4 text-muted" aria-label="Brewing steps">
+          {recipe.chain.map((c) => (
+            <li key={c}>{c}</li>
+          ))}
+        </ol>
+      ) : null}
+    </>
+  );
+}
+
+/** A furnace bill's fuel (the furnace's unless set). */
+function BillFuel({ d, set, recipe }: DraftProps) {
+  if (recipe?.workbench !== 'furnace') return null;
+  return (
+    <label className="flex items-center gap-2 text-xs">
+      <span className="w-28 font-semibold">Fuel</span>
+      <select
+        aria-label="Bill fuel"
+        value={d.fuel ?? ''}
+        onChange={(e) => set({ fuel: e.target.value || null })}
+        className="h-7 rounded border border-border bg-surface-2 px-1"
+      >
+        <option value="">The furnace's</option>
+        {Object.keys(FUEL_CHOICES).map((f) => (
+          <option key={f} value={f}>
+            {fuelLabel(f)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Enchanting: the offer to take up to, a preferred enchantment (only that one). */
+function BillEnchanting({ d, set, recipe }: DraftProps) {
+  if (recipe?.workbench !== 'enchanting_table') return null;
+  return (
+    <fieldset className="space-y-1.5 text-xs">
+      <legend className="text-xs font-semibold">Enchanting</legend>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1">
+          Up to offer
+          <select
+            aria-label="Enchant option"
+            value={d.option ?? 3}
+            onChange={(e) => set({ option: Number(e.target.value) })}
+            className="h-7 rounded border border-border bg-surface-2 px-1"
+          >
+            <option value={1}>1 (1 lapis, 1 level)</option>
+            <option value={2}>2 (2 lapis, 2 levels)</option>
+            <option value={3}>3 (3 lapis, 3 levels)</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1">
+          Prefer
+          <select
+            aria-label="Preferred enchantment"
+            value={d.prefer ?? ''}
+            onChange={(e) => set({ prefer: e.target.value || null, preferOnly: e.target.value ? d.preferOnly : false })}
+            className="h-7 rounded border border-border bg-surface-2 px-1"
+          >
+            <option value="">The highest offer</option>
+            {(recipe.enchantments ?? []).map((e) => (
+              <option key={e} value={e}>
+                {enchantLabel(e)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={d.preferOnly}
+            disabled={!d.prefer}
+            onChange={(e) => set({ preferOnly: e.target.checked })}
+          />{' '}
+          Only that one
+        </label>
+      </div>
+      <p className="text-[10.5px] text-muted">
+        The table shows its offers once the item is in; a pawn's offers only change after it enchants something.
+      </p>
+    </fieldset>
+  );
+}
+
+/** A worker choice: the pawn's skill for the recipe's work (and XP level when it takes levels). */
+function workerLabel(p: StoryPawn, recipe: StoryRecipe | undefined): string {
+  const work = recipe?.workType ?? 'craft';
+  return `${p.display} (${work} ${p.skills[work]?.level ?? 0}${recipe?.requires?.xpLevels ? `, XP ${p.xpLevel ?? 0}` : ''})`;
+}
+
+/** Worker: anyone or one pawn, and the minimum skill. */
+function BillWorker({ d, set, recipe, pawns }: DraftProps & { pawns: StoryPawn[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="w-28 font-semibold">Worker</span>
+      <select
+        aria-label="Worker"
+        value={d.pawn}
+        onChange={(e) => set({ pawn: e.target.value })}
+        className="h-7 rounded border border-border bg-surface-2 px-1"
+      >
+        <option value="any">Anyone</option>
+        {pawns.map((p) => (
+          <option key={p.name} value={p.name}>
+            {workerLabel(p, recipe)}
+          </option>
+        ))}
+      </select>
+      <label className="flex items-center gap-1">
+        Min skill
+        <Stepper
+          label="Minimum skill"
+          value={d.minSkill ?? 0}
+          min={0}
+          max={20}
+          onChange={(v) => set({ minSkill: v || null })}
+        />
+      </label>
+    </div>
+  );
+}
+
+/** Store in: the best storage, or a chest picked on the map. */
+function BillStore({ d, set, onPick }: { d: BillDraft; set: DraftSet; onPick: () => void }) {
+  const best = d.store === 'best';
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="w-28 font-semibold">Store in</span>
+      <select
+        aria-label="Store mode"
+        value={best ? 'best' : 'chest'}
+        onChange={(e) => e.target.value === 'best' && set({ store: 'best' })}
+        className="h-7 rounded border border-border bg-surface-2 px-1"
+      >
+        <option value="best">Best storage</option>
+        <option value="chest" disabled={best}>
+          {d.store === 'best' ? 'A chest (pick on the map)' : `Chest ${d.store.chest.join(', ')}`}
+        </option>
+      </select>
+      <Button size="sm" variant="ghost" onClick={onPick}>
+        Pick a chest…
+      </Button>
+    </div>
+  );
+}
+
 export function BillDialog({
   recipe,
   initial,
@@ -1521,24 +1838,7 @@ export function BillDialog({
 }) {
   const [d, setD] = useState<BillDraft>(initial);
   const set = (p: Partial<BillDraft>) => setD((x) => ({ ...x, ...p }));
-  // The ingredient tree: only the categories and items the recipe can use.
-  const tree = useMemo(() => {
-    const full = buildTree(state?.categories);
-    const allowed = new Set(
-      (recipe?.inputs ?? []).flatMap((i) => [
-        ...(i.category ? [i.category] : []),
-        ...(i.options ?? []).map(([a, m]) => `${a}:${m}`),
-      ]),
-    );
-    const keep = (n: TreeNode): TreeNode | null => {
-      if (allowed.has(n.id)) return n;
-      const items = n.items.filter((it) => allowed.has(it.key));
-      const children = n.children.map(keep).filter((c): c is TreeNode => !!c);
-      return items.length || children.length ? { ...n, items, children } : null;
-    };
-    return full.map(keep).filter((n): n is TreeNode => !!n);
-  }, [recipe, state?.categories]);
-  const pawns = state?.pawns ?? [];
+  const tree = useIngredientTree(recipe, state?.categories);
   return (
     <Dialog
       open
@@ -1558,120 +1858,10 @@ export function BillDialog({
       }
     >
       <div className="space-y-3 text-sm" data-testid="bill-dialog">
-        <fieldset className="space-y-1.5">
-          <legend className="text-xs font-semibold">Repeat</legend>
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              aria-label="Repeat mode"
-              value={d.mode}
-              onChange={(e) =>
-                set({
-                  mode: e.target.value as BillDraft['mode'],
-                  target: e.target.value === 'until' && d.target < 2 ? 64 : d.target,
-                })
-              }
-              className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
-            >
-              {recipeModes(recipe).map((m) => (
-                <option key={m} value={m}>
-                  {m === 'count' ? 'Do X times' : m === 'until' ? 'Do until you have X' : 'Do forever'}
-                </option>
-              ))}
-            </select>
-            {d.mode !== 'forever' ? (
-              <Stepper label="Target" value={d.target} min={1} max={9999} onChange={(v) => set({ target: v })} />
-            ) : null}
-            <span className="text-xs text-muted">{billSummary(d)}</span>
-          </div>
-        </fieldset>
-        {recipe?.requires || recipe?.fuels?.length ? (
-          <div className="space-y-1 rounded-md bg-surface-2 px-2 py-1.5 text-xs" data-testid="bill-requires">
-            {recipe.requires ? (
-              <div>
-                <span className="font-semibold">Needs:</span> {requiresLine(recipe, d.option)}
-              </div>
-            ) : null}
-            {recipe.fuels?.length ? (
-              <div data-testid="bill-fuels">
-                <span className="font-semibold">Fuel:</span> {fuelTable(recipe)}
-              </div>
-            ) : null}
-            {recipe.requires?.note ? <div className="text-muted">{recipe.requires.note}</div> : null}
-            {recipe.chain?.length ? (
-              <ol className="list-decimal pl-4 text-muted" aria-label="Brewing steps">
-                {recipe.chain.map((c) => (
-                  <li key={c}>{c}</li>
-                ))}
-              </ol>
-            ) : null}
-          </div>
-        ) : null}
-        {recipe?.workbench === 'furnace' ? (
-          <label className="flex items-center gap-2 text-xs">
-            <span className="w-28 font-semibold">Fuel</span>
-            <select
-              aria-label="Bill fuel"
-              value={d.fuel ?? ''}
-              onChange={(e) => set({ fuel: e.target.value || null })}
-              className="h-7 rounded border border-border bg-surface-2 px-1"
-            >
-              <option value="">The furnace's</option>
-              {Object.keys(FUEL_CHOICES).map((f) => (
-                <option key={f} value={f}>
-                  {fuelLabel(f)}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-                {recipe?.workbench === 'enchanting_table' ? (
-          <fieldset className="space-y-1.5 text-xs">
-            <legend className="text-xs font-semibold">Enchanting</legend>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-1">
-                Up to offer
-                <select
-                  aria-label="Enchant option"
-                  value={d.option ?? 3}
-                  onChange={(e) => set({ option: Number(e.target.value) })}
-                  className="h-7 rounded border border-border bg-surface-2 px-1"
-                >
-                  <option value={1}>1 (1 lapis, 1 level)</option>
-                  <option value={2}>2 (2 lapis, 2 levels)</option>
-                  <option value={3}>3 (3 lapis, 3 levels)</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-1">
-                Prefer
-                <select
-                  aria-label="Preferred enchantment"
-                  value={d.prefer ?? ''}
-                  onChange={(e) => set({ prefer: e.target.value || null, preferOnly: e.target.value ? d.preferOnly : false })}
-                  className="h-7 rounded border border-border bg-surface-2 px-1"
-                >
-                  <option value="">The highest offer</option>
-                  {(recipe.enchantments ?? []).map((e) => (
-                    <option key={e} value={e}>
-                      {enchantLabel(e)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={d.preferOnly}
-                  disabled={!d.prefer}
-                  onChange={(e) => set({ preferOnly: e.target.checked })}
-                />{' '}
-                Only that one
-              </label>
-            </div>
-            <p className="text-[10.5px] text-muted">
-              The table shows its offers once the item is in; a pawn's offers only change after it enchants something.
-            </p>
-          </fieldset>
-        ) : null}
+        <BillRepeat d={d} set={set} recipe={recipe} />
+        <BillRequires recipe={recipe} option={d.option} />
+        <BillFuel d={d} set={set} recipe={recipe} />
+        <BillEnchanting d={d} set={set} recipe={recipe} />
         <fieldset>
           <legend className="mb-1 text-xs font-semibold">Ingredients</legend>
           <FilterTree tree={tree} filter={d.ingredients} onChange={(f) => set({ ingredients: f })} />
@@ -1689,50 +1879,8 @@ export function BillDialog({
           />
           <span className="w-16 text-right tabular-nums">{d.radius} blocks</span>
         </label>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="w-28 font-semibold">Worker</span>
-          <select
-            aria-label="Worker"
-            value={d.pawn}
-            onChange={(e) => set({ pawn: e.target.value })}
-            className="h-7 rounded border border-border bg-surface-2 px-1"
-          >
-            <option value="any">Anyone</option>
-            {pawns.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.display} ({recipe?.workType ?? 'craft'} {p.skills[recipe?.workType ?? 'craft']?.level ?? 0}
-                {recipe?.requires?.xpLevels ? `, XP ${p.xpLevel ?? 0}` : ''})
-              </option>
-            ))}
-          </select>
-          <label className="flex items-center gap-1">
-            Min skill
-            <Stepper
-              label="Minimum skill"
-              value={d.minSkill ?? 0}
-              min={0}
-              max={20}
-              onChange={(v) => set({ minSkill: v || null })}
-            />
-          </label>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="w-28 font-semibold">Store in</span>
-          <select
-            aria-label="Store mode"
-            value={d.store === 'best' ? 'best' : 'chest'}
-            onChange={(e) => e.target.value === 'best' && set({ store: 'best' })}
-            className="h-7 rounded border border-border bg-surface-2 px-1"
-          >
-            <option value="best">Best storage</option>
-            <option value="chest" disabled={d.store === 'best'}>
-              {d.store === 'best' ? 'A chest (pick on the map)' : `Chest ${d.store.chest.join(', ')}`}
-            </option>
-          </select>
-          <Button size="sm" variant="ghost" onClick={() => onPickChest(d)}>
-            Pick a chest…
-          </Button>
-        </div>
+        <BillWorker d={d} set={set} recipe={recipe} pawns={state?.pawns ?? []} />
+        <BillStore d={d} set={set} onPick={() => onPickChest(d)} />
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={d.paused} onChange={(e) => set({ paused: e.target.checked })} /> Paused
         </label>

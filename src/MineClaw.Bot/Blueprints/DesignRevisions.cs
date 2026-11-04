@@ -148,21 +148,30 @@ public sealed partial class DesignRevisions
     public DesignRevision? Resolve(long design, string? spec)
     {
         var s = (spec ?? "").Trim().Trim('"', '\'').TrimStart('#');
-        var head = Head(design);
-        if (head == null) return null;
+        if (Head(design) is not { } head) return null;
         if (s.Length == 0) return head;
         if (RevRx().Match(s) is { Success: true } m) return Get(design, int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture));
-        if (HeadRx().Match(s) is { Success: true } h)
-        {
-            int back = h.Groups[1].Success ? h.Groups[1].Value.Length == 0 ? 1 : int.Parse(h.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
-            return Get(design, head.Rev - back);
-        }
-        if (s.ToLowerInvariant() is "previous" or "prev" or "last" or "before" or "the one before" or "undo") return Get(design, head.Rev - 1);
-        if (s.ToLowerInvariant() is "first" or "original") return Get(design, 1);
+        if (Relative(s, head.Rev) is { } rev) return Get(design, rev);
         lock (_db.Gate)
             return _db.Query($"SELECT {Cols} FROM blueprint_revisions WHERE blueprint_id=$id AND tag=$t COLLATE NOCASE ORDER BY rev DESC LIMIT 1", Map,
                 ("$id", design), ("$t", s)).FirstOrDefault();
     }
+
+    private static readonly HashSet<string> PreviousWords = ["previous", "prev", "last", "before", "the one before", "undo"];
+    private static readonly HashSet<string> FirstWords = ["first", "original"];
+
+    /// <summary>"HEAD~2" / "head^" / "previous" / "first" → that revision's number from HEAD's <paramref name="head"/>; null = not
+    /// such a spelling (a tag, then).</summary>
+    private static int? Relative(string s, int head)
+    {
+        if (HeadRx().Match(s) is { Success: true } h) return head - Back(h.Groups[1]);
+        var word = s.ToLowerInvariant();
+        if (PreviousWords.Contains(word)) return head - 1;
+        return FirstWords.Contains(word) ? 1 : null;
+    }
+
+    /// <summary>How far back a HEAD spelling goes: "HEAD" 0, "HEAD~" / "head^" 1, "HEAD~3" 3.</summary>
+    private static int Back(Group g) => !g.Success ? 0 : g.Value.Length == 0 ? 1 : int.Parse(g.Value, CultureInfo.InvariantCulture);
 
     // ------------------------------------------------------------------ the drift watcher's last world view
 

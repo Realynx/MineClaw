@@ -96,68 +96,101 @@ public static class ExitRoute
     /// <summary>One stair step down from a reachable cell: the tread (and its support), verified walkable.</summary>
     private static StairStep? Stair(PlanWorld sim, List<BlockPos> cells, Func<BlockPos, bool> mayPlace, double reach, ref int blocks, List<string>? trace = null)
     {
-        var reachable = cells.ToHashSet();
-        StairStep? best = null;
-        int bestFall = int.MaxValue, bestPlaces = int.MaxValue;
+        var search = new StairSearch(sim, cells.ToHashSet(), mayPlace, reach, blocks);
         foreach (var c in cells)
         {
             if (!BuildBlocks.Supports(sim.Get(c.Down()))) continue;
-            var eye = new Vec3d(c.X + 0.5, c.Y + PlayerPhysics.EyeHeight, c.Z + 0.5);
-            foreach (var f in Sides)
-            {
-                var d = f.Normal();
-                var side = new BlockPos(c.X + d.X, c.Y, c.Z + d.Z); // the cell walked through (feet), then dropped from
-                var to = side.Down();                              // the next feet cell
-                var tread = to.Down();
-                if (reachable.Contains(to) || !Open(sim, side) || !Open(sim, side.Up()) || !Open(sim, to)) continue;
-                if (!sim.IsLoaded(tread.X, tread.Z) || Safety.IsOverVoid(sim, tread.X, tread.Y, tread.Z)) continue; // never over the void
-                if (Safety.VoidNeighbourCount(sim, to.X, to.Y, to.Z) > 0) continue;                                  // nor beside it
-                // The lowest landing first (each flight goes on down from its own end), then the fewest blocks.
-                int fall = to.Y;
-                if (fall > bestFall) continue;
-                var places = new List<ExitMove>();
-                var fork = sim.Fork();
-                if (!BuildBlocks.Supports(fork.Get(tread)))
-                {
-                    if (fork.Get(tread) != 0 && !Aiming.IsReplaceable(fork, fork.Get(tread)) || !mayPlace(tread)) continue;
-                    var face = SupportFace(fork, tread, to, eye, reach);
-                    if (face == null)
-                    {
-                        // A support under my own floor first (its bottom face, hidden), then the tread against it.
-                        var floor = c.Down();
-                        var under = floor.Down();
-                        if (fork.Get(under) != 0 || !mayPlace(under) || !InReach(eye, floor, BlockFace.Bottom, reach)) continue;
-                        places.Add(new ExitMove(ExitKind.Place, under, c, BlockFace.Bottom, Hidden: true));
-                        fork.Set(under, Blocks.Cobblestone);
-                        face = SupportFace(fork, tread, to, eye, reach);
-                        if (face == null) continue;
-                    }
-                    places.Add(new ExitMove(ExitKind.Place, tread, c, face.Value, Hidden: !Seen(face.Value, tread, eye)));
-                    fork.Set(tread, Blocks.Cobblestone);
-                }
-                // The follower's overshoot guard: past the landing there must be footing or a wall, never a deadly drop (the tread
-                // made two long when nothing is there: the next step turns or goes on from its end).
-                var beyond = new BlockPos(to.X + d.X, to.Y, to.Z + d.Z);
-                if (Open(fork, beyond) && Safety.IsDeadlyColumn(fork, beyond.X, beyond.Y, beyond.Z, 3))
-                {
-                    var ext = beyond.Down();
-                    if (fork.Get(ext) != 0 || !mayPlace(ext) || Safety.IsOverVoid(fork, ext.X, ext.Y, ext.Z)) continue;
-                    if (SupportFace(fork, ext, beyond, eye, reach) is not { } fx) continue;
-                    places.Add(new ExitMove(ExitKind.Place, ext, c, fx, Hidden: !Seen(fx, ext, eye)));
-                    fork.Set(ext, Blocks.Cobblestone);
-                }
-                if (places.Count > blocks || fall == bestFall && places.Count >= bestPlaces) continue;
-                // Walkable: from where I stand, down onto the new tread (a 1-block drop the follower takes).
-                if (!Pathfinder.FindPath(fork, c, new GoalBlock(to), WayHome.Walk).Success) continue;
-                best = new StairStep(c, to, places);
-                (bestFall, bestPlaces) = (fall, places.Count);
-            }
-            if (best != null && bestFall < c.Y - 1) break; // every cell from here on is higher: nothing lower to land on
+            search.From(c);
+            if (search.Best != null && search.BestFall < c.Y - 1) break; // every cell from here on is higher: nothing lower to land on
         }
-        if (best == null) return null;
+        if (search.Best is not { } best) return null;
         foreach (var p in best.Places) sim.Set(p.Target, Blocks.Cobblestone);
         blocks -= best.Places.Count;
         return best;
+    }
+
+    /// <summary>
+    /// The search for the best stair step over the reachable cells: the lowest landing first (each flight goes on down from its own
+    /// end), then the fewest blocks. Each candidate is tried on a fork of the simulated world (tread, support, overshoot guard).
+    /// </summary>
+    private sealed class StairSearch(PlanWorld sim, HashSet<BlockPos> reachable, Func<BlockPos, bool> mayPlace, double reach, int blocks)
+    {
+        public StairStep? Best;
+        public int BestFall = int.MaxValue;
+        private int _bestPlaces = int.MaxValue;
+
+        /// <summary>Every side of a cell standing on something.</summary>
+        public void From(BlockPos c)
+        {
+            var eye = new Vec3d(c.X + 0.5, c.Y + PlayerPhysics.EyeHeight, c.Z + 0.5);
+            foreach (var f in Sides) Consider(c, eye, f);
+        }
+
+        private void Consider(BlockPos c, Vec3d eye, BlockFace f)
+        {
+            var d = f.Normal();
+            var side = new BlockPos(c.X + d.X, c.Y, c.Z + d.Z); // the cell walked through (feet), then dropped from
+            var to = side.Down();                              // the next feet cell
+            var tread = to.Down();
+            if (!Landing(side, to, tread)) return;
+            int fall = to.Y;
+            if (fall > BestFall) return;
+            var places = new List<ExitMove>();
+            var fork = sim.Fork();
+            if (!PlaceTread(fork, c, tread, to, eye, places) || !GuardOvershoot(fork, c, to, f, eye, places)) return;
+            if (places.Count > blocks || fall == BestFall && places.Count >= _bestPlaces) return;
+            // Walkable: from where I stand, down onto the new tread (a 1-block drop the follower takes).
+            if (!Pathfinder.FindPath(fork, c, new GoalBlock(to), WayHome.Walk).Success) return;
+            Best = new StairStep(c, to, places);
+            (BestFall, _bestPlaces) = (fall, places.Count);
+        }
+
+        /// <summary>An open way through <paramref name="side"/> down to <paramref name="to"/>, not reached already, its tread never over
+        /// the void and the landing never beside it.</summary>
+        private bool Landing(BlockPos side, BlockPos to, BlockPos tread)
+        {
+            if (reachable.Contains(to) || !Open(sim, side) || !Open(sim, side.Up()) || !Open(sim, to)) return false;
+            if (!sim.IsLoaded(tread.X, tread.Z) || Safety.IsOverVoid(sim, tread.X, tread.Y, tread.Z)) return false;
+            return Safety.VoidNeighbourCount(sim, to.X, to.Y, to.Z) == 0;
+        }
+
+        /// <summary>The tread under the landing: there already, or placed against a solid face (a support under my own floor first
+        /// when it has none). False = it can't be.</summary>
+        private bool PlaceTread(PlanWorld fork, BlockPos c, BlockPos tread, BlockPos to, Vec3d eye, List<ExitMove> places)
+        {
+            if (BuildBlocks.Supports(fork.Get(tread))) return true;
+            if (fork.Get(tread) != 0 && !Aiming.IsReplaceable(fork, fork.Get(tread)) || !mayPlace(tread)) return false;
+            if ((SupportFace(fork, tread, to, eye, reach) ?? SupportUnderFloor(fork, c, tread, to, eye, places)) is not { } face) return false;
+            places.Add(new ExitMove(ExitKind.Place, tread, c, face, Hidden: !Seen(face, tread, eye)));
+            fork.Set(tread, Blocks.Cobblestone);
+            return true;
+        }
+
+        /// <summary>A support under my own floor (its bottom face, hidden), then the tread's face against it; null = none.</summary>
+        private BlockFace? SupportUnderFloor(PlanWorld fork, BlockPos c, BlockPos tread, BlockPos to, Vec3d eye, List<ExitMove> places)
+        {
+            var floor = c.Down();
+            var under = floor.Down();
+            if (fork.Get(under) != 0 || !mayPlace(under) || !InReach(eye, floor, BlockFace.Bottom, reach)) return null;
+            places.Add(new ExitMove(ExitKind.Place, under, c, BlockFace.Bottom, Hidden: true));
+            fork.Set(under, Blocks.Cobblestone);
+            return SupportFace(fork, tread, to, eye, reach);
+        }
+
+        /// <summary>The follower's overshoot guard: past the landing there must be footing or a wall, never a deadly drop (the tread
+        /// made two long when nothing is there: the next step turns or goes on from its end). False = it can't be guarded.</summary>
+        private bool GuardOvershoot(PlanWorld fork, BlockPos c, BlockPos to, BlockFace f, Vec3d eye, List<ExitMove> places)
+        {
+            var d = f.Normal();
+            var beyond = new BlockPos(to.X + d.X, to.Y, to.Z + d.Z);
+            if (!Open(fork, beyond) || !Safety.IsDeadlyColumn(fork, beyond.X, beyond.Y, beyond.Z, 3)) return true;
+            var ext = beyond.Down();
+            if (fork.Get(ext) != 0 || !mayPlace(ext) || Safety.IsOverVoid(fork, ext.X, ext.Y, ext.Z)) return false;
+            if (SupportFace(fork, ext, beyond, eye, reach) is not { } fx) return false;
+            places.Add(new ExitMove(ExitKind.Place, ext, c, fx, Hidden: !Seen(fx, ext, eye)));
+            fork.Set(ext, Blocks.Cobblestone);
+            return true;
+        }
     }
 
     /// <summary>A face of a solid neighbour of <paramref name="cell"/> (not the cell above it, where the feet go) within reach.</summary>

@@ -13,7 +13,9 @@ namespace MineClaw.Bot.Tests;
 /// </summary>
 public class BlueprintGoldenTests
 {
-    private const string Hut = """
+    // Line endings normalized: a CRLF checkout (core.autocrlf) puts "\r\n" in the raw literal, and the corpus edits below
+    // (Replace("size 5x4x5\n", "")) match on "\n" (the golden was generated from an LF checkout).
+    private static readonly string Hut = """
         blueprint small cobble hut
         size 5x4x5
         facing south
@@ -36,7 +38,7 @@ public class BlueprintGoldenTests
         PPPPP
         PPPPP
         PPPPP
-        """;
+        """.ReplaceLineEndings("\n");
 
     public static readonly string[] Corpus =
     [

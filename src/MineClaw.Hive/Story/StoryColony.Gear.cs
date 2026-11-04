@@ -207,59 +207,109 @@ public sealed partial class StoryColony
     public (JsonNode? Result, string? Error) MaterialRulesOp(JsonObject body)
     {
         if (World is not { } w) return (null, "no world view yet");
-        var d = w.Data;
         var op = Str(body["op"]) ?? "";
         lock (_lock)
         {
-            if (op == "remove")
-            {
-                var m = Str(body["material"]) ?? "";
-                int n = Meta.Gear.Rules.RemoveAll(r => r.Material.Equals(m, StringComparison.OrdinalIgnoreCase));
-                if (n > 0) { Touch(); _toolPlans.Clear(); WakeIdle(); }
-                return (new JsonObject { ["removed"] = n > 0 }, null);
-            }
+            if (op == "remove") return RemoveMaterialRule(Str(body["material"]) ?? "");
             if (op != "set") return (null, "op must be set|remove");
             if (body["rule"] is not JsonObject r) return (null, "rule required");
-            var material = Str(r["material"])?.Trim() ?? "";
-            var group = StoryTools.Groups.FirstOrDefault(g => g.Id == material);
-            int? block = group == null ? StoryTools.BlockOf(d, material) : null;
-            if (group == null && block == null) return (null, $"unknown material '{material}'");
-            if (block is { } bid) material = d.Block(bid).Name;
-            var members = group != null ? group.Members.Where(d.BlockExists).ToList() : [block!.Value];
-            var tool = Str(r["tool"]);
-            ToolType? kind = tool == null ? null : StoryTools.Kind(tool);
-            if (tool != null && kind == null) return (null, $"tool must be {string.Join("|", StoryTools.Kinds)}");
-            var tier = Str(r["tier"]);
-            int level = StoryTools.Level(tier);
-            if (tier != null && level < 0) return (null, $"tier must be {string.Join("|", StoryTools.Tiers)}");
-            var enchant = Str(r["enchant"]);
-            if (enchant != null && !StoryTools.Enchants.Contains(enchant)) return (null, $"enchant must be {string.Join("|", StoryTools.Enchants)}");
-            if (enchant != null && w.Version == "b1.8.1") return (null, "b1.8.1 has no enchantments");
-            var fallback = Str(r["fallback"]) ?? "plain";
-            if (fallback is not ("plain" or "wait")) return (null, "fallback must be plain|wait");
-            // The floor: never below what the material needs to drop anything (a group: its lowest member's; each member keeps its own).
-            int floor = members.Select(m => StoryTools.For(d, m).Floor).DefaultIfEmpty(-1).Min();
-            if (level >= 0 && level < floor)
-            {
-                var first = members.First(m => StoryTools.For(d, m).Floor == floor);
-                return (null, $"{(group != null ? group.Label.ToLowerInvariant() : material)} needs at least {StoryTools.Describe(StoryTools.For(d, first).Kind, floor)}");
-            }
-            foreach (var m in members)
-            {
-                var need = StoryTools.For(d, m);
-                if (need.Hand || kind is not { } k) continue;
-                int lv = Math.Max(Math.Max(level, need.Floor), 0);
-                if (StoryTools.ItemFor(k, lv) is not { } id || !d.ItemExists(id) || !d.CanHarvest(m, id))
-                    return (null, $"{StoryTools.Describe(k, lv)} can't harvest {d.Block(m).Name} (it needs {need.Text})");
-            }
-            var rule = new MaterialRule { Material = material, Tool = kind is { } kk ? StoryTools.KindName(kk) : null, Tier = StoryTools.TierName(level), Enchant = enchant, Fallback = fallback };
-            Meta.Gear.Rules.RemoveAll(x => x.Material.Equals(material, StringComparison.OrdinalIgnoreCase));
-            Meta.Gear.Rules.Add(rule);
+            var (rule, err) = ParseMaterialRule(w, r);
+            if (err != null) return (null, err);
+            Meta.Gear.Rules.RemoveAll(x => x.Material.Equals(rule!.Material, StringComparison.OrdinalIgnoreCase));
+            Meta.Gear.Rules.Add(rule!);
             Touch();
             _toolPlans.Clear();
             WakeIdle();
-            return (new JsonObject { ["rule"] = RuleJson(d, rule) }, null);
+            return (new JsonObject { ["rule"] = RuleJson(w.Data, rule!) }, null);
         }
+    }
+
+    private (JsonNode? Result, string? Error) RemoveMaterialRule(string material)
+    {
+        int n = Meta.Gear.Rules.RemoveAll(r => r.Material.Equals(material, StringComparison.OrdinalIgnoreCase));
+        if (n > 0) { Touch(); _toolPlans.Clear(); WakeIdle(); }
+        return (new JsonObject { ["removed"] = n > 0 }, null);
+    }
+
+    /// <summary>What a rule is for: a material group or one block (its name), the blocks it covers, and how an answer names it.</summary>
+    private sealed record RuleTarget(string Material, List<int> Members, string Label);
+
+    /// <summary>A rule as the browser sent it, checked in order: material, tool, tier, enchant, fallback, then what can harvest it.</summary>
+    private static (MaterialRule? Rule, string? Error) ParseMaterialRule(IStoryWorld w, JsonObject r)
+    {
+        var d = w.Data;
+        var (target, err) = RuleTargetOf(d, Str(r["material"])?.Trim() ?? "");
+        if (err != null) return (null, err);
+        var (kind, level, toolErr) = RuleToolOf(r);
+        if (toolErr != null) return (null, toolErr);
+        var (enchant, fallback, restErr) = RuleRestOf(w, r);
+        if (restErr != null) return (null, restErr);
+        if (RuleHarvestError(d, target!, kind, level) is { } harvestErr) return (null, harvestErr);
+        return (new MaterialRule
+        {
+            Material = target!.Material, Tool = kind is { } kk ? StoryTools.KindName(kk) : null, Tier = StoryTools.TierName(level), Enchant = enchant,
+            Fallback = fallback,
+        }, null);
+    }
+
+    private static (RuleTarget? Target, string? Error) RuleTargetOf(IGameData d, string material)
+    {
+        var group = StoryTools.Groups.FirstOrDefault(g => g.Id == material);
+        int? block = group == null ? StoryTools.BlockOf(d, material) : null;
+        if (group == null && block == null) return (null, $"unknown material '{material}'");
+        if (block is { } bid) material = d.Block(bid).Name;
+        List<int> members = group != null ? group.Members.Where(d.BlockExists).ToList() : [block!.Value];
+        return (new RuleTarget(material, members, group != null ? group.Label.ToLowerInvariant() : material), null);
+    }
+
+    /// <summary>The rule's tool kind (null = any) and tier level (−1 = any).</summary>
+    private static (ToolType? Kind, int Level, string? Error) RuleToolOf(JsonObject r)
+    {
+        var tool = Str(r["tool"]);
+        ToolType? kind = tool == null ? null : StoryTools.Kind(tool);
+        if (tool != null && kind == null) return (null, -1, $"tool must be {string.Join("|", StoryTools.Kinds)}");
+        var tier = Str(r["tier"]);
+        int level = StoryTools.Level(tier);
+        if (tier != null && level < 0) return (null, -1, $"tier must be {string.Join("|", StoryTools.Tiers)}");
+        return (kind, level, null);
+    }
+
+    /// <summary>The rule's enchantment (b1.8.1 has none) and its fallback when no such tool is there (plain | wait).</summary>
+    private static (string? Enchant, string Fallback, string? Error) RuleRestOf(IStoryWorld w, JsonObject r)
+    {
+        var enchant = Str(r["enchant"]);
+        if (enchant != null && !StoryTools.Enchants.Contains(enchant)) return (null, "", $"enchant must be {string.Join("|", StoryTools.Enchants)}");
+        if (enchant != null && w.Version == "b1.8.1") return (null, "", "b1.8.1 has no enchantments");
+        var fallback = Str(r["fallback"]) ?? "plain";
+        if (fallback is not ("plain" or "wait")) return (null, "", "fallback must be plain|wait");
+        return (enchant, fallback, null);
+    }
+
+    /// <summary>
+    /// The floor: never below what the material needs to drop anything (a group: its lowest member's; each member keeps its own); and
+    /// the rule's tool must harvest every member.
+    /// </summary>
+    private static string? RuleHarvestError(IGameData d, RuleTarget target, ToolType? kind, int level)
+    {
+        int floor = target.Members.Select(m => StoryTools.For(d, m).Floor).DefaultIfEmpty(-1).Min();
+        if (level >= 0 && level < floor)
+        {
+            var first = target.Members.First(m => StoryTools.For(d, m).Floor == floor);
+            return $"{target.Label} needs at least {StoryTools.Describe(StoryTools.For(d, first).Kind, floor)}";
+        }
+        foreach (var m in target.Members)
+            if (MemberHarvestError(d, m, kind, level) is { } err) return err;
+        return null;
+    }
+
+    private static string? MemberHarvestError(IGameData d, int m, ToolType? kind, int level)
+    {
+        var need = StoryTools.For(d, m);
+        if (need.Hand || kind is not { } k) return null;
+        int lv = Math.Max(Math.Max(level, need.Floor), 0);
+        if (StoryTools.ItemFor(k, lv) is not { } id || !d.ItemExists(id) || !d.CanHarvest(m, id))
+            return $"{StoryTools.Describe(k, lv)} can't harvest {d.Block(m).Name} (it needs {need.Text})";
+        return null;
     }
 
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
@@ -639,50 +689,84 @@ public sealed partial class StoryColony
     {
         foreach (var k in _toolWants.Where(kv => Now - kv.Value >= ToolWantTtl).Select(kv => kv.Key).ToList()) _toolWants.Remove(k);
         var g = Meta.Gear;
-        var d = w.Data;
+        NoteToolWants(g, hasTable);
+        if (!g.AutoCraftTools || !hasTable) return pool;
+        foreach (var ask in ToolAsks(g)) pool = CraftToolAsk(w.Data, g, ask, pool, reserved, wants);
+        return pool;
+    }
+
+    /// <summary>Each wanted tool's wait says, to begin with, why nothing is made for it (the craft step below says better).</summary>
+    private void NoteToolWants(GearSettings g, bool hasTable)
+    {
         _toolWantNote.Clear();
         foreach (var ((kind, lvl), _) in _toolWants)
             _toolWantNote[$"needs {StoryTools.Describe(kind, lvl)}"] = !g.AutoCraftTools ? "auto-crafting tools is off" : !hasTable ? "no crafting table for it" : "no materials for it";
-        if (!g.AutoCraftTools || !hasTable) return pool;
+    }
+
+    /// <summary>The tools to have: one of each a waiting job needs, then the spares kept per kind.</summary>
+    private List<(ToolType Kind, int Level, int N, bool Spare)> ToolAsks(GearSettings g)
+    {
         var asks = new List<(ToolType Kind, int Level, int N, bool Spare)>();
         foreach (var ((kind, lvl), _) in _toolWants) asks.Add((kind, lvl, 1, false));
         if (g.SpareCount > 0)
             foreach (var k in g.SpareKinds)
                 if (StoryTools.Kind(k) is { } kk) asks.Add((kk, 0, g.SpareCount, true));
-        foreach (var (kind, lvl, n, spare) in asks)
+        return asks;
+    }
+
+    /// <summary>One asked-for tool the colony lacks: an auto bill for it at the lowest level the stock makes (the pool after it).</summary>
+    private Dictionary<(int Id, int Meta), int> CraftToolAsk(IGameData d, GearSettings g, (ToolType Kind, int Level, int N, bool Spare) ask,
+        Dictionary<(int Id, int Meta), int> pool, Dictionary<(int Id, int Meta), int> reserved, List<Want> wants)
+    {
+        var (kind, lvl, n, spare) = ask;
+        int missing = n - ToolStock(d, kind, lvl);
+        var noteKey = $"needs {StoryTools.Describe(kind, lvl)}";
+        if (missing <= 0) return pool;
+        int[] levels = spare ? [2, 1, 0] : lvl == 0 ? [1, 0] : [lvl];
+        if (!spare) NoteToolShort(d, g, kind, levels[^1], noteKey, pool);
+        foreach (var level in levels)
         {
-            int have = Storages.Sum(s => s.Contents.Where(c => StoryTools.ToolOf(d, c.Id) == kind && StoryTools.LevelOf(d, c.Id) >= lvl && !StoryTools.Worn(d, c.Id, c.Meta)).Sum(c => c.Count));
-            // All the colony's stock: storage and every pawn's pocket (a pocketed pickaxe counts; live 11-04: one pawn held 13).
-            foreach (var pn in Pawns.Keys)
-                    have += GearOf(Host.Live(pn)).Count(x => x.Slot >= 9 && StoryTools.ToolOf(d, x.Id) == kind && StoryTools.LevelOf(d, x.Id) >= lvl && !StoryTools.Worn(d, x.Id, x.Meta));
-            int missing = n - have;
-            var noteKey = $"needs {StoryTools.Describe(kind, lvl)}";
-            if (missing <= 0) continue;
-            int[] levels = spare ? [2, 1, 0] : lvl == 0 ? [1, 0] : [lvl];
-            if (!spare && StoryTools.ItemFor(kind, levels[^1]) is { } want && d.ItemExists(want))
-            {
-                // Why it can't be made, said with the wait: the raw material it is short of (or its bill was cancelled).
-                var plan = PlanFor((want, 0), 1, pool);
-                _toolWantNote[noteKey] = g.NoCraft.Contains(d.Item(want).Name) ? "its auto bill was cancelled"
-                    : plan.Missing.Count > 0 ? $"no {string.Join(", ", plan.Missing.Select(m => d.DisplayName(m.Id, Math.Max(0, m.Damage)).ToLowerInvariant()))} for it"
-                    : "no materials for it";
-            }
-            foreach (var level in levels)
-            {
-                if (StoryTools.ItemFor(kind, level) is not { } id || !d.ItemExists(id)) continue;
-                var name = d.Item(id).Name;
-                if (g.NoCraft.Contains(name)) continue;
-                if (Feasible((id, 0), missing, pool) is not { } f || f.Plan.Steps.Any(s => s.IsSmelt)) continue; // never smelted for (iron only from ingots)
-                foreach (var u in f.Plan.Used) Reserve(reserved, (u.Id, u.Damage), u.Count);
-                pool = f.After;
-                int step = 0;
-                foreach (var s in f.Plan.Steps)
-                    if (RecipeOf(d, s, intermediate: (s.Recipe?.OutputId ?? -1) != id) is { } r) wants.Add(new Want(ToolsTag, -1, name, r, s.OutputCount, step++, "crafting_table"));
-                if (!spare) _toolWantNote[noteKey] = "crafting one";
-                break;
-            }
+            if (ToolBill(d, g, kind, level, missing, pool, reserved, wants) is not { } after) continue;
+            if (!spare) _toolWantNote[noteKey] = "crafting one";
+            return after;
         }
         return pool;
+    }
+
+    /// <summary>All the colony's fresh tools of a kind at a level or better: storage and every pawn's pocket (a pocketed pickaxe counts;
+    /// live 11-04: one pawn held 13).</summary>
+    private int ToolStock(IGameData d, ToolType kind, int lvl)
+    {
+        int have = Storages.Sum(s => s.Contents.Where(c => StoryTools.ToolOf(d, c.Id) == kind && StoryTools.LevelOf(d, c.Id) >= lvl && !StoryTools.Worn(d, c.Id, c.Meta)).Sum(c => c.Count));
+        foreach (var pn in Pawns.Keys)
+            have += GearOf(Host.Live(pn)).Count(x => x.Slot >= 9 && StoryTools.ToolOf(d, x.Id) == kind && StoryTools.LevelOf(d, x.Id) >= lvl && !StoryTools.Worn(d, x.Id, x.Meta));
+        return have;
+    }
+
+    /// <summary>Why it can't be made, said with the wait: the raw material it is short of (or its bill was cancelled).</summary>
+    private void NoteToolShort(IGameData d, GearSettings g, ToolType kind, int level, string noteKey, Dictionary<(int Id, int Meta), int> pool)
+    {
+        if (StoryTools.ItemFor(kind, level) is not { } want || !d.ItemExists(want)) return;
+        var plan = PlanFor((want, 0), 1, pool);
+        _toolWantNote[noteKey] = g.NoCraft.Contains(d.Item(want).Name) ? "its auto bill was cancelled"
+            : plan.Missing.Count > 0 ? $"no {string.Join(", ", plan.Missing.Select(m => d.DisplayName(m.Id, Math.Max(0, m.Damage)).ToLowerInvariant()))} for it"
+            : "no materials for it";
+    }
+
+    /// <summary>The tool's auto bills when the pool makes <paramref name="missing"/> of it with no smelting (iron only from ingots):
+    /// their materials reserved, the pool after them returned; null = not this level.</summary>
+    private Dictionary<(int Id, int Meta), int>? ToolBill(IGameData d, GearSettings g, ToolType kind, int level, int missing, Dictionary<(int Id, int Meta), int> pool,
+        Dictionary<(int Id, int Meta), int> reserved, List<Want> wants)
+    {
+        if (StoryTools.ItemFor(kind, level) is not { } id || !d.ItemExists(id)) return null;
+        var name = d.Item(id).Name;
+        if (g.NoCraft.Contains(name)) return null;
+        if (Feasible((id, 0), missing, pool) is not { } f || f.Plan.Steps.Any(s => s.IsSmelt)) return null; // never smelted for (iron only from ingots)
+        foreach (var u in f.Plan.Used) Reserve(reserved, (u.Id, u.Damage), u.Count);
+        int step = 0;
+        foreach (var s in f.Plan.Steps)
+            if (RecipeOf(d, s, intermediate: (s.Recipe?.OutputId ?? -1) != id) is { } r) wants.Add(new Want(ToolsTag, -1, name, r, s.OutputCount, step++, "crafting_table"));
+        return f.After;
     }
 
     /// <summary>The owner cancelled a tool's auto bill: that tool isn't made by itself again (until the owner turns it back on by
@@ -1106,15 +1190,41 @@ public sealed partial class StoryColony
         var claims = GearClaims();
         var t = new GearTask { Id = NextId("g"), Op = "policy", Label = "gearing up" };
         var from = live.Block;
-        // What it carries beyond its policy goes back first: colony stock other pawns can take (live 11-04: one pawn held 13 stone
-        // pickaxes, crafted for spares and kept as its "own tools").
-        if (ExtrasOf(p, live, from) is { Count: > 0 } extras)
-        {
-            t.Extras.AddRange(extras);
-            t.Label = "returning extra gear";
-            gear = gear.Where(g => !extras.Any(x => x.Id == g.Id)).Concat(gear.Where(g => extras.Any(x => x.Id == g.Id))
-                .GroupBy(g => g.Id).SelectMany(grp => grp.OrderBy(g => g.Meta).Take(extras.First(x => x.Id == grp.Key).Keep))).ToList();
-        }
+        gear = KeepUpExtras(p, live, t, gear, from);
+        KeepUpTools(p, d, gear, t, from, claims);
+        KeepUpWeapon(pol, d, gear, t, from, claims);
+        KeepUpArmor(p, pol, d, gear, t, from, claims);
+        KeepUpFood(pol, w, live, t, from, claims);
+        if (NothingToGear(t)) return null;
+        _policyTasks[p.Name] = t;
+        return TaskJob(p, t, "policy");
+    }
+
+    private static bool NothingToGear(GearTask t) => t.Fetch.Count == 0 && t.Wear.Count == 0 && !t.Unwear && t.Store.Count == 0 && t.Extras.Count == 0;
+
+    /// <summary>A stored unit the policy fetches: claimed (no other plan counts it), one of it fetched.</summary>
+    private static void KeepUpFetch(Dictionary<(P3 Chest, int Id, int Meta), int> claims, GearTask t, Unit u)
+    {
+        claims[(u.Store.Chest, u.Id, u.Meta)] = claims.GetValueOrDefault((u.Store.Chest, u.Id, u.Meta)) + 1;
+        t.Fetch.Add(new GearFetch(u.Store.Chest, u.Id, u.Meta, 1, EnchWish(u.Ench)));
+    }
+
+    /// <summary>
+    /// What it carries beyond its policy goes back first: colony stock other pawns can take (live 11-04: one pawn held 13 stone pickaxes,
+    /// crafted for spares and kept as its "own tools"). The gear the rest of the check sees: what stays.
+    /// </summary>
+    private List<GearSlot> KeepUpExtras(PawnState p, PawnLive live, GearTask t, List<GearSlot> gear, P3 from)
+    {
+        if (ExtrasOf(p, live, from) is not { Count: > 0 } extras) return gear;
+        t.Extras.AddRange(extras);
+        t.Label = "returning extra gear";
+        return gear.Where(g => !extras.Any(x => x.Id == g.Id)).Concat(gear.Where(g => extras.Any(x => x.Id == g.Id))
+            .GroupBy(g => g.Id).SelectMany(grp => grp.OrderBy(g => g.Meta).Take(extras.First(x => x.Id == grp.Key).Keep))).ToList();
+    }
+
+    /// <summary>Each tool kind its work needs that it lacks (or only has worn): the best fresh one stored; the worn one goes back.</summary>
+    private void KeepUpTools(PawnState p, IGameData d, List<GearSlot> gear, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
         foreach (var kind in KindsFor(p))
         {
             var mine = gear.Where(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind).ToList();
@@ -1122,50 +1232,61 @@ public sealed partial class StoryColony
             var best = StoredUnits((id, meta) => StoryTools.ToolOf(d, id) == kind && !StoryTools.Worn(d, id, meta), from, claims)
                 .OrderBy(u => u.Ench is { Count: > 0 } ? 1 : 0).ThenByDescending(u => StoryTools.LevelOf(d, u.Id)).ThenBy(u => u.Meta).FirstOrDefault();
             if (best == null) continue;
-            claims[(best.Store.Chest, best.Id, best.Meta)] = claims.GetValueOrDefault((best.Store.Chest, best.Id, best.Meta)) + 1;
-            t.Fetch.Add(new GearFetch(best.Store.Chest, best.Id, best.Meta, 1, EnchWish(best.Ench)));
+            KeepUpFetch(claims, t, best);
             // The worn one goes back to storage (a worn tool never breaks mid-job while a fresh one is around).
             foreach (var old in mine)
                 if (BestChest(old.Id, old.Meta, from) is { } st) t.Store.Add(new GearPut(st.Chest, old.Id, old.Meta, 1, old.Ench?.ToDictionary(e => e.Key, e => e.Value)));
         }
-        if (pol.Weapon != "none" && !gear.Any(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pol.Weapon) > 0 && !StoryTools.Worn(d, g.Id, g.Meta)))
-            if (StoredUnits((id, meta) => StoryTools.WeaponScore(d, id, pol.Weapon) > 0 && !StoryTools.Worn(d, id, meta), from, claims)
-                    .OrderByDescending(u => StoryTools.WeaponScore(d, u.Id, pol.Weapon)).FirstOrDefault() is { } wu && (pol.Weapon == "best" || StoryTools.WeaponScore(d, wu.Id, pol.Weapon) >= 200))
-            {
-                claims[(wu.Store.Chest, wu.Id, wu.Meta)] = claims.GetValueOrDefault((wu.Store.Chest, wu.Id, wu.Meta)) + 1;
-                t.Fetch.Add(new GearFetch(wu.Store.Chest, wu.Id, wu.Meta, 1, EnchWish(wu.Ench)));
-            }
+    }
+
+    /// <summary>No fresh weapon of its policy's kind carried: the best stored one (a "best" policy takes any; the others a real one).</summary>
+    private void KeepUpWeapon(GearPolicy pol, IGameData d, List<GearSlot> gear, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
+        if (pol.Weapon == "none" || gear.Any(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pol.Weapon) > 0 && !StoryTools.Worn(d, g.Id, g.Meta))) return;
+        if (StoredUnits((id, meta) => StoryTools.WeaponScore(d, id, pol.Weapon) > 0 && !StoryTools.Worn(d, id, meta), from, claims)
+                .OrderByDescending(u => StoryTools.WeaponScore(d, u.Id, pol.Weapon)).FirstOrDefault() is not { } wu
+            || pol.Weapon != "best" && StoryTools.WeaponScore(d, wu.Id, pol.Weapon) < 200) return;
+        KeepUpFetch(claims, t, wu);
+    }
+
+    /// <summary>Armour on now (always, or at night by a night policy), else off when it shouldn't be worn (kept in the bag).</summary>
+    private void KeepUpArmor(PawnState p, GearPolicy pol, IGameData d, List<GearSlot> gear, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
         bool night = HourNow is >= 13 and <= 22; // dusk..dawn (hour 0 = 06:00)
         bool wearNow = pol.Armor == "always" || pol.Armor == "night" && night;
         var worn = gear.Where(g => g.Slot is >= 5 and <= 8).ToList();
-        if (wearNow)
+        if (wearNow) KeepUpWear(d, gear, worn, t, from, claims);
+        else if (worn.Count > 0 && (pol.Armor is "none" or "night") && !p.Gear.DraftArmor) t.Unwear = true; // not now: off, kept in the bag
+    }
+
+    private static readonly string[] ArmorSlotOrder = ["head", "chest", "legs", "feet"];
+
+    /// <summary>Each armour slot it doesn't wear: its best piece in the bag, else the best stored one, fetched.</summary>
+    private void KeepUpWear(IGameData d, List<GearSlot> gear, List<GearSlot> worn, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
+        foreach (var slot in ArmorSlotOrder)
         {
-            foreach (var slot in new[] { "head", "chest", "legs", "feet" })
+            if (worn.Any(g => StoryTools.ArmorSlot(g.Id) == slot)) continue;
+            if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } bag)
+                t.Wear.Add(ItemName(bag.Id, bag.Meta));
+            else if (StoredUnits((id, meta) => StoryTools.ArmorSlot(id) == slot && !StoryTools.Worn(d, id, meta), from, claims)
+                         .OrderByDescending(u => StoryTools.ArmorRank(u.Id)).FirstOrDefault() is { } au)
             {
-                if (worn.Any(g => StoryTools.ArmorSlot(g.Id) == slot)) continue;
-                if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } bag)
-                    t.Wear.Add(ItemName(bag.Id, bag.Meta));
-                else if (StoredUnits((id, meta) => StoryTools.ArmorSlot(id) == slot && !StoryTools.Worn(d, id, meta), from, claims)
-                             .OrderByDescending(u => StoryTools.ArmorRank(u.Id)).FirstOrDefault() is { } au)
-                {
-                    claims[(au.Store.Chest, au.Id, au.Meta)] = claims.GetValueOrDefault((au.Store.Chest, au.Id, au.Meta)) + 1;
-                    t.Fetch.Add(new GearFetch(au.Store.Chest, au.Id, au.Meta, 1, EnchWish(au.Ench)));
-                    t.Wear.Add(ItemName(au.Id, au.Meta));
-                }
+                KeepUpFetch(claims, t, au);
+                t.Wear.Add(ItemName(au.Id, au.Meta));
             }
         }
-        else if (worn.Count > 0 && (pol.Armor is "none" or "night") && !p.Gear.DraftArmor) t.Unwear = true; // not now: off, kept in the bag
-        if (pol.Food > 0 && w.Data is { } fd)
-        {
-            int food = live.Inventory.Where(s => fd.Food(s.Id, s.Meta) != null && !Raw(w, s.Id)).Sum(s => s.Count);
-            if (food * 2 < pol.Food
-                && StoredUnits((id, meta) => fd.Food(id, meta) != null && !Raw(w, id), from, claims).Take(pol.Food - food).ToList() is { Count: > 0 } fu)
-                foreach (var g in fu.GroupBy(u => (u.Store.Chest, u.Id, u.Meta)))
-                    t.Fetch.Add(new GearFetch(g.Key.Chest, g.Key.Id, g.Key.Meta, g.Count(), null));
-        }
-        if (t.Fetch.Count == 0 && t.Wear.Count == 0 && !t.Unwear && t.Store.Count == 0 && t.Extras.Count == 0) return null;
-        _policyTasks[p.Name] = t;
-        return TaskJob(p, t, "policy");
+    }
+
+    /// <summary>Less than half its policy's food carried: stored food up to the policy's amount.</summary>
+    private void KeepUpFood(GearPolicy pol, IStoryWorld w, PawnLive live, GearTask t, P3 from, Dictionary<(P3 Chest, int Id, int Meta), int> claims)
+    {
+        if (pol.Food <= 0 || w.Data is not { } fd) return;
+        int food = live.Inventory.Where(s => fd.Food(s.Id, s.Meta) != null && !Raw(w, s.Id)).Sum(s => s.Count);
+        if (food * 2 >= pol.Food
+            || StoredUnits((id, meta) => fd.Food(id, meta) != null && !Raw(w, id), from, claims).Take(pol.Food - food).ToList() is not { Count: > 0 } fu) return;
+        foreach (var g in fu.GroupBy(u => (u.Store.Chest, u.Id, u.Meta)))
+            t.Fetch.Add(new GearFetch(g.Key.Chest, g.Key.Id, g.Key.Meta, g.Count(), null));
     }
 
     /// <summary>
@@ -1180,33 +1301,48 @@ public sealed partial class StoryColony
         var pol = PolicyOf(p);
         var gear = GearOf(live);
         foreach (var g in gear.Where(g => g.Slot is >= 5 and <= 8)) keep.Add(g);
-        var kinds = KindsFor(p);
-        foreach (var r in Meta.Gear.Rules) if (StoryTools.Kind(r.Tool) is { } rk) kinds.Add(rk);
-        if (_current.TryGetValue(p.Name, out var cur) && cur.Json["tool"] is JsonValue tv && tv.TryGetValue<string>(out var tn)
-            && d.ItemByName(tn) is { } ti && StoryTools.ToolOf(d, ti.Id) is var tk and not ToolType.None) kinds.Add(tk);
+        var kinds = KeptToolKinds(p, d);
         bool marked = Meta.Gear.Rules.Any(r => r.Enchant != null);
-        foreach (var kind in kinds)
-        {
-            var mine = gear.Where(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind)
-                .OrderBy(g => StoryTools.Worn(d, g.Id, g.Meta) ? 1 : 0).ThenByDescending(g => StoryTools.LevelOf(d, g.Id)).ThenBy(g => g.Enchanted ? 0 : 1)
-                .ThenBy(g => g.Meta).ToList();
-            if (mine.Count == 0) continue;
-            keep.Add(mine[0]);
-            if (marked && mine[0].Enchanted && mine.FirstOrDefault(g => !g.Enchanted && !StoryTools.Worn(d, g.Id, g.Meta)) is { } plain) keep.Add(plain);
-            if (pol.Spare && mine.Skip(1).FirstOrDefault(g => !keep.Contains(g) && !StoryTools.Worn(d, g.Id, g.Meta)) is { } spareOne) keep.Add(spareOne);
-        }
+        foreach (var kind in kinds) KeepTools(d, pol, gear, kind, marked, keep);
         var pref = pol.Weapon is "none" ? "best" : pol.Weapon;
         if (gear.Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0 && StoryTools.ToolOf(d, g.Id) != ToolType.Axe)
                 .OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref)).ThenBy(g => g.Meta).FirstOrDefault() is { } weapon) keep.Add(weapon);
         if (pol.Armor != "none")
-            foreach (var slot in new[] { "head", "chest", "legs", "feet" })
-            {
-                if (gear.Any(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot)) continue;
-                if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } a)
-                    keep.Add(a);
-            }
+            foreach (var slot in ArmorSlotOrder)
+                if (BagArmorFor(gear, slot) is { } a) keep.Add(a);
         return keep;
     }
+
+    /// <summary>The tool kinds a pawn keeps one of: its work's (by policy), every material rule's, and the one its job uses now.</summary>
+    private HashSet<ToolType> KeptToolKinds(PawnState p, IGameData d)
+    {
+        var kinds = KindsFor(p);
+        foreach (var r in Meta.Gear.Rules) if (StoryTools.Kind(r.Tool) is { } rk) kinds.Add(rk);
+        if (CurrentJobTool(p, d) is { } tk) kinds.Add(tk);
+        return kinds;
+    }
+
+    /// <summary>The kind of the tool the pawn's current job names (null = none, or not a tool).</summary>
+    private ToolType? CurrentJobTool(PawnState p, IGameData d) =>
+        _current.TryGetValue(p.Name, out var cur) && cur.Json["tool"] is JsonValue tv && tv.TryGetValue<string>(out var tn)
+        && d.ItemByName(tn) is { } ti && StoryTools.ToolOf(d, ti.Id) is var tk and not ToolType.None ? tk : null;
+
+    /// <summary>Of one tool kind: the best fresh one, a plain one beside an enchanted one (a rule marks a material), a spare by policy.</summary>
+    private static void KeepTools(IGameData d, GearPolicy pol, List<GearSlot> gear, ToolType kind, bool marked, HashSet<GearSlot> keep)
+    {
+        var mine = gear.Where(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind)
+            .OrderBy(g => StoryTools.Worn(d, g.Id, g.Meta) ? 1 : 0).ThenByDescending(g => StoryTools.LevelOf(d, g.Id)).ThenBy(g => g.Enchanted ? 0 : 1)
+            .ThenBy(g => g.Meta).ToList();
+        if (mine.Count == 0) return;
+        keep.Add(mine[0]);
+        if (marked && mine[0].Enchanted && mine.FirstOrDefault(g => !g.Enchanted && !StoryTools.Worn(d, g.Id, g.Meta)) is { } plain) keep.Add(plain);
+        if (pol.Spare && mine.Skip(1).FirstOrDefault(g => !keep.Contains(g) && !StoryTools.Worn(d, g.Id, g.Meta)) is { } spareOne) keep.Add(spareOne);
+    }
+
+    /// <summary>For an armour slot nothing is worn in: the best piece in the bag for it (null = one is worn, or the bag has none).</summary>
+    private static GearSlot? BagArmorFor(List<GearSlot> gear, string slot) =>
+        gear.Any(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot) ? null
+            : gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault();
 
     /// <summary>The pawn's extra gear (see <see cref="KeepOf"/>), per item: how many go into which chest and how many of it stay.</summary>
     internal List<GearKeep> ExtrasOf(PawnState p, PawnLive live, P3 from)
@@ -1265,40 +1401,48 @@ public sealed partial class StoryColony
         p.Gear.Tasks.RemoveAll(t => t.Op is "draft" or "restore");
         var pol = PolicyOf(p);
         var gear = GearOf(live);
-        if (drafted)
-        {
-            var t = new GearTask { Id = NextId("g"), Op = "draft", Label = "arming for the draft" };
-            var pref = pol.Weapon == "none" ? "best" : pol.Weapon;
-            var weapon = gear.Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0 && g.Id != 261).OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref))
-                .ThenBy(g => g.Meta).FirstOrDefault();
-            var heldName = live.Held;
-            p.Gear.RestoreHeld = heldName != null && (weapon == null || heldName != ItemName(weapon.Id, weapon.Meta)) ? heldName : null;
-            if (weapon != null && heldName != ItemName(weapon.Id, weapon.Meta)) { t.Hold = ItemName(weapon.Id, weapon.Meta); t.HoldEnch = weapon.Enchanted ? "any" : "none"; }
-            bool night = HourNow >= 13 && HourNow <= 22;
-            if (pol.Armor is "drafted" or "always" || pol.Armor == "night" && night)
-            {
-                foreach (var slot in new[] { "head", "chest", "legs", "feet" })
-                {
-                    if (gear.Any(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot)) continue;
-                    if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } a)
-                        t.Wear.Add(ItemName(a.Id, a.Meta));
-                }
-                p.Gear.DraftArmor = t.Wear.Count > 0 && pol.Armor == "drafted";
-            }
-            if (t.Hold != null || t.Wear.Count > 0) p.Gear.Tasks.Insert(0, t);
-        }
-        else
-        {
-            var t = new GearTask { Id = NextId("g"), Op = "restore", Label = "putting the weapon away" };
-            if (p.Gear.RestoreHeld is { } back && live.Inventory.Any(s => ItemName(s.Id, s.Meta) == back)) t.Hold = back;
-            if (p.Gear.DraftArmor && pol.Armor != "always") t.Unwear = true;
-            p.Gear.RestoreHeld = null;
-            p.Gear.DraftArmor = false;
-            p.Gear.Post = null;
-            RevokePermits(p);
-            if (t.Hold != null || t.Unwear) p.Gear.Tasks.Insert(0, t);
-        }
+        if (drafted) ArmForDraft(p, d, live, pol, gear);
+        else StandDown(p, live, pol);
         p.Rev = Touch();
+    }
+
+    /// <summary>Drafted: its best weapon in hand (what it held remembered), its armour on when the policy says so.</summary>
+    private void ArmForDraft(PawnState p, IGameData d, PawnLive live, GearPolicy pol, List<GearSlot> gear)
+    {
+        var t = new GearTask { Id = NextId("g"), Op = "draft", Label = "arming for the draft" };
+        DraftWeapon(p, d, live, pol, gear, t);
+        bool night = HourNow >= 13 && HourNow <= 22;
+        if (pol.Armor is "drafted" or "always" || pol.Armor == "night" && night)
+        {
+            foreach (var slot in ArmorSlotOrder)
+                if (BagArmorFor(gear, slot) is { } a) t.Wear.Add(ItemName(a.Id, a.Meta));
+            p.Gear.DraftArmor = t.Wear.Count > 0 && pol.Armor == "drafted";
+        }
+        if (t.Hold != null || t.Wear.Count > 0) p.Gear.Tasks.Insert(0, t);
+    }
+
+    private void DraftWeapon(PawnState p, IGameData d, PawnLive live, GearPolicy pol, List<GearSlot> gear, GearTask t)
+    {
+        var pref = pol.Weapon == "none" ? "best" : pol.Weapon;
+        var weapon = gear.Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0 && g.Id != 261).OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref))
+            .ThenBy(g => g.Meta).FirstOrDefault();
+        var heldName = live.Held;
+        p.Gear.RestoreHeld = heldName != null && (weapon == null || heldName != ItemName(weapon.Id, weapon.Meta)) ? heldName : null;
+        if (weapon != null && heldName != ItemName(weapon.Id, weapon.Meta)) { t.Hold = ItemName(weapon.Id, weapon.Meta); t.HoldEnch = weapon.Enchanted ? "any" : "none"; }
+    }
+
+    /// <summary>Undrafted: the old item back in the hand, the draft's armour off again (unless the policy says always), the post and any
+    /// player permits gone.</summary>
+    private void StandDown(PawnState p, PawnLive live, GearPolicy pol)
+    {
+        var t = new GearTask { Id = NextId("g"), Op = "restore", Label = "putting the weapon away" };
+        if (p.Gear.RestoreHeld is { } back && live.Inventory.Any(s => ItemName(s.Id, s.Meta) == back)) t.Hold = back;
+        if (p.Gear.DraftArmor && pol.Armor != "always") t.Unwear = true;
+        p.Gear.RestoreHeld = null;
+        p.Gear.DraftArmor = false;
+        p.Gear.Post = null;
+        RevokePermits(p);
+        if (t.Hold != null || t.Unwear) p.Gear.Tasks.Insert(0, t);
     }
 
     // ---------------------------------------------------------------- state JSON

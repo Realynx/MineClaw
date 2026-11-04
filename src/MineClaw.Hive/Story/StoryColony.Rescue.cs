@@ -123,11 +123,31 @@ public sealed partial class StoryColony
             if (_stuck.TryGetValue(p.Name, out var es)) es.Failed++;
             return true; // still stuck: its next escape (or the teleport, once the budget is spent) follows
         }
-        bool stuck = _stuck.ContainsKey(p.Name); // said so itself or seen by the colony: its failures never count against a target
-        bool guard = j.Source == "guard";
-        bool noWay = Unreachable(why) || OutOfReach(why);
-        bool reach = ReachOnly(why) && j.Source != "designation"; // a designation's "can't reach" is the soft rest (Failed)
-        if (!stuck && !guard && !noWay && !reach) return false;
+        var miss = MissOf(p, j, why);
+        if (!miss.Any) return false;
+        RestForPawn(p, j, why, miss.Guard);
+        if (miss.RestsOnlyThePawn || j.Lease == null) return true;
+        return UnreachableForEveryone(p, j.Lease, j, why);
+    }
+
+    /// <summary>Why a failure may be the pawn's own: it is stuck (said so itself or seen by the colony: its failures never count against
+    /// a target), a guard's monster, no way there, a reach refusal (a designation's "can't reach" is the soft rest instead: Failed).</summary>
+    private readonly record struct PawnMiss(bool Stuck, bool Guard, bool NoWay, bool Reach)
+    {
+        public bool Any => Stuck || Guard || NoWay || Reach;
+        /// <summary>Never the target's failure, however many pawns miss it (only no way there may become one).</summary>
+        public bool RestsOnlyThePawn => Stuck || Guard || Reach;
+    }
+
+    /// <remarks>A drop collect that found nothing (its drop still in view, nothing written off: <see cref="DropMissed"/>) is no way
+    /// there too: the drop rests for this pawn, and for everyone only once <see cref="UnreachPawns"/> pawns missed it.</remarks>
+    private PawnMiss MissOf(PawnState p, ActiveJob j, string why) =>
+        new(_stuck.ContainsKey(p.Name), j.Source == "guard", Unreachable(why) || OutOfReach(why) || DropMissed(j, why),
+            ReachOnly(why) && j.Source != "designation");
+
+    /// <summary>The target rests for this pawn only (a guard's monster a short while, else longer each time); no way there is noted.</summary>
+    private void RestForPawn(PawnState p, ActiveJob j, string why, bool guard)
+    {
         if (j.Lease is { } lease)
         {
             var key = PawnKey(lease, p.Name);
@@ -135,16 +155,18 @@ public sealed partial class StoryColony
             _skip[key] = Now + (guard ? MobRest : PawnBackoff(n));
         }
         if (NoWay.IsMatch(why)) NoteUnreachable(p, j);
-        if (stuck || guard || reach || j.Lease == null) return true;
-        // N different pawns couldn't reach it: then it is the target's failure.
-        if (!_unreachBy.TryGetValue(j.Lease, out var by)) _unreachBy[j.Lease] = by = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>N different pawns couldn't reach it: then it is the target's failure (false), unless it is out of reach even from a
+    /// pillar for every pawn that tried: the designation waits with why (no failure, no alert).</summary>
+    private bool UnreachableForEveryone(PawnState p, string lease, ActiveJob j, string why)
+    {
+        if (!_unreachBy.TryGetValue(lease, out var by)) _unreachBy[lease] = by = new(StringComparer.OrdinalIgnoreCase);
         by.Add(p.Name);
         int online = Pawns.Values.Count(o => Host.Live(o.Name).Online);
         if (by.Count < Math.Clamp(online, 1, UnreachPawns)) return true;
-        _unreachBy.Remove(j.Lease);
-        // Out of reach even from a pillar for every pawn that tried: the designation waits with why (no failure, no alert).
-        if (OutOfReach(why) && ReachWait(j, why)) return true;
-        return false;
+        _unreachBy.Remove(lease);
+        return OutOfReach(why) && ReachWait(j, why);
     }
 
     /// <summary>A run of unreachable targets: the colony takes the pawn for stuck (an escape job).</summary>

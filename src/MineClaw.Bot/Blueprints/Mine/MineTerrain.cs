@@ -159,84 +159,116 @@ public sealed class MineTerrain
         var tops = new int[256];
         for (int lz = 0; lz < 16; lz++)
             for (int lx = 0; lx < 16; lx++)
-            {
-                int x = cx * 16 + lx, z = cz * 16 + lz;
-                int top = Surface(x, z);
-                tops[lz * 16 + lx] = top;
-                int dirt = 3 + (int)(H(x, z, 0, SaltDirt) % 2);
-                for (int y = 0; y <= top && y < Height; y++)
-                {
-                    int id = y == top ? Grass : y >= top - dirt ? Dirt : Stone;
-                    if (y <= Table.BedrockTop && (y == Table.BedrockFloor || (int)(H(x, y, z, SaltBedrock) % 5) >= y)) id = Bedrock;
-                    cells[Index(lx, y, lz)] = (ushort)(id << 4);
-                }
-            }
+                tops[lz * 16 + lx] = Column(cells, cx * 16 + lx, cz * 16 + lz, lx, lz);
         // Pockets first, then the ores (in the table's order), each feature its own random stream.
         var features = Table.Pockets.Concat(Table.Ores).ToList();
         for (int k = 0; k < features.Count; k++)
         {
             var f = features[k];
             if (f.Veins <= 0 || f.Size <= 0) continue;
-            bool pocket = k < Table.Pockets.Count;
-            ushort state = (ushort)(f.Block << 4 | f.Meta);
             var rng = new Rng(H(cx, cz, k, SaltFeature));
-            for (int v = 0; v < f.Veins; v++)
-            {
-                int x = rng.Below(16), z = rng.Below(16);
-                int y = f.Shape == "triangle" ? f.Center - f.Spread + rng.Below(f.Spread) + rng.Below(f.Spread) : f.Min + rng.Below(f.Max - f.Min + 1);
-                for (int s = 0; s < f.Size; s++)
-                {
-                    Put(cells, x, y, z, state);
-                    if (pocket)
-                    {
-                        Put(cells, x + 1, y, z, state); Put(cells, x - 1, y, z, state);
-                        Put(cells, x, y + 1, z, state); Put(cells, x, y - 1, z, state);
-                        Put(cells, x, y, z + 1, state); Put(cells, x, y, z - 1, state);
-                    }
-                    switch (rng.Below(6))
-                    {
-                        case 0: x++; break;
-                        case 1: x--; break;
-                        case 2: y++; break;
-                        case 3: y--; break;
-                        case 4: z++; break;
-                        default: z--; break;
-                    }
-                }
-            }
+            for (int v = 0; v < f.Veins; v++) Vein(cells, ref rng, f, pocket: k < Table.Pockets.Count);
         }
-        // Now and then one light cave: a 3×2 worm inside the chunk, well under the grass.
-        var cr = new Rng(H(cx, cz, 0, SaltCave));
-        if (cr.Below(3) == 0)
-        {
-            int x = 3 + cr.Below(10), z = 3 + cr.Below(10), y = 16 + cr.Below(40), dir = cr.Below(4);
-            for (int s = 0; s < 40; s++)
-            {
-                for (int dz = -1; dz <= 1; dz++)
-                    for (int dx = -1; dx <= 1; dx++)
-                        for (int dy = 0; dy <= 1; dy++)
-                        {
-                            int lx = x + dx, lz = z + dz, yy = y + dy;
-                            if (lx is < 0 or > 15 || lz is < 0 or > 15 || yy < 1 || yy >= tops[lz * 16 + lx] - 6) continue;
-                            int i = Index(lx, yy, lz);
-                            if (cells[i] >> 4 != Bedrock) cells[i] = 0;
-                        }
-                if (cr.Below(4) == 0) dir = cr.Below(4);
-                if (cr.Below(5) == 0) y += cr.Below(3) - 1;
-                switch (dir)
-                {
-                    case 0: x++; break;
-                    case 1: x--; break;
-                    case 2: z++; break;
-                    default: z--; break;
-                }
-                x = Math.Clamp(x, 1, 14);
-                z = Math.Clamp(z, 1, 14);
-                y = Math.Clamp(y, 8, 70);
-            }
-        }
+        Cave(cells, tops, cx, cz);
         return cells;
     }
+
+    /// <summary>One column: grass on 3-4 dirt layers, stone, the bedrock floor and its patchy layer; returns the grass y.</summary>
+    private int Column(ushort[] cells, int x, int z, int lx, int lz)
+    {
+        int top = Surface(x, z);
+        int dirt = 3 + (int)(H(x, z, 0, SaltDirt) % 2);
+        for (int y = 0; y <= top && y < Height; y++)
+        {
+            int id = y == top ? Grass : y >= top - dirt ? Dirt : Stone;
+            if (IsBedrock(x, y, z)) id = Bedrock;
+            cells[Index(lx, y, lz)] = (ushort)(id << 4);
+        }
+        return top;
+    }
+
+    private bool IsBedrock(int x, int y, int z) =>
+        y <= Table.BedrockTop && (y == Table.BedrockFloor || (int)(H(x, y, z, SaltBedrock) % 5) >= y);
+
+    /// <summary>One vein (or pocket, which also fills each cell's six neighbours): a random walk of the feature's size.</summary>
+    private static void Vein(ushort[] cells, ref Rng rng, OreBand f, bool pocket)
+    {
+        ushort state = (ushort)(f.Block << 4 | f.Meta);
+        int x = rng.Below(16), z = rng.Below(16);
+        int y = f.Shape == "triangle" ? f.Center - f.Spread + rng.Below(f.Spread) + rng.Below(f.Spread) : f.Min + rng.Below(f.Max - f.Min + 1);
+        for (int s = 0; s < f.Size; s++)
+        {
+            Put(cells, x, y, z, state);
+            if (pocket)
+            {
+                Put(cells, x + 1, y, z, state); Put(cells, x - 1, y, z, state);
+                Put(cells, x, y + 1, z, state); Put(cells, x, y - 1, z, state);
+                Put(cells, x, y, z + 1, state); Put(cells, x, y, z - 1, state);
+            }
+            Walk(rng.Below(6), ref x, ref y, ref z);
+        }
+    }
+
+    /// <summary>A step of a random walk: 0/1 = ±x, 2/3 = ±y, 4 = +z, anything else −z.</summary>
+    private static void Walk(int dir, ref int x, ref int y, ref int z)
+    {
+        switch (dir)
+        {
+            case 0: x++; break;
+            case 1: x--; break;
+            case 2: y++; break;
+            case 3: y--; break;
+            case 4: z++; break;
+            default: z--; break;
+        }
+    }
+
+    /// <summary>Now and then one light cave: a 3×2 worm inside the chunk, well under the grass.</summary>
+    private void Cave(ushort[] cells, int[] tops, int cx, int cz)
+    {
+        var cr = new Rng(H(cx, cz, 0, SaltCave));
+        if (cr.Below(3) != 0) return;
+        int x = 3 + cr.Below(10), z = 3 + cr.Below(10), y = 16 + cr.Below(40), dir = cr.Below(4);
+        for (int s = 0; s < 40; s++)
+        {
+            Carve(cells, tops, x, y, z);
+            if (cr.Below(4) == 0) dir = cr.Below(4);
+            if (cr.Below(5) == 0) y += cr.Below(3) - 1;
+            Turn(dir, ref x, ref z);
+            x = Math.Clamp(x, 1, 14);
+            z = Math.Clamp(z, 1, 14);
+            y = Math.Clamp(y, 8, 70);
+        }
+    }
+
+    /// <summary>The worm's step in the horizontal plane: 0/1 = ±x, 2 = +z, anything else −z.</summary>
+    private static void Turn(int dir, ref int x, ref int z)
+    {
+        switch (dir)
+        {
+            case 0: x++; break;
+            case 1: x--; break;
+            case 2: z++; break;
+            default: z--; break;
+        }
+    }
+
+    /// <summary>The worm's 3×3×2 slice at (x, y, z): air inside the chunk, at least 6 under the grass, never through bedrock.</summary>
+    private static void Carve(ushort[] cells, int[] tops, int x, int y, int z)
+    {
+        for (int dz = -1; dz <= 1; dz++)
+            for (int dx = -1; dx <= 1; dx++)
+                for (int dy = 0; dy <= 1; dy++)
+                {
+                    int lx = x + dx, lz = z + dz, yy = y + dy;
+                    if (!Carvable(tops, lx, yy, lz)) continue;
+                    int i = Index(lx, yy, lz);
+                    if (cells[i] >> 4 != Bedrock) cells[i] = 0;
+                }
+    }
+
+    /// <summary>Inside the chunk, above the floor, and at least 6 under the column's grass.</summary>
+    private static bool Carvable(int[] tops, int lx, int y, int lz) => lx is >= 0 and <= 15 && lz is >= 0 and <= 15 && y >= 1 && y < tops[lz * 16 + lx] - 6;
 
     /// <summary>Sets a cell of the chunk to <paramref name="state"/> when it is plain stone (features never replace anything else).</summary>
     private static void Put(ushort[] cells, int lx, int y, int lz, ushort state)
