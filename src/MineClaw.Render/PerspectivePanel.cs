@@ -240,19 +240,22 @@ public static partial class PerspectivePanel
     /// <summary>Renders one panel (raster + role overlay + focus box + tags + compass + title).</summary>
     public static VisionImage Render(EyeRenderer r, Rig rig, Input inp, out List<string> labels) => Render(r, rig, inp, out labels, out _);
 
+    /// <summary>The eye scene of a panel: the rig's camera over the input's world, entities and marks.</summary>
+    private static EyeScene SceneFor(Rig rig, Input inp, ViewCut? xray) => new()
+    {
+        World = inp.World, Atlas = inp.Atlas, EyeX = rig.X, EyeY = rig.Y, EyeZ = rig.Z, Yaw = rig.Yaw, Pitch = rig.Pitch, Time = inp.Time,
+        Nether = inp.Nether, Entities = inp.Entities, Marks = inp.Marks, Fov = rig.Fov, MaxDistance = rig.MaxDistance,
+        Cut = rig.Cut ? inp.Cut : null, MinBrightness = rig.Ortho > 0 ? 0.6f : 0.3f, Smooth = inp.Smooth, Ortho = rig.Ortho, Clip = rig.Clip,
+        XRay = xray, Weather = inp.Weather,
+        // Iso and the maps get the weather's wash; the other panels sparse streaks (never enough to hide a block).
+        Precip = rig.Ortho > 0 || rig.Title.StartsWith("ISO", StringComparison.Ordinal) ? PrecipStyle.Tint : PrecipStyle.Streaks, PrecipDensity = 0.3f,
+    };
+
     /// <summary>Renders one panel; <paramref name="facts"/> = the reading aids' labels as text ("chest 14,64,-5").</summary>
     public static VisionImage Render(EyeRenderer r, Rig rig, Input inp, out List<string> labels, out List<string> facts)
     {
         var xray = XRayFor(rig, inp);
-        var scene = new EyeScene
-        {
-            World = inp.World, Atlas = inp.Atlas, EyeX = rig.X, EyeY = rig.Y, EyeZ = rig.Z, Yaw = rig.Yaw, Pitch = rig.Pitch, Time = inp.Time,
-            Nether = inp.Nether, Entities = inp.Entities, Marks = inp.Marks, Fov = rig.Fov, MaxDistance = rig.MaxDistance,
-            Cut = rig.Cut ? inp.Cut : null, MinBrightness = rig.Ortho > 0 ? 0.6f : 0.3f, Smooth = inp.Smooth, Ortho = rig.Ortho, Clip = rig.Clip,
-            XRay = xray, Weather = inp.Weather,
-            // Iso and the maps get the weather's wash; the other panels sparse streaks (never enough to hide a block).
-            Precip = rig.Ortho > 0 || rig.Title.StartsWith("ISO", StringComparison.Ordinal) ? PrecipStyle.Tint : PrecipStyle.Streaks, PrecipDensity = 0.3f,
-        };
+        var scene = SceneFor(rig, inp, xray);
         var fr = r.Raster(scene);
         var c = new Canvas(fr.Width, fr.Height, (uint[])fr.Px.Clone());
         if (inp.Slab is { Roles: not null } slab) RoleOverlay(r, c, fr, scene, slab);

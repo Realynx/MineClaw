@@ -22,19 +22,21 @@ public sealed class VoxelCache
         lock (_lock)
         {
             double hz = Math.Clamp(o.VoxelHz, 0.1, 20);
-            if (_last != null && t - _builtAt < TimeSpan.FromSeconds(1 / hz) && _last.Cx == c.X && _last.Cy == c.Y && _last.Cz == c.Z
-                && SameInts(_last.Target, target) && SameInts(_last.Path, path))
+            if (_last != null && t - _builtAt < TimeSpan.FromSeconds(1 / hz) && SameView(_last, c.X, c.Y, c.Z, target, path))
                 return _last;
             _builtAt = t;
             var cells = VoxelBuilder.Cells(world, c.X, c.Y, c.Z, o, out int x0, out int y0, out int z0, out int sx, out int sy, out int sz);
             uint hash = VoxelCodec.Hash(cells, x0, y0, z0, sx, sy, sz);
-            if (_last != null && _last.Hash == hash && _last.X0 == x0 && _last.Y0 == y0 && _last.Z0 == z0 && _last.Cx == c.X && _last.Cy == c.Y
-                && _last.Cz == c.Z && SameInts(_last.Target, target) && SameInts(_last.Path, path))
+            if (_last != null && _last.Hash == hash && (_last.X0, _last.Y0, _last.Z0) == (x0, y0, z0) && SameView(_last, c.X, c.Y, c.Z, target, path))
                 return _last;
             _last = VoxelVolume.Create(x0, y0, z0, sx, sy, sz, c.X, c.Y, c.Z, cells, ++_seq, target, path);
             return _last;
         }
     }
+
+    /// <summary>Whether a volume was built around the same centre cell with the same target and path marks.</summary>
+    private static bool SameView(VoxelVolume v, int cx, int cy, int cz, int[]? target, int[]? path) =>
+        v.Cx == cx && v.Cy == cy && v.Cz == cz && SameInts(v.Target, target) && SameInts(v.Path, path);
 
     private static bool SameInts(int[]? a, int[]? b) => a == null ? b == null : b != null && a.AsSpan().SequenceEqual(b);
 }

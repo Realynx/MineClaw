@@ -788,21 +788,36 @@ public static class BlockGeometry
     {
         int m = meta;
         if (id != Blocks.Rail) m &= 7;
-        int tile = id == Blocks.PoweredRail ? ((meta & 8) != 0 ? 179 : 163) : id == Blocks.DetectorRail ? 195 : m >= 6 ? 112 : 128;
-        float X0 = 0, X1 = 1;
-        // Corner x/z per vanilla vertex order.
-        float[] vx = [X1, X1, X0, X0], vz = [0, 1, 1, 0];
-        if (m is 1 or 2 or 3 or 7) { vx = [X1, X0, X0, X1]; vz = [1, 1, 0, 0]; }
-        else if (m == 8) { vx = [X0, X0, X1, X1]; vz = [1, 0, 0, 1]; }
-        else if (m == 9) { vx = [X0, X1, X1, X0]; vz = [0, 0, 1, 1]; }
-        const float h = 1 / 16f;
-        float[] vy = [h, h, h, h];
-        if (m is 2 or 4) { vy[0] += 1; vy[3] += 1; }
-        if (m is 3 or 5) { vy[1] += 1; vy[2] += 1; }
+        int tile = RailTile(id, meta, m);
+        var (vx, vz) = RailCorners(m);
+        float[] vy = RailHeights(m);
         var q = GeoQuad.Make(new(vx[0], vy[0], vz[0]), new(vx[1], vy[1], vz[1]), new(vx[2], vy[2], vz[2]), new(vx[3], vy[3], vz[3]),
             new(1, 0), new(1, 1), new(0, 1), new(0, 0));
         q.Tile = (short)tile; q.Pass = RenderPass.Cutout; q.Flat = 0x8a8070; q.TwoSided = true;
         dst.Add(q);
+    }
+
+    /// <summary>The rail tile: powered (on/off), detector, or a plain rail's straight / curved tile.</summary>
+    private static int RailTile(int id, int meta, int m) =>
+        id == Blocks.PoweredRail ? ((meta & 8) != 0 ? 179 : 163) : id == Blocks.DetectorRail ? 195 : m >= 6 ? 112 : 128;
+
+    /// <summary>Corner x/z per vanilla vertex order for a rail shape.</summary>
+    private static (float[] X, float[] Z) RailCorners(int m) => m switch
+    {
+        1 or 2 or 3 or 7 => ([1, 0, 0, 1], [1, 1, 0, 0]),
+        8 => ([0, 0, 1, 1], [1, 0, 0, 1]),
+        9 => ([0, 1, 1, 0], [0, 0, 1, 1]),
+        _ => ([1, 1, 0, 0], [0, 1, 1, 0]),
+    };
+
+    /// <summary>Corner heights 1/16 up, the high side of an ascending rail one block more.</summary>
+    private static float[] RailHeights(int m)
+    {
+        const float h = 1 / 16f;
+        float[] vy = [h, h, h, h];
+        if (m is 2 or 4) { vy[0] += 1; vy[3] += 1; }
+        if (m is 3 or 5) { vy[1] += 1; vy[2] += 1; }
+        return vy;
     }
 
     /// <summary>b1.8.1 stairs (meta 0 high side east, 1 west, 2 south, 3 north): two standard boxes.</summary>
@@ -857,7 +872,14 @@ public static class BlockGeometry
     private static void Lever(int meta, List<GeoQuad> dst)
     {
         int m = meta & 7;
-        bool on = (meta & 8) != 0;
+        var stick = LeverBase(m, (meta & 8) != 0, dst);
+        // The handle points out of the base (local +y), so put the stick on the base's outward axis.
+        Box(dst, -1 / 16f, 0, -1 / 16f, 1 / 16f, 10 / 16f, 1 / 16f, _ => new(96), Blocks.Lever, RenderPass.Cutout, 0, LeverAlign(m) * stick);
+    }
+
+    /// <summary>The lever's cobblestone base on the face its meta names; returns where the stick pivots (thrown on or off).</summary>
+    private static Matrix4x4 LeverBase(int m, bool on, List<GeoQuad> dst)
+    {
         TileFn cob = _ => new(16);
         Matrix4x4 stick;
         switch (m)
@@ -868,10 +890,15 @@ public static class BlockGeometry
             case 4: Box(dst, 0.25f, 0.3125f, 0.8125f, 0.75f, 0.6875f, 1, cob, Blocks.Lever); stick = Matrix4x4.CreateRotationX(on ? -0.7f : 0.7f) * Matrix4x4.CreateTranslation(0.5f, 0.5f, 0.81f); break;
             default: Box(dst, 0.3125f, 0, 0.25f, 0.6875f, 0.1875f, 0.75f, cob, Blocks.Lever); stick = Matrix4x4.CreateRotationX(on ? 0.7f : -0.7f) * Matrix4x4.CreateTranslation(0.5f, 0.1f, 0.5f); break;
         }
-        // The handle points out of the base (local +y), so put the stick on the base's outward axis.
-        var align = m switch { 1 => Matrix4x4.CreateRotationZ(-MathF.PI / 2), 2 => Matrix4x4.CreateRotationZ(MathF.PI / 2), 3 => Matrix4x4.CreateRotationX(MathF.PI / 2), 4 => Matrix4x4.CreateRotationX(-MathF.PI / 2), _ => Matrix4x4.Identity };
-        Box(dst, -1 / 16f, 0, -1 / 16f, 1 / 16f, 10 / 16f, 1 / 16f, _ => new(96), Blocks.Lever, RenderPass.Cutout, 0, align * stick);
+        return stick;
     }
+
+    /// <summary>Turns the stick's local +y onto the base's outward axis.</summary>
+    private static Matrix4x4 LeverAlign(int m) => m switch
+    {
+        1 => Matrix4x4.CreateRotationZ(-MathF.PI / 2), 2 => Matrix4x4.CreateRotationZ(MathF.PI / 2),
+        3 => Matrix4x4.CreateRotationX(MathF.PI / 2), 4 => Matrix4x4.CreateRotationX(-MathF.PI / 2), _ => Matrix4x4.Identity,
+    };
 
     private static void Bed(int meta, List<GeoQuad> dst, int skip)
     {
@@ -889,8 +916,14 @@ public static class BlockGeometry
         bool C(int n) => n == id || n == Blocks.Glass || Op(n);
         bool wv = C(w.Block(x - 1, y, z)), ev = C(w.Block(x + 1, y, z)), nv = C(w.Block(x, y, z - 1)), sv = C(w.Block(x, y, z + 1));
         if (!wv && !ev && !nv && !sv) wv = ev = nv = sv = true;
-        const float a = 7 / 16f, b = 9 / 16f;
         TileFn t = _ => new(tile);
+        PaneArms(dst, wv, ev, nv, sv, t, id);
+    }
+
+    /// <summary>The pane's west-east and north-south arms (a lone pane's arm is the 7/16..9/16 post).</summary>
+    private static void PaneArms(List<GeoQuad> dst, bool wv, bool ev, bool nv, bool sv, TileFn t, int id)
+    {
+        const float a = 7 / 16f, b = 9 / 16f;
         if (wv || ev) Box(dst, wv ? 0 : a, 0, a, ev ? 1 : b, 1, b, t, id, RenderPass.Cutout);
         if (nv || sv) Box(dst, a, 0, nv ? 0 : a, b, 1, sv ? 1 : b, t, id, RenderPass.Cutout);
     }
