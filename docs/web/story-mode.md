@@ -172,8 +172,10 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
-- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first). It rests
-  on its feet: idle legs about home (see "Idle behaviour"), never cutting the 15 s short.
+- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again, but only when it has nothing else to do: the back-off
+  rests the failed targets, never the pawn (Fox 11-04: "never idle on a work schedule if there are things to be done"). Orders and
+  urgent needs still come first. It rests on its feet: idle legs about home (see "Idle behaviour"). Work for it ends a resting leg at
+  once.
 - A designation that failed is kept on the map with `reason` and `fails`. Its first failure raises an alert saying why. After 3
   failures its `status` is `failed` and an alert says so (again every 3 failures). It is still retried after its rest until it is
   done or cancelled.
@@ -398,17 +400,39 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
      same safe rules as above. Pillar when the wall can't be cut, dig for blocks when it has none. It stops level with home, and then
      walks home again;
   4. nothing works: `story.stuck`.
-- **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
-  `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
-  needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
+- **Help, fast (Fox 11-04: "they should teleport sooner").** A stuck pawn gets an escape budget: option `stuck_teleport_after_s`
+  (default 20 s, at least 5) from when the colony first saw it stuck, or 2 failed escape steps, whichever comes first. Then the colony
   **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
-  coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
-  why. Blocks are thrown into a pit only: a pawn with no way home from a ravine or a canyon is teleported at once, because a rescuer
-  would only walk in after it. A teleport counts once the pawn shows up at home. When it hasn't within 20 s (the server refused the
-  `/tp`), one warning says so and the colony doesn't try again.
+  coordinates). Blocks are tossed into a pit (kind `give`, 8 blocks, fetched from storage first when needed) only by a pawn that is idle
+  and within 16 blocks, and only within the budget. Otherwise the teleport comes straight away, as it does for a pawn with no way home
+  from a ravine or a canyon. A teleport counts once the pawn shows up at home. When it hasn't within 10 s (the server refused the
+  `/tp`), one warning says so and the colony doesn't try again. A teleport that can't be sent (option off, no op path) is said at most
+  every 10 minutes, and the pawn keeps trying to get out by itself. Each teleport is logged and said in an alert.
+- **Getting out beats a drop.** The no-tool rule ("needs a wooden pickaxe: digging stone … would lose the drop") is for work targets.
+  An escape that is refused for it digs with whatever the pawn holds (the hidden `escape_dig{at}`). Every other rule (protection, the
+  floor under someone, lava, the void) still holds, and the client logs the lost drop. In a pit, a pillar step with the blocks it
+  carries comes before any stair dig. Live 11-04: three pawns waited for the teleport in a stone hole they could have dug out of.
+- **Stuck spots keep work away.** For 5 minutes after a pawn gets stuck, no other pawn is sent to a target within 3 blocks of the spot
+  (4 up or down). Live 11-04: maid_chan_126, _118 and _105 were stuck in one hole, each sent after the work by it.
+- **Idle with work (the idle audit).** Every second the director checks each pawn in a work or anything hour that holds, wanders or
+  rests while the colony has work of a kind it does: designations, builds with cells to do, or bills that run. Such a pawn gets a
+  reason (`idle_reason` on its row): `stuck`, `back-off rest`, `work not taken yet` (an idle leg the next wake hands over),
+  `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target` or `build or bill waiting`. When there is work
+  only of kinds it doesn't do, the reason is `priority 0`. The supervisor's per-minute perf line adds
+  `idle-with-work N: <reason> <pawn-seconds>, …`. A pawn whose top work type is all leased, or waiting for a tool, takes its next
+  work type.
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.
+- **Ditches (added 2026-11-04).** Fox: "The pawns are very bad at navigating one-drop-level holes. I have channels for water to flow,
+  one level down … They fall into it when they're walking, and they can't walk out because they have to jump once to get out."
+  A step down into a ditch (a 1-deep trench or hole, dry or a water channel, with a bank on both sides within 2 cells) costs
+  `DitchPenalty` (15 ticks, about 3 blocks), and a level gap jump over one only `DitchJumpPenalty` (6, instead of 30: a miss lands in
+  it and climbs out), so a pawn walks round a short channel or jumps a 1-wide one rather than wading through. A long one is still
+  crossed through it: down, then a jump out (out of water: jump held while pushing into the bank, vanilla's collided-in-liquid hop).
+  A body knocked off a level step into a ditch beside it jumps straight back out onto the step (it used to push into the wall until
+  "stuck" 4 s later and then avoid that move); one that lands farther away re-plans from there at once. The goto's own escape for
+  "stuck twice here" hops toward the step holding jump in water (one tap only floated the body off the floor).
 - **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
   Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
   ignored (see Defending).
@@ -792,6 +816,20 @@ opens a Growing zones window beside it: each zone's cells, Extend, what it sows 
 with the plant picker; mode and target; drag or the arrows to reorder; pause; remove; the active one marked "sowing", met ones
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
+
+**Walking fields (added 2026-11-04).** Fox: "The pawns need to crouch-walk through growing zones, so they don't crush plants or
+tilled ground", "If the ground in a grow zone isn't planted or tilled, they don't have to crouch-walk — better for speed", and "In
+the version we're using now (1.12.2) we can walk on wheat and not crush it. We can't sprint on it, but we don't have to crouch-walk
+either, like the beta version." Each director tick hands every online pawn's body the colony's growing zones
+(`IStoryHost.SetGrowZone`: the zones' cells at their painted level ± 2, an immutable filter rebuilt only when a zone changes). A move
+takes care when it is onto or off farmland (anywhere, zone or not), or onto, off or past a planted cell inside a zone (a crop,
+sapling, stem, cane, wart, cocoa in or beside the body's cells), read from the live blocks, so a harvested or untilled patch is
+walked at full speed. The care is the version's (`IPhysicsRules.WalkingTramplesFarmland`): b1.8.1 tramples under a walker that
+isn't sneaking (mc-dev `BlockSoil.b`, 1 in 4 per step), so those moves are sneaked (the server sees the entity action; a sneaking
+body is never sped up); 1.12.2 tramples only on a landing from more than half a block (`BlockFarmland.onFallenUpon`), so they are
+walked at normal speed, never sprinted (`PathStep.Gentle`). On both, a path prefers an aisle to the soil, no drop and no gap jump
+ever lands on farmland, and a hop onto it (only out of an irrigation trench, a fall of about 0.3) costs as much as a 20-block walk
+round.
 
 ## Quarries (added 2026-11-04)
 
@@ -1588,6 +1626,14 @@ stock errors while bills waited.
   potatoes while anything else exists; those only when starving, hunger ≤ 6, fetched and left to the body's own starving reflex, never
   an "eat" that refuses them). A food fetch that fails corrects that chest's record, makes that pawn wait 15 s (then 60 s) and skips
   that chest for it for 2 minutes (an unreachable chest too: another chest, or it waits). No food anywhere: one alert, and it waits.
+- **Unreachable chests (added 2026-11-04).** Live: 334 of 462 failed searches in 5 minutes were "can't reach chest at 218,64,400 …
+  no path to use", each an A* run to its 30k-node / 2 s budget, because the rest went to the designation and not the chest. Now a
+  pawn that can't reach a chest (or a bench) leaves it out of every plan of its own (fetches, deposits, food, ingredients) for 2, then
+  5, then 10 minutes as it keeps failing; the job is never the target's failure and nobody rests. When every pawn in game has failed
+  it, one alert says "Chest at x,y,z is unreachable — pawns can't get to it" and its contents aren't stock (builds and bills don't count
+  on them) for 10 minutes or until a pawn gets there. A body's goto also remembers its failed searches (`NoRouteCache`): the same search
+  from the same cell to the same goal with the same freedoms isn't run again for 15 s unless a block changes within 24 blocks of
+  either end or a chunk loads. `Bodies:MaxPathfinds` defaults to half the cores, 2..4.
 - **Missing stock is no failure:** a bill whose ingredient isn't there is suspended with why, with where the raw material comes from
   ("no planks within 32 blocks — needs logs (chop trees)"; with logs stored: "make them from the stored logs"), never attempted, and
   retried by itself every 30 s. A failure that was the plan's (the record said the item was there; "no … within", "reserved for",
@@ -1689,7 +1735,7 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 ## Web: the Story Mode tab
 
 - **Map.** A top-down orthographic view (the world viewer's `top` camera) over the colony.
-  - The mouse wheel zooms around the cursor, out to 112 blocks of view height. Pan with WASD/arrows, a middle-drag or the
+  - The mouse wheel zooms around the cursor, out to 112 blocks of view height. Pan with WASD/arrows, a middle-drag or (in full screen only) the
     screen edge.
   - In the top-down and angled views the viewer draws the whole ground the picture shows (its footprint's half diagonal,
     capped at 192 blocks) whatever the draw distance or the software quality lever says, with the fog beyond it; mobs keep

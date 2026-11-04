@@ -78,6 +78,7 @@ public sealed class SupervisorPerf
         sb.Append(CultureInfo.InvariantCulture, $"longest {a.Longest.TotalMilliseconds:0} ms waited {a.Waited.TotalSeconds:0.0}s; ");
         var st = MineClaw.Hive.Story.StoryPerf.Take();
         sb.Append(CultureInfo.InvariantCulture, $"story {st.Picks} picks {st.PickTime.TotalMilliseconds:0} ms, {st.Ticks} ticks {st.TickTime.TotalMilliseconds:0} ms");
+        if (MineClaw.Hive.Story.StoryPerf.TakeIdle() is { } idle) sb.Append(", ").Append(idle); // pawns idle in work hours with work about, by why
         foreach (var (route, list) in routes.OrderByDescending(r => r.Value.Sum()).Take(12))
         {
             list.Sort();

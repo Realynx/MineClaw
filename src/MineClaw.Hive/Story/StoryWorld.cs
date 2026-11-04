@@ -97,6 +97,9 @@ public interface IStoryHost
     void PermitAttack(string account, int entity, bool on) { }
     /// <summary>The pawn body's movement multiplier (1 normal, 2 fast, 3 faster; StoryColony.Speed.cs). Only ever a colony pawn's.</summary>
     void SetSpeed(string account, double multiplier) { }
+    /// <summary>The colony's growing zones for this pawn's body (foot cell x,y,z → inside one; null = none): its walks crouch past their
+    /// plants (StoryColony.Farming.cs, Fox 11-04). Only ever a colony pawn's.</summary>
+    void SetGrowZone(string account, Func<int, int, int, bool>? inZone) { }
     /// <summary>The pawn body's speed boost as it runs (null = offline or unknown).</summary>
     PawnSpeed? Speed(string account) => null;
     /// <summary>Can the colony ask the server for a Speed effect (1.12.2 with an op account)?</summary>
@@ -225,10 +228,21 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
     private IReadOnlyList<WorldState> Others()
     {
         long now = Environment.TickCount64;
-        if (now - Interlocked.Read(ref _othersAt) < 500) return _others;
+        return now - Interlocked.Read(ref _othersAt) < 500 ? _others : RefreshOthers(now);
+    }
+
+    /// <summary>Apart from <see cref="Others"/>: its lambda's captured locals made the compiler allocate their closure on every call,
+    /// the cached path too (once per cell main doesn't hold: most of the allocations of a pick near a far home).</summary>
+    private IReadOnlyList<WorldState> RefreshOthers(long now)
+    {
         int dim = Dimension;
-        IReadOnlyList<WorldState> list;
-        try { list = others().Where(w => w.Dimension == dim && !ReferenceEquals(w, main())).ToList(); }
+        var m = main();
+        var list = new List<WorldState>();
+        try
+        {
+            foreach (var w in others())
+                if (w.Dimension == dim && !ReferenceEquals(w, m)) list.Add(w);
+        }
         catch (Exception) { list = []; }
         _others = list;
         Interlocked.Exchange(ref _othersAt, now);
@@ -273,7 +287,28 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
 
     /// <summary>Every body's entities by id: the freshest copy (the body nearest it gets its moves) with the earliest first sighting
     /// (a drop's age). A mob only one body's tracker still holds keeps that body's last update, so the colony can tell it is stale.</summary>
+    /// <summary>How long a merged entity list is reused while nobody spawned, left or changed stack (only moves): the picker, the
+    /// haul and mark ticks and the director's checks each asked for it, and each read walked every body's tracker (live 11-04: ten
+    /// bodies holding the same ~80 entities, ~200 KB a read, several reads a pick).</summary>
+    internal const long EntityReuseMs = 250;
+
+    private sealed record EntityRead(long At, WorldState? Main, IReadOnlyList<WorldState> Others, long Membership, IReadOnlyList<StoryEntity> List);
+    private EntityRead? _entities;
+
     public IReadOnlyList<StoryEntity> Entities()
+    {
+        var m = main();
+        var others = Others();
+        long key = m?.Entities.Membership ?? 0, now = Environment.TickCount64;
+        foreach (var w in others) key += w.Entities.Membership;
+        if (_entities is { } c && now - c.At < EntityReuseMs && c.Membership == key && ReferenceEquals(c.Main, m) && ReferenceEquals(c.Others, others))
+            return c.List;
+        var list = Read(m, others);
+        _entities = new EntityRead(now, m, others, key, list);
+        return list;
+    }
+
+    private List<StoryEntity> Read(WorldState? m, IReadOnlyList<WorldState> others)
     {
         var byId = new Dictionary<int, int>();
         var list = new List<StoryEntity>();
@@ -287,8 +322,8 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
                 list[i] = (e.SeenAt > old.SeenAt ? e : old) with { FirstSeen = first };
             }
         }
-        if (main() is { } m) Add(m);
-        foreach (var w in Others()) Add(w);
+        if (m != null) Add(m);
+        foreach (var w in others) Add(w);
         return list;
     }
 }

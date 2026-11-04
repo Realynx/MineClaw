@@ -168,6 +168,14 @@
   // there is one, else dig a staircase (never down, never beside liquid or under sand/gravel), else nerd-pole with blocks it carries,
   // else dig the walls for blocks and pole. Nothing works: the colony is asked for help (a pawn brings blocks, or a teleport home).
   // -> {ok, out: it moved out, stuck: still stuck, msg}
+  // escDig(at): a dig to get out. The no-tool rule is for work targets: a pawn refused for want of a tool ("would lose the drop")
+  // digs with whatever it holds (escape_dig, logged by the client); every other refusal stands.
+  const LOSSY = /would lose the drop/i;
+  const escDig = at => {
+    const g = globalThis, r = g.dig(at);
+    if (g.ok(r) || !LOSSY.test(r.msg || '') || typeof g.escape_dig !== 'function') return r;
+    return g.escape_dig(at);
+  };
   // climb (the colony found no way home from here: a ravine, a canyon): whatever its shape, walk to the wall nearest home
   // (s.approach) and cut a staircase up it toward home until level with home; the caller asks for help when it can't.
   const escape = (toward, climb) => {
@@ -189,11 +197,18 @@
         if (g.ok(r)) { moved = true; continue; }
         why = r.msg;
       }
+      // A pit: a pillar step first when it carries blocks (no digging at all); a ravine's wall is climbed by its stair.
+      if (!climb && s.pillar && s.blocks > 0 && !tried['p' + s.feet]) {
+        tried['p' + s.feet] = 1;
+        const r = g.place(s.block, s.feet);
+        if (g.ok(r)) { moved = true; continue; }
+        why = r.msg;
+      }
       const st = s.stair;
       if (st && !tried[st.to]) {
         tried[st.to] = 1;
         let r = { ok: true };
-        for (const c of st.dig) { r = g.dig(c); if (!g.ok(r)) break; }
+        for (const c of st.dig) { r = escDig(c); if (!g.ok(r)) break; }
         if (g.ok(r)) r = g.go(st.to, 0);
         if (g.ok(r)) { moved = true; continue; }
         why = r.msg;

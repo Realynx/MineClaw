@@ -33,7 +33,9 @@ public sealed class StoryRecreationTests
         var clock = NewClock();
         var (c, h, w) = StoryRig.Make(time: clock);
         foreach (var t in WorkTypes.All) c.Pawns.Values.First().Priorities[t] = t == WorkTypes.Mine ? 1 : 0;
-        c.Designate("add", "mine", null, [new P3(1, 63, 0), new P3(2, 63, 0), new P3(3, 63, 0), new P3(4, 63, 0)], null);
+        // Three blocks, all three failing: with nothing else to do the pawn rests (with an open block it would dig that instead:
+        // a rest never holds a pawn back from work, StoryLiveFixTests).
+        c.Designate("add", "mine", null, [new P3(1, 63, 0), new P3(2, 63, 0), new P3(3, 63, 0)], null);
         for (int k = 0; k < 3; k++)
         {
             var j = c.Next();
@@ -42,7 +44,7 @@ public sealed class StoryRecreationTests
             c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", "too hard to dig", null);
             clock.Now += TimeSpan.FromSeconds(1);
         }
-        // Resting: on its feet about home, not standing still; the open mine job doesn't cut the rest short.
+        // Resting: on its feet about home, not standing still.
         var started = clock.Now;
         int legs = 0;
         while (clock.Now - started < StoryColony.FailRest - TimeSpan.FromSeconds(5)) // the rest runs from the last failure (a second before "started")
@@ -59,10 +61,10 @@ public sealed class StoryRecreationTests
             Arrive(h, c.P(), At(leg));
         }
         Assert.True(legs >= 3, $"{legs} legs");
-        // The rest is over: the leg in progress is taken back in the same tick and the pawn works.
+        // The rest and the blocks' back-off are over: the leg in progress is taken back in the same tick and the pawn works.
         var last = c.Next();
         Assert.Equal("idle", last["kind"]!.GetValue<string>());
-        clock.Now = started + StoryColony.FailRest + TimeSpan.FromSeconds(3);
+        clock.Now = started + TimeSpan.FromSeconds(30);
         c.Tick();
         Assert.False(c.Holds(c.P(), last["id"]!.GetValue<string>()));
         Assert.Equal("dig", c.Next()["kind"]!.GetValue<string>());

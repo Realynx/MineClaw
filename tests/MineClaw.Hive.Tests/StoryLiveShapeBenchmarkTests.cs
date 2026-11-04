@@ -177,7 +177,8 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
     }
 
     internal sealed record Numbers(double PickMs, double ReportMs, double TickMs, double StateMs, double ArchitectMs, double ArchitectP95, double StateP95,
-        double SecondMs, long Blocks, long Loads, long EntityLists, int LiveCalls, int Jobs);
+        double SecondMs, long Blocks, long Loads, long EntityLists, int LiveCalls, int Jobs, double PickKb = 0, double ReportKb = 0, double TickKb = 0,
+        double StateKb = 0, double ArchitectKb = 0, int Picks = 0);
 
     /// <summary>Runs <paramref name="seconds"/> simulated seconds (warm-up excluded) and returns the costs per second.</summary>
     internal static Numbers Run(StoryColony c, LiveShapeHost h, int seconds)
@@ -189,19 +190,25 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         var stateTimes = new List<double>(); var archTimes = new List<double>();
         h.Counting.Reset();
         h.LiveCalls = 0;
-        int jobs = 0;
+        int jobs = 0, pickCount = 0;
+        long pickB = 0, reportB = 0, tickB = 0, stateB = 0, archB = 0;
+        static long A() => GC.GetAllocatedBytesForCurrentThread();
         var all = Stopwatch.StartNew();
         for (int s = 0; s < seconds; s++)
         {
             for (int i = 0; i < names.Count; i++)
             {
                 var n = names[i];
+                long a0 = A();
                 picks.Start();
                 var j = c.Next(n);
                 picks.Stop();
+                pickB += A() - a0;
+                pickCount++;
                 if (j == null) continue;
                 jobs++;
                 var id = j["id"]!.GetValue<string>();
+                long r0 = A();
                 reports.Start();
                 // A third of the pawns finish each second (a dig really happens), the rest report progress.
                 if ((s + i) % 3 == 0)
@@ -215,19 +222,26 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
                 }
                 else c.Report(n, id, "progress", null, 0.5);
                 reports.Stop();
+                reportB += A() - r0;
             }
+            long t1 = A();
             ticks.Start(); c.Tick(); ticks.Stop();
+            tickB += A() - t1;
+            long s1 = A();
             var t0 = states.Elapsed.TotalMilliseconds;
             states.Start();
             var st = c.State(since);
             since = st["rev"]!.GetValue<long>();
             _ = st.ToJsonString();
             states.Stop();
+            stateB += A() - s1;
             stateTimes.Add(states.Elapsed.TotalMilliseconds - t0);
             if (s % 4 == 0)
             {
                 var a0 = archs.Elapsed.TotalMilliseconds;
+                long x0 = A();
                 archs.Start(); _ = c.Architect().ToJsonString(); archs.Stop();
+                archB += A() - x0;
                 archTimes.Add(archs.Elapsed.TotalMilliseconds - a0);
             }
         }
@@ -236,12 +250,14 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         double per(Stopwatch sw) => sw.Elapsed.TotalMilliseconds / seconds;
         return new Numbers(per(picks), per(reports), per(ticks), per(states), archTimes.Count == 0 ? 0 : archTimes.Average(), P95(archTimes), P95(stateTimes),
             all.Elapsed.TotalMilliseconds / seconds, h.Counting.Blocks / seconds, h.Counting.Loads / seconds, h.Counting.EntityLists / seconds,
-            h.LiveCalls / seconds, jobs);
+            h.LiveCalls / seconds, jobs, pickB / 1024.0 / Math.Max(1, pickCount), reportB / 1024.0 / seconds, tickB / 1024.0 / seconds,
+            stateB / 1024.0 / seconds, archB / 1024.0 / seconds, pickCount);
     }
 
     internal static string Format(Numbers n) =>
         $"per second: total {n.SecondMs:0.00} ms = picks {n.PickMs:0.00} + reports {n.ReportMs:0.00} + tick {n.TickMs:0.00} + state {n.StateMs:0.00} (p95 {n.StateP95:0.00}); " +
-        $"architect {n.ArchitectMs:0.00} ms (p95 {n.ArchitectP95:0.00}); world calls/s: block {n.Blocks}, loaded {n.Loads}, entity lists {n.EntityLists}; live reads/s {n.LiveCalls}; {n.Jobs} jobs";
+        $"architect {n.ArchitectMs:0.00} ms (p95 {n.ArchitectP95:0.00}); world calls/s: block {n.Blocks}, loaded {n.Loads}, entity lists {n.EntityLists}; live reads/s {n.LiveCalls}; {n.Jobs} jobs; " +
+        $"allocated: {n.PickKb:0.0} KB a pick, per second reports {n.ReportKb:0.0} KB + tick {n.TickKb:0.0} KB + state {n.StateKb:0.0} KB + architect {n.ArchitectKb:0.0} KB";
 
     [Fact]
     public void Ten_pawns_on_shared_worlds_with_a_busy_colony()
@@ -252,5 +268,8 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         output.WriteLine(Format(n));
         // Generous (CI machines vary): one second of play must cost the director a small part of one core.
         Assert.True(n.SecondMs < 250, Format(n));
+        // Allocations don't depend on the machine: 11-04 a pick allocated 158 KB here (a merged entity read per pick, a closure per
+        // block lookup main couldn't answer, a regex per filter entry per chest per drop), now well under 100 KB.
+        Assert.True(n.PickKb < 120, Format(n));
     }
 }

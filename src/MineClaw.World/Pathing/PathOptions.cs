@@ -36,6 +36,18 @@ public sealed record PathOptions
     /// <summary>Extra cost per step whose body cells hold flowing (non-source) water: a stream is crossed, never followed. Live 11-04:
     /// pawns carried off by streams and stuck in waterfalls.</summary>
     public double FlowingWaterPenalty { get; init; } = 4;
+    /// <summary>Extra cost of stepping down into a ditch: a 1-deep hole or trench (dry, or a Story water channel) with a bank on both
+    /// sides, that takes a jump to get out of. Fox 11-04: "They fall into it when they're walking". A walk round a few blocks, or a
+    /// jump across (<see cref="DitchJumpPenalty"/>), wins; a long channel is still crossed through it.</summary>
+    public double DitchPenalty { get; init; } = 15;
+    /// <summary>Risk penalty of a level gap jump over a ditch (a miss lands a block down, in it, and climbs out), instead of
+    /// <see cref="ParkourPenalty"/>.</summary>
+    public double DitchJumpPenalty { get; init; } = 6;
+    /// <summary>A growing zone's cells (foot cell x,y,z), or null. Fox 11-04: "The pawns need to crouch-walk through growing zones, so they
+    /// don't crush plants or tilled ground" / "If the ground in a grow zone isn't planted or tilled, they don't have to crouch-walk".
+    /// Inside one, a move onto, off or past a planted cell (a crop, sapling, stem, cane… in or beside the body's cells) is sneaked,
+    /// from the live blocks; bare ground in the zone is walked. Farmland is sneaked everywhere, zone or not.</summary>
+    public Func<int, int, int, bool>? GrowZone { get; init; }
     /// <summary>Extra cost per step whose body cells hold falling water (a waterfall column): it pushes the body down.</summary>
     public double FallingWaterPenalty { get; init; } = 30;
     /// <summary>Raw sky light at a cell (0-15), or null (no light data: no cave penalty). With it, a path that starts under the sky

@@ -112,6 +112,7 @@ public sealed partial class StoryColony
             ["state"] = state,
             ["leaving"] = _leaving.ContainsKey(p.Name),
             ["stuck"] = StuckJson(p.Name), // {since, at, reason, step, attempts} while it is stuck (StoryColony.Rescue.cs)
+            ["idle_reason"] = _idleReason.GetValueOrDefault(p.Name), // idle in its work hours with work about: why (StoryColony.IdleAudit.cs)
             ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {
