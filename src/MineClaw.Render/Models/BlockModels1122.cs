@@ -34,13 +34,21 @@ public sealed class BlockModels1122 : IBlockModels
     }
 
     /// <summary>Blocks whose state needs the neighbours (never on the cube fast path).</summary>
-    private static bool WorldDependent(int id) => BlockStates1122.IsStairs(id) || BlockStates1122.IsFence(id) || BlockStates1122.IsFenceGate(id)
-        || BlockStates1122.IsPane(id) || BlockStates1122.IsDoor(id) || id is 139 or 106 or 175 or 104 or 105 or 55 or 54 or 146;
+    private static bool WorldDependent(int id) => ConnectsToNeighbours(id) || NeighbourStates.Contains(id);
+
+    private static bool ConnectsToNeighbours(int id) => BlockStates1122.IsStairs(id) || BlockStates1122.IsFence(id) || BlockStates1122.IsFenceGate(id)
+        || BlockStates1122.IsPane(id) || BlockStates1122.IsDoor(id);
+
+    /// <summary>Walls, vines, double plants, stems, redstone wire and chests: their state reads the neighbours too.</summary>
+    private static readonly HashSet<int> NeighbourStates = [139, 106, 175, 104, 105, 55, 54, 146];
 
     /// <summary>Block.getBlockLayer() == TRANSLUCENT: ice, stained glass (+ panes), slime, frosted ice, portals.</summary>
     private static bool TranslucentLayer(int id) => id is 79 or 95 or 160 or 165 or 212 or 90;
 
-    public bool Emissive(int id) => id is 50 or 76 or 89 or 91 or 124 or 138 or 169 or 198 or 213 or 10 or 11 or 51 or 62 or 74 or 90 or 119 or 209;
+    public bool Emissive(int id) => EmissiveIds.Contains(id);
+
+    /// <summary>Blocks drawn at full brightness (light emitters).</summary>
+    private static readonly HashSet<int> EmissiveIds = [50, 76, 89, 91, 124, 138, 169, 198, 213, 10, 11, 51, 62, 74, 90, 119, 209];
 
     private bool SolidFull(int id, int meta) => (uint)id < 256 && Classify(id, meta & 15) == BlockShape.Cube;
 
@@ -91,7 +99,7 @@ public sealed class BlockModels1122 : IBlockModels
 
     private GeoQuad[] Cube(IVoxelWorld w, int x, int y, int z, int id, int meta)
     {
-        bool snowy = (id is 2 or 110 || id == 3 && meta % 3 == 2) && w.Block(x, y + 1, z) is 78 or 80;
+        bool snowy = Snowable(id, meta) && w.Block(x, y + 1, z) is 78 or 80;
         int i = (id << 4 | (meta & 15)) * 2 + (snowy ? 1 : 0);
         if (_cubes[i] is { } hit) return hit;
         var s = snowy ? StateOf(id, meta, w, x, y, z) : StateOf(id, meta);
@@ -99,6 +107,9 @@ public sealed class BlockModels1122 : IBlockModels
         _cubes[i] = faces;
         return faces;
     }
+
+    /// <summary>Grass, mycelium and podzol: snow above changes their sides.</summary>
+    private static bool Snowable(int id, int meta) => id is 2 or 110 || id == 3 && meta % 3 == 2;
 
     public GeoQuad CubeFace(IVoxelWorld w, int x, int y, int z, int id, int meta, Face face) =>
         InBiome(Cube(w, x, y, z, id, meta)[(int)face], id, w.Biome(x, z));
@@ -142,9 +153,12 @@ public sealed class BlockModels1122 : IBlockModels
         }
         var quads = Bake(id, s);
         int biome = w.Biome(x, z);
-        if (!BiomeTinted(id) || biome < 0 || biome == BiomeTints.DefaultBiome) { dst.AddRange(quads); return; }
+        if (!Recoloured(id, biome)) { dst.AddRange(quads); return; }
         foreach (var q in quads) dst.Add(InBiome(q, id, biome));
     }
+
+    /// <summary>A biome-tinted block in a known biome other than the plains the quads were baked with.</summary>
+    private static bool Recoloured(int id, int biome) => BiomeTinted(id) && biome >= 0 && biome != BiomeTints.DefaultBiome;
 
     /// <summary>Grass, ferns, reeds, double grass, leaves and vines take the biome's colour (BlockColors); the rest don't.</summary>
     private static bool BiomeTinted(int id) => id is 2 or 31 or 83 or 175 or 18 or 161 or 106;
@@ -153,7 +167,7 @@ public sealed class BlockModels1122 : IBlockModels
     /// colours (spruce, birch, lily pads) are left alone: only the plains grass/foliage tint is swapped.</summary>
     private static GeoQuad InBiome(GeoQuad q, int id, int biome)
     {
-        if (biome < 0 || biome == BiomeTints.DefaultBiome || !BiomeTinted(id)) return q;
+        if (!Recoloured(id, biome)) return q;
         uint grass = BiomeTints.Grass(), foliage = BiomeTints.Foliage();
         uint Swap(uint t) => t == 0 ? 0 : t == grass ? BiomeTints.Grass(biome) : t == foliage ? BiomeTints.Foliage(biome) : t;
         q.Tint = Swap(q.Tint);
@@ -208,23 +222,23 @@ public sealed class BlockModels1122 : IBlockModels
     }
 
     /// <summary>BlockColors.colorMultiplier for the tinted faces (0 = none), plains biome.</summary>
-    private static uint TintOf(int id, StateRef s)
+    private static uint TintOf(int id, StateRef s) => id switch
     {
-        switch (id)
-        {
-            case 2 or 31 or 83: return BiomeTints.Grass();
-            case 175: return s.File is "double_grass" or "double_fern" ? BiomeTints.Grass() : 0;
-            case 18: return s.File switch { "spruce_leaves" => BiomeTints.Spruce, "birch_leaves" => BiomeTints.Birch, _ => BiomeTints.Foliage() };
-            case 161 or 106: return BiomeTints.Foliage();
-            case 111: return BiomeTints.LilyPad;
-            case 104 or 105:
-            {
-                int age = s.Props.TryGetValue("age", out var a) ? int.Parse(a) : 7;
-                return (uint)(age * 32) << 16 | (uint)(255 - age * 8) << 8 | (uint)(age * 4);
-            }
-            case 55: return WireColour(s.Props.TryGetValue("power", out var pw) ? int.Parse(pw) : 0);
-            default: return 0;
-        }
+        2 or 31 or 83 => BiomeTints.Grass(),
+        175 => s.File is "double_grass" or "double_fern" ? BiomeTints.Grass() : 0,
+        18 => s.File switch { "spruce_leaves" => BiomeTints.Spruce, "birch_leaves" => BiomeTints.Birch, _ => BiomeTints.Foliage() },
+        161 or 106 => BiomeTints.Foliage(),
+        111 => BiomeTints.LilyPad,
+        104 or 105 => StemTint(s),
+        55 => WireColour(s.Props.TryGetValue("power", out var pw) ? int.Parse(pw) : 0),
+        _ => 0,
+    };
+
+    /// <summary>Stems: green to orange with the age (a bent stem has no age: fully grown).</summary>
+    private static uint StemTint(StateRef s)
+    {
+        int age = s.Props.TryGetValue("age", out var a) ? int.Parse(a) : 7;
+        return (uint)(age * 32) << 16 | (uint)(255 - age * 8) << 8 | (uint)(age * 4);
     }
 
     /// <summary>BlockRedstoneWire.colorMultiplier(power).</summary>

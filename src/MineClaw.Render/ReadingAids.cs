@@ -131,67 +131,80 @@ public static class ReadingAids
 
     // ------------------------------------------------------------------ labels
 
+    private static string Pos(double x, double y, double z) =>
+        string.Create(CultureInfo.InvariantCulture, $"{(int)Math.Floor(x)},{(int)Math.Floor(y)},{(int)Math.Floor(z)}");
+
     private static List<Cand> Candidates(EyeScene s, Input a)
     {
         var list = new List<Cand>();
-        string P(double x, double y, double z) => string.Create(CultureInfo.InvariantCulture, $"{(int)Math.Floor(x)},{(int)Math.Floor(y)},{(int)Math.Floor(z)}");
         var f = a.Focus;
-        list.Add(new Cand(0, f.X + 0.5, f.Y + 1.0, f.Z + 0.5, P(f.X, f.Y, f.Z), FocusC, true, $"focus {P(f.X, f.Y, f.Z)} {Blocks.Get(s.World.Block(f.X, f.Y, f.Z)).Name}"));
+        list.Add(new Cand(0, f.X + 0.5, f.Y + 1.0, f.Z + 0.5, Pos(f.X, f.Y, f.Z), FocusC, true, $"focus {Pos(f.X, f.Y, f.Z)} {Blocks.Get(s.World.Block(f.X, f.Y, f.Z)).Name}"));
         foreach (var sp in a.Spots)
-            list.Add(new Cand(0, sp.X + 0.5, sp.Y + 1.0, sp.Z + 0.5, P(sp.X, sp.Y, sp.Z), Gold, true, $"spot {P(sp.X, sp.Y, sp.Z)}"));
+            list.Add(new Cand(0, sp.X + 0.5, sp.Y + 1.0, sp.Z + 0.5, Pos(sp.X, sp.Y, sp.Z), Gold, true, $"spot {Pos(sp.X, sp.Y, sp.Z)}"));
         foreach (var e in s.Entities)
         {
             double hx = s.EyeX - e.X, hz = s.EyeZ - e.Z;
             if (e.Kind != "item" && hx * hx + hz * hz < 0.36 && s.EyeY - e.Y is > -0.2 and < 2.0) continue; // the camera's own body
-            switch (e.Kind)
-            {
-                case "player" or "hive" or "self":
-                {
-                    var name = string.IsNullOrEmpty(e.Name) ? e.Kind : e.Name!.Length > 14 ? e.Name[..14] : e.Name;
-                    list.Add(new Cand(1, e.X, e.Y + (e.Sneaking ? 2.0 : 2.15), e.Z, name, e.Kind is "hive" or "self" ? 0xff9f43 : VisionRenderer.PlayerColour(e.Name), true,
-                        $"{(e.Kind == "player" ? "player" : "bot")} {e.Name} {P(e.X, e.Y, e.Z)}"));
-                    break;
-                }
-                case "mob":
-                {
-                    var name = (e.Mob ?? e.Name ?? "mob").Replace('_', ' ');
-                    var model = EntityGeometry.Create(EntityGeometry.ModelKind(e));
-                    list.Add(new Cand(e.Burning ? 2 : 3, e.X, e.Y + model.Height + 0.3, e.Z, e.Burning ? name + " BURNING" : name, e.Burning ? 0xff7a1au : 0xff5a5au, false,
-                        $"{name}{(e.Burning ? " burning" : "")} {P(e.X, e.Y, e.Z)}"));
-                    break;
-                }
-                case "item":
-                    list.Add(new Cand(2, e.X, e.Y + 0.45, e.Z, EyeRenderer.DropLabel(e), 0xf2e46a, false, $"drop {EyeRenderer.DropLabel(e)} {P(e.X, e.Y, e.Z)}"));
-                    break;
-            }
+            if (EntityCandidate(e) is { } cand) list.Add(cand);
         }
-        if (a.Slab is { Roles: not null } slab)
-        {
-            int g = 0;
-            for (int iy = 0; iy < slab.Sy; iy++)
-                for (int iz = 0; iz < slab.N; iz++)
-                    for (int ix = 0; ix < slab.N; ix++)
-                    {
-                        int x = slab.X0 + ix, y = slab.Y0 + iy, z = slab.Z0 + iz;
-                        if (slab.RoleAt(x, y, z) != BlockRole.GenCell) continue;
-                        g++;
-                        list.Add(new Cand(2, x + 0.5, y + 1.0, z + 0.5, "G" + g, BlockRoles.Colour(BlockRole.GenCell), false, $"gen cell G{g} {P(x, y, z)}"));
-                    }
-        }
+        if (a.Slab is { Roles: not null } slab) GenCellCandidates(slab, list);
         foreach (var m in s.Marks)
-        {
-            var t = VisionRenderer.ShortLabel(m.Text);
-            if (t.Length == 0) continue;
-            int id = s.World.Block(m.MinX, m.MinY, m.MinZ);
-            if (id == Blocks.LitFurnace) t += " LIT";
-            else if (id == Blocks.Furnace && t.Contains("FURNACE", StringComparison.OrdinalIgnoreCase)) t += " OFF";
-            bool station = id is Blocks.Chest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Workbench or Blocks.Dispenser;
-            list.Add(new Cand(station ? 4 : 5, m.CentreX + 0.5, m.MaxY + (m.Box ? 1.2 : 1.1), m.CentreZ + 0.5, t, m.Box ? Gold : 0xe8ecf4, false,
-                $"{t.ToLowerInvariant()} {m.MinX},{m.MinY},{m.MinZ}"));
-        }
+            if (MarkCandidate(s, m) is { } cand) list.Add(cand);
         return list;
     }
 
+    /// <summary>A name tag (players, bots), a mob's name, or a drop's label; null for other kinds.</summary>
+    private static Cand? EntityCandidate(VisionEntity e)
+    {
+        switch (e.Kind)
+        {
+            case "player" or "hive" or "self":
+            {
+                var name = string.IsNullOrEmpty(e.Name) ? e.Kind : e.Name!.Length > 14 ? e.Name[..14] : e.Name;
+                return new Cand(1, e.X, e.Y + (e.Sneaking ? 2.0 : 2.15), e.Z, name, e.Kind is "hive" or "self" ? 0xff9f43 : VisionRenderer.PlayerColour(e.Name), true,
+                    $"{(e.Kind == "player" ? "player" : "bot")} {e.Name} {Pos(e.X, e.Y, e.Z)}");
+            }
+            case "mob": return MobCandidate(e);
+            case "item": return new Cand(2, e.X, e.Y + 0.45, e.Z, EyeRenderer.DropLabel(e), 0xf2e46a, false, $"drop {EyeRenderer.DropLabel(e)} {Pos(e.X, e.Y, e.Z)}");
+            default: return null;
+        }
+    }
+
+    private static Cand MobCandidate(VisionEntity e)
+    {
+        var name = (e.Mob ?? e.Name ?? "mob").Replace('_', ' ');
+        var model = EntityGeometry.Create(EntityGeometry.ModelKind(e));
+        return new Cand(e.Burning ? 2 : 3, e.X, e.Y + model.Height + 0.3, e.Z, e.Burning ? name + " BURNING" : name, e.Burning ? 0xff7a1au : 0xff5a5au, false,
+            $"{name}{(e.Burning ? " burning" : "")} {Pos(e.X, e.Y, e.Z)}");
+    }
+
+    /// <summary>The gen cells in the slab, numbered G1, G2... in scan order.</summary>
+    private static void GenCellCandidates(VisionRenderer.Slab slab, List<Cand> list)
+    {
+        int g = 0;
+        for (int iy = 0; iy < slab.Sy; iy++)
+            for (int iz = 0; iz < slab.N; iz++)
+                for (int ix = 0; ix < slab.N; ix++)
+                {
+                    int x = slab.X0 + ix, y = slab.Y0 + iy, z = slab.Z0 + iz;
+                    if (slab.RoleAt(x, y, z) != BlockRole.GenCell) continue;
+                    g++;
+                    list.Add(new Cand(2, x + 0.5, y + 1.0, z + 0.5, "G" + g, BlockRoles.Colour(BlockRole.GenCell), false, $"gen cell G{g} {Pos(x, y, z)}"));
+                }
+    }
+
+    /// <summary>A mark's short label (furnaces say LIT / OFF; stations rank above other marks), null when it has no text.</summary>
+    private static Cand? MarkCandidate(EyeScene s, VisionMark m)
+    {
+        var t = VisionRenderer.ShortLabel(m.Text);
+        if (t.Length == 0) return null;
+        int id = s.World.Block(m.MinX, m.MinY, m.MinZ);
+        if (id == Blocks.LitFurnace) t += " LIT";
+        else if (id == Blocks.Furnace && t.Contains("FURNACE", StringComparison.OrdinalIgnoreCase)) t += " OFF";
+        bool station = id is Blocks.Chest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Workbench or Blocks.Dispenser;
+        return new Cand(station ? 4 : 5, m.CentreX + 0.5, m.MaxY + (m.Box ? 1.2 : 1.1), m.CentreZ + 0.5, t, m.Box ? Gold : 0xe8ecf4, false,
+            $"{t.ToLowerInvariant()} {m.MinX},{m.MinY},{m.MinZ}");
+    }
     /// <summary>Places labels by priority near their anchors (stacked when crowded, a leader line when moved off the anchor),
     /// skipping anchors behind walls (players are kept, dimmed), at most <see cref="MaxLabels"/>.</summary>
     private static void Place(EyeRenderer r, Canvas c, EyeRenderer.Frame fr, EyeScene s, List<Cand> cands, VisionRenderer.Placer placer, List<string> facts)

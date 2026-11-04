@@ -19,22 +19,24 @@ public static class AsciiMap
     {
         if (!w.IsLoaded(x, z)) return '?';
         int feet = w.GetBlock(x, y, z);
-        char? obstacle = feet switch
-        {
-            0 => null,
-            Blocks.Chest or Blocks.LockedChest => 'C',
-            Blocks.Furnace or Blocks.LitFurnace => 'F',
-            Blocks.Workbench => 'W',
-            Blocks.WoodenDoor or Blocks.IronDoor => 'D',
-            Blocks.Log => 'T',
-            Blocks.Leaves => '*',
-            Blocks.Water or Blocks.FlowingWater => '~',
-            Blocks.Lava or Blocks.FlowingLava => '!',
-            Blocks.Slab or Blocks.SnowLayer or Blocks.Farmland => '=',
-            _ => Blocks.Get(feet).Solid ? '#' : null,
-        };
-        if (obstacle is { } o) return o;
-        bool deco = feet != 0;
+        if (feet != 0 && Obstacle(feet) is { } o) return o;
+        return Ground(w, x, y, z, deco: feet != 0);
+    }
+
+    /// <summary>Feet-level blocks with their own glyph (other solid blocks are walls).</summary>
+    private static readonly Dictionary<int, char> Obstacles = new()
+    {
+        [Blocks.Chest] = 'C', [Blocks.LockedChest] = 'C', [Blocks.Furnace] = 'F', [Blocks.LitFurnace] = 'F', [Blocks.Workbench] = 'W',
+        [Blocks.WoodenDoor] = 'D', [Blocks.IronDoor] = 'D', [Blocks.Log] = 'T', [Blocks.Leaves] = '*', [Blocks.Water] = '~', [Blocks.FlowingWater] = '~',
+        [Blocks.Lava] = '!', [Blocks.FlowingLava] = '!', [Blocks.Slab] = '=', [Blocks.SnowLayer] = '=', [Blocks.Farmland] = '=',
+    };
+
+    /// <summary>The glyph of a feet-level block, null when it is see-through (look at the ground).</summary>
+    private static char? Obstacle(int feet) => Obstacles.TryGetValue(feet, out var g) ? g : Blocks.Get(feet).Solid ? '#' : null;
+
+    /// <summary>What is underfoot: fluid, floor (o with a plant/torch on it), lower ground, deep ground or void.</summary>
+    private static char Ground(IBlockAccess w, int x, int y, int z, bool deco)
+    {
         int under = w.GetBlock(x, y - 1, z);
         if (Blocks.IsWater(under)) return '~';
         if (Blocks.IsLava(under)) return '!';
@@ -69,16 +71,42 @@ public static class AsciiMap
     {
         size = Math.Clamp(size | 1, 5, 25);
         int r = size / 2, x0 = cx - r, z0 = cz - r;
-        var grid = new char[size, size];
         var present = new HashSet<BlockRole>();
+        var grid = Grid(w, x0, cy, z0, size, roles, present);
+        var who = PlaceEntities(grid, entities ?? [], x0, z0, size);
+        if (self is { } me && (uint)(me.X - x0) < (uint)size && (uint)(me.Z - z0) < (uint)size) grid[me.Z - z0, me.X - x0] = '@';
+
+        var sb = new StringBuilder();
+        sb.Append(CultureInfo.InvariantCulture, $"map {size}x{size} x{x0}..{x0 + size - 1} z{z0}..{z0 + size - 1} at feet y{cy}, N up, 1 char=1 block\n");
+        AppendRows(sb, grid, x0, z0, size);
+        sb.Append(Legend);
+        if (present.Count > 0) sb.Append("; roles: ").Append(BlockRoles.Legend(present));
+        if (who.Count > 0) sb.Append("; ").Append(string.Join(' ', who));
+        var inView = (marks ?? []).Where(m => m.MaxX >= x0 && m.MinX < x0 + size && m.MaxZ >= z0 && m.MinZ < z0 + size).Take(6).ToList();
+        if (inView.Count > 0)
+            sb.Append("; marks: ").Append(string.Join("; ", inView.Select(m =>
+                $"{VisionRenderer.ShortLabel(m.Text)} {Rng(m.MinX, m.MaxX)},{Rng(m.MinY, m.MaxY)},{Rng(m.MinZ, m.MaxZ)}")));
+        return sb.ToString();
+    }
+
+    /// <summary>The block glyphs, role letters over them (the roles shown go to <paramref name="present"/>).</summary>
+    private static char[,] Grid(IBlockAccess w, int x0, int cy, int z0, int size, RoleMap? roles, HashSet<BlockRole> present)
+    {
+        var grid = new char[size, size];
         for (int iz = 0; iz < size; iz++)
             for (int ix = 0; ix < size; ix++)
             {
                 grid[iz, ix] = Cell(w, x0 + ix, cy, z0 + iz);
                 if (roles != null && RoleGlyph(w, roles, x0 + ix, cy, z0 + iz, out var role) is { } g) { grid[iz, ix] = g; present.Add(role); }
             }
+        return grid;
+    }
+
+    /// <summary>Entities on the grid (players by initial, mobs 'm'); returns "glyph=name" for the players and bots.</summary>
+    private static List<string> PlaceEntities(char[,] grid, IReadOnlyList<VisionEntity> entities, int x0, int z0, int size)
+    {
         var who = new List<string>();
-        foreach (var e in entities ?? [])
+        foreach (var e in entities)
         {
             int ix = (int)Math.Floor(e.X) - x0, iz = (int)Math.Floor(e.Z) - z0;
             if ((uint)ix >= (uint)size || (uint)iz >= (uint)size) continue;
@@ -91,11 +119,13 @@ public static class AsciiMap
             grid[iz, ix] = g;
             if (e.Kind is "player" or "hive" && e.Name is { Length: > 0 } n && !who.Contains($"{g}={n}")) who.Add($"{g}={n}");
         }
-        if (self is { } me && (uint)(me.X - x0) < (uint)size && (uint)(me.Z - z0) < (uint)size) grid[me.Z - z0, me.X - x0] = '@';
+        return who;
+    }
 
+    /// <summary>The x ruler (every 5th x) and the rows with z labels (every 5th z).</summary>
+    private static void AppendRows(StringBuilder sb, char[,] grid, int x0, int z0, int size)
+    {
         const int pad = 4;
-        var sb = new StringBuilder();
-        sb.Append(CultureInfo.InvariantCulture, $"map {size}x{size} x{x0}..{x0 + size - 1} z{z0}..{z0 + size - 1} at feet y{cy}, N up, 1 char=1 block\n");
         var ruler = new char[pad + size + 4];
         Array.Fill(ruler, ' ');
         for (int ix = 0; ix < size; ix++)
@@ -113,15 +143,6 @@ public static class AsciiMap
             for (int ix = 0; ix < size; ix++) sb.Append(grid[iz, ix]);
             sb.Append('|').Append('\n');
         }
-        sb.Append(Legend);
-        if (present.Count > 0) sb.Append("; roles: ").Append(BlockRoles.Legend(present));
-        if (who.Count > 0) sb.Append("; ").Append(string.Join(' ', who));
-        var inView = (marks ?? []).Where(m => m.MaxX >= x0 && m.MinX < x0 + size && m.MaxZ >= z0 && m.MinZ < z0 + size).Take(6).ToList();
-        if (inView.Count > 0)
-            sb.Append("; marks: ").Append(string.Join("; ", inView.Select(m =>
-                $"{VisionRenderer.ShortLabel(m.Text)} {Rng(m.MinX, m.MaxX)},{Rng(m.MinY, m.MaxY)},{Rng(m.MinZ, m.MaxZ)}")));
-        return sb.ToString();
     }
-
     private static string Rng(int a, int b) => a == b ? a.ToString(CultureInfo.InvariantCulture) : $"{a}..{b}";
 }

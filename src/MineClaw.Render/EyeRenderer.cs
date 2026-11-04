@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using MineClaw.Data;
 using MineClaw.World;
 
@@ -153,27 +154,25 @@ public sealed class ViewCut
         double dx = camX - x, dy = camY - y, dz = camZ - z, len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
         if (len < 1e-6) return false;
         dx /= len; dy /= len; dz /= len;
-        int vx = (int)Math.Floor(x), vy = (int)Math.Floor(y), vz = (int)Math.Floor(z);
-        int sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
-        double tdx = dx == 0 ? double.MaxValue : Math.Abs(1 / dx), tdy = dy == 0 ? double.MaxValue : Math.Abs(1 / dy), tdz = dz == 0 ? double.MaxValue : Math.Abs(1 / dz);
-        double tmx = dx == 0 ? double.MaxValue : (dx > 0 ? vx + 1 - x : x - vx) * tdx;
-        double tmy = dy == 0 ? double.MaxValue : (dy > 0 ? vy + 1 - y : y - vy) * tdy;
-        double tmz = dz == 0 ? double.MaxValue : (dz > 0 ? vz + 1 - z : z - vz) * tdz;
+        var d = new EyeRenderer.Dda(x, y, z, dx, dy, dz);
         int h = w.WorldHeight;
         for (int i = 0; i < 512; i++)
         {
-            double t;
-            if (tmx < tmy && tmx < tmz) { t = tmx; vx += sx; tmx += tdx; }
-            else if (tmy < tmz) { t = tmy; vy += sy; tmy += tdy; }
-            else { t = tmz; vz += sz; tmz += tdz; }
+            double t = d.Exit;
+            d.Advance();
             if (t >= len - 0.3) return false;
-            if ((uint)vy >= (uint)h) { if (vy >= h && dy > 0) return false; continue; }
-            int id = w.Block(vx, vy, vz);
-            if (id == 0 || !(BlockGeometry.OpaqueCube(id) || id is Blocks.Leaves or 161)) continue;
-            if (mask != null && mask.Hidden(vx, vy, vz)) continue;
-            return true;
+            if ((uint)d.Vy >= (uint)h) { if (d.Vy >= h && dy > 0) return false; continue; }
+            if (Occludes(w, d.Vx, d.Vy, d.Vz, mask)) return true;
         }
         return false;
+    }
+
+    /// <summary>An opaque cube or leaves that the roof cut (<paramref name="mask"/>) left in place.</summary>
+    private static bool Occludes(IVoxelWorld w, int x, int y, int z, CutAway? mask)
+    {
+        int id = w.Block(x, y, z);
+        if (id == 0 || !(BlockGeometry.OpaqueCube(id) || id is Blocks.Leaves or 161)) return false;
+        return !(mask != null && mask.Hidden(x, y, z));
     }
 
     /// <summary>
@@ -538,132 +537,234 @@ public sealed class EyeRenderer
     /// <summary>Partial block heights for the crosshair pick (the render shapes come from <see cref="BlockGeometry"/>).</summary>
     private static bool Translucent(int id) => id is Blocks.Water or Blocks.FlowingWater or Blocks.Ice or Blocks.Portal;
 
-    private (uint Colour, float Depth, long Cell) Trace(Ctx ctx, double ox, double oy, double oz, double dx, double dy, double dz, BandCache cache)
+    /// <summary>A ray: origin and unit direction (the float direction for the quad intersections).</summary>
+    private readonly struct Ray(double ox, double oy, double oz, double dx, double dy, double dz)
     {
-        var s = ctx.S;
-        int vx = (int)Math.Floor(ox), vy = (int)Math.Floor(oy), vz = (int)Math.Floor(oz);
-        int stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
-        double tdx = dx == 0 ? double.MaxValue : Math.Abs(1 / dx), tdy = dy == 0 ? double.MaxValue : Math.Abs(1 / dy), tdz = dz == 0 ? double.MaxValue : Math.Abs(1 / dz);
-        double tmx = dx == 0 ? double.MaxValue : (dx > 0 ? vx + 1 - ox : ox - vx) * tdx;
-        double tmy = dy == 0 ? double.MaxValue : (dy > 0 ? vy + 1 - oy : oy - vy) * tdy;
-        double tmz = dz == 0 ? double.MaxValue : (dz > 0 ? vz + 1 - oz : oz - vz) * tdz;
+        public readonly double Ox = ox, Oy = oy, Oz = oz, Dx = dx, Dy = dy, Dz = dz;
+        public readonly Vector3 DirF = new((float)dx, (float)dy, (float)dz);
+    }
 
-        // Nearest opaque entity texel along the ray.
-        double eT = double.MaxValue;
-        uint eC = 0;
-        var dirF = new Vector3((float)dx, (float)dy, (float)dz);
-        foreach (var m in ctx.Ents)
+    /// <summary>Amanatides–Woo voxel walk: the current cell, the axis it was entered through and the next boundary per axis.</summary>
+    internal struct Dda
+    {
+        public int Vx, Vy, Vz, LastAxis;
+        public readonly int StepX, StepY, StepZ;
+        public readonly double Tdx, Tdy, Tdz;
+        public double Tmx, Tmy, Tmz;
+
+        public Dda(double ox, double oy, double oz, double dx, double dy, double dz)
         {
-            if (!RayBox(ox, oy, oz, dx, dy, dz, m.X0, m.Y0, m.Z0, m.X1, m.Y1, m.Z1, out double tb, out _) || tb > eT) continue;
-            var o = new Vector3((float)(ox - m.Ox), (float)(oy - m.Oy), (float)(oz - m.Oz));
-            for (int i = 0; i < m.Quads.Length; i++)
-            {
-                ref var q = ref m.Quads[i];
-                if (!QuadHit.Intersect(q, o, dirF, 0.01f, out float t, out var uv) || t >= eT) continue;
-                uint tex = Sample(s, q, uv);
-                float a = q.Alpha > 0 ? q.Alpha : (tex >> 24) / 255f;
-                if (a < 0.5f) continue;
-                eT = t;
-                eC = Lighting.Scale(tex, Math.Min(1f, m.Light * q.Shade));
-            }
+            Vx = (int)Math.Floor(ox); Vy = (int)Math.Floor(oy); Vz = (int)Math.Floor(oz);
+            LastAxis = -1;
+            StepX = Step(dx); StepY = Step(dy); StepZ = Step(dz);
+            Tdx = Delta(dx); Tdy = Delta(dy); Tdz = Delta(dz);
+            Tmx = First(ox, Vx, dx, Tdx); Tmy = First(oy, Vy, dy, Tdy); Tmz = First(oz, Vz, dz, Tdz);
         }
 
+        private static int Step(double d) => d > 0 ? 1 : -1;
+        private static double Delta(double d) => d == 0 ? double.MaxValue : Math.Abs(1 / d);
+        private static double First(double o, int v, double d, double td) => d == 0 ? double.MaxValue : (d > 0 ? v + 1 - o : o - v) * td;
+
+        /// <summary>Distance along the ray where it leaves the current cell.</summary>
+        public readonly double Exit => Math.Min(Tmx, Math.Min(Tmy, Tmz));
+
+        /// <summary>The face of the current cell the ray came in through.</summary>
+        public readonly Face EntryFace => LastAxis switch
+        {
+            0 => StepX > 0 ? Face.West : Face.East,
+            1 => StepY > 0 ? Face.Down : Face.Up,
+            _ => StepZ > 0 ? Face.North : Face.South,
+        };
+
+        /// <summary>Steps into the next cell.</summary>
+        public void Advance()
+        {
+            if (Tmx < Tmy && Tmx < Tmz) { Vx += StepX; Tmx += Tdx; LastAxis = 0; }
+            else if (Tmy < Tmz) { Vy += StepY; Tmy += Tdy; LastAxis = 1; }
+            else { Vz += StepZ; Tmz += Tdz; LastAxis = 2; }
+        }
+    }
+
+    /// <summary>What one pixel's ray found: colour, depth and the cell it shows.</summary>
+    private readonly record struct Hit(uint Colour, float Depth, long Cell);
+
+    private (uint Colour, float Depth, long Cell) Trace(Ctx ctx, double ox, double oy, double oz, double dx, double dy, double dz, BandCache cache)
+    {
+        var ray = new Ray(ox, oy, oz, dx, dy, dz);
+        var dda = new Dda(ox, oy, oz, dx, dy, dz);
+        var (eT, eC) = NearestEntity(ctx, ray);
+        var w = ctx.S.World;
         var blend = Blend.New();
         double t0 = 0;
-        int lastAxis = -1, prevId = s.World.Block(vx, vy, vz);
-        var w = s.World;
+        int prevId = w.Block(dda.Vx, dda.Vy, dda.Vz);
         int maxDist = ctx.MaxDist;
         int maxSteps = maxDist * 3 + 3, height = w.WorldHeight;
         Span<(float T, int Q)> hits = stackalloc (float, int)[24];
-        var xray = s.XRay;
         bool cutBefore = false; // the previous cell was solid and x-rayed away: the face it exposes is a cut face
         for (int step = 0; step < maxSteps && t0 <= maxDist; step++)
         {
             if (eT <= t0) return (Finish(ctx, blend, eC, eT, dy), (float)eT, NoCell);
-            if (vy < 0 && dy < 0 || vy >= height && dy > 0) break;
-            int id = (uint)vy < height ? w.Block(vx, vy, vz) : 0;
-            double tExit = Math.Min(tmx, Math.Min(tmy, tmz));
+            if (dda.Vy < 0 && dy < 0 || dda.Vy >= height && dy > 0) break;
+            int id = (uint)dda.Vy < height ? w.Block(dda.Vx, dda.Vy, dda.Vz) : 0;
+            double tExit = dda.Exit;
             bool cutEdge = cutBefore;
-            cutBefore = false;
-            if (id != 0 && xray != null && step > 0 && xray.Hides(vx, vy, vz)) { cutBefore = BlockGeometry.OpaqueCube(id) || id is Blocks.Leaves or 161; id = 0; }
-            if (id != 0 && step > 0 && !(s.Cut is { } cut && cut.Hidden(vx, vy, vz)) && !(s.Clip is { } clip && !clip.Contains(vx, vy, vz)))
-            {
-                var models = s.Atlas?.Models;
-                var shape = BlockMesh.Shape(models, id, w.Meta(vx, vy, vz));
-                if (BlockMesh.IsCube(shape))
-                {
-                    // Glass beside glass and ice beside ice draw no face between them (fancy leaves do).
-                    bool culled = shape != BlockShape.Cube && id != Blocks.Leaves && prevId == id && !(models != null && id == 161);
-                    if (!culled)
-                    {
-                        int meta = w.Meta(vx, vy, vz);
-                        Face face = lastAxis switch { 0 => stepX > 0 ? Face.West : Face.East, 1 => stepY > 0 ? Face.Down : Face.Up, _ => stepZ > 0 ? Face.North : Face.South };
-                        double hx = ox + dx * t0, hy = oy + dy * t0, hz = oz + dz * t0;
-                        var (u, v) = Uv(face, hx - vx, hy - vy, hz - vz);
-                        uint texel;
-                        if (models != null)
-                            texel = models.CubeTexel(w, vx, vy, vz, id, meta, face, new Vector3((float)(hx - vx), (float)(hy - vy), (float)(hz - vz)));
-                        else if (s.Atlas is { } atlas)
-                        {
-                            var tr = BlockGeometry.CubeTile(w, vx, vy, vz, id, meta, face);
-                            texel = BlockTextures.Texel(atlas, tr, id, (float)u, (float)v) ?? (0xff000000 | BlockGeometry.FlatColour(id, face));
-                        }
-                        else texel = 0xff000000 | BlockGeometry.FlatColour(id, face);
-                        float a = shape == BlockShape.TranslucentCube ? 0.62f : (texel >> 24) / 255f;
-                        if (shape == BlockShape.Cube || a >= 0.5f)
-                        {
-                            float k = models != null && models.Emissive(id) ? 1f : CubeLight(s, w, id, vx, vy, vz, face, u, v, ctx.Sub, cache, ctx.MinB);
-                            uint c = Lighting.Scale(texel, k);
-                            if (face == Face.Up) c = ShadowAt(ctx, c, hx, hy, hz);
-                            if (cutEdge) c = Hatch(c, hx, hy, hz);
-                            if (shape == BlockShape.TranslucentCube) blend.Add(c, a);
-                            else if (eT > t0) return (Finish(ctx, blend, Fog(ctx, c, t0), t0, dy), (float)t0, CellKey(vx, vy, vz));
-                        }
-                    }
-                }
-                else
-                {
-                    var quads = Shape(models, w, vx, vy, vz, cache);
-                    if (quads.Length > 0)
-                    {
-                        var o = new Vector3((float)(ox - vx), (float)(oy - vy), (float)(oz - vz));
-                        int n = 0;
-                        for (int i = 0; i < quads.Length && n < hits.Length; i++)
-                            if (QuadHit.Intersect(quads[i], o, dirF, 0.0005f, out float t, out _) && t >= t0 - 1e-3 && t <= tExit + 1e-3)
-                            {
-                                int j = n++;
-                                while (j > 0 && hits[j - 1].T > t) { hits[j] = hits[j - 1]; j--; }
-                                hits[j] = (t, i);
-                            }
-                        for (int h = 0; h < n; h++)
-                        {
-                            var (t, qi) = hits[h];
-                            if (t >= eT) break;
-                            ref var q = ref quads[qi];
-                            QuadHit.Intersect(q, o, dirF, t - 1e-4f, out _, out var uv);
-                            uint tex = Sample(s, q, uv);
-                            float a = q.Alpha > 0 ? q.Alpha : (tex >> 24) / 255f;
-                            if (q.Pass != RenderPass.Translucent && a < 0.5f) continue;
-                            float k = q.Emissive ? 1f : QuadLight(s, w, q, vx, vy, vz, ctx.Sub, cache, ctx.MinB);
-                            uint c = Lighting.Scale(tex, k);
-                            double hx = ox + dx * t, hy = oy + dy * t, hz = oz + dz * t;
-                            if (q.Normal.Y > 0.7f) c = ShadowAt(ctx, c, hx, hy, hz);
-                            if (cutEdge) c = Hatch(c, hx, hy, hz);
-                            if (q.Pass == RenderPass.Translucent) { blend.Add(Fog(ctx, c, t), Math.Clamp(a, 0.3f, 0.95f)); if (blend.T < 0.04f) return (blend.Over(0), t, CellKey(vx, vy, vz)); continue; }
-                            return (Finish(ctx, blend, Fog(ctx, c, t), t, dy), t, CellKey(vx, vy, vz));
-                        }
-                    }
-                }
-            }
+            id = XRayed(ctx.S, dda, id, step, out cutBefore);
+            if (id != 0 && step > 0 && Drawn(ctx.S, dda.Vx, dda.Vy, dda.Vz)
+                && HitCell(ctx, ray, dda, id, prevId, t0, tExit, cutEdge, eT, ref blend, cache, hits, out var hit))
+                return (hit.Colour, hit.Depth, hit.Cell);
             prevId = id;
-            // Advance.
             t0 = tExit;
-            if (tmx < tmy && tmx < tmz) { vx += stepX; tmx += tdx; lastAxis = 0; }
-            else if (tmy < tmz) { vy += stepY; tmy += tdy; lastAxis = 1; }
-            else { vz += stepZ; tmz += tdz; lastAxis = 2; }
+            dda.Advance();
         }
         if (eT < double.MaxValue) return (Finish(ctx, blend, eC, eT, dy), (float)eT, NoCell);
         return (blend.Over(Sky(ctx, dy)), float.PositiveInfinity, NoCell);
+    }
+
+    /// <summary>Nearest opaque entity texel along the ray: its distance (MaxValue = none) and lit colour.</summary>
+    private static (double T, uint C) NearestEntity(Ctx ctx, in Ray r)
+    {
+        double eT = double.MaxValue;
+        uint eC = 0;
+        foreach (var m in ctx.Ents)
+        {
+            if (!RayBox(r.Ox, r.Oy, r.Oz, r.Dx, r.Dy, r.Dz, m.X0, m.Y0, m.Z0, m.X1, m.Y1, m.Z1, out double tb, out _) || tb > eT) continue;
+            NearestEntityQuad(ctx.S, m, r, ref eT, ref eC);
+        }
+        return (eT, eC);
+    }
+
+    private static void NearestEntityQuad(EyeScene s, EMesh m, in Ray r, ref double eT, ref uint eC)
+    {
+        var o = new Vector3((float)(r.Ox - m.Ox), (float)(r.Oy - m.Oy), (float)(r.Oz - m.Oz));
+        for (int i = 0; i < m.Quads.Length; i++)
+        {
+            ref var q = ref m.Quads[i];
+            if (!QuadHit.Intersect(q, o, r.DirF, 0.01f, out float t, out var uv) || t >= eT) continue;
+            uint tex = Sample(s, q, uv);
+            float a = q.Alpha > 0 ? q.Alpha : (tex >> 24) / 255f;
+            if (a < 0.5f) continue;
+            eT = t;
+            eC = Lighting.Scale(tex, Math.Min(1f, m.Light * q.Shade));
+        }
+    }
+
+    /// <summary>The block id the ray sees in the current cell: 0 when the x-ray cut removes it (then <paramref name="cut"/> says
+    /// whether it was solid, so the next face is a cut face).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int XRayed(EyeScene s, in Dda d, int id, int step, out bool cut)
+    {
+        cut = false;
+        if (id == 0 || s.XRay is not { } xray || step == 0 || !xray.Hides(d.Vx, d.Vy, d.Vz)) return id;
+        cut = BlockGeometry.OpaqueCube(id) || id is Blocks.Leaves or 161;
+        return 0;
+    }
+
+    /// <summary>The cell is drawn: not under a cut-away roof, inside the clip box.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool Drawn(EyeScene s, int x, int y, int z) =>
+        !(s.Cut is { } cut && cut.Hidden(x, y, z)) && !(s.Clip is { } clip && !clip.Contains(x, y, z));
+
+    /// <summary>The ray in a non-air cell: a full cube's entry face or the block's quads. True = the pixel is decided.</summary>
+    private bool HitCell(Ctx ctx, in Ray r, in Dda d, int id, int prevId, double t0, double tExit, bool cutEdge, double eT, ref Blend blend,
+        BandCache cache, Span<(float T, int Q)> hits, out Hit hit)
+    {
+        var models = ctx.S.Atlas?.Models;
+        var shape = BlockMesh.Shape(models, id, ctx.S.World.Meta(d.Vx, d.Vy, d.Vz));
+        if (BlockMesh.IsCube(shape)) return CubeHit(ctx, r, d, id, shape, models, prevId, t0, cutEdge, eT, ref blend, cache, out hit);
+        return QuadsHit(ctx, r, d, models, t0, tExit, cutEdge, eT, ref blend, cache, hits, out hit);
+    }
+
+    private bool CubeHit(Ctx ctx, in Ray r, in Dda d, int id, BlockShape shape, IBlockModels? models, int prevId, double t0, bool cutEdge, double eT,
+        ref Blend blend, BandCache cache, out Hit hit)
+    {
+        hit = default;
+        var s = ctx.S;
+        var w = s.World;
+        // Glass beside glass and ice beside ice draw no face between them (fancy leaves do).
+        if (shape != BlockShape.Cube && id != Blocks.Leaves && prevId == id && !(models != null && id == 161)) return false;
+        int meta = w.Meta(d.Vx, d.Vy, d.Vz);
+        Face face = d.EntryFace;
+        double hx = r.Ox + r.Dx * t0, hy = r.Oy + r.Dy * t0, hz = r.Oz + r.Dz * t0;
+        var (u, v) = Uv(face, hx - d.Vx, hy - d.Vy, hz - d.Vz);
+        uint texel = CubeTexel(s, models, d, id, meta, face, hx, hy, hz, u, v);
+        float a = shape == BlockShape.TranslucentCube ? 0.62f : (texel >> 24) / 255f;
+        if (!(shape == BlockShape.Cube || a >= 0.5f)) return false;
+        float k = models != null && models.Emissive(id) ? 1f : CubeLight(s, w, id, d.Vx, d.Vy, d.Vz, face, u, v, ctx.Sub, cache, ctx.MinB);
+        uint c = Lighting.Scale(texel, k);
+        if (face == Face.Up) c = ShadowAt(ctx, c, hx, hy, hz);
+        if (cutEdge) c = Hatch(c, hx, hy, hz);
+        if (shape == BlockShape.TranslucentCube) { blend.Add(c, a); return false; }
+        if (!(eT > t0)) return false;
+        hit = new Hit(Finish(ctx, blend, Fog(ctx, c, t0), t0, r.Dy), (float)t0, CellKey(d.Vx, d.Vy, d.Vz));
+        return true;
+    }
+
+    /// <summary>Texel (0xAARRGGBB) of a full cube's face at the hit: the 1.12.2 model, the b1.8.1 tile, or the flat colour.</summary>
+    private static uint CubeTexel(EyeScene s, IBlockModels? models, in Dda d, int id, int meta, Face face, double hx, double hy, double hz, double u, double v)
+    {
+        var w = s.World;
+        if (models != null)
+            return models.CubeTexel(w, d.Vx, d.Vy, d.Vz, id, meta, face, new Vector3((float)(hx - d.Vx), (float)(hy - d.Vy), (float)(hz - d.Vz)));
+        if (s.Atlas is not { } atlas) return 0xff000000 | BlockGeometry.FlatColour(id, face);
+        var tr = BlockGeometry.CubeTile(w, d.Vx, d.Vy, d.Vz, id, meta, face);
+        return BlockTextures.Texel(atlas, tr, id, (float)u, (float)v) ?? (0xff000000 | BlockGeometry.FlatColour(id, face));
+    }
+
+    private bool QuadsHit(Ctx ctx, in Ray r, in Dda d, IBlockModels? models, double t0, double tExit, bool cutEdge, double eT, ref Blend blend,
+        BandCache cache, Span<(float T, int Q)> hits, out Hit hit)
+    {
+        hit = default;
+        var quads = Shape(models, ctx.S.World, d.Vx, d.Vy, d.Vz, cache);
+        if (quads.Length == 0) return false;
+        var o = new Vector3((float)(r.Ox - d.Vx), (float)(r.Oy - d.Vy), (float)(r.Oz - d.Vz));
+        int n = SortedHits(quads, o, r.DirF, t0, tExit, hits);
+        for (int h = 0; h < n; h++)
+        {
+            var (t, qi) = hits[h];
+            if (t >= eT) break;
+            ref var q = ref quads[qi];
+            if (QuadColour(ctx, r, d, q, o, t, cutEdge, cache, out float a) is not { } c) continue;
+            if (q.Pass != RenderPass.Translucent)
+            {
+                hit = new Hit(Finish(ctx, blend, Fog(ctx, c, t), t, r.Dy), t, CellKey(d.Vx, d.Vy, d.Vz));
+                return true;
+            }
+            blend.Add(Fog(ctx, c, t), Math.Clamp(a, 0.3f, 0.95f));
+            if (blend.T >= 0.04f) continue;
+            hit = new Hit(blend.Over(0), t, CellKey(d.Vx, d.Vy, d.Vz));
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>The quads the ray crosses inside the cell, nearest first (insertion sort into <paramref name="hits"/>).</summary>
+    private static int SortedHits(GeoQuad[] quads, Vector3 o, Vector3 dir, double t0, double tExit, Span<(float T, int Q)> hits)
+    {
+        int n = 0;
+        for (int i = 0; i < quads.Length && n < hits.Length; i++)
+            if (QuadHit.Intersect(quads[i], o, dir, 0.0005f, out float t, out _) && t >= t0 - 1e-3 && t <= tExit + 1e-3)
+            {
+                int j = n++;
+                while (j > 0 && hits[j - 1].T > t) { hits[j] = hits[j - 1]; j--; }
+                hits[j] = (t, i);
+            }
+        return n;
+    }
+
+    /// <summary>The lit colour of a quad at the ray's hit, or null where an alpha-tested texel lets the ray through.</summary>
+    private static uint? QuadColour(Ctx ctx, in Ray r, in Dda d, in GeoQuad q, Vector3 o, float t, bool cutEdge, BandCache cache, out float a)
+    {
+        var s = ctx.S;
+        QuadHit.Intersect(q, o, r.DirF, t - 1e-4f, out _, out var uv);
+        uint tex = Sample(s, q, uv);
+        a = q.Alpha > 0 ? q.Alpha : (tex >> 24) / 255f;
+        if (q.Pass != RenderPass.Translucent && a < 0.5f) return null;
+        float k = q.Emissive ? 1f : QuadLight(s, s.World, q, d.Vx, d.Vy, d.Vz, ctx.Sub, cache, ctx.MinB);
+        uint c = Lighting.Scale(tex, k);
+        double hx = r.Ox + r.Dx * t, hy = r.Oy + r.Dy * t, hz = r.Oz + r.Dz * t;
+        if (q.Normal.Y > 0.7f) c = ShadowAt(ctx, c, hx, hy, hz);
+        if (cutEdge) c = Hatch(c, hx, hy, hz);
+        return c;
     }
 
     private static uint Finish(Ctx ctx, Blend b, uint c, double depth, double dy) => b.Over(c);
@@ -697,39 +798,35 @@ public sealed class EyeRenderer
     internal static uint Sample(EyeScene s, in GeoQuad q, Vector2 uv) => SampleQuad(s.Atlas, q, uv);
 
     /// <summary>Texel (0xAARRGGBB) of a quad at its UV with the given textures (the raycaster's sampling; parity tests).</summary>
-    public static uint SampleQuad(TextureAtlas? atlas0, in GeoQuad q, Vector2 uv)
+    public static uint SampleQuad(TextureAtlas? atlas0, in GeoQuad q, Vector2 uv) => q.Tex switch
     {
-        float u = uv.X, v = uv.Y;
-        switch (q.Tex)
-        {
-            case QuadTex.WaterStill: return FluidTextures.Sample(FluidTextures.WaterStill, u, v);
-            case QuadTex.WaterFlow: return FluidTextures.Sample(FluidTextures.WaterFlow, u, v);
-            case QuadTex.LavaStill: return FluidTextures.Sample(FluidTextures.LavaStill, u, v);
-            case QuadTex.LavaFlow: return FluidTextures.Sample(FluidTextures.LavaFlow, u, v);
-            case QuadTex.Fire: return FluidTextures.Sample(q.Tile == 1 ? FluidTextures.FireB : FluidTextures.FireA, Math.Clamp(u, 0, 0.999f), Math.Clamp(v, 0, 0.999f));
-            case QuadTex.Entity:
-            {
-                uint t = EntityTextures.Sample(atlas0, q.Tile, u, v);
-                return q.Tint != 0 ? BlockTextures.Tinted(t, q.Tint) : t;
-            }
-            case QuadTex.Item:
-                if (atlas0?.SampleItem(q.Tile, Math.Clamp(u, 0, 0.999f), Math.Clamp(v, 0, 0.999f)) is { } it) return it;
-                return 0xff000000 | q.Flat;
-            case QuadTex.Flat:
-                return 0xff000000 | q.Flat;
-            case QuadTex.Block:
-                return atlas0?.Models is { } models ? models.SampleQuad(q, uv) : 0xff000000 | q.Flat;
-            default:
-                if (q.Tile < 0 || atlas0 is not { } atlas) return (q.Pass == RenderPass.Cutout && atlas0 == null ? 0xff000000u : 0xff000000u) | q.Flat;
-                u = Math.Clamp(u, 0, 0.999f); v = Math.Clamp(v, 0, 0.999f);
-                uint p = BlockTextures.Tinted(atlas.Sample(q.Tile, u, v), q.Tint);
-                if (q.Overlay >= 0)
-                {
-                    uint ov = atlas.Sample(q.Overlay, u, v);
-                    if (ov >> 24 >= 128) p = BlockTextures.Tinted(ov, q.OverlayTint) | 0xff000000;
-                }
-                return p;
-        }
+        QuadTex.WaterStill => FluidTextures.Sample(FluidTextures.WaterStill, uv.X, uv.Y),
+        QuadTex.WaterFlow => FluidTextures.Sample(FluidTextures.WaterFlow, uv.X, uv.Y),
+        QuadTex.LavaStill => FluidTextures.Sample(FluidTextures.LavaStill, uv.X, uv.Y),
+        QuadTex.LavaFlow => FluidTextures.Sample(FluidTextures.LavaFlow, uv.X, uv.Y),
+        QuadTex.Fire => FluidTextures.Sample(q.Tile == 1 ? FluidTextures.FireB : FluidTextures.FireA, Math.Clamp(uv.X, 0, 0.999f), Math.Clamp(uv.Y, 0, 0.999f)),
+        QuadTex.Entity => EntityTexel(atlas0, q, uv),
+        QuadTex.Item => atlas0?.SampleItem(q.Tile, Math.Clamp(uv.X, 0, 0.999f), Math.Clamp(uv.Y, 0, 0.999f)) ?? 0xff000000 | q.Flat,
+        QuadTex.Flat => 0xff000000 | q.Flat,
+        QuadTex.Block => atlas0?.Models is { } models ? models.SampleQuad(q, uv) : 0xff000000 | q.Flat,
+        _ => TerrainTexel(atlas0, q, uv),
+    };
+
+    private static uint EntityTexel(TextureAtlas? atlas, in GeoQuad q, Vector2 uv)
+    {
+        uint t = EntityTextures.Sample(atlas, q.Tile, uv.X, uv.Y);
+        return q.Tint != 0 ? BlockTextures.Tinted(t, q.Tint) : t;
+    }
+
+    /// <summary>A terrain.png tile texel (tint + overlay), or the flat colour without a tile or an atlas.</summary>
+    private static uint TerrainTexel(TextureAtlas? atlas0, in GeoQuad q, Vector2 uv)
+    {
+        if (q.Tile < 0 || atlas0 is not { } atlas) return 0xff000000u | q.Flat;
+        float u = Math.Clamp(uv.X, 0, 0.999f), v = Math.Clamp(uv.Y, 0, 0.999f);
+        uint p = BlockTextures.Tinted(atlas.Sample(q.Tile, u, v), q.Tint);
+        if (q.Overlay < 0) return p;
+        uint ov = atlas.Sample(q.Overlay, u, v);
+        return ov >> 24 >= 128 ? BlockTextures.Tinted(ov, q.OverlayTint) | 0xff000000 : p;
     }
 
     private static (double U, double V) Uv(Face f, double fx, double fy, double fz) => FaceLight.CubeFaceUv(f, fx, fy, fz);
@@ -825,19 +922,23 @@ public sealed class EyeRenderer
         double tmin = 0, tmax = double.MaxValue;
         axis = -1;
         t = 0;
-        for (int a = 0; a < 3; a++)
-        {
-            double o = a == 0 ? ox : a == 1 ? oy : oz, d = a == 0 ? dx : a == 1 ? dy : dz, lo = a == 0 ? x0 : a == 1 ? y0 : z0, hi = a == 0 ? x1 : a == 1 ? y1 : z1;
-            if (Math.Abs(d) < 1e-12) { if (o < lo || o > hi) return false; continue; }
-            double t1 = (lo - o) / d, t2 = (hi - o) / d;
-            if (t1 > t2) (t1, t2) = (t2, t1);
-            if (t1 > tmin) { tmin = t1; axis = a; }
-            if (t2 < tmax) tmax = t2;
-            if (tmin > tmax) return false;
-        }
+        if (!RaySlab(ox, dx, x0, x1, 0, ref tmin, ref tmax, ref axis)) return false;
+        if (!RaySlab(oy, dy, y0, y1, 1, ref tmin, ref tmax, ref axis)) return false;
+        if (!RaySlab(oz, dz, z0, z1, 2, ref tmin, ref tmax, ref axis)) return false;
         t = tmin;
         if (axis < 0) axis = 1;
         return true;
+    }
+
+    /// <summary>One axis of the slab test: narrows [tmin, tmax] (the entry axis when tmin grows); false = the ray misses.</summary>
+    private static bool RaySlab(double o, double d, double lo, double hi, int a, ref double tmin, ref double tmax, ref int axis)
+    {
+        if (Math.Abs(d) < 1e-12) return !(o < lo || o > hi);
+        double t1 = (lo - o) / d, t2 = (hi - o) / d;
+        if (t1 > t2) (t1, t2) = (t2, t1);
+        if (t1 > tmin) { tmin = t1; axis = a; }
+        if (t2 < tmax) tmax = t2;
+        return !(tmin > tmax);
     }
 
     // ------------------------------------------------------------------ overlays
@@ -880,37 +981,54 @@ public sealed class EyeRenderer
     internal List<string> Tags(Canvas c, Frame fr, EyeScene s, VisionRenderer.Placer placer, bool marks = true, bool drops = false)
     {
         var labels = new List<string>();
-        int maxDist = MaxDist(s);
-        void Tag(int x, int y, string t, uint fg)
+        var tags = new Tagger(this, c, fr, s, placer, MaxDist(s));
+        foreach (var e in s.Entities.Where(e => e.Kind is "player" or "hive" or "self")) tags.Name(e);
+        if (drops)
+            foreach (var e in s.Entities.Where(e => e.Kind == "item")) tags.Drop(e);
+        if (marks)
+            foreach (var m in s.Marks)
+                if (tags.Mark(m) is { } label) labels.Add(label);
+        return labels;
+    }
+
+    /// <summary>Name tags and labels of one frame as 2D chips at their projected anchors, kept apart by the placer.</summary>
+    private sealed class Tagger(EyeRenderer r, Canvas c, Frame fr, EyeScene s, VisionRenderer.Placer placer, int maxDist)
+    {
+        private void Tag(int x, int y, string t, uint fg)
         {
             int w = PixelFont.Width(t) + 4;
             if (placer.FindNear(x - w / 2, y - 11, w, 11) is { } at) c.Chip(at.X, at.Y, t, fg);
         }
-        bool Visible(int x, int y, double dist) => fr.Depth[Math.Clamp(y, 0, fr.Height - 1) * fr.Width + Math.Clamp(x, 0, fr.Width - 1)] >= dist - 1.0;
-        foreach (var e in s.Entities.Where(e => e.Kind is "player" or "hive" or "self"))
+
+        private bool Visible(int x, int y, double dist) => fr.Depth[Math.Clamp(y, 0, fr.Height - 1) * fr.Width + Math.Clamp(x, 0, fr.Width - 1)] >= dist - 1.0;
+
+        /// <summary>A player's or bot's name over its head (not the camera's own body).</summary>
+        public void Name(VisionEntity e)
         {
             double hx = s.EyeX - e.X, hz = s.EyeZ - e.Z;
-            if (hx * hx + hz * hz < 0.36 && s.EyeY - e.Y is > -0.2 and < 2.0) continue;
-            if (Project(s, e.X, e.Y + (e.Sneaking ? 2.0 : 2.15), e.Z) is { } p && p.Dist < maxDist)
-            {
-                var t = string.IsNullOrEmpty(e.Name) ? e.Kind : e.Name!.Length > 14 ? e.Name[..14] : e.Name;
-                Tag(p.X, p.Y - 2, t, e.Kind is "hive" or "self" ? 0xff9f43 : VisionRenderer.PlayerColour(e.Name));
-            }
+            if (hx * hx + hz * hz < 0.36 && s.EyeY - e.Y is > -0.2 and < 2.0) return;
+            if (r.Project(s, e.X, e.Y + (e.Sneaking ? 2.0 : 2.15), e.Z) is not { } p || p.Dist >= maxDist) return;
+            var t = string.IsNullOrEmpty(e.Name) ? e.Kind : e.Name!.Length > 14 ? e.Name[..14] : e.Name;
+            Tag(p.X, p.Y - 2, t, e.Kind is "hive" or "self" ? 0xff9f43 : VisionRenderer.PlayerColour(e.Name));
         }
-        if (drops)
-            foreach (var e in s.Entities.Where(e => e.Kind == "item"))
-                if (Project(s, e.X, e.Y + 0.45, e.Z) is { } p && p.Dist < maxDist * 0.6 && Visible(p.X, Math.Min(fr.Height - 1, p.Y + 3), p.Dist))
-                    Tag(p.X, p.Y, DropLabel(e), 0xf2e46a);
-        if (marks)
-            foreach (var m in s.Marks)
-                if (Project(s, m.CentreX + 0.5, m.MaxY + 1.2, m.CentreZ + 0.5) is { } p && p.Dist < maxDist && Visible(p.X, Math.Min(fr.Height - 1, p.Y + 3), p.Dist))
-                {
-                    var t = VisionRenderer.ShortLabel(m.Text);
-                    if (t.Length == 0) continue;
-                    Tag(p.X, p.Y, t, m.Box ? 0xffd84au : 0xe8ecf4u);
-                    labels.Add($"{t} {m.MinX},{m.MinY},{m.MinZ}");
-                }
-        return labels;
+
+        /// <summary>A visible drop's label, within 60 % of the view distance.</summary>
+        public void Drop(VisionEntity e)
+        {
+            if (r.Project(s, e.X, e.Y + 0.45, e.Z) is { } p && p.Dist < maxDist * 0.6 && Visible(p.X, Math.Min(fr.Height - 1, p.Y + 3), p.Dist))
+                Tag(p.X, p.Y, DropLabel(e), 0xf2e46a);
+        }
+
+        /// <summary>A visible mark's short label; returns "label x,y,z" when drawn.</summary>
+        public string? Mark(VisionMark m)
+        {
+            if (r.Project(s, m.CentreX + 0.5, m.MaxY + 1.2, m.CentreZ + 0.5) is not { } p || p.Dist >= maxDist || !Visible(p.X, Math.Min(fr.Height - 1, p.Y + 3), p.Dist))
+                return null;
+            var t = VisionRenderer.ShortLabel(m.Text);
+            if (t.Length == 0) return null;
+            Tag(p.X, p.Y, t, m.Box ? 0xffd84au : 0xe8ecf4u);
+            return $"{t} {m.MinX},{m.MinY},{m.MinZ}";
+        }
     }
 
     /// <summary>"2 sapling" style label of a dropped item.</summary>
@@ -973,22 +1091,15 @@ public sealed class EyeRenderer
     public (int X, int Y, int Z, int Id, double Dist)? CrosshairBlock(EyeScene s)
     {
         var cam = Camera(s);
-        double ox = cam.Ox, oy = cam.Oy, oz = cam.Oz, dx = cam.Fx, dy = cam.Fy, dz = cam.Fz;
-        int vx = (int)Math.Floor(ox), vy = (int)Math.Floor(oy), vz = (int)Math.Floor(oz);
-        int stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
-        double tdx = dx == 0 ? double.MaxValue : Math.Abs(1 / dx), tdy = dy == 0 ? double.MaxValue : Math.Abs(1 / dy), tdz = dz == 0 ? double.MaxValue : Math.Abs(1 / dz);
-        double tmx = dx == 0 ? double.MaxValue : (dx > 0 ? vx + 1 - ox : ox - vx) * tdx;
-        double tmy = dy == 0 ? double.MaxValue : (dy > 0 ? vy + 1 - oy : oy - vy) * tdy;
-        double tmz = dz == 0 ? double.MaxValue : (dz > 0 ? vz + 1 - oz : oz - vz) * tdz;
+        var d = new Dda(cam.Ox, cam.Oy, cam.Oz, cam.Fx, cam.Fy, cam.Fz);
         double t = 0;
         int maxDist = MaxDist(s), height = s.World.WorldHeight;
         for (int i = 0; i < maxDist * 3 && t <= maxDist; i++)
         {
-            if (i > 0 && (uint)vy < height && s.World.Block(vx, vy, vz) is var id and not 0 && !Translucent(id))
-                return (vx, vy, vz, id, t);
-            if (tmx < tmy && tmx < tmz) { vx += stepX; t = tmx; tmx += tdx; }
-            else if (tmy < tmz) { vy += stepY; t = tmy; tmy += tdy; }
-            else { vz += stepZ; t = tmz; tmz += tdz; }
+            if (i > 0 && (uint)d.Vy < height && s.World.Block(d.Vx, d.Vy, d.Vz) is var id and not 0 && !Translucent(id))
+                return (d.Vx, d.Vy, d.Vz, id, t);
+            t = d.Exit;
+            d.Advance();
         }
         return null;
     }

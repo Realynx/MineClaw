@@ -98,21 +98,23 @@ public static partial class PerspectivePanel
             string name = view switch { "iso" => "ISO", "high" => "HIGH", _ => "ORBIT" };
             return Orbiting(name, focus, feetY, radius, p.Yaw ?? d.Yaw, p.PitchClamped(d.Pitch), d.Fov, p);
         }
-        if (view == "shoulder" && body is { } b && p.Dist is { } behind)
-        {
-            // The shoulder camera at another distance behind the body (the default is 3.4 blocks).
-            double back = Math.Clamp(behind, 1, 16);
-            double fx = focus.X + 0.5, fy = feetY + 0.5, fz = focus.Z + 0.5;
-            double ex = b.X, ey = b.Y + 1.62, ez = b.Z, tx = fx - ex, tz = fz - ez;
-            bool self = tx * tx + tz * tz < 2.5;
-            double yawR = self ? b.Yaw * Math.PI / 180 : Math.Atan2(-tx, tz);
-            double fwx = -Math.Sin(yawR), fwz = Math.Cos(yawR), rx = -fwz, rz = fwx;
-            double cx = ex - fwx * back - rx * 0.9, cy = ey + 1.1 * back / 3.4, cz = ez - fwz * back - rz * 0.9;
-            var (yaw, pitch) = self ? EyeScene.LookAt(cx, cy, cz, ex + fwx * 5, ey - 1.6, ez + fwz * 5) : EyeScene.LookAt(cx, cy, cz, fx, fy, fz);
-            string dir = EyeRenderer.Compass(yaw);
-            return new Rig(cx, cy, cz, yaw, pitch, 62f, $"SHOULDER >{dir} {back:0.#}m", $"SHOULDER (behind {(b.Name ?? "you")} {back:0.#} m, facing {dir})", false, (int)(48 + back));
-        }
+        if (view == "shoulder" && body is { } b && p.Dist is { } behind) return ShoulderAt(b, focus, feetY, behind);
         return For(view, focus, feetY, radius, body, eye, rotation);
+    }
+
+    /// <summary>The shoulder camera at another distance behind the body (the default is 3.4 blocks).</summary>
+    private static Rig ShoulderAt(Body b, (int X, int Y, int Z) focus, int feetY, double behind)
+    {
+        double back = Math.Clamp(behind, 1, 16);
+        double fx = focus.X + 0.5, fy = feetY + 0.5, fz = focus.Z + 0.5;
+        double ex = b.X, ey = b.Y + 1.62, ez = b.Z, tx = fx - ex, tz = fz - ez;
+        bool self = tx * tx + tz * tz < 2.5;
+        double yawR = self ? b.Yaw * Math.PI / 180 : Math.Atan2(-tx, tz);
+        double fwx = -Math.Sin(yawR), fwz = Math.Cos(yawR), rx = -fwz, rz = fwx;
+        double cx = ex - fwx * back - rx * 0.9, cy = ey + 1.1 * back / 3.4, cz = ez - fwz * back - rz * 0.9;
+        var (yaw, pitch) = self ? EyeScene.LookAt(cx, cy, cz, ex + fwx * 5, ey - 1.6, ez + fwz * 5) : EyeScene.LookAt(cx, cy, cz, fx, fy, fz);
+        string dir = EyeRenderer.Compass(yaw);
+        return new Rig(cx, cy, cz, yaw, pitch, 62f, $"SHOULDER >{dir} {back:0.#}m", $"SHOULDER (behind {(b.Name ?? "you")} {back:0.#} m, facing {dir})", false, (int)(48 + back));
     }
 
     /// <summary>A 3D camera around the focus facing <paramref name="yaw"/> (game convention), <paramref name="pitch"/> degrees down,
@@ -177,12 +179,7 @@ public static partial class PerspectivePanel
     public static Rig Cam((int X, int Y, int Z) focus, int feetY, string? from, double? dist, string caption, int radius, CamParams p)
     {
         if (p.IsEmpty) return Cam(focus, feetY, from, dist, caption, radius);
-        var f = (from ?? "S").Trim().ToUpperInvariant();
-        bool above = f is "ABOVE" or "UP" or "TOP";
-        var (sx, sz) = f switch
-        {
-            "N" => (0, -1), "NE" => (1, -1), "E" => (1, 0), "SE" => (1, 1), "S" => (0, 1), "SW" => (-1, 1), "W" => (-1, 0), "NW" => (-1, -1), _ => (0, 1),
-        };
+        var (_, above, sx, sz) = CamSide(from);
         double len = Math.Sqrt(sx * sx + sz * sz);
         // Facing yaw from the compass side (camera there, looking back at the spot), unless yaw is given.
         double yaw = p.Yaw ?? CamParams.NormYaw(Math.Atan2(sx / len, -sz / len) * 180 / Math.PI);
