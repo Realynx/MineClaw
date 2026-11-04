@@ -360,19 +360,26 @@ public sealed class HiveHierarchy : IHiveAccounts
     {
         if (Bodies is not { } bodies) return "error: hive is off";
         owner = Tree.Norm(owner);
-        if (owner != HiveTree.Root && Tree.Get(owner) is not { Kind: CloneKind.Hive })
-            return $"no: {Short(owner)} isn't a hive (only main and hive-kind clones own clones)";
+        if (NotAHive(owner) is { } notHive) return notHive;
         var (kind, kindErr) = HiveKinds.ParseKind(r.Kind);
         if (kindErr != null) return "error: " + kindErr;
         bool hasScript = !string.IsNullOrWhiteSpace(r.Script) || !string.IsNullOrWhiteSpace(r.Code);
         var (brain, brainProfile) = HiveKinds.ParseBrain(r.Brain);
-        string? profile = brainProfile ?? (string.IsNullOrWhiteSpace(r.Profile) ? null : r.Profile.Trim());
-        bool crewHive = IsCrewHive(r, kind, hasScript, brain != null || profile != null);
-        var k = crewHive ? CloneKind.Hive : kind ?? DefaultKind(owner, hasScript, brain != null || profile != null, r.Name);
+        string? profile = brainProfile ?? GivenProfile(r);
+        bool hasBrain = brain != null || profile != null;
+        bool crewHive = IsCrewHive(r, kind, hasScript, hasBrain);
+        var k = crewHive ? CloneKind.Hive : kind ?? DefaultKind(owner, hasScript, hasBrain, r.Name);
         var (done, kindProfile) = ByKind(k, r, owner, hasScript, brain, profile);
         if (done != null) return done;
         return SpawnClone(bodies, r, owner, k, brain, kindProfile, crewHive);
     }
+
+    /// <summary>Only main and hive-kind clones own clones; null = the owner may spawn.</summary>
+    private string? NotAHive(string owner) => owner != HiveTree.Root && Tree.Get(owner) is not { Kind: CloneKind.Hive }
+        ? $"no: {Short(owner)} isn't a hive (only main and hive-kind clones own clones)"
+        : null;
+
+    private static string? GivenProfile(SpawnRequest r) => string.IsNullOrWhiteSpace(r.Profile) ? null : r.Profile.Trim();
 
     /// <summary>
     /// A hive spawned straight onto a script (Fox 10-30: "spawn up its bodies with a script already made, so its bodies just go
@@ -407,18 +414,27 @@ public sealed class HiveHierarchy : IHiveAccounts
     /// <summary>One clone (a script runner, a hive with its own brain, or a hive driving N bodies in its process).</summary>
     private string SpawnClone(IHiveBodies bodies, SpawnRequest r, string owner, CloneKind k, BrainKind? brain, string? profile, bool crewHive)
     {
-        if (r.Name is { Length: > 0 } named && owner != HiveTree.Root && !OwnedBy(named, owner))
-            return $"no: {named} isn't one of {Short(owner)}'s clones";
+        if (NotOwned(r.Name, owner) is { } notOwned) return notOwned;
         var (crew, crewErr) = crewHive ? PrepareCrew(r) : (null, null);
         if (crewErr != null) return crewErr;
         var (hostBodies, note, noRoom) = k == CloneKind.Hive && r.Bodies is > 0 and var asked ? HostBodies(bodies, asked, profile) : (null, "", null);
         if (noRoom != null) return noRoom;
-        var opts = new HiveSpawnOptions(profile, crew != null ? null : r.Script, crew != null ? null : r.Code, r.Args, r.After)
-            { Kind = HiveKinds.Name(k), Owner = owner, Bodies = hostBodies, Crew = crew };
-        var text = bodies.Spawn(crew != null ? r.Task ?? $"crew {crew}" : r.Task ?? "", r.Name, r.Handover, opts);
+        var text = bodies.Spawn(TaskText(r, crew), r.Name, r.Handover, OptionsFor(r, owner, k, profile, hostBodies, crew));
         if (hostBodies is { } hb && text.StartsWith("ok", StringComparison.Ordinal)) text += HostedNote(hb, brain, crew) + note;
         return text;
     }
+
+    /// <summary>A hive (not main) may only name its own clones; null = fine.</summary>
+    private string? NotOwned(string? name, string owner) =>
+        name is { Length: > 0 } named && owner != HiveTree.Root && !OwnedBy(named, owner) ? $"no: {named} isn't one of {Short(owner)}'s clones" : null;
+
+    /// <summary>The task text: a crew hive's defaults to "crew NAME".</summary>
+    private static string TaskText(SpawnRequest r, string? crew) => crew != null ? r.Task ?? $"crew {crew}" : r.Task ?? "";
+
+    /// <summary>The spawn options: a crew hive's script goes to its bodies (the crew), not the hive itself.</summary>
+    private static HiveSpawnOptions OptionsFor(SpawnRequest r, string owner, CloneKind k, string? profile, int? hostBodies, string? crew) =>
+        new(profile, crew != null ? null : r.Script, crew != null ? null : r.Code, r.Args, r.After)
+            { Kind = HiveKinds.Name(k), Owner = owner, Bodies = hostBodies, Crew = crew };
 
     /// <summary>The crew script saved for the hive's bodies; an error when it can't be.</summary>
     private (string? Crew, string? Error) PrepareCrew(SpawnRequest r)

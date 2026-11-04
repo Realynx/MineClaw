@@ -122,23 +122,35 @@ public sealed class AdminSettingsRoutes
             case "/api/admin/settings":
                 return SettingsRoute(r, m, who);
             case "/api/admin/settings/node":
-                return IsGet(m) ? Json(200, _svc.NodeView()) : NotAllowed("GET");
+                return GetOnly(m, () => Json(200, _svc.NodeView()));
             case "/api/admin/settings/audit":
-                return IsGet(m) ? AuditTail(r) : NotAllowed("GET");
+                return GetOnly(m, () => AuditTail(r));
             case "/api/admin/settings/test":
-                if (m != "POST") return NotAllowed("POST");
-                return _probes.Take() is { } pw ? Limited(pw) : await TestAsync(r.Body, who, ct).ConfigureAwait(false);
+                return await PostProbeAsync(m, () => TestAsync(r.Body, who, ct)).ConfigureAwait(false);
             case "/api/admin/ollama/models":
-                if (!IsGet(m)) return NotAllowed("GET");
-                return _probes.Take() is { } ow ? Limited(ow) : await OllamaModelsAsync(r, ct).ConfigureAwait(false);
+                return IsGet(m) ? await ProbeAsync(() => OllamaModelsAsync(r, ct)).ConfigureAwait(false) : NotAllowed("GET");
             case "/api/admin/restart/safety":
-                return IsGet(m) ? Json(200, _svc.Safety.Check()) : NotAllowed("GET");
+                return GetOnly(m, () => Json(200, _svc.Safety.Check()));
             case "/api/admin/restart":
-                if (m != "POST") return NotAllowed("POST");
-                return _writes.Take() is { } rw ? Limited(rw) : Restart(r.Body, who);
+                return RestartRoute(r, m, who);
             default:
                 return Json(404, new { error = "not found" });
         }
+    }
+
+    private static SupervisorReply GetOnly(string m, Func<SupervisorReply> reply) => IsGet(m) ? reply() : NotAllowed("GET");
+
+    /// <summary>A probe (key test, model list) within the probes' rate limit.</summary>
+    private async Task<SupervisorReply> ProbeAsync(Func<Task<SupervisorReply>> probe) =>
+        _probes.Take() is { } wait ? Limited(wait) : await probe().ConfigureAwait(false);
+
+    private async Task<SupervisorReply> PostProbeAsync(string m, Func<Task<SupervisorReply>> probe) =>
+        m != "POST" ? NotAllowed("POST") : await ProbeAsync(probe).ConfigureAwait(false);
+
+    private SupervisorReply RestartRoute(SupervisorRequest r, string m, string who)
+    {
+        if (m != "POST") return NotAllowed("POST");
+        return _writes.Take() is { } rw ? Limited(rw) : Restart(r.Body, who);
     }
 
     private SupervisorReply SettingsRoute(SupervisorRequest r, string m, string who)
@@ -239,10 +251,13 @@ public sealed class AdminSettingsRoutes
         var want = Str(root, "model");
         var names = list.Models.Select(x => x.Name).ToList();
         bool wanted = want is not { Length: > 0 } || names.Any(n => OllamaCatalog.SameModel(n, want));
-        string message = !list.Ok ? list.Error ?? "unreachable"
-            : !wanted ? $"reachable ({names.Count} models), but '{want}' is not one of them"
-            : $"reachable: {names.Count} model{(names.Count == 1 ? "" : "s")}";
-        return (new ProviderTestResult(list.Ok && wanted, message, list.LatencyMs, names), null);
+        return (new ProviderTestResult(list.Ok && wanted, OllamaMessage(list, want, names.Count, wanted), list.LatencyMs, names), null);
+    }
+
+    private static string OllamaMessage(OllamaListResult list, string? want, int count, bool wanted)
+    {
+        if (!list.Ok) return list.Error ?? "unreachable";
+        return !wanted ? $"reachable ({count} models), but '{want}' is not one of them" : $"reachable: {count} model{(count == 1 ? "" : "s")}";
     }
 
     private SupervisorReply Restart(string? body, string who)
@@ -255,7 +270,12 @@ public sealed class AdminSettingsRoutes
         var safety = _svc.Safety.Check();
         if (!safety.Safe && !force) return RestartRefused(safety, reason, who);
         if (Interlocked.Exchange(ref _restarting, 1) == 1) return Json(409, new { error = "a restart is already under way" });
-        bool forced = force && !safety.Safe;
+        return RestartAccepted(restart, safety, force && !safety.Safe, reason, who);
+    }
+
+    /// <summary>Audited and logged, then requested after <see cref="RestartDelay"/> (so the 202 reaches the browser first).</summary>
+    private SupervisorReply RestartAccepted(Action<string> restart, RestartSafetyResult safety, bool forced, string reason, string who)
+    {
         _svc.Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "restart", [], Clip(reason, 300), true, forced ? "forced: " + Clip(string.Join("; ", safety.Reasons), 280) : null));
         _log.LogWarning("admin settings: restart requested by {Who}{Forced}", who, forced ? " (forced while unsafe)" : "");
         var why = $"restart requested from the web by {who}";

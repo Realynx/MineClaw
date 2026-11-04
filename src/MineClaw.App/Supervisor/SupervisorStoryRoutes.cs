@@ -61,7 +61,7 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
         var path = r.Path.TrimEnd('/');
         if (!IsStoryPath(path)) return null;
         if (Gate(r) is { } denied) return denied;
-        bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+        bool get = IsGet(r.Method);
         if (MethodDenied(r.Method, get) is { } refused) return refused;
         var (body, badBody) = get ? (new JsonObject(), null) : BodyOf(r.Body);
         if (badBody != null) return badBody;
@@ -84,6 +84,9 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
         if (!TokenOk(r.TokenHeader, o.Token)) return Reply(403, new JsonObject { ["error"] = "X-Supervisor-Token header required" });
         return null;
     }
+
+    private static bool IsGet(string method) =>
+        method.Equals("GET", StringComparison.OrdinalIgnoreCase) || method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Only GET, HEAD and POST; a POST only with story writes on. Null = allowed (past this, not GET/HEAD means POST).</summary>
     private SupervisorReply? MethodDenied(string method, bool get)

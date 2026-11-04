@@ -127,19 +127,26 @@ public static class MemoryReset
                 return (null, Fail(o, ExitCodes.Usage, $"{r.PackPath} is not a version pack (a {version.Manifest.Pack?.Kind ?? version.Manifest.Kind} shard)"));
             var (modePaths, sdkMissing) = ModePaths(r, o);
             if (sdkMissing != null) return (null, sdkMissing);
-            var modes = new List<(string Path, Shard Shard)>();
-            foreach (var p in modePaths)
-            {
-                var s = ShardFile.Read(p);
-                if (s.Manifest.Pack is not { Kind: ShardPackInfo.ModeKind }) return (null, Fail(o, ExitCodes.Usage, $"{p} is not a mode pack"));
-                modes.Add((p, s));
-            }
-            return ((version, modes), null);
+            var (modes, notMode) = ReadModes(modePaths);
+            return modes == null ? (null, Fail(o, ExitCodes.Usage, $"{notMode} is not a mode pack")) : ((version, modes), null);
         }
         catch (Exception ex) when (ex is IOException or ShardFormatException or UnauthorizedAccessException or InvalidDataException)
         {
             return (null, Fail(o, ExitCodes.Usage, "can't read a pack: " + ex.Message));
         }
+    }
+
+    /// <summary>Each mode pack read, in order; the first path that isn't a mode pack stops it.</summary>
+    private static (List<(string Path, Shard Shard)>? Modes, string? NotMode) ReadModes(List<string> paths)
+    {
+        var modes = new List<(string Path, Shard Shard)>();
+        foreach (var p in paths)
+        {
+            var s = ShardFile.Read(p);
+            if (s.Manifest.Pack is not { Kind: ShardPackInfo.ModeKind }) return (null, p);
+            modes.Add((p, s));
+        }
+        return (modes, null);
     }
 
     /// <summary>The mode packs to add: the asked ones, plus the sdk-js pack (given, or beside the version pack) unless --no-sdk.</summary>

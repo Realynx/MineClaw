@@ -121,12 +121,9 @@ public sealed class GraphModel
         AssignPrimaryParents(ordered, slot, nodes, parents);
         var kids = KidsOf(nodes);
         RollUp(nodes, kids);
-        foreach (var g in nodes)
-            g.Children = kids[g.Slot] is { } ks ? ks.OrderByDescending(c => nodes[c].Leaves).ThenBy(c => nodes[c].Index).ToArray() : [];
+        OrderChildrenAndRoots(nodes, kids);
         var top = nodes.Where(g => g.Parent < 0).OrderByDescending(g => g.Layer).ThenByDescending(g => g.Leaves).ThenBy(g => g.Index)
             .Select(g => g.Slot).ToArray();
-        // Roots (top-down: slot ascending is layer descending, so parents are assigned first).
-        for (int k = 0; k < nodes.Length; k++) nodes[k].Root = nodes[k].Parent < 0 ? k : nodes[nodes[k].Parent].Root;
 
         int layers = Math.Max(numLayers, nodes.Length > 0 ? nodes.Max(g => g.Layer) : 0);
         var counts = new int[layers + 1];
@@ -140,6 +137,15 @@ public sealed class GraphModel
         };
         m.Layout = PartitionLayout.Compute(m);
         return m;
+    }
+
+    /// <summary>Each node's children in layout order (most leaves first), then its root (top-down: slot ascending is layer
+    /// descending, so parents are assigned first).</summary>
+    private static void OrderChildrenAndRoots(GraphNode[] nodes, List<int>?[] kids)
+    {
+        foreach (var g in nodes)
+            g.Children = kids[g.Slot] is { } ks ? ks.OrderByDescending(c => nodes[c].Leaves).ThenBy(c => nodes[c].Index).ToArray() : [];
+        for (int k = 0; k < nodes.Length; k++) nodes[k].Root = nodes[k].Parent < 0 ? k : nodes[nodes[k].Parent].Root;
     }
 
     /// <summary>Every slot's clusters (soft clustering: a leaf may have several), by slot; null = none.</summary>

@@ -96,36 +96,54 @@ public sealed class DesignerRoutes
     {
         var path = r.Path.TrimEnd('/');
         if (!IsDesignerPath(path)) return null;
-        if (!_o.Viewer.Enabled || !_o.Viewer.Designer.Enabled) return Reply(404, new { error = "not found" });
-        if (string.IsNullOrEmpty(_o.Token)) return Reply(403, new { error = "the designer needs Supervisor:Token" });
-        if (!TokenOk(r.TokenHeader, _o.Token)) return Reply(403, new { error = "X-Supervisor-Token header required" });
+        if (Gate(r) is { } denied) return denied;
         bool post = r.Method.Equals("POST", StringComparison.OrdinalIgnoreCase);
         bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
-        if (r.Body == SupervisorAdminRoutes.TooLarge) return Reply(413, new { error = $"body over {MaxBodyBytes} bytes" });
         var rest = path[Prefix.Length..];
         try
         {
             if (rest.Equals("/models", StringComparison.OrdinalIgnoreCase)) return get ? Models() : NotAllowed("GET, HEAD");
             if (rest.Equals("/sessions", StringComparison.OrdinalIgnoreCase)) return post ? Create(r) : NotAllowed("POST");
-            var parts = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length is 2 or 3 && parts[0].Equals("sessions", StringComparison.OrdinalIgnoreCase)
-                && long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var id))
-            {
-                if (parts.Length == 2) return get ? Session(id) : NotAllowed("GET, HEAD");
-                if (!post) return NotAllowed("POST");
-                return parts[2].ToLowerInvariant() switch
-                {
-                    "messages" => await Locked(id, () => MessageAsync(id, r, ct), ct).ConfigureAwait(false),
-                    "canvas" => await Locked(id, () => Task.FromResult(Canvas(id, r)), ct).ConfigureAwait(false),
-                    "save" => await Locked(id, () => Task.FromResult(Save(id, r)), ct).ConfigureAwait(false),
-                    "version" => await Locked(id, () => Task.FromResult(Version(id, r)), ct).ConfigureAwait(false),
-                    _ => Reply(404, new { error = "not found" }),
-                };
-            }
-            return Reply(404, new { error = "not found" });
+            return await SessionRouteAsync(r, rest, get, post, ct).ConfigureAwait(false);
         }
         catch (JsonException) { return Reply(400, new { error = "body must be JSON (see docs/web/api.md, Design Studio)" }); }
         catch (OperationCanceledException) { return Reply(503, new { error = "cancelled" }); }
+    }
+
+    /// <summary>The gate, in order: the viewer and the designer on, a configured token, the token header, the body size; null = through.</summary>
+    private SupervisorReply? Gate(SupervisorRequest r)
+    {
+        if (!_o.Viewer.Enabled || !_o.Viewer.Designer.Enabled) return Reply(404, new { error = "not found" });
+        if (string.IsNullOrEmpty(_o.Token)) return Reply(403, new { error = "the designer needs Supervisor:Token" });
+        if (!TokenOk(r.TokenHeader, _o.Token)) return Reply(403, new { error = "X-Supervisor-Token header required" });
+        if (r.Body == SupervisorAdminRoutes.TooLarge) return Reply(413, new { error = $"body over {MaxBodyBytes} bytes" });
+        return null;
+    }
+
+    /// <summary><c>sessions/{id}[/{action}]</c> → the id and the lower-cased action (null for the session itself); null = not that shape.</summary>
+    private static (long Id, string? Action)? SessionPath(string rest)
+    {
+        var parts = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is not (2 or 3) || !parts[0].Equals("sessions", StringComparison.OrdinalIgnoreCase)
+            || !long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+            return null;
+        return (id, parts.Length == 3 ? parts[2].ToLowerInvariant() : null);
+    }
+
+    /// <summary><c>sessions/{id}</c> (GET) and <c>sessions/{id}/messages|canvas|save|version</c> (POST, one at a time per session).</summary>
+    private async Task<SupervisorReply> SessionRouteAsync(SupervisorRequest r, string rest, bool get, bool post, CancellationToken ct)
+    {
+        if (SessionPath(rest) is not (var id, var action)) return Reply(404, new { error = "not found" });
+        if (action == null) return get ? Session(id) : NotAllowed("GET, HEAD");
+        if (!post) return NotAllowed("POST");
+        return action switch
+        {
+            "messages" => await Locked(id, () => MessageAsync(id, r, ct), ct).ConfigureAwait(false),
+            "canvas" => await Locked(id, () => Task.FromResult(Canvas(id, r)), ct).ConfigureAwait(false),
+            "save" => await Locked(id, () => Task.FromResult(Save(id, r)), ct).ConfigureAwait(false),
+            "version" => await Locked(id, () => Task.FromResult(Version(id, r)), ct).ConfigureAwait(false),
+            _ => Reply(404, new { error = "not found" }),
+        };
     }
 
     private async Task<SupervisorReply> Locked(long id, Func<Task<SupervisorReply>> body, CancellationToken ct)
@@ -267,50 +285,80 @@ public sealed class DesignerRoutes
         var b = Parse<VersionBody>(r.Body);
         if (DesignVersions.Normalize(b?.Version) is not { } target) return Reply(400, new { error = BadVersion(b?.Version ?? "") });
         var (kind, kindErr) = KindOf(b!.Kind);
-        if (kindErr != null) return Reply(400, new { error = kindErr });
-        if (b.Seed is { Length: > 32 }) return Reply(400, new { error = "seed over 32 chars" });
-        if (b.PreferredFor is { Length: > 0 } pfx && pfx != "none" && DesignVersions.Normalize(pfx) == null) return Reply(400, new { error = BadVersion(pfx) });
+        if (VersionBodyError(b, kindErr) is { } bad) return Reply(400, new { error = bad });
         bool modeChanged = false;
         if (kind != null && kind != s.Canvas.Kind)
         {
-            bool blank = s.Canvas.Count == 0 && s.Canvas.Dug.Count == 0;
-            if (!blank && b.Apply != true)
+            if (!IsBlank(s) && b.Apply != true)
                 return Reply(200, new { version = s.Version, target, changed = false, report = (object?)null, needs_clear = true, session = (object?)null });
-            bool mine = kind == DesignerCanvas.KindMine;
-            s.Canvas = new DesignerCanvas
-            {
-                Version = target, Rev = s.Canvas.Rev + 1, Kind = kind,
-                Seed = mine ? MineTerrain.NormalizeSeed(b.Seed is { Length: > 0 } seed ? seed : MineTerrain.RandomSeed()) : "0",
-            };
-            s.Anchor = null;
-            s.Offset = default;
-            if (!mine) s.PreferredFor = null;
-            var switched = mine ? $"the canvas is now a mine over generated {target} terrain (seed {s.Canvas.Seed}, absolute y)" : "the canvas is a grassland build plot again";
-            s.PendingEdits = s.PendingEdits.Length == 0 ? switched : Clip(s.PendingEdits + "; " + switched, 600);
-            _store.AddMessage(s.Id, "assistant", mine ? $"Switched to a mine design over generated terrain (seed {s.Canvas.Seed})." : "Switched back to a build design.");
+            SwitchKind(s, kind, target, b.Seed);
             modeChanged = true;
         }
-        if (b.Seed is { Length: > 0 } newSeed && s.Canvas.Mine && MineTerrain.NormalizeSeed(newSeed) != s.Canvas.Seed)
-        {
-            s.Canvas.Seed = MineTerrain.NormalizeSeed(newSeed);
-            s.PendingEdits = Clip((s.PendingEdits.Length == 0 ? "" : s.PendingEdits + "; ") + $"the terrain seed is now {s.Canvas.Seed}", 600);
-            modeChanged = true;
-        }
-        if (b.PreferredFor != null && s.Canvas.Mine)
-        {
-            var pf = b.PreferredFor is "" or "none" ? null : DesignVersions.Normalize(b.PreferredFor);
-            if (pf != s.PreferredFor) { s.PreferredFor = pf; modeChanged = true; }
-        }
+        modeChanged |= ChangeSeed(s, b.Seed);
+        modeChanged |= ChangePreferredFor(s, b.PreferredFor);
         if (modeChanged) _store.Update(s);
+        return ChangeVersion(s, target, b.Apply == true, modeChanged);
+    }
+
+    private static string? VersionBodyError(VersionBody b, string? kindErr)
+    {
+        if (kindErr != null) return kindErr;
+        if (b.Seed is { Length: > 32 }) return "seed over 32 chars";
+        if (b.PreferredFor is { Length: > 0 } pfx && pfx != "none" && DesignVersions.Normalize(pfx) == null) return BadVersion(pfx);
+        return null;
+    }
+
+    private static bool IsBlank(DesignerSessionRecord s) => s.Canvas.Count == 0 && s.Canvas.Dug.Count == 0;
+
+    /// <summary>A fresh canvas of the other kind (a mine canvas is generated terrain at absolute y: nothing carries over); the
+    /// model hears it.</summary>
+    private void SwitchKind(DesignerSessionRecord s, string kind, string target, string? seedText)
+    {
+        bool mine = kind == DesignerCanvas.KindMine;
+        s.Canvas = new DesignerCanvas
+        {
+            Version = target, Rev = s.Canvas.Rev + 1, Kind = kind,
+            Seed = mine ? MineTerrain.NormalizeSeed(seedText is { Length: > 0 } seed ? seed : MineTerrain.RandomSeed()) : "0",
+        };
+        s.Anchor = null;
+        s.Offset = default;
+        if (!mine) s.PreferredFor = null;
+        var switched = mine ? $"the canvas is now a mine over generated {target} terrain (seed {s.Canvas.Seed}, absolute y)" : "the canvas is a grassland build plot again";
+        s.PendingEdits = s.PendingEdits.Length == 0 ? switched : Clip(s.PendingEdits + "; " + switched, 600);
+        _store.AddMessage(s.Id, "assistant", mine ? $"Switched to a mine design over generated terrain (seed {s.Canvas.Seed})." : "Switched back to a build design.");
+    }
+
+    /// <summary>A mine's new terrain seed; true when it changed.</summary>
+    private static bool ChangeSeed(DesignerSessionRecord s, string? newSeed)
+    {
+        if (newSeed is not { Length: > 0 } || !s.Canvas.Mine || MineTerrain.NormalizeSeed(newSeed) == s.Canvas.Seed) return false;
+        s.Canvas.Seed = MineTerrain.NormalizeSeed(newSeed);
+        s.PendingEdits = Clip((s.PendingEdits.Length == 0 ? "" : s.PendingEdits + "; ") + $"the terrain seed is now {s.Canvas.Seed}", 600);
+        return true;
+    }
+
+    /// <summary>A mine's preferred version ("" / "none" drops it); true when it changed.</summary>
+    private static bool ChangePreferredFor(DesignerSessionRecord s, string? preferredFor)
+    {
+        if (preferredFor == null || !s.Canvas.Mine) return false;
+        var pf = preferredFor is "" or "none" ? null : DesignVersions.Normalize(preferredFor);
+        if (pf == s.PreferredFor) return false;
+        s.PreferredFor = pf;
+        return true;
+    }
+
+    /// <summary>The target version: the same (nothing to do), an empty canvas (switches), the compatibility check (no apply), or
+    /// the conversion (the missing blocks left out; the model hears it).</summary>
+    private SupervisorReply ChangeVersion(DesignerSessionRecord s, string target, bool apply, bool modeChanged)
+    {
         if (target == s.Version) return Reply(200, new { version = s.Version, target, changed = modeChanged, report = (object?)null, needs_clear = false, session = SessionJson(s) });
-        bool empty = s.Canvas.Count == 0 && s.Canvas.Dug.Count == 0;
-        if (empty)
+        if (IsBlank(s))
         {
             s.Canvas.Version = target;
             _store.Update(s);
             return Reply(200, new { version = s.Version, target, changed = true, report = (object?)null, session = SessionJson(s) });
         }
-        if (b!.Apply != true)
+        if (!apply)
         {
             var (_, check) = DesignConvert.Convert(s.Canvas.Blocks, s.Version, target);
             return Reply(200, new { version = s.Version, target, changed = false, report = ReportJson(check), session = (object?)null });
