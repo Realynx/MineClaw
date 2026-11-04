@@ -67,39 +67,58 @@ public static partial class BuildGate
         var t = text.Trim();
         if (t.Length == 0) return null;
         if (UndoRx().IsMatch(t)) return new GateReply(GateVerdict.Undo, by, t);
-        int quarters = 0, dx = 0, dy = 0, dz = 0;
-        bool mirror = false, any = false;
-        if (AroundRx().IsMatch(t)) { quarters += 2; any = true; }
-        else if (TurnRx().Match(t) is { Success: true } tm)
-        {
-            var d = tm.Groups["dir"].Value.ToLowerInvariant();
-            quarters += d.StartsWith("left", StringComparison.Ordinal) || d.StartsWith("counter", StringComparison.Ordinal) || d.StartsWith("anti", StringComparison.Ordinal) ? 3 : 1;
-            any = true;
-        }
-        if (MirrorRx().IsMatch(t)) { mirror = true; any = true; }
-        foreach (Match m in MoveRx().Matches(t))
-        {
-            int n = m.Groups["n"].Value.ToLowerInvariant() switch
-            {
-                "" or "a" or "one" => 1, "two" => 2, "three" => 3, "four" => 4, "five" => 5, var v => int.TryParse(v, out var k) ? k : 1,
-            };
-            switch (m.Groups["dir"].Value.ToLowerInvariant())
-            {
-                case "north": dz -= n; break;
-                case "south": dz += n; break;
-                case "east": dx += n; break;
-                case "west": dx -= n; break;
-                case "up": dy += n; break;
-                case "down": dy -= n; break;
-                default: continue; // left/right without a frame: ask instead
-            }
-            any = true;
-        }
-        if (any) return new GateReply(GateVerdict.Correct, by, t, new BuildTransform(quarters % 4, mirror, dx, dy, dz, anchor, axis));
+        var (quarters, mirror, turned) = Turns(t);
+        var (dx, dy, dz, moved) = Moves(t);
+        if (turned || moved) return new GateReply(GateVerdict.Correct, by, t, new BuildTransform(quarters % 4, mirror, dx, dy, dz, anchor, axis));
         if (ApproveRx().IsMatch(t)) return new GateReply(GateVerdict.Approve, by, t);
         if (HoldRx().IsMatch(t)) return new GateReply(GateVerdict.Hold, by, t);
         return null;
     }
+
+    /// <summary>"wrong way" (half a turn), "turn it left" (three quarters) / "turn it" (one), "flip it" (a mirror).</summary>
+    private static (int Quarters, bool Mirror, bool Any) Turns(string t)
+    {
+        int quarters = 0;
+        bool any = false;
+        if (AroundRx().IsMatch(t)) { quarters = 2; any = true; }
+        else if (TurnRx().Match(t) is { Success: true } tm) { quarters = Quarters(tm.Groups["dir"].Value.ToLowerInvariant()); any = true; }
+        bool mirror = MirrorRx().IsMatch(t);
+        return (quarters, mirror, any || mirror);
+    }
+
+    private static int Quarters(string dir) =>
+        dir.StartsWith("left", StringComparison.Ordinal) || dir.StartsWith("counter", StringComparison.Ordinal) || dir.StartsWith("anti", StringComparison.Ordinal) ? 3 : 1;
+
+    /// <summary>Every "move 2 east" / "3 blocks further north" summed; left/right without a frame don't count (ask instead).</summary>
+    private static (int Dx, int Dy, int Dz, bool Any) Moves(string t)
+    {
+        int dx = 0, dy = 0, dz = 0;
+        bool any = false;
+        foreach (Match m in MoveRx().Matches(t))
+        {
+            if (Direction(m.Groups["dir"].Value.ToLowerInvariant()) is not { } d) continue;
+            int n = Count(m.Groups["n"].Value.ToLowerInvariant());
+            (dx, dy, dz) = (dx + d.X * n, dy + d.Y * n, dz + d.Z * n);
+            any = true;
+        }
+        return (dx, dy, dz, any);
+    }
+
+    private static int Count(string n) => n switch
+    {
+        "" or "a" or "one" => 1, "two" => 2, "three" => 3, "four" => 4, "five" => 5, var v => int.TryParse(v, out var k) ? k : 1,
+    };
+
+    private static (int X, int Y, int Z)? Direction(string dir) => dir switch
+    {
+        "north" => (0, 0, -1),
+        "south" => (0, 0, 1),
+        "east" => (1, 0, 0),
+        "west" => (-1, 0, 0),
+        "up" => (0, 1, 0),
+        "down" => (0, -1, 0),
+        _ => null,
+    };
 
     /// <summary>
     /// "First 5 blocks down: the hut starts just east of the main house and runs east, away from the main house toward the
