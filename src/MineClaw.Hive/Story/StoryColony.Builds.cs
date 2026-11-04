@@ -128,7 +128,7 @@ public sealed partial class StoryColony
     /// into a hut and was walled in).</summary>
     public const double BuildReach = 3.8;
     /// <summary>A batch's stand is chosen for the cells within this many blocks (horizontally) of its first.</summary>
-    private const int BatchRadius = 3;
+    private const int StandRadius = 3;
     /// <summary>A batch's cells lie within this many blocks (horizontally) of its first (the pawn steps along for the farther ones).</summary>
     private const int WalkRadius = 6;
 
@@ -262,7 +262,7 @@ public sealed partial class StoryColony
     /// <summary>The seeds of a level in order: support first (touching something solid), then away from other pawns' batches, then nearest.</summary>
     private IEnumerable<GhostState> Seeds(List<GhostState> open, List<P3> busy, P3 from) =>
         open.OrderBy(t => StoryConstruction.Supported(t.At, Solid) ? 0 : 1)
-            .ThenBy(t => t.At.Dist(from) + (busy.Any(o => Math.Abs(o.X - t.At.X) <= BatchRadius + 1 && Math.Abs(o.Z - t.At.Z) <= BatchRadius + 1) ? 12 : 0));
+            .ThenBy(t => t.At.Dist(from) + (busy.Any(o => Math.Abs(o.X - t.At.X) <= StandRadius + 1 && Math.Abs(o.Z - t.At.Z) <= StandRadius + 1) ? 12 : 0));
 
     /// <summary>A cell holds what the ghost wants: the same block and variant (a facing is the placement's own).</summary>
     internal static bool Matches(GhostState g, int id, int meta)
@@ -340,7 +340,7 @@ public sealed partial class StoryColony
                 if (!StoryBlocks.Replaceable.Contains(cur) && cur != clearId) continue; // another block to clear: another tool, another job
                 cand.Add(x);
             }
-        var stand = StandFor(w, b, seed, cand.Where(x => Math.Abs(x.At.X - seed.At.X) <= BatchRadius && Math.Abs(x.At.Z - seed.At.Z) <= BatchRadius).ToList(), from);
+        var stand = StandFor(w, b, seed, cand.Where(x => Math.Abs(x.At.X - seed.At.X) <= StandRadius && Math.Abs(x.At.Z - seed.At.Z) <= StandRadius).ToList(), from);
         var inBatch = new HashSet<P3> { seed.At };
         var batch = new List<GhostState> { seed };
         // The stand may be an open cell of the batch's patch (the pawn stands in the middle of it): that cell is left for later.
@@ -385,8 +385,8 @@ public sealed partial class StoryColony
             if (j.Source == "ghost" && j.Json["stand"] is JsonValue tv && tv.TryGetValue<string>(out var ts) && ParseCell(ts) is { } tp) taken.Add(tp);
         P3? best = null;
         double bestScore = double.MaxValue;
-        for (int dx = -BatchRadius - 2; dx <= BatchRadius + 2; dx++)
-            for (int dz = -BatchRadius - 2; dz <= BatchRadius + 2; dz++)
+        for (int dx = -StandRadius - 2; dx <= StandRadius + 2; dx++)
+            for (int dz = -StandRadius - 2; dz <= StandRadius + 2; dz++)
                 for (int dy = -3; dy <= 1; dy++) // a roof or a wall's top row is laid from the ground below it
                 {
                     var s = seed.At.Add(dx, dy, dz);
