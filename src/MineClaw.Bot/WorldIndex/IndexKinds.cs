@@ -58,21 +58,23 @@ public static class IndexKinds
         _ => null,
     };
 
+    private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
+    {
+        ["gen"] = Generator, ["generator"] = Generator, ["cobble_gen"] = Generator, ["cobblegen"] = Generator,
+        ["cobblestone_generator"] = Generator, ["stone_generator"] = Generator,
+        ["workbench"] = CraftingTable, ["crafting"] = CraftingTable, ["table"] = CraftingTable,
+        ["chests"] = Chest, ["storage"] = Chest,
+        ["furnaces"] = Furnace,
+        ["trees"] = Tree, ["sapling"] = Tree, ["saplings"] = Tree,
+        ["farms"] = Farm, ["wheat"] = Farm, ["sugar_cane"] = Farm, ["sugarcane"] = Farm, ["cactus"] = Farm,
+        ["portals"] = Portal, ["nether_portal"] = Portal,
+    };
+
     /// <summary>Model-facing aliases → kind ("cobble_gen", "generators", "workbench"...).</summary>
     public static string? FromAlias(string name)
     {
         var n = name.Trim().ToLowerInvariant().Replace(' ', '_');
-        n = n switch
-        {
-            "gen" or "generator" or "cobble_gen" or "cobblegen" or "cobblestone_generator" or "stone_generator" => Generator,
-            "workbench" or "crafting" or "table" => CraftingTable,
-            "chests" or "storage" => Chest,
-            "furnaces" => Furnace,
-            "trees" or "sapling" or "saplings" => Tree,
-            "farms" or "wheat" or "sugar_cane" or "sugarcane" or "cactus" => Farm,
-            "portals" or "nether_portal" => Portal,
-            _ => n,
-        };
+        n = Aliases.GetValueOrDefault(n, n);
         if (n.EndsWith('s') && !PointKinds.Contains(n) && !ClusterKinds.Contains(n)) n = n[..^1];
         return PointKinds.Contains(n) || ClusterKinds.Contains(n) ? n : null;
     }

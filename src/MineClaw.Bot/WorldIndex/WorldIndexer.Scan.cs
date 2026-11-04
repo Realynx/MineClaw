@@ -56,6 +56,22 @@ public sealed partial class WorldIndexer
         }
     }
 
+    /// <summary>What one column scan found, by layer (a struct of references: no extra allocation per scan).</summary>
+    private readonly struct ColumnFinds
+    {
+        public readonly List<BlockPos> Stations = new();
+        public readonly HashSet<BlockPos> Signs = new();
+        public readonly HashSet<BlockPos> Trees = new();
+        public readonly HashSet<BlockPos> Builds = new();
+        public readonly HashSet<BlockPos> Floors = new();
+        public readonly HashSet<BlockPos> Portals = new();
+        public readonly HashSet<BlockPos> FootCells = new();
+        public readonly List<BlockPos> GenCandidates = new();
+        public readonly Dictionary<string, HashSet<BlockPos>> Farms = BlockClass.FarmTypes.ToDictionary(t => t, _ => new HashSet<BlockPos>());
+
+        public ColumnFinds() { }
+    }
+
     /// <summary>Full scan of one 16x128x16 column: stations, signs, fluids/generators, farms, trees, unusual blocks, footprint.</summary>
     private bool ScanColumn(int cx, int cz, DateTimeOffset now)
     {
@@ -63,112 +79,129 @@ public sealed partial class WorldIndexer
         if (col is null || !col.HasData) return false;
         bool firstScan = _scannedColumns.Add(ColKey(cx, cz));
 
-        var stations = new List<BlockPos>();
-        var signs = new HashSet<BlockPos>();
-        var trees = new HashSet<BlockPos>();
-        var builds = new HashSet<BlockPos>();
-        var floors = new HashSet<BlockPos>();
-        var portals = new HashSet<BlockPos>();
-        var footCells = new HashSet<BlockPos>();
+        var finds = new ColumnFinds();
         bool islands = IslandsOn;
         bool terrain = ScanTrustsTerrain; // skyblock: scanned stone/builds/lava-by-water are placed things (normal world: terrain)
-        var table = BlockClass.Table;
-        var genCandidates = new List<BlockPos>();
-        Dictionary<string, HashSet<BlockPos>> farms = BlockClass.FarmTypes.ToDictionary(t => t, _ => new HashSet<BlockPos>());
-        int bx = cx << 4, bz = cz << 4;
         Span<int> ids = stackalloc int[256];
-        int height = col.Height;
-
         for (int lx = 0; lx < 16; lx++)
         for (int lz = 0; lz < 16; lz++)
-        {
-            int x = bx + lx, z = bz + lz;
-            int minY = -1, maxY = -1, distinct = 0;
-            int below = 0;
-            for (int y = 0; y < height; y++)
-            {
-                int id = col.GetBlock(lx, y, lz);
-                if (id == 0) { below = 0; continue; }
-                var c = BlockClass.Of(table, id);
-                if ((c & C.Ground) != 0)
-                {
-                    if (minY < 0) minY = y;
-                    maxY = y;
-                    if (_hist[id]++ == 0 && distinct < ids.Length) ids[distinct++] = id;
-                }
-                if (c == C.None) { below = id; continue; }
-                var p = new BlockPos(x, y, z);
-                if ((c & C.Station) != 0) stations.Add(p);
-                if ((c & C.Sign) != 0) signs.Add(p);
-                if ((c & C.Portal) != 0) portals.Add(p);
-                if ((c & C.Farm) != 0 && IsFarmMember(id)) farms[BlockClass.FarmType(id)!].Add(p);
-                if ((c & C.Tree) != 0) trees.Add(p);
-                if (!terrain) { below = id; continue; } // a normal world generates the rest: placements come from block changes
-                if (IsBuildBlock(id, c)) builds.Add(p); // natural nether terrain isn't a build there
-                else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (y + 1 < height && col.GetBlock(lx, y + 1, lz) == Blocks.Cobblestone)))
-                    builds.Add(p); // walls/pillars, not one-thick floors
-                if (IsFloorCandidate(id, c)) floors.Add(p); // gen cells are dropped when protection is rebuilt
-                if ((c & C.GenOutput) != 0 && IsGenCell(p, id, false)) genCandidates.Add(p);
-                else if ((c & C.Lava) != 0)
-                    foreach (var o in FlowIn)
-                    {
-                        var q = new BlockPos(x - o.X, y - o.Y, z - o.Z); // cells this lava can flow into
-                        if (IsGenCell(q, _world.GetBlock(q), false)) genCandidates.Add(q);
-                    }
-                below = id;
-            }
-            var cell = new BlockPos(x, 0, z);
-            if (!islands)
-            {
-                for (int i = 0; i < distinct; i++) _hist[ids[i]] = 0;
-                continue;
-            }
-            if (minY >= 0)
-            {
-                var hist = new int[distinct];
-                for (int i = 0; i < distinct; i++) { hist[i] = (ids[i] << 16) | Math.Min(_hist[ids[i]], 0xFFFF); _hist[ids[i]] = 0; }
-                SetFoot(cell, new Foot(minY, maxY, hist));
-                footCells.Add(cell);
-            }
-            else _foot.Remove(XZ(x, z));
-        }
+            ScanXZ(col, (cx << 4) + lx, (cz << 4) + lz, islands, terrain, in finds, ids);
 
-        if (!terrain)
-        {
-            // Normal world: builds and floors are what was SEEN placed (block changes); a re-scan keeps those still standing.
-            foreach (var q in _builds.CellsInChunk(cx, cz))
-                if (IsBuildCell(q, _world.GetBlock(q))) builds.Add(q);
-            if (_floorByChunk.TryGetValue(ColKey(cx, cz), out var seenFloors))
-                foreach (var q in seenFloors)
-                {
-                    int fid = _world.GetBlock(q);
-                    if (IsFloorCandidate(fid, BlockClass.Of(table, fid))) floors.Add(q);
-                }
-        }
-        if (islands) _islands.ReplaceChunk(cx, cz, footCells);
+        // Normal world: builds and floors are what was SEEN placed (block changes); a re-scan keeps those still standing.
+        if (!terrain) KeepSeenPlacements(cx, cz, in finds);
+        if (islands) _islands.ReplaceChunk(cx, cz, finds.FootCells);
         else if (InNether) NoteHazardColumn(cx, cz, ScanHazards(col));
-        _trees.ReplaceChunk(cx, cz, trees);
-        _builds.ReplaceChunk(cx, cz, builds);
-        ReplaceFloors(cx, cz, floors);
-        _portals.ReplaceChunk(cx, cz, portals);
-        foreach (var (t, set) in farms) _farms[t].ReplaceChunk(cx, cz, set);
-
-        // Generators: re-check known cells here, add new candidates (which may lie in a neighbouring column).
-        foreach (var g in _gens.CellsInChunk(cx, cz).ToList()) _gens.Set(g, IsGenCell(g, _world.GetBlock(g), true));
-        foreach (var g in genCandidates) _gens.Add(g);
-
-        // Stations: everything previously known in this column is re-evaluated, then everything found.
-        if (_stationsByChunk.TryGetValue(ColKey(cx, cz), out var known))
-            foreach (var p in known.ToList()) EvaluateStation(p);
-        foreach (var p in stations) EvaluateStation(p, seen: true);
-
-        if (_signsByChunk.TryGetValue(ColKey(cx, cz), out var knownSigns))
-            foreach (var p in knownSigns.Where(p => !signs.Contains(p)).ToList()) EvaluateSign(p);
-        foreach (var p in signs) EvaluateSign(p);
+        _trees.ReplaceChunk(cx, cz, finds.Trees);
+        _builds.ReplaceChunk(cx, cz, finds.Builds);
+        ReplaceFloors(cx, cz, finds.Floors);
+        _portals.ReplaceChunk(cx, cz, finds.Portals);
+        foreach (var (t, set) in finds.Farms) _farms[t].ReplaceChunk(cx, cz, set);
+        ApplyColumnStations(cx, cz, in finds);
 
         MarkSeenInColumn(cx, cz);
         if (firstScan) QueueReconcile(cx, cz);
         return true;
+    }
+
+    /// <summary>One x,z of a column scan, bottom to top: every classified block into its layer, and the footprint histogram.</summary>
+    private void ScanXZ(ChunkColumn col, int x, int z, bool islands, bool terrain, in ColumnFinds finds, Span<int> ids)
+    {
+        var table = BlockClass.Table;
+        int lx = x & 15, lz = z & 15, height = col.Height;
+        int minY = -1, maxY = -1, distinct = 0, below = 0;
+        for (int y = 0; y < height; y++)
+        {
+            int id = col.GetBlock(lx, y, lz);
+            if (id == 0) { below = 0; continue; }
+            var c = BlockClass.Of(table, id);
+            if ((c & C.Ground) != 0)
+            {
+                if (minY < 0) minY = y;
+                maxY = y;
+                if (_hist[id]++ == 0 && distinct < ids.Length) ids[distinct++] = id;
+            }
+            if (c != C.None) NoteScannedBlock(col, new BlockPos(x, y, z), id, c, below, terrain, in finds);
+            below = id;
+        }
+        FinishFoot(x, z, minY, maxY, ids[..distinct], islands, in finds);
+    }
+
+    private void NoteScannedBlock(ChunkColumn col, BlockPos p, int id, C c, int below, bool terrain, in ColumnFinds finds)
+    {
+        if ((c & C.Station) != 0) finds.Stations.Add(p);
+        if ((c & C.Sign) != 0) finds.Signs.Add(p);
+        if ((c & C.Portal) != 0) finds.Portals.Add(p);
+        if ((c & C.Farm) != 0 && IsFarmMember(id)) finds.Farms[BlockClass.FarmType(id)!].Add(p);
+        if ((c & C.Tree) != 0) finds.Trees.Add(p);
+        if (terrain) NoteTerrainBlock(col, p, id, c, below, in finds); // a normal world generates the rest: placements come from block changes
+    }
+
+    /// <summary>Skyblock: builds, floor candidates and generator cells (a cell lava flows into counts too).</summary>
+    private void NoteTerrainBlock(ChunkColumn col, BlockPos p, int id, C c, int below, in ColumnFinds finds)
+    {
+        if (IsBuildBlock(id, c)) finds.Builds.Add(p); // natural nether terrain isn't a build there
+        else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (p.Y + 1 < col.Height && col.GetBlock(p.X & 15, p.Y + 1, p.Z & 15) == Blocks.Cobblestone)))
+            finds.Builds.Add(p); // walls/pillars, not one-thick floors
+        if (IsFloorCandidate(id, c)) finds.Floors.Add(p); // gen cells are dropped when protection is rebuilt
+        if ((c & C.GenOutput) != 0 && IsGenCell(p, id, false)) finds.GenCandidates.Add(p);
+        else if ((c & C.Lava) != 0) AddLavaFlowCells(p, finds.GenCandidates);
+    }
+
+    /// <summary>Cells this lava can flow into that would make a generator cell.</summary>
+    private void AddLavaFlowCells(BlockPos p, List<BlockPos> genCandidates)
+    {
+        foreach (var o in FlowIn)
+        {
+            var q = new BlockPos(p.X - o.X, p.Y - o.Y, p.Z - o.Z);
+            if (IsGenCell(q, _world.GetBlock(q), false)) genCandidates.Add(q);
+        }
+    }
+
+    /// <summary>The footprint of one x,z from the scan's histogram (which is cleared for the next one).</summary>
+    private void FinishFoot(int x, int z, int minY, int maxY, Span<int> ids, bool islands, in ColumnFinds finds)
+    {
+        if (!islands)
+        {
+            foreach (var id in ids) _hist[id] = 0;
+            return;
+        }
+        if (minY < 0)
+        {
+            _foot.Remove(XZ(x, z));
+            return;
+        }
+        var hist = new int[ids.Length];
+        for (int i = 0; i < ids.Length; i++) { hist[i] = (ids[i] << 16) | Math.Min(_hist[ids[i]], 0xFFFF); _hist[ids[i]] = 0; }
+        var cell = new BlockPos(x, 0, z);
+        SetFoot(cell, new Foot(minY, maxY, hist));
+        finds.FootCells.Add(cell);
+    }
+
+    private void KeepSeenPlacements(int cx, int cz, in ColumnFinds finds)
+    {
+        foreach (var q in _builds.CellsInChunk(cx, cz))
+            if (IsBuildCell(q, _world.GetBlock(q))) finds.Builds.Add(q);
+        if (!_floorByChunk.TryGetValue(ColKey(cx, cz), out var seenFloors)) return;
+        foreach (var q in seenFloors)
+        {
+            int fid = _world.GetBlock(q);
+            if (IsFloorCandidate(fid, BlockClass.Of(BlockClass.Table, fid))) finds.Floors.Add(q);
+        }
+    }
+
+    /// <summary>Generators (known cells re-checked, new candidates added: they may lie in a neighbouring column), then stations and
+    /// signs: everything previously known in this column is re-evaluated, then everything found.</summary>
+    private void ApplyColumnStations(int cx, int cz, in ColumnFinds finds)
+    {
+        foreach (var g in _gens.CellsInChunk(cx, cz).ToList()) _gens.Set(g, IsGenCell(g, _world.GetBlock(g), true));
+        foreach (var g in finds.GenCandidates) _gens.Add(g);
+        if (_stationsByChunk.TryGetValue(ColKey(cx, cz), out var known))
+            foreach (var p in known.ToList()) EvaluateStation(p);
+        foreach (var p in finds.Stations) EvaluateStation(p, seen: true);
+        var signs = finds.Signs;
+        if (_signsByChunk.TryGetValue(ColKey(cx, cz), out var knownSigns))
+            foreach (var p in knownSigns.Where(p => !signs.Contains(p)).ToList()) EvaluateSign(p);
+        foreach (var p in signs) EvaluateSign(p);
     }
 
     private void SetFoot(BlockPos cell, Foot f)
@@ -212,24 +245,42 @@ public sealed partial class WorldIndexer
         lock (_columnsLock) queued = _dirtyColumns.Contains(ColKey(p.X >> 4, p.Z >> 4));
         if (queued) return; // the full scan covers it
 
-        if (IslandsOn && ((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Ground) != 0) UpdateFootColumn(p.X, p.Z);
+        var both = BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId);
+        if (IslandsOn && (both & C.Ground) != 0) UpdateFootColumn(p.X, p.Z);
         if (ch.OldId == Blocks.Portal || ch.NewId == Blocks.Portal) _portals.Set(p, ch.NewId == Blocks.Portal);
-
-        if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Station) != 0)
-        {
-            EvaluateStation(p, seen: true);
-            if (Ids1122.IsChest(ch.OldId) || Ids1122.IsChest(ch.NewId))
-                foreach (var o in Six)
-                    if (o.Y == 0 && Ids1122.IsChest(_world.GetBlock(p + o))) EvaluateStation(p + o);
-            if (ch.OldId == Blocks.Bed || ch.NewId == Blocks.Bed)
-                foreach (var o in Six)
-                    if (o.Y == 0 && _world.GetBlock(p + o) == Blocks.Bed) EvaluateStation(p + o);
-        }
-        if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Sign) != 0) EvaluateSign(p);
-
-        // Generators: this cell and the cells it can affect. A normal world's lava meets water everywhere (caves, lakes):
-        // only cells whose refill was seen (TrackRegen) become generator cells there; known cells are kept up to date.
+        if ((both & C.Station) != 0) StationChanged(ch);
+        if ((both & C.Sign) != 0) EvaluateSign(p);
         bool terrain = ScanTrustsTerrain;
+        GeneratorChanged(ch, terrain);
+        FarmChanged(ch);
+        _trees.Set(p, (BlockClass.Of(ch.NewId) & C.Tree) != 0);
+        PlacementChanged(ch, terrain);
+    }
+
+    /// <summary>A station changed: it, and a chest's or bed's other half beside it.</summary>
+    private void StationChanged(BlockChange ch)
+    {
+        var p = ch.Pos;
+        EvaluateStation(p, seen: true);
+        if (Ids1122.IsChest(ch.OldId) || Ids1122.IsChest(ch.NewId)) EvaluateSideNeighbours(p, chest: true);
+        if (ch.OldId == Blocks.Bed || ch.NewId == Blocks.Bed) EvaluateSideNeighbours(p, chest: false);
+    }
+
+    private void EvaluateSideNeighbours(BlockPos p, bool chest)
+    {
+        foreach (var o in Six)
+        {
+            if (o.Y != 0) continue;
+            int id = _world.GetBlock(p + o);
+            if (chest ? Ids1122.IsChest(id) : id == Blocks.Bed) EvaluateStation(p + o);
+        }
+    }
+
+    /// <summary>Generators: this cell and the cells it can affect. A normal world's lava meets water everywhere (caves, lakes):
+    /// only cells whose refill was seen (TrackRegen) become generator cells there; known cells are kept up to date.</summary>
+    private void GeneratorChanged(BlockChange ch, bool terrain)
+    {
+        var p = ch.Pos;
         if (terrain || _gens.Contains(p)) _gens.Set(p, IsGenCell(p, ch.NewId, _gens.Contains(p)));
         foreach (var o in Six)
         {
@@ -238,7 +289,11 @@ public sealed partial class WorldIndexer
             if (_gens.Contains(q) || terrain && (BlockClass.Of(id) & C.GenOutput) != 0) _gens.Set(q, IsGenCell(q, id, _gens.Contains(q)));
         }
         if (_gens.Contains(p)) _gens.Touch(p);
+    }
 
+    private void FarmChanged(BlockChange ch)
+    {
+        var p = ch.Pos;
         foreach (var t in BlockClass.FarmTypes)
         {
             var layer = _farms[t];
@@ -250,18 +305,26 @@ public sealed partial class WorldIndexer
         // Water/sand/dirt next to a farm changes its irrigation/soil description.
         if (Blocks.IsWater(ch.OldId) || Blocks.IsWater(ch.NewId))
             foreach (var o in Six) foreach (var layer in _farms.Values) layer.Touch(p + o);
-        _trees.Set(p, (BlockClass.Of(ch.NewId) & C.Tree) != 0);
-        // Fluids hardening (lava meeting water: cobble, stone, obsidian) is the world, not a placement (a normal world's caves
-        // do it on their own; on skyblock the gen cells are kept out of floors anyway).
+    }
+
+    /// <summary>Builds and floors. Fluids hardening (lava meeting water: cobble, stone, obsidian) is the world, not a placement (a
+    /// normal world's caves do it on their own; on skyblock the gen cells are kept out of floors anyway).</summary>
+    private void PlacementChanged(BlockChange ch, bool terrain)
+    {
+        var p = ch.Pos;
         bool hardened = !terrain && (Blocks.IsLava(ch.OldId) || Blocks.IsWater(ch.OldId));
         _builds.Set(p, !hardened && IsBuildCell(p, ch.NewId));
         SetFloor(p, !hardened && !_gens.Contains(p) && IsFloorCandidate(ch.NewId, BlockClass.Of(ch.NewId)));
-        foreach (var q in new[] { p.Up(), p.Down() })
-        {
-            int id = _world.GetBlock(q);
-            // Normal world: natural cobble (dungeon walls) next to a placement stays terrain; only a seen placement can pillar.
-            if (_builds.Contains(q) || id == Blocks.Cobblestone && (terrain || IsSeenFloor(q))) _builds.Set(q, IsBuildCell(q, id));
-        }
+        RecheckPillar(p.Up(), terrain);
+        RecheckPillar(p.Down(), terrain);
+    }
+
+    /// <summary>A pillar/wall cell above or below a change. Normal world: natural cobble (dungeon walls) next to a placement stays
+    /// terrain; only a seen placement can pillar.</summary>
+    private void RecheckPillar(BlockPos q, bool terrain)
+    {
+        int id = _world.GetBlock(q);
+        if (_builds.Contains(q) || id == Blocks.Cobblestone && (terrain || IsSeenFloor(q))) _builds.Set(q, IsBuildCell(q, id));
     }
 
     /// <summary>A farm block that counts towards a farm here: natural nether terrain doesn't, nor (normal world) wild cave
