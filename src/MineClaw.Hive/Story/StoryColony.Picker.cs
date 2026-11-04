@@ -58,23 +58,47 @@ public sealed partial class StoryColony
 
     private ActiveJob PickCore(PawnState p, PawnLive live)
     {
+        if (GateJob(p, live) is { } gated) return gated;
+        if (ErrandJob(p, live) is { } errand) return errand;
+        int hour = HourNow;
+        var block = ScheduleBlockAt(p, hour);
+        var home = Home();
+        return ScheduledJob(p, live, block, hour, home) ?? WorkOrIdle(p, live, hour);
+    }
+
+    /// <summary>The pawn's schedule block for this hour (anything when its schedule is missing or the block unknown).</summary>
+    private static string ScheduleBlockAt(PawnState p, int hour) =>
+        p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
+
+    /// <summary>What comes before anything else: offline, released, leaving, paused, an escape, gear work, drafted.</summary>
+    private ActiveJob? GateJob(PawnState p, PawnLive live)
+    {
         if (!live.Online) return Hold("offline", "offline");
         if (!Meta.Active) return Job("idle", "end", "colony released", null, null, "none", null, "idle", xp: 0); // the script ends cleanly
         if (LeavingJob(p, live) is { } leave) return leave; // removed from the colony: store its things, then go (StoryColony.Roster.cs)
         if (Meta.Paused) return Hold("colony paused", "idle", s: 5);
         if (!p.Drafted && EscapeJob(p, live) is { } escape) return escape; // stuck in a pit, a cave, water (StoryColony.Rescue.cs)
         if (GearJob(p, live) is { } gear) return gear; // gear work first: arming, armour, fetches the owner asked for (StoryColony.Gear.cs)
-        if (p.Drafted)
-            return DraftedEngage(p, live) ?? OrderJob(p, live) ?? DraftedReturn(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
+        return p.Drafted ? DraftedJob(p, live) : null;
+    }
+
+    private ActiveJob DraftedJob(PawnState p, PawnLive live) =>
+        DraftedEngage(p, live) ?? OrderJob(p, live) ?? DraftedReturn(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
+
+    /// <summary>Before its schedule: orders, urgent needs, a back-off rest (only with no work there), deliveries, its gear policy.</summary>
+    private ActiveJob? ErrandJob(PawnState p, PawnLive live)
+    {
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
         // A back-off rests the failed targets; the pawn itself rests only when nothing else is there (Fox 11-04: never idle with work).
         if (RestLeft(p) != null && Work(p, live) == null && Resting(p, live) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;
-        if (PolicyJob(p, live) is { } kit) return kit; // its gear policy: tools for its work, weapon, armour, food
-        int hour = HourNow;
-        var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
-        var home = Home();
+        return PolicyJob(p, live); // its gear policy: tools for its work, weapon, armour, food
+    }
+
+    /// <summary>The schedule hour's own job: sleep, free time, a meal in "anything" hours when hungry (null = work hours).</summary>
+    private ActiveJob? ScheduledJob(PawnState p, PawnLive live, string block, int hour, P3? home)
+    {
         switch (block)
         {
             case ScheduleBlocks.Sleep:
@@ -84,6 +108,11 @@ public sealed partial class StoryColony
             case ScheduleBlocks.Anything when live.Food <= 14 && FoodIn(live) != null:
                 return Job("need", "eat", "eating", null, null, "need", null, "eating", xp: 0);
         }
+        return null;
+    }
+
+    private ActiveJob WorkOrIdle(PawnState p, PawnLive live, int hour)
+    {
         if (RescueJob(p, live) is { } rescue) return rescue; // a pawn stuck in a pit gets blocks brought to it first
         if (Work(p, live) is { } work) return work;
         if (Deliver(p, live, force: true) is { } leftovers) return leftovers; // nothing else to do: store what it still carries
@@ -258,65 +287,72 @@ public sealed partial class StoryColony
         Free(key, pawn) && !Skipped(key) && !Skipped(PawnKey(key, pawn)) && (at == null || !Forbidden(at.Value) && !NearHazard(at.Value, pawn));
 
     /// <summary>The nearest available job of one work type for this pawn, or null.</summary>
-    internal ActiveJob? Candidate(string type, PawnState p, PawnLive live)
+    internal ActiveJob? Candidate(string type, PawnState p, PawnLive live) =>
+        CandidateSearch.TryGetValue(type, out var search) ? search(this, p, live) : null;
+
+    /// <summary>Each work type's job search (static: nothing is allocated per pick).</summary>
+    private static readonly Dictionary<string, Func<StoryColony, PawnState, PawnLive, ActiveJob?>> CandidateSearch = new(StringComparer.Ordinal)
     {
+        [WorkTypes.Guard] = static (c, p, live) => c.GuardJob(p, live), // fresh, reachable monsters at home only (StoryColony.Defend.cs)
+        [WorkTypes.Doctor] = static (c, p, live) => c.FeedJob(p, live),
+        [WorkTypes.Cook] = static (c, p, live) => c.BillJob(p, live, WorkTypes.Cook),
+        [WorkTypes.Craft] = static (c, p, live) => c.BillJob(p, live, WorkTypes.Craft) ?? c.SupplyJob(p, live), // the builds' own crafts (a bench to place, a 2×2 craft)
+        [WorkTypes.Hunt] = static (c, p, live) => c.HuntJob(p, live),
+        [WorkTypes.Fish] = static (c, p, live) => c.FishJob(p, live), // StoryColony.Fishing.cs
+        [WorkTypes.Build] = static (c, p, live) => c.GhostJob(p, live) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Build, "deconstruct", "dig", "deconstructing"),
+        [WorkTypes.Farm] = static (c, p, live) => c.DesignationJob(p, live, live.Block, WorkTypes.Farm, "harvest", "harvest", "harvesting") ?? c.FarmZoneJob(p, live),
+        [WorkTypes.Mine] = static (c, p, live) => c.DesignationJob(p, live, live.Block, WorkTypes.Mine, "mine", "dig", "mining") ?? c.ZoneJob(p, live.Block, WorkTypes.Mine, "mine", live),
+        [WorkTypes.Chop] = static (c, p, live) => c.ChopJob(p, live),
+        [WorkTypes.Haul] = static (c, p, live) => c.HaulJob(p, live) ?? c.RebalanceJob(p, live), // StoryColony.Hauling.cs
+    };
+
+    private ActiveJob? ChopJob(PawnState p, PawnLive live)
+    {
+        if (LeaveToSurfacePawn(p, live, WorkTypes.Chop)) return null; // under ground: a pawn up top takes the trees
         var from = live.Block;
-        switch (type)
+        return DesignationJob(p, live, from, WorkTypes.Chop, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, WorkTypes.Chop, "cut", "dig", "cutting plants")
+            ?? ZoneJob(p, from, WorkTypes.Chop, "chop");
+    }
+
+    /// <summary>A pawn that is hungry and has no food: food brought to it (carried, or fetched from storage).</summary>
+    private ActiveJob? FeedJob(PawnState p, PawnLive live)
+    {
+        if (World is not { } w) return null;
+        foreach (var other in Pawns.Values.Where(o => o != p))
         {
-            case WorkTypes.Guard:
-                return GuardJob(p, live); // fresh, reachable monsters at home only (StoryColony.Defend.cs)
-            case WorkTypes.Doctor:
+            var ol = Host.Live(other.Name);
+            if (!Starving(w, other, ol)) continue;
+            var key = "feed:" + other.Name;
+            if (!Open(key, p.Name, null)) continue;
+            var mine = FoodIn(live);
+            var stored = mine == null ? FindStored(s => w.Data.Food(s.Id, s.Meta) != null && !Raw(w, s.Id), live.Block) : null;
+            if (mine == null && stored == null) continue;
+            var item = mine ?? stored!.Value.Stack;
+            var j = Job(WorkTypes.Doctor, "give", $"feeding {other.Display}", ol.Block, key, "feed", other.Name, "working", f =>
             {
-                if (World is not { } w) return null;
-                foreach (var other in Pawns.Values.Where(o => o != p))
-                {
-                    var ol = Host.Live(other.Name);
-                    if (!ol.Online || ol.Food > StoryCharacter.EatFood(other) || ol.Inventory.Any(s => w.Data.Food(s.Id, s.Meta) != null)) continue;
-                    var key = "feed:" + other.Name;
-                    if (!Open(key, p.Name, null)) continue;
-                    var mine = FoodIn(live);
-                    var stored = mine == null ? FindStored(s => w.Data.Food(s.Id, s.Meta) != null && !Raw(w, s.Id), from) : null;
-                    if (mine == null && stored == null) continue;
-                    var item = mine ?? stored!.Value.Stack;
-                    var j = Job(type, "give", $"feeding {other.Display}", ol.Block, key, "feed", other.Name, "working", f =>
-                    {
-                        f["to"] = other.Name; f["item"] = ItemName(item.Id, item.Meta); f["n"] = 3;
-                        if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, 3);
-                    }, xp: 30);
-                    if (stored is { } st2) j.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(3, st2.Stack.Count) }));
-                    return j;
-                }
-                return null;
-            }
-            case WorkTypes.Cook:
-                return BillJob(p, live, WorkTypes.Cook);
-            case WorkTypes.Craft:
-                return BillJob(p, live, WorkTypes.Craft) ?? SupplyJob(p, live); // the builds' own crafts (a bench to place, a 2×2 craft)
-            case WorkTypes.Hunt:
-            {
-                var ents = Ents().ToDictionary(e => e.Id);
-                var d = Designations.Where(x => x.Kind == "hunt" && x.Entity is { } id && ents.ContainsKey(id) && Open("e:" + id, p.Name, null))
-                    .OrderBy(x => ents[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
-                if (d == null) return null;
-                var e = ents[d.Entity!.Value];
-                return Job(type, "attack", $"hunting a {e.Name}", e.Block, "e:" + e.Id, "designation", d.Id, "fighting", j => j["mob"] = e.Name, xp: 30);
-            }
-            case WorkTypes.Fish:
-                return FishJob(p, live); // StoryColony.Fishing.cs
-            case WorkTypes.Build:
-                return GhostJob(p, live) ?? DesignationJob(p, live, from, type, "deconstruct", "dig", "deconstructing");
-            case WorkTypes.Farm:
-                return DesignationJob(p, live, from, type, "harvest", "harvest", "harvesting") ?? FarmZoneJob(p, live);
-            case WorkTypes.Mine:
-                return DesignationJob(p, live, from, type, "mine", "dig", "mining") ?? ZoneJob(p, from, type, "mine", live);
-            case WorkTypes.Chop:
-                if (LeaveToSurfacePawn(p, live, type)) return null; // under ground: a pawn up top takes the trees
-                return DesignationJob(p, live, from, type, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, type, "cut", "dig", "cutting plants")
-                    ?? ZoneJob(p, from, type, "chop");
-            case WorkTypes.Haul:
-                return HaulJob(p, live) ?? RebalanceJob(p, live); // StoryColony.Hauling.cs
+                f["to"] = other.Name; f["item"] = ItemName(item.Id, item.Meta); f["n"] = 3;
+                if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, 3);
+            }, xp: 30);
+            if (stored is { } st2) j.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(3, st2.Stack.Count) }));
+            return j;
         }
         return null;
+    }
+
+    /// <summary>Online, at or under its eating threshold, and carrying no food at all.</summary>
+    private static bool Starving(IStoryWorld w, PawnState p, PawnLive live) =>
+        live.Online && live.Food <= StoryCharacter.EatFood(p) && !live.Inventory.Any(s => w.Data.Food(s.Id, s.Meta) != null);
+
+    /// <summary>The nearest hunt designation whose animal is in view.</summary>
+    private ActiveJob? HuntJob(PawnState p, PawnLive live)
+    {
+        var from = live.Block;
+        var ents = Ents().ToDictionary(e => e.Id);
+        var d = Designations.Where(x => x.Kind == "hunt" && x.Entity is { } id && ents.ContainsKey(id) && Open("e:" + id, p.Name, null))
+            .OrderBy(x => ents[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
+        if (d == null) return null;
+        var e = ents[d.Entity!.Value];
+        return Job(WorkTypes.Hunt, "attack", $"hunting a {e.Name}", e.Block, "e:" + e.Id, "designation", d.Id, "fighting", j => j["mob"] = e.Name, xp: 30);
     }
 
     /// <summary>
@@ -344,45 +380,69 @@ public sealed partial class StoryColony
         // (live 11-03: "double_plant ... is busy: another hive bot is working on that part" when a mine and a cut box overlapped it).
         if (!Index().ByKind.TryGetValue(kind, out var list) || list.Count == 0) return null;
         bool digs = kind is "mine" or "deconstruct";
-        bool tooled = digs || kind == "cut"; // the dig takes its material's tool (StoryColony.Gear.cs): never a lost drop
-        var w = World;
+        // The dig takes its material's tool (StoryColony.Gear.cs): never a lost drop.
+        var s = new MarkSearch(kind, digs, digs || kind == "cut", World, live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : []);
+        var best = NearestMark(p, live, from, list, s);
+        if (best.D == null) return null;
+        return MarkJob(p, live, type, scriptKind, label, list, best, s);
+    }
+
+    /// <summary>One designation search: its kind, whether it digs (and takes a tool), the world, the cells the pawn stands on.</summary>
+    private readonly record struct MarkSearch(string Kind, bool Digs, bool Tooled, IStoryWorld? W, HashSet<P3> Mine);
+
+    /// <summary>The best open mark: nearest first, higher cells a little earlier (top-down), its own floor last (it would have to step
+    /// off first). None (default) when no mark is open and in reach.</summary>
+    private (DesignationState D, string Key, P3 Target) NearestMark(PawnState p, PawnLive live, P3 from, List<(DesignationState D, string Key, P3 Target)> list,
+        MarkSearch s)
+    {
         HashSet<P3>? stoodOn = null;
-        var mine = live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : [];
         (DesignationState D, string Key, P3 Target) best = default;
         double bestScore = double.MaxValue;
         foreach (var x in list)
         {
             var at = x.Target;
-            // Nearest first, higher cells a little earlier (top-down), its own floor last (it would have to step off first).
-            double score = at.Dist(from) - 0.25 * at.Y + (mine.Contains(at) ? 1000 : 0);
+            double score = at.Dist(from) - 0.25 * at.Y + (s.Mine.Contains(at) ? 1000 : 0);
             if (score >= bestScore) continue;
-            if (!Open(x.Key, p.Name, at)) continue;
-            // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
-            if (kind is "cut" or "harvest" && w != null && StoryWander.Underground(w, at)) continue;
-            if (digs && w != null)
-            {
-                // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone.
-                if (!Exposed(w, at)) continue;
-                // Never the block under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
-                if ((stoodOn ??= StoodOnByOthers(p.Name)).Contains(at)) continue;
-            }
-            // No tool for its material (carried or stored): the target waits, said on the map, no failure.
-            if (tooled && w != null && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(x.D, why); continue; }
+            if (!Open(x.Key, p.Name, at) || !MarkWorkable(p, live, x.D, at, s, ref stoodOn)) continue;
             best = x;
             bestScore = score;
         }
-        if (best.D is not { } d) return null;
-        var target = best.Target;
-        P3? stand = digs && w != null && mine.Contains(target)
-            ? StandBeside(w, target, c => c == target || list.Any(o => o.Target == c)) : null;
+        return best;
+    }
+
+    /// <summary>Can the pawn work this mark now: surface work out of caves, a dig only exposed and not under someone's feet, a tool for
+    /// it (else the mark waits, said on the map, no failure).</summary>
+    private bool MarkWorkable(PawnState p, PawnLive live, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
+    {
+        if (s.W is not { } w) return true;
+        // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
+        if (s.Kind is "cut" or "harvest" && StoryWander.Underground(w, at)) return false;
+        // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone. Never the block
+        // under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
+        if (s.Digs && DigBlocked(w, at, p.Name, ref stoodOn)) return false;
+        // No tool for its material (carried or stored): the target waits, said on the map, no failure.
+        if (s.Tooled && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(d, why); return false; }
+        return true;
+    }
+
+    private bool DigBlocked(IStoryWorld w, P3 at, string pawn, ref HashSet<P3>? stoodOn) =>
+        !Exposed(w, at) || (stoodOn ??= StoodOnByOthers(pawn)).Contains(at);
+
+    private ActiveJob MarkJob(PawnState p, PawnLive live, string type, string scriptKind, string label, List<(DesignationState D, string Key, P3 Target)> list,
+        (DesignationState D, string Key, P3 Target) best, MarkSearch s)
+    {
+        var (d, key, target) = best;
+        P3? stand = s.Digs && s.W != null && s.Mine.Contains(target)
+            ? StandBeside(s.W, target, c => c == target || list.Any(o => o.Target == c)) : null;
         NoteWait(d, null);
-        var tool = tooled && w != null ? PlanTool(p, live, w.Block(target.X, target.Y, target.Z).Id) : null;
-        return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, best.Key, "designation", d.Id, "working",
+        var tool = s.Tooled && s.W != null ? PlanTool(p, live, s.W.Block(target.X, target.Y, target.Z).Id) : null;
+        string kind = s.Kind;
+        return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, key, "designation", d.Id, "working",
             j =>
             {
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
-                if (stand is { } s) j["stand"] = s.ToString(); // it stands on its target: step off to the side first
+                if (stand is { } st) j["stand"] = st.ToString(); // it stands on its target: step off to the side first
             }, xp: kind == "chop" ? 40 : 20));
     }
 
@@ -502,71 +562,81 @@ public sealed partial class StoryColony
 
     private void Done(PawnState p, ActiveJob j, string? note)
     {
-        foreach (var (chest, s) in j.Takes) if (StorageAt(chest) is { } st) TakeContents(st, s.Id, s.Meta, s.Count);
-        foreach (var (chest, stacks) in j.Puts) if (StorageAt(chest) is { } st) foreach (var s in stacks) AddContents(st, s);
+        SettleStock(j);
         GearTakesEnded(j, done: true);
         ChestsReached(p, j);
         if (j.Source == "need") _needFails.Remove(p.Name);
-        if (WorkTypes.Known(j.Type) && j.Xp > 0 && StoryCharacter.Learn(p, j.Type, j.Xp, HourNow) > 0)
-            Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
+        LearnFrom(p, j);
         _fails.Remove(p.Name);
         if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
         Reached(p, j); // it isn't stuck; a rescue's blocks arrived (StoryColony.Rescue.cs)
         if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
         HauledDone(j); // every drop a collect trip leased: its haul designation is done (StoryColony.EntityMarks.cs)
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
-        switch (j.Source)
+        if (DoneBySource.TryGetValue(j.Source, out var done)) done(this, p, j, note);
+    }
+
+    /// <summary>The chests' records follow a finished job: what it took out, what it put in.</summary>
+    private void SettleStock(ActiveJob j)
+    {
+        foreach (var (chest, s) in j.Takes) if (StorageAt(chest) is { } st) TakeContents(st, s.Id, s.Meta, s.Count);
+        foreach (var (chest, stacks) in j.Puts) if (StorageAt(chest) is { } st) foreach (var s in stacks) AddContents(st, s);
+    }
+
+    /// <summary>The job's experience; a new level is said.</summary>
+    private void LearnFrom(PawnState p, ActiveJob j)
+    {
+        if (WorkTypes.Known(j.Type) && j.Xp > 0 && StoryCharacter.Learn(p, j.Type, j.Xp, HourNow) > 0)
+            Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
+    }
+
+    /// <summary>What a finished job does to where it came from, by its source.</summary>
+    private static readonly Dictionary<string, Action<StoryColony, PawnState, ActiveJob, string?>> DoneBySource = new(StringComparer.Ordinal)
+    {
+        ["designation"] = static (c, p, j, note) => c.DesignationDone(p, j, note),
+        ["ghost"] = static (c, p, j, note) => c.BatchDone(p, j, note),
+        ["bill"] = static (c, p, j, note) => c.BillDone(p, j, note),
+        ["furnace"] = static (c, p, j, note) => c.BillDone(p, j, note),
+        ["look"] = static (c, _, j, _) => c.LookDone(j), // the chest's record from what the pawn saw (StoryColony.StockCheck.cs)
+        ["order"] = static (c, p, j, note) => c.OrderDone(p, j, ok: true, note),
+        ["station"] = static (c, p, j, _) => c.SupplyDone(p, j),
+        ["hand"] = static (c, p, j, _) => c.SupplyDone(p, j),
+        ["gear"] = static (c, p, j, note) => c.GearEnded(p, j, ok: true, note),
+        ["policy"] = static (c, p, j, note) => c.GearEnded(p, j, ok: true, note),
+        ["fish"] = static (c, _, j, note) => c.FishDone(j, note), // the catch counts toward the zone (StoryColony.Fishing.cs)
+        ["zone"] = static (c, _, j, _) => c.ZoneWorkDone(j),
+        ["crop"] = static (c, _, j, _) => c.ZoneWorkDone(j),
+        ["sow"] = static (c, _, j, _) => c.ZoneWorkDone(j),
+    };
+
+    /// <summary>A zone's job done: its scans start over (a quarry rescans at once); a harvest counts toward the zone's planting bills.</summary>
+    private void ZoneWorkDone(ActiveJob j)
+    {
+        if (j.Source == "crop") GrowHarvested(j);
+        _zoneScan.Remove(j.SourceId ?? "");
+        _quarryScan.Remove(j.SourceId ?? ""); // StoryColony.Quarry.cs
+        _growScan.Remove(j.SourceId ?? "");
+    }
+
+    private void DesignationDone(PawnState p, ActiveJob j, string? note)
+    {
+        if (Designations.FirstOrDefault(d => d.Id == j.SourceId) is not { } des) return;
+        bool partial = note != null && note.StartsWith("partial", StringComparison.OrdinalIgnoreCase);
+        // Part of the tree came down and the rest still stands: the designation stays, now on its lowest log left, rested a moment for
+        // this pawn (Fox 11-04 tree farming: the rest is chopped too, never dropped with "0/N" or half a tree).
+        if (partial && ChopRest(des) is { } rest)
         {
-            case "designation":
-                if (Designations.FirstOrDefault(d => d.Id == j.SourceId) is { } des)
-                {
-                    // Part of the tree came down and the rest still stands: the designation stays, now on its lowest log left, rested
-                    // a moment for this pawn (Fox 11-04 tree farming: the rest is chopped too, never dropped with "0/N" or half a tree).
-                    if (note is { } pn && pn.StartsWith("partial", StringComparison.OrdinalIgnoreCase) && ChopRest(des) is { } rest)
-                    {
-                        Alert("info", $"{p.Display} took what it could reach of the tree at {des.At}: {Short(pn)}; the rest ({rest.Count} log(s)) stays designated", p.Name);
-                        des.At = rest[0];
-                        des.Rev = Touch();
-                        _skip[PawnKey("b:" + rest[0], p.Name)] = Now + PartialRest;
-                        break;
-                    }
-                    _chopPartials.Remove(des.Id);
-                    Designations.Remove(des);
-                    Removed("designation", des.Id);
-                    // Part of the tree was out of reach: what could be reached came down; the rest is said, not silently dropped.
-                    if (note is { } n && n.StartsWith("partial", StringComparison.OrdinalIgnoreCase))
-                        Alert("info", $"{p.Display} took what it could reach of the {des.Kind} at {des.At?.ToString() ?? "#" + des.Entity}: {Short(n)}", p.Name);
-                }
-                break;
-            case "ghost":
-                BatchDone(p, j, note);
-                break;
-            case "bill":
-            case "furnace":
-                BillDone(p, j, note);
-                break;
-            case "look":
-                LookDone(j); // the chest's record from what the pawn saw (StoryColony.StockCheck.cs)
-                break;
-            case "order":
-                OrderDone(p, j, ok: true, note);
-                break;
-            case "station" or "hand":
-                SupplyDone(p, j);
-                break;
-            case "gear" or "policy":
-                GearEnded(p, j, ok: true, note);
-                break;
-            case "fish":
-                FishDone(j, note); // the catch counts toward the zone (StoryColony.Fishing.cs)
-                break;
-            case "zone" or "crop" or "sow":
-                if (j.Source == "crop") GrowHarvested(j); // counts toward the zone's planting bills
-                _zoneScan.Remove(j.SourceId ?? "");
-                _quarryScan.Remove(j.SourceId ?? ""); // a quarry rescans at once (StoryColony.Quarry.cs)
-                _growScan.Remove(j.SourceId ?? "");
-                break;
+            Alert("info", $"{p.Display} took what it could reach of the tree at {des.At}: {Short(note!)}; the rest ({rest.Count} log(s)) stays designated", p.Name);
+            des.At = rest[0];
+            des.Rev = Touch();
+            _skip[PawnKey("b:" + rest[0], p.Name)] = Now + PartialRest;
+            return;
         }
+        _chopPartials.Remove(des.Id);
+        Designations.Remove(des);
+        Removed("designation", des.Id);
+        // Part of the target was out of reach: what could be reached came down; the rest is said, not silently dropped.
+        if (partial) Alert("info", $"{p.Display} took what it could reach of the {des.Kind} at {des.At?.ToString() ?? "#" + des.Entity}: {Short(note!)}", p.Name);
     }
 
     /// <summary>
@@ -633,60 +703,28 @@ public sealed partial class StoryColony
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
-        var why = string.IsNullOrWhiteSpace(note) ? "failed" : note.Trim();
-        if (why.Length > 120) why = why[..119] + "…";
-        _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
-        GearTakesEnded(j, done: false);
-        if (j.Source is "gear" or "policy") GearEnded(p, j, ok: false, why);
-        if (j.Source == "need") NeedFailed(p, j); // a food fetch that failed: that pawn waits a little, that chest is skipped
+        var why = FailureText(p, j, note);
+        GearOrNeedFailed(p, j, why);
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
         if (StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note)) return;
-        foreach (var (chest, _) in j.Puts)
-            if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
+        MarkFullChests(j, why);
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
         // (live 11-04: one pawn in a hole failed grass after grass for everyone; StoryColony.Rescue.cs).
         if (PawnOnly(p, j, why)) return;
-        if (j.Source is "designation" or "ghost" && j.Lease != null && Transient(why) && !Unreachable(why))
-        {
-            // Not now, not a failure (live 11-03: "can't reach dirt" ×46, "someone is standing on it" ×6, a tall plant "busy" ×11 all
-            // counted, alerted and backed off as failures): the target rests a little, no fail count, no alert; only when it keeps
-            // happening (SoftLimit times in a row) does it count as a real failure. "can't reach" rests it for this pawn only: from
-            // where another pawn stands it may well be in reach.
-            int soft = _softFails[j.Lease] = _softFails.GetValueOrDefault(j.Lease) + 1;
-            if (soft < SoftLimit)
-            {
-                _skip[ReachOnly(why) ? PawnKey(j.Lease, p.Name) : j.Lease] = Now + SoftRest;
-                return;
-            }
-            _softFails.Remove(j.Lease);
-        }
+        if (SoftFailure(p, j, why)) return;
         if (!PlanningError(why)) NoteFailure(p); // stock and ledger errors are the plan's, not the pawn's: no resting (StoryColony.Ledger.cs)
-        if (j.Lease != null)
-        {
-            // Not this target again right away; one that keeps failing (an unreachable drop) rests longer each time (up to 10 minutes).
-            int n = _leaseFails[j.Lease] = _leaseFails.GetValueOrDefault(j.Lease) + 1;
-            _skip[j.Lease] = Now + Backoff(n);
-        }
-        if (j.Source == "deliver")
-        {
-            int n = _leaseFails["deliver:" + p.Name] = _leaseFails.GetValueOrDefault("deliver:" + p.Name) + 1;
-            _skip["deliver:" + p.Name] = Now + Backoff(n);
-        }
+        BackOffTarget(p, j);
+        FailedBySource(p, j, why);
+    }
+
+    /// <summary>What a failed job does to where it came from, by its source.</summary>
+    private void FailedBySource(PawnState p, ActiveJob j, string why)
+    {
         switch (j.Source)
         {
             case "designation":
-                if (Designations.FirstOrDefault(d => d.Id == j.SourceId) is { } des)
-                {
-                    // Kept on the map with why (the browser shows it); retried after a rest, until it is done or cancelled.
-                    des.Fails++;
-                    des.Reason = why;
-                    if (des.Fails >= DesignationFailLimit) des.Status = "failed";
-                    des.Rev = Touch();
-                    if (des.Fails == 1 || des.Fails % DesignationFailLimit == 0)
-                        Alert("warn", $"{des.Kind} at {des.At?.ToString() ?? "#" + des.Entity} failed {des.Fails} times: {why} (kept on the map, "
-                            + $"retried in {Backoff(des.Fails).TotalMinutes:0} min; cancel it to drop it)", p.Name);
-                }
+                DesignationFailed(p, j, why);
                 break;
             case "ghost":
                 BatchFailed(p, j, why);
@@ -699,5 +737,75 @@ public sealed partial class StoryColony
                 OrderDone(p, j, ok: false, why);
                 break;
         }
+    }
+
+    /// <summary>The failure's reason as kept and shown (trimmed, at most 120 characters), logged.</summary>
+    private string FailureText(PawnState p, ActiveJob j, string? note)
+    {
+        var why = string.IsNullOrWhiteSpace(note) ? "failed" : note.Trim();
+        if (why.Length > 120) why = why[..119] + "…";
+        _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
+        return why;
+    }
+
+    private void GearOrNeedFailed(PawnState p, ActiveJob j, string why)
+    {
+        GearTakesEnded(j, done: false);
+        if (j.Source is "gear" or "policy") GearEnded(p, j, ok: false, why);
+        if (j.Source == "need") NeedFailed(p, j); // a food fetch that failed: that pawn waits a little, that chest is skipped
+    }
+
+    /// <summary>A put that failed for a full chest: the chest is full now (no plan sends more there until it is seen again).</summary>
+    private void MarkFullChests(ActiveJob j, string why)
+    {
+        foreach (var (chest, _) in j.Puts)
+            if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
+    }
+
+    /// <summary>
+    /// Not now, not a failure (live 11-03: "can't reach dirt" ×46, "someone is standing on it" ×6, a tall plant "busy" ×11 all counted,
+    /// alerted and backed off as failures): a designation's or a build cell's target rests a little, no fail count, no alert; only when
+    /// it keeps happening (SoftLimit times in a row) does it count as a real failure. "can't reach" rests it for this pawn only: from
+    /// where another pawn stands it may well be in reach. True = handled (no failure).
+    /// </summary>
+    private bool SoftFailure(PawnState p, ActiveJob j, string why)
+    {
+        if (j.Source is not ("designation" or "ghost") || j.Lease == null || !Transient(why) || Unreachable(why)) return false;
+        int soft = _softFails[j.Lease] = _softFails.GetValueOrDefault(j.Lease) + 1;
+        if (soft < SoftLimit)
+        {
+            _skip[ReachOnly(why) ? PawnKey(j.Lease, p.Name) : j.Lease] = Now + SoftRest;
+            return true;
+        }
+        _softFails.Remove(j.Lease);
+        return false;
+    }
+
+    /// <summary>Not this target again right away; one that keeps failing (an unreachable drop) rests longer each time (up to 10 minutes).</summary>
+    private void BackOffTarget(PawnState p, ActiveJob j)
+    {
+        if (j.Lease != null)
+        {
+            int n = _leaseFails[j.Lease] = _leaseFails.GetValueOrDefault(j.Lease) + 1;
+            _skip[j.Lease] = Now + Backoff(n);
+        }
+        if (j.Source == "deliver")
+        {
+            int n = _leaseFails["deliver:" + p.Name] = _leaseFails.GetValueOrDefault("deliver:" + p.Name) + 1;
+            _skip["deliver:" + p.Name] = Now + Backoff(n);
+        }
+    }
+
+    /// <summary>Kept on the map with why (the browser shows it); retried after a rest, until it is done or cancelled.</summary>
+    private void DesignationFailed(PawnState p, ActiveJob j, string why)
+    {
+        if (Designations.FirstOrDefault(d => d.Id == j.SourceId) is not { } des) return;
+        des.Fails++;
+        des.Reason = why;
+        if (des.Fails >= DesignationFailLimit) des.Status = "failed";
+        des.Rev = Touch();
+        if (des.Fails == 1 || des.Fails % DesignationFailLimit == 0)
+            Alert("warn", $"{des.Kind} at {des.At?.ToString() ?? "#" + des.Entity} failed {des.Fails} times: {why} (kept on the map, "
+                + $"retried in {Backoff(des.Fails).TotalMinutes:0} min; cancel it to drop it)", p.Name);
     }
 }

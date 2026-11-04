@@ -66,38 +66,72 @@ public sealed partial class StoryColony
 
     private string? IdleWithWork(PawnState p, ref HashSet<string>? kinds)
     {
-        if (p.Drafted || _leaving.ContainsKey(p.Name)) return null;
-        // Working, or between two jobs (it asks for the next one at once): not idle.
-        if (!_current.TryGetValue(p.Name, out var cur) || cur.Source is not ("none" or "wander" or "escape")) return null;
-        int hour = HourNow;
-        var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
-        if (block is not (ScheduleBlocks.Work or ScheduleBlocks.Anything)) return null;
-        if (!Host.Live(p.Name).Online) return null;
+        if (!IdleInWorkHours(p)) return null;
         if (_stuck.ContainsKey(p.Name)) return "stuck";
-        var look = _looks.GetValueOrDefault(p.Name);
-        if (look != null && Now - look.At > LookFresh) look = null;
+        var look = FreshLook(p.Name);
         if (look is { Found: true }) return "work not taken yet";
-        // Its designations: why none of them is for it.
-        bool leased = false, waiting = false, backingOff = false, open = false;
-        foreach (var d in Designations)
-        {
-            if (d.Status is not (null or "open" or "waiting") || WorkOf(d.Kind) is not { Length: > 0 } wt || p.Priorities.GetValueOrDefault(wt) is < 1 or > 4) continue;
-            var key = DesignationKey(d);
-            if (d.Wait != null) { waiting = true; continue; }
-            if (!Free(key, p.Name)) { leased = true; continue; }
-            if (Skipped(key) || Skipped(PawnKey(key, p.Name))) { backingOff = true; continue; }
-            open = true;
-        }
-        if (open) return RestLeft(p) != null ? "back-off rest" : "no reachable target";
-        if (backingOff) return "targets backing off";
-        if (waiting) return "tool waiting";
-        if (leased) return "all targets leased";
+        if (MarksIdleReason(p) is { } why) return why;
         // What its last search found held back: a build short of something, a suspended bill, a busy bench.
         if (look is { Blocked: [var first, ..] }) return "waiting: " + first;
         kinds ??= WorkKindsWithWork();
-        foreach (var t in kinds) if (p.Priorities.GetValueOrDefault(t) is >= 1 and <= 4) return null; // its own kinds: nothing it could start (searched)
+        if (DoesAnyOf(p, kinds)) return null; // its own kinds: nothing it could start (searched)
         return kinds.Count > 0 ? "priority 0" : null;
     }
+
+    /// <summary>
+    /// Holding, wandering or resting (not working, nor between two jobs: it asks for the next one at once) in its work hours, online,
+    /// neither drafted nor leaving.
+    /// </summary>
+    private bool IdleInWorkHours(PawnState p)
+    {
+        if (p.Drafted || _leaving.ContainsKey(p.Name)) return false;
+        if (!_current.TryGetValue(p.Name, out var cur) || cur.Source is not ("none" or "wander" or "escape")) return false;
+        if (ScheduleBlockAt(p, HourNow) is not (ScheduleBlocks.Work or ScheduleBlocks.Anything)) return false;
+        return Host.Live(p.Name).Online;
+    }
+
+    /// <summary>The pawn's last work search, while it is still about now (null = none, or too old).</summary>
+    private Look? FreshLook(string pawn)
+    {
+        var look = _looks.GetValueOrDefault(pawn);
+        return look != null && Now - look.At > LookFresh ? null : look;
+    }
+
+    private static bool DoesAnyOf(PawnState p, HashSet<string> kinds)
+    {
+        foreach (var t in kinds) if (p.Priorities.GetValueOrDefault(t) is >= 1 and <= 4) return true;
+        return false;
+    }
+
+    /// <summary>What the open designations of a pawn's kinds of work are to it (any one of each is enough).</summary>
+    [Flags]
+    private enum MarkSeen { None = 0, Waiting = 1, Leased = 2, BackingOff = 4, Open = 8 }
+
+    /// <summary>Its designations: why none of them is for it (null = it has none to do).</summary>
+    private string? MarksIdleReason(PawnState p)
+    {
+        var seen = MarkSeen.None;
+        foreach (var d in Designations) seen |= MarkSeenBy(p, d);
+        if ((seen & MarkSeen.Open) != 0) return RestLeft(p) != null ? "back-off rest" : "no reachable target";
+        if ((seen & MarkSeen.BackingOff) != 0) return "targets backing off";
+        if ((seen & MarkSeen.Waiting) != 0) return "tool waiting";
+        if ((seen & MarkSeen.Leased) != 0) return "all targets leased";
+        return null;
+    }
+
+    private MarkSeen MarkSeenBy(PawnState p, DesignationState d)
+    {
+        if (!MarkOfItsWork(p, d)) return MarkSeen.None;
+        var key = DesignationKey(d);
+        if (d.Wait != null) return MarkSeen.Waiting;
+        if (!Free(key, p.Name)) return MarkSeen.Leased;
+        if (Skipped(key) || Skipped(PawnKey(key, p.Name))) return MarkSeen.BackingOff;
+        return MarkSeen.Open;
+    }
+
+    /// <summary>An open (or tool-waiting) designation of a work type the pawn does.</summary>
+    private static bool MarkOfItsWork(PawnState p, DesignationState d) =>
+        d.Status is null or "open" or "waiting" && WorkOf(d.Kind) is { Length: > 0 } wt && p.Priorities.GetValueOrDefault(wt) is >= 1 and <= 4;
 
     /// <summary>The work types the colony has something to do for now: designations, builds with cells to do, bills that are wanted.</summary>
     private HashSet<string> WorkKindsWithWork()

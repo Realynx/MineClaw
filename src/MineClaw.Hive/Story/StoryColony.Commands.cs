@@ -75,60 +75,109 @@ public sealed partial class StoryColony
             }
     }
 
+    /// <summary>An order's target: a position, an entity (by id, or a player or bot by name), or an area.</summary>
+    private readonly record struct OrderAim(P3? At, int? Entity, Area? Area)
+    {
+        /// <summary>A place to go: a position or an area.</summary>
+        public bool HasPlace => At != null || Area != null;
+        public bool HasAny => HasPlace || Entity != null;
+    }
+
     /// <summary>An order for each pawn: replaces its queue (and cuts what it does now) unless <paramref name="queue"/>.</summary>
     public (JsonNode? Result, string? Error) GiveOrder(IReadOnlyList<PawnState> pawns, JsonObject order, bool queue)
     {
         var kind = order["kind"]?.GetValue<string>()?.Trim().ToLowerInvariant();
         if (kind == null || !OrderKinds.Contains(kind)) return (null, $"order.kind must be {string.Join("|", OrderKinds)}");
-        P3? at = null;
-        int? entity = null;
-        Area? area = null;
-        if (order["target"] is JsonNode t)
-        {
-            if (t is JsonObject to && to["entity"] is { } en) entity = StoryJson.Int(en);
-            else if (t is JsonObject tp && tp["player"] is JsonValue pv && pv.TryGetValue<string>(out var pn)) // a player or bot by name (the map has no id for a bot)
-            {
-                entity = World?.Entities().FirstOrDefault(e => e.Kind == "player" && e.Name.Equals(pn, StringComparison.OrdinalIgnoreCase))?.Id;
-                if (entity == null) return (null, $"no player named {pn} in view");
-            }
-            else if (t is JsonObject ta && ta["area"] is { } an) area = Area.Parse(an) ?? (Area?)null;
-            else at = P3.Parse(t);
-            if (at == null && entity == null && area == null) return (null, "target must be {x,y,z} | {entity:id} | {area:[x1,y1,z1,x2,y2,z2]}");
-        }
+        var (aim, err) = OrderAimOf(order["target"]);
+        if (err != null) return (null, err);
         long? design = StoryJson.Int(order["design"]);
-        if (kind is "move" or "chop" or "mine" && at == null && area == null) return (null, $"{kind} needs a target position or area");
-        if (kind is "attack" && entity == null && at == null) return (null, "attack needs a target entity");
-        if (kind == "haul" && entity == null && at == null && area == null) return (null, "haul needs a target");
-        if (kind == "build" && design == null && at == null) return (null, "build needs a design (or a target)");
-        if (area is { Volume: > 32_768 }) return (null, "area too large for an order (max 32768 blocks)");
-        if (kind == "attack")
-            lock (_lock)
-                if (AttackCheck(entity, order["confirm"]) is { Error: { } aerr } check)
-                    return (check.Confirm is { } cf ? new JsonObject { ["confirm"] = cf } : null, aerr); // a player or bot: the owner confirms (409)
+        if (OrderError(kind, aim, design) is { } bad) return (null, bad);
+        if (kind == "attack" && AttackOrderRefused(aim.Entity, order["confirm"]) is { } refused) return refused; // a player or bot: the owner confirms (409)
         // A chop order on a tree's canopy (a top-down click) or a branch means the tree: its trunk base.
-        if (kind == "chop" && at is { } ca && World is { } cw && StoryBlocks.TreeBaseOf(cw, ca) is { } cb) at = cb;
-        var ids = new JsonArray();
+        if (kind == "chop") aim = aim with { At = TreeBaseOrCell(aim.At) };
+        lock (_lock) return QueueOrders(pawns, kind, aim, design, queue);
+    }
+
+    /// <summary>The order's target (none when the order has none), or why it can't be read.</summary>
+    private (OrderAim Aim, string? Error) OrderAimOf(JsonNode? t)
+    {
+        if (t == null) return (default, null);
+        var (aim, err) = ReadOrderAim(t);
+        if (err == null && !aim.HasAny) err = "target must be {x,y,z} | {entity:id} | {area:[x1,y1,z1,x2,y2,z2]}";
+        return (aim, err);
+    }
+
+    private (OrderAim Aim, string? Error) ReadOrderAim(JsonNode t)
+    {
+        if (t is JsonObject o)
+        {
+            if (o["entity"] is { } en) return (new OrderAim(null, StoryJson.Int(en), null), null);
+            // A player or bot by name (the map has no id for a bot).
+            if (o["player"] is JsonValue pv && pv.TryGetValue<string>(out var pn))
+                return PlayerIdInView(pn) is { } id ? (new OrderAim(null, id, null), null) : (default, $"no player named {pn} in view");
+            if (o["area"] is { } an) return (new OrderAim(null, null, Area.Parse(an)), null);
+        }
+        return (new OrderAim(P3.Parse(t), null, null), null);
+    }
+
+    private int? PlayerIdInView(string name) =>
+        World?.Entities().FirstOrDefault(e => e.Kind == "player" && e.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Id;
+
+    /// <summary>What the order kind lacks, or an area too large (null = it can be given).</summary>
+    private static string? OrderError(string kind, OrderAim aim, long? design) =>
+        MissingTarget(kind, aim, design) ?? (aim.Area is { Volume: > 32_768 } ? "area too large for an order (max 32768 blocks)" : null);
+
+    private static string? MissingTarget(string kind, OrderAim aim, long? design) => kind switch
+    {
+        "move" or "chop" or "mine" when !aim.HasPlace => $"{kind} needs a target position or area",
+        "attack" when aim.Entity == null && aim.At == null => "attack needs a target entity",
+        "haul" when !aim.HasAny => "haul needs a target",
+        "build" when design == null && aim.At == null => "build needs a design (or a target)",
+        _ => null,
+    };
+
+    /// <summary>An attack on a player or bot the owner hasn't confirmed: the answer (with what to confirm), else null.</summary>
+    private (JsonNode? Result, string? Error)? AttackOrderRefused(int? entity, JsonNode? confirm)
+    {
         lock (_lock)
-            foreach (var p in pawns)
-            {
-                if (kind == "stop") { p.Queue.Clear(); p.Rev = Touch(); Supersede(p, "stop"); NoteOrder(p, new Order { Kind = "stop" }); continue; }
-                var o = new Order { Id = NextId("o"), Kind = kind, At = at, Entity = entity, Area = area, Design = design, Given = Now };
-                if (area is { } a && World is { } w)
-                    o.Targets = kind switch
-                    {
-                        "chop" => StoryBlocks.TreesIn(w, a, max: 64),
-                        "mine" => a.Blocks().Where(b => StoryBlocks.MineMatch(w.Block(b.X, b.Y, b.Z).Id, "all")).OrderByDescending(b => b.Y).Take(512).ToList(),
-                        _ => null,
-                    };
-                if (!queue) { p.Queue.Clear(); Supersede(p, "new order"); }
-                if (p.Queue.Count >= 32) return (null, "queue full (32 orders)");
-                p.Queue.Add(o);
-                NoteOrder(p, o); // a drafted pawn's move sets its post
-                p.Rev = Touch();
-                ids.Add(o.Id);
-            }
+            if (AttackCheck(entity, confirm) is { Error: { } aerr } check)
+                return (check.Confirm is { } cf ? new JsonObject { ["confirm"] = cf } : null, aerr);
+        return null;
+    }
+
+    private P3? TreeBaseOrCell(P3? at) => at is { } ca && World is { } cw && StoryBlocks.TreeBaseOf(cw, ca) is { } cb ? cb : at;
+
+    private (JsonNode? Result, string? Error) QueueOrders(IReadOnlyList<PawnState> pawns, string kind, OrderAim aim, long? design, bool queue)
+    {
+        var ids = new JsonArray();
+        foreach (var p in pawns)
+        {
+            if (kind == "stop") { p.Queue.Clear(); p.Rev = Touch(); Supersede(p, "stop"); NoteOrder(p, new Order { Kind = "stop" }); continue; }
+            var o = NewOrder(kind, aim, design);
+            if (!queue) { p.Queue.Clear(); Supersede(p, "new order"); }
+            if (p.Queue.Count >= 32) return (null, "queue full (32 orders)");
+            p.Queue.Add(o);
+            NoteOrder(p, o); // a drafted pawn's move sets its post
+            p.Rev = Touch();
+            ids.Add(o.Id);
+        }
         return (new JsonObject { ["ids"] = ids }, null);
     }
+
+    private Order NewOrder(string kind, OrderAim aim, long? design)
+    {
+        var o = new Order { Id = NextId("o"), Kind = kind, At = aim.At, Entity = aim.Entity, Area = aim.Area, Design = design, Given = Now };
+        if (aim.Area is { } a && World is { } w) o.Targets = AreaOrderTargets(kind, w, a);
+        return o;
+    }
+
+    /// <summary>An area order's targets: its trees (chop), its blocks top down (mine); null for the other kinds.</summary>
+    private static List<P3>? AreaOrderTargets(string kind, IStoryWorld w, Area a) => kind switch
+    {
+        "chop" => StoryBlocks.TreesIn(w, a, max: 64),
+        "mine" => a.Blocks().Where(b => StoryBlocks.MineMatch(w.Block(b.X, b.Y, b.Z).Id, "all")).OrderByDescending(b => b.Y).Take(512).ToList(),
+        _ => null,
+    };
 
     /// <summary>The job for a pawn's first order (null = no runnable order: the order is dropped).</summary>
     private ActiveJob? OrderJob(PawnState p, PawnLive live)
@@ -191,136 +240,198 @@ public sealed partial class StoryColony
     /// job: its log column(s)); remove|cancel: designations in the area (or by id) go.
     /// </summary>
     public (JsonNode? Result, string? Error) Designate(string op, string? kind, Area? area, IReadOnlyList<P3>? blocks, string? filter,
-        IReadOnlyList<string>? ids = null)
+        IReadOnlyList<string>? ids = null) => op switch
     {
-        if (op is "remove" or "cancel")
+        "remove" or "cancel" => RemoveDesignations(kind, area, blocks, ids),
+        "retry" => RetryDesignations(ids),
+        "add" => AddDesignations(kind, area, blocks, filter),
+        _ => (null, "op must be add|remove|cancel|retry"),
+    };
+
+    private (JsonNode? Result, string? Error) RemoveDesignations(string? kind, Area? area, IReadOnlyList<P3>? blocks, IReadOnlyList<string>? ids)
+    {
+        lock (_lock)
         {
-            lock (_lock)
-            {
-                var gone = Designations.Where(d => (ids != null && ids.Contains(d.Id))
-                    || (kind == null || d.Kind == kind) && (area is { } a && (d.At is { } at && a.Contains(at) || d.Entity != null && d.Blocks?.FirstOrDefault() is { } eb && a.Contains(eb))
-                        || blocks != null && d.At is { } bt && blocks.Contains(bt))).ToList();
-                foreach (var d in gone) { Designations.Remove(d); Removed("designation", d.Id); }
-                return (new JsonObject { ["count"] = gone.Count, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
-            }
+            var gone = Designations.Where(d => RemovalHits(d, kind, area, blocks, ids)).ToList();
+            foreach (var d in gone) { Designations.Remove(d); Removed("designation", d.Id); }
+            return (new JsonObject { ["count"] = gone.Count, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
         }
-        if (op == "retry")
+    }
+
+    /// <summary>A remove|cancel hits a designation named by id, or one of the kind (any kind when null) in the area or on the blocks.</summary>
+    private static bool RemovalHits(DesignationState d, string? kind, Area? area, IReadOnlyList<P3>? blocks, IReadOnlyList<string>? ids)
+    {
+        if (ids != null && ids.Contains(d.Id)) return true;
+        if (kind != null && d.Kind != kind) return false;
+        return InRemovalArea(d, area) || blocks != null && d.At is { } bt && blocks.Contains(bt);
+    }
+
+    /// <summary>Its cell, or (an entity's mark) the block its entity was on, lies in the area.</summary>
+    private static bool InRemovalArea(DesignationState d, Area? area) =>
+        area is { } a && (d.At is { } at && a.Contains(at) || d.Entity != null && d.Blocks?.FirstOrDefault() is { } eb && a.Contains(eb));
+
+    /// <summary>{op:"retry", ids} → {count, retried}: a failed designation is tried again now (its rest is over, its status open again).</summary>
+    private (JsonNode? Result, string? Error) RetryDesignations(IReadOnlyList<string>? ids)
+    {
+        if (ids == null || ids.Count == 0) return (null, "ids required");
+        lock (_lock)
         {
-            // {op:"retry", ids} → {count, retried}: a failed designation is tried again now (its rest is over, its status open again).
-            if (ids == null || ids.Count == 0) return (null, "ids required");
-            lock (_lock)
-            {
-                var hit = Designations.Where(d => ids.Contains(d.Id)).ToList();
-                foreach (var d in hit)
-                {
-                    var key = DesignationKey(d);
-                    _skip.Remove(key);
-                    _leaseFails.Remove(key);
-                    _softFails.Remove(key);
-                    ForgetPawnFails(key);
-                    d.Status = "open";
-                    d.Rev = Touch();
-                }
-                return (new JsonObject { ["count"] = hit.Count, ["retried"] = new JsonArray(hit.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
-            }
+            var hit = Designations.Where(d => ids.Contains(d.Id)).ToList();
+            foreach (var d in hit) Reopen(d);
+            return (new JsonObject { ["count"] = hit.Count, ["retried"] = new JsonArray(hit.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
         }
-        if (op != "add") return (null, "op must be add|remove|cancel|retry");
-        if (kind == null || !DesignationKinds.Contains(kind)) return (null, $"kind must be {string.Join("|", DesignationKinds)}");
-        if (filter != null && filter is not ("all" or "ores" or "stone" or "soil")) return (null, "filter must be all|ores|stone|soil");
-        if (area == null && (blocks == null || blocks.Count == 0)) return (null, "area or blocks required");
-        if (area is { Volume: > 262_144 }) return (null, "area too large (max 262144 blocks)");
+    }
+
+    /// <summary>A designation is open again now: its rests and fail counts (the target's and each pawn's) are forgotten.</summary>
+    private void Reopen(DesignationState d)
+    {
+        var key = DesignationKey(d);
+        _skip.Remove(key);
+        _leaseFails.Remove(key);
+        _softFails.Remove(key);
+        ForgetPawnFails(key);
+        d.Status = "open";
+        d.Rev = Touch();
+    }
+
+    private (JsonNode? Result, string? Error) AddDesignations(string? kind, Area? area, IReadOnlyList<P3>? blocks, string? filter)
+    {
+        if (AddDesignationError(kind, area, blocks, filter) is { } err) return (null, err);
         if (World is not { } w) return (null, "no world view yet");
         lock (_lock)
         {
-            var targets = new JsonArray();
-            var made = new List<DesignationState>();
-            var madeAt = new HashSet<P3>();
-            var madeEnt = new HashSet<int>();
-            // Also what this call made already: a tall plant's two halves (or any repeated cell) become one designation.
-            // What this kind has already (sets: a 4096-cell box over a few hundred designations was O(n·m)).
-            var hasAt = Designations.Where(d => d.Kind == kind && d.At != null).Select(d => d.At!.Value).ToHashSet();
-            // Marking a cell that already holds a failed/resting designation of this kind tries it again now (live 11-04: re-marking
-            // a grove whose cuts had failed answered "0" and nothing happened).
-            var existing = Designations.Where(d => d.Kind == kind && d.At != null).GroupBy(d => d.At!.Value).ToDictionary(g => g.Key, g => g.First());
-            int revived = 0;
-            void Revive(P3 at)
-            {
-                if (!existing.TryGetValue(at, out var d) || d.Status is null or "open") return;
-                var key = DesignationKey(d);
-                _skip.Remove(key);
-                _leaseFails.Remove(key);
-                _softFails.Remove(key);
-                ForgetPawnFails(key);
-                d.Status = "open";
-                d.Rev = Touch();
-                revived++;
-                targets.Add(at.Json());
-            }
-            var hasEnt = Designations.Where(d => d.Kind == kind && d.Entity != null).Select(d => d.Entity!.Value).ToHashSet();
-            bool Taken(string k, P3? at, int? ent) => at is { } ma && (!madeAt.Add(ma) || hasAt.Contains(ma)) || ent is { } me && (!madeEnt.Add(me) || hasEnt.Contains(me));
-            void Block(P3 at, List<P3>? col = null, string? replant = null, string? label = null)
-            {
-                if (Taken(kind, at, null)) { Revive(at); return; }
-                made.Add(new DesignationState { Id = NextId("d"), Kind = kind, At = at, Blocks = col, Replant = replant, Label = label, Created = Now });
-                targets.Add(at.Json());
-            }
-            void Entity(StoryEntity e, string label)
-            {
-                if (Taken(kind, null, e.Id)) return;
-                made.Add(new DesignationState { Id = NextId("d"), Kind = kind, Entity = e.Id, Blocks = [e.Block], Label = label, Created = Now });
-                targets.Add(e.Id);
-            }
-            IEnumerable<P3> Cells() => blocks ?? area!.Value.Blocks();
-            bool In(StoryEntity e) => area is { } a ? a.Contains(e.Block) || a.Contains(e.Block.Add(0, 1, 0)) : blocks!.Contains(e.Block);
-            switch (kind)
-            {
-                case "chop":
-                {
-                    // Any log or leaf of a tree (the canopy top a top-down click lands on included) stands for that tree: its trunk base.
-                    var bases = area is { } a ? StoryBlocks.TreesIn(w, a)
-                        : blocks!.Select(b => StoryBlocks.TreeBaseOf(w, b)).Where(b => b != null).Select(b => b!.Value).Distinct().ToList();
-                    foreach (var b in bases.Take(512)) Block(b, StoryBlocks.TreeFrom(w, b), null, "chopping a tree");
-                    break;
-                }
-                case "cut":
-                    foreach (var c in Cells())
-                        if (w.Block(c.X, c.Y, c.Z).Id is var id && (StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id)))
-                            Block(PlantBase(c), null, null, "cutting plants"); // a tall plant is one designation, on its lower half
-                    break;
-                case "harvest":
-                    foreach (var c in Cells())
-                        if (StoryBlocks.Crop(w, c.X, c.Y, c.Z) is { Ripe: true } crop) Block(c, null, crop.Replant, "harvesting");
-                    break;
-                case "mine":
-                    foreach (var c in Cells())
-                        if (StoryBlocks.MineMatch(w.Block(c.X, c.Y, c.Z).Id, filter)) Block(PlantBase(c), null, null, "mining"); // a tall plant: one designation, its lower half
-                    break;
-                case "deconstruct":
-                    foreach (var c in Cells())
-                        if (w.Block(c.X, c.Y, c.Z).Id is var id && !StoryBlocks.Natural.Contains(id) && !StoryBlocks.Undiggable.Contains(id)) Block(PlantBase(c), null, null, "deconstructing");
-                    break;
-                case "haul":
-                    foreach (var e in w.Entities().Where(e => e.Kind == "item" && In(e))) Entity(e, "hauling " + e.Name);
-                    break;
-                case "hunt":
-                    foreach (var e in w.Entities().Where(e => e.Kind == "mob" && !e.Hostile && In(e))) Entity(e, "hunting a " + e.Name);
-                    break;
-                case "forbid":
-                    foreach (var e in w.Entities().Where(e => e.Kind == "item" && In(e))) Entity(e, "forbidden " + e.Name);
-                    foreach (var c in Cells().Take(100_000)) if (StoryBlocks.IsDoor(w.Block(c.X, c.Y, c.Z).Id)) Block(c, null, null, "forbidden door");
-                    break;
-                case "allow":
-                {
-                    var gone = Designations.Where(d => d.Kind == "forbid" && (d.At is { } at && (area?.Contains(at) ?? blocks!.Contains(at))
-                        || d.Blocks?.FirstOrDefault() is { } eb && (area?.Contains(eb) ?? blocks!.Contains(eb)))).ToList();
-                    foreach (var d in gone) { Designations.Remove(d); Removed("designation", d.Id); }
-                    return (new JsonObject { ["count"] = gone.Count, ["targets"] = new JsonArray() }, null);
-                }
-            }
+            if (kind == "allow") return AllowCells(area, blocks);
+            var batch = new DesignationBatch(this, w, kind!, area, blocks);
+            batch.Collect(filter);
+            var made = batch.Made;
             if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
             foreach (var d in made) { d.Rev = Touch(); Designations.Add(d); }
-            if (made.Count > 0 || revived > 0) WakeIdle();
-            return (new JsonObject { ["count"] = made.Count + revived, ["revived"] = revived, ["targets"] = targets }, null);
+            if (made.Count > 0 || batch.Revived > 0) WakeIdle();
+            return (new JsonObject { ["count"] = made.Count + batch.Revived, ["revived"] = batch.Revived, ["targets"] = batch.Targets }, null);
+        }
+    }
+
+    private static string? AddDesignationError(string? kind, Area? area, IReadOnlyList<P3>? blocks, string? filter)
+    {
+        if (kind == null || !DesignationKinds.Contains(kind)) return $"kind must be {string.Join("|", DesignationKinds)}";
+        if (!MineFilterKnown(filter)) return "filter must be all|ores|stone|soil";
+        if (area == null && (blocks == null || blocks.Count == 0)) return "area or blocks required";
+        return area is { Volume: > 262_144 } ? "area too large (max 262144 blocks)" : null;
+    }
+
+    private static bool MineFilterKnown(string? filter) => filter is null or "all" or "ores" or "stone" or "soil";
+
+    /// <summary>allow: the forbid marks in the area (or on the blocks) go, a door's or an item's.</summary>
+    private (JsonNode? Result, string? Error) AllowCells(Area? area, IReadOnlyList<P3>? blocks)
+    {
+        bool In(P3 c) => area?.Contains(c) ?? blocks!.Contains(c);
+        var gone = Designations.Where(d => d.Kind == "forbid" && (d.At is { } at && In(at) || d.Blocks?.FirstOrDefault() is { } eb && In(eb))).ToList();
+        foreach (var d in gone) { Designations.Remove(d); Removed("designation", d.Id); }
+        return (new JsonObject { ["count"] = gone.Count, ["targets"] = new JsonArray() }, null);
+    }
+
+    /// <summary>
+    /// One add: the targets it finds become new designations, one per cell or entity. A cell or entity this kind has already (or this
+    /// call made already: a tall plant's two halves) is no new one; a failed/resting one there is tried again now (live 11-04:
+    /// re-marking a grove whose cuts had failed answered "0" and nothing happened).
+    /// </summary>
+    private sealed class DesignationBatch
+    {
+        private readonly StoryColony _c;
+        private readonly IStoryWorld _w;
+        private readonly string _kind;
+        private readonly Area? _area;
+        private readonly IReadOnlyList<P3>? _blocks;
+        private readonly HashSet<P3> _madeAt = new(), _hasAt;
+        private readonly HashSet<int> _madeEnt = new(), _hasEnt;
+        private readonly Dictionary<P3, DesignationState> _existing;
+
+        public readonly JsonArray Targets = new();
+        public readonly List<DesignationState> Made = new();
+        public int Revived;
+
+        public DesignationBatch(StoryColony c, IStoryWorld w, string kind, Area? area, IReadOnlyList<P3>? blocks)
+        {
+            _c = c; _w = w; _kind = kind; _area = area; _blocks = blocks;
+            // What this kind has already (sets: a 4096-cell box over a few hundred designations was O(n·m)).
+            _hasAt = c.Designations.Where(d => d.Kind == kind && d.At != null).Select(d => d.At!.Value).ToHashSet();
+            _existing = c.Designations.Where(d => d.Kind == kind && d.At != null).GroupBy(d => d.At!.Value).ToDictionary(g => g.Key, g => g.First());
+            _hasEnt = c.Designations.Where(d => d.Kind == kind && d.Entity != null).Select(d => d.Entity!.Value).ToHashSet();
+        }
+
+        public void Collect(string? filter)
+        {
+            switch (_kind)
+            {
+                case "chop": Trees(); break;
+                case "cut": CellsWhere(id => StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id), "cutting plants"); break; // a tall plant: its lower half
+                case "harvest": Crops(); break;
+                case "mine": CellsWhere(id => StoryBlocks.MineMatch(id, filter), "mining"); break; // a tall plant: one designation, its lower half
+                case "deconstruct": CellsWhere(id => !StoryBlocks.Natural.Contains(id) && !StoryBlocks.Undiggable.Contains(id), "deconstructing"); break;
+                case "haul": EntitiesWhere(e => e.Kind == "item", "hauling "); break;
+                case "hunt": EntitiesWhere(e => e.Kind == "mob" && !e.Hostile, "hunting a "); break;
+                case "forbid": EntitiesWhere(e => e.Kind == "item", "forbidden "); Doors(); break;
+            }
+        }
+
+        private IEnumerable<P3> Cells() => _blocks ?? _area!.Value.Blocks();
+
+        private bool In(StoryEntity e) => _area is { } a ? a.Contains(e.Block) || a.Contains(e.Block.Add(0, 1, 0)) : _blocks!.Contains(e.Block);
+
+        /// <summary>Any log or leaf of a tree (the canopy top a top-down click lands on included) stands for that tree: its trunk base.</summary>
+        private void Trees()
+        {
+            var bases = _area is { } a ? StoryBlocks.TreesIn(_w, a)
+                : _blocks!.Select(b => StoryBlocks.TreeBaseOf(_w, b)).Where(b => b != null).Select(b => b!.Value).Distinct().ToList();
+            foreach (var b in bases.Take(512)) Block(b, StoryBlocks.TreeFrom(_w, b), null, "chopping a tree");
+        }
+
+        /// <summary>Each cell whose block matches, on its plant base (a tall plant is one designation, on its lower half).</summary>
+        private void CellsWhere(Func<int, bool> match, string label)
+        {
+            foreach (var c in Cells())
+                if (match(_w.Block(c.X, c.Y, c.Z).Id)) Block(_c.PlantBase(c), null, null, label);
+        }
+
+        private void Crops()
+        {
+            foreach (var c in Cells())
+                if (StoryBlocks.Crop(_w, c.X, c.Y, c.Z) is { Ripe: true } crop) Block(c, null, crop.Replant, "harvesting");
+        }
+
+        private void EntitiesWhere(Func<StoryEntity, bool> match, string label)
+        {
+            foreach (var e in _w.Entities().Where(e => match(e) && In(e))) Entity(e, label + e.Name);
+        }
+
+        private void Doors()
+        {
+            foreach (var c in Cells().Take(100_000)) if (StoryBlocks.IsDoor(_w.Block(c.X, c.Y, c.Z).Id)) Block(c, null, null, "forbidden door");
+        }
+
+        private bool TakenAt(P3 at) => !_madeAt.Add(at) || _hasAt.Contains(at);
+
+        private void Block(P3 at, List<P3>? col, string? replant, string label)
+        {
+            if (TakenAt(at)) { Revive(at); return; }
+            Made.Add(new DesignationState { Id = _c.NextId("d"), Kind = _kind, At = at, Blocks = col, Replant = replant, Label = label, Created = _c.Now });
+            Targets.Add(at.Json());
+        }
+
+        private void Entity(StoryEntity e, string label)
+        {
+            if (!_madeEnt.Add(e.Id) || _hasEnt.Contains(e.Id)) return;
+            Made.Add(new DesignationState { Id = _c.NextId("d"), Kind = _kind, Entity = e.Id, Blocks = [e.Block], Label = label, Created = _c.Now });
+            Targets.Add(e.Id);
+        }
+
+        /// <summary>Marking a cell that already holds a failed/resting designation of this kind tries it again now.</summary>
+        private void Revive(P3 at)
+        {
+            if (!_existing.TryGetValue(at, out var d) || d.Status is null or "open") return;
+            _c.Reopen(d);
+            Revived++;
+            Targets.Add(at.Json());
         }
     }
 }

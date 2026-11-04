@@ -27,15 +27,18 @@ public static class StoryRecipeFamilies
     public static string? FamilyOf(int id) => Members.FirstOrDefault(kv => kv.Value.Contains(id)).Key;
 
     /// <summary>Where a family's raw material comes from (a missing ingredient's hint), or null.</summary>
-    public static string? Source(int id) => id switch
-    {
-        17 or 162 or 5 or 280 => "chop trees",
-        1 or 4 => "mine stone",
-        12 => "dig sand",
-        263 => "mine coal or smelt charcoal",
-        14 or 15 or 16 or 21 or 56 or 73 or 129 or 153 or 265 or 266 or 264 or 331 or 351 => "mine ore",
-        _ => null,
-    };
+    public static string? Source(int id) => SourceById.GetValueOrDefault(id);
+
+    private static readonly (string Hint, int[] Ids)[] SourceHints =
+    [
+        ("chop trees", [17, 162, 5, 280]),
+        ("mine stone", [1, 4]),
+        ("dig sand", [12]),
+        ("mine coal or smelt charcoal", [263]),
+        ("mine ore", [14, 15, 16, 21, 56, 73, 129, 153, 265, 266, 264, 331, 351]),
+    ];
+
+    private static readonly Dictionary<int, string> SourceById = SourceHints.SelectMany(h => h.Ids.Select(id => (Id: id, h.Hint))).ToDictionary(x => x.Id, x => x.Hint);
 
     /// <summary>A recipe with a wildcard input of a family ("planks", any meta) is an "any" recipe: label suffix and flag.</summary>
     internal static StoryRecipe Mark(StoryRecipe r)
