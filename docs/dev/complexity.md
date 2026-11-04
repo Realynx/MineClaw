@@ -3,6 +3,9 @@
 Measured on `main` at `6ff72385` (2026-11-04). Threshold: **complexity > 10** is a violation. *Excess* means
 `complexity - 10`, summed over the violations. It approximates how much branching has to move out of a function.
 
+**This is not a gate.** Nothing in lint, CI, tests or deploys enforces the threshold, and nothing should: the tools are
+report-only and the cleanup runs when the owner asks for one, as code rot and tech debt build up (Fox, 2026-11-04).
+
 | language | files | functions | > 10 | excess | 11-15 | 16-25 | 26-50 | 51+ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | C# (`src/`, `tools/`) | 1042 | 24020 | **1700** | 19486 | 764 | 576 | 281 | 79 |

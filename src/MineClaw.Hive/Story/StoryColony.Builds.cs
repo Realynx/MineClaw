@@ -695,6 +695,8 @@ public sealed partial class StoryColony
             if (soft < SoftLimit) { _skip[key] = Now + SoftRest; return; }
             _softFails.Remove(key);
         }
+        // A pour cell with nothing to pour against won't take a retry either (live 11-04: 371 of them, each tried 6 times): blocked at once.
+        if (StoryConstruction.IsLiquid(g) && why.Contains("nothing beside or under", StringComparison.Ordinal)) _ghostFails[id] = Math.Max(_ghostFails.GetValueOrDefault(id), 2);
         int n = _ghostFails[id] = _ghostFails.GetValueOrDefault(id) + 1;
         if (!counted) _skip[key] = Now + Backoff(n);
         if (g.State is "leased" or "todo") g.State = n >= 3 ? "blocked" : "todo";
