@@ -39,38 +39,54 @@ public static class Light1122
     /// <summary><c>IBlockState.isTopSolid()</c> of (id, meta), minus bedrock, barriers and magma (see the class remarks).</summary>
     public static bool IsSpawnFloor(int id, int meta)
     {
-        if ((uint)id >= 256 || id == 0) return false;
-        switch (id)
+        if ((uint)id >= 256) return false;
+        return SpawnFloorRules[id] switch
         {
-            case 7 or 166 or 213: return false;                     // bedrock, barrier; magma (fire-immune mobs only)
-            case 44 or 126 or 182 or 205: return (meta & 8) != 0;   // single slabs: the top half
-            case 53 or 67 or 108 or 109 or 114 or 128 or 134 or 135 or 136 or 156 or 163 or 164 or 180 or 203:
-                return (meta & 4) != 0;                             // stairs: upside down
-            case 78: return (meta & 7) == 7;                        // snow: 8 layers
-            case 154: return true;                                  // hopper
-            case 29 or 33: return (meta & 8) == 0 || (meta & 7) == 0; // piston: retracted, or facing down
-            case 34: return (meta & 7) == 1;                        // piston head facing up
-        }
-        return !NotFullCube[id] && !Translucent[id] && !NoBlockMaterial[id];
+            FloorRule.Never => false,                               // air, bedrock, barrier; magma (fire-immune mobs only)
+            FloorRule.TopSlab => (meta & 8) != 0,                   // single slabs: the top half
+            FloorRule.UpsideDownStairs => (meta & 4) != 0,          // stairs: upside down
+            FloorRule.FullSnow => (meta & 7) == 7,                  // snow: 8 layers
+            FloorRule.Always => true,                               // hopper
+            FloorRule.Piston => (meta & 8) == 0 || (meta & 7) == 0, // piston: retracted, or facing down
+            FloorRule.PistonHeadUp => (meta & 7) == 1,              // piston head facing up
+            _ => IsTopSolidCube(id),
+        };
     }
+
+    private enum FloorRule : byte { Cube, Never, TopSlab, UpsideDownStairs, FullSnow, Always, Piston, PistonHeadUp }
+
+    private static readonly FloorRule[] SpawnFloorRules = BuildFloorRules();
+
+    private static FloorRule[] BuildFloorRules()
+    {
+        var r = new FloorRule[256];
+        foreach (int id in new[] { 0, 7, 166, 213 }) r[id] = FloorRule.Never;
+        foreach (int id in new[] { 44, 126, 182, 205 }) r[id] = FloorRule.TopSlab;
+        foreach (int id in new[] { 53, 67, 108, 109, 114, 128, 134, 135, 136, 156, 163, 164, 180, 203 }) r[id] = FloorRule.UpsideDownStairs;
+        r[78] = FloorRule.FullSnow;
+        r[154] = FloorRule.Always;
+        r[29] = r[33] = FloorRule.Piston;
+        r[34] = FloorRule.PistonHeadUp;
+        return r;
+    }
+
+    private static bool IsTopSolidCube(int id) => !NotFullCube[id] && !Translucent[id] && !NoBlockMaterial[id];
 
     /// <summary><c>WorldEntitySpawner.isValidEmptySpawnBlock</c>: whether a mob's feet or head may be in this cell.</summary>
     public static bool IsSpawnCellClear(int id, int meta)
     {
         if (id == 0) return true;
-        if ((uint)id >= 256) return false;
-        if (id is >= 8 and <= 11) return false;                                   // liquid
-        if (id is 27 or 28 or 66 or 157) return false;                            // rails
-        if (ProvidesPower(id)) return false;
-        bool normalCube = !NotFullCube[id] && !NoBlockMaterial[id];
-        return !normalCube;
+        if ((uint)id >= 256 || NeverSpawnCell.Contains(id)) return false;          // liquids, rails, power sources
+        return NotFullCube[id] || NoBlockMaterial[id];                               // not a normal cube
     }
 
     /// <summary>Whether the biome lists hostile mobs (−1 = unknown: yes).</summary>
     public static bool BiomeHasMonsters(int biome) => biome is not (14 or 15 or 127);
 
-    private static bool ProvidesPower(int id) =>
-        id is 69 or 70 or 72 or 77 or 143 or 147 or 148 or 146 or 152 or 151 or 178 or 218 or 28 or 93 or 94 or 149 or 150 or 75 or 76 or 55 or 131;
+    /// <summary>Liquids, rails and the blocks that provide power (levers, plates, buttons, trapped chest, redstone block, daylight
+    /// sensors, observer, detector rail, repeaters, comparators, torches, wire, tripwire hook).</summary>
+    private static readonly IdSet NeverSpawnCell = IdSet.Of(
+        [27, 28, 66, 157, 69, 70, 72, 77, 143, 147, 148, 146, 152, 151, 178, 218, 93, 94, 149, 150, 75, 76, 55, 131], (8, 11));
 
     private static byte[] BuildOpacity()
     {

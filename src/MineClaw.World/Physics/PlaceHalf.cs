@@ -34,7 +34,7 @@ public static class PlaceCursor
     public static bool IsSlab(int blockId) => blockId is Blocks.Slab or 126 or 182 or 205;
 
     /// <summary>Stair blocks (b1.8.1 53, 67, 108, 109, 114 and 1.12.2's 128, 134..136, 156, 163, 164, 180, 203).</summary>
-    public static bool IsStairs(int blockId) => blockId is 53 or 67 or 108 or 109 or 114 or 128 or 134 or 135 or 136 or 156 or 163 or 164 or 180 or 203;
+    public static bool IsStairs(int blockId) => Release1122.Shapes1122.IsStairs(blockId);
 
     /// <summary>Slabs and stairs: their half follows the click on versions where <c>HalvesFollowCursor</c> holds.</summary>
     public static bool HasHalves(int blockId) => IsSlab(blockId) || IsStairs(blockId);

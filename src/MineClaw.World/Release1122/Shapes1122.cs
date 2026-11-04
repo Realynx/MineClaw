@@ -27,7 +27,9 @@ public static partial class Shapes1122
     public const int HayBale = 170, PackedIce = 174, ChorusPlant = 199, ChorusFlower = 200, FrostedIce = 212;
     public const int ShulkerFirst = 219, ShulkerLast = 234;
 
-    public static bool IsStairs(int id) => id is 53 or 67 or 108 or 109 or 114 or 128 or 134 or 135 or 136 or 156 or 163 or 164 or 180 or 203;
+    public static bool IsStairs(int id) => Stairs.Contains(id);
+
+    private static readonly IdSet Stairs = IdSet.Of([53, 67, 108, 109, 114, 128, 134, 135, 136, 156, 163, 164, 180, 203]);
     public static bool IsWoodFence(int id) => id is Fence or (>= 188 and <= 192);
     public static bool IsFence(int id) => IsWoodFence(id) || id == NetherBrickFence;
     public static bool IsFenceGate(int id) => id is FenceGate or (>= 183 and <= 187);
@@ -53,91 +55,88 @@ public static partial class Shapes1122
     public static void AddCollisionBoxes(IBlockAccess w, int id, int meta, int x, int y, int z, List<AABB> output)
     {
         if (id <= 0 || id > 255) return;
-        void Add(double x0, double y0, double z0, double x1, double y1, double z1) =>
-            output.Add(new AABB(x + x0, y + y0, z + z0, x + x1, y + y1, z + z1));
-
-        if (IsFence(id))
-        {
-            Add(0.375, 0, 0.375, 0.625, 1.5, 0.625);                                  // PILLAR_AABB
-            if (FenceConnects(w, id, x, y, z - 1, Face.South)) Add(0.375, 0, 0, 0.625, 1.5, 0.375);   // NORTH_AABB
-            if (FenceConnects(w, id, x + 1, y, z, Face.West)) Add(0.625, 0, 0.375, 1, 1.5, 0.625);   // EAST_AABB
-            if (FenceConnects(w, id, x, y, z + 1, Face.North)) Add(0.375, 0, 0.625, 0.625, 1.5, 1);   // SOUTH_AABB
-            if (FenceConnects(w, id, x - 1, y, z, Face.East)) Add(0, 0, 0.375, 0.375, 1.5, 0.625);   // WEST_AABB
-            return;
-        }
-        if (IsWall(id))
-        {
-            int i = 0;                                                                // getAABBIndex: S 1, W 2, N 4, E 8
-            if (WallConnects(w, x, y, z + 1, Face.North)) i |= 1;
-            if (WallConnects(w, x - 1, y, z, Face.East)) i |= 2;
-            if (WallConnects(w, x, y, z - 1, Face.South)) i |= 4;
-            if (WallConnects(w, x + 1, y, z, Face.West)) i |= 8;
-            var b = WallBoxes[i];
-            Add(b[0], 0, b[1], b[2], 1.5, b[3]);                                      // CLIP_AABB_BY_INDEX: setMaxY(1.5)
-            return;
-        }
-        if (IsPane(id))
-        {
-            Add(0.4375, 0, 0.4375, 0.5625, 1, 0.5625);                                // AABB_BY_INDEX[0]
-            if (PaneConnects(w, x, y, z - 1, Face.South)) Add(0.4375, 0, 0, 0.5625, 1, 0.5625);
-            if (PaneConnects(w, x, y, z + 1, Face.North)) Add(0.4375, 0, 0.4375, 0.5625, 1, 1);
-            if (PaneConnects(w, x + 1, y, z, Face.West)) Add(0.4375, 0, 0.4375, 1, 1, 0.5625);
-            if (PaneConnects(w, x - 1, y, z, Face.East)) Add(0, 0, 0.4375, 0.5625, 1, 0.5625);
-            return;
-        }
-        if (IsStairs(id))
-        {
-            AddStairBoxes(w, meta, x, y, z, Add);
-            return;
-        }
-        if (IsDoor(id))
-        {
-            var (facing, open, rightHinge) = DoorState(w, id, meta, x, y, z);
-            const double t = 0.1875;
-            // BlockDoor.getBoundingBox: closed → the facing's box; open → swung to the hinge side.
-            Face box = facing switch
-            {
-                Face.East => !open ? Face.East : rightHinge ? Face.North : Face.South,
-                Face.South => !open ? Face.South : rightHinge ? Face.East : Face.West,
-                Face.West => !open ? Face.West : rightHinge ? Face.South : Face.North,
-                _ => !open ? Face.North : rightHinge ? Face.West : Face.East,
-            };
-            switch (box)
-            {
-                case Face.South: Add(0, 0, 0, 1, 1, t); break;           // SOUTH_AABB
-                case Face.North: Add(0, 0, 1 - t, 1, 1, 1); break;       // NORTH_AABB
-                case Face.West: Add(1 - t, 0, 0, 1, 1, 1); break;        // WEST_AABB
-                default: Add(0, 0, 0, t, 1, 1); break;                   // EAST_AABB
-            }
-            return;
-        }
-        if (IsChest(id))
-        {
-            if (w.GetBlock(x, y, z - 1) == id) Add(0.0625, 0, 0, 0.9375, 0.875, 0.9375);
-            else if (w.GetBlock(x, y, z + 1) == id) Add(0.0625, 0, 0.0625, 0.9375, 0.875, 1);
-            else if (w.GetBlock(x - 1, y, z) == id) Add(0, 0, 0.0625, 0.9375, 0.875, 0.9375);
-            else if (w.GetBlock(x + 1, y, z) == id) Add(0.0625, 0, 0.0625, 1, 0.875, 0.9375);
-            else Add(0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375);
-            return;
-        }
-        if (id == ChorusPlant)
-        {
-            static bool Plant(int b) => b is ChorusPlant or ChorusFlower;
-            Add(0.1875, 0.1875, 0.1875, 0.8125, 0.8125, 0.8125);
-            if (Plant(w.GetBlock(x - 1, y, z))) Add(0, 0.1875, 0.1875, 0.1875, 0.8125, 0.8125);
-            if (Plant(w.GetBlock(x + 1, y, z))) Add(0.8125, 0.1875, 0.1875, 1, 0.8125, 0.8125);
-            if (Plant(w.GetBlock(x, y + 1, z))) Add(0.1875, 0.8125, 0.1875, 0.8125, 1, 0.8125);
-            int below = w.GetBlock(x, y - 1, z);
-            if (Plant(below) || below == EndStone) Add(0.1875, 0, 0.1875, 0.8125, 0.1875, 0.8125);
-            if (Plant(w.GetBlock(x, y, z - 1))) Add(0.1875, 0.1875, 0, 0.8125, 0.8125, 0.1875);
-            if (Plant(w.GetBlock(x, y, z + 1))) Add(0.1875, 0.1875, 0.8125, 0.8125, 0.8125, 1);
-            return;
-        }
-
-        var boxes = ShapeBoxes[StateShape[id << 4 | (meta & 15)]];
-        for (int k = 0; k < boxes.Length; k += 6)
-            Add(boxes[k], boxes[k + 1], boxes[k + 2], boxes[k + 3], boxes[k + 4], boxes[k + 5]);
+        var box = new BoxSink(output, x, y, z);
+        if (IsFence(id)) AddFenceBoxes(w, id, x, y, z, box);
+        else if (IsWall(id)) AddWallBoxes(w, x, y, z, box);
+        else if (IsPane(id)) AddPaneBoxes(w, x, y, z, box);
+        else if (IsStairs(id)) AddStairBoxes(w, meta, x, y, z, box);
+        else if (IsDoor(id)) AddDoorBoxes(w, id, meta, x, y, z, box);
+        else if (IsChest(id)) AddChestBoxes(w, id, x, y, z, box);
+        else if (id == ChorusPlant) AddChorusBoxes(w, x, y, z, box);
+        else AddTableBoxes(id, meta, box);
     }
+
+    /// <summary><c>BlockFence.addCollisionBoxToList</c>: the 1.5-high pillar plus an arm per connection.</summary>
+    private static void AddFenceBoxes(IBlockAccess w, int id, int x, int y, int z, BoxSink box)
+    {
+        box.Add(0.375, 0, 0.375, 0.625, 1.5, 0.625);                                  // PILLAR_AABB
+        if (FenceConnects(w, id, x, y, z - 1, Face.South)) box.Add(0.375, 0, 0, 0.625, 1.5, 0.375);   // NORTH_AABB
+        if (FenceConnects(w, id, x + 1, y, z, Face.West)) box.Add(0.625, 0, 0.375, 1, 1.5, 0.625);   // EAST_AABB
+        if (FenceConnects(w, id, x, y, z + 1, Face.North)) box.Add(0.375, 0, 0.625, 0.625, 1.5, 1);   // SOUTH_AABB
+        if (FenceConnects(w, id, x - 1, y, z, Face.East)) box.Add(0, 0, 0.375, 0.375, 1.5, 0.625);   // WEST_AABB
+    }
+
+    private static void AddWallBoxes(IBlockAccess w, int x, int y, int z, BoxSink box)
+    {
+        int i = 0;                                                                    // getAABBIndex: S 1, W 2, N 4, E 8
+        if (WallConnects(w, x, y, z + 1, Face.North)) i |= 1;
+        if (WallConnects(w, x - 1, y, z, Face.East)) i |= 2;
+        if (WallConnects(w, x, y, z - 1, Face.South)) i |= 4;
+        if (WallConnects(w, x + 1, y, z, Face.West)) i |= 8;
+        var b = WallBoxes[i];
+        box.Add(b[0], 0, b[1], b[2], 1.5, b[3]);                                      // CLIP_AABB_BY_INDEX: setMaxY(1.5)
+    }
+
+    private static void AddPaneBoxes(IBlockAccess w, int x, int y, int z, BoxSink box)
+    {
+        box.Add(0.4375, 0, 0.4375, 0.5625, 1, 0.5625);                                // AABB_BY_INDEX[0]
+        if (PaneConnects(w, x, y, z - 1, Face.South)) box.Add(0.4375, 0, 0, 0.5625, 1, 0.5625);
+        if (PaneConnects(w, x, y, z + 1, Face.North)) box.Add(0.4375, 0, 0.4375, 0.5625, 1, 1);
+        if (PaneConnects(w, x + 1, y, z, Face.West)) box.Add(0.4375, 0, 0.4375, 1, 1, 0.5625);
+        if (PaneConnects(w, x - 1, y, z, Face.East)) box.Add(0, 0, 0.4375, 0.5625, 1, 0.5625);
+    }
+
+    /// <summary><c>BlockDoor.getBoundingBox</c>: closed → the facing's box; open → swung to the hinge side (a right hinge turns it
+    /// counter-clockwise, a left one clockwise).</summary>
+    private static void AddDoorBoxes(IBlockAccess w, int id, int meta, int x, int y, int z, BoxSink box)
+    {
+        var (facing, open, rightHinge) = DoorState(w, id, meta, x, y, z);
+        const double t = 0.1875;
+        switch (!open ? facing : rightHinge ? Ccw(facing) : Cw(facing))
+        {
+            case Face.South: box.Add(0, 0, 0, 1, 1, t); break;           // SOUTH_AABB
+            case Face.North: box.Add(0, 0, 1 - t, 1, 1, 1); break;       // NORTH_AABB
+            case Face.West: box.Add(1 - t, 0, 0, 1, 1, 1); break;        // WEST_AABB
+            default: box.Add(0, 0, 0, t, 1, 1); break;                   // EAST_AABB
+        }
+    }
+
+    /// <summary><c>BlockChest.getBoundingBox</c>: a double chest reaches its neighbour's edge.</summary>
+    private static void AddChestBoxes(IBlockAccess w, int id, int x, int y, int z, BoxSink box)
+    {
+        if (w.GetBlock(x, y, z - 1) == id) box.Add(0.0625, 0, 0, 0.9375, 0.875, 0.9375);
+        else if (w.GetBlock(x, y, z + 1) == id) box.Add(0.0625, 0, 0.0625, 0.9375, 0.875, 1);
+        else if (w.GetBlock(x - 1, y, z) == id) box.Add(0, 0, 0.0625, 0.9375, 0.875, 0.9375);
+        else if (w.GetBlock(x + 1, y, z) == id) box.Add(0.0625, 0, 0.0625, 1, 0.875, 0.9375);
+        else box.Add(0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375);
+    }
+
+    /// <summary><c>BlockChorusPlant</c>: the centre plus an arm toward each plant or flower (and end stone below).</summary>
+    private static void AddChorusBoxes(IBlockAccess w, int x, int y, int z, BoxSink box)
+    {
+        static bool Plant(int b) => b is ChorusPlant or ChorusFlower;
+        box.Add(0.1875, 0.1875, 0.1875, 0.8125, 0.8125, 0.8125);
+        if (Plant(w.GetBlock(x - 1, y, z))) box.Add(0, 0.1875, 0.1875, 0.1875, 0.8125, 0.8125);
+        if (Plant(w.GetBlock(x + 1, y, z))) box.Add(0.8125, 0.1875, 0.1875, 1, 0.8125, 0.8125);
+        if (Plant(w.GetBlock(x, y + 1, z))) box.Add(0.1875, 0.8125, 0.1875, 0.8125, 1, 0.8125);
+        int below = w.GetBlock(x, y - 1, z);
+        if (Plant(below) || below == EndStone) box.Add(0.1875, 0, 0.1875, 0.8125, 0.1875, 0.8125);
+        if (Plant(w.GetBlock(x, y, z - 1))) box.Add(0.1875, 0.1875, 0, 0.8125, 0.8125, 0.1875);
+        if (Plant(w.GetBlock(x, y, z + 1))) box.Add(0.1875, 0.1875, 0.8125, 0.8125, 0.8125, 1);
+    }
+
+    /// <summary>The state-only shape (minecraft-data's table).</summary>
+    private static void AddTableBoxes(int id, int meta, BoxSink box) => box.AddAll(ShapeBoxes[StateShape[id << 4 | (meta & 15)]]);
 
     /// <summary>The state-only table entry (no neighbour rules): for the cross-check tests.</summary>
     public static double[] TableBoxes(int id, int meta) => ShapeBoxes[StateShape[id << 4 | (meta & 15)]];
@@ -204,9 +203,7 @@ public static partial class Shapes1122
     {
         int id = w.GetBlock(x, y, z);
         if (IsPane(id)) return true;
-        bool exception = id is >= ShulkerFirst and <= ShulkerLast or Leaves or Leaves2 or Beacon or Cauldron or Glowstone or Ice
-            or SeaLantern or Piston or StickyPiston or PistonHead or Melon or Pumpkin or LitPumpkin or Barrier;
-        return !exception && SideSolid(w, id, x, y, z, face);
+        return !PaneAttachException.Contains(id) && SideSolid(w, id, x, y, z, face);
     }
 
     /// <summary><c>BlockFenceGate.getBlockFaceShape</c>: a side face is a MIDDLE_POLE when the gate's facing axis equals the
@@ -220,10 +217,24 @@ public static partial class Shapes1122
 
     /// <summary><c>BlockFence.isExcepBlockForAttachWithPiston</c> = <c>Block.isExceptBlockForAttachWithPiston</c> + barrier, melon,
     /// pumpkins (the wall's list is the same).</summary>
-    private static bool FenceException(int id) =>
-        id is >= ShulkerFirst and <= ShulkerLast or Leaves or Leaves2 or Trapdoor or IronTrapdoor or Beacon or Cauldron or Glass
-            or Glowstone or Ice or SeaLantern or StainedGlass or Piston or StickyPiston or PistonHead or Barrier or Melon or Pumpkin
-            or LitPumpkin;
+    private static bool FenceException(int id) => FenceAttachException.Contains(id);
+
+    /// <summary><c>Block.isExceptBlockForAttachWithPiston</c>: shulker boxes, leaves, trapdoors, beacon, cauldron, glass, glowstone,
+    /// ice, sea lantern, stained glass, pistons.</summary>
+    internal static readonly IdSet AttachException = IdSet.Of(
+        [Leaves, Leaves2, Trapdoor, IronTrapdoor, Beacon, Cauldron, Glass, Glowstone, Ice, SeaLantern, StainedGlass, Piston, StickyPiston,
+         PistonHead],
+        (ShulkerFirst, ShulkerLast));
+
+    private static readonly IdSet FenceAttachException = IdSet.Of(
+        [Leaves, Leaves2, Trapdoor, IronTrapdoor, Beacon, Cauldron, Glass, Glowstone, Ice, SeaLantern, StainedGlass, Piston, StickyPiston,
+         PistonHead, Barrier, Melon, Pumpkin, LitPumpkin],
+        (ShulkerFirst, ShulkerLast));
+
+    /// <summary><c>BlockPane.attachesTo</c>'s exceptions: unlike the fence's, glass and trapdoors are not among them.</summary>
+    private static readonly IdSet PaneAttachException = IdSet.Of(
+        [Leaves, Leaves2, Beacon, Cauldron, Glowstone, Ice, SeaLantern, Piston, StickyPiston, PistonHead, Melon, Pumpkin, LitPumpkin, Barrier],
+        (ShulkerFirst, ShulkerLast));
 
     /// <summary><c>getBlockFaceShape(face) == SOLID</c> for a horizontal face: <c>Block</c>'s default is SOLID; the classes that
     /// override it return UNDEFINED (or a pole) on their sides, except double slabs (SOLID), cauldron sides (SOLID, but an attach
@@ -250,16 +261,13 @@ public static partial class Shapes1122
     /// <summary>Blocks whose <c>getBlockFaceShape</c> is never SOLID on a horizontal side (air, liquids, plants, rails, redstone,
     /// torches, signs, banners, doors, trapdoors, ladders, vines, beds, chests, cake, cactus, carpets, snow layers, farmland, grass
     /// path, slabs (non-double), fences, gates, walls, panes, …; the overriding classes listed in the source).</summary>
-    private static bool SideUndefined(int id) => id switch
-    {
-        0 or 6 or (>= 8 and <= 11) or 26 or 27 or 28 or 30 or 31 or 32 or 34 or 36 or (>= 37 and <= 40) or 44 or 50 or 51 or 54 or 55
-            or 59 or 60 or 63 or 64 or 65 or 66 or 68 or 69 or 70 or 71 or 72 or 75 or 76 or 77 or 78 or 81 or 83 or 85 or 90 or 92
-            or 93 or 94 or 96 or 101 or 102 or 104 or 105 or 106 or 107 or 111 or 113 or 115 or 116 or 117 or 119 or 120 or 122
-            or 126 or 127 or 130 or 131 or 132 or 139 or 140 or 141 or 142 or 143 or 144 or 145 or 146 or 147 or 148 or 149 or 150
-            or 151 or 154 or 157 or 160 or 167 or 171 or 175 or 176 or 177 or 178 or 182 or (>= 183 and <= 200) or 205 or 207 or 208
-            or 209 or 217 => true,
-        _ => false,
-    };
+    private static bool SideUndefined(int id) => SideNeverSolid.Contains(id);
+
+    private static readonly IdSet SideNeverSolid = IdSet.Of(
+        [0, 6, 26, 27, 28, 30, 31, 32, 34, 36, 44, 50, 51, 54, 55, 59, 60, 63, 64, 65, 66, 68, 69, 70, 71, 72, 75, 76, 77, 78, 81, 83, 85,
+         90, 92, 93, 94, 96, 101, 102, 104, 105, 106, 107, 111, 113, 115, 116, 117, 119, 120, 122, 126, 127, 130, 131, 132, 139, 140, 141,
+         142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 154, 157, 160, 167, 171, 175, 176, 177, 178, 182, 205, 207, 208, 209, 217],
+        (8, 11), (37, 40), (183, 200));
 
     private static readonly double[][] WallBoxes =                                    // BlockWall.AABB_BY_INDEX: minX, minZ, maxX, maxZ
     [
@@ -327,21 +335,21 @@ public static partial class Shapes1122
 
     /// <summary><c>BlockStairs.getCollisionBoxList</c>: the half slab, the quarter (straight and inner shapes; note the source's
     /// swapped names: a top stair gets the lower quarter), and the eighth (every non-straight shape).</summary>
-    private static void AddStairBoxes(IBlockAccess w, int meta, int x, int y, int z, Action<double, double, double, double, double, double> add)
+    private static void AddStairBoxes(IBlockAccess w, int meta, int x, int y, int z, BoxSink box)
     {
         bool top = StairTop(meta);
         var facing = StairFacing(meta);
         var shape = StairShape(w, meta, x, y, z);
-        if (top) add(0, 0.5, 0, 1, 1, 1); else add(0, 0, 0, 1, 0.5, 1);
+        if (top) box.Add(0, 0.5, 0, 1, 1, 1); else box.Add(0, 0, 0, 1, 0.5, 1);
         double y0 = top ? 0 : 0.5, y1 = top ? 0.5 : 1;
         if (shape is StairsShape.Straight or StairsShape.InnerLeft or StairsShape.InnerRight)
         {
             switch (facing)
             {
-                case Face.North: add(0, y0, 0, 1, y1, 0.5); break;
-                case Face.South: add(0, y0, 0.5, 1, y1, 1); break;
-                case Face.West: add(0, y0, 0, 0.5, y1, 1); break;
-                default: add(0.5, y0, 0, 1, y1, 1); break;
+                case Face.North: box.Add(0, y0, 0, 1, y1, 0.5); break;
+                case Face.South: box.Add(0, y0, 0.5, 1, y1, 1); break;
+                case Face.West: box.Add(0, y0, 0, 0.5, y1, 1); break;
+                default: box.Add(0.5, y0, 0, 1, y1, 1); break;
             }
         }
         if (shape != StairsShape.Straight)
@@ -355,10 +363,10 @@ public static partial class Shapes1122
             };
             switch (f1)                                                               // N → NW, S → SE, W → SW, E → NE
             {
-                case Face.North: add(0, y0, 0, 0.5, y1, 0.5); break;
-                case Face.South: add(0.5, y0, 0.5, 1, y1, 1); break;
-                case Face.West: add(0, y0, 0.5, 0.5, y1, 1); break;
-                default: add(0.5, y0, 0, 1, y1, 0.5); break;
+                case Face.North: box.Add(0, y0, 0, 0.5, y1, 0.5); break;
+                case Face.South: box.Add(0.5, y0, 0.5, 1, y1, 1); break;
+                case Face.West: box.Add(0, y0, 0.5, 0.5, y1, 1); break;
+                default: box.Add(0.5, y0, 0, 1, y1, 0.5); break;
             }
         }
     }

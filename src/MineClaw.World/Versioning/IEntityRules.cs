@@ -110,13 +110,16 @@ public sealed class Release1122EntityRules : IEntityRules
     /// <summary>The profile of a type the table knows; null for an unknown one.</summary>
     public static MobProfile? Known(int type) => Mobs.GetValueOrDefault(type);
 
-    public string? ObjectName(int type) => type switch
+    public string? ObjectName(int type) => ObjectNames.TryGetValue(type, out var name) ? name : $"object_{type}";
+
+    /// <summary>1.12.2 object types (Spawn Object; entities.json).</summary>
+    private static readonly Dictionary<int, string> ObjectNames = new()
     {
-        1 => "boat", 2 => "item", 3 => "area_effect_cloud", 10 => "minecart", 50 => "primed_tnt", 51 => "ender_crystal", 60 => "arrow",
-        61 => "snowball", 62 => "egg", 63 => "fireball", 64 => "small_fireball", 65 => "ender_pearl", 66 => "wither_skull",
-        67 => "shulker_bullet", 68 => "llama_spit", 70 => "falling_block", 71 => "item_frame", 72 => "eye_of_ender", 73 => "potion",
-        75 => "xp_bottle", 76 => "firework", 77 => "leash_knot", 78 => "armor_stand", 79 => "evocation_fangs", 90 => "fishing_hook",
-        91 => "spectral_arrow", 93 => "dragon_fireball", _ => $"object_{type}",
+        [1] = "boat", [2] = "item", [3] = "area_effect_cloud", [10] = "minecart", [50] = "primed_tnt", [51] = "ender_crystal", [60] = "arrow",
+        [61] = "snowball", [62] = "egg", [63] = "fireball", [64] = "small_fireball", [65] = "ender_pearl", [66] = "wither_skull",
+        [67] = "shulker_bullet", [68] = "llama_spit", [70] = "falling_block", [71] = "item_frame", [72] = "eye_of_ender", [73] = "potion",
+        [75] = "xp_bottle", [76] = "firework", [77] = "leash_knot", [78] = "armor_stand", [79] = "evocation_fangs", [90] = "fishing_hook",
+        [91] = "spectral_arrow", [93] = "dragon_fireball",
     };
 
     public bool HasBabies => true;

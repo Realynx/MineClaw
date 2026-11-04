@@ -98,16 +98,21 @@ public static class Openables
         _ => false,
     };
 
-    public static string Name(int id) => id switch
+    public static string Name(int id) => Names.TryGetValue(id, out var name) ? name : "block";
+
+    private static readonly Dictionary<int, string> Names = BuildNames();
+
+    private static Dictionary<int, string> BuildNames()
     {
-        WoodDoor or (>= 193 and <= 197) => "door",
-        IronDoor => "iron door",
-        Trapdoor => "trapdoor",
-        IronTrapdoor => "iron trapdoor",
-        FenceGate or (>= 183 and <= 187) => "fence gate",
-        Lever => "lever",
-        StoneButton or WoodButton => "button",
-        StonePlate or WoodPlate or LightWeightedPlate or HeavyWeightedPlate => "pressure plate",
-        _ => "block",
-    };
+        var n = new Dictionary<int, string>();
+        foreach (int id in new[] { WoodDoor, 193, 194, 195, 196, 197 }) n[id] = "door";
+        n[IronDoor] = "iron door";
+        n[Trapdoor] = "trapdoor";
+        n[IronTrapdoor] = "iron trapdoor";
+        foreach (int id in new[] { FenceGate, 183, 184, 185, 186, 187 }) n[id] = "fence gate";
+        n[Lever] = "lever";
+        n[StoneButton] = n[WoodButton] = "button";
+        foreach (int id in new[] { StonePlate, WoodPlate, LightWeightedPlate, HeavyWeightedPlate }) n[id] = "pressure plate";
+        return n;
+    }
 }
