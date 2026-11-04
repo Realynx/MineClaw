@@ -139,22 +139,42 @@ public sealed partial class VisionHub
     public const string DefaultQuestion =
         "What is at the focus (cyan box)? Its block and role, its neighbours' roles (floor, walls, edges, gen cells, portal), and which faces a block can be placed against.";
 
+    /// <summary>Foci meaning the bot itself (case as typed).</summary>
+    internal static readonly HashSet<string> SelfWords = new(StringComparer.Ordinal) { "you", "me", "self" };
+
+    /// <summary>Foci meaning the block a player last pointed at (lower case).</summary>
+    internal static readonly HashSet<string> PointedWords = new(StringComparer.Ordinal) { "pointed", "this", "that", "this one", "that one", "punched" };
+
+    /// <summary>Foci meaning the hive overview (lower case).</summary>
+    internal static readonly HashSet<string> HiveWords = new(StringComparer.Ordinal)
+        { "hive", "the hive", "hive view", "overview", "hive overview", "everyone", "all bots", "bots" };
+
+    /// <summary>The player who spoke this turn, if they're in view.</summary>
+    private Entity? SpeakerEntity() =>
+        TurnContext.Current?.Speaker is { } who ? _c.World.Entities.FindPlayer(who) : null;
+
     /// <summary>The focus of a look: coords, a player, a saved place, "pointed"/"this"; default the current job's target, else the bot.</summary>
     public (BlockPos Focus, Entity? Player, string? Error) ResolveFocus(string? focus)
     {
         var w = _c.World;
         var feet = w.Player.Position.ToBlockPos();
         var f = focus?.Trim();
-        if (string.IsNullOrEmpty(f) || f is "you" or "me" or "self" || f.Equals(_c.Username, StringComparison.OrdinalIgnoreCase))
-            return (string.IsNullOrEmpty(f) ? VisionTools.ActivityTarget(_rt, _places) ?? feet : feet, null, null);
+        if (string.IsNullOrEmpty(f)) return (VisionTools.ActivityTarget(_rt, _places) ?? feet, null, null);
+        if (SelfWords.Contains(f) || f.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)) return (feet, null, null);
         var lower = f.ToLowerInvariant();
-        if (lower is "pointed" or "this" or "that" or "this one" or "that one" or "punched")
-            return LastPoint is { } g && _time.GetUtcNow() - g.At < TimeSpan.FromMinutes(10) ? (g.Pos, null, null) : (feet, null, "nothing pointed at recently");
-        if (lower == "player" && TurnContext.Current?.Speaker is { } who && w.Entities.FindPlayer(who) is { } sp) return (sp.Position.ToBlockPos(), sp, null);
+        if (PointedWords.Contains(lower))
+            return RecentPoint() is { } g ? (g.Pos, null, null) : (feet, null, "nothing pointed at recently");
+        if (lower == "player" && SpeakerEntity() is { } sp) return (sp.Position.ToBlockPos(), sp, null);
+        return NamedFocus(f) ?? (feet, null, $"unknown focus '{f}' (x,y,z, player, clone, saved name, hive or pointed)");
+    }
+
+    /// <summary>Coords, a player in view, or a saved place.</summary>
+    private (BlockPos Focus, Entity? Player, string? Error)? NamedFocus(string f)
+    {
         if (Locations.ParseCoords(f) is { } p) return (p, null, null);
-        if (w.Entities.FindPlayer(f) is { } e) return (e.Position.ToBlockPos(), e, null);
+        if (_c.World.Entities.FindPlayer(f) is { } e) return (e.Position.ToBlockPos(), e, null);
         if (_places.Resolve(f) is { } q) return (q, null, null);
-        return (feet, null, $"unknown focus '{f}' (x,y,z, player, clone, saved name, hive or pointed)");
+        return null;
     }
 
     /// <summary>The side panel's direction: the bot→focus line, else the way the bot faces (work axis).</summary>
@@ -250,28 +270,18 @@ public sealed partial class VisionHub
         bool mainHere = scene.Dim == w.Dimension;
         var list = SheetViewList(views, pose);
         var pointed = local ? RecentPoint() : null;
-        var ents = local ? VisionTools.Entities(_c, focus, radius + 4, _isHive) : HiveEntities(scene.Dim, focus, radius);
+        var ents = SheetEntities(scene, focus, radius);
         var ms = mainHere ? _marks(focus.X, focus.Y, focus.Z, radius) : [];
         var atlas = Atlas();
         if (local) _voxels.Prepare(focus.X, focus.Z, radius / 16 + 2);
-        EyeScene? eye = null;
-        if (list.Contains("eye"))
-        {
-            var (ex, ey, ez, yaw, pitch, who) = SheetEyePose(focus, viewer, pose, mainHere);
-            eye = new EyeScene
-            {
-                World = scene.Light, Atlas = atlas, EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = yaw, Pitch = pitch, Time = w.Time, Nether = scene.Dim == -1,
-                Weather = WeatherIn(scene.Dim), Smooth = _o.SmoothLighting, Entities = ents, Marks = ms, Target = (focus.X, focus.Y, focus.Z),
-                Pointed = pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null, Viewer = who,
-            };
-        }
+        var eye = list.Contains("eye") ? SheetEyeScene(scene, focus, SheetEyePose(focus, viewer, pose, mainHere), atlas, ents, ms, pointed) : null;
         var axis = SheetAxis(focus, pose, mainHere);
         return new ContactSheetRequest
         {
             Blocks = scene.Blocks, Focus = (focus.X, focus.Y, focus.Z), Radius = radius, Views = list,
             Self = mainHere ? (feet.X, feet.Y, feet.Z) : null,
             Entities = ents, Marks = ms, Target = local && VisionTools.ActivityTarget(_rt, _places) is { } t ? (t.X, t.Y, t.Z) : null,
-            Pointed = pointed is { } p2 ? (p2.Pos.X, p2.Pos.Y, p2.Pos.Z) : null, PointedBy = pointed?.Player, Nether = scene.Dim == -1,
+            Pointed = PointedCell(pointed), PointedBy = pointed?.Player, Nether = scene.Dim == -1,
             Atlas = atlas, Light = scene.Light, Time = w.Time, Weather = WeatherIn(scene.Dim), Roles = scene.Roles.Map, Axis = axis, Eye = eye,
             SelfPose = SheetSelfPose(pose, mainHere, me),
             Aids = aids,
@@ -307,6 +317,21 @@ public sealed partial class VisionHub
         float pitch = self ? 60 : (float)(-Math.Atan2(dy, Math.Sqrt(dx * dx + dz * dz)) * 180 / Math.PI);
         return (ex, ey, ez, yaw, pitch, null);
     }
+
+    /// <summary>Entities to draw: main's live list for a local scene, else the hive bots' snapshots.</summary>
+    private List<VisionEntity> SheetEntities(Scene scene, BlockPos focus, int radius) =>
+        scene.Local ? VisionTools.Entities(_c, focus, radius + 4, _isHive) : HiveEntities(scene.Dim, focus, radius);
+
+    /// <summary>The first-person panel from <paramref name="at"/> (the eye pose).</summary>
+    private EyeScene SheetEyeScene(Scene scene, BlockPos focus, (double X, double Y, double Z, float Yaw, float Pitch, string? Who) at, TextureAtlas? atlas,
+        IReadOnlyList<VisionEntity> ents, IReadOnlyList<VisionMark> ms, Perception.Gesture? pointed) => new()
+    {
+        World = scene.Light, Atlas = atlas, EyeX = at.X, EyeY = at.Y, EyeZ = at.Z, Yaw = at.Yaw, Pitch = at.Pitch, Time = _c.World.Time, Nether = scene.Dim == -1,
+        Weather = WeatherIn(scene.Dim), Smooth = _o.SmoothLighting, Entities = ents, Marks = ms, Target = (focus.X, focus.Y, focus.Z),
+        Pointed = PointedCell(pointed), Viewer = at.Who,
+    };
+
+    private static (int X, int Y, int Z)? PointedCell(Perception.Gesture? pointed) => pointed is { } p ? (p.Pos.X, p.Pos.Y, p.Pos.Z) : null;
 
     /// <summary>The SIDE panel's axis: along a clone's facing, else the focus's own axis when main is in its dimension.</summary>
     private SideAxis SheetAxis(BlockPos focus, HiveEyePose? pose, bool mainHere)
@@ -440,48 +465,62 @@ public sealed partial class VisionHub
     {
         var t = text.Trim().ToLowerInvariant();
         if (t.Length == 0) return null;
-        static bool Match(string name, string q)
-        {
-            var n = name.ToLowerInvariant().Replace('_', ' ');
-            if (n == q) return true;
-            var words = q.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(x => x is not ("the" or "a" or "our" or "my")).ToList();
-            return words.Count > 0 && words.All(n.Contains);
-        }
+        return SavedLandmark(t) ?? (LandmarkKinds.TryGetValue(t, out var kind) ? IndexedLandmark(kind) : null);
+    }
+
+    /// <summary>Spoken landmark names → the world index kind they mean (lower case).</summary>
+    internal static readonly Dictionary<string, string> LandmarkKinds = new(StringComparer.Ordinal)
+    {
+        ["gen"] = "cobble_generator", ["the gen"] = "cobble_generator", ["cobble gen"] = "cobble_generator", ["cobble generator"] = "cobble_generator",
+        ["generator"] = "cobble_generator", ["the generator"] = "cobble_generator", ["cobblestone generator"] = "cobble_generator",
+        ["portal"] = "portal", ["the portal"] = "portal", ["nether portal"] = "portal",
+        ["farm"] = "farm", ["the farm"] = "farm", ["wheat farm"] = "farm",
+    };
+
+    /// <summary>A saved name matches exactly (underscores as spaces) or by all its meaningful words.</summary>
+    private static bool LandmarkNameMatches(string name, string q)
+    {
+        var n = name.ToLowerInvariant().Replace('_', ' ');
+        if (n == q) return true;
+        var words = q.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(x => x is not ("the" or "a" or "our" or "my")).ToList();
+        return words.Count > 0 && words.All(n.Contains);
+    }
+
+    /// <summary>A saved structure (its box's centre, one above the floor), else a waypoint: exact name first, then by words.</summary>
+    private (BlockPos Pos, int Dim, string Name)? SavedLandmark(string t)
+    {
         try
         {
             var (wps, sts) = _rt.Memory.Read(d => (d.Waypoints.ToList(), d.Structures.ToList()));
             var withBox = sts.Where(x => x.Min != null).ToList();
-            var s = withBox.FirstOrDefault(x => x.Name.Equals(t, StringComparison.OrdinalIgnoreCase)) ?? withBox.FirstOrDefault(x => Match(x.Name, t));
+            var s = withBox.FirstOrDefault(x => x.Name.Equals(t, StringComparison.OrdinalIgnoreCase)) ?? withBox.FirstOrDefault(x => LandmarkNameMatches(x.Name, t));
             if (s?.Min is { } mn)
             {
                 var mx = s.Max ?? mn;
                 return (new BlockPos((mn.X + mx.X) / 2, Math.Min(mn.Y, mx.Y) + 1, (mn.Z + mx.Z) / 2), s.Dimension, s.Name);
             }
-            var wp = wps.FirstOrDefault(x => x.Name.Equals(t, StringComparison.OrdinalIgnoreCase)) ?? wps.FirstOrDefault(x => Match(x.Name, t));
+            var wp = wps.FirstOrDefault(x => x.Name.Equals(t, StringComparison.OrdinalIgnoreCase)) ?? wps.FirstOrDefault(x => LandmarkNameMatches(x.Name, t));
             if (wp != null) return (new BlockPos(wp.X, wp.Y, wp.Z), wp.Dimension, wp.Name);
         }
         catch (Exception ex) { _log?.LogDebug(ex, "landmark lookup failed"); }
-        string? kind = t switch
-        {
-            "gen" or "the gen" or "cobble gen" or "cobble generator" or "generator" or "the generator" or "cobblestone generator" => "cobble_generator",
-            "portal" or "the portal" or "nether portal" => "portal",
-            "farm" or "the farm" or "wheat farm" => "farm",
-            _ => null,
-        };
-        if (kind != null)
-            try
-            {
-                var rows = _rt.Observations.OfKind(kind, null, 20);
-                var row = rows.Where(r => r.Bounds != null).OrderBy(r => r.Dimension == _c.World.Dimension ? 0 : 1).FirstOrDefault();
-                if (row?.Bounds is { } b)
-                    return (new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ)), row.Dimension, kind.Replace('_', ' '));
-            }
-            catch (Exception ex) { _log?.LogDebug(ex, "landmark index lookup failed"); }
         return null;
     }
 
-    private static bool Deictic(string lower) =>
-        lower is "you" or "me" or "self" or "player" or "pointed" or "this" or "that" or "this one" or "that one" or "punched";
+    /// <summary>The indexed landmark of a kind, main's dimension first.</summary>
+    private (BlockPos Pos, int Dim, string Name)? IndexedLandmark(string kind)
+    {
+        try
+        {
+            var rows = _rt.Observations.OfKind(kind, null, 20);
+            var row = rows.Where(r => r.Bounds != null).OrderBy(r => r.Dimension == _c.World.Dimension ? 0 : 1).FirstOrDefault();
+            if (row?.Bounds is { } b)
+                return (new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ)), row.Dimension, kind.Replace('_', ' '));
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "landmark index lookup failed"); }
+        return null;
+    }
+
+    internal static bool Deictic(string lower) => SelfWords.Contains(lower) || lower == "player" || PointedWords.Contains(lower);
 
     /// <summary>
     /// Resolves any focus: "hive" (the overview), a clone ("67", "at 67", "what 1337 sees"), coords, a player, pointed, a saved
@@ -492,19 +531,22 @@ public sealed partial class VisionHub
         var w = _c.World;
         var t = focus?.Trim() ?? "";
         var lower = t.ToLowerInvariant();
-        if (lower is "hive" or "the hive" or "hive view" or "overview" or "hive overview" or "everyone" or "all bots" or "bots")
+        if (HiveWords.Contains(lower))
             return new VisionTarget(w.Player.Position.ToBlockPos(), w.Dimension, HiveView: true);
-        if (t.Length > 0 && Locations.ParseCoords(t) == null && !Deictic(lower))
-        {
-            var name = StripViewPhrase(t);
-            if (Hive != null && !name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)
-                && HiveVision.Find(HiveBots().Where(b => !b.IsMain), name) is { } bot)
-                return new VisionTarget(new BlockPos((int)Math.Floor(bot.X), (int)Math.Floor(bot.Y), (int)Math.Floor(bot.Z)), bot.Dim, Bot: bot);
-            if (w.Entities.FindPlayer(name) == null && Landmark(name) is { } lm)
-                return new VisionTarget(lm.Pos, lm.Dim, Landmark: lm.Name);
-        }
+        if (t.Length > 0 && Locations.ParseCoords(t) == null && !Deictic(lower) && NamedTarget(StripViewPhrase(t)) is { } named) return named;
         var (f, player, err) = ResolveFocus(focus);
         return new VisionTarget(f, w.Dimension, player, Error: err);
+    }
+
+    /// <summary>A name that is a clone (its last snapshot) or, unless it's a player in view, a saved place / landmark.</summary>
+    private VisionTarget? NamedTarget(string name)
+    {
+        if (Hive != null && !name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)
+            && HiveVision.Find(HiveBots().Where(b => !b.IsMain), name) is { } bot)
+            return new VisionTarget(new BlockPos((int)Math.Floor(bot.X), (int)Math.Floor(bot.Y), (int)Math.Floor(bot.Z)), bot.Dim, Bot: bot);
+        if (_c.World.Entities.FindPlayer(name) == null && Landmark(name) is { } lm)
+            return new VisionTarget(lm.Pos, lm.Dim, Landmark: lm.Name);
+        return null;
     }
 
     /// <summary>
@@ -569,10 +611,9 @@ public sealed partial class VisionHub
         if (viewError != null) return ToolResult.Error(viewError);
         if (WantsComposite(reqs))
             return await SeeCompositeAsync(i, reqs!, target, radius, aids, direct, takeShot, ct).ConfigureAwait(false);
-        var views = reqs != null ? reqs.Select(r => r.Kind).ToList() : i.StrList("views");
+        var views = SeeViewNames(i, reqs);
         // Camera adjustments per named view ("iso yaw=200 pitch=50 zoom=1.3", {"top":{"zoom":2}}); none = the fixed defaults.
         var viewParams = CamParamsOf(reqs);
-        if (views.Count == 0 && i.Str("view") is { Length: > 0 } v) views.Add(v);
         var bad = views.Where(x => !ContactSheet.Known.Contains(x.Trim())).ToList();
         if (bad.Count > 0) return ToolResult.Error($"unknown view '{bad[0]}' (eye, shoulder, orbit, high, iso, top, side, layers; cam/follow/eye <body>)");
         var (focus, dim, pose, cloneLine) = await CloneViewAsync(target, ct).ConfigureAwait(false);
@@ -602,6 +643,14 @@ public sealed partial class VisionHub
     private static bool WantsComposite(List<PanelRequest>? reqs) =>
         reqs != null && (reqs.Any(r => r.Composite || r.Kind == "eye" && r.At != null || r.Kind == "orbit" && r.N > 1)
             || reqs.Any(r => !r.Cam.IsEmpty) && reqs.GroupBy(r => r.Kind).Any(g => g.Count() > 1));
+
+    /// <summary>The views a <c>see</c> names: parsed panels, else <c>views</c>, else the legacy single <c>view</c>.</summary>
+    private static List<string> SeeViewNames(JsonElement i, List<PanelRequest>? reqs)
+    {
+        var views = reqs != null ? reqs.Select(r => r.Kind).ToList() : i.StrList("views");
+        if (views.Count == 0 && i.Str("view") is { Length: > 0 } v) views.Add(v);
+        return views;
+    }
 
     /// <summary>Camera adjustments per named view; null when no view has any.</summary>
     private static IReadOnlyDictionary<string, CamParams>? CamParamsOf(List<PanelRequest>? reqs)
