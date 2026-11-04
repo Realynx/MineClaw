@@ -37,6 +37,7 @@ import {
 import { anchorLift, bodyLook, hologramCells, type BodyLook } from './bodyLook';
 import { chestBadge, drawChestBadge, useContainerBadges } from './chestBadges';
 import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type PlacedLabel } from './failedLabels';
+import type { WorldClock } from './clock';
 import { type Selection } from './model';
 import {
   buildItem,
@@ -149,6 +150,10 @@ export interface StoryMapProps {
   onDropTool: () => void;
   /** A drag was cancelled (Esc, the other mouse button, leaving full screen). */
   onCancelled?: () => void;
+  /** The page's world clock: the map's sky light and it share one anchor (the newer server sample wins, both ways). */
+  clock?: WorldClock;
+  /** A material hovered in the material selector: the placement preview keeps showing at the last map cell meanwhile. */
+  previewHold?: boolean;
   onHover?(info: string | null): void;
 }
 
@@ -316,6 +321,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   /** Esc / the other button cancel a drag; the release after a cancel does nothing (tools.ts `DragGate`). */
   const gate = useRef(new DragGate());
   const hover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
+  /** The last hover over the map (kept when the pointer leaves it: the material selector previews there). */
+  const lastHover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
   const shown = useRef(new Map<string, V3>());
   const scan = useRef<{ key: string; busy: boolean; result: (DragResult & { cols?: ColumnSpan[] }) | null }>({
     key: '',
@@ -455,6 +462,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         e.setLevelCut(p.current.cutY !== null || dim !== null ? { y: p.current.cutY ?? 1e6, dimBelow: dim } : null);
       }
       if (placed.current) e.rig.target.y = p.current.level + 1;
+      // Day and night: the viewer's index time and the colony clock are one anchor (the newer sample wins).
+      p.current.clock?.syncViewer({
+        anchor: () => e.runtime.worldTimeAnchor(0),
+        set: (ticks, at, frozen) => e.runtime.setWorldTime(0, ticks, at, frozen),
+      });
       syncHolograms(e);
       const w = c.clientWidth,
         h = c.clientHeight;
@@ -544,13 +556,28 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       e.setHolograms(cells, rev);
     }
     const tool = p.current.tool,
-      hv = hover.current;
+      hv = hover.current ?? (p.current.previewHold ? lastHover.current : null);
     const a = tool.kind === 'design' && hv?.cell && !drag.current ? startCellOf(hv) : null;
+    // A structure tool: its placement in the chosen material, under the cursor and while dragging (the material selector's
+    // hover shows here at once).
+    const d = drag.current;
+    const ba =
+      tool.kind === 'build' && tool.id !== 'remove' && !tool.id.startsWith('furniture:')
+        ? (d?.startCell ?? (hv?.cell && !d ? startCellOf(hv) : null))
+        : null;
     if (a && tool.kind === 'design') {
       const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}`;
       if (key !== h.preview) {
         h.preview = key;
         e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing, !!tool.mine).slice(0, 4096).flat(), key);
+      }
+    } else if (ba && tool.kind === 'build') {
+      const bb = d?.endCell ?? ba;
+      const o = { ...p.current.build, line: d?.alt };
+      const key = `b|${tool.id}|${ba.join(',')}|${bb.join(',')}|${JSON.stringify(o)}`;
+      if (key !== h.preview) {
+        h.preview = key;
+        e.setHologramPreview(buildPreview(buildItem(tool.id, ba, bb, o)).blocks.slice(0, 4096).flat(), key);
       }
     } else if (h.preview) {
       h.preview = '';
@@ -1106,7 +1133,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     } else if (tool.kind === 'build' && hover.current?.cell && !d) {
       // The placement ghost under the cursor before a drag starts.
       const a = startCellOf(hover.current);
-      if (a) {
+      // With build holograms on, the viewer draws it in its material (syncHolograms).
+      if (a && (!holoOn || tool.id === 'remove' || tool.id.startsWith('furniture:'))) {
         const pv = buildPreview(buildItem(tool.id, a, a, props.build));
         for (const b of pv.blocks.slice(0, 600)) cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.4, false);
       }
@@ -1431,6 +1459,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     h.at = pt;
     h.cell = cell;
     hover.current = h;
+    lastHover.current = h;
     const tool = p.current.tool;
     if (p.current.view === 'angled' && (tool.kind === 'build' || tool.kind === 'design') && now - h.pickAt > 60) {
       h.pickAt = now;
@@ -1970,6 +1999,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           ...(toPage(pos[0], pos[1] + 0.2, pos[2]) ?? { x: NaN, y: NaN }),
         })),
       fps: () => engine()?.stats().fps,
+      /** The view's world time and sky light subtraction (0 noon … 11 midnight) of its last frame. */
+      sky: () => engine()?.sky() ?? null,
       /** Each body: how it is shown (model, token, cut) and whether the viewer drew its model last frame. */
       models: () =>
         bodies(0).map((b) => ({ name: b.key, look: b.look, model: engine()?.runtime.entities.detailOf(b.key) ?? null })),

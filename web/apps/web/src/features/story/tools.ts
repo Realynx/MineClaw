@@ -760,6 +760,9 @@ export type KeyAction =
   | 'fullscreen'
   | 'layersUp'
   | 'layersDown'
+  | 'materialNext'
+  | 'materialPrev'
+  | `recent:${number}`
   | `height:${HeightMode}`
   | `tool:${DesignateId}`
   | `tab:${string}`;
@@ -776,8 +779,17 @@ export function keyAction(
   e: { code: string; key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
   buildTool: boolean,
   heightTool = false,
+  /** A structure tool that takes a material: Tab / Shift+Tab and ] / [ cycle it, 1–5 pick a recent one. */
+  materialTool = false,
 ): KeyAction | null {
   if (e.ctrlKey || e.metaKey) return null;
+  if (materialTool && !e.altKey) {
+    if (e.code === 'Tab') return e.shiftKey ? 'materialPrev' : 'materialNext';
+    if (e.code === 'BracketRight') return 'materialNext';
+    if (e.code === 'BracketLeft') return 'materialPrev';
+    const n = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
+    if (n && !e.shiftKey) return `recent:${Number(n[1])}`;
+  }
   if (heightTool) {
     const mode = HEIGHT_MODES.find((h) => h.key === e.code || h.key.replace('Digit', 'Numpad') === e.code);
     if (mode && !e.shiftKey && !e.altKey) return `height:${mode.id}`;

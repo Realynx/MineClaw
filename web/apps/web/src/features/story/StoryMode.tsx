@@ -111,6 +111,22 @@ import {
   type Target,
 } from './tools';
 import type { StorageClip } from './storage';
+import { WorldClock } from './clock';
+import { MaterialBar } from './MaterialBar';
+import {
+  cycleMaterial,
+  defaultMaterial,
+  loadMaterialMemory,
+  materialsFor,
+  materialToolOf,
+  matKey,
+  recentFor,
+  rememberMaterial,
+  saveMaterialMemory,
+  searchMaterials,
+  type MaterialMemory,
+  type MaterialOption,
+} from './materials';
 import { catchUp, colonyKey, useArchitect, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
 import { useQueryClient } from '@tanstack/react-query';
@@ -154,6 +170,11 @@ export function StoryMode() {
   const colony = useColony(id);
   const state = colony.data;
   const write = useStoryWrite(id);
+  // The page's one world clock (./clock.ts): anchored to the server's newest time sample, the colony state's or the map's.
+  const [clock] = useState(() => new WorldClock());
+  useEffect(() => {
+    clock.colony(state?.timeOfDay, state?.timeFrozen);
+  }, [clock, state?.timeOfDay, state?.timeFrozen]);
 
   const map = useRef<StoryMapHandle | null>(null);
   const keys = useRef(new Set<string>());
@@ -186,7 +207,14 @@ export function StoryMode() {
   const [xray, setXray] = useState<'auto' | 'on' | 'off'>('auto');
   const [view, setView] = useState<'top' | 'angled'>('top');
   const [tab, setTab] = useState<TabId | null>(null);
-  const architect = useArchitect(id, state?.rev, tab === 'architect');
+  // The material selector: a structure tool's materials (the palette is fetched while one is in hand, too).
+  const matTool = materialToolOf(tool);
+  const architect = useArchitect(id, state?.rev, tab === 'architect' || matTool !== null);
+  const [matMemory, setMatMemory] = useState<MaterialMemory>(() => ({ last: {}, recent: [] }));
+  useEffect(() => setMatMemory(loadMaterialMemory()), []);
+  const [matQuery, setMatQuery] = useState('');
+  /** A material hovered in the selector: the map previews it until the pointer leaves. */
+  const [matHover, setMatHover] = useState<MaterialOption | null>(null);
   const [menu, setMenu] = useState<{
     at: { x: number; y: number };
     title: string;
@@ -267,6 +295,53 @@ export function StoryMode() {
       for (const [i, mm, n] of s.contents) m.set(`${i}:${mm}`, (m.get(`${i}:${mm}`) ?? 0) + n);
     return m;
   }, [state?.storages]);
+
+  const matOptions = useMemo(
+    () => (matTool ? materialsFor(matTool, architect.data?.entries, stock) : null),
+    [matTool, architect.data?.entries, stock],
+  );
+  const matCurrent = matKey(build.material);
+  /** Chooses `o` for the tool in hand (remembered per tool, and as the most recent). */
+  const chooseMaterial = useCallback(
+    (o: MaterialOption, forTool = matTool) => {
+      if (!o.unlocked) return;
+      setBuild((b) => ({ ...b, material: o.material }));
+      if (forTool)
+        setMatMemory((m) => {
+          const next = rememberMaterial(m, forTool, o.key);
+          saveMaterialMemory(next);
+          return next;
+        });
+    },
+    [matTool],
+  );
+  // A new tool starts on its last material (else the first one it can use); new options keep a choice that is still valid.
+  const matToolSeen = useRef<string | null>(null);
+  useEffect(() => {
+    setMatHover(null);
+    if (!matTool || !matOptions) {
+      matToolSeen.current = matTool;
+      return;
+    }
+    const switched = matToolSeen.current !== matTool;
+    matToolSeen.current = matTool;
+    const cur = matOptions.find((o) => o.key === matCurrent && o.unlocked);
+    if (!switched && cur) return;
+    const pick = defaultMaterial(matOptions, matMemory.last[matTool] ?? (cur ? cur.key : null));
+    if (pick && pick.key !== matCurrent) setBuild((b) => ({ ...b, material: pick.material }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matTool, matOptions]);
+  const matShown = useMemo(() => (matOptions ? searchMaterials(matOptions, matQuery) : null), [matOptions, matQuery]);
+  const matRecent = useMemo(
+    () =>
+      matOptions
+        ? recentFor(
+            matOptions.filter((o) => o.unlocked),
+            matMemory.recent,
+          )
+        : [],
+    [matOptions, matMemory.recent],
+  );
 
   /** Runs one action: the director call for the colony and/or a directive for the AI bodies. */
   const run = useCallback(
@@ -554,9 +629,19 @@ export function StoryMode() {
         e.preventDefault();
         return;
       }
-      const a = keyAction(e, tool.kind === 'build', heightTool !== null);
+      const a = keyAction(e, tool.kind === 'build', heightTool !== null, matTool !== null);
       if (!a) return;
       e.preventDefault();
+      if (a === 'materialNext' || a === 'materialPrev' || a.startsWith('recent:')) {
+        const o = a.startsWith('recent:')
+          ? matRecent[Number(a.slice(7)) - 1]
+          : cycleMaterial(matShown ?? [], matCurrent, a === 'materialNext' ? 1 : -1);
+        if (o) {
+          chooseMaterial(o);
+          say(`${o.label}`);
+        }
+        return;
+      }
       if (a.startsWith('height:') && heightTool) {
         const m = a.slice(7) as HeightMode;
         setHeightModes((cur) => ({ ...cur, [heightTool]: m }));
@@ -648,6 +733,11 @@ export function StoryMode() {
     focusBody,
     xrayOn,
     toggleFullscreen,
+    matTool,
+    matRecent,
+    matShown,
+    matCurrent,
+    chooseMaterial,
   ]);
 
   // ------------------------------------------------------------------ alerts
@@ -823,7 +913,9 @@ export function StoryMode() {
           const m = mineCheck(blocks);
           if (m.refusal) return say(`${name}: ${m.refusal}`, 'warn');
           setTool({ kind: 'design', id, name, blocks, mine: { min: m.min, max: m.max } });
-          return say(`${name}: a mine at y ${m.min}..${m.max}, absolute: move to a spot and click to queue it (Q/E turns)${converted}`);
+          return say(
+            `${name}: a mine at y ${m.min}..${m.max}, absolute: move to a spot and click to queue it (Q/E turns)${converted}`,
+          );
         }
       }
       if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
@@ -919,7 +1011,16 @@ export function StoryMode() {
               // A placeable: its default build tool, with it as the material (the build's auto bills craft what's missing).
               const furniture = (STORY_FURNITURE as readonly string[]).includes(e.kind);
               setTool({ kind: 'build', id: furniture ? `furniture:${e.kind}` : e.kind } as MapTool);
-              if (!furniture) setBuild((b) => ({ ...b, material: [e.material[0], e.material[1]] }));
+              if (!furniture) {
+                const t = materialToolOf({ kind: 'build', id: e.kind } as MapTool);
+                const o = t
+                  ? materialsFor(t, architect.data?.entries, stock).find(
+                      (x) => x.key === `${e.material[0]}:${e.material[1]}`,
+                    )
+                  : null;
+                if (o) chooseMaterial(o, t);
+                else setBuild((b) => ({ ...b, material: [e.material[0], e.material[1]] }));
+              }
               say(`${e.label}: drag on the map to place`);
             }}
           />
@@ -938,9 +1039,9 @@ export function StoryMode() {
       case 'schedule':
         return (
           <SchedulePanel
+            clock={clock}
             pawns={pawns}
             ai={ai}
-            hour={state?.hour}
             canWrite={canWrite}
             onPaint={(reqs) =>
               reqs.forEach((r) => void write('story.schedule', r).catch((e) => say(errorText(e), 'warn')))
@@ -1037,7 +1138,8 @@ export function StoryMode() {
             state={state}
             selection={selection}
             tool={tool}
-            build={build}
+            build={matHover ? { ...build, material: matHover.material } : build}
+            previewHold={matHover !== null}
             mineFilter={mineFilter}
             heightMode={heightMode}
             layers={layers}
@@ -1064,6 +1166,7 @@ export function StoryMode() {
             onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
             onDropTool={() => setTool({ kind: 'select' })}
             onCancelled={() => say('Cancelled')}
+            clock={clock}
           />
         </WorldHost>
 
@@ -1072,8 +1175,8 @@ export function StoryMode() {
           <div className="absolute right-2 bottom-2">
             {state ? (
               <ControlCluster
+                clock={clock}
                 name={state.name ?? id ?? ''}
-                hour={state.hour}
                 paused={!!state.paused}
                 canWrite={canWrite}
                 onPause={togglePause}
@@ -1088,7 +1191,7 @@ export function StoryMode() {
                 onHelp={() => setHelp((h) => !h)}
               >
                 <TimeSlider
-                  tod={state.timeOfDay}
+                  clock={clock}
                   control={state.timeControl ?? colonies.data?.timeControl}
                   canWrite={canWrite}
                   onSet={setTime}
@@ -1169,7 +1272,6 @@ export function StoryMode() {
             <OptionsBar
               tool={tool}
               build={build}
-              onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
               mineFilter={mineFilter}
               onMineFilter={setMineFilter}
               heightMode={heightMode}
@@ -1177,7 +1279,6 @@ export function StoryMode() {
               layers={layers}
               onLayers={(n) => setLayers(clampLayers(n))}
               level={lv}
-              stock={stock}
               onClose={() => setTool({ kind: 'select' })}
             />
             {pickHint ? (
@@ -1210,10 +1311,28 @@ export function StoryMode() {
           ) : null}
 
           {/* bottom: inspector + the open tab's window, the tab bar, the toast, the chat */}
-          <div className="absolute bottom-9 left-2 flex items-end gap-2">
-            {inspector}
-            {panelEl}
-            {tab === 'colony' ? growingZones : null}
+          <div className="absolute right-[22rem] bottom-9 left-2 flex flex-col items-start gap-2">
+            <div className="flex max-w-[calc(100vw-1rem)] items-end gap-2">
+              {inspector}
+              {panelEl}
+              {tab === 'colony' ? growingZones : null}
+            </div>
+            {/* The universal material selector: docked here, above the tab bar, for every structure / furniture tool. */}
+            {tool.kind === 'build' ? (
+              <MaterialBar
+                toolId={tool.id}
+                options={matShown}
+                current={matCurrent}
+                recent={matRecent}
+                query={matQuery}
+                onQuery={setMatQuery}
+                onPick={(o) => chooseMaterial(o)}
+                onHover={setMatHover}
+                build={build}
+                onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
+                onClose={() => setTool({ kind: 'select' })}
+              />
+            ) : null}
           </div>
           <div className="absolute bottom-12 left-1/2 -translate-x-1/2">
             <Toast text={toast?.text ?? null} tone={toast?.tone} />

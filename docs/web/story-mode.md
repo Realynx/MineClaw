@@ -45,7 +45,9 @@ There is one per colony. It holds:
   - `free` means idle near home.
   - `anything` means work, eat or rest as needed.
 
-  The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
+  The hour comes from the world time, at 1000 ticks per hour, with tick 0 = 06:00. A schedule is indexed by the clock hour
+  (index 0 = 00:00, `StoryCharacter.Hour`); the colony state's `hour` is that clock hour, the column in force. (Until
+  2026-11-03 the web labelled index 0 as 06:00: its schedule grid and HUD clock ran six hours ahead of the bot.)
 - **Zones,** painted as areas: chop, mine, farm, home, forbidden. Storage is chests with their own settings (see "Storage").
 - **Designations,** per block or area: chop this tree, mine these blocks, harvest, haul these drops, build design N here,
   deconstruct.
@@ -103,7 +105,7 @@ storage is chests (see "Storage").
 ### The colony state
 
 ```
-{id, rev, since, full, at, time_of_day, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
+{id, rev, since, full, at, time_of_day, time_frozen, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
  pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, name, plant?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
@@ -190,6 +192,20 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
 The minecraft server owns the clock, but an op account can set it. `time_control` (in `GET /api/story` and in every colony state)
 is `{available, by}`. It is available when an account this bot controls is op: main first, else the first op body. `by` names it.
 
+- **One clock on the page** (added 2026-11-03, `features/story/clock.ts`). The server's time is the only truth: the HUD
+  clock (HH:MM), its sun/moon, the time slider, the schedule grid's current column and the map's day/night light all read one
+  anchor, the newest server sample by receipt time: the colony state's `time_of_day` or the world index's `time` (the map's
+  viewer polls it every ~0.9 s). Between samples it advances at 20 ticks/s; each new sample re-anchors it, and when the colony
+  state is newer than the viewer's index the viewer is fed from it (and the other way round), so the light and the clock
+  agree to the second. Never the browser's wall clock. A sample older than a minute is stale: the clock dims (with a
+  tooltip) and stops advancing. A catch-up with no newer revision still carries the time (a paused colony's clock runs).
+- **Day and night** follow the bot: night is 19:00–05:59 (`StoryCharacter.Night`), about ticks 13000–23000, where vanilla's sky
+  goes dark. The map darkens with the sky light (`skylightSubtracted`, 0 at noon, 11 at midnight; torches and other block
+  light stay), the sky and fog colours with it.
+- **Frozen time.** A 1.12.2 server sends the time of day negative while `doDaylightCycle` is false (the absolute value is the
+  time). The bot reads it so (`TimeUpdatePacket.Frozen`, `WorldState.TimeFrozen`; `WorldState.TimeOfDay` never maps -6000 to
+  18000) and says `time_frozen` in the colony state and the world index. The web does not advance a frozen time and shows a
+  snowflake on the clock and "Time is frozen" under the slider.
 - **Op detection.** A 1.12.2 server tells each account its op level as Entity Status 24..28 on its own player, on login and on
   every /op and /deop (level = status − 24). Op means level 2 or more. A b1.8.1 server never says, so there an account is op only
   when `Supervisor:Viewer:OpAccounts` lists it. Otherwise it's unknown, and an unknown account doesn't count.
@@ -641,6 +657,20 @@ where they were; beside them, the tab's placeables: icon, name, tier and "have N
 are greyed with a lock and the reason; picking an unlocked one arms its build tool with it as the material (a furniture entry its
 furniture tool), and the queued build's auto bills craft what's missing.
 
+**The material selector** (added 2026-11-03, `MaterialBar.tsx`, `materials.ts`). One bar for every structure and furniture tool,
+docked bottom-left just above the tab bar (never a popup over the map; it takes pointer events only over itself, and works in
+full screen). It holds the tool's name, its materials, a search box, the recent row, and the tool's options as small segmented
+controls to the right: wall height, roof style and overhang, facing. The top options bar is for the other tools only.
+- **Materials per tool:** the palette entries whose `kinds` list the tool (wall, floor, roof, door, stairs, fence, single
+  block), each with its icon, name, tier, lock state (greyed with the reason) and stock; unlocked ones first. Until the palette
+  loads (it is fetched whenever such a tool is in hand), a static list with the stockpile counts.
+- **Memory:** each tool remembers its last material, and the recent row its last ones across tools (per device,
+  `localStorage` `mcx-story-materials`). Picking a placeable in the palette counts as choosing it.
+- **Keys:** Tab / Shift+Tab or ] / [ cycle the tool's unlocked materials (in the search's results), 1–5 pick a recent one.
+- **Preview:** hovering a material shows the placement in it at once, as a build hologram at the last map cell (and the
+  placement under the cursor or the drag is drawn in its material).
+- **Narrow maps** (under 760 px) fold the bar into one material chip that opens it.
+
 ## AI hives
 
 AI hives and their bodies take the same selections as directives. They're best effort: the brain decides how.
@@ -769,8 +799,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   per slot (the pawn's colour and initials) show where they go; a slot on an unstandable cell (water, a wall, no headroom)
   moves to the nearest standable one within 3 cells, never two pawns on one cell. Undrafted pawns in the selection are left
   out (the genre's rule; the toast says so). A right-click without a drag (under 5 px) is the order menu as before.
-- **Time of day.** A slider under the clock over one day (06:00 at tick 0; dawn, noon, dusk and midnight marked) sets the
-  world time on release, through the bot's op account. Without one it is disabled with "No op account — op the main bot
+- **Time of day.** A slider under the clock over one day (06:00 at tick 0; dawn, noon, dusk and midnight marked) follows
+  the page's one world clock (see "Time of day") and sets the world time on release, through the bot's op account. Without one it is disabled with "No op account — op the main bot
   to change time". Needs the `story` role.
 - **Bottom bar:**
   - pawn portraits with hp, food and job, where clicking selects (and centres the map when the pawn is off it) and a
@@ -780,7 +810,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - Work, Schedule and Colony panels
 - **Work panel.** A grid of pawns by work type. Click to cycle 1–4 and off, with skill shown as the cell tint and a
   passion mark.
-- **Schedule panel.** A grid of pawns by the 24 hours. Paint with the brush (work, sleep, anything, free) by dragging
+- **Schedule panel.** A grid of pawns by the 24 clock hours (00–23, as the bot indexes them); the current hour's column
+  follows the page's world clock. Paint with the brush (work, sleep, anything, free) by dragging
   across cells. Copy and paste between pawns.
 - **Inspector.** The selected pawn's characteristics, skills, current job and queue, and orders.
 - **Houses and beds.** Any number of home zones (the Zones tool's Home area, or "Draw a house" in the Colony tab), each

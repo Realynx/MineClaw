@@ -24,7 +24,8 @@ export function normalizeIndex(raw: unknown): WorldIndex {
     at: r.at,
     columns: (r.columns ?? []).map((c) => ({ cx: num(c.cx), cz: num(c.cz), hash: c.hash ?? 0, seen: num(c.seen), by: c.by ?? null, live: !!c.live })),
     version: r.version ?? null,
-    time: r.time ?? null,
+    time: r.time == null ? null : num(r.time, NaN),
+    timeFrozen: r.timeFrozen === true || (typeof r.time === 'number' && r.time < 0),
     rain: r.rain ?? null,
     thunder: r.thunder ?? null,
   };

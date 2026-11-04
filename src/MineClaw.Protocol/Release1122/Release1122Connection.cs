@@ -265,7 +265,7 @@ public sealed partial class Release1122Connection : IGameConnection
             {
                 r.ReadLong(); // world age
                 long time = r.ReadLong();
-                return new TimeUpdatePacket { Time = time < 0 ? -time : time }; // negative = doDaylightCycle off
+                return new TimeUpdatePacket { Time = time < 0 ? -time : time, Frozen = time < 0 }; // negative = doDaylightCycle off
             }
             case Ids1122.UpdateHealth:
             {
