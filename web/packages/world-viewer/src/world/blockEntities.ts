@@ -3,7 +3,7 @@
 // feed reports `block_entity` for it; kept here for the main-thread layers (sign text, banners, spawner mobs) and handed to
 // the worker, whose mesher reads beds, skulls and pots. Batched (48 columns a request) and never more than one in flight.
 
-import type { BlockEntityDto, Dim, WorldSource } from '../types';
+import type { BlockEntityColumn, BlockEntityDto, Dim, WorldSource } from '../types';
 import type { MeshHost } from '../mesh/host';
 import { hashKey } from '../wire/hash';
 import { normalizeBlockEntities } from '../wire/normalize';
@@ -77,27 +77,7 @@ export class BlockEntityStore {
     void (async () => {
       try {
         const reply = normalizeBlockEntities(await src.blockEntities!(dim, cols));
-        const changed: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> = [];
-        const answered = new Set<string>();
-        for (const c of reply.columns) {
-          const k = key(dim, c.cx, c.cz);
-          answered.add(k);
-          const h = hashKey(c.hash);
-          if (this.hashes.get(k) === h && this.columns.has(k)) continue;
-          this.hashes.set(k, h);
-          changed.push(c);
-          if (c.entities.length) this.columns.set(k, c.entities);
-          else this.columns.delete(k);
-        }
-        // Asked for but not in the reply: the column has none.
-        for (const [cx, cz] of cols) {
-          const k = key(dim, cx, cz);
-          if (!answered.has(k) && this.columns.has(k)) {
-            this.columns.delete(k);
-            this.hashes.delete(k);
-            changed.push({ cx, cz, entities: [] });
-          }
-        }
+        const changed = this.absorb(dim, cols, reply.columns);
         if (changed.length) {
           this.revision++;
           this.onDirty(dim, await this.host.setBlockEntities(dim, changed));
@@ -110,6 +90,31 @@ export class BlockEntityStore {
         this.busy = false;
       }
     })();
+  }
+
+  /** Takes a reply's columns (those whose hash moved); returns the columns that changed. */
+  private absorb(dim: Dim, asked: Array<[number, number]>, reply: BlockEntityColumn[]): Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> {
+    const changed: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> = [];
+    const answered = new Set<string>();
+    for (const c of reply) {
+      const k = key(dim, c.cx, c.cz);
+      answered.add(k);
+      const h = hashKey(c.hash);
+      if (this.hashes.get(k) === h && this.columns.has(k)) continue;
+      this.hashes.set(k, h);
+      changed.push(c);
+      if (c.entities.length) this.columns.set(k, c.entities);
+      else this.columns.delete(k);
+    }
+    // Asked for but not in the reply: the column has none.
+    for (const [cx, cz] of asked) {
+      const k = key(dim, cx, cz);
+      if (answered.has(k) || !this.columns.has(k)) continue;
+      this.columns.delete(k);
+      this.hashes.delete(k);
+      changed.push({ cx, cz, entities: [] });
+    }
+    return changed;
   }
 
   clear(): void {

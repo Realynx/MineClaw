@@ -49,16 +49,25 @@ public sealed class FoodSupply(IGameClient c, AcquisitionSources? sources = null
         var extraRaw = new List<(int Id, int Hunger)>();
         for (int id = 256; id < 512; id++)
         {
-            if (!d.ItemExists(id) || ready.Contains(id) || raw.Contains(id) || Kept.Contains(id) || d.Food(id) is not { } f) continue;
+            if (!IsExtraFood(d, id, ready, raw, out int hunger)) continue;
             var cooked = d.SmeltingFor(id);
-            if (cooked != null && d.Food(cooked.OutputId) != null) extraRaw.Add((id, f.Hunger));
-            else if (d.FoodPoisonChance(id) <= 0) extraReady.Add((id, f.Hunger));
+            if (cooked != null && d.Food(cooked.OutputId) != null) extraRaw.Add((id, hunger));
+            else if (d.FoodPoisonChance(id) <= 0) extraReady.Add((id, hunger));
         }
         ready.AddRange(extraReady.OrderByDescending(x => x.Hunger).Select(x => x.Id));
         raw.AddRange(extraRaw.OrderByDescending(x => x.Hunger).Select(x => x.Id));
         foreach (var id in new[] { Ids1122.Log2, Ids1122.CoalBlock })
             if (!fuels.Contains(id) && d.ItemExists(id) && d.FuelTicks(id) > 0) fuels.Add(id);
         return new Lists(ready.ToArray(), raw.ToArray(), fuels.ToArray());
+    }
+
+    /// <summary>A version food item not already listed and not kept back; <paramref name="hunger"/> = what it restores.</summary>
+    private static bool IsExtraFood(IGameData d, int id, List<int> ready, List<int> raw, out int hunger)
+    {
+        hunger = 0;
+        if (!d.ItemExists(id) || ready.Contains(id) || raw.Contains(id) || Kept.Contains(id) || d.Food(id) is not { } f) return false;
+        hunger = f.Hunger;
+        return true;
     }
 
     /// <summary>Prepared food fetched as it is, best first (golden apples stay: they're saved for critical hp).</summary>
@@ -97,77 +106,103 @@ public sealed class FoodSupply(IGameClient c, AcquisitionSources? sources = null
 
     private Outlook Survey(ChestStock chests)
     {
-        var reserved = c.ReservedItems;
         var opts = new List<Option>();
         if (HasReady(c)) opts.Add(new Option(Way.Carried, 0, 1, "food in inventory"));
-
-        foreach (var id in Ready)
-        {
-            if (reserved.Contains(id)) continue;
-            int n = chests.Count(id);
-            if (n > 0) opts.Add(new Option(Way.Chest, id, n, $"{n} {Name(id)} in {Where(id, chests, carried: false)} (eat will fetch it)"));
-        }
-
-        if (!reserved.Contains(Items.Bread))
-        {
-            int wheat = Spare(Items.Wheat) + chests.Count(Items.Wheat);
-            if (wheat >= 3)
-                opts.Add(new Option(Way.Craft, Items.Bread, wheat / 3,
-                    $"no ready food; {wheat} wheat in {Where(Items.Wheat, chests)} → can craft {wheat / 3} bread (eat will do it)"));
-        }
-        if (!reserved.Contains(Items.MushroomStew))
-        {
-            int bowls = Spare(Items.Bowl) + chests.Count(Items.Bowl);
-            int brown = Spare(Blocks.BrownMushroom) + chests.Count(Blocks.BrownMushroom), red = Spare(Blocks.RedMushroom) + chests.Count(Blocks.RedMushroom);
-            int n = Math.Min(bowls, Math.Min(brown, red));
-            if (n > 0)
-                opts.Add(new Option(Way.Craft, Items.MushroomStew, n,
-                    $"no ready food; {n} bowl + mushrooms in {Where(Items.Bowl, chests)} → can craft {n} mushroom stew (eat will do it)"));
-        }
-
+        AddChestOptions(opts, chests);
+        AddBreadOption(opts, chests);
+        AddStewOption(opts, chests);
         var furnace = FurnaceInReach();
         bool fuel = FuelAvailable(chests);
         foreach (var id in Raw)
-        {
-            if (reserved.Contains(id) || Smelting.ResultFor(id) is not { } cooked || reserved.Contains(cooked.OutputId)) continue;
-            int n = Spare(id) + chests.Count(id);
-            if (n <= 0) continue;
-            string where = Where(id, chests);
-            if (furnace != null && fuel)
-                opts.Add(new Option(Way.Cook, id, n, $"no ready food; {n} {Name(id)} in {where} → can cook {n} {Name(cooked.OutputId)} at the furnace {furnace} (eat will do it)"));
-            else if (!HungerRules.IsRisky(id) && chests.Count(id) > 0)
-                opts.Add(new Option(Way.EatRaw, id, chests.Count(id),
-                    $"no ready food; {n} {Name(id)} in {where}, {(furnace == null ? "no furnace in reach" : "no fuel")} to cook it: eat will take it raw"));
-        }
+            if (RawOption(id, chests, furnace, fuel) is { } o) opts.Add(o);
         return new Outlook(opts, opts.Count > 0 ? opts[0].Line : Shortfall(chests, furnace, fuel));
+    }
+
+    private void AddChestOptions(List<Option> opts, ChestStock chests)
+    {
+        foreach (var id in Ready)
+        {
+            if (c.ReservedItems.Contains(id)) continue;
+            int n = chests.Count(id);
+            if (n > 0) opts.Add(new Option(Way.Chest, id, n, $"{n} {Name(id)} in {Where(id, chests, carried: false)} (eat will fetch it)"));
+        }
+    }
+
+    private void AddBreadOption(List<Option> opts, ChestStock chests)
+    {
+        if (c.ReservedItems.Contains(Items.Bread)) return;
+        int wheat = Spare(Items.Wheat) + chests.Count(Items.Wheat);
+        if (wheat >= 3)
+            opts.Add(new Option(Way.Craft, Items.Bread, wheat / 3,
+                $"no ready food; {wheat} wheat in {Where(Items.Wheat, chests)} → can craft {wheat / 3} bread (eat will do it)"));
+    }
+
+    private void AddStewOption(List<Option> opts, ChestStock chests)
+    {
+        if (c.ReservedItems.Contains(Items.MushroomStew)) return;
+        int bowls = Spare(Items.Bowl) + chests.Count(Items.Bowl);
+        int brown = Spare(Blocks.BrownMushroom) + chests.Count(Blocks.BrownMushroom), red = Spare(Blocks.RedMushroom) + chests.Count(Blocks.RedMushroom);
+        int n = Math.Min(bowls, Math.Min(brown, red));
+        if (n > 0)
+            opts.Add(new Option(Way.Craft, Items.MushroomStew, n,
+                $"no ready food; {n} bowl + mushrooms in {Where(Items.Bowl, chests)} → can craft {n} mushroom stew (eat will do it)"));
+    }
+
+    /// <summary>Raw meat/fish to cook (furnace + fuel in reach) or, when safe and stored, to eat raw; null when neither.</summary>
+    private Option? RawOption(int id, ChestStock chests, string? furnace, bool fuel)
+    {
+        var reserved = c.ReservedItems;
+        if (reserved.Contains(id) || Smelting.ResultFor(id) is not { } cooked || reserved.Contains(cooked.OutputId)) return null;
+        int n = Spare(id) + chests.Count(id);
+        if (n <= 0) return null;
+        string where = Where(id, chests);
+        if (furnace != null && fuel)
+            return new Option(Way.Cook, id, n, $"no ready food; {n} {Name(id)} in {where} → can cook {n} {Name(cooked.OutputId)} at the furnace {furnace} (eat will do it)");
+        if (HungerRules.IsRisky(id) || chests.Count(id) <= 0) return null;
+        return new Option(Way.EatRaw, id, chests.Count(id),
+            $"no ready food; {n} {Name(id)} in {where}, {(furnace == null ? "no furnace in reach" : "no fuel")} to cook it: eat will take it raw");
     }
 
     /// <summary>"no food anywhere: none in inventory or the 3 known chests; only 2 wheat in chest 3,65,2 (bread needs 3)".</summary>
     private string Shortfall(ChestStock chests, string? furnace, bool fuel)
     {
-        var reserved = c.ReservedItems;
         string head = chests.Known == 0 ? "no food anywhere: none in inventory and no known chests"
             : $"no food anywhere: none in inventory or the {chests.Known} known chest{(chests.Known == 1 ? "" : "s")}";
         var notes = new List<string>();
+        AddCarriedNotes(notes);
+        AddCraftNotes(notes, chests);
+        AddRawNotes(notes, chests, furnace, fuel);
+        return notes.Count == 0 ? head : head + "; " + string.Join("; ", notes);
+    }
+
+    private void AddCarriedNotes(List<string> notes)
+    {
         var slots = W.Inventory.PlayerSlots();
         var held = slots.Skip(9).Where(s => !s.IsEmpty && Items.Food(s.Id, s.Damage) != null && c.EatReservedItems.Contains(s.Id))
             .GroupBy(s => (int)s.Id).Select(g => $"{Name(g.Key)} x{g.Sum(s => s.Count)}").ToList();
         if (held.Count > 0) notes.Add($"carried {string.Join(", ", held)} is reserved");
         if (SurvivalReflex.HasAnyFood(slots, c.EatReservedItems)) notes.Add("only rotten flesh/raw chicken carried (use_item to eat one anyway)");
+    }
+
+    private void AddCraftNotes(List<string> notes, ChestStock chests)
+    {
         int wheat = Spare(Items.Wheat) + chests.Count(Items.Wheat);
-        if (reserved.Contains(Items.Bread)) { if (wheat >= 3) notes.Add($"{wheat} wheat, but bread is reserved"); }
+        if (c.ReservedItems.Contains(Items.Bread)) { if (wheat >= 3) notes.Add($"{wheat} wheat, but bread is reserved"); }
         else if (wheat > 0) notes.Add($"only {wheat} wheat in {Where(Items.Wheat, chests)} (bread needs 3)");
         int seeds = Spare(Items.Seeds) + chests.Count(Items.Seeds);
         if (wheat < 3 && seeds > 0) notes.Add($"{seeds} seeds to plant");
         int mush = Spare(Blocks.BrownMushroom) + chests.Count(Blocks.BrownMushroom) + Spare(Blocks.RedMushroom) + chests.Count(Blocks.RedMushroom);
         if (mush > 0) notes.Add("mushrooms, but stew needs a bowl + 1 brown + 1 red");
+    }
+
+    private void AddRawNotes(List<string> notes, ChestStock chests, string? furnace, bool fuel)
+    {
         foreach (var id in Raw)
         {
             int n = Spare(id) + chests.Count(id);
-            if (n > 0 && !reserved.Contains(id))
+            if (n > 0 && !c.ReservedItems.Contains(id))
                 notes.Add($"{n} {Name(id)} in {Where(id, chests)}, but {(furnace == null ? "no furnace in reach" : fuel ? "it's reserved" : "no fuel")} to cook it");
         }
-        return notes.Count == 0 ? head : head + "; " + string.Join("; ", notes);
     }
 
     /// <summary>Carried copies a craft may use (reserved ones stay).</summary>
@@ -255,25 +290,34 @@ public sealed class FoodSupply(IGameClient c, AcquisitionSources? sources = null
             if (!got.Text.StartsWith("had ", StringComparison.Ordinal)) notes.Add(got.Text);
         }
         n = Math.Min(n, Inv(raw));
-        var carriedFuel = W.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty && !c.ReservedItems.Contains(s.Id) && s.Id != raw);
-        if (Smelting.BestFuel(carriedFuel) is not { } fuel || carriedFuel.Where(s => s.Id == fuel).Sum(s => s.Count) < Smelting.FuelNeeded(n, fuel))
-        {
-            var chests = Chests();
-            foreach (var f in Fuels)
-            {
-                int need = Smelting.FuelNeeded(n, f);
-                if (chests.Count(f) < need) continue;
-                var got = await obtainer.ObtainAsync(f, -1, Inv(f) + need, ct).ConfigureAwait(false);
-                notes.Add(got.Text);
-                if (got.Ok) break;
-            }
-        }
+        if (!CarriesFuelFor(raw, n)) await FetchFuelAsync(n, obtainer, notes, ct).ConfigureAwait(false);
         var station = await new Crafter(c) { Observations = _s?.Observations }.EnsureStationAsync(Blocks.Furnace, ct).ConfigureAwait(false);
         if (!station.Ok) return new(false, Join(notes, $"can't cook {Name(raw)}: {station.Message}"));
         if (station.Note != null) notes.Add(station.Note);
         OnStep?.Invoke("smelt");
         var r = await c.SmeltAsync(raw, n, null, wait: true, furnace: station.Pos, ct: ct).ConfigureAwait(false);
         return new(r.Ok && HasReady(c), Join(notes, r.Ok ? $"cooked {n} {Name(Smelting.ResultFor(raw)!.OutputId)}" : $"cooking {Name(raw)} failed: {r.Message}"));
+    }
+
+    /// <summary>Enough spare carried fuel (not the raw food itself) to smelt <paramref name="n"/>.</summary>
+    private bool CarriesFuelFor(int raw, int n)
+    {
+        var carriedFuel = W.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty && !c.ReservedItems.Contains(s.Id) && s.Id != raw);
+        return Smelting.BestFuel(carriedFuel) is { } fuel && carriedFuel.Where(s => s.Id == fuel).Sum(s => s.Count) >= Smelting.FuelNeeded(n, fuel);
+    }
+
+    /// <summary>Fetches the first stored fuel there is enough of (in fuel order), noting each attempt.</summary>
+    private async Task FetchFuelAsync(int n, Obtainer obtainer, List<string> notes, CancellationToken ct)
+    {
+        var chests = Chests();
+        foreach (var f in Fuels)
+        {
+            int need = Smelting.FuelNeeded(n, f);
+            if (chests.Count(f) < need) continue;
+            var got = await obtainer.ObtainAsync(f, -1, Inv(f) + need, ct).ConfigureAwait(false);
+            notes.Add(got.Text);
+            if (got.Ok) break;
+        }
     }
 
     private static string Join(List<string> notes, string last) => notes.Count == 0 ? last : string.Join("; ", notes) + "; " + last;

@@ -129,14 +129,18 @@ public sealed class RoleClassifier
 
     /// <summary>The crop role of a block (wheat by its growth stage, meta 7 = ripe; stems grow, fruit/cane/cactus are ripe), else null.
     /// Saplings are not crops (tree stewardship keeps them).</summary>
-    public static BlockRole? CropRole(int id, int meta) => id switch
-    {
-        MineClaw.Data.Blocks.Crops or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart =>
-            meta >= Ids1122.RipeStage(id) ? BlockRole.CropRipe : BlockRole.CropGrowing,
-        MineClaw.Data.Blocks.PumpkinStem or MineClaw.Data.Blocks.MelonStem => BlockRole.CropGrowing,
-        MineClaw.Data.Blocks.Pumpkin or MineClaw.Data.Blocks.Melon or MineClaw.Data.Blocks.SugarCane or MineClaw.Data.Blocks.Cactus => BlockRole.CropRipe,
-        _ => null,
-    };
+    public static BlockRole? CropRole(int id, int meta) =>
+        IsStagedCrop(id) ? (meta >= Ids1122.RipeStage(id) ? BlockRole.CropRipe : BlockRole.CropGrowing)
+        : id is MineClaw.Data.Blocks.PumpkinStem or MineClaw.Data.Blocks.MelonStem ? BlockRole.CropGrowing
+        : IsWholeCrop(id) ? BlockRole.CropRipe : null;
+
+    /// <summary>Crops that ripen by growth stage (wheat, carrots, potatoes, beetroots, nether wart).</summary>
+    private static bool IsStagedCrop(int id) =>
+        id is MineClaw.Data.Blocks.Crops or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart;
+
+    /// <summary>Harvestable whole: fruit, cane, cactus.</summary>
+    private static bool IsWholeCrop(int id) =>
+        id is MineClaw.Data.Blocks.Pumpkin or MineClaw.Data.Blocks.Melon or MineClaw.Data.Blocks.SugarCane or MineClaw.Data.Blocks.Cactus;
 
     /// <summary>"crop (ripe 7/7)", "crop (growing 3/7)": the words for a crop in facts and answers (null = not a crop).</summary>
     public static string? CropText(int id, int meta) => id switch

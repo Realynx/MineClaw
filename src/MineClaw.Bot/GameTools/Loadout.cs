@@ -65,12 +65,18 @@ public static class Loadout
             if (r.Ok && Have(w, k) > 0) { (r.Plan != null ? planned : got).Add(r.Text); continue; }
             missing.Add(k.Name);
         }
+        return new Report(FetchText(got, planned, have, missing), missing, [.. got, .. planned]);
+    }
+
+    /// <summary>"took …; <bootstrap lines>; already had …; no … in my inventory or storage", or "nothing needed".</summary>
+    private static string FetchText(List<string> got, List<string> planned, List<string> have, List<string> missing)
+    {
         var parts = new List<string>();
         if (got.Count > 0) parts.Add("took " + string.Join(", ", got));
         parts.AddRange(planned);
         if (have.Count > 0) parts.Add("already had " + string.Join(", ", have));
         if (missing.Count > 0) parts.Add("no " + string.Join(", no ", missing) + " in my inventory or storage");
-        return new Report(parts.Count == 0 ? "nothing needed" : string.Join("; ", parts), missing, [.. got, .. planned]);
+        return parts.Count == 0 ? "nothing needed" : string.Join("; ", parts);
     }
 
     /// <summary>Withdraws one of the kind from the nearest known container holding it; "stone pickaxe from 14,64,-5" or null.</summary>

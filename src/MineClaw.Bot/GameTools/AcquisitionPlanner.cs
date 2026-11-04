@@ -55,32 +55,44 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         _depth++;
         try
         {
-            string? got = Loadout.Kinds.TryGetValue(need.What.Trim(), out var kind)
-                ? await ToolAsync(kind, need, ct).ConfigureAwait(false)
-                : Items.ByNameWithDamage(need.What.Trim()) is { } item
-                    ? await ItemAsync(item.Item.Id, Math.Max(1, need.Count), need.Depth, ct, item.Damage).ConfigureAwait(false)
-                    : throw new OutOfBudget($"unknown item '{need.What}'");
-            if (got == null && _shortfall == null && kind is { Craftable.Length: > 0 })
-                _shortfall = NewCrafter().Shortfall(kind.Craftable[0], -1, 1); // what a stone one still lacks
-            return Result(got != null, got ?? (_shortfall != null ? _shortfall
-                : $"no {need} (inventory, chests, hive, crafting{(need.Depth == AcquireDepth.Full ? ", bootstrap" : "")})"));
+            var (got, kind) = await GetNeedAsync(need, ct).ConfigureAwait(false);
+            if (got == null) NoteToolShortfall(kind);
+            return Result(top, got != null, got ?? _shortfall ?? NoneText(need));
         }
-        catch (OutOfBudget e) { return Result(false, e.Message); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return Result(false, "cancelled"); }
+        catch (OutOfBudget e) { return Result(top, false, e.Message); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return Result(top, false, "cancelled"); }
         finally
         {
             _depth--;
             if (c.World.Inventory.OpenWindow != null && _depth == 0)
                 try { await c.CloseWindowAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* best effort */ }
         }
+    }
 
-        AcquireResult Result(bool ok, string text)
-        {
-            if (!top) return new AcquireResult(ok, text, _plan);
-            var steps = _done.Count > 0 && _plan != null ? " | " + string.Join(", ", _done.Distinct().Take(8)) : "";
-            var line = _plan != null ? $"{_plan}{steps}; {(ok ? "got " : "")}{text}" : text;
-            return new AcquireResult(ok, line, _plan);
-        }
+    /// <summary>What a stone one of the tool kind still lacks, when nothing better explained the miss.</summary>
+    private void NoteToolShortfall(Loadout.Kind? kind)
+    {
+        if (_shortfall == null && kind is { Craftable.Length: > 0 }) _shortfall = NewCrafter().Shortfall(kind.Craftable[0], -1, 1);
+    }
+
+    private static string NoneText(Need need) =>
+        $"no {need} (inventory, chests, hive, crafting{(need.Depth == AcquireDepth.Full ? ", bootstrap" : "")})";
+
+    /// <summary>A tool kind or an item (by name, with its variant); an unknown name is out of budget.</summary>
+    private async Task<(string? Got, Loadout.Kind? Kind)> GetNeedAsync(Need need, CancellationToken ct)
+    {
+        if (Loadout.Kinds.TryGetValue(need.What.Trim(), out var kind)) return (await ToolAsync(kind, need, ct).ConfigureAwait(false), kind);
+        if (Items.ByNameWithDamage(need.What.Trim()) is not { } item) throw new OutOfBudget($"unknown item '{need.What}'");
+        return (await ItemAsync(item.Item.Id, Math.Max(1, need.Count), need.Depth, ct, item.Damage).ConfigureAwait(false), null);
+    }
+
+    /// <summary>The top-level line: "plan | steps done; got …" (a nested acquire returns its text as is).</summary>
+    private AcquireResult Result(bool top, bool ok, string text)
+    {
+        if (!top) return new AcquireResult(ok, text, _plan);
+        var steps = _done.Count > 0 && _plan != null ? " | " + string.Join(", ", _done.Distinct().Take(8)) : "";
+        var line = _plan != null ? $"{_plan}{steps}; {(ok ? "got " : "")}{text}" : text;
+        return new AcquireResult(ok, line, _plan);
     }
 
     /// <summary>Skill preconditions: one of <paramref name="ids"/> (best first), e.g. any hoe, a bucket, torches.</summary>
@@ -112,13 +124,15 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         if (!Loadout.Kinds.TryGetValue(kindName, out var k) || k.Craftable.Length < 2) return null;
         int stone = k.Craftable[0];
         if (!k.Ids.Any(id => Inv(id) > 0) || k.Ids.Any(id => Inv(id) > 0 && Level(id) >= 1)) return null;
-        if (!PlanCompleteFromInventory(stone)) return null;
-        bool table = W.FindNearestBlock(W.Player.Position, c.StationSearchRadius, Blocks.Workbench) != null || Inv(Blocks.Workbench) > 0
-                     || WoodUnits(false) >= 4 + (Inv(Items.Stick) >= SticksFor(k) ? 0 : 2);
-        if (!table) return null;
+        if (!PlanCompleteFromInventory(stone) || !TableAvailable(k)) return null;
         var r = await NewCrafter().CraftAsync(Items.Get(stone).Name, 1, ct).ConfigureAwait(false);
         return r.Ok && Inv(stone) > 0 ? "upgraded to " + Names.Item(stone) : null;
     }
+
+    /// <summary>A crafting table in reach or carried, or the wood to make one (plus sticks when short).</summary>
+    private bool TableAvailable(Loadout.Kind k) =>
+        W.FindNearestBlock(W.Player.Position, c.StationSearchRadius, Blocks.Workbench) != null || Inv(Blocks.Workbench) > 0
+        || WoodUnits(false) >= 4 + (Inv(Items.Stick) >= SticksFor(k) ? 0 : 2);
 
     // ------------------------------------------------------------------ tools
 
@@ -413,15 +427,8 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     {
         var inv = W.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList();
         var plan = RecipePlanner.Plan(id, Math.Max(1, need), inv, dmg ?? -1, new PlannerOptions { AllowSmelting = true, HasCraftingTable = true });
-        int cobble = 0, wood = 0;
-        foreach (var m in plan.Missing)
-        {
-            if (m.Id == Blocks.Cobblestone) cobble += m.Count;
-            else if (m.Id is Blocks.Log or Ids1122.Log2) wood += 4 * m.Count;
-            else if (m.Id == Blocks.Planks) wood += m.Count;
-            else if (m.Id == Items.Stick) wood += (m.Count + 1) / 2;
-            else return false;
-        }
+        if (RawShortfall(plan.Missing) is not { } raw) return false;
+        var (cobble, wood) = raw;
         var steps = new List<string>();
         if (wood > 0) steps.Add("logs");
         if (cobble > 0) steps.Add($"{cobble} cobble (mine stone)");
@@ -431,6 +438,22 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
             return false;
         return await CraftVariantAsync(id, dmg, craftName, need, ct).ConfigureAwait(false);
     }
+
+    /// <summary>The cobble and wood units (planks) the missing materials come down to; null when something else is missing.</summary>
+    private static (int Cobble, int Wood)? RawShortfall(IReadOnlyList<MaterialNeed> missing)
+    {
+        int cobble = 0, wood = 0;
+        foreach (var m in missing)
+        {
+            if (m.Id == Blocks.Cobblestone) cobble += m.Count;
+            else if (WoodUnitsOf(m) is { } units) wood += units;
+            else return null;
+        }
+        return (cobble, wood);
+    }
+
+    private static int? WoodUnitsOf(MaterialNeed m) =>
+        m.Id is Blocks.Log or Ids1122.Log2 ? 4 * m.Count : m.Id == Blocks.Planks ? m.Count : m.Id == Items.Stick ? (m.Count + 1) / 2 : null;
 
     /// <summary>Cobble-only recipes: (cobble in, items out) per craft.</summary>
     private static (int In, int Out)? CobbleProduct(int id, int damage) => (id, damage) switch
@@ -553,24 +576,37 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     {
         if (Inv(Blocks.Cobblestone) >= want) return true;
         if (gen is null && !NaturalStone) { Note("no generator known"); return false; }
-        if (!Loadout.Kinds["pickaxe"].Ids.Any(id => Inv(id) > 0))
-        {
-            if (!fetchPick) return false;
-            var pick = await AcquireAsync(new Need("pickaxe"), ct).ConfigureAwait(false);
-            if (!pick.Ok) return false;
-            if (Inv(Blocks.Cobblestone) >= want) return true;
-        }
-        if (NaturalStone)
-        {
-            Step("mine stone");
-            int had = Inv(Blocks.Cobblestone);
-            var mined = await c.MineAsync("stone", Math.Min(256, want - had), 32, ct).ConfigureAwait(false);
-            int dug = Inv(Blocks.Cobblestone) - had;
-            Note(dug > 0 ? $"mined {dug} stone" : "mine stone: " + Trim(mined.Message));
-            if (Inv(Blocks.Cobblestone) >= want) return true;
-            if (gen is null) return false;
-        }
-        var (free, note) = GameToolSet.PickGeneratorCell(c, gen!.Value, _s.CellsNear);
+        if (!Loadout.Kinds["pickaxe"].Ids.Any(id => Inv(id) > 0) && await FetchPickAsync(want, fetchPick, ct).ConfigureAwait(false) is { } settled)
+            return settled;
+        // A normal world mines natural stone first; the generator only when that wasn't enough.
+        if (NaturalStone && (await MineStoneAsync(want, ct).ConfigureAwait(false) || gen is null)) return Inv(Blocks.Cobblestone) >= want;
+        return await DigGenCobbleAsync(gen!.Value, want, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>No pickaxe: fetch one when asked. False = can't dig; true = enough cobble came along; null = go on digging.</summary>
+    private async Task<bool?> FetchPickAsync(int want, bool fetchPick, CancellationToken ct)
+    {
+        if (!fetchPick) return false;
+        var pick = await AcquireAsync(new Need("pickaxe"), ct).ConfigureAwait(false);
+        if (!pick.Ok) return false;
+        return Inv(Blocks.Cobblestone) >= want ? true : null;
+    }
+
+    /// <summary>Mines natural stone toward <paramref name="want"/> cobble; true when that is enough.</summary>
+    private async Task<bool> MineStoneAsync(int want, CancellationToken ct)
+    {
+        Step("mine stone");
+        int had = Inv(Blocks.Cobblestone);
+        var mined = await c.MineAsync("stone", Math.Min(256, want - had), 32, ct).ConfigureAwait(false);
+        int dug = Inv(Blocks.Cobblestone) - had;
+        Note(dug > 0 ? $"mined {dug} stone" : "mine stone: " + Trim(mined.Message));
+        return Inv(Blocks.Cobblestone) >= want;
+    }
+
+    /// <summary>Digs the generator's free cell nearest <paramref name="gen"/> until <paramref name="want"/> cobble are on hand.</summary>
+    private async Task<bool> DigGenCobbleAsync(BlockPos gen, int want, CancellationToken ct)
+    {
+        var (free, note) = GameToolSet.PickGeneratorCell(c, gen, _s.CellsNear);
         if (free is not { } at) { Note(note ?? "gen busy"); return false; }
         Step("gen cobble");
         int before = Inv(Blocks.Cobblestone);
@@ -665,12 +701,7 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     {
         if (_s.AskPlayer is not { } f) return null;
         Step("ask");
-        var why = _done.LastOrDefault(d => d.StartsWith("won't chop", StringComparison.Ordinal)) is { } tree ? " (last trees, won't chop them)" : "";
-        // "a cobblestone slab" / "256 cobblestone slabs" / "food": never "a 256 stone slab" (live 10-28).
-        bool many = ask.Length > 0 && char.IsDigit(ask[0]) || ask == "food";
-        if (!many && !ask.StartsWith("a ", StringComparison.Ordinal) && !ask.StartsWith("an ", StringComparison.Ordinal))
-            ask = ("aeiou".Contains(ask[0]) ? "an " : "a ") + ask;
-        var q = $"I need {ask} and can't get {(ask == "food" ? "it" : many ? "them" : "one")}{why}. Can someone toss me {(many ? "some" : "one")}? (no answer in {L.AskTimeout.TotalSeconds:0}s: I'll stop)";
+        var q = AskQuestion(ask);
         string? answer;
         try { answer = await f(q, L.AskTimeout, ct).ConfigureAwait(false); }
         catch (Exception e) when (e is not OperationCanceledException) { answer = null; }
@@ -680,6 +711,21 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         Note("asked: " + Trim(answer));
         return null;
     }
+
+    /// <summary>"I need a stone pickaxe and can't get one (last trees, won't chop them). Can someone toss me one? (no answer in
+    /// 60s: I'll stop)".</summary>
+    private string AskQuestion(string ask)
+    {
+        var why = _done.LastOrDefault(d => d.StartsWith("won't chop", StringComparison.Ordinal)) is { } ? " (last trees, won't chop them)" : "";
+        // "a cobblestone slab" / "256 cobblestone slabs" / "food": never "a 256 stone slab" (live 10-28).
+        bool many = ask.Length > 0 && char.IsDigit(ask[0]) || ask == "food";
+        ask = WithArticle(ask, many);
+        return $"I need {ask} and can't get {(ask == "food" ? "it" : many ? "them" : "one")}{why}. Can someone toss me {(many ? "some" : "one")}? (no answer in {L.AskTimeout.TotalSeconds:0}s: I'll stop)";
+    }
+
+    private static string WithArticle(string ask, bool many) =>
+        many || ask.StartsWith("a ", StringComparison.Ordinal) || ask.StartsWith("an ", StringComparison.Ordinal) ? ask
+            : ("aeiou".Contains(ask[0]) ? "an " : "a ") + ask;
 
     // ------------------------------------------------------------------ bookkeeping
 

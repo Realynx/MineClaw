@@ -91,46 +91,52 @@ public sealed partial class AutoVision
     public (string Kind, BlockPos Focus, string Question, bool Build)? Classify(string tool, JsonElement input)
     {
         var feet = _c.World.Player.Position.ToBlockPos();
-        BlockPos? At(params string[] keys)
-        {
-            if (input.ValueKind != JsonValueKind.Object) return null;
-            foreach (var k in keys)
-                if (input.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String && Locations.ParseCoords(v.GetString()) is { } p) return p;
-            if (input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object)
-                foreach (var k in keys)
-                    if (a.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String && Locations.ParseCoords(v.GetString()) is { } p) return p;
-            return null;
-        }
         switch (tool)
         {
             // Stone means the gen only where stone comes from one (skyblock); a normal world mines natural stone.
-            case "mine" when MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && input.Str("block") is { } b
-                && MineClaw.Data.Blocks.ByName(b) is { Id: MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone }:
+            case "mine" when MinesGenStone(input):
             case "harvest_generator":
-            {
-                var f = At("at") ?? GenFocus(feet);
-                return ("gen", f, MineClaw.Bot.Perception.Vision.Eval.VisionEval.GenQuestion, false);
-            }
+                return ("gen", CoordArg(input, "at") ?? GenFocus(feet), MineClaw.Bot.Perception.Vision.Eval.VisionEval.GenQuestion, false);
             case "place":
             {
-                var f = At("at") ?? feet;
+                var f = CoordArg(input, "at") ?? feet;
                 return ("place", f, $"Is {f.X},{f.Y},{f.Z} free, which solid blocks next to it can a block be placed against, and is there a fall under it?", false);
             }
             case "dig":
-            {
-                var f = At("at") ?? feet;
-                return ("dig", f, "What is the block at the focus: its role (gen cell, floor, wall, protected) and what is under it (air, a fall?)", false);
-            }
+                return ("dig", CoordArg(input, "at") ?? feet, "What is the block at the focus: its role (gen cell, floor, wall, protected) and what is under it (air, a fall?)", false);
             case "skill":
-            {
-                var name = input.Str("name") ?? input.Str("skill") ?? "";
-                if (!BuildSkillRx().IsMatch(name)) return null;
-                var f = At("at", "to", "pos", "from", "start", "corner", "origin") ?? feet;
-                return ("build", f, $"Check the {name.Replace('_', ' ')} at the focus: is it complete? List gaps or missing blocks with coords, and any open edge.", true);
-            }
+                return SkillStep(input, feet);
             default:
                 return null;
         }
+    }
+
+    private static bool MinesGenStone(JsonElement input) =>
+        MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && input.Str("block") is { } b
+        && MineClaw.Data.Blocks.ByName(b) is { Id: MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone };
+
+    /// <summary>A build skill: check the build at its anchor (at/to/pos/from/start/corner/origin, else the feet).</summary>
+    private static (string Kind, BlockPos Focus, string Question, bool Build)? SkillStep(JsonElement input, BlockPos feet)
+    {
+        var name = input.Str("name") ?? input.Str("skill") ?? "";
+        if (!BuildSkillRx().IsMatch(name)) return null;
+        var f = CoordArg(input, "at", "to", "pos", "from", "start", "corner", "origin") ?? feet;
+        return ("build", f, $"Check the {name.Replace('_', ' ')} at the focus: is it complete? List gaps or missing blocks with coords, and any open edge.", true);
+    }
+
+    /// <summary>The first "x,y,z" among <paramref name="keys"/> of the input, else of its "args" object.</summary>
+    private static BlockPos? CoordArg(JsonElement input, params string[] keys)
+    {
+        if (input.ValueKind != JsonValueKind.Object) return null;
+        if (CoordIn(input, keys) is { } p) return p;
+        return input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? CoordIn(a, keys) : null;
+    }
+
+    private static BlockPos? CoordIn(JsonElement obj, string[] keys)
+    {
+        foreach (var k in keys)
+            if (obj.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String && Locations.ParseCoords(v.GetString()) is { } p) return p;
+        return null;
     }
 
     private BlockPos GenFocus(BlockPos near)

@@ -5,7 +5,7 @@
 // over anything that isn't. Water is translucent (its top drawn from below too), lava opaque and full bright.
 
 import { Layer } from '../world/blocks';
-import { FACE_SHADE, makeQuad, type Quad, TINT_NONE } from './quad';
+import { FACE_SHADE, makeQuad, type Quad, type QuadInit, TINT_NONE } from './quad';
 import type { Nb } from './models/states';
 
 export const isWater = (id: number) => id === 8 || id === 9;
@@ -60,37 +60,42 @@ function decay(nb: Nb, x: number, y: number, z: number, fluid: number): number {
 export function flowVector(nb: Nb, fluid: number): [number, number, number] {
   let vx = 0, vy = 0, vz = 0;
   const l = decay(nb, 0, 0, 0, fluid);
-  const side: Array<[number, number]> = [[-1, 0], [0, -1], [1, 0], [0, 1]];
-  for (const [x, z] of side) {
-    let l1 = decay(nb, x, 0, z, fluid);
-    if (l1 < 0) {
-      if (!solidMaterial(nb.id(x, 0, z))) {
-        l1 = decay(nb, x, -1, z, fluid);
-        if (l1 >= 0) {
-          const d = l1 - (l - 8);
-          vx += x * d;
-          vz += z * d;
-        }
-      }
-    } else {
-      const d = l1 - l;
-      vx += x * d;
-      vz += z * d;
-    }
+  for (const [x, z] of FLOW_SIDES) {
+    const d = sideFlow(nb, x, z, l, fluid);
+    if (d === null) continue;
+    vx += x * d;
+    vz += z * d;
   }
-  if (nb.meta(0, 0, 0) >= 8) {
-    const s = (x: number, y: number, z: number) => solidMaterial(nb.id(x, y, z)) && nb.id(x, y, z) !== 0;
-    if (s(0, 0, -1) || s(0, 0, 1) || s(-1, 0, 0) || s(1, 0, 0) || s(0, 1, -1) || s(0, 1, 1) || s(-1, 1, 0) || s(1, 1, 0)) {
-      const len0 = Math.hypot(vx, vz);
-      if (len0 > 0) {
-        vx /= len0;
-        vz /= len0;
-      }
-      vy -= 6;
+  // Falling fluid next to a solid side: mostly down.
+  if (nb.meta(0, 0, 0) >= 8 && besideSolid(nb)) {
+    const len0 = Math.hypot(vx, vz);
+    if (len0 > 0) {
+      vx /= len0;
+      vz /= len0;
     }
+    vy -= 6;
   }
   const len = Math.hypot(vx, vy, vz);
   return len < 1e-9 ? [0, 0, 0] : [vx / len, vy / len, vz / len];
+}
+
+const FLOW_SIDES: ReadonlyArray<readonly [number, number]> = [[-1, 0], [0, -1], [1, 0], [0, 1]];
+/** The cells beside a falling fluid (its level and the one above) that turn its flow down when solid. */
+const FALL_SIDES: ReadonlyArray<readonly [number, number, number]> = [[0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0], [0, 1, -1], [0, 1, 1], [-1, 1, 0], [1, 1, 0]];
+
+/** The flow toward side (x, z) from a cell of decay `l`: the side's decay difference, or (an open side without fluid) the
+ * difference to the fluid below it; null when nothing flows that way. */
+function sideFlow(nb: Nb, x: number, z: number, l: number, fluid: number): number | null {
+  const l1 = decay(nb, x, 0, z, fluid);
+  if (l1 >= 0) return l1 - l;
+  if (solidMaterial(nb.id(x, 0, z))) return null;
+  const below = decay(nb, x, -1, z, fluid);
+  return below >= 0 ? below - (l - 8) : null;
+}
+
+function besideSolid(nb: Nb): boolean {
+  for (const [x, y, z] of FALL_SIDES) if (solidMaterial(nb.id(x, y, z)) && nb.id(x, y, z) !== 0) return true;
+  return false;
 }
 
 /** atan2(flow.z, flow.x) − π/2, or −1000 when still (no horizontal flow). */
@@ -120,26 +125,12 @@ export interface FluidTex {
 export function fluidQuads(nb: Nb, id: number, tex: FluidTex, opaque: (dx: number, dy: number, dz: number) => boolean, out: Quad[]): void {
   const water = isWater(id);
   const [h00, h01, h11, h10] = fluidCorners(nb, id);
-  const layer = water ? Layer.Translucent : Layer.Opaque;
-  const base = { layer, emissive: !water, ao: false, tint: water ? tex.tint : TINT_NONE, flat: tex.flat, textured: tex.textured, alpha: tex.textured ? 1 : water ? 0.62 : 1 };
-  const win = tex.beta ? 0.5 : 0.25;
+  const base = fluidBase(tex, water);
   const fspan = tex.flowSpan ?? 0, fk = fspan ? fspan >> 8 : 1;
   const flowUv = (uv: number[]) => (fk === 1 ? uv : uv.map((v) => v * fk));
   if (!sameFluid(id, nb.id(0, 1, 0))) {
-    const ang = flowAngle(nb, id);
-    let uv: number[], c: number, r: number, span = 0;
-    if (ang < -999) {
-      uv = [0, 0, 0, 1, 1, 1, 1, 0];
-      c = tex.stillC;
-      r = tex.stillR;
-    } else {
-      const s = Math.sin(ang) * win, k = Math.cos(ang) * win;
-      uv = flowUv([0.5 - k - s, 0.5 - k + s, 0.5 - k + s, 0.5 + k + s, 0.5 + k + s, 0.5 + k - s, 0.5 + k - s, 0.5 - k - s]);
-      c = tex.flowC;
-      r = tex.flowR;
-      span = fspan;
-    }
-    out.push(makeQuad([0, h00, 0, 0, h01, 1, 1, h11, 1, 1, h10, 0], uv, { ...base, c, r, span, wrap: tex.beta, shade: 1, dir: 1, twoSided: water }));
+    const t = topSurface(flowAngle(nb, id), tex, flowUv);
+    out.push(makeQuad([0, h00, 0, 0, h01, 1, 1, h11, 1, 1, h10, 0], t.uv, { ...base, c: t.c, r: t.r, span: t.flowing ? fspan : 0, wrap: tex.beta, shade: 1, dir: 1, twoSided: water }));
   }
   const below = nb.id(0, -1, 0);
   if (!sameFluid(id, below) && !opaque(0, -1, 0))
@@ -164,4 +155,20 @@ export function fluidQuads(nb: Nb, id: number, tex: FluidTex, opaque: (dx: numbe
   side(3, 0, 1, 1, 1, 0, 1, h11, h01);
   side(4, -1, 0, 0, 1, 0, 0, h01, h00);
   side(5, 1, 0, 1, 0, 1, 1, h10, h11);
+}
+
+/** What every quad of a fluid cell shares: water blends on the translucent layer, lava glows; untextured water is see-through. */
+function fluidBase(tex: FluidTex, water: boolean): QuadInit {
+  const layer = water ? Layer.Translucent : Layer.Opaque;
+  const alpha = tex.textured || !water ? 1 : 0.62;
+  return { layer, emissive: !water, ao: false, tint: water ? tex.tint : TINT_NONE, flat: tex.flat, textured: tex.textured, alpha };
+}
+
+/** The top surface's texture: still when nothing flows, else the flowing texture turned along the flow (a window of it). */
+function topSurface(ang: number, tex: FluidTex, flowUv: (uv: number[]) => number[]): { uv: number[]; c: number; r: number; flowing: boolean } {
+  if (ang < -999) return { uv: [0, 0, 0, 1, 1, 1, 1, 0], c: tex.stillC, r: tex.stillR, flowing: false };
+  const win = tex.beta ? 0.5 : 0.25;
+  const s = Math.sin(ang) * win, k = Math.cos(ang) * win;
+  const uv = flowUv([0.5 - k - s, 0.5 - k + s, 0.5 - k + s, 0.5 + k + s, 0.5 + k + s, 0.5 + k - s, 0.5 + k - s, 0.5 - k - s]);
+  return { uv, c: tex.flowC, r: tex.flowR, flowing: true };
 }

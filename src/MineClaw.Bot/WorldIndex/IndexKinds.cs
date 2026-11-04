@@ -38,25 +38,26 @@ public static class IndexKinds
     /// <summary>Area summaries (not things): never "near X", never a sign target, never a place for activity.</summary>
     public static bool IsArea(string kind) => kind is Island or Hangout or Activity or Hazard;
 
-    public static string? StationKind(int blockId) => blockId switch
-    {
-        Blocks.Chest or Ids1122.TrappedChest => Chest,
-        Ids1122.Hopper => Hopper,
-        Ids1122.Dropper => Dropper,
-        Ids1122.EnderChest => EnderChest,
-        Ids1122.BrewingStand => BrewingStand,
-        Ids1122.EnchantingTable => EnchantingTable,
-        Ids1122.Anvil => Anvil,
-        >= Ids1122.ShulkerFirst and <= Ids1122.ShulkerLast => ShulkerBox,
-        Blocks.Furnace or Blocks.LitFurnace => Furnace,
-        Blocks.Workbench => CraftingTable,
-        Blocks.Dispenser => Dispenser,
-        Blocks.Bed => Bed,
-        Blocks.Jukebox => Jukebox,
-        Blocks.NoteBlock => NoteBlock,
-        Blocks.MobSpawner => Spawner,
-        _ => null,
-    };
+    /// <summary>The station kind of a block id (chest, furnace, hopper, shulker box...), or null. A table lookup: the scan
+    /// asks it per block.</summary>
+    public static string? StationKind(int blockId) => (uint)blockId < (uint)StationKinds.Length ? StationKinds[blockId] : null;
+
+    private static readonly string?[] StationKinds = IdTable.Of<string>(
+        (Chest, [Blocks.Chest, Ids1122.TrappedChest]),
+        (Hopper, [Ids1122.Hopper]),
+        (Dropper, [Ids1122.Dropper]),
+        (EnderChest, [Ids1122.EnderChest]),
+        (BrewingStand, [Ids1122.BrewingStand]),
+        (EnchantingTable, [Ids1122.EnchantingTable]),
+        (Anvil, [Ids1122.Anvil]),
+        (ShulkerBox, IdTable.Range(Ids1122.ShulkerFirst, Ids1122.ShulkerLast)),
+        (Furnace, [Blocks.Furnace, Blocks.LitFurnace]),
+        (CraftingTable, [Blocks.Workbench]),
+        (Dispenser, [Blocks.Dispenser]),
+        (Bed, [Blocks.Bed]),
+        (Jukebox, [Blocks.Jukebox]),
+        (NoteBlock, [Blocks.NoteBlock]),
+        (Spawner, [Blocks.MobSpawner]));
 
     private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
     {
@@ -104,10 +105,12 @@ internal static class BlockClass
     }
 
     /// <summary>Blocks that are natural terrain in the nether (no "unknown build" from them there; mushrooms aren't farms).</summary>
-    public static bool NaturalNether(int id) =>
-        id is Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone or Blocks.Gravel or Blocks.Obsidian or Blocks.BrownMushroom
-            or Blocks.RedMushroom or Blocks.Fire or Ids1122.NetherBrick or Ids1122.NetherBrickFence or Ids1122.NetherBrickStairs
-            or Ids1122.NetherWart or Ids1122.QuartzOre or Ids1122.Magma or Ids1122.NetherWartBlock;
+    public static bool NaturalNether(int id) => (uint)id < (uint)NetherNatural.Length && NetherNatural[id];
+
+    private static readonly bool[] NetherNatural = IdTable.Flags(
+        Blocks.Netherrack, Blocks.SoulSand, Blocks.Glowstone, Blocks.Gravel, Blocks.Obsidian, Blocks.BrownMushroom,
+        Blocks.RedMushroom, Blocks.Fire, Ids1122.NetherBrick, Ids1122.NetherBrickFence, Ids1122.NetherBrickStairs,
+        Ids1122.NetherWart, Ids1122.QuartzOre, Ids1122.Magma, Ids1122.NetherWartBlock);
 
     private sealed record Cache(IGameData Data, C[] Table);
     private static volatile Cache? _last;
@@ -135,6 +138,14 @@ internal static class BlockClass
     private static C[] Build(IGameData d)
     {
         var t = new C[256];
+        AddBetaClasses(t, d);
+        Add1122Classes(t, d);
+        return t;
+    }
+
+    /// <summary>The b1.8.1 classification (ground, fluids, stations, signs, generator output, farms, trees, builds).</summary>
+    private static void AddBetaClasses(C[] t, IGameData d)
+    {
         for (int id = 1; id < 256; id++)
             if (d.BlockExists(id)) t[id] = C.Ground;
         foreach (var id in new[] { Blocks.Water, Blocks.FlowingWater, Blocks.Lava, Blocks.FlowingLava, Blocks.Fire, Blocks.Portal })
@@ -166,7 +177,11 @@ internal static class BlockClass
                      Blocks.Netherrack, Blocks.SoulSand, Blocks.Sponge, Blocks.Web, Blocks.SnowBlock, Blocks.Clay, Blocks.Cake,
                  })
             t[id] |= C.Build;
-        // 1.12.2's own ids (absent from b1.8.1, so its table is unchanged).
+    }
+
+    /// <summary>1.12.2's own ids (absent from b1.8.1, so its table is unchanged).</summary>
+    private static void Add1122Classes(C[] t, IGameData d)
+    {
         void Add(C c, params int[] ids)
         {
             foreach (var id in ids)
@@ -184,28 +199,48 @@ internal static class BlockClass
             190, 191, 192, 193, 194, 195, 196, 197, 198, 201, 202, 203, 204, 205, 206, 216, 218, 251, 252);
         for (int id = 235; id <= 250; id++) Add(C.Build, id);
         if (d.BlockByName("stained_glass") is { Id: var sg } && sg <= Blocks.MaxId) t[sg] |= C.Build; // 95 (b1.8.1: locked chest)
-        return t;
     }
 
     /// <summary>Farm sub-type of a farm block, or null.</summary>
-    public static string? FarmType(int id) => id switch
-    {
-        Blocks.Crops or Blocks.Farmland => "wheat",
-        Blocks.SugarCane => "sugar_cane",
-        Blocks.Cactus => "cactus",
-        Blocks.MelonStem or Blocks.Melon => "melon",
-        Blocks.PumpkinStem or Blocks.Pumpkin => "pumpkin",
-        Blocks.BrownMushroom or Blocks.RedMushroom => "mushroom",
-        Ids1122.Carrots => "carrot",
-        Ids1122.Potatoes => "potato",
-        Ids1122.Beetroots => "beetroot",
-        Ids1122.NetherWart => "nether_wart",
-        _ => null,
-    };
+    public static string? FarmType(int id) => (uint)id < (uint)FarmTypeOf.Length ? FarmTypeOf[id] : null;
+
+    private static readonly string?[] FarmTypeOf = IdTable.Of<string>(
+        ("wheat", [Blocks.Crops, Blocks.Farmland]),
+        ("sugar_cane", [Blocks.SugarCane]),
+        ("cactus", [Blocks.Cactus]),
+        ("melon", [Blocks.MelonStem, Blocks.Melon]),
+        ("pumpkin", [Blocks.PumpkinStem, Blocks.Pumpkin]),
+        ("mushroom", [Blocks.BrownMushroom, Blocks.RedMushroom]),
+        ("carrot", [Ids1122.Carrots]),
+        ("potato", [Ids1122.Potatoes]),
+        ("beetroot", [Ids1122.Beetroots]),
+        ("nether_wart", [Ids1122.NetherWart]));
 
     public static readonly string[] FarmTypes = ["wheat", "sugar_cane", "cactus", "melon", "pumpkin", "mushroom", "carrot", "potato", "beetroot", "nether_wart"];
 
     /// <summary>Farm types that grow wild in a normal world (cane by rivers, desert cactus, cave mushrooms, pumpkin patches):
     /// indexed there as resources, but their soil and water are not protected unless terrain is scarce.</summary>
     public static bool WildFarmType(string type) => type is "sugar_cane" or "cactus" or "mushroom" or "pumpkin" or "melon";
+}
+
+/// <summary>Block-id lookup tables built from (value, ids) rows; the first row naming an id wins, like a switch.</summary>
+internal static class IdTable
+{
+    public static T?[] Of<T>(params (T Value, int[] Ids)[] rows) where T : class
+    {
+        var t = new T?[rows.Max(r => r.Ids.Length == 0 ? 0 : r.Ids.Max()) + 1];
+        foreach (var (value, ids) in rows)
+            foreach (var id in ids)
+                t[id] ??= value;
+        return t;
+    }
+
+    public static bool[] Flags(params int[] ids)
+    {
+        var t = new bool[ids.Max() + 1];
+        foreach (var id in ids) t[id] = true;
+        return t;
+    }
+
+    public static int[] Range(int first, int last) => Enumerable.Range(first, last - first + 1).ToArray();
 }

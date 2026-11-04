@@ -160,24 +160,35 @@ export class SectionManager {
     let quads = 0;
     this.culled = 0;
     for (const e of this.entries.values()) {
-      let vis = Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= maxD && (e.sy + 1) * 16 > floorY;
-      if (vis && seen && !seen.has(`${e.cx},${e.sy},${e.cz}`)) {
-        vis = false;
-        if (e.solid || e.trans) this.culled++;
-      }
-      if (e.solid) {
-        e.solid.visible = vis;
-        if (e.cap) e.cap.visible = vis;
-        quads += vis ? (e.solid.userData.quads as number) : 0;
-      }
-      if (e.trans) {
-        // Distant water and glass are the first thing a slow renderer drops (blended overdraw).
-        const tv = vis && Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= transD;
-        e.trans.visible = tv;
-        quads += tv ? (e.trans.userData.quads as number) : 0;
-      }
+      const vis = this.inView(e, ccx, ccz, maxD, floorY, seen);
+      quads += this.showEntry(e, vis, ccx, ccz, transD);
     }
     this.quads = quads;
+  }
+
+  /** Within the draw distance, above the floor, and (cave culling) seen through the graph; counts the culled ones. */
+  private inView(e: Entry, ccx: number, ccz: number, maxD: number, floorY: number, seen: Set<string> | null): boolean {
+    const vis = Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= maxD && (e.sy + 1) * 16 > floorY;
+    if (!vis || !seen || seen.has(`${e.cx},${e.sy},${e.cz}`)) return vis;
+    if (e.solid || e.trans) this.culled++;
+    return false;
+  }
+
+  /** Shows or hides a section's meshes; returns the quads drawn. Distant water and glass are the first thing a slow renderer
+   * drops (blended overdraw). */
+  private showEntry(e: Entry, vis: boolean, ccx: number, ccz: number, transD: number): number {
+    let quads = 0;
+    if (e.solid) {
+      e.solid.visible = vis;
+      if (e.cap) e.cap.visible = vis;
+      quads += vis ? (e.solid.userData.quads as number) : 0;
+    }
+    if (e.trans) {
+      const tv = vis && Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= transD;
+      e.trans.visible = tv;
+      quads += tv ? (e.trans.userData.quads as number) : 0;
+    }
+    return quads;
   }
 
   /** Adds the animated cells of the sections drawn in the last showAround (the atlas animation's visible-only set). */
@@ -218,24 +229,30 @@ export class SectionManager {
     if (!centres.length) return;
     const cs = centres.map((c) => ({ x: c.x / 16, y: c.y / 16, z: c.z / 16, d: c.distance / 16 + 1 }));
     const inRange = (cx: number, cz: number, slack = 1, extra = 0) => cs.some((c) => Math.hypot(cx + 0.5 - c.x, cz + 0.5 - c.z) <= c.d * slack + extra);
-    // Columns in range of some view that have no entries yet (first sight, or evicted earlier and back in range).
-    if (now - this.scanAt > 400) {
-      this.scanAt = now;
-      for (const c of this.cache.columns(this.dim)) {
-        if (!inRange(c.cx, c.cz)) continue;
-        for (let sy = 0; sy < c.height >> 4; sy++) {
-          const k = skey(c.cx, sy, c.cz);
-          if (!this.entries.has(k)) this.dirty.add(k);
-        }
-      }
-    }
-    for (const [k, e] of this.entries) if (!inRange(e.cx, e.cz, 1.3, 2)) this.remove(k, e);
-    if (this.entries.size > this.maxSections) {
-      const lru = [...this.entries].sort((a, b) => a[1].lastRendered - b[1].lastRendered);
-      for (const [k, e] of lru.slice(0, this.entries.size - this.maxSections)) this.remove(k, e);
-    }
+    if (now - this.scanAt > 400) this.scanColumns(now, inRange);
+    this.evict(inRange);
     this.lastCs = cs;
     if (!this.inFlight && !this.hold && this.dirty.size) this.schedule(cs);
+  }
+
+  /** Columns in range of some view that have no entries yet (first sight, or evicted earlier and back in range). */
+  private scanColumns(now: number, inRange: (cx: number, cz: number) => boolean): void {
+    this.scanAt = now;
+    for (const c of this.cache.columns(this.dim)) {
+      if (!inRange(c.cx, c.cz)) continue;
+      for (let sy = 0; sy < c.height >> 4; sy++) {
+        const k = skey(c.cx, sy, c.cz);
+        if (!this.entries.has(k)) this.dirty.add(k);
+      }
+    }
+  }
+
+  /** Sections out of every view's range (with slack), then the least recently drawn beyond `maxSections`. */
+  private evict(inRange: (cx: number, cz: number, slack?: number, extra?: number) => boolean): void {
+    for (const [k, e] of this.entries) if (!inRange(e.cx, e.cz, 1.3, 2)) this.remove(k, e);
+    if (this.entries.size <= this.maxSections) return;
+    const lru = [...this.entries].sort((a, b) => a[1].lastRendered - b[1].lastRendered);
+    for (const [k, e] of lru.slice(0, this.entries.size - this.maxSections)) this.remove(k, e);
   }
 
   private lastCs: Array<{ x: number; y: number; z: number; d: number }> = [];
@@ -300,6 +317,11 @@ export class SectionManager {
     this.visRev++;
     this.builds.set(k, (this.builds.get(k) ?? 0) + 1);
     this.release(e);
+    this.upload(m, e);
+  }
+
+  /** The section's passes as meshes: solid (with its cap) and translucent. */
+  private upload(m: SectionMesh, e: Entry): void {
     if (m.solid) {
       const g = this.geometry(m.solid, e);
       e.solid = this.mesh(g, this.mats.solid, e, 0, m.solid.quads);

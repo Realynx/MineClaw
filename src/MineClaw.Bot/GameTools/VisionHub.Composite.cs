@@ -48,13 +48,7 @@ public sealed partial class VisionHub
         var list = new List<PanelRequest>();
         foreach (var e in items)
         {
-            var p = e.ValueKind switch
-            {
-                JsonValueKind.String => ParseString(e.GetString() ?? ""),
-                JsonValueKind.Object => ParseObject(e),
-                _ => null,
-            };
-            if (p == null)
+            if (ParseView(e) is not { } p)
             {
                 error = $"unknown view '{(e.ValueKind == JsonValueKind.String ? e.GetString() : e.GetRawText())}' (eye [body], shoulder, orbit [at] [n], high, iso, top, side, layers, cam <at> <N..NW|above> [dist], follow <name>)";
                 return null;
@@ -69,6 +63,13 @@ public sealed partial class VisionHub
         }
         return list.Count == 0 ? null : list;
     }
+
+    private static PanelRequest? ParseView(JsonElement e) => e.ValueKind switch
+    {
+        JsonValueKind.String => ParseString(e.GetString() ?? ""),
+        JsonValueKind.Object => ParseObject(e),
+        _ => null,
+    };
 
     /// <summary>"eye", "eye 67", "eye:67", "cam tower NE 14", "cam 4,64,6 above", "orbit gen 3", "follow robinchan", "high"...</summary>
     public static PanelRequest? ParseString(string s)
@@ -177,21 +178,27 @@ public sealed partial class VisionHub
         var w = _c.World;
         var me = w.Player;
         var n = name?.Trim() ?? "";
-        if (n.Length == 0 || n is "me" or "self" or "you" or "main" || n.Equals(_c.Username, StringComparison.OrdinalIgnoreCase))
+        if (IsMainName(n))
             return (new PerspectivePanel.Body(me.Position.X, me.Position.Y, me.Position.Z, me.Yaw, me.Pitch, _c.Username), w.Dimension, "MAIN", null);
         var target = ResolveTarget(n);
-        if (target.Bot is { } bot)
-        {
-            HiveEyePose? pose = null;
-            try { pose = Hive == null ? null : await Hive.ViewAsync(bot.Name, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (!ct.IsCancellationRequested) { _log?.LogDebug(ex, "composite: view request to {Bot} failed", bot.Name); }
-            if (pose != null) return (new PerspectivePanel.Body(pose.X, pose.Y, pose.Z, pose.Yaw, pose.Pitch, bot.Short), pose.Dim, bot.Short.ToUpperInvariant(), null);
-            return (new PerspectivePanel.Body(bot.X, bot.Y, bot.Z, 0, 20, bot.Short), bot.Dim, bot.Short.ToUpperInvariant(),
-                $"{bot.Short} didn't answer: its last snapshot, {RegionWorld.Age(_time.GetUtcNow() - bot.At)} old, facing S");
-        }
+        if (target.Bot is { } bot) return await CloneBodyAsync(bot, ct).ConfigureAwait(false);
         if (w.Entities.FindPlayer(StripViewPhrase(n)) is { } p)
             return (new PerspectivePanel.Body(p.Position.X, p.Position.Y, p.Position.Z, p.Yaw, p.Pitch, p.Name), w.Dimension, (p.Name ?? n).ToUpperInvariant(), null);
         return null;
+    }
+
+    private bool IsMainName(string n) =>
+        n.Length == 0 || n is "me" or "self" or "you" or "main" || n.Equals(_c.Username, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A clone's live pose over the view IPC, else its snapshot (with how old it is).</summary>
+    private async Task<(PerspectivePanel.Body Body, int Dim, string Label, string? Note)> CloneBodyAsync(HiveBotState bot, CancellationToken ct)
+    {
+        HiveEyePose? pose = null;
+        try { pose = Hive == null ? null : await Hive.ViewAsync(bot.Name, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (!ct.IsCancellationRequested) { _log?.LogDebug(ex, "composite: view request to {Bot} failed", bot.Name); }
+        if (pose != null) return (new PerspectivePanel.Body(pose.X, pose.Y, pose.Z, pose.Yaw, pose.Pitch, bot.Short), pose.Dim, bot.Short.ToUpperInvariant(), null);
+        return (new PerspectivePanel.Body(bot.X, bot.Y, bot.Z, 0, 20, bot.Short), bot.Dim, bot.Short.ToUpperInvariant(),
+            $"{bot.Short} didn't answer: its last snapshot, {RegionWorld.Age(_time.GetUtcNow() - bot.At)} old, facing S");
     }
 
     /// <summary>The context of one spot (its scene: live or the shared memory; entities, marks, roles, staleness).</summary>

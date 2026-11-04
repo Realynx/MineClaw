@@ -25,6 +25,18 @@ export interface ReconcileResult {
 
 const key = (cx: number, cz: number) => `${cx},${cz}`;
 
+const inRect = (c: { cx: number; cz: number }, cx0: number, cz0: number, cx1: number, cz1: number) => c.cx >= cx0 && c.cx <= cx1 && c.cz >= cz0 && c.cz <= cz1;
+
+/** An unchanged column the index lists again: takes its new sighting (when, by whom, live), reported when it differs. */
+function touchColumn(have: CachedColumn, c: WorldIndexColumn, res: ReconcileResult): void {
+  const by = c.by ?? null;
+  if (have.seen === c.seen && have.live === c.live && have.by === by) return;
+  have.seen = c.seen;
+  have.by = by;
+  have.live = c.live;
+  res.touched.push({ cx: c.cx, cz: c.cz, seen: c.seen, by, live: c.live });
+}
+
 /** A world time sample: ticks, when it was received (ms), and whether the server stopped the daylight cycle. */
 export interface WorldTimeAnchor {
   time: number;
@@ -121,20 +133,12 @@ export class WorldCache {
       const k = key(c.cx, c.cz);
       listed.add(k);
       const have = m.get(k);
-      if (have && have.hash === hashKey(c.hash)) {
-        const by = c.by ?? null;
-        if (have.seen !== c.seen || have.live !== c.live || have.by !== by) {
-          have.seen = c.seen;
-          have.by = by;
-          have.live = c.live;
-          res.touched.push({ cx: c.cx, cz: c.cz, seen: c.seen, by, live: c.live });
-        }
-        continue;
-      }
-      res.want.push([c.cx, c.cz]);
+      if (have && have.hash === hashKey(c.hash)) touchColumn(have, c, res);
+      else res.want.push([c.cx, c.cz]);
     }
+    // Held columns of the rectangle the index no longer lists are gone.
     for (const [k, c] of m)
-      if (c.cx >= cx0 && c.cx <= cx1 && c.cz >= cz0 && c.cz <= cz1 && !listed.has(k)) {
+      if (inRect(c, cx0, cz0, cx1, cz1) && !listed.has(k)) {
         m.delete(k);
         res.dropped.push([c.cx, c.cz]);
       }

@@ -3,18 +3,15 @@
 
 import { signLineText, stringWidth, type FontTable } from './font';
 
+/** charWidth's advances other than the default 6, by the characters that have them. */
+const NARROW_WIDTHS: ReadonlyMap<string, number> = new Map(
+  ([[2, '!.,:;|i'], [3, "'l`"], [4, ' It[]'], [5, '"(){}<>*fk'], [7, '@~']] as const).flatMap(([w, chars]) => [...chars].map((c) => [c, w] as const)),
+);
+
 /** The default font's advance per character (glyph width + 1 px spacing), as FontRenderer measures ascii.png: the fallback
  * when a pack has no measured font table. */
 export function charWidth(ch: string): number {
-  switch (ch) {
-    case ' ': return 4;
-    case '!': case '.': case ',': case ':': case ';': case '|': case 'i': return 2;
-    case "'": case 'l': case '`': return 3;
-    case 'I': case 't': case '[': case ']': return 4;
-    case '"': case '(': case ')': case '{': case '}': case '<': case '>': case '*': case 'f': case 'k': return 5;
-    case '@': case '~': return 7;
-    default: return 6;
-  }
+  return NARROW_WIDTHS.get(ch) ?? 6;
 }
 
 export const textWidth = (s: string) => [...s].reduce((a, c) => a + charWidth(c), 0) - (s.length ? 1 : 0);

@@ -231,7 +231,7 @@ public sealed class BodyDirectory : IBodyDirectory
         {
             var shortName = Body.ShortName(acc, false);
             var b = live.FirstOrDefault(x => x.Name.Equals(acc, StringComparison.OrdinalIgnoreCase));
-            bool online = b != null && b.Adapter.IsPlaying && b.State is BodyState.Online;
+            bool online = b is { Adapter.IsPlaying: true, State: BodyState.Online };
             if (online && idle.Contains(shortName) && !string.Equals(shortName, focus, StringComparison.OrdinalIgnoreCase)) { idleOnline++; continue; }
             parts.Add(new BodyStatusBlock.Part(shortName, online, online ? Line(b!) : ""));
         }
@@ -246,28 +246,46 @@ public sealed class BodyDirectory : IBodyDirectory
         try
         {
             var w = b.Adapter.World;
-            var p = w.Player.Position;
-            var job = b.Scripts?.Current is { } s ? $"script {s.Name}" + (s.ProgressPct is { } pct ? $" {pct:0}%" : "")
-                : b.Activities.Current is { } a ? $"{Short(a.Label)} #{a.Id}" : "idle";
-            string where;
-            try { where = _brain.Landmark(p.X, p.Y, p.Z) ?? $"{(int)Math.Floor(p.X)},{(int)Math.Floor(p.Y)},{(int)Math.Floor(p.Z)}"; }
-            catch (Exception) { where = $"{(int)Math.Floor(p.X)},{(int)Math.Floor(p.Y)},{(int)Math.Floor(p.Z)}"; }
             int hp = w.Player.Health, food = w.Player.Food;
-            var slots = w.Inventory.PlayerSlots();
-            int free = 0;
-            for (int i = 9; i < slots.Length && i <= 44; i++) if (slots[i].IsEmpty) free++;
-            var held = w.Inventory.HeldItem(w.Player.HeldSlot);
-            var tool = !held.IsEmpty && MineClaw.Data.Items.Exists(held.Id) && MineClaw.Data.Items.Get(held.Id).MaxDamage > 0
-                ? " " + MineClaw.Data.Items.Get(held.Id).Name : "";
             var danger = hp is > 0 and <= 6 ? "DANGER " : "";
             var hold = (b as Body) is { } body && _reg.VoidHoldOf(body.Name) is not null ? " HOLD over void" : "";
-            return $"{danger}{job} @{where} hp{hp} f{food}{tool} free{free}{hold}";
+            return $"{danger}{Job(b)} @{WhereText(w.Player.Position)} hp{hp} f{food}{HeldTool(w)} free{FreeSlots(w)}{hold}";
         }
         catch (Exception ex)
         {
             _log?.LogDebug(ex, "bodies: status line of {Body} failed", b.Name);
             return "?";
         }
+    }
+
+    /// <summary>"script mine_all 40%", "gen #4", or "idle".</summary>
+    private static string Job(IBody b) =>
+        b.Scripts?.Current is { } s ? $"script {s.Name}" + (s.ProgressPct is { } pct ? $" {pct:0}%" : "")
+        : b.Activities.Current is { } a ? $"{Short(a.Label)} #{a.Id}" : "idle";
+
+    /// <summary>A landmark ("2 E of cobble_gen"), else the block coordinates.</summary>
+    private string WhereText(MineClaw.World.Vec3d p)
+    {
+        try { return _brain.Landmark(p.X, p.Y, p.Z) ?? Cell(p); }
+        catch (Exception) { return Cell(p); }
+    }
+
+    private static string Cell(MineClaw.World.Vec3d p) => $"{(int)Math.Floor(p.X)},{(int)Math.Floor(p.Y)},{(int)Math.Floor(p.Z)}";
+
+    private static int FreeSlots(MineClaw.World.WorldState w)
+    {
+        var slots = w.Inventory.PlayerSlots();
+        int free = 0;
+        for (int i = 9; i < slots.Length && i <= 44; i++) if (slots[i].IsEmpty) free++;
+        return free;
+    }
+
+    /// <summary>" stone_pickaxe" when a damageable tool is held, else "".</summary>
+    private static string HeldTool(MineClaw.World.WorldState w)
+    {
+        var held = w.Inventory.HeldItem(w.Player.HeldSlot);
+        return !held.IsEmpty && MineClaw.Data.Items.Exists(held.Id) && MineClaw.Data.Items.Get(held.Id).MaxDamage > 0
+            ? " " + MineClaw.Data.Items.Get(held.Id).Name : "";
     }
 
     private static string Short(string label) => label switch

@@ -253,16 +253,21 @@ public static partial class VisionEval
             var t = line.Trim();
             if (t.Length == 0 || t.StartsWith('#')) continue;
             var p = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (p.Length < 4) continue;
-            int x = int.Parse(p[0], CultureInfo.InvariantCulture), y = int.Parse(p[1], CultureInfo.InvariantCulture), z = int.Parse(p[2], CultureInfo.InvariantCulture);
-            int lx = x - x0, lz = z - z0;
-            if (lx < 0 || lz < 0 || lx >= size || lz >= size || (uint)y >= 128) continue;
-            ids[(lx * size + lz) * 128 + y] = (byte)int.Parse(p[3], CultureInfo.InvariantCulture);
-            if (p.Length > 4 && int.Parse(p[4], CultureInfo.InvariantCulture) is var m and not 0) metas.Add((x, y, z, m));
+            if (p.Length >= 4) LoadBlock(p, ids, metas, size, x0, z0);
         }
         w.ApplyChunkRegion(x0, 0, z0, size, 128, size, ids, null, null, null);
         foreach (var (x, y, z, m) in metas) w.SetBlock(x, y, z, w.GetBlock(x, y, z), m);
         return w;
+    }
+
+    /// <summary>One "x y z id [meta]" fixture line into the region (outside it: skipped).</summary>
+    private static void LoadBlock(string[] p, byte[] ids, List<(int X, int Y, int Z, int Meta)> metas, int size, int x0, int z0)
+    {
+        int x = int.Parse(p[0], CultureInfo.InvariantCulture), y = int.Parse(p[1], CultureInfo.InvariantCulture), z = int.Parse(p[2], CultureInfo.InvariantCulture);
+        int lx = x - x0, lz = z - z0;
+        if (lx < 0 || lz < 0 || lx >= size || lz >= size || (uint)y >= 128) return;
+        ids[(lx * size + lz) * 128 + y] = (byte)int.Parse(p[3], CultureInfo.InvariantCulture);
+        if (p.Length > 4 && int.Parse(p[4], CultureInfo.InvariantCulture) is var m and not 0) metas.Add((x, y, z, m));
     }
 
     /// <summary>

@@ -66,22 +66,31 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             bool correction = _resyncUntil is { } until && now <= until;
             _resyncUntil = null;
             string? scope = correction ? Correction : _scopes.Count > 0 ? _scopes[^1].Cause : null;
-            // 1.12.2 answers every item use with the whole inventory (PlayerInteractionManager.processRightClick →
-            // sendContainerToPlayer): a bucket that filled or emptied arrives as a resync. An empty and a full bucket trading places
-            // there is that use, not a correction of a wrong model (live 11-04: "server correction" for every pour and fill).
-            var keys = _last.Keys.Union(counts.Keys).ToList();
-            int Delta((int Id, int Damage) k) => counts.GetValueOrDefault(k) - _last.GetValueOrDefault(k);
-            bool bucketUse = correction && keys.Any(k => IsBucket(k.Id) && Delta(k) != 0) && keys.Where(k => IsBucket(k.Id)).Sum(Delta) == 0;
-            foreach (var key in keys)
-            {
-                int d = Delta(key);
-                if (d == 0) continue;
-                var why = bucketUse && IsBucket(key.Id) ? (d < 0 ? "used (a bucket filled or emptied)" : "a bucket filled or emptied") : scope;
-                _pending.Add((now, key.Id, key.Damage, d, why, action, container));
-            }
+            AddPending(now, _last, counts, correction, scope, action, container);
             _last = new(counts);
         }
     }
+
+    /// <summary>
+    /// Every count that changed becomes a pending change. 1.12.2 answers every item use with the whole inventory
+    /// (PlayerInteractionManager.processRightClick → sendContainerToPlayer): a bucket that filled or emptied arrives as a resync.
+    /// An empty and a full bucket trading places there is that use, not a correction of a wrong model (live 11-04: "server
+    /// correction" for every pour and fill). Caller holds _lock.
+    /// </summary>
+    private void AddPending(DateTimeOffset now, Dictionary<(int Id, int Damage), int> last, IReadOnlyDictionary<(int Id, int Damage), int> counts,
+        bool correction, string? scope, string? action, string? container)
+    {
+        var keys = last.Keys.Union(counts.Keys).ToList();
+        int Delta((int Id, int Damage) k) => counts.GetValueOrDefault(k) - last.GetValueOrDefault(k);
+        bool bucketUse = correction && keys.Any(k => IsBucket(k.Id) && Delta(k) != 0) && keys.Where(k => IsBucket(k.Id)).Sum(Delta) == 0;
+        foreach (var key in keys)
+        {
+            int d = Delta(key);
+            if (d != 0) _pending.Add((now, key.Id, key.Damage, d, bucketUse && IsBucket(key.Id) ? BucketWhy(d) : scope, action, container));
+        }
+    }
+
+    private static string BucketWhy(int delta) => delta < 0 ? "used (a bucket filled or emptied)" : "a bucket filled or emptied";
 
     /// <summary>Changes until disposal are caused by <paramref name="cause"/> (innermost scope wins).</summary>
     public IDisposable Scope(string cause)
@@ -230,20 +239,25 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
     private static bool WoreOut(int id, int delta, string? action) =>
         delta < 0 && Items.Get(id) is { MaxDamage: > 0 } && action is "dig" or "mine" or "chop" or "harvest" or "attack" or "spar" or "collect";
 
-    private static string ActionCause(string action, int delta) => (action, delta < 0) switch
+    private static string ActionCause(string action, int delta) =>
+        ActionCauses.TryGetValue((action, delta < 0), out var cause) ? cause : $"{(delta < 0 ? "used" : "gained")} during {action}";
+
+    /// <summary>What a change during a tool action was, by (action, lost?).</summary>
+    private static readonly Dictionary<(string Action, bool Lost), string> ActionCauses = new()
     {
-        ("craft", true) => "used in crafting",
-        ("craft", false) => "crafted",
-        ("deposit", true) => "deposited into a chest",
-        ("withdraw", false) => "taken from a chest",
-        ("withdraw", true) => "put back into the chest (the rest of a stack I picked up)",
-        ("place", true) or ("build", true) => "placed as a block",
-        ("goto", true) or ("follow", true) => "placed while moving (bridge/pillar block)",
-        ("eat", true) => "eaten",
-        ("smelt", true) => "put in a furnace",
-        ("collect_furnace", false) => "taken from a furnace",
-        ("chop", true) => "placed by chop_tree (pillar/replant)",
-        _ => $"{(delta < 0 ? "used" : "gained")} during {action}",
+        [("craft", true)] = "used in crafting",
+        [("craft", false)] = "crafted",
+        [("deposit", true)] = "deposited into a chest",
+        [("withdraw", false)] = "taken from a chest",
+        [("withdraw", true)] = "put back into the chest (the rest of a stack I picked up)",
+        [("place", true)] = "placed as a block",
+        [("build", true)] = "placed as a block",
+        [("goto", true)] = "placed while moving (bridge/pillar block)",
+        [("follow", true)] = "placed while moving (bridge/pillar block)",
+        [("eat", true)] = "eaten",
+        [("smelt", true)] = "put in a furnace",
+        [("collect_furnace", false)] = "taken from a furnace",
+        [("chop", true)] = "placed by chop_tree (pillar/replant)",
     };
 
     /// <summary>
@@ -259,14 +273,23 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         for (int i = _entries.Count - 1; i >= 0 && at - _entries[i].At <= MergeWindow; i--)
         {
             var x = _entries[i];
-            if (x.ItemId != id || x.Damage != damage || Math.Sign(x.Delta) == Math.Sign(delta)) continue;
-            if (depositBack && !x.Cause.StartsWith("deposited", StringComparison.Ordinal)) continue;
-            int left = x.Delta + delta;
-            if (Math.Sign(left) != Math.Sign(x.Delta)) return null; // more came back than went: not a partial return
-            if (left == 0) { _entries.RemoveAt(i); return x with { Delta = 0 }; }
-            return _entries[i] = x with { Delta = left };
+            if (Opposes(x, id, damage, delta, depositBack)) return NetInto(i, x, delta);
         }
         return null;
+    }
+
+    /// <summary>An earlier entry of the same item moving the other way (for a deposit's return: the deposit itself).</summary>
+    private static bool Opposes(LedgerEntry x, int id, int damage, int delta, bool depositBack) =>
+        x.ItemId == id && x.Damage == damage && Math.Sign(x.Delta) != Math.Sign(delta)
+        && (!depositBack || x.Cause.StartsWith("deposited", StringComparison.Ordinal));
+
+    /// <summary>Nets the return into entry <paramref name="i"/>; null when more came back than went (not a partial return).</summary>
+    private LedgerEntry? NetInto(int i, LedgerEntry x, int delta)
+    {
+        int left = x.Delta + delta;
+        if (Math.Sign(left) != Math.Sign(x.Delta)) return null; // more came back than went: not a partial return
+        if (left == 0) { _entries.RemoveAt(i); return x with { Delta = 0 }; }
+        return _entries[i] = x with { Delta = left };
     }
 
     private LedgerEntry Record(LedgerEntry e)

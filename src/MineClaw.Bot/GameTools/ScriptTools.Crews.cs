@@ -137,10 +137,16 @@ public sealed partial class ScriptBridge
         }
         Func<IReadOnlyCollection<string>> members = c.Members ?? (() => port.Bodies());
         if (c.Members == null) pending ??= port.Pending;
+        NoteOtherCrews(port, members, id, notTaken);
+        return (members, pending, null);
+    }
+
+    /// <summary>Member bodies another crew holds: not taken.</summary>
+    private static void NoteOtherCrews(ICrewPort port, Func<IReadOnlyCollection<string>> members, string id, List<string> notTaken)
+    {
         foreach (var b in port.Bodies())
             if (port.HeldBy(b) is { } other && !string.Equals(other, id, StringComparison.Ordinal) && members().Contains(b, StringComparer.OrdinalIgnoreCase))
                 notTaken.Add($"{b} (in crew {other})");
-        return (members, pending, null);
     }
 
     /// <summary>Holds each listed body for crew <paramref name="id"/>; the ones it can't (another crew's, offline, a hive script's)

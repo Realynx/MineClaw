@@ -127,30 +127,13 @@ public sealed partial class WorldIndexer
         var dig = c.Cells.OrderBy(p => p.Y).ThenBy(p => p.X).ThenBy(p => p.Z).ToList();
         var lava = new HashSet<BlockPos>();
         var water = new HashSet<BlockPos>();
-        foreach (var d in dig)
-            foreach (var o in FlowIn)
-            {
-                var q = d + o;
-                int id = _world.GetBlock(q);
-                if (Blocks.IsLava(id)) Flood(q, Blocks.IsLava, lava, d);
-                else if (Blocks.IsWater(id)) Flood(q, Blocks.IsWater, water, d);
-            }
+        foreach (var d in dig) FloodFluidsAround(d, lava, water);
         var digSet = dig.ToHashSet();
         lava.ExceptWith(digSet); // a dug cell briefly holds flowing lava: still the dig cell
         water.ExceptWith(digSet);
         var all = dig.Concat(lava).Concat(water).ToList();
         e.SetBounds(all);
-        var protect = new HashSet<BlockPos>(lava);
-        protect.UnionWith(water);
-        foreach (var f in lava.Concat(water))
-            foreach (var o in Six)
-            {
-                var q = f + o;
-                if (digSet.Contains(q) || protect.Contains(q)) continue;
-                int id = _world.GetBlock(q);
-                if (_gens.Contains(q) || IsGenCell(q, id, false)) continue; // another dig cell (dual generator), not a wall
-                if (id != 0 && !Blocks.IsLava(id) && !Blocks.IsWater(id)) protect.Add(q); // the walls holding the fluids
-            }
+        var protect = GeneratorProtect(digSet, lava, water);
         int regens = dig.Sum(d => _regens.GetValueOrDefault(d));
         // A normal world's lava pools touch water everywhere: only a generator whose refill was seen guards its walls.
         if (regens == 0 && !ScanTrustsTerrain) protect.Clear();
@@ -164,6 +147,38 @@ public sealed partial class WorldIndexer
         e.Extra["lava"] = lava.Count;
         e.Extra["water"] = water.Count;
         if (regens > 0) e.Force |= created || e.WrittenText?.Contains("unconfirmed") == true;
+    }
+
+    private void FloodFluidsAround(BlockPos d, HashSet<BlockPos> lava, HashSet<BlockPos> water)
+    {
+        foreach (var o in FlowIn)
+        {
+            var q = d + o;
+            int id = _world.GetBlock(q);
+            if (Blocks.IsLava(id)) Flood(q, Blocks.IsLava, lava, d);
+            else if (Blocks.IsWater(id)) Flood(q, Blocks.IsWater, water, d);
+        }
+    }
+
+    /// <summary>The generator's fluids plus the walls holding them (never another dig cell of a dual generator).</summary>
+    private HashSet<BlockPos> GeneratorProtect(HashSet<BlockPos> digSet, HashSet<BlockPos> lava, HashSet<BlockPos> water)
+    {
+        var protect = new HashSet<BlockPos>(lava);
+        protect.UnionWith(water);
+        foreach (var f in lava.Concat(water))
+            foreach (var o in Six)
+            {
+                var q = f + o;
+                if (!digSet.Contains(q) && !protect.Contains(q) && IsFluidWall(q)) protect.Add(q); // the walls holding the fluids
+            }
+        return protect;
+    }
+
+    private bool IsFluidWall(BlockPos q)
+    {
+        int id = _world.GetBlock(q);
+        if (_gens.Contains(q) || IsGenCell(q, id, false)) return false; // another dig cell (dual generator), not a wall
+        return id != 0 && !Blocks.IsLava(id) && !Blocks.IsWater(id);
     }
 
     private void Flood(BlockPos start, Func<int, bool> match, HashSet<BlockPos> into, BlockPos near)
@@ -194,14 +209,7 @@ public sealed partial class WorldIndexer
         {
             if (dx == 0 && dz == 0) continue;
             var s = dig.Offset(dx, dy, dz);
-            if (BlockShapes.HasCollision(_world, s.X, s.Y, s.Z) || BlockShapes.HasCollision(_world, s.X, s.Y + 1, s.Z)) continue;
-            if (!BlockShapes.HasCollision(_world, s.X, s.Y - 1, s.Z)) continue;
-            int f = _world.GetBlock(s), h = _world.GetBlock(s.Up());
-            if (Blocks.IsLava(f) || Blocks.IsWater(f) || Blocks.IsLava(h) || Blocks.IsWater(h)) continue;
-            bool lavaNext = false;
-            foreach (var o in Six)
-                lavaNext |= Blocks.IsLava(_world.GetBlock(s + o)) || Blocks.IsLava(_world.GetBlock(s.Up() + o));
-            if (lavaNext) continue;
+            if (!SafeStandCell(s)) continue;
             var eye = new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5);
             if (eye.DistanceTo(dig.Center) > 4.5) continue;
             double lavaDist = lava.Count == 0 ? 9 : lava.Min(l => Math.Sqrt(l.DistanceSquaredTo(s)));
@@ -209,6 +217,19 @@ public sealed partial class WorldIndexer
             if (score < bestScore) { bestScore = score; best = s; }
         }
         return best;
+    }
+
+    /// <summary>Two free, dry cells on solid ground with no lava next to feet or head.</summary>
+    private bool SafeStandCell(BlockPos s)
+    {
+        if (BlockShapes.HasCollision(_world, s.X, s.Y, s.Z) || BlockShapes.HasCollision(_world, s.X, s.Y + 1, s.Z)) return false;
+        if (!BlockShapes.HasCollision(_world, s.X, s.Y - 1, s.Z)) return false;
+        int f = _world.GetBlock(s), h = _world.GetBlock(s.Up());
+        if (Blocks.IsLava(f) || Blocks.IsWater(f) || Blocks.IsLava(h) || Blocks.IsWater(h)) return false;
+        bool lavaNext = false;
+        foreach (var o in Six)
+            lavaNext |= Blocks.IsLava(_world.GetBlock(s + o)) || Blocks.IsLava(_world.GetBlock(s.Up() + o));
+        return !lavaNext;
     }
 
     private static int[] Arr(BlockPos p) => [p.X, p.Y, p.Z];
@@ -319,13 +340,7 @@ public sealed partial class WorldIndexer
 
     private void ApplyTree(ClusterChange c)
     {
-        int logs = 0, saplings = 0, trunks = 0;
-        foreach (var p in c.Cells)
-        {
-            int id = _world.GetBlock(p);
-            if (id == Blocks.Sapling) saplings++;
-            else if (IsLog(id)) { logs++; if (!IsLog(_world.GetBlock(p.Down()))) trunks++; }
-        }
+        var (logs, saplings, trunks) = CountTree(c.Cells);
         if (saplings == 0 && logs < 3)
         {
             if (Find(IndexKinds.Tree, c.Key) is { } gone) RemoveEntry(gone);
@@ -336,22 +351,45 @@ public sealed partial class WorldIndexer
         e.Extra["trees"] = trunks;
         e.Extra["logs"] = logs;
         e.Extra["saplings"] = saplings;
-        // Dirt is unrenewable and the tree is the only wood: never mine the soil under a trunk or a sapling (skyblock; a normal
-        // world has dirt and trees everywhere, so nothing of a tree is guarded there).
-        var protect = new HashSet<BlockPos>();
-        foreach (var p in c.Cells)
-        {
-            if (!ScarceSoil) break;
-            int id = _world.GetBlock(p);
-            if ((id == Blocks.Sapling || (IsLog(id) && !IsLog(_world.GetBlock(p.Down()))))
-                && _world.GetBlock(p.Down()) is Blocks.Dirt or Blocks.Grass) protect.Add(p.Down());
-            if (id == Blocks.Sapling) protect.Add(p);
-        }
-        SetProtect(e, protect);
+        SetProtect(e, TreeProtect(c.Cells));
         // The bot's own notes ("replanted oak sapling, growing") on any cell of this cluster.
         foreach (var p in c.Cells)
             if (_treeNotes.TryGetValue(p, out var note)) { e.Extra["note"] = note.Text; e.Extra["noted"] = note.At.ToString("u"); break; }
     }
+
+    private (int Logs, int Saplings, int Trunks) CountTree(HashSet<BlockPos> cells)
+    {
+        int logs = 0, saplings = 0, trunks = 0;
+        foreach (var p in cells)
+        {
+            int id = _world.GetBlock(p);
+            if (id == Blocks.Sapling) saplings++;
+            else if (IsLog(id)) { logs++; if (!IsLog(_world.GetBlock(p.Down()))) trunks++; }
+        }
+        return (logs, saplings, trunks);
+    }
+
+    /// <summary>
+    /// Dirt is unrenewable and the tree is the only wood: never mine the soil under a trunk or a sapling (skyblock; a normal
+    /// world has dirt and trees everywhere, so nothing of a tree is guarded there).
+    /// </summary>
+    private HashSet<BlockPos> TreeProtect(HashSet<BlockPos> cells)
+    {
+        var protect = new HashSet<BlockPos>();
+        if (!ScarceSoil) return protect;
+        foreach (var p in cells)
+        {
+            int id = _world.GetBlock(p);
+            if (StandsOnSoil(p, id)) protect.Add(p.Down());
+            if (id == Blocks.Sapling) protect.Add(p);
+        }
+        return protect;
+    }
+
+    /// <summary>A sapling or a trunk's bottom log on dirt or grass.</summary>
+    private bool StandsOnSoil(BlockPos p, int id) =>
+        (id == Blocks.Sapling || (IsLog(id) && !IsLog(_world.GetBlock(p.Down()))))
+        && _world.GetBlock(p.Down()) is Blocks.Dirt or Blocks.Grass;
 
     private static bool IsLog(int id) => MineClaw.Client.Trees.Wood.IsLog(id);
 
@@ -418,38 +456,50 @@ public sealed partial class WorldIndexer
         var e = GetOrCreate(IndexKinds.Island, c.Key, out bool created);
         if (!created) GridRemove(e);
         e.Cells = c.Cells;
-        int y0 = int.MaxValue, y1 = int.MinValue;
         var hist = new Dictionary<int, int>();
-        foreach (var cell in c.Cells)
+        var (y0, y1) = IslandHeights(c.Cells, hist);
+        var (mn, mx) = (MinOf(c.Cells), MaxOf(c.Cells));
+        e.Min = new BlockPos(mn.X, y0, mn.Z);
+        e.Max = new BlockPos(mx.X, y1, mx.Z);
+        var a = First(c.Cells);
+        e.Anchor = new BlockPos(a.X, _foot.TryGetValue(XZ(a.X, a.Z), out var af) ? af.MaxY : y1, a.Z);
+        e.Extra.Clear();
+        e.Extra["columns"] = c.Cells.Count;
+        e.Extra["blocks"] = hist.Values.Sum();
+        e.Extra["top"] = hist.OrderByDescending(kv => kv.Value).Take(4).ToDictionary(kv => Blocks.Get(kv.Key).Name, kv => kv.Value);
+        e.Extra["edges"] = IslandEdges(c.Cells);
+        e.Dirty = true;
+        e.Seen = true;
+        e.MinWriteInterval = TimeSpan.FromSeconds(_o.ClusterMinWriteSeconds);
+        GridAdd(e);
+    }
+
+    /// <summary>The island's footprint height range (64..64 when no column is known) and its block histogram.</summary>
+    private (int Y0, int Y1) IslandHeights(HashSet<BlockPos> cells, Dictionary<int, int> hist)
+    {
+        int y0 = int.MaxValue, y1 = int.MinValue;
+        foreach (var cell in cells)
         {
             if (!_foot.TryGetValue(XZ(cell.X, cell.Z), out var f)) continue;
             y0 = Math.Min(y0, f.MinY);
             y1 = Math.Max(y1, f.MaxY);
             foreach (var h in f.Hist) hist[h >> 16] = hist.GetValueOrDefault(h >> 16) + (h & 0xFFFF);
         }
-        if (y0 > y1) { y0 = y1 = 64; }
-        var (mn, mx) = (MinOf(c.Cells), MaxOf(c.Cells));
-        e.Min = new BlockPos(mn.X, y0, mn.Z);
-        e.Max = new BlockPos(mx.X, y1, mx.Z);
-        var a = First(c.Cells);
-        e.Anchor = new BlockPos(a.X, _foot.TryGetValue(XZ(a.X, a.Z), out var af) ? af.MaxY : y1, a.Z);
+        return y0 > y1 ? (64, 64) : (y0, y1);
+    }
+
+    /// <summary>Edge columns per side (no neighbour column that way).</summary>
+    private static Dictionary<string, int> IslandEdges(HashSet<BlockPos> cells)
+    {
         int n = 0, east = 0, s = 0, w = 0;
-        foreach (var cell in c.Cells)
+        foreach (var cell in cells)
         {
-            if (!c.Cells.Contains(cell.Offset(0, 0, -1))) n++;
-            if (!c.Cells.Contains(cell.Offset(1, 0, 0))) east++;
-            if (!c.Cells.Contains(cell.Offset(0, 0, 1))) s++;
-            if (!c.Cells.Contains(cell.Offset(-1, 0, 0))) w++;
+            if (!cells.Contains(cell.Offset(0, 0, -1))) n++;
+            if (!cells.Contains(cell.Offset(1, 0, 0))) east++;
+            if (!cells.Contains(cell.Offset(0, 0, 1))) s++;
+            if (!cells.Contains(cell.Offset(-1, 0, 0))) w++;
         }
-        e.Extra.Clear();
-        e.Extra["columns"] = c.Cells.Count;
-        e.Extra["blocks"] = hist.Values.Sum();
-        e.Extra["top"] = hist.OrderByDescending(kv => kv.Value).Take(4).ToDictionary(kv => Blocks.Get(kv.Key).Name, kv => kv.Value);
-        e.Extra["edges"] = new Dictionary<string, int> { ["N"] = n, ["E"] = east, ["S"] = s, ["W"] = w };
-        e.Dirty = true;
-        e.Seen = true;
-        e.MinWriteInterval = TimeSpan.FromSeconds(_o.ClusterMinWriteSeconds);
-        GridAdd(e);
+        return new Dictionary<string, int> { ["N"] = n, ["E"] = east, ["S"] = s, ["W"] = w };
     }
 
     private void UpdateMainIsland()

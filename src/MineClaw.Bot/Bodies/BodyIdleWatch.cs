@@ -60,23 +60,31 @@ public sealed class BodyIdleWatch : IDisposable
         var online = _reg.All.Where(b => !b.IsMain && b.State is BodyState.Online && b.Adapter.IsPlaying).ToList();
         var names = online.Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var gone in _since.Keys.Where(k => !names.Contains(k)).ToList()) { _since.TryRemove(gone, out _); _reported.TryRemove(gone, out _); }
-        foreach (var b in online)
-        {
-            Watch(b);
-            bool busy = b.Activities.IsBusy || b.Scripts?.Current != null || b.Adapter.SafetyEngaged;
-            if (busy) { _since.TryRemove(b.Name, out _); _reported.TryRemove(b.Name, out _); }
-            else _since.TryAdd(b.Name, now);
-        }
+        foreach (var b in online) Refresh(b, now);
         var fresh = _since.Where(kv => now - kv.Value >= After && !_reported.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList();
         if (fresh.Count == 0 || now - _lastWake < Cooldown) return;
         _lastWake = now;
         foreach (var f in fresh) _reported[f] = true;
+        _events.Post(GameEvent.Notice(WakeText(fresh, online.Count), EventPriority.Normal) with { MustWake = true });
+    }
+
+    /// <summary>A busy body (activity, script, safety) restarts its idle stretch; an idle one keeps when it went idle.</summary>
+    private void Refresh(IBody b, DateTimeOffset now)
+    {
+        Watch(b);
+        bool busy = b.Activities.IsBusy || b.Scripts?.Current != null || b.Adapter.SafetyEngaged;
+        if (busy) { _since.TryRemove(b.Name, out _); _reported.TryRemove(b.Name, out _); }
+        else _since.TryAdd(b.Name, now);
+    }
+
+    /// <summary>"[bodies] 3 of 5 bodies idle 60s+ (101, 105); last: …; give them work …".</summary>
+    private string WakeText(List<string> fresh, int online)
+    {
         var idle = Idle();
         var shorts = fresh.Select(f => Body.ShortName(f, false)).OrderBy(n => n, StringComparer.Ordinal).ToList();
-        var text = $"[bodies] {idle.Count} of {online.Count} bodies idle {After.TotalSeconds:0}s+ ({string.Join(", ", shorts.Take(10))}{(shorts.Count > 10 ? ", …" : "")})"
-                   + (Reason(shorts) is { } why ? $"; last: {Clip(why, 160)}" : "")
-                   + "; give them work (a wider area: chop_tree at=<a tree beyond>) or report done";
-        _events.Post(GameEvent.Notice(text, EventPriority.Normal) with { MustWake = true });
+        return $"[bodies] {idle.Count} of {online} bodies idle {After.TotalSeconds:0}s+ ({string.Join(", ", shorts.Take(10))}{(shorts.Count > 10 ? ", …" : "")})"
+               + (Reason(shorts) is { } why ? $"; last: {Clip(why, 160)}" : "")
+               + "; give them work (a wider area: chop_tree at=<a tree beyond>) or report done";
     }
 
     /// <summary>The commonest last result among <paramref name="bodies"/> ("exhausted: …" counts first), or null.</summary>

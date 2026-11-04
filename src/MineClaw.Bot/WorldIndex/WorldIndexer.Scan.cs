@@ -406,24 +406,30 @@ public sealed partial class WorldIndexer
     {
         var p = ch.Pos;
         bool oldOut = (BlockClass.Of(ch.OldId) & C.GenOutput) != 0, newOut = (BlockClass.Of(ch.NewId) & C.GenOutput) != 0;
-        if (oldOut && !newOut && (ch.NewId == 0 || Blocks.IsLava(ch.NewId)))
-        {
-            if (_gens.Contains(p) || IsGenCell(p, ch.OldId, true)) _dug[p] = now;
-        }
+        if (oldOut && !newOut && (ch.NewId == 0 || Blocks.IsLava(ch.NewId))) NoteDug(p, ch.OldId, now);
         else if (newOut && _dug.TryGetValue(p, out var t))
         {
             _dug.Remove(p);
-            if (now - t <= TimeSpan.FromSeconds(_o.GeneratorRegenSeconds))
-            {
-                _regens[p] = _regens.GetValueOrDefault(p) + 1;
-                _protectDirty = true; // a confirmed dig cell leaves the protected set (and joins the dig-cell snapshot)
-                _gens.Add(p);
-                _gens.Touch(p);
-                try { RegenConfirmed?.Invoke(p); } catch (Exception) { /* a contributor's listener never breaks the pass */ }
-            }
+            if (now - t <= TimeSpan.FromSeconds(_o.GeneratorRegenSeconds)) ConfirmRegen(p);
         }
         if (_dug.Count > 256)
             foreach (var k in _dug.Where(kv => now - kv.Value > TimeSpan.FromMinutes(1)).Select(kv => kv.Key).ToList()) _dug.Remove(k);
+    }
+
+    /// <summary>Output dug out of a known or gen-shaped cell: watch it for a refill.</summary>
+    private void NoteDug(BlockPos p, int oldId, DateTimeOffset now)
+    {
+        if (_gens.Contains(p) || IsGenCell(p, oldId, true)) _dug[p] = now;
+    }
+
+    /// <summary>A dug cell refilled in time: a confirmed dig cell (it leaves the protected set and joins the dig-cell snapshot).</summary>
+    private void ConfirmRegen(BlockPos p)
+    {
+        _regens[p] = _regens.GetValueOrDefault(p) + 1;
+        _protectDirty = true;
+        _gens.Add(p);
+        _gens.Touch(p);
+        try { RegenConfirmed?.Invoke(p); } catch (Exception) { /* a contributor's listener never breaks the pass */ }
     }
 
     /// <summary>A dig cell's refill was just observed (on the indexer thread). A clone body's contributor indexer forwards it

@@ -260,26 +260,11 @@ public sealed partial class WorldIndexer
         {
             if (p.Kind != EntityKind.Player || p.Name is not { Length: > 0 } name || name.Equals(_selfName, StringComparison.OrdinalIgnoreCase)) continue;
             int bx = (int)Math.Floor(p.Position.X / b), bz = (int)Math.Floor(p.Position.Z / b);
-            var key = (name, bx, bz);
-            if (!_dwell.TryGetValue(key, out var d)) _dwell[key] = d = new Dwell();
-            d.Seconds += dt;
-            d.SumX += p.Position.X; d.SumY += p.Position.Y; d.SumZ += p.Position.Z;
-            d.Samples++;
-            d.Last = now;
+            var d = Dwelt(name, bx, bz, p.Position, dt, now);
             if (d.Seconds < _o.HangoutMinMinutes * 60) continue;
             var anchor = new BlockPos((int)Math.Floor(d.SumX / d.Samples), (int)Math.Floor(d.SumY / d.Samples), (int)Math.Floor(d.SumZ / d.Samples));
             var e = GetOrCreate(IndexKinds.Hangout, $"{name}@{bx},{bz}", out bool created);
-            if (created && !d.Seeded)
-            {
-                d.Seeded = true;
-                try
-                {
-                    var old = _sink.Near(IndexKinds.Hangout, anchor.X, anchor.Y, anchor.Z, b * 2, 10, _dim).FirstOrDefault(r => r.Key == e.Key);
-                    if (old?.FieldsJson is { } json && System.Text.Json.JsonDocument.Parse(json).RootElement.TryGetProperty("minutes", out var m))
-                        d.Seconds += m.GetDouble() * 60;
-                }
-                catch { /* best effort */ }
-            }
+            if (created && !d.Seeded) SeedDwell(d, e.Key, anchor, b);
             e.Anchor = anchor;
             e.Min = new BlockPos(bx * b, anchor.Y - 2, bz * b);
             e.Max = new BlockPos(bx * b + b - 1, anchor.Y + 2, bz * b + b - 1);
@@ -289,6 +274,31 @@ public sealed partial class WorldIndexer
             e.MinWriteInterval = TimeSpan.FromMinutes(Math.Max(1, _o.HangoutMinWriteMinutes));
             e.Dirty = true;
         }
+    }
+
+    /// <summary>Adds one sample to the player's dwell in that bucket.</summary>
+    private Dwell Dwelt(string name, int bx, int bz, Vec3d pos, double dt, DateTimeOffset now)
+    {
+        var key = (name, bx, bz);
+        if (!_dwell.TryGetValue(key, out var d)) _dwell[key] = d = new Dwell();
+        d.Seconds += dt;
+        d.SumX += pos.X; d.SumY += pos.Y; d.SumZ += pos.Z;
+        d.Samples++;
+        d.Last = now;
+        return d;
+    }
+
+    /// <summary>A hangout new this session continues the minutes its stored row had.</summary>
+    private void SeedDwell(Dwell d, string key, BlockPos anchor, int b)
+    {
+        d.Seeded = true;
+        try
+        {
+            var old = _sink.Near(IndexKinds.Hangout, anchor.X, anchor.Y, anchor.Z, b * 2, 10, _dim).FirstOrDefault(r => r.Key == key);
+            if (old?.FieldsJson is { } json && System.Text.Json.JsonDocument.Parse(json).RootElement.TryGetProperty("minutes", out var m))
+                d.Seconds += m.GetDouble() * 60;
+        }
+        catch { /* best effort */ }
     }
 
     // Activity summaries are produced by PlayerActivityTracker; nothing to flush here.

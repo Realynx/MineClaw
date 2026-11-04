@@ -322,8 +322,7 @@ public sealed class PlayerActivityTracker : IDisposable
     private void OnBlockChanged(BlockChange ch)
     {
         if (ch.OldId == ch.NewId) return; // growth stages, doors, levers: not attributed
-        bool oldFluid = Blocks.IsWater(ch.OldId) || Blocks.IsLava(ch.OldId), newFluid = Blocks.IsWater(ch.NewId) || Blocks.IsLava(ch.NewId);
-        if ((oldFluid || ch.OldId == 0) && (newFluid || ch.NewId == 0)) return; // fluid flow
+        if (FluidOrAir(ch.OldId) && FluidOrAir(ch.NewId)) return; // fluid flow
         var near = NearPlayers(ch.Pos.Center, _o.Reach + 2);
         var me = _world.Player.Snapshot;
         PlayerSample? bot = me.Position.DistanceTo(ch.Pos.Center) <= _o.Reach + 2
@@ -331,6 +330,8 @@ public sealed class PlayerActivityTracker : IDisposable
         if (near.Length == 0) return;
         _in.Enqueue(new BlockIn(_time.GetUtcNow(), ch, near, bot, _botBusy?.Invoke() ?? false, _world.SelfEdits.IsRecent(ch.Pos)));
     }
+
+    private static bool FluidOrAir(int id) => id == 0 || Blocks.IsWater(id) || Blocks.IsLava(id);
 
     private void OnUnknownStructure(UnknownStructure u)
     {
@@ -529,39 +530,51 @@ public sealed class PlayerActivityTracker : IDisposable
     private (string Name, double Conf)? Attribute(BlockPos target, PlayerSample[] near, PlayerSample? bot, bool botBusy, DateTimeOffset at, bool needSwing)
     {
         var center = target.Center;
-        double Score(PlayerSample s, bool swungOverride)
-        {
-            var eye = s.Pos + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
-            double d = eye.DistanceTo(center);
-            if (d > _o.Reach) return 0;
-            var look = PlayerPhysics.LookVector(s.Yaw, s.Pitch);
-            double cos = look.Dot((center - eye).Normalized());
-            double facing = d < 1.2 ? 1 : Math.Clamp((cos - 0.55) / 0.4, 0, 1);
-            bool swung = swungOverride || (_swings.TryGetValue(s.EntityId, out var sw) && at - sw <= TimeSpan.FromSeconds(_o.SwingWindowSeconds) && at >= sw - TimeSpan.FromMilliseconds(200));
-            if (needSwing && !swung) return 0;
-            double score = 0.5 * facing + 0.3 * (swung ? 1 : 0) + 0.2 * (1 - d / _o.Reach);
-            if (facing == 0 && !swung) score *= 0.3;
-            return score;
-        }
+        var (best, second) = TopTwo(near, center, at, needSwing);
+        if (best == null) return null;
+        if (bot is { } b && botBusy && Score(b, center, at, needSwing, swungOverride: true) >= best.Value.Score) return null; // the bot did it
+        double conf = best.Value.Score;
+        if (second is { } s2) conf *= MarginFactor(best.Value.Score - s2.Score);
+        return conf < _o.MinLogConfidence ? null : (best.Value.Name, Math.Round(conf, 2));
+    }
+
+    /// <summary>The two best-scoring players (never the bot itself) for the edit at <paramref name="center"/>.</summary>
+    private ((string Name, double Score)? Best, (string Name, double Score)? Second) TopTwo(PlayerSample[] near, Vec3d center, DateTimeOffset at, bool needSwing)
+    {
         (string Name, double Score)? best = null, second = null;
         foreach (var s in near)
         {
             if (s.Name.Equals(_self, StringComparison.OrdinalIgnoreCase)) continue;
-            double sc = Score(s, false);
+            double sc = Score(s, center, at, needSwing, swungOverride: false);
             if (sc <= 0) continue;
             if (best == null || sc > best.Value.Score) { second = best; best = (s.Name, sc); }
             else if (second == null || sc > second.Value.Score) second = (s.Name, sc);
         }
-        if (best == null) return null;
-        if (bot is { } b && botBusy && Score(b, true) >= best.Value.Score) return null; // the bot did it
-        double conf = best.Value.Score;
-        if (second is { } s2)
-        {
-            double margin = best.Value.Score - s2.Score;
-            conf *= margin < 0.15 ? 0.4 : margin < 0.3 ? 0.8 : 1.0; // ambiguous → low: kept out of the digest
-        }
-        return conf < _o.MinLogConfidence ? null : (best.Value.Name, Math.Round(conf, 2));
+        return (best, second);
     }
+
+    /// <summary>Ambiguous (a close second) → low: kept out of the digest.</summary>
+    private static double MarginFactor(double margin) => margin < 0.15 ? 0.4 : margin < 0.3 ? 0.8 : 1.0;
+
+    /// <summary>How likely <paramref name="s"/> made the edit: facing it, a recent swing, and nearness (0 = out of reach, or no
+    /// swing where one is needed).</summary>
+    private double Score(PlayerSample s, Vec3d center, DateTimeOffset at, bool needSwing, bool swungOverride)
+    {
+        var eye = s.Pos + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
+        double d = eye.DistanceTo(center);
+        if (d > _o.Reach) return 0;
+        var look = PlayerPhysics.LookVector(s.Yaw, s.Pitch);
+        double cos = look.Dot((center - eye).Normalized());
+        double facing = d < 1.2 ? 1 : Math.Clamp((cos - 0.55) / 0.4, 0, 1);
+        bool swung = swungOverride || SwungAt(s.EntityId, at);
+        if (needSwing && !swung) return 0;
+        double score = 0.5 * facing + 0.3 * (swung ? 1 : 0) + 0.2 * (1 - d / _o.Reach);
+        if (facing == 0 && !swung) score *= 0.3;
+        return score;
+    }
+
+    private bool SwungAt(int entityId, DateTimeOffset at) =>
+        _swings.TryGetValue(entityId, out var sw) && at - sw <= TimeSpan.FromSeconds(_o.SwingWindowSeconds) && at >= sw - TimeSpan.FromMilliseconds(200);
 
     private void HandleBlock(BlockIn b)
     {
@@ -569,15 +582,18 @@ public sealed class PlayerActivityTracker : IDisposable
         if (IsPhysics(ch) || EditOf(ch) is not { } edit) return;
         if (edit.Broke) NoteBreak(b.At, ch.Pos);
         if (b.Self) { SelfEdits++; return; } // the bot did it (kept above only so its drops/cascades aren't blamed on anyone)
-        // Blocks that change by themselves too often need a swing to count.
-        bool needSwing = ch.OldId is Blocks.Leaves || ch.NewId is Blocks.Sand or Blocks.Gravel;
-        var who = Attribute(ch.Pos, b.Near, b.Bot, b.BotBusy, b.At, needSwing);
+        var who = Attribute(ch.Pos, b.Near, b.Bot, b.BotBusy, b.At, NeedsSwing(ch));
         if (who is not { } w) return;
         int block = edit.Broke ? ch.OldId : ch.NewId;
-        if (block is Blocks.SignPost or Blocks.WallSign && edit.Placed) { _signPlacers[ch.Pos] = (w.Name, b.At, w.Conf); return; } // text follows
+        if (IsSign(block) && edit.Placed) { _signPlacers[ch.Pos] = (w.Name, b.At, w.Conf); return; } // text follows
         Danger.BlockWork(w.Name, ch.Pos);
         Record(new ActivityEvent(w.Name, edit.Kind(ch), b.At, w.Conf) { BlockId = block, Pos = ch.Pos, Place = Place(ch.Pos) });
     }
+
+    /// <summary>Blocks that change by themselves too often need a swing to count.</summary>
+    private static bool NeedsSwing(BlockChange ch) => ch.OldId is Blocks.Leaves || ch.NewId is Blocks.Sand or Blocks.Gravel;
+
+    private static bool IsSign(int block) => block is Blocks.SignPost or Blocks.WallSign;
 
     /// <summary>What a block change was: placed (into air/replaceable), broken (to air/replaceable), or a furnace lit.</summary>
     private readonly record struct BlockEdit(bool Placed, bool Broke, bool Lit)
@@ -607,17 +623,17 @@ public sealed class PlayerActivityTracker : IDisposable
     private void HandleChat(ChatIn c)
     {
         var line = _classifier.Classify(c.Raw);
-        switch (line.Kind)
-        {
-            case ChatLineKind.Player or ChatLineKind.Emote or ChatLineKind.Whisper when line.Sender is { } s && !s.Equals(_self, StringComparison.OrdinalIgnoreCase):
-                if (line.Kind == ChatLineKind.Whisper) break; // private: not logged
-                var text = _o.ChatChars <= 0 ? null : Trim(line.Message ?? "", _o.ChatChars);
-                Record(new ActivityEvent(s, ActivityKinds.Chat, c.At, 1.0) { Detail = text });
-                break;
-            case ChatLineKind.System:
-                if (_deaths.Parse(line) is { } d && !d.Player.Equals(_self, StringComparison.OrdinalIgnoreCase)) Danger.DeathLine(d.Player, d.Cause);
-                break;
-        }
+        if (line.Kind is ChatLineKind.Player or ChatLineKind.Emote && line.Sender is { } s && !IsSelf(s)) RecordChat(s, line, c.At);
+        else if (line.Kind == ChatLineKind.System && _deaths.Parse(line) is { } d && !IsSelf(d.Player)) Danger.DeathLine(d.Player, d.Cause);
+        // A whisper is private: not logged.
+    }
+
+    private bool IsSelf(string name) => name.Equals(_self, StringComparison.OrdinalIgnoreCase);
+
+    private void RecordChat(string sender, ClassifiedLine line, DateTimeOffset at)
+    {
+        var text = _o.ChatChars <= 0 ? null : Trim(line.Message ?? "", _o.ChatChars);
+        Record(new ActivityEvent(sender, ActivityKinds.Chat, at, 1.0) { Detail = text });
     }
 
     private void HandleSign(SignIn s)
@@ -626,16 +642,22 @@ public sealed class PlayerActivityTracker : IDisposable
         if (label.Length == 0) return;
         if (_seenFirst.Contains("sign:" + s.Pos + label)) return;
         _seenFirst.Add("sign:" + s.Pos + label);
-        // Prefer whoever placed the sign block; else the nearest player facing it (an edit, or text arriving late).
-        (string Name, double Conf)? who = null;
-        if (_signPlacers.Remove(s.Pos, out var placer) && s.At - placer.At <= TimeSpan.FromMinutes(2)) who = (placer.Player, placer.Conf);
-        else if (s.Near.Length > 0 && Attribute(s.Pos, s.Near, null, false, s.At, needSwing: false) is { } a) who = (a.Name, a.Conf * 0.8);
-        if (who is not { } w) return; // pre-existing sign seen on chunk load: the indexer labels it, nobody "wrote" it now
+        if (SignAuthor(s) is not { } w) return; // pre-existing sign seen on chunk load: the indexer labels it, nobody "wrote" it now
         Record(new ActivityEvent(w.Name, ActivityKinds.WroteSign, s.At, w.Conf) { Detail = label, Pos = s.Pos, Place = Place(s.Pos, 4) });
-        if (_o.Wake.SignMentionsBot && BotNames().Any(n => n.Length >= 3 && label.Contains(n, StringComparison.OrdinalIgnoreCase))
-            && _gate.TryWake(w.Name, "sign", DangerLevel.Danger, TimeSpan.FromSeconds(_o.Wake.CooldownSeconds), _o.Wake.MaxWakesPer5Min))
+        if (SignNamesBot(label) && _gate.TryWake(w.Name, "sign", DangerLevel.Danger, TimeSpan.FromSeconds(_o.Wake.CooldownSeconds), _o.Wake.MaxWakesPer5Min))
             Wake?.Invoke(GameEvent.Activity($"{w.Name} placed a sign naming you: \"{label}\"{ActivityText.At(Place(s.Pos, 4), s.Pos)}", w.Name, EventPriority.Normal) with { At = s.At });
     }
+
+    /// <summary>Prefer whoever placed the sign block; else the nearest player facing it (an edit, or text arriving late).</summary>
+    private (string Name, double Conf)? SignAuthor(SignIn s)
+    {
+        if (_signPlacers.Remove(s.Pos, out var placer) && s.At - placer.At <= TimeSpan.FromMinutes(2)) return (placer.Player, placer.Conf);
+        if (s.Near.Length > 0 && Attribute(s.Pos, s.Near, null, false, s.At, needSwing: false) is { } a) return (a.Name, a.Conf * 0.8);
+        return null;
+    }
+
+    private bool SignNamesBot(string label) =>
+        _o.Wake.SignMentionsBot && BotNames().Any(n => n.Length >= 3 && label.Contains(n, StringComparison.OrdinalIgnoreCase));
 
     private void HandleSpawn(SpawnIn s)
     {
@@ -676,25 +698,41 @@ public sealed class PlayerActivityTracker : IDisposable
         _containers[id] = (s.At, s.Items);
         if (!s.First || prev.Items == null) return;
         // Contents changed between the bot's last look and this one: someone else used it.
-        var before = prev.Items.GroupBy(i => (i.ItemId, i.Damage)).ToDictionary(g => g.Key, g => g.Sum(i => i.Count));
-        var after = s.Items.GroupBy(i => (i.ItemId, i.Damage)).ToDictionary(g => g.Key, g => g.Sum(i => i.Count));
-        var diffs = before.Keys.Union(after.Keys)
+        var diffs = ContentDiffs(prev.Items, s.Items);
+        if (diffs.Count == 0) return;
+        var visitor = OnlyVisitor(prev.At, s.Pos);
+        var place = Place(s.Pos, 1);
+        string who = visitor ?? "someone";
+        if (visitor != null)
+            foreach (var (k, delta) in diffs)
+                Record(new ActivityEvent(who, delta < 0 ? ActivityKinds.Took : ActivityKinds.Stored, s.At, 0.75) { ItemId = k.ItemId, Count = Math.Abs(delta), Pos = s.Pos, Place = place });
+        if (_o.Wake.ManagedChestChanged && _gate.TryWake(who, "chest:" + s.Key, DangerLevel.Watch, TimeSpan.FromSeconds(_o.Wake.CooldownSeconds * 5), _o.Wake.MaxWakesPer5Min))
+            WakeChestChanged(visitor, place, diffs, s.At);
+    }
+
+    /// <summary>The one player whose trail passed within 5 blocks since <paramref name="since"/>; null for none or several.</summary>
+    private string? OnlyVisitor(DateTimeOffset since, BlockPos pos)
+    {
+        var visitors = _players.Where(kv => kv.Value.Trail.Any(t => t.At >= since && t.Pos.DistanceTo(pos.Center) <= 5)).Select(kv => kv.Key).ToList();
+        return visitors.Count == 1 ? visitors[0] : null;
+    }
+
+    /// <summary>The (up to 3) biggest per-item count changes between two looks.</summary>
+    private static List<((int ItemId, int Damage) Key, int Delta)> ContentDiffs(IReadOnlyList<ItemCount> was, IReadOnlyList<ItemCount> now)
+    {
+        var before = was.GroupBy(i => (i.ItemId, i.Damage)).ToDictionary(g => g.Key, g => g.Sum(i => i.Count));
+        var after = now.GroupBy(i => (i.ItemId, i.Damage)).ToDictionary(g => g.Key, g => g.Sum(i => i.Count));
+        return before.Keys.Union(after.Keys)
             .Select(k => (Key: k, Delta: after.GetValueOrDefault(k) - before.GetValueOrDefault(k))).Where(d => d.Delta != 0)
             .OrderByDescending(d => Math.Abs(d.Delta)).Take(3).ToList();
-        if (diffs.Count == 0) return;
-        var visitors = _players.Where(kv => kv.Value.Trail.Any(t => t.At >= prev.At && t.Pos.DistanceTo(s.Pos.Center) <= 5)).Select(kv => kv.Key).ToList();
-        var place = Place(s.Pos, 1);
-        string who = visitors.Count == 1 ? visitors[0] : "someone";
-        double conf = visitors.Count == 1 ? 0.75 : 0.4;
-        if (visitors.Count == 1)
-            foreach (var (k, delta) in diffs)
-                Record(new ActivityEvent(who, delta < 0 ? ActivityKinds.Took : ActivityKinds.Stored, s.At, conf) { ItemId = k.ItemId, Count = Math.Abs(delta), Pos = s.Pos, Place = place });
-        if (_o.Wake.ManagedChestChanged && _gate.TryWake(who, "chest:" + s.Key, DangerLevel.Watch, TimeSpan.FromSeconds(_o.Wake.CooldownSeconds * 5), _o.Wake.MaxWakesPer5Min))
-        {
-            var parts = string.Join(", ", diffs.Select(d => $"{(d.Delta < 0 ? "-" : "+")}{Math.Abs(d.Delta)} {ActivityText.Item(d.Key.ItemId)}"));
-            Wake?.Invoke(GameEvent.Activity($"{(visitors.Count == 1 ? "probably " + who : "someone")} changed the {place?.Name ?? "chest"} you manage: {parts}",
-                visitors.Count == 1 ? who : null, EventPriority.Low) with { At = s.At });
-        }
+    }
+
+    /// <summary>"probably kiwi changed the chest you manage: -12 cobblestone, +3 bread" (who = the one visitor, else someone).</summary>
+    private void WakeChestChanged(string? visitor, PlaceRef? place, List<((int ItemId, int Damage) Key, int Delta)> diffs, DateTimeOffset at)
+    {
+        var parts = string.Join(", ", diffs.Select(d => $"{(d.Delta < 0 ? "-" : "+")}{Math.Abs(d.Delta)} {ActivityText.Item(d.Key.ItemId)}"));
+        Wake?.Invoke(GameEvent.Activity($"{(visitor != null ? "probably " + visitor : "someone")} changed the {place?.Name ?? "chest"} you manage: {parts}",
+            visitor, EventPriority.Low) with { At = at });
     }
 
     // ------------------------------------------------------------------ per-pass player sampling (presence, places, held items, danger)
@@ -703,22 +741,33 @@ public sealed class PlayerActivityTracker : IDisposable
     {
         foreach (var e in _world.Entities.All())
         {
-            if (e.Kind != EntityKind.Player || e.Name is not { } name || name.Equals(_self, StringComparison.OrdinalIgnoreCase)) continue;
+            if (e.Kind != EntityKind.Player || e.Name is not { } name || IsSelf(name)) continue;
             var s = Sample(e);
-            if (!_players.TryGetValue(name, out var st))
-            {
-                _players[name] = st = new PlayerState { EntityId = e.Id, HeldItem = e.HeldItem, VehicleId = e.VehicleId, PlaceSince = now };
-                if (e.HeldItem > 0) st.HeldBefore.Add(e.HeldItem);
-            }
+            var st = StateFor(e, name, now);
             st.EntityId = e.Id;
             st.Last = s;
             Danger.Sample(s);
-            if (st.Trail.Count == 0 || now - st.Trail.Last().At >= TimeSpan.FromSeconds(1)) st.Trail.Enqueue((now, s.Pos));
-            while (st.Trail.Count > 0 && now - st.Trail.Peek().At > TimeSpan.FromMinutes(15)) st.Trail.Dequeue();
+            AddTrail(st, s.Pos, now);
             if (e.HeldItem != st.HeldItem) HeldChanged(name, e.HeldItem, now);   // polled 0x05 slot 0
             if (e.VehicleId != st.VehicleId) VehicleChanged(name, e.VehicleId, now); // polled 0x27
             TrackPlace(name, st, s, now);
         }
+    }
+
+    /// <summary>A player's state, new on first sight (what they hold then isn't "equipped" news).</summary>
+    private PlayerState StateFor(Entity e, string name, DateTimeOffset now)
+    {
+        if (_players.TryGetValue(name, out var st)) return st;
+        _players[name] = st = new PlayerState { EntityId = e.Id, HeldItem = e.HeldItem, VehicleId = e.VehicleId, PlaceSince = now };
+        if (e.HeldItem > 0) st.HeldBefore.Add(e.HeldItem);
+        return st;
+    }
+
+    /// <summary>One trail point per second, 15 minutes kept.</summary>
+    private static void AddTrail(PlayerState st, Vec3d pos, DateTimeOffset now)
+    {
+        if (st.Trail.Count == 0 || now - st.Trail.Last().At >= TimeSpan.FromSeconds(1)) st.Trail.Enqueue((now, pos));
+        while (st.Trail.Count > 0 && now - st.Trail.Peek().At > TimeSpan.FromMinutes(15)) st.Trail.Dequeue();
     }
 
     private void HeldChanged(string name, int item, DateTimeOffset now)
@@ -760,22 +809,29 @@ public sealed class PlayerActivityTracker : IDisposable
         if (!SamePlace(place, st.Candidate)) { st.Candidate = place; st.CandidateSince = now; }
         // Hysteresis: a place must hold ≥10 s (islands 5 s) before it counts as arrived.
         var hold = TimeSpan.FromSeconds(place?.Kind == IndexKinds.Island ? 5 : 10);
-        if (!SamePlace(st.Candidate, st.Place) && now - st.CandidateSince >= hold)
-        {
-            if (st.Place != null && st.Place.Kind != IndexKinds.Island)
-                Record(new ActivityEvent(name, ActivityKinds.Departed, now, 0.9) { Place = st.Place });
-            st.Place = st.Candidate;
-            st.PlaceSince = st.CandidateSince;
-            st.LingerFlagged = false;
-            if (st.Place != null) Record(new ActivityEvent(name, ActivityKinds.Arrived, now, 0.9) { Place = st.Place, Pos = pos });
-        }
+        if (!SamePlace(st.Candidate, st.Place) && now - st.CandidateSince >= hold) Arrive(name, st, pos, now);
         if (st.Place is { Kind: IndexKinds.UnknownStructure } u && !st.LingerFlagged && now - st.PlaceSince >= TimeSpan.FromSeconds(_o.LingerSeconds))
-        {
-            st.LingerFlagged = true;
-            _index.NoteStructureUse(u.Key, name);
-            if (_o.Wake.LingerAtUnknownStructure && _gate.TryWake(name, "linger:" + u.Key, DangerLevel.Watch, TimeSpan.FromMinutes(30), _o.Wake.MaxWakesPer5Min))
-                Wake?.Invoke(GameEvent.Activity($"{name} keeps using an {u.Name} you don't understand{ActivityText.At(null, pos)}; ask what it is", name, EventPriority.Low) with { At = now });
-        }
+            Lingered(name, st, u, pos, now, _index);
+    }
+
+    /// <summary>The candidate place held long enough: departed the old one (islands aren't news), arrived at the new.</summary>
+    private void Arrive(string name, PlayerState st, BlockPos pos, DateTimeOffset now)
+    {
+        if (st.Place != null && st.Place.Kind != IndexKinds.Island)
+            Record(new ActivityEvent(name, ActivityKinds.Departed, now, 0.9) { Place = st.Place });
+        st.Place = st.Candidate;
+        st.PlaceSince = st.CandidateSince;
+        st.LingerFlagged = false;
+        if (st.Place != null) Record(new ActivityEvent(name, ActivityKinds.Arrived, now, 0.9) { Place = st.Place, Pos = pos });
+    }
+
+    /// <summary>A player keeps using an unknown structure: note it, and (rate-limited) ask the brain to find out what it is.</summary>
+    private void Lingered(string name, PlayerState st, PlaceRef u, BlockPos pos, DateTimeOffset now, WorldIndexer index)
+    {
+        st.LingerFlagged = true;
+        index.NoteStructureUse(u.Key, name);
+        if (_o.Wake.LingerAtUnknownStructure && _gate.TryWake(name, "linger:" + u.Key, DangerLevel.Watch, TimeSpan.FromMinutes(30), _o.Wake.MaxWakesPer5Min))
+            Wake?.Invoke(GameEvent.Activity($"{name} keeps using an {u.Name} you don't understand{ActivityText.At(null, pos)}; ask what it is", name, EventPriority.Low) with { At = now });
     }
 
     private static bool SamePlace(PlaceRef? a, PlaceRef? b) => a?.Kind == b?.Kind && a?.Key == b?.Key;
@@ -825,13 +881,7 @@ public sealed class PlayerActivityTracker : IDisposable
     private void AddToSession(ActivityEvent e)
     {
         _sessions.TryGetValue(e.Player, out var s);
-        if (s != null)
-        {
-            bool gap = e.At - s.Last > TimeSpan.FromSeconds(_o.SessionGapSeconds);
-            bool tooLong = e.At - s.Start > TimeSpan.FromMinutes(_o.SessionMaxMinutes);
-            bool moved = IsWork(e) && e.Place != null && s.Place != null && !SamePlace(e.Place, s.Place);
-            if (gap || tooLong || moved) { Close(s); s = null; }
-        }
+        if (s != null && Ends(s, e)) { Close(s); s = null; }
         if (s == null)
         {
             if (!IsWork(e)) return; // chat/travel alone never opens a session
@@ -840,15 +890,23 @@ public sealed class PlayerActivityTracker : IDisposable
         s.Place ??= IsWork(e) ? e.Place : null;
         s.Events.Add(e);
         s.Last = e.At;
-        if (e.Pos is { } p)
-        {
-            if (!s.HasBounds) { s.Min = s.Max = p; s.HasBounds = true; }
-            else
-            {
-                s.Min = new BlockPos(Math.Min(s.Min.X, p.X), Math.Min(s.Min.Y, p.Y), Math.Min(s.Min.Z, p.Z));
-                s.Max = new BlockPos(Math.Max(s.Max.X, p.X), Math.Max(s.Max.Y, p.Y), Math.Max(s.Max.Z, p.Z));
-            }
-        }
+        if (e.Pos is { } p) Grow(s, p);
+    }
+
+    /// <summary>The event starts a new session: after a gap, past the max length, or work at another place.</summary>
+    private bool Ends(Session s, ActivityEvent e)
+    {
+        bool gap = e.At - s.Last > TimeSpan.FromSeconds(_o.SessionGapSeconds);
+        bool tooLong = e.At - s.Start > TimeSpan.FromMinutes(_o.SessionMaxMinutes);
+        bool moved = IsWork(e) && e.Place != null && s.Place != null && !SamePlace(e.Place, s.Place);
+        return gap || tooLong || moved;
+    }
+
+    private static void Grow(Session s, BlockPos p)
+    {
+        if (!s.HasBounds) { s.Min = s.Max = p; s.HasBounds = true; return; }
+        s.Min = new BlockPos(Math.Min(s.Min.X, p.X), Math.Min(s.Min.Y, p.Y), Math.Min(s.Min.Z, p.Z));
+        s.Max = new BlockPos(Math.Max(s.Max.X, p.X), Math.Max(s.Max.Y, p.Y), Math.Max(s.Max.Z, p.Z));
     }
 
     private void ReplaceInSession(ActivityEvent old, ActivityEvent merged)
@@ -886,9 +944,16 @@ public sealed class PlayerActivityTracker : IDisposable
         _rollups.Add(r);
         if (_rollups.Count > 200) _rollups.RemoveRange(0, 50);
         RollupClosed?.Invoke(r);
-        if (_index != null && s.HasBounds && s.Events.Count(e => e.Kind == ActivityKinds.Placed) >= 6)
+        if (s.HasBounds) NoteBuildEvidence(s, r);
+    }
+
+    /// <summary>A session with a box: six+ placements name the builder of the structure there; one at a taught structure is
+    /// evidence about it.</summary>
+    private void NoteBuildEvidence(Session s, ActivityRollup r)
+    {
+        if (_index != null && s.Events.Count(e => e.Kind == ActivityKinds.Placed) >= 6)
             _index.NoteStructureBuilder(new BlockPos((s.Min.X + s.Max.X) / 2, (s.Min.Y + s.Max.Y) / 2, (s.Min.Z + s.Max.Z) / 2), s.Player);
-        if (TaughtStructureAt != null && s.HasBounds && TaughtStructureAt(s.Min) is { } taught) StructureEvidence?.Invoke(taught, r);
+        if (TaughtStructureAt != null && TaughtStructureAt(s.Min) is { } taught) StructureEvidence?.Invoke(taught, r);
     }
 
     private readonly Dictionary<ActivityEvent, long> _ids = new(ReferenceEqualityComparer.Instance);
@@ -918,41 +983,11 @@ public sealed class PlayerActivityTracker : IDisposable
     private ActivityRollup? RollupCore(IReadOnlyList<ActivityEvent> events, string player, PlaceRef? place, DateTimeOffset start, DateTimeOffset end,
         BlockPos min, BlockPos max, bool includeTimes)
     {
-        var parts = new List<(string Text, double Conf, double Salience, string Cat, int N)>();
         var usable = events.Where(e => e.Confidence >= _o.MediumConfidence).ToList();
-        void Group(string kind, string verb1, string verbN, Func<ActivityEvent, int?> idOf, Func<int, string> name, string cat, double sal)
-        {
-            foreach (var g in usable.Where(e => e.Kind == kind).GroupBy(idOf).OrderByDescending(g => g.Sum(e => e.Count)))
-            {
-                int n = g.Sum(e => e.Count);
-                var nm = g.Key is { } id ? name(id) : "blocks";
-                // Broken blocks read naturally ("chopped log", "mined cobblestone"), never "broke".
-                string v1 = kind == ActivityKinds.Broke ? ActivityVerbs.Broken(nm) : verb1, vN = kind == ActivityKinds.Broke ? v1 : verbN;
-                parts.Add((n > 1 ? $"{vN} {ActivityText.Qty(n)} {nm}" : $"{v1} {nm}", g.Average(e => e.Confidence), sal * (n >= 20 ? 2 : 1), cat, n));
-            }
-        }
-        Group(ActivityKinds.Broke, "mined", "mined", e => e.BlockId, ActivityText.Block, ActivityCategory.Mined, 1);
-        Group(ActivityKinds.Harvested, "harvested", "harvested", e => e.BlockId, ActivityText.Block, ActivityCategory.Farmed, 1);
-        Group(ActivityKinds.Planted, "planted", "planted", e => e.BlockId, ActivityText.Block, ActivityCategory.Farmed, 1);
-        Group(ActivityKinds.Placed, "placed", "placed", e => e.BlockId, ActivityText.Block, ActivityCategory.Built, 1.2);
-        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.WroteSign))
-            parts.Add(($"placed sign \"{e.Detail}\"", e.Confidence, 2.5, ActivityCategory.Built, 1));
-        var opened = usable.Where(e => e.Kind == ActivityKinds.Opened).ToList();
-        int chests = opened.Select(e => e.Place?.Key ?? e.Pos?.ToString()).Distinct().Count();
-        if (chests == 1) parts.Add(($"opened the {opened[0].Place?.Name ?? "chest"}", opened.Average(e => e.Confidence), 1.5, ActivityCategory.Container, 1));
-        else if (chests > 1) parts.Add(($"{(chests >= 3 ? "reorganized" : "used")} {chests} chests", opened.Average(e => e.Confidence), 1.5, ActivityCategory.Container, chests));
-        Group(ActivityKinds.Took, "took", "took", e => e.ItemId, ActivityText.Item, ActivityCategory.Container, 1.5);
-        Group(ActivityKinds.Stored, "stored", "stored", e => e.ItemId, ActivityText.Item, ActivityCategory.Container, 1.2);
-        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.LitFurnace).Take(1)) parts.Add(("lit the furnace", e.Confidence, 1, ActivityCategory.Crafted, 1));
-        Group(ActivityKinds.Crafted, "crafted", "crafted", e => e.ItemId, ActivityText.Item, ActivityCategory.Crafted, 1.2);
-        Group(ActivityKinds.PickedUp, "picked up", "picked up", e => e.ItemId, ActivityText.Item, ActivityCategory.Items, 0.5);
-        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.Fought))
-            parts.Add(($"fought a {e.Detail} ({e.Count} hit{(e.Count == 1 ? "" : "s")} taken)", e.Confidence, 3, ActivityCategory.Fought, 1));
-        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.Died))
-            parts.Add((e.Detail ?? "died", e.Confidence, 5, ActivityCategory.Died, 1));
+        var parts = RollupParts(usable);
         if (parts.Count == 0) return null;
 
-        string Phrase((string Text, double Conf, double Sal, string Cat, int N) p) => (p.Conf < _o.HighConfidence ? "probably " : "") + p.Text;
+        string Phrase(RollupPart p) => (p.Conf < _o.HighConfidence ? "probably " : "") + p.Text;
         var ordered = parts.OrderByDescending(p => p.Salience * Math.Log2(1 + p.N)).Take(5).Select(Phrase).ToList();
         var list = ordered.Count == 1 ? ordered[0] : string.Join(", ", ordered.Take(ordered.Count - 1)) + " and " + ordered[^1];
         var at = place == null || place.Kind == IndexKinds.Island && parts.All(p => p.Cat == ActivityCategory.Died) ? "" : ActivityText.At(place, null);
@@ -965,6 +1000,57 @@ public sealed class PlayerActivityTracker : IDisposable
             Place = place, Min = min, Max = max, Events = events.Count, Short = shortText, Salience = sal,
             Counts = parts.GroupBy(p => p.Cat).ToDictionary(g => g.Key, g => g.Sum(p => p.N)),
         };
+    }
+
+    /// <summary>One phrase of a rollup ("mined ~20 cobblestone") with its confidence, salience, category and amount.</summary>
+    private readonly record struct RollupPart(string Text, double Conf, double Salience, string Cat, int N);
+
+    /// <summary>The session's phrases in their fixed order: block work, signs, chests, items, furnace, crafting, pickups, fights,
+    /// deaths.</summary>
+    private static List<RollupPart> RollupParts(List<ActivityEvent> usable)
+    {
+        var parts = new List<RollupPart>();
+        GroupPart(parts, usable, ActivityKinds.Broke, "mined", "mined", e => e.BlockId, ActivityText.Block, ActivityCategory.Mined, 1);
+        GroupPart(parts, usable, ActivityKinds.Harvested, "harvested", "harvested", e => e.BlockId, ActivityText.Block, ActivityCategory.Farmed, 1);
+        GroupPart(parts, usable, ActivityKinds.Planted, "planted", "planted", e => e.BlockId, ActivityText.Block, ActivityCategory.Farmed, 1);
+        GroupPart(parts, usable, ActivityKinds.Placed, "placed", "placed", e => e.BlockId, ActivityText.Block, ActivityCategory.Built, 1.2);
+        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.WroteSign))
+            parts.Add(new($"placed sign \"{e.Detail}\"", e.Confidence, 2.5, ActivityCategory.Built, 1));
+        if (OpenedPart(usable) is { } opened) parts.Add(opened);
+        GroupPart(parts, usable, ActivityKinds.Took, "took", "took", e => e.ItemId, ActivityText.Item, ActivityCategory.Container, 1.5);
+        GroupPart(parts, usable, ActivityKinds.Stored, "stored", "stored", e => e.ItemId, ActivityText.Item, ActivityCategory.Container, 1.2);
+        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.LitFurnace).Take(1)) parts.Add(new("lit the furnace", e.Confidence, 1, ActivityCategory.Crafted, 1));
+        GroupPart(parts, usable, ActivityKinds.Crafted, "crafted", "crafted", e => e.ItemId, ActivityText.Item, ActivityCategory.Crafted, 1.2);
+        GroupPart(parts, usable, ActivityKinds.PickedUp, "picked up", "picked up", e => e.ItemId, ActivityText.Item, ActivityCategory.Items, 0.5);
+        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.Fought))
+            parts.Add(new($"fought a {e.Detail} ({e.Count} hit{(e.Count == 1 ? "" : "s")} taken)", e.Confidence, 3, ActivityCategory.Fought, 1));
+        foreach (var e in usable.Where(e => e.Kind == ActivityKinds.Died))
+            parts.Add(new(e.Detail ?? "died", e.Confidence, 5, ActivityCategory.Died, 1));
+        return parts;
+    }
+
+    /// <summary>One phrase per block/item of a kind, biggest amount first.</summary>
+    private static void GroupPart(List<RollupPart> parts, List<ActivityEvent> usable, string kind, string verb1, string verbN,
+        Func<ActivityEvent, int?> idOf, Func<int, string> name, string cat, double sal)
+    {
+        foreach (var g in usable.Where(e => e.Kind == kind).GroupBy(idOf).OrderByDescending(g => g.Sum(e => e.Count)))
+        {
+            int n = g.Sum(e => e.Count);
+            var nm = g.Key is { } id ? name(id) : "blocks";
+            // Broken blocks read naturally ("chopped log", "mined cobblestone"), never "broke".
+            string v1 = kind == ActivityKinds.Broke ? ActivityVerbs.Broken(nm) : verb1, vN = kind == ActivityKinds.Broke ? v1 : verbN;
+            parts.Add(new(n > 1 ? $"{vN} {ActivityText.Qty(n)} {nm}" : $"{v1} {nm}", g.Average(e => e.Confidence), sal * (n >= 20 ? 2 : 1), cat, n));
+        }
+    }
+
+    /// <summary>"opened the chest" (one), "used 2 chests", "reorganized 3 chests"; null when none was opened.</summary>
+    private static RollupPart? OpenedPart(List<ActivityEvent> usable)
+    {
+        var opened = usable.Where(e => e.Kind == ActivityKinds.Opened).ToList();
+        int chests = opened.Select(e => e.Place?.Key ?? e.Pos?.ToString()).Distinct().Count();
+        if (chests == 1) return new($"opened the {opened[0].Place?.Name ?? "chest"}", opened.Average(e => e.Confidence), 1.5, ActivityCategory.Container, 1);
+        if (chests > 1) return new($"{(chests >= 3 ? "reorganized" : "used")} {chests} chests", opened.Average(e => e.Confidence), 1.5, ActivityCategory.Container, chests);
+        return null;
     }
 
     private ActivityRollup? Rollup(Session s, bool includeTimes) =>

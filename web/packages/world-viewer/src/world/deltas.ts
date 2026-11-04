@@ -20,12 +20,13 @@ export interface DeltaEvents {
 }
 
 type Change5 = [number, number, number, number, number];
+type StaleColumn = { dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' | 'block_entity' };
 
 export class BlockDeltaFeed {
   /** The revision to ask from next (0 = not started: the first reply only sets it). */
   rev = 0;
   private pending = new Map<Dim, Change5[]>();
-  private stale: Array<{ dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' | 'block_entity' }> = [];
+  private stale: StaleColumn[] = [];
   private fallbackDue = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -85,15 +86,15 @@ export class BlockDeltaFeed {
     const first = this.rev === 0;
     this.rev = Math.max(this.rev, d.rev);
     if (d.full && !first) this.fallbackDue = true;
-    const groups: Array<[Dim, Change5[]]> = Array.isArray(d.blocks) ? [[d.dim ?? 0, d.blocks]] : Object.entries(d.blocks ?? {}).map(([k, v]) => [Number(k), v]);
-    for (const [dim, blocks] of groups) {
-      if (!blocks?.length || !Number.isFinite(dim)) continue;
-      let list = this.pending.get(dim);
-      if (!list) this.pending.set(dim, (list = []));
-      // In rev order: applying them in order makes the later entry for a cell win.
-      for (const b of blocks) list.push([b[0], b[1], b[2], b[3], b[4]]);
-    }
+    for (const [dim, blocks] of changeGroups(d)) if (blocks?.length && Number.isFinite(dim)) this.queue(dim, blocks);
     for (const c of d.columns ?? []) this.stale.push(c);
+  }
+
+  /** In rev order: applying them in order makes the later entry for a cell win. */
+  private queue(dim: Dim, blocks: Change5[]): void {
+    let list = this.pending.get(dim);
+    if (!list) this.pending.set(dim, (list = []));
+    for (const b of blocks) list.push([b[0], b[1], b[2], b[3], b[4]]);
   }
 
   /** The stream reconnected or the server lost our revision: refetch through the index hash-diff. */
@@ -116,36 +117,9 @@ export class BlockDeltaFeed {
       this.pending = new Map();
       const cols = this.stale;
       this.stale = [];
-      let reindex = false;
-      if (this.fallbackDue) {
-        this.fallbackDue = false;
-        this.fallbacks++;
-        reindex = true;
-      }
-      for (const [dim, blocks] of batches) {
-        const r = await this.host.patch(dim, blocks);
-        this.applied += r.applied;
-        if (r.dirty.length) this.ev.onDirty(dim, r.dirty);
-        if (r.applied) this.ev.onChanged?.(dim, blocks.map(([x, y, z]) => [x, y, z]));
-        if (r.missing.length) {
-          // Not held (yet): the index fetches them when they are in someone's interest.
-          this.cache.invalidate(dim, r.missing);
-          reindex = true;
-        }
-      }
-      for (const c of cols) {
-        const have = this.cache.get(c.dim, c.cx, c.cz);
-        if (c.kind === 'block_entity') {
-          this.ev.onBlockEntities?.(c.dim, c.cx, c.cz);
-        } else if (c.kind === 'loaded') {
-          this.cache.invalidate(c.dim, [[c.cx, c.cz]]);
-          reindex = true;
-        } else if (have && have.live) {
-          // Out of every bot's sight: keep it, drawn as remembered (dimmed); the cache's LRU trims it later.
-          have.live = false;
-          this.ev.onDirty(c.dim, await this.host.touch(c.dim, [{ cx: c.cx, cz: c.cz, seen: have.seen, by: have.by, live: false }]));
-        }
-      }
+      let reindex = this.takeFallback();
+      for (const [dim, blocks] of batches) if (await this.applyBatch(dim, blocks)) reindex = true;
+      for (const c of cols) if (await this.applyStale(c)) reindex = true;
       if (reindex) this.sync.reindexNow();
     } catch (e) {
       this.ev.onError?.(e);
@@ -153,4 +127,45 @@ export class BlockDeltaFeed {
       this.flushing = false;
     }
   }
+
+  /** A fallback asked for: counted, and the index re-runs. */
+  private takeFallback(): boolean {
+    if (!this.fallbackDue) return false;
+    this.fallbackDue = false;
+    this.fallbacks++;
+    return true;
+  }
+
+  /** One dimension's changes on the worker; true when some fell in columns not held (yet): the index fetches them when they
+   * are in someone's interest. */
+  private async applyBatch(dim: Dim, blocks: Change5[]): Promise<boolean> {
+    const r = await this.host.patch(dim, blocks);
+    this.applied += r.applied;
+    if (r.dirty.length) this.ev.onDirty(dim, r.dirty);
+    if (r.applied) this.ev.onChanged?.(dim, blocks.map(([x, y, z]) => [x, y, z]));
+    if (!r.missing.length) return false;
+    this.cache.invalidate(dim, r.missing);
+    return true;
+  }
+
+  /** A column the server says changed otherwise: its block entities, reloaded (refetch: true), or out of every bot's sight. */
+  private async applyStale(c: StaleColumn): Promise<boolean> {
+    const have = this.cache.get(c.dim, c.cx, c.cz);
+    if (c.kind === 'block_entity') {
+      this.ev.onBlockEntities?.(c.dim, c.cx, c.cz);
+    } else if (c.kind === 'loaded') {
+      this.cache.invalidate(c.dim, [[c.cx, c.cz]]);
+      return true;
+    } else if (have && have.live) {
+      // Out of every bot's sight: keep it, drawn as remembered (dimmed); the cache's LRU trims it later.
+      have.live = false;
+      this.ev.onDirty(c.dim, await this.host.touch(c.dim, [{ cx: c.cx, cz: c.cz, seen: have.seen, by: have.by, live: false }]));
+    }
+    return false;
+  }
+}
+
+/** A reply's changes by dimension: one list (with its `dim`), or a map of them. */
+function changeGroups(d: BlockDeltas): Array<[Dim, Change5[]]> {
+  return Array.isArray(d.blocks) ? [[d.dim ?? 0, d.blocks]] : Object.entries(d.blocks ?? {}).map(([k, v]) => [Number(k), v]);
 }

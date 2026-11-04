@@ -231,39 +231,55 @@ public sealed class WorldMemory : IDisposable
         {
             if (dim != _dim) return 0;
             var have = new Dictionary<string, int>(StringComparer.Ordinal);
-            int y0 = Math.Max(0, min.Y), y1 = Math.Min(_world.WorldHeight - 1, max.Y);
             for (int cx = min.X >> 4; cx <= max.X >> 4; cx++)
             for (int cz = min.Z >> 4; cz <= max.Z >> 4; cz++)
-            {
-                long k = Key(cx, cz);
-                var st = _state.GetValueOrDefault(k);
-                ChunkSnapshot? before = null;
-                if (st == BaselineState.Changed)
-                {
-                    if (!_baselineDecoded.TryGetValue(k, out before))
-                    {
-                        if (!_baseline.TryGetValue(k, out var row)) continue;
-                        try { before = ChunkSnapshot.Decode(row.Data); }
-                        catch (Exception ex) { _log.LogDebug(ex, "stored column {X},{Z} unreadable", cx, cz); continue; }
-                        _baselineDecoded[k] = before;
-                    }
-                }
-                else if (st != BaselineState.Unchanged) continue;
-                int xa = Math.Max(min.X, cx * 16), xb = Math.Min(max.X, cx * 16 + 15);
-                int za = Math.Max(min.Z, cz * 16), zb = Math.Min(max.Z, cz * 16 + 15);
-                for (int x = xa; x <= xb; x++)
-                for (int z = za; z <= zb; z++)
-                for (int y = y0; y <= y1; y++)
-                {
-                    int id = before == null ? _world.GetBlock(x, y, z) : y < before.Height ? before.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
-                    if (id == 0 || !Blocks.Exists(id)) continue;
-                    var name = Blocks.Get(id).Name;
-                    if (blocks.ContainsKey(name)) have[name] = have.GetValueOrDefault(name) + 1;
-                }
-            }
+                if (TryBaselineSource(cx, cz, out var before)) CountBaseline(before, cx, cz, min, max, blocks, have);
             int overlap = blocks.Sum(kv => Math.Min(kv.Value, have.GetValueOrDefault(kv.Key)));
             return (double)overlap / total;
         }
+    }
+
+    /// <summary>
+    /// Where a column's pre-visit blocks come from: the live world (<paramref name="before"/> null) when it arrived unchanged,
+    /// the decoded kept baseline when it changed; false for new/unknown or unreadable columns.
+    /// </summary>
+    private bool TryBaselineSource(int cx, int cz, out ChunkSnapshot? before)
+    {
+        before = null;
+        long k = Key(cx, cz);
+        var st = _state.GetValueOrDefault(k);
+        if (st == BaselineState.Unchanged) return true;
+        if (st != BaselineState.Changed) return false;
+        if (_baselineDecoded.TryGetValue(k, out before)) return true;
+        if (!_baseline.TryGetValue(k, out var row)) return false;
+        try { before = ChunkSnapshot.Decode(row.Data); }
+        catch (Exception ex) { _log.LogDebug(ex, "stored column {X},{Z} unreadable", cx, cz); return false; }
+        _baselineDecoded[k] = before;
+        return true;
+    }
+
+    /// <summary>Counts the build's block names inside the box's part of column (cx, cz) into <paramref name="have"/>.</summary>
+    private void CountBaseline(ChunkSnapshot? before, int cx, int cz, BlockPos min, BlockPos max,
+        IReadOnlyDictionary<string, int> blocks, Dictionary<string, int> have)
+    {
+        int y0 = Math.Max(0, min.Y), y1 = Math.Min(_world.WorldHeight - 1, max.Y);
+        int xa = Math.Max(min.X, cx * 16), xb = Math.Min(max.X, cx * 16 + 15);
+        int za = Math.Max(min.Z, cz * 16), zb = Math.Min(max.Z, cz * 16 + 15);
+        for (int x = xa; x <= xb; x++)
+        for (int z = za; z <= zb; z++)
+        for (int y = y0; y <= y1; y++)
+        {
+            int id = before == null ? _world.GetBlock(x, y, z) : y < before.Height ? before.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
+            if (BuildBlockName(id, blocks) is { } name) have[name] = have.GetValueOrDefault(name) + 1;
+        }
+    }
+
+    /// <summary>The block's name when it is one of the build's blocks, else null.</summary>
+    private static string? BuildBlockName(int id, IReadOnlyDictionary<string, int> blocks)
+    {
+        if (id == 0 || !Blocks.Exists(id)) return null;
+        var name = Blocks.Get(id).Name;
+        return blocks.ContainsKey(name) ? name : null;
     }
 
     /// <summary>Share (0..1) of the build's blocks in the box that hive bots placed themselves (<see cref="WorldState.Placed"/>).</summary>
@@ -277,7 +293,7 @@ public sealed class WorldMemory : IDisposable
         for (int y = y0; y <= y1; y++)
         {
             int id = _world.GetBlock(x, y, z);
-            if (id == 0 || !Blocks.Exists(id) || !blocks.ContainsKey(Blocks.Get(id).Name)) continue;
+            if (BuildBlockName(id, blocks) == null) continue;
             n++;
             if (_world.Placed.IsPlaced(new BlockPos(x, y, z), dim, id)) placed++;
         }
@@ -297,60 +313,74 @@ public sealed class WorldMemory : IDisposable
 
             // Columns that left the world (unload / dimension change): store their final state. Before an arrival, so the
             // old dimension is written under its own id.
-            while (_dropped.TryDequeue(out var gone))
-            {
-                puts.Add(RowOf(ChunkSnapshot.Capture(gone), gone.Dimension, gone.ChunkX, gone.ChunkZ, now));
-                if (gone.Dimension == _dim)
-                {
-                    _state.Remove(Key(gone.ChunkX, gone.ChunkZ));
-                    _baseline.Remove(Key(gone.ChunkX, gone.ChunkZ));
-                    _baselineDecoded.Remove(Key(gone.ChunkX, gone.ChunkZ));
-                }
-                _dirty.TryRemove(Key(gone.ChunkX, gone.ChunkZ), out _);
-            }
+            StoreDropped(puts, now);
 
             if (!_started || _world.Dimension != _dim) Arrive(_world.Dimension, now);
 
             var seen = new HashSet<long>();
             while (_regions.TryDequeue(out var k))
-            {
-                if (!seen.Add(k)) continue;
-                var (cx, cz) = Col(k);
-                var col = _world.GetColumn(cx, cz);
-                if (col is not { HasData: true } || col.Dimension != _dim) continue;
-                if (_state.ContainsKey(k)) { _dirty.TryAdd(k, 0); continue; } // a later bulk update: a change, flushed on the timer
-                var snap = ChunkSnapshot.Capture(col);
-                var stored = _store.GetChunk(_dim, cx, cz);
-                if (stored == null) { _state[k] = BaselineState.New; puts.Add(RowOf(snap, _dim, cx, cz, now)); }
-                else if (stored.Hash == snap.Hash) { _state[k] = BaselineState.Unchanged; touches.Add((cx, cz)); ColumnsUnchanged++; }
-                else
-                {
-                    _state[k] = BaselineState.Changed;
-                    _baseline[k] = stored;
-                    ColumnsChanged++;
-                    if (_arrivalOpen) Diff(stored, snap, cx, cz);
-                    puts.Add(RowOf(snap, _dim, cx, cz, now));
-                }
-                _arrivedAny = true;
-                _arrivalLast = now;
-            }
+                if (seen.Add(k)) ArriveColumn(k, puts, touches, now);
 
-            if (_arrivalOpen && _arrivedAny &&
-                (now - _arrivalLast >= TimeSpan.FromSeconds(_o.SettleSeconds) || now - _arrivalStart >= TimeSpan.FromSeconds(_o.MaxArrivalSeconds)))
-            {
-                _arrivalOpen = false;
-                if (Describe() is { } line)
-                {
-                    try { SinceLastTime?.Invoke(line); }
-                    catch (Exception ex) { _log.LogDebug(ex, "SinceLastTime handler failed"); }
-                }
-                _diff.Clear();
-            }
+            if (ArrivalSettled(now)) CloseArrival();
 
             if (now - _lastFlush >= TimeSpan.FromSeconds(Math.Max(1, _o.FlushSeconds))) puts.AddRange(DirtyRows(now));
 
             Write(puts, touches, now);
         }
+    }
+
+    private void StoreDropped(List<ChunkRow> puts, DateTimeOffset now)
+    {
+        while (_dropped.TryDequeue(out var gone))
+        {
+            long k = Key(gone.ChunkX, gone.ChunkZ);
+            puts.Add(RowOf(ChunkSnapshot.Capture(gone), gone.Dimension, gone.ChunkX, gone.ChunkZ, now));
+            if (gone.Dimension == _dim)
+            {
+                _state.Remove(k);
+                _baseline.Remove(k);
+                _baselineDecoded.Remove(k);
+            }
+            _dirty.TryRemove(k, out _);
+        }
+    }
+
+    /// <summary>One column region arrived: classify it against the stored baseline (new / unchanged / changed).</summary>
+    private void ArriveColumn(long k, List<ChunkRow> puts, List<(int, int)> touches, DateTimeOffset now)
+    {
+        var (cx, cz) = Col(k);
+        var col = _world.GetColumn(cx, cz);
+        if (col is not { HasData: true } || col.Dimension != _dim) return;
+        if (_state.ContainsKey(k)) { _dirty.TryAdd(k, 0); return; } // a later bulk update: a change, flushed on the timer
+        var snap = ChunkSnapshot.Capture(col);
+        var stored = _store.GetChunk(_dim, cx, cz);
+        if (stored == null) { _state[k] = BaselineState.New; puts.Add(RowOf(snap, _dim, cx, cz, now)); }
+        else if (stored.Hash == snap.Hash) { _state[k] = BaselineState.Unchanged; touches.Add((cx, cz)); ColumnsUnchanged++; }
+        else
+        {
+            _state[k] = BaselineState.Changed;
+            _baseline[k] = stored;
+            ColumnsChanged++;
+            if (_arrivalOpen) Diff(stored, snap, cx, cz);
+            puts.Add(RowOf(snap, _dim, cx, cz, now));
+        }
+        _arrivedAny = true;
+        _arrivalLast = now;
+    }
+
+    private bool ArrivalSettled(DateTimeOffset now) =>
+        _arrivalOpen && _arrivedAny &&
+        (now - _arrivalLast >= TimeSpan.FromSeconds(_o.SettleSeconds) || now - _arrivalStart >= TimeSpan.FromSeconds(_o.MaxArrivalSeconds));
+
+    private void CloseArrival()
+    {
+        _arrivalOpen = false;
+        if (Describe() is { } line)
+        {
+            try { SinceLastTime?.Invoke(line); }
+            catch (Exception ex) { _log.LogDebug(ex, "SinceLastTime handler failed"); }
+        }
+        _diff.Clear();
     }
 
     /// <summary>Writes every changed (or, with <paramref name="all"/>, every) live column now.</summary>
@@ -474,17 +504,16 @@ public sealed class WorldMemory : IDisposable
         for (int lz = 0; lz < 16; lz++)
         {
             for (int y = 0; y < h; y++)
-            {
-                int i = ChunkColumn.Index(lx, y, lz);
-                int was = before.Ids[i], isId = now.Ids[i];
-                if (was == isId) continue;
-                int cw = Canon(was), ci = Canon(isId);
-                if (cw == ci) continue;
-                double x = cx * 16 + lx + 0.5, z = cz * 16 + lz + 0.5;
-                if (!Noise(was) && !SecondHalf(was, before.Meta[i])) Note(was, removed: true, x, z);
-                if (!Noise(isId) && !SecondHalf(isId, now.Meta[i])) Note(isId, removed: false, x, z);
-            }
+                DiffCell(before, now, ChunkColumn.Index(lx, y, lz), cx * 16 + lx + 0.5, cz * 16 + lz + 0.5);
         }
+    }
+
+    private void DiffCell(ChunkSnapshot before, ChunkSnapshot now, int i, double x, double z)
+    {
+        int was = before.Ids[i], isId = now.Ids[i];
+        if (was == isId || Canon(was) == Canon(isId)) return;
+        if (!Noise(was) && !SecondHalf(was, before.Meta[i])) Note(was, removed: true, x, z);
+        if (!Noise(isId) && !SecondHalf(isId, now.Meta[i])) Note(isId, removed: false, x, z);
     }
 
     private void Note(int id, bool removed, double x, double z)
@@ -525,7 +554,12 @@ public sealed class WorldMemory : IDisposable
         return names[(int)Math.Round(a / 45) % 8];
     }
 
+    /// <summary>Mass nouns that stay singular ("12 cobblestone gone").</summary>
+    private static readonly HashSet<string> MassNouns = new(StringComparer.Ordinal)
+    {
+        "cobblestone", "stone", "dirt", "sand", "gravel", "glass", "wool", "obsidian", "netherrack", "glowstone", "soul sand",
+    };
+
     private static string Plural(string label, int n) =>
-        n == 1 || label.EndsWith('s') || label is "cobblestone" or "stone" or "dirt" or "sand" or "gravel" or "glass" or "wool" or "obsidian" or "netherrack" or "glowstone" or "soul sand"
-            ? label : label + "s";
+        n == 1 || label.EndsWith('s') || MassNouns.Contains(label) ? label : label + "s";
 }

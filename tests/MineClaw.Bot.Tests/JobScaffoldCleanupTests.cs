@@ -16,9 +16,11 @@ public class JobScaffoldCleanupTests
         for (int x = 0; x < 16; x++)
         for (int z = 0; z < 16; z++) s.Blocks[(x, 63, z)] = Blocks.Stone;
         s.Inventory[36] = new ItemStack(Blocks.Cobblestone, 32, 0);
+        // 20 ms ticks: the pillar jump's placement window (~6 ticks) must survive a CPU-saturated full test run (at 5 ms it was
+        // ~30 ms of wall time: "path step Place ... no visible support face" in full runs only; see ProtectionPolicyTests.PillarTickMs).
         await using var c = new MinecraftClient(new ClientOptions
         {
-            Username = "maid_chan", TickInterval = TimeSpan.FromMilliseconds(5), ChatInterval = TimeSpan.Zero,
+            Username = "maid_chan", TickInterval = TimeSpan.FromMilliseconds(20), ChatInterval = TimeSpan.Zero,
             ConnectionFactory = s.CreateClientConnection, HostileAlertRadius = 0,
             Survival = new() { Enabled = false },
         });

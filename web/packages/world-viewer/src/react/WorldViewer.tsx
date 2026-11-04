@@ -160,31 +160,42 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
     [],
   );
 
-  const showNotes = (props.layers?.notes ?? true) && notes.length > 0;
   return (
     <div className={props.className} style={{ position: 'relative', overflow: 'hidden', width: '100%', height: '100%', ...props.style }}>
       <div ref={host} style={{ position: 'absolute', inset: 0 }} />
-      {mode === 'fly' && !locked && !props.hideHint && (
-        <div
-          style={{ position: 'absolute', left: '50%', top: 12, transform: 'translateX(-50%)', padding: '4px 10px', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap' }}
-        >
-          Click to look around · WASD move · Space/E up · Q down · Shift fast · Esc releases the mouse
-        </div>
-      )}
+      <FlyHint mode={mode} locked={locked} hidden={props.hideHint} />
       <PerfOverlay engine={engine} />
-      {showNotes && (
-        <ul
-          style={{ position: 'absolute', left: 8, bottom: 8, margin: 0, padding: '4px 8px', listStyle: 'none', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.5)', borderRadius: 6, pointerEvents: 'none' }}
-          aria-label="world notes"
-        >
-          {notes.map((n, i) => (
-            <li key={i}>{n}</li>
-          ))}
-        </ul>
-      )}
+      <WorldNotes notes={notes} layers={props.layers} />
     </div>
   );
 });
+
+/** Free cam with the mouse not yet locked: how to look around and move. */
+function FlyHint({ mode, locked, hidden }: { mode: CameraMode; locked: boolean; hidden?: boolean }) {
+  if (mode !== 'fly' || locked || hidden) return null;
+  return (
+    <div
+      style={{ position: 'absolute', left: '50%', top: 12, transform: 'translateX(-50%)', padding: '4px 10px', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap' }}
+    >
+      Click to look around · WASD move · Space/E up · Q down · Shift fast · Esc releases the mouse
+    </div>
+  );
+}
+
+/** The overlays' notes (the `notes` layer, on by default), bottom left. */
+function WorldNotes({ notes, layers }: { notes: string[]; layers?: Partial<LayerToggles> }) {
+  if (!(layers?.notes ?? true) || notes.length === 0) return null;
+  return (
+    <ul
+      style={{ position: 'absolute', left: 8, bottom: 8, margin: 0, padding: '4px 8px', listStyle: 'none', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.5)', borderRadius: 6, pointerEvents: 'none' }}
+      aria-label="world notes"
+    >
+      {notes.map((n, i) => (
+        <li key={i}>{n}</li>
+      ))}
+    </ul>
+  );
+}
 
 /** The viewer settings' fps readout (`perfOverlay`): this view's frame rate, the timed frame and the controller's levers. */
 function PerfOverlay({ engine }: { engine: { current: WorldViewerEngine | null } }) {

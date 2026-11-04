@@ -153,25 +153,35 @@ public sealed partial class WorldIndexer
             if (now - a.Since > TimeSpan.FromSeconds(30)) _arrival = null; // never saw the exit (died, kicked, teleported)
             else if (cell is { } exitCell && a.From.Dim != _dim)
             {
-                var exit = EndAt(exitCell);
-                _arrival = null;
-                try
-                {
-                    _sink.LinkPortals(a.From, exit);
-                    Stats.PortalLinks++;
-                    _log.LogInformation("portal pair: {FromDim} {From} <-> {ToDim} {To}", WorldDim.Name(a.From.Dim), a.From.Pos, WorldDim.Name(exit.Dim), exit.Pos);
-                }
-                catch (Exception ex) { _log.LogWarning(ex, "portal link failed"); }
-                _portals.Add(exitCell); // index the exit at once (its column scan may not have run yet)
-                foreach (var p in PortalSheet(exitCell)) _portals.Add(p);
-                _departure = (exit, now); // standing in it: going straight back is a trip too
+                LinkArrival(a.From, exitCell, now);
                 return;
             }
         }
-        if (cell is { } c && (_departure is not { } d || d.End.X != c.X || d.End.Y != c.Y || d.End.Z != c.Z || d.End.Dim != _dim))
-            _departure = (EndAt(c), now);
+        if (cell is { } c && !DepartingFrom(c)) _departure = (EndAt(c), now);
         else if (cell is not null && _departure is { } keep) _departure = (keep.End, now);
     }
+
+    /// <summary>The bot stands in the exit portal of a trip from <paramref name="from"/>: link the pair, index the exit now (its
+    /// column scan may not have run yet), and count standing in it as a departure (going straight back is a trip too).</summary>
+    private void LinkArrival(PortalEnd from, BlockPos exitCell, DateTimeOffset now)
+    {
+        var exit = EndAt(exitCell);
+        _arrival = null;
+        try
+        {
+            _sink.LinkPortals(from, exit);
+            Stats.PortalLinks++;
+            _log.LogInformation("portal pair: {FromDim} {From} <-> {ToDim} {To}", WorldDim.Name(from.Dim), from.Pos, WorldDim.Name(exit.Dim), exit.Pos);
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "portal link failed"); }
+        _portals.Add(exitCell);
+        foreach (var p in PortalSheet(exitCell)) _portals.Add(p);
+        _departure = (exit, now);
+    }
+
+    /// <summary>The pending departure is this very cell (in this dimension).</summary>
+    private bool DepartingFrom(BlockPos c) =>
+        _departure is { } d && d.End.X == c.X && d.End.Y == c.Y && d.End.Z == c.Z && d.End.Dim == _dim;
 
     private void ApplyPortal(ClusterChange c)
     {
@@ -286,15 +296,17 @@ public sealed partial class WorldIndexer
     {
         var x = e.Extra;
         var parts = new List<string>();
-        if (x["lava_sea"] is int sea && sea > 0) parts.Add($"lava sea y<={LavaSeaY}");
-        if (x["lava_high"] is int hi && hi > 0)
+        if (Positive(x["lava_sea"]) is not null) parts.Add($"lava sea y<={LavaSeaY}");
+        if (Positive(x["lava_high"]) is { } hi)
             parts.Add($"lava {hi} above it" + (x.GetValueOrDefault("lava_high_y") is int[] ys ? $" (y{ys[0]}-{ys[1]})" : ""));
-        if (x["fire"] is int fire && fire > 0) parts.Add($"fire {fire}");
-        if (x["soul_sand"] is int soul && soul > 0) parts.Add($"soul sand {soul}");
-        if (x["glowstone"] is int glow && glow > 0) parts.Add($"glowstone {glow}");
+        if (Positive(x["fire"]) is { } fire) parts.Add($"fire {fire}");
+        if (Positive(x["soul_sand"]) is { } soul) parts.Add($"soul sand {soul}");
+        if (Positive(x["glowstone"]) is { } glow) parts.Add($"glowstone {glow}");
         foreach (var (k, v) in x) f[k] = v;
         return $"nether area {P(e.Min)}..{P(e.Max)} ({x["chunks"]}/16 chunks seen): " + (parts.Count > 0 ? string.Join(", ", parts) : "no lava or fire seen");
     }
+
+    private static int? Positive(object? v) => v is int n && n > 0 ? n : null;
 
     /// <summary>Per-column hazard counts during a nether scan (lava sea vs lava above it, fire, soul sand, glowstone).</summary>
     private static HazCol ScanHazards(ChunkColumn col)

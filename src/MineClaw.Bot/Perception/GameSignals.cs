@@ -281,16 +281,7 @@ public sealed class GameSignals : IDisposable
     {
         int last;
         lock (_lock) { last = _lastHp; _lastHp = hp; }
-        if (last >= 0 && hp < last && hp > 0)
-        {
-            // A player punching me swings at my face: hits, never a wave at me.
-            foreach (var p in W.Entities.Nearby(W.Player.Position, 4.5, x => x.Kind == EntityKind.Player && x.Name is { Length: > 0 }))
-                _gestures.Struck(p.Name!, Now);
-            var (by, _) = Attacker(W.Player.Position, null);
-            var data = new JsonObject { ["hp"] = hp };
-            if (by != null) data["by"] = by;
-            Raise("me.hurt", null, data);
-        }
+        if (last >= 0 && hp < last && hp > 0) Hurt(hp);
         bool fire = false;
         lock (_lock)
         {
@@ -298,6 +289,17 @@ public sealed class GameSignals : IDisposable
             else if (hp > 12) _low = false;
         }
         if (fire) Raise("me.lowHp", null, new JsonObject { ["hp"] = hp });
+    }
+
+    /// <summary>me.hurt (by = the nearest attacker). A player punching me swings at my face: hits, never a wave at me.</summary>
+    private void Hurt(int hp)
+    {
+        foreach (var p in W.Entities.Nearby(W.Player.Position, 4.5, x => x.Kind == EntityKind.Player && x.Name is { Length: > 0 }))
+            _gestures.Struck(p.Name!, Now);
+        var (by, _) = Attacker(W.Player.Position, null);
+        var data = new JsonObject { ["hp"] = hp };
+        if (by != null) data["by"] = by;
+        Raise("me.hurt", null, data);
     }
 
     private void Sneak(int entityId, bool on)
@@ -412,18 +414,29 @@ public sealed class GameSignals : IDisposable
         foreach (var p in players)
         {
             Sneak(p.Id, p.IsCrouched);
-            double d = p.Position.DistanceTo(me);
-            bool isNear;
-            lock (_lock) isNear = _near.Contains(p.Name!);
-            if (!isNear && d <= NearBlocks) { lock (_lock) _near.Add(p.Name!); Raise("player.near", p.Name, new JsonObject { ["d"] = Math.Round(d, 1) }); }
-            else if (isNear && d > NearBlocks + 1) { lock (_lock) _near.Remove(p.Name!); Raise("player.leave", p.Name, new JsonObject { ["d"] = Math.Round(d, 1) }); }
+            Proximity(p, p.Position.DistanceTo(me));
             Gaze(p, me, now);
         }
         foreach (var g in _gestures.Poll(now, LookOf)) RaiseGesture(g);
         List<string> gone;
         lock (_lock) gone = _near.Where(n => players.All(p => !p.Name!.Equals(n, StringComparison.OrdinalIgnoreCase))).ToList();
         foreach (var n in gone) { lock (_lock) _near.Remove(n); Raise("player.leave", n, new JsonObject { ["d"] = -1 }); }
+        MobsNear(w, me);
+        TimeAndWeather(w);
+    }
 
+    /// <summary>player.near on coming within <see cref="NearBlocks"/>, player.leave once a block past it.</summary>
+    private void Proximity(Entity p, double d)
+    {
+        bool isNear;
+        lock (_lock) isNear = _near.Contains(p.Name!);
+        if (!isNear && d <= NearBlocks) { lock (_lock) _near.Add(p.Name!); Raise("player.near", p.Name, new JsonObject { ["d"] = Math.Round(d, 1) }); }
+        else if (isNear && d > NearBlocks + 1) { lock (_lock) _near.Remove(p.Name!); Raise("player.leave", p.Name, new JsonObject { ["d"] = Math.Round(d, 1) }); }
+    }
+
+    /// <summary>mob.near once per hostile mob coming within <see cref="MobBlocks"/>.</summary>
+    private void MobsNear(WorldState w, Vec3d me)
+    {
         var mobs = w.Entities.Nearby(me, MobBlocks, e => e.IsHostileMob).ToList();
         foreach (var m in mobs)
         {
@@ -432,7 +445,11 @@ public sealed class GameSignals : IDisposable
             if (fresh) Raise("mob.near", null, new JsonObject { ["mob"] = m.DisplayName.ToLowerInvariant(), ["d"] = Math.Round(m.Position.DistanceTo(me), 1), ["pos"] = Pos(m.Position) });
         }
         lock (_lock) _mobs.RemoveWhere(id => mobs.All(m => m.Id != id));
+    }
 
+    /// <summary>time.dusk / time.dawn as the clock crosses them; weather when rain starts or stops.</summary>
+    private void TimeAndWeather(WorldState w)
+    {
         long t = w.TimeOfDay;
         long prev;
         lock (_lock) { prev = _lastTime; _lastTime = t; }
@@ -459,17 +476,7 @@ public sealed class GameSignals : IDisposable
     /// <summary>player.lookAt: their look ray passes within 0.6 of my head (target me) or rests on one block (target block) for <see cref="GazeHold"/>.</summary>
     private void Gaze(Entity p, Vec3d me, DateTimeOffset now)
     {
-        var eye = p.Position + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
-        var head = me + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
-        string key = "";
-        BlockPos? block = null;
-        double d = eye.DistanceTo(head);
-        if (d <= 16 && RayMiss(eye, p.Yaw, p.Pitch, head) < 0.6) key = "me";
-        else if (DemonstrationRecorder.LookTarget(W, p.Position, p.Yaw, p.Pitch, reach: 6, solidOnly: true) is { } t && p.Pitch > 10)
-        {
-            block = t.Pos;
-            key = $"{t.Pos.X},{t.Pos.Y},{t.Pos.Z}";
-        }
+        var (key, block) = GazeTarget(p, me);
         bool fire;
         lock (_lock)
         {
@@ -481,6 +488,19 @@ public sealed class GameSignals : IDisposable
         var data = new JsonObject { ["target"] = key == "me" ? "me" : "block" };
         if (block is { } b) { data["pos"] = Pos(b); data["block"] = ItemName(W.GetBlock(b)); }
         Raise("player.lookAt", p.Name, data);
+    }
+
+    /// <summary>What the player's look rests on: "me" (the ray passes within 0.6 of my head, ≤ 16 blocks), a block looked down at
+    /// within 6, or nothing ("").</summary>
+    private (string Key, BlockPos? Block) GazeTarget(Entity p, Vec3d me)
+    {
+        var eye = p.Position + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
+        var head = me + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
+        double d = eye.DistanceTo(head);
+        if (d <= 16 && RayMiss(eye, p.Yaw, p.Pitch, head) < 0.6) return ("me", null);
+        if (DemonstrationRecorder.LookTarget(W, p.Position, p.Yaw, p.Pitch, reach: 6, solidOnly: true) is { } t && p.Pitch > 10)
+            return ($"{t.Pos.X},{t.Pos.Y},{t.Pos.Z}", t.Pos);
+        return ("", null);
     }
 
     /// <summary>Distance from <paramref name="point"/> to the look ray (b1.8.1 yaw: 0 = +Z, 90 = −X); +∞ when it's behind.</summary>

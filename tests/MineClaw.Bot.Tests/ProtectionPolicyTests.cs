@@ -22,13 +22,21 @@ public class ProtectionPolicyTests
 {
     // ------------------------------------------------------------------ harness (real client + fake server)
 
-    private static async Task<(MinecraftClient C, FakeServer S)> StartAsync(Action<FakeServer> setup, string username = "maid_chan")
+    /// <summary>
+    /// Tick for the pillar scenarios. A pillar jump leaves ~6 ticks to send the placement under the feet; at 5 ms ticks that is
+    /// ~30 ms of wall time, which a CPU-saturated full test run (every class's FakeServer ticking in parallel, the tick loop
+    /// bursting to catch up) regularly overran: "path step Place at 6,6x,-6 failed: no visible support face" in full runs only
+    /// (reproduced alone with every core busy). 20 ms ticks keep the window at ~120 ms; the protection assertions are unchanged.
+    /// </summary>
+    private const int PillarTickMs = 20;
+
+    private static async Task<(MinecraftClient C, FakeServer S)> StartAsync(Action<FakeServer> setup, string username = "maid_chan", int tickMs = 5)
     {
         var server = new FakeServer();
         setup(server);
         var o = new ClientOptions
         {
-            Username = username, TickInterval = TimeSpan.FromMilliseconds(5), ChatInterval = TimeSpan.Zero,
+            Username = username, TickInterval = TimeSpan.FromMilliseconds(tickMs), ChatInterval = TimeSpan.Zero,
             RespawnDelay = TimeSpan.FromMilliseconds(10), ConnectionFactory = server.CreateClientConnection, HostileAlertRadius = 0,
         };
         var client = new MinecraftClient(o);
@@ -87,7 +95,7 @@ public class ProtectionPolicyTests
     [Fact]
     public async Task Replay_15_33_the_bot_mines_its_own_log_pillar_inside_the_main_house_box()
     {
-        var (c, s) = await StartAsync(HouseArea);
+        var (c, s) = await StartAsync(HouseArea, tickMs: PillarTickMs);
         await using var _ = c;
         using var __ = s;
         using var h = BotHost.Create(new MinecraftGameClient(c), Options(), null, new NoLlm(), persist: false);
@@ -135,7 +143,7 @@ public class ProtectionPolicyTests
 
     private static async Task<Dictionary<(int, int, int), int>> BuildPillarAsync(string dbPath)
     {
-        var (c, s) = await StartAsync(HouseArea);
+        var (c, s) = await StartAsync(HouseArea, tickMs: PillarTickMs);
         await using var _ = c;
         using var __ = s;
         using var db = AgentDb.Open(dbPath);
@@ -155,7 +163,7 @@ public class ProtectionPolicyTests
             HouseArea(srv);
             foreach (var kv in world) srv.Blocks[kv.Key] = kv.Value;
             srv.SpawnAt = (6.5, 70, -5.5); // where the bot was when the session ended: on top of the pillar
-        }, username);
+        }, username, PillarTickMs);
         await using var _ = c;
         using var __ = s;
         using var db = AgentDb.Open(dbPath);

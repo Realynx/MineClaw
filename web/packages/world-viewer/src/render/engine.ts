@@ -20,7 +20,7 @@ import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
 import { aimAt, outlineOf, type AimTarget } from './aim';
 import type { BubbleKind, ShownBubble } from './bubbles';
-import { CameraRig, lookDir } from './cameraRig';
+import { CameraRig, lookDir, type RigInput } from './cameraRig';
 import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type ViewSetup } from './runtime';
 import type { HoloCell, HologramStats } from './holograms';
 import type { Centre } from './sections';
@@ -385,103 +385,159 @@ export class WorldViewerEngine implements RuntimeView {
     if (this.disposed) return null;
     const t0 = performance.now();
     const bot = this.followed();
-    if (bot && this.following && this.rig.mode !== 'fly') {
-      const want = new THREE.Vector3(bot.x, bot.y + 1.2, bot.z);
-      if (!this.acquired) {
-        this.rig.target.copy(want);
-        this.acquired = true;
-      } else this.rig.target.lerp(want, Math.min(1, dt * 10));
-    }
-    this.rig.apply(this.camera, dt, { keys: this.keys }, now);
+    this.followBot(bot, dt);
+    this.rig.apply(this.camera, dt, this.rigInput, now);
     const iso = this.rig.mode === 'iso' || this.rig.mode === 'top';
     const cover = this.cover();
-    this.camera.far = Math.max(this.drawDistance, cover) * 1.6 + (iso ? this.rig.isoDistance() : 0) + 32;
+    this.fitClipPlanes(iso, cover);
+    this.syncOverlays(rt);
+    const subs = this.xray === 'off' ? [] : this.subjects(bot);
+    this.updateXRay(now, bot, subs);
+    this.updateAim(now);
+    const setup = this.setupFor(rt, bot, subs, iso, cover);
+    this.countFrame(now, t0);
+    return setup;
+  }
+
+  private readonly rigInput: RigInput = { keys: this.keys };
+  private readonly followAt = new THREE.Vector3();
+
+  /** The look-at point follows the bot's eyes (jumps there when first acquired, then glides); not while flying. */
+  private followBot(bot: BotView | null, dt: number): void {
+    if (!bot || !this.following || this.rig.mode === 'fly') return;
+    const want = this.followAt.set(bot.x, bot.y + 1.2, bot.z);
+    if (!this.acquired) {
+      this.rig.target.copy(want);
+      this.acquired = true;
+    } else this.rig.target.lerp(want, Math.min(1, dt * 10));
+  }
+
+  /** Near and far planes for the drawn distance (iso: from far away). */
+  private fitClipPlanes(iso: boolean, cover: number): void {
+    const isoDist = iso ? this.rig.isoDistance() : 0;
+    this.camera.far = Math.max(this.drawDistance, cover) * 1.6 + isoDist + 32;
     this.camera.near = iso ? Math.max(0.5, this.rig.isoDistance() * 0.2) : 0.05;
     // A cut-away shows solids from the inside: the cap pass needs their far side (down to the world floor) in range.
     if (this.roof || this.coneOn || this.levelCut) this.camera.far += 256;
-    // Overlays: this view's dimension, its toggles; notes go to the app.
+  }
+
+  /** Overlays: this view's dimension, its toggles; notes go to the app. */
+  private syncOverlays(rt: WorldRuntime): void {
     const ov = rt.overlaysFor(this.dim);
     if (ov && ov !== this.overlaysSeen) {
       this.overlaysSeen = ov;
       this.opts.onNotes?.(this.layers.notes ? ov.notes : []);
     }
     rt.overlays.setVisible(this.layers);
-    const subs = this.xray === 'off' ? [] : this.subjects(bot);
-    this.updateXRay(now, bot, subs);
-    // The crosshair (free cam, mouse locked): what the centre ray hits, ten times a second.
-    if (this.locked() && this.rig.mode === 'fly') {
-      if (!this.aimBusy && now - this.aimAtMs >= 100) {
-        this.aimAtMs = now;
-        this.aimBusy = true;
-        void this.aimNow().finally(() => {
-          this.aimBusy = false;
-        });
-      }
-    } else if (this.aimed) this.setAim(null);
-    const outlines: Array<{ min: [number, number, number]; max: [number, number, number]; color: number }> = [];
-    for (const name of this.highlighted) {
-      const b = this.runtime.store.bot(name);
-      if (b && b.dim === this.dim)
-        outlines.push({ ...outlineOf({ kind: 'bot', name, x: b.x, y: b.y, z: b.z, distance: 0 }), color: 0x5ee08a });
+  }
+
+  /** The crosshair (free cam, mouse locked): what the centre ray hits, ten times a second. */
+  private updateAim(now: number): void {
+    if (!(this.locked() && this.rig.mode === 'fly')) {
+      if (this.aimed) this.setAim(null);
+      return;
     }
-    if (this.marker)
-      outlines.push({
-        min: [this.marker[0] - 0.01, this.marker[1] - 0.01, this.marker[2] - 0.01],
-        max: [this.marker[0] + 1.01, this.marker[1] + 1.01, this.marker[2] + 1.01],
-        color: 0x38bdf8,
-      });
-    if (this.aimed) {
-      const b = this.aimed.kind === 'bot' ? this.runtime.store.bot(this.aimed.name) : null;
-      const t = b ? { ...this.aimed, x: b.x, y: b.y, z: b.z } : this.aimed;
-      outlines.push({ ...outlineOf(t), color: t.kind === 'bot' ? 0xffffff : 0x000000 });
-    }
+    if (this.aimBusy || now - this.aimAtMs < 100) return;
+    this.aimAtMs = now;
+    this.aimBusy = true;
+    void this.aimNow().finally(() => {
+      this.aimBusy = false;
+    });
+  }
+
+  /** What the runtime draws for this view this frame. */
+  private setupFor(rt: WorldRuntime, bot: BotView | null, subs: BotView[], iso: boolean, cover: number): ViewSetup {
+    const outlines = this.outlines();
     const primary = rt.isPrimary(this);
     const [w, h] = primary ? rt.primarySize(this.container) : this.size;
-    const setup: ViewSetup = {
+    return {
       dim: this.dim,
       camera: this.camera,
       centre: iso || this.rig.mode === 'follow' ? this.rig.target : this.camera.position,
       drawDistance: this.drawDistance,
       cover,
-      // Zoomed out past the draw distance, a top-down / iso picture skips what lies deep below the ground it looks at.
-      depthFloor: cover > this.drawDistance ? this.rig.target.y - FLOOR_DEPTH : null,
+      depthFloor: this.depthFloor(cover),
       width: w,
       height: h,
       layers: this.layers,
       labels: true,
       overlays: true,
       selected: this.followName,
-      cones:
-        subs.length && (this.xray === 'on' || this.coneOn) ? subs.map((s) => ({ x: s.x, y: s.y + 0.9, z: s.z })) : [],
-      floorY: subs.length ? Math.floor(Math.min(...subs.map((s) => s.y)) + 0.01) : 0,
-      roof: this.levelCut
-        ? { x: this.rig.target.x, y: this.levelCut.y, z: this.rig.target.z, r: this.levelCut.r }
-        : this.roof,
+      cones: this.cones(subs),
+      floorY: floorUnder(subs),
+      roof: this.roofCut(),
       dimBelow: this.levelCut?.dimBelow ?? null,
       ghosts: this.xray !== 'off',
       viewId: this.id,
       precip: this.precip,
-      aids: this.layers.aids && bot ? { x: bot.x, y: bot.y, z: bot.z } : null,
+      aids: this.aidsAt(bot),
       target: primary ? 'primary' : (this.ctx2d ?? 'primary'),
       outlines,
       bubbles: this.layers.bubbles === false ? 'off' : 'full',
       pxScale: h / Math.max(1, this.container.clientHeight),
       botLabels: this.botLabels,
-      entityCut: this.levelCut
-        ? { x: this.rig.target.x, y: this.levelCut.y, z: this.rig.target.z, r: this.levelCut.r, dimBelow: this.levelCut.dimBelow }
-        : null,
+      entityCut: this.entityCut(),
       holoPx: iso ? this.container.clientHeight / Math.max(1, this.rig.isoZoom) : null,
     };
+  }
+
+  /** Zoomed out past the draw distance, a top-down / iso picture skips what lies deep below the ground it looks at. */
+  private depthFloor(cover: number): number | null {
+    return cover > this.drawDistance ? this.rig.target.y - FLOOR_DEPTH : null;
+  }
+
+  /** X-ray cones toward the subjects: always with x-ray on, in auto mode only around a buried camera. */
+  private cones(subs: BotView[]): ViewSetup['cones'] {
+    if (!subs.length || !(this.xray === 'on' || this.coneOn)) return [];
+    return subs.map((s) => ({ x: s.x, y: s.y + 0.9, z: s.z }));
+  }
+
+  /** The level cut as a roof cut around where the view looks, else the automatic roof cut-away. */
+  private roofCut(): ViewSetup['roof'] {
+    const cut = this.levelCut;
+    return cut ? { x: this.rig.target.x, y: cut.y, z: this.rig.target.z, r: cut.r } : this.roof;
+  }
+
+  /** [level cut] Bodies above the cut are hidden, those below its dimmed storeys dimmed. */
+  private entityCut(): ViewSetup['entityCut'] {
+    const cut = this.levelCut;
+    return cut ? { x: this.rig.target.x, y: cut.y, z: this.rig.target.z, r: cut.r, dimBelow: cut.dimBelow } : null;
+  }
+
+  private aidsAt(bot: BotView | null): ViewSetup['aids'] {
+    return this.layers.aids && bot ? { x: bot.x, y: bot.y, z: bot.z } : null;
+  }
+
+  /** Wireframe boxes: the highlighted bots, the target marker and what the crosshair points at. */
+  private outlines(): NonNullable<ViewSetup['outlines']> {
+    const outlines: Array<{ min: [number, number, number]; max: [number, number, number]; color: number }> = [];
+    for (const name of this.highlighted) {
+      const b = this.runtime.store.bot(name);
+      if (b && b.dim === this.dim) outlines.push({ ...outlineOf({ kind: 'bot', name, x: b.x, y: b.y, z: b.z, distance: 0 }), color: 0x5ee08a });
+    }
+    const m = this.marker;
+    if (m) outlines.push({ min: [m[0] - 0.01, m[1] - 0.01, m[2] - 0.01], max: [m[0] + 1.01, m[1] + 1.01, m[2] + 1.01], color: 0x38bdf8 });
+    if (this.aimed) outlines.push(this.aimOutline(this.aimed));
+    return outlines;
+  }
+
+  /** The crosshair's box: a bot's where it stands now (white), a block's (black). */
+  private aimOutline(aimed: AimTarget): { min: [number, number, number]; max: [number, number, number]; color: number } {
+    const b = aimed.kind === 'bot' ? this.runtime.store.bot(aimed.name) : null;
+    const t = b ? { ...aimed, x: b.x, y: b.y, z: b.z } : aimed;
+    return { ...outlineOf(t), color: t.kind === 'bot' ? 0xffffff : 0x000000 };
+  }
+
+  /** Frame time and fps (over half-second windows), reported to the app with the stats. */
+  private countFrame(now: number, t0: number): void {
     this.frames++;
     this.frameMs = this.frameMs * 0.9 + (performance.now() - t0) * 0.1;
     if (!this.fpsAt) this.fpsAt = now;
-    if (now - this.fpsAt >= 500) {
-      this.fps = (this.frames * 1000) / (now - this.fpsAt);
-      this.frames = 0;
-      this.fpsAt = now;
-      this.opts.onStats?.(this.stats());
-    }
-    return setup;
+    if (now - this.fpsAt < 500) return;
+    this.fps = (this.frames * 1000) / (now - this.fpsAt);
+    this.frames = 0;
+    this.fpsAt = now;
+    this.opts.onStats?.(this.stats());
   }
 
   /** The bodies the x-ray keeps in sight: the followed bot, or (flying) up to two bots in front of the camera. */
@@ -627,7 +683,7 @@ export class WorldViewerEngine implements RuntimeView {
       const d = this.drag;
       this.drag = null;
       if (c.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId);
-      if (!d || d.moved || performance.now() - d.t > 500 || d.button !== 0) return;
+      if (!isClick(d)) return;
       const locked = document.pointerLockElement === c;
       if (locked && this.opts.onAimClick) {
         const mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
@@ -690,6 +746,16 @@ export class WorldViewerEngine implements RuntimeView {
 
 /** How deep below the look-at point a zoomed-out top-down / iso view still draws (ocean floors stay; caves do not). */
 const FLOOR_DEPTH = 32;
+
+/** A press that counts as a click: the left button, not dragged, released within half a second. */
+function isClick(d: { t: number; button: number; moved: boolean } | null): boolean {
+  return !!d && !d.moved && performance.now() - d.t <= 500 && d.button === 0;
+}
+
+/** The x-ray's floor: the cut never goes below the lowest subject's feet (0 without subjects). */
+function floorUnder(subs: BotView[]): number {
+  return subs.length ? Math.floor(Math.min(...subs.map((s) => s.y)) + 0.01) : 0;
+}
 
 function clampDraw(n: number): number {
   return Math.max(32, Math.min(256, Math.round(n)));
