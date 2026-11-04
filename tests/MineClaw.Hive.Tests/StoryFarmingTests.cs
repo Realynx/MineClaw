@@ -166,6 +166,7 @@ public sealed class StoryFarmingTests
         Assert.True(err == null, err);
         Assert.Equal(2, res!["count"]!.GetValue<int>());
         Assert.Equal(new[] { new P3(15, 64, 2), new P3(16, 64, 3) }, c.Designations.Where(d => d.Kind == "cut").Select(d => d.At!.Value).OrderBy(p => p.X).ToArray());
+        Assert.All(c.Designations, d => Assert.True(d.Auto)); // the colony chose these cells: a cave plant among them would be left alone
         // Seeds in storage: the zone has them, a pawn fetches them to sow.
         c.StorageOp("set", [new P3(0, 64, 4)], null, null, null);
         c.AddContents(c.StorageAt(new P3(0, 64, 4))!, new Stack(295, 0, 6));

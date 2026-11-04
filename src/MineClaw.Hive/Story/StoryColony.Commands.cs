@@ -294,7 +294,8 @@ public sealed partial class StoryColony
         d.Rev = Touch();
     }
 
-    private (JsonNode? Result, string? Error) AddDesignations(string? kind, Area? area, IReadOnlyList<P3>? blocks, string? filter)
+    /// <param name="auto">Placed by the colony (seek_seeds), not the owner: see <see cref="DesignationState.Auto"/>.</param>
+    private (JsonNode? Result, string? Error) AddDesignations(string? kind, Area? area, IReadOnlyList<P3>? blocks, string? filter, bool auto = false)
     {
         if (AddDesignationError(kind, area, blocks, filter) is { } err) return (null, err);
         if (World is not { } w) return (null, "no world view yet");
@@ -305,7 +306,7 @@ public sealed partial class StoryColony
             batch.Collect(filter);
             var made = batch.Made;
             if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
-            foreach (var d in made) { d.Rev = Touch(); Designations.Add(d); }
+            foreach (var d in made) { d.Auto = auto; d.Rev = Touch(); Designations.Add(d); }
             if (made.Count > 0 || batch.Revived > 0) WakeIdle();
             return (new JsonObject { ["count"] = made.Count + batch.Revived, ["revived"] = batch.Revived, ["targets"] = batch.Targets }, null);
         }

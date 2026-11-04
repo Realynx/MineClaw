@@ -250,7 +250,7 @@ public sealed partial class StoryColony
         try
         {
             var job = WorkSearch(p, live);
-            _looks[p.Name] = new Look(Now, job != null, notes, job == null ? NoReachNote() : null);
+            _looks[p.Name] = new Look(Now, job != null, notes, job == null ? NoReachNote() : null, _passed[(int)MarkPass.LeftToSurface] > 0);
             return job;
         }
         finally { _blockedNotes = outer; }
@@ -423,22 +423,29 @@ public sealed partial class StoryColony
     /// failure).</summary>
     private bool MarkWorkable(PawnState p, PawnLive live, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
     {
-        if (MarkPassedOver(p.Name, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
+        if (MarkPassedOver(p.Name, d, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
         // No tool for its material (carried or stored): the target waits, said on the map, no failure.
         if (s.Tooled && s.W is { } w && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(d, why); return false; }
         return true;
     }
 
     /// <summary>Why the pawn can't take this mark now (null = it can).</summary>
-    private MarkPass? MarkPassedOver(string pawn, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
+    private MarkPass? MarkPassedOver(string pawn, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
     {
         if (Forbidden(at)) return MarkPass.Forbidden;
         if (NearHazard(at, pawn)) return MarkPass.StuckSpot;
         if (s.W is not { } w) return null;
-        // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
-        if (s.Kind is "cut" or "harvest" && StoryWander.Underground(w, at)) return MarkPass.Cave;
+        if (CaveLeftAlone(w, d, at)) return MarkPass.Cave;
         return s.Digs ? DigPassedOver(w, pawn, at, ref stoodOn) : null;
     }
+
+    /// <summary>
+    /// Cutting and harvesting the colony chose (<see cref="DesignationState.Auto"/>) is surface work: a plant in a cave by it waits by
+    /// design (live 11-04: pawns went into caves). An owner's mark is ordinary work wherever it is (live 11-04 story-1: five pawns idle a
+    /// whole evening on "cut 91,55,463: in a cave"): the route, reach and stuck rules decide, and the idle audit says why if they can't.
+    /// </summary>
+    internal static bool CaveLeftAlone(IStoryWorld w, DesignationState d, P3 at) =>
+        d is { Auto: true, Kind: "cut" or "harvest" } && StoryWander.Underground(w, at);
 
     /// <summary>Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone. Never the
     /// block under someone else's feet (the client refuses it: "won't dig: someone is standing on it").</summary>
