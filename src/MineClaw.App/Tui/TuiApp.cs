@@ -173,75 +173,112 @@ public sealed class TuiApp
     /// <summary>Key handling (public for tests). Typing mode only when t, Enter or / was pressed, so hotkeys never eat chat.</summary>
     public void HandleKey(ConsoleKeyInfo k)
     {
-        var st = _state;
         if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control)) { Quit("ctrl+c"); return; }
+        if (_state.Mode != InputMode.None) TypingKey(k);
+        else if (!NavigationKey(k)) HotKey(k.KeyChar);
+    }
 
-        if (st.Mode != InputMode.None)
-        {
-            switch (k.Key)
-            {
-                case ConsoleKey.Enter:
-                    var text = st.Input.ToString().Trim();
-                    var mode = st.Mode;
-                    st.Mode = InputMode.None;
-                    st.Input.Clear();
-                    _historyAt = -1;
-                    if (text.Length == 0) return;
-                    var line = mode == InputMode.Command ? "/" + text.TrimStart('/') : text;
-                    _history.Add(line);
-                    if (_history.Count > 30) _history.RemoveAt(0);
-                    Send(line);
-                    return;
-                case ConsoleKey.Escape:
-                    st.Mode = InputMode.None;
-                    st.Input.Clear();
-                    return;
-                case ConsoleKey.Backspace:
-                    if (st.Input.Length > 0) st.Input.Length--;
-                    else if (st.Mode == InputMode.Command) st.Mode = InputMode.None;
-                    return;
-                case ConsoleKey.UpArrow when _history.Count > 0:
-                    _historyAt = _historyAt < 0 ? _history.Count - 1 : Math.Max(0, _historyAt - 1);
-                    var h = _history[_historyAt];
-                    st.Mode = h.StartsWith('/') ? InputMode.Command : InputMode.Chat;
-                    st.Input.Clear().Append(h.StartsWith('/') ? h[1..] : h);
-                    return;
-                default:
-                    if (k.KeyChar != '\0' && !char.IsControl(k.KeyChar) && st.Input.Length < 256) st.Input.Append(k.KeyChar);
-                    return;
-            }
-        }
-
+    /// <summary>Typing mode: Enter sends, Escape cancels, Backspace deletes (and leaves an empty command), Up recalls history.</summary>
+    private void TypingKey(ConsoleKeyInfo k)
+    {
+        var st = _state;
         switch (k.Key)
         {
-            case ConsoleKey.Tab when k.Modifiers.HasFlag(ConsoleModifiers.Shift): Select(st.Selected - 1); return;
-            case ConsoleKey.Tab: Select(st.Selected + 1); return;
-            case ConsoleKey.Enter: st.Mode = InputMode.Chat; return;
-            case ConsoleKey.PageUp: st.BrainScroll += 5; return;
-            case ConsoleKey.PageDown: st.BrainScroll = Math.Max(0, st.BrainScroll - 5); return;
-            case ConsoleKey.End: st.BrainScroll = 0; return;
-            case ConsoleKey.Escape: st.Flash = null; return;
-        }
-        switch (k.KeyChar)
-        {
-            case 'q' or 'Q': Quit("q"); return;
-            case 't' or 'T': st.Mode = InputMode.Chat; return;
-            case '/': st.Mode = InputMode.Command; return;
-            case ']': Select(st.Selected + 1); return;
-            case '[': Select(st.Selected - 1); return;
-            case 'v' or 'V': st.View = st.View switch { ViewMode.Top => ViewMode.Side, ViewMode.Side => ViewMode.Iso, _ => ViewMode.Top }; return;
-            case ',' or '<': st.Iso.Rotate(-1); return;
-            case '.' or '>': st.Iso.Rotate(1); return;
-            case '+' or '=': st.Iso.ZoomBy(1); return;
-            case '-' or '_': st.Iso.ZoomBy(-1); return;
-            case 'c' or 'C': st.Iso.Cutaway = !st.Iso.Cutaway; return;
-            case 'y' or 'Y': st.Iso.Labels = !st.Iso.Labels; return;
-            case 'p' or 'P': st.NarrowPanel = (st.NarrowPanel + 1) % 3; return;
-            case >= '1' and <= '9':
-                int i = k.KeyChar - '1';
-                if (i < _sources.Count) Select(i);
+            case ConsoleKey.Enter:
+                SubmitInput();
+                return;
+            case ConsoleKey.Escape:
+                st.Mode = InputMode.None;
+                st.Input.Clear();
+                return;
+            case ConsoleKey.Backspace:
+                if (st.Input.Length > 0) st.Input.Length--;
+                else if (st.Mode == InputMode.Command) st.Mode = InputMode.None;
+                return;
+            case ConsoleKey.UpArrow when _history.Count > 0:
+                RecallHistory();
+                return;
+            default:
+                if (k.KeyChar != '\0' && !char.IsControl(k.KeyChar) && st.Input.Length < 256) st.Input.Append(k.KeyChar);
                 return;
         }
+    }
+
+    private void SubmitInput()
+    {
+        var st = _state;
+        var text = st.Input.ToString().Trim();
+        var mode = st.Mode;
+        st.Mode = InputMode.None;
+        st.Input.Clear();
+        _historyAt = -1;
+        if (text.Length == 0) return;
+        var line = mode == InputMode.Command ? "/" + text.TrimStart('/') : text;
+        _history.Add(line);
+        if (_history.Count > 30) _history.RemoveAt(0);
+        Send(line);
+    }
+
+    private void RecallHistory()
+    {
+        _historyAt = _historyAt < 0 ? _history.Count - 1 : Math.Max(0, _historyAt - 1);
+        var h = _history[_historyAt];
+        _state.Mode = h.StartsWith('/') ? InputMode.Command : InputMode.Chat;
+        _state.Input.Clear().Append(h.StartsWith('/') ? h[1..] : h);
+    }
+
+    /// <summary>The non-character keys outside typing mode; false = not one of them.</summary>
+    private bool NavigationKey(ConsoleKeyInfo k)
+    {
+        var st = _state;
+        switch (k.Key)
+        {
+            case ConsoleKey.Tab when k.Modifiers.HasFlag(ConsoleModifiers.Shift): Select(st.Selected - 1); return true;
+            case ConsoleKey.Tab: Select(st.Selected + 1); return true;
+            case ConsoleKey.Enter: st.Mode = InputMode.Chat; return true;
+            case ConsoleKey.PageUp: st.BrainScroll += 5; return true;
+            case ConsoleKey.PageDown: st.BrainScroll = Math.Max(0, st.BrainScroll - 5); return true;
+            case ConsoleKey.End: st.BrainScroll = 0; return true;
+            case ConsoleKey.Escape: st.Flash = null; return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>The character hotkeys (either case): 1-9 pick a bot; the rest come from <see cref="HotKeys"/>.</summary>
+    private void HotKey(char c)
+    {
+        if (c is >= '1' and <= '9')
+        {
+            int i = c - '1';
+            if (i < _sources.Count) Select(i);
+            return;
+        }
+        if (HotKeys.TryGetValue(c, out var act)) act(this);
+    }
+
+    private static readonly Dictionary<char, Action<TuiApp>> HotKeys = BuildHotKeys();
+
+    private static Dictionary<char, Action<TuiApp>> BuildHotKeys()
+    {
+        var d = new Dictionary<char, Action<TuiApp>>();
+        void On(string keys, Action<TuiApp> act)
+        {
+            foreach (var c in keys) d[c] = act;
+        }
+        On("qQ", a => a.Quit("q"));
+        On("tT", a => a._state.Mode = InputMode.Chat);
+        On("/", a => a._state.Mode = InputMode.Command);
+        On("]", a => a.Select(a._state.Selected + 1));
+        On("[", a => a.Select(a._state.Selected - 1));
+        On("vV", a => a._state.View = a._state.View switch { ViewMode.Top => ViewMode.Side, ViewMode.Side => ViewMode.Iso, _ => ViewMode.Top });
+        On(",<", a => a._state.Iso.Rotate(-1));
+        On(".>", a => a._state.Iso.Rotate(1));
+        On("+=", a => a._state.Iso.ZoomBy(1));
+        On("-_", a => a._state.Iso.ZoomBy(-1));
+        On("cC", a => a._state.Iso.Cutaway = !a._state.Iso.Cutaway);
+        On("yY", a => a._state.Iso.Labels = !a._state.Iso.Labels);
+        On("pP", a => a._state.NarrowPanel = (a._state.NarrowPanel + 1) % 3);
+        return d;
     }
 
     private void Select(int i)

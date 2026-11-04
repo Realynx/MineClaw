@@ -366,85 +366,121 @@ public sealed class AdminSettingsService
     {
         node = null;
         if (v.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
-        switch (d.Kind)
+        return d.Kind switch
         {
-            case SettingKind.Bool:
-                bool? b = v.ValueKind switch
-                {
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    JsonValueKind.String when bool.TryParse(v.GetString(), out var p) => p,
-                    _ => null,
-                };
-                if (b is not { } bv) return "must be true or false";
-                node = JsonValue.Create(bv);
-                return null;
-            case SettingKind.Int:
-                {
-                    if (!TryNumber(v, out var n) || n != Math.Floor(n) || Math.Abs(n) > int.MaxValue) return "must be a whole number";
-                    if (Range(d, n) is { } re) return re;
-                    node = JsonValue.Create((long)n);
-                    return null;
-                }
-            case SettingKind.Number:
-                {
-                    if (!TryNumber(v, out var n) || !double.IsFinite(n)) return "must be a number";
-                    if (Range(d, n) is { } re) return re;
-                    node = JsonValue.Create(decimal.Parse(n.ToString("R", CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture));
-                    return null;
-                }
-            case SettingKind.List:
-                {
-                    if (v.ValueKind != JsonValueKind.Array) return "must be a list of names";
-                    var items = new JsonArray();
-                    foreach (var e in v.EnumerateArray())
-                    {
-                        if (e.ValueKind != JsonValueKind.String) return "every item must be text";
-                        var s = e.GetString()!.Trim();
-                        if (s.Length == 0 || s.Length > MaxListItem || s.Any(char.IsControl)) return $"items are 1-{MaxListItem} characters, no control characters";
-                        items.Add(s);
-                    }
-                    if (items.Count > MaxListItems) return $"at most {MaxListItems} items";
-                    node = items;
-                    return null;
-                }
+            SettingKind.Bool => NormalizeBool(v, out node),
+            SettingKind.Int => NormalizeInt(d, v, out node),
+            SettingKind.Number => NormalizeNumber(d, v, out node),
+            SettingKind.List => NormalizeList(v, out node),
+            _ => NormalizeText(d, v, out node),
+        };
+    }
+
+    private static string? NormalizeBool(JsonElement v, out JsonNode? node)
+    {
+        node = null;
+        bool? b = v.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(v.GetString(), out var p) => p,
+            _ => null,
+        };
+        if (b is not { } bv) return "must be true or false";
+        node = JsonValue.Create(bv);
+        return null;
+    }
+
+    private static string? NormalizeInt(SettingDef d, JsonElement v, out JsonNode? node)
+    {
+        node = null;
+        if (!TryNumber(v, out var n) || n != Math.Floor(n) || Math.Abs(n) > int.MaxValue) return "must be a whole number";
+        if (Range(d, n) is { } re) return re;
+        node = JsonValue.Create((long)n);
+        return null;
+    }
+
+    private static string? NormalizeNumber(SettingDef d, JsonElement v, out JsonNode? node)
+    {
+        node = null;
+        if (!TryNumber(v, out var n) || !double.IsFinite(n)) return "must be a number";
+        if (Range(d, n) is { } re) return re;
+        node = JsonValue.Create(decimal.Parse(n.ToString("R", CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture));
+        return null;
+    }
+
+    private static string? NormalizeList(JsonElement v, out JsonNode? node)
+    {
+        node = null;
+        if (v.ValueKind != JsonValueKind.Array) return "must be a list of names";
+        var items = new JsonArray();
+        foreach (var e in v.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.String) return "every item must be text";
+            var s = e.GetString()!.Trim();
+            if (s.Length == 0 || s.Length > MaxListItem || s.Any(char.IsControl)) return $"items are 1-{MaxListItem} characters, no control characters";
+            items.Add(s);
         }
+        if (items.Count > MaxListItems) return $"at most {MaxListItems} items";
+        node = items;
+        return null;
+    }
+
+    /// <summary>The text kinds: the value must be a JSON string; each kind trims and checks it its own way.</summary>
+    private static string? NormalizeText(SettingDef d, JsonElement v, out JsonNode? node)
+    {
+        node = null;
         if (v.ValueKind != JsonValueKind.String) return "must be text";
         var text = v.GetString()!;
-        switch (d.Kind)
+        var (error, clean) = d.Kind switch
         {
-            case SettingKind.Secret:
-                text = text.Trim();
-                if (text.Length > MaxSecret) return $"at most {MaxSecret} characters";
-                if (text.Any(c => char.IsControl(c) || char.IsWhiteSpace(c))) return "no spaces or control characters";
-                break;
-            case SettingKind.Text:
-                if (text.Length > MaxText) return $"at most {MaxText} characters";
-                if (text.Any(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t'))) return "no control characters";
-                break;
-            case SettingKind.Enum:
-                {
-                    var match = d.Options?.FirstOrDefault(o => o.Equals(text.Trim(), StringComparison.OrdinalIgnoreCase));
-                    if (match == null) return "must be one of " + string.Join(", ", (d.Options ?? []).Select(o => o.Length == 0 ? "(empty)" : o));
-                    text = match;
-                    break;
-                }
-            case SettingKind.Url:
-                text = text.Trim();
-                if (text.Length > MaxSecret) return $"at most {MaxSecret} characters";
-                if (text.Length > 0 && LiveProviderTester.CheckEndpoint(text) is { } ue) return ue;
-                break;
-            case SettingKind.Model:
-                text = text.Trim();
-                if (text.Length > 128 || !text.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or ':' or '/' or '-')) return "not a model id";
-                break;
-            default:
-                text = text.Trim();
-                if (text.Length > MaxString) return $"at most {MaxString} characters";
-                if (text.Any(char.IsControl)) return "no control characters";
-                break;
-        }
-        node = JsonValue.Create(text);
+            SettingKind.Secret => SecretText(text.Trim()),
+            SettingKind.Text => (LongTextError(text), text),
+            SettingKind.Enum => EnumText(d, text),
+            SettingKind.Url => UrlText(text.Trim()),
+            SettingKind.Model => (ModelTextError(text.Trim()), text.Trim()),
+            _ => (PlainTextError(text.Trim()), text.Trim()),
+        };
+        if (error != null) return error;
+        node = JsonValue.Create(clean);
+        return null;
+    }
+
+    private static (string? Error, string Text) SecretText(string text)
+    {
+        if (text.Length > MaxSecret) return ($"at most {MaxSecret} characters", text);
+        if (text.Any(c => char.IsControl(c) || char.IsWhiteSpace(c))) return ("no spaces or control characters", text);
+        return (null, text);
+    }
+
+    private static string? LongTextError(string text)
+    {
+        if (text.Length > MaxText) return $"at most {MaxText} characters";
+        if (text.Any(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t'))) return "no control characters";
+        return null;
+    }
+
+    private static (string? Error, string Text) EnumText(SettingDef d, string text)
+    {
+        var match = d.Options?.FirstOrDefault(o => o.Equals(text.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (match == null) return ("must be one of " + string.Join(", ", (d.Options ?? []).Select(o => o.Length == 0 ? "(empty)" : o)), text);
+        return (null, match);
+    }
+
+    private static (string? Error, string Text) UrlText(string text)
+    {
+        if (text.Length > MaxSecret) return ($"at most {MaxSecret} characters", text);
+        if (text.Length > 0 && LiveProviderTester.CheckEndpoint(text) is { } ue) return (ue, text);
+        return (null, text);
+    }
+
+    private static string? ModelTextError(string text) =>
+        text.Length > 128 || !text.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or ':' or '/' or '-') ? "not a model id" : null;
+
+    private static string? PlainTextError(string text)
+    {
+        if (text.Length > MaxString) return $"at most {MaxString} characters";
+        if (text.Any(char.IsControl)) return "no control characters";
         return null;
     }
 
