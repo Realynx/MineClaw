@@ -72,6 +72,19 @@ public sealed class StoryHost : IStoryHost
 
     private Body? Find(string account) => _bodies()?.Find(account) as Body;
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (WorldState World, IStoryWorld View)> _views = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The pawn body's own view (its connection's world): a dig it reported done is checked there first.</summary>
+    public IStoryWorld? ViewOf(string account)
+    {
+        if (Find(account) is not { State: BodyState.Online } b || World is not { } main) return null;
+        var w = b.Adapter.World;
+        if (_views.TryGetValue(account, out var v) && ReferenceEquals(v.World, w)) return v.View;
+        var view = new WorldStateStoryWorld(() => w, main.Data);
+        _views[account] = (w, view);
+        return view;
+    }
+
     public PawnLive Live(string account)
     {
         if (Find(account) is not { } b || b.State != BodyState.Online) return PawnLive.Offline;

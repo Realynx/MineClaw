@@ -146,7 +146,7 @@ The **Pawn** object:
    With nothing to do, the pawn idles and the colony gets an alert, at most every 5 minutes.
 
 Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y,z`.
-- A lease lasts 90 s and progress reports renew it. It goes back when the job ends, fails or times out.
+- A lease lasts 90 s; progress reports renew it, and so does the tick while the pawn's script still runs (up to 10 minutes per job). It goes back when the job ends, fails or times out.
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
@@ -251,6 +251,36 @@ Designations carry `retry_at` (when a resting, failed designation is tried again
 `POST .../designations {op:"retry", ids}` → `{count, retried}` tries them again now. The map shows a failed designation's reason as a
 short label (one per cluster of adjacent designations with the same reason), the full text on hover and in its inspector (reason,
 fail count, next retry, Retry now / Cancel).
+
+### Digging that sticks (added 2026-11-03, late)
+
+Live 11-03 after 23:41 (`story-1`, 1.12.2, 10 pawns): "reported done, but the tallgrass is still there" ×54 (flowers ×13, dirt/grass
+×27), a tall plant "busy: another hive bot is working on that part" ×11, "can't reach dirt/grass" ×46, "won't dig: someone is standing
+on it" ×6, and the bot at ~70% CPU. Fixed:
+
+- **Done is checked where the dig happened.** A pawn's "done" is checked against its own body's view (its connection carried the
+  server's answer) when that view holds the cell, else main's; main's copy of a block change can come a moment later and is no failure.
+  The check waits up to 1.5 s for the world to agree (`DoneGrace`; the pawn's script thread waits, never the director's lock). A block
+  that is still there after that is a failure whose reason says which view saw it ("… still there (in its own view)").
+- **The dig primitive finishes the block.** A block that turned into its other form while being dug (exposed dirt → grass, grass → dirt,
+  redstone ore lighting up when punched) used to count as broken; the client now waits until it is really gone. `story_pawn` digs a
+  block that an ok dig left in place once more after a second.
+- **A tall plant is one target for every kind.** Cut, mine and deconstruct designations over a 1.12.2 double plant are all made on
+  its lower half and lease the same key, so a cut box and a mine box over one plant never send two pawns to its two halves.
+- **Leases last as long as the job.** The pawn script reports no progress, so a lease ran out after 90 s while the pawn was still
+  walking there or digging and a second pawn was sent to the same target. A pawn whose script still runs keeps its lease (renewed by
+  the tick) up to 10 minutes per job.
+- **Only exposed blocks are handed out.** A mine or deconstruct target is offered only when a face of it touches an open cell (air,
+  a plant, a liquid, snow), so a multi-layer box is dug top-down and from the outside in; a buried cell just waits, uncounted. Among
+  open targets the nearest wins, higher cells a little earlier.
+- **Nobody digs a block someone stands on.** A block under another pawn's or a player's feet is skipped; a pawn's own floor comes
+  last, and when it is the pawn's target anyway the job carries `stand` (a cell beside it) and the script steps off first.
+- **Transient refusals aren't failures.** "can't reach", "someone is standing on it", "busy"/a hive claim and "not loaded" rest the
+  target 15 s with no fail count and no alert; only the 5th in a row counts as a failure (with its reason and alert as before).
+- **CPU.** A pick reads designations from an index rebuilt only when a designation or zone changed (by kind, with lease keys and
+  targets; forbidden cells, drops and zones as sets) and the world's entities once per pick. Benchmark (`StoryPickerBenchmarkTests`,
+  10 pawns, 500 mine designations): a pick round of all 10 pawns 15.7 → 2.0 ms; a director tick with every pawn finishing a job, the
+  watchdog tick and a state delta 6.7 → 3.1 ms.
 
 ### Pawn bodies and the pawn script
 
@@ -480,7 +510,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   hovered face.
 - **Designate tools** work by area the genre's way: pick a tool, drag a grid rectangle, every matching target lights up with a
   live count, release designates (Shift keeps the tool). Kinds gain `cut`, `hunt`, `forbid`, `allow` and a mine `filter`; the
-  director expands an area to its targets and answers the count.
+  director expands an area to its targets and answers the count. Mine and Deconstruct send the exact cells instead (`blocks`):
+  see "Mining height" under the Story Mode tab.
 - **Storage is chests.** There is no ground stockpile (loose loot despawns). Chests get the genre's storage settings: a
   priority and a filter over a loot category tree. State: `categories` and `storages`.
 - **Bills.** Workbenches (crafting table, furnace, brewing stand, anvil, enchanting table) take bills: a recipe, repeat
@@ -531,6 +562,32 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a mob gives attack
   - a drop gives haul
   - a design gives build
+- **Mining height (added 2026-11-03).** Live 11-03: Fox flattening the ground mined too deep, because a Mine drag took a whole
+  storey (level − 1 to the wall height) and nothing showed how deep. A Mine or Deconstruct drag now has an explicit height mode,
+  picked on the tool's options bar or with 1–5 while the tool is active:
+  - **Surface** (Mine's default): the top block of each column (trees, leaves, plants and snow looked through) and the plants
+    standing on it. Exactly one layer.
+  - **Level**: only the blocks at the working level (PgUp / PgDn).
+  - **Down to level**: from the surface down to and including the working level (terrace down to a height).
+  - **Flatten here**: everything above the working level, the plants on a column already at the level included, so the ground
+    comes out flat at the level. This is "make a surface level".
+  - **Layers: N**: N blocks deep from each column's top, with a 1–8 stepper (+ / − while the tool is active).
+
+  Deconstruct takes the same modes over placed blocks only (default Down to level: a building and its floor); Cut, Harvest
+  and Chop target plants and trees as before. Air and liquids are never designated, nothing goes below the mode's bottom, and
+  Surface and Layers see what the level's x-ray cut leaves (Down to level and Flatten here take the whole column above the
+  level either way). While dragging, each affected column's top face is outlined (fuller the deeper it goes; the bottom dashed
+  in the angled view) and the label says `Mine (Surface): y 64 → 62 · 3 layers · 48 blocks`. The release sends exactly those
+  cells as `blocks`, never an area the director could expand deeper. One drag takes at most 4096 cells: over that the label turns
+  red ("too many") and the release only says so. The columns come from the viewer engine's `stacks` query (each column's top and
+  the cells under it, in the mesh worker), so the preview reads the same world the map shows.
+- **Cancelling a drag (added 2026-11-03).** Esc, or a press of the other mouse button (right during a left drag, left during a
+  right-drag formation line), cancels the drag in progress the genre's way: the preview goes, a small "Cancelled" toast shows,
+  and the release does nothing, not even the right-click's usual "put the tool down". A middle-drag pan is never cancelled.
+  A click under the drag threshold (5 px) paints no zone, and a designate box with nothing in it posts nothing (the tool
+  stays). In full screen Esc is normally the browser's way out: while a drag is held, the map locks Esc (Keyboard Lock, Chromium:
+  holding Esc still leaves full screen) so it cancels the drag instead. Where Esc can't be locked (other browsers), leaving full
+  screen also cancels the drag. Right-click cancel works the same in full screen.
 - **Draft.** A draft toggle, with R as the hotkey. Shift queues orders.
 - **Formations.** With drafted pawns selected, a right-drag draws a line; on release every drafted pawn gets its own move
   order (`POST .../orders`, one pawn each) to a distinct standable cell spread evenly along it, at least a cell apart. Pawns
@@ -581,7 +638,15 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 - **Offline pawns and failed designations** see "Offline pawns" and "A pawn's own claim" above.
 - **Permissions.** Needs the `admin` role, or a new `story` role, for writes. Viewers can watch.
 - **Performance.** It must stay smooth with software WebGL at 40 fps or more. It uses the shared renderer, and the
-  overlays are cheap.
+  overlays are cheap. Live 11-03 it lagged with 10 pawns and a few hundred designations. Since then the designations' marks and
+  the failed ones' clusters are worked out once per state (not per frame), each mark is stamped from a cached sprite and skipped
+  off screen, the pawn portraits and the viewer's element are memoised (the page re-renders on every state poll), and the map
+  centre reaches the page only while the Colony tab or the new-colony card needs it. Measured with `STORY_PERF=1` in
+  `e2e/story.spec.ts` (the mock's `busy` seed: 10 pawns, 600 surface mine designations plus the cuts and chops of a 41×41 box, 120 failed; Chromium with SwiftShader, dev
+  build, 1440×900), before → after: panning 35 → 40 fps (p95 frame 50 → 33 ms) and main-thread script 263–299 → 178 ms/s;
+  idle 43 → 40 fps (noise; p95 33 ms both), script 199–245 → 211 ms/s; zoomed in on the failed labels 51 → 57 fps, script
+  213–219 → 175 ms/s. In the CPU profile React's render work fell 981 → 371 ms and the overlay's draw 779 → 491 ms per 12 s.
+  `STORY_PROFILE=<file>` also saves the CPU profile.
 
 ## Construction (added 2026-11-03)
 

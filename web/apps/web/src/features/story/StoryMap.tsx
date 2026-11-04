@@ -39,7 +39,16 @@ import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type P
 import { type Selection } from './model';
 import {
   buildItem,
+  DragGate,
   entitiesIn,
+  hasHeight,
+  heightLabel,
+  heightQuery,
+  heightTargets,
+  MAX_DRAG_CELLS,
+  NOT_GROUND_IDS,
+  type HeightMode,
+  type HeightTargets,
   faceCell,
   placeDesign,
   type DesignBlock,
@@ -76,6 +85,10 @@ export interface DragResult {
   cells: V3[];
   entities: EntityLite[];
   count: number;
+  /** The pointer travelled past the drag threshold (else it was a click). */
+  moved?: boolean;
+  /** A Mine or Deconstruct drag: exactly the cells its height mode designates (sent as `blocks`). */
+  height?: HeightTargets;
 }
 
 export interface FormationMove {
@@ -97,6 +110,8 @@ export interface StoryMapHandle {
   onScreen(x: number, y: number, z: number): boolean;
   /** The top solid block of a column (trees and plants skipped), when its chunk is loaded. */
   surface(x: number, z: number): Promise<number | null>;
+  /** Esc: cancels a drag in progress (nothing happens on release). True when there was one. */
+  cancelDrag(): boolean;
 }
 
 export interface StoryMapProps {
@@ -105,6 +120,9 @@ export interface StoryMapProps {
   tool: MapTool;
   build: BuildOpts;
   mineFilter: 'all' | 'ores' | 'stone' | 'soil';
+  /** The active Mine / Deconstruct tool's height mode, and the Layers count. */
+  heightMode: HeightMode;
+  layers: number;
   level: number;
   cutY: number | null;
   view: 'top' | 'angled';
@@ -128,6 +146,8 @@ export interface StoryMapProps {
    * `ignored` = selected pawns that are not drafted (they keep working, as in the genre). */
   onFormation?: (moves: FormationMove[], queue: boolean, ignored: number) => void;
   onDropTool: () => void;
+  /** A drag was cancelled (Esc, the other mouse button, leaving full screen). */
+  onCancelled?: () => void;
   onHover?(info: string | null): void;
 }
 
@@ -148,6 +168,123 @@ function settleSpot(e: WorldViewerEngine, player: string | null | undefined): V3
   return me ? at(me.x, me.y, me.z) : null;
 }
 const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
+
+/** A map mark (its glyph on a dark disc) drawn once into a small canvas and stamped with drawImage after that: a few hundred
+ * marks a frame cost a blit each instead of a path fill with save/restore (the Story perf profile's top item). */
+const sprites = new Map<string, HTMLCanvasElement | null>();
+function markSprite(id: string, color: string, size: number): HTMLCanvasElement | null {
+  const key = `${id}|${color}|${size}`;
+  const hit = sprites.get(key);
+  if (hit !== undefined) return hit;
+  let c: HTMLCanvasElement | null = null;
+  const g = glyph(id);
+  if (typeof document !== 'undefined') {
+    const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    const full = size + 6;
+    c = document.createElement('canvas');
+    c.width = Math.ceil(full * dpr);
+    c.height = Math.ceil(full * dpr);
+    const x = c.getContext('2d');
+    if (!x) c = null;
+    else {
+      x.scale(dpr, dpr);
+      x.translate(3, 3);
+      x.fillStyle = 'rgba(12,14,18,0.72)';
+      x.beginPath();
+      x.arc(size / 2, size / 2, size / 2 + 2, 0, Math.PI * 2);
+      x.fill();
+      if (g) {
+        x.scale(size / 16, size / 16);
+        x.fillStyle = color;
+        x.strokeStyle = color;
+        x.lineWidth = 1.4;
+        x.fill(g, 'evenodd');
+        if (id === 'hunt') x.stroke(g);
+      }
+    }
+  }
+  if (sprites.size > 256) sprites.clear();
+  sprites.set(key, c);
+  return c;
+}
+
+/** One designation as the map draws it: its mark's cell (a tree's top log), colour, ring, owner. */
+interface DesMark {
+  d: StoryColonyState['designations'][number];
+  cell: V3;
+  col: string;
+  ring: string | null;
+  failed: boolean;
+}
+
+/** The designations' marks and the failed ones' clusters, worked out once per state (not per frame). */
+interface DesModel {
+  marks: DesMark[];
+  failed: FailedMark[];
+  clusters: FailedCluster[];
+  clusterOf: Map<string, Array<string | number>>;
+}
+
+const desModels = new WeakMap<object, DesModel>();
+function designationModel(list: StoryColonyState['designations']): DesModel {
+  const hit = desModels.get(list);
+  if (hit) return hit;
+  const marks: DesMark[] = [];
+  const failed: FailedMark[] = [];
+  for (const d of list) {
+    const all = designationCells(d);
+    const cells = d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
+    const isFailed = d.status === 'failed';
+    const ring = isFailed ? COLORS.danger : (d.fails ?? 0) > 0 ? '#ffb35c' : null;
+    for (const b of cells) {
+      const cell: V3 = [b[0], b[1], b[2]];
+      marks.push({ d, cell, col: COLORS.designation[d.kind] ?? '#ffffff', ring, failed: isFailed });
+      if (isFailed) failed.push({ id: d.id, kind: d.kind, reason: d.reason ?? '', cell });
+    }
+  }
+  const clusters = clusterFailed(failed);
+  const clusterOf = new Map<string, Array<string | number>>();
+  for (const cl of clusters) for (const id of cl.ids) clusterOf.set(String(id), cl.ids);
+  const m = { marks, failed, clusters, clusterOf };
+  desModels.set(list, m);
+  return m;
+}
+
+/** One column of a height-mode preview: x, z, its highest and lowest designated y, how many cells. */
+type ColumnSpan = [number, number, number, number, number];
+
+/** Groups a height drag's cells by column (once per scan, not per frame). */
+function columnSpans(cells: readonly V3[]): ColumnSpan[] {
+  const by = new Map<string, ColumnSpan>();
+  for (const [x, y, z] of cells) {
+    const k = `${x},${z}`;
+    const c = by.get(k);
+    if (!c) by.set(k, [x, z, y, y, 1]);
+    else {
+      c[2] = Math.max(c[2], y);
+      c[3] = Math.min(c[3], y);
+      c[4]++;
+    }
+  }
+  return [...by.values()];
+}
+
+/** The pointer-event `buttons` bit of a `button` (0 left → 1, 1 middle → 4, 2 right → 2). */
+const buttonBit = (b: number) => (b === 0 ? 1 : b === 1 ? 4 : b === 2 ? 2 : 1 << b);
+
+type KeyboardLock = { lock?: (codes: string[]) => Promise<void>; unlock?: () => void };
+/** In full screen, Esc is the browser's way out: while a drag is held it is locked (Keyboard Lock, Chromium) so Esc cancels
+ * the drag instead; holding Esc still leaves full screen. Elsewhere (or where the API is missing) leaving full screen
+ * cancels the drag instead (see the fullscreenchange listener). */
+function lockEsc(on: boolean) {
+  const kb = (navigator as unknown as { keyboard?: KeyboardLock }).keyboard;
+  try {
+    if (on && document.fullscreenElement) void kb?.lock?.(['Escape'])?.catch(() => undefined);
+    else if (!on) kb?.unlock?.();
+  } catch {
+    /* not supported */
+  }
+}
 
 interface Formation {
   a: P2;
@@ -175,9 +312,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const p = useRef(props);
   p.current = props;
   const drag = useRef<DragState | null>(null);
+  /** Esc / the other button cancel a drag; the release after a cancel does nothing (tools.ts `DragGate`). */
+  const gate = useRef(new DragGate());
   const hover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
   const shown = useRef(new Map<string, V3>());
-  const scan = useRef<{ key: string; busy: boolean; result: DragResult | null }>({
+  const scan = useRef<{ key: string; busy: boolean; result: (DragResult & { cols?: ColumnSpan[] }) | null }>({
     key: '',
     busy: false,
     result: null,
@@ -244,6 +383,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
       return null;
     },
+    cancelDrag: () => {
+      if (!gate.current.escape()) return false;
+      dropDrag();
+      return true;
+    },
   }));
 
   // First placement over the colony's home; with no colony yet, over the main bot (else the viewing user's player) so a new
@@ -280,7 +424,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     let raf = 0;
     let last = performance.now();
     let centreAt = 0,
-      centreKey = '';
+      centreKey = '',
+      centreCb: StoryMapProps['onCentre'] = undefined;
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
       const dt = Math.min(0.1, (now - last) / 1000);
@@ -361,8 +506,13 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           })
           .catch(() => undefined);
       }
-      // The centre column for the panels ("settles at", "move home here"), at most five times a second, once placed.
-      if (placed.current && now - centreAt > 200) {
+      // The centre column for the panels ("settles at", "move home here"), at most five times a second, once placed, and
+      // only while a panel wants it (the page passes onCentre then: a re-render of the whole HUD per pan step otherwise).
+      if (p.current.onCentre !== centreCb) {
+        centreCb = p.current.onCentre;
+        centreKey = '';
+      }
+      if (placed.current && centreCb && now - centreAt > 200) {
         centreAt = now;
         const t = e.rig.target,
           cc: V3 = [Math.floor(t.x), p.current.level, Math.floor(t.z)];
@@ -511,6 +661,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       ctx.closePath();
     };
     const mark = (id: string, at: Pt, color: string, size = 14) => {
+      const sp = markSprite(id, color, size);
+      if (sp) {
+        ctx.drawImage(sp, at.x - size / 2 - 3, at.y - size / 2 - 3, size + 6, size + 6);
+        return;
+      }
       const g = glyph(id);
       ctx.save();
       ctx.translate(at.x - size / 2, at.y - size / 2);
@@ -683,47 +838,40 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const col = COLORS.ghost[state] ?? COLORS.ghost.todo!;
       cube(g[0], g[1], g[2], col, state === 'leased' ? 0.5 : 0.32, cutY !== null && g[1] >= cutY);
     }
-    // Designations: a mark on every target (one per tree for chop).
-    const failed: Array<FailedMark & { at: Pt }> = [];
-    for (const d of st?.designations ?? []) {
-      const col = COLORS.designation[d.kind] ?? '#ffffff';
-      const all = designationCells(d);
-      const cells =
-        d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
-      for (const b of cells) {
-        const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
-        if (at) mark(d.kind, at, col, cell > 18 ? 14 : 11);
-        // A designation that keeps failing (the director's status / reason): a red ring always; its reason as a short label
-        // (one per cluster, see below) when zoomed in.
-        if (at && (d.status === 'failed' || (d.fails ?? 0) > 0)) {
-          ctx.strokeStyle = d.status === 'failed' ? COLORS.danger : '#ffb35c';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
-          ctx.stroke();
-          if (d.status === 'failed')
-            failed.push({ id: d.id, kind: d.kind, reason: d.reason ?? '', cell: [b[0], b[1], b[2]], at });
-        }
-        if (d.pawn && at) {
-          ctx.strokeStyle = pawnColor(d.pawn);
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
-          ctx.stroke();
-        }
+    // Designations: a mark on every target (one per tree for chop). The marks and the failed ones' clusters are worked out
+    // once per state; a frame only projects and stamps them (off-screen ones skipped).
+    const model = designationModel(st?.designations ?? EMPTY_LIST);
+    const failedOn: Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }> = [];
+    const markSize = cell > 18 ? 14 : 11;
+    const vw = c.clientWidth,
+      vh = c.clientHeight;
+    for (const mk of model.marks) {
+      const b = mk.cell;
+      const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
+      if (!at || at.x < -20 || at.y < -20 || at.x > vw + 20 || at.y > vh + 20) continue;
+      mark(mk.d.kind, at, mk.col, markSize);
+      // A designation that keeps failing (the director's status / reason): a red ring always; its reason as a short label
+      // (one per cluster, see below) when zoomed in.
+      if (mk.ring) {
+        ctx.strokeStyle = mk.ring;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
+        ctx.stroke();
+        if (mk.failed) failedOn.push({ id: mk.d.id, cluster: model.clusterOf.get(String(mk.d.id)) ?? [mk.d.id], x: at.x, y: at.y });
+      }
+      if (mk.d.pawn) {
+        ctx.strokeStyle = pawnColor(mk.d.pawn);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
     // The failed designations' labels: one per cluster (same reason, adjacent), largest first, never on top of another; hidden
     // when zoomed out (the rings stay).
-    const clusters = clusterFailed(failed);
-    const clusterOf = new Map<string, Array<string | number>>();
-    for (const cl of clusters) for (const id of cl.ids) clusterOf.set(String(id), cl.ids);
-    failedAt.current = failed.map((f) => ({
-      id: f.id,
-      cluster: clusterOf.get(String(f.id)) ?? [f.id],
-      x: f.at.x,
-      y: f.at.y,
-    }));
+    const clusters = model.clusters;
+    failedAt.current = failedOn;
     const view = { w: c.clientWidth, h: c.clientHeight };
     syncLabels(
       cell > LABEL_ZOOM
@@ -1155,7 +1303,31 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     if (tool.kind === 'designate') {
       const res = scan.current.result;
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
-      if (res) {
+      if (res?.height && res.cols) {
+        // Exactly what will be designated: each column's top face outlined (fuller the deeper it goes), its bottom dashed.
+        const deep = res.height.layers > 1;
+        ctx.lineWidth = 1.2;
+        for (const [x, z, top, bottom, n] of res.cols.slice(0, 2500)) {
+          const qt = quad(x + 0.08, z + 0.08, x + 0.92, z + 0.92, top + 1.01);
+          if (!qt) continue;
+          poly(qt);
+          ctx.fillStyle = `${col}${n > 1 ? (n > 3 ? '66' : '44') : '22'}`;
+          ctx.fill();
+          ctx.strokeStyle = res.height.tooMany ? '#ff6b6b' : col;
+          ctx.stroke();
+          if (deep && bottom < top && props.view === 'angled') {
+            const qb = quad(x + 0.08, z + 0.08, x + 0.92, z + 0.92, bottom + 0.01);
+            if (qb) {
+              poly(qb);
+              ctx.setLineDash([3, 3]);
+              ctx.stroke();
+              ctx.setLineDash([]);
+            }
+          }
+        }
+        const mode = props.heightMode;
+        label(ctx, d.now, heightLabel(t.label, mode, res.height, props.layers), !res.height.tooMany && res.count > 0);
+      } else if (res) {
         for (const c of res.cells.slice(0, 1200)) {
           const s = project(m, c[0] + 0.5, c[1] + 1, c[2] + 0.5);
           if (s) {
@@ -1253,6 +1425,43 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     }
   };
 
+  /** What a designate drag's preview depends on: the rectangle, the tool and its filter, height mode and level. */
+  const scanKey = (rect: readonly number[], toolId: string): string => {
+    const pr = p.current;
+    return `${rect.join(',')}|${toolId}|${pr.mineFilter}|${pr.heightMode}|${pr.layers}|${pr.level}|${pr.cutY}`;
+  };
+
+  /** A Mine / Deconstruct drag's exact cells: each column's top and what its height mode takes under it. */
+  const heightScan = async (
+    e: WorldViewerEngine,
+    tool: 'mine' | 'deconstruct',
+    rect: readonly number[],
+  ): Promise<HeightTargets> => {
+    const pr = p.current;
+    const q = heightQuery(pr.heightMode, pr.level, pr.layers, pr.cutY);
+    const max = 4 * MAX_DRAG_CELLS;
+    const raw = await e.runtime.host.stacks(
+      0,
+      [rect[0]!, q.min, rect[1]!],
+      [rect[2]!, q.max, rect[3]!],
+      [...NOT_GROUND_IDS],
+      q.depth,
+      q.above,
+      max,
+    );
+    const t = heightTargets(tool, pr.heightMode, raw, pr.level, tool === 'mine' ? pr.mineFilter : 'all');
+    return raw.length >= max * 6 ? { ...t, tooMany: true } : t;
+  };
+
+  /** Drops the drag in progress (Esc, the other button, leaving full screen): no preview, nothing on release. */
+  const dropDrag = () => {
+    drag.current = null;
+    scan.current = { key: '', busy: false, result: null };
+    formationShown.current = null;
+    lockEsc(false);
+    p.current.onCancelled?.();
+  };
+
   /** Rescans a designate drag's targets (one scan in flight; the latest rectangle wins). */
   const rescan = () => {
     const d = drag.current,
@@ -1260,13 +1469,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const tool = p.current.tool;
     if (!d || !e || !d.startCell || !d.endCell || tool.kind !== 'designate') return;
     const rect = cellRect(d.startCell, d.endCell);
-    const key = rect.join(',') + tool.id + p.current.mineFilter;
+    const key = scanKey(rect, tool.id);
     if (scan.current.key === key || scan.current.busy) return;
     scan.current.key = key;
     const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
     const y = toolYRange(tool.id, p.current.level, p.current.build.height, p.current.cutY);
-    const finish = (cells: V3[], count: number, ents: EntityLite[]) => {
-      scan.current.result = { rect, a: d.startCell!, b: d.endCell!, cells, entities: ents, count };
+    const finish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets) => {
+      if (drag.current !== d) return; // cancelled meanwhile
+      scan.current.result = {
+        rect,
+        a: d.startCell!,
+        b: d.endCell!,
+        cells,
+        entities: ents,
+        count,
+        ...(height ? { height, cols: columnSpans(height.cells) } : {}),
+      };
     };
     if (t.entities) {
       const ents = entitiesIn(t, rect, entityList());
@@ -1282,27 +1500,40 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       return;
     }
     scan.current.busy = true;
-    void e.runtime.host
-      .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
-      .then((s) => {
-        const pv = previewTargets(tool.id, s, p.current.mineFilter);
-        finish(pv.cells, pv.count, []);
-      })
+    const job = hasHeight(tool.id)
+      ? heightScan(e, tool.id, rect).then((ht) => finish(ht.cells, ht.cells.length, [], ht))
+      : e.runtime.host
+          .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
+          .then((s) => {
+            const pv = previewTargets(tool.id, s, p.current.mineFilter);
+            finish(pv.cells, pv.count, []);
+          });
+    void job
       .catch(() => undefined)
       .finally(() => {
         scan.current.busy = false;
-        if (drag.current) {
-          const r2 =
-            drag.current.startCell && drag.current.endCell
-              ? cellRect(drag.current.startCell, drag.current.endCell).join(',') + tool.id + p.current.mineFilter
-              : '';
+        const dd = drag.current;
+        if (dd) {
+          const r2 = dd.startCell && dd.endCell ? scanKey(cellRect(dd.startCell, dd.endCell), tool.id) : '';
           if (r2 !== scan.current.key) rescan();
         }
       });
   };
 
+  /** Another button went down during a drag: right during a left drag (left during a right drag) cancels it. */
+  const chord = (button: number) => {
+    if (gate.current.chord(button)) dropDrag();
+  };
+
   const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
+    if (gate.current.button !== null && (ev.buttons & ~buttonBit(ev.button)) !== 0) {
+      // A second button while one is held (browsers that send it as a down, not a chorded move).
+      chord(ev.button);
+      return;
+    }
+    gate.current.start(ev.button);
+    if (ev.button !== 1) lockEsc(true);
     canvas.current?.setPointerCapture(ev.pointerId);
     canvas.current?.focus({ preventScroll: true });
     updateHover(pt);
@@ -1342,6 +1573,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
+    // A chorded press: pointer events report a second button going down as a move with `button` set.
+    if (ev.button >= 0 && (ev.buttons & buttonBit(ev.button)) !== 0 && gate.current.button !== null) chord(ev.button);
     const d = drag.current;
     if (d && d.button === 1) {
       // Middle-drag pans (Shift + middle-drag turns the angled view).
@@ -1398,6 +1631,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   const onPointerUp = async (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
+    if (gate.current.release(ev.buttons) !== 'act') return; // cancelled: the release (and the cancelling click) do nothing
+    lockEsc(false);
     const d = drag.current;
     drag.current = null;
     const props = p.current;
@@ -1558,11 +1793,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
       const rect = cellRect(d.startCell, end);
       const y = toolYRange(tool.id, props.level, props.build.height, props.cutY);
-      let res = scan.current.result;
-      if (!res || res.rect.join(',') !== rect.join(',')) {
+      let res: DragResult | null = scan.current.result;
+      if (!res || scan.current.key !== scanKey(rect, tool.id) || res.rect.join(',') !== rect.join(',')) {
         // A click, or the scan had not caught up: scan now.
         const e = engine();
-        if (t.entities) {
+        if (e && hasHeight(tool.id)) {
+          const ht = await heightScan(e, tool.id, rect).catch(() => null);
+          res = {
+            rect,
+            a: d.startCell,
+            b: end,
+            cells: ht?.cells ?? [],
+            entities: [],
+            count: ht?.cells.length ?? 0,
+            ...(ht ? { height: ht } : {}),
+          };
+        } else if (t.entities) {
           const ents = entitiesIn(t, rect, entityList());
           res = { rect, a: d.startCell, b: end, cells: [], entities: ents, count: ents.length };
         } else if (e && tool.id !== 'cancel') {
@@ -1574,11 +1820,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         } else res = { rect, a: d.startCell, b: end, cells: [], entities: [], count: 0 };
       }
       void toolArea;
-      props.onTool(res, ev.shiftKey);
+      props.onTool({ ...res, moved: d.moved }, ev.shiftKey);
       return;
     }
     props.onTool(
-      { rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0 },
+      { rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0, moved: d.moved },
       ev.shiftKey,
     );
   };
@@ -1640,6 +1886,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     e.rig.target.z = z.z;
   };
 
+  // Leaving full screen mid-drag (the browser's Esc where Esc can't be locked) cancels the drag too.
+  useEffect(() => {
+    const off = () => {
+      if (!document.fullscreenElement && gate.current.escape()) dropDrag();
+    };
+    document.addEventListener('fullscreenchange', off);
+    return () => document.removeEventListener('fullscreenchange', off);
+  }, []);
+
+  /** The pointer was taken away (a touch scroll, the window lost it): the drag ends with nothing done. */
+  const lost = () => {
+    if (gate.current.button === null) return;
+    gate.current = new DragGate();
+    if (drag.current) dropDrag();
+  };
+
   // The wheel must not scroll the page (a passive React listener cannot prevent it).
   useEffect(() => {
     const c = canvas.current;
@@ -1665,6 +1927,26 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         if (e) e.rig.target.set(x + 0.5, p.current.level + 1, z + 0.5);
       },
       ready: () => !!engine() && !!mats.current,
+      /** The live preview of the drag in progress (null = none): what its release would designate. */
+      preview: () => {
+        const r = scan.current.result;
+        if (!drag.current || !r) return null;
+        const t = DESIGNATE_TOOLS.find((x) => p.current.tool.kind === 'designate' && x.id === p.current.tool.id);
+        return {
+          count: r.count,
+          cells: r.cells.length,
+          label: r.height && t ? heightLabel(t.label, p.current.heightMode, r.height, p.current.layers) : null,
+          top: r.height?.top ?? null,
+          bottom: r.height?.bottom ?? null,
+        };
+      },
+      /** Block ids at points [[x, y, z], …] (-1 where nothing is held). */
+      blocks: async (pts: number[][]) => {
+        const e = engine();
+        if (!e) return [];
+        const r = await e.runtime.host.blocksAt(0, pts.flat());
+        return pts.map((_, i) => r[i * 3]!);
+      },
       bodies: () =>
         [...shown.current].map(([name, pos]) => ({
           name,
@@ -1712,25 +1994,35 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     [],
   );
 
-  if (!ready) return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
-  return (
-    <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map">
-      {mod && source ? (
+  // The viewer's element is kept while its inputs stay (React then skips its subtree): the page re-renders on every state
+  // poll, and the viewer needs none of that (the overlay reads the state from a ref each frame).
+  const cameraMode = props.view === 'top' ? 'top' : 'iso';
+  const followName = mod && source ? '' : (props.state?.pawns[0]?.name ?? '');
+  const viewerEl = useMemo(
+    () =>
+      mod && source ? (
         <mod.WorldViewer
           ref={viewer}
           source={source}
           dim={0}
           follow={null}
           layers={layers}
-          cameraMode={props.view === 'top' ? 'top' : 'iso'}
+          cameraMode={cameraMode}
           xray="off"
           drawDistance={112}
           hideHint
           className="absolute inset-0"
         />
       ) : (
-        <DotMap follow={props.state?.pawns[0]?.name ?? ''} radius={40} className="absolute inset-0" label={false} />
-      )}
+        <DotMap follow={followName} radius={40} className="absolute inset-0" label={false} />
+      ),
+    [mod, source, layers, cameraMode, followName],
+  );
+
+  if (!ready) return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
+  return (
+    <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map">
+      {viewerEl}
       <canvas
         ref={canvas}
         tabIndex={0}
@@ -1740,6 +2032,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={(e) => void onPointerUp(e)}
+        onPointerCancel={lost}
+        onMouseDown={(e) => {
+          // Mouse events still report every button press (pointer events chord them into moves): a fallback for the cancel.
+          if (gate.current.button !== null && e.button !== gate.current.button) chord(e.button);
+        }}
         onPointerLeave={() => (hover.current = null)}
         onWheel={onWheel}
         onContextMenu={(e) => e.preventDefault()}
@@ -1761,6 +2058,7 @@ const LABEL_CLASS =
   'pointer-events-auto absolute top-0 left-0 max-w-64 cursor-pointer truncate rounded-full border border-danger/50 bg-surface/90 px-2 ' +
   'py-px text-[11px] leading-[16px] font-semibold whitespace-nowrap text-fg shadow-sm hover:bg-surface';
 const EMPTY_SEL: Selection = { bodies: [], chests: [], bench: null };
+const EMPTY_LIST: StoryColonyState['designations'] = [];
 
 const BLOCK_LABELS: Record<number, string> = {
   1: 'stone',
