@@ -16,16 +16,27 @@ public static class DoorOps
 {
     public static bool IsDoorish(int id) => Openables.IsOpenable(id);
 
+    // Kinds by family (every wood's door and gate, both trapdoors), not by one b1.8.1 id.
+    private static readonly Dictionary<string, Func<int, bool>> Kinds = new(StringComparer.Ordinal)
+    {
+        ["door"] = id => Openables.IsDoor(id) && id != Openables.IronDoor,
+        ["iron_door"] = IsIronDoor, ["iron door"] = IsIronDoor,
+        ["gate"] = Openables.IsFenceGate, ["fence_gate"] = Openables.IsFenceGate,
+        ["trapdoor"] = Openables.IsTrapdoor, ["hatch"] = Openables.IsTrapdoor,
+        ["iron_trapdoor"] = IsIronTrapdoor, ["iron trapdoor"] = IsIronTrapdoor,
+    };
+
+    private static bool IsIronDoor(int id) => id == Openables.IronDoor;
+    private static bool IsIronTrapdoor(int id) => id == Openables.IronTrapdoor;
+
+    /// <summary>The block filter of an open_door/close_door <c>kind</c> (door, iron_door, gate, trapdoor, iron_trapdoor and their
+    /// aliases, any case); null = any openable.</summary>
+    public static Func<int, bool>? KindFilter(string? kind) => kind is null ? null : Kinds.GetValueOrDefault(kind.ToLowerInvariant());
+
     /// <summary>Nearest openable (optionally of one kind) within <paramref name="radius"/>.</summary>
     public static BlockPos? Nearest(SkillContext ctx, string? kind, double radius = 8)
     {
-        // Kinds by family (every wood's door and gate, both trapdoors), not by one b1.8.1 id.
-        Func<int, bool>? only = kind?.ToLowerInvariant() switch
-        {
-            "door" => id => Openables.IsDoor(id) && id != Openables.IronDoor, "iron_door" or "iron door" => id => id == Openables.IronDoor,
-            "gate" or "fence_gate" => Openables.IsFenceGate, "trapdoor" or "hatch" => Openables.IsTrapdoor,
-            "iron_trapdoor" or "iron trapdoor" => id => id == Openables.IronTrapdoor, _ => null,
-        };
+        var only = KindFilter(kind);
         var hit = ctx.Find((id, meta) => Openables.IsOpenable(id) && (only is null || only(id)) && !Openables.IsUpperHalf(id, meta), radius, 1);
         return hit.Count > 0 ? hit[0].Pos : null;
     }
@@ -34,15 +45,27 @@ public static class DoorOps
     /// nearest the bot) or a plate next to it — never one with TNT/dispensers near.</summary>
     public static BlockPos? FindActuator(SkillContext ctx, BlockPos door)
     {
+        var eye = ctx.World.Player.EyePosition;
+        return LearnedTrigger(ctx, door, eye) ?? NearbyActuator(ctx, door, eye);
+    }
+
+    private static BlockPos? LearnedTrigger(SkillContext ctx, BlockPos door, Vec3d eye)
+    {
         BlockPos? best = null;
         double bestD = double.MaxValue;
-        var eye = ctx.World.Player.EyePosition;
         foreach (var l in MechanismOps.Openers(ctx, door).Where(l => !l.Dangerous && l.TriggerPresent(ctx.World)))
         {
             double d = l.Trigger.Center.DistanceTo(eye);
             if (d < bestD) { bestD = d; best = l.Trigger; }
         }
-        if (best is not null) return best;
+        return best;
+    }
+
+    /// <summary>A lever/button within 2 blocks of the door (a plate counts half a block farther), none with explosives near.</summary>
+    private static BlockPos? NearbyActuator(SkillContext ctx, BlockPos door, Vec3d eye)
+    {
+        BlockPos? best = null;
+        double bestD = double.MaxValue;
         for (int dx = -2; dx <= 2; dx++)
         for (int dz = -2; dz <= 2; dz++)
         for (int dy = -1; dy <= 2; dy++)
@@ -77,7 +100,12 @@ public static class DoorOps
             return SkillResult.Fail($"won't open the {what}: I'm standing on it");
 
         if (!Openables.OpensByHand(id)) return await IronAsync(ctx, s, want, what, ct).ConfigureAwait(false); // iron door / iron trapdoor
+        return await ByHandAsync(ctx, s, id, before, want, what, ct).ConfigureAwait(false);
+    }
 
+    /// <summary>A right-click on the door itself, verified by the server's block change.</summary>
+    private static async Task<SkillResult> ByHandAsync(SkillContext ctx, BlockPos s, int id, int before, bool want, string what, CancellationToken ct)
+    {
         var reach = await ctx.ReachAsync(s, ct).ConfigureAwait(false);
         if (!reach.Ok) return SkillResult.Fail($"can't reach {what}: {reach.Message}");
         var r = await ctx.Game.ActivateAsync(s, ct).ConfigureAwait(false);
@@ -94,23 +122,31 @@ public static class DoorOps
             return SkillResult.Fail($"{what} only opens with redstone and I don't know its button/lever/plate; " + MechanismOps.Ask(ctx, s, "iron door"));
         int aid = ctx.Block(act);
         int before = ctx.Meta(s);
-        if (Openables.IsPlate(aid))
-        {
-            if (!want) return SkillResult.Success($"{what} closes when nobody stands on the plate at {SkillJson.Fmt(act)}");
-            var g = await ctx.Game.GotoAsync(new GoalBlock(act), null, ct).ConfigureAwait(false);
-            if (!g.Ok) return SkillResult.Fail($"can't reach the plate at {SkillJson.Fmt(act)}: {g.Message}");
-        }
-        else
-        {
-            if (Openables.IsButton(aid) && !want) return SkillResult.Success($"{what} closes by itself (button)");
-            var reach = await ctx.ReachAsync(act, ct).ConfigureAwait(false);
-            if (!reach.Ok) return SkillResult.Fail($"can't reach the {Openables.Name(aid)} for {what}: {reach.Message}");
-            var r = await ctx.Game.ActivateAsync(act, ct).ConfigureAwait(false);
-            if (!r.Ok) return SkillResult.Fail($"couldn't press the {Openables.Name(aid)}: {r.Message}");
-        }
+        var done = Openables.IsPlate(aid)
+            ? await StepOnPlateAsync(ctx, act, want, what, ct).ConfigureAwait(false)
+            : await PressAsync(ctx, act, aid, want, what, ct).ConfigureAwait(false);
+        if (done is not null) return done;
         if (!await ctx.WaitBlockAsync(s, (_, meta) => ((meta ^ before) & Openables.OpenBit) != 0, ct).ConfigureAwait(false))
             return SkillResult.Fail($"{what} didn't react to the {Openables.Name(aid)} at {SkillJson.Fmt(act)} (not wired to it?)");
         return SkillResult.Success($"{what} {(want ? "opened" : "closed")} via {Openables.Name(aid)}" + (Openables.IsButton(aid) ? " (shuts in ~1s)" : ""));
+    }
+
+    /// <summary>Opening by a plate: walk onto it (closing: just step off). → the result when that's the end of it, else null.</summary>
+    private static async Task<SkillResult?> StepOnPlateAsync(SkillContext ctx, BlockPos act, bool want, string what, CancellationToken ct)
+    {
+        if (!want) return SkillResult.Success($"{what} closes when nobody stands on the plate at {SkillJson.Fmt(act)}");
+        var g = await ctx.Game.GotoAsync(new GoalBlock(act), null, ct).ConfigureAwait(false);
+        return g.Ok ? null : SkillResult.Fail($"can't reach the plate at {SkillJson.Fmt(act)}: {g.Message}");
+    }
+
+    /// <summary>A button or lever press (a button closes by itself). → the result when that's the end of it, else null.</summary>
+    private static async Task<SkillResult?> PressAsync(SkillContext ctx, BlockPos act, int aid, bool want, string what, CancellationToken ct)
+    {
+        if (Openables.IsButton(aid) && !want) return SkillResult.Success($"{what} closes by itself (button)");
+        var reach = await ctx.ReachAsync(act, ct).ConfigureAwait(false);
+        if (!reach.Ok) return SkillResult.Fail($"can't reach the {Openables.Name(aid)} for {what}: {reach.Message}");
+        var r = await ctx.Game.ActivateAsync(act, ct).ConfigureAwait(false);
+        return r.Ok ? null : SkillResult.Fail($"couldn't press the {Openables.Name(aid)}: {r.Message}");
     }
 
     private static bool StandingOn(SkillContext ctx, BlockPos p)
@@ -183,13 +219,24 @@ public sealed class UseLeverSkill : Skill
     {
         var p = args.Pos() ?? (ctx.Find(Openables.Lever, 8, 1) is [var f, ..] ? f.Pos : null);
         if (p is not { } pos || ctx.Block(pos) != Openables.Lever) return Fail("no lever there");
-        if (MechanismOps.TriggerVeto(ctx, pos, args.Flag("confirm")) is { } veto) return Fail(veto);
-        // A lever in someone's build with an unknown effect: only once we've seen what it does (or were told to).
-        if (ctx.Protected(pos) && MechanismOps.View(ctx).ForTrigger(pos) is null && !args.Flag("confirm"))
-            return Fail($"lever at {P(pos)} is part of a build and I don't know what it does (confirm to flip it)");
+        if (Refusal(ctx, pos, args) is { } no) return Fail(no);
         bool now = Openables.IsActuatorOn(Openables.Lever, ctx.Meta(pos));
         bool want = args.Bool("on") ?? !now;
         if (now == want) return Ok($"lever at {P(pos)} already {(want ? "on" : "off")}");
+        return await FlipAsync(ctx, pos, want, ct);
+    }
+
+    private static string? Refusal(SkillContext ctx, BlockPos pos, JsonElement args)
+    {
+        if (MechanismOps.TriggerVeto(ctx, pos, args.Flag("confirm")) is { } veto) return veto;
+        // A lever in someone's build with an unknown effect: only once we've seen what it does (or were told to).
+        if (ctx.Protected(pos) && MechanismOps.View(ctx).ForTrigger(pos) is null && !args.Flag("confirm"))
+            return $"lever at {P(pos)} is part of a build and I don't know what it does (confirm to flip it)";
+        return null;
+    }
+
+    private static async Task<SkillResult> FlipAsync(SkillContext ctx, BlockPos pos, bool want, CancellationToken ct)
+    {
         var reach = await ctx.ReachAsync(pos, ct);
         if (!reach.Ok) return Fail($"can't reach lever: {reach.Message}");
         var r = await ctx.Game.ActivateAsync(pos, ct);
@@ -245,53 +292,87 @@ public sealed class GotoViaDoorsSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         if (args.Pos() is not { } target) return Fail("pos required");
-        bool restore = ctx.Options.RestoreDoors && !args.Flag("leave_open");
-        var goal = new GoalBlock(target);
-        int doors = 0, restored = 0;
+        var trip = new Trip(target, ctx.Options.RestoreDoors && !args.Flag("leave_open"), args.Flag("one_way"));
         for (int attempt = 0; attempt < 4; attempt++)
         {
-            var plan = Pathfinder.FindPath(ctx.World, ctx.Feet, goal, PathOptions.Default with
+            var plan = Pathfinder.FindPath(ctx.World, ctx.Feet, trip.Goal, PathOptions.Default with
             {
-                AllowOpenDoors = true, Mechanisms = MechanismOps.View(ctx), AllowOneWay = args.Flag("one_way"),
+                AllowOpenDoors = true, Mechanisms = MechanismOps.View(ctx), AllowOneWay = trip.OneWay,
             }, ct);
-            if (plan.Status is PathStatus.NoPath or PathStatus.InvalidStart)
-            {
-                // Blocked by an iron door / piston wall nobody told me about: ask gently, default = go around.
-                string why = $"no path to {P(target)} ({plan.Reason ?? plan.Status.ToString()})";
-                return MechanismOps.Unknowns(ctx, 12).FirstOrDefault() is { What: { } w } u ? Fail(why + "; " + MechanismOps.Ask(ctx, u.Pos, w)) : Fail(why);
-            }
-            int idx = -1;
-            for (int i = 0; i < plan.Steps.Count; i++) if (plan.Steps[i].Opens.Count > 0) { idx = i; break; }
+            if (plan.Status is PathStatus.NoPath or PathStatus.InvalidStart) return NoPath(ctx, target, plan);
+            int idx = FirstDoor(plan);
             // Mechanism (Trigger) steps are timing-critical: the client's goto runs them (it plans with the same graph).
-            if (idx < 0 || plan.Steps.Take(idx).Any(st => st.Trigger is not null))
-            {
-                var g = await ctx.Game.GotoAsync(goal, null, ct);
-                return g.Ok ? Ok($"at {P(target)}" + (doors > 0 ? $" through {doors} door(s){(restore ? $", {restored} re-closed" : "")}" : "")) : SkillResult.From(g);
-            }
-            var step = plan.Steps[idx];
-            var before = idx > 0 ? plan.Steps[idx - 1].Pos : ctx.Me;
-            if (before != ctx.Me)
-            {
-                var g = await ctx.Game.GotoAsync(new GoalBlock(before), null, ct);
-                if (!g.Ok) return Fail($"couldn't reach the door at {P(step.Opens[0].Pos)}: {g.Message}");
-            }
-            foreach (var tg in step.Opens)
-            {
-                var r = await DoorOps.SetAsync(ctx, tg.Pos, !Openables.IsOpen(tg.FromMeta), ct);
-                if (!r.Ok) return Fail($"stuck at {Openables.Name(tg.Id)}: {r.Text}");
-            }
-            doors++;
-            // Step through (and one more cell when there is one, so the doorway is clear for closing).
-            var through = idx + 1 < plan.Steps.Count ? plan.Steps[idx + 1].Pos : step.Pos;
-            var pass = await ctx.Game.GotoAsync(new GoalBlock(through), null, ct);
-            if (!pass.Ok) return Fail($"opened {Openables.Name(step.Opens[0].Id)} but couldn't pass: {pass.Message}");
-            if (restore)
-                foreach (var tg in step.Opens.Where(t => t.CanRestore(ctx.World) && !t.Restored(ctx.World)))
-                {
-                    var r = await DoorOps.SetAsync(ctx, tg.Pos, Openables.IsOpen(tg.FromMeta), ct);
-                    if (r.Ok) restored++;
-                }
+            if (idx < 0 || plan.Steps.Take(idx).Any(st => st.Trigger is not null)) return await FinishAsync(ctx, trip, ct);
+            if (await PassDoorAsync(ctx, trip, plan, idx, ct) is { } failed) return failed;
         }
         return Fail($"too many doors on the way to {P(target)}; now at {P(ctx.Me)}");
+    }
+
+    /// <summary>One walk: where to, whether doors are put back, and the doors passed and re-closed so far.</summary>
+    private sealed class Trip(BlockPos target, bool restore, bool oneWay)
+    {
+        public BlockPos Target { get; } = target;
+        public GoalBlock Goal { get; } = new(target);
+        public bool Restore { get; } = restore;
+        public bool OneWay { get; } = oneWay;
+        public int Doors { get; set; }
+        public int Restored { get; set; }
+    }
+
+    // Blocked by an iron door / piston wall nobody told me about: ask gently, default = go around.
+    private static SkillResult NoPath(SkillContext ctx, BlockPos target, PathResult plan)
+    {
+        string why = $"no path to {P(target)} ({plan.Reason ?? plan.Status.ToString()})";
+        return MechanismOps.Unknowns(ctx, 12).FirstOrDefault() is { What: { } w } u ? Fail(why + "; " + MechanismOps.Ask(ctx, u.Pos, w)) : Fail(why);
+    }
+
+    private static int FirstDoor(PathResult plan)
+    {
+        for (int i = 0; i < plan.Steps.Count; i++) if (plan.Steps[i].Opens.Count > 0) return i;
+        return -1;
+    }
+
+    /// <summary>No door left on the way: the client's goto walks the rest.</summary>
+    private static async Task<SkillResult> FinishAsync(SkillContext ctx, Trip trip, CancellationToken ct)
+    {
+        var g = await ctx.Game.GotoAsync(trip.Goal, null, ct);
+        if (!g.Ok) return SkillResult.From(g);
+        return Ok($"at {P(trip.Target)}" + (trip.Doors > 0 ? $" through {trip.Doors} door(s){(trip.Restore ? $", {trip.Restored} re-closed" : "")}" : ""));
+    }
+
+    /// <summary>Up to the door, open it (verified), step through, put it back. → null when through, else the failure.</summary>
+    private static async Task<SkillResult?> PassDoorAsync(SkillContext ctx, Trip trip, PathResult plan, int idx, CancellationToken ct)
+    {
+        var step = plan.Steps[idx];
+        var before = idx > 0 ? plan.Steps[idx - 1].Pos : ctx.Me;
+        if (before != ctx.Me)
+        {
+            var g = await ctx.Game.GotoAsync(new GoalBlock(before), null, ct);
+            if (!g.Ok) return Fail($"couldn't reach the door at {P(step.Opens[0].Pos)}: {g.Message}");
+        }
+        foreach (var tg in step.Opens)
+        {
+            var r = await DoorOps.SetAsync(ctx, tg.Pos, !Openables.IsOpen(tg.FromMeta), ct);
+            if (!r.Ok) return Fail($"stuck at {Openables.Name(tg.Id)}: {r.Text}");
+        }
+        trip.Doors++;
+        // Step through (and one more cell when there is one, so the doorway is clear for closing).
+        var through = idx + 1 < plan.Steps.Count ? plan.Steps[idx + 1].Pos : step.Pos;
+        var pass = await ctx.Game.GotoAsync(new GoalBlock(through), null, ct);
+        if (!pass.Ok) return Fail($"opened {Openables.Name(step.Opens[0].Id)} but couldn't pass: {pass.Message}");
+        if (trip.Restore) trip.Restored += await RecloseAsync(ctx, step, ct);
+        return null;
+    }
+
+    /// <summary>Each door of the step back the way it was found (one that can be and isn't yet) → how many.</summary>
+    private static async Task<int> RecloseAsync(SkillContext ctx, PathStep step, CancellationToken ct)
+    {
+        int n = 0;
+        foreach (var tg in step.Opens.Where(t => t.CanRestore(ctx.World) && !t.Restored(ctx.World)))
+        {
+            var r = await DoorOps.SetAsync(ctx, tg.Pos, Openables.IsOpen(tg.FromMeta), ct);
+            if (r.Ok) n++;
+        }
+        return n;
     }
 }

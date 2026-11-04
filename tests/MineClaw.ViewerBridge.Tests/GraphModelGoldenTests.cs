@@ -19,7 +19,7 @@ public class GraphModelGoldenTests
         ("Fact", "seed"), (null, "chat"), ("lore", "wiki"),
     ];
 
-    private static List<NodeSpec> Specs(int seed, int leaves, int layers)
+    internal static List<NodeSpec> Specs(int seed, int leaves, int layers)
     {
         var rng = new Random(seed);
         var specs = new List<NodeSpec>();

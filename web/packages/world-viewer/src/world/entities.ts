@@ -101,29 +101,46 @@ export class EntityStore {
     const now = this.clock();
     if (this.lastUpdate > 0) this.intervalMs = Math.max(50, Math.min(1000, this.intervalMs * 0.7 + (now - this.lastUpdate) * 0.3));
     this.lastUpdate = now;
+    this.applyEntities(d, now);
+    this.applyBots(d.bots, now);
+    for (const ev of d.events ?? []) this.pending.push(ev);
+    if (this.pending.length > 512) this.pending.splice(0, this.pending.length - 512);
+    this.rev = d.rev;
+    this.version++;
+  }
+
+  /** Entities glide to their new positions; a full reply drops those it doesn't list, a delta the ones it names removed. */
+  private applyEntities(d: EntityDelta, now: number): void {
     const seen = d.full ? new Set<string>() : null;
     for (const e of d.entities) {
       if (e.id == null) continue;
       const k = `${e.dim}:${e.id}`;
       seen?.add(k);
-      const yaw = e.yaw ?? 0;
-      const t = this.tracks.get(k);
-      if (!t) {
-        this.tracks.set(k, { e, fromX: e.x, fromY: e.y, fromZ: e.z, toX: e.x, toY: e.y, toZ: e.z, fromYaw: yaw, toYaw: yaw, start: now, dur: this.intervalMs, ageAt: (e.age ?? 0) * 20, ageMs: now });
-        continue;
-      }
-      retarget(t, e.x, e.y, e.z, yaw, now, this.intervalMs);
-      if (e.age != null && Math.abs(e.age * 20 - this.ticks(t, now)) > 20) {
-        t.ageAt = e.age * 20;
-        t.ageMs = now;
-      }
-      t.e = e;
+      this.applyEntity(k, e, now);
     }
     if (seen) for (const k of [...this.tracks.keys()]) if (!seen.has(k)) this.tracks.delete(k);
     for (const [dim, id] of d.removed ?? []) this.tracks.delete(`${dim}:${id}`);
-    // Bots: always the full list.
+  }
+
+  private applyEntity(k: string, e: EntityDto, now: number): void {
+    const yaw = e.yaw ?? 0;
+    const t = this.tracks.get(k);
+    if (!t) {
+      this.tracks.set(k, { e, fromX: e.x, fromY: e.y, fromZ: e.z, toX: e.x, toY: e.y, toZ: e.z, fromYaw: yaw, toYaw: yaw, start: now, dur: this.intervalMs, ageAt: (e.age ?? 0) * 20, ageMs: now });
+      return;
+    }
+    retarget(t, e.x, e.y, e.z, yaw, now, this.intervalMs);
+    if (e.age != null && Math.abs(e.age * 20 - this.ticks(t, now)) > 20) {
+      t.ageAt = e.age * 20;
+      t.ageMs = now;
+    }
+    t.e = e;
+  }
+
+  /** Bots: always the full list (a bot that changed dimension starts over where it is). */
+  private applyBots(bots: BotDto[], now: number): void {
     const names = new Set<string>();
-    for (const b of d.bots) {
+    for (const b of bots) {
       names.add(b.name);
       const yaw = b.yaw ?? 0;
       const t = this.botTracks.get(b.name);
@@ -135,10 +152,6 @@ export class EntityStore {
       t.b = b;
     }
     for (const k of [...this.botTracks.keys()]) if (!names.has(k)) this.botTracks.delete(k);
-    for (const ev of d.events ?? []) this.pending.push(ev);
-    if (this.pending.length > 512) this.pending.splice(0, this.pending.length - 512);
-    this.rev = d.rev;
-    this.version++;
   }
 
   private pending: EntityEvent[] = [];
@@ -158,13 +171,14 @@ export class EntityStore {
   entities(dim: Dim | null, out: EntityView[] = []): EntityView[] {
     out.length = 0;
     const now = this.clock();
-    for (const [key, t] of this.tracks) {
-      const e = t.e;
-      if (dim !== null && e.dim !== dim) continue;
-      const [x, y, z, yaw] = at(t, now);
-      out.push({ key, id: e.id ?? -1, dim: e.dim, kind: e.kind, name: e.name ?? null, type: e.type ?? -1, item: e.item ?? 0, count: e.count ?? 1, x, y, z, yaw, ageTicks: this.ticks(t, now), flags: e.flags ?? 0, dto: e });
-    }
+    for (const [key, t] of this.tracks) if (dim === null || t.e.dim === dim) out.push(this.viewOf(key, t, now));
     return out;
+  }
+
+  private viewOf(key: string, t: EntityTrack, now: number): EntityView {
+    const e = t.e;
+    const [x, y, z, yaw] = at(t, now);
+    return { key, id: e.id ?? -1, dim: e.dim, kind: e.kind, name: e.name ?? null, type: e.type ?? -1, item: e.item ?? 0, count: e.count ?? 1, x, y, z, yaw, ageTicks: this.ticks(t, now), flags: e.flags ?? 0, dto: e };
   }
 
   bots(out: BotView[] = []): BotView[] {

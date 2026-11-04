@@ -3,7 +3,7 @@
 // vanilla ones (1.12.2 model classes; b1.8.1 where its layout differs: `_beta` ids).
 
 import { BIPED_BABY, box, D2R, look, mbox, part, PI, quadBaby, walkLegs } from '../dsl';
-import type { ModelDef, PartDef, PartState, PoseCtx, PoseFn } from '../types';
+import type { CubeDef, ModelDef, PartDef, PartState, PoseCtx, PoseFn } from '../types';
 
 // ------------------------------------------------------------------------------------------------------------ bipeds
 
@@ -163,6 +163,14 @@ interface BipedOpts {
   height?: number;
 }
 
+/** The right and left arm cubes: limb thickness t (skeletons 2), arm width aw (Alex 3); the player model's own left arm
+ * (64×64 skin), else the right arm mirrored. */
+function bipedArms(o: BipedOpts, t: number, aw: number): [CubeDef[], CubeDef[]] {
+  const ra = t === 4 ? [box(o.slim ? -2 : -3, -2, -2, aw, 12, 4, 40, 16)] : [box(-1, -2, -1, 2, 12, 2, 40, 16)];
+  if (o.wear) return [ra, [box(-1, -2, -2, aw, 12, 4, 32, 48)]];
+  return [ra, t === 4 ? [mbox(-1, -2, -2, 4, 12, 4, 40, 16)] : [mbox(-1, -2, -1, 2, 12, 2, 40, 16)]];
+}
+
 function biped(o: BipedOpts): ModelDef {
   const t = o.limb ?? 4, h = t / 2, legX = o.legX ?? 1.9;
   const aw = o.slim ? 3 : t; // arm width
@@ -173,8 +181,7 @@ function biped(o: BipedOpts): ModelDef {
     o.wear ? [part(name, [0, 0, 0], [box(x, y, z, dx, dy, dz, u, v, 0.25)])] : [];
   const headC = [box(-4, -8, -4, 8, 8, 8, 0, 0)];
   const bodyC = [box(-4, 0, -2, 8, 12, 4, 16, 16)];
-  const raC = t === 4 ? [box(o.slim ? -2 : -3, -2, -2, aw, 12, 4, 40, 16)] : [box(-1, -2, -1, 2, 12, 2, 40, 16)];
-  const laC = o.wear ? [box(-1, -2, -2, aw, 12, 4, 32, 48)] : t === 4 ? [mbox(-1, -2, -2, 4, 12, 4, 40, 16)] : [mbox(-1, -2, -1, 2, 12, 2, 40, 16)];
+  const [raC, laC] = bipedArms(o, t, aw);
   const rlC = [box(-h, 0, -h, t, 12, t, 0, 16)];
   const llC = o.wear ? [box(-2, 0, -2, 4, 12, 4, 16, 48)] : [mbox(-h, 0, -h, t, 12, t, 0, 16)];
   return {

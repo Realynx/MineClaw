@@ -3,7 +3,7 @@
 // No allocation per call: one Skeleton per model kind is reused for every entity of that kind.
 
 import { BONE_SLOTS, type BuiltModel } from './builder';
-import type { PartState, PoseCtx } from './types';
+import type { ModelDef, PartState, PoseCtx, V3 } from './types';
 
 export type Affine = Float32Array; // 12 floats: rows (m00 m01 m02 m03), (m10 …), (m20 …)
 
@@ -122,6 +122,21 @@ export function rootMatrix(out: Affine, r: RootParams): Affine {
   return out;
 }
 
+type BabyLayout = NonNullable<ModelDef['baby']>;
+
+/** A child layout pre-transform: scale(s) · translate(o px), s per axis or uniform. */
+function babyPreMatrix(k: number | V3, o: V3): Affine {
+  const s = typeof k === 'number' ? [k, k, k] : k;
+  const m = identity();
+  m[0] = s[0];
+  m[5] = s[1];
+  m[10] = s[2];
+  m[3] = s[0] * o[0];
+  m[7] = s[1] * o[1];
+  m[11] = s[2] * o[2];
+  return m;
+}
+
 export class Skeleton {
   readonly states: PartState[];
   readonly byName: Record<string, PartState>;
@@ -165,49 +180,50 @@ export class Skeleton {
   private babyRoots: Float32Array[] = [];
 
   write(root: ArrayLike<number>, out: Float32Array, offset: number, baby = false): void {
-    const parts = this.model.parts, w = this.world, l = this.local;
     const layout = baby ? this.model.def.baby : undefined;
     if (layout) {
-      if (!this.babyPre) {
-        const pre = (k: number | readonly [number, number, number], o: readonly [number, number, number]) => {
-          const s = typeof k === 'number' ? [k, k, k] : k;
-          const m = identity();
-          m[0] = s[0];
-          m[5] = s[1];
-          m[10] = s[2];
-          m[3] = s[0] * o[0];
-          m[7] = s[1] * o[1];
-          m[11] = s[2] * o[2];
-          return m;
-        };
-        const groups = layout.groups ?? [];
-        this.babyPre = [pre(layout.headScale, layout.headOffset), pre(layout.bodyScale, layout.bodyOffset), ...groups.map((g) => pre(g.scale, g.offset))];
-        this.babyRoots = this.babyPre.map(() => new Float32Array(12));
-        // Top-level parts: a group that names them, else head or body; −1 = drawn without the layout (vanilla renders it outside
-        // the child push/pop: the horse's saddle).
-        this.babyOf = Int8Array.from(parts.map((p) => {
-          const g = groups.findIndex((x) => x.parts.includes(p.name));
-          if (g >= 0) return 2 + g;
-          if (layout.head.includes(p.name)) return 0;
-          return layout.unscaled?.includes(p.name) ? -1 : 1;
-        }));
-      }
-      for (let k = 0; k < this.babyPre.length; k++) mul(this.babyRoots[k], root, this.babyPre[k]);
+      const pre = (this.babyPre ??= this.initBaby(layout));
+      for (let k = 0; k < pre.length; k++) mul(this.babyRoots[k], root, pre[k]);
     }
-    for (let i = 0; i < parts.length; i++) {
-      const s = this.states[i], par = parts[i].parent;
-      const hide = !s.visible || (par >= 0 && this.hidden[par] === 1);
-      this.hidden[i] = hide ? 1 : 0;
-      partLocal(l, s.px, s.py, s.pz, s.rx, s.ry, s.rz);
-      const dst = w.subarray(i * 12, i * 12 + 12);
-      if (par < 0) {
-        const g = layout ? this.babyOf![i] : -1;
-        mul(dst, g >= 0 ? this.babyRoots[g] : root, l);
-      } else mul(dst, w.subarray(par * 12, par * 12 + 12), l);
-      const o = offset + i * 12;
-      if (hide) out.fill(0, o, o + 12);
-      else out.set(dst, o);
-    }
+    for (let i = 0; i < this.model.parts.length; i++) this.writePart(i, root, out, offset, !!layout);
+  }
+
+  /** The child layout's pre-transforms, a scratch root per transform, and which one each top-level part takes. */
+  private initBaby(layout: BabyLayout): Float32Array[] {
+    const groups = layout.groups ?? [];
+    const pre = [babyPreMatrix(layout.headScale, layout.headOffset), babyPreMatrix(layout.bodyScale, layout.bodyOffset), ...groups.map((g) => babyPreMatrix(g.scale, g.offset))];
+    this.babyRoots = pre.map(() => new Float32Array(12));
+    // Top-level parts: a group that names them, else head or body; −1 = drawn without the layout (vanilla renders it outside
+    // the child push/pop: the horse's saddle).
+    this.babyOf = Int8Array.from(this.model.parts.map((p) => {
+      const g = groups.findIndex((x) => x.parts.includes(p.name));
+      if (g >= 0) return 2 + g;
+      if (layout.head.includes(p.name)) return 0;
+      return layout.unscaled?.includes(p.name) ? -1 : 1;
+    }));
+    return pre;
+  }
+
+  /** Part i's world matrix (its parent's, or the root: a child layout's for top-level parts) · its local transform, written
+   * to `out` (zeros when it or a parent is hidden). */
+  private writePart(i: number, root: ArrayLike<number>, out: Float32Array, offset: number, baby: boolean): void {
+    const w = this.world, l = this.local;
+    const s = this.states[i], par = this.model.parts[i].parent;
+    const hide = !s.visible || (par >= 0 && this.hidden[par] === 1);
+    this.hidden[i] = hide ? 1 : 0;
+    partLocal(l, s.px, s.py, s.pz, s.rx, s.ry, s.rz);
+    const dst = w.subarray(i * 12, i * 12 + 12);
+    if (par < 0) mul(dst, this.topRoot(i, root, baby), l);
+    else mul(dst, w.subarray(par * 12, par * 12 + 12), l);
+    const o = offset + i * 12;
+    if (hide) out.fill(0, o, o + 12);
+    else out.set(dst, o);
+  }
+
+  /** The root a top-level part hangs from: its child-layout root when drawn as a baby, else the entity root. */
+  private topRoot(i: number, root: ArrayLike<number>, baby: boolean): ArrayLike<number> {
+    const g = baby ? this.babyOf![i] : -1;
+    return g >= 0 ? this.babyRoots[g] : root;
   }
 
   /** The world matrix of part `i` from the last pose (e.g. the right arm, for the held item). */

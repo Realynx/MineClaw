@@ -26,6 +26,39 @@ export interface RigInput {
   keys: Set<string>;
 }
 
+const FORWARD = ['KeyW', 'ArrowUp'], BACK = ['KeyS', 'ArrowDown'], RIGHT = ['KeyD', 'ArrowRight'], LEFT = ['KeyA', 'ArrowLeft'];
+const RISE = ['KeyE', 'Space', 'PageUp'], SINK = ['KeyQ', 'PageDown'], FAST = ['ShiftLeft', 'ShiftRight'];
+
+/** Whether any of `codes` is held. */
+function held(keys: Set<string>, codes: readonly string[]): boolean {
+  for (const c of codes) if (keys.has(c)) return true;
+  return false;
+}
+
+/** The fly camera's unnormalised move this frame: along its heading `fwd`, sideways and straight up or down. */
+function flyMove(fwd: THREE.Vector3, k: Set<string>): THREE.Vector3 {
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  const mv = new THREE.Vector3();
+  if (held(k, FORWARD)) mv.add(fwd);
+  if (held(k, BACK)) mv.sub(fwd);
+  if (held(k, RIGHT)) mv.add(right);
+  if (held(k, LEFT)) mv.sub(right);
+  if (held(k, RISE)) mv.y += 1;
+  if (held(k, SINK)) mv.y -= 1;
+  return mv;
+}
+
+const UP = new THREE.Vector3(0, 1, 0);
+/** Top-down: north is up on screen. */
+const NORTH_UP = new THREE.Vector3(0, 0, -1);
+const lookM = new THREE.Matrix4();
+
+/** The orientation of a camera at `eye` looking at `at` (a new quaternion: the pose keeps it). */
+function lookQuat(eye: THREE.Vector3, at: THREE.Vector3, up: THREE.Vector3): THREE.Quaternion {
+  lookM.lookAt(eye, at, up);
+  return new THREE.Quaternion().setFromRotationMatrix(lookM);
+}
+
 export class CameraRig {
   mode: CameraMode = 'follow';
   /** What follow / iso look at (the bot's eyes, or a focused point). */
@@ -85,52 +118,47 @@ export class CameraRig {
 
   /** The pose the current mode wants this frame. */
   desired(dt: number, input: RigInput): Pose {
-    const quat = new THREE.Quaternion();
-    const m = new THREE.Matrix4();
-    const up = new THREE.Vector3(0, 1, 0);
-    if (this.mode === 'fly') {
-      const k = input.keys;
-      const fast = k.has('ShiftLeft') || k.has('ShiftRight') ? 4 : 1;
-      const v = this.speed * fast * dt;
-      const fwd = lookDir(this.flyYaw, 0);
-      const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-      const mv = new THREE.Vector3();
-      if (k.has('KeyW') || k.has('ArrowUp')) mv.add(fwd);
-      if (k.has('KeyS') || k.has('ArrowDown')) mv.sub(fwd);
-      if (k.has('KeyD') || k.has('ArrowRight')) mv.add(right);
-      if (k.has('KeyA') || k.has('ArrowLeft')) mv.sub(right);
-      if (k.has('KeyE') || k.has('Space') || k.has('PageUp')) mv.y += 1;
-      if (k.has('KeyQ') || k.has('PageDown')) mv.y -= 1;
-      if (mv.lengthSq() > 0) this.flyPos.addScaledVector(mv.normalize(), v);
-      this.flyPos.y = Math.max(-64, Math.min(320, this.flyPos.y));
-      const dir = lookDir(this.flyYaw, this.flyPitch);
-      m.lookAt(this.flyPos, this.flyPos.clone().add(dir), up);
-      quat.setFromRotationMatrix(m);
-      return { pos: this.flyPos.clone(), quat, fov: this.fov };
-    }
-    if (this.mode === 'iso' || this.mode === 'top') {
-      const k = input.keys;
-      const pan = (this.isoZoom / 2) * dt;
-      const fwd = lookDir(this.mode === 'top' ? 180 : this.isoYaw, 0);
-      const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-      if (k.has('KeyW') || k.has('ArrowUp')) this.target.addScaledVector(fwd, pan);
-      if (k.has('KeyS') || k.has('ArrowDown')) this.target.addScaledVector(fwd, -pan);
-      if (k.has('KeyD') || k.has('ArrowRight')) this.target.addScaledVector(right, pan);
-      if (k.has('KeyA') || k.has('ArrowLeft')) this.target.addScaledVector(right, -pan);
-      this.isoYaw += (this.isoYawTarget - this.isoYaw) * Math.min(1, dt * 8);
-      const dist = this.isoDistance();
-      const top = this.mode === 'top';
-      const dir = lookDir(top ? 180 : this.isoYaw, top ? 89.9 : this.isoPitch);
-      const pos = this.target.clone().addScaledVector(dir, -dist);
-      m.lookAt(pos, this.target, top ? new THREE.Vector3(0, 0, -1) : up);
-      quat.setFromRotationMatrix(m);
-      return { pos, quat, fov: this.isoFov };
-    }
+    if (this.mode === 'fly') return this.flyPose(dt, input.keys);
+    if (this.mode === 'iso' || this.mode === 'top') return this.isoPose(dt, input.keys);
+    return this.followPose();
+  }
+
+  /** Fly: WASD / arrows move across, E Space PageUp up, Q PageDown down (Shift 4× faster); the mouse looks. */
+  private flyPose(dt: number, k: Set<string>): Pose {
+    const fast = held(k, FAST) ? 4 : 1;
+    const v = this.speed * fast * dt;
+    const mv = flyMove(lookDir(this.flyYaw, 0), k);
+    if (mv.lengthSq() > 0) this.flyPos.addScaledVector(mv.normalize(), v);
+    this.flyPos.y = Math.max(-64, Math.min(320, this.flyPos.y));
+    const dir = lookDir(this.flyYaw, this.flyPitch);
+    return { pos: this.flyPos.clone(), quat: lookQuat(this.flyPos, this.flyPos.clone().add(dir), UP), fov: this.fov };
+  }
+
+  /** Iso / top-down: WASD / arrows pan the target across the ground; Q/E turns glide; the camera sits far off, narrow FOV. */
+  private isoPose(dt: number, k: Set<string>): Pose {
+    const top = this.mode === 'top';
+    this.panTarget(k, (this.isoZoom / 2) * dt, top);
+    this.isoYaw += (this.isoYawTarget - this.isoYaw) * Math.min(1, dt * 8);
+    const dist = this.isoDistance();
+    const dir = lookDir(top ? 180 : this.isoYaw, top ? 89.9 : this.isoPitch);
+    const pos = this.target.clone().addScaledVector(dir, -dist);
+    return { pos, quat: lookQuat(pos, this.target, top ? NORTH_UP : UP), fov: this.isoFov };
+  }
+
+  private panTarget(k: Set<string>, pan: number, top: boolean): void {
+    const fwd = lookDir(top ? 180 : this.isoYaw, 0);
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    if (held(k, FORWARD)) this.target.addScaledVector(fwd, pan);
+    if (held(k, BACK)) this.target.addScaledVector(fwd, -pan);
+    if (held(k, RIGHT)) this.target.addScaledVector(right, pan);
+    if (held(k, LEFT)) this.target.addScaledVector(right, -pan);
+  }
+
+  /** Follow: orbit the target, pulled in when a block is in the way. */
+  private followPose(): Pose {
     const dir = lookDir(this.orbitYaw, this.orbitPitch);
     const pos = this.target.clone().addScaledVector(dir, -Math.min(this.orbitDist, this.collideDist));
-    m.lookAt(pos, this.target, up);
-    quat.setFromRotationMatrix(m);
-    return { pos, quat, fov: this.fov };
+    return { pos, quat: lookQuat(pos, this.target, UP), fov: this.fov };
   }
 
   /**

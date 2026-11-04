@@ -20,36 +20,45 @@ const lift = (h: number) => 24.016 - 16 * h;
 function bipedPose(p: Record<string, PartState>, c: PoseCtx): void {
   const head = p.head, body = p.body, ra = p.rightArm, la = p.leftArm, rl = p.rightLeg, ll = p.leftLeg;
   look(head, c.headYaw, c.pitch);
-  const f = c.swing, a = c.amount;
+  limbSwing(ra, la, rl, ll, c.swing, c.amount);
+  if (c.riding) ridingLimbs(ra, la, rl, ll);
+  if (c.attack > 0 && body && ra && la) attackSwing(head, body, ra, la, c.attack);
+  armSway(ra, la, c.age);
+}
+
+/** The walk swing: arms and legs in opposite phase (f = swing, a = amount). */
+function limbSwing(ra: PartState | undefined, la: PartState | undefined, rl: PartState | undefined, ll: PartState | undefined, f: number, a: number): void {
   if (ra) ra.rx = Math.cos(f * 0.6662 + PI) * 2 * a * 0.5;
   if (la) la.rx = Math.cos(f * 0.6662) * 2 * a * 0.5;
   if (rl) rl.rx = Math.cos(f * 0.6662) * 1.4 * a;
   if (ll) ll.rx = Math.cos(f * 0.6662 + PI) * 1.4 * a;
-  if (c.riding) {
-    if (ra) ra.rx -= PI / 5;
-    if (la) la.rx -= PI / 5;
-    if (rl) Object.assign(rl, { rx: -1.4137167, ry: PI / 10, rz: 0.07853982 });
-    if (ll) Object.assign(ll, { rx: -1.4137167, ry: -PI / 10, rz: -0.07853982 });
-  }
-  if (c.attack > 0 && body && ra && la) {
-    const g = c.attack;
-    body.ry = Math.sin(Math.sqrt(g) * PI * 2) * 0.2;
-    ra.pz = Math.sin(body.ry) * 5;
-    ra.px = -Math.cos(body.ry) * 5;
-    la.pz = -Math.sin(body.ry) * 5;
-    la.px = Math.cos(body.ry) * 5;
-    ra.ry += body.ry;
-    la.ry += body.ry;
-    la.rx += body.ry;
-    let h = 1 - g;
-    h *= h;
-    h *= h;
-    h = 1 - h;
-    ra.rx -= Math.sin(h * PI) * 1.2 + Math.sin(g * PI) * -((head?.rx ?? 0) - 0.7) * 0.75;
-    ra.ry += body.ry * 2;
-    ra.rz += Math.sin(g * PI) * -0.4;
-  }
-  armSway(ra, la, c.age);
+}
+
+/** Riding: arms forward, legs spread out in front. */
+function ridingLimbs(ra: PartState | undefined, la: PartState | undefined, rl: PartState | undefined, ll: PartState | undefined): void {
+  if (ra) ra.rx -= PI / 5;
+  if (la) la.rx -= PI / 5;
+  if (rl) Object.assign(rl, { rx: -1.4137167, ry: PI / 10, rz: 0.07853982 });
+  if (ll) Object.assign(ll, { rx: -1.4137167, ry: -PI / 10, rz: -0.07853982 });
+}
+
+/** The attack swing at progress g: the body turns, the shoulders follow it, the right arm chops down. */
+function attackSwing(head: PartState | undefined, body: PartState, ra: PartState, la: PartState, g: number): void {
+  body.ry = Math.sin(Math.sqrt(g) * PI * 2) * 0.2;
+  ra.pz = Math.sin(body.ry) * 5;
+  ra.px = -Math.cos(body.ry) * 5;
+  la.pz = -Math.sin(body.ry) * 5;
+  la.px = Math.cos(body.ry) * 5;
+  ra.ry += body.ry;
+  la.ry += body.ry;
+  la.rx += body.ry;
+  let h = 1 - g;
+  h *= h;
+  h *= h;
+  h = 1 - h;
+  ra.rx -= Math.sin(h * PI) * 1.2 + Math.sin(g * PI) * -((head?.rx ?? 0) - 0.7) * 0.75;
+  ra.ry += body.ry * 2;
+  ra.rz += Math.sin(g * PI) * -0.4;
 }
 
 /** The idle arm sway every biped-like model adds. */

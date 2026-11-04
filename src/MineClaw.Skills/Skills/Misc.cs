@@ -24,14 +24,21 @@ public sealed class SetRepeaterSkill : Skill
         int Delay() => ((ctx.Meta(p) >> 2) & 3) + 1;
         var reach = await ctx.ReachAsync(p, ct);
         if (!reach.Ok) return Fail($"can't reach repeater: {reach.Message}");
-        for (int i = 0; i < 4 && Delay() != want; i++)
+        if (await ClickToAsync(ctx, p, want, Delay, ct) is { } failed) return failed;
+        return Delay() == want ? Ok($"repeater at {P(p)} delay {want}") : Fail($"repeater stuck at delay {Delay()}");
+    }
+
+    /// <summary>Right-clicks (each one delay up, verified) until the delay is <paramref name="want"/>, at most 4. → null, else the failure.</summary>
+    private static async Task<SkillResult?> ClickToAsync(SkillContext ctx, BlockPos p, int want, Func<int> delay, CancellationToken ct)
+    {
+        for (int i = 0; i < 4 && delay() != want; i++)
         {
             int before = ctx.Meta(p);
             var r = await ctx.Game.ActivateAsync(p, ct);
             if (!r.Ok) return SkillResult.From(r);
             if (!await ctx.WaitBlockAsync(p, (_, m) => m != before, ct)) return Fail("repeater didn't change (protected?)");
         }
-        return Delay() == want ? Ok($"repeater at {P(p)} delay {want}") : Fail($"repeater stuck at delay {Delay()}");
+        return null;
     }
 }
 
@@ -173,13 +180,21 @@ public sealed class JukeboxSkill : Skill
         bool playing = ctx.Meta(j) != 0; // b1.8.1: meta 1 = has a record
         bool eject = args.Flag("eject", playing);
         if (eject && !playing) return Ok("jukebox already empty");
-        if (!eject)
-        {
-            int? disc = ctx.FirstOwned(Items.Record13, Items.RecordCat);
-            if (disc is null) return Fail("no music disc");
-            var hold = await ctx.RunAsync("hold_item", new { item = Items.Get(disc.Value).Name }, ct);
-            if (!hold.Ok) return hold;
-        }
+        if (!eject && await HoldDiscAsync(ctx, ct) is { } failed) return failed;
+        return await ClickAsync(ctx, j, eject, ct);
+    }
+
+    /// <summary>A music disc in hand → null, else the failure.</summary>
+    private static async Task<SkillResult?> HoldDiscAsync(SkillContext ctx, CancellationToken ct)
+    {
+        int? disc = ctx.FirstOwned(Items.Record13, Items.RecordCat);
+        if (disc is null) return Fail("no music disc");
+        var hold = await ctx.RunAsync("hold_item", new { item = Items.Get(disc.Value).Name }, ct);
+        return hold.Ok ? null : hold;
+    }
+
+    private static async Task<SkillResult> ClickAsync(SkillContext ctx, BlockPos j, bool eject, CancellationToken ct)
+    {
         var reach = await ctx.ReachAsync(j, ct);
         if (!reach.Ok) return Fail(reach.Message);
         var r = await ctx.Game.ActivateAsync(j, ct);
@@ -205,17 +220,7 @@ public sealed class ThrowProjectileSkill : Skill
     {
         int item = args.Str("item")?.Contains("egg", StringComparison.OrdinalIgnoreCase) == true ? Items.Egg : ctx.FirstOwned(Items.Snowball, Items.Egg)!.Value;
         if (!ctx.Has(item)) return Fail($"no {Item(item)}");
-        Vec3d aimAt;
-        string what;
-        var t = args.Str("target");
-        if (t is not null && SkillJson.Parse($"{{\"p\":\"{t}\"}}").Pos("p") is { } pos) { aimAt = pos.Center; what = P(pos); }
-        else
-        {
-            var mob = ctx.World.Entities.Nearby(ctx.Feet, 24, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(ctx.World, e, ctx.Feet), 1).FirstOrDefault();
-            if (mob is null || NetherHazards.NeverAttack(mob)) return Fail("no hostile mob in range");
-            aimAt = mob.Position + new Vec3d(0, 1, 0);
-            what = mob.DisplayName;
-        }
+        if (Target(ctx, args) is not (var aimAt, var what)) return Fail("no hostile mob in range");
         int n = Clamp(args.Int("count"), 1, 1, 16), thrown = 0;
         for (int i = 0; i < n && ctx.Has(item); i++)
         {
@@ -224,6 +229,16 @@ public sealed class ThrowProjectileSkill : Skill
             await ctx.Game.WaitTicksAsync(4, ct);
         }
         return thrown > 0 ? Ok($"threw {thrown} {Item(item)} at {what}") : Fail("couldn't throw");
+    }
+
+    /// <summary>The spot given (target "x,y,z"), else the nearest hostile mob in range (never a pigman) → where to aim and what it is.</summary>
+    private static (Vec3d AimAt, string What)? Target(SkillContext ctx, JsonElement args)
+    {
+        var t = args.Str("target");
+        if (t is not null && SkillJson.Parse($"{{\"p\":\"{t}\"}}").Pos("p") is { } pos) return (pos.Center, P(pos));
+        var mob = ctx.World.Entities.Nearby(ctx.Feet, 24, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(ctx.World, e, ctx.Feet), 1).FirstOrDefault();
+        if (mob is null || NetherHazards.NeverAttack(mob)) return null;
+        return (mob.Position + new Vec3d(0, 1, 0), mob.DisplayName);
     }
 }
 
@@ -254,15 +269,7 @@ public sealed class ShootBowSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        Vec3d spot = default;
-        MineClaw.World.Entity? mob = null;
-        var t = args.Str("target");
-        if (t is not null && SkillJson.Parse($"{{\"p\":\"{t}\"}}").Pos("p") is { } pos) spot = pos.Center;
-        else
-        {
-            mob = ctx.World.Entities.Nearby(ctx.Feet, 32, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(ctx.World, e, ctx.Feet), 1).FirstOrDefault();
-            if (mob is null || NetherHazards.NeverAttack(mob)) return Fail("no hostile mob in range");
-        }
+        if (Target(ctx, args) is not (var spot, var mob)) return Fail("no hostile mob in range");
         int shots = Clamp(args.Int("shots"), 1, 1, 8), fired = 0;
         string? last = null;
         for (int i = 0; i < shots && ctx.Has(Items.Arrow); i++)
@@ -274,7 +281,20 @@ public sealed class ShootBowSkill : Skill
             if (!r.Ok) return fired > 0 ? Ok($"shot {fired} arrow(s), then {r.Message}") : SkillResult.From(r);
             fired++;
         }
-        return fired > 0 ? Ok($"shot {fired} arrow(s) at {mob?.DisplayName ?? P(spot.ToBlockPos())}") : Fail(last ?? "no arrows");
+        return Shot(fired, mob, spot, last);
+    }
+
+    private static SkillResult Shot(int fired, MineClaw.World.Entity? mob, Vec3d spot, string? last) =>
+        fired > 0 ? Ok($"shot {fired} arrow(s) at {mob?.DisplayName ?? P(spot.ToBlockPos())}") : Fail(last ?? "no arrows");
+
+    /// <summary>The spot given (target "x,y,z"), else the nearest hostile mob in range (never a pigman); null = nothing to shoot at.</summary>
+    private static (Vec3d Spot, MineClaw.World.Entity? Mob)? Target(SkillContext ctx, JsonElement args)
+    {
+        var t = args.Str("target");
+        if (t is not null && SkillJson.Parse($"{{\"p\":\"{t}\"}}").Pos("p") is { } pos) return (pos.Center, null);
+        var mob = ctx.World.Entities.Nearby(ctx.Feet, 32, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(ctx.World, e, ctx.Feet), 1).FirstOrDefault();
+        if (mob is null || NetherHazards.NeverAttack(mob)) return null;
+        return (default, mob);
     }
 }
 
@@ -301,21 +321,38 @@ public abstract class UseOnMobSkill : Skill
             used.Add(mob.Id);
             var g = await ctx.Game.GotoAsync(new GoalNearPosition(mob.Position, 2), null, ct);
             if (!g.Ok) continue;
-            bool ok = false;
-            for (int k = 0; k < Attempts && !ok; k++)
-            {
-                if (ItemId is { } need && !ctx.Has(need)) break;
-                int before = ItemId is { } it ? ctx.Count(it) : 0;
-                var r = await ctx.Game.UseEntityAsync(mob.Id, ItemId, ct);
-                if (!r.Ok) return done > 0 ? Ok($"{Verb} {done}, then {r.Message}") : SkillResult.From(r);
-                if (Verify is { } v && !await ctx.Game.WaitUntilAsync(() => v(ctx, before), TimeSpan.FromSeconds(2), ct)) continue;
-                ok = Attempts == 1 || (ctx.World.Entities.Get(mob.Id) is { } now && Finished(now));
-                if (!ok) await ctx.Game.WaitTicksAsync(10, ct);
-            }
+            var (ok, failed) = await UseOnAsync(ctx, mob, ct);
+            if (failed is not null) return done > 0 ? Ok($"{Verb} {done}, then {failed.Message}") : SkillResult.From(failed);
             if (ok) done++;
         }
         await ctx.Game.CollectDropsAsync(6, ct);
         return done > 0 ? Ok($"{Verb} {done} {MobTypes.Name(MobType)}") : Fail($"no {MobTypes.Name(MobType)} to {Verb.TrimEnd('d', 'e')} nearby");
+    }
+
+    /// <summary>The item on the mob, up to <see cref="Attempts"/> times while it lasts → done with it, or the use that failed.</summary>
+    private async Task<(bool Ok, MineClaw.Client.ActionResult? Failed)> UseOnAsync(SkillContext ctx, MineClaw.World.Entity mob, CancellationToken ct)
+    {
+        for (int k = 0; k < Attempts; k++)
+        {
+            if (ItemId is { } need && !ctx.Has(need)) break;
+            var (r, done) = await UseOnceAsync(ctx, mob, ct);
+            if (!r.Ok) return (false, r);
+            if (done) return (true, null);
+        }
+        return (false, null);
+    }
+
+    /// <summary>One use, verified (<see cref="Verify"/>) → its result, and whether that mob is done (<see cref="Finished"/>; not yet:
+    /// a short wait before the next).</summary>
+    private async Task<(MineClaw.Client.ActionResult R, bool Done)> UseOnceAsync(SkillContext ctx, MineClaw.World.Entity mob, CancellationToken ct)
+    {
+        int before = ItemId is { } it ? ctx.Count(it) : 0;
+        var r = await ctx.Game.UseEntityAsync(mob.Id, ItemId, ct);
+        if (!r.Ok) return (r, false);
+        if (Verify is { } v && !await ctx.Game.WaitUntilAsync(() => v(ctx, before), TimeSpan.FromSeconds(2), ct)) return (r, false);
+        bool ok = Attempts == 1 || (ctx.World.Entities.Get(mob.Id) is { } now && Finished(now));
+        if (!ok) await ctx.Game.WaitTicksAsync(10, ct);
+        return (r, ok);
     }
 }
 

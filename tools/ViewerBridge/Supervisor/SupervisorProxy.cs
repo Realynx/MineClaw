@@ -167,40 +167,55 @@ public static class SupervisorProxy
     {
         int status = (int)res.StatusCode;
         var bytes = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
+        var (passThrough, msg, retryMs) = ReadUpstreamError(bytes, status, post);
+        if (passThrough)
+        {
+            ctx.Response.StatusCode = 400;
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            ctx.Response.Headers.CacheControl = "no-store";
+            await ctx.Response.Body.WriteAsync(bytes, ctx.RequestAborted);
+            return;
+        }
+        retryMs ??= res.Headers.RetryAfter?.Delta is { } d ? (long)d.TotalMilliseconds : null;
+        await WriteMappedAsync(ctx, status, msg, retryMs);
+    }
+
+    /// <summary>The upstream error body: a store refusal to pass through (400 + <c>ok</c> on a write), else its message and retry hint.</summary>
+    private static (bool PassThrough, string Message, long? RetryMs) ReadUpstreamError(byte[] bytes, int status, bool post)
+    {
         string msg = "upstream error";
         long? retryMs = null;
         try
         {
             using var doc = JsonDocument.Parse(bytes);
             var root = doc.RootElement;
-            if (root.ValueKind == JsonValueKind.Object)
-            {
-                if (status == 400 && post && root.TryGetProperty("ok", out _))
-                {
-                    ctx.Response.StatusCode = 400;
-                    ctx.Response.ContentType = "application/json; charset=utf-8";
-                    ctx.Response.Headers.CacheControl = "no-store";
-                    await ctx.Response.Body.WriteAsync(bytes, ctx.RequestAborted);
-                    return;
-                }
-                if (root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String) msg = Clip(e.GetString()!);
-                if (root.TryGetProperty("retry_after_ms", out var ra) && ra.TryGetInt64(out var r)) retryMs = r;
-            }
+            if (root.ValueKind != JsonValueKind.Object) return (false, msg, retryMs);
+            if (status == 400 && post && root.TryGetProperty("ok", out _)) return (true, msg, retryMs);
+            if (root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String) msg = Clip(e.GetString()!);
+            if (root.TryGetProperty("retry_after_ms", out var ra) && ra.TryGetInt64(out var r)) retryMs = r;
         }
         catch (JsonException) { }
-        retryMs ??= res.Headers.RetryAfter?.Delta is { } d ? (long)d.TotalMilliseconds : null;
-        switch (status)
-        {
-            case 400: await ApiErrors.Write(ctx, 400, "bad_request", msg); break;
-            case 401: await ApiErrors.Write(ctx, 502, "upstream_error", "the bot refused the bridge (check Supervisor:Token)"); break;
-            case 403: await ApiErrors.Write(ctx, 403, "forbidden", msg); break;
-            case 404: await ApiErrors.Write(ctx, 404, "not_found", msg); break;
-            case 405: await ApiErrors.Write(ctx, 404, "not_found", "not found"); break;
-            case 413: await ApiErrors.Write(ctx, 413, "payload_too_large", msg); break;
-            case 429: await ApiErrors.Write(ctx, 429, "rate_limited", msg, retryMs ?? 1000); break;
-            case 503: await ApiErrors.Write(ctx, 503, msg.Contains("busy", StringComparison.OrdinalIgnoreCase) || retryMs != null ? "busy" : "upstream_unavailable", msg, retryMs ?? 1000); break;
-            default: await ApiErrors.Write(ctx, 502, "upstream_error", "upstream error"); break;
-        }
+        return (false, msg, retryMs);
+    }
+
+    private static Task WriteMappedAsync(HttpContext ctx, int status, string msg, long? retryMs) => status switch
+    {
+        400 => ApiErrors.Write(ctx, 400, "bad_request", msg),
+        401 => ApiErrors.Write(ctx, 502, "upstream_error", "the bot refused the bridge (check Supervisor:Token)"),
+        403 => ApiErrors.Write(ctx, 403, "forbidden", msg),
+        404 => ApiErrors.Write(ctx, 404, "not_found", msg),
+        405 => ApiErrors.Write(ctx, 404, "not_found", "not found"),
+        413 => ApiErrors.Write(ctx, 413, "payload_too_large", msg),
+        429 or 503 => WriteRetryableAsync(ctx, status, msg, retryMs),
+        _ => ApiErrors.Write(ctx, 502, "upstream_error", "upstream error"),
+    };
+
+    /// <summary>429 = rate limited; 503 = busy when it says so or gives a retry hint, else unavailable. Both retry in a second by default.</summary>
+    private static Task WriteRetryableAsync(HttpContext ctx, int status, string msg, long? retryMs)
+    {
+        if (status == 429) return ApiErrors.Write(ctx, 429, "rate_limited", msg, retryMs ?? 1000);
+        var code = msg.Contains("busy", StringComparison.OrdinalIgnoreCase) || retryMs != null ? "busy" : "upstream_unavailable";
+        return ApiErrors.Write(ctx, 503, code, msg, retryMs ?? 1000);
     }
 
     private static string Clip(string s)

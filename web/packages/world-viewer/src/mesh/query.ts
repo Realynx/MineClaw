@@ -24,34 +24,98 @@ function cutHides(cut: CutParams | null | undefined, x: number, y: number, z: nu
   return !!cut && y >= cut.y && (x + 0.5 - cut.x) ** 2 + (z + 0.5 - cut.z) ** 2 <= cut.r * cut.r;
 }
 
+/** A voxel walk along a unit direction (Amanatides & Woo): the cell it is in, and the face it last entered by. */
+class VoxelRay {
+  vx = 0;
+  vy = 0;
+  vz = 0;
+  /** The face of the current cell the ray came in through (Minecraft side order; −1 = the start cell). */
+  face = -1;
+  private sx = 0;
+  private sy = 0;
+  private sz = 0;
+  private tdx = 0;
+  private tdy = 0;
+  private tdz = 0;
+  private tmx = 0;
+  private tmy = 0;
+  private tmz = 0;
+
+  start(o: V3, dx: number, dy: number, dz: number): this {
+    this.vx = Math.floor(o[0]);
+    this.vy = Math.floor(o[1]);
+    this.vz = Math.floor(o[2]);
+    this.sx = dx > 0 ? 1 : -1;
+    this.sy = dy > 0 ? 1 : -1;
+    this.sz = dz > 0 ? 1 : -1;
+    this.tdx = axisDelta(dx);
+    this.tdy = axisDelta(dy);
+    this.tdz = axisDelta(dz);
+    this.tmx = axisStart(dx, this.vx, o[0], this.tdx);
+    this.tmy = axisStart(dy, this.vy, o[1], this.tdy);
+    this.tmz = axisStart(dz, this.vz, o[2], this.tdz);
+    this.face = -1;
+    return this;
+  }
+
+  /** Into the next cell; returns the distance travelled to its boundary. */
+  step(): number {
+    let tt: number;
+    if (this.tmx < this.tmy && this.tmx < this.tmz) {
+      tt = this.tmx;
+      this.vx += this.sx;
+      this.tmx += this.tdx;
+      this.face = this.sx > 0 ? 4 : 5;
+    } else if (this.tmy < this.tmz) {
+      tt = this.tmy;
+      this.vy += this.sy;
+      this.tmy += this.tdy;
+      this.face = this.sy > 0 ? 0 : 1;
+    } else {
+      tt = this.tmz;
+      this.vz += this.sz;
+      this.tmz += this.tdz;
+      this.face = this.sz > 0 ? 2 : 3;
+    }
+    return tt;
+  }
+}
+
+/** Distance along the ray between two boundaries of one axis. */
+function axisDelta(d: number): number {
+  return d === 0 ? Infinity : Math.abs(1 / d);
+}
+
+/** Distance along the ray to the first boundary of one axis. */
+function axisStart(d: number, v: number, o: number, td: number): number {
+  return d === 0 ? Infinity : (d > 0 ? v + 1 - o : o - v) * td;
+}
+
+/** One walk at a time (the worker is single-threaded and the queries don't nest). */
+const ray = new VoxelRay();
+
 /** First drawn block along the ray (fluids skipped), within maxDist; null when nothing is hit. */
 export function pick(store: ColumnStore, t: StateTable, dim: number, o: V3, d: V3, maxDist: number, cut?: CutParams | null): PickHit | null {
   const len = Math.hypot(d[0], d[1], d[2]);
   if (len < 1e-9) return null;
-  const dx = d[0] / len, dy = d[1] / len, dz = d[2] / len;
-  let vx = Math.floor(o[0]), vy = Math.floor(o[1]), vz = Math.floor(o[2]);
-  const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
-  const tdx = dx === 0 ? Infinity : Math.abs(1 / dx), tdy = dy === 0 ? Infinity : Math.abs(1 / dy), tdz = dz === 0 ? Infinity : Math.abs(1 / dz);
-  let tmx = dx === 0 ? Infinity : (dx > 0 ? vx + 1 - o[0] : o[0] - vx) * tdx;
-  let tmy = dy === 0 ? Infinity : (dy > 0 ? vy + 1 - o[1] : o[1] - vy) * tdy;
-  let tmz = dz === 0 ? Infinity : (dz > 0 ? vz + 1 - o[2] : o[2] - vz) * tdz;
-  let face = -1;
+  ray.start(o, d[0] / len, d[1] / len, d[2] / len);
   for (let i = 0; i < 4096; i++) {
-    const b = store.blockAt(dim, vx, vy, vz);
-    if (b && b.id !== 0 && !cutHides(cut, vx, vy, vz)) {
-      const s = (b.id << 4) | b.meta;
-      if (t.shape[s] !== Shape.None && !(t.flags[s] & (F_WATER | F_LAVA))) {
-        return { x: vx, y: vy, z: vz, id: b.id, meta: b.meta, face, live: b.col.live, seen: b.col.seen, by: b.col.by };
-      }
-    }
-    let tt: number;
-    if (tmx < tmy && tmx < tmz) { tt = tmx; vx += sx; tmx += tdx; face = sx > 0 ? 4 : 5; }
-    else if (tmy < tmz) { tt = tmy; vy += sy; tmy += tdy; face = sy > 0 ? 0 : 1; }
-    else { tt = tmz; vz += sz; tmz += tdz; face = sz > 0 ? 2 : 3; }
-    if (tt > maxDist) return null;
-    if (vy < -64 || vy > 320) return null;
+    const hit = pickHere(store, t, dim, cut);
+    if (hit) return hit;
+    const tt = ray.step();
+    if (tt > maxDist || ray.vy < -64 || ray.vy > 320) return null;
   }
   return null;
+}
+
+/** The ray's current cell when it holds a drawn, uncut block that isn't a fluid. */
+function pickHere(store: ColumnStore, t: StateTable, dim: number, cut: CutParams | null | undefined): PickHit | null {
+  const { vx, vy, vz } = ray;
+  const b = store.blockAt(dim, vx, vy, vz);
+  if (!b || b.id === 0 || cutHides(cut, vx, vy, vz)) return null;
+  const s = (b.id << 4) | b.meta;
+  if (t.shape[s] === Shape.None || t.flags[s] & (F_WATER | F_LAVA)) return null;
+  return { x: vx, y: vy, z: vz, id: b.id, meta: b.meta, face: ray.face, live: b.col.live, seen: b.col.seen, by: b.col.by };
 }
 
 /** ViewCut.Blocked: does an opaque cube or leaf block (not already cut) hide point p from the camera? */
@@ -60,30 +124,24 @@ export function blocked(store: ColumnStore, t: StateTable, dim: number, p: V3, c
   const len = Math.hypot(dx, dy, dz);
   if (len < 1e-6) return false;
   dx /= len; dy /= len; dz /= len;
-  let vx = Math.floor(p[0]), vy = Math.floor(p[1]), vz = Math.floor(p[2]);
-  const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
-  const tdx = dx === 0 ? Infinity : Math.abs(1 / dx), tdy = dy === 0 ? Infinity : Math.abs(1 / dy), tdz = dz === 0 ? Infinity : Math.abs(1 / dz);
-  let tmx = dx === 0 ? Infinity : (dx > 0 ? vx + 1 - p[0] : p[0] - vx) * tdx;
-  let tmy = dy === 0 ? Infinity : (dy > 0 ? vy + 1 - p[1] : p[1] - vy) * tdy;
-  let tmz = dz === 0 ? Infinity : (dz > 0 ? vz + 1 - p[2] : p[2] - vz) * tdz;
+  ray.start(p, dx, dy, dz);
   for (let i = 0; i < 512; i++) {
-    let tt: number;
-    if (tmx < tmy && tmx < tmz) { tt = tmx; vx += sx; tmx += tdx; }
-    else if (tmy < tmz) { tt = tmy; vy += sy; tmy += tdy; }
-    else { tt = tmz; vz += sz; tmz += tdz; }
+    const tt = ray.step();
     if (tt >= len - 0.3) return false;
-    const b = store.blockAt(dim, vx, vy, vz);
+    const b = store.blockAt(dim, ray.vx, ray.vy, ray.vz);
     if (!b) {
-      if (vy >= 256 && dy > 0) return false;
+      if (ray.vy >= 256 && dy > 0) return false;
       continue;
     }
-    if (b.id === 0) continue;
-    const s = (b.id << 4) | b.meta;
-    if (!(t.flags[s] & (F_OPAQUE | F_LEAVES))) continue;
-    if (cutHides(cut, vx, vy, vz)) continue;
-    return true;
+    if (hidesView(t, b.id, b.meta, cut)) return true;
   }
   return false;
+}
+
+/** An opaque cube or leaves, not cut away, in the ray's current cell. */
+function hidesView(t: StateTable, id: number, meta: number, cut: CutParams | null | undefined): boolean {
+  if (id === 0 || !(t.flags[(id << 4) | meta] & (F_OPAQUE | F_LEAVES))) return false;
+  return !cutHides(cut, ray.vx, ray.vy, ray.vz);
 }
 
 /** For each body (x, y, z of its feet, 3 numbers each): is any of its feet / waist / head points hidden from the camera by an

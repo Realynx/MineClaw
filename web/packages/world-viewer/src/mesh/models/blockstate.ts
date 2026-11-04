@@ -68,38 +68,49 @@ export class BlockStateFile {
   /** The models that draw a state (one for variants, every applying case for multipart). `key` = an exact variant key to
    * prefer ("all" for seamless double slabs). */
   select(state: Props, key?: string | null): VariantRef[] {
+    if (this.parts.length) return this.selectParts(state);
+    const exact = key != null ? this.variants.find((x) => x.key === key) : undefined;
+    if (exact) return [exact.model];
+    const pick = this.bestVariant(state);
+    if (pick) return [pick];
+    return this.variants.length ? [this.variants[0].model] : [];
+  }
+
+  /** Multipart: every case whose condition (any of its OR terms) the state meets. */
+  private selectParts(state: Props): VariantRef[] {
     const out: VariantRef[] = [];
-    if (this.parts.length) {
-      for (const { when, apply } of this.parts) {
-        if (!apply) continue;
-        if (!when || when.some((c) => Object.entries(c).every(([k, vs]) => state[k] != null && vs.includes(state[k])))) out.push(apply);
-      }
-      return out;
-    }
-    if (key != null) {
-      const v = this.variants.find((x) => x.key === key);
-      if (v) return [v.model];
-    }
+    for (const { when, apply } of this.parts) if (apply && (!when || when.some((c) => meets(state, c)))) out.push(apply);
+    return out;
+  }
+
+  /** The variant that agrees with the most of the state's properties and contradicts none (the first on a tie). */
+  private bestVariant(state: Props): VariantRef | null {
     let best = -1;
     let pick: VariantRef | null = null;
     for (const v of this.variants) {
-      let score = 0, ok = true;
-      for (const [k, val] of Object.entries(v.props)) {
-        const have = state[k];
-        if (have == null) continue;
-        if (have !== val) {
-          ok = false;
-          break;
-        }
-        score++;
-      }
-      if (ok && score > best) {
+      const score = variantScore(v.props, state);
+      if (score > best) {
         best = score;
         pick = v.model;
       }
     }
-    if (pick) out.push(pick);
-    else if (this.variants.length) out.push(this.variants[0].model);
-    return out;
+    return pick;
   }
+}
+
+/** A multipart term: each named property has one of the listed values. */
+function meets(state: Props, c: Cond): boolean {
+  return Object.entries(c).every(([k, vs]) => state[k] != null && vs.includes(state[k]));
+}
+
+/** How many of a variant's properties the state has as given; −1 when one differs. */
+function variantScore(props: Props, state: Props): number {
+  let score = 0;
+  for (const [k, val] of Object.entries(props)) {
+    const have = state[k];
+    if (have == null) continue;
+    if (have !== val) return -1;
+    score++;
+  }
+  return score;
 }

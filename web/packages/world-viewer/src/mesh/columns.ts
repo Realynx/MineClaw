@@ -165,18 +165,10 @@ export class ColumnStore {
         missing.add(`${cx},${cz}`);
         continue;
       }
-      if (y < 0 || y >= c.height) continue;
-      const i = cellIndex(x & 15, y, z & 15);
-      if (c.ids[i] === (id & 255) && c.meta[i] === (meta & 15)) continue;
-      c.ids[i] = id & 255;
-      c.meta[i] = meta & 15;
+      if (!setBlock(c, x, y, z, id, meta)) continue;
       tops.add(c);
       applied++;
-      const sy = y >> 4, lx = x & 15, lz = z & 15, ly = y & 15;
-      const xs = [0, ...(lx === 0 ? [-1] : lx === 15 ? [1] : [])];
-      const zs = [0, ...(lz === 0 ? [-1] : lz === 15 ? [1] : [])];
-      const ys = [0, ...(ly === 0 && sy > 0 ? [-1] : ly === 15 && (sy + 1) * 16 < c.height ? [1] : [])];
-      for (const dx of xs) for (const dz of zs) for (const dy of ys) dirty.add(`${cx + dx},${sy + dy},${cz + dz}`);
+      markBlockSections(dirty, c, x, y, z);
     }
     for (const c of tops) c.top = topMap(c, this.version);
     // Relight around the changes (a dug hole lets the sky in, a removed torch goes dark) and re-mesh what that touched.
@@ -225,6 +217,31 @@ function topMap(c: StoredColumn, version: GameVersion): Int16Array {
   return top;
 }
 
+/** Sets a held cell; false when it is outside the column's height or already holds that state. */
+function setBlock(c: StoredColumn, x: number, y: number, z: number, id: number, meta: number): boolean {
+  if (y < 0 || y >= c.height) return false;
+  const i = cellIndex(x & 15, y, z & 15);
+  if (c.ids[i] === (id & 255) && c.meta[i] === (meta & 15)) return false;
+  c.ids[i] = id & 255;
+  c.meta[i] = meta & 15;
+  return true;
+}
+
+/** The changed block's own section, plus the neighbouring section across every boundary the block sits on. */
+function markBlockSections(dirty: Set<string>, c: StoredColumn, x: number, y: number, z: number): void {
+  const cx = x >> 4, cz = z >> 4, sy = y >> 4;
+  const xs = boundarySteps(x & 15, true, true);
+  const zs = boundarySteps(z & 15, true, true);
+  const ys = boundarySteps(y & 15, sy > 0, (sy + 1) * 16 < c.height);
+  for (const dx of xs) for (const dz of zs) for (const dy of ys) dirty.add(`${cx + dx},${sy + dy},${cz + dz}`);
+}
+
+/** [0], plus −1 on a section's low boundary or +1 on its high one (when there is a section that way). */
+function boundarySteps(l: number, low: boolean, high: boolean): number[] {
+  if (l === 0) return low ? [0, -1] : [0];
+  return l === 15 && high ? [0, 1] : [0];
+}
+
 function sectionChanged(a: StoredColumn, b: StoredColumn, s: number): boolean {
   for (let x = 0; x < 16; x++)
     for (let z = 0; z < 16; z++) {
@@ -233,6 +250,10 @@ function sectionChanged(a: StoredColumn, b: StoredColumn, s: number): boolean {
     }
   const la = a.light, lb = b.light;
   if (!la || !lb) return la !== lb;
+  return lightChanged(la, lb, s);
+}
+
+function lightChanged(la: ColumnLight, lb: ColumnLight, s: number): boolean {
   for (let x = 0; x < 16; x++) for (let z = 0; z < 16; z++) for (let y = 0; y < 16; y++) if (lightPacked(la, x, s * 16 + y, z) !== lightPacked(lb, x, s * 16 + y, z)) return true;
   return false;
 }

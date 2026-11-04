@@ -29,6 +29,45 @@ export function wireColour(power: number): number {
   return ((Math.min(1, Math.max(0, r)) * 255) << 16) | ((g * 255) << 8) | (b * 255);
 }
 
+/** Faces against the same block are skipped: glass, stained glass, ice, slime, frosted ice. */
+const SELF_CULL = new Set([20, 95, 79, 165, 212]);
+
+/** A biome's grass, foliage and water colours (−1 = the plains default; swamps tint water). */
+function biomeTints(id: number, b: { grass?: number | null; foliage?: number | null }): [number, number, number] {
+  return [b.grass ?? -1, b.foliage ?? -1, id === 6 || id === 134 ? 0xe0ffae : 0xffffff];
+}
+
+/** The colours unknown biomes use: plains', with vanilla's own as the fallback. */
+function plainsTints(pl: [number, number, number] | undefined): [number, number, number] {
+  if (!pl) return [0x91bd59, 0x77ab2f, 0xffffff];
+  return [pl[0] >= 0 ? pl[0] : 0x91bd59, pl[1] >= 0 ? pl[1] : 0x77ab2f, 0xffffff];
+}
+
+/** BlockColors.colorMultiplier for tinted faces, by id (biome kinds resolved per position); absent = untinted. */
+const TINTS: Record<number, (s: StateRef) => number> = (() => {
+  const t: Record<number, (s: StateRef) => number> = {};
+  const set = (ids: number[], f: (s: StateRef) => number) => ids.forEach((id) => (t[id] = f));
+  set([2, 31, 83], () => TINT_GRASS);
+  set([175], (s) => (s.file === 'double_grass' || s.file === 'double_fern' ? TINT_GRASS : TINT_NONE));
+  set([18], (s) => (s.file === 'spruce_leaves' ? fixedTint(SPRUCE) : s.file === 'birch_leaves' ? fixedTint(BIRCH) : TINT_FOLIAGE));
+  set([161, 106], () => TINT_FOLIAGE);
+  set([111], () => fixedTint(LILY_PAD));
+  set([104, 105], (s) => {
+    const age = s.props.age != null ? +s.props.age : 7;
+    return fixedTint(((age * 32) << 16) | ((255 - age * 8) << 8) | (age * 4));
+  });
+  set([55], (s) => fixedTint(wireColour(+(s.props.power ?? 0))));
+  return t;
+})();
+
+/** What every baked face of one block shares. */
+interface FaceStyle {
+  id: number;
+  tint: number;
+  translucent: boolean;
+  emissive: boolean;
+}
+
 function samePositions(a: Quad, b: Quad): boolean {
   for (let i = 0; i < 12; i++) if (Math.abs(a.p[i] - b.p[i]) > 1e-4) return false;
   return true;
@@ -60,12 +99,8 @@ export class Models1122 implements BlockSource {
     });
     for (const [n, json] of Object.entries(a.blockstates)) this.files.set(n, BlockStateFile.parse(json));
     for (const [c, r] of a.anims) this.animated.add(r * a.columns + c);
-    for (const [k, b] of Object.entries(a.biomes)) {
-      const id = +k;
-      this.biomes.set(id, [b.grass ?? -1, b.foliage ?? -1, id === 6 || id === 134 ? 0xe0ffae : 0xffffff]);
-    }
-    const pl = this.biomes.get(1);
-    this.plains = [pl && pl[0] >= 0 ? pl[0] : 0x91bd59, pl && pl[1] >= 0 ? pl[1] : 0x77ab2f, 0xffffff];
+    for (const [k, b] of Object.entries(a.biomes)) this.biomes.set(+k, biomeTints(+k, b));
+    this.plains = plainsTints(this.biomes.get(1));
     this.classify();
   }
 
@@ -76,30 +111,37 @@ export class Models1122 implements BlockSource {
 
   private solidFull = (id: number, meta: number) => (this.flags[(id << 4) | (meta & 15)] & F_OPAQUE) !== 0;
 
+  /** Every state's flags and whether its geometry depends on the world (in id, meta order: a state's resolution may read
+   * the flags of the states before it). */
   private classify(): void {
     for (let id = 1; id < 256; id++) {
       const dyn = worldDependent(id) || isFluid(id) || id === 54 || id === 146;
-      let base = 0;
-      if (EMISSIVE.has(id)) base |= F_EMISSIVE;
-      if (id === 8 || id === 9) base |= F_WATER;
-      if (id === 10 || id === 11) base |= F_LAVA;
-      if (id === 18 || id === 161) base |= F_LEAVES | (this.fastLeaves ? F_OPAQUE : 0);
-      if (id === 20 || id === 95 || id === 79 || id === 165 || id === 212) base |= F_SELF_CULL;
+      const base = this.baseFlags(id);
       for (let meta = 0; meta < 16; meta++) {
         const s = (id << 4) | meta;
         this.dynamic[s] = dyn ? 1 : 0;
-        let f = base;
-        if (!BLOCK_NAMES_1122[id]) {
-          this.flags[s] = f;
-          continue;
-        }
-        if (!dyn || SNOWY_CUBES.has(id)) {
-          const ref = resolveState(id, meta, null, this.solidFull);
-          if (!ref.builtin && this.isOpaqueCube(id, this.bake(id, ref))) f |= F_OPAQUE;
-        }
-        this.flags[s] = f;
+        this.flags[s] = this.stateFlags(id, meta, base, dyn);
       }
     }
+  }
+
+  /** The flags every state of a block shares. */
+  private baseFlags(id: number): number {
+    let base = 0;
+    if (EMISSIVE.has(id)) base |= F_EMISSIVE;
+    if (id === 8 || id === 9) base |= F_WATER;
+    if (id === 10 || id === 11) base |= F_LAVA;
+    if (id === 18 || id === 161) base |= F_LEAVES | (this.fastLeaves ? F_OPAQUE : 0);
+    if (SELF_CULL.has(id)) base |= F_SELF_CULL;
+    return base;
+  }
+
+  /** A state is an opaque cube when its fixed (or snowy-cube) model is one. */
+  private stateFlags(id: number, meta: number, base: number, dyn: boolean): number {
+    if (!BLOCK_NAMES_1122[id]) return base;
+    if (dyn && !SNOWY_CUBES.has(id)) return base;
+    const ref = resolveState(id, meta, null, this.solidFull);
+    return !ref.builtin && this.isOpaqueCube(id, this.bake(id, ref)) ? base | F_OPAQUE : base;
   }
 
   /** Six flush faces on distinct sides, each the whole face, all fully covered and not on the translucent layer. */
@@ -127,23 +169,40 @@ export class Models1122 implements BlockSource {
 
   build(id: number, meta: number, nb: Nb, out: Quad[]): void {
     if (isFluid(id)) {
-      const water = id === 8 || id === 9;
-      const still = this.a.tiles[water ? 'blocks/water_still' : 'blocks/lava_still'] ?? [0, 0];
-      // The flowing texture at its native 32 px when the pack has the 2×2-cell sheet, else its 16 px cell.
-      const big = Object.entries(this.a.sheets).find(([n]) => n.startsWith(water ? 'blocks/water_flow@' : 'blocks/lava_flow@'))?.[1];
-      const flow = big ?? this.a.tiles[water ? 'blocks/water_flow' : 'blocks/lava_flow'] ?? still;
-      const info = this.a.info[water ? 'blocks/water_still' : 'blocks/lava_still'];
-      fluidQuads(
-        nb,
-        id,
-        { stillC: still[0], stillR: still[1], flowC: flow[0], flowR: flow[1], flowSpan: big ? (big[2] << 8) | big[3] : 0, beta: false, tint: water ? TINT_WATER : TINT_NONE, flat: info?.[2] ?? (water ? 0x2f5cff : 0xf55a10), textured: this.textured },
-        (dx, dy, dz) => this.solidFull(nb.id(dx, dy, dz), nb.meta(dx, dy, dz)),
-        out,
-      );
+      this.buildFluid(id, nb, out);
       return;
     }
     const ref = resolveState(id, meta, nb, this.solidFull);
     for (const q of this.bake(id, ref, nb)) out.push(q);
+  }
+
+  /** Water and lava: the still and flowing textures (the flowing one at its native 32 px when the pack has the 2×2-cell
+   * sheet, else its 16 px cell). */
+  private buildFluid(id: number, nb: Nb, out: Quad[]): void {
+    const water = id === 8 || id === 9;
+    const kind = water ? 'water' : 'lava';
+    const { still, big, flow } = this.fluidTiles(kind);
+    const info = this.a.info[`blocks/${kind}_still`];
+    const flat = info?.[2] ?? (water ? 0x2f5cff : 0xf55a10);
+    fluidQuads(
+      nb,
+      id,
+      { stillC: still[0], stillR: still[1], flowC: flow[0], flowR: flow[1], flowSpan: big ? (big[2] << 8) | big[3] : 0, beta: false, tint: water ? TINT_WATER : TINT_NONE, flat, textured: this.textured },
+      (dx, dy, dz) => this.solidFull(nb.id(dx, dy, dz), nb.meta(dx, dy, dz)),
+      out,
+    );
+  }
+
+  private fluidTiles(kind: 'water' | 'lava'): { still: number[]; big: number[] | undefined; flow: number[] } {
+    const still = this.a.tiles[`blocks/${kind}_still`] ?? [0, 0];
+    const big = Object.entries(this.a.sheets).find(([n]) => n.startsWith(`blocks/${kind}_flow@`))?.[1];
+    const flow = big ?? this.a.tiles[`blocks/${kind}_flow`] ?? still;
+    return { still, big, flow };
+  }
+
+  /** Fast graphics: leaves drawn opaque (and hiding each other). */
+  private opaqueLeaves(id: number): boolean {
+    return this.fastLeaves && (id === 18 || id === 161);
   }
 
   /** The baked (cached) quads of a resolved state. */
@@ -162,66 +221,61 @@ export class Models1122 implements BlockSource {
   }
 
   private bakeNow(id: number, ref: StateRef, nb: Nb): Quad[] {
-    const emissive = EMISSIVE.has(id);
+    if (ref.builtin) return this.bakeBuiltin(id, ref, nb);
     const list: Quad[] = [];
-    if (ref.builtin) {
-      builtinQuads(id, ref, nb, this.sheet, list);
-      const flat = flatColour('1.12.2', id, 0, true);
-      for (const q of list) {
-        if (emissive) q.emissive = true;
-        if (!this.textured) {
-          q.textured = false;
-          if (q.span) q.flat = flat;
-        }
-      }
-      return list;
-    }
     const file = this.files.get(ref.file);
     if (!file) return list;
     const raw: BakedFace[] = [];
     for (const v of file.select(ref.props, ref.key)) this.baker.bake(v.model, v.x, v.y, v.uvlock, raw);
-    const tint = this.tintOf(id, ref);
-    const translucent = translucentLayer(id);
+    const style: FaceStyle = { id, tint: this.tintOf(id, ref), translucent: translucentLayer(id), emissive: EMISSIVE.has(id) };
     for (const m of raw) {
-      const q: Quad = m;
-      q.tint = m.tintindex >= 0 ? tint : TINT_NONE;
-      const cov = this.a.info[m.texture]?.[0] ?? 1;
-      q.layer = translucent ? Layer.Translucent : cov < 0.999 ? Layer.Cutout : Layer.Opaque;
-      q.emissive = emissive;
-      if (emissive) q.ao = false;
-      if (this.fastLeaves && (id === 18 || id === 161)) {
-        q.layer = Layer.Opaque;
-        q.fx = TEX_OPAQUE;
-      }
-      if (!this.textured) q.textured = false;
+      const q = this.styleFace(m, style);
       // A second element over the same face (the grass side fringe) becomes the first one's overlay.
       const host = list.find((o) => o.ovC < 0 && samePositions(o, q));
       if (host) {
         host.ovC = q.c;
         host.ovR = q.r;
         host.ovTint = q.tint;
-        continue;
-      }
-      list.push(q);
+      } else list.push(q);
     }
     return list;
   }
 
+  /** Tile-entity blocks and the like: our own geometry (untextured, a span takes the block's flat colour). */
+  private bakeBuiltin(id: number, ref: StateRef, nb: Nb): Quad[] {
+    const list: Quad[] = [];
+    builtinQuads(id, ref, nb, this.sheet, list);
+    const emissive = EMISSIVE.has(id);
+    const flat = flatColour('1.12.2', id, 0, true);
+    for (const q of list) {
+      if (emissive) q.emissive = true;
+      if (this.textured) continue;
+      q.textured = false;
+      if (q.span) q.flat = flat;
+    }
+    return list;
+  }
+
+  /** A baked face's tint, render layer (translucent blocks, cut-out where its texture has holes), light and texture mode. */
+  private styleFace(m: BakedFace, st: FaceStyle): Quad {
+    const q: Quad = m;
+    q.tint = m.tintindex >= 0 ? st.tint : TINT_NONE;
+    const cov = this.a.info[m.texture]?.[0] ?? 1;
+    q.layer = st.translucent ? Layer.Translucent : cov < 0.999 ? Layer.Cutout : Layer.Opaque;
+    q.emissive = st.emissive;
+    if (st.emissive) q.ao = false;
+    if (this.opaqueLeaves(st.id)) {
+      q.layer = Layer.Opaque;
+      q.fx = TEX_OPAQUE;
+    }
+    if (!this.textured) q.textured = false;
+    return q;
+  }
+
   /** BlockColors.colorMultiplier for tinted faces (biome kinds resolved per position). */
   private tintOf(id: number, s: StateRef): number {
-    switch (id) {
-      case 2: case 31: case 83: return TINT_GRASS;
-      case 175: return s.file === 'double_grass' || s.file === 'double_fern' ? TINT_GRASS : TINT_NONE;
-      case 18: return s.file === 'spruce_leaves' ? fixedTint(SPRUCE) : s.file === 'birch_leaves' ? fixedTint(BIRCH) : TINT_FOLIAGE;
-      case 161: case 106: return TINT_FOLIAGE;
-      case 111: return fixedTint(LILY_PAD);
-      case 104: case 105: {
-        const age = s.props.age != null ? +s.props.age : 7;
-        return fixedTint(((age * 32) << 16) | ((255 - age * 8) << 8) | (age * 4));
-      }
-      case 55: return fixedTint(wireColour(+(s.props.power ?? 0)));
-      default: return TINT_NONE;
-    }
+    const f = TINTS[id];
+    return f ? f(s) : TINT_NONE;
   }
 
   biomeColour(kind: number, biome: number): number {
