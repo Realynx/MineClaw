@@ -104,10 +104,10 @@ export class ThumbnailView implements RuntimeView {
     this.placeCamera(b);
     const xray = this.opts.xray ?? true;
     if (xray && !this.busy) this.testView(rt, b);
-    return this.setupFor(b, w, h, xray);
+    return this.setupFor(b, w, h, xray, this.ctx);
   }
 
-  private setupFor(b: BotView, w: number, h: number, xray: boolean): ViewSetup {
+  private setupFor(b: BotView, w: number, h: number, xray: boolean, ctx: CanvasRenderingContext2D): ViewSetup {
     return {
       dim: b.dim,
       camera: this.camera,
@@ -126,7 +126,7 @@ export class ThumbnailView implements RuntimeView {
       viewId: this.id,
       bubbles: (this.opts.bubbles ?? true) ? 'compact' : 'off',
       pxScale: h / Math.max(1, this.canvas.clientHeight),
-      target: this.ctx,
+      target: ctx,
     };
   }
 
