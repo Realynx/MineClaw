@@ -75,6 +75,26 @@ function mobBox(e: EntityView, version: GameVersion): { colour: number; w: numbe
   return { colour: look.colour, w: (def?.width ?? 0.6) * s, h: (def?.height ?? 1.8) * s };
 }
 
+/** How far (blocks) an entity's label shows: players 64, drops 12, the rest 24. */
+function labelRange(kind: string): number {
+  if (kind === 'player') return 64;
+  return kind === 'item' ? 12 : 24;
+}
+
+/** Bodies that get a silhouette when hidden: visible bots and players. */
+function ghostable(d: Drawn): boolean {
+  return !d.invisible && (d.bot || d.ent?.kind === 'player');
+}
+
+/** The experience orb icon (0..10) by its value (EntityXPOrb.getTextureByXP). */
+export function xpOrbIcon(v: number): number {
+  for (let k = 0; k < ORB_STEPS.length; k++) if (v >= ORB_STEPS[k]) return ORB_STEPS.length - k;
+  return 0;
+}
+
+/** The smallest value of icons 10 down to 1. */
+const ORB_STEPS = [2477, 1237, 617, 307, 149, 73, 37, 17, 7, 3];
+
 /** The shoulder parrots part of a rider signature: "left|right" colours, empty where none. */
 function shoulderSig(shoulders: EntityDto['shoulders']): string {
   return `${shoulders?.left ?? ''}|${shoulders?.right ?? ''}`;
@@ -1880,13 +1900,17 @@ export class EntityLayer {
   /** Flags the body's base instance for the silhouette pass (when this view found it hidden) and makes the draw's ghost twin. */
   private ghostFlags(d: Drawn, i: InstanceData, draw: InstancedDraw): void {
     const a = this.ghostMap?.get(d.key) ?? 0;
-    if (a < 0.02 || d.invisible || (!d.bot && d.ent?.kind !== 'player')) return;
-    const sel = this.ghostSelected;
-    const selected = d.bot && !!sel && (d.key === sel || this.botObjs.get(d.key)?.root.userData.short === sel);
-    i.flags |= GHOST_FLAG | (d.bot ? (selected ? GHOST_SELECTED : 0) : GHOST_PLAYER);
+    if (a < 0.02 || !ghostable(d)) return;
+    i.flags |= GHOST_FLAG | (d.bot ? (this.ghostIsSelected(d) ? GHOST_SELECTED : 0) : GHOST_PLAYER);
     i.flags += Math.max(1, Math.min(15, Math.round(a * 15))) * GHOST_LEVEL;
     const g = draw.ghostMesh(this.mats.ghost);
     if (g.created) this.group.add(g.mesh);
+  }
+
+  /** The view's selected bot, by name or short key. */
+  private ghostIsSelected(d: Drawn): boolean {
+    const sel = this.ghostSelected;
+    return !!sel && (d.key === sel || this.botObjs.get(d.key)?.root.userData.short === sel);
   }
 
   private rect(key: string): [number, number, number, number] | null {
@@ -2102,16 +2126,23 @@ export class EntityLayer {
     const i = this.base(d, slot, 0);
     const shiny = glint && !!this.mats.shared.uGlint.value;
     if (shiny) i.flags |= GLINT_FLAG;
-    if (l.kind === 'cube') {
-      i.tex = [0, 0, 1, 1];
-      i.flags |= F_BLOCKS;
-      i.faces = l.faces;
-      i.tintMask = l.tint ? l.tintMask : 0;
-      tint(i, l.tint || undefined, d.bright);
-      if (shiny) this.glintTwin(this.cubes, this.mats.glintTile);
-      this.cubes.push(i);
-      return;
-    }
+    if (l.kind === 'cube') this.pushCubeItem(d, l, i, shiny);
+    else this.pushSpriteItem(d, l, i, shiny, billboard, p);
+  }
+
+  /** A block item: the cube with its face cells (tinted faces by mask). */
+  private pushCubeItem(d: Drawn, l: Extract<ItemLook, { kind: 'cube' }>, i: InstanceData, shiny: boolean): void {
+    i.tex = [0, 0, 1, 1];
+    i.flags |= F_BLOCKS;
+    i.faces = l.faces;
+    i.tintMask = l.tint ? l.tintMask : 0;
+    tint(i, l.tint || undefined, d.bright);
+    if (shiny) this.glintTwin(this.cubes, this.mats.glintTile);
+    this.cubes.push(i);
+  }
+
+  /** A flat item: its atlas cell (items or blocks sheet) as a sprite, inset a little; billboarded for drops. */
+  private pushSpriteItem(d: Drawn, l: Extract<ItemLook, { kind: 'sprite' }>, i: InstanceData, shiny: boolean, billboard: boolean, p: Pack): void {
     if (shiny) this.glintTwin(this.sprites, this.mats.glintTile);
     const [cols, rows] = l.atlas === 'items' ? this.itemsGrid(p) : this.blocksGrid(p);
     const cx = l.cell % cols, cy = Math.floor(l.cell / cols);
@@ -2168,7 +2199,7 @@ export class EntityLayer {
     const key = this.version === 'b1.8.1' ? 'item/xporb' : 'entity/experience_orb';
     const r = this.rect(key);
     if (!r) return this.pushBox(d);
-    const v = d.count, icon = v >= 2477 ? 10 : v >= 1237 ? 9 : v >= 617 ? 8 : v >= 307 ? 7 : v >= 149 ? 6 : v >= 73 ? 5 : v >= 37 ? 4 : v >= 17 ? 3 : v >= 7 ? 2 : v >= 3 ? 1 : 0;
+    const icon = xpOrbIcon(d.count);
     const i = this.base(d, 0, 0);
     i.tex = [r[0] + ((icon % 4) / 4) * r[2], r[1] + (Math.floor(icon / 4) / 4) * r[3], r[2] / 4, r[3] / 4];
     const t = d.age / 2;
@@ -2204,39 +2235,53 @@ export class EntityLayer {
   // ------------------------------------------------------------------------------------------------------------ labels
 
   private botLabel(b: BotView, selected: ReadonlySet<string>, timeMs: number): void {
-    let o = this.botObjs.get(b.name);
-    if (!o) {
-      const ring = new THREE.Mesh(this.ringGeo, this.ringMat.clone());
-      ring.renderOrder = 9;
-      const root = new THREE.Group();
-      root.userData = { name: b.name, short: b.dto.short };
-      root.add(ring);
-      this.group.add(root);
-      this.botObjs.set(b.name, (o = { root, ring, label: null, labelText: '' }));
-    }
+    const o = this.botObjFor(b);
     o.root.position.set(b.x, b.y, b.z);
     const sel = selected.has(b.name) || selected.has(b.dto.short);
     (o.ring.material as THREE.MeshBasicMaterial).opacity = 0.6 + 0.3 * Math.sin(timeMs / 250);
     const held = b.dto.held ? `holding ${b.dto.held}` : b.dto.job ? b.dto.job : null;
     const text = `${b.name}${b.dto.main ? ' · main' : ''}`;
     const lt = `${text}|${held ?? ''}|${sel}`;
-    if (o.labelText !== lt) {
-      if (o.label) {
-        o.root.remove(o.label);
-        this.labels.release(o.label);
-      }
-      o.label = this.labels.create(text, { fg: '#ffffff', bg: sel ? 'rgba(30,60,120,0.85)' : 'rgba(0,0,0,0.6)', sub: held, border: sel ? '#9ec5ff' : null }, true);
-      o.label.position.set(0, 2.2, 0);
-      o.root.add(o.label);
-      o.labelText = lt;
+    if (o.labelText !== lt) this.relabelBot(o, text, held, sel, lt);
+  }
+
+  /** A bot's ring and label root, made on first sight. */
+  private botObjFor(b: BotView): BotObj {
+    const o = this.botObjs.get(b.name);
+    if (o) return o;
+    const ring = new THREE.Mesh(this.ringGeo, this.ringMat.clone());
+    ring.renderOrder = 9;
+    const root = new THREE.Group();
+    root.userData = { name: b.name, short: b.dto.short };
+    root.add(ring);
+    this.group.add(root);
+    const made: BotObj = { root, ring, label: null, labelText: '' };
+    this.botObjs.set(b.name, made);
+    return made;
+  }
+
+  /** Replaces a bot's name label (`sub`: what it holds or its job; selected bots get a blue plate). */
+  private relabelBot(o: BotObj, text: string, held: string | null, sel: boolean, lt: string): void {
+    if (o.label) {
+      o.root.remove(o.label);
+      this.labels.release(o.label);
     }
+    o.label = this.labels.create(text, { fg: '#ffffff', bg: sel ? 'rgba(30,60,120,0.85)' : 'rgba(0,0,0,0.6)', sub: held, border: sel ? '#9ec5ff' : null }, true);
+    o.label.position.set(0, 2.2, 0);
+    o.root.add(o.label);
+    o.labelText = lt;
   }
 
   private entityLabel(d: Drawn, e: EntityView, dist: number, want: Set<string>): void {
-    const near = e.kind === 'player' ? 64 : e.kind === 'item' ? 12 : 24;
-    if (dist > near) return;
+    if (dist > labelRange(e.kind)) return;
     want.add(e.key);
-    const text = entityText(e);
+    const l = this.entLabelFor(e, entityText(e));
+    const bob = e.kind === 'item' ? 0.35 : 0.25;
+    l.sprite.position.set(d.x, d.y + (d.hang ? d.h / 2 : d.h) + bob, d.z);
+  }
+
+  /** An entity's label sprite for `text` (a changed text replaces it). */
+  private entLabelFor(e: EntityView, text: string): Label {
     let l = this.entLabels.get(e.key);
     if (l && l.text !== text) {
       this.group.remove(l.sprite);
@@ -2244,13 +2289,12 @@ export class EntityLayer {
       this.entLabels.delete(e.key);
       l = undefined;
     }
-    if (!l) {
-      const sprite = this.labels.create(text, { fg: e.kind === 'player' ? '#cfe0ff' : '#ffffff', bg: 'rgba(0,0,0,0.45)' }, e.kind === 'player', e.kind === 'item' ? 0.7 : 0.85);
-      this.group.add(sprite);
-      this.entLabels.set(e.key, (l = { sprite, text }));
-    }
-    const bob = e.kind === 'item' ? 0.35 : 0.25;
-    l.sprite.position.set(d.x, d.y + (d.hang ? d.h / 2 : d.h) + bob, d.z);
+    if (l) return l;
+    const sprite = this.labels.create(text, { fg: e.kind === 'player' ? '#cfe0ff' : '#ffffff', bg: 'rgba(0,0,0,0.45)' }, e.kind === 'player', e.kind === 'item' ? 0.7 : 0.85);
+    this.group.add(sprite);
+    l = { sprite, text };
+    this.entLabels.set(e.key, l);
+    return l;
   }
 
   // ------------------------------------------------------------------------------------------------------------ queries
@@ -2313,17 +2357,15 @@ export class EntityLayer {
     return this.drawn.get(key)?.detail ?? null;
   }
 
-  private dropBot(k: string, o: BotObj): void {
-    this.group.remove(o.root);
-    if (o.label) this.labels.release(o.label);
-    (o.ring.material as THREE.Material).dispose();
-    this.botObjs.delete(k);
-  }
-
-  dispose(): void {
+  /** Bot rings and labels, entity labels. */
+  private disposeLabels(): void {
     for (const [k, o] of this.botObjs) this.dropBot(k, o);
     for (const l of this.entLabels.values()) this.labels.release(l.sprite);
     this.entLabels.clear();
+  }
+
+  /** The per-model draws (opaque, translucent, armour), skulls, elytra and the extra geometries. */
+  private disposeModelDraws(): void {
     for (const e of this.models.values()) {
       e.opaque.dispose();
       e.translucent?.dispose();
@@ -2335,6 +2377,18 @@ export class EntityLayer {
     this.skullDraws.clear();
     this.elytraDraw?.dispose();
     for (const g of this.extraGeos) g.dispose();
+  }
+
+  private dropBot(k: string, o: BotObj): void {
+    this.group.remove(o.root);
+    if (o.label) this.labels.release(o.label);
+    (o.ring.material as THREE.Material).dispose();
+    this.botObjs.delete(k);
+  }
+
+  dispose(): void {
+    this.disposeLabels();
+    this.disposeModelDraws();
     this.sprites.dispose();
     this.cubes.dispose();
     this.shadowDraw.dispose();

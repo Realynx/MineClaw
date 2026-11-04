@@ -1,9 +1,10 @@
 // Behaviour pin for the complexity refactor of render/entityLayer.ts (docs/dev/complexity.md, WP12): the exported label
-// text and LOD box helpers (entityText, entityLook) over seeded entities of every kind, both versions. The digest was taken
-// from the code before it was reshaped.
+// text and LOD box helpers (entityText, entityLook) over seeded entities of every kind, both versions, and the experience
+// orb icon table against the original threshold ladder over every value. The digest was taken from the code before it was
+// reshaped.
 
 import { describe, expect, it } from 'vitest';
-import { entityLook, entityText } from '../src/render/entityLayer';
+import { entityLook, entityText, xpOrbIcon } from '../src/render/entityLayer';
 import { MOB_NAMES } from '../src/render/entities/registry';
 import type { EntityDto } from '../src/types';
 import type { EntityView } from '../src/world/entities';
@@ -28,5 +29,12 @@ describe('entity text goldens', () => {
       d.add(`${entityText(e)} ${JSON.stringify(entityLook(e))} ${JSON.stringify(entityLook(e, 'b1.8.1'))}`);
     }
     expect(d.hex()).toBe('01c365691ca7fab19485ad98f8098407');
+  });
+
+  it('xpOrbIcon equals the getTextureByXP ladder', () => {
+    const ladder = (v: number) => (v >= 2477 ? 10 : v >= 1237 ? 9 : v >= 617 ? 8 : v >= 307 ? 7 : v >= 149 ? 6 : v >= 73 ? 5 : v >= 37 ? 4 : v >= 17 ? 3 : v >= 7 ? 2 : v >= 3 ? 1 : 0);
+    const values = [NaN, Infinity, -Infinity, -0, 2.5, 2476.9, 1e9];
+    for (let v = -5; v <= 3000; v++) values.push(v);
+    for (const v of values) expect(xpOrbIcon(v)).toBe(ladder(v));
   });
 });
