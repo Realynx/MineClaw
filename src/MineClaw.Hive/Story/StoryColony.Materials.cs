@@ -212,7 +212,7 @@ public sealed partial class StoryColony
         bool hasTable = Benches.Any(b => b.Kind == "crafting_table"), hasFurnace = Benches.Any(b => b.Kind == "furnace");
         List<MaterialNeed> Used(IReadOnlyList<MaterialNeed> used, Dictionary<(int Id, int Meta), int> after) { pool = after; return used.ToList(); }
         pool = ToolCrafts(w, pool, reserved, wants, hasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
-        bool bucketCovered = BucketCarried(); // liquid builds need one bucket between them, not one per cell (StoryColony.Water.cs)
+        bool bucketCovered = BucketsHeld() > 0; // any bucket anywhere, empty or full, is the one liquid builds share (StoryColony.Water.cs)
         bool bucketAsked = false;
         foreach (var b in Builds.OrderBy(b => b.Order))
         {

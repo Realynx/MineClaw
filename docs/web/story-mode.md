@@ -1202,11 +1202,12 @@ fair share), with one stand in reach of them (`StoryColony.WaterPour.cs`):
   buckets poured the canal before the pool queued ahead of it (the pool's dug cells still looked solid to the colony), then filled
   its buckets from the canal itself ("scooped at 17,63,16"). A water build still being poured is never a fill source either: only a
   finished build's cells that refill.
-- **Bucket.** The pawn's own (empty or full), else up to two from storage (empty first), else the build waits: the materials pass
-  counts a liquid build's need as one bucket, not one per cell, and liquid builds share it; a bucket missing makes an auto bill
-  "for build #N" (3 iron ingots at the crafting table), "waiting for a bucket (being crafted)", or "needs a bucket" blocked with
-  one alert. Buckets are tools: the pawn keeps them (deliveries never take tools); the batch that pours the colony's last
-  liquid cells returns them to storage (`stash`).
+- **Bucket.** The pawn's own (empty or full), else up to two from storage (full ones first: a full one pours at once, with no fill
+  trip), else the build waits: the materials pass counts a liquid build's need as one bucket, not one per cell, and liquid builds
+  share it. Any bucket the colony has, empty or full, in a chest or a pawn's pocket, covers it (live 11-04: a water bucket put in a
+  chest still had "Make Bucket" asking for iron); with none, an auto bill "for build #N" (3 iron ingots at the crafting table),
+  "waiting for a bucket (being crafted)", or "needs a bucket" blocked with one alert. Buckets are tools: the pawn keeps them
+  (deliveries never take tools) and a pour job never stashes them, so the colony's working bucket stays out of the chests.
 - **Fill source** (`FillSource`): a still source within 24 blocks of the cells that won't be used up: one the colony poured that
   refills (an infinite pool it built first, then a channel of its own that refills), then any that refills (two source neighbours over ground: a lake, a pool), then a
   source with another source beside it; never a lone puddle, never water the colony poured that doesn't refill (Fox's
