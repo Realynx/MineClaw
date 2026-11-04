@@ -75,37 +75,55 @@ public static partial class MineDesign
         var min = new BlockPos(cells.Min(p => p.X), cells.Min(p => p.Y), cells.Min(p => p.Z));
         var max = new BlockPos(cells.Max(p => p.X), cells.Max(p => p.Y), cells.Max(p => p.Z));
         int wx = max.X - min.X + 1, hy = max.Y - min.Y + 1, dz = max.Z - min.Z + 1;
-        if (wx > BlueprintParser.MaxSide || dz > BlueprintParser.MaxSide || hy > BlueprintParser.MaxMineHeight)
-            return (null, min, 0, string.Create(CultureInfo.InvariantCulture,
-                $"it would be {wx}×{hy}×{dz} (a mine holds at most {BlueprintParser.MaxSide} a side and {BlueprintParser.MaxMineHeight} high)"));
+        if (TooBig(wx, hy, dz) is { } big) return (null, min, 0, big);
         if (min.Y < 1) return (null, min, 0, "a mine can't dig below y 1 (y 0 is bedrock)");
         var r = new CaptureResult { Name = name, Min = min, Max = max, Version = DesignVersions.Normalize(version) };
         foreach (var (p, s) in snap.Blocks) r.Cells[p] = s;
         var dsl = StructureCapture.Dsl(r);
         dsl = OriginLine().Replace(dsl, "");
         dsl = CaptureComment().Replace(dsl, $"# a mine drawn in the Design Studio: dig the clear boxes, then place the blocks\n", 1);
-        var head = new StringBuilder();
-        head.Append("kind mine\n");
-        head.Append(CultureInfo.InvariantCulture, $"anchor absolute {min.X},{min.Y},{min.Z}\n");
-        if (entry is { } e) head.Append(CultureInfo.InvariantCulture, $"entry {e.X - min.X},{e.Y - min.Y},{e.Z - min.Z}\n");
-        if (!string.IsNullOrWhiteSpace(seed)) head.Append("seed ").Append(MineTerrain.NormalizeSeed(seed).Replace('\n', ' ').Replace('#', ' ')).Append('\n');
-        if (DesignVersions.Normalize(preferredFor) is { } pf) head.Append("preferred_for ").Append(pf).Append('\n');
         int at = dsl.IndexOf("facing ", StringComparison.Ordinal);
-        dsl = at >= 0 ? dsl.Insert(at, head.ToString()) : dsl + head;
+        var head = Header(min, entry, seed, preferredFor);
+        dsl = at >= 0 ? dsl.Insert(at, head) : dsl + head;
         var sb = new StringBuilder(dsl);
         if (!sb.ToString().EndsWith('\n')) sb.Append('\n');
         var air = snap.Air.Where(p => !snap.Blocks.ContainsKey(p)).ToHashSet();
         foreach (var (lo, hi) in Boxes(air))
             sb.Append(CultureInfo.InvariantCulture, $"clear {lo.X - min.X},{lo.Y - min.Y},{lo.Z - min.Z} {hi.X - min.X},{hi.Y - min.Y},{hi.Z - min.Z}\n");
         dsl = sb.ToString();
+        var (bad, why) = DrawnAs(dsl, snap, air, min, Math.Max(height, min.Y + hy));
+        return why == null ? (dsl, min, bad, null) : (null, min, 0, why);
+    }
+
+    /// <summary>Why a mine of this size can't be a design (over 64 a side or 128 high), or null.</summary>
+    private static string? TooBig(int wx, int hy, int dz) =>
+        wx > BlueprintParser.MaxSide || dz > BlueprintParser.MaxSide || hy > BlueprintParser.MaxMineHeight
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"it would be {wx}×{hy}×{dz} (a mine holds at most {BlueprintParser.MaxSide} a side and {BlueprintParser.MaxMineHeight} high)")
+            : null;
+
+    /// <summary>The mine's header lines: kind, absolute anchor, entry, seed and version preference.</summary>
+    private static string Header(BlockPos min, BlockPos? entry, string? seed, string? preferredFor)
+    {
+        var head = new StringBuilder();
+        head.Append("kind mine\n");
+        head.Append(CultureInfo.InvariantCulture, $"anchor absolute {min.X},{min.Y},{min.Z}\n");
+        if (entry is { } e) head.Append(CultureInfo.InvariantCulture, $"entry {e.X - min.X},{e.Y - min.Y},{e.Z - min.Z}\n");
+        if (!string.IsNullOrWhiteSpace(seed)) head.Append("seed ").Append(MineTerrain.NormalizeSeed(seed).Replace('\n', ' ').Replace('#', ' ')).Append('\n');
+        if (DesignVersions.Normalize(preferredFor) is { } pf) head.Append("preferred_for ").Append(pf).Append('\n');
+        return head.ToString();
+    }
+
+    /// <summary>The DSL parsed back and normalized: the cells drawn otherwise (blocks as stand-ins, cells to dig it doesn't clear), or why it doesn't draw.</summary>
+    private static (int Bad, string? Why) DrawnAs(string dsl, DesignSnapshot snap, HashSet<BlockPos> air, BlockPos min, int height)
+    {
         var (bp, issues) = BlueprintParser.Parse(dsl);
-        if (issues.FirstOrDefault(i => i.Level == IssueLevel.Error) is { } perr) return (null, min, 0, "it doesn't draw as a design: " + perr);
-        var (plan, more) = BlueprintNormalizer.Normalize(bp, min, Math.Max(height, min.Y + hy));
+        if (issues.FirstOrDefault(i => i.Level == IssueLevel.Error) is { } perr) return (0, "it doesn't draw as a design: " + perr);
+        var (plan, more) = BlueprintNormalizer.Normalize(bp, min, height);
         if (plan == null || more.Any(i => i.Level == IssueLevel.Error))
-            return (null, min, 0, "it doesn't normalize: " + string.Join("; ", more.Where(i => i.Level == IssueLevel.Error).Take(2)));
-        int bad = snap.Blocks.Count(kv => !plan.Blocks.TryGetValue(kv.Key, out var b) || b.Id != kv.Value.Id || b.Meta != kv.Value.Meta)
-                  + air.Count(p => !plan.Air.Contains(p));
-        return (dsl, min, bad, null);
+            return (0, "it doesn't normalize: " + string.Join("; ", more.Where(i => i.Level == IssueLevel.Error).Take(2)));
+        return (snap.Blocks.Count(kv => !plan.Blocks.TryGetValue(kv.Key, out var b) || b.Id != kv.Value.Id || b.Meta != kv.Value.Meta)
+                + air.Count(p => !plan.Air.Contains(p)), null);
     }
 
     /// <summary>"mine 12×61×40 (y 11..71): 2 210 cells to dig, 9 torches".</summary>
