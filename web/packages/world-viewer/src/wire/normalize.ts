@@ -75,12 +75,13 @@ export function itemRef(v: unknown): ItemRef {
   if (v == null || v === false) return null;
   if (typeof v === 'number') return v > 0 ? [v, 0] : null;
   if (Array.isArray(v)) return v.length && num(v[0]) > 0 ? [num(v[0]), num(v[1])] : null;
-  if (typeof v === 'object') {
-    const o = v as Record<string, unknown>;
-    const id = num(o.id ?? o.item);
-    return id > 0 ? [id, num(o.meta ?? o.damage)] : null;
-  }
-  return null;
+  return typeof v === 'object' ? objectRef(v as Record<string, unknown>) : null;
+}
+
+/** {id, meta} / {item, damage}. */
+function objectRef(o: Record<string, unknown>): ItemRef {
+  const id = num(o.id ?? o.item);
+  return id > 0 ? [id, num(o.meta ?? o.damage)] : null;
 }
 
 const FLAG_BITS: Array<[string[], number]> = [
@@ -146,14 +147,30 @@ function equipment(v: unknown): Equipment | null {
   return any ? e : null;
 }
 
-function entity(e: Partial<EntityDto> & Record<string, unknown>): EntityDto {
+type WireEntity = Partial<EntityDto> & Record<string, unknown>;
+
+function entity(e: WireEntity): EntityDto {
   const kind = e.kind ?? 'mob';
   const out: EntityDto = { ...e, kind, dim: num(e.dim), x: num(e.x), y: num(e.y), z: num(e.z) };
+  // The fields are read in this order (new keys land in it after the wire's own).
+  genericFields(e, out);
+  appearanceFields(e, out);
+  kindFields(e, out, kind);
+  extraFields(e, out);
+  if (kind === 'minecart') minecartFields(e, out);
+  if (e.pose && typeof e.pose === 'object') out.pose = poseOf(e.pose as Record<string, unknown>);
+  return out;
+}
+
+function genericFields(e: WireEntity, out: EntityDto): void {
   if (e.flags != null) out.flags = flags(e.flags);
   if (e.equipment != null) out.equipment = equipment(e.equipment);
   if (e.headYaw != null) out.headYaw = num(e.headYaw);
   if (e.baby != null) out.baby = !!e.baby;
-  // `look` is the appearance string; an older string `variant` is read as one.
+}
+
+/** `look` is the appearance string; an older string `variant` is read as one. A boolean `vehicle` is the riding flag. */
+function appearanceFields(e: WireEntity, out: EntityDto): void {
   if (typeof e.variant === 'string') {
     out.look = (e.look as string | undefined) ?? e.variant;
     out.variant = null;
@@ -163,32 +180,50 @@ function entity(e: Partial<EntityDto> & Record<string, unknown>): EntityDto {
     if (e.vehicle) out.flags = (out.flags ?? 0) | FLAG_RIDING;
     out.vehicle = null;
   }
-  // Kind-specific fields that share names with the generic ones.
+}
+
+/** Kind-specific fields that share names with the generic ones. */
+function kindFields(e: WireEntity, out: EntityDto, kind: string): void {
   if (kind === 'painting') out.motive = (e.motive as string | undefined) ?? e.name ?? null;
   if (kind === 'item_frame') {
-    out.frameItem = Array.isArray(e.item) || (e.item && typeof e.item === 'object') ? itemRef(e.item) : itemRef(e.item != null ? [num(e.item), num(e.damage)] : null);
+    out.frameItem = frameItemOf(e);
     out.item = null;
     out.rotation = e.rotation == null ? 0 : num(e.rotation);
   }
   if (kind === 'falling_block' && e.block != null) out.block = itemRef(e.block);
+}
+
+/** An item frame's item: a ref as it comes ([id, meta] / {id, meta}), or a bare id with its `damage`. */
+function frameItemOf(e: WireEntity): ItemRef {
+  const it = e.item;
+  if (Array.isArray(it) || (it && typeof it === 'object')) return itemRef(it);
+  return itemRef(it != null ? [num(it), num(e.damage)] : null);
+}
+
+function extraFields(e: WireEntity, out: EntityDto): void {
   if (e.carried != null) out.carried = itemRef(e.carried);
   if (e.glint != null) out.glint = !!e.glint;
   if (e.arrows != null) out.arrows = Math.max(0, Math.floor(num(e.arrows)));
-  if (e.shoulders && typeof e.shoulders === 'object') {
-    const s = e.shoulders as Record<string, unknown>;
-    out.shoulders = { left: typeof s.left === 'string' ? s.left : null, right: typeof s.right === 'string' ? s.right : null };
-  }
-  if (kind === 'minecart') {
-    const t = e.minecartType ?? (typeof e.type === 'string' ? e.type : null) ?? (out.look ? out.look.split(',')[0] : null);
-    out.minecartType = (t as string | number | null) ?? null;
-    if (typeof e.type === 'string') out.type = null;
-  }
-  if (e.pose && typeof e.pose === 'object') {
-    const p: NonNullable<EntityDto['pose']> = {};
-    for (const [k, v] of Object.entries(e.pose as Record<string, unknown>)) if (Array.isArray(v) && v.length >= 3) p[k as keyof typeof p] = [num(v[0]), num(v[1]), num(v[2])];
-    out.pose = p;
-  }
-  return out;
+  if (e.shoulders && typeof e.shoulders === 'object') out.shoulders = shouldersOf(e.shoulders as Record<string, unknown>);
+}
+
+function shouldersOf(s: Record<string, unknown>): NonNullable<EntityDto['shoulders']> {
+  return { left: typeof s.left === 'string' ? s.left : null, right: typeof s.right === 'string' ? s.right : null };
+}
+
+/** A minecart's type: its own field, a string `type`, or the first word of its look. */
+function minecartFields(e: WireEntity, out: EntityDto): void {
+  const named = typeof e.type === 'string' ? e.type : null;
+  const t = e.minecartType ?? named ?? (out.look ? out.look.split(',')[0] : null);
+  out.minecartType = (t as string | number | null) ?? null;
+  if (named !== null) out.type = null;
+}
+
+/** Part rotations: the [x, y, z] triples only. */
+function poseOf(pose: Record<string, unknown>): NonNullable<EntityDto['pose']> {
+  const p: NonNullable<EntityDto['pose']> = {};
+  for (const [k, v] of Object.entries(pose)) if (Array.isArray(v) && v.length >= 3) p[k as keyof typeof p] = [num(v[0]), num(v[1]), num(v[2])];
+  return p;
 }
 
 const DYES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'silver', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black'];
@@ -201,19 +236,37 @@ export function dyeIndex(v: unknown): number {
   return DYES.indexOf(n);
 }
 
+const textOf = (l: unknown) => (l == null ? '' : String(l));
+const TEXT_KEYS = ['text1', 'text2', 'text3', 'text4'];
+
+/** Sign lines as `lines` or text1..text4. */
+function signLines(b: Record<string, unknown>): string[] {
+  return Array.isArray(b.lines) ? (b.lines as unknown[]).map(textOf) : TEXT_KEYS.map((k) => textOf(b[k]));
+}
+
+/** Banner patterns as [code, colour] pairs or {pattern, color} objects. */
+function bannerPatterns(b: Record<string, unknown>): Array<[string, number | string]> | null {
+  if (!Array.isArray(b.patterns)) return null;
+  return (b.patterns as unknown[]).map((p) => {
+    if (Array.isArray(p)) return [String(p[0]), p[1] as number | string];
+    const o = p as Record<string, unknown>;
+    return [String(o.pattern ?? ''), o.color as number | string];
+  }) as Array<[string, number | string]>;
+}
+
+/** A styled sign's four lines of runs (objects only, text as a string). */
+function signRich(b: Record<string, unknown>): SignRun[][] | null {
+  if (!Array.isArray(b.rich)) return null;
+  return (b.rich as unknown[]).slice(0, 4).map((l) =>
+    Array.isArray(l) ? (l as unknown[]).filter((r) => !!r && typeof r === 'object').map((r) => ({ ...(r as SignRun), text: String((r as SignRun).text ?? '') })) : [],
+  );
+}
+
 function blockEntity(b: Record<string, unknown>): BlockEntityDto {
-  const lines = Array.isArray(b.lines)
-    ? (b.lines as unknown[]).map((l) => (l == null ? '' : String(l)))
-    : ['text1', 'text2', 'text3', 'text4'].map((k) => (b[k] == null ? '' : String(b[k])));
-  const patterns = Array.isArray(b.patterns)
-    ? (b.patterns as unknown[]).map((p) => (Array.isArray(p) ? [String(p[0]), p[1] as number | string] : [String((p as Record<string, unknown>).pattern ?? ''), (p as Record<string, unknown>).color as number | string])) as Array<[string, number | string]>
-    : null;
+  const lines = signLines(b);
+  const patterns = bannerPatterns(b);
   const kind = String(b.kind ?? '').replace(/^minecraft:/, '');
-  const rich = Array.isArray(b.rich)
-    ? (b.rich as unknown[]).slice(0, 4).map((l) =>
-        Array.isArray(l) ? (l as unknown[]).filter((r) => !!r && typeof r === 'object').map((r) => ({ ...(r as SignRun), text: String((r as SignRun).text ?? '') })) : [],
-      )
-    : null;
+  const rich = signRich(b);
   return {
     ...b,
     ...(rich ? { rich } : {}),
@@ -225,8 +278,13 @@ function blockEntity(b: Record<string, unknown>): BlockEntityDto {
     patterns,
     // The wire names the skull type `skull` and a banner's base colour `color`.
     type: (b.type as number | string | undefined) ?? (b.skull as number | string | undefined) ?? null,
-    base: (b.base as number | string | undefined) ?? (kind === 'banner' ? (b.color as number | string | undefined) : undefined) ?? null,
+    base: bannerBase(b, kind),
   };
+}
+
+function bannerBase(b: Record<string, unknown>, kind: string): number | string | null {
+  const color = kind === 'banner' ? (b.color as number | string | undefined) : undefined;
+  return (b.base as number | string | undefined) ?? color ?? null;
 }
 
 /** `api/world/blockentities` (snake_case or camelCase; sign lines as `lines` or text1..text4; patterns as pairs or objects). */
