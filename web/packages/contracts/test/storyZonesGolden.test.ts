@@ -7,7 +7,16 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { eraseZones, irrigationPlan, paintZones, rectCells, rowsOf, zoneCellSet, type ZoneLike } from '../src/index.js';
+import {
+  describeZonePaint,
+  eraseZones,
+  irrigationPlan,
+  paintZones,
+  rectCells,
+  rowsOf,
+  zoneCellSet,
+  type ZoneLike,
+} from '../src/index.js';
 
 /** A seeded generator (mulberry32). */
 function seeded(seed: number): () => number {
@@ -94,6 +103,31 @@ describe('zone painter (golden)', () => {
     }
     expect(trace.filter((l) => l.startsWith('refused')).length).toBeGreaterThan(0);
     expect(digest(trace, 'zones')).toMatchSnapshot();
+  });
+
+  it('describes every paint result exactly as before', () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+    const lines: string[] = [];
+    for (const created of [0, 1])
+      for (const merged of [0, 1, 2])
+        for (const grown of [0, 1])
+          for (const split of [0, 1, 2])
+            for (const shrunk of [0, 1, 2])
+              for (const deleted of [0, 1, 2])
+                for (const removed of [0, 1, 5]) {
+                  const r = {
+                    created: ids(created),
+                    merged: ids(merged).map((i) => ({ into: i, from: ids(i) })),
+                    grown: ids(grown),
+                    split: ids(split).map((i) => ({ from: i, into: [i + 10] })),
+                    shrunk: ids(shrunk),
+                    deleted: ids(deleted),
+                  };
+                  lines.push(describeZonePaint(r, removed));
+                }
+    lines.push(describeZonePaint({ created: [], merged: [], grown: [], shrunk: [], split: [], deleted: [] }));
+    expect(digest(lines, 'describe')).toMatchSnapshot();
+    expect(new Set(lines).size).toBeGreaterThan(100);
   });
 
   it('plans irrigation exactly as before', () => {

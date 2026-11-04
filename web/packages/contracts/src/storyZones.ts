@@ -399,18 +399,25 @@ export function waterColumns(scan: readonly number[]): Set<number> {
   return new Set([...top].filter(([, t]) => t.meta === 0).map(([k]) => k));
 }
 
+/** "a zone" / "N zones". */
+const zonesWord = (n: number) => (n === 1 ? 'a zone' : `${n} zones`);
+
+/** What the paint cut out of other zones: the cells it takes (when counted), else the zones it shrinks. */
+function cutPhrase(r: ZonePaintResult, removedCells: number): string | null {
+  if (!r.shrunk.length) return null;
+  if (!removedCells) return `shrinks ${zonesWord(r.shrunk.length)}`;
+  return `takes ${removedCells} cell${removedCells === 1 ? '' : 's'} from ${zonesWord(r.shrunk.length + r.deleted.length)}`;
+}
+
 /** A one-line summary of what a paint or erase did ("merged 2 zones", "overwrote 6 cells of 1 zone"…), for toasts and previews. */
 export function describeZonePaint(r: ZonePaintResult, removedCells = 0): string {
   const out: string[] = [];
   if (r.created.length) out.push('a new zone');
   for (const m of r.merged) out.push(`merged ${m.from.length + 1} zones`);
   if (r.grown.length) out.push('extends the zone');
-  if (r.split.length) out.push(`splits ${r.split.length === 1 ? 'a zone' : `${r.split.length} zones`}`);
-  if (r.shrunk.length && removedCells)
-    out.push(
-      `takes ${removedCells} cell${removedCells === 1 ? '' : 's'} from ${r.shrunk.length + r.deleted.length === 1 ? 'a zone' : `${r.shrunk.length + r.deleted.length} zones`}`,
-    );
-  else if (r.shrunk.length) out.push(`shrinks ${r.shrunk.length === 1 ? 'a zone' : `${r.shrunk.length} zones`}`);
-  if (r.deleted.length) out.push(`removes ${r.deleted.length === 1 ? 'a zone' : `${r.deleted.length} zones`}`);
+  if (r.split.length) out.push(`splits ${zonesWord(r.split.length)}`);
+  const cut = cutPhrase(r, removedCells);
+  if (cut) out.push(cut);
+  if (r.deleted.length) out.push(`removes ${zonesWord(r.deleted.length)}`);
   return out.join(', ') || 'no change';
 }
