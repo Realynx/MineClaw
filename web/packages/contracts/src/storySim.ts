@@ -350,6 +350,31 @@ function seedsOf(stock: ReadonlyMap<string, number>, plant: StoryPlant, needed: 
   };
 }
 
+/** The plant a growing zone sows now: its active bill's (with bills), else its plant. */
+function sownPlant(z: StoryZone, active: StoryGrowBill | null): StoryPlant | undefined {
+  const id = z.bills ? (active?.plant ?? null) : (z.plant ?? null);
+  return STORY_SIM_PLANTS.find((p) => p.id === id);
+}
+
+/** A growing zone sowing `plant` (mock: nothing sown yet): its seeds, and whether farmland wants a hoe nobody has. */
+function sowingStatus<B extends object>(base: B, stock: ReadonlyMap<string, number>, plant: StoryPlant, cells: number) {
+  return {
+    ...base,
+    status: `0/${cells} sown, 0 ripe`,
+    seeds: seedsOf(stock, plant, cells),
+    needsHoe: plant.soil === 'farmland' && (stock.get('290:0') ?? 0) === 0,
+  };
+}
+
+/** A growing zone with nothing to sow: every bill met, or none. */
+function idleGrowStatus<B extends object>(base: B, bills: number) {
+  return {
+    ...base,
+    status: `${bills ? 'all bills met' : 'no planting bills'}: sowing nothing, 0 growing, 0 ripe`,
+    seeds: null,
+  };
+}
+
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
 
@@ -1302,22 +1327,10 @@ export class StorySim {
     if (z.kind !== 'farm' || (!z.plant && !z.bills)) return z;
     const cells = z.cells ?? (z.area[3] - z.area[0] + 1) * (z.area[5] - z.area[2] + 1);
     const active = z.bills ? this.activeBill(c, z) : null;
-    const activePlantId = z.bills ? (active?.plant ?? null) : (z.plant ?? null);
-    const plant = STORY_SIM_PLANTS.find((p) => p.id === activePlantId);
+    const plant = sownPlant(z, active);
     const bills = z.bills?.map((b) => this.growBillRow(c, b, active, cells));
     const base = { ...z, ...(bills ? { bills, activeBill: active?.id ?? null } : {}), activePlant: plant?.id ?? null };
-    if (!plant)
-      return {
-        ...base,
-        status: `${z.bills?.length ? 'all bills met' : 'no planting bills'}: sowing nothing, 0 growing, 0 ripe`,
-        seeds: null,
-      };
-    return {
-      ...base,
-      status: `0/${cells} sown, 0 ripe`,
-      seeds: seedsOf(c.stock, plant, cells),
-      needsHoe: plant.soil === 'farmland' && (c.stock.get('290:0') ?? 0) === 0,
-    };
+    return plant ? sowingStatus(base, c.stock, plant, cells) : idleGrowStatus(base, z.bills?.length ?? 0);
   }
 
   /** A planting bill as the zone reports it: its label, met / active, the stored produce (until), its seeds. */
