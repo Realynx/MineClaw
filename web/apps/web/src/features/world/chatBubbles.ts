@@ -18,17 +18,15 @@ export function bubbleOf(line: FeedLine, player: string | null | undefined): Cha
   const from = line.from?.trim();
   const text = line.text?.trim();
   if (!from || !text || text.startsWith('/')) return null;
-  switch (line.kind) {
-    case 'chat':
-    case 'said':
-    case 'viewer':
-      return { from, text, kind: line.kind };
-    case 'whisper':
-      return player && from.toLowerCase() === player.toLowerCase() ? { from, text, kind: 'whisper' } : null;
-    default:
-      return null; // internal, muted, system
-  }
+  if (SPOKEN.has(line.kind)) return { from, text, kind: line.kind as ChatSay['kind'] };
+  // a whisper only when it is the user's own; internal, muted and system lines never
+  return line.kind === 'whisper' && sameName(from, player) ? { from, text, kind: 'whisper' } : null;
 }
+
+/** The kinds said out loud (in game, by the bot, from the web). */
+const SPOKEN = new Set<FeedLine['kind']>(['chat', 'said', 'viewer']);
+
+const sameName = (a: string, b: string | null | undefined): boolean => !!b && a.toLowerCase() === b.toLowerCase();
 
 type Listener = (s: ChatSay) => void;
 interface Sub {
