@@ -66,6 +66,7 @@ import {
   StudioHud,
   type Tool,
   type ToolDef,
+  type ToolSettings,
   ToolRail,
   ToolSettingsBar,
   toolSuffix,
@@ -145,14 +146,30 @@ const GROUND: PaletteEntry = {
   icon: null,
 };
 
+/** A numeric search param, or null when it is missing or empty. */
+const numberParam = (v: string | null) => (v ? Number(v) : null);
+
+/** The body remounts on another session, version, kind or seed. */
+const sessionKey = (s: DesignerSession) => `${s.id}:${s.version}:${s.kind ?? 'build'}:${s.seed ?? ''}`;
+
+function StudioOpening() {
+  return (
+    <div className="grid h-full place-items-center text-sm text-muted">
+      <span className="flex items-center gap-2">
+        <Spinner className="size-4" /> Opening the Design Studio…
+      </span>
+    </div>
+  );
+}
+
 export function StudioPage() {
   const params = useSearchParams();
   const router = useRouter();
   const qc = useQueryClient();
   const { me, can, canChat } = useAuth();
   const canWrite = can('design');
-  const designParam = params.get('id') ? Number(params.get('id')) : null;
-  const sessionParam = params.get('session') ? Number(params.get('session')) : null;
+  const designParam = numberParam(params.get('id'));
+  const sessionParam = numberParam(params.get('session'));
   const models = useApi('designer.models');
   const [session, setSession] = useState<DesignerSession | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -188,23 +205,17 @@ export function StudioPage() {
   }, []);
 
   if (loadError) return <ErrorState error={loadError} title="The Design Studio could not open" />;
-  if (!session || !mod)
-    return (
-      <div className="grid h-full place-items-center text-sm text-muted">
-        <span className="flex items-center gap-2">
-          <Spinner className="size-4" /> Opening the Design Studio…
-        </span>
-      </div>
-    );
+  if (!session || !mod) return <StudioOpening />;
+  const m = models.data;
   return (
     <StudioBody
-      key={`${session.id}:${session.version}:${session.kind ?? 'build'}:${session.seed ?? ''}`}
+      key={sessionKey(session)}
       session={session}
       onSession={setSession}
       mod={mod}
-      models={models.data?.models ?? []}
-      defaultModel={models.data?.default ?? null}
-      serverSeed={models.data?.serverSeed ?? null}
+      models={m?.models ?? []}
+      defaultModel={m?.default ?? null}
+      serverSeed={m?.serverSeed ?? null}
       canWrite={canWrite}
       canChat={canChat}
       player={me.player ?? me.username}
@@ -237,7 +248,7 @@ function StudioBody({
   player: string;
   invalidate: () => void;
 }) {
-  const version: Version = session.version === '1.12.2' ? '1.12.2' : 'b1.8.1';
+  const version = versionOf(session);
   const studio = useMemo(() => new Studio(session, realApi), [session]);
   /** A mine session: generated terrain at absolute y (its ground always editable, the side panel, the X-ray). */
   const mine = studio.terrain !== null;
@@ -272,29 +283,29 @@ function StudioBody({
   /** Underground mode: null = off, else the highest layer still shown (canvas y; everything above it is cut away). */
   const [under, setUnder] = useState<number | null>(null);
   const [withSel, setWithSel] = useState(true);
-  const [model, setModel] = useState(session.model || defaultModel || 'main');
+  const [model, setModel] = useState(() => session.model || defaultModel || 'main');
   const [clip, setClip] = useState<Clip | null>(null);
   const [pasting, setPasting] = useState(false);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [fps, setFps] = useState(0);
   const [iconTick, setIconTick] = useState(0);
   const [replaceFrom, setReplaceFrom] = useState<string>('any');
-  const [saveName, setSaveName] = useState(session.name === 'new design' ? '' : session.name);
+  const [saveName, setSaveName] = useState(() => (session.name === 'new design' ? '' : session.name));
   const [saveSummary, setSaveSummary] = useState('');
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState<{ designId: number; rev: number; text: string } | null>(
+  const [saved, setSaved] = useState<{ designId: number; rev: number; text: string } | null>(() =>
     session.designId ? { designId: session.designId, rev: session.revisions[0]?.rev ?? 0, text: '' } : null,
   );
   const [revisions, setRevisions] = useState<DesignRevision[]>(session.revisions);
   const [notice, setNotice] = useState<string | null>(null);
   /** Underground's first level: a mine's highest ground, a build's grass layer. */
-  const underFirst = useRef(surface ? surface.max : UNDER_DEFAULT);
+  const underFirst = useRef(firstUnderLevel(surface));
   const [xray, setXray] = useState(false);
-  const [preferred, setPreferred] = useState<string | null>(session.preferredFor ?? null);
+  const [preferred, setPreferred] = useState<string | null>(() => session.preferredFor ?? null);
   /** A kind switch of a full canvas waits for the user's word (the canvas is cleared). */
   const [kindAsk, setKindAsk] = useState<'build' | 'mine' | null>(null);
   const bots = useApi('bots.list', {}, { enabled: canChat });
-  const mainBot = bots.data?.bots.find((b) => b.main)?.name ?? bots.data?.bots[0]?.name ?? null;
+  const mainBot = mainBotOf(bots.data?.bots);
 
   // Icons from the bundled textures (loaded once per version); the whole palette drawn into one sheet once the page is idle.
   const bundle = useRef<Awaited<ReturnType<Mod['loadBundle']>> | null>(null);
@@ -895,45 +906,21 @@ function StudioBody({
   // ------------------------------------------------------------------ render
 
   const h = hitOf(aim, studio.canvas, under !== null);
-  const selSize = sel ? sizeOf(sel) : null;
   const selBlocks = useMemo(
-    () =>
-      sel
-        ? studio.canvas
-            .cells()
-            .filter(
-              (c) =>
-                c[0] >= sel.min[0] &&
-                c[0] <= sel.max[0] &&
-                c[1] >= sel.min[1] &&
-                c[1] <= sel.max[1] &&
-                c[2] >= sel.min[2] &&
-                c[2] <= sel.max[2],
-            ).length
-        : 0,
+    () => (sel ? studio.canvas.cells().filter((c) => inBox(c, sel)).length : 0),
     [sel, studio, snap.rev, snap.blocks],
   ); // eslint-disable-line react-hooks/exhaustive-deps
   const bounds = useMemo(() => studio.canvas.bounds(), [studio, snap.blocks, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
-  const over = !mine && !!bounds && sizeOf(bounds).some((n) => n > 32);
   const selMaterials = useMemo(() => {
     const ids = new Map<number, string>();
     if (sel)
       for (const c of studio.canvas.cells())
-        if (
-          c[0] >= sel.min[0] &&
-          c[0] <= sel.max[0] &&
-          c[1] >= sel.min[1] &&
-          c[1] <= sel.max[1] &&
-          c[2] >= sel.min[2] &&
-          c[2] <= sel.max[2]
-        )
-          ids.set(c[3], session.palette.find((p) => p.id === c[3])?.name ?? `#${c[3]}`);
+        if (inBox(c, sel)) ids.set(c[3], session.palette.find((p) => p.id === c[3])?.name ?? `#${c[3]}`);
     return [...ids];
   }, [sel, studio, session.palette, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toolLabel = `${TOOLS.find((t) => t.id === tool)?.label.split(' (')[0]}${toolSuffix({ tool, boxMode, brushMode, brushShape, brushSize, extrudeN })}`;
-  const modeLocked = !canWrite || versionBusy || snap.busy;
-  const canSave = canWrite && !saving && !(snap.blocks === 0 && snap.dug === 0);
+  const toolSettings = { tool, boxMode, brushMode, brushShape, brushSize, extrudeN };
+  const busy = snap.busy || versionBusy;
 
   return (
     <div
@@ -941,28 +928,28 @@ function StudioBody({
       data-testid="studio"
       data-blocks={snap.blocks}
       data-rev={snap.rev}
-      data-dirty={snap.dirty ? '1' : '0'}
+      data-dirty={Number(snap.dirty)}
       data-under={under ?? ''}
     >
       <StudioHeader
         snap={snap}
         session={session}
         version={version}
-        locked={modeLocked}
+        locked={!canWrite || busy}
         changeVersion={(v) => void changeVersion(v)}
         changeKind={(k) => void changeKind(k)}
         saveName={saveName}
         setSaveName={setSaveName}
         saveSummary={saveSummary}
         setSaveSummary={setSaveSummary}
-        canSave={canSave}
+        canSave={canSaveNow(canWrite, saving, snap)}
         saving={saving}
         doSave={(asNew) => void doSave(asNew)}
         revisions={revisions}
       />
       <StudioBars
         saved={saved}
-        mineRange={mine && bounds ? mineRangeText(bounds, preferred) : null}
+        mineRange={mineRangeOf(mine, bounds, preferred)}
         canChat={canChat}
         mainBot={mainBot}
         askBot={() => void askBot()}
@@ -1000,12 +987,12 @@ function StudioBody({
             <StudioHud
               aim={aimText(h, mine)}
               facing={facingText(facing, lookNow)}
-              toolLabel={toolLabel}
+              toolLabel={toolLabelOf(toolSettings)}
               counts={countsText(snap, bounds)}
               pending={snap.pending}
               fps={fps}
-              over={over}
-              selection={selectionText(sel, selSize, selBlocks)}
+              over={tooBig(mine, bounds)}
+              selection={selectionText(sel, selBlocks)}
               pasting={pasting}
             />
           ) : null}
@@ -1023,51 +1010,26 @@ function StudioBody({
             stage={stage}
           />
           {/* Tool options and the selection's actions */}
-          {/* A mine's stage sits between two panels: its options start under the HUD (its level slider is in the mine panel). */}
-          <div
-            className={cn(
-              'absolute right-3 flex flex-col items-end gap-1.5 text-[11px] text-white',
-              mine ? 'top-20 max-w-[calc(100%-4.5rem)]' : 'top-3 max-w-[52%]',
-            )}
-          >
-            {under !== null && !mine ? <UnderSlider under={under} setUnder={setUnder} /> : null}
-            <ToolSettingsBar
-              tool={tool}
-              boxMode={boxMode}
-              brushMode={brushMode}
-              brushShape={brushShape}
-              brushSize={brushSize}
-              extrudeN={extrudeN}
-              setBoxMode={setBoxMode}
-              setBrushMode={setBrushMode}
-              setBrushShape={setBrushShape}
-              setBrushSize={setBrushSize}
-              setExtrudeN={setExtrudeN}
-            />
-            <TransformBar
-              studio={studio}
-              sel={sel}
-              version={version}
-              hasClip={!!clip}
-              applyTransform={applyTransform}
-              moveSel={(d) => moveSel(d)}
-              doCopy={doCopy}
-              startPaste={() => setPasting(true)}
-            />
-            {sel ? (
-              <SelectionEdits
-                studio={studio}
-                sel={sel}
-                current={current}
-                materials={selMaterials}
-                replaceFrom={replaceFrom}
-                setReplaceFrom={setReplaceFrom}
-              />
-            ) : (
-              <SelectAllBar studio={studio} />
-            )}
-            {snap.anchor ? <AnchorNote studio={studio} anchor={snap.anchor} /> : null}
-          </div>
+          <ToolColumn
+            mine={mine}
+            under={under}
+            setUnder={setUnder}
+            settings={toolSettings}
+            setters={{ setBoxMode, setBrushMode, setBrushShape, setBrushSize, setExtrudeN }}
+            studio={studio}
+            sel={sel}
+            version={version}
+            hasClip={!!clip}
+            applyTransform={applyTransform}
+            moveSel={moveSel}
+            doCopy={doCopy}
+            startPaste={() => setPasting(true)}
+            current={current}
+            materials={selMaterials}
+            replaceFrom={replaceFrom}
+            setReplaceFrom={setReplaceFrom}
+            anchor={snap.anchor}
+          />
           <Hotbar slots={slots} active={active} onPick={setActive} icon={icon} />
           {paletteOpen ? (
             <PaletteDrawer
@@ -1089,13 +1051,9 @@ function StudioBody({
               }}
             />
           ) : null}
-          {!canWrite ? (
-            <div className="absolute inset-x-0 bottom-20 mx-auto w-fit rounded bg-black/70 px-3 py-1.5 text-xs text-white">
-              View only: designing needs the design (or admin) role.
-            </div>
-          ) : null}
+          <ViewOnlyNote canWrite={canWrite} />
         </div>
-        {mine && studio.terrain ? (
+        {studio.terrain ? (
           <MinePanel
             terrain={studio.terrain}
             version={version}
@@ -1108,9 +1066,9 @@ function StudioBody({
             onLevel={(y) => setUnder(y)}
             xray={xray}
             onXray={setXray}
-            at={sel ? sel.min : null}
+            at={selMin(sel)}
             canWrite={canWrite}
-            busy={snap.busy || versionBusy}
+            busy={busy}
             onSeed={(seed) => void changeSeed(seed)}
             onInsert={(m) => insertMine(m)}
             onPreset={(p, m) => void applyPreset(p, m)}
@@ -1133,14 +1091,124 @@ function StudioBody({
           error={snap.error}
         />
       </div>
-      {models.length === 0 ? (
-        <p className="border-t border-border bg-warn-soft px-3 py-1 text-xs text-warn">
-          The bot has no usable model configured (Agent:Llm), so the AI can't answer.
-        </p>
-      ) : null}
+      <NoModelNote models={models} />
       <span hidden data-testid="player">
         {player}
       </span>
+    </div>
+  );
+}
+
+const versionOf = (session: DesignerSession): Version => (session.version === '1.12.2' ? '1.12.2' : 'b1.8.1');
+
+/** A cell inside the selection's box. */
+function inBox(c: Cell, sel: Selection): boolean {
+  const inX = c[0] >= sel.min[0] && c[0] <= sel.max[0];
+  return inX && c[1] >= sel.min[1] && c[1] <= sel.max[1] && c[2] >= sel.min[2] && c[2] <= sel.max[2];
+}
+
+function ViewOnlyNote({ canWrite }: { canWrite: boolean }) {
+  if (canWrite) return null;
+  return (
+    <div className="absolute inset-x-0 bottom-20 mx-auto w-fit rounded bg-black/70 px-3 py-1.5 text-xs text-white">
+      View only: designing needs the design (or admin) role.
+    </div>
+  );
+}
+
+function NoModelNote({ models }: { models: DesignerModel[] }) {
+  if (models.length !== 0) return null;
+  return (
+    <p className="border-t border-border bg-warn-soft px-3 py-1 text-xs text-warn">
+      The bot has no usable model configured (Agent:Llm), so the AI can't answer.
+    </p>
+  );
+}
+
+/** Underground's first level: a mine's highest ground, a build's grass layer. */
+const firstUnderLevel = (surface: { max: number } | null) => (surface ? surface.max : UNDER_DEFAULT);
+
+/** The bot "Ask the bot to build it" asks: the main body, else the first. */
+function mainBotOf(bots: ReadonlyArray<{ name: string; main?: boolean }> | undefined): string | null {
+  return bots?.find((b) => b.main)?.name ?? bots?.[0]?.name ?? null;
+}
+
+/** Saving needs the role, no save in flight and something on the canvas. */
+function canSaveNow(canWrite: boolean, saving: boolean, snap: StudioSnapshot): boolean {
+  return canWrite && !saving && !(snap.blocks === 0 && snap.dug === 0);
+}
+
+type Bounds = { min: V3; max: V3 };
+
+const mineRangeOf = (mine: boolean, bounds: Bounds | null, preferred: string | null) =>
+  mine && bounds ? mineRangeText(bounds, preferred) : null;
+
+/** A build over 32 a side can't be saved as one design (a mine can). */
+const tooBig = (mine: boolean, bounds: Bounds | null) => !mine && !!bounds && sizeOf(bounds).some((n) => n > 32);
+
+const selMin = (sel: Selection | null) => (sel ? sel.min : null);
+
+/** The HUD's tool: its name without the hint, then its settings. */
+const toolLabelOf = (t: ToolSettings) => `${TOOLS.find((x) => x.id === t.tool)?.label.split(' (')[0]}${toolSuffix(t)}`;
+
+/** The column right of the stage: the underground slider, the tool's settings, transforms, selection edits, the anchor. */
+function ToolColumn(p: {
+  mine: boolean;
+  under: number | null;
+  setUnder: (y: number) => void;
+  settings: ToolSettings;
+  setters: Pick<
+    Parameters<typeof ToolSettingsBar>[0],
+    'setBoxMode' | 'setBrushMode' | 'setBrushShape' | 'setBrushSize' | 'setExtrudeN'
+  >;
+  studio: Studio;
+  sel: Selection | null;
+  version: Version;
+  hasClip: boolean;
+  applyTransform: Parameters<typeof TransformBar>[0]['applyTransform'];
+  moveSel: (d: V3) => void;
+  doCopy: () => unknown;
+  startPaste: () => void;
+  current: PaletteEntry | null;
+  materials: Array<[number, string]>;
+  replaceFrom: string;
+  setReplaceFrom: (v: string) => void;
+  anchor: V3 | null;
+}) {
+  const { studio, sel, mine } = p;
+  return (
+    // A mine's stage sits between two panels: its options start under the HUD (its level slider is in the mine panel).
+    <div
+      className={cn(
+        'absolute right-3 flex flex-col items-end gap-1.5 text-[11px] text-white',
+        mine ? 'top-20 max-w-[calc(100%-4.5rem)]' : 'top-3 max-w-[52%]',
+      )}
+    >
+      {p.under !== null && !mine ? <UnderSlider under={p.under} setUnder={p.setUnder} /> : null}
+      <ToolSettingsBar {...p.settings} {...p.setters} />
+      <TransformBar
+        studio={studio}
+        sel={sel}
+        version={p.version}
+        hasClip={p.hasClip}
+        applyTransform={p.applyTransform}
+        moveSel={(d) => p.moveSel(d)}
+        doCopy={p.doCopy}
+        startPaste={p.startPaste}
+      />
+      {sel ? (
+        <SelectionEdits
+          studio={studio}
+          sel={sel}
+          current={p.current}
+          materials={p.materials}
+          replaceFrom={p.replaceFrom}
+          setReplaceFrom={p.setReplaceFrom}
+        />
+      ) : (
+        <SelectAllBar studio={studio} />
+      )}
+      {p.anchor ? <AnchorNote studio={studio} anchor={p.anchor} /> : null}
     </div>
   );
 }
@@ -1157,8 +1225,9 @@ function StageHints({ locked, ready }: { locked: boolean; ready: boolean }) {
 }
 
 /** "Selection 3×2×4 · 17 blocks" (a mask counts its cells); null without a selection. */
-function selectionText(sel: Selection | null, size: V3 | null, blocks: number): string | null {
-  if (!sel || !size) return null;
+function selectionText(sel: Selection | null, blocks: number): string | null {
+  if (!sel) return null;
+  const size = sizeOf(sel);
   return `Selection ${size[0]}×${size[1]}×${size[2]} · ${sel.mask ? sel.mask.size : blocks} blocks`;
 }
 
