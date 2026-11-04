@@ -12,33 +12,25 @@
 import type { CloudCluster, MemoryCloudResponse } from '@mineclaw/contracts';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { haloVertices, linkSegments, paneXy, pointStyles } from './cloudBuffers';
+import { CloudPainter, type CloudPulse, type Drawn, type Gl, type PaneGl, type View } from './cloudDraw';
 import {
   buildGrid,
-  clusterColor,
   easeInOut,
-  hexRgb,
   lassoSelect,
-  legendKey,
-  linkAlpha,
   nearest,
-  niceScale,
   paneFrame,
   paneRects,
-  pointLook,
   visibleMask,
-  zoomSizeFactor,
   type Rect,
   type Theme,
 } from './cloudStyle';
 
+export type { CloudPulse } from './cloudDraw';
+
 export interface CloudCanvasHandle {
   fit: () => void;
   reveal: (id: number) => void;
-}
-
-export interface CloudPulse {
-  index: number;
-  at: number;
 }
 
 /** One arrangement drawn in one pane: positions in the primary cloud's point / summary order. */
@@ -53,15 +45,30 @@ export interface CloudPane {
   unitDistance: number | null;
 }
 
-interface View {
-  k: number;
-  tx: number;
-  ty: number;
-}
-
-const PULSE_MS = 1600;
 const ANIM_MS = 650;
 const MAX_K = 60;
+/** The canvas keys: fit, zoom about the pane's centre, pan by a step, Escape (clear the lasso, else the selection). */
+type KeyAction = { kind: 'fit' } | { kind: 'zoom'; factor: number } | { kind: 'pan'; dx: number; dy: number } | { kind: 'escape' };
+const PAN_STEP = 60;
+const FIT: KeyAction = { kind: 'fit' };
+const ZOOM_IN: KeyAction = { kind: 'zoom', factor: 1.4 };
+const ZOOM_OUT: KeyAction = { kind: 'zoom', factor: 1 / 1.4 };
+const KEYS: ReadonlyMap<string, KeyAction> = new Map<string, KeyAction>([
+  ['f', FIT],
+  ['F', FIT],
+  ['Home', FIT],
+  ['+', ZOOM_IN],
+  ['=', ZOOM_IN],
+  ['-', ZOOM_OUT],
+  ['_', ZOOM_OUT],
+  ['ArrowLeft', { kind: 'pan', dx: PAN_STEP, dy: 0 }],
+  ['ArrowRight', { kind: 'pan', dx: -PAN_STEP, dy: 0 }],
+  ['ArrowUp', { kind: 'pan', dx: 0, dy: PAN_STEP }],
+  ['ArrowDown', { kind: 'pan', dx: 0, dy: -PAN_STEP }],
+  ['Escape', { kind: 'escape' }],
+]);
+/** The fitted view (read only). */
+const FITTED: Readonly<View> = { k: 1, tx: 0, ty: 0 };
 /** Width the legend card takes, left clear in the fitted view on canvases at least LEGEND_ROOM_MIN_W wide. */
 export const LEGEND_W = 290;
 export const LEGEND_ROOM_MIN_W = 720;
@@ -142,39 +149,12 @@ function compile(gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgr
   return p;
 }
 
-/** One pane's GPU buffers: its positions (now and before the last switch), its links and its halos. */
-interface PaneGl {
-  pos: WebGLBuffer;
-  prev: WebGLBuffer;
-  line: WebGLBuffer;
-  halo: WebGLBuffer;
-  vaoPoint: WebGLVertexArrayObject;
-  vaoLine: WebGLVertexArrayObject;
-  vaoHalo: WebGLVertexArrayObject;
-  lineCount: number;
-  haloCount: number;
-}
-
-interface Gl {
-  gl: WebGL2RenderingContext;
-  point: WebGLProgram;
-  halo: WebGLProgram;
-  line: WebGLProgram;
-  style: WebGLBuffer;
-  panes: PaneGl[];
-}
-
 /** A pane's switch animation: where its points (summaries, clusters) were drawn when its arrangement changed. */
 interface Anim {
   xy: readonly number[];
   sxy: readonly number[];
   clusters: readonly CloudCluster[];
   start: number;
-}
-
-function cssVar(name: string, fallback: string): string {
-  if (typeof window === 'undefined') return fallback;
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
 /** Frame stats for the perf harness (`window.__mineclawCloudStats`); written in place, no DOM churn. */
@@ -431,33 +411,7 @@ export const CloudCanvas = forwardRef<
       const pg = paneGl(g, slot);
       const s = shown.current[slot];
       const a = anims.current[slot];
-      const seg: number[] = [];
-      if (showLinks && s) {
-        const xy = s.xy;
-        const sxy = s.sxy;
-        const pxy = a ? a.xy : xy;
-        const psxy = a ? a.sxy : sxy;
-        const push = (x: number, y: number, px: number, py: number) => seg.push(x, y, px, py);
-        for (let i = 0; i < n; i++) {
-          if (!mask[i]) continue;
-          for (const p of cloud.points.parents[i] ?? []) {
-            const q = summaryIndexOf.get(p);
-            if (q === undefined) continue;
-            push(xy[2 * i]!, xy[2 * i + 1]!, pxy[2 * i]!, pxy[2 * i + 1]!);
-            push(sxy[2 * q]!, sxy[2 * q + 1]!, psxy[2 * q]!, psxy[2 * q + 1]!);
-          }
-        }
-        cloud.summaries.id.forEach((_, si) => {
-          const c = cloud.summaries.cluster[si]!;
-          if (c >= 0 && hidden.has(legendKey(c))) return;
-          for (const p of cloud.summaries.parents[si] ?? []) {
-            const q = summaryIndexOf.get(p);
-            if (q === undefined) continue;
-            push(sxy[2 * si]!, sxy[2 * si + 1]!, psxy[2 * si]!, psxy[2 * si + 1]!);
-            push(sxy[2 * q]!, sxy[2 * q + 1]!, psxy[2 * q]!, psxy[2 * q + 1]!);
-          }
-        });
-      }
+      const seg = showLinks && s ? linkSegments(cloud, paneXy(s, a), mask, hidden, summaryIndexOf) : [];
       g.gl.bindBuffer(g.gl.ARRAY_BUFFER, pg.line);
       g.gl.bufferData(g.gl.ARRAY_BUFFER, new Float32Array(seg), g.gl.STATIC_DRAW);
       pg.lineCount = seg.length / 4;
@@ -470,23 +424,7 @@ export const CloudCanvas = forwardRef<
   const uploadStyle = useCallback(() => {
     const g = glr.current;
     if (!g) return;
-    const { cloud: c, brightness: b, theme: th, highlight: hl, selectedId: sel, mask: m } = props.current;
-    const data = new Float32Array(n * 5);
-    const halos: Array<[number, number, number, number, number, number]> = [];
-    const rgb = new Map<number, [number, number, number]>();
-    for (let i = 0; i < n; i++) {
-      if (!m[i]) continue; // size 0: not drawn
-      const cl = c.points.cluster[i]!;
-      let col = rgb.get(cl);
-      if (!col) rgb.set(cl, (col = hexRgb(clusterColor(cl, th))));
-      const look = pointLook(b[i] ?? 0, 1, {
-        dimmed: hl ? !hl[i] : false,
-        highlighted: hl ? !!hl[i] : false,
-        selected: c.points.id[i] === sel,
-      });
-      data.set([col[0], col[1], col[2], look.alpha, look.size], i * 5);
-      if (look.halo > 0) halos.push([i, col[0], col[1], col[2], 0.55 * look.halo, look.size * 4.5]);
-    }
+    const { data, halos } = pointStyles(props.current, n);
     g.gl.bindBuffer(g.gl.ARRAY_BUFFER, g.style);
     g.gl.bufferData(g.gl.ARRAY_BUFFER, data, g.gl.DYNAMIC_DRAW);
     for (let slot = 0; slot < shown.current.length; slot++) {
@@ -494,11 +432,7 @@ export const CloudCanvas = forwardRef<
       if (!s) continue;
       const pg = paneGl(g, slot);
       const a = anims.current[slot];
-      const pxy = a ? a.xy : s.xy;
-      const buf = new Float32Array(halos.length * 9);
-      halos.forEach(([i, r, gg, bb, al, sz], k) =>
-        buf.set([s.xy[2 * i]!, s.xy[2 * i + 1]!, pxy[2 * i]!, pxy[2 * i + 1]!, r, gg, bb, al, sz], k * 9),
-      );
+      const buf = haloVertices(halos, s.xy, a ? a.xy : s.xy);
       g.gl.bindBuffer(g.gl.ARRAY_BUFFER, pg.halo);
       g.gl.bufferData(g.gl.ARRAY_BUFFER, buf, g.gl.DYNAMIC_DRAW);
       pg.haloCount = halos.length;
@@ -512,249 +446,60 @@ export const CloudCanvas = forwardRef<
   }, [brightness, theme, highlight, selectedId, mask, gen, panes, uploadStyle]);
 
   // ---- draw ----
+  const painter = useRef<CloudPainter | null>(null);
+  /** Above the points: labels, lasso / pulse / selection / hover rings, the scale bar and the lasso path. True while a pulse fades. */
+  const drawOverlay = (pt: CloudPainter, o: CanvasRenderingContext2D, slot: number, cur: Drawn): boolean => {
+    const st = props.current;
+    pt.beginOverlay(o, cur.clusters, st.hidden);
+    pt.lassoRings(o, cur.xy, st.lasso, st.mask);
+    const pulsing = pt.pulses(o, cur.xy, st.pulses, st.mask, st.cloud.points.cluster);
+    drawSelection(pt, o, cur, st.selectedId);
+    if (hoverIx.current !== null) pt.ring(o, cur.xy, hoverIx.current, 7, pt.text, 1.5, 0.8);
+    const pane = st.panes[slot]!;
+    const bar = pt.scaleBar(o, pane.metric, pane.unitDistance);
+    if (wrap.current) {
+      const key = `scale${slot}`;
+      const val = bar ? `${bar.label}|${bar.px.toFixed(1)}` : '';
+      if (wrap.current.dataset[key] !== val) wrap.current.dataset[key] = val;
+    }
+    const lp = lassoPath.current;
+    if (lp && lp.pane === slot && lp.path.length > 1) pt.lassoPath(o, lp.path);
+    pt.endOverlay(o);
+    return pulsing;
+  };
+  /** The selected point's ring, or a selected summary's dashed ring. */
+  const drawSelection = (pt: CloudPainter, o: CanvasRenderingContext2D, cur: Drawn, sel: number | null) => {
+    if (sel === null) return;
+    const si = indexOf.get(sel);
+    if (si !== undefined) return pt.ring(o, cur.xy, si, 8, pt.text, 2);
+    const s = summaryIndexOf.get(sel);
+    if (s !== undefined) pt.summaryRing(o, cur.sxy, s);
+  };
+  /** Draws one pane; true while it still wants frames (its switch is animating or a pulse is fading). */
+  const drawPane = (pt: CloudPainter, slot: number): boolean => {
+    const rect = rects[slot];
+    const cur = drawnNow(slot);
+    if (!rect || !cur) return false;
+    const mix = mixOf(slot, pt.now);
+    pt.pane(rect, views.current[slot] ?? FITTED, mix);
+    pt.blobs(cur.clusters, props.current.hidden);
+    if (pt.g) pt.points(pt.g, paneGl(pt.g, slot), n);
+    const pulsing = pt.over ? drawOverlay(pt, pt.over, slot, cur) : false;
+    return mix < 1 || pulsing;
+  };
   const draw = useCallback(() => {
     raf.current = 0;
     const t0 = performance.now();
-    const w = size.w,
-      h = size.h;
-    if (!w || !h) return;
-    const dpr = window.devicePixelRatio || 1;
-    const { cloud: c, theme: th, hidden: hid, pulses: ps, lasso: ls, selectedId: sel, panes: pn } = props.current;
-    let animating = false;
-
-    for (const el of [under.current, glCanvas.current, over.current]) {
-      if (!el) continue;
-      if (el.width !== Math.round(w * dpr)) el.width = Math.round(w * dpr);
-      if (el.height !== Math.round(h * dpr)) el.height = Math.round(h * dpr);
-    }
-    const u = under.current?.getContext('2d');
-    if (u) {
-      u.setTransform(dpr, 0, 0, dpr, 0, 0);
-      u.clearRect(0, 0, w, h);
-    }
-    const o = over.current?.getContext('2d');
-    if (o) {
-      o.setTransform(dpr, 0, 0, dpr, 0, 0);
-      o.clearRect(0, 0, w, h);
-    }
-    const g = glr.current;
-    if (g) {
-      const gl = g.gl;
-      gl.viewport(0, 0, Math.round(w * dpr), Math.round(h * dpr));
-      gl.disable(gl.SCISSOR_TEST);
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.enable(gl.BLEND);
-      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-      if (pn.length > 1) gl.enable(gl.SCISSOR_TEST);
-    }
-    const text = cssVar('--text', th === 'dark' ? '#e7e9ec' : '#14171c');
-    const bg = cssVar('--canvas-bg', th === 'dark' ? '#0a0c0f' : '#eef1f5');
-    const now = performance.now();
-    let pulsing = false;
-
-    for (let slot = 0; slot < pn.length; slot++) {
-      const rect = rects[slot];
-      const cur = drawnNow(slot);
-      if (!rect || !cur) continue;
-      const mix = mixOf(slot, now);
-      if (mix < 1) animating = true;
-      const v = views.current[slot] ?? { k: 1, tx: 0, ty: 0 };
-      const f = paneFrame(rect);
-      const scale = f.base * v.k;
-      const offX = f.ox * v.k + v.tx,
-        offY = f.oy * v.k + v.ty;
-      const sx = (x: number) => x * scale + offX;
-      const sy = (y: number) => y * scale + offY;
-      const clip = (ctx: CanvasRenderingContext2D) => {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(rect.x, rect.y, rect.w, rect.h);
-        ctx.clip();
-      };
-
-      // below: cluster density blobs, strongest when zoomed out (the level of detail for a far view)
-      if (u) {
-        clip(u);
-        const blob = Math.max(0.03, Math.min(0.2, 0.22 / Math.sqrt(v.k)));
-        for (const cl of cur.clusters) {
-          if (hid.has(legendKey(cl.id))) continue;
-          const cx = sx(cl.x),
-            cy = sy(cl.y);
-          const r = Math.max(24, cl.spread * 2.4 * scale);
-          if (cx + r < rect.x || cy + r < rect.y || cx - r > rect.x + rect.w || cy - r > rect.y + rect.h) continue;
-          const grad = u.createRadialGradient(cx, cy, 0, cx, cy, r);
-          const [cr, cg, cb] = hexRgb(clusterColor(cl.id, th)).map((x) => Math.round(x * 255));
-          grad.addColorStop(0, `rgba(${cr},${cg},${cb},${blob})`);
-          grad.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
-          u.fillStyle = grad;
-          u.fillRect(cx - r, cy - r, 2 * r, 2 * r);
-        }
-        u.restore();
-      }
-
-      // the points
-      if (g) {
-        const gl = g.gl;
-        const pg = paneGl(g, slot);
-        if (pn.length > 1)
-          gl.scissor(
-            Math.round(rect.x * dpr),
-            Math.round((h - rect.y - rect.h) * dpr),
-            Math.round(rect.w * dpr),
-            Math.round(rect.h * dpr),
-          );
-        const uni = (p: WebGLProgram) => {
-          gl.useProgram(p);
-          gl.uniform2f(gl.getUniformLocation(p, 'u_scale'), scale, scale);
-          gl.uniform2f(gl.getUniformLocation(p, 'u_off'), offX, offY);
-          gl.uniform2f(gl.getUniformLocation(p, 'u_res'), w, h);
-          gl.uniform1f(gl.getUniformLocation(p, 'u_mix'), mix);
-          const d = gl.getUniformLocation(p, 'u_dpr');
-          if (d) gl.uniform1f(d, dpr);
-          const ks = gl.getUniformLocation(p, 'u_ksize');
-          if (ks) gl.uniform1f(ks, zoomSizeFactor(v.k));
-        };
-        if (pg.lineCount) {
-          uni(g.line);
-          const ink = th === 'dark' ? [0.85, 0.88, 0.92] : [0.1, 0.13, 0.18];
-          gl.uniform4f(gl.getUniformLocation(g.line, 'u_col'), ink[0]!, ink[1]!, ink[2]!, linkAlpha(v.k, pg.lineCount / 2, th));
-          gl.bindVertexArray(pg.vaoLine);
-          gl.drawArrays(gl.LINES, 0, pg.lineCount);
-        }
-        uni(g.point);
-        gl.bindVertexArray(pg.vaoPoint);
-        gl.drawArrays(gl.POINTS, 0, n);
-        if (pg.haloCount) {
-          uni(g.halo);
-          gl.bindVertexArray(pg.vaoHalo);
-          gl.drawArrays(gl.POINTS, 0, pg.haloCount);
-        }
-        gl.bindVertexArray(null);
-      }
-
-      // above: cluster labels, selection / hover / lasso rings, live pulses, the scale bar, the lasso path
-      if (o) {
-        clip(o);
-        o.font = '600 12px ui-sans-serif, system-ui, sans-serif';
-        o.textBaseline = 'middle';
-        const placed: Array<[number, number, number, number]> = [];
-        for (const cl of cur.clusters) {
-          if (hid.has(legendKey(cl.id))) continue;
-          const x = sx(cl.x),
-            y = sy(cl.y) - Math.min(60, cl.spread * scale * 1.1) - 8;
-          if (x < rect.x - 100 || y < rect.y - 20 || x > rect.x + rect.w + 100 || y > rect.y + rect.h + 20) continue;
-          const tw = o.measureText(cl.label).width + 16;
-          const box: [number, number, number, number] = [x - tw / 2, y - 9, tw, 18];
-          if (
-            placed.some(
-              (b) => box[0] < b[0] + b[2] && b[0] < box[0] + box[2] && box[1] < b[1] + b[3] && b[1] < box[1] + box[3],
-            )
-          )
-            continue;
-          placed.push(box);
-          o.lineWidth = 4;
-          o.strokeStyle = bg;
-          o.lineJoin = 'round';
-          o.strokeText(cl.label, x - tw / 2 + 14, y);
-          o.fillStyle = text;
-          o.fillText(cl.label, x - tw / 2 + 14, y);
-          o.beginPath();
-          o.arc(x - tw / 2 + 6, y, 4, 0, Math.PI * 2);
-          o.fillStyle = clusterColor(cl.id, th);
-          o.fill();
-        }
-        const xy = cur.xy;
-        const ring = (i: number, r: number, color: string, width: number, alpha = 1) => {
-          o.globalAlpha = alpha;
-          o.beginPath();
-          o.arc(sx(xy[2 * i]!), sy(xy[2 * i + 1]!), r, 0, Math.PI * 2);
-          o.strokeStyle = color;
-          o.lineWidth = width;
-          o.stroke();
-          o.globalAlpha = 1;
-        };
-        for (const i of ls) if (props.current.mask[i]) ring(i, 5, text, 1, 0.55);
-        for (const p of ps) {
-          const age = (now - p.at) / PULSE_MS;
-          if (age >= 1 || !props.current.mask[p.index]) continue;
-          pulsing = true;
-          if (age < 0) continue; // staggered: starts a little later
-          ring(p.index, 4 + 16 * age, clusterColor(c.points.cluster[p.index]!, th), 1.5, (1 - age) * 0.8);
-        }
-        const si = sel === null ? undefined : indexOf.get(sel);
-        if (si !== undefined) ring(si, 8, text, 2);
-        else if (sel !== null) {
-          const s = summaryIndexOf.get(sel);
-          if (s !== undefined) {
-            o.beginPath();
-            o.arc(sx(cur.sxy[2 * s]!), sy(cur.sxy[2 * s + 1]!), 10, 0, Math.PI * 2);
-            o.strokeStyle = text;
-            o.lineWidth = 2;
-            o.setLineDash([3, 3]);
-            o.stroke();
-            o.setLineDash([]);
-          }
-        }
-        if (hoverIx.current !== null) ring(hoverIx.current, 7, text, 1.5, 0.8);
-
-        // Scale bar (metric arrangements): a round cosine distance at this zoom, bottom left of the pane.
-        const pane = pn[slot]!;
-        const bar = pane.metric && pane.unitDistance ? niceScale(pane.unitDistance, scale) : null;
-        if (bar) {
-          const bx = rect.x + 14,
-            by = rect.y + rect.h - 16;
-          o.strokeStyle = text;
-          o.globalAlpha = 0.75;
-          o.lineWidth = 1.5;
-          o.beginPath();
-          o.moveTo(bx, by - 4);
-          o.lineTo(bx, by);
-          o.lineTo(bx + bar.px, by);
-          o.lineTo(bx + bar.px, by - 4);
-          o.stroke();
-          o.globalAlpha = 1;
-          o.font = '500 11px ui-sans-serif, system-ui, sans-serif';
-          o.textBaseline = 'bottom';
-          o.lineWidth = 3;
-          o.strokeStyle = bg;
-          o.strokeText(bar.label, bx, by - 6);
-          o.fillStyle = text;
-          o.fillText(bar.label, bx, by - 6);
-        }
-        if (wrap.current) {
-          const key = `scale${slot}`;
-          const val = bar ? `${bar.label}|${bar.px.toFixed(1)}` : '';
-          if (wrap.current.dataset[key] !== val) wrap.current.dataset[key] = val;
-        }
-
-        const lp = lassoPath.current;
-        if (lp && lp.pane === slot && lp.path.length > 1) {
-          o.beginPath();
-          o.moveTo(lp.path[0]![0], lp.path[0]![1]);
-          for (const [x, y] of lp.path) o.lineTo(x, y);
-          o.closePath();
-          o.fillStyle = th === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)';
-          o.fill();
-          o.setLineDash([4, 3]);
-          o.strokeStyle = text;
-          o.lineWidth = 1;
-          o.stroke();
-          o.setLineDash([]);
-        }
-        o.restore();
-        if (pn.length > 1) {
-          // a hairline frame per pane
-          o.strokeStyle = th === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.10)';
-          o.lineWidth = 1;
-          o.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
-        }
-      }
-    }
+    if (!size.w || !size.h) return;
+    const pt = (painter.current ??= new CloudPainter());
+    const { theme, panes: pn } = props.current;
+    pt.begin(under.current, glCanvas.current, over.current, glr.current, size.w, size.h, window.devicePixelRatio || 1, theme, pn.length > 1);
+    let more = false;
+    for (let slot = 0; slot < pn.length; slot++) if (drawPane(pt, slot)) more = true;
     const s = stats.current;
     s.frames++;
     s.drawMs += performance.now() - t0;
-    if (pulsing || animating) raf.current = requestAnimationFrame(draw);
+    if (more) raf.current = requestAnimationFrame(draw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size, n, rects, indexOf, summaryIndexOf, paneGl]);
 
@@ -880,6 +625,23 @@ export const CloudCanvas = forwardRef<
     return nearest(grid, pane.xy, x, y, 9 / (f.base * (views.current[slot]?.k ?? 1)), mask);
   };
 
+  /** A view key on the active pane (see KEYS). */
+  const onKeyAction = (action: KeyAction) => {
+    const slot = active.current;
+    const v = views.current[slot] ?? { k: 1, tx: 0, ty: 0 };
+    const r = rects[slot] ?? { x: 0, y: 0, w: size.w, h: size.h };
+    switch (action.kind) {
+      case 'fit':
+        return fitAll();
+      case 'zoom':
+        return zoomAt(slot, r.x + r.w / 2, r.y + r.h / 2, action.factor);
+      case 'pan':
+        return setView(slot, { ...v, tx: v.tx + action.dx, ty: v.ty + action.dy });
+      case 'escape':
+        return lasso.length ? onLasso([]) : onSelect(null);
+    }
+  };
+
   const local = (e: { clientX: number; clientY: number }): [number, number] => {
     const r = wrap.current!.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];
@@ -977,21 +739,9 @@ export const CloudCanvas = forwardRef<
         zoomAt(paneAt(x, y), x, y, 2);
       }}
       onKeyDown={(e) => {
-        const slot = active.current;
-        const v = views.current[slot] ?? { k: 1, tx: 0, ty: 0 };
-        const r = rects[slot] ?? { x: 0, y: 0, w: size.w, h: size.h };
-        const step = 60;
-        if (e.key === 'f' || e.key === 'F' || e.key === 'Home') fitAll();
-        else if (e.key === '+' || e.key === '=') zoomAt(slot, r.x + r.w / 2, r.y + r.h / 2, 1.4);
-        else if (e.key === '-' || e.key === '_') zoomAt(slot, r.x + r.w / 2, r.y + r.h / 2, 1 / 1.4);
-        else if (e.key === 'ArrowLeft') setView(slot, { ...v, tx: v.tx + step });
-        else if (e.key === 'ArrowRight') setView(slot, { ...v, tx: v.tx - step });
-        else if (e.key === 'ArrowUp') setView(slot, { ...v, ty: v.ty + step });
-        else if (e.key === 'ArrowDown') setView(slot, { ...v, ty: v.ty - step });
-        else if (e.key === 'Escape') {
-          if (lasso.length) onLasso([]);
-          else onSelect(null);
-        } else return;
+        const action = KEYS.get(e.key);
+        if (!action) return;
+        onKeyAction(action);
         e.preventDefault();
       }}
     >

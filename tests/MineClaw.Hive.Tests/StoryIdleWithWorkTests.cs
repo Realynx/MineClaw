@@ -45,6 +45,44 @@ public sealed class StoryIdleWithWorkTests
         Assert.Contains("idle-with-work", StoryPerf.TakeIdle());
     }
 
+    /// <summary>A cave under stone at 5,55,5 (8 blocks of stone over it) with tall grass in it.</summary>
+    private static void CaveGrass(FakeStoryWorld w)
+    {
+        w.Set(5, 55, 5, 31, 1);
+        w.Set(5, 56, 5, 0);
+    }
+
+    /// <summary>Live 11-04 story-1 (release 20261104-074119): "no reachable target: cut 91,55,463: in a cave (surface work)", five pawns
+    /// idle on it. A mark the owner placed is ordinary work wherever it is: the route, reach and stuck rules decide.</summary>
+    [Fact]
+    public void An_owner_cut_mark_in_a_cave_is_taken()
+    {
+        var (c, h, w) = StoryRig.Make(1, time: NewClock());
+        Only(c, (WorkTypes.Chop, 1));
+        CaveGrass(w);
+        c.Designate("add", "cut", null, [new P3(5, 55, 5)], null);
+        Assert.False(Assert.Single(c.Designations).Auto);
+        var j = c.Next();
+        Assert.Equal("dig", Kind(j));
+        Assert.Equal("5,55,5", j["at"]!.GetValue<string>());
+    }
+
+    /// <summary>A cave plant the colony marked itself (seek_seeds' grass) is left alone by design, and the audit doesn't count a pawn
+    /// with only that about as idle with work.</summary>
+    [Fact]
+    public void A_colony_marked_cave_plant_is_left_alone_and_is_no_blocked_work()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, (WorkTypes.Chop, 1));
+        CaveGrass(w);
+        c.Designate("add", "cut", null, [new P3(5, 55, 5)], null);
+        Assert.Single(c.Designations).Auto = true;
+        Assert.NotEqual("dig", Kind(c.Next()));
+        c.Tick();
+        Assert.Null(c.IdleReasonOf(c.P())); // no reason: not counted on the perf line nor in blocked_work
+    }
+
     [Fact]
     public void A_haul_mark_whose_drop_is_out_of_sight_is_said_as_such()
     {

@@ -50,7 +50,6 @@ function rank(value: string, search: string, keywords?: string[]): number {
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const router = useRouter();
   const { can } = useAuth();
-  const prefs = usePrefs();
   const [q, setQ] = useState('');
   const dq = useDeferredValue(q.trim());
   const status = useStatus();
@@ -90,35 +89,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
             <Command.List className="max-h-[60vh] overflow-y-auto p-2">
               <Command.Empty className="px-3 py-8 text-center text-sm text-muted">Nothing matches “{q}”.</Command.Empty>
 
-              {dq.length >= 3 ? (
-                <Command.Group heading="Memories" className={groupClass}>
-                  <Item
-                    value={`search memories ${dq}`}
-                    icon={<Search className="size-4" />}
-                    onSelect={() => go(`/search?q=${encodeURIComponent(dq)}`)}
-                    hint="recall search"
-                  >
-                    Search memories for “{dq}”
-                  </Item>
-                  {(memories.data?.hits ?? []).map((h) => (
-                    <Item
-                      key={h.docId}
-                      value={`memory ${dq} ${h.title} ${h.ref}`}
-                      icon={<FileText className="size-4" />}
-                      hint={h.kind}
-                      onSelect={() =>
-                        go(
-                          h.raptorLeaf !== null && h.raptorLeaf !== undefined
-                            ? `/memory-activity?layout=cloud&node=${h.raptorLeaf}`
-                            : `/search?q=${encodeURIComponent(dq)}`,
-                        )
-                      }
-                    >
-                      {h.title}
-                    </Item>
-                  ))}
-                </Command.Group>
-              ) : null}
+              {dq.length >= 3 ? <MemoryGroup dq={dq} hits={memories.data?.hits} go={go} /> : null}
 
               <Command.Group heading="Bots" className={groupClass}>
                 {(status.data?.bots ?? []).map((b) => (
@@ -159,66 +130,111 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                 </Item>
               </Command.Group>
 
-              {scripts.data?.scripts.length ? (
-                <Command.Group heading="Scripts" className={groupClass}>
-                  {scripts.data.scripts.map((s) => (
-                    <Item
-                      key={s.name}
-                      value={`script ${s.name} ${s.purpose ?? ''}`}
-                      icon={<Code2 className="size-4" />}
-                      hint={`v${s.version} · ${s.lang}`}
-                      onSelect={() => go(`/scripts?name=${encodeURIComponent(s.name)}`)}
-                    >
-                      {s.name}
-                    </Item>
-                  ))}
-                </Command.Group>
-              ) : null}
+              <ScriptsGroup scripts={scripts.data?.scripts} go={go} />
+              <DesignsGroup designs={designs.data?.items} go={go} />
 
-              {designs.data?.items.length ? (
-                <Command.Group heading="Designs" className={groupClass}>
-                  {designs.data.items.map((d) => (
-                    <Item
-                      key={d.id}
-                      value={`design ${d.id} ${d.name} ${d.requester ?? ''}`}
-                      icon={<Boxes className="size-4" />}
-                      hint={`#${d.id} · r${d.rev}`}
-                      onSelect={() => go(`/designs?id=${d.id}`)}
-                    >
-                      {d.name}
-                    </Item>
-                  ))}
-                </Command.Group>
-              ) : null}
-
-              <Command.Group heading="Actions" className={groupClass}>
-                <Item
-                  value="toggle theme dark light"
-                  icon={
-                    resolvedTheme(prefs.theme) === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />
-                  }
-                  onSelect={() => {
-                    setPrefs({ theme: resolvedTheme(prefs.theme) === 'dark' ? 'light' : 'dark' });
-                    onOpenChange(false);
-                  }}
-                >
-                  Switch to {resolvedTheme(prefs.theme) === 'dark' ? 'light' : 'dark'} theme
-                </Item>
-                <Item
-                  value="developer details toggle dev stats"
-                  icon={<Bug className="size-4" />}
-                  onSelect={() => {
-                    setPrefs({ devDetails: !prefs.devDetails });
-                    onOpenChange(false);
-                  }}
-                >
-                  {prefs.devDetails ? 'Hide' : 'Show'} developer details
-                </Item>
-              </Command.Group>
+              <ActionsGroup close={() => onOpenChange(false)} />
             </Command.List>
           </Command>
         </D.Content>
       </D.Portal>
     </D.Root>
+  );
+}
+
+type Go = (href: string) => void;
+type Hit = NonNullable<ReturnType<typeof useApi<'search'>>['data']>['hits'][number];
+
+/** The memory search, and the top hits (a hit with a RAPTOR leaf opens it in the cloud). */
+function MemoryGroup({ dq, hits, go }: { dq: string; hits: readonly Hit[] | undefined; go: Go }) {
+  const searchHref = `/search?q=${encodeURIComponent(dq)}`;
+  return (
+    <Command.Group heading="Memories" className={groupClass}>
+      <Item value={`search memories ${dq}`} icon={<Search className="size-4" />} onSelect={() => go(searchHref)} hint="recall search">
+        Search memories for “{dq}”
+      </Item>
+      {(hits ?? []).map((h) => (
+        <Item
+          key={h.docId}
+          value={`memory ${dq} ${h.title} ${h.ref}`}
+          icon={<FileText className="size-4" />}
+          hint={h.kind}
+          onSelect={() => go(h.raptorLeaf !== null && h.raptorLeaf !== undefined ? `/memory-activity?layout=cloud&node=${h.raptorLeaf}` : searchHref)}
+        >
+          {h.title}
+        </Item>
+      ))}
+    </Command.Group>
+  );
+}
+
+type Script = NonNullable<ReturnType<typeof useApi<'scripts.list'>>['data']>['scripts'][number];
+type Design = NonNullable<ReturnType<typeof useApi<'designs.list'>>['data']>['items'][number];
+
+function ScriptsGroup({ scripts, go }: { scripts: readonly Script[] | undefined; go: Go }) {
+  if (!scripts?.length) return null;
+  return (
+    <Command.Group heading="Scripts" className={groupClass}>
+      {scripts.map((s) => (
+        <Item
+          key={s.name}
+          value={`script ${s.name} ${s.purpose ?? ''}`}
+          icon={<Code2 className="size-4" />}
+          hint={`v${s.version} · ${s.lang}`}
+          onSelect={() => go(`/scripts?name=${encodeURIComponent(s.name)}`)}
+        >
+          {s.name}
+        </Item>
+      ))}
+    </Command.Group>
+  );
+}
+
+function DesignsGroup({ designs, go }: { designs: readonly Design[] | undefined; go: Go }) {
+  if (!designs?.length) return null;
+  return (
+    <Command.Group heading="Designs" className={groupClass}>
+      {designs.map((d) => (
+        <Item
+          key={d.id}
+          value={`design ${d.id} ${d.name} ${d.requester ?? ''}`}
+          icon={<Boxes className="size-4" />}
+          hint={`#${d.id} · r${d.rev}`}
+          onSelect={() => go(`/designs?id=${d.id}`)}
+        >
+          {d.name}
+        </Item>
+      ))}
+    </Command.Group>
+  );
+}
+
+/** Switch the theme, show or hide developer details (each closes the palette). */
+function ActionsGroup({ close }: { close: () => void }) {
+  const prefs = usePrefs();
+  const dark = resolvedTheme(prefs.theme) === 'dark';
+  return (
+    <Command.Group heading="Actions" className={groupClass}>
+      <Item
+        value="toggle theme dark light"
+        icon={dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+        onSelect={() => {
+          setPrefs({ theme: dark ? 'light' : 'dark' });
+          close();
+        }}
+      >
+        Switch to {dark ? 'light' : 'dark'} theme
+      </Item>
+      <Item
+        value="developer details toggle dev stats"
+        icon={<Bug className="size-4" />}
+        onSelect={() => {
+          setPrefs({ devDetails: !prefs.devDetails });
+          close();
+        }}
+      >
+        {prefs.devDetails ? 'Hide' : 'Show'} developer details
+      </Item>
+    </Command.Group>
   );
 }

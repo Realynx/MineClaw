@@ -220,65 +220,93 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     /// <summary>Planks equivalent of the sticks a tool needs (2 planks = 4 sticks; sticks on hand count).</summary>
     private int SticksPlanks(Loadout.Kind k) => Inv(Items.Stick) >= SticksFor(k) ? 0 : 2;
 
+    /// <summary>A bootstrap's numbers: the tool's head count, what cobble is in reach, whether it goes via stone, a table, a wood
+    /// pick first, and the planks it all takes.</summary>
+    private sealed record BootPlan(bool Pickaxe, int Head, int CobbleReach, bool ViaStone, bool TableNear, bool NeedWoodPick, bool WoodTool,
+        int Planks, bool WoodShort);
+
     private async Task<string?> BootstrapAsync(Loadout.Kind k, int min, int stone, int wood, CancellationToken ct)
     {
         var gen = FindGeneratorCell();
+        if (PlanBootstrap(k, min, gen) is not { } plan) return null;
+        // The plan, announced once: "no pick, making one: logs→planks→sticks→wood pick→3 cobble→stone pick".
+        Announce($"no {Short(k)}, making one: {string.Join("→", BootSteps(k, plan))}");
+        if (plan.WoodShort && !await WoodAsync(plan.Planks, ct).ConfigureAwait(false)) return null;
+        var (done, result) = await BootWoodToolAsync(plan, wood, ct).ConfigureAwait(false);
+        if (done) return result;
+        return await BootStoneAsync(k, min, plan.Head, stone, gen, ct).ConfigureAwait(false);
+    }
+
+    private BootPlan? PlanBootstrap(Loadout.Kind k, int min, BlockPos? gen)
+    {
         bool pickaxe = k.Name == "pickaxe";
         int head = HeadCount(k);
         int cobbleReach = Inv(Blocks.Cobblestone) + ChestStock(Blocks.Cobblestone);
         bool haveWoodPick = Loadout.Kinds["pickaxe"].Ids.Any(id => Inv(id) > 0);
-        // Stone whenever cobble is reachable: on hand / in a chest, at the gen or (normal world) natural stone (with a pick, or
-        // the wood pick made first).
-        bool viaStone = min <= 1 && (cobbleReach >= head || gen != null || NaturalStone);
+        bool viaStone = ViaStone(min, cobbleReach, head, gen);
         if (min == 1 && !viaStone) return null;
         bool tableNear = W.FindNearestBlock(W.Player.Position, c.StationSearchRadius, Blocks.Workbench) != null || Inv(Blocks.Workbench) > 0;
         bool needWoodPick = viaStone && cobbleReach < head && !haveWoodPick;   // to dig the gen's cobble
         bool woodTool = !viaStone || (pickaxe && needWoodPick);
+        int planks = BootPlanks(head, pickaxe, tableNear, needWoodPick, woodTool);
+        return new BootPlan(pickaxe, head, cobbleReach, viaStone, tableNear, needWoodPick, woodTool, planks, WoodUnits(withChests: false) < planks);
+    }
 
-        int planks = (woodTool ? head : 0) + (needWoodPick && !pickaxe ? 3 : 0) + 2 + (tableNear ? 0 : 4);
-        bool woodShort = WoodUnits(withChests: false) < planks;
+    /// <summary>Stone whenever cobble is reachable: on hand / in a chest, at the gen or (normal world) natural stone (with a pick,
+    /// or the wood pick made first).</summary>
+    private bool ViaStone(int min, int cobbleReach, int head, BlockPos? gen) => min <= 1 && (cobbleReach >= head || gen != null || NaturalStone);
 
-        // The plan, announced once: "no pick, making one: logs→planks→sticks→wood pick→3 cobble→stone pick".
+    private static int BootPlanks(int head, bool pickaxe, bool tableNear, bool needWoodPick, bool woodTool) =>
+        (woodTool ? head : 0) + (needWoodPick && !pickaxe ? 3 : 0) + 2 + (tableNear ? 0 : 4);
+
+    private List<string> BootSteps(Loadout.Kind k, BootPlan plan)
+    {
         var parts = new List<string>();
-        if (woodShort) parts.Add("logs");
+        if (plan.WoodShort) parts.Add("logs");
         parts.Add("planks");
         if (Inv(Items.Stick) < 4) parts.Add("sticks");
-        if (!tableNear) parts.Add("table");
-        if (woodTool) parts.Add("wood " + Short(k));
-        else if (needWoodPick) parts.Add("wood pick");
-        if (viaStone)
-        {
-            if (cobbleReach < head) parts.Add($"{head} cobble");
-            parts.Add("stone " + Short(k));
-        }
-        Announce($"no {Short(k)}, making one: {string.Join("→", parts)}");
+        if (!plan.TableNear) parts.Add("table");
+        if (plan.WoodTool) parts.Add("wood " + Short(k));
+        else if (plan.NeedWoodPick) parts.Add("wood pick");
+        if (!plan.ViaStone) return parts;
+        if (plan.CobbleReach < plan.Head) parts.Add($"{plan.Head} cobble");
+        parts.Add("stone " + Short(k));
+        return parts;
+    }
 
-        if (woodShort && !await WoodAsync(planks, ct).ConfigureAwait(false)) return null;
-
-        if (woodTool)
+    /// <summary>The wood tool (done unless it goes on to stone), or the wood pick that digs the cobble. Done with null = failed.</summary>
+    private async Task<(bool Done, string? Result)> BootWoodToolAsync(BootPlan plan, int wood, CancellationToken ct)
+    {
+        if (plan.WoodTool)
         {
-            int woodId = pickaxe ? Items.WoodenPickaxe : wood;
-            if (!await CraftAsync(woodId, ct).ConfigureAwait(false)) { Note("couldn't craft " + Names.Item(woodId)); return null; }
+            int woodId = plan.Pickaxe ? Items.WoodenPickaxe : wood;
+            if (!await CraftAsync(woodId, ct).ConfigureAwait(false)) { Note("couldn't craft " + Names.Item(woodId)); return (true, null); }
             Note("crafted " + Names.Item(woodId));
-            if (!viaStone) return "crafted " + Names.Item(woodId);
+            if (!plan.ViaStone) return (true, "crafted " + Names.Item(woodId));
         }
-        else if (needWoodPick)
+        else if (plan.NeedWoodPick)
         {
-            if (!await CraftAsync(Items.WoodenPickaxe, ct).ConfigureAwait(false)) { Note("couldn't craft a wooden pickaxe"); return null; }
+            if (!await CraftAsync(Items.WoodenPickaxe, ct).ConfigureAwait(false)) { Note("couldn't craft a wooden pickaxe"); return (true, null); }
             Note("crafted wooden pickaxe");
         }
+        return (false, null);
+    }
 
+    /// <summary>The cobble (chest, else the gen), then the stone tool.</summary>
+    private async Task<string?> BootStoneAsync(Loadout.Kind k, int min, int head, int stone, BlockPos? gen, CancellationToken ct)
+    {
         if (Inv(Blocks.Cobblestone) < head)
         {
             if (ChestStock(Blocks.Cobblestone) > 0) await WithdrawAsync([Blocks.Cobblestone], head - Inv(Blocks.Cobblestone), ct).ConfigureAwait(false);
-            if (Inv(Blocks.Cobblestone) < head && !await GenCobbleAsync(head, gen, ct).ConfigureAwait(false))
-                return Has(k, min) ? Names.Item(k.Ids.First(id => Inv(id) > 0)) + " (no cobble for stone yet)" : null;
+            if (Inv(Blocks.Cobblestone) < head && !await GenCobbleAsync(head, gen, ct).ConfigureAwait(false)) return HadAnyway(k, min, "no cobble for stone yet");
         }
-        if (!await CraftAsync(stone, ct).ConfigureAwait(false))
-            return Has(k, min) ? Names.Item(k.Ids.First(id => Inv(id) > 0)) + " (stone craft failed)" : null;
+        if (!await CraftAsync(stone, ct).ConfigureAwait(false)) return HadAnyway(k, min, "stone craft failed");
         Note("crafted " + Names.Item(stone));
         return "crafted " + Names.Item(stone);
     }
+
+    /// <summary>A tool of the kind on hand after all (the wood one), saying why it isn't stone; else null.</summary>
+    private string? HadAnyway(Loadout.Kind k, int min, string why) => Has(k, min) ? Names.Item(k.Ids.First(id => Inv(id) > 0)) + $" ({why})" : null;
 
     // ------------------------------------------------------------------ items
 
@@ -292,7 +320,6 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         int? dmg = damage >= 0 && IsVariant(id) ? damage : null;
         int Have() => W.Inventory.CountItem(id, dmg);
         string name = Names.Item(id, dmg ?? 0);
-        string plural = count > 1 ? $"{count} {Plural(name)}" : $"a {name}";
         if (Have() >= count) return $"had {count} {name}";
         // (b)+(d) the shared resolver: every known chest nearest first, the exact variant, as much as the inventory holds (live
         // 10-28: 500+ cobble in three chests, yet "I need a 256 cobblestone"), then the whole recipe tree planned over
@@ -303,39 +330,58 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         if (got.Text.Contains("inventory full", StringComparison.Ordinal)) return null;
         // (c) hive
         if (await HandoffAsync(name, [id], count - Have(), () => Have() >= count, ct).ConfigureAwait(false) is { } giver) return giver;
-        // (e) raw wood/cobble missing: gather them first.
-        bool craftable = Recipes.ForOutput(id, dmg ?? -1).Count > 0;
+        return depth == AcquireDepth.Full ? await GatherOrAskAsync(id, dmg, count, name, ct).ConfigureAwait(false) : null;
+    }
+
+    /// <summary>(e) raw wood/cobble missing: gather them first (and craft); else ask a player.</summary>
+    private async Task<string?> GatherOrAskAsync(int id, int? dmg, int count, string name, CancellationToken ct)
+    {
+        string plural = count > 1 ? $"{count} {Plural(name)}" : $"a {name}";
+        var gathered = id is Blocks.Cobblestone or Blocks.Log
+            ? await GatherRawAsync(id, count, ct).ConfigureAwait(false)
+            : await GatherAndCraftAsync(id, dmg, count, name, ct).ConfigureAwait(false);
+        if (gathered != null) return gathered;
+        return await AskAsync(name, plural, () => W.Inventory.CountItem(id, dmg) >= count, ct).ConfigureAwait(false);
+    }
+
+    private async Task<string?> GatherRawAsync(int id, int count, CancellationToken ct)
+    {
+        if (id == Blocks.Cobblestone)
+            return await GenCobbleAsync(count, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false)
+                ? NaturalStone ? $"mined stone for {count} cobblestone" : $"dug {count} cobblestone at the gen"
+                : null;
+        return await LogsAsync(count, ct).ConfigureAwait(false) && Inv(id) >= count ? $"got {count} logs" : null;
+    }
+
+    /// <summary>A wood product from logs, cobblestone slabs/stairs from the gen when storage has too little cobble, or (normal
+    /// world) what a craft lacks gathered first.</summary>
+    private async Task<string?> GatherAndCraftAsync(int id, int? dmg, int count, string name, CancellationToken ct)
+    {
+        if (Recipes.ForOutput(id, dmg ?? -1).Count == 0) return null;
         string craftName = dmg is { } d0 ? Items.VariantName(id, d0) : Items.Get(id).Name;
-        if (depth == AcquireDepth.Full)
-        {
-            if (id == Blocks.Cobblestone)
-            {
-                if (await GenCobbleAsync(count, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false))
-                    return NaturalStone ? $"mined stone for {count} cobblestone" : $"dug {count} cobblestone at the gen";
-            }
-            else if (id == Blocks.Log)
-            {
-                if (await LogsAsync(count, ct).ConfigureAwait(false) && Inv(id) >= count) return $"got {count} logs";
-            }
-            else if (craftable && IsWoodProduct(id))
-            {
-                Announce($"no {name}, making it: logs→{name}");
-                if (await WoodAsync(WoodNeedFor(id, count), ct).ConfigureAwait(false)
-                    && await CraftAsync(id, ct, count - Inv(id)).ConfigureAwait(false) && Inv(id) >= count) return $"crafted {name}";
-            }
-            else if (craftable && dmg is { } d1 && CobbleProduct(id, d1) is { } perCobble)
-            {
-                // Cobblestone slabs/stairs from the gen when storage has too little cobble.
-                int cobble = (count - Have() + perCobble.Out - 1) / perCobble.Out * perCobble.In;
-                Announce($"no {name}, making it: cobble→{name}");
-                if (await GenCobbleAsync(cobble, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false)
-                    && await CraftVariantAsync(id, dmg, craftName, count - Have(), ct).ConfigureAwait(false) && Have() >= count) return $"crafted {count} {name}";
-            }
-            else if (craftable && NaturalStone && await GatherThenCraftAsync(id, dmg, name, craftName, count - Have(), ct).ConfigureAwait(false)
-                     && Have() >= count) return $"crafted {count} {name}";
-            return await AskAsync(name, plural, () => Have() >= count, ct).ConfigureAwait(false);
-        }
-        return null;
+        if (IsWoodProduct(id)) return await WoodProductAsync(id, count, name, ct).ConfigureAwait(false);
+        if (dmg is { } d1 && CobbleProduct(id, d1) is { } perCobble)
+            return await CobbleProductAsync(id, d1, perCobble, count, name, craftName, ct).ConfigureAwait(false);
+        int have = W.Inventory.CountItem(id, dmg);
+        return NaturalStone && await GatherThenCraftAsync(id, dmg, name, craftName, count - have, ct).ConfigureAwait(false)
+               && W.Inventory.CountItem(id, dmg) >= count ? $"crafted {count} {name}" : null;
+    }
+
+    private async Task<string?> WoodProductAsync(int id, int count, string name, CancellationToken ct)
+    {
+        Announce($"no {name}, making it: logs→{name}");
+        return await WoodAsync(WoodNeedFor(id, count), ct).ConfigureAwait(false)
+               && await CraftAsync(id, ct, count - Inv(id)).ConfigureAwait(false) && Inv(id) >= count ? $"crafted {name}" : null;
+    }
+
+    private async Task<string?> CobbleProductAsync(int id, int dmg, (int In, int Out) perCobble, int count, string name, string craftName,
+        CancellationToken ct)
+    {
+        int Have() => W.Inventory.CountItem(id, dmg);
+        int cobble = (count - Have() + perCobble.Out - 1) / perCobble.Out * perCobble.In;
+        Announce($"no {name}, making it: cobble→{name}");
+        return await GenCobbleAsync(cobble, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false)
+               && await CraftVariantAsync(id, dmg, craftName, count - Have(), ct).ConfigureAwait(false) && Have() >= count ? $"crafted {count} {name}" : null;
     }
 
     /// <summary>

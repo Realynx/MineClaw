@@ -36,14 +36,19 @@ const MIN = 60_000;
 /** Stale time by route family. Db reads are a live read-only view of the bot's db, so they go stale after a short while. */
 export function staleTimeFor(id: RouteId): number {
   if (LIVE_ROUTES.has(id)) return Infinity;
-  if (id === 'auth.me') return 5 * MIN;
-  if (id === 'admin.schema') return Infinity;
   if (id.startsWith('scripts.') && id !== 'scripts.list') return 5 * MIN; // versions are immutable once saved
-  if (id === 'designs.diff' || id === 'scripts.diff') return 10 * MIN;
-  if (id === 'memoryActivity.heat') return 15_000;
-  if (id === 'brains.context' || id === 'bodies.script') return 0;
-  return 30_000;
+  return STALE_TIME.get(id) ?? 30_000;
 }
+
+/** The other routes that do not go stale after the default 30 s. */
+const STALE_TIME = new Map<RouteId, number>([
+  ['auth.me', 5 * MIN],
+  ['admin.schema', Infinity],
+  ['designs.diff', 10 * MIN],
+  ['memoryActivity.heat', 15_000],
+  ['brains.context', 0],
+  ['bodies.script', 0],
+]);
 
 export function makeQueryClient(): QueryClient {
   return new QueryClient({

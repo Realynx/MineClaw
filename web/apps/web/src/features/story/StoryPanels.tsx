@@ -37,7 +37,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import {
@@ -187,49 +187,33 @@ export function ArchitectPalette({
   );
 }
 
-export function ArchitectPanel({
-  tool,
-  onTool,
-  palette,
-  onPick,
-  plants,
-  zones,
-}: {
-  tool: MapTool;
-  onTool: (t: MapTool) => void;
-  palette?: StoryArchitectResponse;
-  onPick?: (e: StoryArchitectEntry) => void;
-  /** What a growing zone can grow here (the plant picker under the Zones tools). */
-  plants?: readonly StoryPlant[] | null;
-  /** The colony's zones (the Zones tools name the zone being extended). */
-  zones?: readonly StoryZone[];
-}) {
-  const [cat, setCat] = useState<ArchCat>(
-    tool.kind === 'zone'
-      ? 'zones'
-      : tool.kind === 'build'
-        ? tool.id.startsWith('furniture:')
-          ? 'furniture'
-          : WATER_TOOLS.some((w) => w.id === tool.id)
-            ? 'water'
-            : 'structure'
-        : tool.kind === 'storage'
-          ? 'storage'
-          : 'orders',
-  );
-  const cats: Array<[ArchCat, string]> = [
-    ['orders', 'Orders'],
-    ['zones', 'Zones'],
-    ['structure', 'Structure'],
-    ['furniture', 'Furniture'],
-    ['production', 'Production'],
-    ['storage', 'Storage'],
-    ['lighting', 'Lighting'],
-    ['water', 'Water'],
-    ['misc', 'Misc'],
-  ];
+const ARCH_CATS: ReadonlyArray<[ArchCat, string]> = [
+  ['orders', 'Orders'],
+  ['zones', 'Zones'],
+  ['structure', 'Structure'],
+  ['furniture', 'Furniture'],
+  ['production', 'Production'],
+  ['storage', 'Storage'],
+  ['lighting', 'Lighting'],
+  ['water', 'Water'],
+  ['misc', 'Misc'],
+];
+
+/** The category the Architect opens on: the one holding the tool in hand. */
+function categoryOf(tool: MapTool): ArchCat {
+  if (tool.kind === 'zone') return 'zones';
+  if (tool.kind === 'storage') return 'storage';
+  if (tool.kind !== 'build') return 'orders';
+  if (tool.id.startsWith('furniture:')) return 'furniture';
+  return WATER_TOOLS.some((w) => w.id === tool.id) ? 'water' : 'structure';
+}
+
+type ToolBtn = (t: MapTool, icon: string, label: string, hint: string, key?: string) => ReactNode;
+
+/** One tool button (pressed while in hand; clicking it again puts it down). */
+function toolButton(tool: MapTool, onTool: (t: MapTool) => void): ToolBtn {
   const active = (t: MapTool) => JSON.stringify(t) === JSON.stringify(tool);
-  const btn = (t: MapTool, icon: string, label: string, hint: string, key?: string) => (
+  return (t, icon, label, hint, key) => (
     <button
       key={label}
       type="button"
@@ -248,6 +232,77 @@ export function ArchitectPanel({
       {key ? <span className="absolute top-0.5 right-1 font-mono text-[9px] text-subtle">{key}</span> : null}
     </button>
   );
+}
+
+type CatProps = {
+  tool: MapTool;
+  onTool: (t: MapTool) => void;
+  palette?: StoryArchitectResponse;
+  plants?: readonly StoryPlant[] | null;
+  zones?: readonly StoryZone[];
+  btn: ToolBtn;
+};
+
+const loadingPalette = ({ palette }: CatProps) =>
+  palette ? null : <p className="w-56 text-[11px] leading-snug text-muted">Loading what the colony can make…</p>;
+
+/** Each category's tools (the palette's own entries show beside the panel). */
+const CATEGORY_TOOLS: Record<ArchCat, (p: CatProps) => ReactNode> = {
+  orders: ({ btn }) =>
+    DESIGNATE_TOOLS.map((t) => btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', ''))),
+  zones: ({ tool, onTool, plants, zones, btn }) => (
+    <ZoneToolbar tool={tool} onTool={onTool} plants={plants} zones={zones ?? []} btn={btn} />
+  ),
+  structure: ({ btn }) => STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint)),
+  furniture: ({ btn }) =>
+    FURNITURE_TOOLS.map((f) =>
+      btn({ kind: 'build', id: `furniture:${f.id}` }, f.id, f.label, `Place a ${f.label.toLowerCase()} (Q/E turns)`),
+    ),
+  water: ({ palette, btn }) => (
+    <>
+      {WATER_TOOLS.filter(
+        // Lava only while the colony allows it (the palette lists it then).
+        (w) => w.id !== 'lava' || palette?.entries.some((e) => e.kind === 'lava'),
+      ).map((w) => btn({ kind: 'build', id: w.id }, w.id, w.label, w.hint))}
+      <p className="w-56 text-[11px] leading-snug text-muted" data-testid="water-note">
+        Pawns bring a bucket (3 iron ingots at a crafting table), fill it at still water and pour each cell. Dig the
+        trench first for a canal; a 2×2 infinite source refills.
+      </p>
+    </>
+  ),
+  storage: ({ btn }) => (
+    <>
+      {btn({ kind: 'storage' }, 'storage', 'Register chests', 'Drag over chests: every chest in the area becomes storage')}
+      <p className="w-56 text-[11px] leading-snug text-muted">
+        Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to choose what it
+        keeps and how much it matters.
+      </p>
+    </>
+  ),
+  production: loadingPalette,
+  lighting: loadingPalette,
+  misc: loadingPalette,
+};
+
+export function ArchitectPanel({
+  tool,
+  onTool,
+  palette,
+  onPick,
+  plants,
+  zones,
+}: {
+  tool: MapTool;
+  onTool: (t: MapTool) => void;
+  palette?: StoryArchitectResponse;
+  onPick?: (e: StoryArchitectEntry) => void;
+  /** What a growing zone can grow here (the plant picker under the Zones tools). */
+  plants?: readonly StoryPlant[] | null;
+  /** The colony's zones (the Zones tools name the zone being extended). */
+  zones?: readonly StoryZone[];
+}) {
+  const [cat, setCat] = useState<ArchCat>(categoryOf(tool));
+  const btn = toolButton(tool, onTool);
   return (
     <div className="flex items-end gap-2">
       <section
@@ -256,7 +311,7 @@ export function ArchitectPanel({
         data-testid="architect"
       >
         <div className="flex w-24 flex-col gap-0.5">
-          {cats.map(([id, label]) => (
+          {ARCH_CATS.map(([id, label]) => (
             <button
               key={id}
               type="button"
@@ -272,56 +327,7 @@ export function ArchitectPanel({
           ))}
         </div>
         <div className="flex flex-1 flex-wrap content-start gap-1.5">
-          {cat === 'orders'
-            ? DESIGNATE_TOOLS.map((t) =>
-                btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', '')),
-              )
-            : null}
-          {cat === 'zones' ? (
-            <ZoneToolbar tool={tool} onTool={onTool} plants={plants} zones={zones ?? []} btn={btn} />
-          ) : null}
-          {cat === 'structure'
-            ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
-            : null}
-          {cat === 'furniture'
-            ? FURNITURE_TOOLS.map((f) =>
-                btn(
-                  { kind: 'build', id: `furniture:${f.id}` },
-                  f.id,
-                  f.label,
-                  `Place a ${f.label.toLowerCase()} (Q/E turns)`,
-                ),
-              )
-            : null}
-          {cat === 'water'
-            ? WATER_TOOLS.filter(
-                // Lava only while the colony allows it (the palette lists it then).
-                (w) => w.id !== 'lava' || palette?.entries.some((e) => e.kind === 'lava'),
-              ).map((w) => btn({ kind: 'build', id: w.id }, w.id, w.label, w.hint))
-            : null}
-          {cat === 'water' ? (
-            <p className="w-56 text-[11px] leading-snug text-muted" data-testid="water-note">
-              Pawns bring a bucket (3 iron ingots at a crafting table), fill it at still water and pour each cell. Dig the
-              trench first for a canal; a 2×2 infinite source refills.
-            </p>
-          ) : null}
-          {cat === 'storage' ? (
-            <>
-              {btn(
-                { kind: 'storage' },
-                'storage',
-                'Register chests',
-                'Drag over chests: every chest in the area becomes storage',
-              )}
-              <p className="w-56 text-[11px] leading-snug text-muted">
-                Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to
-                choose what it keeps and how much it matters.
-              </p>
-            </>
-          ) : null}
-          {(cat === 'production' || cat === 'lighting' || cat === 'misc') && !palette ? (
-            <p className="w-56 text-[11px] leading-snug text-muted">Loading what the colony can make…</p>
-          ) : null}
+          {CATEGORY_TOOLS[cat]({ tool, onTool, palette, plants, zones, btn })}
         </div>
       </section>
       {palette && onPick && cat !== 'orders' && cat !== 'zones' ? (
@@ -521,6 +527,8 @@ export function MaterialRow({ m }: { m: StoryBuildMaterial }) {
   );
 }
 
+type QueueOp = (op: 'remove' | 'pause' | 'resume' | 'reorder', ids: Array<string | number>) => void;
+
 export function QueuePanel({
   builds,
   canWrite,
@@ -530,7 +538,7 @@ export function QueuePanel({
 }: {
   builds: StoryBuild[];
   canWrite: boolean;
-  onOp: (op: 'remove' | 'pause' | 'resume' | 'reorder', ids: Array<string | number>) => void;
+  onOp: QueueOp;
   /** Failed cells per build id: "Retry failed cells (N)". */
   failed?: ReadonlyMap<string, number>;
   onRetry?: (id: string | number) => void;
@@ -539,6 +547,16 @@ export function QueuePanel({
   const done = builds.filter((b) => b.status === 'done').length;
   const dragId = useRef<string | number | null>(null);
   const [over, setOver] = useState<string | number | null>(null);
+  /** Dropping the dragged build on `onto`: it goes before it. */
+  const drop = (onto: string | number) => {
+    setOver(null);
+    const from = dragId.current;
+    dragId.current = null;
+    if (from === null || from === undefined || from === onto) return;
+    const ids = list.map((x) => x.id).filter((x) => x !== from);
+    ids.splice(ids.indexOf(onto), 0, from);
+    onOp('reorder', ids);
+  };
   return (
     <section
       className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[30rem] overflow-auto p-2')}
@@ -560,109 +578,157 @@ export function QueuePanel({
               setOver(b.id);
             }}
             onDragLeave={() => setOver((o) => (o === b.id ? null : o))}
-            onDrop={() => {
-              setOver(null);
-              const from = dragId.current;
-              dragId.current = null;
-              if (from === null || from === undefined || from === b.id) return;
-              const ids = list.map((x) => x.id).filter((x) => x !== from);
-              ids.splice(ids.indexOf(b.id), 0, from);
-              onOp('reorder', ids);
-            }}
+            onDrop={() => drop(b.id)}
             className={cn(
               'flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs',
               over === b.id && 'border-t-2 border-t-[#f5c542]',
             )}
           >
-            <GripVertical className="size-3.5 cursor-grab text-subtle" aria-hidden />
-            <span className="w-4 text-right text-subtle tabular-nums">{i + 1}</span>
-            <ToolIcon id={b.kind === 'furniture' ? 'block' : b.kind} className="size-3.5 text-muted" />
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-semibold">{b.label}</div>
-              <div className="mt-0.5 flex items-center gap-1.5">
-                <span className="block h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
-                  <span
-                    className="block h-full bg-accent"
-                    style={{ width: `${b.blocksTotal ? (b.blocksDone / b.blocksTotal) * 100 : 0}%` }}
-                  />
-                </span>
-                <span className="tabular-nums text-subtle">
-                  {b.blocksDone}/{b.blocksTotal}
-                </span>
-              </div>
-              {b.reason || b.status === 'blocked' ? (
-                <div className={cn('text-[10.5px]', b.status === 'waiting' ? 'text-muted' : 'text-danger')}>
-                  {b.reason ?? 'blocked'}
-                </div>
-              ) : null}
-              {(failed?.get(String(b.id)) ?? 0) > 0 && onRetry ? (
-                <button
-                  type="button"
-                  disabled={!canWrite}
-                  onClick={() => onRetry(b.id)}
-                  data-testid="build-retry"
-                  className="mt-0.5 rounded border border-border px-1.5 py-0.5 text-[10.5px] font-semibold hover:bg-surface-3 disabled:opacity-40"
-                  title="These cells failed (or rest after failing): try them again now"
-                >
-                  Retry failed cells ({failed!.get(String(b.id))})
-                </button>
-              ) : null}
-              {b.station ? (
-                <div className="text-[10.5px] text-muted">
-                  making a {b.station.kind.replace(/_/g, ' ')} at {b.station.pos.join(', ')}
-                </div>
-              ) : null}
-              {(b.materials ?? []).map((m) => (
-                <MaterialRow key={m.item} m={m} />
-              ))}
-            </div>
-            <span
-              className={cn(
-                'rounded px-1 text-[10px] font-semibold uppercase',
-                b.status === 'active'
-                  ? 'bg-ok-soft text-ok'
-                  : b.status === 'paused'
-                    ? 'bg-warn-soft text-warn'
-                    : b.status === 'blocked'
-                      ? 'bg-danger-soft text-danger'
-                      : 'bg-surface-3 text-muted',
-              )}
-            >
-              {b.status}
-            </span>
-            <button
-              type="button"
-              disabled={!canWrite || i === 0}
-              onClick={() => onOp('reorder', [b.id, ...list.filter((x) => x.id !== b.id).map((x) => x.id)])}
-              className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
-              title="Build first"
-              aria-label={`Build ${b.label} first`}
-            >
-              Top
-            </button>
-            <button
-              type="button"
-              disabled={!canWrite}
-              onClick={() => onOp(b.status === 'paused' ? 'resume' : 'pause', [b.id])}
-              className="rounded p-0.5 hover:bg-surface-3"
-              aria-label={b.status === 'paused' ? `Resume ${b.label}` : `Pause ${b.label}`}
-            >
-              {b.status === 'paused' ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-            </button>
-            <button
-              type="button"
-              disabled={!canWrite}
-              onClick={() => onOp('remove', [b.id])}
-              className="rounded p-0.5 text-danger hover:bg-danger-soft"
-              aria-label={`Cancel ${b.label}`}
-            >
-              <Trash2 className="size-3.5" />
-            </button>
+            <QueueRow
+              b={b}
+              i={i}
+              canWrite={canWrite}
+              onOp={onOp}
+              failedCells={failed?.get(String(b.id)) ?? 0}
+              onRetry={onRetry}
+              others={list}
+            />
           </li>
         ))}
       </ol>
       {done ? <p className="mt-1 px-1 text-[10.5px] text-subtle">{done} finished</p> : null}
     </section>
+  );
+}
+
+const STATUS_TONE: Record<string, string> = {
+  active: 'bg-ok-soft text-ok',
+  paused: 'bg-warn-soft text-warn',
+  blocked: 'bg-danger-soft text-danger',
+};
+
+/** One queued build: its progress, why it waits, its retry, its station and materials, and its buttons. */
+function QueueRow({
+  b,
+  i,
+  canWrite,
+  onOp,
+  failedCells,
+  onRetry,
+  others,
+}: {
+  b: StoryBuild;
+  i: number;
+  canWrite: boolean;
+  onOp: QueueOp;
+  failedCells: number;
+  onRetry?: (id: string | number) => void;
+  others: readonly StoryBuild[];
+}) {
+  const paused = b.status === 'paused';
+  return (
+    <>
+      <GripVertical className="size-3.5 cursor-grab text-subtle" aria-hidden />
+      <span className="w-4 text-right text-subtle tabular-nums">{i + 1}</span>
+      <ToolIcon id={b.kind === 'furniture' ? 'block' : b.kind} className="size-3.5 text-muted" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-semibold">{b.label}</div>
+        <BuildProgress b={b} />
+        <BuildNotes b={b} canWrite={canWrite} failedCells={failedCells} onRetry={onRetry} />
+        {b.station ? (
+          <div className="text-[10.5px] text-muted">
+            making a {b.station.kind.replace(/_/g, ' ')} at {b.station.pos.join(', ')}
+          </div>
+        ) : null}
+        {(b.materials ?? []).map((m) => (
+          <MaterialRow key={m.item} m={m} />
+        ))}
+      </div>
+      <span
+        className={cn('rounded px-1 text-[10px] font-semibold uppercase', STATUS_TONE[b.status] ?? 'bg-surface-3 text-muted')}
+      >
+        {b.status}
+      </span>
+      <button
+        type="button"
+        disabled={!canWrite || i === 0}
+        onClick={() => onOp('reorder', [b.id, ...others.filter((x) => x.id !== b.id).map((x) => x.id)])}
+        className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
+        title="Build first"
+        aria-label={`Build ${b.label} first`}
+      >
+        Top
+      </button>
+      <button
+        type="button"
+        disabled={!canWrite}
+        onClick={() => onOp(paused ? 'resume' : 'pause', [b.id])}
+        className="rounded p-0.5 hover:bg-surface-3"
+        aria-label={paused ? `Resume ${b.label}` : `Pause ${b.label}`}
+      >
+        {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+      </button>
+      <button
+        type="button"
+        disabled={!canWrite}
+        onClick={() => onOp('remove', [b.id])}
+        className="rounded p-0.5 text-danger hover:bg-danger-soft"
+        aria-label={`Cancel ${b.label}`}
+      >
+        <Trash2 className="size-3.5" />
+      </button>
+    </>
+  );
+}
+
+/** Why a build waits or is blocked, and its "Retry failed cells" button. */
+function BuildNotes({
+  b,
+  canWrite,
+  failedCells,
+  onRetry,
+}: {
+  b: StoryBuild;
+  canWrite: boolean;
+  failedCells: number;
+  onRetry?: (id: string | number) => void;
+}) {
+  return (
+    <>
+      {b.reason || b.status === 'blocked' ? (
+        <div className={cn('text-[10.5px]', b.status === 'waiting' ? 'text-muted' : 'text-danger')}>
+          {b.reason ?? 'blocked'}
+        </div>
+      ) : null}
+      {failedCells > 0 && onRetry ? (
+        <button
+          type="button"
+          disabled={!canWrite}
+          onClick={() => onRetry(b.id)}
+          data-testid="build-retry"
+          className="mt-0.5 rounded border border-border px-1.5 py-0.5 text-[10.5px] font-semibold hover:bg-surface-3 disabled:opacity-40"
+          title="These cells failed (or rest after failing): try them again now"
+        >
+          Retry failed cells ({failedCells})
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+function BuildProgress({ b }: { b: StoryBuild }) {
+  return (
+    <div className="mt-0.5 flex items-center gap-1.5">
+      <span className="block h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
+        <span
+          className="block h-full bg-accent"
+          style={{ width: `${b.blocksTotal ? (b.blocksDone / b.blocksTotal) * 100 : 0}%` }}
+        />
+      </span>
+      <span className="tabular-nums text-subtle">
+        {b.blocksDone}/{b.blocksTotal}
+      </span>
+    </div>
   );
 }
 
@@ -718,6 +784,17 @@ export function DirectivesPanel({ state }: { state: StoryColonyState | undefined
 
 // ------------------------------------------------------------------ colony
 
+type ColonyOptionsChange = {
+  autoPlaceBenches?: boolean;
+  detectBenches?: boolean;
+  idle?: StoryIdleMode;
+  rescueTeleport?: boolean;
+  unfilteredStorageTakesAnything?: boolean;
+  keepDisallowed?: boolean;
+};
+
+type ColonyEntry = { id: string; name: string; pawns: string[]; paused?: boolean | null };
+
 export function ColonyPanel({
   state,
   colonies,
@@ -744,7 +821,7 @@ export function ColonyPanel({
   onOptions,
 }: {
   state: StoryColonyState | undefined;
-  colonies: Array<{ id: string; name: string; pawns: string[]; paused?: boolean | null }>;
+  colonies: ColonyEntry[];
   current: string | null;
   canWrite: boolean;
   onSwitch: (id: string) => void;
@@ -771,227 +848,330 @@ export function ColonyPanel({
   onBringAll?: (overCap: boolean) => void;
   displayOf?: (account: string) => string;
   /** Colony options (auto-place benches builds need, detect benches near home). */
-  onOptions?: (o: {
-    autoPlaceBenches?: boolean;
-    detectBenches?: boolean;
-    idle?: StoryIdleMode;
-    rescueTeleport?: boolean;
-    unfilteredStorageTakesAnything?: boolean;
-    keepDisallowed?: boolean;
-  }) => void;
+  onOptions?: (o: ColonyOptionsChange) => void;
 }) {
-  const offline = (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').length;
-  const opts = state?.options;
-  const seats = state?.seats;
   return (
     <section
       className={cn(panel, 'pointer-events-auto w-[26rem] space-y-3 p-3 text-xs')}
       aria-label="Colony"
       data-testid="colony-panel"
     >
-      <div>
-        <div className="mb-1 font-semibold">Colonies</div>
-        <ul className="space-y-1">
-          {colonies.map((c) => (
-            <li key={c.id}>
-              <button
-                type="button"
-                onClick={() => onSwitch(c.id)}
-                aria-pressed={c.id === current}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded border px-2 py-1 text-left',
-                  c.id === current ? 'border-accent bg-accent-soft' : 'border-border hover:bg-surface-2',
-                )}
-              >
-                <span className="font-semibold">{c.name}</span>
-                <span className="text-muted">{c.pawns.length ? `${c.pawns.length} pawns` : 'released'}</span>
-                {c.paused ? <span className="ml-auto text-warn">paused</span> : null}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
+      <ColonyList colonies={colonies} current={current} onSwitch={onSwitch} />
       {state ? (
-        <div className="flex gap-2">
-          <Button size="sm" disabled={!canWrite} onClick={onPause}>
-            {state.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-            {state.paused ? 'Resume colony' : 'Pause colony'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={!canWrite || !state.pawns.some((p) => p.online !== false)}
-            onClick={onRelease}
-          >
-            Release pawns
-          </Button>
-          {state.active === false ? (
-            <Button size="sm" variant="primary" disabled={!canWrite} onClick={onResume}>
-              Resume colony
-            </Button>
+        <>
+          <ColonyActions state={state} canWrite={canWrite} onPause={onPause} onRelease={onRelease} onResume={onResume} />
+          {state.options && onOptions ? (
+            <ColonyOptions opts={state.options} canWrite={canWrite} onOptions={onOptions} />
           ) : null}
-        </div>
-      ) : null}
-      {state && opts && onOptions ? (
-        <div className="space-y-1" data-testid="colony-options">
-          <label
-            className="flex items-center gap-2"
-            title="A build that needs a crafting table or furnace the colony hasn't got: a pawn crafts one and places it near home"
-          >
-            <input
-              type="checkbox"
-              disabled={!canWrite}
-              checked={opts.autoPlaceBenches}
-              onChange={(e) => onOptions({ autoPlaceBenches: e.target.checked })}
+          {state.seats ? <SeatsLine seats={state.seats} /> : null}
+          {onBringAll ? (
+            <BringAllBox
+              state={state}
+              blocked={blocked}
+              canWrite={canWrite}
+              onBringAll={onBringAll}
+              displayOf={displayOf}
             />
-            Builds may place the benches they need
-          </label>
-          <label
-            className="flex items-center gap-2"
-            title="Off: only benches you designate (inspector: Use as colony workbench) are used, never another player's"
-          >
-            <input
-              type="checkbox"
-              disabled={!canWrite}
-              checked={opts.detectBenches}
-              onChange={(e) => onOptions({ detectBenches: e.target.checked })}
-            />
-            Use any bench near home (no designation)
-          </label>
-          <label className="flex items-center gap-2" title="Loot no chest's filter takes goes into any chest with room that doesn't deny it">
-            <input
-              type="checkbox"
-              disabled={!canWrite}
-              checked={opts.unfilteredStorageTakesAnything}
-              onChange={(e) => onOptions({ unfilteredStorageTakesAnything: e.target.checked })}
-            />
-            Unfiltered storage takes anything
-          </label>
-          <label
-            className="flex items-center gap-2"
-            title="Off (like the genre): what a chest's filter no longer allows and no chest takes is dropped beside it"
-          >
-            <input
-              type="checkbox"
-              disabled={!canWrite}
-              checked={opts.keepDisallowed}
-              onChange={(e) => onOptions({ keepDisallowed: e.target.checked })}
-            />
-            Keep disallowed items until a chest takes them
-          </label>
-          <label className="flex items-center gap-2" title="Last resort for a pawn stuck in a pit or a cave: teleport it home (op)">
-            <input
-              type="checkbox"
-              disabled={!canWrite}
-              checked={opts.rescueTeleport}
-              onChange={(e) => onOptions({ rescueTeleport: e.target.checked })}
-            />
-            Teleport stuck pawns home
-          </label>
-          <label
-            className="flex items-center gap-2"
-            title="With nothing to do, in free hours and while resting after failures: pastimes (wander, socialise, stargaze, sit, the garden, the sunset), strolls only, or stay put"
-          >
-            Idle pawns
-            <select
-              aria-label="Idle pawns"
-              data-testid="colony-idle"
-              disabled={!canWrite}
-              value={opts.idle ?? 'recreation'}
-              onChange={(e) => onOptions({ idle: e.target.value as StoryIdleMode })}
-              className="rounded border border-border bg-surface px-1 py-0.5"
-            >
-              <option value="recreation">recreation</option>
-              <option value="wander">wander</option>
-              <option value="stay">stay put</option>
-            </select>
-          </label>
-        </div>
-      ) : null}
-      {state && seats ? (
-        <div className="text-muted" data-testid="colony-seats">
-          {seats.online} of {seats.wanted} pawns in game
-          {seats.capFree !== null && seats.capFree !== undefined
-            ? ` · server: ${seats.capFree} seat${seats.capFree === 1 ? '' : 's'} free, ${seats.keptForRegulars ?? 0} kept for regulars`
-            : ''}
-        </div>
-      ) : null}
-      {state && state.active !== false && offline > 0 && onBringAll ? (
-        <BringOnlineBox
-          blocked={blocked}
-          canWrite={canWrite}
-          label={`Bring all online (${offline} offline)`}
-          onBring={onBringAll}
-          testid="colony-bring-online"
-          names={displayOf}
-        />
-      ) : null}
-      {state ? (
-        <div className="space-y-1.5 rounded-md border border-border p-2" data-testid="colony-home">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold">Home</span>
-            <span className="text-muted tabular-nums">
-              {state.home ? `${state.home[0]}, ${state.home[2]}` : 'not set'}
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="ml-auto"
-              disabled={!canWrite}
-              onClick={onPickHome}
-              title="Click the spot on the map"
-            >
-              <MapPin className="size-3.5" />
-              Set home on the map
-            </Button>
-            <Button size="sm" disabled={!canWrite || !centre} onClick={onMoveHome}>
-              <Home className="size-3.5" />
-              Move home here (migrate)
-            </Button>
-          </div>
-          {migrate ? (
-            <div
-              className="space-y-1.5 rounded border border-accent bg-accent-soft p-2"
-              role="alertdialog"
-              aria-label="Migrate home"
-              data-testid="migrate-confirm"
-            >
-              <p>
-                Migrate home to{' '}
-                <span className="font-semibold tabular-nums">
-                  {migrate[0]}, {migrate[2]}
-                </span>
-                ? Pawns far from it are brought over; zones, storage and builds stay where they are.
-              </p>
-              <div className="flex gap-2">
-                <Button size="sm" variant="primary" onClick={onConfirmMove}>
-                  Migrate
-                </Button>
-                <Button size="sm" variant="ghost" onClick={onCancelMove}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <p className="text-[10.5px] text-subtle">
-              {centre ? `Here is ${centre[0]}, ${centre[2]}: the map centre.` : 'Here is the map centre.'} Pawns far
-              from the new home are brought to it.
-            </p>
-          )}
-        </div>
-      ) : null}
-      {state ? (
-        <Houses
-          zones={state.zones.filter((z) => z.kind === 'home')}
-          canWrite={canWrite}
-          onDraw={onDrawHouse}
-          onShow={onShowZone}
-          onRename={onRenameZone}
-          onDelete={onDeleteZone}
-        />
+          ) : null}
+          <HomeBox
+            home={state.home}
+            canWrite={canWrite}
+            centre={centre}
+            migrate={migrate}
+            onPickHome={onPickHome}
+            onMoveHome={onMoveHome}
+            onConfirmMove={onConfirmMove}
+            onCancelMove={onCancelMove}
+          />
+          <Houses
+            zones={state.zones.filter((z) => z.kind === 'home')}
+            canWrite={canWrite}
+            onDraw={onDrawHouse}
+            onShow={onShowZone}
+            onRename={onRenameZone}
+            onDelete={onDeleteZone}
+          />
+        </>
       ) : null}
       <NewColony canWrite={canWrite} at={centre} onCreate={onCreate} />
     </section>
+  );
+}
+
+function ColonyList({
+  colonies,
+  current,
+  onSwitch,
+}: {
+  colonies: ColonyEntry[];
+  current: string | null;
+  onSwitch: (id: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-1 font-semibold">Colonies</div>
+      <ul className="space-y-1">
+        {colonies.map((c) => (
+          <li key={c.id}>
+            <button
+              type="button"
+              onClick={() => onSwitch(c.id)}
+              aria-pressed={c.id === current}
+              className={cn(
+                'flex w-full items-center gap-2 rounded border px-2 py-1 text-left',
+                c.id === current ? 'border-accent bg-accent-soft' : 'border-border hover:bg-surface-2',
+              )}
+            >
+              <span className="font-semibold">{c.name}</span>
+              <span className="text-muted">{c.pawns.length ? `${c.pawns.length} pawns` : 'released'}</span>
+              {c.paused ? <span className="ml-auto text-warn">paused</span> : null}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ColonyActions({
+  state,
+  canWrite,
+  onPause,
+  onRelease,
+  onResume,
+}: {
+  state: StoryColonyState;
+  canWrite: boolean;
+  onPause: () => void;
+  onRelease: () => void;
+  onResume: () => void;
+}) {
+  return (
+    <div className="flex gap-2">
+      <Button size="sm" disabled={!canWrite} onClick={onPause}>
+        {state.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+        {state.paused ? 'Resume colony' : 'Pause colony'}
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={!canWrite || !state.pawns.some((p) => p.online !== false)}
+        onClick={onRelease}
+      >
+        Release pawns
+      </Button>
+      {state.active === false ? (
+        <Button size="sm" variant="primary" disabled={!canWrite} onClick={onResume}>
+          Resume colony
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+type ColonyFlag = 'autoPlaceBenches' | 'detectBenches' | 'unfilteredStorageTakesAnything' | 'keepDisallowed' | 'rescueTeleport';
+
+/** The colony's on / off options, in the panel's order. */
+const COLONY_FLAGS: ReadonlyArray<{ key: ColonyFlag; label: string; title: string }> = [
+  {
+    key: 'autoPlaceBenches',
+    label: 'Builds may place the benches they need',
+    title:
+      "A build that needs a crafting table or furnace the colony hasn't got: a pawn crafts one and places it near home",
+  },
+  {
+    key: 'detectBenches',
+    label: 'Use any bench near home (no designation)',
+    title: "Off: only benches you designate (inspector: Use as colony workbench) are used, never another player's",
+  },
+  {
+    key: 'unfilteredStorageTakesAnything',
+    label: 'Unfiltered storage takes anything',
+    title: "Loot no chest's filter takes goes into any chest with room that doesn't deny it",
+  },
+  {
+    key: 'keepDisallowed',
+    label: 'Keep disallowed items until a chest takes them',
+    title: "Off (like the genre): what a chest's filter no longer allows and no chest takes is dropped beside it",
+  },
+  {
+    key: 'rescueTeleport',
+    label: 'Teleport stuck pawns home',
+    title: 'Last resort for a pawn stuck in a pit or a cave: teleport it home (op)',
+  },
+];
+
+function ColonyOptions({
+  opts,
+  canWrite,
+  onOptions,
+}: {
+  opts: NonNullable<StoryColonyState['options']>;
+  canWrite: boolean;
+  onOptions: (o: ColonyOptionsChange) => void;
+}) {
+  return (
+    <div className="space-y-1" data-testid="colony-options">
+      {COLONY_FLAGS.map((f) => (
+        <label key={f.key} className="flex items-center gap-2" title={f.title}>
+          <input
+            type="checkbox"
+            disabled={!canWrite}
+            checked={opts[f.key]}
+            onChange={(e) => onOptions({ [f.key]: e.target.checked })}
+          />
+          {f.label}
+        </label>
+      ))}
+      <label
+        className="flex items-center gap-2"
+        title="With nothing to do, in free hours and while resting after failures: pastimes (wander, socialise, stargaze, sit, the garden, the sunset), strolls only, or stay put"
+      >
+        Idle pawns
+        <select
+          aria-label="Idle pawns"
+          data-testid="colony-idle"
+          disabled={!canWrite}
+          value={opts.idle ?? 'recreation'}
+          onChange={(e) => onOptions({ idle: e.target.value as StoryIdleMode })}
+          className="rounded border border-border bg-surface px-1 py-0.5"
+        >
+          <option value="recreation">recreation</option>
+          <option value="wander">wander</option>
+          <option value="stay">stay put</option>
+        </select>
+      </label>
+    </div>
+  );
+}
+
+/** " · server: N seats free, M kept for regulars" when the server's cap is known. */
+function capText(seats: NonNullable<StoryColonyState['seats']>): string {
+  if (seats.capFree === null || seats.capFree === undefined) return '';
+  return ` · server: ${seats.capFree} seat${seats.capFree === 1 ? '' : 's'} free, ${seats.keptForRegulars ?? 0} kept for regulars`;
+}
+
+function SeatsLine({ seats }: { seats: NonNullable<StoryColonyState['seats']> }) {
+  return (
+    <div className="text-muted" data-testid="colony-seats">
+      {seats.online} of {seats.wanted} pawns in game
+      {capText(seats)}
+    </div>
+  );
+}
+
+/** "Bring all online" while an active colony has pawns offline. */
+function BringAllBox({
+  state,
+  blocked,
+  canWrite,
+  onBringAll,
+  displayOf,
+}: {
+  state: StoryColonyState;
+  blocked: readonly StoryOnlineBlocked[];
+  canWrite: boolean;
+  onBringAll: (overCap: boolean) => void;
+  displayOf?: (account: string) => string;
+}) {
+  const offline = state.pawns.filter((p) => p.online === false || p.state === 'offline').length;
+  if (state.active === false || offline <= 0) return null;
+  return (
+    <BringOnlineBox
+      blocked={blocked}
+      canWrite={canWrite}
+      label={`Bring all online (${offline} offline)`}
+      onBring={onBringAll}
+      testid="colony-bring-online"
+      names={displayOf}
+    />
+  );
+}
+
+function HomeBox({
+  home,
+  canWrite,
+  centre,
+  migrate,
+  onPickHome,
+  onMoveHome,
+  onConfirmMove,
+  onCancelMove,
+}: {
+  home: StoryColonyState['home'];
+  canWrite: boolean;
+  centre: readonly number[] | null;
+  migrate: readonly number[] | null;
+  onPickHome: () => void;
+  onMoveHome: () => void;
+  onConfirmMove: () => void;
+  onCancelMove: () => void;
+}) {
+  return (
+    <div className="space-y-1.5 rounded-md border border-border p-2" data-testid="colony-home">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold">Home</span>
+        <span className="text-muted tabular-nums">{home ? `${home[0]}, ${home[2]}` : 'not set'}</span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto"
+          disabled={!canWrite}
+          onClick={onPickHome}
+          title="Click the spot on the map"
+        >
+          <MapPin className="size-3.5" />
+          Set home on the map
+        </Button>
+        <Button size="sm" disabled={!canWrite || !centre} onClick={onMoveHome}>
+          <Home className="size-3.5" />
+          Move home here (migrate)
+        </Button>
+      </div>
+      {migrate ? (
+        <MigrateConfirm migrate={migrate} onConfirm={onConfirmMove} onCancel={onCancelMove} />
+      ) : (
+        <p className="text-[10.5px] text-subtle">
+          {centre ? `Here is ${centre[0]}, ${centre[2]}: the map centre.` : 'Here is the map centre.'} Pawns far from the
+          new home are brought to it.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function MigrateConfirm({
+  migrate,
+  onConfirm,
+  onCancel,
+}: {
+  migrate: readonly number[];
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="space-y-1.5 rounded border border-accent bg-accent-soft p-2"
+      role="alertdialog"
+      aria-label="Migrate home"
+      data-testid="migrate-confirm"
+    >
+      <p>
+        Migrate home to{' '}
+        <span className="font-semibold tabular-nums">
+          {migrate[0]}, {migrate[2]}
+        </span>
+        ? Pawns far from it are brought over; zones, storage and builds stay where they are.
+      </p>
+      <div className="flex gap-2">
+        <Button size="sm" variant="primary" onClick={onConfirm}>
+          Migrate
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
 

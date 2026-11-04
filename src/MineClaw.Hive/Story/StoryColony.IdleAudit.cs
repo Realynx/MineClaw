@@ -24,7 +24,7 @@ public sealed partial class StoryColony
 
     /// <summary>What a pawn's last work search saw: when, whether it found a job, what held work of its kinds back, and why it passed
     /// over designations that are free and not resting (<see cref="NoReach"/>: the audit's "no reachable target: …").</summary>
-    private sealed record Look(DateTimeOffset At, bool Found, List<string> Blocked, string? NoReach = null);
+    private sealed record Look(DateTimeOffset At, bool Found, List<string> Blocked, string? NoReach = null, bool LeftTrees = false);
 
     private readonly Dictionary<string, Look> _looks = new(StringComparer.OrdinalIgnoreCase);
 
@@ -113,7 +113,7 @@ public sealed partial class StoryColony
     private string? MarksIdleReason(PawnState p, Look? look)
     {
         var seen = MarkSeen.None;
-        foreach (var d in Designations) seen |= MarkSeenBy(p, d);
+        foreach (var d in Designations) seen |= MarkSeenBy(p, d, look);
         if ((seen & MarkSeen.Open) != 0) return RestLeft(p) != null ? "back-off rest" : look?.NoReach ?? "no reachable target";
         if ((seen & MarkSeen.BackingOff) != 0) return "targets backing off";
         if ((seen & MarkSeen.Waiting) != 0) return "tool waiting";
@@ -121,14 +121,24 @@ public sealed partial class StoryColony
         return null;
     }
 
-    private MarkSeen MarkSeenBy(PawnState p, DesignationState d)
+    private MarkSeen MarkSeenBy(PawnState p, DesignationState d, Look? look)
     {
-        if (!MarkOfItsWork(p, d)) return MarkSeen.None;
+        if (!MarkOfItsWork(p, d) || SkippedByDesign(d, look)) return MarkSeen.None;
         var key = DesignationKey(d);
         if (d.Wait != null) return MarkSeen.Waiting;
         if (!Free(key, p.Name)) return MarkSeen.Leased;
         if (Skipped(key) || Skipped(PawnKey(key, p.Name))) return MarkSeen.BackingOff;
         return MarkSeen.Open;
+    }
+
+    /// <summary>
+    /// A mark the picker leaves alone on purpose is no blocked work: a cave plant the colony itself marked (<see cref="CaveLeftAlone"/>),
+    /// and trees while its last search left them to a pawn up top (it is under ground: <see cref="LeaveToSurfacePawn"/>).
+    /// </summary>
+    private bool SkippedByDesign(DesignationState d, Look? look)
+    {
+        if (look is { LeftTrees: true } && WorkOf(d.Kind) == WorkTypes.Chop) return true;
+        return d.Auto && d.At is { } at && World is { } w && CaveLeftAlone(w, d, at);
     }
 
     /// <summary>An open (or tool-waiting) designation of a work type the pawn does.</summary>
@@ -147,9 +157,12 @@ public sealed partial class StoryColony
 
     private static readonly string[] MarkPassText =
     [
-        "buried (dug once a cell over or beside it is gone)", "under someone's feet", "in a cave (surface work)",
+        "buried (dug once a cell over or beside it is gone)", "under someone's feet", "in a cave (colony-marked surface work)",
         "by a spot where a pawn got stuck", "forbidden", "left to a pawn up top (this one is under ground)", "out of sight",
     ];
+
+    /// <summary>Passes the picker makes on purpose (a colony-marked cave plant, trees left to a pawn up top): never blocked work.</summary>
+    private static readonly bool[] ByDesign = [false, false, true, false, false, true, false];
 
     private readonly int[] _passed = new int[MarkPassText.Length];
     private readonly (string Kind, P3? At)[] _passedFirst = new (string, P3?)[MarkPassText.Length];
@@ -166,7 +179,7 @@ public sealed partial class StoryColony
     private string? NoReachNote()
     {
         int best = -1;
-        for (int i = 0; i < _passed.Length; i++) if (_passed[i] > 0 && (best < 0 || _passed[i] > _passed[best])) best = i;
+        for (int i = 0; i < _passed.Length; i++) if (_passed[i] > 0 && !ByDesign[i] && (best < 0 || _passed[i] > _passed[best])) best = i;
         if (best < 0) return null;
         var (kind, at) = _passedFirst[best];
         var key = ((MarkPass)best, kind, at);

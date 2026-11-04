@@ -176,6 +176,52 @@ export interface HeightTargets {
   tooMany: boolean;
 }
 
+/** The running scan of a `stacks` answer: the column being read and the totals so far. */
+interface ColumnScan {
+  colKey: string;
+  colTop: number | null;
+  colCount: number;
+  layers: number;
+  columns: number;
+  top: number | null;
+  bottom: number | null;
+}
+
+/** Closes the column being read (a column counts when it gave a cell). */
+function flushColumn(s: ColumnScan): void {
+  if (s.colCount > 0) s.columns++;
+  s.layers = Math.max(s.layers, s.colCount);
+}
+
+/** Takes a cell: into the list, the column's count and the y range. */
+function addCell(s: ColumnScan, cells: V3[], x: number, y: number, z: number): void {
+  cells.push([x, y, z]);
+  s.colCount++;
+  s.top = s.top === null ? y : Math.max(s.top, y);
+  s.bottom = s.bottom === null ? y : Math.min(s.bottom, y);
+}
+
+/** Whether a tool takes a block: over the column's top only a plant (or snow) standing on it, with Mine and no filter. */
+function takesBlock(
+  tool: 'mine' | 'deconstruct',
+  filter: StoryMineFilter,
+  overTop: boolean,
+  id: number,
+  meta: number,
+  below: number,
+): boolean {
+  // Over the column's top: a plant (or snow) standing on it goes with it; trees stay (Chop takes them).
+  if (overTop) return tool === 'mine' && ON_TOP_IDS.has(id) && filter === 'all';
+  return matchesTool(tool, id, meta, below, filter);
+}
+
+/** The height mode's cut at the working level (Surface and Layers take the depth the query asked for). */
+function inModeRange(mode: HeightMode, y: number, level: number): boolean {
+  if (mode === 'level') return y === level;
+  if (mode === 'down') return y >= level;
+  return mode === 'flatten' ? y > level : true;
+}
+
 /**
  * The cells a height-mode drag designates, from a `stacks` answer ([x, y, z, id, meta, below, …], each column from the top
  * down). Never air, never under the mode's bottom, plants only where they stand on the column's top.
@@ -188,47 +234,25 @@ export function heightTargets(
   filter: StoryMineFilter = 'all',
 ): HeightTargets {
   const cells: V3[] = [];
-  let colKey = '',
-    colTop: number | null = null,
-    colCount = 0,
-    layers = 0,
-    columns = 0,
-    top: number | null = null,
-    bottom: number | null = null;
+  const s: ColumnScan = { colKey: '', colTop: null, colCount: 0, layers: 0, columns: 0, top: null, bottom: null };
   const skip = new Set(NOT_GROUND_IDS);
-  const flush = () => {
-    if (colCount > 0) columns++;
-    layers = Math.max(layers, colCount);
-  };
   for (let i = 0; i + 5 < stacks.length + 1; i += 6) {
-    const x = stacks[i]!, y = stacks[i + 1]!, z = stacks[i + 2]!, id = stacks[i + 3]!, meta = stacks[i + 4]!, below = stacks[i + 5]!;
+    const x = stacks[i]!, y = stacks[i + 1]!, z = stacks[i + 2]!, id = stacks[i + 3]!;
     const key = `${x},${z}`;
-    if (key !== colKey) {
-      flush();
-      colKey = key;
-      colTop = null;
-      colCount = 0;
+    if (key !== s.colKey) {
+      flushColumn(s);
+      s.colKey = key;
+      s.colTop = null;
+      s.colCount = 0;
     }
     if (id === 0) continue;
-    let take: boolean;
-    if (colTop === null && skip.has(id)) {
-      // Over the column's top: a plant (or snow) standing on it goes with it; trees stay (Chop takes them).
-      take = tool === 'mine' && ON_TOP_IDS.has(id) && filter === 'all';
-    } else {
-      if (colTop === null) colTop = y;
-      take = matchesTool(tool, id, meta, below, filter);
-    }
-    if (take && mode === 'level') take = y === level;
-    else if (take && mode === 'down') take = y >= level;
-    else if (take && mode === 'flatten') take = y > level;
-    if (!take) continue;
-    cells.push([x, y, z]);
-    colCount++;
-    top = top === null ? y : Math.max(top, y);
-    bottom = bottom === null ? y : Math.min(bottom, y);
+    const overTop = s.colTop === null && skip.has(id);
+    if (!overTop && s.colTop === null) s.colTop = y;
+    if (!takesBlock(tool, filter, overTop, id, stacks[i + 4]!, stacks[i + 5]!) || !inModeRange(mode, y, level)) continue;
+    addCell(s, cells, x, y, z);
   }
-  flush();
-  return { cells, columns, top, bottom, layers, tooMany: cells.length > MAX_DRAG_CELLS };
+  flushColumn(s);
+  return { cells, columns: s.columns, top: s.top, bottom: s.bottom, layers: s.layers, tooMany: cells.length > MAX_DRAG_CELLS };
 }
 
 /** The HUD line while dragging: "Mine (Surface): y 64 → 62 · 3 layers · 48 blocks". */
@@ -500,6 +524,45 @@ export function lineEnd(a: V3, b: V3): V3 {
   return Math.abs(b[0] - a[0]) >= Math.abs(b[2] - a[2]) ? [b[0], a[1], a[2]] : [a[0], a[1], b[2]];
 }
 
+/** A structure placement: the drag's cells (`end` snapped to a line for line tools), the first layer's y, its flat area. */
+type Placement = { a: V3; b: V3; end: V3; y: number; flat: StoryArea; o: BuildOpts };
+
+function roofItem({ a, end, y, o }: Placement): StoryBuildItem {
+  const ry = y + clampHeight(o.height);
+  return {
+    kind: 'roof',
+    area: [a[0], ry, a[2], end[0], ry, end[2]],
+    material: o.material,
+    roof: {
+      style: o.roof,
+      ...(o.roofMaterial ? { material: o.roofMaterial } : {}),
+      ...(o.overhang ? { overhang: 1 as const } : {}),
+    },
+  };
+}
+
+/** A block that faces somewhere (a furnace, stairs, a pumpkin…) takes the Q/E turn as its meta: the hologram shows it and the
+ * pawn places it that way. One cell is a block; a drag is a box of them. */
+function blockItem({ a, b, o }: Placement): StoryBuildItem {
+  const material = turnedMaterial(o.material, o.facing);
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
+    ? { kind: 'block', blocks: [a], material }
+    : { kind: 'block', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material };
+}
+
+/** Each structure tool's item. */
+const STRUCTURE_ITEMS: Record<StructureId, (p: Placement) => StoryBuildItem> = {
+  wall: ({ flat, o }) => ({ kind: 'wall', area: flat, material: o.material, height: clampHeight(o.height) }),
+  floor: ({ a, end, y, o }) => ({ kind: 'floor', area: [a[0], y - 1, a[2], end[0], y - 1, end[2]], material: o.material }),
+  roof: roofItem,
+  door: ({ a, o }) => ({ kind: 'door', blocks: [a], material: o.material, facing: o.facing }),
+  window: ({ a, end, y }) => ({ kind: 'window', area: [a[0], y + 1, a[2], end[0], y + 1, end[2]], material: 'glass' }),
+  stairs: ({ flat, o }) => ({ kind: 'stairs', area: flat, material: o.material, facing: o.facing }),
+  fence: ({ flat, o }) => ({ kind: 'fence', area: flat, material: o.material }),
+  block: blockItem,
+  remove: ({ a, b }) => ({ kind: 'remove', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material: 'stone' }),
+};
+
 /**
  * The build item a placement makes. `a` / `b` are the drag's start and end cells (the first block layer: the level's floor
  * + 1 in top-down, the snapped face cell in the angled view). Walls rise `height`; a roof sits on top of walls of that
@@ -513,36 +576,7 @@ export function buildItem(tool: BuildToolId, a: V3, b: V3, o: BuildOpts): StoryB
   const spec = STRUCTURE_TOOLS.find((s) => s.id === t)!;
   const end = spec.drag === 'line' || (t === 'wall' && o.line) ? lineEnd(a, b) : b;
   const y = a[1];
-  const flat: StoryArea = [a[0], y, a[2], end[0], y, end[2]];
-  switch (t) {
-    case 'wall':
-      return { kind: 'wall', area: flat, material: o.material, height: clampHeight(o.height) };
-    case 'floor':
-      return { kind: 'floor', area: [a[0], y - 1, a[2], end[0], y - 1, end[2]], material: o.material };
-    case 'roof':
-      return {
-        kind: 'roof',
-        area: [a[0], y + clampHeight(o.height), a[2], end[0], y + clampHeight(o.height), end[2]],
-        material: o.material,
-        roof: { style: o.roof, ...(o.roofMaterial ? { material: o.roofMaterial } : {}), ...(o.overhang ? { overhang: 1 as const } : {}) },
-      };
-    case 'door':
-      return { kind: 'door', blocks: [a], material: o.material, facing: o.facing };
-    case 'window':
-      return { kind: 'window', area: [a[0], y + 1, a[2], end[0], y + 1, end[2]], material: 'glass' };
-    case 'stairs':
-      return { kind: 'stairs', area: flat, material: o.material, facing: o.facing };
-    case 'fence':
-      return { kind: 'fence', area: flat, material: o.material };
-    case 'block': {
-      // A block that faces somewhere (a furnace, stairs, a pumpkin…) takes the Q/E turn as its meta: the hologram shows it and the
-      // pawn places it that way.
-      const material = turnedMaterial(o.material, o.facing);
-      return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] ? { kind: 'block', blocks: [a], material } : { kind: 'block', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material };
-    }
-    case 'remove':
-      return { kind: 'remove', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material: 'stone' };
-  }
+  return STRUCTURE_ITEMS[t]({ a, b, end, y, flat: [a[0], y, a[2], end[0], y, end[2]], o });
 }
 
 /** Every item a placement queues: a water tool's dig item (same group) before its water; one item otherwise. */
@@ -603,6 +637,32 @@ export function materialLabel(m: StoryMaterial): string {
 
 export type DesignBlock = [number, number, number, number, number];
 
+const isTuple = (e: unknown): boolean =>
+  Array.isArray(e) && e.length >= 4 && e.slice(0, 4).every((n) => typeof n === 'number');
+
+function isBlockObject(e: unknown): boolean {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return false;
+  const o = e as Record<string, unknown>;
+  return ['x', 'y', 'z'].every((k) => typeof o[k] === 'number') && typeof (o.id ?? o.block) === 'number';
+}
+
+/** A list's blocks when it is one: every entry a `[x, y, z, id, meta?]` tuple, or every entry a block object. */
+function listBlocks(json: unknown[]): DesignBlock[] {
+  if (json.every(isTuple)) return (json as number[][]).map((e) => [e[0]!, e[1]!, e[2]!, e[3]!, e[4] ?? 0]);
+  if (json.every(isBlockObject))
+    return (json as Array<Record<string, number>>).map((e) => [e.x!, e.y!, e.z!, e.id ?? e.block!, e.meta ?? e.data ?? 0]);
+  return [];
+}
+
+/** A JSON list's entries or an object's values (where a design's blocks may be nested). */
+const childrenOf = (json: object): unknown[] => (Array.isArray(json) ? json : Object.values(json as Record<string, unknown>));
+
+/** The blocks moved so the lowest corner is (0, 0, 0), air left out. */
+function fromCorner(out: DesignBlock[]): DesignBlock[] {
+  const mx = Math.min(...out.map((b) => b[0])), my = Math.min(...out.map((b) => b[1])), mz = Math.min(...out.map((b) => b[2]));
+  return out.filter((b) => b[3] !== 0).map((b) => [b[0] - mx, b[1] - my, b[2] - mz, b[3], b[4]]);
+}
+
 /**
  * A design's blocks from whatever JSON the bot gives for it: the first list of `[x, y, z, id, meta?]` tuples or of objects with
  * numeric `x, y, z` and `id` (or `block`), moved so its lowest corner is (0, 0, 0). Empty when there is none.
@@ -610,18 +670,10 @@ export type DesignBlock = [number, number, number, number, number];
 export function designBlocks(json: unknown, depth = 0): DesignBlock[] {
   if (depth > 6 || json === null || typeof json !== 'object') return [];
   if (Array.isArray(json) && json.length) {
-    const tuples = json.every((e) => Array.isArray(e) && e.length >= 4 && e.slice(0, 4).every((n) => typeof n === 'number'));
-    const objects = json.every((e) => e && typeof e === 'object' && !Array.isArray(e) && ['x', 'y', 'z'].every((k) => typeof (e as Record<string, unknown>)[k] === 'number') && typeof ((e as Record<string, unknown>).id ?? (e as Record<string, unknown>).block) === 'number');
-    let out: DesignBlock[] = [];
-    if (tuples) out = (json as number[][]).map((e) => [e[0]!, e[1]!, e[2]!, e[3]!, e[4] ?? 0]);
-    else if (objects)
-      out = (json as Array<Record<string, number>>).map((e) => [e.x!, e.y!, e.z!, e.id ?? e.block!, e.meta ?? e.data ?? 0]);
-    if (out.length) {
-      const mx = Math.min(...out.map((b) => b[0])), my = Math.min(...out.map((b) => b[1])), mz = Math.min(...out.map((b) => b[2]));
-      return out.filter((b) => b[3] !== 0).map((b) => [b[0] - mx, b[1] - my, b[2] - mz, b[3], b[4]]);
-    }
+    const out = listBlocks(json);
+    if (out.length) return fromCorner(out);
   }
-  for (const v of Array.isArray(json) ? json : Object.values(json as Record<string, unknown>)) {
+  for (const v of childrenOf(json)) {
     const found = designBlocks(v, depth + 1);
     if (found.length) return found;
   }
@@ -681,18 +733,13 @@ export function placeDesign(blocks: readonly DesignBlock[], at: V3, facing: Stor
   });
 }
 
-/**
- * The build request for a placed mine design: `mine` items of one group, its dig cells top-down (the colony digs a cell once
- * it is exposed) then the blocks put in once their cells are dug (`place`: torches, ladders), at most 4096 cells an item.
- */
-export function mineItems(placed: readonly DesignBlock[], name?: string, group?: string): StoryBuildItem[] {
-  const dig = placed.filter((b) => b[3] === 0).sort((a, b) => b[1] - a[1] || a[0] - b[0] || a[2] - b[2]);
-  const put = placed.filter((b) => b[3] !== 0);
-  const tag = { group: (group ?? `m${Date.now().toString(36)}`).slice(0, 40), ...(name ? { name: name.slice(0, 40) } : {}) };
-  const items: StoryBuildItem[] = [];
-  for (let i = 0; i < dig.length; i += 4096)
-    items.push({ kind: 'mine', blocks: dig.slice(i, i + 4096).map((b): [number, number, number] => [b[0], b[1], b[2]]), ...tag });
-  // The blocks ride in the last dig item while it has room, the rest in items of their own.
+/** A design's group tag (one id ties its items together) and its name, both cut to 40 characters. */
+function designTag(prefix: string, name?: string, group?: string): { group: string; name?: string } {
+  return { group: (group ?? `${prefix}${Date.now().toString(36)}`).slice(0, 40), ...(name ? { name: name.slice(0, 40) } : {}) };
+}
+
+/** The blocks ride in the last dig item while it has room, the rest in items of their own (4096 cells an item). */
+function packPlaced(items: StoryBuildItem[], put: readonly DesignBlock[], tag: { group: string; name?: string }): void {
   let last = items[items.length - 1];
   let k = 0;
   while (k < put.length) {
@@ -706,7 +753,38 @@ export function mineItems(placed: readonly DesignBlock[], name?: string, group?:
     last!.place = [...(last!.place ?? []), ...take];
     k += take.length;
   }
+}
+
+/**
+ * The build request for a placed mine design: `mine` items of one group, its dig cells top-down (the colony digs a cell once
+ * it is exposed) then the blocks put in once their cells are dug (`place`: torches, ladders), at most 4096 cells an item.
+ */
+export function mineItems(placed: readonly DesignBlock[], name?: string, group?: string): StoryBuildItem[] {
+  const dig = placed.filter((b) => b[3] === 0).sort((a, b) => b[1] - a[1] || a[0] - b[0] || a[2] - b[2]);
+  const put = placed.filter((b) => b[3] !== 0);
+  const tag = designTag('m', name, group);
+  const items: StoryBuildItem[] = [];
+  for (let i = 0; i < dig.length; i += 4096)
+    items.push({ kind: 'mine', blocks: dig.slice(i, i + 4096).map((b): [number, number, number] => [b[0], b[1], b[2]]), ...tag });
+  packPlaced(items, put, tag);
   return items.slice(0, 64);
+}
+
+/** A design's cells to dig (id 0) and its blocks by material (`id:meta`), in the design's order. */
+function splitDesign(placed: readonly DesignBlock[]): { dig: V3[]; by: Map<string, V3[]> } {
+  const by = new Map<string, V3[]>();
+  const dig: V3[] = [];
+  for (const [x, y, z, id, meta] of placed) {
+    if (id === 0) {
+      dig.push([x, y, z]);
+      continue;
+    }
+    const k = `${id}:${meta}`;
+    const list = by.get(k);
+    if (list) list.push([x, y, z]);
+    else by.set(k, [[x, y, z]]);
+  }
+  return { dig, by };
 }
 
 /**
@@ -714,24 +792,16 @@ export function mineItems(placed: readonly DesignBlock[], name?: string, group?:
  * (id 0 cells: its basement) queues a `remove` item first and ties its items into one `group`, so its blocks wait for the dig.
  */
 export function designItems(placed: readonly DesignBlock[], name?: string, group?: string): StoryBuildItem[] {
-  const by = new Map<string, Array<[number, number, number]>>();
-  const dig: Array<[number, number, number]> = [];
-  for (const [x, y, z, id, meta] of placed) {
-    if (id === 0) {
-      dig.push([x, y, z]);
-      continue;
-    }
-    const k = `${id}:${meta}`;
-    by.set(k, [...(by.get(k) ?? []), [x, y, z]]);
-  }
+  const { dig, by } = splitDesign(placed);
   const items: StoryBuildItem[] = [];
-  const tag = dig.length ? { group: (group ?? `d${Date.now().toString(36)}`).slice(0, 40) } : {};
+  const tag = dig.length ? { group: designTag('d', undefined, group).group } : {};
+  const named = name ? { name: name.slice(0, 40) } : {};
   // Top-down is the colony's own order for a dig; the list order is the queue order (the dig first).
-  for (let i = 0; i < dig.length; i += 4096)
-    items.push({ kind: 'remove', blocks: dig.slice(i, i + 4096), ...(name ? { name: name.slice(0, 40) } : {}), ...tag });
+  for (let i = 0; i < dig.length; i += 4096) items.push({ kind: 'remove', blocks: dig.slice(i, i + 4096), ...named, ...tag });
   for (const [k, cells] of by) {
     const [id, meta] = k.split(':').map(Number) as [number, number];
-    for (let i = 0; i < cells.length; i += 4096) items.push({ kind: 'block', blocks: cells.slice(i, i + 4096), material: [id, meta], ...(name ? { name: name.slice(0, 40) } : {}), ...tag });
+    for (let i = 0; i < cells.length; i += 4096)
+      items.push({ kind: 'block', blocks: cells.slice(i, i + 4096), material: [id, meta], ...named, ...tag });
   }
   return items.slice(0, 64);
 }
@@ -770,54 +840,78 @@ export const GEAR_MENU: ReadonlyArray<{ op: StoryGearOp; label: string }> = [
   { op: 'tools', label: 'Equip tools for their work' },
 ];
 
+type Cell = { x: number; y: number; z: number };
+type MenuOrder = (id: string, label: string, spec: StoryOrderSpec, d: StoryDirectiveSpec) => void;
+/** What a target's menu items are built with: the list, the order adder (only with pawns or AI selected), the cell. */
+type MenuCtx = { out: MenuItem[]; order: MenuOrder; at: Cell; p: V3; acting: boolean };
+
+const goHere = ({ order, at, p }: MenuCtx) =>
+  order('move', 'Go here', { kind: 'move', target: at }, { kind: 'move', targets: [p] });
+
+/** Attack a player (by entity) or an AI bot (by name): confirmed once per target. */
+function playerAttack(t: Extract<Target, { kind: 'player' }>): MenuItem {
+  const byEntity = t.entity !== null;
+  return {
+    id: 'attack',
+    label: `Attack ${t.name}`,
+    hint: 'asks to confirm once',
+    order: { kind: 'attack', target: byEntity ? { entity: t.entity! } : { player: t.name } },
+    directive: { kind: 'attack', ...(byEntity ? { entities: [t.entity!] } : { text: `attack ${t.name}` }) },
+    confirm: { name: t.name, kind: t.bot ? 'bot' : 'player', entity: t.entity },
+  };
+}
+
+/** A block: its storage or bills, then chop (a tree) or mine it, then go on top of it. */
+function blockItems(t: Extract<Target, { kind: 'block' }>, c: MenuCtx): void {
+  const { out, order, at, p } = c;
+  const tree = LOG_IDS.has(t.id) || t.id === 18 || t.id === 161;
+  if (CHEST_IDS.has(t.id)) out.push({ id: 'storage', label: 'Storage settings', action: 'storage' });
+  if (t.id === 58 || t.id === 61 || t.id === 62) out.push({ id: 'bills', label: 'Bills', action: 'bills' });
+  if (tree) order('chop', 'Chop this tree', { kind: 'chop', target: at }, { kind: 'chop', targets: [p] });
+  else order('mine', `Mine ${t.name}`, { kind: 'mine', target: at }, { kind: 'mine', targets: [p] });
+  const above: Cell = { x: at.x, y: at.y + 1, z: at.z };
+  order('move', 'Go here', { kind: 'move', target: above }, { kind: 'move', targets: [[at.x, at.y + 1, at.z]] });
+}
+
+/** Each target kind's own items (before Hold, Stop and the gear). */
+const TARGET_ITEMS: { [K in Target['kind']]: (t: Extract<Target, { kind: K }>, c: MenuCtx) => void } = {
+  ghost: (t, c) => {
+    c.out.push({ id: 'first-build', label: `Build "${t.label}" first`, action: 'first-build' });
+    c.out.push({ id: 'cancel-build', label: `Cancel "${t.label}"`, action: 'cancel-build' });
+    c.order('build', 'Build this now', { kind: 'build', target: c.at, design: t.build }, { kind: 'build', targets: [c.p] });
+  },
+  mob: (t, c) => {
+    c.order(
+      'attack',
+      t.animal ? `Hunt ${t.name}` : `Attack ${t.name}`,
+      { kind: 'attack', target: { entity: t.entity } },
+      { kind: t.animal ? 'hunt' : 'attack', entities: [t.entity] },
+    );
+    goHere(c);
+  },
+  player: (t, c) => {
+    if (c.acting) c.out.push(playerAttack(t));
+    goHere(c);
+  },
+  item: (t, c) => {
+    c.order('haul', `Haul ${t.name}`, { kind: 'haul', target: { entity: t.entity } }, { kind: 'haul', entities: [t.entity] });
+    goHere(c);
+  },
+  block: blockItems,
+  ground: (_t, c) => goHere(c),
+};
+
 /** The genre's context menu: what the selected pawns can do to the thing under the cursor. */
 export function contextMenu(t: Target, hasPawns: boolean, hasAi: boolean): MenuItem[] {
   const at = { x: Math.floor(t.x), y: Math.floor(t.y), z: Math.floor(t.z) };
   const p: [number, number, number] = [at.x, at.y, at.z];
   const out: MenuItem[] = [];
-  const order = (id: string, label: string, spec: StoryOrderSpec, d: StoryDirectiveSpec) => {
-    if (hasPawns || hasAi) out.push({ id, label, order: spec, directive: d });
+  const acting = hasPawns || hasAi;
+  const order: MenuOrder = (id, label, spec, d) => {
+    if (acting) out.push({ id, label, order: spec, directive: d });
   };
-  switch (t.kind) {
-    case 'ghost':
-      out.push({ id: 'first-build', label: `Build "${t.label}" first`, action: 'first-build' });
-      out.push({ id: 'cancel-build', label: `Cancel "${t.label}"`, action: 'cancel-build' });
-      order('build', 'Build this now', { kind: 'build', target: at, design: t.build }, { kind: 'build', targets: [p] });
-      break;
-    case 'mob':
-      order('attack', t.animal ? `Hunt ${t.name}` : `Attack ${t.name}`, { kind: 'attack', target: { entity: t.entity } }, { kind: t.animal ? 'hunt' : 'attack', entities: [t.entity] });
-      order('move', 'Go here', { kind: 'move', target: at }, { kind: 'move', targets: [p] });
-      break;
-    case 'player':
-      if (hasPawns || hasAi)
-        out.push({
-          id: 'attack',
-          label: `Attack ${t.name}`,
-          hint: 'asks to confirm once',
-          order: { kind: 'attack', target: t.entity !== null ? { entity: t.entity } : { player: t.name } },
-          directive: { kind: 'attack', ...(t.entity !== null ? { entities: [t.entity] } : { text: `attack ${t.name}` }) },
-          confirm: { name: t.name, kind: t.bot ? 'bot' : 'player', entity: t.entity },
-        });
-      order('move', 'Go here', { kind: 'move', target: at }, { kind: 'move', targets: [p] });
-      break;
-    case 'item':
-      order('haul', `Haul ${t.name}`, { kind: 'haul', target: { entity: t.entity } }, { kind: 'haul', entities: [t.entity] });
-      order('move', 'Go here', { kind: 'move', target: at }, { kind: 'move', targets: [p] });
-      break;
-    case 'block': {
-      const tree = LOG_IDS.has(t.id) || t.id === 18 || t.id === 161;
-      if (CHEST_IDS.has(t.id)) out.push({ id: 'storage', label: 'Storage settings', action: 'storage' });
-      if (t.id === 58 || t.id === 61 || t.id === 62) out.push({ id: 'bills', label: 'Bills', action: 'bills' });
-      if (tree) order('chop', 'Chop this tree', { kind: 'chop', target: at }, { kind: 'chop', targets: [p] });
-      else order('mine', `Mine ${t.name}`, { kind: 'mine', target: at }, { kind: 'mine', targets: [p] });
-      order('move', 'Go here', { kind: 'move', target: { x: at.x, y: at.y + 1, z: at.z } }, { kind: 'move', targets: [[at.x, at.y + 1, at.z]] });
-      break;
-    }
-    case 'ground':
-      order('move', 'Go here', { kind: 'move', target: at }, { kind: 'move', targets: [p] });
-      break;
-  }
-  if (hasPawns || hasAi) {
+  (TARGET_ITEMS[t.kind] as (t: Target, c: MenuCtx) => void)(t, { out, order, at, p, acting });
+  if (acting) {
     out.push({ id: 'hold', label: 'Hold position', order: { kind: 'hold' }, directive: { kind: 'guard' } });
     out.push({ id: 'stop', label: 'Stop', order: { kind: 'stop' }, directive: { kind: 'text', text: 'stop what you are doing' } });
   }
@@ -1004,17 +1098,28 @@ export interface FailedCell {
 
 type GhostLike = readonly [number, number, number, number, number, string | number, string, (string | null)?, (string | null)?];
 
+/** Whether a ghost lies outside a grid rect [x1, z1, x2, z2] (either corner first). */
+function outsideGridRect(g: GhostLike, rect: readonly [number, number, number, number]): boolean {
+  const [x1, z1, x2, z2] = rect;
+  return g[0] < Math.min(x1, x2) || g[0] > Math.max(x1, x2) || g[2] < Math.min(z1, z2) || g[2] > Math.max(z1, z2);
+}
+
+/** A ghost's failure: blocked, or a failure's reason (null when it hasn't failed, or is done or unsupported). */
+function ghostFailure(g: GhostLike): string | null {
+  const state = g[6];
+  if (state === 'done' || state === 'unsupported') return null;
+  const reason = g[8] ?? null;
+  if (state !== 'blocked' && !reason) return null;
+  return reason ?? 'blocked after repeated failures';
+}
+
 /** The failed cells among the state's ghosts (never done or unsupported ones), in a grid rect [x1, z1, x2, z2] when given. */
 export function failedCells(ghosts: readonly GhostLike[], rect: readonly [number, number, number, number] | null = null): FailedCell[] {
   const out: FailedCell[] = [];
   for (const g of ghosts) {
-    const state = g[6];
-    if (state === 'done' || state === 'unsupported') continue;
-    const reason = g[8] ?? null;
-    if (state !== 'blocked' && !reason) continue;
-    if (rect && (g[0] < Math.min(rect[0], rect[2]) || g[0] > Math.max(rect[0], rect[2]) || g[2] < Math.min(rect[1], rect[3]) || g[2] > Math.max(rect[1], rect[3])))
-      continue;
-    out.push({ build: g[5], cell: [g[0], g[1], g[2]], reason: reason ?? 'blocked after repeated failures' });
+    const reason = ghostFailure(g);
+    if (reason === null || (rect && outsideGridRect(g, rect))) continue;
+    out.push({ build: g[5], cell: [g[0], g[1], g[2]], reason });
   }
   return out;
 }

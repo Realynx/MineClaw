@@ -223,7 +223,13 @@ public sealed class StoryStuckPawnTests
         Only(c, WorkTypes.Chop);
         w.Set(5, 64, 5, 31, 1);
         c.Designate("add", "cut", null, [new P3(5, 64, 5)], null);
+        // A cave plant the colony marked itself is left alone; one the owner marked is work (live 11-04: five pawns idle on
+        // "cut 91,55,463: in a cave").
+        c.Designations.Single().Auto = true;
         Assert.NotEqual("dig", Kind(c.Next()));
+        c.Report(c.P(), c.CurrentOf(c.P())!.Id, "done", null, null);
+        c.Designations.Single().Auto = false;
+        Assert.Equal("dig", Kind(c.Next()));
     }
 
     // ================================================================ ravines: stuck is sticky until it is out

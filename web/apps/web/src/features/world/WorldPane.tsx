@@ -7,56 +7,74 @@
  * or E with the crosshair on it) shows what the hive knows is inside. Renderer stats appear only with developer details on.
  */
 import type { AimTarget, CameraMode, LayerToggles, PickedBlock, ViewerStats, WorldViewerHandle, XRayMode } from '@mineclaw/world-viewer';
-import { Crosshair, Gem, Layers, LocateFixed, Maximize, Minimize, Monitor } from 'lucide-react';
-import { Popover } from 'radix-ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { api, errorText } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth';
 import { useEntities } from '@/lib/live/hooks';
 import { usePrefs } from '@/lib/prefs';
-import { bytes, cn, dimName, num } from '@/lib/utils';
-import { Button, Checkbox, Input, Select } from '@/components/ui/primitives';
-import { PortalContainer, Segmented, Tooltip } from '@/components/ui/overlays';
+import { cn } from '@/lib/utils';
+import { PortalContainer } from '@/components/ui/overlays';
 import { isContainerBlock } from '@/features/live/inventory/containerLayout';
-import { ViewerQualityButton } from '@/features/settings/QuickSettings';
 import { concreteFields } from '@/features/settings/schema';
 import { detectedProfile, setField, useRendererProbe, useViewerSettings } from '@/features/settings/store';
 import { ContainerPanel, sameContainer, type ContainerTarget } from './ContainerPanel';
-import { DotMap } from './DotMap';
 import { useWorldHost } from './integration';
 import { ChatOverlay, Crosshair as AimCross, SelectionBar, TargetReadout } from './InWorld';
-import { closesOpenBar, isTyping, nextSelection, selectByNumber, sendDirective, type SendResult } from './directives';
+import { nextSelection, selectByNumber, sendDirective, type SendResult } from './directives';
+import { goTo } from './worldGoto';
+import { onWorldKey } from './worldKeys';
+import { DropsPanel, FullscreenBar, PositionHud, StatsHud, WorldFallback, WorldToolbar } from './WorldPaneParts';
 
 /** The Keyboard Lock API (fullscreen, secure contexts only): with Escape locked, Esc reaches the page instead of the browser. */
 type KeyboardLock = { lock?: (keys: string[]) => Promise<void>; unlock?: () => void };
 const keyboardOf = () => (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
 
-const LAYER_LABELS: Array<[keyof LayerToggles, string]> = [
-  ['bots', 'Bots'],
-  ['entities', 'Mobs, players, drops'],
-  ['claims', 'Claims'],
-  ['places', 'Places & structures'],
-  ['points', 'Chests, gens, farms, portals'],
-  ['plans', 'Build plans (ghosts)'],
-  ['dangers', 'Dangers'],
-  ['notes', 'Notes'],
-  ['bubbles', 'Chat bubbles'],
-  ['weather', 'Weather'],
-  ['cutaway', 'Roof cut-away'],
-  ['staleness', 'Tint unseen areas'],
-  ['changes', 'Highlight changed blocks'],
-];
+type Entities = ReturnType<typeof useEntities>['data'];
+type Host = ReturnType<typeof useWorldHost>;
 
-function facing(yaw: number | null | undefined): string {
-  if (yaw === null || yaw === undefined) return '—';
-  // Minecraft yaw: 0 = south (+z), 90 = west, 180 = north, 270 = east
-  const dirs = ['south', 'south-west', 'west', 'north-west', 'north', 'north-east', 'east', 'south-east'];
-  return dirs[Math.round((((yaw % 360) + 360) % 360) / 45) % 8]!;
+/** The viewer module and its source have loaded. */
+const loaded = (h: Host): h is Host & { mod: NonNullable<Host['mod']>; source: NonNullable<Host['source']> } => h.ready && !!h.mod && !!h.source;
+
+/** Following a bot starts in the follow camera; else free cam. */
+const initialMode = (follow: string | undefined): CameraMode => (follow ? 'follow' : 'fly');
+
+/** The followed bot (by name or short name) and its dimension (the overworld when none). */
+function followed(data: Entities, follow: string | undefined) {
+  const me = data?.bots.find((b) => b.name === follow || b.short === follow);
+  return { me, dim: me?.dim ?? 0 };
 }
 
-function parseCoords(q: string): [number, number, number] | null {
-  const m = /^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/.exec(q);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+/** In free cam: the crosshair and what it is on while the mouse is held, else (bar closed) how to look around. */
+function FreeCamOverlay(p: { mode: CameraMode; locked: boolean; chatOpen: boolean; aim: AimTarget | null; bots: NonNullable<Entities>['bots'] | undefined }) {
+  if (p.mode !== 'fly') return null;
+  const aim = p.aim;
+  if (p.locked)
+    return (
+      <>
+        <AimCross />
+        <TargetReadout target={aim} bot={aim?.kind === 'bot' ? p.bots?.find((b) => b.name === aim.name) : undefined} />
+      </>
+    );
+  if (p.chatOpen) return null;
+  return (
+    <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-md bg-black/55 px-2.5 py-1 text-center text-xs whitespace-nowrap text-white">
+      Click to look around · WASD move · T chat · 1–9 pick a bot · Tab HUD · F full screen
+    </div>
+  );
+}
+
+/** The open container's panel, portalled into the stage (so it stays in fullscreen). */
+function ContainerLayer({ container, stageEl, onClose }: { container: ContainerTarget | null; stageEl: HTMLDivElement | null; onClose: () => void }) {
+  if (!container) return null;
+  return (
+    <PortalContainer.Provider value={stageEl}>
+      <ContainerPanel
+        key={`${container.dim}:${container.x},${container.y},${container.z}`}
+        target={container}
+        onClose={onClose}
+        className="absolute bottom-3 left-1/2 z-10 max-h-[calc(100%-4.5rem)] -translate-x-1/2"
+      />
+    </PortalContainer.Provider>
+  );
 }
 
 /**
@@ -76,14 +94,14 @@ export function WorldPane({
   onBodyClick?: (name: string) => void;
   overlay?: ReactNode;
 }) {
-  const { mod, source, ready } = useWorldHost();
+  const host = useWorldHost();
   const bodyClick = useRef(onBodyClick);
   useEffect(() => {
     bodyClick.current = onBodyClick;
   }, [onBodyClick]);
   const { devDetails } = usePrefs();
   const viewer = useRef<WorldViewerHandle>(null);
-  const [mode, setMode] = useState<CameraMode>(follow ? 'follow' : 'fly');
+  const [mode, setMode] = useState<CameraMode>(initialMode(follow));
   const [xray, setXray] = useState<XRayMode>('auto');
   // The draw distance is the device's viewer setting (Settings → Viewer quality): this slider edits it for every view.
   const viewerSettings = useViewerSettings();
@@ -98,8 +116,7 @@ export function WorldPane({
   const [gotoError, setGotoError] = useState<string | null>(null);
   const [drops, setDrops] = useState(false);
   const entities = useEntities();
-  const me = entities.data?.bots.find((b) => b.name === follow || b.short === follow);
-  const dim = me?.dim ?? 0;
+  const { me, dim } = followed(entities.data, follow);
   const dimRef = useRef(dim);
   useEffect(() => {
     dimRef.current = dim;
@@ -114,19 +131,7 @@ export function WorldPane({
   }, []);
   const [fullscreen, setFullscreen] = useState(false);
   const [locked, setLocked] = useState(false);
-  const [aim, setAim] = useState<AimTarget | null>(null);
-  const aimRef = useRef<AimTarget | null>(null);
-  useEffect(() => {
-    aimRef.current = aim;
-  }, [aim]);
-  const [container, setContainer] = useState<ContainerTarget | null>(null);
-  const closeContainer = useCallback(() => setContainer(null), []);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [marker, setMarker] = useState<[number, number, number] | null>(null);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [sent, setSent] = useState<SendResult[] | null>(null);
   const [escToPage, setEscToPage] = useState(false);
-  const targets = selected.length ? selected : me ? [me.name] : [];
 
   const toggleFullscreen = useCallback(() => {
     const el = stage.current;
@@ -153,6 +158,18 @@ export function WorldPane({
       document.removeEventListener('pointerlockchange', onLock);
     };
   }, []);
+  const [aim, setAim] = useState<AimTarget | null>(null);
+  const aimRef = useRef<AimTarget | null>(null);
+  useEffect(() => {
+    aimRef.current = aim;
+  }, [aim]);
+  const [container, setContainer] = useState<ContainerTarget | null>(null);
+  const closeContainer = useCallback(() => setContainer(null), []);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [marker, setMarker] = useState<[number, number, number] | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [sent, setSent] = useState<SendResult[] | null>(null);
+  const targets = selected.length ? selected : me ? [me.name] : [];
 
   // A picked block (a click in follow / iso, a click or E on the crosshair's block in free cam): a container opens its panel.
   const onBlockPick = useCallback((b: { x: number; y: number; z: number; id: number; dim: number }) => {
@@ -217,51 +234,29 @@ export function WorldPane({
     };
     el.addEventListener('pointerdown', onDown, true);
     return () => el.removeEventListener('pointerdown', onDown, true);
-  }, [closeChat, ready]);
+  }, [closeChat, host.ready]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'F3') {
-        e.preventDefault();
-        setHud((h) => !h);
-        return;
-      }
-      if (isTyping(e.target)) return;
-      const el = stage.current;
-      const inWorld = !!el && (el.contains(document.activeElement) || document.fullscreenElement === el || (!!document.pointerLockElement && el.contains(document.pointerLockElement)));
-      if (!inWorld || e.altKey || e.ctrlKey || e.metaKey) return;
-      if ((e.key === 'Enter' || e.key === ' ') && (e.target as HTMLElement | null)?.closest?.('button, a')) return; // a focused control
-      if (chatOpenRef.current) {
-        // The bar is open but its input doesn't have the keys (disabled, or a button has focus): T / Enter / Esc close it.
-        if (closesOpenBar(e)) {
-          e.preventDefault();
-          closeChat();
-        }
-        return;
-      }
-      if (e.code === 'KeyF' && !e.shiftKey) {
-        e.preventDefault();
-        toggleFullscreen();
-      } else if (e.code === 'KeyT' || e.key === 'Enter' || e.key === '/') {
-        e.preventDefault();
-        openChat();
-      } else if (e.code === 'KeyE' && document.pointerLockElement && !e.shiftKey) {
-        const t = aimRef.current;
-        if (t?.kind === 'block' && isContainerBlock(t.id)) {
-          const next = { dim: dimRef.current, x: t.x, y: t.y, z: t.z };
-          setContainer((cur) => (sameContainer(cur, next) ? null : next));
-        } else setContainer(null);
-      } else if (e.key === 'Tab') {
-        e.preventDefault();
-        setHud((h) => !h);
-      } else if (/^Digit[1-9]$/.test(e.code)) {
-        const names = viewer.current?.botsInView().map((b) => b.name) ?? [];
-        setSelected((cur) => selectByNumber(cur, names, Number(e.code.slice(5)), e.shiftKey));
-      } else if (e.key === 'Escape') {
-        if (document.pointerLockElement) document.exitPointerLock();
-        else if (document.fullscreenElement === el) void document.exitFullscreen().catch(() => undefined);
-      }
-    };
+    const onKey = (e: KeyboardEvent) =>
+      onWorldKey(e, {
+        stage: stage.current,
+        chatOpen: () => chatOpenRef.current,
+        toggleHud: () => setHud((h) => !h),
+        openChat,
+        closeChat,
+        toggleFullscreen,
+        toggleAimedContainer: () => {
+          const t = aimRef.current;
+          if (t?.kind === 'block' && isContainerBlock(t.id)) {
+            const next = { dim: dimRef.current, x: t.x, y: t.y, z: t.z };
+            setContainer((cur) => (sameContainer(cur, next) ? null : next));
+          } else setContainer(null);
+        },
+        selectNumber: (n, add) => {
+          const names = viewer.current?.botsInView().map((b) => b.name) ?? [];
+          setSelected((cur) => selectByNumber(cur, names, n, add));
+        },
+      });
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [toggleFullscreen, openChat, closeChat]);
@@ -294,124 +289,40 @@ export function WorldPane({
     setGotoError(null);
     const q = gotoText.trim();
     if (!q) return;
-    const c = parseCoords(q);
-    if (c) {
-      viewer.current?.focus(c[0], c[1], c[2]);
-      return;
-    }
-    const bot = viewer.current?.bots().find((b) => b.name.toLowerCase() === q.toLowerCase() || b.dto.short === q);
-    if (bot && mode === 'fly') {
-      // Free cam stays free: fly to the bot with the crosshair on its body.
-      viewer.current?.focus(bot.x - 0.5, bot.y + 0.6, bot.z - 0.5, { distance: 4, pitch: 8 });
-      return;
-    }
-    if (bot) {
-      viewer.current?.followBot(bot.name);
-      setMode('follow');
-      return;
-    }
-    try {
-      const r = await api('locate', { query: { q } });
-      viewer.current?.focus(r.x, r.y, r.z);
-    } catch (err) {
-      setGotoError(errorText(err).replace('Not found.', `No place called “${q}”.`));
-    }
+    const err = await goTo(q, viewer, mode, setMode);
+    if (err !== null) setGotoError(err);
+  };
+  const onMode = (m: CameraMode) => {
+    setMode(m);
+    viewer.current?.setCameraMode(m);
   };
 
-  if (!ready || !mod || !source) {
-    return (
-      <div className={cn('relative size-full', className)}>
-        {follow ? <DotMap follow={follow} radius={40} className="absolute inset-0" /> : <div className="absolute inset-0 bg-canvas" />}
-        {ready ? (
-          <div className="absolute top-3 left-3 max-w-xs rounded-lg border border-border bg-surface px-3 py-2 text-xs text-muted shadow-card">
-            The 3D viewer could not load. Showing a top-down map of nearby bots and entities.
-          </div>
-        ) : null}
-      </div>
-    );
-  }
+  if (!loaded(host)) return <WorldFallback follow={follow} ready={host.ready} className={className} />;
+  const { mod, source } = host;
 
   return (
     <div className={cn('flex size-full min-h-0 flex-col', className)}>
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
-        {toolbarStart}
-        <Segmented<CameraMode>
-          label="Camera"
-          size="sm"
-          value={mode}
-          onChange={(m) => {
-            setMode(m);
-            viewer.current?.setCameraMode(m);
-          }}
-          options={[
-            { value: 'follow', label: 'Follow', title: 'Orbit the followed bot' },
-            { value: 'fly', label: 'Fly', title: 'WASD/QE + mouse; Shift fast; wheel sets speed' },
-            { value: 'iso', label: 'Iso', title: 'Isometric dolly; Q/E rotate' },
-          ]}
-        />
-        <Popover.Root>
-          <Popover.Trigger asChild>
-            <Button size="sm" variant="ghost">
-              <Layers className="size-3.5" /> Layers
-            </Button>
-          </Popover.Trigger>
-          <Popover.Portal>
-            <Popover.Content align="start" sideOffset={6} className="z-50 w-64 space-y-2 rounded-xl border border-border bg-surface p-4 shadow-pop">
-              {LAYER_LABELS.map(([k, label]) => (
-                <div key={k}>
-                  <Checkbox checked={layers[k] ?? true} onChange={(v) => setLayers((l) => ({ ...l, [k]: v }))} label={label} />
-                </div>
-              ))}
-              <div className="border-t border-border pt-3">
-                <label className="mb-1 block text-xs text-muted" htmlFor="xray">
-                  X-ray toward bots
-                </label>
-                <Select id="xray" value={xray} onChange={(e) => setXray(e.target.value as XRayMode)} className="h-8 w-full">
-                  <option value="auto">Auto (when hidden)</option>
-                  <option value="on">On</option>
-                  <option value="off">Off</option>
-                </Select>
-              </div>
-              <div>
-                <label className="mb-1 flex justify-between text-xs text-muted" htmlFor="dist">
-                  Draw distance (all views) <span className="tabular text-fg">{distance} blocks</span>
-                </label>
-                <input id="dist" type="range" min={32} max={256} step={16} value={distance} onChange={(e) => setDistance(Number(e.target.value))} className="w-full accent-[var(--accent)]" />
-              </div>
-            </Popover.Content>
-          </Popover.Portal>
-        </Popover.Root>
-        <ViewerQualityButton />
-        <form onSubmit={(e) => void go(e)} className="flex items-center gap-1">
-          <Input
-            value={gotoText}
-            onChange={(e) => setGotoText(e.target.value)}
-            placeholder="Go to place, bot or x,y,z"
-            aria-label="Go to a place, a bot or coordinates"
-            className="h-8 w-56"
-          />
-          <Button type="submit" size="icon-sm" variant="ghost" aria-label="Go">
-            <LocateFixed className="size-3.5" />
-          </Button>
-        </form>
-        {gotoError ? <span className="text-xs text-danger">{gotoError}</span> : null}
-        <span className="flex-1" />
-        <Tooltip content="Drops near the bot">
-          <Button size="sm" variant={drops ? 'subtle' : 'ghost'} aria-pressed={drops} onClick={() => setDrops((d) => !d)}>
-            <Gem className="size-3.5" /> Drops{nearbyDrops.length ? <span className="tabular text-subtle">{nearbyDrops.length}</span> : null}
-          </Button>
-        </Tooltip>
-        <Tooltip content="Position HUD (F3)">
-          <Button size="sm" variant={hud ? 'subtle' : 'ghost'} aria-pressed={hud} onClick={() => setHud((h) => !h)}>
-            <Crosshair className="size-3.5" /> HUD
-          </Button>
-        </Tooltip>
-        <Tooltip content="Full screen (F)">
-          <Button size="icon-sm" variant="ghost" aria-label="Full screen" onClick={toggleFullscreen}>
-            <Maximize className="size-3.5" />
-          </Button>
-        </Tooltip>
-      </div>
+      <WorldToolbar
+        toolbarStart={toolbarStart}
+        mode={mode}
+        onMode={onMode}
+        layers={layers}
+        setLayers={setLayers}
+        xray={xray}
+        setXray={setXray}
+        distance={distance}
+        setDistance={setDistance}
+        gotoText={gotoText}
+        setGotoText={setGotoText}
+        gotoError={gotoError}
+        onGo={(e) => void go(e)}
+        drops={drops}
+        toggleDrops={() => setDrops((d) => !d)}
+        dropCount={nearbyDrops.length}
+        hud={hud}
+        toggleHud={() => setHud((h) => !h)}
+        toggleFullscreen={toggleFullscreen}
+      />
       <div ref={stageRef} className="relative min-h-0 flex-1 bg-canvas" data-testid="world-stage">
         <mod.WorldViewer
           ref={viewer}
@@ -435,37 +346,8 @@ export function WorldPane({
           hideHint
           className="absolute inset-0"
         />
-        {locked && mode === 'fly' ? (
-          <>
-            <AimCross />
-            <TargetReadout target={aim} bot={aim?.kind === 'bot' ? entities.data?.bots.find((b) => b.name === aim.name) : undefined} />
-          </>
-        ) : null}
-        {mode === 'fly' && !locked && !chatOpen ? (
-          <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-md bg-black/55 px-2.5 py-1 text-center text-xs whitespace-nowrap text-white">
-            Click to look around · WASD move · T chat · 1–9 pick a bot · Tab HUD · F full screen
-          </div>
-        ) : null}
-        {fullscreen ? (
-          <div className="absolute top-3 right-3 z-10 flex gap-1.5" style={{ marginTop: selected.length || marker ? 32 : 0 }}>
-            <Segmented<CameraMode>
-              label="Camera"
-              size="sm"
-              value={mode}
-              onChange={(m) => {
-                setMode(m);
-                viewer.current?.setCameraMode(m);
-              }}
-              options={[
-                { value: 'follow', label: 'Follow' },
-                { value: 'fly', label: 'Free cam' },
-              ]}
-            />
-            <Button size="sm" variant="subtle" onClick={toggleFullscreen} aria-label="Exit full screen">
-              <Minimize className="size-3.5" /> Exit {escToPage ? '(Esc twice)' : '(Esc)'}
-            </Button>
-          </div>
-        ) : null}
+        <FreeCamOverlay mode={mode} locked={locked} chatOpen={chatOpen} aim={aim} bots={entities.data?.bots} />
+        <FullscreenBar shown={fullscreen} mode={mode} onMode={onMode} selected={selected} marker={marker} escToPage={escToPage} toggleFullscreen={toggleFullscreen} />
         {hud ? <SelectionBar selected={selected} marker={marker} onClear={() => setSelected([])} onClearMarker={() => setMarker(null)} /> : null}
         <ChatOverlay
           open={chatOpen}
@@ -476,76 +358,11 @@ export function WorldPane({
           onClose={closeChat}
           results={sent}
         />
-        {hud ? (
-          <div className="pointer-events-none absolute top-3 left-3 space-y-0.5 rounded-md bg-black/55 px-2.5 py-2 font-mono text-[11px] leading-snug text-white">
-            {me ? (
-              <>
-                <div>
-                  {me.name} · {dimName(me.dim)}
-                </div>
-                <div>
-                  XYZ {me.x.toFixed(1)} / {me.y.toFixed(1)} / {me.z.toFixed(1)}
-                </div>
-                <div>
-                  Facing {facing(me.yaw)} ({Math.round(me.yaw ?? 0)}°)
-                </div>
-              </>
-            ) : (
-              <div>no followed bot</div>
-            )}
-            <div className="pt-1 text-white/80">
-              {picked
-                ? `Block ${picked.name}${picked.meta ? `:${picked.meta}` : ''} at ${picked.x},${picked.y},${picked.z} · ${picked.live ? 'live' : 'remembered'}${picked.by ? ` · seen by ${picked.by}` : ''}`
-                : 'Click a block to inspect it'}
-            </div>
-          </div>
-        ) : null}
-        {drops ? (
-          <div className="absolute top-3 right-3 bottom-3 flex w-64 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-pop">
-            <div className="border-b border-border px-3 py-2 text-xs font-medium text-fg">Drops near {me?.name ?? 'the bot'}</div>
-            <ul className="min-h-0 flex-1 overflow-auto py-1 text-xs">
-              {nearbyDrops.length === 0 ? <li className="px-3 py-4 text-center text-muted">No drops nearby.</li> : null}
-              {nearbyDrops.map(({ e, d }) => (
-                <li key={`${e.dim}:${e.id ?? `${e.x},${e.z}`}`}>
-                  <button onClick={() => viewer.current?.focus(e.x, e.y, e.z)} className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-2">
-                    <span className="min-w-0 flex-1 truncate text-fg">
-                      {e.name ?? 'item'} ×{e.count ?? 1}
-                    </span>
-                    <span className="tabular text-subtle">{d.toFixed(0)} m</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
+        <PositionHud shown={hud} me={me} picked={picked} />
+        <DropsPanel shown={drops} me={me} drops={nearbyDrops} onFocus={(e) => viewer.current?.focus(e.x, e.y, e.z)} />
         {overlay}
-        {container ? (
-          <PortalContainer.Provider value={stageEl}>
-            <ContainerPanel
-              key={`${container.dim}:${container.x},${container.y},${container.z}`}
-              target={container}
-              onClose={closeContainer}
-              className="absolute bottom-3 left-1/2 z-10 max-h-[calc(100%-4.5rem)] -translate-x-1/2"
-            />
-          </PortalContainer.Provider>
-        ) : null}
-        {devDetails && stats ? (
-          <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/55 px-2.5 py-2 font-mono text-[11px] leading-snug text-white">
-            <div className="flex items-center gap-1.5">
-              <Monitor className="size-3" /> {stats.fps.toFixed(0)} fps · {stats.frameMs.toFixed(1)} ms · {Math.round(stats.resolutionScale * 100)}% res
-            </div>
-            <div>
-              {num(stats.drawCalls)} draws · {num(stats.triangles)} tris · {stats.textured ? 'textured' : 'flat'} · {stats.version}
-            </div>
-            <div>
-              {num(stats.memory.columns)} columns · {num(stats.memory.sections)} sections ({num(stats.memory.sectionsQueued)} queued) · {stats.memory.views} views
-            </div>
-            <div>
-              GPU {bytes(stats.memory.gpuBytes)} · worker {bytes(stats.memory.workerBytes)} · received {bytes(stats.memory.bytesReceived)}
-            </div>
-            <div className="text-white/70">{stats.gpu}</div>
-          </div>
-        ) : null}
+        <ContainerLayer container={container} stageEl={stageEl} onClose={closeContainer} />
+        <StatsHud stats={devDetails ? stats : null} />
       </div>
     </div>
   );

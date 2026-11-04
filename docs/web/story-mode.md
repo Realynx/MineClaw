@@ -423,9 +423,10 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   - from its designations: `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target`, or `back-off rest`.
     `no reachable target` (a mark free and not resting that its search still passed over) says which and why when its last search
     knows: `no reachable target: mine 181,57,366: buried (dug once a cell over or beside it is gone)`. The reasons: buried, under
-    someone's feet, in a cave (surface work), by a spot where a pawn got stuck, forbidden, left to a pawn up top (this one is under
-    ground), out of sight (a haul or hunt mark whose entity no body sees). The mark named is the first such one in the colony's list,
-    so pawns idle for the same reason group together.
+    someone's feet, by a spot where a pawn got stuck, forbidden, out of sight (a haul or hunt mark whose entity no body sees). The
+    mark named is the first such one in the colony's list, so pawns idle for the same reason group together. What the picker skips
+    on purpose is no blocked work and gives no reason: a cave plant the colony marked itself, and trees an under-ground pawn leaves
+    to a pawn up top.
   - `waiting: …`: what its last search found held back. Examples: `waiting: build b3: need 48 block of iron (short: 432 iron ore)`,
     `waiting: bill Iron Ingot suspended: no iron ore …`, `waiting: Torch for build b5: no coal …`,
     `waiting: build b2: the level below is still being built`, `waiting: build b2: its open cells are taken or backing off`,
@@ -457,8 +458,10 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   "stuck" 4 s later and then avoid that move); one that lands farther away re-plans from there at once. The goto's own escape for
   "stuck twice here" hops toward the step holding jump in water (one tap only floated the body off the floor).
 - **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
-  Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
-  ignored (see Defending).
+  Cut and harvest marks the colony placed itself (`seek_seeds`' grass) wait when the plant is in a cave. Marks the owner placed are
+  ordinary work wherever they are, cave or not (live 11-04: five pawns idle all evening on "cut 91,55,463: in a cave"): the route,
+  reach and stuck rules decide, and the idle audit says why when they can't. Mine designations go as before. Guard targets in a cave
+  are ignored (see Defending).
 - The pawn's row carries `stuck` (`{since, at, reason, step, attempts}`, or null); the web lists stuck pawns as a condition.
 
 ### Keeping loot while gathering (added 2026-11-04)

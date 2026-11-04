@@ -30,11 +30,15 @@ public static class Gestures
     {
         if (held <= 0) return false;
         if (held < 256) return true; // a block in hand: the swing places it
-        return held is Items.Bucket or Items.WaterBucket or Items.LavaBucket or Items.MilkBucket or Items.FlintAndSteel or Items.Seeds
-            or Items.PumpkinSeeds or Items.MelonSeeds or Items.WoodenDoor or Items.IronDoor or Items.Redstone or Items.Minecart
-            or Items.Boat or Items.Bed or Items.Sign or Items.Dye or Items.SugarCane or Items.Painting or Items.Cake or Items.Repeater
-            || (held >= Items.WoodenHoe && held <= Items.GoldenHoe);
+        return UseItems.Contains(held) || (held >= Items.WoodenHoe && held <= Items.GoldenHoe);
     }
+
+    private static readonly HashSet<int> UseItems =
+    [
+        Items.Bucket, Items.WaterBucket, Items.LavaBucket, Items.MilkBucket, Items.FlintAndSteel, Items.Seeds, Items.PumpkinSeeds,
+        Items.MelonSeeds, Items.WoodenDoor, Items.IronDoor, Items.Redstone, Items.Minecart, Items.Boat, Items.Bed, Items.Sign, Items.Dye,
+        Items.SugarCane, Items.Painting, Items.Cake, Items.Repeater,
+    ];
 }
 
 /// <summary>

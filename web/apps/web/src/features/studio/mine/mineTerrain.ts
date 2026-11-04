@@ -173,109 +173,59 @@ export class MineTerrain {
     return c;
   }
 
+  /** A chunk's states: the columns, then the pockets and ore veins, then now and then one cave. */
   private generate(cx: number, cz: number): Uint16Array {
     const cells = new Uint16Array(16 * 16 * TERRAIN_HEIGHT);
     const tops = new Int32Array(256);
+    for (let lz = 0; lz < 16; lz++) for (let lx = 0; lx < 16; lx++) tops[lz * 16 + lx] = this.column(cells, cx, cz, lx, lz);
+    this.features(cells, cx, cz);
+    this.cave(cells, tops, cx, cz);
+    return cells;
+  }
+
+  /** One column: grass on top, 3-4 dirt layers, stone, the bedrock floor (patchy up to the version's top). Returns its top. */
+  private column(cells: Uint16Array, cx: number, cz: number, lx: number, lz: number): number {
     const t = this.table;
-    for (let lz = 0; lz < 16; lz++)
-      for (let lx = 0; lx < 16; lx++) {
-        const x = cx * 16 + lx,
-          z = cz * 16 + lz;
-        const top = this.surface(x, z);
-        tops[lz * 16 + lx] = top;
-        const dirt = 3 + (this.h(x, z, 0, SALT_DIRT) % 2);
-        for (let y = 0; y <= top && y < TERRAIN_HEIGHT; y++) {
-          let id = y === top ? GRASS : y >= top - dirt ? DIRT : STONE;
-          if (y <= t.bedrockTop && (y === t.bedrockFloor || this.h(x, y, z, SALT_BEDROCK) % 5 >= y)) id = BEDROCK;
-          cells[index(lx, y, lz)] = id << 4;
-        }
-      }
+    const x = cx * 16 + lx,
+      z = cz * 16 + lz;
+    const top = this.surface(x, z);
+    const dirt = 3 + (this.h(x, z, 0, SALT_DIRT) % 2);
+    for (let y = 0; y <= top && y < TERRAIN_HEIGHT; y++) {
+      let id = y === top ? GRASS : y >= top - dirt ? DIRT : STONE;
+      if (y <= t.bedrockTop && (y === t.bedrockFloor || this.h(x, y, z, SALT_BEDROCK) % 5 >= y)) id = BEDROCK;
+      cells[index(lx, y, lz)] = id << 4;
+    }
+    return top;
+  }
+
+  /** The version's stone pockets, then its ore veins, each from its own stream. */
+  private features(cells: Uint16Array, cx: number, cz: number) {
+    const t = this.table;
     const features: OreBand[] = [...t.pockets, ...t.ores];
     for (let k = 0; k < features.length; k++) {
       const f = features[k]!;
       if (f.veins <= 0 || f.size <= 0) continue;
-      const pocket = k < t.pockets.length;
-      const state = (f.block << 4) | f.meta;
       const rng = new Rng(this.h(cx, cz, k, SALT_FEATURE));
-      for (let v = 0; v < f.veins; v++) {
-        let x = rng.below(16),
-          z = rng.below(16);
-        let y: number;
-        if (f.shape === 'triangle') {
-          const a = rng.below(f.spread);
-          const b = rng.below(f.spread);
-          y = f.center - f.spread + a + b;
-        } else y = f.min + rng.below(f.max - f.min + 1);
-        for (let s = 0; s < f.size; s++) {
-          put(cells, x, y, z, state);
-          if (pocket) {
-            put(cells, x + 1, y, z, state);
-            put(cells, x - 1, y, z, state);
-            put(cells, x, y + 1, z, state);
-            put(cells, x, y - 1, z, state);
-            put(cells, x, y, z + 1, state);
-            put(cells, x, y, z - 1, state);
-          }
-          switch (rng.below(6)) {
-            case 0:
-              x++;
-              break;
-            case 1:
-              x--;
-              break;
-            case 2:
-              y++;
-              break;
-            case 3:
-              y--;
-              break;
-            case 4:
-              z++;
-              break;
-            default:
-              z--;
-          }
-        }
-      }
+      for (let v = 0; v < f.veins; v++) vein(cells, rng, f, k < t.pockets.length);
     }
+  }
+
+  /** Now and then (one chunk in three) a light cave: a 3×3×2 tunnel wandering 40 steps, kept off bedrock and the surface. */
+  private cave(cells: Uint16Array, tops: Int32Array, cx: number, cz: number) {
     const cr = new Rng(this.h(cx, cz, 0, SALT_CAVE));
-    if (cr.below(3) === 0) {
-      let x = 3 + cr.below(10);
-      let z = 3 + cr.below(10);
-      let y = 16 + cr.below(40);
-      let dir = cr.below(4);
-      for (let s = 0; s < 40; s++) {
-        for (let dz = -1; dz <= 1; dz++)
-          for (let dx = -1; dx <= 1; dx++)
-            for (let dy = 0; dy <= 1; dy++) {
-              const lx = x + dx,
-                lz = z + dz,
-                yy = y + dy;
-              if (lx < 0 || lx > 15 || lz < 0 || lz > 15 || yy < 1 || yy >= tops[lz * 16 + lx]! - 6) continue;
-              const i = index(lx, yy, lz);
-              if (cells[i]! >> 4 !== BEDROCK) cells[i] = 0;
-            }
-        if (cr.below(4) === 0) dir = cr.below(4);
-        if (cr.below(5) === 0) y += cr.below(3) - 1;
-        switch (dir) {
-          case 0:
-            x++;
-            break;
-          case 1:
-            x--;
-            break;
-          case 2:
-            z++;
-            break;
-          default:
-            z--;
-        }
-        x = Math.max(1, Math.min(14, x));
-        z = Math.max(1, Math.min(14, z));
-        y = Math.max(8, Math.min(70, y));
-      }
+    if (cr.below(3) !== 0) return;
+    let x = 3 + cr.below(10);
+    let z = 3 + cr.below(10);
+    let y = 16 + cr.below(40);
+    let dir = cr.below(4);
+    for (let s = 0; s < 40; s++) {
+      carve(cells, tops, x, y, z);
+      if (cr.below(4) === 0) dir = cr.below(4);
+      if (cr.below(5) === 0) y += cr.below(3) - 1;
+      x = Math.max(1, Math.min(14, x + CAVE_DX[dir]!));
+      z = Math.max(1, Math.min(14, z + CAVE_DZ[dir]!));
+      y = Math.max(8, Math.min(70, y));
     }
-    return cells;
   }
 
   /** FNV-1a over the plot (y, z, x order): the golden value both languages' tests check. */
@@ -307,6 +257,57 @@ export class MineTerrain {
       for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) hi = Math.max(hi, this.surface(x, z));
     return hi;
   }
+}
+
+/** A vein's steps (the stream picks one of six), in the order a stone pocket also grows around each cell. */
+const STEP_DX = [1, -1, 0, 0, 0, 0],
+  STEP_DY = [0, 0, 1, -1, 0, 0],
+  STEP_DZ = [0, 0, 0, 0, 1, -1];
+/** A cave's headings: +x, -x, +z, -z. */
+const CAVE_DX = [1, -1, 0, 0],
+  CAVE_DZ = [0, 0, 1, -1];
+
+/** A vein's starting height: uniform over the band, or triangular around its centre. */
+function veinY(rng: Rng, f: OreBand): number {
+  if (f.shape !== 'triangle') return f.min + rng.below(f.max - f.min + 1);
+  const a = rng.below(f.spread);
+  const b = rng.below(f.spread);
+  return f.center - f.spread + a + b;
+}
+
+/** One vein: a random walk of `size` steps replacing stone (a pocket also fills each cell's six neighbours). */
+function vein(cells: Uint16Array, rng: Rng, f: OreBand, pocket: boolean) {
+  const state = (f.block << 4) | f.meta;
+  let x = rng.below(16),
+    z = rng.below(16);
+  let y = veinY(rng, f);
+  for (let s = 0; s < f.size; s++) {
+    put(cells, x, y, z, state);
+    if (pocket) for (let d = 0; d < 6; d++) put(cells, x + STEP_DX[d]!, y + STEP_DY[d]!, z + STEP_DZ[d]!, state);
+    const d = rng.below(6);
+    x += STEP_DX[d]!;
+    y += STEP_DY[d]!;
+    z += STEP_DZ[d]!;
+  }
+}
+
+/** Inside the chunk, above y 0 and at least 6 below the column's surface. */
+function carvable(tops: Int32Array, lx: number, y: number, lz: number): boolean {
+  return lx >= 0 && lx <= 15 && lz >= 0 && lz <= 15 && y >= 1 && y < tops[lz * 16 + lx]! - 6;
+}
+
+/** Clears the cave's 3×3×2 block at (x, y, z): inside the chunk, above y 0, 6 below the surface, never bedrock. */
+function carve(cells: Uint16Array, tops: Int32Array, x: number, y: number, z: number) {
+  for (let dz = -1; dz <= 1; dz++)
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = 0; dy <= 1; dy++) {
+        const lx = x + dx,
+          lz = z + dz,
+          yy = y + dy;
+        if (!carvable(tops, lx, yy, lz)) continue;
+        const i = index(lx, yy, lz);
+        if (cells[i]! >> 4 !== BEDROCK) cells[i] = 0;
+      }
 }
 
 function put(cells: Uint16Array, lx: number, y: number, lz: number, state: number): void {

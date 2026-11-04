@@ -234,41 +234,60 @@ public sealed class ActivityLog
     {
         var t = now ?? _time.GetUtcNow();
         var q = question.ToLowerInvariant();
-        var local = t.ToLocalTime();
-        DateTimeOffset from = t - TimeSpan.FromDays(1), until = t;
-        if (since is { } explicitSince) from = explicitSince;
-        else if (q.Contains("yesterday")) { from = new DateTimeOffset(local.Date.AddDays(-1), local.Offset); until = new DateTimeOffset(local.Date, local.Offset); }
-        else if (q.Contains("today") || q.Contains("tonight")) from = new DateTimeOffset(local.Date, local.Offset);
-        else if (q.Contains("this morning")) from = new DateTimeOffset(local.Date, local.Offset);
-        else if (q.Contains("last hour") || q.Contains("past hour")) from = t - TimeSpan.FromHours(1);
-        else if (q.Contains("this week") || q.Contains("lately")) from = t - TimeSpan.FromDays(7);
-
-        var players = Players();
-        var who = players.Where(p => Regex.IsMatch(q, $@"\b{Regex.Escape(p.ToLowerInvariant())}\b")).ToList();
-        var sb = new StringBuilder();
-        void Line(string s)
-        {
-            if (sb.Length + s.Length + 2 > maxChars) return;
-            if (sb.Length > 0) sb.Append("; ");
-            sb.Append(s);
-        }
+        var (from, until) = AskWindow(q, t, since);
+        var who = Players().Where(p => Regex.IsMatch(q, $@"\b{Regex.Escape(p.ToLowerInvariant())}\b")).ToList();
+        var lines = new BoundedLines(maxChars);
         var targets = who.Count > 0 ? who.Cast<string?>().ToList() : [null];
-        foreach (var p in targets)
+        foreach (var p in targets) AskPlayer(p, from, until, lines);
+        if (lines.Empty && who.Count == 0)
+            foreach (var e in Search(question, from, 8)) lines.Add(e.Text);
+        if (!lines.Empty) return lines.ToString();
+        return who.Count > 0 ? $"nothing recorded for {string.Join(", ", who)} in that window" : "no matching activity";
+    }
+
+    /// <summary>The window a question names (today, yesterday, this morning, last hour, this week...); default the last day.</summary>
+    private static (DateTimeOffset From, DateTimeOffset Until) AskWindow(string q, DateTimeOffset t, DateTimeOffset? since)
+    {
+        var local = t.ToLocalTime();
+        var midnight = new DateTimeOffset(local.Date, local.Offset);
+        if (since is { } explicitSince) return (explicitSince, t);
+        if (q.Contains("yesterday")) return (new DateTimeOffset(local.Date.AddDays(-1), local.Offset), midnight);
+        if (q.Contains("today") || q.Contains("tonight") || q.Contains("this morning")) return (midnight, t);
+        if (q.Contains("last hour") || q.Contains("past hour")) return (t - TimeSpan.FromHours(1), t);
+        if (q.Contains("this week") || q.Contains("lately")) return (t - TimeSpan.FromDays(7), t);
+        return (t - TimeSpan.FromDays(1), t);
+    }
+
+    /// <summary>One player's (or everyone's) rollups, then raw events not rolled up yet ("... x5" for repeats, "probably" for
+    /// medium confidence).</summary>
+    private void AskPlayer(string? p, DateTimeOffset from, DateTimeOffset until, BoundedLines lines)
+    {
+        foreach (var r in Rollups(p, from, until, 12).OrderBy(r => r.Start)) lines.Add(r.Text + WorldDim.Tag(r.Dimension, CurrentDimension()));
+        var raw = Events(p, from, 30).Where(e => e.Rollup == null && e.At <= until && e.Confidence >= _o.MediumConfidence).Reverse().ToList();
+        for (int i = 0; i < raw.Count;)
         {
-            foreach (var r in Rollups(p, from, until, 12).OrderBy(r => r.Start)) Line(r.Text + WorldDim.Tag(r.Dimension, CurrentDimension()));
-            var raw = Events(p, from, 30).Where(e => e.Rollup == null && e.At <= until && e.Confidence >= _o.MediumConfidence).Reverse().ToList();
-            for (int i = 0; i < raw.Count;)
-            {
-                int j = i;
-                while (j + 1 < raw.Count && raw[j + 1].Text == raw[i].Text) j++; // collapse repeats: "... x5"
-                var e = raw[i];
-                Line((e.Confidence < _o.HighConfidence ? "probably " : "") + e.Text + (j > i ? $" x{j - i + 1}" : "") + " " +
-                     e.At.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture));
-                i = j + 1;
-            }
+            int j = i;
+            while (j + 1 < raw.Count && raw[j + 1].Text == raw[i].Text) j++; // collapse repeats: "... x5"
+            var e = raw[i];
+            lines.Add((e.Confidence < _o.HighConfidence ? "probably " : "") + e.Text + (j > i ? $" x{j - i + 1}" : "") + " " +
+                      e.At.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture));
+            i = j + 1;
         }
-        if (sb.Length == 0 && who.Count == 0)
-            foreach (var e in Search(question, from, 8)) Line(e.Text);
-        return sb.Length == 0 ? (who.Count > 0 ? $"nothing recorded for {string.Join(", ", who)} in that window" : "no matching activity") : sb.ToString();
+    }
+
+    /// <summary>"; "-joined lines up to a size: a line that doesn't fit is left out.</summary>
+    private sealed class BoundedLines(int maxChars)
+    {
+        private readonly StringBuilder _sb = new();
+        public bool Empty => _sb.Length == 0;
+
+        public void Add(string s)
+        {
+            if (_sb.Length + s.Length + 2 > maxChars) return;
+            if (_sb.Length > 0) _sb.Append("; ");
+            _sb.Append(s);
+        }
+
+        public override string ToString() => _sb.ToString();
     }
 }

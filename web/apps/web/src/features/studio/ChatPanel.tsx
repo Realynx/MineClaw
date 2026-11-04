@@ -101,47 +101,7 @@ export const ChatPanel = forwardRef<
           </li>
         ) : null}
         {p.messages.map((m) => (
-          <li
-            key={`${m.seq}:${m.at}`}
-            className={cn('flex gap-2 text-sm', m.role === 'user' ? 'flex-row-reverse' : '')}
-            data-role={m.role}
-          >
-            <span
-              className={cn(
-                'mt-0.5 grid size-6 shrink-0 place-items-center rounded-full',
-                m.role === 'user' ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-muted',
-              )}
-            >
-              {m.role === 'user' ? <User className="size-3.5" /> : <Bot className="size-3.5" />}
-            </span>
-            <div
-              className={cn(
-                'max-w-[85%] rounded-lg px-3 py-2',
-                m.role === 'user' ? 'bg-accent-soft text-fg' : 'bg-surface-2 text-fg',
-              )}
-            >
-              <p className="whitespace-pre-wrap">{m.text}</p>
-              {m.ops?.length ? (
-                <ul className="mt-1.5 flex flex-wrap gap-1" aria-label="What it changed">
-                  {m.ops.map((o, i) => (
-                    <li
-                      key={i}
-                      className="rounded bg-ok-soft px-1.5 py-0.5 text-[11px] text-ok"
-                      title={`${o.cells} cells`}
-                    >
-                      {o.label}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {m.role === 'assistant' && (m.model || (m.costUsd !== null && m.costUsd !== undefined)) ? (
-                <p className="mt-1 text-[11px] text-subtle" data-testid="message-cost">
-                  {m.model ?? ''}
-                  {m.costUsd !== null && m.costUsd !== undefined ? ` · ${usd(m.costUsd)}` : ''}
-                </p>
-              ) : null}
-            </div>
-          </li>
+          <MessageItem key={`${m.seq}:${m.at}`} m={m} />
         ))}
         {p.busy ? (
           <li className="flex items-center gap-2 text-sm text-muted" data-testid="designing">
@@ -198,3 +158,48 @@ export const ChatPanel = forwardRef<
     </aside>
   );
 });
+
+type Message = DesignerMessage;
+
+/** One chat message: who said it, the text, the ops it made, and (the AI's) model and cost. */
+function MessageItem({ m }: { m: Message }) {
+  const user = m.role === 'user';
+  return (
+    <li className={cn('flex gap-2 text-sm', user ? 'flex-row-reverse' : '')} data-role={m.role}>
+      <span
+        className={cn(
+          'mt-0.5 grid size-6 shrink-0 place-items-center rounded-full',
+          user ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-muted',
+        )}
+      >
+        {user ? <User className="size-3.5" /> : <Bot className="size-3.5" />}
+      </span>
+      <div className={cn('max-w-[85%] rounded-lg px-3 py-2', user ? 'bg-accent-soft text-fg' : 'bg-surface-2 text-fg')}>
+        <p className="whitespace-pre-wrap">{m.text}</p>
+        {m.ops?.length ? (
+          <ul className="mt-1.5 flex flex-wrap gap-1" aria-label="What it changed">
+            {m.ops.map((o, i) => (
+              <li key={i} className="rounded bg-ok-soft px-1.5 py-0.5 text-[11px] text-ok" title={`${o.cells} cells`}>
+                {o.label}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <MessageCost m={m} />
+      </div>
+    </li>
+  );
+}
+
+const hasCost = (m: Message) => m.costUsd !== null && m.costUsd !== undefined;
+
+/** The AI's model and what the message cost (when known). */
+function MessageCost({ m }: { m: Message }) {
+  if (m.role !== 'assistant' || !(m.model || hasCost(m))) return null;
+  return (
+    <p className="mt-1 text-[11px] text-subtle" data-testid="message-cost">
+      {m.model ?? ''}
+      {hasCost(m) ? ` · ${usd(m.costUsd)}` : ''}
+    </p>
+  );
+}

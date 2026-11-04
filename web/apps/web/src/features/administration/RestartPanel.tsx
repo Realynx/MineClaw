@@ -122,25 +122,14 @@ function RestartDialog({
       title="Restart the bot"
       description="A graceful restart: bodies stop what they do, the bot logs out and systemd starts it again."
       footer={
-        done ? (
-          <Button variant="primary" onClick={onClose}>
-            Close
-          </Button>
-        ) : (
-          <>
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button
-              variant={unsafe ? 'danger' : 'primary'}
-              loading={busy}
-              disabled={!s || !!rErr || (unsafe && !force)}
-              onClick={() => void restart()}
-            >
-              <Power className="size-4" /> {unsafe ? 'Restart anyway' : 'Restart now'}
-            </Button>
-          </>
-        )
+        <RestartFooter
+          done={!!done}
+          unsafe={unsafe}
+          busy={busy}
+          disabled={!s || !!rErr || (unsafe && !force)}
+          onClose={onClose}
+          onRestart={() => void restart()}
+        />
       }
     >
       {done ? (
@@ -150,47 +139,8 @@ function RestartDialog({
       ) : (
         <div className="space-y-4">
           <section aria-label="Safety check" className="space-y-2">
-            {safety.isPending ? (
-              <SkeletonLines lines={2} />
-            ) : safety.error ? (
-              <ErrorState
-                error={safety.error}
-                onRetry={() => void safety.refetch()}
-                title="Could not check whether a restart is safe"
-              />
-            ) : s?.safe ? (
-              <p className="flex items-start gap-2 text-sm text-ok">
-                <CheckCircle2 className="mt-0.5 size-4 shrink-0" /> Safe to restart now: no body is outside at night or
-                at the edge of a high build.
-              </p>
-            ) : s ? (
-              <div className="space-y-2 rounded-lg border border-danger/40 bg-danger-soft/40 p-3">
-                <p className="flex items-start gap-2 text-sm font-medium text-danger">
-                  <AlertTriangle className="mt-0.5 size-4 shrink-0" /> Not safe to restart now
-                </p>
-                <ul className="list-disc space-y-0.5 pl-6 text-sm text-fg">
-                  {s.reasons.map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {s?.bodies.length ? (
-              <table className="w-full text-xs" aria-label="Bodies">
-                <tbody>
-                  {s.bodies.map((b) => (
-                    <tr key={b.name} className="border-b border-border/60 last:border-0">
-                      <td className="py-1 pr-2 font-medium text-fg">{b.name}</td>
-                      <td className="py-1 pr-2 text-muted">{b.reason ?? 'fine'}</td>
-                      <td className="py-1 text-right">
-                        {b.exposed ? <Badge tone="danger">exposed</Badge> : null}{' '}
-                        {b.highBuild ? <Badge tone="danger">high build</Badge> : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
+            <SafetyVerdict safety={safety} />
+            {s?.bodies.length ? <BodiesTable bodies={s.bodies} /> : null}
           </section>
           <Field label="Reason" htmlFor="restart-reason" hint="Recorded in the node's audit.">
             <Input
@@ -214,5 +164,74 @@ function RestartDialog({
         </div>
       )}
     </Dialog>
+  );
+}
+
+/** Close once it is done; else Cancel and Restart (anyway, when the check says it is not safe). */
+function RestartFooter(p: { done: boolean; unsafe: boolean; busy: boolean; disabled: boolean; onClose: () => void; onRestart: () => void }) {
+  if (p.done)
+    return (
+      <Button variant="primary" onClick={p.onClose}>
+        Close
+      </Button>
+    );
+  return (
+    <>
+      <Button variant="ghost" onClick={p.onClose}>
+        Cancel
+      </Button>
+      <Button variant={p.unsafe ? 'danger' : 'primary'} loading={p.busy} disabled={p.disabled} onClick={p.onRestart}>
+        <Power className="size-4" /> {p.unsafe ? 'Restart anyway' : 'Restart now'}
+      </Button>
+    </>
+  );
+}
+
+type Safety = ReturnType<typeof useApi<'admin.restartSafety'>>;
+
+/** The safety check's answer: loading, could not check, safe, or not safe with its reasons. */
+function SafetyVerdict({ safety }: { safety: Safety }) {
+  if (safety.isPending) return <SkeletonLines lines={2} />;
+  if (safety.error)
+    return <ErrorState error={safety.error} onRetry={() => void safety.refetch()} title="Could not check whether a restart is safe" />;
+  const s = safety.data;
+  if (s.safe)
+    return (
+      <p className="flex items-start gap-2 text-sm text-ok">
+        <CheckCircle2 className="mt-0.5 size-4 shrink-0" /> Safe to restart now: no body is outside at night or
+        at the edge of a high build.
+      </p>
+    );
+  return (
+    <div className="space-y-2 rounded-lg border border-danger/40 bg-danger-soft/40 p-3">
+      <p className="flex items-start gap-2 text-sm font-medium text-danger">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" /> Not safe to restart now
+      </p>
+      <ul className="list-disc space-y-0.5 pl-6 text-sm text-fg">
+        {s.reasons.map((r) => (
+          <li key={r}>{r}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Each body and why it is (or is not) at risk. */
+function BodiesTable({ bodies }: { bodies: NonNullable<Safety['data']>['bodies'] }) {
+  return (
+    <table className="w-full text-xs" aria-label="Bodies">
+      <tbody>
+        {bodies.map((b) => (
+          <tr key={b.name} className="border-b border-border/60 last:border-0">
+            <td className="py-1 pr-2 font-medium text-fg">{b.name}</td>
+            <td className="py-1 pr-2 text-muted">{b.reason ?? 'fine'}</td>
+            <td className="py-1 text-right">
+              {b.exposed ? <Badge tone="danger">exposed</Badge> : null}{' '}
+              {b.highBuild ? <Badge tone="danger">high build</Badge> : null}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
