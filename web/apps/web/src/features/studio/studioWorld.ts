@@ -4,12 +4,17 @@
  * the canvas's dug cells are air in the ground, its blocks below y 0 replace the ground, noon, no weather, no bots. Edits are pushed as
  * block deltas through `subscribe`, so the viewer patches its store and re-meshes only the touched sections; the column
  * hashes never change (a refetch, if the viewer evicts a column, encodes the current canvas).
+ *
+ * A mine plot (`terrain` given) is generated terrain instead of the grassland, the ring of columns around the plot too, at
+ * absolute y (canvas y = world y): every column is its terrain chunk (./mine/mineTerrain, generated once per chunk and kept),
+ * the canvas's dug cells cut out of it. Only sections near the camera are meshed (the viewer's own draw distance).
  */
 import type { BlockDeltas, EntityDelta, Overlays, WorldIndex, WorldSource } from '@mineclaw/world-viewer';
 import { cellIndex } from '@mineclaw/world-viewer';
 import { encodeColumn, encodeMcwc, lightSections, type EncodeEntry } from '@mineclaw/world-viewer/testing';
 import { EARTH, posOf, type Canvas, type Cell } from './canvas';
 import type { Version } from './facing';
+import type { MineTerrain } from './mine/mineTerrain';
 
 /** World y of canvas y 0 (the grass is one below). */
 export const BASE_Y = 64;
@@ -41,12 +46,17 @@ export class StudioWorld {
   private listeners = new Set<(d: BlockDeltas) => void>();
   readonly source: WorldSource;
 
+  /** World y of canvas y 0: 64 over the grassland, 0 on a mine's terrain. */
+  readonly base: number;
+
   constructor(
     readonly version: Version,
     private readonly canvas: Canvas,
     private readonly now: () => number = () => Date.now(),
+    readonly terrain: MineTerrain | null = null,
   ) {
     this.height = version === '1.12.2' ? 256 : 128;
+    this.base = terrain ? 0 : BASE_Y;
     const hashOf = (cx: number, cz: number) => BigInt(((cx + 16) * 64 + (cz + 16)) * 7919 + 1);
     this.source = {
       index: (dim: number): Promise<WorldIndex> => {
@@ -122,7 +132,11 @@ export class StudioWorld {
       full: false,
       blocks: {
         '0': cells.map(([x, y, z, id, meta]): [number, number, number, number, number] =>
-          id === EARTH ? [x, y + BASE_Y, z, groundAt(y + BASE_Y), 0] : [x, y + BASE_Y, z, id, meta],
+          id === EARTH
+            ? this.terrain
+              ? [x, y, z, ...this.terrain.block(x, y, z)]
+              : [x, y + BASE_Y, z, groundAt(y + BASE_Y), 0]
+            : [x, y + this.base, z, id, meta],
         ),
       },
       columns: [],
@@ -136,23 +150,40 @@ export class StudioWorld {
     const ids = new Uint8Array(n),
       meta = new Uint8Array(n);
     const ground = BASE_Y - 1;
-    for (let lx = 0; lx < 16; lx++)
-      for (let lz = 0; lz < 16; lz++) {
-        ids[cellIndex(lx, 0, lz)] = BEDROCK;
-        for (let y = 1; y < ground - 3; y++) ids[cellIndex(lx, y, lz)] = STONE;
-        for (let y = ground - 3; y < ground; y++) ids[cellIndex(lx, y, lz)] = DIRT;
-        ids[cellIndex(lx, ground, lz)] = GRASS;
-      }
+    const base = this.base;
+    if (this.terrain) {
+      // The terrain chunk, (y·16 + lz)·16 + lx, id << 4 | meta.
+      const t = this.terrain.chunk(cx, cz);
+      const h = Math.min(this.height, 128);
+      for (let y = 0; y < h; y++)
+        for (let lz = 0; lz < 16; lz++)
+          for (let lx = 0; lx < 16; lx++) {
+            const v = t[(y * 16 + lz) * 16 + lx]!;
+            if (v === 0) continue;
+            const i = cellIndex(lx, y, lz);
+            ids[i] = v >> 4;
+            meta[i] = v & 15;
+          }
+    } else
+      for (let lx = 0; lx < 16; lx++)
+        for (let lz = 0; lz < 16; lz++) {
+          ids[cellIndex(lx, 0, lz)] = BEDROCK;
+          for (let y = 1; y < ground - 3; y++) ids[cellIndex(lx, y, lz)] = STONE;
+          for (let y = ground - 3; y < ground; y++) ids[cellIndex(lx, y, lz)] = DIRT;
+          ids[cellIndex(lx, ground, lz)] = GRASS;
+        }
     if (cx >= 0 && cx <= 3 && cz >= 0 && cz <= 3) {
       for (const k of this.canvas.dug) {
         const [x, y, z] = posOf(k);
         if (x >> 4 !== cx || z >> 4 !== cz) continue;
-        ids[cellIndex(x & 15, y + BASE_Y, z & 15)] = 0;
+        const i = cellIndex(x & 15, y + base, z & 15);
+        ids[i] = 0;
+        meta[i] = 0;
       }
       for (const [k, v] of this.canvas.blocks) {
         const [x, y, z] = posOf(k);
         if (x >> 4 !== cx || z >> 4 !== cz) continue;
-        const i = cellIndex(x & 15, y + BASE_Y, z & 15);
+        const i = cellIndex(x & 15, y + base, z & 15);
         ids[i] = v >> 4;
         meta[i] = v & 15;
       }

@@ -255,20 +255,64 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
   here (query kept, so `?node=` links still open that node's detail), and the Search page, memory browser and command palette
   link here. The bot's RAPTOR memory itself is untouched; this tab reads it.
 - **Layouts.** Radial, icicle and node-link draw the server-laid-out tree (`/v1/raptor/graph`). **Cloud** draws every memory
-  as a point where similar memories sit together:
-  - **Projection: in the bridge, with the bot's own UMAP** (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded
-    single-threaded SGD) over the stored RAPTOR leaf embeddings (`RaptorNode.Embedding`, 1024-d `text-embedding-3-large` on
-    the live bot). Why the bridge and not a browser worker: the vectors are 4 KB each (2466 leaves = 10 MB of floats today,
-    tens of thousands later) and never need to leave CT 114; the bridge already holds them in memory, the C# UMAP is the one
-    RAPTOR clusters with, and the layout is computed once per tree state instead of once per visitor. No new dependency.
-  - **Bounded and never blocking.** `GET /v1/memory-activity/cloud` answers at once; the first request for a tree state starts
-    one background job on `Bridge:CloudThreads` (default 1) and the client polls while `status` is `computing`, showing the
-    previous layout meanwhile. UMAP runs on at most 2000 anchors (above that the bot's kNN would go parallel on every core);
-    the live 2466-leaf db takes ~4.8 s on one thread, once per RAPTOR build.
-  - **Stable.** Anchors are the build's leaves (`InsertedSeq == 0`, an even sample above 2000) under a fixed seed. Every other
-    leaf is placed at the softmax(cos/0.04)-weighted mean of its 6 most similar anchors (plus a tiny id-seeded offset), so a
-    new memory appears next to its neighbours without moving anything, and a restart reproduces the same picture. Only a new
-    RAPTOR build lays the cloud out again.
+  as a point, laid out in the bridge from the stored RAPTOR leaf embeddings (`RaptorNode.Embedding`, 1024-d
+  `text-embedding-3-large` on the live bot). Why the bridge and not a browser worker: the vectors are 4 KB each (2466 leaves =
+  10 MB of floats today, tens of thousands later) and never need to leave CT 114; the bridge already holds them in memory, and
+  each layout is computed once per tree state instead of once per visitor. No new dependency (MDS, PCA and the force layout
+  are ~600 lines of C# in `tools/ViewerBridge/Graph/Cloud*.cs`).
+  - **Arrangements (2026-11-03).** The cloud has four, picked in its toolbar (`?arr=`; the default is Distances):
+    - **Distances (MDS)**, the default: on-screen distance stands for embedding distance. Metric MDS minimising raw stress
+      Σ(δ − d)² on the **cosine distance** δ = 1 − cos of the unit-normalised vectors. Cosine distance because it is what RAPTOR
+      clusters and the bot retrieves by, so the scale bar and the hover's numbers are in the unit the bot "sees", and the bar is
+      linear in it; it is half the squared chord, not a true metric, which only shows as a little extra stress (text embeddings
+      have cos ≥ 0 almost everywhere, so δ stays in 0..1). Start: landmark MDS (400 max-min landmarks, Torgerson on their δ²,
+      every point triangulated from them). Refine: SMACOF (Guttman transform, unit weights) over **all pairs** of up to 3000
+      build leaves (`Bridge:CloudMaxMdsPoints`; 3000 = a 36 MB distance matrix for the length of the fit), one row per task with
+      SIMD over the row, so the result does not depend on the thread count; it stops when an iteration gains < 10⁻⁵. Above 3000
+      build leaves, and for every memory inserted since the build, a leaf minimises its own stress against the fixed anchors
+      (the one-point Guttman update from the softmax mean of its nearest anchors): the anchors are each placed point's pair
+      sample, so the cost stays n × 3000 dot products.
+    - **Neighbourhoods (UMAP)**: the bot's own UMAP (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded single-threaded
+      SGD) on at most 2000 anchors (above that the bot's kNN would go parallel on every core); other leaves at the
+      softmax(cos/0.04)-weighted mean of their 6 most similar anchors plus a tiny id-seeded offset. It keeps neighbourhoods,
+      not distances: the gaps between islands mean nothing, and its badge says so.
+    - **PCA**: the top two principal axes (seeded block power iteration on Xcᵀ Xc, ≤ 5000 build leaves fit them; every leaf is
+      an exact projection); the badge's tooltip gives the variance each axis explains (17 % and 7 % on the live db).
+    - **Tree (force)**: the RAPTOR tree itself, force-directed: leaves and summaries are nodes, springs along the parent links
+      (primary parent strongest; a leaf sits ℓ₀ = 0.5/√n from its parent, each layer up 2.2× farther), short-range grid
+      repulsion, a weak pull toward the start; it starts from the MDS picture (summaries at their children's mean), so it is
+      stable between builds. Summaries are drawn where the layout put them; a memory inserted later sits next to its parent.
+  - **Fidelity, shown.** Every arrangement is judged the same way on a seeded sample of 20 000 leaf pairs: Pearson and Spearman
+    between cosine distance and drawn distance, and normalised stress after the best uniform scale α (which never credits an
+    arrangement for its own scale); α is also the scale (`unit_distance`: the cosine distance one unit of the picture stands
+    for). The toolbar badge reads "Distances: true to embeddings (r = 0.84, stress 0.28)" (r ≥ 0.8 and stress ≤ 0.3), "roughly
+    to scale" (r ≥ 0.6) or "not to scale", with a tooltip that says why 1024 dimensions cannot map perfectly onto two. Distance
+    arrangements (MDS, PCA) draw a scale bar in cosine distance (a round 1/2/5 × 10ⁿ value near 110 px, following the zoom).
+    With a memory selected, hovering another shows their actual embedding distance (`GET /v1/memory-activity/cloud/distance`,
+    cosine computed in the bridge; vectors never reach the browser) beside the drawn one. On the live db (2466 leaves):
+
+    | arrangement | r | Spearman | stress | compute (1 thread) |
+    | --- | --- | --- | --- | --- |
+    | Distances (MDS) | 0.84 | 0.85 | 0.28 | 6.7 s |
+    | Neighbourhoods (UMAP) | 0.66 | 0.61 | 0.35 | 6.4 s |
+    | PCA | 0.67 | 0.67 | 0.38 | 0.5 s |
+    | Tree (force) | 0.82 | 0.82 | 0.33 | 0.5 s (after MDS) |
+
+    On a synthetic 1024-d set (13 topics, `Bench_arrangements_on_synthetic_sets_when_asked`), MDS takes 1.2–1.6 s at 2 500 points
+    and ~7 s at 20 000 (fit on 3000, 17 000 placed); PCA 1.6 s / 2.1 s, the tree 0.5 s / 7.5 s, UMAP 4.9 s / 6.9 s.
+  - **Bounded and never blocking.** `GET /v1/memory-activity/cloud?arrangement=` answers at once; an arrangement is computed
+    lazily, on its first request for a tree state, by one background queue on `Bridge:CloudThreads` (default 1; one
+    arrangement at a time; the tree computes MDS first), and the client polls while `status` is `computing`, showing the
+    previous layout meanwhile. Each arrangement is cached per tree state; `arrangements` reports the state of all four.
+  - **Stable.** Every arrangement is fitted on the build's leaves (`InsertedSeq == 0`, an even sample above its cap) under a
+    fixed seed, and every other leaf is placed from that fit and its own vector (and, for the tree, its parents) only, so a new
+    memory appears without moving anything, and a restart reproduces the same picture. Only a new RAPTOR build lays the cloud
+    out again.
+  - **Switching and comparing.** Switching the arrangement animates every point from where it was (650 ms, ease in-out; the
+    vertex shader mixes old and new positions). **Compare** (`?cmp=mds,umap`, 2–4 arrangements) shows them side by side (a 2×2
+    grid for three or four) in the same WebGL context: one buffer set and a scissor rectangle per pane, one shared style
+    buffer, so hover, selection, search, lasso, heat, time and the legend are linked across panes by construction; each pane
+    pans and zooms on its own and carries its title and fidelity numbers.
   - **Colour = the bot's own clusters**: the highest summary layer with ≥ 6 nodes (layer 3 of 4 on the live db: 13 clusters),
     each leaf under its primary-parent ancestor there; labels are that summary's TF-IDF terms. Eight fixed categorical slots
     (largest clusters first, stepped per theme, validated for colour-vision deficiency); the rest fold into "other". The legend
@@ -278,12 +322,15 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
     Live accesses pulse once (a thin fading ring, at most 24 at a time). Hot points get a soft halo.
   - **Interaction.** Pan, zoom, hover tooltip (title, text after a short dwell, cluster, last use and by whom), click opens the
     shared node detail, Shift-drag lasso lists the memories inside, search dims everything but the matches (Search page hits
-    arrive as `?hits=`), and a faded link overlay draws the RAPTOR parent links (leaf → summary → summary).
+    arrive as `?hits=`), and a faded link overlay draws the RAPTOR parent links (leaf → summary → summary). Links are **on by
+    default** (`?links=0` or the switch turns them off; the choice is remembered in this browser): calm at the fitted view
+    (alpha ≈ 0.08), fading further when zoomed out (× k²) and with more links on screen, a little stronger when zoomed in.
   - **Rendering.** One WebGL2 context draws every point and link from GPU buffers, on demand only; 2-D canvases add cluster
     density blobs underneath (the level of detail when zoomed out: points shrink, blobs carry the shape) and labels, rings and
     pulses on top. Measured on software WebGL (Chromium `--disable-gpu`, ANGLE on SwiftShader, 1440×900, `CLOUD_PERF=1` in
-    `e2e/memory-cloud.spec.ts`): 60 fps (p95 frame 17 ms) while panning and zooming at 3000 and at 20 000 points, links on or off;
-    the JS side of a frame is ~0.2 ms.
+    `e2e/memory-cloud.spec.ts`): 60 fps (p95 frame 17 ms) while panning and zooming at 3000 and at 20 000 points, links on
+    (the default) or off, and in Compare with links on (2 panes at 3000 and 20 000 points, 4 panes at 3000); the JS side of a
+    frame is 0.25–0.5 ms (4 panes the most).
 
 ## Design Studio (added 2026-11-03)
 
@@ -300,6 +347,17 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   any block placed there replaces it) and cuts the view away above a level (the slider, y -16..0; the engine's level cut,
   which the aim looks through). Off, the grassland behaves as before: only blocks and already-dug cells are edited. A box
   selection's move / rotate / mirror / copy carries its dug cells and fills the ground it leaves back in.
+- **Mine designer (added 2026-11-03).** The header's Build / Mine switch turns the session into a mine (docs/web/api.md "Mine
+  designs"): the grassland becomes generated terrain for the session's version and seed (`features/studio/mine/mineTerrain.ts`,
+  the bot's generator ported line for line; random seed by default, editable, "server seed" when the bot knows it) and y is
+  absolute world y 1..127. The primary tool digs (dug cells are the design: forced air), "Ground (fill back)" on the hotbar
+  undoes digs, blocks (torches, ladders, rails, chests) still place; the Underground cut and its slider reach down to y 1. A
+  side panel holds the ore-height guide (each ore band of the version from `ore-heights.json` as a ruler, best levels marked,
+  the current level and what is at it), an X-ray layer (the generated ores as instanced boxes drawn through the stone), the
+  stats (blocks to mine by material and ores mined / exposed per band, estimated from the generated terrain: the real world
+  will differ), and the templates: spiral shaft, strip mine, room, "at ore band" levels and the version-preferred presets
+  (`mine-presets.json`; applying one tags the design `preferred_for`). Saves keep kind, seed, entry and the absolute y.
+  Story Mode places a mine at its saved y as `mine` build items.
 - **Leaving unsaved work.** The studio tracks every cell changed since the last save (or since it opened: an untouched new
   design is clean; an undo back to the saved state is clean). While dirty, `lib/navGuard` (generic, installed by the shell)
   asks "Leave without saving?" (Save and leave / Leave / Stay) on in-app links (a capture-phase click listener ahead of

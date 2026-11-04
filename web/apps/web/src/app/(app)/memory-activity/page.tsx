@@ -1,13 +1,18 @@
 'use client';
 
-import { toNumber, type GraphLayout, type GraphNode } from '@mineclaw/contracts';
+import { toNumber, type CloudArrangement, type GraphLayout, type GraphNode, type MemoryCloudResponse } from '@mineclaw/contracts';
 import { Activity, Loader2, Pause, Play, Radio } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, EmptyState, ErrorState, Select, Skeleton } from '@/components/ui/primitives';
 import type { CloudCanvasHandle } from '@/features/memory-activity/cloud/CloudCanvas';
-import { CloudView } from '@/features/memory-activity/cloud/CloudView';
-import { cloudParents } from '@/features/memory-activity/cloud/cloudStyle';
+import { CloudView, type CloudViewPane } from '@/features/memory-activity/cloud/CloudView';
+import {
+  DEFAULT_ARRANGEMENT,
+  cloudParents,
+  isArrangement,
+  parseCompare,
+} from '@/features/memory-activity/cloud/cloudStyle';
 import { Segmented } from '@/components/ui/overlays';
 import { GraphCanvas, type GraphCanvasHandle, type NodeStyle } from '@/features/graph/GraphCanvas';
 import { indexGraph } from '@/features/graph/geometry';
@@ -36,7 +41,7 @@ import { resolvedTheme, usePrefs } from '@/lib/prefs';
 import { ago, clock, duration } from '@/lib/utils';
 
 const WINDOWS = [5, 15, 30, 60] as const;
-/** The map layouts (server-laid-out RAPTOR graph) plus the memory cloud (UMAP over the leaf embeddings). */
+/** The map layouts (server-laid-out RAPTOR graph) plus the memory cloud (bridge-laid-out arrangements of the leaf embeddings). */
 type View = GraphLayout | 'cloud';
 const VIEWS: readonly View[] = ['radial', 'icicle', 'nodelink', 'cloud'];
 const DIGITS = /^[0-9]+$/;
@@ -158,15 +163,54 @@ function ActivityInner() {
   const setSelected = (id: number | null) => setParam('node', id === null ? null : String(id));
 
   const graph = useApi('raptor.graph', { query: { layout: isCloud ? 'radial' : layout, colorBy: 'kind' } }, { enabled: !isCloud });
-  const cloud = useApi(
-    'memoryActivity.cloud',
-    {},
-    {
-      enabled: isCloud,
-      // The bridge lays the cloud out in the background: poll while it does.
-      refetchInterval: (q) => (q.state.data?.status === 'computing' ? 2000 : 60_000),
-    },
-  );
+  // Cloud arrangement(s): `arr` (one pane, default the distance layout) or `cmp` (2–4 side by side); links on unless `links=0`
+  // (or turned off before, remembered in this browser).
+  const arrParam = params.get('arr');
+  const arrangement: CloudArrangement = isArrangement(arrParam) ? arrParam : DEFAULT_ARRANGEMENT;
+  const compare = parseCompare(params.get('cmp'));
+  const paneArrangements: readonly CloudArrangement[] = compare ?? [arrangement];
+  const linksParam = params.get('links');
+  const [linksPref, setLinksPref] = useState<boolean>(() => {
+    try {
+      return typeof window === 'undefined' || window.localStorage.getItem('mcx-cloud-links') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const showLinks = linksParam === '0' ? false : linksParam === '1' ? true : linksPref;
+  const setShowLinks = (on: boolean) => {
+    setLinksPref(on);
+    try {
+      window.localStorage.setItem('mcx-cloud-links', on ? '1' : '0');
+    } catch {
+      // private window: the URL still keeps it
+    }
+    setParam('links', on ? null : '0');
+  };
+  const cloudOpts = (a: CloudArrangement) => ({
+    enabled: isCloud && paneArrangements.includes(a),
+    // The bridge lays each arrangement out in the background: poll while it does.
+    refetchInterval: (q: { state: { data?: { status: string } } }) => (q.state.data?.status === 'computing' ? 2000 : 60_000),
+  });
+  const cloudQ = {
+    mds: useApi('memoryActivity.cloud', { query: { arrangement: 'mds' } }, cloudOpts('mds')),
+    umap: useApi('memoryActivity.cloud', { query: { arrangement: 'umap' } }, cloudOpts('umap')),
+    pca: useApi('memoryActivity.cloud', { query: { arrangement: 'pca' } }, cloudOpts('pca')),
+    tree: useApi('memoryActivity.cloud', { query: { arrangement: 'tree' } }, cloudOpts('tree')),
+  } satisfies Record<CloudArrangement, unknown>;
+  // A pane shows its arrangement once it has points; until then the last thing it showed (so a switch animates instead of
+  // flashing a spinner).
+  const [lastShown, setLastShown] = useState<ReadonlyArray<MemoryCloudResponse | null>>([]);
+  const viewPanes: CloudViewPane[] = paneArrangements.map((a, slot) => {
+    const d = cloudQ[a].data;
+    const ready = d && d.points.id.length > 0 ? d : null;
+    const fallback = ready ?? lastShown[slot] ?? lastShown[0] ?? null;
+    return { arrangement: a, cloud: fallback, pending: !ready || ready.status === 'computing' };
+  });
+  if (viewPanes.length !== lastShown.length || viewPanes.some((p, i) => p.cloud !== lastShown[i]))
+    setLastShown(viewPanes.map((p) => p.cloud));
+  const cloud = cloudQ[paneArrangements[0]!];
+  const primaryCloud = viewPanes[0]!.cloud;
   const heat = useApi(
     'memoryActivity.heat',
     { query: { windowS: windowMin * 60, ...(filter.kind === 'brain' ? { brain: filter.brain } : {}) } },
@@ -183,7 +227,7 @@ function ActivityInner() {
 
   const idx = useMemo(() => (graph.data && !isCloud ? indexGraph(graph.data) : null), [graph.data, isCloud]);
   const cloudIdx = useMemo(() => {
-    const c = isCloud ? cloud.data : undefined;
+    const c = isCloud ? (primaryCloud ?? undefined) : undefined;
     if (!c) return null;
     const info = new Map<number, { label: string; layer: number }>();
     c.points.id.forEach((id, i) => info.set(id, { label: c.points.title[i]!, layer: 0 }));
@@ -192,7 +236,7 @@ function ActivityInner() {
       info.set(id, { label: `L${c.summaries.layer[i]} · ${cl >= 0 ? (c.clusters[cl]?.label ?? '') : 'summary'}`, layer: c.summaries.layer[i]! });
     });
     return { parents: cloudParents(c), info };
-  }, [cloud.data, isCloud]);
+  }, [primaryCloud, isCloud]);
   const parents = isCloud ? cloudIdx?.parents : idx?.parents;
   const events = useMemo(() => activity.data?.events ?? [], [activity.data]);
   const brains = useMemo(() => [...new Set([...(heat.data?.brains ?? []), ...events.map((e) => e.brain)])].sort(), [heat.data, events]);
@@ -318,22 +362,21 @@ function ActivityInner() {
         <div className="relative flex min-h-[28rem] flex-col">
           {isCloud ? (
             <div className="relative min-h-0 flex-1">
-              {cloud.isPending ? (
-                <Skeleton className="absolute inset-6 rounded-xl" />
-              ) : cloud.error ? (
-                <ErrorState error={cloud.error} onRetry={() => void cloud.refetch()} className="absolute inset-0" />
-              ) : cloud.data.status === 'empty' ? (
-                <EmptyState title="No RAPTOR tree yet" hint={cloud.data.note ?? undefined} className="absolute inset-0" />
-              ) : cloud.data.points.id.length === 0 ? (
-                <EmptyState
-                  icon={cloud.data.status === 'error' ? undefined : <Loader2 className="size-5 animate-spin" />}
-                  title={cloud.data.status === 'error' ? 'The memory cloud could not be laid out' : 'Laying out the memory cloud…'}
-                  hint={cloud.data.status === 'error' ? (cloud.data.note ?? undefined) : 'The bridge projects every memory once per RAPTOR build; it takes a few seconds.'}
-                  className="absolute inset-0"
-                />
-              ) : (
+              {primaryCloud ? (
                 <CloudView
-                  cloud={cloud.data}
+                  panes={viewPanes}
+                  arrangement={arrangement}
+                  onArrangement={(a) => setParams({ arr: a === DEFAULT_ARRANGEMENT ? null : a, cmp: null })}
+                  compare={compare}
+                  onCompare={(list) =>
+                    setParams(
+                      list
+                        ? { cmp: list.join(',') }
+                        : { cmp: null, arr: compare?.[0] && compare[0] !== DEFAULT_ARRANGEMENT ? compare[0] : null },
+                    )
+                  }
+                  showLinks={showLinks}
+                  onShowLinks={setShowLinks}
                   last={last}
                   t={t}
                   halfLifeS={hl}
@@ -348,6 +391,19 @@ function ActivityInner() {
                   hitQuery={params.get('q')}
                   onClearHits={() => setParams({ hits: null, q: null })}
                   canvasRef={cloudRef}
+                />
+              ) : cloud.isPending ? (
+                <Skeleton className="absolute inset-6 rounded-xl" />
+              ) : cloud.error ? (
+                <ErrorState error={cloud.error} onRetry={() => void cloud.refetch()} className="absolute inset-0" />
+              ) : cloud.data.status === 'empty' ? (
+                <EmptyState title="No RAPTOR tree yet" hint={cloud.data.note ?? undefined} className="absolute inset-0" />
+              ) : (
+                <EmptyState
+                  icon={cloud.data.status === 'error' ? undefined : <Loader2 className="size-5 animate-spin" />}
+                  title={cloud.data.status === 'error' ? 'The memory cloud could not be laid out' : 'Laying out the memory cloud…'}
+                  hint={cloud.data.status === 'error' ? (cloud.data.note ?? undefined) : 'The bridge lays every memory out once per RAPTOR build; it takes a few seconds.'}
+                  className="absolute inset-0"
                 />
               )}
             </div>

@@ -3,7 +3,16 @@
  * route's response schema), a Response (binary, errors), or throw MockError. Auth, CSRF, roles and chat rate limiting
  * behave like the real server so the UI's error paths can be exercised.
  */
-import { hasRole, ROUTES, STEP_UP_MS, type MemoryKindKey, type Me, type Role, type RouteId } from '@mineclaw/contracts';
+import {
+  hasRole,
+  ROUTES,
+  STEP_UP_MS,
+  type CloudArrangement,
+  type MemoryKindKey,
+  type Me,
+  type Role,
+  type RouteId,
+} from '@mineclaw/contracts';
 import { blockSheetSvg, iso, nowIso } from './util';
 import * as admin from './data/administration';
 import * as live from './data/live';
@@ -418,9 +427,13 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     }
   },
 
-  'memoryActivity.heat': ({ query }) =>
-    live.memoryHeat(query.brain as string | undefined, num(query.windowS), raptor.STATE_KEY),
-  'memoryActivity.cloud': () => cloud.memoryCloud(),
+  'memoryActivity.heat': ({ query }) => live.memoryHeat(query.brain as string | undefined, num(query.windowS), raptor.STATE_KEY),
+  'memoryActivity.cloud': ({ query }) => cloud.memoryCloud((query.arrangement as CloudArrangement | undefined) ?? 'mds'),
+  'memoryActivity.cloudDistance': ({ query }) => {
+    const d = cloud.cloudDistance(num(query.a), num(query.b));
+    if (!d) throw new MockError(404, 'No such memory', 'not_found');
+    return d;
+  },
   'memoryActivity.list': ({ query }) => live.memoryActivitySince(num(query.since), query.brain as string | undefined),
 
   'admin.schema': () => misc.editSchema,
@@ -714,6 +727,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'memory.get': { params: { kind: 'claims', id: '3' }, query: {}, body: null },
   search: { params: {}, query: { q: 'melons' }, body: null },
   'raptor.node': { params: { id: 481 }, query: {}, body: null },
+  'memoryActivity.cloudDistance': { params: {}, query: { a: 0, b: 1 }, body: null },
   'raptor.leaves': { params: { id: 481 }, query: {}, body: null },
   'scripts.get': { params: { name: 'cobble_loop' }, query: {}, body: null },
   'scripts.diff': { params: { name: 'cobble_loop' }, query: { a: 6, b: 7 }, body: null },

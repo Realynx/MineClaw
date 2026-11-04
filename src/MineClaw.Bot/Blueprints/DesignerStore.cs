@@ -20,6 +20,8 @@ public sealed class DesignerSessionRecord
     public int Calls { get; set; }
     /// <summary>What the user changed since the AI's last turn ("placed 12 planks; removed 3"), told to the AI with the next message.</summary>
     public string PendingEdits { get; set; } = "";
+    /// <summary>A mine session's version preference (<c>preferred_for</c>): a strip mine that suits that version's ore heights.</summary>
+    public string? PreferredFor { get; set; }
     public DateTimeOffset Created { get; set; }
     public DateTimeOffset Updated { get; set; }
 
@@ -66,9 +68,13 @@ public sealed class DesignerStore
         // The canvas's game version (added 2026-11-03). A session from before has none: it is the server's (its blocks are).
         lock (_db.Gate)
             try { _db.Exec("ALTER TABLE designer_sessions ADD COLUMN version TEXT"); } catch (Microsoft.Data.Sqlite.SqliteException) { /* already there */ }
+        // Mine sessions (added 2026-11-03): the canvas's kind, its terrain seed and its version preference. Older rows are builds.
+        foreach (var col in new[] { "kind TEXT", "seed TEXT", "preferred_for TEXT" })
+            lock (_db.Gate)
+                try { _db.Exec("ALTER TABLE designer_sessions ADD COLUMN " + col); } catch (Microsoft.Data.Sqlite.SqliteException) { /* already there */ }
     }
 
-    private const string Cols = "id,owner,model,design_id,name,rev,blocks,ox,oy,oz,ax,ay,az,cost_usd,calls,pending,created,updated,version";
+    private const string Cols = "id,owner,model,design_id,name,rev,blocks,ox,oy,oz,ax,ay,az,cost_usd,calls,pending,created,updated,version,kind,seed,preferred_for";
 
     public DesignerSessionRecord Insert(DesignerSessionRecord s)
     {
@@ -76,10 +82,12 @@ public sealed class DesignerStore
         lock (_db.Gate)
         {
             _db.Exec("""
-                INSERT INTO designer_sessions(owner,model,design_id,name,rev,blocks,ox,oy,oz,cost_usd,calls,pending,created,updated,version)
-                VALUES($o,$m,$d,$n,$r,$b,$ox,$oy,$oz,0,0,'',$t,$t,$v)
+                INSERT INTO designer_sessions(owner,model,design_id,name,rev,blocks,ox,oy,oz,ax,ay,az,cost_usd,calls,pending,created,updated,version,kind,seed,preferred_for)
+                VALUES($o,$m,$d,$n,$r,$b,$ox,$oy,$oz,$ax,$ay,$az,0,0,'',$t,$t,$v,$k,$s,$p)
                 """, ("$o", s.Owner), ("$m", s.Model), ("$d", s.DesignId), ("$n", s.Name), ("$r", s.Canvas.Rev), ("$b", s.Canvas.Encode()),
-                ("$ox", s.Offset.X), ("$oy", s.Offset.Y), ("$oz", s.Offset.Z), ("$t", AgentDb.ToUnixMs(s.Created)), ("$v", s.Canvas.Version));
+                ("$ox", s.Offset.X), ("$oy", s.Offset.Y), ("$oz", s.Offset.Z), ("$ax", s.Anchor?.X), ("$ay", s.Anchor?.Y), ("$az", s.Anchor?.Z),
+                ("$t", AgentDb.ToUnixMs(s.Created)), ("$v", s.Canvas.Version),
+                ("$k", s.Canvas.Kind), ("$s", s.Canvas.Mine ? s.Canvas.Seed : null), ("$p", s.PreferredFor));
             s.Id = _db.ScalarLong("SELECT last_insert_rowid()");
         }
         return s;
@@ -91,8 +99,8 @@ public sealed class DesignerStore
         lock (_db.Gate)
             _db.Exec("""
                 UPDATE designer_sessions SET model=$m, design_id=$d, name=$n, rev=$r, blocks=$b, ox=$ox, oy=$oy, oz=$oz, ax=$ax, ay=$ay, az=$az,
-                    cost_usd=$c, calls=$k, pending=$p, updated=$t, version=$v WHERE id=$id
-                """, ("$v", s.Canvas.Version), ("$m", s.Model), ("$d", s.DesignId), ("$n", s.Name), ("$r", s.Canvas.Rev), ("$b", s.Canvas.Encode()),
+                    cost_usd=$c, calls=$k, pending=$p, updated=$t, version=$v, kind=$kind, seed=$seed, preferred_for=$pf WHERE id=$id
+                """, ("$v", s.Canvas.Version), ("$kind", s.Canvas.Kind), ("$seed", s.Canvas.Mine ? s.Canvas.Seed : null), ("$pf", s.PreferredFor), ("$m", s.Model), ("$d", s.DesignId), ("$n", s.Name), ("$r", s.Canvas.Rev), ("$b", s.Canvas.Encode()),
                 ("$ox", s.Offset.X), ("$oy", s.Offset.Y), ("$oz", s.Offset.Z), ("$ax", s.Anchor?.X), ("$ay", s.Anchor?.Y), ("$az", s.Anchor?.Z),
                 ("$c", (double)s.CostUsd), ("$k", s.Calls), ("$p", s.PendingEdits), ("$t", AgentDb.ToUnixMs(s.Updated)), ("$id", s.Id));
     }
@@ -103,10 +111,13 @@ public sealed class DesignerStore
             return _db.Query($"SELECT {Cols} FROM designer_sessions WHERE id=$id", r => new DesignerSessionRecord
             {
                 Id = r.GetInt64(0), Owner = r.GetString(1), Model = r.GetString(2), DesignId = AgentDb.LongOrNull(r, 3), Name = r.GetString(4),
-                Canvas = DesignerCanvas.Decode(r.GetString(6), r.GetInt32(5)), Offset = new BlockPos(r.GetInt32(7), r.GetInt32(8), r.GetInt32(9)),
+                // The kind, seed and version first: a mine canvas reads its dug cells against its own plot.
+                Canvas = DesignerCanvas.Decode(r.GetString(6), r.GetInt32(5), AgentDb.StrOrNull(r, 19), AgentDb.StrOrNull(r, 20),
+                    AgentDb.StrOrNull(r, 18) ?? DesignVersions.Server), Offset = new BlockPos(r.GetInt32(7), r.GetInt32(8), r.GetInt32(9)),
                 Anchor = r.IsDBNull(10) ? null : new BlockPos(r.GetInt32(10), r.GetInt32(11), r.GetInt32(12)),
                 CostUsd = (decimal)r.GetDouble(13), Calls = r.GetInt32(14), PendingEdits = r.GetString(15),
                 Created = AgentDb.FromUnixMs(r.GetInt64(16)), Updated = AgentDb.FromUnixMs(r.GetInt64(17)),
+                PreferredFor = DesignVersions.Normalize(AgentDb.StrOrNull(r, 21)),
             }.WithVersion(AgentDb.StrOrNull(r, 18)), ("$id", id)).FirstOrDefault();
     }
 

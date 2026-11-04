@@ -296,7 +296,8 @@ Notes on specific routes:
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
 |---|---|---|---|---|---|---|---|
 | `memoryActivity.heat` | `GET /api/memory-activity/heat` | viewer | query `MemoryHeatQuery` | `MemoryHeatResponse` | `GET /v1/memory-activity/heat` | bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree) | – |
-| `memoryActivity.cloud` | `GET /api/memory-activity/cloud` | viewer | – | `MemoryCloudResponse` | `GET /v1/memory-activity/cloud` | bridge-native (UMAP over the RAPTOR leaf embeddings, computed in the background and cached per tree state) | – |
+| `memoryActivity.cloud` | `GET /api/memory-activity/cloud` | viewer | query `MemoryCloudQuery` | `MemoryCloudResponse` | `GET /v1/memory-activity/cloud` | bridge-native (MDS / UMAP / PCA / tree layouts of the RAPTOR leaf embeddings, computed lazily in the background and cached per tree state) | – |
+| `memoryActivity.cloudDistance` | `GET /api/memory-activity/cloud/distance` | viewer | query `CloudDistanceQuery` | `CloudDistanceResponse` | `GET /v1/memory-activity/cloud/distance` | bridge-native (cosine of two stored RAPTOR embeddings; vectors never leave the bridge) | – |
 | `memoryActivity.list` | `GET /api/memory-activity` | viewer | query `MemoryActivityQuery` | `MemoryActivityResponse` | `GET /v1/sup/viewer/memory-activity` | /api/viewer/memory-activity | – |
 
 ### Administration (the bot's settings, per node; POSTs need a fresh step-up)
@@ -623,16 +624,32 @@ These are the bot-side additions from architecture.md, in their wire form. They 
 in_context, staleness_s, evicted}]}`.
   - **Decay.** `heat = 0.5^((at − last_access_at)/half_life_s)`. The client re-decays between refreshes with `decayHeat`.
 
-- **Memory cloud** (`MemoryCloudResponse`, added 2026-11-03): `GET /v1/memory-activity/cloud`. Every RAPTOR leaf at a 2-D
-  position from the bot's own UMAP (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded single-threaded SGD) over the
-  stored leaf embeddings, in the unit square:
-  - **Never blocks.** The first request for a tree state starts the layout in the background (`Bridge:CloudThreads`, default
-    1) and answers at once with `status: "computing"` and the previous layout (or none); the client polls. `ready` layouts are
-    cached per tree state; `empty` = no tree; `error` = the layout failed (logged, not retried for that state).
-  - **Stable.** UMAP runs on the build's leaves (`InsertedSeq == 0`; an even index-ordered sample of 2000 above that), and
-    every other leaf is placed at the softmax(cos/0.04)-weighted mean of its 6 most similar anchors plus a tiny offset from
-    its id. Placement depends on the anchors only, so incremental refreshes and a bridge restart give the same picture;
-    only a new RAPTOR build (or a removed build leaf) lays it out again.
+- **Memory cloud** (`MemoryCloudResponse`, added 2026-11-03; arrangements 2026-11-03): `GET /v1/memory-activity/cloud?arrangement=`.
+  Every RAPTOR leaf at a 2-D position in the unit square, in one of four arrangements of the stored leaf embeddings
+  (`arrangement`, default `mds`; anything else is a 400):
+  - `mds` **Distances**: metric MDS on cosine distance (1 − cos): landmark MDS start, all-pairs SMACOF on ≤ 3000 build leaves
+    (`Bridge:CloudMaxMdsPoints`), every other leaf minimising its own stress against them. Drawn distance ≈ embedding distance.
+  - `umap` **Neighbourhoods**: the bot's own UMAP (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded single-threaded SGD)
+    on ≤ 2000 build leaves; every other leaf at the softmax(cos/0.04)-weighted mean of its 6 most similar anchors plus a tiny
+    id-seeded offset. Neighbourhoods only: gaps between islands mean nothing.
+  - `pca`: the top two principal axes (≤ 5000 build leaves fit them; every leaf is an exact projection);
+    `fidelity.variance_explained` per axis.
+  - `tree`: force-directed along the RAPTOR parent links (leaves and summaries are nodes; `summaries.xy` are their own
+    positions here, not their children's mean), started from the MDS picture; inserted leaves sit next to their parent.
+  - **Fidelity** (`fidelity`, every arrangement, the same measure): on a seeded sample of 20 000 leaf pairs (all pairs when
+    fewer), `pearson` / `spearman` between cosine distance and drawn distance, `stress` = √(Σ(δ − αd)²/Σδ²) after the best
+    scale α, and `unit_distance` = α (the cosine distance one unit of the unit square stands for: the scale bar, the hover).
+  - **Never blocks.** The first request for an arrangement and tree state queues it on one background job
+    (`Bridge:CloudThreads`, default 1; one arrangement at a time; `tree` computes `mds` first) and answers at once with
+    `status: "computing"` and that arrangement's previous layout (or none); the client polls. `arrangements` lists all four
+    with their state for this tree (`ready`, `computing`, `queued`, `error`, `idle` = not asked for). `ready` layouts are cached
+    per tree state; `empty` = no tree; `error` = the layout failed (logged, not retried for that state).
+  - **Stable.** Every arrangement is fitted on the build's leaves (`InsertedSeq == 0`) under a fixed seed and places every other
+    leaf from that fit and its own vector only, so incremental refreshes and a bridge restart give the same picture; only a new
+    RAPTOR build (or a removed build leaf) lays it out again.
+- **Embedding distance** (`CloudDistanceResponse`): `GET /v1/memory-activity/cloud/distance?a=&b=` (viewer role): the cosine
+  distance and similarity of two nodes' stored embeddings, computed in the bridge (vectors never leave it); 404 for an unknown
+  node or one without a vector, 400 without two integer ids. The cloud's hover asks it for the selected and the hovered memory.
   - **Columns.** `points` and `summaries` are parallel arrays (`id`, `xy` interleaved, `cluster`, `kind`, `title`,
     `parents`, `inserted`) to keep tens of thousands of points small (the live db's 2466 leaves are 208 KiB).
   - **Clusters** are the bot's own: the summary layer with ≥ 6 nodes nearest the top (`cluster_layer`), each leaf under its
@@ -767,7 +784,57 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   never locked). Over 32 a side is refused.
 - **Bridge.** `/v1/sup/designer/*` passes reads for any signed role; every POST needs `design` or `admin`, and the bridge
   writes `player` (the linked player) and `who` ("user (web)") into the body, refusing a body that sets them.
-- **Persistence.** `designer_sessions` and `designer_messages` in the agent db.
+- **Persistence.** `designer_sessions` and `designer_messages` in the agent db (a session's `kind`, `seed` and `preferred_for`
+  columns were added for mine designs; older rows are builds).
+
+### Mine designs (added 2026-11-03)
+
+A session is a `build` (the grassland plot above) or a `mine` (`kind`). A mine is the inverse of a build: the cells to dig out
+of the ground, so a large underground strip mine can be drawn once and placed in the world for the pawns to mine.
+
+- **The canvas.** The same 64×64 plot, but the ground is generated terrain and y is **absolute world y 0..127** (`plot` =
+  `{size: 64, height: 128, depth: 0}`). A cell is undisturbed ground where the terrain is solid; air there digs it (never
+  bedrock: refused), `-1` fills it back, air over the terrain's air changes nothing; blocks go anywhere (torches, ladders,
+  rails, chests: placed once their cell is dug). A loaded mine keeps its dug cells as saved whatever the terrain under them.
+  `anchor` is the mine's entry (the top of its shaft). The browser holds the same terrain (`mineTerrain.ts`), so both canvases
+  apply the same rule.
+- **The terrain** (src/MineClaw.Bot/Blueprints/Mine/MineTerrain.cs, a line-for-line port in
+  web/apps/web/src/features/studio/mine/mineTerrain.ts; MineClaw's own generator, no game code): the session's `seed` (text;
+  a whole number as it is, other text by Java's string hash) and version give rolling hills (surface y 58..81 from three
+  octaves of fixed-point value noise), grass on 3-4 dirt layers, stone, a bedrock floor at y 0 patchy up to y 4; per 16×16
+  chunk, stone pockets (dirt, gravel; 1.12.2 granite, diorite, andesite), ore veins at their heights and now and then one light
+  cave, each chunk from its own position only. Integer math only (a 32-bit hash, mulberry32, 16.16 noise), so C# and the
+  browser agree bit for bit; both test suites check the same golden plot hashes.
+- **Ore heights** (`web/apps/web/src/features/studio/mine/ore-heights.json`, embedded in the bot; its public sources are listed
+  in it): per version, each ore's band, veins per chunk, vein size, shape (lapis: a triangle at 16 ± 16) and the level a strip
+  mine goes to (`best`: diamond, redstone and gold y 11, above the lava lakes at y ≤ 10; lapis and iron 16; coal 48), plus the
+  bedrock layer. 1.12.2: coal 0-127, iron 0-63, gold 0-31, redstone 0-15, diamond 0-15, lapis 0-30 (peak 16), emerald
+  (extreme hills only: not generated). b1.8.1: the same bands with veins one block smaller and no emerald or granite family.
+- **Templates** (MineTemplates.cs / mineTemplates.ts, the same cells for the same parameters): `spiral` — an n×n shaft (3..6)
+  around a centred c×c core (1|2) left standing, one block down per step and 3 high (feet, head, the room a step needs), so a
+  lap later the same cell is 4(n−1) lower with solid floor between; top (default: the highest ground over its square) to
+  bottom, clockwise or not, a torch on the outer wall every N steps, landings (the whole square dug 2 high) at given levels;
+  `strip` — a main corridor (1×2 or 2×3) along x or z with 1×2 branches off both sides every spacing+1 cells, torches on the
+  corridor's wall. Presets (`mine-presets.json`): "1.12.2 diamond strip mine at y 11" (branches 3 apart), "1.12.2 lapis and
+  iron strip mine at y 16", "b1.8.1 diamond strip mine at y 11" (2 apart: smaller veins), "b1.8.1 lapis and gold strip mine
+  at y 16"; a design made from one is saved with `preferred_for <version>`.
+- **Routes.** `POST sessions {kind?, seed?, rev?, …}`: a new mine canvas (a random seed when none), or revision `rev` of a design
+  (saving it again makes it the newest revision: a revert). `POST sessions/{id}/version {version, kind?, seed?, preferred_for?,
+  apply?}`: `kind` switches an empty canvas at once and answers `needs_clear: true` for a full one (`apply` clears it and
+  switches: nothing carries over between a grassland and absolute y); `seed` changes the terrain in place; `preferred_for` (a
+  version, `""`/`"none"` to drop it) marks a version-preferred mine. `GET models` → `server_seed` when the server told the bot
+  its world seed (b1.8.1's login does; 1.12.2's doesn't): our terrain from it, never the real world's.
+- **Saved as DSL.** `kind mine`, `anchor absolute X,Y,Z` (layer 0 at world y Y; X,Z where its min corner sat on the plot),
+  `entry x,y,z` (local), `seed S`, `preferred_for V`, the blocks as layers and the cells to dig as `clear` boxes (merged
+  greedily: a 64×64×100 mine is a few hundred short lines), drawn then parsed back and compared cell by cell. Only a mine may be
+  taller than 32 (up to 128) or place nothing at all; it never digs below y 1. Every builder places it at its absolute y
+  (`Blueprint.OriginOn`: the entry's column on the site's), and the history's revisions, diff and revert keep it a mine.
+- **The AI designer.** On a mine canvas only: a compact system section (absolute y, the surface range here, the version's ore
+  heights in one line, the preset ids, the walkable-mine rules) and three more tools: `spiral_shaft {at:[x,z], size?, core?,
+  top?, bottom, dir?, torch_every?, landings?}`, `strip_mine {at:[x,y,z], axis?, length?, corridor? 1x2|2x3, spacing?,
+  branch_length?, sides?, torch_every?}`, `mine_preset {id}`. `remove` digs rooms; a build turn's prompt and tools are unchanged.
+- **Story Mode.** A placed mine is one `mine` build item group (docs/web/story-mode.md "Construction"): `blocks` = the cells to dig
+  at their absolute y, `place` = `[[x,y,z,id,meta]]` the blocks that go in them.
 
 ## 7. Binary formats
 
@@ -817,7 +884,7 @@ filename="<slug>-<yyyyMMdd-HHmm>.mcshard"`. The format is `ShardFile` FormatVers
 | 6   | `memory-activity` pass-through       | `viewer/memory-activity` was added to the GET allow-list.                                                                                                                                                                                               |
 | 7   | i64 world hashes                     | They are strings on the public API, via `parseBridgeJson`, because JSON.parse would lose precision past 2^53.                                                                                                                                           |
 | 8   | Opaque maps during case conversion   | The `OPAQUE_KEYS` list (§1) applies. Script params and blackboards keep their own keys.                                                                                                                                                                 |
-| 9   | Routes the architecture did not list | These bridge routes are added: `/v1/raptor/node/{id}/leaves` ("show leaves under"), `/v1/shards/export/preview` (the export dialog's preview), `/v1/designs/{id}/picture.png`, `/v1/memory-activity/heat`, `/v1/memory-activity/cloud`, `/v1/groom/preview` (phase 2), `/v1/health`. `/v1/raptor/tree` was removed with the RAPTOR tree page (2026-11-03). |
+| 9   | Routes the architecture did not list | These bridge routes are added: `/v1/raptor/node/{id}/leaves` ("show leaves under"), `/v1/shards/export/preview` (the export dialog's preview), `/v1/designs/{id}/picture.png`, `/v1/memory-activity/heat`, `/v1/memory-activity/cloud`, `/v1/memory-activity/cloud/distance`, `/v1/groom/preview` (phase 2), `/v1/health`. `/v1/raptor/tree` was removed with the RAPTOR tree page (2026-11-03). |
 | 10  | Script source                        | One public route takes `source=live                                                                                                                                                                                                                     | db`. The bridge's `/v1/scripts*` picks the supervisor (live) or its own db reader (db). |
 | 11  | Import preview                       | It is bridge-native (`ShardImporter.Preview` on the read-only db), as the architecture lists. Apply goes to the bot (`/api/admin/shard/import`). The supervisor's own preview route is not exposed.                                                     |
 | 12  | Vision PNG path                      | The public path is `/api/bodies/:body/vision/:id/image.png`, so it cannot collide with `/vision/:id`. The bridge path keeps the supervisor's `{id}.png`.                                                                                                |
