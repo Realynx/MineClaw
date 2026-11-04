@@ -31,7 +31,7 @@ public static class EquipTool
         if (mode == "unwear") return await UnwearAsync(c, item, ct).ConfigureAwait(false);
         if (Items.ByNameWithDamage(item) is not { } it) return ToolResult.Error($"unknown item '{item}'");
         var want = new Wanted(it.Item.Id, it.Damage, it.Item.MaxDamage, ench);
-        string label = Items.Get(it.Item.Id).DisplayName.ToLowerInvariant() + (string.IsNullOrEmpty(ench) || ench == "none" ? "" : $" ({ench})");
+        string label = Label(it.Item.Id, ench);
         return mode switch
         {
             "take" => await TakeAsync(c, i, want, label, ct).ConfigureAwait(false),
@@ -41,6 +41,10 @@ public static class EquipTool
             _ => ToolResult.Error("mode must be hold|wear|unwear|take|store"),
         };
     }
+
+    /// <summary>"diamond pickaxe (fortune)", or just the item's name without an enchantment wish.</summary>
+    private static string Label(int id, string? ench) =>
+        Items.Get(id).DisplayName.ToLowerInvariant() + (string.IsNullOrEmpty(ench) || ench == "none" ? "" : $" ({ench})");
 
     /// <summary>The stacks an equip call means: that item (any variant for -1 or a tool), with the enchantment wish.</summary>
     private sealed record Wanted(int Id, int Damage, int MaxDamage, string? Ench)

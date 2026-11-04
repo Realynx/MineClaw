@@ -270,13 +270,16 @@ public sealed partial class ScriptBridge
     private ChatOwner OwnChat(GameEvent e)
     {
         if (Addressed == null) return ChatOwner.Named;
-        if (e.Kind == EventKind.Whisper && GameEvent.BodyTag(e.Body) is { } whisperedTo)
-            return Body != null && whisperedTo.Equals(Body, StringComparison.OrdinalIgnoreCase) ? ChatOwner.Named : ChatOwner.Other;
+        if (e.Kind == EventKind.Whisper && GameEvent.BodyTag(e.Body) is { } whisperedTo) return WhisperOwner(whisperedTo);
         IReadOnlyList<string> named;
         try { named = Addressed(e.Text); } catch (Exception) { return Body == null ? ChatOwner.Named : ChatOwner.Other; }
         if (named.Count == 0) return Body == null ? ChatOwner.Named : ChatOwner.Unnamed;
         return named.Contains(Body ?? "main", StringComparer.OrdinalIgnoreCase) ? ChatOwner.Named : ChatOwner.Other;
     }
+
+    /// <summary>A whisper is this lane's only when it went to this lane's body.</summary>
+    private ChatOwner WhisperOwner(string whisperedTo) =>
+        Body != null && whisperedTo.Equals(Body, StringComparison.OrdinalIgnoreCase) ? ChatOwner.Named : ChatOwner.Other;
 
     private enum ChatOwner { Named, Unnamed, Other }
 
@@ -314,14 +317,22 @@ public sealed partial class ScriptBridge
             var v = Library.Resolve(reference, IsScriptable, out var why);
             return v == null ? (null, why ?? $"no saved script '{clean}'", null) : (clean, null, v.Code);
         }
-        var lang = LanguageOf(code);
-        if (lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) return (null, ScriptPrompts.JsOnly, null);
-        var lint = Lint(code, lang);
-        if (lint.HasErrors) return (null, lint.Format(LintSeverity.Error, 300), null); // "lint errors (fix and resubmit): ..."
+        if (CodeProblem(code, out var lang, out _) is { } problem) return (null, problem, null); // "lint errors (fix and resubmit): ..."
         var res = Library.SaveVersion(clean, code, author: author, purpose: ScriptLint.Purpose(code), argNames: ScriptLint.ArgNames(code),
             lang: lang == ScriptLanguage.Js ? "js" : null);
         _log?.LogInformation("hive script {Name} saved v{Version} by {Author}", clean, res.Routine?.Script?.Version, author ?? "c#");
         return (clean, null, code);
+    }
+
+    /// <summary>Why code can't be saved: Lua while only JS is accepted, or lint errors ("lint errors (fix and resubmit): ...");
+    /// null = it may be saved (its language and lint report out).</summary>
+    private string? CodeProblem(string code, out ScriptLanguage lang, out LintReport lint)
+    {
+        lang = LanguageOf(code);
+        lint = default!;
+        if (lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) return ScriptPrompts.JsOnly;
+        lint = Lint(code, lang);
+        return lint.HasErrors ? lint.Format(LintSeverity.Error, 300) : null;
     }
 
     /// <summary>
@@ -523,16 +534,20 @@ public sealed partial class ScriptBridge
             return;
         }
         bool wakes = s.PausedFor is PauseKind.Danger or PauseKind.Stop or PauseKind.Script;
-        // The full turn's interrupt → resume latency (a patch that escalated keeps its open measurement, now "escalated").
-        if (wakes)
-        {
-            var key = ScriptPatcher.Key(s);
-            if (!_rt.Interrupts.IsOpen(key)) _rt.Interrupts.Open(key, s.Name, PauseKindTag(s), "full", Body);
-        }
-        var text = "script paused: " + s.State() + (s.PausedFor == PauseKind.Chat ? $" (auto-resume {Options.ChatAutoResumeSeconds}s)"
-            : s.PauseReason?.StartsWith("needs_input", StringComparison.Ordinal) == true ? " (answer: script{op:resume,code:<answer>})" : "");
-        PostOwn(GameEvent.Notice(text, wakes ? EventPriority.Normal : EventPriority.Background));
+        if (wakes) OpenInterrupt(s);
+        PostOwn(GameEvent.Notice(PausedText(s), wakes ? EventPriority.Normal : EventPriority.Background));
     }
+
+    /// <summary>The full turn's interrupt → resume latency (a patch that escalated keeps its open measurement, now "escalated").</summary>
+    private void OpenInterrupt(ScriptSession s)
+    {
+        var key = ScriptPatcher.Key(s);
+        if (!_rt.Interrupts.IsOpen(key)) _rt.Interrupts.Open(key, s.Name, PauseKindTag(s), "full", Body);
+    }
+
+    private string PausedText(ScriptSession s) =>
+        "script paused: " + s.State() + (s.PausedFor == PauseKind.Chat ? $" (auto-resume {Options.ChatAutoResumeSeconds}s)"
+            : s.PauseReason?.StartsWith("needs_input", StringComparison.Ordinal) == true ? " (answer: script{op:resume,code:<answer>})" : "");
 
     private static string PauseKindTag(ScriptSession s) =>
         s.PauseReason?.StartsWith("needs_input", StringComparison.Ordinal) == true ? "needs_input"
@@ -1014,12 +1029,17 @@ public sealed partial class ScriptBridge
         var author = $"main/{outcome.Model}";
         var (saved, note) = SaveChecked(name, code, author, ToolInput.Str(input, "force"));
         if (saved?.Script is not { } sc) return new(false, $"script {name} written but {note ?? "not saved"} ({outcome.Cost})");
+        return new(true, AuthoredSummary(name, sc, code, outcome.Cost), code, sc.Version, author);
+    }
+
+    /// <summary>"wrote mine_all v3 | purpose | args(n) | lint ok | 1234 chars | $0.02".</summary>
+    private string AuthoredSummary(string name, RoutineScript sc, string code, string cost)
+    {
         var warnings = Lint(code).Warnings.Count();
         var args = sc.ArgNames.Count > 0 ? $" | args({string.Join(",", sc.ArgNames)})" : "";
         var purpose = string.IsNullOrWhiteSpace(sc.Purpose) ? "" : " | " + Clip(sc.Purpose!, 100);
         var lintTag = warnings > 0 ? $"lint ok, {warnings} warning(s)" : "lint ok";
-        var summary = $"wrote {name} v{sc.Version}{purpose}{args} | {lintTag} | {code.Length} chars | {outcome.Cost}";
-        return new(true, summary, code, sc.Version, author);
+        return $"wrote {name} v{sc.Version}{purpose}{args} | {lintTag} | {code.Length} chars | {cost}";
     }
 
     /// <summary>
@@ -1078,17 +1098,16 @@ public sealed partial class ScriptBridge
         if (string.IsNullOrWhiteSpace(code) && ParamsOf(input) is { } tune && !string.IsNullOrWhiteSpace(rawName)) return TuneParamsOp(rawName, tune);
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(rawName)) return ToolResult.Error("save needs name and code");
         var name = ScriptLibrary.ParseRef(CleanRef(rawName)).Name;
-        var lang = LanguageOf(code);
-        if (lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) return ToolResult.Error(ScriptPrompts.JsOnly);
-        var lint = Lint(code, lang);
-        if (lint.HasErrors) return ToolResult.Error(lint.Format(LintSeverity.Error, 300));
-        int before = Library.Get(name)?.Script?.Version ?? 0;
+        if (CodeProblem(code, out var lang, out var lint) is { } problem) return ToolResult.Error(problem);
+        int before = SavedVersion(name);
         var (saved, note) = SaveChecked(name, code, ToolCaller.Current?.Tag, ToolInput.Str(input, "force"), lang);
         if (saved?.Script is not { } sc) return ToolResult.Error(note ?? "not saved");
         var warn = lint.Format(LintSeverity.Warning);
         var head = SavedHeadline(name, sc, before);
         return ToolResult.Success(warn.Length > 0 ? head + " | " + warn : head);
     }
+
+    private int SavedVersion(string name) => Library.Get(name)?.Script?.Version ?? 0;
 
     /// <summary>script{op:save, name, params}: retune a saved script without new code (merged over its saved tunables); names the
     /// keys its params() doesn't declare.</summary>

@@ -355,11 +355,40 @@ public class WorldIndexerTests(ITestOutputHelper output)
         for (int y = 0; y < 70; y++)
             ids[(x * 128 + z) * 128 + y] = (byte)(new[] { Blocks.Stone, Blocks.Dirt, Blocks.Cobblestone, Blocks.Sand, Blocks.Log })[rnd.Next(5)];
         f.World.ApplyChunkRegion(-64, 0, -64, 128, 128, 128, ids, null, null, null);
+        double before = ReadAllMsPerColumn(f.World);
         var sw = Stopwatch.StartNew();
         f.Indexer.PumpAll(1000);
-        output.WriteLine($"{f.Indexer.Stats}; total {sw.ElapsedMilliseconds} ms");
+        double after = ReadAllMsPerColumn(f.World);
+        double baseline = Math.Max(before, after);
+        double limit = Math.Max(25, ScanCostVsReadAll * baseline);
+        output.WriteLine($"{f.Indexer.Stats}; total {sw.ElapsedMilliseconds} ms; read-all baseline {before:0.###}/{after:0.###} ms/column; limit {limit:0.#}");
         Assert.True(f.Indexer.Stats.ColumnsScanned >= 64);
-        Assert.True(f.Indexer.Stats.MsPerColumn < 25, $"{f.Indexer.Stats.MsPerColumn} ms/column");
+        // 25 ms/column on a quiet machine; under a CPU-saturated full test run (25-42 ms/column seen) the bound scales with a
+        // reference measured in the same run: reading every cell of the same columns, the floor of any column scan.
+        Assert.True(f.Indexer.Stats.MsPerColumn < limit, $"{f.Indexer.Stats.MsPerColumn} ms/column (limit {limit:0.#}, read-all baseline {baseline:0.###})");
+    }
+
+    /// <summary>How many times a plain read of every cell a column scan may cost (the scan classifies, clusters and hashes).</summary>
+    private const double ScanCostVsReadAll = 40;
+
+    /// <summary>Wall time per column to read every block of every loaded column once (mean of 3 passes after a warm-up pass).</summary>
+    private static double ReadAllMsPerColumn(WorldState w)
+    {
+        var cols = w.Columns;
+        long sum = 0;
+        double total = 0;
+        for (int pass = 0; pass < 4; pass++)
+        {
+            var sw = Stopwatch.StartNew();
+            foreach (var c in cols)
+                for (int x = 0; x < 16; x++)
+                for (int z = 0; z < 16; z++)
+                for (int y = 0; y < w.WorldHeight; y++)
+                    sum += w.GetBlock(c.ChunkX * 16 + x, y, c.ChunkZ * 16 + z);
+            if (pass > 0) total += sw.Elapsed.TotalMilliseconds; // pass 0 warms up (JIT, caches)
+        }
+        GC.KeepAlive(sum);
+        return total / 3 / Math.Max(1, cols.Count);
     }
 
     [Fact]

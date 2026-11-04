@@ -111,14 +111,23 @@ public sealed partial class Protection
         if (BlockMeta is not { } meta) return null;
         int m;
         try { m = meta(p); } catch (Exception) { return null; }
-        return id switch
-        {
-            Blocks.Crops when m < 7 => $"wheat is a farm crop (ripe? no: stage {m}/7): not ripe ({m}/7)",
-            Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart when Ids1122.RipeStage(id) is { } ripe && m < ripe =>
-                $"{(id switch { Ids1122.Carrots => "carrot", Ids1122.Potatoes => "potato", Ids1122.Beetroots => "beetroot", _ => "nether wart" })} is a farm crop (ripe? no: stage {m}/{ripe}): not ripe ({m}/{ripe})",
-            Blocks.PumpkinStem or Blocks.MelonStem => $"a {(id == Blocks.MelonStem ? "melon" : "pumpkin")} stem (stage {Math.Min(m, 7)}/7): it grows the fruit, harvest the {(id == Blocks.MelonStem ? "melon" : "pumpkin")} next to it",
-            _ => null,
-        };
+        if (id == Blocks.Crops) return m < 7 ? $"wheat is a farm crop (ripe? no: stage {m}/7): not ripe ({m}/7)" : null;
+        if (id is Blocks.PumpkinStem or Blocks.MelonStem) return StemReason(id, m);
+        return UnripeStaged(id, m); // carrots, potatoes, beetroots, nether wart (no ripe stage: not a crop)
+    }
+
+    /// <summary>A 1.12.2 crop below its ripe stage: "carrot is a farm crop (ripe? no: stage 3/7): not ripe (3/7)".</summary>
+    private static string? UnripeStaged(int id, int m)
+    {
+        if (Ids1122.RipeStage(id) is not { } ripe || m >= ripe) return null;
+        string crop = id switch { Ids1122.Carrots => "carrot", Ids1122.Potatoes => "potato", Ids1122.Beetroots => "beetroot", _ => "nether wart" };
+        return $"{crop} is a farm crop (ripe? no: stage {m}/{ripe}): not ripe ({m}/{ripe})";
+    }
+
+    private static string StemReason(int id, int m)
+    {
+        string fruit = id == Blocks.MelonStem ? "melon" : "pumpkin";
+        return $"a {fruit} stem (stage {Math.Min(m, 7)}/7): it grows the fruit, harvest the {fruit} next to it";
     }
     /// <summary>Refusals counted by reason (rule 6).</summary>
     public ProtectionTelemetry Telemetry { get; set; } = new();

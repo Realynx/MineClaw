@@ -135,20 +135,11 @@ public sealed class GestureTracker : IDisposable
     {
         var w = _client.World;
         var e = w.Entities.Get(entityId);
-        if (e == null || e.Kind != EntityKind.Player || e.Name is not { Length: > 0 } name) return null;
-        if (name.Equals(_client.Username, StringComparison.OrdinalIgnoreCase) || _isBot(name)) return null;
-        if (Gestures.IsUseItem(e.HeldItem)) return null; // a right-click use is an action, not pointing
+        if (OtherPlayer(e) is not { } name) return null;
+        if (Gestures.IsUseItem(e!.HeldItem)) return null; // a right-click use is an action, not pointing
         if (Target(w, e) is not { } t) return null;
         var now = _time.GetUtcNow();
-        lock (_lock)
-        {
-            int i = _recent.FindLastIndex(g => g.Player.Equals(name, StringComparison.OrdinalIgnoreCase));
-            if (i >= 0 && _recent[i].Pos == t.Pos && now - _recent[i].At < Window)
-            {
-                _recent[i] = _recent[i] with { At = now }; // still punching the same block
-                return null;
-            }
-        }
+        if (StillPunching(name, t.Pos, now)) return null;
         var g = new Gesture(name, t.Pos, t.Id, now, t.Broken ? $"{Names.Block(t.Id)} (and broke it)" : _describe(w, t.Pos, t.Id));
         lock (_lock)
         {
@@ -157,6 +148,25 @@ public sealed class GestureTracker : IDisposable
         }
         try { Pointed?.Invoke(g); } catch (Exception) { }
         return g;
+    }
+
+    /// <summary>A player's name, never this bot or a hive bot; null for anything else.</summary>
+    private string? OtherPlayer(Entity? e)
+    {
+        if (e == null || e.Kind != EntityKind.Player || e.Name is not { Length: > 0 } name) return null;
+        return name.Equals(_client.Username, StringComparison.OrdinalIgnoreCase) || _isBot(name) ? null : name;
+    }
+
+    /// <summary>The player's last gesture was at the same block moments ago: refresh it instead of a new one.</summary>
+    private bool StillPunching(string name, BlockPos pos, DateTimeOffset now)
+    {
+        lock (_lock)
+        {
+            int i = _recent.FindLastIndex(g => g.Player.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (i < 0 || _recent[i].Pos != pos || now - _recent[i].At >= Window) return false;
+            _recent[i] = _recent[i] with { At = now }; // still punching the same block
+            return true;
+        }
     }
 
     /// <summary>The latest gestures (at most <see cref="MaxGestures"/>, within <see cref="Window"/>), newest last.</summary>
@@ -319,10 +329,19 @@ public static class BlockDescriber
     {
         if (IsGenCell(w, p)) return null;
         if ((uint)p.Y >= w.WorldHeight) return "out of the world";
-        int id = w.GetBlock(p);
+        return WrongBlock(w, p, w.GetBlock(p)) ?? MissingFluids(w, p);
+    }
+
+    /// <summary>A block that is no cell (not output, air or flowing lava; or the lava source itself), else null.</summary>
+    private static string? WrongBlock(WorldState w, BlockPos p, int id)
+    {
         if (!(id is Blocks.Cobblestone or Blocks.Stone or 0 || id == Blocks.FlowingLava))
             return $"it's {(Blocks.Exists(id) ? Blocks.Get(id).Name : "block " + id)}, not cobblestone/stone";
-        if (id == Blocks.FlowingLava && w.GetMeta(p.X, p.Y, p.Z) == 0) return "it's the gen's lava source, not a cell";
+        return id == Blocks.FlowingLava && w.GetMeta(p.X, p.Y, p.Z) == 0 ? "it's the gen's lava source, not a cell" : null;
+    }
+
+    private static string MissingFluids(WorldState w, BlockPos p)
+    {
         bool lava = FlowIn.Any(o => Blocks.IsLava(w.GetBlock(p + o))), water = FlowIn.Any(o => Blocks.IsWater(w.GetBlock(p + o)));
         return !lava && !water ? "no lava or water next to it" : !lava ? "no lava flowing in" : "no water touching it";
     }

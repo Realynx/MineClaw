@@ -57,19 +57,8 @@ public static class ScriptSdkPack
             "SDK helpers (modules: " + string.Join("; ", modules.Select(m => $"{m.Name} = {m.Summary}")) + ") and the game functions " +
             "(goto, mine, craft, chopTree...: each returns {ok, msg, n}; args positional in the listed order or one {name: value} object; " +
             "snake_case and camelCase both work). SDK names win over game functions with the same name.");
-        foreach (var m in modules)
-        {
-            var names = entries.Where(e => e.Module == m.Name).SelectMany(e => e.Names).Distinct(StringComparer.Ordinal).ToList();
-            Add($"mod:{m.Name}", $"JS SDK module {m.Name}", $"JS script SDK module {m.Name}: {m.Summary}." +
-                (names.Count > 0 ? " Helpers: " + string.Join(", ", names) + "." : ""));
-        }
-        foreach (var e in entries)
-            Add($"fn:{e.Module}.{(e.Names.Count > 0 ? e.Names[0] : "doc")}", $"JS SDK {e.Module}: {string.Join(", ", e.Names.Take(6))}",
-                $"JS script SDK, {e.Module} module ({e.ModuleSummary}): {e.Text}");
-        foreach (var f in functions)
-            Add($"game:{f.Global.Camel}", $"JS game function {f.Global.Camel}",
-                $"JS script game function {f.Global.Signature} ({f.Global.Kind}{(f.Global.Kind == "alias" ? " of " + f.Global.Target : "")}; " +
-                $"{string.Join(", ", f.Versions)}): {f.Description}. Returns {{ok, msg, n}}.");
+        AddModuleDocs(Add, modules, entries);
+        AddGameFunctionDocs(Add, functions);
         int i = 0;
         foreach (var (title, code) in ScriptPrompts.Examples)
             Add($"example:{++i}", $"JS script example: {title}", $"Worked JS script example ({title}):\n```js\n{Unindent(code)}\n```");
@@ -80,6 +69,28 @@ public static class ScriptSdkPack
             "game functions a script calls (per game version) and worked examples. Generated from MineClaw.Scripting/Sdk/js and the bot's tools.",
             $"MineClaw.Scripting SDK modules ({sdkNames}) + game functions ({string.Join(", ", (versions ?? Versions).Select(v => v.Version.Id))}) + ScriptPrompts examples",
             docs);
+    }
+
+    /// <summary>One doc per module (its helpers listed), then one per SDK entry.</summary>
+    private static void AddModuleDocs(Action<string, string, string> add, IReadOnlyList<SdkModule> modules, IReadOnlyList<SdkReference.Entry> entries)
+    {
+        foreach (var m in modules)
+        {
+            var names = entries.Where(e => e.Module == m.Name).SelectMany(e => e.Names).Distinct(StringComparer.Ordinal).ToList();
+            add($"mod:{m.Name}", $"JS SDK module {m.Name}", $"JS script SDK module {m.Name}: {m.Summary}." +
+                (names.Count > 0 ? " Helpers: " + string.Join(", ", names) + "." : ""));
+        }
+        foreach (var e in entries)
+            add($"fn:{e.Module}.{(e.Names.Count > 0 ? e.Names[0] : "doc")}", $"JS SDK {e.Module}: {string.Join(", ", e.Names.Take(6))}",
+                $"JS script SDK, {e.Module} module ({e.ModuleSummary}): {e.Text}");
+    }
+
+    private static void AddGameFunctionDocs(Action<string, string, string> add, IReadOnlyList<VersionedGlobal> functions)
+    {
+        foreach (var f in functions)
+            add($"game:{f.Global.Camel}", $"JS game function {f.Global.Camel}",
+                $"JS script game function {f.Global.Signature} ({f.Global.Kind}{(f.Global.Kind == "alias" ? " of " + f.Global.Target : "")}; " +
+                $"{string.Join(", ", f.Versions)}): {f.Description}. Returns {{ok, msg, n}}.");
     }
 
     /// <summary>A game function with the versions that have it (same name and params) and its tool/skill description.</summary>

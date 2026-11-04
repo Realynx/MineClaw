@@ -359,12 +359,13 @@ public sealed partial class BotHost : IDisposable
         foreach (var name in hiveBots?.Invoke() ?? [])
         {
             if (string.IsNullOrEmpty(name) || name.Equals(c.Options.Username, StringComparison.OrdinalIgnoreCase)) continue;
-            if (c.World.Entities.FindPlayer(name) is { } e
-                && Math.Abs(e.Position.X - (p.X + 0.5)) <= 4.5 && Math.Abs(e.Position.Z - (p.Z + 0.5)) <= 4.5 && Math.Abs(e.Position.Y - p.Y) <= 6)
-                return true;
+            if (c.World.Entities.FindPlayer(name) is { } e && Within4(e.Position, p)) return true;
         }
         return false;
     }
+
+    private static bool Within4(MineClaw.World.Vec3d at, MineClaw.World.BlockPos p) =>
+        Math.Abs(at.X - (p.X + 0.5)) <= 4.5 && Math.Abs(at.Z - (p.Z + 0.5)) <= 4.5 && Math.Abs(at.Y - p.Y) <= 6;
 
     /// <summary>
     /// The client's learned region vs the shared protected_region fact: gone from the db (a success in another process retracted
@@ -382,22 +383,29 @@ public sealed partial class BotHost : IDisposable
             }
             var account = c.Options.Username;
             var fact = SpawnProtectionFact.Read(rt.Observations, c.World.Dimension);
-            if (c.ProtectedRegion is { } mine)
-            {
-                // Grace: my own fresh region may not be written yet (the event dispatcher upserts it).
-                if (fact == null && DateTime.UtcNow - mine.LearnedAt > TimeSpan.FromSeconds(30) && c.ForgetProtectedRegion("retracted in the shared memory"))
-                    log?.LogInformation("spawn protection retracted elsewhere in the hive: forgot {Region}", mine);
-                else if (fact != null && !fact.AppliesTo(account) && c.ForgetProtectedRegion("this account is exempt (op)"))
-                    log?.LogInformation("spawn protection doesn't bind {Account} (exempt): forgot {Region}", account, mine);
-                return;
-            }
-            if (fact == null || !fact.AppliesTo(account)) return;
-            var row = rt.Observations.Get(SpawnProtectionFact.Kind, SpawnProtectionFact.Key, dimension: c.World.Dimension);
-            var center = fact.Center with { Y = fact.Center.Y != 0 ? fact.Center.Y : c.World.Spawn.Y };
-            var r = (fact with { Center = center }).ToRegion(2, row?.LastSeen.UtcDateTime ?? DateTime.UtcNow);
-            if (c.AdoptProtectedRegion(r)) log?.LogInformation("adopted the hive's spawn protection fact: {Region}", r);
+            if (c.ProtectedRegion is { } mine) ForgetIfGone(c, fact, account, mine, log);
+            else if (fact != null && fact.AppliesTo(account)) AdoptRegion(c, rt, fact, log);
         }
         catch (Exception ex) { log?.LogDebug(ex, "protected_region sync failed"); }
+    }
+
+    /// <summary>My learned region: gone from the shared db (after a 30 s grace, my own fresh one may not be written yet) or the
+    /// fact exempts this account (op) → forget it.</summary>
+    private static void ForgetIfGone(MineClaw.Client.MinecraftClient c, SpawnProtectionFact? fact, string account, MineClaw.Client.LearnedProtectedRegion mine, ILogger? log)
+    {
+        if (fact == null && DateTime.UtcNow - mine.LearnedAt > TimeSpan.FromSeconds(30) && c.ForgetProtectedRegion("retracted in the shared memory"))
+            log?.LogInformation("spawn protection retracted elsewhere in the hive: forgot {Region}", mine);
+        else if (fact != null && !fact.AppliesTo(account) && c.ForgetProtectedRegion("this account is exempt (op)"))
+            log?.LogInformation("spawn protection doesn't bind {Account} (exempt): forgot {Region}", account, mine);
+    }
+
+    /// <summary>A region another hive process learned: adopt it, keeping its time (the fact's y, else the spawn's).</summary>
+    private static void AdoptRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, SpawnProtectionFact fact, ILogger? log)
+    {
+        var row = rt.Observations.Get(SpawnProtectionFact.Kind, SpawnProtectionFact.Key, dimension: c.World.Dimension);
+        var center = fact.Center with { Y = fact.Center.Y != 0 ? fact.Center.Y : c.World.Spawn.Y };
+        var r = (fact with { Center = center }).ToRegion(2, row?.LastSeen.UtcDateTime ?? DateTime.UtcNow);
+        if (c.AdoptProtectedRegion(r)) log?.LogInformation("adopted the hive's spawn protection fact: {Region}", r);
     }
 
     /// <summary>Forgets notes claiming spawn protection blocks the bots (count removed).</summary>

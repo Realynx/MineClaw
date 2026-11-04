@@ -121,12 +121,20 @@ public sealed class Gestures
         if (!Enabled || _isBot(player) || player.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)) return null;
         DateTimeOffset asked;
         lock (_lock) { _partner = (player, Now); asked = _asked; }
-        if (_o.AnswerNodSeconds > 0 && Now - asked <= TimeSpan.FromSeconds(_o.AnswerNodSeconds) && GestureClassifier.IsYesNo(StripNames(text)))
+        if (AnswersQuestion(asked, text))
         {
             lock (_lock) _asked = DateTimeOffset.MinValue; // one acknowledgement per question
             return Play("ack", player);
         }
-        if (!_o.LookAtSpeaker) return null;
+        return _o.LookAtSpeaker ? LookAtSpeaker(player) : null;
+    }
+
+    /// <summary>A yes/no line soon after the bot asked something.</summary>
+    private bool AnswersQuestion(DateTimeOffset asked, string text) =>
+        _o.AnswerNodSeconds > 0 && Now - asked <= TimeSpan.FromSeconds(_o.AnswerNodSeconds) && GestureClassifier.IsYesNo(StripNames(text));
+
+    private string? LookAtSpeaker(string player)
+    {
         lock (_lock)
         {
             if (_lookedAt.TryGetValue(player, out var at) && Now - at < TimeSpan.FromMilliseconds(_o.LookAtIntervalMs)) return Suppress("debounced");
@@ -160,7 +168,10 @@ public sealed class Gestures
         return plan.Name;
     }
 
-    private GesturePlan? Build(string gesture, string? target, bool bodyFree)
+    private GesturePlan? Build(string gesture, string? target, bool bodyFree) => HeadPlan(gesture, target) ?? BodyPlan(gesture, bodyFree);
+
+    /// <summary>Head/arm gestures (no sneaking or hopping); null for the body ones (and a look with no one to look at).</summary>
+    private GesturePlan? HeadPlan(string gesture, string? target)
     {
         float pitch = _c.World.Player.Physics.Pitch;
         switch (gesture)
@@ -171,15 +182,25 @@ public sealed class Gestures
             case "wave": return GestureMoves.Wave();
             case "greet": return With(GestureMoves.Wave(), LookPlan(target ?? Partner()));
             case "look": return LookPlan(target ?? Partner());
-            case "bow": return GestureMoves.Bow(sneak: bodyFree);
-            case "bob": return bodyFree ? GestureMoves.CrouchBob() : GestureMoves.Wave(2);
-            case "hop": return bodyFree ? (HopSafe() ? GestureMoves.Hop() : GestureMoves.CrouchBob(2)) : GestureMoves.Wave(2);
-            case "excite":
-                if (!bodyFree) return GestureMoves.Wave(2);
-                return (_excited++ % 2 == 1 && HopSafe()) ? GestureMoves.Hop() : GestureMoves.CrouchBob();
             default: return null;
         }
     }
+
+    /// <summary>Gestures that sneak or hop when the body is free, else a wave stands in.</summary>
+    private GesturePlan? BodyPlan(string gesture, bool bodyFree)
+    {
+        switch (gesture)
+        {
+            case "bow": return GestureMoves.Bow(sneak: bodyFree);
+            case "bob": return bodyFree ? GestureMoves.CrouchBob() : GestureMoves.Wave(2);
+            case "hop": return bodyFree ? (HopSafe() ? GestureMoves.Hop() : GestureMoves.CrouchBob(2)) : GestureMoves.Wave(2);
+            case "excite": return bodyFree ? Excite() : GestureMoves.Wave(2);
+            default: return null;
+        }
+    }
+
+    /// <summary>Alternates a crouch-bob and (when safe) a hop.</summary>
+    private GesturePlan Excite() => (_excited++ % 2 == 1 && HopSafe()) ? GestureMoves.Hop() : GestureMoves.CrouchBob();
 
     private static GesturePlan With(GesturePlan a, GesturePlan? look) => look == null ? a : GestureMoves.Merge(look, a);
 
@@ -202,6 +223,15 @@ public sealed class Gestures
     /// <summary>Why no gesture may play now (null = ok). <paramref name="body"/> adds the sneak/hop checks.</summary>
     public string? WhyNot(bool body)
     {
+        if (WhyNotNow() is { } why) return why;
+        if (WhyNotHere() is { } where) return where;
+        if (body && (_c.CurrentAction != null || !BodyFree)) return "body busy";
+        return null;
+    }
+
+    /// <summary>Not playing, safety engaged, hurt, or danger near/recent.</summary>
+    private string? WhyNotNow()
+    {
         if (!_c.IsPlaying) return "not playing";
         if (_c.SafetyEngaged) return "safety";
         var w = _c.World;
@@ -209,13 +239,20 @@ public sealed class Gestures
         if (p.IsDead || p.Health <= _o.MinHealth) return "hurt";
         lock (_lock) if (Now - _danger < TimeSpan.FromSeconds(_o.DangerQuietSeconds)) return "danger";
         if (_o.DangerRadius > 0 && w.Entities.Nearest(p.Position, _o.DangerRadius, e => e.IsHostileMob) != null) return "danger";
+        return null;
+    }
+
+    /// <summary>Airborne / in a fluid, or near the void.</summary>
+    private string? WhyNotHere()
+    {
+        var w = _c.World;
+        var p = w.Player;
         var phys = p.Physics;
         if (!p.OnGround || phys.InWater || phys.InLava || Math.Abs(phys.Velocity.Y) > 0.1) return "airborne";
         var pos = p.Position;
         int x = (int)Math.Floor(pos.X), y = (int)Math.Floor(pos.Y + 1e-6), z = (int)Math.Floor(pos.Z);
         if (w.IsPlayerOverVoid(pos)) return "void";
         if (_o.VoidMargin > 0 && Safety.EdgeDistance(w, x, y, z, _o.VoidMargin) <= _o.VoidMargin) return "void";
-        if (body && (_c.CurrentAction != null || !BodyFree)) return "body busy";
         return null;
     }
 

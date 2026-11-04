@@ -55,26 +55,27 @@ public sealed class RegionWorld
         int r = Math.Clamp(radius, 1, 64) + 4;
         for (int cx = (x - r) >> 4; cx <= (x + r) >> 4; cx++)
             for (int cz = (z - r) >> 4; cz <= (z + r) >> 4; cz++)
-            {
-                if (live.Dimension == dim && live.GetColumn(cx, cz) is { HasData: true } col)
-                {
-                    var snap = ChunkSnapshot.Capture(col);
-                    if (w.Remember(new RememberedColumn(cx, cz, dim, now, snap))) region.Seen[(cx, cz)] = new ColumnSource(liveName, now, true);
-                    continue;
-                }
-                ChunkRow? row = null;
-                try { row = store?.GetChunk(dim, cx, cz); } catch (Exception) { /* memory unavailable: unknown */ }
-                if (row != null)
-                {
-                    var data = row.Data;
-                    if (w.Remember(new RememberedColumn(cx, cz, dim, row.LastSeen, () => ChunkSnapshot.Decode(data))))
-                        region.Seen[(cx, cz)] = new ColumnSource(row.SeenBy, row.LastSeen, false);
-                    continue;
-                }
-                if (live.Dimension == dim && live.GetRemembered(cx, cz) is { } rem && w.Remember(new RememberedColumn(cx, cz, dim, rem.LastSeen, () => rem.Blocks)))
-                    region.Seen[(cx, cz)] = new ColumnSource(null, rem.LastSeen, false);
-            }
+                if (region.Column(live, liveName, store, dim, cx, cz, now) is { } source) region.Seen[(cx, cz)] = source;
         return region;
+    }
+
+    /// <summary>Copies column (cx, cz) in: the live one, else the shared memory's stored one, else the live world's own
+    /// remembered one; where it came from, or null when unknown.</summary>
+    private ColumnSource? Column(WorldState live, string liveName, IWorldMemoryStore? store, int dim, int cx, int cz, DateTimeOffset now)
+    {
+        if (live.Dimension == dim && live.GetColumn(cx, cz) is { HasData: true } col)
+            return World.Remember(new RememberedColumn(cx, cz, dim, now, ChunkSnapshot.Capture(col))) ? new ColumnSource(liveName, now, true) : null;
+        ChunkRow? row = null;
+        try { row = store?.GetChunk(dim, cx, cz); } catch (Exception) { /* memory unavailable: unknown */ }
+        if (row != null)
+        {
+            var data = row.Data;
+            return World.Remember(new RememberedColumn(cx, cz, dim, row.LastSeen, () => ChunkSnapshot.Decode(data)))
+                ? new ColumnSource(row.SeenBy, row.LastSeen, false) : null;
+        }
+        if (live.Dimension == dim && live.GetRemembered(cx, cz) is { } rem && World.Remember(new RememberedColumn(cx, cz, dim, rem.LastSeen, () => rem.Blocks)))
+            return new ColumnSource(null, rem.LastSeen, false);
+        return null;
     }
 
     public static string Age(TimeSpan t) => t.TotalSeconds < 90 ? $"{Math.Max(0, (int)t.TotalSeconds)} s"
@@ -86,12 +87,31 @@ public sealed class RegionWorld
     /// </summary>
     public string Staleness((int X, int Y, int Z) f, int radius, DateTimeOffset now, string? landmark = null)
     {
-        string Desc(ColumnSource s, bool here) => s.Live ? $"live ({ShortBy(s.By)})"
-            : $"seen {(s.By != null ? "by " + ShortBy(s.By) + " " : "")}{Age(now - s.At)} ago";
         int fcx = f.X >> 4, fcz = f.Z >> 4;
         var parts = new List<string>();
-        string here = Seen.TryGetValue((fcx, fcz), out var hs) ? Desc(hs, true) : "never seen";
+        string here = Seen.TryGetValue((fcx, fcz), out var hs) ? Desc(hs, now) : "never seen";
         parts.Add((landmark != null ? landmark + " " : "here ") + here);
+        var groups = new List<(string Text, List<string> Sides)>();
+        foreach (var (side, cols) in Sides(f, radius))
+        {
+            if (cols.Count == 0) continue;
+            string text = SideText(cols, now);
+            if (text == here && !text.StartsWith("never", StringComparison.Ordinal)) continue; // same as the focus: not news
+            var g = groups.FirstOrDefault(x => x.Text == text);
+            if (g.Text == null) groups.Add((text, new List<string> { side }));
+            else g.Sides.Add(side);
+        }
+        foreach (var (text, ss) in groups) parts.Add($"{string.Join(",", ss)} side {text}");
+        return string.Join("; ", parts);
+    }
+
+    private static string Desc(ColumnSource s, DateTimeOffset now) => s.Live ? $"live ({ShortBy(s.By)})"
+        : $"seen {(s.By != null ? "by " + ShortBy(s.By) + " " : "")}{Age(now - s.At)} ago";
+
+    /// <summary>The columns around the focus column by side (N/E/S/W: the larger offset decides), in N, E, S, W order.</summary>
+    private Dictionary<string, List<ColumnSource?>> Sides((int X, int Y, int Z) f, int radius)
+    {
+        int fcx = f.X >> 4, fcz = f.Z >> 4;
         var sides = new Dictionary<string, List<ColumnSource?>> { ["N"] = new(), ["E"] = new(), ["S"] = new(), ["W"] = new() };
         int r = Math.Clamp(radius, 1, 64);
         for (int cx = (f.X - r) >> 4; cx <= (f.X + r) >> 4; cx++)
@@ -102,24 +122,15 @@ public sealed class RegionWorld
                 string side = Math.Abs(dx) >= Math.Abs(dz) ? (dx > 0 ? "E" : "W") : (dz > 0 ? "S" : "N");
                 sides[side].Add(Seen.GetValueOrDefault((cx, cz)));
             }
-        var groups = new List<(string Text, List<string> Sides)>();
-        foreach (var (side, cols) in sides)
-        {
-            if (cols.Count == 0) continue;
-            string text;
-            if (cols.All(c => c == null)) text = "never seen";
-            else
-            {
-                var oldest = cols.Where(c => c != null).OrderBy(c => c!.Live ? 1 : 0).ThenBy(c => c!.At).First()!;
-                text = Desc(oldest, false) + (cols.Any(c => c == null) ? " (partly unknown)" : "");
-            }
-            if (text == here && !text.StartsWith("never", StringComparison.Ordinal)) continue; // same as the focus: not news
-            var g = groups.FirstOrDefault(x => x.Text == text);
-            if (g.Text == null) groups.Add((text, new List<string> { side }));
-            else g.Sides.Add(side);
-        }
-        foreach (var (text, ss) in groups) parts.Add($"{string.Join(",", ss)} side {text}");
-        return string.Join("; ", parts);
+        return sides;
+    }
+
+    /// <summary>A side's staleness: its oldest (non-live first) column, "(partly unknown)" when some were never seen.</summary>
+    private static string SideText(List<ColumnSource?> cols, DateTimeOffset now)
+    {
+        if (cols.All(c => c == null)) return "never seen";
+        var oldest = cols.Where(c => c != null).OrderBy(c => c!.Live ? 1 : 0).ThenBy(c => c!.At).First()!;
+        return Desc(oldest, now) + (cols.Any(c => c == null) ? " (partly unknown)" : "");
     }
 
     private static string ShortBy(string? by) => by == null ? "?" : HiveVision.ShortName(by);
@@ -149,6 +160,16 @@ public static class HiveVision
 
     private static string DimName(int d) => d switch { -1 => "nether", 0 => "overworld", 1 => "end", _ => "dim " + d };
 
+    /// <summary>"67 @3,64,-2 chop (claims task chop) hp20 food18, 12 s ago".</summary>
+    private static string BotLine(HiveBotState b, IReadOnlyList<HiveLease> leases, DateTimeOffset now)
+    {
+        var mine = leases.Where(l => l.Owner.Equals(b.Name, StringComparison.OrdinalIgnoreCase)).Select(l => Lease(l.Key).Text).Take(2).ToList();
+        string job = string.IsNullOrWhiteSpace(b.Job) ? "idle" : Trunc(b.Job!.Trim(), 48);
+        string where = (b.Dim != 0 ? DimName(b.Dim) + " " : "") + "@" + P(b.X, b.Y, b.Z);
+        string age = b.IsMain || now - b.At < TimeSpan.FromSeconds(10) ? "" : $", {RegionWorld.Age(now - b.At)} ago";
+        return $"{b.Short} {where} {job}{(mine.Count > 0 ? " (claims " + string.Join(", ", mine) + ")" : "")} hp{b.Hp} food{b.Food}{age}";
+    }
+
     /// <summary>A lease as text: "block 4,64,6", "chest 14,64,-5", "area 0,63,0..8,63,8", "task chop".</summary>
     public static (string Text, ClaimKey? Key) Lease(string key)
     {
@@ -172,13 +193,7 @@ public static class HiveVision
         var sb = new StringBuilder($"[hive] {bots.Count} bot{(bots.Count == 1 ? "" : "s")}: ");
         var lines = new List<string>();
         foreach (var b in bots.OrderBy(b => b.IsMain ? 0 : 1).ThenBy(b => b.Short, StringComparer.Ordinal))
-        {
-            var mine = leases.Where(l => l.Owner.Equals(b.Name, StringComparison.OrdinalIgnoreCase)).Select(l => Lease(l.Key).Text).Take(2).ToList();
-            string job = string.IsNullOrWhiteSpace(b.Job) ? "idle" : Trunc(b.Job!.Trim(), 48);
-            string where = (b.Dim != 0 ? DimName(b.Dim) + " " : "") + "@" + P(b.X, b.Y, b.Z);
-            string age = b.IsMain || now - b.At < TimeSpan.FromSeconds(10) ? "" : $", {RegionWorld.Age(now - b.At)} ago";
-            lines.Add($"{b.Short} {where} {job}{(mine.Count > 0 ? " (claims " + string.Join(", ", mine) + ")" : "")} hp{b.Hp} food{b.Food}{age}");
-        }
+            lines.Add(BotLine(b, leases, now));
         sb.Append(string.Join("; ", lines));
         var free = leases.Where(l => !bots.Any(b => b.Name.Equals(l.Owner, StringComparison.OrdinalIgnoreCase))).Take(3).ToList();
         if (free.Count > 0) sb.Append(" | other claims: ").Append(string.Join(", ", free.Select(l => $"{ShortName(l.Owner)} {Lease(l.Key).Text}")));

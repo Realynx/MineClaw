@@ -73,20 +73,28 @@ public static partial class VisionRouter
     public static VisionIntent Classify(string? question)
     {
         var q = question ?? "";
+        if (q.Length == 0) return VisionIntent.Model;
         // Ripeness is block metadata (wheat stage 0-7), never a picture question, even with "middle rows" in it (live 10-28:
         // "which wheat is fully grown (ripe)... middle rows" went to Sonnet, 2 of 2 claims wrong, and the job gave up).
-        if (q.Length > 0 && CropRx().IsMatch(q) && !PointingRx().IsMatch(q)) return VisionIntent.Things;
-        if (q.Length > 0 && DropsRx().IsMatch(q) && !PointingRx().IsMatch(q)) return VisionIntent.Drops;
-        if (q.Length == 0 || RelationalRx().IsMatch(q)) return VisionIntent.Model;
-        if (FluidsRx().IsMatch(q)) return VisionIntent.GenFluids;
-        if (FacesRx().IsMatch(q)) return VisionIntent.Faces;
-        if (FocusRx().IsMatch(q)) return VisionIntent.FocusBlock;
-        if (PortalRx().IsMatch(q)) return VisionIntent.Portal;
-        if (GenRx().IsMatch(q)) return VisionIntent.GenCells;
-        if (ThingsRx().IsMatch(q)) return VisionIntent.Things;
-        if (VoidRx().IsMatch(q)) return VisionIntent.Void;
+        if (CropRx().IsMatch(q) && !PointingRx().IsMatch(q)) return VisionIntent.Things;
+        if (DropsRx().IsMatch(q) && !PointingRx().IsMatch(q)) return VisionIntent.Drops;
+        if (RelationalRx().IsMatch(q)) return VisionIntent.Model;
+        foreach (var (rx, intent) in Rules)
+            if (rx.IsMatch(q)) return intent;
         return VisionIntent.Model;
     }
+
+    /// <summary>The rest of the rules, in order: the first pattern the question matches decides.</summary>
+    private static readonly (Regex Rx, VisionIntent Intent)[] Rules =
+    [
+        (FluidsRx(), VisionIntent.GenFluids),
+        (FacesRx(), VisionIntent.Faces),
+        (FocusRx(), VisionIntent.FocusBlock),
+        (PortalRx(), VisionIntent.Portal),
+        (GenRx(), VisionIntent.GenCells),
+        (ThingsRx(), VisionIntent.Things),
+        (VoidRx(), VisionIntent.Void),
+    ];
 
     /// <summary>The exact answer for a deterministic question, else null (a model question).</summary>
     public static string? Answer(string? question, IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius,
@@ -347,12 +355,8 @@ public static partial class VisionRouter
 
     private static string Portal(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius)
     {
-        var sheet = new List<(int X, int Y, int Z)>();
-        int r = Math.Clamp(radius, 2, 12), h = w.WorldHeight;
-        for (int y = f.Y - 6; y <= f.Y + 6; y++)
-            for (int z = f.Z - r; z <= f.Z + r; z++)
-                for (int x = f.X - r; x <= f.X + r; x++)
-                    if ((uint)y < h && w.GetBlock(x, y, z) == Blocks.Portal) sheet.Add((x, y, z));
+        int r = Math.Clamp(radius, 2, 12);
+        var sheet = PortalSheet(w, f, r);
         if (sheet.Count == 0) return $"no portal sheet within {r} of {P(f)}";
         int x0 = sheet.Min(c => c.X), x1 = sheet.Max(c => c.X), y0 = sheet.Min(c => c.Y), y1 = sheet.Max(c => c.Y), z0 = sheet.Min(c => c.Z), z1 = sheet.Max(c => c.Z);
         static string R(string axis, int a, int b) => a == b ? $"{axis}={a}" : $"{axis}={a}..{b}";
@@ -364,13 +368,30 @@ public static partial class VisionRouter
         foreach (var (n, dx, dz) in sides)
         {
             int x = (alongZ ? x0 : (x0 + x1) / 2) + dx, z = (alongZ ? (z0 + z1) / 2 : z0) + dz;
-            int fy = y0 - 1;
-            int id = w.GetBlock(x, fy, z);
-            string what = !w.IsLoaded(x, z) ? "unknown" : VoidColumn(w, x, y0, z) ? "VOID (fall)" : id != 0 && w.Info(id).Solid ? $"floor {Name(id)} {P((x, fy, z))}" : "a drop";
-            outs.Add($"{n} {what}");
+            outs.Add($"{n} {StepOut(w, x, y0, z)}");
         }
         sb.Append("; stepping out: ").Append(string.Join(", ", outs));
         return sb.ToString();
+    }
+
+    /// <summary>Portal blocks within <paramref name="r"/> across and 6 up/down of the focus.</summary>
+    private static List<(int X, int Y, int Z)> PortalSheet(IBlockAccess w, (int X, int Y, int Z) f, int r)
+    {
+        var sheet = new List<(int X, int Y, int Z)>();
+        int h = w.WorldHeight;
+        for (int y = f.Y - 6; y <= f.Y + 6; y++)
+            for (int z = f.Z - r; z <= f.Z + r; z++)
+                for (int x = f.X - r; x <= f.X + r; x++)
+                    if ((uint)y < h && w.GetBlock(x, y, z) == Blocks.Portal) sheet.Add((x, y, z));
+        return sheet;
+    }
+
+    /// <summary>What stepping out beside the sheet's bottom row lands on: unknown, the void, a floor block, or a drop.</summary>
+    private static string StepOut(IBlockAccess w, int x, int y0, int z)
+    {
+        int fy = y0 - 1;
+        int id = w.GetBlock(x, fy, z);
+        return !w.IsLoaded(x, z) ? "unknown" : VoidColumn(w, x, y0, z) ? "VOID (fall)" : id != 0 && w.Info(id).Solid ? $"floor {Name(id)} {P((x, fy, z))}" : "a drop";
     }
 
     /// <summary>

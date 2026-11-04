@@ -37,45 +37,58 @@ public sealed class LuaMigration(ScriptBridge bridge, ILogger? log = null)
         foreach (var r in pending)
         {
             ct.ThrowIfCancellationRequested();
-            var sc = r.Script!;
-            var from = ScriptLibrary.Active(sc);
             var left = o.MigrateMaxUsd - spent;
             if (left <= 0.01m) { log?.LogInformation("lua migration: total cap reached; {Name} and the rest wait for the next start", r.Name); break; }
-            var job = new AuthorJob
-            {
-                Kind = "migrate",
-                System = ScriptPrompts.AuthorSystem,
-                Brief = ScriptPrompts.MigrationBrief(r.Name, from.Code, bridge.AuthorFacts(r.Name), o.MaxCodeChars),
-                Check = bridge.CheckDraft,
-                MaxUsd = Math.Min(o.MigrateMaxUsdPerScript, left),
-            };
-            AuthorOutcome outcome;
-            try { outcome = await author.RunAsync(job, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
-            {
-                log?.LogWarning(ex, "lua migration: {Name} failed", r.Name);
-                continue; // transient (network): no verdict, retried next start
-            }
+            var outcome = await TranslateAsync(author, r, left, ct).ConfigureAwait(false);
+            if (outcome == null) continue; // transient (network): no verdict, retried next start
             spent += outcome.Usd;
-            if (!outcome.Ok || outcome.Artifact is not { } js)
-            {
-                var why = $"failed: {outcome.Blocker} ({outcome.Cost})";
-                bridge.Library.MarkMigration(r.Name, why);
-                done.Add(new Item(r.Name, from.V, null, why, outcome.Usd));
-                log?.LogWarning("lua migration: {Name} v{V} not translated: {Why}", r.Name, from.V, why);
-                continue;
-            }
-            var save = bridge.Library.SaveVersion(r.Name, js, author: $"migration/{outcome.Model}", purpose: ScriptLint.Purpose(js) ?? sc.Purpose,
-                argNames: ScriptLint.ArgNames(js), lang: "js");
-            var to = save.Routine?.Script?.Version;
-            var verdict = $"ok v{to} from Lua v{from.V} ({outcome.Cost})";
-            bridge.Library.MarkMigration(r.Name, verdict);
-            done.Add(new Item(r.Name, from.V, to, verdict, outcome.Usd));
-            log?.LogInformation("lua migration: {Name} v{From} (Lua, {LuaChars} chars) -> v{To} (JS, {JsChars} chars), {Cost}", r.Name, from.V,
-                from.Code.Length, to, js.Length, outcome.Cost);
+            done.Add(Record(r, outcome));
         }
         log?.LogInformation("lua migration: {Ok}/{N} translated, ${Usd:0.00} spent", done.Count(d => d.ToVersion != null), done.Count, spent);
         return done;
+    }
+
+    /// <summary>One script through the author (within what's left of the total cap); null on a transient failure.</summary>
+    private async Task<AuthorOutcome?> TranslateAsync(AuthorAgent author, Agent.Memory.Routine r, decimal left, CancellationToken ct)
+    {
+        var o = bridge.Options;
+        var from = ScriptLibrary.Active(r.Script!);
+        var job = new AuthorJob
+        {
+            Kind = "migrate",
+            System = ScriptPrompts.AuthorSystem,
+            Brief = ScriptPrompts.MigrationBrief(r.Name, from.Code, bridge.AuthorFacts(r.Name), o.MaxCodeChars),
+            Check = bridge.CheckDraft,
+            MaxUsd = Math.Min(o.MigrateMaxUsdPerScript, left),
+        };
+        try { return await author.RunAsync(job, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.LogWarning(ex, "lua migration: {Name} failed", r.Name);
+            return null;
+        }
+    }
+
+    /// <summary>The verdict: the JS version saved ("ok v4 from Lua v3 ($0.03)"), or why it failed; marked on the script.</summary>
+    private Item Record(Agent.Memory.Routine r, AuthorOutcome outcome)
+    {
+        var sc = r.Script!;
+        var from = ScriptLibrary.Active(sc);
+        if (!outcome.Ok || outcome.Artifact is not { } js)
+        {
+            var why = $"failed: {outcome.Blocker} ({outcome.Cost})";
+            bridge.Library.MarkMigration(r.Name, why);
+            log?.LogWarning("lua migration: {Name} v{V} not translated: {Why}", r.Name, from.V, why);
+            return new Item(r.Name, from.V, null, why, outcome.Usd);
+        }
+        var save = bridge.Library.SaveVersion(r.Name, js, author: $"migration/{outcome.Model}", purpose: ScriptLint.Purpose(js) ?? sc.Purpose,
+            argNames: ScriptLint.ArgNames(js), lang: "js");
+        var to = save.Routine?.Script?.Version;
+        var verdict = $"ok v{to} from Lua v{from.V} ({outcome.Cost})";
+        bridge.Library.MarkMigration(r.Name, verdict);
+        log?.LogInformation("lua migration: {Name} v{From} (Lua, {LuaChars} chars) -> v{To} (JS, {JsChars} chars), {Cost}", r.Name, from.V,
+            from.Code.Length, to, js.Length, outcome.Cost);
+        return new Item(r.Name, from.V, to, verdict, outcome.Usd);
     }
 }

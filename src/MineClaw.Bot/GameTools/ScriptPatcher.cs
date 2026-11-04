@@ -69,14 +69,7 @@ public sealed class ScriptPatcher : IInterruptPatcher
     {
         var key = Key(ctx.Session);
         _tracker.Open(key, ctx.Script, ctx.Interrupt.Kind, PatchSources.Llm, Body, ctx.Signature, ctx.At);
-        ScriptHandler? h = null;
-        try { h = _library.FindHandler(ctx.Script, ctx.Interrupt.Kind, ctx.Signature); } catch (Exception ex) { _log?.LogWarning(ex, "handler lookup failed"); }
-        if (h != null)
-        {
-            _tracker.Relabel(key, PatchSources.Learned);
-            _log?.LogInformation("script {Name}: learned handler for {Kind} ({Ok}/{Fail}): {Note}", ctx.Script, h.Kind, h.Successes, h.Failures, h.Note ?? h.Signature);
-            return new ScriptPatch(h.Js, PatchThens.Parse(h.Then), PatchSources.Learned, h.Note, h.Key);
-        }
+        if (LearnedPatch(ctx, key) is { } learned) return learned;
         if (Agent is not { } agent) return null;
         if (agent.Refusal() is { } no) return ScriptPatch.Escalate(no);
         PatchReply reply;
@@ -89,6 +82,17 @@ public sealed class ScriptPatcher : IInterruptPatcher
         }
         if (reply.Escalates) return ScriptPatch.Escalate(reply.Blocker ?? reply.Note ?? "escalate");
         return new ScriptPatch(reply.Js ?? "", PatchThens.Parse(reply.Then), PatchSources.Llm, reply.Note);
+    }
+
+    /// <summary>A learned handler for this interrupt (zero tokens), relabelled as learned; null when there is none.</summary>
+    private ScriptPatch? LearnedPatch(PatchContext ctx, string key)
+    {
+        ScriptHandler? h = null;
+        try { h = _library.FindHandler(ctx.Script, ctx.Interrupt.Kind, ctx.Signature); } catch (Exception ex) { _log?.LogWarning(ex, "handler lookup failed"); }
+        if (h == null) return null;
+        _tracker.Relabel(key, PatchSources.Learned);
+        _log?.LogInformation("script {Name}: learned handler for {Kind} ({Ok}/{Fail}): {Note}", ctx.Script, h.Kind, h.Successes, h.Failures, h.Note ?? h.Signature);
+        return new ScriptPatch(h.Js, PatchThens.Parse(h.Then), PatchSources.Learned, h.Note, h.Key);
     }
 
     public void Applied(PatchContext ctx, ScriptPatch patch, PatchOutcome outcome)

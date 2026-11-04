@@ -114,22 +114,25 @@ public sealed class HandoverWatch(TimeProvider? time = null)
         int hits = 0;
         foreach (var p in players)
         {
-            double dx = item.X - p.Feet.X, dz = item.Z - p.Feet.Z, dy = item.Y - p.Feet.Y;
-            double h = Math.Sqrt(dx * dx + dz * dz);
-            double score;
-            if (h <= 0.6 && dy is > 0.9 and < 1.8) score = h; // the toss itself: locY - 0.3 + 1.62 ≈ +1.32
-            else
-            {
-                double yaw = p.Yaw * Math.PI / 180;
-                double fx = -Math.Sin(yaw), fz = Math.Cos(yaw);
-                double along = dx * fx + dz * fz, side = Math.Abs(-dx * fz + dz * fx);
-                if (along is > 0 and <= 3.0 && side <= 1.0 && dy is > -1.6 and < 1.8) score = 1 + side + Math.Abs(along - 1);
-                else continue;
-            }
+            if (ThrowScore(item, p) is not { } score) continue;
             hits++;
             if (score < bestScore) { bestScore = score; best = p.Name; }
         }
         return hits >= 1 ? best : null;
+    }
+
+    /// <summary>How well <paramref name="p"/> fits as the thrower (lower = better): the toss itself at their eye height, or a
+    /// little ahead along their look; null when they couldn't have thrown it.</summary>
+    private static double? ThrowScore(Vec3d item, PlayerView p)
+    {
+        double dx = item.X - p.Feet.X, dz = item.Z - p.Feet.Z, dy = item.Y - p.Feet.Y;
+        double h = Math.Sqrt(dx * dx + dz * dz);
+        if (h <= 0.6 && dy is > 0.9 and < 1.8) return h; // the toss itself: locY - 0.3 + 1.62 ≈ +1.32
+        double yaw = p.Yaw * Math.PI / 180;
+        double fx = -Math.Sin(yaw), fz = Math.Cos(yaw);
+        double along = dx * fx + dz * fz, side = Math.Abs(-dx * fz + dz * fx);
+        if (along is > 0 and <= 3.0 && side <= 1.0 && dy is > -1.6 and < 1.8) return 1 + side + Math.Abs(along - 1);
+        return null;
     }
 
     /// <summary>The bot picked up <paramref name="entityId"/>; true when it was a hand-over (added to that player's bucket).</summary>
@@ -208,15 +211,23 @@ public sealed class HandoverWatch(TimeProvider? time = null)
             string? partner = _partner is { } pt && now - pt.At <= TimeSpan.FromMinutes(3) ? pt.Player : null;
             bool handover = HandoverCond.IsMatch(cond);
             int min = 1;
-            int? item = handover ? null : GottenItem(cond, ref min);
-            // "make bread when you hand it over": the item is the one the partner offered ("I have wheat"), else the recipe's input.
-            item ??= ItemNamedIn(act, cond) ?? PartnerOffered(act, partner, now) ?? RecipeInput(act);
+            int? item = PromisedItem(act, cond, handover, partner, now, ref min);
             if (!handover && item is null) return null; // "once I'm done" etc.: nothing concrete to watch for
             var p = new PendingPromise(act, cond, handover ? partner : null, item, min, item is { } id ? have(id) : 0, now) { ByHandover = handover };
             _promises.RemoveAll(x => x.ItemId == p.ItemId && string.Equals(x.From, p.From, StringComparison.OrdinalIgnoreCase));
             _promises.Add(p);
             return p;
         }
+    }
+
+    /// <summary>
+    /// The item a promise waits for: the one the bot itself gets ("once I get 3 logs"), else for "make bread when you hand it
+    /// over" the one the condition names, the partner offered ("I have wheat"), or the recipe's input. Caller holds _lock.
+    /// </summary>
+    private int? PromisedItem(string act, string cond, bool handover, string? partner, DateTimeOffset now, ref int min)
+    {
+        int? item = handover ? null : GottenItem(cond, ref min);
+        return item ?? ItemNamedIn(act, cond) ?? PartnerOffered(act, partner, now) ?? RecipeInput(act);
     }
 
     /// <summary>The promised act and its condition ("make bread" / "you hand it over"), either order; null when the line holds none.</summary>
@@ -269,40 +280,53 @@ public sealed class HandoverWatch(TimeProvider? time = null)
             foreach (var (player, b) in _buckets.Where(kv => now - kv.Value.Last >= Debounce).ToList())
             {
                 _buckets.Remove(player);
-                // Only items actually picked up count as received; distinguish pending tosses and other collectors.
-                var got = new Dictionary<int, int>(b.Items);
-                foreach (var (item, n) in b.Unpicked.Values.Concat(b.Taken.Values)) got[item] = got.GetValueOrDefault(item) - n;
-                var h = new Handover(player, got.Where(kv => kv.Value > 0).Select(kv => (kv.Key, kv.Value)).ToList(), b.Last);
-                var ground = Stacks(b.Unpicked.Values);
-                var taken = Stacks(b.Taken.Values);
-                var text = h.Items.Count > 0 ? $"{player} gave you {h.ItemsText}"
-                    : ground.Count > 0 ? $"{player} tossed you {Text(ground)}" : $"{player} tossed {Text(taken)} toward you";
-                if (ground.Count > 0)
-                    text += (h.Items.Count > 0 ? $"; {Text(ground)} still" : ", but it's still") + " on the ground: not in your inventory until you pick it up (collect_drops)";
-                if (taken.Count > 0) text += $"; {Text(taken)} was picked up by someone else, not you";
-                bool promised = false;
-                var kept = _promises.FirstOrDefault(p => (p.From is null || p.From.Equals(player, StringComparison.OrdinalIgnoreCase))
-                                                          && (p.ItemId is null || b.Items.ContainsKey(p.ItemId.Value)));
-                if (kept is not null)
-                {
-                    _promises.Remove(kept);
-                    text += $"; you said you'd {kept.Intent} when {player} handed it over" + (kept.ItemId is { } id ? $" (now {have(id)} {ItemWord(id, have(id))})" : "");
-                    promised = true;
-                }
-                if (!promised) text += AckHint;
-                outp.Add((text, player));
+                outp.Add((HandoverText(player, b) + (KeptPromise(player, b, have) ?? AckHint), player));
             }
             // An open bucket may still carry the promised item: wait for it to settle so it's one wake, not two.
             if (_buckets.Count == 0)
                 foreach (var p in _promises.Where(p => p.ItemId is { } id && have(id) >= Math.Max(p.MinCount, p.HaveAtPromise + 1)).ToList())
                 {
                     _promises.Remove(p);
-                    int n = have(p.ItemId!.Value);
-                    string cond = p.ByHandover ? (p.From is { } f ? $"when {f} handed it over" : "once you got it") : "once " + Second(p.Condition);
-                    outp.Add(($"you said you'd {p.Intent} {cond}; you now have {n} {ItemWord(p.ItemId.Value, n)}", p.From));
+                    outp.Add((MetPromiseText(p, have), p.From));
                 }
         }
         return outp;
+    }
+
+    /// <summary>"PoofimaFox gave you 21 wheat", or what was tossed and still lies on the ground / went to someone else. Only
+    /// items actually picked up count as received.</summary>
+    private static string HandoverText(string player, Bucket b)
+    {
+        var got = new Dictionary<int, int>(b.Items);
+        foreach (var (item, n) in b.Unpicked.Values.Concat(b.Taken.Values)) got[item] = got.GetValueOrDefault(item) - n;
+        var h = new Handover(player, got.Where(kv => kv.Value > 0).Select(kv => (kv.Key, kv.Value)).ToList(), b.Last);
+        var ground = Stacks(b.Unpicked.Values);
+        var taken = Stacks(b.Taken.Values);
+        var text = h.Items.Count > 0 ? $"{player} gave you {h.ItemsText}"
+            : ground.Count > 0 ? $"{player} tossed you {Text(ground)}" : $"{player} tossed {Text(taken)} toward you";
+        if (ground.Count > 0)
+            text += (h.Items.Count > 0 ? $"; {Text(ground)} still" : ", but it's still") + " on the ground: not in your inventory until you pick it up (collect_drops)";
+        if (taken.Count > 0) text += $"; {Text(taken)} was picked up by someone else, not you";
+        return text;
+    }
+
+    /// <summary>The promise this hand-over keeps ("; you said you'd make bread when PoofimaFox handed it over (now 21 wheat)"),
+    /// removed; null when none. Caller holds _lock.</summary>
+    private string? KeptPromise(string player, Bucket b, Func<int, int> have)
+    {
+        var kept = _promises.FirstOrDefault(p => (p.From is null || p.From.Equals(player, StringComparison.OrdinalIgnoreCase))
+                                                  && (p.ItemId is null || b.Items.ContainsKey(p.ItemId.Value)));
+        if (kept is null) return null;
+        _promises.Remove(kept);
+        return $"; you said you'd {kept.Intent} when {player} handed it over" + (kept.ItemId is { } id ? $" (now {have(id)} {ItemWord(id, have(id))})" : "");
+    }
+
+    /// <summary>"you said you'd build the floor once you got the logs; you now have 12 oak log".</summary>
+    private static string MetPromiseText(PendingPromise p, Func<int, int> have)
+    {
+        int n = have(p.ItemId!.Value);
+        string cond = p.ByHandover ? (p.From is { } f ? $"when {f} handed it over" : "once you got it") : "once " + Second(p.Condition);
+        return $"you said you'd {p.Intent} {cond}; you now have {n} {ItemWord(p.ItemId.Value, n)}";
     }
 
     private static List<(int Item, int Count)> Stacks(IEnumerable<(int Item, int Count)> stacks) =>

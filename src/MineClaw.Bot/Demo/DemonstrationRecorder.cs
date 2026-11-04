@@ -168,12 +168,18 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
                 _lastSwing = (Now, target?.Pos, e.HeldItem);
                 if (target is not { } t) return;
                 Touch(true);
-                var kind = Containers.Contains(t.Id) ? DemoActionKind.OpenContainer : DemoActionKind.UseBlock;
-                string? held = e.HeldItem > 0 && Items.Exists(e.HeldItem) ? Names.Item(e.HeldItem) : null;
-                // "Punch the regenerating brick" is a valid teaching action: a swing that isn't an item use is pointing.
-                string? detail = kind != DemoActionKind.UseBlock ? null : use ? held : Perception.Gestures.Punched;
-                _raw.Add(new Raw(new DemoAction(Now, kind, t.Pos.X, t.Pos.Y, t.Pos.Z, Names.Block(t.Id), detail), e.HeldItem, true));
+                _raw.Add(new Raw(SwingAction(t.Pos, t.Id, e.HeldItem, use), e.HeldItem, true));
             }
+        }
+
+        /// <summary>A swing at a block: opening a container, using the held item on it, or (no item use) a punch. "Punch the
+        /// regenerating brick" is a valid teaching action: a swing that isn't an item use is pointing.</summary>
+        private DemoAction SwingAction(BlockPos pos, int id, int heldItem, bool use)
+        {
+            var kind = Containers.Contains(id) ? DemoActionKind.OpenContainer : DemoActionKind.UseBlock;
+            string? held = heldItem > 0 && Items.Exists(heldItem) ? Names.Item(heldItem) : null;
+            string? detail = kind != DemoActionKind.UseBlock ? null : use ? held : Perception.Gestures.Punched;
+            return new DemoAction(Now, kind, pos.X, pos.Y, pos.Z, Names.Block(id), detail);
         }
 
         private void OnBlockAction(BlockPos pos, int d1, int d2)
@@ -212,14 +218,18 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             var p = ch.Pos;
             if (BlockShapes.IsLiquid(ch.NewId))
                 return (swung && ch.NewMeta == 0 ? new DemoAction(Now, DemoActionKind.BlockPlaced, p.X, p.Y, p.Z, Names.Block(ch.NewId), "poured") : null, swung);
-            if (ch.NewId == 0)
-            {
-                if (!BlockShapes.IsLiquid(ch.OldId)) return (new DemoAction(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), swung ? null : "vanished"), swung);
-                return (swung && ch.OldMeta == 0 ? new DemoAction(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), "scooped") : null, swung);
-            }
+            if (ch.NewId == 0) return (Emptied(ch, swung), swung);
             // Lava meeting water makes stone/cobble/obsidian: that is the structure working, not the player placing.
             bool mine = swung && !(ch.NewId is Blocks.Cobblestone or Blocks.Stone or Blocks.Obsidian && TouchesLiquid(p));
             return (new DemoAction(Now, DemoActionKind.BlockPlaced, p.X, p.Y, p.Z, Names.Block(ch.NewId), mine ? null : "appeared"), mine);
+        }
+
+        /// <summary>A block gone to air: broken (a solid; "vanished" without a swing), or a liquid source scooped after a swing.</summary>
+        private DemoAction? Emptied(BlockChange ch, bool swung)
+        {
+            var p = ch.Pos;
+            if (!BlockShapes.IsLiquid(ch.OldId)) return new DemoAction(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), swung ? null : "vanished");
+            return swung && ch.OldMeta == 0 ? new DemoAction(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), "scooped") : null;
         }
 
         private bool TouchesLiquid(BlockPos p) =>
@@ -268,29 +278,33 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             var mine = attributed.Where(e => e.Confidence >= minConfidence && e.Pos != null).ToList();
             var list = new List<Raw>(raw.Count);
             foreach (var r in raw)
-            {
-                var a = r.A;
-                if (a.Kind is DemoActionKind.BlockPlaced or DemoActionKind.BlockBroken && Solid(a))
-                {
-                    bool placed = a.Kind == DemoActionKind.BlockPlaced;
-                    bool theirs = mine.Any(e => e.Pos is { } p && p.X == a.X && p.Y == a.Y && p.Z == a.Z
-                                                && (placed ? e.Kind is ActivityKinds.Placed or ActivityKinds.Planted or ActivityKinds.WroteSign
-                                                           : e.Kind is ActivityKinds.Broke or ActivityKinds.Harvested)
-                                                && (e.At - a.At).Duration() <= TimeSpan.FromSeconds(3));
-                    list.Add(r with { A = a with { Detail = theirs ? null : placed ? "appeared" : "vanished" }, PlayerCaused = theirs });
-                }
-                else list.Add(r);
-            }
+                list.Add(r.A.Kind is DemoActionKind.BlockPlaced or DemoActionKind.BlockBroken && Solid(r.A) ? Attributed(r, mine) : r);
             foreach (var e in attributed.Where(e => e.Confidence >= minConfidence && e.Kind is ActivityKinds.WroteSign or ActivityKinds.Crafted))
-            {
-                var p = e.Pos ?? default;
-                var a = e.Kind == ActivityKinds.WroteSign
-                    ? new DemoAction(e.At, DemoActionKind.UseBlock, p.X, p.Y, p.Z, "sign", $"wrote \"{e.Detail}\"")
-                    : new DemoAction(e.At, DemoActionKind.UseBlock, p.X, p.Y, p.Z, "crafting_table", "crafted " + ActivityText.Item(e.ItemId ?? 0));
-                list.Add(new Raw(a, 0, true));
-            }
+                list.Add(new Raw(StepOf(e), 0, true));
             return list.OrderBy(x => x.A.At).ToList(); // stable
 
+        }
+
+        /// <summary>A solid place/break: the teacher's (no detail) when the tracker saw them do it there within 3 s, else the
+        /// world's ("appeared"/"vanished").</summary>
+        private static Raw Attributed(Raw r, List<ActivityEvent> mine)
+        {
+            var a = r.A;
+            bool placed = a.Kind == DemoActionKind.BlockPlaced;
+            bool theirs = mine.Any(e => e.Pos is { } p && p.X == a.X && p.Y == a.Y && p.Z == a.Z
+                                        && (placed ? e.Kind is ActivityKinds.Placed or ActivityKinds.Planted or ActivityKinds.WroteSign
+                                                   : e.Kind is ActivityKinds.Broke or ActivityKinds.Harvested)
+                                        && (e.At - a.At).Duration() <= TimeSpan.FromSeconds(3));
+            return r with { A = a with { Detail = theirs ? null : placed ? "appeared" : "vanished" }, PlayerCaused = theirs };
+        }
+
+        /// <summary>A sign written or an item crafted, as a step.</summary>
+        private static DemoAction StepOf(ActivityEvent e)
+        {
+            var p = e.Pos ?? default;
+            return e.Kind == ActivityKinds.WroteSign
+                ? new DemoAction(e.At, DemoActionKind.UseBlock, p.X, p.Y, p.Z, "sign", $"wrote \"{e.Detail}\"")
+                : new DemoAction(e.At, DemoActionKind.UseBlock, p.X, p.Y, p.Z, "crafting_table", "crafted " + ActivityText.Item(e.ItemId ?? 0));
         }
 
         /// <summary>
@@ -324,15 +338,19 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             for (int j = i + 1; j < raw.Count; j++)
             {
                 var b = raw[j].A;
-                var dt = b.At - a.At;
-                if (b.Kind == DemoActionKind.BlockBroken && b.Detail == null && b.X == a.X && b.Y == a.Y && b.Z == a.Z && dt <= TimeSpan.FromSeconds(15))
-                    return true;
-                if (b.Kind == DemoActionKind.BlockPlaced && b.Detail == null && dt <= TimeSpan.FromSeconds(1.5) && HoldsBlock(r) &&
-                    Math.Abs(b.X - a.X) + Math.Abs(b.Y - a.Y) + Math.Abs(b.Z - a.Z) <= 1)
-                    return true;
+                if (BrokeIt(a, b) || (HoldsBlock(r) && PlacedBeside(a, b))) return true;
             }
             return false;
         }
+
+        /// <summary>The teacher broke the swung-at block within 15 s.</summary>
+        private static bool BrokeIt(DemoAction a, DemoAction b) =>
+            b.Kind == DemoActionKind.BlockBroken && b.Detail == null && b.X == a.X && b.Y == a.Y && b.Z == a.Z && b.At - a.At <= TimeSpan.FromSeconds(15);
+
+        /// <summary>The teacher placed a block next to the swung-at one within 1.5 s.</summary>
+        private static bool PlacedBeside(DemoAction a, DemoAction b) =>
+            b.Kind == DemoActionKind.BlockPlaced && b.Detail == null && b.At - a.At <= TimeSpan.FromSeconds(1.5)
+            && Math.Abs(b.X - a.X) + Math.Abs(b.Y - a.Y) + Math.Abs(b.Z - a.Z) <= 1;
 
         private static bool HoldsBlock(Raw r) => r.Held > 0 && r.Held < 256;
 

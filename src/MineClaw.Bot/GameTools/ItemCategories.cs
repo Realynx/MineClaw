@@ -30,9 +30,9 @@ public static class ItemCategories
 
     public static string Of(int id, int damage = 0)
     {
-        if (id == Items.Dye) return damage == Items.LapisLazuli ? "ores" : damage == Items.BoneMeal ? "farm" : "misc";
+        if (id == Items.Dye) return DyeCategory(damage);
         if (Mob.Contains(id)) return "mob";
-        if (ToolLike.Contains(id) || (id >= Items.LeatherHelmet && id <= Items.GoldenBoots) || (Items.Exists(id) && Items.IsTool(id))) return "tools";
+        if (IsToolLike(id)) return "tools";
         if (Ores.Contains(id)) return "ores";
         if (Wood.Contains(id)) return "wood";
         if (Farm.Contains(id)) return "farm";
@@ -40,6 +40,13 @@ public static class ItemCategories
         if (id < 256) return "blocks";
         return "misc";
     }
+
+    /// <summary>Lapis is ore, bone meal is farm, other dyes misc.</summary>
+    private static string DyeCategory(int damage) => damage == Items.LapisLazuli ? "ores" : damage == Items.BoneMeal ? "farm" : "misc";
+
+    /// <summary>Tools, armour and tool-like items (bow, rod, shears, buckets, compass, clock).</summary>
+    private static bool IsToolLike(int id) =>
+        ToolLike.Contains(id) || (id >= Items.LeatherHelmet && id <= Items.GoldenBoots) || (Items.Exists(id) && Items.IsTool(id));
 
     public static int Rank(string category) => Array.IndexOf(Order, category) is var i and >= 0 ? i : Order.Length;
 }

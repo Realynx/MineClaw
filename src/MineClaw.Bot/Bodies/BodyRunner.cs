@@ -126,79 +126,35 @@ public sealed class BodyRunner : IAsyncDisposable
         try { StateChanged?.Invoke(s); } catch (Exception ex) { _log.LogDebug(ex, "body {Name}: state handler failed", Name); }
     }
 
+    /// <summary>What the loop does after one connect / session round.</summary>
+    private enum LoopStep
+    {
+        /// <summary>Go round again (reconnect).</summary>
+        Again,
+        /// <summary>Leave the loop and go offline.</summary>
+        Stop,
+        /// <summary>Leave the loop keeping the state just set (retired, occupied).</summary>
+        Exit,
+    }
+
+    /// <summary>The loop's carried state: the last session's exit and the current reconnect backoff.</summary>
+    private sealed class LoopState(TimeSpan reconnect, TimeSpan maxWait)
+    {
+        public BodyExit Exit = BodyExit.Stopped();
+        public TimeSpan Reconnect = reconnect;
+        public readonly TimeSpan MaxWait = maxWait;
+    }
+
     private async Task LoopAsync(CancellationToken ct)
     {
-        var exit = BodyExit.Stopped();
-        var reconnect = TimeSpan.FromSeconds(Math.Max(0, _o.ReconnectSeconds));
-        var maxWait = TimeSpan.FromSeconds(Math.Max(0, _o.BackoffMaxSeconds));
+        var st = new LoopState(TimeSpan.FromSeconds(Math.Max(0, _o.ReconnectSeconds)), TimeSpan.FromSeconds(Math.Max(0, _o.BackoffMaxSeconds)));
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                Set(BodyState.Connecting);
-                try
-                {
-                    await _session.Gate(ct).ConfigureAwait(false);
-                    await _session.Connect(ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
-                catch (Exception ex)
-                {
-                    _log.LogWarning("body {Name}: connect failed: {Error}; retrying in {S:0.#}s", Name, ex.Message, reconnect.TotalSeconds);
-                    if (!await DelayAsync(reconnect, ct).ConfigureAwait(false)) break;
-                    reconnect = Next(reconnect, maxWait);
-                    continue;
-                }
-
-                Set(BodyState.Online);
-                Sessions++;
-                var started = _time.GetUtcNow();
-                using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                lock (_lock) _current = session;
-                Exception? crash = null;
-                try { exit = await _session.Run(session.Token).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { exit = BodyExit.Stopped(); }
-                catch (Exception ex) { crash = ex; }
-                lock (_lock)
-                {
-                    _current = null;
-                    if (_fault != null) { crash = _fault; _fault = null; }
-                }
-                if (ct.IsCancellationRequested && crash == null) break;
-
-                if (crash != null)
-                {
-                    var (count, retired) = Record(crash);
-                    try { await _session.Reset().ConfigureAwait(false); } catch (Exception ex) { _log.LogDebug(ex, "body {Name}: reset failed", Name); }
-                    if (retired)
-                    {
-                        _log.LogError(crash, "body {Name} crashed {N} times in {W:0} min: retired for this session", Name, count, _o.CrashWindowMinutes);
-                        exit = new BodyExit(BodyExitKind.Stopped, "retired: " + crash.Message);
-                        Set(BodyState.Retired);
-                        RaiseCrashed(crash, true);
-                        return;
-                    }
-                    var backoff = TimeSpan.FromSeconds(Math.Min(_o.BackoffMaxSeconds, _o.BackoffBaseSeconds * Math.Pow(2, count - 1)));
-                    _log.LogWarning(crash, "body {Name} crashed ({N}/{Max}); restarting it alone in {S:0.#}s", Name, count, _o.MaxCrashes, backoff.TotalSeconds);
-                    Set(BodyState.Offline);
-                    RaiseCrashed(crash, false);
-                    if (!await DelayAsync(backoff, ct).ConfigureAwait(false)) break;
-                    continue;
-                }
-
-                if (exit.Kind == BodyExitKind.Stopped) break;
-                if (exit.Kind == BodyExitKind.ExternalLogin)
-                {
-                    _log.LogWarning("body {Name}: someone else logged in with this account ({Reason}); not reconnecting", Name, exit.Reason);
-                    Set(BodyState.Occupied);
-                    return;
-                }
-                // Lost (kick, network): reconnect. A session that lasted a while starts the backoff over.
-                if (_time.GetUtcNow() - started > TimeSpan.FromMinutes(1)) reconnect = TimeSpan.FromSeconds(Math.Max(0, _o.ReconnectSeconds));
-                _log.LogInformation("body {Name}: connection lost ({Reason}); reconnecting in {S:0.#}s", Name, exit.Reason, reconnect.TotalSeconds);
-                Set(BodyState.Connecting);
-                if (!await DelayAsync(reconnect, ct).ConfigureAwait(false)) break;
-                reconnect = Next(reconnect, maxWait);
+                var step = await RoundAsync(st, ct).ConfigureAwait(false);
+                if (step == LoopStep.Stop) break;
+                if (step == LoopStep.Exit) return;
             }
             Set(BodyState.Offline);
         }
@@ -210,8 +166,97 @@ public sealed class BodyRunner : IAsyncDisposable
         }
         finally
         {
-            try { Ended?.Invoke(exit); } catch (Exception ex) { _log.LogDebug(ex, "body {Name}: ended handler failed", Name); }
+            try { Ended?.Invoke(st.Exit); } catch (Exception ex) { _log.LogDebug(ex, "body {Name}: ended handler failed", Name); }
         }
+    }
+
+    /// <summary>One round: connect, run a session, then decide (crash restart, stop, occupied, or reconnect).</summary>
+    private async Task<LoopStep> RoundAsync(LoopState st, CancellationToken ct)
+    {
+        Set(BodyState.Connecting);
+        if (await ConnectAsync(st, ct).ConfigureAwait(false) is { } failed) return failed;
+
+        Set(BodyState.Online);
+        Sessions++;
+        var started = _time.GetUtcNow();
+        using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var crash = await RunSessionAsync(st, session, ct).ConfigureAwait(false);
+        if (ct.IsCancellationRequested && crash == null) return LoopStep.Stop;
+        if (crash != null) return await AfterCrashAsync(st, crash, ct).ConfigureAwait(false);
+        return await AfterExitAsync(st, started, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Gate + connect; null when connected, else the step to take (a failed connect waits and backs off).</summary>
+    private async Task<LoopStep?> ConnectAsync(LoopState st, CancellationToken ct)
+    {
+        try
+        {
+            await _session.Gate(ct).ConfigureAwait(false);
+            await _session.Connect(ct).ConfigureAwait(false);
+            return null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return LoopStep.Stop; }
+        catch (Exception ex)
+        {
+            _log.LogWarning("body {Name}: connect failed: {Error}; retrying in {S:0.#}s", Name, ex.Message, st.Reconnect.TotalSeconds);
+            if (!await DelayAsync(st.Reconnect, ct).ConfigureAwait(false)) return LoopStep.Stop;
+            st.Reconnect = Next(st.Reconnect, st.MaxWait);
+            return LoopStep.Again;
+        }
+    }
+
+    /// <summary>Runs one session; the crash it ended with (a thrown error or a reported <see cref="Fault"/>), or null.</summary>
+    private async Task<Exception?> RunSessionAsync(LoopState st, CancellationTokenSource session, CancellationToken ct)
+    {
+        lock (_lock) _current = session;
+        Exception? crash = null;
+        try { st.Exit = await _session.Run(session.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { st.Exit = BodyExit.Stopped(); }
+        catch (Exception ex) { crash = ex; }
+        lock (_lock)
+        {
+            _current = null;
+            if (_fault != null) { crash = _fault; _fault = null; }
+        }
+        return crash;
+    }
+
+    private async Task<LoopStep> AfterCrashAsync(LoopState st, Exception crash, CancellationToken ct)
+    {
+        var (count, retired) = Record(crash);
+        try { await _session.Reset().ConfigureAwait(false); } catch (Exception ex) { _log.LogDebug(ex, "body {Name}: reset failed", Name); }
+        if (retired)
+        {
+            _log.LogError(crash, "body {Name} crashed {N} times in {W:0} min: retired for this session", Name, count, _o.CrashWindowMinutes);
+            st.Exit = new BodyExit(BodyExitKind.Stopped, "retired: " + crash.Message);
+            Set(BodyState.Retired);
+            RaiseCrashed(crash, true);
+            return LoopStep.Exit;
+        }
+        var backoff = TimeSpan.FromSeconds(Math.Min(_o.BackoffMaxSeconds, _o.BackoffBaseSeconds * Math.Pow(2, count - 1)));
+        _log.LogWarning(crash, "body {Name} crashed ({N}/{Max}); restarting it alone in {S:0.#}s", Name, count, _o.MaxCrashes, backoff.TotalSeconds);
+        Set(BodyState.Offline);
+        RaiseCrashed(crash, false);
+        return await DelayAsync(backoff, ct).ConfigureAwait(false) ? LoopStep.Again : LoopStep.Stop;
+    }
+
+    private async Task<LoopStep> AfterExitAsync(LoopState st, DateTimeOffset started, CancellationToken ct)
+    {
+        var exit = st.Exit;
+        if (exit.Kind == BodyExitKind.Stopped) return LoopStep.Stop;
+        if (exit.Kind == BodyExitKind.ExternalLogin)
+        {
+            _log.LogWarning("body {Name}: someone else logged in with this account ({Reason}); not reconnecting", Name, exit.Reason);
+            Set(BodyState.Occupied);
+            return LoopStep.Exit;
+        }
+        // Lost (kick, network): reconnect. A session that lasted a while starts the backoff over.
+        if (_time.GetUtcNow() - started > TimeSpan.FromMinutes(1)) st.Reconnect = TimeSpan.FromSeconds(Math.Max(0, _o.ReconnectSeconds));
+        _log.LogInformation("body {Name}: connection lost ({Reason}); reconnecting in {S:0.#}s", Name, exit.Reason, st.Reconnect.TotalSeconds);
+        Set(BodyState.Connecting);
+        if (!await DelayAsync(st.Reconnect, ct).ConfigureAwait(false)) return LoopStep.Stop;
+        st.Reconnect = Next(st.Reconnect, st.MaxWait);
+        return LoopStep.Again;
     }
 
     private (int Count, bool Retired) Record(Exception crash)

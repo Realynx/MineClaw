@@ -38,30 +38,39 @@ public sealed partial class WorldIndexer
         int id = _world.GetBlock(p);
         var kind = IndexKinds.StationKind(id);
         if (kind == null) return null;
-        if (Ids1122.IsChest(id))
-        {
-            // One 54-slot chest, keyed on its west/north half whichever block is asked (ChestPairs: same kind only, a trapped
-            // chest with a trapped one; never stacked or diagonal; a third chest touching a pair pairs with nothing). Was: the
-            // first same-id side won, so with three in a row the middle block re-keyed the pair and orphaned the end chest.
-            if (ChestPairs.Partner(_world, p) is { } q)
-                return ChestPairs.IsFirst(p, q) ? (kind, p, [p, q]) : (kind, q, [q, p]);
-            // The other half's column is away (it reads as air): a pair memory knows stays one chest until that column is back,
-            // instead of splitting into a single holding all 54 slots' memory (a re-scan beside an unloaded column).
-            if (_stationCells.GetValueOrDefault(p) is { Kind: IndexKinds.Chest, Cells.Count: 2 } known
-                && known.Cells.First(c => c != p) is var other && !_world.IsLoaded(other.X, other.Z))
-                return ChestPairs.IsFirst(p, other) ? (kind, p, [p, other]) : (kind, other, [other, p]);
-            return (kind, p, [p]);
-        }
-        if (id == Blocks.Bed)
-        {
-            int meta = _world.GetMeta(p);
-            var dir = (meta & 3) switch { 0 => new BlockPos(0, 0, 1), 1 => new BlockPos(-1, 0, 0), 2 => new BlockPos(0, 0, -1), _ => new BlockPos(1, 0, 0) };
-            bool head = (meta & 8) != 0;
-            var other = head ? p - dir : p + dir;
-            var headPos = head ? p : other;
-            return _world.GetBlock(other) == Blocks.Bed ? (kind, headPos, [p, other]) : (kind, p, [p]);
-        }
+        if (Ids1122.IsChest(id)) return ChestAt(kind, p);
+        if (id == Blocks.Bed) return BedAt(kind, p);
         return (kind, p, [p]);
+    }
+
+    /// <summary>
+    /// One 54-slot chest, keyed on its west/north half whichever block is asked (ChestPairs: same kind only, a trapped
+    /// chest with a trapped one; never stacked or diagonal; a third chest touching a pair pairs with nothing). Was: the
+    /// first same-id side won, so with three in a row the middle block re-keyed the pair and orphaned the end chest.
+    /// </summary>
+    private (string Kind, BlockPos KeyPos, BlockPos[] Cells) ChestAt(string kind, BlockPos p)
+    {
+        if (ChestPairs.Partner(_world, p) is { } q) return Pair(kind, p, q);
+        // The other half's column is away (it reads as air): a pair memory knows stays one chest until that column is back,
+        // instead of splitting into a single holding all 54 slots' memory (a re-scan beside an unloaded column).
+        if (_stationCells.GetValueOrDefault(p) is { Kind: IndexKinds.Chest, Cells.Count: 2 } known
+            && known.Cells.First(c => c != p) is var other && !_world.IsLoaded(other.X, other.Z))
+            return Pair(kind, p, other);
+        return (kind, p, [p]);
+    }
+
+    private static (string Kind, BlockPos KeyPos, BlockPos[] Cells) Pair(string kind, BlockPos p, BlockPos q) =>
+        ChestPairs.IsFirst(p, q) ? (kind, p, [p, q]) : (kind, q, [q, p]);
+
+    /// <summary>A bed keys on its head cell (both halves when the other half is there).</summary>
+    private (string Kind, BlockPos KeyPos, BlockPos[] Cells) BedAt(string kind, BlockPos p)
+    {
+        int meta = _world.GetMeta(p);
+        var dir = (meta & 3) switch { 0 => new BlockPos(0, 0, 1), 1 => new BlockPos(-1, 0, 0), 2 => new BlockPos(0, 0, -1), _ => new BlockPos(1, 0, 0) };
+        bool head = (meta & 8) != 0;
+        var other = head ? p - dir : p + dir;
+        var headPos = head ? p : other;
+        return _world.GetBlock(other) == Blocks.Bed ? (kind, headPos, [p, other]) : (kind, p, [p]);
     }
 
     private static bool Less(BlockPos a, BlockPos b) => a.X != b.X ? a.X < b.X : a.Y != b.Y ? a.Y < b.Y : a.Z < b.Z;
@@ -135,19 +144,20 @@ public sealed partial class WorldIndexer
         RemoveEntry(e);
         if (e.LabelSign is { } sp) _dirtySigns.Add(sp);
         foreach (var c in rest)
-        {
-            if (EvaluateStation(c) is not { } ne || ne.Kind != e.Kind) continue;
-            if (e.Contents != null && ne.Contents == null) ne.Label ??= e.Label;
-            // A double chest lost a half: the survivor is a 27-slot chest with its own half's items (the broken half's spilled
-            // on the ground). Its half unknown (no 54-slot look this session): contents unknown, never the pair's 54 slots' worth.
-            if (ne.Contents == null && e.HalfContents?.GetValueOrDefault(c) is { } half)
-            {
-                ne.Contents = half.ToList();
-                ne.ContentsAt = e.ContentsAt;
-                ne.ContentsBy = e.ContentsBy;
-                ne.ContentsDirty = true;
-            }
-        }
+            if (EvaluateStation(c) is { } ne && ne.Kind == e.Kind) InheritSurvivor(e, c, ne);
+    }
+
+    /// <summary>The rest of a broken station, re-derived as <paramref name="ne"/>, keeps the label and (a chest) its own half.</summary>
+    private static void InheritSurvivor(IndexEntry e, BlockPos c, IndexEntry ne)
+    {
+        if (e.Contents != null && ne.Contents == null) ne.Label ??= e.Label;
+        // A double chest lost a half: the survivor is a 27-slot chest with its own half's items (the broken half's spilled
+        // on the ground). Its half unknown (no 54-slot look this session): contents unknown, never the pair's 54 slots' worth.
+        if (ne.Contents != null || e.HalfContents?.GetValueOrDefault(c) is not { } half) return;
+        ne.Contents = half.ToList();
+        ne.ContentsAt = e.ContentsAt;
+        ne.ContentsBy = e.ContentsBy;
+        ne.ContentsDirty = true;
     }
 
     /// <summary>
@@ -164,9 +174,13 @@ public sealed partial class WorldIndexer
         var halves = e.HalfContents ??= new();
         halves[cell] = mem.Items.ToList();
         e.Contents = Sum(halves.Values.SelectMany(h => h));
-        e.ContentsAt = e.ContentsAt is { } a && mem.At is { } b ? (a < b ? a : b) : e.ContentsAt ?? mem.At; // the older look
+        e.ContentsAt = OlderLook(e.ContentsAt, mem.At);
         e.ContentsBy ??= mem.By;
     }
+
+    /// <summary>The older of two look times (either may be unknown).</summary>
+    private static DateTimeOffset? OlderLook(DateTimeOffset? x, DateTimeOffset? y) =>
+        x is { } a && y is { } b ? (a < b ? a : b) : x ?? y;
 
     private ContainerMemory? Remembered(IndexEntry e)
     {
@@ -245,37 +259,50 @@ public sealed partial class WorldIndexer
             if (loaded && id is not (Blocks.SignPost or Blocks.WallSign)) continue;
             if (!_signText.TryGetValue(p, out var lines)) continue;
             var label = SignLabel(lines);
-            var key = ObservationStore.KeyFor(p.X, p.Y, p.Z);
-            var sign = GetOrCreate(IndexKinds.Sign, key, out bool created);
-            ClearLabel(sign);
-            sign.Anchor = p;
-            sign.Min = sign.Max = p;
-            sign.Cells = [p];
-            sign.Label = label;
-            sign.Dirty = true;
-            sign.Seen = true;
-            SetProtect(sign, [p]);
-            if (created) GridAdd(sign);
+            var sign = UpsertSign(p, label);
             if (label.Length == 0) continue;
-
-            // Wall signs label the block they hang on first; otherwise the nearest thing within the radius.
-            IndexEntry? target = null;
-            if (id == Blocks.WallSign)
-            {
-                var back = (_world.GetMeta(p) & 7) switch
-                {
-                    2 => p.Offset(0, 0, 1), 3 => p.Offset(0, 0, -1), 4 => p.Offset(1, 0, 0), 5 => p.Offset(-1, 0, 0), _ => p,
-                };
-                target = _stationCells.GetValueOrDefault(back);
-            }
-            target ??= NearestEntry(p, _o.SignAttachRadius, x => x.Kind is not (IndexKinds.Sign or IndexKinds.Island or IndexKinds.Hangout or IndexKinds.Activity));
-            if (target == null) continue;
-            if (target.LabelSign is { } other && other != p && _signText.ContainsKey(other)) target.Label = target.Label + " / " + label;
-            else target.Label = label;
-            target.LabelSign = p;
-            target.Dirty = true;
-            sign.Extra["labels"] = target.Kind + "@" + target.Key;
+            if (LabelTarget(p, id) is { } target) ApplyLabel(sign, target, p, label);
         }
+    }
+
+    private IndexEntry UpsertSign(BlockPos p, string label)
+    {
+        var sign = GetOrCreate(IndexKinds.Sign, ObservationStore.KeyFor(p.X, p.Y, p.Z), out bool created);
+        ClearLabel(sign);
+        sign.Anchor = p;
+        sign.Min = sign.Max = p;
+        sign.Cells = [p];
+        sign.Label = label;
+        sign.Dirty = true;
+        sign.Seen = true;
+        SetProtect(sign, [p]);
+        if (created) GridAdd(sign);
+        return sign;
+    }
+
+    /// <summary>Wall signs label the block they hang on first; otherwise the nearest thing within the radius.</summary>
+    private IndexEntry? LabelTarget(BlockPos p, int id)
+    {
+        IndexEntry? target = null;
+        if (id == Blocks.WallSign)
+        {
+            var back = (_world.GetMeta(p) & 7) switch
+            {
+                2 => p.Offset(0, 0, 1), 3 => p.Offset(0, 0, -1), 4 => p.Offset(1, 0, 0), 5 => p.Offset(-1, 0, 0), _ => p,
+            };
+            target = _stationCells.GetValueOrDefault(back);
+        }
+        return target ?? NearestEntry(p, _o.SignAttachRadius, x => x.Kind is not (IndexKinds.Sign or IndexKinds.Island or IndexKinds.Hangout or IndexKinds.Activity));
+    }
+
+    /// <summary>A second sign on the same thing adds to its label ("a / b").</summary>
+    private void ApplyLabel(IndexEntry sign, IndexEntry target, BlockPos p, string label)
+    {
+        if (target.LabelSign is { } other && other != p && _signText.ContainsKey(other)) target.Label = target.Label + " / " + label;
+        else target.Label = label;
+        target.LabelSign = p;
+        target.Dirty = true;
+        sign.Extra["labels"] = target.Kind + "@" + target.Key;
     }
 
     private void ClearLabel(IndexEntry sign)
@@ -297,60 +324,69 @@ public sealed partial class WorldIndexer
     {
         while (_containerEvents.TryDequeue(out var ev))
         {
-            if (ev.Open)
-            {
-                var pos = ResolveContainer(ev);
-                _open = pos is { } p && EvaluateStation(p, seen: true) is { } e ? (ev.Window, e, ev.InvVersion) : null;
-                _openSeenVersion = ev.InvVersion;
-                _openFirst = true;
-            }
-            else if (_open is { } o && o.Window == ev.Window)
-            {
-                // Only trust the snapshot if the window's items actually arrived after it opened.
-                if (ev.InvVersion > o.InvVersion && ev.Snapshot != null)
-                {
-                    if (_openFirst) NoteVanished(o.Entry, ev.Initial, now);
-                    ApplySnapshot(o.Entry, ev.Window.Type, ev.Snapshot, ev.Burning, force: true, first: _openFirst, now);
-                }
-                _open = null;
-            }
+            if (ev.Open) OnContainerOpened(ev);
+            else if (_open is { } o && o.Window == ev.Window) OnContainerClosed(ev, o.Entry, o.InvVersion, now);
         }
-        if (_open is { } cur)
+        if (_open is { } cur) RefreshOpenContainer(cur.Window, cur.Entry, cur.InvVersion, now);
+    }
+
+    private void OnContainerOpened(ContainerEvent ev)
+    {
+        var pos = ResolveContainer(ev);
+        _open = pos is { } p && EvaluateStation(p, seen: true) is { } e ? (ev.Window, e, ev.InvVersion) : null;
+        _openSeenVersion = ev.InvVersion;
+        _openFirst = true;
+    }
+
+    private void OnContainerClosed(ContainerEvent ev, IndexEntry entry, int openVersion, DateTimeOffset now)
+    {
+        // Only trust the snapshot if the window's items actually arrived after it opened.
+        if (ev.InvVersion > openVersion && ev.Snapshot != null)
         {
-            int v = Volatile.Read(ref _inventoryVersion);
-            if (v != _openSeenVersion && v > cur.InvVersion && _world.Inventory.OpenWindow == cur.Window)
-            {
-                _openSeenVersion = v;
-                MineClaw.Data.ItemStack[] snap;
-                lock (_world.Inventory.SyncRoot) snap = cur.Window.ContainerContents().Select(t => t.Item).ToArray();
-                if (_openFirst) NoteVanished(cur.Entry, _initialContents.TryGetValue(cur.Window, out var first0) ? first0 : snap, now);
-                // The first look after an open is written at once (forced): other hive bots must not act on stale contents.
-                ApplySnapshot(cur.Entry, cur.Window.Type, snap, cur.Window.IsBurning, force: _openFirst, first: _openFirst, now);
-                _openFirst = false;
-            }
+            if (_openFirst) NoteVanished(entry, ev.Initial, now);
+            ApplySnapshot(entry, ev.Window.Type, ev.Snapshot, ev.Burning, force: true, first: _openFirst, now);
         }
+        _open = null;
+    }
+
+    /// <summary>The open window's items changed since the last look: snapshot them.</summary>
+    private void RefreshOpenContainer(Window window, IndexEntry entry, int openVersion, DateTimeOffset now)
+    {
+        int v = Volatile.Read(ref _inventoryVersion);
+        if (v == _openSeenVersion || v <= openVersion || _world.Inventory.OpenWindow != window) return;
+        _openSeenVersion = v;
+        MineClaw.Data.ItemStack[] snap;
+        lock (_world.Inventory.SyncRoot) snap = window.ContainerContents().Select(t => t.Item).ToArray();
+        if (_openFirst) NoteVanished(entry, _initialContents.TryGetValue(window, out var first0) ? first0 : snap, now);
+        // The first look after an open is written at once (forced): other hive bots must not act on stale contents.
+        ApplySnapshot(entry, window.Type, snap, window.IsBurning, force: _openFirst, first: _openFirst, now);
+        _openFirst = false;
     }
 
     private BlockPos? ResolveContainer(ContainerEvent ev)
     {
-        var want = ev.Window.Type switch
-        {
-            WindowType.Chest => new[] { Blocks.Chest, Ids1122.TrappedChest },
-            WindowType.Furnace => new[] { Blocks.Furnace, Blocks.LitFurnace },
-            WindowType.Dispenser => new[] { Blocks.Dispenser },
-            _ => [],
-        };
+        var want = ContainerBlocks(ev.Window.Type);
         if (ev.FeedPos is { } fp && want.Contains(_world.GetBlock(fp))) return fp;
         if (Raycast.Cast(_world, ev.Eye, ev.Yaw, ev.Pitch, 6) is { } hit)
         {
             if (want.Contains(hit.BlockId)) return hit.Pos;
             // Looking at another chest-like container (an ender chest's own 27 slots, a shulker box, a hopper): its window is
             // never the nearest chest's contents (was: written over the chest beside it).
-            if (hit.BlockId is Ids1122.EnderChest or Ids1122.Hopper or Ids1122.Dropper || Ids1122.IsShulkerBox(hit.BlockId)) return null;
+            if (OtherContainer(hit.BlockId)) return null;
         }
         var near = _world.FindBlocks(ev.Eye, 6, (id, _) => want.Contains(id), 1);
         return near.Count > 0 ? near[0].Pos : null;
     }
+
+    private static int[] ContainerBlocks(WindowType type) => type switch
+    {
+        WindowType.Chest => new[] { Blocks.Chest, Ids1122.TrappedChest },
+        WindowType.Furnace => new[] { Blocks.Furnace, Blocks.LitFurnace },
+        WindowType.Dispenser => new[] { Blocks.Dispenser },
+        _ => [],
+    };
+
+    private static bool OtherContainer(int id) => id is Ids1122.EnderChest or Ids1122.Hopper or Ids1122.Dropper || Ids1122.IsShulkerBox(id);
 
     /// <summary>
     /// First look after an open: what shared memory said the container held (any bot's last open, from the db) versus what it
@@ -385,23 +421,14 @@ public sealed partial class WorldIndexer
     private void ApplySnapshot(IndexEntry e, WindowType type, MineClaw.Data.ItemStack[] slots, bool burning, bool force, bool first, DateTimeOffset now)
     {
         var list = Group(slots);
-        // Either half's click opens the same 54 slots (slots 0-26 = the key cell, the west/north half): one row holds them all,
-        // and each half's share is kept for the day one half is broken.
-        e.HalfContents = e.Kind == IndexKinds.Chest && e.Cells.Count == 2 && slots.Length >= ChestPairs.DoubleSlots
-            ? new Dictionary<BlockPos, List<ItemCount>>
-            {
-                [e.Anchor] = Group(slots.Take(ChestPairs.HalfSlots)),
-                [e.Cells.First(c => c != e.Anchor)] = Group(slots.Skip(ChestPairs.HalfSlots).Take(ChestPairs.HalfSlots)),
-            }
-            : null;
+        e.HalfContents = HalvesOf(e, slots);
         e.ContentsBy = null;
         if (type == WindowType.Furnace)
         {
-            ItemCount? At(int i) => i < slots.Length && !slots[i].IsEmpty ? new ItemCount(slots[i].Id, ItemName(slots[i].Id), slots[i].Count, slots[i].Damage) : null;
-            e.FurnaceSlots = (At(0), At(1), At(2));
+            e.FurnaceSlots = (FurnaceSlot(slots, 0), FurnaceSlot(slots, 1), FurnaceSlot(slots, 2));
             e.FurnaceLit |= burning;
         }
-        bool same = e.Contents != null && e.Contents.Count == list.Count && e.Contents.Zip(list).All(t => t.First == t.Second);
+        bool same = SameContents(e.Contents, list);
         e.Contents = list;
         e.ContentsAt = now;
         // Every open re-stamps the contents (freshness for every hive bot), even when they didn't change.
@@ -412,6 +439,23 @@ public sealed partial class WorldIndexer
         if (force) e.Force = true;
         ContainerSnapshot?.Invoke(e.Kind, e.Key, e.Anchor, list, first);
     }
+
+    /// <summary>Either half's click opens the same 54 slots (slots 0-26 = the key cell, the west/north half): one row holds them
+    /// all, and each half's share is kept for the day one half is broken. Null for anything but a full double chest.</summary>
+    private static Dictionary<BlockPos, List<ItemCount>>? HalvesOf(IndexEntry e, MineClaw.Data.ItemStack[] slots) =>
+        e.Kind == IndexKinds.Chest && e.Cells.Count == 2 && slots.Length >= ChestPairs.DoubleSlots
+            ? new Dictionary<BlockPos, List<ItemCount>>
+            {
+                [e.Anchor] = Group(slots.Take(ChestPairs.HalfSlots)),
+                [e.Cells.First(c => c != e.Anchor)] = Group(slots.Skip(ChestPairs.HalfSlots).Take(ChestPairs.HalfSlots)),
+            }
+            : null;
+
+    private static ItemCount? FurnaceSlot(MineClaw.Data.ItemStack[] slots, int i) =>
+        i < slots.Length && !slots[i].IsEmpty ? new ItemCount(slots[i].Id, ItemName(slots[i].Id), slots[i].Count, slots[i].Damage) : null;
+
+    private static bool SameContents(List<ItemCount>? was, List<ItemCount> now) =>
+        was != null && was.Count == now.Count && was.Zip(now).All(t => t.First == t.Second);
 
     /// <summary>Raised on the indexer thread after the bot snapshots a container (kind, key, position, contents, first snapshot since it opened).</summary>
     internal event Action<string, string, BlockPos, IReadOnlyList<ItemCount>, bool>? ContainerSnapshot;
@@ -507,18 +551,28 @@ public sealed partial class WorldIndexer
         {
             var r = _pendingClusterRows[i];
             if (Find(r.Kind, r.Key) != null) { _pendingClusterRows.RemoveAt(i); continue; }
-            var b = r.Bounds!.Value;
-            bool covered = true;
-            for (int cx = (int)Math.Floor(b.MinX) >> 4; cx <= (int)Math.Floor(b.MaxX) >> 4 && covered; cx++)
-            for (int cz = (int)Math.Floor(b.MinZ) >> 4; cz <= (int)Math.Floor(b.MaxZ) >> 4 && covered; cz++)
-                covered = _scannedColumns.Contains(ColKey(cx, cz));
-            lock (_columnsLock) covered &= _dirtyColumns.Count == 0 || !_dirtyColumns.Any(k => { var (x, z) = ColOf(k); return x >= (int)Math.Floor(b.MinX) >> 4 && x <= (int)Math.Floor(b.MaxX) >> 4 && z >= (int)Math.Floor(b.MinZ) >> 4 && z <= (int)Math.Floor(b.MaxZ) >> 4; });
-            if (!covered) continue;
+            if (!BoxScanned(r.Bounds!.Value)) continue;
             _removals.Add((r.Kind, r.Key));
             _pendingClusterRows.RemoveAt(i);
         }
         if (_pendingClusterRows.Count > 2000) _pendingClusterRows.RemoveRange(0, _pendingClusterRows.Count - 2000);
     }
+
+    /// <summary>Every column under the box was scanned and none is waiting for a re-scan.</summary>
+    private bool BoxScanned(Box b)
+    {
+        bool covered = true;
+        for (int cx = (int)Math.Floor(b.MinX) >> 4; cx <= (int)Math.Floor(b.MaxX) >> 4 && covered; cx++)
+        for (int cz = (int)Math.Floor(b.MinZ) >> 4; cz <= (int)Math.Floor(b.MaxZ) >> 4 && covered; cz++)
+            covered = _scannedColumns.Contains(ColKey(cx, cz));
+        lock (_columnsLock) covered &= _dirtyColumns.Count == 0 || !_dirtyColumns.Any(k => { var (x, z) = ColOf(k); return x >= (int)Math.Floor(b.MinX) >> 4 && x <= (int)Math.Floor(b.MaxX) >> 4 && z >= (int)Math.Floor(b.MinZ) >> 4 && z <= (int)Math.Floor(b.MaxZ) >> 4; });
+        return covered;
+    }
+
+    /// <summary>A stored row no live entry holds; an auto row only of the same sub-type.</summary>
+    private bool Adoptable(ObservationRow row, string kind, string? subType) =>
+        Find(kind, row.Key) == null
+        && (row.Source != ObservationSource.Auto || subType == null || row.Key.StartsWith(subType + "@", StringComparison.Ordinal));
 
     /// <summary>Key for a brand-new cluster: reuse a persisted row of the same kind it overlaps (auto rows of the same
     /// sub-type, or any taught/llm row — the store then only annotates that one), else <paramref name="fresh"/>.</summary>
@@ -533,13 +587,10 @@ public sealed partial class WorldIndexer
         double bestOverlap = -1;
         foreach (var row in rows)
         {
-            if (row.Bounds is not { } b || Find(kind, row.Key) != null) continue;
-            if (row.Source == ObservationSource.Auto && subType != null && !row.Key.StartsWith(subType + "@", StringComparison.Ordinal)) continue;
-            double ox = Math.Min(b.MaxX, max.X + 2) - Math.Max(b.MinX, min.X - 2) + 1;
-            double oy = Math.Min(b.MaxY, max.Y + 2) - Math.Max(b.MinY, min.Y - 2) + 1;
-            double oz = Math.Min(b.MaxZ, max.Z + 2) - Math.Max(b.MinZ, min.Z - 2) + 1;
-            if (ox <= 0 || oy <= 0 || oz <= 0) continue;
-            double overlap = ox * oy * oz * (row.Source == ObservationSource.Auto ? 1 : 2);
+            if (row.Bounds is not { } b || !Adoptable(row, kind, subType)) continue;
+            double raw = Overlap(b, min, max);
+            if (raw < 0) continue;
+            double overlap = raw * (row.Source == ObservationSource.Auto ? 1 : 2);
             if (overlap > bestOverlap) { bestOverlap = overlap; best = row.Key; }
         }
         _pendingClusterRows.RemoveAll(x => x.Kind == kind && x.Key == best);
@@ -547,6 +598,15 @@ public sealed partial class WorldIndexer
         // to equal the stored one (an unchanged structure) - it is not "new" (was: re-announced on every join).
         if (best != null) _adopted.Add(kind + "|" + best);
         return best ?? fresh;
+    }
+
+    /// <summary>Overlap volume of the row's box with the cluster's box grown by 2; -1 when they don't touch.</summary>
+    private static double Overlap(Box b, BlockPos min, BlockPos max)
+    {
+        double ox = Math.Min(b.MaxX, max.X + 2) - Math.Max(b.MinX, min.X - 2) + 1;
+        double oy = Math.Min(b.MaxY, max.Y + 2) - Math.Max(b.MinY, min.Y - 2) + 1;
+        double oz = Math.Min(b.MaxZ, max.Z + 2) - Math.Max(b.MinZ, min.Z - 2) + 1;
+        return ox <= 0 || oy <= 0 || oz <= 0 ? -1 : ox * oy * oz;
     }
 
     private static string Json(Dictionary<string, object?> fields) => JsonSerializer.Serialize(fields);
