@@ -115,6 +115,7 @@ import {
   type HeightMode,
   type MenuItem,
   type Target,
+  stalledIn,
 } from './tools';
 import type { StorageClip } from './storage';
 import { AssignPanel } from './assign/AssignPanel';
@@ -430,6 +431,17 @@ export function StoryMode() {
       return;
     }
     if (!shift && tool.kind !== 'zone') setTool({ kind: 'select' }); // zone tools stay in hand (Shift extends a zone)
+    if (tool.kind === 'designate' && tool.id === 'retry') {
+      // Failed or resting designations under the box (any height) are tried again now; nothing new is designated.
+      const ids = stalledIn(state?.designations ?? [], [r.rect[0], r.rect[1], r.rect[2], r.rect[3]]);
+      if (!ids.length) return say('No failed or resting designations there');
+      if (!canWrite) return say('Needs the story role', 'warn');
+      await write('story.designations', { op: 'retry', ids }).then(
+        () => say(`Trying ${ids.length} designation${ids.length === 1 ? '' : 's'} again now`),
+        (e) => say(errorText(e), 'warn'),
+      );
+      return;
+    }
     if (tool.kind === 'designate' && hasHeight(tool.id) && r.height) {
       // Exactly the cells the preview showed (its height mode), as blocks: the director never expands them deeper.
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
@@ -1452,6 +1464,15 @@ export function StoryMode() {
               layers={layers}
               onLayers={(n) => setLayers(clampLayers(n))}
               level={lv}
+              stalled={stalledIn(state?.designations ?? [], null).length}
+              onRetryAll={() => {
+                const ids = stalledIn(state?.designations ?? [], null);
+                if (!ids.length) return say('No failed or resting designations');
+                void write('story.designations', { op: 'retry', ids }).then(
+                  () => say(`Trying all ${ids.length} failed designation${ids.length === 1 ? '' : 's'} again now`),
+                  (e) => say(errorText(e), 'warn'),
+                );
+              }}
               onClose={() => setTool({ kind: 'select' })}
             />
             {pickHint ? (

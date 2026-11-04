@@ -29,7 +29,18 @@ type V3 = [number, number, number];
 
 // ------------------------------------------------------------------ designate tools
 
-export type DesignateId = 'chop' | 'cut' | 'harvest' | 'mine' | 'haul' | 'hunt' | 'deconstruct' | 'cancel' | 'forbid' | 'allow';
+export type DesignateId =
+  | 'chop'
+  | 'cut'
+  | 'harvest'
+  | 'mine'
+  | 'haul'
+  | 'hunt'
+  | 'deconstruct'
+  | 'cancel'
+  | 'retry'
+  | 'forbid'
+  | 'allow';
 
 export interface DesignateTool {
   id: DesignateId;
@@ -52,6 +63,7 @@ export const DESIGNATE_TOOLS: readonly DesignateTool[] = [
   { id: 'hunt', label: 'Hunt', key: 'KeyN', hint: 'Hunt the animals in the area', entities: 'animal', noun: ['animal', 'animals'] },
   { id: 'deconstruct', label: 'Deconstruct', key: 'KeyK', hint: 'Take apart placed blocks', noun: ['block', 'blocks'] },
   { id: 'cancel', label: 'Cancel', key: 'KeyZ', hint: 'Remove designations in the area', noun: ['designation', 'designations'] },
+  { id: 'retry', label: 'Retry failed', key: 'KeyO', hint: 'Try failed or resting designations in the area again now', noun: ['designation', 'designations'] },
   { id: 'forbid', label: 'Forbid', key: 'KeyF', hint: 'Pawns leave these items and doors alone', entities: 'item', noun: ['thing', 'things'] },
   { id: 'allow', label: 'Allow', key: 'KeyJ', hint: 'Undo a forbid', entities: 'item', noun: ['thing', 'things'] },
 ];
@@ -340,7 +352,7 @@ export interface PreviewHit {
  * chop, blocks otherwise).
  */
 export function previewTargets(tool: DesignateId, scan: readonly number[], filter: StoryMineFilter = 'all'): { cells: V3[]; count: number } {
-  if (tool === 'cancel' || tool === 'haul' || tool === 'hunt') return { cells: [], count: 0 };
+  if (tool === 'cancel' || tool === 'retry' || tool === 'haul' || tool === 'hunt') return { cells: [], count: 0 };
   const cells: V3[] = [];
   const kind = tool as StoryDesignationKind;
   for (let i = 0; i + 5 < scan.length + 1; i += 6) {
@@ -377,7 +389,7 @@ export function designationBody(tool: DesignateId, area: StoryArea, filter?: Sto
 
 /** The same task as a directive for AI bodies. */
 export function designationDirective(tool: DesignateId, area: StoryArea, targets: readonly V3[], filter?: StoryMineFilter): StoryDirectiveSpec | null {
-  if (tool === 'cancel' || tool === 'forbid' || tool === 'allow') return null;
+  if (tool === 'cancel' || tool === 'retry' || tool === 'forbid' || tool === 'allow') return null;
   return { kind: tool, area, ...(targets.length ? { targets: targets.slice(0, 512) } : {}), ...(tool === 'mine' && filter ? { filter } : {}) };
 }
 
@@ -899,3 +911,42 @@ export const PAN_KEYS: Record<string, [number, number]> = {
   KeyD: [1, 0],
   ArrowRight: [1, 0],
 };
+
+/** A designation that failed or is resting (its target waits out a back-off): what Retry picks up. */
+export function isStalled(d: { status?: string | null; retryAt?: unknown; fails?: number | null }): boolean {
+  return (d.status !== null && d.status !== undefined && d.status !== 'open') || (d.retryAt !== null && d.retryAt !== undefined) || (d.fails ?? 0) > 0;
+}
+
+/** A designation's block cell (its target, else its first block), or null for entity designations without one. */
+export function designationCell(d: {
+  target?: unknown;
+  block?: readonly number[] | null;
+  blocks?: ReadonlyArray<readonly number[]> | null;
+  targets?: ReadonlyArray<readonly number[]> | null;
+}): V3 | null {
+  const t = d.target;
+  if (Array.isArray(t) && t.length >= 3) {
+    const [x, y, z] = t as [number, number, number];
+    return [Math.floor(x), Math.floor(y), Math.floor(z)];
+  }
+  const b = d.block ?? d.blocks?.[0] ?? d.targets?.[0];
+  return b && b.length >= 3 ? [Math.floor(b[0]!), Math.floor(b[1]!), Math.floor(b[2]!)] : null;
+}
+
+/** The stalled designations whose cell lies in the dragged XZ rectangle [x1, z1, x2, z2] (any height). */
+export function stalledIn<T extends Parameters<typeof isStalled>[0] & Parameters<typeof designationCell>[0] & { id: string | number }>(
+  all: readonly T[],
+  rect: readonly [number, number, number, number] | null,
+): Array<T['id']> {
+  return all
+    .filter((d) => {
+      if (!isStalled(d)) return false;
+      if (!rect) return true;
+      const c = designationCell(d);
+      if (!c) return false;
+      const [x1, z1, x2, z2] = rect;
+      return c[0] >= Math.min(x1, x2) && c[0] <= Math.max(x1, x2) && c[2] >= Math.min(z1, z2) && c[2] <= Math.max(z1, z2);
+    })
+    .map((d) => d.id);
+}
+
