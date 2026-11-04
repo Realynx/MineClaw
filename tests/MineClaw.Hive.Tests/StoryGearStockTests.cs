@@ -28,6 +28,55 @@ public sealed class StoryGearStockTests
 
     private static int Stored(StoryColony c, int id) => c.StorageAt(Chest)!.Contents.Where(s => s.Id == id).Sum(s => s.Count);
 
+    [Fact]
+    public void A_fetch_that_finds_its_tool_gone_corrects_the_record_and_never_comes_back_for_it()
+    {
+        var (c, h, w) = StoryRig.Make(1);
+        Only(c, 0, WorkTypes.Mine);
+        h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 0);
+        Store(c, new Stack(270, 0, 1), new Stack(3, 0, 5)); // the record says a wooden pickaxe; someone took it
+        c.Designate("add", "mine", null, [new P3(5, 63, 5)], null); // stone: needs a pickaxe
+        var j = c.Next(0);
+        Assert.Equal(w.Data.Item(270).Name, j["fetch"]!.AsArray().Single()!["item"]!.GetValue<string>());
+        Assert.True(c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", $"no wooden pickaxe in the chest at {Chest} (it had: dirt x5)", null));
+        Assert.Equal(0, Stored(c, 270)); // corrected from what the pawn saw
+        Assert.Equal(5, Stored(c, 3));
+        var d = c.Designations.Single();
+        Assert.Equal(0, d.Fails); // not a failure: the record was wrong
+        for (int i = 0; i < 3; i++)
+        {
+            var again = c.Next(0);
+            Assert.NotEqual("dig", Kind(again)); // no second fetch of what isn't there: it waits
+            c.Report(c.P(), again["id"]!.GetValue<string>(), "done", null, null);
+        }
+        Assert.Equal("needs a wooden pickaxe", d.Wait);
+        Assert.Equal(0, d.Fails);
+        Assert.Contains(c.Alerts, a => a.Text.Contains("record is corrected"));
+    }
+
+    [Fact]
+    public void A_missing_hoe_corrects_the_record_and_the_farm_gets_a_hoe_bill_and_waits()
+    {
+        var (c, h, w) = StoryRig.Make(1);
+        Only(c, 0, WorkTypes.Farm);
+        h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 0, new Stack(295, 0, 5));
+        Store(c, new Stack(291, 0, 1), new Stack(5, 0, 8)); // a stone hoe on record, and planks
+        w.Set(Table.X, Table.Y, Table.Z, 58);
+        Assert.Null(c.WorkbenchOp("designate", Table).Error);
+        w.Set(10, 63, 0, 2); w.Set(10, 63, 2, 9);
+        Assert.Null(c.ZoneOp("add", "farm", Area.Of(10, 63, 0, 10, 63, 0), grow: new JsonObject { ["plant"] = "wheat" }).Error);
+        var till = c.Next(0); // its policy (a farmer carries a hoe) or the till job itself goes for the stone hoe on record
+        Assert.Contains(Kind(till), new[] { "till", "equip" });
+        Assert.Equal(w.Data.Item(291).Name, till["fetch"]!.AsArray().Single()!["item"]!.GetValue<string>());
+        Assert.True(c.Report(c.P(), till["id"]!.GetValue<string>(), "failed", $"no stone hoe in the chest at {Chest} (it had: oak wood planks x8)", null));
+        Assert.Equal(0, Stored(c, 291));
+        var next = c.Next(0);
+        Assert.NotEqual("till", Kind(next)); // nothing to till with: it waits, no loop
+        Assert.Null(next["fetch"]);
+        Assert.Contains(c.Benches.Single().Bills, b => b.Recipe.Contains("hoe")); // and a hoe is made
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("failed"));
+    }
+
     private static JsonObject StoreOf(JsonObject job, string item) =>
         job["store"]!.AsArray().Select(x => x!.AsObject()).Single(x => x["item"]!.GetValue<string>() == item);
 

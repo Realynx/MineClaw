@@ -1200,6 +1200,13 @@ pocket (a pawn's tools were always "its own" and never stored) the colony kept c
 - **Crafted tools are stock:** a tool bill's product goes into storage like any bill's; a crafter that needs one fetches it back by
   its policy.
 - **Targets count every pocket:** spare-tool and auto-tool bills count storage plus every pawn's pocket, so they stop at the target.
+- **A record that lies is corrected (StoryColony.Ledger.cs).** Live 11-04: "no wooden pickaxe in the chest at 218,64,400" and "no
+  stone hoe in the chest at 223,64,400 (it had: dirt x333, …)" over and over: the colony's record said the item was there, someone had
+  taken it, and every pick planned the same fetch. A fetch that finds its item missing now corrects that chest's record from what the
+  pawn saw (the item gone; "it is empty" empties it; a full "it had:" listing replaces it), the job is not counted as failed, one
+  alert says so, and the next pick plans from real stock: another chest, a pawn with one to spare, else the target waits ("needs a
+  wooden pickaxe") and an auto bill makes one (a farm's hoe: farming's own wooden-hoe bill). The same fetch is never planned again
+  until a deposit puts the item back on the record.
 
 ### Bulk gear
 

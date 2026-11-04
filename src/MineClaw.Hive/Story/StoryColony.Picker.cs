@@ -589,6 +589,7 @@ public sealed partial class StoryColony
         _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
         GearTakesEnded(j, done: false);
         if (j.Source is "gear" or "policy") GearEnded(p, j, ok: false, why);
+        if (StaleFetch(p, j, note)) return; // the chest's record was wrong: corrected and re-planned from real stock, not a failure
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
