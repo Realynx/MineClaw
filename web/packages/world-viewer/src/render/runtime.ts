@@ -33,6 +33,7 @@ import { effectiveProfile, entityReach, FrameLimiter, getViewerQuality, reportVi
 import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
 import { BlockEntityStore } from '../world/blockEntities';
+import { HologramLayer } from './holograms';
 
 export interface RuntimeOptions {
   /** Device pixel ratio cap for the primary view (default min(2, devicePixelRatio)). */
@@ -106,6 +107,13 @@ export interface ViewSetup {
   bubbles?: BubbleMode;
   /** Render pixels per CSS pixel (bubble sizes are chosen in CSS pixels); default 1. */
   pxScale?: number;
+  /** Name labels over bots (default: with `labels`); off when the app draws its own (Story Mode). */
+  botLabels?: boolean;
+  /** [level cut] Entities whose feet are at or above `y` within `r` of (x, z) are not drawn; those below `dimBelow` are dimmed
+   * (Story Mode's storeys: bodies follow the blocks). */
+  entityCut?: { x: number; y: number; z: number; r: number; dimBelow: number | null } | null;
+  /** [holograms] Screen pixels per block of this view (its holograms switch to outline boxes when tiny); null = near enough. */
+  holoPx?: number | null;
 }
 
 export interface RuntimeView {
@@ -187,6 +195,10 @@ export class WorldRuntime {
   deltas: BlockDeltaFeed;
   private readonly sections = new Map<Dim, SectionManager>();
   private readonly views = new Map<number, RuntimeView>();
+  /** [holograms] Each view's build holograms (only that view draws them). */
+  private readonly holoViews = new Map<number, HologramLayer>();
+  /** Block changes as they are applied (dim, the changed cells). */
+  readonly blockListeners = new Set<(dim: Dim, blocks: Array<[number, number, number]>) => void>();
   private primary: { view: RuntimeView; container: HTMLElement } | null = null;
   private entityPoller: Poller;
   private overlayPoller: Poller;
@@ -352,8 +364,27 @@ export class WorldRuntime {
     this.overlayPoller.kick();
   }
 
+  /** [holograms] The view's hologram layer (made and added to the scene on first use). */
+  holograms(viewId: number, dim: Dim = 0): HologramLayer {
+    let h = this.holoViews.get(viewId);
+    if (!h) {
+      h = new HologramLayer(this.host, this.uniforms, dim);
+      h.group.visible = false;
+      this.scene.add(h.group);
+      this.holoViews.set(viewId, h);
+    }
+    return h;
+  }
+
+  /** [holograms] The view's layer, if it has one. */
+  hologramsOf(viewId: number): HologramLayer | null {
+    return this.holoViews.get(viewId) ?? null;
+  }
+
   removeView(v: RuntimeView): void {
     this.views.delete(v.id);
+    this.holoViews.get(v.id)?.dispose();
+    this.holoViews.delete(v.id);
     this.ghostViews.delete(v.id);
     // No views left (e.g. between pages, persistent runtime): stop the network loops, keep the world.
     if (!this.views.size) this.pause();
@@ -463,6 +494,8 @@ export class WorldRuntime {
     this.entityPoller.stop();
     this.overlayPoller.stop();
     this.views.clear();
+    for (const h of this.holoViews.values()) h.dispose();
+    this.holoViews.clear();
     this.chatOff?.();
     this.chatOff = null;
     this.bubbles.dispose();
@@ -633,7 +666,11 @@ export class WorldRuntime {
   private makeDeltas(): BlockDeltaFeed {
     return new BlockDeltaFeed(this.source, this.host, this.cache, this.sync, {
       onDirty: (dim, dirty) => this.sections.get(dim)?.markDirty(dirty),
-      onChanged: (dim, blocks) => this.flashes.add(dim, blocks, performance.now()),
+      onChanged: (dim, blocks) => {
+        this.flashes.add(dim, blocks, performance.now());
+        for (const h of this.holoViews.values()) h.blocksChanged(dim, blocks);
+        for (const l of this.blockListeners) l(dim, blocks);
+      },
       onBlockEntities: (dim, cx, cz) => this.blockEntities.want(dim, [[cx, cz]]),
       onError: (e) => this.opts.onError?.('blocks', e),
     });
@@ -667,6 +704,7 @@ export class WorldRuntime {
     this.uniforms.uTextured.value = ready ? 1 : 0;
     await this.host.configure(v, ready ? meshAssets(this.blockAtlas!.bundle.pack) : null, ready, fastLeaves);
     for (const s of this.sections.values()) s.clear();
+    for (const h of this.holoViews.values()) h.refresh(); // [holograms] the new atlas cells
     if (want && !ready && this.atlasFor !== v) void this.loadBlockAtlas(v);
   }
 
@@ -1060,6 +1098,8 @@ export class WorldRuntime {
       bots: s.layers.bots,
       entities: s.layers.entities,
       labels,
+      botLabels: labels && s.botLabels !== false,
+      cut: s.entityCut ?? null,
       selected: s.selected,
       drawDistance: reach.radius,
       centre: reach.fromCentre ? s.centre : null,
@@ -1078,6 +1118,10 @@ export class WorldRuntime {
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);
     this.blockEntityLayer.showFor(s.dim); // [blocks]
+    for (const [id, h] of this.holoViews) {
+      h.group.visible = q.holograms && id === s.viewId;
+      if (h.group.visible) h.show(s.holoPx ?? null);
+    }
     this.aids.showAt(s.aids ?? null);
     this.showOutlines(s.outlines ?? []);
     r.setViewport(0, 0, w, h);

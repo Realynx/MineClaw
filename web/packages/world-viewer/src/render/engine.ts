@@ -22,6 +22,7 @@ import { aimAt, outlineOf, type AimTarget } from './aim';
 import type { BubbleKind, ShownBubble } from './bubbles';
 import { CameraRig, lookDir } from './cameraRig';
 import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type ViewSetup } from './runtime';
+import type { HoloCell, HologramStats } from './holograms';
 import type { Centre } from './sections';
 
 export interface EngineOptions extends RuntimeOptions {
@@ -88,6 +89,7 @@ export class WorldViewerEngine implements RuntimeView {
   private marker: [number, number, number] | null = null;
   private highlighted: string[] = [];
   private levelCut: { y: number; r: number; dimBelow: number | null } | null = null;
+  private botLabels = true;
 
   constructor(
     private readonly container: HTMLElement,
@@ -184,6 +186,38 @@ export class WorldViewerEngine implements RuntimeView {
    */
   setLevelCut(cut: { y: number; r?: number; dimBelow?: number | null } | null): void {
     this.levelCut = cut ? { y: cut.y, r: cut.r ?? 512, dimBelow: cut.dimBelow ?? null } : null;
+  }
+
+  /** Name labels over bots in this view (default on); off where the app draws its own (Story Mode's overlay). */
+  setBotLabels(on: boolean): void {
+    this.botLabels = on;
+  }
+
+  /**
+   * [holograms] Queued build cells drawn in this view as translucent block holograms (render/holograms.ts). Rebuilt only when
+   * `rev` changes (or a block change lands on one of the cells: a built cell disappears); cheap to call every frame.
+   */
+  setHolograms(cells: readonly HoloCell[], rev: string): void {
+    const h = this.runtime.holograms(this.id, this.dim);
+    h.setDim(this.dim);
+    h.set(cells, rev);
+  }
+
+  /** [holograms] A placement preview (flat [x, y, z, id, meta, …]; id 0 = dig): green where it fits, red where a block is in
+   * the way; null clears it. The same `key` keeps the current one. */
+  setHologramPreview(blocks: number[] | null, key?: string): void {
+    if (!blocks && !this.runtime.hologramsOf(this.id)) return;
+    this.runtime.holograms(this.id, this.dim).setPreview(blocks, key);
+  }
+
+  /** [holograms] What this view's holograms show (cells, digs, boxes, preview, LOD), or null when it has none. */
+  hologramStats(): HologramStats | null {
+    return this.runtime.hologramsOf(this.id)?.stats() ?? null;
+  }
+
+  /** [holograms] Whether the queued cell at (x, y, z) is drawn as a hologram now (a built one is not). */
+  hologramAt(x: number, y: number, z: number): boolean {
+    return this.runtime.hologramsOf(this.id)?.has(x, y, z) ?? false;
   }
 
   /** The cut a pick should honour (the level cut, else the roof cut), centred where this view looks. */
@@ -426,6 +460,11 @@ export class WorldViewerEngine implements RuntimeView {
       outlines,
       bubbles: this.layers.bubbles === false ? 'off' : 'full',
       pxScale: h / Math.max(1, this.container.clientHeight),
+      botLabels: this.botLabels,
+      entityCut: this.levelCut
+        ? { x: this.rig.target.x, y: this.levelCut.y, z: this.rig.target.z, r: this.levelCut.r, dimBelow: this.levelCut.dimBelow }
+        : null,
+      holoPx: iso ? this.container.clientHeight / Math.max(1, this.rig.isoZoom) : null,
     };
     this.frames++;
     this.frameMs = this.frameMs * 0.9 + (performance.now() - t0) * 0.1;

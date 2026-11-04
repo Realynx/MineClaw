@@ -5,6 +5,7 @@ import { MeshEngine } from './engine';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { meshBuffers } from './sink';
 import type { SectionMesh } from './mesher';
+import { holoBuffers } from './holo';
 
 const engine = new MeshEngine();
 interface WorkerScope {
@@ -39,6 +40,8 @@ async function handle(m: WorkerRequest): Promise<void> {
         return reply({ id: m.id, ok: true, result: engine.blocksAt(m.dim, m.pts) });
       case 'scan':
         return reply({ id: m.id, ok: true, result: engine.scan(m.dim, m.min, m.max, m.ids, m.maxHits) });
+      case 'stacks':
+        return reply({ id: m.id, ok: true, result: engine.stacks(m.dim, m.min, m.max, m.skip, m.depth, m.above, m.maxHits) });
       case 'lights':
         return reply({ id: m.id, ok: true, result: engine.lights(m.dim, m.pts) });
       case 'occluded':
@@ -47,6 +50,10 @@ async function handle(m: WorkerRequest): Promise<void> {
         return reply({ id: m.id, ok: true, result: engine.viewInfo(m.dim, m.cam, m.body, m.cut) });
       case 'blockEntities':
         return reply({ id: m.id, ok: true, result: engine.setBlockEntities(m.dim, m.cols) });
+      case 'holo': {
+        const rs = engine.meshHolo(m.dim, m.reqs);
+        return reply({ id: m.id, ok: true, result: rs }, holoBuffers(rs));
+      }
       case 'clear':
         engine.clear();
         return reply({ id: m.id, ok: true, result: null });

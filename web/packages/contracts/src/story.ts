@@ -368,17 +368,45 @@ export const StoryAlert = z.object({
 });
 export type StoryAlert = z.infer<typeof StoryAlert>;
 
+/**
+ * One item a build still needs (the director's materials pass, in queue order): `have` = what the colony has for it (reserved
+ * for this build), `crafting` = what its auto bills are making, `short` = what can't be made from what there is (`raw` says
+ * which raw materials are missing). `via`: craft | smelt (the chain has a furnace step) | none (no recipe, or its crafting was
+ * cancelled). `chain` = the recipe steps, ingredients first.
+ */
+export const StoryBuildMaterial = z.object({
+  item: z.string(),
+  label: z.string().nullish(),
+  need: z.number().int(),
+  have: z.number().int().default(0),
+  crafting: z.number().int().default(0),
+  short: z.number().int().default(0),
+  via: z.string().default('none').describe('craft | smelt | none'),
+  chain: z.array(z.string()).default([]),
+  raw: z.array(z.string()).default([]).describe('raw materials short, e.g. "6 Wood"'),
+});
+export type StoryBuildMaterial = z.infer<typeof StoryBuildMaterial>;
+
 export const StoryBuild = z.object({
   id: z.union([z.string(), z.number()]),
   kind: z.string(),
   label: z.string(),
-  status: z.string().describe('queued | active | paused | blocked | done'),
+  status: z.string().describe('queued | active | waiting (its materials are being crafted) | paused | blocked | done'),
   reason: z.string().nullish(),
   blocksTotal: z.number().int().default(0),
   blocksDone: z.number().int().default(0),
   material: StoryMaterial.nullish(),
   order: z.number().int().default(0),
   created: When.nullish(),
+  materials: z.array(StoryBuildMaterial).default([]),
+  noCraft: z
+    .array(z.string())
+    .nullish()
+    .describe('items whose auto-crafting the owner cancelled: the build waits for them'),
+  station: z
+    .object({ kind: z.string(), pos: Vec3i })
+    .nullish()
+    .describe('a bench the colony is making and placing for this build'),
 });
 export type StoryBuild = z.infer<typeof StoryBuild>;
 
@@ -463,6 +491,12 @@ export const StoryBill = z.object({
   pawn: z.string().default('any').describe('"any" or a pawn name'),
   minSkill: z.number().int().nullish(),
   store: z.union([z.literal('best'), z.object({ chest: Vec3i })]).default('best'),
+  forBuild: z
+    .union([z.string(), z.number()])
+    .nullish()
+    .describe('an auto bill: the build it crafts for (cancel-only; it follows the build)'),
+  forItem: z.string().nullish().describe("an auto bill: the build's item its chain ends in"),
+  step: z.number().int().nullish().describe("an auto bill's place in the recipe chain (ingredients first)"),
 });
 export type StoryBill = z.infer<typeof StoryBill>;
 
@@ -592,6 +626,7 @@ export const StoryColonyState = z.object({
   since: z.number().int().nullish(),
   active: z.boolean().nullish(),
   tieBreak: z.string().nullish().describe('column | skill: equal priorities go by column order or by skill'),
+  options: z.lazy(() => StoryColonyOptions).nullish(),
   version: z.union([z.string(), z.number()]).nullish(),
   timeOfDay: z.number().nullish().describe('world ticks 0..24000'),
   hour: z.number().int().nullish().describe('0..23, 0 = 06:00'),
@@ -952,6 +987,65 @@ export const StoryBillsResponse = z.object({
   rev: z.number().int().nullish(),
 });
 export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;
+
+/**
+ * POST /api/story/colonies/{id}/workbenches: the owner marks a placed crafting table / furnace (any bench kind) as the
+ * colony's (`designate`) or gives it back (`release`). Only designated benches take bills and unlock the Architect's tiers.
+ */
+export const StoryWorkbenchesRequest = z.object({ op: z.enum(['designate', 'release']), pos: Vec3i }).strict();
+export type StoryWorkbenchesRequest = z.infer<typeof StoryWorkbenchesRequest>;
+export const StoryWorkbenchesResponse = z.object({ pos: Vec3i, kind: z.string(), designated: z.boolean() });
+export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
+
+/** The colony's options: auto-placing a bench a build needs (default on), detecting benches near home (default off). */
+export const StoryColonyOptions = z.object({
+  autoPlaceBenches: z.boolean().default(true),
+  detectBenches: z.boolean().default(false),
+});
+export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
+/** POST /api/story/colonies/{id}/options: either or both flags. */
+export const StoryOptionsRequest = z
+  .object({ autoPlaceBenches: z.boolean().optional(), detectBenches: z.boolean().optional() })
+  .strict()
+  .describe('either or both (the bot answers 400 for neither)');
+export type StoryOptionsRequest = z.infer<typeof StoryOptionsRequest>;
+
+export const STORY_ARCHITECT_TABS = ['structure', 'furniture', 'production', 'storage', 'lighting', 'misc'] as const;
+export const STORY_TIERS = ['gathered', 'hand', 'workbench', 'furnace'] as const;
+
+/**
+ * One Architect placeable: its tab and tier (gathered = no recipe; hand = a pawn's 2×2 grid; workbench = a crafting table;
+ * furnace = a furnace step in its chain), whether the colony unlocked it (a designated bench of that tier), and the colony's
+ * stock: `have` (unreserved), `craftable` now from unreserved stock (max 64), `from` (what one takes), `short` (raw missing
+ * for one, when neither). `material` is the block it places ([id, meta]: the build item's material), `kind` the default
+ * build tool, `kinds` every tool it fits.
+ */
+export const StoryArchitectEntry = z.object({
+  id: z.string(),
+  label: z.string(),
+  tab: z.string(),
+  tier: z.string().describe('gathered | hand | workbench | furnace'),
+  unlocked: z.boolean(),
+  reason: z.string().nullish(),
+  item: StoryItemKey,
+  material: StoryItemKey,
+  kind: z.string(),
+  kinds: z.array(z.string()).default([]),
+  chain: z.array(z.string()).default([]),
+  have: z.number().int().default(0),
+  craftable: z.number().int().default(0),
+  from: z.array(z.string()).default([]),
+  short: z.array(z.string()).default([]),
+});
+export type StoryArchitectEntry = z.infer<typeof StoryArchitectEntry>;
+
+/** GET /api/story/colonies/{id}/architect. */
+export const StoryArchitectResponse = z.object({
+  entries: z.array(StoryArchitectEntry).default([]),
+  benches: z.record(z.string(), z.number().int()).default({}),
+  tabs: z.array(z.string()).default([...STORY_ARCHITECT_TABS]),
+});
+export type StoryArchitectResponse = z.infer<typeof StoryArchitectResponse>;
 
 /**
  * POST /api/story/directives: the same payload a colony tool sends the director, addressed to AI bodies (they work it out

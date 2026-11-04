@@ -18,3 +18,4 @@ export {
   type ViewerStatus,
 } from './render/viewerQuality';
 export { PROFILES, probeRenderer, probeRendererOnce, recommendedPreset, type QualityName, type QualityProfile, type RendererProbe } from './render/quality';
+export { holoState, planHolograms, HOLO_CAP, HOLO_LOD_PX, HOLO_STATES, HOLO_STYLES, type HoloCell, type HoloState, type HoloStyle, type HoloPlan, type HoloBox } from './render/holoPlan';

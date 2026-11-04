@@ -59,6 +59,9 @@ function storyOverrides(): typeof OVERRIDES {
     'story.builds': { params: id, body: { op: 'add', items: [{ kind: 'wall', area: [0, 64, 0, 4, 64, 4], material: 'cobblestone', height: 3 }] } },
     'story.storage': { params: id, body: { op: 'assign_area', area: [14, 60, 0, 30, 70, 10] } },
     'story.bills': { params: id, body: { op: 'add', bench: [17, 63, 7], bill: { recipe: 'sticks', mode: 'until', target: 64, minSkill: 2 } } },
+    'story.workbenches': { params: id, body: { op: 'designate', pos: [17, 63, 7] } },
+    'story.options': { params: id, body: { autoPlaceBenches: true } },
+    'story.architect': { params: id, query: {} },
     'story.directives': { body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'come here' }, requestId: 'r-story0001' } },
   };
 }

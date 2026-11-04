@@ -7,7 +7,7 @@
  */
 import type { BlockDeltas, BotDto, EntityDelta, WorldSource } from '@mineclaw/world-viewer';
 import { createFixtureSource, surface } from '@mineclaw/world-viewer/testing';
-import { allOverrides, pendingBlocks } from '@/mocks/data/story';
+import { allOverrides, pendingBlocks, storySim } from '@/mocks/data/story';
 import { subscribeChat } from './chatBubbles';
 
 const RENAME: Record<string, { name: string; short: string }> = {
@@ -42,6 +42,49 @@ function extras(bots: BotDto[]): BotDto[] {
   ];
 }
 
+/** Facing per pawn, from its last step (pawns turn the way they walk). */
+const pawnYaw = new Map<string, { x: number; z: number; yaw: number }>();
+
+/**
+ * The mock colonies' online pawns as bodies of the world, as the real hive lists its in-process bodies (a pawn's player is a
+ * bot, never an entity): the map draws them as player models, walking where the director moves them.
+ */
+function pawnBots(base: BotDto | undefined): BotDto[] {
+  if (!base) return [];
+  const out: BotDto[] = [];
+  for (const c of storySim.colonies.values()) {
+    if (c.released) continue;
+    for (const sim of c.pawns.values()) {
+      const pw = sim.p;
+      if (pw.online === false || (pw.dim ?? 0) !== 0) continue;
+      const x = sim.x,
+        y = sim.y,
+        z = sim.z;
+      const last = pawnYaw.get(pw.name);
+      let yaw = last?.yaw ?? 0;
+      if (last && Math.hypot(x - last.x, z - last.z) > 0.05) yaw = (Math.atan2(-(x - last.x), z - last.z) * 180) / Math.PI;
+      pawnYaw.set(pw.name, { x, z, yaw });
+      out.push({
+        ...base,
+        name: pw.name,
+        short: pw.name.replace(/^maid_/, ''),
+        main: false,
+        dim: 0,
+        x,
+        y,
+        z,
+        yaw,
+        hp: pw.hp ?? 20,
+        food: pw.food ?? 20,
+        job: pw.job?.type ?? null,
+        held: pw.held ?? null,
+        equipment: null,
+      });
+    }
+  }
+  return out;
+}
+
 let shared: WorldSource | null = null;
 let resendUntil = 0;
 let playerOf: (() => string | null | undefined) | undefined;
@@ -57,7 +100,7 @@ export function createMockWorldSource(player?: () => string | null | undefined):
     async entities(since?: number): Promise<EntityDelta> {
       const d = await src.entities(since);
       const bots = d.bots.map((b) => (RENAME[b.name] ? { ...b, ...RENAME[b.name] } : b));
-      return { ...d, bots: [...bots, ...extras(bots)] };
+      return { ...d, bots: [...bots, ...extras(bots), ...pawnBots(bots.find((b) => b.name === 'maid_chan'))] };
     },
     async chunks(dim, cols) {
       const out = await src.chunks(dim, cols);

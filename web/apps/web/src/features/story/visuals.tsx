@@ -31,7 +31,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useState, type SVGProps } from 'react';
+import { memo, useEffect, useState, type SVGProps } from 'react';
 import { cn } from '@/lib/utils';
 
 export function hashOf(s: string): number {
@@ -83,7 +83,8 @@ const SKIN = ['#f2d2b6', '#e3b48f', '#c98e66', '#9c6a48', '#6e4a33'];
 const HAIR = ['#2b1f17', '#5a3a22', '#a2652f', '#d9b25f', '#e8e2d0', '#7d2d24', '#3b4a6b'];
 
 /** A blocky face drawn from the name: skin, hair colour and cut, eyes; the back is the pawn's colour. */
-export function Avatar({
+/** A pawn's pixel portrait (pure by name: memoised, the colonist bar re-renders on every state poll). */
+export const Avatar = memo(function Avatar({
   name,
   size = 40,
   ai = false,
@@ -128,7 +129,7 @@ export function Avatar({
       {ai ? <path d="M11.5 1.5h3v3h-3z" fill="#a78bfa" /> : null}
     </svg>
   );
-}
+});
 
 /** A small brain mark for AI bodies (our own glyph). */
 export function AiMark({ className }: { className?: string }) {

@@ -290,7 +290,16 @@ export interface EntityShowOptions {
   fov?: number;
   /** Occluded-body silhouettes: strength 0..1 per entity key (bot name, player "dim:id"); absent = none. */
   ghosts?: ReadonlyMap<string, number> | null;
+  /** Name labels over bots (default: `labels`); off where the app draws its own. */
+  botLabels?: boolean;
+  /** [level cut] Entities with their feet at or above `y` within `r` of (x, z) are not drawn (the storey above is x-rayed);
+   * those below `dimBelow` are dimmed like the blocks there. */
+  cut?: { x: number; y: number; z: number; r: number; dimBelow: number | null } | null;
 }
+
+/** Bots (the hive's bodies, Story Mode's pawns: a few dozen at most) keep their full model to at least this apparent
+ * distance, whatever the detailed-model setting (0 still means boxes for everyone): a top-down map sees them from far up. */
+export const BOT_DETAIL_MIN = 96;
 
 /** A body the silhouette test considers: its key and feet. */
 export interface GhostCandidate {
@@ -347,6 +356,7 @@ export class EntityLayer {
   private nextCams: Array<{ p: THREE.Vector3; k: number }> = [];
   private visibleBots: Drawn[] = [];
   private drawnCount = 0;
+  private botModelCount = 0;
   private heldCache = new Map<string, ItemLook | null>();
   private readonly root = new Float32Array(12);
   /** The root without the sneaking sink (the elytra layer). */
@@ -959,7 +969,8 @@ export class EntityLayer {
 
   private near(d: Drawn): boolean {
     if (!this.lastCams.length) return true;
-    const r2 = (this.detailDistance + 4) ** 2;
+    const detail = d.bot && this.detailDistance > 0 ? Math.max(this.detailDistance, BOT_DETAIL_MIN) : this.detailDistance;
+    const r2 = (detail + 4) ** 2;
     for (const c of this.lastCams) if (((c.p.x - d.x) ** 2 + (c.p.y - d.y) ** 2 + (c.p.z - d.z) ** 2) * c.k * c.k <= r2) return true;
     return false;
   }
@@ -1511,6 +1522,9 @@ export class EntityLayer {
     this.ghostMap = opts.ghosts ?? null;
     this.ghostSelected = opts.selected ?? null;
     const far = (opts.drawDistance ?? 1e9) + 8, detail = this.detailDistance;
+    const botDetail = detail > 0 ? Math.max(detail, BOT_DETAIL_MIN) : 0;
+    const cut = opts.cut ?? null;
+    let botModels = 0;
     const centre = opts.centre ?? null, drops = opts.drops !== false, frustum = opts.frustum ?? null;
     const sphere = this.cullSphere;
     const want = new Set<string>();
@@ -1531,20 +1545,25 @@ export class EntityLayer {
       if (d.drop && !drops) continue;
       const real = Math.hypot(d.x - cam.x, d.y - cam.y, d.z - cam.z);
       if ((centre ? Math.hypot(d.x - centre.x, d.z - centre.z) : real) > far) continue;
+      if (cut && Math.floor(d.y + 0.01) >= cut.y && Math.hypot(d.x - cut.x, d.z - cut.z) <= cut.r) continue;
       if (frustum) {
         sphere.center.set(d.x, d.y + d.h * 0.5, d.z);
         sphere.radius = Math.max(d.w, d.h) + 0.5;
         if (!frustum.intersectsSphere(sphere)) continue;
       }
       const dist = real * zoom;
-      const near = !(dist > detail || !d.posed || !this.bundle);
+      const near = !(dist > (d.bot ? botDetail : detail) || !d.posed || !this.bundle);
       // Far boxes are a few pixels each: past the cap (a zoomed-out map over a mob farm) the rest are skipped, bots never.
       if (!near && !d.bot && !d.display && ++boxes > MAX_FAR_BOXES) continue;
       if (d.bot) this.visibleBots.push(d);
       n++;
       d.detail = near;
+      if (near && d.bot) botModels++;
+      const bright = d.bright;
+      if (cut && cut.dimBelow !== null && d.y < cut.dimBelow) d.bright = bright * 0.55;
       if (d.detail) this.pushDetail(d, dist);
       else if (!d.invisible) this.pushBox(d);
+      d.bright = bright;
       if (!d.bot && !d.display && opts.labels && d.ent && !d.invisible) this.entityLabel(d, d.ent, dist, want);
     }
     if (opts.entities) this.pushParticles(dim);
@@ -1561,6 +1580,7 @@ export class EntityLayer {
     for (const s of this.skullDraws.values()) s.commit();
     this.elytraDraw?.commit();
     this.drawnCount = n;
+    this.botModelCount = botModels;
     for (const [k, l] of this.entLabels) {
       if (want.has(k)) l.sprite.visible = true;
       else if (opts.labels) {
@@ -1573,7 +1593,8 @@ export class EntityLayer {
       const d = this.drawn.get(name);
       o.root.visible = !!d && opts.bots && d.dim === dim;
       if (d) o.root.position.set(d.x, d.y, d.z);
-      if (o.label) o.label.visible = opts.labels;
+      if (o.label) o.label.visible = opts.botLabels ?? opts.labels;
+      if (o.root.visible && d && cut && Math.floor(d.y + 0.01) >= cut.y && Math.hypot(d.x - cut.x, d.z - cut.z) <= cut.r) o.root.visible = false;
       o.ring.visible = !!opts.selected && (o.root.userData.name === opts.selected || o.root.userData.short === opts.selected);
     }
   }
@@ -1983,6 +2004,11 @@ export class EntityLayer {
   /** Entities (and bots, display mobs) drawn in the last `showFor`. */
   get instances(): number {
     return this.drawnCount;
+  }
+
+  /** Bots drawn as full (posed, skinned) models in the last `showFor`. */
+  get botModels(): number {
+    return this.botModelCount;
   }
 
   /** Live particles and lightning bolts (tests, stats). */
