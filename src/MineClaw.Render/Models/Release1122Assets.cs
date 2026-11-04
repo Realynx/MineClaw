@@ -39,47 +39,62 @@ public static class Release1122Assets
     {
         using var zip = ZipFile.OpenRead(jarPath);
         if (zip.GetEntry(Root + "blockstates/stone.json") == null) return null;
-        var tex = new ModelTextures();
-        var baker = new ModelBaker(tex);
-        var states = new Dictionary<string, BlockStateFile>(StringComparer.Ordinal);
-        var entity = new Dictionary<string, (int W, int H, uint[] Px)>(StringComparer.Ordinal);
-        var items = new Dictionary<string, (int W, int H, uint[] Px)>(StringComparer.Ordinal);
+        var jar = new JarAssets();
         int bad = 0;
         foreach (var e in zip.Entries)
         {
             string n = e.FullName;
             if (!n.StartsWith(Root, StringComparison.Ordinal) || e.Length > 1 << 20) continue;
-            string rel = n[Root.Length..];
-            try
-            {
-                if (rel.StartsWith("blockstates/", StringComparison.Ordinal) && rel.EndsWith(".json", StringComparison.Ordinal))
-                    states[rel[12..^5]] = BlockStateFile.Parse(Text(e));
-                else if (rel.StartsWith("models/block/", StringComparison.Ordinal) && rel.EndsWith(".json", StringComparison.Ordinal))
-                    baker.Add("block/" + rel[13..^5], Text(e));
-                else if (rel.StartsWith("textures/blocks/", StringComparison.Ordinal) && rel.EndsWith(".png", StringComparison.Ordinal))
-                {
-                    var (w, h, px) = Png.Decode(Bytes(e));
-                    tex.Add("blocks/" + rel[16..^4], w, h, px);
-                }
-                else if (rel.StartsWith("textures/items/", StringComparison.Ordinal) && rel.EndsWith(".png", StringComparison.Ordinal))
-                    items[rel[15..^4]] = Png.Decode(Bytes(e));
-                else if (rel.StartsWith("textures/entity/", StringComparison.Ordinal) && rel.EndsWith(".png", StringComparison.Ordinal) && WantedEntity(rel[16..^4]))
-                    entity[rel[16..^4]] = Png.Decode(Bytes(e));
-            }
+            try { jar.Read(n[Root.Length..], e); }
             catch (Exception) { bad++; }
         }
         if (bad > 0) log?.Invoke($"1.12.2 assets: {bad} unreadable entries skipped");
-        AddChests(tex, baker, states, entity);
-        AddShulkers(baker, states);
-        var models = new BlockModels1122(tex, baker, states);
-        var terrain = Terrain(tex, entity);
-        var itemAtlas = Items(items);
-        var skin = entity.TryGetValue("steve", out var st) ? TopHalf(st) : ((int, int, uint[])?)null;
+        AddChests(jar.Tex, jar.Baker, jar.States, jar.Entity);
+        AddShulkers(jar.Baker, jar.States);
+        var models = new BlockModels1122(jar.Tex, jar.Baker, jar.States);
+        var terrain = Terrain(jar.Tex, jar.Entity);
+        var itemAtlas = Items(jar.Items);
+        var skin = jar.Entity.TryGetValue("steve", out var st) ? TopHalf(st) : ((int, int, uint[])?)null;
+        var mobs = MobTextures(jar.Entity);
+        log?.Invoke($"1.12.2 assets from {jarPath}: {jar.States.Count} blockstates, {jar.Baker.Count} models, {jar.Tex.Count} textures, {mobs.Count} mob textures");
+        return new TextureAtlas(256, terrain, itemAtlas, skin) { Source = jarPath, Mobs = mobs.Count == 0 ? null : mobs, Models = models };
+    }
+
+    /// <summary>The b1.8.1 mob textures the jar has (zombies cut to the old 64×32 layout).</summary>
+    private static Dictionary<string, (int W, int H, uint[] Px)> MobTextures(Dictionary<string, (int W, int H, uint[] Px)> entity)
+    {
         var mobs = new Dictionary<string, (int W, int H, uint[] Px)>();
         foreach (var (old, path) in MobPaths)
             if (entity.TryGetValue(path, out var img)) mobs[old] = old is "zombie" or "pigzombie" ? TopHalf(img) : img;
-        log?.Invoke($"1.12.2 assets from {jarPath}: {states.Count} blockstates, {baker.Count} models, {tex.Count} textures, {mobs.Count} mob textures");
-        return new TextureAtlas(256, terrain, itemAtlas, skin) { Source = jarPath, Mobs = mobs.Count == 0 ? null : mobs, Models = models };
+        return mobs;
+    }
+
+    /// <summary>What the jar's assets/minecraft entries hold: blockstates, block models, block/item/entity textures.</summary>
+    private sealed class JarAssets
+    {
+        public readonly ModelTextures Tex = new();
+        public readonly ModelBaker Baker;
+        public readonly Dictionary<string, BlockStateFile> States = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, (int W, int H, uint[] Px)> Entity = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, (int W, int H, uint[] Px)> Items = new(StringComparer.Ordinal);
+
+        public JarAssets() => Baker = new ModelBaker(Tex);
+
+        private static bool Under(string rel, string dir, string ext) => rel.StartsWith(dir, StringComparison.Ordinal) && rel.EndsWith(ext, StringComparison.Ordinal);
+
+        /// <summary>Takes one entry (path relative to assets/minecraft) if it is one of the kinds read; throws on a bad file.</summary>
+        public void Read(string rel, ZipArchiveEntry e)
+        {
+            if (Under(rel, "blockstates/", ".json")) States[rel[12..^5]] = BlockStateFile.Parse(Text(e));
+            else if (Under(rel, "models/block/", ".json")) Baker.Add("block/" + rel[13..^5], Text(e));
+            else if (Under(rel, "textures/blocks/", ".png"))
+            {
+                var (w, h, px) = Png.Decode(Bytes(e));
+                Tex.Add("blocks/" + rel[16..^4], w, h, px);
+            }
+            else if (Under(rel, "textures/items/", ".png")) Items[rel[15..^4]] = Png.Decode(Bytes(e));
+            else if (Under(rel, "textures/entity/", ".png") && WantedEntity(rel[16..^4])) Entity[rel[16..^4]] = Png.Decode(Bytes(e));
+        }
     }
 
     /// <summary>b1.8.1 mob texture name → the 1.12.2 <c>textures/entity</c> path.</summary>
