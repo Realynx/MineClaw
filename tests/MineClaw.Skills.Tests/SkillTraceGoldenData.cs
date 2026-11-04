@@ -1302,4 +1302,428 @@ internal static partial class SkillTraceGoldenData
 = ok: took 1 stone pickaxe, 16 torch; still short: axe; 2 moves, 3 chests, 19 clicks, Ns
   world 6E2343BA0EFF8EBA @0.5,64,0.5 violations 0
 """";
+
+    public const string Building = """"
+## grow one side, two rows
+> expand_island {"side":"east","rows":2}
+  place 4,63,0 4 -> ok placed 4
+  place 4,63,-1 4 -> ok placed 4
+  place 4,63,-2 4 -> ok placed 4
+  place 4,63,-3 4 -> ok placed 4
+  place 4,63,1 4 -> ok placed 4
+  place 4,63,2 4 -> ok placed 4
+  place 4,63,3 4 -> ok placed 4
+  place 5,63,0 4 -> ok placed 4
+  place 5,63,-1 4 -> ok placed 4
+  place 5,63,-2 4 -> ok placed 4
+  place 5,63,-3 4 -> ok placed 4
+  place 5,63,1 4 -> ok placed 4
+  place 5,63,2 4 -> ok placed 4
+  place 5,63,3 4 -> ok placed 4
+= ok: expanded island by 14 block(s) at y 63; 50 cobblestone left
+  world D619BCC9F8D6DD2B @0.5,64,0.5 violations 0
+> expand_island {"side":"n","rows":1,"max":3}
+  place 0,63,-4 4 -> ok placed 4
+  place 1,63,-4 4 -> ok placed 4
+  place -1,63,-4 4 -> ok placed 4
+= ok: expanded island by 3 block(s) at y 63; 47 cobblestone left
+  world 77D1B4D377C0A326 @0.5,64,0.5 violations 0
+> expand_island {"side":"up"}
+  place -4,63,0 4 -> ok placed 4
+  place -4,63,-1 4 -> ok placed 4
+  place -4,63,-2 4 -> ok placed 4
+  place -4,63,-3 4 -> ok placed 4
+  place 0,63,4 4 -> ok placed 4
+  place -1,63,4 4 -> ok placed 4
+  place -2,63,4 4 -> ok placed 4
+  place -3,63,4 4 -> ok placed 4
+  place 1,63,4 4 -> ok placed 4
+  place 2,63,4 4 -> ok placed 4
+  place 3,63,4 4 -> ok placed 4
+  place 4,63,4 4 -> ok placed 4
+  place 5,63,4 4 -> ok placed 4
+  place -4,63,1 4 -> ok placed 4
+  place -4,63,2 4 -> ok placed 4
+  place -4,63,3 4 -> ok placed 4
+  place 2,63,-4 4 -> ok placed 4
+  place 3,63,-4 4 -> ok placed 4
+  place 4,63,-4 4 -> ok placed 4
+  place 5,63,-4 4 -> ok placed 4
+  place -2,63,-4 4 -> ok placed 4
+  place -3,63,-4 4 -> ok placed 4
+  place 0,63,-5 4 -> ok placed 4
+  place -1,63,-5 4 -> ok placed 4
+  place 1,63,-5 4 -> ok placed 4
+  place 6,63,0 4 -> ok placed 4
+  place 6,63,-1 4 -> ok placed 4
+  place 6,63,-2 4 -> ok placed 4
+  place 6,63,-3 4 -> ok placed 4
+  place 6,63,1 4 -> ok placed 4
+  place 6,63,2 4 -> ok placed 4
+  place 6,63,3 4 -> ok placed 4
+= ok: expanded island by 32 block(s) at y 63; 15 cobblestone left
+  world 88B8A35B1167CA10 @0.5,64,0.5 violations 0
+> expand_island {"rows":3,"max":10,"block":"dirt"}
+  place -5,63,0 4 -> ok placed 4
+  place -5,63,1 4 -> ok placed 4
+  place -5,63,2 4 -> ok placed 4
+  place 0,63,5 4 -> ok placed 4
+  place -1,63,5 4 -> ok placed 4
+  place -2,63,5 4 -> ok placed 4
+  place -5,63,-1 4 -> ok placed 4
+  place -5,63,-2 4 -> ok placed 4
+  place 1,63,5 4 -> ok placed 4
+  place 2,63,-5 4 -> ok placed 4
+= ok: expanded island by 10 block(s) at y 63; 5 cobblestone left
+  world 4F68C8E08CD1BAEF @0.5,64,0.5 violations 0
+## grow with a mob near, out of blocks
+> expand_island {"side":"west"}
+= failed: expanded island by 0 block(s) at y 63 (zombie within 6: not working at the edge); 64 cobblestone left
+  world 08122BB431DE5FEA @0.5,64,0.5 violations 0
+> expand_island {"rows":2}
+  place 0,63,-3 4 -> ok placed 4
+  place -1,63,-3 4 -> ok placed 4
+  place -2,63,-3 4 -> ok placed 4
+  place 0,63,3 4 -> ok placed 4
+  place 1,63,3 4 -> ok placed 4
+= ok: expanded island by 5 block(s) at y 63, skipped 15 (out of cobblestone); 0 cobblestone left
+  world 583178DF7DBE9F58 @0.5,64,0.5 violations 0
+> expand_island {}
+= failed: no building blocks
+  world 30153C5CBD43D816 @0.5,64,0.5 violations 0
+## lines, floors, walls, pillars, ladders, torches
+> place_line {"from":"-3,64,-3","to":"3,64,-3"}
+  place 0,64,-3 4 -> ok placed 4
+  place -1,64,-3 4 -> ok placed 4
+  place 1,64,-3 4 -> ok placed 4
+  place -2,64,-3 4 -> ok placed 4
+  place 2,64,-3 4 -> ok placed 4
+  place -3,64,-3 4 -> ok placed 4
+  place 3,64,-3 4 -> ok placed 4
+= ok: line: placed 7; 121 cobblestone left
+  world A3C00308CD98EC55 @0.5,64,0.5 violations 0
+> fill_floor {"from":"-2,64,1","to":"0,64,3"}
+  place 0,64,1 4 -> ok placed 4
+  place -1,64,1 4 -> ok placed 4
+  place 0,64,2 4 -> ok placed 4
+  place -2,64,1 4 -> ok placed 4
+  place -1,64,2 4 -> ok placed 4
+  place -2,64,2 4 -> ok placed 4
+  place 0,64,3 4 -> ok placed 4
+  place -1,64,3 4 -> ok placed 4
+  place -2,64,3 4 -> ok placed 4
+= ok: floor: placed 9; 112 cobblestone left
+  world 1A4B1F8ADD157DA0 @0.5,64,0.5 violations 0
+> build_wall {"from":"-4,64,4","to":"4,64,4","height":3}
+  place 0,64,4 4 -> ok placed 4
+  place -1,64,4 4 -> ok placed 4
+  place 1,64,4 4 -> ok placed 4
+  place 0,65,4 4 -> ok placed 4
+  place -1,65,4 4 -> ok placed 4
+  place 1,65,4 4 -> ok placed 4
+  place -2,64,4 4 -> ok placed 4
+  place 2,64,4 4 -> ok placed 4
+  place 0,66,4 4 -> ok placed 4
+  place -2,65,4 4 -> ok placed 4
+  place 2,65,4 4 -> ok placed 4
+  place -1,66,4 4 -> ok placed 4
+  place 1,66,4 4 -> ok placed 4
+  place -2,66,4 4 -> ok placed 4
+  place 2,66,4 4 -> ok placed 4
+  place -3,64,4 4 -> ok placed 4
+  place 3,64,4 4 -> ok placed 4
+  place -3,65,4 4 -> ok placed 4
+  place 3,65,4 4 -> ok placed 4
+  place -3,66,4 4 -> ok placed 4
+  place 3,66,4 4 -> ok placed 4
+  place -4,64,4 4 -> ok placed 4
+  place 4,64,4 4 -> ok placed 4
+  place -4,65,4 4 -> ok placed 4
+  place 4,65,4 4 -> ok placed 4
+  place -4,66,4 4 -> ok placed 4
+  place 4,66,4 4 -> ok placed 4
+= ok: wall: placed 27; 85 cobblestone left
+  world 3D299A6BE26FDF13 @0.5,64,0.5 violations 0
+> place_ladder {"pos":"2,64,3","height":3}
+  place 2,64,3 65 -> ok placed 65
+  wait_until 1500 -> True
+  place 2,65,3 65 -> ok placed 65
+  wait_until 1500 -> True
+  place 2,66,3 65 -> ok placed 65
+  wait_until 1500 -> True
+= ok: ladder x3 at 2,64,3
+  world E6B998692899ADCA @0.5,64,0.5 violations 0
+> place_torch {"pos":"1,64,0"}
+  place 1,64,0 50 -> ok placed 50
+= ok: placed 50
+  world 0D66D7B3FBD74F36 @0.5,64,0.5 violations 0
+> place_torch {}
+  place -1,64,0 50 -> ok placed 50
+= ok: placed 50
+  world 44F737D0D91D7DCD @0.5,64,0.5 violations 0
+> pillar_up {"height":3}
+  goto block (0, 67, 0) drop - place True break False @0.5,67,0.5 -> ok arrived at (0.5, 67, 0.5)
+= ok: pillared up 3 to y 67
+  world 2E541266831FC865 @0.5,67,0.5 violations 0
+## pillar down
+> pillar_down {"depth":3}
+  dig 1,63,0 -> ok dug dirt
+  goto block (1, 63, 0) drop - place  break  @1.5,63,0.5 -> ok arrived at (1.5, 63, 0.5)
+  dig 2,63,0 -> ok dug dirt
+  dig 2,62,0 -> ok dug stone
+  goto block (2, 62, 0) drop - place  break  @2.5,62,0.5 -> ok arrived at (2.5, 62, 0.5)
+  dig 3,63,0 -> ok dug dirt
+  dig 3,62,0 -> ok dug stone
+  dig 3,61,0 -> ok dug stone
+  goto block (3, 61, 0) drop - place  break  @3.5,61,0.5 -> ok arrived at (3.5, 61, 0.5)
+= ok: down 3 to y 61
+  world EF86956B792A9E8B @3.5,61,0.5 violations 0
+> pillar_down {"depth":2,"side":"west"}
+  dig 4,62,0 -> ok dug stone
+  dig 4,61,0 -> ok dug stone
+  dig 4,60,0 -> ok dug stone
+  goto block (4, 60, 0) drop - place  break  @4.5,60,0.5 -> ok arrived at (4.5, 60, 0.5)
+  dig 5,61,0 -> ok dug stone
+  dig 5,60,0 -> ok dug stone
+  dig 5,59,0 -> ok dug stone
+  goto block (5, 59, 0) drop - place  break  @5.5,59,0.5 -> ok arrived at (5.5, 59, 0.5)
+= ok: down 2 to y 59
+  world 0500A76982C202A6 @5.5,59,0.5 violations 0
+> pillar_down {"depth":3}
+= failed: no safe staircase 3 down from here (void, liquid, sand/gravel above or protected)
+  world 1AFD2F42F137B277 @0.5,64,0.5 violations 0
+> pillar_down {"depth":1}
+  dig 1,64,0 -> ok dug sand
+  dig 1,63,0 -> ok dug dirt
+  goto block (1, 63, 0) drop - place  break  @1.5,63,0.5 -> ok arrived at (1.5, 63, 0.5)
+= ok: down 1 to y 63
+  world 4D25521EC2E5F526 @1.5,63,0.5 violations 0
+"""";
+
+    public const string Portal = """"
+## cast
+> cast_portal {"pos":"-2,64,-4"}
+  198 actions A90543174D3DC8EF
+= ok: portal frame cast at -2,64,-4 (x axis, 10 lava buckets, plate dug 24/24); light_portal next
+  world C0A78944CAF7D155 @0.5,65,-3.5 violations 0
+## refusals
+> cast_portal {"pos":"-2,64,-4"}
+  0 actions E3B0C44298FC1C14
+= failed: cast_portal: needs water bucket + 2nd bucket + lava nearby + 24 blocks
+  world 4DC26D72801C2A7A @0.5,64,4.5 violations 0
+> cast_portal {"pos":"-2,64,-4"}
+  0 actions E3B0C44298FC1C14
+= failed: no lava source within 24
+  world 8EBCFBAE6973BE13 @0.5,64,4.5 violations 0
+> cast_portal {"pos":"-2,64,-4"}
+  0 actions E3B0C44298FC1C14
+= failed: needs 24 cobblestone for the back plate (have 5)
+  world 80AAEBC4E906170B @0.5,64,4.5 violations 0
+> cast_portal {"pos":"-2,64,-4"}
+  0 actions E3B0C44298FC1C14
+= failed: 0,66,-4 is in the way (stone)
+  world A1CDF7EBC4A63662 @0.5,64,4.5 violations 0
+> cast_portal {"pos":"-2,64,-4"}
+  0 actions E3B0C44298FC1C14
+= failed: planks at 3,66,-4 would catch fire
+  world C80099299947A3B8 @0.5,64,4.5 violations 0
+> cast_portal {"pos":"-2,64,-4"}
+  0 actions E3B0C44298FC1C14
+= failed: no solid floor under -2,64,-3
+  world 904FAFC0AB63E2D8 @0.5,64,4.5 violations 0
+> cast_portal {"pos":"-2,64,-4"}
+  0 actions E3B0C44298FC1C14
+= failed: -1,64,-3 is protected (a protected block); say 'you can break it' if you want it gone
+  world D5D81FF41E1ACC2F @0.5,64,4.5 violations 0
+## find a spot along z, the water fails, light it
+> cast_portal {"axis":"z"}
+  198 actions E04170EBEFDB714C
+= ok: portal frame cast at -2,64,4 (z axis, 10 lava buckets, plate dug 24/24); light_portal next
+  world D4FE98D2DE1A9EB5 @-1.5,65,6.5 violations 0
+> cast_portal {}
+  198 actions DFF865C97D9F6AA7
+= ok: portal frame cast at -2,64,4 (x axis, 10 lava buckets, plate dug 24/24); light_portal next
+  world 266D53D6E526119A @0.5,65,4.5 violations 0
+> cast_portal {"pos":"-2,64,-4"}
+  64 actions 39F839F73DD7AD5D
+= failed: cast 2/10 at -2,65,-4: water: -2,66,-4 is not empty (cobblestone); lava taken back
+  world 5450940F24D54156 @-0.5,64,-4.5 violations 0
+> cast_portal {"pos":"-2,64,-4","light":true}
+  200 actions 6ED80BE593A465D3
+= ok: portal frame cast at -2,64,-4 (x axis, 10 lava buckets, plate dug 24/24); portal lit at -1,65,-4
+  world 53B4F6DD02EC05D5 @0.5,65,-3.5 violations 0
+"""";
+
+    public const string Farm = """"
+## harvest wheat
+> harvest_wheat {}
+  dig 1,64,2 -> ok dug wheat
+  collect 3 dry True -> ok collected
+  use_on 1,63,2 Top 291 -> ok used on block
+  place 1,64,2 295 -> ok placed 59
+  dig 2,64,2 -> ok dug wheat
+  collect 3 dry True -> ok collected
+  use_on 2,63,2 Top 291 -> ok used on block
+  place 2,64,2 295 -> ok placed 59
+  collect 12 dry True -> ok collected
+= ok: harvested 2 wheat, replanted 2 (wheat 2, seeds 2; 0 growing); field: 2/2 farmland planted; 0 drop(s) left behind
+  world F13F06715A1B409F @0.5,64,0.5 violations 0
+> harvest_wheat {}
+  dig 1,64,2 -> ok dug wheat
+  collect 3 dry True -> ok collected
+  use_on 1,63,2 Top 290 -> ok used on block
+  wait_until 1500 -> True
+  place 1,64,2 295 -> ok placed 59
+  collect 12 dry True -> ok collected
+= ok: harvested 1 wheat, replanted 1 (re-tilled 1) (wheat 1, seeds 1; 0 growing); field: 1/1 farmland planted; 0 drop(s) left behind
+  world E2C80D7B17A2BB70 @0.5,64,0.5 violations 0
+> harvest_wheat {}
+  dig 1,64,2 -> ok dug wheat
+  collect 3 dry True -> ok collected
+  use_on 1,63,2 Top 291 -> ok used on block
+  place 1,64,2 295 -> ok placed 59
+  collect 12 dry True -> ok collected
+= ok: harvested 1 wheat, replanted 1 (wheat 1, seeds 1; 0 growing); field: 1/1 farmland planted; 0 drop(s) left behind; crafted stone hoe
+  world 35BBF8FA814F771F @0.5,64,0.5 violations 0
+> harvest_wheat {}
+  dig 1,64,2 -> ok dug wheat
+  collect 3 dry True -> ok collected
+  use_on 1,63,2 Top 291 -> ok used on block
+  place 1,64,2 295 -> ok placed 59
+  dig 2,64,2 -> ok dug wheat
+  collect 3 dry True -> ok collected
+  use_on 2,63,2 Top 291 -> ok used on block
+  place 2,64,2 295 -> ok placed 59
+  collect 12 dry True -> ok collected
+  place 1,64,3 295 -> ok placed 59
+  wait_until 1500 -> True
+  place 2,64,3 295 -> ok placed 59
+  wait_until 1500 -> True
+= ok: harvested 2 wheat, replanted 4 (wheat 2, seeds 0; 0 growing); field: 4/6 planted, 2 empty: out of seeds (need 2 more); 0 drop(s) left behind
+  world D4D2EEC362A53059 @0.5,64,0.5 violations 0
+> harvest_wheat {}
+= failed: no ripe wheat within 12 (1 still growing)
+  world D8C80494281493CF @0.5,64,0.5 violations 0
+> harvest_wheat {}
+  dig 1,64,2 -> ok dug wheat
+  collect 3 dry True -> ok collected
+  place 1,64,2 295 -> ok placed 59
+  collect 12 dry True -> ok collected
+= ok: harvested 1 wheat, replanted 1 (no hoe: planted only on farmland) (wheat 1, seeds 1; 0 growing); field: 1/1 farmland planted; 0 drop(s) left behind
+  world 38A3E9C0AB71A025 @0.5,64,0.5 violations 0
+## till, bonemeal, sapling, cane, cactus, melons
+> till_soil {"count":2}
+  use_on 0,63,0 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  place 0,64,0 295 -> ok placed 59
+  use_on 0,63,1 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  place 0,64,1 295 -> ok placed 59
+= ok: tilled 2, planted 2
+  world 444E74F11149078A @0.5,64,0.5 violations 0
+> till_soil {"pos":"2,63,2","count":4}
+  use_on 1,63,2 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  use_on 2,63,1 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  goto reach (2, 63, 3) (3.65) drop - place False break False @0.5,64,1.5 -> ok arrived at (0.5, 64, 1.5)
+  use_on 2,63,3 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  goto reach (3, 63, 2) (3.65) drop - place False break False @1.5,64,1.5 -> ok arrived at (1.5, 64, 1.5)
+  use_on 3,63,2 Top 291 -> ok used on block
+  wait_until 1500 -> True
+= ok: tilled 4, planted 0
+  world D8901A06C312CEFE @1.5,64,1.5 violations 0
+> till_soil {"pos":"2,63,2","count":4}
+  use_on 1,63,3 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  use_on 1,63,1 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  use_on 3,63,1 Top 291 -> ok used on block
+  wait_until 1500 -> True
+  use_on 3,63,3 Top 291 -> ok used on block
+  wait_until 1500 -> True
+= ok: tilled 4, planted 0
+  world 66907AAA1F1A857D @1.5,64,1.5 violations 0
+> apply_bonemeal {"count":2}
+  use_on 1,64,2 Top 351 -> ok used on block
+  wait_until 1500 -> True
+= ok: bonemealed 1 (1 bone meal)
+  world 87E5EEEA50397D24 @0.5,64,0.5 violations 0
+> plant_sapling {"pos":"1,64,1"}
+  place 1,64,1 6 -> ok placed 6
+= ok: planted sapling at 1,64,1
+  world 8E698CBE9DA2F831 @0.5,64,0.5 violations 0
+> plant_sapling {"pos":"2,64,2"}
+  place 2,64,2 6 -> ok placed 6
+= ok: planted sapling at 2,64,2
+  world 2290F261B9A25812 @0.5,64,0.5 violations 0
+> harvest_cane {}
+  dig 2,65,2 -> ok dug 2
+  collect 12 dry False -> ok collected
+= ok: cut 1 sugar_cane column(s), bottoms left; +2 (2 total)
+  world 0456C64B0F40F8D8 @0.5,64,0.5 violations 0
+> harvest_cactus {}
+  dig -2,65,-2 -> ok dug 1
+  collect 12 dry False -> ok collected
+= ok: cut 1 cactus column(s), bottoms left; +1 (1 total)
+  world C0AA1A947F972031 @0.5,64,0.5 violations 0
+> harvest_melons {}
+  dig 1,64,3 -> ok dug melon_block
+  collect 12 dry False -> ok collected
+= ok: harvested 1 (melon slices 4, pumpkins 0); stems kept
+  world DDF17ED11D91842E @0.5,64,0.5 violations 0
+## liquids
+> infinite_water {"pos":"2,63,2"}
+  dig 2,63,2 -> ok dug dirt
+  dig 3,63,2 -> ok dug dirt
+  dig 2,63,3 -> ok dug dirt
+  dig 3,63,3 -> ok dug dirt
+  goto reach (2, 63, 2) (4.2) (pour stand for 2,63,2) drop - place  break  @1.5,64,1.5 -> ok arrived at (1.5, 64, 1.5)
+  look 2.5,63,2.5 -> ok looking
+  use 326 -> ok poured
+  wait_until 1500 -> True
+  look 4,63.75,3.25 -> ok looking
+  use 326 -> ok poured
+  wait_until 1500 -> True
+  wait_until 3000 -> True
+= ok: infinite water at 2,63,2 (4 sources)
+  world 68C911D341772D69 @1.5,64,1.5 violations 0
+> fill_bucket {"pos":"2,63,2"}
+  look 2.2,63.98,2.2 -> ok looking
+  use 325 -> ok filled
+  wait_until 1500 -> True
+= ok: filled water bucket at 2,63,2
+  world 888E8C732675A047 @1.5,64,1.5 violations 0
+> empty_bucket {"pos":"-2,63,-2"}
+= failed: -2,63,-2 is not empty (dirt)
+  world 888E8C732675A047 @1.5,64,1.5 violations 0
+> infinite_water {"pos":"-3,63,2","shape":"line"}
+  dig -3,63,2 -> ok dug dirt
+  dig -2,63,2 -> ok dug dirt
+  dig -1,63,2 -> ok dug dirt
+  look -3,63.9,2.5 -> ok looking
+  use 326 -> ok poured
+  wait_until 1500 -> True
+  look -0.5,63.5,3 -> ok looking
+  use 326 -> ok poured
+  wait_until 1500 -> True
+  wait_until 3000 -> True
+= ok: infinite water at -3,63,2 (3 sources)
+  world 17E0E2DC5C0350B2 @0.5,64,0.5 violations 0
+> infinite_water {}
+= failed: infinite_water: needs 2 water buckets
+  world 4EDF54223CE4B24F @0.5,64,0.5 violations 0
+> make_obsidian {"pos":"2,63,2"}
+  look 1.5,64,2.5 -> ok looking
+  use 326 -> ok poured
+  wait_until 1500 -> True
+  wait_until 3000 -> True
+  goto any(reach (1, 64, 2) (4.25) (visible source (1, 64, 2))) drop - place False break False @0.5,64,0.5 -> FAIL no path to any(reach (1, 64, 2) (4.25) (visible source (1, 64, 2))) (no route)
+= ok: made 1 obsidian
+  world 176C30DC6A76DB2D @0.5,64,0.5 violations 0
+> make_obsidian {}
+= failed: make_obsidian: needs water bucket
+  world 176C30DC6A76DB2D @0.5,64,0.5 violations 0
+"""";
 }

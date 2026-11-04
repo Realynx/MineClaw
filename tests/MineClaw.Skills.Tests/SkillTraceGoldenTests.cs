@@ -393,6 +393,217 @@ public class SkillTraceGoldenTests
         }
     }
 
+    /// <summary>Solid stone up to y63 (dirt on top) over bedrock: ground under everything.</summary>
+    private static FakeGame Ground()
+    {
+        var g = new FakeGame(128, (_, y, _) => y == 0 ? Blocks.Bedrock : y < 63 ? Blocks.Stone : y == 63 ? Blocks.Dirt : 0);
+        g.Stand(0.5, 64, 0.5);
+        return g;
+    }
+
+    private static async Task Building(StringBuilder sb)
+    {
+        sb.Append("## grow one side, two rows\n");
+        {
+            var g = Island(3);
+            g.Give(Blocks.Cobblestone, 64);
+            await Run(sb, g, "expand_island", new { side = "east", rows = 2 });
+            await Run(sb, g, "expand_island", new { side = "n", rows = 1, max = 3 });
+            await Run(sb, g, "expand_island", new { side = "up" });
+            await Run(sb, g, "expand_island", new { rows = 3, max = 10, block = "dirt" });
+        }
+        sb.Append("## grow with a mob near, out of blocks\n");
+        {
+            var g = Island(2);
+            g.Give(Blocks.Cobblestone, 64);
+            g.World.Entities.SpawnMob(7, MobTypes.Zombie, new Vec3d(2.5, 64, 0.5), 0, 0);
+            await Run(sb, g, "expand_island", new { side = "west" });
+            var o = Island(2);
+            o.Give(Blocks.Cobblestone, 5);
+            await Run(sb, o, "expand_island", new { rows = 2 });
+            await Run(sb, Island(2), "expand_island", new { });
+        }
+        sb.Append("## lines, floors, walls, pillars, ladders, torches\n");
+        {
+            var g = Island(4);
+            g.Give(Blocks.Cobblestone, 128);
+            g.Give(Blocks.Torch, 4);
+            g.Give(Blocks.Ladder, 8);
+            await Run(sb, g, "place_line", new { from = "-3,64,-3", to = "3,64,-3" });
+            await Run(sb, g, "fill_floor", new { from = "-2,64,1", to = "0,64,3" });
+            await Run(sb, g, "build_wall", new { from = "-4,64,4", to = "4,64,4", height = 3 });
+            await Run(sb, g, "place_ladder", new { pos = "2,64,3", height = 3 });
+            await Run(sb, g, "place_torch", new { pos = "1,64,0" });
+            await Run(sb, g, "place_torch", new { });
+            await Run(sb, g, "pillar_up", new { height = 3 });
+        }
+        sb.Append("## pillar down\n");
+        {
+            var g = Ground();
+            await Run(sb, g, "pillar_down", new { depth = 3 });
+            await Run(sb, g, "pillar_down", new { depth = 2, side = "west" });
+            var lava = Ground();
+            for (int x = -2; x <= 2; x++) for (int z = -2; z <= 2; z++) if (x != 0 || z != 0) lava.Set(x, 61, z, Blocks.Lava);
+            await Run(sb, lava, "pillar_down", new { depth = 3 });
+            var sand = Ground();
+            sand.Set(1, 64, 0, Blocks.Sand);
+            sand.ProtectedBlocks.Add(new BlockPos(-1, 63, 0));
+            await Run(sb, sand, "pillar_down", new { depth = 1 });
+        }
+    }
+
+    private static FakeGame Lava(int dirt = 40, bool lava = true, int waterBuckets = 1, int emptyBuckets = 1)
+    {
+        var g = Island(8);
+        if (lava) for (int x = 3; x <= 8; x++) for (int z = 6; z <= 7; z++) g.Set(x, 63, z, Blocks.Lava);
+        g.Give(Items.WaterBucket, waterBuckets);
+        g.Give(Items.Bucket, emptyBuckets);
+        g.Give(Blocks.Cobblestone, dirt);
+        g.Stand(0.5, 64, 4.5);
+        return g;
+    }
+
+    private static async Task Portal(StringBuilder sb)
+    {
+        sb.Append("## cast\n");
+        await Run(sb, Lava(), "cast_portal", new { pos = "-2,64,-4" });
+        sb.Append("## refusals\n");
+        await Run(sb, Lava(waterBuckets: 0), "cast_portal", new { pos = "-2,64,-4" });
+        await Run(sb, Lava(lava: false), "cast_portal", new { pos = "-2,64,-4" });
+        await Run(sb, Lava(dirt: 5), "cast_portal", new { pos = "-2,64,-4" });
+        {
+            var g = Lava();
+            g.Set(0, 66, -4, Blocks.Stone);
+            await Run(sb, g, "cast_portal", new { pos = "-2,64,-4" });
+            var wood = Lava();
+            wood.Set(3, 66, -4, Blocks.Planks);
+            await Run(sb, wood, "cast_portal", new { pos = "-2,64,-4" });
+            var hole = Lava();
+            hole.Set(-2, 63, -3, 0);
+            await Run(sb, hole, "cast_portal", new { pos = "-2,64,-4" });
+            var prot = Lava();
+            prot.ProtectedBlocks.Add(new BlockPos(-1, 64, -3));
+            await Run(sb, prot, "cast_portal", new { pos = "-2,64,-4" });
+        }
+        sb.Append("## find a spot along z, the water fails, light it\n");
+        await Run(sb, Lava(), "cast_portal", new { axis = "z" });
+        await Run(sb, Lava(), "cast_portal", new { });
+        {
+            var g = Lava();
+            var third = new BlockPos(-2, 65, -4);
+            g.Changed = (p, id, _) => { if (BlockShapes.IsLava(id) && p == third) g.World.SetBlock(p.X, p.Y + 1, p.Z, Blocks.Cobblestone, 0); };
+            await Run(sb, g, "cast_portal", new { pos = "-2,64,-4" });
+            var l = Lava();
+            l.Give(Items.FlintAndSteel, 1);
+            await Run(sb, l, "cast_portal", new { pos = "-2,64,-4", light = true });
+        }
+    }
+
+    private static async Task Farm(StringBuilder sb)
+    {
+        sb.Append("## harvest wheat\n");
+        {
+            var g = Island(4);
+            g.Set(3, 63, 3, Blocks.Water);
+            for (int x = 1; x <= 2; x++) { g.Set(x, 63, 2, Blocks.Farmland); g.Set(x, 64, 2, Blocks.Crops, 7); }
+            g.Give(Items.StoneHoe, 1);
+            await Run(sb, g, "harvest_wheat");
+            var t = Island(4);
+            t.Set(3, 63, 3, Blocks.Water);
+            t.Set(1, 63, 2, Blocks.Farmland);
+            t.Set(1, 64, 2, Blocks.Crops, 7);
+            t.Give(Items.WoodenHoe, 1);
+            var crop = new BlockPos(1, 64, 2);
+            t.AfterDig = p => { if (p == crop) t.Set(1, 63, 2, Blocks.Dirt); };
+            await Run(sb, t, "harvest_wheat");
+            var a = Island(4);
+            a.Set(1, 63, 2, Blocks.Farmland);
+            a.Set(1, 64, 2, Blocks.Crops, 7);
+            var reg = SkillRegistry.CreateDefault();
+            reg.AcquireMissing = (_, _, _, _) => { a.Give(Items.StoneHoe, 1); return Task.FromResult<string?>("crafted stone hoe"); };
+            await Run(sb, a, "harvest_wheat", null, reg);
+            var e = Island(4);
+            e.Set(3, 63, 4, Blocks.Water);
+            for (int x = 1; x <= 2; x++) { e.Set(x, 63, 2, Blocks.Farmland); e.Set(x, 64, 2, Blocks.Crops, 7); }
+            for (int x = 1; x <= 4; x++) e.Set(x, 63, 3, Blocks.Farmland);
+            e.Give(Items.StoneHoe, 1);
+            await Run(sb, e, "harvest_wheat");
+            var n = Island(4);
+            n.Set(1, 63, 2, Blocks.Farmland);
+            n.Set(1, 64, 2, Blocks.Crops, 2);
+            await Run(sb, n, "harvest_wheat");
+            var h = Island(4);
+            h.Set(1, 63, 2, Blocks.Farmland);
+            h.Set(1, 64, 2, Blocks.Crops, 7);
+            var none = SkillRegistry.CreateDefault();
+            none.AcquireMissing = (_, _, _, _) => Task.FromResult<string?>(null);
+            await Run(sb, h, "harvest_wheat", null, none);
+        }
+        sb.Append("## till, bonemeal, sapling, cane, cactus, melons\n");
+        {
+            var g = Island(4);
+            g.Set(3, 63, 3, Blocks.Water);
+            g.Give(Items.StoneHoe, 1);
+            g.Give(Items.Seeds, 4);
+            await Run(sb, g, "till_soil", new { count = 2 });
+            var w = Island(4);
+            w.Set(2, 63, 2, Blocks.Water);
+            w.ProtectedBlocks.Add(new BlockPos(2, 63, 2));
+            w.Give(Items.StoneHoe, 1);
+            await Run(sb, w, "till_soil", new { pos = "2,63,2", count = 4 });
+            await Run(sb, w, "till_soil", new { pos = "2,63,2", count = 4 });
+            var b = Island(4);
+            b.Set(1, 63, 2, Blocks.Farmland);
+            b.Set(1, 64, 2, Blocks.Crops, 2);
+            b.Give(Items.Dye, 4, 15);
+            await Run(sb, b, "apply_bonemeal", new { count = 2 });
+            var s = Island(4);
+            s.Give(Blocks.Sapling, 2);
+            await Run(sb, s, "plant_sapling", new { pos = "1,64,1" });
+            await Run(sb, s, "plant_sapling", new { pos = "2,64,2" });
+            var c = Island(4);
+            for (int y = 64; y <= 66; y++) c.Set(2, y, 2, Blocks.SugarCane);
+            for (int y = 64; y <= 65; y++) c.Set(-2, y, -2, Blocks.Cactus);
+            c.Set(1, 64, 2, Blocks.MelonStem, 7);
+            c.Set(1, 64, 3, Blocks.Melon);
+            await Run(sb, c, "harvest_cane");
+            await Run(sb, c, "harvest_cactus");
+            await Run(sb, c, "harvest_melons");
+        }
+        sb.Append("## liquids\n");
+        {
+            var g = Island(4);
+            g.Fluids = true;
+            g.Give(Items.WaterBucket, 2);
+            await Run(sb, g, "infinite_water", new { pos = "2,63,2" });
+            g.Give(Items.Bucket, 1);
+            await Run(sb, g, "fill_bucket", new { pos = "2,63,2" });
+            await Run(sb, g, "empty_bucket", new { pos = "-2,63,-2" });
+            var l = Island(4);
+            l.Fluids = true;
+            l.Give(Items.WaterBucket, 2);
+            await Run(sb, l, "infinite_water", new { pos = "-3,63,2", shape = "line" });
+            await Run(sb, Island(4), "infinite_water");
+            var o = Island(4);
+            o.Fluids = true;
+            o.Set(2, 63, 2, Blocks.Lava);
+            o.Set(3, 63, 2, Blocks.Lava);
+            o.Give(Items.WaterBucket, 1);
+            o.Give(Items.Bucket, 1);
+            await Run(sb, o, "make_obsidian", new { pos = "2,63,2" });
+            await Run(sb, o, "make_obsidian");
+        }
+    }
+
+    [Fact]
+    public async Task Portal_traces_match_the_golden() => Same(SkillTraceGoldenData.Portal, await Area("portal", Portal, hashed: true));
+
+    [Fact]
+    public async Task Farm_traces_match_the_golden() => Same(SkillTraceGoldenData.Farm, await Area("farm", Farm));
+
+    [Fact]
+    public async Task Building_traces_match_the_golden() => Same(SkillTraceGoldenData.Building, await Area("building", Building));
+
     private static FakeGame NightIsland()
     {
         var g = new FakeGame();
