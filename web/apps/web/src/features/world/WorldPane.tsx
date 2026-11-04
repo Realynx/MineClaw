@@ -2,8 +2,9 @@
 
 /**
  * The 3D world pane: the viewer's `<WorldViewer>` (follow / fly / iso cameras, layers, x-ray, draw distance) plus the app-side
- * tools the viewer does not provide: a "go to" lookup (place, bot or x,y,z via /api/locate), a drops list, and an F3-style HUD
- * (position, facing, the last picked block). Renderer stats appear only with developer details on.
+ * tools the viewer does not provide: a "go to" lookup (place, bot or x,y,z via /api/locate), a drops list, an F3-style HUD
+ * (position, facing, the last picked block), and the container panel: a click on a chest, furnace, hopper… (in free cam, a click
+ * or E with the crosshair on it) shows what the hive knows is inside. Renderer stats appear only with developer details on.
  */
 import type { AimTarget, CameraMode, LayerToggles, PickedBlock, ViewerStats, WorldViewerHandle, XRayMode } from '@mineclaw/world-viewer';
 import { Crosshair, Gem, Layers, LocateFixed, Maximize, Minimize, Monitor } from 'lucide-react';
@@ -15,10 +16,12 @@ import { useEntities } from '@/lib/live/hooks';
 import { usePrefs } from '@/lib/prefs';
 import { bytes, cn, dimName, num } from '@/lib/utils';
 import { Button, Checkbox, Input, Select } from '@/components/ui/primitives';
-import { Segmented, Tooltip } from '@/components/ui/overlays';
+import { PortalContainer, Segmented, Tooltip } from '@/components/ui/overlays';
+import { isContainerBlock } from '@/features/live/inventory/containerLayout';
 import { ViewerQualityButton } from '@/features/settings/QuickSettings';
 import { concreteFields } from '@/features/settings/schema';
 import { detectedProfile, setField, useRendererProbe, useViewerSettings } from '@/features/settings/store';
+import { ContainerPanel, sameContainer, type ContainerTarget } from './ContainerPanel';
 import { DotMap } from './DotMap';
 import { useWorldHost } from './integration';
 import { ChatOverlay, Crosshair as AimCross, SelectionBar, TargetReadout } from './InWorld';
@@ -97,12 +100,23 @@ export function WorldPane({
   const entities = useEntities();
   const me = entities.data?.bots.find((b) => b.name === follow || b.short === follow);
   const dim = me?.dim ?? 0;
+  const dimRef = useRef(dim);
+  useEffect(() => {
+    dimRef.current = dim;
+  }, [dim]);
   const { canChat } = useAuth();
   // The stage (the world and every overlay on it) is what goes fullscreen: the shared canvas moves with it, no new context.
   const stage = useRef<HTMLDivElement>(null);
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [locked, setLocked] = useState(false);
   const [aim, setAim] = useState<AimTarget | null>(null);
+  const aimRef = useRef<AimTarget | null>(null);
+  useEffect(() => {
+    aimRef.current = aim;
+  }, [aim]);
+  const [container, setContainer] = useState<ContainerTarget | null>(null);
+  const closeContainer = useCallback(() => setContainer(null), []);
   const [selected, setSelected] = useState<string[]>([]);
   const [marker, setMarker] = useState<[number, number, number] | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
@@ -136,19 +150,39 @@ export function WorldPane({
     };
   }, []);
 
+  // A picked block (a click in follow / iso, a click or E on the crosshair's block in free cam): a container opens its panel.
+  const onBlockPick = useCallback((b: { x: number; y: number; z: number; id: number; dim: number }) => {
+    if (isContainerBlock(b.id)) setContainer({ dim: b.dim, x: b.x, y: b.y, z: b.z });
+  }, []);
+  const onPick = useCallback(
+    (b: PickedBlock) => {
+      setPicked(b);
+      onBlockPick(b);
+    },
+    [onBlockPick],
+  );
+
   // Mock mode only (e2e): the chat bubbles this pane drew in its last frame, and its camera, for headless checks.
   useEffect(() => {
     if (process.env.NEXT_PUBLIC_MOCK !== '1') return;
-    const w = window as unknown as { __mcxWorld?: { bubbles: () => unknown; camera: (m: CameraMode) => void; clickBot: (name: string) => void } };
+    const w = window as unknown as {
+      __mcxWorld?: {
+        bubbles: () => unknown;
+        camera: (m: CameraMode) => void;
+        clickBot: (name: string) => void;
+        clickBlock: (x: number, y: number, z: number, id: number) => void;
+      };
+    };
     w.__mcxWorld = {
       bubbles: () => viewer.current?.bubbles() ?? [],
       camera: (m) => viewer.current?.setCameraMode(m),
       clickBot: (name) => bodyClick.current?.(name), // what a click on that bot's model does
+      clickBlock: (x, y, z, id) => onBlockPick({ x, y, z, id, dim: dimRef.current }), // what a click on that block does
     };
     return () => {
       delete w.__mcxWorld;
     };
-  }, []);
+  }, [onBlockPick]);
 
   // The bar needs the cursor: opening it releases the mouse, and while it is open nothing may lock it again (a click on the
   // world closes the bar instead, see below), so the chips and the close button stay clickable.
@@ -207,6 +241,12 @@ export function WorldPane({
       } else if (e.code === 'KeyT' || e.key === 'Enter' || e.key === '/') {
         e.preventDefault();
         openChat();
+      } else if (e.code === 'KeyE' && document.pointerLockElement && !e.shiftKey) {
+        const t = aimRef.current;
+        if (t?.kind === 'block' && isContainerBlock(t.id)) {
+          const next = { dim: dimRef.current, x: t.x, y: t.y, z: t.z };
+          setContainer((cur) => (sameContainer(cur, next) ? null : next));
+        } else setContainer(null);
       } else if (e.key === 'Tab') {
         e.preventDefault();
         setHud((h) => !h);
@@ -230,7 +270,10 @@ export function WorldPane({
     if (t?.kind === 'bot') {
       setSelected((cur) => nextSelection(cur, t.name, mods));
       if (!mods.shift) bodyClick.current?.(t.name);
-    } else if (t?.kind === 'block') setMarker([t.x, t.y, t.z]);
+    } else if (t?.kind === 'block') {
+      setMarker([t.x, t.y, t.z]);
+      if (isContainerBlock(t.id)) setContainer({ dim: dimRef.current, x: t.x, y: t.y, z: t.z });
+    }
   }, []);
 
   const nearbyDrops = useMemo(() => {
@@ -365,7 +408,14 @@ export function WorldPane({
           </Button>
         </Tooltip>
       </div>
-      <div ref={stage} className="relative min-h-0 flex-1 bg-canvas" data-testid="world-stage">
+      <div
+        ref={(el) => {
+          stage.current = el;
+          setStageEl(el);
+        }}
+        className="relative min-h-0 flex-1 bg-canvas"
+        data-testid="world-stage"
+      >
         <mod.WorldViewer
           ref={viewer}
           source={source}
@@ -374,7 +424,7 @@ export function WorldPane({
           layers={layers}
           cameraMode={mode}
           xray={xray}
-          onPick={setPicked}
+          onPick={onPick}
           onStats={devDetails ? setStats : undefined}
           onCameraModeChange={setMode}
           onSelectBot={(name) => {
@@ -472,6 +522,16 @@ export function WorldPane({
           </div>
         ) : null}
         {overlay}
+        {container ? (
+          <PortalContainer.Provider value={stageEl}>
+            <ContainerPanel
+              key={`${container.dim}:${container.x},${container.y},${container.z}`}
+              target={container}
+              onClose={closeContainer}
+              className="absolute bottom-3 left-1/2 z-10 max-h-[calc(100%-4.5rem)] -translate-x-1/2"
+            />
+          </PortalContainer.Provider>
+        ) : null}
         {devDetails && stats ? (
           <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/55 px-2.5 py-2 font-mono text-[11px] leading-snug text-white">
             <div className="flex items-center gap-1.5">

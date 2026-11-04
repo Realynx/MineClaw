@@ -27,7 +27,7 @@ import {
   type RouteId,
   type SseEventName,
 } from '@mineclaw/contracts';
-import { mockInventory } from '@mineclaw/contracts/testing';
+import { mockContainer, mockContainers, mockInventory } from '@mineclaw/contracts/testing';
 import { SignatureVerifier, type BridgeIdentity } from '../bridge/signing.js';
 import { makeMcwc, makePng, makeZip } from './binary.js';
 import { generate } from './generate.js';
@@ -477,6 +477,19 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
         if (!found) return { status: 404, json: { error: 'no such body', code: 'not_found' } };
         const index = world.hive.names().indexOf(found.name);
         return { json: toSnake(mockInventory(found.name, index, world.tick)) };
+      }
+      case 'world.container':
+      case 'world.containers': {
+        // Both public routes reach the bot's one /api/world/containers: a box (x0..z1) lists, x/y/z answers one container.
+        const n = (k: string) => Number(query.get(k) ?? 0);
+        const dim = n('dim');
+        if (query.has('x0')) {
+          const box = { x0: n('x0'), z0: n('z0'), x1: n('x1'), z1: n('z1'), ...(query.has('y0') ? { y0: n('y0') } : {}), ...(query.has('y1') ? { y1: n('y1') } : {}) };
+          if (Math.abs(box.x1 - box.x0) > 512 || Math.abs(box.z1 - box.z0) > 512)
+            return { status: 400, json: { error: 'containers box is at most 512 blocks wide', code: 'bad_request' } };
+          return { json: toSnake(mockContainers(dim, box, query.has('limit') ? n('limit') : undefined, world.tick)) };
+        }
+        return { json: toSnake(mockContainer(dim, n('x'), n('y'), n('z'), world.tick)) };
       }
       case 'bots.list':
         return { json: world.hive.tiles() };

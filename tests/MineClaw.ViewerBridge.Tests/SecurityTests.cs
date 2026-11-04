@@ -165,6 +165,8 @@ public class PassthroughTests
     [InlineData("GET", "hive/tree", true)]
     [InlineData("GET", "world/chunks", true)]
     [InlineData("GET", "world/blocks", true)]
+    [InlineData("GET", "world/containers", true)]
+    [InlineData("POST", "world/containers", false)]
     [InlineData("GET", "world", false)]
     [InlineData("GET", "bodies/maid_chan/script", true)]
     [InlineData("GET", "bodies", false)]
@@ -267,6 +269,41 @@ public class PassthroughTests
         Assert.Equal(404, (await h.GetAsync("/v1/sup/shutdown")).Status);
         Assert.Equal(404, (await h.PostAsync("/v1/sup/status", "{}")).Status);
         Assert.DoesNotContain(h.Sup.Seen, r => r.Target.StartsWith("/api/shutdown", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Container_contents_pass_through_for_viewers_with_the_query_and_the_token_and_errors_map_to_ApiError()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        h.Sup.Routes["/api/world/containers"] = req => req.Query.ContainsKey("x0")
+            ? FakeSupervisor.Json("""{"dim":0,"containers":[{"pos":[2,74,-4],"dim":0,"kind":"double_chest","size":54,"used":1,"total":64,"top":[{"id":17,"meta":0,"name":"log","count":64}],"seen_at":1762077420000,"seen_by":"maid_chan_102","source":"memory","cells":[[2,74,-4],[3,74,-4]]}],"capped":false}""")
+            : req.Query["x"] == "9"
+                ? FakeSupervisor.Json("""{"error":"no container at 9,64,9"}""", 404)
+                : FakeSupervisor.Json("""{"pos":[2,74,-4],"dim":0,"kind":"double_chest","size":54,"slots":[{"slot":53,"id":264,"meta":0,"count":2,"name":"diamond","display":"Diamond","enchanted":false}],"seen_at":1762077420000,"seen_by":"maid_chan_102","source":"memory","version":"b1.8.1","exact":true,"cells":[[2,74,-4],[3,74,-4]]}""");
+        // Signed with the viewer role only: the query passes unchanged (snake_case), the supervisor token added by the bridge.
+        var (s, body) = await h.GetAsync("/v1/sup/world/containers?dim=0&x=3&y=74&z=-4", roles: "viewer");
+        Assert.Equal(200, s);
+        using (var doc = JsonDocument.Parse(body))
+        {
+            Assert.Equal("double_chest", doc.RootElement.GetProperty("kind").GetString());
+            Assert.Equal(53, doc.RootElement.GetProperty("slots")[0].GetProperty("slot").GetInt32());
+            Assert.Equal("maid_chan_102", doc.RootElement.GetProperty("seen_by").GetString());
+        }
+        var seen = h.Sup.Seen.Last(r => r.Target.StartsWith("/api/world/containers", StringComparison.Ordinal));
+        Assert.Equal("/api/world/containers?dim=0&x=3&y=74&z=-4", seen.Target);
+        Assert.Equal("test-token", seen.Token);
+        var (bs, bb) = await h.GetAsync("/v1/sup/world/containers?dim=0&x0=-16&z0=-40&x1=32&z1=8&limit=50", roles: "viewer");
+        Assert.Equal(200, bs);
+        Assert.Contains("\"capped\":false", bb);
+        // Unsigned: 401 before the supervisor is asked.
+        int before = h.Sup.Seen.Count(r => r.Target.Contains("/world/containers", StringComparison.Ordinal));
+        using (var none = await h.Http.GetAsync("/v1/sup/world/containers?x=3&y=74&z=-4")) Assert.Equal(401, (int)none.StatusCode);
+        Assert.Equal(before, h.Sup.Seen.Count(r => r.Target.Contains("/world/containers", StringComparison.Ordinal)));
+        // Not a container: the bot's 404 becomes the contract's ApiError; never a write.
+        var (s2, b2) = await h.GetAsync("/v1/sup/world/containers?dim=0&x=9&y=64&z=9", roles: "viewer");
+        Assert.Equal(404, s2);
+        Assert.Contains("\"code\":\"not_found\"", b2);
+        Assert.Equal(404, (await h.PostAsync("/v1/sup/world/containers", "{}")).Status);
     }
 
     [Fact]

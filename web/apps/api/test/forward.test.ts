@@ -58,6 +58,13 @@ beforeAll(async () => {
         return json(res, 200, live.inventory);
       case '/v1/sup/viewer/bodies/maid_chan_102/inventory':
         return json(res, 200, live.inventoryOffline);
+      case '/v1/sup/world/containers': {
+        const q = new URLSearchParams(req.target.split('?')[1] ?? '');
+        if (q.has('x0')) return json(res, 200, live.containerList);
+        if (q.get('x') === '20') return json(res, 200, live.containerUnknown);
+        if (q.get('x') === '9') return json(res, 404, { error: 'no container at 9,64,9' });
+        return json(res, 200, live.containerDouble);
+      }
       case '/v1/sup/viewer/bodies/ghost/inventory':
         return json(res, 404, { error: 'no such body', code: 'not_found' });
       case '/v1/sup/admin/memory':
@@ -172,6 +179,36 @@ describe('JSON forwarding', () => {
     // Read-only: no write verb on the route, and a session is required.
     expect([404, 405]).toContain((await fox.agent.post('/api/bots/maid_chan_67/inventory').set('Origin', ORIGIN).set('X-CSRF-Token', fox.csrf).send({})).status);
     expect((await fetch(`${t.url}/api/bots/maid_chan_67/inventory`)).status).toBe(401);
+  });
+
+  it('containers: viewer role, GET, camelCased, query forwarded snake_case; a box lists; bad queries never reach the bridge', async () => {
+    const r = await robin.agent.get('/api/world/container?dim=0&x=3&y=74&z=-4').expect(200);
+    expect(r.body).toMatchObject({ kind: 'double_chest', size: 54, source: 'memory', seenBy: 'maid_chan_102', exact: true });
+    expect(r.body.seen_by).toBeUndefined();
+    expect(r.body.slots[1]).toMatchObject({ slot: 13, name: 'stone_axe', durability: { max: 131, left: 100 } });
+    expect(r.body.cells).toEqual([
+      [2, 74, -4],
+      [3, 74, -4],
+    ]);
+    const req = last('/v1/sup/world/containers');
+    expect(req.method).toBe('GET');
+    expect(req.target).toBe('/v1/sup/world/containers?dim=0&x=3&y=74&z=-4');
+    expect(req.identity).toEqual({ user: 'robin', player: 'kiwi', roles: 'chat,viewer' });
+    const unknown = await cora.agent.get('/api/world/container?x=20&y=70&z=-32').expect(200);
+    expect(unknown.body).toMatchObject({ source: 'unknown', slots: [] });
+    expect(unknown.body.seenAt ?? null).toBeNull();
+    const none = await fox.agent.get('/api/world/container?x=9&y=64&z=9');
+    expect(none.status).toBe(404);
+    expect(none.body.code).toBe('not_found');
+    const box = await fox.agent.get('/api/world/containers?x0=-16&z0=-40&x1=32&z1=8&limit=50').expect(200);
+    expect(box.body.containers[0]).toMatchObject({ kind: 'double_chest', used: 3, total: 67, seenBy: 'maid_chan_102' });
+    expect(last('/v1/sup/world/containers').target).toBe('/v1/sup/world/containers?dim=0&x0=-16&z0=-40&x1=32&z1=8&limit=50');
+    const before = bridge.requests.length;
+    expect((await fox.agent.get('/api/world/container?x=3&z=-4')).status).toBe(400);
+    expect((await fox.agent.get('/api/world/containers?x0=0&z0=0&x1=1&z1=1&limit=900')).status).toBe(400);
+    expect(bridge.requests.length).toBe(before);
+    expect((await fetch(`${t.url}/api/world/container?x=3&y=74&z=-4`)).status).toBe(401);
+    expect([404, 405]).toContain((await fox.agent.post('/api/world/container').set('Origin', ORIGIN).set('X-CSRF-Token', fox.csrf).send({})).status);
   });
 
   it('never leaks upstream details on 5xx', async () => {
