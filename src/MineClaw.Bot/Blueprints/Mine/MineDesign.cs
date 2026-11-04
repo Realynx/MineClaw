@@ -75,9 +75,7 @@ public static partial class MineDesign
         var min = new BlockPos(cells.Min(p => p.X), cells.Min(p => p.Y), cells.Min(p => p.Z));
         var max = new BlockPos(cells.Max(p => p.X), cells.Max(p => p.Y), cells.Max(p => p.Z));
         int wx = max.X - min.X + 1, hy = max.Y - min.Y + 1, dz = max.Z - min.Z + 1;
-        if (wx > BlueprintParser.MaxSide || dz > BlueprintParser.MaxSide || hy > BlueprintParser.MaxMineHeight)
-            return (null, min, 0, string.Create(CultureInfo.InvariantCulture,
-                $"it would be {wx}×{hy}×{dz} (a mine holds at most {BlueprintParser.MaxSide} a side and {BlueprintParser.MaxMineHeight} high)"));
+        if (TooBig(wx, hy, dz) is { } big) return (null, min, 0, big);
         if (min.Y < 1) return (null, min, 0, "a mine can't dig below y 1 (y 0 is bedrock)");
         var r = new CaptureResult { Name = name, Min = min, Max = max, Version = DesignVersions.Normalize(version) };
         foreach (var (p, s) in snap.Blocks) r.Cells[p] = s;
@@ -96,6 +94,13 @@ public static partial class MineDesign
         var (bad, why) = DrawnAs(dsl, snap, air, min, Math.Max(height, min.Y + hy));
         return why == null ? (dsl, min, bad, null) : (null, min, 0, why);
     }
+
+    /// <summary>Why a mine of this size can't be a design (over 64 a side or 128 high), or null.</summary>
+    private static string? TooBig(int wx, int hy, int dz) =>
+        wx > BlueprintParser.MaxSide || dz > BlueprintParser.MaxSide || hy > BlueprintParser.MaxMineHeight
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"it would be {wx}×{hy}×{dz} (a mine holds at most {BlueprintParser.MaxSide} a side and {BlueprintParser.MaxMineHeight} high)")
+            : null;
 
     /// <summary>The mine's header lines: kind, absolute anchor, entry, seed and version preference.</summary>
     private static string Header(BlockPos min, BlockPos? entry, string? seed, string? preferredFor)

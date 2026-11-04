@@ -400,6 +400,13 @@ public class DesignerGoldenTests
         Rec(sb, s, id);
     }
 
+    /// <summary>Every version spelling (pinned before <see cref="DesignVersions.Normalize"/> became a table).</summary>
+    [Theory]
+    [InlineData("b1.8.1", "b1.8.1"), InlineData(" B181 ", "b1.8.1"), InlineData("beta", "b1.8.1"), InlineData("b1.8", "b1.8.1"), InlineData("Beta 1.8.1", "b1.8.1"),
+     InlineData("beta1.8.1", "b1.8.1"), InlineData("1.12.2", "1.12.2"), InlineData("1.12", "1.12.2"), InlineData("1122", "1.12.2"), InlineData("RELEASE", "1.12.2"),
+     InlineData(null, null), InlineData("", null), InlineData("1.8", null), InlineData("beta 1.8", null), InlineData("b 1.8.1", null), InlineData("1.12.1", null)]
+    public void Version_spellings_normalize(string? spelling, string? version) => Assert.Equal(version, DesignVersions.Normalize(spelling));
+
     [Fact]
     public void Designer_tools_saves_and_history_match_the_golden_dump()
     {

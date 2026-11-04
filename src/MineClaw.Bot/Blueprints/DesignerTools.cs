@@ -256,8 +256,7 @@ public static class DesignerTools
         int x = at[0].GetInt32(), z = at[1].GetInt32();
         int size = Math.Clamp(OptInt(input, "size") ?? 4, MineTemplates.MinSize, MineTemplates.MaxSize);
         int top = OptInt(input, "top") ?? terrain.SurfaceOver(x, z, x + size - 1, z + size - 1);
-        var landings = input.TryGetProperty("landings", out var l) && l.ValueKind == JsonValueKind.Array
-            ? l.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Number).Select(e => e.GetInt32()).ToList() : null;
+        var landings = IntList(input, "landings");
         return MineTemplates.Spiral(new SpiralSpec(x, z, top, OptInt(input, "bottom") ?? 11, size, OptInt(input, "core") ?? 2,
             OptStr(input, "dir") != "ccw", OptInt(input, "torch_every") ?? 0, landings));
     }
@@ -276,6 +275,10 @@ public static class DesignerTools
 
     /// <summary>An optional string argument (null when missing or not a string).</summary>
     private static string? OptStr(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>An optional list of whole numbers (its non-numbers skipped); null when missing or not an array.</summary>
+    private static List<int>? IntList(JsonElement e, string k) => e.TryGetProperty(k, out var l) && l.ValueKind == JsonValueKind.Array
+        ? l.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Number).Select(x => x.GetInt32()).ToList() : null;
 
     private static (string, DesignerOp?, bool) Done(DesignerCanvas canvas, string kind, string label, List<CanvasCell> changed, int rejected)
     {
