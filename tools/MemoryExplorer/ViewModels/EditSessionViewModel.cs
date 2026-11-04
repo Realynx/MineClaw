@@ -178,14 +178,21 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
         if (!MemoryEditSchema.Ops(kind).Contains(op)) { Shell.Status = $"{kind}: {op} is not supported"; return; }
         var fields = MemoryEditSchema.For(kind);
         var before = row != null ? EditPrefill.For(kind, row) : fields.ToDictionary(f => f.Name, _ => (string?)"");
-        var title = op == "add" ? $"Add a {kind}" : $"Edit {kind} {row!.Name}";
-        var values = await ShowEditor(new EditRequest(title, kind, op, fields, before, IsLive ? "Applied by the live bot on alice." : "Applied to the local db file."));
+        var values = await ShowEditor(new EditRequest(EditTitle(op, kind, row), kind, op, fields, before, EditNote));
         if (values == null) return;
         string? reason = values.Remove("__reason", out var r) ? r : null;
-        var changed = op == "add" ? values.Where(kv => !string.IsNullOrEmpty(kv.Value)).ToDictionary(kv => kv.Key, kv => kv.Value) : EditPrefill.Changed(before, values);
+        var changed = ChangedFields(op, before, values);
         if (op == "update" && changed.Count == 0) { Shell.Status = "Nothing changed"; return; }
         await ApplyAsync(new MemoryEdit(op, kind, row != null ? EditPrefill.IdOf(kind, row) : null, changed, Who, reason));
     }
+
+    private static string EditTitle(string op, string kind, MemoryRow? row) => op == "add" ? $"Add a {kind}" : $"Edit {kind} {row!.Name}";
+
+    private string EditNote => IsLive ? "Applied by the live bot on alice." : "Applied to the local db file.";
+
+    /// <summary>An add sends every filled field; an update only the fields that differ from the prefill.</summary>
+    private static Dictionary<string, string?> ChangedFields(string op, Dictionary<string, string?> before, Dictionary<string, string?> values) =>
+        op == "add" ? values.Where(kv => !string.IsNullOrEmpty(kv.Value)).ToDictionary(kv => kv.Key, kv => kv.Value) : EditPrefill.Changed(before, values);
 
     public async Task DeleteAsync(string kind, MemoryRow row)
     {
@@ -234,57 +241,8 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
 
     private async Task RebuildAsync(RebuildRequest request, string what)
     {
-        if (!EditMode) { Shell.Status = "Turn on edit mode to rebuild"; return; }
-        if (RebuildRunning) { Shell.Status = "A rebuild is already running"; return; }
-        if (!IsLive && LocalAdminTarget.LlmProblems(Shell.Config) is { Count: > 0 } problems)
-        {
-            Shell.Status = "Rebuild refused: " + string.Join("; ", problems);
-            return;
-        }
-        try
-        {
-            var t = Open();
-            Shell.Status = $"Estimating the rebuild of {what}…";
-            var est = await t.EstimateAsync(request, CancellationToken.None);
-            if (est.Summaries == 0)
-            {
-                Shell.Status = "Nothing to rebuild: " + est.Note;
-                return;
-            }
-            var cap = Math.Max(0.05m, Math.Ceiling(est.Usd * 150m) / 100m); // estimate + 50 %, rounded up to a cent
-            var msg = FormattableString.Invariant($"Rebuild {what}: re-cluster, re-summarize and re-embed.\n\n") +
-                FormattableString.Invariant($"• {est.Summaries} summaries with {est.Model}\n• ~{est.InputTokens:N0} input + ~{est.OutputTokens:N0} output tokens\n") +
-                FormattableString.Invariant($"• ~{est.EmbeddingTokens:N0} embedding tokens\n• estimated ${est.Usd:0.0000} (hard cap ${cap:0.00})\n\n{est.Note}\n\n") +
-                (IsLive ? "Runs in the background inside the bot, under its budget caps." : "Runs here on the local file. A backup is taken first.");
-            if (Shell.Confirm == null || !await Shell.Confirm("Rebuild with the model?", msg)) return;
-            if (!await EnsureBackupAsync(t)) return;
-            Shell.Navigate("audit");
-            Diffs.Clear();
-            RebuildRunning = true;
-            RebuildPercent = 0;
-            RebuildSummary = "";
-            RebuildStage = "starting…";
-            var cts = _rebuildCts = new CancellationTokenSource();
-            var progress = new Progress<RebuildStatus>(s =>
-            {
-                if (s.Progress is { } p)
-                {
-                    RebuildStage = $"{p.Stage} {p.Done}/{p.Total}" + (p.Message != null ? " · " + p.Message : "");
-                    RebuildPercent = p.Total > 0 ? 100.0 * p.Done / p.Total : 0;
-                }
-            });
-            var final = await t.RebuildAsync(request with { MaxUsd = cap }, progress, cts.Token);
-            if (final.Result is { } res)
-            {
-                foreach (var d in res.Diffs.OrderByDescending(d => d.Layer).ThenBy(d => d.Index))
-                    Diffs.Add(new DiffRow($"L{d.Layer} #{d.Index}", d.Old ?? "(new node)", d.New ?? "(removed)"));
-                RebuildSummary = string.Create(CultureInfo.InvariantCulture, $"{(res.Ok ? "Done" : "Failed")}: {res.Message} · ${res.SpentUsd:0.0000} · {res.Elapsed.TotalSeconds:0.0} s");
-            }
-            else RebuildSummary = final.Error ?? final.State;
-            Shell.Status = "Rebuild " + RebuildSummary;
-            await RefreshAuditAsync();
-            if (final.Result?.Ok == true && !IsLive) await ReloadAfterWriteAsync();
-        }
+        if (RebuildRefusal() is { } refusal) { Shell.Status = refusal; return; }
+        try { await EstimateConfirmAndRebuildAsync(request, what); }
         catch (OperationCanceledException) { RebuildSummary = "Cancelled"; }
         catch (Exception ex) { Shell.Status = RebuildSummary = "Rebuild failed: " + ex.Message; }
         finally
@@ -292,6 +250,74 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
             RebuildRunning = false;
             RebuildPercent = 100;
         }
+    }
+
+    /// <summary>Why a rebuild can't start now (edit mode off, one already running, no summary model locally), or null.</summary>
+    private string? RebuildRefusal()
+    {
+        if (!EditMode) return "Turn on edit mode to rebuild";
+        if (RebuildRunning) return "A rebuild is already running";
+        return !IsLive && LocalAdminTarget.LlmProblems(Shell.Config) is { Count: > 0 } problems ? "Rebuild refused: " + string.Join("; ", problems) : null;
+    }
+
+    /// <summary>The estimate, the confirmation with its hard cap and the backup, then the run.</summary>
+    private async Task EstimateConfirmAndRebuildAsync(RebuildRequest request, string what)
+    {
+        var t = Open();
+        Shell.Status = $"Estimating the rebuild of {what}…";
+        var est = await t.EstimateAsync(request, CancellationToken.None);
+        if (est.Summaries == 0)
+        {
+            Shell.Status = "Nothing to rebuild: " + est.Note;
+            return;
+        }
+        var cap = Math.Max(0.05m, Math.Ceiling(est.Usd * 150m) / 100m); // estimate + 50 %, rounded up to a cent
+        if (Shell.Confirm == null || !await Shell.Confirm("Rebuild with the model?", RebuildPrompt(what, est, cap))) return;
+        if (!await EnsureBackupAsync(t)) return;
+        await RunRebuildAsync(t, request with { MaxUsd = cap });
+    }
+
+    private string RebuildPrompt(string what, RebuildEstimate est, decimal cap) =>
+        FormattableString.Invariant($"Rebuild {what}: re-cluster, re-summarize and re-embed.\n\n") +
+        FormattableString.Invariant($"• {est.Summaries} summaries with {est.Model}\n• ~{est.InputTokens:N0} input + ~{est.OutputTokens:N0} output tokens\n") +
+        FormattableString.Invariant($"• ~{est.EmbeddingTokens:N0} embedding tokens\n• estimated ${est.Usd:0.0000} (hard cap ${cap:0.00})\n\n{est.Note}\n\n") +
+        (IsLive ? "Runs in the background inside the bot, under its budget caps." : "Runs here on the local file. A backup is taken first.");
+
+    private async Task RunRebuildAsync(IAdminTarget t, RebuildRequest request)
+    {
+        Shell.Navigate("audit");
+        Diffs.Clear();
+        RebuildRunning = true;
+        RebuildPercent = 0;
+        RebuildSummary = "";
+        RebuildStage = "starting…";
+        var cts = _rebuildCts = new CancellationTokenSource();
+        var progress = new Progress<RebuildStatus>(ShowRebuildProgress);
+        var final = await t.RebuildAsync(request, progress, cts.Token);
+        ShowRebuildResult(final);
+        Shell.Status = "Rebuild " + RebuildSummary;
+        await RefreshAuditAsync();
+        if (final.Result?.Ok == true && !IsLive) await ReloadAfterWriteAsync();
+    }
+
+    private void ShowRebuildProgress(RebuildStatus s)
+    {
+        if (s.Progress is not { } p) return;
+        RebuildStage = RebuildText.Stage(p);
+        RebuildPercent = RebuildText.Percent(p);
+    }
+
+    /// <summary>The summary diff (top layers first) and the one-line outcome.</summary>
+    private void ShowRebuildResult(RebuildStatus final)
+    {
+        if (final.Result is not { } res)
+        {
+            RebuildSummary = final.Error ?? final.State;
+            return;
+        }
+        foreach (var d in res.Diffs.OrderByDescending(d => d.Layer).ThenBy(d => d.Index))
+            Diffs.Add(new DiffRow($"L{d.Layer} #{d.Index}", d.Old ?? "(new node)", d.New ?? "(removed)"));
+        RebuildSummary = string.Create(CultureInfo.InvariantCulture, $"{(res.Ok ? "Done" : "Failed")}: {res.Message} · ${res.SpentUsd:0.0000} · {res.Elapsed.TotalSeconds:0.0} s");
     }
 
     [RelayCommand]
@@ -321,27 +347,32 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
         {
             CompactRunning = true;
             var t = Open();
-            if (!dryRun)
-            {
-                if (Shell.Confirm == null || !await Shell.Confirm("Compact activity episodes?",
-                        "Rewrites per-minute activity episodes into coalesced spans and deletes the originals. Only activity episodes are touched " +
-                        "(never player notes, beliefs, rules or the self-profile). The RAPTOR summaries above them are marked dirty and refresh " +
-                        "within the daily RAPTOR budget. " + (IsLive ? "Runs inside the live bot, which backs up first." : "A backup is taken first.")))
-                    return;
-                if (!IsLive && !await EnsureBackupAsync(t)) return;
-            }
+            if (!dryRun && !await ConfirmCompactionAsync(t)) return;
             CompactInfo = dryRun ? "Previewing…" : "Compacting…";
             var r = await t.CompactActivityAsync(dryRun, Who, CancellationToken.None);
             CompactInfo = r.Message + (r.Samples.Count > 0 ? "\n\ne.g. " + string.Join("\n", r.Samples.Take(3)) : "");
             Shell.Status = r.Message;
-            if (!dryRun)
-            {
-                await RefreshAuditAsync();
-                if (r.Ok && !IsLive) await ReloadAfterWriteAsync();
-            }
+            if (!dryRun) await AfterCompactionAsync(r);
         }
         catch (Exception ex) { CompactInfo = Shell.Status = "Compaction failed: " + ex.Message; }
         finally { CompactRunning = false; }
+    }
+
+    /// <summary>A real run asks first and (locally) backs up first; false = don't run.</summary>
+    private async Task<bool> ConfirmCompactionAsync(IAdminTarget t)
+    {
+        if (Shell.Confirm == null || !await Shell.Confirm("Compact activity episodes?",
+                "Rewrites per-minute activity episodes into coalesced spans and deletes the originals. Only activity episodes are touched " +
+                "(never player notes, beliefs, rules or the self-profile). The RAPTOR summaries above them are marked dirty and refresh " +
+                "within the daily RAPTOR budget. " + (IsLive ? "Runs inside the live bot, which backs up first." : "A backup is taken first.")))
+            return false;
+        return IsLive || await EnsureBackupAsync(t);
+    }
+
+    private async Task AfterCompactionAsync(ActivityCompactionReport r)
+    {
+        await RefreshAuditAsync();
+        if (r.Ok && !IsLive) await ReloadAfterWriteAsync();
     }
 
     /// <summary>Raw → groomed for a doc ref of the open bank or pasted text (read-only; edit mode not needed).</summary>
@@ -366,26 +397,34 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
         Audit.Clear();
         try
         {
-            IReadOnlyList<AuditEntry> entries;
-            if (IsLive)
-            {
-                if (!EditMode) { AuditInfo = "Turn on edit mode to read the live bot's audit trail."; return; }
-                entries = await Open().AuditAsync(300, CancellationToken.None);
-            }
-            else
-            {
-                if (Bank is not { } b) { AuditInfo = ""; return; }
-                var path = LocalAdminTarget.AuditPathFor(b.Path);
-                entries = File.Exists(path) ? new AdminAudit(path).Read(300) : [];
-                AuditInfo = File.Exists(path) ? ExplorerPaths.Display(path) : "No edits on this file yet.";
-            }
-            foreach (var e in entries.OrderByDescending(e => e.At))
-                Audit.Add(new AuditRow(e.At.ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture), e.Who, e.Op, e.Kind, e.Id ?? "", e.Ok, e.Message,
-                    e.Target, $"{e.Before ?? "∅"}\n→ {e.After ?? "∅"}"));
+            var entries = IsLive ? await LiveAuditAsync() : LocalAudit();
+            if (entries == null) return;
+            foreach (var e in entries.OrderByDescending(e => e.At)) Audit.Add(AuditRowOf(e));
             if (IsLive) AuditInfo = $"{entries.Count} entries from the live bot";
         }
         catch (Exception ex) { AuditInfo = "Audit unavailable: " + ex.Message; }
     }
+
+    /// <summary>The live bot's trail (null when edit mode is off: reading it goes through the write target).</summary>
+    private async Task<IReadOnlyList<AuditEntry>?> LiveAuditAsync()
+    {
+        if (!EditMode) { AuditInfo = "Turn on edit mode to read the live bot's audit trail."; return null; }
+        return await Open().AuditAsync(300, CancellationToken.None);
+    }
+
+    /// <summary>The local file's trail beside the db (null without a db).</summary>
+    private IReadOnlyList<AuditEntry>? LocalAudit()
+    {
+        if (Bank is not { } b) { AuditInfo = ""; return null; }
+        var path = LocalAdminTarget.AuditPathFor(b.Path);
+        IReadOnlyList<AuditEntry> entries = File.Exists(path) ? new AdminAudit(path).Read(300) : [];
+        AuditInfo = File.Exists(path) ? ExplorerPaths.Display(path) : "No edits on this file yet.";
+        return entries;
+    }
+
+    private static AuditRow AuditRowOf(AuditEntry e) =>
+        new(e.At.ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture), e.Who, e.Op, e.Kind, e.Id ?? "", e.Ok, e.Message,
+            e.Target, $"{e.Before ?? "∅"}\n→ {e.After ?? "∅"}");
 
     public void Dispose()
     {

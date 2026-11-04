@@ -30,7 +30,6 @@ public static class ShardExportDialog
 
     public static async Task<string?> ShowAsync(Window owner, ShardExportDialogRequest req)
     {
-        string? written = null;
         var dlg = new Window
         {
             Title = "Export shard",
@@ -42,195 +41,252 @@ public static class ShardExportDialog
             ShowInTaskbar = false,
         };
         dlg.Bind(Window.BackgroundProperty, dlg.GetResourceObservable("CardBrush"));
-        var sel = req.Selection;
+        var form = new ExportForm(dlg, req);
+        await dlg.ShowDialog(owner);
+        return form.Written;
+    }
 
-        var name = new TextBox { Text = req.Name };
-        var description = new TextBox { Watermark = "What this shard holds and why (travels in the manifest)", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 48 };
+    /// <summary>The dialog's controls and what they do: one panel per mode, the opt-ins, preview and export.</summary>
+    private sealed class ExportForm
+    {
+        private readonly Window _dlg;
+        private readonly ShardExportDialogRequest _req;
+        private readonly ShardSelection _sel;
+        private readonly TextBox _name, _description, _query, _names, _version;
+        private readonly List<(string Kind, CheckBox Box)> _kindBoxes;
+        private readonly ComboBox _dimension, _people;
+        private readonly CheckBox _semantic, _withKb, _rules, _world, _vectors, _summaries;
+        private readonly List<(string Key, RadioButton Radio, Control Panel)> _modes = [];
+        private readonly WrapPanel _modeRow = new();
+        private readonly Panel _panels = new();
+        private readonly SelectableTextBlock _previewText;
+        private readonly Button _preview, _export, _cancel;
 
-        // ---- what goes in
-        var modes = new List<(string Key, RadioButton Radio, Control Panel)>();
-        RadioButton Radio(string text) => new() { Content = text, GroupName = "mode-" + dlg.GetHashCode(), Margin = new Thickness(0, 0, 14, 0) };
+        /// <summary>The written path (null until an export succeeds).</summary>
+        public string? Written { get; private set; }
 
-        var subtreeInfo = new TextBlock { Text = req.SubtreeLabel ?? "", TextWrapping = TextWrapping.Wrap, Classes = { "muted" }, FontSize = 12 };
-        var subtreePanel = Block("Every leaf under the node, mapped back to its memory record (notes, claims, episodes, knowledge…).", subtreeInfo);
-
-        var kindBoxes = KindLabels.Select(k => (k.Kind, Box: new CheckBox
+        public ExportForm(Window dlg, ShardExportDialogRequest req)
         {
-            Content = k.Label, Margin = new Thickness(0, 0, 12, 0),
-            IsChecked = sel.Mode == "filter" && sel.Kinds is { Count: > 0 } ks ? ks.Contains(k.Kind) : !ShardKinds.IsWorld(k.Kind) && k.Kind is not (ShardKinds.GameData or ShardKinds.Knowledge or ShardKinds.Rule),
-        })).ToList();
-        var dimension = new ComboBox { ItemsSource = new[] { "any dimension", "overworld", "nether" }, SelectedIndex = sel.Dimension switch { 0 => 1, -1 => 2, _ => 0 }, MinWidth = 160 };
-        var query = new TextBox { Text = sel.Mode == "filter" ? sel.Query ?? "" : "", Watermark = "Text every record must contain (or a semantic query)" };
-        var semantic = new CheckBox { Content = "Semantic (the bot's own hybrid search; needs embeddings configured)", IsChecked = sel.Semantic };
-        var kindsWrap = new WrapPanel { ItemSpacing = 0, LineSpacing = 4 };
-        foreach (var (_, box) in kindBoxes) kindsWrap.Children.Add(box);
-        var filterPanel = new StackPanel
-        {
-            Spacing = 8,
-            Children = { Label("Memory kinds"), kindsWrap, Row(Label("Dimension"), dimension), Label("Query"), query, semantic },
-        };
+            _dlg = dlg;
+            _req = req;
+            _sel = req.Selection;
+            _name = new TextBox { Text = req.Name };
+            _description = new TextBox { Watermark = "What this shard holds and why (travels in the manifest)", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 48 };
 
-        var people = new ComboBox { ItemsSource = req.People, MinWidth = 260, PlaceholderText = "Pick a player" };
-        var names = new TextBox { Watermark = "Login and every name used for them, comma separated", Text = sel.People is { Count: > 0 } p ? string.Join(", ", p) : "" };
-        people.SelectionChanged += (_, _) => { if (people.SelectedItem is PersonChoice pc) names.Text = string.Join(", ", pc.Names); };
-        if (sel.People is { Count: > 0 } given && req.People.FirstOrDefault(x => x.Names.Any(n => given.Contains(n, StringComparer.OrdinalIgnoreCase))) is { } match)
-            people.SelectedItem = match;
-        var personPanel = new StackPanel
+            // ---- what goes in
+            var subtreeInfo = new TextBlock { Text = req.SubtreeLabel ?? "", TextWrapping = TextWrapping.Wrap, Classes = { "muted" }, FontSize = 12 };
+            var subtreePanel = Block("Every leaf under the node, mapped back to its memory record (notes, claims, episodes, knowledge…).", subtreeInfo);
+            _kindBoxes = KindLabels.Select(k => (k.Kind, Box: new CheckBox { Content = k.Label, Margin = new Thickness(0, 0, 12, 0), IsChecked = CheckedAtStart(_sel, k.Kind) })).ToList();
+            _dimension = new ComboBox { ItemsSource = new[] { "any dimension", "overworld", "nether" }, SelectedIndex = _sel.Dimension switch { 0 => 1, -1 => 2, _ => 0 }, MinWidth = 160 };
+            _query = new TextBox { Text = _sel.Mode == "filter" ? _sel.Query ?? "" : "", Watermark = "Text every record must contain (or a semantic query)" };
+            _semantic = new CheckBox { Content = "Semantic (the bot's own hybrid search; needs embeddings configured)", IsChecked = _sel.Semantic };
+            var filterPanel = FilterPanel();
+
+            _people = new ComboBox { ItemsSource = req.People, MinWidth = 260, PlaceholderText = "Pick a player" };
+            _names = new TextBox { Watermark = "Login and every name used for them, comma separated", Text = _sel.People is { Count: > 0 } p ? string.Join(", ", p) : "" };
+            _people.SelectionChanged += (_, _) => { if (_people.SelectedItem is PersonChoice pc) _names.Text = string.Join(", ", pc.Names); };
+            if (PersonOf(_sel, req.People) is { } match) _people.SelectedItem = match;
+            var personPanel = PersonPanel();
+
+            _version = new TextBox { Text = _sel.PackVersion ?? req.ActivePack, Width = 160, HorizontalAlignment = HorizontalAlignment.Left };
+            _withKb = new CheckBox { Content = "Also carry the docs/knowledge chunks", IsChecked = _sel.IncludeKnowledgeDocs };
+            var packPanel = PackPanel();
+
+            _rules = new CheckBox { Content = "Include standing rules (directives from trusted players)", IsChecked = _sel.IncludeRules };
+            _world = new CheckBox { Content = "Include world memory (places, structures)", IsChecked = _sel.IncludeWorld };
+            _vectors = new CheckBox { Content = "Include embeddings (reused on import when the model and dims match)", IsChecked = true };
+            _summaries = new CheckBox { Content = "Include RAPTOR summaries as a cache (never as truth)", IsChecked = true };
+            AddModes(subtreePanel, filterPanel, personPanel, packPanel);
+
+            var flags = new StackPanel { Spacing = 4, Children = { _rules, _world, _vectors, _summaries } };
+            _previewText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, Classes = { "body" }, Text = "Preview shows the counts and the exact file size before anything is written." };
+            var previewCard = new Border { Classes = { "card" }, Child = _previewText };
+            Sync();
+
+            _preview = new Button { Content = "Preview", Classes = { "ghost" } };
+            _export = new Button { Content = "Export…", Classes = { "accent" }, IsDefault = true };
+            _cancel = new Button { Content = "Cancel", Classes = { "ghost" }, IsCancel = true };
+            _preview.Click += async (_, _) => await RunPreview();
+            _export.Click += async (_, _) => await ExportAsync();
+            _cancel.Click += (_, _) => _dlg.Close();
+            _dlg.Content = Layout(flags, previewCard);
+        }
+
+        /// <summary>A kind box starts ticked when the filter named it, else for every kind but world memory, game data, knowledge and rules.</summary>
+        private static bool CheckedAtStart(ShardSelection sel, string kind) =>
+            sel.Mode == "filter" && sel.Kinds is { Count: > 0 } ks ? ks.Contains(kind)
+                : !ShardKinds.IsWorld(kind) && kind is not (ShardKinds.GameData or ShardKinds.Knowledge or ShardKinds.Rule);
+
+        /// <summary>The player the selection's names point at (any of their names, ignoring case).</summary>
+        private static PersonChoice? PersonOf(ShardSelection sel, IReadOnlyList<PersonChoice> people) =>
+            sel.People is { Count: > 0 } given ? people.FirstOrDefault(x => x.Names.Any(n => given.Contains(n, StringComparer.OrdinalIgnoreCase))) : null;
+
+        private StackPanel FilterPanel()
+        {
+            var kindsWrap = new WrapPanel { ItemSpacing = 0, LineSpacing = 4 };
+            foreach (var (_, box) in _kindBoxes) kindsWrap.Children.Add(box);
+            return new StackPanel
+            {
+                Spacing = 8,
+                Children = { Label("Memory kinds"), kindsWrap, Row(Label("Dimension"), _dimension), Label("Query"), _query, _semantic },
+            };
+        }
+
+        private StackPanel PersonPanel() => new()
         {
             Spacing = 8,
             Children =
             {
                 Hint("Beliefs and claims about them, facts, relationship entries in the self-profile, episodes with them (and their standing rules when ticked below)."),
-                people, names,
+                _people, _names,
             },
         };
 
-        var version = new TextBox { Text = sel.PackVersion ?? req.ActivePack, Width = 160, HorizontalAlignment = HorizontalAlignment.Left };
-        var withKb = new CheckBox { Content = "Also carry the docs/knowledge chunks", IsChecked = sel.IncludeKnowledgeDocs };
-        var packPanel = new StackPanel
+        private StackPanel PackPanel() => new()
         {
             Spacing = 8,
             Children =
             {
-                Hint($"The version-tagged seed game data (recipes, smelting, items, blocks, dig facts). This db's active pack: {req.ActivePack}."),
-                Row(Label("Minecraft version"), version), withKb,
+                Hint($"The version-tagged seed game data (recipes, smelting, items, blocks, dig facts). This db's active pack: {_req.ActivePack}."),
+                Row(Label("Minecraft version"), _version), _withKb,
             },
         };
 
-        var rules = new CheckBox { Content = "Include standing rules (directives from trusted players)", IsChecked = sel.IncludeRules };
-        var world = new CheckBox { Content = "Include world memory (places, structures)", IsChecked = sel.IncludeWorld };
-        var vectors = new CheckBox { Content = "Include embeddings (reused on import when the model and dims match)", IsChecked = true };
-        var summaries = new CheckBox { Content = "Include RAPTOR summaries as a cache (never as truth)", IsChecked = true };
-        if (req.SubtreeLabel != null) modes.Add(("subtree", Radio("RAPTOR subtree"), subtreePanel));
-        modes.Add(("filter", Radio("Filter"), filterPanel));
-        modes.Add(("person", Radio("About a person"), personPanel));
-        modes.Add(("pack", Radio("Knowledge pack"), packPanel));
-        var modeRow = new WrapPanel();
-        var panels = new Panel();
-        foreach (var m in modes)
+        /// <summary>One radio per mode (the subtree only when opened on a node); the selection's mode starts checked.</summary>
+        private void AddModes(Control subtreePanel, Control filterPanel, Control personPanel, Control packPanel)
         {
-            modeRow.Children.Add(m.Radio);
-            panels.Children.Add(m.Panel);
-            m.Radio.IsCheckedChanged += (_, _) => Sync();
-        }
-        (modes.FirstOrDefault(m => m.Key == sel.Mode).Radio ?? modes[0].Radio).IsChecked = true;
-
-        var flags = new StackPanel { Spacing = 4, Children = { rules, world, vectors, summaries } };
-
-        var previewText = new SelectableTextBlock { TextWrapping = TextWrapping.Wrap, Classes = { "body" }, Text = "Preview shows the counts and the exact file size before anything is written." };
-        var previewCard = new Border { Classes = { "card" }, Child = previewText };
-
-        string Mode() => modes.First(m => m.Radio.IsChecked == true).Key;
-
-        void Sync()
-        {
-            var mode = modes.FirstOrDefault(m => m.Radio.IsChecked == true).Key;
-            foreach (var m in modes) m.Panel.IsVisible = m.Key == mode;
-            bool pack = mode == "pack";
-            rules.IsEnabled = world.IsEnabled = !pack;
-            if (pack && string.IsNullOrWhiteSpace(name.Text)) name.Text = "recipes " + version.Text;
-        }
-        Sync();
-
-        ShardExportRequest Build()
-        {
-            var mode = Mode();
-            var s = new ShardSelection
+            if (_req.SubtreeLabel != null) _modes.Add(("subtree", Radio("RAPTOR subtree"), subtreePanel));
+            _modes.Add(("filter", Radio("Filter"), filterPanel));
+            _modes.Add(("person", Radio("About a person"), personPanel));
+            _modes.Add(("pack", Radio("Knowledge pack"), packPanel));
+            foreach (var m in _modes)
             {
-                Mode = mode,
-                Node = mode == "subtree" ? sel.Node : null,
-                LeafRefs = mode == "subtree" ? sel.LeafRefs : null,
-                Kinds = mode == "filter" ? kindBoxes.Where(k => k.Box.IsChecked == true).Select(k => k.Kind).ToList() : null,
-                Dimension = mode == "filter" ? dimension.SelectedIndex switch { 1 => 0, 2 => -1, _ => null } : null,
-                Query = mode == "filter" && !string.IsNullOrWhiteSpace(query.Text) ? query.Text.Trim() : null,
-                Semantic = mode == "filter" && semantic.IsChecked == true,
-                People = mode == "person" ? (names.Text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() : null,
-                PackVersion = mode == "pack" ? version.Text?.Trim() : null,
-                IncludeKnowledgeDocs = mode == "pack" && withKb.IsChecked == true,
-                IncludeRules = mode != "pack" && rules.IsChecked == true,
-                IncludeWorld = mode != "pack" && world.IsChecked == true,
+                _modeRow.Children.Add(m.Radio);
+                _panels.Children.Add(m.Panel);
+                m.Radio.IsCheckedChanged += (_, _) => Sync();
+            }
+            (_modes.FirstOrDefault(m => m.Key == _sel.Mode).Radio ?? _modes[0].Radio).IsChecked = true;
+        }
+
+        private RadioButton Radio(string text) => new() { Content = text, GroupName = "mode-" + _dlg.GetHashCode(), Margin = new Thickness(0, 0, 14, 0) };
+
+        private string Mode() => _modes.First(m => m.Radio.IsChecked == true).Key;
+
+        /// <summary>Shows the checked mode's panel; a pack has no rules or world opt-ins and names itself after its version.</summary>
+        private void Sync()
+        {
+            var mode = _modes.FirstOrDefault(m => m.Radio.IsChecked == true).Key;
+            foreach (var m in _modes) m.Panel.IsVisible = m.Key == mode;
+            bool pack = mode == "pack";
+            _rules.IsEnabled = _world.IsEnabled = !pack;
+            if (pack && string.IsNullOrWhiteSpace(_name.Text)) _name.Text = "recipes " + _version.Text;
+        }
+
+        private ShardExportRequest Build() =>
+            new(Trimmed(_name.Text) ?? "shard", SelectionFor(Mode()), Trimmed(_description.Text), _vectors.IsChecked == true, _summaries.IsChecked == true,
+                "admin:" + Environment.UserName, _req.Source);
+
+        private static string? Trimmed(string? text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+
+        /// <summary>The selection the form describes: the mode's own fields, and the opt-ins (never for a pack).</summary>
+        private ShardSelection SelectionFor(string mode)
+        {
+            bool pack = mode == "pack";
+            var s = new ShardSelection { Mode = mode, IncludeRules = !pack && _rules.IsChecked == true, IncludeWorld = !pack && _world.IsChecked == true };
+            return mode switch
+            {
+                "subtree" => s with { Node = _sel.Node, LeafRefs = _sel.LeafRefs },
+                "filter" => FilterSelection(s),
+                "person" => s with { People = (_names.Text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() },
+                "pack" => s with { PackVersion = _version.Text?.Trim(), IncludeKnowledgeDocs = _withKb.IsChecked == true },
+                _ => s,
+            };
+        }
+
+        private ShardSelection FilterSelection(ShardSelection s)
+        {
+            var kinds = _kindBoxes.Where(k => k.Box.IsChecked == true).Select(k => k.Kind).ToList();
+            s = s with
+            {
+                Kinds = kinds, Dimension = _dimension.SelectedIndex switch { 1 => 0, 2 => -1, _ => null }, Query = Trimmed(_query.Text), Semantic = _semantic.IsChecked == true,
             };
             // Ticking a world/rule kind in the filter implies the opt-in for it.
-            if (mode == "filter" && s.Kinds!.Any(ShardKinds.IsWorld)) s = s with { IncludeWorld = true };
-            if (mode == "filter" && s.Kinds!.Contains(ShardKinds.Rule)) s = s with { IncludeRules = true };
-            return new ShardExportRequest(string.IsNullOrWhiteSpace(name.Text) ? "shard" : name.Text.Trim(), s,
-                string.IsNullOrWhiteSpace(description.Text) ? null : description.Text.Trim(), vectors.IsChecked == true, summaries.IsChecked == true,
-                "admin:" + Environment.UserName, req.Source);
+            if (kinds.Any(ShardKinds.IsWorld)) s = s with { IncludeWorld = true };
+            if (kinds.Contains(ShardKinds.Rule)) s = s with { IncludeRules = true };
+            return s;
         }
 
-        var preview = new Button { Content = "Preview", Classes = { "ghost" } };
-        var export = new Button { Content = "Export…", Classes = { "accent" }, IsDefault = true };
-        var cancel = new Button { Content = "Cancel", Classes = { "ghost" }, IsCancel = true };
-        async Task<ShardPreview?> RunPreview()
+        private async Task<ShardPreview?> RunPreview()
         {
-            preview.IsEnabled = export.IsEnabled = false;
-            previewText.Text = "Counting…";
+            _preview.IsEnabled = _export.IsEnabled = false;
+            _previewText.Text = "Counting…";
             try
             {
-                var p = await req.Preview(Build());
-                previewText.Text = Describe(p);
+                var p = await _req.Preview(Build());
+                _previewText.Text = Describe(p);
                 return p;
             }
-            catch (Exception ex) { previewText.Text = "Can't export: " + ex.Message; return null; }
-            finally { preview.IsEnabled = export.IsEnabled = true; }
+            catch (Exception ex) { _previewText.Text = "Can't export: " + ex.Message; return null; }
+            finally { _preview.IsEnabled = _export.IsEnabled = true; }
         }
-        preview.Click += async (_, _) => await RunPreview();
-        export.Click += async (_, _) =>
+
+        /// <summary>Preview first (nothing to export: stop), then the save path, then the write; closes on success.</summary>
+        private async Task ExportAsync()
         {
             var p = await RunPreview();
             if (p == null || p.Total == 0) return;
             var r = Build();
-            var path = await req.PickSavePath(ShardService.SuggestPath(r.Name));
+            var path = await _req.PickSavePath(ShardService.SuggestPath(r.Name));
             if (path == null) return;
-            export.IsEnabled = false;
+            _export.IsEnabled = false;
             try
             {
-                previewText.Text = await req.Export(r, path);
-                written = path;
-                dlg.Close();
+                _previewText.Text = await _req.Export(r, path);
+                Written = path;
+                _dlg.Close();
             }
-            catch (Exception ex) { previewText.Text = "Export failed: " + ex.Message; }
-            finally { export.IsEnabled = true; }
-        };
-        cancel.Click += (_, _) => dlg.Close();
+            catch (Exception ex) { _previewText.Text = "Export failed: " + ex.Message; }
+            finally { _export.IsEnabled = true; }
+        }
 
-        var form = new StackPanel
+        private DockPanel Layout(Control flags, Control previewCard)
         {
-            Spacing = 14,
-            Children =
+            var form = new StackPanel
             {
-                new StackPanel { Spacing = 4, Children = { Label("Name"), name } },
-                new StackPanel { Spacing = 4, Children = { Label("Description"), description } },
-                new StackPanel { Spacing = 8, Children = { Label("What goes in"), modeRow, panels } },
-                new StackPanel { Spacing = 6, Children = { Label("Options"), flags,
-                    Hint("Secrets never travel: records about keys or passwords are left out and token-shaped strings are redacted. World observations, containers, the inventory ledger, chunks and build plans are never part of a shard.") } },
-                previewCard,
-            },
-        };
-        dlg.Content = new DockPanel
-        {
-            Margin = new Thickness(24),
-            Children =
-            {
-                Dock(new StackPanel
+                Spacing = 14,
+                Children =
                 {
-                    Spacing = 4, Margin = new Thickness(0, 0, 0, 16),
-                    Children =
+                    new StackPanel { Spacing = 4, Children = { Label("Name"), _name } },
+                    new StackPanel { Spacing = 4, Children = { Label("Description"), _description } },
+                    new StackPanel { Spacing = 8, Children = { Label("What goes in"), _modeRow, _panels } },
+                    new StackPanel { Spacing = 6, Children = { Label("Options"), flags,
+                        Hint("Secrets never travel: records about keys or passwords are left out and token-shaped strings are redacted. World observations, containers, the inventory ledger, chunks and build plans are never part of a shard.") } },
+                    previewCard,
+                },
+            };
+            return new DockPanel
+            {
+                Margin = new Thickness(24),
+                Children =
+                {
+                    Dock(new StackPanel
                     {
-                        new TextBlock { Text = "Export a memory shard", Classes = { "h2" } },
-                        new TextBlock { Text = "From " + req.Source + " (read-only). A portable .mcshard you can import into any db or the live bot.", Classes = { "muted" }, FontSize = 12, TextWrapping = TextWrapping.Wrap },
-                    },
-                }, Avalonia.Controls.Dock.Top),
-                Dock(new StackPanel
-                {
-                    Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8, Margin = new Thickness(0, 18, 0, 0),
-                    Children = { cancel, preview, export },
-                }, Avalonia.Controls.Dock.Bottom),
-                new ScrollViewer { Content = form },
-            },
-        };
-        await dlg.ShowDialog(owner);
-        return written;
+                        Spacing = 4, Margin = new Thickness(0, 0, 0, 16),
+                        Children =
+                        {
+                            new TextBlock { Text = "Export a memory shard", Classes = { "h2" } },
+                            new TextBlock { Text = "From " + _req.Source + " (read-only). A portable .mcshard you can import into any db or the live bot.", Classes = { "muted" }, FontSize = 12, TextWrapping = TextWrapping.Wrap },
+                        },
+                    }, Avalonia.Controls.Dock.Top),
+                    Dock(new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8, Margin = new Thickness(0, 18, 0, 0),
+                        Children = { _cancel, _preview, _export },
+                    }, Avalonia.Controls.Dock.Bottom),
+                    new ScrollViewer { Content = form },
+                },
+            };
+        }
     }
 
     internal static string Describe(ShardPreview p)

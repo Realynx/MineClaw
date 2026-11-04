@@ -107,20 +107,7 @@ public class FrameView : Control
         _posted = false;
         if (_attached?.TakeFrame() is not { } f || f.W <= 0 || f.H <= 0 || f.Px.Length < f.W * f.H) return;
         double t0 = FreecamStats.NowMs;
-        if (_bmp == null || _fw != f.W || _fh != f.H)
-        {
-            // Two sizes alternate (moving / still): keep both bitmaps instead of reallocating on every switch.
-            if (_bmp != null) { _spare?.Dispose(); _spare = _bmp; }
-            if (_spare is { } sp && sp.PixelSize.Width == f.W && sp.PixelSize.Height == f.H) { _bmp = sp; _spare = null; }
-            else _bmp = new WriteableBitmap(new PixelSize(f.W, f.H), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
-            (_fw, _fh) = (f.W, f.H);
-        }
-        using (var fb = _bmp.Lock())
-        {
-            if (fb.RowBytes == f.W * 4) Marshal.Copy(f.Px, 0, fb.Address, f.W * f.H);
-            else
-                for (int y = 0; y < f.H; y++) Marshal.Copy(f.Px, y * f.W, fb.Address + y * fb.RowBytes, f.W);
-        }
+        CopyPixels(BitmapFor(f.W, f.H), f);
         _frame = f;
         _labels = f.Labels;
         FramesShown++;
@@ -131,6 +118,26 @@ public class FrameView : Control
         }
         Presented();
         InvalidateVisual();
+    }
+
+    /// <summary>The bitmap for a w×h frame. Two sizes alternate (moving / still): both are kept instead of reallocating on every switch.</summary>
+    private WriteableBitmap BitmapFor(int w, int h)
+    {
+        if (_bmp != null && _fw == w && _fh == h) return _bmp;
+        if (_bmp != null) { _spare?.Dispose(); _spare = _bmp; }
+        if (_spare is { } sp && sp.PixelSize.Width == w && sp.PixelSize.Height == h) { _bmp = sp; _spare = null; }
+        else _bmp = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
+        (_fw, _fh) = (w, h);
+        return _bmp;
+    }
+
+    /// <summary>One copy when the rows are packed, else row by row.</summary>
+    private static void CopyPixels(WriteableBitmap bmp, FrameOut f)
+    {
+        using var fb = bmp.Lock();
+        if (fb.RowBytes == f.W * 4) Marshal.Copy(f.Px, 0, fb.Address, f.W * f.H);
+        else
+            for (int y = 0; y < f.H; y++) Marshal.Copy(f.Px, y * f.W, fb.Address + y * fb.RowBytes, f.W);
     }
 
     /// <summary>After each new frame (UI thread).</summary>
