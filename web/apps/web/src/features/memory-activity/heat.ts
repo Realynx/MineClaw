@@ -60,21 +60,35 @@ export function lastAccessFromEvents(
   return out;
 }
 
+/** The one brain a filter means (a body filter: the body's brain), or undefined for every brain. */
+function filterBrain(filter: ActivityFilter, bodyBrain: string | undefined): string | undefined {
+  if (filter.kind === 'brain') return filter.brain;
+  return filter.kind === 'body' ? bodyBrain : undefined;
+}
+
+type HeatNode = MemoryHeatResponse['nodes'][number];
+
+/** A node's latest access by `brain` (or by any brain); with no brain given, the node's own time when no brain has one. */
+function nodeLast(n: HeatNode, brain: string | undefined): LastAccess | null {
+  let best: LastAccess | null = null;
+  for (const b of n.brains) {
+    if (brain && b.brain !== brain) continue;
+    const at = b.lastAccessAt ? Date.parse(b.lastAccessAt) : NaN;
+    if (!Number.isNaN(at) && (!best || at > best.at)) best = { at, brain: b.brain };
+  }
+  if (!best && !brain && n.lastAccessAt) best = { at: Date.parse(n.lastAccessAt), brain: n.brains[0]?.brain ?? '' };
+  return best;
+}
+
 /** The server's aggregate (already propagated) as last-access per node, for the chosen filter. */
 export function lastAccessFromServer(heat: MemoryHeatResponse | undefined, filter: ActivityFilter, bodyBrain?: string): Map<number, LastAccess> {
   const out = new Map<number, LastAccess>();
   if (!heat) return out;
-  const brain = filter.kind === 'brain' ? filter.brain : filter.kind === 'body' ? bodyBrain : undefined;
+  const brain = filterBrain(filter, bodyBrain);
   // A body filter cannot be answered from the per-brain aggregate alone; the events cover it.
   if (filter.kind === 'body' && !bodyBrain) return out;
   for (const n of heat.nodes) {
-    let best: LastAccess | null = null;
-    for (const b of n.brains) {
-      if (brain && b.brain !== brain) continue;
-      const at = b.lastAccessAt ? Date.parse(b.lastAccessAt) : NaN;
-      if (!Number.isNaN(at) && (!best || at > best.at)) best = { at, brain: b.brain };
-    }
-    if (!best && !brain && n.lastAccessAt) best = { at: Date.parse(n.lastAccessAt), brain: n.brains[0]?.brain ?? '' };
+    const best = nodeLast(n, brain);
     if (best) out.set(n.nodeId, best);
   }
   return out;
@@ -102,26 +116,32 @@ export interface Staleness {
  * (positionFromEnd null) are kept so they draw hollow. For one brain/body only that brain's context counts; with several
  * brains the freshest wins.
  */
+function stalenessOf(c: InContextMemory, now: number): Staleness {
+  const seen = Date.parse(c.lastSeenAt);
+  return {
+    stalenessS: Number.isNaN(seen) ? Infinity : Math.max(0, (now - seen) / 1000),
+    evicted: c.positionFromEnd === null || c.positionFromEnd === undefined,
+    brain: c.brain,
+  };
+}
+
+/** Prefer a live (not evicted) entry, then the freshest. */
+const preferred = (s: Staleness, cur: Staleness): boolean => (cur.evicted && !s.evicted) || (cur.evicted === s.evicted && s.stalenessS < cur.stalenessS);
+
 export function stalenessByNode(
   inContext: readonly InContextMemory[],
   now: number,
   filter: ActivityFilter,
   bodyBrain?: string,
 ): Map<number, Staleness> {
-  const brain = filter.kind === 'brain' ? filter.brain : filter.kind === 'body' ? bodyBrain : undefined;
+  const brain = filterBrain(filter, bodyBrain);
   const out = new Map<number, Staleness>();
   for (const c of inContext) {
     if (c.raptorNodeId === null || c.raptorNodeId === undefined) continue;
     if (brain && c.brain !== brain) continue;
-    const seen = Date.parse(c.lastSeenAt);
-    const s: Staleness = {
-      stalenessS: Number.isNaN(seen) ? Infinity : Math.max(0, (now - seen) / 1000),
-      evicted: c.positionFromEnd === null || c.positionFromEnd === undefined,
-      brain: c.brain,
-    };
+    const s = stalenessOf(c, now);
     const cur = out.get(c.raptorNodeId);
-    // prefer a live (not evicted) entry, then the freshest
-    if (!cur || (cur.evicted && !s.evicted) || (cur.evicted === s.evicted && s.stalenessS < cur.stalenessS)) out.set(c.raptorNodeId, s);
+    if (!cur || preferred(s, cur)) out.set(c.raptorNodeId, s);
   }
   return out;
 }
