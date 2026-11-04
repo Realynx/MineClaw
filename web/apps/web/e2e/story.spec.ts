@@ -619,3 +619,244 @@ test('offline pawns say why and come back; a failed cut says why; full screen ke
   await expect(page.getByTestId('story-fullscreen')).toHaveAttribute('aria-pressed', 'false');
   await expect(bar).toBeVisible();
 });
+
+interface Preview {
+  count: number;
+  cells: number;
+  label: string | null;
+  top: number | null;
+  bottom: number | null;
+}
+const preview = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __story: { preview(): Preview | null } }).__story.preview());
+const blockIds = (page: Page, pts: number[][]) =>
+  page.evaluate(
+    (p) => (window as unknown as { __story: { blocks(p: number[][]): Promise<number[]> } }).__story.blocks(p),
+    pts,
+  );
+const PLANTS = new Set([6, 31, 32, 37, 38, 39, 40, 175, 78]);
+
+test('mine height: Surface designates one layer; Flatten here previews exactly what it sends', async ({ page }) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  // The tall grass and flowers east of the wheat (fixture island x 8..15, z -12..-8): plants on grass.
+  const x0 = 9,
+    z0 = -12;
+  await story(page, 'focus', x0 + 2, z0 + 2);
+  await story(page, 'setZoom', 40);
+  await page.waitForTimeout(800);
+  const lv = await story(page, 'level');
+
+  // Mine (M) starts in Surface: the sub-bar says so.
+  await page.keyboard.press('m');
+  const modes = page.getByTestId('height-modes');
+  await expect(modes.getByRole('radio', { name: /Surface/ })).toHaveAttribute('aria-checked', 'true');
+  await dragCells(page, [x0, lv, z0], [x0 + 4, lv, z0 + 4]);
+  const pv = (await preview(page))!;
+  expect(pv.label).toMatch(/^Mine \(Surface\): y \d+/);
+  const des = post(page, /\/designations$/);
+  await page.mouse.up();
+  const sent = body(await des) as { op: string; kind: string; blocks: number[][]; area?: unknown };
+  expect(sent).toMatchObject({ op: 'add', kind: 'mine' });
+  expect(sent.area).toBeUndefined(); // exact cells, never an area the director could expand deeper
+  expect(sent.blocks.length).toBe(pv.cells);
+  // One layer: per column exactly one block that isn't a plant, and nothing but air over the highest designated cell.
+  const ids = await blockIds(page, sent.blocks);
+  const above = await blockIds(
+    page,
+    [...new Set(sent.blocks.map((b) => `${b[0]},${b[2]}`))].map((k) => {
+      const [x, z] = k.split(',').map(Number) as [number, number];
+      const top = Math.max(...sent.blocks.filter((b) => b[0] === x && b[2] === z).map((b) => b[1]!));
+      return [x, top + 1, z];
+    }),
+  );
+  const solid = new Map<string, number>();
+  sent.blocks.forEach((b, i) => {
+    expect(ids[i]).toBeGreaterThan(0); // never air
+    if (!PLANTS.has(ids[i]!)) solid.set(`${b[0]},${b[2]}`, (solid.get(`${b[0]},${b[2]}`) ?? 0) + 1);
+  });
+  expect(solid.size).toBe(25);
+  expect([...solid.values()].every((n) => n === 1)).toBe(true);
+  expect(above.every((id) => id === 0 || PLANTS.has(id))).toBe(true);
+  await expect(page.getByTestId('story-toast')).toContainText(/Mine: \d+ blocks?/);
+
+  // Flatten here (4) to one below the lowest ground of a slope (x 16..19, z -12..-9): everything above that level in the box,
+  // the preview's count is what is sent, and the ground comes out flat at the level.
+  await page.keyboard.press('m');
+  await page.keyboard.press('4');
+  await expect(modes.getByRole('radio', { name: /Flatten here/ })).toHaveAttribute('aria-checked', 'true');
+  const box: Array<[number, number]> = [];
+  for (let x = 16; x <= 19; x++) for (let z = -12; z <= -9; z++) box.push([x, z]);
+  const tops = await Promise.all(
+    box.map(async ([x, z]) => {
+      const ids = await blockIds(page, Array.from({ length: 40 }, (_, i) => [x, 100 - i, z]));
+      return 100 - ids.findIndex((id) => id !== 0 && !PLANTS.has(id));
+    }),
+  );
+  const target = Math.min(...tops) - 1;
+  for (let l = lv; l !== target; l += l < target ? 1 : -1)
+    await page.keyboard.press(l < target ? 'Shift+PageUp' : 'Shift+PageDown');
+  await expect.poll(() => story(page, 'level')).toBe(target);
+  await expect(page.getByTestId('height-level')).toHaveText(`level y ${target} (PgUp / PgDn)`);
+  await story(page, 'focus', 17, -10);
+  await page.waitForTimeout(500);
+  await dragCells(page, [16, target, -12], [19, target, -9]);
+  const fp = (await preview(page))!;
+  expect(fp.label).toMatch(/^Mine \(Flatten here\): y \d+ → \d+ · \d+ layers? · \d+ blocks?$/);
+  expect(fp.bottom).toBe(target + 1);
+  expect(fp.cells).toBeGreaterThanOrEqual(tops.reduce((n, t) => n + (t - target), 0));
+  const flat = post(page, /\/designations$/);
+  await page.mouse.up();
+  const fb = body(await flat) as { blocks: number[][] };
+  expect(fb.blocks.length).toBe(fp.cells);
+  expect(fb.blocks.every((b) => b[1]! > target)).toBe(true);
+  if (shots) await page.screenshot({ path: `${shots}/story-flatten.png` });
+});
+
+test('a drag is cancelled by Esc or a right-click: nothing is sent, the tool stays', async ({ page }) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const posts: Request[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/api\/story\//.test(new URL(r.url()).pathname)) posts.push(r);
+  });
+  const c = await story(page, 'center');
+  const lv = await story(page, 'level');
+  const a: [number, number, number] = [Math.floor(c[0]) - 3, lv, Math.floor(c[2]) - 3];
+  const b: [number, number, number] = [Math.floor(c[0]) + 3, lv, Math.floor(c[2]) + 3];
+
+  // Esc while dragging a mine box: the preview goes, the release does nothing, the tool stays.
+  await page.keyboard.press('m');
+  await dragCells(page, a, b);
+  expect(await preview(page)).not.toBeNull();
+  await page.keyboard.press('Escape');
+  expect(await preview(page)).toBeNull();
+  await page.mouse.up();
+  await expect(page.getByTestId('story-toast')).toHaveText('Cancelled');
+  await expect(page.getByTestId('tool-options')).toContainText('Mine');
+
+  // A right-click during a zone drag: the same, and the right-click doesn't put the tool down either.
+  await page.keyboard.press('Escape'); // the tool
+  await page.keyboard.press('c'); // chop: a designate tool again
+  await dragCells(page, a, b);
+  expect(await preview(page)).not.toBeNull();
+  await page.mouse.down({ button: 'right' });
+  expect(await preview(page)).toBeNull(); // cancelled on the press
+  await page.mouse.up({ button: 'right' });
+  await page.mouse.up();
+  await expect(page.getByTestId('order-menu')).toHaveCount(0);
+  await expect(page.getByTestId('tool-options')).toContainText('Chop wood');
+
+  // A click (no drag) where there is nothing to act on designates nothing (the cancel tool over no designations).
+  await page.keyboard.press('z');
+  const pa = (await story(page, 'toPage', c[0] + 0.5, lv + 1, c[2] + 0.5))!;
+  await page.mouse.click(pa.x, pa.y);
+  await expect(page.getByTestId('tool-options')).toContainText('Cancel');
+
+  // Esc during a formation line (drafted pawns, right-drag): no move orders, no menu.
+  await page.keyboard.press('Escape');
+  const bar = page.getByTestId('colonist-bar');
+  const names = await bar
+    .locator('[data-kind="pawn"]')
+    .evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.portrait!));
+  await bar.locator(`[data-portrait="${names[0]}"]`).click();
+  await page.mouse.move(700, 500);
+  await page.keyboard.press('r');
+  await expect(bar.locator('[data-kind="pawn"][data-drafted="true"]')).toHaveCount(1);
+  const drafted = posts.length;
+  const p1 = (await story(page, 'toPage', a[0] + 0.5, lv + 1, b[2] + 0.5))!;
+  const p2 = (await story(page, 'toPage', b[0] + 0.5, lv + 1, b[2] + 0.5))!;
+  await page.mouse.move(p1.x, p1.y);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(p2.x, p2.y, { steps: 6 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up({ button: 'right' });
+  await page.waitForTimeout(1000);
+  await expect(page.getByTestId('order-menu')).toHaveCount(0);
+  expect(posts.slice(drafted).map((r) => new URL(r.url()).pathname)).toEqual([]);
+  // Nothing but the draft was ever sent.
+  expect(posts.map((r) => new URL(r.url()).pathname).filter((p) => !/\/draft$/.test(p))).toEqual([]);
+});
+
+test('story map frame rate and main-thread time on software WebGL (10 pawns, hundreds of designations)', async ({
+  page,
+}) => {
+  test.skip(!process.env.STORY_PERF, 'set STORY_PERF=1 to measure');
+  test.setTimeout(240_000);
+  await page.addInitScript(() => sessionStorage.setItem('mcx-mock-story', 'busy'));
+  await signIn(page, false);
+  await openStory(page);
+  await expect(page.getByTestId('colonist-bar').locator('[data-kind="pawn"]')).toHaveCount(10);
+  await page.waitForTimeout(3000);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const metrics = async () => {
+    const { metrics: m } = await cdp.send('Performance.getMetrics');
+    return Object.fromEntries(m.map((x) => [x.name, x.value]));
+  };
+  const out: Record<string, unknown> = {};
+  const measure = async (label: string, act: () => Promise<void>) => {
+    await page.evaluate(() => {
+      const w = window as unknown as { __frames: number[]; __run: number };
+      const run = (w.__run = (w.__run ?? 0) + 1);
+      w.__frames = [];
+      const tick = (t: number) => {
+        if (w.__run !== run) return;
+        w.__frames.push(t);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const a = await metrics();
+    const t0 = Date.now();
+    await act();
+    const secs = (Date.now() - t0) / 1000;
+    const b = await metrics();
+    const f = await page.evaluate(() => (window as unknown as { __frames: number[] }).__frames);
+    const gaps = f
+      .slice(1)
+      .map((t, i) => t - f[i]!)
+      .sort((x, y) => x - y);
+    const per = (k: string) => Math.round(((b[k]! - a[k]!) * 1000) / secs);
+    out[label] = {
+      fps: Math.round((f.length - 1) / ((f[f.length - 1]! - f[0]!) / 1000)),
+      frameP95: Math.round(gaps[Math.floor(gaps.length * 0.95)] ?? NaN),
+      // main-thread milliseconds per second of wall time
+      taskMsPerS: per('TaskDuration'),
+      scriptMsPerS: per('ScriptDuration'),
+      layoutMsPerS: per('LayoutDuration'),
+      styleMsPerS: per('RecalcStyleDuration'),
+    };
+  };
+  await page.mouse.move(720, 450);
+  // STORY_PROFILE=<file> also saves a CPU profile of the idle and panning phases (chrome://inspect → Performance can load it).
+  const profile = process.env.STORY_PROFILE;
+  if (profile) {
+    await cdp.send('Profiler.enable');
+    await cdp.send('Profiler.setSamplingInterval', { interval: 200 });
+    await cdp.send('Profiler.start');
+  }
+  await measure('idle', () => page.waitForTimeout(6000));
+  await measure('panning', async () => {
+    for (const k of ['d', 's', 'a', 'w']) {
+      await page.keyboard.down(k);
+      await page.waitForTimeout(1500);
+      await page.keyboard.up(k);
+    }
+  });
+  if (profile) {
+    const { profile: p } = (await cdp.send('Profiler.stop')) as { profile: unknown };
+    const fs = await import('node:fs');
+    fs.writeFileSync(profile, JSON.stringify(p));
+  }
+  const failed = await story(page, 'failed');
+  out.failed = failed.length;
+  const cell = failed[0]!.cell!;
+  await story(page, 'focus', cell[0], cell[2]);
+  await story(page, 'setZoom', 24);
+  await page.waitForTimeout(800);
+  await measure('labels', () => page.waitForTimeout(5000));
+  console.warn(`STORY_PERF ${JSON.stringify(out)}`);
+});

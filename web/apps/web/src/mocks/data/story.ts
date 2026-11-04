@@ -133,6 +133,35 @@ export function startStory(emit: (event: string, data: unknown) => void): void {
   }, 500);
 }
 
+function busy(): boolean {
+  try {
+    return sessionStorage.getItem('mcx-mock-story') === 'busy';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The perf seed (`sessionStorage['mcx-mock-story'] = 'busy'`, the Story perf e2e): ten pawns and a few hundred designations
+ * the way a live colony has them: a surface mine over the camp (one per column), every plant cut, the trees chopped, and a
+ * band of failed ones with three reasons (labelled clusters on the map).
+ */
+function seedBusy(): void {
+  const { id } = storySim.create({ name: 'Busy', pawns: 10 });
+  const blocks: Array<[number, number, number]> = [];
+  for (let x = -16; x <= 16; x++) for (let z = -16; z <= 16; z++) if ((x + z) % 3 !== 0) blocks.push([x, surface(x, z), z]);
+  storySim.designations(id, { op: 'add', kind: 'mine', blocks: blocks.slice(0, 600) });
+  storySim.designations(id, { op: 'add', kind: 'cut', area: [-20, 50, -20, 20, 90, 20] });
+  storySim.designations(id, { op: 'add', kind: 'chop', area: [-20, 50, -20, 20, 90, 20] });
+  const ids = (storySim.state(id).designations ?? []).filter((d) => d.kind === 'mine').map((d) => d.id);
+  const reasons = [
+    "can't reach dirt at the bottom of the pit",
+    'reported done, but the grass is still there',
+    "won't dig: someone is standing on it",
+  ];
+  reasons.forEach((r, i) => storySim.failDesignations(id, ids.slice(i * 40, i * 40 + 40), r));
+}
+
 /** The e2e and the screenshots can start from no colony (`sessionStorage['mcx-mock-story'] = 'empty'`). */
 export function seedStory(): void {
   let empty = false;
@@ -142,6 +171,7 @@ export function seedStory(): void {
     /* node */
   }
   if (empty || storySim.colonies.size > 0) return;
+  if (busy()) return seedBusy();
   const { id } = storySim.create({ name: 'Hollow', pawns: 5 });
   // A lived-in start: one tree marked, the chests in use, a bill at the bench, a small shed queued.
   storySim.designations(id, { op: 'add', kind: 'chop', area: [-10, 50, -4, -6, 90, 0] });

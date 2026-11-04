@@ -72,8 +72,11 @@ import {
 } from './StoryPanels';
 import {
   buildItem,
+  cellsArea,
   clampHeight,
+  clampLayers,
   contextMenu,
+  DEFAULT_HEIGHT,
   countLabel,
   designBlocks,
   designationBody,
@@ -81,8 +84,13 @@ import {
   designCells,
   designItems,
   DESIGNATE_TOOLS,
+  hasHeight,
+  heightBody,
+  HEIGHT_MODES,
+  MAX_DRAG_CELLS,
   placeDesign,
   keyAction,
+  releaseIsNoop,
   levelCutY,
   nextLevel,
   orderBody,
@@ -92,6 +100,7 @@ import {
   toolArea,
   toolYRange,
   type BuildOpts,
+  type HeightMode,
   type MenuItem,
   type Target,
 } from './tools';
@@ -152,6 +161,11 @@ export function StoryMode() {
     material: 'oak_planks',
   });
   const [mineFilter, setMineFilter] = useState<'all' | 'ores' | 'stone' | 'soil'>('all');
+  /** How deep Mine and Deconstruct drags go (each tool keeps its own mode), and the Layers count. */
+  const [heightModes, setHeightModes] = useState<Record<'mine' | 'deconstruct', HeightMode>>({ ...DEFAULT_HEIGHT });
+  const [layers, setLayers] = useState(2);
+  const heightTool = tool.kind === 'designate' && hasHeight(tool.id) ? tool.id : null;
+  const heightMode: HeightMode = heightTool ? heightModes[heightTool] : 'surface';
   // Before a colony exists, the floor under the main bot the map settled over.
   const [settledY, setSettledY] = useState<number | null>(null);
   const ground = state?.home?.[1] ?? settledY ?? 64;
@@ -298,7 +312,34 @@ export function StoryMode() {
   };
 
   const onTool = async (r: DragResult, shift: boolean) => {
+    // A click (under the drag threshold) paints no zone, and a box with nothing in it designates nothing: no request, the tool stays.
+    const kind =
+      tool.kind === 'designate' || tool.kind === 'zone' || tool.kind === 'storage' ? tool.kind : ('other' as const);
+    if (releaseIsNoop(kind, r.moved ?? true, r.count)) {
+      if (tool.kind === 'designate' && r.moved) {
+        const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+        say(`${t.label}: nothing ${hasHeight(tool.id) ? 'at that height ' : ''}in the box`, 'warn');
+      }
+      return;
+    }
+    if (tool.kind === 'designate' && r.height?.tooMany) {
+      say(`Too many blocks (max ${MAX_DRAG_CELLS}): drag a smaller box or a shallower mode`, 'warn');
+      return;
+    }
     if (!shift) setTool({ kind: 'select' });
+    if (tool.kind === 'designate' && hasHeight(tool.id) && r.height) {
+      // Exactly the cells the preview showed (its height mode), as blocks: the director never expands them deeper.
+      const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+      const area = cellsArea(r.height.cells, toolArea(r.rect, [lv, lv]));
+      const body = heightBody(tool.id, r.height.cells, mineFilter);
+      await run(
+        { route: 'story.designations', body },
+        designationDirective(tool.id, area, r.height.cells, mineFilter),
+        'designated',
+        (out) => countLabel(t, (out as { count?: number } | null)?.count ?? r.count),
+      );
+      return;
+    }
     if (tool.kind === 'designate') {
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
       const area = toolArea(r.rect, toolYRange(tool.id, lv, build.height, cutY));
@@ -505,9 +546,20 @@ export function StoryMode() {
         e.preventDefault();
         return;
       }
-      const a = keyAction(e, tool.kind === 'build');
+      const a = keyAction(e, tool.kind === 'build', heightTool !== null);
       if (!a) return;
       e.preventDefault();
+      if (a.startsWith('height:') && heightTool) {
+        const m = a.slice(7) as HeightMode;
+        setHeightModes((cur) => ({ ...cur, [heightTool]: m }));
+        say(`${HEIGHT_MODES.find((h) => h.id === m)!.label}${m === 'layers' ? `: ${layers}` : ''}`);
+        return;
+      }
+      if (a === 'layersUp' || a === 'layersDown') {
+        setLayers((n) => clampLayers(n + (a === 'layersUp' ? 1 : -1)));
+        if (heightTool) setHeightModes((cur) => ({ ...cur, [heightTool]: 'layers' }));
+        return;
+      }
       if (a === 'draft') {
         // R toggles; a second press before the state caught up flips the last request rather than re-reading old state.
         const key = [...split.pawns].sort().join(',');
@@ -520,6 +572,11 @@ export function StoryMode() {
         void draft(split.pawns, anyUndrafted);
       } else if (a === 'pause') togglePause();
       else if (a === 'escape') {
+        // A drag in progress is cancelled first (nothing happens on release); the key goes no further.
+        if (map.current?.cancelDrag()) {
+          e.stopPropagation();
+          return;
+        }
         if (picking.current) {
           picking.current(null);
           picking.current = null;
@@ -566,6 +623,9 @@ export function StoryMode() {
     };
   }, [
     tool,
+    heightTool,
+    say,
+    layers,
     split,
     state,
     menu,
@@ -905,6 +965,8 @@ export function StoryMode() {
             tool={tool}
             build={build}
             mineFilter={mineFilter}
+            heightMode={heightMode}
+            layers={layers}
             level={lv}
             cutY={cutY}
             view={view}
@@ -912,7 +974,7 @@ export function StoryMode() {
             home={(state?.home as V3 | undefined) ?? null}
             settle={noColony}
             player={me.player ?? null}
-            onCentre={setCentre}
+            onCentre={noColony || tab === 'colony' ? setCentre : undefined}
             onSettled={setSettledY}
             onSelect={onSelect}
             onSelectSame={(kind, visible) =>
@@ -927,6 +989,7 @@ export function StoryMode() {
             onContext={onContext}
             onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
             onDropTool={() => setTool({ kind: 'select' })}
+            onCancelled={() => say('Cancelled')}
           />
         </WorldHost>
 
@@ -1007,6 +1070,11 @@ export function StoryMode() {
               onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
               mineFilter={mineFilter}
               onMineFilter={setMineFilter}
+              heightMode={heightMode}
+              onHeightMode={(m) => heightTool && setHeightModes((cur) => ({ ...cur, [heightTool]: m }))}
+              layers={layers}
+              onLayers={(n) => setLayers(clampLayers(n))}
+              level={lv}
               stock={stock}
               onClose={() => setTool({ kind: 'select' })}
             />

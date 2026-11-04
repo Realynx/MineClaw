@@ -34,6 +34,9 @@ export interface MeshHost {
   blocksAt(dim: number, pts: number[]): Promise<number[]>;
   /** [scan] Blocks of a box whose id is in `ids` (every non-air block when empty): [x, y, z, id, meta, below-id, …]. */
   scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number): Promise<number[]>;
+  /** [stacks] Per column of the box, its top (highest block not air nor in `skip`) and the blocks from `above` cells over it
+   * down to `depth` cells deep (never below the box): [x, y, z, id, meta, below-id, …], air left out. */
+  stacks(dim: number, min: V3, max: V3, skip: number[], depth: number, above?: number, maxHits?: number): Promise<number[]>;
   clear(): Promise<void>;
   dispose(): void;
 }
@@ -59,6 +62,7 @@ export class InlineMeshHost implements MeshHost {
   lights(dim: number, pts: number[]) { return this.run(() => this.engine.lights(dim, pts)); }
   blocksAt(dim: number, pts: number[]) { return this.run(() => this.engine.blocksAt(dim, pts)); }
   scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number) { return this.run(() => this.engine.scan(dim, min, max, ids, maxHits)); }
+  stacks(dim: number, min: V3, max: V3, skip: number[], depth: number, above?: number, maxHits?: number) { return this.run(() => this.engine.stacks(dim, min, max, skip, depth, above, maxHits)); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.run(() => this.engine.setBlockEntities(dim, cols)); }
   clear() { return this.run(() => this.engine.clear()); }
   dispose(): void {
@@ -112,6 +116,7 @@ export class WorkerMeshHost implements MeshHost {
   lights(dim: number, pts: number[]) { return this.send<number[]>({ op: 'lights', dim, pts }); }
   blocksAt(dim: number, pts: number[]) { return this.send<number[]>({ op: 'blocksAt', dim, pts }); }
   scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number) { return this.send<number[]>({ op: 'scan', dim, min, max, ids, maxHits }); }
+  stacks(dim: number, min: V3, max: V3, skip: number[], depth: number, above?: number, maxHits?: number) { return this.send<number[]>({ op: 'stacks', dim, min, max, skip, depth, above, maxHits }); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.send<Dirty>({ op: 'blockEntities', dim, cols }); }
   clear() { return this.send<void>({ op: 'clear' }); }
 
