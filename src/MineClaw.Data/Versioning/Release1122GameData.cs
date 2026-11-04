@@ -313,24 +313,29 @@ public static class Release1122Dig
         var tool = Release1122GameData.ToolOf(item.Name);
         float eff = Efficiency(Release1122GameData.Tier(item.Name));
         string n = block.Name;
-        switch (tool)
+        return tool switch
         {
-            case ToolType.Pickaxe:
-                return block.HarvestTools.Overlaps(Pickaxes) || Array.IndexOf(PickaxeOn, n) >= 0 ? eff : 1f;
-            case ToolType.Axe:
-                return block.Category == "wood" || block.Category == "plant" && !NotPlantsOrVine.Contains(n) || Array.IndexOf(AxeOn, n) >= 0 ? eff : 1f;
-            case ToolType.Shovel:
-                return Array.IndexOf(ShovelOn, n) >= 0 ? eff : 1f;
-            case ToolType.Sword:
-                if (n == "web") return 15f;
-                return block.Category == "plant" && n != "cactus" ? 1.5f : 1f;
-            case ToolType.Shears:
-                if (n is "web" or "leaves" or "leaves2") return 15f;
-                return n == "wool" ? 5f : 1f;
-            default:
-                return 1f;
-        }
+            ToolType.Pickaxe => PickaxeSpeed(block, n, eff),
+            ToolType.Axe => AxeSpeed(block, n, eff),
+            ToolType.Shovel => ShovelSpeed(n, eff),
+            ToolType.Sword => SwordSpeed(block, n),
+            ToolType.Shears => ShearsSpeed(n),
+            _ => 1f,
+        };
     }
+
+    private static float PickaxeSpeed(Release1122GameData.McBlock block, string n, float eff) =>
+        block.HarvestTools.Overlaps(Pickaxes) || Array.IndexOf(PickaxeOn, n) >= 0 ? eff : 1f;
+
+    private static float ShovelSpeed(string n, float eff) => Array.IndexOf(ShovelOn, n) >= 0 ? eff : 1f;
+
+    private static float AxeSpeed(Release1122GameData.McBlock block, string n, float eff) =>
+        block.Category == "wood" || block.Category == "plant" && !NotPlantsOrVine.Contains(n) || Array.IndexOf(AxeOn, n) >= 0 ? eff : 1f;
+
+    private static float SwordSpeed(Release1122GameData.McBlock block, string n) =>
+        n == "web" ? 15f : block.Category == "plant" && n != "cactus" ? 1.5f : 1f;
+
+    private static float ShearsSpeed(string n) => n is "web" or "leaves" or "leaves2" ? 15f : n == "wool" ? 5f : 1f;
 
     /// <summary>Dig progress per tick (<c>getPlayerRelativeBlockHardness</c>); 0 = unbreakable, +∞ = instant (hardness 0).</summary>
     public static float RelativeHardness(Release1122GameData d, in DigInput input)
@@ -340,18 +345,30 @@ public static class Release1122Dig
         float hardness = block.Hardness;
         if (hardness < 0f) return 0f;
         int held = input.Held.IsEmpty ? -1 : input.Held.Id;
-        float f = DestroySpeed(d, input.BlockId, held);
-        if (f > 1f)
-        {
-            int eff = input.Held.Tag?.EnchantmentLevel(EfficiencyEnchantment) ?? 0;
-            if (eff > 0 && !input.Held.IsEmpty) f += eff * eff + 1;
-        }
-        if (input.Haste > 0) f *= 1f + input.Haste * 0.2f;
-        if (input.Fatigue > 0) f *= input.Fatigue switch { 1 => 0.3f, 2 => 0.09f, 3 => 0.0027f, _ => 8.1E-4f };
-        if (input.InWater && !input.AquaAffinity) f /= 5f;
-        if (!input.OnGround) f /= 5f;
+        float f = DigSpeed(d, in input, held);
         return d.CanHarvest(input.BlockId, held) ? f / hardness / 30f : f / hardness / 100f;
     }
+
+    /// <summary><c>EntityPlayer.getDigSpeed</c>: the held stack's speed, its efficiency, haste, mining fatigue, water and air.</summary>
+    private static float DigSpeed(Release1122GameData d, in DigInput input, int held)
+    {
+        float f = DestroySpeed(d, input.BlockId, held);
+        if (f > 1f) f += EfficiencyBonus(in input);
+        if (input.Haste > 0) f *= 1f + input.Haste * 0.2f;
+        if (input.Fatigue > 0) f *= FatigueFactor(input.Fatigue);
+        if (input.InWater && !input.AquaAffinity) f /= 5f;
+        if (!input.OnGround) f /= 5f;
+        return f;
+    }
+
+    /// <summary>Efficiency n on the held stack adds n² + 1 (0 = none).</summary>
+    private static int EfficiencyBonus(in DigInput input)
+    {
+        int eff = input.Held.Tag?.EnchantmentLevel(EfficiencyEnchantment) ?? 0;
+        return eff > 0 && !input.Held.IsEmpty ? eff * eff + 1 : 0;
+    }
+
+    private static float FatigueFactor(int fatigue) => fatigue switch { 1 => 0.3f, 2 => 0.09f, 3 => 0.0027f, _ => 8.1E-4f };
 
     /// <summary>Ticks until the float accumulation reaches 1 (0 = breaks on the first hit, <see cref="int.MaxValue"/> = never).</summary>
     public static int Ticks(float perTick)

@@ -62,27 +62,29 @@ public static class Tools
         if (!RequiresTool(blockId)) return true;
         if (heldItemId <= 0) return false;
         var item = Items.GetB(heldItemId);
-        switch (item.Tool)
+        return item.Tool switch
         {
-            case ToolType.Pickaxe:
-            {
-                int lvl = HarvestLevel(item.ToolTier);
-                return blockId switch
-                {
-                    Blocks.Obsidian => lvl == 3,
-                    Blocks.DiamondBlock or Blocks.DiamondOre => lvl >= 2,
-                    Blocks.GoldBlock or Blocks.GoldOre => lvl >= 2,
-                    Blocks.IronBlock or Blocks.IronOre => lvl >= 1,
-                    Blocks.LapisBlock or Blocks.LapisOre => lvl >= 1,
-                    Blocks.RedstoneOre or Blocks.LitRedstoneOre => lvl >= 2,
-                    Blocks.SnowLayer or Blocks.SnowBlock or Blocks.Web => false,
-                    _ => true, // any rock or iron material
-                };
-            }
-            case ToolType.Shovel: return blockId is Blocks.SnowLayer or Blocks.SnowBlock;
-            case ToolType.Sword: case ToolType.Shears: return blockId == Blocks.Web;
-            default: return false;
-        }
+            ToolType.Pickaxe => PickaxeHarvests(blockId, HarvestLevel(item.ToolTier)),
+            ToolType.Shovel => blockId is Blocks.SnowLayer or Blocks.SnowBlock,
+            ToolType.Sword or ToolType.Shears => blockId == Blocks.Web,
+            _ => false,
+        };
+    }
+
+    /// <summary>The harvest level an ore or storage block needs from a pickaxe (any other rock or iron material: any pickaxe).</summary>
+    private static readonly Dictionary<int, int> PickaxeLevelNeeded = new()
+    {
+        [Blocks.DiamondBlock] = 2, [Blocks.DiamondOre] = 2, [Blocks.GoldBlock] = 2, [Blocks.GoldOre] = 2,
+        [Blocks.IronBlock] = 1, [Blocks.IronOre] = 1, [Blocks.LapisBlock] = 1, [Blocks.LapisOre] = 1,
+        [Blocks.RedstoneOre] = 2, [Blocks.LitRedstoneOre] = 2,
+    };
+
+    /// <summary>A pickaxe of harvest level <paramref name="lvl"/>: obsidian takes diamond, snow and cobweb never drop for it.</summary>
+    private static bool PickaxeHarvests(int blockId, int lvl)
+    {
+        if (blockId == Blocks.Obsidian) return lvl == 3;
+        if (blockId is Blocks.SnowLayer or Blocks.SnowBlock or Blocks.Web) return false;
+        return !PickaxeLevelNeeded.TryGetValue(blockId, out int need) || lvl >= need;
     }
 
     /// <summary>The held item's speed multiplier against the block (1.0 = bare hand).</summary>
@@ -92,14 +94,20 @@ public static class Tools
         var item = Items.GetB(heldItemId);
         return item.Tool switch
         {
-            ToolType.Pickaxe => PickaxeEffective.Contains(blockId) ? Efficiency(item.ToolTier) : 1f,
-            ToolType.Shovel => ShovelEffective.Contains(blockId) ? Efficiency(item.ToolTier) : 1f,
-            ToolType.Axe => AxeEffective.Contains(blockId) ? Efficiency(item.ToolTier) : 1f,
+            ToolType.Pickaxe => EffectiveSpeed(PickaxeEffective, blockId, item.ToolTier),
+            ToolType.Shovel => EffectiveSpeed(ShovelEffective, blockId, item.ToolTier),
+            ToolType.Axe => EffectiveSpeed(AxeEffective, blockId, item.ToolTier),
             ToolType.Sword => blockId == Blocks.Web ? 15f : 1.5f,
-            ToolType.Shears => blockId is Blocks.Web or Blocks.Leaves ? 15f : blockId == Blocks.Wool ? 5f : 1f,
+            ToolType.Shears => ShearsSpeed(blockId),
             _ => 1f,
         };
     }
+
+    private static float EffectiveSpeed(IReadOnlySet<int> effectiveOn, int blockId, int tier) =>
+        effectiveOn.Contains(blockId) ? Efficiency(tier) : 1f;
+
+    private static float ShearsSpeed(int blockId) =>
+        blockId is Blocks.Web or Blocks.Leaves ? 15f : blockId == Blocks.Wool ? 5f : 1f;
 
     /// <summary>Dig progress added per tick (Block.blockStrength). 0 for unbreakable blocks and liquids; +∞ for hardness 0.</summary>
     public static float DigProgressPerTick(int blockId, int heldItemId, bool onGround = true, bool inWater = false)

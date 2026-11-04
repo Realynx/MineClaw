@@ -113,10 +113,52 @@ public static partial class Items
 
     internal static string VariantNameB(int id, int meta)
     {
-        bool variant = id is Blocks.Slab or Blocks.Wool or Blocks.Log or Blocks.Leaves or Blocks.Sapling or Blocks.StoneBricks
-            or Blocks.TallGrass or Dye or Coal;
-        if (!variant) return ExistsB(id) ? GetB(id).Name : Blocks.GetB(id).Name;
+        if (!BetaTables.VariantNamed.Contains(id)) return ExistsB(id) ? GetB(id).Name : Blocks.GetB(id).Name;
         return DisplayNameB(id, meta).ToLowerInvariant().Replace(' ', '_');
+    }
+
+    /// <summary>The b1.8.1 lookup tables of the variant names, foods and item forms (a nested class: built on first use, whatever
+    /// order this partial class's own fields initialize in).</summary>
+    private static class BetaTables
+    {
+        /// <summary>The ids whose snake-case name keeps the variant.</summary>
+        public static readonly HashSet<int> VariantNamed =
+            [Blocks.Slab, Blocks.Wool, Blocks.Log, Blocks.Leaves, Blocks.Sapling, Blocks.StoneBricks, Blocks.TallGrass, Dye, Coal];
+
+        /// <summary>The display name of each variant id by its meta (never negative).</summary>
+        public static readonly Dictionary<int, Func<int, string>> VariantDisplayNames = new()
+        {
+            [Blocks.Wool] = m => $"{WoolColors[m & 15]} Wool",
+            [Dye] = m => DyeNames[m & 15],
+            [Coal] = m => m == 1 ? "Charcoal" : "Coal",
+            [Blocks.Log] = m => (m & 3) switch { 1 => "Spruce Wood", 2 => "Birch Wood", _ => "Oak Wood" },
+            [Blocks.Leaves] = m => $"{WoodTypes[Math.Min(m & 3, 2)]} Leaves",
+            [Blocks.Sapling] = m => $"{WoodTypes[Math.Min(m & 3, 2)]} Sapling",
+            [Blocks.Slab] = m => $"{SlabTypes[Math.Min(m & 7, 5)]} Slab",
+            [Blocks.DoubleSlab] = m => $"{SlabTypes[Math.Min(m & 7, 5)]} Double Slab",
+            [Blocks.TallGrass] = m => (m & 3) switch { 0 => "Dead Shrub", 2 => "Fern", _ => "Tall Grass" },
+            [Blocks.StoneBricks] = m => (m & 3) switch { 1 => "Mossy Stone Bricks", 2 => "Cracked Stone Bricks", _ => "Stone Bricks" },
+            [Blocks.MonsterEgg] = m => (m & 3) switch { 1 => "Silverfish Cobblestone", 2 => "Silverfish Stone Bricks", _ => "Silverfish Stone" },
+        };
+
+        public static readonly Dictionary<int, (int Hunger, float Saturation)> Foods = new()
+        {
+            [Apple] = (4, 0.3f), [MushroomStew] = (8, 0.6f), [Bread] = (5, 0.6f), [Porkchop] = (3, 0.3f), [CookedPorkchop] = (8, 0.8f),
+            [GoldenApple] = (10, 1.2f), [RawFish] = (2, 0.3f), [CookedFish] = (5, 0.6f), [Cookie] = (1, 0.1f), [MelonSlice] = (2, 0.3f),
+            [RawBeef] = (3, 0.3f), [Steak] = (8, 0.8f), [RawChicken] = (2, 0.3f), [CookedChicken] = (6, 0.6f), [RottenFlesh] = (4, 0.1f),
+        };
+
+        /// <summary>Placed-only blocks and the item they come from.</summary>
+        public static readonly Dictionary<int, int> ItemForms = new()
+        {
+            [Blocks.FlowingWater] = WaterBucket, [Blocks.Water] = WaterBucket,
+            [Blocks.FlowingLava] = LavaBucket, [Blocks.Lava] = LavaBucket,
+            [Blocks.Bed] = Bed, [Blocks.RedstoneWire] = Redstone, [Blocks.Crops] = Seeds, [Blocks.LitFurnace] = Blocks.Furnace,
+            [Blocks.SignPost] = Sign, [Blocks.WallSign] = Sign, [Blocks.WoodenDoor] = WoodenDoor, [Blocks.IronDoor] = IronDoor,
+            [Blocks.LitRedstoneOre] = Blocks.RedstoneOre, [Blocks.RedstoneTorchOff] = Blocks.RedstoneTorch,
+            [Blocks.SugarCane] = SugarCane, [Blocks.Cake] = Cake, [Blocks.RepeaterOff] = Repeater, [Blocks.RepeaterOn] = Repeater,
+            [Blocks.PumpkinStem] = PumpkinSeeds, [Blocks.MelonStem] = MelonSeeds, [Blocks.Grass] = Blocks.Dirt,
+        };
     }
 
     public static bool IsTool(int id) => Get(id).Tool != ToolType.None;
@@ -141,20 +183,7 @@ public static partial class Items
     {
         if (id <= 0) return id == 0 ? "Air" : "(empty)";
         int m = damage < 0 ? 0 : damage;
-        switch (id)
-        {
-            case Blocks.Wool: return $"{WoolColors[m & 15]} Wool";
-            case Dye: return DyeNames[m & 15];
-            case Coal: return m == 1 ? "Charcoal" : "Coal";
-            case Blocks.Log: return (m & 3) switch { 1 => "Spruce Wood", 2 => "Birch Wood", _ => "Oak Wood" };
-            case Blocks.Leaves: return $"{WoodTypes[Math.Min(m & 3, 2)]} Leaves";
-            case Blocks.Sapling: return $"{WoodTypes[Math.Min(m & 3, 2)]} Sapling";
-            case Blocks.Slab: case Blocks.DoubleSlab:
-                return $"{SlabTypes[Math.Min(m & 7, 5)]} {(id == Blocks.Slab ? "Slab" : "Double Slab")}";
-            case Blocks.TallGrass: return (m & 3) switch { 0 => "Dead Shrub", 2 => "Fern", _ => "Tall Grass" };
-            case Blocks.StoneBricks: return (m & 3) switch { 1 => "Mossy Stone Bricks", 2 => "Cracked Stone Bricks", _ => "Stone Bricks" };
-            case Blocks.MonsterEgg: return (m & 3) switch { 1 => "Silverfish Cobblestone", 2 => "Silverfish Stone Bricks", _ => "Silverfish Stone" };
-        }
+        if (BetaTables.VariantDisplayNames.TryGetValue(id, out var variantName)) return variantName(m);
         if (id < 256 && !_byId.ContainsKey(id)) return Blocks.GetB(id).DisplayName;
         var info = GetB(id);
         if (info.MaxDamage > 0 && damage > 0) return $"{info.DisplayName} ({info.MaxDamage - damage}/{info.MaxDamage})";
@@ -167,13 +196,7 @@ public static partial class Items
     /// <summary>Food value of an item variant (1.12.2 fish types differ: salmon, clownfish, pufferfish).</summary>
     public static (int Hunger, float Saturation)? Food(int id, int damage) => Versioning.GameData.IsBeta(out var d) ? FoodB(id) : d.Food(id, damage);
 
-    internal static (int Hunger, float Saturation)? FoodB(int id) => id switch
-    {
-        Apple => (4, 0.3f), MushroomStew => (8, 0.6f), Bread => (5, 0.6f), Porkchop => (3, 0.3f), CookedPorkchop => (8, 0.8f),
-        GoldenApple => (10, 1.2f), RawFish => (2, 0.3f), CookedFish => (5, 0.6f), Cookie => (1, 0.1f), MelonSlice => (2, 0.3f),
-        RawBeef => (3, 0.3f), Steak => (8, 0.8f), RawChicken => (2, 0.3f), CookedChicken => (6, 0.6f), RottenFlesh => (4, 0.1f),
-        _ => null,
-    };
+    internal static (int Hunger, float Saturation)? FoodB(int id) => BetaTables.Foods.TryGetValue(id, out var food) ? food : null;
 
     /// <summary>Foods with a chance of the Hunger effect: raw chicken 30%, rotten flesh 80%.</summary>
     public static float FoodPoisonChance(int id) => Versioning.GameData.IsBeta(out var d) ? FoodPoisonChanceB(id) : d.FoodPoisonChance(id);
@@ -181,17 +204,7 @@ public static partial class Items
     internal static float FoodPoisonChanceB(int id) => id switch { RawChicken => 0.3f, RottenFlesh => 0.8f, _ => 0f };
 
     /// <summary>Block ids that are not obtainable as an item in b1.8.1 (placed-only forms). Their item form is listed alongside.</summary>
-    public static int ItemFormOf(int blockId) => blockId switch
-    {
-        Blocks.FlowingWater or Blocks.Water => WaterBucket,
-        Blocks.FlowingLava or Blocks.Lava => LavaBucket,
-        Blocks.Bed => Bed, Blocks.RedstoneWire => Redstone, Blocks.Crops => Seeds, Blocks.LitFurnace => Blocks.Furnace,
-        Blocks.SignPost or Blocks.WallSign => Sign, Blocks.WoodenDoor => WoodenDoor, Blocks.IronDoor => IronDoor,
-        Blocks.LitRedstoneOre => Blocks.RedstoneOre, Blocks.RedstoneTorchOff => Blocks.RedstoneTorch,
-        Blocks.SugarCane => SugarCane, Blocks.Cake => Cake, Blocks.RepeaterOff or Blocks.RepeaterOn => Repeater,
-        Blocks.PumpkinStem => PumpkinSeeds, Blocks.MelonStem => MelonSeeds, Blocks.Grass => Blocks.Dirt,
-        _ => blockId,
-    };
+    public static int ItemFormOf(int blockId) => BetaTables.ItemForms.GetValueOrDefault(blockId, blockId);
 
     private static readonly HashSet<int> NonItemBlocks =
     [

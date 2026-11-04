@@ -121,4 +121,23 @@ public class DataLookupGoldenTests
             sb.Append('\n');
         }
     });
+
+    /// <summary>Every 1.12.2 item name plus the odd ones the rules name (pumpkin, skull, enchanted book…) and malformed names.</summary>
+    private static IEnumerable<string> ItemNames() =>
+        Enumerable.Range(1, 2300).Select(Modern.NameOf).OfType<string>()
+            .Concat(["book", "enchanted_book", "pumpkin", "skull", "shears", "elytra", "shield", "carrot_on_a_stick", "flint_and_steel",
+                "chainmail_boots", "stone_helmet", "wooden_", "_axe", "foo", "", "leather_sword", "golden_hoe"])
+            .Distinct();
+
+    [Fact]
+    public void Enchantment_fits_and_anvil_repair_match_the_golden() => Check("enchant-anvil", "C4C8E2989759372FDF02DB399C8F5F3BA9E89F4264972B14CD23E86773B9E9C6", sb =>
+    {
+        foreach (var item in ItemNames())
+        {
+            sb.Append(item).Append(" repair=").Append(Anvil.RepairMaterial(item) is { } m ? $"{m.Id}/{m.Meta}/{m.Name}" : "-").Append(' ');
+            foreach (var e in Enchanting.All)
+                sb.Append(Enchanting.Fits(e, item) ? 'T' : '-').Append(Enchanting.Fits(e, item, anvil: true) ? 'A' : '-');
+            sb.Append('\n');
+        }
+    });
 }
