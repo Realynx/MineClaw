@@ -709,20 +709,21 @@ public sealed partial class ScriptSession
         if (result.Count == 0 || KindOf(result[0]) == ValueKind.Nil) return LastFailure;
         var first = result[0];
         if (KindOf(first) == ValueKind.Bool) return first!.GetValue<bool>() ? null : LastFailure;
-        if (KindOf(first) == ValueKind.Str)
-        {
-            // `return ok .. msg` / `return tostring(ok) .. msg` ("falseno skill 'toss'..") or just the failure text again.
-            var text = OneLine(first!.GetValue<string>());
-            var fm = OneLine(_lastFailureMsg);
-            if (fm.Length > 0)
-            {
-                foreach (var head in new[] { "false", "nil", "undefined" })
-                    if (text.StartsWith(head, StringComparison.OrdinalIgnoreCase) && text[head.Length..].TrimStart(' ', ':', ',', '-').StartsWith(fm, StringComparison.Ordinal))
-                        return LastFailure;
-                if (string.Equals(text, fm, StringComparison.Ordinal)) return LastFailure;
-            }
-        }
+        if (KindOf(first) == ValueKind.Str && RepeatsFailure(OneLine(first!.GetValue<string>()))) return LastFailure;
         return null;
+    }
+
+    private static readonly string[] FalseHeads = ["false", "nil", "undefined"];
+
+    /// <summary>`return ok .. msg` / `return tostring(ok) .. msg` ("falseno skill 'toss'..") or just the failure text again.</summary>
+    private bool RepeatsFailure(string text)
+    {
+        var fm = OneLine(_lastFailureMsg);
+        if (fm.Length == 0) return false;
+        foreach (var head in FalseHeads)
+            if (text.StartsWith(head, StringComparison.OrdinalIgnoreCase) && text[head.Length..].TrimStart(' ', ':', ',', '-').StartsWith(fm, StringComparison.Ordinal))
+                return true;
+        return string.Equals(text, fm, StringComparison.Ordinal);
     }
 
     internal static string OneLine(string? s) => (s ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
