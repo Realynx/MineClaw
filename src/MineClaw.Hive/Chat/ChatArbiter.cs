@@ -393,15 +393,22 @@ public sealed class ChatArbiter
             // request to main. Main is addressed (it delegates); before, such lines rode along as "(not to you)" context and
             // main later decided an unaddressed "go farm the trees" must have been meant for 69 (live 3, 14:24:16).
             if (delegated) return new(_main, true, false);
-            // A bot that asked this player something (or is watching their demo) owns their replies until resolved/timeout.
-            if (LiveThread(msg.Player) is { } holder) return new(holder, true, false);
-            // Main just handed this player's request to a clone: their follow-ups ("just like 5") are that clone's.
-            if (LiveDelegation(msg.Player) is { } doer) return new(doer, true, false);
-            if (_sticky.TryGetValue(msg.Player, out var s) && s.Until > _time.GetUtcNow()
-                && (string.Equals(s.Owner, _main, StringComparison.OrdinalIgnoreCase) || _live.Contains(s.Owner)))
-                return new(s.Owner, false, false);
-            return new(_main, false, false);
+            return UnnamedRoute(msg.Player);
         }
+    }
+
+    /// <summary>A line naming no bot: the bot holding this player's thread or delegation, else their sticky partner (main or a live
+    /// clone), else main. Caller holds <see cref="_lock"/>.</summary>
+    private ChatRoute UnnamedRoute(string player)
+    {
+        // A bot that asked this player something (or is watching their demo) owns their replies until resolved/timeout.
+        if (LiveThread(player) is { } holder) return new(holder, true, false);
+        // Main just handed this player's request to a clone: their follow-ups ("just like 5") are that clone's.
+        if (LiveDelegation(player) is { } doer) return new(doer, true, false);
+        if (_sticky.TryGetValue(player, out var s) && s.Until > _time.GetUtcNow()
+            && (string.Equals(s.Owner, _main, StringComparison.OrdinalIgnoreCase) || _live.Contains(s.Owner)))
+            return new(s.Owner, false, false);
+        return new(_main, false, false);
     }
 
     // Words after which a bot's name/number is a mention, not an address ("tell 67 to...", "get 67 cobble", "with 67?").
@@ -463,25 +470,7 @@ public sealed class ChatArbiter
     private List<string> AddressedBots(string text, ChatKind kind, out bool delegated)
     {
         delegated = false;
-        var cands = new List<(string Bot, int Index, int End, bool Strong)>();
-        foreach (var c in Clones) // offline clones too: an address to one goes to main (Route)
-        {
-            foreach (Match m in _explicit[c].Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true));
-            if (_number.TryGetValue(c, out var n))
-                foreach (Match m in n.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, false));
-            if (kind == ChatKind.Emote && _bare.TryGetValue(c, out var b))
-                foreach (Match m in b.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true)); // "* kiwi pats 67"
-        }
-        var clonesStrong = cands.Where(x => x.Strong).ToList();
-        foreach (Match m in _mainRegex.Matches(text))
-            if (!clonesStrong.Any(x => x.Index < m.Index + m.Length && m.Index < x.End)) // "maid chan 69" is 69, not main
-                cands.Add((_main, m.Index, m.Index + m.Length, true));
-        if (MainVocative.Match(text) is { Success: true } mv) cands.Add((_main, mv.Index, mv.Index + mv.Length, true)); // "main spin"
-        // A weak (bare number) hit inside a strong one is the same mention ("maid chan 67", "67, come" at the start).
-        var strong = cands.Where(x => x.Strong).ToList();
-        cands = cands.Where(x => x.Strong || !strong.Any(y => y.Index <= x.Index && x.End <= y.End))
-            .OrderBy(x => x.Index).ThenByDescending(x => x.Strong).ToList();
-
+        var cands = Candidates(text, kind);
         var named = new List<string>();
         int prevEnd = -1;
         foreach (var x in cands)
@@ -498,22 +487,59 @@ public sealed class ChatArbiter
         return named;
     }
 
+    /// <summary>Every mention of a hive bot in the line, in order (strong before weak at one spot); a weak (bare number) hit inside a
+    /// strong one is the same mention ("maid chan 67", "67, come" at the start) and is left out.</summary>
+    private List<(string Bot, int Index, int End, bool Strong)> Candidates(string text, ChatKind kind)
+    {
+        var cands = new List<(string Bot, int Index, int End, bool Strong)>();
+        foreach (var c in Clones) CloneCandidates(c, text, kind, cands); // offline clones too: an address to one goes to main (Route)
+        var clonesStrong = cands.Where(x => x.Strong).ToList();
+        foreach (Match m in _mainRegex.Matches(text))
+            if (!clonesStrong.Any(x => x.Index < m.Index + m.Length && m.Index < x.End)) // "maid chan 69" is 69, not main
+                cands.Add((_main, m.Index, m.Index + m.Length, true));
+        if (MainVocative.Match(text) is { Success: true } mv) cands.Add((_main, mv.Index, mv.Index + mv.Length, true)); // "main spin"
+        var strong = cands.Where(x => x.Strong).ToList();
+        return cands.Where(x => x.Strong || !strong.Any(y => y.Index <= x.Index && x.End <= y.End))
+            .OrderBy(x => x.Index).ThenByDescending(x => x.Strong).ToList();
+    }
+
+    /// <summary>One clone's mentions: its login/explicit names (strong), its bare number (weak), and in an emote its bare name (strong).</summary>
+    private void CloneCandidates(string c, string text, ChatKind kind, List<(string Bot, int Index, int End, bool Strong)> cands)
+    {
+        foreach (Match m in _explicit[c].Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true));
+        if (_number.TryGetValue(c, out var n))
+            foreach (Match m in n.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, false));
+        if (kind == ChatKind.Emote && _bare.TryGetValue(c, out var b))
+            foreach (Match m in b.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true)); // "* kiwi pats 67"
+    }
+
     private static bool IsAddress(string text, int index, int end, bool strong, int prevAddressedEnd)
     {
         var before = text[..index];
-        var trimmed = before.TrimEnd().TrimStart(' ', '\t', '@', '#');
-        if (trimmed.Length == 0) return true;                                       // start of the line
-        if (trimmed[^1] is '.' or '!' or '?' or ';') return true;                   // start of a sentence
+        if (StartsClause(before)) return true;
         if (prevAddressedEnd >= 0 && prevAddressedEnd <= index && Joiner.IsMatch(text[prevAddressedEnd..index])) return true; // "67 and 69"
         var lw = LastWord.Match(before) is { Success: true } w ? w.Groups[1].Value.Trim('\'') : "";
         if (strong) return !RefWords.Contains(lw);
+        return IsBareNumberAddress(text, before, end, lw);
+    }
+
+    /// <summary>The mention starts the line or a sentence.</summary>
+    private static bool StartsClause(string before)
+    {
+        var trimmed = before.TrimEnd().TrimStart(' ', '\t', '@', '#');
+        return trimmed.Length == 0 || trimmed[^1] is '.' or '!' or '?' or ';';
+    }
+
+    /// <summary>A bare clone number (after <paramref name="lw"/>) is an address next to an address word, or after a discourse word
+    /// with a comma/colon; never in coordinates or as an ordinary number in a sentence.</summary>
+    private static bool IsBareNumberAddress(string text, string before, int end, string lw)
+    {
         if (CoordBefore.IsMatch(before)) return false;                              // "14, 67, -5"
         if (AddressWords.Contains(lw)) return true;                                 // "hey 69", "maid 69?!"
         var after = text[end..];
         if (FirstWord.Match(after) is { Success: true } fw && TrailingAddress.Contains(fw.Groups[1].Value)) return true; // "69 maid"
         char next = after.TrimStart() is { Length: > 0 } a ? a[0] : '\0';
-        if (Discourse.Contains(lw)) return next is ',' or ':';
-        return false; // an ordinary number in a sentence
+        return Discourse.Contains(lw) && (next is ',' or ':');
     }
 
     /// <summary>
@@ -549,11 +575,17 @@ public sealed class ChatArbiter
         if (r.Group && r.Names(_self) && !IsMain) return true;
         bool mine = string.Equals(owner, _self, StringComparison.OrdinalIgnoreCase);
         bool handle = mine && (isExplicit || locallyAddressed);
-        if (handle) Accept(msg.Player, _self);
-        if (handle && isExplicit) { try { AddressedHere?.Invoke(msg); } catch (Exception) { } }
-        else if (IsMain && isExplicit) Accept(msg.Player, owner); // main is the sticky authority (pushed to clones)
-        if (IsMain && r.Group) lock (_lock) _groupHold[msg.Player] = _time.GetUtcNow() + GroupHold;
+        NoteDecision(msg, msg.Player, r, owner, handle);
         return handle;
+    }
+
+    /// <summary>The sticky partner and group hold after <see cref="Decide"/>; an explicit address taken here raises <see cref="AddressedHere"/>.</summary>
+    private void NoteDecision(ChatMessage msg, string player, ChatRoute r, string owner, bool handle)
+    {
+        if (handle) Accept(player, _self);
+        if (handle && r.Explicit) { try { AddressedHere?.Invoke(msg); } catch (Exception) { } }
+        else if (IsMain && r.Explicit) Accept(player, owner); // main is the sticky authority (pushed to clones)
+        if (IsMain && r.Group) lock (_lock) _groupHold[player] = _time.GetUtcNow() + GroupHold;
     }
 
     /// <summary>A player named THIS bot (or a body it drives) and this bot takes the line: a direct order (pre-empts a logout).</summary>

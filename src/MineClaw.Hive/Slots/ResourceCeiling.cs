@@ -110,13 +110,20 @@ public sealed class ResourceCeiling
         double need = Math.Max(0, hives) * HiveMb(inProcess) + Math.Max(0, bodies) * _cfg.BodyMb;
         // Main's own bodies and in-process hives share this heap; a process of its own has its own.
         double heap = inProcess || hives <= 0 ? HeapFree() : double.MaxValue;
-        var hive = hives <= 0 ? "" : inProcess ? "a hive + " : "a hive process + ";
+        var what = WhatNeeds(hives, bodies, inProcess, need);
         if (need > heap && heap < s.Free)
             return (false, string.Create(CultureInfo.InvariantCulture,
-                $"memory: {Math.Max(0, heap):0} MB free in the managed heap ({_cfg.HeapReserveMb:0} kept), {hive}{bodies} bod{(bodies == 1 ? "y" : "ies")} need {need:0} MB"));
+                $"memory: {Math.Max(0, heap):0} MB free in the managed heap ({_cfg.HeapReserveMb:0} kept), {what}"));
         if (need <= s.Free) return (true, null);
         return (false, string.Create(CultureInfo.InvariantCulture,
-            $"memory: {Math.Max(0, s.Free):0} MB free of {s.Limit:0} MB ({s.Used:0} used, {_cfg.ReserveMb:0} kept), {hive}{bodies} bod{(bodies == 1 ? "y" : "ies")} need {need:0} MB"));
+            $"memory: {Math.Max(0, s.Free):0} MB free of {s.Limit:0} MB ({s.Used:0} used, {_cfg.ReserveMb:0} kept), {what}"));
+    }
+
+    /// <summary>"a hive process + 3 bodies need 1200 MB".</summary>
+    private static string WhatNeeds(int hives, int bodies, bool inProcess, double need)
+    {
+        var hive = hives <= 0 ? "" : inProcess ? "a hive + " : "a hive process + ";
+        return string.Create(CultureInfo.InvariantCulture, $"{hive}{bodies} bod{(bodies == 1 ? "y" : "ies")} need {need:0} MB");
     }
 
     /// <summary>How many bodies fit after <paramref name="withHives"/> more hives (int.MaxValue when unlimited).</summary>

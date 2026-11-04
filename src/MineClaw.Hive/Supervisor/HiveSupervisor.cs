@@ -437,10 +437,7 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
     /// </summary>
     internal string? ExternalOccupant(CloneSlot s)
     {
-        // A subhive account is online in its owner's host, not this supervisor's process slot. It is still ours.
-        if (Accounts is MineClaw.Hive.Hierarchy.HiveHierarchy hierarchy && hierarchy.Tree.Get(s.Name) is { } node
-            && (node.Kind == MineClaw.Hive.Hierarchy.CloneKind.Subhive || node.Owner != MineClaw.Hive.Hierarchy.HiveTree.Root))
-            return $"managed by hive {node.Owner} (one of ours; use its host, not another login)";
+        if (ManagedByHive(s) is { } managed) return managed;
         var now = Now;
         if (now < s.ExternalUntil)
             return $"is in use by a player's viewer (someone else logged in as {s.Name}); left alone for {Math.Max(1, (int)Math.Ceiling((s.ExternalUntil - now).TotalMinutes))} more min";
@@ -458,6 +455,13 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
         }
         return $"is in use by a player's viewer ({s.Name} is online but isn't one of ours)";
     }
+
+    /// <summary>A subhive account is online in its owner's host, not this supervisor's process slot. It is still ours.</summary>
+    private string? ManagedByHive(CloneSlot s) =>
+        Accounts is MineClaw.Hive.Hierarchy.HiveHierarchy hierarchy && hierarchy.Tree.Get(s.Name) is { } node
+            && (node.Kind == MineClaw.Hive.Hierarchy.CloneKind.Subhive || node.Owner != MineClaw.Hive.Hierarchy.HiveTree.Root)
+            ? $"managed by hive {node.Owner} (one of ours; use its host, not another login)"
+            : null;
 
     /// <summary>Logged in with nothing to finish: free for a new job right where it is (a crew build's default helpers).</summary>
     public static bool IdleOnline(CloneSlot s) => s.IsLive && Free(s);
@@ -564,17 +568,32 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
     {
         foreach (var mate in _slots.Values)
         {
-            if (ReferenceEquals(mate, slot) || !mate.Pending || mate.Task is not { } mt || mate.Link is not { IsOpen: true } link) continue;
-            if (forPlayer != null && mate.ForPlayer != null && !mate.ForPlayer.Equals(forPlayer, StringComparison.OrdinalIgnoreCase)) continue;
-            if (!SameRequest(mt.Text, task) && !Mentions(task, mate) && !Mentions(mt.Text, slot)) continue;
-            var gone = _slots.Values.Where(o => !ReferenceEquals(o, mate) && !ReferenceEquals(o, slot) && Mentions(mt.Text, o)
-                && !(o.IsLive || o.Pending)).Select(o => o.Number).ToList();
-            var text = $"[hive update from main] {slot.Number} is on your job too: \"{Trunc(task, 160)}\"" +
-                (gone.Count > 0 ? $"; {string.Join(", ", gone)} is offline, so {slot.Number} takes that part." : ".") +
-                " Work with it; if a partner is missing, ask main (hive_report progress), not the player.";
-            _ = link.SendAsync(Msg.Note, new NoteMsg(text));
+            if (!OnSameJob(mate, slot, forPlayer, task, out var mt, out var link)) continue;
+            _ = link.SendAsync(Msg.Note, new NoteMsg(JoinedNote(mate, mt, slot, task)));
             _log.LogInformation("hive: told {Mate} that {Clone} joined its job", mate.Name, slot.Name);
         }
+    }
+
+    /// <summary><paramref name="mate"/> (another clone, its task pending, its link open) serves the same player's request as
+    /// <paramref name="slot"/>'s: the same request, or either task names the other clone.</summary>
+    private static bool OnSameJob(CloneSlot mate, CloneSlot slot, string? forPlayer, string task, out TaskMsg mt, out HiveLink link)
+    {
+        mt = null!;
+        link = null!;
+        if (ReferenceEquals(mate, slot) || !mate.Pending || mate.Task is not { } t || mate.Link is not { IsOpen: true } l) return false;
+        (mt, link) = (t, l);
+        if (forPlayer != null && mate.ForPlayer != null && !mate.ForPlayer.Equals(forPlayer, StringComparison.OrdinalIgnoreCase)) return false;
+        return SameRequest(t.Text, task) || Mentions(task, mate) || Mentions(t.Text, slot);
+    }
+
+    /// <summary>The note to a job mate; a partner its task names who is gone is replaced by <paramref name="slot"/>.</summary>
+    private string JoinedNote(CloneSlot mate, TaskMsg mt, CloneSlot slot, string task)
+    {
+        var gone = _slots.Values.Where(o => !ReferenceEquals(o, mate) && !ReferenceEquals(o, slot) && Mentions(mt.Text, o)
+            && !(o.IsLive || o.Pending)).Select(o => o.Number).ToList();
+        return $"[hive update from main] {slot.Number} is on your job too: \"{Trunc(task, 160)}\"" +
+            (gone.Count > 0 ? $"; {string.Join(", ", gone)} is offline, so {slot.Number} takes that part." : ".") +
+            " Work with it; if a partner is missing, ask main (hive_report progress), not the player.";
     }
 
     /// <summary>The task text names this clone ("spar with 69", "maid_chan_69's partner"), never inside a coordinate.</summary>
@@ -734,36 +753,43 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
     {
         var turn = MineClaw.Agent.TurnContext.Current;
         if (turn == null || text.Length == 0 || !Arriving.IsMatch(text)) return text;
+        var gone = FailedThisTurn(turn);
+        if (gone.Count == 0) return text;
+        var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?<=[.!?])\s+").Select(sentence => WithoutArrivals(sentence, gone));
+        return string.Join(" ", parts).Trim();
+    }
+
+    /// <summary>The clones spawned in <paramref name="turn"/> whose outing already failed (a failed result, or retired), each with the
+    /// line that replaces its arrival claim. Idle may just be a reserved launch waiting for the login gap: not a failure.</summary>
+    private List<(CloneSlot Slot, string Note)> FailedThisTurn(object turn)
+    {
         var gone = new List<(CloneSlot Slot, string Note)>();
         foreach (var s in _slots.Values)
             lock (s.Lock)
             {
                 if (!ReferenceEquals(s.AssignedTurn, turn)) continue;
-                string? note = s.ResultIn && !s.ResultOk ? $"{s.Number} couldn't get in"
-                    : s.State == CloneState.Retired ? $"{s.Number} couldn't get in"
-                    : null; // Idle may just be a reserved launch waiting for the login gap: not a failure
-                if (note != null) gone.Add((s, note));
+                if ((s.ResultIn && !s.ResultOk) || s.State == CloneState.Retired) gone.Add((s, $"{s.Number} couldn't get in"));
             }
-        if (gone.Count == 0) return text;
-        var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?<=[.!?])\s+").Select(sentence =>
+        return gone;
+    }
+
+    /// <summary>Each gone clone's arrival clause in the sentence (from its name to the next clause break after the claim) replaced.</summary>
+    private string WithoutArrivals(string sentence, List<(CloneSlot Slot, string Note)> gone)
+    {
+        foreach (var (slot, note) in gone)
         {
-            foreach (var (slot, note) in gone)
-            {
-                var who = new System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_,])(?:" + System.Text.RegularExpressions.Regex.Escape(slot.Number) + "|"
-                    + System.Text.RegularExpressions.Regex.Escape(slot.Name) + @")(?![A-Za-z0-9_]|,\d)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                var m = who.Match(sentence);
-                if (!m.Success) continue;
-                var claim = Arriving.Match(sentence, m.Index);
-                if (!claim.Success) continue;
-                // The clause runs from the clone's name to the next clause break after the claim.
-                var brk = System.Text.RegularExpressions.Regex.Match(sentence[(claim.Index + claim.Length)..], @",\s|\s(?:and|but|so)\s|[.!?]");
-                int end = brk.Success ? claim.Index + claim.Length + brk.Index : sentence.Length;
-                _log.LogInformation("hive: dropped a stale arrival claim from main's chat: {Text} ({Note})", sentence[m.Index..end].Trim(), note);
-                sentence = sentence[..m.Index] + note + sentence[end..];
-            }
-            return sentence;
-        });
-        return string.Join(" ", parts).Trim();
+            var who = new System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_,])(?:" + System.Text.RegularExpressions.Regex.Escape(slot.Number) + "|"
+                + System.Text.RegularExpressions.Regex.Escape(slot.Name) + @")(?![A-Za-z0-9_]|,\d)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var m = who.Match(sentence);
+            if (!m.Success) continue;
+            var claim = Arriving.Match(sentence, m.Index);
+            if (!claim.Success) continue;
+            var brk = System.Text.RegularExpressions.Regex.Match(sentence[(claim.Index + claim.Length)..], @",\s|\s(?:and|but|so)\s|[.!?]");
+            int end = brk.Success ? claim.Index + claim.Length + brk.Index : sentence.Length;
+            _log.LogInformation("hive: dropped a stale arrival claim from main's chat: {Text} ({Note})", sentence[m.Index..end].Trim(), note);
+            sentence = sentence[..m.Index] + note + sentence[end..];
+        }
+        return sentence;
     }
 
     private static readonly System.Text.RegularExpressions.Regex Arriving = new(
@@ -788,29 +814,37 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
 
     public string Recall(string? nameOrAll, string reason = "recalled")
     {
-        var targets = string.IsNullOrWhiteSpace(nameOrAll) || nameOrAll.Trim().Equals("all", StringComparison.OrdinalIgnoreCase)
-            ? _slots.Values.Where(s => s.State is not (CloneState.Idle or CloneState.Retired)).ToList()
-            : Resolve(nameOrAll) is { } n ? [_slots[n]] : null;
+        var targets = RecallTargets(nameOrAll);
         if (targets == null) return $"error: no clone '{nameOrAll}'";
         if (targets.Count == 0) return "ok: no clones out";
         var turn = MineClaw.Agent.TurnContext.Current;
         var kept = new List<string>();
         foreach (var s in targets)
         {
-            lock (s.Lock)
-            {
-                s.BrainRecall = true;
-                // "recall 69" + "69: new task" in one turn (parallel, either order): the new task survives the logout.
-                if (turn != null && ReferenceEquals(s.AssignedTurn, turn) && s.Pending && s.Task is { } t && s.RespawnWith == null)
-                {
-                    s.RespawnWith = (t, s.ForPlayer, s.Unnamed);
-                    kept.Add(s.Number);
-                }
-            }
+            if (KeepTurnTask(s, turn)) kept.Add(s.Number);
             RecallSlot(s, reason);
         }
         return "ok: recalling " + string.Join(", ", targets.Select(s => s.Number)) +
             (kept.Count > 0 ? $" ({string.Join(", ", kept)} logs back in with the task given this turn)" : "");
+    }
+
+    /// <summary>"all" (or nothing) = every clone out; else the named one; null = no such clone.</summary>
+    private List<CloneSlot>? RecallTargets(string? nameOrAll) =>
+        string.IsNullOrWhiteSpace(nameOrAll) || nameOrAll.Trim().Equals("all", StringComparison.OrdinalIgnoreCase)
+            ? _slots.Values.Where(s => s.State is not (CloneState.Idle or CloneState.Retired)).ToList()
+            : Resolve(nameOrAll) is { } n ? [_slots[n]] : null;
+
+    /// <summary>Marks a brain recall; "recall 69" + "69: new task" in one turn (parallel, either order): the new task survives the
+    /// logout (true = kept).</summary>
+    private static bool KeepTurnTask(CloneSlot s, object? turn)
+    {
+        lock (s.Lock)
+        {
+            s.BrainRecall = true;
+            if (turn == null || !ReferenceEquals(s.AssignedTurn, turn) || !s.Pending || s.Task is not { } t || s.RespawnWith != null) return false;
+            s.RespawnWith = (t, s.ForPlayer, s.Unnamed);
+            return true;
+        }
     }
 
     private void RecallSlot(CloneSlot s, string reason, double? deadlineSeconds = null)
@@ -1150,29 +1184,37 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
     {
         try { await Task.Delay(backoff, _time, _cts.Token).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
         lock (slot.Lock)
-        {
-            if (slot.State != CloneState.Backoff || slot.Recalled || _shuttingDown) { if (slot.State == CloneState.Backoff) { slot.State = CloneState.Idle; FinallyReleased(slot, "not restarted"); } return; }
-            // Resume: the same unfinished task, its loadout and the leases it held.
-            if (slot.Task != null)
-                slot.Task = slot.Task with { Restarted = true, Loadout = slot.Task.Loadout ?? TaskLoadout.For(slot.Task.Text), Claims = slot.ResumeClaims };
-            if (!SlotPolicy.CanSpawn(SlotFacts(), Regulars, 0, _cfg.MaxPlayersFallback).Ok || Ledger.AtRecallLine(out _))
-            {
-                slot.State = CloneState.Idle;
-                FinallyReleased(slot, "not restarted (no slot/budget)");
-                Post(GameEvent.Notice($"[hive] {slot.Number} not restarted (no slot/budget)", EventPriority.Background));
-                return;
-            }
-            if (ExternalOccupant(slot) is { } occupied)
-            {
-                slot.State = CloneState.Idle;
-                FinallyReleased(slot, "not restarted: " + occupied);
-                Post(GameEvent.Notice($"[hive] {slot.Number} not restarted: it {occupied}" + (slot.Task is { } ut ? $"; its task \"{Trunc(ut.Text, 60)}\" needs another clone" : ""),
-                    EventPriority.Normal));
-                return;
-            }
-        }
+            if (!ReadyToRestart(slot)) return;
         _log.LogInformation("hive: restarting {Clone} after {S:0}s backoff", slot.Name, backoff.TotalSeconds);
         Launch(slot);
+    }
+
+    /// <summary>After the backoff (caller holds the slot's lock): still in backoff, not recalled, a seat and budget, nobody else in its
+    /// login; else it goes idle and is released. The task resumes with its loadout and the leases it held.</summary>
+    private bool ReadyToRestart(CloneSlot slot)
+    {
+        if (slot.State != CloneState.Backoff || slot.Recalled || _shuttingDown) { if (slot.State == CloneState.Backoff) { slot.State = CloneState.Idle; FinallyReleased(slot, "not restarted"); } return false; }
+        ResumeTask(slot);
+        if (!SlotPolicy.CanSpawn(SlotFacts(), Regulars, 0, _cfg.MaxPlayersFallback).Ok || Ledger.AtRecallLine(out _))
+        {
+            slot.State = CloneState.Idle;
+            FinallyReleased(slot, "not restarted (no slot/budget)");
+            Post(GameEvent.Notice($"[hive] {slot.Number} not restarted (no slot/budget)", EventPriority.Background));
+            return false;
+        }
+        if (ExternalOccupant(slot) is not { } occupied) return true;
+        slot.State = CloneState.Idle;
+        FinallyReleased(slot, "not restarted: " + occupied);
+        Post(GameEvent.Notice($"[hive] {slot.Number} not restarted: it {occupied}" + (slot.Task is { } ut ? $"; its task \"{Trunc(ut.Text, 60)}\" needs another clone" : ""),
+            EventPriority.Normal));
+        return false;
+    }
+
+    /// <summary>Resume: the same unfinished task, its loadout and the leases it held.</summary>
+    private static void ResumeTask(CloneSlot slot)
+    {
+        if (slot.Task != null)
+            slot.Task = slot.Task with { Restarted = true, Loadout = slot.Task.Loadout ?? TaskLoadout.For(slot.Task.Text), Claims = slot.ResumeClaims };
     }
 
     /// <summary>A restarted clone gets back the leases it held when it was lost (those still free).</summary>

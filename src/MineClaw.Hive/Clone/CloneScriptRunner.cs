@@ -94,10 +94,16 @@ public sealed class CloneScriptRunner : IDisposable
         orders.Held = false;
         bool ok = orders.ResumeIfIdle(change ? "hive order changed" : "hive script");
         lock (_lock) _pendingStart = !ok;
+        Started(t, ok, change, resume);
+        return ok;
+    }
+
+    /// <summary>Logs the start (or queueing); a changed order is told to the brain.</summary>
+    private void Started(TaskMsg t, bool ok, bool change, string? resume)
+    {
         _log.LogInformation("clone {Bot}: script {Script} {State}{Resume} (brain asleep{Profile})", _bot, t.Script, ok ? "started" : "queued",
             resume != null ? $" from cp '{resume}'" : "", t.Profile != null ? ", profile " + t.Profile : "");
         if (change) PostOwn(GameEvent.Notice($"[hive] main changed your standing order: script {t.Script}", EventPriority.Normal));
-        return ok;
     }
 
     /// <summary>Takes <paramref name="t"/> as the task (asleep, progress reset): whether it replaces another one, and the checkpoint a
@@ -237,7 +243,7 @@ public sealed class CloneScriptRunner : IDisposable
         if (e.Kind == EventKind.TaskCompleted) return CompletedGate(e);
         if (AlwaysWakes.Contains(e.Kind)) return e;
         if (ChatKinds.Contains(e.Kind)) return ChatGate(e);
-        if (e.Kind == EventKind.Notice && IsWakeNotice(e.Text)) return e;
+        if (IsWakeNotice(e)) return e;
         return Interrupting(e) ? e : Quiet(e);
     }
 
@@ -262,6 +268,8 @@ public sealed class CloneScriptRunner : IDisposable
         }
         return e;
     }
+
+    private static bool IsWakeNotice(GameEvent e) => e.Kind == EventKind.Notice && IsWakeNotice(e.Text);
 
     private static bool IsWakeNotice(string text) =>
         text.StartsWith("script wake:", StringComparison.Ordinal) || text.StartsWith("script paused:", StringComparison.Ordinal)

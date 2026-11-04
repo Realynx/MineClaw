@@ -47,29 +47,44 @@ public sealed class ChatRelayGuard
         if (string.IsNullOrWhiteSpace(text)) return text;
         foreach (var raw in Sentence.Split(text))
         {
-            var m = Vocative.Match(raw.Trim());
-            if (!m.Success) continue;
-            if (_hive.Resolve(m.Groups["num"].Value) is not { } clone || _hive.Slot(clone) is not { IsLive: true } slot) continue;
-            var rest = m.Groups["rest"].Value.Trim();
-            if (rest.Length < 4 || !Instruction.IsMatch(rest)) continue; // "69, good job!" is just chat
-            var key = clone + "|" + rest;
-            var now = _time.GetUtcNow();
-            lock (_lock)
-            {
-                if (_sent.TryGetValue(key, out var at) && now - at < TimeSpan.FromMinutes(2)) continue; // the gate runs per send path
-                _sent[key] = now;
-            }
-            if (Reassign.IsMatch(rest))
-            {
-                var r = _hive.Spawn($"From main: {rest}", slot.Number);
-                _log.LogInformation("hive: main's chat to {Clone} became a hive task: {Rest} -> {Result}", clone, rest, r);
-            }
-            else
-            {
-                bool ok = _hive.Note(clone, $"[hive update from main] {rest} (main said it in chat; hive chat never reaches you)");
-                _log.LogInformation("hive: main's chat to {Clone} became a note ({Ok}): {Rest}", clone, ok, rest);
-            }
+            if (InstructionIn(raw) is not { } ins || !FirstTime(ins.Clone + "|" + ins.Text)) continue;
+            Relay(ins.Clone, ins.Slot, ins.Text);
         }
         return text;
+    }
+
+    /// <summary>A sentence addressed to a live clone by number that instructs it ("69, go mine"); null = chat ("69, good job!").</summary>
+    private (string Clone, CloneSlot Slot, string Text)? InstructionIn(string raw)
+    {
+        var m = Vocative.Match(raw.Trim());
+        if (!m.Success) return null;
+        if (_hive.Resolve(m.Groups["num"].Value) is not { } clone || _hive.Slot(clone) is not { IsLive: true } slot) return null;
+        var rest = m.Groups["rest"].Value.Trim();
+        return rest.Length < 4 || !Instruction.IsMatch(rest) ? null : (clone, slot, rest);
+    }
+
+    /// <summary>Not relayed in the last two minutes (the gate runs per send path); records it now.</summary>
+    private bool FirstTime(string key)
+    {
+        var now = _time.GetUtcNow();
+        lock (_lock)
+        {
+            if (_sent.TryGetValue(key, out var at) && now - at < TimeSpan.FromMinutes(2)) return false;
+            _sent[key] = now;
+            return true;
+        }
+    }
+
+    /// <summary>A reassignment becomes a hive task; anything else a note on the clone's running task.</summary>
+    private void Relay(string clone, CloneSlot slot, string rest)
+    {
+        if (Reassign.IsMatch(rest))
+        {
+            var r = _hive.Spawn($"From main: {rest}", slot.Number);
+            _log.LogInformation("hive: main's chat to {Clone} became a hive task: {Rest} -> {Result}", clone, rest, r);
+            return;
+        }
+        bool ok = _hive.Note(clone, $"[hive update from main] {rest} (main said it in chat; hive chat never reaches you)");
+        _log.LogInformation("hive: main's chat to {Clone} became a note ({Ok}): {Rest}", clone, ok, rest);
     }
 }

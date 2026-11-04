@@ -132,16 +132,11 @@ public sealed class BudgetLedger
             var cm = Get(_state.Months, MonthKey).Clones.GetValueOrDefault(clone);
             var mine = _outstanding.GetValueOrDefault(clone);
             var all = _outstanding.Values.Sum();
-            if (_o.CloneDailyCapUsd > 0 && cd + mine + estimateUsd > _o.CloneDailyCapUsd)
-                return new SpendGrant(false, 0, mode, $"clone daily sub-cap ${_o.CloneDailyCapUsd:0.00} reached");
-            if (_o.CloneMonthlyCapUsd > 0 && cm + mine + estimateUsd > _o.CloneMonthlyCapUsd)
-                return new SpendGrant(false, 0, mode, $"clone monthly sub-cap ${_o.CloneMonthlyCapUsd:0.00} reached");
-            if (mode != BudgetMode.Normal) return new SpendGrant(false, 0, mode, "hive budget mode " + mode);
             var f = (decimal)_o.RecallFraction;
-            if (_caps.DailyCapUsd > 0 && hd + all + estimateUsd > _caps.DailyCapUsd * f)
-                return new SpendGrant(false, 0, mode, "hive daily budget at the recall line");
-            if (_caps.MonthlyCapUsd > 0 && hm + all + estimateUsd > _caps.MonthlyCapUsd * f)
-                return new SpendGrant(false, 0, mode, "hive monthly budget at the recall line");
+            var why = CloneCapRefusal(cd + mine + estimateUsd, cm + mine + estimateUsd)
+                ?? (mode != BudgetMode.Normal ? "hive budget mode " + mode : null)
+                ?? HiveCapRefusal(hd + all + estimateUsd, hm + all + estimateUsd, f);
+            if (why != null) return new SpendGrant(false, 0, mode, why);
             // Clip the chunk so outstanding grants never cross the sub-cap / recall line.
             if (_o.CloneDailyCapUsd > 0) grant = Math.Min(grant, _o.CloneDailyCapUsd - cd - mine);
             if (_caps.DailyCapUsd > 0) grant = Math.Min(grant, _caps.DailyCapUsd * f - hd - all);
@@ -149,6 +144,22 @@ public sealed class BudgetLedger
             _outstanding[clone] = mine + grant;
             return new SpendGrant(true, grant, mode, null);
         }
+    }
+
+    /// <summary>The clone's own daily / monthly sub-cap would be crossed by this spend (today's, this month's); null = within.</summary>
+    private string? CloneCapRefusal(decimal day, decimal month)
+    {
+        if (_o.CloneDailyCapUsd > 0 && day > _o.CloneDailyCapUsd) return $"clone daily sub-cap ${_o.CloneDailyCapUsd:0.00} reached";
+        if (_o.CloneMonthlyCapUsd > 0 && month > _o.CloneMonthlyCapUsd) return $"clone monthly sub-cap ${_o.CloneMonthlyCapUsd:0.00} reached";
+        return null;
+    }
+
+    /// <summary>The hive's daily / monthly recall line (cap × <paramref name="f"/>) would be crossed by this spend; null = within.</summary>
+    private string? HiveCapRefusal(decimal day, decimal month, decimal f)
+    {
+        if (_caps.DailyCapUsd > 0 && day > _caps.DailyCapUsd * f) return "hive daily budget at the recall line";
+        if (_caps.MonthlyCapUsd > 0 && month > _caps.MonthlyCapUsd * f) return "hive monthly budget at the recall line";
+        return null;
     }
 
     /// <summary>Actual spend of one finished clone call (consumes its outstanding grant).</summary>

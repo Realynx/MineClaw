@@ -50,17 +50,8 @@ public sealed class HiveCrewPort(HiveSupervisor hive, ICrewBoard board, TimeProv
         if (hive.Resolve(spec.Body) is not { } name || hive.Slot(name) is not { } slot) return Lanes.Failed(spec.Body, $"no clone {spec.Body}");
         if (slot.Pending) return Lanes.Failed(spec.Body, $"body {spec.Body} busy: {slot.Task?.Text}");
         if (!slot.IsLive) return Lanes.Failed(spec.Body, $"{spec.Body} isn't in game; bring bodies in with hive spawn script=… bodies=N");
-        // The clone runs the script by name from the shared db: an unsaved coordinator is saved first (same lint as any script).
-        if (hive.ScriptPrep is { } prep)
-        {
-            var (saved, error, _) = prep(spec.Script, null);
-            if (saved == null) (saved, error, _) = prep(spec.Script, spec.Code);
-            if (saved == null) return Lanes.Failed(spec.Body, error ?? "script not saved");
-        }
-        var args = (string.IsNullOrWhiteSpace(spec.ArgsJson) ? null : JsonNode.Parse(spec.ArgsJson) as JsonObject) ?? new JsonObject();
-        args["__role"] = spec.Role;
-        args["__crew"] = spec.CrewId;
-        var r = hive.Spawn($"crew {spec.Script}: {spec.Role}", name, options: new Ipc.HiveSpawnOptions(Script: spec.Script, Args: args.ToJsonString(), After: "sleep"));
+        if (ScriptError(spec) is { } notSaved) return Lanes.Failed(spec.Body, notSaved);
+        var r = hive.Spawn($"crew {spec.Script}: {spec.Role}", name, options: new Ipc.HiveSpawnOptions(Script: spec.Script, Args: LaneArgs(spec), After: "sleep"));
         if (r.StartsWith("error", StringComparison.OrdinalIgnoreCase)) return Lanes.Failed(spec.Body, r);
         var task = slot.Task;
         var done = Task.Run(async () =>
@@ -74,6 +65,25 @@ public sealed class HiveCrewPort(HiveSupervisor hive, ICrewBoard board, TimeProv
             }
         });
         return Lanes.Of(spec.Body, why => hive.Recall(name), done, () => $"lane {spec.Body}: {slot.LastProgress ?? "starting"}");
+    }
+
+    /// <summary>The clone runs the script by name from the shared db: an unsaved coordinator is saved first (same lint as any
+    /// script). Why it couldn't be; null = saved.</summary>
+    private string? ScriptError(LaneSpec spec)
+    {
+        if (hive.ScriptPrep is not { } prep) return null;
+        var (saved, error, _) = prep(spec.Script, null);
+        if (saved == null) (saved, error, _) = prep(spec.Script, spec.Code);
+        return saved == null ? error ?? "script not saved" : null;
+    }
+
+    /// <summary>The lane's args (its JSON object, else empty) with its role and crew.</summary>
+    private static string LaneArgs(LaneSpec spec)
+    {
+        var args = (string.IsNullOrWhiteSpace(spec.ArgsJson) ? null : JsonNode.Parse(spec.ArgsJson) as JsonObject) ?? new JsonObject();
+        args["__role"] = spec.Role;
+        args["__crew"] = spec.CrewId;
+        return args.ToJsonString();
     }
 
     /// <summary>"ok: script gen_crew done (67 64, +64 cobblestone, 4m)" → "67 64": the role's own result for parallel().</summary>

@@ -607,17 +607,20 @@ public sealed class HiveHierarchy : IHiveAccounts
             return "no: " + (first ?? why) + "; spawned nothing";
         }
         var started = host.Start(id, name, r.Args, () => Members(id), (ok, line) => ScriptEnded(id, ok, line));
-        if (!started.StartsWith("ok", StringComparison.Ordinal))
-        {
-            lock (_lock) _scripts.Remove(id);
-            ReleaseMembers(id, "hive script didn't start");
-            return started.StartsWith("error", StringComparison.Ordinal) ? started : "error: " + started;
-        }
+        if (!started.StartsWith("ok", StringComparison.Ordinal)) return NotStarted(id, started);
         _log.LogInformation("hive: hive script {Id} ({Script}) over {N} bodies: {Names}", id, name, got.Count, string.Join(", ", got));
         var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
         return $"ok: hive script {id}: ONE script drives {got.Count} bod{(got.Count == 1 ? "y" : "ies")} ({names}), no brain; " +
             $"none in game yet{Pacing(got.Count)}; when it ends they deposit and log out " +
             $"(release {id} stops it)" + (got.Count < asked ? $"; only {got.Count} of {asked}: {why}" : "");
+    }
+
+    /// <summary>The coordinator didn't start: the id is freed and its bodies released; the host's answer as an error.</summary>
+    private string NotStarted(string id, string started)
+    {
+        lock (_lock) _scripts.Remove(id);
+        ReleaseMembers(id, "hive script didn't start");
+        return started.StartsWith("error", StringComparison.Ordinal) ? started : "error: " + started;
     }
 
     /// <summary>Only main runs hive scripts, and only with subhive bodies and a script host; null = it may.</summary>
@@ -675,18 +678,23 @@ public sealed class HiveHierarchy : IHiveAccounts
         string? why = null;
         var want = new Queue<string>((prefer ?? []).Where(p => !string.IsNullOrWhiteSpace(p)));
         int target = Math.Min(Math.Max(1, n), Math.Max(1, MaxBodiesPerSpawn));
-        while (got.Count < target)
-        {
-            if (Resources?.CanAdd(0, 1) is { Ok: false } full) { why = full.Why; break; }
-            var (name, refused) = AllocateGroupBody(b, group, script, want);
-            if (name == null) { why = refused; break; }
-            try { Allocated?.Invoke(name); } catch (Exception ex) { _log.LogDebug(ex, "hive: allocated hook failed"); }
-            var t = Subhives.Spawn(HiveTree.Root, name, null, null); // no job of its own: the director starts its lane once it is in
-            if (!t.StartsWith("ok", StringComparison.Ordinal)) { why = t; Released(name, "not spawned: " + t); break; }
-            got.Add(name);
-        }
+        while (got.Count < target && AddGroupBody(b, group, script, want, got, out why)) { }
         if (got.Count > 0) _log.LogInformation("hive: group {Group}: {N} script-only bodies ({Names})", group, got.Count, string.Join(", ", got));
         return (got, got.Count < n ? why ?? (n > target ? $"max {target} per spawn" : null) : null);
+    }
+
+    /// <summary>Allocates and logs in one more group body (added to <paramref name="got"/>); false, with why, when it can't.</summary>
+    private bool AddGroupBody(IHiveBodies b, string group, string script, Queue<string> want, List<string> got, out string? why)
+    {
+        why = null;
+        if (Resources?.CanAdd(0, 1) is { Ok: false } full) { why = full.Why; return false; }
+        var (name, refused) = AllocateGroupBody(b, group, script, want);
+        if (name == null) { why = refused; return false; }
+        try { Allocated?.Invoke(name); } catch (Exception ex) { _log.LogDebug(ex, "hive: allocated hook failed"); }
+        var t = Subhives!.Spawn(HiveTree.Root, name, null, null); // no job of its own: the director starts its lane once it is in
+        if (!t.StartsWith("ok", StringComparison.Ordinal)) { why = t; Released(name, "not spawned: " + t); return false; }
+        got.Add(name);
+        return true;
     }
 
     /// <summary>One more account for the group (the room allocated; a pawn account it had before takes the room when free), recorded
