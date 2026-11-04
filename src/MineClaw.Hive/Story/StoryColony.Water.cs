@@ -326,9 +326,18 @@ public sealed partial class StoryColony
         var unreachable = pawn == null ? [] : _fillMisses.Where(m => m.Key.Pawn == pawn && m.Value > Now).Select(m => m.Key.At).ToList();
         var placed = new HashSet<P3>();
         var own = new HashSet<P3>();
+        var pools = new HashSet<P3>(); // the colony's infinite sources (built for it): before a channel that happens to refill
         foreach (var b in Builds)
+        {
+            bool pool = b.Spec?["infinite"] is JsonValue iv && iv.TryGetValue<bool>(out var inf) && inf;
             foreach (var g in b.Ghosts)
-                if (StoryConstruction.IsLiquid(g) && g.State == "done") (Refills(w, g.At) ? own : placed).Add(g.At);
+                if (StoryConstruction.IsLiquid(g) && g.State == "done")
+                {
+                    bool refills = Refills(w, g.At);
+                    (refills ? own : placed).Add(g.At);
+                    if (refills && pool) pools.Add(g.At);
+                }
+        }
         P3? best = null;
         double bestScore = double.MaxValue;
         foreach (var s in SourcesNear(w, near, lava))
@@ -342,7 +351,8 @@ public sealed partial class StoryColony
             double score = s.Dist(near) + 3 * Math.Abs(s.Y - near.Y);
             if (!lava)
             {
-                if (own.Contains(s)) score -= 1000;
+                if (pools.Contains(s)) score -= 2000;
+                else if (own.Contains(s)) score -= 1000;
                 else if (Refills(w, s)) score -= 500;
                 else if (!Sides.Any(o => IsSourceAt(w, s.Add(o.Dx, 0, o.Dz), false)) && !IsSourceAt(w, s.Add(0, 1, 0), false) && !IsSourceAt(w, s.Add(0, -1, 0), false))
                     continue; // a lone puddle: scooping it uses it up

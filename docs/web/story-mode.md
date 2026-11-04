@@ -1053,7 +1053,7 @@ fair share), with one stand in reach of them:
   one alert. Buckets are tools: the pawn keeps them (deliveries never take tools); the batch that pours the colony's last
   liquid cells returns them to storage (`stash`).
 - **Fill source** (`FillSource`): a still source within 24 blocks of the cells that won't be used up: one the colony poured that
-  refills (an infinite pool it built) first, then any that refills (two source neighbours over ground: a lake, a pool), then a
+  refills (an infinite pool it built first, then a channel of its own that refills), then any that refills (two source neighbours over ground: a lake, a pool), then a
   source with another source beside it; never a lone puddle, never water the colony poured that doesn't refill (Fox's
   channels), never a cell of the batch. None and no full bucket: blocked, "no still water within 24 blocks to fill a bucket
   from". Lava: any lava source the colony didn't pour.
