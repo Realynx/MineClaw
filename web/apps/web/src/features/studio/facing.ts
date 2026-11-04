@@ -164,35 +164,33 @@ const span = (dirs: Dir[], first: number): Codec => ({
   set: (m, d) => ((m & 7) >= first && (m & 7) <= first + 3 ? (m & 8) | (dirs.indexOf(d) + first) : m),
 });
 
+const TORCH_CODEC: Codec = {
+  get: (m) => (m >= 1 && m <= 4 ? TORCH_WALLS[m - 1]! : null),
+  set: (m, d) => (m >= 1 && m <= 4 ? TORCH_WALLS.indexOf(d) + 1 : m),
+};
+const FRONT_CODEC = span(FRONT_DIRS, 2);
+const BUTTON_CODEC = span(BUTTON_FACES, 1);
+
+/** Each facing family's codec; families not listed have none. */
+const CODECS: Partial<Record<Family, Codec>> = {
+  stairs: low2(STAIRS_DIRS),
+  door: low2(DOOR_DIRS), // both halves: the designs system stores the upper as lower | 8 in both versions
+  bed: low2(SWNE),
+  horizontal: low2(SWNE),
+  gate: low2(SWNE),
+  trapdoor: low2(TRAP_WALLS),
+  torch: TORCH_CODEC,
+  wall: FRONT_CODEC,
+  front: FRONT_CODEC,
+  facing6: FRONT_CODEC,
+  hopper: FRONT_CODEC,
+  skull: FRONT_CODEC,
+  button: BUTTON_CODEC,
+  lever: BUTTON_CODEC,
+};
+
 function codecOf(id: number): Codec | null {
-  switch (familyOf(id)) {
-    case 'stairs':
-      return low2(STAIRS_DIRS);
-    case 'door':
-      return low2(DOOR_DIRS); // both halves: the designs system stores the upper as lower | 8 in both versions
-    case 'bed':
-    case 'horizontal':
-    case 'gate':
-      return low2(SWNE);
-    case 'trapdoor':
-      return low2(TRAP_WALLS);
-    case 'torch':
-      return {
-        get: (m) => (m >= 1 && m <= 4 ? TORCH_WALLS[m - 1]! : null),
-        set: (m, d) => (m >= 1 && m <= 4 ? TORCH_WALLS.indexOf(d) + 1 : m),
-      };
-    case 'wall':
-    case 'front':
-    case 'facing6':
-    case 'hopper':
-    case 'skull':
-      return span(FRONT_DIRS, 2);
-    case 'button':
-    case 'lever':
-      return span(BUTTON_FACES, 1);
-    default:
-      return null;
-  }
+  return CODECS[familyOf(id)] ?? null;
 }
 
 /** The meta's facing, or null (no facing, a floor torch, an upright log). */
@@ -216,6 +214,83 @@ export function withFacing(id: number, meta: number, d: Dir): number {
 }
 const ROT16: Record<Dir, number> = { south: 0, west: 4, north: 8, east: 12 };
 
+/** One placement: the block, the look, the clicked face and what follows from it. */
+interface Placing {
+  id: number;
+  baseMeta: number;
+  look: Dir;
+  face: number;
+  /** The clicked face's direction (null for the top or bottom). */
+  fd: Dir | null;
+  /** The side of the new block the clicked block is on (null for the top or bottom). */
+  wall: Dir | null;
+  modern: boolean;
+  /** A 1.12.2 log's axis bits for the clicked face: 8 = z (north / south), 4 = x (west / east), 0 = y. */
+  axis: number;
+}
+
+/** face → axis bits (faces 2, 3 → z; 4, 5 → x; 0, 1 → y). */
+const AXIS_OF_FACE = [0, 0, 8, 8, 4, 4];
+const VINE_SIDE: Record<Dir, number> = { south: 1, west: 2, north: 4, east: 8 };
+const alongX = (d: Dir) => d === 'east' || d === 'west';
+
+/** End rods and shulker boxes point off the clicked face; pistons, dispensers and droppers face the player; observers look away. */
+function placeFacing6(p: Placing): number {
+  if (p.id === 198 || (p.id >= 219 && p.id <= 234)) return p.face === 0 || p.face === 1 ? p.face : FRONT_OF(p.fd!);
+  return FRONT_OF(p.id === 218 ? p.look : opposite(p.look));
+}
+
+function placeButton(p: Placing): number {
+  if (p.wall) return BUTTON_FACES.indexOf(opposite(p.wall)) + 1;
+  if (!p.modern) return p.baseMeta;
+  return p.face === 0 ? 0 : 5;
+}
+
+function placeLever(p: Placing): number {
+  if (p.wall) return BUTTON_FACES.indexOf(opposite(p.wall)) + 1;
+  if (p.face === 0 && p.modern) return alongX(p.look) ? 0 : 7;
+  return alongX(p.look) ? 6 : 5;
+}
+
+/** A tripwire hook faces off its wall; the rest of the family turns its face to the player. */
+function placeHorizontal(p: Placing): number {
+  if (p.id === 131) return low2(SWNE).set(0, opposite(p.wall ?? p.look));
+  return low2(SWNE).set(p.baseMeta & ~3, opposite(p.look));
+}
+
+function placeQuartz(p: Placing): number {
+  if (p.baseMeta < 2) return p.baseMeta;
+  if (p.axis === 4) return 3;
+  return p.axis === 8 ? 4 : 2;
+}
+
+const placeRail = (p: Placing) => (alongX(p.look) ? 1 : 0);
+
+/** The placement rule per family; a family not listed keeps its base meta. */
+const PLACE: Partial<Record<Family, (p: Placing) => number>> = {
+  stairs: (p) => low2(STAIRS_DIRS).set(p.baseMeta & ~3, p.look),
+  door: (p) => low2(DOOR_DIRS).set(p.baseMeta & 4, p.look),
+  bed: (p) => low2(SWNE).set(0, p.look),
+  wall: (p) => FRONT_OF(opposite(p.wall ?? p.look)),
+  skull: (p) => (p.wall ? FRONT_OF(opposite(p.wall)) : 1),
+  front: (p) => FRONT_OF(opposite(p.look)),
+  facing6: placeFacing6,
+  hopper: (p) => (p.wall ? FRONT_OF(p.wall) : 0),
+  torch: (p) => (p.wall ? TORCH_WALLS.indexOf(p.wall) + 1 : 5),
+  button: placeButton,
+  lever: placeLever,
+  vine: (p) => (p.wall ? VINE_SIDE[p.wall] : p.baseMeta),
+  trapdoor: (p) => low2(TRAP_WALLS).set(p.baseMeta & ~3, p.wall ?? p.look),
+  gate: (p) => low2(SWNE).set(0, p.look),
+  horizontal: placeHorizontal,
+  rail: placeRail,
+  poweredrail: placeRail,
+  rotation16: (p) => ROT16[opposite(p.look)],
+  log: (p) => (p.modern ? (p.baseMeta & 3) | p.axis : p.baseMeta),
+  pillar: (p) => p.axis,
+  quartz: placeQuartz,
+};
+
 /**
  * The meta of a block placed by someone looking `look` (horizontal), on face `face` of the block it was placed against
  * (Minecraft side order), as the game does it: stairs go up away from the player, a door faces the way the player looks, a bed
@@ -224,63 +299,19 @@ const ROT16: Record<Dir, number> = { south: 0, west: 4, north: 8, east: 12 };
  * a sign stands facing the player, a 1.12.2 log or pillar lies along the clicked face's axis.
  */
 export function placeMeta(id: number, baseMeta: number, look: Dir, face: number, version: Version): number {
-  const fd = FACE_DIR[face];
-  const wall = fd ? opposite(fd) : null; // the clicked block is on this side of the new one
-  const modern = version === '1.12.2';
-  const axis = face === 2 || face === 3 ? 8 : face === 4 || face === 5 ? 4 : 0;
-  switch (familyOf(id)) {
-    case 'stairs':
-      return low2(STAIRS_DIRS).set(baseMeta & ~3, look);
-    case 'door':
-      return low2(DOOR_DIRS).set(baseMeta & 4, look);
-    case 'bed':
-      return low2(SWNE).set(0, look);
-    case 'wall':
-      return FRONT_OF(opposite(wall ?? look));
-    case 'skull':
-      return wall ? FRONT_OF(opposite(wall)) : 1;
-    case 'front':
-      return FRONT_OF(opposite(look));
-    case 'facing6':
-      // End rods and shulker boxes point off the clicked face; pistons, dispensers and droppers face the player; observers
-      // look away from them.
-      if (id === 198 || (id >= 219 && id <= 234)) return face === 0 ? 0 : face === 1 ? 1 : FRONT_OF(fd!);
-      return FRONT_OF(id === 218 ? look : opposite(look));
-    case 'hopper':
-      return wall ? FRONT_OF(wall) : 0;
-    case 'torch':
-      return wall ? TORCH_WALLS.indexOf(wall) + 1 : 5;
-    case 'button':
-      if (wall) return BUTTON_FACES.indexOf(opposite(wall)) + 1;
-      return modern ? (face === 0 ? 0 : 5) : baseMeta;
-    case 'lever':
-      if (wall) return BUTTON_FACES.indexOf(opposite(wall)) + 1;
-      if (face === 0 && modern) return look === 'east' || look === 'west' ? 0 : 7;
-      return look === 'east' || look === 'west' ? 6 : 5;
-    case 'vine':
-      return wall ? { south: 1, west: 2, north: 4, east: 8 }[wall] : baseMeta;
-    case 'trapdoor':
-      return low2(TRAP_WALLS).set(baseMeta & ~3, wall ?? look);
-    case 'gate':
-      return low2(SWNE).set(0, look);
-    case 'horizontal':
-      if (id === 131) return low2(SWNE).set(0, opposite(wall ?? look)); // a tripwire hook faces off its wall
-      return low2(SWNE).set(baseMeta & ~3, opposite(look));
-    case 'rail':
-      return look === 'east' || look === 'west' ? 1 : 0;
-    case 'poweredrail':
-      return look === 'east' || look === 'west' ? 1 : 0;
-    case 'rotation16':
-      return ROT16[opposite(look)];
-    case 'log':
-      return modern ? (baseMeta & 3) | axis : baseMeta;
-    case 'pillar':
-      return axis;
-    case 'quartz':
-      return baseMeta >= 2 ? (axis === 4 ? 3 : axis === 8 ? 4 : 2) : baseMeta;
-    default:
-      return baseMeta;
-  }
+  const fd = FACE_DIR[face] ?? null;
+  const p: Placing = {
+    id,
+    baseMeta,
+    look,
+    face,
+    fd,
+    wall: fd ? opposite(fd) : null, // the clicked block is on this side of the new one
+    modern: version === '1.12.2',
+    axis: AXIS_OF_FACE[face] ?? 0,
+  };
+  const rule = PLACE[familyOf(id)];
+  return rule ? rule(p) : baseMeta;
 }
 
 /** Rail shapes turned clockwise: 0 N-S ↔ 1 E-W, ascending E → S → W → N (2 → 5 → 3 → 4), curves SE → SW → NW → NE (6 → 9). */
@@ -290,55 +321,95 @@ function railTurn(shape: number, q: number): number {
   return shape;
 }
 
+/** A log or pillar's axis turned a quarter: x (4) ↔ z (8); upright (0) stays. */
+function swapAxis(meta: number): number {
+  const axis = meta & 12;
+  if (axis === 4) return (meta & ~12) | 8;
+  return axis === 8 ? (meta & ~12) | 4 : meta;
+}
+
+/** Vine side bits turned `q` quarters: S → W → N → E → S. */
+function turnVine(meta: number, q: number): number {
+  let m = meta & 15;
+  for (let i = 0; i < q; i++) m = ((m << 1) | (m >> 3)) & 15;
+  return m;
+}
+
+/** A floor or ceiling lever's two orientations swap on a quarter turn. */
+const LEVER_FLOOR_TURN: Record<number, number> = { 5: 6, 6: 5, 0: 7, 7: 0 };
+
+/** Families whose quarter turns are not a plain codec turn; undefined = use the codec. */
+function specialTurn(fam: Family, meta: number, q: number, version: Version): number | undefined {
+  const quarter = q % 2 === 1 ? QUARTER_TURNS[fam]?.(meta, version) : undefined;
+  return quarter ?? TURNS[fam]?.(meta, q);
+}
+
+/** A quartz pillar's x (3) and z (4) swap on a quarter turn. */
+const swapQuartz = (meta: number) => (meta === 3 ? 4 : meta === 4 ? 3 : meta);
+
+/** Odd quarter turns that swap an axis or orientation; undefined = no special rule for this meta. */
+const QUARTER_TURNS: Partial<Record<Family, (meta: number, version: Version) => number | undefined>> = {
+  log: (meta, version) => (version === '1.12.2' ? swapAxis(meta) : undefined),
+  pillar: (meta) => swapAxis(meta),
+  quartz: swapQuartz,
+  lever: (meta) => ((meta & 7) in LEVER_FLOOR_TURN ? (meta & 8) | LEVER_FLOOR_TURN[meta & 7]! : undefined),
+};
+
+const TURNS: Partial<Record<Family, (meta: number, q: number) => number>> = {
+  rotation16: (meta, q) => (meta + q * 4) & 15,
+  rail: (meta, q) => railTurn(meta, q),
+  poweredrail: (meta, q) => (meta & 8) | railTurn(meta & 7, q),
+  vine: turnVine,
+};
+
 /** A meta turned `quarters` clockwise (seen from above) with its block. */
 export function rotateMeta(id: number, meta: number, quarters: number, version: Version): number {
   const q = ((quarters % 4) + 4) % 4;
   if (q === 0) return meta;
-  const fam = familyOf(id);
-  if (((fam === 'log' && version === '1.12.2') || fam === 'pillar') && q % 2 === 1) {
-    const axis = meta & 12;
-    return axis === 4 ? (meta & ~12) | 8 : axis === 8 ? (meta & ~12) | 4 : meta;
-  }
-  if (fam === 'quartz' && q % 2 === 1) return meta === 3 ? 4 : meta === 4 ? 3 : meta;
-  if (fam === 'rotation16') return (meta + q * 4) & 15;
-  if (fam === 'rail') return railTurn(meta, q);
-  if (fam === 'poweredrail') return (meta & 8) | railTurn(meta & 7, q);
-  if (fam === 'vine') {
-    let m = meta & 15;
-    for (let i = 0; i < q; i++) m = ((m << 1) | (m >> 3)) & 15; // S → W → N → E → S
-    return m;
-  }
-  if (fam === 'lever' && q % 2 === 1 && [0, 5, 6, 7].includes(meta & 7))
-    return (meta & 8) | ({ 5: 6, 6: 5, 0: 7, 7: 0 } as Record<number, number>)[meta & 7]!;
+  const special = specialTurn(familyOf(id), meta, q, version);
+  if (special !== undefined) return special;
+  return codecTurn(id, meta, (d) => turn(d, q));
+}
+
+/** The meta with its codec's facing moved by `f`; unchanged without a codec or a facing. */
+function codecTurn(id: number, meta: number, f: (d: Dir) => Dir): number {
   const c = codecOf(id);
   const d = c?.get(meta);
-  return c && d ? c.set(meta, turn(d, q)) : meta;
+  return c && d ? c.set(meta, f(d)) : meta;
 }
+
+const CURVE_MIRROR: Record<number, [number, number]> = { 6: [7, 9], 7: [6, 8], 8: [9, 7], 9: [8, 6] };
+
+/** A rail shape mirrored: ascending E/W (2, 3) flip across x, N/S (4, 5) across z, curves swap. */
+function mirrorRailShape(s: number, axis: 'x' | 'z'): number {
+  if ((s === 2 || s === 3) && axis === 'x') return s ^ 1;
+  if ((s === 4 || s === 5) && axis === 'z') return s ^ 1;
+  return s >= 6 ? CURVE_MIRROR[s]![axis === 'x' ? 0 : 1] : s;
+}
+
+function mirrorRail(fam: Family, meta: number, axis: 'x' | 'z'): number {
+  const mask = fam === 'rail' ? 15 : 7;
+  return (meta & ~mask) | mirrorRailShape(meta & mask, axis);
+}
+
+/** Vine side bits mirrored: across x the W (2) and E (8) bits swap, across z S (1) and N (4). */
+function mirrorVine(meta: number, axis: 'x' | 'z'): number {
+  const m = meta & 15;
+  return axis === 'x' ? (m & 5) | ((m & 2) << 2) | ((m & 8) >> 2) : (m & 10) | ((m & 1) << 2) | ((m & 4) >> 2);
+}
+
+const MIRRORS: Partial<Record<Family, (fam: Family, meta: number, axis: 'x' | 'z') => number>> = {
+  rotation16: (_fam, meta, axis) => (axis === 'x' ? (16 - meta) & 15 : (8 - meta) & 15),
+  rail: mirrorRail,
+  poweredrail: mirrorRail,
+  vine: (_fam, meta, axis) => mirrorVine(meta, axis),
+};
 
 /** A meta mirrored across x (east ↔ west) or z (north ↔ south). */
 export function mirrorMeta(id: number, meta: number, axis: 'x' | 'z'): number {
   const fam = familyOf(id);
-  if (fam === 'rotation16') return axis === 'x' ? (16 - meta) & 15 : (8 - meta) & 15;
-  if (fam === 'rail' || fam === 'poweredrail') {
-    const mask = fam === 'rail' ? 15 : 7;
-    const s = meta & mask;
-    const m =
-      (s === 2 || s === 3) && axis === 'x'
-        ? s ^ 1
-        : (s === 4 || s === 5) && axis === 'z'
-          ? s ^ 1
-          : s >= 6
-            ? ({ 6: [7, 9], 7: [6, 8], 8: [9, 7], 9: [8, 6] } as Record<number, [number, number]>)[s]![axis === 'x' ? 0 : 1]
-            : s;
-    return (meta & ~mask) | m;
-  }
-  if (fam === 'vine') {
-    const m = meta & 15;
-    return axis === 'x' ? (m & 5) | ((m & 2) << 2) | ((m & 8) >> 2) : (m & 10) | ((m & 1) << 2) | ((m & 4) >> 2);
-  }
-  const c = codecOf(id);
-  const d = c?.get(meta);
-  return c && d ? c.set(meta, mirror(d, axis)) : meta;
+  const special = MIRRORS[fam];
+  return special ? special(fam, meta, axis) : codecTurn(id, meta, (d) => mirror(d, axis));
 }
 
 /** The upper half of a door placed with lower meta `lower` (the designs system's convention in both versions: lower | 8). */
