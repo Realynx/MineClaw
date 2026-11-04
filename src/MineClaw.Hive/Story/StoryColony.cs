@@ -263,6 +263,7 @@ public sealed partial class StoryColony : IStoryPort
             {
                 case "progress":
                     cur.Progress = pct;
+                    if (cur.Source == "escape" && note != null) EscapeStep(body, note); // what a stuck pawn tries now
                     if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
                     if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
                     if (p != null) p.Rev = Bump();

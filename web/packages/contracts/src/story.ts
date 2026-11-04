@@ -331,7 +331,10 @@ export const StoryPawn = z.object({
   drafted: z.boolean().nullish(),
   state: z.string().nullish().describe(STORY_PAWN_STATES.join(' | ')),
   leaving: z.boolean().nullish().describe('removed from the colony: storing its things, then it logs out'),
-  stuck: z.string().nullish().describe('why the colony takes it for stuck (a pit, a cave, out-of-reach targets), else null'),
+  stuck: z
+    .object({ since: z.string().nullish(), at: Vec3i.nullish(), reason: z.string().nullish(), step: z.string().nullish(), attempts: z.number().int().nullish() })
+    .nullish()
+    .describe('while the colony takes it for stuck (a pit, a ravine, a cave, out-of-reach targets): since when, where, why, what it tries now'),
   offlineReason: z
     .string()
     .nullish()

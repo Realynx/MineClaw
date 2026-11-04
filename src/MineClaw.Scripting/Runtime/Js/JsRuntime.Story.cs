@@ -33,7 +33,8 @@ internal sealed partial class JsRuntime
         {
             s.SafePoint();
             var toward = Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null;
-            return V(Story.PitScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, toward));
+            bool climb = Jint.Runtime.TypeConverter.ToBoolean(JsConvert.Arg(a, 1)); // no way home from here: climb toward it whatever the shape
+            return V(Story.PitScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, toward, climb));
         });
         // story.dig's eyes (Story/ReachScan.cs): a block above reach, the column to nerd-pole from and what to pole with.
         H(h, "storyReach", a =>

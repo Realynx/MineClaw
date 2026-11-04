@@ -338,21 +338,35 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   5. ask the colony for help (`story.stuck`).
 - **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute, or a pawn under ground (three blocks of
   natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and with no queued order: the
-  pawn's next job is `escape` (label "stuck: getting out", "stuck? heading home", "under ground: heading back up"). It gets out by
-  itself, else walks home, else asks for help. A pawn that moved more than 4 blocks from where it got stuck is free again.
+  pawn's next job is `escape` (label "stuck: getting out (attempt N)", "stuck? heading home", "under ground: heading back up").
+- **Stuck is sticky (live 11-04, a ravine at y 49 under home at y 63).** Pawns stuck in the ravine went back to work after a few
+  blocks' walk along its floor and failed task after task, about 100 failures each in 20 minutes. A stuck pawn now gets only escape work
+  (never a regular task) until its escape walks it home. That walk is the path check: the `escape` job is done only when `go(home)`
+  succeeds. The state carries `stuck: {since, at, reason, step, attempts}`; `step` is what it tries now. Each step goes to the log
+  ("stuck: no way home (…): trying a staircase toward home", "teleporting home (rescue_teleport)").
+- **The escape job:**
+  1. out of a pit, a cave or water by itself (above);
+  2. walk home (a ravine with a walkable slope ends here);
+  3. with no walkable way home, whatever the shape (a ravine, a canyon, a deep hole), climb toward home (`storyPit(home, climb)`):
+     walk to the floor cell nearest home (`approach`), then cut a staircase up the wall toward home, one step up a block, under the
+     same safe rules as above. Pillar when the wall can't be cut, dig for blocks when it has none. It stops level with home, and then
+     walks home again;
+  4. nothing works: `story.stuck`.
 - **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
   `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
   needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
   **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
   coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
-  why.
+  why. Blocks are thrown into a pit only: a pawn with no way home from a ravine or a canyon is teleported at once, because a rescuer
+  would only walk in after it. A teleport counts once the pawn shows up at home. When it hasn't within 20 s (the server refused the
+  `/tp`), one warning says so and the colony doesn't try again.
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.
 - **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
   Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
   ignored (see Defending).
-- The pawn's row carries `stuck` (why, or null).
+- The pawn's row carries `stuck` (`{since, at, reason, step, attempts}`, or null); the web lists stuck pawns as a condition.
 
 ### Keeping loot while gathering (added 2026-11-04)
 

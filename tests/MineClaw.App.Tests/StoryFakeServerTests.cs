@@ -419,6 +419,33 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(7, 64, 4)] = Blocks.Planks;                 // a built block to deconstruct
     });
 
+    /// <summary>Live 11-04: pawns in a ravine under home "looks stuck … 3 targets out of reach in a row" ×6 and kept cycling tasks.
+    /// Now: stuck after three, only escape work, a staircase cut up the ravine wall toward home, then back to its work.</summary>
+    [Fact]
+    public Task A_pawn_on_a_ravine_floor_cuts_a_stair_up_the_wall_and_goes_back_to_work() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(3, c.Designate("add", "cut", null, [new P3(4, 64, 4), new P3(5, 64, 4), new P3(6, 64, 4)], null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => c.Designations.Count == 0, 240_000),
+            "cut: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason}")) + " | " + x.Diag() + " | " + string.Join(" / ", ClientLog.TakeLast(20)));
+        Assert.False(c.IsStuck(x.Pawns[0]));
+        Assert.Contains(srv.Dug, d => d.Z < 15 && d.Y >= 52 && d.Y <= 63); // the stair in the ravine's north wall
+        Assert.DoesNotContain(srv.Dug, d => d.Y < 50);                      // never below its floor
+    }, s =>
+    {
+        EmptyHanded(s);
+        for (int x = -4; x <= 22; x++)
+            for (int z = -4; z <= 22; z++)
+                for (int y = 50; y <= 62; y++) s.Blocks[(x, y, z)] = Blocks.Dirt; // deep dirt (quick to dig) under the grass
+        for (int x = 2; x <= 20; x++)
+            for (int z = 15; z <= 17; z++)
+                for (int y = 51; y <= 63; y++) s.Blocks.Remove((x, y, z));     // a ravine 3 wide, 13 deep, 19 long, no slope
+        foreach (var at in new[] { (4, 64, 4), (5, 64, 4), (6, 64, 4) }) { s.Blocks[at] = 31; s.Metas[at] = 1; } // tall grass at home
+        s.SpawnAt = (10.5, 51, 16.5); // the pawns come in on its floor
+    });
+
     /// <summary>Fox 11-04: "it should nerd-pole up to reach those blocks on its own and destroy the nerd pole on the way back down." A
     /// 14-log tree is felled whole from a dirt pillar that is dug back down, its dirt collected again.</summary>
     [Fact]
