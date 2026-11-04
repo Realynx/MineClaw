@@ -44,7 +44,7 @@ public sealed partial class StoryColony
     {
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick
-        try { return PickCore(p, live); }
+        try { return PillarHint(PickCore(p, live), live); } // a job up high: blocks to climb with (StoryColony.Reach.cs)
         finally { _pickEnts = null; }
     }
 
@@ -178,9 +178,11 @@ public sealed partial class StoryColony
         if (World is not { } w) return [];
         var cats = StoryCategories.For(w.Data);
         bool foodKept = false;
+        int pillar = PillarKeepKind(live); // its small stack of blocks to nerd-pole with stays (StoryColony.Reach.cs)
         var list = new List<Stack>();
         foreach (var s in live.Inventory)
         {
+            if (s.Id == pillar) continue;
             var leaf = cats.LeafOf(s.Id, s.Meta);
             if (leaf is "tools" or "weapons" or "armour") continue;
             if (!foodKept && w.Data.Food(s.Id, s.Meta) != null && !Raw(w, s.Id)) { foodKept = true; continue; }
@@ -492,7 +494,7 @@ public sealed partial class StoryColony
                 }
                 break;
             case "ghost":
-                GhostDone(j);
+                BatchDone(p, j, note);
                 break;
             case "bill":
             case "furnace":
@@ -576,7 +578,9 @@ public sealed partial class StoryColony
         why.Contains("can't reach", StringComparison.OrdinalIgnoreCase) || why.Contains("can't see/reach", StringComparison.OrdinalIgnoreCase)
         || why.Contains("someone is standing on it", StringComparison.OrdinalIgnoreCase) || why.Contains("is busy", StringComparison.OrdinalIgnoreCase)
         || why.StartsWith("busy", StringComparison.OrdinalIgnoreCase) || why.Contains("a hive claim", StringComparison.OrdinalIgnoreCase)
-        || why.Contains("is not loaded", StringComparison.OrdinalIgnoreCase);
+        || why.Contains("is not loaded", StringComparison.OrdinalIgnoreCase)
+        // A placement out of reach from where the pawn got to, or with someone in the cell: it walks again next time.
+        || why.Contains("couldn't get closer", StringComparison.OrdinalIgnoreCase) || why.Contains("standing in it", StringComparison.OrdinalIgnoreCase);
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
@@ -590,7 +594,7 @@ public sealed partial class StoryColony
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
         // (live 11-04: one pawn in a hole failed grass after grass for everyone; StoryColony.Rescue.cs).
         if (PawnOnly(p, j, why)) return;
-        if (j.Source == "designation" && j.Lease != null && Transient(why) && !Unreachable(why))
+        if (j.Source is "designation" or "ghost" && j.Lease != null && Transient(why) && !Unreachable(why))
         {
             // Not now, not a failure (live 11-03: "can't reach dirt" ×46, "someone is standing on it" ×6, a tall plant "busy" ×11 all
             // counted, alerted and backed off as failures): the target rests a little, no fail count, no alert; only when it keeps
@@ -632,7 +636,7 @@ public sealed partial class StoryColony
                 }
                 break;
             case "ghost":
-                GhostFailed(p, j, why);
+                BatchFailed(p, j, why);
                 break;
             case "bill":
             case "furnace":

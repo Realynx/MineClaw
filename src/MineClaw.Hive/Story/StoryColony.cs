@@ -27,6 +27,11 @@ public sealed class ActiveJob
     public List<(P3 Chest, List<Stack> Stacks)> Puts { get; } = new();
     public double Xp { get; init; } = 20;
     public int Count { get; init; }
+    /// <summary>A build job's cells (ghost ids "build|x,y,z", its own first), each leased <c>g:</c>+id to the pawn while it works the
+    /// batch; a cell leaves the list as the pawn reports it (docs/web/story-mode.md "Building fast"). Null for other jobs.</summary>
+    public List<string>? Cells { get; set; }
+    /// <summary>Runs once when the job is handed to the pawn (a pick that only probes for work claims nothing).</summary>
+    public Action? Assign { get; set; }
     /// <summary>Further targets the job holds besides <see cref="Lease"/> (a hauler's batch of drops), leased and released with it.</summary>
     public List<string> MoreLeases { get; } = new();
 }
@@ -217,6 +222,7 @@ public sealed partial class StoryColony : IStoryPort
             var live = Host.Live(body);
             var job = Pick(p, live);
             if (job.Lease != null) _leases[job.Lease] = (body, Now + LeaseTtl);
+            job.Assign?.Invoke();
             foreach (var k in job.MoreLeases) _leases[k] = (body, Now + LeaseTtl);
             _current[body] = job;
             p.Rev = Bump();
@@ -258,6 +264,7 @@ public sealed partial class StoryColony : IStoryPort
                 case "progress":
                     cur.Progress = pct;
                     if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
+                    if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
                     if (p != null) p.Rev = Bump();
                     return true;
                 case "done" when p != null && cur.Source == "designation" && Left(cur, body) is { } left:
@@ -299,7 +306,7 @@ public sealed partial class StoryColony : IStoryPort
         foreach (var k in j.MoreLeases) _leases.Remove(k);
         if (j.Lease == null) return;
         _leases.Remove(j.Lease);
-        if (j.Source == "ghost" && FindGhost(j.SourceId) is { } g && g.State == "leased") { g.State = "todo"; g.Rev = Touch(); }
+        if (j.Source == "ghost") ReleaseCells(j);
     }
 
     /// <summary>Drops a pawn's current job (an order, drafted, paused, stop) and cuts its action so it asks again.</summary>
@@ -374,6 +381,7 @@ public sealed partial class StoryColony : IStoryPort
                     && l.Until - Now < LeaseTtl / 2 && Host.Live(owner) is { Online: true, ScriptRunning: true })
                 {
                     _leases[cur.Lease] = (owner, Now + LeaseTtl);
+                    RenewCells(owner, cur);
                     foreach (var k in cur.MoreLeases) _leases[k] = (owner, Now + LeaseTtl);
                 }
             foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())

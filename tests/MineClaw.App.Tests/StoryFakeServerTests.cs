@@ -66,10 +66,14 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
                 ? new ItemStack((short)d[0].ItemId, (byte)Math.Max(1, d[0].Min), (short)d[0].Damage) : ItemStack.Empty;
     }
 
+    /// <summary>The clients' chop/pillar/dig lines (diagnostics for the climbing tests).</summary>
+    private static readonly ConcurrentQueue<string> ClientLog = new();
+
     private static ClientOptions Fast(ClientOptions o, FakeServer s) => o with
     {
         TickInterval = TimeSpan.FromMilliseconds(5), ChatInterval = TimeSpan.Zero, RespawnDelay = TimeSpan.FromMilliseconds(10),
         ConnectionFactory = s.CreateConnection, HostileAlertRadius = 0, AutoReconnect = false,
+        Log = m => { o.Log?.Invoke(m); if (m.Contains("chop") || m.Contains("pillar") || m.Contains("dig")) { ClientLog.Enqueue(m); while (ClientLog.Count > 60) ClientLog.TryDequeue(out _); } },
     };
 
     private static async Task<bool> Until(Func<bool> cond, int ms)
@@ -304,6 +308,40 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Contains(c.Alerts, a => a.Text.Contains("is done"));
     });
 
+    /// <summary>
+    /// Building fast (docs/web/story-mode.md "Building fast"; live 11-03 "building floors goes very slowly"): three builders split a
+    /// 6×6 planks floor into batches, each fetches its share in one chest session and lays it from one stand spot. No cell fails
+    /// (no "busy" chest, no "too far", no "occupied" for a cell that is already built) and the floor is done in well under a minute.
+    /// </summary>
+    [Fact]
+    public Task Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures() => Colony("1.12.2", 3, async x =>
+    {
+        var c = x.C;
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Wood").Error);
+        c.AddContents(c.StorageAt(WoodChest)!, new Stack(Blocks.Planks, 0, 64)); // what the bot remembers of the chest
+        Only(x, WorkTypes.Build);
+        int logBefore;
+        lock (x.Log) logBefore = x.Log.Count;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Null(c.BuildsOp("add", new JsonArray(new JsonObject
+        {
+            ["kind"] = "floor", ["area"] = new JsonArray(14, 64, 14, 19, 64, 19), ["material"] = "planks",
+        }), null).Error);
+        var b = c.Builds.Single();
+        Assert.Equal(36, b.BlocksTotal);
+        Assert.True(await Until(() => b.Status == "done", 120_000), $"floor: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason}: " + x.Diag());
+        sw.Stop();
+        var srv = x.Servers[x.Pawns[0]];
+        foreach (var g in b.Ghosts) Assert.Equal(Blocks.Planks, srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)));
+        List<string> lines;
+        lock (x.Log) lines = x.Log.Skip(logBefore).Where(l => l.StartsWith("story story-1:", StringComparison.Ordinal) && l.Contains(" failed: ")).ToList();
+        output.WriteLine($"6x6 floor by 3 pawns: {sw.Elapsed.TotalSeconds:0.0} s; placed per pawn: " +
+                         string.Join(", ", x.Pawns.Select(p => $"{p} {x.Placed.GetValueOrDefault(p)}")));
+        Assert.True(lines.Count == 0, "failures: " + string.Join(" | ", lines));
+        Assert.True(x.Pawns.Count(p => x.Placed.GetValueOrDefault(p) > 0) >= 2, "the floor was shared: " + string.Join(", ", x.Pawns.Select(p => $"{p} {x.Placed.GetValueOrDefault(p)}")));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(60), $"took {sw.Elapsed.TotalSeconds:0} s");
+    }, s => s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Planks, 64, 0));
+
     [Theory]
     [InlineData("b1.8.1")]
     [InlineData("1.12.2")]
@@ -380,6 +418,26 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(6, 64, 4)] = Blocks.Dirt;                   // a dirt block to mine
         s.Blocks[(7, 64, 4)] = Blocks.Planks;                 // a built block to deconstruct
     });
+
+    /// <summary>Fox 11-04: "it should nerd-pole up to reach those blocks on its own and destroy the nerd pole on the way back down." A
+    /// 14-log tree is felled whole from a dirt pillar that is dug back down, its dirt collected again.</summary>
+    [Fact]
+    public Task A_pawn_nerd_poles_up_a_tall_tree_takes_it_all_and_leaves_no_pillar() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(1, c.Designate("add", "chop", null, [new P3(16, 64, 16)], null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => c.Designations.Count == 0, 180_000),
+            "done: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason}")) + " | " + x.Diag());
+        Assert.Equal(0, Enumerable.Range(64, 14).Count(y => srv.Blocks.GetValueOrDefault((16, y, 16)) == Blocks.Log)); // the whole trunk
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("took what it could reach"));
+        // No pillar left: no dirt standing above the ground around the trunk.
+        var left = srv.Blocks.Where(b => b.Value == Blocks.Dirt && b.Key.Item2 >= 64 && Math.Abs(b.Key.Item1 - 16) <= 2 && Math.Abs(b.Key.Item3 - 16) <= 2).ToList();
+        string PillarLog() => string.Join(" / ", ClientLog.TakeLast(40));
+        Assert.True(left.Count == 0, $"pillar left: {string.Join(" ", left.Select(b => b.Key))} | {PillarLog()}");
+        Assert.True(srv.Inventory.Where(i => !i.IsEmpty && i.Id == Blocks.Dirt).Sum(i => i.Count) >= 28, "the pillar's dirt came back");
+    }, s => { EmptyHanded(s); s.Inventory[37] = new ItemStack((short)Blocks.Dirt, 32, 0); Tree(s, 16, 16, 14); });
 
     /// <summary>Live 11-04: maid_chan_114 stood for good in a hole two deep ("no path … it's 2 blocks up"). Now it digs a stair out
     /// (no blocks on it) and goes on to its job.</summary>

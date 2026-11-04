@@ -81,7 +81,10 @@ public sealed partial class StoryColony
                 foreach (var g in b.Ghosts)
                     if (g.State is not ("done" or "unsupported")) cells.Add(g.At);
         var fronts = Storages.SelectMany(s => s.DoubleWith is { } d ? new[] { s.Chest, d } : [s.Chest]).Concat(Benches.Select(b => b.Pos)).ToList();
+        // Inside a wall or fence ring still going up: an idle pawn there gets walled in (FakeServer: a hut's pawn shut in).
+        var rings = Builds.Where(b => b.Status != "done").Select(Footprint).Where(f => f.Walled).ToList();
         return c => cells.Contains(c) || cells.Contains(c.Add(0, -1, 0)) || cells.Contains(c.Add(0, 1, 0))
+            || rings.Any(f => c.X >= f.X1 && c.X <= f.X2 && c.Z >= f.Z1 && c.Z <= f.Z2)
             || fronts.Any(f => Math.Abs(f.X - c.X) <= 1 && Math.Abs(f.Z - c.Z) <= 1 && Math.Abs(f.Y - c.Y) <= 1)
             || Forbidden(c) || Forbidden(c.Add(0, -1, 0));
     }
@@ -224,6 +227,8 @@ public sealed partial class StoryColony
             var job = Urgent(p, live) ?? (workHours && !resting ? Work(p, live) : null);
             if (job == null) continue;
             if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
+            foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
+            job.Assign?.Invoke(); // a build batch leases its cells now (as Next does)
             _current[p.Name] = job;
             p.Rev = Bump();
         }

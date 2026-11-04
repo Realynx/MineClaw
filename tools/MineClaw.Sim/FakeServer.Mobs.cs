@@ -29,6 +29,8 @@ public partial class FakeServer
         public DateTime LastHurt = DateTime.MinValue, LastAttack = DateTime.MinValue;
         public float LastDamage;
         public bool Dead;
+        /// <summary>Knockback motion (blocks per AI tick) and the height above its walking level while it flies.</summary>
+        public double VX, VY, VZ, Lift;
     }
 
     /// <summary>One melee hit as the server judged it.</summary>
@@ -71,7 +73,11 @@ public partial class FakeServer
     public void ApplyEffect(int entityId, int effect, int amplifier, int ticks) =>
         Send(new EntityEffectPacket { EntityId = entityId, EffectId = (sbyte)effect, Amplifier = (sbyte)amplifier, Duration = (short)ticks });
 
-    /// <summary>Runs the mob AI: chasing mobs walk 0.12 b/t toward the bot and hit it (1.5 blocks, once per 20 ticks).</summary>
+    /// <summary>
+    /// Runs the mob AI: chasing mobs walk 0.12 b/t toward the bot (stopping at 1.2) and hit it once per 20 ticks within the vanilla
+    /// melee reach (<c>EntityAIAttackMelee.getAttackReachSqr</c> against <c>getDistanceSq</c> to the player's feet). A mob that our
+    /// hit knocked back flies and slides first (<see cref="KnockbackTick"/>).
+    /// </summary>
     public void StartMobAi()
     {
         _ai = new CancellationTokenSource();
@@ -82,34 +88,98 @@ public partial class FakeServer
             {
                 await Task.Delay(TickMs, CancellationToken.None).ConfigureAwait(false);
                 if (double.IsNaN(_px)) continue;
-                lock (BlockLock)
-                    foreach (var m in Mobs.Values)
-                    {
-                        if (!m.Dead && m.Archer) { ArcherTick(m); continue; }
-                        if (m.Dead || !m.Chase) continue;
-                        double dx = _px - m.X, dz = _pz - m.Z, d = Math.Sqrt(dx * dx + dz * dz);
-                        if (d > 1.2)
-                        {
-                            double step = Math.Min(0.12, d - 1.2);
-                            m.X += dx / d * step;
-                            m.Z += dz / d * step;
-                            byte yaw = (byte)((int)(Math.Atan2(-dx, dz) * 180 / Math.PI / 360 * 256) & 0xFF);
-                            Send(new EntityTeleportPacket
-                            {
-                                EntityId = m.Id, X = FixedPoint.ToAbsolute(m.X), Y = FixedPoint.ToAbsolute(m.Y), Z = FixedPoint.ToAbsolute(m.Z),
-                                Exact = (m.X, m.Y, m.Z), Yaw = yaw,
-                            });
-                        }
-                        else if (DateTime.UtcNow - m.LastAttack > TimeSpan.FromMilliseconds(TickMs * 20) && Health > 0 && !PlayerBoxedIn())
-                        {
-                            m.LastAttack = DateTime.UtcNow;
-                            Health = Math.Max(1, Health - m.AttackDamage);
-                            Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
-                            Send(new EntityStatusPacket { EntityId = EntityId, Status = 2 });
-                        }
-                    }
+                MobAiTick();
             }
         }, CancellationToken.None);
+    }
+
+    private void MobAiTick()
+    {
+        lock (BlockLock)
+            foreach (var m in Mobs.Values)
+            {
+                if (!m.Dead && m.Archer) { ArcherTick(m); continue; }
+                if (m.Dead || !m.Chase) continue;
+                if (KnockbackTick(m)) continue; // in the air: no walking, no attack
+                double dx = _px - m.X, dz = _pz - m.Z, d = Math.Sqrt(dx * dx + dz * dz);
+                if (d > 1.2)
+                {
+                    double step = Math.Min(0.12, d - 1.2);
+                    m.X += dx / d * step;
+                    m.Z += dz / d * step;
+                    byte yaw = (byte)((int)(Math.Atan2(-dx, dz) * 180 / Math.PI / 360 * 256) & 0xFF);
+                    Send(new EntityTeleportPacket
+                    {
+                        EntityId = m.Id, X = FixedPoint.ToAbsolute(m.X), Y = FixedPoint.ToAbsolute(m.Y), Z = FixedPoint.ToAbsolute(m.Z),
+                        Exact = (m.X, m.Y, m.Z), Yaw = yaw,
+                    });
+                }
+                // Its own check, not the walk's else: the walk ends at 1.2 only up to rounding, and that rounding used to decide
+                // whether the mob ever attacked at all.
+                double dy = _py - m.Y;
+                if (dx * dx + dz * dz + dy * dy <= MeleeReachSqr
+                    && DateTime.UtcNow - m.LastAttack > TimeSpan.FromMilliseconds(TickMs * 20) && Health > 0 && !PlayerBoxedIn())
+                {
+                    m.LastAttack = DateTime.UtcNow;
+                    Health = Math.Max(1, Health - m.AttackDamage);
+                    Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
+                    Send(new EntityStatusPacket { EntityId = EntityId, Status = 2 });
+                }
+            }
+    }
+
+    /// <summary>A zombie's melee reach on a player, squared: (width 0.6 · 2)² + the player's width 0.6.</summary>
+    private const double MeleeReachSqr = 0.6 * 2 * (0.6 * 2) + 0.6;
+
+    /// <summary>
+    /// <c>EntityLivingBase.knockBack(attacker, 0.4F, …)</c> from a hit that counted (<c>attackEntityFrom</c>): the motion halved, 0.4
+    /// away from the attacker and, on the ground, half the vertical motion + 0.4 (capped at 0.4). It moves under the mob AI.
+    /// </summary>
+    private void Knock(FakeMob m)
+    {
+        if (double.IsNaN(_px)) return;
+        double xr = _px - m.X, zr = _pz - m.Z, f = Math.Sqrt(xr * xr + zr * zr);
+        if (f < 1e-4) { xr = 0.01; zr = 0; f = 0.01; }
+        m.VX = m.VX / 2 - xr / f * Release1122CombatRules.HitKnockback;
+        m.VZ = m.VZ / 2 - zr / f * Release1122CombatRules.HitKnockback;
+        if (m.Lift <= 0) m.VY = Math.Min(m.VY / 2 + Release1122CombatRules.HitKnockback, 0.4000000059604645);
+    }
+
+    /// <summary>
+    /// One tick of knockback motion (<c>EntityLivingBase.travel</c>): move, then gravity (−0.08, ×0.98) and friction (0.91 in the
+    /// air, 0.6 · 0.91 on the ground). A wall stops the motion along its axis (<c>Entity.move</c>, simplified to the mob's centre
+    /// column at feet and head). True while the mob is in the air. Caller holds <see cref="BlockLock"/>.
+    /// </summary>
+    private bool KnockbackTick(FakeMob m)
+    {
+        if (m.Lift <= 0 && m.VY <= 0 && Math.Abs(m.VX) + Math.Abs(m.VZ) < 0.003) { m.VX = m.VZ = 0; return false; }
+        if (Walled(m.X + m.VX, m.Y + m.Lift, m.Z)) m.VX = 0;
+        m.X += m.VX;
+        if (Walled(m.X, m.Y + m.Lift, m.Z + m.VZ)) m.VZ = 0;
+        m.Z += m.VZ;
+        m.Lift += m.VY;
+        bool air = m.Lift > 0;
+        if (air) m.VY = (m.VY - 0.08) * 0.98;
+        else { m.Lift = 0; m.VY = 0; }
+        double friction = air ? 0.91 : 0.6 * 0.91;
+        m.VX *= friction;
+        m.VZ *= friction;
+        Send(new EntityTeleportPacket
+        {
+            EntityId = m.Id, X = FixedPoint.ToAbsolute(m.X), Y = FixedPoint.ToAbsolute(m.Y + m.Lift), Z = FixedPoint.ToAbsolute(m.Z),
+            Exact = (m.X, m.Y + m.Lift, m.Z),
+        });
+        return air;
+    }
+
+    /// <summary>A solid block at the feet or head cell of a mob standing at (x, y, z).</summary>
+    private bool Walled(double x, double y, double z)
+    {
+        int bx = (int)Math.Floor(x), by = (int)Math.Floor(y + 1e-6), bz = (int)Math.Floor(z);
+        for (int dy = 0; dy <= 1; dy++)
+            if (Blocks.GetValueOrDefault((bx, by + dy, bz)) is var id && id != 0 && id is not (8 or 9 or 10 or 11)
+                && id != MineClaw.Data.Blocks.TallGrass) return true;
+        return false;
     }
 
     /// <summary>Arrows that hit the player (the skeleton AI).</summary>
@@ -278,6 +348,7 @@ public partial class FakeServer
         m.LastDamage = dmg;
         m.Health -= dealt;
         MeleeHits.Enqueue(new(m.Id, strength, crit, dealt, false));
+        if (!resisting && Modern) lock (BlockLock) Knock(m); // only a fresh hurt knocks back (attackEntityFrom's flag)
         Send(new EntityStatusPacket { EntityId = m.Id, Status = 2 });
         if (Modern) Send(new EntityMetadataPacket { EntityId = m.Id, Metadata = new EntityMetadata([MetadataEntry.FromFloat(EntityMeta.Health, Math.Max(0, m.Health))]) });
         if (m.Health > 0) return;

@@ -1,6 +1,39 @@
 // module: story | colony pawns
 (H, def) => {
   const id = j => (j && typeof j === 'object' ? j.id : j);
+  const report = (j, status, note, pct) => H.storyReport(String(id(j)), status, note == null ? null : String(note), pct);
+  const call = (name, ...a) => globalThis[name](...a);
+  const good = r => !(r === false || r === null || (typeof r === 'object' && r.ok === false));
+  const why = r => String((r && r.msg) || 'failed');
+  const eyes = c => {
+    const [x, y, z] = String(c).split(',').map(Number), p = H.me('pos');
+    return Math.hypot(x + 0.5 - p.x, y + 0.5 - p.y - 1.62, z + 0.5 - p.z);
+  };
+  const FAR = /from my eyes|couldn't get closer|not visible|in reach|can't reach/i, IN_WAY = /standing in it|in the way/i;
+  // A build job's cells in order from its stand: a cell already built counts as done; out of reach (or standing in it) -> step
+  // closer (or back to the stand) and try once more; each cell is reported; out of items, the rest go back to the queue.
+  const place = j => {
+    const cells = j.cells || [j.at], clear = Array.isArray(j.clear) ? j.clear : j.clear ? [j.at] : [];
+    if (j.stand && eyes(j.stand) > 1.8) call('go', j.stand, 0);
+    let n = 0;
+    for (const c of cells) {
+      const built = () => j.want && H.block(c) == j.want;
+      if (!clear.includes(c) && built()) { if (j.cells) report(j, 'progress', 'cell ' + c + ' done'); n++; continue; }
+      if (j.cells && !(H.inv(j.block) > 0)) break;
+      if (clear.includes(c)) call('dig', c);
+      if (eyes(c) > 4) call('go', c, 2);
+      let r = call('place', j.block, c);
+      if (!good(r) && built()) r = { ok: true };
+      else if (!good(r) && (FAR.test(why(r)) || IN_WAY.test(why(r)))) {
+        if (IN_WAY.test(why(r)) && j.stand) call('go', j.stand, 0); else call('go', c, 2);
+        r = call('place', j.block, c);
+      }
+      if (!j.cells) return r;
+      report(j, 'progress', 'cell ' + c + (good(r) ? ' done' : ' failed: ' + why(r)));
+      if (good(r)) n++;
+    }
+    return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' placed' };
+  };
   // during(job, fn): fn while the job is still this pawn's; cut at once when the director takes it back -> {ok:false, cancelled:true}.
   const during = (j, f) => H.storyDuring(String(id(j)), f);
   // idle(job): an idle leg (a stroll or a pastime: j.act). Walk to the director's cell (this pawn's alone), then linger looking at
@@ -51,12 +84,22 @@
   };
   // fetch(job): the job's items out of their chests (a tool, weapon or armour piece exactly: f.ench, the enchanted one or a plain
   // one; the rest by name), then the tool its material takes in hand (j.tool, j.tool_ench: the dig keeps it, never a lost drop).
+  // A busy chest is waited for (2, 4 s) and tried again; a build batch goes on with what it already carries and says when its items
+  // are out of the chests ("fetched").
   const fetch = j => {
     const g = globalThis;
+    let got = false;
     for (const f of j.fetch || []) {
-      const r = f.ench ? equip(f.item, 'take', f.from, f.ench) : g.take(f.item, f.n, f.from);
-      if (!g.ok(r)) return r;
+      let r;
+      for (let i = 0; i < 3; i++) {
+        r = f.ench ? equip(f.item, 'take', f.from, f.ench) : g.take(f.item, f.n, f.from);
+        if (g.ok(r) || !/busy/i.test(why(r))) break;
+        H.wait(2 + 2 * i);
+      }
+      if (g.ok(r)) got = true;
+      else if (!j.cells || !(H.inv(j.block) > 0)) return r;
     }
+    if (got && j.cells) report(j, 'progress', 'fetched');
     return j.tool ? equip(j.tool, 'hold', '', j.tool_ench) : { ok: true };
   };
   // till(job): hold the hoe (j.hoe) and use it on the dirt or grass at j.at, walking over first when it is far.
@@ -121,7 +164,60 @@
     if (g.ok(r) || r.cancelled || !NO_WAY.test(r.msg || '')) return r;
     const e = escape(at);
     if (!g.ok(e)) return { ok: false, stuck: true, msg: r.msg + '; ' + e.msg };
-    return e.out ? walk() : r;
+    if (e.out) return walk();
+    // A target high above (a crown log, a ledge, a ceiling): stand below it; story.dig pillars up from there.
+    const t = typeof at === 'string' ? at.split(',').map(Number) : null;
+    if (t && t.length === 3 && t[1] > H.me('pos').y + 2) {
+      const s = H.storyReach(at);
+      if (s.within) return { ok: true, msg: 'in reach' };
+      if (s.stand) { const b = g.go(s.stand, 0); if (g.ok(b)) return { ok: true, msg: 'below it at ' + s.stand }; }
+    }
+    return r;
+  };
+  const REACH = /can't reach|out of reach|from my eyes|no walkable spot/i;
+  const feet = () => { const p = H.me('pos'); return Math.floor(p.x) + ',' + Math.floor(p.y + 1e-6) + ',' + Math.floor(p.z); };
+  // reachUp(at, fn, job?): a block above reach. Walk to the column H.storyReach picks (under it or beside it), nerd-pole up (one
+  // place at its own feet per step) until it is in reach, do fn, then dig the pillar back down from the top (every block it placed,
+  // collected again). Short of blocks: the job's pillar stack from storage (j.pillar), else dirt dug around the column.
+  const reachUp = (at, fn, j) => {
+    const g = globalThis, scan = () => H.storyReach(String(at));
+    let s = scan();
+    if (s.within) return fn();
+    if (!s.stand) return { ok: false, msg: 'out of reach even from a pillar: ' + s.why };
+    if (s.blocks < s.steps && j && j.pillar) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    s = scan();
+    for (const c of s.gather || []) {
+      if (s.blocks >= s.steps) break;
+      g.dig(c);
+      s = scan();
+    }
+    if (!s.stand) return { ok: false, msg: 'out of reach even from a pillar: ' + s.why };
+    if (s.blocks < s.steps) return { ok: false, msg: 'out of reach: ' + s.steps + ' block(s) to pillar up, ' + s.blocks + ' on me' };
+    const w = g.go(s.stand, 0);
+    if (!g.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };
+    const placed = [];
+    for (let i = 0; i < s.steps + 2; i++) {
+      const now = scan();
+      if (now.within || !now.block) break;
+      const f = feet(), p = g.place(now.block, f);
+      if (!g.ok(p)) break;
+      placed.push(f);
+    }
+    const r = fn();
+    for (let i = placed.length - 1; i >= 0; i--) if (!g.ok(g.dig(placed[i]))) break;
+    return r;
+  };
+  // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on.
+  const dig = (at, j) => {
+    const g = globalThis, r = g.dig(at);
+    if (g.ok(r) || !REACH.test(r.msg || '')) return r;
+    return reachUp(at, () => g.dig(at), j);
+  };
+  // ready(job): a job up high (a tall tree) starts with blocks to pillar with: the job's pillar stack from storage when short.
+  const ready = j => {
+    const g = globalThis;
+    if (j && j.pillar && g.inv(j.pillar.item) < 4) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    return { ok: true };
   };
   // run(job): the colony's own kinds (story.work hands them over). escape: the colony saw it stuck (a pit, a cave, a run of
   // unreachable targets): out by itself, else to j.at (home); help is asked for when nothing works. dump: no storage takes these:
@@ -149,16 +245,19 @@
       default: return { ok: true };
     }
   };
-  /** story.next(s)|report(job, status, note?)|during(job, fn)|idle|work|fetch|go(at, d)|escape - the job loop */
+  /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|go|dig|escape - the job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
-    report: (j, status, note, pct) => H.storyReport(String(id(j)), status, note == null ? null : String(note), pct),
+    report,
     during,
     idle,
     go,
     escape,
+    dig,
+    ready,
     work,
     till,
     fetch,
+    place,
   }));
 }

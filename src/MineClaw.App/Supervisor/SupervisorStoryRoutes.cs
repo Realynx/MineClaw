@@ -379,16 +379,19 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 var rescue = Flag("rescue_teleport");
                 var unfiltered = Flag("unfiltered_storage_takes_anything");
                 var keep = Flag("keep_disallowed");
+                // pillar_stack: 0..64 blocks a pawn keeps to nerd-pole with (StoryColony.Reach.cs)
+                int? pillarStack = b["pillar_stack"] is null ? null : b["pillar_stack"] is JsonValue pv && pv.TryGetValue<int>(out var pn) && pn is >= 0 and <= 64
+                    ? pn : throw new FormatException("pillar_stack must be 0..64");
                 // speed: normal | fast | faster, speed_effect: bool (StoryColony.Speed.cs)
                 var speed = b["speed"] is null ? null : b["speed"] is JsonValue sv && sv.TryGetValue<string>(out var sm) ? sm : "";
                 var speedEffect = Flag("speed_effect");
                 if (auto == null && detect == null && idle == null && craftTools == null && spare == null && rescue == null && unfiltered == null && keep == null
-                    && speed == null && speedEffect == null)
-                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools, spare_tools, rescue_teleport, unfiltered_storage_takes_anything, keep_disallowed, speed or speed_effect required");
+                    && pillarStack == null && speed == null && speedEffect == null)
+                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools, spare_tools, rescue_teleport, unfiltered_storage_takes_anything, keep_disallowed, pillar_stack, speed or speed_effect required");
                 if (c.SetSpeed(speed, speedEffect) is { } speedErr) return Bad(speedErr);
                 if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 if ((craftTools != null || spare != null) && c.SetGearOptions(craftTools, spare) is { } gerr) return Bad(gerr);
-                if (rescue != null || unfiltered != null || keep != null) c.SetHaulOptions(rescue, unfiltered, keep);
+                if (rescue != null || unfiltered != null || keep != null || pillarStack != null) c.SetHaulOptions(rescue, unfiltered, keep, pillarStack);
                 return Reply(200, auto == null && detect == null ? c.OptionsNow() : c.SetOptions(auto, detect));
             }
             default:

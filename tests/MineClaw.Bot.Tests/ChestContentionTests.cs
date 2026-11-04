@@ -114,6 +114,33 @@ public class ChestContentionTests
     }
 
     /// <summary>
+    /// Live 11-03 (Story builders): "busy: maid_chan_102 is using chest 218,64,400" failed build jobs outright, though the holder's
+    /// session is a few seconds. A withdraw waits its turn (bounded), then says busy with the holder and how long it waited.
+    /// </summary>
+    [Fact]
+    public async Task A_withdraw_behind_another_bodys_chest_session_waits_its_turn_then_says_busy()
+    {
+        var board = new TestLeases();
+        var other = board.ViewFor("maid_chan_102");
+        Assert.True((await other.TryClaimAsync(ClaimKey.Chest(LogChest))).Ok);
+        var c = Body("maid_chan_109");
+        c.Results["withdraw"] = () => MineClaw.Client.ActionResult.Success("took 4 planks", 4);
+        var game = new ClaimAwareGameClient(c, board.ViewFor(c.Username)) { WithdrawWait = TimeSpan.FromSeconds(5) };
+        _ = Task.Run(async () => { await Task.Delay(300); await other.ReleaseAsync(ClaimKey.Chest(LogChest)); });
+        var r = await game.WithdrawAsync(Blocks.Planks, 4, LogChest);
+        Assert.True(r.Ok, r.Message);
+        Assert.Contains(c.CallList, x => x.StartsWith("withdraw"));
+
+        Assert.True((await other.TryClaimAsync(ClaimKey.Chest(LogChest))).Ok); // held for good this time
+        var bounded = new ClaimAwareGameClient(c, board.ViewFor(c.Username)) { WithdrawWait = TimeSpan.FromMilliseconds(300) };
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var busy = await bounded.WithdrawAsync(Blocks.Planks, 4, LogChest);
+        Assert.False(busy.Ok);
+        Assert.Contains("busy: maid_chan_102 is using chest 5,65,5; waited", busy.Message);
+        Assert.InRange(sw.Elapsed.TotalMilliseconds, 250, 3000);
+    }
+
+    /// <summary>
     /// A double chest is one window (user report 10-29): an exclusive user who came in through one half blocks a deposit through
     /// the other, and the four deposit slots are the pair's, not four per half.
     /// </summary>

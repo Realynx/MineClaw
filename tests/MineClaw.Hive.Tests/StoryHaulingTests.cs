@@ -93,6 +93,7 @@ public sealed class StoryHaulingTests
     {
         var (c, h, w) = StoryRig.Make(time: NewClock());
         Prio(c, (WorkTypes.Haul, 1));
+        c.SetHaulOptions(null, null, null, pillarStack: 0);
         // Its own loot (seeds to sow, blocks to build) stays with it…
         h.Lives[c.P()] = FakeStoryHost.Live(5, 64, 5, inv: [new Stack(4, 0, 10), new Stack(3, 0, 5)]);
         Assert.NotEqual("dump", Kind(c.Next()));
