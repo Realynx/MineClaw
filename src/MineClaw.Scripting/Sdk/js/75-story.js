@@ -116,12 +116,21 @@
   // there is one, else dig a staircase (never down, never beside liquid or under sand/gravel), else nerd-pole with blocks it carries,
   // else dig the walls for blocks and pole. Nothing works: the colony is asked for help (a pawn brings blocks, or a teleport home).
   // -> {ok, out: it moved out, stuck: still stuck, msg}
-  const escape = toward => {
-    const g = globalThis, tried = {};
+  // climb (the colony found no way home from here: a ravine, a canyon): whatever its shape, walk to the wall nearest home
+  // (s.approach) and cut a staircase up it toward home until level with home; the caller asks for help when it can't.
+  const escape = (toward, climb) => {
+    const g = globalThis, tried = {}, ty = toward == null ? null : +String(toward).split(',')[1];
     let s = null, why = '', moved = false;
-    for (let i = 0; i < 40; i++) {
-      s = H.storyPit(toward == null ? null : String(toward));
+    for (let i = 0; i < (climb ? 64 : 40); i++) {
+      s = H.storyPit(toward == null ? null : String(toward), !!climb);
+      if (climb && ty != null && s.feet_y >= ty - 1) return { ok: true, out: true, msg: 'climbed up to ' + s.feet };
       if (!s.pit) return { ok: true, out: moved, msg: moved ? 'got out' : 'not stuck' };
+      if (s.approach && !tried['a' + s.approach]) {
+        tried['a' + s.approach] = 1;
+        const r = g.go(s.approach, 0);
+        if (g.ok(r)) { moved = true; continue; }
+        why = r.msg;
+      }
       if (s.exit && !tried['e' + s.exit]) {
         tried['e' + s.exit] = 1;
         const r = g.go(s.exit, 0);
@@ -152,7 +161,8 @@
       }
       break;
     }
-    const where = (s.water ? 'in water' : s.cave ? 'in a cave' : 'in a pit') + ' at ' + s.feet;
+    const where = (s.water ? 'in water' : climb ? 'below home' : s.cave ? 'in a cave' : 'in a pit') + ' at ' + s.feet;
+    if (climb) return { ok: false, stuck: true, msg: "couldn't climb out " + where + (why ? ' (' + why + ')' : '') };
     const help = H.storyStuck('stuck ' + where + (why ? ' (' + why + ')' : ''));
     return { ok: false, stuck: true, msg: 'stuck ' + where + (why ? ' (' + why + ')' : '') + ': ' + help };
   };
@@ -226,12 +236,22 @@
     const g = globalThis;
     switch (j.kind) {
       case 'escape': {
-        const e = escape(j.at);
+        // Done only once home is reached by walking (the colony then knows it is out); a pit, a cave or water first.
+        let e = escape(j.at);
         if (!g.ok(e)) { g.wait(j.s || 8); return e; }
-        if (e.out || !j.at) return e;
-        const r = g.go(j.at, j.dist ?? 2);
+        if (!j.at) return e;
+        let r = g.go(j.at, j.dist ?? 2);
         if (g.ok(r) || r.cancelled) return r;
-        return { ok: false, stuck: true, msg: r.msg + ': ' + H.storyStuck('no way home: ' + r.msg) };
+        // No walkable way home (a ravine, a canyon, a deep hole): climb toward home, then walk again.
+        report(j, 'progress', 'no way home (' + r.msg + '): trying a staircase toward home');
+        e = escape(j.at, true);
+        if (g.ok(e)) {
+          r = g.go(j.at, j.dist ?? 2);
+          if (g.ok(r) || r.cancelled) return r;
+        }
+        const help = H.storyStuck('no way home: ' + (g.ok(e) ? r.msg : e.msg));
+        g.wait(j.s || 8);
+        return { ok: false, stuck: true, msg: 'no way home (' + (g.ok(e) ? r.msg : e.msg) + '): ' + help };
       }
       case 'dump': {
         const r = go(j.at, j.dist ?? 1);

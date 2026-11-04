@@ -105,7 +105,7 @@ public sealed partial class StoryColony
             ["pos"] = new JsonArray(Math.Round(live.X, 2), Math.Round(live.Y, 2), Math.Round(live.Z, 2)), ["dim"] = live.Dim, ["drafted"] = p.Drafted,
             ["state"] = state,
             ["leaving"] = _leaving.ContainsKey(p.Name),
-            ["stuck"] = _stuck.TryGetValue(p.Name, out var stuck) ? stuck.Why : null, // why it is stuck (StoryColony.Rescue.cs)
+            ["stuck"] = StuckJson(p.Name), // {since, at, reason, step, attempts} while it is stuck (StoryColony.Rescue.cs)
             ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {

@@ -149,6 +149,10 @@ public sealed class StoryStuckPawnTests
         // The blocks came and it still can't get out: the last resort.
         Assert.Equal("teleported home", c.Stuck(c.P(0), "stuck in a pit at 10,62,10"));
         Assert.Equal(c.P(0), Assert.Single(h.Teleported).Account);
+        Assert.True(c.IsStuck(c.P(0))); // out once it shows up at home
+        c.Report(c.P(0), c.CurrentOf(c.P(0))!.Id, "failed", "teleported", null);
+        h.Lives[c.P(0)] = FakeStoryHost.Live(1, 64, 1);
+        Assert.NotEqual("escape", Kind(c.Next(0)));
         Assert.False(c.IsStuck(c.P(0)));
         Assert.Contains(c.Alerts, a => a.Text.Contains("teleported home"));
     }
@@ -219,6 +223,71 @@ public sealed class StoryStuckPawnTests
         w.Set(5, 64, 5, 31, 1);
         c.Designate("add", "cut", null, [new P3(5, 64, 5)], null);
         Assert.NotEqual("dig", Kind(c.Next()));
+    }
+
+    // ================================================================ ravines: stuck is sticky until it is out
+
+    /// <summary>Live 11-04: pawns in a ravine (floor y 49, home y 63) "looks stuck … 3 targets out of reach in a row" ×6, then the
+    /// next task and the next failure (~100 failures each in 20 min): walking a few blocks along the ravine floor read as "got out".</summary>
+    [Fact]
+    public void A_stuck_pawn_gets_only_escape_work_until_it_walks_home_however_far_it_wanders_meanwhile()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Chop);
+        Field(c, w, 6);
+        h.Lives[c.P()] = FakeStoryHost.Live(30, 64, 30);
+        for (int i = 0; i < 3; i++)
+        {
+            var j = c.Next();
+            Assert.Equal("dig", Kind(j));
+            c.Report(c.P(), Id(j), "failed", NoPath, null);
+        }
+        Assert.True(c.IsStuck(c.P()));
+        for (int i = 0; i < 12; i++)
+        {
+            h.Lives[c.P()] = FakeStoryHost.Live(30 + i * 3, 64, 30); // along the ravine floor, far from where it got stuck
+            var j = c.Next();
+            Assert.Equal("escape", Kind(j)); // never a regular task while stuck: no cycling
+            c.Report(c.P(), Id(j), "progress", "no way home (no path): trying a staircase toward home", null);
+            c.Report(c.P(), Id(j), "failed", "no way home (couldn't climb out below home at 45,49,30): teleported home", null);
+            clock.Now += TimeSpan.FromSeconds(10);
+        }
+        var stuck = c.State()["pawns"]![0]!["stuck"]!;
+        Assert.Equal(12, stuck["attempts"]!.GetValue<int>());
+        Assert.Contains("couldn't climb out", stuck["step"]!.GetValue<string>());
+        // Its escape walks it home: out, and back to work.
+        var esc = c.Next();
+        Assert.Equal("escape", Kind(esc));
+        h.Lives[c.P()] = FakeStoryHost.Live(1, 64, 1);
+        c.Report(c.P(), Id(esc), "done", null, null);
+        Assert.False(c.IsStuck(c.P()));
+        Assert.Equal("dig", Kind(c.Next()));
+    }
+
+    [Fact]
+    public void A_pawn_with_no_way_home_is_teleported_at_once_and_a_teleport_that_never_shows_is_said_once()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(2, time: clock);
+        Only(c, WorkTypes.Chop);
+        var chest = new P3(2, 64, 0);
+        c.StorageOp("set", [chest], null, null, null);
+        c.AddContents(c.StorageAt(chest)!, new Stack(4, 0, 32)); // blocks to bring: no use in a ravine
+        h.Lives[c.P(0)] = FakeStoryHost.Live(40, 49, 40);
+        Assert.Equal("teleported home", c.Stuck(c.P(0), "no way home: couldn't climb out below home at 40,49,40 (obsidian)"));
+        Assert.Single(h.Teleported);
+        Assert.NotEqual("give", Kind(c.Next(1))); // no rescuer walks into a ravine after it
+        // The server never moved it (a refused /tp): said once, not tried again.
+        var wait = c.Next(0);
+        Assert.Equal("hold", Kind(wait));
+        clock.Now += StoryColony.TeleportCheck + TimeSpan.FromSeconds(1);
+        c.Report(c.P(0), Id(wait), "done", null, null);
+        Assert.True(c.IsStuck(c.P(0)));
+        Assert.Equal("escape", Kind(c.Next(0)));
+        Assert.Single(c.Alerts, a => a.Text.Contains("teleport home didn't take"));
+        Assert.StartsWith("nobody can help", c.Stuck(c.P(0), "no way home: still"));
+        Assert.Single(h.Teleported);
     }
 
     // ================================================================ defending: fresh, reachable monsters only
