@@ -152,12 +152,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             old?.Dispose();
             UpdateHeader();
             Status = "Loading views…";
-            foreach (var page in Pages.Select(p => p.Page).OfType<PageViewModel>())
-            {
-                try { await page.LoadAsync(bank, cts.Token); }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { Status = $"{page.GetType().Name}: {ex.Message}"; }
-            }
+            await LoadPagesAsync(bank, cts.Token);
             Status = bank.HasTree
                 ? $"Loaded {ExplorerPaths.Display(path)}: {bank.Raptor!.Index.NodeCount:N0} tree nodes, {bank.Rag.Count():N0} docs"
                 : $"Loaded {ExplorerPaths.Display(path)} ({bank.TreeNote})";
@@ -167,6 +162,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         finally
         {
             if (ReferenceEquals(_loadCts, cts)) IsBusy = false;
+        }
+    }
+
+    /// <summary>Every page loads the new bank; one page failing shows its error and the rest still load (a cancel stops them all).</summary>
+    private async Task LoadPagesAsync(MemoryBank bank, CancellationToken ct)
+    {
+        foreach (var page in Pages.Select(p => p.Page).OfType<PageViewModel>())
+        {
+            try { await page.LoadAsync(bank, ct); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Status = $"{page.GetType().Name}: {ex.Message}"; }
         }
     }
 

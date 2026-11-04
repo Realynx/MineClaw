@@ -57,28 +57,37 @@ public sealed partial class SearchViewModel(MainWindowViewModel shell) : PageVie
         IsLoading = true;
         try
         {
-            IReadOnlyCollection<string>? kinds = Kind == "all kinds" ? null : [Kind];
-            int? dim = Dimension switch { "overworld" => 0, "nether" => -1, _ => null };
-            var outcome = await new SearchService(bank).SearchAsync(Query.Trim(), kinds, dim, 30, cts.Token);
+            var outcome = await new SearchService(bank).SearchAsync(Query.Trim(), KindFilter(), DimensionFilter(), 30, cts.Token);
             if (cts.IsCancellationRequested) return;
-            Hits.Clear();
-            TreeHits.Clear();
-            foreach (var h in outcome.Hits) Hits.Add(Row(bank, h));
-            foreach (var t in outcome.TreeHits)
-                TreeHits.Add(new TreeHitRow(t.List, t.Index, t.Leaf ? $"leaf #{t.Index}" : $"L{t.Layer} #{t.Index}", t.Score.ToString("0.000", CultureInfo.InvariantCulture), t.Preview));
-            ModeNote = outcome.ModeNote;
-            IsLexical = outcome.Mode == SearchMode.Lexical;
-            HasResults = Hits.Count > 0;
-            ResultInfo = $"{Hits.Count} hits in {outcome.Elapsed.TotalMilliseconds:0} ms" + (outcome.QueryEmbedded ? " · query embedded" : "");
-            EmptyText = Hits.Count == 0 ? $"Nothing found for \"{Query.Trim()}\"." : null;
-            SelectedHit = Hits.FirstOrDefault();
-            // Light the results up in the RAPTOR graph (Ctrl+K lands here too).
-            Shell.Tree.SetSearchHits(Hits.Select(h => bank.NodeOfDoc(h.Id) ?? -1).Concat(TreeHits.Select(t => t.Index)), Query.Trim());
+            ShowOutcome(bank, outcome);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { EmptyText = "Search failed: " + ex.Message; }
         finally { if (ReferenceEquals(_cts, cts)) IsLoading = false; }
     }
+
+    private IReadOnlyCollection<string>? KindFilter() => Kind == "all kinds" ? null : [Kind];
+
+    private int? DimensionFilter() => Dimension switch { "overworld" => 0, "nether" => -1, _ => null };
+
+    private void ShowOutcome(MemoryBank bank, SearchOutcome outcome)
+    {
+        Hits.Clear();
+        TreeHits.Clear();
+        foreach (var h in outcome.Hits) Hits.Add(Row(bank, h));
+        foreach (var t in outcome.TreeHits) TreeHits.Add(TreeRow(t));
+        ModeNote = outcome.ModeNote;
+        IsLexical = outcome.Mode == SearchMode.Lexical;
+        HasResults = Hits.Count > 0;
+        ResultInfo = $"{Hits.Count} hits in {outcome.Elapsed.TotalMilliseconds:0} ms" + (outcome.QueryEmbedded ? " · query embedded" : "");
+        EmptyText = Hits.Count == 0 ? $"Nothing found for \"{Query.Trim()}\"." : null;
+        SelectedHit = Hits.FirstOrDefault();
+        // Light the results up in the RAPTOR graph (Ctrl+K lands here too).
+        Shell.Tree.SetSearchHits(Hits.Select(h => bank.NodeOfDoc(h.Id) ?? -1).Concat(TreeHits.Select(t => t.Index)), Query.Trim());
+    }
+
+    private static TreeHitRow TreeRow(TreeHit t) =>
+        new(t.List, t.Index, t.Leaf ? $"leaf #{t.Index}" : $"L{t.Layer} #{t.Index}", t.Score.ToString("0.000", CultureInfo.InvariantCulture), t.Preview);
 
     partial void OnKindChanged(string value) => _ = RunSearchAsync();
     partial void OnDimensionChanged(string value) => _ = RunSearchAsync();

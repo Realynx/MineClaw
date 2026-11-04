@@ -111,26 +111,36 @@ public sealed partial class DesignsViewModel(MainWindowViewModel shell) : PageVi
         ClearDetail();
         if (value == null || _source == null) return;
         _selecting = true;
-        try
-        {
-            foreach (var r in _source.Revisions(value.E.Id)) Revisions.Add(new DesignRevisionRow(r));
-            foreach (var r in Revisions) Targets.Add(r);
-            var world = _source.World(value.E.Id);
-            if (world != null)
-            {
-                Targets.Insert(0, WorldSide);
-                WorldNote = $"last seen by {world.SeenBy} {world.Seen.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)} at r{world.Rev}: {world.Diff}"
-                            + (world.Causes.Length > 0 ? $" ({world.Causes})" : "");
-            }
-            Picture = Png(value.E.HasPicture ? _source.Picture(value.E.Id) : null);
-            HasDetail = true;
-            // Default: what HEAD lacks against the world (drift), else the last change (HEAD~1 → HEAD).
-            From = Revisions.FirstOrDefault();
-            To = world != null ? WorldSide : Revisions.Count > 1 ? Revisions[1] : null;
-            if (world == null && Revisions.Count > 1) (From, To) = (Revisions[1], Revisions[0]);
-        }
+        try { LoadDetail(value, _source); }
         finally { _selecting = false; }
         RefreshDiff();
+    }
+
+    /// <summary>The revisions, the world as last seen (when the bot has looked), the preview, and the default diff sides.</summary>
+    private void LoadDetail(DesignRow value, DesignHistorySource source)
+    {
+        foreach (var r in source.Revisions(value.E.Id)) Revisions.Add(new DesignRevisionRow(r));
+        foreach (var r in Revisions) Targets.Add(r);
+        var world = source.World(value.E.Id);
+        if (world != null) ShowWorld(world);
+        Picture = Png(value.E.HasPicture ? source.Picture(value.E.Id) : null);
+        HasDetail = true;
+        DefaultSides(world != null);
+    }
+
+    private void ShowWorld(DesignWorldInfo world)
+    {
+        Targets.Insert(0, WorldSide);
+        WorldNote = $"last seen by {world.SeenBy} {world.Seen.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)} at r{world.Rev}: {world.Diff}"
+                    + (world.Causes.Length > 0 ? $" ({world.Causes})" : "");
+    }
+
+    /// <summary>Default: what HEAD lacks against the world (drift), else the last change (HEAD~1 → HEAD).</summary>
+    private void DefaultSides(bool seen)
+    {
+        From = Revisions.FirstOrDefault();
+        To = seen ? WorldSide : Revisions.Count > 1 ? Revisions[1] : null;
+        if (!seen && Revisions.Count > 1) (From, To) = (Revisions[1], Revisions[0]);
     }
 
     partial void OnFromChanged(DesignRevisionRow? value) { if (!_selecting) RefreshDiff(); }
@@ -141,23 +151,20 @@ public sealed partial class DesignsViewModel(MainWindowViewModel shell) : PageVi
         DiffCells.Clear();
         DiffSummary = "";
         if (_source == null || Selected is not { } d || From is not { } a) return;
-        (string Summary, IReadOnlyList<string> Cells)? r;
-        string head;
-        if (To is string s && s == WorldSide)
-        {
-            r = _source.AgainstWorld(d.E.Id, a.Rev);
-            head = $"r{a.Rev} → world";
-        }
-        else if (To is DesignRevisionRow b && b.Rev != a.Rev)
-        {
-            r = _source.Between(d.E.Id, a.Rev, b.Rev);
-            head = $"r{Math.Min(a.Rev, b.Rev)} → r{Math.Max(a.Rev, b.Rev)}";
-        }
-        else return;
+        if (DiffOf(_source, d, a) is not { } pick) return;
+        var (r, head) = pick;
         if (r is not { } diff) { DiffSummary = head + ": no block set to compare"; return; }
         DiffSummary = $"{head}: {diff.Summary}";
         foreach (var c in diff.Cells.Take(500)) DiffCells.Add(c);
         if (diff.Cells.Count > 500) DiffCells.Add($"… {diff.Cells.Count - 500} more");
+    }
+
+    /// <summary>The diff of <paramref name="a"/> against the "to" side and its heading; null when there is nothing to compare.</summary>
+    private ((string Summary, IReadOnlyList<string> Cells)? Diff, string Head)? DiffOf(DesignHistorySource source, DesignRow d, DesignRevisionRow a)
+    {
+        if (To is string s && s == WorldSide) return (source.AgainstWorld(d.E.Id, a.Rev), $"r{a.Rev} → world");
+        if (To is DesignRevisionRow b && b.Rev != a.Rev) return (source.Between(d.E.Id, a.Rev, b.Rev), $"r{Math.Min(a.Rev, b.Rev)} → r{Math.Max(a.Rev, b.Rev)}");
+        return null;
     }
 
     private static Bitmap? Png(byte[]? png)
