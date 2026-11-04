@@ -580,7 +580,7 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   the failed ones' clusters are worked out once per state (not per frame), each mark is stamped from a cached sprite and skipped
   off screen, the pawn portraits and the viewer's element are memoised (the page re-renders on every state poll), and the map
   centre reaches the page only while the Colony tab or the new-colony card needs it. Measured with `STORY_PERF=1` in
-  `e2e/story.spec.ts` (the mock's `busy` seed: 10 pawns, ~1100 designations, 120 failed; Chromium with SwiftShader, dev
+  `e2e/story.spec.ts` (the mock's `busy` seed: 10 pawns, 600 surface mine designations plus the cuts and chops of a 41×41 box, 120 failed; Chromium with SwiftShader, dev
   build, 1440×900), before → after: panning 35 → 40 fps (p95 frame 50 → 33 ms) and main-thread script 263–299 → 178 ms/s;
   idle 43 → 40 fps (noise; p95 33 ms both), script 199–245 → 211 ms/s; zoomed in on the failed labels 51 → 57 fps, script
   213–219 → 175 ms/s. In the CPU profile React's render work fell 981 → 371 ms and the overlay's draw 779 → 491 ms per 12 s.
