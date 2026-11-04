@@ -133,6 +133,44 @@ public class DemoTests
     }
 
     [Fact]
+    public void Summary_words_every_action_kind()
+    {
+        var steps = DemoSummary.Summarize(
+        [
+            A(DemoActionKind.Move, 0, 64, 0),
+            A(DemoActionKind.UseBlock, 1, 64, 0, "stone", MineClaw.Bot.Perception.Gestures.Punched),
+            A(DemoActionKind.Chat, 0, 0, 0, detail: "hi"),
+            A(DemoActionKind.UseBlock, 1, 64, 1),
+            A(DemoActionKind.BlockPlaced, 2, 64, 0, "water", "poured"),
+            A(DemoActionKind.BlockPlaced, 2, 64, 1, "dirt"),
+            A(DemoActionKind.BlockBroken, 3, 64, 0, "sand", "vanished"),
+            A(DemoActionKind.Move, 0, 64, 0),
+            A(DemoActionKind.BlockBroken, 3, 64, 1, "water", "scooped"),
+            A(DemoActionKind.BlockBroken, 3, 64, 2, "dirt"),
+            A(DemoActionKind.ClickSlot, 0, 0, 0),
+            A(DemoActionKind.ClickSlot, 0, 0, 0, detail: "took 12 cobblestone"),
+            A(DemoActionKind.Move, 9, 64, 9),
+        ]);
+        Assert.Equal(
+        [
+            "stood at 0,64,0",
+            "punched stone at 1,64,0",
+            "used block at 1,64,1",
+            "poured water at 2,64,0",
+            "placed dirt at 2,64,1",
+            "sand vanished at 3,64,0",
+            "scooped water at 3,64,1",
+            "broke dirt at 3,64,2",
+            "clicked a slot",
+            "took 12 cobblestone",
+        ], steps);
+        Assert.Equal(["stood at 4,5,6 facing x"],
+            DemoSummary.Summarize([A(DemoActionKind.Move, 1, 2, 3), A(DemoActionKind.Move, 4, 5, 6, detail: "facing x")]));
+        Assert.Equal(["stood at -1,+0,+2"], DemoSummary.Summarize([A(DemoActionKind.Move, 4, 64, 7)], origin: new MineClaw.World.BlockPos(5, 64, 5)));
+        Assert.Empty(DemoSummary.Summarize([A(DemoActionKind.Chat, 0, 0, 0, detail: "hi")]));
+    }
+
+    [Fact]
     public void Summary_merges_repeats_uses_relative_coords_and_caps()
     {
         var acts = Enumerable.Range(0, 3).Select(_ => A(DemoActionKind.UseBlock, 1, 64, 1, "lever")).ToList();
