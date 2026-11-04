@@ -293,20 +293,22 @@ public sealed partial class StoryColony
                 got.Add((store.Chest, stack with { Count = n }));
                 left -= n;
             }
-            if (left == need) return (got, MissingText(input, b.Radius)); // some is a smaller batch; none is missing
+            if (left == need) return (got, MissingText(input, b.Radius, bench)); // some is a smaller batch; none is missing
         }
         return (got, null);
     }
 
     /// <summary>"no planks within 32 blocks — needs logs (chop trees)": an any-variant input says its family, and where its raw
     /// material comes from when the colony has none of it.</summary>
-    private string MissingText(RecipeInput input, int radius)
+    private string MissingText(RecipeInput input, int radius, WorkbenchState? bench = null)
     {
         var d = World!.Data;
         var first = input.Options[0];
         var fam = input.Options.All(o => o.Meta < 0) || input.Options.Select(o => o.Id).Distinct().Count() > 1 ? StoryRecipeFamilies.FamilyOf(first.Id) : null;
         var name = fam ?? d.DisplayName(first.Id, Math.Max(0, first.Meta)).ToLowerInvariant();
-        var text = $"no {name} within {radius} blocks";
+        // What it looked at (StoryColony.StockCheck.cs): "no planks: checked 6 chests within 32 of the bench (2 not looked into lately)".
+        var text = bench != null ? $"no {name}: {CheckedText(bench, radius)}" : $"no {name} within {radius} blocks";
+        if (PocketText(input, null) is { } pockets) text += $"; {pockets} (stored soon)";
         if (StoryRecipeFamilies.Source(first.Id) is not { } from) return text;
         // Planks or sticks with logs in stock: they can be made (the "any" bills); with no logs either: chop trees.
         bool logs = Storages.Any(s => s.Contents.Any(c => c.Id is 17 or 162));
@@ -319,6 +321,7 @@ public sealed partial class StoryColony
     {
         if (World is not { } w) return null;
         EnsureMaterials(); // the builds' auto bills are on the benches
+        RetryOnStockChange(); // a deposit or a look since: the waiting bills try again now (StoryColony.StockCheck.cs)
         var from = live.Block;
         foreach (var bench in Benches.OrderBy(b => b.Pos.Dist(from)))
         {
@@ -379,6 +382,17 @@ public sealed partial class StoryColony
                         crafts = fit;
                         (got, missing) = Ingredients(bill, r, crafts, bench, live);
                     }
+                }
+                if (missing != null && missing.StartsWith("no ", StringComparison.Ordinal))
+                {
+                    // Before waiting: the bodies' latest looks into the chests around the bench, then a pawn looks into the ones nobody
+                    // has lately (a player's deposit is invisible until a body opens the chest: StoryColony.StockCheck.cs).
+                    if (RefreshSeen(Storages.Where(s => s.Chest.Dist(bench.Pos) <= bill.Radius)))
+                    {
+                        RetryOnStockChange();
+                        (got, missing) = Ingredients(bill, r, crafts, bench, live);
+                    }
+                    if (missing != null && LookJob(p, work, bench, bill, missing[3..].Split(':')[0]) is { } look) return look;
                 }
                 if (missing != null)
                 {

@@ -320,6 +320,8 @@ public sealed class StorageState
     public List<Stack> Contents { get; set; } = new();
     public int FreeSlots { get; set; } = 27;
     public DateTimeOffset? KnownAt { get; set; }
+    /// <summary>When a body last looked inside (the bot's memory of the chest); null = nobody has (StoryColony.StockCheck.cs).</summary>
+    public DateTimeOffset? SeenAt { get; set; }
     /// <summary>Enchanted gear known to be in this chest (put there by the colony's pawns): the contents list can't tell them apart.</summary>
     public List<EnchStack> Enchanted { get; set; } = new();
     public long Rev { get; set; }

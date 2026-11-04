@@ -62,6 +62,11 @@ public interface IStoryHost
     void Interrupt(string account, string why);
     /// <summary>What the bot remembers of a chest (last seen contents), or null.</summary>
     IReadOnlyList<Stack>? KnownChest(P3 at) => null;
+    /// <summary>What a body last saw inside a chest and when (any body's look: a player's deposit shows once a body opens it), or null.</summary>
+    (IReadOnlyList<Stack> Contents, DateTimeOffset At)? SeenChest(P3 at) => null;
+    /// <summary>The host remembers what bodies saw in chests (<see cref="SeenChest"/>): a chest nobody looked into is then worth a look
+    /// before a bill waits.</summary>
+    bool KnowsChests => false;
     /// <summary>
     /// Brings a pawn to <paramref name="to"/> at once (the bot is op: <c>/tp</c> through the op command path and its blocklist), for
     /// the colony owner's founding or home move. Null = sent; else why not (the director then walks it there).

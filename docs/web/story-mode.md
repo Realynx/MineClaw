@@ -1157,6 +1157,20 @@ of the chain that crafts it (the 3 iron ore a water build's bucket is smelted fr
   that item (it waits for it, as cancelling its auto bill does); the build's own item pauses the build. The storage and bench inspectors
   list what builds hold of their items, each with a Release.
 
+### Bills see the chests (added 2026-11-04)
+
+Live 11-04: "Make Stick (from any planks) suspended: no planks within 32 blocks" with planks in the chest beside the table. The colony's
+record of a chest only changed with its own pawns' takes and puts, so a player's deposit was invisible. Now (`StoryColony.StockCheck.cs`):
+- A body's look inside a chest (the bot's memory: any body, any reason) newer than the record's last change replaces it
+  (`StorageState.SeenAt`). Checked before a bill waits and every 30 s.
+- Before an owner's bill waits for a missing ingredient, a pawn looks into the nearest chest within the bill's radius of the bench that
+  nobody has looked into for 10 minutes (a `look` job: `peek_container`, each chest at most every 2 minutes).
+- Every change of the stock (a deposit, a take, a corrected record) retries the waiting bills on the next pick, not on a timer.
+- The reason says what was looked at and who carries some: "no planks: checked 6 chests within 32 of the bench (2 not looked into
+  lately); Ann carries 4 (stored soon) — needs logs (chop trees)". The radius is the bill's, from the bench.
+- "From any planks" ingredients match every plank (and the ingredient filter's `id:-1` entries every meta) in the stock check, the
+  reservation and the fetch.
+
 ### Furnaces are collected (added 2026-11-04)
 
 - A furnace load lands on the furnace whatever became of its bill (an auto bill the build stopped wanting while the pawn walked: live

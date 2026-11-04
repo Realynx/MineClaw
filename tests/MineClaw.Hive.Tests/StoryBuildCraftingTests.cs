@@ -218,7 +218,7 @@ public sealed class StoryBuildCraftingTests
         // A manual stick bill would eat the reserved planks: it waits, saying why.
         Assert.Null(c.BillsOp("add", new JsonObject { ["bench"] = Table.Json(), ["bill"] = new JsonObject { ["recipe"] = "craft:stick", ["mode"] = "count", ["target"] = 4 } }).Error);
         Assert.NotEqual("craft", c.Next(0)["kind"]!.GetValue<string>());
-        Assert.Contains("reserved for builds", c.Benches.Single().Bills.Single().SuspendedReason);
+        Assert.Matches(@"^6 oak wood planks reserved for build b\d+ \(.*\) — 0 free$", c.Benches.Single().Bills.Single().SuspendedReason); // names the build and the amounts
         // Reorder: the fence first. Now it gets the planks (crafting), and the floor waits.
         c.BuildsOp("reorder", null, [fence]);
         c.EnsureMaterials();
