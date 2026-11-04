@@ -681,6 +681,64 @@ public sealed class LiveHiveStateGoldenTests(ITestOutputHelper output)
         Compare(rows, Golden);
     }
 
+    /// <summary>Compose mode's local renderer over a synced world (columns seen a minute ago; no world time: noon).</summary>
+    private static string LocalSheetDump()
+    {
+        var cache = new HiveWorldCache();
+        long seen = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 60_000;
+        var entries = new List<ColumnPayloadEntry>();
+        for (int cx = -2; cx <= 2; cx++)
+            for (int cz = -2; cz <= 2; cz++)
+            {
+                var blocks = new List<(int, int, int, byte)>();
+                for (int x = 0; x < 16; x++)
+                    for (int z = 0; z < 16; z++)
+                        blocks.Add((x, 63, z, (byte)((x + z) % 5 == 0 ? 4 : 2)));
+                if (cx == 0 && cz == 0) { blocks.Add((5, 64, 5, 4)); blocks.Add((6, 64, 5, 1)); blocks.Add((6, 65, 5, 1)); }
+                entries.Add(Entry(cx, cz, Snap([.. blocks]), seen));
+            }
+        cache.Apply(ColumnPayload.Encode(0, entries));
+        List<BotDto> bots =
+        [
+            new("maid_chan", "main", true, 0, 2.5, 64, 2.5, 30, 10, 0, 20, 20, null, null, null, null, true, 0),
+            new("maid_chan_67", "67", false, 0, -3.5, 64, 6.5, 90, null, 0, 20, 20, null, null, null, null, true, 0),
+            new("nether_bot", "68", false, -1, 0, 64, 0, 0, 0, 0, 20, 20, null, null, null, null, true, 0),
+            new("far_bot", "69", false, 0, 300, 64, 0, 0, 0, 0, 20, 20, null, null, null, null, true, 0),
+        ];
+        List<EntityDto> ents =
+        [
+            new("player", "Fox", 0, 6.5, 64, -2.5, Yaw: 45), new("player", "MAID_CHAN", 0, 1, 64, 1), new("mob", "zombie", 0, 3, 64, 3, Type: 54),
+            new("item", "cobblestone", 0, 4.5, 64, 4.5, Item: 4, Count: 12), new("item", "far", 0, 100, 64, 6.5), new("player", "Robin", -1, 0, 64, 0),
+            new("arrow", "a", 0, 2, 64, 2),
+        ];
+        var composer = new LocalSheetComposer(cache, () => null, () => bots, () => ents);
+        var specs = new[]
+        {
+            new ComposeSpec(bots[0], (5, 64, 5), 6, [new SeeView("eye"), new SeeView("iso"), new SeeView("top")]),
+            new ComposeSpec(bots[0], (2, 64, 2), 4, [new SeeView("eye")], Aids: false),
+            new ComposeSpec(bots[1], (5, 64, 5), 20, [new SeeView("iso", new CamParams(Yaw: 200, Pitch: 50)), new SeeView("side", new CamParams(Axis: "N")), new SeeView("TOP")]),
+            new ComposeSpec(bots[1] with { Yaw = null }, (-3, 64, 6), 2, []),
+            new ComposeSpec(bots[0], (5, 64, 9), 8, [new SeeView("orbit", new CamParams(Dist: 9)), new SeeView("high"), new SeeView("layers"), new SeeView("shoulder")]),
+        };
+        var sb = new StringBuilder();
+        foreach (var spec in specs)
+        {
+            var pic = composer.Render(spec);
+            sb.Append(spec.SeeCall()).Append(" => ").Append(pic.Width).Append('x').Append(pic.Height).Append(' ').Append(pic.Where).Append(' ').Append(Hash(pic.Png))
+                .Append('\n').Append(pic.Legend).Append('\n');
+        }
+        foreach (var (feet, focus, yaw) in new[] { ((0, 64, 0), (3, 64, 0), 0f), ((0, 64, 0), (0, 64, -5), 0f), ((0, 64, 0), (1, 64, 0), 90f), ((0, 64, 0), (0, 64, 0), 180f), ((0, 64, 0), (0, 64, 1), 45f) })
+            sb.Append(LocalSheetComposer.AxisFor(feet, focus, yaw)).Append(' ');
+        return sb.ToString();
+    }
+
+    [Fact]
+    public void Local_sheet_composer_matches_the_golden_hash() => Compare([("local-sheet", LocalSheetDump())], LocalGolden);
+
+    private const string LocalGolden = """
+        local-sheet 08A06984EFA5914A6930
+        """;
+
     [Fact]
     public async Task Fast_loop_states_match_the_golden_hash() => Compare([("fast-loop", await FastLoopDump())], FastGolden);
 

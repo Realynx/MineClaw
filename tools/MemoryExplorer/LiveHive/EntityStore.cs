@@ -50,37 +50,46 @@ public sealed class EntityStore
             _lastUpdateMs = now;
             if (d.Full) { _anon.Clear(); }
             var seen = d.Full ? new HashSet<(int, int)>() : null;
-            foreach (var e in d.Entities)
-            {
-                if (e.Id is not { } id) { if (d.Full) _anon.Add(e); continue; }
-                var k = (e.Dim, id);
-                seen?.Add(k);
-                if (!_tracks.TryGetValue(k, out var t))
-                {
-                    _tracks[k] = new Track { E = e, FromX = e.X, FromY = e.Y, FromZ = e.Z, ToX = e.X, ToY = e.Y, ToZ = e.Z, StartMs = now, AgeAt = (e.Age ?? 0) * 20, AgeMs = now };
-                    continue;
-                }
-                Position(t, now, out var cx, out var cy, out var cz);
-                // A teleport-sized jump snaps instead of gliding.
-                bool snap = Math.Abs(e.X - cx) + Math.Abs(e.Y - cy) + Math.Abs(e.Z - cz) > 8;
-                (t.FromX, t.FromY, t.FromZ) = snap ? (e.X, e.Y, e.Z) : (cx, cy, cz);
-                (t.ToX, t.ToY, t.ToZ) = (e.X, e.Y, e.Z);
-                t.StartMs = now;
-                t.DurMs = _intervalMs;
-                if (e.Age is { } age && Math.Abs(age * 20 - Ticks(t, now)) > 20) { t.AgeAt = age * 20; t.AgeMs = now; }
-                t.E = e;
-            }
+            foreach (var e in d.Entities) ApplyOne(e, d.Full, seen, now);
             if (seen != null)
                 foreach (var k in _tracks.Keys.Where(k => !seen.Contains(k)).ToList()) _tracks.Remove(k);
-            if (d.Removed != null)
-                foreach (var r in d.Removed)
-                    if (r.Length >= 2) _tracks.Remove((r[0], r[1]));
+            RemoveListed(d.Removed);
             Interlocked.Increment(ref _version);
             var all = new List<EntityDto>(_tracks.Count + _anon.Count);
             foreach (var t in _tracks.Values) all.Add(t.E);
             all.AddRange(_anon);
             return d with { Entities = all, Full = true, Removed = null };
         }
+    }
+
+    /// <summary>One wire record (under the lock): a new track, a glide of a known one, or (no id, full reply) an anonymous entity.</summary>
+    private void ApplyOne(EntityDto e, bool full, HashSet<(int, int)>? seen, double now)
+    {
+        if (e.Id is not { } id) { if (full) _anon.Add(e); return; }
+        var k = (e.Dim, id);
+        seen?.Add(k);
+        if (_tracks.TryGetValue(k, out var t)) Glide(t, e, now);
+        else _tracks[k] = new Track { E = e, FromX = e.X, FromY = e.Y, FromZ = e.Z, ToX = e.X, ToY = e.Y, ToZ = e.Z, StartMs = now, AgeAt = (e.Age ?? 0) * 20, AgeMs = now };
+    }
+
+    /// <summary>Starts a glide from where the track is drawn now to the record's position (a teleport-sized jump snaps).</summary>
+    private void Glide(Track t, EntityDto e, double now)
+    {
+        Position(t, now, out var cx, out var cy, out var cz);
+        bool snap = Math.Abs(e.X - cx) + Math.Abs(e.Y - cy) + Math.Abs(e.Z - cz) > 8;
+        (t.FromX, t.FromY, t.FromZ) = snap ? (e.X, e.Y, e.Z) : (cx, cy, cz);
+        (t.ToX, t.ToY, t.ToZ) = (e.X, e.Y, e.Z);
+        t.StartMs = now;
+        t.DurMs = _intervalMs;
+        if (e.Age is { } age && Math.Abs(age * 20 - Ticks(t, now)) > 20) { t.AgeAt = age * 20; t.AgeMs = now; }
+        t.E = e;
+    }
+
+    private void RemoveListed(List<int[]>? removed)
+    {
+        if (removed == null) return;
+        foreach (var r in removed)
+            if (r.Length >= 2) _tracks.Remove((r[0], r[1]));
     }
 
     private static double Ticks(Track t, double now) => t.AgeAt + (now - t.AgeMs) / 50.0;
@@ -104,19 +113,23 @@ public sealed class EntityStore
             foreach (var kv in _tracks)
             {
                 if (kv.Key.Dim != dim) continue;
-                var t = kv.Value;
-                Position(t, now, out var x, out var y, out var z);
-                var e = t.E;
-                into.Add(new EntityView
-                {
-                    Id = kv.Key.Id, Dim = dim, X = x, Y = y, Z = z, AgeTicks = Ticks(t, now), Kind = e.Kind, Name = e.Name, Item = e.Item ?? 0,
-                    Damage = e.Damage ?? 0, Count = e.Count ?? 1, Type = e.Type ?? -1, Yaw = e.Yaw ?? 0, Vx = e.Vx ?? 0, Vz = e.Vz ?? 0, Flags = e.Flags ?? 0, Variant = e.Variant ?? 0,
-                });
+                into.Add(ViewOf(kv.Key.Id, dim, kv.Value, now));
             }
             foreach (var e in _anon)
                 if (e.Dim == dim)
                     into.Add(new EntityView { Id = -1, Dim = dim, X = e.X, Y = e.Y, Z = e.Z, Kind = e.Kind, Name = e.Name, Count = 1, Type = -1 });
         }
+    }
+
+    private static EntityView ViewOf(int id, int dim, Track t, double now)
+    {
+        Position(t, now, out var x, out var y, out var z);
+        var e = t.E;
+        return new EntityView
+        {
+            Id = id, Dim = dim, X = x, Y = y, Z = z, AgeTicks = Ticks(t, now), Kind = e.Kind, Name = e.Name, Item = e.Item ?? 0,
+            Damage = e.Damage ?? 0, Count = e.Count ?? 1, Type = e.Type ?? -1, Yaw = e.Yaw ?? 0, Vx = e.Vx ?? 0, Vz = e.Vz ?? 0, Flags = e.Flags ?? 0, Variant = e.Variant ?? 0,
+        };
     }
 
     public void Clear()
