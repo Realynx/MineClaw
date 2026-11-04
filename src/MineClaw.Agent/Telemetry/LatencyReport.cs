@@ -82,79 +82,98 @@ public static class LatencyReport
     public static List<LatencyRecord> FromLog(IEnumerable<string> lines, string bot, IEnumerable<string>? otherBots = null,
         IEnumerable<string>? names = null, double maxQueueSeconds = 15, DateOnly? day = null)
     {
-        var bots = new HashSet<string>((otherBots ?? []).Append(bot), StringComparer.OrdinalIgnoreCase);
-        var nameList = (names ?? []).Append(bot).ToList();
-        var date = day ?? new DateOnly(2026, 1, 1);
-        var records = new List<LatencyRecord>();
-        (DateTimeOffset At, string Player, string Text)? pending = null;
-        (DateTimeOffset At, string Player, string Text)? turn = null;
-        DateTimeOffset? lastCall = null, firstLine = null, lastLine = null, action = null;
-        bool workerAction = false;
-        DateTimeOffset prev = DateTimeOffset.MinValue;
-        int dayOffset = 0;
-        var tools = new List<string>();
+        var scan = new LogScan(bot, otherBots, names, TimeSpan.FromSeconds(maxQueueSeconds), day ?? new DateOnly(2026, 1, 1));
+        foreach (var raw in lines) scan.Line(raw);
+        return scan.Records;
+    }
 
-        foreach (var raw in lines)
+    /// <summary>The state machine behind <see cref="FromLog"/>: a pending player line, the turn it started, and that turn's marks.</summary>
+    private sealed class LogScan(string bot, IEnumerable<string>? otherBots, IEnumerable<string>? names, TimeSpan maxQueue, DateOnly date)
+    {
+        private readonly HashSet<string> _bots = new((otherBots ?? []).Append(bot), StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _names = (names ?? []).Append(bot).ToList();
+        public readonly List<LatencyRecord> Records = [];
+        private (DateTimeOffset At, string Player, string Text)? _pending;
+        private (DateTimeOffset At, string Player, string Text)? _turn;
+        private DateTimeOffset? _lastCall, _firstLine, _lastLine, _action;
+        private bool _workerAction;
+        private DateTimeOffset _prev = DateTimeOffset.MinValue;
+        private int _dayOffset;
+        private readonly List<string> _tools = [];
+
+        public void Line(string raw)
+        {
+            if (Time(raw) is not { } t) return;
+            if (ChatRx.Match(raw) is { Success: true } cm) Chat(t, cm.Groups[1].Value, cm.Groups[2].Value);
+            else if (TriageRx.IsMatch(raw)) Triage(t);
+            else if (_turn == null) return;
+            else if (CallRx.IsMatch(raw)) Call(t, raw);
+            else if (ToolRx.Match(raw) is { Success: true } tool) Tool(t, tool.Groups[1].Value);
+            else if (TurnEndRx.IsMatch(raw)) TurnEnd();
+        }
+
+        /// <summary>The line's time on the scan's day; a jump back of over 6 h is the next day.</summary>
+        private DateTimeOffset? Time(string raw)
         {
             var tm = TimeRx.Match(raw);
-            if (!tm.Success) continue;
+            if (!tm.Success) return null;
             var t = new DateTimeOffset(date.ToDateTime(new TimeOnly(int.Parse(tm.Groups[1].Value), int.Parse(tm.Groups[2].Value),
-                int.Parse(tm.Groups[3].Value), int.Parse(tm.Groups[4].Value))), TimeSpan.Zero).AddDays(dayOffset);
-            if (prev != DateTimeOffset.MinValue && t < prev - TimeSpan.FromHours(6)) { dayOffset++; t = t.AddDays(1); }
-            prev = t;
-
-            if (ChatRx.Match(raw) is { Success: true } cm)
-            {
-                var who = cm.Groups[1].Value;
-                if (who.Equals(bot, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (turn != null) { firstLine ??= t; lastLine = t; }
-                    continue;
-                }
-                if (bots.Contains(who)) continue;
-                var text = cm.Groups[2].Value;
-                if (turn == null && (pending == null || t - pending.Value.At > TimeSpan.FromSeconds(maxQueueSeconds))) pending = (t, who, text);
-                else if (turn == null && pending is { } pd && pd.Player.Equals(who, StringComparison.OrdinalIgnoreCase)) pending = (pd.At, pd.Player, pd.Text + " / " + text);
-                continue;
-            }
-            if (TriageRx.IsMatch(raw))
-            {
-                if (turn == null && pending is { } p && t - p.At <= TimeSpan.FromSeconds(maxQueueSeconds)) turn = p;
-                pending = null;
-                if (turn != null) { lastCall = null; firstLine = lastLine = action = null; workerAction = false; tools.Clear(); }
-                continue;
-            }
-            if (turn == null) continue;
-            if (CallRx.IsMatch(raw))
-            {
-                if (raw.Contains("worker call", StringComparison.Ordinal) && workerAction == false && tools.Count == 0) { action ??= t; workerAction = true; }
-                lastCall = t;
-                continue;
-            }
-            if (ToolRx.Match(raw) is { Success: true } tool)
-            {
-                var name = tool.Groups[1].Value;
-                tools.Add(name);
-                if (action == null && (LatencyTracker.BodyTools.Contains(name) || name == "stop")) action = lastCall ?? t;
-                continue;
-            }
-            if (TurnEndRx.IsMatch(raw))
-            {
-                var o = turn.Value;
-                long? Ms(DateTimeOffset? x) => x is { } v ? Math.Max(0, (long)(v - o.At).TotalMilliseconds) : null;
-                var react = new[] { firstLine, action }.Where(x => x != null).Min();
-                var cls = ChatIntent.CategoryOf(o.Text.Split(" / "), nameList);
-                records.Add(new LatencyRecord
-                {
-                    Ts = o.At, Bot = bot, Player = o.Player, Text = TextUtil.Truncate(o.Text, 80), Kind = "log",
-                    ReactionMs = Ms(react), FirstChatMs = Ms(firstLine), ConclusiveMs = Ms(lastLine), FirstActionMs = Ms(action),
-                    ReactionBy = react == null ? null : react == firstLine ? "line" : "action", Category = cls,
-                    FullMs = LatencyTracker.Full(Ms(lastLine), Ms(action), Ms(firstLine)), Tools = tools.ToArray(),
-                });
-                turn = null;
-            }
+                int.Parse(tm.Groups[3].Value), int.Parse(tm.Groups[4].Value))), TimeSpan.Zero).AddDays(_dayOffset);
+            if (_prev != DateTimeOffset.MinValue && t < _prev - TimeSpan.FromHours(6)) { _dayOffset++; t = t.AddDays(1); }
+            _prev = t;
+            return t;
         }
-        return records;
+
+        private void Chat(DateTimeOffset t, string who, string text)
+        {
+            if (who.Equals(bot, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_turn != null) { _firstLine ??= t; _lastLine = t; }
+                return;
+            }
+            if (_bots.Contains(who) || _turn != null) return;
+            if (_pending == null || t - _pending.Value.At > maxQueue) _pending = (t, who, text);
+            else if (_pending is { } pd && pd.Player.Equals(who, StringComparison.OrdinalIgnoreCase)) _pending = (pd.At, pd.Player, pd.Text + " / " + text);
+        }
+
+        private void Triage(DateTimeOffset t)
+        {
+            if (_turn == null && _pending is { } p && t - p.At <= maxQueue) _turn = p;
+            _pending = null;
+            if (_turn == null) return;
+            _lastCall = null;
+            _firstLine = _lastLine = _action = null;
+            _workerAction = false;
+            _tools.Clear();
+        }
+
+        private void Call(DateTimeOffset t, string raw)
+        {
+            if (raw.Contains("worker call", StringComparison.Ordinal) && _workerAction == false && _tools.Count == 0) { _action ??= t; _workerAction = true; }
+            _lastCall = t;
+        }
+
+        private void Tool(DateTimeOffset t, string name)
+        {
+            _tools.Add(name);
+            if (_action == null && (LatencyTracker.BodyTools.Contains(name) || name == "stop")) _action = _lastCall ?? t;
+        }
+
+        private void TurnEnd()
+        {
+            var o = _turn!.Value;
+            long? Ms(DateTimeOffset? x) => x is { } v ? Math.Max(0, (long)(v - o.At).TotalMilliseconds) : null;
+            var react = new[] { _firstLine, _action }.Where(x => x != null).Min();
+            var cls = ChatIntent.CategoryOf(o.Text.Split(" / "), _names);
+            Records.Add(new LatencyRecord
+            {
+                Ts = o.At, Bot = bot, Player = o.Player, Text = TextUtil.Truncate(o.Text, 80), Kind = "log",
+                ReactionMs = Ms(react), FirstChatMs = Ms(_firstLine), ConclusiveMs = Ms(_lastLine), FirstActionMs = Ms(_action),
+                ReactionBy = react == null ? null : react == _firstLine ? "line" : "action", Category = cls,
+                FullMs = LatencyTracker.Full(Ms(_lastLine), Ms(_action), Ms(_firstLine)), Tools = _tools.ToArray(),
+            });
+            _turn = null;
+        }
     }
 
     /// <summary>A markdown table of <see cref="Build"/> (design docs, reports).</summary>

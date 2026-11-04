@@ -383,35 +383,90 @@ public sealed partial class BotAgent
         var typed = waking.Where(EventQueue.IsTyped).ToList();
         var now = _time.GetUtcNow();
 
-        if (_lastCheap is { } last)
+        if (CheapMiss(typed, now, o) is { } miss) return miss;
+        if (CheapKind(batch, waking, typed, mode, o) is not { } kind) return new();
+        // Act first: the brainstem already answered this small talk with a prefetched in-character line. No model call at all.
+        if (await TryInstantAsync(batch, typed, kind, now).ConfigureAwait(false) is { } instant) return instant;
+
+        var prompt = QuickPromptFor(batch, typed);
+        if (await QuickCallAsync(prompt, o, ct).ConfigureAwait(false) is not { } response) return new();
+        return await AnswerCheapAsync(batch, kind, prompt, response, now, o, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The cheap call's verdict: the brain is needed (with its ack), the line failed the lint (the brain answers), or it is said
+    /// as the final answer and committed as a small episode.
+    /// </summary>
+    private async Task<QuickResult> AnswerCheapAsync(EventBatch batch, QuickKind kind, QuickPrompt prompt, LlmResponse response, DateTimeOffset now,
+        ReplyOptions o, CancellationToken ct)
+    {
+        decimal cost = _usage.Record(response.Model, response.Usage, ModelTier.Cheap);
+        var (needsBrain, say) = QuickReply.Parse(response.Text);
+        if (needsBrain)
         {
-            bool samePlayer = typed.Any(e => last.Player.Equals(e.Player, StringComparison.OrdinalIgnoreCase));
-            if (samePlayer) _lastCheap = null;
-            if (samePlayer && now - last.At <= TimeSpan.FromSeconds(Math.Max(0, o.CorrectionWindowSeconds)) && typed.Any(e => QuickReply.IsCorrection(e.Text)))
-            {
-                Latency?.NoteCheapMiss();
-                _log.LogInformation("cheap-path miss: {Player} corrected the quick reply \"{Reply}\"; escalating to the brain", last.Player, last.Reply);
-                return new(Prelude: $"(your quick reply \"{last.Reply}\" missed: {last.Player} is correcting it; answer properly)");
-            }
+            var ack = QuickReply.LintAck(say, o.AckMaxWords, o.AckMaxChars);
+            _log.LogInformation("quick reply: cheap tier says the brain is needed ({Kind}); ack {Ack}", kind, ack ?? "(none)");
+            return new(Ack: ack, Calls: 1, Usage: response.Usage, Cost: cost);
+        }
+        var final = QuickReply.LintFinal(say, prompt.Context, o.CheapMaxChars);
+        if (final == null)
+        {
+            _log.LogInformation("[quick reply rejected by lint] {Text}; the brain answers", TextUtil.OneLine(response.Text));
+            return new(Calls: 1, Usage: response.Usage, Cost: cost);
         }
 
-        if (!o.CheapOnly || mode is not (BudgetMode.Normal or BudgetMode.Economy)) return new();
-        if (!SureAddressed(typed, o)) return new(); // might be someone else's line: no cheap answer, no ack; the brain decides
-        if (waking.Count != typed.Count || batch.HasDanger || typed.Any(e => e.Player == null)) return new();
+        var said = await SayCheapAsync(batch, final, prompt.Players, kind, ct).ConfigureAwait(false);
+        // History + episodes: the brain sees this exchange next turn (a small appended tail, not a rewrite of the cached prefix).
+        var episode = new Episode(ModelTier.Cheap, now) { IsTest = batch.IsTest };
+        episode.Events.AddRange(batch.Events);
+        episode.Messages.Add(LlmMessage.User(QuickReplyTag + "\n" + prompt.Events));
+        episode.Messages.Add(LlmMessage.Assistant(said.Count > 0 ? string.Join(" ", said) : "(silent)"));
+        CommitQuickEpisode(episode);
+        if (said.Count > 0) _lastCheap = (prompt.Players[0], _time.GetUtcNow(), string.Join(" ", said));
+        return new(Final: new RunResult(ModelTier.Cheap, 1, response.Usage, cost, said, null));
+    }
+
+    /// <summary>The last cheap-only reply's player spoke again: that clears it, and a correction in time escalates (a miss).</summary>
+    private QuickResult? CheapMiss(List<GameEvent> typed, DateTimeOffset now, ReplyOptions o)
+    {
+        if (_lastCheap is not { } last || !typed.Any(e => last.Player.Equals(e.Player, StringComparison.OrdinalIgnoreCase))) return null;
+        _lastCheap = null;
+        if (now - last.At > TimeSpan.FromSeconds(Math.Max(0, o.CorrectionWindowSeconds)) || !typed.Any(e => QuickReply.IsCorrection(e.Text))) return null;
+        Latency?.NoteCheapMiss();
+        _log.LogInformation("cheap-path miss: {Player} corrected the quick reply \"{Reply}\"; escalating to the brain", last.Player, last.Reply);
+        return new(Prelude: $"(your quick reply \"{last.Reply}\" missed: {last.Player} is correcting it; answer properly)");
+    }
+
+    /// <summary>What kind of small talk this batch is when the cheap tier may answer it alone; null = the brain's.</summary>
+    private QuickKind? CheapKind(EventBatch batch, List<GameEvent> waking, List<GameEvent> typed, BudgetMode mode, ReplyOptions o)
+    {
+        if (!o.CheapOnly || mode is not (BudgetMode.Normal or BudgetMode.Economy)) return null;
+        if (!SureAddressed(typed, o)) return null; // might be someone else's line: no cheap answer, no ack; the brain decides
+        if (waking.Count != typed.Count || batch.HasDanger || typed.Any(e => e.Player == null)) return null;
         bool emote = typed.All(e => e.Kind == EventKind.Emote);
         var kind = QuickReply.Classify(typed.Select(e => e.Text).ToList(), NameWords(), emote);
-        if (kind == QuickKind.Brain) return new();
-        // Act first: the brainstem already answered this small talk with a prefetched in-character line. No model call at all.
-        var talkers = typed.Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (Voice is { Options.InstantSmallTalkIsFinal: true } voice && voice.For(talkers) is { Count: > 0 } inst
-            && talkers.All(p => inst.Any(i => i.Player.Equals(p, StringComparison.OrdinalIgnoreCase))))
-        {
-            // The line is still being "typed" (≤ the typing cap): wait for it, so the episode and the telemetry hold what was said.
-            var out1 = await Character.CharacterVoice.SentAsync(inst, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-            if (out1.Count > 0 && talkers.All(p => out1.Any(i => i.Player.Equals(p, StringComparison.OrdinalIgnoreCase))))
-                return InstantFinal(batch, out1, kind, now);
-        }
+        return kind == QuickKind.Brain ? null : kind;
+    }
 
+    /// <summary>Every talker already got an instant in-character line: wait for it to be "typed" and finish the turn with it.</summary>
+    private async Task<QuickResult?> TryInstantAsync(EventBatch batch, List<GameEvent> typed, QuickKind kind, DateTimeOffset now)
+    {
+        var talkers = typed.Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (Voice is not { Options.InstantSmallTalkIsFinal: true } voice || voice.For(talkers) is not { Count: > 0 } inst || !CoversAll(talkers, inst))
+            return null;
+        // The line is still being "typed" (≤ the typing cap): wait for it, so the episode and the telemetry hold what was said.
+        var out1 = await Character.CharacterVoice.SentAsync(inst, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        return out1.Count > 0 && CoversAll(talkers, out1) ? InstantFinal(batch, out1, kind, now) : null;
+    }
+
+    private static bool CoversAll(List<string> talkers, IReadOnlyList<Character.InstantLine> lines) =>
+        talkers.All(p => lines.Any(i => i.Player.Equals(p, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>The cheap reply's inputs: state + here lines, the batch's events, who talked, and the self block.</summary>
+    private sealed record QuickPrompt(string Context, string Events, List<string> Players, string? Self);
+
+    private QuickPrompt QuickPromptFor(EventBatch batch, List<GameEvent> typed)
+    {
         string header = "";
         try { header = StateHeader?.Invoke() ?? ""; } catch (Exception ex) { _log.LogDebug(ex, "state header failed"); }
         var activity = _activities.Describe();
@@ -421,16 +476,19 @@ public sealed partial class BotAgent
         string? self = null;
         try { self = Growth != null ? Growth.RenderBlock(players) : Self?.Render(); } catch (Exception ex) { _log.LogDebug(ex, "self render failed"); }
         var events = batch.Format();
-        var context = state + "\n" + (here.Length > 0 ? here + "\n" : "");
+        return new(state + "\n" + (here.Length > 0 ? here + "\n" : ""), events, players, self);
+    }
 
-        LlmResponse response;
+    /// <summary>The one cheap triage call; null when it failed (the brain answers).</summary>
+    private async Task<LlmResponse?> QuickCallAsync(QuickPrompt prompt, ReplyOptions o, CancellationToken ct)
+    {
         try
         {
-            response = await _llm.CompleteAsync(new LlmRequest
+            return await _llm.CompleteAsync(new LlmRequest
             {
                 Tier = ModelTier.Cheap,
-                System = [new LlmSystemBlock(QuickReply.TriageSystem(_chat.DisplayName, Persona(), self, o.AckMaxWords))],
-                Messages = [LlmMessage.User(context + events)],
+                System = [new LlmSystemBlock(QuickReply.TriageSystem(_chat.DisplayName, Persona(), prompt.Self, o.AckMaxWords))],
+                Messages = [LlmMessage.User(prompt.Context + prompt.Events)],
                 MaxTokens = Math.Max(24, o.MaxTokens),
                 CacheHistory = false,
                 Purpose = QuickReplyPurpose,
@@ -439,40 +497,20 @@ public sealed partial class BotAgent
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             _log.LogWarning(ex, "quick reply call failed; the brain answers");
-            return new();
+            return null;
         }
-        decimal cost = _usage.Record(response.Model, response.Usage, ModelTier.Cheap);
-        var (needsBrain, say) = QuickReply.Parse(response.Text);
-        if (needsBrain)
-        {
-            var ack = QuickReply.LintAck(say, o.AckMaxWords, o.AckMaxChars);
-            _log.LogInformation("quick reply: cheap tier says the brain is needed ({Kind}); ack {Ack}", kind, ack ?? "(none)");
-            return new(Ack: ack, Calls: 1, Usage: response.Usage, Cost: cost);
-        }
-        var final = QuickReply.LintFinal(say, context, o.CheapMaxChars);
-        if (final == null)
-        {
-            _log.LogInformation("[quick reply rejected by lint] {Text}; the brain answers", TextUtil.OneLine(response.Text));
-            return new(Calls: 1, Usage: response.Usage, Cost: cost);
-        }
+    }
 
+    /// <summary>Says the cheap tier's final line (through the speech gate and the meta-speech filters) as its own short turn.</summary>
+    private async Task<List<string>> SayCheapAsync(EventBatch batch, string final, List<string> players, QuickKind kind, CancellationToken ct)
+    {
         string? whisperTo = batch.WhisperOnlyFrom;
         var said = new List<string>();
         Latency?.BeginTurn(true);
         Latency?.NoteKind("cheap:" + kind.ToString().ToLowerInvariant());
         try
         {
-            string? text = final;
-            if (whisperTo == null && SpeechGate != null)
-            {
-                try { text = SpeechGate(batch, final, false); } catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); }
-                if (text == null || IsSilent(text.Trim())) { try { Muted?.Invoke(final); } catch (Exception) { } text = ""; }
-            }
-            if (!IsSilent(text))
-            {
-                text = MetaSpeech.Strip(text, out _, MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text)), AddresseeNames(players));
-                if (!IsSilent(text.Trim())) text = LastLook(text, players);
-            }
+            var text = GateCheapLine(batch, final, whisperTo, players);
             if (!IsSilent(text))
             {
                 var lines = await _chat.SayAsync(text, whisperTo, players, ct).ConfigureAwait(false);
@@ -484,20 +522,31 @@ public sealed partial class BotAgent
         }
         finally { Latency?.EndTurn(workPending: false); }
         _log.LogInformation("quick reply (cheap tier, no brain call) to {Players}: {Text}", string.Join(",", players), string.Join(" ", said));
+        return said;
+    }
 
-        // History + episodes: the brain sees this exchange next turn (a small appended tail, not a rewrite of the cached prefix).
-        var episode = new Episode(ModelTier.Cheap, now) { IsTest = batch.IsTest };
-        episode.Events.AddRange(batch.Events);
-        episode.Messages.Add(LlmMessage.User(QuickReplyTag + "\n" + events));
-        episode.Messages.Add(LlmMessage.Assistant(said.Count > 0 ? string.Join(" ", said) : "(silent)"));
+    private string GateCheapLine(EventBatch batch, string final, string? whisperTo, List<string> players)
+    {
+        string? text = final;
+        if (whisperTo == null && SpeechGate != null)
+        {
+            try { text = SpeechGate(batch, final, false); } catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); }
+            if (text == null || IsSilent(text.Trim())) { try { Muted?.Invoke(final); } catch (Exception) { } text = ""; }
+        }
+        if (IsSilent(text)) return text;
+        text = MetaSpeech.Strip(text, out _, MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text)), AddresseeNames(players));
+        return IsSilent(text.Trim()) ? text : LastLook(text, players);
+    }
+
+    /// <summary>A cheap/instant exchange becomes history: its waking events count as handled, then the episode is committed.</summary>
+    private void CommitQuickEpisode(Episode episode)
+    {
         lock (_handled)
         {
             _handled.Clear();
             foreach (var e in episode.Events.Where(e => e.Wakes)) _handled.Add(HandledKey(e));
         }
         _context.Commit(episode);
-        if (said.Count > 0) _lastCheap = (players[0], _time.GetUtcNow(), string.Join(" ", said));
-        return new(Final: new RunResult(ModelTier.Cheap, 1, response.Usage, cost, said, null));
     }
 
     public const string InstantReplyTag = "[instant reply: the brainstem said a prepared line, no model call]";
@@ -518,12 +567,7 @@ public sealed partial class BotAgent
         episode.Events.AddRange(batch.Events);
         episode.Messages.Add(LlmMessage.User(InstantReplyTag + "\n" + batch.Format()));
         episode.Messages.Add(LlmMessage.Assistant(string.Join(" ", said)));
-        lock (_handled)
-        {
-            _handled.Clear();
-            foreach (var e in episode.Events.Where(e => e.Wakes)) _handled.Add(HandledKey(e));
-        }
-        _context.Commit(episode);
+        CommitQuickEpisode(episode);
         _lastCheap = (inst[0].Player, _time.GetUtcNow(), string.Join(" ", said)); // "no, I meant…" right after escalates to the brain
         return new(Final: new RunResult(ModelTier.Cheap, 0, LlmUsage.Zero, 0, said, null));
     }

@@ -85,60 +85,89 @@ public sealed partial class SelfGrowth
     public List<SelfSignal> OnEpisode(Episode e)
     {
         if (!_o.Enabled || !_o.Signals || e.IsTest) return [];
+        var x = ExtractWithActivity(e);
+        var epRef = EpisodeRef(Clone, e);
+        var at = e.Started;
+        var raw = new List<RawSignal>(x.Signals);
+        // Novelty: first times (checked before this episode's own signals are stored).
+        raw.AddRange(FirstTimes(raw));
+
+        var weights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        double W(string? p) => p == null ? 1 : weights.TryGetValue(p, out var w) ? w : weights[p] = WeightOf(p);
+        var batch = raw.Select(s => ToSignal(s, epRef, at, W(s.Player))).ToList();
+        AddPhraseSignals(x.Phrases, batch, epRef, at, W);
+        if (batch.Count == 0) return [];
+        return _store.Record(batch);
+    }
+
+    /// <summary>Signals of the episode; "good job" credits the activity of the last 15 minutes, and the newest one is remembered.</summary>
+    private ExtractionResult ExtractWithActivity(Episode e)
+    {
         string? last;
         lock (_lock) last = _lastActivity != null && e.Started - _lastActivityAt <= TimeSpan.FromMinutes(15) ? _lastActivity : null;
         var x = SignalExtractor.Extract(e, _botNames(), _actionWords, last);
         if (x.LastActivity != null && x.LastActivity != last)
             lock (_lock) { _lastActivity = x.LastActivity; _lastActivityAt = e.Started; }
-        var epRef = EpisodeRef(Clone, e);
-        var at = e.Started;
-        var raw = new List<RawSignal>(x.Signals);
+        return x;
+    }
 
-        // Novelty: first times (checked before this episode's own signals are stored).
+    private List<RawSignal> FirstTimes(List<RawSignal> raw)
+    {
         var firsts = new List<RawSignal>();
         foreach (var s in raw)
         {
             if (s.Player != null && _hive.IsBot(s.Player)) continue;
-            (string Subject, string Note)? first = s.Kind switch
-            {
-                _ when s.Player != null && SignalKinds.IsTreatment(s.Kind) && _store.InteractionEpisodes(Scope, s.Player) == 0
-                    && !firsts.Any(f => f.Subject == "met:" + s.Player.ToLowerInvariant()) => ("met:" + s.Player.ToLowerInvariant(), $"first chat with {s.Player}"),
-                SignalKinds.Affection when s.Player != null && s.Subject?.StartsWith("emote:") == true =>
-                    ($"{s.Subject}:{s.Player.ToLowerInvariant()}", $"first {s.Subject[6..]} from {s.Player}"),
-                SignalKinds.TaskOk when s.Subject != null => ("task:" + s.Subject, $"first {TaskTypes.Label(s.Subject)} done"),
-                SignalKinds.SparWin or SignalKinds.SparLoss or SignalKinds.SparDraw when s.Player != null =>
-                    ("spar:" + s.Player.ToLowerInvariant(), $"first spar with {s.Player} ({SparWord(s.Kind)})"),
-                SignalKinds.Death => ("death", "first death"),
-                SignalKinds.NearFall => ("edge_save", "first time the edge guard caught you"),
-                _ => null,
-            };
-            if (first is { } f && !_store.Exists(Scope, SignalKinds.FirstTime, f.Subject) && !firsts.Any(q => q.Subject == f.Subject))
+            if (FirstTimeOf(s, firsts) is { } f && !_store.Exists(Scope, SignalKinds.FirstTime, f.Subject) && !firsts.Any(q => q.Subject == f.Subject))
                 firsts.Add(new(SignalKinds.FirstTime, s.Player, 0.5, 0.7, f.Subject, f.Note));
         }
-        raw.AddRange(firsts);
+        return firsts;
+    }
 
-        var stored = new List<SelfSignal>();
-        var weights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        double W(string? p) => p == null ? 1 : weights.TryGetValue(p, out var w) ? w : weights[p] = WeightOf(p);
-        var batch = raw.Select(s => ToSignal(s, epRef, at, W(s.Player))).ToList();
+    /// <summary>The first time this signal could be (meeting a player, an emote, a task type, a spar, a death, an edge save), or null.</summary>
+    private (string Subject, string Note)? FirstTimeOf(RawSignal s, List<RawSignal> firsts) =>
+        IsFirstMeeting(s, firsts) ? ("met:" + s.Player!.ToLowerInvariant(), $"first chat with {s.Player}") : OtherFirstTime(s);
 
-        // Recurring phrases → inside-joke / nickname / catchphrase candidates (regulars only: strangers can't plant jokes).
-        foreach (var ph in x.Phrases)
+    /// <summary>The first treatment from a player the bot never had an episode with (once per episode).</summary>
+    private bool IsFirstMeeting(RawSignal s, List<RawSignal> firsts) =>
+        s.Player != null && SignalKinds.IsTreatment(s.Kind) && _store.InteractionEpisodes(Scope, s.Player) == 0
+        && !firsts.Any(f => f.Subject == "met:" + s.Player.ToLowerInvariant());
+
+    private static (string Subject, string Note)? OtherFirstTime(RawSignal s)
+    {
+        return s.Kind switch
         {
-            if (ph.Player.Length > 0 && W(ph.Player) < 1) continue;
+            SignalKinds.Affection when s.Player != null && s.Subject?.StartsWith("emote:") == true =>
+                ($"{s.Subject}:{s.Player.ToLowerInvariant()}", $"first {s.Subject[6..]} from {s.Player}"),
+            SignalKinds.TaskOk when s.Subject != null => ("task:" + s.Subject, $"first {TaskTypes.Label(s.Subject)} done"),
+            SignalKinds.SparWin or SignalKinds.SparLoss or SignalKinds.SparDraw when s.Player != null =>
+                ("spar:" + s.Player.ToLowerInvariant(), $"first spar with {s.Player} ({SparWord(s.Kind)})"),
+            SignalKinds.Death => ("death", "first death"),
+            SignalKinds.NearFall => ("edge_save", "first time the edge guard caught you"),
+            _ => null,
+        };
+    }
+
+    /// <summary>Recurring phrases → inside-joke / nickname / catchphrase candidates (regulars only: strangers can't plant jokes).</summary>
+    private void AddPhraseSignals(List<PhraseObservation> phrases, List<SelfSignal> batch, string epRef, DateTimeOffset at, Func<string?, double> weight)
+    {
+        foreach (var ph in phrases)
+        {
+            if (ph.Player.Length > 0 && weight(ph.Player) < 1) continue;
             int threshold = ph.Kind == "catch" ? _o.InsideJokeEpisodes + 1 : _o.InsideJokeEpisodes;
             if (!_store.NotePhrase(Scope, ph.Player, ph.Kind, ph.Phrase, epRef, at, threshold)) continue;
-            var who = ph.Player.Length > 0 ? ph.Player : null;
-            batch.Add(ph.Kind switch
-            {
-                "nick" => ToSignal(new(SignalKinds.Nickname, who, 0.6, 0.7, ph.Phrase, $"{who} calls you \"{ph.Phrase}\""), epRef, at, 1),
-                "catch" => ToSignal(new(SignalKinds.Catchphrase, null, 0.2, 0.5, ph.Phrase, $"you keep saying \"{ph.Phrase}\""), epRef, at, 1),
-                _ => ToSignal(new(SignalKinds.InsideJoke, who, 0.5, 0.7, ph.Phrase, $"{who} keeps saying \"{ph.Phrase}\""), epRef, at, 1),
-            });
+            batch.Add(ToSignal(PhraseSignal(ph), epRef, at, 1));
         }
-        if (batch.Count == 0) return stored;
-        stored = _store.Record(batch);
-        return stored;
+    }
+
+    private static RawSignal PhraseSignal(PhraseObservation ph)
+    {
+        var who = ph.Player.Length > 0 ? ph.Player : null;
+        return ph.Kind switch
+        {
+            "nick" => new(SignalKinds.Nickname, who, 0.6, 0.7, ph.Phrase, $"{who} calls you \"{ph.Phrase}\""),
+            "catch" => new(SignalKinds.Catchphrase, null, 0.2, 0.5, ph.Phrase, $"you keep saying \"{ph.Phrase}\""),
+            _ => new(SignalKinds.InsideJoke, who, 0.5, 0.7, ph.Phrase, $"{who} keeps saying \"{ph.Phrase}\""),
+        };
     }
 
     private static string SparWord(string kind) => kind == SignalKinds.SparWin ? "won" : kind == SignalKinds.SparLoss ? "lost" : "even";

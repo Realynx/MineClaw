@@ -258,102 +258,138 @@ public sealed class ActivityManager
         TimeSpan inlineWait, CancellationToken ct, ActivityKind kind = ActivityKind.Job, bool queueBehindCurrent = false)
     {
         if (steps.Count == 0) return [];
-        if (kind is ActivityKind.Speculative or ActivityKind.Social)
-            return TryStartFiller(kind, steps) ? steps.Select(_ => ToolResult.Success("started")).ToArray() : steps.Select(_ => ToolResult.Error("body busy")).ToArray();
+        if (kind is ActivityKind.Speculative or ActivityKind.Social) return FillerResults(kind, steps);
 
-        Activity act;
-        Activity? behind = null;
-        bool adoptFirst = false;
-        (bool Adopted, string Why)? resolved = null;
-        lock (_lock)
-        {
-            act = NewActivityLocked(steps, kind, null);
-            if (_current is { Finished: false } old)
-            {
-                bool startsWithMove = MovementTools.Contains(steps[0].Tool.Name);
-                if (old.Kind == ActivityKind.Speculative)
-                {
-                    var verdict = SpeculationVerdict.Cancel;
-                    try { verdict = SpeculationPolicy?.Invoke(old.Steps, act.Steps) ?? SpeculationVerdict.Cancel; } catch (Exception) { }
-                    if (verdict == SpeculationVerdict.Adopt && startsWithMove)
-                    {
-                        // The walk is already under way: it becomes this chain's first step.
-                        old.Kind = steps.Count == 1 ? kind : ActivityKind.Move;
-                        old.Label = steps[0].Tool.Name;
-                        behind = old;
-                        adoptFirst = true;
-                        old.Queued = act;
-                        resolved = (true, "adopted");
-                    }
-                    else
-                    {
-                        old.CancelReason = "superseded by " + act.Label;
-                        try { old.Cts.Cancel(); } catch (ObjectDisposedException) { }
-                        resolved = verdict == SpeculationVerdict.Cancel ? (false, "superseded by " + act.Label) : (true, "retargeted by " + act.Label);
-                    }
-                }
-                else if (old.Queued is not { Finished: false } && !old.Silent && (queueBehindCurrent
-                    || (old.Kind == ActivityKind.Move && kind == ActivityKind.Job && QueueBehindMoves && !startsWithMove)))
-                {
-                    behind = old; // walk there first, then do it
-                    old.Queued = act;
-                }
-                else
-                {
-                    old.CancelReason = "superseded by " + act.Label;
-                    try { old.Cts.Cancel(); } catch (ObjectDisposedException) { }
-                    if (old.Queued is { Finished: false } q && !ReferenceEquals(q, act))
-                    {
-                        q.CancelReason = old.CancelReason;
-                        try { q.Cts.Cancel(); } catch (ObjectDisposedException) { }
-                    }
-                }
-            }
-            act.Behind = behind;
-            act.RequireSuccess = adoptFirst || behind is { Kind: ActivityKind.Move } || !queueBehindCurrent;
-            if (behind == null || adoptFirst) _current = adoptFirst ? behind : act;
-            if (adoptFirst && steps.Count == 1)
-            {
-                // The adopted walk IS the whole chain: no second activity.
-                behind!.Queued = null;
-                act = behind;
-            }
-        }
-        if (resolved is { } r0) RaiseResolved(r0.Adopted, r0.Why);
-        if (!ReferenceEquals(act, behind)) RaiseStarted(act);
+        Placement p;
+        lock (_lock) p = PlaceLocked(steps, kind, queueBehindCurrent);
+        if (p.Resolved is { } r0) RaiseResolved(r0.Adopted, r0.Why);
+        var act = p.Act;
+        bool adoptedWalk = ReferenceEquals(act, p.Behind); // an adopted single walk: already running, no second activity
+        if (!adoptedWalk) RaiseStarted(act);
 
         var results = new ToolResult?[steps.Count];
-        Task chain;
-        if (ReferenceEquals(act, behind)) chain = act.Done.Task; // adopted single walk: already running
-        else chain = RunChainAsync(act, steps, results, behind, adoptFirst);
-
-        try
-        {
-            await Task.WhenAny(chain, Task.Delay(inlineWait, _time, ct)).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { }
+        Task chain = adoptedWalk ? act.Done.Task : RunChainAsync(act, steps, results, p.Behind, p.AdoptFirst);
+        await WaitInlineAsync(chain, inlineWait, ct).ConfigureAwait(false);
 
         lock (_lock)
         {
             if (!act.Finished) act.Detached = true;
         }
+        return adoptedWalk ? [AdoptedWalkResult(act)] : InlineResults(p, results);
+    }
 
-        if (ReferenceEquals(act, behind))
-        {
-            var done = act.Finished ? act.LastResult : null;
-            return [done ?? ToolResult.Success($"already on the way ({act.Label} #{act.Id}); a [task] event reports arrival")];
-        }
+    private ToolResult[] FillerResults(ActivityKind kind, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps) =>
+        TryStartFiller(kind, steps) ? steps.Select(_ => ToolResult.Success("started")).ToArray() : steps.Select(_ => ToolResult.Error("body busy")).ToArray();
 
-        var output = new ToolResult[steps.Count];
-        for (int i = 0; i < steps.Count; i++)
+    private async Task WaitInlineAsync(Task chain, TimeSpan inlineWait, CancellationToken ct)
+    {
+        try
         {
-            output[i] = Volatile.Read(ref results[i]) ?? ToolResult.Success(behind != null && i == 0 && adoptFirst
-                ? $"already on the way (#{behind.Id})"
-                : behind != null && !adoptFirst
-                    ? $"queued behind {behind.Label} #{behind.Id}: runs on arrival as task #{act.Id}; a [task] event will report the result"
-                    : $"running in background as task #{act.Id} ({act.Label}); a [task] event will report the result");
+            await Task.WhenAny(chain, Task.Delay(inlineWait, _time, ct)).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) { }
+    }
+
+    private static ToolResult AdoptedWalkResult(Activity act)
+    {
+        var done = act.Finished ? act.LastResult : null;
+        return done ?? ToolResult.Success($"already on the way ({act.Label} #{act.Id}); a [task] event reports arrival");
+    }
+
+    /// <summary>Each step's result if it finished inline, else what it is doing (on the way, queued, in the background).</summary>
+    private static ToolResult[] InlineResults(Placement p, ToolResult?[] results)
+    {
+        var output = new ToolResult[results.Length];
+        for (int i = 0; i < results.Length; i++)
+            output[i] = Volatile.Read(ref results[i]) ?? ToolResult.Success(PendingText(p.Act, p.Behind, p.AdoptFirst, i));
         return output;
+    }
+
+    /// <summary>Where a new chain goes: its activity (or the adopted walk), what it waits behind, and the speculation outcome.</summary>
+    private sealed class Placement
+    {
+        public required Activity Act;
+        public Activity? Behind;
+        public bool AdoptFirst;
+        public (bool Adopted, string Why)? Resolved;
+    }
+
+    /// <summary>Places a new chain against what holds the body (under the lock): adopt, queue behind, or supersede it.</summary>
+    private Placement PlaceLocked(IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ActivityKind kind, bool queueBehindCurrent)
+    {
+        var p = new Placement { Act = NewActivityLocked(steps, kind, null) };
+        if (_current is { Finished: false } old) MeetLocked(p, old, steps, kind, queueBehindCurrent);
+        var act = p.Act;
+        act.Behind = p.Behind;
+        act.RequireSuccess = p.AdoptFirst || p.Behind is { Kind: ActivityKind.Move } || !queueBehindCurrent;
+        if (p.Behind == null || p.AdoptFirst) _current = p.AdoptFirst ? p.Behind : act;
+        if (p.AdoptFirst && steps.Count == 1)
+        {
+            // The adopted walk IS the whole chain: no second activity.
+            p.Behind!.Queued = null;
+            p.Act = p.Behind;
+        }
+        return p;
+    }
+
+    private void MeetLocked(Placement p, Activity old, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ActivityKind kind, bool queueBehindCurrent)
+    {
+        bool startsWithMove = MovementTools.Contains(steps[0].Tool.Name);
+        if (old.Kind == ActivityKind.Speculative) MeetSpeculationLocked(p, old, steps, kind, startsWithMove);
+        else if (old.Queued is not { Finished: false } && !old.Silent && (queueBehindCurrent
+            || (old.Kind == ActivityKind.Move && kind == ActivityKind.Job && QueueBehindMoves && !startsWithMove)))
+        {
+            p.Behind = old; // walk there first, then do it
+            old.Queued = p.Act;
+        }
+        else SupersedeLocked(old, p.Act);
+    }
+
+    /// <summary>A speculative walk meets the brain's chain: adopted as its first step (same place, a move), else cancelled.</summary>
+    private void MeetSpeculationLocked(Placement p, Activity old, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ActivityKind kind, bool startsWithMove)
+    {
+        var verdict = SpeculationVerdict.Cancel;
+        try { verdict = SpeculationPolicy?.Invoke(old.Steps, p.Act.Steps) ?? SpeculationVerdict.Cancel; } catch (Exception) { }
+        if (verdict == SpeculationVerdict.Adopt && startsWithMove)
+        {
+            // The walk is already under way: it becomes this chain's first step.
+            old.Kind = steps.Count == 1 ? kind : ActivityKind.Move;
+            old.Label = steps[0].Tool.Name;
+            p.Behind = old;
+            p.AdoptFirst = true;
+            old.Queued = p.Act;
+            p.Resolved = (true, "adopted");
+            return;
+        }
+        old.CancelReason = "superseded by " + p.Act.Label;
+        CancelQuietly(old);
+        p.Resolved = verdict == SpeculationVerdict.Cancel ? (false, "superseded by " + p.Act.Label) : (true, "retargeted by " + p.Act.Label);
+    }
+
+    /// <summary>The new chain replaces what runs (and a job queued behind it, unless that is the new chain).</summary>
+    private static void SupersedeLocked(Activity old, Activity act)
+    {
+        old.CancelReason = "superseded by " + act.Label;
+        CancelQuietly(old);
+        if (old.Queued is { Finished: false } q && !ReferenceEquals(q, act))
+        {
+            q.CancelReason = old.CancelReason;
+            CancelQuietly(q);
+        }
+    }
+
+    private static void CancelQuietly(Activity a)
+    {
+        try { a.Cts.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>What a step that hasn't finished inline says: on the way, queued behind a move/job, or running in the background.</summary>
+    private static string PendingText(Activity act, Activity? behind, bool adoptFirst, int i)
+    {
+        if (behind != null && i == 0 && adoptFirst) return $"already on the way (#{behind.Id})";
+        return behind != null && !adoptFirst
+            ? $"queued behind {behind.Label} #{behind.Id}: runs on arrival as task #{act.Id}; a [task] event will report the result"
+            : $"running in background as task #{act.Id} ({act.Label}); a [task] event will report the result";
     }
 
     private Activity NewActivityLocked(IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ActivityKind kind, string? label) => new()
@@ -375,39 +411,77 @@ public sealed class ActivityManager
         Activity? behind = null, bool adoptFirst = false)
     {
         await Task.Yield();
-        ToolResult? failure = null;
-        int failedAt = -1;
         int start = 0;
         if (behind != null)
         {
-            // Wait for the move (or the adopted walk); never run the rest if it failed.
-            ToolResult? moveFail;
-            try { moveFail = await behind.Done.Task.WaitAsync(act.Cts.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) { moveFail = ToolResult.Error("cancelled"); }
-            if (adoptFirst)
-            {
-                results[0] = moveFail ?? behind.LastResult ?? ToolResult.Success("arrived");
-                start = 1;
-            }
-            if (!act.RequireSuccess && !act.Cts.IsCancellationRequested) moveFail = null;
-            if (moveFail != null || act.Cts.IsCancellationRequested)
-            {
-                var why = act.Cts.IsCancellationRequested ? "cancelled" + (act.CancelReason != null ? ": " + act.CancelReason : "")
-                    : $"not run: {behind.Steps[0].Tool} failed: {moveFail!.Text}";
-                for (int i = start; i < steps.Count; i++) results[i] = ToolResult.Error(i == start ? why : "skipped (earlier step failed)");
-                failure = adoptFirst && moveFail != null ? results[0] : results[start];
-                failedAt = adoptFirst && moveFail != null ? 0 : start;
-                await FinishAsync(act, steps, results, failure, failedAt).ConfigureAwait(false);
-                return;
-            }
-            lock (_lock)
-            {
-                if (act.Finished || act.Cts.IsCancellationRequested) { }
-                else if (_current is not { Finished: false } || ReferenceEquals(_current, behind)) _current = act;
-            }
+            start = await WaitBehindAsync(act, steps, results, behind, adoptFirst).ConfigureAwait(false);
+            if (start < 0) return; // the move failed or this chain was cancelled: already finished
         }
 
+        // Set in this frame (AsyncLocal): every step below, and the finish, runs with it.
         _runningKind.Value = act.Kind;
+        var (failure, failedAt) = await RunStepsAsync(act, steps, results, start).ConfigureAwait(false);
+        await FinishAsync(act, steps, results, failure, failedAt).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Waits for the move (or the adopted walk) this chain is queued behind; never runs the rest if it failed. Returns the first
+    /// step to run, or -1 when the chain was finished here (failed move / cancelled).
+    /// </summary>
+    private async Task<int> WaitBehindAsync(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
+        Activity behind, bool adoptFirst)
+    {
+        var moveFail = await MoveOutcomeAsync(act, behind).ConfigureAwait(false);
+        int start = 0;
+        if (adoptFirst)
+        {
+            results[0] = moveFail ?? behind.LastResult ?? ToolResult.Success("arrived");
+            start = 1;
+        }
+        if (!act.RequireSuccess && !act.Cts.IsCancellationRequested) moveFail = null;
+        if (moveFail != null || act.Cts.IsCancellationRequested)
+        {
+            await SkipAfterMoveAsync(act, steps, results, behind, moveFail, adoptFirst, start).ConfigureAwait(false);
+            return -1;
+        }
+        TakeBodyFrom(act, behind);
+        return start;
+    }
+
+    /// <summary>The failure of what this chain waits behind (null = it succeeded); a cancel while waiting is "cancelled".</summary>
+    private static async Task<ToolResult?> MoveOutcomeAsync(Activity act, Activity behind)
+    {
+        try { return await behind.Done.Task.WaitAsync(act.Cts.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return ToolResult.Error("cancelled"); }
+    }
+
+    /// <summary>The chain now holds the body (unless it ended, or something else took the body meanwhile).</summary>
+    private void TakeBodyFrom(Activity act, Activity behind)
+    {
+        lock (_lock)
+        {
+            if (act.Finished || act.Cts.IsCancellationRequested) { }
+            else if (_current is not { Finished: false } || ReferenceEquals(_current, behind)) _current = act;
+        }
+    }
+
+    /// <summary>The move failed (or this chain was cancelled while waiting): every remaining step says why, then the chain finishes.</summary>
+    private Task SkipAfterMoveAsync(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
+        Activity behind, ToolResult? moveFail, bool adoptFirst, int start)
+    {
+        var why = act.Cts.IsCancellationRequested ? "cancelled" + (act.CancelReason != null ? ": " + act.CancelReason : "")
+            : $"not run: {behind.Steps[0].Tool} failed: {moveFail!.Text}";
+        for (int i = start; i < steps.Count; i++) results[i] = ToolResult.Error(i == start ? why : "skipped (earlier step failed)");
+        bool moveFailed = adoptFirst && moveFail != null;
+        return FinishAsync(act, steps, results, moveFailed ? results[0] : results[start], moveFailed ? 0 : start);
+    }
+
+    /// <summary>Runs the steps in order from <paramref name="start"/>; after a failure or a cancel the rest are skipped.</summary>
+    private async Task<(ToolResult? Failure, int FailedAt)> RunStepsAsync(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps,
+        ToolResult?[] results, int start)
+    {
+        ToolResult? failure = null;
+        int failedAt = -1;
         for (int i = start; i < steps.Count; i++)
         {
             if (failure != null || act.Cts.IsCancellationRequested)
@@ -415,18 +489,10 @@ public sealed class ActivityManager
                 results[i] = ToolResult.Error(act.Cts.IsCancellationRequested ? "cancelled" : "skipped (earlier step failed)");
                 continue;
             }
-            ToolResult r;
-            using (StepScope?.Invoke())
-                r = await _registry.ExecuteAsync(steps[i].Tool, steps[i].Input, act.Cts.Token).ConfigureAwait(false);
-            if (act.Cts.IsCancellationRequested && r.Ok == false && act.CancelReason != null)
-                r = ToolResult.Error("cancelled: " + act.CancelReason + "; " + r.Text);
+            var r = await RunStepAsync(act, steps[i]).ConfigureAwait(false);
             results[i] = r;
             act.LastResult = r;
-            if (!act.Silent)
-            {
-                try { StepFinished?.Invoke(steps[i].Tool.Name, steps[i].Input, r, act.Cts.IsCancellationRequested ? act.CancelReason ?? "cancelled" : null); }
-                catch (Exception) { }
-            }
+            if (!act.Silent) RaiseStepFinished(act, steps[i], r);
             if (!r.Ok) { failure = r; failedAt = i; }
         }
         if (failure == null && act.Cts.IsCancellationRequested)
@@ -434,7 +500,23 @@ public sealed class ActivityManager
             failure = ToolResult.Error("cancelled: " + (act.CancelReason ?? "shutdown"));
             failedAt = start;
         }
-        await FinishAsync(act, steps, results, failure, failedAt).ConfigureAwait(false);
+        return (failure, failedAt);
+    }
+
+    private async Task<ToolResult> RunStepAsync(Activity act, (IAgentTool Tool, JsonElement Input) step)
+    {
+        ToolResult r;
+        using (StepScope?.Invoke())
+            r = await _registry.ExecuteAsync(step.Tool, step.Input, act.Cts.Token).ConfigureAwait(false);
+        if (act.Cts.IsCancellationRequested && r.Ok == false && act.CancelReason != null)
+            r = ToolResult.Error("cancelled: " + act.CancelReason + "; " + r.Text);
+        return r;
+    }
+
+    private void RaiseStepFinished(Activity act, (IAgentTool Tool, JsonElement Input) step, ToolResult r)
+    {
+        try { StepFinished?.Invoke(step.Tool.Name, step.Input, r, act.Cts.IsCancellationRequested ? act.CancelReason ?? "cancelled" : null); }
+        catch (Exception) { }
     }
 
     private async Task FinishAsync(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
