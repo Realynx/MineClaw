@@ -56,6 +56,12 @@ function work(j) {
       if (ok(r) && j.replant && inv(j.replant) > 0) place(j.replant, a)
       return r
     }
+    case 'till': {
+      const there = reach(a, 3)
+      if (!ok(there)) return there
+      hold_item(j.hoe)
+      return use(a)
+    }
     case 'collect': {
       const there = go(a, 1)
       const r = collect(j.r || 4)

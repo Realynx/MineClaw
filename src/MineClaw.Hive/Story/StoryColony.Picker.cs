@@ -391,6 +391,8 @@ public sealed partial class StoryColony
     {
         var from = live.Block;
         foreach (var z in Zones.Where(z => z.Kind == "farm").OrderBy(z => z.Area.Center.Dist(from)))
+        {
+            if (z.Plant != null) { if (GrowJob(p, live, z) is { } grow) return grow; continue; } // a growing zone (StoryColony.Farming.cs)
             foreach (var t in ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)))
             {
                 if (t.Kind == "harvest")
@@ -409,6 +411,7 @@ public sealed partial class StoryColony
                 if (stored is { } st2) j2.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(16, st2.Stack.Count) }));
                 return j2;
             }
+        }
         return null;
     }
 
@@ -464,8 +467,9 @@ public sealed partial class StoryColony
             case "order":
                 OrderDone(p, j, ok: true, note);
                 break;
-            case "zone" or "crop":
+            case "zone" or "crop" or "sow":
                 _zoneScan.Remove(j.SourceId ?? "");
+                _growScan.Remove(j.SourceId ?? "");
                 break;
         }
     }

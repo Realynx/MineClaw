@@ -202,6 +202,12 @@ public sealed class ZoneState
     /// <summary>A name the browser gives it ("Main house", "Farmhouse"); null = none.</summary>
     public string? Name { get; set; }
     public long Rev { get; set; }
+    /// <summary>A growing zone's plant (a <see cref="StoryPlants"/> id, farm zones only); null = a plain farm zone (ripe crops, bare farmland).</summary>
+    public string? Plant { get; set; }
+    /// <summary>A growing zone: pawns till and sow it.</summary>
+    public bool Sow { get; set; } = true;
+    /// <summary>A growing zone: pawns harvest what is ripe.</summary>
+    public bool Harvest { get; set; } = true;
 }
 
 /// <summary>One designated target: a block (tree base, crop, ore…) or an entity (a drop, an animal).</summary>

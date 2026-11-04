@@ -273,7 +273,8 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             {
                 Area? area = b["area"] != null ? Area.Parse(b["area"]) : null;
                 if (b["area"] != null && area == null) return Bad("area must be [x1,y1,z1,x2,y2,z2]");
-                return Result(c.ZoneOp(S(b, "op") ?? "", S(b, "kind"), area, S(b, "id"), S(b, "name")));
+                // Growing zones: plant, sow, harvest on add/update; seek_seeds {id} (docs/web/story-mode.md "Farming").
+                return Result(c.ZoneOp(S(b, "op") ?? "", S(b, "kind"), area, S(b, "id"), S(b, "name"), b));
             }
             case "designations":
             {

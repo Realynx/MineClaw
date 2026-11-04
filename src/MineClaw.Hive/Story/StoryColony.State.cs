@@ -35,10 +35,7 @@ public sealed partial class StoryColony
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
-                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev)).Select(z => (JsonNode)new JsonObject
-                {
-                    ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(), ["name"] = z.Name,
-                }).ToArray()),
+                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),
@@ -75,6 +72,7 @@ public sealed partial class StoryColony
                 }).ToArray()),
             };
             if (full && w != null) o["categories"] = StoryCategories.For(w.Data).Json();
+            if (full && w != null) o["plants"] = StoryPlants.Json(w.Data); // what growing zones can grow here
             if (!full)
             {
                 var removed = new JsonObject();
