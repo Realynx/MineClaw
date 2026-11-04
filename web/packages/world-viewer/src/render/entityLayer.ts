@@ -225,6 +225,25 @@ interface Label {
   text: string;
 }
 
+/** One `showFor`'s view parameters and counters (one object per layer, refilled for each view: no per-frame allocation). */
+interface ViewState {
+  dim: number;
+  cam: THREE.Vector3;
+  zoom: number;
+  bots: boolean;
+  entities: boolean;
+  labels: boolean;
+  far: number;
+  botDetail: number;
+  cut: NonNullable<EntityShowOptions['cut']> | null;
+  centre: { x: number; z: number } | null;
+  drops: boolean;
+  frustum: THREE.Frustum | null;
+  n: number;
+  boxes: number;
+  botModels: number;
+}
+
 /** Extra slots in an entity's bone row (models with more parts than CONTENT_SLOT skip these extras). */
 const HELD_SLOT = 62;
 const FIRE_SLOT = 61;
@@ -321,6 +340,9 @@ export class EntityLayer {
   shadows = true;
   private readonly labels = new LabelFactory();
   private readonly cullSphere = new THREE.Sphere();
+  private readonly view: ViewState = {
+    dim: 0, cam: new THREE.Vector3(), zoom: 1, bots: true, entities: true, labels: false, far: 0, botDetail: 0, cut: null, centre: null, drops: true, frustum: null, n: 0, boxes: 0, botModels: 0,
+  };
   private readonly botObjs = new Map<string, BotObj>();
   private readonly entLabels = new Map<string, Label>();
   private readonly drawn = new Map<string, Drawn>();
@@ -1561,6 +1583,23 @@ export class EntityLayer {
     // Detail by apparent size: distances are scaled by the view's zoom relative to a 70° field of view.
     const zoom = opts.fov ? Math.tan((opts.fov * Math.PI) / 360) / Math.tan((35 * Math.PI) / 180) : 1;
     this.nextCams.push({ p: cam.clone(), k: zoom });
+    this.resetDraws();
+    this.visibleBots.length = 0;
+    this.ghostMap = opts.ghosts ?? null;
+    this.ghostSelected = opts.selected ?? null;
+    const v = this.beginView(dim, cam, opts, zoom);
+    const want = new Set<string>();
+    for (const d of this.list) this.showOne(d, v, want);
+    if (opts.entities) this.pushParticles(dim);
+    this.lightning.showFor(dim);
+    this.commitDraws();
+    this.drawnCount = v.n;
+    this.botModelCount = v.botModels;
+    this.syncEntityLabels(want, opts.labels);
+    for (const [name, o] of this.botObjs) this.syncBotObj(name, o, dim, opts);
+  }
+
+  private resetDraws(): void {
     for (const e of this.models.values()) {
       e.opaque.reset();
       e.translucent?.reset();
@@ -1571,56 +1610,9 @@ export class EntityLayer {
     this.shadowDraw.reset();
     for (const s of this.skullDraws.values()) s.reset();
     this.elytraDraw?.reset();
-    this.visibleBots.length = 0;
-    this.ghostMap = opts.ghosts ?? null;
-    this.ghostSelected = opts.selected ?? null;
-    const far = (opts.drawDistance ?? 1e9) + 8, detail = this.detailDistance;
-    const botDetail = detail > 0 ? Math.max(detail, BOT_DETAIL_MIN) : 0;
-    const cut = opts.cut ?? null;
-    let botModels = 0;
-    const centre = opts.centre ?? null, drops = opts.drops !== false, frustum = opts.frustum ?? null;
-    const sphere = this.cullSphere;
-    const want = new Set<string>();
-    let n = 0, boxes = 0;
-    for (const d of this.list) {
-      d.detail = null;
-      if (d.parent) {
-        // A rider shows with its body's detail.
-        if (d.parent.detail && d.posed && d.dim === dim && this.bundle) {
-          d.detail = true;
-          this.pushDetail(d, 0);
-        }
-        continue;
-      }
-      if (d.dim !== dim) continue;
-      if (d.bot ? !opts.bots : !opts.entities) continue;
-      if (d.motion.deadAt && this.now - d.motion.deadAt >= DEATH_GONE_MS) continue;
-      if (d.drop && !drops) continue;
-      const real = Math.hypot(d.x - cam.x, d.y - cam.y, d.z - cam.z);
-      if ((centre ? Math.hypot(d.x - centre.x, d.z - centre.z) : real) > far) continue;
-      if (cut && Math.floor(d.y + 0.01) >= cut.y && Math.hypot(d.x - cut.x, d.z - cut.z) <= cut.r) continue;
-      if (frustum) {
-        sphere.center.set(d.x, d.y + d.h * 0.5, d.z);
-        sphere.radius = Math.max(d.w, d.h) + 0.5;
-        if (!frustum.intersectsSphere(sphere)) continue;
-      }
-      const dist = real * zoom;
-      const near = !(dist > (d.bot ? botDetail : detail) || !d.posed || !this.bundle);
-      // Far boxes are a few pixels each: past the cap (a zoomed-out map over a mob farm) the rest are skipped, bots never.
-      if (!near && !d.bot && !d.display && ++boxes > MAX_FAR_BOXES) continue;
-      if (d.bot) this.visibleBots.push(d);
-      n++;
-      d.detail = near;
-      if (near && d.bot) botModels++;
-      const bright = d.bright;
-      if (cut && cut.dimBelow !== null && d.y < cut.dimBelow) d.bright = bright * 0.55;
-      if (d.detail) this.pushDetail(d, dist);
-      else if (!d.invisible) this.pushBox(d);
-      d.bright = bright;
-      if (!d.bot && !d.display && opts.labels && d.ent && !d.invisible) this.entityLabel(d, d.ent, dist, want);
-    }
-    if (opts.entities) this.pushParticles(dim);
-    this.lightning.showFor(dim);
+  }
+
+  private commitDraws(): void {
     for (const e of this.models.values()) {
       e.opaque.commit();
       e.translucent?.commit();
@@ -1632,24 +1624,113 @@ export class EntityLayer {
     this.shadowDraw.commit();
     for (const s of this.skullDraws.values()) s.commit();
     this.elytraDraw?.commit();
-    this.drawnCount = n;
-    this.botModelCount = botModels;
+  }
+
+  /** Fills the reused view state for one `showFor`. */
+  private beginView(dim: number, cam: THREE.Vector3, opts: EntityShowOptions, zoom: number): ViewState {
+    const v = this.view;
+    v.dim = dim;
+    v.cam = cam;
+    v.zoom = zoom;
+    v.bots = opts.bots;
+    v.entities = opts.entities;
+    v.labels = opts.labels;
+    v.far = (opts.drawDistance ?? 1e9) + 8;
+    v.botDetail = this.detailDistance > 0 ? Math.max(this.detailDistance, BOT_DETAIL_MIN) : 0;
+    v.cut = opts.cut ?? null;
+    v.centre = opts.centre ?? null;
+    v.drops = opts.drops !== false;
+    v.frustum = opts.frustum ?? null;
+    v.n = v.boxes = v.botModels = 0;
+    return v;
+  }
+
+  /** One drawn entity in this view: skipped, a full model, or a LOD box (and its label). */
+  private showOne(d: Drawn, v: ViewState, want: Set<string>): void {
+    d.detail = null;
+    if (d.parent) {
+      this.showRider(d, v.dim);
+      return;
+    }
+    if (!this.wanted(d, v)) return;
+    const real = Math.hypot(d.x - v.cam.x, d.y - v.cam.y, d.z - v.cam.z);
+    if (!this.inRange(d, v, real)) return;
+    const dist = real * v.zoom;
+    const near = this.isNear(d, v, dist);
+    // Far boxes are a few pixels each: past the cap (a zoomed-out map over a mob farm) the rest are skipped, bots never.
+    if (!near && !d.bot && !d.display && ++v.boxes > MAX_FAR_BOXES) return;
+    this.drawOne(d, v, near, dist, want);
+  }
+
+  /** A rider shows with its body's detail. */
+  private showRider(d: Drawn, dim: number): void {
+    if (d.parent!.detail && d.posed && d.dim === dim && this.bundle) {
+      d.detail = true;
+      this.pushDetail(d, 0);
+    }
+  }
+
+  /** In this view's dimension, of a kind it shows, not long dead, not a hidden drop. */
+  private wanted(d: Drawn, v: ViewState): boolean {
+    if (d.dim !== v.dim) return false;
+    if (d.bot ? !v.bots : !v.entities) return false;
+    if (d.motion.deadAt && this.now - d.motion.deadAt >= DEATH_GONE_MS) return false;
+    return !(d.drop && !v.drops);
+  }
+
+  /** Within the draw distance, not in the cut-away storey, not outside the frustum. */
+  private inRange(d: Drawn, v: ViewState, real: number): boolean {
+    if ((v.centre ? Math.hypot(d.x - v.centre.x, d.z - v.centre.z) : real) > v.far) return false;
+    if (cutAway(v.cut, d.x, d.y, d.z)) return false;
+    if (!v.frustum) return true;
+    const sphere = this.cullSphere;
+    sphere.center.set(d.x, d.y + d.h * 0.5, d.z);
+    sphere.radius = Math.max(d.w, d.h) + 0.5;
+    return v.frustum.intersectsSphere(sphere);
+  }
+
+  /** Drawn as a full model: within the detail distance (bots further), posed, and with textures. */
+  private isNear(d: Drawn, v: ViewState, dist: number): boolean {
+    return !(dist > (d.bot ? v.botDetail : this.detailDistance) || !d.posed || !this.bundle);
+  }
+
+  private drawOne(d: Drawn, v: ViewState, near: boolean, dist: number, want: Set<string>): void {
+    if (d.bot) this.visibleBots.push(d);
+    v.n++;
+    d.detail = near;
+    if (near && d.bot) v.botModels++;
+    this.pushShown(d, v.cut, dist);
+    if (!d.bot && !d.display && v.labels && d.ent && !d.invisible) this.entityLabel(d, d.ent, dist, want);
+  }
+
+  /** Its instances (dimmed below a level cut like the blocks there). */
+  private pushShown(d: Drawn, cut: ViewState['cut'], dist: number): void {
+    const bright = d.bright;
+    if (cut && cut.dimBelow !== null && d.y < cut.dimBelow) d.bright = bright * 0.55;
+    if (d.detail) this.pushDetail(d, dist);
+    else if (!d.invisible) this.pushBox(d);
+    d.bright = bright;
+  }
+
+  /** Keeps the entity labels this view wants; the rest are dropped (labels on) or hidden. */
+  private syncEntityLabels(want: Set<string>, labels: boolean): void {
     for (const [k, l] of this.entLabels) {
       if (want.has(k)) l.sprite.visible = true;
-      else if (opts.labels) {
+      else if (labels) {
         this.group.remove(l.sprite);
         this.labels.release(l.sprite);
         this.entLabels.delete(k);
       } else l.sprite.visible = false;
     }
-    for (const [name, o] of this.botObjs) {
-      const d = this.drawn.get(name);
-      o.root.visible = !!d && opts.bots && d.dim === dim;
-      if (d) o.root.position.set(d.x, d.y, d.z);
-      if (o.label) o.label.visible = opts.botLabels ?? opts.labels;
-      if (o.root.visible && d && cut && Math.floor(d.y + 0.01) >= cut.y && Math.hypot(d.x - cut.x, d.z - cut.z) <= cut.r) o.root.visible = false;
-      o.ring.visible = !!opts.selected && (o.root.userData.name === opts.selected || o.root.userData.short === opts.selected);
-    }
+  }
+
+  /** A bot's ring and name label in this view. */
+  private syncBotObj(name: string, o: BotObj, dim: number, opts: EntityShowOptions): void {
+    const d = this.drawn.get(name);
+    o.root.visible = !!d && opts.bots && d.dim === dim && !cutAway(opts.cut ?? null, d.x, d.y, d.z);
+    if (d) o.root.position.set(d.x, d.y, d.z);
+    if (o.label) o.label.visible = opts.botLabels ?? opts.labels;
+    o.ring.visible = !!opts.selected && (o.root.userData.name === opts.selected || o.root.userData.short === opts.selected);
   }
 
   private base(d: Drawn, slot: number, layer: number): InstanceData {
@@ -2132,6 +2213,11 @@ export class EntityLayer {
 /** EntityCreeper.getCreeperFlashIntensity: the fuse's progress over fuseTime − 2 = 28 ticks since it began (0 = not fusing). */
 function creeperFlash(fuseAt: number, now: number): number {
   return fuseAt ? Math.min(1, Math.max(0, (now - fuseAt) / (28 * 50))) : 0;
+}
+
+/** At or above a level cut's floor within its radius (the x-rayed storey). */
+function cutAway(cut: { x: number; y: number; z: number; r: number } | null, x: number, y: number, z: number): boolean {
+  return !!cut && Math.floor(y + 0.01) >= cut.y && Math.hypot(x - cut.x, z - cut.z) <= cut.r;
 }
 
 /** RenderCreeper.preRenderCallback: the swell scale(h, i, h) from the flash intensity `f`. */
