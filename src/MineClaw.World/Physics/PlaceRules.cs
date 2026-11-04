@@ -24,29 +24,49 @@ public static class PlaceRules
         var below = target.Down();
         int under = w.GetBlock(below.X, below.Y, below.Z);
         string underName = Name(w, below);
-        switch (block)
+        return block switch
         {
-            case Blocks.Sapling or Blocks.Dandelion or Blocks.Rose:
-                if (under is Blocks.Grass or Blocks.Dirt or Blocks.Farmland) return null;
-                return $"{F(target)} has no dirt/grass under it for a {PlantName(block)} ({F(below)} is {underName})";
-            case Blocks.BrownMushroom or Blocks.RedMushroom:
-                if (under != 0 && w.Info(under).Solid && BlockShapes.HasCollision(w, below.X, below.Y, below.Z) && !BlockShapes.IsLiquid(under)) return null;
-                return $"{F(target)} has nothing solid under it for a mushroom ({F(below)} is {underName})";
-            case Blocks.SugarCane:
-                if (under == Blocks.SugarCane) return null;
-                if (under is not (Blocks.Grass or Blocks.Dirt or Blocks.Sand))
-                    return $"{F(target)} has no dirt/grass/sand under it for sugar cane ({F(below)} is {underName})";
-                foreach (var o in Horizontal)
-                    if (BlockShapes.IsWater(w.GetBlock(below.X + o.X, below.Y, below.Z + o.Z))) return null;
-                return $"{F(target)}: sugar cane needs water right next to the {underName} at {F(below)}";
-            case Blocks.Cactus:
-                foreach (var o in Horizontal)
-                    if (BlockShapes.HasCollision(w, target.X + o.X, target.Y, target.Z + o.Z))
-                        return $"{F(target)}: cactus can't touch a block on its side ({Name(w, new BlockPos(target.X + o.X, target.Y, target.Z + o.Z))} at {F(new BlockPos(target.X + o.X, target.Y, target.Z + o.Z))})";
-                if (under is Blocks.Sand or Blocks.Cactus) return null;
-                return $"{F(target)} has no sand under it for a cactus ({F(below)} is {underName})";
-        }
-        return null;
+            Blocks.Sapling or Blocks.Dandelion or Blocks.Rose => FlowerProblem(target, below, under, underName, block),
+            Blocks.BrownMushroom or Blocks.RedMushroom => MushroomProblem(w, target, below, under, underName),
+            Blocks.SugarCane => CaneProblem(w, target, below, under, underName),
+            Blocks.Cactus => CactusProblem(w, target, below, under, underName),
+            _ => null,
+        };
+    }
+
+    /// <summary>BlockFlower.canPlace (saplings, flowers): grass, dirt or farmland under.</summary>
+    private static string? FlowerProblem(BlockPos target, BlockPos below, int under, string underName, int block)
+    {
+        if (under is Blocks.Grass or Blocks.Dirt or Blocks.Farmland) return null;
+        return $"{F(target)} has no dirt/grass under it for a {PlantName(block)} ({F(below)} is {underName})";
+    }
+
+    /// <summary>Mushrooms: a solid, colliding, non-liquid block under.</summary>
+    private static string? MushroomProblem(IBlockAccess w, BlockPos target, BlockPos below, int under, string underName)
+    {
+        if (under != 0 && w.Info(under).Solid && BlockShapes.HasCollision(w, below.X, below.Y, below.Z) && !BlockShapes.IsLiquid(under)) return null;
+        return $"{F(target)} has nothing solid under it for a mushroom ({F(below)} is {underName})";
+    }
+
+    /// <summary>BlockReed.canPlace: on sugar cane, or on grass/dirt/sand with water right beside that block.</summary>
+    private static string? CaneProblem(IBlockAccess w, BlockPos target, BlockPos below, int under, string underName)
+    {
+        if (under == Blocks.SugarCane) return null;
+        if (under is not (Blocks.Grass or Blocks.Dirt or Blocks.Sand))
+            return $"{F(target)} has no dirt/grass/sand under it for sugar cane ({F(below)} is {underName})";
+        foreach (var o in Horizontal)
+            if (BlockShapes.IsWater(w.GetBlock(below.X + o.X, below.Y, below.Z + o.Z))) return null;
+        return $"{F(target)}: sugar cane needs water right next to the {underName} at {F(below)}";
+    }
+
+    /// <summary>BlockCactus.canPlace: nothing solid on its sides, sand (or cactus) under.</summary>
+    private static string? CactusProblem(IBlockAccess w, BlockPos target, BlockPos below, int under, string underName)
+    {
+        foreach (var o in Horizontal)
+            if (BlockShapes.HasCollision(w, target.X + o.X, target.Y, target.Z + o.Z))
+                return $"{F(target)}: cactus can't touch a block on its side ({Name(w, new BlockPos(target.X + o.X, target.Y, target.Z + o.Z))} at {F(new BlockPos(target.X + o.X, target.Y, target.Z + o.Z))})";
+        if (under is Blocks.Sand or Blocks.Cactus) return null;
+        return $"{F(target)} has no sand under it for a cactus ({F(below)} is {underName})";
     }
 
     /// <summary>A neighbour the server lets us click to put a block into the cell beside it (solid, not a container/door).</summary>
@@ -193,19 +213,32 @@ public static class PlaceRules
         {
             if (dx == 0 && dy == 0 && dz == 0) continue;
             var c = new BlockPos(requested.X + dx, requested.Y + dy, requested.Z + dz);
-            if (c.Y < 1 || c.Y >= w.WorldHeight || !w.IsLoaded(c.X, c.Z)) continue;
-            int id = w.GetBlock(c.X, c.Y, c.Z);
-            if (!Aiming.IsReplaceable(w, id) || BlockShapes.IsLiquid(id)) continue;
-            if (Safety.IsOverVoid(w, c.X, c.Y, c.Z)) continue;
+            if (!AttachCandidate(w, c)) continue;
             var faces = AttachFaces(w, c, itemId);
             if (faces.Count == 0) continue;
-            double score = dx * dx + dz * dz + 2 * dy * dy + (StandNear(w, c) ? 0 : 50);
-            if (me is { } m) score += 0.01 * (Math.Pow(c.X + 0.5 - m.X, 2) + Math.Pow(c.Y + 0.5 - m.Y, 2) + Math.Pow(c.Z + 0.5 - m.Z, 2));
+            double score = AttachScore(w, c, dx, dy, dz, me);
             if (score >= bestScore) continue;
             bestScore = score;
             best = new AttachSpot(c, faces[0], Math.Max(Math.Abs(dx), Math.Max(Math.Abs(dy), Math.Abs(dz))));
         }
         return best;
+    }
+
+    /// <summary>A cell an attachable may go into: inside the world, loaded, empty (replaceable, not liquid), not over the void.</summary>
+    private static bool AttachCandidate(IBlockAccess w, BlockPos c)
+    {
+        if (c.Y < 1 || c.Y >= w.WorldHeight || !w.IsLoaded(c.X, c.Z)) return false;
+        int id = w.GetBlock(c.X, c.Y, c.Z);
+        if (!Aiming.IsReplaceable(w, id) || BlockShapes.IsLiquid(id)) return false;
+        return !Safety.IsOverVoid(w, c.X, c.Y, c.Z);
+    }
+
+    /// <summary>Lower is better: the offset (layers count double), +50 out of reach on foot, a little for the distance from me.</summary>
+    private static double AttachScore(IBlockAccess w, BlockPos c, int dx, int dy, int dz, Vec3d? me)
+    {
+        double score = dx * dx + dz * dz + 2 * dy * dy + (StandNear(w, c) ? 0 : 50);
+        if (me is { } m) score += 0.01 * (Math.Pow(c.X + 0.5 - m.X, 2) + Math.Pow(c.Y + 0.5 - m.Y, 2) + Math.Pow(c.Z + 0.5 - m.Z, 2));
+        return score;
     }
 
     /// <summary>"no ground or wall within 2 of -9,64,-18 (it's over the void): pick a spot on the island".</summary>

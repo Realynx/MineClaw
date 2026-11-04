@@ -49,15 +49,7 @@ public static class PlayerPhysics
 
     internal static void TickBeta(IBlockAccess w, PhysicsState s, MoveInput input, double stepHeight)
     {
-        int bx = (int)Math.Floor(s.Position.X), bz = (int)Math.Floor(s.Position.Z);
-        if (!w.IsLoaded(bx, bz))
-        {
-            s.Frozen = true;
-            return;
-        }
-        s.Frozen = false;
-        s.Yaw = input.Yaw;
-        s.Pitch = input.Pitch;
+        if (!BeginTick(w, s, input)) return;
 
         // Entity.onEntityUpdate → handleWaterMovement (also applies water current).
         s.InWater = HandleMaterialAcceleration(w, s, s.BoundingBox.Grow(0, -0.4, 0).Grow(-0.001, -0.001, -0.001), water: true);
@@ -65,40 +57,14 @@ public static class PlayerPhysics
         s.InLava = IsLavaInBB(w, s.BoundingBox.Grow(-0.1, -0.4, -0.1));
 
         // EntityPlayerSP: movement input.
-        double forward = Math.Clamp(input.Forward, -1f, 1f);
-        double strafe = Math.Clamp(input.Strafe, -1f, 1f);
-        s.Sneaking = input.Sneak;
-        if (input.Sneak)
-        {
-            forward *= SneakMultiplier;
-            strafe *= SneakMultiplier;
-            if (s.YSize < 0.2) s.YSize = 0.2;
-        }
+        ScaledInput(s, input, out double strafe, out double forward);
         bool sprint = input.Sprint && forward >= SprintMinForward && !s.CollidedHorizontally && !input.Sneak;
         s.Sprinting = sprint;
-
-        double landFactor = WalkAccel, airFactor = AirAccel;
-        if (s.Sprinting)
-        {
-            landFactor += WalkAccel * 0.3f;
-            airFactor += AirAccel * 0.3f;
-        }
+        SpeedFactors(s.Sprinting, out double landFactor, out double airFactor);
 
         // EntityLiving.onLivingUpdate: jumping.
         var v = s.Velocity;
-        if (input.Jump)
-        {
-            if (s.InWater || s.InLava) v = v with { Y = v.Y + SwimUpAccel };
-            else if (s.OnGround)
-            {
-                v = v with { Y = JumpVelocity };
-                if (s.Sprinting)
-                {
-                    double f = s.Yaw * 0.01745329f;
-                    v = v with { X = v.X - MathSin(f) * SprintJumpBoost, Z = v.Z + MathCos(f) * SprintJumpBoost };
-                }
-            }
-        }
+        if (input.Jump) v = Jumped(s, v);
         s.Velocity = v;
         strafe *= InputDamping;
         forward *= InputDamping;
@@ -106,24 +72,87 @@ public static class PlayerPhysics
         MoveWithHeading(w, s, strafe, forward, landFactor, airFactor, stepHeight);
     }
 
+    /// <summary>Vanilla doesn't tick entities in unloaded chunks: false (frozen) when the chunk isn't there.</summary>
+    private static bool BeginTick(IBlockAccess w, PhysicsState s, MoveInput input)
+    {
+        int bx = (int)Math.Floor(s.Position.X), bz = (int)Math.Floor(s.Position.Z);
+        if (!w.IsLoaded(bx, bz))
+        {
+            s.Frozen = true;
+            return false;
+        }
+        s.Frozen = false;
+        s.Yaw = input.Yaw;
+        s.Pitch = input.Pitch;
+        return true;
+    }
+
+    /// <summary>MovementInputFromOptions: the input clamped, × 0.3 sneaking (which also lowers the camera, ySize ≥ 0.2).</summary>
+    private static void ScaledInput(PhysicsState s, MoveInput input, out double strafe, out double forward)
+    {
+        forward = Math.Clamp(input.Forward, -1f, 1f);
+        strafe = Math.Clamp(input.Strafe, -1f, 1f);
+        s.Sneaking = input.Sneak;
+        if (input.Sneak)
+        {
+            forward *= SneakMultiplier;
+            strafe *= SneakMultiplier;
+            if (s.YSize < 0.2) s.YSize = 0.2;
+        }
+    }
+
+    /// <summary>The land and air acceleration factors, + 30 % of the base sprinting.</summary>
+    private static void SpeedFactors(bool sprinting, out double landFactor, out double airFactor)
+    {
+        landFactor = WalkAccel;
+        airFactor = AirAccel;
+        if (sprinting)
+        {
+            landFactor += WalkAccel * 0.3f;
+            airFactor += AirAccel * 0.3f;
+        }
+    }
+
+    /// <summary>Jump held: up in water or lava, else the jump off the ground (with the sprint boost along the yaw).</summary>
+    private static Vec3d Jumped(PhysicsState s, Vec3d v)
+    {
+        if (s.InWater || s.InLava) return v with { Y = v.Y + SwimUpAccel };
+        if (!s.OnGround) return v;
+        v = v with { Y = JumpVelocity };
+        if (s.Sprinting)
+        {
+            double f = s.Yaw * 0.01745329f;
+            v = v with { X = v.X - MathSin(f) * SprintJumpBoost, Z = v.Z + MathCos(f) * SprintJumpBoost };
+        }
+        return v;
+    }
+
     private static void MoveWithHeading(IBlockAccess w, PhysicsState s, double strafe, double forward,
         double landFactor, double airFactor, double stepHeight)
     {
-        if (s.InWater || s.InLava)
-        {
-            double drag = s.InWater ? WaterDrag : LavaDrag;
-            double y0 = s.Position.Y;
-            MoveFlying(s, strafe, forward, LiquidAccel);
-            MoveEntity(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z, stepHeight);
-            var v = s.Velocity * drag;
-            v = v with { Y = v.Y - LiquidGravity };
-            s.Velocity = v;
-            if (s.CollidedHorizontally &&
-                IsOffsetPositionInLiquid(w, s, v.X, v.Y + 0.6 - s.Position.Y + y0, v.Z))
-                s.Velocity = v with { Y = 0.3 };
-            return;
-        }
+        if (s.InWater || s.InLava) MoveInLiquid(w, s, strafe, forward, stepHeight);
+        else MoveOnLand(w, s, strafe, forward, landFactor, airFactor, stepHeight);
+    }
 
+    /// <summary>moveEntityWithHeading in water (× 0.8) or lava (× 0.5): − 0.02 gravity and the 0.3 climb-out at a wall.</summary>
+    private static void MoveInLiquid(IBlockAccess w, PhysicsState s, double strafe, double forward, double stepHeight)
+    {
+        double drag = s.InWater ? WaterDrag : LavaDrag;
+        double y0 = s.Position.Y;
+        MoveFlying(s, strafe, forward, LiquidAccel);
+        MoveEntity(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z, stepHeight);
+        var v = s.Velocity * drag;
+        v = v with { Y = v.Y - LiquidGravity };
+        s.Velocity = v;
+        if (s.CollidedHorizontally &&
+            IsOffsetPositionInLiquid(w, s, v.X, v.Y + 0.6 - s.Position.Y + y0, v.Z))
+            s.Velocity = v with { Y = 0.3 };
+    }
+
+    /// <summary>moveEntityWithHeading on the ground or in the air: slipperiness, the ladder clamp and climb, gravity and drag.</summary>
+    private static void MoveOnLand(IBlockAccess w, PhysicsState s, double strafe, double forward,
+        double landFactor, double airFactor, double stepHeight)
+    {
         double friction = AirFriction;
         if (s.OnGround) friction = GroundFrictionBelow(w, s);
         double f1 = 0.1627714f / (friction * friction * friction);
@@ -133,16 +162,7 @@ public static class PlayerPhysics
         friction = s.OnGround ? GroundFrictionBelow(w, s) : AirFriction;
 
         s.OnLadder = IsOnLadder(w, s);
-        if (s.OnLadder)
-        {
-            var lv = s.Velocity;
-            double lx = Math.Clamp(lv.X, -LadderMaxSpeed, LadderMaxSpeed);
-            double lz = Math.Clamp(lv.Z, -LadderMaxSpeed, LadderMaxSpeed);
-            double ly = lv.Y < -LadderMaxSpeed ? -LadderMaxSpeed : lv.Y;
-            if (s.Sneaking && ly < 0) ly = 0;
-            s.Velocity = new Vec3d(lx, ly, lz);
-            s.FallDistance = 0;
-        }
+        if (s.OnLadder) ClampOnLadder(s);
 
         MoveEntity(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z, stepHeight);
 
@@ -150,6 +170,18 @@ public static class PlayerPhysics
         if (s.CollidedHorizontally && IsOnLadder(w, s)) v2 = v2 with { Y = LadderClimbSpeed };
         v2 = new Vec3d(v2.X * friction, (v2.Y - Gravity) * VerticalDrag, v2.Z * friction);
         s.Velocity = v2;
+    }
+
+    /// <summary>On a ladder: horizontal motion within ±0.15, falling no faster than 0.15, and sneaking holds on.</summary>
+    private static void ClampOnLadder(PhysicsState s)
+    {
+        var lv = s.Velocity;
+        double lx = Math.Clamp(lv.X, -LadderMaxSpeed, LadderMaxSpeed);
+        double lz = Math.Clamp(lv.Z, -LadderMaxSpeed, LadderMaxSpeed);
+        double ly = lv.Y < -LadderMaxSpeed ? -LadderMaxSpeed : lv.Y;
+        if (s.Sneaking && ly < 0) ly = 0;
+        s.Velocity = new Vec3d(lx, ly, lz);
+        s.FallDistance = 0;
     }
 
     private static double GroundFrictionBelow(IBlockAccess w, PhysicsState s)
@@ -209,6 +241,13 @@ public static class PlayerPhysics
         if (ShouldStepUp(s, stepHeight, canStep, sneakOnGround, ox != dx || oz != dz))
             StepUp(w, s, boxes, startBox, stepHeight, ox, oz, ref box, ref dx, ref dy, ref dz);
 
+        FinishMove(s, box, ox, oy, oz, dx, dy, dz);
+        DoBlockCollisions(w, s);
+    }
+
+    /// <summary>The moved box becomes the position; collision flags, updateFallState and the blocked axes' velocity.</summary>
+    private static void FinishMove(PhysicsState s, AABB box, double ox, double oy, double oz, double dx, double dy, double dz)
+    {
         s.Position = new Vec3d((box.MinX + box.MaxX) / 2, box.MinY, (box.MinZ + box.MaxZ) / 2);
         s.CollidedHorizontally = ox != dx || oz != dz;
         s.CollidedVertically = oy != dy;
@@ -219,7 +258,6 @@ public static class PlayerPhysics
         else if (dy < 0) s.FallDistance -= dy;
 
         s.Velocity = StopBlockedAxes(s.Velocity, ox != dx, oy != dy, oz != dz);
-        DoBlockCollisions(w, s);
     }
 
     /// <summary>On the ground, or the fall was stopped by a floor this move.</summary>
@@ -398,41 +436,40 @@ public static class PlayerPhysics
     {
         var vec = Vec3d.Zero;
         int l = FlowDecay(w, x, y, z, water);
-        for (int i = 0; i < 4; i++)
-        {
-            int nx = x, nz = z;
-            if (i == 0) nx--;
-            if (i == 1) nz--;
-            if (i == 2) nx++;
-            if (i == 3) nz++;
-            int l1 = FlowDecay(w, nx, y, nz, water);
-            if (l1 < 0)
-            {
-                // BlockFluids.java:106: the neighbour's material must not block movement (signs and plates do; ladders don't).
-                if (!BlockShapes.MaterialBlocksMovement(w.GetBlock(nx, y, nz)))
-                {
-                    l1 = FlowDecay(w, nx, y - 1, nz, water);
-                    if (l1 >= 0)
-                    {
-                        int d = l1 - (l - 8);
-                        vec += new Vec3d((nx - x) * d, 0, (nz - z) * d);
-                    }
-                }
-                continue;
-            }
-            int j = l1 - l;
-            vec += new Vec3d((nx - x) * j, 0, (nz - z) * j);
-        }
-        if (w.GetMeta(x, y, z) >= 8)
-        {
-            bool solidSide = SolidForFlow(w, x, y, z - 1, water) || SolidForFlow(w, x, y, z + 1, water)
-                || SolidForFlow(w, x - 1, y, z, water) || SolidForFlow(w, x + 1, y, z, water)
-                || SolidForFlow(w, x, y + 1, z - 1, water) || SolidForFlow(w, x, y + 1, z + 1, water)
-                || SolidForFlow(w, x - 1, y + 1, z, water) || SolidForFlow(w, x + 1, y + 1, z, water);
-            if (solidSide) vec = vec.Normalized() + new Vec3d(0, -6, 0);
-        }
+        foreach (var (dx, dz) in FlowSides)
+            if (SideFlow(w, x + dx, y, z + dz, l, water, out int d)) vec += new Vec3d(dx * d, 0, dz * d);
+        if (w.GetMeta(x, y, z) >= 8 && HasSolidSide(w, x, y, z, water)) vec = vec.Normalized() + new Vec3d(0, -6, 0);
         return vec.Normalized();
     }
+
+    /// <summary>getFlowVector's side order: −x, −z, +x, +z.</summary>
+    private static readonly (int Dx, int Dz)[] FlowSides = [(-1, 0), (0, -1), (1, 0), (0, 1)];
+
+    /// <summary>A side's pull on the flow: its decay − ours, or (through a side whose material doesn't block movement) the
+    /// decay below it − (ours − 8). False when the side adds nothing.</summary>
+    private static bool SideFlow(IBlockAccess w, int nx, int y, int nz, int l, bool water, out int d)
+    {
+        int l1 = FlowDecay(w, nx, y, nz, water);
+        if (l1 >= 0)
+        {
+            d = l1 - l;
+            return true;
+        }
+        d = 0;
+        // BlockFluids.java:106: the neighbour's material must not block movement (signs and plates do; ladders don't).
+        if (BlockShapes.MaterialBlocksMovement(w.GetBlock(nx, y, nz))) return false;
+        l1 = FlowDecay(w, nx, y - 1, nz, water);
+        if (l1 < 0) return false;
+        d = l1 - (l - 8);
+        return true;
+    }
+
+    /// <summary>Falling liquid beside a solid side, at its level or one above.</summary>
+    private static bool HasSolidSide(IBlockAccess w, int x, int y, int z, bool water) =>
+        SolidForFlow(w, x, y, z - 1, water) || SolidForFlow(w, x, y, z + 1, water)
+        || SolidForFlow(w, x - 1, y, z, water) || SolidForFlow(w, x + 1, y, z, water)
+        || SolidForFlow(w, x, y + 1, z - 1, water) || SolidForFlow(w, x, y + 1, z + 1, water)
+        || SolidForFlow(w, x - 1, y + 1, z, water) || SolidForFlow(w, x + 1, y + 1, z, water);
 
     /// <summary>BlockFluids.b(IBlockAccess, x, y, z, face) (BlockFluids.java:60-64 → Block.java:240): not the same
     /// liquid, not ice, and a buildable material (slabs, fences, glass, web... count; plants, torches, snow layers don't).</summary>

@@ -61,24 +61,52 @@ public static class Physics1122
 
     public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input)
     {
-        int bx = (int)Math.Floor(s.Position.X), bz = (int)Math.Floor(s.Position.Z);
-        if (!w.IsLoaded(bx, bz))
-        {
-            s.Frozen = true;                                               // EntityPlayerSP.onUpdate: isBlockLoaded(posX, 0, posZ)
-            return;
-        }
-        s.Frozen = false;
-        s.FallDamage = 0;
-        if (s.Width != Width) s.Width = Width;
-        s.Yaw = input.Yaw;
-        s.Pitch = input.Pitch;
+        if (!BeginTick(w, s, input)) return;
 
         // Entity.onEntityUpdate
         HandleWaterMovement(w, s);
         if (IsInLava(w, s)) s.FallDistance = (float)(s.FallDistance * 0.5f);
 
         // EntityPlayerSP.onLivingUpdate: MovementInputFromOptions, item use, sprint.
-        float forward = Math.Clamp(input.Forward, -1f, 1f), strafe = Math.Clamp(input.Strafe, -1f, 1f);
+        ScaledInput(s, input, out float strafe, out float forward);
+        UpdateSprint(s, input, forward);
+
+        // EntityLivingBase.onLivingUpdate
+        ApplyJump(w, s, input);
+        strafe *= 0.98f;
+        forward *= 0.98f;
+
+        Travel(w, s, strafe, forward);
+
+        // EntityPlayer.onLivingUpdate after super: next tick's speeds.
+        s.AirSpeed = AirSpeed(s.Sprinting);
+        s.LandSpeed = LandSpeed(s.Sprinting, s.SpeedAmplifier, s.SlownessAmplifier);
+
+        UpdateSize(w, s);
+    }
+
+    /// <summary><c>EntityPlayerSP.onUpdate</c>: isBlockLoaded(posX, 0, posZ); false (frozen) when the chunk isn't there.</summary>
+    private static bool BeginTick(IBlockAccess w, PhysicsState s, MoveInput input)
+    {
+        int bx = (int)Math.Floor(s.Position.X), bz = (int)Math.Floor(s.Position.Z);
+        if (!w.IsLoaded(bx, bz))
+        {
+            s.Frozen = true;
+            return false;
+        }
+        s.Frozen = false;
+        s.FallDamage = 0;
+        if (s.Width != Width) s.Width = Width;
+        s.Yaw = input.Yaw;
+        s.Pitch = input.Pitch;
+        return true;
+    }
+
+    /// <summary><c>MovementInputFromOptions</c> (sneak ×0.3) and item use (×0.2).</summary>
+    private static void ScaledInput(PhysicsState s, MoveInput input, out float strafe, out float forward)
+    {
+        forward = Math.Clamp(input.Forward, -1f, 1f);
+        strafe = Math.Clamp(input.Strafe, -1f, 1f);
         s.Sneaking = input.Sneak;
         if (input.Sneak)
         {
@@ -90,43 +118,54 @@ public static class Physics1122
             strafe *= 0.2f;
             forward *= 0.2f;
         }
-        bool foodOk = !input.Hungry;
-        if (!s.Sprinting && input.Sprint && forward >= 0.8f && foodOk && !input.UsingItem) s.Sprinting = true;
-        if (s.Sprinting && (forward < 0.8f || s.CollidedHorizontally || !foodOk || !input.Sprint)) s.Sprinting = false;
+    }
 
-        // EntityLivingBase.onLivingUpdate
+    /// <summary>The sprint rules: starts at forward ≥ 0.8 with food and no item in use; stops below it, on a horizontal
+    /// collision, when hungry, or on release.</summary>
+    private static void UpdateSprint(PhysicsState s, MoveInput input, float forward)
+    {
+        bool foodOk = !input.Hungry;
+        if (!s.Sprinting && StartsSprint(input, forward, foodOk)) s.Sprinting = true;
+        if (s.Sprinting && (forward < 0.8f || s.CollidedHorizontally || !foodOk || !input.Sprint)) s.Sprinting = false;
+    }
+
+    private static bool StartsSprint(MoveInput input, float forward, bool foodOk) =>
+        input.Sprint && forward >= 0.8f && foodOk && !input.UsingItem;
+
+    /// <summary><c>EntityLivingBase.onLivingUpdate</c>: jump ticks, motion below 0.003 zeroed, then the jump or the swim-up.</summary>
+    private static void ApplyJump(IBlockAccess w, PhysicsState s, MoveInput input)
+    {
         if (s.JumpTicks > 0) s.JumpTicks--;
         var v = s.Velocity;
         double vx = Math.Abs(v.X) < 0.003 ? 0 : v.X, vy = Math.Abs(v.Y) < 0.003 ? 0 : v.Y, vz = Math.Abs(v.Z) < 0.003 ? 0 : v.Z;
-        if (input.Jump)
-        {
-            if (s.InWater) vy += SwimUp;
-            else if (IsInLava(w, s)) vy += SwimUp;
-            else if (s.OnGround && s.JumpTicks == 0)
-            {
-                vy = JumpVelocity;                                         // jump(): getJumpUpwardsMotion
-                if (s.JumpBoostAmplifier >= 0) vy += (s.JumpBoostAmplifier + 1) * 0.1f; // + jump boost
-                if (s.Sprinting)
-                {
-                    float f = s.Yaw * 0.017453292f;
-                    vx -= Sin(f) * SprintJumpBoost;
-                    vz += Cos(f) * SprintJumpBoost;
-                }
-                s.JumpTicks = 10;
-            }
-        }
+        if (input.Jump) Jump(w, s, ref vx, ref vy, ref vz);
         else s.JumpTicks = 0;
         s.Velocity = new Vec3d(vx, vy, vz);
-        strafe *= 0.98f;
-        forward *= 0.98f;
+    }
 
-        Travel(w, s, strafe, forward);
+    /// <summary>Jump held: up in water or lava (+0.04), else the jump off the ground (0.42F, jump boost, the sprint boost
+    /// along the yaw; 10 jump ticks).</summary>
+    private static void Jump(IBlockAccess w, PhysicsState s, ref double vx, ref double vy, ref double vz)
+    {
+        if (s.InWater) vy += SwimUp;
+        else if (IsInLava(w, s)) vy += SwimUp;
+        else if (s.OnGround && s.JumpTicks == 0)
+        {
+            vy = JumpVelocity;                                         // jump(): getJumpUpwardsMotion
+            if (s.JumpBoostAmplifier >= 0) vy += (s.JumpBoostAmplifier + 1) * 0.1f; // + jump boost
+            if (s.Sprinting)
+            {
+                float f = s.Yaw * 0.017453292f;
+                vx -= Sin(f) * SprintJumpBoost;
+                vz += Cos(f) * SprintJumpBoost;
+            }
+            s.JumpTicks = 10;
+        }
+    }
 
-        // EntityPlayer.onLivingUpdate after super: next tick's speeds.
-        s.AirSpeed = AirSpeed(s.Sprinting);
-        s.LandSpeed = LandSpeed(s.Sprinting, s.SpeedAmplifier, s.SlownessAmplifier);
-
-        // EntityPlayer.onUpdate: updateSize
+    /// <summary><c>EntityPlayer.updateSize</c>: the sneaking height when the box fits, and the eye height.</summary>
+    private static void UpdateSize(IBlockAccess w, PhysicsState s)
+    {
         float h = s.Sneaking ? SneakHeight : Height;
         if (s.Height != h)
         {
@@ -139,48 +178,64 @@ public static class Physics1122
 
     private static void Travel(IBlockAccess w, PhysicsState s, float strafe, float forward)
     {
-        if (s.InWater || IsInLava(w, s))
-        {
-            bool water = s.InWater;
-            double y0 = s.Position.Y;
-            MoveRelative(s, strafe, forward, 0.02f);
-            Move(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z);
-            double drag = water ? WaterDrag : LavaDrag;
-            var v = s.Velocity;
-            v = new Vec3d(v.X * drag, v.Y * drag - LiquidGravity, v.Z * drag);
-            s.Velocity = v;
-            if (s.CollidedHorizontally && IsOffsetPositionInLiquid(w, s, v.X, v.Y + 0.6000000238418579 - s.Position.Y + y0, v.Z))
-                s.Velocity = v with { Y = 0.30000001192092896 };
-            return;
-        }
+        if (s.InWater || IsInLava(w, s)) TravelLiquid(w, s, strafe, forward);
+        else TravelLand(w, s, strafe, forward);
+    }
 
-        float o = 0.91f;
-        if (s.OnGround) o = Shapes1122.Slipperiness(GroundBlock(w, s)) * 0.91f;
+    /// <summary><c>travel</c> in water (0.02F accel, ×0.8F) or lava (×0.5): −0.02 gravity and the 0.3 climb-out at a wall.</summary>
+    private static void TravelLiquid(IBlockAccess w, PhysicsState s, float strafe, float forward)
+    {
+        bool water = s.InWater;
+        double y0 = s.Position.Y;
+        MoveRelative(s, strafe, forward, 0.02f);
+        Move(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z);
+        double drag = water ? WaterDrag : LavaDrag;
+        var v = s.Velocity;
+        v = new Vec3d(v.X * drag, v.Y * drag - LiquidGravity, v.Z * drag);
+        s.Velocity = v;
+        if (s.CollidedHorizontally && IsOffsetPositionInLiquid(w, s, v.X, v.Y + 0.6000000238418579 - s.Position.Y + y0, v.Z))
+            s.Velocity = v with { Y = 0.30000001192092896 };
+    }
+
+    /// <summary><c>travel</c> on the ground or in the air: slipperiness, the ladder clamp and climb, gravity and drag.</summary>
+    private static void TravelLand(IBlockAccess w, PhysicsState s, float strafe, float forward)
+    {
+        float o = Friction(w, s);
         float r = 0.16277136f / (o * o * o);
         float land = float.IsNaN(s.LandSpeed) ? LandSpeed(false, s.SpeedAmplifier, s.SlownessAmplifier) : s.LandSpeed;
         float air = float.IsNaN(s.AirSpeed) ? AirSpeed(false) : s.AirSpeed;
         float t = s.OnGround ? land * r : air;
         MoveRelative(s, strafe, forward, t);
-        o = 0.91f;
-        if (s.OnGround) o = Shapes1122.Slipperiness(GroundBlock(w, s)) * 0.91f;
+        o = Friction(w, s);
 
         bool ladder = IsOnLadder(w, s);
         s.OnLadder = ladder;
-        if (ladder)
-        {
-            var lv = s.Velocity;
-            double lx = Math.Clamp(lv.X, -LadderSpeed, LadderSpeed), lz = Math.Clamp(lv.Z, -LadderSpeed, LadderSpeed);
-            double ly = lv.Y < -0.15 ? -0.15 : lv.Y;
-            s.FallDistance = 0;
-            if (s.Sneaking && ly < 0) ly = 0;
-            s.Velocity = new Vec3d(lx, ly, lz);
-        }
+        if (ladder) ClampOnLadder(s);
 
         Move(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z);
         var v2 = s.Velocity;
         if (s.CollidedHorizontally && IsOnLadder(w, s)) v2 = v2 with { Y = LadderClimb };
         double ny = (v2.Y - Gravity) * VerticalDrag;
         s.Velocity = new Vec3d(v2.X * o, ny, v2.Z * o);
+    }
+
+    /// <summary>0.91F in the air; on the ground the ground block's slipperiness × 0.91F.</summary>
+    private static float Friction(IBlockAccess w, PhysicsState s)
+    {
+        float o = 0.91f;
+        if (s.OnGround) o = Shapes1122.Slipperiness(GroundBlock(w, s)) * 0.91f;
+        return o;
+    }
+
+    /// <summary>On a ladder: horizontal motion within ±0.15, falling no faster than 0.15, and sneaking holds on.</summary>
+    private static void ClampOnLadder(PhysicsState s)
+    {
+        var lv = s.Velocity;
+        double lx = Math.Clamp(lv.X, -LadderSpeed, LadderSpeed), lz = Math.Clamp(lv.Z, -LadderSpeed, LadderSpeed);
+        double ly = lv.Y < -0.15 ? -0.15 : lv.Y;
+        s.FallDistance = 0;
+        if (s.Sneaking && ly < 0) ly = 0;
+        s.Velocity = new Vec3d(lx, ly, lz);
     }
 
     /// <summary>The block whose slipperiness applies: <c>BlockPos(posX, minY − 1, posZ)</c>.</summary>
@@ -516,48 +571,51 @@ public static class Physics1122
         int i = RenderedDepth(w, x, y, z);
         foreach (var face in HorizontalFaces)
         {
-            var (dx, dz) = face switch
-            {
-                Shapes1122.Face.North => (0, -1), Shapes1122.Face.South => (0, 1), Shapes1122.Face.West => (-1, 0), _ => (1, 0),
-            };
-            int nx = x + dx, nz = z + dz;
-            int j = RenderedDepth(w, nx, y, nz);
-            if (j < 0)
-            {
-                if (!BlocksMovement(w.GetBlock(nx, y, nz)))
-                {
-                    j = RenderedDepth(w, nx, y - 1, nz);
-                    if (j >= 0)
-                    {
-                        int k = j - (i - 8);
-                        d += dx * k; f += dz * k;
-                    }
-                }
-            }
-            else
-            {
-                int l = j - i;
-                d += dx * l; f += dz * l;
-            }
+            var (dx, dz) = Offset(face);
+            if (!FlowWeight(w, x + dx, y, z + dz, i, out int k)) continue;
+            d += dx * k; f += dz * k;
         }
         var vec = new Vec3d(d, 0, f);
-        if (w.GetMeta(x, y, z) >= 8)
+        if (w.GetMeta(x, y, z) >= 8 && FallsBesideSolid(w, x, y, z))
         {
-            foreach (var face in HorizontalFaces)
-            {
-                var (dx, dz) = face switch
-                {
-                    Shapes1122.Face.North => (0, -1), Shapes1122.Face.South => (0, 1), Shapes1122.Face.West => (-1, 0), _ => (1, 0),
-                };
-                if (DownwardCurrent(w, x + dx, y, z + dz, face) || DownwardCurrent(w, x + dx, y + 1, z + dz, face))
-                {
-                    var n = Normalize(vec);
-                    vec = new Vec3d(n.X, n.Y - 6.0, n.Z);
-                    break;
-                }
-            }
+            var n = Normalize(vec);
+            vec = new Vec3d(n.X, n.Y - 6.0, n.Z);
         }
         return Normalize(vec);
+    }
+
+    private static (int Dx, int Dz) Offset(Shapes1122.Face face) => face switch
+    {
+        Shapes1122.Face.North => (0, -1), Shapes1122.Face.South => (0, 1), Shapes1122.Face.West => (-1, 0), _ => (1, 0),
+    };
+
+    /// <summary>A side's pull on the flow: its depth − ours, or (through a side that doesn't block movement) the depth below it
+    /// − (ours − 8). False when the side adds nothing.</summary>
+    private static bool FlowWeight(IBlockAccess w, int nx, int y, int nz, int i, out int k)
+    {
+        int j = RenderedDepth(w, nx, y, nz);
+        if (j >= 0)
+        {
+            k = j - i;
+            return true;
+        }
+        k = 0;
+        if (BlocksMovement(w.GetBlock(nx, y, nz))) return false;
+        j = RenderedDepth(w, nx, y - 1, nz);
+        if (j < 0) return false;
+        k = j - (i - 8);
+        return true;
+    }
+
+    /// <summary>A side (at the water's level or one above) that causes a downward current.</summary>
+    private static bool FallsBesideSolid(IBlockAccess w, int x, int y, int z)
+    {
+        foreach (var face in HorizontalFaces)
+        {
+            var (dx, dz) = Offset(face);
+            if (DownwardCurrent(w, x + dx, y, z + dz, face) || DownwardCurrent(w, x + dx, y + 1, z + dz, face)) return true;
+        }
+        return false;
     }
 
     /// <summary><c>EnumFacing.Plane.HORIZONTAL</c> order: north, east, south, west.</summary>
