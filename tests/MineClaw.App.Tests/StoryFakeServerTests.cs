@@ -403,6 +403,13 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
     /// the pour (aimed at the trench floor from the bank) and becomes a source. Every cell ends a water source; nothing is refused
     /// as "no block face" or "protected".
     /// </summary>
+    /// <summary>The colony's fill and pour lines (why a bucket didn't fill, which cells failed): a failing water run says them.</summary>
+    private static string FillLines(Ctx x)
+    {
+        lock (x.Log)
+            return string.Join(" | ", x.Log.Where(l => l.Contains("couldn't fill") || l.Contains("cell ") && l.Contains("failed")).TakeLast(8));
+    }
+
     [Theory]
     [InlineData("b1.8.1")]
     [InlineData("1.12.2")]
@@ -420,7 +427,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
             new JsonObject { ["kind"] = "water", ["blocks"] = canal.DeepClone(), ["group"] = "canal" }), null).Error);
         var waters = c.Builds.Where(b => b.Kind == "water").ToList();
         Assert.True(await Until(() => waters.All(b => b.Status == "done"), 300_000), // generous: the whole Story suite runs beside it
-            string.Join("; ", waters.Select(b => $"{b.Label}: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason}")) + ": " + x.Diag());
+            string.Join("; ", waters.Select(b => $"{b.Label}: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason}")) + " || fills: " + FillLines(x) + " || " + x.Diag());
         var srv = x.Servers[x.Pawns[0]];
         foreach (var g in waters.SelectMany(b => b.Ghosts))
             Assert.True(srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)) == 9 && srv.Metas.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)) == 0, $"{g.At} is a source");

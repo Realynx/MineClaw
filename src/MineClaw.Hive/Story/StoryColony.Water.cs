@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using Microsoft.Extensions.Logging;
 using MineClaw.Data;
 using MineClaw.Data.Versioning;
 
@@ -77,6 +76,21 @@ public sealed partial class StoryColony
         return !dug.Contains(below) && !TakesLiquid(id);
     }
 
+    /// <summary>
+    /// A pour is aimed at a solid face beside or under the cell (the bucket's ray passes liquids): one that stays (not dug first, not
+    /// the item's own cell). None: on a source of the same liquid ("the channel there is full": live 11-04, a channel drawn one above a
+    /// filled trench failed 371 times as "nothing beside or under … to pour against"), else nothing to pour against. Null = fine.
+    /// </summary>
+    private static string? PourFaceProblem(IStoryWorld w, P3 at, int ghostId, string liquid, HashSet<P3> own, IReadOnlySet<P3> dug)
+    {
+        foreach (var n in new[] { at.Add(0, -1, 0), at.Add(1, 0, 0), at.Add(-1, 0, 0), at.Add(0, 0, 1), at.Add(0, 0, -1), at.Add(0, 1, 0) })
+            if (!own.Contains(n) && !dug.Contains(n) && !TakesLiquid(w.Block(n.X, n.Y, n.Z).Id)) return null;
+        var (bid, bmeta) = w.Block(at.X, at.Y - 1, at.Z);
+        return LiquidSource(ghostId, bid, bmeta)
+            ? $"{at} sits on {liquid} already (the channel under it is full): draw it one block lower, in the trench"
+            : $"nothing beside or under {at} to pour against: the {liquid} needs a solid block next to it or under it";
+    }
+
     /// <summary>A cell holding something liquid can't go in (a block to dig first).</summary>
     private static bool TakesLiquid(int id) => TakesLiquidIds.Contains(id) || StoryBlocks.Liquids.Contains(id);
 
@@ -121,37 +135,59 @@ public sealed partial class StoryColony
     /// </summary>
     private string? CheckLiquid(IStoryWorld w, JsonObject item, List<GhostState> ghosts, IEnumerable<BuildState> made, List<string> warnings)
     {
-        string liquid = LiquidName(ghosts[0]);
-        bool lava = liquid == "lava";
+        bool lava = LiquidName(ghosts[0]) == "lava";
         if (lava && !Meta.AllowLava) return "lava is off: turn on the colony option allow_lava first";
-        bool indoor = item["indoor"] is JsonValue iv && iv.TryGetValue<bool>(out var ib) && ib;
-        var dug = DugFirst(item, made);
-        var own = ghosts.Select(g => g.At).ToHashSet();
+        var ctx = new LiquidCheck(w, LiquidName(ghosts[0]), item["indoor"] is JsonValue iv && iv.TryGetValue<bool>(out var ib) && ib,
+            DugFirst(item, made), ghosts.Select(g => g.At).ToHashSet());
         foreach (var g in ghosts)
-        {
-            if (!w.Loaded(g.At.X, g.At.Z)) return $"{g.At} isn't in the colony's view yet";
-            var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
-            if (LiquidSource(g.Id, id, meta)) continue; // there already: done at once
-            if (lava ? IsWaterId(id) : IsLavaId(id))
-                return $"{g.At} holds {(lava ? "water" : "lava")}: {liquid} there would turn it to {(meta == 0 ? "obsidian" : "cobblestone")}";
-            if (!TakesLiquid(id) && !dug.Contains(g.At))
-                return $"{g.At} holds {BlockLabel(w, id)}: dig it first (a remove item in the same group, or the channel tool's \"Dig the trench\")";
-            // Nothing under it: the source would pour down (and a pawn has no floor face to aim at). Live 11-04: "no block face to
-            // pour against" cell after cell; said once here instead.
-            if (!Held(w, g.At.Add(0, -1, 0), g.Id, own, dug))
-                return $"nothing under {g.At} to hold the {liquid}: it would pour down. Dig the channel into the ground, or lay a floor under it first";
-            if (HomeZoneAt(g.At.X, g.At.Z) is { } house)
-            {
-                if (lava) return $"{g.At} is in the home area ({house.Name ?? house.Id}): no lava at home";
-                if (!indoor && Indoors(w, g.At)) return $"{g.At} is indoors ({house.Name ?? house.Id}): pour there with the Water source tool (indoor:true)";
-            }
-            if (lava && FlammableNear(w, g.At) is { } f) return $"lava at {g.At} would set the {BlockLabel(w, w.Block(f.X, f.Y, f.Z).Id)} at {f} alight";
-        }
-        var flow = Flow(w, ghosts.Select(g => g.At).ToHashSet(), lava, dug);
-        if (flow.Spread.Count > 0)
-            warnings.Add($"the {liquid} will spread to {flow.Spread.Count}{(flow.Spread.Count >= MaxFlow ? "+" : "")} cell{(flow.Spread.Count == 1 ? "" : "s")} beyond what was drawn (e.g. {flow.Spread[0]}): place dam blocks first, or dig the channel into the ground");
-        if (flow.Touches is { } t) warnings.Add(t);
+            if (LiquidCellProblem(ctx, g) is { } why) return why;
+        FlowWarnings(w, ctx, warnings);
         return null;
+    }
+
+    /// <summary>What a water item's cells are checked against: the world, its liquid, the explicit indoor click, the cells its group digs
+    /// first, its own cells.</summary>
+    private sealed record LiquidCheck(IStoryWorld W, string Liquid, bool Indoor, HashSet<P3> Dug, HashSet<P3> Own)
+    {
+        public bool Lava => Liquid == "lava";
+    }
+
+    /// <summary>Why one cell can't take the liquid (null = fine, or a source there already).</summary>
+    private string? LiquidCellProblem(LiquidCheck c, GhostState g)
+    {
+        var w = c.W;
+        if (!w.Loaded(g.At.X, g.At.Z)) return $"{g.At} isn't in the colony's view yet";
+        var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
+        if (LiquidSource(g.Id, id, meta)) return null; // there already: done at once
+        if (c.Lava ? IsWaterId(id) : IsLavaId(id))
+            return $"{g.At} holds {(c.Lava ? "water" : "lava")}: {c.Liquid} there would turn it to {(meta == 0 ? "obsidian" : "cobblestone")}";
+        if (!TakesLiquid(id) && !c.Dug.Contains(g.At))
+            return $"{g.At} holds {BlockLabel(w, id)}: dig it first (a remove item in the same group, or the channel tool's \"Dig the trench\")";
+        // Nothing under it: the source would pour down (and a pawn has no floor face to aim at). Live 11-04: "no block face to pour
+        // against" cell after cell; said once here instead.
+        if (!Held(w, g.At.Add(0, -1, 0), g.Id, c.Own, c.Dug))
+            return $"nothing under {g.At} to hold the {c.Liquid}: it would pour down. Dig the channel into the ground, or lay a floor under it first";
+        if (PourFaceProblem(w, g.At, g.Id, c.Liquid, c.Own, c.Dug) is { } face) return face;
+        return HouseProblem(c, g.At) ?? (c.Lava && FlammableNear(w, g.At) is { } f
+            ? $"lava at {g.At} would set the {BlockLabel(w, w.Block(f.X, f.Y, f.Z).Id)} at {f} alight" : null);
+    }
+
+    /// <summary>A cell in a house: never lava; water indoors only with the Water source tool's explicit click.</summary>
+    private string? HouseProblem(LiquidCheck c, P3 at)
+    {
+        if (HomeZoneAt(at.X, at.Z) is not { } house) return null;
+        if (c.Lava) return $"{at} is in the home area ({house.Name ?? house.Id}): no lava at home";
+        return !c.Indoor && Indoors(c.W, at) ? $"{at} is indoors ({house.Name ?? house.Id}): pour there with the Water source tool (indoor:true)" : null;
+    }
+
+    /// <summary>What only surprises: the liquid will spread beyond the drawn cells (place dams first), or meet the other liquid.</summary>
+    private static void FlowWarnings(IStoryWorld w, LiquidCheck c, List<string> warnings)
+    {
+        var flow = Flow(w, c.Own, c.Lava, c.Dug);
+        int n = flow.Spread.Count;
+        if (n > 0)
+            warnings.Add($"the {c.Liquid} will spread to {n}{(n >= MaxFlow ? "+" : "")} cell{(n == 1 ? "" : "s")} beyond what was drawn (e.g. {flow.Spread[0]}): place dam blocks first, or dig the channel into the ground");
+        if (flow.Touches is { } t) warnings.Add(t);
     }
 
     /// <summary>
@@ -161,8 +197,49 @@ public sealed partial class StoryColony
     /// </summary>
     internal static (List<P3> Spread, string? Touches) Flow(IStoryWorld w, HashSet<P3> cells, bool lava, IReadOnlySet<P3>? dug = null)
     {
-        int reach = lava ? LavaReach : WaterReach;
-        bool Open(P3 c)
+        var walk = new FlowWalk(w, cells, lava, dug);
+        walk.Run();
+        return (walk.Spread, walk.Touches);
+    }
+
+    /// <summary>The flow preview's breadth-first walk (see <see cref="Flow"/>).</summary>
+    private sealed class FlowWalk(IStoryWorld w, HashSet<P3> cells, bool lava, IReadOnlySet<P3>? dug)
+    {
+        private readonly HashSet<P3> _seen = [.. cells];
+        private readonly Queue<(P3 P, int D)> _queue = new();
+        public List<P3> Spread { get; } = new();
+        public string? Touches { get; private set; }
+
+        public void Run()
+        {
+            foreach (var c in cells.OrderBy(c => c.Y).ThenBy(c => c.X).ThenBy(c => c.Z)) _queue.Enqueue((c, 0));
+            while (_queue.Count > 0 && Spread.Count < MaxFlow)
+            {
+                var (c, d) = _queue.Dequeue();
+                if (Open(c.Add(0, -1, 0))) Fall(c.Add(0, -1, 0));
+                else if (d < (lava ? LavaReach : WaterReach)) Sideways(c, d);
+            }
+        }
+
+        /// <summary>Straight down while it can (no sideways spread while falling); where it lands it spreads again.</summary>
+        private void Fall(P3 f)
+        {
+            int fallen = 1;
+            Reach(f);
+            while (fallen < MaxFall && Open(f.Add(0, -1, 0))) { f = f.Add(0, -1, 0); Reach(f); fallen++; }
+            if (fallen < MaxFall) _queue.Enqueue((f, 0));
+        }
+
+        private void Sideways(P3 c, int d)
+        {
+            foreach (var (dx, dz) in Sides)
+            {
+                var n = c.Add(dx, 0, dz);
+                if (Open(n) && Reach(n)) _queue.Enqueue((n, d + 1));
+            }
+        }
+
+        private bool Open(P3 c)
         {
             if (cells.Contains(c)) return false;
             if (dug?.Contains(c) == true) return true;
@@ -171,43 +248,26 @@ public sealed partial class StoryColony
             if (lava ? IsLavaId(id) : IsWaterId(id)) return meta != 0; // flowing of its own kind: it runs there; a source: already full
             return TakesLiquidIds.Contains(id);
         }
-        var seen = new HashSet<P3>();
-        var spread = new List<P3>();
-        string? touches = null;
-        var q = new Queue<(P3 P, int D)>();
-        foreach (var c in cells.OrderBy(c => c.Y).ThenBy(c => c.X).ThenBy(c => c.Z)) { seen.Add(c); q.Enqueue((c, 0)); }
-        void Reach(P3 c)
+
+        /// <summary>A newly reached cell (false when seen before), and whether the other liquid is beside it.</summary>
+        private bool Reach(P3 c)
         {
-            spread.Add(c);
-            if (touches != null) return;
+            if (!_seen.Add(c)) return false;
+            Spread.Add(c);
+            Touches ??= OtherLiquidBeside(c);
+            return true;
+        }
+
+        private string? OtherLiquidBeside(P3 c)
+        {
             foreach (var n in new[] { c.Add(1, 0, 0), c.Add(-1, 0, 0), c.Add(0, 0, 1), c.Add(0, 0, -1), c.Add(0, -1, 0), c.Add(0, 1, 0) })
             {
                 var (nid, nm) = w.Block(n.X, n.Y, n.Z);
-                if (lava ? IsWaterId(nid) : IsLavaId(nid))
-                    touches = lava ? $"the lava would reach water at {n} (stone or cobblestone forms)" : $"the water would reach lava at {n} ({(nm == 0 ? "obsidian" : "cobblestone")} forms)";
+                if (lava && IsWaterId(nid)) return $"the lava would reach water at {n} (stone or cobblestone forms)";
+                if (!lava && IsLavaId(nid)) return $"the water would reach lava at {n} ({(nm == 0 ? "obsidian" : "cobblestone")} forms)";
             }
+            return null;
         }
-        while (q.Count > 0 && spread.Count < MaxFlow)
-        {
-            var (c, d) = q.Dequeue();
-            var below = c.Add(0, -1, 0);
-            if (Open(below))
-            {
-                var f = below;
-                int fallen = 1;
-                if (seen.Add(f)) Reach(f);
-                while (fallen < MaxFall && Open(f.Add(0, -1, 0))) { f = f.Add(0, -1, 0); if (seen.Add(f)) Reach(f); fallen++; }
-                if (fallen < MaxFall) q.Enqueue((f, 0)); // landed: it spreads again from there
-                continue;
-            }
-            if (d >= reach) continue;
-            foreach (var (dx, dz) in Sides)
-            {
-                var n = c.Add(dx, 0, dz);
-                if (Open(n) && seen.Add(n)) { Reach(n); q.Enqueue((n, d + 1)); }
-            }
-        }
-        return (spread, touches);
     }
 
     private static JsonObject FlowJson(List<P3> spread) => new()
@@ -293,219 +353,6 @@ public sealed partial class StoryColony
         return n;
     }
 
-    private readonly Dictionary<(bool Lava, int Rx, int Ry, int Rz), (DateTimeOffset At, List<P3> Found)> _sourceScan = new();
-
-    /// <summary>Still sources of a liquid around <paramref name="near"/> (scanned at most every 10 s per region).</summary>
-    private List<P3> SourcesNear(IStoryWorld w, P3 near, bool lava)
-    {
-        var key = (lava, near.X >> 3, near.Y >> 3, near.Z >> 3);
-        if (_sourceScan.TryGetValue(key, out var hit) && Now - hit.At < TimeSpan.FromSeconds(10)) return hit.Found;
-        var found = new List<P3>();
-        for (int x = near.X - SourceRadius; x <= near.X + SourceRadius; x++)
-            for (int z = near.Z - SourceRadius; z <= near.Z + SourceRadius; z++)
-            {
-                if (!w.Loaded(x, z)) continue;
-                for (int y = Math.Min(w.Height - 1, near.Y + 6); y >= Math.Max(1, near.Y - 10); y--)
-                {
-                    var (id, meta) = w.Block(x, y, z);
-                    if (meta == 0 && (lava ? IsLavaId(id) : IsWaterId(id))) found.Add(new P3(x, y, z));
-                }
-            }
-        if (_sourceScan.Count > 64) _sourceScan.Clear();
-        _sourceScan[key] = (Now, found);
-        return found;
-    }
-
-    /// <summary>
-    /// Where a pourer fills its bucket: water from a source that won't be used up (one that refills first, the colony's own infinite
-    /// pools before a lake; else one with another source beside it), never a lone puddle, never water the colony poured that doesn't
-    /// refill, never a cell of this batch; lava from any lava source the colony didn't pour. Nearest within each kind; null = none.
-    /// </summary>
-    internal P3? FillSource(IStoryWorld w, bool lava, P3 near, IReadOnlySet<P3> exclude, string? pawn = null)
-    {
-        var unreachable = pawn == null ? [] : _fillMisses.Where(m => m.Key.Pawn == pawn && m.Value > Now).Select(m => m.Key.At).ToList();
-        var placed = new HashSet<P3>();
-        var own = new HashSet<P3>();
-        var pools = new HashSet<P3>(); // the colony's infinite sources (built for it): before a channel that happens to refill
-        foreach (var b in Builds)
-        {
-            bool pool = b.Spec?["infinite"] is JsonValue iv && iv.TryGetValue<bool>(out var inf) && inf;
-            foreach (var g in b.Ghosts)
-                if (StoryConstruction.IsLiquid(g) && g.State == "done")
-                {
-                    bool refills = Refills(w, g.At);
-                    (refills ? own : placed).Add(g.At);
-                    if (refills && pool) pools.Add(g.At);
-                }
-        }
-        P3? best = null;
-        double bestScore = double.MaxValue;
-        foreach (var s in SourcesNear(w, near, lava))
-        {
-            if (exclude.Contains(s) || placed.Contains(s) || !IsSourceAt(w, s, lava)) continue; // the scan is up to 10 s old
-            // A pond this pawn couldn't get to (or fill at) lately: its other cells too.
-            if (unreachable.Any(u => Math.Abs(u.X - s.X) <= 6 && Math.Abs(u.Z - s.Z) <= 6 && Math.Abs(u.Y - s.Y) <= 3)) continue;
-            // Filled from dry land beside it (live 11-04: "no path to any reach (227,54,406)": a pond down a pit). Its own pool counts
-            // anyway: the colony made it where its pawns work.
-            if (!own.Contains(s) && !HasBank(w, s)) continue;
-            double score = s.Dist(near) + 3 * Math.Abs(s.Y - near.Y);
-            if (!lava)
-            {
-                if (pools.Contains(s)) score -= 2000;
-                else if (own.Contains(s)) score -= 1000;
-                else if (Refills(w, s)) score -= 500;
-                else if (!Sides.Any(o => IsSourceAt(w, s.Add(o.Dx, 0, o.Dz), false)) && !IsSourceAt(w, s.Add(0, 1, 0), false) && !IsSourceAt(w, s.Add(0, -1, 0), false))
-                    continue; // a lone puddle: scooping it uses it up
-            }
-            if (score < bestScore) { bestScore = score; best = s; }
-        }
-        return best;
-    }
-
-    /// <summary>Somewhere dry to stand beside a source, looking down at it: a side neighbour that is solid ground with two open, dry
-    /// cells over it (or open ground one step up).</summary>
-    private static bool HasBank(IStoryWorld w, P3 s)
-    {
-        bool Dry(P3 c) { int id = w.Block(c.X, c.Y, c.Z).Id; return OpenCell(id) && !StoryBlocks.Liquids.Contains(id); }
-        bool Ground(P3 c) { int id = w.Block(c.X, c.Y, c.Z).Id; return !OpenCell(id) && !StoryBlocks.Liquids.Contains(id); }
-        foreach (var (dx, dz) in Sides)
-        {
-            var n = s.Add(dx, 0, dz);
-            if (Ground(n) && Dry(n.Add(0, 1, 0)) && Dry(n.Add(0, 2, 0))) return true;           // the bank at water level
-            if (Dry(n) && Dry(n.Add(0, 1, 0)) && Ground(n.Add(0, -1, 0))) return true;          // a shallow step beside it
-        }
-        return false;
-    }
-
-    /// <summary>Ponds a pawn failed to fill at (unreachable, protected, nothing visible), until when: skipped for that pawn.</summary>
-    private readonly Dictionary<(string Pawn, P3 At), DateTimeOffset> _fillMisses = new();
-
-    /// <summary>A pour job's <c>fill failed at x,y,z: why</c>: that pond rests 10 minutes for this pawn (the batch's other cells went
-    /// back without a failure); the next pour job fills elsewhere.</summary>
-    private void FillFailed(PawnState p, string note)
-    {
-        int colon = note.IndexOf(':', "fill failed at ".Length);
-        var at = ParseCell(colon > 0 ? note["fill failed at ".Length..colon] : note["fill failed at ".Length..]);
-        if (at is not { } a) return;
-        _fillMisses[(p.Name, a)] = Now + TimeSpan.FromMinutes(10);
-        foreach (var k in _fillMisses.Where(kv => kv.Value <= Now).Select(kv => kv.Key).ToList()) _fillMisses.Remove(k);
-        _log.LogInformation("story {Colony}: {Pawn} couldn't fill a bucket at {At}: {Why}", Id, p.Name, a, colon > 0 ? note[(colon + 1)..].Trim() : "");
-    }
-
-    /// <summary>A channel's cells in pouring order: every other cell first (no two side by side), then the ones between, which a game
-    /// rule fills by itself (two sources beside it, over ground) and the pourer then finds already done. A 2×2 pool: two corners.</summary>
-    internal static List<GhostState> PourOrder(List<GhostState> cells)
-    {
-        var first = new List<GhostState>();
-        var taken = new HashSet<P3>();
-        foreach (var c in cells)
-        {
-            if (Sides.Any(o => taken.Contains(c.At.Add(o.Dx, 0, o.Dz)))) continue;
-            first.Add(c);
-            taken.Add(c.At);
-        }
-        return [.. first, .. cells.Where(c => !taken.Contains(c.At))];
-    }
-
-    /// <summary>
-    /// A pour job for this pawn from a liquid build (see the type's summary), or why not: <c>Wait</c> = the build waits (no bucket, no
-    /// source to fill from, lava off) and the picker goes on to the next build; neither = try this build's next cell.
-    /// </summary>
-    private (ActiveJob? Job, bool Wait) PourJob(PawnState p, PawnLive live, BuildState b, GhostState seed, List<GhostState> todo, int builders)
-    {
-        if (World is not { } w) return (null, true);
-        bool lava = IsLavaId(seed.Id);
-        string liquid = lava ? "lava" : "water";
-        if (lava && !Meta.AllowLava) { NoteBuildWait(b, "lava is off (the colony option allow_lava)"); return (null, true); }
-        var (cur, curMeta) = w.Block(seed.At.X, seed.At.Y, seed.At.Z);
-        if (LiquidSource(seed.Id, cur, curMeta)) { CellDone(b, seed); return (null, false); }
-        // A block in the cell (put there since it was queued): the water waits for it to go (a remove build, or by hand).
-        if (!TakesLiquid(cur)) { NoteBuildWait(b, $"{seed.At} holds {BlockLabel(w, cur)}: the {liquid} goes in once it is dug out"); return (null, false); }
-        // The pour is aimed at a face beside the cell: nothing solid around it, nothing to pour against (yet).
-        if (!StoryConstruction.Supported(seed.At, Solid)) return (null, false);
-        var from = live.Block;
-        int fullId = lava ? Items.LavaBucket : Items.WaterBucket;
-        int full = live.Inventory.Where(s => s.Id == fullId).Sum(s => s.Count);
-        int empty = live.Inventory.Where(s => s.Id == Items.Bucket).Sum(s => s.Count);
-        // Buckets: its own, else from storage (empty ones first, then full ones of this liquid), up to two.
-        var fetch = new JsonArray();
-        var takes = new List<(P3, Stack)>();
-        int carried = full + empty;
-        if (carried == 0)
-        {
-            foreach (var id in new[] { Items.Bucket, fullId })
-                foreach (var (st, stack, n) in Stored((id, 0), from))
-                {
-                    int t = Math.Min(n, PourBuckets - carried);
-                    if (t <= 0) break;
-                    fetch.Add(new JsonObject { ["from"] = st.Chest.ToString(), ["item"] = ItemName(stack.Id, stack.Meta), ["n"] = t });
-                    takes.Add((st.Chest, stack with { Count = t }));
-                    carried += t;
-                    if (id == fullId) full += t;
-                }
-            if (carried == 0)
-            {
-                // Another pawn is pouring with the colony's bucket: this build waits its turn, nothing is blocked.
-                if (_current.Values.Any(j => j.Kind == "pour")) return (null, true);
-                var mat = b.Materials.FirstOrDefault(m => m.Item == "bucket");
-                string status = "blocked", reason;
-                bool alert = mat is not { Short: > 0 }; // the materials pass already said what's short and why
-                if (mat is { Crafting: > 0 }) { status = "waiting"; reason = "waiting for a bucket (being crafted)"; alert = false; }
-                else reason = "needs a bucket (3 iron ingots at a crafting table)";
-                if (b.Status != status || b.Reason != reason)
-                {
-                    b.Status = status; b.Reason = reason; b.Rev = Touch();
-                    if (alert) Alert("warn", $"Build {b.Id} ({b.Label}) is {status}: {reason}");
-                }
-                return (null, true);
-            }
-        }
-        int openCells = todo.Count(StoryConstruction.IsLiquid);
-        int cap = Math.Clamp((int)Math.Ceiling(openCells / (double)builders), 1, PourBatchMax);
-        var (batch, stand) = Batch(w, b, seed, cap, from, p.Name, -1);
-        var cells = PourOrder(batch);
-        // A source to fill from (unless every cell is already in its buckets).
-        P3? source = null;
-        if (full < cells.Count)
-        {
-            source = FillSource(w, lava, seed.At, cells.Select(c => c.At).ToHashSet(), p.Name);
-            if (source == null && full == 0)
-            {
-                bool missed = _fillMisses.Any(m => m.Key.Pawn == p.Name && m.Value > Now);
-                var reason = lava ? $"no lava source within {SourceRadius} blocks to fill a bucket from"
-                    : $"no still water within {SourceRadius} blocks {(missed ? "that the pawns can reach " : "")}to fill a bucket from (a lake or pool with dry ground beside it, or an infinite source; a lone puddle would be used up)";
-                if (b.Status != "blocked" || b.Reason != reason)
-                {
-                    b.Status = "blocked"; b.Reason = reason; b.Rev = Touch();
-                    Alert("warn", $"Build {b.Id} ({b.Label}) is blocked: {reason}");
-                }
-                return (null, true);
-            }
-            if (source == null) cells = cells.Take(Math.Max(1, full)).ToList(); // only what its full buckets pour
-        }
-        if (b.Status != "active") { b.Status = "active"; b.Reason = null; b.Rev = Touch(); }
-        var key = $"g:{b.Id}|{seed.At}";
-        // The last liquid cells: the buckets go back to storage after (else the pourer keeps them for the next channel).
-        bool last = Builds.Where(Builds_Live).SelectMany(x => x.Ghosts).Count(g => StoryConstruction.IsLiquid(g) && g.Job && g.State is "todo" or "leased") <= cells.Count;
-        var home = last ? BestChest(Items.Bucket, 0, from) : null;
-        var label = $"pouring {liquid} ({b.Label}){(cells.Count > 1 ? $": {cells.Count} cells" : "")}";
-        var job = Job(WorkTypes.Build, "pour", label, seed.At, key, "ghost", $"{b.Id}|{seed.At}", "working", f =>
-        {
-            f["liquid"] = liquid;
-            f["block"] = "bucket"; // what the batch can't go on without (a failed fetch with one in hand goes on)
-            f["want"] = liquid;
-            f["cells"] = new JsonArray(cells.Select(c => (JsonNode)c.At.ToString()).ToArray());
-            if (source is { } s) f["source"] = s.ToString();
-            f["buckets"] = carried;
-            if (stand is { } sp) f["stand"] = sp.ToString();
-            if (fetch.Count > 0) f["fetch"] = fetch;
-            if (home != null) f["stash"] = new JsonArray(new JsonObject { ["to"] = home.Chest.ToString(), ["items"] = new JsonArray("bucket") });
-        }, xp: Math.Min(60, 8 + 4 * cells.Count));
-        job.Takes.AddRange(takes);
-        if (home != null) job.Puts.Add((home.Chest, [new Stack(Items.Bucket, 0, carried)]));
-        return (Claim(b, cells, p.Name, job), false);
-    }
-
     /// <summary>The colony options for water (<c>POST …/options {allow_lava}</c>).</summary>
     public JsonObject SetWaterOptions(bool? allowLava)
     {
@@ -555,72 +402,5 @@ public sealed partial class StoryColony
         Add("water_channel", "Water channel", "water_channel", Items.WaterBucket, 9);
         Add("infinite_water", "Infinite water source", "infinite_water", Items.WaterBucket, 9);
         if (Meta.AllowLava) Add("lava_source", "Lava source", "lava", Items.LavaBucket, 11);
-    }
-
-    /// <summary>
-    /// <c>POST …/zones {op:"irrigation", id}</c>: water channels a growing zone wants (docs/web/story-mode.md "Water"): farmland needs
-    /// water within 4 blocks, so for a crop a straight channel at soil level along the zone's longer side, one every 9 rows (a centre
-    /// line in a zone 9 or narrower, and one more by the far edge when it would be dry); sugar cane needs water right beside it, so one
-    /// every 3 rows. Lines whose cells are all watered already are left out, and so are cells indoors. → <c>{id, cells, dig, axis,
-    /// lines, note}</c>: <c>cells</c> the sources at soil level, <c>dig</c> those that hold soil now (dug first: queue them as a remove
-    /// item in the water item's group). Nothing is queued.
-    /// </summary>
-    public (JsonNode? Result, string? Error) Irrigation(string? id)
-    {
-        lock (_lock)
-        {
-            if (World is not { } w) return (null, "no world view yet");
-            if (Zones.FirstOrDefault(z => z.Id == id) is not { } zone) return (null, "id: no such zone");
-            if (zone.Kind != "farm") return (null, "irrigation is for growing zones");
-            var plant = ActivePlant(w, zone) ?? StoryPlants.Get(w.Data, zone.Plant);
-            bool cane = plant?.Block == StoryPlants.Cane;
-            int spacing = cane ? 3 : 9, cover = cane ? 1 : 4;
-            var (x1, z1, x2, z2) = zone.Cells.Bounds();
-            bool alongX = x2 - x1 >= z2 - z1; // the lines run along the longer side
-            int lo = alongX ? z1 : x1, hi = alongX ? z2 : x2, across = hi - lo + 1;
-            var lines = new List<int>();
-            if (across <= spacing) lines.Add(lo + across / 2);
-            else
-            {
-                for (int k = lo + cover; k <= hi; k += spacing) lines.Add(k);
-                if (lines[^1] + cover < hi) lines.Add(hi);
-            }
-            var cells = new List<P3>();
-            var dig = new List<P3>();
-            int kept = 0;
-            foreach (var line in lines)
-            {
-                var row = new List<P3>();
-                bool dry = false;
-                foreach (var (x, z) in zone.Cells.Sorted())
-                {
-                    int a = alongX ? z : x;
-                    if (Math.Abs(a - line) > cover) continue;
-                    if (!w.Loaded(x, z) || SoilIn(w, x, z, zone.Area.Y1) is not { } soil) continue;
-                    if (!(cane ? StoryPlants.WaterBeside(w, soil) : StoryPlants.WaterNear(w, soil))) dry = true;
-                    if (a == line && !Indoors(w, soil)) row.Add(soil);
-                }
-                if (!dry || row.Count == 0) continue;
-                kept++;
-                foreach (var c in row)
-                {
-                    var (bid, bm) = w.Block(c.X, c.Y, c.Z);
-                    if (IsWaterId(bid) && bm == 0) continue;
-                    cells.Add(c);
-                    if (!TakesLiquid(bid)) dig.Add(c);
-                }
-            }
-            string what = cane ? "beside the sugar cane (every 3rd row)" : across <= spacing ? "down the middle" : "every 9th row";
-            var note = cells.Count == 0 ? "the zone is watered already: every cell has water close enough"
-                : $"{kept} channel{(kept == 1 ? "" : "s")} along {(alongX ? "x" : "z")} {what}: {cells.Count} water cell{(cells.Count == 1 ? "" : "s")}"
-                  + (dig.Count > 0 ? $", {dig.Count} dug out first" : "");
-            return (new JsonObject
-            {
-                ["id"] = zone.Id, ["axis"] = alongX ? "x" : "z", ["lines"] = kept,
-                ["cells"] = new JsonArray(cells.Select(c => (JsonNode)c.Json()).ToArray()),
-                ["dig"] = new JsonArray(dig.Select(c => (JsonNode)c.Json()).ToArray()),
-                ["note"] = note,
-            }, null);
-        }
     }
 }
