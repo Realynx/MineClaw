@@ -36,149 +36,202 @@ public sealed partial class WorldIndexer
         return items.Count > max ? s + $" +{items.Count - max} more" : s;
     }
 
+    /// <summary>One entry's text and fields while it is rendered.</summary>
+    private sealed class EntryText(IndexEntry e, string? on, string? near)
+    {
+        public readonly IndexEntry E = e;
+        public readonly string? On = on;
+        public readonly StringBuilder Sb = new();
+        public readonly Dictionary<string, object?> F = new(StringComparer.Ordinal);
+
+        /// <summary>" \"label\" on main island near cobble gen".</summary>
+        public void Where()
+        {
+            if (E.Label is { Length: > 0 } && E.Kind != IndexKinds.Sign) Sb.Append($" \"{E.Label}\"");
+            if (On != null) Sb.Append(" on ").Append(On);
+            if (near != null) Sb.Append(" near ").Append(near);
+        }
+    }
+
+    /// <summary>The text of each kind with its own wording; every other kind is "display name at x,y,z" + where.</summary>
+    private static readonly Dictionary<string, Action<WorldIndexer, EntryText>> Renderers = new(StringComparer.Ordinal)
+    {
+        [IndexKinds.Chest] = (_, t) => RenderContainer(t),
+        [IndexKinds.Dispenser] = (_, t) => RenderContainer(t),
+        [IndexKinds.Furnace] = (_, t) => RenderFurnace(t),
+        [IndexKinds.Sign] = (_, t) => RenderSign(t),
+        [IndexKinds.Generator] = (_, t) => RenderGenerator(t),
+        [IndexKinds.Farm] = (_, t) => RenderFarm(t),
+        [IndexKinds.Tree] = (_, t) => RenderTree(t),
+        [IndexKinds.UnknownStructure] = (_, t) => RenderUnknownStructure(t),
+        [IndexKinds.Island] = (w, t) => w.RenderIsland(t),
+        [IndexKinds.Portal] = (_, t) => RenderPortal(t),
+        [IndexKinds.Hazard] = (_, t) => t.Sb.Append(RenderHazard(t.E, t.F)),
+        [IndexKinds.Hangout] = (_, t) => RenderHangout(t),
+    };
+
     /// <summary>Compact retrieval text + fields JSON for one entry.</summary>
     private (string Text, string Fields) Render(IndexEntry e)
     {
-        var sb = new StringBuilder();
-        var f = new Dictionary<string, object?>(StringComparer.Ordinal);
         string? on = On(e);
-        string? near = IndexKinds.IsArea(e.Kind) ? null : Near(e);
-        if (on != null) f["island"] = on;
-        if (e.Label != null) f["label"] = e.Label;
-
-        void Where()
+        var t = new EntryText(e, on, IndexKinds.IsArea(e.Kind) ? null : Near(e));
+        if (on != null) t.F["island"] = on;
+        if (e.Label != null) t.F["label"] = e.Label;
+        if (Renderers.TryGetValue(e.Kind, out var render)) render(this, t);
+        else
         {
-            if (e.Label is { Length: > 0 } && e.Kind != IndexKinds.Sign) sb.Append($" \"{e.Label}\"");
-            if (on != null) sb.Append(" on ").Append(on);
-            if (near != null) sb.Append(" near ").Append(near);
+            t.Sb.Append($"{DisplayName(e.Kind, e.SubType, null)} at {P(e.Anchor)}");
+            t.Where();
         }
+        if (e.Protect.Count > 0 && e.Kind != IndexKinds.Generator) t.F["protected"] = true;
+        return (t.Sb.ToString(), Json(t.F));
+    }
 
-        switch (e.Kind)
+    private static void RenderContainer(EntryText t)
+    {
+        var e = t.E;
+        t.Sb.Append($"{e.Kind} at {P(e.Anchor)}");
+        if (e.Cells.Count > 1) { t.Sb.Append(" (double)"); t.F["double"] = true; }
+        t.Where();
+        if (e.Contents == null) return;
+        t.Sb.Append("; has ").Append(ItemList(e.Contents, 5));
+        t.F["slots_used"] = e.Contents.Count;
+    }
+
+    private static void RenderFurnace(EntryText t)
+    {
+        var (e, sb, f) = (t.E, t.Sb, t.F);
+        sb.Append($"furnace at {P(e.Anchor)}");
+        if (e.FurnaceLit) sb.Append(" (lit)");
+        f["lit"] = e.FurnaceLit;
+        t.Where();
+        var (i, fuel, o) = e.FurnaceSlots;
+        if (i is { } inp)
         {
-            case IndexKinds.Chest or IndexKinds.Dispenser:
-                sb.Append($"{e.Kind} at {P(e.Anchor)}");
-                if (e.Cells.Count > 1) { sb.Append(" (double)"); f["double"] = true; }
-                Where();
-                if (e.Contents != null)
-                {
-                    sb.Append("; has ").Append(ItemList(e.Contents, 5));
-                    f["slots_used"] = e.Contents.Count;
-                }
-                break;
-            case IndexKinds.Furnace:
-                sb.Append($"furnace at {P(e.Anchor)}");
-                if (e.FurnaceLit) sb.Append(" (lit)");
-                f["lit"] = e.FurnaceLit;
-                Where();
-                var (i, fuel, o) = e.FurnaceSlots;
-                if (i is { } inp)
-                {
-                    var res = MineClaw.Data.Smelting.ResultFor(inp.ItemId);
-                    sb.Append($"; last: {inp.Count} {inp.Name} -> {(res != null ? ItemName(res.OutputId) : "?")}");
-                    f["in"] = inp.Name;
-                }
-                if (o is { } outp) { sb.Append(i == null ? $"; out: {outp.Name} x{outp.Count}" : $", out {outp.Count}"); f["out"] = outp.Name; }
-                if (fuel is { } fu) { sb.Append($"; fuel {fu.Name} x{fu.Count}"); f["fuel"] = fu.Name; }
-                break;
-            case IndexKinds.Sign:
-                sb.Append($"sign at {P(e.Anchor)} \"{e.Label}\"");
-                if (e.Extra.GetValueOrDefault("labels") is string t) { sb.Append(" on ").Append(t.Replace('_', ' ')); f["labels"] = t; }
-                else Where();
-                break;
-            case IndexKinds.Generator:
-            {
-                var dig = (List<int[]>)e.Extra["dig"]!;
-                bool ok = e.Extra["confirmed"] is true;
-                sb.Append($"cobble_generator at {string.Join(",", dig[0])}");
-                Where();
-                sb.Append($": makes {e.Extra["makes"]}; dig {string.Join(" ", dig.Take(3).Select(d => string.Join(",", d)))}");
-                if (e.Extra["stand"] is int[] st) sb.Append($" stand {string.Join(",", st)}");
-                sb.Append(ok ? $"; confirmed ({e.Extra["regens"]} regens)" : "; unconfirmed");
-                foreach (var k in new[] { "dig", "stand", "makes", "confirmed", "regens", "lava", "water" }) f[k] = e.Extra[k];
-                f["protect"] = e.Protect.Count;
-                break;
-            }
-            case IndexKinds.Farm:
-            {
-                var x = e.Extra;
-                sb.Append($"{(e.SubType ?? "").Replace('_', ' ')} farm {e.Max.X - e.Min.X + 1}x{e.Max.Z - e.Min.Z + 1} at {P(e.Min)}");
-                Where();
-                var parts = new List<string>();
-                if (x.GetValueOrDefault("farmland") is int fl) parts.Add($"farmland {fl}");
-                if (x.GetValueOrDefault("crops") is int cr) parts.Add($"crops {cr} ({x["ripe"]} ripe)");
-                if (x.GetValueOrDefault("stems") is int stm) parts.Add($"stems {stm}");
-                if (x.GetValueOrDefault("fruit") is int fr) parts.Add($"{e.SubType} {fr}");
-                if (x.GetValueOrDefault("plants") is int pl) parts.Add($"{(e.SubType ?? "").Replace('_', ' ')} {pl}" + (x.GetValueOrDefault("tallest") is int h ? $" (max h{h})" : ""));
-                if (x.GetValueOrDefault("soil") is string soil) parts.Add("on " + soil);
-                if (x.GetValueOrDefault("water") is int w && w > 0) parts.Add("by water");
-                if (parts.Count > 0) sb.Append(": ").Append(string.Join(", ", parts));
-                foreach (var (k, v) in x) f[k] = v;
-                break;
-            }
-            case IndexKinds.Tree:
-                sb.Append(e.Extra["saplings"] is int sp && sp > 0 && e.Extra["logs"] is 0 ? $"tree spot at {P(e.Anchor)}" : $"tree at {P(e.Anchor)}");
-                Where();
-                sb.Append($": {e.Extra["trees"]} trees, {e.Extra["logs"]} logs, {e.Extra["saplings"]} saplings");
-                if (e.Extra.GetValueOrDefault("note") is string note) sb.Append("; ").Append(note).Append(" (by me)");
-                foreach (var (k, v) in e.Extra) f[k] = v;
-                break;
-            case IndexKinds.UnknownStructure:
-            {
-                var blocks = (Dictionary<string, int>)e.Extra["blocks"]!;
-                sb.Append($"unknown_structure {e.Max.X - e.Min.X + 1}x{e.Max.Y - e.Min.Y + 1}x{e.Max.Z - e.Min.Z + 1} at {P(e.Min)}..{P(e.Max)}");
-                Where();
-                sb.Append(": ").Append(string.Join(", ", blocks.Select(kv => $"{kv.Key} {kv.Value}")));
-                if (e.Extra.GetValueOrDefault("by") is string by) { sb.Append($"; likely by {by}"); f["by"] = by; }
-                if (e.Extra.GetValueOrDefault("used_by") is string ub) { sb.Append($"; used by {ub}"); f["used_by"] = ub; }
-                sb.Append("; ask players what it is");
-                f["blocks"] = blocks;
-                f["ask"] = true;
-                break;
-            }
-            case IndexKinds.Island:
-            {
-                var top = (Dictionary<string, int>)e.Extra["top"]!;
-                var edges = (Dictionary<string, int>)e.Extra["edges"]!;
-                sb.Append($"{IslandName(e)} {e.Max.X - e.Min.X + 1}x{e.Max.Z - e.Min.Z + 1} ({e.Extra["columns"]} cols) y{e.Min.Y}-{e.Max.Y} at {P(e.Min)}..{P(e.Max)}: ");
-                sb.Append(string.Join(" ", top.Select(kv => $"{kv.Key} {kv.Value}")));
-                sb.Append(MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? "; void edges" : "; edges").Append($" N{edges["N"]} E{edges["E"]} S{edges["S"]} W{edges["W"]}");
-                var has = _entries.Values.Where(x => x.Kind is not (IndexKinds.Island or IndexKinds.Hangout or IndexKinds.Activity or IndexKinds.Sign)
-                                                     && _islands.OwnerOf(new BlockPos(x.Anchor.X, 0, x.Anchor.Z)) == e.Key)
-                    .GroupBy(x => DisplayName(x.Kind, x.SubType, null)).OrderByDescending(g => g.Count()).Take(6)
-                    .Select(g => g.Count() > 1 ? $"{g.Key} x{g.Count()}" : g.Key).ToList();
-                if (has.Count > 0) sb.Append("; has ").Append(string.Join(", ", has));
-                f["main"] = e.Key == _mainIsland;
-                foreach (var k in new[] { "columns", "blocks", "top", "edges" }) f[k] = e.Extra[k];
-                break;
-            }
-            case IndexKinds.Portal:
-            {
-                var st = (int[])e.Extra["stand"]!;
-                var fr = (List<int[]>)e.Extra["frame"]!;
-                sb.Append($"nether portal at {P(e.Anchor)} (frame {string.Join(",", fr[0])}..{string.Join(",", fr[1])})");
-                Where();
-                sb.Append($"; step in at {string.Join(",", st)}");
-                if (e.Extra["approach"] is int[] ap) sb.Append($", approach {string.Join(",", ap)}");
-                foreach (var (k, v) in e.Extra) f[k] = v;
-                break;
-            }
-            case IndexKinds.Hazard:
-                sb.Append(RenderHazard(e, f));
-                break;
-            case IndexKinds.Hangout:
-                sb.Append($"{e.Extra["player"]} hangs out around {P(e.Anchor)}");
-                if (on != null) sb.Append(" on ").Append(on);
-                sb.Append($" (~{e.Extra["minutes"]} min, last {((DateTimeOffset)e.Extra["last"]!).ToLocalTime():MM-dd HH:mm})");
-                f["player"] = e.Extra["player"];
-                f["minutes"] = e.Extra["minutes"];
-                break;
-            default:
-                sb.Append($"{DisplayName(e.Kind, e.SubType, null)} at {P(e.Anchor)}");
-                Where();
-                break;
+            var res = MineClaw.Data.Smelting.ResultFor(inp.ItemId);
+            sb.Append($"; last: {inp.Count} {inp.Name} -> {(res != null ? ItemName(res.OutputId) : "?")}");
+            f["in"] = inp.Name;
         }
-        if (e.Protect.Count > 0 && e.Kind != IndexKinds.Generator) f["protected"] = true;
-        return (sb.ToString(), Json(f));
+        if (o is { } outp) { sb.Append(i == null ? $"; out: {outp.Name} x{outp.Count}" : $", out {outp.Count}"); f["out"] = outp.Name; }
+        if (fuel is { } fu) { sb.Append($"; fuel {fu.Name} x{fu.Count}"); f["fuel"] = fu.Name; }
+    }
+
+    private static void RenderSign(EntryText t)
+    {
+        var e = t.E;
+        t.Sb.Append($"sign at {P(e.Anchor)} \"{e.Label}\"");
+        if (e.Extra.GetValueOrDefault("labels") is string labels) { t.Sb.Append(" on ").Append(labels.Replace('_', ' ')); t.F["labels"] = labels; }
+        else t.Where();
+    }
+
+    private static readonly string[] GeneratorFields = ["dig", "stand", "makes", "confirmed", "regens", "lava", "water"];
+
+    private static void RenderGenerator(EntryText t)
+    {
+        var e = t.E;
+        var dig = (List<int[]>)e.Extra["dig"]!;
+        bool ok = e.Extra["confirmed"] is true;
+        t.Sb.Append($"cobble_generator at {string.Join(",", dig[0])}");
+        t.Where();
+        t.Sb.Append($": makes {e.Extra["makes"]}; dig {string.Join(" ", dig.Take(3).Select(d => string.Join(",", d)))}");
+        if (e.Extra["stand"] is int[] st) t.Sb.Append($" stand {string.Join(",", st)}");
+        t.Sb.Append(ok ? $"; confirmed ({e.Extra["regens"]} regens)" : "; unconfirmed");
+        foreach (var k in GeneratorFields) t.F[k] = e.Extra[k];
+        t.F["protect"] = e.Protect.Count;
+    }
+
+    private static void RenderFarm(EntryText t)
+    {
+        var e = t.E;
+        t.Sb.Append($"{(e.SubType ?? "").Replace('_', ' ')} farm {e.Max.X - e.Min.X + 1}x{e.Max.Z - e.Min.Z + 1} at {P(e.Min)}");
+        t.Where();
+        var parts = FarmParts(e);
+        if (parts.Count > 0) t.Sb.Append(": ").Append(string.Join(", ", parts));
+        foreach (var (k, v) in e.Extra) t.F[k] = v;
+    }
+
+    /// <summary>"farmland 6", "crops 6 (2 ripe)", "stems 1", "melon 1", "sugar cane 2 (max h2)", "on sand", "by water".</summary>
+    private static List<string> FarmParts(IndexEntry e)
+    {
+        var x = e.Extra;
+        var parts = new List<string>();
+        if (x.GetValueOrDefault("farmland") is int fl) parts.Add($"farmland {fl}");
+        if (x.GetValueOrDefault("crops") is int cr) parts.Add($"crops {cr} ({x["ripe"]} ripe)");
+        if (x.GetValueOrDefault("stems") is int stm) parts.Add($"stems {stm}");
+        if (x.GetValueOrDefault("fruit") is int fr) parts.Add($"{e.SubType} {fr}");
+        if (x.GetValueOrDefault("plants") is int pl) parts.Add($"{(e.SubType ?? "").Replace('_', ' ')} {pl}" + (x.GetValueOrDefault("tallest") is int h ? $" (max h{h})" : ""));
+        if (x.GetValueOrDefault("soil") is string soil) parts.Add("on " + soil);
+        if (x.GetValueOrDefault("water") is int w && w > 0) parts.Add("by water");
+        return parts;
+    }
+
+    private static void RenderTree(EntryText t)
+    {
+        var e = t.E;
+        t.Sb.Append(e.Extra["saplings"] is int sp && sp > 0 && e.Extra["logs"] is 0 ? $"tree spot at {P(e.Anchor)}" : $"tree at {P(e.Anchor)}");
+        t.Where();
+        t.Sb.Append($": {e.Extra["trees"]} trees, {e.Extra["logs"]} logs, {e.Extra["saplings"]} saplings");
+        if (e.Extra.GetValueOrDefault("note") is string note) t.Sb.Append("; ").Append(note).Append(" (by me)");
+        foreach (var (k, v) in e.Extra) t.F[k] = v;
+    }
+
+    private static void RenderUnknownStructure(EntryText t)
+    {
+        var e = t.E;
+        var blocks = (Dictionary<string, int>)e.Extra["blocks"]!;
+        t.Sb.Append($"unknown_structure {e.Max.X - e.Min.X + 1}x{e.Max.Y - e.Min.Y + 1}x{e.Max.Z - e.Min.Z + 1} at {P(e.Min)}..{P(e.Max)}");
+        t.Where();
+        t.Sb.Append(": ").Append(string.Join(", ", blocks.Select(kv => $"{kv.Key} {kv.Value}")));
+        if (e.Extra.GetValueOrDefault("by") is string by) { t.Sb.Append($"; likely by {by}"); t.F["by"] = by; }
+        if (e.Extra.GetValueOrDefault("used_by") is string ub) { t.Sb.Append($"; used by {ub}"); t.F["used_by"] = ub; }
+        t.Sb.Append("; ask players what it is");
+        t.F["blocks"] = blocks;
+        t.F["ask"] = true;
+    }
+
+    private static readonly string[] IslandFields = ["columns", "blocks", "top", "edges"];
+
+    private void RenderIsland(EntryText t)
+    {
+        var (e, sb) = (t.E, t.Sb);
+        var top = (Dictionary<string, int>)e.Extra["top"]!;
+        var edges = (Dictionary<string, int>)e.Extra["edges"]!;
+        sb.Append($"{IslandName(e)} {e.Max.X - e.Min.X + 1}x{e.Max.Z - e.Min.Z + 1} ({e.Extra["columns"]} cols) y{e.Min.Y}-{e.Max.Y} at {P(e.Min)}..{P(e.Max)}: ");
+        sb.Append(string.Join(" ", top.Select(kv => $"{kv.Key} {kv.Value}")));
+        sb.Append(MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? "; void edges" : "; edges").Append($" N{edges["N"]} E{edges["E"]} S{edges["S"]} W{edges["W"]}");
+        var has = IslandHas(e);
+        if (has.Count > 0) sb.Append("; has ").Append(string.Join(", ", has));
+        t.F["main"] = e.Key == _mainIsland;
+        foreach (var k in IslandFields) t.F[k] = e.Extra[k];
+    }
+
+    /// <summary>"chest x2, furnace, cobble gen": the six commonest things on an island.</summary>
+    private List<string> IslandHas(IndexEntry island) =>
+        _entries.Values.Where(x => x.Kind is not (IndexKinds.Island or IndexKinds.Hangout or IndexKinds.Activity or IndexKinds.Sign)
+                                   && _islands.OwnerOf(new BlockPos(x.Anchor.X, 0, x.Anchor.Z)) == island.Key)
+            .GroupBy(x => DisplayName(x.Kind, x.SubType, null)).OrderByDescending(g => g.Count()).Take(6)
+            .Select(g => g.Count() > 1 ? $"{g.Key} x{g.Count()}" : g.Key).ToList();
+
+    private static void RenderPortal(EntryText t)
+    {
+        var e = t.E;
+        var st = (int[])e.Extra["stand"]!;
+        var fr = (List<int[]>)e.Extra["frame"]!;
+        t.Sb.Append($"nether portal at {P(e.Anchor)} (frame {string.Join(",", fr[0])}..{string.Join(",", fr[1])})");
+        t.Where();
+        t.Sb.Append($"; step in at {string.Join(",", st)}");
+        if (e.Extra["approach"] is int[] ap) t.Sb.Append($", approach {string.Join(",", ap)}");
+        foreach (var (k, v) in e.Extra) t.F[k] = v;
+    }
+
+    private static void RenderHangout(EntryText t)
+    {
+        var e = t.E;
+        t.Sb.Append($"{e.Extra["player"]} hangs out around {P(e.Anchor)}");
+        if (t.On != null) t.Sb.Append(" on ").Append(t.On);
+        t.Sb.Append($" (~{e.Extra["minutes"]} min, last {((DateTimeOffset)e.Extra["last"]!).ToLocalTime():MM-dd HH:mm})");
+        t.F["player"] = e.Extra["player"];
+        t.F["minutes"] = e.Extra["minutes"];
     }
 
     // ------------------------------------------------------------------ hangouts (coarse, rate-limited; never per-tick movement)

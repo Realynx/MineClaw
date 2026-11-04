@@ -53,40 +53,60 @@ public sealed class RoleClassifier
         bool geometry = MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone;
         bool gen = Safe(() => IsGenCell?.Invoke(p) == true) || (geometry && id is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone or 0
             && Safe(() => IsGenGeometry?.Invoke(p) == true));
-        if (id == 0)
-        {
-            // Air between lava and water is a refilling gen cell only when taught/confirmed or not stacked on one: the air
-            // over a dual gen's cells (lava and water at y+1 too, live 10-27) is not a place to mine.
-            if (gen && !Safe(() => IsGenCell?.Invoke(p) == true))
-            {
-                var down = new BlockPos(x, y - 1, z);
-                int below = Blocks.GetBlock(x, y - 1, z);
-                if (Safe(() => IsGenCell?.Invoke(down) == true)
-                    || (geometry && below is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(down) == true)))
-                    gen = false;
-            }
-            if (gen) return BlockRole.GenCell;
-            if (Safe(() => IsDarkSpawn?.Invoke(p) == true)) return BlockRole.DarkSpawn;
-            for (int yy = y - 1; yy >= 0; yy--) if (Blocks.GetBlock(x, yy, z) != 0) return BlockRole.None;
-            return MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? BlockRole.Void : BlockRole.None;
-        }
+        return id == 0 ? AirRole(p, gen, geometry) : BlockRoleOf(p, id, gen, geometry);
+    }
+
+    private BlockRole AirRole(BlockPos p, bool gen, bool geometry)
+    {
+        // Air between lava and water is a refilling gen cell only when taught/confirmed or not stacked on one: the air
+        // over a dual gen's cells (lava and water at y+1 too, live 10-27) is not a place to mine.
+        if (gen && !Safe(() => IsGenCell?.Invoke(p) == true)) gen = !OnGenCell(p.Down(), geometry);
+        if (gen) return BlockRole.GenCell;
+        if (Safe(() => IsDarkSpawn?.Invoke(p) == true)) return BlockRole.DarkSpawn;
+        for (int yy = p.Y - 1; yy >= 0; yy--) if (Blocks.GetBlock(p.X, yy, p.Z) != 0) return BlockRole.None;
+        return MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? BlockRole.Void : BlockRole.None;
+    }
+
+    /// <summary>A taught/confirmed gen cell, or (by geometry) cobble/stone with lava and water next to it.</summary>
+    private bool OnGenCell(BlockPos q, bool geometry)
+    {
+        int id = Blocks.GetBlock(q.X, q.Y, q.Z);
+        return Safe(() => IsGenCell?.Invoke(q) == true)
+               || (geometry && id is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(q) == true));
+    }
+
+    private BlockRole BlockRoleOf(BlockPos p, int id, bool gen, bool geometry)
+    {
         ProtectionVerdict? v = null;
         try { v = Verdict?.Invoke(p, id); } catch (Exception) { }
         if (v is { Level: ProtectionLevel.Hard }) return BlockRole.NeverBreak;
         if (gen) return BlockRole.GenCell;
         string? kind = null;
         try { kind = IndexerKind?.Invoke(p); } catch (Exception) { }
-        if (id == MineClaw.Data.Blocks.Portal || (id == MineClaw.Data.Blocks.Obsidian && (kind == WorldIndex.IndexKinds.Portal || NextToPortal(x, y, z))))
+        if (id == MineClaw.Data.Blocks.Portal || (id == MineClaw.Data.Blocks.Obsidian && (kind == WorldIndex.IndexKinds.Portal || NextToPortal(p.X, p.Y, p.Z))))
             return BlockRole.Portal;
+        if (FixedRole(id) is { } fixedRole) return fixedRole;
+        // Crops are work, not property (live 10-28: a field drawn '$' read as "protected, owned by others, needs permission"):
+        // ripe/growing from the block's own metadata, whatever box, index entry, claim or planter covers them.
+        if (CropRole(id, Blocks.GetMeta(p.X, p.Y, p.Z)) is { } crop) return crop;
+        if (Safe(() => IsOwnPlaced?.Invoke(p, id) == true)) return BlockRole.OwnPlaced;
+        if (kind == WorldIndex.IndexKinds.UnknownStructure) return BlockRole.PlayerBuild;
+        return GroundRole(p, id, v, kind, geometry);
+    }
+
+    /// <summary>Doors, stations and fluids: their role whatever covers them.</summary>
+    private static BlockRole? FixedRole(int id)
+    {
         if (Openables.IsDoor(id) || Openables.IsTrapdoor(id)) return BlockRole.Door;
         if (WorldIndex.IndexKinds.StationKind(id) != null) return BlockRole.Station;
         if (MineClaw.Data.Blocks.IsWater(id)) return BlockRole.Water;
         if (MineClaw.Data.Blocks.IsLava(id)) return BlockRole.Lava;
-        // Crops are work, not property (live 10-28: a field drawn '$' read as "protected, owned by others, needs permission"):
-        // ripe/growing from the block's own metadata, whatever box, index entry, claim or planter covers them.
-        if (CropRole(id, Blocks.GetMeta(x, y, z)) is { } crop) return crop;
-        if (Safe(() => IsOwnPlaced?.Invoke(p, id) == true)) return BlockRole.OwnPlaced;
-        if (kind == WorldIndex.IndexKinds.UnknownStructure) return BlockRole.PlayerBuild;
+        return null;
+    }
+
+    /// <summary>Soft-protected, floor or wall (or nothing for a non-solid block).</summary>
+    private BlockRole GroundRole(BlockPos p, int id, ProtectionVerdict? v, string? kind, bool geometry)
+    {
         bool solid = Blocks.Info(id).Solid;
         // Farm soil is floor to walk on and plant into: its "don't break the farmland" rule lives in the policy, not the overlay.
         // A hive lease is coordination (another bot works there), not protection: no '$' for it either.
@@ -94,14 +114,10 @@ public sealed class RoleClassifier
             && id != MineClaw.Data.Blocks.Farmland)
             return BlockRole.SoftProtected;
         if (!solid) return BlockRole.None;
-        int above = Blocks.GetBlock(x, y + 1, z);
+        int above = Blocks.GetBlock(p.X, p.Y + 1, p.Z);
         if (above == 0 || !Blocks.Info(above).Solid) return BlockRole.Floor;
         // The island floor under a gen cell is still floor (the cell on top is the thing to mine, not this).
-        var up = new BlockPos(x, y + 1, z);
-        if (Safe(() => IsGenCell?.Invoke(up) == true)
-            || (geometry && above is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(up) == true)))
-            return BlockRole.Floor;
-        return BlockRole.Wall;
+        return OnGenCell(p.Up(), geometry) ? BlockRole.Floor : BlockRole.Wall;
     }
 
     /// <summary>The crop role of a block (wheat by its growth stage, meta 7 = ripe; stems grow, fruit/cane/cactus are ripe), else null.
