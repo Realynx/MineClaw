@@ -1011,45 +1011,53 @@ export class StorySim {
   /** POST /api/story/colonies/{id}/online: offline pawns (null = all) are whitelisted again and started, the cap permitting. */
   online(id: string, body: StoryOnlineRequest): StoryOnlineResponse {
     const c = this.colony(id);
-    const names: string[] = [];
-    if (body.pawns === null) {
-      for (const p of c.pawns.values()) if (!p.p.online) names.push(p.p.name);
-    } else
-      for (const n of body.pawns) {
-        const p = c.pawns.get(n) ?? [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === n.toLowerCase());
-        if (!p) throw Object.assign(new Error(`no pawn '${n}'`), { status: 404 });
-        names.push(p.p.name);
-      }
+    const names = body.pawns === null ? this.offlinePawns(c) : body.pawns.map((n) => this.pawnNamed(c, n).p.name);
     const started: string[] = [];
     const blocked: StoryOnlineBlocked[] = [];
     for (const n of names) {
-      const p = c.pawns.get(n)!;
-      if (c.released) {
-        blocked.push({ pawn: n, reason: 'the colony is released: resume it first' });
-        continue;
-      }
-      if (p.p.online) {
-        started.push(n);
-        continue;
-      }
-      // A hosted pawn (kicked "not white-listed") is re-added and retried now; one that never got a seat needs one.
-      const hosted = p.backAt !== null && p.backAt !== undefined;
-      if (!hosted && c.capFree - 1 < (body.overCap ? 0 : c.kept)) {
-        p.p.offlineReason = this.capReason(c);
-        p.rev = this.bump(c);
-        blocked.push({ pawn: n, reason: p.p.offlineReason });
-        continue;
-      }
-      if (!hosted) c.capFree--;
-      p.p.offlineReason = 'connecting';
-      p.backAt = this.now() + 1500;
-      p.rev = this.bump(c);
-      started.push(n);
+      const reason = this.startPawn(c, n, !!body.overCap);
+      if (reason) blocked.push({ pawn: n, reason });
+      else started.push(n);
     }
     if (started.length)
       this.alert(c, 'info', `Bringing ${started.length} pawn${started.length === 1 ? '' : 's'} online.`);
     return { started, blocked };
   }
+
+  /** Every offline pawn's account. */
+  private offlinePawns(c: Colony): string[] {
+    return [...c.pawns.values()].filter((p) => !p.p.online).map((p) => p.p.name);
+  }
+
+  /** A pawn by account or shown name (404 when none). */
+  private pawnNamed(c: Colony, n: string) {
+    const p = c.pawns.get(n) ?? [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === n.toLowerCase());
+    if (!p) throw Object.assign(new Error(`no pawn '${n}'`), { status: 404 });
+    return p;
+  }
+
+  /**
+   * Brings one pawn online (online already counts as started); the reason when it can't. A hosted pawn (kicked "not
+   * white-listed") is re-added and retried now; one that never got a seat needs one (the regulars' seats with `overCap`).
+   */
+  private startPawn(c: Colony, n: string, overCap: boolean): string | null {
+    const p = c.pawns.get(n)!;
+    if (c.released) return 'the colony is released: resume it first';
+    if (p.p.online) return null;
+    const hosted = p.backAt !== null && p.backAt !== undefined;
+    if (!hosted && c.capFree - 1 < (overCap ? 0 : c.kept)) {
+      const reason = this.capReason(c);
+      p.p.offlineReason = reason;
+      p.rev = this.bump(c);
+      return reason;
+    }
+    if (!hosted) c.capFree--;
+    p.p.offlineReason = 'connecting';
+    p.backAt = this.now() + 1500;
+    p.rev = this.bump(c);
+    return null;
+  }
+
 
   /** Mock: marks designations failed (3 tries) with a reason, resting 10 minutes. */
   failDesignations(id: string, ids: Key[], reason: string): void {
