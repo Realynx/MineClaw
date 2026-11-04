@@ -22,7 +22,7 @@ namespace MineClaw.Bot.Blueprints;
 /// <c>blueprint(3)</c>), the chat review (accept/change, zero tokens, the consumed line doesn't wake the brain), resume after a
 /// restart, and recording a finished build as a soft-protected structure.
 /// </summary>
-public sealed class BlueprintWiring
+public sealed partial class BlueprintWiring
 {
     public const string DesignTool = "design", BuildTool = "build", InfoTool = "blueprint";
 
@@ -134,6 +134,14 @@ public sealed class BlueprintWiring
         wiring.WrapDelegate(rt);
         wiring._playerAt = name => client.World.Entities.FindPlayer(name) is { } pe ? pe.Position.ToBlockPos() : null;
         wiring.AttachChat(rt, log);
+        wiring.WireRulesAndResume(rt, client, o, clock, log, persist);
+        return wiring;
+    }
+
+    /// <summary>Standing rules on designs, and a build paused by a restart told (or resumed) once the body spawns.</summary>
+    private void WireRulesAndResume(AgentRuntime rt, IGameClient client, BlueprintOptions o, TimeProvider clock, ILogger? log, bool persist)
+    {
+        var service = Service;
         // Trusted players' standing rules ride along with resume/build results, and a pending build puts its design in play for
         // the turn header's [standing rules] (text only: the brain decides, e.g. "only build in daytime" at night).
         var rules = Agent.Rules.DirectiveStore.For(rt.Db, rt.Rag);
@@ -142,25 +150,24 @@ public sealed class BlueprintWiring
         service.Rules = id => rules.ForDesign(id);
         // The one coded check: a rule that limits the build to a time of day stops it at dusk and walks the body home.
         service.Executor.Hold = id => client.IsPlaying ? rules.TimeHold(id, client.World.TimeOfDay) : null;
+        if (!persist) return;
         // A build paused by the restart rides in main's one startup wake (and the idle watchdog), not a Background notice that
         // never wakes the brain (live 10-28 07:37-08:45).
-        if (persist && !o.AutoResume) rt.Agent.AddPendingWork(() => service.NotifyPending(client.Username, notice: false));
+        if (!o.AutoResume) rt.Agent.AddPendingWork(() => service.NotifyPending(client.Username, notice: false));
         int spawns = 0;
-        if (persist)
-            client.Spawned += () => _ = Task.Run(async () =>
+        client.Spawned += () => _ = Task.Run(async () =>
+        {
+            try
             {
-                try
-                {
-                    // First spawn of a process: the startup wake already tells a paused build (AutoResume off).
-                    if (Interlocked.Increment(ref spawns) == 1 && !o.AutoResume && rt.Agent.WakeOnStart && rt.Options.Idle.StartupWake) return;
-                    await Task.Delay(TimeSpan.FromSeconds(15), clock).ConfigureAwait(false);
-                    if (rt.Agent.ActivitiesFor(client.Username).IsBusy) return;
-                    var line = o.AutoResume ? service.ResumePending(client.Username) : service.NotifyPending(client.Username);
-                    if (line != null) log?.LogInformation("blueprints: {Line}", line);
-                }
-                catch (Exception ex) { log?.LogDebug(ex, "blueprint resume failed"); }
-            });
-        return wiring;
+                // First spawn of a process: the startup wake already tells a paused build (AutoResume off).
+                if (Interlocked.Increment(ref spawns) == 1 && !o.AutoResume && rt.Agent.WakeOnStart && rt.Options.Idle.StartupWake) return;
+                await Task.Delay(TimeSpan.FromSeconds(15), clock).ConfigureAwait(false);
+                if (rt.Agent.ActivitiesFor(client.Username).IsBusy) return;
+                var line = o.AutoResume ? service.ResumePending(client.Username) : service.NotifyPending(client.Username);
+                if (line != null) log?.LogInformation("blueprints: {Line}", line);
+            }
+            catch (Exception ex) { log?.LogDebug(ex, "blueprint resume failed"); }
+        });
     }
 
     // ------------------------------------------------------------------ tools
@@ -183,37 +190,42 @@ public sealed class BlueprintWiring
         rt.Tools.SetInputAdapter(BuildTool, NormalizeBlueprintId);
         rt.Tools.Register(BuildTool, "Build/resume an approved saved design by id (its saved plan); lane = crew lane; undo/delete:true (trusted word) remove only its placed blocks.",
             ToolSchema.Create().Str("bp").Int("lane", required: false).Build(),
-            async (input, ct) =>
-            {
-                var bp = Id(input, "bp") ?? Id(input, "id") ?? "";
-                if (input.Bool("delete") == true)
-                {
-                    // The brain's design delete hands its trusted speaker over; a worker's own call needs a trusted speaker this turn.
-                    long.TryParse(bp.TrimStart('#'), out var did);
-                    var by = (did != 0 && _deleteBy.TryRemove(did, out var auth) ? auth : null) ?? TurnContext.Current?.Speaker;
-                    var (dok, dtext) = await Service.DeleteAsync(bp, by, ct).ConfigureAwait(false);
-                    return dok ? ToolResult.Success(dtext) : ToolResult.Error(dtext);
-                }
-                if (input.Bool("undo") == true)
-                {
-                    var (uok, utext) = await Service.UndoAsync(bp, ct).ConfigureAwait(false);
-                    return uok ? ToolResult.Success(utext) : ToolResult.Error(utext);
-                }
-                // A hive clone's lane of a crew build (main started it as a hive job: build{bp, lane}).
-                if (input.Int("lane") is { } lane)
-                {
-                    var (lok, ltext) = await Service.BuildLaneAsync(bp, lane, ct).ConfigureAwait(false);
-                    return lok ? ToolResult.Success(ltext) : ToolResult.Error(ltext);
-                }
-                if (CrewOf(input) is { } crew && Service.Store.Find(bp) is { } brec) Service.RequestCrew(brec.Id, crew);
-                var (ok, text) = await Service.BuildAsync(bp, input.Int("part"), input.Int("of"), input.Int("layer"), ct, input.Bool("by_layer") == true).ConfigureAwait(false);
-                return ok ? ToolResult.Success(text) : ToolResult.Error(text);
-            }, longRunning: true, tiers: ToolTiers.Worker, maxResultChars: 600);
+            RunBuildToolAsync, longRunning: true, tiers: ToolTiers.Worker, maxResultChars: 600);
         rt.Tools.SetInputAdapter(InfoTool, NormalizeBlueprintId);
         rt.Tools.Register(InfoTool, "A saved blueprint: size, layers, bill, status.",
             ToolSchema.Create().Str("bp").Build(),
             (input, _) => Task.FromResult(Service.Store.Find(Id(input, "bp") ?? Id(input, "id") ?? "") is { } r ? ToolResult.Success(Service.Describe(r)) : ToolResult.Error("no such blueprint")),
             tiers: ToolTiers.None);
+    }
+
+    /// <summary>The hidden build tool: delete / undo / a crew lane / a build (or resume) of a saved design.</summary>
+    private async Task<ToolResult> RunBuildToolAsync(JsonElement input, CancellationToken ct)
+    {
+        var bp = Id(input, "bp") ?? Id(input, "id") ?? "";
+        if (input.Bool("delete") == true) return await DeleteFromToolAsync(bp, ct).ConfigureAwait(false);
+        if (input.Bool("undo") == true)
+        {
+            var (uok, utext) = await Service.UndoAsync(bp, ct).ConfigureAwait(false);
+            return Outcome(uok, utext);
+        }
+        // A hive clone's lane of a crew build (main started it as a hive job: build{bp, lane}).
+        if (input.Int("lane") is { } lane)
+        {
+            var (lok, ltext) = await Service.BuildLaneAsync(bp, lane, ct).ConfigureAwait(false);
+            return Outcome(lok, ltext);
+        }
+        if (CrewOf(input) is { } crew && Service.Store.Find(bp) is { } brec) Service.RequestCrew(brec.Id, crew);
+        var (ok, text) = await Service.BuildAsync(bp, input.Int("part"), input.Int("of"), input.Int("layer"), ct, input.Bool("by_layer") == true).ConfigureAwait(false);
+        return Outcome(ok, text);
+    }
+
+    /// <summary>The brain's design delete hands its trusted speaker over; a worker's own call needs a trusted speaker this turn.</summary>
+    private async Task<ToolResult> DeleteFromToolAsync(string bp, CancellationToken ct)
+    {
+        long.TryParse(bp.TrimStart('#'), out var did);
+        var by = (did != 0 && _deleteBy.TryRemove(did, out var auth) ? auth : null) ?? TurnContext.Current?.Speaker;
+        var (dok, dtext) = await Service.DeleteAsync(bp, by, ct).ConfigureAwait(false);
+        return Outcome(dok, dtext);
     }
 
     // ------------------------------------------------------------------ delegated design builds
@@ -236,19 +248,31 @@ public sealed class BlueprintWiring
     internal (string? Hint, string? Refusal) DesignTask(string task)
     {
         if (string.IsNullOrWhiteSpace(task)) return (null, null);
-        BlueprintRecord? rec = null;
-        foreach (System.Text.RegularExpressions.Match m in DesignRef.Matches(task))
-            if ((m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value) is { Length: > 0 } id && BuildsAt(task, m.Index)
-                && Service.Store.Find(id) is { } r) { rec = r; break; }
-        // By name: approved designs first, since two can share one (live: #4 "mob drop tower" built, #8 a draft of it).
-        if (rec == null && task.Contains("design", StringComparison.OrdinalIgnoreCase))
-            rec = Service.Store.List(10).Where(r => r.Name.Length >= 4)
-                .OrderBy(r => r.Status is DesignStatus.Accepted or DesignStatus.Building or DesignStatus.Built ? 0 : 1)
-                .FirstOrDefault(r => task.IndexOf(r.Name, StringComparison.OrdinalIgnoreCase) is >= 0 and var at && BuildsAt(task, at));
+        var rec = DesignByRef(task) ?? DesignByName(task);
         if (rec == null) return (null, null);
-        if (rec.Status is DesignStatus.Accepted or DesignStatus.Building or DesignStatus.Built)
+        if (IsApproved(rec))
             return ($"[design #{rec.Id} \"{rec.Name}\" is approved: call build{{bp:\"{rec.Id}\"}} (it resumes the saved plan; never place its blocks by hand)]", null);
         return (null, $"design #{rec.Id} \"{rec.Name}\" is {rec.Status}, not approved: a worker can't build it. A trusted player's 'build it', then design build{{id={rec.Id}}}");
+    }
+
+    private static bool IsApproved(BlueprintRecord r) => r.Status is DesignStatus.Accepted or DesignStatus.Building or DesignStatus.Built;
+
+    /// <summary>"design #4" (or "#4") headed by a build verb.</summary>
+    private BlueprintRecord? DesignByRef(string task)
+    {
+        foreach (System.Text.RegularExpressions.Match m in DesignRef.Matches(task))
+            if ((m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value) is { Length: > 0 } id && BuildsAt(task, m.Index)
+                && Service.Store.Find(id) is { } r) return r;
+        return null;
+    }
+
+    /// <summary>By name: approved designs first, since two can share one (live: #4 "mob drop tower" built, #8 a draft of it).</summary>
+    private BlueprintRecord? DesignByName(string task)
+    {
+        if (!task.Contains("design", StringComparison.OrdinalIgnoreCase)) return null;
+        return Service.Store.List(10).Where(r => r.Name.Length >= 4)
+            .OrderBy(r => IsApproved(r) ? 0 : 1)
+            .FirstOrDefault(r => task.IndexOf(r.Name, StringComparison.OrdinalIgnoreCase) is >= 0 and var at && BuildsAt(task, at));
     }
 
     /// <summary>The delegate tool, same definition: a design-build task carries its build{bp} line, or is refused up front.</summary>
@@ -303,146 +327,20 @@ public sealed class BlueprintWiring
     internal static CrewRequest? CrewOf(JsonElement input)
     {
         if (input.ValueKind != JsonValueKind.Object) return null;
-        List<string>? names = null;
-        if (input.TryGetProperty("bodies", out var b))
-            names = b.ValueKind switch
-            {
-                JsonValueKind.Array => b.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.Number ? e.GetRawText() : e.GetString() ?? "")
-                    .Where(n => n.Trim().Length > 0).ToList(),
-                JsonValueKind.String => (b.GetString() ?? "").Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList(),
-                JsonValueKind.Number => [b.GetRawText()],
-                _ => null,
-            };
+        List<string>? names = input.TryGetProperty("bodies", out var b) ? BodyNames(b) : null;
         int? count = input.TryGetProperty("crew", out var c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt32(out var n) ? Math.Max(1, n) : null;
         if (names is { Count: 0 }) names = null;
         return names == null && count == null ? null : new CrewRequest(names, count);
     }
 
-    private ToolResult Design(JsonElement input)
+    private static List<string>? BodyNames(JsonElement b) => b.ValueKind switch
     {
-        var op = (input.Str("op") ?? (input.Str("id") != null && input.Str("what") != null ? "revise" : "new")).Trim().ToLowerInvariant();
-        var speaker = TurnContext.Current?.Speaker;
-        var id = Id(input, "id");
-        // "my house" → the captured design it names (its remembered structure's link), before the store's name search.
-        BlueprintRecord? Rec()
-        {
-            var r = id is { Length: > 0 } ? Owned?.Invoke(id, speaker) ?? Service.Store.Find(id) : Service.Pending(speaker) ?? Service.Store.List(1).FirstOrDefault();
-            // A trusted player's turn working on a design opens it for editing (their requested digs may change it).
-            if (r != null && Edits?.IsTrusted(speaker) == true) Edits.Touch(r.Id, $"{speaker} asked about it");
-            return r;
-        }
-        switch (op)
-        {
-            case "log":
-                {
-                    if (Rec() is not { } rec || History is not { } h) return ToolResult.Error("no design (id?)");
-                    // "r2 good" tags r2 (a name for revert/diff: revert{id, what:"good"}).
-                    if (input.Str("what") is { Length: > 0 } tagSpec && tagSpec.Split(' ', 2, StringSplitOptions.TrimEntries) is [var rs, var tag]
-                        && h.Revisions.Resolve(rec.Id, rs) is { } tr && h.Revisions.TagRev(rec.Id, tr.Rev, tag))
-                        return ToolResult.Success($"tagged r{tr.Rev} '{tag}'; " + h.Log(rec));
-                    return ToolResult.Success(h.Log(rec));
-                }
-            case "status":
-                return Rec() is { } st && History is { } hs ? ToolResult.Success(hs.Status(st)) : ToolResult.Error("no design (id?)");
-            case "diff":
-                return Rec() is { } df && History is { } hd ? ToolResult.Success(hd.Diff(df, input.Str("what"))) : ToolResult.Error("no design (id?)");
-            case "commit":
-                {
-                    if (Rec() is not { } rec || History is not { } h) return ToolResult.Error("no design (id?)");
-                    var (ok, text) = h.Commit(rec, speaker, input.Str("what"));
-                    if (ok) Drift?.Refresh();
-                    return ok ? ToolResult.Success(text) : ToolResult.Error(text);
-                }
-            case "revert":
-            case "checkout":
-                {
-                    if (Rec() is not { } rec || History is not { } h) return ToolResult.Error("no design (id?)");
-                    var (ok, text) = h.Revert(rec, input.Str("what"), speaker);
-                    if (ok) Drift?.Refresh();
-                    return ok ? ToolResult.Success(text) : ToolResult.Error(text);
-                }
-            case "new":
-                {
-                    var r = Service.Design(input.Str("what") ?? "", input.Str("at"), speaker);
-                    return r.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(r[7..]) : ToolResult.Success(r);
-                }
-            case "revise":
-                {
-                    if (Rec() is not { } rec) return ToolResult.Error("no design to revise (id?)");
-                    var r = Service.Revise(rec.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), input.Str("what") ?? "", speaker);
-                    return r.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(r[7..]) : ToolResult.Success(r);
-                }
-            case "build":
-                {
-                    if (Rec() is not { } rec) return ToolResult.Error("no design to build (id?)");
-                    // Drawn for another version with blocks this world lacks: refused, the blocks named (never built wrong).
-                    if (Service.WorldRefusal(rec) is { } wrong) return ToolResult.Error(wrong);
-                    // Held by a "no" at its gate: only a trusted player's fresh go lifts it (never a resume on its own).
-                    if (Service.HeldBy(rec.Id) is { } holder)
-                    {
-                        if (!Service.IsTrusted(speaker))
-                            return ToolResult.Error($"#{rec.Id} is held: {holder} said no at its gate; it needs a trusted player's fresh go ({speaker ?? "nobody"} asked)");
-                        Service.ClearHold(rec.Id);
-                    }
-                    bool moving = input.Str("at") is { Length: > 0 };
-                    var crew = CrewOf(input);
-                    if (crew != null && !moving) Service.RequestCrew(rec.Id, crew);
-                    // Already accepted by a trusted player: resuming (after a material or night pause) needs no second go.
-                    if (!moving && rec.Status is DesignStatus.Accepted or DesignStatus.Building && rec.AcceptedBy != null)
-                        return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why)
-                            : ToolResult.Success(Service.WithRules(rec.Id, $"building #{rec.Id} \"{rec.Name}\" (resuming; {rec.AcceptedBy} approved it)"));
-                    if (!Service.IsTrusted(speaker)) return ToolResult.Error($"a build needs a trusted player's go ({string.Join("/", rt_Trusted())}); {speaker ?? "nobody"} asked");
-                    if (rec.Status is DesignStatus.Built or DesignStatus.Captured || moving && rec.Status is not DesignStatus.Review)
-                    {
-                        var (_, text) = Service.Reuse(rec, input.Str("at"), speaker!, crew);
-                        return text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(text[7..]) : ToolResult.Success(text);
-                    }
-                    if (rec.Status is DesignStatus.Accepted or DesignStatus.Building)
-                        return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why) : ToolResult.Success(Service.WithRules(rec.Id, $"building #{rec.Id} \"{rec.Name}\" (resuming)"));
-                    var a = Service.Accept(rec, speaker!, crew);
-                    return a.StartsWith("building", StringComparison.Ordinal) ? ToolResult.Success(a) : ToolResult.Error(a);
-                }
-            case "show":
-                {
-                    if (Rec() is not { } rec) return ToolResult.Error("no design (id?)");
-                    var head = History?.Ensure(rec);
-                    var res = ToolResult.Success(Service.Describe(rec) + (head != null ? $"; at r{head.Rev} (log/status/diff)" : ""));
-                    if (input.Bool("image") == true && Service.Store.Picture(rec.Id) is { } png && Png(png) is { } img)
-                        res = res with { Image = new LlmImage(png, img.W, img.H, $"[design #{rec.Id} preview]") };
-                    return res;
-                }
-            case "capture":
-                // Read-only: memorize a standing build as a design (any speaker; rebuilding it still needs a trusted go).
-                return CaptureOp?.Invoke(input, speaker) ?? ToolResult.Error("capture isn't wired");
-            case "list":
-                {
-                    var list = Service.Store.List(6);
-                    return ToolResult.Success(list.Count == 0 ? "no designs yet" : string.Join("; ", list.Select(Service.ListLine)));
-                }
-            case "cancel":
-                return Rec() is { } c ? ToolResult.Success(Service.Cancel(c)) : ToolResult.Error("no design (id?)");
-            case "undo":
-                {
-                    // The build's own ledger (gate blocks included), dug top-first as the body's job; nothing else is touched.
-                    if (id is not { Length: > 0 } || Service.Store.Find(id) is not { } rec) return ToolResult.Error("undo needs the design's id");
-                    int n = Service.PlacedCount(rec.Id);
-                    if (n == 0) return ToolResult.Error($"#{rec.Id} \"{rec.Name}\" has no placed blocks to take down");
-                    return Service.StartUndo(rec.Id) is { } no ? ToolResult.Error($"can't undo #{rec.Id}: {no}")
-                        : ToolResult.Success($"taking down #{rec.Id} \"{rec.Name}\": the {n} block{(n == 1 ? "" : "s")} it placed, top first; a [task] reports the end");
-                }
-            case "delete":
-                {
-                    // A trusted player's word, like a build's go: the blocks come down, then its plans and the record go.
-                    if (id is not { Length: > 0 } || Service.Store.Find(id) is not { } rec) return ToolResult.Error("delete needs the design's id");
-                    if (rec.Status == DesignStatus.Deleted) return ToolResult.Error($"#{rec.Id} is already deleted");
-                    if (!Service.IsTrusted(speaker)) return ToolResult.Error($"deleting a design needs a trusted player's word ({string.Join("/", rt_Trusted())}); {speaker ?? "nobody"} asked");
-                    int n = Service.PlacedCount(rec.Id);
-                    return Service.StartDelete(rec.Id, speaker!) is { } no ? ToolResult.Error($"can't delete #{rec.Id}: {no}")
-                        : ToolResult.Success($"deleting #{rec.Id} \"{rec.Name}\": taking down the {n} block{(n == 1 ? "" : "s")} it placed, then its plan; a [task] names what came down");
-                }
-        }
-        return ToolResult.Error("op: " + string.Join("|", Ops));
-    }
+        JsonValueKind.Array => b.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.Number ? e.GetRawText() : e.GetString() ?? "")
+            .Where(n => n.Trim().Length > 0).ToList(),
+        JsonValueKind.String => (b.GetString() ?? "").Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList(),
+        JsonValueKind.Number => [b.GetRawText()],
+        _ => null,
+    };
 
     private Func<IReadOnlyList<string>> _trusted = () => [];
     private IReadOnlyList<string> rt_Trusted() => _trusted();
@@ -480,10 +378,12 @@ public sealed class BlueprintWiring
     {
         if (Edits is not { } e || !e.IsTrusted(player) || string.IsNullOrWhiteSpace(text)) return;
         foreach (var rec in Service.Store.List(30))
-            if (rec.Status is not (DesignStatus.Deleted or DesignStatus.Cancelled or DesignStatus.Failed) && Names(text, rec.Name))
+            if (IsLive(rec) && Names(text, rec.Name))
                 e.Touch(rec.Id, $"{player} named it");
         if (Drift != null && _playerAt(player!) is { } at && Drift.At(at, pad: 3) is { } d) e.Touch(d.Id, $"{player} asked while at it");
     }
+
+    private static bool IsLive(BlueprintRecord rec) => rec.Status is not (DesignStatus.Deleted or DesignStatus.Cancelled or DesignStatus.Failed);
 
     /// <summary>"keep digging the stairs" names "spiral_staircase": the whole name, or a word sharing a 5-letter stem with one of its words.</summary>
     internal static bool Names(string text, string name)
@@ -572,40 +472,54 @@ public sealed class BlueprintWiring
         var w = client.World;
         var requester = who != null ? w.Entities.FindPlayer(who) : null;
         // What the player referenced, never the bot's own spot or a nearby landmark by default (live 10-28: "wrong spot").
-        bool pointedNow = hub?.LastPoint is { } lp && (who == null || lp.Player.Equals(who, StringComparison.OrdinalIgnoreCase))
-                          && clock.GetUtcNow() - lp.At < TimeSpan.FromMinutes(10);
-        if (Building.SiteAnchor.IsHere(at) || string.IsNullOrWhiteSpace(at) && !pointedNow)
-        {
-            if (requester == null) return (null, $"where should it go? I can't see {who ?? "you"} (stand there and say 'here', point at a block, or name a place)");
-            var feet = requester.Position.ToBlockPos();
-            var facing = Building.SiteAnchor.Facing(requester.Yaw);
-            return (new SitePick(BlueprintService.Ground(w.PlanningView, feet.Down()), $"where {who} is standing, facing {facing.Name()}", null, Inferred: true), null);
-        }
+        bool pointedNow = PointedBy(hub, who, clock) != null;
+        if (Building.SiteAnchor.IsHere(at) || string.IsNullOrWhiteSpace(at) && !pointedNow) return StandingSite(w, requester, who);
         var near = requester?.Position.ToBlockPos() ?? w.Player.Position.ToBlockPos();
-        if (Building.SiteAnchor.IsRecentBuild(at) && Building.SiteAnchor.RecentBuild(w.Placed.All(), w.Dimension, near, clock.GetUtcNow(), TimeSpan.FromHours(2)) is { } floor)
-            return (new SitePick(Building.SiteAnchor.Ground(floor), $"on the {floor.Name}", floor), null);
-        if (rt != null && Building.SiteAnchor.OnWhat(at) is { } what && rt.Memory.GetStructure(what) is { Min: { } mn } st)
-        {
-            var mx = st.Max ?? mn;
-            var ext = new Building.SiteExtent(new BlockPos(Math.Min(mn.X, mx.X), Math.Max(mn.Y, mx.Y), Math.Min(mn.Z, mx.Z)),
-                new BlockPos(Math.Max(mn.X, mx.X), Math.Max(mn.Y, mx.Y), Math.Max(mn.Z, mx.Z)), st.Name);
-            return (new SitePick(Building.SiteAnchor.Ground(ext), $"on the {st.Name}", ext), null);
-        }
-        if (at is { Length: > 0 } a)
-        {
-            if (hub != null)
-            {
-                var (focus, player, error) = hub.ResolveFocus(a);
-                if (error != null) return (null, error);
-                return (new SitePick(BlueprintService.Ground(w.PlanningView, player != null ? focus.Down() : focus), $"at {a}"), null);
-            }
-            if (Locations.ParseCoords(a) is { } p) return (new SitePick(BlueprintService.Ground(w.PlanningView, p), $"at {a}"), null);
-            return (null, $"unknown site '{a}' (x,y,z, pointed, a player or a saved place)");
-        }
+        if (StructureSite(w, rt, at, near, clock) is { } on) return (on, null);
+        if (at is { Length: > 0 } a) return NamedSite(w, hub, a);
         // Pointed recently by the requester: build there.
-        if (hub?.LastPoint is { } g && (who == null || g.Player.Equals(who, StringComparison.OrdinalIgnoreCase)) && clock.GetUtcNow() - g.At < TimeSpan.FromMinutes(10))
+        if (PointedBy(hub, who, clock) is { } g)
             return (new SitePick(BlueprintService.Ground(w.PlanningView, g.Pos), $"where {g.Player} pointed", null, Inferred: true), null);
         return (null, "where should it go? (say 'here' where you stand, point at a block, or name a place)");
+    }
+
+    /// <summary>The requester's (or anyone's, without one) point gesture of the last 10 minutes.</summary>
+    private static Perception.Gesture? PointedBy(VisionHub? hub, string? who, TimeProvider clock) =>
+        hub?.LastPoint is { } lp && (who == null || lp.Player.Equals(who, StringComparison.OrdinalIgnoreCase)) && clock.GetUtcNow() - lp.At < TimeSpan.FromMinutes(10)
+            ? lp : null;
+
+    /// <summary>"here" (or nothing said and nothing pointed): where the requester stands, facing their way.</summary>
+    private static (SitePick?, string?) StandingSite(WorldState w, Entity? requester, string? who)
+    {
+        if (requester == null) return (null, $"where should it go? I can't see {who ?? "you"} (stand there and say 'here', point at a block, or name a place)");
+        var feet = requester.Position.ToBlockPos();
+        var facing = Building.SiteAnchor.Facing(requester.Yaw);
+        return (new SitePick(BlueprintService.Ground(w.PlanningView, feet.Down()), $"where {who} is standing, facing {facing.Name()}", null, Inferred: true), null);
+    }
+
+    /// <summary>"on the floor I just built", or "on the &lt;remembered structure&gt;": its top.</summary>
+    private static SitePick? StructureSite(WorldState w, AgentRuntime? rt, string? at, BlockPos near, TimeProvider clock)
+    {
+        if (Building.SiteAnchor.IsRecentBuild(at) && Building.SiteAnchor.RecentBuild(w.Placed.All(), w.Dimension, near, clock.GetUtcNow(), TimeSpan.FromHours(2)) is { } floor)
+            return new SitePick(Building.SiteAnchor.Ground(floor), $"on the {floor.Name}", floor);
+        if (rt == null || Building.SiteAnchor.OnWhat(at) is not { } what || rt.Memory.GetStructure(what) is not { Min: { } mn } st) return null;
+        var mx = st.Max ?? mn;
+        var ext = new Building.SiteExtent(new BlockPos(Math.Min(mn.X, mx.X), Math.Max(mn.Y, mx.Y), Math.Min(mn.Z, mx.Z)),
+            new BlockPos(Math.Max(mn.X, mx.X), Math.Max(mn.Y, mx.Y), Math.Max(mn.Z, mx.Z)), st.Name);
+        return new SitePick(Building.SiteAnchor.Ground(ext), $"on the {st.Name}", ext);
+    }
+
+    /// <summary>A named site: what vision resolves (a player, a saved place, pointed), else bare coordinates.</summary>
+    private static (SitePick?, string?) NamedSite(WorldState w, VisionHub? hub, string a)
+    {
+        if (hub != null)
+        {
+            var (focus, player, error) = hub.ResolveFocus(a);
+            if (error != null) return (null, error);
+            return (new SitePick(BlueprintService.Ground(w.PlanningView, player != null ? focus.Down() : focus), $"at {a}"), null);
+        }
+        if (Locations.ParseCoords(a) is { } p) return (new SitePick(BlueprintService.Ground(w.PlanningView, p), $"at {a}"), null);
+        return (null, $"unknown site '{a}' (x,y,z, pointed, a player or a saved place)");
     }
 
     /// <summary>

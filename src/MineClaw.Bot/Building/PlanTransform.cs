@@ -43,20 +43,31 @@ public static class PlanTransform
     }
 
     /// <summary>A directional meta mirrored across the main axis (<paramref name="axis"/> 'x': north↔south; 'z': east↔west).</summary>
-    public static int Mirror(int id, int meta, char axis)
+    public static int Mirror(int id, int meta, char axis) => BuildBlocks.KindOf(id) switch
     {
-        Dir M(Dir d) => axis == 'x' ? d switch { Dir.North => Dir.South, Dir.South => Dir.North, _ => d } : d switch { Dir.East => Dir.West, Dir.West => Dir.East, _ => d };
-        switch (BuildBlocks.KindOf(id))
-        {
-            case BuildKind.Stairs: return BuildBlocks.StairsMeta(M(BuildBlocks.StairsAscend(meta)));
-            case BuildKind.Door: return BuildBlocks.DoorFacingMeta(M(BuildBlocks.DoorPlacerFacing(meta))) | (meta & 8) | ((meta & 4) ^ ((meta & 8) == 0 ? 4 : 0));
-        }
-        if (id == Blocks.Ladder && meta is >= 2 and <= 5) return BuildBlocks.LadderMeta(M(((Dir[])[Dir.South, Dir.North, Dir.East, Dir.West])[meta - 2]));
-        if (id is Blocks.Chest or Blocks.Furnace or Blocks.Dispenser && meta is >= 2 and <= 5)
-            return BuildBlocks.FrontMeta(M(((Dir[])[Dir.North, Dir.South, Dir.West, Dir.East])[meta - 2]));
-        if (id == Blocks.FenceGate) return BuildBlocks.GateMeta(M(((Dir[])[Dir.South, Dir.West, Dir.North, Dir.East])[meta & 3])) | (meta & 4);
-        if (id == Blocks.Torch) return axis == 'x' ? meta switch { 3 => 4, 4 => 3, _ => meta } : meta switch { 1 => 2, 2 => 1, _ => meta };
+        BuildKind.Stairs => BuildBlocks.StairsMeta(Flip(BuildBlocks.StairsAscend(meta), axis)),
+        // The hinge flips with the facing (a lower half's hinge bit toggles; an upper half keeps its own).
+        BuildKind.Door => BuildBlocks.DoorFacingMeta(Flip(BuildBlocks.DoorPlacerFacing(meta), axis)) | (meta & 8) | ((meta & 4) ^ ((meta & 8) == 0 ? 4 : 0)),
         // Every other design block: the design rules (axis 'x' here flips north↔south, the design rules' 'z').
-        return DesignFacing.Mirror(id, meta, axis == 'x' ? 'z' : 'x');
+        _ => MirrorBuilt(id, meta, axis) ?? DesignFacing.Mirror(id, meta, axis == 'x' ? 'z' : 'x'),
+    };
+
+    /// <summary>The builder's own directional blocks: ladders, chests/furnaces/dispensers, gates, torches (null = none of them).</summary>
+    private static int? MirrorBuilt(int id, int meta, char axis)
+    {
+        if (id == Blocks.Ladder && meta is >= 2 and <= 5) return BuildBlocks.LadderMeta(Flip(BuildBlocks.LadderWalls[meta - 2], axis));
+        if (BuildBlocks.IsFronted(id) && meta is >= 2 and <= 5) return BuildBlocks.FrontMeta(Flip(BuildBlocks.FrontSides[meta - 2], axis));
+        if (id == Blocks.FenceGate) return BuildBlocks.GateMeta(Flip(BuildBlocks.GateWays[meta & 3], axis)) | (meta & 4);
+        if (id == Blocks.Torch) return MirrorTorch(meta, axis);
+        return null;
     }
+
+    /// <summary>A torch's wall (1 west, 2 east, 3 north, 4 south) mirrored.</summary>
+    private static int MirrorTorch(int meta, char axis) =>
+        axis == 'x' ? meta switch { 3 => 4, 4 => 3, _ => meta } : meta switch { 1 => 2, 2 => 1, _ => meta };
+
+    /// <summary>A direction across the axis ('x': north↔south; else east↔west).</summary>
+    private static Dir Flip(Dir d, char axis) => axis == 'x'
+        ? d switch { Dir.North => Dir.South, Dir.South => Dir.North, _ => d }
+        : d switch { Dir.East => Dir.West, Dir.West => Dir.East, _ => d };
 }
