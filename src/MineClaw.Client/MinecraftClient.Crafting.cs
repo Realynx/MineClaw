@@ -36,6 +36,26 @@ public sealed partial class MinecraftClient
         string target = ItemName(itemId, Math.Max(damage, 0));
         if (Recipes.ForOutput(itemId, damage).Count == 0) return ActionResult.Fail($"{target} has no crafting recipe");
 
+        var (plan, unplanned) = await PlanCraftAsync(itemId, damage, count, target, ct).ConfigureAwait(false);
+        if (unplanned is not null) return unplanned;
+        int? variant = damage < 0 ? null : damage;
+        if (plan.Steps.Count == 0) return ActionResult.Success($"already have {World.Inventory.CountItem(itemId, variant)} {target}");
+        if (CraftTableRefusal(plan, target, out var table) is { } noTable) return ActionResult.Fail(noTable);
+
+        int resyncsBefore = Volatile.Read(ref _windowResyncs);
+        int before = World.Inventory.CountItem(itemId, variant);
+        if (await RunCraftStepsAsync(plan, table, ct).ConfigureAwait(false) is { } stopped) return stopped;
+        string synced = await ConfirmCraftAfterResyncAsync(resyncsBefore, ct).ConfigureAwait(false);
+        int have = World.Inventory.CountItem(itemId, variant);
+        int made = have - before;
+        if (made <= 0) return ActionResult.Fail($"crafting {target} produced nothing (have {have}{synced})");
+        return ActionResult.Success($"crafted {made} {target} (have {World.Inventory.CountItem(itemId, variant)}{synced})", made);
+    }
+
+    /// <summary>The craft's plan (planned again on the server's contents when a probe finds a desync), or the failure that ends it:
+    /// smelting needed first, or what is missing.</summary>
+    private async Task<(CraftPlan Plan, ActionResult? Fail)> PlanCraftAsync(int itemId, int damage, int count, string target, CancellationToken ct)
+    {
         var opts = new PlannerOptions { AllowSmelting = false, HasCraftingTable = true };
         // Crafting makes new ones: the carried target never stands in for the craft (live 10-28: "already have 1 stone
         // pickaxe" for a pickaxe at 1/131, so no replacement was ever made).
@@ -46,46 +66,40 @@ public sealed partial class MinecraftClient
             Log("craft: inventory resynced before giving up on missing materials");
             plan = RecipePlanner.Plan(itemId, count, PlannerStacks(itemId, damage), damage, opts);
         }
-        if (!plan.Complete)
-        {
-            var withSmelt = RecipePlanner.Plan(itemId, count, PlannerStacks(itemId, damage), damage, opts with { AllowSmelting = true });
-            if (withSmelt.Complete)
-                return ActionResult.Fail($"need smelting first: {string.Join("; ", withSmelt.Steps.Where(s => s.IsSmelt))}");
-            return ActionResult.Fail($"missing {string.Join(", ", plan.Missing)} for {count} {target}");
-        }
-        if (plan.Steps.Count == 0) return ActionResult.Success($"already have {World.Inventory.CountItem(itemId, damage < 0 ? null : damage)} {target}");
+        if (plan.Complete) return (plan, null);
+        var withSmelt = RecipePlanner.Plan(itemId, count, PlannerStacks(itemId, damage), damage, opts with { AllowSmelting = true });
+        if (withSmelt.Complete)
+            return (plan, ActionResult.Fail($"need smelting first: {string.Join("; ", withSmelt.Steps.Where(s => s.IsSmelt))}"));
+        return (plan, ActionResult.Fail($"missing {string.Join(", ", plan.Missing)} for {count} {target}"));
+    }
 
-        BlockPos? table = null;
-        if (plan.Steps.Any(s => s.RequiresCraftingTable))
-        {
-            table = World.FindNearestBlock(World.Player.Position, StationSearchRadius, Blocks.Workbench)?.Pos;
-            if (table is null)
-                return ActionResult.Fail(World.Inventory.CountItem(Blocks.Workbench) > 0
-                    ? $"{target} needs a crafting table: place the one I carry first"
-                    : $"{target} needs a crafting table and none is within {StationSearchRadius:0} blocks");
-        }
+    /// <summary>The crafting table a plan needs (null when none of its steps does), or why there is none in reach.</summary>
+    private string? CraftTableRefusal(CraftPlan plan, string target, out BlockPos? table)
+    {
+        table = null;
+        if (!plan.Steps.Any(s => s.RequiresCraftingTable)) return null;
+        table = World.FindNearestBlock(World.Player.Position, StationSearchRadius, Blocks.Workbench)?.Pos;
+        if (table is not null) return null;
+        return World.Inventory.CountItem(Blocks.Workbench) > 0
+            ? $"{target} needs a crafting table: place the one I carry first"
+            : $"{target} needs a crafting table and none is within {StationSearchRadius:0} blocks";
+    }
 
-        int resyncsBefore = Volatile.Read(ref _windowResyncs);
-        int before = World.Inventory.CountItem(itemId, damage < 0 ? null : damage);
+    /// <summary>Crafts every step of the plan in its window (the table opened for 3×3 steps, a foreign window closed for 2×2 ones),
+    /// then closes the window while the session lives: null when all went through, else the failure.</summary>
+    private async Task<ActionResult?> RunCraftStepsAsync(CraftPlan plan, BlockPos? table, CancellationToken ct)
+    {
         try
         {
             foreach (var step in plan.Steps)
             {
                 var recipe = step.Recipe!;
-                var open = World.Inventory.OpenWindow;
-                if (recipe.RequiresCraftingTable && open?.Type != WindowType.Workbench)
-                {
-                    var o = await OpenCoreAsync(table!.Value, ct).ConfigureAwait(false);
-                    if (!o.Ok) return ActionResult.Fail($"couldn't open crafting table: {o.Message}");
-                }
-                else if (!recipe.RequiresCraftingTable && open is not null && open.Type != WindowType.Workbench)
-                {
-                    await EnsureNoWindowAsync(ct).ConfigureAwait(false);
-                }
+                if (await PrepareCraftWindowAsync(recipe, table, ct).ConfigureAwait(false) is { } noWindow) return noWindow;
                 var w = World.Inventory.ActiveWindow;
                 var r = await CraftRecipeAsync(w, recipe, step.Times, ct).ConfigureAwait(false);
                 if (!r.Ok) return r;
             }
+            return null;
         }
         finally
         {
@@ -95,18 +109,32 @@ public sealed partial class MinecraftClient
                 catch (Exception ex) { Log($"cleanup after craft failed: {ex.Message}"); }
             }
         }
-        string synced = "";
-        if (Volatile.Read(ref _windowResyncs) != resyncsBefore)
+    }
+
+    /// <summary>Opens the crafting table for a 3×3 recipe (unless it is open), or closes a foreign window for a 2×2 one: null, or
+    /// the failure to open the table.</summary>
+    private async Task<ActionResult?> PrepareCraftWindowAsync(Recipe recipe, BlockPos? table, CancellationToken ct)
+    {
+        var open = World.Inventory.OpenWindow;
+        if (recipe.RequiresCraftingTable && open?.Type != WindowType.Workbench)
         {
-            // The model was replaced by the server's during this craft: confirm the end state too, so the count reported
-            // is the server's (no phantom "+N" from a prediction the server never made).
-            if (_session is { Ended: false }) await ProbeCoreAsync(ct).ConfigureAwait(false);
-            synced = ", server-confirmed after a resync";
+            var o = await OpenCoreAsync(table!.Value, ct).ConfigureAwait(false);
+            if (!o.Ok) return ActionResult.Fail($"couldn't open crafting table: {o.Message}");
         }
-        int have = World.Inventory.CountItem(itemId, damage < 0 ? null : damage);
-        int made = have - before;
-        if (made <= 0) return ActionResult.Fail($"crafting {target} produced nothing (have {have}{synced})");
-        return ActionResult.Success($"crafted {made} {target} (have {World.Inventory.CountItem(itemId, damage < 0 ? null : damage)}{synced})", made);
+        else if (!recipe.RequiresCraftingTable && open is not null && open.Type != WindowType.Workbench)
+        {
+            await EnsureNoWindowAsync(ct).ConfigureAwait(false);
+        }
+        return null;
+    }
+
+    /// <summary>After a craft during which the model was replaced by the server's, the end state is probed too, so the count
+    /// reported is the server's (no phantom "+N" from a prediction the server never made): the note for the result, or "".</summary>
+    private async Task<string> ConfirmCraftAfterResyncAsync(int resyncsBefore, CancellationToken ct)
+    {
+        if (Volatile.Read(ref _windowResyncs) == resyncsBefore) return "";
+        if (_session is { Ended: false }) await ProbeCoreAsync(ct).ConfigureAwait(false);
+        return ", server-confirmed after a resync";
     }
 
     private List<ItemStack> PlannerStacks() => World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList();

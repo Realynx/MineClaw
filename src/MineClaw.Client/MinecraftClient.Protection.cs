@@ -80,13 +80,17 @@ public sealed partial class MinecraftClient
     private const int QuartzOre = 153;
 
     /// <summary>Blocks that are a resource wherever they are (nobody builds floors from ore or gravel).</summary>
-    public static bool NaturalResource(int id, int dimension) => id switch
-    {
-        Blocks.CoalOre or Blocks.IronOre or Blocks.GoldOre or Blocks.DiamondOre or Blocks.LapisOre or Blocks.RedstoneOre or Blocks.LitRedstoneOre
-            or EmeraldOre or Blocks.Gravel or Blocks.Sand or Blocks.Clay or Blocks.Leaves or Trees.Wood.Leaves2 => true,
-        QuartzOre or Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone => dimension == -1,
-        _ => false,
-    };
+    public static bool NaturalResource(int id, int dimension) =>
+        AnywhereResources.Contains(id) || dimension == -1 && NetherResources.Contains(id);
+
+    private static readonly HashSet<int> AnywhereResources =
+    [
+        Blocks.CoalOre, Blocks.IronOre, Blocks.GoldOre, Blocks.DiamondOre, Blocks.LapisOre, Blocks.RedstoneOre, Blocks.LitRedstoneOre,
+        EmeraldOre, Blocks.Gravel, Blocks.Sand, Blocks.Clay, Blocks.Leaves, Trees.Wood.Leaves2,
+    ];
+
+    /// <summary>Resources only in the Nether (elsewhere they were brought and placed).</summary>
+    private static readonly HashSet<int> NetherResources = [QuartzOre, Blocks.Netherrack, Blocks.SoulSand, Blocks.Glowstone];
 
     /// <summary>Wild plants are resources for mining/mowing, not placed structures. Includes tall grass and ferns,
     /// dead bush, dandelion, poppy and the 1.12.2 flowers (same id), and

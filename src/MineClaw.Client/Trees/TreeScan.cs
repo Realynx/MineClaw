@@ -53,15 +53,17 @@ public static class TreeScan
     };
 
     /// <summary>"oak" / "birch" / "spruce" (also "pine", "fir") / "jungle" / "acacia" / "dark oak" → species (= sapling damage), else null.</summary>
-    public static int? ParseWood(string? s) => s?.Trim().ToLowerInvariant() switch
+    public static int? ParseWood(string? s) =>
+        s?.Trim().ToLowerInvariant() is { } key && WoodNames.TryGetValue(key, out int wood) ? wood : null;
+
+    private static readonly Dictionary<string, int> WoodNames = new(StringComparer.Ordinal)
     {
-        "oak" or "oak tree" => 0,
-        "spruce" or "pine" or "fir" or "spruce tree" or "pine tree" => 1,
-        "birch" or "birch tree" => 2,
-        "jungle" or "jungle tree" => 3,
-        "acacia" or "acacia tree" => 4,
-        "dark oak" or "darkoak" or "dark_oak" or "roofed oak" or "dark oak tree" => 5,
-        _ => null,
+        ["oak"] = 0, ["oak tree"] = 0,
+        ["spruce"] = 1, ["pine"] = 1, ["fir"] = 1, ["spruce tree"] = 1, ["pine tree"] = 1,
+        ["birch"] = 2, ["birch tree"] = 2,
+        ["jungle"] = 3, ["jungle tree"] = 3,
+        ["acacia"] = 4, ["acacia tree"] = 4,
+        ["dark oak"] = 5, ["darkoak"] = 5, ["dark_oak"] = 5, ["roofed oak"] = 5, ["dark oak tree"] = 5,
     };
 
     private static readonly BlockPos[] Six =

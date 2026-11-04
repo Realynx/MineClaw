@@ -56,40 +56,17 @@ public sealed partial class MinecraftClient
     private async Task<ActionResult> PlaceAgainstCoreAsync(BlockPos target, BlockFace face, int itemId, int? damage, float? yaw, bool allowHidden,
         CancellationToken c, PlaceHalf half = PlaceHalf.Auto, (float X, float Y, float Z)? cursor = null)
         {
-            if (Options.Profile.Data.HalvesFollowCursor && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && !PlaceCursor.FaceAllows(face, half))
-                return ActionResult.Fail($"a {(half == PlaceHalf.Top ? "top" : "bottom")} {ItemName(itemId, damage ?? 0)} can't be placed by clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(target - face.Normal())}");
-            if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
-            if (!World.IsLoaded(target.X, target.Z)) return ActionResult.Fail($"{Fmt(target)} is not loaded");
-            // The box-in reflex and builds never wall a stair step or a mine room shut (live 10-30 01:44 "stop filling it in").
-            if (World.KeepAir.Refusal(target, World.Dimension, itemId) is { } keep) return ActionResult.Fail(keep);
-            int existing = World.GetBlock(target);
-            if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(target)} is occupied by {BlockName(existing, World.GetMeta(target))}");
-            if (EditBlocked(target)) return ActionResult.Fail(BlockedReason(target));
+            if (PlaceTargetRefusal(target, face, itemId, damage, half) is { } refusal) return ActionResult.Fail(refusal);
             var n = face.Normal();
             var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
-            int aid = World.GetBlock(against);
-            if (aid == 0 || BlockShapes.IsLiquid(aid) || !BlockShapes.HasCollision(World, against.X, against.Y, against.Z))
-                return ActionResult.Fail($"nothing solid at {Fmt(against)} to place against");
-            if (Blocks.Get(aid).Interactable) return ActionResult.Fail($"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block");
+            if (PlaceSupportRefusal(against) is { } unsupported) return ActionResult.Fail(unsupported);
             await EnsureNoWindowAsync(c).ConfigureAwait(false);
             bool sneakBefore = _idleSneak;
             _idleSneak = _waterHold is null; // sneak on land (edge clamping); in a column the hover steers
             try
             {
-                var eye = World.Player.EyePosition;
-                Vec3d point;
-                float aimYaw, aimPitch;
-                if (FaceAim.Find(World, eye, against, face, Options.Reach) is { } seen) (point, aimYaw, aimPitch) = (seen.Point, seen.Yaw, seen.Pitch);
-                else
-                {
-                    point = FaceAim.FaceCenter(World, against, face);
-                    if (!allowHidden) return ActionResult.Fail($"the {face.ToString().ToLowerInvariant()} face of {Fmt(against)} isn't in view from {Fmt(World.Player.Position)}");
-                    // Server: feet within 8 of the clicked block's centre; client: our own eye reach to the face.
-                    if (eye.DistanceTo(point) > Options.Reach + 0.3 || World.Player.Position.DistanceTo(against.Center) >= 8)
-                        return ActionResult.Fail($"the face of {Fmt(against)} is {eye.DistanceTo(point):0.0} from my eyes (reach {Options.Reach:0.#})");
-                    (aimYaw, aimPitch) = PlayerPhysics.YawPitchTo(eye, point);
-                    Log($"place: clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(against)} unseen for {Fmt(target)}");
-                }
+                if (!PlaceAgainstAim(target, against, face, allowHidden, out var point, out var aimYaw, out var aimPitch, out var unseen))
+                    return ActionResult.Fail(unseen!);
                 if (await SelectItemAsync(itemId, damage, c).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId)}");
                 await LookCoreAsync(yaw ?? aimYaw, aimPitch, c).ConfigureAwait(false);
                 if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(target.X, target.Y, target.Z)) || FallingIntoCell(target))
@@ -102,8 +79,8 @@ public sealed partial class MinecraftClient
                 if (yaw is { } want) SendLookNow(want, aimPitch);
                 Send(new PlayerBlockPlacementPacket
                 {
-                    X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(), Cursor = cursor ?? CursorFor(against, face, point,
-                        half == PlaceHalf.Auto && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && face != BlockFace.Bottom ? PlaceHalf.Bottom : half),
+                    X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(),
+                    Cursor = PlacementCursor(itemId, against, face, point, half, cursor),
                 });
                 Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
                 if (!await WaitUntilAsync(() => !Aiming.IsReplaceable(World, World.GetBlock(target)), TimeSpan.FromMilliseconds(1500), c).ConfigureAwait(false))
@@ -117,6 +94,62 @@ public sealed partial class MinecraftClient
             }
             finally { _idleSneak = sneakBefore; }
         }
+
+    /// <summary>Why <paramref name="itemId"/> can't go into <paramref name="target"/> at all (a half the clicked face can't give, none
+    /// held, unloaded, kept air, occupied, protected), or null.</summary>
+    private string? PlaceTargetRefusal(BlockPos target, BlockFace face, int itemId, int? damage, PlaceHalf half)
+    {
+        if (Options.Profile.Data.HalvesFollowCursor && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && !PlaceCursor.FaceAllows(face, half))
+            return $"a {(half == PlaceHalf.Top ? "top" : "bottom")} {ItemName(itemId, damage ?? 0)} can't be placed by clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(target - face.Normal())}";
+        if (World.Inventory.CountItem(itemId, damage) == 0) return $"no {ItemName(itemId, damage ?? 0)} in inventory";
+        if (!World.IsLoaded(target.X, target.Z)) return $"{Fmt(target)} is not loaded";
+        // The box-in reflex and builds never wall a stair step or a mine room shut (live 10-30 01:44 "stop filling it in").
+        if (World.KeepAir.Refusal(target, World.Dimension, itemId) is { } keep) return keep;
+        int existing = World.GetBlock(target);
+        if (!Aiming.IsReplaceable(World, existing)) return $"{Fmt(target)} is occupied by {BlockName(existing, World.GetMeta(target))}";
+        return EditBlocked(target) ? BlockedReason(target) : null;
+    }
+
+    /// <summary>Why the block at <paramref name="against"/> can't take a placement click (nothing solid, or it would open), or null.</summary>
+    private string? PlaceSupportRefusal(BlockPos against)
+    {
+        int aid = World.GetBlock(against);
+        if (aid == 0 || BlockShapes.IsLiquid(aid) || !BlockShapes.HasCollision(World, against.X, against.Y, against.Z))
+            return $"nothing solid at {Fmt(against)} to place against";
+        return Blocks.Get(aid).Interactable ? $"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block" : null;
+    }
+
+    /// <summary>Where and how to look to click <paramref name="face"/> of <paramref name="against"/>: the seen point, or (when
+    /// <paramref name="allowHidden"/>) the face's centre clicked unseen within reach. False with the reason otherwise.</summary>
+    private bool PlaceAgainstAim(BlockPos target, BlockPos against, BlockFace face, bool allowHidden, out Vec3d point, out float yaw, out float pitch,
+        out string? fail)
+    {
+        fail = null;
+        var eye = World.Player.EyePosition;
+        if (FaceAim.Find(World, eye, against, face, Options.Reach) is { } seen)
+        {
+            (point, yaw, pitch) = (seen.Point, seen.Yaw, seen.Pitch);
+            return true;
+        }
+        point = FaceAim.FaceCenter(World, against, face);
+        (yaw, pitch) = (0, 0);
+        if (!allowHidden)
+            fail = $"the {face.ToString().ToLowerInvariant()} face of {Fmt(against)} isn't in view from {Fmt(World.Player.Position)}";
+        // Server: feet within 8 of the clicked block's centre; client: our own eye reach to the face.
+        else if (eye.DistanceTo(point) > Options.Reach + 0.3 || World.Player.Position.DistanceTo(against.Center) >= 8)
+            fail = $"the face of {Fmt(against)} is {eye.DistanceTo(point):0.0} from my eyes (reach {Options.Reach:0.#})";
+        if (fail is not null) return false;
+        (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, point);
+        Log($"place: clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(against)} unseen for {Fmt(target)}");
+        return true;
+    }
+
+    /// <summary>The click's cursor: the exact one asked for, else the half's (an unasked half of a slab or stair is the bottom one,
+    /// except from an underside click) or the aim's.</summary>
+    private static (float X, float Y, float Z) PlacementCursor(int itemId, BlockPos against, BlockFace face, Vec3d point, PlaceHalf half,
+        (float X, float Y, float Z)? cursor) =>
+        cursor ?? CursorFor(against, face, point,
+            half == PlaceHalf.Auto && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && face != BlockFace.Bottom ? PlaceHalf.Bottom : half);
 
     /// <summary>
     /// The placement cursor: the wanted half's (<see cref="PlaceCursor.For"/>) when one is asked for, else where the aim ray hits

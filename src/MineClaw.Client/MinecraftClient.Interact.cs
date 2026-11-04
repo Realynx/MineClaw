@@ -50,10 +50,13 @@ public sealed partial class MinecraftClient
         RunActionAsync("use_on_block", ct, c => UseOnBlockCoreAsync(pos, face, itemId, damage, c));
 
     /// <summary>b1.8.1 items that act through <c>onItemRightClick</c> (server-side raytrace or no target at all).</summary>
-    public static bool UsesRightClickAction(int itemId) =>
-        itemId is Items.Bucket or Items.WaterBucket or Items.LavaBucket or Items.MilkBucket or Items.Bow or Items.Snowball
-            or Items.Egg or Items.FishingRod or Items.Boat or Items.MushroomStew
-        || Items.Food(itemId) is not null;
+    public static bool UsesRightClickAction(int itemId) => RightClickItems.Contains(itemId) || Items.Food(itemId) is not null;
+
+    private static readonly HashSet<int> RightClickItems =
+    [
+        Items.Bucket, Items.WaterBucket, Items.LavaBucket, Items.MilkBucket, Items.Bow, Items.Snowball, Items.Egg, Items.FishingRod,
+        Items.Boat, Items.MushroomStew,
+    ];
 
     private static bool IsHoe(int id) => id is >= Items.WoodenHoe and <= Items.GoldenHoe;
 
@@ -63,48 +66,19 @@ public sealed partial class MinecraftClient
 
     private async Task<ActionResult> UseOnBlockCoreAsync(BlockPos pos, BlockFace face, int itemId, int? damage, CancellationToken ct)
     {
-        if (face == BlockFace.None) return ActionResult.Fail("a face is required");
-        if ((uint)pos.Y >= (uint)World.WorldHeight) return ActionResult.Fail($"{Fmt(pos)} is outside the world");
-        if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
-        if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
+        if (UseOnBlockTargetRefusal(pos, face, itemId, damage) is { } refusal) return ActionResult.Fail(refusal);
         int id = World.GetBlock(pos);
         string name = BlockName(id, World.GetMeta(pos));
-        if (id != 0 && Blocks.Get(id).Interactable)
-            return ActionResult.Fail($"{name} at {Fmt(pos)} would be opened/used instead (b1.8.1 activates the block first)");
-        // A hoe changes only what it tills (mc-dev ItemHoe: grass/dirt; 1.12.2 also grass path): on farmland, water or anything
-        // else it is a harmless no-op, never a protected edit.
-        if ((IsHoe(itemId) && HoeTills(id) || itemId == Items.FlintAndSteel) && IsBlockProtected(pos, id))
-            return ActionResult.Fail(ProtectedRefusal(pos, id));
         var beside = pos.Offset(face);
-        if (itemId == Items.FlintAndSteel)
-        {
-            if (IsBlockProtected(beside, World.GetBlock(beside))) return ActionResult.Fail(ProtectedRefusal(beside, World.GetBlock(beside), $"{Fmt(beside)}"));
-            if (id == Blocks.Tnt || BlockFaceExtensions.All.Any(f => World.GetBlock(beside.Offset(f)) == Blocks.Tnt))
-                return ActionResult.Fail("won't light a fire next to TNT");
-        }
+        if (UseOnBlockSafetyRefusal(pos, beside, itemId, id, name) is { } unsafeUse) return ActionResult.Fail(unsafeUse);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
         bool raytraced = UsesRightClickAction(itemId);
-        var aim = FaceAim.Find(World, World.Player.EyePosition, pos, face, Options.Reach);
-        if (aim is null)
-        {
-            await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
-                .ConfigureAwait(false);
-            aim = FaceAim.Find(World, World.Player.EyePosition, pos, face, Options.Reach);
-        }
-        Vec3d lookAt;
-        if (aim is { } a) lookAt = a.Point;
-        else
-        {
-            // 0x0F names the face itself and the server doesn't raytrace it, so a hidden face in reach is still usable —
-            // except for items the server raytraces from my look (buckets...).
-            var center = FaceAim.FaceCenter(World, pos, face);
-            if (raytraced || World.Player.EyePosition.DistanceTo(center) > Options.Reach)
-                return ActionResult.Fail($"can't see/reach the {face.ToString().ToLowerInvariant()} face of {name} at {Fmt(pos)}");
-            lookAt = center;
-        }
+        if (await UseOnBlockLookPointAsync(pos, face, raytraced, ct).ConfigureAwait(false) is not { } lookAt)
+            return ActionResult.Fail($"can't see/reach the {face.ToString().ToLowerInvariant()} face of {name} at {Fmt(pos)}");
 
-        if (await SelectItemAsync(itemId, damage, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId, damage ?? 0)}");
+        int dmg = damage ?? 0;
+        if (await SelectItemAsync(itemId, damage, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId, dmg)}");
         var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, lookAt);
         await LookCoreAsync(yaw, pitch, ct).ConfigureAwait(false);
 
@@ -122,14 +96,67 @@ public sealed partial class MinecraftClient
         if (raytraced) Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
 
         if (!await WaitUntilAsync(Changed, TimeSpan.FromMilliseconds(1200), ct).ConfigureAwait(false))
-            return ActionResult.Fail($"{ItemName(itemId, damage ?? 0)} on {name} at {Fmt(pos)} had no effect" + SpawnProtectionHint(pos));
+            return ActionResult.Fail($"{ItemName(itemId, dmg)} on {name} at {Fmt(pos)} had no effect" + SpawnProtectionHint(pos));
         await WaitTicksAsync(1, ct).ConfigureAwait(false); // let the paired block change / SetSlot land too
-        string effect = World.GetBlock(pos) != id0 ? $"{name} -> {BlockName(World.GetBlock(pos), World.GetMeta(pos))}"
-            : World.GetMeta(pos) != m0 ? $"{name} meta {m0} -> {World.GetMeta(pos)}"
-            : World.GetBlock(beside) != bid0 || World.GetMeta(beside) != bm0 ? $"{BlockName(World.GetBlock(beside), 0)} at {Fmt(beside)}"
-            : "inventory changed";
-        return ActionResult.Success($"used {ItemName(itemId, damage ?? 0)} on {name} at {Fmt(pos)}: {effect}");
+        return ActionResult.Success($"used {ItemName(itemId, dmg)} on {name} at {Fmt(pos)}: {UseOnBlockEffect(pos, beside, name, id0, m0, bid0, bm0)}");
     }
+
+    /// <summary>Why <paramref name="itemId"/> can't be used on <paramref name="pos"/> at all (no face, outside the world, unloaded,
+    /// none held), or null.</summary>
+    private string? UseOnBlockTargetRefusal(BlockPos pos, BlockFace face, int itemId, int? damage)
+    {
+        if (face == BlockFace.None) return "a face is required";
+        if ((uint)pos.Y >= (uint)World.WorldHeight) return $"{Fmt(pos)} is outside the world";
+        if (!World.IsLoaded(pos.X, pos.Z)) return $"{Fmt(pos)} is not loaded";
+        return World.Inventory.CountItem(itemId, damage) == 0 ? $"no {ItemName(itemId, damage ?? 0)} in inventory" : null;
+    }
+
+    /// <summary>Why using <paramref name="itemId"/> on block <paramref name="id"/> at <paramref name="pos"/> is refused (it would open
+    /// instead, it would till or burn a protected block, a fire next to TNT), or null.</summary>
+    private string? UseOnBlockSafetyRefusal(BlockPos pos, BlockPos beside, int itemId, int id, string name)
+    {
+        if (id != 0 && Blocks.Get(id).Interactable)
+            return $"{name} at {Fmt(pos)} would be opened/used instead (b1.8.1 activates the block first)";
+        // A hoe changes only what it tills (mc-dev ItemHoe: grass/dirt; 1.12.2 also grass path): on farmland, water or anything
+        // else it is a harmless no-op, never a protected edit.
+        if ((IsHoe(itemId) && HoeTills(id) || itemId == Items.FlintAndSteel) && IsBlockProtected(pos, id))
+            return ProtectedRefusal(pos, id);
+        return itemId == Items.FlintAndSteel ? FireRefusal(id, beside) : null;
+    }
+
+    /// <summary>Why a fire can't be lit in <paramref name="beside"/> (protected, or TNT there or next to it), or null.</summary>
+    private string? FireRefusal(int id, BlockPos beside)
+    {
+        if (IsBlockProtected(beside, World.GetBlock(beside))) return ProtectedRefusal(beside, World.GetBlock(beside), $"{Fmt(beside)}");
+        if (id == Blocks.Tnt || BlockFaceExtensions.All.Any(f => World.GetBlock(beside.Offset(f)) == Blocks.Tnt))
+            return "won't light a fire next to TNT";
+        return null;
+    }
+
+    /// <summary>Where to look to use an item on <paramref name="face"/> of <paramref name="pos"/> (pathing into reach when it isn't in
+    /// view): the seen point, or the face's centre when it is in reach and the server doesn't raytrace the item; null otherwise.</summary>
+    private async Task<Vec3d?> UseOnBlockLookPointAsync(BlockPos pos, BlockFace face, bool raytraced, CancellationToken ct)
+    {
+        var aim = FaceAim.Find(World, World.Player.EyePosition, pos, face, Options.Reach);
+        if (aim is null)
+        {
+            await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
+                .ConfigureAwait(false);
+            aim = FaceAim.Find(World, World.Player.EyePosition, pos, face, Options.Reach);
+        }
+        if (aim is { } a) return a.Point;
+        // 0x0F names the face itself and the server doesn't raytrace it, so a hidden face in reach is still usable —
+        // except for items the server raytraces from my look (buckets...).
+        var center = FaceAim.FaceCenter(World, pos, face);
+        return raytraced || World.Player.EyePosition.DistanceTo(center) > Options.Reach ? null : center;
+    }
+
+    /// <summary>What a use on a block did: the block changed, its meta changed, the block beside changed, or the inventory.</summary>
+    private string UseOnBlockEffect(BlockPos pos, BlockPos beside, string name, int id0, int m0, int bid0, int bm0) =>
+        World.GetBlock(pos) != id0 ? $"{name} -> {BlockName(World.GetBlock(pos), World.GetMeta(pos))}"
+        : World.GetMeta(pos) != m0 ? $"{name} meta {m0} -> {World.GetMeta(pos)}"
+        : World.GetBlock(beside) != bid0 || World.GetMeta(beside) != bm0 ? $"{BlockName(World.GetBlock(beside), 0)} at {Fmt(beside)}"
+        : "inventory changed";
 
     private static bool Same(ItemStack a, ItemStack b) =>
         a.IsEmpty ? b.IsEmpty : !b.IsEmpty && a.Id == b.Id && a.Count == b.Count && a.Damage == b.Damage;
@@ -183,54 +210,92 @@ public sealed partial class MinecraftClient
 
     private async Task<ActionResult> UseEntityCoreAsync(int entityId, int? itemId, int? damage, CancellationToken ct)
     {
-        if (entityId == World.Player.EntityId) return ActionResult.Fail("can't use myself");
-        var e = World.Entities.Get(entityId);
-        if (e is null) return ActionResult.Fail($"entity {entityId} isn't around");
-        if (e.Kind == EntityKind.Player) return ActionResult.Fail("right-clicking a player does nothing in b1.8.1");
-        if (e.Kind is EntityKind.Item or EntityKind.XpOrb or EntityKind.Weather) return ActionResult.Fail($"{e.DisplayName} can't be used");
-        if (itemId is { } want && World.Inventory.CountItem(want, damage) == 0) return ActionResult.Fail($"no {ItemName(want, damage ?? 0)}");
+        if (UseEntityRefusal(entityId, itemId, damage) is { } refusal) return ActionResult.Fail(refusal);
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
-
-        for (int attempt = 0; ; attempt++)
-        {
-            e = World.Entities.Get(entityId);
-            if (e is null) return ActionResult.Fail($"lost the entity {entityId}");
-            var eye = World.Player.EyePosition;
-            var c = EntityUsePoint(e);
-            if (eye.DistanceTo(c) <= EntityUseReach && InSight(eye, c)) break;
-            if (attempt >= 2) return ActionResult.Fail($"can't get within reach and sight of {e.DisplayName} at {Fmt(e.Position)}");
-            await GotoCoreAsync(new GoalNearPosition(e.Position, 1.8), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), MaxReplans = 2 }, ct)
-                .ConfigureAwait(false);
-        }
+        var (e, unreachable) = await ApproachToUseAsync(entityId, ct).ConfigureAwait(false);
+        if (unreachable is not null) return ActionResult.Fail(unreachable);
         if (itemId is { } item && await SelectItemAsync(item, damage, ct).ConfigureAwait(false) < 0)
             return ActionResult.Fail($"couldn't hold {ItemName(item, damage ?? 0)}");
-        var target = World.Entities.Get(entityId) ?? e;
+        var target = World.Entities.Get(entityId) ?? e!;
         var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, EntityUsePoint(target));
         await LookCoreAsync(yaw, pitch, ct).ConfigureAwait(false);
 
-        int heldSlot = 36 + World.Player.HeldSlot;
-        var heldBefore = World.Inventory.GetPlayerSlot(heldSlot);
+        var before = new EntityUseBefore(this, entityId, target.Position);
         var held = HeldStack();
-        var metaBefore = World.Entities.Get(entityId)?.Metadata;
-        long statusBefore = _entityStatusSeq.GetValueOrDefault(entityId);
-        int vehicleBefore = _vehicleId;
-        int itemsBefore = World.Entities.Nearby(target.Position, 3, x => x.Kind == EntityKind.Item).Count;
         Send(new UseEntityPacket { UserEntityId = World.Player.EntityId, TargetEntityId = entityId, LeftClick = false });
 
         string? effect = null;
-        bool done = await WaitUntilAsync(() =>
-        {
-            if (_vehicleId != vehicleBefore) effect = _vehicleId == entityId ? "riding it" : "got out";
-            else if (!Same(World.Inventory.GetPlayerSlot(heldSlot), heldBefore)) effect = "inventory changed";
-            else if (_entityStatusSeq.GetValueOrDefault(entityId) != statusBefore) effect = "it reacted";
-            else if (!ReferenceEquals(World.Entities.Get(entityId)?.Metadata, metaBefore)) effect = "its state changed";
-            else if (World.Entities.Nearby(target.Position, 3, x => x.Kind == EntityKind.Item).Count > itemsBefore) effect = "dropped items";
-            return effect is not null;
-        }, TimeSpan.FromMilliseconds(1500), ct).ConfigureAwait(false);
+        bool done = await WaitUntilAsync(() => (effect = before.Effect(this)) is not null, TimeSpan.FromMilliseconds(1500), ct).ConfigureAwait(false);
         string what = held.IsEmpty ? "hand" : ItemName(held.Id, held.Damage);
         return done
             ? ActionResult.Success($"used {what} on {target.DisplayName}: {effect}")
             : ActionResult.Fail($"{what} on {target.DisplayName} had no effect");
+    }
+
+    /// <summary>Why entity <paramref name="entityId"/> can't be right-clicked (myself, gone, a player, an item/orb/bolt, the item
+    /// asked for isn't held), or null.</summary>
+    private string? UseEntityRefusal(int entityId, int? itemId, int? damage)
+    {
+        if (entityId == World.Player.EntityId) return "can't use myself";
+        var e = World.Entities.Get(entityId);
+        if (e is null) return $"entity {entityId} isn't around";
+        if (e.Kind == EntityKind.Player) return "right-clicking a player does nothing in b1.8.1";
+        if (e.Kind is EntityKind.Item or EntityKind.XpOrb or EntityKind.Weather) return $"{e.DisplayName} can't be used";
+        if (itemId is { } want && World.Inventory.CountItem(want, damage) == 0) return $"no {ItemName(want, damage ?? 0)}";
+        return null;
+    }
+
+    /// <summary>Walks (up to twice) until entity <paramref name="entityId"/> is within <see cref="EntityUseReach"/> and in sight:
+    /// the entity as last seen, or the reason it can't be reached.</summary>
+    private async Task<(Entity? Entity, string? Fail)> ApproachToUseAsync(int entityId, CancellationToken ct)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var e = World.Entities.Get(entityId);
+            if (e is null) return (null, $"lost the entity {entityId}");
+            var eye = World.Player.EyePosition;
+            var c = EntityUsePoint(e);
+            if (eye.DistanceTo(c) <= EntityUseReach && InSight(eye, c)) return (e, null);
+            if (attempt >= 2) return (e, $"can't get within reach and sight of {e.DisplayName} at {Fmt(e.Position)}");
+            await GotoCoreAsync(new GoalNearPosition(e.Position, 1.8), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), MaxReplans = 2 }, ct)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>What an entity right-click could change, taken right before it: the answer is the first one that moved.</summary>
+    private sealed class EntityUseBefore
+    {
+        private readonly int _entityId, _heldSlot, _vehicle, _items;
+        private readonly ItemStack _held;
+        private readonly object? _meta;
+        private readonly long _status;
+        private readonly Vec3d _at;
+
+        public EntityUseBefore(MinecraftClient client, int entityId, Vec3d at)
+        {
+            var world = client.World;
+            _entityId = entityId;
+            _at = at;
+            _heldSlot = 36 + world.Player.HeldSlot;
+            _held = world.Inventory.GetPlayerSlot(_heldSlot);
+            _meta = world.Entities.Get(entityId)?.Metadata;
+            _status = client._entityStatusSeq.GetValueOrDefault(entityId);
+            _vehicle = client._vehicleId;
+            _items = ItemsAround(world, at);
+        }
+
+        private static int ItemsAround(WorldState world, Vec3d at) => world.Entities.Nearby(at, 3, x => x.Kind == EntityKind.Item).Count;
+
+        /// <summary>The effect seen so far (riding/got out, inventory, a status, new metadata, dropped items), or null.</summary>
+        public string? Effect(MinecraftClient client)
+        {
+            var world = client.World;
+            if (client._vehicleId != _vehicle) return client._vehicleId == _entityId ? "riding it" : "got out";
+            if (!Same(world.Inventory.GetPlayerSlot(_heldSlot), _held)) return "inventory changed";
+            if (client._entityStatusSeq.GetValueOrDefault(_entityId) != _status) return "it reacted";
+            if (!ReferenceEquals(world.Entities.Get(_entityId)?.Metadata, _meta)) return "its state changed";
+            return ItemsAround(world, _at) > _items ? "dropped items" : null;
+        }
     }
 
     /// <summary>Where to look at an entity to right-click it (a bit above its feet; boats/carts are low).</summary>

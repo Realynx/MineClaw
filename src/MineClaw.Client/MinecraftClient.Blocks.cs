@@ -175,7 +175,10 @@ public sealed partial class MinecraftClient
     /// <summary>Two ids of one block that a dig in progress can turn into each other: soil (grass, dirt, farmland, mycelium, grass
     /// path) and redstone ore (unlit, lit).</summary>
     public static bool SameDigForm(int a, int b) =>
-        a is 2 or 3 or 60 or 110 or 208 && b is 2 or 3 or 60 or 110 or 208 || a is 73 or 74 && b is 73 or 74;
+        DigForms.TryGetValue(a, out int fa) && DigForms.TryGetValue(b, out int fb) && fa == fb;
+
+    /// <summary>Block id → its dig form: 1 soil (grass, dirt, farmland, mycelium, grass path), 2 redstone ore (unlit, lit).</summary>
+    private static readonly Dictionary<int, int> DigForms = new() { [2] = 1, [3] = 1, [60] = 1, [110] = 1, [208] = 1, [73] = 2, [74] = 2 };
 
     /// <param name="face">Click this face of the neighbour at pos − normal(face) (wall-mounted blocks); null = any visible support.</param>
     private async Task<ActionResult> PlaceCoreAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing = true, int? damage = null,
@@ -519,32 +522,52 @@ public sealed partial class MinecraftClient
     private async Task<int> SelectToolForAsync(int blockId, CancellationToken ct, bool noShears = false)
     {
         var slots = World.Inventory.PlayerSlots();
-        var usable = new ItemStack[45];
-        for (int i = 0; i < 45; i++) usable[i] = i >= 9 && !(noShears && slots[i].Id == Items.Shears) ? slots[i] : ItemStack.Empty;
+        var usable = UsableForDigging(slots, noShears);
         int best = Tools.BestToolIndex(blockId, usable);
         // The tool the body was told to hold (Story Mode: the plain pickaxe for stone, the Fortune one for ores) stays in hand when it
         // harvests the block and beats the bare hand.
-        if (PreferHeldTool && best >= 0 && HeldStack() is { IsEmpty: false } h0 && Items.Exists(h0.Id) && Items.Get(h0.Id).Tool is not (ToolType.None or ToolType.Hoe)
-            && (Tools.CanHarvest(blockId, h0.Id) || !Tools.CanHarvest(blockId, usable[best].Id)) && Tools.DigTicks(blockId, h0.Id) < Tools.DigTicks(blockId, -1))
-            return h0.Id;
+        if (PreferHeldTool && best >= 0 && HeldToolServes(blockId, usable[best].Id, out int heldId)) return heldId;
         if (best >= 0)
         {
             var tool = usable[best];
             int hb = await SelectItemAsync(tool.Id, tool.Damage, ct).ConfigureAwait(false);
             return hb >= 0 ? HeldStack().Id : -1;
         }
-        // Bare hand is best: avoid wearing down a tool/sword in hand.
-        var held = HeldStack();
-        if (!held.IsEmpty && (Items.Get(held.Id).MaxDamage > 0 || (noShears && held.Id == Items.Shears)))
-        {
-            for (int i = 0; i < 9; i++)
-            {
-                var s = slots[36 + i];
-                if (s.IsEmpty || Items.Get(s.Id).MaxDamage == 0) { SelectHotbar(i); break; }
-            }
-        }
+        SelectHarmlessSlot(slots, noShears);
         var h = HeldStack();
         return h.IsEmpty ? -1 : h.Id;
+    }
+
+    /// <summary>The window-0 slots a dig may take a tool from: the inventory and hotbar (no armour or crafting slots), without
+    /// shears when <paramref name="noShears"/>.</summary>
+    private static ItemStack[] UsableForDigging(ItemStack[] slots, bool noShears)
+    {
+        var usable = new ItemStack[45];
+        for (int i = 0; i < 45; i++) usable[i] = i >= 9 && !(noShears && slots[i].Id == Items.Shears) ? slots[i] : ItemStack.Empty;
+        return usable;
+    }
+
+    /// <summary>The held tool (not a hoe) harvests <paramref name="blockId"/> whenever the best one does, and digs it faster than the
+    /// bare hand.</summary>
+    private bool HeldToolServes(int blockId, int bestId, out int heldId)
+    {
+        heldId = -1;
+        if (HeldStack() is not { IsEmpty: false } h0 || !Items.Exists(h0.Id) || Items.Get(h0.Id).Tool is ToolType.None or ToolType.Hoe) return false;
+        heldId = h0.Id;
+        return (Tools.CanHarvest(blockId, h0.Id) || !Tools.CanHarvest(blockId, bestId)) && Tools.DigTicks(blockId, h0.Id) < Tools.DigTicks(blockId, -1);
+    }
+
+    /// <summary>Bare hand is best: avoid wearing down a tool/sword in hand (shears too, when they are kept out): the first hotbar
+    /// slot holding nothing that wears.</summary>
+    private void SelectHarmlessSlot(ItemStack[] slots, bool noShears)
+    {
+        var held = HeldStack();
+        if (held.IsEmpty || !(Items.Get(held.Id).MaxDamage > 0 || (noShears && held.Id == Items.Shears))) return;
+        for (int i = 0; i < 9; i++)
+        {
+            var s = slots[36 + i];
+            if (s.IsEmpty || Items.Get(s.Id).MaxDamage == 0) { SelectHotbar(i); break; }
+        }
     }
 
     /// <summary>Hotbar slot to receive a new item: empty, else one not holding a tool, else the last slot.</summary>
@@ -615,31 +638,42 @@ public sealed partial class MinecraftClient
         // the crown leaves clone 67 stood on; it fell 6 blocks to hp 7).
         if (Safety.OtherPlayersSupport(World).Contains(pos))
             return $"won't dig the {name} at {Fmt(pos)}: someone is standing on it";
-        if (SupportBlocks().Contains(pos))
-        {
-            // Mining down my own pillar (a block a hive bot placed) is a 1-block step onto the next solid block: fine.
-            // Leaves, a longer drop or the void below never are (hard safety), and ground I didn't build stays a floor.
-            int under = World.GetBlock(pos);
-            // Mine: the protection policy's record, or this body's own placement log (a pillar it just put up: Story Mode's nerd-pole).
-            bool mine = OverridesSoft(pos, under)
-                        || World.Placed.Get(pos, World.Dimension) is { } placed && placed.Bot == Options.Username && World.Placed.IsPlaced(pos, World.Dimension, under);
-            bool shortStep = !Trees.Wood.IsLeaves(under) && mine && !NextToLava(pos)
-                             && Safety.RemovalIsShortSafeDrop(World, World.Player.Position, pos);
-            if (!shortStep)
-                return $"won't dig the {name} I'm standing on at {Fmt(pos)}" + (WouldDropIntoVoid(pos) ? " (it's all that holds me over the void)"
-                    : Trees.Wood.IsLeaves(World.GetBlock(pos)) ? " (leaves up high: I'd fall)" : " (the drop below is too far)");
-        }
+        if (StandingDigVeto(pos, name) is { } standing) return standing;
         if (WouldDropIntoVoid(pos)) return $"won't dig {name} at {Fmt(pos)}: it's the last block between me and the void";
-        if (LavaCouldFlowInto(pos))
-        {
-            // Lava that flows into a cell touching water hardens straight back into cobble/stone: that is how every
-            // cobble generator works, so treat such a cell like a generator cell and only refuse if lava could reach me.
-            // Only where stone comes from a generator (skyblock): in a normal world that's a cave pool, not a gen.
-            generator |= MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && NextToWater(pos);
-            if (!generator) return $"won't dig {name} at {Fmt(pos)}: lava next to it would flow out";
-            // A player taught this stand spot for this cell (demo): trust it over the lava-distance rule.
-            if (positioned && LavaPathToMe(pos) && !OnTrustedStand(pos)) return $"won't dig {name} at {Fmt(pos)} from here: released lava could reach me";
-        }
+        return LavaDigVeto(pos, name, generator, positioned);
+    }
+
+    /// <summary>Why the block I stand on at <paramref name="pos"/> can't be dug, or null (not a support, or a 1-block step down my own
+    /// pillar).</summary>
+    private string? StandingDigVeto(BlockPos pos, string name)
+    {
+        if (!SupportBlocks().Contains(pos)) return null;
+        // Mining down my own pillar (a block a hive bot placed) is a 1-block step onto the next solid block: fine.
+        // Leaves, a longer drop or the void below never are (hard safety), and ground I didn't build stays a floor.
+        int under = World.GetBlock(pos);
+        bool shortStep = !Trees.Wood.IsLeaves(under) && MyOwnStand(pos, under) && !NextToLava(pos)
+                         && Safety.RemovalIsShortSafeDrop(World, World.Player.Position, pos);
+        if (shortStep) return null;
+        return $"won't dig the {name} I'm standing on at {Fmt(pos)}" + (WouldDropIntoVoid(pos) ? " (it's all that holds me over the void)"
+            : Trees.Wood.IsLeaves(World.GetBlock(pos)) ? " (leaves up high: I'd fall)" : " (the drop below is too far)");
+    }
+
+    /// <summary>Mine: the protection policy's record, or this body's own placement log (a pillar it just put up: Story Mode's nerd-pole).</summary>
+    private bool MyOwnStand(BlockPos pos, int under) =>
+        OverridesSoft(pos, under)
+        || World.Placed.Get(pos, World.Dimension) is { } placed && placed.Bot == Options.Username && World.Placed.IsPlaced(pos, World.Dimension, under);
+
+    /// <summary>Why lava beside <paramref name="pos"/> forbids the dig, or null.</summary>
+    private string? LavaDigVeto(BlockPos pos, string name, bool generator, bool positioned)
+    {
+        if (!LavaCouldFlowInto(pos)) return null;
+        // Lava that flows into a cell touching water hardens straight back into cobble/stone: that is how every
+        // cobble generator works, so treat such a cell like a generator cell and only refuse if lava could reach me.
+        // Only where stone comes from a generator (skyblock): in a normal world that's a cave pool, not a gen.
+        generator |= MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && NextToWater(pos);
+        if (!generator) return $"won't dig {name} at {Fmt(pos)}: lava next to it would flow out";
+        // A player taught this stand spot for this cell (demo): trust it over the lava-distance rule.
+        if (positioned && LavaPathToMe(pos) && !OnTrustedStand(pos)) return $"won't dig {name} at {Fmt(pos)} from here: released lava could reach me";
         return null;
     }
 

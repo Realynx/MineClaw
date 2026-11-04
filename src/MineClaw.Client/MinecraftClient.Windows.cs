@@ -528,9 +528,15 @@ public sealed partial class MinecraftClient
         var info = Items.Get(s.Id);
         if (info.MaxDamage > 0 || info.Tool != ToolType.None) return false;
         if (Items.Food(s.Id) is not null) return false;
-        return s.Id is not (Blocks.Sapling or Items.Bucket or Items.WaterBucket or Items.LavaBucket or Items.MilkBucket
-            or Blocks.Torch or Items.Seeds or Items.PumpkinSeeds or Items.MelonSeeds);
+        return !KeptFromDeposits.Contains(s.Id);
     }
+
+    /// <summary>Items the default deposit keeps besides tools, armour and food: saplings, buckets, torches, seeds.</summary>
+    private static readonly HashSet<int> KeptFromDeposits =
+    [
+        Blocks.Sapling, Items.Bucket, Items.WaterBucket, Items.LavaBucket, Items.MilkBucket, Blocks.Torch, Items.Seeds, Items.PumpkinSeeds,
+        Items.MelonSeeds,
+    ];
 
     private Dictionary<(int, int), int> InventoryCounts()
     {

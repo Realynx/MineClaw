@@ -133,56 +133,7 @@ public sealed partial class MinecraftClient
             return await RunActionAsync("shelter", ct, async c =>
             {
                 feet = FeetCell();
-                int need = BlocksToBoxIn(feet), have = ShelterBlocksTotal();
-                if (have < need || have == 0 && need > 0)
-                    return ActionResult.Fail(have == 0 ? "no blocks to box myself in with" : $"only {have} block(s) for a box that takes {need}: not starting one");
-                for (int pass = 0; pass < 3 && !Shelter.Enclosed(World, feet); pass++)
-                {
-                    foreach (var p in Shelter.Plan(World, feet))
-                    {
-                        var (id, n) = ShelterBlock();
-                        if (n == 0) break;
-                        if (!Aiming.IsReplaceable(World, World.GetBlock(p.Target))) continue;
-                        var r = await PlaceAgainstCoreAsync(p.Target, p.Face, id, null, null, allowHidden: true, c).ConfigureAwait(false);
-                        if (r.Ok) { placed.Add(p.Target); RememberTemporaryBlock(p.Target); }
-                        else Log($"survival: shelter block at {Fmt(p.Target)}: {r.Message}");
-                    }
-                }
-                var mobs = World.Entities.Nearby(World.Player.Position, 12, CombatRules.IsThreat);
-                bool closed = Shelter.Enclosed(World, feet);
-                if (placed.Count == 0 && !closed)
-                    return ActionResult.Fail(ShelterBlocksTotal() == 0 ? "no blocks to box myself in with" : $"couldn't box myself in at {Fmt(feet)}");
-                if (!closed && ShelterBlocksTotal() == 0)
-                {
-                    // Ran out part way (a placement failed, a block went to something else): no cover, so take the stub back down.
-                    var back = await ClearShelterAsync(feet, placed, c).ConfigureAwait(false);
-                    return ActionResult.Fail($"ran out of blocks boxing in at {Fmt(feet)} ({Shelter.Open(World, feet).Count} side(s) open){back}");
-                }
-                var line = $"boxed myself in at {Fmt(feet)}: {MobCount(mobs)}, hp {World.Player.Health}; waiting it out"
-                           + (closed ? "" : $" ({Shelter.Open(World, feet).Count} side(s) still open)");
-                Log("survival: " + line + $" ({why})");
-                Raise(() => CombatEventRaised?.Invoke(new CombatEvent(CombatEventKind.Critical, line)));
-                try { boxed?.Invoke(line); } catch (Exception) { }
-
-                var o = Options.Survival;
-                var until = DateTime.UtcNow + TimeSpan.FromMinutes(Math.Max(0.05, o.ShelterMaxMinutes));
-                while (DateTime.UtcNow < until)
-                {
-                    var p = World.Player;
-                    if (SurvivalReflex.EatNow(World.Inventory.PlayerSlots(), EatReserved(p.Health), p.Health, p.Food, o) is { } meal)
-                    {
-                        var eat = await UseCoreAsync(meal.ItemId, c).ConfigureAwait(false);
-                        if (eat.Ok) Interlocked.Increment(ref _autoMeals);
-                    }
-                    bool quiet = NearestThreat(p.Position, 16) is null || !World.IsNight;
-                    if (p.Health >= o.ShelterUntilHealth && quiet || Brave) break; // brave: the brain called it off
-                    await Task.Delay(500, c).ConfigureAwait(false);
-                }
-                // Safe now: the whole box comes down. Timed out with mobs still about: only the way out opens (taking it all down would
-                // only box in again), and the rest is cleared once the body is idle by it and nothing can get at it.
-                bool safe = NearestThreat(World.Player.Position, 16) is null || Brave;
-                var open = safe ? await ClearShelterAsync(feet, placed, c).ConfigureAwait(false) : await OpenShelterAsync(feet, placed, c).ConfigureAwait(false);
-                return ActionResult.Success($"waited it out boxed in at {Fmt(feet)} (hp {World.Player.Health}){open}");
+                return await ShelterHereAsync(feet, placed, why, boxed, c).ConfigureAwait(false);
             }).ConfigureAwait(false);
         }
         finally
@@ -196,6 +147,91 @@ public sealed partial class MinecraftClient
             }
             Combat.Sheltering = false;
             Volatile.Write(ref _sheltering, 0);
+        }
+    }
+
+    /// <summary>The shelter under the action lock: box in at <paramref name="feet"/> (every block placed goes into
+    /// <paramref name="placed"/>), wait it out, then take the box down (safe) or open the way out (mobs still about).</summary>
+    private async Task<ActionResult> ShelterHereAsync(BlockPos feet, List<BlockPos> placed, string why, Action<string>? boxed, CancellationToken c)
+    {
+        if (ShelterStartRefusal(feet) is { } refusal) return ActionResult.Fail(refusal);
+        await BuildShelterBoxAsync(feet, placed, c).ConfigureAwait(false);
+        var mobs = World.Entities.Nearby(World.Player.Position, 12, CombatRules.IsThreat);
+        bool closed = Shelter.Enclosed(World, feet);
+        if (await ShelterFailedAsync(feet, placed, closed, c).ConfigureAwait(false) is { } failed) return failed;
+        AnnounceBoxedIn(feet, mobs, closed, why, boxed);
+        await WaitOutShelterAsync(c).ConfigureAwait(false);
+        // Safe now: the whole box comes down. Timed out with mobs still about: only the way out opens (taking it all down would
+        // only box in again), and the rest is cleared once the body is idle by it and nothing can get at it.
+        bool safe = NearestThreat(World.Player.Position, 16) is null || Brave;
+        var open = safe ? await ClearShelterAsync(feet, placed, c).ConfigureAwait(false) : await OpenShelterAsync(feet, placed, c).ConfigureAwait(false);
+        return ActionResult.Success($"waited it out boxed in at {Fmt(feet)} (hp {World.Player.Health}){open}");
+    }
+
+    /// <summary>Why no box is started at <paramref name="feet"/> (no blocks, or too few for the whole box), or null.</summary>
+    private string? ShelterStartRefusal(BlockPos feet)
+    {
+        int need = BlocksToBoxIn(feet), have = ShelterBlocksTotal();
+        if (have >= need && !(have == 0 && need > 0)) return null;
+        return have == 0 ? "no blocks to box myself in with" : $"only {have} block(s) for a box that takes {need}: not starting one";
+    }
+
+    /// <summary>Up to three passes over the box's plan, placing a shelter block into every cell still open.</summary>
+    private async Task BuildShelterBoxAsync(BlockPos feet, List<BlockPos> placed, CancellationToken c)
+    {
+        for (int pass = 0; pass < 3 && !Shelter.Enclosed(World, feet); pass++)
+        {
+            foreach (var p in Shelter.Plan(World, feet))
+            {
+                var (id, n) = ShelterBlock();
+                if (n == 0) break;
+                if (!Aiming.IsReplaceable(World, World.GetBlock(p.Target))) continue;
+                var r = await PlaceAgainstCoreAsync(p.Target, p.Face, id, null, null, allowHidden: true, c).ConfigureAwait(false);
+                if (r.Ok) { placed.Add(p.Target); RememberTemporaryBlock(p.Target); }
+                else Log($"survival: shelter block at {Fmt(p.Target)}: {r.Message}");
+            }
+        }
+    }
+
+    /// <summary>The shelter's failure when nothing went up, or when the blocks ran out part way (the stub is taken back down: it is
+    /// no cover); null when the body is boxed in (or nearly, with blocks left).</summary>
+    private async Task<ActionResult?> ShelterFailedAsync(BlockPos feet, List<BlockPos> placed, bool closed, CancellationToken c)
+    {
+        if (placed.Count == 0 && !closed)
+            return ActionResult.Fail(ShelterBlocksTotal() == 0 ? "no blocks to box myself in with" : $"couldn't box myself in at {Fmt(feet)}");
+        if (closed || ShelterBlocksTotal() != 0) return null;
+        // Ran out part way (a placement failed, a block went to something else): no cover, so take the stub back down.
+        var back = await ClearShelterAsync(feet, placed, c).ConfigureAwait(false);
+        return ActionResult.Fail($"ran out of blocks boxing in at {Fmt(feet)} ({Shelter.Open(World, feet).Count} side(s) open){back}");
+    }
+
+    /// <summary>Logs and raises the boxed-in line (and hands it to <paramref name="boxed"/>).</summary>
+    private void AnnounceBoxedIn(BlockPos feet, IReadOnlyList<Entity> mobs, bool closed, string why, Action<string>? boxed)
+    {
+        var line = $"boxed myself in at {Fmt(feet)}: {MobCount(mobs)}, hp {World.Player.Health}; waiting it out"
+                   + (closed ? "" : $" ({Shelter.Open(World, feet).Count} side(s) still open)");
+        Log("survival: " + line + $" ({why})");
+        Raise(() => CombatEventRaised?.Invoke(new CombatEvent(CombatEventKind.Critical, line)));
+        try { boxed?.Invoke(line); } catch (Exception) { }
+    }
+
+    /// <summary>Waits in the box (eating when it should) until healed with nothing about, or the brain calls it off, or the wait's
+    /// cap.</summary>
+    private async Task WaitOutShelterAsync(CancellationToken c)
+    {
+        var o = Options.Survival;
+        var until = DateTime.UtcNow + TimeSpan.FromMinutes(Math.Max(0.05, o.ShelterMaxMinutes));
+        while (DateTime.UtcNow < until)
+        {
+            var p = World.Player;
+            if (SurvivalReflex.EatNow(World.Inventory.PlayerSlots(), EatReserved(p.Health), p.Health, p.Food, o) is { } meal)
+            {
+                var eat = await UseCoreAsync(meal.ItemId, c).ConfigureAwait(false);
+                if (eat.Ok) Interlocked.Increment(ref _autoMeals);
+            }
+            bool quiet = NearestThreat(p.Position, 16) is null || !World.IsNight;
+            if (p.Health >= o.ShelterUntilHealth && quiet || Brave) break; // brave: the brain called it off
+            await Task.Delay(500, c).ConfigureAwait(false);
         }
     }
 

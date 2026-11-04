@@ -457,60 +457,80 @@ public sealed partial class MinecraftClient
         while (true)
         {
             FollowerOutput last = default;
-            await DriveAsync(phys =>
-            {
-                if ((_lastGuardActions & GuardActions.CancelledJump) != 0) follower.NoteJumpCancelled(phys);
-                if ((_lastGuardActions & GuardActions.ParkourRejected) != 0) follower.NoteParkourRejected();
-                var output = follower.Tick(World, phys);
-                last = output;
-                bool drop = follower.CurrentStep?.Kind == MoveKind.Drop;
-                return output.Status == FollowerStatus.Moving
-                    ? new DriverStep(output.Input, AllowDrop: drop, Parkour: follower.Commitment,
-                        BoostRoom: drop || _speedTarget <= 1 ? 0 : follower.BoostRoom(phys)) // Fast / Faster (MinecraftClient.Speed.cs)
-                    : new DriverStep(output.Input, Done: true);
-            }, ct).ConfigureAwait(false);
+            await DriveAsync(phys => FollowTick(follower, phys, out last), ct).ConfigureAwait(false);
 
             switch (last.Status)
             {
                 case FollowerStatus.Finished:
                     return null;
                 case FollowerStatus.Failed:
-                    if (follower.BlockedJump is { } bj)
-                    {
-                        blockedJumps?.Add(bj);
-                        lock (_recentBlockedJumps) _recentBlockedJumps[bj] = DateTime.UtcNow;
-                    }
-                    if (follower.FailedTrigger is { } ft) lockedDoors?.Add(ft); // a mechanism that didn't respond
-                    if (follower.CurrentStep is { Opens.Count: > 0 } door)
-                        foreach (var tg in door.Opens.Where(t => !t.Done(World))) lockedDoors?.Add(tg.Pos);
+                    NoteFollowFailure(follower, blockedJumps, lockedDoors);
                     return last.Reason ?? "path failed";
                 case FollowerStatus.NeedsAction when last.Action is { } a:
                 {
-                    _idleSneak = last.Input.Sneak;
-                    var r = a.Kind switch
-                    {
-                        FollowerActionKind.Break => await DigCoreAsync(a.Pos, ct, allowPathing: false).ConfigureAwait(false),
-                        FollowerActionKind.Activate => await ActivateForPathAsync(a.Pos, follower.CurrentStep, ct).ConfigureAwait(false),
-                        _ => await PlaceCoreAsync(a.Pos, ScaffoldItem() ?? -1, ct, allowPathing: false).ConfigureAwait(false),
-                    };
-                    _idleSneak = false;
-                    if (r.Ok && a.Kind == FollowerActionKind.Place) RememberTemporaryBlock(a.Pos);
+                    var r = await DoFollowerActionAsync(follower, a, last.Input.Sneak, ct).ConfigureAwait(false);
                     // Pillar jump fell back before the block went out: jump again (the follower re-centers), not a failure.
-                    if (!r.Ok && a.Kind == FollowerActionKind.Place && r.Message.StartsWith(InTheWay, StringComparison.Ordinal)
-                        && ++pillarRetries <= 6)
-                        break;
-                    if (!r.Ok)
-                    {
-                        if (a.Kind == FollowerActionKind.Activate && follower.CurrentStep is { } st)
-                            foreach (var tg in st.Opens) lockedDoors?.Add(tg.Pos);
-                        return $"path step {a.Kind} at {Fmt(a.Pos)} failed: {r.Message}";
-                    }
-                    break;
+                    if (r.Ok || IsPillarFallback(a, r) && ++pillarRetries <= 6) break;
+                    return FollowerActionFailed(follower, a, r, lockedDoors);
                 }
                 default:
                     return "path follower stopped";
             }
         }
+    }
+
+    /// <summary>One driven tick of the follower (the guard's notes from the last tick first): the move, or done.</summary>
+    private DriverStep FollowTick(PathFollower follower, PhysicsState phys, out FollowerOutput output)
+    {
+        if ((_lastGuardActions & GuardActions.CancelledJump) != 0) follower.NoteJumpCancelled(phys);
+        if ((_lastGuardActions & GuardActions.ParkourRejected) != 0) follower.NoteParkourRejected();
+        output = follower.Tick(World, phys);
+        bool drop = follower.CurrentStep?.Kind == MoveKind.Drop;
+        return output.Status == FollowerStatus.Moving
+            ? new DriverStep(output.Input, AllowDrop: drop, Parkour: follower.Commitment,
+                BoostRoom: drop || _speedTarget <= 1 ? 0 : follower.BoostRoom(phys)) // Fast / Faster (MinecraftClient.Speed.cs)
+            : new DriverStep(output.Input, Done: true);
+    }
+
+    /// <summary>A failed follow remembers its blocked jump (here and for later routes) and the mechanisms that didn't open.</summary>
+    private void NoteFollowFailure(PathFollower follower, HashSet<(BlockPos From, BlockPos To)>? blockedJumps, HashSet<BlockPos>? lockedDoors)
+    {
+        if (follower.BlockedJump is { } bj)
+        {
+            blockedJumps?.Add(bj);
+            lock (_recentBlockedJumps) _recentBlockedJumps[bj] = DateTime.UtcNow;
+        }
+        if (follower.FailedTrigger is { } ft) lockedDoors?.Add(ft); // a mechanism that didn't respond
+        if (follower.CurrentStep is { Opens.Count: > 0 } door)
+            foreach (var tg in door.Opens.Where(t => !t.Done(World))) lockedDoors?.Add(tg.Pos);
+    }
+
+    /// <summary>The follower's step action (dig, activate, scaffold placement) under the step's sneak; a placed scaffold block is
+    /// remembered for cleanup.</summary>
+    private async Task<ActionResult> DoFollowerActionAsync(PathFollower follower, FollowerAction a, bool sneak, CancellationToken ct)
+    {
+        _idleSneak = sneak;
+        var r = a.Kind switch
+        {
+            FollowerActionKind.Break => await DigCoreAsync(a.Pos, ct, allowPathing: false).ConfigureAwait(false),
+            FollowerActionKind.Activate => await ActivateForPathAsync(a.Pos, follower.CurrentStep, ct).ConfigureAwait(false),
+            _ => await PlaceCoreAsync(a.Pos, ScaffoldItem() ?? -1, ct, allowPathing: false).ConfigureAwait(false),
+        };
+        _idleSneak = false;
+        if (r.Ok && a.Kind == FollowerActionKind.Place) RememberTemporaryBlock(a.Pos);
+        return r;
+    }
+
+    /// <summary>A pillar placement refused because the body was still in the cell (it fell back before the block went out).</summary>
+    private static bool IsPillarFallback(FollowerAction a, ActionResult r) =>
+        !r.Ok && a.Kind == FollowerActionKind.Place && r.Message.StartsWith(InTheWay, StringComparison.Ordinal);
+
+    /// <summary>The follow's failure for a step action that failed (an activation's mechanisms count as locked).</summary>
+    private string FollowerActionFailed(PathFollower follower, FollowerAction a, ActionResult r, HashSet<BlockPos>? lockedDoors)
+    {
+        if (a.Kind == FollowerActionKind.Activate && follower.CurrentStep is { } st)
+            foreach (var tg in st.Opens) lockedDoors?.Add(tg.Pos);
+        return $"path step {a.Kind} at {Fmt(a.Pos)} failed: {r.Message}";
     }
 
     /// <summary>The step a follower got "stuck" on and the cell it was planned from (null = the path's start).</summary>
