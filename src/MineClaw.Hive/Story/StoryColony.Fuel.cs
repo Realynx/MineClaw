@@ -29,17 +29,26 @@ public sealed partial class StoryColony
         // Auto (and any) leave the builds' and bills' reserved stock alone unless nothing else is there; a named fuel is what was asked.
         bool guard = bill.ForBuild == null && choice is StoryFuels.Auto or "any" && _reserved.Count > 0;
         for (int pass = guard ? 0 : 1; pass < 2; pass++)
-            foreach (var f in fuels)
-            {
-                int units = f.Units(net);
-                bool Ok(Stack s) => f.Item.Matches(s.Id, s.Meta);
-                int own = live?.Inventory.Where(Ok).Sum(s => s.Count) ?? 0;
-                if (own >= units) return (f, units, null, null);
-                if (FindStored(s => Ok(s) && s.Count >= units - own, bench.Pos, bill.Radius) is not { } fs) continue;
-                if (pass == 0 && Unreserved((id, meta) => f.Item.Matches(id, meta)) < units - own) continue;
-                return (f, units, (fs.Store.Chest, fs.Stack with { Count = units - own }), null);
-            }
+            if (FuelPass(fuels, net, bench, bill, live, unreservedOnly: pass == 0) is { } got) return got;
         return (null, 0, null, $"needs fuel: no {StoryFuels.Describe(choice)} within {bill.Radius} blocks");
+    }
+
+    /// <summary>The first fuel the pawn carries enough of, or a chest within the bill's radius holds the rest of (with
+    /// <paramref name="unreservedOnly"/>: only from what the builds and bills haven't reserved).</summary>
+    private (StoryFuel? Fuel, int Units, (P3 Chest, Stack Stack)? From, string? Missing)? FuelPass(IReadOnlyList<StoryFuel> fuels, int net, WorkbenchState bench,
+        BillState bill, PawnLive? live, bool unreservedOnly)
+    {
+        foreach (var f in fuels)
+        {
+            int units = f.Units(net);
+            bool Ok(Stack s) => f.Item.Matches(s.Id, s.Meta);
+            int own = live?.Inventory.Where(Ok).Sum(s => s.Count) ?? 0;
+            if (own >= units) return (f, units, null, null);
+            if (FindStored(s => Ok(s) && s.Count >= units - own, bench.Pos, bill.Radius) is not { } fs) continue;
+            if (unreservedOnly && Unreserved((id, meta) => f.Item.Matches(id, meta)) < units - own) continue;
+            return (f, units, (fs.Store.Chest, fs.Stack with { Count = units - own }), null);
+        }
+        return null;
     }
 
     /// <summary>A furnace load done: what the fuel it brought leaves over for the next batch.</summary>
@@ -58,18 +67,25 @@ public sealed partial class StoryColony
     internal JsonObject? FuelNeedJson(WorkbenchState bench, BillState bill)
     {
         if (World is not { } w || StoryRecipes.Get(w.Data, bill.Recipe) is not { } r) return null;
-        if (bench.Kind == "brewing_stand" && r.Station?.Kind == "brew")
-        {
-            int brews = Brewing.Chain(r.Output.Id, r.Station.Potion!)?.Count ?? 1;
-            int haveP = CountItem(StoryFuels.BlazePowder, -1);
-            bool known = bench.Fuel is { } f && f >= brews;
-            return new JsonObject
-            {
-                ["choice"] = "blaze_powder", ["item"] = new JsonArray(StoryFuels.BlazePowder, 0), ["name"] = "blaze powder",
-                ["need"] = known ? 0 : 1, ["have"] = haveP, ["short"] = !known && haveP == 0, ["per_item"] = 1.0 / Brewing.BrewsPerPowder,
-            };
-        }
+        if (bench.Kind == "brewing_stand" && r.Station?.Kind == "brew") return BrewFuelJson(bench, r);
         if (bench.Kind != "furnace" || !r.Fuel) return null;
+        return FurnaceFuelJson(w, bench, bill, r);
+    }
+
+    private JsonObject BrewFuelJson(WorkbenchState bench, StoryRecipe r)
+    {
+        int brews = Brewing.Chain(r.Output.Id, r.Station!.Potion!)?.Count ?? 1;
+        int haveP = CountItem(StoryFuels.BlazePowder, -1);
+        bool known = bench.Fuel is { } f && f >= brews;
+        return new JsonObject
+        {
+            ["choice"] = "blaze_powder", ["item"] = new JsonArray(StoryFuels.BlazePowder, 0), ["name"] = "blaze powder",
+            ["need"] = known ? 0 : 1, ["have"] = haveP, ["short"] = !known && haveP == 0, ["per_item"] = 1.0 / Brewing.BrewsPerPowder,
+        };
+    }
+
+    private JsonObject FurnaceFuelJson(IStoryWorld w, WorkbenchState bench, BillState bill, StoryRecipe r)
+    {
         int left = bill.Mode == "count" ? bill.Target - bill.Done : bill.Mode == "until" ? bill.Target - StockOf(r) : 8;
         int items = Math.Clamp(left, 1, 8);
         var choice = FuelChoice(bench, bill);
