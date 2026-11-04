@@ -336,9 +336,9 @@ public class StoryOfflinePawnTests
         c.Designate("add", "cut", null, [new P3(5, 64, 2)], null);
         var id = c.Designations.Single().Id;
         var job = c.Next();
-        Assert.True(c.Report(c.P(), job["id"]!.GetValue<string>(), "failed", "double_plant at 5,64,2 is busy", null));
+        Assert.True(c.Report(c.P(), job["id"]!.GetValue<string>(), "failed", "double_plant at 5,64,2 didn't break", null));
         var d = c.State()["designations"]!.AsArray().Single()!;
-        Assert.Equal("double_plant at 5,64,2 is busy", d["reason"]!.GetValue<string>());
+        Assert.Equal("double_plant at 5,64,2 didn't break", d["reason"]!.GetValue<string>());
         Assert.Equal(1, d["fails"]!.GetValue<int>());
         Assert.NotNull(d["retry_at"]);
         Assert.NotEqual("dig", c.Next()["kind"]!.GetValue<string>()); // resting: not picked again at once

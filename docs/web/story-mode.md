@@ -146,7 +146,7 @@ The **Pawn** object:
    With nothing to do, the pawn idles and the colony gets an alert, at most every 5 minutes.
 
 Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y,z`.
-- A lease lasts 90 s and progress reports renew it. It goes back when the job ends, fails or times out.
+- A lease lasts 90 s; progress reports renew it, and so does the tick while the pawn's script still runs (up to 10 minutes per job). It goes back when the job ends, fails or times out.
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
@@ -251,6 +251,36 @@ Designations carry `retry_at` (when a resting, failed designation is tried again
 `POST .../designations {op:"retry", ids}` → `{count, retried}` tries them again now. The map shows a failed designation's reason as a
 short label (one per cluster of adjacent designations with the same reason), the full text on hover and in its inspector (reason,
 fail count, next retry, Retry now / Cancel).
+
+### Digging that sticks (added 2026-11-03, late)
+
+Live 11-03 after 23:41 (`story-1`, 1.12.2, 10 pawns): "reported done, but the tallgrass is still there" ×54 (flowers ×13, dirt/grass
+×27), a tall plant "busy: another hive bot is working on that part" ×11, "can't reach dirt/grass" ×46, "won't dig: someone is standing
+on it" ×6, and the bot at ~70% CPU. Fixed:
+
+- **Done is checked where the dig happened.** A pawn's "done" is checked against its own body's view (its connection carried the
+  server's answer) when that view holds the cell, else main's; main's copy of a block change can come a moment later and is no failure.
+  The check waits up to 1.5 s for the world to agree (`DoneGrace`; the pawn's script thread waits, never the director's lock). A block
+  that is still there after that is a failure whose reason says which view saw it ("… still there (in its own view)").
+- **The dig primitive finishes the block.** A block that turned into its other form while being dug (exposed dirt → grass, grass → dirt,
+  redstone ore lighting up when punched) used to count as broken; the client now waits until it is really gone. `story_pawn` digs a
+  block that an ok dig left in place once more after a second.
+- **A tall plant is one target for every kind.** Cut, mine and deconstruct designations over a 1.12.2 double plant are all made on
+  its lower half and lease the same key, so a cut box and a mine box over one plant never send two pawns to its two halves.
+- **Leases last as long as the job.** The pawn script reports no progress, so a lease ran out after 90 s while the pawn was still
+  walking there or digging and a second pawn was sent to the same target. A pawn whose script still runs keeps its lease (renewed by
+  the tick) up to 10 minutes per job.
+- **Only exposed blocks are handed out.** A mine or deconstruct target is offered only when a face of it touches an open cell (air,
+  a plant, a liquid, snow), so a multi-layer box is dug top-down and from the outside in; a buried cell just waits, uncounted. Among
+  open targets the nearest wins, higher cells a little earlier.
+- **Nobody digs a block someone stands on.** A block under another pawn's or a player's feet is skipped; a pawn's own floor comes
+  last, and when it is the pawn's target anyway the job carries `stand` (a cell beside it) and the script steps off first.
+- **Transient refusals aren't failures.** "can't reach", "someone is standing on it", "busy"/a hive claim and "not loaded" rest the
+  target 15 s with no fail count and no alert; only the 5th in a row counts as a failure (with its reason and alert as before).
+- **CPU.** A pick reads designations from an index rebuilt only when a designation or zone changed (by kind, with lease keys and
+  targets; forbidden cells, drops and zones as sets) and the world's entities once per pick. Benchmark (`StoryPickerBenchmarkTests`,
+  10 pawns, 500 mine designations): a pick round of all 10 pawns 15.7 → 2.0 ms; a director tick with every pawn finishing a job, the
+  watchdog tick and a state delta 6.7 → 3.1 ms.
 
 ### Pawn bodies and the pawn script
 

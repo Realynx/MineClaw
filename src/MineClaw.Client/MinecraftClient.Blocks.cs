@@ -105,7 +105,7 @@ public sealed partial class MinecraftClient
             while (TickCount < startTick + total)
             {
                 await WaitUntilTickAsync(Math.Min(startTick + total, TickCount + 4), ct).ConfigureAwait(false);
-                if (World.GetBlock(pos) != id) break;
+                if (Broke(pos, id)) break;
                 int elapsed = (int)(TickCount - startTick);
                 if (elapsed - lastSwing >= 4) { lastSwing = elapsed; Send(new AnimationPacket { EntityId = eid, Animation = 1 }); }
             }
@@ -113,7 +113,7 @@ public sealed partial class MinecraftClient
         }
 
         var wait = TimeSpan.FromMilliseconds(1500 + ticks * Options.TickInterval.TotalMilliseconds * 0.4);
-        if (!await WaitUntilAsync(() => World.GetBlock(pos) != id, wait, ct).ConfigureAwait(false))
+        if (!await WaitUntilAsync(() => Broke(pos, id), wait, ct).ConfigureAwait(false))
         {
             NoteEditReverted(pos, "dig"); // first edit of the macro: aborts it (spawn protection, claims)
             return ActionResult.Fail($"{name} at {Fmt(pos)} didn't break" + SpawnProtectionHint(pos));
@@ -121,6 +121,18 @@ public sealed partial class MinecraftClient
         NoteEditOk(pos);
         return ActionResult.Success($"dug {name} at {Fmt(pos)} ({ticks} ticks, {(held > 0 ? ItemName(held) : "hand")})");
     }
+
+    /// <summary>
+    /// The dug block is gone: the cell holds something else than <paramref name="id"/> and not merely its other form. Live 11-03 (Story,
+    /// 1.12.2): "mine … reported done, but the dirt is still there": exposed dirt turned to grass (or grass to dirt) while it was dug,
+    /// and "anything but the old id" took that for the break. Redstone ore lights up when punched (73 → 74) the same way.
+    /// </summary>
+    internal bool Broke(BlockPos pos, int id) => World.GetBlock(pos) is var now && now != id && !SameDigForm(id, now);
+
+    /// <summary>Two ids of one block that a dig in progress can turn into each other: soil (grass, dirt, farmland, mycelium, grass
+    /// path) and redstone ore (unlit, lit).</summary>
+    public static bool SameDigForm(int a, int b) =>
+        a is 2 or 3 or 60 or 110 or 208 && b is 2 or 3 or 60 or 110 or 208 || a is 73 or 74 && b is 73 or 74;
 
     /// <param name="face">Click this face of the neighbour at pos − normal(face) (wall-mounted blocks); null = any visible support.</param>
     private async Task<ActionResult> PlaceCoreAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing = true, int? damage = null,

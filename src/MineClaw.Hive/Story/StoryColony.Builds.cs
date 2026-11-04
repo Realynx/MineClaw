@@ -111,7 +111,7 @@ public sealed partial class StoryColony
 
     private bool Occupied(P3 at)
     {
-        foreach (var e in World?.Entities() ?? [])
+        foreach (var e in Ents())
             if (e.Kind == "player" && (int)Math.Floor(e.X) == at.X && (int)Math.Floor(e.Z) == at.Z && (at.Y == (int)Math.Floor(e.Y) || at.Y == (int)Math.Floor(e.Y) + 1))
                 return true;
         return false;
