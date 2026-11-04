@@ -78,29 +78,32 @@ export function reconcile(
   const resolved: string[] = [];
   const out: PendingMessage[] = [];
   for (const p0 of pending) {
-    let p = p0;
-    if (p.state === 'sending' || p.state === 'awaiting') {
-      const echo = lines.find(
-        (l) =>
-          l.kind === 'viewer' &&
-          sameBot(l, p.bot, aliases) &&
-          ((p.viewerSeq !== null && l.seq === p.viewerSeq) || (!!l.requestId && l.requestId === p.requestId)),
-      );
-      // Only a real change makes a new object: callers compare by identity to decide whether anything changed (a fresh
-      // object on every pass made ChatPane's reconcile effect set state forever while a reply was pending).
-      if (echo && (!p.echoed || p.viewerSeq !== echo.seq)) p = { ...p, viewerSeq: echo.seq, echoed: true };
-    }
-    if (p.state === 'awaiting' && p.viewerSeq !== null) {
-      const seq = p.viewerSeq;
-      const reply = lines.find((l) => isBotReply(l, p.bot, aliases) && (l.seq > seq || l.replyTo === seq));
-      if (reply) {
-        resolved.push(p.localId);
-        continue;
-      }
-    }
-    out.push(p);
+    const p = p0.state === 'sending' || p0.state === 'awaiting' ? withEcho(p0, lines, aliases) : p0;
+    if (answered(p, lines, aliases)) resolved.push(p.localId);
+    else out.push(p);
   }
   return { pending: out, resolved };
+}
+
+/** The message with its viewer line's seq once the feed echoes it (matched by seq or request id). */
+function withEcho(p: PendingMessage, lines: readonly FeedLine[], aliases: readonly string[]): PendingMessage {
+  const echo = lines.find(
+    (l) =>
+      l.kind === 'viewer' &&
+      sameBot(l, p.bot, aliases) &&
+      ((p.viewerSeq !== null && l.seq === p.viewerSeq) || (!!l.requestId && l.requestId === p.requestId)),
+  );
+  // Only a real change makes a new object: callers compare by identity to decide whether anything changed (a fresh
+  // object on every pass made ChatPane's reconcile effect set state forever while a reply was pending).
+  if (echo && (!p.echoed || p.viewerSeq !== echo.seq)) return { ...p, viewerSeq: echo.seq, echoed: true };
+  return p;
+}
+
+/** An awaited message the bot has replied to (a reply after its line, or to it). */
+function answered(p: PendingMessage, lines: readonly FeedLine[], aliases: readonly string[]): boolean {
+  if (p.state !== 'awaiting' || p.viewerSeq === null) return false;
+  const seq = p.viewerSeq;
+  return lines.some((l) => isBotReply(l, p.bot, aliases) && (l.seq > seq || l.replyTo === seq));
 }
 
 /** Bubbles to draw for pending messages: only the ones whose real viewer line is not in the feed yet. */
