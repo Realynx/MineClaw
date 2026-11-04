@@ -900,8 +900,13 @@ keep it). `{op: add, kind: mine, area, mode?}`, `{op: update, id, mode}`.
 
 **Digging.** A quarry digs everything in its columns, layer by layer from its top (its highest ground when first seen, not trees;
 kept as `quarry_top`) down to bedrock: never bedrock, never y 0; each column stops one over its highest bedrock (b1.8.1 and 1.12.2
-put it at y 0..4). A layer is offered once the one above has nothing left to dig (cells resting after failures don't hold it back),
-so it goes top-down. Mine work; only exposed cells (a face open), never one someone stands on, the pickaxe its material needs (tool
+put it at y 0..4). A layer is offered once the one above has nothing left to dig, resting cells included: a layer is never left half
+dug (live 11-04: "no pawn wants to mine in it any more after about the 7th depth layer": cells that rested after "no path" failures
+were left behind, the floor went uneven, paths dropped 2–3 blocks onto cells being dug and pawns got stranded on the leftovers).
+The scan starts from the top every 30 s, so a cell left or refilled above is found again. The whole stair from the top down to one
+step under the working layer is checked against the world each scan; a missing step is placed before anything else, and while a
+step at or above the working layer is missing nothing deeper is dug. Why a quarry offers nothing ("stair broken at y 59: placing
+a step", "3 cell(s) on y 57 resting after failures", "waiting for the stair step over y 57") is in its status and the idle audit. Mine work; only exposed cells (a face open), never one someone stands on, the pickaxe its material needs (tool
 floors and rules, StoryColony.Gear.cs), loot batched like any gathering. A cell beside lava or water (or a liquid cell itself) is
 left standing as a seal, with an alert ("N cell(s) at y Y left standing beside lava or water").
 
@@ -915,6 +920,11 @@ existing blocks; a step that is air, liquid or would fall (sand, gravel, concret
 dirt, netherrack, planks, stone, sandstone: carried, else fetched from storage; none: an alert), before the layer under it is dug
 (the cell under a step waiting for a block is held back). The quarry never digs its own steps. Repainting a quarry recomputes the
 ring (its top stays).
+
+**Walking the stair.** A pit with a floor is no "edge" to sneak at: a path step sneaked only because of such an edge is walked (the
+pathfinder keeps its edge costs, so routes don't change; fields and growing zones stay sneaked), and the edge guard forces sneak and
+stops sprint only beside a fatal drop (the void, lava, water over the void: `Safety.IsFatalColumn`). Beside a quarry's pit the stair is walked normally (live 11-04: "they crouch-walk when the stairs get high on the
+outside wall"); the guard's per-tick simulation still never lets the body step off, and drops into the pit stay limited to safe ones.
 
 **State.** A mine zone has `mode`; a quarry adds `quarry: {top, bottom, depth, layer, y, cells_left, stair_fixes, sealed, done,
 stair: [[x,y,z], …] (top first), status}` ("layer 3 of 61 (y 61), 34 cell(s) left", "done: down to bedrock").

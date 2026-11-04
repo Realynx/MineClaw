@@ -53,7 +53,7 @@ public sealed partial class Pathfinder
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
         budget.CancelAfter(o.Timeout + TimeSpan.FromMilliseconds(250));
         var r = pf.Search(start, goal, budget.Token);
-        return o.AllowOneWay || r.Steps.Count == 0 ? r : pf.CheckReturn(r, start, goal, budget.Token);
+        return pf.WalkPits(o.AllowOneWay || r.Steps.Count == 0 ? r : pf.CheckReturn(r, start, goal, budget.Token), start);
     }
 
     /// <summary>Finds a path from a feet position (see <see cref="StartCellFor"/>).</summary>
@@ -806,17 +806,43 @@ public sealed partial class Pathfinder
     }
 
     /// <summary>Any of the 8 neighbours at this level is a deadly drop.</summary>
-    /// <summary>
-    /// Next to a fatal drop (the void, lava: <see cref="Safety.IsFatalColumn"/>): an "edge", costed higher and sneaked. A pit with a
-    /// floor is not (a quarry's stair beside its pit is walked normally; the drops into it are still checked by <see cref="IsDeadly"/>).
-    /// </summary>
     private bool IsEdge(int x, int y, int z)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        for (int dz = -1; dz <= 1; dz++)
+            if ((dx != 0 || dz != 0) && IsDeadly(x + dx, y, z + dz)) return true;
+        return false;
+    }
+
+    /// <summary>Next to a deadly drop that is also fatal (the void, lava, water over the void: <see cref="Safety.IsFatalColumn"/>).</summary>
+    private bool IsFatalEdge(int x, int y, int z)
     {
         for (int dx = -1; dx <= 1; dx++)
         for (int dz = -1; dz <= 1; dz++)
             if ((dx != 0 || dz != 0) && IsDeadly(x + dx, y, z + dz) && Safety.IsFatalColumn(_w, x + dx, y, z + dz)) return true;
         return false;
     }
+
+    /// <summary>
+    /// The path as walked: a step sneaked only for its edge (no field, no plants) beside a pit with a floor is walked normally (live
+    /// 11-04: "they crouch-walk when the stairs get high on the outside wall" of a quarry). Edges still cost what they did, so routes
+    /// don't change; the void and lava stay sneaked, and the edge guard's simulation still never lets the body step off.
+    /// </summary>
+    private PathResult WalkPits(PathResult r, BlockPos start)
+    {
+        if (r.Steps.Count == 0) return r;
+        var steps = r.Steps.ToList();
+        for (int i = 0; i < steps.Count; i++)
+        {
+            var prev = i == 0 ? start : steps[i - 1].Pos;
+            if (steps[i].Sneak && PitEdgeOnly(prev) && PitEdgeOnly(steps[i].Pos)) steps[i] = steps[i] with { Sneak = false };
+        }
+        return r with { Steps = steps };
+    }
+
+    /// <summary>Sneaking at this cell would only be for a pit with a floor: no fatal edge, no field, no growing zone's plants.</summary>
+    private bool PitEdgeOnly(BlockPos c) =>
+        !IsFatalEdge(c.X, c.Y, c.Z) && !OnFarmland(c.X, c.Y, c.Z) && !Careful(c.X, c.Y, c.Z);
 
     private static double[] BuildFallTicks()
     {
