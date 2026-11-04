@@ -46,66 +46,80 @@ public sealed partial class MinecraftClient
 
     /// <summary>Puts the first carried stack matching <paramref name="match"/> in the hand (into the hotbar first when needed).</summary>
     public Task<ActionResult> HoldAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) =>
-        RunActionAsync("equip", ct, async c =>
-        {
-            var inv = World.Inventory;
-            if (!HeldStack().IsEmpty && match(HeldStack())) return ActionResult.Success($"holding {label}");
-            for (int i = 0; i < 9; i++)
-                if (inv.GetPlayerSlot(36 + i) is { IsEmpty: false } s && match(s)) { SelectHotbar(i); return ActionResult.Success($"holding {label}"); }
-            int from = -1;
-            for (int slot = 9; slot <= 35 && from < 0; slot++)
-                if (inv.GetPlayerSlot(slot) is { IsEmpty: false } s && match(s)) from = slot;
-            if (from < 0) return ActionResult.Fail($"no {label} carried");
-            int hb = ChooseHotbarTarget();
-            await SwapIntoHotbarAsync(from, hb, c).ConfigureAwait(false);
-            if (inv.GetPlayerSlot(36 + hb) is not { IsEmpty: false } now || !match(now)) return ActionResult.Fail($"couldn't hold {label}");
-            SelectHotbar(hb);
-            return ActionResult.Success($"holding {label}");
-        });
+        RunActionAsync("equip", ct, c => HoldCoreAsync(match, label, c));
+
+    private async Task<ActionResult> HoldCoreAsync(Func<ItemStack, bool> match, string label, CancellationToken c)
+    {
+        var inv = World.Inventory;
+        if (!HeldStack().IsEmpty && match(HeldStack())) return ActionResult.Success($"holding {label}");
+        int inHotbar = FirstCarried(36, 44, match);
+        if (inHotbar >= 0) { SelectHotbar(inHotbar - 36); return ActionResult.Success($"holding {label}"); }
+        int from = FirstCarried(9, 35, match);
+        if (from < 0) return ActionResult.Fail($"no {label} carried");
+        int hb = ChooseHotbarTarget();
+        await SwapIntoHotbarAsync(from, hb, c).ConfigureAwait(false);
+        if (inv.GetPlayerSlot(36 + hb) is not { IsEmpty: false } now || !match(now)) return ActionResult.Fail($"couldn't hold {label}");
+        SelectHotbar(hb);
+        return ActionResult.Success($"holding {label}");
+    }
+
+    /// <summary>The first window-0 slot in <paramref name="from"/>..<paramref name="to"/> (inclusive) holding a stack that matches, or -1.</summary>
+    private int FirstCarried(int from, int to, Func<ItemStack, bool> match)
+    {
+        for (int slot = from; slot <= to; slot++)
+            if (World.Inventory.GetPlayerSlot(slot) is { IsEmpty: false } s && match(s)) return slot;
+        return -1;
+    }
 
     /// <summary>Wears the first carried armour piece matching <paramref name="match"/> (what was in that slot goes into the bag).</summary>
     public Task<ActionResult> WearAsync(Func<ItemStack, bool> match, string label, CancellationToken ct = default) =>
-        RunActionAsync("equip", ct, async c =>
-        {
-            await EnsureNoWindowAsync(c).ConfigureAwait(false);
-            var inv = World.Inventory;
-            int from = -1;
-            for (int slot = 9; slot <= 44 && from < 0; slot++)
-                if (inv.GetPlayerSlot(slot) is { IsEmpty: false } s && match(s) && ArmorSlotOf(s.Id) >= 5) from = slot;
-            if (from < 0)
-                return Enumerable.Range(5, 4).Any(a => inv.GetPlayerSlot(a) is { IsEmpty: false } w && match(w))
-                    ? ActionResult.Success($"already wearing {label}") : ActionResult.Fail($"no {label} carried");
-            var piece = inv.GetPlayerSlot(from);
-            int armor = ArmorSlotOf(piece.Id);
-            await ClickCoreAsync(from, false, false, c).ConfigureAwait(false);   // pick it up
-            await ClickCoreAsync(armor, false, false, c).ConfigureAwait(false);  // put it on (the old piece comes onto the cursor)
-            if (!inv.Cursor.IsEmpty) await ClickCoreAsync(from, false, false, c).ConfigureAwait(false); // the old piece where the new one was
-            if (!inv.Cursor.IsEmpty) await StashCursorAsync(c).ConfigureAwait(false);
-            var on = inv.GetPlayerSlot(armor);
-            return !on.IsEmpty && on.Id == piece.Id ? ActionResult.Success($"wearing {label}") : ActionResult.Fail($"couldn't put on {label}");
-        });
+        RunActionAsync("equip", ct, c => WearCoreAsync(match, label, c));
+
+    private async Task<ActionResult> WearCoreAsync(Func<ItemStack, bool> match, string label, CancellationToken c)
+    {
+        await EnsureNoWindowAsync(c).ConfigureAwait(false);
+        var inv = World.Inventory;
+        int from = FirstCarried(9, 44, s => match(s) && ArmorSlotOf(s.Id) >= 5);
+        if (from < 0)
+            return FirstCarried(5, 8, match) >= 0 ? ActionResult.Success($"already wearing {label}") : ActionResult.Fail($"no {label} carried");
+        var piece = inv.GetPlayerSlot(from);
+        int armor = ArmorSlotOf(piece.Id);
+        await ClickCoreAsync(from, false, false, c).ConfigureAwait(false);   // pick it up
+        await ClickCoreAsync(armor, false, false, c).ConfigureAwait(false);  // put it on (the old piece comes onto the cursor)
+        if (!inv.Cursor.IsEmpty) await ClickCoreAsync(from, false, false, c).ConfigureAwait(false); // the old piece where the new one was
+        if (!inv.Cursor.IsEmpty) await StashCursorAsync(c).ConfigureAwait(false);
+        var on = inv.GetPlayerSlot(armor);
+        return !on.IsEmpty && on.Id == piece.Id ? ActionResult.Success($"wearing {label}") : ActionResult.Fail($"couldn't put on {label}");
+    }
 
     /// <summary>Takes off the worn armour (all of it, or the pieces matching <paramref name="match"/>) into free bag slots.</summary>
     public Task<ActionResult> UnwearAsync(Func<ItemStack, bool>? match = null, CancellationToken ct = default) =>
-        RunActionAsync("equip", ct, async c =>
+        RunActionAsync("equip", ct, c => UnwearCoreAsync(match, c));
+
+    private async Task<ActionResult> UnwearCoreAsync(Func<ItemStack, bool>? match, CancellationToken c)
+    {
+        await EnsureNoWindowAsync(c).ConfigureAwait(false);
+        var inv = World.Inventory;
+        int n = 0;
+        for (int armor = 5; armor <= 8; armor++)
         {
-            await EnsureNoWindowAsync(c).ConfigureAwait(false);
-            var inv = World.Inventory;
-            int n = 0;
-            for (int armor = 5; armor <= 8; armor++)
-            {
-                var s = inv.GetPlayerSlot(armor);
-                if (s.IsEmpty || match != null && !match(s)) continue;
-                int free = -1;
-                for (int slot = 9; slot <= 44 && free < 0; slot++) if (inv.GetPlayerSlot(slot).IsEmpty) free = slot;
-                if (free < 0) return n > 0 ? ActionResult.Success($"took off {n} piece(s); no room for the rest", n) : ActionResult.Fail("no free slot to take armour off into");
-                await ClickCoreAsync(armor, false, false, c).ConfigureAwait(false);
-                await ClickCoreAsync(free, false, false, c).ConfigureAwait(false);
-                if (!inv.Cursor.IsEmpty) await StashCursorAsync(c).ConfigureAwait(false);
-                if (inv.GetPlayerSlot(armor).IsEmpty) n++;
-            }
-            return ActionResult.Success(n == 0 ? "wearing nothing to take off" : $"took off {n} piece(s)", n);
-        });
+            var s = inv.GetPlayerSlot(armor);
+            if (s.IsEmpty || match != null && !match(s)) continue;
+            int free = FirstEmptyBagSlot();
+            if (free < 0) return n > 0 ? ActionResult.Success($"took off {n} piece(s); no room for the rest", n) : ActionResult.Fail("no free slot to take armour off into");
+            await ClickCoreAsync(armor, false, false, c).ConfigureAwait(false);
+            await ClickCoreAsync(free, false, false, c).ConfigureAwait(false);
+            if (!inv.Cursor.IsEmpty) await StashCursorAsync(c).ConfigureAwait(false);
+            if (inv.GetPlayerSlot(armor).IsEmpty) n++;
+        }
+        return ActionResult.Success(n == 0 ? "wearing nothing to take off" : $"took off {n} piece(s)", n);
+    }
+
+    private int FirstEmptyBagSlot()
+    {
+        for (int slot = 9; slot <= 44; slot++) if (World.Inventory.GetPlayerSlot(slot).IsEmpty) return slot;
+        return -1;
+    }
 
     /// <summary>Takes up to <paramref name="count"/> of the stacks matching <paramref name="match"/> (one exact tool: an enchanted
     /// pickaxe) out of the chest at <paramref name="container"/>.</summary>

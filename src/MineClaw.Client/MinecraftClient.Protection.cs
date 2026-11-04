@@ -67,6 +67,12 @@ public sealed partial class MinecraftClient
         if (NeverBreak?.Invoke(p) == true) return false;
         if (MineSource?.Invoke(p, id) == true || OverridesSoft(p, id)) return true;
         if (NaturalResource(id, World.Dimension) || NaturalPlant(id)) return true;
+        return TerrainMineSource(p, id);
+    }
+
+    /// <summary>Natural terrain in a normal world, a generator cell on skyblock, a log of a real tree.</summary>
+    private bool TerrainMineSource(BlockPos p, int id)
+    {
         bool skyblock = WorldMode.Current.GeneratorStone;
         if (!skyblock && NaturalTerrain(id)) return true;
         if (skyblock && id is Blocks.Cobblestone or Blocks.Stone) return LavaCouldFlowInto(p) && NextToWater(p);

@@ -290,17 +290,7 @@ public sealed partial class MinecraftClient
     /// 0x0D (moved + rotated), 0x0B (moved), 0x0C (rotated) or 0x0A (neither). Position is forced every 20 ticks.</summary>
     private void SendMovement(Session s, PhysicsState phys)
     {
-        int eid = World.Player.EntityId;
-        if (phys.Sprinting != _lastSprint)
-        {
-            Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sprinting ? 4 : 5) });
-            _lastSprint = phys.Sprinting;
-        }
-        if (phys.Sneaking != _lastSneak)
-        {
-            Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sneaking ? 1 : 2) });
-            _lastSneak = phys.Sneaking;
-        }
+        SendActionChanges(s, phys);
         if (phys.Frozen)
         {
             Send(s, new PlayerOnGroundPacket { OnGround = phys.OnGround });
@@ -314,15 +304,7 @@ public sealed partial class MinecraftClient
         var (yaw, pitch) = SentLook(phys); // a gesture's head overlay rides here only; physics keeps the real look
         bool rotated = yaw != _lastYaw || pitch != _lastPitch;
         _ticksSincePos++;
-
-        if (moved && rotated)
-            Send(s, new PlayerPositionLookPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
-        else if (moved)
-            Send(s, new PlayerPositionPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, OnGround = phys.OnGround });
-        else if (rotated)
-            Send(s, new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
-        else
-            Send(s, new PlayerOnGroundPacket { OnGround = phys.OnGround });
+        SendMotion(s, phys, stance, moved, rotated, yaw, pitch);
 
         if (moved)
         {
@@ -334,6 +316,34 @@ public sealed partial class MinecraftClient
             _lastYaw = yaw;
             _lastPitch = pitch;
         }
+    }
+
+    /// <summary>0x13 on a sprint or sneak change.</summary>
+    private void SendActionChanges(Session s, PhysicsState phys)
+    {
+        int eid = World.Player.EntityId;
+        if (phys.Sprinting != _lastSprint)
+        {
+            Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sprinting ? 4 : 5) });
+            _lastSprint = phys.Sprinting;
+        }
+        if (phys.Sneaking == _lastSneak) return;
+        Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sneaking ? 1 : 2) });
+        _lastSneak = phys.Sneaking;
+    }
+
+    /// <summary>Exactly one of 0x0D (moved + rotated), 0x0B (moved), 0x0C (rotated) or 0x0A (neither).</summary>
+    private void SendMotion(Session s, PhysicsState phys, double stance, bool moved, bool rotated, float yaw, float pitch)
+    {
+        var pos = phys.Position;
+        if (moved && rotated)
+            Send(s, new PlayerPositionLookPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
+        else if (moved)
+            Send(s, new PlayerPositionPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, OnGround = phys.OnGround });
+        else if (rotated)
+            Send(s, new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
+        else
+            Send(s, new PlayerOnGroundPacket { OnGround = phys.OnGround });
     }
 
     private void CheckDangers(PhysicsState phys)

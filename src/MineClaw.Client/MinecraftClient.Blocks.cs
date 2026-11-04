@@ -186,19 +186,8 @@ public sealed partial class MinecraftClient
     {
         if (itemId <= 0) return ActionResult.Fail("no block to place");
         if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
-        if (itemId is Items.Seeds or Items.MelonSeeds or Items.PumpkinSeeds)
-        {
-            var soil = World.GetBlock(pos) == Blocks.Farmland ? pos : pos.Offset(BlockFace.Bottom);
-            if (World.GetBlock(soil) != Blocks.Farmland) return ActionResult.Fail($"{Fmt(pos)} has no farmland for seeds");
-            return await UseOnBlockCoreAsync(soil, BlockFace.Top, itemId, damage, ct).ConfigureAwait(false);
-        }
-        if (PlacementRefusedTooOften(pos, itemId, damage))
-            return ActionResult.Fail($"stopped after 3 identical server refusals at {Fmt(pos)}; change the target/support before retrying");
-        int existing = World.GetBlock(pos);
-        if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}");
-        if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
-        if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
-        if (World.KeepAir.Refusal(pos, World.Dimension, itemId) is { } keep) return ActionResult.Fail(keep);
+        if (itemId is Items.Seeds or Items.MelonSeeds or Items.PumpkinSeeds) return await PlantSeedsAsync(pos, itemId, damage, ct).ConfigureAwait(false);
+        if (PlaceCellRefusal(pos, itemId, damage) is { } refusal) return ActionResult.Fail(refusal);
         if (itemId is Items.WaterBucket or Items.LavaBucket) return await PourIntoCoreAsync(pos, itemId, allowPathing, ct).ConfigureAwait(false);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
@@ -213,6 +202,26 @@ public sealed partial class MinecraftClient
         {
             _idleSneak = sneakBefore;
         }
+    }
+
+    /// <summary>Seeds go on farmland: the cell itself or the one under it.</summary>
+    private async Task<ActionResult> PlantSeedsAsync(BlockPos pos, int itemId, int? damage, CancellationToken ct)
+    {
+        var soil = World.GetBlock(pos) == Blocks.Farmland ? pos : pos.Offset(BlockFace.Bottom);
+        if (World.GetBlock(soil) != Blocks.Farmland) return ActionResult.Fail($"{Fmt(pos)} has no farmland for seeds");
+        return await UseOnBlockCoreAsync(soil, BlockFace.Top, itemId, damage, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Why <paramref name="pos"/> takes no block (refused by the server too often, occupied, unloaded, protected, kept air), or null.</summary>
+    private string? PlaceCellRefusal(BlockPos pos, int itemId, int? damage)
+    {
+        if (PlacementRefusedTooOften(pos, itemId, damage))
+            return $"stopped after 3 identical server refusals at {Fmt(pos)}; change the target/support before retrying";
+        int existing = World.GetBlock(pos);
+        if (!Aiming.IsReplaceable(World, existing)) return $"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}";
+        if (!World.IsLoaded(pos.X, pos.Z)) return $"{Fmt(pos)} is not loaded";
+        if (EditBlocked(pos)) return BlockedReason(pos);
+        return World.KeepAir.Refusal(pos, World.Dimension, itemId);
     }
 
     private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing, int? damage = null,

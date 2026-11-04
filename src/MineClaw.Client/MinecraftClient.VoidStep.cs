@@ -48,41 +48,47 @@ public sealed partial class MinecraftClient
         if (reason.Length == 0) return Task.FromResult(ActionResult.Fail("into_void needs a reason (a deliberate step off the island)"));
         if (!keepItemsOk && CarriedSummary() is { } held)
             return Task.FromResult(ActionResult.Fail($"deposit first: holding {held} (or keep_items_ok=true to lose them)"));
-        return RunActionAsync("into_void", ct, async c =>
+        return RunActionAsync("into_void", ct, c => StepIntoVoidCoreAsync(reason, c));
+    }
+
+    private async Task<ActionResult> StepIntoVoidCoreAsync(string reason, CancellationToken c)
+    {
+        var me = World.Player.Position;
+        int py = (int)Math.Floor(me.Y + 1e-6);
+        if (World.IsPlayerOverVoid(me) && !World.Player.OnGround)
+            return ActionResult.Fail("already over the void");
+        if (NearestVoidEdge(me, py) is not { } edge)
+            return ActionResult.Fail("no reachable island edge with open void next to it within 10 blocks");
+        var (stand, off) = edge;
+        if (await WalkToVoidEdgeAsync(me, py, stand, c).ConfigureAwait(false) is { } away) return away;
+        string warn = RespawnWarning();
+        var step = new IntentionalVoidStep(reason, World.Player.Position, DateTimeOffset.UtcNow);
+        _voidStep = step;
+        Log($"into_void: stepping off at {Fmt(stand)} toward {Fmt(off)} on purpose ({reason}){(warn.Length > 0 ? "; " + warn : "")}");
+        Raise(() => VoidStepStarted?.Invoke(step));
+        var target = new Vec3d(off.X + 0.5, stand.Y, off.Z + 0.5);
+        long until = TickCount + 80;
+        await DriveAsync(phys =>
         {
-            var me = World.Player.Position;
-            int py = (int)Math.Floor(me.Y + 1e-6);
-            if (World.IsPlayerOverVoid(me) && !World.Player.OnGround)
-                return ActionResult.Fail("already over the void");
-            if (NearestVoidEdge(me, py) is not { } edge)
-                return ActionResult.Fail("no reachable island edge with open void next to it within 10 blocks");
-            var (stand, off) = edge;
-            if (Math.Abs(stand.X + 0.5 - me.X) > 0.4 || Math.Abs(stand.Z + 0.5 - me.Z) > 0.4 || stand.Y != py)
-            {
-                var g = await GotoCoreAsync(new GoalBlock(stand), GotoOptions.Default with { AllowBreak = false, AllowPlace = false }, c).ConfigureAwait(false);
-                if (!g.Ok) return ActionResult.Fail($"couldn't reach the edge at {Fmt(stand)}: {g.Message}");
-            }
-            string warn = RespawnWarning();
-            var step = new IntentionalVoidStep(reason, World.Player.Position, DateTimeOffset.UtcNow);
-            _voidStep = step;
-            Log($"into_void: stepping off at {Fmt(stand)} toward {Fmt(off)} on purpose ({reason}){(warn.Length > 0 ? "; " + warn : "")}");
-            Raise(() => VoidStepStarted?.Invoke(step));
-            var target = new Vec3d(off.X + 0.5, stand.Y, off.Z + 0.5);
-            long until = TickCount + 80;
-            await DriveAsync(phys =>
-            {
-                var (yaw, _) = PlayerPhysics.YawPitchTo(phys.Position, target);
-                bool gone = phys.Position.Y < stand.Y - 2.5 || TickCount > until;
-                return new DriverStep(new MoveInput(Forward: 1, Yaw: yaw, Pitch: 30), Done: gone, AllowDrop: true);
-            }, c).ConfigureAwait(false);
-            if (World.Player.Position.Y >= stand.Y - 2.5 && !World.Player.IsDead)
-            {
-                _voidStep = null;
-                return ActionResult.Fail($"didn't drop off the edge at {Fmt(stand)} (blocked?)");
-            }
-            return ActionResult.Success($"stepped off into the void at {Fmt(stand)} on purpose ({reason}); respawn at spawn " +
-                                        $"{World.Spawn.X},{World.Spawn.Y},{World.Spawn.Z} expected" + (warn.Length > 0 ? "; " + warn : ""));
-        });
+            var (yaw, _) = PlayerPhysics.YawPitchTo(phys.Position, target);
+            bool gone = phys.Position.Y < stand.Y - 2.5 || TickCount > until;
+            return new DriverStep(new MoveInput(Forward: 1, Yaw: yaw, Pitch: 30), Done: gone, AllowDrop: true);
+        }, c).ConfigureAwait(false);
+        if (World.Player.Position.Y >= stand.Y - 2.5 && !World.Player.IsDead)
+        {
+            _voidStep = null;
+            return ActionResult.Fail($"didn't drop off the edge at {Fmt(stand)} (blocked?)");
+        }
+        return ActionResult.Success($"stepped off into the void at {Fmt(stand)} on purpose ({reason}); respawn at spawn " +
+                                    $"{World.Spawn.X},{World.Spawn.Y},{World.Spawn.Z} expected" + (warn.Length > 0 ? "; " + warn : ""));
+    }
+
+    /// <summary>Walks onto the edge cell unless already centred on it: null, or why it couldn't.</summary>
+    private async Task<ActionResult?> WalkToVoidEdgeAsync(Vec3d me, int py, BlockPos stand, CancellationToken c)
+    {
+        if (Math.Abs(stand.X + 0.5 - me.X) <= 0.4 && Math.Abs(stand.Z + 0.5 - me.Z) <= 0.4 && stand.Y == py) return null;
+        var g = await GotoCoreAsync(new GoalBlock(stand), GotoOptions.Default with { AllowBreak = false, AllowPlace = false }, c).ConfigureAwait(false);
+        return g.Ok ? null : ActionResult.Fail($"couldn't reach the edge at {Fmt(stand)}: {g.Message}");
     }
 
     /// <summary>"cobblestone x13, stone pickaxe" of everything carried (inventory, armor, cursor), or null when empty.</summary>
@@ -125,19 +131,24 @@ public sealed partial class MinecraftClient
             int x = cx + dx, y = py + dy, z = cz + dz;
             if (y < 1 || y >= h - 2 || !World.IsLoaded(x, z) || !Safety.IsStandable(World, x, y, z)) continue;
             double d = Math.Sqrt(dx * dx + dz * dz) + Math.Abs(dy) * 2;
-            if (d >= bestD) continue;
-            foreach (var s in sides)
-            {
-                int ox = x + s.X, oz = z + s.Z;
-                if (!World.IsLoaded(ox, oz)) continue; // unknown is not "open void"
-                if (BlockShapes.HasCollision(World, ox, y, oz) || BlockShapes.HasCollision(World, ox, y + 1, oz)) continue;
-                if (!Safety.IsOverVoid(World, ox, y, oz)) continue;
-                best = (new BlockPos(x, y, z), new BlockPos(ox, y, oz));
-                bestD = d;
-                break;
-            }
+            if (d >= bestD || OpenVoidBeside(x, y, z, sides) is not { } off) continue;
+            best = (new BlockPos(x, y, z), off);
+            bestD = d;
         }
         return best;
+    }
+
+    /// <summary>The first side of (x, y, z) that is a loaded, open (feet and head) column over the void, or null.</summary>
+    private BlockPos? OpenVoidBeside(int x, int y, int z, BlockPos[] sides)
+    {
+        foreach (var s in sides)
+        {
+            int ox = x + s.X, oz = z + s.Z;
+            if (!World.IsLoaded(ox, oz)) continue; // unknown is not "open void"
+            if (BlockShapes.HasCollision(World, ox, y, oz) || BlockShapes.HasCollision(World, ox, y + 1, oz)) continue;
+            if (Safety.IsOverVoid(World, ox, y, oz)) return new BlockPos(ox, y, oz);
+        }
+        return null;
     }
 
     /// <summary>Tick thread: the EdgeGuard pass, except during a deliberate void step (the only time it yields).</summary>
