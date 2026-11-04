@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StorySim, type StoryWorld } from '../src/testing.js';
+import { STORY_DEFAULT_RECIPES } from '../src/index.js';
 
 /** A seeded generator (mulberry32) for Math.random. */
 function seeded(seed: number): () => number {
@@ -465,6 +466,115 @@ describe('the mock director: a golden run', () => {
     builds();
     benches();
     expect(JSON.stringify(trace)).toMatch(/waiting|blocked/);
+    const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
+    expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
+  });
+
+  it('bills: every op, refused and accepted, at a table, a furnace and an enchanting table (pins bills)', () => {
+    const w = world();
+    const blockAt = w.blockAt.bind(w);
+    // An enchanting table ringed by bookshelves, an anvil and a brewing stand by the camp.
+    const extra = new Map<string, [number, number]>([
+      ['-10,64,-6', [116, 0]],
+      ['-12,64,-6', [47, 0]],
+      ['-8,64,-6', [47, 0]],
+      ['-10,64,-8', [47, 0]],
+      ['-14,64,-6', [145, 4]],
+      ['-16,64,-6', [117, 0]],
+    ]);
+    w.blockAt = (x, y, z) => extra.get(`${x},${y},${z}`) ?? blockAt(x, y, z);
+    const sim = new StorySim({ world: w, defaultHome: [-6, 63, -4], now: () => t });
+    const trace: unknown[] = [];
+    const call = (label: string, f: () => unknown) => {
+      try {
+        trace.push([label, f() ?? null]);
+      } catch (e) {
+        const err = e as { status?: number; message?: string };
+        trace.push([label, 'error', err.status ?? null, err.message ?? String(e)]);
+      }
+    };
+    const { id } = sim.create({ name: 'Bills', pawns: 1 });
+    const bill = (label: string, body: unknown) => call(label, () => sim.bills(id, body as never));
+    const benches = () => call('benches', () => sim.state(id).workbenches);
+    for (const pos of [
+      [-2, 64, -2],
+      [-3, 64, -2],
+      [-10, 64, -6],
+      [-14, 64, -6],
+      [-16, 64, -6],
+    ])
+      call(`designate ${pos.join(',')}`, () => sim.workbenches(id, { op: 'designate', pos: pos as never }));
+    benches();
+    bill('add no bench', { op: 'add', bench: [0, 0, 0], bill: { recipe: 'sticks', mode: 'count' } });
+    bill('add unknown', { op: 'add', bench: [-2, 64, -2], bill: { recipe: 'nope', mode: 'count' } });
+    bill('add wrong bench', { op: 'add', bench: [-3, 64, -2], bill: { recipe: 'sticks', mode: 'count' } });
+    bill('add sticks', { op: 'add', bench: [-2, 64, -2], bill: { recipe: 'sticks', mode: 'until' } });
+    bill('add torches', {
+      op: 'add',
+      bench: [-2, 64, -2],
+      bill: {
+        recipe: 'torch',
+        mode: 'count',
+        target: 16,
+        paused: true,
+        radius: 12,
+        pawn: 'any',
+        minSkill: 3,
+        store: 'best',
+        ingredients: { allow: ['coal'], deny: [] },
+      },
+    });
+    bill('add glass', {
+      op: 'add',
+      bench: [-3, 64, -2],
+      bill: { recipe: 'glass', mode: 'count', target: 9, fuel: 'planks' },
+    });
+    bill('add glass inherit', {
+      op: 'add',
+      bench: [-3, 64, -2],
+      bill: { recipe: 'glass', mode: 'forever', fuel: 'inherit' },
+    });
+    for (const recipe of STORY_DEFAULT_RECIPES.slice(0, 80))
+      bill(`add ${recipe.id}`, {
+        op: 'add',
+        bench:
+          recipe.workbench === 'furnace'
+            ? [-3, 64, -2]
+            : recipe.workbench === 'enchanting_table'
+              ? [-10, 64, -6]
+              : recipe.workbench === 'anvil'
+                ? [-14, 64, -6]
+                : recipe.workbench === 'brewing_stand'
+                  ? [-16, 64, -6]
+                  : [-2, 64, -2],
+        bill: { recipe: recipe.id, mode: recipe.modes?.[0] ?? 'count', target: 2, option: 2, prefer: 'fortune' },
+      });
+    benches();
+    const ids = () => (sim.state(id).workbenches ?? []).flatMap((b) => b.bills.map((x) => x.id));
+    const first = ids()[0]!;
+    bill('update', { op: 'update', id: first, target: 5, paused: false, radius: 20 });
+    bill('update fuel at table', { op: 'update', id: first, fuel: 'coal' });
+    const glass = (sim.state(id).workbenches ?? []).find((b) => b.kind === 'furnace')!.bills[0]!.id;
+    bill('update fuel', { op: 'update', id: glass, fuel: 'coal' });
+    bill('update fuel inherit', { op: 'update', id: glass, fuel: 'inherit', mode: 'count', target: 3 });
+    bill('pause', { op: 'pause', id: first });
+    bill('resume', { op: 'resume', id: first });
+    bill('pause missing', { op: 'pause', id: 'bill-none' });
+    bill('reorder', { op: 'reorder', bench: [-2, 64, -2], ids: ids().slice(0, 3).reverse() });
+    bill('release claim', { op: 'release_claim', build: 'b1', item: 'fence' });
+    bill('enchant', {
+      op: 'enchant_tools',
+      items: ['diamond_pickaxe', 'iron_pickaxe', 'nope'],
+      material: 'diamond_ore',
+      count: 2,
+    });
+    bill('enchant again', { op: 'enchant_tools', material: 'glass' });
+    bill('enchant plain', { op: 'enchant_tools', prefer: 'efficiency', preferOnly: true });
+    bill('remove', { op: 'remove', id: first });
+    benches();
+    call('workbench fuel', () => sim.workbenches(id, { op: 'fuel', pos: [-3, 64, -2], fuel: 'logs' } as never));
+    bill('add after fuel', { op: 'add', bench: [-3, 64, -2], bill: { recipe: 'glass', mode: 'count', target: 30 } });
+    benches();
     const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
     expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
   });

@@ -1930,136 +1930,137 @@ export class StorySim {
     return null;
   }
 
-  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; ids?: Key[]; rev: number; note?: string | null } {
+  bills(id: string, body: StoryBillsRequest): BillsAck {
     const c = this.colony(id);
-    const benchAt = (pos: readonly number[]) => {
-      const f = c.benches.get(keyOf(pos));
-      if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
-      if (f.v.supported === false)
-        throw Object.assign(new Error(`this version has no ${f.v.kind.replace(/_/g, ' ')} bills`), { status: 400 });
-      return f;
-    };
-    const holder = (billId: Key) => {
-      for (const f of c.benches.values()) if (f.v.bills.some((b) => String(b.id) === String(billId))) return f;
-      throw Object.assign(new Error('no such bill'), { status: 404 });
-    };
-    let f: Fn<StoryWorkbench>;
-    let newId: Key | undefined;
-    if (body.op === 'enchant_tools') {
-      // The tools hook: a count bill per pickaxe kind at the colony's enchanting table, preferring the enchantment.
-      const table = [...c.benches.values()].find((x) => x.v.kind === 'enchanting_table');
-      if (!table) throw Object.assign(new Error('no enchanting table: place one and designate it'), { status: 400 });
-      const prefer = body.prefer ?? (body.material && /ore|coal|diamond|lapis|redstone|emerald|quartz/.test(body.material) ? 'fortune' : body.material && /glass|ice|glowstone/.test(body.material) ? 'silk_touch' : 'efficiency');
-      const ids: Key[] = [];
-      for (const item of body.items ?? ['diamond_pickaxe']) {
-        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === `enchant:${item}`);
-        if (!recipe || table.v.bills.some((b) => b.recipe === recipe.id && b.prefer === prefer)) continue;
-        const b: StoryBill = {
-          id: `bill${c.seq++}`, recipe: recipe.id, mode: 'count', target: body.count ?? 1, done: 0, paused: false, suspendedReason: null,
-          ingredients: { allow: ['*'], deny: [] }, radius: 32, pawn: 'any', minSkill: null, store: 'best', option: 3, prefer,
-          preferOnly: body.preferOnly ?? false,
-        };
-        table.v.bills.push(b);
-        ids.push(b.id);
-      }
-      table.rev = this.bump(c);
-      return { ok: true, ids, rev: c.rev };
-    }
-    if (body.op === 'release_claim') {
-      // The sim reserves nothing for builds' chains: a release is a no-op that says so.
-      return { ok: true, rev: c.rev, note: `build ${body.build} holds nothing for ${body.item}` };
-    }
-    if (body.op !== 'add' && body.op !== 'reorder') {
-      const auto = [...c.benches.values()]
-        .flatMap((x) => x.v.bills)
-        .find((x) => String(x.id) === String(body.id) && (x.forBuild ?? null) !== null);
-      if (auto && body.op !== 'remove')
-        throw Object.assign(new Error(`an auto bill (for build ${auto.forBuild}) can only be cancelled`), {
-          status: 400,
-        });
-      if (auto) {
-        // Cancelled: that build waits for the item instead of crafting it.
-        const bf = c.builds.get(String(auto.forBuild)) ?? c.builds.get(auto.forBuild!);
-        if (bf && auto.forItem) {
-          bf.v.noCraft = [...(bf.v.noCraft ?? []), auto.forItem];
-          bf.rev = this.bump(c);
-        }
-      }
-    }
-    switch (body.op) {
-      case 'add': {
-        f = benchAt(body.bench);
-        const spec = body.bill;
-        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === spec.recipe);
-        if (!recipe) throw Object.assign(new Error('unknown recipe'), { status: 400 });
-        if (recipe.workbench !== f.v.kind)
-          throw Object.assign(new Error(`no recipe '${recipe.id}' at a ${f.v.kind}`), { status: 400 });
-        if (recipe.modes && !recipe.modes.includes(spec.mode))
-          throw Object.assign(new Error(`mode must be ${recipe.modes.join('|')} for this recipe`), { status: 400 });
-        const b: StoryBill = {
-          id: `bill${c.seq++}`,
-          recipe: recipe.id,
-          mode: spec.mode,
-          target: spec.target ?? (spec.mode === 'until' ? 64 : 1),
-          done: 0,
-          paused: spec.paused ?? false,
-          suspendedReason: null,
-          ingredients: spec.ingredients ?? {
-            allow: recipe.inputs.flatMap((i) =>
-              i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`),
-            ),
-            deny: [],
-          },
-          radius: spec.radius ?? 32,
-          pawn: spec.pawn ?? 'any',
-          minSkill: spec.minSkill ?? null,
-          store: spec.store ?? 'best',
-          ...(recipe.workbench === 'enchanting_table'
-            ? { option: spec.option ?? 3, prefer: spec.prefer ?? null, preferOnly: spec.preferOnly ?? false }
-            : {}),
-          ...(recipe.workbench === 'furnace' ? { fuel: spec.fuel && spec.fuel !== 'inherit' ? spec.fuel : null } : {}),
-        };
-        if (recipe.workbench === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
-        f.v.bills.push(b);
-        newId = b.id;
-        break;
-      }
-      case 'update': {
-        f = holder(body.id);
-        const b = f.v.bills.find((x) => String(x.id) === String(body.id))!;
-        const { op: _op, id: _id, ...fields } = body;
-        if (fields.fuel !== undefined && f.v.kind !== 'furnace')
-          throw Object.assign(new Error('fuel is for furnace bills (a brewing stand burns blaze powder)'), { status: 400 });
-        Object.assign(b, { ...fields, ...(fields.fuel !== undefined ? { fuel: fields.fuel === 'inherit' ? null : fields.fuel } : {}) });
-        if (f.v.kind === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
-        if (fields.paused === false) b.suspendedReason = null;
-        break;
-      }
-      case 'remove':
-        f = holder(body.id);
-        f.v.bills = f.v.bills.filter((b) => String(b.id) !== String(body.id));
-        break;
-      case 'pause':
-      case 'resume':
-        f = holder(body.id);
-        for (const b of f.v.bills)
-          if (String(b.id) === String(body.id)) {
-            b.paused = body.op === 'pause';
-            if (body.op === 'resume') b.suspendedReason = null;
-          }
-        break;
-      case 'reorder': {
-        f = benchAt(body.bench);
-        const ids = body.ids.map(String);
-        const front = ids.map((i) => f.v.bills.find((b) => String(b.id) === i)).filter((b): b is StoryBill => !!b);
-        f.v.bills = [...front, ...f.v.bills.filter((b) => !ids.includes(String(b.id)))];
-        f.rev = this.bump(c);
-        return { ok: true, ids: f.v.bills.map((b) => b.id), rev: c.rev };
-      }
-    }
+    if (body.op === 'enchant_tools') return this.enchantBills(c, body);
+    // The sim reserves nothing for builds' chains: a release is a no-op that says so.
+    if (body.op === 'release_claim') return { ok: true, rev: c.rev, note: `build ${body.build} holds nothing for ${body.item}` };
+    if (body.op === 'reorder') return this.reorderBills(c, body);
+    if (body.op !== 'add') this.guardAutoBill(c, body.id, body.op);
+    const { f, newId } = this.changeBill(c, body);
     f.rev = this.bump(c);
     if (body.op === 'remove') this.plan(c);
     return { ok: true, ...(newId ? { id: newId } : {}), rev: c.rev };
+  }
+
+  /** A designated bench that takes bills (404 none there; 400 one this version has no bills for). */
+  private billBench(c: Colony, pos: readonly number[]): Fn<StoryWorkbench> {
+    const f = c.benches.get(keyOf(pos));
+    if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
+    if (f.v.supported === false)
+      throw Object.assign(new Error(`this version has no ${f.v.kind.replace(/_/g, ' ')} bills`), { status: 400 });
+    return f;
+  }
+
+  /** The bench holding a bill (404 none). */
+  private billHolder(c: Colony, billId: Key): Fn<StoryWorkbench> {
+    for (const f of c.benches.values()) if (f.v.bills.some((b) => String(b.id) === String(billId))) return f;
+    throw Object.assign(new Error('no such bill'), { status: 404 });
+  }
+
+  /** The tools hook: a count bill per pickaxe kind at the colony's enchanting table, preferring the enchantment. */
+  private enchantBills(c: Colony, body: Extract<StoryBillsRequest, { op: 'enchant_tools' }>): BillsAck {
+    const table = [...c.benches.values()].find((x) => x.v.kind === 'enchanting_table');
+    if (!table) throw Object.assign(new Error('no enchanting table: place one and designate it'), { status: 400 });
+    const prefer = body.prefer ?? enchantFor(body.material);
+    const ids: Key[] = [];
+    for (const item of body.items ?? ['diamond_pickaxe']) {
+      const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === `enchant:${item}`);
+      if (!recipe || table.v.bills.some((b) => b.recipe === recipe.id && b.prefer === prefer)) continue;
+      const b: StoryBill = {
+        id: `bill${c.seq++}`,
+        recipe: recipe.id,
+        mode: 'count',
+        target: body.count ?? 1,
+        done: 0,
+        paused: false,
+        suspendedReason: null,
+        ingredients: { allow: ['*'], deny: [] },
+        radius: 32,
+        pawn: 'any',
+        minSkill: null,
+        store: 'best',
+        option: 3,
+        prefer,
+        preferOnly: body.preferOnly ?? false,
+      };
+      table.v.bills.push(b);
+      ids.push(b.id);
+    }
+    table.rev = this.bump(c);
+    return { ok: true, ids, rev: c.rev };
+  }
+
+  /** An auto bill (for a build) can only be cancelled; cancelled, its build waits for the item instead of crafting it. */
+  private guardAutoBill(c: Colony, billId: Key, op: string): void {
+    const auto = [...c.benches.values()]
+      .flatMap((x) => x.v.bills)
+      .find((x) => String(x.id) === String(billId) && (x.forBuild ?? null) !== null);
+    if (!auto) return;
+    if (op !== 'remove')
+      throw Object.assign(new Error(`an auto bill (for build ${auto.forBuild}) can only be cancelled`), {
+        status: 400,
+      });
+    const bf = c.builds.get(String(auto.forBuild)) ?? c.builds.get(auto.forBuild!);
+    if (!bf || !auto.forItem) return;
+    bf.v.noCraft = [...(bf.v.noCraft ?? []), auto.forItem];
+    bf.rev = this.bump(c);
+  }
+
+  private reorderBills(c: Colony, body: Extract<StoryBillsRequest, { op: 'reorder' }>): BillsAck {
+    const f = this.billBench(c, body.bench);
+    const ids = body.ids.map(String);
+    const front = ids.map((i) => f.v.bills.find((b) => String(b.id) === i)).filter((b): b is StoryBill => !!b);
+    f.v.bills = [...front, ...f.v.bills.filter((b) => !ids.includes(String(b.id)))];
+    f.rev = this.bump(c);
+    return { ok: true, ids: f.v.bills.map((b) => b.id), rev: c.rev };
+  }
+
+  /** Adds, updates, removes, pauses or resumes a bill; the bench it is on (and a new bill's id). */
+  private changeBill(
+    c: Colony,
+    body: Extract<StoryBillsRequest, { op: 'add' | 'update' | 'remove' | 'pause' | 'resume' }>,
+  ): { f: Fn<StoryWorkbench>; newId?: Key } {
+    if (body.op === 'add') return this.addBill(c, body);
+    const f = this.billHolder(c, body.id);
+    if (body.op === 'update') this.updateBill(f, body);
+    else if (body.op === 'remove') f.v.bills = f.v.bills.filter((b) => String(b.id) !== String(body.id));
+    else
+      for (const b of f.v.bills)
+        if (String(b.id) === String(body.id)) {
+          b.paused = body.op === 'pause';
+          if (body.op === 'resume') b.suspendedReason = null;
+        }
+    return { f };
+  }
+
+  private addBill(c: Colony, body: Extract<StoryBillsRequest, { op: 'add' }>): { f: Fn<StoryWorkbench>; newId: Key } {
+    const f = this.billBench(c, body.bench);
+    const spec = body.bill;
+    const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === spec.recipe);
+    if (!recipe) throw Object.assign(new Error('unknown recipe'), { status: 400 });
+    if (recipe.workbench !== f.v.kind)
+      throw Object.assign(new Error(`no recipe '${recipe.id}' at a ${f.v.kind}`), { status: 400 });
+    if (recipe.modes && !recipe.modes.includes(spec.mode))
+      throw Object.assign(new Error(`mode must be ${recipe.modes.join('|')} for this recipe`), { status: 400 });
+    const b = newBill(`bill${c.seq++}`, recipe, spec);
+    if (recipe.workbench === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
+    f.v.bills.push(b);
+    return { f, newId: b.id };
+  }
+
+  /** A bill's fields change (fuel only on a furnace's; `inherit` = the bench's); a resumed bill is no longer suspended. */
+  private updateBill(f: Fn<StoryWorkbench>, body: Extract<StoryBillsRequest, { op: 'update' }>): void {
+    const b = f.v.bills.find((x) => String(x.id) === String(body.id))!;
+    const { op: _op, id: _id, ...fields } = body;
+    if (fields.fuel !== undefined && f.v.kind !== 'furnace')
+      throw Object.assign(new Error('fuel is for furnace bills (a brewing stand burns blaze powder)'), { status: 400 });
+    Object.assign(b, {
+      ...fields,
+      ...(fields.fuel !== undefined ? { fuel: fields.fuel === 'inherit' ? null : fields.fuel } : {}),
+    });
+    if (f.v.kind === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
+    if (fields.paused === false) b.suspendedReason = null;
   }
 
   // ------------------------------------------------------------------ builds craft what they need; designated benches; tiers
@@ -3219,4 +3220,51 @@ function hasInput(stock: ReadonlyMap<string, number>, i: (typeof STORY_DEFAULT_R
     ? categoryItems(STORY_DEFAULT_CATEGORIES, i.category)
     : (i.options ?? []).map(([a, m]) => `${a}:${m === -1 ? 0 : m}`);
   return keys.some((key) => (stock.get(key.replace(':-1', ':0')) ?? 0) >= i.count);
+}
+
+// ------------------------------------------------------------------ bills
+
+/** What a bills request answers. */
+type BillsAck = { ok: boolean; id?: Key; ids?: Key[]; rev: number; note?: string | null };
+type BillSpec = Extract<StoryBillsRequest, { op: 'add' }>['bill'];
+
+/** The enchantment tools are enchanted toward for a material: fortune for ores, silk touch for glass and ice, else efficiency. */
+function enchantFor(material: string | undefined): string {
+  if (material && /ore|coal|diamond|lapis|redstone|emerald|quartz/.test(material)) return 'fortune';
+  return material && /glass|ice|glowstone/.test(material) ? 'silk_touch' : 'efficiency';
+}
+
+/** A new bill from its spec: defaults for what it leaves out; an enchanting table's option, a furnace's fuel. */
+function newBill(id: string, recipe: SimRecipe, spec: BillSpec): StoryBill {
+  return {
+    id,
+    recipe: recipe.id,
+    mode: spec.mode,
+    target: spec.target ?? (spec.mode === 'until' ? 64 : 1),
+    done: 0,
+    paused: spec.paused ?? false,
+    suspendedReason: null,
+    ingredients: spec.ingredients ?? { allow: recipeIngredients(recipe), deny: [] },
+    radius: spec.radius ?? 32,
+    pawn: spec.pawn ?? 'any',
+    minSkill: spec.minSkill ?? null,
+    store: spec.store ?? 'best',
+    ...enchantFields(recipe, spec),
+    ...fuelFields(recipe, spec),
+  };
+}
+
+/** A recipe's inputs as a bill's ingredient filter (categories, item keys). */
+const recipeIngredients = (recipe: SimRecipe): string[] =>
+  recipe.inputs.flatMap((i) => (i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`)));
+
+function enchantFields(recipe: SimRecipe, spec: BillSpec): Partial<StoryBill> {
+  if (recipe.workbench !== 'enchanting_table') return {};
+  return { option: spec.option ?? 3, prefer: spec.prefer ?? null, preferOnly: spec.preferOnly ?? false };
+}
+
+/** A furnace bill's own fuel (`inherit` or none: the bench's). */
+function fuelFields(recipe: SimRecipe, spec: BillSpec): Partial<StoryBill> {
+  if (recipe.workbench !== 'furnace') return {};
+  return { fuel: spec.fuel && spec.fuel !== 'inherit' ? spec.fuel : null };
 }

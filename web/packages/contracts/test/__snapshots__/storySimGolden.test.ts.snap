@@ -1,5 +1,274 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`the mock director: a golden run > bills: every op, refused and accepted, at a table, a furnace and an enchanting table (pins bills) 1`] = `
+[
+  [
+    "designate -2,64,-2",
+    "251e57a70805520f",
+  ],
+  [
+    "designate -3,64,-2",
+    "74d7c25cff050f09",
+  ],
+  [
+    "designate -10,64,-6",
+    "04715c777d0f4c2c",
+  ],
+  [
+    "designate -14,64,-6",
+    "75b0d450cb16fefe",
+  ],
+  [
+    "designate -16,64,-6",
+    "cbdc7bb6f757350b",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+  [
+    "add no bench",
+    "8c05b94656a161d4",
+  ],
+  [
+    "add unknown",
+    "ea1748c73988e9e3",
+  ],
+  [
+    "add wrong bench",
+    "cf9bfdd7b9f17479",
+  ],
+  [
+    "add sticks",
+    "52c7d89dd24cca24",
+  ],
+  [
+    "add torches",
+    "5407b2d848b969a2",
+  ],
+  [
+    "add glass",
+    "13d9d59f8a4132e8",
+  ],
+  [
+    "add glass inherit",
+    "2cfd3dfc5c5f41d0",
+  ],
+  [
+    "add planks",
+    "0130d044b88ab363",
+  ],
+  [
+    "add sticks",
+    "9f3ab338ae1a3572",
+  ],
+  [
+    "add torch",
+    "2c03e76457d2c985",
+  ],
+  [
+    "add chest",
+    "58b92a0be3be375d",
+  ],
+  [
+    "add crafting_table",
+    "2f0fc1af64c012ee",
+  ],
+  [
+    "add furnace",
+    "a79461a3ba261660",
+  ],
+  [
+    "add ladder",
+    "f62c6d919980f3b8",
+  ],
+  [
+    "add fence",
+    "d76407a4c6f7cfed",
+  ],
+  [
+    "add door",
+    "5b26341a8efd938e",
+  ],
+  [
+    "add wooden_pickaxe",
+    "11d13685e6547a78",
+  ],
+  [
+    "add stone_pickaxe",
+    "3b439eddeef94307",
+  ],
+  [
+    "add stone_axe",
+    "995b6cddbf7c5282",
+  ],
+  [
+    "add stone_sword",
+    "44c5ee74e6171e16",
+  ],
+  [
+    "add iron_pickaxe",
+    "cb2d85df6de6f8e5",
+  ],
+  [
+    "add bow",
+    "817b6369abf0b53c",
+  ],
+  [
+    "add bread",
+    "7147e85a3c8e4719",
+  ],
+  [
+    "add bucket",
+    "2ac8d96ffc4ec488",
+  ],
+  [
+    "add cook_pork",
+    "26acbcad629a4f8b",
+  ],
+  [
+    "add cook_beef",
+    "4884c13bf56aa47b",
+  ],
+  [
+    "add cook_chicken",
+    "7bf571aea57d6c45",
+  ],
+  [
+    "add cook_fish",
+    "73263d58abfc23bf",
+  ],
+  [
+    "add smelt_iron",
+    "ce0030765f3a4147",
+  ],
+  [
+    "add smelt_gold",
+    "2b3cbe688759f354",
+  ],
+  [
+    "add glass",
+    "18d89d8faa9f6ef4",
+  ],
+  [
+    "add stone",
+    "a0e3eadc1a3ac1d0",
+  ],
+  [
+    "add charcoal",
+    "4a997117544fdc6f",
+  ],
+  [
+    "add brew:awkward",
+    "6719d4079a690dff",
+  ],
+  [
+    "add brew:swiftness",
+    "798ef1eefdbbeb54",
+  ],
+  [
+    "add brew:splash_healing",
+    "ae3b65252895cf0f",
+  ],
+  [
+    "add enchant:diamond_pickaxe",
+    "f58c7746c4afeae3",
+  ],
+  [
+    "add enchant:iron_sword",
+    "ec86d84ce1b89f38",
+  ],
+  [
+    "add enchant:book",
+    "af6006cb54d799dc",
+  ],
+  [
+    "add repair:iron_pickaxe",
+    "9d90ca1b9654ebb3",
+  ],
+  [
+    "add combine:bow",
+    "c8392be2b17015d8",
+  ],
+  [
+    "add book:diamond_sword",
+    "cc4f7ee6f5bfd7b6",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+  [
+    "update",
+    "3775a892cbb86889",
+  ],
+  [
+    "update fuel at table",
+    "165f8fc7b65bbba4",
+  ],
+  [
+    "update fuel",
+    "b698209ff71338fb",
+  ],
+  [
+    "update fuel inherit",
+    "d02a70cbdfce4008",
+  ],
+  [
+    "pause",
+    "de36c7ccb4218d65",
+  ],
+  [
+    "resume",
+    "9c510c563c33b23e",
+  ],
+  [
+    "pause missing",
+    "abb6498ddf4e745c",
+  ],
+  [
+    "reorder",
+    "7188b75a30251462",
+  ],
+  [
+    "release claim",
+    "c391f1531d6885fa",
+  ],
+  [
+    "enchant",
+    "f101df46c5c2eb54",
+  ],
+  [
+    "enchant again",
+    "32777ba9f00171af",
+  ],
+  [
+    "enchant plain",
+    "0968b3a8ef6d14d5",
+  ],
+  [
+    "remove",
+    "894c4ed34104d670",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+  [
+    "workbench fuel",
+    "f984c40b956f844e",
+  ],
+  [
+    "add after fuel",
+    "328c0d3afb21d8e3",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+]
+`;
+
 exports[`the mock director: a golden run > materials: builds without benches, auto-placed stations, smelting, auto bills and their cancel (pins the plan pass) 1`] = `
 [
   [
