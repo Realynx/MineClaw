@@ -20,41 +20,59 @@ public static class ConfigCheck
     public static List<string> Validate(MinecraftSettings mc, AgentOptions a)
     {
         var p = new List<string>();
-        if (string.IsNullOrWhiteSpace(mc.Host)) p.Add("Minecraft:Host is empty");
-        if (mc.Port is <= 0 or > 65535) p.Add($"Minecraft:Port {mc.Port} is not a valid port");
-        if (string.IsNullOrWhiteSpace(mc.Username) || mc.Username.Length > 16) p.Add("Minecraft:Username must be 1-16 characters");
+        CheckServer(mc, p);
         // Provider routing (Agent:Llm:*Provider, Agent:Llm:Ollama). Nothing set to ollama = no new checks, same as before.
         p.AddRange(a.Llm.ValidateProviders());
-        if (a.Llm.MockInUse)
-        {
-            try { _ = new Agent.Llm.MockLlmClient(a.Llm); }
-            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
-            { p.Add($"Agent:Llm:MockScriptPath: {ex.Message}"); }
-        }
+        CheckMockScript(a, p);
         if (string.Equals(a.Llm.Perception.Provider?.Trim(), MineClaw.Agent.Perception.PerceptionProviders.Anthropic, StringComparison.OrdinalIgnoreCase)
             && !MineClaw.Agent.Llm.ModelProfiles.IsCurrentGeneration(a.Llm.Perception.Model))
             p.Add($"Agent:Llm:Perception:Model '{a.Llm.Perception.Model}' is older than the 5.5 generation");
         // The Anthropic key is needed only when some tier runs on Anthropic.
-        if (a.Llm.TiersUseAnthropic)
-        {
-            if (string.IsNullOrWhiteSpace(a.Llm.ApiKey)) p.Add("Agent:Llm:ApiKey is missing (or set ANTHROPIC_API_KEY)");
-            else if (!a.Llm.ApiKey.StartsWith("sk-ant-")) p.Add("Agent:Llm:ApiKey doesn't look like an Anthropic key (sk-ant-...)");
-        }
+        if (a.Llm.TiersUseAnthropic) CheckAnthropicKey(a.Llm.ApiKey, p);
+        CheckModels(a, p);
+        if (a.Embeddings.IsOllama && a.Rag.Enabled) CheckOllamaEmbeddings(a, p);
+        if (!string.Equals(a.Chat.Username, mc.Username, StringComparison.OrdinalIgnoreCase))
+            p.Add($"Agent:Chat:Username ({a.Chat.Username}) should equal Minecraft:Username ({mc.Username})");
+        return p;
+    }
+
+    private static void CheckServer(MinecraftSettings mc, List<string> p)
+    {
+        if (string.IsNullOrWhiteSpace(mc.Host)) p.Add("Minecraft:Host is empty");
+        if (mc.Port is <= 0 or > 65535) p.Add($"Minecraft:Port {mc.Port} is not a valid port");
+        if (string.IsNullOrWhiteSpace(mc.Username) || mc.Username.Length > 16) p.Add("Minecraft:Username must be 1-16 characters");
+    }
+
+    private static void CheckMockScript(AgentOptions a, List<string> p)
+    {
+        if (!a.Llm.MockInUse) return;
+        try { _ = new Agent.Llm.MockLlmClient(a.Llm); }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
+        { p.Add($"Agent:Llm:MockScriptPath: {ex.Message}"); }
+    }
+
+    private static void CheckAnthropicKey(string? apiKey, List<string> p)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey)) p.Add("Agent:Llm:ApiKey is missing (or set ANTHROPIC_API_KEY)");
+        else if (!apiKey.StartsWith("sk-ant-")) p.Add("Agent:Llm:ApiKey doesn't look like an Anthropic key (sk-ant-...)");
+    }
+
+    /// <summary>Both tier models set, a daily cap, and a price for every Anthropic tier model.</summary>
+    private static void CheckModels(AgentOptions a, List<string> p)
+    {
         if (string.IsNullOrWhiteSpace(a.Llm.CheapModel) || string.IsNullOrWhiteSpace(a.Llm.MainModel)) p.Add("Agent:Llm:CheapModel/MainModel must be set");
         if (a.Budget.DailyCapUsd <= 0) p.Add("Agent:Budget:DailyCapUsd must be > 0");
         foreach (var (tier, m) in new[] { (Agent.Llm.ModelTier.Cheap, a.Llm.CheapModel), (Agent.Llm.ModelTier.Main, a.Llm.MainModel) })
             if (!string.IsNullOrWhiteSpace(m) && a.Llm.ProviderFor(tier) == Agent.Llm.LlmProviders.Anthropic && !a.Prices.Models.ContainsKey(m))
                 p.Add($"no price for model {m}: add Agent:Prices:Models:{m}"); // Ollama models are priced from Agent:Prices:Ollama ($0 default)
-        if (a.Embeddings.IsOllama && a.Rag.Enabled)
-        {
-            if (string.IsNullOrWhiteSpace(a.Embeddings.Model)) p.Add("Agent:Embeddings:Provider is ollama but Agent:Embeddings:Model is empty");
-            if (a.Embeddings.Dimensions <= 0) p.Add("Agent:Embeddings:Dimensions must be the Ollama model's vector size");
-            if (string.IsNullOrWhiteSpace(a.Embeddings.Endpoint) && !a.Llm.Ollama.IsConfigured)
-                p.Add("Agent:Embeddings:Provider is ollama but neither Agent:Embeddings:Endpoint nor Agent:Llm:Ollama:Endpoint is set");
-        }
-        if (!string.Equals(a.Chat.Username, mc.Username, StringComparison.OrdinalIgnoreCase))
-            p.Add($"Agent:Chat:Username ({a.Chat.Username}) should equal Minecraft:Username ({mc.Username})");
-        return p;
+    }
+
+    private static void CheckOllamaEmbeddings(AgentOptions a, List<string> p)
+    {
+        if (string.IsNullOrWhiteSpace(a.Embeddings.Model)) p.Add("Agent:Embeddings:Provider is ollama but Agent:Embeddings:Model is empty");
+        if (a.Embeddings.Dimensions <= 0) p.Add("Agent:Embeddings:Dimensions must be the Ollama model's vector size");
+        if (string.IsNullOrWhiteSpace(a.Embeddings.Endpoint) && !a.Llm.Ollama.IsConfigured)
+            p.Add("Agent:Embeddings:Provider is ollama but neither Agent:Embeddings:Endpoint nor Agent:Llm:Ollama:Endpoint is set");
     }
 }
 

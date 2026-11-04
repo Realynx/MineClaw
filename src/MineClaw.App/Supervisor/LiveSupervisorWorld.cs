@@ -422,6 +422,24 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
     {
         var now = _time.GetUtcNow();
         var notes = new List<string>();
+        var claims = ClaimMarks(dim);
+        var places = new List<WorldMark>();
+        var points = new List<WorldMark>();
+        var dangers = new List<WorldMark>();
+        if (_rt is { } rt)
+        {
+            AddRemembered(rt, dim, places, points, notes);
+            AddIndexed(rt, dim, points, dangers, notes);
+        }
+        else notes.Add("no runtime: places and points unavailable");
+        AddVitals(dim, dangers);
+        var plans = Plans(dim, notes);
+        return new WorldOverlays(now, dim, claims, places, points, plans, dangers, notes);
+    }
+
+    /// <summary>The hive's area claims in this dimension (task claims have no area).</summary>
+    private List<WorldMark> ClaimMarks(int dim)
+    {
         var claims = new List<WorldMark>();
         foreach (var l in Leases())
         {
@@ -429,61 +447,73 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
             if (k is not { } key || key.Kind == ClaimKind.Task || key.Dim != dim) continue;
             claims.Add(new WorldMark(key.Kind.ToString().ToLowerInvariant(), text, P(key.Min), P(key.Max), l.Owner));
         }
-        var places = new List<WorldMark>();
-        var points = new List<WorldMark>();
-        var dangers = new List<WorldMark>();
-        if (_rt is { } rt)
+        return claims;
+    }
+
+    /// <summary>The memory's structures (with up to 12 key blocks each) and waypoints.</summary>
+    private void AddRemembered(AgentRuntime rt, int dim, List<WorldMark> places, List<WorldMark> points, List<string> notes)
+    {
+        try
         {
-            try
+            var (wps, sts) = rt.Memory.Read(d => (d.Waypoints.ToList(), d.Structures.ToList()));
+            foreach (var s in sts.Where(s => s.Dimension == dim))
             {
-                var (wps, sts) = rt.Memory.Read(d => (d.Waypoints.ToList(), d.Structures.ToList()));
-                foreach (var s in sts.Where(s => s.Dimension == dim))
-                {
-                    if (s.Min is not { } mn) continue;
-                    var mx = s.Max ?? mn;
-                    places.Add(new WorldMark("structure:" + s.Kind, s.Name, [mn.X, mn.Y, mn.Z], [mx.X, mx.Y, mx.Z]));
-                    foreach (var kb in s.KeyBlocks.Take(12)) points.Add(new WorldMark("key", $"{s.Name}: {kb.Label}", [kb.X, kb.Y, kb.Z], [kb.X, kb.Y, kb.Z]));
-                }
-                foreach (var wp in wps.Where(w => w.Dimension == dim))
-                    places.Add(new WorldMark("waypoint", wp.Name, [wp.X, wp.Y, wp.Z], [wp.X, wp.Y, wp.Z]));
+                if (s.Min is not { } mn) continue;
+                var mx = s.Max ?? mn;
+                places.Add(new WorldMark("structure:" + s.Kind, s.Name, [mn.X, mn.Y, mn.Z], [mx.X, mx.Y, mx.Z]));
+                foreach (var kb in s.KeyBlocks.Take(12)) points.Add(new WorldMark("key", $"{s.Name}: {kb.Label}", [kb.X, kb.Y, kb.Z], [kb.X, kb.Y, kb.Z]));
             }
-            catch (Exception ex) { notes.Add("memory unavailable"); _log?.LogDebug(ex, "supervisor world: memory read failed"); }
-            try
-            {
-                foreach (var kind in PointKinds)
-                    foreach (var row in rt.Observations.OfKind(kind, dim, kind == IndexKinds.Chest ? 400 : 100))
-                        if (row.Bounds is { } b)
-                            points.Add(new WorldMark(kind, Trunc(row.Text, 120), P(b.MinX, b.MinY, b.MinZ), P(b.MaxX, b.MaxY, b.MaxZ)));
-                foreach (var row in rt.Observations.OfKind(IndexKinds.Hazard, dim, 100))
-                    if (row.Bounds is { } b) dangers.Add(new WorldMark("hazard", Trunc(row.Text, 120), P(b.MinX, b.MinY, b.MinZ), P(b.MaxX, b.MaxY, b.MaxZ)));
-            }
-            catch (Exception ex) { notes.Add("world index unavailable"); _log?.LogDebug(ex, "supervisor world: observations failed"); }
+            foreach (var wp in wps.Where(w => w.Dimension == dim))
+                places.Add(new WorldMark("waypoint", wp.Name, [wp.X, wp.Y, wp.Z], [wp.X, wp.Y, wp.Z]));
         }
-        else notes.Add("no runtime: places and points unavailable");
+        catch (Exception ex) { notes.Add("memory unavailable"); _log?.LogDebug(ex, "supervisor world: memory read failed"); }
+    }
+
+    /// <summary>The world index's points of interest (chests up to 400, the rest up to 100 each) and hazards.</summary>
+    private void AddIndexed(AgentRuntime rt, int dim, List<WorldMark> points, List<WorldMark> dangers, List<string> notes)
+    {
+        try
+        {
+            foreach (var kind in PointKinds)
+                foreach (var row in rt.Observations.OfKind(kind, dim, kind == IndexKinds.Chest ? 400 : 100))
+                    if (row.Bounds is { } b)
+                        points.Add(new WorldMark(kind, Trunc(row.Text, 120), P(b.MinX, b.MinY, b.MinZ), P(b.MaxX, b.MaxY, b.MaxZ)));
+            foreach (var row in rt.Observations.OfKind(IndexKinds.Hazard, dim, 100))
+                if (row.Bounds is { } b) dangers.Add(new WorldMark("hazard", Trunc(row.Text, 120), P(b.MinX, b.MinY, b.MinZ), P(b.MaxX, b.MaxY, b.MaxZ)));
+        }
+        catch (Exception ex) { notes.Add("world index unavailable"); _log?.LogDebug(ex, "supervisor world: observations failed"); }
+    }
+
+    /// <summary>Bots in this dimension low on health (≤ 6) or food (≤ 4, alive).</summary>
+    private void AddVitals(int dim, List<WorldMark> dangers)
+    {
         foreach (var b in Bots().Where(b => b.Dim == dim))
         {
             if (b.Hp is > 0 and <= 6) dangers.Add(new WorldMark("vital", $"{b.Short} hp {b.Hp}", P(b.X, b.Y, b.Z), P(b.X, b.Y, b.Z), b.Name));
             if (b.Food is >= 0 and <= 4 && b.Hp > 0) dangers.Add(new WorldMark("vital", $"{b.Short} food {b.Food}", P(b.X, b.Y, b.Z), P(b.X, b.Y, b.Z), b.Name));
         }
+    }
+
+    /// <summary>The live build plans' blocks in this dimension (the 12 newest blueprints in play, 6000 placements at most).</summary>
+    private List<WorldPlan> Plans(int dim, List<string> notes)
+    {
         var plans = new List<WorldPlan>();
         try
         {
-            if (_blueprints() is { Plans: { } store } svc)
-            {
-                int budget = 6000;
-                foreach (var rec in svc.Store.List(12).Where(r => r.Status is "accepted" or "building" or "review" or "draft"))
-                    foreach (var part in store.ForBlueprint(rec.Id).Where(p => p.Dim == dim))
-                    {
-                        var blocks = part.Steps.Where(s => s.Action == MineClaw.Bot.Building.StepAction.Place).Take(budget)
-                            .Select(s => new[] { s.Target.X, s.Target.Y, s.Target.Z, s.Id, s.Meta, s.Finished ? 1 : 0 }).ToList();
-                        budget -= blocks.Count;
-                        plans.Add(new WorldPlan(rec.Id, rec.Name, rec.Status, part.Part, blocks));
-                        if (budget <= 0) break;
-                    }
-            }
+            if (_blueprints() is not { Plans: { } store } svc) return plans;
+            int budget = 6000;
+            foreach (var rec in svc.Store.List(12).Where(r => r.Status is "accepted" or "building" or "review" or "draft"))
+                foreach (var part in store.ForBlueprint(rec.Id).Where(p => p.Dim == dim))
+                {
+                    var blocks = part.Steps.Where(s => s.Action == MineClaw.Bot.Building.StepAction.Place).Take(budget)
+                        .Select(s => new[] { s.Target.X, s.Target.Y, s.Target.Z, s.Id, s.Meta, s.Finished ? 1 : 0 }).ToList();
+                    budget -= blocks.Count;
+                    plans.Add(new WorldPlan(rec.Id, rec.Name, rec.Status, part.Part, blocks));
+                    if (budget <= 0) break;
+                }
         }
         catch (Exception ex) { notes.Add("build plans unavailable"); _log?.LogDebug(ex, "supervisor world: plans failed"); }
-        return new WorldOverlays(now, dim, claims, places, points, plans, dangers, notes);
+        return plans;
     }
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";

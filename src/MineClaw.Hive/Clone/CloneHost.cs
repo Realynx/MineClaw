@@ -271,19 +271,7 @@ public sealed class CloneHost : IHandoffTarget
         _connectedAt = DateTimeOffset.UtcNow;
         _ = Task.Run(() => ClearVoidMarkOnGroundAsync(ct));
 
-        if (welcome.Stranded && !LoggingOut)
-        {
-            // This clone crashed holding items last time: a quick try to put them away, then the task starts whatever happened.
-            // Not the logout's 180 s: a body that logged in stuck in a tree tried all 10 chests, a hand-off to main, then all
-            // again, while the new task waited and its 10 bodies stood in game doing nothing (live 10-30 03:50-03:52, Fox:
-            // "how come they take so long to start actually doing anything?"). What's left is the brain's to store later.
-            _log.LogInformation("clone {Name}: depositing {N} stranded item(s) first (at most {S:0}s)", Name, welcome.StrandedItems, StartupDeposit.TotalSeconds);
-            var r = await new DepositProcedure(_body.Inventory, Claims, "hive_storage_" + Name, this, _log)
-                .RunAsync(StartupDeposit, ct).ConfigureAwait(false);
-            LastDeposit = r;
-            if (r.Empty) _store?.ClearStranded(Name);
-            await ReportAsync("progress", "stranded items: " + r.Text + (r.Empty ? "" : "; still carrying them, store them when it's convenient")).ConfigureAwait(false);
-        }
+        if (welcome.Stranded && !LoggingOut) await DepositStrandedAsync(welcome.StrandedItems, ct).ConfigureAwait(false);
         if (!LoggingOut)
         {
             _body.StartAgent(ct);
@@ -292,54 +280,80 @@ public sealed class CloneHost : IHandoffTarget
         return await _exit.Task.ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// This clone crashed holding items last time: a quick try to put them away, then the task starts whatever happened. Not the
+    /// logout's 180 s: a body that logged in stuck in a tree tried all 10 chests, a hand-off to main, then all again, while the new
+    /// task waited and its 10 bodies stood in game doing nothing (live 10-30 03:50-03:52, Fox: "how come they take so long to start
+    /// actually doing anything?"). What's left is the brain's to store later.
+    /// </summary>
+    private async Task DepositStrandedAsync(int items, CancellationToken ct)
+    {
+        _log.LogInformation("clone {Name}: depositing {N} stranded item(s) first (at most {S:0}s)", Name, items, StartupDeposit.TotalSeconds);
+        var r = await new DepositProcedure(_body.Inventory, Claims, "hive_storage_" + Name, this, _log)
+            .RunAsync(StartupDeposit, ct).ConfigureAwait(false);
+        LastDeposit = r;
+        if (r.Empty) _store?.ClearStranded(Name);
+        await ReportAsync("progress", "stranded items: " + r.Text + (r.Empty ? "" : "; still carrying them, store them when it's convenient")).ConfigureAwait(false);
+    }
+
     // ---------------------------------------------------------------- from main
 
-    private async Task<object?> HandleAsync(HiveMessage m, CancellationToken ct)
+    private static readonly Task<object?> NoReply = Task.FromResult<object?>(null);
+    private Dictionary<string, Func<HiveMessage, CancellationToken, Task<object?>>>? _handlers;
+
+    /// <summary>One handler per message from main (an unknown type, or a payload that doesn't parse, gets no reply).</summary>
+    private Dictionary<string, Func<HiveMessage, CancellationToken, Task<object?>>> Handlers => _handlers ??= new(StringComparer.Ordinal)
     {
-        switch (m.T)
-        {
-            case Msg.Heartbeat: return null;
-            case Msg.Task when m.As<TaskMsg>() is { } t:
-                _task = t;
-                if (!LoggingOut) _ = StartTaskAsync(t, _cts.Token); // the loadout walk never blocks the message queue
-                else PreemptLogout("new task from main"); // a logout after our own finished task yields to the new order
-                return null;
-            case Msg.Recall when m.As<RecallMsg>() is { } r:
-                _ = LogoutAsync(r.Reason, planned: true, r.DeadlineSeconds is { } d ? TimeSpan.FromSeconds(d) : null);
-                return null;
-            case Msg.Roster when m.As<RosterMsg>() is { } ro:
-                Arbiter.Apply(ro);
-                return null;
-            case Msg.Claims when m.As<ClaimsMsg>() is { } c:
-                Claims.SetMirror(c);
-                return null;
-            case Msg.Cmd when m.As<CmdMsg>() is { } cmd:
-                return await _body.ExecuteAsync(cmd.Line, ct).ConfigureAwait(false);
-            case Msg.Inject when m.As<InjectMsg>() is { } inj:
-                if (inj is { Origin: { } origin, Player: { } player, Target: { } target })
-                    _body.InjectRemoteChat(new MineClaw.Agent.Chat.RemoteChat(player, inj.Raw, origin, target, inj.AllowCommands, inj.RequestId));
-                else _body.InjectChat(inj.Raw);
-                return null;
-            case Msg.Chorus when m.As<ChorusMsg>() is { } chorus:
-                _ = SayChorusAsync(chorus); // never block the IPC inbox until the shared fire time
-                return null;
-            case Msg.Note when m.As<NoteMsg>() is { } note:
-                _body.Note(note.Text);
-                return null;
-            case Msg.View:
-                return View == null ? null : await View(ct).ConfigureAwait(false);
-            case Msg.ScriptDebug:
-                return ScriptDebug?.Invoke(m.As<ScriptDebugReq>()?.Code == true);
-            case Msg.BrainContext:
-                return BrainContext?.Invoke(m.As<MineClaw.Agent.Telemetry.BrainContextQuery>() ?? new MineClaw.Agent.Telemetry.BrainContextQuery());
-            case Msg.VisionList:
-                return VisionList?.Invoke(m.As<VisionListReq>()?.Since ?? 0);
-            case Msg.VisionPng when m.As<VisionPngReq>() is { } vp:
-                return VisionPng?.Invoke(vp.Id);
-            case Msg.Bus when m.As<Hierarchy.Bus.BusEnvelope>() is { } env:
-                return BusInbox is { } inbox ? await inbox(env, ct).ConfigureAwait(false) : Hierarchy.Bus.BusReply.Fail("no bus inbox");
-            default: return null;
-        }
+        [Msg.Heartbeat] = (_, _) => NoReply,
+        [Msg.Task] = (m, _) => On(m.As<TaskMsg>(), OnTask),
+        [Msg.Recall] = (m, ct) => On(m.As<RecallMsg>(), r => _ = LogoutAsync(r.Reason, planned: true, r.DeadlineSeconds is { } d ? TimeSpan.FromSeconds(d) : null)),
+        [Msg.Roster] = (m, _) => On(m.As<RosterMsg>(), ro => Arbiter.Apply(ro)),
+        [Msg.Claims] = (m, _) => On(m.As<ClaimsMsg>(), c => Claims.SetMirror(c)),
+        [Msg.Cmd] = CmdAsync,
+        [Msg.Inject] = (m, _) => On(m.As<InjectMsg>(), OnInject),
+        [Msg.Chorus] = (m, ct) => On(m.As<ChorusMsg>(), chorus => _ = SayChorusAsync(chorus)), // never block the IPC inbox until the shared fire time
+        [Msg.Note] = (m, _) => On(m.As<NoteMsg>(), note => _body.Note(note.Text)),
+        [Msg.View] = ViewAsync,
+        [Msg.ScriptDebug] = (m, _) => Task.FromResult<object?>(ScriptDebug?.Invoke(m.As<ScriptDebugReq>()?.Code == true)),
+        [Msg.BrainContext] = (m, _) => Task.FromResult<object?>(BrainContext?.Invoke(m.As<MineClaw.Agent.Telemetry.BrainContextQuery>() ?? new MineClaw.Agent.Telemetry.BrainContextQuery())),
+        [Msg.VisionList] = (m, _) => Task.FromResult<object?>(VisionList?.Invoke(m.As<VisionListReq>()?.Since ?? 0)),
+        [Msg.VisionPng] = (m, _) => Task.FromResult<object?>(m.As<VisionPngReq>() is { } vp ? VisionPng?.Invoke(vp.Id) : null),
+        [Msg.Bus] = BusInboxAsync,
+    };
+
+    private async Task<object?> HandleAsync(HiveMessage m, CancellationToken ct) =>
+        m.T is { } type && Handlers.TryGetValue(type, out var handle) ? await handle(m, ct).ConfigureAwait(false) : null;
+
+    /// <summary>A one-way message: acted on when its payload parses; no reply.</summary>
+    private static Task<object?> On<T>(T? payload, Action<T> act) where T : class
+    {
+        if (payload != null) act(payload);
+        return NoReply;
+    }
+
+    private void OnTask(TaskMsg t)
+    {
+        _task = t;
+        if (!LoggingOut) _ = StartTaskAsync(t, _cts.Token); // the loadout walk never blocks the message queue
+        else PreemptLogout("new task from main"); // a logout after our own finished task yields to the new order
+    }
+
+    private void OnInject(InjectMsg inj)
+    {
+        if (inj is { Origin: { } origin, Player: { } player, Target: { } target })
+            _body.InjectRemoteChat(new MineClaw.Agent.Chat.RemoteChat(player, inj.Raw, origin, target, inj.AllowCommands, inj.RequestId));
+        else _body.InjectChat(inj.Raw);
+    }
+
+    private async Task<object?> CmdAsync(HiveMessage m, CancellationToken ct) =>
+        m.As<CmdMsg>() is { } cmd ? await _body.ExecuteAsync(cmd.Line, ct).ConfigureAwait(false) : null;
+
+    private async Task<object?> ViewAsync(HiveMessage m, CancellationToken ct) => View == null ? null : await View(ct).ConfigureAwait(false);
+
+    private async Task<object?> BusInboxAsync(HiveMessage m, CancellationToken ct)
+    {
+        if (m.As<Hierarchy.Bus.BusEnvelope>() is not { } env) return null;
+        return BusInbox is { } inbox ? await inbox(env, ct).ConfigureAwait(false) : Hierarchy.Bus.BusReply.Fail("no bus inbox");
     }
 
     /// <summary>
@@ -348,45 +362,62 @@ public sealed class CloneHost : IHandoffTarget
     /// </summary>
     internal async Task StartTaskAsync(TaskMsg t, CancellationToken ct)
     {
-        // Just logged in / teleported: the client holds still until the ground is verified. Over the void that hold lasts until a
-        // /tp (it is detected after ~2 s): the task waits for the landing instead of failing at once (live 10-27 07:49: 420 said
-        // "no path up to island", reported failed and logged out, twice).
-        for (int i = 0; i < 40 && _body.HoldingStill && HoldingOverVoid is null && !LoggingOut; i++)
-        {
-            try { await Task.Delay(100, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
-        }
+        if (!await WaitForGroundAsync(ct).ConfigureAwait(false)) return;
         lock (_voidLock)
             if (_voidHold is not null) { _voidDeferred = t; return; }
         string? note = null;
         if (t.Loadout is { Length: > 0 } want)
         {
-            try
-            {
-                var r = await _body.PrepareLoadoutAsync(want, ct).ConfigureAwait(false);
-                if (r != null)
-                {
-                    note = "loadout: " + r.Text;
-                    // Storage lacks a tool: the hive's inventory next (main hands over a spare; live 3, 14:16:58).
-                    var missing = r.Missing.ToList();
-                    var holders = new List<string>();
-                    foreach (var kind in r.Missing.Where(k => !k.Equals(TaskLoadout.Food, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        if (LoggingOut) break;
-                        var h = await RequestHandoffAsync(kind, 1, ct).ConfigureAwait(false);
-                        if (h.Ok && h.Received > 0) { missing.Remove(kind); note += "; then " + h.Text; }
-                        else holders.AddRange(h.Holders);
-                    }
-                    _log.LogInformation("clone {Name}: {Note}", Name, note);
-                    if (missing.Count > 0)
-                        await ReportAsync("progress", $"loadout short: no {string.Join(", no ", missing)} in my inventory or storage" +
-                            (holders.Count > 0 ? $"; spare with {string.Join(", ", holders.Distinct())}" : "")).ConfigureAwait(false);
-                }
-            }
+            try { note = await FetchLoadoutAsync(want, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
             catch (Exception ex) { _log.LogWarning(ex, "clone {Name}: loadout fetch failed", Name); note = "loadout: fetch failed (" + ex.Message + ")"; }
         }
         if (LoggingOut || !ReferenceEquals(_task, t) && _task?.Id != t.Id) return; // replaced meanwhile
         _body.AssignTask(note == null ? t : t with { Text = $"({note}) {t.Text}" });
+    }
+
+    /// <summary>
+    /// Just logged in / teleported: the client holds still until the ground is verified. Over the void that hold lasts until a
+    /// /tp (it is detected after ~2 s): the task waits for the landing instead of failing at once (live 10-27 07:49: 420 said
+    /// "no path up to island", reported failed and logged out, twice). False = cancelled.
+    /// </summary>
+    private async Task<bool> WaitForGroundAsync(CancellationToken ct)
+    {
+        for (int i = 0; i < 40 && _body.HoldingStill && HoldingOverVoid is null && !LoggingOut; i++)
+        {
+            try { await Task.Delay(100, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return false; }
+        }
+        return true;
+    }
+
+    /// <summary>The task's loadout from storage, then the hive for a missing tool; the note for the brain (null = nothing fetched).</summary>
+    private async Task<string?> FetchLoadoutAsync(IReadOnlyList<string> want, CancellationToken ct)
+    {
+        var r = await _body.PrepareLoadoutAsync(want, ct).ConfigureAwait(false);
+        if (r == null) return null;
+        var note = "loadout: " + r.Text;
+        // Storage lacks a tool: the hive's inventory next (main hands over a spare; live 3, 14:16:58).
+        var missing = r.Missing.ToList();
+        var holders = new List<string>();
+        note = await AskHiveForToolsAsync(r, note, missing, holders, ct).ConfigureAwait(false);
+        _log.LogInformation("clone {Name}: {Note}", Name, note);
+        if (missing.Count > 0)
+            await ReportAsync("progress", $"loadout short: no {string.Join(", no ", missing)} in my inventory or storage" +
+                (holders.Count > 0 ? $"; spare with {string.Join(", ", holders.Distinct())}" : "")).ConfigureAwait(false);
+        return note;
+    }
+
+    /// <summary>One hand-off request per missing tool (not food): what arrived leaves <paramref name="missing"/>, else who has a spare.</summary>
+    private async Task<string> AskHiveForToolsAsync(LoadoutReport r, string note, List<string> missing, List<string> holders, CancellationToken ct)
+    {
+        foreach (var kind in r.Missing.Where(k => !k.Equals(TaskLoadout.Food, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (LoggingOut) break;
+            var h = await RequestHandoffAsync(kind, 1, ct).ConfigureAwait(false);
+            if (h.Ok && h.Received > 0) { missing.Remove(kind); note += "; then " + h.Text; }
+            else holders.AddRange(h.Holders);
+        }
+        return note;
     }
 
     // ---------------------------------------------------------------- to main
@@ -569,69 +600,7 @@ public sealed class CloneHost : IHandoffTarget
         LogoutReason = reason;
         bool stayOnline = false;
         int code = CloneExitCodes.Ok;
-        try
-        {
-            _log.LogInformation("clone {Name}: logout ({Reason}); depositing first", Name, reason);
-            try { await _body.StopAgentAsync().ConfigureAwait(false); } catch (Exception ex) { _log.LogWarning(ex, "stop agent failed"); }
-            var limit = timeout ?? TimeSpan.FromSeconds(planned ? _cfg.DepositTimeoutSeconds : _cfg.ParentLossDepositSeconds);
-            DepositReport report;
-            if (!_body.IsPlaying || (!planned && !_body.Inventory.CanActSafely))
-                report = new DepositReport(DepositProcedure.CountOf(_body.Inventory.Items()) == 0, DepositProcedure.CountOf(_body.Inventory.Items()), 0, "not in a state to deposit");
-            else
-            {
-                using var dcts = new CancellationTokenSource(limit + TimeSpan.FromSeconds(5));
-                // Only a logout that follows this clone's own finished task can be pre-empted by a new order (recall, budget and
-                // shutdown can't). Live 10-29: "420 is still stuck on its deposit job and won't take orders from me rn".
-                var abort = EndsTask(reason) ? new CancellationTokenSource() : null;
-                Volatile.Write(ref _logoutAbort, abort);
-                using var linked = abort == null ? null : CancellationTokenSource.CreateLinkedTokenSource(dcts.Token, abort.Token);
-                try
-                {
-                    report = await new DepositProcedure(_body.Inventory, Claims, "hive_storage_" + Name, planned && _link is { IsOpen: true } ? this : null, _log)
-                        .RunAsync(limit, (linked ?? dcts).Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (abort is { IsCancellationRequested: true })
-                {
-                    report = new DepositReport(false, DepositProcedure.CountOf(_body.Inventory.Items()), 0, "pre-empted by a new order");
-                }
-                finally { Volatile.Write(ref _logoutAbort, null); }
-                if (abort is { IsCancellationRequested: true })
-                {
-                    _log.LogInformation("clone {Name}: logout ({Reason}) pre-empted by a new order; staying online", Name, reason);
-                    LogoutReason = null;
-                    stayOnline = true;
-                    Volatile.Write(ref _loggingOut, 0); // online again before the order starts (StartTaskAsync skips while logging out)
-                    try { _body.StartAgent(_cts.Token); } catch (Exception ex) { _log.LogDebug(ex, "restart agent failed"); }
-                    if (_task is { } next) _ = StartTaskAsync(next, _cts.Token);
-                    return;
-                }
-                abort?.Dispose();
-            }
-            LastDeposit = report;
-            _log.LogInformation("clone {Name}: deposit before logout: {Text}", Name, report.Text);
-            await SyncInventoryAsync().ConfigureAwait(false);
-            if (!report.Empty && planned && _body.IsPlaying && _link is { IsOpen: true } && EndsTask(reason))
-            {
-                // The user's rule: the WHOLE inventory is put away before any logout. Storage, a step-out, main's hands and a new
-                // chest all failed: stay online holding it and ask main (free a chest, take the items, or recall me to retry).
-                _log.LogWarning("clone {Name}: {N} item(s) not put away; staying online instead of logging out ({Reason})", Name, report.Remaining, reason);
-                await Send(Msg.NeedsInput, new NeedsInputMsg(_task?.Id ?? "-",
-                    $"couldn't put away {report.Remaining} item(s) ({report.Text}); staying online holding them: free a chest, take them, or recall me")).ConfigureAwait(false);
-                LogoutReason = null;
-                stayOnline = true;
-                try { _body.StartAgent(_cts.Token); } catch (Exception ex) { _log.LogDebug(ex, "restart agent failed"); }
-                return;
-            }
-            if (!report.Empty)
-            {
-                try { _store?.MarkStranded(Name, (planned ? "logout: " : "") + reason, _body.Inventory.Items().ToList()); } catch (Exception ex) { _log.LogWarning(ex, "stranded record failed"); }
-            }
-            else
-            {
-                try { _store?.ClearStranded(Name); } catch (Exception) { }
-            }
-            if (_link is { IsOpen: true } l) await l.SendAsync(Msg.Bye, new ByeMsg(reason, report.Empty, report.Remaining)).ConfigureAwait(false);
-        }
+        try { stayOnline = await PutAwayBeforeLogoutAsync(reason, planned, timeout).ConfigureAwait(false); }
         catch (Exception ex) { _log.LogError(ex, "clone {Name}: logout failed", Name); code = 1; }
         finally
         {
@@ -642,6 +611,108 @@ public sealed class CloneHost : IHandoffTarget
         _cts.Cancel();
         if (_link is { } link) { try { await link.DisposeAsync().ConfigureAwait(false); } catch (Exception) { } }
         _exit.TrySetResult(code);
+    }
+
+    /// <summary>
+    /// The logout's deposit: the brain stops, everything goes into storage (unless the clone can't act), then main hears the bye.
+    /// True = the clone stays online instead (a new order pre-empted the deposit, or items it couldn't put away after its own task).
+    /// </summary>
+    private async Task<bool> PutAwayBeforeLogoutAsync(string reason, bool planned, TimeSpan? timeout)
+    {
+        _log.LogInformation("clone {Name}: logout ({Reason}); depositing first", Name, reason);
+        try { await _body.StopAgentAsync().ConfigureAwait(false); } catch (Exception ex) { _log.LogWarning(ex, "stop agent failed"); }
+        var limit = timeout ?? TimeSpan.FromSeconds(planned ? _cfg.DepositTimeoutSeconds : _cfg.ParentLossDepositSeconds);
+        var (report, preempted) = await LogoutDepositAsync(reason, planned, limit).ConfigureAwait(false);
+        if (preempted)
+        {
+            StayOnlineAfterPreempt(reason);
+            return true;
+        }
+        LastDeposit = report;
+        _log.LogInformation("clone {Name}: deposit before logout: {Text}", Name, report.Text);
+        await SyncInventoryAsync().ConfigureAwait(false);
+        if (MustHoldItems(report, reason, planned))
+        {
+            await HoldItemsAsync(report, reason).ConfigureAwait(false);
+            return true;
+        }
+        RecordStranded(report, reason, planned);
+        if (_link is { IsOpen: true } l) await l.SendAsync(Msg.Bye, new ByeMsg(reason, report.Empty, report.Remaining)).ConfigureAwait(false);
+        return false;
+    }
+
+    /// <summary>A clone that can't act (offline, or a lost parent while unsafe) doesn't deposit: the report says what it holds.</summary>
+    private async Task<(DepositReport Report, bool Preempted)> LogoutDepositAsync(string reason, bool planned, TimeSpan limit)
+    {
+        if (!_body.IsPlaying || (!planned && !_body.Inventory.CanActSafely))
+            return (new DepositReport(DepositProcedure.CountOf(_body.Inventory.Items()) == 0, DepositProcedure.CountOf(_body.Inventory.Items()), 0, "not in a state to deposit"), false);
+        return await DepositForLogoutAsync(reason, planned, limit).ConfigureAwait(false);
+    }
+
+    /// <summary>Items left after a planned logout that ends the clone's own task, while it's online and main can hear it.</summary>
+    private bool MustHoldItems(DepositReport report, string reason, bool planned) =>
+        !report.Empty && planned && _body.IsPlaying && _link is { IsOpen: true } && EndsTask(reason);
+
+    /// <summary>
+    /// The deposit itself. Only a logout that follows this clone's own finished task can be pre-empted by a new order (recall, budget
+    /// and shutdown can't). Live 10-29: "420 is still stuck on its deposit job and won't take orders from me rn".
+    /// </summary>
+    private async Task<(DepositReport Report, bool Preempted)> DepositForLogoutAsync(string reason, bool planned, TimeSpan limit)
+    {
+        using var dcts = new CancellationTokenSource(limit + TimeSpan.FromSeconds(5));
+        var abort = EndsTask(reason) ? new CancellationTokenSource() : null;
+        Volatile.Write(ref _logoutAbort, abort);
+        using var linked = abort == null ? null : CancellationTokenSource.CreateLinkedTokenSource(dcts.Token, abort.Token);
+        DepositReport report;
+        try
+        {
+            report = await new DepositProcedure(_body.Inventory, Claims, "hive_storage_" + Name, planned && _link is { IsOpen: true } ? this : null, _log)
+                .RunAsync(limit, (linked ?? dcts).Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (abort is { IsCancellationRequested: true })
+        {
+            report = new DepositReport(false, DepositProcedure.CountOf(_body.Inventory.Items()), 0, "pre-empted by a new order");
+        }
+        finally { Volatile.Write(ref _logoutAbort, null); }
+        if (abort is { IsCancellationRequested: true }) return (report, true);
+        abort?.Dispose();
+        return (report, false);
+    }
+
+    /// <summary>A new order pre-empted the logout deposit: online again before the order starts (StartTaskAsync skips while logging out).</summary>
+    private void StayOnlineAfterPreempt(string reason)
+    {
+        _log.LogInformation("clone {Name}: logout ({Reason}) pre-empted by a new order; staying online", Name, reason);
+        LogoutReason = null;
+        Volatile.Write(ref _loggingOut, 0);
+        try { _body.StartAgent(_cts.Token); } catch (Exception ex) { _log.LogDebug(ex, "restart agent failed"); }
+        if (_task is { } next) _ = StartTaskAsync(next, _cts.Token);
+    }
+
+    /// <summary>
+    /// The user's rule: the WHOLE inventory is put away before any logout. Storage, a step-out, main's hands and a new chest all
+    /// failed: stay online holding it and ask main (free a chest, take the items, or recall me to retry).
+    /// </summary>
+    private async Task HoldItemsAsync(DepositReport report, string reason)
+    {
+        _log.LogWarning("clone {Name}: {N} item(s) not put away; staying online instead of logging out ({Reason})", Name, report.Remaining, reason);
+        await Send(Msg.NeedsInput, new NeedsInputMsg(_task?.Id ?? "-",
+            $"couldn't put away {report.Remaining} item(s) ({report.Text}); staying online holding them: free a chest, take them, or recall me")).ConfigureAwait(false);
+        LogoutReason = null;
+        try { _body.StartAgent(_cts.Token); } catch (Exception ex) { _log.LogDebug(ex, "restart agent failed"); }
+    }
+
+    /// <summary>What's still on the clone is recorded as stranded; an empty inventory clears the record.</summary>
+    private void RecordStranded(DepositReport report, string reason, bool planned)
+    {
+        if (!report.Empty)
+        {
+            try { _store?.MarkStranded(Name, (planned ? "logout: " : "") + reason, _body.Inventory.Items().ToList()); } catch (Exception ex) { _log.LogWarning(ex, "stranded record failed"); }
+        }
+        else
+        {
+            try { _store?.ClearStranded(Name); } catch (Exception) { }
+        }
     }
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
@@ -802,31 +873,58 @@ public sealed class CloneHost : IHandoffTarget
     {
         if (_link is not { IsOpen: true } l) return HandoffResult.Fail("no link to main");
         if (_bodyRef is not { IsPlaying: true } body) return HandoffResult.Fail("not in game");
-        LendReplyMsg? offer;
-        try { offer = await l.RequestAsync<LendReplyMsg>(Msg.Lend, new LendMsg(item, Math.Max(1, count), ids?.ToArray()), TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
-        catch (HiveIpcException ex) { return HandoffResult.Fail("main did not answer: " + ex.Message); }
-        if (offer is not { Ok: true }) return HandoffResult.Fail(offer?.Reason ?? "main did not answer", offer?.Holders);
+        var (offer, refused) = await AskToLendAsync(l, item, count, ids, ct).ConfigureAwait(false);
+        if (offer == null) return refused!;
         int before = Count(body, offer.Id);
-        bool near;
-        try { near = await body.Inventory.GoNearAsync(new Vec3d(offer.X, offer.Y, offer.Z), ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "walk to main failed"); near = false; }
-        var me = body.Snapshot(false).Pos ?? new BotPos(offer.X, offer.Y, offer.Z);
+        bool near = await WalkToMainAsync(body, offer, ct).ConfigureAwait(false);
         // Go even when the walk fell short: the toss request is what releases main (it stands still until then).
-        LendDoneMsg? done;
-        try { done = await l.RequestAsync<LendDoneMsg>(Msg.LendGo, new LendGoMsg(me.X, me.Y, me.Z), TimeSpan.FromSeconds(15), ct).ConfigureAwait(false); }
-        catch (HiveIpcException ex) { return HandoffResult.Fail("main did not toss: " + ex.Message); }
-        if (done is not { Tossed: > 0 }) return HandoffResult.Fail("main could not toss: " + (done?.Reason ?? "no answer"));
+        var (done, notTossed) = await AskToTossAsync(l, body, offer, ct).ConfigureAwait(false);
+        if (done == null) return notTossed!;
         // Confirmed by this clone's own inventory (the pick-up), never by the toss alone.
-        var until = DateTimeOffset.UtcNow + HandoffPickupWait;
-        while (DateTimeOffset.UtcNow < until && !ct.IsCancellationRequested && Count(body, offer.Id) - before < done.Tossed)
-        {
-            try { await Task.Delay(100, ct).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
-        }
-        int got = Math.Max(0, Count(body, offer.Id) - before);
+        int got = await WaitForPickupAsync(body, offer.Id, before, done.Tossed, ct).ConfigureAwait(false);
         _log.LogInformation("clone {Name}: main tossed {T} {Item}, picked up {Got}{Near}", Name, done.Tossed, offer.Name, got, near ? "" : " (walk to main fell short)");
         return got > 0
             ? new HandoffResult(true, got, $"main handed me {got} {offer.Name}", [])
             : HandoffResult.Fail($"main tossed {done.Tossed} {offer.Name} but I did not pick it up");
+    }
+
+    /// <summary>Main's offer (where it stands, what it hands over), or why there's none.</summary>
+    private static async Task<(LendReplyMsg? Offer, HandoffResult? Refused)> AskToLendAsync(HiveLink l, string item, int count, IReadOnlyList<int>? ids,
+        CancellationToken ct)
+    {
+        LendReplyMsg? offer;
+        try { offer = await l.RequestAsync<LendReplyMsg>(Msg.Lend, new LendMsg(item, Math.Max(1, count), ids?.ToArray()), TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
+        catch (HiveIpcException ex) { return (null, HandoffResult.Fail("main did not answer: " + ex.Message)); }
+        if (offer is not { Ok: true }) return (null, HandoffResult.Fail(offer?.Reason ?? "main did not answer", offer?.Holders));
+        return (offer, null);
+    }
+
+    private async Task<bool> WalkToMainAsync(ICloneBody body, LendReplyMsg offer, CancellationToken ct)
+    {
+        try { return await body.Inventory.GoNearAsync(new Vec3d(offer.X, offer.Y, offer.Z), ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "walk to main failed"); return false; }
+    }
+
+    /// <summary>Asks main to toss from where this clone stands; the toss, or why there was none.</summary>
+    private static async Task<(LendDoneMsg? Done, HandoffResult? Failed)> AskToTossAsync(HiveLink l, ICloneBody body, LendReplyMsg offer, CancellationToken ct)
+    {
+        var me = body.Snapshot(false).Pos ?? new BotPos(offer.X, offer.Y, offer.Z);
+        LendDoneMsg? done;
+        try { done = await l.RequestAsync<LendDoneMsg>(Msg.LendGo, new LendGoMsg(me.X, me.Y, me.Z), TimeSpan.FromSeconds(15), ct).ConfigureAwait(false); }
+        catch (HiveIpcException ex) { return (null, HandoffResult.Fail("main did not toss: " + ex.Message)); }
+        if (done is not { Tossed: > 0 }) return (null, HandoffResult.Fail("main could not toss: " + (done?.Reason ?? "no answer")));
+        return (done, null);
+    }
+
+    /// <summary>Waits (up to <see cref="HandoffPickupWait"/>) until what main tossed is in the inventory; how many arrived.</summary>
+    private static async Task<int> WaitForPickupAsync(ICloneBody body, int id, int before, int tossed, CancellationToken ct)
+    {
+        var until = DateTimeOffset.UtcNow + HandoffPickupWait;
+        while (DateTimeOffset.UtcNow < until && !ct.IsCancellationRequested && Count(body, id) - before < tossed)
+        {
+            try { await Task.Delay(100, ct).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
+        }
+        return Math.Max(0, Count(body, id) - before);
     }
 
     /// <summary>How long a clone waits to pick up what main tossed.</summary>

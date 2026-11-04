@@ -122,47 +122,62 @@ public static class SettingsProxy
     /// <summary>The bot's error → ApiError: per-key validation errors as <c>details</c>, 409 (restart refused) as a conflict.</summary>
     public static async Task WriteErrorAsync(HttpContext ctx, int status, byte[] body, TimeSpan? retryAfter)
     {
-        string msg = "upstream error";
-        JsonArray? details = null;
-        long? retryMs = retryAfter is { } d ? (long)d.TotalMilliseconds : null;
-        try
-        {
-            if (JsonNode.Parse(body) is JsonObject o)
-            {
-                if (o["error"] is JsonValue e && e.TryGetValue<string>(out var s)) msg = Clip(s);
-                if (o["errors"] is JsonArray errs)
-                    details = new JsonArray(errs.OfType<JsonObject>().Take(50).Select(x => (JsonNode)new JsonObject
-                    {
-                        ["path"] = x["key"] is JsonValue k && k.TryGetValue<string>(out var ks) ? ks : "",
-                        ["message"] = x["message"] is JsonValue m && m.TryGetValue<string>(out var ms) ? Clip(ms) : "invalid",
-                    }).ToArray());
-                if (o["retry_after_ms"] is JsonValue ra && ra.TryGetValue<long>(out var r)) retryMs = r;
-            }
-        }
-        catch (JsonException) { }
-        (int outStatus, string code) = status switch
-        {
-            400 => (400, "bad_request"),
-            401 => (502, "upstream_error"),
-            403 => (403, "forbidden"),
-            404 => (404, "not_found"),
-            409 => (409, "conflict"),
-            413 => (413, "payload_too_large"),
-            429 => (429, "rate_limited"),
-            503 => (503, "upstream_unavailable"),
-            _ => (502, "upstream_error"),
-        };
+        var (msg, details, retryMs) = ReadUpstreamError(body, retryAfter is { } d ? (long)d.TotalMilliseconds : null);
+        var (outStatus, code) = MapStatus(status);
         if (status == 401) msg = "the bot refused the bridge (check Supervisor:Token)";
         if (outStatus == 502 && status != 401) msg = "upstream error";
         ctx.Response.StatusCode = outStatus;
         ctx.Response.ContentType = "application/json; charset=utf-8";
         ctx.Response.Headers.CacheControl = "no-store";
-        if (outStatus is 429 or 503 && retryMs is { } rm) ctx.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(rm / 1000.0)).ToString(CultureInfo.InvariantCulture);
         var err = new JsonObject { ["error"] = msg, ["code"] = code };
-        if (outStatus is 429 or 503 && retryMs is { } rms) err["retry_after_ms"] = rms;
+        if (outStatus is 429 or 503 && retryMs is { } rm)
+        {
+            ctx.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(rm / 1000.0)).ToString(CultureInfo.InvariantCulture);
+            err["retry_after_ms"] = rm;
+        }
         if (details is { Count: > 0 }) err["details"] = details;
         await ctx.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(err.ToJsonString()), ctx.RequestAborted);
     }
+
+    /// <summary>The bot's error body: its message (clipped), per-key errors, and a retry hint that beats the Retry-After header.</summary>
+    private static (string Message, JsonArray? Details, long? RetryMs) ReadUpstreamError(byte[] body, long? retryMs)
+    {
+        string msg = "upstream error";
+        JsonArray? details = null;
+        try
+        {
+            if (JsonNode.Parse(body) is JsonObject o)
+            {
+                if (o["error"] is JsonValue e && e.TryGetValue<string>(out var s)) msg = Clip(s);
+                if (o["errors"] is JsonArray errs) details = Details(errs);
+                if (o["retry_after_ms"] is JsonValue ra && ra.TryGetValue<long>(out var r)) retryMs = r;
+            }
+        }
+        catch (JsonException) { }
+        return (msg, details, retryMs);
+    }
+
+    /// <summary>Per-key validation errors (at most 50) as ApiError details: path and message (clipped; "invalid" without one).</summary>
+    private static JsonArray Details(JsonArray errs) =>
+        new(errs.OfType<JsonObject>().Take(50).Select(x => (JsonNode)new JsonObject
+        {
+            ["path"] = x["key"] is JsonValue k && k.TryGetValue<string>(out var ks) ? ks : "",
+            ["message"] = x["message"] is JsonValue m && m.TryGetValue<string>(out var ms) ? Clip(ms) : "invalid",
+        }).ToArray());
+
+    /// <summary>The bot's status → the bridge's status and ApiError code (a refused bridge token is the bridge's 502).</summary>
+    private static (int Status, string Code) MapStatus(int status) => status switch
+    {
+        400 => (400, "bad_request"),
+        401 => (502, "upstream_error"),
+        403 => (403, "forbidden"),
+        404 => (404, "not_found"),
+        409 => (409, "conflict"),
+        413 => (413, "payload_too_large"),
+        429 => (429, "rate_limited"),
+        503 => (503, "upstream_unavailable"),
+        _ => (502, "upstream_error"),
+    };
 
     private static string Clip(string s)
     {
