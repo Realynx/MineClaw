@@ -287,108 +287,102 @@ public partial class FakeServer : IDisposable
 
     private void Handle(IPacket p)
     {
-        if (p is PlayerOnGroundPacket or PlayerPositionPacket or PlayerLookPacket or PlayerPositionLookPacket) Interlocked.Increment(ref _flyingPackets);
-        TrackPlacer(p); // the look and feet a placed block's facing reads (FakeServer.Placement.cs)
-        if (Hook?.Invoke(p) == true) return;
-        if (TrampleFarmland) TrackTrample(p); // farmland back to dirt under a careless walker / a hard landing (FakeServer.Movement.cs)
-        if (MovementChecks && CheckMovement(p)) return; // vanilla "moved too quickly" / "moved wrongly" (FakeServer.Movement.cs)
-        HandleMobs(p); // P4: the bot's melee on mobs (server-side charge and crit), orb pickups
-        if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
-        if (Buckets && HandleBucket(p)) return;
-        if (Fishing && HandleFishing(p)) return; // FakeServer.Fishing.cs
-        if (Modern && HandleStations(p)) return; // brewing stands, enchanting tables (FakeServer.Stations.cs)
-        if (Modern && HandleModern(p)) return;
-        if (CraftingEnabled && HandleCrafting(p)) return;
+        if (HandledBeforeVanilla(p)) return;
         switch (p)
         {
             case UpdateSignPacket sign:
-                if (!SignsLocked)
-                {
-                    var lines = sign.Lines.Select(l => l.Length > 15 || l.Any(c => c < 0x20 || c > 0x7E) ? "!?" : l).ToArray();
-                    Send(new UpdateSignPacket { X = sign.X, Y = sign.Y, Z = sign.Z, Lines = lines });
-                }
+                HandleSignEdit(sign);
                 break;
-            case PlayerBlockPlacementPacket bow when bow.Direction == PlayerBlockPlacementPacket.NoDirection && bow.HeldItem.Id == MineClaw.Data.Items.Bow:
-                if (Array.Exists(Inventory, st => !st.IsEmpty && st.Id == MineClaw.Data.Items.Arrow)) _drawStartTicks = _flyingPackets;
+            case PlayerBlockPlacementPacket place:
+                HandleUseOrPlace(place);
                 break;
-            case PlayerDiggingPacket rel when rel.Status == PlayerDiggingPacket.StatusReleaseUseItem:
-                if (_drawStartTicks >= 0)
-                {
-                    int held = _flyingPackets - _drawStartTicks;
-                    _drawStartTicks = -1;
-                    Shots.Enqueue(held);
-                    int slot = Array.FindIndex(Inventory, st => !st.IsEmpty && st.Id == MineClaw.Data.Items.Arrow);
-                    if (slot >= 0)
-                    {
-                        var cur = Inventory[slot];
-                        Inventory[slot] = cur.Count <= 1 ? ItemStack.Empty : new ItemStack(cur.Id, (byte)(cur.Count - 1), cur.Damage);
-                        Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
-                    }
-                }
+            case PlayerDiggingPacket dig:
+                HandleDigging(dig);
                 break;
             case HandshakePacket:
                 Send(new HandshakePacket("-"));
                 break;
             case LoginRequestPacket:
-                Send(new LoginRequestPacket { EntityId = EntityId, MapSeed = 1234, ServerMode = 0, Dimension = 0, Difficulty = (sbyte)Difficulty, WorldHeight = 128, MaxPlayers = 8 });
-                Send(new SpawnPositionPacket { X = 8, Y = 64, Z = 8 });
-                Send(new TimeUpdatePacket { Time = 6000 });
-                Send(new PlayerListItemPacket { PlayerName = "tester", Online = true, Ping = 1 });
-                if (ChunksAfterConfirm) _chunksPending = true;
-                else SendSpawnChunks();
-                Send(new WindowItemsPacket { WindowId = 0, Items = (ItemStack[])Inventory.Clone() });
-                Send(new UpdateHealthPacket { Health = 20, Food = 20, FoodSaturation = 5 });
-                Send(new PlayerPositionLookPacket { X = SpawnAt.X, Y = SpawnAt.Y, Stance = SpawnAt.Y + 1.62, Z = SpawnAt.Z, Yaw = 0, Pitch = 0, OnGround = false });
-                LoggedIn = true;
-                OnLogin?.Invoke();
+                HandleLoginRequest();
                 break;
             case WindowClickPacket click:
-                if (RejectActions.Contains(click.ActionNumber))
-                {
-                    Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = false });
-                    Send(new WindowItemsPacket { WindowId = click.WindowId, Items = click.WindowId == 0 ? (ItemStack[])Inventory.Clone() : Enumerable.Repeat(ItemStack.Empty, 63).ToArray() });
-                    Send(new SetSlotPacket { WindowId = -1, Slot = -1, Item = ItemStack.Empty });
-                }
-                else Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = true });
+                HandleWindowClick(click);
                 break;
             case HoldingChangePacket hc:
                 _heldSlot = hc.Slot;
                 break;
-            case PlayerDiggingPacket dig:
-                // ItemInWorldManager.blockClicked / 1.12.2 PlayerInteractionManager.onBlockClicked: a block that breaks in one
-                // tick (hardness 0: tall grass, flowers, torches...) is harvested on the start packet; the client sends no finish.
-                if (BreakOnFinish && (dig.Status == PlayerDiggingPacket.StatusFinished
-                                      || dig.Status == PlayerDiggingPacket.StatusStarted && InstantBreak(dig.X, dig.Y, dig.Z)))
-                {
-                    Blocks.TryGetValue((dig.X, dig.Y, dig.Z), out int was);
-                    Metas.Remove((dig.X, dig.Y, dig.Z), out int wasMeta);
-                    Blocks.Remove((dig.X, dig.Y, dig.Z));
-                    if (was != 0) Dug.Enqueue((dig.X, dig.Y, dig.Z, was));
-                    Send(new BlockChangePacket { X = dig.X, Y = dig.Y, Z = dig.Z, BlockId = 0, Metadata = 0 });
-                    Mirror?.Invoke(dig.X, dig.Y, dig.Z, 0, 0);
-                    if (DigDrop is not null) SettleDrops(dig.X, dig.Y, dig.Z);
-                    if (DropOnDig && was != 0)
-                    {
-                        // Beta wheat always drops seeds; ripe wheat also drops one wheat.
-                        // Deterministic ripe seed count (one) keeps the tiny server reproducible.
-                        if (was == 59 && wasMeta == 7)
-                            SpawnDrop(dig.X + 0.5, dig.Y + 0.1, dig.Z + 0.5, new ItemStack(296, 1, 0));
-                        var drop = DigDrop is { } dd ? dd((dig.X, dig.Y, dig.Z), was, wasMeta)
-                            : new ItemStack((short)(was == 59 ? 295 : was == MineClaw.Data.Blocks.Stone ? MineClaw.Data.Blocks.Cobblestone : was), 1, 0);
-                        if (drop is { IsEmpty: false } d && DigDrop is null) SpawnDrop(dig.X + 0.5, dig.Y + 0.1, dig.Z + 0.5, d);
-                        else if (drop is { IsEmpty: false } d2 && GroundBelow(dig.X, dig.Y, dig.Z) is { } gy) SpawnDrop(dig.X + 0.5, gy + 0.1, dig.Z + 0.5, d2);
-                    }
-                    if (Regenerate.TryGetValue((dig.X, dig.Y, dig.Z), out int regenId))
-                    {
-                        var key = (dig.X, dig.Y, dig.Z);
-                        _ = Task.Delay(RegenerateDelayMs).ContinueWith(_ =>
-                        {
-                            Blocks[key] = regenId;
-                            Send(new BlockChangePacket { X = key.Item1, Y = key.Item2, Z = key.Item3, BlockId = (byte)regenId });
-                        });
-                    }
-                }
+            default:
+                HandlePickupMovement(p);
                 break;
+        }
+    }
+
+    /// <summary>The trackers, the test hook, the movement checks and the opt-in features, in order; true = the packet is handled.</summary>
+    private bool HandledBeforeVanilla(IPacket p)
+    {
+        CountFlyingPacket(p);
+        TrackPlacer(p); // the look and feet a placed block's facing reads (FakeServer.Placement.cs)
+        if (Hook?.Invoke(p) == true) return true;
+        if (TrampleFarmland) TrackTrample(p); // farmland back to dirt under a careless walker / a hard landing (FakeServer.Movement.cs)
+        if (MovementChecks && CheckMovement(p)) return true; // vanilla "moved too quickly" / "moved wrongly" (FakeServer.Movement.cs)
+        HandleMobs(p); // P4: the bot's melee on mobs (server-side charge and crit), orb pickups
+        if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
+        return HandledByOptIns(p);
+    }
+
+    private void CountFlyingPacket(IPacket p)
+    {
+        if (p is PlayerOnGroundPacket or PlayerPositionPacket or PlayerLookPacket or PlayerPositionLookPacket) Interlocked.Increment(ref _flyingPackets);
+    }
+
+    /// <summary>Buckets, fishing (FakeServer.Fishing.cs), brewing stands and enchanting tables (FakeServer.Stations.cs), the 1.12.2
+    /// server logic and crafting, each when switched on; true = handled.</summary>
+    private bool HandledByOptIns(IPacket p) =>
+        Buckets && HandleBucket(p)
+        || Fishing && HandleFishing(p)
+        || Modern && (HandleStations(p) || HandleModern(p))
+        || CraftingEnabled && HandleCrafting(p);
+
+    private void HandleSignEdit(UpdateSignPacket sign)
+    {
+        if (SignsLocked) return;
+        var lines = sign.Lines.Select(l => l.Length > 15 || l.Any(c => c < 0x20 || c > 0x7E) ? "!?" : l).ToArray();
+        Send(new UpdateSignPacket { X = sign.X, Y = sign.Y, Z = sign.Z, Lines = lines });
+    }
+
+    private void HandleLoginRequest()
+    {
+        Send(new LoginRequestPacket { EntityId = EntityId, MapSeed = 1234, ServerMode = 0, Dimension = 0, Difficulty = (sbyte)Difficulty, WorldHeight = 128, MaxPlayers = 8 });
+        Send(new SpawnPositionPacket { X = 8, Y = 64, Z = 8 });
+        Send(new TimeUpdatePacket { Time = 6000 });
+        Send(new PlayerListItemPacket { PlayerName = "tester", Online = true, Ping = 1 });
+        if (ChunksAfterConfirm) _chunksPending = true;
+        else SendSpawnChunks();
+        Send(new WindowItemsPacket { WindowId = 0, Items = (ItemStack[])Inventory.Clone() });
+        Send(new UpdateHealthPacket { Health = 20, Food = 20, FoodSaturation = 5 });
+        Send(new PlayerPositionLookPacket { X = SpawnAt.X, Y = SpawnAt.Y, Stance = SpawnAt.Y + 1.62, Z = SpawnAt.Z, Yaw = 0, Pitch = 0, OnGround = false });
+        LoggedIn = true;
+        OnLogin?.Invoke();
+    }
+
+    private void HandleWindowClick(WindowClickPacket click)
+    {
+        if (!RejectActions.Contains(click.ActionNumber))
+        {
+            Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = true });
+            return;
+        }
+        Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = false });
+        Send(new WindowItemsPacket { WindowId = click.WindowId, Items = click.WindowId == 0 ? (ItemStack[])Inventory.Clone() : Enumerable.Repeat(ItemStack.Empty, 63).ToArray() });
+        Send(new SetSlotPacket { WindowId = -1, Slot = -1, Item = ItemStack.Empty });
+    }
+
+    /// <summary>Items are picked up where the player's last position packet put it; a stationary player still picks up items every
+    /// server tick (opt-in).</summary>
+    private void HandlePickupMovement(IPacket p)
+    {
+        switch (p)
+        {
             case PlayerPositionPacket pp:
                 _pickupPosition = (pp.X, pp.Y, pp.Z);
                 CheckPickups(pp.X, pp.Y, pp.Z);
@@ -397,98 +391,181 @@ public partial class FakeServer : IDisposable
                 _pickupPosition = (ppl.X, ppl.Y, ppl.Z);
                 CheckPickups(ppl.X, ppl.Y, ppl.Z);
                 break;
-            case PlayerOnGroundPacket:
-            case PlayerLookPacket:
-                // A stationary player still picks up items every server tick (opt-in).
-                if (!StationaryPickup) break;
+            case PlayerOnGroundPacket or PlayerLookPacket when StationaryPickup:
                 var pos = _pickupPosition ?? SpawnAt;
                 CheckPickups(pos.X, pos.Y, pos.Z);
                 break;
-            case PlayerBlockPlacementPacket use when use.Direction == PlayerBlockPlacementPacket.NoDirection:
-                if (!use.HeldItem.IsEmpty && MineClaw.Data.Items.Food(use.HeldItem.Id) is { } meal && Food < 20)
-                {
-                    int id = use.HeldItem.Id;
-                    _ = Task.Delay(EatDelayMs).ContinueWith(_ =>
-                    {
-                        int slot = Array.FindIndex(Inventory, 36, 9, st => !st.IsEmpty && st.Id == id);
-                        if (slot < 0) slot = Array.FindIndex(Inventory, 9, 27, st => !st.IsEmpty && st.Id == id);
-                        if (slot >= 0)
-                        {
-                            var cur = Inventory[slot];
-                            Inventory[slot] = cur.Count <= 1 ? ItemStack.Empty : new ItemStack(cur.Id, (byte)(cur.Count - 1), cur.Damage);
-                            Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
-                        }
-                        Send(new EntityStatusPacket { EntityId = EntityId, Status = 9 });
-                        Eaten.Enqueue(id);
-                        SetVitals(Health, Math.Min(20, Food + meal.Hunger), meal.Hunger * meal.Saturation * 2);
-                    });
-                }
-                break;
-            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
-                                                       && ToggleOpenable(place.X, place.Y, place.Z):
-                break;
-            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection:
-                if (Chests.TryGetValue((place.X, place.Y, place.Z), out var contents))
-                {
-                    sbyte id = (sbyte)++_windowId;
-                    Send(new OpenWindowPacket { WindowId = id, InventoryType = 0, Title = "Chest", SlotCount = 27 });
-                    var items = new ItemStack[63];
-                    for (int i = 0; i < 27; i++) items[i] = contents[i];
-                    for (int i = 0; i < 36; i++) items[27 + i] = Inventory[9 + i];
-                    Send(new WindowItemsPacket { WindowId = id, Items = items });
-                }
-                else if (Furnaces.TryGetValue((place.X, place.Y, place.Z), out var fslots))
-                {
-                    sbyte id = (sbyte)++_windowId;
-                    Send(new OpenWindowPacket { WindowId = id, InventoryType = 2, Title = "Furnace", SlotCount = 3 });
-                    var items = new ItemStack[39];
-                    for (int i = 0; i < 3; i++) items[i] = fslots[i];
-                    for (int i = 0; i < 36; i++) items[3 + i] = Inventory[9 + i];
-                    Send(new WindowItemsPacket { WindowId = id, Items = items });
-                }
-                else if (PlaceBlocks && !place.HeldItem.IsEmpty && (place.HeldItem.Id < 256 ||
-                    (place.HeldItem.Id == 295 && place.Direction == 1 && Blocks.GetValueOrDefault((place.X, place.Y, place.Z)) == 60)))
-                {
-                    var (dx, dy, dz) = place.Direction switch { 0 => (0, -1, 0), 1 => (0, 1, 0), 2 => (0, 0, -1), 3 => (0, 0, 1), 4 => (-1, 0, 0), _ => (1, 0, 0) };
-                    int x = place.X + dx, y = place.Y + dy, z = place.Z + dz;
-                    int placed = place.HeldItem.Id == 295 ? 59 : place.HeldItem.Id; // seeds on farmland plant wheat crops
-                    if (placed == 59 && Blocks.GetValueOrDefault((x, y, z)) != 0) break;
-                    Blocks[(x, y, z)] = placed;
-                    int meta = OrientedMeta(place, placed, place.HeldItem.Damage, x, y, z) // facing, axis, half (FakeServer.Placement.cs)
-                        ?? (place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage
-                        : place.HeldItem.Id == MineClaw.Data.Blocks.Torch ? MineClaw.World.PlaceRules.TorchMeta((MineClaw.World.BlockFace)place.Direction) // BlockTorch.postPlace
-                        : 0);
-                    if (meta != 0) Metas[(x, y, z)] = meta;
-                    else Metas.Remove((x, y, z));
-                    RegisterStation(x, y, z, placed);
-                    Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)placed, Metadata = (byte)meta });
-                    Mirror?.Invoke(x, y, z, placed, meta);
-                    if (FallingBlocks && placed is MineClaw.Data.Blocks.Sand or MineClaw.Data.Blocks.Gravel && GroundBelow(x, y, z) != y)
-                    {
-                        // The placed block falls: its cell empties and it lands on the first block below (or is lost over the void).
-                        int? land = GroundBelow(x, y, z);
-                        SetBlock(x, y, z, 0);
-                        Mirror?.Invoke(x, y, z, 0, 0);
-                        if (land is { } ly)
-                        {
-                            SetBlock(x, ly, z, placed);
-                            Mirror?.Invoke(x, ly, z, placed, 0);
-                        }
-                    }
-                    if (ConsumeOnPlace)
-                    {
-                        var h = place.HeldItem;
-                        var left = h.Count <= 1 ? ItemStack.Empty : new ItemStack(h.Id, (byte)(h.Count - 1), h.Damage);
-                        Inventory[36 + _heldSlot] = left;
-                        var slotUpdate = new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = left };
-                        // 1.12.2: processTryUseItemOnBlock sends only the Block Changes; the Set Slot comes from the player's next
-                        // detectAndSendChanges, a tick later (b1.8.1's NetServerHandler sends it in the same handler).
-                        if (Modern) _ = Task.Delay(60).ContinueWith(_ => { try { Send(slotUpdate); } catch (Exception) { } }, TaskScheduler.Default);
-                        else Send(slotUpdate);
-                    }
-                }
-                break;
         }
+    }
+
+    // ------------------------------------------------------------------ digging, using and placing
+
+    private void HandleDigging(PlayerDiggingPacket dig)
+    {
+        if (dig.Status == PlayerDiggingPacket.StatusReleaseUseItem) ReleaseBowDraw();
+        // ItemInWorldManager.blockClicked / 1.12.2 PlayerInteractionManager.onBlockClicked: a block that breaks in one
+        // tick (hardness 0: tall grass, flowers, torches...) is harvested on the start packet; the client sends no finish.
+        else if (BreakOnFinish && (dig.Status == PlayerDiggingPacket.StatusFinished
+                                   || dig.Status == PlayerDiggingPacket.StatusStarted && InstantBreak(dig.X, dig.Y, dig.Z)))
+            BreakDugBlock(dig.X, dig.Y, dig.Z);
+    }
+
+    /// <summary>A bow released after a draw: the shot's draw time (in flying packets) is recorded and one arrow used up.</summary>
+    private void ReleaseBowDraw()
+    {
+        if (_drawStartTicks < 0) return;
+        int held = _flyingPackets - _drawStartTicks;
+        _drawStartTicks = -1;
+        Shots.Enqueue(held);
+        int slot = Array.FindIndex(Inventory, st => !st.IsEmpty && st.Id == MineClaw.Data.Items.Arrow);
+        if (slot < 0) return;
+        var cur = Inventory[slot];
+        Inventory[slot] = cur.Count <= 1 ? ItemStack.Empty : new ItemStack(cur.Id, (byte)(cur.Count - 1), cur.Damage);
+        Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
+    }
+
+    private void BreakDugBlock(int x, int y, int z)
+    {
+        Blocks.TryGetValue((x, y, z), out int was);
+        Metas.Remove((x, y, z), out int wasMeta);
+        Blocks.Remove((x, y, z));
+        if (was != 0) Dug.Enqueue((x, y, z, was));
+        Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = 0, Metadata = 0 });
+        Mirror?.Invoke(x, y, z, 0, 0);
+        if (DigDrop is not null) SettleDrops(x, y, z);
+        if (DropOnDig && was != 0) DropDugBlock(x, y, z, was, wasMeta);
+        if (Regenerate.TryGetValue((x, y, z), out int regenId)) RegenerateLater((x, y, z), regenId);
+    }
+
+    private void DropDugBlock(int x, int y, int z, int was, int wasMeta)
+    {
+        // Beta wheat always drops seeds; ripe wheat also drops one wheat.
+        // Deterministic ripe seed count (one) keeps the tiny server reproducible.
+        if (was == 59 && wasMeta == 7)
+            SpawnDrop(x + 0.5, y + 0.1, z + 0.5, new ItemStack(296, 1, 0));
+        var drop = DigDrop is { } dd ? dd((x, y, z), was, wasMeta)
+            : new ItemStack((short)(was == 59 ? 295 : was == MineClaw.Data.Blocks.Stone ? MineClaw.Data.Blocks.Cobblestone : was), 1, 0);
+        if (drop is { IsEmpty: false } d && DigDrop is null) SpawnDrop(x + 0.5, y + 0.1, z + 0.5, d);
+        else if (drop is { IsEmpty: false } d2 && GroundBelow(x, y, z) is { } gy) SpawnDrop(x + 0.5, gy + 0.1, z + 0.5, d2);
+    }
+
+    private void RegenerateLater((int, int, int) key, int regenId)
+    {
+        _ = Task.Delay(RegenerateDelayMs).ContinueWith(_ =>
+        {
+            Blocks[key] = regenId;
+            Send(new BlockChangePacket { X = key.Item1, Y = key.Item2, Z = key.Item3, BlockId = (byte)regenId });
+        });
+    }
+
+    private void HandleUseOrPlace(PlayerBlockPlacementPacket place)
+    {
+        if (place.Direction == PlayerBlockPlacementPacket.NoDirection)
+        {
+            if (place.HeldItem.Id == MineClaw.Data.Items.Bow) StartBowDraw();
+            else EatHeldLater(place.HeldItem);
+        }
+        else if (!ToggleOpenable(place.X, place.Y, place.Z)) OpenOrPlace(place);
+    }
+
+    private void StartBowDraw()
+    {
+        if (Array.Exists(Inventory, st => !st.IsEmpty && st.Id == MineClaw.Data.Items.Arrow)) _drawStartTicks = _flyingPackets;
+    }
+
+    /// <summary>Eating the held food (when hungry): after <see cref="EatDelayMs"/>, one is used up, the eat status sent and food restored.</summary>
+    private void EatHeldLater(ItemStack held)
+    {
+        if (held.IsEmpty || MineClaw.Data.Items.Food(held.Id) is not { } meal || Food >= 20) return;
+        int id = held.Id;
+        _ = Task.Delay(EatDelayMs).ContinueWith(_ =>
+        {
+            int slot = Array.FindIndex(Inventory, 36, 9, st => !st.IsEmpty && st.Id == id);
+            if (slot < 0) slot = Array.FindIndex(Inventory, 9, 27, st => !st.IsEmpty && st.Id == id);
+            if (slot >= 0)
+            {
+                var cur = Inventory[slot];
+                Inventory[slot] = cur.Count <= 1 ? ItemStack.Empty : new ItemStack(cur.Id, (byte)(cur.Count - 1), cur.Damage);
+                Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
+            }
+            Send(new EntityStatusPacket { EntityId = EntityId, Status = 9 });
+            Eaten.Enqueue(id);
+            SetVitals(Health, Math.Min(20, Food + meal.Hunger), meal.Hunger * meal.Saturation * 2);
+        });
+    }
+
+    /// <summary>A click on a chest or furnace opens its window; else the held block (or seeds on farmland) is placed.</summary>
+    private void OpenOrPlace(PlayerBlockPlacementPacket place)
+    {
+        if (Chests.TryGetValue((place.X, place.Y, place.Z), out var contents)) OpenContainerWindow(0, "Chest", contents, 27);
+        else if (Furnaces.TryGetValue((place.X, place.Y, place.Z), out var fslots)) OpenContainerWindow(2, "Furnace", fslots, 3);
+        else if (PlaceBlocks && !place.HeldItem.IsEmpty && (place.HeldItem.Id < 256 ||
+                 (place.HeldItem.Id == 295 && place.Direction == 1 && Blocks.GetValueOrDefault((place.X, place.Y, place.Z)) == 60)))
+            PlaceHeldBlock(place);
+    }
+
+    /// <summary>Opens a container window: its <paramref name="size"/> slots, then the player's 36.</summary>
+    private void OpenContainerWindow(byte type, string title, ItemStack[] slots, int size)
+    {
+        sbyte id = (sbyte)++_windowId;
+        Send(new OpenWindowPacket { WindowId = id, InventoryType = type, Title = title, SlotCount = (byte)size });
+        var items = new ItemStack[size + 36];
+        for (int i = 0; i < size; i++) items[i] = slots[i];
+        for (int i = 0; i < 36; i++) items[size + i] = Inventory[9 + i];
+        Send(new WindowItemsPacket { WindowId = id, Items = items });
+    }
+
+    private void PlaceHeldBlock(PlayerBlockPlacementPacket place)
+    {
+        var (x, y, z) = PlacedCell(place);
+        int placed = place.HeldItem.Id == 295 ? 59 : place.HeldItem.Id; // seeds on farmland plant wheat crops
+        if (placed == 59 && Blocks.GetValueOrDefault((x, y, z)) != 0) return;
+        Blocks[(x, y, z)] = placed;
+        int meta = OrientedMeta(place, placed, place.HeldItem.Damage, x, y, z) ?? PlainPlacedMeta(place); // facing, axis, half (FakeServer.Placement.cs)
+        if (meta != 0) Metas[(x, y, z)] = meta;
+        else Metas.Remove((x, y, z));
+        RegisterStation(x, y, z, placed);
+        Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)placed, Metadata = (byte)meta });
+        Mirror?.Invoke(x, y, z, placed, meta);
+        if (FallingBlocks) FallIfUnsupported(x, y, z, placed);
+        if (ConsumeOnPlace) ConsumePlacedItem(place.HeldItem);
+    }
+
+    /// <summary>The cell next to the clicked block on the clicked face.</summary>
+    private static (int X, int Y, int Z) PlacedCell(PlayerBlockPlacementPacket place)
+    {
+        var (dx, dy, dz) = place.Direction switch { 0 => (0, -1, 0), 1 => (0, 1, 0), 2 => (0, 0, -1), 3 => (0, 0, 1), 4 => (-1, 0, 0), _ => (1, 0, 0) };
+        return (place.X + dx, place.Y + dy, place.Z + dz);
+    }
+
+    /// <summary>The old rule's meta: the item's variant for saplings, logs and wool, a torch from its face (BlockTorch.postPlace), else 0.</summary>
+    private static int PlainPlacedMeta(PlayerBlockPlacementPacket place) =>
+        place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage
+        : place.HeldItem.Id == MineClaw.Data.Blocks.Torch ? MineClaw.World.PlaceRules.TorchMeta((MineClaw.World.BlockFace)place.Direction)
+        : 0;
+
+    /// <summary>Placed sand or gravel with no block right under it falls: its cell empties and it lands on the first block below (or
+    /// is lost over the void).</summary>
+    private void FallIfUnsupported(int x, int y, int z, int placed)
+    {
+        if (placed is not (MineClaw.Data.Blocks.Sand or MineClaw.Data.Blocks.Gravel) || GroundBelow(x, y, z) == y) return;
+        int? land = GroundBelow(x, y, z);
+        SetBlock(x, y, z, 0);
+        Mirror?.Invoke(x, y, z, 0, 0);
+        if (land is not { } ly) return;
+        SetBlock(x, ly, z, placed);
+        Mirror?.Invoke(x, ly, z, placed, 0);
+    }
+
+    private void ConsumePlacedItem(ItemStack h)
+    {
+        var left = h.Count <= 1 ? ItemStack.Empty : new ItemStack(h.Id, (byte)(h.Count - 1), h.Damage);
+        Inventory[36 + _heldSlot] = left;
+        var slotUpdate = new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = left };
+        // 1.12.2: processTryUseItemOnBlock sends only the Block Changes; the Set Slot comes from the player's next
+        // detectAndSendChanges, a tick later (b1.8.1's NetServerHandler sends it in the same handler).
+        if (Modern) _ = Task.Delay(60).ContinueWith(_ => { try { Send(slotUpdate); } catch (Exception) { } }, TaskScheduler.Default);
+        else Send(slotUpdate);
     }
 
     /// <summary>1.12.2 server logic that differs from b1.8.1's (see the class remarks). True = handled.</summary>
