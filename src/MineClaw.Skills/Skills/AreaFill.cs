@@ -43,93 +43,153 @@ internal static class AreaFill
         return new Rect(Math.Min(v[0], v[2]), Math.Min(v[1], v[3]), Math.Max(v[0], v[2]), Math.Max(v[1], v[3]));
     }
 
+    /// <summary>What the fill starts from: the level, the empty cells still to fill and their BFS level from the floor.</summary>
+    private sealed record Setup(Rect R, int Y, string Where, List<BlockPos> Cells, string Cover, HashSet<BlockPos> Todo, int Total,
+        List<BlockPos> Prot, Dictionary<BlockPos, int> Level);
+
     public static async Task<SkillResult> RunAsync(SkillContext ctx, JsonElement args, Rect r, CancellationToken ct)
     {
+        var (s, done) = Prepare(ctx, args, r);
+        if (s is null) return done!;
+        int max = Math.Clamp(args.Int("max") ?? s.Todo.Count, 1, MaxCells);
+        var (block, note) = await MaterialAsync(ctx, args.Str("block"), Math.Min(max, s.Todo.Count), ct).ConfigureAwait(false);
+        if (block is not { } id) return SkillResult.Fail(note ?? "no building blocks");
+        var fill = new Filler(ctx, s, max, id);
+        await fill.RunAsync(ct).ConfigureAwait(false);
+        return fill.Result(note);
+    }
+
+    /// <summary>The level and cells to fill, or the answer without placing anything (too big, outside the world, not loaded,
+    /// already solid, nothing to grow from).</summary>
+    private static (Setup? S, SkillResult? Done) Prepare(SkillContext ctx, JsonElement args, Rect r)
+    {
         var w = ctx.World;
-        if (r.Count > MaxCells) return SkillResult.Fail($"area {r} is {r.Count} cells; at most {MaxCells} per call");
+        if (r.Count > MaxCells) return (null, SkillResult.Fail($"area {r} is {r.Count} cells; at most {MaxCells} per call"));
         int y = args.Int("y") ?? FloorLevel(ctx, r) ?? ctx.Me.Y - 1;
-        if (y < 1 || y >= w.WorldHeight - 2) return SkillResult.Fail($"y {y} is outside the world");
+        if (y < 1 || y >= w.WorldHeight - 2) return (null, SkillResult.Fail($"y {y} is outside the world"));
         string where = $"{r} at y{y}";
         var cells = r.Cells(y).ToList();
-        if (cells.Any(c => !w.IsLoaded(c.X, c.Z))) return SkillResult.Fail($"part of {where} isn't loaded; come closer first");
+        if (cells.Any(c => !w.IsLoaded(c.X, c.Z))) return (null, SkillResult.Fail($"part of {where} isn't loaded; come closer first"));
         string cover = Coverage(ctx, r, y);
         var todo = cells.Where(c => SkillWorld.Replaceable(w, c)).ToHashSet();
         int total = todo.Count;
-        if (total == 0) return SkillResult.Success($"filled 0/0 cells of {where}: already solid" + cover);
+        if (total == 0) return (null, SkillResult.Success($"filled 0/0 cells of {where}: already solid" + cover));
         var prot = todo.Where(ctx.Protected).ToList();
         todo.ExceptWith(prot);
         var level = Levels(w, y, todo);
         if (level.Count == 0)
-            return SkillResult.Fail($"nothing solid at y{y} in or beside {r}: no edge to grow the floor from" + cover);
-        int max = Math.Clamp(args.Int("max") ?? todo.Count, 1, MaxCells);
-        var (block, note) = await MaterialAsync(ctx, args.Str("block"), Math.Min(max, todo.Count), ct).ConfigureAwait(false);
-        if (block is not { } id) return SkillResult.Fail(note ?? "no building blocks");
-        string name = SkillWorld.Name(id);
+            return (null, SkillResult.Fail($"nothing solid at y{y} in or beside {r}: no edge to grow the floor from" + cover));
+        return (new Setup(r, y, where, cells, cover, todo, total, prot, level), null);
+    }
 
-        int placed = 0, streak = 0;
-        bool restocked = false;
-        string? stop = null, lastFail = null;
-        BlockPos? last = null;
-        var failedAt = new Dictionary<BlockPos, int>(); // cell → its support count when it failed (retried once that grows)
-        int Supports(BlockPos c) => BlockFaceExtensions.All.Count(f => SkillWorld.Solid(w, c.Offset(f)));
-        while (todo.Count > 0 && placed < max)
+    /// <summary>The placing loop: the lowest-level reachable cell next (beside the last one, then nearest), restocked once,
+    /// stopped by a veto, a void/danger refusal, 8 failures in a row or no reachable cell.</summary>
+    private sealed class Filler(SkillContext ctx, Setup s, int max, int id)
+    {
+        private readonly WorldState _w = ctx.World;
+        private readonly string _name = SkillWorld.Name(id);
+        private readonly Dictionary<BlockPos, int> _failedAt = new(); // cell → its support count when it failed (retried once that grows)
+        private int _placed, _streak;
+        private bool _restocked;
+        private string? _stop, _lastFail;
+        private BlockPos? _last;
+
+        public async Task RunAsync(CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested();
-            todo.RemoveWhere(c => !SkillWorld.Replaceable(w, c)); // someone else filled it
-            if (todo.Count == 0) break;
-            if (BuildOps.HostileVeto(ctx) is { } h) { stop = h; break; }
-            if (ctx.SurvivalVeto("expand_island", SafetyClass.Edge) is { } sv) { stop = sv; break; }
-            var me = ctx.Feet;
-            var next = todo.Where(c => level.ContainsKey(c) && Supports(c) > failedAt.GetValueOrDefault(c))
-                .OrderBy(c => level[c])
-                .ThenBy(c => last is { } l && Math.Abs(c.X - l.X) + Math.Abs(c.Z - l.Z) == 1 ? 0 : 1)
-                .ThenBy(c => Math.Pow(c.X + 0.5 - me.X, 2) + Math.Pow(c.Z + 0.5 - me.Z, 2))
-                .Cast<BlockPos?>().FirstOrDefault();
-            if (next is not { } c)
+            while (s.Todo.Count > 0 && _placed < max)
             {
-                if (failedAt.Count > 0) stop = "no cell can be reached safely" + (lastFail is null ? "" : $"; last: {lastFail}");
-                break;
-            }
-            if (!ctx.Has(id))
-            {
-                if (!restocked && ctx.Registry.Obtain != null)
+                ct.ThrowIfCancellationRequested();
+                s.Todo.RemoveWhere(c => !SkillWorld.Replaceable(_w, c)); // someone else filled it
+                if (s.Todo.Count == 0 || Vetoed()) break;
+                var me = ctx.Feet;
+                if (Next(me) is not { } c)
                 {
-                    restocked = true;
-                    await MaterialAsync(ctx, name, Math.Min(max - placed, todo.Count), ct).ConfigureAwait(false);
+                    NothingReachable();
+                    break;
                 }
-                if (!ctx.Has(id)) { stop = $"out of {name}"; break; }
+                if (!await StockedAsync(ct).ConfigureAwait(false) || !await PlaceAsync(c, me, ct).ConfigureAwait(false)) break;
             }
-            // Out of reach: walk first (the pathfinder never stands over the void); the client's place still leans out at an
-            // edge (sneaking, EdgeGuard on) when the only support is the outer face of the floor block beside the cell.
-            if (Aiming.FindPlaceAim(w, w.Player.EyePosition, c, ctx.Game.Reach, AABB.ForPlayer(me)) is null)
-                await ctx.ReachAsync(c, ct).ConfigureAwait(false);
-            var res = await ctx.Game.PlaceAsync(c, id, ct).ConfigureAwait(false);
-            if (res.Ok && !SkillWorld.Replaceable(w, c))
-            {
-                placed++;
-                todo.Remove(c);
-                last = c;
-                streak = 0;
-                continue;
-            }
-            failedAt[c] = Supports(c);
-            lastFail = res.Message;
-            if (res.Message.Contains("void", StringComparison.OrdinalIgnoreCase) || res.Message.Contains("danger", StringComparison.OrdinalIgnoreCase))
-            { stop = res.Message; break; }
-            if (++streak >= 8) { stop = $"no cell can be reached safely ({streak} failed in a row; last: {res.Message})"; break; }
         }
 
-        int left = cells.Count(c => SkillWorld.Replaceable(w, c));
-        int cut = todo.Count(c => !level.ContainsKey(c));
-        var why = stop ?? (left == 0 ? null
-            : placed >= max && todo.Count > 0 ? $"max {max} per run"
-            : cut > 0 ? $"{cut} not connected to the floor"
-            : prot.Count > 0 ? $"{prot.Count} protected" : null);
-        var text = $"filled {placed}/{total} cells of {where}"
-                   + (left == 0 ? "; the floor is complete" : $"; {left} left" + (why is null ? "" : $" ({why})"))
-                   + cover + $"; {ctx.Count(id)} {name} on me";
-        if (note != null) ctx.Log?.Invoke($"expand_island area materials: {note}");
-        return new SkillResult(placed > 0 || left == 0, text);
+        private bool Vetoed()
+        {
+            _stop = BuildOps.HostileVeto(ctx) ?? ctx.SurvivalVeto("expand_island", SafetyClass.Edge);
+            return _stop != null;
+        }
+
+        private int Supports(BlockPos c) => BlockFaceExtensions.All.Count(f => SkillWorld.Solid(_w, c.Offset(f)));
+
+        private BlockPos? Next(Vec3d me) =>
+            s.Todo.Where(c => s.Level.ContainsKey(c) && Supports(c) > _failedAt.GetValueOrDefault(c))
+                .OrderBy(c => s.Level[c])
+                .ThenBy(c => _last is { } l && Math.Abs(c.X - l.X) + Math.Abs(c.Z - l.Z) == 1 ? 0 : 1)
+                .ThenBy(c => Math.Pow(c.X + 0.5 - me.X, 2) + Math.Pow(c.Z + 0.5 - me.Z, 2))
+                .Cast<BlockPos?>().FirstOrDefault();
+
+        private void NothingReachable()
+        {
+            if (_failedAt.Count > 0) _stop = "no cell can be reached safely" + (_lastFail is null ? "" : $"; last: {_lastFail}");
+        }
+
+        /// <summary>Blocks on hand, fetched once more through the Obtain hook when they run out.</summary>
+        private async Task<bool> StockedAsync(CancellationToken ct)
+        {
+            if (ctx.Has(id)) return true;
+            if (!_restocked && ctx.Registry.Obtain != null)
+            {
+                _restocked = true;
+                await MaterialAsync(ctx, _name, Math.Min(max - _placed, s.Todo.Count), ct).ConfigureAwait(false);
+            }
+            if (ctx.Has(id)) return true;
+            _stop = $"out of {_name}";
+            return false;
+        }
+
+        /// <summary>Out of reach: walk first (the pathfinder never stands over the void); the client's place still leans out at an
+        /// edge (sneaking, EdgeGuard on) when the only support is the outer face of the floor block beside the cell.</summary>
+        private async Task<bool> PlaceAsync(BlockPos c, Vec3d me, CancellationToken ct)
+        {
+            if (Aiming.FindPlaceAim(_w, _w.Player.EyePosition, c, ctx.Game.Reach, AABB.ForPlayer(me)) is null)
+                await ctx.ReachAsync(c, ct).ConfigureAwait(false);
+            var res = await ctx.Game.PlaceAsync(c, id, ct).ConfigureAwait(false);
+            if (!res.Ok || SkillWorld.Replaceable(_w, c)) return Failed(c, res.Message);
+            _placed++;
+            s.Todo.Remove(c);
+            _last = c;
+            _streak = 0;
+            return true;
+        }
+
+        private bool Failed(BlockPos c, string message)
+        {
+            _failedAt[c] = Supports(c);
+            _lastFail = message;
+            if (message.Contains("void", StringComparison.OrdinalIgnoreCase) || message.Contains("danger", StringComparison.OrdinalIgnoreCase))
+                _stop = message;
+            else if (++_streak >= 8) _stop = $"no cell can be reached safely ({_streak} failed in a row; last: {message})";
+            return _stop is null;
+        }
+
+        public SkillResult Result(string? note)
+        {
+            int left = s.Cells.Count(c => SkillWorld.Replaceable(_w, c));
+            var why = _stop ?? Why(left);
+            var text = $"filled {_placed}/{s.Total} cells of {s.Where}"
+                       + (left == 0 ? "; the floor is complete" : $"; {left} left" + (why is null ? "" : $" ({why})"))
+                       + s.Cover + $"; {ctx.Count(id)} {_name} on me";
+            if (note != null) ctx.Log?.Invoke($"expand_island area materials: {note}");
+            return new SkillResult(_placed > 0 || left == 0, text);
+        }
+
+        /// <summary>Why cells are left when nothing stopped the run: the per-run cap, cells cut off from the floor, protected ones.</summary>
+        private string? Why(int left)
+        {
+            if (left == 0) return null;
+            int cut = s.Todo.Count(c => !s.Level.ContainsKey(c));
+            if (_placed >= max && s.Todo.Count > 0) return $"max {max} per run";
+            if (cut > 0) return $"{cut} not connected to the floor";
+            return s.Prot.Count > 0 ? $"{s.Prot.Count} protected" : null;
+        }
     }
 
     /// <summary>BFS distance of each empty cell from the existing floor (cells with a solid side neighbour at y or a block under them
@@ -181,21 +241,29 @@ internal static class AreaFill
     /// <paramref name="need"/>), else any building block on hand.</summary>
     private static async Task<(int? Block, string? Note)> MaterialAsync(SkillContext ctx, string? name, int need, CancellationToken ct)
     {
-        int id = Blocks.Cobblestone;
-        if (!string.IsNullOrWhiteSpace(name))
-        {
-            if (SkillJson.Item(name) is not { Id: > 0 and < 256 } it) return (null, $"'{name}' isn't a placeable block");
-            id = it.Id;
-        }
-        string? note = null;
+        if (Named(name) is not { } id) return (null, $"'{name}' isn't a placeable block");
         int want = Math.Min(need, 9 * 64); // what the inventory comfortably holds; the rest is fetched when it runs out
-        if (ctx.Count(id) < want && ctx.Registry.Obtain is { } obtain)
-            try { note = await obtain(ctx, id, want, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex) { ctx.Log?.Invoke($"expand_island obtain threw: {ex.Message}"); }
+        string? note = await ObtainAsync(ctx, id, want, ct).ConfigureAwait(false);
         if (ctx.Has(id) && !ctx.Game.ReservedItems.Contains(id)) return (id, note);
         if (string.IsNullOrWhiteSpace(name) && SkillWorld.BuildingBlock(ctx) is { } other) return (other, note);
         return (null, $"no {SkillWorld.Name(id)} to lay" + (note is null ? "" : $" ({note})"));
+    }
+
+    /// <summary>The block named (a placeable block id), cobblestone when none is named; null when the name isn't a block.</summary>
+    private static int? Named(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return Blocks.Cobblestone;
+        return SkillJson.Item(name) is { Id: > 0 and < 256 } it ? it.Id : null;
+    }
+
+    /// <summary>Tops <paramref name="id"/> up to <paramref name="want"/> through the Obtain hook; its note, or null.</summary>
+    private static async Task<string?> ObtainAsync(SkillContext ctx, int id, int want, CancellationToken ct)
+    {
+        if (ctx.Count(id) >= want || ctx.Registry.Obtain is not { } obtain) return null;
+        try { return await obtain(ctx, id, want, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { ctx.Log?.Invoke($"expand_island obtain threw: {ex.Message}"); }
+        return null;
     }
 
     /// <summary>"; x -33..-32 of design #4 still uncovered (its area=-33,7,-18,22)" for each known design whose footprint the
@@ -208,15 +276,23 @@ internal static class AreaFill
         var parts = new List<string>();
         foreach (var f in fps)
         {
-            if (f.X1 < r.X0 || f.X0 > r.X1 || f.Z1 < r.Z0 || f.Z0 > r.Z1) continue; // not under it at all
-            if (Math.Abs(f.Y0 - 1 - y) > 3) continue;
-            var gaps = new List<string>();
-            if (f.X0 < r.X0) gaps.Add($"x {f.X0}..{r.X0 - 1}");
-            if (f.X1 > r.X1) gaps.Add($"x {r.X1 + 1}..{f.X1}");
-            if (f.Z0 < r.Z0) gaps.Add($"z {f.Z0}..{r.Z0 - 1}");
-            if (f.Z1 > r.Z1) gaps.Add($"z {r.Z1 + 1}..{f.Z1}");
+            if (Apart(f, r) || Math.Abs(f.Y0 - 1 - y) > 3) continue; // not under it at all, or another level
+            var gaps = Gaps(f, r);
             if (gaps.Count > 0) parts.Add($"{string.Join(", ", gaps)} of {f.Label} still uncovered (its area={f.X0},{f.Z0},{f.X1},{f.Z1})");
         }
         return parts.Count == 0 ? "" : "; " + string.Join("; ", parts.Take(2));
+    }
+
+    private static bool Apart(DesignFootprint f, Rect r) => f.X1 < r.X0 || f.X0 > r.X1 || f.Z1 < r.Z0 || f.Z0 > r.Z1;
+
+    /// <summary>The strips of the footprint beyond each side of the rectangle.</summary>
+    private static List<string> Gaps(DesignFootprint f, Rect r)
+    {
+        var gaps = new List<string>();
+        if (f.X0 < r.X0) gaps.Add($"x {f.X0}..{r.X0 - 1}");
+        if (f.X1 > r.X1) gaps.Add($"x {r.X1 + 1}..{f.X1}");
+        if (f.Z0 < r.Z0) gaps.Add($"z {f.Z0}..{r.Z0 - 1}");
+        if (f.Z1 > r.Z1) gaps.Add($"z {r.Z1 + 1}..{f.Z1}");
+        return gaps;
     }
 }
