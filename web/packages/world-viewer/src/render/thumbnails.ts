@@ -104,6 +104,10 @@ export class ThumbnailView implements RuntimeView {
     this.placeCamera(b);
     const xray = this.opts.xray ?? true;
     if (xray && !this.busy) this.testView(rt, b);
+    return this.setupFor(b, w, h, xray);
+  }
+
+  private setupFor(b: BotView, w: number, h: number, xray: boolean): ViewSetup {
     return {
       dim: b.dim,
       camera: this.camera,
