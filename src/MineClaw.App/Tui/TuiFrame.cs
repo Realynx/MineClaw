@@ -383,7 +383,7 @@ public static class TuiFrame
 
     private static readonly string[] PlayerColours = ["aqua", "lime", "fuchsia", "orange1", "deepskyblue1", "hotpink"];
 
-    private static string? CellStyle(ViewCell c) => c.Kind switch
+    internal static string? CellStyle(ViewCell c) => c.Kind switch
     {
         CellKind.Void => null,
         CellKind.Stone => "grey",

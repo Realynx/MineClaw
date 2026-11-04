@@ -14,9 +14,9 @@ namespace MineClaw.App.Tests;
 /// </summary>
 public class HiveBodyListTests
 {
-    private const string Hive = "maid_chan_109";
+    internal const string Hive = "maid_chan_109";
 
-    private sealed class FakeHive : IHiveVision
+    internal sealed class FakeHive : IHiveVision
     {
         public List<HiveBotState> Bots { get; } = new();
         public IReadOnlyList<HiveBotState> Clones() => Bots;
@@ -109,7 +109,7 @@ public class HiveBodyListTests
         Assert.Equal(("hive", "maid_chan", false, "build a hut"), (rows[5].Kind, rows[5].Owner, rows[5].Online, rows[5].Job));
     }
 
-    private static (BotHost Host, FakeGameClient Client, HiveBodyList Bodies, FakeHive Hive) Live()
+    internal static (BotHost Host, FakeGameClient Client, HiveBodyList Bodies, FakeHive Hive) Live()
     {
         var o = TestBot.Options();
         o.Llm.Perception.Mode = "direct";
