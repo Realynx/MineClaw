@@ -43,13 +43,16 @@ public readonly record struct CamParams(double? Yaw = null, double? Pitch = null
             return true;
         }
         if (!double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) || !double.IsFinite(d)) return false;
-        p = k switch
-        {
-            "yaw" => p with { Yaw = d }, "pitch" => p with { Pitch = d }, "zoom" => p with { Zoom = d }, "dist" => p with { Dist = d },
-            "dx" => p with { Dx = d }, "dy" => p with { Dy = d }, _ => p with { Dz = d },
-        };
+        p = WithNumber(p, k, d);
         return true;
     }
+
+    /// <summary>The numeric camera key k set to d.</summary>
+    private static CamParams WithNumber(CamParams p, string k, double d) => k switch
+    {
+        "yaw" => p with { Yaw = d }, "pitch" => p with { Pitch = d }, "zoom" => p with { Zoom = d }, "dist" => p with { Dist = d },
+        "dx" => p with { Dx = d }, "dy" => p with { Dy = d }, _ => p with { Dz = d },
+    };
 
     /// <summary>Pulls every camera token out of <paramref name="words"/> (what stays is the view's spot/body words).</summary>
     public static CamParams Extract(List<string> words)

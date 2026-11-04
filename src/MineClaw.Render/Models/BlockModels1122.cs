@@ -148,7 +148,7 @@ public sealed class BlockModels1122 : IBlockModels
         if (s.Builtin)
         {
             // Fluids, fire, signs and beds: the b1.8.1 shapes (same ids and metas), textured from the synthesized terrain atlas.
-            if (id is 8 or 9 or 10 or 11 or 51 or 63 or 68 or 26) BlockGeometry.Build(w, x, y, z, dst);
+            if (LegacyShape(id)) BlockGeometry.Build(w, x, y, z, dst);
             return;
         }
         var quads = Bake(id, s);
@@ -156,6 +156,9 @@ public sealed class BlockModels1122 : IBlockModels
         if (!Recoloured(id, biome)) { dst.AddRange(quads); return; }
         foreach (var q in quads) dst.Add(InBiome(q, id, biome));
     }
+
+    /// <summary>The builtin blocks drawn with their b1.8.1 shapes: water, lava, fire, signs and beds.</summary>
+    private static bool LegacyShape(int id) => id is 8 or 9 or 10 or 11 or 51 or 63 or 68 or 26;
 
     /// <summary>A biome-tinted block in a known biome other than the plains the quads were baked with.</summary>
     private static bool Recoloured(int id, int biome) => BiomeTinted(id) && biome >= 0 && biome != BiomeTints.DefaultBiome;
