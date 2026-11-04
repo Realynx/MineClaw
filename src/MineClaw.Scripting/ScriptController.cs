@@ -68,19 +68,9 @@ public sealed class ScriptController : IDisposable
         var req = request with { Name = CleanName(request.Name) };
         if (req.ResumeFrom is { Length: > 0 } label)
         {
-            label = label.Trim();
-            if (!ScriptSession.HasCheckpoint(req.Code, label)) return (null, $"no checkpoint('{label}') in script {req.Name}");
-            // A restart: the snapshot comes back from the durable store (cp carry; a machine's state, history and blackboard).
-            var snap = CheckpointCarry(req.Name, label) ?? SafeLoad(req.Name, label);
-            if (label.StartsWith('@'))
-            {
-                req = req with { ResumeState = req.ResumeState ?? snap };
-                if (req.CarryJson == null && snap != null)
-                    try { if (System.Text.Json.Nodes.JsonNode.Parse(snap)?["carry"] is System.Text.Json.Nodes.JsonObject c) req = req with { CarryJson = c.ToJsonString() }; }
-                    catch (System.Text.Json.JsonException) { }
-            }
-            else if (req.CarryJson == null) req = req with { CarryJson = snap };
-            req = req with { ResumeFrom = label };
+            var (resumed, error) = WithResume(req, label.Trim());
+            if (error != null) return (null, error);
+            req = resumed;
         }
         ScriptSession s;
         lock (_lock)
@@ -92,6 +82,26 @@ public sealed class ScriptController : IDisposable
         Safe(() => Started?.Invoke(s));
         s.Start();
         return (s, null);
+    }
+
+    /// <summary>A restart: the snapshot comes back from the durable store (cp carry; a machine's state, history and blackboard).</summary>
+    private (ScriptRequest Request, string? Error) WithResume(ScriptRequest req, string label)
+    {
+        if (!ScriptSession.HasCheckpoint(req.Code, label)) return (req, $"no checkpoint('{label}') in script {req.Name}");
+        var snap = CheckpointCarry(req.Name, label) ?? SafeLoad(req.Name, label);
+        if (label.StartsWith('@')) req = WithMachineSnapshot(req, snap);
+        else if (req.CarryJson == null) req = req with { CarryJson = snap };
+        return (req with { ResumeFrom = label }, null);
+    }
+
+    /// <summary>A machine checkpoint: its state snapshot, and the carry inside it unless the request brings one.</summary>
+    private static ScriptRequest WithMachineSnapshot(ScriptRequest req, string? snap)
+    {
+        req = req with { ResumeState = req.ResumeState ?? snap };
+        if (req.CarryJson == null && snap != null)
+            try { if (System.Text.Json.Nodes.JsonNode.Parse(snap)?["carry"] is System.Text.Json.Nodes.JsonObject c) req = req with { CarryJson = c.ToJsonString() }; }
+            catch (System.Text.Json.JsonException) { }
+        return req;
     }
 
     /// <summary>

@@ -40,19 +40,37 @@ public sealed class EventFilter
         if (node is not JsonObject o) return new EventFilter();
         double cd = Num(o["cooldown"]) ?? 0;
         var f = new EventFilter { Cooldown = TimeSpan.FromSeconds(Math.Clamp(cd, 0, 3600)), Once = o["once"] is JsonValue ov && ov.TryGetValue<bool>(out var once) && once };
-        if (Names(o["player"] ?? o["from"]) is { } players) f._checks.Add(d => players.Any(p => Eq(p, Str(d, "player"))));
-        foreach (var key in new[] { "block", "item", "mob", "cause", "intent", "target", "by", "to", "slot", "at", "answer", "entity" })
-            if (Names(o[key]) is { } want) { var k = key; f._checks.Add(d => want.Any(w => NameMatch(w, Str(d, k)))); }
-        if (Names(o["kind"]) is { } kinds) f._checks.Add(d => kinds.Any(w => NameMatch(w, Str(d, "kind") ?? Str(d, "mob"))));
-        if (Names(o["from_block"]) is { } fb) f._checks.Add(d => fb.Any(w => NameMatch(w, Str(d, "from"))));
-        if (Names(o["held"]) is { } held) f._checks.Add(d => held.Any(h => HeldMatch(h, Str(d, "held") ?? Str(d, "item"))));
-        if (Str(o, "text") is { Length: > 0 } text) f._checks.Add(d => Str(d, "text")?.Contains(text, StringComparison.OrdinalIgnoreCase) == true);
-        if (Num(o["dist"]) is { } dist) f._checks.Add(d => Num(d["d"]) is { } dd && dd <= dist);
-        if (Num(o["minCount"]) is { } mc) f._checks.Add(d => (Num(d["count"]) ?? 0) >= mc);
-        if (Pos(o["pos"]) is { } at) f._checks.Add(d => Pos(d["pos"]) is { } p && Same(p, at));
-        if (Near(o["near"]) is { } near) f._checks.Add(d => Pos(d["pos"]) is { } p && Dist(p, near.P) <= near.R);
-        if (Region(o["region"]) is { } reg) f._checks.Add(d => Pos(d["pos"]) is { } p && Inside(p, reg.Min, reg.Max));
+        f.AddNameChecks(o);
+        f.AddValueChecks(o);
+        f.AddPlaceChecks(o);
         return f;
+    }
+
+    /// <summary>player/from, the name keys, kind, from_block and held.</summary>
+    private void AddNameChecks(JsonObject o)
+    {
+        if (Names(o["player"] ?? o["from"]) is { } players) _checks.Add(d => players.Any(p => Eq(p, Str(d, "player"))));
+        foreach (var key in new[] { "block", "item", "mob", "cause", "intent", "target", "by", "to", "slot", "at", "answer", "entity" })
+            if (Names(o[key]) is { } want) { var k = key; _checks.Add(d => want.Any(w => NameMatch(w, Str(d, k)))); }
+        if (Names(o["kind"]) is { } kinds) _checks.Add(d => kinds.Any(w => NameMatch(w, Str(d, "kind") ?? Str(d, "mob"))));
+        if (Names(o["from_block"]) is { } fb) _checks.Add(d => fb.Any(w => NameMatch(w, Str(d, "from"))));
+        if (Names(o["held"]) is { } held) _checks.Add(d => held.Any(h => HeldMatch(h, Str(d, "held") ?? Str(d, "item"))));
+    }
+
+    /// <summary>text, dist and minCount.</summary>
+    private void AddValueChecks(JsonObject o)
+    {
+        if (Str(o, "text") is { Length: > 0 } text) _checks.Add(d => Str(d, "text")?.Contains(text, StringComparison.OrdinalIgnoreCase) == true);
+        if (Num(o["dist"]) is { } dist) _checks.Add(d => Num(d["d"]) is { } dd && dd <= dist);
+        if (Num(o["minCount"]) is { } mc) _checks.Add(d => (Num(d["count"]) ?? 0) >= mc);
+    }
+
+    /// <summary>pos, near and region.</summary>
+    private void AddPlaceChecks(JsonObject o)
+    {
+        if (Pos(o["pos"]) is { } at) _checks.Add(d => Pos(d["pos"]) is { } p && Same(p, at));
+        if (Near(o["near"]) is { } near) _checks.Add(d => Pos(d["pos"]) is { } p && Dist(p, near.P) <= near.R);
+        if (Region(o["region"]) is { } reg) _checks.Add(d => Pos(d["pos"]) is { } p && Inside(p, reg.Min, reg.Max));
     }
 
     /// <summary>The payload passes every check (no cooldown/once bookkeeping: see <see cref="TryFire"/>).</summary>
@@ -102,11 +120,13 @@ public sealed class EventFilter
         var w = Norm(want);
         var h = held == null ? "" : Norm(held);
         if (w == "any") return true;
-        if (w is "empty" or "nothing" or "hand") return h is "" or "nothing" or "air" or "empty";
+        if (w is "empty" or "nothing" or "hand") return IsEmptyHand(h);
         if (w == "tool") return HeldClasses.Any(c => IsClass(h, c));
         if (HeldClasses.Contains(w)) return IsClass(h, w);
         return NameMatch(w, h);
     }
+
+    private static bool IsEmptyHand(string h) => h is "" or "nothing" or "air" or "empty";
 
     // "pickaxe" is also "...axe": the axe class must not take pickaxes.
     private static bool IsClass(string item, string cls) =>
@@ -149,12 +169,18 @@ public sealed class EventFilter
             case JsonObject o when Num(o["x"]) is { } x && Num(o["y"]) is { } y && Num(o["z"]) is { } z: return (x, y, z);
             case JsonArray a when a.Count >= 3 && Num(a[0]) is { } x && Num(a[1]) is { } y && Num(a[2]) is { } z: return (x, y, z);
             case JsonValue v when v.TryGetValue<string>(out var s):
-                var p = s.Split(',', StringSplitOptions.TrimEntries);
-                return p.Length >= 3 && double.TryParse(p[0], System.Globalization.CultureInfo.InvariantCulture, out var px)
-                    && double.TryParse(p[1], System.Globalization.CultureInfo.InvariantCulture, out var py)
-                    && double.TryParse(p[2], System.Globalization.CultureInfo.InvariantCulture, out var pz) ? (px, py, pz) : null;
+                return ParsePos(s);
         }
         return null;
+    }
+
+    /// <summary>"x,y,z" (extra fields ignored).</summary>
+    private static (double X, double Y, double Z)? ParsePos(string s)
+    {
+        var p = s.Split(',', StringSplitOptions.TrimEntries);
+        return p.Length >= 3 && double.TryParse(p[0], System.Globalization.CultureInfo.InvariantCulture, out var px)
+            && double.TryParse(p[1], System.Globalization.CultureInfo.InvariantCulture, out var py)
+            && double.TryParse(p[2], System.Globalization.CultureInfo.InvariantCulture, out var pz) ? (px, py, pz) : null;
     }
 
     private static ((double X, double Y, double Z) P, double R)? Near(JsonNode? n) => n switch
