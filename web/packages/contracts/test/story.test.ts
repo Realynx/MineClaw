@@ -224,7 +224,7 @@ describe('the mock director', () => {
     const rev = sim.state(id).rev;
     const haul = sim.designations(id, { op: 'add', kind: 'haul', area: [0, 60, 0, 8, 70, 8] });
     expect(haul.entities).toEqual([7]);
-    const mark = sim.state(id, rev).designations!.find((d) => d.kind === 'haul')!;
+    const mark = sim.state(id, rev).designations.find((d) => d.kind === 'haul')!;
     for (let i = 0; i < 900 && sim.state(id).designations.some((d) => d.kind === 'haul'); i++) sim.step(1000);
     expect(sim.state(id).designations.some((d) => d.kind === 'haul')).toBe(false);
     expect(sim.state(id, rev).removed?.designations).toContain(mark.id);
