@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 
@@ -44,6 +45,29 @@ public sealed partial class StoryColony
         public bool Asked;
         public bool Delivered;
         public bool Alerted;
+        /// <summary>What it tried last (its escape job's report: "trying a staircase toward home", "couldn't climb out …").</summary>
+        public string? Step;
+        public int Attempts;
+        /// <summary>The colony sent it home by /tp: it is out once it shows up there (else the server refused it).</summary>
+        public DateTimeOffset? TeleportedAt;
+        public bool TeleportFailed;
+    }
+
+    /// <summary>How long a teleport home has to show in the pawn's position before the colony takes it as refused.</summary>
+    public static readonly TimeSpan TeleportCheck = TimeSpan.FromSeconds(20);
+
+    /// <summary>The pawn's stuck state for the browser: {since, at, reason, step, attempts}, or null.</summary>
+    private JsonObject? StuckJson(string pawn) => _stuck.TryGetValue(pawn, out var st)
+        ? new JsonObject { ["since"] = st.Since, ["at"] = st.At.Json(), ["reason"] = st.Why, ["step"] = st.Step, ["attempts"] = st.Attempts }
+        : null;
+
+    /// <summary>A step of a stuck pawn's escape (its job's progress or failure note), for the log and the browser.</summary>
+    internal void EscapeStep(string pawn, string note)
+    {
+        if (!_stuck.TryGetValue(pawn, out var st) || st.Step == note) return;
+        st.Step = Short(note);
+        _log.LogInformation("story {Colony}: {Pawn} stuck: {Step}", Id, pawn, st.Step);
+        if (Pawns.TryGetValue(pawn, out var p)) p.Rev = Bump();
     }
 
     private readonly Dictionary<string, StuckState> _stuck = new(StringComparer.OrdinalIgnoreCase);
@@ -71,10 +95,10 @@ public sealed partial class StoryColony
     private bool PawnOnly(PawnState p, ActiveJob j, string why)
     {
         if (j.Source is "order" or "deliver" or "wander") return false;
-        if (j.Source == "escape") return true; // still stuck: help is under way (Stuck)
-        bool stuck = _stuck.TryGetValue(p.Name, out var st) && st.Asked;
+        if (j.Source == "escape") { EscapeStep(p.Name, why); return true; } // still stuck: its next escape (and help) follow
+        bool stuck = _stuck.ContainsKey(p.Name); // said so itself or seen by the colony: its failures never count against a target
         bool guard = j.Source == "guard";
-        bool noWay = Unreachable(why);
+        bool noWay = Unreachable(why) || OutOfReach(why);
         bool reach = ReachOnly(why) && j.Source != "designation"; // a designation's "can't reach" is the soft rest (Failed)
         if (!stuck && !guard && !noWay && !reach) return false;
         if (j.Lease is { } lease)
@@ -91,6 +115,8 @@ public sealed partial class StoryColony
         int online = Pawns.Values.Count(o => Host.Live(o.Name).Online);
         if (by.Count < Math.Clamp(online, 1, UnreachPawns)) return true;
         _unreachBy.Remove(j.Lease);
+        // Out of reach even from a pillar for every pawn that tried: the designation waits with why (no failure, no alert).
+        if (OutOfReach(why) && ReachWait(j, why)) return true;
         return false;
     }
 
@@ -111,7 +137,11 @@ public sealed partial class StoryColony
     private void Reached(PawnState p, ActiveJob j)
     {
         _unreachRun.Remove(p.Name);
-        if (_stuck.Remove(p.Name, out var st) && st.Asked) Alert("info", $"{p.Display} is out (was stuck at {st.At})", p.Name);
+        if (j.Source != "none" && _stuck.Remove(p.Name, out var st))
+        {
+            if (st.Asked) Alert("info", $"{p.Display} is out (was stuck at {st.At})", p.Name);
+            if (st.Attempts > 0) _log.LogInformation("story {Colony}: {Pawn} is out (stuck at {At} after {N} escape attempt(s))", Id, p.Name, st.At, st.Attempts);
+        }
         if (j.Lease != null) { _unreachBy.Remove(j.Lease); _pawnFails.Remove(PawnKey(j.Lease, p.Name)); }
         if (j.Source == "rescue" && j.SourceId is { } who && _stuck.TryGetValue(who, out var s)) s.Delivered = true;
     }
@@ -134,8 +164,26 @@ public sealed partial class StoryColony
     {
         if (_stuck.TryGetValue(p.Name, out var st))
         {
-            if (st.At.Dist(live.X, live.Y, live.Z) > 4) { _stuck.Remove(p.Name); return null; } // it got out (a teleport, a fall, its own way)
-            return Escape(p, live, st.Asked ? "stuck: getting out" : "stuck? heading home");
+            // Sticky until it is out: only escape work, never a regular task (live 11-04: pawns in a ravine cycled through tasks for
+            // 20 minutes, ~100 failures each, because moving a few blocks along the ravine floor read as "got out").
+            if (st.TeleportedAt is { } sent)
+            {
+                if (Home() is { } h && h.Dist(live.X, live.Y, live.Z) <= HomeRange / 2 && Math.Abs(live.Y - h.Y) <= 6)
+                {
+                    _stuck.Remove(p.Name);
+                    _log.LogInformation("story {Colony}: {Pawn} is home after the teleport (was stuck at {At})", Id, p.Name, st.At);
+                    return null;
+                }
+                if (Now - sent < TeleportCheck) return Hold("stuck: teleported home, arriving", "moving", s: 3, type: "need");
+                st.TeleportedAt = null;
+                st.TeleportFailed = true;
+                _log.LogWarning("story {Colony}: {Pawn}'s teleport home didn't take (still at {At}): the server refused /tp?", Id, p.Name, live.Block);
+                Alert("warn", $"{p.Display}'s teleport home didn't take (still at {live.Block}): is the bot op, and /tp allowed by the command gate?", p.Name);
+            }
+            st.Attempts++;
+            if (st.Attempts == 1 || st.Attempts % 5 == 0)
+                _log.LogInformation("story {Colony}: {Pawn} stuck at {At} ({Why}): escape attempt {N}", Id, p.Name, live.Block, st.Why, st.Attempts);
+            return Escape(p, live, st.Asked ? $"stuck: getting out (attempt {st.Attempts})" : "stuck? heading home");
         }
         if (p.Queue.Count == 0 && World is { } w && w.Loaded(live.Block.X, live.Block.Z) && StoryWander.Underground(w, live.Block) && !MiningNear(live.Block)
             && !Zones.Any(z => z.Kind == "home" && z.Contains(live.Block.X, live.Block.Z)))
@@ -186,17 +234,27 @@ public sealed partial class StoryColony
                 st.Since = Now;
                 _log.LogInformation("story {Colony}: {Pawn} is stuck at {At}: {Why}", Id, body, live.Block, why);
             }
-            bool helper = !st.Delivered && Pawns.Values.Any(o => o != p && !o.Drafted && !_stuck.ContainsKey(o.Name) && Host.Live(o.Name).Online
+            // Blocks thrown in help a pit; a ravine, a canyon or a cave a pawn can't climb out of is the teleport's (a rescuer would
+            // only walk in after it).
+            bool pit = why.Contains("in a pit", StringComparison.OrdinalIgnoreCase);
+            bool helper = pit && !st.Delivered && Pawns.Values.Any(o => o != p && !o.Drafted && !_stuck.ContainsKey(o.Name) && Host.Live(o.Name).Online
                 && (PillarStack(Host.Live(o.Name).Inventory) != null || FindStored(s => PillarIds.Contains(s.Id), live.Block) != null));
             if (helper && Now - st.Since < RescueWait)
             {
-                if (!st.Alerted) { st.Alerted = true; Alert("info", $"{p.Display} is stuck at {live.Block} ({Short(why)}): a pawn brings it blocks", body); }
+                if (!st.Alerted)
+                {
+                    st.Alerted = true;
+                    _log.LogInformation("story {Colony}: {Pawn} stuck: asking a pawn to bring blocks", Id, body);
+                    Alert("info", $"{p.Display} is stuck at {live.Block} ({Short(why)}): a pawn brings it blocks", body);
+                }
                 return "help is on its way: a pawn brings blocks";
             }
-            if (Meta.RescueTeleport && Home() is { } home && World is { } w) to = SpreadHome(p, live, home) ?? SafeSpot(w, home);
+            if (Meta.RescueTeleport && !st.TeleportFailed && Home() is { } home && World is { } w) to = SpreadHome(p, live, home) ?? SafeSpot(w, home);
             if (to == null)
             {
-                string reason = !Meta.RescueTeleport ? "rescue teleport is off" : "no safe spot at home";
+                string reason = !Meta.RescueTeleport ? "rescue teleport is off" : st.TeleportFailed ? "the teleport home didn't take" : "no safe spot at home";
+                if (!_homeAlert.ContainsKey("stuck:" + body))
+                    _log.LogWarning("story {Colony}: {Pawn} stuck at {At} and can't get out ({Why}): {Reason}", Id, body, live.Block, why, reason);
                 if (!_homeAlert.TryGetValue("stuck:" + body, out var last) || Now - last > TimeSpan.FromMinutes(10))
                 {
                     _homeAlert["stuck:" + body] = Now;
@@ -212,12 +270,14 @@ public sealed partial class StoryColony
         {
             if (err == null)
             {
-                _stuck.Remove(body);
+                // Out once it shows up at home (EscapeJob checks; a refused /tp is said once and not tried again).
+                if (_stuck.TryGetValue(body, out var sent)) sent.TeleportedAt = Now;
                 _broughtHome[body] = Now;
-                _log.LogInformation("story {Colony}: {Pawn} teleported home to {To} (stuck at {At}: {Why})", Id, body, to, at, why);
+                _log.LogInformation("story {Colony}: {Pawn} teleporting home to {To} (rescue_teleport; stuck at {At}: {Why})", Id, body, to, at, why);
                 Alert("info", $"{p.Display} was stuck at {at} and was teleported home to {to}", body);
                 return "teleported home";
             }
+            _log.LogWarning("story {Colony}: {Pawn} can't be teleported home: {Err}", Id, body, err);
             if (!_homeAlert.TryGetValue("stuck:" + body, out var last) || Now - last > TimeSpan.FromMinutes(10))
             {
                 _homeAlert["stuck:" + body] = Now;
@@ -236,7 +296,8 @@ public sealed partial class StoryColony
         if (_stuck.Count == 0 || _stuck.ContainsKey(p.Name)) return null;
         foreach (var (name, st) in _stuck)
         {
-            if (!st.Asked || st.Delivered || Now - st.Since > RescueWait * 2 || !Pawns.TryGetValue(name, out var who)) continue;
+            if (!st.Asked || st.Delivered || st.TeleportedAt != null || !st.Why.Contains("in a pit", StringComparison.OrdinalIgnoreCase)
+                || Now - st.Since > RescueWait * 2 || !Pawns.TryGetValue(name, out var who)) continue;
             var key = "rescue:" + name;
             if (!Open(key, p.Name, null)) continue;
             var sl = Host.Live(name);

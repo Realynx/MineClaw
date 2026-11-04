@@ -93,6 +93,7 @@ public sealed class StoryHaulingTests
     {
         var (c, h, w) = StoryRig.Make(time: NewClock());
         Prio(c, (WorkTypes.Haul, 1));
+        c.SetHaulOptions(null, null, null, pillarStack: 0);
         // Its own loot (seeds to sow, blocks to build) stays with it…
         h.Lives[c.P()] = FakeStoryHost.Live(5, 64, 5, inv: [new Stack(4, 0, 10), new Stack(3, 0, 5)]);
         Assert.NotEqual("dump", Kind(c.Next()));
@@ -160,6 +161,53 @@ public sealed class StoryHaulingTests
         c.Tick();
         Assert.Contains(h.Interrupted, i => i.Contains("about to despawn"));
         Assert.Equal("collect", Kind(c.Next()));
+    }
+
+    // ================================================================ haul marks follow their drop (Fox 11-04: "the hauling icons don't go away")
+
+    [Fact]
+    public void One_trip_takes_three_designated_drops_and_all_three_marks_go()
+    {
+        var (c, h, w) = StoryRig.Make(time: NewClock());
+        Prio(c, (WorkTypes.Haul, 1));
+        c.StorageOp("set", [new P3(2, 64, 0)], null, null, null);
+        w.Ents.Add(Drop(1, 6.5, 6.5));
+        w.Ents.Add(Drop(2, 8.5, 6.5));
+        w.Ents.Add(Drop(3, 7.5, 9.5));
+        Assert.Equal(3, c.Designate("add", "haul", Area.Of(4, 60, 4, 10, 70, 10), null, null).Result!["count"]!.GetValue<int>());
+        var rev = c.Rev;
+        var j = c.Next();
+        Assert.Equal("collect", Kind(j));
+        Assert.Contains("(+2 more)", Label(j));
+        w.Ents.Clear(); // all three picked up on the one trip
+        c.Report(c.P(), Id(j), "done", null, null);
+        Assert.DoesNotContain(c.Designations, d => d.Kind == "haul");
+        Assert.Equal(3, c.State(rev)["removed"]!["designations"]!.AsArray().Count); // the web clears all three icons
+    }
+
+    [Fact]
+    public void A_designated_drop_someone_else_picks_up_loses_its_mark_and_one_that_merges_passes_it_on()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(time: clock);
+        Prio(c); // nobody hauls: only the world changes
+        w.Ents.Add(Drop(1, 5.5, 5.5));
+        w.Ents.Add(Drop(2, 12.5, 5.5));
+        c.Designate("add", "haul", Area.Of(4, 60, 4, 14, 70, 7), null, null);
+        Assert.Equal(2, c.Designations.Count);
+        c.Tick();
+        // A player picks up the first; the second merges into a stack that lands right beside it (a new entity).
+        w.Ents.RemoveAll(e => e.Id is 1 or 2);
+        w.Ents.Add(Drop(9, 12.9, 5.7));
+        var rev = c.Rev;
+        clock.Now += TimeSpan.FromSeconds(4);
+        c.Tick();
+        Assert.Equal(9, c.Designations.Single(d => d.Entity != 1).Entity); // the mark follows the stack at once
+        Assert.Contains(c.Designations, d => d.Entity == 1);              // the picked-up one waits a moment (packets in flight)
+        clock.Now += StoryColony.EntityGone + TimeSpan.FromSeconds(1);
+        c.Tick();
+        Assert.Equal(9, Assert.Single(c.Designations).Entity);
+        Assert.Single(c.State(rev)["removed"]!["designations"]!.AsArray());
     }
 
     // ================================================================ re-sorting chests

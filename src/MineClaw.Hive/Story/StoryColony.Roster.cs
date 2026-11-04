@@ -65,6 +65,7 @@ public sealed partial class StoryColony
     /// <summary>Releases the account (logout, whitelist removal) and drops the pawn from the colony.</summary>
     private void Depart(string pawn)
     {
+        ResetSpeed([pawn]); // back to normal speed (StoryColony.Speed.cs)
         string? err;
         try { err = Host.ReleasePawn(pawn, $"story {Id}: removed from the colony"); } catch (Exception ex) { err = ex.Message; }
         lock (_lock)

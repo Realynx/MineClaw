@@ -173,6 +173,49 @@ public sealed class StoryHost : IStoryHost
         return null;
     }
 
+    // ---------------------------------------------------------------- Fast / Faster (StoryColony.Speed.cs)
+
+    /// <summary>Main is op on the server (1.12.2 tells; else the config's op accounts). Null = unknown: no Speed effects.</summary>
+    public Func<bool>? MainIsOp { get; init; }
+
+    /// <summary>The op command path for the Speed effects: the gate's scoped <c>/effect … minecraft:speed</c> exception on main's chat.</summary>
+    public Func<string, string, Task<string?>>? EffectCommand { get; init; }
+
+    /// <summary>Only a hosted hive body (a colony pawn): main and players are never touched.</summary>
+    private MineClaw.Client.MinecraftClient? PawnClient(string account) =>
+        Find(account) is { IsMain: false, Client: { } c } && _hierarchy?.Tree.Get(account) != null ? c : null;
+
+    public void SetSpeed(string account, double multiplier)
+    {
+        if (PawnClient(account) is { } c) c.SpeedMultiplier = multiplier;
+    }
+
+    public PawnSpeed? Speed(string account)
+    {
+        if (Find(account) is not { State: BodyState.Online } || PawnClient(account) is not { } c) return null;
+        var s = c.SpeedNow;
+        return new PawnSpeed(s.Requested, s.Effective, s.ServerFactor, s.Rollbacks);
+    }
+
+    public bool SpeedEffectAvailable => EffectCommand != null && World?.Version == "1.12.2" && (MainIsOp?.Invoke() ?? false);
+
+    public string? SpeedEffect(string account, int amplifier, string why)
+    {
+        if (EffectCommand is not { } send) return "no op command path";
+        if (World?.Version != "1.12.2") return "b1.8.1 has no effects";
+        if (PawnClient(account) == null) return "not a pawn body";
+        var line = amplifier < 0 ? $"/effect {account} minecraft:speed 0" : $"/effect {account} minecraft:speed {StoryColony.EffectSeconds} {Math.Clamp(amplifier, 0, 4)} true";
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (await send(line, why).ConfigureAwait(false) is { } err) _log.LogWarning("story: {Line} not sent: {Err}", line, err);
+            }
+            catch (Exception ex) { _log.LogWarning(ex, "story: {Line} failed", line); }
+        });
+        return null;
+    }
+
     public void Interrupt(string account, string why)
     {
         if (Find(account)?.ScriptBridge?.Controller.Current is { } s) s.Stop(why);

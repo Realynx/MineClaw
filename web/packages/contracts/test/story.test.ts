@@ -218,6 +218,18 @@ describe('tool matching', () => {
 });
 
 describe('the mock director', () => {
+  it('a hauled drop takes its haul icon with it: the delta removes the designation', () => {
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 2 });
+    const rev = sim.state(id).rev;
+    const haul = sim.designations(id, { op: 'add', kind: 'haul', area: [0, 60, 0, 8, 70, 8] });
+    expect(haul.entities).toEqual([7]);
+    const mark = sim.state(id, rev).designations!.find((d) => d.kind === 'haul')!;
+    for (let i = 0; i < 900 && sim.state(id).designations.some((d) => d.kind === 'haul'); i++) sim.step(1000);
+    expect(sim.state(id).designations.some((d) => d.kind === 'haul')).toBe(false);
+    expect(sim.state(id, rev).removed?.designations).toContain(mark.id);
+  });
+
   it('founds a colony, expands designations against the world and answers deltas', () => {
     const w = world();
     const sim = new StorySim({ world: w, defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });

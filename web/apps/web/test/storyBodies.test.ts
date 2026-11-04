@@ -62,4 +62,39 @@ describe('queued builds as hologram cells', () => {
     expect(hologramCells(paused).rev).not.toBe(a.rev);
     expect(hologramCells(undefined)).toEqual({ cells: [], rev: '0|0|' });
   });
+
+  it("reads the bot's 8-element ghosts: dig cells (carrying the block there) become outlines, place cells blocks", () => {
+    const st = {
+      builds: [
+        { id: 'm1', kind: 'mine', label: 'mine', status: 'active', blocksTotal: 4, blocksDone: 0 },
+        { id: 'c1', kind: 'chest', label: 'chest', status: 'queued', blocksTotal: 1, blocksDone: 0 },
+        { id: 'd1', kind: 'door', label: 'door', status: 'queued', blocksTotal: 2, blocksDone: 0 },
+      ],
+      ghosts: {
+        rev: 3,
+        blocks: [
+          [0, 60, 0, 1, 0, 'm1', 'todo', 'dig'], // stone to dig out: the world's block, not 0
+          [0, 59, 0, 0, 0, 'm1', 'todo', 'dig'], // a column not in view when queued: 0 = unknown
+          [1, 60, 0, 50, 5, 'm1', 'todo', 'place'], // the mine's torch
+          [2, 60, 0, 0, 0, 'm1', 'todo', 'place'], // air to place: nothing to draw
+          [5, 64, 5, 54, 0, 'c1', 'todo', 'place'],
+          [6, 64, 5, 64, 1, 'd1', 'todo', 'place'],
+          [6, 65, 5, 64, 8, 'd1', 'todo', 'place'],
+          [7, 64, 5, 4, 0, 'd1', 'todo'], // 7 elements (an older bot): a block
+          [8, 64, 5, 0, 0, 'd1', 'todo'], // 7 elements, id 0: dig
+        ],
+      },
+    } as unknown as Parameters<typeof hologramCells>[0];
+    const { cells } = hologramCells(st);
+    expect(cells.map((c) => [c.x, c.y, c.id, c.meta])).toEqual([
+      [0, 60, 0, 0],
+      [0, 59, 0, 0],
+      [1, 60, 50, 5],
+      [5, 64, 54, 0],
+      [6, 64, 64, 1],
+      [6, 65, 64, 8],
+      [7, 64, 4, 0],
+      [8, 64, 0, 0],
+    ]);
+  });
 });

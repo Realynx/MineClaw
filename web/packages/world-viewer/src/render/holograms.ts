@@ -220,6 +220,8 @@ export interface HologramStats {
   /** Rebuilds done (worker round trips). */
   builds: number;
   rev: string | null;
+  /** Drawn in the view's last frame (the "Build holograms" setting is on and this is the view showing them). */
+  visible: boolean;
 }
 
 type Group = HoloState | 'place' | 'placeBlocked';
@@ -245,7 +247,7 @@ export class HologramLayer {
   private previewDirty = false;
   private lod = false;
   private disposed = false;
-  private readonly st: HologramStats = { cells: 0, digs: 0, boxes: 0, preview: { ok: 0, blocked: 0 }, lod: false, builds: 0, rev: null };
+  private readonly st: HologramStats = { cells: 0, digs: 0, boxes: 0, preview: { ok: 0, blocked: 0 }, lod: false, builds: 0, rev: null, visible: false };
   /** Resolves when no rebuild is pending (tests). */
   idle: Promise<void> = Promise.resolve();
 
@@ -338,7 +340,7 @@ export class HologramLayer {
   }
 
   stats(): HologramStats {
-    return { ...this.st, preview: { ...this.st.preview } };
+    return { ...this.st, preview: { ...this.st.preview }, visible: this.group.visible };
   }
 
   /** Whether a queued cell is drawn as a hologram now (built cells are not). */

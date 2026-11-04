@@ -521,7 +521,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false },
+      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false, speed: 'normal', speedEffect: true },
       gear: newSimGear(),
     };
     for (let i = 0; i < req.pawns; i++) {
@@ -592,6 +592,7 @@ export class StorySim {
         policy: i === 0 ? 'soldier' : null,
         gearTasks: [],
         xpLevel: Math.floor(r() * 18),
+        speed: { level: 'normal', multiplier: 1, requested: 1, serverFactor: 1, rollbacks: 0 },
       },
     };
   }
@@ -1932,7 +1933,7 @@ export class StorySim {
   options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
     const c = this.colony(id);
     if (Object.values(body).every((v) => v === undefined))
-      throw Object.assign(new Error('autoPlaceBenches, detectBenches, idle, autoCraftTools, spareTools, rescueTeleport, unfilteredStorageTakesAnything or keepDisallowed required'), { status: 400 });
+      throw Object.assign(new Error('autoPlaceBenches, detectBenches, idle, autoCraftTools, spareTools, rescueTeleport, unfilteredStorageTakesAnything, keepDisallowed, speed or speedEffect required'), { status: 400 });
     if (body.idle !== undefined) c.options.idle = body.idle;
     if (body.autoCraftTools !== undefined) c.options.autoCraftTools = body.autoCraftTools;
     if (body.spareTools !== undefined) c.options.spareTools = { count: body.spareTools.count, kinds: [...body.spareTools.kinds] };
@@ -1941,6 +1942,16 @@ export class StorySim {
     if (body.rescueTeleport !== undefined) c.options.rescueTeleport = body.rescueTeleport;
     if (body.unfilteredStorageTakesAnything !== undefined) c.options.unfilteredStorageTakesAnything = body.unfilteredStorageTakesAnything;
     if (body.keepDisallowed !== undefined) c.options.keepDisallowed = body.keepDisallowed;
+    if (body.speedEffect !== undefined) c.options.speedEffect = body.speedEffect;
+    if (body.speed !== undefined) {
+      // Fast / Faster: every online pawn's body runs at the multiplier (the mock server never rejects it).
+      c.options.speed = body.speed;
+      const m = body.speed === 'faster' ? 3 : body.speed === 'fast' ? 2 : 1;
+      for (const p of c.pawns.values()) {
+        p.p.speed = p.p.online === false ? null : { level: body.speed, multiplier: m, requested: m, serverFactor: 1, rollbacks: 0 };
+        p.rev = this.bump(c);
+      }
+    }
     this.bump(c);
     this.plan(c);
     return { ...c.options };

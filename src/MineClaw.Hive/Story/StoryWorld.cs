@@ -90,6 +90,17 @@ public interface IStoryHost
     /// a player without it (the client's hard gate).
     /// </summary>
     void PermitAttack(string account, int entity, bool on) { }
+    /// <summary>The pawn body's movement multiplier (1 normal, 2 fast, 3 faster; StoryColony.Speed.cs). Only ever a colony pawn's.</summary>
+    void SetSpeed(string account, double multiplier) { }
+    /// <summary>The pawn body's speed boost as it runs (null = offline or unknown).</summary>
+    PawnSpeed? Speed(string account) => null;
+    /// <summary>Can the colony ask the server for a Speed effect (1.12.2 with an op account)?</summary>
+    bool SpeedEffectAvailable => false;
+    /// <summary>
+    /// A Speed effect on a pawn through the op command path (<c>/effect &lt;pawn&gt; minecraft:speed 30 &lt;amplifier&gt; true</c>; −1 clears
+    /// it): the gate's scoped exception, managed accounts only, the blocklist applies. Null = sent; else why not.
+    /// </summary>
+    string? SpeedEffect(string account, int amplifier, string why) => "speed effects aren't available here";
 }
 
 /// <param name="Hosted">The account is one of the colony's bodies right now (online, or its login is under way / looping).</param>

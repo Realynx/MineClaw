@@ -36,6 +36,13 @@ internal static class StoryWiring
                 if (!rt.Commands.ArmManagedTeleport(line, why)) return "refused by the command gate";
                 return await rt.Chat.SendCommandAsync(line).ConfigureAwait(false) ? null : "not sent";
             },
+            // Fast / Faster on 1.12.2: a Speed effect on the colony's pawns (managed accounts only, the blocklist applies), when main is op.
+            MainIsOp = () => client.IsOp ?? o.Viewer.OpAccounts.Contains(client.Options.Username, StringComparer.OrdinalIgnoreCase),
+            EffectCommand = async (line, why) =>
+            {
+                if (!rt.Commands.ArmManagedSpeed(line, why)) return "refused by the command gate";
+                return await rt.Chat.SendCommandAsync(line).ConfigureAwait(false) ? null : "not sent";
+            },
         };
         var colonies = new StoryColonies(host, new StoryStore(rt.Memory.Db), log: log);
         // Every pawn of an active colony is the colony's, online or still waiting for a seat: the startup reconcile never takes it

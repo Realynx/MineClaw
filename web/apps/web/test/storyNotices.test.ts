@@ -132,7 +132,7 @@ describe('conditions from the colony state', () => {
   });
 
   it('kinds with no storage and stuck pawns are conditions while they last', () => {
-    const c = conditions(st({ unstoredKinds: ['Oak Wood', 'Dirt'], pawns: [pawn('ann', { stuck: 'stuck in a pit at 1,62,1' }), pawn('bob')] }));
+    const c = conditions(st({ unstoredKinds: ['Oak Wood', 'Dirt'], pawns: [pawn('ann', { stuck: { at: [1, 62, 1], reason: 'no way home', step: 'trying a staircase toward home', attempts: 2 } }), pawn('bob')] }));
     expect(c.map((x) => [x.key, x.text])).toEqual([
       ['unstored', 'No storage for: Oak Wood, Dirt'],
       ['stuck', 'ANN is stuck'],

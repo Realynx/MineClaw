@@ -323,6 +323,7 @@ public sealed partial class MinecraftClient
         var follower = new PathFollower(steps, new PathFollowerOptions
         {
             AllowSprint = o.AllowSprint, Reach = Options.Reach, RestoreDoors = o.RestoreDoors, CanSprint = CanSprintNow,
+            Boosted = () => ClientSpeedFactor() > 1.0001,
         });
         try
         {
@@ -355,7 +356,8 @@ public sealed partial class MinecraftClient
                 last = output;
                 bool drop = follower.CurrentStep?.Kind == MoveKind.Drop;
                 return output.Status == FollowerStatus.Moving
-                    ? new DriverStep(output.Input, AllowDrop: drop, Parkour: follower.Commitment)
+                    ? new DriverStep(output.Input, AllowDrop: drop, Parkour: follower.Commitment,
+                        BoostRoom: drop || _speedTarget <= 1 ? 0 : follower.BoostRoom(phys)) // Fast / Faster (MinecraftClient.Speed.cs)
                     : new DriverStep(output.Input, Done: true);
             }, ct).ConfigureAwait(false);
 

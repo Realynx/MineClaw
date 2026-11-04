@@ -44,10 +44,11 @@ public sealed partial class StoryColony
     // ---------------------------------------------------------------- options
 
     /// <summary>The hauling and rescue options (<c>POST …/options</c>). Null leaves one as it is.</summary>
-    public JsonObject SetHaulOptions(bool? rescueTeleport, bool? unfiltered, bool? keepDisallowed)
+    public JsonObject SetHaulOptions(bool? rescueTeleport, bool? unfiltered, bool? keepDisallowed, int? pillarStack = null)
     {
         lock (_lock)
         {
+            if (pillarStack is { } ps) { Meta.PillarStack = Math.Clamp(ps, 0, 64); Touch(); }
             if (rescueTeleport is { } r) Meta.RescueTeleport = r;
             if (unfiltered is { } u) Meta.UnfilteredTakesAnything = u;
             if (keepDisallowed is { } k) Meta.KeepDisallowed = k;
@@ -62,6 +63,7 @@ public sealed partial class StoryColony
         o["rescue_teleport"] = Meta.RescueTeleport;
         o["unfiltered_storage_takes_anything"] = Meta.UnfilteredTakesAnything;
         o["keep_disallowed"] = Meta.KeepDisallowed;
+        o["pillar_stack"] = Meta.PillarStack;
     }
 
     // ---------------------------------------------------------------- destinations
@@ -269,8 +271,17 @@ public sealed partial class StoryColony
             if (d != null)
             {
                 var de = byId[d.Entity!.Value];
-                return Job(WorkTypes.Haul, "collect", $"hauling {w.Data.DisplayName(de.ItemId, de.ItemMeta)}", de.Block, "e:" + de.Id, "designation",
-                    d.Id, "working", j => j["r"] = 3, xp: 5);
+                // The designated drops around it go in the same trip (each leased; their designations are done with it).
+                int slots = Math.Max(1, live.FreeSlots - 1);
+                var more = Designations.Where(x => x != d && x.Kind == "haul" && x.Entity is { } mid && byId.ContainsKey(mid) && Open("e:" + mid, p.Name, null))
+                    .Select(x => byId[x.Entity!.Value])
+                    .Where(m => Math.Abs(m.X - de.X) <= BatchRadius && Math.Abs(m.Z - de.Z) <= BatchRadius && Math.Abs(m.Y - de.Y) <= 3)
+                    .OrderBy(m => m.Block.Dist(de.X, de.Y, de.Z)).Take(slots - 1).ToList();
+                double far = more.Count == 0 ? 0 : more.Max(m => Math.Sqrt(Math.Pow(m.X - de.X, 2) + Math.Pow(m.Z - de.Z, 2)));
+                var dj = Job(WorkTypes.Haul, "collect", $"hauling {w.Data.DisplayName(de.ItemId, de.ItemMeta)}" + (more.Count > 0 ? $" (+{more.Count} more)" : ""),
+                    de.Block, "e:" + de.Id, "designation", d.Id, "working", j => j["r"] = Math.Clamp((int)Math.Ceiling(far) + 2, 3, 8), xp: 5);
+                foreach (var m in more) dj.MoreLeases.Add("e:" + m.Id);
+                return dj;
             }
         }
         var cands = new List<(StoryEntity E, (StorageState? Chest, P3? Dump, bool Fallback) Dest, bool Risk)>();
