@@ -142,7 +142,9 @@ export function GrowingZonesPanel({
                   {s.missing}
                 </div>
               ) : null}
-              {z.needsHoe ? <div className="text-warn">Needs a hoe to till: store one, or a crafting table makes one</div> : null}
+              {z.needsHoe ? (
+                <div className="text-warn">Needs a hoe to till: store one, or a crafting table makes one</div>
+              ) : null}
               {z.plant ? (
                 <div className="flex flex-wrap items-center gap-3">
                   <label className="flex items-center gap-1">

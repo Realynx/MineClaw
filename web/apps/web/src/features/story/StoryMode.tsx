@@ -790,6 +790,34 @@ export function StoryMode() {
     if (b?.pos && !map.current?.onScreen(b.pos[0]!, b.pos[1]!, b.pos[2]!)) focusBody(name);
   };
 
+  /** Growing zones (GrowingZones.tsx), beside the Colony tab: plant, seeds, status, seek seeds. */
+  const growingZones = (
+    <GrowingZonesPanel
+      state={state}
+      canWrite={canWrite}
+      onShow={(z) =>
+        map.current?.focus(Math.floor((z.area[0] + z.area[3]) / 2), Math.floor((z.area[2] + z.area[5]) / 2), z.area[1])
+      }
+      onUpdate={(z, change) =>
+        void write('story.zones', { op: 'update', id: z.id, ...change }).then(
+          (out) =>
+            say(
+              out.warnings?.length ? out.warnings.join('; ') : 'Growing zone updated',
+              out.warnings?.length ? 'warn' : 'ok',
+            ),
+          (e) => say(errorText(e), 'warn'),
+        )
+      }
+      onSeek={(z) =>
+        void write('story.zones', { op: 'seek_seeds', id: z.id }).then(
+          (out) =>
+            say(out.kind === 'bill' ? 'A bill for seeds was added' : `${out.count ?? 0} tall grass designated to cut`),
+          (e) => say(errorText(e), 'warn'),
+        )
+      }
+    />
+  );
+
   const panelEl = (() => {
     switch (tab) {
       case 'architect':
@@ -829,7 +857,6 @@ export function StoryMode() {
         return <DirectivesPanel state={state} />;
       case 'colony':
         return (
-          <>
           <ColonyPanel
             state={state}
             colonies={list}
@@ -878,32 +905,6 @@ export function StoryMode() {
             onBringAll={(overCap) => void bringOnline(null, overCap)}
             displayOf={displayOf}
           />
-          {/* Growing zones (GrowingZones.tsx): plant, seeds, status, seek seeds. */}
-          <GrowingZonesPanel
-            state={state}
-            canWrite={canWrite}
-            onShow={(z) =>
-              map.current?.focus(
-                Math.floor((z.area[0] + z.area[3]) / 2),
-                Math.floor((z.area[2] + z.area[5]) / 2),
-                z.area[1],
-              )
-            }
-            onUpdate={(z, change) =>
-              void write('story.zones', { op: 'update', id: z.id, ...change }).then(
-                (out) => say(out.warnings?.length ? out.warnings.join('; ') : 'Growing zone updated', out.warnings?.length ? 'warn' : 'ok'),
-                (e) => say(errorText(e), 'warn'),
-              )
-            }
-            onSeek={(z) =>
-              void write('story.zones', { op: 'seek_seeds', id: z.id }).then(
-                (out) =>
-                  say(out.kind === 'bill' ? 'A bill for seeds was added' : `${out.count ?? 0} tall grass designated to cut`),
-                (e) => say(errorText(e), 'warn'),
-              )
-            }
-          />
-          </>
         );
       default:
         return null;
@@ -1101,6 +1102,7 @@ export function StoryMode() {
           <div className="absolute bottom-9 left-2 flex items-end gap-2">
             {inspector}
             {panelEl}
+            {tab === 'colony' ? growingZones : null}
           </div>
           <div className="absolute bottom-12 left-1/2 -translate-x-1/2">
             <Toast text={toast?.text ?? null} tone={toast?.tone} />

@@ -156,16 +156,106 @@ interface Colony {
 
 /** What growing zones can grow (the mock speaks 1.12.2). */
 export const STORY_SIM_PLANTS: StoryPlant[] = [
-  { id: 'wheat', label: 'Wheat', block: 59, seed: 'wheat_seeds', seedItem: [295, 0], soil: 'farmland', harvest: 'crop', source: 'cut tall grass (seeds drop) or harvest wheat' },
-  { id: 'carrots', label: 'Carrots', block: 141, seed: 'carrot', seedItem: [391, 0], soil: 'farmland', harvest: 'crop', source: 'the carrot itself: harvests, zombie drops, village farms and chests' },
-  { id: 'potatoes', label: 'Potatoes', block: 142, seed: 'potato', seedItem: [392, 0], soil: 'farmland', harvest: 'crop', source: 'the potato itself: harvests, zombie drops, village farms and chests' },
-  { id: 'beetroot', label: 'Beetroot', block: 207, seed: 'beetroot_seeds', seedItem: [435, 0], soil: 'farmland', harvest: 'crop', source: 'harvest beetroot; village farms and chests' },
-  { id: 'pumpkin', label: 'Pumpkin', block: 104, seed: 'pumpkin_seeds', seedItem: [361, 0], soil: 'farmland', harvest: 'fruit', source: 'craft them from a pumpkin (a bill at a crafting table)' },
-  { id: 'melon', label: 'Melon', block: 105, seed: 'melon_seeds', seedItem: [362, 0], soil: 'farmland', harvest: 'fruit', source: 'craft them from a melon slice (a bill at a crafting table)' },
-  { id: 'sugar_cane', label: 'Sugar cane', block: 83, seed: 'reeds', seedItem: [338, 0], soil: 'cane', harvest: 'stalk', source: 'the cane itself: found by water' },
-  { id: 'cactus', label: 'Cactus', block: 81, seed: 'cactus', seedItem: [81, 0], soil: 'sand', harvest: 'stalk', source: 'the cactus itself: found in deserts' },
-  { id: 'oak', label: 'Oak sapling', block: 6, seed: 'sapling', seedItem: [6, 0], soil: 'dirt', harvest: 'tree', source: 'leaves of chopped oaks drop them' },
-  { id: 'birch', label: 'Birch sapling', block: 6, seed: 'birch_sapling', seedItem: [6, 2], soil: 'dirt', harvest: 'tree', source: 'leaves of chopped birches drop them' },
+  {
+    id: 'wheat',
+    label: 'Wheat',
+    block: 59,
+    seed: 'wheat_seeds',
+    seedItem: [295, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'cut tall grass (seeds drop) or harvest wheat',
+  },
+  {
+    id: 'carrots',
+    label: 'Carrots',
+    block: 141,
+    seed: 'carrot',
+    seedItem: [391, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'the carrot itself: harvests, zombie drops, village farms and chests',
+  },
+  {
+    id: 'potatoes',
+    label: 'Potatoes',
+    block: 142,
+    seed: 'potato',
+    seedItem: [392, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'the potato itself: harvests, zombie drops, village farms and chests',
+  },
+  {
+    id: 'beetroot',
+    label: 'Beetroot',
+    block: 207,
+    seed: 'beetroot_seeds',
+    seedItem: [435, 0],
+    soil: 'farmland',
+    harvest: 'crop',
+    source: 'harvest beetroot; village farms and chests',
+  },
+  {
+    id: 'pumpkin',
+    label: 'Pumpkin',
+    block: 104,
+    seed: 'pumpkin_seeds',
+    seedItem: [361, 0],
+    soil: 'farmland',
+    harvest: 'fruit',
+    source: 'craft them from a pumpkin (a bill at a crafting table)',
+  },
+  {
+    id: 'melon',
+    label: 'Melon',
+    block: 105,
+    seed: 'melon_seeds',
+    seedItem: [362, 0],
+    soil: 'farmland',
+    harvest: 'fruit',
+    source: 'craft them from a melon slice (a bill at a crafting table)',
+  },
+  {
+    id: 'sugar_cane',
+    label: 'Sugar cane',
+    block: 83,
+    seed: 'reeds',
+    seedItem: [338, 0],
+    soil: 'cane',
+    harvest: 'stalk',
+    source: 'the cane itself: found by water',
+  },
+  {
+    id: 'cactus',
+    label: 'Cactus',
+    block: 81,
+    seed: 'cactus',
+    seedItem: [81, 0],
+    soil: 'sand',
+    harvest: 'stalk',
+    source: 'the cactus itself: found in deserts',
+  },
+  {
+    id: 'oak',
+    label: 'Oak sapling',
+    block: 6,
+    seed: 'sapling',
+    seedItem: [6, 0],
+    soil: 'dirt',
+    harvest: 'tree',
+    source: 'leaves of chopped oaks drop them',
+  },
+  {
+    id: 'birch',
+    label: 'Birch sapling',
+    block: 6,
+    seed: 'birch_sapling',
+    seedItem: [6, 2],
+    soil: 'dirt',
+    harvest: 'tree',
+    source: 'leaves of chopped birches drop them',
+  },
 ];
 
 const SEED_HINT: Record<string, string> = {
@@ -769,9 +859,12 @@ export class StorySim {
         ...(body.name ? { name: body.name } : {}),
       };
       if (body.plant || body.sow !== undefined || body.harvest !== undefined) {
-        if (z.kind !== 'farm') throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+        if (z.kind !== 'farm')
+          throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
         if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
-          throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), { status: 400 });
+          throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
+            status: 400,
+          });
         Object.assign(z, { plant: body.plant ?? null, sow: body.sow ?? true, harvest: body.harvest ?? true });
       }
       c.zones.set(z.id, { rev: this.bump(c), v: z });
@@ -802,8 +895,10 @@ export class StorySim {
         have,
         neededForEmpty: cells,
         sourceHint: plant.source ?? null,
-        missing: have === 0 ? (SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`) : null,
-        action: have === 0 ? (plant.id === 'wheat' ? 'seek_seeds' : plant.harvest === 'fruit' ? 'craft_seeds' : null) : null,
+        missing:
+          have === 0 ? (SEED_HINT[plant.id] ?? `No ${plant.label.toLowerCase()} to sow — ${plant.source}`) : null,
+        action:
+          have === 0 ? (plant.id === 'wheat' ? 'seek_seeds' : plant.harvest === 'fruit' ? 'craft_seeds' : null) : null,
       },
       needsHoe: plant.soil === 'farmland' && (c.stock.get('290:0') ?? 0) === 0,
     };
@@ -813,9 +908,12 @@ export class StorySim {
     const f = c.zones.get(String(body.id));
     if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
     if (body.op === 'update') {
-      if (f.v.kind !== 'farm') throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+      if (f.v.kind !== 'farm')
+        throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
       if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
-        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), { status: 400 });
+        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
+          status: 400,
+        });
       f.v = {
         ...f.v,
         ...(body.plant !== undefined ? { plant: body.plant || null } : {}),
@@ -891,7 +989,8 @@ export class StorySim {
       return answer(why);
     }
     const p =
-      c.pawns.get(body.pawn) ?? [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === body.pawn.toLowerCase());
+      c.pawns.get(body.pawn) ??
+      [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === body.pawn.toLowerCase());
     if (!p) throw Object.assign(new Error(`no pawn '${body.pawn}'`), { status: 404 });
     if (p.p.leaving) return answer(null);
     if (staying().length <= 1)

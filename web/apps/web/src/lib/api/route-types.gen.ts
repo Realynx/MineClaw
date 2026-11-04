@@ -98,6 +98,7 @@ export interface RouteTypes {
   'story.release': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.resume': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.online': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryOnlineRequest>; response: z.output<typeof C.StoryOnlineResponse> };
+  'story.pawns': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPawnsRequest>; response: z.output<typeof C.StoryPawnsResponse> };
   'story.pause': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPauseRequest>; response: z.output<typeof C.StoryAck> };
   'story.home': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryHomeRequest>; response: z.output<typeof C.StoryHomeResponse> };
   'story.beds': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBedsRequest>; response: z.output<typeof C.StoryBedsResponse> };

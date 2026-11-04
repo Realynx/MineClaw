@@ -203,7 +203,10 @@ export const StoryAck = z.object({
     .array(z.union([z.string(), z.number()]))
     .nullish()
     .describe('zones remove: the zones removed'),
-  warnings: z.array(z.string()).nullish().describe('zones add/update (growing zones): what slows it, e.g. no water near'),
+  warnings: z
+    .array(z.string())
+    .nullish()
+    .describe('zones add/update (growing zones): what slows it, e.g. no water near'),
   count: z.number().int().nullish().describe('zones seek_seeds: the tall grass designated (or seeds billed)'),
   kind: z.string().nullish().describe('zones seek_seeds: cut | bill'),
 });

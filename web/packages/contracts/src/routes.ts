@@ -1235,7 +1235,7 @@ export const ROUTES = {
     supervisor: '/api/story/colonies/{id}/pawns',
     audit: 'story',
     summary:
-      'Adds pawns (as many as the free seats allow now, never the regulars' seats; the rest join as seats free up; at most 12) ' +
+      'Adds pawns (as many as the free seats allow now, never the seats kept for regulars; the rest join as seats free up; at most 12) ' +
       'or removes one (its claims and bed go back, it stores its things, logs out and its account is released). The last pawn ' +
       'cannot be removed. 404 unknown colony or pawn.',
   }),
