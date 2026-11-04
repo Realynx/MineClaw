@@ -517,6 +517,8 @@ public sealed partial class StoryColony
         Mix(_freePool.Count);
         foreach (var kind in StoryRecipes.Benches) Mix(Benches.Count(b => b.Kind == kind));
         Mix(Benches.Count);
+        Mix(Meta.AllowLava ? 1 : 0); // the Water tab: the Lava source entry, and the buckets anywhere that unlock it (StoryColony.Water.cs)
+        Mix(BucketsHeld());
         return (int)(h ^ h >> 32) & int.MaxValue;
     }
 
