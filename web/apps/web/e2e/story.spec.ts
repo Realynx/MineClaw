@@ -670,6 +670,97 @@ test('+ adds a joining pawn; − removes the selected one after a confirm; a gro
   expect(body(await zone)).toMatchObject({ op: 'add', kind: 'farm', plant: 'carrots' });
 });
 
+test('zones paint like RimWorld: overlapping growing zones are one, a woodlot takes its cells, erase removes; planting bills', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const [cx, , cz] = (await story(page, 'center')).map(Math.floor) as [number, number, number];
+  const lv = await story(page, 'level');
+  const zoneAck = () =>
+    page.waitForResponse((r) => r.request().method() === 'POST' && /\/zones$/.test(new URL(r.url()).pathname));
+  const paint = async (a: [number, number], b: [number, number]) => {
+    const ack = zoneAck();
+    await dragCells(page, [a[0], lv, a[1]], [b[0], lv, b[1]]);
+    await page.mouse.up();
+    const res = await ack;
+    return {
+      body: res.request().postDataJSON() as Record<string, unknown>,
+      ack: (await res.json()) as Record<string, unknown>,
+    };
+  };
+  await page.keyboard.press('KeyB'); // the Architect
+  await page.getByRole('button', { name: 'Zones', exact: true }).click();
+  await page.getByRole('button', { name: 'Growing zone' }).click();
+  await page.getByTestId('grow-plant-picker').getByRole('radio', { name: /Wheat/ }).click();
+
+  // Two overlapping growing zones of one plant: one zone (12 + 10 − 4 overlapping = 18 cells).
+  const first = await paint([cx - 4, cz - 1], [cx - 1, cz + 1]);
+  expect(first.body).toMatchObject({ op: 'add', kind: 'farm', plant: 'wheat' });
+  const id = first.ack.id;
+  const second = await paint([cx - 2, cz], [cx + 2, cz + 1]); // the tool stays in hand
+  expect(second.ack).toMatchObject({ id, created: [], grown: [id] });
+
+  // A woodlot over part of it: the growing zone loses those cells (6).
+  await page.getByRole('button', { name: 'Woodlot' }).click();
+  const wood = await paint([cx - 4, cz - 1], [cx - 3, cz + 1]);
+  expect(wood.ack).toMatchObject({ shrunk: [id] });
+
+  // Erase (any kind) a corner of the growing zone: 4 cells go.
+  await page.getByRole('button', { name: 'Erase zone' }).click();
+  await expect(page.getByTestId('zone-erase-kind').getByRole('radio', { name: 'Any' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  const erase = await paint([cx + 1, cz], [cx + 2, cz + 1]);
+  expect(erase.body).toEqual({ op: 'remove', area: [cx + 1, lv, cz, cx + 2, lv, cz + 1] });
+  expect(erase.ack).toMatchObject({ shrunk: [id] });
+  await page.keyboard.press('Escape'); // the tool
+
+  // The Growing zones window (beside the Colony tab): one zone of 8 cells, sowing wheat; a second bill, moved up, is sown now.
+  await page.keyboard.press('Escape'); // the Architect
+  await page
+    .getByTestId('tab-bar')
+    .getByRole('button', { name: /^Colony/ })
+    .click();
+  const zones = page.getByTestId('growing-zones');
+  await expect(zones.getByTestId('growing-zone')).toHaveCount(1);
+  await expect(zones.getByTestId('zone-cells')).toHaveText('8 cells');
+  await expect(zones.getByTestId('zone-active-plant')).toHaveText('Sowing: Wheat');
+  const bill = post(page, /\/zones$/);
+  await zones.getByRole('button', { name: 'Add bill' }).click();
+  await zones
+    .getByTestId('grow-bill-add')
+    .getByRole('button', { name: /Carrots/ })
+    .click();
+  expect(body(await bill)).toEqual({ op: 'bill_add', id, plant: 'carrots' });
+  await expect(zones.getByTestId('grow-bill')).toHaveCount(2);
+  const reorder = post(page, /\/zones$/);
+  await zones.getByRole('button', { name: 'Move Carrots up' }).click();
+  expect(body(await reorder)).toMatchObject({ op: 'bill_reorder', id });
+  await expect(zones.getByTestId('zone-active-plant')).toHaveText('Sowing: Carrots');
+  await expect(zones.getByTestId('grow-bill').first()).toHaveAttribute('data-active', 'true');
+
+  // Erase the rest: the zone is gone.
+  await page
+    .getByTestId('tab-bar')
+    .getByRole('button', { name: /^Colony/ })
+    .click();
+  await page.keyboard.press('KeyB');
+  await page.getByRole('button', { name: 'Zones', exact: true }).click();
+  await page.getByRole('button', { name: 'Erase zone' }).click();
+  const all = await paint([cx - 6, cz - 3], [cx + 4, cz + 3]);
+  expect(all.ack).toMatchObject({ deleted: expect.arrayContaining([id]) });
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page
+    .getByTestId('tab-bar')
+    .getByRole('button', { name: /^Colony/ })
+    .click();
+  await expect(page.getByTestId('growing-zones')).toHaveCount(0);
+});
+
 // ------------------------------------------------------------------ the world under the HUD: models, holograms, notices
 
 type Ghost = [number, number, number, number, number, string | number, string];

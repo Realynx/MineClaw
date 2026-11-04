@@ -9,7 +9,7 @@ function reach(a, d) {
   if (!a || dist(pos(a)) <= d + 2) return { ok: true }
   return go(a, d)
 }
-// THAT tree (" only"); some logs down: planks (clutch/pillar), once more at the lowest log left; the rest is partial.
+// THAT tree (" only"); some down: planks, once more at the lowest log; else partial.
 function chopTree(j) {
   const wood = j.wood || ['log']
   const held = () => wood.reduce((n, w) => n + inv(w), 0)
@@ -78,6 +78,7 @@ function work(j) {
     case 'collect_furnace': return collect_furnace(a)
     case 'give': return handTo(j.to, j.item, j.n, { gather: false })
     case 'blueprint': return build(j.design)
+    case 'fish': { const t = go(a, 0); return ok(t) ? fish(j.water, j.s, j.max) : t }
     case 'sleep': return sleepAt(j)
     case 'idle': return story.idle(j)
     case 'hold':
@@ -92,7 +93,7 @@ function pawn() {
     if (!j) continue
     if (j.kind === 'end') { story.report(j.id, 'done'); return 'released: ' + (j.label || 'colony') }
     let r = each(j.fetch, f => take(f.item, f.n, f.from))
-    // Crafts first (a bench the colony places for a build: craft it, at the table when it needs one, then place it).
+    // Crafts first (a bench a build needs; at the table if need be).
     if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })
     if (ok(r)) r = work(j)
     if (ok(r)) r = each(j.stash, s => deposit(s.to, s.items))

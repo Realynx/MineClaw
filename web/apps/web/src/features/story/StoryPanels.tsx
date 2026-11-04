@@ -22,7 +22,8 @@ import {
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
-import { GrowPlantPicker } from './GrowingZones';
+import { zoneCellCount } from './zones/zonePaint';
+import { ZoneToolbar } from './zones/ZoneToolbar';
 import {
   ClipboardPaste,
   Copy,
@@ -58,7 +59,7 @@ import {
 import { useWorldClock, type WorldClock } from './clock';
 import { panel } from './StoryHud';
 import { BringOnlineBox } from './StoryInspector';
-import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, ZONE_TOOLS } from './tools';
+import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS } from './tools';
 import type { MapTool } from './StoryMap';
 import { AiMark, Avatar, ItemIcon, ToolIcon } from './visuals';
 
@@ -199,6 +200,7 @@ export function ArchitectPanel({
   palette,
   onPick,
   plants,
+  zones,
 }: {
   tool: MapTool;
   onTool: (t: MapTool) => void;
@@ -206,6 +208,8 @@ export function ArchitectPanel({
   onPick?: (e: StoryArchitectEntry) => void;
   /** What a growing zone can grow here (the plant picker under the Zones tools). */
   plants?: readonly StoryPlant[] | null;
+  /** The colony's zones (the Zones tools name the zone being extended). */
+  zones?: readonly StoryZone[];
 }) {
   const [cat, setCat] = useState<ArchCat>(
     tool.kind === 'zone'
@@ -277,19 +281,8 @@ export function ArchitectPanel({
                 btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', '')),
               )
             : null}
-          {cat === 'zones'
-            ? [
-                ...ZONE_TOOLS.map((z) => btn({ kind: 'zone', id: z.id, op: 'add' }, 'zone', z.label, z.hint)),
-                btn(
-                  { kind: 'zone', id: 'home', op: 'remove' },
-                  'cancel',
-                  'Remove zone',
-                  'Drag over a zone to remove it',
-                ),
-              ]
-            : null}
-          {cat === 'zones' && tool.kind === 'zone' && tool.id === 'farm' && tool.op === 'add' ? (
-            <GrowPlantPicker plants={plants} />
+          {cat === 'zones' ? (
+            <ZoneToolbar tool={tool} onTool={onTool} plants={plants} zones={zones ?? []} btn={btn} />
           ) : null}
           {cat === 'structure'
             ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
@@ -1123,8 +1116,8 @@ function Houses({
                     >
                       {name}
                     </button>
-                    <span className="text-subtle tabular-nums">
-                      {Math.abs(z.area[3] - z.area[0]) + 1} × {Math.abs(z.area[5] - z.area[2]) + 1}
+                    <span className="text-subtle tabular-nums" data-testid="zone-cells">
+                      {zoneCellCount(z)} cells
                     </span>
                     <Button
                       size="sm"

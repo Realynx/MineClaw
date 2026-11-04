@@ -36,7 +36,7 @@ public sealed partial class StoryColony
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
-                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
+                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish").Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),

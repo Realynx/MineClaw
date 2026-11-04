@@ -5,7 +5,7 @@ namespace MineClaw.Hive.Story;
 /// <summary>What the browser asks of a colony: priorities, schedules, drafting, orders, zones and designations.</summary>
 public sealed partial class StoryColony
 {
-    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "home", "forbidden"];
+    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "fish", "home", "forbidden"];
     public static readonly IReadOnlyList<string> OrderKinds = ["move", "attack", "chop", "mine", "haul", "build", "hold", "stop"];
     public static readonly IReadOnlyList<string> DesignationKinds = ["chop", "cut", "harvest", "mine", "haul", "hunt", "deconstruct", "forbid", "allow"];
 
@@ -169,63 +169,7 @@ public sealed partial class StoryColony
         p.Rev = Touch();
     }
 
-    // ---------------------------------------------------------------- zones
-
-    public (JsonNode? Result, string? Error) ZoneOp(string op, string? kind, Area? area, string? id = null, string? name = null, JsonObject? grow = null)
-    {
-        if (name is { Length: > 40 }) return (null, "name: at most 40 characters");
-        if (op is "update" or "seek_seeds") return GrowZoneOp(op, id, grow); // growing zones (StoryColony.Farming.cs)
-        if (kind == "grow" || kind == null && grow?["plant"] != null) kind = "farm";
-        if (op == "rename")
-        {
-            lock (_lock)
-            {
-                if (Zones.FirstOrDefault(z => z.Id == id) is not { } rz) return (null, "id: no such zone");
-                rz.Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
-                rz.Rev = Touch();
-                return (new JsonObject { ["id"] = rz.Id, ["name"] = rz.Name }, null);
-            }
-        }
-        if (op == "remove" && id != null)
-        {
-            lock (_lock)
-            {
-                if (Zones.FirstOrDefault(z => z.Id == id) is not { } gz) return (null, "id: no such zone");
-                Zones.Remove(gz); Removed("zone", gz.Id); _zoneScan.Remove(gz.Id); _bedScan = null;
-                return (new JsonObject { ["removed"] = new JsonArray(gz.Id) }, null);
-            }
-        }
-        if (op is not ("add" or "remove")) return (null, "op must be add|remove|rename|update|seek_seeds");
-        if (area is not { } a) return (null, "area [x1,y1,z1,x2,y2,z2] required");
-        if (kind == "stockpile") return (null, "storage is chests: register them with /storage (no ground stockpiles)");
-        if (op == "add" && (kind == null || !ZoneKinds.Contains(kind))) return (null, $"kind must be {string.Join("|", ZoneKinds)}");
-        if ((long)(a.X2 - a.X1 + 1) * (a.Z2 - a.Z1 + 1) > 256 * 256) return (null, "zone too large (256 x 256 max)");
-        lock (_lock)
-        {
-            if (op == "add")
-            {
-                var z = new ZoneState { Id = NextId("z"), Kind = kind!, Area = a, Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim(), Rev = Touch() };
-                List<string>? warnings = null;
-                if (grow != null && (grow["plant"] != null || grow["sow"] != null || grow["harvest"] != null))
-                {
-                    if (kind != "farm") return (null, "only farm (growing) zones take plant, sow and harvest");
-                    if (ApplyGrow(z, grow) is { } gerr) return (null, gerr);
-                    var (bad, warn) = ValidateGrow(z);
-                    if (bad != null) return (null, bad);
-                    warnings = warn;
-                }
-                Zones.Add(z);
-                _bedScan = null;
-                WakeIdle();
-                return (warnings is { Count: > 0 } ? new JsonObject { ["id"] = z.Id, ["warnings"] = new JsonArray(warnings.Select(x => (JsonNode)x!).ToArray()) }
-                    : new JsonObject { ["id"] = z.Id }, null);
-            }
-            var gone = Zones.Where(z => (kind == null || z.Kind == kind) && z.Area.Overlaps(a)).ToList();
-            foreach (var z in gone) { Zones.Remove(z); Removed("zone", z.Id); _zoneScan.Remove(z.Id); }
-            _bedScan = null;
-            return (new JsonObject { ["removed"] = new JsonArray(gone.Select(z => (JsonNode)z.Id!).ToArray()) }, null);
-        }
-    }
+    // ---------------------------------------------------------------- zones: StoryColony.Zones.cs
 
     // ---------------------------------------------------------------- designations
 

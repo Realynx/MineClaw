@@ -109,6 +109,17 @@ public sealed class SupervisorStoryRouteTests
         (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "seek_seeds", id = zone });
         Assert.Equal(200, s);
         Assert.Equal(1, j!["count"]!.GetValue<int>());
+
+        // Planting bills, and an erase (cells; no kind = any, any level) on the same route (docs/web/story-mode.md "Zones").
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "bill_add", id = zone, plant = "pumpkin", mode = "count", target = 3 });
+        Assert.Equal(200, s);
+        var bill = j!["bill"]!.GetValue<string>();
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "bill_reorder", id = zone, ids = new[] { bill } });
+        Assert.Equal(200, s);
+        Assert.Equal(bill, j!["ids"]![0]!.GetValue<string>());
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "remove", area = new[] { 10, 70, 0, 10, 70, 0 } });
+        Assert.Equal(200, s);
+        Assert.Equal(zone, j!["deleted"]![0]!.GetValue<string>());
     }
 
     [Fact]

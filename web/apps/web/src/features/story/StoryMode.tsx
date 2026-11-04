@@ -15,6 +15,7 @@ import {
   type StoryColonyState,
   type StoryDirectiveSpec,
   type StoryOnlineBlocked,
+  type StoryZone,
 } from '@mineclaw/contracts';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -59,7 +60,9 @@ import {
   UndesignatedBench,
 } from './StoryInspector';
 import { useFullscreen } from './useFullscreen';
-import { GrowingZonesPanel, growPlantNow } from './GrowingZones';
+import { GrowingZonesPanel, growPlantNow, type GrowBillChange } from './GrowingZones';
+import { FishingZonesPanel } from './zones/FishingZones';
+import { zoneBody, zoneInto, zoneToast } from './zones/zonePaint';
 import type { Condition } from './notices';
 import { StoryNotices, type JumpTarget } from './StoryNotices';
 import { StoryMap, type DragResult, type FormationMove, type MapTool, type StoryMapHandle } from './StoryMap';
@@ -105,6 +108,7 @@ import {
   rotateFacing,
   toolArea,
   toolYRange,
+  ZONE_TOOLS,
   type BuildOpts,
   type HeightMode,
   type MenuItem,
@@ -407,7 +411,7 @@ export function StoryMode() {
       say(`Too many blocks (max ${MAX_DRAG_CELLS}): drag a smaller box or a shallower mode`, 'warn');
       return;
     }
-    if (!shift) setTool({ kind: 'select' });
+    if (!shift && tool.kind !== 'zone') setTool({ kind: 'select' }); // zone tools stay in hand (Shift extends a zone)
     if (tool.kind === 'designate' && hasHeight(tool.id) && r.height) {
       // Exactly the cells the preview showed (its height mode), as blocks: the director never expands them deeper.
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
@@ -443,18 +447,15 @@ export function StoryMode() {
       return;
     }
     if (tool.kind === 'zone') {
-      const area = normArea([r.rect[0], lv, r.rect[1], r.rect[2], lv, r.rect[3]]);
+      // RimWorld painting (zones/zonePaint.ts): erase sends the kind (or none: any); Shift extends the zone the drag started in.
       if (!canWrite) return say('Needs the story role', 'warn');
-      await write(
-        'story.zones',
-        tool.op === 'add'
-          ? { op: 'add', kind: tool.id as never, area, ...(tool.id === 'farm' ? { plant: growPlantNow() } : {}) }
-          : { op: 'remove', kind: tool.id as never, area },
-      ).then(
+      const into = zoneInto(tool, state?.zones ?? [], r.a, shift);
+      const label =
+        into !== undefined ? 'Zone extended' : `${ZONE_TOOLS.find((z) => z.id === tool.id)?.label ?? 'Zone'} painted`;
+      await write('story.zones', zoneBody(tool, r.rect, lv, growPlantNow(), into)).then(
         (out) =>
           say(
-            `${tool.op === 'add' ? 'Zone painted' : 'Zone removed'}: ${r.rect[2] - r.rect[0] + 1} × ${r.rect[3] - r.rect[1] + 1}` +
-              (out.warnings?.length ? ` (${out.warnings.join('; ')})` : ''),
+            zoneToast(label, tool, out) + (out.warnings?.length ? ` (${out.warnings.join('; ')})` : ''),
             out.warnings?.length ? 'warn' : 'ok',
           ),
         (e) => say(errorText(e), 'warn'),
@@ -970,6 +971,18 @@ export function StoryMode() {
     if (b?.pos && !map.current?.onScreen(b.pos[0]!, b.pos[1]!, b.pos[2]!)) focusBody(name);
   };
 
+  /** A zone's bills (planting or fishing), on the zones route. */
+  const onZoneBill = (z: StoryZone, body: GrowBillChange) =>
+    void write('story.zones', { ...body, id: z.id }).then(
+      (out) =>
+        say(out.warnings?.length ? out.warnings.join('; ') : 'Bills updated', out.warnings?.length ? 'warn' : 'ok'),
+      (e) => say(errorText(e), 'warn'),
+    );
+  const focusZone = (z: StoryZone) =>
+    map.current?.focus(Math.floor((z.area[0] + z.area[3]) / 2), Math.floor((z.area[2] + z.area[5]) / 2), z.area[1]);
+  /** Fishing zones (zones/FishingZones.tsx), under the growing zones: water, fishers, catches, bills. */
+  const fishingZones = <FishingZonesPanel state={state} canWrite={canWrite} onBill={onZoneBill} onShow={focusZone} />;
+
   /** Growing zones (GrowingZones.tsx), beside the Colony tab: plant, seeds, status, seek seeds. */
   const growingZones = (
     <GrowingZonesPanel
@@ -988,6 +1001,11 @@ export function StoryMode() {
           (e) => say(errorText(e), 'warn'),
         )
       }
+      onBill={onZoneBill}
+      onExtend={(z) => {
+        setTool({ kind: 'zone', id: z.kind, op: 'add', into: z.id });
+        setTab('architect');
+      }}
       onSeek={(z) =>
         void write('story.zones', { op: 'seek_seeds', id: z.id }).then(
           (out) =>
@@ -1006,6 +1024,7 @@ export function StoryMode() {
             tool={tool}
             onTool={setTool}
             plants={state?.plants}
+            zones={state?.zones}
             palette={architect.data}
             onPick={(e) => {
               // A placeable: its default build tool, with it as the material (the build's auto bills craft what's missing).
@@ -1315,7 +1334,12 @@ export function StoryMode() {
             <div className="flex max-w-[calc(100vw-1rem)] items-end gap-2">
               {inspector}
               {panelEl}
-              {tab === 'colony' ? growingZones : null}
+              {tab === 'colony' ? (
+                <>
+                  {growingZones}
+                  {fishingZones}
+                </>
+              ) : null}
             </div>
             {/* The universal material selector: docked here, above the tab bar, for every structure / furniture tool. */}
             {tool.kind === 'build' ? (

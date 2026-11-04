@@ -20,6 +20,7 @@ export const STORY_WORK_TYPES = [
   'doctor',
   'cook',
   'hunt',
+  'fish',
   'build',
   'farm',
   'mine',
@@ -51,7 +52,7 @@ export const StoryOrderKind = z.enum(STORY_ORDER_KINDS);
 export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
 
 /** Zone kinds. Loot goes into chests with storage settings (`storage`): the director refuses a `stockpile` zone. */
-export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'home', 'forbidden'] as const;
+export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'fish', 'home', 'forbidden'] as const;
 export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
 export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
 
@@ -203,7 +204,36 @@ export const StoryAck = z.object({
   removed: z
     .array(z.union([z.string(), z.number()]))
     .nullish()
-    .describe('zones remove: the zones removed'),
+    .describe('zones add/remove: the zones that went (= deleted)'),
+  created: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add: the new zone (the painted cells touched none of the type)'),
+  merged: z
+    .array(z.object({ into: z.union([z.string(), z.number()]), from: z.array(z.union([z.string(), z.number()])) }))
+    .nullish()
+    .describe('zones add: zones of the type the paint joined into the oldest (or the `into` zone)'),
+  grown: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add: the zone that took the cells'),
+  shrunk: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add/remove: zones that lost cells (overwritten or erased)'),
+  split: z
+    .array(z.object({ from: z.union([z.string(), z.number()]), into: z.array(z.union([z.string(), z.number()])) }))
+    .nullish()
+    .describe('zones add/remove: a zone cut in parts (it keeps the largest; the others are new zones)'),
+  deleted: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones add/remove: zones left empty'),
+  bill: z.union([z.string(), z.number()]).nullish().describe('zones bill_add: the new planting bill'),
+  activeBill: z
+    .union([z.string(), z.number()])
+    .nullish()
+    .describe('zones bill_*: the bill that decides what is sown now'),
   warnings: z
     .array(z.string())
     .nullish()
@@ -307,15 +337,51 @@ export const StoryPawn = z.object({
 });
 export type StoryPawn = z.infer<typeof StoryPawn>;
 
+/** A planting bill of a growing zone: what to sow and for how long (docs/web/story-mode.md "Farming"). */
+export const STORY_GROW_BILL_MODES = ['forever', 'until', 'count'] as const;
+export const StoryGrowBill = z.object({
+  id: z.union([z.string(), z.number()]),
+  plant: z.string(),
+  label: z.string().nullish(),
+  mode: z
+    .enum(STORY_GROW_BILL_MODES)
+    .describe('forever | until (target of the produce in storage) | count (harvest target)'),
+  target: z.number().int().default(64),
+  done: z.number().int().default(0).describe('count: harvested so far'),
+  stored: z.number().int().nullish().describe('until: the produce the colony has'),
+  paused: z.boolean().default(false),
+  met: z.boolean().nullish(),
+  active: z.boolean().nullish().describe('the first unpaused bill whose target is not met: what is sown now'),
+  seeds: z.lazy(() => StoryZoneSeeds).nullish(),
+  missing: z.string().nullish().describe('the plant does not grow in this version'),
+});
+export type StoryGrowBill = z.infer<typeof StoryGrowBill>;
+
+/** A zone row run: `[z, x1, x2]`. */
+export const StoryZoneRow = z.tuple([z.number().int(), z.number().int(), z.number().int()]);
+
 export const StoryZone = z.object({
   id: z.union([z.string(), z.number()]),
   kind: z.string(),
+  /** The cells' bounding box (x, z) and the zone's level range (y). */
   area: StoryArea,
+  /** The zone's cells as normalised row runs (null = the whole `area`: an older bot). */
+  rows: z.array(StoryZoneRow).nullish(),
+  cells: z.number().int().nullish().describe('how many cells (columns) the zone has'),
   /** The zone's name (the bot's field; houses are named home zones). */
   name: z.string().nullish(),
   label: z.string().nullish(),
-  /** A growing zone (kind `farm`): the plant it grows (a `plants` id; null = ripe crops and bare farmland only). */
+  /** A growing zone (kind `farm`): its type's plant, the first bill's (a `plants` id; null = ripe crops and bare farmland only). */
   plant: z.string().nullish(),
+  activePlant: z
+    .string()
+    .nullish()
+    .describe("a growing zone: what it sows now (the active bill's plant; null = all bills met)"),
+  bills: z.array(StoryGrowBill).nullish().describe('a growing zone: its planting bills, in order'),
+  activeBill: z.union([z.string(), z.number()]).nullish(),
+  waterCells: z.number().int().nullish().describe('a fishing zone: its still-water cells'),
+  fishers: z.array(z.string()).nullish().describe('a fishing zone: who is fishing there now'),
+  catches: z.number().int().nullish().describe('a fishing zone: fish caught there so far'),
   sow: z.boolean().nullish().describe('pawns till and sow it'),
   harvest: z.boolean().nullish().describe('pawns harvest what is ripe'),
   status: z.string().nullish().describe('a growing zone: "12/40 sown, 6 ripe"'),
@@ -827,14 +893,23 @@ export const StoryOrderRequest = z
   .strict();
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
-/** `remove` without a kind removes every zone overlapping the area. */
+/** `remove` with an area erases those cells from zones of the kind (no kind or `any`: every kind). */
 const ZoneId = z.union([z.string().min(1).max(64), z.number().int()]);
+const BillSpec = {
+  plant: z.string().min(1).max(32).optional(),
+  mode: z.enum(STORY_GROW_BILL_MODES).optional(),
+  target: z.number().int().min(1).max(100_000).optional(),
+  paused: z.boolean().optional(),
+};
 
 /**
- * Zones (houses are zones of kind `home`: any number, each with its own name): `add` an area (optionally named), `remove`
- * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it). A growing zone
- * (kind `farm`) takes a `plant` (from `plants`), `sow` and `harvest`; `update` changes them; `seek_seeds` designates tall grass to
- * cut (wheat) or queues a seed bill (pumpkin, melon).
+ * Zones are cell sets painted RimWorld-style (docs/web/story-mode.md "Zones"; houses are zones of kind `home`): `add` paints an
+ * area (cells touching a zone of the same type join it, several merge into the oldest; other work zones under it are overwritten;
+ * home and forbidden are overlay layers; `into` extends one zone), `remove` erases an area's cells from zones of a kind (or any;
+ * empty zones go, cut ones split) or deletes one zone by id, `rename` one zone (an empty name clears it). A growing zone (kind
+ * `farm`) takes a `plant` (from `plants`: its first planting bill), `sow` and `harvest`; `update` changes them; `bill_*` edit its
+ * planting bills (like a workbench's: add, update, remove, pause, resume, reorder); `seek_seeds` designates tall grass to cut
+ * (wheat) or queues a seed bill (pumpkin, melon). Answers what changed: created, merged, grown, shrunk, split, deleted.
  */
 export const StoryZoneRequest = z.union([
   z
@@ -842,6 +917,7 @@ export const StoryZoneRequest = z.union([
       op: z.literal('add'),
       kind: StoryZoneKind.optional(),
       area: StoryArea,
+      into: ZoneId.optional().describe('extend this zone: the painted cells take its type'),
       name: z.string().trim().max(40).optional(),
       plant: z.string().min(1).max(32).optional(),
       sow: z.boolean().optional(),
@@ -858,7 +934,13 @@ export const StoryZoneRequest = z.union([
     })
     .strict(),
   z.object({ op: z.literal('seek_seeds'), id: ZoneId }).strict(),
-  z.object({ op: z.literal('remove'), kind: StoryZoneKind.optional(), area: StoryArea }).strict(),
+  z
+    .object({ op: z.literal('remove'), kind: z.union([StoryZoneKind, z.literal('any')]).optional(), area: StoryArea })
+    .strict(),
+  z.object({ op: z.literal('bill_add'), id: ZoneId, ...BillSpec, plant: z.string().min(1).max(32) }).strict(),
+  z.object({ op: z.literal('bill_update'), id: ZoneId, bill: ZoneId, ...BillSpec }).strict(),
+  z.object({ op: z.enum(['bill_remove', 'bill_pause', 'bill_resume']), id: ZoneId, bill: ZoneId }).strict(),
+  z.object({ op: z.literal('bill_reorder'), id: ZoneId, ids: z.array(ZoneId).min(1).max(16) }).strict(),
   z.object({ op: z.literal('remove'), id: z.union([z.string().min(1).max(64), z.number().int()]) }).strict(),
   z
     .object({

@@ -135,6 +135,8 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => T().ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
         T().UseItemOnBlockAsync(pos, face, itemId, damage, ct);
+    public Task<ActionResult> FishAsync(Vec3d target, TimeSpan session, int maxCatches = 64, CancellationToken ct = default) =>
+        T().FishAsync(target, session, maxCatches, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => T().EatAsync(ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => T().ChopTreeAsync(at, wood, ct);
     public Task<ActionResult> ChopThisTreeAsync(BlockPos at, CancellationToken ct = default) => T().ChopThisTreeAsync(at, ct);

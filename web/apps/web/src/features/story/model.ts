@@ -199,6 +199,7 @@ export const WORK_LABELS: Record<string, string> = {
   doctor: 'Doctor',
   cook: 'Cook',
   hunt: 'Hunt',
+  fish: 'Fish',
   build: 'Build',
   farm: 'Farm',
   mine: 'Mine',
