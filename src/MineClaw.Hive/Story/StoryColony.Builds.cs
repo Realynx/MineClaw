@@ -123,8 +123,10 @@ public sealed partial class StoryColony
 
     /// <summary>Cells one build job lays at most (docs/web/story-mode.md "Building fast").</summary>
     public const int BatchMax = 24;
-    /// <summary>How far (eyes to a cell's centre) a batch's cells may be from its stand: under the survival reach (4.5) with margin.</summary>
-    public const double BuildReach = 4.3;
+    /// <summary>How far (eyes to a cell's centre) a batch's cells may be from its stand: well under the client's reach (4.3 to a
+    /// support face, which can be farther than the centre), so the place tool never has to walk (FakeServer: one that did walked
+    /// into a hut and was walled in).</summary>
+    public const double BuildReach = 3.8;
     /// <summary>A batch's stand is chosen for the cells within this many blocks (horizontally) of its first.</summary>
     private const int BatchRadius = 3;
     /// <summary>A batch's cells lie within this many blocks (horizontally) of its first (the pawn steps along for the farther ones).</summary>
@@ -216,7 +218,7 @@ public sealed partial class StoryColony
                 // The pawn's fair share of what is open (ten builders on one floor each get a part), no more than it can get items for.
                 int openCells = todo.Count(x => (x.Item ?? "") == item); // open or in a batch now: every builder's share of the whole
                 int cap = mine ? 1 : Math.Min(Math.Clamp((int)Math.Ceiling(openCells / (double)builders), 1, BatchMax), have + stored);
-                var (cells, stand) = Batch(w, b, g, lowest, cap, from, p.Name);
+                var (cells, stand) = Batch(w, b, g, cap, from, p.Name);
                 int fetchN = Math.Max(0, cells.Count - have);
                 var fetch = new JsonArray();
                 var takes = new List<(P3, Stack)>();
@@ -308,20 +310,22 @@ public sealed partial class StoryColony
     }
 
     /// <summary>
-    /// The batch around <paramref name="seed"/>: open cells of the same item and facing near it (its level or above), a stand spot
+    /// The batch around <paramref name="seed"/>: open cells of the same item and facing near it (its level), a stand spot
     /// from which the seed and as many of the nearest of them as possible are in reach, then the cells in an order where each has
     /// support when its turn comes: those in reach of the stand first, then the ones a few steps on (cells left over between earlier
-    /// batches are taken along instead of becoming one-block jobs); within each, bottom-up, then touching something solid or a cell
-    /// placed before it, nearest the last (along the row).
+    /// batches are taken along instead of becoming one-block jobs); within each, touching something solid or a cell placed before it,
+    /// nearest the last (along the row).
     /// </summary>
-    private (List<GhostState> Cells, P3? Stand) Batch(IStoryWorld w, BuildState b, GhostState seed, int lowest, int cap, P3 from, string pawn)
+    private (List<GhostState> Cells, P3? Stand) Batch(IStoryWorld w, BuildState b, GhostState seed, int cap, P3 from, string pawn)
     {
+        // One level: the next goes up once this one stands (b1.8.1 FakeServer: a roof row laid early, over a wall still going up, had
+        // no visible support face, and its builder climbed onto the wall and was shut in).
         var cand = new List<GhostState>();
         if (cap > 1)
             foreach (var x in b.Ghosts)
             {
                 if (x == seed || !x.Job || x.Remove || x.State != "todo" || x.Item != seed.Item || x.Facing != seed.Facing) continue;
-                if (Math.Abs(x.At.X - seed.At.X) > WalkRadius || Math.Abs(x.At.Z - seed.At.Z) > WalkRadius || x.At.Y < seed.At.Y || x.At.Y > seed.At.Y + 3) continue;
+                if (Math.Abs(x.At.X - seed.At.X) > WalkRadius || Math.Abs(x.At.Z - seed.At.Z) > WalkRadius || x.At.Y != seed.At.Y) continue;
                 if (!Open($"g:{b.Id}|{x.At}", pawn, x.At) || Occupied(x.At)) continue;
                 var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
                 if (cur != 0 && Matches(x, cur, curMeta)) { CellDone(b, x); continue; }
@@ -331,8 +335,10 @@ public sealed partial class StoryColony
         var inBatch = new HashSet<P3> { seed.At };
         var batch = new List<GhostState> { seed };
         // The stand may be an open cell of the batch's patch (the pawn stands in the middle of it): that cell is left for later.
-        var rest = cand.Where(c => stand is not { } s || c.At != s && c.At != s.Add(0, 1, 0)).ToList();
         bool InReach(P3 c) => stand is { } s ? EyeDist(s, c) <= BuildReach : Math.Abs(c.X - seed.At.X) <= 1 && Math.Abs(c.Z - seed.At.Z) <= 1;
+        // A wall's builder works from outside only: no cells it would have to walk to (it could end up inside and be walled in).
+        bool walled = Footprint(b).Walled;
+        var rest = cand.Where(c => (stand is not { } s || c.At != s && c.At != s.Add(0, 1, 0)) && (!walled || InReach(c.At))).ToList();
         bool SolidOrPlaced(P3 c) => inBatch.Contains(c) || Solid(c);
         while (batch.Count < cap && rest.Count > 0)
         {
@@ -340,7 +346,6 @@ public sealed partial class StoryColony
             double best = double.MaxValue;
             foreach (var c in rest)
             {
-                if (c.At.Y > lowest && !SolidOrPlaced(c.At.Add(0, -1, 0))) continue; // a cell over a gap waits for what goes under it
                 if (!StoryConstruction.Supported(c.At, SolidOrPlaced)) continue;
                 double score = (InReach(c.At) ? 0 : 100_000) + c.At.Y * 1000 + c.At.Dist(batch[^1].At);
                 if (score < best) { best = score; next = c; }
@@ -356,22 +361,16 @@ public sealed partial class StoryColony
     /// <summary>
     /// A spot to stand on for a batch: feet and head open, solid ground under it, not the seed's cell and not on a batch cell (another
     /// cell of the patch can be the stand: it is then left out of the batch); the seed in reach, then the most of the batch in reach.
-    /// A spot in a still-open cell of the build, another builder's spot, or inside the footprint of a wall or fence (builders never
-    /// wall themselves in) costs extra. Null when nothing near is standable (the place tool then walks into reach by itself).
+    /// A spot in a still-open cell of the build or another builder's spot costs extra. A wall or fence ring is built from outside only,
+    /// never on or inside its footprint (builders never wall themselves in). Null when nothing near is standable (the place tool then
+    /// walks into reach by itself).
     /// </summary>
     private P3? StandFor(IStoryWorld w, BuildState b, GhostState seed, List<GhostState> cand, P3 from)
     {
         var cells = cand.Select(c => c.At).ToHashSet();
         cells.Add(seed.At);
-        var pending = new HashSet<P3>();
-        int x1 = int.MaxValue, x2 = int.MinValue, z1 = int.MaxValue, z2 = int.MinValue;
-        foreach (var g in b.Ghosts)
-        {
-            if (!g.Job) continue;
-            if (g.State != "done") pending.Add(g.At);
-            x1 = Math.Min(x1, g.At.X); x2 = Math.Max(x2, g.At.X); z1 = Math.Min(z1, g.At.Z); z2 = Math.Max(z2, g.At.Z);
-        }
-        bool walled = b.Kind is "wall" or "fence" && x2 - x1 >= 2 && z2 - z1 >= 2;
+        var pending = b.Ghosts.Where(g => g.Job && g.State != "done").Select(g => g.At).ToHashSet();
+        var (walled, x1, z1, x2, z2) = Footprint(b);
         var taken = new HashSet<P3>();
         foreach (var j in _current.Values)
             if (j.Source == "ghost" && j.Json["stand"] is JsonValue tv && tv.TryGetValue<string>(out var ts) && ParseCell(ts) is { } tp) taken.Add(tp);
@@ -379,21 +378,33 @@ public sealed partial class StoryColony
         double bestScore = double.MaxValue;
         for (int dx = -BatchRadius - 2; dx <= BatchRadius + 2; dx++)
             for (int dz = -BatchRadius - 2; dz <= BatchRadius + 2; dz++)
-                for (int dy = -1; dy <= 1; dy++)
+                for (int dy = -3; dy <= 1; dy++) // a roof or a wall's top row is laid from the ground below it
                 {
                     var s = seed.At.Add(dx, dy, dz);
                     if (s == seed.At || s.Add(0, 1, 0) == seed.At || cells.Contains(s.Add(0, -1, 0))) continue;
                     if (EyeDist(s, seed.At) > BuildReach) continue;
+                    if (walled && s.X >= x1 && s.X <= x2 && s.Z >= z1 && s.Z <= z2) continue; // never on or inside the walls
                     if (!w.Loaded(s.X, s.Z) || !Standable(w, s)) continue;
                     int reach = 0;
                     foreach (var c in cells) if (c != s && c != s.Add(0, 1, 0) && EyeDist(s, c) <= BuildReach) reach++;
                     double score = -10.0 * reach + 0.05 * s.Dist(from)
                         + (pending.Contains(s) || pending.Contains(s.Add(0, 1, 0)) ? 4 : 0)
-                        + (taken.Contains(s) ? 25 : 0)
-                        + (walled && s.X > x1 && s.X < x2 && s.Z > z1 && s.Z < z2 ? 1000 : 0);
+                        + (taken.Contains(s) ? 25 : 0);
                     if (score < bestScore) { bestScore = score; best = s; }
                 }
         return best;
+    }
+
+    /// <summary>A build's footprint (its cells' x/z box), and whether it encloses ground (a wall or fence ring): its builders stay out.</summary>
+    private static (bool Walled, int X1, int Z1, int X2, int Z2) Footprint(BuildState b)
+    {
+        int x1 = int.MaxValue, x2 = int.MinValue, z1 = int.MaxValue, z2 = int.MinValue;
+        foreach (var g in b.Ghosts)
+        {
+            if (!g.Job) continue;
+            x1 = Math.Min(x1, g.At.X); x2 = Math.Max(x2, g.At.X); z1 = Math.Min(z1, g.At.Z); z2 = Math.Max(z2, g.At.Z);
+        }
+        return (b.Kind is "wall" or "fence" && x2 - x1 >= 2 && z2 - z1 >= 2, x1, z1, x2, z2);
     }
 
     /// <summary>Feet and head open (no liquid), solid ground under it.</summary>
@@ -436,6 +447,7 @@ public sealed partial class StoryColony
         j.Assign = () =>
         {
             var until = Now + LeaseTtl;
+            _log.LogDebug("story {Colony}: {Pawn} batch {Job}: {Cells} stand {Stand}", Id, pawn, j.Id, string.Join(" ", cells.Select(c => c.At)), j.Json["stand"]?.ToString());
             foreach (var c in cells)
             {
                 _leases[$"g:{b.Id}|{c.At}"] = (pawn, until);

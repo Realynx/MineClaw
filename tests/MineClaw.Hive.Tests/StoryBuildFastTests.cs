@@ -172,7 +172,7 @@ public sealed class StoryBuildFastTests
     }
 
     [Fact]
-    public void A_wall_batch_goes_bottom_up_and_its_builder_stands_outside()
+    public void A_wall_batch_is_one_level_and_its_builder_stands_outside()
     {
         var (c, h, _) = Rig(1);
         h.Lives[c.P()] = FakeStoryHost.Live(12, 64, 12);
@@ -183,10 +183,8 @@ public sealed class StoryBuildFastTests
         }), null).Error);
         var j = c.Next(0);
         var cells = Cells(j).Select(At).ToList();
-        Assert.InRange(cells.Count, 12, StoryColony.BatchMax);
-        // Each cell above the ground goes after the one under it.
-        for (int i = 0; i < cells.Count; i++)
-            if (cells[i].Y > 64) Assert.Contains(cells[i].Add(0, -1, 0), cells.Take(i));
+        Assert.InRange(cells.Count, 4, 12);
+        Assert.All(cells, x => Assert.Equal(64, x.Y)); // one level at a time: the next goes up once this one stands
         var stand = At(j["stand"]!.GetValue<string>());
         Assert.False(stand.X > 10 && stand.X < 13 && stand.Z > 10 && stand.Z < 13, $"stand {stand} is inside the walls");
     }

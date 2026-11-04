@@ -683,20 +683,27 @@ Now:
 
 - **A build job is a batch.** It holds up to 24 cells of one item (and facing) within 6 blocks of its first open cell, and comes
   with one `stand`.
-  - The stand has feet and head open and solid ground under it. It is not the first cell and not on a batch cell. It must have
-    the first cell in reach (4.3 blocks from the eyes), then as many as possible of the cells within 3 blocks of it.
+  - The stand has feet and head open and solid ground under it, up to three blocks below the cell (a roof is laid from the
+    ground). It is not the first cell and not on a batch cell.
+  - The stand must have the first cell in reach, then as many as possible of the cells within 3 blocks of it. In reach means
+    3.8 blocks from the eyes to the cell's centre, under the client's 4.3 to a support face. That way the place tool never walks
+    on its own: on FakeServer, one that did walked into a hut and was walled in.
   - The stand may be another open cell of the patch, so the pawn stands in the middle of its patch. That cell is then left out.
-  - Another builder's stand, a still-open cell of the build, or (for a wall or fence) a spot inside the footprint costs extra, so
-    builders never wall themselves in.
+  - Another builder's stand or a still-open cell of the build costs extra.
+  - A wall or fence ring is built from outside only. Its stand is never on or inside the footprint, and its batch has only cells
+    in reach of the stand, so builders never wall themselves in. (FakeServer: with stands inside the ring allowed, a hut's builder
+    was shut in and couldn't get to a chest.)
   - The cells in reach of the stand come first, then the ones a few steps on. Cells left over between earlier batches are taken
     along this way instead of becoming one-block jobs.
-  - Within each group, each cell has support when its turn comes: bottom-up (a wall's upper cell joins the batch over a cell
-    the batch places first), then touching something solid or an earlier cell, then nearest the last one, along the row.
+  - A batch is one level: the next goes up once this one stands. (b1.8.1 FakeServer: a roof row laid early, over a wall still
+    going up, had no visible support face, and its builder climbed onto the wall and was shut in.) Within each group, each cell
+    has support when its turn comes: touching something solid or an earlier cell, then nearest the last one, along the row.
 - **Fair share.** The batch is the pawn's share of the build's cells still to place (`ceil(left / builders)`, 1 to 24), no more
   than it can get items for. Ten builders on a 16×16 floor each get a part, and a seed next to another pawn's batch comes after the rest, so
   they spread out. Each cell is leased (`g:<build>|x,y,z`) to the pawn until it reports that cell. The cells stay its own while it
   works: they are renewed with the job's lease by the tick and by progress. A probe claims nothing: cells are leased only when the
-  job is handed out (`ActiveJob.Assign`).
+  job is handed out (`ActiveJob.Assign`), by `Next` or when a wandering pawn is handed work. (The wander path once skipped this,
+  and two pawns got the same cells: "busy: … is using block".)
 - **One fetch per batch.** The job's `fetch` covers the batch less what the pawn carries, taken from as few chests as possible.
   Chests no other job is still fetching from come first, then the nearest. The amount a chest can give is what the ledger lists
   minus the fetches other jobs haven't made yet. When the items are out of the chests the script reports `fetched`, and the ledger
@@ -731,8 +738,8 @@ client, whose withdraw failed at once on a busy chest. After is the new director
 
 | stock | before: blocks/min | before: idle | before: jobs, failed | after: blocks/min | after: idle | after: jobs, failed |
 |---|---|---|---|---|---|---|
-| exact | 108.6 (161 s) | 63 % | 328, 36 busy | 188.7 (93 s) | 14 % | 57, 0 |
-| plenty | 150.9 (116 s) | 47 % | 347, 54 busy | 188.7 (93 s) | 14 % | 57, 0 |
+| exact | 108.6 (161 s) | 63 % | 328, 36 busy | 188.0 (93 s) | 10 % | 58, 0 |
+| plenty | 150.9 (116 s) | 47 % | 347, 54 busy | 188.0 (93 s) | 10 % | 58, 0 |
 
 The old run also depends on timing. In one variant of the model, ten cells hit their third busy failure, were `blocked` for good,
 and the build never finished: 282 of 292 cells after 30 simulated minutes, 99 % idle. That is the live picture. The simulation
@@ -740,8 +747,8 @@ leaves out pathfinding and the reach failures, so live gains should be larger. I
 within reach works.
 
 FakeServer 1.12.2 (`StoryFakeServerTests.Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures`): three pawns lay
-a 6×6 floor from one chest with no failed cell (no busy chest, no "too far", no "occupied") in 4.2 s of wall time. The fake
-clients tick every 5 ms, so that is about 40 s of game time. The test allows 60 s.
+a 6×6 floor from one chest with no failed cell (no busy chest, no "too far", no "occupied") in about 2 s of wall time (1.8–2.5 s
+over the runs). The fake clients tick every 5 ms, so that is about 20 s of game time. Each pawn placed 12. The test allows 60 s.
 
 ## Storage
 

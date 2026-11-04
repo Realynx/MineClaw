@@ -37,7 +37,7 @@
       if (!clear.includes(c) && built()) { if (j.cells) report(j, 'progress', 'cell ' + c + ' done'); n++; continue; }
       if (j.cells && !(H.inv(j.block) > 0)) break;
       if (clear.includes(c)) call('dig', c);
-      if (eyes(c) > 4.4) call('go', c, 2);
+      if (eyes(c) > 4) call('go', c, 2);
       let r = call('place', j.block, c);
       if (!good(r) && built()) r = { ok: true };
       else if (!good(r) && (FAR.test(why(r)) || IN_WAY.test(why(r)))) {
