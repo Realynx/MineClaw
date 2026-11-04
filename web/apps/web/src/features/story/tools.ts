@@ -407,7 +407,7 @@ export const ZONE_TOOLS: ReadonlyArray<{ id: StoryZoneKind; label: string; hint:
   { id: 'home', label: 'Home area', hint: 'Where pawns rest and keep things tidy', color: '#4f9cf0' },
   { id: 'farm', label: 'Growing zone', hint: 'Pawns plant, tend and harvest here', color: '#7cc35b' },
   { id: 'chop', label: 'Woodlot', hint: 'Trees here are cut and replanted', color: '#b98a4e' },
-  { id: 'mine', label: 'Quarry', hint: 'Pawns mine here when idle', color: '#9aa3ad' },
+  { id: 'mine', label: 'Quarry', hint: 'Pawns dig everything down to bedrock (a spiral stair), or only the ores', color: '#9aa3ad' },
   { id: 'fish', label: 'Fishing zone', hint: 'Pawns fish here with rods (still water only)', color: '#3fb8d9' },
   { id: 'forbidden', label: 'Keep out', hint: 'Pawns never walk here', color: '#e0525a' },
   { id: 'dump', label: 'Drop spot', hint: 'Loot goes here while the colony has no storage', color: '#c8a46a' },
