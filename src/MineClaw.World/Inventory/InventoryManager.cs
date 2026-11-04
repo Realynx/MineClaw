@@ -205,12 +205,10 @@ public sealed partial class InventoryManager
         lock (_sync)
         {
             var w = _open ?? _playerWindow;
-            var before = new ItemStack[w.SlotCount];
-            for (int i = 0; i < before.Length; i++) before[i] = w.Get(i);
+            var before = Snapshot(w);
             var cursorBefore = _cursor;
             var expected = Model.ModernClicks ? SlotClick1122(w, slot, mode, button) : SlotClick(w, slot, right, shift);
-            var changed = new List<int>();
-            for (int i = 0; i < before.Length; i++) if (!before[i].Equals(w.Get(i))) changed.Add(i);
+            var changed = ChangedSince(w, before);
             r = new ClickResult(w.Id, slot, right, shift, expected, ++_actionCounter)
             {
                 ChangedSlots = changed,
@@ -221,6 +219,20 @@ public sealed partial class InventoryManager
         }
         RaiseChanged();
         return r;
+    }
+
+    private static ItemStack[] Snapshot(Window w)
+    {
+        var items = new ItemStack[w.SlotCount];
+        for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
+        return items;
+    }
+
+    private static List<int> ChangedSince(Window w, ItemStack[] before)
+    {
+        var changed = new List<int>();
+        for (int i = 0; i < before.Length; i++) if (!before[i].Equals(w.Get(i))) changed.Add(i);
+        return changed;
     }
 
     /// <summary>1.12.2 Player Digging status 6 (<c>NetHandlerPlayServer.processPlayerDigging</c>, SWAP_HELD_ITEMS): the held
@@ -244,92 +256,89 @@ public sealed partial class InventoryManager
     {
         if (slot == OutsideSlot)
         {
-            if (!_cursor.IsEmpty)
-            {
-                if (!right) _cursor = ItemStack.Empty;
-                else _cursor = WithCount(_cursor, _cursor.Count - 1);
-            }
+            DropFromCursor(one: right);
             return ItemStack.Empty;
         }
         if (slot < 0 || slot >= w.SlotCount) return ItemStack.Empty;
+        return shift ? ShiftClickBeta(w, slot) : PickupSlotBeta(w, slot, right);
+    }
 
-        if (shift)
+    /// <summary>retrySlotClick: keep shift-clicking while the slot still holds the same item; the first move's stack.</summary>
+    private ItemStack ShiftClickBeta(Window w, int slot)
+    {
+        var moved = TransferStackInSlot(w, slot);
+        if (moved.IsEmpty) return ItemStack.Empty;
+        for (int guard = 0; guard < 64; guard++)
         {
-            var moved = TransferStackInSlot(w, slot);
-            if (moved.IsEmpty) return ItemStack.Empty;
-            // retrySlotClick: keep shift-clicking while the slot still holds the same item.
-            for (int guard = 0; guard < 64; guard++)
-            {
-                var now = w.Get(slot);
-                if (now.IsEmpty || now.Id != moved.Id) break;
-                if (TransferStackInSlot(w, slot).IsEmpty) break;
-            }
-            return moved;
+            var now = w.Get(slot);
+            if (now.IsEmpty || now.Id != moved.Id) break;
+            if (TransferStackInSlot(w, slot).IsEmpty) break;
         }
+        return moved;
+    }
 
+    private ItemStack PickupSlotBeta(Window w, int slot, bool right)
+    {
         var kind = w.KindOf(slot);
         var slotStack = w.Get(slot);
         var cursor = _cursor;
         var result = slotStack.IsEmpty ? ItemStack.Empty : slotStack;
         int limit = SlotLimit(kind);
-
-        if (slotStack.IsEmpty)
-        {
-            if (!cursor.IsEmpty && IsItemValid(slot, kind, cursor))
-            {
-                int n = right ? 1 : cursor.Count;
-                if (n > limit) n = limit;
-                w.Set(slot, WithCount(cursor, n));
-                _cursor = WithCount(cursor, cursor.Count - n);
-                OnSlotChanged(w, kind);
-            }
-        }
-        else if (cursor.IsEmpty)
-        {
-            int n = right ? (slotStack.Count + 1) / 2 : slotStack.Count;
-            if (kind == SlotKind.CraftOutput) n = slotStack.Count; // InventoryCraftResult.decrStackSize takes all
-            _cursor = WithCount(slotStack, n);
-            w.Set(slot, WithCount(slotStack, slotStack.Count - n));
-            OnPickup(w, kind);
-            OnSlotChanged(w, kind);
-        }
-        else if (IsItemValid(slot, kind, cursor))
-        {
-            if (!Rules.SameItem(slotStack, cursor))
-            {
-                if (cursor.Count <= limit)
-                {
-                    w.Set(slot, cursor);
-                    _cursor = slotStack;
-                    OnSlotChanged(w, kind);
-                }
-            }
-            else
-            {
-                int n = right ? 1 : cursor.Count;
-                n = Math.Min(n, limit - slotStack.Count);
-                n = Math.Min(n, Rules.MaxStack(cursor.Id) - slotStack.Count);
-                if (n > 0)
-                {
-                    _cursor = WithCount(cursor, cursor.Count - n);
-                    w.Set(slot, WithCount(slotStack, slotStack.Count + n));
-                    OnSlotChanged(w, kind);
-                }
-            }
-        }
-        else if (Rules.SameItem(slotStack, cursor) && Rules.MaxStack(cursor.Id) > 1)
-        {
-            // Output slots: add the whole output to the cursor if it fits.
-            int n = slotStack.Count;
-            if (n > 0 && n + cursor.Count <= Rules.MaxStack(cursor.Id))
-            {
-                _cursor = WithCount(cursor, cursor.Count + n);
-                w.Set(slot, ItemStack.Empty);
-                OnPickup(w, kind);
-                OnSlotChanged(w, kind);
-            }
-        }
+        if (slotStack.IsEmpty) PutCursorIntoBeta(w, slot, kind, cursor, right, limit);
+        else if (cursor.IsEmpty) TakeFromBeta(w, slot, kind, slotStack, right);
+        else if (IsItemValid(slot, kind, cursor)) MergeOrSwapBeta(w, slot, kind, slotStack, cursor, right, limit);
+        else if (Rules.SameItem(slotStack, cursor) && Rules.MaxStack(cursor.Id) > 1) TakeOutputBeta(w, slot, kind, slotStack, cursor);
         return result;
+    }
+
+    private void PutCursorIntoBeta(Window w, int slot, SlotKind kind, ItemStack cursor, bool right, int limit)
+    {
+        if (cursor.IsEmpty || !IsItemValid(slot, kind, cursor)) return;
+        int n = right ? 1 : cursor.Count;
+        if (n > limit) n = limit;
+        w.Set(slot, WithCount(cursor, n));
+        _cursor = WithCount(cursor, cursor.Count - n);
+        OnSlotChanged(w, kind);
+    }
+
+    private void TakeFromBeta(Window w, int slot, SlotKind kind, ItemStack slotStack, bool right)
+    {
+        int n = right ? (slotStack.Count + 1) / 2 : slotStack.Count;
+        if (kind == SlotKind.CraftOutput) n = slotStack.Count; // InventoryCraftResult.decrStackSize takes all
+        _cursor = WithCount(slotStack, n);
+        w.Set(slot, WithCount(slotStack, slotStack.Count - n));
+        OnPickup(w, kind);
+        OnSlotChanged(w, kind);
+    }
+
+    private void MergeOrSwapBeta(Window w, int slot, SlotKind kind, ItemStack slotStack, ItemStack cursor, bool right, int limit)
+    {
+        if (!Rules.SameItem(slotStack, cursor))
+        {
+            if (cursor.Count > limit) return;
+            w.Set(slot, cursor);
+            _cursor = slotStack;
+            OnSlotChanged(w, kind);
+            return;
+        }
+        int n = right ? 1 : cursor.Count;
+        n = Math.Min(n, limit - slotStack.Count);
+        n = Math.Min(n, Rules.MaxStack(cursor.Id) - slotStack.Count);
+        if (n <= 0) return;
+        _cursor = WithCount(cursor, cursor.Count - n);
+        w.Set(slot, WithCount(slotStack, slotStack.Count + n));
+        OnSlotChanged(w, kind);
+    }
+
+    /// <summary>Output slots: add the whole output to the cursor if it fits.</summary>
+    private void TakeOutputBeta(Window w, int slot, SlotKind kind, ItemStack slotStack, ItemStack cursor)
+    {
+        int n = slotStack.Count;
+        if (n <= 0 || n + cursor.Count > Rules.MaxStack(cursor.Id)) return;
+        _cursor = WithCount(cursor, cursor.Count + n);
+        w.Set(slot, ItemStack.Empty);
+        OnPickup(w, kind);
+        OnSlotChanged(w, kind);
     }
 
     /// <summary>Container.transferStackInSlot per window type (b1.8.1: no smart routing into furnace/armor slots).
@@ -339,28 +348,9 @@ public sealed partial class InventoryManager
         var original = w.Get(slot);
         if (original.IsEmpty) return ItemStack.Empty;
         var kind = w.KindOf(slot);
-        int main = w.MainStart, hot = w.HotbarStart, end = w.SlotCount;
-        ItemStack remaining;
-        bool ok;
-        switch (w.Type)
-        {
-            case WindowType.Chest:
-            case WindowType.Dispenser:
-                ok = slot < w.ContainerSlots
-                    ? Merge(w, original, main, end, true, out remaining)
-                    : Merge(w, original, 0, w.ContainerSlots, false, out remaining);
-                break;
-            default:
-            {
-                // Player (output 0), Workbench (output 0), Furnace (output 2).
-                bool isOutput = kind is SlotKind.CraftOutput or SlotKind.FurnaceOutput;
-                if (isOutput) ok = Merge(w, original, main, end, true, out remaining);
-                else if (kind == SlotKind.Main) ok = Merge(w, original, hot, end, false, out remaining);
-                else if (kind == SlotKind.Hotbar) ok = Merge(w, original, main, hot, false, out remaining);
-                else ok = Merge(w, original, main, end, false, out remaining);
-                break;
-            }
-        }
+        bool ok = w.Type is WindowType.Chest or WindowType.Dispenser
+            ? TransferFromContainerBeta(w, slot, original, out var remaining)
+            : TransferFromCraftingBeta(w, kind, original, out remaining);
         if (!ok) return ItemStack.Empty;
         w.Set(slot, remaining);
         if (remaining.Count != original.Count)
@@ -371,46 +361,65 @@ public sealed partial class InventoryManager
         return original;
     }
 
+    private bool TransferFromContainerBeta(Window w, int slot, ItemStack original, out ItemStack remaining) =>
+        slot < w.ContainerSlots
+            ? Merge(w, original, w.MainStart, w.SlotCount, true, out remaining)
+            : Merge(w, original, 0, w.ContainerSlots, false, out remaining);
+
+    /// <summary>Player (output 0), Workbench (output 0), Furnace (output 2): outputs to the inventory from the end, the main
+    /// inventory to the hotbar and back, anything else to the inventory.</summary>
+    private bool TransferFromCraftingBeta(Window w, SlotKind kind, ItemStack original, out ItemStack remaining)
+    {
+        int main = w.MainStart, hot = w.HotbarStart, end = w.SlotCount;
+        if (kind is SlotKind.CraftOutput or SlotKind.FurnaceOutput) return Merge(w, original, main, end, true, out remaining);
+        if (kind == SlotKind.Main) return Merge(w, original, hot, end, false, out remaining);
+        if (kind == SlotKind.Hotbar) return Merge(w, original, main, hot, false, out remaining);
+        return Merge(w, original, main, end, false, out remaining);
+    }
+
     /// <summary>Container.mergeItemStack: first top up matching stacks, then the first empty slot.</summary>
     private bool Merge(Window w, ItemStack stack, int start, int end, bool reverse, out ItemStack remaining)
     {
-        bool moved = false;
         int count = stack.Count;
-        int max = Rules.MaxStack(stack.Id);
-        if (Rules.IsStackable(stack))
-        {
-            for (int k = reverse ? end - 1 : start; count > 0 && (reverse ? k >= start : k < end); k += reverse ? -1 : 1)
-            {
-                var s = w.Get(k);
-                if (s.IsEmpty || s.Id != stack.Id || (Rules.HasSubtypes(stack.Id) && s.Damage != stack.Damage)) continue;
-                int total = s.Count + count;
-                if (total <= max)
-                {
-                    count = 0;
-                    w.Set(k, WithCount(s, total));
-                    moved = true;
-                }
-                else if (s.Count < max)
-                {
-                    count -= max - s.Count;
-                    w.Set(k, WithCount(s, max));
-                    moved = true;
-                }
-            }
-        }
-        if (count > 0)
-        {
-            for (int k = reverse ? end - 1 : start; reverse ? k >= start : k < end; k += reverse ? -1 : 1)
-            {
-                if (!w.Get(k).IsEmpty) continue;
-                w.Set(k, WithCount(stack, count));
-                count = 0;
-                moved = true;
-                break;
-            }
-        }
+        bool moved = Rules.IsStackable(stack) && TopUpBeta(w, stack, start, end, reverse, ref count);
+        if (count > 0) moved |= FillEmptyBeta(w, stack, start, end, reverse, ref count);
         remaining = WithCount(stack, count);
         return moved;
+    }
+
+    /// <summary>Adds to the stacks of the same item (and damage, for items with subtypes) in [start, end).</summary>
+    private bool TopUpBeta(Window w, ItemStack stack, int start, int end, bool reverse, ref int count)
+    {
+        bool moved = false;
+        int max = Rules.MaxStack(stack.Id);
+        int step = reverse ? -1 : 1;
+        for (int k = reverse ? end - 1 : start; count > 0 && k >= start && k < end; k += step)
+        {
+            var s = w.Get(k);
+            if (!StacksWithBeta(s, stack)) continue;
+            int total = s.Count + count;
+            if (total <= max) { count = 0; w.Set(k, WithCount(s, total)); moved = true; }
+            else if (s.Count < max) { count -= max - s.Count; w.Set(k, WithCount(s, max)); moved = true; }
+        }
+        return moved;
+    }
+
+    /// <summary>b1.8.1 stacks merge on the same item, and the same damage for items with subtypes.</summary>
+    private bool StacksWithBeta(ItemStack s, ItemStack stack) =>
+        !s.IsEmpty && s.Id == stack.Id && (!Rules.HasSubtypes(stack.Id) || s.Damage == stack.Damage);
+
+    /// <summary>Puts everything left into the first empty slot of [start, end).</summary>
+    private static bool FillEmptyBeta(Window w, ItemStack stack, int start, int end, bool reverse, ref int count)
+    {
+        int step = reverse ? -1 : 1;
+        for (int k = reverse ? end - 1 : start; k >= start && k < end; k += step)
+        {
+            if (!w.Get(k).IsEmpty) continue;
+            w.Set(k, WithCount(stack, count));
+            count = 0;
+            return true;
+        }
+        return false;
     }
 
     private static int SlotLimit(SlotKind kind) => kind == SlotKind.Armor ? 1 : 64;

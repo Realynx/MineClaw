@@ -114,14 +114,14 @@ public sealed class ContainerSightings
     {
         54 => size > 27 ? "double_chest" : "chest",
         146 => size > 27 ? "double_chest" : "trapped_chest", // 1.12.2 trapped chest
-        61 or 62 => "furnace",
-        23 => "dispenser",
-        158 => "dropper",       // 1.12.2
-        154 => "hopper",        // 1.12.2
-        130 => "ender_chest",   // 1.12.2: the opener's own ender inventory
-        117 => "brewing_stand", // 1.12.2
         >= 219 and <= 234 => "shulker_box",
-        _ => null,
+        _ => FixedKinds.GetValueOrDefault(blockId),
+    };
+
+    /// <summary>Containers whose kind is the block alone (the 1.12.2 ender chest shows the opener's own ender inventory).</summary>
+    private static readonly Dictionary<int, string> FixedKinds = new()
+    {
+        [61] = "furnace", [62] = "furnace", [23] = "dispenser", [158] = "dropper", [154] = "hopper", [130] = "ender_chest", [117] = "brewing_stand",
     };
 
     /// <summary>The usual slot count of a kind (a double chest 54).</summary>

@@ -23,216 +23,260 @@ public sealed partial class InventoryManager
     private int _dragEvent, _dragMode;
     private readonly List<int> _dragSlots = new();
 
+
     private ItemStack SlotClick1122(Window w, int slotId, ClickMode mode, int button)
     {
-        var result = ItemStack.Empty;
         if (mode == ClickMode.QuickCraft)
         {
-            int previous = _dragEvent;
-            _dragEvent = button & 3; // getDragEvent
-            if ((previous != 1 || _dragEvent != 2) && previous != _dragEvent) ResetDrag();
-            else if (_cursor.IsEmpty) ResetDrag();
-            else if (_dragEvent == 0)
-            {
-                _dragMode = button >> 2 & 3; // extractDragMode
-                if (_dragMode is 0 or 1) { _dragEvent = 1; _dragSlots.Clear(); } // isValidDragMode (2 = creative)
-                else ResetDrag();
-            }
-            else if (_dragEvent == 1)
-            {
-                if (slotId >= 0 && slotId < w.SlotCount && CanAddItemToSlot(w, slotId, _cursor, true) && IsValid1122(w, slotId, _cursor)
-                    && (_dragMode == 2 || _cursor.Count > _dragSlots.Count) && CanDragIntoSlot(w, slotId) && !_dragSlots.Contains(slotId))
-                    _dragSlots.Add(slotId);
-            }
-            else if (_dragEvent == 2)
-            {
-                if (_dragSlots.Count > 0)
-                {
-                    var copy = _cursor;
-                    int left = _cursor.Count;
-                    foreach (int s in _dragSlots)
-                    {
-                        if (!CanAddItemToSlot(w, s, _cursor, true) || !IsValid1122(w, s, _cursor)
-                            || !(_dragMode == 2 || _cursor.Count >= _dragSlots.Count) || !CanDragIntoSlot(w, s)) continue;
-                        int there = w.Get(s).IsEmpty ? 0 : w.Get(s).Count;
-                        // computeStackSize: 0 split evenly, 1 one each, 2 a full stack; + what the slot holds.
-                        int n = _dragMode switch { 0 => copy.Count / _dragSlots.Count, 1 => 1, _ => Rules.MaxStack(copy.Id) } + there;
-                        n = Math.Min(n, Math.Min(Rules.MaxStack(copy.Id), SlotLimit(w.KindOf(s))));
-                        left -= n - there;
-                        w.Set(s, WithCount(copy, n));
-                        OnSlotChanged(w, w.KindOf(s));
-                    }
-                    _cursor = WithCount(copy, left);
-                }
-                ResetDrag();
-            }
-            else ResetDrag();
-            return result;
+            QuickCraft1122(w, slotId, button);
+            return ItemStack.Empty;
         }
         if (_dragEvent != 0)
         {
             ResetDrag();
-            return result;
+            return ItemStack.Empty;
         }
+        if (IsMouseClick(mode, button)) return PickupClick1122(w, slotId, mode, button);
+        if (IsHotbarSwap(mode, button)) SwapClick1122(w, slotId, button);
+        else if (mode == ClickMode.Throw) ThrowClick1122(w, slotId, button);
+        else if (mode == ClickMode.PickupAll && slotId >= 0) PickupAll1122(w, slotId, button);
+        return ItemStack.Empty; // clone is creative only
+    }
 
-        if (mode is ClickMode.Pickup or ClickMode.QuickMove && button is 0 or 1)
+    private static bool IsMouseClick(ClickMode mode, int button) => mode is ClickMode.Pickup or ClickMode.QuickMove && button is 0 or 1;
+
+    private static bool IsHotbarSwap(ClickMode mode, int button) => mode == ClickMode.Swap && button is >= 0 and < 9;
+
+    // ---- the three-stage drag (QuickCraft) ----
+
+    private void QuickCraft1122(Window w, int slotId, int button)
+    {
+        int previous = _dragEvent;
+        _dragEvent = button & 3; // getDragEvent
+        if ((previous != 1 || _dragEvent != 2) && previous != _dragEvent) ResetDrag();
+        else if (_cursor.IsEmpty) ResetDrag();
+        else if (_dragEvent == 0) StartDrag(button);
+        else if (_dragEvent == 1) { if (CanDragTo(w, slotId)) _dragSlots.Add(slotId); }
+        else if (_dragEvent == 2) EndDrag(w);
+        else ResetDrag();
+    }
+
+    private void StartDrag(int button)
+    {
+        _dragMode = button >> 2 & 3; // extractDragMode
+        if (_dragMode is 0 or 1) { _dragEvent = 1; _dragSlots.Clear(); } // isValidDragMode (2 = creative)
+        else ResetDrag();
+    }
+
+    private bool CanDragTo(Window w, int slotId) =>
+        slotId >= 0 && slotId < w.SlotCount && CanAddItemToSlot(w, slotId, _cursor, true) && IsValid1122(w, slotId, _cursor)
+        && (_dragMode == 2 || _cursor.Count > _dragSlots.Count) && CanDragIntoSlot(w, slotId) && !_dragSlots.Contains(slotId);
+
+    private void EndDrag(Window w)
+    {
+        if (_dragSlots.Count > 0) SpreadDrag(w);
+        ResetDrag();
+    }
+
+    /// <summary>Spreads the cursor over the dragged slots (computeStackSize: 0 split evenly, 1 one each, 2 a full stack; plus
+    /// what the slot holds); the cursor keeps the rest.</summary>
+    private void SpreadDrag(Window w)
+    {
+        var copy = _cursor;
+        int left = _cursor.Count;
+        foreach (int s in _dragSlots)
+            if (CanSpreadInto(w, s)) left -= FillDragSlot(w, s, copy);
+        _cursor = WithCount(copy, left);
+    }
+
+    private bool CanSpreadInto(Window w, int s) =>
+        CanAddItemToSlot(w, s, _cursor, true) && IsValid1122(w, s, _cursor) && (_dragMode == 2 || _cursor.Count >= _dragSlots.Count)
+        && CanDragIntoSlot(w, s);
+
+    /// <summary>Fills one dragged slot; the number of items it took from the cursor.</summary>
+    private int FillDragSlot(Window w, int s, ItemStack copy)
+    {
+        int there = w.Get(s).IsEmpty ? 0 : w.Get(s).Count;
+        int n = DragShare(copy) + there;
+        n = Math.Min(n, Math.Min(Rules.MaxStack(copy.Id), SlotLimit(w.KindOf(s))));
+        w.Set(s, WithCount(copy, n));
+        OnSlotChanged(w, w.KindOf(s));
+        return n - there;
+    }
+
+    private int DragShare(ItemStack copy) => _dragMode switch { 0 => copy.Count / _dragSlots.Count, 1 => 1, _ => Rules.MaxStack(copy.Id) };
+
+    // ---- left/right clicks and shift-clicks ----
+
+    private ItemStack PickupClick1122(Window w, int slotId, ClickMode mode, int button)
+    {
+        if (slotId == OutsideSlot)
         {
-            if (slotId == OutsideSlot)
-            {
-                if (!_cursor.IsEmpty) _cursor = button == 0 ? ItemStack.Empty : WithCount(_cursor, _cursor.Count - 1); // dropped
-                return result;
-            }
-            if (slotId < 0 || slotId >= w.SlotCount) return ItemStack.Empty;
-            if (mode == ClickMode.QuickMove)
-            {
-                // for (t = transfer(); !t.isEmpty() && areItemsEqual(slot.getStack(), t); t = transfer()) result = t.copy();
-                for (int guard = 0; guard < 256; guard++)
-                {
-                    var t = Transfer1122(w, slotId);
-                    if (t.IsEmpty || !ItemsEqual(w.Get(slotId), t)) break;
-                    result = t;
-                }
-                return result;
-            }
-
-            var kind = w.KindOf(slotId);
-            var inSlot = w.Get(slotId);
-            var cursor = _cursor;
-            int limit = SlotLimit(kind);
-            if (!inSlot.IsEmpty) result = inSlot;
-            if (inSlot.IsEmpty)
-            {
-                if (!cursor.IsEmpty && IsValid1122(w, slotId, cursor))
-                {
-                    int u = Math.Min(button == 0 ? cursor.Count : 1, limit);
-                    w.Set(slotId, WithCount(cursor, u));
-                    _cursor = WithCount(cursor, cursor.Count - u);
-                }
-            }
-            else if (cursor.IsEmpty)
-            {
-                int t = button == 0 ? inSlot.Count : (inSlot.Count + 1) / 2;
-                if (kind == SlotKind.CraftOutput) t = inSlot.Count; // InventoryCraftResult.decrStackSize: getAndRemove, the whole stack
-                _cursor = WithCount(inSlot, t);
-                w.Set(slotId, WithCount(inSlot, inSlot.Count - t));
-                OnPickup(w, kind); // slot.onTake
-            }
-            else if (IsValid1122(w, slotId, cursor))
-            {
-                if (inSlot.Id == cursor.Id && inSlot.Damage == cursor.Damage && Equals(inSlot.Tag, cursor.Tag))
-                {
-                    int s = button == 0 ? cursor.Count : 1;
-                    s = Math.Min(s, limit - inSlot.Count);
-                    s = Math.Min(s, Rules.MaxStack(cursor.Id) - inSlot.Count);
-                    if (s != 0)
-                    {
-                        _cursor = WithCount(cursor, cursor.Count - s);
-                        w.Set(slotId, WithCount(inSlot, inSlot.Count + s));
-                    }
-                }
-                else if (cursor.Count <= limit)
-                {
-                    w.Set(slotId, cursor);
-                    _cursor = inSlot;
-                }
-            }
-            else if (inSlot.Id == cursor.Id && Rules.MaxStack(cursor.Id) > 1 && inSlot.Damage == cursor.Damage && Equals(inSlot.Tag, cursor.Tag))
-            {
-                int r = inSlot.Count;
-                if (r + cursor.Count <= Rules.MaxStack(cursor.Id))
-                {
-                    _cursor = WithCount(cursor, cursor.Count + r);
-                    w.Set(slotId, ItemStack.Empty);
-                    OnPickup(w, kind);
-                }
-            }
-            OnSlotChanged(w, kind); // slot.onSlotChanged
-            return result;
+            DropFromCursor(one: button != 0);
+            return ItemStack.Empty;
         }
+        if (slotId < 0 || slotId >= w.SlotCount) return ItemStack.Empty;
+        return mode == ClickMode.QuickMove ? ShiftClick1122(w, slotId) : PickupSlot1122(w, slotId, button);
+    }
 
-        if (mode == ClickMode.Swap && button is >= 0 and < 9)
+    /// <summary>A click outside the window drops the cursor stack (or one of it).</summary>
+    private void DropFromCursor(bool one)
+    {
+        if (!_cursor.IsEmpty) _cursor = one ? WithCount(_cursor, _cursor.Count - 1) : ItemStack.Empty;
+    }
+
+    /// <summary>for (t = transfer(); !t.isEmpty() &amp;&amp; areItemsEqual(slot.getStack(), t); t = transfer()) result = t.copy();</summary>
+    private ItemStack ShiftClick1122(Window w, int slotId)
+    {
+        var result = ItemStack.Empty;
+        for (int guard = 0; guard < 256; guard++)
         {
-            if (slotId < 0 || slotId >= w.SlotCount) return result;
-            int hotIndex = 36 + button; // inventoryPlayer.getStackInSlot(button): the hotbar, window-0 numbering
-            var hot = _player[hotIndex];
-            var inSlot = w.Get(slotId);
-            var kind = w.KindOf(slotId);
-            int limit = SlotLimit(kind);
-            if (hot.IsEmpty && inSlot.IsEmpty) return result;
-            if (hot.IsEmpty)
-            {
-                _player[hotIndex] = inSlot;
-                w.Set(slotId, ItemStack.Empty);
-                OnPickup(w, kind); // onSwapCraft + onTake
-            }
-            else if (inSlot.IsEmpty)
-            {
-                if (IsValid1122(w, slotId, hot))
-                {
-                    if (hot.Count > limit) { w.Set(slotId, WithCount(hot, limit)); _player[hotIndex] = WithCount(hot, hot.Count - limit); }
-                    else { w.Set(slotId, hot); _player[hotIndex] = ItemStack.Empty; }
-                }
-            }
-            else if (IsValid1122(w, slotId, hot))
-            {
-                if (hot.Count > limit)
-                {
-                    w.Set(slotId, WithCount(hot, limit));
-                    _player[hotIndex] = WithCount(hot, hot.Count - limit);
-                    OnPickup(w, kind);
-                    AddToInventory(inSlot); // addItemStackToInventory, else dropped
-                }
-                else
-                {
-                    w.Set(slotId, hot);
-                    _player[hotIndex] = inSlot;
-                    OnPickup(w, kind);
-                }
-            }
-            OnSlotChanged(w, kind);
-            return result;
-        }
-
-        if (mode == ClickMode.Clone) return result; // creative only
-
-        if (mode == ClickMode.Throw && _cursor.IsEmpty && slotId >= 0 && slotId < w.SlotCount)
-        {
-            var inSlot = w.Get(slotId);
-            if (!inSlot.IsEmpty)
-            {
-                int n = button == 0 ? 1 : inSlot.Count;
-                w.Set(slotId, WithCount(inSlot, inSlot.Count - n)); // decrStackSize, then dropped
-                OnPickup(w, w.KindOf(slotId));
-                OnSlotChanged(w, w.KindOf(slotId));
-            }
-            return result;
-        }
-
-        if (mode == ClickMode.PickupAll && slotId >= 0)
-        {
-            var c = _cursor;
-            bool slotFree = slotId >= w.SlotCount || w.Get(slotId).IsEmpty;
-            if (!c.IsEmpty && slotFree)
-            {
-                int size = w.SlotCount;
-                int start = button == 0 ? 0 : size - 1, step = button == 0 ? 1 : -1;
-                int max = Rules.MaxStack(c.Id);
-                for (int k = 0; k < 2; k++)
-                    for (int l = start; l >= 0 && l < size && c.Count < max; l += step)
-                    {
-                        var s = w.Get(l);
-                        if (s.IsEmpty || !CanAddItemToSlot(w, l, c, true) || !CanMergeSlot(w, l)) continue;
-                        if (k == 0 && s.Count == Rules.MaxStack(s.Id)) continue;
-                        int m = Math.Min(max - c.Count, s.Count);
-                        w.Set(l, WithCount(s, s.Count - m));
-                        c = WithCount(c, c.Count + m);
-                        OnPickup(w, w.KindOf(l));
-                    }
-                _cursor = c;
-            }
-            return result;
+            var t = Transfer1122(w, slotId);
+            if (t.IsEmpty || !ItemsEqual(w.Get(slotId), t)) break;
+            result = t;
         }
         return result;
+    }
+
+    private ItemStack PickupSlot1122(Window w, int slotId, int button)
+    {
+        var kind = w.KindOf(slotId);
+        var inSlot = w.Get(slotId);
+        var cursor = _cursor;
+        int limit = SlotLimit(kind);
+        var result = inSlot.IsEmpty ? ItemStack.Empty : inSlot;
+        if (inSlot.IsEmpty) PutCursorInto1122(w, slotId, cursor, button, limit);
+        else if (cursor.IsEmpty) TakeFrom1122(w, slotId, kind, inSlot, button);
+        else if (IsValid1122(w, slotId, cursor)) MergeOrSwap1122(w, slotId, inSlot, cursor, button, limit);
+        else TakeOntoCursor1122(w, slotId, kind, inSlot, cursor);
+        OnSlotChanged(w, kind); // slot.onSlotChanged
+        return result;
+    }
+
+    private void PutCursorInto1122(Window w, int slotId, ItemStack cursor, int button, int limit)
+    {
+        if (cursor.IsEmpty || !IsValid1122(w, slotId, cursor)) return;
+        int u = Math.Min(button == 0 ? cursor.Count : 1, limit);
+        w.Set(slotId, WithCount(cursor, u));
+        _cursor = WithCount(cursor, cursor.Count - u);
+    }
+
+    private void TakeFrom1122(Window w, int slotId, SlotKind kind, ItemStack inSlot, int button)
+    {
+        int t = button == 0 ? inSlot.Count : (inSlot.Count + 1) / 2;
+        if (kind == SlotKind.CraftOutput) t = inSlot.Count; // InventoryCraftResult.decrStackSize: getAndRemove, the whole stack
+        _cursor = WithCount(inSlot, t);
+        w.Set(slotId, WithCount(inSlot, inSlot.Count - t));
+        OnPickup(w, kind); // slot.onTake
+    }
+
+    private void MergeOrSwap1122(Window w, int slotId, ItemStack inSlot, ItemStack cursor, int button, int limit)
+    {
+        if (SameStackType(inSlot, cursor))
+        {
+            int s = button == 0 ? cursor.Count : 1;
+            s = Math.Min(s, limit - inSlot.Count);
+            s = Math.Min(s, Rules.MaxStack(cursor.Id) - inSlot.Count);
+            if (s == 0) return;
+            _cursor = WithCount(cursor, cursor.Count - s);
+            w.Set(slotId, WithCount(inSlot, inSlot.Count + s));
+        }
+        else if (cursor.Count <= limit)
+        {
+            w.Set(slotId, cursor);
+            _cursor = inSlot;
+        }
+    }
+
+    /// <summary>A slot the cursor can't go into (an output): its whole stack joins an equal stackable cursor if it fits.</summary>
+    private void TakeOntoCursor1122(Window w, int slotId, SlotKind kind, ItemStack inSlot, ItemStack cursor)
+    {
+        if (!SameStackType(inSlot, cursor) || Rules.MaxStack(cursor.Id) <= 1) return;
+        int r = inSlot.Count;
+        if (r + cursor.Count > Rules.MaxStack(cursor.Id)) return;
+        _cursor = WithCount(cursor, cursor.Count + r);
+        w.Set(slotId, ItemStack.Empty);
+        OnPickup(w, kind);
+    }
+
+    /// <summary>Same item, damage and NBT (stacks that merge in 1.12.2).</summary>
+    private static bool SameStackType(ItemStack a, ItemStack b) => a.Id == b.Id && a.Damage == b.Damage && Equals(a.Tag, b.Tag);
+
+    // ---- number keys, throw, double click ----
+
+    private void SwapClick1122(Window w, int slotId, int button)
+    {
+        if (slotId < 0 || slotId >= w.SlotCount) return;
+        int hotIndex = 36 + button; // inventoryPlayer.getStackInSlot(button): the hotbar, window-0 numbering
+        var hot = _player[hotIndex];
+        var inSlot = w.Get(slotId);
+        var kind = w.KindOf(slotId);
+        if (hot.IsEmpty && inSlot.IsEmpty) return;
+        if (hot.IsEmpty)
+        {
+            _player[hotIndex] = inSlot;
+            w.Set(slotId, ItemStack.Empty);
+            OnPickup(w, kind); // onSwapCraft + onTake
+        }
+        else if (IsValid1122(w, slotId, hot)) SwapInHotbar1122(w, slotId, kind, hotIndex, hot, inSlot);
+        OnSlotChanged(w, kind);
+    }
+
+    /// <summary>The hotbar stack goes into the slot (at most the slot's limit; the rest stays in the hotbar) and the slot's stack
+    /// into the hotbar, or into the inventory when the hotbar keeps a rest.</summary>
+    private void SwapInHotbar1122(Window w, int slotId, SlotKind kind, int hotIndex, ItemStack hot, ItemStack inSlot)
+    {
+        int limit = SlotLimit(kind);
+        if (hot.Count > limit)
+        {
+            w.Set(slotId, WithCount(hot, limit));
+            _player[hotIndex] = WithCount(hot, hot.Count - limit);
+        }
+        else
+        {
+            w.Set(slotId, hot);
+            _player[hotIndex] = inSlot.IsEmpty ? ItemStack.Empty : inSlot;
+        }
+        if (inSlot.IsEmpty) return;
+        OnPickup(w, kind);
+        if (hot.Count > limit) AddToInventory(inSlot); // addItemStackToInventory, else dropped
+    }
+
+    private void ThrowClick1122(Window w, int slotId, int button)
+    {
+        if (!_cursor.IsEmpty || slotId < 0 || slotId >= w.SlotCount) return;
+        var inSlot = w.Get(slotId);
+        if (inSlot.IsEmpty) return;
+        int n = button == 0 ? 1 : inSlot.Count;
+        w.Set(slotId, WithCount(inSlot, inSlot.Count - n)); // decrStackSize, then dropped
+        OnPickup(w, w.KindOf(slotId));
+        OnSlotChanged(w, w.KindOf(slotId));
+    }
+
+    /// <summary>Double click: gathers equal stacks into the cursor, non-full stacks first, from the start (button 0) or the end.</summary>
+    private void PickupAll1122(Window w, int slotId, int button)
+    {
+        var c = _cursor;
+        bool slotFree = slotId >= w.SlotCount || w.Get(slotId).IsEmpty;
+        if (c.IsEmpty || !slotFree) return;
+        int size = w.SlotCount;
+        int start = button == 0 ? 0 : size - 1, step = button == 0 ? 1 : -1;
+        int max = Rules.MaxStack(c.Id);
+        for (int k = 0; k < 2; k++)
+            for (int l = start; l >= 0 && l < size && c.Count < max; l += step)
+                c = GatherFrom1122(w, l, c, max, fullStacksToo: k > 0);
+        _cursor = c;
+    }
+
+    private ItemStack GatherFrom1122(Window w, int l, ItemStack c, int max, bool fullStacksToo)
+    {
+        var s = w.Get(l);
+        if (s.IsEmpty || !CanAddItemToSlot(w, l, c, true) || !CanMergeSlot(w, l)) return c;
+        if (!fullStacksToo && s.Count == Rules.MaxStack(s.Id)) return c;
+        int m = Math.Min(max - c.Count, s.Count);
+        w.Set(l, WithCount(s, s.Count - m));
+        OnPickup(w, w.KindOf(l));
+        return WithCount(c, c.Count + m);
     }
 
     private void ResetDrag()
@@ -284,118 +328,144 @@ public sealed partial class InventoryManager
         var original = w.Get(index);
         if (original.IsEmpty) return ItemStack.Empty;
         var kind = w.KindOf(index);
-        bool ok;
-        ItemStack rem;
-        bool countCheck = true;
-        switch (w.Type)
-        {
-            case WindowType.Player:
-            {
-                int eq = EquipmentSlot(original.Id);
-                if (index == 0) ok = Merge1122(w, original, 9, 45, true, out rem);
-                else if (index is >= 1 and < 9) ok = Merge1122(w, original, 9, 45, false, out rem);
-                else if (eq is >= 0 and <= 3 && w.Get(5 + eq).IsEmpty) ok = Merge1122(w, original, 5 + eq, 6 + eq, false, out rem);
-                else if (eq == 4 && Model.HasOffhand && w.Get(InventoryModel.OffhandSlot).IsEmpty)
-                    ok = Merge1122(w, original, InventoryModel.OffhandSlot, InventoryModel.OffhandSlot + 1, false, out rem);
-                else if (index is >= 9 and < 36) ok = Merge1122(w, original, 36, 45, false, out rem);
-                else if (index is >= 36 and < 45) ok = Merge1122(w, original, 9, 36, false, out rem);
-                else ok = Merge1122(w, original, 9, 45, false, out rem);
-                break;
-            }
-            case WindowType.Workbench:
-            {
-                int main = w.MainStart, hot = w.HotbarStart, end = w.SlotCount;
-                if (index == 0) ok = Merge1122(w, original, main, end, true, out rem);
-                else if (index >= main && index < hot) ok = Merge1122(w, original, hot, end, false, out rem);
-                else if (index >= hot && index < end) ok = Merge1122(w, original, main, hot, false, out rem);
-                else ok = Merge1122(w, original, main, end, false, out rem);
-                break;
-            }
-            case WindowType.Furnace:
-            {
-                int main = w.MainStart, hot = w.HotbarStart, end = w.SlotCount;
-                if (index == 2) ok = Merge1122(w, original, main, end, true, out rem);
-                else if (index is not (0 or 1))
-                {
-                    if (Rules.IsSmeltable(original)) ok = Merge1122(w, original, 0, 1, false, out rem);
-                    else if (Rules.IsFuel(original.Id)) ok = Merge1122(w, original, 1, 2, false, out rem);
-                    else if (index >= main && index < hot) ok = Merge1122(w, original, hot, end, false, out rem);
-                    else if (index >= hot && index < end) ok = Merge1122(w, original, main, hot, false, out rem);
-                    else { ok = true; rem = original; }
-                }
-                else ok = Merge1122(w, original, main, end, false, out rem);
-                break;
-            }
-            default:
-            {
-                // Chest (and the chest-like hopper, shulker box…), dispenser: the container to the inventory (from the end), and back.
-                int n = w.ContainerSlots;
-                ok = index < n ? Merge1122(w, original, n, w.SlotCount, true, out rem) : Merge1122(w, original, 0, n, false, out rem);
-                countCheck = w.Type != WindowType.Chest;
-                break;
-            }
-        }
+        bool ok = TransferByWindow1122(w, index, original, out var rem);
         if (!ok) return ItemStack.Empty;
         w.Set(index, rem);
-        if (countCheck && rem.Count == original.Count && !rem.IsEmpty) return ItemStack.Empty;
+        // A chest returns the moved stack even when nothing of it moved (ContainerChest has no count check).
+        if (w.Type != WindowType.Chest && rem.Count == original.Count && !rem.IsEmpty) return ItemStack.Empty;
         OnPickup(w, kind); // slot.onTake: crafting output consumes the grid (a leftover that didn't fit is dropped)
         OnSlotChanged(w, kind);
         return original;
     }
 
+    private bool TransferByWindow1122(Window w, int index, ItemStack original, out ItemStack rem)
+    {
+        switch (w.Type)
+        {
+            case WindowType.Player: return TransferFromPlayer1122(w, index, original, out rem);
+            case WindowType.Workbench: return TransferFromWorkbench1122(w, index, original, out rem);
+            case WindowType.Furnace: return TransferFromFurnace1122(w, index, original, out rem);
+            default:
+                // Chest (and the chest-like hopper, shulker box…), dispenser: the container to the inventory (from the end), and back.
+                int n = w.ContainerSlots;
+                return index < n ? Merge1122(w, original, n, w.SlotCount, true, out rem) : Merge1122(w, original, 0, n, false, out rem);
+        }
+    }
+
+    /// <summary>ContainerPlayer: the crafting output and grid to the inventory, armor and a shield to their empty slots, the
+    /// main inventory to the hotbar and back.</summary>
+    private bool TransferFromPlayer1122(Window w, int index, ItemStack original, out ItemStack rem)
+    {
+        if (index < 9) return Merge1122(w, original, 9, 45, index == 0, out rem); // output (from the end) and grid
+        if (EquipTarget1122(w, original) is { } slot) return Merge1122(w, original, slot, slot + 1, false, out rem);
+        var (start, end) = index is >= 9 and < 36 ? (36, 45) : index is >= 36 and < 45 ? (9, 36) : (9, 45);
+        return Merge1122(w, original, start, end, false, out rem);
+    }
+
+    /// <summary>The empty armor slot of the stack's piece, or the empty off hand for a shield; null otherwise.</summary>
+    private int? EquipTarget1122(Window w, ItemStack original)
+    {
+        int eq = EquipmentSlot(original.Id);
+        if (eq is >= 0 and <= 3 && w.Get(5 + eq).IsEmpty) return 5 + eq;
+        if (eq == 4 && Model.HasOffhand && w.Get(InventoryModel.OffhandSlot).IsEmpty) return InventoryModel.OffhandSlot;
+        return null;
+    }
+
+    private bool TransferFromWorkbench1122(Window w, int index, ItemStack original, out ItemStack rem)
+    {
+        int main = w.MainStart, hot = w.HotbarStart, end = w.SlotCount;
+        if (index == 0) return Merge1122(w, original, main, end, true, out rem);
+        if (index >= main && index < hot) return Merge1122(w, original, hot, end, false, out rem);
+        if (index >= hot && index < end) return Merge1122(w, original, main, hot, false, out rem);
+        return Merge1122(w, original, main, end, false, out rem);
+    }
+
+    /// <summary>ContainerFurnace: the output to the inventory (from the end), the input and fuel back to it, smeltables into the
+    /// input, fuel into the fuel slot, anything else between the main inventory and the hotbar.</summary>
+    private bool TransferFromFurnace1122(Window w, int index, ItemStack original, out ItemStack rem)
+    {
+        int main = w.MainStart, hot = w.HotbarStart, end = w.SlotCount;
+        if (index == 2) return Merge1122(w, original, main, end, true, out rem);
+        if (index is 0 or 1) return Merge1122(w, original, main, end, false, out rem);
+        if (Rules.IsSmeltable(original)) return Merge1122(w, original, 0, 1, false, out rem);
+        if (Rules.IsFuel(original.Id)) return Merge1122(w, original, 1, 2, false, out rem);
+        if (index >= main && index < hot) return Merge1122(w, original, hot, end, false, out rem);
+        if (index >= hot && index < end) return Merge1122(w, original, main, hot, false, out rem);
+        rem = original;
+        return true;
+    }
+
     /// <summary>Container.mergeItemStack (1.12.2): top up equal stacks (id, damage, NBT), then the first empty valid slot.</summary>
     private bool Merge1122(Window w, ItemStack stack, int start, int end, bool reverse, out ItemStack remaining)
     {
-        bool moved = false;
         int count = stack.Count;
-        int max = Rules.MaxStack(stack.Id);
-        if (Rules.IsStackable(stack))
-        {
-            for (int i = reverse ? end - 1 : start; count > 0 && (reverse ? i >= start : i < end); i += reverse ? -1 : 1)
-            {
-                var s = w.Get(i);
-                if (s.IsEmpty || s.Id != stack.Id || s.Damage != stack.Damage || !Equals(s.Tag, stack.Tag)) continue;
-                int j = s.Count + count;
-                if (j <= max) { count = 0; w.Set(i, WithCount(s, j)); moved = true; }
-                else if (s.Count < max) { count -= max - s.Count; w.Set(i, WithCount(s, max)); moved = true; }
-            }
-        }
-        if (count > 0)
-        {
-            for (int i = reverse ? end - 1 : start; reverse ? i >= start : i < end; i += reverse ? -1 : 1)
-            {
-                if (!w.Get(i).IsEmpty || !IsValid1122(w, i, stack)) continue;
-                int put = Math.Min(count, SlotLimit(w.KindOf(i)));
-                w.Set(i, WithCount(stack, put));
-                count -= put;
-                moved = true;
-                break;
-            }
-        }
+        bool moved = Rules.IsStackable(stack) && TopUp1122(w, stack, start, end, reverse, ref count);
+        if (count > 0) moved |= FillEmpty1122(w, stack, start, end, reverse, ref count);
         remaining = WithCount(stack, count);
         return moved;
     }
 
+    /// <summary>Adds to the equal stacks in [start, end) (from the end when <paramref name="reverse"/>) until the count is used up.</summary>
+    private bool TopUp1122(Window w, ItemStack stack, int start, int end, bool reverse, ref int count)
+    {
+        bool moved = false;
+        int max = Rules.MaxStack(stack.Id);
+        int step = reverse ? -1 : 1;
+        for (int i = reverse ? end - 1 : start; count > 0 && i >= start && i < end; i += step)
+        {
+            var s = w.Get(i);
+            if (s.IsEmpty || !SameStackType(s, stack)) continue;
+            int j = s.Count + count;
+            if (j <= max) { count = 0; w.Set(i, WithCount(s, j)); moved = true; }
+            else if (s.Count < max) { count -= max - s.Count; w.Set(i, WithCount(s, max)); moved = true; }
+        }
+        return moved;
+    }
+
+    /// <summary>Puts what is left (up to the slot's limit) into the first empty slot of [start, end) that takes the item.</summary>
+    private bool FillEmpty1122(Window w, ItemStack stack, int start, int end, bool reverse, ref int count)
+    {
+        int step = reverse ? -1 : 1;
+        for (int i = reverse ? end - 1 : start; i >= start && i < end; i += step)
+        {
+            if (!w.Get(i).IsEmpty || !IsValid1122(w, i, stack)) continue;
+            int put = Math.Min(count, SlotLimit(w.KindOf(i)));
+            w.Set(i, WithCount(stack, put));
+            count -= put;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Window-0 slots in addItemStackToInventory's order: the hotbar, then the main inventory.</summary>
+    private static readonly int[] HotbarThenMain = [36, 37, 38, 39, 40, 41, 42, 43, 44, .. Enumerable.Range(9, 27)];
+
     /// <summary>InventoryPlayer.addItemStackToInventory (simplified to the main inventory + hotbar): what doesn't fit is dropped.</summary>
     private void AddToInventory(ItemStack stack)
     {
-        int count = stack.Count, max = Rules.MaxStack(stack.Id);
-        for (int pass = 0; pass < 2 && count > 0; pass++)
-            foreach (int i in new[] { 36, 37, 38, 39, 40, 41, 42, 43, 44 }.Concat(Enumerable.Range(9, 27)))
-            {
-                var s = _player[i];
-                if (pass == 0 && !s.IsEmpty && s.Id == stack.Id && s.Damage == stack.Damage && Equals(s.Tag, stack.Tag) && s.Count < max)
-                {
-                    int n = Math.Min(count, max - s.Count);
-                    _player[i] = WithCount(s, s.Count + n);
-                    count -= n;
-                }
-                else if (pass == 1 && s.IsEmpty)
-                {
-                    _player[i] = WithCount(stack, count);
-                    count = 0;
-                }
-                if (count == 0) break;
-            }
+        int count = TopUpPlayer(stack, stack.Count);
+        if (count <= 0) return;
+        foreach (int i in HotbarThenMain)
+        {
+            if (!_player[i].IsEmpty) continue;
+            _player[i] = WithCount(stack, count);
+            return;
+        }
+    }
+
+    /// <summary>Adds to the equal, non-full stacks of the hotbar and main inventory; what is left.</summary>
+    private int TopUpPlayer(ItemStack stack, int count)
+    {
+        int max = Rules.MaxStack(stack.Id);
+        foreach (int i in HotbarThenMain)
+        {
+            if (count <= 0) break;
+            var s = _player[i];
+            if (s.IsEmpty || !SameStackType(s, stack) || s.Count >= max) continue;
+            int n = Math.Min(count, max - s.Count);
+            _player[i] = WithCount(s, s.Count + n);
+            count -= n;
+        }
+        return count;
     }
 }
