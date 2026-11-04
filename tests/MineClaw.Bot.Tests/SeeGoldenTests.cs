@@ -40,7 +40,7 @@ public class SeeGoldenTests
         bot.Vision.ImagesPerHour = imagesPerHour;
         var c = new FakeGameClient();
         var llm = new PerceptionLlm();
-        var host = BotHost.Create(c, o, bot, llm, persist: false);
+        var host = BotHost.Create(c, o, bot, llm, persist: false, worldIndex: new() { Enabled = false }); // the background index would race the labels
         for (int x = -2; x <= 9; x++) for (int z = -2; z <= 11; z++) c.World.SetBlock(x, 64, z, Blocks.Cobblestone, 0);
         c.World.SetBlock(4, 65, 7, Blocks.Water, 0);
         c.World.SetBlock(6, 65, 7, Blocks.Lava, 0);
