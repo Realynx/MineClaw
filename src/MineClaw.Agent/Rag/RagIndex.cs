@@ -292,6 +292,9 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         return n;
     }
 
+    private readonly record struct StoredDoc(long Id, string Kind, string? Tag, string Title, string Body, string Hash, string? Source, bool Embed,
+        double Weight, Box? Bounds, int Dim);
+
     private long UpsertCore(RagDoc d, out bool signal)
     {
         signal = false;
@@ -300,20 +303,8 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         var b = d.Bounds;
         lock (_db.Gate)
         {
-            var existing = _db.Query("SELECT id, kind, tag, title, body, hash, source, embed, weight, min_x, min_y, min_z, max_x, max_y, max_z, dimension FROM docs WHERE ref = $r",
-                r => (Id: r.GetInt64(0), Kind: r.GetString(1), Tag: AgentDb.StrOrNull(r, 2), Title: r.GetString(3), Body: r.GetString(4),
-                    Hash: r.GetString(5), Source: AgentDb.StrOrNull(r, 6), Embed: r.GetInt64(7) != 0, Weight: r.GetDouble(8),
-                    Bounds: r.IsDBNull(9) ? (Box?)null : new Box(r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13), r.GetDouble(14)),
-                    Dim: (int)r.GetInt64(15)),
-                ("$r", d.Ref)).FirstOrDefault();
-
-            var args = new (string, object?)[]
-            {
-                ("$ref", d.Ref), ("$kind", d.Kind), ("$tag", d.Tag), ("$title", d.Title), ("$body", d.Body), ("$hash", hash),
-                ("$source", d.Source), ("$embed", d.Embed ? 1 : 0), ("$weight", d.Weight), ("$t", ms),
-                ("$x0", b?.MinX), ("$y0", b?.MinY), ("$z0", b?.MinZ), ("$x1", b?.MaxX), ("$y1", b?.MaxY), ("$z1", b?.MaxZ),
-                ("$level", d.Level), ("$tok", TextUtil.EstimateTokens(d.Title) + TextUtil.EstimateTokens(d.Body)), ("$dim", d.Dimension),
-            };
+            var existing = StoredDocByRef(d.Ref);
+            var args = UpsertArgs(d, hash, ms, b);
             if (existing.Id == 0)
             {
                 _db.Exec("""
@@ -325,36 +316,67 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                 return _db.ScalarLong("SELECT last_insert_rowid()");
             }
 
-            bool same = existing.Kind == d.Kind && existing.Tag == d.Tag && existing.Title == d.Title && existing.Body == d.Body &&
-                        existing.Source == d.Source && existing.Embed == d.Embed && existing.Weight == d.Weight && existing.Bounds == b &&
-                        existing.Dim == d.Dimension;
-            if (same)
+            if (SameAsStored(existing, d, b))
             {
                 if (d.At != null) _db.Exec("UPDATE docs SET updated = $t WHERE id = $id", ("$t", ms), ("$id", existing.Id));
                 return existing.Id;
             }
 
-            bool textChanged = existing.Title != d.Title || existing.Body != d.Body;
-            bool boundsChanged = existing.Bounds != b || existing.Dim != d.Dimension;
-            var sql = new StringBuilder("UPDATE docs SET kind = $kind, tag = $tag, hash = $hash, source = $source, embed = $embed, weight = $weight, level = $level, updated = $t");
-            if (textChanged) sql.Append(", title = $title, body = $body, token_count = $tok, dirty = 1"); // only then do the FTS triggers fire
-            if (boundsChanged) sql.Append(", min_x = $x0, min_y = $y0, min_z = $z0, max_x = $x1, max_y = $y1, max_z = $z1, dimension = $dim");
-            sql.Append(" WHERE id = $id");
-            _db.Exec(sql.ToString(), [.. args, ("$id", existing.Id)]);
-
-            if (existing.Hash != hash || !d.Embed)
-            {
-                _db.Exec("DELETE FROM vectors WHERE doc_id = $id", ("$id", existing.Id));
-                lock (_vecLock) _vecs.Remove(existing.Id);
-                signal = d.Embed;
-            }
-            else if (existing.Kind != d.Kind || existing.Tag != d.Tag || boundsChanged)
-            {
-                lock (_vecLock)
-                    if (_vecs.TryGetValue(existing.Id, out var v)) _vecs[existing.Id] = v with { Kind = d.Kind, Tag = d.Tag, Dim = b != null ? d.Dimension : null };
-            }
+            bool boundsChanged = UpdateStored(existing, d, b, args);
+            signal = SyncStoredVector(existing, d, hash, b, boundsChanged);
             return existing.Id;
         }
+    }
+
+    private StoredDoc StoredDocByRef(string reference) =>
+        _db.Query("SELECT id, kind, tag, title, body, hash, source, embed, weight, min_x, min_y, min_z, max_x, max_y, max_z, dimension FROM docs WHERE ref = $r",
+            r => new StoredDoc(r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), r.GetString(3), r.GetString(4),
+                r.GetString(5), AgentDb.StrOrNull(r, 6), r.GetInt64(7) != 0, r.GetDouble(8),
+                r.IsDBNull(9) ? (Box?)null : new Box(r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13), r.GetDouble(14)),
+                (int)r.GetInt64(15)),
+            ("$r", reference)).FirstOrDefault();
+
+    private static (string, object?)[] UpsertArgs(RagDoc d, string hash, long ms, Box? b) =>
+    [
+        ("$ref", d.Ref), ("$kind", d.Kind), ("$tag", d.Tag), ("$title", d.Title), ("$body", d.Body), ("$hash", hash),
+        ("$source", d.Source), ("$embed", d.Embed ? 1 : 0), ("$weight", d.Weight), ("$t", ms),
+        ("$x0", b?.MinX), ("$y0", b?.MinY), ("$z0", b?.MinZ), ("$x1", b?.MaxX), ("$y1", b?.MaxY), ("$z1", b?.MaxZ),
+        ("$level", d.Level), ("$tok", TextUtil.EstimateTokens(d.Title) + TextUtil.EstimateTokens(d.Body)), ("$dim", d.Dimension),
+    ];
+
+    private static bool SameAsStored(StoredDoc existing, RagDoc d, Box? b) =>
+        existing.Kind == d.Kind && existing.Tag == d.Tag && existing.Title == d.Title && existing.Body == d.Body &&
+        existing.Source == d.Source && existing.Embed == d.Embed && existing.Weight == d.Weight && existing.Bounds == b &&
+        existing.Dim == d.Dimension;
+
+    /// <summary>Rewrites the changed doc (text and bounds columns only when they changed); returns whether the bounds did.</summary>
+    private bool UpdateStored(StoredDoc existing, RagDoc d, Box? b, (string, object?)[] args)
+    {
+        bool textChanged = existing.Title != d.Title || existing.Body != d.Body;
+        bool boundsChanged = existing.Bounds != b || existing.Dim != d.Dimension;
+        var sql = new StringBuilder("UPDATE docs SET kind = $kind, tag = $tag, hash = $hash, source = $source, embed = $embed, weight = $weight, level = $level, updated = $t");
+        if (textChanged) sql.Append(", title = $title, body = $body, token_count = $tok, dirty = 1"); // only then do the FTS triggers fire
+        if (boundsChanged) sql.Append(", min_x = $x0, min_y = $y0, min_z = $z0, max_x = $x1, max_y = $y1, max_z = $z1, dimension = $dim");
+        sql.Append(" WHERE id = $id");
+        _db.Exec(sql.ToString(), [.. args, ("$id", existing.Id)]);
+        return boundsChanged;
+    }
+
+    /// <summary>Drops a stale vector (returns true when the doc needs embedding again) or retags the cached one.</summary>
+    private bool SyncStoredVector(StoredDoc existing, RagDoc d, string hash, Box? b, bool boundsChanged)
+    {
+        if (existing.Hash != hash || !d.Embed)
+        {
+            _db.Exec("DELETE FROM vectors WHERE doc_id = $id", ("$id", existing.Id));
+            lock (_vecLock) _vecs.Remove(existing.Id);
+            return d.Embed;
+        }
+        if (existing.Kind != d.Kind || existing.Tag != d.Tag || boundsChanged)
+        {
+            lock (_vecLock)
+                if (_vecs.TryGetValue(existing.Id, out var v)) _vecs[existing.Id] = v with { Kind = d.Kind, Tag = d.Tag, Dim = b != null ? d.Dimension : null };
+        }
+        return false;
     }
 
     public bool Delete(string reference)
@@ -714,20 +736,34 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         {
             foreach (var (id, e) in _vecs)
             {
-                if (kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind is "chat" or SummaryKind) continue;
-                if (skip != null && skip(id)) continue;
-                if (tags is { Length: > 0 } && (e.Tag == null || Array.IndexOf(tags, e.Tag) < 0)) continue;
-                if (dim is { } dm && e.Dim is { } ed && ed != dm && e.Kind != EpisodeKind) continue;
+                if (KindExcluded(e, kinds) || (skip != null && skip(id)) || TagOrDimExcluded(e, tags, dim)) continue;
                 double c = VectorMath.Dot(q, e.Vec);
                 if (c < floor) continue;
-                if (top.Count == limit && c <= top[^1].Cos) continue;
-                int i = top.Count;
-                while (i > 0 && top[i - 1].Cos < c) i--;
-                top.Insert(i, (id, c));
-                if (top.Count > limit) top.RemoveAt(top.Count - 1);
+                InsertTop(top, id, c, limit);
             }
         }
         return top;
+    }
+
+    /// <summary>Not one of the kinds asked for; with none asked, chat and summaries (they have their own retrievers).</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool KindExcluded(VecEntry e, string[]? kinds) =>
+        kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind is "chat" or SummaryKind;
+
+    /// <summary>Not tagged as asked, or placed in another dimension (episodes span dimensions).</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool TagOrDimExcluded(VecEntry e, string[]? tags, int? dim) =>
+        (tags is { Length: > 0 } && (e.Tag == null || Array.IndexOf(tags, e.Tag) < 0))
+        || (dim is { } dm && e.Dim is { } ed && ed != dm && e.Kind != EpisodeKind);
+
+    /// <summary>Keeps <paramref name="top"/> sorted by cosine, highest first, at most <paramref name="limit"/> long.</summary>
+    private static void InsertTop(List<(long Id, double Cos)> top, long id, double c, int limit)
+    {
+        if (top.Count == limit && c <= top[^1].Cos) return;
+        int i = top.Count;
+        while (i > 0 && top[i - 1].Cos < c) i--;
+        top.Insert(i, (id, c));
+        if (top.Count > limit) top.RemoveAt(top.Count - 1);
     }
 
     private List<(RagHit Hit, double Weight)> LoadHits(IEnumerable<long> ids)

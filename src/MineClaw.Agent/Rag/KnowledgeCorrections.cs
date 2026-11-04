@@ -331,34 +331,38 @@ public sealed class KnowledgeCorrections
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            foreach (var e in doc.RootElement.EnumerateArray())
-            {
-                try
-                {
-                    string id = e.GetProperty("id").GetString()!, correction = e.GetProperty("correction").GetString()!;
-                    string title = e.TryGetProperty("title", out var t) ? t.GetString() ?? id : "correction: " + id;
-                    string shortText = e.TryGetProperty("short", out var s) ? s.GetString() ?? correction : correction;
-                    var clauses = new List<ClauseRule>();
-                    if (e.TryGetProperty("clauses", out var cl))
-                        foreach (var c in cl.EnumerateArray())
-                            clauses.Add(new ClauseRule(Regexes(c, "all"), c.TryGetProperty("none", out _) ? Regexes(c, "none") : null));
-                    var whole = Regexes(e, "whole");
-                    if (clauses.Count == 0 && whole.Count == 0) throw new FormatException("no patterns");
-                    list.Add(new KnowledgeCorrection(id, title, correction, shortText, clauses, whole));
-                }
-                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException or ArgumentException)
-                {
-                    log?.LogWarning("skipping bad entry in {File}: {Error}", path, ex.Message);
-                }
-            }
+            foreach (var e in doc.RootElement.EnumerateArray()) AddFileEntry(list, e, path, log);
         }
         catch (Exception ex) when (ex is JsonException or IOException or InvalidOperationException)
         {
             log?.LogWarning("could not read {File}: {Error}", path, ex.Message);
         }
         return list;
-
-        static List<Regex> Regexes(JsonElement e, string name) =>
-            e.TryGetProperty(name, out var a) ? a.EnumerateArray().Select(x => R(x.GetString()!)).ToList() : [];
     }
+
+    private static void AddFileEntry(List<KnowledgeCorrection> list, JsonElement e, string path, ILogger? log)
+    {
+        try { list.Add(ParseFileEntry(e)); }
+        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException or ArgumentException)
+        {
+            log?.LogWarning("skipping bad entry in {File}: {Error}", path, ex.Message);
+        }
+    }
+
+    private static KnowledgeCorrection ParseFileEntry(JsonElement e)
+    {
+        string id = e.GetProperty("id").GetString()!, correction = e.GetProperty("correction").GetString()!;
+        string title = e.TryGetProperty("title", out var t) ? t.GetString() ?? id : "correction: " + id;
+        string shortText = e.TryGetProperty("short", out var s) ? s.GetString() ?? correction : correction;
+        var clauses = new List<ClauseRule>();
+        if (e.TryGetProperty("clauses", out var cl))
+            foreach (var c in cl.EnumerateArray())
+                clauses.Add(new ClauseRule(RegexList(c, "all"), c.TryGetProperty("none", out _) ? RegexList(c, "none") : null));
+        var whole = RegexList(e, "whole");
+        if (clauses.Count == 0 && whole.Count == 0) throw new FormatException("no patterns");
+        return new KnowledgeCorrection(id, title, correction, shortText, clauses, whole);
+    }
+
+    private static List<Regex> RegexList(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var a) ? a.EnumerateArray().Select(x => R(x.GetString()!)).ToList() : [];
 }

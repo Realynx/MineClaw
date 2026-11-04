@@ -136,13 +136,15 @@ public static partial class DirectiveParser
     public static IReadOnlySet<string> TimeWords(string text)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
-        foreach (Match m in TimeOfDayRx().Matches(text ?? ""))
-        {
-            var w = m.Value.ToLowerInvariant();
-            set.Add(w.StartsWith("day", StringComparison.Ordinal) || w is "morning" or "sunrise" or "dawn" ? "day"
-                : w.StartsWith("night", StringComparison.Ordinal) || w.StartsWith("dark", StringComparison.Ordinal) || w is "evening" or "dusk" or "sunset" ? "night" : w);
-        }
+        foreach (Match m in TimeOfDayRx().Matches(text ?? "")) set.Add(FoldTimeWord(m.Value.ToLowerInvariant()));
         return set;
+    }
+
+    private static string FoldTimeWord(string w)
+    {
+        if (w.StartsWith("day", StringComparison.Ordinal) || w is "morning" or "sunrise" or "dawn") return "day";
+        if (w.StartsWith("night", StringComparison.Ordinal) || w.StartsWith("dark", StringComparison.Ordinal) || w is "evening" or "dusk" or "sunset") return "night";
+        return w;
     }
 
     /// <summary>Activity topics the text is about ("build", "mine", "farm", ...).</summary>

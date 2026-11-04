@@ -100,15 +100,26 @@ public sealed class HiveHealth
     {
         if (Volatile.Read(ref _flag) is { } flagged) return flagged;
         if (Host is not { } host || host.LoggingOut) return null; // not built yet (main's start timeout) / its logout gate runs (the stop grace)
-        if (Agent?.TurnStartedAt is { } turn)
-        {
-            var since = LastModelCall > turn ? LastModelCall : turn;
-            if (now - since > TimeSpan.FromSeconds(Math.Max(1, cfg.HangSeconds)))
-                return $"hung: a brain turn {(now - since).TotalMinutes:0} min without a model call";
-        }
+        return Hung(cfg, now) ?? Stalled(host, cfg, now) ?? TooManyErrors(cfg, now);
+    }
+
+    private string? Hung(InProcHiveConfig cfg, DateTimeOffset now)
+    {
+        if (Agent?.TurnStartedAt is not { } turn) return null;
+        var since = LastModelCall > turn ? LastModelCall : turn;
+        return now - since > TimeSpan.FromSeconds(Math.Max(1, cfg.HangSeconds))
+            ? $"hung: a brain turn {(now - since).TotalMinutes:0} min without a model call"
+            : null;
+    }
+
+    private string? Stalled(CloneHost host, InProcHiveConfig cfg, DateTimeOffset now)
+    {
         var streamed = host.LastStreamed > AttachedAt ? host.LastStreamed : AttachedAt;
-        if (now - streamed > TimeSpan.FromSeconds(Math.Max(1, cfg.StallSeconds)))
-            return $"stalled: its loops silent for {(now - streamed).TotalSeconds:0}s";
+        return now - streamed > TimeSpan.FromSeconds(Math.Max(1, cfg.StallSeconds)) ? $"stalled: its loops silent for {(now - streamed).TotalSeconds:0}s" : null;
+    }
+
+    private string? TooManyErrors(InProcHiveConfig cfg, DateTimeOffset now)
+    {
         var window = TimeSpan.FromMinutes(Math.Max(0.1, cfg.ErrorWindowMinutes));
         if (cfg.MaxErrors > 0 && Errors.Count(now, window) is var n && n >= cfg.MaxErrors)
             return $"{n} errors in {window.TotalMinutes:0.#} min (last: {Errors.Last ?? "-"})";

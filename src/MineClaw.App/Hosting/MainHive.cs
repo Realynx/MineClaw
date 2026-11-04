@@ -106,22 +106,7 @@ public sealed class MainHive : IAsyncDisposable
 
         var regulars = _cfg.RegularPlayers.Length > 0 ? _cfg.RegularPlayers : agent.Self.TrustedPlayers;
         IProcessLauncher launcher = new ProcessLauncher(extraArgs: _passThrough, log: _log);
-        if (_inProcSettings is { } ips)
-        {
-            // In-process hives (default): another agent in this process per hive; a watchdog stands in for the process kill.
-            InProc = new InProcHiveLauncher(_cfg, ips.For, ips.Profile, _loggers ?? Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance, _log)
-            {
-                Notice = (clone, why) => rt.Events.Post(Agent.Events.GameEvent.Notice(
-                    $"[hive] watchdog stopped {ChatArbiter.NumberOf(clone) ?? clone}: {why}; logging it out (its bodies and items first)",
-                    Agent.Events.EventPriority.Normal)),
-            };
-            var processes = launcher;
-            launcher = new IsolationLauncher(name => _cfg.RunsInProcess(_supervisor?.Slot(name)?.Task?.Isolation, _supervisor?.Slot(name)?.Task?.Profile),
-                InProc, processes);
-            _log.LogInformation("hive: clones run in this process (Hive:Isolation={Isolation}{Processes}); watchdog: hang {Hang:0}s, stall {Stall:0}s, {Errors} errors/{Window:0.#} min",
-                _cfg.Isolation, _cfg.ProcessProfiles.Length > 0 ? "; own process for " + string.Join(", ", _cfg.ProcessProfiles) : "",
-                _cfg.InProc.HangSeconds, _cfg.InProc.StallSeconds, _cfg.InProc.MaxErrors, _cfg.InProc.ErrorWindowMinutes);
-        }
+        if (_inProcSettings is { } ips) launcher = InProcessLauncher(ips, rt, launcher);
         _supervisor = new HiveSupervisor(_cfg, _main, launcher, Board, ledger, Arbiter, store,
             () => new SlotFacts(client.World.MaxPlayers, client.World.Entities.OnlinePlayers), regulars, _log)
         {
@@ -192,6 +177,26 @@ public sealed class MainHive : IAsyncDisposable
         if (bot.Blueprints?.Service is { } blueprints) blueprints.Jobs = new HiveBuildJobs(_supervisor, _cfg.Clones());
         _log.LogInformation("hive: dynamic accounts ({Prefix}*, {Known} managed); regulars {Regulars}; {Budget}", _cfg.Accounts.Prefix,
             Hierarchy.Managed.All().Count, string.Join(", ", regulars), ledger.Summary());
+    }
+
+    /// <summary>
+    /// In-process hives (default): another agent in this process per hive; a watchdog stands in for the process kill. Sets
+    /// <see cref="InProc"/>; hives isolated by config still get <paramref name="processes"/>.
+    /// </summary>
+    private IProcessLauncher InProcessLauncher(InProcHiveSettings ips, AgentRuntime rt, IProcessLauncher processes)
+    {
+        InProc = new InProcHiveLauncher(_cfg, ips.For, ips.Profile, _loggers ?? Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance, _log)
+        {
+            Notice = (clone, why) => rt.Events.Post(Agent.Events.GameEvent.Notice(
+                $"[hive] watchdog stopped {ChatArbiter.NumberOf(clone) ?? clone}: {why}; logging it out (its bodies and items first)",
+                Agent.Events.EventPriority.Normal)),
+        };
+        var launcher = new IsolationLauncher(name => _cfg.RunsInProcess(_supervisor?.Slot(name)?.Task?.Isolation, _supervisor?.Slot(name)?.Task?.Profile),
+            InProc, processes);
+        _log.LogInformation("hive: clones run in this process (Hive:Isolation={Isolation}{Processes}); watchdog: hang {Hang:0}s, stall {Stall:0}s, {Errors} errors/{Window:0.#} min",
+            _cfg.Isolation, _cfg.ProcessProfiles.Length > 0 ? "; own process for " + string.Join(", ", _cfg.ProcessProfiles) : "",
+            _cfg.InProc.HangSeconds, _cfg.InProc.StallSeconds, _cfg.InProc.MaxErrors, _cfg.InProc.ErrorWindowMinutes);
+        return launcher;
     }
 
     public IBotTelemetrySource? SourceFor(string name) =>

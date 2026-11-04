@@ -269,21 +269,8 @@ public static class FluidTextures
         var rnd = new Random(flow ? 81 : 80);
         for (int tick = 0; tick < 240; tick++)
         {
-            for (int i = 0; i < 16; i++)
-                for (int j = 0; j < 16; j++)
-                {
-                    float f = 0;
-                    if (flow) for (int k = j - 2; k <= j; k++) f += a[(i & 15) + (k & 15) * 16];
-                    else for (int k = i - 1; k <= i + 1; k++) f += a[(k & 15) + (j & 15) * 16];
-                    b[i + j * 16] = f / (flow ? 3.2f : 3.3f) + c[i + j * 16] * 0.8f;
-                }
-            for (int i = 0; i < 256; i++)
-            {
-                c[i] += d[i] * 0.05f;
-                if (c[i] < 0) c[i] = 0;
-                d[i] -= flow ? 0.3f : 0.1f;
-                if (rnd.NextDouble() < (flow ? 0.2 : 0.05)) d[i] = 0.5f;
-            }
+            WaterSpread(a, b, c, flow);
+            WaterDrops(c, d, rnd, flow);
             (a, b) = (b, a);
         }
         var px = new uint[256];
@@ -296,6 +283,31 @@ public static class FluidTextures
         return px;
     }
 
+    /// <summary>One water tick's blur of field a into b (still: across i; flow: the two rows above along j), plus the heat c.</summary>
+    private static void WaterSpread(float[] a, float[] b, float[] c, bool flow)
+    {
+        for (int i = 0; i < 16; i++)
+            for (int j = 0; j < 16; j++)
+            {
+                float f = 0;
+                if (flow) for (int k = j - 2; k <= j; k++) f += a[(i & 15) + (k & 15) * 16];
+                else for (int k = i - 1; k <= i + 1; k++) f += a[(k & 15) + (j & 15) * 16];
+                b[i + j * 16] = f / (flow ? 3.2f : 3.3f) + c[i + j * 16] * 0.8f;
+            }
+    }
+
+    /// <summary>One water tick's heat c and its decaying drive d, with random new drops.</summary>
+    private static void WaterDrops(float[] c, float[] d, Random rnd, bool flow)
+    {
+        for (int i = 0; i < 256; i++)
+        {
+            c[i] += d[i] * 0.05f;
+            if (c[i] < 0) c[i] = 0;
+            d[i] -= flow ? 0.3f : 0.1f;
+            if (rnd.NextDouble() < (flow ? 0.2 : 0.05)) d[i] = 0.5f;
+        }
+    }
+
     private static uint[] Lava(bool flow)
     {
         float[] a = new float[256], b = new float[256], c = new float[256], d = new float[256];
@@ -304,30 +316,10 @@ public static class FluidTextures
         {
             for (int i = 0; i < 16; i++)
                 for (int j = 0; j < 16; j++)
-                {
-                    float f = 0;
-                    int l = (int)(MathF.Sin(j * MathF.PI * 2 / 16f) * 1.2f), i1 = (int)(MathF.Sin(i * MathF.PI * 2 / 16f) * 1.2f);
-                    for (int k = i - 1; k <= i + 1; k++)
-                        for (int l1 = j - 1; l1 <= j + 1; l1++)
-                            f += a[((k + l) & 15) + ((l1 + i1) & 15) * 16];
-                    b[i + j * 16] = f / 10f + (c[(i & 15) + (j & 15) * 16] + c[((i + 1) & 15) + (j & 15) * 16] + c[((i + 1) & 15) + ((j + 1) & 15) * 16]
-                        + c[(i & 15) + ((j + 1) & 15) * 16]) / 4f * 0.8f;
-                    c[i + j * 16] += d[i + j * 16] * 0.01f;
-                    if (c[i + j * 16] < 0) c[i + j * 16] = 0;
-                    d[i + j * 16] -= 0.06f;
-                    if (rnd.NextDouble() < 0.005) d[i + j * 16] = 1.5f;
-                }
+                    LavaCell(a, b, c, d, rnd, i, j);
             (a, b) = (b, a);
-            if (flow)
-            {
-                // TextureLavaFlowFX: the same field scrolling down one row per few ticks (streaks along v).
-                if (tick % 3 == 0)
-                {
-                    var s = new float[256];
-                    for (int i = 0; i < 256; i++) s[i] = a[(i + 240) & 255];
-                    a = s;
-                }
-            }
+            // TextureLavaFlowFX: the same field scrolling down one row per few ticks (streaks along v).
+            if (flow && tick % 3 == 0) a = ScrollDown(a);
         }
         var px = new uint[256];
         for (int i = 0; i < 256; i++)
@@ -337,6 +329,30 @@ public static class FluidTextures
             px[i] = 0xff000000 | r << 16 | g << 8 | bl;
         }
         return px;
+    }
+
+    /// <summary>One lava cell per tick: a wobbling 3×3 blur of a plus the heat around it into b, then the heat's own step.</summary>
+    private static void LavaCell(float[] a, float[] b, float[] c, float[] d, Random rnd, int i, int j)
+    {
+        float f = 0;
+        int l = (int)(MathF.Sin(j * MathF.PI * 2 / 16f) * 1.2f), i1 = (int)(MathF.Sin(i * MathF.PI * 2 / 16f) * 1.2f);
+        for (int k = i - 1; k <= i + 1; k++)
+            for (int l1 = j - 1; l1 <= j + 1; l1++)
+                f += a[((k + l) & 15) + ((l1 + i1) & 15) * 16];
+        b[i + j * 16] = f / 10f + (c[(i & 15) + (j & 15) * 16] + c[((i + 1) & 15) + (j & 15) * 16] + c[((i + 1) & 15) + ((j + 1) & 15) * 16]
+            + c[(i & 15) + ((j + 1) & 15) * 16]) / 4f * 0.8f;
+        c[i + j * 16] += d[i + j * 16] * 0.01f;
+        if (c[i + j * 16] < 0) c[i + j * 16] = 0;
+        d[i + j * 16] -= 0.06f;
+        if (rnd.NextDouble() < 0.005) d[i + j * 16] = 1.5f;
+    }
+
+    /// <summary>The field moved down one row (wrapping).</summary>
+    private static float[] ScrollDown(float[] a)
+    {
+        var s = new float[256];
+        for (int i = 0; i < 256; i++) s[i] = a[(i + 240) & 255];
+        return s;
     }
 
     /// <summary>TextureFlamesFX frames (the two fire tiles, 31 and 47): a 16×20 heat field rising from a random bottom row;
@@ -352,16 +368,27 @@ public static class FluidTextures
             for (int i = 0; i < 16; i++)
                 for (int j = 0; j < 20; j++)
                 {
-                    int l = 18;
-                    float f = a[i + (j + 1) % 20 * 16] * l;
-                    for (int k = i - 1; k <= i + 1; k++)
-                        for (int i1 = j; i1 <= j + 1; i1++)
-                            if (k >= 0 && i1 >= 0 && k < 16 && i1 < 20) { f += a[k + i1 * 16]; l++; }
-                    b[i + j * 16] = f / (l * 1.06f);
+                    b[i + j * 16] = FireHeat(a, i, j);
                     if (j >= 19) b[i + j * 16] = (float)(rnd.NextDouble() * rnd.NextDouble() * rnd.NextDouble() * 4 + rnd.NextDouble() * 0.1 + 0.2);
                 }
             (a, b) = (b, a);
         }
+        return FirePixels(a);
+    }
+
+    /// <summary>The heat rising into (i, j): the cell below weighted 18, plus the in-range cells of the 3×2 box above it.</summary>
+    private static float FireHeat(float[] a, int i, int j)
+    {
+        int l = 18;
+        float f = a[i + (j + 1) % 20 * 16] * l;
+        for (int k = i - 1; k <= i + 1; k++)
+            for (int i1 = j; i1 <= j + 1; i1++)
+                if (k >= 0 && i1 >= 0 && k < 16 && i1 < 20) { f += a[k + i1 * 16]; l++; }
+        return f / (l * 1.06f);
+    }
+
+    private static uint[] FirePixels(float[] a)
+    {
         var px = new uint[256];
         for (int k = 0; k < 256; k++)
         {

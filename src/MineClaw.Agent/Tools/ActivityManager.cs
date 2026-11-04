@@ -522,8 +522,7 @@ public sealed class ActivityManager
     private async Task FinishAsync(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
         ToolResult? failure, int failedAt)
     {
-        if (act.Kind == ActivityKind.Job && CleanupJob is { } cleanup && act.Queued == null
-            && act.CancelReason?.StartsWith("superseded", StringComparison.Ordinal) != true)
+        if (CleanupFor(act) is { } cleanup)
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
@@ -553,6 +552,11 @@ public sealed class ActivityManager
         }
     }
 
+    /// <summary>The job cleanup to run after a job that nothing is queued behind and that wasn't superseded, else null.</summary>
+    private Func<CancellationToken, Task<string?>>? CleanupFor(Activity act) =>
+        act.Kind == ActivityKind.Job && CleanupJob is { } cleanup && act.Queued == null
+        && act.CancelReason?.StartsWith("superseded", StringComparison.Ordinal) != true ? cleanup : null;
+
     private void PublishOutcome(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
         ToolResult? failure, int failedAt, bool post, Activity? queued)
     {
@@ -561,22 +565,32 @@ public sealed class ActivityManager
         // A job queued with do{queue:true} runs even when this one failed (it doesn't require success): then nobody would report
         // this failure, so it is posted here.
         if (queued != null && act.Kind == ActivityKind.Move && (failure == null || queued.RequireSuccess)) return;
-        // Every completed step matters: a final planting result must not hide the excavation/tilling counts.
+        var report = StepReport(act, steps, results);
+        if (failure == null) PublishSuccess(act, report);
+        else PublishFailure(act, steps, failure, failedAt, report);
+    }
+
+    /// <summary>Every completed step matters: a final planting result must not hide the excavation/tilling counts.</summary>
+    private static string StepReport(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results)
+    {
         var report = string.Join("; ", results.Select((r, i) => r == null ? null : $"{steps[i].Tool.Name}: {r.Text}").Where(s => s != null));
         if (act.CleanupReport is { Length: > 0 } cr) report += "; " + cr;
+        return report;
+    }
 
-        if (failure == null)
-        {
-            var text = $"#{act.Id} {act.Label}: {report}";
-            // An arrival nobody waits on is context, not a reason to wake the brain (it already said what it's doing).
-            bool quiet = false;
-            try { quiet = QuietOutcome?.Invoke(text) == true; } catch (Exception) { }
-            Post(act.Kind == ActivityKind.Move || quiet
-                ? new GameEvent(EventKind.TaskCompleted, text, priority: EventPriority.Background)
-                : GameEvent.TaskDone(text));
-            return;
-        }
+    private void PublishSuccess(Activity act, string report)
+    {
+        var text = $"#{act.Id} {act.Label}: {report}";
+        // An arrival nobody waits on is context, not a reason to wake the brain (it already said what it's doing).
+        bool quiet = false;
+        try { quiet = QuietOutcome?.Invoke(text) == true; } catch (Exception) { }
+        Post(act.Kind == ActivityKind.Move || quiet
+            ? new GameEvent(EventKind.TaskCompleted, text, priority: EventPriority.Background)
+            : GameEvent.TaskDone(text));
+    }
 
+    private void PublishFailure(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult failure, int failedAt, string report)
+    {
         var reason = act.CancelReason;
         // The model asked for this (stop / new activity): it already knows — keep as quiet context only.
         bool modelInitiated = reason != null && (reason == "stop" || reason.StartsWith("superseded", StringComparison.Ordinal));

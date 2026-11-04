@@ -119,48 +119,58 @@ public sealed class ObservationStore
         long ms = AgentDb.ToUnixMs(now);
         var text = TextUtil.Truncate(TextUtil.OneLine(o.Text), 400);
         var existing = Get(kind, key, includeRemoved: true, dim);
-        var b = o.Bounds;
 
-        if (existing == null)
-        {
-            _db.Exec("""
-                INSERT INTO observations(kind, key, dimension, min_x, min_y, min_z, max_x, max_y, max_z, fields, text, source, confidence, annotation,
-                    first_seen, last_seen, seen_count, removed)
-                VALUES ($k, $key, $dim, $x0, $y0, $z0, $x1, $y1, $z1, $f, $text, $src, $c, NULL, $t, $t, 1, NULL)
-                """, ("$k", kind), ("$key", key), ("$dim", dim), ("$x0", b?.MinX), ("$y0", b?.MinY), ("$z0", b?.MinZ), ("$x1", b?.MaxX), ("$y1", b?.MaxY), ("$z1", b?.MaxZ),
-                ("$f", o.FieldsJson), ("$text", text), ("$src", Source(o.Source)), ("$c", o.Confidence), ("$t", ms));
-        }
+        if (existing == null) InsertObservation(o, kind, key, dim, ms, text);
         else if (existing.Source != ObservationSource.Auto && o.Source == ObservationSource.Auto)
         {
             // Protected entry: the indexer only annotates and refreshes freshness.
             _db.Exec("UPDATE observations SET last_seen = $t, seen_count = seen_count + 1, removed = NULL, annotation = $a WHERE id = $id",
                 ("$t", ms), ("$a", text), ("$id", existing.Id));
         }
-        else
-        {
-            var src = o.Source == ObservationSource.Auto ? existing.Source : o.Source;
-            _db.Exec("""
-                UPDATE observations SET min_x = $x0, min_y = $y0, min_z = $z0, max_x = $x1, max_y = $y1, max_z = $z1, fields = coalesce($f, fields),
-                    text = $text, source = $src, confidence = $c, last_seen = $t, seen_count = seen_count + 1, removed = NULL WHERE id = $id
-                """, ("$x0", b?.MinX ?? existing.Bounds?.MinX), ("$y0", b?.MinY ?? existing.Bounds?.MinY), ("$z0", b?.MinZ ?? existing.Bounds?.MinZ),
-                ("$x1", b?.MaxX ?? existing.Bounds?.MaxX), ("$y1", b?.MaxY ?? existing.Bounds?.MaxY), ("$z1", b?.MaxZ ?? existing.Bounds?.MaxZ),
-                ("$f", o.FieldsJson), ("$text", text), ("$src", Source(src)), ("$c", o.Confidence), ("$t", ms), ("$id", existing.Id));
-        }
+        else UpdateObservation(existing, o, ms, text);
 
         var row = Get(kind, key, includeRemoved: true, dim)!;
-        if (o.Contents != null)
-        {
-            _db.Exec("UPDATE observations SET contents_at = $t, contents_by = $by WHERE id = $id",
-                ("$t", AgentDb.ToUnixMs(o.ContentsAt ?? now)), ("$by", o.ContentsBy), ("$id", row.Id));
-            row = row with { ContentsAt = o.ContentsAt ?? now, ContentsBy = o.ContentsBy };
-            _db.Exec("DELETE FROM container_items WHERE obs_id = $id", ("$id", row.Id));
-            foreach (var g in o.Contents.Where(c => c.Count > 0).GroupBy(c => (c.ItemId, c.Damage)))
-                _db.Exec("INSERT INTO container_items(obs_id, item_id, damage, name, count, dimension) VALUES ($o, $i, $d, $n, $c, $dim)",
-                    ("$o", row.Id), ("$i", g.Key.ItemId), ("$d", g.Key.Damage), ("$n", g.First().Name.ToLowerInvariant()), ("$c", g.Sum(x => x.Count)), ("$dim", dim));
-        }
+        if (o.Contents != null) row = WriteContents(row, o, now, dim);
 
         // Hash-aware: only a material text change (numbers ignored) re-queues an embedding, and only for embeddable kinds.
         _index.UpsertMany([ToDoc(row)]);
+        return row;
+    }
+
+    private void InsertObservation(Observation o, string kind, string key, int dim, long ms, string text)
+    {
+        var b = o.Bounds;
+        _db.Exec("""
+            INSERT INTO observations(kind, key, dimension, min_x, min_y, min_z, max_x, max_y, max_z, fields, text, source, confidence, annotation,
+                first_seen, last_seen, seen_count, removed)
+            VALUES ($k, $key, $dim, $x0, $y0, $z0, $x1, $y1, $z1, $f, $text, $src, $c, NULL, $t, $t, 1, NULL)
+            """, ("$k", kind), ("$key", key), ("$dim", dim), ("$x0", b?.MinX), ("$y0", b?.MinY), ("$z0", b?.MinZ), ("$x1", b?.MaxX), ("$y1", b?.MaxY), ("$z1", b?.MaxZ),
+            ("$f", o.FieldsJson), ("$text", text), ("$src", Source(o.Source)), ("$c", o.Confidence), ("$t", ms));
+    }
+
+    /// <summary>A fresh sighting or a taught/manual update: new text and place (kept when not given), the stronger source kept.</summary>
+    private void UpdateObservation(ObservationRow existing, Observation o, long ms, string text)
+    {
+        var b = o.Bounds;
+        var src = o.Source == ObservationSource.Auto ? existing.Source : o.Source;
+        _db.Exec("""
+            UPDATE observations SET min_x = $x0, min_y = $y0, min_z = $z0, max_x = $x1, max_y = $y1, max_z = $z1, fields = coalesce($f, fields),
+                text = $text, source = $src, confidence = $c, last_seen = $t, seen_count = seen_count + 1, removed = NULL WHERE id = $id
+            """, ("$x0", b?.MinX ?? existing.Bounds?.MinX), ("$y0", b?.MinY ?? existing.Bounds?.MinY), ("$z0", b?.MinZ ?? existing.Bounds?.MinZ),
+            ("$x1", b?.MaxX ?? existing.Bounds?.MaxX), ("$y1", b?.MaxY ?? existing.Bounds?.MaxY), ("$z1", b?.MaxZ ?? existing.Bounds?.MaxZ),
+            ("$f", o.FieldsJson), ("$text", text), ("$src", Source(src)), ("$c", o.Confidence), ("$t", ms), ("$id", existing.Id));
+    }
+
+    /// <summary>A container's snapshot: when and by whom it was opened, and its items grouped by (id, damage).</summary>
+    private ObservationRow WriteContents(ObservationRow row, Observation o, DateTimeOffset now, int dim)
+    {
+        _db.Exec("UPDATE observations SET contents_at = $t, contents_by = $by WHERE id = $id",
+            ("$t", AgentDb.ToUnixMs(o.ContentsAt ?? now)), ("$by", o.ContentsBy), ("$id", row.Id));
+        row = row with { ContentsAt = o.ContentsAt ?? now, ContentsBy = o.ContentsBy };
+        _db.Exec("DELETE FROM container_items WHERE obs_id = $id", ("$id", row.Id));
+        foreach (var g in o.Contents!.Where(c => c.Count > 0).GroupBy(c => (c.ItemId, c.Damage)))
+            _db.Exec("INSERT INTO container_items(obs_id, item_id, damage, name, count, dimension) VALUES ($o, $i, $d, $n, $c, $dim)",
+                ("$o", row.Id), ("$i", g.Key.ItemId), ("$d", g.Key.Damage), ("$n", g.First().Name.ToLowerInvariant()), ("$c", g.Sum(x => x.Count)), ("$dim", dim));
         return row;
     }
 

@@ -129,27 +129,40 @@ public static partial class PerceptionPrompt
     {
         switch (e.ValueKind)
         {
-            case JsonValueKind.Array:
-                // [[x,y,z],...] or a single [x,y,z].
-                if (e.GetArrayLength() == 3 && e.EnumerateArray().All(v => v.ValueKind == JsonValueKind.Number))
-                {
-                    var v = e.EnumerateArray().Select(n => (int)Math.Round(n.GetDouble())).ToArray();
-                    into.Add((v[0], v[1], v[2]));
-                    return;
-                }
-                foreach (var item in e.EnumerateArray()) ReadCoords(item, into);
-                return;
-            case JsonValueKind.String:
-                var m = IntRx().Matches(e.GetString() ?? "");
-                if (m.Count == 3) into.Add((int.Parse(m[0].Value), int.Parse(m[1].Value), int.Parse(m[2].Value)));
-                return;
-            case JsonValueKind.Object:
-                if (e.TryGetProperty("x", out var x) && e.TryGetProperty("y", out var y) && e.TryGetProperty("z", out var z)
-                    && x.ValueKind == JsonValueKind.Number && y.ValueKind == JsonValueKind.Number && z.ValueKind == JsonValueKind.Number)
-                    into.Add(((int)x.GetDouble(), (int)y.GetDouble(), (int)z.GetDouble()));
-                return;
+            case JsonValueKind.Array: ReadCoordArray(e, into); return;
+            case JsonValueKind.String: ReadCoordString(e, into); return;
+            case JsonValueKind.Object: ReadCoordObject(e, into); return;
         }
     }
+
+    /// <summary>[[x,y,z],...] or a single [x,y,z] (rounded).</summary>
+    private static void ReadCoordArray(JsonElement e, List<(int, int, int)> into)
+    {
+        if (e.GetArrayLength() == 3 && e.EnumerateArray().All(v => v.ValueKind == JsonValueKind.Number))
+        {
+            var v = e.EnumerateArray().Select(n => (int)Math.Round(n.GetDouble())).ToArray();
+            into.Add((v[0], v[1], v[2]));
+            return;
+        }
+        foreach (var item in e.EnumerateArray()) ReadCoords(item, into);
+    }
+
+    /// <summary>"x,y,z" or any text with exactly three integers.</summary>
+    private static void ReadCoordString(JsonElement e, List<(int, int, int)> into)
+    {
+        var m = IntRx().Matches(e.GetString() ?? "");
+        if (m.Count == 3) into.Add((int.Parse(m[0].Value), int.Parse(m[1].Value), int.Parse(m[2].Value)));
+    }
+
+    /// <summary>{"x":..,"y":..,"z":..} with three numbers (truncated).</summary>
+    private static void ReadCoordObject(JsonElement e, List<(int, int, int)> into)
+    {
+        if (CoordNumber(e, "x") is { } x && CoordNumber(e, "y") is { } y && CoordNumber(e, "z") is { } z)
+            into.Add(((int)x.GetDouble(), (int)y.GetDouble(), (int)z.GetDouble()));
+    }
+
+    private static JsonElement? CoordNumber(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v : null;
 
     /// <summary>Builds the result from a model's raw text (shared by providers).</summary>
     public static PerceptionResult Result(string raw, LlmUsage usage, string model, string provider, long ms)

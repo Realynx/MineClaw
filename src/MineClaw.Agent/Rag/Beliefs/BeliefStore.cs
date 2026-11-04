@@ -87,14 +87,8 @@ public sealed class BeliefStore
     /// </summary>
     public IngestResult Ingest(string claimant, string text, ClaimCategory? category = null, ClaimStakes? stakes = null, bool isTest = false)
     {
-        if (!Options.Enabled) return new(false, "beliefs are off");
-        if (isTest || TurnContext.IsTest) return new(false, "test chat: claim not stored");
-        if (SelfSanitizer.CleanPlayer(claimant) is not { } who) return new(false, "bad claimant name");
-        if (string.IsNullOrWhiteSpace(text)) return new(false, "empty claim");
-
-        var p = ClaimParser.Parse(text);
-        if (category is { } c && !p.Directive && p.Category != ClaimCategory.Safety) p = p with { Category = c };
-        if (stakes is { } st && !p.Directive) p = p with { Stakes = p.Category == ClaimCategory.Safety ? ClaimStakes.High : st };
+        if (IngestRefusal(claimant, text, isTest, out var who) is { } refused) return refused;
+        var p = WithOverrides(ClaimParser.Parse(text), category, stakes);
         var now = Now;
 
         bool fresh = false;
@@ -117,6 +111,26 @@ public sealed class BeliefStore
         if (fresh || loaded.IsOpen) ClaimVerifier.Evaluate(this, loaded);
         var final = Recompute(claim);
         return new(true, Summary(final, fresh), final);
+    }
+
+    /// <summary>Why a claim isn't taken (beliefs off, test chat, a bad name, empty text), or null with the clean claimant.</summary>
+    private IngestResult? IngestRefusal(string claimant, string text, bool isTest, out string who)
+    {
+        who = "";
+        if (!Options.Enabled) return new(false, "beliefs are off");
+        if (isTest || TurnContext.IsTest) return new(false, "test chat: claim not stored");
+        if (SelfSanitizer.CleanPlayer(claimant) is not { } clean) return new(false, "bad claimant name");
+        who = clean;
+        if (string.IsNullOrWhiteSpace(text)) return new(false, "empty claim");
+        return null;
+    }
+
+    /// <summary>The caller's category/stakes win over the parse (never for an instruction; a safety claim stays safety and high).</summary>
+    private static ParsedClaim WithOverrides(ParsedClaim p, ClaimCategory? category, ClaimStakes? stakes)
+    {
+        if (category is { } c && !p.Directive && p.Category != ClaimCategory.Safety) p = p with { Category = c };
+        if (stakes is { } st && !p.Directive) p = p with { Stakes = p.Category == ClaimCategory.Safety ? ClaimStakes.High : st };
+        return p;
     }
 
     private long? FindSame(ParsedClaim p, string who)
@@ -273,27 +287,38 @@ public sealed class BeliefStore
         return _db.Tx(() =>
         {
             _db.Exec("DELETE FROM claim_evidence WHERE claim_id = $i AND ref LIKE 'admin:%'", ("$i", id));
-            if (status is ClaimStatus.Verified or ClaimStatus.Refuted or ClaimStatus.Disputed)
-            {
-                double conf = Math.Clamp(confidence ?? (status == ClaimStatus.Refuted ? 0.05 : status == ClaimStatus.Verified ? 0.95 : 0.5), 0, 1);
-                int polarity = status switch { ClaimStatus.Verified => 1, ClaimStatus.Refuted => -1, _ => 0 };
-                double weight = status == ClaimStatus.Refuted ? 1 - conf : conf;
-                var kind = c.Category == ClaimCategory.Safety ? EvidenceKind.Experiment : EvidenceKind.Seed;
-                _db.Exec("INSERT INTO claim_evidence(claim_id, kind, ref, polarity, weight, note, at) VALUES ($i, $k, $r, $p, $w, $n, $t)",
-                    ("$i", id), ("$k", BeliefRanks.Name(kind)), ("$r", AdminRefPrefix + who), ("$p", polarity), ("$w", weight),
-                    ("$n", reason ?? $"set by {who}"), ("$t", AgentDb.ToUnixMs(Now)));
-                _db.Exec("UPDATE claims SET checked = $t, plan = 'none' WHERE id = $i", ("$t", AgentDb.ToUnixMs(Now)), ("$i", id));
-                return Recompute(id);
-            }
-            var r = Recompute(id)!;
-            if (r.Status == status && confidence == null && reason == null) return r;
-            _db.Exec("UPDATE claims SET status = $s, confidence = $c, reason = $r, updated = $t WHERE id = $i",
-                ("$s", BeliefRanks.Name(status)), ("$c", Math.Clamp(confidence ?? r.Confidence, 0, 1)), ("$r", reason ?? r.Reason),
-                ("$t", AgentDb.ToUnixMs(Now)), ("$i", id));
-            var after = Load(id)!;
-            IndexDoc(after);
-            return after;
+            return status is ClaimStatus.Verified or ClaimStatus.Refuted or ClaimStatus.Disputed
+                ? PinVerdict(c, status, confidence, reason, who)
+                : SetOpenStatus(id, status, confidence, reason);
         });
+    }
+
+    /// <summary>A verdict as admin evidence (sticky across recomputes), then recomputed.</summary>
+    private BeliefClaim? PinVerdict(BeliefClaim c, ClaimStatus status, double? confidence, string? reason, string who)
+    {
+        long id = c.Id;
+        double conf = Math.Clamp(confidence ?? (status == ClaimStatus.Refuted ? 0.05 : status == ClaimStatus.Verified ? 0.95 : 0.5), 0, 1);
+        int polarity = status switch { ClaimStatus.Verified => 1, ClaimStatus.Refuted => -1, _ => 0 };
+        double weight = status == ClaimStatus.Refuted ? 1 - conf : conf;
+        var kind = c.Category == ClaimCategory.Safety ? EvidenceKind.Experiment : EvidenceKind.Seed;
+        _db.Exec("INSERT INTO claim_evidence(claim_id, kind, ref, polarity, weight, note, at) VALUES ($i, $k, $r, $p, $w, $n, $t)",
+            ("$i", id), ("$k", BeliefRanks.Name(kind)), ("$r", AdminRefPrefix + who), ("$p", polarity), ("$w", weight),
+            ("$n", reason ?? $"set by {who}"), ("$t", AgentDb.ToUnixMs(Now)));
+        _db.Exec("UPDATE claims SET checked = $t, plan = 'none' WHERE id = $i", ("$t", AgentDb.ToUnixMs(Now)), ("$i", id));
+        return Recompute(id);
+    }
+
+    /// <summary>Unverified / provisional: recompute without admin verdicts, then pin the requested status.</summary>
+    private BeliefClaim SetOpenStatus(long id, ClaimStatus status, double? confidence, string? reason)
+    {
+        var r = Recompute(id)!;
+        if (r.Status == status && confidence == null && reason == null) return r;
+        _db.Exec("UPDATE claims SET status = $s, confidence = $c, reason = $r, updated = $t WHERE id = $i",
+            ("$s", BeliefRanks.Name(status)), ("$c", Math.Clamp(confidence ?? r.Confidence, 0, 1)), ("$r", reason ?? r.Reason),
+            ("$t", AgentDb.ToUnixMs(Now)), ("$i", id));
+        var after = Load(id)!;
+        IndexDoc(after);
+        return after;
     }
 
     /// <summary>Deletes a claim (sources and evidence cascade) and its RAG doc. One transaction.</summary>
@@ -347,41 +372,60 @@ public sealed class BeliefStore
     private (ClaimStatus, double, string?) Resolve(BeliefClaim c, IReadOnlyList<ClaimEvidence> ev)
     {
         var people = c.Claimants.Where(p => !IsBotName(p)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        double consensus = c.Claimants.Count == 0 ? 0.1 : 1 - c.Claimants.Distinct(StringComparer.OrdinalIgnoreCase).Aggregate(1.0, (a, p) => a * (1 - BaseConfidence(p)));
-        consensus = Math.Round(Math.Min(consensus, 0.75), 3);
+        double consensus = Consensus(c);
 
         if (c.Directive) return (ClaimStatus.Unverified, 0, "instruction, not a fact");
         // Safety claims are informational: never verified by what players say, never provisional, never an input to gating.
         // The one exception is the bot's OWN deliberate experiment (Experiment evidence, e.g. an explicit into_void step that
         // respawned it at full hp/food): then it's a learned, proven strategy for memory — still never a gate.
-        if (c.Category == ClaimCategory.Safety)
-        {
-            var own = ev.Where(e => e.Kind == EvidenceKind.Experiment && e.Polarity != 0).OrderBy(e => e.At).ThenBy(e => e.Id).LastOrDefault();
-            if (own is null) return (ClaimStatus.Unverified, Math.Min(consensus, 0.5), "info only");
-            return own.Polarity > 0
-                ? (ClaimStatus.Verified, Math.Round(Math.Max(consensus, own.Weight), 3), own.Note)
-                : (ClaimStatus.Refuted, Math.Round(Math.Min(consensus, 1 - own.Weight), 3), own.Note);
-        }
+        if (c.Category == ClaimCategory.Safety) return ResolveSafety(ev, consensus);
+        return ResolveByStrongEvidence(ev, consensus) ?? ResolveByCounters(ev, consensus) ?? ResolveUnchecked(c, people, consensus);
+    }
 
+    /// <summary>1 − the chance that every distinct claimant is wrong, capped at 0.75 (0.1 with no claimant).</summary>
+    private double Consensus(BeliefClaim c)
+    {
+        double consensus = c.Claimants.Count == 0 ? 0.1 : 1 - c.Claimants.Distinct(StringComparer.OrdinalIgnoreCase).Aggregate(1.0, (a, p) => a * (1 - BaseConfidence(p)));
+        return Math.Round(Math.Min(consensus, 0.75), 3);
+    }
+
+    private static (ClaimStatus, double, string?) ResolveSafety(IReadOnlyList<ClaimEvidence> ev, double consensus)
+    {
+        var own = ev.Where(e => e.Kind == EvidenceKind.Experiment && e.Polarity != 0).OrderBy(e => e.At).ThenBy(e => e.Id).LastOrDefault();
+        if (own is null) return (ClaimStatus.Unverified, Math.Min(consensus, 0.5), "info only");
+        return Verdict(own, consensus);
+    }
+
+    private static (ClaimStatus, double, string?) Verdict(ClaimEvidence last, double consensus) => last.Polarity > 0
+        ? (ClaimStatus.Verified, Math.Round(Math.Max(consensus, last.Weight), 3), last.Note)
+        : (ClaimStatus.Refuted, Math.Round(Math.Min(consensus, 1 - last.Weight), 3), last.Note);
+
+    /// <summary>The newest evidence of the strongest rank (rank ≥ 2) decides; a recent opposite one at a rank below 4 disputes it.</summary>
+    private (ClaimStatus, double, string?)? ResolveByStrongEvidence(IReadOnlyList<ClaimEvidence> ev, double consensus)
+    {
         var strong = ev.Where(e => BeliefRanks.Of(e.Kind) >= 2).ToList();
-        if (strong.Count > 0)
-        {
-            int rank = strong.Max(e => BeliefRanks.Of(e.Kind));
-            var atRank = strong.Where(e => BeliefRanks.Of(e.Kind) == rank).OrderBy(e => e.At).ThenBy(e => e.Id).ToList();
-            var last = atRank[^1];
-            if (last.Polarity == 0) return (ClaimStatus.Disputed, 0.5, last.Note);
-            bool split = rank < 4 && atRank.Any(e => e.Polarity == -last.Polarity && last.At - e.At <= Options.DisputeWindow);
-            if (split) return (ClaimStatus.Disputed, 0.5, last.Note);
-            return last.Polarity > 0
-                ? (ClaimStatus.Verified, Math.Round(Math.Max(consensus, last.Weight), 3), last.Note)
-                : (ClaimStatus.Refuted, Math.Round(Math.Min(consensus, 1 - last.Weight), 3), last.Note);
-        }
+        if (strong.Count == 0) return null;
+        int rank = strong.Max(e => BeliefRanks.Of(e.Kind));
+        var atRank = strong.Where(e => BeliefRanks.Of(e.Kind) == rank).OrderBy(e => e.At).ThenBy(e => e.Id).ToList();
+        var last = atRank[^1];
+        if (last.Polarity == 0) return (ClaimStatus.Disputed, 0.5, last.Note);
+        bool split = rank < 4 && atRank.Any(e => e.Polarity == -last.Polarity && last.At - e.At <= Options.DisputeWindow);
+        if (split) return (ClaimStatus.Disputed, 0.5, last.Note);
+        return Verdict(last, consensus);
+    }
 
+    private (ClaimStatus, double, string?)? ResolveByCounters(IReadOnlyList<ClaimEvidence> ev, double consensus)
+    {
         var counters = ev.Where(e => e.Kind == EvidenceKind.Counter).ToList();
         int sup = counters.Count(e => e.Polarity > 0), con = counters.Count(e => e.Polarity < 0);
         if (con >= Options.CounterSupport && sup > 0) return (ClaimStatus.Disputed, 0.5, $"{sup} for, {con} against");
         if (sup >= Options.CounterSupport && con == 0) return (ClaimStatus.Provisional, Math.Max(consensus, 0.6), $"{sup} observations agree");
+        return null;
+    }
 
+    /// <summary>No checks yet: social talk and low-stakes agreement are provisional; the rest stays unverified (with why, when known).</summary>
+    private static (ClaimStatus, double, string?) ResolveUnchecked(BeliefClaim c, List<string> people, double consensus)
+    {
         if (c.Category == ClaimCategory.Social) return (ClaimStatus.Provisional, Math.Max(consensus, 0.6), null);
         if (people.Count >= 2 && c.Stakes != ClaimStakes.High) return (ClaimStatus.Provisional, consensus, $"{people.Count} people agree");
         string? why = c.Category == ClaimCategory.Structure && c.Risk != ExperimentRisk.Safe ? "risky to test, ask first"
@@ -392,22 +436,33 @@ public sealed class BeliefStore
     /// <summary>Trust feed: once per claimant and outcome. Social/safety/directive claims never touch trust.</summary>
     private void Signal(BeliefClaim c)
     {
-        if (Growth == null || c.Directive || c.Category is ClaimCategory.Social or ClaimCategory.Safety) return;
-        if (c.Status is not (ClaimStatus.Verified or ClaimStatus.Refuted or ClaimStatus.Disputed)) return;
+        if (!SignalsTrust(c)) return;
         var outcome = c.Status switch { ClaimStatus.Verified => ClaimOutcome.Verified, ClaimStatus.Refuted => ClaimOutcome.Refuted, _ => ClaimOutcome.Disputed };
-        double w = c.Stakes switch { ClaimStakes.Low => 0.4, ClaimStakes.Medium => 0.7, _ => 1.0 };
-        if (outcome != ClaimOutcome.Verified) w *= 0.5; // refuted lowers trust only slightly
+        double w = TrustWeight(c.Stakes, outcome);
         var status = BeliefRanks.Name(c.Status);
         var due = _db.Query("SELECT claimant FROM claim_sources WHERE claim_id = $i AND coalesce(signaled, '') <> $s",
             r => r.GetString(0), ("$i", c.Id), ("$s", status));
-        foreach (var p in due)
-        {
-            if (IsBotName(p)) continue;
-            SelfSignal? s = null;
-            try { s = Growth.RecordClaimOutcome(p, outcome, w, $"claim#{c.Id} {status}"); } catch (Exception) { }
-            if (s != null)
-                _db.Exec("UPDATE claim_sources SET signaled = $s WHERE claim_id = $i AND claimant = $p", ("$s", status), ("$i", c.Id), ("$p", p));
-        }
+        foreach (var p in due) SignalClaimant(c, p, outcome, w, status);
+    }
+
+    private bool SignalsTrust(BeliefClaim c) =>
+        Growth != null && !c.Directive && c.Category is not (ClaimCategory.Social or ClaimCategory.Safety)
+        && c.Status is ClaimStatus.Verified or ClaimStatus.Refuted or ClaimStatus.Disputed;
+
+    private static double TrustWeight(ClaimStakes stakes, ClaimOutcome outcome)
+    {
+        double w = stakes switch { ClaimStakes.Low => 0.4, ClaimStakes.Medium => 0.7, _ => 1.0 };
+        if (outcome != ClaimOutcome.Verified) w *= 0.5; // refuted lowers trust only slightly
+        return w;
+    }
+
+    private void SignalClaimant(BeliefClaim c, string p, ClaimOutcome outcome, double w, string status)
+    {
+        if (IsBotName(p)) return;
+        SelfSignal? s = null;
+        try { s = Growth!.RecordClaimOutcome(p, outcome, w, $"claim#{c.Id} {status}"); } catch (Exception) { }
+        if (s != null)
+            _db.Exec("UPDATE claim_sources SET signaled = $s WHERE claim_id = $i AND claimant = $p", ("$s", status), ("$i", c.Id), ("$p", p));
     }
 
     // ======================= rendering + index =======================

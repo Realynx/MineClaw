@@ -197,8 +197,17 @@ public sealed class EntityDeltaLog(TimeProvider? time = null)
     private void Apply(IReadOnlyList<WorldEntity> list, DateTimeOffset now)
     {
         long rev = _rev + 1;
-        bool changed = false;
         var seen = new HashSet<(int, int)>();
+        bool changed = Upsert(list, rev, seen);
+        changed |= RemoveUnseen(seen, rev, now);
+        if (changed) _rev = rev;
+        TrimRemoved(now);
+    }
+
+    /// <summary>Every listed entity in <see cref="_cur"/> (a changed one stamped <paramref name="rev"/>); true if any changed.</summary>
+    private bool Upsert(IReadOnlyList<WorldEntity> list, long rev, HashSet<(int, int)> seen)
+    {
+        bool changed = false;
         foreach (var e in list)
         {
             if (e.Id is not { } id) continue;
@@ -209,19 +218,29 @@ public sealed class EntityDeltaLog(TimeProvider? time = null)
             _cur[k] = (e, key, rev);
             changed = true;
         }
+        return changed;
+    }
+
+    /// <summary>Entities no longer listed move to the removed list at <paramref name="rev"/>; true if any did.</summary>
+    private bool RemoveUnseen(HashSet<(int, int)> seen, long rev, DateTimeOffset now)
+    {
+        bool changed = false;
         foreach (var k in _cur.Keys.Where(k => !seen.Contains(k)).ToList())
         {
             _cur.Remove(k);
             _removed.Add((rev, k.Dim, k.Id, now));
             changed = true;
         }
-        if (changed) _rev = rev;
+        return changed;
+    }
+
+    /// <summary>Removals older than <see cref="RemovedRetention"/> (or past the newest 4096) are dropped; the floor rises with them.</summary>
+    private void TrimRemoved(DateTimeOffset now)
+    {
         int drop = 0;
         while (drop < _removed.Count && (now - _removed[drop].At > RemovedRetention || _removed.Count - drop > 4096)) drop++;
-        if (drop > 0)
-        {
-            _floor = Math.Max(_floor, _removed[drop - 1].Rev);
-            _removed.RemoveRange(0, drop);
-        }
+        if (drop == 0) return;
+        _floor = Math.Max(_floor, _removed[drop - 1].Rev);
+        _removed.RemoveRange(0, drop);
     }
 }

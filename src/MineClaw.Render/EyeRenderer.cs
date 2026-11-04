@@ -335,8 +335,7 @@ public sealed class EyeRenderer
         foreach (var e in s.Entities)
         {
             // The camera's own body (eye inside its box) is not drawn: a first-person view has no head in the way.
-            double hx = s.EyeX - e.X, hz = s.EyeZ - e.Z, hy = s.EyeY - e.Y;
-            if (e.Kind != "item" && hx * hx + hz * hz < 0.36 && hy > -0.2 && hy < 2.0) continue;
+            if (EyeInside(s, e)) continue;
             tmp.Clear();
             try { EntityGeometry.Build(e, tmp, s.EyeX, s.EyeZ, s.Atlas, s.EyeY); } catch (Exception) { continue; }
             if (tmp.Count == 0) continue;
@@ -347,16 +346,28 @@ public sealed class EyeRenderer
                     x0 = Math.Min(x0, p.X); y0 = Math.Min(y0, p.Y); z0 = Math.Min(z0, p.Z);
                     x1 = Math.Max(x1, p.X); y1 = Math.Max(y1, p.Y); z1 = Math.Max(z1, p.Z);
                 }
-            int bx = (int)Math.Floor(e.X), by = (int)Math.Floor(e.Y + 0.1), bz = (int)Math.Floor(e.Z);
-            int lvl = Math.Max(FaceLight.CellLevel(s.World, bx, by, bz, sub), FaceLight.CellLevel(s.World, bx, by + 1, bz, sub));
-            float k = lvl < 0 ? 0.8f : Lighting.Brightness(lvl, s.Nether);
             list.Add(new EMesh
             {
-                E = e, Ox = e.X, Oy = e.Y, Oz = e.Z, Quads = tmp.ToArray(), Light = Math.Max(MinB(s), k),
+                E = e, Ox = e.X, Oy = e.Y, Oz = e.Z, Quads = tmp.ToArray(), Light = Math.Max(MinB(s), EntityBrightness(s, e, sub)),
                 X0 = e.X + x0 - 0.01, Y0 = e.Y + y0 - 0.01, Z0 = e.Z + z0 - 0.01, X1 = e.X + x1 + 0.01, Y1 = e.Y + y1 + 0.01, Z1 = e.Z + z1 + 0.01,
             });
         }
         return list.ToArray();
+    }
+
+    /// <summary>Whether the eye is inside an entity's box (the camera's own body; drops never count).</summary>
+    private static bool EyeInside(EyeScene s, VisionEntity e)
+    {
+        double hx = s.EyeX - e.X, hz = s.EyeZ - e.Z, hy = s.EyeY - e.Y;
+        return e.Kind != "item" && hx * hx + hz * hz < 0.36 && hy > -0.2 && hy < 2.0;
+    }
+
+    /// <summary>An entity's brightness: the brighter of its feet and head cells (0.8 without light data).</summary>
+    private static float EntityBrightness(EyeScene s, VisionEntity e, int sub)
+    {
+        int bx = (int)Math.Floor(e.X), by = (int)Math.Floor(e.Y + 0.1), bz = (int)Math.Floor(e.Z);
+        int lvl = Math.Max(FaceLight.CellLevel(s.World, bx, by, bz, sub), FaceLight.CellLevel(s.World, bx, by + 1, bz, sub));
+        return lvl < 0 ? 0.8f : Lighting.Brightness(lvl, s.Nether);
     }
 
     private float MinB(EyeScene s) => s.MinBrightness ?? MinBrightness;
@@ -451,74 +462,96 @@ public sealed class EyeRenderer
     /// </summary>
     private void Precipitation(EyeScene s, Ctx ctx, Cam cam)
     {
-        int W = Width, H = Height;
-        var wx = s.Weather;
         var style = s.Precip == PrecipStyle.Auto ? (cam.Ortho ? PrecipStyle.Tint : PrecipStyle.Streaks) : s.Precip;
         if (style == PrecipStyle.Tint)
         {
-            uint fog = ctx.Sky.Horizon;
-            float a = 0.06f + 0.10f * wx.R + 0.06f * wx.T;
-            for (int i = 0; i < W * H; i++) _px[i] = IsoPalette.Mix(_px[i], fog, a);
+            PrecipitationTint(s.Weather, ctx.Sky.Horizon);
             return;
         }
-        var w = s.World;
-        int h = w.WorldHeight;
-        int n = (int)(W * H / 300.0 * wx.R * Math.Clamp(s.PrecipDensity, 0f, 4f));
-        uint seed = (uint)HashCode.Combine((int)Math.Floor(s.EyeX), (int)Math.Floor(s.EyeY), (int)Math.Floor(s.EyeZ), s.PrecipTick / 2);
-        uint Next() { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return seed; }
-        double R01() => (Next() & 0xffffff) / (double)0x1000000;
-        bool Open(int bx, int by, int bz)
-        {
-            if (by >= h) return true;
-            if (by < 0) return false;
-            int sky = w.SkyLight(bx, by, bz);
-            if (sky >= 15) return w.Block(bx, by, bz) == 0 || !BlockGeometry.OpaqueCube(w.Block(bx, by, bz));
-            if (sky >= 0) return false;
-            for (int y = by; y < Math.Min(h, by + 48); y++) if (w.Block(bx, y, bz) != 0) return false;
-            return true;
-        }
+        int n = (int)(Width * Height / 300.0 * s.Weather.R * Math.Clamp(s.PrecipDensity, 0f, 4f));
+        var rng = new XorShift32((uint)HashCode.Combine((int)Math.Floor(s.EyeX), (int)Math.Floor(s.EyeY), (int)Math.Floor(s.EyeZ), s.PrecipTick / 2));
         double fall = s.PrecipTick % 20 / 20.0;
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) PrecipitationDrop(s, cam, ref rng, fall);
+    }
+
+    /// <summary>The light wash of the weather's fog colour for orthographic views and <see cref="PrecipStyle.Tint"/>.</summary>
+    private void PrecipitationTint(Weather wx, uint fog)
+    {
+        float a = 0.06f + 0.10f * wx.R + 0.06f * wx.T;
+        for (int i = 0; i < Width * Height; i++) _px[i] = IsoPalette.Mix(_px[i], fog, a);
+    }
+
+    /// <summary>The xorshift sequence the precipitation points are drawn from (deterministic per seed).</summary>
+    private struct XorShift32(uint seed)
+    {
+        private uint _seed = seed;
+        public uint Next() { _seed ^= _seed << 13; _seed ^= _seed >> 17; _seed ^= _seed << 5; return _seed; }
+        public double R01() => (Next() & 0xffffff) / (double)0x1000000;
+    }
+
+    /// <summary>One random point of the view volume: a flake or a streak when it sees the sky and its biome precipitates.</summary>
+    private void PrecipitationDrop(EyeScene s, Cam cam, ref XorShift32 rng, double fall)
+    {
+        int W = Width, H = Height;
+        int px = (int)(rng.R01() * W), py = (int)(rng.R01() * H);
+        double far = Math.Min(_depth[py * W + px], 36.0);
+        if (far < 1.5) return;
+        double d = 1.2 + rng.R01() * (far - 1.2);
+        var (x, y, z) = Unproject(s, px + 0.5, py + 0.5, d);
+        if (cam.Ortho) return;
+        int bx = (int)Math.Floor(x), by = (int)Math.Floor(y), bz = (int)Math.Floor(z);
+        if (!SkyOpen(s.World, bx, by, bz)) return;
+        int biome = s.World.Biome(bx, bz);
+        var kind = Weather.At(biome, y);
+        if (kind == MineClaw.Render.Precip.None) return;
+        if (kind == MineClaw.Render.Precip.Snow) SnowFlake(s, x, y - fall * 0.4, z);
+        else RainStreak(s, x, y + (0.45 - fall) * 0.9, z);
+    }
+
+    /// <summary>Whether precipitation reaches a cell: sky light 15 on a non-opaque cell, or (no light data) no block in the 48 above.</summary>
+    private static bool SkyOpen(IVoxelWorld w, int bx, int by, int bz)
+    {
+        int h = w.WorldHeight;
+        if (by >= h) return true;
+        if (by < 0) return false;
+        int sky = w.SkyLight(bx, by, bz);
+        if (sky >= 15) return w.Block(bx, by, bz) == 0 || !BlockGeometry.OpaqueCube(w.Block(bx, by, bz));
+        if (sky >= 0) return false;
+        for (int y = by; y < Math.Min(h, by + 48); y++) if (w.Block(bx, y, bz) != 0) return false;
+        return true;
+    }
+
+    /// <summary>A soft 2×2 snow flake, depth-tested, fainter with distance.</summary>
+    private void SnowFlake(EyeScene s, double x, double y, double z)
+    {
+        if (ProjectF(s, x, y, z) is not { } p) return;
+        int W = Width, H = Height;
+        int fx = (int)p.X, fy = (int)p.Y;
+        float k = (float)Math.Clamp(1.0 - p.Dist / 40.0, 0.25, 0.9);
+        for (int oy = 0; oy < 2; oy++)
+            for (int ox = 0; ox < 2; ox++)
+            {
+                int qx = fx + ox, qy = fy + oy;
+                if ((uint)qx >= (uint)W || (uint)qy >= (uint)H || _depth[qy * W + qx] < p.Dist) continue;
+                _px[qy * W + qx] = IsoPalette.Mix(_px[qy * W + qx], 0xf4f8ff, k * (ox + oy == 2 ? 0.5f : 1f));
+            }
+    }
+
+    /// <summary>Rain: a streak ~0.9 blocks long from (x, y0, z), slanting a little, fainter with distance.</summary>
+    private void RainStreak(EyeScene s, double x, double y0, double z)
+    {
+        if (ProjectF(s, x, y0, z) is not { } a || ProjectF(s, x + 0.08, y0 - 0.9, z + 0.05) is not { } b) return;
+        int W = Width, H = Height;
+        float alpha = (float)Math.Clamp(0.55 - a.Dist / 70.0, 0.18, 0.5) * (0.7f + 0.3f * s.Weather.R);
+        int steps = (int)Math.Clamp(Math.Max(Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y)), 1, 40);
+        for (int k = 0; k <= steps; k++)
         {
-            int px = (int)(R01() * W), py = (int)(R01() * H);
-            double far = Math.Min(_depth[py * W + px], 36.0);
-            if (far < 1.5) continue;
-            double d = 1.2 + R01() * (far - 1.2);
-            var (x, y, z) = Unproject(s, px + 0.5, py + 0.5, d);
-            if (cam.Ortho) continue;
-            int bx = (int)Math.Floor(x), by = (int)Math.Floor(y), bz = (int)Math.Floor(z);
-            if (!Open(bx, by, bz)) continue;
-            int biome = w.Biome(bx, bz);
-            var kind = Weather.At(biome, y);
-            if (kind == MineClaw.Render.Precip.None) continue;
-            if (kind == MineClaw.Render.Precip.Snow)
-            {
-                if (ProjectF(s, x, y - fall * 0.4, z) is not { } p) continue;
-                int fx = (int)p.X, fy = (int)p.Y;
-                float k = (float)Math.Clamp(1.0 - p.Dist / 40.0, 0.25, 0.9);
-                for (int oy = 0; oy < 2; oy++)
-                    for (int ox = 0; ox < 2; ox++)
-                    {
-                        int qx = fx + ox, qy = fy + oy;
-                        if ((uint)qx >= (uint)W || (uint)qy >= (uint)H || _depth[qy * W + qx] < p.Dist) continue;
-                        _px[qy * W + qx] = IsoPalette.Mix(_px[qy * W + qx], 0xf4f8ff, k * (ox + oy == 2 ? 0.5f : 1f));
-                    }
-                continue;
-            }
-            // Rain: a streak ~0.9 blocks long, slanting a little, fainter with distance.
-            double y0 = y + (0.45 - fall) * 0.9;
-            if (ProjectF(s, x, y0, z) is not { } a || ProjectF(s, x + 0.08, y0 - 0.9, z + 0.05) is not { } b) continue;
-            float alpha = (float)Math.Clamp(0.55 - a.Dist / 70.0, 0.18, 0.5) * (0.7f + 0.3f * wx.R);
-            int steps = (int)Math.Clamp(Math.Max(Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y)), 1, 40);
-            for (int k = 0; k <= steps; k++)
-            {
-                double f = k / (double)steps;
-                int qx = (int)(a.X + (b.X - a.X) * f), qy = (int)(a.Y + (b.Y - a.Y) * f);
-                if ((uint)qx >= (uint)W || (uint)qy >= (uint)H) continue;
-                double dist = a.Dist + (b.Dist - a.Dist) * f;
-                if (_depth[qy * W + qx] < dist) continue;
-                _px[qy * W + qx] = IsoPalette.Mix(_px[qy * W + qx], 0xb4c4e0, alpha);
-            }
+            double f = k / (double)steps;
+            int qx = (int)(a.X + (b.X - a.X) * f), qy = (int)(a.Y + (b.Y - a.Y) * f);
+            if ((uint)qx >= (uint)W || (uint)qy >= (uint)H) continue;
+            double dist = a.Dist + (b.Dist - a.Dist) * f;
+            if (_depth[qy * W + qx] < dist) continue;
+            _px[qy * W + qx] = IsoPalette.Mix(_px[qy * W + qx], 0xb4c4e0, alpha);
         }
     }
 
@@ -985,13 +1018,18 @@ public sealed class EyeRenderer
             double t = i / (double)n;
             double x = a.X + (b.X - a.X) * t, y = a.Y + (b.Y - a.Y) * t, z = a.Z + (b.Z - a.Z) * t;
             if (ProjectF(s, x, y, z) is not { } p) continue;
-            int ix = (int)p.X, iy = (int)p.Y;
-            if ((uint)ix >= (uint)fr.Width || (uint)iy >= (uint)fr.Height) continue;
-            bool visible = fr.Depth[iy * fr.Width + ix] >= p.Dist - 0.08;
-            if (visible) { if (alpha >= 0.999f) c.Set(ix, iy, col); else c.Blend(ix, iy, col, alpha); }
-            else if (hiddenDots && i % 3 == 0) c.Blend(ix, iy, col, 0.6f);
+            LinePixel(c, fr, (int)p.X, (int)p.Y, p.Dist, col, alpha, hiddenDots, i);
         }
         _ = len;
+    }
+
+    /// <summary>One sample of <see cref="Line3D"/>: solid (or blended) where visible, every third sample dotted where hidden.</summary>
+    private static void LinePixel(Canvas c, Frame fr, int ix, int iy, double dist, uint col, float alpha, bool hiddenDots, int i)
+    {
+        if ((uint)ix >= (uint)fr.Width || (uint)iy >= (uint)fr.Height) return;
+        bool visible = fr.Depth[iy * fr.Width + ix] >= dist - 0.08;
+        if (visible) { if (alpha >= 0.999f) c.Set(ix, iy, col); else c.Blend(ix, iy, col, alpha); }
+        else if (hiddenDots && i % 3 == 0) c.Blend(ix, iy, col, 0.6f);
     }
 
     /// <summary>The 12 edges of a block, depth-tested.</summary>

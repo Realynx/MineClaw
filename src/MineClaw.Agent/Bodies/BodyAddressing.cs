@@ -72,27 +72,9 @@ public sealed class BodyAddressing
     public IReadOnlyList<string> Addressed(string text, bool emote = false)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
-        var cands = new List<(string Bot, int Index, int End, bool Strong)>();
-        foreach (var c in _clones)
-        {
-            foreach (Match m in _explicit[c].Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true));
-            if (_number.TryGetValue(c, out var n))
-                foreach (Match m in n.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, false));
-            if (emote && _bare.TryGetValue(c, out var b))
-                foreach (Match m in b.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true)); // "* kiwi pats 67"
-        }
-        var clonesStrong = cands.Where(x => x.Strong).ToList();
-        foreach (Match m in _mainRegex.Matches(text))
-            if (!clonesStrong.Any(x => x.Index < m.Index + m.Length && m.Index < x.End)) // "maid chan 69" is 69, not main
-                cands.Add((_main, m.Index, m.Index + m.Length, true));
-        if (MainVocative.Match(text) is { Success: true } mv) cands.Add((_main, mv.Index, mv.Index + mv.Length, true)); // "main spin"
-        var strong = cands.Where(x => x.Strong).ToList();
-        cands = cands.Where(x => x.Strong || !strong.Any(y => y.Index <= x.Index && x.End <= y.End))
-            .OrderBy(x => x.Index).ThenByDescending(x => x.Strong).ToList();
-
         var named = new List<string>();
         int prevEnd = -1;
-        foreach (var x in cands)
+        foreach (var x in Mentions(text, emote))
         {
             if (x.Index < prevEnd) continue;
             if (!IsAddress(text, x.Index, x.End, x.Strong, prevEnd)) continue;
@@ -100,6 +82,30 @@ public sealed class BodyAddressing
             if (!named.Contains(x.Bot, StringComparer.OrdinalIgnoreCase)) named.Add(x.Bot);
         }
         return named;
+    }
+
+    /// <summary>Every mention of a body in the line, in order (a strong mention first at a tie; weak ones inside a strong one dropped).</summary>
+    private List<(string Bot, int Index, int End, bool Strong)> Mentions(string text, bool emote)
+    {
+        var cands = new List<(string Bot, int Index, int End, bool Strong)>();
+        foreach (var c in _clones) AddCloneMentions(cands, c, text, emote);
+        var clonesStrong = cands.Where(x => x.Strong).ToList();
+        foreach (Match m in _mainRegex.Matches(text))
+            if (!clonesStrong.Any(x => x.Index < m.Index + m.Length && m.Index < x.End)) // "maid chan 69" is 69, not main
+                cands.Add((_main, m.Index, m.Index + m.Length, true));
+        if (MainVocative.Match(text) is { Success: true } mv) cands.Add((_main, mv.Index, mv.Index + mv.Length, true)); // "main spin"
+        var strong = cands.Where(x => x.Strong).ToList();
+        return cands.Where(x => x.Strong || !strong.Any(y => y.Index <= x.Index && x.End <= y.End))
+            .OrderBy(x => x.Index).ThenByDescending(x => x.Strong).ToList();
+    }
+
+    private void AddCloneMentions(List<(string Bot, int Index, int End, bool Strong)> cands, string c, string text, bool emote)
+    {
+        foreach (Match m in _explicit[c].Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true));
+        if (_number.TryGetValue(c, out var n))
+            foreach (Match m in n.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, false));
+        if (emote && _bare.TryGetValue(c, out var b))
+            foreach (Match m in b.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true)); // "* kiwi pats 67"
     }
 
     /// <summary>The clone bodies the line addresses (main left out).</summary>
@@ -137,18 +143,29 @@ public sealed class BodyAddressing
     private static bool IsAddress(string text, int index, int end, bool strong, int prevAddressedEnd)
     {
         var before = text[..index];
-        var trimmed = before.TrimEnd().TrimStart(' ', '\t', '@', '#');
-        if (trimmed.Length == 0) return true;
-        if (trimmed[^1] is '.' or '!' or '?' or ';') return true;
-        if (prevAddressedEnd >= 0 && prevAddressedEnd <= index && Joiner.IsMatch(text[prevAddressedEnd..index])) return true;
+        if (StartsClause(text, before, index, prevAddressedEnd)) return true;
         var lw = LastWord.Match(before) is { Success: true } w ? w.Groups[1].Value.Trim('\'') : "";
         if (strong) return !RefWords.Contains(lw);
         if (CoordBefore.IsMatch(before)) return false;
         if (AddressWords.Contains(lw)) return true;
-        var after = text[end..];
+        return TrailedOrDiscourse(text[end..], lw);
+    }
+
+    /// <summary>The mention opens the line or a sentence, or follows the previous addressee with only a joiner between.</summary>
+    private static bool StartsClause(string text, string before, int index, int prevAddressedEnd)
+    {
+        var trimmed = before.TrimEnd().TrimStart(' ', '\t', '@', '#');
+        if (trimmed.Length == 0) return true;
+        if (trimmed[^1] is '.' or '!' or '?' or ';') return true;
+        return prevAddressedEnd >= 0 && prevAddressedEnd <= index && Joiner.IsMatch(text[prevAddressedEnd..index]);
+    }
+
+    /// <summary>"67 maid ...", or a discourse word then the name then ',' / ':' ("so 69, ...").</summary>
+    private static bool TrailedOrDiscourse(string after, string lastWord)
+    {
         if (FirstWord.Match(after) is { Success: true } fw && TrailingAddress.Contains(fw.Groups[1].Value)) return true;
         char next = after.TrimStart() is { Length: > 0 } a ? a[0] : '\0';
-        if (Discourse.Contains(lw)) return next is ',' or ':';
+        if (Discourse.Contains(lastWord)) return next is ',' or ':';
         return false;
     }
 }

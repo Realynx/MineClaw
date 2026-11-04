@@ -292,17 +292,22 @@ public sealed class MinecraftDataSource : IGameDataSource
         new(reference, SeedCorpus.Kind, title, body) { Tag = tag, Source = SeedCorpus.Source, At = SeedCorpus.At };
 
     /// <summary>"rock" (old) / "mineable/pickaxe" (new) → the tool that speeds it up.</summary>
-    private static string? ToolOf(string? material) => material switch
+    private static readonly Dictionary<string, string> MaterialTools = new(StringComparer.Ordinal)
     {
-        null => null,
-        "rock" or "iron" or "anvil" => "pickaxe",
-        "dirt" or "sand" or "snow" or "clay" or "grass" => "shovel",
-        "wood" or "plant;wood" => "axe",
-        "web" or "wool" => "shears or sword",
-        _ when material.Contains("mineable/", StringComparison.Ordinal) => material.Split(';')
-            .Select(p => p.StartsWith("mineable/", StringComparison.Ordinal) ? p["mineable/".Length..] : null).FirstOrDefault(p => p != null),
-        _ => null,
+        ["rock"] = "pickaxe", ["iron"] = "pickaxe", ["anvil"] = "pickaxe",
+        ["dirt"] = "shovel", ["sand"] = "shovel", ["snow"] = "shovel", ["clay"] = "shovel", ["grass"] = "shovel",
+        ["wood"] = "axe", ["plant;wood"] = "axe",
+        ["web"] = "shears or sword", ["wool"] = "shears or sword",
     };
+
+    private static string? ToolOf(string? material)
+    {
+        if (material == null) return null;
+        if (MaterialTools.TryGetValue(material, out var tool)) return tool;
+        return material.Contains("mineable/", StringComparison.Ordinal)
+            ? material.Split(';').Select(p => p.StartsWith("mineable/", StringComparison.Ordinal) ? p["mineable/".Length..] : null).FirstOrDefault(p => p != null)
+            : null;
+    }
 
     private static List<int> HarvestTools(JsonElement e) =>
         e.TryGetProperty("harvestTools", out var h) && h.ValueKind == JsonValueKind.Object
@@ -338,40 +343,56 @@ public sealed class MinecraftDataSource : IGameDataSource
         {
             var counts = new Dictionary<int, int>();
             foreach (var r in entry.Value.EnumerateArray())
-            {
-                if (!r.TryGetProperty("result", out var res)) continue;
-                int outId = IngredientOf(res)?.Id ?? (int.TryParse(entry.Name, NumberStyles.Integer, Inv, out var k) ? k : -1);
-                if (outId < 0) continue;
-                int meta = res.ValueKind == JsonValueKind.Object ? Int(res, "metadata") : 0;
-                int count = res.ValueKind == JsonValueKind.Object ? Int(res, "count", 1) : 1;
-                int n = counts[meta] = counts.GetValueOrDefault(meta) + 1;
-                var output = names.Of(outId, meta);
-                var sb = new StringBuilder($"Crafting recipe: {output}. Makes {count} per craft. ");
-                if (r.TryGetProperty("inShape", out var shape) && shape.ValueKind == JsonValueKind.Array)
-                {
-                    var rows = shape.EnumerateArray().Select(row => row.EnumerateArray().Select(IngredientOf).ToList()).ToList();
-                    int h = rows.Count, w = rows.Count == 0 ? 0 : rows.Max(x => x.Count);
-                    sb.Append(w <= 2 && h <= 2 ? "Fits the 2x2 inventory grid (no crafting table needed). " : "Needs a crafting table (3x3 grid). ");
-                    var totals = rows.SelectMany(x => x).OfType<Ingredient>().GroupBy(i => i).OrderBy(g => g.Key.Id).ThenBy(g => g.Key.Meta ?? -1)
-                        .Select(g => $"{g.Count()} {names.Of(g.Key)}");
-                    sb.Append("Ingredients: ").Append(string.Join(", ", totals)).Append(". ");
-                    var labels = rows.Select((row, y) => (h == 1 ? "one row" : y == 0 ? "top row" : y == h - 1 ? "bottom row" : "middle row") + ": " +
-                        string.Join(", ", Enumerable.Range(0, w).Select(x => x < row.Count && row[x] is { } id ? names.Of(id) : "empty")));
-                    sb.Append($"Shape {w} wide by {h} tall; ").Append(string.Join("; ", labels)).Append('.');
-                }
-                else if (r.TryGetProperty("ingredients", out var ing) && ing.ValueKind == JsonValueKind.Array)
-                {
-                    var ids = ing.EnumerateArray().Select(IngredientOf).OfType<Ingredient>().ToList();
-                    sb.Append(ids.Count <= 4 ? "Fits the 2x2 inventory grid (no crafting table needed). " : "Needs a crafting table (3x3 grid). ");
-                    sb.Append("Ingredients: ").Append(string.Join(", ", ids.GroupBy(i => i).OrderBy(g => g.Key.Id).ThenBy(g => g.Key.Meta ?? -1)
-                        .Select(g => $"{g.Count()} {names.Of(g.Key)}"))).Append(". ");
-                    sb.Append("Shapeless: put the ingredients anywhere in the grid.");
-                }
-                else continue;
-                docs.Add(Doc($"gd:recipe:{outId}:{meta}:{n}", "recipe", $"recipe {output} x{count}", sb.ToString()));
-            }
+                if (RecipeDoc(entry.Name, r, names, counts) is { } doc) docs.Add(doc);
         }
         return docs;
+    }
+
+    /// <summary>One recipe's doc (numbered per output variant; a recipe with no shape still takes its number), or null.</summary>
+    private static RagDoc? RecipeDoc(string entryName, JsonElement r, Names names, Dictionary<int, int> counts)
+    {
+        if (!r.TryGetProperty("result", out var res)) return null;
+        int outId = IngredientOf(res)?.Id ?? (int.TryParse(entryName, NumberStyles.Integer, Inv, out var k) ? k : -1);
+        if (outId < 0) return null;
+        int meta = res.ValueKind == JsonValueKind.Object ? Int(res, "metadata") : 0;
+        int count = res.ValueKind == JsonValueKind.Object ? Int(res, "count", 1) : 1;
+        int n = counts[meta] = counts.GetValueOrDefault(meta) + 1;
+        var output = names.Of(outId, meta);
+        if (RecipeShape(r, names) is not { } shape) return null;
+        return Doc($"gd:recipe:{outId}:{meta}:{n}", "recipe", $"recipe {output} x{count}", $"Crafting recipe: {output}. Makes {count} per craft. " + shape);
+    }
+
+    private static string? RecipeShape(JsonElement r, Names names)
+    {
+        if (r.TryGetProperty("inShape", out var shape) && shape.ValueKind == JsonValueKind.Array) return ShapedText(shape, names);
+        if (r.TryGetProperty("ingredients", out var ing) && ing.ValueKind == JsonValueKind.Array) return ShapelessText(ing, names);
+        return null;
+    }
+
+    private static string ShapedText(JsonElement shape, Names names)
+    {
+        var sb = new StringBuilder();
+        var rows = shape.EnumerateArray().Select(row => row.EnumerateArray().Select(IngredientOf).ToList()).ToList();
+        int h = rows.Count, w = rows.Count == 0 ? 0 : rows.Max(x => x.Count);
+        sb.Append(w <= 2 && h <= 2 ? "Fits the 2x2 inventory grid (no crafting table needed). " : "Needs a crafting table (3x3 grid). ");
+        var totals = rows.SelectMany(x => x).OfType<Ingredient>().GroupBy(i => i).OrderBy(g => g.Key.Id).ThenBy(g => g.Key.Meta ?? -1)
+            .Select(g => $"{g.Count()} {names.Of(g.Key)}");
+        sb.Append("Ingredients: ").Append(string.Join(", ", totals)).Append(". ");
+        var labels = rows.Select((row, y) => (h == 1 ? "one row" : y == 0 ? "top row" : y == h - 1 ? "bottom row" : "middle row") + ": " +
+            string.Join(", ", Enumerable.Range(0, w).Select(x => x < row.Count && row[x] is { } id ? names.Of(id) : "empty")));
+        sb.Append($"Shape {w} wide by {h} tall; ").Append(string.Join("; ", labels)).Append('.');
+        return sb.ToString();
+    }
+
+    private static string ShapelessText(JsonElement ing, Names names)
+    {
+        var sb = new StringBuilder();
+        var ids = ing.EnumerateArray().Select(IngredientOf).OfType<Ingredient>().ToList();
+        sb.Append(ids.Count <= 4 ? "Fits the 2x2 inventory grid (no crafting table needed). " : "Needs a crafting table (3x3 grid). ");
+        sb.Append("Ingredients: ").Append(string.Join(", ", ids.GroupBy(i => i).OrderBy(g => g.Key.Id).ThenBy(g => g.Key.Meta ?? -1)
+            .Select(g => $"{g.Count()} {names.Of(g.Key)}"))).Append(". ");
+        sb.Append("Shapeless: put the ingredients anywhere in the grid.");
+        return sb.ToString();
     }
 
     /// <summary>
@@ -390,27 +411,34 @@ public sealed class MinecraftDataSource : IGameDataSource
         public static SmeltingFacts Parse(JsonElement e, Names names)
         {
             var f = new SmeltingFacts { CookTicks = Int(e, "cook_ticks", 200) };
-            static int? Meta(JsonElement x, string p) =>
-                x.TryGetProperty(p, out var m) && m.ValueKind == JsonValueKind.Number && m.GetInt32() != AnyMeta ? m.GetInt32() : null;
-            Ingredient? Resolve(string? name, int? meta) => name != null && names.Id(name) is { } id ? new Ingredient(id, meta) : null;
             if (e.TryGetProperty("smelting", out var rows) && rows.ValueKind == JsonValueKind.Array)
-                foreach (var r in rows.EnumerateArray())
-                {
-                    var input = Resolve(Str(r, "input"), Meta(r, "input_meta"));
-                    var output = Resolve(Str(r, "output"), Meta(r, "output_meta") ?? 0);
-                    if (input is { } i && output is { } o) f.Rows.Add(new Row(i, o, Int(r, "count", 1), Num(r, "xp") ?? 0));
-                    else throw new InvalidDataException($"smelting.json: unknown item in {r.GetRawText()} (use minecraft-data registry names)");
-                }
+                foreach (var r in rows.EnumerateArray()) f.Rows.Add(ParseRow(r, names));
             if (e.TryGetProperty("fuels", out var fuels) && fuels.ValueKind == JsonValueKind.Array)
-                foreach (var r in fuels.EnumerateArray())
-                {
-                    var name = Str(r, "item");
-                    var item = Resolve(name, Meta(r, "meta"));
-                    if (name != null && item == null) throw new InvalidDataException($"smelting.json: unknown fuel item '{name}'");
-                    f.Fuels.Add(new Fuel(item, Int(r, "ticks"), Str(r, "note")));
-                }
+                foreach (var r in fuels.EnumerateArray()) f.Fuels.Add(ParseFuel(r, names));
             return f;
         }
+
+        private static Row ParseRow(JsonElement r, Names names)
+        {
+            var input = Resolve(names, Str(r, "input"), Meta(r, "input_meta"));
+            var output = Resolve(names, Str(r, "output"), Meta(r, "output_meta") ?? 0);
+            if (input is { } i && output is { } o) return new Row(i, o, Int(r, "count", 1), Num(r, "xp") ?? 0);
+            throw new InvalidDataException($"smelting.json: unknown item in {r.GetRawText()} (use minecraft-data registry names)");
+        }
+
+        private static Fuel ParseFuel(JsonElement r, Names names)
+        {
+            var name = Str(r, "item");
+            var item = Resolve(names, name, Meta(r, "meta"));
+            if (name != null && item == null) throw new InvalidDataException($"smelting.json: unknown fuel item '{name}'");
+            return new Fuel(item, Int(r, "ticks"), Str(r, "note"));
+        }
+
+        private static int? Meta(JsonElement x, string p) =>
+            x.TryGetProperty(p, out var m) && m.ValueKind == JsonValueKind.Number && m.GetInt32() != AnyMeta ? m.GetInt32() : null;
+
+        private static Ingredient? Resolve(Names names, string? name, int? meta) =>
+            name != null && names.Id(name) is { } id ? new Ingredient(id, meta) : null;
 
         private string Items(int ticks) => F(ticks / (double)CookTicks);
 

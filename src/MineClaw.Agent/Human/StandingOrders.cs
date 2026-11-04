@@ -167,53 +167,90 @@ public sealed class StandingOrders
     /// </summary>
     public bool ResumeIfIdle(string why, CancellationToken shutdown = default)
     {
-        if (!_o.ResumeStandingOrders || Held) return false;
-        var o = Current;
-        if (o == null || _activities.IsBusy || _events.HasWaking) return false;
-        if (CanResume is { } can && !can(o)) return false;
-        try { if (BodyBusy?.Invoke() == true) return false; } catch (Exception) { }
+        var o = ResumableOrder();
+        if (o == null) return false;
         var now = _time.GetUtcNow();
-        bool backingOff;
-        lock (_lock) backingOff = now < _backoffUntil;
-        if (backingOff)
-        {
-            bool? ready = null;
-            bool full;
-            lock (_lock) full = _storageFull;
-            // Full chests: a regenerated gen cell is no reason to try again (WorkReady counts as false until the wait runs out).
-            if (!full) try { ready = WorkReady?.Invoke(o); } catch (Exception) { }
-            if (ready != true) return false;
-            _log.LogInformation("standing order {Job}: work is ready again, ending the backoff", o.Job);
-        }
-        lock (_lock)
-        {
-            if (now < _snoozedUntil) return false;
-            if (why != "start" && o.LastResumed is { } last && now - last < TimeSpan.FromSeconds(Math.Max(0, _o.MinResumeIntervalSeconds))) return false;
-            if (o.FailuresInRow >= Math.Max(1, _o.MaxResumeFailures)) return false;
-        }
+        if (!BackoffAllows(o, now) || !PacingAllows(o, why, now)) return false;
         if (!_tools.TryGet(o.Tool, out var tool))
         {
             _log.LogWarning("standing order {Job}: tool {Tool} missing", o.Job, o.Tool);
             ReportProblem(o, $"its tool {o.Tool} isn't available here");
             return false;
         }
-        if (Prepare is { } prepare)
+        if (!PrepareOrder(o)) return false;
+        StartOrder(o, tool, why, now, shutdown);
+        return true;
+    }
+
+    /// <summary>The order when the bot is free to run it: enabled, not held, idle, nothing waking, not vetoed, body not busy.</summary>
+    private StandingOrder? ResumableOrder()
+    {
+        if (!_o.ResumeStandingOrders || Held) return null;
+        var o = Current;
+        if (o == null || _activities.IsBusy || _events.HasWaking) return null;
+        if (CanResume is { } can && !can(o)) return null;
+        return IsBodyBusy() ? null : o;
+    }
+
+    private bool IsBodyBusy()
+    {
+        try { return BodyBusy?.Invoke() == true; } catch (Exception) { return false; }
+    }
+
+    /// <summary>False while a "nothing yet" / storage-full backoff runs, unless the work probe says there is work again.</summary>
+    private bool BackoffAllows(StandingOrder o, DateTimeOffset now)
+    {
+        bool backingOff;
+        lock (_lock) backingOff = now < _backoffUntil;
+        if (!backingOff) return true;
+        bool full;
+        lock (_lock) full = _storageFull;
+        // Full chests: a regenerated gen cell is no reason to try again (WorkReady counts as false until the wait runs out).
+        bool? ready = full ? null : ProbeWorkReady(o);
+        if (ready != true) return false;
+        _log.LogInformation("standing order {Job}: work is ready again, ending the backoff", o.Job);
+        return true;
+    }
+
+    private bool? ProbeWorkReady(StandingOrder o)
+    {
+        try { return WorkReady?.Invoke(o); } catch (Exception) { return null; }
+    }
+
+    /// <summary>Not snoozed, not resumed too recently ("start" skips that), not paused by repeated failures.</summary>
+    private bool PacingAllows(StandingOrder o, string why, DateTimeOffset now)
+    {
+        lock (_lock)
         {
-            OrderCheck check;
-            try { check = prepare(o); }
-            catch (Exception ex) { _log.LogDebug(ex, "standing order check failed"); check = default; }
-            if (check.Problem is { Length: > 0 } problem)
-            {
-                ReportProblem(o, problem);
-                return false;
-            }
-            if (check.Input is { } rewritten)
-            {
-                o.Input = rewritten;
-                _memory.UpdateStandingOrder(Bot, x => x.Input = rewritten);
-                _log.LogInformation("standing order {Job}: call updated ({Note})", o.Job, check.Note ?? "re-resolved");
-            }
+            if (now < _snoozedUntil) return false;
+            if (why != "start" && o.LastResumed is { } last && now - last < TimeSpan.FromSeconds(Math.Max(0, _o.MinResumeIntervalSeconds))) return false;
+            return o.FailuresInRow < Math.Max(1, _o.MaxResumeFailures);
         }
+    }
+
+    /// <summary>Runs <see cref="Prepare"/>: false (and the problem reported) when the call can't run; a rewritten call is persisted.</summary>
+    private bool PrepareOrder(StandingOrder o)
+    {
+        if (Prepare is not { } prepare) return true;
+        OrderCheck check;
+        try { check = prepare(o); }
+        catch (Exception ex) { _log.LogDebug(ex, "standing order check failed"); check = default; }
+        if (check.Problem is { Length: > 0 } problem)
+        {
+            ReportProblem(o, problem);
+            return false;
+        }
+        if (check.Input is { } rewritten)
+        {
+            o.Input = rewritten;
+            _memory.UpdateStandingOrder(Bot, x => x.Input = rewritten);
+            _log.LogInformation("standing order {Job}: call updated ({Note})", o.Job, check.Note ?? "re-resolved");
+        }
+        return true;
+    }
+
+    private void StartOrder(StandingOrder o, IAgentTool tool, string why, DateTimeOffset now, CancellationToken shutdown)
+    {
         lock (_lock)
         {
             _resumedSignature = ToolCallGuard.Signature(o.Tool, o.Input);
@@ -225,7 +262,6 @@ public sealed class StandingOrders
         // Background activity, like any long task: its end posts [task ok]/[task failed]; stop/new activities cancel it.
         _ = _activities.RunAsync([(tool, o.Input)], TimeSpan.Zero, shutdown);
         try { Resumed?.Invoke(o, why); } catch (Exception) { }
-        return true;
     }
 
     /// <summary>An order whose call can't run as stored: one Normal wake per problem (never silent, never a loop).</summary>
@@ -272,11 +308,17 @@ public sealed class StandingOrders
             if (o.FailuresInRow >= Math.Max(1, _o.MaxResumeFailures))
                 return $"auto-resume paused after {o.FailuresInRow} failures" +
                        (o.LastOutcome is { Length: > 0 } l ? $" (last: {TextUtil.Truncate(l, 80)})" : "");
-            if (now < _snoozedUntil) return $"snoozed after a stop ({(int)Math.Ceiling((_snoozedUntil - now).TotalMinutes)}m left)";
-            if (now < _backoffUntil && _storageFull)
-                return $"storage full on the last pass, next try in {(int)Math.Ceiling((_backoffUntil - now).TotalMinutes)}m";
-            if (now < _backoffUntil) return $"nothing to do on the last pass, next check in {(int)Math.Ceiling((_backoffUntil - now).TotalMinutes)}m";
+            return WaitReasonLocked(now);
         }
+    }
+
+    /// <summary>The snooze or backoff the order is waiting out, or null. Caller holds <see cref="_lock"/>.</summary>
+    private string? WaitReasonLocked(DateTimeOffset now)
+    {
+        if (now < _snoozedUntil) return $"snoozed after a stop ({(int)Math.Ceiling((_snoozedUntil - now).TotalMinutes)}m left)";
+        if (now < _backoffUntil && _storageFull)
+            return $"storage full on the last pass, next try in {(int)Math.Ceiling((_backoffUntil - now).TotalMinutes)}m";
+        if (now < _backoffUntil) return $"nothing to do on the last pass, next check in {(int)Math.Ceiling((_backoffUntil - now).TotalMinutes)}m";
         return null;
     }
 
@@ -289,36 +331,46 @@ public sealed class StandingOrders
         string? sig;
         lock (_lock) sig = _resumedSignature;
         if (sig == null || ToolCallGuard.Signature(tool, input) != sig || cancelReason != null) return;
-        bool ok = result.Ok;
         if (AlreadyRunning(result.Text))
         {
             _memory.UpdateStandingOrder(Bot, o => o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(result.Text ?? ""), 160));
             return;
         }
-        if (!ok && StorageFull.Match(result.Text ?? "") is { Success: true } full)
+        if (!result.Ok && StorageFull.Match(result.Text ?? "") is { Success: true } full)
         {
             OnStorageFull(result.Text!, full.Value);
             return;
         }
         if (NothingYet.IsMatch(result.Text ?? ""))
         {
-            // Not a failure and nothing for the brain: wait in C# (probe the world, else 2 → 4 → 8 → 15 min), no LLM call.
-            TimeSpan wait;
-            lock (_lock)
-            {
-                if (_storageFull) _nothingStreak = 0;
-                _storageFull = false;
-                _nothingStreak++;
-                wait = Backoff[Math.Min(_nothingStreak, Backoff.Length) - 1];
-                _backoffUntil = _time.GetUtcNow() + wait;
-                var head = (result.Text ?? "").Trim().Split('\n')[0];
-                _quietText = head.Length > 0 ? head[..Math.Min(60, head.Length)] : null;
-            }
-            _memory.UpdateStandingOrder(Bot, o => o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(result.Text), 160));
-            _log.LogInformation("standing order: nothing to do yet ({N}x), backing off {Min} min", _nothingStreak, wait.TotalMinutes);
-            StartProbe();
+            OnNothingYet(result.Text);
             return;
         }
+        OnPassCounted(result.Ok, result.Text);
+    }
+
+    /// <summary>Not a failure and nothing for the brain: wait in C# (probe the world, else 2 → 4 → 8 → 15 min), no LLM call.</summary>
+    private void OnNothingYet(string? text)
+    {
+        TimeSpan wait;
+        lock (_lock)
+        {
+            if (_storageFull) _nothingStreak = 0;
+            _storageFull = false;
+            _nothingStreak++;
+            wait = Backoff[Math.Min(_nothingStreak, Backoff.Length) - 1];
+            _backoffUntil = _time.GetUtcNow() + wait;
+            var head = (text ?? "").Trim().Split('\n')[0];
+            _quietText = head.Length > 0 ? head[..Math.Min(60, head.Length)] : null;
+        }
+        _memory.UpdateStandingOrder(Bot, o => o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(text), 160));
+        _log.LogInformation("standing order: nothing to do yet ({N}x), backing off {Min} min", _nothingStreak, wait.TotalMinutes);
+        StartProbe();
+    }
+
+    /// <summary>A pass that counts: ends any backoff; a failure adds to the streak and the streak's limit wakes the brain once.</summary>
+    private void OnPassCounted(bool ok, string? text)
+    {
         lock (_lock)
         {
             _nothingStreak = 0;
@@ -331,11 +383,11 @@ public sealed class StandingOrders
         _memory.UpdateStandingOrder(Bot, o =>
         {
             o.FailuresInRow = ok ? 0 : o.FailuresInRow + 1;
-            o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(result.Text), 160);
+            o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(text), 160);
             failures = o.FailuresInRow;
         });
         if (!ok && failures == Math.Max(1, _o.MaxResumeFailures))
-            _events.Post(GameEvent.Notice($"standing order keeps failing ({failures}x), auto-resume paused: {TextUtil.Truncate(result.Text, 120)}",
+            _events.Post(GameEvent.Notice($"standing order keeps failing ({failures}x), auto-resume paused: {TextUtil.Truncate(text, 120)}",
                 EventPriority.Normal) with { MustWake = true });
     }
 
@@ -387,49 +439,60 @@ public sealed class StandingOrders
         var op = (input.Str("op") ?? "show").Trim().ToLowerInvariant();
         var bot = input.Str("for") is { Length: > 0 } f ? f.Trim() : Bot;
         var player = TurnContext.Current?.Speaker;
-        switch (op)
+        return op switch
         {
-            case "show":
-                return ToolResult.Success(_memory.GetStandingOrder(bot) is { } cur ? $"{cur.HeaderTag} via {cur.Tool}; resumed {cur.Resumes}x" +
-                    (cur.LastOutcome != null ? "; last: " + cur.LastOutcome : "") : "no standing order");
-            case "clear":
-                return _memory.ClearStandingOrder(bot, player ?? "brain") ? ToolResult.Success($"standing order of {bot} cleared")
-                    : ToolResult.Success("no standing order");
-            case "set":
-            {
-                var job = input.Str("job");
-                string tool;
-                JsonElement args;
-                if (input.Str("script") is { Length: > 0 } script)
-                {
-                    tool = "script";
-                    var o = new JsonObject { ["op"] = "run", ["name"] = script.Trim() };
-                    if (input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object)
-                        o["args"] = JsonNode.Parse(a.GetRawText());
-                    args = JsonSerializer.SerializeToElement(o);
-                    job ??= script;
-                }
-                else if (input.Str("task") is { Length: > 0 } task)
-                {
-                    tool = Worker.WorkerAgent.ToolName;
-                    var o = new JsonObject { ["task"] = task.Trim() };
-                    if (input.Str("done_when") is { Length: > 0 } dw) o["done_when"] = dw.Trim();
-                    args = JsonSerializer.SerializeToElement(o);
-                    job ??= task;
-                }
-                else return ToolResult.Error("set needs script (saved name) or task");
-                if (!_tools.Contains(tool)) return ToolResult.Error($"no {tool} tool here");
-                var order = _memory.SetStandingOrder(new StandingOrder
-                {
-                    Bot = bot, Player = player, Job = TextUtil.Truncate(TextUtil.OneLine(job!.Trim()), 60), Tool = tool, Input = args,
-                });
-                // Our own order starts right away when idle; a clone picks its up through the shared db.
-                bool started = string.Equals(bot, Bot, StringComparison.OrdinalIgnoreCase) && ResumeIfIdle("set");
-                return ToolResult.Success($"standing order set: {order.HeaderTag}" + (started ? "; started" : "; resumes when idle"));
-            }
-            default:
-                return ToolResult.Error("op is set|clear|show");
+            "show" => ShowOrder(bot),
+            "clear" => _memory.ClearStandingOrder(bot, player ?? "brain") ? ToolResult.Success($"standing order of {bot} cleared")
+                : ToolResult.Success("no standing order"),
+            "set" => SetOrder(input, bot, player),
+            _ => ToolResult.Error("op is set|clear|show"),
+        };
+    }
+
+    private ToolResult ShowOrder(string bot) =>
+        ToolResult.Success(_memory.GetStandingOrder(bot) is { } cur ? $"{cur.HeaderTag} via {cur.Tool}; resumed {cur.Resumes}x" +
+            (cur.LastOutcome != null ? "; last: " + cur.LastOutcome : "") : "no standing order");
+
+    private ToolResult SetOrder(JsonElement input, string bot, string? player)
+    {
+        var job = input.Str("job");
+        if (!TryOrderCall(input, out var tool, out var args, out var named)) return ToolResult.Error("set needs script (saved name) or task");
+        job ??= named;
+        if (!_tools.Contains(tool)) return ToolResult.Error($"no {tool} tool here");
+        var order = _memory.SetStandingOrder(new StandingOrder
+        {
+            Bot = bot, Player = player, Job = TextUtil.Truncate(TextUtil.OneLine(job.Trim()), 60), Tool = tool, Input = args,
+        });
+        // Our own order starts right away when idle; a clone picks its up through the shared db.
+        bool started = string.Equals(bot, Bot, StringComparison.OrdinalIgnoreCase) && ResumeIfIdle("set");
+        return ToolResult.Success($"standing order set: {order.HeaderTag}" + (started ? "; started" : "; resumes when idle"));
+    }
+
+    /// <summary>The order's call: a saved script run (with its args) or a delegated task; <paramref name="job"/> = the default job name.</summary>
+    private static bool TryOrderCall(JsonElement input, out string tool, out JsonElement args, out string job)
+    {
+        if (input.Str("script") is { Length: > 0 } script)
+        {
+            tool = "script";
+            var o = new JsonObject { ["op"] = "run", ["name"] = script.Trim() };
+            if (input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object)
+                o["args"] = JsonNode.Parse(a.GetRawText());
+            args = JsonSerializer.SerializeToElement(o);
+            job = script;
+            return true;
         }
+        if (input.Str("task") is { Length: > 0 } task)
+        {
+            tool = Worker.WorkerAgent.ToolName;
+            var o = new JsonObject { ["task"] = task.Trim() };
+            if (input.Str("done_when") is { Length: > 0 } dw) o["done_when"] = dw.Trim();
+            args = JsonSerializer.SerializeToElement(o);
+            job = task;
+            return true;
+        }
+        tool = job = "";
+        args = default;
+        return false;
     }
 }
 

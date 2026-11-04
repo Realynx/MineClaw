@@ -125,13 +125,22 @@ public static class CodeHighlighter
         private bool Token()
         {
             char c = s[_i];
-            if (lua ? c == '-' && At(1, '-') : c == '/' && (At(1, '/') || At(1, '*'))) return Comment();
-            if (c is '"' or '\'' || (c == '`' && !lua)) Quoted(c);
-            else if (char.IsDigit(c) || (c == '.' && _i + 1 < s.Length && char.IsDigit(s[_i + 1]))) Number();
+            if (CommentStarts(c)) return Comment();
+            if (QuoteStarts(c)) Quoted(c);
+            else if (NumberStarts(c)) Number();
             else if (char.IsLetter(c) || c is '_' or '$') Word();
             else { Add(_i, _i + 1, char.IsWhiteSpace(c) ? CodeKind.Plain : CodeKind.Punct); _i++; }
             return true;
         }
+
+        /// <summary>"--" in Lua; "//" or "/*" in JS.</summary>
+        private bool CommentStarts(char c) => lua ? c == '-' && At(1, '-') : c == '/' && (At(1, '/') || At(1, '*'));
+
+        /// <summary>A string: '…' or "…", and `…` templates in JS.</summary>
+        private bool QuoteStarts(char c) => c is '"' or '\'' || (c == '`' && !lua);
+
+        /// <summary>A digit, or a '.' right before one (".25").</summary>
+        private bool NumberStarts(char c) => char.IsDigit(c) || (c == '.' && _i + 1 < s.Length && char.IsDigit(s[_i + 1]));
 
         /// <summary>At "//", "/*" (JS) or "--" (Lua): a block comment opens ("/*", "--[["), else the rest of the line is one.</summary>
         private bool Comment()
