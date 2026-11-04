@@ -1075,14 +1075,7 @@ public sealed partial class ScriptBridge
         var code = ToolInput.Str(input, "code");
         var rawName = ToolInput.Str(input, "name");
         // script{op:save, name, params}: retune a saved script without new code (merged over its saved tunables).
-        if (string.IsNullOrWhiteSpace(code) && ParamsOf(input) is { } tune && !string.IsNullOrWhiteSpace(rawName))
-        {
-            var tn = ScriptLibrary.ParseRef(CleanRef(rawName)).Name;
-            if (!Library.SetParams(tn, tune)) return ToolResult.Error($"no saved script '{tn}'");
-            var declared = Library.Get(tn)?.Script is { } tsc ? ScriptLint.Params(tsc.Code).Select(p => p.Name).ToHashSet(StringComparer.Ordinal) : [];
-            var unknown = JsonDocument.Parse(tune).RootElement.EnumerateObject().Select(p => p.Name).Where(k => declared.Count > 0 && !declared.Contains(k)).ToList();
-            return ToolResult.Success($"ok: {tn} tuned {Library.ParamsOf(tn) ?? "{}"}" + (unknown.Count > 0 ? $" (not declared by its params(): {string.Join(",", unknown)})" : ""));
-        }
+        if (string.IsNullOrWhiteSpace(code) && ParamsOf(input) is { } tune && !string.IsNullOrWhiteSpace(rawName)) return TuneParamsOp(rawName, tune);
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(rawName)) return ToolResult.Error("save needs name and code");
         var name = ScriptLibrary.ParseRef(CleanRef(rawName)).Name;
         var lang = LanguageOf(code);
@@ -1092,11 +1085,29 @@ public sealed partial class ScriptBridge
         int before = Library.Get(name)?.Script?.Version ?? 0;
         var (saved, note) = SaveChecked(name, code, ToolCaller.Current?.Tag, ToolInput.Str(input, "force"), lang);
         if (saved?.Script is not { } sc) return ToolResult.Error(note ?? "not saved");
-        var args = sc.ArgNames.Count > 0 ? $" args({string.Join(",", sc.ArgNames)})" : "";
         var warn = lint.Format(LintSeverity.Warning);
-        var head = sc.Version == before ? $"ok: {name} unchanged (v{sc.Version})" : $"ok: saved {name} v{sc.Version}{args}" +
-            (sc.Version > 1 ? $"; v{sc.Version - 1} stays callable as {name}@v{sc.Version - 1} until v{sc.Version} proves reliable" : "");
+        var head = SavedHeadline(name, sc, before);
         return ToolResult.Success(warn.Length > 0 ? head + " | " + warn : head);
+    }
+
+    /// <summary>script{op:save, name, params}: retune a saved script without new code (merged over its saved tunables); names the
+    /// keys its params() doesn't declare.</summary>
+    private ToolResult TuneParamsOp(string rawName, string tune)
+    {
+        var tn = ScriptLibrary.ParseRef(CleanRef(rawName)).Name;
+        if (!Library.SetParams(tn, tune)) return ToolResult.Error($"no saved script '{tn}'");
+        var declared = Library.Get(tn)?.Script is { } tsc ? ScriptLint.Params(tsc.Code).Select(p => p.Name).ToHashSet(StringComparer.Ordinal) : [];
+        var unknown = JsonDocument.Parse(tune).RootElement.EnumerateObject().Select(p => p.Name).Where(k => declared.Count > 0 && !declared.Contains(k)).ToList();
+        return ToolResult.Success($"ok: {tn} tuned {Library.ParamsOf(tn) ?? "{}"}" + (unknown.Count > 0 ? $" (not declared by its params(): {string.Join(",", unknown)})" : ""));
+    }
+
+    /// <summary>"ok: saved x v3 args(a,b); v2 stays callable as x@v2 until v3 proves reliable" / "ok: x unchanged (v3)".</summary>
+    private static string SavedHeadline(string name, RoutineScript sc, int before)
+    {
+        if (sc.Version == before) return $"ok: {name} unchanged (v{sc.Version})";
+        var args = sc.ArgNames.Count > 0 ? $" args({string.Join(",", sc.ArgNames)})" : "";
+        return $"ok: saved {name} v{sc.Version}{args}" +
+            (sc.Version > 1 ? $"; v{sc.Version - 1} stays callable as {name}@v{sc.Version - 1} until v{sc.Version} proves reliable" : "");
     }
 
     private DateTimeOffset _lastHousekeep = DateTimeOffset.MinValue;
