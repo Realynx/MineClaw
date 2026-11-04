@@ -51,6 +51,7 @@ function storyOverrides(): typeof OVERRIDES {
     // the first of the camp's two beds (mock/terrain.ts)
     'story.beds': { params: id, body: { op: 'assign', bed: { x: CAMP[0] - 3, y: topAt(CAMP[0] - 3, CAMP[2] + 3) + 1, z: CAMP[2] + 3 }, pawn: 'maid_s1_dara' } },
     'story.priorities': { params: id, body: { pawns, work: { chop: 1, haul: 2 } } },
+    'story.roles': { params: id, body: { op: 'update', role: { id: 'farmer', priorities: { farm: 2 } } } },
     'story.schedule': { params: id, body: { pawns, hours: { '0': 'work', '20': 'sleep' } } },
     'story.draft': { params: id, body: { pawns, drafted: false } },
     'story.orders': { params: id, body: { pawns, order: { kind: 'move', target: { x: 20, y: 64, z: 12 } }, queue: true } },

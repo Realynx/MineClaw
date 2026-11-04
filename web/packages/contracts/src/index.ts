@@ -26,6 +26,7 @@ export * from './memoryActivity.js';
 export * from './story.js';
 export * from './storyData.js';
 export * from './storyGear.js';
+export * from './storyRoles.js';
 export * from './storyZones.js';
 export * from './storyWater.js';
 export * from './sse.js';

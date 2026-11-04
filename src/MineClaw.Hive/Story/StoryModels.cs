@@ -188,8 +188,10 @@ public sealed class PawnState
     public string Display { get; set; } = "";
     public Dictionary<string, SkillState> Skills { get; set; } = new();
     public List<string> Traits { get; set; } = new();
-    /// <summary>work type → 0 (off) .. 4.</summary>
+    /// <summary>work type → 0 (off) .. 4: the effective values (its role's while it has one: StoryColony.Roles.cs).</summary>
     public Dictionary<string, int> Priorities { get; set; } = new();
+    /// <summary>Its work role's id (<see cref="ColonyMeta.Roles"/>); null = Custom (its own priorities).</summary>
+    public string? Role { get; set; }
     public string[] Schedule { get; set; } = new string[24];
     public bool Drafted { get; set; }
     public List<Order> Queue { get; set; } = new();
@@ -505,4 +507,6 @@ public sealed class ColonyMeta
     /// <summary>Pawns may pour lava from buckets (Architect "Lava source"; docs/web/story-mode.md "Water"). Off by default; never in a
     /// home zone or beside something that burns.</summary>
     public bool AllowLava { get; set; }
+    /// <summary>Work roles: named priority templates (StoryColony.Roles.cs). Null = an older save: the built-in roles are seeded.</summary>
+    public List<WorkRole>? Roles { get; set; }
 }

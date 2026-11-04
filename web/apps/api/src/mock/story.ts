@@ -125,6 +125,8 @@ export class MockStory {
         return s.pause(cid, (body as { paused: boolean }).paused);
       case 'story.priorities':
         return s.priorities(cid, body);
+      case 'story.roles':
+        return s.roles(cid, body);
       case 'story.schedule':
         return s.schedule(cid, body);
       case 'story.draft':

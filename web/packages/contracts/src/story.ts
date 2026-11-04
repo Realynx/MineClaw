@@ -329,6 +329,20 @@ export type StorySkill = z.infer<typeof StorySkill>;
 export const StoryTrait = z.object({ id: z.string(), label: z.string(), effect: z.string().nullish() });
 export type StoryTrait = z.infer<typeof StoryTrait>;
 
+/**
+ * A work role: a named priority template (docs/web/story-mode.md "Roles"). A pawn with a role works by the role's priorities;
+ * editing the role changes every pawn that has it.
+ */
+export const StoryRole = z.object({
+  id: z.string(),
+  name: z.string(),
+  icon: z.string().nullish().describe('an icon key (wheat, pickaxe, axe, brick, package, hammer, pot, fish, shield, shapes, …)'),
+  builtin: z.boolean().default(false).describe('one of the shipped roles (reset_defaults restores it)'),
+  priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
+  pawns: z.array(z.string()).default([]).describe('the pawns that have this role'),
+});
+export type StoryRole = z.infer<typeof StoryRole>;
+
 export const StoryPawn = z.object({
   name: z.string().describe('the body (account) name'),
   display: z.string(),
@@ -356,7 +370,11 @@ export const StoryPawn = z.object({
   queue: z.array(StoryOrder).default([]),
   skills: z.record(z.string(), StorySkill).default({}),
   traits: z.array(StoryTrait).default([]),
-  priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
+  priorities: z
+    .record(z.string(), z.number().int())
+    .default({})
+    .describe("work type → 0 (off) .. 4: the effective values (its role's while it has one)"),
+  role: z.string().nullish().describe("its work role's id (null = Custom: its own priorities)"),
   schedule: z.array(z.string()).default([]).describe('24 blocks by clock hour (index 0 = 00:00)'),
   held: z.string().nullish(),
   inventory: z.array(StoryStack).default([]).describe("a 1.12.2 potion's meta is its potion type id (water 1, awkward 4, …)"),
@@ -935,6 +953,7 @@ export const StoryColonyState = z.object({
   ai: z.array(StoryAiBody).nullish(),
   directives: z.array(StoryDirective).nullish(),
   policies: z.array(StoryPolicy).nullish().describe('gear policies (always the default one)'),
+  roles: z.array(StoryRole).nullish().describe('work roles: named priority templates (sent whole with every answer)'),
   materialRules: z.array(StoryMaterialRule).nullish().describe('per material / group: the tool, preferred tier, enchantment'),
   materials: z.array(StoryMaterialInfo).nullish().describe('full state only: the rules editor catalog with each floor'),
   removed: StoryRemoved.nullish(),
@@ -1036,10 +1055,51 @@ export const StoryHomeResponse = z.object({ home: Vec3i });
 export type StoryHomeResponse = z.infer<typeof StoryHomeResponse>;
 
 /** `work`: type → 0 (off) .. 4; types left out keep their value. */
-export const StoryPrioritiesRequest = z
-  .object({ pawns: PawnList, work: z.partialRecord(StoryWorkType, z.number().int().min(0).max(4)) })
-  .strict();
+/** Set cells (a pawn with a role turns Custom, its other values kept), or give the pawns a role (null = Custom, values kept). */
+export const StoryPrioritiesRequest = z.union([
+  z.object({ pawns: PawnList, work: z.partialRecord(StoryWorkType, z.number().int().min(0).max(4)) }).strict(),
+  z.object({ pawns: PawnList, role: z.string().min(1).max(64).nullable() }).strict(),
+]);
 export type StoryPrioritiesRequest = z.infer<typeof StoryPrioritiesRequest>;
+
+const RolePriorities = z.partialRecord(StoryWorkType, z.number().int().min(0).max(4));
+const RoleIcon = z
+  .string()
+  .max(24)
+  .regex(/^[a-z0-9-]+$/);
+
+/** POST /api/story/colonies/{id}/roles: add, update (priorities merge; its pawns follow), remove (its pawns turn Custom), reset_defaults. */
+export const StoryRolesRequest = z.discriminatedUnion('op', [
+  z
+    .object({
+      op: z.literal('add'),
+      role: z.object({ name: z.string().min(1).max(40), icon: RoleIcon.nullish(), priorities: RolePriorities.optional() }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('update'),
+      role: z
+        .object({
+          id: z.string().min(1).max(64),
+          name: z.string().min(1).max(40).optional(),
+          icon: RoleIcon.nullish(),
+          priorities: RolePriorities.optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z.object({ op: z.literal('remove'), id: z.string().min(1).max(64) }).strict(),
+  z.object({ op: z.literal('reset_defaults') }).strict(),
+]);
+export type StoryRolesRequest = z.infer<typeof StoryRolesRequest>;
+
+export const StoryRolesResponse = z.object({
+  id: z.string().nullish().describe('the role added, updated or removed'),
+  removed: z.boolean().nullish(),
+  roles: z.array(StoryRole).default([]),
+});
+export type StoryRolesResponse = z.infer<typeof StoryRolesResponse>;
 
 export const STORY_HOURS = Array.from({ length: 24 }, (_, i) => String(i)) as [string, ...string[]];
 export const StoryScheduleRequest = z

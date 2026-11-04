@@ -46,6 +46,7 @@ function storyWrites(): Partial<Record<RouteId, Ctx>> {
     'story.time': { params: {}, query: {}, body: { time: 6000 } },
     'story.beds': w({ op: 'assign', bed: bedPos(), pawn: 'maid_s1_dara' }),
     'story.priorities': w({ pawns, work: { chop: 1 } }),
+    'story.roles': w({ op: 'update', role: { id: 'farmer', priorities: { farm: 2 } } }),
     'story.schedule': w({ pawns, hours: { '0': 'work' } }),
     'story.draft': w({ pawns, drafted: true }),
     'story.orders': w({ pawns, order: { kind: 'move', target: { x: 0, y: 70, z: 0 } } }),

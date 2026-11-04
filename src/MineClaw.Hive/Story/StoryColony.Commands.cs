@@ -28,6 +28,7 @@ public sealed partial class StoryColony
             bool changed = false;
             foreach (var p in pawns)
             {
+                if (work.Count > 0) p.Role = null; // a cell edit detaches it from its role: Custom, the values kept (StoryColony.Roles.cs)
                 foreach (var (t, v) in work)
                 {
                     if (p.Priorities.GetValueOrDefault(t) == v) continue;
