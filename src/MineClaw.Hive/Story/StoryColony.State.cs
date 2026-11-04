@@ -126,6 +126,7 @@ public sealed partial class StoryColony
             ["inventory"] = new JsonArray(live.Inventory.Select(s => (JsonNode)s.Json()).ToArray()),
             ["equipment"] = EquipmentJson(live), ["policy"] = p.Gear.Policy, ["gear_tasks"] = GearTasksJson(p),
             ["xp_level"] = live.XpLevel,
+            ["speed"] = live.Online ? PawnSpeedJson(p) : null, // the body's speed boost (StoryColony.Speed.cs)
         };
     }
 

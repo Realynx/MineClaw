@@ -544,6 +544,7 @@ public sealed partial class StoryColony
     {
         var o = new JsonObject { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches, ["idle"] = Meta.Idle };
         HaulOptionsJson(o); // rescue teleport, unfiltered storage, keeping disallowed items (StoryColony.Hauling.cs)
+        SpeedOptionsJson(o); // speed, speed_effect (StoryColony.Speed.cs)
         foreach (var (k, v) in GearOptionsJson().ToList()) o[k] = v?.DeepClone(); // auto_craft_tools, spare_tools (StoryColony.Gear.cs)
         return o;
     }
