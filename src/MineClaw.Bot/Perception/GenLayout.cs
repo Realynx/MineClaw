@@ -47,10 +47,7 @@ public static class GenLayout
     public static string? Diagnose(WorldState w, MemoryStore? memory, int dim, WPos cell)
     {
         var causes = new List<string>();
-        int here = w.GetBlock(cell.X, cell.Y, cell.Z);
-        if (here == Blocks.Obsidian) causes.Add($"the cell {Fmt(cell)} is obsidian now (water reached the lava source)");
-        else if (here != 0 && !(here is Blocks.Cobblestone or Blocks.Stone) && !Blocks.IsLava(here) && !Blocks.IsWater(here))
-            causes.Add($"the cell {Fmt(cell)} is {Name(here)} now");
+        if (CellCause(cell, w.GetBlock(cell.X, cell.Y, cell.Z)) is { } changed) causes.Add(changed);
 
         Structure? gen = null;
         try { gen = memory == null ? null : DigCells.GeneratorNear(memory, dim, cell); }
@@ -60,17 +57,30 @@ public static class GenLayout
         if (layout.Count > 0)
         {
             foreach (var k in layout)
-            {
-                bool lava = k.Label == LavaLabel;
-                int id = w.GetBlock(k.X, k.Y, k.Z);
-                bool ok = lava ? Blocks.IsLava(id) : Blocks.IsWater(id);
-                if (!ok) causes.Add($"the {(lava ? "lava" : "water")} at {k.X},{k.Y},{k.Z} is gone (now {Name(id)}; taught layout had it)");
-            }
+                if (FluidGone(w, k) is { } gone) causes.Add(gone);
             // Something new in the way: fluid of the other kind where the layout had none is fine; a solid next to the cell where
             // the layout had fluid is already reported above.
         }
         else if (BlockDescriber.GenCellRejection(w, cell) is { } why && !why.StartsWith("it's", StringComparison.Ordinal))
             causes.Add($"{Fmt(cell)}: {why} (no taught layout to compare)");
         return causes.Count == 0 ? null : string.Join("; ", causes);
+    }
+
+    /// <summary>The cell turned to obsidian or to something that isn't output, air or fluid; else null.</summary>
+    private static string? CellCause(WPos cell, int here)
+    {
+        if (here == Blocks.Obsidian) return $"the cell {Fmt(cell)} is obsidian now (water reached the lava source)";
+        if (here != 0 && !(here is Blocks.Cobblestone or Blocks.Stone) && !Blocks.IsLava(here) && !Blocks.IsWater(here))
+            return $"the cell {Fmt(cell)} is {Name(here)} now";
+        return null;
+    }
+
+    /// <summary>A taught lava/water block that isn't that fluid any more.</summary>
+    private static string? FluidGone(WorldState w, KeyBlock k)
+    {
+        bool lava = k.Label == LavaLabel;
+        int id = w.GetBlock(k.X, k.Y, k.Z);
+        bool ok = lava ? Blocks.IsLava(id) : Blocks.IsWater(id);
+        return ok ? null : $"the {(lava ? "lava" : "water")} at {k.X},{k.Y},{k.Z} is gone (now {Name(id)}; taught layout had it)";
     }
 }

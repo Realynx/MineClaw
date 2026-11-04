@@ -146,17 +146,24 @@ public sealed class DeathRecovery : IDisposable
         var c = body.Adapter;
         var w = c.World;
         var p = w.Player;
-        if (!c.IsPlaying || p.IsDead || c.SafetyEngaged || p.Health < 16 || w.Dimension != loss.Dimension) return false;
-        if (loss.Hazards.Lava || loss.Hazards.Void || loss.Hazards.WaterDepth > 3 && p.Health < 20) return false;
-        if (w.Entities.Nearest(p.Position, 8, e => e.IsHostileMob) != null
-            || w.Entities.Nearest(loss.Spot.Center, 8, e => e.IsHostileMob) != null) return false;
+        if (!BodyFit(c, loss) || Hazardous(loss.Hazards, p.Health)) return false;
+        if (HostileNear(w, p.Position) || HostileNear(w, loss.Spot.Center)) return false;
         if (loss.Spot.Y < 1 || loss.Spot.Y >= w.WorldHeight - 2) return false;
         // The corpse's chunk may be outside respawn view distance. Its captured hazards gate the trip; navigation only
         // walks loaded, safe ground, and the live destination is checked again as soon as it loads (and before pickup).
         if (!w.IsLoaded(loss.Spot.X, loss.Spot.Z)) return true;
-        var hazards = HazardsAt(w, loss.Spot);
-        return !hazards.Lava && !hazards.Void && (hazards.WaterDepth <= 3 || p.Health >= 20);
+        return !Hazardous(HazardsAt(w, loss.Spot), p.Health);
     }
+
+    /// <summary>Playing, alive, no safety reflex running, near full health, in the loss's dimension.</summary>
+    private static bool BodyFit(Game.IGameClient c, Loss loss) =>
+        c.IsPlaying && !c.World.Player.IsDead && !c.SafetyEngaged && c.World.Player.Health >= 16 && c.World.Dimension == loss.Dimension;
+
+    /// <summary>Lava, the void, or deep water without full health.</summary>
+    private static bool Hazardous((bool Lava, bool Void, int WaterDepth) h, double health) =>
+        h.Lava || h.Void || h.WaterDepth > 3 && health < 20;
+
+    private static bool HostileNear(WorldState w, Vec3d at) => w.Entities.Nearest(at, 8, e => e.IsHostileMob) != null;
 
     private static (bool Lava, bool Void, int WaterDepth) HazardsAt(WorldState w, BlockPos spot)
     {

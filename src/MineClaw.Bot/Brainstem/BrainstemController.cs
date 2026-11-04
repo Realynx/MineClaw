@@ -208,21 +208,23 @@ public sealed class BrainstemController : IDisposable
         var intent = IntentMatcher.Reflex(text, Names, enabled.Contains("give") && MayGive(player) ? HoldsItem : null);
         if (!intent.IsReflex || !enabled.Contains(intent.ReflexName)) return null;
         if (_c.SafetyEngaged && intent.Kind != IntentKind.Stop) return null; // safety owns the body: the brain hears it
-        string? note = intent.Kind switch
-        {
-            IntentKind.Stop => Stop(),
-            IntentKind.Come => Walk(player, follow: false),
-            IntentKind.Follow => Walk(player, follow: true),
-            IntentKind.Gesture => Gesture(player, intent.Arg!),
-            IntentKind.LookAtMe => LookAt(player),
-            IntentKind.Give => Give(player, intent),
-            _ => null,
-        };
-        if (note == null) return null;
+        if (RunReflex(intent, player) is not { } note) return null;
         Latency.NoteReflex(intent.ReflexName);
         _log?.LogInformation("reflex {Reflex} for {Player}: {Note}", intent.ReflexName, player, note);
         return (intent, note);
     }
+
+    /// <summary>Plays the reflex; its note, or null when it didn't run.</summary>
+    private string? RunReflex(Intent intent, string player) => intent.Kind switch
+    {
+        IntentKind.Stop => Stop(),
+        IntentKind.Come => Walk(player, follow: false),
+        IntentKind.Follow => Walk(player, follow: true),
+        IntentKind.Gesture => Gesture(player, intent.Arg!),
+        IntentKind.LookAtMe => LookAt(player),
+        IntentKind.Give => Give(player, intent),
+        _ => null,
+    };
 
     private string? Stop()
     {
@@ -313,41 +315,43 @@ public sealed class BrainstemController : IDisposable
         return target;
     }
 
-    private BlockPos? Target(Intent intent, string player)
+    private BlockPos? Target(Intent intent, string player) => intent.Kind switch
+    {
+        IntentKind.SpecToSpeaker => SpeakerCell(player),
+        IntentKind.SpecGenerator => NearestKnown(IndexKinds.Generator) ?? _places.Resolve("cobble_gen"),
+        IntentKind.SpecTree => NearestKnown(IndexKinds.Tree),
+        IntentKind.SpecPlace => intent.Arg is { Length: > 0 } place ? _places.Resolve(place) ?? _places.Resolve(place.Replace(' ', '_')) : null,
+        IntentKind.SpecBring => BringTarget(intent.Arg, player),
+        _ => null,
+    };
+
+    /// <summary>The speaker's cell, unless they stand over the void.</summary>
+    private BlockPos? SpeakerCell(string player) =>
+        _c.World.Entities.FindPlayer(player) is { } e && !_c.World.IsPlayerOverVoid(e.Position) ? e.Position.ToBlockPos() : null;
+
+    /// <summary>Carrying the item: to the speaker; else to the chest remembered holding it.</summary>
+    private BlockPos? BringTarget(string? item, string player)
+    {
+        if (item is { } held && HoldsItem(held)) return SpeakerCell(player);
+        try
+        {
+            var hit = item == null ? null : _rt.Observations.FindItemInContainers(item, limit: 1).FirstOrDefault();
+            if (hit?.Container.Bounds is { } b) return new BlockPos((int)b.MinX, (int)b.MinY, (int)b.MinZ);
+        }
+        catch (Exception) { }
+        return null;
+    }
+
+    /// <summary>The nearest indexed thing of a kind within the speculative range (its footprint centre).</summary>
+    private BlockPos? NearestKnown(string kind)
     {
         var me = _c.World.Player.Position;
-        switch (intent.Kind)
+        try
         {
-            case IntentKind.SpecToSpeaker:
-                return _c.World.Entities.FindPlayer(player) is { } e && !_c.World.IsPlayerOverVoid(e.Position) ? e.Position.ToBlockPos() : null;
-            case IntentKind.SpecGenerator:
-                return Nearest(IndexKinds.Generator) ?? _places.Resolve("cobble_gen");
-            case IntentKind.SpecTree:
-                return Nearest(IndexKinds.Tree);
-            case IntentKind.SpecPlace:
-                return intent.Arg is { Length: > 0 } place ? _places.Resolve(place) ?? _places.Resolve(place.Replace(' ', '_')) : null;
-            case IntentKind.SpecBring:
-                if (intent.Arg is { } item && HoldsItem(item))
-                    return _c.World.Entities.FindPlayer(player) is { } p && !_c.World.IsPlayerOverVoid(p.Position) ? p.Position.ToBlockPos() : null;
-                try
-                {
-                    var hit = intent.Arg == null ? null : _rt.Observations.FindItemInContainers(intent.Arg, limit: 1).FirstOrDefault();
-                    if (hit?.Container.Bounds is { } b) return new BlockPos((int)b.MinX, (int)b.MinY, (int)b.MinZ);
-                }
-                catch (Exception) { }
-                return null;
+            var hit = _rt.Observations.Nearest(kind, me.X, me.Y, me.Z, limit: 1, maxDistance: Options.MaxSpeculativeDistance).FirstOrDefault();
+            return hit.Row?.Bounds is { } b ? new BlockPos((int)Math.Floor((b.MinX + b.MaxX) / 2), (int)b.MinY, (int)Math.Floor((b.MinZ + b.MaxZ) / 2)) : null;
         }
-        return null;
-
-        BlockPos? Nearest(string kind)
-        {
-            try
-            {
-                var hit = _rt.Observations.Nearest(kind, me.X, me.Y, me.Z, limit: 1, maxDistance: Options.MaxSpeculativeDistance).FirstOrDefault();
-                return hit.Row?.Bounds is { } b ? new BlockPos((int)Math.Floor((b.MinX + b.MaxX) / 2), (int)b.MinY, (int)Math.Floor((b.MinZ + b.MaxZ) / 2)) : null;
-            }
-            catch (Exception) { return null; }
-        }
+        catch (Exception) { return null; }
     }
 
     /// <summary>

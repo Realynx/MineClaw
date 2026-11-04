@@ -174,12 +174,7 @@ public sealed partial class DigCells
         foreach (var p in Taught())
         {
             if (_confirmed?.Invoke(p) == true || blockAt(p) is not { } b) continue;
-            string? why = null;
-            if (MineClaw.Data.Blocks.IsLava(b.Id) && !(b.Id == MineClaw.Data.Blocks.FlowingLava && b.Meta != 0)) why = "it's the gen's lava";
-            else if (MineClaw.Data.Blocks.IsWater(b.Id)) why = "it's the gen's water";
-            else if (b.Id is not (0 or MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone or MineClaw.Data.Blocks.FlowingLava))
-                why = $"it's {(MineClaw.Data.Blocks.Exists(b.Id) ? MineClaw.Data.Blocks.Get(b.Id).Name : "block " + b.Id)}, which no gen makes";
-            if (why != null) bad.Add((p, why));
+            if (NotACell(b.Id, b.Meta) is { } why) bad.Add((p, why));
         }
         foreach (var (p, why) in bad)
         {
@@ -187,6 +182,17 @@ public sealed partial class DigCells
             else Retract(p);
         }
         return bad;
+    }
+
+    /// <summary>Why a block shows its cell is no dig cell (the gen's lava source or water, or a solid no gen makes); null when
+    /// it may be one (output, air, flowing lava).</summary>
+    private static string? NotACell(int id, int meta)
+    {
+        if (MineClaw.Data.Blocks.IsLava(id) && !(id == MineClaw.Data.Blocks.FlowingLava && meta != 0)) return "it's the gen's lava";
+        if (MineClaw.Data.Blocks.IsWater(id)) return "it's the gen's water";
+        if (id is not (0 or MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone or MineClaw.Data.Blocks.FlowingLava))
+            return $"it's {(MineClaw.Data.Blocks.Exists(id) ? MineClaw.Data.Blocks.Get(id).Name : "block " + id)}, which no gen makes";
+        return null;
     }
 
     /// <summary>The gen structure nearest <paramref name="p"/> (within <paramref name="max"/> blocks), or null.</summary>

@@ -30,26 +30,31 @@ public sealed class HereBlock(IGameClient client, MemoryStore? memory, Observati
         var me = w.Player.Position;
         var parts = new List<string>();
         // The dimension first: in the nether every island/landmark reflex is wrong (live: "back at spawn" in the nether).
-        if (w.Dimension != 0)
-            parts.Add((w.Dimension == -1 ? "IN THE NETHER" : "IN DIMENSION " + w.Dimension)
-                      + (MineClaw.Client.PortalEntry.InPortal(w, me) ? " (standing in the portal: step out, then back in for 4 s to travel)" : ""));
+        if (w.Dimension != 0) parts.Add(DimensionPart(w, me));
         try { if (landmark?.Invoke(me.X, me.Y, me.Z) is { Length: > 0 } lm) parts.Add("you: " + lm); } catch (Exception) { }
         parts.Add("inv: " + Inventory(w));
 
         var speakers = batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).Take(2);
         foreach (var who in speakers)
-        {
-            if (who.Equals(client.Username, StringComparison.OrdinalIgnoreCase)) continue;
-            if (w.Entities.FindPlayer(who) is not { } e) { parts.Add($"{who} not in sight"); continue; }
-            var off = Landmarks.Offset(me.X, me.Z, e.Position.X, e.Position.Z);
-            var at = off == "here" ? $"{who} right by you" : $"{who} {off} of you";
-            parts.Add($"{at}, facing {Compass(e.Yaw)}" + (OverVoid(w, e.Position) ? " (over void)" : ""));
-        }
+            if (!who.Equals(client.Username, StringComparison.OrdinalIgnoreCase)) parts.Add(SpeakerPart(w, me, who));
 
         var near = Near(me);
         if (near.Count > 0) parts.Add("near: " + string.Join(", ", near));
         if (VoidEdges(w, me) is { Length: > 0 } v) parts.Add(v);
         return "[here] " + string.Join(" | ", parts);
+    }
+
+    private static string DimensionPart(WorldState w, Vec3d me) =>
+        (w.Dimension == -1 ? "IN THE NETHER" : "IN DIMENSION " + w.Dimension)
+        + (MineClaw.Client.PortalEntry.InPortal(w, me) ? " (standing in the portal: step out, then back in for 4 s to travel)" : "");
+
+    /// <summary>"kiwi 3 N of you, facing east (over void)", "kiwi right by you, …", or "kiwi not in sight".</summary>
+    private static string SpeakerPart(WorldState w, Vec3d me, string who)
+    {
+        if (w.Entities.FindPlayer(who) is not { } e) return $"{who} not in sight";
+        var off = Landmarks.Offset(me.X, me.Z, e.Position.X, e.Position.Z);
+        var at = off == "here" ? $"{who} right by you" : $"{who} {off} of you";
+        return $"{at}, facing {Compass(e.Yaw)}" + (OverVoid(w, e.Position) ? " (over void)" : "");
     }
 
     /// <summary>"cobblestone x64, stone pickaxe, dirt x3 +2 more" (grouped by item, biggest first).</summary>
@@ -73,46 +78,48 @@ public sealed class HereBlock(IGameClient client, MemoryStore? memory, Observati
     private List<string> Near(Vec3d me)
     {
         var list = new List<(double D, string Text)>();
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            if (memory != null)
-            {
-                int dim = memory.CurrentDimension;
-                var (wps, sts) = memory.Read(d => (d.Waypoints.Where(x => x.Dimension == dim).ToList(), d.Structures.Where(x => x.Dimension == dim).ToList()));
-                foreach (var wp in wps) Add(wp.Name, wp.X + 0.5, wp.Y, wp.Z + 0.5);
-                foreach (var s in sts)
-                {
-                    if (s.Min == null) continue;
-                    var mx = s.Max ?? s.Min;
-                    Add(s.Name, (s.Min.X + mx.X) / 2.0 + 0.5, (s.Min.Y + mx.Y) / 2.0, (s.Min.Z + mx.Z) / 2.0 + 0.5);
-                }
-            }
-        }
+        try { if (memory != null) NearRemembered(memory, me, list); }
         catch (Exception) { /* memory busy: fewer hints */ }
-        try
-        {
-            if (observations != null)
-                foreach (var (row, d) in observations.Nearest(null, me.X, me.Y, me.Z, limit: 8, maxDistance: 32))
-                {
-                    if (SkipKinds.Contains(row.Kind) || row.Bounds is not { } b) continue;
-                    var cx = (b.MinX + b.MaxX) / 2.0 + 0.5;
-                    var cz = (b.MinZ + b.MaxZ) / 2.0 + 0.5;
-                    var off = Landmarks.Offset(me.X, me.Z, cx, cz);
-                    list.Add((d + 0.1, $"{row.Kind.Replace('_', ' ')} {(off == "here" ? "here" : off)}"));
-                }
-        }
+        try { if (observations != null) NearIndexed(observations, me, list); }
         catch (Exception) { /* index busy */ }
         // Nearest first, each thing once, at most 5.
         return list.OrderBy(t => t.D).Select(t => t.Text).Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList();
+    }
 
-        void Add(string name, double x, double y, double z)
+    /// <summary>Saved waypoints and structures (their centre) in this dimension within 32 blocks (12 up/down).</summary>
+    private static void NearRemembered(MemoryStore memory, Vec3d me, List<(double D, string Text)> list)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int dim = memory.CurrentDimension;
+        var (wps, sts) = memory.Read(d => (d.Waypoints.Where(x => x.Dimension == dim).ToList(), d.Structures.Where(x => x.Dimension == dim).ToList()));
+        foreach (var wp in wps) AddNear(list, names, me, wp.Name, wp.X + 0.5, wp.Y, wp.Z + 0.5);
+        foreach (var s in sts)
         {
-            if (Math.Abs(y - me.Y) > 12 || !names.Add(name)) return;
-            double dx = x - me.X, dz = z - me.Z, d = Math.Sqrt(dx * dx + dz * dz);
-            if (d > 32) return;
-            var off = Landmarks.Offset(me.X, me.Z, x, z);
-            list.Add((d, $"{name} {(off == "here" ? "here" : off)}"));
+            if (s.Min == null) continue;
+            var mx = s.Max ?? s.Min;
+            AddNear(list, names, me, s.Name, (s.Min.X + mx.X) / 2.0 + 0.5, (s.Min.Y + mx.Y) / 2.0, (s.Min.Z + mx.Z) / 2.0 + 0.5);
+        }
+    }
+
+    private static void AddNear(List<(double D, string Text)> list, HashSet<string> names, Vec3d me, string name, double x, double y, double z)
+    {
+        if (Math.Abs(y - me.Y) > 12 || !names.Add(name)) return;
+        double dx = x - me.X, dz = z - me.Z, d = Math.Sqrt(dx * dx + dz * dz);
+        if (d > 32) return;
+        var off = Landmarks.Offset(me.X, me.Z, x, z);
+        list.Add((d, $"{name} {(off == "here" ? "here" : off)}"));
+    }
+
+    /// <summary>Indexed things (not areas) within 32 blocks.</summary>
+    private static void NearIndexed(ObservationStore observations, Vec3d me, List<(double D, string Text)> list)
+    {
+        foreach (var (row, d) in observations.Nearest(null, me.X, me.Y, me.Z, limit: 8, maxDistance: 32))
+        {
+            if (SkipKinds.Contains(row.Kind) || row.Bounds is not { } b) continue;
+            var cx = (b.MinX + b.MaxX) / 2.0 + 0.5;
+            var cz = (b.MinZ + b.MaxZ) / 2.0 + 0.5;
+            var off = Landmarks.Offset(me.X, me.Z, cx, cz);
+            list.Add((d + 0.1, $"{row.Kind.Replace('_', ' ')} {(off == "here" ? "here" : off)}"));
         }
     }
 
