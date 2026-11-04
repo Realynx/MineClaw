@@ -138,6 +138,7 @@ describe('policies', () => {
       weapon: 'best',
       armor: 'drafted',
       food: 2,
+      spare: false,
     },
   ];
 

@@ -1144,13 +1144,30 @@ tool its material needs to drop anything, from the version's own data (`StoryToo
 
 `POST …/policies` `{op:"set", policy:{id?, name, tools_by_work?, tools?, weapon?, armor?, food?}}` → `{id}` · `{op:"remove", id}` ·
 `{op:"assign", id, pawns}`. Policy: `{id, name, default, tools_by_work, tools:[kind], weapon: none|best|sword|axe|bow,
-armor: none|drafted|always|night, food: 0..16}`. The default policy (`default`, never removed) carries the tools of the pawn's work
+armor: none|drafted|always|night, food: 0..16, spare}`. The default policy (`default`, never removed) carries the tools of the pawn's work
 (mine: pickaxe + shovel, chop: axe, farm: hoe, build: pickaxe + axe), no weapon, armour when drafted.
 - **Kept up when idle.** About every 20 s, when nothing more urgent is on, a pawn's gear is checked against its policy: a missing or
   worn tool kind is fetched (the worn one goes back to storage), a weapon, armour to wear now (always, or at night) or to take off
   (none, night by day), food below half the policy's. Storage only, unclaimed items only; a failed fetch rests 2 min.
 - Pawn state: `policy` (id, null = default), `equipment: {held, armor, tools, weapons}` (each `{item, name, label, kind, tier,
   durability, ench, slot}`), `gear_tasks: [{id, op, label}]`.
+
+### Tools are colony stock (added 2026-11-04)
+
+Live 11-04 (Fox): "one pawn holding 13 stone pickaxes". Spare-tool bills counted only storage, so while the crafted pickaxes sat in a
+pocket (a pawn's tools were always "its own" and never stored) the colony kept crafting. Now:
+- **A pawn keeps what its policy needs:** what it wears; per tool kind its work (or a material rule) uses, the best fresh one, plus a
+  plain one beside an enchanted one when a rule marks a material, plus one spare when its policy says `spare: true`; its best weapon;
+  per armour slot it doesn't wear, its best piece unless its armour mode is none. One stray tool of a kind its work doesn't use may stay,
+  unless another pawn whose policy wants that kind has none and storage has none: then it goes at once. Everything else is **extra**
+  (a hoard always goes back): its next gear check
+  (when idle, about every 20 s, and right after the colony loads) stores the extras in the chests that take them, keeping the
+  freshest of each item it keeps (the job's `store: [{to, item, keep}]`, the hidden `equip(item, 'store', chest, '', keep)`), so the
+  other pawns' policies fetch them from storage. A pawn whose job fetches a better tool returns the plain one it replaces into the
+  same chest (a wooden pickaxe for iron, a worn one).
+- **Crafted tools are stock:** a tool bill's product goes into storage like any bill's; a crafter that needs one fetches it back by
+  its policy.
+- **Targets count every pocket:** spare-tool and auto-tool bills count storage plus every pawn's pocket, so they stop at the target.
 
 ### Bulk gear
 
