@@ -226,30 +226,37 @@ public sealed partial class StoryColony
         bool wake = _wakePending;
         int budget = 1;
         long stamp = WorkStamp();
-        foreach (var p in Pawns.Values)
-        {
-            if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "wander") continue;
-            var live = Host.Live(p.Name);
-            if (!live.Online) continue;
-            var block = ScheduleBlockAt(p, hour);
-            bool workHours = block is ScheduleBlocks.Work or ScheduleBlocks.Anything;
-            // A resting leg ends with the back-off, or the moment there is work for it (a rest never holds a pawn back from work).
-            bool resting = cur.SourceId == "rest";
-            bool stillItsHours = resting ? RestLeft(p) != null : cur.SourceId == "free" ? block == ScheduleBlocks.Free : workHours;
-            if (!stillItsHours || p.Queue.Count > 0)
-            {
-                _current.Remove(p.Name); // its hours (or its rest) moved on, or it has orders: it asks again
-                p.Rev = Bump();
-                continue;
-            }
-            // A resting leg too: work never waits for a rest.
-            var job = Urgent(p, live) ?? (workHours && (wake || ProbeDue(p, stamp, ref budget)) ? ProbeWork(p, live, stamp) : null);
-            if (job == null) continue;
-            if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
-            foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
-            job.Assign?.Invoke(); // a build batch leases its cells now (as Next does)
-            _current[p.Name] = job;
-            p.Rev = Bump();
-        }
+        foreach (var p in Pawns.Values) WakeWanderer(p, hour, wake, stamp, ref budget);
     }
+
+    private void WakeWanderer(PawnState p, int hour, bool wake, long stamp, ref int budget)
+    {
+        if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "wander") return;
+        var live = Host.Live(p.Name);
+        if (!live.Online) return;
+        var block = ScheduleBlockAt(p, hour);
+        bool workHours = block is ScheduleBlocks.Work or ScheduleBlocks.Anything;
+        if (!LegStillOn(p, cur, block, workHours) || p.Queue.Count > 0)
+        {
+            _current.Remove(p.Name); // its hours (or its rest) moved on, or it has orders: it asks again
+            p.Rev = Bump();
+            return;
+        }
+        // A resting leg too: work never waits for a rest.
+        if (WandererWork(p, live, workHours, wake, stamp, ref budget) is not { } job) return;
+        if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
+        foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
+        job.Assign?.Invoke(); // a build batch leases its cells now (as Next does)
+        _current[p.Name] = job;
+        p.Rev = Bump();
+    }
+
+    /// <summary>A resting leg ends with the back-off, or the moment there is work for it (a rest never holds a pawn back from work); a
+    /// free-time leg with its free hours; a work-hours leg with its work hours.</summary>
+    private bool LegStillOn(PawnState p, ActiveJob cur, string block, bool workHours) =>
+        cur.SourceId == "rest" ? RestLeft(p) != null : cur.SourceId == "free" ? block == ScheduleBlocks.Free : workHours;
+
+    /// <summary>An urgent need, or (in its work hours, on a wake or when its probe is due) its work.</summary>
+    private ActiveJob? WandererWork(PawnState p, PawnLive live, bool workHours, bool wake, long stamp, ref int budget) =>
+        Urgent(p, live) ?? (workHours && (wake || ProbeDue(p, stamp, ref budget)) ? ProbeWork(p, live, stamp) : null);
 }
