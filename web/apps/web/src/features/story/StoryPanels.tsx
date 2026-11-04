@@ -27,7 +27,6 @@ import { ZoneToolbar } from './zones/ZoneToolbar';
 import {
   ClipboardPaste,
   Copy,
-  Flame,
   GripVertical,
   Home,
   Lock,
@@ -38,30 +37,23 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import {
   applyPaint,
-  cyclePriority,
   directiveStatusTone,
-  nextSort,
   paintRequests,
   paintSpan,
   pasteRequest,
   SCHEDULE_BRUSHES,
-  skillTint,
-  sortPawns,
-  WORK_LABELS,
-  WORK_TYPES,
-  type SortKey,
 } from './model';
 import { useWorldClock, type WorldClock } from './clock';
 import { panel } from './StoryHud';
 import { BringOnlineBox } from './StoryInspector';
 import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, WATER_TOOLS } from './tools';
 import type { MapTool } from './StoryMap';
-import { AiMark, Avatar, ItemIcon, ToolIcon } from './visuals';
+import { AiMark, ItemIcon, ToolIcon } from './visuals';
 
 export type TabId = 'architect' | 'work' | 'schedule' | 'assign' | 'queue' | 'directives' | 'colony';
 
@@ -341,126 +333,8 @@ export function ArchitectPanel({
 
 // ------------------------------------------------------------------ work
 
-export function WorkPanel({
-  pawns,
-  ai,
-  canWrite,
-  onSet,
-}: {
-  pawns: StoryPawn[];
-  ai: StoryAiBody[];
-  canWrite: boolean;
-  onSet: (pawns: string[], work: Record<string, number>) => void;
-}) {
-  const [sort, setSort] = useState<SortKey>(null);
-  const [local, setLocal] = useState<Record<string, Record<string, number>>>({});
-  const rows = useMemo(() => sortPawns(pawns, sort), [pawns, sort]);
-  const value = (p: StoryPawn, t: string) => local[p.name]?.[t] ?? p.priorities[t] ?? 0;
-  const set = (p: StoryPawn, t: string, back: boolean) => {
-    if (!canWrite) return;
-    const v = cyclePriority(value(p, t), back);
-    setLocal((l) => ({ ...l, [p.name]: { ...l[p.name], [t]: v } }));
-    onSet([p.name], { [t]: v });
-  };
-  return (
-    <section
-      className={cn(panel, 'pointer-events-auto max-h-[46vh] overflow-auto p-2')}
-      aria-label="Work priorities"
-      data-testid="work-panel"
-    >
-      <table className="border-separate border-spacing-0 text-xs">
-        <thead>
-          <tr>
-            <th className="sticky top-0 bg-surface px-2 text-left">
-              <button type="button" onClick={() => setSort(nextSort(sort, 'name'))} className="font-semibold">
-                Pawn
-              </button>
-            </th>
-            {WORK_TYPES.map((t) => (
-              <th key={t} className="sticky top-0 bg-surface px-0.5 pb-1">
-                <button
-                  type="button"
-                  onClick={() => setSort(nextSort(sort, t))}
-                  className={cn(
-                    'w-11 rounded py-0.5 text-[11px] font-semibold',
-                    sort?.col === t ? 'bg-accent-soft' : 'text-muted hover:text-fg',
-                  )}
-                  title={`Sort by ${WORK_LABELS[t]} skill`}
-                >
-                  {WORK_LABELS[t]}
-                  {sort?.col === t ? (sort.dir === 1 ? ' ▾' : ' ▴') : ''}
-                </button>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((p) => (
-            <tr key={p.name} data-row={p.name}>
-              <td className="pr-2">
-                <span className="flex items-center gap-1.5">
-                  <Avatar name={p.name} size={18} />
-                  <span className="font-semibold">{p.display}</span>
-                </span>
-              </td>
-              {WORK_TYPES.map((t) => {
-                const v = value(p, t);
-                const sk = p.skills[t];
-                return (
-                  <td key={t} className="p-0.5">
-                    <button
-                      type="button"
-                      data-cell={`${p.name}:${t}`}
-                      aria-label={`${p.display} ${WORK_LABELS[t]}: ${v || 'off'} (skill ${sk?.level ?? 0}${sk?.passion ? ', passion' : ''})`}
-                      onClick={(e) => set(p, t, e.shiftKey)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        set(p, t, true);
-                      }}
-                      disabled={!canWrite}
-                      className="relative h-7 w-11 rounded border border-border text-[13px] font-bold tabular-nums"
-                      style={{
-                        background: `color-mix(in oklab, var(--accent) ${Math.round(skillTint(sk?.level) * 42)}%, var(--surface-2))`,
-                      }}
-                      title={`Skill ${sk?.level ?? 0}/20${sk?.passion ? ' · loves this work' : ''} · click: 1 → 4 → off`}
-                    >
-                      <span className={cn(v === 1 ? 'text-fg' : v === 0 ? 'text-subtle' : 'text-muted')}>
-                        {v || '·'}
-                      </span>
-                      {sk?.passion ? (
-                        <Flame className="absolute top-0.5 right-0.5 size-2.5 text-[#ff9f43]" aria-hidden />
-                      ) : null}
-                      <span className="absolute bottom-0.5 left-1 text-[8px] font-medium text-subtle">
-                        {sk?.level ?? 0}
-                      </span>
-                    </button>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-          {ai.map((a) => (
-            <tr key={a.name} className="opacity-60" data-ai-row={a.name}>
-              <td className="pr-2">
-                <span className="flex items-center gap-1.5">
-                  <Avatar name={a.name} size={18} ai />
-                  <span className="font-semibold">{a.name}</span>
-                </span>
-              </td>
-              <td colSpan={WORK_TYPES.length} className="px-2 text-[11px] text-muted italic">
-                <AiMark className="mr-1 inline size-3 text-[#a78bfa]" />
-                AI-managed: send it directives instead
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="mt-1 px-1 text-[10.5px] text-subtle">
-        1 is done first; ties go left to right, then to skill. Right-click or Shift-click counts down.
-      </p>
-    </section>
-  );
-}
+// The Work grid with roles lives in roles/WorkPanel.tsx (docs/web/story-mode.md "Roles").
+export { WorkPanel } from './roles/WorkPanel';
 
 // ------------------------------------------------------------------ schedule
 

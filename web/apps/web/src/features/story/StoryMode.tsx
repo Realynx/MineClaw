@@ -1244,6 +1244,12 @@ export function StoryMode() {
             onSet={(names, work) =>
               void write('story.priorities', { pawns: names, work }).catch((e) => say(errorText(e), 'warn'))
             }
+            roles={state?.roles ?? []}
+            selected={selection.bodies}
+            onRole={(names, role) =>
+              void write('story.priorities', { pawns: names, role }).catch((e) => say(errorText(e), 'warn'))
+            }
+            onRoleOp={(body) => void write('story.roles', body).catch((e) => say(errorText(e), 'warn'))}
           />
         );
       case 'schedule':

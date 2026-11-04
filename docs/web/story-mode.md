@@ -91,7 +91,8 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
 | POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
-| POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off) → `{ok}` |
+| POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off; a pawn with a role turns Custom) or `{pawns:[name], role: id\|null}` (null = Custom, the values kept) → `{ok}`; 400 for both at once, 404 for an unknown role. See "Roles" |
+| POST | `/api/story/colonies/{id}/roles` | `{op:"add", role:{name, icon?, priorities?}}` \| `{op:"update", role:{id, name?, icon?, priorities?}}` \| `{op:"remove", id}` \| `{op:"reset_defaults"}` → `{id, roles:[Role], removed?}`; 400 on a bad body (unknown op, work type or role, a name taken or not 1..40 chars, a priority past 0..4, an icon not `[a-z0-9-]{1,24}`). See "Roles" |
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
@@ -137,7 +138,7 @@ The **Pawn** object:
 ```
 {name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, leaving, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
- skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]],
+ skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, role, schedule:[24 × block], held, inventory:[[id,meta,count]],
  xp_level,
  equipment:{held, armor, tools, weapons}, policy, gear_tasks:[{id, op, label}] }
 ```
@@ -189,6 +190,45 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
   idle hold lasts a few seconds and the pawn picks again by itself. Only a pawn held idle for 8 s or more (walking home from far)
   is cut for it, at most once every 30 s. (Live 11-03: cutting every idle script on each work-panel click restarted ten scripts per
   click, several "cancelled … (new work)" lines a second, and no pawn got anywhere.)
+
+### Roles (added 2026-11-04)
+
+Fox 11-04: "It would be a lot easier to assign priorities if I could make predefined roles that have specific priorities — e.g. a
+Farmer whose biggest priority is farming, plus a couple of other things … I like the 1–4 priority grid, but I'd like to be able to
+set some of those rows to just predefined roles."
+
+- **A role** is a named priority template, saved with the colony: `Role = {id, name, icon, builtin, priorities:{type: 0..4}, pawns:[name]}`
+  (`pawns` = who has it; a work type missing from a role is off). The state carries `roles` whole with every answer, and each pawn's
+  `role` (its id, or null = **Custom**: its own priorities, the behaviour before roles).
+- **Effective priorities.** A pawn with a role works by the role's priorities. The director keeps them in the pawn's `priorities`
+  (rewritten whenever the role or the assignment changes, and again on load), so the job picker, hauling, gear and every other reader
+  use the effective values unchanged (`StoryColony.Roles.cs`, `EffectivePriorities`).
+- **Built-in roles** (seeded on first use, editable and removable; `reset_defaults` brings them back as shipped, re-adding removed
+  ones and resetting edited ones, and keeps own roles):
+
+  | role | 1 | 2 | 3 | 4 |
+  |---|---|---|---|---|
+  | Farmer (`wheat`) | farm | | cook, haul | doctor |
+  | Miner (`pickaxe`) | mine | | haul | build |
+  | Woodcutter (`axe`) | chop | | haul | |
+  | Builder (`brick`) | build | haul | craft | |
+  | Hauler (`package`) | haul | | chop (plant cutting) | |
+  | Crafter (`hammer`) | craft | cook | haul | |
+  | Cook (`pot`) | cook | | farm, haul | doctor |
+  | Fisher (`fish`) | fish | | cook, haul | |
+  | Guard / Hunter (`shield`) | guard, hunt | | haul | |
+  | Generalist (`shapes`) | | haul | everything else | |
+
+  Every other work type is off. Brewing is Cook and enchanting/anvil work is Craft, so they need no column of their own.
+- **Assigning.** `POST …/priorities {pawns, role}` gives the pawns the role (their values become the role's); `role: null` makes
+  them Custom with the values they have.
+- **Editing a role** (`update`) changes every pawn with it at once; `priorities` merge (only the given work types change).
+- **Customising a role row.** A cell edit (`POST …/priorities {pawns, work}`) on a pawn with a role detaches it: the role is cleared
+  and the pawn keeps the role's values plus that change (RimWorld-style; the grid offers an Undo, which sends the role again).
+- **Deleting a role** turns its pawns Custom with the same values.
+- Ids: built-ins keep theirs (`farmer`, `miner`, …); an added role's id comes from its name (`Night miner` → `night-miner`, `-2` when
+  taken), never a built-in's. Names are unique (case-insensitive); a reset whose built-in name an own role took names it
+  "… (built-in)".
 
 ### Homes and beds
 
@@ -1594,7 +1634,15 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a zones palette (see "Zones": work zones, overlay layers, Erase with its kind)
   - Work, Schedule and Colony panels
 - **Work panel.** A grid of pawns by work type. Click to cycle 1–4 and off, with skill shown as the cell tint and a
-  passion mark.
+  passion mark. Roles (see "Roles"):
+  - Each row starts with a role dropdown (Custom or a role, with the role's icon). A role row shows the role's priorities in
+    dashed, lighter "from role" cells; clicking one turns the pawn Custom with the role's values plus the change, and a line under
+    the grid says "… is now Custom (was Farmer) · Undo" for 8 s.
+  - A checkbox per row (the map's selected pawns come ticked; the header box ticks all) and "N selected · Set role: …" set a role
+    for several pawns at once.
+  - The **Roles** button opens the role editor below the grid: one row per role in the same 1–4 cell style (click cycles, every
+    pawn with the role follows at once), the icon (click for the next), rename, how many pawns have it, delete (two clicks; its
+    pawns turn Custom), "New role…" + Add, and "Reset built-in roles".
 - **Schedule panel.** A grid of pawns by the 24 clock hours (00–23, as the bot indexes them); the current hour's column
   follows the page's world clock. Paint with the brush (work, sleep, anything, free) by dragging
   across cells. Copy and paste between pawns.
