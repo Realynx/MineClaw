@@ -24,3 +24,5 @@ exports[`policy and material-rule ops (golden) > policiesOp answers and changes 
   "{"op":"rename"} → ! 400 no policy '' | [{"id":"default","name":"Everyone","default":true,"toolsByWork":true,"tools":[],"weapon":"best","armor":"drafted","food":1,"spare":false},{"id":"soldier","name":"Soldiers","default":false,"toolsByWork":false,"tools":[],"weapon":"best","armor":"always","food":4,"spare":false},{"id":"pol2","name":"Hunter","default":false,"toolsByWork":true,"tools":["sword"],"weapon":"none","armor":"always","food":3,"spare":false}] | ann:null,bob:null,cy:pol2 | seq 3",
 ]
 `;
+
+exports[`policy and material-rule ops (golden) > rolesOp answers and changes exactly as before 1`] = `"c97a77ae0764480a1e0080b3059ce2d5ca1621556b40febc378831b2f00220ea"`;

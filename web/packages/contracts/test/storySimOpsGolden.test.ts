@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { STORY_TOOL_KINDS, type StoryPawn } from '../src/index.js';
+import { defaultRoles, rolesOp, STORY_TOOL_KINDS, type StoryPawn, type StoryRolesRequest } from '../src/index.js';
 import { DEFAULT_POLICIES, SIM_MATERIALS, materialRulesOp, policiesOp, type SimGear } from '../src/storySimGear.js';
 
 function gearState(): SimGear {
@@ -69,6 +69,43 @@ describe('policy and material-rule ops (golden)', () => {
           .join(',')} | seq ${gear.seq}`,
     );
     expect(trace).toMatchSnapshot();
+  });
+
+  it('rolesOp answers and changes exactly as before', () => {
+    const roles = defaultRoles();
+    const pawns: Array<{ name: string; role: string | null; priorities: Record<string, number> }> = [
+      { name: 'ann', role: 'farmer', priorities: {} },
+      { name: 'bob', role: null, priorities: { mine: 2 } },
+      { name: 'cy', role: 'miner', priorities: {} },
+    ];
+    const bodies: StoryRolesRequest[] = [
+      { op: 'add', role: { name: 'Night Shift', icon: 'moon', priorities: { haul: 1, guard: 2 } } } as never,
+      { op: 'add', role: { name: '  night shift ' } },
+      { op: 'add', role: { name: '   ' } },
+      { op: 'add', role: { name: 'Farmer' } },
+      { op: 'add', role: { name: 'Miner!' } },
+      { op: 'add', role: { name: 'miner' } },
+      { op: 'add', role: { name: '***' } },
+      { op: 'add', role: { name: '***' + 'x' } },
+      { op: 'update', role: { id: 'farmer', priorities: { farm: 2, cook: undefined } } } as never,
+      { op: 'update', role: { id: 'farmer', name: 'Miner' } },
+      { op: 'update', role: { id: 'farmer', name: 'Grower', icon: null } },
+      { op: 'update', role: { id: 'nope', name: 'X' } },
+      { op: 'update', role: { id: 'miner', icon: 'gem' } } as never,
+      { op: 'remove', id: 'miner' },
+      { op: 'remove', id: 'miner' },
+      { op: 'add', role: { name: 'Woodcutter 2' } },
+      { op: 'update', role: { id: 'woodcutter', name: 'Lumber' } },
+      { op: 'add', role: { name: 'woodcutter' } },
+      { op: 'reset_defaults' },
+      { op: 'reset_defaults' },
+    ];
+    const trace = bodies.map(
+      (b) =>
+        `${JSON.stringify(b)} → ${attempt(() => rolesOp(roles, pawns, b))} | ${JSON.stringify(roles)} | ${JSON.stringify(pawns)}`,
+    );
+    expect(createHash('sha256').update(trace.join('\n')).digest('hex')).toMatchSnapshot();
+    expect(trace.filter((l) => l.includes('→ !')).length).toBe(7);
   });
 
   it('materialRulesOp answers and changes exactly as before', () => {
