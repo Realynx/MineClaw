@@ -54,8 +54,17 @@ function entityKey(e: Pick<WorldEntity, 'dim' | 'id'>): string {
  */
 export function mergeEntities(prev: WorldEntities | undefined, next: WorldEntities): WorldEntities {
   if (!prev || next.full || prev.rev === null || prev.rev === undefined) return next;
-  if (next.rev !== null && next.rev !== undefined && next.rev <= prev.rev)
-    return next.rev === prev.rev && next.at > prev.at ? { ...prev, at: next.at, bots: next.bots } : prev;
+  if (next.rev !== null && next.rev !== undefined && next.rev <= prev.rev) return botsOnly(prev, next);
+  return applyDelta(prev, next);
+}
+
+/** A frame no newer than what we have: only its bots move, and only when it is the same revision but later. */
+function botsOnly(prev: WorldEntities, next: WorldEntities): WorldEntities {
+  return next.rev === prev.rev && next.at > prev.at ? { ...prev, at: next.at, bots: next.bots } : prev;
+}
+
+/** A newer delta: removed entities go, changed and new ones replace by key. */
+function applyDelta(prev: WorldEntities, next: WorldEntities): WorldEntities {
   const map = new Map<string, WorldEntity>();
   for (const e of prev.entities) map.set(entityKey(e), e);
   for (const [dim, id] of next.removed ?? []) map.delete(`${dim}:${id}`);
