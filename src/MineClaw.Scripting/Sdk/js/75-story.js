@@ -106,6 +106,7 @@
       case 'enchant':
         return H.skill('enchant_item', { item: j.item, option: j.option || 3, prefer: j.prefer || '', prefer_only: !!j.prefer_only, pos: j.at });
       case 'anvil': return H.skill('use_anvil', { item: j.item, mode: j.mode || 'repair', pos: j.at });
+      case 'look': return H.skill('peek_container', { pos: j.at }); // the colony's record of that chest from what it sees
       case 'equip': return gear(j);
       case 'pour': return pour(j);
       default: return run(j); // escape, dump (below)

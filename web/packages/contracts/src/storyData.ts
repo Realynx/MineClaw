@@ -59,6 +59,15 @@ export const STORY_DEFAULT_CATEGORIES: StoryCategory[] = [
   { id: 'furniture', label: 'Furniture', children: [], items: any(54, 58, 61, 355) },
 ];
 
+/** What a furnace burns and how many items one unit smelts (the director sends the version's table with each recipe). */
+export const STORY_FURNACE_FUELS: NonNullable<StoryRecipe['fuels']> = [
+  { item: [263, -1], name: 'coal', itemsPerUnit: 8 },
+  { item: [5, -1], name: 'planks', itemsPerUnit: 1.5 },
+  { item: [17, -1], name: 'log', itemsPerUnit: 1.5 },
+  { item: [327, 0], name: 'lava_bucket', itemsPerUnit: 100 },
+];
+const BLAZE_POWDER: NonNullable<StoryRecipe['fuels']> = [{ item: [377, 0], name: 'blaze_powder', itemsPerUnit: 20 }];
+
 const r = (
   id: string,
   label: string,
@@ -68,7 +77,16 @@ const r = (
   inputs: StoryRecipe['inputs'],
   group: string,
   fuel?: boolean,
-): StoryRecipe => ({ id, label, workbench, workType, output, inputs, group, ...(fuel ? { fuel: true } : {}) });
+): StoryRecipe => ({
+  id,
+  label,
+  workbench,
+  workType,
+  output,
+  inputs,
+  group,
+  ...(fuel ? { fuel: true, fuels: workbench === 'furnace' ? STORY_FURNACE_FUELS : BLAZE_POWDER } : {}),
+});
 
 const BOTTLES: StoryRecipe['inputs'][number] = { options: [[374, 0], [373, 1]], count: 3 };
 const LAPIS: StoryRecipe['inputs'][number] = { options: [[351, 4]], count: 3 };

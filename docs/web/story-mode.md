@@ -1059,7 +1059,11 @@ entries at the bucket's tier ("workbench"; a bucket anywhere in the colony unloc
 into the ground, a `remove` item of the same group first). The placement shows as water holograms; on release the director
 previews it: water that would run beyond the drawn cells (or an irrigation suggestion) waits in a confirm bar ("Water channel: 4
 sources · spreads to 23 more cells", the director's warnings, Queue / Cancel) with the flow drawn as flowing-water holograms;
-otherwise it is queued at once. The Growing zones window says when cells are dry ("40 cells have no water within 4 blocks") with
+otherwise it is queued at once. The trench's cells (the `remove` item) show as red dig cells in the drag preview and the confirm
+bar alike, apart from the water and its flow; queued, a trench cell shows its dig outline while the ground is there and its
+water hologram once it is dug (a pour in a still-solid cell waits underground: fixed 2026-11-04, Fox: "The holograms for
+digging the water trenches don't show up"; the dig outlines sat just inside the cell, so the ground around them hid them, and
+the previews left the dig out). The Growing zones window says when cells are dry ("40 cells have no water within 4 blocks") with
 Add irrigation: the planner's channels, pre-filled as a pending placement to confirm. The mock director (`storySim`) and
 `@mineclaw/contracts` (`storyWater.ts`: `waterToolCells`, `waterItems`, `liquidFlow`, `pourOrder`, `irrigationPlan`) carry
 reference copies of these rules.
@@ -1183,11 +1187,79 @@ Execution:
   bench. One pawn works a bench at a time.
 - It fetches the ingredients from storages within `radius` of the bench (the ingredient filter applies), crafts, and stores the
   product in the bill's chest, else by the storage rules.
-- A furnace is loaded and left to smelt (10 s an item). Its fuel comes from storage: coal or charcoal, then planks, then logs.
-  A later job of the same work type collects it, and the output is stored.
+- A furnace is loaded and left to smelt (10 s an item) with the fuel its choice allows (see "Fuel" below). A later job of the same
+  work type collects it, and the output is stored.
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
+
+### Reservations (added 2026-11-04)
+
+The materials pass records who holds what (`StoryColony.Claims.cs`): a build's own item in storage (planks it will place), or an input
+of the chain that crafts it (the 3 iron ore a water build's bucket is smelted from, with the chain's step outputs). The state carries
+`reservations: [{item, count, build, for_item, chain}]`.
+- **A step of the chain is the chain's.** An owner's bill that makes one of a chain's step outputs may use that chain's reserved input
+  (smelting the bucket's iron ore into ingots is what the build needs): its product lands in storage or the furnace and the build's
+  next pass counts it (the furnace's load too), reserving the ingots instead. While an owner's live bill makes a step, the build adds
+  no automatic bill for it (no double smelting).
+- **Partial batches.** Only what is free (plus what the pawn holds) is used: a bill runs a smaller batch when some is free and waits
+  only when none is, naming the builds and the amounts: "3 iron ore reserved for build b12 (iron ore) — 0 free".
+- **Release.** `POST …/bills {op:"release_claim", build, item}` → `{build, item, done}`: a chain claim cancels the build's crafting of
+  that item (it waits for it, as cancelling its auto bill does); the build's own item pauses the build. The storage and bench inspectors
+  list what builds hold of their items, each with a Release.
+
+### Bills see the chests (added 2026-11-04)
+
+Live 11-04: "Make Stick (from any planks) suspended: no planks within 32 blocks" with planks in the chest beside the table. The colony's
+record of a chest only changed with its own pawns' takes and puts, so a player's deposit was invisible. Now (`StoryColony.StockCheck.cs`):
+- A body's look inside a chest (the bot's memory: any body, any reason) newer than the record's last change replaces it
+  (`StorageState.SeenAt`). Checked before a bill waits and every 30 s.
+- Before an owner's bill waits for a missing ingredient, a pawn looks into the nearest chest within the bill's radius of the bench that
+  nobody has looked into for 10 minutes (a `look` job: `peek_container`, each chest at most every 2 minutes).
+- Every change of the stock (a deposit, a take, a corrected record) retries the waiting bills on the next pick, not on a timer.
+- The reason says what was looked at and who carries some: "no planks: checked 6 chests within 32 of the bench (2 not looked into
+  lately); Ann carries 4 (stored soon) — needs logs (chop trees)". The radius is the bill's, from the bench.
+- "From any planks" ingredients match every plank (and the ingredient filter's `id:-1` entries every meta) in the stock check, the
+  reservation and the fetch.
+
+### Furnaces are collected (added 2026-11-04)
+
+- A furnace load lands on the furnace whatever became of its bill (an auto bill the build stopped wanting while the pawn walked: live
+  11-04, three ingots smelted and never collected). An auto bill with a job in flight stays until that job ends.
+- `done` counts on collection, never on loading: the collect job's "collected N" is what the bill gets; "still smelting K" keeps the
+  rest loaded and collects it later. The pawn stores what it took out by the storage rules (a build fetches it from there).
+- The furnace's expected progress (an item every 10 s since it was loaded) is in the workbench state, `smelting: {recipe, input,
+  output, loaded_at, ready_at, estimated}`; the materials pass counts the load's output for the builds.
+- The container panel estimates a furnace's slots between looks the same way (`estimated: true`, "estimated (smelting since)"): the
+  input goes down and the output up while it was fuelled (its fuel slot, plus a coal's worth that may have been burning; a lit furnace
+  burns on). A fresh look by any body replaces the estimate.
+
+### Fuel (added 2026-11-04)
+
+A furnace's fuel is a bench setting with a per-bill override (`StoryFuels`, `StoryColony.Fuel.cs`):
+- Choices: `auto` (the default: coal or charcoal, then planks, then logs), `coal`, `charcoal`, `coal_or_charcoal`, `planks`, `logs`,
+  `lava_bucket`, `blaze_rod` (1.12.2 only), `any` (auto plus blaze rods and lava buckets). The workbench state lists the version's
+  `fuel_choices`.
+- `POST …/workbenches {op:"fuel", pos, fuel}` → `{pos, kind, designated, fuel}` sets a furnace's choice (400 for another bench kind, or a
+  fuel the version doesn't burn); `POST …/bills {op:"update", id, fuel}` overrides it for one bill (`inherit` or null clears it; furnace
+  bills only).
+- A named fuel is the only one burnt: the pawn brings only it, and the smelt primitive takes another fuel out of the fuel slot
+  first and never stands another fuel in when it runs short (`MinecraftClient.SmeltAsync` with a fuel). Auto and any leave stock the
+  builds or bills reserved (planks a build needs) unless nothing else is there.
+- What the furnace still holds counts: the colony keeps `fuel_credit` (items it can still smelt on the fuel it loaded, burn time
+  and slot leftovers); a job tops up only what its batch needs beyond it (`fuel_units` 0 = none brought). A job that finds the
+  furnace short of fuel resets the credit. The primitive itself counts the real fuel slot and burn time.
+- Rates come from the version's burn times: coal and charcoal 8 items each, planks and logs 1.5, a blaze rod 12, a lava bucket 100.
+- No allowed fuel: the bill waits with "needs fuel: no coal, charcoal, planks or logs within 32 blocks" (or the choice's own list).
+- The materials pass plans the builds' smelting with the furnace's choice too.
+
+State: a furnace bench carries `fuel` (its choice), `fuel_choices` and `fuel_credit`; every bill `fuel` (its override) and `fuel_need:
+{choice, item, name, need, have, short, per_item}` for its next batch (a brew: blaze powder, one per 20 brews; `need` 0 when the stand's
+fuel is known to last). Furnace recipes carry `fuels:[{item, name, items_per_unit}]` (the version's table), a brew its blaze powder.
+
+The web: the furnace inspector has a fuel picker (an icon per choice) at the top; each furnace bill row a fuel chip (the furnace's,
+or an override) and its fuel need ("fuel: 1 coal (have 12)", red when short); the bill dialog lists the fuel table and takes an
+override; the recipe picker shows "+ fuel" in a smelting recipe's line.
 
 ### Stations: brewing stand, enchanting table, anvil (added 2026-11-03)
 
@@ -1567,7 +1639,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - **Build holograms (added 2026-11-03).** Queued cells show in the world as translucent holograms of the block they
     will become: the block's own model and texture (variant and facing) in a calm tint, about 40 % opaque, with static
     scanlines and a thin edge line. Cyan to do, brighter while a pawn builds it, grey-blue while its build waits (paused,
-    missing materials), striped red when blocked or unsupported. Cells to dig are faint red outlines. A built cell's
+    missing materials), striped red when blocked or unsupported. Cells to dig are red outlines just outside the cell with a faint red fill over
+    the exposed top, lifted a little above the ground around them (an outline on or inside the cell's own edges is hidden by the
+    ground the cell is in). A water or lava cell still filled by a solid block is not drawn (its dig shows there). A built cell's
     hologram goes as soon as the block appears (matched by cell in the mesh worker). The cells are meshed in the worker,
     one merged mesh per state, rebuilt only when the ghosts or builds change or a block change lands on a queued cell. At
     most 20,000 cells draw; past that, and below 3 px per block, each build is one outline box. They are drawn after the

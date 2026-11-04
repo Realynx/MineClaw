@@ -491,6 +491,9 @@ public sealed partial class StoryColony
             case "furnace":
                 BillDone(p, j, note);
                 break;
+            case "look":
+                LookDone(j); // the chest's record from what the pawn saw (StoryColony.StockCheck.cs)
+                break;
             case "order":
                 OrderDone(p, j, ok: true, note);
                 break;

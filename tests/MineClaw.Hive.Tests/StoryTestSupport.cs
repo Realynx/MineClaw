@@ -59,6 +59,11 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
         return null;
     }
     public IReadOnlyList<Stack>? KnownChest(P3 at) => Chests.TryGetValue(at, out var c) ? c : null;
+    /// <summary>The bodies' looks into chests (contents and when), as the bot's memory has them.</summary>
+    public Dictionary<P3, (IReadOnlyList<Stack> Contents, DateTimeOffset At)> Seen { get; } = new();
+    public (IReadOnlyList<Stack> Contents, DateTimeOffset At)? SeenChest(P3 at) => Seen.TryGetValue(at, out var s) ? s : null;
+    /// <summary>Remembers chests (the colony looks into unseen ones before a bill waits): off unless a test turns it on.</summary>
+    public bool KnowsChests { get; set; }
     /// <summary>Player names that are the hive's own bots.</summary>
     public HashSet<string> Bots { get; } = new(StringComparer.OrdinalIgnoreCase);
     public bool IsBot(string name) => Bots.Contains(name);

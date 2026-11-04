@@ -7,6 +7,27 @@ namespace MineClaw.Skills;
 // The 1.12.2 work stations (b1.8.1 has none): brewing stand, enchanting table, anvil, and filling glass bottles. Story Mode's bills
 // run them through the story SDK (Sdk/js/75-story.js story.work); the client primitives are MinecraftClient.Stations.cs.
 
+/// <summary>Opens a container, reads it and closes it (the bodies' memory of it is then fresh: Story Mode's storage record).</summary>
+[Skill]
+public sealed class PeekContainerSkill : Skill
+{
+    public override SkillSpec Spec { get; } = new()
+    {
+        Name = "peek_container", Category = SkillCategory.Storage, Summary = "look into a container and close it", Args = "pos",
+        Schema = SkillJson.Schema("pos:pos"), Estimate = TimeSpan.FromSeconds(8),
+        Keywords = "peek look inside container contents check ledger record",
+    };
+
+    public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
+    {
+        if (args.Pos() is not { } pos) return Fail("pos required");
+        var open = await ctx.Game.OpenContainerAsync(pos, ct);
+        if (!open.Ok) return SkillResult.From(open);
+        try { return Ok(open.Message); }
+        finally { await ctx.Game.CloseWindowAsync(ct); }
+    }
+}
+
 /// <summary>Fills glass bottles at a water source block or a filled cauldron (the nearest when no pos).</summary>
 [Skill]
 public sealed class FillBottlesSkill : Skill

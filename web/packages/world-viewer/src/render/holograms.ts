@@ -1,7 +1,8 @@
 // [holograms] Queued (not yet built) build cells drawn in the world as translucent "holograms" of the block they will become:
 // the block's own model and texture (its variant and facing), recoloured in a calm tint by state, ~40 % opaque, with faint
-// static scanlines and a soft glow along the block edges; cells to dig are faint red outlines. A design being placed gets the
-// same look in green where it fits and red where a block is in the way.
+// static scanlines and a soft glow along the block edges; cells to dig are red outlines just outside the cell with a faint red
+// fill over their top (above the ground they are in). A design being placed gets the same look in green where it fits and red
+// where a block is in the way; the cells it digs first show as dig cells and are no obstacle to what goes into them.
 //
 // Cost: the cells are meshed in the mesh worker (mesh/holo.ts), one merged mesh per state, so a whole queue is a handful of
 // draw calls; they are rebuilt only when the caller's revision moves or a block change lands on one of their cells (a pawn
@@ -206,6 +207,9 @@ export function boxLines(
 
 // ------------------------------------------------------------------------------------------------------------ layer
 
+/** How far a dig cell's outline and top fill stand out of the cell (over the ground surface around it). */
+const DIG_LIFT = 0.03;
+
 export interface HologramStats {
   /** Cells drawn as blocks (after the world left out the built ones). */
   cells: number;
@@ -213,8 +217,8 @@ export interface HologramStats {
   digs: number;
   /** Outline boxes (builds). */
   boxes: number;
-  /** Placement preview cells: fitting, blocked. */
-  preview: { ok: number; blocked: number };
+  /** Placement preview cells: fitting, blocked, and the cells it digs out first (outlines). */
+  preview: { ok: number; blocked: number; dig: number };
   /** The far-zoom outline boxes are showing instead of the cells. */
   lod: boolean;
   /** Rebuilds done (worker round trips). */
@@ -234,11 +238,14 @@ export class HologramLayer {
   private readonly previewGroup = new THREE.Group();
   private readonly mats: Record<Group, THREE.ShaderMaterial>;
   private readonly digMat: THREE.ShaderMaterial;
+  private readonly digFillMat: THREE.ShaderMaterial;
   private readonly boxMat: THREE.ShaderMaterial;
   private rev: string | null = null;
   private plan: HoloPlan | null = null;
   private keys = new Set<string>();
+  /** Cells drawn now: as blocks, and as dig outlines (one cell can be both kinds over time: dug, then the water poured). */
   private shown = new Set<string>();
+  private shownDig = new Set<string>();
   private busy = false;
   private dirty = false;
   private previewKey = '';
@@ -247,7 +254,7 @@ export class HologramLayer {
   private previewDirty = false;
   private lod = false;
   private disposed = false;
-  private readonly st: HologramStats = { cells: 0, digs: 0, boxes: 0, preview: { ok: 0, blocked: 0 }, lod: false, builds: 0, rev: null, visible: false };
+  private readonly st: HologramStats = { cells: 0, digs: 0, boxes: 0, preview: { ok: 0, blocked: 0, dig: 0 }, lod: false, builds: 0, rev: null, visible: false };
   /** Resolves when no rebuild is pending (tests). */
   idle: Promise<void> = Promise.resolve();
 
@@ -266,7 +273,9 @@ export class HologramLayer {
       place: blockMaterial(shared, HOLO_STYLES.place),
       placeBlocked: blockMaterial(shared, HOLO_STYLES.placeBlocked),
     };
-    this.digMat = lineMaterial(shared, 0.45);
+    this.digMat = lineMaterial(shared, 0.8);
+    this.digFillMat = lineMaterial(shared, 0.2);
+    this.digFillMat.side = THREE.DoubleSide;
     this.boxMat = lineMaterial(shared, 0.85);
   }
 
@@ -313,7 +322,7 @@ export class HologramLayer {
     this.previewBlocks = blocks;
     if (!blocks) {
       this.clearGroup(this.previewGroup);
-      this.st.preview = { ok: 0, blocked: 0 };
+      this.st.preview = { ok: 0, blocked: 0, dig: 0 };
       return;
     }
     this.previewDirty = true;
@@ -343,9 +352,10 @@ export class HologramLayer {
     return { ...this.st, preview: { ...this.st.preview }, visible: this.group.visible };
   }
 
-  /** Whether a queued cell is drawn as a hologram now (built cells are not). */
-  has(x: number, y: number, z: number): boolean {
-    return this.shown.has(`${x},${y},${z}`);
+  /** Whether a queued cell is drawn as a hologram now (built cells are not): as a block, as a dig outline, or either. */
+  has(x: number, y: number, z: number, kind?: 'block' | 'dig'): boolean {
+    const k = `${x},${y},${z}`;
+    return kind === 'dig' ? this.shownDig.has(k) : kind === 'block' ? this.shown.has(k) : this.shown.has(k) || this.shownDig.has(k);
   }
 
   dispose(): void {
@@ -355,6 +365,7 @@ export class HologramLayer {
     this.clearGroup(this.previewGroup);
     for (const m of Object.values(this.mats)) m.dispose();
     this.digMat.dispose();
+    this.digFillMat.dispose();
     this.boxMat.dispose();
     this.group.removeFromParent();
   }
@@ -394,19 +405,21 @@ export class HologramLayer {
   private apply(plan: HoloPlan, rs: HoloResult[]): void {
     this.clearGroup(this.cellsGroup);
     this.clearGroup(this.boxGroup);
-    const shown = new Set<string>();
+    const shown = new Set<string>(), shownDig = new Set<string>();
     let cells = 0, digs = 0;
     for (const r of rs) {
-      for (let i = 0; i + 4 < r.cells.length + 1; i += 5) shown.add(`${r.cells[i]},${r.cells[i + 1]},${r.cells[i + 2]}`);
+      const into = r.key === 'dig' ? shownDig : shown;
+      for (let i = 0; i + 4 < r.cells.length + 1; i += 5) into.add(`${r.cells[i]},${r.cells[i + 1]},${r.cells[i + 2]}`);
       if (r.key === 'dig') {
         digs = r.cells.length / 5;
-        if (digs) this.cellsGroup.add(this.digLines(r.cells));
+        if (digs) this.cellsGroup.add(...this.digMarks(r.cells));
         continue;
       }
       cells += r.cells.length / 5;
       if (r.mesh) this.cellsGroup.add(this.mesh(r, this.mats[r.key as HoloState]));
     }
     this.shown = shown;
+    this.shownDig = shownDig;
     // Outline boxes: every build (far zoom), the capped ones marked to show always.
     const all = plan.boxes.map((b) => ({ min: b.min, max: b.max, rgb: BOX_RGB[b.state], cy: b.min[1], capped: plan.capped.has(b.build) }));
     if (all.length) {
@@ -441,7 +454,9 @@ export class HologramLayer {
         for (let i = 0; i + 4 < blocks.length; i += 5) (blocks[i + 3] === 0 ? dig : solid).push(...blocks.slice(i, i + 5));
         let rs: HoloResult[];
         try {
-          rs = await this.host.holo(this.dim, [{ key: 'p', blocks: solid, mode: 'place' }]);
+          // The cells it digs first are no obstacle to what goes into them (a trench, then its water).
+          const clear = dig.flatMap((_, i) => (i % 5 < 3 ? [dig[i]] : []));
+          rs = await this.host.holo(this.dim, [{ key: 'p', blocks: solid, mode: 'place', clear }]);
         } catch {
           rs = [];
         }
@@ -454,8 +469,8 @@ export class HologramLayer {
           else ok += r.cells.length / 5;
           if (r.mesh) this.previewGroup.add(this.mesh(r, bad ? this.mats.placeBlocked : this.mats.place));
         }
-        if (dig.length) this.previewGroup.add(this.digLines(dig));
-        this.st.preview = { ok, blocked };
+        if (dig.length) this.previewGroup.add(...this.digMarks(dig));
+        this.st.preview = { ok, blocked, dig: dig.length / 5 };
       }
     } finally {
       this.previewBusy = false;
@@ -479,19 +494,47 @@ export class HologramLayer {
     return mesh;
   }
 
-  private digLines(cells: readonly number[]): THREE.LineSegments {
+  /**
+   * Cells to dig: a red outline just outside each cell (a cell in solid ground is inside the ground, so an outline on its own
+   * edges or inside them would be buried) and a faint red fill over each exposed top (no dig cell above it), lifted a little
+   * over the ground surface so a trench in flat ground reads from above and from the angled view alike.
+   */
+  private digMarks(cells: readonly number[]): [THREE.LineSegments, THREE.Mesh] {
     const boxes: Array<{ min: number[]; max: number[]; rgb: readonly number[]; cy: number }> = [];
+    const at = new Set<string>();
+    for (let i = 0; i + 4 < cells.length + 1; i += 5) at.add(`${cells[i]},${cells[i + 1]},${cells[i + 2]}`);
+    const tops: number[][] = [];
     for (let i = 0; i + 4 < cells.length + 1; i += 5) {
       const x = cells[i], y = cells[i + 1], z = cells[i + 2];
       boxes.push({ min: [x, y, z], max: [x + 1, y + 1, z + 1], rgb: DIG_RGB, cy: y });
+      if (!at.has(`${x},${y + 1},${z}`)) tops.push([x, y, z]);
     }
     const origin = boxes[0].min;
-    const l = new THREE.LineSegments(boxLines(boxes, origin, 0.04), this.digMat);
+    const l = new THREE.LineSegments(boxLines(boxes, origin, -DIG_LIFT), this.digMat);
     l.name = 'holo dig';
     l.position.set(origin[0], origin[1], origin[2]);
     l.geometry.computeBoundingSphere();
     l.renderOrder = 5;
-    return l;
+    const pos = new Float32Array(tops.length * 18), rgb = new Float32Array(tops.length * 18), cy = new Float32Array(tops.length * 6);
+    tops.forEach(([x, y, z], i) => {
+      const x0 = x - origin[0] - DIG_LIFT, x1 = x0 + 1 + 2 * DIG_LIFT, z0 = z - origin[2] - DIG_LIFT, z1 = z0 + 1 + 2 * DIG_LIFT;
+      const yy = y + 1 + DIG_LIFT - origin[1];
+      pos.set([x0, yy, z0, x0, yy, z1, x1, yy, z1, x0, yy, z0, x1, yy, z1, x1, yy, z0], i * 18);
+      for (let k = 0; k < 6; k++) {
+        rgb.set(DIG_RGB, i * 18 + k * 3);
+        cy[i * 6 + k] = y;
+      }
+    });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('aRgb', new THREE.BufferAttribute(rgb, 3));
+    g.setAttribute('aCy', new THREE.BufferAttribute(cy, 1));
+    g.computeBoundingSphere();
+    const f = new THREE.Mesh(g, this.digFillMat);
+    f.name = 'holo dig fill';
+    f.position.set(origin[0], origin[1], origin[2]);
+    f.renderOrder = 5;
+    return [l, f];
   }
 
   private clearGroup(g: THREE.Group): void {

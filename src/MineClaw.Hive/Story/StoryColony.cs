@@ -418,7 +418,7 @@ public sealed partial class StoryColony : IStoryPort
                     if (_current.Remove(p.Name, out var stale)) Release(stale);
                     restart.Add(p.Name);
                 }
-            if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RetrySuspended(); } // missing ingredients may be stored by now
+            if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
