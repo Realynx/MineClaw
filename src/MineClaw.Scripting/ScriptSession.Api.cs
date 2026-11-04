@@ -96,28 +96,17 @@ public sealed partial class ScriptSession
     /// </summary>
     public void Deliver(ScriptEvent e)
     {
-        Handler? h = null;
+        Handler? h;
         CancellationTokenSource? cut = null;
         lock (_lock)
         {
             if (!IsLive) return;
-            if (e.Kind == ScriptEventKind.Danger) _lastDanger = _time.GetUtcNow();
-            _events.Add((++_eventSeq, e));
-            if (_events.Count > 32) _events.RemoveAt(0);
-            if (e.Kind == ScriptEventKind.Join) return;
-            if (e.Kind == ScriptEventKind.Chat && _waitingFor is "chat" or "ask") return;
-            if (e.Kind == ScriptEventKind.Danger && _waitingFor == "danger") return;
-            if (e.Kind != ScriptEventKind.Stop)
-                h = _handlers.FirstOrDefault(x => SafeMatch(x, e));
+            RecordEvent(e);
+            if (OnlyFeedsWaits(e)) return;
+            h = e.Kind != ScriptEventKind.Stop ? _handlers.FirstOrDefault(x => SafeMatch(x, e)) : null;
             // A signal already waiting for the same handler is not queued twice (timers coalesce while an action runs).
-            if (h != null && e.Kind == ScriptEventKind.Signal && _pendingHandlers.Any(p => ReferenceEquals(p.H, h) && p.E.Topic == e.Topic)) return;
-            if (h != null)
-            {
-                _pendingHandlers.Enqueue((h, e));
-                // A repeating timer never cuts the running action (it would restart it every period); its handler runs between actions.
-                bool repeating = e.Topic?.StartsWith("every:", StringComparison.Ordinal) == true;
-                if (h.Cuts && !repeating && !_currentAtomic && _abortCts != null) { _abortedForPause = true; cut = _abortCts; }
-            }
+            if (h != null && SignalQueued(h, e)) return;
+            if (h != null) cut = QueueHandler(h, e);
         }
         if (h != null)
         {
@@ -125,6 +114,40 @@ public sealed partial class ScriptSession
             _wake.Set();
             return;
         }
+        DefaultInterrupt(e);
+    }
+
+    /// <summary>Keeps the event for waitfor (the last 32); a danger stamps the time. Under <c>_lock</c>.</summary>
+    private void RecordEvent(ScriptEvent e)
+    {
+        if (e.Kind == ScriptEventKind.Danger) _lastDanger = _time.GetUtcNow();
+        _events.Add((++_eventSeq, e));
+        if (_events.Count > 32) _events.RemoveAt(0);
+    }
+
+    /// <summary>A join, or the chat / danger the script is waiting for: it only feeds the wait. Under <c>_lock</c>.</summary>
+    private bool OnlyFeedsWaits(ScriptEvent e) =>
+        e.Kind == ScriptEventKind.Join
+        || e.Kind == ScriptEventKind.Chat && _waitingFor is "chat" or "ask"
+        || e.Kind == ScriptEventKind.Danger && _waitingFor == "danger";
+
+    private bool SignalQueued(Handler h, ScriptEvent e) =>
+        e.Kind == ScriptEventKind.Signal && _pendingHandlers.Any(p => ReferenceEquals(p.H, h) && p.E.Topic == e.Topic);
+
+    /// <summary>Queues the handler run; returns the running action's token source when the handler cuts it. Under <c>_lock</c>.</summary>
+    private CancellationTokenSource? QueueHandler(Handler h, ScriptEvent e)
+    {
+        _pendingHandlers.Enqueue((h, e));
+        // A repeating timer never cuts the running action (it would restart it every period); its handler runs between actions.
+        bool repeating = e.Topic?.StartsWith("every:", StringComparison.Ordinal) == true;
+        if (!h.Cuts || repeating || _currentAtomic || _abortCts == null) return null;
+        _abortedForPause = true;
+        return _abortCts;
+    }
+
+    /// <summary>No handler: the interrupt policy (danger and stop pause and abort; addressed chat pauses when configured).</summary>
+    private void DefaultInterrupt(ScriptEvent e)
+    {
         switch (e.Kind)
         {
             case ScriptEventKind.Danger: RequestPause(PauseKind.Danger, "danger: " + Short(e.Text, 40), abort: true, e); break;
@@ -224,64 +247,97 @@ public sealed partial class ScriptSession
         SafePoint();
         if (_host.ActionVeto() is { } veto) { Stop("stopped: " + veto); ThrowIfStopping(); }
         Locate();
-        if (_resumeTarget != null)
-        {
-            if (++_skipped > _o.MaxSkippedActions) throw Bug($"checkpoint '{_resumeTarget}' not reached");
-            TouchSegment();
-            return ActResult.Success("skipped (resume)");
-        }
+        if (_resumeTarget != null) return SkipForResume();
         if (_patchRun is { } patchRun) PatchBeforeAction(patchRun);
-        if (counts)
-        {
-            if (Actions >= _o.MaxActions) Limit($"action limit ({_o.MaxActions})");
-            Actions++;
-        }
-        ActResult r;
+        if (counts) CountAction();
         TraceActionStart(label, atomic, args);
         var sw = Stopwatch.StartNew();
+        var r = RunAttempts(atomic, run);
+        return FinishAction(label, counts, r, sw);
+    }
+
+    /// <summary>Resuming to a checkpoint: actions before it are skipped (up to a limit).</summary>
+    private ActResult SkipForResume()
+    {
+        if (++_skipped > _o.MaxSkippedActions) throw Bug($"checkpoint '{_resumeTarget}' not reached");
+        TouchSegment();
+        return ActResult.Success("skipped (resume)");
+    }
+
+    private void CountAction()
+    {
+        if (Actions >= _o.MaxActions) Limit($"action limit ({_o.MaxActions})");
+        Actions++;
+    }
+
+    /// <summary>Runs the action; one cut short by a pause or a handler runs again once it's safe.</summary>
+    private ActResult RunAttempts(bool atomic, Func<CancellationToken, Task<ActResult>> run)
+    {
         while (true)
         {
-            CancellationToken ct;
-            lock (_lock)
-            {
-                _abortCts?.Dispose();
-                _abortCts = atomic ? null : CancellationTokenSource.CreateLinkedTokenSource(_stopCts.Token, _hardCt);
-                // A patch's actions end at its deadline (the patch then aborts; the script itself is untouched).
-                if (_abortCts != null && _patchRun is { } pr && pr.Deadline - _time.GetUtcNow() is var left)
-                    _abortCts.CancelAfter(left > TimeSpan.Zero ? left : TimeSpan.FromMilliseconds(1));
-                _currentAtomic = atomic;
-                _abortedForPause = false;
-                ct = _abortCts?.Token ?? _hardCt;
-            }
-            try
-            {
-                _blocked = true; // the engine is still while the action runs (the debugger may read its locals)
-                using (_owner.StepScope?.Invoke()) // explicit around every step, not only inherited from the thread
-                    r = run(ct).GetAwaiter().GetResult();
-            }
-            catch (OperationCanceledException) { r = ActResult.Fail("cancelled"); }
-            catch (ScriptFailException) { throw; }
-            catch (Exception ex) { r = ActResult.Fail($"{ex.GetType().Name}: {OneLine(ex.Message)}"); }
-            finally { WaitProbe(); }
-            bool again;
-            lock (_lock)
-            {
-                again = _abortedForPause && _stopReason == null;
-                _abortedForPause = false;
-                _currentAtomic = false;
-            }
+            var r = TryRunAttempt(run, ArmAbort(atomic));
+            bool again = EndAttempt();
             TouchSegment();
-            if (!again) break;
+            if (!again) return r;
             SafePoint();
-            if (_patchRun is { } cutPatch)
-            {
-                ThrowIfStopping();
-                if (OtherDangerPending(cutPatch.Interrupt) is { } why) throw new PatchAbortException(why);
-                if (_time.GetUtcNow() >= cutPatch.Deadline) throw new PatchAbortException("patch budget: deadline");
-                WaitForSafety(cutPatch);
-            }
+            if (_patchRun is { } cutPatch) PatchAfterCut(cutPatch);
             Locate();
         }
+    }
+
+    /// <summary>A fresh abort source for an interruptible action; the token the action runs with.</summary>
+    private CancellationToken ArmAbort(bool atomic)
+    {
+        lock (_lock)
+        {
+            _abortCts?.Dispose();
+            _abortCts = atomic ? null : CancellationTokenSource.CreateLinkedTokenSource(_stopCts.Token, _hardCt);
+            // A patch's actions end at its deadline (the patch then aborts; the script itself is untouched).
+            if (_abortCts != null && _patchRun is { } pr && pr.Deadline - _time.GetUtcNow() is var left)
+                _abortCts.CancelAfter(left > TimeSpan.Zero ? left : TimeSpan.FromMilliseconds(1));
+            _currentAtomic = atomic;
+            _abortedForPause = false;
+            return _abortCts?.Token ?? _hardCt;
+        }
+    }
+
+    private ActResult TryRunAttempt(Func<CancellationToken, Task<ActResult>> run, CancellationToken ct)
+    {
+        try
+        {
+            _blocked = true; // the engine is still while the action runs (the debugger may read its locals)
+            using (_owner.StepScope?.Invoke()) // explicit around every step, not only inherited from the thread
+                return run(ct).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException) { return ActResult.Fail("cancelled"); }
+        catch (ScriptFailException) { throw; }
+        catch (Exception ex) { return ActResult.Fail($"{ex.GetType().Name}: {OneLine(ex.Message)}"); }
+        finally { WaitProbe(); }
+    }
+
+    /// <summary>Whether the attempt was cut for a pause (and the script isn't stopping): run it again.</summary>
+    private bool EndAttempt()
+    {
+        lock (_lock)
+        {
+            bool again = _abortedForPause && _stopReason == null;
+            _abortedForPause = false;
+            _currentAtomic = false;
+            return again;
+        }
+    }
+
+    /// <summary>A patch's action that was cut: stop, abort for another danger or the deadline, else wait until it's safe.</summary>
+    private void PatchAfterCut(PatchRun cutPatch)
+    {
+        ThrowIfStopping();
+        if (OtherDangerPending(cutPatch.Interrupt) is { } why) throw new PatchAbortException(why);
+        if (_time.GetUtcNow() >= cutPatch.Deadline) throw new PatchAbortException("patch budget: deadline");
+        WaitForSafety(cutPatch);
+    }
+
+    private ActResult FinishAction(string label, bool counts, ActResult r, Stopwatch sw)
+    {
         TraceActionEnd(r.Ok);
         if (counts) RecordTiming(label, sw.Elapsed, r.Ok);
         SafePoint();
@@ -406,40 +462,59 @@ public sealed partial class ScriptSession
 
     internal ActResult Chat(string text, bool emote)
     {
-        var t = (text ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
-        // No server commands from scripts: a word starting with '/' loses it (chat splitting can't surface one either).
-        t = Regex.Replace(t, @"(^|\s)/+", "$1").Trim();
+        var t = CleanChat(text);
         if (t.Length == 0) return ActResult.Fail("nothing to say");
         if (t.Length > 200) t = t[..200];
         // Live 10-27 (B15): a hive clone's say() threw "muted" and aborted real work (a chop script after 30 s, +4 oak wood).
         // Muted chat is report output for the brain, never a failure.
-        if (_host.Muted?.Invoke(t) == true)
-        {
-            var said = Short(t, 160);
-            lock (Reports) { Reports.Add(said); if (Reports.Count > 8) Reports.RemoveAt(0); }
-            _host.Log?.Invoke($"script {Name}: [muted, reported] {said}");
-            return ActResult.Success("not said (chat muted): it goes back to the brain in this script's result");
-        }
-        string? limited = null;
+        if (_host.Muted?.Invoke(t) == true) return ReportMuted(t);
+        string? limited;
         lock (_lock)
         {
             var now = _time.GetUtcNow();
             while (_said.Count > 0 && now - _said.Peek() > TimeSpan.FromMinutes(1)) _said.Dequeue();
             if (_said.Count >= _o.MaxSayPerMinute) return ActResult.Fail("chat rate limit");
-            // Live 10-27: a scan loop say-ed every block ("4,64,6 cobblestone"...) into public chat. A run gets a couple of
-            // lines, spaced out; anything beyond goes to the log (debug output belongs there).
-            if (_sayRun >= Math.Max(0, _o.MaxSayPerRun)) limited = $"say limit ({_o.MaxSayPerRun}/run)";
-            else if (_lastSay is { } last && now - last < TimeSpan.FromSeconds(_o.SayMinIntervalSeconds)) limited = $"say limit (1 per {_o.SayMinIntervalSeconds:0}s)";
-            else { _said.Enqueue(now); _sayRun++; _lastSay = now; }
+            limited = SayLimit(now);
         }
-        if (limited != null)
-        {
-            var msg = Short(t, 160);
-            lock (_lock) { Logs.Add(msg); if (Logs.Count > 20) Logs.RemoveAt(0); }
-            _host.Log?.Invoke($"script {Name}: [{limited}, logged] {msg}");
-            return ActResult.Success($"logged, not said ({limited}): use log() for data, say() only to talk to players");
-        }
+        if (limited != null) return LogInsteadOfSay(t, limited);
         return RunAction(emote ? "emote" : "say", atomic: true, ct => emote ? _host.Emote(t, ct) : _host.Say(t, ct));
+    }
+
+    /// <summary>One line, and no server commands from scripts: a word starting with '/' loses it (chat splitting can't surface one either).</summary>
+    private static string CleanChat(string text)
+    {
+        var t = (text ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return Regex.Replace(t, @"(^|\s)/+", "$1").Trim();
+    }
+
+    private ActResult ReportMuted(string t)
+    {
+        var said = Short(t, 160);
+        lock (Reports) { Reports.Add(said); if (Reports.Count > 8) Reports.RemoveAt(0); }
+        _host.Log?.Invoke($"script {Name}: [muted, reported] {said}");
+        return ActResult.Success("not said (chat muted): it goes back to the brain in this script's result");
+    }
+
+    /// <summary>
+    /// Live 10-27: a scan loop say-ed every block ("4,64,6 cobblestone"...) into public chat. A run gets a couple of lines, spaced
+    /// out; anything beyond goes to the log (debug output belongs there). The limit hit, or null (the line is counted). Under <c>_lock</c>.
+    /// </summary>
+    private string? SayLimit(DateTimeOffset now)
+    {
+        if (_sayRun >= Math.Max(0, _o.MaxSayPerRun)) return $"say limit ({_o.MaxSayPerRun}/run)";
+        if (_lastSay is { } last && now - last < TimeSpan.FromSeconds(_o.SayMinIntervalSeconds)) return $"say limit (1 per {_o.SayMinIntervalSeconds:0}s)";
+        _said.Enqueue(now);
+        _sayRun++;
+        _lastSay = now;
+        return null;
+    }
+
+    private ActResult LogInsteadOfSay(string t, string limited)
+    {
+        var msg = Short(t, 160);
+        lock (_lock) { Logs.Add(msg); if (Logs.Count > 20) Logs.RemoveAt(0); }
+        _host.Log?.Invoke($"script {Name}: [{limited}, logged] {msg}");
+        return ActResult.Success($"logged, not said ({limited}): use log() for data, say() only to talk to players");
     }
 
     /// <summary>ask(player, q, sec) → the player's reply or null. ask("brain", q) pauses and wakes the brain (needs_input); returns its answer.</summary>
@@ -480,63 +555,7 @@ public sealed partial class ScriptSession
         var kind = (kindRaw ?? "").Trim().ToLowerInvariant();
         double s = Math.Clamp(seconds ?? 60, 0.1, _o.MaxWaitSeconds);
         string? from = Field(filter, "from") ?? Field(filter, "player"), text = Field(filter, "text");
-        Func<long, (bool Hit, string Msg)> check;
-        switch (kind)
-        {
-            case "chat" or "danger" or "join":
-            {
-                var k = kind switch { "chat" => ScriptEventKind.Chat, "danger" => ScriptEventKind.Danger, _ => ScriptEventKind.Join };
-                if (AsString(filter) is { } fs) { if (kind == "join") from = fs; else text = fs; }
-                check = since =>
-                {
-                    lock (_lock)
-                        foreach (var (seq, ev) in _events)
-                            if (seq > since && (ev.Kind == k || (k == ScriptEventKind.Danger && ev.Kind == ScriptEventKind.Stop)) && Matches(from, text, ev))
-                                return (true, ev.Text);
-                    return (false, "");
-                };
-                break;
-            }
-            case "item":
-            {
-                var item = filter is JsonObject o ? o["item"] : filter is JsonArray a && a.Count > 0 ? a[0] : filter;
-                var nV = filter is JsonObject o2 ? (o2["n"] ?? o2["count"]) : filter is JsonArray a2 && a2.Count > 1 ? a2[1] : null;
-                var name = AsString(item) ?? throw Bug("item name must be a string");
-                var (id, dmg) = ResolveItem(name);
-                int n = AsNumber(nV) is { } nn ? (int)nn : _host.World.Inventory.CountItem(id, dmg) + 1;
-                check = _ => { int cnt = _host.World.Inventory.CountItem(id, dmg); return (cnt >= n, $"{cnt} {name}"); };
-                break;
-            }
-            case "block":
-            {
-                var p = PosOf(filter) ?? throw Bug("waitfor('block', {x,y,z,name}) needs a position");
-                var want = Field(filter, "name");
-                int start = _host.World.GetBlock(p.X, p.Y, p.Z);
-                check = _ =>
-                {
-                    int id = _host.World.GetBlock(p.X, p.Y, p.Z);
-                    var name = _host.Data.Block(id).Name;
-                    return (want != null ? string.Equals(name, BlockNamed(want)?.Name ?? want, StringComparison.OrdinalIgnoreCase) : id != start, name);
-                };
-                break;
-            }
-            case "day": check = _ => (!_host.World.IsNight, "day"); break;
-            case "night": check = _ => (_host.World.IsNight, "night"); break;
-            default:
-                if (Signals.Has(kindRaw!.Trim()))
-                {
-                    var topic = kindRaw.Trim();
-                    check = since =>
-                    {
-                        lock (_lock)
-                            foreach (var (seq, ev) in _events)
-                                if (seq > since && ev.Matches(topic)) return (true, ev.Text);
-                        return (false, "");
-                    };
-                    break;
-                }
-                throw Bug($"waitfor kind '{kind}'? use chat|item|block|day|night|danger|join or a signal");
-        }
+        var check = WaitCheck(kind, kindRaw, filter, from, text);
         long since;
         lock (_lock) { since = _eventSeq; _waitingFor = kind; }
         try
@@ -555,6 +574,71 @@ public sealed partial class ScriptSession
             });
         }
         finally { lock (_lock) _waitingFor = null; }
+    }
+
+    /// <summary>The test a wait polls (given the event sequence it started at): hit, and what it saw.</summary>
+    private Func<long, (bool Hit, string Msg)> WaitCheck(string kind, string kindRaw, JsonNode? filter, string? from, string? text) => kind switch
+    {
+        "chat" or "danger" or "join" => WaitEventCheck(kind, filter, from, text),
+        "item" => WaitItemCheck(filter),
+        "block" => WaitBlockCheck(filter),
+        "day" => _ => (!_host.World.IsNight, "day"),
+        "night" => _ => (_host.World.IsNight, "night"),
+        _ => WaitSignalCheck(kind, kindRaw),
+    };
+
+    /// <summary>A chat / danger (or stop) / join since the wait began, from that player with that text (a plain string filter: the text, or the joining player).</summary>
+    private Func<long, (bool Hit, string Msg)> WaitEventCheck(string kind, JsonNode? filter, string? from, string? text)
+    {
+        var k = kind switch { "chat" => ScriptEventKind.Chat, "danger" => ScriptEventKind.Danger, _ => ScriptEventKind.Join };
+        if (AsString(filter) is { } fs) { if (kind == "join") from = fs; else text = fs; }
+        return since =>
+        {
+            lock (_lock)
+                foreach (var (seq, ev) in _events)
+                    if (seq > since && (ev.Kind == k || (k == ScriptEventKind.Danger && ev.Kind == ScriptEventKind.Stop)) && Matches(from, text, ev))
+                        return (true, ev.Text);
+            return (false, "");
+        };
+    }
+
+    /// <summary>The bag holds n of the item ("log" / {item,n} / [item,n]; no n: one more than now).</summary>
+    private Func<long, (bool Hit, string Msg)> WaitItemCheck(JsonNode? filter)
+    {
+        var item = filter is JsonObject o ? o["item"] : filter is JsonArray a && a.Count > 0 ? a[0] : filter;
+        var nV = filter is JsonObject o2 ? (o2["n"] ?? o2["count"]) : filter is JsonArray a2 && a2.Count > 1 ? a2[1] : null;
+        var name = AsString(item) ?? throw Bug("item name must be a string");
+        var (id, dmg) = ResolveItem(name);
+        int n = AsNumber(nV) is { } nn ? (int)nn : _host.World.Inventory.CountItem(id, dmg) + 1;
+        return _ => { int cnt = _host.World.Inventory.CountItem(id, dmg); return (cnt >= n, $"{cnt} {name}"); };
+    }
+
+    /// <summary>The block at {x,y,z} becomes the named one, or (no name) changes.</summary>
+    private Func<long, (bool Hit, string Msg)> WaitBlockCheck(JsonNode? filter)
+    {
+        var p = PosOf(filter) ?? throw Bug("waitfor('block', {x,y,z,name}) needs a position");
+        var want = Field(filter, "name");
+        int start = _host.World.GetBlock(p.X, p.Y, p.Z);
+        return _ =>
+        {
+            int id = _host.World.GetBlock(p.X, p.Y, p.Z);
+            var name = _host.Data.Block(id).Name;
+            return (want != null ? string.Equals(name, BlockNamed(want)?.Name ?? want, StringComparison.OrdinalIgnoreCase) : id != start, name);
+        };
+    }
+
+    /// <summary>A signal topic the script registered, fired since the wait began.</summary>
+    private Func<long, (bool Hit, string Msg)> WaitSignalCheck(string kind, string kindRaw)
+    {
+        if (!Signals.Has(kindRaw!.Trim())) throw Bug($"waitfor kind '{kind}'? use chat|item|block|day|night|danger|join or a signal");
+        var topic = kindRaw.Trim();
+        return since =>
+        {
+            lock (_lock)
+                foreach (var (seq, ev) in _events)
+                    if (seq > since && ev.Matches(topic)) return (true, ev.Text);
+            return (false, "");
+        };
     }
 
     /// <summary>cp"label" marks a checkpoint (carry snapshot for resume_from); cp("label", fn) is a stage skipped when resuming past it.</summary>
@@ -706,19 +790,25 @@ public sealed partial class ScriptSession
         int x = (int)Math.Floor(p.X), y = (int)Math.Floor(p.Y + 1e-6), z = (int)Math.Floor(p.Z);
         return key switch
         {
-            "hp" => w.Player.Health,
-            "food" => w.Player.Food,
-            "dim" => w.Dimension,
             "pos" => PosNode(x, y, z),
             "x" => x,
             "y" => y,
             "z" => z,
-            "night" => w.IsNight,
-            "name" => _host.Username,
-            "body" => _host.Body ?? "main",
-            _ => null,
+            _ => MeState(w, key),
         };
     }
+
+    /// <summary><c>me.x</c> beyond the position: hp, food, dim, night, name, body.</summary>
+    private JsonNode? MeState(WorldState w, string key) => key switch
+    {
+        "hp" => w.Player.Health,
+        "food" => w.Player.Food,
+        "dim" => w.Dimension,
+        "night" => w.IsNight,
+        "name" => _host.Username,
+        "body" => _host.Body ?? "main",
+        _ => null,
+    };
 
     internal string BlockAt(BlockPos p)
     {
@@ -781,55 +871,79 @@ public sealed partial class ScriptSession
         SafePoint();
         double r = radius is { } rr ? Math.Clamp(rr, 1, 64) : 24;
         int max = Math.Clamp(limit ?? 16, 1, 64);
-        var w = _host.World;
-        var feet = w.Player.Position;
+        var feet = _host.World.Player.Position;
         var q = (query ?? "").Trim();
         var key = q.ToLowerInvariant();
         var hits = new List<(double D, JsonObject O)>();
-        Func<Entity, bool>? ent = key switch
-        {
-            "hostile" or "hostiles" or "monster" or "monsters" => e => e.IsHostileMob,
-            "mob" or "mobs" => e => e.Kind == EntityKind.Mob,
-            "player" or "players" => e => e.Kind == EntityKind.Player,
-            "item" or "items" or "drop" or "drops" => e => e.Kind == EntityKind.Item,
-            _ => MobTypes.ByName(key) is { } t ? e => e.Kind == EntityKind.Mob && e.TypeId == t
-                : e => e.Kind == EntityKind.Player && string.Equals(e.Name, q, StringComparison.OrdinalIgnoreCase),
-        };
-        bool entityWord = key is "hostile" or "hostiles" or "monster" or "monsters" or "mob" or "mobs" or "player" or "players"
-            or "item" or "items" or "drop" or "drops" || MobTypes.ByName(key) != null;
-        if (!entityWord && (_host.Data.BlockByName(q) ?? Blocks.ByName(q)) is { } b)
-            foreach (var f in w.FindBlocks(feet, r, (id, _) => id == b.Id, max * 2).Where(f => !_host.IsProtected(f.Pos, f.Id)).Take(max))
-            {
-                var o = PosNode(f.Pos.X, f.Pos.Y, f.Pos.Z, b.Name, Math.Sqrt(f.DistanceSquared));
-                o["kind"] = "block";
-                o["meta"] = f.Meta;
-                hits.Add((Math.Sqrt(f.DistanceSquared), o));
-            }
-        foreach (var e in w.Entities.Nearby(feet, r, ent, max))
-        {
-            var d = e.Position.DistanceTo(feet);
-            string name = e.Kind switch
-            {
-                EntityKind.Player => e.Name ?? "player",
-                EntityKind.Mob => MobTypes.Name(e.TypeId),
-                EntityKind.Item => _host.Data.ItemExists(e.Item.Id) ? _host.Data.Item(e.Item.Id).Name : "item",
-                _ => e.DisplayName.ToLowerInvariant(),
-            };
-            var o = PosNode((int)Math.Floor(e.Position.X), (int)Math.Floor(e.Position.Y), (int)Math.Floor(e.Position.Z), name, d);
-            o["kind"] = e.Kind == EntityKind.Mob ? "mob" : e.Kind.ToString().ToLowerInvariant();
-            if (e.Kind == EntityKind.Item) o["count"] = (int)e.Item.Count;
-            hits.Add((d, o));
-        }
-        if (hits.Count == 0 && _host.NearestKnown(q) is { } k)
-        {
-            var o = PosNode(k.X, k.Y, k.Z, q, new Vec3d(k.X + 0.5, k.Y, k.Z + 0.5).DistanceTo(feet));
-            o["kind"] = "place";
-            hits.Add((0, o));
-        }
+        bool entityWord = FindEntityWords.ContainsKey(key) || MobTypes.ByName(key) != null;
+        if (!entityWord && (_host.Data.BlockByName(q) ?? Blocks.ByName(q)) is { } b) FindBlockHits(hits, b, feet, r, max);
+        foreach (var e in _host.World.Entities.Nearby(feet, r, FindEntityFilter(key, q), max)) hits.Add(FindEntityHit(e, feet));
+        if (hits.Count == 0) FindPlaceHit(hits, q, feet);
         var list = new JsonArray();
         foreach (var (_, o) in hits.OrderBy(h => h.D).Take(max)) list.Add(o);
         return list;
     }
+
+    /// <summary>Nothing in view: the remembered place of that name, if any.</summary>
+    private void FindPlaceHit(List<(double D, JsonObject O)> hits, string q, Vec3d feet)
+    {
+        if (_host.NearestKnown(q) is not { } k) return;
+        var o = PosNode(k.X, k.Y, k.Z, q, new Vec3d(k.X + 0.5, k.Y, k.Z + 0.5).DistanceTo(feet));
+        o["kind"] = "place";
+        hits.Add((0, o));
+    }
+
+    /// <summary><c>find</c>'s entity words: hostile mobs, any mob, players, dropped items.</summary>
+    private static readonly Dictionary<string, Func<Entity, bool>> FindEntityWords = BuildFindEntityWords();
+
+    private static Dictionary<string, Func<Entity, bool>> BuildFindEntityWords()
+    {
+        Func<Entity, bool> hostile = e => e.IsHostileMob, mob = e => e.Kind == EntityKind.Mob,
+            player = e => e.Kind == EntityKind.Player, item = e => e.Kind == EntityKind.Item;
+        return new(StringComparer.Ordinal)
+        {
+            ["hostile"] = hostile, ["hostiles"] = hostile, ["monster"] = hostile, ["monsters"] = hostile,
+            ["mob"] = mob, ["mobs"] = mob, ["player"] = player, ["players"] = player,
+            ["item"] = item, ["items"] = item, ["drop"] = item, ["drops"] = item,
+        };
+    }
+
+    /// <summary>An entity word, else a mob type, else a player of that name.</summary>
+    private static Func<Entity, bool> FindEntityFilter(string key, string q)
+    {
+        if (FindEntityWords.TryGetValue(key, out var f)) return f;
+        if (MobTypes.ByName(key) is { } t) return e => e.Kind == EntityKind.Mob && e.TypeId == t;
+        return e => e.Kind == EntityKind.Player && string.Equals(e.Name, q, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Unprotected blocks of that kind in view, nearest first.</summary>
+    private void FindBlockHits(List<(double D, JsonObject O)> hits, BlockInfo b, Vec3d feet, double r, int max)
+    {
+        foreach (var f in _host.World.FindBlocks(feet, r, (id, _) => id == b.Id, max * 2).Where(f => !_host.IsProtected(f.Pos, f.Id)).Take(max))
+        {
+            var o = PosNode(f.Pos.X, f.Pos.Y, f.Pos.Z, b.Name, Math.Sqrt(f.DistanceSquared));
+            o["kind"] = "block";
+            o["meta"] = f.Meta;
+            hits.Add((Math.Sqrt(f.DistanceSquared), o));
+        }
+    }
+
+    private (double D, JsonObject O) FindEntityHit(Entity e, Vec3d feet)
+    {
+        var d = e.Position.DistanceTo(feet);
+        var o = PosNode((int)Math.Floor(e.Position.X), (int)Math.Floor(e.Position.Y), (int)Math.Floor(e.Position.Z), FindEntityName(e), d);
+        o["kind"] = e.Kind == EntityKind.Mob ? "mob" : e.Kind.ToString().ToLowerInvariant();
+        if (e.Kind == EntityKind.Item) o["count"] = (int)e.Item.Count;
+        return (d, o);
+    }
+
+    private string FindEntityName(Entity e) => e.Kind switch
+    {
+        EntityKind.Player => e.Name ?? "player",
+        EntityKind.Mob => MobTypes.Name(e.TypeId),
+        EntityKind.Item => _host.Data.ItemExists(e.Item.Id) ? _host.Data.Item(e.Item.Id).Name : "item",
+        _ => e.DisplayName.ToLowerInvariant(),
+    };
 
     /// <summary><c>item(name)</c>: this version's own name for an item or block ({name, id, block, stack, craftable, version}), or null.</summary>
     internal JsonObject? ItemInfo(string name)
@@ -902,6 +1016,12 @@ public sealed partial class ScriptSession
         if (jv.TryGetValue<double>(out var d)) return d;
         if (jv.TryGetValue<float>(out var f)) return f;
         if (jv.TryGetValue<long>(out var l)) return l;
+        return AsSmallNumber(jv);
+    }
+
+    /// <summary>A JSON number held as a smaller CLR type (or only as text).</summary>
+    private static double? AsSmallNumber(JsonValue jv)
+    {
         if (jv.TryGetValue<int>(out var i)) return i;
         if (jv.TryGetValue<short>(out var sh)) return sh;
         if (jv.TryGetValue<byte>(out var b)) return b;
@@ -914,19 +1034,23 @@ public sealed partial class ScriptSession
     /// <summary>A position from "x,y,z", [x,y,z] or {x,y,z}.</summary>
     internal static BlockPos? PosOf(JsonNode? v)
     {
-        if (AsString(v) is { } s)
-        {
-            var parts = s.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries);
-            return parts.Length == 3 && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var x)
-                && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var y)
-                && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var z) ? new BlockPos(x, y, z) : null;
-        }
-        if (v is JsonObject o && AsNumber(o["x"]) is { } ox && AsNumber(o["y"]) is { } oy && AsNumber(o["z"]) is { } oz)
-            return new BlockPos((int)Math.Floor(ox), (int)Math.Floor(oy), (int)Math.Floor(oz));
-        if (v is JsonArray a && a.Count == 3 && AsNumber(a[0]) is { } ax && AsNumber(a[1]) is { } ay && AsNumber(a[2]) is { } az)
-            return new BlockPos((int)Math.Floor(ax), (int)Math.Floor(ay), (int)Math.Floor(az));
+        if (AsString(v) is { } s) return PosOfText(s);
+        if (v is JsonObject o) return PosOfNumbers(o["x"], o["y"], o["z"]);
+        if (v is JsonArray a && a.Count == 3) return PosOfNumbers(a[0], a[1], a[2]);
         return null;
     }
+
+    private static BlockPos? PosOfText(string s)
+    {
+        var parts = s.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 3 && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var x)
+            && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var y)
+            && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var z) ? new BlockPos(x, y, z) : null;
+    }
+
+    private static BlockPos? PosOfNumbers(JsonNode? x, JsonNode? y, JsonNode? z) =>
+        AsNumber(x) is { } nx && AsNumber(y) is { } ny && AsNumber(z) is { } nz
+            ? new BlockPos((int)Math.Floor(nx), (int)Math.Floor(ny), (int)Math.Floor(nz)) : null;
 
     internal static string FmtPos(BlockPos p) => string.Create(CultureInfo.InvariantCulture, $"{p.X},{p.Y},{p.Z}");
 }

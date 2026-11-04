@@ -18,24 +18,39 @@ public static class ScriptText
     public static string State(ScriptSession s, int max = 400)
     {
         var sb = new StringBuilder("script ").Append(s.Name).Append(' ').Append(s.Status.ToString().ToLowerInvariant());
-        if (s.Status == ScriptStatus.Paused && s.PauseReason != null) sb.Append(" (").Append(s.PauseReason).Append(')');
-        if (s.Patching is { } patching) sb.Append(" (patching: ").Append(patching).Append(')');
-        else if (s.Status == ScriptStatus.Paused && s.PatchNote is { } pn) sb.Append(" (patch ").Append(ScriptSession.Short(pn, 80)).Append(')');
-        if (s.Reason != null && !s.IsLive) sb.Append(" (").Append(s.Reason).Append(')');
+        AppendStatusNotes(sb, s);
         if (s.Line > 0) sb.Append(" L").Append(s.Line);
         if (s.Snippet != null) sb.Append(" `").Append(s.Snippet).Append('`');
-        if (s.MachineState != null) sb.Append(" | state ").Append(s.MachineState).Append(s.Transitions > 0 ? $" ({s.Transitions} moves)" : "");
-        else if (s.Checkpoint != null) sb.Append(" | cp '").Append(s.Checkpoint).Append('\'').Append(s.CheckpointTotal > 0 ? $" {s.CheckpointsPassed}/{s.CheckpointTotal}" : "");
-        if (s.ProgressPct != null || s.ProgressNote != null)
-        {
-            sb.Append(" | ");
-            if (s.ProgressPct is { } p) sb.Append($"{p:0}%");
-            if (s.ProgressNote != null) sb.Append(s.ProgressPct != null ? " " : "").Append(s.ProgressNote);
-        }
+        AppendPhase(sb, s);
+        AppendProgress(sb, s);
         if (s.Vars != null) sb.Append(" | ").Append(s.Vars);
         if (s.LastFailure != null && s.IsLive) sb.Append(" | last fail ").Append(s.LastFailure);
         sb.Append(" | ").Append(s.Actions).Append(" acts | ").Append(Dur(s.Elapsed));
         return Cap(sb.ToString(), max);
+    }
+
+    /// <summary>Why it is paused, a patch in progress (or its note while paused), why it ended.</summary>
+    private static void AppendStatusNotes(StringBuilder sb, ScriptSession s)
+    {
+        if (s.Status == ScriptStatus.Paused && s.PauseReason != null) sb.Append(" (").Append(s.PauseReason).Append(')');
+        if (s.Patching is { } patching) sb.Append(" (patching: ").Append(patching).Append(')');
+        else if (s.Status == ScriptStatus.Paused && s.PatchNote is { } pn) sb.Append(" (patch ").Append(ScriptSession.Short(pn, 80)).Append(')');
+        if (s.Reason != null && !s.IsLive) sb.Append(" (").Append(s.Reason).Append(')');
+    }
+
+    /// <summary>The machine state (and its moves), else the checkpoint (and how many of them passed).</summary>
+    private static void AppendPhase(StringBuilder sb, ScriptSession s)
+    {
+        if (s.MachineState != null) sb.Append(" | state ").Append(s.MachineState).Append(s.Transitions > 0 ? $" ({s.Transitions} moves)" : "");
+        else if (s.Checkpoint != null) sb.Append(" | cp '").Append(s.Checkpoint).Append('\'').Append(s.CheckpointTotal > 0 ? $" {s.CheckpointsPassed}/{s.CheckpointTotal}" : "");
+    }
+
+    private static void AppendProgress(StringBuilder sb, ScriptSession s)
+    {
+        if (s.ProgressPct == null && s.ProgressNote == null) return;
+        sb.Append(" | ");
+        if (s.ProgressPct is { } p) sb.Append($"{p:0}%");
+        if (s.ProgressNote != null) sb.Append(s.ProgressPct != null ? " " : "").Append(s.ProgressNote);
     }
 
     /// <summary>
@@ -48,16 +63,7 @@ public static class ScriptText
         List<string> reports;
         lock (s.Reports) reports = s.Reports.ToList();
         var report = reports.Count == 0 ? null : "report: " + ScriptSession.Short(string.Join(" | ", reports), 160);
-        if (s.Status == ScriptStatus.Done)
-        {
-            var parts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(completion)) parts.Add(ScriptSession.Short(ScriptSession.OneLine(completion), 200));
-            if (report != null) parts.Add(report);
-            parts.AddRange(gained);
-            if (parts.Count == 0) parts.Add($"{s.Actions} acts");
-            parts.Add(dur);
-            return Cap($"ok: script {s.Name} done ({string.Join(", ", parts)})", max);
-        }
+        if (s.Status == ScriptStatus.Done) return Cap($"ok: script {s.Name} done ({string.Join(", ", DoneParts(s, completion, gained, report, dur))})", max);
         var head = s.Status == ScriptStatus.Cancelled ? "cancelled" : "failed";
         var where = s.Line > 0 ? $" at line {s.Line}" : "";
         var reason = s.Reason ?? "?";
@@ -66,6 +72,18 @@ public static class ScriptText
         var progress = s.CheckpointTotal > 0 ? $"cp {s.CheckpointsPassed}/{s.CheckpointTotal}, {s.Actions} acts" : $"{s.Actions} acts";
         var tail = (gained.Count > 0 ? ", " + string.Join(", ", gained) : "") + (report != null ? ", " + report : "");
         return Cap($"{head}: script {s.Name}{where} ({reason}): {progress}{tail}, {dur}", max);
+    }
+
+    /// <summary>A finished run: what it returned, its reports, the items gained (else its action count), the time.</summary>
+    private static List<string> DoneParts(ScriptSession s, string? completion, IReadOnlyList<string> gained, string? report, string dur)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(completion)) parts.Add(ScriptSession.Short(ScriptSession.OneLine(completion), 200));
+        if (report != null) parts.Add(report);
+        parts.AddRange(gained);
+        if (parts.Count == 0) parts.Add($"{s.Actions} acts");
+        parts.Add(dur);
+        return parts;
     }
 
     public static string Cap(string s, int max) => s.Length <= max ? s : s[..(max - 3)].TrimEnd() + "...";

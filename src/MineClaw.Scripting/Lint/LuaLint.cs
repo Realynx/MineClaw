@@ -61,136 +61,197 @@ internal static class LuaLint
         IReadOnlyDictionary<string, BindingSignature>? signatures = null)
     {
         var acts = new HashSet<string>(actions, StringComparer.Ordinal);
-        var toks = Tokenize(code ?? "");
-        var ownFunctions = signatures is { Count: > 0 } ? DefinedNames(toks) : [];
-        var findings = new List<LintFinding>();
-        var stack = new List<Block>();
-        var parens = new Stack<string?>();   // callee name per open '(' / '{' call
-        int actionSites = 0;
-        bool hasCp = false, hasEnsure = false;
-        (int Line, string Call, string Tool)? needsTool = null;
-        bool LoopActive() => stack.Any(b => b.Loop || b.UptoFn);
+        var pass = new CheckPass(Tokenize(code ?? ""), acts, signatures);
+        pass.Run();
+        return pass.Report(longScriptActions);
+    }
 
-        for (int i = 0; i < toks.Count; i++)
+    /// <summary>
+    /// One lint walk over the tokens: a stack of open blocks (loops, functions, ifs) that learn whether they act, and the callee
+    /// of each open call bracket (a function inside <c>upto(...)</c> is a loop body).
+    /// </summary>
+    private sealed class CheckPass(List<Tok> toks, HashSet<string> acts, IReadOnlyDictionary<string, BindingSignature>? signatures)
+    {
+        private readonly HashSet<string> ownFunctions = signatures is { Count: > 0 } ? DefinedNames(toks) : [];
+        private readonly List<LintFinding> findings = new();
+        private readonly List<Block> stack = new();
+        private readonly Stack<string?> parens = new();   // callee name per open '(' / '{' call
+        private int actionSites;
+        private bool hasCp, hasEnsure;
+        private (int Line, string Call, string Tool)? needsTool;
+
+        public void Run()
         {
-            var t = toks[i];
-            var prev = i > 0 ? toks[i - 1] : default;
-            var next = i + 1 < toks.Count ? toks[i + 1] : default;
-            if (t.Kind == T.Ident)
+            for (int i = 0; i < toks.Count; i++)
             {
-                bool member = prev.Kind == T.Sym && prev.Text is "." or ":";
-                bool isCall = next.Kind == T.Sym && next.Text is "(" or "{" || next.Kind == T.Str;
-                switch (t.Text)
-                {
-                    case "while":
-                    {
-                        bool unbounded = (next.Kind == T.Ident && next.Text == "true" || next.Kind == T.Num) &&
-                            i + 2 < toks.Count && toks[i + 2].Kind == T.Ident && toks[i + 2].Text == "do";
-                        stack.Add(new Block { Kind = "while", Line = t.Line, Loop = true, Unbounded = unbounded });
-                        // the matching "do" belongs to this block
-                        for (int j = i + 1; j < toks.Count; j++) if (toks[j].Kind == T.Ident && toks[j].Text == "do") { i = j; break; }
-                        continue;
-                    }
-                    case "for":
-                        stack.Add(new Block { Kind = "for", Line = t.Line, Loop = true });
-                        for (int j = i + 1; j < toks.Count; j++) if (toks[j].Kind == T.Ident && toks[j].Text == "do") { i = j; break; }
-                        continue;
-                    case "repeat":
-                        stack.Add(new Block { Kind = "repeat", Line = t.Line, Loop = true, Unbounded = true });
-                        continue;
-                    case "until":
-                    {
-                        int k = stack.FindLastIndex(b => b.Kind == "repeat");
-                        if (k >= 0)
-                        {
-                            var b = stack[k];
-                            bool forever = next.Kind == T.Ident && next.Text == "false";
-                            b.Unbounded = forever;
-                            Close(b);
-                            stack.RemoveRange(k, stack.Count - k);
-                        }
-                        continue;
-                    }
-                    case "function":
-                        stack.Add(new Block { Kind = "function", Line = t.Line, UptoFn = parens.Contains("upto") });
-                        continue;
-                    case "if":
-                        stack.Add(new Block { Kind = "if", Line = t.Line });
-                        continue;
-                    case "do":
-                        stack.Add(new Block { Kind = "do", Line = t.Line });
-                        continue;
-                    case "end":
-                        if (stack.Count > 0)
-                        {
-                            var b = stack[^1];
-                            stack.RemoveAt(stack.Count - 1);
-                            Close(b);
-                        }
-                        continue;
-                    case "cp":
-                        if (!member) hasCp = true;
-                        break;
-                }
-
-                if (member)
-                {
-                    if (prev.Kind == T.Sym && i >= 2 && toks[i - 2].Text == "os" && !OsAllowed.Contains(t.Text))
-                        findings.Add(new(LintSeverity.Error, t.Line, "removed-global", $"os.{t.Text} is not available (os.time/os.clock only)"));
-                    continue;
-                }
-                if (RemovedGlobals.Contains(t.Text) && (isCall || next.Kind == T.Sym && next.Text == "."))
-                {
-                    findings.Add(new(LintSeverity.Error, t.Line, "removed-global", $"{t.Text} is not available in scripts" +
-                        (t.Text is "pcall" or "xpcall" ? " (check ok,msg instead)" : "")));
-                    continue;
-                }
-                if (!isCall) continue;
-
-                bool isAction = acts.Contains(t.Text);
-                if (t.Text is "ensure" or "acquire") hasEnsure = true;
-                else if (needsTool == null && isAction && NeedsTool(t.Text, toks, i) is { } tool) needsTool = (t.Line, t.Text, tool);
-                if (!PureCalls.Contains(t.Text))
-                    foreach (var b in stack) b.Acts = true;
-                if (isAction) actionSites++;
-                if (signatures is { Count: > 0 } && !ownFunctions.Contains(t.Text) && SignatureFor(t.Text, signatures) is { } sig
-                    && MissingArgs(sig, toks, i + 1) is { Count: > 0 } missing)
-                    findings.Add(new(LintSeverity.Error, t.Line, "missing-arg",
-                        $"{t.Text} needs {string.Join(" ", missing.Select(m => m + "="))} (args in order: {string.Join(",", sig.Params.Take(4))})"));
-                if (LoopActive())
-                {
-                    if (t.Text == "say")
-                        findings.Add(new(LintSeverity.Warning, t.Line, "say-in-loop", "say inside a loop (spams chat; use log or prog)"));
-                    else if (isAction && !SelfChecked.Contains(t.Text) && StatementStart(toks, i))
-                        findings.Add(new(LintSeverity.Warning, t.Line, "unchecked", $"{t.Text}{{}} result ignored in a loop (local ok,m={t.Text}{{..}} expect(ok,m))"));
-                }
-                if (next.Kind == T.Sym && next.Text is "(" or "{") { parens.Push(t.Text); i++; }
-                continue;
-            }
-            if (t.Kind == T.Sym)
-            {
-                if (t.Text is "(" or "{") parens.Push(null);
-                else if (t.Text is ")" or "}") { if (parens.Count > 0) parens.Pop(); }
+                var t = toks[i];
+                if (t.Kind == T.Ident) i = Ident(i);
+                else if (t.Kind == T.Sym) Bracket(t.Text);
             }
         }
 
-        if (!hasCp && actionSites > longScriptActions)
-            findings.Add(new(LintSeverity.Warning, 1, "no-cp", $"{actionSites} actions and no cp\"label\" (add one before each long phase)"));
-        // A job that needs a tool gets it planned up front (ensure auto-acquires: chest, hive, craft, bootstrap).
-        if (needsTool is { } nt && !hasEnsure)
-            findings.Add(new(LintSeverity.Warning, nt.Line, "no-ensure", $"{nt.Call}{{}} needs a {nt.Tool}: start with ensure\"{nt.Tool}\" (auto-acquires it)"));
-        // One finding per rule and line is enough.
-        var unique = findings.GroupBy(f => (f.Rule, f.Line)).Select(g => g.First()).OrderBy(f => f.Severity == LintSeverity.Error ? 0 : 1).ThenBy(f => f.Line).ToList();
-        return new LintReport(unique);
+        public LintReport Report(int longScriptActions)
+        {
+            if (!hasCp && actionSites > longScriptActions)
+                findings.Add(new(LintSeverity.Warning, 1, "no-cp", $"{actionSites} actions and no cp\"label\" (add one before each long phase)"));
+            // A job that needs a tool gets it planned up front (ensure auto-acquires: chest, hive, craft, bootstrap).
+            if (needsTool is { } nt && !hasEnsure)
+                findings.Add(new(LintSeverity.Warning, nt.Line, "no-ensure", $"{nt.Call}{{}} needs a {nt.Tool}: start with ensure\"{nt.Tool}\" (auto-acquires it)"));
+            // One finding per rule and line is enough.
+            var unique = findings.GroupBy(f => (f.Rule, f.Line)).Select(g => g.First()).OrderBy(f => f.Severity == LintSeverity.Error ? 0 : 1).ThenBy(f => f.Line).ToList();
+            return new LintReport(unique);
+        }
 
-        void Close(Block b)
+        private Tok At(int k) => k >= 0 && k < toks.Count ? toks[k] : default;
+
+        /// <summary>A name token: a block keyword, a member access, a removed global, or a call. Returns the index to continue from.</summary>
+        private int Ident(int i)
+        {
+            var t = toks[i];
+            var next = At(i + 1);
+            if (BlockKeyword(ref i, t, next)) return i;
+            if (IsMemberDot(At(i - 1)))
+            {
+                OsMember(i, t);
+                return i;
+            }
+            if (t.Text == "cp") hasCp = true;
+            if (RemovedGlobal(t, next) || !OpensCall(next)) return i;
+            return Call(i, t, next);
+        }
+
+        private bool BlockKeyword(ref int i, Tok t, Tok next)
+        {
+            switch (t.Text)
+            {
+                case "while":
+                    bool unbounded = UnboundedWhile(i, next);
+                    OpenLoop(ref i, "while", unbounded, t.Line);
+                    return true;
+                case "for":
+                    OpenLoop(ref i, "for", false, t.Line);
+                    return true;
+                case "repeat":
+                    stack.Add(new Block { Kind = "repeat", Line = t.Line, Loop = true, Unbounded = true });
+                    return true;
+                case "until":
+                    CloseRepeat(next);
+                    return true;
+                case "function":
+                    stack.Add(new Block { Kind = "function", Line = t.Line, UptoFn = parens.Contains("upto") });
+                    return true;
+                case "if":
+                case "do":
+                    stack.Add(new Block { Kind = t.Text, Line = t.Line });
+                    return true;
+                case "end":
+                    CloseInnermost();
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary><c>while true do</c> / <c>while 1 do</c>.</summary>
+        private bool UnboundedWhile(int i, Tok next) =>
+            (next.Kind == T.Ident && next.Text == "true" || next.Kind == T.Num) &&
+            i + 2 < toks.Count && toks[i + 2].Kind == T.Ident && toks[i + 2].Text == "do";
+
+        /// <summary>A loop block; the matching "do" belongs to it (skipped).</summary>
+        private void OpenLoop(ref int i, string kind, bool unbounded, int line)
+        {
+            stack.Add(new Block { Kind = kind, Line = line, Loop = true, Unbounded = unbounded });
+            for (int j = i + 1; j < toks.Count; j++) if (toks[j].Kind == T.Ident && toks[j].Text == "do") { i = j; break; }
+        }
+
+        private void CloseRepeat(Tok next)
+        {
+            int k = stack.FindLastIndex(b => b.Kind == "repeat");
+            if (k < 0) return;
+            var b = stack[k];
+            b.Unbounded = next.Kind == T.Ident && next.Text == "false";
+            Close(b);
+            stack.RemoveRange(k, stack.Count - k);
+        }
+
+        private void CloseInnermost()
+        {
+            if (stack.Count == 0) return;
+            var b = stack[^1];
+            stack.RemoveAt(stack.Count - 1);
+            Close(b);
+        }
+
+        private void Close(Block b)
         {
             if (b.Loop && b.Unbounded && !b.Acts)
                 findings.Add(new(LintSeverity.Error, b.Line, "busy-loop",
                     $"unbounded {b.Kind} loop never acts or waits (bound it: upto(n,fn) or for i=1,n; add wait())"));
             // An inner block that acts makes the outer one act too (already propagated on the call).
         }
+
+        private void OsMember(int i, Tok t)
+        {
+            if (i >= 2 && toks[i - 2].Text == "os" && !OsAllowed.Contains(t.Text))
+                findings.Add(new(LintSeverity.Error, t.Line, "removed-global", $"os.{t.Text} is not available (os.time/os.clock only)"));
+        }
+
+        private bool RemovedGlobal(Tok t, Tok next)
+        {
+            if (!RemovedGlobals.Contains(t.Text) || !(OpensCall(next) || next.Kind == T.Sym && next.Text == ".")) return false;
+            findings.Add(new(LintSeverity.Error, t.Line, "removed-global", $"{t.Text} is not available in scripts" +
+                (t.Text is "pcall" or "xpcall" ? " (check ok,msg instead)" : "")));
+            return true;
+        }
+
+        private int Call(int i, Tok t, Tok next)
+        {
+            bool isAction = acts.Contains(t.Text);
+            TrackTool(i, t, isAction);
+            if (!PureCalls.Contains(t.Text))
+                foreach (var b in stack) b.Acts = true;
+            if (isAction) actionSites++;
+            CheckArgs(i, t);
+            if (stack.Any(b => b.Loop || b.UptoFn)) LoopWarnings(i, t, isAction);
+            if (next.Kind != T.Sym || next.Text is not ("(" or "{")) return i;
+            parens.Push(t.Text);
+            return i + 1;
+        }
+
+        private void TrackTool(int i, Tok t, bool isAction)
+        {
+            if (t.Text is "ensure" or "acquire") hasEnsure = true;
+            else if (needsTool == null && isAction && NeedsTool(t.Text, toks, i) is { } tool) needsTool = (t.Line, t.Text, tool);
+        }
+
+        private void CheckArgs(int i, Tok t)
+        {
+            if (signatures is not { Count: > 0 } || ownFunctions.Contains(t.Text) || SignatureFor(t.Text, signatures) is not { } sig) return;
+            if (MissingArgs(sig, toks, i + 1) is not { Count: > 0 } missing) return;
+            findings.Add(new(LintSeverity.Error, t.Line, "missing-arg",
+                $"{t.Text} needs {string.Join(" ", missing.Select(m => m + "="))} (args in order: {string.Join(",", sig.Params.Take(4))})"));
+        }
+
+        private void LoopWarnings(int i, Tok t, bool isAction)
+        {
+            if (t.Text == "say")
+                findings.Add(new(LintSeverity.Warning, t.Line, "say-in-loop", "say inside a loop (spams chat; use log or prog)"));
+            else if (isAction && !SelfChecked.Contains(t.Text) && StatementStart(toks, i))
+                findings.Add(new(LintSeverity.Warning, t.Line, "unchecked", $"{t.Text}{{}} result ignored in a loop (local ok,m={t.Text}{{..}} expect(ok,m))"));
+        }
+
+        private void Bracket(string text)
+        {
+            if (text is "(" or "{") parens.Push(null);
+            else if (text is ")" or "}" && parens.Count > 0) parens.Pop();
+        }
     }
+
+    /// <summary>The token opens a call: <c>f(</c>, <c>f{</c>, <c>f"s"</c>.</summary>
+    private static bool OpensCall(Tok next) => next.Kind == T.Sym && next.Text is "(" or "{" || next.Kind == T.Str;
+
+    /// <summary>The token before a name makes it a member (<c>a.b</c>, <c>a:b</c>).</summary>
+    private static bool IsMemberDot(Tok prev) => prev.Kind == T.Sym && prev.Text is "." or ":";
 
     /// <summary>Actions that dig cobble/stone: the generator always, mine/dig when the literal target needs a pickaxe.</summary>
     private static readonly HashSet<string> GenCalls = new(StringComparer.Ordinal) { "gen", "harvest_generator" };
@@ -232,14 +293,23 @@ internal static class LuaLint
         foreach (var p in props.EnumerateObject())
         {
             ps.Add(p.Name);
-            if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Object && p.Value.TryGetProperty("type", out var ty)
-                && ty.ValueKind == System.Text.Json.JsonValueKind.String && ty.GetString() == "string") strings.Add(p.Name);
+            if (IsStringProperty(p.Value)) strings.Add(p.Name);
         }
+        return new BindingSignature(ps, RequiredStrings(schema, strings));
+    }
+
+    private static bool IsStringProperty(System.Text.Json.JsonElement v) =>
+        v.ValueKind == System.Text.Json.JsonValueKind.Object && v.TryGetProperty("type", out var ty)
+        && ty.ValueKind == System.Text.Json.JsonValueKind.String && ty.GetString() == "string";
+
+    /// <summary>The schema's <c>required</c> names that are string params.</summary>
+    private static HashSet<string> RequiredStrings(System.Text.Json.JsonElement schema, HashSet<string> strings)
+    {
         var req = new HashSet<string>(StringComparer.Ordinal);
-        if (schema.TryGetProperty("required", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.Array)
-            foreach (var x in r.EnumerateArray())
-                if (x.ValueKind == System.Text.Json.JsonValueKind.String && x.GetString() is { } n && strings.Contains(n)) req.Add(n);
-        return new BindingSignature(ps, req);
+        if (!schema.TryGetProperty("required", out var r) || r.ValueKind != System.Text.Json.JsonValueKind.Array) return req;
+        foreach (var x in r.EnumerateArray())
+            if (x.ValueKind == System.Text.Json.JsonValueKind.String && x.GetString() is { } n && strings.Contains(n)) req.Add(n);
+        return req;
     }
 
     private static BindingSignature? SignatureFor(string call, IReadOnlyDictionary<string, BindingSignature> sigs) =>
@@ -251,13 +321,17 @@ internal static class LuaLint
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
         for (int i = 0; i + 1 < toks.Count; i++)
-        {
-            if (toks[i].Kind == T.Ident && toks[i].Text is "function" or "local" && toks[i + 1].Kind == T.Ident && toks[i + 1].Text != "function")
-                set.Add(toks[i + 1].Text);
-            if (toks[i].Kind == T.Ident && toks[i].Text == "local" && i + 2 < toks.Count && toks[i + 1].Text == "function" && toks[i + 2].Kind == T.Ident)
-                set.Add(toks[i + 2].Text);
-        }
+            if (DefinedAt(toks, i) is { } name) set.Add(name);
         return set;
+    }
+
+    /// <summary>The name defined at <paramref name="i"/>: <c>function f</c> / <c>local f</c> → f, <c>local function f</c> → f.</summary>
+    private static string? DefinedAt(List<Tok> toks, int i)
+    {
+        if (toks[i].Kind != T.Ident || toks[i].Text is not ("function" or "local")) return null;
+        var next = toks[i + 1];
+        if (next.Kind == T.Ident && next.Text != "function") return next.Text;
+        return toks[i].Text == "local" && next.Text == "function" && i + 2 < toks.Count && toks[i + 2].Kind == T.Ident ? toks[i + 2].Text : null;
     }
 
     private enum ArgKind { Str, Num, Nil, Table, Multi, Other }
@@ -273,35 +347,59 @@ internal static class LuaLint
     private static List<string>? MissingArgs(BindingSignature sig, List<Tok> toks, int j)
     {
         if (sig.Required.Count == 0 || j >= toks.Count) return null;
-        List<Arg> args;
-        var first = toks[j];
-        if (first.Kind == T.Str) args = [new Arg(ArgKind.Str, null, j, j)];
-        else if (first.Kind == T.Sym && first.Text == "{") args = Elements(toks, j, "}") ?? [];
-        else if (first.Kind == T.Sym && first.Text == "(")
-        {
-            if (Elements(toks, j, ")") is not { } list) return null;
-            if (list.Count == 1 && list[0].Kind == ArgKind.Table && list[0].Name == null)
-                args = Elements(toks, list[0].Start, "}") ?? [];
-            else if (list.Count == 1 && list[0].Kind is ArgKind.Other or ArgKind.Multi) return null; // go(p), place(t): runtime shape
-            else args = list;
-        }
-        else return null;
-
+        if (CallArgs(toks, j) is not { } args) return null;
         var filled = new HashSet<string>(StringComparer.Ordinal);
         var pos = args.Where(a => a.Name == null).ToList();
+        FillNamed(sig, args, pos, filled);
+        FillPositional(sig, pos, filled);
+        return sig.Params.Where(p => sig.Required.Contains(p) && !filled.Contains(p)).ToList();
+    }
+
+    /// <summary>The call's arguments starting at its first token (a string, a table or a paren list); null = not checkable.</summary>
+    private static List<Arg>? CallArgs(List<Tok> toks, int j)
+    {
+        var first = toks[j];
+        if (first.Kind == T.Str) return [new Arg(ArgKind.Str, null, j, j)];
+        if (first.Kind != T.Sym) return null;
+        return first.Text switch
+        {
+            "{" => Elements(toks, j, "}") ?? [],
+            "(" => ParenArgs(toks, j),
+            _ => null,
+        };
+    }
+
+    private static List<Arg>? ParenArgs(List<Tok> toks, int j)
+    {
+        if (Elements(toks, j, ")") is not { } list) return null;
+        if (list.Count != 1) return list;
+        var only = list[0];
+        if (only.Kind == ArgKind.Table && only.Name == null) return Elements(toks, only.Start, "}") ?? [];
+        return only.Kind is ArgKind.Other or ArgKind.Multi ? null : list; // go(p), place(t): runtime shape
+    }
+
+    private static readonly string[] XyzKeys = ["x", "y", "z"];
+
+    /// <summary>Named keys fill their params (<c>n</c> = count); a position table as the whole argument fills the first param.</summary>
+    private static void FillNamed(BindingSignature sig, List<Arg> args, List<Arg> pos, HashSet<string> filled)
+    {
         // dig{x=1,y=64,z=2}: a position table as the whole argument fills the first (position) param.
         if (sig.Params.Count > 0 && PosParamNames.Contains(sig.Params[0]) && pos.Count == 0
-            && new[] { "x", "y", "z" }.All(k => args.Any(a => a.Name == k))) filled.Add(sig.Params[0]);
+            && XyzKeys.All(k => args.Any(a => a.Name == k))) filled.Add(sig.Params[0]);
         foreach (var a in args.Where(a => a.Name != null && a.Kind != ArgKind.Nil))
             filled.Add(a.Name == "n" && sig.Params.Contains("count") ? "count" : a.Name!);
-        // A single position table ({1,64,2} / {x=..}) as the whole call fills the first (position) param.
+    }
+
+    /// <summary>Positional args fill params in order; a position param takes three numbers; a trailing call / ... fills the rest.</summary>
+    private static void FillPositional(BindingSignature sig, List<Arg> pos, HashSet<string> filled)
+    {
         int pi = 0;
         for (int i = 0; i < pos.Count && pi < sig.Params.Count;)
         {
             var name = sig.Params[pi];
             // Only a trailing call / ... can expand to several values; elsewhere it is one value.
             if (pos[i].Kind == ArgKind.Multi && i == pos.Count - 1) { foreach (var p in sig.Params.Skip(pi)) filled.Add(p); break; }
-            if (PosParamNames.Contains(name) && i + 2 < pos.Count && pos[i].Kind == ArgKind.Num && pos[i + 1].Kind == ArgKind.Num && pos[i + 2].Kind == ArgKind.Num)
+            if (PosParamNames.Contains(name) && ThreeNumbers(pos, i))
             {
                 filled.Add(name);
                 i += 3;
@@ -312,8 +410,10 @@ internal static class LuaLint
             i++;
             pi++;
         }
-        return sig.Params.Where(p => sig.Required.Contains(p) && !filled.Contains(p)).ToList();
     }
+
+    private static bool ThreeNumbers(List<Arg> pos, int i) =>
+        i + 2 < pos.Count && pos[i].Kind == ArgKind.Num && pos[i + 1].Kind == ArgKind.Num && pos[i + 2].Kind == ArgKind.Num;
 
     private static readonly HashSet<string> PosParamNames = new(StringComparer.OrdinalIgnoreCase) { "to", "at", "pos" };
 
@@ -325,63 +425,92 @@ internal static class LuaLint
         for (int k = open + 1; k < toks.Count; k++)
         {
             var t = toks[k];
-            if (t.Kind == T.Ident)
+            if (t.Kind != T.Sym) { blocks += BlockDelta(t); continue; }
+            bool top = depth == 0 && blocks <= 0;
+            int d = BracketDelta(t.Text);
+            if (d < 0 && top) return t.Text == close ? AddElement(list, toks, start, k) : null;
+            depth += d;
+            if (top && t.Text is "," or ";")
             {
-                if (t.Text is "function" or "if" or "do" or "repeat") blocks++;
-                else if (t.Text is "end" or "until") blocks--;
-            }
-            else if (t.Kind == T.Sym)
-            {
-                if (t.Text is "(" or "{" or "[") depth++;
-                else if (t.Text is ")" or "}" or "]")
-                {
-                    if (depth == 0 && blocks <= 0)
-                    {
-                        if (t.Text != close) return null;
-                        if (k > start) list.Add(Classify(toks, start, k - 1));
-                        return list;
-                    }
-                    depth--;
-                }
-                else if (t.Text is "," or ";" && depth == 0 && blocks <= 0)
-                {
-                    if (k > start) list.Add(Classify(toks, start, k - 1));
-                    start = k + 1;
-                }
+                AddElement(list, toks, start, k);
+                start = k + 1;
             }
         }
         return null;
     }
 
+    private static List<Arg> AddElement(List<Arg> list, List<Tok> toks, int start, int k)
+    {
+        if (k > start) list.Add(Classify(toks, start, k - 1));
+        return list;
+    }
+
+    /// <summary>+1 for a keyword that opens a block, -1 for one that closes it.</summary>
+    private static int BlockDelta(Tok t) => t.Kind != T.Ident ? 0 : t.Text switch
+    {
+        "function" or "if" or "do" or "repeat" => 1,
+        "end" or "until" => -1,
+        _ => 0,
+    };
+
+    private static int BracketDelta(string s) => s switch
+    {
+        "(" or "{" or "[" => 1,
+        ")" or "}" or "]" => -1,
+        _ => 0,
+    };
+
     private static Arg Classify(List<Tok> toks, int s, int e)
     {
         string? name = null;
         // key = value / ["key"] = value (not ==)
-        if (e - s >= 2 && toks[s].Kind == T.Ident && toks[s + 1].Kind == T.Sym && toks[s + 1].Text == "=" && !(toks[s + 2].Kind == T.Sym && toks[s + 2].Text == "="))
+        if (IsNameKey(toks, s, e))
         {
             name = toks[s].Text;
             s += 2;
         }
-        else if (e - s >= 4 && toks[s].Text == "[" && toks[s + 1].Kind == T.Str && toks[s + 2].Text == "]" && toks[s + 3].Text == "=")
+        else if (IsBracketKey(toks, s, e))
         {
             name = toks[s + 1].Text;
             s += 4;
         }
-        int len = e - s + 1;
-        var kind = len switch
-        {
-            1 when toks[s].Kind == T.Str => ArgKind.Str,
-            1 when toks[s].Kind == T.Num => ArgKind.Num,
-            2 when toks[s].Text == "-" && toks[s + 1].Kind == T.Num => ArgKind.Num,
-            1 when toks[s].Kind == T.Ident && toks[s].Text == "nil" => ArgKind.Nil,
-            _ when toks[s].Kind == T.Sym && toks[s].Text == "{" && MatchClose(toks, s) == e => ArgKind.Table,
-            _ when toks[e].Kind == T.Sym && toks[e].Text is ")" || toks[e].Kind == T.Str && len >= 2 && toks[e - 1].Kind == T.Ident
-                   || toks[e].Kind == T.Sym && toks[e].Text == "}" && len >= 2 && toks[s].Kind == T.Ident => ArgKind.Multi, // f(x), f"x", f{..}
-            2 when toks[s].Text == ".." && toks[s + 1].Text == "." => ArgKind.Multi, // ... (tokenized ".." ".")
-            _ => ArgKind.Other,
-        };
-        return new Arg(kind, name, s, e);
+        return new Arg(KindOf(toks, s, e), name, s, e);
     }
+
+    private static bool IsNameKey(List<Tok> toks, int s, int e) =>
+        e - s >= 2 && toks[s].Kind == T.Ident && IsSym(toks[s + 1], "=") && !IsSym(toks[s + 2], "=");
+
+    private static bool IsBracketKey(List<Tok> toks, int s, int e) =>
+        e - s >= 4 && toks[s].Text == "[" && toks[s + 1].Kind == T.Str && toks[s + 2].Text == "]" && toks[s + 3].Text == "=";
+
+    private static bool IsSym(Tok t, string text) => t.Kind == T.Sym && t.Text == text;
+
+    private static ArgKind KindOf(List<Tok> toks, int s, int e)
+    {
+        int len = e - s + 1;
+        if (LiteralKind(toks, s, len) is { } literal) return literal;
+        if (IsSym(toks[s], "{") && MatchClose(toks, s) == e) return ArgKind.Table;
+        // f(x), f"x", f{..}, or ... (tokenized ".." ".")
+        if (IsCallTail(toks, s, e, len) || len == 2 && toks[s].Text == ".." && toks[s + 1].Text == ".") return ArgKind.Multi;
+        return ArgKind.Other;
+    }
+
+    private static ArgKind? LiteralKind(List<Tok> toks, int s, int len) => len switch
+    {
+        1 => toks[s].Kind switch
+        {
+            T.Str => ArgKind.Str,
+            T.Num => ArgKind.Num,
+            T.Ident when toks[s].Text == "nil" => ArgKind.Nil,
+            _ => null,
+        },
+        2 when toks[s].Text == "-" && toks[s + 1].Kind == T.Num => ArgKind.Num,
+        _ => null,
+    };
+
+    private static bool IsCallTail(List<Tok> toks, int s, int e, int len) =>
+        toks[e].Kind == T.Sym && toks[e].Text is ")" || toks[e].Kind == T.Str && len >= 2 && toks[e - 1].Kind == T.Ident
+        || toks[e].Kind == T.Sym && toks[e].Text == "}" && len >= 2 && toks[s].Kind == T.Ident;
 
     private static int MatchClose(List<Tok> toks, int open)
     {
@@ -418,69 +547,105 @@ internal static class LuaLint
 
     private static List<Tok> Tokenize(string code)
     {
-        var list = new List<Tok>();
-        int line = 1, i = 0, n = code.Length;
-        while (i < n)
+        var lexer = new Lexer(code);
+        while (lexer.More) lexer.Next();
+        return lexer.Tokens;
+    }
+
+    /// <summary>The Lua tokenizer: comments dropped, strings and long brackets as one token, line numbers kept.</summary>
+    private sealed class Lexer(string code)
+    {
+        public readonly List<Tok> Tokens = new();
+        private readonly int n = code.Length;
+        private int line = 1, i;
+
+        public bool More => i < n;
+
+        public void Next()
         {
             char c = code[i];
-            if (c == '\n') { line++; i++; continue; }
-            if (char.IsWhiteSpace(c)) { i++; continue; }
+            if (Trivia(c)) return;
+            if (c == '[' && LongBracket(code, i) is { } level) LongString(level);
+            else if (c is '"' or '\'') Quoted(c);
+            else Word(c);
+        }
+
+        /// <summary>Whitespace (counting lines) or a comment: skipped.</summary>
+        private bool Trivia(char c)
+        {
             if (c == '-' && i + 1 < n && code[i + 1] == '-')
             {
-                i += 2;
-                if (i < n && code[i] == '[' && LongBracket(code, i) is { } lvl)
-                {
-                    int close = code.IndexOf("]" + new string('=', lvl) + "]", i, StringComparison.Ordinal);
-                    int end = close < 0 ? n : close + lvl + 2;
-                    line += Count(code, i, end, '\n');
-                    i = end;
-                }
-                else while (i < n && code[i] != '\n') i++;
-                continue;
+                Comment();
+                return true;
             }
-            if (c == '[' && LongBracket(code, i) is { } level)
+            if (!char.IsWhiteSpace(c)) return false;
+            if (c == '\n') line++;
+            i++;
+            return true;
+        }
+
+        private void Comment()
+        {
+            i += 2;
+            if (i < n && code[i] == '[' && LongBracket(code, i) is { } lvl) SkipLong(lvl);
+            else while (i < n && code[i] != '\n') i++;
+        }
+
+        /// <summary>Skips a long bracket of <paramref name="level"/> from <see cref="i"/> to its close (or the end), counting lines.</summary>
+        private void SkipLong(int level)
+        {
+            int close = code.IndexOf("]" + new string('=', level) + "]", i, StringComparison.Ordinal);
+            int end = close < 0 ? n : close + level + 2;
+            line += Count(code, i, end, '\n');
+            i = end;
+        }
+
+        private void LongString(int level)
+        {
+            Tokens.Add(new Tok(T.Str, "S", line));
+            SkipLong(level);
+        }
+
+        private void Quoted(char quote)
+        {
+            int start = line, from = i + 1;
+            i++;
+            while (i < n && code[i] != quote)
             {
-                int close = code.IndexOf("]" + new string('=', level) + "]", i, StringComparison.Ordinal);
-                int end = close < 0 ? n : close + level + 2;
-                list.Add(new Tok(T.Str, "S", line));
-                line += Count(code, i, end, '\n');
-                i = end;
-                continue;
-            }
-            if (c is '"' or '\'')
-            {
-                int start = line, from = i + 1;
+                if (code[i] == '\\' && i + 1 < n) i++;
+                if (code[i] == '\n') line++;
                 i++;
-                while (i < n && code[i] != c)
-                {
-                    if (code[i] == '\\' && i + 1 < n) i++;
-                    if (code[i] == '\n') line++;
-                    i++;
-                }
-                // The literal's text rides along (tool-needing mine targets); every other consumer reads Str as "S".
-                list.Add(new Tok(T.Str, code[from..Math.Min(i, n)], start));
-                i++;
-                continue;
             }
-            if (char.IsDigit(c))
-            {
-                int s = i;
-                while (i < n && (char.IsLetterOrDigit(code[i]) || code[i] == '.')) i++;
-                list.Add(new Tok(T.Num, code[s..i], line));
-                continue;
-            }
-            if (char.IsLetter(c) || c == '_')
-            {
-                int s = i;
-                while (i < n && (char.IsLetterOrDigit(code[i]) || code[i] == '_')) i++;
-                list.Add(new Tok(T.Ident, code[s..i], line));
-                continue;
-            }
-            if (c == '.' && i + 1 < n && code[i + 1] == '.') { list.Add(new Tok(T.Sym, "..", line)); i += 2; continue; }
-            list.Add(new Tok(T.Sym, c.ToString(), line));
+            // The literal's text rides along (tool-needing mine targets); every other consumer reads Str as "S".
+            Tokens.Add(new Tok(T.Str, code[from..Math.Min(i, n)], start));
             i++;
         }
-        return list;
+
+        private void Word(char c)
+        {
+            if (char.IsDigit(c)) Run(T.Num, ch => char.IsLetterOrDigit(ch) || ch == '.');
+            else if (char.IsLetter(c) || c == '_') Run(T.Ident, ch => char.IsLetterOrDigit(ch) || ch == '_');
+            else Symbol(c);
+        }
+
+        private void Run(T kind, Func<char, bool> part)
+        {
+            int s = i;
+            while (i < n && part(code[i])) i++;
+            Tokens.Add(new Tok(kind, code[s..i], line));
+        }
+
+        private void Symbol(char c)
+        {
+            if (c == '.' && i + 1 < n && code[i + 1] == '.')
+            {
+                Tokens.Add(new Tok(T.Sym, "..", line));
+                i += 2;
+                return;
+            }
+            Tokens.Add(new Tok(T.Sym, c.ToString(), line));
+            i++;
+        }
     }
 
     private static int? LongBracket(string s, int i)
@@ -521,8 +686,7 @@ internal static class LuaLint
         var toks = Tokenize(code ?? "");
         var set = new HashSet<string>(StringComparer.Ordinal);
         for (int i = 0; i + 1 < toks.Count; i++)
-            if (toks[i].Kind == T.Ident && (toks[i + 1].Kind == T.Str || toks[i + 1].Kind == T.Sym && toks[i + 1].Text is "(" or "{") &&
-                !(i > 0 && toks[i - 1].Kind == T.Sym && toks[i - 1].Text is "." or ":") && toks[i].Text != "function")
+            if (toks[i].Kind == T.Ident && OpensCall(toks[i + 1]) && !(i > 0 && IsMemberDot(toks[i - 1])) && toks[i].Text != "function")
                 set.Add(toks[i].Text);
         return set;
     }
