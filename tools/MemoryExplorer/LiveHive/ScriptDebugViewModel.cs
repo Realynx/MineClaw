@@ -185,14 +185,32 @@ public sealed partial class ScriptDebugViewModel : ObservableObject, IDisposable
         Snapshot = s;
         if (s == null)
         {
-            ScriptName = "";
-            StatusText = reply.Running ? "running" : "no script running";
-            StatusKind = "idle";
-            IsRunning = IsPaused = false;
+            ApplyNoSnapshot(reply.Running);
             Tick(now);
             return;
         }
-        // The source comes once per run (and again when a different run or version shows up).
+        ApplyCode(s);
+        ApplyHeader(s);
+        ApplyActions(s);
+        ApplyMachine(s);
+        ApplyValues(s);
+        ApplyLanesAndOutcome(s);
+        Controls = s.Controls;
+        OnPropertyChanged(nameof(CanControl));
+        Tick(now);
+    }
+
+    private void ApplyNoSnapshot(bool running)
+    {
+        ScriptName = "";
+        StatusText = running ? "running" : "no script running";
+        StatusKind = "idle";
+        IsRunning = IsPaused = false;
+    }
+
+    /// <summary>The source comes once per run (and again when a different run or version shows up).</summary>
+    private void ApplyCode(ScriptDebugSnapshot s)
+    {
         var key = $"{s.SessionId}:{s.Name}:{s.Version}";
         if (s.Code != null && key != _codeKey)
         {
@@ -203,36 +221,55 @@ public sealed partial class ScriptDebugViewModel : ObservableObject, IDisposable
             CurrentIndex = -1;
         }
         else if (s.Code == null && key != _codeKey) Volatile.Write(ref _codeSession, -1); // ask for the new run's code next time
+    }
 
-        // A crew lane says whose crew it works for (Fox 10-30: a hive assigns scripts to some of its bodies; which crew is this body in?).
-        ScriptName = s.Name + (s.Version is { } v ? $" v{v}" : "") + (s.Role is { } role ? $" · lane {role}" + (s.Coordinator is { } co ? $" · crew of {co}" : "") : "");
+    /// <summary>The name line, run/pause status, the current line and where the engine is.</summary>
+    private void ApplyHeader(ScriptDebugSnapshot s)
+    {
+        ScriptName = NameLine(s);
         IsRunning = s.Live;
         IsPaused = s.Paused;
         StatusKind = s.Paused ? "paused" : s.Live ? "running" : s.Status;
-        StatusText = (s.Live ? (s.Paused ? "paused" : s.PausePending ? "pausing at the next safe point" : "running") : s.Status)
-            + (s.Line > 0 ? $" · line {s.Line}" : "");
-        PauseText = s.Patching is { } patching ? $"patching: {patching}"
-            : s.Paused ? $"paused ({s.PauseKind}): {s.PauseReason}" + (s.PausedSeconds is { } ps ? $" · {Dur(ps)}" : "") + (s.PatchNote is { } patchNote ? $" · patch {patchNote}" : "") : "";
+        StatusText = StatusLine(s);
+        PauseText = PauseLine(s);
         if (s.Patching != null) StatusText = "patching · " + StatusText;
         LineLive = s.LineLive;
         SetCurrent(s.Line);
-        WhereText = s.LineLive ? $"line {s.Line}:{s.Column}" + (s.Snippet is { } sn ? $"  `{sn}`" : "")
-            : s.Line > 0 ? $"line {s.Line} (last host call)" + (s.InSdk is { } sdk ? $" · now in {sdk}" : "") : "";
+        WhereText = WhereLine(s);
+    }
 
+    /// <summary>A crew lane says whose crew it works for (Fox 10-30: a hive assigns scripts to some of its bodies; which crew is this body in?).</summary>
+    private static string NameLine(ScriptDebugSnapshot s) =>
+        s.Name + (s.Version is { } v ? $" v{v}" : "") + (s.Role is { } role ? $" · lane {role}" + (s.Coordinator is { } co ? $" · crew of {co}" : "") : "");
+
+    private static string StatusLine(ScriptDebugSnapshot s) =>
+        (s.Live ? (s.Paused ? "paused" : s.PausePending ? "pausing at the next safe point" : "running") : s.Status) + (s.Line > 0 ? $" · line {s.Line}" : "");
+
+    private static string PauseLine(ScriptDebugSnapshot s) => s.Patching is { } patching ? $"patching: {patching}"
+        : s.Paused ? $"paused ({s.PauseKind}): {s.PauseReason}" + (s.PausedSeconds is { } ps ? $" · {Dur(ps)}" : "") + (s.PatchNote is { } patchNote ? $" · patch {patchNote}" : "") : "";
+
+    private static string WhereLine(ScriptDebugSnapshot s) => s.LineLive ? $"line {s.Line}:{s.Column}" + (s.Snippet is { } sn ? $"  `{sn}`" : "")
+        : s.Line > 0 ? $"line {s.Line} (last host call)" + (s.InSdk is { } sdk ? $" · now in {sdk}" : "") : "";
+
+    /// <summary>The call stack, the action in flight, counts and per-action timings.</summary>
+    private void ApplyActions(ScriptDebugSnapshot s)
+    {
         Replace(Stack, s.Stack.Select(f => new FrameRow(f.Function, $"{f.File}:{f.Line}", f.Script, IsHostFrame(f, s))).ToList());
         ActionText = ActionLine(s);
         ActionsText = $"{s.Actions} action{(s.Actions == 1 ? "" : "s")}";
         ElapsedText = Dur(s.ElapsedSeconds);
         Replace(Timings, s.Timings.Select(t => new TimingRow(t.Action, $"{t.Calls}x" + (t.Fails > 0 ? $" ({t.Fails} failed)" : ""), $"{t.Seconds:0.0} s",
             $"{t.AvgMs:0} ms", t.Fails > 0)).ToList());
+    }
 
-        CheckpointText = s.Checkpoint is { } cp ? $"cp '{cp}'" + (s.CheckpointTotal > 0 ? $" ({s.CheckpointsPassed}/{s.CheckpointTotal} passed)" : "")
-            : s.CheckpointTotal > 0 ? $"no checkpoint yet (0/{s.CheckpointTotal})" : "no checkpoints";
+    /// <summary>The checkpoint line and the state machine (state, history newest first, blackboard).</summary>
+    private void ApplyMachine(ScriptDebugSnapshot s)
+    {
+        CheckpointText = CheckpointLine(s);
         if (s.Machine is { } m)
         {
             HasMachine = true;
-            MachineText = $"{(m.Id == "m" ? "" : m.Id + ": ")}{m.State}  ·  {m.Transitions} transition{(m.Transitions == 1 ? "" : "s")}"
-                + (m.BlackboardAgeSeconds is > 1 ? $"  ·  blackboard {m.BlackboardAgeSeconds:0} s old" : "");
+            MachineText = MachineLine(m);
             Replace(History, m.History.AsEnumerable().Reverse().Select(h => new StepRow($"{h.From} → {h.To}  ({h.Why})", $"{h.At:0.0} s")).ToList());
             Replace(Blackboard, Rows(m.Blackboard));
         }
@@ -243,24 +280,42 @@ public sealed partial class ScriptDebugViewModel : ObservableObject, IDisposable
             History.Clear();
             Blackboard.Clear();
         }
+    }
+
+    private static string CheckpointLine(ScriptDebugSnapshot s) =>
+        s.Checkpoint is { } cp ? $"cp '{cp}'" + (s.CheckpointTotal > 0 ? $" ({s.CheckpointsPassed}/{s.CheckpointTotal} passed)" : "")
+        : s.CheckpointTotal > 0 ? $"no checkpoint yet (0/{s.CheckpointTotal})" : "no checkpoints";
+
+    private static string MachineLine(ScriptMachineView m) =>
+        $"{(m.Id == "m" ? "" : m.Id + ": ")}{m.State}  ·  {m.Transitions} transition{(m.Transitions == 1 ? "" : "s")}"
+        + (m.BlackboardAgeSeconds is > 1 ? $"  ·  blackboard {m.BlackboardAgeSeconds:0} s old" : "");
+
+    /// <summary>Params (with this run's extra args marked) and the locals.</summary>
+    private void ApplyValues(ScriptDebugSnapshot s)
+    {
         Replace(Params, Rows(s.Params));
         ParamsNote = s.Params == null ? "this script declares no params()" : "";
         if (s.Args is JsonObject { Count: > 0 } args)
             foreach (var row in Rows(args).Where(r => Params.All(p => p.Name != r.Name))) Params.Add(row with { Note = "arg" });
         Replace(Locals, s.Locals?.Select(l => new ValueRow(l.Name, l.Value, l.Scope)).ToList() ?? []);
         LocalsNote = s.LocalsNote ?? (s.LocalsAgeSeconds is > 1 ? $"sampled {s.LocalsAgeSeconds:0} s ago" : "");
+    }
+
+    /// <summary>Crew lanes, progress, the failure / outcome line and the log.</summary>
+    private void ApplyLanesAndOutcome(ScriptDebugSnapshot s)
+    {
         var lanes = s.Lanes.Select(l => new ValueRow($"lane {l.Id} · {l.Body}", l.Status)).ToList();
         if (s.Role != null && s.Crew != null)
             lanes.InsertRange(0, [new ValueRow("crew", s.Crew), .. s.Coordinator is { } c ? new[] { new ValueRow("coordinator", c) } : []]);
         Replace(Lanes, lanes);
         HasLanes = Lanes.Count > 0 || s.Crew != null;
-        ProgressText = s.ProgressPct is { } pct ? $"{pct:0}%" + (s.ProgressNote is { } pn ? " " + pn : "") : s.ProgressNote ?? "";
+        ProgressText = ProgressLine(s);
         FailureText = s.Live ? (s.LastFailure is { } lf ? "last failure: " + lf : "") : s.Outcome ?? "";
         Replace(Logs, s.Logs.ToList());
-        Controls = s.Controls;
-        OnPropertyChanged(nameof(CanControl));
-        Tick(now);
     }
+
+    private static string ProgressLine(ScriptDebugSnapshot s) =>
+        s.ProgressPct is { } pct ? $"{pct:0}%" + (s.ProgressNote is { } pn ? " " + pn : "") : s.ProgressNote ?? "";
 
     /// <summary>Recomputes the stale badge (UI thread; also called by the Live Hive's 2 Hz HUD timer).</summary>
     public void Tick(DateTime now)
@@ -287,12 +342,17 @@ public sealed partial class ScriptDebugViewModel : ObservableObject, IDisposable
     public static string ActionLine(ScriptDebugSnapshot s)
     {
         if (s.Action is not { } a) return s.Live ? "between actions" : "";
-        string? helper = null;
-        int firstScript = -1;
-        for (int i = 0; i < s.Stack.Count; i++) if (s.Stack[i].Script) { firstScript = i; break; }
-        if (firstScript > 1 && !s.Stack[firstScript - 1].Script) helper = s.Stack[firstScript - 1].Function;
+        string? helper = SdkHelper(s);
         var head = (helper != null ? helper + " → " : "") + a.Label + (a.Args is { Length: > 0 } args ? " " + args : "");
         return head + (a.Running ? $" · {Dur(a.Seconds)}" + (a.Atomic ? " · atomic" : "") : $" · done in {Dur(a.Seconds)}" + (a.Ok == false ? " (failed)" : ""));
+    }
+
+    /// <summary>The SDK helper the script called: the non-script frame just inside the innermost script frame (never the host frame 0), else null.</summary>
+    private static string? SdkHelper(ScriptDebugSnapshot s)
+    {
+        int firstScript = -1;
+        for (int i = 0; i < s.Stack.Count; i++) if (s.Stack[i].Script) { firstScript = i; break; }
+        return firstScript > 1 && !s.Stack[firstScript - 1].Script ? s.Stack[firstScript - 1].Function : null;
     }
 
     private static List<ValueRow> Rows(JsonNode? node)

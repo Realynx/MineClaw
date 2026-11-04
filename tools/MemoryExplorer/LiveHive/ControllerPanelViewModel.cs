@@ -317,26 +317,46 @@ public sealed partial class ControllerPanelViewModel : ObservableObject, IDispos
         HasBrain = info.Brain != null && info.Tabs.Contains("brain");
         HasScript = info.Tabs.Contains("script");
         ShowTabs = HasBrain && HasScript;
-        if (!HasBrain && HasScript) SelectedTab = 1;
-        else if (!HasScript && SelectedTab == 1) SelectedTab = 0;
-        KindText = info.Kind switch
-        {
-            "main" => "main hive · its own brain",
-            "hive" => $"hive · its own brain" + (info.Owner is { } o && o != "main" ? $" · owned by {o}" : ""),
-            "subhive" => $"subhive · driven by {(info.Owner ?? "main")}'s brain",
-            "script" => $"script-only · runs {info.Script ?? "a script"}" + (info.Owner is { } so ? $" · owned by {so}" : ""),
-            _ => info.Kind,
-        };
+        SelectTabForInfo();
+        KindText = KindLine(info);
         BrainText = info.Brain == null ? "no brain of its own" : string.Join(" · ", new[] { info.BrainKind, info.Model, info.Provider }.Where(s => !string.IsNullOrEmpty(s)));
         NoteText = info.Note ?? "";
-        Filter = info.Filter;
-        HasFilter = info.Filter != null;
-        FilterText = info.Filter != null ? $"highlighting the turns and tool calls that targeted {info.Filter}" : "";
-        if (info.Filter != null && Updates == 0) OnlyTargets = true;
+        ApplyFilter(info.Filter);
         HasOwner = info.Kind == "subhive" && info.Links.Owner != null;
+        SyncScript();
+        if (Script != null && Polling && (SelectedTab == 1 || !HasBrain)) Script.Start();
+    }
+
+    /// <summary>A script-only body opens on the script tab; a body without a script can't stay on it.</summary>
+    private void SelectTabForInfo()
+    {
+        if (!HasBrain && HasScript) SelectedTab = 1;
+        else if (!HasScript && SelectedTab == 1) SelectedTab = 0;
+    }
+
+    private static string KindLine(BodyControllerInfo info) => info.Kind switch
+    {
+        "main" => "main hive · its own brain",
+        "hive" => $"hive · its own brain" + (info.Owner is { } o && o != "main" ? $" · owned by {o}" : ""),
+        "subhive" => $"subhive · driven by {(info.Owner ?? "main")}'s brain",
+        "script" => $"script-only · runs {info.Script ?? "a script"}" + (info.Owner is { } so ? $" · owned by {so}" : ""),
+        _ => info.Kind,
+    };
+
+    /// <summary>The subhive filter: the body whose turns are highlighted (and shown alone on the first answer).</summary>
+    private void ApplyFilter(string? filter)
+    {
+        Filter = filter;
+        HasFilter = filter != null;
+        FilterText = filter != null ? $"highlighting the turns and tool calls that targeted {filter}" : "";
+        if (filter != null && Updates == 0) OnlyTargets = true;
+    }
+
+    /// <summary>Creates the script debugger when a script tab appears (and a source is known), drops it when the tab goes.</summary>
+    private void SyncScript()
+    {
         if (HasScript && Script == null && _scripts != null) Script = new ScriptDebugViewModel(_scripts(), Body, Title, _post);
         else if (!HasScript && Script != null) { Script.Dispose(); Script = null; }
-        if (Script != null && Polling && (SelectedTab == 1 || !HasBrain)) Script.Start();
     }
 
     partial void OnSelectedTabChanged(int value)
@@ -414,17 +434,30 @@ public sealed partial class ControllerPanelViewModel : ObservableObject, IDispos
     {
         Window = w;
         System.Clear();
-        foreach (var s in w.System)
-            System.Add(new ControllerSystemRow($"#{s.Index} · ~{K(s.Tokens)} tok" + (s.Cache ? $" · cache breakpoint ({s.Ttl ?? "5m"})" : "")
-                + (s.InCachedPrefix ? " · cached prefix" : " · uncached"), s.Text, s.InCachedPrefix, s.Cache));
-        long systemTokens = w.System.Sum(s => (long)s.Tokens);
-        SystemHeader = $"System prompt · {w.System.Count} block{(w.System.Count == 1 ? "" : "s")} · ~{K(systemTokens)} tok · {w.ToolCount} tools ~{K(w.ToolTokens)} tok"
-            + (w.CachedPrefixTokens > 0 ? $" · cached prefix ~{K(w.CachedPrefixTokens)} tok" : " · no cache breakpoint")
-            + (w.Usage is { } u ? $" (this call: read {K(u.CacheRead)}, wrote {K(u.CacheWrite)})" : "");
+        foreach (var s in w.System) System.Add(SystemRow(s));
+        SystemHeader = SystemHeaderLine(w);
         _allMessages = [];
         foreach (var m in w.Messages) foreach (var b in m.Blocks) _allMessages.Add(Row(m, b));
         WindowHeader = $"call #{w.CallSeq} · turn #{w.TurnId} · {w.Model} · {w.Messages.Count} messages" + (w.InFlight ? " · in flight" : "");
-        // token bar: the real prompt size of the last call (the estimate while in flight) against the context limit
+        ApplyTokenBar(w);
+        ApplySearch();
+    }
+
+    private static ControllerSystemRow SystemRow(CtxSystemBlock s) =>
+        new($"#{s.Index} · ~{K(s.Tokens)} tok" + (s.Cache ? $" · cache breakpoint ({s.Ttl ?? "5m"})" : "")
+            + (s.InCachedPrefix ? " · cached prefix" : " · uncached"), s.Text, s.InCachedPrefix, s.Cache);
+
+    private static string SystemHeaderLine(CtxWindow w)
+    {
+        long systemTokens = w.System.Sum(s => (long)s.Tokens);
+        return $"System prompt · {w.System.Count} block{(w.System.Count == 1 ? "" : "s")} · ~{K(systemTokens)} tok · {w.ToolCount} tools ~{K(w.ToolTokens)} tok"
+            + (w.CachedPrefixTokens > 0 ? $" · cached prefix ~{K(w.CachedPrefixTokens)} tok" : " · no cache breakpoint")
+            + (w.Usage is { } u ? $" (this call: read {K(u.CacheRead)}, wrote {K(u.CacheWrite)})" : "");
+    }
+
+    /// <summary>The token bar: the real prompt size of the last call (the estimate while in flight) against the context limit.</summary>
+    private void ApplyTokenBar(CtxWindow w)
+    {
         long used = w.PromptTokens > 0 ? w.PromptTokens : w.EstimatedTokens;
         double limit = Math.Max(1, w.Limit);
         Fill = Math.Clamp(used / limit, 0, 1);
@@ -432,7 +465,6 @@ public sealed partial class ControllerPanelViewModel : ObservableObject, IDispos
         CompactMark = w.CompactAt > 0 ? Math.Clamp(w.CompactAt / limit, 0, 1) : 0;
         NearLimit = Fill > 0.85;
         TokenText = $"{K(used)}{(w.PromptTokens > 0 ? "" : " (est.)")} / {K(w.Limit)} tok ({Fill:P0}) · cached prefix ~{K(w.CachedPrefixTokens)} · compacts at {K(w.CompactAt)} history";
-        ApplySearch();
     }
 
     partial void OnSearchTextChanged(string value) => ApplySearch();
@@ -479,22 +511,38 @@ public sealed partial class ControllerPanelViewModel : ObservableObject, IDispos
     public static ControllerBlockRow Row(CtxMessage? m, CtxBlock b)
     {
         bool user = m?.Role == "user";
-        string who = m == null ? "assistant" : m.Role;
         string head = b.Kind switch
         {
-            "text" when b.Label is { } l => l == "journal" ? "compaction summary (journal)" : $"{who} · [{l}]" + (l == "memory" ? " · retrieved memory" : ""),
-            "text" => m?.Tag == "turn" ? "user · turn input" : $"{who} · text",
-            "tool_use" => $"→ tool call {b.Name}" + (b.Id != null ? $" ({b.Id})" : ""),
-            "tool_result" => (b.IsError ? "← tool error" : "← tool result") + (b.Id != null ? $" ({b.Id})" : "") + (b.Label != null ? " " + b.Label : ""),
-            "thinking" => "thinking · " + (b.Label ?? BrainContextCapture.ThinkingLabel) + (b.Bytes is > 0 ? $" · signed ({b.Bytes} bytes)" : ""),
-            "redacted_thinking" => "thinking · " + (b.Label ?? BrainContextCapture.RedactedThinkingLabel) + (b.Bytes is { } n ? $" · {n} bytes" : ""),
-            "reasoning" => "thinking · " + (b.Label ?? BrainContextCapture.ReasoningLabel),
+            "text" => TextHead(m, b),
+            "tool_use" or "tool_result" => ToolHead(b),
+            "thinking" or "redacted_thinking" or "reasoning" => ThinkingHead(b),
             "image" => b.Label ?? "image",
             _ => b.Kind,
         };
-        string text = b.Kind == "tool_use" ? Pretty(b.Input) : b.Text ?? (b.Kind == "redacted_thinking" ? "(encrypted: the API returns no readable text for this block)" : "");
-        return new ControllerBlockRow(b.Kind, head, text, b.Target, user, b.Label);
+        return new ControllerBlockRow(b.Kind, head, RowText(b), b.Target, user, b.Label);
     }
+
+    /// <summary>A text block: labelled ("[memory]", the journal summary), a turn's input, or plain text by role.</summary>
+    private static string TextHead(CtxMessage? m, CtxBlock b)
+    {
+        string who = m == null ? "assistant" : m.Role;
+        if (b.Label is { } l) return l == "journal" ? "compaction summary (journal)" : $"{who} · [{l}]" + (l == "memory" ? " · retrieved memory" : "");
+        return m?.Tag == "turn" ? "user · turn input" : $"{who} · text";
+    }
+
+    private static string ToolHead(CtxBlock b) => b.Kind == "tool_use"
+        ? $"→ tool call {b.Name}" + (b.Id != null ? $" ({b.Id})" : "")
+        : (b.IsError ? "← tool error" : "← tool result") + (b.Id != null ? $" ({b.Id})" : "") + (b.Label != null ? " " + b.Label : "");
+
+    private static string ThinkingHead(CtxBlock b) => b.Kind switch
+    {
+        "thinking" => "thinking · " + (b.Label ?? BrainContextCapture.ThinkingLabel) + (b.Bytes is > 0 ? $" · signed ({b.Bytes} bytes)" : ""),
+        "redacted_thinking" => "thinking · " + (b.Label ?? BrainContextCapture.RedactedThinkingLabel) + (b.Bytes is { } n ? $" · {n} bytes" : ""),
+        _ => "thinking · " + (b.Label ?? BrainContextCapture.ReasoningLabel),
+    };
+
+    private static string RowText(CtxBlock b) =>
+        b.Kind == "tool_use" ? Pretty(b.Input) : b.Text ?? (b.Kind == "redacted_thinking" ? "(encrypted: the API returns no readable text for this block)" : "");
 
     private static string CallHeader(CtxCall c)
     {
