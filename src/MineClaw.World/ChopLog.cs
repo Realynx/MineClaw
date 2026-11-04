@@ -52,13 +52,17 @@ public sealed class ChopLog
                 if (r.Dimension != dimension || t - r.At > Window) continue;
                 if (r.Left.Contains(log)) return r;
                 foreach (var f in r.Felled)
-                {
-                    int dx = Math.Abs(f.X - log.X), dz = Math.Abs(f.Z - log.Z), dy = log.Y - f.Y;
-                    if (dx <= 1 && dz <= 1 && dy is >= -1 and <= 1) return r;
-                    if (dx == 0 && dz == 0 && dy is > 1 and <= 3) return r;
-                }
+                    if (Touches(f, log)) return r;
             }
         }
         return null;
+    }
+
+    /// <summary>The log is in the 26-neighbourhood of the felled cell, or up to 3 straight above it.</summary>
+    private static bool Touches(BlockPos felled, BlockPos log)
+    {
+        int dx = Math.Abs(felled.X - log.X), dz = Math.Abs(felled.Z - log.Z), dy = log.Y - felled.Y;
+        if (dx <= 1 && dz <= 1 && dy is >= -1 and <= 1) return true;
+        return dx == 0 && dz == 0 && dy is > 1 and <= 3;
     }
 }

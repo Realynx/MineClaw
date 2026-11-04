@@ -110,19 +110,32 @@ public sealed class DesignSnapshot
         foreach (var row in text.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
             int colon = row.IndexOf(':');
-            if (colon < 0) continue;
-            var yz = row[..colon].Split(',');
-            if (yz.Length != 2 || !int.TryParse(yz[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var y)
-                || !int.TryParse(yz[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var z)) continue;
+            if (colon < 0 || !RowYz(row[..colon], out int y, out int z)) continue;
             foreach (var run in row[(colon + 1)..].Split(',', StringSplitOptions.RemoveEmptyEntries))
             {
-                // Runs use '/' (x can be negative: "-5/-2").
-                var ab = run.Split('/');
-                if (!int.TryParse(ab[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var x0)) continue;
-                int x1 = ab.Length > 1 && int.TryParse(ab[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var e) ? e : x0;
+                if (!Run(run, out int x0, out int x1)) continue;
                 for (int x = x0; x <= x1; x++) yield return new BlockPos(x, y, z);
             }
         }
+    }
+
+    /// <summary>A row's "y,z" head.</summary>
+    private static bool RowYz(string head, out int y, out int z)
+    {
+        y = z = 0;
+        var yz = head.Split(',');
+        return yz.Length == 2 && int.TryParse(yz[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out y)
+            && int.TryParse(yz[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out z);
+    }
+
+    /// <summary>One run: "x" or "x0/x1" (runs use '/': x can be negative, "-5/-2").</summary>
+    private static bool Run(string run, out int x0, out int x1)
+    {
+        var ab = run.Split('/');
+        x1 = 0;
+        if (!int.TryParse(ab[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out x0)) return false;
+        x1 = ab.Length > 1 && int.TryParse(ab[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var e) ? e : x0;
+        return true;
     }
 
     public static DesignSnapshot Decode(string? states, string? air)
@@ -185,20 +198,26 @@ public sealed class DesignDiff
     public static DesignDiff Against(DesignSnapshot rev, IBlockAccess world)
     {
         var d = new DesignDiff();
-        foreach (var (p, s) in rev.Blocks)
-        {
-            if (!world.IsLoaded(p.X, p.Z)) { d.Unknown++; continue; }
-            int id = world.GetBlock(p.X, p.Y, p.Z), meta = world.GetMeta(p.X, p.Y, p.Z);
-            if (id == 0 || Drifts(id) && !Drifts(s.Id)) d.Removed.Add(new DiffCell(p, s.Id, s.Meta, id, meta));
-            else if (!Same(s.Id, s.Meta, id, meta)) d.Changed.Add(new DiffCell(p, s.Id, s.Meta, id, meta));
-        }
-        foreach (var p in rev.Air)
-        {
-            if (!world.IsLoaded(p.X, p.Z)) continue;
-            int id = world.GetBlock(p.X, p.Y, p.Z);
-            if (id != 0 && !Drifts(id)) d.Added.Add(new DiffCell(p, 0, 0, id, world.GetMeta(p.X, p.Y, p.Z)));
-        }
+        foreach (var (p, s) in rev.Blocks) d.CompareBlock(p, s, world);
+        foreach (var p in rev.Air) d.CompareAir(p, world);
         return d;
+    }
+
+    /// <summary>A design block against the world: unknown (unloaded), removed (air, or something drifted in), or changed.</summary>
+    private void CompareBlock(BlockPos p, (int Id, int Meta) s, IBlockAccess world)
+    {
+        if (!world.IsLoaded(p.X, p.Z)) { Unknown++; return; }
+        int id = world.GetBlock(p.X, p.Y, p.Z), meta = world.GetMeta(p.X, p.Y, p.Z);
+        if (id == 0 || Drifts(id) && !Drifts(s.Id)) Removed.Add(new DiffCell(p, s.Id, s.Meta, id, meta));
+        else if (!Same(s.Id, s.Meta, id, meta)) Changed.Add(new DiffCell(p, s.Id, s.Meta, id, meta));
+    }
+
+    /// <summary>An expected-air cell holding a block that didn't drift in: added.</summary>
+    private void CompareAir(BlockPos p, IBlockAccess world)
+    {
+        if (!world.IsLoaded(p.X, p.Z)) return;
+        int id = world.GetBlock(p.X, p.Y, p.Z);
+        if (id != 0 && !Drifts(id)) Added.Add(new DiffCell(p, 0, 0, id, world.GetMeta(p.X, p.Y, p.Z)));
     }
 
     /// <summary>The same cells the other way round (world → revision: what a revert places, digs and swaps).</summary>
@@ -216,10 +235,12 @@ public sealed class DesignDiff
     {
         if (id == 0) return false;
         var n = Blocks.Get(id).Name;
-        return Blocks.IsWater(id) || Blocks.IsLava(id) || id == Blocks.Fire || id is Blocks.TallGrass or Blocks.DeadBush or Blocks.SnowLayer
-               or Blocks.Vine or Blocks.BrownMushroom or Blocks.RedMushroom or 37 or 38
-               || n is "double_plant" or "waterlily" or "web";
+        return Blocks.IsWater(id) || Blocks.IsLava(id) || id == Blocks.Fire || DriftingPlant(id) || n is "double_plant" or "waterlily" or "web";
     }
+
+    /// <summary>Tall grass, dead bushes, snow layers, vines, mushrooms and flowers.</summary>
+    private static bool DriftingPlant(int id) => id is Blocks.TallGrass or Blocks.DeadBush or Blocks.SnowLayer
+        or Blocks.Vine or Blocks.BrownMushroom or Blocks.RedMushroom or 37 or 38;
 
     /// <summary>The same block for a design: exact id and meta, except use-state bits (open, powered, lit, grown).</summary>
     public static bool Same(int aId, int aMeta, int bId, int bMeta)

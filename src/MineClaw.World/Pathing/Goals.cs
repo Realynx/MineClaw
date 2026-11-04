@@ -192,14 +192,17 @@ public sealed class GoalFiltered(Goal inner, Func<int, int, int, bool> accept, s
         {
             double f = (double)i / n;
             int cx = (int)Math.Floor(ex + dx * f), cy = (int)Math.Floor(ey + dy * f), cz = (int)Math.Floor(ez + dz * f);
-            if (cx == target.X && cy == target.Y && cz == target.Z) continue;
-            if (cx == x && cz == z && (cy == y || cy == y + 1)) continue;
+            if (OwnOrTargetCell(cx, cy, cz, x, y, z, target)) continue;
             int id = w.GetBlock(cx, cy, cz);
             if (id is 18 or 161 || !BlockShapes.HasCollision(w, cx, cy, cz)) continue;
             return false;
         }
         return true;
     }
+
+    /// <summary>The target cell, or one of the body's own two cells.</summary>
+    private static bool OwnOrTargetCell(int cx, int cy, int cz, int x, int y, int z, BlockPos target) =>
+        (cx == target.X && cy == target.Y && cz == target.Z) || (cx == x && cz == z && (cy == y || cy == y + 1));
 
     /// <summary>
     /// <paramref name="inner"/>, but only standing cells at least <paramref name="minEdgeDistance"/> from any deadly

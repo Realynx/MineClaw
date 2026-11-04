@@ -75,16 +75,24 @@ public static class Openables
         int id = w.GetBlock(s.X, s.Y, s.Z), meta = w.GetMeta(s.X, s.Y, s.Z);
         if (!IsOpenable(id)) return false;
         if (!IsDoor(id)) return IsOpen(meta);
-        // The panel's plane from its collision box (b1.8.1: state 0/2 = a z-face, mc-dev BlockDoor; 1.12.2: the actual state).
-        var panel = new List<AABB>(2);
-        BlockShapes.AddCollisionBoxes(w, id, meta, s.X, s.Y, s.Z, panel);
-        bool zFace = panel.Count > 0 ? panel[0].MaxZ - panel[0].MinZ < 0.5 : ((meta & OpenBit) == 0 ? (meta - 1) & 3 : meta & 3) is 0 or 2;
-        bool Side(int x, int z) => BlockShapes.HasCollision(w, x, s.Y, z) || IsDoor(w.GetBlock(x, s.Y, z));
-        bool wallsX = Side(s.X - 1, s.Z) && Side(s.X + 1, s.Z), wallsZ = Side(s.X, s.Z - 1) && Side(s.X, s.Z + 1);
+        bool zFace = PanelOnZFace(w, id, meta, s);
+        bool wallsX = DoorwaySide(w, s.X - 1, s.Y, s.Z) && DoorwaySide(w, s.X + 1, s.Y, s.Z);
+        bool wallsZ = DoorwaySide(w, s.X, s.Y, s.Z - 1) && DoorwaySide(w, s.X, s.Y, s.Z + 1);
         if (wallsZ && !wallsX) return zFace;   // passage along x: x-face panels block it
         if (wallsX && !wallsZ) return !zFace;  // passage along z
         return IsOpen(meta);
     }
+
+    /// <summary>The panel's plane from its collision box (b1.8.1: state 0/2 = a z-face, mc-dev BlockDoor; 1.12.2: the actual state).</summary>
+    private static bool PanelOnZFace(IBlockAccess w, int id, int meta, BlockPos s)
+    {
+        var panel = new List<AABB>(2);
+        BlockShapes.AddCollisionBoxes(w, id, meta, s.X, s.Y, s.Z, panel);
+        return panel.Count > 0 ? panel[0].MaxZ - panel[0].MinZ < 0.5 : ((meta & OpenBit) == 0 ? (meta - 1) & 3 : meta & 3) is 0 or 2;
+    }
+
+    /// <summary>A wall or another door beside the doorway.</summary>
+    private static bool DoorwaySide(IBlockAccess w, int x, int y, int z) => BlockShapes.HasCollision(w, x, y, z) || IsDoor(w.GetBlock(x, y, z));
 
     /// <summary>Metadata after one right-click / redstone flip (door lower half or trapdoor/gate). Gates swing away from
     /// the player in vanilla, but the open bit is what passability depends on, so the planner just flips it.</summary>

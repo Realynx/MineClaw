@@ -57,15 +57,23 @@ public static class StuckProbe
             if (id == 0) continue;
             boxes.Clear();
             BlockShapes.AddCollisionBoxes(w, id, w.GetMeta(x, y, z), x, y, z, boxes);
-            bool head = false, block = false;
-            foreach (var b in boxes)
-            {
-                if (b.Intersects(here)) continue; // already touching/inside it: not what stops this move
-                if (b.Intersects(moved) && b.MaxY > feet.Y + w.Physics.StepHeight + 1e-6) { block = true; head |= b.MinY >= feet.Y + 1 - 1e-6; }
-                else if (b.Intersects(raised) && !b.Intersects(moved)) { block = true; head = true; }
-            }
-            if (block) found.Add(new Obstruction(new BlockPos(x, y, z), head));
+            if (InTheWay(w, boxes, feet, here, moved, raised, out bool head)) found.Add(new Obstruction(new BlockPos(x, y, z), head));
         }
         return found;
+    }
+
+    /// <summary>A block's boxes stop the move: one the moved body hits above a step, or one the stepped-up body hits; at head
+    /// height when it reaches a block above the feet (or only the stepped-up body hits it).</summary>
+    private static bool InTheWay(IBlockAccess w, List<AABB> boxes, Vec3d feet, AABB here, AABB moved, AABB raised, out bool head)
+    {
+        head = false;
+        bool block = false;
+        foreach (var b in boxes)
+        {
+            if (b.Intersects(here)) continue; // already touching/inside it: not what stops this move
+            if (b.Intersects(moved) && b.MaxY > feet.Y + w.Physics.StepHeight + 1e-6) { block = true; head |= b.MinY >= feet.Y + 1 - 1e-6; }
+            else if (b.Intersects(raised) && !b.Intersects(moved)) { block = true; head = true; }
+        }
+        return block;
     }
 }

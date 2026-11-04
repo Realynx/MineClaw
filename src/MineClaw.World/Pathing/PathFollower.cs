@@ -285,11 +285,13 @@ public sealed partial class PathFollower
         if (!StepWorkDone(w, step)) return false;
         var pos = s.Position;
         if ((int)Math.Floor(pos.X) != step.X || (int)Math.Floor(pos.Z) != step.Z) return false;
-        bool settled = s.OnGround || s.InWater || s.OnLadder || PlayerPhysics.IsOnLadder(w, s);
-        if (!settled) return false;
+        if (!Settled(w, s)) return false;
         if (step.Jump is not null) return LandedJump(s, step);
         return AtStepHeight(pos, step) && (!NeedsPrecision(step) || OnCentre(pos, step));
     }
+
+    /// <summary>On the ground, in water or on a ladder.</summary>
+    private static bool Settled(IBlockAccess w, PhysicsState s) => s.OnGround || s.InWater || s.OnLadder || PlayerPhysics.IsOnLadder(w, s);
 
     /// <summary>The step's doors are open, its trigger fired, its blocks broken and its block placed.</summary>
     private static bool StepWorkDone(IBlockAccess w, PathStep step)
