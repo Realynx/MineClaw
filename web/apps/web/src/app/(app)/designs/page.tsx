@@ -180,6 +180,50 @@ function DiffBody({ same, diff }: { same: boolean; diff: DesignDiff }) {
   );
 }
 
+type DesignsList = ReturnType<typeof useApi<'designs.list'>>;
+
+/** The designs (the open one marked): loading, an error, none, or the rows. */
+function DesignList({ list, id, onPick }: { list: DesignsList; id: number | null; onPick: (id: number) => void }) {
+  if (list.isPending)
+    return (
+      <li className="space-y-2 p-4">
+        {Array.from({ length: 5 }, (_, i) => (
+          <Skeleton key={i} className="h-12" />
+        ))}
+      </li>
+    );
+  if (list.error)
+    return (
+      <li>
+        <ErrorState error={list.error} onRetry={() => void list.refetch()} />
+      </li>
+    );
+  if (list.data.items.length === 0)
+    return (
+      <li>
+        <EmptyState title="No designs" />
+      </li>
+    );
+  return list.data.items.map((d) => (
+    <li key={d.id}>
+      <button
+        onClick={() => onPick(d.id)}
+        aria-current={d.id === id ? 'true' : undefined}
+        className={cn('block w-full border-b border-border px-4 py-3 text-left', d.id === id ? 'bg-accent-soft' : 'hover:bg-surface-2')}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-subtle">#{d.id}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{d.name}</span>
+          <Badge>{d.status}</Badge>
+        </div>
+        <p className="mt-0.5 text-[11px] text-subtle">
+          r{d.rev} · {d.revisions} revisions{d.version ? ` · ${d.version}` : ''}{d.requester ? ` · for ${d.requester}` : ''} · {ago(d.updated)}
+        </p>
+      </button>
+    </li>
+  ));
+}
+
 function DesignsInner() {
   const params = useSearchParams();
   const router = useRouter();
@@ -212,40 +256,7 @@ function DesignsInner() {
           ) : null}
         </div>
         <ul className="min-h-0 flex-1 overflow-y-auto">
-          {list.isPending ? (
-            <li className="space-y-2 p-4">
-              {Array.from({ length: 5 }, (_, i) => (
-                <Skeleton key={i} className="h-12" />
-              ))}
-            </li>
-          ) : list.error ? (
-            <li>
-              <ErrorState error={list.error} onRetry={() => void list.refetch()} />
-            </li>
-          ) : list.data.items.length === 0 ? (
-            <li>
-              <EmptyState title="No designs" />
-            </li>
-          ) : (
-            list.data.items.map((d) => (
-              <li key={d.id}>
-                <button
-                  onClick={() => router.replace(`/designs?id=${d.id}`, { scroll: false })}
-                  aria-current={d.id === id ? 'true' : undefined}
-                  className={cn('block w-full border-b border-border px-4 py-3 text-left', d.id === id ? 'bg-accent-soft' : 'hover:bg-surface-2')}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-subtle">#{d.id}</span>
-                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{d.name}</span>
-                    <Badge>{d.status}</Badge>
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-subtle">
-                    r{d.rev} · {d.revisions} revisions{d.version ? ` · ${d.version}` : ''}{d.requester ? ` · for ${d.requester}` : ''} · {ago(d.updated)}
-                  </p>
-                </button>
-              </li>
-            ))
-          )}
+          <DesignList list={list} id={id} onPick={(d) => router.replace(`/designs?id=${d}`, { scroll: false })} />
         </ul>
       </aside>
       <section className="min-h-0 min-w-0 flex-1 overflow-auto bg-surface">

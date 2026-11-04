@@ -327,12 +327,13 @@ function Preview() {
 function PreviewViewer({ mode }: { mode: CameraMode }) {
   const { mod, source, ready } = useWorldHost();
   const entities = useEntities();
-  const bot = entities.data?.bots[0]?.name ?? null;
+  const first = entities.data?.bots[0];
+  const bot = first?.name ?? null;
   if (!ready || !mod || !source) return bot ? <DotMap follow={bot} radius={30} className="absolute inset-0" label={false} /> : null;
   return (
     <mod.WorldViewer
       source={source}
-      dim={entities.data?.bots[0]?.dim ?? 0}
+      dim={first?.dim ?? 0}
       follow={bot}
       cameraMode={mode}
       hideHint
