@@ -234,12 +234,28 @@ public sealed class RaptorSectionRebuilder
     private string? Refusal(RebuildRequest r, string scope)
     {
         if (scope is not ("node" or "kind")) return "scope must be node or kind";
+        return TreeRefusal() ?? SpendRefusal(r) ?? TargetRefusal(r, scope);
+    }
+
+    /// <summary>A loaded tree in a writable db, and an LLM to summarise with.</summary>
+    private string? TreeRefusal()
+    {
         if (_ctx.Raptor == null) return "no RAPTOR tree: " + (_ctx.RaptorNote ?? "unavailable");
         if (!_ctx.Raptor.Ready) return "the RAPTOR tree is still loading; try again shortly";
         if (_ctx.ReadOnly) return "the database is open read-only; nothing was changed";
         if (_ctx.Llm == null) return "no LLM client for summaries";
+        return null;
+    }
+
+    private string? SpendRefusal(RebuildRequest r)
+    {
         if (r.MaxUsd <= 0) return "max_usd must be > 0";
         if (_ctx.Usage?.Mode == BudgetMode.Paused) return "the bot's budget is Paused; no model calls until it rolls over";
+        return null;
+    }
+
+    private static string? TargetRefusal(RebuildRequest r, string scope)
+    {
         if (scope == "node" && r.Node == null) return "scope node needs node (the summary node index)";
         if (scope == "kind" && string.IsNullOrWhiteSpace(r.Kind)) return "scope kind needs kind";
         return null;

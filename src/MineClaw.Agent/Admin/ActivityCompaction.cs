@@ -133,8 +133,7 @@ public sealed class ActivityCompaction
         // The tree takes the removals now (zero tokens); summaries above them stay dirty for the budgeted refresh.
         if (!dryRun && pending.Count > 0) await SyncTreeAsync(ct).ConfigureAwait(false);
 
-        int docsAfter = dryRun ? docsBefore - removed : (int)_db.ScalarLong("SELECT count(*) FROM docs");
-        int actAfter = dryRun ? actBefore - removed : ActivityDocs();
+        var (docsAfter, actAfter) = dryRun ? (docsBefore - removed, actBefore - removed) : ((int)_db.ScalarLong("SELECT count(*) FROM docs"), ActivityDocs());
         var samples = pass.Outputs.Values.Where(d => !pass.Gone.Contains(d.Ref)).OrderByDescending(d => d.Body.Length).Take(5).Select(d => d.Body).ToList();
         var msg = pending.Count == 0
             ? $"nothing to compact: {actBefore} activity episodes are already coalesced"

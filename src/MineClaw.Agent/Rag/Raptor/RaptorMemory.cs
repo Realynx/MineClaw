@@ -177,10 +177,7 @@ public sealed class RaptorMemory : ISearchAugmenter, IDisposable
 
     public SearchAugment? Augment(RagQuery q, float[]? queryVector)
     {
-        if (!_ready || queryVector == null || queryVector.Length == 0) return null;
-        if (q.Tags is { Count: > 0 }) return null; // tag filters target world observations, which are not in the tree
-        var (count, dims) = Index.Read(t => (t.Count, t.Dimensions));
-        if (count == 0 || dims != queryVector.Length) return null;
+        if (!Searchable(q, queryVector)) return null;
         RaptorFilter? filter = null;
         if (q.Kinds is { Count: > 0 } kinds)
         {
@@ -188,6 +185,21 @@ public sealed class RaptorMemory : ISearchAugmenter, IDisposable
             filter = new RaptorFilter { Kinds = kinds };
         }
         bool summaries = _o.IncludeSummaries && filter == null;
+        return new SearchAugment(RankedLists(queryVector!, filter, summaries), Store.ContainsDoc);
+    }
+
+    /// <summary>A loaded tree with the query vector's dimensions, and no tag filter (those target world observations, not in the tree).</summary>
+    private bool Searchable(RagQuery q, float[]? queryVector)
+    {
+        if (!_ready || queryVector == null || queryVector.Length == 0) return false;
+        if (q.Tags is { Count: > 0 }) return false;
+        var (count, dims) = Index.Read(t => (t.Count, t.Dimensions));
+        return count != 0 && dims == queryVector.Length;
+    }
+
+    /// <summary>The collapsed and/or traversal candidates, per the mode.</summary>
+    private List<RankedList> RankedLists(float[] queryVector, RaptorFilter? filter, bool summaries)
+    {
         var lists = new List<RankedList>(2);
         if (Mode is RaptorMode.Collapsed or RaptorMode.Hybrid)
         {
@@ -202,7 +214,7 @@ public sealed class RaptorMemory : ISearchAugmenter, IDisposable
             var r = Index.Retrieve(queryVector, new RaptorQuery { Collapsed = false, TopK = Math.Max(1, _o.TraversalTopK), Filter = filter });
             lists.Add(Map(TraversalList, r.Nodes.OrderByDescending(n => n.Score).ThenBy(n => n.Index).ToList(), summaries));
         }
-        return new SearchAugment(lists, Store.ContainsDoc);
+        return lists;
     }
 
     private RankedList Map(string name, IReadOnlyList<RetrievedNode> nodes, bool summaries)

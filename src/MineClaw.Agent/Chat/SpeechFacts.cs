@@ -130,19 +130,30 @@ public static partial class SpeechFacts
     public static string CorrectCounts(string text, IReadOnlyList<TaskCount> facts, List<string>? corrected = null)
     {
         if (string.IsNullOrWhiteSpace(text) || facts.Count == 0) return text;
-        return CountClaimRx().Replace(text, m =>
-        {
-            int n = int.Parse(m.Groups["n"].Value);
-            string next = m.Groups["rest"].Success ? m.Groups["rest"].Value.Trim() : "";
-            var fact = facts.LastOrDefault(f => f.Target == n);
-            bool countWord = next.Length == 0 || CountWords.Contains(next) || next.StartsWith("cobble", StringComparison.OrdinalIgnoreCase);
-            if (fact == default && countWord) fact = facts[^1];
-            if (fact == default || n <= fact.Actual) return m.Value;
-            if (m.Groups["verb"].Value.Equals("dug", StringComparison.OrdinalIgnoreCase) && fact.Dug is { } dug && n <= dug) return m.Value;
-            string fixedText = $"{m.Groups["verb"].Value} only {fact.Actual} of the {n}{m.Groups["rest"].Value}";
-            corrected?.Add($"{m.Value} -> {fixedText}");
-            return fixedText;
-        });
+        return CountClaimRx().Replace(text, m => CorrectClaim(m, facts, corrected));
+    }
+
+    /// <summary>One count claim: kept when the facts allow it, else "verb only N of the M".</summary>
+    private static string CorrectClaim(Match m, IReadOnlyList<TaskCount> facts, List<string>? corrected)
+    {
+        int n = int.Parse(m.Groups["n"].Value);
+        string next = m.Groups["rest"].Success ? m.Groups["rest"].Value.Trim() : "";
+        var fact = FactFor(n, next, facts);
+        if (fact == default || n <= fact.Actual) return m.Value;
+        if (m.Groups["verb"].Value.Equals("dug", StringComparison.OrdinalIgnoreCase) && fact.Dug is { } dug && n <= dug) return m.Value;
+        string fixedText = $"{m.Groups["verb"].Value} only {fact.Actual} of the {n}{m.Groups["rest"].Value}";
+        corrected?.Add($"{m.Value} -> {fixedText}");
+        return fixedText;
+    }
+
+    /// <summary>The task whose target is the claimed number; else, when the claim is about the count itself ("all 64",
+    /// "64 cobble"), the latest task.</summary>
+    private static TaskCount FactFor(int n, string next, IReadOnlyList<TaskCount> facts)
+    {
+        var fact = facts.LastOrDefault(f => f.Target == n);
+        bool countWord = next.Length == 0 || CountWords.Contains(next) || next.StartsWith("cobble", StringComparison.OrdinalIgnoreCase);
+        if (fact == default && countWord) fact = facts[^1];
+        return fact;
     }
 
     private static string MapSentences(string text, Func<string, string> map)

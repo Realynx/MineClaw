@@ -134,22 +134,31 @@ internal static class Clauses
             if (raw.TrimStart().StartsWith('/')) { lines.Add(raw); continue; }
             var sentences = new List<string>();
             foreach (var s in Sentence.Split(raw))
-            {
-                var t = s.Trim();
-                if (t.Length == 0) continue;
-                var end = t[^1] is '.' or '!' or '?' or '~' ? t[^1].ToString() : "";
-                var body = end.Length > 0 ? t[..^1] : t;
-                var parts = Comma.Split(body).ToList();
-                var kept = parts.Where(c => !drop(c.Trim())).ToList();
-                if (kept.Count == 0) continue;
-                if (kept.Count == parts.Count) { sentences.Add(t); continue; }
-                var joined = string.Join(", ", kept.Select(k => k.Trim())).Trim();
-                if (joined.Length == 0) continue;
-                if (!ReferenceEquals(kept[^1], parts[^1]) && end == "?") end = ""; // the question was the dropped part
-                sentences.Add(joined + end);
-            }
+                if (KeptSentence(s.Trim(), drop) is { } kept) sentences.Add(kept);
             if (sentences.Count > 0) lines.Add(string.Join(" ", sentences));
         }
         return string.Join("\n", lines).Trim();
+    }
+
+    /// <summary>A sentence without its dropped clauses (as is when none dropped; null when nothing is left).</summary>
+    private static string? KeptSentence(string t, Func<string, bool> drop)
+    {
+        if (t.Length == 0) return null;
+        var (body, end) = SplitEnd(t);
+        var parts = Comma.Split(body).ToList();
+        var kept = parts.Where(c => !drop(c.Trim())).ToList();
+        if (kept.Count == 0) return null;
+        if (kept.Count == parts.Count) return t;
+        var joined = string.Join(", ", kept.Select(k => k.Trim())).Trim();
+        if (joined.Length == 0) return null;
+        if (!ReferenceEquals(kept[^1], parts[^1]) && end == "?") end = ""; // the question was the dropped part
+        return joined + end;
+    }
+
+    /// <summary>A sentence's body and its end mark (. ! ? ~, or "" when it has none).</summary>
+    private static (string Body, string End) SplitEnd(string t)
+    {
+        var end = t[^1] is '.' or '!' or '?' or '~' ? t[^1].ToString() : "";
+        return (end.Length > 0 ? t[..^1] : t, end);
     }
 }

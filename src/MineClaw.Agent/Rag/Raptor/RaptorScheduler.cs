@@ -154,11 +154,8 @@ public sealed class RaptorScheduler : IDisposable
             var now = _time.GetUtcNow();
 
             var decision = index.ShouldRebuild();
-            bool small = index.LeafCount < _o.RebuildAnytimeBelowLeaves;
-            bool wantRebuild = forceRebuild || (decision.Rebuild && (OffPeak || small));
-            int dirty = index.DirtyCount;
-            bool wantRefresh = forceRefresh || (dirty > 0 && (_leavesSinceRefresh >= Math.Max(1, _o.RefreshEveryLeaves)
-                || now - _lastRefresh >= TimeSpan.FromMinutes(Math.Max(1, _o.RefreshEveryMinutes))));
+            bool wantRebuild = forceRebuild || WantsRebuild(index, decision);
+            bool wantRefresh = forceRefresh || WantsRefresh(index, now);
             if (!wantRebuild && !wantRefresh) return new RaptorStepReport(sync, null, null, 0, null);
 
             if (SummaryGate() is { } why)
@@ -166,44 +163,65 @@ public sealed class RaptorScheduler : IDisposable
                 _log.LogDebug("raptor {Job} skipped: {Why}", wantRebuild ? "rebuild" : "refresh", why);
                 return new RaptorStepReport(sync, null, null, 0, why);
             }
-
-            var sw = Stopwatch.StartNew();
-            decimal before = _summarizer.CostUsd;
-            if (wantRebuild)
-            {
-                decimal cap = Math.Min(_o.RebuildMaxUsd, RemainingToday);
-                var budget = _summarizer.Budget(cap);
-                _summarizer.JobLimitUsd = before + cap;
-                BuildStats stats;
-                try { stats = await index.RebuildAsync(budget, ct).ConfigureAwait(false); }
-                finally { _summarizer.JobLimitUsd = null; AddSpend(_summarizer.CostUsd - before); }
-                decimal cost = _summarizer.CostUsd - before;
-                _leavesSinceRefresh = 0;
-                _lastRefresh = now;
-                _log.LogInformation(
-                    "raptor rebuild ({Reason}): {Leaves} leaves, layers [{Layers}], {Summaries} summaries ({Reused} reused, {Pending} pending), " +
-                    "${Cost:F4} ({In}+{Out} tok), {Embed} embed tok, {Ms} ms",
-                    forceRebuild ? "forced" : decision.Reason, stats.Leaves, string.Join(",", stats.NodesPerLayer), stats.Summaries, stats.ReusedSummaries,
-                    stats.Placeholders, cost, budget.InputTokens, budget.OutputTokens, stats.EmbeddingTokens, sw.ElapsedMilliseconds);
-                return new RaptorStepReport(sync, null, stats, cost, null);
-            }
-            else
-            {
-                decimal cap = Math.Min(_o.RefreshMaxUsd, RemainingToday);
-                var budget = _summarizer.Budget(cap);
-                _summarizer.JobLimitUsd = before + cap;
-                RefreshReport report;
-                try { report = await index.RefreshDirtyAsync(budget, ct).ConfigureAwait(false); }
-                finally { _summarizer.JobLimitUsd = null; AddSpend(_summarizer.CostUsd - before); }
-                decimal cost = _summarizer.CostUsd - before;
-                _leavesSinceRefresh = 0;
-                _lastRefresh = now;
-                _log.LogInformation("raptor refresh: {Refreshed} refreshed, {Splits} splits, {Remaining} still dirty, ${Cost:F4} ({In}+{Out} tok), {Embed} embed tok, {Ms} ms",
-                    report.Refreshed, report.Splits, report.RemainingDirty, cost, budget.InputTokens, budget.OutputTokens, report.EmbeddingTokens, sw.ElapsedMilliseconds);
-                return new RaptorStepReport(sync, report, null, cost, null);
-            }
+            return wantRebuild
+                ? await RebuildStepAsync(sync, index, now, forceRebuild ? "forced" : decision.Reason, ct).ConfigureAwait(false)
+                : await RefreshStepAsync(sync, index, now, ct).ConfigureAwait(false);
         }
         finally { _step.Release(); }
+    }
+
+    /// <summary>The tree asks for a rebuild and it's off-peak (or the tree is still small).</summary>
+    private bool WantsRebuild(RaptorIndex index, RebuildDecision decision)
+    {
+        bool small = index.LeafCount < _o.RebuildAnytimeBelowLeaves;
+        return decision.Rebuild && (OffPeak || small);
+    }
+
+    /// <summary>Dirty summaries and enough new leaves or time since the last refresh.</summary>
+    private bool WantsRefresh(RaptorIndex index, DateTimeOffset now)
+    {
+        int dirty = index.DirtyCount;
+        return dirty > 0 && (_leavesSinceRefresh >= Math.Max(1, _o.RefreshEveryLeaves)
+            || now - _lastRefresh >= TimeSpan.FromMinutes(Math.Max(1, _o.RefreshEveryMinutes)));
+    }
+
+    private async Task<RaptorStepReport> RebuildStepAsync(RaptorSyncReport sync, RaptorIndex index, DateTimeOffset now, string reason, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        decimal before = _summarizer.CostUsd;
+        decimal cap = Math.Min(_o.RebuildMaxUsd, RemainingToday);
+        var budget = _summarizer.Budget(cap);
+        _summarizer.JobLimitUsd = before + cap;
+        BuildStats stats;
+        try { stats = await index.RebuildAsync(budget, ct).ConfigureAwait(false); }
+        finally { _summarizer.JobLimitUsd = null; AddSpend(_summarizer.CostUsd - before); }
+        decimal cost = _summarizer.CostUsd - before;
+        _leavesSinceRefresh = 0;
+        _lastRefresh = now;
+        _log.LogInformation(
+            "raptor rebuild ({Reason}): {Leaves} leaves, layers [{Layers}], {Summaries} summaries ({Reused} reused, {Pending} pending), " +
+            "${Cost:F4} ({In}+{Out} tok), {Embed} embed tok, {Ms} ms",
+            reason, stats.Leaves, string.Join(",", stats.NodesPerLayer), stats.Summaries, stats.ReusedSummaries,
+            stats.Placeholders, cost, budget.InputTokens, budget.OutputTokens, stats.EmbeddingTokens, sw.ElapsedMilliseconds);
+        return new RaptorStepReport(sync, null, stats, cost, null);
+    }
+
+    private async Task<RaptorStepReport> RefreshStepAsync(RaptorSyncReport sync, RaptorIndex index, DateTimeOffset now, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        decimal before = _summarizer.CostUsd;
+        decimal cap = Math.Min(_o.RefreshMaxUsd, RemainingToday);
+        var budget = _summarizer.Budget(cap);
+        _summarizer.JobLimitUsd = before + cap;
+        RefreshReport report;
+        try { report = await index.RefreshDirtyAsync(budget, ct).ConfigureAwait(false); }
+        finally { _summarizer.JobLimitUsd = null; AddSpend(_summarizer.CostUsd - before); }
+        decimal cost = _summarizer.CostUsd - before;
+        _leavesSinceRefresh = 0;
+        _lastRefresh = now;
+        _log.LogInformation("raptor refresh: {Refreshed} refreshed, {Splits} splits, {Remaining} still dirty, ${Cost:F4} ({In}+{Out} tok), {Embed} embed tok, {Ms} ms",
+            report.Refreshed, report.Splits, report.RemainingDirty, cost, budget.InputTokens, budget.OutputTokens, report.EmbeddingTokens, sw.ElapsedMilliseconds);
+        return new RaptorStepReport(sync, report, null, cost, null);
     }
 
     public void Dispose()
