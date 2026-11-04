@@ -806,11 +806,15 @@ public sealed partial class Pathfinder
     }
 
     /// <summary>Any of the 8 neighbours at this level is a deadly drop.</summary>
+    /// <summary>
+    /// Next to a fatal drop (the void, lava: <see cref="Safety.IsFatalColumn"/>): an "edge", costed higher and sneaked. A pit with a
+    /// floor is not (a quarry's stair beside its pit is walked normally; the drops into it are still checked by <see cref="IsDeadly"/>).
+    /// </summary>
     private bool IsEdge(int x, int y, int z)
     {
         for (int dx = -1; dx <= 1; dx++)
         for (int dz = -1; dz <= 1; dz++)
-            if ((dx != 0 || dz != 0) && IsDeadly(x + dx, y, z + dz)) return true;
+            if ((dx != 0 || dz != 0) && IsDeadly(x + dx, y, z + dz) && Safety.IsFatalColumn(_w, x + dx, y, z + dz)) return true;
         return false;
     }
 

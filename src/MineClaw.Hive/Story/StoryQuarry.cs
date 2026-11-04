@@ -14,36 +14,30 @@ public static class StoryQuarry
     /// <summary>The clockwise ring of edge cells (north-west-most first), or null when the zone has no closed ring of 4 or more.</summary>
     public static List<(int X, int Z)>? Ring(ZoneCells cells)
     {
-        var edge = new HashSet<(int, int)>();
-        foreach (var (x, z) in cells.Sorted())
-            foreach (var (dx, dz) in Clockwise)
-                if (!cells.Contains(x + dx, z + dz)) { edge.Add((x, z)); break; }
+        var edge = cells.Sorted().Where(c => Clockwise.Any(d => !cells.Contains(c.X + d.Dx, c.Z + d.Dz))).ToHashSet();
         if (edge.Count < 4) return null;
-        var start = edge.OrderBy(c => c.Item2).ThenBy(c => c.Item1).First();
+        var start = edge.OrderBy(c => c.Z).ThenBy(c => c.X).First();
         var ring = new List<(int X, int Z)> { start };
-        var seen = new HashSet<(int, int)> { start };
         int heading = 0;
-        var cur = start;
-        while (true)
-        {
-            bool moved = false;
-            // Outside on the left: try left, straight, right, back.
-            foreach (var turn in new[] { -1, 0, 1, 2 })
-            {
-                int d = (heading + turn + 4) % 4;
-                var n = (cur.Item1 + Clockwise[d].Dx, cur.Item2 + Clockwise[d].Dz);
-                if (!edge.Contains(n) || !seen.Add(n)) continue;
-                ring.Add(n);
-                cur = n;
-                heading = d;
-                moved = true;
-                break;
-            }
-            if (!moved) break;
-        }
+        while (NextEdge(edge, ring, ref heading) is { } n) ring.Add(n);
         var last = ring[^1];
-        bool closed = Math.Abs(last.X - start.Item1) + Math.Abs(last.Z - start.Item2) == 1;
+        bool closed = Math.Abs(last.X - start.X) + Math.Abs(last.Z - start.Z) == 1;
         return ring.Count >= 4 && closed ? ring : null;
+    }
+
+    /// <summary>The next edge cell along the ring, outside on the left (try left, straight, right, back), or null at the end.</summary>
+    private static (int X, int Z)? NextEdge(HashSet<(int X, int Z)> edge, List<(int X, int Z)> ring, ref int heading)
+    {
+        var cur = ring[^1];
+        foreach (var turn in new[] { -1, 0, 1, 2 })
+        {
+            int d = (heading + turn + 4) % 4;
+            var n = (cur.X + Clockwise[d].Dx, cur.Z + Clockwise[d].Dz);
+            if (!edge.Contains(n) || ring.Contains(n)) continue;
+            heading = d;
+            return n;
+        }
+        return null;
     }
 
     /// <summary>The step of layer <paramref name="k"/>: the ring cell k mod n at y = top − k.</summary>
