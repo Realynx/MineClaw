@@ -172,6 +172,52 @@ public partial class FakeServer
         _checkMovement = false;
     }
 
+    // ---------------------------------------------------------------- farmland trampling
+
+    /// <summary>Turn farmland to dirt the way the version's server does (default off): b1.8.1 <c>BlockSoil.b</c>, called by
+    /// <c>Entity.move</c> for a walker on the ground that isn't sneaking (1 in 4 per step there; here every such move, the worst
+    /// case); 1.12.2 <c>BlockFarmland.onFallenUpon</c>, a landing with a fall of more than 0.5 (chance fall − 0.5; here always).
+    /// The block under the feet is vanilla's <c>(x, y − 0.2, z)</c>; a crop on it goes with it.</summary>
+    public bool TrampleFarmland { get; set; }
+    /// <summary>Farmland the player turned to dirt: the cell and how (walked | landed from N).</summary>
+    public ConcurrentQueue<(int X, int Y, int Z, string How)> Trampled { get; } = new();
+
+    private bool _trSneak, _trGround = true;
+    private double _trPeak;
+    private (double X, double Z)? _trLast;
+
+    private void TrackTrample(IPacket p)
+    {
+        if (p is EntityActionPacket ea) { if (ea.Action == 1) _trSneak = true; else if (ea.Action == 2) _trSneak = false; return; }
+        double x, y, z;
+        bool ground;
+        switch (p)
+        {
+            case PlayerPositionPacket pp: (x, y, z, ground) = (pp.X, pp.Y, pp.Z, pp.OnGround); break;
+            case PlayerPositionLookPacket pl: (x, y, z, ground) = (pl.X, pl.Y, pl.Z, pl.OnGround); break;
+            default: return;
+        }
+        var under = ((int)Math.Floor(x), (int)Math.Floor(y - 0.2), (int)Math.Floor(z));
+        bool farm = Blocks.GetValueOrDefault(under) == MineClaw.Data.Blocks.Farmland;
+        double moved = _trLast is { } last ? Math.Sqrt((x - last.X) * (x - last.X) + (z - last.Z) * (z - last.Z)) : 0;
+        _trLast = (x, z);
+        string? how = null;
+        if (Modern)
+        {
+            if (ground && !_trGround && _trPeak - y > 0.5 && farm) how = $"landed from {_trPeak - y:0.00}";
+        }
+        else if (ground && !_trSneak && moved > 1e-3 && farm) how = "walked";
+        _trPeak = ground ? y : _trGround ? Math.Max(y, _trPeak) : Math.Max(_trPeak, y);
+        _trGround = ground;
+        if (how == null) return;
+        Trampled.Enqueue((under.Item1, under.Item2, under.Item3, how));
+        lock (BlockLock)
+        {
+            SetBlock(under.Item1, under.Item2, under.Item3, MineClaw.Data.Blocks.Dirt);
+            if (Blocks.GetValueOrDefault((under.Item1, under.Item2 + 1, under.Item3)) is not 0) SetBlock(under.Item1, under.Item2 + 1, under.Item3, 0);
+        }
+    }
+
     /// <summary>The server's blocks as the physics reads them (everything loaded).</summary>
     private sealed class ServerBlocks(FakeServer s) : IBlockAccess
     {

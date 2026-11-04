@@ -92,6 +92,9 @@ public interface IStoryHost
     void PermitAttack(string account, int entity, bool on) { }
     /// <summary>The pawn body's movement multiplier (1 normal, 2 fast, 3 faster; StoryColony.Speed.cs). Only ever a colony pawn's.</summary>
     void SetSpeed(string account, double multiplier) { }
+    /// <summary>The colony's growing zones for this pawn's body (foot cell x,y,z → inside one; null = none): its walks crouch past their
+    /// plants (StoryColony.Farming.cs, Fox 11-04). Only ever a colony pawn's.</summary>
+    void SetGrowZone(string account, Func<int, int, int, bool>? inZone) { }
     /// <summary>The pawn body's speed boost as it runs (null = offline or unknown).</summary>
     PawnSpeed? Speed(string account) => null;
     /// <summary>Can the colony ask the server for a Speed effect (1.12.2 with an op account)?</summary>

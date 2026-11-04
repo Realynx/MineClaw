@@ -190,6 +190,11 @@ public sealed class StoryHost : IStoryHost
         if (PawnClient(account) is { } c) c.SpeedMultiplier = multiplier;
     }
 
+    public void SetGrowZone(string account, Func<int, int, int, bool>? inZone)
+    {
+        if (PawnClient(account) is { } c) c.GrowZone = inZone;
+    }
+
     public PawnSpeed? Speed(string account)
     {
         if (Find(account) is not { State: BodyState.Online } || PawnClient(account) is not { } c) return null;

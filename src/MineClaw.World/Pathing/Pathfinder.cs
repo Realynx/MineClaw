@@ -239,6 +239,7 @@ public sealed partial class Pathfinder
         if (!here.Ok) return; // e.g. a broken/placed block invalidated it
         bool hereEdge = IsEdge(x, y, z);
         _hereFarmland = OnFarmland(x, y, z);
+        _hereCareful = Careful(x, y, z);
 
         foreach (var (dx, dz) in Cardinals)
         {
@@ -366,6 +367,29 @@ public sealed partial class Pathfinder
 
     /// <summary>The node being expanded stands on farmland (set per <see cref="Expand"/>).</summary>
     private bool _hereFarmland;
+    /// <summary>The node being expanded is a planted cell of a growing zone, or beside one (<see cref="Careful"/>).</summary>
+    private bool _hereCareful;
+
+    /// <summary>Plants a walker in a growing zone sneaks past: sapling, wheat, sugar cane, pumpkin/melon stems, nether wart, cocoa,
+    /// carrots, potatoes, beetroot.</summary>
+    private static bool IsPlant(int id) => id is 6 or 59 or 83 or 104 or 105 or 115 or 127 or 141 or 142 or 207;
+
+    /// <summary>
+    /// Foot cell (x,y,z) is in a growing zone (<see cref="PathOptions.GrowZone"/>) and a plant is in the body's cells there or beside
+    /// them: the pawn crouch-walks (Fox 11-04). The zone is only the cheap filter; the live blocks decide, so a harvested or untilled
+    /// patch is walked at full speed.
+    /// </summary>
+    private bool Careful(int x, int y, int z)
+    {
+        if (_o.GrowZone is not { } zone || !zone(x, y, z)) return false;
+        for (int yy = y; yy <= y + 1; yy++)
+        {
+            if (IsPlant(_w.GetBlock(x, yy, z))) return true;
+            foreach (var (dx, dz) in Cardinals)
+                if (IsPlant(_w.GetBlock(x + dx, yy, z + dz))) return true;
+        }
+        return false;
+    }
 
     /// <summary>The goal of the running search (farmland is walked cheaply only near it).</summary>
     private Goal? _goal;
@@ -400,6 +424,12 @@ public sealed partial class Pathfinder
         }
         // Out of the water onto a field (the trench rim): the swimmer jumps out, and a jump lands on the soil.
         else if (water && toFarm && !NearGoal(tx, ty, tz)) cost += PathOptions.FarmlandJumpPenalty;
+        // Past the plants of a growing zone: crouch-walk (no extra cost beyond the slower pace).
+        if (!water && !sneak && (_hereCareful || Careful(tx, ty, tz)))
+        {
+            cost *= PathOptions.SneakFactor;
+            sneak = true;
+        }
         double time = cost + (breaks.Count > 0 ? DigCosts(breaks) : 0);
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         if (open is { Count: > 0 })
@@ -423,6 +453,7 @@ public sealed partial class Pathfinder
         // Landing on one is what tramples in 1.12 (BlockFarmland.onFallenUpon): costed so high that any walk round wins.
         if (OnFarmland(tx, ty, tz)) { sneak = true; cost += PathOptions.FarmlandJumpPenalty; }
         else if (_hereFarmland) { sneak = true; cost += PathOptions.FarmlandPenalty * 2; }
+        else if (_hereCareful || Careful(tx, ty, tz)) sneak = true;
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         output.Add(new Candidate(tx, ty, tz, MoveKind.Jump, t.Floor, cost, breaks, null, sneak && !here.Water));
     }
@@ -471,8 +502,28 @@ public sealed partial class Pathfinder
             double cost = PathOptions.WalkCost + FallTicks[Math.Min((int)Math.Ceiling(fall), FallTicks.Length - 1)]
                           + HazardPenalty(tx, ty, tz);
             if (IsEdge(tx, ty, tz)) cost *= 1.5;
+            // Down into a ditch (a 1-deep trench or hole, dry or a water channel): it takes a jump to get back out.
+            if (fall <= 1.25 + 1e-6 && InDitch(tx, ty, tz)) cost += _o.DitchPenalty;
             output.Add(new Candidate(tx, ty, tz, c.Water ? MoveKind.Swim : MoveKind.Drop, c.Floor, cost, [], null, false));
             return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Foot cell (x,y,z) is the bottom of a ditch: along x or z there is a bank on both sides within 2 cells (a wall at the feet whose
+    /// top is a standable cell), so the body came down a block into it and must jump to get out (Story water's trenches and channels).
+    /// </summary>
+    private bool InDitch(int x, int y, int z) =>
+        (Bank(x, y, z, 1, 0) && Bank(x, y, z, -1, 0)) || (Bank(x, y, z, 0, 1) && Bank(x, y, z, 0, -1));
+
+    private bool Bank(int x, int y, int z, int dx, int dz)
+    {
+        for (int i = 1; i <= 2; i++)
+        {
+            int bx = x + dx * i, bz = z + dz * i;
+            if (HasCollisionAt(bx, y, bz)) return Cell(bx, y + 1, bz).Ok;
+            if (!Cell(bx, y, bz).Ok) return false;
         }
         return false;
     }
