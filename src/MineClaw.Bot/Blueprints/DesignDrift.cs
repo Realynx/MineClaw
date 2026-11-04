@@ -124,9 +124,22 @@ public sealed class DesignDrift : IDisposable
     {
         var p = ch.Pos;
         if (_world.SelfEdits.IsRecent(p)) return Self();
-        if (ch.NewId != 0 && _world.Placed.Get(p, _world.Dimension) is { } pl && PlacedBlockLog.SameBlock(pl.BlockId, ch.NewId)) return pl.Bot is { Length: > 0 } by ? by : Self();
+        if (PlacedBy(ch) is { } placer) return placer;
         if (_world.Blasts.Near(p)) return "an explosion";
         if (ch.NewId == Blocks.Fire || ch.NewId == 0 && BlockFaceExtensions.All.Any(f => _world.GetBlock(p.Offset(f)) == Blocks.Fire)) return "fire";
+        return NearbyCause(p);
+    }
+
+    /// <summary>The bot that placed this very block (this one when the log names nobody), or null.</summary>
+    private string? PlacedBy(BlockChange ch)
+    {
+        if (ch.NewId == 0 || _world.Placed.Get(ch.Pos, _world.Dimension) is not { } pl || !PlacedBlockLog.SameBlock(pl.BlockId, ch.NewId)) return null;
+        return pl.Bot is { Length: > 0 } by ? by : Self();
+    }
+
+    /// <summary>An enderman within 4, else the nearest other player within 6, else "unknown".</summary>
+    private string NearbyCause(BlockPos p)
+    {
         var at = new Vec3d(p.X + 0.5, p.Y + 0.5, p.Z + 0.5);
         if (_world.Entities.Nearby(at, 4, e => e.Kind == EntityKind.Mob && e.DisplayName.Contains("enderman", StringComparison.OrdinalIgnoreCase), 1).Count > 0)
             return "an enderman";
@@ -161,46 +174,61 @@ public sealed class DesignDrift : IDisposable
     public string? Tick()
     {
         if (Interlocked.Exchange(ref _ticking, 1) == 1) return null;
-        try
-        {
-            var now = _time.GetUtcNow();
-            if (now - _refreshed > TimeSpan.FromSeconds(60)) Refresh();
-            var lines = new List<string>();
-            foreach (var (id, at) in _dirty.ToArray())
-            {
-                if (now - at < TimeSpan.FromSeconds(SettleSeconds) || Busy(id)) continue;
-                _dirty.TryRemove(id, out _);
-                if (_service.Store.Get(id) is not { } rec || _history.AgainstWorld(rec) is not { } aw) continue;
-                var d = aw.Diff;
-                if (d.Empty)
-                {
-                    _causes.TryRemove(id, out _);
-                    _reported.TryRemove(id, out _);
-                    continue;
-                }
-                var sig = DesignSnapshot.EncodeCells(d.All.Select(c => c.Pos)) + d.Text(9);
-                if (_reported.TryGetValue(id, out var last) && (last.Sig == sig || now - last.At < TimeSpan.FromSeconds(MinGapSeconds)))
-                {
-                    if (last.Sig != sig) _dirty.TryAdd(id, at); // again once the gap is over
-                    continue;
-                }
-                _reported[id] = (sig, now);
-                var who = Causes(id, d);
-                var damage = who != null && (who.Contains("explosion", StringComparison.Ordinal) || who.Contains("fire", StringComparison.Ordinal) || who.Contains("enderman", StringComparison.Ordinal));
-                lines.Add($"#{id} {rec.Name} drifted from r{aw.Rev.Rev}: {d.Text()} ({who})" + (damage
-                    ? $"; revert{{id={id}}} restores, commit{{id={id}}} keeps"
-                    : $"; commit{{id={id}}} keeps, revert{{id={id}}} restores"));
-                try { SaveWorld(rec, aw.Rev.Rev, d, who ?? ""); } catch (Exception ex) { _log?.LogDebug(ex, "design world view not saved"); }
-            }
-            if (lines.Count == 0) return null;
-            var line = "[design] " + string.Join(" | ", lines);
-            Notice?.Invoke(line);
-            _log?.LogInformation("design drift: {Line}", line);
-            return line;
-        }
+        try { return TickOnce(); }
         catch (Exception ex) { _log?.LogDebug(ex, "design drift tick failed"); return null; }
         finally { Volatile.Write(ref _ticking, 0); }
     }
+
+    private string? TickOnce()
+    {
+        var now = _time.GetUtcNow();
+        if (now - _refreshed > TimeSpan.FromSeconds(60)) Refresh();
+        var lines = new List<string>();
+        foreach (var (id, at) in _dirty.ToArray())
+            if (DriftLine(id, at, now) is { } l) lines.Add(l);
+        if (lines.Count == 0) return null;
+        var line = "[design] " + string.Join(" | ", lines);
+        Notice?.Invoke(line);
+        _log?.LogInformation("design drift: {Line}", line);
+        return line;
+    }
+
+    /// <summary>A settled, idle design compared with HEAD: its drift line (and the world view saved), or null (no drift, or the
+    /// same drift already said / said too recently).</summary>
+    private string? DriftLine(long id, DateTimeOffset at, DateTimeOffset now)
+    {
+        if (now - at < TimeSpan.FromSeconds(SettleSeconds) || Busy(id)) return null;
+        _dirty.TryRemove(id, out _);
+        if (_service.Store.Get(id) is not { } rec || _history.AgainstWorld(rec) is not { } aw) return null;
+        var d = aw.Diff;
+        if (d.Empty)
+        {
+            _causes.TryRemove(id, out _);
+            _reported.TryRemove(id, out _);
+            return null;
+        }
+        var sig = DesignSnapshot.EncodeCells(d.All.Select(c => c.Pos)) + d.Text(9);
+        if (SaidAlready(id, at, now, sig)) return null;
+        _reported[id] = (sig, now);
+        var who = Causes(id, d);
+        var line = $"#{id} {rec.Name} drifted from r{aw.Rev.Rev}: {d.Text()} ({who})" + (IsDamage(who)
+            ? $"; revert{{id={id}}} restores, commit{{id={id}}} keeps"
+            : $"; commit{{id={id}}} keeps, revert{{id={id}}} restores");
+        try { SaveWorld(rec, aw.Rev.Rev, d, who ?? ""); } catch (Exception ex) { _log?.LogDebug(ex, "design world view not saved"); }
+        return line;
+    }
+
+    /// <summary>This drift was said already, or another one too recently (then it is said again once the gap is over).</summary>
+    private bool SaidAlready(long id, DateTimeOffset at, DateTimeOffset now, string sig)
+    {
+        if (!_reported.TryGetValue(id, out var last) || last.Sig != sig && now - last.At >= TimeSpan.FromSeconds(MinGapSeconds)) return false;
+        if (last.Sig != sig) _dirty.TryAdd(id, at); // again once the gap is over
+        return true;
+    }
+
+    /// <summary>Damage (an explosion, fire, an enderman) suggests revert first; anything else, commit first.</summary>
+    private static bool IsDamage(string? who) =>
+        who != null && (who.Contains("explosion", StringComparison.Ordinal) || who.Contains("fire", StringComparison.Ordinal) || who.Contains("enderman", StringComparison.Ordinal));
 
     /// <summary>The world as this body sees the design's cells now (its HEAD's block and air cells), for the Explorer.</summary>
     private void SaveWorld(BlueprintRecord rec, int rev, DesignDiff d, string causes)
