@@ -14,7 +14,21 @@ import {
   STORY_DEFAULT_RECIPES,
   storyItemLabel,
 } from './storyData.js';
-import { cellKey, cellX, cellZ, eraseZones, paintZones, rectCells, zoneCellSet } from './storyZones.js';
+import {
+  cellKey,
+  cellsTouch,
+  cellX,
+  cellZ,
+  eraseZones,
+  paintZones,
+  quarryRing,
+  quarryStep,
+  rectCells,
+  zoneCellSet,
+} from './storyZones.js';
+
+const QUARRY_TOO_NARROW =
+  'a quarry needs at least 2×2 (a 1-wide strip is a trench: paint it as Ores only, or designate Mine)';
 import { irrigationPlan, liquidFlow } from './storyWater.js';
 import {
   CHEST_IDS,
@@ -975,6 +989,17 @@ export class StorySim {
 
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
+    if (body.op === 'update' && body.mode) {
+      // A mine zone's mode: quarry (everything to bedrock, a stair) or ores only.
+      const f = c.zones.get(String(body.id));
+      if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+      if (f.v.kind !== 'mine') throw Object.assign(new Error('only mine zones take a mode (ores | quarry)'), { status: 400 });
+      if (body.mode === 'quarry' && !quarryRing(zoneCellSet(f.v)))
+        throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
+      f.v = { ...f.v, mode: body.mode };
+      f.rev = this.bump(c);
+      return { id: f.v.id, rev: c.rev };
+    }
     if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
     if (body.op === 'irrigation') return this.irrigation(c, String(body.id));
     if (body.op.startsWith('bill_')) return this.billOp(c, body as Extract<StoryZoneRequest, { op: `bill_${string}` }>);
@@ -1024,6 +1049,7 @@ export class StorySim {
             kind: k,
             area: a,
             ...(body.name ? { name: body.name } : {}),
+            ...(k === 'mine' ? { mode: body.mode ?? 'quarry' } : {}),
             ...(k === 'farm' && plant
               ? {
                   plant,
@@ -1033,6 +1059,14 @@ export class StorySim {
                 }
               : {}),
           };
+    if (
+      kind === 'mine' &&
+      !into &&
+      (body.mode ?? 'quarry') === 'quarry' &&
+      (rect[0] === rect[2] || rect[1] === rect[3]) &&
+      !list.some((z) => z.kind === 'mine' && z.mode === 'quarry' && cellsTouch(zoneCellSet(z), rectCells(...rect)))
+    )
+      throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
     // A fishing zone keeps only still water (a source block, open above, near the level).
     const water =
       kind === 'fish'
@@ -1171,8 +1205,37 @@ export class StorySim {
     };
   }
 
+  /** A quarry's progress as the bot reports it (mock: nothing is dug yet; bedrock at y 0..2). */
+  private quarryStatus(z: StoryZone): StoryZone {
+    const mode = z.mode ?? 'ores';
+    if (mode !== 'quarry') return { ...z, mode };
+    const ring = quarryRing(zoneCellSet(z));
+    const top = z.area[1],
+      bottom = 3;
+    const stair = ring ? Array.from({ length: Math.max(0, top - bottom + 1) }, (_, k) => quarryStep(ring, top, k)) : [];
+    const cells = z.cells ?? zoneCellSet(z).size;
+    return {
+      ...z,
+      mode,
+      quarry: {
+        top,
+        bottom,
+        depth: top - bottom + 1,
+        layer: 0,
+        y: top,
+        cellsLeft: Math.max(0, cells - 1),
+        stairFixes: 0,
+        sealed: 0,
+        done: false,
+        stair,
+        status: `layer 1 of ${top - bottom + 1} (y ${top}), ${Math.max(0, cells - 1)} cell(s) left`,
+      },
+    };
+  }
+
   /** A growing zone's fields as the bot reports them (mock: nothing grows; seeds from the colony's stock). */
   private growStatus(c: Colony, z: StoryZone): StoryZone {
+    if (z.kind === 'mine') return this.quarryStatus(z);
     if (z.kind !== 'farm' || (!z.plant && !z.bills)) return z;
     const cells = z.cells ?? (z.area[3] - z.area[0] + 1) * (z.area[5] - z.area[2] + 1);
     const seedsOf = (plant: StoryPlant, needed: number) => {

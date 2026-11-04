@@ -11,6 +11,7 @@ import { useSyncExternalStore } from 'react';
 import { cn } from '@/lib/utils';
 import { GrowPlantPicker } from '../GrowingZones';
 import { ZONE_TOOLS } from '../tools';
+import { QuarryModePicker } from './quarry';
 import { ERASE_ANY, type ZoneTool } from './zonePaint';
 
 let eraseKind = ERASE_ANY;
@@ -88,6 +89,7 @@ export function ZoneToolbar({
         </div>
       ) : null}
       {zt?.op === 'add' && zt.id === 'farm' && zt.into === undefined ? <GrowPlantPicker plants={plants} /> : null}
+      {zt?.op === 'add' && zt.id === 'mine' && zt.into === undefined ? <QuarryModePicker /> : null}
       {zt?.op === 'add' && zt.into !== undefined ? (
         <p className="w-full text-[11px] text-accent" data-testid="zone-extending">
           Extending {target?.name || target?.label || `zone ${zt.into}`}: painted cells join it. Esc to stop.

@@ -96,7 +96,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: irrigation, id}` → `{id, cells, dig, axis, lines, note}` (see "Water"); `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, mode? (mine: quarry|ores), name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: irrigation, id}` → `{id, cells, dig, axis, lines, note}` (see "Water"); `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -792,6 +792,38 @@ opens a Growing zones window beside it: each zone's cells, Extend, what it sows 
 with the plant picker; mode and target; drag or the arrows to reorder; pause; remove; the active one marked "sowing", met ones
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
+
+## Quarries (added 2026-11-04)
+
+Fox 11-04: "The quarry zone didn't make sense — nothing happened." (A mine zone only offered its ores: a square of stone and dirt
+had no work at all.) A mine zone now has a mode: `quarry` (the default for new ones) or `ores` (the old behaviour; zones from before
+keep it). `{op: add, kind: mine, area, mode?}`, `{op: update, id, mode}`.
+
+**Digging.** A quarry digs everything in its columns, layer by layer from its top (its highest ground when first seen, not trees;
+kept as `quarry_top`) down to bedrock: never bedrock, never y 0; each column stops one over its highest bedrock (b1.8.1 and 1.12.2
+put it at y 0..4). A layer is offered once the one above has nothing left to dig (cells resting after failures don't hold it back),
+so it goes top-down. Mine work; only exposed cells (a face open), never one someone stands on, the pickaxe its material needs (tool
+floors and rules, StoryColony.Gear.cs), loot batched like any gathering. A cell beside lava or water (or a liquid cell itself) is
+left standing as a seal, with an alert ("N cell(s) at y Y left standing beside lava or water").
+
+**The stair.** Along the inside of the zone's edge: the edge cells in a ring, clockwise from the north-west-most one; layer k
+(y = top − k) leaves ring cell k mod n standing as a step. So the steps go down one block per cell around the ring, a helix from
+the surface to the bottom: each step is beside the last and one lower, and the next step in the same column is n ≥ 4 layers up, so
+the 2 cells over every step (and the one over those, for the jump) stay open. A 2×2 zone's ring is its 4 cells: a spiral shaft,
+1 step and 3 dug cells per layer. 3×3 and larger use the edge ring (the middle is all dug). A 1-wide zone has no ring: painting one
+as a quarry is refused ("a quarry needs at least 2×2 (a 1-wide strip is a trench…)"); Ores only still works there. Steps are the
+existing blocks; a step that is air, liquid or would fall (sand, gravel, concrete powder) gets a cheap block placed first (cobblestone,
+dirt, netherrack, planks, stone, sandstone: carried, else fetched from storage; none: an alert), before the layer under it is dug
+(the cell under a step waiting for a block is held back). The quarry never digs its own steps. Repainting a quarry recomputes the
+ring (its top stays).
+
+**State.** A mine zone has `mode`; a quarry adds `quarry: {top, bottom, depth, layer, y, cells_left, stair_fixes, sealed, done,
+stair: [[x,y,z], …] (top first), status}` ("layer 3 of 61 (y 61), 34 cell(s) left", "done: down to bedrock").
+
+**Web.** The Zones tool's Quarry shows a mode picker (Quarry (everything) / Ores only). While dragging a quarry, the map draws the
+stair ring as numbered steps (step 1 at the top) and the label says how many steps a turn and about how deep it goes. Quarry zones
+draw their ring with the step being worked highlighted. The Colony tab's Quarries window: progress (a bar, the status), from y to y,
+the stair's length, steps waiting for a block, sealed cells, and the mode (switchable).
 
 ## Fishing (added 2026-11-03)
 

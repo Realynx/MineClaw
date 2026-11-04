@@ -761,6 +761,35 @@ test('zones paint like RimWorld: overlapping growing zones are one, a woodlot ta
   await expect(page.getByTestId('growing-zones')).toHaveCount(0);
 });
 
+test('a quarry zone digs everything by default (Ores only is the other mode) and shows its stair and progress', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const [cx, , cz] = (await story(page, 'center')).map(Math.floor) as [number, number, number];
+  const lv = await story(page, 'level');
+  await page.keyboard.press('KeyB');
+  await page.getByRole('button', { name: 'Zones', exact: true }).click();
+  await page.getByRole('button', { name: 'Quarry', exact: true }).click();
+  const modes = page.getByTestId('quarry-mode');
+  await expect(modes.getByRole('radio', { name: 'Quarry (everything)' })).toHaveAttribute('aria-checked', 'true');
+  const zone = post(page, /\/zones$/);
+  await dragCells(page, [cx - 1, lv, cz - 1], [cx + 1, lv, cz + 1]);
+  await page.mouse.up();
+  expect(body(await zone)).toMatchObject({ op: 'add', kind: 'mine', mode: 'quarry' });
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page.getByTestId('tab-bar').getByRole('button', { name: /^Colony/ }).click();
+  const q = page.getByTestId('quarry-zones');
+  await expect(q.getByTestId('quarry-zone')).toHaveCount(1);
+  await expect(q.getByTestId('quarry-status')).toContainText('layer 1 of');
+  const update = post(page, /\/zones$/);
+  await q.getByLabel('Quarry mode').selectOption('ores');
+  expect(body(await update)).toMatchObject({ op: 'update', mode: 'ores' });
+  await expect(q.getByTestId('quarry-status')).toHaveCount(0);
+});
+
 // ------------------------------------------------------------------ the world under the HUD: models, holograms, notices
 
 type Ghost = [number, number, number, number, number, string | number, string];
