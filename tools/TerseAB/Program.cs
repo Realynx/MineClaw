@@ -54,6 +54,26 @@ bool stopped = false;
 
 try
 {
+    await RunArmsAsync();
+    // Haiku judge: baseline vs each other arm, both orders (scores averaged) to cancel position bias.
+    if (!stopped) await JudgeAllAsync();
+    WriteLog();
+    Console.WriteLine($"artifacts: {logPath}");
+}
+finally
+{
+    try { Directory.Delete(temp, true); } catch (Exception) { }
+}
+
+Report();
+PrintTotal();
+return stopped ? 3 : 0;
+
+// =====================================================================================================================
+
+// Every arm over every scenario; a budget stop ends the run.
+async Task RunArmsAsync()
+{
     foreach (var arm in arms)
     {
         var dir = Path.Combine(temp, arm);
@@ -74,60 +94,62 @@ try
         prefix[(arm, "reflection")] = (Tok(ReflectionSystem(options)), false, options.Llm.CheapModel);
 
         foreach (var s in scenarios)
-        {
-            var res = new Result { Arm = arm, Id = s.Id, Purpose = s.Purpose };
-            current = res;
-            try { await s.Run(rt, res); }
-            catch (BudgetStop ex) { Console.Error.WriteLine($"STOP: {ex.Message}"); stopped = true; break; }
-            current = null;
-            (res.RubricOk, res.RubricNote) = dryRun ? (true, "dry") : s.Rubric(res);
-            results.Add(res);
-            Console.WriteLine($"  {s.Id,-22} out {res.Out,5}  ${res.Cost:0.0000}  calls {res.Records.Count}  think {res.Thinking.Length}c  artifact {res.Artifact.Length}c  rubric {(res.RubricOk ? "ok" : "FAIL " + res.RubricNote)}");
-            Console.WriteLine($"      > {Short(res.Artifact, 220)}");
-            if (res.Chat.Length > 0 && s.Purpose != "chat") Console.WriteLine($"      chat> {Short(res.Chat, 160)}");
-        }
+            if (await RunScenarioAsync(rt, s, arm)) break;
         if (stopped) break;
     }
-
-    // Haiku judge: baseline vs each other arm, both orders (scores averaged) to cancel position bias.
-    if (!stopped)
-    {
-        var judgeOptions = LoadOptions("off", temp);
-        var judgeLlm = new GuardLlm(new AnthropicLlmClient(judgeOptions.Llm), judgeOptions, HardCapUsd, dryRun);
-        foreach (var arm in arms.Skip(1))
-        foreach (var s in scenarios)
-        {
-            var a = results.FirstOrDefault(r => r.Id == s.Id && r.Arm == arms[0]);
-            var b = results.FirstOrDefault(r => r.Id == s.Id && r.Arm == arm);
-            if (a == null || b == null) continue;
-            try
-            {
-                var (x1, y1, why) = await JudgeAsync(judgeLlm, judgeOptions, s, a, b);
-                var (y2, x2, _) = await JudgeAsync(judgeLlm, judgeOptions, s, b, a);
-                a.Judges.AddRange(new[] { x1, x2 }.Where(v => v > 0).Select(v => (double)v));
-                b.Judges.AddRange(new[] { y1, y2 }.Where(v => v > 0).Select(v => (double)v));
-                Console.WriteLine($"  judge {s.Id,-22} {arms[0]} {x1}/{x2}  {arm} {y1}/{y2}  {Short(why, 110)}");
-            }
-            catch (BudgetStop ex) { Console.Error.WriteLine($"STOP (judge): {ex.Message}"); stopped = true; break; }
-        }
-    }
-    using (var w = new StreamWriter(logPath))
-        foreach (var r in results)
-            w.WriteLine(JsonSerializer.Serialize(new
-            {
-                r.Arm, r.Id, r.Purpose, Out = r.Out, Cost = r.Cost, Calls = r.Records.Count, r.RubricOk, r.RubricNote, Judge = r.Judge,
-                r.Artifact, r.Chat, r.Thinking, Delegate = r.Delegate?.GetRawText(), r.Tools,
-            }));
-    Console.WriteLine($"artifacts: {logPath}");
 }
-finally
+
+// One scenario on one arm, graded and printed; true when the budget stopped it.
+async Task<bool> RunScenarioAsync(AgentRuntime rt, Scenario s, string arm)
 {
-    try { Directory.Delete(temp, true); } catch (Exception) { }
+    var res = new Result { Arm = arm, Id = s.Id, Purpose = s.Purpose };
+    current = res;
+    try { await s.Run(rt, res); }
+    catch (BudgetStop ex) { Console.Error.WriteLine($"STOP: {ex.Message}"); stopped = true; return true; }
+    current = null;
+    (res.RubricOk, res.RubricNote) = dryRun ? (true, "dry") : s.Rubric(res);
+    results.Add(res);
+    Console.WriteLine($"  {s.Id,-22} out {res.Out,5}  ${res.Cost:0.0000}  calls {res.Records.Count}  think {res.Thinking.Length}c  artifact {res.Artifact.Length}c  rubric {(res.RubricOk ? "ok" : "FAIL " + res.RubricNote)}");
+    Console.WriteLine($"      > {Short(res.Artifact, 220)}");
+    if (res.Chat.Length > 0 && s.Purpose != "chat") Console.WriteLine($"      chat> {Short(res.Chat, 160)}");
+    return false;
 }
 
-Report();
-Console.WriteLine($"\ntotal spend (cumulative incl. --spent): ${GuardLlm.Spent:0.0000}{(dryRun ? $" (dry run; worst-case plan ${GuardLlm.Planned:0.00})" : "")}{(stopped ? "  [stopped at budget]" : "")}");
-return stopped ? 3 : 0;
+async Task JudgeAllAsync()
+{
+    var judgeOptions = LoadOptions("off", temp);
+    var judgeLlm = new GuardLlm(new AnthropicLlmClient(judgeOptions.Llm), judgeOptions, HardCapUsd, dryRun);
+    foreach (var arm in arms.Skip(1))
+    foreach (var s in scenarios)
+    {
+        var a = results.FirstOrDefault(r => r.Id == s.Id && r.Arm == arms[0]);
+        var b = results.FirstOrDefault(r => r.Id == s.Id && r.Arm == arm);
+        if (a == null || b == null) continue;
+        try
+        {
+            var (x1, y1, why) = await JudgeAsync(judgeLlm, judgeOptions, s, a, b);
+            var (y2, x2, _) = await JudgeAsync(judgeLlm, judgeOptions, s, b, a);
+            a.Judges.AddRange(new[] { x1, x2 }.Where(v => v > 0).Select(v => (double)v));
+            b.Judges.AddRange(new[] { y1, y2 }.Where(v => v > 0).Select(v => (double)v));
+            Console.WriteLine($"  judge {s.Id,-22} {arms[0]} {x1}/{x2}  {arm} {y1}/{y2}  {Short(why, 110)}");
+        }
+        catch (BudgetStop ex) { Console.Error.WriteLine($"STOP (judge): {ex.Message}"); stopped = true; break; }
+    }
+}
+
+void WriteLog()
+{
+    using var w = new StreamWriter(logPath);
+    foreach (var r in results)
+        w.WriteLine(JsonSerializer.Serialize(new
+        {
+            r.Arm, r.Id, r.Purpose, Out = r.Out, Cost = r.Cost, Calls = r.Records.Count, r.RubricOk, r.RubricNote, Judge = r.Judge,
+            r.Artifact, r.Chat, r.Thinking, Delegate = r.Delegate?.GetRawText(), r.Tools,
+        }));
+}
+
+void PrintTotal() =>
+    Console.WriteLine($"\ntotal spend (cumulative incl. --spent): ${GuardLlm.Spent:0.0000}{(dryRun ? $" (dry run; worst-case plan ${GuardLlm.Planned:0.00})" : "")}{(stopped ? "  [stopped at budget]" : "")}");
 
 // =====================================================================================================================
 
@@ -498,24 +520,43 @@ static (bool, string) ReflectionRubric(string text, HashSet<int> allowed)
         using var doc = JsonDocument.Parse(text[i..(j + 1)]);
         if (!doc.RootElement.TryGetProperty("changes", out var changes) || changes.ValueKind != JsonValueKind.Array) return (false, "no changes[]");
         foreach (var c in changes.EnumerateArray())
-        {
-            var op = c.GetProperty("op").GetString() ?? "";
-            if (op is not ("add" or "reinforce" or "adjust" or "remove")) return (false, "bad op " + op);
-            if (c.TryGetProperty("text", out var t) && (t.GetString()?.Length ?? 0) > 60) return (false, "text > 60");
-            if (op == "remove") continue;
-            if (!c.TryGetProperty("signals", out var s) || s.ValueKind != JsonValueKind.Array || s.GetArrayLength() == 0) return (false, "uncited " + op);
-            foreach (var id in s.EnumerateArray())
-            {
-                int v = id.ValueKind == JsonValueKind.Number ? id.GetInt32() : int.TryParse(id.GetString()?.TrimStart('s'), out var p) ? p : -1;
-                if (!allowed.Contains(v)) return (false, $"unknown signal {id}");
-            }
-            if (c.TryGetProperty("player", out var pl) && pl.GetString() is { Length: > 0 } name && name is not ("kiwi" or "poofimafox"))
-                return (false, "player name changed: " + name);
-        }
+            if (ChangeProblem(c, allowed) is { } problem) return (false, problem);
         return (true, "");
     }
     catch (Exception ex) { return (false, "bad JSON: " + ex.GetType().Name); }
 }
+
+// One proposed change: a known op, short text, and (unless it removes) cited known signals and the player name unchanged.
+static string? ChangeProblem(JsonElement c, HashSet<int> allowed)
+{
+    var op = c.GetProperty("op").GetString() ?? "";
+    if (OpProblem(c, op) is { } bad) return bad;
+    if (op == "remove") return null;
+    return CitationProblem(c, op, allowed) ?? PlayerProblem(c);
+}
+
+static string? OpProblem(JsonElement c, string op)
+{
+    if (op is not ("add" or "reinforce" or "adjust" or "remove")) return "bad op " + op;
+    if (c.TryGetProperty("text", out var t) && (t.GetString()?.Length ?? 0) > 60) return "text > 60";
+    return null;
+}
+
+static string? CitationProblem(JsonElement c, string op, HashSet<int> allowed)
+{
+    if (!c.TryGetProperty("signals", out var s) || s.ValueKind != JsonValueKind.Array || s.GetArrayLength() == 0) return "uncited " + op;
+    foreach (var id in s.EnumerateArray())
+        if (!allowed.Contains(SignalId(id))) return $"unknown signal {id}";
+    return null;
+}
+
+// A cited signal: 12 or "s12" (-1 when neither).
+static int SignalId(JsonElement id) =>
+    id.ValueKind == JsonValueKind.Number ? id.GetInt32() : int.TryParse(id.GetString()?.TrimStart('s'), out var p) ? p : -1;
+
+static string? PlayerProblem(JsonElement c) =>
+    c.TryGetProperty("player", out var pl) && pl.GetString() is { Length: > 0 } name && name is not ("kiwi" or "poofimafox")
+        ? "player name changed: " + name : null;
 
 // =====================================================================================================================
 

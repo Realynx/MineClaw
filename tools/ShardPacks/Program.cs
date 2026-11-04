@@ -38,8 +38,7 @@ try
         _ => Usage(),
     };
 }
-catch (Exception ex) when (ex is ArgumentException or FileNotFoundException or DirectoryNotFoundException or ShardFormatException
-                               or InvalidOperationException or InvalidDataException)
+catch (Exception ex) when (IsUserError(ex))
 {
     Console.Error.WriteLine("error: " + ex.Message);
     return 2;
@@ -53,21 +52,7 @@ int Usage()
 
 PackBuildOptions Options(string output, string version, bool sdk, bool versionPacks = true)
 {
-    var sourceKind = Opt("--source") ?? (version == KnowledgePack.DefaultVersion ? "mineclaw" : "minecraft-data");
-    var vendored = Path.Combine(root, "third_party", "minecraft-data", "pc", version);
-    var facts = Opt("--facts") is { } fo ? Abs(fo) : Path.Combine(root, "shards", "sources", version);
-    IGameDataSource source = sourceKind.ToLowerInvariant() switch
-    {
-        "mineclaw" when version == KnowledgePack.DefaultVersion => new MineClawDataSource(),
-        "mineclaw" => throw new ArgumentException($"MineClaw.Data holds b1.8.1 only; {version} needs --source minecraft-data [--data <dir>]"),
-        "minecraft-data" or "prismarine" => new MinecraftDataSource(
-            Opt("--data") is { } d ? Abs(d) : Directory.Exists(vendored) ? vendored
-                : throw new ArgumentException($"--data <minecraft-data checkout> is required (no vendored {vendored})"),
-            version, Opt("--edition") ?? "pc", Opt("--data-key"), Directory.Exists(facts) ? facts : null,
-            // The bot's own tables, when MineClaw.Data has this version: the pack's drop facts are what its planners use.
-            version == MineClaw.Data.Versioning.Release1122GameData.Instance.VersionId ? MineClaw.Data.Versioning.Release1122GameData.Instance : null),
-        _ => throw new ArgumentException($"unknown --source {sourceKind} (mineclaw | minecraft-data)"),
-    };
+    var source = Source(version);
     return new PackBuildOptions
     {
         Source = source,
@@ -83,6 +68,27 @@ PackBuildOptions Options(string output, string version, bool sdk, bool versionPa
         IncludeVersionPacks = versionPacks,
     };
 }
+
+IGameDataSource Source(string version)
+{
+    var sourceKind = Opt("--source") ?? (version == KnowledgePack.DefaultVersion ? "mineclaw" : "minecraft-data");
+    var vendored = Path.Combine(root, "third_party", "minecraft-data", "pc", version);
+    var facts = Opt("--facts") is { } fo ? Abs(fo) : Path.Combine(root, "shards", "sources", version);
+    return sourceKind.ToLowerInvariant() switch
+    {
+        "mineclaw" when version == KnowledgePack.DefaultVersion => new MineClawDataSource(),
+        "mineclaw" => throw new ArgumentException($"MineClaw.Data holds b1.8.1 only; {version} needs --source minecraft-data [--data <dir>]"),
+        "minecraft-data" or "prismarine" => MinecraftData(version, vendored, facts),
+        _ => throw new ArgumentException($"unknown --source {sourceKind} (mineclaw | minecraft-data)"),
+    };
+}
+
+MinecraftDataSource MinecraftData(string version, string vendored, string facts) => new(
+    Opt("--data") is { } d ? Abs(d) : Directory.Exists(vendored) ? vendored
+        : throw new ArgumentException($"--data <minecraft-data checkout> is required (no vendored {vendored})"),
+    version, Opt("--edition") ?? "pc", Opt("--data-key"), Directory.Exists(facts) ? facts : null,
+    // The bot's own tables, when MineClaw.Data has this version: the pack's drop facts are what its planners use.
+    version == MineClaw.Data.Versioning.Release1122GameData.Instance.VersionId ? MineClaw.Data.Versioning.Release1122GameData.Instance : null);
 
 int Build(string output, string version, bool print, bool sdk, bool versionPacks = true)
 {
@@ -131,6 +137,9 @@ int List()
         Console.WriteLine($"{p.File,-28} {p.Kind,-7} {p.Version,-8} {p.Records,5} records {p.Bytes / 1024.0,8:F0} KB  {p.Description}");
     return 0;
 }
+
+static bool IsUserError(Exception ex) => ex is ArgumentException or FileNotFoundException or DirectoryNotFoundException or ShardFormatException
+    or InvalidOperationException or InvalidDataException;
 
 static string FindRoot()
 {

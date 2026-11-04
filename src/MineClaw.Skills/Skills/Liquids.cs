@@ -33,12 +33,7 @@ public static class FluidRules
             var below = c.Down();
             if (below.Y >= 0 && Open(w, below))
             {
-                var f = below;
-                int fallen = 1;
-                seen.Add(f);
-                while (f.Y > 0 && Open(w, f.Down()) && fallen < MaxFall) { f = f.Down(); seen.Add(f); fallen++; }
-                // Landed on something: it spreads again from there.
-                if (f.Y > 0 && !Open(w, f.Down()) && fallen < MaxFall) q.Enqueue((f, 0));
+                Fall(w, below, seen, q);
                 continue;
             }
             if (d >= reach) continue;
@@ -49,6 +44,16 @@ public static class FluidRules
             }
         }
         return seen;
+    }
+
+    /// <summary>Falls from <paramref name="below"/> (up to MaxFall); landed on something, it spreads again from there.</summary>
+    private static void Fall(IBlockAccess w, BlockPos below, HashSet<BlockPos> seen, Queue<(BlockPos P, int D)> q)
+    {
+        var f = below;
+        int fallen = 1;
+        seen.Add(f);
+        while (f.Y > 0 && Open(w, f.Down()) && fallen < MaxFall) { f = f.Down(); seen.Add(f); fallen++; }
+        if (f.Y > 0 && !Open(w, f.Down()) && fallen < MaxFall) q.Enqueue((f, 0));
     }
 
     private static bool Open(IBlockAccess w, BlockPos p)
@@ -168,11 +173,7 @@ public static class BucketOps
             var o = f.Normal();
             foreach (var (u, v) in FaceGrid)
             {
-                // Face centre pushed In inside along the normal, spread over the face's two in-plane axes.
-                double x = src.X + 0.5 + (o.X != 0 ? o.X * (0.5 - In) : u);
-                double y = src.Y + 0.5 + (o.Y != 0 ? o.Y * (0.5 - In) : o.X != 0 ? u : v);
-                double z = src.Z + 0.5 + (o.Z != 0 ? o.Z * (0.5 - In) : v);
-                var p = new Vec3d(x, y, z);
+                var p = FacePoint(src, o, u, v, In);
                 double d = p.DistanceTo(eye);
                 if (d > reach || !HitsFromBothEyes(w, eye, p, src)) continue;
                 double score = d + (f == BlockFace.Top ? 0 : 2);
@@ -181,6 +182,15 @@ public static class BucketOps
             if (best is not null && f == BlockFace.Top) return best;
         }
         return best;
+    }
+
+    /// <summary>Face centre pushed <paramref name="inset"/> inside along the normal, spread over the face's two in-plane axes.</summary>
+    private static Vec3d FacePoint(BlockPos src, BlockPos o, double u, double v, double inset)
+    {
+        double x = src.X + 0.5 + (o.X != 0 ? o.X * (0.5 - inset) : u);
+        double y = src.Y + 0.5 + (o.Y != 0 ? o.Y * (0.5 - inset) : o.X != 0 ? u : v);
+        double z = src.Z + 0.5 + (o.Z != 0 ? o.Z * (0.5 - inset) : v);
+        return new Vec3d(x, y, z);
     }
 
     /// <summary>The look at <paramref name="p"/> reaches <paramref name="src"/> first from the standing eye and from the 1.12.2 sneaking
@@ -216,24 +226,26 @@ public static class BucketOps
     public static (BlockPos? Src, string? Why) PickSource(SkillContext ctx, BlockPos? pos, bool lava)
     {
         string what = lava ? "lava" : "water";
-        bool Usable(BlockPos p) => Scoopable(ctx, p, lava);
         double far = Math.Max(12.0, ctx.Options.SearchRadius);
-        if (pos is { } p0)
-        {
-            if (Usable(p0)) return (p0, null);
-            if (!BlockShapes.IsLiquid(ctx.Block(p0)) && Usable(p0.Up())) return (p0.Up(), null);
-            BlockPos? cell = BlockShapes.IsLiquid(ctx.Block(p0)) ? p0 : BlockShapes.IsLiquid(ctx.Block(p0.Up())) ? p0.Up() : null;
-            if (cell is not { } c) return (null, $"no {what} at {SkillJson.Fmt(p0)} ({ctx.BlockName(p0)})");
-            if (Nearest(ctx, c.Center, 6, lava) is { } s) return (s, null);
-            string state = FluidRules.IsSource(ctx.World, c, lava) ? $"a protected {what} source" : FluidRules.Describe(ctx.Block(c), ctx.Meta(c));
-            return (null, $"{SkillJson.Fmt(c)} is {state}; no unprotected {what} source within 6 of it{ProtectedHint(ctx, c.Center, far, lava, c)}");
-        }
+        if (pos is { } p0) return PickAt(ctx, p0, lava, what, far);
         foreach (double r in new[] { 12.0, far })
             if (Nearest(ctx, ctx.Feet, r, lava) is { } s) return (s, null);
         var flowing = ctx.World.FindBlocks(ctx.Feet, far, (i, m) => (lava ? BlockShapes.IsLava(i) : BlockShapes.IsWater(i)) && m != 0, 1);
         string seen = flowing.Count > 0
             ? $"; only {FluidRules.Describe(flowing[0].Id, flowing[0].Meta)} e.g. at {SkillJson.Fmt(flowing[0].Pos)} (can't be scooped)" : "";
         return (null, $"no {what} source within {far:0}{seen}{ProtectedHint(ctx, ctx.Feet, far, lava, null)}");
+    }
+
+    /// <summary>A given position: itself, the source above its floor, else the nearest usable source of the same pool.</summary>
+    private static (BlockPos? Src, string? Why) PickAt(SkillContext ctx, BlockPos p0, bool lava, string what, double far)
+    {
+        if (Scoopable(ctx, p0, lava)) return (p0, null);
+        if (!BlockShapes.IsLiquid(ctx.Block(p0)) && Scoopable(ctx, p0.Up(), lava)) return (p0.Up(), null);
+        BlockPos? cell = BlockShapes.IsLiquid(ctx.Block(p0)) ? p0 : BlockShapes.IsLiquid(ctx.Block(p0.Up())) ? p0.Up() : null;
+        if (cell is not { } c) return (null, $"no {what} at {SkillJson.Fmt(p0)} ({ctx.BlockName(p0)})");
+        if (Nearest(ctx, c.Center, 6, lava) is { } s) return (s, null);
+        string state = FluidRules.IsSource(ctx.World, c, lava) ? $"a protected {what} source" : FluidRules.Describe(ctx.Block(c), ctx.Meta(c));
+        return (null, $"{SkillJson.Fmt(c)} is {state}; no unprotected {what} source within 6 of it{ProtectedHint(ctx, c.Center, far, lava, c)}");
     }
 
     private static BlockPos? Nearest(SkillContext ctx, Vec3d at, double r, bool lava)
@@ -256,18 +268,9 @@ public static class BucketOps
     {
         int id = ctx.Block(src);
         bool lava = BlockShapes.IsLava(id);
-        if (!BlockShapes.IsLiquid(id)) return SkillResult.Fail($"no liquid at {SkillJson.Fmt(src)} ({ctx.BlockName(src)})");
-        if (ctx.Meta(src) != 0) return SkillResult.Fail($"{SkillJson.Fmt(src)} is {FluidRules.Describe(id, ctx.Meta(src))}, not a source");
-        if (!ctx.Has(Items.Bucket)) return SkillResult.Fail("no empty bucket");
-        if (!Scoopable(ctx, src, lava)) return SkillResult.Fail(ctx.ProtectedText(src, $"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)}"));
+        if (FillRefusal(ctx, src, id, lava) is { } refused) return refused;
         double reach = Math.Min(4.5, ctx.Game.Reach);
-        var sources = lava ? new List<BlockPos> { src } : PoolSources(ctx, src, lava);
-        // Never trade a source that comes back for one that doesn't: when the asked source refills, only it and other refilling
-        // cells of its pool are taken (from the bank another cell of a channel can be the one in view: its end, used up for good).
-        if (!lava && FluidRules.Refills(ctx.World, src))
-            sources = sources.Where(s => s == src || FluidRules.Refills(ctx.World, s)).ToList();
-        // Unprotected sources first; a protected one only because it refills.
-        sources = sources.OrderBy(s => s == src ? 0 : 1).ThenBy(s => ctx.Protected(s) ? 1 : 0).ToList();
+        var sources = FillCandidates(ctx, src, lava);
         (BlockPos Src, Vec3d Point)? Visible()
         {
             foreach (var s in sources)
@@ -298,6 +301,28 @@ public static class BucketOps
         if (!await ctx.Game.WaitUntilAsync(() => ctx.Count(full) > before, ctx.Options.BlockChangeTimeout, ct).ConfigureAwait(false))
             return SkillResult.Fail($"bucket didn't fill at {SkillJson.Fmt(src)}");
         return SkillResult.Success($"filled {(lava ? "lava" : "water")} bucket at {SkillJson.Fmt(src)}");
+    }
+
+    private static SkillResult? FillRefusal(SkillContext ctx, BlockPos src, int id, bool lava)
+    {
+        if (!BlockShapes.IsLiquid(id)) return SkillResult.Fail($"no liquid at {SkillJson.Fmt(src)} ({ctx.BlockName(src)})");
+        if (ctx.Meta(src) != 0) return SkillResult.Fail($"{SkillJson.Fmt(src)} is {FluidRules.Describe(id, ctx.Meta(src))}, not a source");
+        if (!ctx.Has(Items.Bucket)) return SkillResult.Fail("no empty bucket");
+        if (!Scoopable(ctx, src, lava)) return SkillResult.Fail(ctx.ProtectedText(src, $"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)}"));
+        return null;
+    }
+
+    /// <summary>
+    /// The pool's sources to fill from, the asked one first and unprotected before protected. Never trade a source that comes
+    /// back for one that doesn't: when the asked source refills, only it and other refilling cells of its pool are taken (from
+    /// the bank another cell of a channel can be the one in view: its end, used up for good).
+    /// </summary>
+    private static List<BlockPos> FillCandidates(SkillContext ctx, BlockPos src, bool lava)
+    {
+        var sources = lava ? new List<BlockPos> { src } : PoolSources(ctx, src, lava);
+        if (!lava && FluidRules.Refills(ctx.World, src))
+            sources = sources.Where(s => s == src || FluidRules.Refills(ctx.World, s)).ToList();
+        return sources.OrderBy(s => s == src ? 0 : 1).ThenBy(s => ctx.Protected(s) ? 1 : 0).ToList();
     }
 
     private static List<BlockPos> PoolSources(SkillContext ctx, BlockPos src, bool lava)
@@ -341,36 +366,53 @@ public static class BucketOps
     public static async Task<SkillResult> EmptyAsync(SkillContext ctx, BlockPos cell, bool lava, CancellationToken ct, Func<string?>? veto = null)
     {
         int bucket = lava ? Items.LavaBucket : Items.WaterBucket;
-        if (!ctx.Has(bucket)) return SkillResult.Fail($"no {(lava ? "lava" : "water")} bucket");
-        if (!lava && ctx.InNether) return SkillResult.Fail("water evaporates in the nether");
-        if (!SkillWorld.Replaceable(ctx.World, cell)) return SkillResult.Fail($"{SkillJson.Fmt(cell)} is not empty ({ctx.BlockName(cell)})");
-        if (ctx.Protected(cell)) return SkillResult.Fail(ctx.ProtectedText(cell, SkillJson.Fmt(cell)));
+        string what = lava ? "lava" : "water";
+        if (PourRefusal(ctx, cell, lava, bucket, what) is { } refused) return refused;
         // The server pours along its own raytrace of my look (from a lower eye while sneaking on 1.12.2): the pour aim keeps the
         // water in the cell from either eye, rather than on the rim of a dug hole.
         if (!HasPourFace(ctx.World, cell) && await PourFaceNearAsync(ctx, cell, ct).ConfigureAwait(false) is { } around)
-            return SkillResult.Fail($"nothing beside or under {SkillJson.Fmt(cell)} to pour against ({around}): the {(lava ? "lava" : "water")} would have nothing to hold it");
-        var me = ctx.Me;
-        var aim = DryStand(ctx.World, me.X, me.Y, me.Z) ? Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5) : null;
-        if (aim is null)
-        {
-            // A dry stand from which a face beside the cell is in view (a 1-deep trench: the bank, looking down at its floor, or
-            // across at its far wall). The cell's flowing water never hides a face: the full bucket's ray passes liquids.
-            var stand = new GoalFiltered(new GoalWithinReach(cell, 4.2),
-                (x, y, z) => DryStand(ctx.World, x, y, z) && Aiming.FindPourAim(ctx.World, GoalUseBlock.EyeAt(ctx.World, x, y, z), cell, 4.4) is not null,
-                $"pour stand for {SkillJson.Fmt(cell)}");
-            var g = await ctx.Game.GotoAsync(stand, null, ct).ConfigureAwait(false);
-            me = ctx.Me;
-            aim = DryStand(ctx.World, me.X, me.Y, me.Z) ? Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5) : null;
-            if (aim is null)
-                return SkillResult.Fail($"can't get near {SkillJson.Fmt(cell)}: no dry spot with a face beside it in view ({g.Message})");
-        }
+            return SkillResult.Fail($"nothing beside or under {SkillJson.Fmt(cell)} to pour against ({around}): the {what} would have nothing to hold it");
+        var (aim, noStand) = await PourAimAsync(ctx, cell, ct).ConfigureAwait(false);
+        if (aim is null) return noStand!;
         if (veto?.Invoke() is { } why) return SkillResult.Fail($"won't pour from here: {why}");
         await ctx.Game.LookAtAsync(aim.Value.Point, ct).ConfigureAwait(false);
         var r = await ctx.Game.UseItemAsync(bucket, ct).ConfigureAwait(false);
         if (!r.Ok) return SkillResult.From(r);
         bool ok = await ctx.WaitBlockAsync(cell, (id, _) => lava ? BlockShapes.IsLava(id) : BlockShapes.IsWater(id), ct).ConfigureAwait(false);
-        return ok ? SkillResult.Success($"poured {(lava ? "lava" : "water")} at {SkillJson.Fmt(cell)}")
-                  : SkillResult.Fail($"{(lava ? "lava" : "water")} didn't appear at {SkillJson.Fmt(cell)}");
+        return ok ? SkillResult.Success($"poured {what} at {SkillJson.Fmt(cell)}")
+                  : SkillResult.Fail($"{what} didn't appear at {SkillJson.Fmt(cell)}");
+    }
+
+    private static SkillResult? PourRefusal(SkillContext ctx, BlockPos cell, bool lava, int bucket, string what)
+    {
+        if (!ctx.Has(bucket)) return SkillResult.Fail($"no {what} bucket");
+        if (!lava && ctx.InNether) return SkillResult.Fail("water evaporates in the nether");
+        if (!SkillWorld.Replaceable(ctx.World, cell)) return SkillResult.Fail($"{SkillJson.Fmt(cell)} is not empty ({ctx.BlockName(cell)})");
+        if (ctx.Protected(cell)) return SkillResult.Fail(ctx.ProtectedText(cell, SkillJson.Fmt(cell)));
+        return null;
+    }
+
+    /// <summary>The pour aim from where I stand (only on a dry stand), else null.</summary>
+    private static PlaceAim? PourAimHere(SkillContext ctx, BlockPos cell)
+    {
+        var me = ctx.Me;
+        return DryStand(ctx.World, me.X, me.Y, me.Z) ? Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5) : null;
+    }
+
+    /// <summary>
+    /// The pour aim, walking first when needed to a dry stand from which a face beside the cell is in view (a 1-deep trench: the
+    /// bank, looking down at its floor, or across at its far wall). The cell's flowing water never hides a face: the full bucket's
+    /// ray passes liquids. No aim: the failure.
+    /// </summary>
+    private static async Task<(PlaceAim? Aim, SkillResult? Failure)> PourAimAsync(SkillContext ctx, BlockPos cell, CancellationToken ct)
+    {
+        if (PourAimHere(ctx, cell) is { } here) return (here, null);
+        var stand = new GoalFiltered(new GoalWithinReach(cell, 4.2),
+            (x, y, z) => DryStand(ctx.World, x, y, z) && Aiming.FindPourAim(ctx.World, GoalUseBlock.EyeAt(ctx.World, x, y, z), cell, 4.4) is not null,
+            $"pour stand for {SkillJson.Fmt(cell)}");
+        var g = await ctx.Game.GotoAsync(stand, null, ct).ConfigureAwait(false);
+        if (PourAimHere(ctx, cell) is { } there) return (there, null);
+        return (null, SkillResult.Fail($"can't get near {SkillJson.Fmt(cell)}: no dry spot with a face beside it in view ({g.Message})"));
     }
 }
 
@@ -434,18 +476,39 @@ public sealed class InfiniteWaterSkill : Skill
                     || args.Str("shape")?.Contains("3") == true;
         var cells = Pick(ctx, args.Pos(), line);
         if (cells is null) return Fail($"no safe {(line ? "1x3 trench" : "2x2 basin")} spot near me; give pos = corner at water level");
+        if (await DigBasinAsync(ctx, cells, ct) is { } dug) return dug;
+        if (BasinProblem(ctx.World, cells) is { } problem) return Fail(problem);
+        if (await PourCornersAsync(ctx, cells, line, ct) is { } failed) return failed;
+        bool all = await ctx.Game.WaitUntilAsync(() => cells.All(c => FluidRules.IsSource(ctx.World, c, false)), TimeSpan.FromSeconds(3), ct);
+        int sources = cells.Count(c => FluidRules.IsSource(ctx.World, c, false));
+        return all ? Ok($"infinite water at {P(cells[0])} ({cells.Length} sources)")
+                   : Fail($"only {sources}/{cells.Length} cells became sources at {P(cells[0])}");
+    }
 
-        // Dig out the basin (never my own floor, never protected blocks).
+    /// <summary>Digs out the basin (never my own floor, never protected blocks); the failure, else null.</summary>
+    private static async Task<SkillResult?> DigBasinAsync(SkillContext ctx, BlockPos[] cells, CancellationToken ct)
+    {
         foreach (var c in cells.Where(c => !SkillWorld.Replaceable(ctx.World, c)))
         {
             if (ctx.Protected(c)) return Fail(ctx.ProtectedText(c, P(c)));
             var d = await ctx.Game.DigAsync(c, ct);
             if (!d.Ok) return Fail($"couldn't dig the basin at {P(c)}: {d.Message}");
         }
-        if (Leak(ctx.World, cells) is { } leak) return Fail($"basin would leak at {P(leak)}");
-        foreach (var c in cells)
-            if (FluidRules.WaterContact(ctx.World, c) is { } why) return Fail($"won't pour: {why}");
+        return null;
+    }
 
+    /// <summary>Why the dug basin can't be filled (a leak, or water that would reach lava), else null.</summary>
+    private static string? BasinProblem(IBlockAccess w, BlockPos[] cells)
+    {
+        if (Leak(w, cells) is { } leak) return $"basin would leak at {P(leak)}";
+        foreach (var c in cells)
+            if (FluidRules.WaterContact(w, c) is { } why) return $"won't pour: {why}";
+        return null;
+    }
+
+    /// <summary>Pours the two opposite corners (the ends of a line) that are not sources yet; the failed pour, else null.</summary>
+    private static async Task<SkillResult?> PourCornersAsync(SkillContext ctx, BlockPos[] cells, bool line, CancellationToken ct)
+    {
         var (a, b) = line ? (cells[0], cells[2]) : (cells[0], cells[3]);
         foreach (var c in new[] { a, b })
         {
@@ -453,10 +516,7 @@ public sealed class InfiniteWaterSkill : Skill
             var r = await BucketOps.EmptyAsync(ctx, c, false, ct);
             if (!r.Ok) return r;
         }
-        bool all = await ctx.Game.WaitUntilAsync(() => cells.All(c => FluidRules.IsSource(ctx.World, c, false)), TimeSpan.FromSeconds(3), ct);
-        int sources = cells.Count(c => FluidRules.IsSource(ctx.World, c, false));
-        return all ? Ok($"infinite water at {P(cells[0])} ({cells.Length} sources)")
-                   : Fail($"only {sources}/{cells.Length} cells became sources at {P(cells[0])}");
+        return null;
     }
 
     /// <summary>Basin cells: from <paramref name="corner"/>, else a nearby solid patch one below feet level.</summary>
@@ -556,31 +616,46 @@ public sealed class MakeObsidianSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         int want = Clamp(args.Int("count"), 1, 1, 14);
-        var targets = args.Pos() is { } one ? [one]
-            : ctx.Find((id, m) => BlockShapes.IsLava(id) && m == 0, 12, 32).Select(f => f.Pos)
-                .Where(p => SkillWorld.Replaceable(ctx.World, p.Up()) && !BlockShapes.IsLiquid(ctx.Block(p.Up()))).ToList();
+        var targets = LavaTargets(ctx, args);
         int made = 0;
         foreach (var lava in targets)
         {
             if (made >= want) break;
             ct.ThrowIfCancellationRequested();
-            if (!FluidRules.IsSource(ctx.World, lava, true)) continue;
-            if (ctx.Protected(lava)) continue; // e.g. a cobble generator's lava
-            var above = lava.Up();
-            if (!SkillWorld.Air(ctx.World, above)) continue;
-            // Water must flow onto the lava (a full bucket aimed at the lava would replace it, not harden it):
-            // pour next to the cell above the lava, on solid ground, and let it run over.
-            var pour = SkillWorld.Horizontal.Select(o => above + o)
-                .FirstOrDefault(c => SkillWorld.Air(ctx.World, c) && SkillWorld.Solid(ctx.World, c.Down()) && !ctx.Protected(c));
-            if (pour == default) continue;
+            if (PourSpot(ctx, lava) is not { } pour) continue;
             var r = await BucketOps.EmptyAsync(ctx, pour, false, ct);
             if (!r.Ok) return made > 0 ? Ok($"made {made} obsidian; then {r.Text}") : r;
             await ctx.WaitBlockAsync(lava, (id, _) => id == Blocks.Obsidian, ct, TimeSpan.FromSeconds(3));
             if (ctx.Block(lava) == Blocks.Obsidian) made++;
-            if (ctx.Has(Items.Bucket) && FluidRules.IsSource(ctx.World, pour, false))
-                await BucketOps.FillAsync(ctx, pour, ct); // take the water back
+            await TakeWaterBackAsync(ctx, pour, ct);
             if (!ctx.Has(Items.WaterBucket)) break;
         }
         return made > 0 ? Ok($"made {made} obsidian") : Fail("no reachable lava source with open air above");
+    }
+
+    /// <summary>The given lava, else nearby lava sources with open, dry air above.</summary>
+    private static List<BlockPos> LavaTargets(SkillContext ctx, JsonElement args) => args.Pos() is { } one ? [one]
+        : ctx.Find((id, m) => BlockShapes.IsLava(id) && m == 0, 12, 32).Select(f => f.Pos)
+            .Where(p => SkillWorld.Replaceable(ctx.World, p.Up()) && !BlockShapes.IsLiquid(ctx.Block(p.Up()))).ToList();
+
+    /// <summary>
+    /// Where to pour so the water flows onto the lava (a full bucket aimed at the lava would replace it, not harden it): next to the
+    /// cell above the lava, on solid ground. Null when the lava is gone, protected (e.g. a cobble generator's) or covered.
+    /// </summary>
+    private static BlockPos? PourSpot(SkillContext ctx, BlockPos lava)
+    {
+        if (!FluidRules.IsSource(ctx.World, lava, true)) return null;
+        if (ctx.Protected(lava)) return null;
+        var above = lava.Up();
+        if (!SkillWorld.Air(ctx.World, above)) return null;
+        var pour = SkillWorld.Horizontal.Select(o => above + o)
+            .FirstOrDefault(c => SkillWorld.Air(ctx.World, c) && SkillWorld.Solid(ctx.World, c.Down()) && !ctx.Protected(c));
+        return pour == default ? null : pour;
+    }
+
+    private static async Task TakeWaterBackAsync(SkillContext ctx, BlockPos pour, CancellationToken ct)
+    {
+        if (ctx.Has(Items.Bucket) && FluidRules.IsSource(ctx.World, pour, false))
+            await BucketOps.FillAsync(ctx, pour, ct);
     }
 }

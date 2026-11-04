@@ -91,18 +91,33 @@ public sealed class SkillRegistry
     private static string Normalize(string name) => name.Trim().Replace(' ', '_').Replace('-', '_');
 
     /// <summary>Why the skill can't start right now, or null.</summary>
-    public static string? CheckPreconditions(SkillContext ctx, SkillSpec spec, JsonElement args)
+    public static string? CheckPreconditions(SkillContext ctx, SkillSpec spec, JsonElement args) =>
+        WorldProblem(ctx, spec.Pre) ?? ItemProblem(ctx, spec.Pre, args) ?? SafetyProblem(ctx, spec);
+
+    /// <summary>The world, dimension or client can't do it.</summary>
+    private static string? WorldProblem(SkillContext ctx, Preconditions pre)
     {
-        var pre = spec.Pre;
         if (pre.Requires is { } req && !req.Holds(ctx)) return $"not available in this world: {req.Reason}";
         if ((pre.Dimension & ctx.Dimension) == 0)
             return $"only works in the {(pre.Dimension == Dim.Nether ? "nether" : pre.Dimension == Dim.End ? "end" : "overworld")}";
         var missing = pre.Primitives & ~ctx.Game.Supported;
         if (missing != Primitive.None) return $"needs client primitive {missing}";
+        return null;
+    }
+
+    /// <summary>A needed item group is missing, or it is night for a daylight-only skill.</summary>
+    private static string? ItemProblem(SkillContext ctx, Preconditions pre, JsonElement args)
+    {
         foreach (var group in pre.Items)
             if (!group.Any(id => ctx.Has(id))) return $"needs {pre.Needs}";
         if (pre.DaylightOnly && ctx.World.IsNight && !args.Flag("night_ok")) return "it's night (mobs spawn); pass night_ok=true to do it anyway";
-        bool gate = pre.SurvivalGate || spec.Safety is SafetyClass.Edge or SafetyClass.Combat;
+        return null;
+    }
+
+    /// <summary>The survival veto (gated skills, edge and combat work) and the ghast veto at edges.</summary>
+    private static string? SafetyProblem(SkillContext ctx, SkillSpec spec)
+    {
+        bool gate = spec.Pre.SurvivalGate || spec.Safety is SafetyClass.Edge or SafetyClass.Combat;
         if (gate && ctx.SurvivalVeto(spec.Name, spec.Safety) is { } veto) return veto;
         if (spec.Safety is SafetyClass.Edge or SafetyClass.Combat && NetherHazards.EdgeVeto(ctx) is { } ghast) return ghast;
         return null;
@@ -112,60 +127,79 @@ public sealed class SkillRegistry
     private async Task<string?> AcquireAsync(SkillContext ctx, SkillSpec spec, CancellationToken ct)
     {
         if (AcquireMissing is not { } acquire || spec.Pre.Items.Count == 0) return null;
-        if (spec.Pre.Requires is { } req && !req.Holds(ctx)) return null;
-        if ((spec.Pre.Dimension & ctx.Dimension) == 0 || (spec.Pre.Primitives & ~ctx.Game.Supported) != Primitive.None) return null;
+        if (WorldProblem(ctx, spec.Pre) is not null) return null;
         var notes = new List<string>();
         foreach (var group in spec.Pre.Items)
         {
             if (group.Any(id => ctx.Has(id))) continue;
-            string? note;
-            try { note = await acquire(ctx, spec, group, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex) { note = null; ctx.Log?.Invoke($"acquire for {spec.Name} threw: {ex.Message}"); }
-            if (note != null) notes.Add(note);
+            if (await AcquireGroupAsync(acquire, ctx, spec, group, ct).ConfigureAwait(false) is { } note) notes.Add(note);
             if (!group.Any(id => ctx.Has(id))) break; // the precondition check reports it
         }
         return notes.Count == 0 ? null : string.Join("; ", notes);
     }
 
+    /// <summary>One group's fetch note; a throw is logged and counts as no note (a cancel passes through).</summary>
+    private static async Task<string?> AcquireGroupAsync(Func<SkillContext, SkillSpec, int[], CancellationToken, Task<string?>> acquire, SkillContext ctx, SkillSpec spec, int[] group, CancellationToken ct)
+    {
+        try { return await acquire(ctx, spec, group, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            ctx.Log?.Invoke($"acquire for {spec.Name} threw: {ex.Message}");
+            return null;
+        }
+    }
+
     /// <summary>Runs a skill by name. Never throws for game failures; "cancelled" when <paramref name="ct"/> fires.</summary>
     public async Task<SkillResult> RunAsync(SkillContext ctx, string name, JsonElement args, CancellationToken ct)
     {
-        if (!TryGet(name, out var skill))
-        {
-            var near = SkillCatalog.Search(Specs, name, 3).Select(s => s.Name).ToArray();
-            return SkillResult.Fail($"no skill '{name}'" + (near.Length > 0 ? $"; try {string.Join(", ", near)}" : "; use find_skill"));
-        }
+        if (!TryGet(name, out var skill)) return NoSkill(name);
         var spec = skill.Spec;
         if (spec.Status == SkillStatus.Stub) return SkillResult.Fail($"{spec.Name} is not implemented yet (stub): {spec.Summary}");
         string? acquired;
         try { acquired = await AcquireAsync(ctx, spec, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return SkillResult.Fail($"{spec.Name} cancelled"); }
         if (CheckPreconditions(ctx, spec, args) is { } why) return SkillResult.Fail($"{spec.Name}: {why}" + (acquired != null ? $" ({acquired})" : ""));
-        SkillResult r;
+        var r = await ExecuteGuardedAsync(skill, spec, ctx, args, ct).ConfigureAwait(false);
+        if (acquired != null && r.Ok) r = r with { Text = acquired + "; " + r.Text };
+        return Capped(r, ctx.Options.MaxResultChars);
+    }
+
+    private SkillResult NoSkill(string name)
+    {
+        var near = SkillCatalog.Search(Specs, name, 3).Select(s => s.Name).ToArray();
+        return SkillResult.Fail($"no skill '{name}'" + (near.Length > 0 ? $"; try {string.Join(", ", near)}" : "; use find_skill"));
+    }
+
+    /// <summary>The skill's run inside its scope: a cancel or a throw becomes a failed result.</summary>
+    private async Task<SkillResult> ExecuteGuardedAsync(ISkill skill, SkillSpec spec, SkillContext ctx, JsonElement args, CancellationToken ct)
+    {
         IDisposable? scope = null;
         try
         {
             ct.ThrowIfCancellationRequested();
             try { scope = RunScope?.Invoke(spec.Name, args); } catch (Exception) { scope = null; }
-            r = await skill.ExecuteAsync(ctx, args, ct).ConfigureAwait(false) ?? SkillResult.Fail("no result");
+            return await skill.ExecuteAsync(ctx, args, ct).ConfigureAwait(false) ?? SkillResult.Fail("no result");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            r = SkillResult.Fail($"{spec.Name} cancelled");
+            return SkillResult.Fail($"{spec.Name} cancelled");
         }
         catch (Exception ex)
         {
             ctx.Log?.Invoke($"skill {spec.Name} threw: {ex}");
-            r = SkillResult.Fail($"{spec.Name} error: {ex.GetType().Name}: {ex.Message.Replace('\n', ' ')}");
+            return SkillResult.Fail($"{spec.Name} error: {ex.GetType().Name}: {ex.Message.Replace('\n', ' ')}");
         }
         finally
         {
             scope?.Dispose();
         }
-        if (acquired != null && r.Ok) r = r with { Text = acquired + "; " + r.Text };
+    }
+
+    /// <summary>One line, at most <paramref name="cap"/> chars.</summary>
+    private static SkillResult Capped(SkillResult r, int cap)
+    {
         var text = r.Text.Replace('\r', ' ').Replace('\n', ' ').Trim();
-        int cap = ctx.Options.MaxResultChars;
         if (text.Length > cap) text = text[..(cap - 3)].TrimEnd() + "...";
         return r with { Text = text };
     }

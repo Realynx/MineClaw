@@ -50,21 +50,28 @@ internal sealed partial class JsRuntime
         foreach (var key in on.GetOwnPropertyKeys(Types.String))
         {
             var k = key.ToString();
-            var v = on.Get(key);
-            if (v.IsString()) list.Add(new TransitionSpec(k, v.AsString()));
-            else if (v is Function f) list.Add(new TransitionSpec(k, null, Handler: Store(f)));
-            else if (v is ObjectInstance o)
-            {
-                var to = JsConvert.Str(o.Get("to"));
-                var g = o.Get("guard");
-                if (g.IsUndefined()) g = o.Get("if");
-                var does = o.Get("do");
-                list.Add(new TransitionSpec(k, to, Handler: does is Function df ? Store(df) : -1, Guard: g.IsString() ? g.AsString() : null,
-                    GuardFn: g is Function gf ? Store(gf) : -1));
-            }
-            else throw ScriptSession.Bug($"machine '{machine}'{(state != null ? " state " + state : "")}: on['{k}'] must be a state name, a function or {{to, guard}}");
+            list.Add(Transition(k, on.Get(key), machine, state));
         }
         return list;
+    }
+
+    private TransitionSpec Transition(string k, JsValue v, string machine, string? state)
+    {
+        if (v.IsString()) return new TransitionSpec(k, v.AsString());
+        if (v is Function f) return new TransitionSpec(k, null, Handler: Store(f));
+        if (v is ObjectInstance o) return ObjectTransition(k, o);
+        throw ScriptSession.Bug($"machine '{machine}'{(state != null ? " state " + state : "")}: on['{k}'] must be a state name, a function or {{to, guard}}");
+    }
+
+    /// <summary>{to, guard|if, do}: a guard by name or function, an optional handler.</summary>
+    private TransitionSpec ObjectTransition(string k, ObjectInstance o)
+    {
+        var to = JsConvert.Str(o.Get("to"));
+        var g = o.Get("guard");
+        if (g.IsUndefined()) g = o.Get("if");
+        var does = o.Get("do");
+        return new TransitionSpec(k, to, Handler: does is Function df ? Store(df) : -1, Guard: g.IsString() ? g.AsString() : null,
+            GuardFn: g is Function gf ? Store(gf) : -1);
     }
 
     private int Store(JsValue fn)

@@ -7,6 +7,9 @@ namespace MineClaw.Skills;
 
 internal static class ItemOps
 {
+    /// <summary>The damage to match: none for tools and armor (any wear) or an unspecified variant.</summary>
+    public static int? MatchDamage(int id, int damage) => damage < 0 || Items.Get(id).MaxDamage > 0 ? null : damage;
+
     /// <summary>Drops exactly <paramref name="count"/> of an item where I'm looking (window clicks: pick up, put back
     /// the rest with singles or the whole remainder, click outside). Returns how many were dropped.</summary>
     public static async Task<int> DropAsync(SkillContext ctx, int id, int? damage, int count, CancellationToken ct)
@@ -72,7 +75,7 @@ public sealed class GiveItemsSkill : Skill
         if (ctx.World.Entities.FindPlayer(name) is not { } pl) return Fail($"can't see {name}");
         if (SkillJson.Item(args.Str("item")) is not { } it) return Fail($"unknown item '{args.Str("item")}'");
         if (ctx.Game.ReservedItems.Contains(it.Id)) return Fail($"{Item(it.Id)} is reserved");
-        int? dmg = it.Damage < 0 || Items.Get(it.Id).MaxDamage > 0 ? null : it.Damage;
+        int? dmg = ItemOps.MatchDamage(it.Id, it.Damage);
         int have = ctx.Count(it.Id, dmg);
         if (have == 0) return Fail($"no {Item(it.Id, Math.Max(0, it.Damage))}");
         int count = Clamp(args.Int("count"), 1, 1, have);
@@ -100,7 +103,7 @@ public sealed class DropItemsSkill : Skill
     {
         if (SkillJson.Item(args.Str("item")) is not { } it) return Fail($"unknown item '{args.Str("item")}'");
         if (ctx.Game.ReservedItems.Contains(it.Id)) return Fail($"{Item(it.Id)} is reserved");
-        int? dmg = it.Damage < 0 || Items.Get(it.Id).MaxDamage > 0 ? null : it.Damage;
+        int? dmg = ItemOps.MatchDamage(it.Id, it.Damage);
         int have = ctx.Count(it.Id, dmg);
         if (have == 0) return Fail($"no {Item(it.Id, Math.Max(0, it.Damage))}");
         var (n, _) = await ItemOps.DropVerifiedAsync(ctx, it.Id, dmg, Clamp(args.Int("count"), have, 1, have), ct);
@@ -158,7 +161,7 @@ public sealed class HoldItemSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         if (SkillJson.Item(args.Str("item")) is not { } it) return Fail($"unknown item '{args.Str("item")}'");
-        int? dmg = it.Damage < 0 || Items.Get(it.Id).MaxDamage > 0 ? null : it.Damage;
+        int? dmg = ItemOps.MatchDamage(it.Id, it.Damage);
         var held = ctx.World.Inventory.HeldItem(ctx.World.Player.HeldSlot);
         if (WindowModel.Same(held, it.Id, dmg)) return Ok($"already holding {Item(it.Id, Math.Max(0, it.Damage))}");
         var run = new InventoryRun(ctx);

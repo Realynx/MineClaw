@@ -83,55 +83,14 @@ internal sealed class MachineRunner
     /// <summary>Runs until a final state (or "done"); returns its name.</summary>
     public string Run()
     {
-        string state = _spec.Initial;
-        if (_s.ResumeTarget == Label)
-        {
-            state = Restore() ?? state;
-            _s.ReachedResumeTarget(Label);
-        }
-        _current = _spec.States.TryGetValue(state, out var st) ? st : _spec.States[_spec.Initial];
-        state = _current.Name;
+        string state = StartState();
         foreach (var key in AllKeys()) if (!IsTimer(key) && !key.StartsWith("when:", StringComparison.Ordinal)) _s.Signals.Ensure(key, Threshold(key));
         _s.AddHandler(new ScriptSession.Handler($"machine '{_spec.Id}'", Match, Handle, Cuts: true, Owner: this));
         StartTimers(_spec.On, this);
         _s.EnterMachine(this);
         try
         {
-            bool entered = false;
-            string? pending = null;
-            string why = "start";
-            while (true)
-            {
-                try
-                {
-                    if (!entered)
-                    {
-                        entered = true;
-                        Publish(state);
-                        StartTimers(_current.On, _stateToken);
-                        pending = Enter(state);
-                        why = "enter";
-                    }
-                    while (pending != null)
-                    {
-                        if (pending == "done" && !_spec.States.ContainsKey("done")) { Step(state, "done", why); return "done"; }
-                        state = Switch(state, pending, why);
-                        pending = Enter(state);
-                        why = "enter";
-                    }
-                    if (_current.Final) return state;
-                    _s.SafePoint();
-                    int before = _s.Actions;
-                    var next = _current.HasTick ? _host.Tick(state) : null;
-                    if (next != null) { pending = next; why = "tick"; continue; }
-                    if (_s.Actions == before) _s.Wait((_current.IdleMs ?? _s.Options.MachineIdleMs) / 1000.0, counts: false);
-                }
-                catch (ScriptUnwind u) when (ReferenceEquals(u.Target, this))
-                {
-                    pending = u.To;
-                    why = u.Message;
-                }
-            }
+            return Loop(state);
         }
         finally
         {
@@ -141,6 +100,74 @@ internal sealed class MachineRunner
             _s.Signals.RemoveOwner(_stateToken);
             foreach (var key in AllKeys().Where(k => k.StartsWith("when:", StringComparison.Ordinal))) _s.Signals.Activate(key, false);
         }
+    }
+
+    /// <summary>The initial state, or the checkpointed one when the run resumes at this machine.</summary>
+    private string StartState()
+    {
+        string state = _spec.Initial;
+        if (_s.ResumeTarget == Label)
+        {
+            state = Restore() ?? state;
+            _s.ReachedResumeTarget(Label);
+        }
+        _current = _spec.States.TryGetValue(state, out var st) ? st : _spec.States[_spec.Initial];
+        return _current.Name;
+    }
+
+    /// <summary>enter → (transitions) → tick… until a final state; an unwind aimed at this machine becomes the next transition.</summary>
+    private string Loop(string state)
+    {
+        bool entered = false;
+        string? pending = null;
+        string why = "start";
+        while (true)
+        {
+            try
+            {
+                if (!entered)
+                {
+                    entered = true;
+                    Publish(state);
+                    StartTimers(_current.On, _stateToken);
+                    pending = Enter(state);
+                    why = "enter";
+                }
+                if (Drain(ref state, ref pending, ref why)) return "done";
+                if (_current.Final) return state;
+                var next = TickOnce(state);
+                if (next != null) { pending = next; why = "tick"; }
+            }
+            catch (ScriptUnwind u) when (ReferenceEquals(u.Target, this))
+            {
+                pending = u.To;
+                why = u.Message;
+            }
+        }
+    }
+
+    /// <summary>Takes pending transitions (each new state's enter may chain another); true when the machine went to an implicit "done".</summary>
+    private bool Drain(ref string state, ref string? pending, ref string why)
+    {
+        while (pending != null)
+        {
+            if (pending == "done" && !_spec.States.ContainsKey("done")) { Step(state, "done", why); return true; }
+            state = Switch(state, pending, why);
+            pending = Enter(state);
+            why = "enter";
+        }
+        return false;
+    }
+
+    /// <summary>One tick at a safe point; a tick that did no action idles. Returns the tick's target state, if any.</summary>
+    private string? TickOnce(string state)
+    {
+        _s.SafePoint();
+        int before = _s.Actions;
+        var next = _current.HasTick ? _host.Tick(state) : null;
+        if (next != null) return next;
+        if (_s.Actions == before) _s.Wait((_current.IdleMs ?? _s.Options.MachineIdleMs) / 1000.0, counts: false);
+        return null;
     }
 
     private string? Enter(string state)

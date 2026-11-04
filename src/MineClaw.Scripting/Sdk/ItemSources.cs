@@ -44,35 +44,54 @@ public static class ItemSources
         var it = data.ItemByName(item);
         if (it == null) return list;
         int id = it.Id;
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        void Add(string via, string key, string name, string? skill = null)
+        var routes = new Routes(list);
+        var harvested = AddHarvests(data, id, routes);
+        if (id is Blocks.Log or Log2 && data.BlockExists(id)) routes.Add("chop", "block", data.Block(id).Name);
+        foreach (var b in MinedBlocks(data, id, harvested)) routes.Add("mine", "block", data.Block(b).Name);
+        foreach (var (mob, items) in MobDrops)
+            if (items.Any(n => data.ItemByName(n)?.Id == id)) routes.Add("kill", "mob", mob);
+        return list;
+    }
+
+    /// <summary>Route objects, each (via, name) once.</summary>
+    private sealed class Routes(JsonArray list)
+    {
+        private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
+
+        public void Add(string via, string key, string name, string? skill = null)
         {
-            if (!seen.Add(via + ":" + name)) return;
+            if (!_seen.Add(via + ":" + name)) return;
             var o = new JsonObject { ["via"] = via, [key] = name };
             if (skill != null) o["skill"] = skill;
             list.Add(o);
         }
+    }
+
+    /// <summary>The plants that drop the item (with their harvest skill); returns their blocks.</summary>
+    private static HashSet<int> AddHarvests(IGameData data, int id, Routes routes)
+    {
         var harvested = new HashSet<int>();
         foreach (var (block, meta, skill) in Harvests)
             if (data.BlockExists(block) && data.DropsFor(block, meta).Any(d => d.ItemId == id))
             {
                 harvested.Add(block);
-                Add("harvest", "block", data.Block(block).Name, skill);
+                routes.Add("harvest", "block", data.Block(block).Name, skill);
             }
-        if (id is Blocks.Log or Log2 && data.BlockExists(id)) Add("chop", "block", data.Block(id).Name);
-        // Natural sources before the item's own block (stone before cobblestone), then by expected yield; never farmland, crafted
-        // blocks (stairs, furnaces...: someone built them) or the plants above.
-        var mined = data.BlockIds.Where(b => data.DropsFor(b, 0, b == Blocks.Web && !data.CanHarvest(b, -1) ? Items.Shears : BestTool(data, b)).Any(d => d.ItemId == id))
+        return harvested;
+    }
+
+    /// <summary>
+    /// Natural sources before the item's own block (stone before cobblestone), then by expected yield; never farmland, crafted
+    /// blocks (stairs, furnaces...: someone built them) or the plants above.
+    /// </summary>
+    private static IEnumerable<int> MinedBlocks(IGameData data, int id, HashSet<int> harvested) =>
+        data.BlockIds.Where(b => data.DropsFor(b, 0, b == Blocks.Web && !data.CanHarvest(b, -1) ? Items.Shears : BestTool(data, b)).Any(d => d.ItemId == id))
             .Where(b => b != Blocks.Log && b != Log2 && b != Blocks.Farmland && !harvested.Contains(b) && data.BlockExists(b)
                         && (b == id || data.RecipesFor(b).Count == 0))
             .Select(b => (Id: b, Yield: data.DropsFor(b, 0, BestTool(data, b)).Where(d => d.ItemId == id).Sum(d => d.Expected)))
             .Where(x => x.Yield > 0)
-            .OrderBy(x => x.Id == id ? 1 : 0).ThenByDescending(x => x.Yield).ThenBy(x => x.Id);
-        foreach (var (b, _) in mined) Add("mine", "block", data.Block(b).Name);
-        foreach (var (mob, items) in MobDrops)
-            if (items.Any(n => data.ItemByName(n)?.Id == id)) Add("kill", "mob", mob);
-        return list;
-    }
+            .OrderBy(x => x.Id == id ? 1 : 0).ThenByDescending(x => x.Yield).ThenBy(x => x.Id)
+            .Select(x => x.Id);
 
     /// <summary>1.12.2 acacia / dark oak logs.</summary>
     private const int Log2 = 162;
