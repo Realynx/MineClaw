@@ -96,6 +96,59 @@ public interface IStoryHost
 /// <param name="Why">Why it isn't in game, when known.</param>
 public sealed record PawnSeat(bool Hosted, string? Why);
 
+/// <summary>
+/// A pawn body's <see cref="PawnLive"/> read off its <see cref="WorldState"/> (the live host's <see cref="IStoryHost.Live"/>). The
+/// director asks many times a second per pawn (each pick, the tick, every state the browser polls); the inventory totals and the gear
+/// list are kept per body until its <see cref="MineClaw.World.Inventory.InventoryManager.Version"/> moves, the rest is read each time.
+/// Thread-safe.
+/// </summary>
+public sealed class PawnLiveCache
+{
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Pockets> _pockets = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record Pockets(WorldState World, long Version, IGameData Data, IReadOnlyList<Stack> Inventory, IReadOnlyList<GearSlot> Gear, int Free);
+
+    public PawnLive Read(string account, WorldState w, IGameData d, bool running)
+    {
+        long v = w.Inventory.Version; // before the reads: a change while reading moves it, and the next read starts over
+        if (!_pockets.TryGetValue(account, out var pk) || !ReferenceEquals(pk.World, w) || pk.Version != v || !ReferenceEquals(pk.Data, d))
+            _pockets[account] = pk = new Pockets(w, v, d, InventoryOf(w), GearOf(w, d), w.Inventory.EmptySlotCount());
+        var held = w.Inventory.HeldItem(w.Player.HeldSlot);
+        var p = w.Player.Position;
+        return new PawnLive(true, w.Player.Health, w.Player.Food, p.X, p.Y, p.Z, w.Dimension, held.IsEmpty ? null : d.Item(held.Id).Name, pk.Inventory,
+            running, pk.Free, w.Player.Snapshot.XpLevel, pk.Gear, 36 + w.Player.HeldSlot);
+    }
+
+    /// <summary>Totals by item over the bag and hotbar (9..44).</summary>
+    private static List<Stack> InventoryOf(WorldState w)
+    {
+        var inv = new List<Stack>();
+        for (int slot = 9; slot <= 44; slot++)
+        {
+            var s = w.Inventory.GetPlayerSlot(slot);
+            if (s.IsEmpty) continue;
+            // A 1.12.2 potion's type is NBT (its damage is 0): the colony tells water bottles from awkward or swiftness potions by meta.
+            int meta = MineClaw.Data.Brewing.IsPotionItem(s.Id) && MineClaw.Data.Brewing.TypeId(s.Tag?.Potion) is >= 0 and var pt ? pt : s.Damage;
+            int i = inv.FindIndex(x => x.Id == s.Id && x.Meta == meta);
+            if (i >= 0) inv[i] = inv[i] with { Count = inv[i].Count + s.Count }; else inv.Add(new Stack(s.Id, meta, s.Count));
+        }
+        return inv;
+    }
+
+    /// <summary>The body's tools, weapons and armour slot by slot (armour 5..8, bag 9..44) with their enchantments.</summary>
+    private static List<GearSlot> GearOf(WorldState w, IGameData d)
+    {
+        var list = new List<GearSlot>();
+        for (int slot = 5; slot <= 44; slot++)
+        {
+            var s = w.Inventory.GetPlayerSlot(slot);
+            if (s.IsEmpty || !StoryTools.IsGear(d, s.Id)) continue;
+            list.Add(new GearSlot(slot, s.Id, s.Damage, s.Count, MineClaw.Data.Enchantments.Of(s)));
+        }
+        return list;
+    }
+}
+
 /// <summary><see cref="IStoryWorld"/> over a client's <see cref="WorldState"/>.</summary>
 public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data) : IStoryWorld
 {
@@ -109,9 +162,11 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
 
     public (int Id, int Meta) Block(int x, int y, int z) => world() is { } w ? (w.GetBlock(x, y, z), w.GetMeta(x, y, z)) : (0, 0);
 
-    public IReadOnlyList<StoryEntity> Entities()
+    public IReadOnlyList<StoryEntity> Entities() => world() is { } w ? EntitiesOf(w, data) : [];
+
+    /// <summary>What one body's tracker holds as the colony sees it (drops, mobs, players).</summary>
+    internal static List<StoryEntity> EntitiesOf(WorldState w, IGameData data)
     {
-        if (world() is not { } w) return [];
         var list = new List<StoryEntity>();
         foreach (var e in w.Entities.All())
         {
@@ -164,17 +219,39 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
         return list;
     }
 
-    /// <summary>The world that has column x,z live: main first, else the first body that does; null = nobody.</summary>
-    private WorldState? At(int x, int z)
+    /// <summary>The body that answered the last lookup main couldn't (valid with the <see cref="Others"/> list it came from): the
+    /// pickers scan areas cell by cell, so the next cell is nearly always in a column the same body holds. Bodies on one shared chunk
+    /// store hold the same column object, so which of them answers doesn't change the answer.</summary>
+    private sealed record Hint(IReadOnlyList<WorldState> List, WorldState World);
+    private Hint? _hint;
+
+    /// <summary>The live column at x,z: main's first, else the hinted body's, else the first body's that has it; null = nobody.
+    /// One dictionary lookup per body asked (live 11-04 every cell near a far home asked main, then up to ten pawns, twice).</summary>
+    private ChunkColumn? Col(int x, int z, out WorldState? by)
     {
-        if (main() is { } m && m.IsLoaded(x, z)) return m;
-        foreach (var w in Others()) if (w.IsLoaded(x, z)) return w;
+        int cx = x >> 4, cz = z >> 4;
+        var m = main();
+        if (m?.GetColumn(cx, cz) is { HasData: true } mc) { by = m; return mc; }
+        var list = Others();
+        if (_hint is { } h && ReferenceEquals(h.List, list) && h.World.GetColumn(cx, cz) is { HasData: true } hc) { by = h.World; return hc; }
+        foreach (var w in list)
+            if (w.GetColumn(cx, cz) is { HasData: true } c)
+            {
+                _hint = new Hint(list, w);
+                by = w;
+                return c;
+            }
+        by = null;
         return null;
     }
 
-    public bool Loaded(int x, int z) => At(x, z) != null;
+    /// <summary>The world that has column x,z live (see <see cref="Col"/>); null = nobody.</summary>
+    private WorldState? At(int x, int z) => Col(x, z, out var by) != null ? by : null;
 
-    public (int Id, int Meta) Block(int x, int y, int z) => At(x, z) is { } w ? (w.GetBlock(x, y, z), w.GetMeta(x, y, z)) : (0, 0);
+    public bool Loaded(int x, int z) => Col(x, z, out _) != null;
+
+    public (int Id, int Meta) Block(int x, int y, int z) =>
+        Col(x, z, out _) is { } c && (uint)y < (uint)c.Height ? (c.GetBlock(x & 15, y, z & 15), c.GetMeta(x & 15, y, z & 15)) : (0, 0);
 
     public int? NightLight(int x, int y, int z) => At(x, z) is { } w ? w.Light.LightLevel(x, y, z, LightEngine.NightSubtracted) : null;
 
@@ -186,7 +263,7 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
         var list = new List<StoryEntity>();
         void Add(WorldState w)
         {
-            foreach (var e in new WorldStateStoryWorld(() => w, data).Entities())
+            foreach (var e in WorldStateStoryWorld.EntitiesOf(w, data))
             {
                 if (!byId.TryGetValue(e.Id, out var i)) { byId[e.Id] = list.Count; list.Add(e); continue; }
                 var old = list[i];

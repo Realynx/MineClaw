@@ -215,6 +215,13 @@ public sealed partial class StoryColony : IStoryPort
 
     public JsonObject? Next(string body)
     {
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        try { return NextCore(body); }
+        finally { StoryPerf.Note(ref StoryPerf.Picks, ref StoryPerf.PickTicks, t0); }
+    }
+
+    private JsonObject? NextCore(string body)
+    {
         lock (_lock)
         {
             if (!Pawns.TryGetValue(body, out var p)) return null;

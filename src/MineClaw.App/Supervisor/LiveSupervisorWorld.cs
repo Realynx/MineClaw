@@ -16,17 +16,21 @@ public sealed record LiveBody(string Name, string Short, bool IsMain, WorldState
 /// <summary>
 /// The hive's merged world memory as columns for the Live Hive viewer: live columns of every in-process body (main first), then
 /// every hive bot's remembered <c>world_chunks</c> rows. Live hashes are computed straight off the column arrays (no copy, no lock:
-/// a racing write only means the next index differs) and cached ~1 s; a live column is copied and encoded only when asked for,
-/// remembered ones ship their stored blob untouched. Thread-safe.
+/// a racing write only means the next index differs) and kept while the column's <see cref="ChunkColumn.Version"/> stands still; a
+/// live column is copied and encoded only when asked for and changed since (else its last payload ships again), remembered ones
+/// ship their stored blob untouched. Thread-safe.
 /// </summary>
 public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func<IWorldMemoryStore?> store, TimeProvider? time = null)
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
-    private readonly Dictionary<(int, int, int, bool), (DateTimeOffset At, long Hash, string By)> _liveHash = new();
-    private readonly Dictionary<(int, int, int, long), byte[]> _encoded = new();
+    private readonly Dictionary<(int, int, int, bool), (ChunkColumn Col, long Version, DateTimeOffset At, long Hash)> _liveHash = new();
+    private readonly Dictionary<(int, int, int, bool), (ChunkColumn Col, long Version, long Hash, byte[] Data, byte[]? Light)> _payload = new();
     private readonly object _lock = new();
 
-    public TimeSpan LiveHashTtl { get; init; } = TimeSpan.FromSeconds(1);
+    /// <summary>A live column's hash is kept while its <see cref="ChunkColumn.Version"/> stands still, at most this long (a backstop:
+    /// every write moves the version). Live 11-04 the index rehashed every live column each second (~18 ms of 64 KB FNV walks per
+    /// ask with 235 live columns, p95 415 ms through the gateway); now a quiet column costs a lookup.</summary>
+    public TimeSpan LiveHashTtl { get; init; } = TimeSpan.FromSeconds(30);
 
     private (ChunkColumn Col, string By)? Live(IReadOnlyList<LiveBody> bs, int dim, int cx, int cz)
     {
@@ -41,18 +45,18 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
 
     /// <summary>The viewer's delta key of a live column: the block hash, joined with the light hash when the viewer syncs light
     /// (<see cref="LightSnapshot.Combine"/>; the same key <see cref="Columns(int, IReadOnlyList{ValueTuple{int, int}}, bool)"/> ships).</summary>
-    private long LiveHash(int dim, ChunkColumn c, string by, DateTimeOffset now, bool light)
+    private long LiveHash(int dim, ChunkColumn c, DateTimeOffset now, bool light)
     {
         var k = (dim, c.ChunkX, c.ChunkZ, light);
+        long v = c.Version; // read before hashing: a write during the walk moves it, so the next ask hashes again
         lock (_lock)
-            if (_liveHash.TryGetValue(k, out var e) && now - e.At < LiveHashTtl && e.By == by
-                && (BlockDeltaLog.Process?.ChangedSince(dim, c.ChunkX, c.ChunkZ, e.At) != true)) return e.Hash; // a logged change: rehash now
+            if (_liveHash.TryGetValue(k, out var e) && ReferenceEquals(e.Col, c) && e.Version == v && now - e.At < LiveHashTtl) return e.Hash;
         long h = c.ContentHash(); // = ChunkSnapshot.ComputeHash(c.IdData, c.MetaData), without the two flat copies
         if (light) h = LightSnapshot.Combine(h, LightSnapshot.HashOf(c));
         lock (_lock)
         {
             if (_liveHash.Count > 8192) _liveHash.Clear();
-            _liveHash[k] = (now, h, by);
+            _liveHash[k] = (c, v, now, h);
         }
         return h;
     }
@@ -81,7 +85,7 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
             for (int cx = cx0; cx <= cx1; cx++)
                 for (int cz = cz0; cz <= cz1; cz++)
                     if (Live(bs, dim, cx, cz) is { } l)
-                        map[(cx, cz)] = new WorldColumnInfo(cx, cz, LiveHash(dim, l.Col, l.By, now, light), now.ToUnixTimeMilliseconds(), l.By, true);
+                        map[(cx, cz)] = new WorldColumnInfo(cx, cz, LiveHash(dim, l.Col, now, light), now.ToUnixTimeMilliseconds(), l.By, true);
         return map.Values.Take(Math.Max(0, max)).ToList();
     }
 
@@ -98,25 +102,29 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
         {
             if (Live(bs, dim, cx, cz) is { } l)
             {
-                var snap = ChunkSnapshot.Capture(l.Col);
-                var key = (dim, cx, cz, snap.Hash);
-                byte[]? data;
-                lock (_lock) _encoded.TryGetValue(key, out data);
-                if (data == null)
+                // An unchanged column (same version) ships the payload encoded the last time: no 64 KB copy, hash or deflate.
+                var key = (dim, cx, cz, light);
+                long v = l.Col.Version;
+                (ChunkColumn Col, long Version, long Hash, byte[] Data, byte[]? Light) p;
+                bool hit;
+                lock (_lock) hit = _payload.TryGetValue(key, out p) && ReferenceEquals(p.Col, l.Col) && p.Version == v;
+                if (!hit)
                 {
-                    data = snap.Encode();
+                    var snap = ChunkSnapshot.Capture(l.Col);
+                    var data = snap.Encode();
+                    if (light)
+                    {
+                        var ls = LightSnapshot.Capture(l.Col);
+                        p = (l.Col, v, LightSnapshot.Combine(snap.Hash, ls.Hash), data, ls.Encode());
+                    }
+                    else p = (l.Col, v, snap.Hash, data, null);
                     lock (_lock)
                     {
-                        if (_encoded.Count > 512) _encoded.Clear();
-                        _encoded[key] = data;
+                        if (_payload.Count > 1024) _payload.Clear();
+                        _payload[key] = p;
                     }
                 }
-                if (light)
-                {
-                    var ls = LightSnapshot.Capture(l.Col);
-                    list.Add(new ColumnPayloadEntry(cx, cz, LightSnapshot.Combine(snap.Hash, ls.Hash), now.ToUnixTimeMilliseconds(), l.By, true, data, ls.Encode()));
-                }
-                else list.Add(new ColumnPayloadEntry(cx, cz, snap.Hash, now.ToUnixTimeMilliseconds(), l.By, true, data));
+                list.Add(new ColumnPayloadEntry(cx, cz, p.Hash, now.ToUnixTimeMilliseconds(), l.By, true, p.Data, p.Light));
                 continue;
             }
             ChunkRow? row = null;

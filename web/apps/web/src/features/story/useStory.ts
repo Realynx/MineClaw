@@ -10,6 +10,7 @@ import type { RouteId, StoryColonyState, StoryRecipe } from '@mineclaw/contracts
 import { useCallback, useEffect } from 'react';
 import { api, type RouteBody } from '@/lib/api/client';
 import { qk } from '@/lib/api/query';
+import { storyFramesFlowing } from './frames';
 import { mergeColony } from './model';
 
 export const colonyKey = (id: string) => qk('story.get', { id });
@@ -39,12 +40,12 @@ export function useColony(id: string | null) {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
-  // The stream's `story` frames keep it current; this catch-up covers a quiet or reconnecting stream, and a full refetch
-  // every minute is the backstop for anything a delta could miss.
+  // The stream's `story` frames keep it current; this catch-up covers a quiet or reconnecting stream (it skips while frames
+  // flow), and a full refetch every minute is the backstop for anything a delta could miss.
   useEffect(() => {
     if (!id) return;
     const t = setInterval(() => {
-      if (document.visibilityState === 'visible') void catchUp(qc, id).catch(() => undefined);
+      if (document.visibilityState === 'visible' && !storyFramesFlowing(id)) void catchUp(qc, id).catch(() => undefined);
     }, 3000);
     const full = setInterval(() => void qc.invalidateQueries({ queryKey: colonyKey(id) }), 60_000);
     return () => {
@@ -89,15 +90,18 @@ type ColonyWrite =
   | 'story.gear';
 
 /**
- * The Architect palette (placeables by tab, tier, unlock state, stock). Refreshed with the colony's revision while the
- * Architect is open: designating a bench or storing materials changes it.
+ * The Architect palette (placeables by tab, tier, unlock state, stock), fetched while the Architect is open. The state's
+ * `architectKey` folds everything the palette reads (free stock, benches, version): the palette is fetched again only when it
+ * moves (live 11-04 the old key, the colony revision / 20, refetched it every ~4 s at ~200 ms each). A bot without the key
+ * falls back to the revision buckets.
  */
-export function useArchitect(id: string | null, rev: number | undefined, open: boolean) {
+export function useArchitect(id: string | null, rev: number | undefined, open: boolean, architectKey?: number | null) {
+  const key = architectKey ?? `rev:${Math.floor((rev ?? 0) / 20)}`;
   return useQuery({
-    queryKey: [...qk('story.architect', { id: id ?? '' }), Math.floor((rev ?? 0) / 20)],
+    queryKey: [...qk('story.architect', { id: id ?? '' }), key],
     queryFn: ({ signal }) => api('story.architect', { params: { id: id! }, signal }),
     enabled: !!id && open,
-    staleTime: 5_000,
+    staleTime: architectKey === null || architectKey === undefined ? 5_000 : Infinity,
     placeholderData: (prev) => prev,
   });
 }

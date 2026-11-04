@@ -476,14 +476,54 @@ public sealed partial class StoryColony
         {
             if (World is not { } w) return new JsonObject { ["entries"] = new JsonArray(), ["benches"] = new JsonObject() };
             EnsureMaterials();
-            if (_architect is { } c && c.Seq == _materialsSeq && Now - c.At < TimeSpan.FromSeconds(5)) return (JsonObject)c.Json.DeepClone();
+            int key = ArchitectKey(w);
+            if (_architect is { } c && c.Key == key) return (JsonObject)c.Json.DeepClone();
             var json = ArchitectJson(w);
-            _architect = (Now, _materialsSeq, json);
+            _architect = (key, json);
             return (JsonObject)json.DeepClone();
         }
     }
 
-    private (DateTimeOffset At, long Seq, JsonObject Json)? _architect;
+    /// <summary>The palette as last built and the <see cref="ArchitectKey"/> it was built for.</summary>
+    private (int Key, JsonObject Json)? _architect;
+
+    /// <summary>
+    /// Everything the Architect palette reads (the version, the free pool after reservations, the benches by kind) folded to one
+    /// number: the same key = the same palette. The state carries it as <c>architect_key</c>, so the browser fetches the palette only
+    /// when it moves (live 11-04: it refetched every ~4 s, ~200 ms each, every reply rebuilt under the colony lock). Callers hold the lock.
+    /// </summary>
+    private int ArchitectKey(IStoryWorld w)
+    {
+        ulong h = 14695981039346656037UL;
+        void Mix(long v) { h ^= unchecked((ulong)v); h *= 1099511628211UL; }
+        foreach (var ch in w.Data.VersionId) Mix(ch);
+        // The pool is a dictionary: order-independent (a sum of mixed entries) so equal pools give equal keys.
+        ulong pool = 0;
+        foreach (var ((id, meta), n) in _freePool)
+        {
+            ulong e = (ulong)(uint)id * 0x9E3779B97F4A7C15UL ^ (ulong)(uint)meta * 0xC2B2AE3D27D4EB4FUL ^ (ulong)(uint)n * 0x165667B19E3779F9UL;
+            e ^= e >> 29;
+            pool += e * 0xBF58476D1CE4E5B9UL;
+        }
+        Mix((long)pool);
+        Mix(_freePool.Count);
+        foreach (var kind in StoryRecipes.Benches) Mix(Benches.Count(b => b.Kind == kind));
+        Mix(Benches.Count);
+        return (int)(h ^ h >> 32) & int.MaxValue;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IGameData,
+        System.Collections.Concurrent.ConcurrentDictionary<(int Id, int Meta), (string Tier, bool NeedsTable, string[] Chain)>> BasePlans = new();
+
+    /// <summary>A placeable's plan from nothing (its tier, whether it needs a table, its chain): the version's recipes only, so it
+    /// is planned once per game data. Callers scope <see cref="GameData.Current"/> to <paramref name="d"/>.</summary>
+    private static (string Tier, bool NeedsTable, string[] Chain) BasePlan(IGameData d, (int Id, int Meta) key) =>
+        BasePlans.GetOrCreateValue(d).GetOrAdd(key, _ =>
+        {
+            var plan = PlanFor(key, 1, new Dictionary<(int, int), int>());
+            string tier = plan.Steps.Count == 0 ? "gathered" : plan.Steps.Any(s => s.IsSmelt) ? "furnace" : plan.Steps.Any(s => s.RequiresCraftingTable) ? "workbench" : "hand";
+            return (tier, plan.Steps.Any(s => s.RequiresCraftingTable), plan.Steps.Select(s => s.ToString()).ToArray());
+        });
 
     private JsonObject ArchitectJson(IStoryWorld w)
     {
@@ -494,22 +534,21 @@ public sealed partial class StoryColony
             foreach (var e in StoryArchitect.Entries(w.Data))
             {
                 var key = (e.ItemId, e.ItemMeta);
-                var plan = PlanFor(key, 1, new Dictionary<(int, int), int>());
-                string tier = plan.Steps.Count == 0 ? "gathered" : plan.Steps.Any(s => s.IsSmelt) ? "furnace" : plan.Steps.Any(s => s.RequiresCraftingTable) ? "workbench" : "hand";
-                bool needsTable = plan.Steps.Any(s => s.RequiresCraftingTable);
+                var (tier, needsTable, chain) = BasePlan(w.Data, key);
                 string? reason = null;
                 if (needsTable && !hasTable) reason = "Needs a crafting table — place one or designate an existing one";
                 else if (tier == "furnace" && !hasFurnace) reason = "Needs a furnace — place one or designate an existing one";
                 int have = _freePool.GetValueOrDefault(key);
-                int can = have > 0 || plan.Steps.Count == 0 ? 0 : MostCraftable(key, 64, _freePool).N;
                 var withStock = PlanFor(key, 1, _freePool);
+                // One the stock can't even make one of (the plan for 1 is short) makes none of 64 either: the search is skipped.
+                int can = have > 0 || chain.Length == 0 || !withStock.Complete ? 0 : MostCraftable(key, 64, _freePool).N;
                 var shortList = have > 0 || can > 0 ? new List<string>() : withStock.Missing.Select(m => m.ToString()).ToList();
                 entries.Add(new JsonObject
                 {
                     ["id"] = e.Id, ["label"] = e.Label, ["tab"] = e.Tab, ["tier"] = tier, ["unlocked"] = reason == null, ["reason"] = reason,
                     ["item"] = new JsonArray(e.ItemId, e.ItemMeta), ["material"] = new JsonArray(e.BlockId, e.BlockMeta), ["kind"] = e.Kinds[0],
                     ["kinds"] = new JsonArray(e.Kinds.Select(k => (JsonNode)k!).ToArray()),
-                    ["chain"] = new JsonArray(plan.Steps.Select(s => (JsonNode)s.ToString()!).ToArray()),
+                    ["chain"] = new JsonArray(chain.Select(s => (JsonNode)s!).ToArray()),
                     ["have"] = have, ["craftable"] = can,
                     ["from"] = new JsonArray(withStock.Used.Select(u => (JsonNode)u.ToString()!).ToArray()),
                     ["short"] = new JsonArray(shortList.Select(s => (JsonNode)s!).ToArray()),

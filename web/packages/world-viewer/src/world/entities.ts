@@ -82,6 +82,7 @@ export class EntityStore {
   private readonly tracks = new Map<string, EntityTrack>();
   private readonly botTracks = new Map<string, BotTrack>();
   private lastUpdate = 0;
+  private lastFrame: number | undefined;
   intervalMs = 200;
   /** The revision to send as `since` next. */
   rev = 0;
@@ -91,6 +92,12 @@ export class EntityStore {
   constructor(public clock: () => number = () => performance.now()) {}
 
   apply(d: EntityDelta): void {
+    // Between stream frames a cache-backed source has nothing new: re-applying the same positions would restart every glide
+    // and count a short interval, so motion would ease out and stall between frames.
+    if (d.frame !== undefined) {
+      if (d.frame === this.lastFrame) return;
+      this.lastFrame = d.frame;
+    }
     const now = this.clock();
     if (this.lastUpdate > 0) this.intervalMs = Math.max(50, Math.min(1000, this.intervalMs * 0.7 + (now - this.lastUpdate) * 0.3));
     this.lastUpdate = now;
@@ -188,6 +195,7 @@ export class EntityStore {
     this.tracks.clear();
     this.botTracks.clear();
     this.lastUpdate = 0;
+    this.lastFrame = undefined;
     this.rev = 0;
     this.version++;
   }
