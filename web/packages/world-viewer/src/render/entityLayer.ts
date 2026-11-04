@@ -782,68 +782,10 @@ export class EntityLayer {
   }
 
   private refreshEntity(d: Drawn, e: EntityView, now: number): void {
-    const dto = e.dto;
-    const sig = `${this.version}|${!!this.bundle}|${e.kind}|${e.type}|${dto.variant ?? ''}|${lookOf(dto) ?? ''}|${e.item}|${dto.damage ?? 0}|${e.name ?? ''}|${dto.baby ? 1 : 0}|${JSON.stringify(dto.equipment ?? null)}|${dto.motive ?? ''}|${dto.facing ?? ''}|${dto.rotation ?? ''}|${dto.frameItem ?? ''}|${dto.block ?? ''}|${dto.minecartType ?? ''}|${dto.glint ? 1 : 0}|${dto.carried ?? ''}`;
-    const beta = this.version === 'b1.8.1';
+    const sig = `${this.version}|${!!this.bundle}|${entityKindSig(e)}|${entityExtraSig(e.dto)}`;
     if (d.sig !== sig) {
       d.sig = sig;
-      d.v = Variant.of(dto.variant, lookOf(dto));
-      d.baby = !!dto.baby;
-      d.item = null;
-      d.hang = null;
-      d.fixedYaw = null;
-      const kind = e.kind === 'object' ? (objectName(e.type, beta) ?? (e.name ? objectKind(e.name) : 'object')) : e.kind;
-      d.drop = kind === 'item' || kind === 'xp_orb' || kind === 'xporb' || kind === 'orb';
-      if (kind === 'player') this.setLook(d, playerLook(this.version, e.name ?? 'player', false));
-      else if (kind === 'mob') this.setLook(d, mobLook(this.version, e.type, e.name, d.v, e.id));
-      else if (kind === 'item') {
-        this.setLook(d, null);
-        d.item = this.bundle && e.item > 0 ? itemLookById(this.version, this.bundle.pack, e.item, dto.damage ?? 0) : null;
-        d.itemGlint = !!dto.glint || glintsById(this.version, e.item, dto.damage ?? 0);
-        d.kind = d.item ? 'item' : 'box';
-        d.w = d.h = 0.25;
-        d.colour = 0xd8b040;
-      } else if (kind === 'xp_orb' || kind === 'xporb' || kind === 'orb') {
-        this.setLook(d, null);
-        d.kind = this.bundle ? 'orb' : 'box';
-        d.w = d.h = 0.25;
-        d.colour = 0x9ae040;
-      } else if (kind === 'painting') this.setPainting(d, e);
-      else if (kind === 'item_frame') this.setFrame(d, e);
-      else if (kind === 'firework' || kind === 'fireworks_rocket') {
-        this.setLook(d, null);
-        d.item = this.bundle && !beta ? itemLookByName(this.version, this.bundle.pack, 'fireworks') : null;
-        d.kind = d.item ? 'sprite' : 'box';
-        d.w = d.h = 0.25;
-        d.colour = 0xd04040;
-      } else if (kind === 'falling_block' || kind === 'falling_sand' || kind === 'tnt') {
-        this.setLook(d, null);
-        const ref: ItemRef = kind === 'tnt' ? [46, 0] : (dto.block ?? (e.item > 0 ? [e.item, dto.damage ?? 0] : [beta && e.type === 71 ? 13 : 12, 0]));
-        const l = this.itemById(ref);
-        d.item = l?.kind === 'cube' ? l : null;
-        d.kind = d.item ? 'block' : 'box';
-        d.w = d.h = 0.98;
-        d.colour = kind === 'tnt' ? 0xd04030 : 0xd8c890;
-      } else {
-        // Objects and stands with a model (boat, minecart, arrow, ender crystal, armor stand…).
-        const look = objectLook(this.version, kind, d.v, e.id);
-        this.setLook(d, look);
-        if (!look) {
-          d.w = d.h = 0.5;
-          d.colour = 0x9a9a9a;
-        }
-        if (kind === 'minecart' || kind.endsWith('_minecart')) {
-          const block = minecartBlock(dto.minecartType ?? (kind === 'minecart' ? 0 : kind));
-          d.cartBlock = block;
-          d.item = block ? this.itemById([block, 0]) : null;
-        }
-      }
-      // Hand items and armour: wire equipment, else a player's held item id.
-      this.layersFor(d, kind, e);
-      this.equip(d, dto.equipment, kind === 'player' && e.item > 0 ? this.itemById(null, e.item) : null, null);
-      if (!LIVING.has(kind) && d.kind === 'model') d.fixedYaw = e.yaw;
-      // LayerHeldBlock: an enderman's block.
-      d.carried = d.look?.model === 'enderman' && dto.carried ? this.itemById(dto.carried) : null;
+      this.applyEntityLook(d, e);
     }
     // LayerIronGolemFlower: holdRoseTick counts down 400 ticks from when the wire first said so.
     const rose = d.look?.model === 'iron_golem' && d.v.has('holding_rose', 'rose');
@@ -857,18 +799,101 @@ export class EntityLayer {
     d.invisible = (flags & FLAG_INVISIBLE) !== 0;
     d.glowing = (flags & FLAG_GLOWING) !== 0;
     if (d.fixedYaw !== null) this.objectAim(d, e);
-    // Creeper fusing (Mob16 state 1 / "fuse"/"ignited") and primed TNT (fuse ticks): white flashes.
-    const fuse = e.kind === 'mob' && e.type === 50 && ((!d.v.isString && d.v.num === 1) || d.v.has('fuse', 'fusing', 'ignited'));
-    const tnt = d.kind === 'block' && d.colour === 0xd04030;
-    const fuseTicks = dto.fuse ?? 80 - (e.ageTicks % 80);
-    // RenderCreeper.getColorMultiplier: a white overlay of f·0.2 on odd tenths of the flash intensity f (the fuse's progress
-    // over 28 ticks, from when the wire said it began); RenderTNTPrimed: (1 − (fuse + 1)/100)·0.8 every other 5 ticks.
-    if (fuse && !d.fuseAt) d.fuseAt = now;
-    else if (!fuse) d.fuseAt = 0;
-    const fi = creeperFlash(d.fuseAt, now);
-    d.flash = fuse ? (Math.floor(fi * 10) % 2 === 0 ? 0 : fi * 0.2) : tnt ? (Math.floor(fuseTicks / 5) % 2 === 0 ? Math.max(0, 1 - (fuseTicks + 1) / 100) * 0.8 : 0) : 0;
+    entityFlash(d, e, now);
     if (d.motion.deadAt && now - d.motion.deadAt > 4000) d.motion.deadAt = 0; // still reported long after: it lives
     stepMotion(d.motion, e.x, e.y, e.z, e.yaw, now, (flags & FLAG_SPRINTING) !== 0);
+  }
+
+  /** What an entity draws (its model or item, size, colour, layers, equipment), re-resolved when its wire look changes. */
+  private applyEntityLook(d: Drawn, e: EntityView): void {
+    const dto = e.dto;
+    d.v = Variant.of(dto.variant, lookOf(dto));
+    d.baby = !!dto.baby;
+    d.item = null;
+    d.hang = null;
+    d.fixedYaw = null;
+    const kind = entityKind(e, this.beta);
+    d.drop = kind === 'item' || isOrb(kind);
+    this.setKindLook(d, e, kind);
+    // Hand items and armour: wire equipment, else a player's held item id.
+    this.layersFor(d, kind, e);
+    this.equip(d, dto.equipment, kind === 'player' && e.item > 0 ? this.itemById(null, e.item) : null, null);
+    if (!LIVING.has(kind) && d.kind === 'model') d.fixedYaw = e.yaw;
+    // LayerHeldBlock: an enderman's block.
+    d.carried = d.look?.model === 'enderman' && dto.carried ? this.itemById(dto.carried) : null;
+  }
+
+  /** How each entity kind gets its look; anything else is an object with a model (or a box). */
+  private static readonly KIND_LOOKS = new Map<string, (l: EntityLayer, d: Drawn, e: EntityView, kind: string) => void>([
+    ['player', (l, d, e) => l.setLook(d, playerLook(l.version, e.name ?? 'player', false))],
+    ['mob', (l, d, e) => l.setLook(d, mobLook(l.version, e.type, e.name, d.v, e.id))],
+    ['item', (l, d, e) => l.setDrop(d, e)],
+    ['xp_orb', (l, d) => l.setOrb(d)],
+    ['xporb', (l, d) => l.setOrb(d)],
+    ['orb', (l, d) => l.setOrb(d)],
+    ['painting', (l, d, e) => l.setPainting(d, e)],
+    ['item_frame', (l, d, e) => l.setFrame(d, e)],
+    ['firework', (l, d) => l.setFirework(d)],
+    ['fireworks_rocket', (l, d) => l.setFirework(d)],
+    ['falling_block', (l, d, e, kind) => l.setFallingBlock(d, e, kind)],
+    ['falling_sand', (l, d, e, kind) => l.setFallingBlock(d, e, kind)],
+    ['tnt', (l, d, e, kind) => l.setFallingBlock(d, e, kind)],
+  ]);
+
+  private setKindLook(d: Drawn, e: EntityView, kind: string): void {
+    const set = EntityLayer.KIND_LOOKS.get(kind);
+    if (set) set(this, d, e, kind);
+    else this.setObject(d, e, kind);
+  }
+
+  private setDrop(d: Drawn, e: EntityView): void {
+    const damage = e.dto.damage ?? 0;
+    this.setLook(d, null);
+    d.item = this.bundle && e.item > 0 ? itemLookById(this.version, this.bundle.pack, e.item, damage) : null;
+    d.itemGlint = !!e.dto.glint || glintsById(this.version, e.item, damage);
+    d.kind = d.item ? 'item' : 'box';
+    d.w = d.h = 0.25;
+    d.colour = 0xd8b040;
+  }
+
+  private setOrb(d: Drawn): void {
+    this.setLook(d, null);
+    d.kind = this.bundle ? 'orb' : 'box';
+    d.w = d.h = 0.25;
+    d.colour = 0x9ae040;
+  }
+
+  private setFirework(d: Drawn): void {
+    this.setLook(d, null);
+    d.item = this.bundle && !this.beta ? itemLookByName(this.version, this.bundle.pack, 'fireworks') : null;
+    d.kind = d.item ? 'sprite' : 'box';
+    d.w = d.h = 0.25;
+    d.colour = 0xd04040;
+  }
+
+  /** Falling blocks and primed TNT: the block as a cube. */
+  private setFallingBlock(d: Drawn, e: EntityView, kind: string): void {
+    this.setLook(d, null);
+    const l = this.itemById(fallingBlockRef(e, kind, this.beta));
+    d.item = l?.kind === 'cube' ? l : null;
+    d.kind = d.item ? 'block' : 'box';
+    d.w = d.h = 0.98;
+    d.colour = kind === 'tnt' ? 0xd04030 : 0xd8c890;
+  }
+
+  /** Objects and stands with a model (boat, minecart, arrow, ender crystal, armor stand…); minecarts show their block. */
+  private setObject(d: Drawn, e: EntityView, kind: string): void {
+    const look = objectLook(this.version, kind, d.v, e.id);
+    this.setLook(d, look);
+    if (!look) {
+      d.w = d.h = 0.5;
+      d.colour = 0x9a9a9a;
+    }
+    if (kind === 'minecart' || kind.endsWith('_minecart')) {
+      const block = minecartBlock(e.dto.minecartType ?? (kind === 'minecart' ? 0 : kind));
+      d.cartBlock = block;
+      d.item = block ? this.itemById([block, 0]) : null;
+    }
   }
 
   /** Objects face their wire yaw; arrows (and anything flying without a yaw) turn and pitch along their velocity. */
@@ -2107,6 +2132,60 @@ export function copies(count: number, beta: boolean): number {
 function objectKind(name: string): string {
   const n = canonical(name);
   return ({ falling_sand: 'falling_block', primed_tnt: 'tnt', tnt_primed: 'tnt', xp_orb: 'xp_orb', experience_orb: 'xp_orb', fireworks_rocket: 'firework', fireworks_rocket_entity: 'firework', minecart_chest: 'chest_minecart', minecart_furnace: 'furnace_minecart', minecart_tnt: 'tnt_minecart', minecart_hopper: 'hopper_minecart', minecart_spawner: 'spawner_minecart', minecart_command_block: 'command_block_minecart', minecart_rideable: 'minecart', ender_crystal: 'ender_crystal', thrown_egg: 'egg', snowball: 'snowball', item_frame: 'item_frame', painting: 'painting', armor_stand: 'armor_stand' } as Record<string, string>)[n] ?? n;
+}
+
+/** An entity's kind; objects by their type (or wire type name). */
+function entityKind(e: EntityView, beta: boolean): string {
+  if (e.kind !== 'object') return e.kind;
+  return objectName(e.type, beta) ?? (e.name ? objectKind(e.name) : 'object');
+}
+
+/** Experience orbs, by the wire's kind names. */
+function isOrb(kind: string): boolean {
+  return kind === 'xp_orb' || kind === 'xporb' || kind === 'orb';
+}
+
+/** The wire fields an entity's look depends on: its kind, type, variant, item, name, age and equipment. */
+function entityKindSig(e: EntityView): string {
+  const dto = e.dto;
+  return `${e.kind}|${e.type}|${dto.variant ?? ''}|${lookOf(dto) ?? ''}|${e.item}|${dto.damage ?? 0}|${e.name ?? ''}|${dto.baby ? 1 : 0}|${JSON.stringify(dto.equipment ?? null)}`;
+}
+
+/** …and its hanging, block, minecart, glint and carried-block fields. */
+function entityExtraSig(dto: EntityDto): string {
+  return `${dto.motive ?? ''}|${dto.facing ?? ''}|${dto.rotation ?? ''}|${dto.frameItem ?? ''}|${dto.block ?? ''}|${dto.minecartType ?? ''}|${dto.glint ? 1 : 0}|${dto.carried ?? ''}`;
+}
+
+/** A falling block's block: TNT when primed, else the wire's block, its item id, or sand (b1.8.1 type 71: gravel). */
+function fallingBlockRef(e: EntityView, kind: string, beta: boolean): ItemRef {
+  if (kind === 'tnt') return [46, 0];
+  return e.dto.block ?? (e.item > 0 ? [e.item, e.dto.damage ?? 0] : [beta && e.type === 71 ? 13 : 12, 0]);
+}
+
+/** A creeper fusing (Mob16 state 1 / "fuse"/"ignited"). */
+function isFusing(d: Drawn, e: EntityView): boolean {
+  return e.kind === 'mob' && e.type === 50 && ((!d.v.isString && d.v.num === 1) || d.v.has('fuse', 'fusing', 'ignited'));
+}
+
+/**
+ * Creeper fusing and primed TNT (fuse ticks): white flashes. RenderCreeper.getColorMultiplier: a white overlay of f·0.2 on
+ * odd tenths of the flash intensity f (the fuse's progress over 28 ticks, from when the wire said it began);
+ * RenderTNTPrimed: (1 − (fuse + 1)/100)·0.8 every other 5 ticks.
+ */
+function entityFlash(d: Drawn, e: EntityView, now: number): void {
+  const fuse = isFusing(d, e);
+  if (fuse && !d.fuseAt) d.fuseAt = now;
+  else if (!fuse) d.fuseAt = 0;
+  if (fuse) d.flash = creeperOverlay(creeperFlash(d.fuseAt, now));
+  else d.flash = d.kind === 'block' && d.colour === 0xd04030 ? tntFlash(e.dto.fuse ?? 80 - (e.ageTicks % 80)) : 0;
+}
+
+function creeperOverlay(intensity: number): number {
+  return Math.floor(intensity * 10) % 2 === 0 ? 0 : intensity * 0.2;
+}
+
+function tntFlash(fuseTicks: number): number {
+  return Math.floor(fuseTicks / 5) % 2 === 0 ? Math.max(0, 1 - (fuseTicks + 1) / 100) * 0.8 : 0;
 }
 
 /** An older optional DTO form: `armor: [helmet, chestplate, leggings, boots]` material names. */
