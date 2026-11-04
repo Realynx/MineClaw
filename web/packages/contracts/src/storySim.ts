@@ -1078,18 +1078,23 @@ export class StorySim {
   }
 
   /** Beds: give one to a pawn (its other bed is freed: one bed a pawn) or free one. */
-  beds(id: string, body: StoryBedsRequest) {
-    const c = this.colony(id);
-    const bp = body?.bed;
-    if (!bp || ![bp.x, bp.y, bp.z].every((v) => Number.isInteger(v)))
-      throw Object.assign(new Error('bed must be {x,y,z}'), { status: 400 });
-    // The head half names the bed too (a bed is named by its foot).
+  /** The bed at a block: its foot, or the head half beside it (a bed is named by its foot). */
+  private bedAt(c: Colony, bp: { x: number; y: number; z: number }) {
     const bed =
       c.beds.get(keyOf([bp.x, bp.y, bp.z])) ??
       [...c.beds.values()].find(
         (b) => b.pos[1] === bp.y && Math.abs(b.pos[0] - bp.x) + Math.abs(b.pos[2] - bp.z) === 1,
       );
     if (!bed) throw Object.assign(new Error('no bed there'), { status: 400 });
+    return bed;
+  }
+
+  beds(id: string, body: StoryBedsRequest) {
+    const c = this.colony(id);
+    const bp = body?.bed;
+    if (!bp || ![bp.x, bp.y, bp.z].every((v) => Number.isInteger(v)))
+      throw Object.assign(new Error('bed must be {x,y,z}'), { status: 400 });
+    const bed = this.bedAt(c, bp);
     if (body.op === 'assign') {
       if (!c.pawns.has(body.pawn)) throw Object.assign(new Error('no such pawn'), { status: 404 });
       for (const b of c.beds.values()) if (b.pawn === body.pawn) b.pawn = null;

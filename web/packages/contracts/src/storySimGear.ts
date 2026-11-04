@@ -139,18 +139,25 @@ function structuredCloneList<T>(v: T[]): T[] {
 }
 
 /** A gear item for an [id, meta] (meta = damage for tools, so durability follows). */
+type GearInfo = ReturnType<typeof gearItemInfo>;
+
+/** A gear item's label ("Iron Pickaxe"), or "Item N" for an unknown id. */
+const gearLabel = (g: GearInfo, id: number) =>
+  g ? toolLabel(g.name.replace(/^(wooden|stone|iron|diamond|golden|leather|chainmail)_/, ''), g.tier) : `Item ${id}`;
+
+/** What is left of its uses (0..1; null for an unknown id). */
+const gearDurability = (g: GearInfo, meta: number) => (g ? Math.max(0, Math.min(1, (g.max - meta) / g.max)) : null);
+
 export function gearItem(id: number, meta: number, ench: Record<string, number> = {}): StoryGearItem {
   const g = gearItemInfo(id);
   const kind = g?.kind ?? 'other';
   return {
     item: [id, meta],
     name: g?.name ?? String(id),
-    label: g
-      ? toolLabel(g.name.replace(/^(wooden|stone|iron|diamond|golden|leather|chainmail)_/, ''), g.tier)
-      : `Item ${id}`,
+    label: gearLabel(g, id),
     kind,
     tier: g?.tier ?? null,
-    durability: g ? Math.max(0, Math.min(1, (g.max - meta) / g.max)) : null,
+    durability: gearDurability(g, meta),
     ench,
     slot: ARMOR_SLOT[kind] ?? null,
   };
@@ -385,9 +392,13 @@ const WORK_TOOLS: Record<string, string[]> = {
 export function policyKinds(p: StoryPawn, policies: StoryPolicy[]): string[] {
   const pol = policies.find((x) => x.id === p.policy) ?? policies.find((x) => x.default) ?? null;
   const kinds = new Set<string>(pol?.tools ?? []);
-  if (pol?.toolsByWork ?? true)
-    for (const [w, ks] of Object.entries(WORK_TOOLS)) if ((p.priorities[w] ?? 0) > 0) for (const k of ks) kinds.add(k);
+  if (pol?.toolsByWork ?? true) addWorkTools(p, kinds);
   return [...kinds];
+}
+
+/** The tools of every work type the pawn does (priority above 0). */
+function addWorkTools(p: StoryPawn, kinds: Set<string>): void {
+  for (const [w, ks] of Object.entries(WORK_TOOLS)) if ((p.priorities[w] ?? 0) > 0) for (const k of ks) kinds.add(k);
 }
 
 export function gearOp(
