@@ -84,6 +84,8 @@ public sealed record DoorToggle(BlockPos Pos, int Id, int FromMeta, BlockPos? Ac
 /// One step of a path: the destination foot cell and how to get there. <see cref="Break"/> lists blocks that must be
 /// mined first (in order); <see cref="Place"/> is a cell to fill with a scaffold block. <see cref="Sneak"/> is set when
 /// the move starts or ends next to a void/deadly drop — the follower sneaks there so vanilla edge protection applies.
+/// <see cref="Gentle"/>: over farmland or past a growing zone's plants on a version where walking doesn't trample (1.12.2): walked,
+/// never sprinted (b1.8.1 sneaks those moves instead).
 /// </summary>
 public sealed record PathStep(
     int X,
@@ -98,7 +100,8 @@ public sealed record PathStep(
     IReadOnlyList<DoorToggle>? Open = null,
     ParkourPlan? Jump = null,
     TriggerUse? Trigger = null,
-    TriggerUse? Requires = null)
+    TriggerUse? Requires = null,
+    bool Gentle = false)
 {
     public BlockPos Pos => new(X, Y, Z);
 
@@ -112,7 +115,7 @@ public sealed record PathStep(
 
     public override string ToString() =>
         $"{Kind} -> {Pos}" + (Break.Count > 0 ? $" break[{string.Join(",", Break)}]" : "") +
-        (Place is { } p ? $" place{p}" : "") + (Opens.Count > 0 ? $" open[{string.Join(",", Opens)}]" : "") + (Sneak ? " sneak" : "") +
+        (Place is { } p ? $" place{p}" : "") + (Opens.Count > 0 ? $" open[{string.Join(",", Opens)}]" : "") + (Sneak ? " sneak" : "") + (Gentle ? " gentle" : "") +
         (Jump is { } j ? $" {j.Describe()}{(j.OverVoid ? " over void" : "")}" : "") +
         (Trigger is { } t ? $" trigger[{t}]" : "") + (Requires is { } r ? $" needs[{r.Link.Key}]" : "");
 }

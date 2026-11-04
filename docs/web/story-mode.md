@@ -762,16 +762,19 @@ with the plant picker; mode and target; drag or the arrows to reorder; pause; re
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
 
-**Crouch-walking (added 2026-11-04).** Fox: "The pawns need to crouch-walk through growing zones, so they don't crush plants or
-tilled ground", and "If the ground in a grow zone isn't planted or tilled, they don't have to crouch-walk — better for speed." Each
-director tick hands every online pawn's body the colony's growing zones (`IStoryHost.SetGrowZone`: the zones' cells at their painted
-level ± 2, an immutable filter rebuilt only when a zone changes). Every walk then sneaks a move onto, off or past a planted cell inside
-a zone (a crop, sapling, stem, cane, wart, cocoa in or beside the body's cells), read from the live blocks, so a harvested or
-untilled patch is walked at full speed. Farmland itself is sneaked everywhere, zone or not, and a path prefers an aisle to the soil.
-What tramples: b1.8.1 `BlockSoil.b`, a walker on farmland that isn't sneaking (1 in 4 per step); 1.12.2
-`BlockFarmland.onFallenUpon`, a landing from more than half a block. So no drop and no gap jump ever lands on farmland, and a hop
-onto it (only out of an irrigation trench, a fall of about 0.3) costs as much as a 20-block walk round. The server sees the sneak
-(entity action start/stop); a sneaking body is never sped up (Fast / Faster).
+**Walking fields (added 2026-11-04).** Fox: "The pawns need to crouch-walk through growing zones, so they don't crush plants or
+tilled ground", "If the ground in a grow zone isn't planted or tilled, they don't have to crouch-walk — better for speed", and "In
+the version we're using now (1.12.2) we can walk on wheat and not crush it. We can't sprint on it, but we don't have to crouch-walk
+either, like the beta version." Each director tick hands every online pawn's body the colony's growing zones
+(`IStoryHost.SetGrowZone`: the zones' cells at their painted level ± 2, an immutable filter rebuilt only when a zone changes). A move
+takes care when it is onto or off farmland (anywhere, zone or not), or onto, off or past a planted cell inside a zone (a crop,
+sapling, stem, cane, wart, cocoa in or beside the body's cells), read from the live blocks, so a harvested or untilled patch is
+walked at full speed. The care is the version's (`IPhysicsRules.WalkingTramplesFarmland`): b1.8.1 tramples under a walker that
+isn't sneaking (mc-dev `BlockSoil.b`, 1 in 4 per step), so those moves are sneaked (the server sees the entity action; a sneaking
+body is never sped up); 1.12.2 tramples only on a landing from more than half a block (`BlockFarmland.onFallenUpon`), so they are
+walked at normal speed, never sprinted (`PathStep.Gentle`). On both, a path prefers an aisle to the soil, no drop and no gap jump
+ever lands on farmland, and a hop onto it (only out of an irrigation trench, a fall of about 0.3) costs as much as a 20-block walk
+round.
 
 ## Quarries (added 2026-11-04)
 

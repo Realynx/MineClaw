@@ -432,7 +432,7 @@ public sealed partial class PathFollower
         if (s.InWater && step.Kind != MoveKind.Swim && step.Floor >= pos.Y - 0.2) jump = true;
 
         // A boosted body (Story Mode's Fast / Faster) keeps sprinting on a straight line: cells go by in a tick or two.
-        bool sprint = _o.AllowSprint && !sneak && forward > 0 && kind is MoveKind.Walk or MoveKind.Diagonal
+        bool sprint = _o.AllowSprint && !sneak && !step.Gentle && forward > 0 && kind is MoveKind.Walk or MoveKind.Diagonal
                       && StepIndex + 3 < _steps.Count && (dist > 0.8 || _o.Boosted?.Invoke() == true && BoostRoom(s) >= 0.8);
         return Move(new MoveInput(forward, 0, jump, sneak, sprint, moveYaw, 0));
     }

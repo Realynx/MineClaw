@@ -76,6 +76,9 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     public List<(string Pawn, int Amp)> Effects { get; } = new();
     public bool EffectsAvailable;
     public void SetSpeed(string account, double multiplier) => Speeds[account] = multiplier;
+    /// <summary>Each body's growing-zone filter (crouch-walking), as the colony last handed it.</summary>
+    public Dictionary<string, Func<int, int, int, bool>?> GrowZones { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public void SetGrowZone(string account, Func<int, int, int, bool>? inZone) => GrowZones[account] = inZone;
     public PawnSpeed? Speed(string account) => Live(account).Online && Speeds.TryGetValue(account, out var m)
         ? new PawnSpeed(m, Math.Min(m, SpeedCaps.GetValueOrDefault(account, 3)), 1, SpeedCaps.ContainsKey(account) ? 2 : 0) : null;
     public bool SpeedEffectAvailable => EffectsAvailable;

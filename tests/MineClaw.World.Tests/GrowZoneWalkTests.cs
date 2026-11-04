@@ -5,7 +5,9 @@ namespace MineClaw.World.Tests;
 /// <summary>
 /// Fox 11-04: "The pawns need to crouch-walk through growing zones, so they don't crush plants or tilled ground" and "If the ground in a
 /// grow zone isn't planted or tilled (for whatever reason), they don't have to crouch-walk — better for speed". The zone
-/// (<see cref="PathOptions.GrowZone"/>) only filters; the live blocks decide which moves are sneaked.
+/// (<see cref="PathOptions.GrowZone"/>) only filters; the live blocks decide which moves take care. The care is the version's
+/// (Fox 11-04: "In 1.12.2 we can walk on wheat and not crush it. We can't sprint on it, but we don't have to crouch-walk either,
+/// like the beta version"): b1.8.1 sneaks them, 1.12.2 walks them without sprinting (<see cref="PathStep.Gentle"/>).
 /// </summary>
 public class GrowZoneWalkTests
 {
@@ -28,10 +30,13 @@ public class GrowZoneWalkTests
         return w;
     }
 
+    /// <summary>The step takes the version's care: sneaked on b1.8.1, gentle (and not sneaked) on 1.12.2.</summary>
+    private static bool Cared(PathStep s, bool v1122) => v1122 ? s.Gentle && !s.Sneak : s.Sneak && !s.Gentle;
+
     private static bool Zone(int x, int y, int z) => x is >= 0 and <= 9 && z is >= -1 and <= 1 && y is >= 62 and <= 66;
 
     [Theory, MemberData(nameof(Versions))]
-    public void Across_a_half_tilled_zone_only_the_tilled_half_is_sneaked(bool v1122)
+    public void Across_a_half_tilled_zone_only_the_tilled_half_takes_care(bool v1122)
     {
         var w = HalfTilled(v1122);
         var r = Pathfinder.FindPath(w, new BlockPos(-4, 64, 0), new GoalBlock(14, 64, 0), Strict with { GrowZone = Zone });
@@ -41,22 +46,23 @@ public class GrowZoneWalkTests
         {
             // Onto the field, across it, off it, and the bare cell beside its last crop: sneaked. The bare half and outside: walked.
             bool careful = s.X is >= 0 and <= 6;
-            Assert.True(s.Sneak == careful, $"step {s} sneak={s.Sneak}, expected {careful}");
+            Assert.True(Cared(s, v1122) == careful, $"step {s}: expected care {careful}");
+            if (!careful) Assert.False(s.Sneak || s.Gentle, $"step {s}");
         }
     }
 
     [Theory, MemberData(nameof(Versions))]
-    public void Without_a_zone_only_farmland_is_sneaked(bool v1122)
+    public void Without_a_zone_only_farmland_takes_care(bool v1122)
     {
         var w = HalfTilled(v1122);
         w.Fill(7, 64, 0, 7, 64, 0, Sapling); // a sapling outside any zone: walked through
         var r = Pathfinder.FindPath(w, new BlockPos(-4, 64, 0), new GoalBlock(14, 64, 0), Strict);
         Assert.Equal(PathStatus.Found, r.Status);
-        Assert.All(r.Steps.Where(s => s.X >= 6), s => Assert.False(s.Sneak, $"step {s} sneaked"));
+        Assert.All(r.Steps.Where(s => s.X >= 6), s => Assert.False(s.Sneak || s.Gentle, $"step {s} took care"));
     }
 
     [Theory, MemberData(nameof(Versions))]
-    public void Saplings_in_a_zone_are_passed_sneaking_and_a_harvested_zone_is_walked(bool v1122)
+    public void Saplings_in_a_zone_are_passed_with_care_and_a_harvested_zone_is_walked(bool v1122)
     {
         var w = HalfTilled(v1122);
         w.Fill(0, 63, 0, 4, 64, 0, Air);
@@ -67,7 +73,8 @@ public class GrowZoneWalkTests
         foreach (var s in r.Steps)
         {
             bool careful = s.X is >= 6 and <= 9; // into the sapling's neighbour, its cell, past it and off
-            Assert.True(s.Sneak == careful, $"step {s} sneak={s.Sneak}, expected {careful}");
+            Assert.True(Cared(s, v1122) == careful, $"step {s}: expected care {careful}");
+            if (!careful) Assert.False(s.Sneak || s.Gentle, $"step {s}");
         }
     }
 
@@ -84,6 +91,6 @@ public class GrowZoneWalkTests
             Strict with { GrowZone = (x, y, z) => x is >= 0 and <= 10 && z is >= -4 and <= 4 });
         Assert.Equal(PathStatus.Found, r.Status);
         Assert.DoesNotContain(r.Steps, s => w.GetBlock(s.X, s.Y, s.Z) == Farmland || w.GetBlock(s.X, s.Y - 1, s.Z) == Farmland);
-        Assert.All(r.Steps.Where(s => s.X is >= 0 and <= 10), s => Assert.True(s.Sneak, $"aisle step {s} beside the wheat not sneaked"));
+        Assert.All(r.Steps.Where(s => s.X is >= 0 and <= 10), s => Assert.True(Cared(s, v1122), $"aisle step {s} beside the wheat: no care"));
     }
 }
