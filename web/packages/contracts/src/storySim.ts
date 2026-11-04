@@ -178,7 +178,7 @@ interface Colony {
   designations: Map<Key, Fn<StoryDesignation>>;
   orders: Map<Key, Fn<StoryOrder>>;
   builds: Map<Key, Fn<StoryBuild>>;
-  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string, ('dig' | 'place' | 'pour')?]>>;
+  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string, ('dig' | 'place' | 'pour')?, (string | null)?]>>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
@@ -1622,8 +1622,37 @@ export class StorySim {
     cells?: number;
     done?: number;
     error?: string | null;
+    reopened?: number;
+    reasons?: Array<{ id: Key; reason: string }>;
   } {
     const c = this.colony(id);
+    if (body.op === 'retry' || body.op === 'retry_all') {
+      // Failed (blocked) cells start over: all of a build's, the given ones, or every build's.
+      const want = body.op === 'retry' ? new Set([body.id, ...(body.ids ?? [])].filter((x) => x !== undefined).map(String)) : null;
+      const cells = body.op === 'retry' && body.cells ? new Set(body.cells.map((p) => p.join(','))) : null;
+      if (want && ![...c.builds.keys()].some((k) => want.has(String(k)))) throw Object.assign(new Error('no such build'), { status: 400 });
+      let reopened = 0;
+      const ids: Key[] = [];
+      for (const [bid, list] of c.ghostCells) {
+        if (want && !want.has(String(bid))) continue;
+        ids.push(bid);
+        for (const g of list)
+          if ((g[6] === 'blocked' || (g[8] && g[6] !== 'done' && g[6] !== 'unsupported')) && (!cells || cells.has(`${g[0]},${g[1]},${g[2]}`))) {
+            g[6] = 'todo';
+            g.length = 8;
+            reopened++;
+          }
+        const f = c.builds.get(bid);
+        if (f && f.v.status === 'blocked') {
+          f.v.status = 'queued';
+          f.v.reason = null;
+          f.rev = this.bump(c);
+        }
+      }
+      c.ghostsRev = this.bump(c);
+      this.plan(c);
+      return { ok: true, ids, rev: c.rev, reopened, reasons: [] };
+    }
     if (body.op === 'preview') {
       const r = this.checkWater(c, body.items);
       return {
@@ -1675,7 +1704,16 @@ export class StorySim {
         c.builds.set(bid, { rev: this.bump(c), v: b });
         c.ghostCells.set(
           bid,
-          cells.map(([x, y, z, bi, bm]) => [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place']),
+          cells.map(([x, y, z, bi, bm]) => {
+            // A pour cell with nothing under it (open ground, not dug by its group, not another cell): the mock's pawns fail it
+            // as the bot's did before its queue-time check, so the Retry tool and "Retry failed cells" have something to show.
+            const below = this.opts.world.blockAt(x, y - 1, z)[0];
+            const own = cells.some((o) => o[0] === x && o[1] === y - 1 && o[2] === z);
+            const dug = body.items.some((i) => i.kind === 'remove' && i.group && i.group === item.group && expandBuildItem(i).some((d) => d[0] === x && d[1] === y - 1 && d[2] === z));
+            if (liquid && !own && (dug || [0, 8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(below)))
+              return [x, y, z, bi, bm, bid, 'blocked', 'pour', `nothing under ${x},${y},${z} to hold the ${liquid}: it would pour down`];
+            return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place'];
+          }),
         );
         ids.push(bid);
       }

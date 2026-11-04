@@ -606,6 +606,7 @@ export const StoryGhostBlock = z.tuple([
   z.union([z.string(), z.number()]),
   z.string(),
   z.enum(['dig', 'place', 'pour']).optional(),
+  z.string().nullish().describe("a failed (or unsupported) cell's reason: the map's failed-cell marker"),
 ]);
 export type StoryGhostBlock = z.infer<typeof StoryGhostBlock>;
 
@@ -1294,6 +1295,19 @@ export const StoryBuildRequest = z.discriminatedUnion('op', [
     .describe('water items checked and their expected flow; nothing is queued'),
   z
     .object({
+      op: z.literal('retry'),
+      id: z.union([z.string(), z.number()]).optional(),
+      ids: z
+        .array(z.union([z.string(), z.number()]))
+        .max(256)
+        .optional(),
+      cells: z.array(Vec3i).max(4096).optional(),
+    })
+    .strict()
+    .describe("a build's failed or resting cells start over (all of them, or `cells`); a reason that still holds is said at once"),
+  z.object({ op: z.literal('retry_all') }).strict().describe("every build's failed or resting cells start over"),
+  z
+    .object({
       op: z.literal('remove'),
       ids: z
         .array(z.union([z.string(), z.number()]))
@@ -1347,6 +1361,11 @@ export const StoryBuildResponse = z.object({
   cells: z.number().int().nullish().describe('preview: the water cells'),
   done: z.number().int().nullish().describe('preview: cells already holding the source'),
   error: z.string().nullish().describe('preview: why the items would be refused'),
+  reopened: z.number().int().nullish().describe('retry: the failed cells that start over'),
+  reasons: z
+    .array(z.object({ id: z.union([z.string(), z.number()]), reason: z.string() }))
+    .nullish()
+    .describe('retry: builds whose reason still holds (blocked again at once, with why)'),
 });
 export type StoryBuildResponse = z.infer<typeof StoryBuildResponse>;
 

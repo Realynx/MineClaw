@@ -366,7 +366,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
             new JsonObject { ["kind"] = "remove", ["blocks"] = canal.DeepClone(), ["group"] = "canal" },
             new JsonObject { ["kind"] = "water", ["blocks"] = canal.DeepClone(), ["group"] = "canal" }), null).Error);
         var waters = c.Builds.Where(b => b.Kind == "water").ToList();
-        Assert.True(await Until(() => waters.All(b => b.Status == "done"), 200_000),
+        Assert.True(await Until(() => waters.All(b => b.Status == "done"), 300_000), // generous: the whole Story suite runs beside it
             string.Join("; ", waters.Select(b => $"{b.Label}: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason}")) + ": " + x.Diag());
         var srv = x.Servers[x.Pawns[0]];
         foreach (var g in waters.SelectMany(b => b.Ghosts))

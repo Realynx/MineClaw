@@ -1122,6 +1122,24 @@ limit with 429 actions, and "server correction" ledger lines for every bucket. C
   (b1.8.1 and 1.12.2) pours a 2×2 pool from two full buckets, then a 4-long canal every other cell, filling at that pool; the
   canal's end holds flowing water before its pour. `BucketPourTests` (skills) cover the bank stand, flowing cells and protected pools.
 
+**Retrying failed build cells (added 2026-11-04).** Fox: "There are some water channels I can't unblock to retry to make them
+fill." The Retry tool only covered designations; a build cell that failed three times stayed `blocked` for good.
+- `POST …/builds {op:"retry", id | ids, cells?}` reopens a build's failed cells (all of them, or the given ones): blocked → todo,
+  their failure counts, rests, soft failures and per-pawn skips forgotten, a blocked build queued again. `{op:"retry_all"}` does
+  it for every build. → `{ids, reopened, reasons:[{id, reason}]}`: the build's checks run at once (a water build's cells, its
+  bucket, water to fill from; ponds a pawn missed are tried again), and a reason that still holds blocks it again now, said in
+  `reasons`, instead of after three more failures.
+- A failed cell keeps its last reason (`GhostState.Reason`), sent as the ghost's 9th element: the map draws a dashed red ring with a
+  cross on each failed cell (holograms on or off), and hovering one names it in the map's tooltip ("Build b3: 4,63,12 failed: …
+  (Retry tool: O)").
+- The Retry tool's drag (O) takes the failed designations and the failed build cells in the box (one `retry {id, cells}` per build),
+  and its live count counts both (before, its count was always 0 and a drag sent nothing); "Retry all failed (N)" counts both and
+  sends `retry_all`. The build queue shows "Retry failed cells (N)" on a build with failed cells.
+- On the first load after this fix (`ColonyMeta.WaterRetried`), blocked water cells reopen (they were blocked before cells kept a
+  reason, or by "no block face", "protected", an unreachable pond), and a water build blocked by those reasons is queued again.
+- The mock director fails a pour cell with nothing under it at queue time (blocked, with the reason) so the retry UI has something
+  to show; the bot refuses such an item outright.
+
 **Tests.** `StoryWaterTests` (director: checks, flow, dig before pour, fill-source choice, bucket fetch and auto bill, infinite
 sources, irrigation), `StoryPourSdkTests` (the SDK), `StoryFakeServerTests.A_pawn_digs_a_canal_fills_its_bucket_at_a_pool_and_pours_each_cell_a_source`
 (b1.8.1 and 1.12.2: the fake server's vanilla buckets now scoop as well as pour), `storyWater.test.tsx` (web) and

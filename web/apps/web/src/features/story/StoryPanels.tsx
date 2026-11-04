@@ -525,10 +525,15 @@ export function QueuePanel({
   builds,
   canWrite,
   onOp,
+  failed,
+  onRetry,
 }: {
   builds: StoryBuild[];
   canWrite: boolean;
   onOp: (op: 'remove' | 'pause' | 'resume' | 'reorder', ids: Array<string | number>) => void;
+  /** Failed cells per build id: "Retry failed cells (N)". */
+  failed?: ReadonlyMap<string, number>;
+  onRetry?: (id: string | number) => void;
 }) {
   const list = [...builds].filter((b) => b.status !== 'done').sort((a, b) => a.order - b.order);
   const done = builds.filter((b) => b.status === 'done').length;
@@ -589,6 +594,18 @@ export function QueuePanel({
                 <div className={cn('text-[10.5px]', b.status === 'waiting' ? 'text-muted' : 'text-danger')}>
                   {b.reason ?? 'blocked'}
                 </div>
+              ) : null}
+              {(failed?.get(String(b.id)) ?? 0) > 0 && onRetry ? (
+                <button
+                  type="button"
+                  disabled={!canWrite}
+                  onClick={() => onRetry(b.id)}
+                  data-testid="build-retry"
+                  className="mt-0.5 rounded border border-border px-1.5 py-0.5 text-[10.5px] font-semibold hover:bg-surface-3 disabled:opacity-40"
+                  title="These cells failed (or rest after failing): try them again now"
+                >
+                  Retry failed cells ({failed!.get(String(b.id))})
+                </button>
               ) : null}
               {b.station ? (
                 <div className="text-[10.5px] text-muted">

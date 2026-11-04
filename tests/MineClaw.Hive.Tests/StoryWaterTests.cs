@@ -398,4 +398,85 @@ public sealed class StoryWaterTests
         Assert.Single(mats, m => m.Raw.Count > 0); // only the first says what is short
         Assert.True(c.Alerts.Count(a => a.Text.Contains("bucket")) <= 1, string.Join(" | ", c.Alerts.Select(a => a.Text))); // said once, not per build
     }
+
+    // ------------------------------------------------------------------ retrying failed build cells (Fox 11-04: "water channels I can't unblock")
+
+    [Fact]
+    public void A_pour_cell_that_failed_rests_and_retry_reopens_it_now_with_its_reason_gone()
+    {
+        var (c, _, w) = Rig(carried: new Stack(325, 0, 1));
+        Pool(w, 0, 20);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 5, 64, 12) }).Error);
+        var b = c.Builds.Single();
+        var job = c.Next();
+        c.Report(c.P(), Id(job), "progress", "cell 4,64,12 failed: no block face to pour against at 4,64,12", null);
+        c.Report(c.P(), Id(job), "progress", "cell 5,64,12 failed: no block face to pour against at 5,64,12", null);
+        c.Report(c.P(), Id(job), "done", "batch: 0/2 poured", null);
+        Assert.Equal(2, c.FailedCells());
+        var ghost = c.State()["ghosts"]!["blocks"]!.AsArray().Select(x => x!.AsArray()).First(x => x[0]!.GetValue<int>() == 4);
+        Assert.Contains("no block face", ghost[8]!.GetValue<string>()); // the map's marker says why
+        Assert.NotEqual("pour", c.Next()["kind"]!.GetValue<string>()); // resting: no job for those cells now
+        // Retry one cell: only it comes back at once.
+        var r = c.RetryBuilds("retry", [b.Id], [new P3(4, 64, 12)]);
+        Assert.Null(r.Error);
+        Assert.Equal(1, r.Result!["reopened"]!.GetValue<int>());
+        Assert.Empty(r.Result!["reasons"]!.AsArray());
+        Assert.Equal(1, c.FailedCells());
+        Assert.Null(b.Ghosts.Single(g => g.At == new P3(4, 64, 12)).Reason);
+        // Retry the whole build: both are out again.
+        Assert.Equal(1, c.RetryBuilds("retry", [b.Id], null).Result!["reopened"]!.GetValue<int>());
+        Assert.Equal(0, c.FailedCells());
+    }
+
+    [Fact]
+    public void Retry_all_reopens_blocked_cells_of_every_build_and_a_reason_that_still_holds_is_said_at_once()
+    {
+        var (c, h, w) = Rig(carried: new Stack(325, 0, 1));
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 5, 64, 12) }).Error);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "floor", ["area"] = new JsonArray(4, 64, 16, 5, 64, 16), ["material"] = "planks" }).Error);
+        foreach (var b in c.Builds)
+        {
+            foreach (var g in b.Ghosts) { g.State = "blocked"; g.Reason = "can't place: no block face"; }
+            b.Status = "blocked";
+            b.Reason = "can't place at …";
+        }
+        Assert.Equal(4, c.FailedCells());
+        // No water anywhere to fill from: the water build says so now; the floor goes back to the queue.
+        var r = c.RetryBuilds("retry_all", null, null);
+        Assert.Null(r.Error);
+        Assert.Equal(4, r.Result!["reopened"]!.GetValue<int>());
+        var reason = r.Result!["reasons"]!.AsArray().Single()!;
+        Assert.Equal(c.Builds[0].Id, reason["id"]!.GetValue<string>());
+        Assert.Contains("no still water", reason["reason"]!.GetValue<string>());
+        Assert.Equal("blocked", c.Builds[0].Status);
+        Assert.NotEqual("blocked", c.Builds[1].Status);
+        Assert.All(c.Builds.SelectMany(b => b.Ghosts), g => Assert.Equal("todo", g.State));
+        // With a pool, the retry finds nothing in the way.
+        Later();
+        Pool(w, 0, 20);
+        Assert.Empty(c.RetryBuilds("retry", [c.Builds[0].Id], null).Result!["reasons"]!.AsArray());
+        Assert.Equal("queued", c.Builds[0].Status);
+        Assert.Contains("no such build", c.RetryBuilds("retry", ["b999"], null).Error);
+        _ = h;
+    }
+
+    [Fact]
+    public void Water_cells_blocked_by_the_old_canal_bugs_reopen_once_on_load()
+    {
+        var (c, _, _) = Rig();
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 64, 12) }).Error);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "floor", ["area"] = new JsonArray(4, 64, 16, 4, 64, 16), ["material"] = "planks" }).Error);
+        var water = c.Builds[0];
+        water.Ghosts[0].State = "blocked"; // blocked before cells kept a reason
+        water.Ghosts[1].State = "blocked"; water.Ghosts[1].Reason = "a protected water source; no unprotected water source within 6 of it";
+        water.Ghosts[2].State = "blocked"; water.Ghosts[2].Reason = "lava is off";
+        water.Status = "blocked"; water.Reason = "can't place at 4,64,12: no block face to pour against at 4,64,12";
+        c.Builds[1].Ghosts[0].State = "blocked"; // not water: left alone
+        c.Meta.WaterRetried = false; // an older save
+        Assert.True(c.MigrateWaterFailures());
+        Assert.Equal(["todo", "todo", "blocked"], water.Ghosts.Select(g => g.State));
+        Assert.Equal("queued", water.Status);
+        Assert.Equal("blocked", c.Builds[1].Ghosts[0].State);
+        Assert.False(c.MigrateWaterFailures()); // once
+    }
 }

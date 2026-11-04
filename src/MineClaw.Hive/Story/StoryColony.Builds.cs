@@ -611,6 +611,7 @@ public sealed partial class StoryColony
         int n = _ghostFails[id] = _ghostFails.GetValueOrDefault(id) + 1;
         if (!counted) _skip[key] = Now + Backoff(n);
         if (g.State is "leased" or "todo") g.State = n >= 3 ? "blocked" : "todo";
+        g.Reason = why; // the cell's last failure: the map's marker says it, Retry clears it (StoryColony.BuildRetry.cs)
         g.Rev = Touch();
         if (n >= 3)
         {

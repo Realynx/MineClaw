@@ -57,9 +57,7 @@ public sealed partial class StoryColony
                 ["ghosts"] = new JsonObject
                 {
                     ["rev"] = _rev,
-                    ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)).Select(g => (JsonNode)new JsonArray(
-                        // The 8th element: dig (Id/Meta = the block expected there: the live world's when queued) or place.
-                        g.At.X, g.At.Y, g.At.Z, g.Id, g.Meta, b.Id, g.State, g.Remove ? "dig" : StoryConstruction.IsLiquid(g) ? "pour" : "place"))).ToArray()),
+                    ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)).Select(g => GhostJson(b, g))).ToArray()),
                 },
                 ["storages"] = new JsonArray(Storages.Where(st => New(st.Rev)).Select(st => (JsonNode)new JsonObject
                 {

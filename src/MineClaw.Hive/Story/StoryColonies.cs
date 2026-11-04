@@ -161,7 +161,7 @@ public sealed class StoryColonies : IDisposable
         {
             int n = 1;
             while (_all.Any(x => x.Id == $"story-{n}")) n++;
-            c = new StoryColony(new ColonyMeta { Id = $"story-{n}", Name = name.Trim(), Created = _time.GetUtcNow(), Home = home, Wanted = pawns }, _host, _time, _store, _log);
+            c = new StoryColony(new ColonyMeta { Id = $"story-{n}", Name = name.Trim(), Created = _time.GetUtcNow(), Home = home, Wanted = pawns, WaterRetried = true }, _host, _time, _store, _log);
             _all.Add(c);
         }
         var why = Spawn(c, pawns, null);
