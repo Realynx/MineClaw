@@ -163,24 +163,33 @@ public static class ReplayHarness
                 nextPass += o.PassMs;
             }
             clock.Set(f.OffsetMs);
-            if (o.Speed > 0)
-            {
-                var due = TimeSpan.FromMilliseconds(f.OffsetMs / o.Speed) - wall.Elapsed;
-                if (due > TimeSpan.Zero) Thread.Sleep(due);
-            }
+            Pace(f.OffsetMs);
             if (f.Direction == MineClaw.Protocol.PacketDirection.ClientBound && (applier.SelfName != null || self != null)) Ensure();
             applier.Apply(f);
         }
         Ensure();
         // Let pending sessions/danger windows settle a little after the last frame.
         long end = rec.Frames.Count == 0 ? 0 : rec.Frames[^1].OffsetMs;
-        for (long t = Math.Max(nextPass, end); t <= end + 5000; t += o.PassMs)
-        {
-            clock.Set(t);
-            indexer!.Pump();
-            tracker!.Pump();
-        }
+        Settle(end);
         var census = indexer!.Census();
+
+        // Replays at --speed: sleeps until the frame is due on the wall clock.
+        void Pace(long offsetMs)
+        {
+            if (!(o.Speed > 0)) return;
+            var due = TimeSpan.FromMilliseconds(offsetMs / o.Speed) - wall.Elapsed;
+            if (due > TimeSpan.Zero) Thread.Sleep(due);
+        }
+
+        void Settle(long last)
+        {
+            for (long t = Math.Max(nextPass, last); t <= last + 5000; t += o.PassMs)
+            {
+                clock.Set(t);
+                indexer!.Pump();
+                tracker!.Pump();
+            }
+        }
         long skipped = tracker!.SelfEdits;
         tracker.Dispose();
         indexer.Dispose();

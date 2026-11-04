@@ -63,11 +63,25 @@ public static class SkillCatalog
     public static string Stem(string w)
     {
         if (Syn.TryGetValue(w, out var s)) return s;
-        if (w.Length > 5 && w.EndsWith("ing")) w = w[..^3];
-        else if (w.Length > 4 && w.EndsWith("ed")) w = w[..^2];
-        else if (w.Length > 3 && w.EndsWith("es") && !w.EndsWith("ses")) w = w[..^2];
-        else if (w.Length > 3 && w.EndsWith('s') && !w.EndsWith("ss")) w = w[..^1];
+        w = StripSuffix(w);
         return Syn.TryGetValue(w, out var s2) ? s2 : w;
+    }
+
+    /// <summary>-ing, -ed, -es (not -ses), -s (not -ss): the first that applies.</summary>
+    private static string StripSuffix(string w) => StripVerb(w) ?? StripPlural(w) ?? w;
+
+    private static string? StripVerb(string w)
+    {
+        if (w.Length > 5 && w.EndsWith("ing")) return w[..^3];
+        if (w.Length > 4 && w.EndsWith("ed")) return w[..^2];
+        return null;
+    }
+
+    private static string? StripPlural(string w)
+    {
+        if (w.Length > 3 && w.EndsWith("es") && !w.EndsWith("ses")) return w[..^2];
+        if (w.Length > 3 && w.EndsWith('s') && !w.EndsWith("ss")) return w[..^1];
+        return null;
     }
 
     private static HashSet<string> Terms(string text) =>
