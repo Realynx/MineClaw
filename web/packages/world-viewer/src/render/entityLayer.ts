@@ -75,6 +75,11 @@ function mobBox(e: EntityView, version: GameVersion): { colour: number; w: numbe
   return { colour: look.colour, w: (def?.width ?? 0.6) * s, h: (def?.height ?? 1.8) * s };
 }
 
+/** The shoulder parrots part of a rider signature: "left|right" colours, empty where none. */
+function shoulderSig(shoulders: EntityDto['shoulders']): string {
+  return `${shoulders?.left ?? ''}|${shoulders?.right ?? ''}`;
+}
+
 /** Selected bodies (by key, or a bot by its short key) draw brighter. */
 function selectedBrightness(d: { key: string; botView: BotView | null }, selected: ReadonlySet<string>): number {
   return selected.has(d.key) || (d.botView && selected.has(d.botView.dto.short)) ? 1.25 : 1;
@@ -294,6 +299,8 @@ const HEAD_SLOT = 59;
 const CONTENT_SLOT = 58;
 /** A worn skull: its head at 58, the dragon's jaw at 59 (never together with a head block or minecart contents). */
 const SKULL_SLOT = CONTENT_SLOT;
+/** LayerCustomHead's skull scale (and the villager lift in px). */
+const SKULL_SCALE = 1.1875;
 /** Elytra wings: left 56, right 57 (models with at most 56 parts). */
 const ELYTRA_SLOT = 56;
 /** A mooshroom's mushrooms: 3 × 2 crossed planes at 50..55 (an enderman's carried plant and an iron golem's poppy: 50, 51). */
@@ -1288,28 +1295,36 @@ export class EntityLayer {
   /** The parrots on a player's shoulders and the arrows stuck in it: rider rows, kept while the wire says so. */
   private syncRiders(d: Drawn, e: EntityView, now: number): void {
     if (e.kind !== 'player' && !d.riders) return;
-    const dto = e.dto;
-    const shoulders = e.kind === 'player' && this.version === '1.12.2' ? dto.shoulders : null;
-    const arrows = e.kind === 'player' && this.version === '1.12.2' ? (dto.arrows ?? 0) : 0;
+    const modern = e.kind === 'player' && this.version === '1.12.2';
+    const shoulders = modern ? e.dto.shoulders : null;
+    const arrows = modern ? (e.dto.arrows ?? 0) : 0;
     const slim = d.look?.model === 'player_slim';
-    const sig = `${this.version}|${!!this.bundle}|${shoulders?.left ?? ''}|${shoulders?.right ?? ''}|${arrows}|${slim}|${e.id}`;
+    const sig = `${this.version}|${!!this.bundle}|${shoulderSig(shoulders)}|${arrows}|${slim}|${e.id}`;
     if (sig === d.ridersSig) return;
     d.ridersSig = sig;
+    const riders = this.makeRiders(d, e.id, shoulders, arrows, slim, now);
+    d.riders = riders.length ? riders : null;
+  }
+
+  /** Rider rows: a parrot per shoulder that has one, then the stuck arrows (their spots on the model). */
+  private makeRiders(d: Drawn, id: number, shoulders: EntityDto['shoulders'], arrows: number, slim: boolean, now: number): Drawn[] {
     const riders: Drawn[] = [];
-    const rider = (suffix: string, ride: NonNullable<Drawn['ride']>, look: Look | null): void => {
-      const r = this.drawnFor(`${d.key}#${suffix}`, false, d.x, d.y, d.z, 0, now);
-      r.parent = d;
-      r.ride = ride;
-      this.setLook(r, look);
-      riders.push(r);
-    };
     for (const [left, colour] of [[true, shoulders?.left], [false, shoulders?.right]] as const)
-      if (colour) rider(left ? 'shoulder_left' : 'shoulder_right', { kind: 'shoulder', left }, mobLook(this.version, 105, 'parrot', Variant.of(null, colour), 0));
+      if (colour) riders.push(this.rider(d, left ? 'shoulder_left' : 'shoulder_right', { kind: 'shoulder', left }, mobLook(this.version, 105, 'parrot', Variant.of(null, colour), 0), now));
     if (arrows > 0) {
       const look = objectLook(this.version, 'arrow', Variant.NONE, 0);
-      stuckArrows(e.id, arrows, slim).forEach((spot, j) => rider(`arrow${j}`, { kind: 'arrow', spot }, look));
+      stuckArrows(id, arrows, slim).forEach((spot, j) => riders.push(this.rider(d, `arrow${j}`, { kind: 'arrow', spot }, look, now)));
     }
-    d.riders = riders.length ? riders : null;
+    return riders;
+  }
+
+  /** One rider of `d` (its own drawn record, keyed under the body's). */
+  private rider(d: Drawn, suffix: string, ride: NonNullable<Drawn['ride']>, look: Look | null, now: number): Drawn {
+    const r = this.drawnFor(`${d.key}#${suffix}`, false, d.x, d.y, d.z, 0, now);
+    r.parent = d;
+    r.ride = ride;
+    this.setLook(r, look);
+    return r;
   }
 
   /**
@@ -1320,7 +1335,6 @@ export class EntityLayer {
    *   with its yaw and pitch (our arrow's yaw and pitch are vanilla's negated).
    */
   private poseRiders(d: Drawn, e: ModelEntry, sneaking: boolean): void {
-    const c = this.ctx;
     for (const r of d.riders!) {
       if (!r.model || !r.look || !r.ride) continue;
       r.sky = d.sky;
@@ -1329,40 +1343,50 @@ export class EntityLayer {
       r.bright = d.bright;
       r.invisible = false;
       const off = r.row * ROW_FLOATS;
-      if (r.ride.kind === 'shoulder') {
-        const t = identity(this.tmpA);
-        t[3] = r.ride.left ? 6.4 : -6.4;
-        t[7] = (sneaking ? -1.3 : -1.5) * 16;
-        mul(this.tmpB, this.rootBase, t);
-        r.model.skel.pose(c, this.tmpB, this.bones, off);
-      } else {
-        const spot = r.ride.spot;
-        const pi = spot.part != null ? e.built.index[spot.part] : undefined;
-        let frame: Float32Array;
-        if (pi != null) frame = this.layerFrame(new Float32Array(12), e.skel.partMatrix(pi));
-        else {
-          const t = identity(this.tmpA);
-          t[3] = spot.pivot[0];
-          t[7] = spot.pivot[1];
-          t[11] = spot.pivot[2];
-          frame = this.layerFrame(new Float32Array(12), mul(this.tmpB, this.rootBase, t));
-        }
-        const at = identity(this.tmpA);
-        at[3] = spot.at[0];
-        at[7] = spot.at[1];
-        at[11] = spot.at[2];
-        const placed = mul(new Float32Array(12), frame, at);
-        const def = r.model.built.def, s0 = def.scale ?? 1, k = r.look.scale ?? 1;
-        const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
-        rootMatrix(this.tmpC, { x: 0, y: 0, z: 0, yaw: -spot.yaw, death: 0, scale: sc, offset: def.offset ?? ZERO3 });
-        mul(this.tmpD, placed, this.tmpC);
-        const pitch = c.pitch;
-        c.pitch = -spot.pitch;
-        r.model.skel.pose(c, this.tmpD, this.bones, off);
-        c.pitch = pitch;
-      }
+      if (r.ride.kind === 'shoulder') this.poseShoulder(r.model, r.ride.left, sneaking, off);
+      else this.poseArrow(r.model, r.look, r.ride.spot, e, off);
       r.posed = true;
     }
+  }
+
+  /** A shoulder parrot: translate(±0.4, sneaking −1.3 : −1.5, 0) blocks in the body's model frame. */
+  private poseShoulder(m: ModelEntry, left: boolean, sneaking: boolean, off: number): void {
+    const t = identity(this.tmpA);
+    t[3] = left ? 6.4 : -6.4;
+    t[7] = (sneaking ? -1.3 : -1.5) * 16;
+    mul(this.tmpB, this.rootBase, t);
+    m.skel.pose(this.ctx, this.tmpB, this.bones, off);
+  }
+
+  /** A stuck arrow: the spot's part frame (or its pivot in the root frame), translate(spot), the arrow's own root (scale,
+   * yaw) and its pitch. */
+  private poseArrow(m: ModelEntry, look: Look, spot: ArrowSpot, e: ModelEntry, off: number): void {
+    const c = this.ctx;
+    const frame = this.arrowFrame(spot, e);
+    const at = identity(this.tmpA);
+    at[3] = spot.at[0];
+    at[7] = spot.at[1];
+    at[11] = spot.at[2];
+    const placed = mul(new Float32Array(12), frame, at);
+    const def = m.built.def, s0 = def.scale ?? 1, k = look.scale ?? 1;
+    const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
+    rootMatrix(this.tmpC, { x: 0, y: 0, z: 0, yaw: -spot.yaw, death: 0, scale: sc, offset: def.offset ?? ZERO3 });
+    mul(this.tmpD, placed, this.tmpC);
+    const pitch = c.pitch;
+    c.pitch = -spot.pitch;
+    m.skel.pose(c, this.tmpD, this.bones, off);
+    c.pitch = pitch;
+  }
+
+  /** The layer frame an arrow spot hangs in: its part's (postRender), else its pivot in the body's root frame. */
+  private arrowFrame(spot: ArrowSpot, e: ModelEntry): Float32Array {
+    const pi = spot.part != null ? e.built.index[spot.part] : undefined;
+    if (pi != null) return this.layerFrame(new Float32Array(12), e.skel.partMatrix(pi));
+    const t = identity(this.tmpA);
+    t[3] = spot.pivot[0];
+    t[7] = spot.pivot[1];
+    t[11] = spot.pivot[2];
+    return this.layerFrame(new Float32Array(12), mul(this.tmpB, this.rootBase, t));
   }
 
   private get beta(): boolean {
@@ -1385,59 +1409,67 @@ export class EntityLayer {
     const frame = this.tmpC;
     frame.set(e.skel.partMatrix(hi));
     const def = e.built.def;
-    if (d.baby && def.baby && !d.villagerHead) {
-      // root · T(0, 0.5) · S(0.7 / headScale) · root⁻¹ · head (the child head already carries the model's own layout).
-      const hs = typeof def.baby.headScale === 'number' ? def.baby.headScale : def.baby.headScale[1];
-      const adj = identity(this.tmpA);
-      adj[0] = adj[5] = adj[10] = 0.7 / hs;
-      adj[7] = 0.5;
-      invert(this.tmpB, this.root);
-      mul(this.tmpD, adj, this.tmpB);
-      mul(this.tmpB, this.root, this.tmpD);
-      mul(this.tmpD, this.tmpB, frame);
-      frame.set(this.tmpD);
-    }
+    if (d.baby && def.baby && !d.villagerHead) this.babyHeadFrame(frame, def.baby);
     const l = identity(this.tmpA);
-    if (d.skull >= 0) {
-      const k = 1.1875;
-      if (d.skull === 5) {
-        // ModelDragonHead inside the skull frame: T(0, −0.374375 blocks) · S(0.75), all × 1.1875.
-        l[0] = l[5] = l[10] = k * 0.75;
-        l[7] = -k * 0.374375 * 16 - (d.villagerHead ? k : 0);
-        mul(this.tmpB, frame, l);
-        this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
-        // The jaw: its pivot (0, 4, −8) in the head, rotX((sin(limbSwing·π·0.2) + 1)·0.2).
-        partLocal(this.tmpD, 0, 4, -8, (Math.sin(swing * Math.PI * 0.2) + 1) * 0.2, 0, 0);
-        mul(this.tmpA, this.tmpB, this.tmpD);
-        this.bones.set(this.tmpA, off + (SKULL_SLOT + 1) * 12);
-        return;
-      }
-      l[0] = l[5] = l[10] = k;
-      l[7] = d.villagerHead ? -k : 0;
-      mul(this.tmpB, frame, l);
-      this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
-      return;
-    }
-    if (d.headBlock) {
-      // Cube geometry: x, z ±0.5, y 0..1 → centred, then diag(−10, −10, 10) px (b1.8.1: turned 180°, its pumpkin face is
-      // the south one), up 4 px (+1.875 for villagers).
-      const s = 10;
-      l[0] = this.beta ? s : -s;
-      l[5] = -s;
-      l[10] = this.beta ? -s : s;
-      l[7] = s * 0.5 - 4 - (d.villagerHead ? 1.875 : 0);
-      mul(this.tmpB, frame, l);
-      this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
-      return;
-    }
-    // A flat item (the sprite: x −0.5..0.5, y 0..1): x' = 10x, y' = −10y − 7.125, z' = 4.375 px (villagers 1.875 higher).
-    l[0] = 10;
-    l[5] = -10;
-    l[10] = -10;
-    l[7] = -7.125 - (d.villagerHead ? 1.875 : 0);
-    l[11] = 4.375;
+    if (d.skull === 5) this.poseDragonSkull(frame, l, off, swing, d.villagerHead);
+    else if (d.skull >= 0) this.poseSkull(frame, l, off, d.villagerHead);
+    else if (d.headBlock) this.poseHeadBlock(frame, l, off, d.villagerHead);
+    else this.poseHeadItem(frame, l, off, d.villagerHead);
+  }
+
+  /** A skull: scale(1.1875) about the neck, villagers 1.1875 px higher. */
+  private poseSkull(frame: Float32Array, l: Float32Array, off: number, villager: boolean): void {
+    this.poseHeadPiece(frame, l, off + SKULL_SLOT * 12, SKULL_SCALE, SKULL_SCALE, SKULL_SCALE, villager ? -SKULL_SCALE : 0, 0);
+  }
+
+  /** A block: the cube (x, z ±0.5, y 0..1) centred, then diag(−10, −10, 10) px (b1.8.1: turned 180°, its pumpkin face is the
+   * south one), up 4 px (+1.875 for villagers). */
+  private poseHeadBlock(frame: Float32Array, l: Float32Array, off: number, villager: boolean): void {
+    const s = 10;
+    this.poseHeadPiece(frame, l, off + HEAD_SLOT * 12, this.beta ? s : -s, -s, this.beta ? -s : s, s * 0.5 - 4 - (villager ? 1.875 : 0), 0);
+  }
+
+  /** A flat item (the sprite: x −0.5..0.5, y 0..1): x' = 10x, y' = −10y − 7.125, z' = 4.375 px (villagers 1.875 higher). */
+  private poseHeadItem(frame: Float32Array, l: Float32Array, off: number, villager: boolean): void {
+    this.poseHeadPiece(frame, l, off + HEAD_SLOT * 12, 10, -10, -10, -7.125 - (villager ? 1.875 : 0), 4.375);
+  }
+
+  /** The child head's frame: root · T(0, 0.5) · S(0.7 / headScale) · root⁻¹ · head (the child head already carries the
+   * model's own layout). */
+  private babyHeadFrame(frame: Float32Array, baby: NonNullable<ModelDef['baby']>): void {
+    const hs = typeof baby.headScale === 'number' ? baby.headScale : baby.headScale[1];
+    const adj = identity(this.tmpA);
+    adj[0] = adj[5] = adj[10] = 0.7 / hs;
+    adj[7] = 0.5;
+    invert(this.tmpB, this.root);
+    mul(this.tmpD, adj, this.tmpB);
+    mul(this.tmpB, this.root, this.tmpD);
+    mul(this.tmpD, this.tmpB, frame);
+    frame.set(this.tmpD);
+  }
+
+  /** A head piece in the head frame: diag(sx, sy, sz) and translate(0, ty, tz) px, written at bone offset `at`. */
+  private poseHeadPiece(frame: Float32Array, l: Float32Array, at: number, sx: number, sy: number, sz: number, ty: number, tz: number): void {
+    l[0] = sx;
+    l[5] = sy;
+    l[10] = sz;
+    l[7] = ty;
+    l[11] = tz;
     mul(this.tmpB, frame, l);
-    this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
+    this.bones.set(this.tmpB, at);
+  }
+
+  /** ModelDragonHead inside the skull frame: T(0, −0.374375 blocks) · S(0.75), all × 1.1875; its jaw: the pivot (0, 4, −8)
+   * in the head, rotX((sin(limbSwing·π·0.2) + 1)·0.2). */
+  private poseDragonSkull(frame: Float32Array, l: Float32Array, off: number, swing: number, villager: boolean): void {
+    const k = SKULL_SCALE;
+    l[0] = l[5] = l[10] = k * 0.75;
+    l[7] = -k * 0.374375 * 16 - (villager ? k : 0);
+    mul(this.tmpB, frame, l);
+    this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
+    partLocal(this.tmpD, 0, 4, -8, (Math.sin(swing * Math.PI * 0.2) + 1) * 0.2, 0, 0);
+    mul(this.tmpA, this.tmpB, this.tmpD);
+    this.bones.set(this.tmpA, off + (SKULL_SLOT + 1) * 12);
   }
 
   /** LayerSnowmanHead: a pumpkin unless the wire says it was sheared off (1.12.2 snow golems only). */
@@ -1538,22 +1570,7 @@ export class EntityLayer {
     const l = this.tmpA, out = this.tmpB;
     const item = left ? d.heldOff! : d.held!, tool = left ? d.heldOffTool : d.heldTool;
     // Arm space: pixels, y down the arm, −z forward; the fist is around (∓1, 10, 0). Item geometry is y-up (0..1).
-    const h = HELD_POSES[item.kind === 'cube' ? 'block' : tool ? 'tool' : 'flat'];
-    // Columns: where the item's x (right), y (up) and z (normal) axes go in arm space, times its size. The left hand mirrors
-    // across x (and flips the item's right axis so the basis stays right-handed).
-    const mx = left ? -1 : 1;
-    for (let r = 0; r < 3; r++) {
-      const sx = r === 0 ? mx : 1;
-      l[r * 4] = h.right[r] * h.size * sx * mx;
-      l[r * 4 + 1] = h.up[r] * h.size * sx;
-      l[r * 4 + 2] = h.normal[r] * h.size * sx;
-      l[r * 4 + 3] = h.at[r] * sx;
-    }
-    // Pre-translate in item units (centre the cube / put the grip at the fist).
-    const px = h.pre[0] * mx;
-    l[3] += l[0] * px + l[1] * h.pre[1] + l[2] * h.pre[2];
-    l[7] += l[4] * px + l[5] * h.pre[1] + l[6] * h.pre[2];
-    l[11] += l[8] * px + l[9] * h.pre[1] + l[10] * h.pre[2];
+    heldBasis(l, HELD_POSES[item.kind === 'cube' ? 'block' : tool ? 'tool' : 'flat'], left ? -1 : 1);
     mul(out, am, l);
     this.bones.set(out, off + (left ? OFF_SLOT : HELD_SLOT) * 12);
   }
@@ -2391,6 +2408,23 @@ export const HELD_POSES: Record<'block' | 'tool' | 'flat', { at: [number, number
   tool: { at: [-1, 9.5, -1], right: [0, -0.944, 0.33], up: UP_F, normal: [1, 0, 0], size: 10, pre: [0.35, -0.15, 0] },
   flat: { at: [-1, 9.5, -1.5], right: [0, -0.944, 0.33], up: UP_F, normal: [1, 0, 0], size: 7, pre: [0, -0.1, 0] },
 };
+
+/** A held item's local transform in arm space into `l`. Columns: where the item's x (right), y (up) and z (normal) axes go,
+ * times its size; the left hand (mx −1) mirrors across x (and flips the item's right axis so the basis stays right-handed).
+ * Then the pre-translate in item units (centre the cube / put the grip at the fist). */
+function heldBasis(l: Float32Array, h: (typeof HELD_POSES)['block'], mx: number): void {
+  for (let r = 0; r < 3; r++) {
+    const sx = r === 0 ? mx : 1;
+    l[r * 4] = h.right[r] * h.size * sx * mx;
+    l[r * 4 + 1] = h.up[r] * h.size * sx;
+    l[r * 4 + 2] = h.normal[r] * h.size * sx;
+    l[r * 4 + 3] = h.at[r] * sx;
+  }
+  const px = h.pre[0] * mx;
+  l[3] += l[0] * px + l[1] * h.pre[1] + l[2] * h.pre[2];
+  l[7] += l[4] * px + l[5] * h.pre[1] + l[6] * h.pre[2];
+  l[11] += l[8] * px + l[9] * h.pre[1] + l[10] * h.pre[2];
+}
 
 /** RenderEntityItem copies by stack size (b1.8.1: 1, 2 (>1), 3 (>5), 4 (>20); 1.12.2: up to 5 at >48). */
 export function copies(count: number, beta: boolean): number {
