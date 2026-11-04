@@ -44,25 +44,37 @@ class WaterFX implements TextureFX {
   }
   tick(): void {
     this.ticks++;
-    const { a, b, heat, vel, flow } = this;
-    for (let i = 0; i < 16; i++)
-      for (let j = 0; j < 16; j++) {
-        let f = 0;
-        if (flow) for (let k = j - 2; k <= j; k++) f += a[(i & 15) + (k & 15) * 16];
-        else for (let k = i - 1; k <= i + 1; k++) f += a[(k & 15) + (j & 15) * 16];
-        b[i + j * 16] = f / (flow ? 3.2 : 3.3) + heat[i + j * 16] * 0.8;
-      }
+    const { a, b, heat, flow } = this;
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) b[i + j * 16] = this.spread(a, i, j) / (flow ? 3.2 : 3.3) + heat[i + j * 16] * 0.8;
+    this.stir();
+    this.a = b;
+    this.b = a;
+    this.paint();
+  }
+
+  /** The cell's neighbourhood sum: the three cells above it (flowing, the texture scrolls down) or beside it (still). */
+  private spread(a: Float32Array, i: number, j: number): number {
+    let f = 0;
+    if (this.flow) for (let k = j - 2; k <= j; k++) f += a[(i & 15) + (k & 15) * 16];
+    else for (let k = i - 1; k <= i + 1; k++) f += a[(k & 15) + (j & 15) * 16];
+    return f;
+  }
+
+  /** Heat rises with each cell's velocity, which decays and now and then kicks back up. */
+  private stir(): void {
+    const { heat, vel, flow } = this;
     for (let i = 0; i < 256; i++) {
       heat[i] += vel[i] * 0.05;
       if (heat[i] < 0) heat[i] = 0;
       vel[i] -= flow ? 0.3 : 0.1;
       if (this.rand() < (flow ? 0.2 : 0.05)) vel[i] = 0.5;
     }
-    this.a = b;
-    this.b = a;
+  }
+
+  private paint(): void {
     const src = this.a;
     for (let k = 0; k < 256; k++) {
-      const f1 = clamp01(src[flow ? (k - this.ticks * 16) & 255 : k]);
+      const f1 = clamp01(src[this.flow ? (k - this.ticks * 16) & 255 : k]);
       const f2 = f1 * f1;
       const o = k * 4;
       this.pixels[o] = 32 + f2 * 32;
@@ -117,6 +129,18 @@ class LavaFX implements TextureFX {
   }
 }
 
+/** A flame cell rises from the one below it (weighted 18) and the six around and above it that lie on the sheet. */
+function flameCell(a: Float32Array, i: number, j: number): number {
+  let l = 18;
+  let f = a[i + ((j + 1) % 20) * 16] * l;
+  for (let k = i - 1; k <= i + 1; k++)
+    for (let m = j; m <= j + 1; m++) {
+      if (k >= 0 && m >= 0 && k < 16 && m < 20) f += a[k + m * 16];
+      l++;
+    }
+  return f / (l * 1.06);
+}
+
 class FlamesFX implements TextureFX {
   readonly pixels = new Uint8Array(1024);
   private a = new Float32Array(320);
@@ -129,14 +153,7 @@ class FlamesFX implements TextureFX {
     const { a, b } = this;
     for (let i = 0; i < 16; i++)
       for (let j = 0; j < 20; j++) {
-        let l = 18;
-        let f = a[i + ((j + 1) % 20) * 16] * l;
-        for (let k = i - 1; k <= i + 1; k++)
-          for (let m = j; m <= j + 1; m++) {
-            if (k >= 0 && m >= 0 && k < 16 && m < 20) f += a[k + m * 16];
-            l++;
-          }
-        b[i + j * 16] = f / (l * 1.06);
+        b[i + j * 16] = flameCell(a, i, j);
         if (j >= 19) b[i + j * 16] = this.rand() * this.rand() * this.rand() * 4 + this.rand() * 0.1 + 0.2;
       }
     this.a = b;
