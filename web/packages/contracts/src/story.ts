@@ -7,7 +7,9 @@
  *
  * Deltas: `GET /api/story/colonies/{id}?since=rev` returns only what changed after `rev` (items keyed by pawn name, zone /
  * designation / order / build id, storage chest position) plus `removed` keys; without `since`, or with `full: true`, the
- * reply is the whole state and replaces what the client holds. `ghosts` and `categories`, when present, always replace.
+ * reply is the whole state and replaces what the client holds. `categories`, when present, always replaces. A delta's
+ * `ghosts.blocks` holds only the ghosts that changed (the bot's shape): the client merges them by build and cell, and a removed
+ * build takes its ghosts with it.
  */
 import { z } from 'zod';
 import { IsoDateTime, Vec3, Vec3i } from './common.js';

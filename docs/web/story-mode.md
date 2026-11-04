@@ -116,13 +116,16 @@ storage is chests (see "Storage").
 {id, rev, since, full, at, time_of_day, time_frozen, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
  pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
- alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
+ alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state,kind]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null}, policies:[Policy], material_rules:[MaterialRule], materials:[MaterialInfo] (full only),
  removed:{zones:[id], designations:[id], builds:[id], storages:["x,y,z"]} (delta only)}
 ```
 
 A delta (`since=rev`) carries only the objects with a newer revision, plus every pawn (they move all the time) and `removed`.
+That holds for `ghosts.blocks` too: a delta lists only the ghosts that changed (often none), so the client merges them into
+what it holds by build and cell, and a build in `removed.builds` takes its ghosts with it (fixed 2026-11-04: the web replaced
+the whole list with each delta's, so the holograms and flat ghosts vanished a few seconds after the page loaded).
 Pass the answer's `rev` back as the next `since`. This is the `story` event source the bridge polls, at 2 Hz while a client
 watches.
 
@@ -1331,6 +1334,16 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
     way, green where it fits and red where a block is in the way. The viewer setting "Build holograms" (default on) turns
     them off; the map then draws the flat ghosts as before. Measured (SwiftShader, 1440 × 900, top view at the default
     zoom, the mock colony): 58 fps before, 48 fps with a 2,000-cell build queued, 41 fps in the angled view.
+    Fixed 2026-11-04 (Fox: "I still can't see holograms for queued builds like chests, or other blocks"): the live bot sends
+    only the changed ghosts in a delta, and the web replaced its whole list with them, so every hologram went with the first
+    catch-up a few seconds after the page loaded (the mock sends all of them, so mock mode never showed it). The client now
+    merges ghost deltas (see "The colony state"). Ghosts are read by their 8th element: a `dig` ghost carries the block
+    expected there, and is drawn as a red outline until the cell is air (by id it looked built and was hidden). Every block
+    kind is the section mesher's own model, block entities included: chests (a double chest as one), beds, signs, banners,
+    skulls, shulker boxes, doors, torches, slabs, stairs, fences, panes, ladders. A b1.8.1 door's upper half takes the
+    lower half's facing (the queue sends it as plain 8, the 1.12.2 form, so the halves stood on different sides of the
+    cell). A furniture tool's placement (chest, bed,
+    furnace…) previews as a hologram too. The test hook `hologramKinds()` counts each build kind's queued and drawn cells.
 - **Selection.**
   - A left-drag box selects many pawns, or objects (trees, blocks, drops) in designation mode.
   - A click selects one, shift adds, a double-click selects every visible pawn of the same kind, and Esc clears.

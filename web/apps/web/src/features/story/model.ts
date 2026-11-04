@@ -32,6 +32,30 @@ function mergeBy<T>(
   return [...map.values()];
 }
 
+type Ghosts = NonNullable<StoryColonyState['ghosts']>;
+
+/**
+ * The build queue's ghosts after a delta. The bot sends only the ghosts that changed after `since` (a full reply: all of
+ * them), so a delta's ghosts are merged by build and cell (a changed state replaces the old one in place), and a removed
+ * build's ghosts go with it. Nothing changed → the same object (the map's holograms rebuild only when it changes).
+ */
+export function mergeGhosts(
+  prev: StoryColonyState['ghosts'],
+  next: StoryColonyState['ghosts'],
+  removedBuilds?: ReadonlyArray<unknown> | null,
+): StoryColonyState['ghosts'] {
+  const gone = new Set((removedBuilds ?? []).map(String));
+  if (!prev) return next;
+  const touched = (next?.blocks.length ?? 0) > 0 || (gone.size > 0 && prev.blocks.some((g) => gone.has(String(g[5]))));
+  if (!touched) return prev;
+  const key = (g: Ghosts['blocks'][number]) => `${g[5]}|${g[0]},${g[1]},${g[2]}`;
+  const map = new Map<string, Ghosts['blocks'][number]>();
+  for (const g of prev.blocks) map.set(key(g), g);
+  for (const g of next?.blocks ?? []) map.set(key(g), g);
+  const blocks = [...map.values()].filter((g) => !gone.has(String(g[5])));
+  return { rev: Math.max(prev.rev, next?.rev ?? 0), blocks };
+}
+
 /** Applies a delta (or a whole state) to what the client holds. Older revisions are ignored. */
 export function mergeColony(prev: StoryColonyState | undefined, d: StoryColonyState): StoryColonyState {
   if (!prev || d.full || d.rev < (prev.rev ?? 0) - 1000) return d;
@@ -65,7 +89,7 @@ export function mergeColony(prev: StoryColonyState | undefined, d: StoryColonySt
     workbenches: mergeBy(prev.workbenches, d.workbenches, (w) => k3(w.pos), rm.workbenches),
     directives: mergeBy(prev.directives, d.directives, id, rm.directives).slice(-60),
     ai: d.ai ?? prev.ai,
-    ghosts: d.ghosts ?? prev.ghosts,
+    ghosts: mergeGhosts(prev.ghosts, d.ghosts, rm.builds),
     categories: d.categories ?? prev.categories,
     removed: null,
   };
