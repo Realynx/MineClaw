@@ -12,6 +12,7 @@ import {
   eraseZones,
   irrigationPlan,
   paintZones,
+  quarryRing,
   rectCells,
   rowsOf,
   zoneCellSet,
@@ -101,6 +102,7 @@ describe('zone painter (golden)', () => {
       }
       trace.push(`  ${show(zones)}`);
     }
+    for (const z of zones) trace.push(`ring ${z.id}: ${JSON.stringify(quarryRing(zoneCellSet(z)))}`);
     expect(trace.filter((l) => l.startsWith('refused')).length).toBeGreaterThan(0);
     expect(digest(trace, 'zones')).toMatchSnapshot();
   });

@@ -2,6 +2,6 @@
 
 exports[`zone painter (golden) > describes every paint result exactly as before 1`] = `"de616c3ade8ffbeee9700878764de4fec3e394b61565c65e173fdd5b276cda88"`;
 
-exports[`zone painter (golden) > paints, extends and erases exactly as before 1`] = `"1648ba4c1026393c60ec378568d99191008b199166780dd28141fbf565c9c03f"`;
+exports[`zone painter (golden) > paints, extends and erases exactly as before 1`] = `"1b140be722dc770537779facff6c50437f76e62597afca6f04e710e6bf2a577c"`;
 
 exports[`zone painter (golden) > plans irrigation exactly as before 1`] = `"eeecd27f6e9c32e66516efe0b7dbf37080964cecfce965da171078942f5ac4f9"`;
