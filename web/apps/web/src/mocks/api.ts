@@ -724,6 +724,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'memory.get': { params: { kind: 'claims', id: '3' }, query: {}, body: null },
   search: { params: {}, query: { q: 'melons' }, body: null },
   'raptor.node': { params: { id: 481 }, query: {}, body: null },
+  'memoryActivity.cloudDistance': { params: {}, query: { a: 0, b: 1 }, body: null },
   'raptor.leaves': { params: { id: 481 }, query: {}, body: null },
   'scripts.get': { params: { name: 'cobble_loop' }, query: {}, body: null },
   'scripts.diff': { params: { name: 'cobble_loop' }, query: { a: 6, b: 7 }, body: null },

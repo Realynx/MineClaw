@@ -298,8 +298,8 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
     | PCA | 0.67 | 0.67 | 0.38 | 0.5 s |
     | Tree (force) | 0.82 | 0.82 | 0.33 | 0.5 s (after MDS) |
 
-    On a synthetic 1024-d set (13 topics, `Bench_arrangements_on_synthetic_sets_when_asked`), MDS takes 1.2 s at 2 500 points
-    and 6.9 s at 20 000 (fit on 3000, 17 000 placed); PCA 0.5 s / 2 s, the tree 0.4 s / 9.4 s, UMAP 4.8 s / 7.0 s.
+    On a synthetic 1024-d set (13 topics, `Bench_arrangements_on_synthetic_sets_when_asked`), MDS takes 1.2–1.6 s at 2 500 points
+    and ~7 s at 20 000 (fit on 3000, 17 000 placed); PCA 1.6 s / 2.1 s, the tree 0.5 s / 7.5 s, UMAP 4.9 s / 6.9 s.
   - **Bounded and never blocking.** `GET /v1/memory-activity/cloud?arrangement=` answers at once; an arrangement is computed
     lazily, on its first request for a tree state, by one background queue on `Bridge:CloudThreads` (default 1; one
     arrangement at a time; the tree computes MDS first), and the client polls while `status` is `computing`, showing the
