@@ -46,6 +46,28 @@ public sealed class StoryLookupGoldenTests
         GoldenHash("recipes", sb.ToString());
     }
 
+    /// <summary>The category tree per version (each node's id, label, items) and every item's leaf.</summary>
+    [Fact]
+    public void Category_trees()
+    {
+        var sb = new StringBuilder();
+        void Node(Category c, int depth)
+        {
+            sb.Append(new string(' ', depth * 2)).Append(c.Id).Append(" '").Append(c.Label).Append("' ").Append(string.Join(",", c.Items.Select(i => i.Id + ":" + i.Meta))).Append('\n');
+            foreach (var ch in c.Children) Node(ch, depth + 1);
+        }
+        foreach (var d in Versions)
+        {
+            var cats = StoryCategories.For(d);
+            sb.Append(d.VersionId).Append('\n');
+            foreach (var r in cats.Roots) Node(r, 1);
+            for (int id = 0; id < 4096; id++)
+                if (d.ItemExists(id))
+                    for (int meta = -1; meta < 16; meta++) sb.Append("leaf ").Append(id).Append(':').Append(meta).Append(' ').Append(cats.LeafOf(id, meta)).Append('\n');
+        }
+        GoldenHash("categories", sb.ToString());
+    }
+
     [Fact]
     public void Produce_table_matches_the_old_switch_for_every_plant()
     {
