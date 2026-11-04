@@ -129,6 +129,36 @@ public static class VisionTools
     }
 
     /// <summary>Short label of an indexed object kind (null = not labelled).</summary>
+    /// <summary>Saved structures (as boxes) and waypoints in this dimension near or overlapping the view.</summary>
+    private static void RememberedMarks(AgentRuntime rt, int dim, int cx, int cz, int r, List<VisionMark> list)
+    {
+        bool Near(double x, double z) => Math.Abs(x - cx) <= r + 2 && Math.Abs(z - cz) <= r + 2;
+        var (wps, sts) = rt.Memory.Read(d => (d.Waypoints.Where(w => w.Dimension == dim).ToList(), d.Structures.Where(s => s.Dimension == dim).ToList()));
+        foreach (var s in sts)
+        {
+            if (s.Min == null) continue;
+            var mx = s.Max ?? s.Min;
+            var m = new VisionMark(s.Name, Math.Min(s.Min.X, mx.X), Math.Min(s.Min.Y, mx.Y), Math.Min(s.Min.Z, mx.Z),
+                Math.Max(s.Min.X, mx.X), Math.Max(s.Min.Y, mx.Y), Math.Max(s.Min.Z, mx.Z), Box: true);
+            if (Near(m.CentreX, m.CentreZ) || (m.MaxX >= cx - r && m.MinX <= cx + r && m.MaxZ >= cz - r && m.MinZ <= cz + r)) list.Add(m);
+        }
+        foreach (var w in wps) if (Near(w.X, w.Z)) list.Add(VisionMark.At(w.Name, w.X, w.Y, w.Z));
+    }
+
+    /// <summary>Indexed things near the view, unless a mark already stands there (a box, or the same label).</summary>
+    private static void IndexedMarks(AgentRuntime rt, int cx, int cy, int cz, int r, List<VisionMark> list)
+    {
+        foreach (var (row, _) in rt.Observations.Nearest(null, cx, cy, cz, 40, r * 1.5 + 2))
+        {
+            if (ObjectLabel(row.Kind) is not { } label || row.Bounds is not { } b) continue;
+            int x0 = (int)Math.Floor(b.MinX), y0 = (int)Math.Floor(b.MinY), z0 = (int)Math.Floor(b.MinZ);
+            int x1 = (int)Math.Floor(b.MaxX), y1 = (int)Math.Floor(b.MaxY), z1 = (int)Math.Floor(b.MaxZ);
+            if (list.Any(m => Math.Abs(m.CentreX - (x0 + x1) / 2.0) <= 2 && Math.Abs(m.CentreZ - (z0 + z1) / 2.0) <= 2
+                && (m.Box || VisionRenderer.ShortLabel(m.Text).Equals(label, StringComparison.OrdinalIgnoreCase)))) continue;
+            list.Add(new VisionMark(label, x0, y0, z0, x1, y1, z1, Box: x1 > x0 || z1 > z0));
+        }
+    }
+
     private static string? ObjectLabel(string kind) => kind switch
     {
         "chest" => "chest",
@@ -157,27 +187,8 @@ public static class VisionTools
             var list = new List<VisionMark>();
             try
             {
-                int dim = c.World.Dimension;
-                bool Near(double x, double z) => Math.Abs(x - cx) <= r + 2 && Math.Abs(z - cz) <= r + 2;
-                var (wps, sts) = rt.Memory.Read(d => (d.Waypoints.Where(w => w.Dimension == dim).ToList(), d.Structures.Where(s => s.Dimension == dim).ToList()));
-                foreach (var s in sts)
-                {
-                    if (s.Min == null) continue;
-                    var mx = s.Max ?? s.Min;
-                    var m = new VisionMark(s.Name, Math.Min(s.Min.X, mx.X), Math.Min(s.Min.Y, mx.Y), Math.Min(s.Min.Z, mx.Z),
-                        Math.Max(s.Min.X, mx.X), Math.Max(s.Min.Y, mx.Y), Math.Max(s.Min.Z, mx.Z), Box: true);
-                    if (Near(m.CentreX, m.CentreZ) || (m.MaxX >= cx - r && m.MinX <= cx + r && m.MaxZ >= cz - r && m.MinZ <= cz + r)) list.Add(m);
-                }
-                foreach (var w in wps) if (Near(w.X, w.Z)) list.Add(VisionMark.At(w.Name, w.X, w.Y, w.Z));
-                foreach (var (row, _) in rt.Observations.Nearest(null, cx, cy, cz, 40, r * 1.5 + 2))
-                {
-                    if (ObjectLabel(row.Kind) is not { } label || row.Bounds is not { } b) continue;
-                    int x0 = (int)Math.Floor(b.MinX), y0 = (int)Math.Floor(b.MinY), z0 = (int)Math.Floor(b.MinZ);
-                    int x1 = (int)Math.Floor(b.MaxX), y1 = (int)Math.Floor(b.MaxY), z1 = (int)Math.Floor(b.MaxZ);
-                    if (list.Any(m => Math.Abs(m.CentreX - (x0 + x1) / 2.0) <= 2 && Math.Abs(m.CentreZ - (z0 + z1) / 2.0) <= 2
-                        && (m.Box || VisionRenderer.ShortLabel(m.Text).Equals(label, StringComparison.OrdinalIgnoreCase)))) continue;
-                    list.Add(new VisionMark(label, x0, y0, z0, x1, y1, z1, Box: x1 > x0 || z1 > z0));
-                }
+                RememberedMarks(rt, c.World.Dimension, cx, cz, r, list);
+                IndexedMarks(rt, cx, cy, cz, r, list);
             }
             catch (Exception ex) { log?.LogDebug(ex, "see: marks unavailable"); }
             return list.Take(14).ToList();

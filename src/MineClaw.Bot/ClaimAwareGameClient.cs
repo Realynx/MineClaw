@@ -77,8 +77,15 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         await ApproachAsync(pos, ct).ConfigureAwait(false);
         var key = ClaimKey.Chest(ChestPairs.Canonical(inner.World, pos), inner.World.Dimension);
         if (wait <= TimeSpan.Zero) return await Held(key, action, ct).ConfigureAwait(false);
-        // Live 11-03 (Story builders): "busy: maid_chan_102 is using chest 218,64,400" failed a build job outright although the
-        // holder's session is a few seconds. A withdraw waits its turn (bounded), then says busy with the holder and the wait.
+        return await WaitForChestAsync(key, pos, action, wait, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Live 11-03 (Story builders): "busy: maid_chan_102 is using chest 218,64,400" failed a build job outright although the
+    /// holder's session is a few seconds. A withdraw waits its turn (bounded), then says busy with the holder and the wait.
+    /// </summary>
+    private async Task<ActionResult> WaitForChestAsync(ClaimKey key, BlockPos pos, Func<Task<ActionResult>> action, TimeSpan wait, CancellationToken ct)
+    {
         var start = DateTime.UtcNow;
         string? holder = null;
         for (int seen = 0; ; seen++)
@@ -156,7 +163,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         var chestKey = ClaimKey.Chest(at, dim);
         var start = DateTime.UtcNow;
         var deadline = start + DepositWait;
-        string? lastHolder = null;
+        var holder = new LastHolder();
         int seen = 0;
         while (true)
         {
@@ -165,32 +172,46 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
             // tries the next chest (or places one) rather than queueing behind something that isn't a deposit.
             if (!claims.IsFree(chestKey) && DateTime.UtcNow - start >= ExclusiveWait) deadline = DateTime.UtcNow;
             if (claims.IsFree(chestKey))
-                for (int i = 0; i < Math.Max(1, DepositSlots); i++)
-                {
-                    var key = DepositSlot(at, dim, i);
-                    if (!claims.IsFree(key)) { lastHolder = claims.HolderOf(key) ?? lastHolder; continue; }
-                    var r = await claims.TryClaimAsync(key, Ttl, "deposit", ct).ConfigureAwait(false);
-                    if (!r.Ok)
-                    {
-                        if (r.Holder == null) { try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { } }
-                        else lastHolder = r.Holder;
-                        continue;
-                    }
-                    try { return await action().ConfigureAwait(false); }
-                    finally
-                    {
-                        try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* expires */ }
-                    }
-                }
-            else lastHolder = claims.HolderOf(chestKey) ?? lastHolder;
+            {
+                if (await DepositInFreeSlotAsync(at, dim, action, holder, ct).ConfigureAwait(false) is { } done) return done;
+            }
+            else holder.Name = claims.HolderOf(chestKey) ?? holder.Name;
             seen++;
-            if (DateTime.UtcNow >= deadline)
-                return ActionResult.Fail(claims.IsFree(chestKey)
-                    ? $"busy: chest {pos.X},{pos.Y},{pos.Z} has {DepositSlots} bodies depositing (last {lastHolder ?? "?"}); waited {(DateTime.UtcNow - start).TotalSeconds:0}s"
-                    : $"busy: {lastHolder ?? "another bot"} is using chest {pos.X},{pos.Y},{pos.Z}; waited {(DateTime.UtcNow - start).TotalSeconds:0}s");
+            if (DateTime.UtcNow >= deadline) return ActionResult.Fail(DepositBusy(pos, chestKey, holder.Name, start));
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 150 + 50 * seen)), ct).ConfigureAwait(false);
         }
     }
+
+    /// <summary>The last body seen holding the chest or one of its deposit slots.</summary>
+    private sealed class LastHolder { public string? Name; }
+
+    /// <summary>Runs the deposit under the first deposit slot lease it gets; null when every slot is taken.</summary>
+    private async Task<ActionResult?> DepositInFreeSlotAsync(BlockPos at, int dim, Func<Task<ActionResult>> action, LastHolder holder, CancellationToken ct)
+    {
+        for (int i = 0; i < Math.Max(1, DepositSlots); i++)
+        {
+            var key = DepositSlot(at, dim, i);
+            if (!claims.IsFree(key)) { holder.Name = claims.HolderOf(key) ?? holder.Name; continue; }
+            var r = await claims.TryClaimAsync(key, Ttl, "deposit", ct).ConfigureAwait(false);
+            if (!r.Ok)
+            {
+                if (r.Holder == null) { try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { } }
+                else holder.Name = r.Holder;
+                continue;
+            }
+            try { return await action().ConfigureAwait(false); }
+            finally
+            {
+                try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* expires */ }
+            }
+        }
+        return null;
+    }
+
+    private string DepositBusy(BlockPos pos, ClaimKey chestKey, string? lastHolder, DateTime start) =>
+        claims.IsFree(chestKey)
+            ? $"busy: chest {pos.X},{pos.Y},{pos.Z} has {DepositSlots} bodies depositing (last {lastHolder ?? "?"}); waited {(DateTime.UtcNow - start).TotalSeconds:0}s"
+            : $"busy: {lastHolder ?? "another bot"} is using chest {pos.X},{pos.Y},{pos.Z}; waited {(DateTime.UtcNow - start).TotalSeconds:0}s";
 
     // ---- claimed actions ----
     public Task<ActionResult> OpenContainerAsync(int x, int y, int z, CancellationToken ct = default) =>

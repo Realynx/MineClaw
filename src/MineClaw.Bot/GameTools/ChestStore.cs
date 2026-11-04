@@ -227,13 +227,7 @@ public static class ChestStore
             foreach (var (dx, dz) in new[] { (2, 0), (-2, 0), (0, 2), (0, -2), (2, 2), (-2, -2), (2, -2), (-2, 2), (3, 0), (-3, 0), (0, 3), (0, -3) })
             {
                 var p = new BlockPos(near.X + dx, near.Y + dy, near.Z + dz);
-                if (w.GetBlock(p.X, p.Y, p.Z) != 0 || w.GetBlock(p.X, p.Y + 1, p.Z) != 0) continue;
-                if (!BlockShapes.HasCollision(w, p.X, p.Y - 1, p.Z)) continue;
-                var sides = new[] { p.Offset(1, 0, 0), p.Offset(-1, 0, 0), p.Offset(0, 0, 1), p.Offset(0, 0, -1) };
-                if (sides.Any(n => Ids1122.IsChest(w.GetBlock(n)))) continue;
-                if (sides.Append(p.Down()).Any(n => Blocks.IsLava(w.GetBlock(n)) || Blocks.IsWater(w.GetBlock(n)))) continue;
-                if (c.IsProtected?.Invoke(p, Blocks.Chest) == true) continue;
-                spots.Add(p);
+                if (ChestSpot(c, p)) spots.Add(p);
             }
         if (spots.Count == 0) return null;
         if (w.Inventory.CountItem(Blocks.Chest) <= 0)
@@ -249,6 +243,18 @@ public static class ChestStore
             if (r.Ok && Ids1122.IsChest(w.GetBlock(p))) return p;
         }
         return null;
+    }
+
+    /// <summary>Two free cells on solid ground, no chest beside (it would pair), no fluid beside or under, not protected.</summary>
+    private static bool ChestSpot(IGameClient c, BlockPos p)
+    {
+        var w = c.World;
+        if (w.GetBlock(p.X, p.Y, p.Z) != 0 || w.GetBlock(p.X, p.Y + 1, p.Z) != 0) return false;
+        if (!BlockShapes.HasCollision(w, p.X, p.Y - 1, p.Z)) return false;
+        var sides = new[] { p.Offset(1, 0, 0), p.Offset(-1, 0, 0), p.Offset(0, 0, 1), p.Offset(0, 0, -1) };
+        if (sides.Any(n => Ids1122.IsChest(w.GetBlock(n)))) return false;
+        if (sides.Append(p.Down()).Any(n => Blocks.IsLava(w.GetBlock(n)) || Blocks.IsWater(w.GetBlock(n)))) return false;
+        return c.IsProtected?.Invoke(p, Blocks.Chest) != true;
     }
 
     private static string Coords(List<BlockPos> list) => string.Join(", ", list.Take(2).Select(P)) + (list.Count > 2 ? ", …" : "");

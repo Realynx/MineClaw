@@ -275,8 +275,7 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
     public async Task<ActionResult> DepositAsync(BlockPos? store, CancellationToken ct)
     {
         var reserved = c.ReservedItems;
-        int Loose() => c.World.Inventory.PlayerSlots().Skip(9).Count(s => !Keep(s, reserved));
-        int before = Loose();
+        int before = Loose(reserved);
         if (before == 0) return ActionResult.Success("nothing to deposit");
         var storing = c.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s, reserved)).Select(s => (int)s.Id).ToHashSet();
         var tried = new HashSet<BlockPos>();
@@ -286,16 +285,31 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
             if (!tried.Add(chest)) continue;
             foreach (var cell in ChestPairs.Cells(c.World, chest)) tried.Add(cell); // the other half is this window
             if (tried.Count > MaxChestsTried) break;
-            int was = Loose();
-            var items = LooseItems(reserved);
-            var r = await c.DepositAllAsync(chest, s => !Keep(s, reserved), ct).ConfigureAwait(false);
-            NoteStored(chest, items, LooseItems(reserved));
-            int now = Loose();
-            if (now == 0 || c.World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) > 0 && now < before)
-                return ActionResult.Success($"deposited at {chest.X},{chest.Y},{chest.Z}", before - now);
-            why.Add($"{chest.X},{chest.Y},{chest.Z} {(r.Ok || now < was ? "filled up" : Short(r.Message))}");
+            if (await DepositIntoAsync(chest, reserved, before, why, ct).ConfigureAwait(false) is { } done) return done;
         }
         // Every known chest is really full (or none is known): a new one, labelled in shared memory.
+        return await DepositIntoNewChestAsync(reserved, before, why, ct).ConfigureAwait(false);
+    }
+
+    private int Loose(IReadOnlySet<int> reserved) => c.World.Inventory.PlayerSlots().Skip(9).Count(s => !Keep(s, reserved));
+
+    /// <summary>One known chest: the result when the inventory emptied (or has room again); else why it didn't take more.</summary>
+    private async Task<ActionResult?> DepositIntoAsync(BlockPos chest, IReadOnlySet<int> reserved, int before, List<string> why, CancellationToken ct)
+    {
+        int was = Loose(reserved);
+        var items = LooseItems(reserved);
+        var r = await c.DepositAllAsync(chest, s => !Keep(s, reserved), ct).ConfigureAwait(false);
+        NoteStored(chest, items, LooseItems(reserved));
+        int now = Loose(reserved);
+        if (now == 0 || c.World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) > 0 && now < before)
+            return ActionResult.Success($"deposited at {chest.X},{chest.Y},{chest.Z}", before - now);
+        why.Add($"{chest.X},{chest.Y},{chest.Z} {(r.Ok || now < was ? "filled up" : Short(r.Message))}");
+        return null;
+    }
+
+    /// <summary>Every known chest is really full (or none is known): a new one, labelled in shared memory.</summary>
+    private async Task<ActionResult> DepositIntoNewChestAsync(IReadOnlySet<int> reserved, int before, List<string> why, CancellationToken ct)
+    {
         var placed = await PlaceChestAsync(ct).ConfigureAwait(false);
         string tries = why.Count == 0 ? "no known chest" : "tried " + string.Join("; ", why.Take(6));
         if (placed is not { } p) return ActionResult.Fail($"storage full: {tries}; no chest (or planks) to place a new one");
@@ -304,8 +318,8 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
         NoteStored(p, held, LooseItems(reserved));
         var label = $"cobble_storage_{p.X}_{p.Z}";
         try { _s.LabelChest?.Invoke(label, p); } catch (Exception) { /* label is best effort */ }
-        return Loose() < before
-            ? ActionResult.Success($"placed and labelled a new chest '{label}' at {p.X},{p.Y},{p.Z}", before - Loose())
+        return Loose(reserved) < before
+            ? ActionResult.Success($"placed and labelled a new chest '{label}' at {p.X},{p.Y},{p.Z}", before - Loose(reserved))
             : ActionResult.Fail($"placed a chest at {p.X},{p.Y},{p.Z} but couldn't deposit into it");
     }
 
@@ -394,14 +408,21 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
         foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1), (2, 0), (-2, 0), (0, 2), (0, -2) })
         {
             var p = new BlockPos(me.X + dx, me.Y, me.Z + dz);
-            if (w.GetBlock(p.X, p.Y, p.Z) != 0 || w.GetBlock(p.X, p.Y + 1, p.Z) != 0) continue;
-            if (!BlockShapes.HasCollision(w, p.X, p.Y - 1, p.Z)) continue;
-            if (Neighbours(p).Any(n => Blocks.IsLava(w.GetBlock(n)) || Blocks.IsWater(w.GetBlock(n)))) continue; // not inside the gen
-            if (c.IsProtected?.Invoke(p, Blocks.Chest) == true) continue;
+            if (!ChestSpot(p)) continue;
             var r = await c.PlaceBlockAsync(p.X, p.Y, p.Z, Blocks.Chest, ct).ConfigureAwait(false);
             if (r.Ok) return p;
         }
         return null;
+    }
+
+    /// <summary>Two free cells on solid ground, no fluid beside or under (not inside the gen), not protected.</summary>
+    private bool ChestSpot(BlockPos p)
+    {
+        var w = c.World;
+        if (w.GetBlock(p.X, p.Y, p.Z) != 0 || w.GetBlock(p.X, p.Y + 1, p.Z) != 0) return false;
+        if (!BlockShapes.HasCollision(w, p.X, p.Y - 1, p.Z)) return false;
+        if (Neighbours(p).Any(n => Blocks.IsLava(w.GetBlock(n)) || Blocks.IsWater(w.GetBlock(n)))) return false; // not inside the gen
+        return c.IsProtected?.Invoke(p, Blocks.Chest) != true;
     }
 
     private static IEnumerable<BlockPos> Neighbours(BlockPos p) =>
