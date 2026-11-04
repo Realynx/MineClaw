@@ -415,12 +415,30 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
 - **Stuck spots keep work away.** For 5 minutes after a pawn gets stuck, no other pawn is sent to a target within 3 blocks of the spot
   (4 up or down). Live 11-04: maid_chan_126, _118 and _105 were stuck in one hole, each sent after the work by it.
 - **Idle with work (the idle audit).** Every second the director checks each pawn in a work or anything hour that holds, wanders or
-  rests while the colony has work of a kind it does: designations, builds with cells to do, or bills that run. Such a pawn gets a
-  reason (`idle_reason` on its row): `stuck`, `back-off rest`, `work not taken yet` (an idle leg the next wake hands over),
-  `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target` or `build or bill waiting`. When there is work
-  only of kinds it doesn't do, the reason is `priority 0`. The supervisor's per-minute perf line adds
-  `idle-with-work N: <reason> <pawn-seconds>, …`. A pawn whose top work type is all leased, or waiting for a tool, takes its next
-  work type.
+  rests. The audit never searches for work itself. It reads what the pawn's own last search saw: every pick and every wake check keeps
+  that, along with what held work of its kinds back. A pawn between two jobs is not idle. An idle pawn gets a reason (`idle_reason` on
+  its row):
+  - `stuck`
+  - `work not taken yet`: its last search found work that an idle leg still holds
+  - from its designations: `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target`, or `back-off rest`
+  - `waiting: …`: what its last search found held back. Examples: `waiting: build b3: need 48 block of iron (short: 432 iron ore)`,
+    `waiting: bill Iron Ingot suspended: no iron ore …`, `waiting: Torch for build b5: no coal …`,
+    `waiting: build b2: the level below is still being built`, `waiting: build b2: its open cells are taken or backing off`,
+    `waiting: the furnace at 6,64,0 is in use`
+  - `priority 0`: there is work, but only of kinds it doesn't do
+
+  A bill whose count is met, or whose stock is there, is no work. A furnace that is still smelting is no work either. A pawn with
+  nothing else is simply idle. The colony's state carries `blocked_work`: idle pawns grouped by reason, most first. The web shows it
+  as one condition, such as "4 pawns idle: build b3: need 48 block of iron (short: 432 iron ore)". The supervisor's per-minute perf
+  line adds `idle-with-work N: <reason> <pawn-seconds>, …`, with the six biggest reasons and the rest summed. A pawn whose top work
+  type is all leased, or waiting for a tool, takes its next work type.
+- **A material that is out holds only its own cells.** When a build's open cells include a material the colony doesn't have (a mine
+  design's torches, a wall's roof stairs), the build's other cells still go in. The build turns `blocked`, with the alert said once
+  per reason, only when nothing of it can go in.
+- **Wake checks stay cheap.** A wandering pawn searches for work again when new work is announced. Otherwise it searches only when
+  something it reads has changed since its last empty search: designations, zones, builds, benches, storages, materials or leases.
+  It searches at most every 3 s, and regardless every 10 s. The tick runs one such search at most. A search from the tick sets up
+  the same per-pawn caches as a pick, such as tool plans.
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.

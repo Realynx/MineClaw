@@ -326,7 +326,12 @@ public sealed partial class StoryColony
         foreach (var bench in Benches.OrderBy(b => b.Pos.Dist(from)))
         {
             var key = "bench:" + bench.Pos;
-            if (!Open(key, p.Name, null)) continue;
+            if (!Open(key, p.Name, null))
+            {
+                if (_blockedNotes != null && bench.Bills.Any(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } br && br.WorkType == work && Wanted(b, br)))
+                    Blocked($"the {bench.Kind.Replace('_', ' ')} at {bench.Pos} is in use");
+                continue;
+            }
             // A loaded furnace that is done: collect (the bill's work type).
             if (bench.LoadedBill is { } lb && bench.ReadyAt <= Now)
             {
@@ -341,8 +346,9 @@ public sealed partial class StoryColony
             if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) continue;
             foreach (var bill in bench.Bills)
             {
-                if (bill.Paused || bill.SuspendedReason != null) continue;
+                if (bill.Paused) continue;
                 if (StoryRecipes.Get(w.Data, bill.Recipe) is not { } r || r.WorkType != work || !MayTake(bill, p, work)) continue;
+                if (bill.SuspendedReason != null) { if (bill.ForBuild == null && _blockedNotes != null && Wanted(bill, r)) Blocked($"bill {r.Label} suspended: {bill.SuspendedReason}"); continue; }
                 if (!Wanted(bill, r)) continue;
                 if (r.Station != null)
                 {
@@ -360,7 +366,7 @@ public sealed partial class StoryColony
                 var (got, missing) = Ingredients(bill, r, crafts, bench, live);
                 bool auto = bill.ForBuild != null;
                 // An auto bill whose ingredient isn't there yet waits quietly (an earlier step makes it; a raw shortfall is the build's alert).
-                if (missing != null && auto) continue;
+                if (missing != null && auto) { Blocked($"{r.Label} for build {bill.ForBuild}: {missing}"); continue; }
                 // The owner's bill leaves what the builds reserved (their items, their chains' inputs), except an input of a chain that
                 // makes what this bill makes (it does that step for the build: StoryColony.Claims.cs). What is free runs as a partial
                 // batch; the bill waits only when nothing is, and says who holds it.
@@ -399,6 +405,7 @@ public sealed partial class StoryColony
                 }
                 if (missing != null)
                 {
+                    Blocked($"bill {r.Label} suspended: {missing}");
                     bill.SuspendedReason = missing;
                     bench.Rev = Touch();
                     if (_billAlerted.GetValueOrDefault(bill.Id) != missing) { _billAlerted[bill.Id] = missing; Alert("warn", $"Bill {r.Label} suspended: {missing}"); }
