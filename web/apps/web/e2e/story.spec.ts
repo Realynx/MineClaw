@@ -767,19 +767,14 @@ const dbg = <K extends keyof WorldDebug>(page: Page, m: K, ...a: Parameters<Worl
     [m, a] as const,
   ) as Promise<ReturnType<WorldDebug[K]>>;
 
-test('pawns are drawn as their player models; a queued build shows as holograms that go once built', async ({
-  page,
-}) => {
+test('pawns are drawn as their player models; a queued build shows as holograms that go once built', async ({ page }) => {
   await signIn(page, false);
   await openStory(page);
   // The seeded colony's online pawns: player models (the viewer's bots), with the overlay's marks instead of tokens.
   await expect
-    .poll(
-      async () => (await dbg(page, 'models')).filter((b) => b.name.startsWith('maid_s1_') && b.look === 'model').length,
-      {
-        timeout: 60_000,
-      },
-    )
+    .poll(async () => (await dbg(page, 'models')).filter((b) => b.name.startsWith('maid_s1_') && b.look === 'model').length, {
+      timeout: 60_000,
+    })
     .toBeGreaterThan(0);
   expect(await dbg(page, 'botModels')).toBeGreaterThan(0);
   if (shots) await page.screenshot({ path: `${shots}/story-models.png` });
@@ -813,9 +808,7 @@ test('notifications: repeats coalesce, messages expire, Dismiss all, conditions 
   const notices = (fn: string, ...a: unknown[]) =>
     page.evaluate(
       ([f, aa]) =>
-        (window as unknown as { __storyNotices: Record<string, (...x: unknown[]) => unknown> }).__storyNotices[f]!(
-          ...aa,
-        ),
+        (window as unknown as { __storyNotices: Record<string, (...x: unknown[]) => unknown> }).__storyNotices[f]!(...aa),
       [fn, a] as const,
     );
   await page.waitForFunction(() => !!(window as unknown as { __storyNotices?: unknown }).__storyNotices);
@@ -842,23 +835,16 @@ test('notifications: repeats coalesce, messages expire, Dismiss all, conditions 
   await expect(page.getByTestId('log-unread')).toBeVisible();
   // Messages expire by themselves (a short test lifetime).
   await notices('setTtlScale', 0.05);
-  await notices('ingest', [
-    { id: 'e2e-info', at: new Date().toISOString(), level: 'info', text: 'Ann is now level 5 in mining.' },
-  ]);
+  await notices('ingest', [{ id: 'e2e-info', at: new Date().toISOString(), level: 'info', text: 'Ann is now level 5 in mining.' }]);
   await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(1);
   await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(0, { timeout: 5000 });
   // At most four show; the rest are "+N more", which opens the log.
   await notices('setTtlScale', 1);
   await notices(
     'ingest',
-    [
-      'Ann is idle',
-      'Bob is hungry',
-      'A cow wandered off',
-      'The furnace is cold',
-      'A chest is full',
-      'Rain is coming',
-    ].map((t, i) => ({ id: `e2e-k${i}`, at: new Date().toISOString(), level: 'warn', text: t })),
+    ['Ann is idle', 'Bob is hungry', 'A cow wandered off', 'The furnace is cold', 'A chest is full', 'Rain is coming'].map(
+      (t, i) => ({ id: `e2e-k${i}`, at: new Date().toISOString(), level: 'warn', text: t }),
+    ),
   );
   await expect(msgs).toHaveCount(4);
   await page.getByTestId('more-messages').click();
@@ -944,10 +930,7 @@ test('mine height: Surface designates one layer; Flatten here previews exactly w
   for (let x = 16; x <= 19; x++) for (let z = -12; z <= -9; z++) box.push([x, z]);
   const tops = await Promise.all(
     box.map(async ([x, z]) => {
-      const ids = await blockIds(
-        page,
-        Array.from({ length: 40 }, (_, i) => [x, 100 - i, z]),
-      );
+      const ids = await blockIds(page, Array.from({ length: 40 }, (_, i) => [x, 100 - i, z]));
       return 100 - ids.findIndex((id) => id !== 0 && !PLANTS.has(id));
     }),
   );

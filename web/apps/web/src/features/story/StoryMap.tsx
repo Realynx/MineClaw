@@ -346,11 +346,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   /** Where each failed designation's ring was drawn this frame, for clicks (id, the ids its cluster label stands for). */
   const failedAt = useRef<Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }>>([]);
   /** What the viewer was last given for the holograms: the state's ghosts and builds (by identity) and the placement key. */
-  const holo = useRef<{ ghosts: unknown; builds: unknown; preview: string }>({
-    ghosts: null,
-    builds: null,
-    preview: '',
-  });
+  const holo = useRef<{ ghosts: unknown; builds: unknown; preview: string }>({ ghosts: null, builds: null, preview: '' });
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
@@ -570,9 +566,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
    * when it has one, else its reported position eased toward. `look`: model (overlay marks only), token, or cut (a storey
    * above the level cut); `r`: its hit radius in pixels.
    */
-  const bodies = (
-    dt: number,
-  ): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> => {
+  const bodies = (dt: number): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> => {
     const m = mats.current;
     const st = p.current.state;
     const e = engine();
@@ -698,12 +692,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     };
     // Zones by their cells (zones/zoneDraw.ts): work zones tinted with a dashed edge (growing zones say what they sow), the
     // overlay layers apart (houses: the home-area tint, a solid edge, the name; keep-out: red stripes).
-    drawZones(
-      ctx,
-      st?.zones ?? [],
-      (x, y, z) => project(m, x, y, z),
-      cell,
-      (z, houseNo) => zoneLabel(z, houseNo, st?.plants),
+    drawZones(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell, (z, houseNo) =>
+      zoneLabel(z, houseNo, st?.plants),
     );
     // The colony's home: a house mark.
     const homeAt = props.home;
@@ -850,8 +840,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         ctx.beginPath();
         ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
         ctx.stroke();
-        if (mk.failed)
-          failedOn.push({ id: mk.d.id, cluster: model.clusterOf.get(String(mk.d.id)) ?? [mk.d.id], x: at.x, y: at.y });
+        if (mk.failed) failedOn.push({ id: mk.d.id, cluster: model.clusterOf.get(String(mk.d.id)) ?? [mk.d.id], x: at.x, y: at.y });
       }
       if (mk.d.pawn) {
         ctx.strokeStyle = pawnColor(mk.d.pawn);
@@ -1004,15 +993,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           ctx.strokeStyle = color;
           ctx.lineWidth = 2.5;
           ctx.beginPath();
-          ctx.ellipse(
-            f.x,
-            f.y,
-            Math.max(4, Math.hypot(fx.x - f.x, fx.y - f.y)),
-            Math.max(2, Math.hypot(fz.x - f.x, fz.y - f.y)),
-            0,
-            0,
-            Math.PI * 2,
-          );
+          ctx.ellipse(f.x, f.y, Math.max(4, Math.hypot(fx.x - f.x, fx.y - f.y)), Math.max(2, Math.hypot(fz.x - f.x, fz.y - f.y)), 0, 0, Math.PI * 2);
           ctx.stroke();
         }
       } else {
@@ -1313,15 +1294,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const zs = props.state?.zones ?? [];
       const into = zoneInto(tool, zs, a, d.shift);
       const wk = `${rect.join(',')}@${props.level}`;
-      const out = zonePreview(
-        zs,
-        tool,
-        rect,
-        props.level,
-        growPlantNow(),
-        into,
-        water.current.key === wk ? water.current.cells : null,
-      );
+      const wet = water.current.key === wk ? water.current.cells : null;
+      const out = zonePreview(zs, tool, rect, props.level, growPlantNow(), into, wet);
       if (out)
         drawZonePreview(ctx, out.zones, out.result.id, out.removedCells, col, props.level + 1.03, (x, y, z) =>
           project(m, x, y, z),
@@ -1492,11 +1466,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   };
 
   /** A fishing-zone drag: the still water under the rectangle (one scan in flight; the latest rectangle wins). */
-  const water = useRef<{ key: string; cells: Set<number> | null; busy: boolean }>({
-    key: '',
-    cells: null,
-    busy: false,
-  });
+  const water = useRef<{ key: string; cells: Set<number> | null; busy: boolean }>({ key: '', cells: null, busy: false });
   const rescanWater = () => {
     const d = drag.current,
       e = engine();
@@ -1515,11 +1485,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       .finally(() => {
         water.current.busy = false;
         const dd = drag.current;
-        if (
-          dd?.startCell &&
-          dd.endCell &&
-          `${cellRect(dd.startCell, dd.endCell).join(',')}@${p.current.level}` !== water.current.key
-        )
+        if (dd?.startCell && dd.endCell && `${cellRect(dd.startCell, dd.endCell).join(',')}@${p.current.level}` !== water.current.key)
           rescanWater();
       });
   };
@@ -1564,10 +1530,12 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     scan.current.busy = true;
     const job = hasHeight(tool.id)
       ? heightScan(e, tool.id, rect).then((ht) => finish(ht.cells, ht.cells.length, [], ht))
-      : e.runtime.host.scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000).then((s) => {
-          const pv = previewTargets(tool.id, s, p.current.mineFilter);
-          finish(pv.cells, pv.count, []);
-        });
+      : e.runtime.host
+          .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
+          .then((s) => {
+            const pv = previewTargets(tool.id, s, p.current.mineFilter);
+            finish(pv.cells, pv.count, []);
+          });
     void job
       .catch(() => undefined)
       .finally(() => {
@@ -2017,11 +1985,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       fps: () => engine()?.stats().fps,
       /** Each body: how it is shown (model, token, cut) and whether the viewer drew its model last frame. */
       models: () =>
-        bodies(0).map((b) => ({
-          name: b.key,
-          look: b.look,
-          model: engine()?.runtime.entities.detailOf(b.key) ?? null,
-        })),
+        bodies(0).map((b) => ({ name: b.key, look: b.look, model: engine()?.runtime.entities.detailOf(b.key) ?? null })),
       /** The viewer's player models drawn last frame. */
       botModels: () => engine()?.runtime.entities.botModels ?? 0,
       holograms: () => engine()?.hologramStats() ?? null,
