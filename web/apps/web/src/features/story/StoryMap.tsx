@@ -484,7 +484,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         c.width = w;
         c.height = h;
       }
-      // Pan: keys, then the screen edge (only while the pointer is over the map and not dragging a box).
+      // Pan: keys, then the screen edge — the edge only in full screen (in the page the pointer crosses the map's edge on its
+      // way to the nav and HUD, which panned the camera), only while the pointer is over the map and not dragging a box.
       const keys = p.current.keys.current;
       let px = 0,
         pz = 0;
@@ -495,7 +496,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         if (code === 'KeyD' || code === 'ArrowRight') px += 1;
       }
       const hv = hover.current;
-      if (hv && !drag.current && document.hasFocus()) {
+      if (hv && !drag.current && document.hasFocus() && document.fullscreenElement) {
         const [ex, ey] = edgePan(hv.at, w, h, 8);
         px += ex;
         pz += ey;

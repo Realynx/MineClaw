@@ -1683,7 +1683,7 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 ## Web: the Story Mode tab
 
 - **Map.** A top-down orthographic view (the world viewer's `top` camera) over the colony.
-  - The mouse wheel zooms around the cursor, out to 112 blocks of view height. Pan with WASD/arrows, a middle-drag or the
+  - The mouse wheel zooms around the cursor, out to 112 blocks of view height. Pan with WASD/arrows, a middle-drag or (in full screen only) the
     screen edge.
   - In the top-down and angled views the viewer draws the whole ground the picture shows (its footprint's half diagonal,
     capped at 192 blocks) whatever the draw distance or the software quality lever says, with the fog beyond it; mobs keep
