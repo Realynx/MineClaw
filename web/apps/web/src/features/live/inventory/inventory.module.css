@@ -3,8 +3,9 @@
 
 .slot {
   position: relative;
-  width: 36px;
-  height: 36px;
+  /* --slot: set by a container that must fit 9 columns in less room (the Story inspector); 36px otherwise. */
+  width: var(--slot, 36px);
+  height: var(--slot, 36px);
   border-radius: 3px;
   background: color-mix(in oklab, var(--surface-3) 80%, #000 6%);
   box-shadow:
@@ -29,8 +30,8 @@
 .icon {
   position: absolute;
   inset: 2px;
-  width: 32px;
-  height: 32px;
+  width: calc(var(--slot, 36px) - 4px);
+  height: calc(var(--slot, 36px) - 4px);
   image-rendering: pixelated;
   pointer-events: none;
   user-select: none;
