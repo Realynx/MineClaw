@@ -67,13 +67,21 @@ export function blockSheetSvg(seed: number, w = 640, h = 400, title = ''): strin
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="100%" height="100%" fill="#1d2430"/>${cubes.join('')}${label}</svg>`;
 }
 
-/** Minimal LCS line diff (mock stand-in for the bridge's ScriptDiff). */
-export function lineDiff(a: string[], b: string[]): Array<{ op: ' ' | '+' | '-'; text: string; aLine: number | null; bLine: number | null }> {
+/** The LCS lengths of every pair of suffixes of `a` and `b`. */
+function lcsTable(a: string[], b: string[]): number[][] {
   const n = a.length;
   const m = b.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--) dp[i]![j] = a[i] === b[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+  return dp;
+}
+
+/** Minimal LCS line diff (mock stand-in for the bridge's ScriptDiff). */
+export function lineDiff(a: string[], b: string[]): Array<{ op: ' ' | '+' | '-'; text: string; aLine: number | null; bLine: number | null }> {
+  const n = a.length;
+  const m = b.length;
+  const dp = lcsTable(a, b);
   const out: Array<{ op: ' ' | '+' | '-'; text: string; aLine: number | null; bLine: number | null }> = [];
   let i = 0;
   let j = 0;

@@ -312,30 +312,42 @@ export function detail(name: string, v?: number): ScriptVersionDetail | null {
   };
 }
 
+type DiffLine = ReturnType<typeof lineDiff>[number];
+
+/** The changed lines grouped into hunks with `context` lines around them (overlapping ones merged). */
+function hunksOf(lines: DiffLine[], context: number): ScriptDiff['hunks'] {
+  const hunks: ScriptDiff['hunks'] = [];
+  const changed = lines.map((l, i) => (l.op !== ' ' ? i : -1)).filter((i) => i >= 0);
+  const last = lines.length - 1;
+  let i = 0;
+  while (i < changed.length) {
+    const start = Math.max(0, changed[i]! - context);
+    let end = Math.min(last, changed[i]! + context);
+    while (i + 1 < changed.length && changed[i + 1]! - context <= end + 1) {
+      i++;
+      end = Math.min(last, changed[i]! + context);
+    }
+    hunks.push(hunkOf(lines.slice(start, end + 1)));
+    i++;
+  }
+  return hunks;
+}
+
+function hunkOf(slice: DiffLine[]): ScriptDiff['hunks'][number] {
+  return {
+    aStart: slice.find((l) => l.aLine)?.aLine ?? 0,
+    aLines: slice.filter((l) => l.op !== '+').length,
+    bStart: slice.find((l) => l.bLine)?.bLine ?? 0,
+    bLines: slice.filter((l) => l.op !== '-').length,
+    lines: slice,
+  };
+}
+
 export function diff(name: string, a: number, b: number, context = 3): ScriptDiff {
   const A = (SCRIPT_CODE[name]?.[a] ?? '').split('\n');
   const B = (SCRIPT_CODE[name]?.[b] ?? '').split('\n');
   const lines = lineDiff(A, B);
-  const hunks: ScriptDiff['hunks'] = [];
-  const changed = lines.map((l, i) => (l.op !== ' ' ? i : -1)).filter((i) => i >= 0);
-  let i = 0;
-  while (i < changed.length) {
-    const start = Math.max(0, changed[i]! - context);
-    let end = Math.min(lines.length - 1, changed[i]! + context);
-    while (i + 1 < changed.length && changed[i + 1]! - context <= end + 1) {
-      i++;
-      end = Math.min(lines.length - 1, changed[i]! + context);
-    }
-    const slice = lines.slice(start, end + 1);
-    hunks.push({
-      aStart: slice.find((l) => l.aLine)?.aLine ?? 0,
-      aLines: slice.filter((l) => l.op !== '+').length,
-      bStart: slice.find((l) => l.bLine)?.bLine ?? 0,
-      bLines: slice.filter((l) => l.op !== '-').length,
-      lines: slice,
-    });
-    i++;
-  }
+  const hunks = hunksOf(lines, context);
   const unified = [`--- ${name} v${a}`, `+++ ${name} v${b}`, ...hunks.flatMap((h) => [`@@ -${h.aStart},${h.aLines} +${h.bStart},${h.bLines} @@`, ...h.lines.map((l) => `${l.op}${l.text}`)])].join('\n');
   return {
     name,

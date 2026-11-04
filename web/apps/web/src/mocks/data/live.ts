@@ -377,23 +377,31 @@ function brainStateOf(b: MockBot, inflight: unknown): string {
   return inflight ? 'thinking' : b.script ? `awake · script ${b.script.name}` : 'awake';
 }
 
-export function botNow(b: MockBot): BotNow {
+/** The bot's current thought (its thinking alongside), cycling through its lines. */
+function thoughtOf(b: MockBot): BotNow['thought'] {
+  if (!b.thoughts.length) return null;
   const ti = sim.thoughtIdx[b.name] ?? 0;
-  const inflight = sim.inFlight[b.name];
+  return {
+    text: b.thoughts[ti % b.thoughts.length],
+    thinking: b.thinking.length ? b.thinking[ti % b.thinking.length] : null,
+    at: iso(sim.thoughtAt[b.name] ?? T0),
+  };
+}
+
+function toolOf(b: MockBot): BotNow['tool'] {
   const tool = b.tools.length ? b.tools[(sim.toolIdx[b.name] ?? 0) % b.tools.length] : undefined;
+  return tool ? { name: tool[0], argsShort: tool[1] || null, at: iso(Date.now() - 4000) } : null;
+}
+
+export function botNow(b: MockBot): BotNow {
+  const inflight = sim.inFlight[b.name];
   return {
     bot: b.name,
     at: nowIso(),
     brainState: brainStateOf(b, inflight),
     inFlight: inflight ? { purpose: inflight.purpose, model: inflight.model, since: iso(inflight.since) } : null,
-    thought: b.thoughts.length
-      ? {
-          text: b.thoughts[ti % b.thoughts.length],
-          thinking: b.thinking.length ? b.thinking[ti % b.thinking.length] : null,
-          at: iso(sim.thoughtAt[b.name] ?? T0),
-        }
-      : null,
-    tool: tool ? { name: tool[0], argsShort: tool[1] || null, at: iso(Date.now() - 4000) } : null,
+    thought: thoughtOf(b),
+    tool: toolOf(b),
     task: b.task,
     script: b.script
       ? { name: b.script.name, version: b.script.version, status: b.script.status, line: b.script.line, paused: b.script.paused }
@@ -572,21 +580,29 @@ export function overlays(dim: number): WorldOverlays {
   };
 }
 
+/** A body's script as the scripts list shows it (all null without one). */
+function scriptFields(s: MockBot['script']) {
+  if (!s) return { script: null, status: null, line: null, paused: null, version: null };
+  return { script: s.name, status: s.status, line: s.line, paused: s.paused, version: s.version };
+}
+
 export function bodyScripts(): LiveScriptsResponse {
   return {
     at: nowIso(),
     bodies: BOTS.map((b) => ({
       body: b.name,
       short: b.short,
-      script: b.script?.name ?? null,
-      status: b.script?.status ?? null,
-      line: b.script?.line ?? null,
-      paused: b.script?.paused ?? null,
-      version: b.script?.version ?? null,
+      ...scriptFields(b.script),
       role: b.kind === 'subhive' ? 'farmer' : null,
       owner: b.owner,
     })),
   };
+}
+
+/** A subhive body's farm crew (its role, crew and coordinator); none for the others. */
+function crewOf(b: MockBot) {
+  const sub = b.kind === 'subhive';
+  return { role: sub ? 'farmer' : null, crew: sub ? 'farm crew' : null, coordinator: sub ? 'maid_chan' : null };
 }
 
 export function bodyScript(key: string, withCode: boolean): BodyScriptReply {
@@ -606,9 +622,7 @@ export function bodyScript(key: string, withCode: boolean): BodyScriptReply {
       live: true,
       body: b.name,
       author: 'Opus (maid_chan)',
-      role: b.kind === 'subhive' ? 'farmer' : null,
-      crew: b.kind === 'subhive' ? 'farm crew' : null,
-      coordinator: b.kind === 'subhive' ? 'maid_chan' : null,
+      ...crewOf(b),
       at: nowIso(),
       started: isoAgo(21),
       seq: sim.tick,
@@ -676,6 +690,18 @@ export function bodyScript(key: string, withCode: boolean): BodyScriptReply {
   };
 }
 
+/** Whose brain drives the body, on which model (none for a script-only body). */
+function brainInfo(b: MockBot) {
+  if (!b.brain) return { brainKind: null, model: null, provider: null };
+  return { brainKind: b.kind === 'subhive' ? 'owner brain' : 'own brain', model: 'claude-opus-5-5', provider: 'anthropic' };
+}
+
+/** The body view's tabs: its brain and its script, as it has them. */
+function tabsOf(b: MockBot): BodyControllerInfo['tabs'] {
+  if (!b.brain) return ['script'];
+  return b.script ? ['brain', 'script'] : ['brain'];
+}
+
 export function controller(key: string): BodyControllerInfo {
   const b = findBot(key) ?? BOTS[0]!;
   return {
@@ -683,12 +709,10 @@ export function controller(key: string): BodyControllerInfo {
     kind: b.kind,
     owner: b.owner,
     brain: b.brain,
-    brainKind: b.brain ? (b.kind === 'subhive' ? 'owner brain' : 'own brain') : null,
-    model: b.brain ? 'claude-opus-5-5' : null,
-    provider: b.brain ? 'anthropic' : null,
+    ...brainInfo(b),
     hasScript: !!b.script,
     script: b.script?.name ?? null,
-    tabs: b.brain ? (b.script ? ['brain', 'script'] : ['brain']) : ['script'],
+    tabs: tabsOf(b),
     filter: b.kind === 'subhive' ? b.name : null,
     links: { context: b.brain ? `/api/brains/${b.brain}/context` : null, script: `/api/bodies/${b.name}/script`, owner: b.owner },
     note: null,
@@ -696,6 +720,24 @@ export function controller(key: string): BodyControllerInfo {
 }
 
 const LANES = ['brain', 'brain', 'reply', 'memory', 'perception', 'background', 'brain', 'compaction', 'worker', 'brain', 'author', 'brain'];
+
+/** The brain and authoring lanes run on Opus; the rest on Haiku. */
+function laneModel(lane: string) {
+  const opus = lane === 'brain' || lane === 'author';
+  return { model: opus ? 'claude-opus-5-5' : 'claude-haiku-5-5', tier: opus ? 'opus' : 'haiku' };
+}
+
+function turnPreview(lane: string, i: number): string {
+  if (lane === 'brain')
+    return pick(rng(i), ['Fox: claude, set it to day → run_command /time set day', 'kiwi: bone meal? → say "left 12 in the chest"', 'tick: generator ok · no events', 'danger: hp 5 near lava → eat, retreat']);
+  return lane === 'memory' ? 'retrieved 6 memories for "melon farm"' : `${lane} pass`;
+}
+
+/** Which body a turn was for: main's own or (every fourth) its farm hand; the other brain's its one body. */
+function turnBody(brain: string, i: number): string {
+  if (brain !== 'main') return 'maid_chan_67';
+  return i % 4 === 0 ? 'maid_chan_68' : 'maid_chan';
+}
 
 function turnSummary(brain: string, i: number): CtxTurnSummary {
   const lane = LANES[i % LANES.length]!;
@@ -709,8 +751,7 @@ function turnSummary(brain: string, i: number): CtxTurnSummary {
     end: inFlight ? null : iso(start + 3200 + i * 140),
     inFlight,
     calls: lane === 'brain' ? 2 + (i % 3) : 1,
-    model: lane === 'brain' || lane === 'author' ? 'claude-opus-5-5' : 'claude-haiku-5-5',
-    tier: lane === 'brain' || lane === 'author' ? 'opus' : 'haiku',
+    ...laneModel(lane),
     provider: 'anthropic',
     in: 24000 + i * 900,
     out: 380 + i * 40,
@@ -718,16 +759,11 @@ function turnSummary(brain: string, i: number): CtxTurnSummary {
     cacheWrite: 1200,
     cost: Number((0.012 + i * 0.002).toFixed(4)),
     latencyMs: 2800 + i * 120,
-    preview:
-      lane === 'brain'
-        ? pick(rng(i), ['Fox: claude, set it to day → run_command /time set day', 'kiwi: bone meal? → say "left 12 in the chest"', 'tick: generator ok · no events', 'danger: hp 5 near lava → eat, retreat'])
-        : lane === 'memory'
-          ? 'retrieved 6 memories for "melon farm"'
-          : `${lane} pass`,
+    preview: turnPreview(lane, i),
     tools: lane === 'brain' ? ['say', 'run_command'].slice(0, 1 + (i % 2)) : [],
     hasThinking: lane === 'brain',
     parent: lane === 'brain' ? null : 100 + i - 1,
-    body: brain === 'main' ? (i % 4 === 0 ? 'maid_chan_68' : 'maid_chan') : 'maid_chan_67',
+    body: turnBody(brain, i),
     targets: true,
     version: i + 1,
     error: i === 7 ? 'overloaded: retried once' : null,
@@ -893,6 +929,30 @@ export function memoryActivitySince(since: number, brain?: string) {
   };
 }
 
+/** Calls `fn` on a node and every ancestor (each once). */
+function forSelfAndAncestors(start: number, parents: ReadonlyMap<number, readonly number[]>, fn: (id: number) => void) {
+  const seen = new Set<number>();
+  const stack = [start];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    fn(id);
+    for (const p of parents.get(id) ?? []) stack.push(p);
+  }
+}
+
+/** One brain's access to a node, and whether that brain's context holds it (or evicted it). */
+function brainHeat(brain: string, at: number, c: InContextMemory | undefined, now: number) {
+  return {
+    brain,
+    lastAccessAt: iso(at),
+    inContext: !!c && c.positionFromEnd !== null,
+    stalenessS: c ? (now - Date.parse(c.lastSeenAt)) / 1000 : null,
+    evicted: !!c && c.positionFromEnd === null,
+  };
+}
+
 export function memoryHeat(brain: string | undefined, windowS: number, stateKey: string): MemoryHeatResponse {
   const halfLifeS = 300;
   const now = Date.now();
@@ -909,15 +969,7 @@ export function memoryHeat(brain: string | undefined, windowS: number, stateKey:
   for (const e of sim.activity) {
     const at = Date.parse(e.at);
     if (at < cutoff || (brain && e.brain !== brain) || e.raptorNodeId === null || e.raptorNodeId === undefined) continue;
-    const seen = new Set<number>();
-    const stack = [e.raptorNodeId];
-    while (stack.length) {
-      const id = stack.pop()!;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      touch(id, at, e.brain);
-      for (const p of parents.get(id) ?? []) stack.push(p);
-    }
+    forSelfAndAncestors(e.raptorNodeId, parents, (id) => touch(id, at, e.brain));
   }
   const ctx = sim.inContext.filter((c) => !brain || c.brain === brain);
   return {
@@ -932,16 +984,7 @@ export function memoryHeat(brain: string | undefined, windowS: number, stateKey:
       lastAccessAt: iso(n.last),
       accessCount: n.count,
       heat: Math.pow(0.5, (now - n.last) / 1000 / halfLifeS),
-      brains: [...n.brains.entries()].map(([b, at]) => {
-        const c = ctx.find((x) => x.brain === b && x.raptorNodeId === id);
-        return {
-          brain: b,
-          lastAccessAt: iso(at),
-          inContext: !!c && c.positionFromEnd !== null,
-          stalenessS: c ? (now - Date.parse(c.lastSeenAt)) / 1000 : null,
-          evicted: !!c && c.positionFromEnd === null,
-        };
-      }),
+      brains: [...n.brains.entries()].map(([b, at]) => brainHeat(b, at, ctx.find((x) => x.brain === b && x.raptorNodeId === id), now)),
     })),
   };
 }

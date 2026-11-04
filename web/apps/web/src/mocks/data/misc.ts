@@ -443,6 +443,18 @@ export const compaction = (dryRun: boolean): ActivityCompactionReport => ({
 });
 
 const WEB_KINDS = ['login', 'chat', 'memory_edit', 'chat', 'login_failed', 'rebuild', 'shard_export', 'backup', 'logout'] as const;
+/** The route and target a kind of audited request hits. */
+function auditCall(kind: (typeof WEB_KINDS)[number]): { route: string; target: string | null } {
+  if (kind === 'chat') return { route: 'bots.chat', target: 'maid_chan' };
+  if (kind === 'memory_edit') return { route: 'admin.memoryEdit', target: 'fact/12' };
+  return { route: `auth.${kind}`, target: null };
+}
+
+function auditSummary(kind: (typeof WEB_KINDS)[number], i: number): string {
+  if (kind === 'chat') return pick(rng(i), ['claude, set it to day', 'how is the cobble going?', 'hi maid!']);
+  return kind === 'memory_edit' ? 'update fact 12' : kind;
+}
+
 export const webAudit: WebAuditEntry[] = Array.from({ length: 140 }, (_, i) => {
   const kind = WEB_KINDS[i % WEB_KINDS.length]!;
   const user = i % 3 === 0 ? 'robin' : 'fox';
@@ -454,12 +466,11 @@ export const webAudit: WebAuditEntry[] = Array.from({ length: 140 }, (_, i) => {
     ip: user === 'fox' ? '10.1.2.21' : '10.1.2.44',
     userAgent: 'Mozilla/5.0',
     kind,
-    method: kind === 'login' || kind === 'login_failed' ? 'POST' : 'POST',
-    route: kind === 'chat' ? 'bots.chat' : kind === 'memory_edit' ? 'admin.memoryEdit' : `auth.${kind}`,
-    target: kind === 'chat' ? 'maid_chan' : kind === 'memory_edit' ? 'fact/12' : null,
+    method: 'POST',
+    ...auditCall(kind),
     ok: kind !== 'login_failed',
     status: kind === 'login_failed' ? 401 : 200,
-    summary: kind === 'chat' ? pick(rng(i), ['claude, set it to day', 'how is the cobble going?', 'hi maid!']) : kind === 'memory_edit' ? 'update fact 12' : kind,
+    summary: auditSummary(kind, i),
     requestId: `req-${i}`,
   };
 });
