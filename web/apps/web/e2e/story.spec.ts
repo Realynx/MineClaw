@@ -741,7 +741,9 @@ test('a drag is cancelled by Esc or a right-click: nothing is sent, the tool sta
   await page.keyboard.press('Escape'); // the tool
   await page.keyboard.press('c'); // chop: a designate tool again
   await dragCells(page, a, b);
+  expect(await preview(page)).not.toBeNull();
   await page.mouse.down({ button: 'right' });
+  expect(await preview(page)).toBeNull(); // cancelled on the press
   await page.mouse.up({ button: 'right' });
   await page.mouse.up();
   await expect(page.getByTestId('order-menu')).toHaveCount(0);
