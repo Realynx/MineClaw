@@ -74,7 +74,7 @@ public sealed partial class StoryColony
         if (j.Source == "escape") return true; // still stuck: help is under way (Stuck)
         bool stuck = _stuck.TryGetValue(p.Name, out var st) && st.Asked;
         bool guard = j.Source == "guard";
-        bool noWay = Unreachable(why);
+        bool noWay = Unreachable(why) || OutOfReach(why);
         bool reach = ReachOnly(why) && j.Source != "designation"; // a designation's "can't reach" is the soft rest (Failed)
         if (!stuck && !guard && !noWay && !reach) return false;
         if (j.Lease is { } lease)
@@ -91,6 +91,8 @@ public sealed partial class StoryColony
         int online = Pawns.Values.Count(o => Host.Live(o.Name).Online);
         if (by.Count < Math.Clamp(online, 1, UnreachPawns)) return true;
         _unreachBy.Remove(j.Lease);
+        // Out of reach even from a pillar for every pawn that tried: the designation waits with why (no failure, no alert).
+        if (OutOfReach(why) && ReachWait(j, why)) return true;
         return false;
     }
 

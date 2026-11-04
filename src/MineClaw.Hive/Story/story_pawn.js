@@ -15,6 +15,7 @@ function chopTree(j) {
   const held = () => wood.reduce((n, w) => n + inv(w), 0)
   const there = reach(j.at, 3)
   if (!ok(there)) return there
+  story.ready(j)
   const before = held()
   let r = chop(j.at + ' only')
   let got = held() - before
@@ -40,7 +41,7 @@ function sleepAt(j) {
 // j.stand: it stands on its target, step off first. A block still there after an ok dig gets one more go.
 function digAt(j) {
   if (j.stand) go(j.stand, 0)
-  const was = block(j.at), r = dig(j.at)
+  const was = block(j.at), r = story.dig(j.at, j)
   if (!ok(r) || was == 'air' || block(j.at) != was) return r
   wait(1)
   return block(j.at) == was ? dig(j.at) : r
@@ -57,7 +58,7 @@ function work(j) {
     case 'harvest': {
       const there = reach(a, 3)
       if (!ok(there)) return there
-      const r = dig(a)
+      const r = story.dig(a, j)
       if (ok(r) && j.replant && inv(j.replant) > 0) place(j.replant, a)
       return r
     }

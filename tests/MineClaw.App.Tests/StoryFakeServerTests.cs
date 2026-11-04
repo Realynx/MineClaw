@@ -381,6 +381,24 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(7, 64, 4)] = Blocks.Planks;                 // a built block to deconstruct
     });
 
+    /// <summary>Fox 11-04: "it should nerd-pole up to reach those blocks on its own and destroy the nerd pole on the way back down." A
+    /// 14-log tree is felled whole from a dirt pillar that is dug back down, its dirt collected again.</summary>
+    [Fact]
+    public Task A_pawn_nerd_poles_up_a_tall_tree_takes_it_all_and_leaves_no_pillar() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(1, c.Designate("add", "chop", null, [new P3(16, 64, 16)], null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => c.Designations.Count == 0, 180_000),
+            "done: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason}")) + " | " + x.Diag());
+        Assert.Equal(0, Enumerable.Range(64, 14).Count(y => srv.Blocks.GetValueOrDefault((16, y, 16)) == Blocks.Log)); // the whole trunk
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("took what it could reach"));
+        // No pillar left: no dirt standing above the ground around the trunk.
+        Assert.Empty(srv.Blocks.Where(b => b.Value == Blocks.Dirt && b.Key.Item2 >= 64 && Math.Abs(b.Key.Item1 - 16) <= 2 && Math.Abs(b.Key.Item3 - 16) <= 2));
+        Assert.True(srv.Inventory.Where(i => !i.IsEmpty && i.Id == Blocks.Dirt).Sum(i => i.Count) >= 28, "the pillar's dirt came back");
+    }, s => { EmptyHanded(s); s.Inventory[37] = new ItemStack((short)Blocks.Dirt, 32, 0); Tree(s, 16, 16, 14); });
+
     /// <summary>Live 11-04: maid_chan_114 stood for good in a hole two deep ("no path … it's 2 blocks up"). Now it digs a stair out
     /// (no blocks on it) and goes on to its job.</summary>
     [Fact]

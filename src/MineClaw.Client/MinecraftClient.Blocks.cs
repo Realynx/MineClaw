@@ -632,17 +632,23 @@ public sealed partial class MinecraftClient
     /// <summary>Scaffold block to use for bridging/pillaring: the first of <see cref="ScaffoldBlocks"/> held (never reserved items).</summary>
     private int? ScaffoldItem()
     {
-        foreach (int id in ScaffoldBlocks)
+        foreach (int id in ScaffoldIds)
             if (!ReservedItems.Contains(id) && World.Inventory.CountItem(id) > 0) return id;
         return null;
     }
 
     /// <summary>All scaffold blocks held (the placer moves on to the next kind when one runs out).</summary>
-    private int ScaffoldCount() => ScaffoldBlocks.Where(id => !ReservedItems.Contains(id)).Sum(id => World.Inventory.CountItem(id));
+    private int ScaffoldCount() => ScaffoldIds.Where(id => !ReservedItems.Contains(id)).Sum(id => World.Inventory.CountItem(id));
+
+    /// <summary><see cref="ScaffoldBlocks"/>, and dirt (before the logs) in a normal world, where it is everywhere (Story Mode pawns
+    /// climb out of pits and up to high blocks with the dirt they dig).</summary>
+    private static IReadOnlyList<int> ScaffoldIds => MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain ? ScaffoldBlocks : ScaffoldBlocksNormal;
+    private static readonly IReadOnlyList<int> ScaffoldBlocksNormal =
+        [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Dirt, Blocks.Log, Blocks.Sandstone, Blocks.StoneBricks];
 
     /// <summary>Scaffold kinds held now, for "used 5 planks, 2 log" after a build-mode goto.</summary>
     private Dictionary<int, int> ScaffoldSnapshot() =>
-        ScaffoldBlocks.ToDictionary(id => id, id => World.Inventory.CountItem(id));
+        ScaffoldIds.ToDictionary(id => id, id => World.Inventory.CountItem(id));
 
     private string ScaffoldUsed(Dictionary<int, int> before, Dictionary<int, int> after)
     {
