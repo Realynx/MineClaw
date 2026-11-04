@@ -79,59 +79,12 @@ public sealed class AdminSettingsRoutes
 
     public async Task<SupervisorReply> HandleAsync(SupervisorRequest r, CancellationToken ct)
     {
-        if (!_o.AllowAdminWrites) return Json(403, new { error = "admin writes are off (Supervisor:AllowAdminWrites)" });
-        if (string.IsNullOrEmpty(_o.Token)) return Json(403, new { error = "admin writes need Supervisor:Token" });
-        if (!TokenOk(r.TokenHeader, _o.Token)) return Json(403, new { error = "X-Supervisor-Token header required" });
-        var roles = Header(r, RolesHeader) ?? "";
-        var user = Header(r, UserHeader) ?? "";
-        if (!roles.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Contains("admin", StringComparer.OrdinalIgnoreCase) || user.Length == 0)
-            return Json(403, new { error = "admin role required" });
-        if (r.Body == SupervisorAdminRoutes.TooLarge) return Json(413, new { error = $"body over {MaxBodyBytes} bytes" });
-        var who = Clip(user, 64) + " (web)";
-
+        if (Denied(r) is { } denied) return denied;
+        var who = Clip(Header(r, UserHeader) ?? "", 64) + " (web)";
         var path = r.Path.TrimEnd('/').ToLowerInvariant();
-        var m = r.Method.ToUpperInvariant();
-        bool get = m is "GET" or "HEAD";
         try
         {
-            switch (path)
-            {
-                case "/api/admin/settings":
-                    if (get) return Json(200, _svc.View());
-                    if (m != "PUT") return NotAllowed("GET, PUT");
-                    if (_writes.Take() is { } wait) return Limited(wait);
-                    return Save(r.Body, who);
-                case "/api/admin/settings/node":
-                    return get ? Json(200, _svc.NodeView()) : NotAllowed("GET");
-                case "/api/admin/settings/audit":
-                    {
-                        if (!get) return NotAllowed("GET");
-                        int max = int.TryParse(Q(r, "max"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var mv) ? Math.Clamp(mv, 1, 500) : 100;
-                        return Json(200, new { entries = _svc.AuditTail(max) });
-                    }
-                case "/api/admin/settings/test":
-                    if (m != "POST") return NotAllowed("POST");
-                    if (_probes.Take() is { } pw) return Limited(pw);
-                    return await TestAsync(r.Body, who, ct).ConfigureAwait(false);
-                case "/api/admin/ollama/models":
-                    {
-                        if (!get) return NotAllowed("GET");
-                        if (_probes.Take() is { } ow) return Limited(ow);
-                        var endpoint = Q(r, "endpoint") is { Length: > 0 } e ? e.Trim() : _svc.Current("Agent:Llm:Ollama:Endpoint") ?? "";
-                        if (endpoint.Length == 0) return Json(200, new { endpoint, ok = false, error = "no Ollama endpoint is set", models = Array.Empty<object>() });
-                        if (LiveProviderTester.CheckEndpoint(endpoint) is { } bad) return Json(400, new { error = "endpoint " + bad });
-                        bool same = endpoint.Equals(_svc.Current("Agent:Llm:Ollama:Endpoint")?.Trim(), StringComparison.OrdinalIgnoreCase);
-                        var res = await _svc.Tester.OllamaAsync(endpoint, same ? _svc.Current("Agent:Llm:Ollama:ApiKey") : null, details: true, ct).ConfigureAwait(false);
-                        return Json(200, new { endpoint, ok = res.Ok, error = res.Error, models = res.Models.Select(x => new { name = x.Name, capabilities = x.Capabilities }) });
-                    }
-                case "/api/admin/restart/safety":
-                    return get ? Json(200, _svc.Safety.Check()) : NotAllowed("GET");
-                case "/api/admin/restart":
-                    if (m != "POST") return NotAllowed("POST");
-                    if (_writes.Take() is { } rw) return Limited(rw);
-                    return Restart(r.Body, who);
-            }
-            return Json(404, new { error = "not found" });
+            return await RouteAsync(r, path, r.Method.ToUpperInvariant(), who, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is JsonException or FormatException or KeyNotFoundException or InvalidOperationException)
         {
@@ -145,18 +98,84 @@ public sealed class AdminSettingsRoutes
         }
     }
 
+    /// <summary>The gate, in order: the flag, a configured token, the token header, the bridge's admin role and user, the body size.</summary>
+    private SupervisorReply? Denied(SupervisorRequest r)
+    {
+        if (!_o.AllowAdminWrites) return Json(403, new { error = "admin writes are off (Supervisor:AllowAdminWrites)" });
+        if (string.IsNullOrEmpty(_o.Token)) return Json(403, new { error = "admin writes need Supervisor:Token" });
+        if (!TokenOk(r.TokenHeader, _o.Token)) return Json(403, new { error = "X-Supervisor-Token header required" });
+        var roles = Header(r, RolesHeader) ?? "";
+        var user = Header(r, UserHeader) ?? "";
+        if (!roles.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Contains("admin", StringComparer.OrdinalIgnoreCase) || user.Length == 0)
+            return Json(403, new { error = "admin role required" });
+        if (r.Body == SupervisorAdminRoutes.TooLarge) return Json(413, new { error = $"body over {MaxBodyBytes} bytes" });
+        return null;
+    }
+
+    private static bool IsGet(string m) => m is "GET" or "HEAD";
+
+    /// <summary>By lower-cased path; <paramref name="m"/> is the upper-cased method. Writes and probes take their rate limit first.</summary>
+    private async Task<SupervisorReply> RouteAsync(SupervisorRequest r, string path, string m, string who, CancellationToken ct)
+    {
+        switch (path)
+        {
+            case "/api/admin/settings":
+                return SettingsRoute(r, m, who);
+            case "/api/admin/settings/node":
+                return IsGet(m) ? Json(200, _svc.NodeView()) : NotAllowed("GET");
+            case "/api/admin/settings/audit":
+                return IsGet(m) ? AuditTail(r) : NotAllowed("GET");
+            case "/api/admin/settings/test":
+                if (m != "POST") return NotAllowed("POST");
+                return _probes.Take() is { } pw ? Limited(pw) : await TestAsync(r.Body, who, ct).ConfigureAwait(false);
+            case "/api/admin/ollama/models":
+                if (!IsGet(m)) return NotAllowed("GET");
+                return _probes.Take() is { } ow ? Limited(ow) : await OllamaModelsAsync(r, ct).ConfigureAwait(false);
+            case "/api/admin/restart/safety":
+                return IsGet(m) ? Json(200, _svc.Safety.Check()) : NotAllowed("GET");
+            case "/api/admin/restart":
+                if (m != "POST") return NotAllowed("POST");
+                return _writes.Take() is { } rw ? Limited(rw) : Restart(r.Body, who);
+            default:
+                return Json(404, new { error = "not found" });
+        }
+    }
+
+    private SupervisorReply SettingsRoute(SupervisorRequest r, string m, string who)
+    {
+        if (IsGet(m)) return Json(200, _svc.View());
+        if (m != "PUT") return NotAllowed("GET, PUT");
+        if (_writes.Take() is { } wait) return Limited(wait);
+        return Save(r.Body, who);
+    }
+
+    private SupervisorReply AuditTail(SupervisorRequest r)
+    {
+        int max = int.TryParse(Q(r, "max"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var mv) ? Math.Clamp(mv, 1, 500) : 100;
+        return Json(200, new { entries = _svc.AuditTail(max) });
+    }
+
+    private const string OllamaEndpointKey = "Agent:Llm:Ollama:Endpoint";
+
+    /// <summary>Whether <paramref name="endpoint"/> is the configured Ollama endpoint (then its saved key may go with a probe).</summary>
+    private bool IsConfiguredOllama(string endpoint) => endpoint.Equals(_svc.Current(OllamaEndpointKey)?.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private async Task<SupervisorReply> OllamaModelsAsync(SupervisorRequest r, CancellationToken ct)
+    {
+        var endpoint = Q(r, "endpoint") is { Length: > 0 } e ? e.Trim() : _svc.Current(OllamaEndpointKey) ?? "";
+        if (endpoint.Length == 0) return Json(200, new { endpoint, ok = false, error = "no Ollama endpoint is set", models = Array.Empty<object>() });
+        if (LiveProviderTester.CheckEndpoint(endpoint) is { } bad) return Json(400, new { error = "endpoint " + bad });
+        var res = await _svc.Tester.OllamaAsync(endpoint, IsConfiguredOllama(endpoint) ? _svc.Current("Agent:Llm:Ollama:ApiKey") : null, details: true, ct).ConfigureAwait(false);
+        return Json(200, new { endpoint, ok = res.Ok, error = res.Error, models = res.Models.Select(x => new { name = x.Name, capabilities = x.Capabilities }) });
+    }
+
     private SupervisorReply Save(string? body, string who)
     {
         var root = Root(body);
         if (!root.TryGetProperty("changes", out var ch) || ch.ValueKind != JsonValueKind.Array) return Json(400, new { error = "changes (a list) required" });
         var reason = root.TryGetProperty("reason", out var rv) && rv.ValueKind == JsonValueKind.String ? rv.GetString()!.Trim() : "";
         if (reason.Length < 3) return Json(400, new { error = "a reason (at least 3 characters) is required", errors = new[] { new { key = "reason", message = "say why" } } });
-        var changes = new List<(string, JsonElement)>();
-        foreach (var c in ch.EnumerateArray())
-        {
-            if (c.ValueKind != JsonValueKind.Object || !c.TryGetProperty("key", out var k) || k.ValueKind != JsonValueKind.String) return Json(400, new { error = "every change needs a key" });
-            changes.Add((k.GetString()!, c.TryGetProperty("value", out var v) ? v.Clone() : default));
-        }
+        if (ChangesOf(ch) is not { } changes) return Json(400, new { error = "every change needs a key" });
         if (changes.Count > 100) return Json(400, new { error = "at most 100 changes at once" });
         var res = _svc.Save(changes, reason, who);
         if (!res.Ok)
@@ -168,41 +187,62 @@ public sealed class AdminSettingsRoutes
         return Json(200, new { applied = res.Applied, restart_required = res.RestartRequired, backup = res.Backup });
     }
 
+    /// <summary>The <c>changes</c> list as (key, value) pairs; null when one has no string key.</summary>
+    private static List<(string, JsonElement)>? ChangesOf(JsonElement ch)
+    {
+        var changes = new List<(string, JsonElement)>();
+        foreach (var c in ch.EnumerateArray())
+        {
+            if (c.ValueKind != JsonValueKind.Object || !c.TryGetProperty("key", out var k) || k.ValueKind != JsonValueKind.String) return null;
+            changes.Add((k.GetString()!, c.TryGetProperty("value", out var v) ? v.Clone() : default));
+        }
+        return changes;
+    }
+
     private static string Describe(SettingError e) => e.Key.Length > 0 ? $"{e.Key}: {e.Message}" : e.Message;
 
     private async Task<SupervisorReply> TestAsync(string? body, string who, CancellationToken ct)
     {
         var root = Root(body);
         var kind = Str(root, "kind");
-        ProviderTestResult result;
-        if (kind == "anthropic")
+        var (result, refused) = kind switch
         {
-            var key = Str(root, "api_key") is { Length: > 0 } k ? k.Trim() : _svc.Current("Agent:Llm:ApiKey");
-            if (string.IsNullOrWhiteSpace(key)) return Json(200, new { ok = false, message = "no Anthropic key is set" });
-            var model = Str(root, "model") is { Length: > 0 } mm ? mm.Trim() : "claude-haiku-5-5";
-            if (!ModelProfiles.IsCurrentGeneration(model)) return Json(400, new { error = $"test with a 5.5-generation model ({string.Join(", ", ModelProfiles.CurrentGeneration)})" });
-            var baseUrl = root.TryGetProperty("base_url", out _) ? Str(root, "base_url") : _svc.Current("Agent:Llm:BaseUrl");
-            if (!string.IsNullOrWhiteSpace(baseUrl) && LiveProviderTester.CheckEndpoint(baseUrl) is { } bu) return Json(400, new { error = "base URL " + bu });
-            result = await _svc.Tester.AnthropicAsync(key, baseUrl, model, ct).ConfigureAwait(false);
-        }
-        else if (kind == "ollama")
-        {
-            var endpoint = Str(root, "endpoint") is { Length: > 0 } e ? e.Trim() : _svc.Current("Agent:Llm:Ollama:Endpoint") ?? "";
-            if (LiveProviderTester.CheckEndpoint(endpoint) is { } bad) return Json(400, new { error = "endpoint " + bad });
-            var token = Str(root, "ollama_api_key") is { Length: > 0 } t ? t.Trim()
-                : endpoint.Equals(_svc.Current("Agent:Llm:Ollama:Endpoint")?.Trim(), StringComparison.OrdinalIgnoreCase) ? _svc.Current("Agent:Llm:Ollama:ApiKey") : null;
-            var list = await _svc.Tester.OllamaAsync(endpoint, token, details: false, ct).ConfigureAwait(false);
-            var want = Str(root, "model");
-            var names = list.Models.Select(x => x.Name).ToList();
-            string message = !list.Ok ? list.Error ?? "unreachable"
-                : want is { Length: > 0 } && !names.Any(n => OllamaCatalog.SameModel(n, want)) ? $"reachable ({names.Count} models), but '{want}' is not one of them"
-                : $"reachable: {names.Count} model{(names.Count == 1 ? "" : "s")}";
-            bool ok = list.Ok && (want is not { Length: > 0 } || names.Any(n => OllamaCatalog.SameModel(n, want)));
-            result = new ProviderTestResult(ok, message, list.LatencyMs, names);
-        }
-        else return Json(400, new { error = "kind must be anthropic or ollama" });
-        _svc.Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "test", [kind == "anthropic" ? "Agent:Llm:ApiKey" : "Agent:Llm:Ollama:Endpoint"], null, result.Ok, Clip(result.Message, 200)));
+            "anthropic" => await TestAnthropicAsync(root, ct).ConfigureAwait(false),
+            "ollama" => await TestOllamaAsync(root, ct).ConfigureAwait(false),
+            _ => (null, Json(400, new { error = "kind must be anthropic or ollama" })),
+        };
+        if (result == null) return refused!;
+        _svc.Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "test", [kind == "anthropic" ? "Agent:Llm:ApiKey" : OllamaEndpointKey], null, result.Ok, Clip(result.Message, 200)));
         return Json(200, new { ok = result.Ok, message = result.Message, latency_ms = result.LatencyMs is { } l ? Math.Round(l) : (double?)null, models = result.Models });
+    }
+
+    /// <summary>A key check (the given key, else the saved one) with a 5.5-generation model; a refusal reply when it can't run.</summary>
+    private async Task<(ProviderTestResult? Result, SupervisorReply? Refused)> TestAnthropicAsync(JsonElement root, CancellationToken ct)
+    {
+        var key = Str(root, "api_key") is { Length: > 0 } k ? k.Trim() : _svc.Current("Agent:Llm:ApiKey");
+        if (string.IsNullOrWhiteSpace(key)) return (null, Json(200, new { ok = false, message = "no Anthropic key is set" }));
+        var model = Str(root, "model") is { Length: > 0 } mm ? mm.Trim() : "claude-haiku-5-5";
+        if (!ModelProfiles.IsCurrentGeneration(model)) return (null, Json(400, new { error = $"test with a 5.5-generation model ({string.Join(", ", ModelProfiles.CurrentGeneration)})" }));
+        var baseUrl = root.TryGetProperty("base_url", out _) ? Str(root, "base_url") : _svc.Current("Agent:Llm:BaseUrl");
+        if (!string.IsNullOrWhiteSpace(baseUrl) && LiveProviderTester.CheckEndpoint(baseUrl) is { } bu) return (null, Json(400, new { error = "base URL " + bu }));
+        return (await _svc.Tester.AnthropicAsync(key, baseUrl, model, ct).ConfigureAwait(false), null);
+    }
+
+    /// <summary>The endpoint's model list (the given endpoint, else the saved one), and whether the wanted model is on it.</summary>
+    private async Task<(ProviderTestResult? Result, SupervisorReply? Refused)> TestOllamaAsync(JsonElement root, CancellationToken ct)
+    {
+        var endpoint = Str(root, "endpoint") is { Length: > 0 } e ? e.Trim() : _svc.Current(OllamaEndpointKey) ?? "";
+        if (LiveProviderTester.CheckEndpoint(endpoint) is { } bad) return (null, Json(400, new { error = "endpoint " + bad }));
+        var token = Str(root, "ollama_api_key") is { Length: > 0 } t ? t.Trim()
+            : IsConfiguredOllama(endpoint) ? _svc.Current("Agent:Llm:Ollama:ApiKey") : null;
+        var list = await _svc.Tester.OllamaAsync(endpoint, token, details: false, ct).ConfigureAwait(false);
+        var want = Str(root, "model");
+        var names = list.Models.Select(x => x.Name).ToList();
+        bool wanted = want is not { Length: > 0 } || names.Any(n => OllamaCatalog.SameModel(n, want));
+        string message = !list.Ok ? list.Error ?? "unreachable"
+            : !wanted ? $"reachable ({names.Count} models), but '{want}' is not one of them"
+            : $"reachable: {names.Count} model{(names.Count == 1 ? "" : "s")}";
+        return (new ProviderTestResult(list.Ok && wanted, message, list.LatencyMs, names), null);
     }
 
     private SupervisorReply Restart(string? body, string who)
@@ -213,17 +253,20 @@ public sealed class AdminSettingsRoutes
         bool force = root.TryGetProperty("force", out var f) && f.ValueKind == JsonValueKind.True;
         if (_svc.RequestRestart is not { } restart) return Json(409, new { error = "this process can't restart itself" });
         var safety = _svc.Safety.Check();
-        if (!safety.Safe && !force)
-        {
-            _svc.Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "restart_refused", [], Clip(reason, 300), false, Clip(string.Join("; ", safety.Reasons), 300)));
-            return Json(409, new { error = "not safe to restart now: " + string.Join("; ", safety.Reasons), safety });
-        }
+        if (!safety.Safe && !force) return RestartRefused(safety, reason, who);
         if (Interlocked.Exchange(ref _restarting, 1) == 1) return Json(409, new { error = "a restart is already under way" });
-        _svc.Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "restart", [], Clip(reason, 300), true, force && !safety.Safe ? "forced: " + Clip(string.Join("; ", safety.Reasons), 280) : null));
-        _log.LogWarning("admin settings: restart requested by {Who}{Forced}", who, force && !safety.Safe ? " (forced while unsafe)" : "");
+        bool forced = force && !safety.Safe;
+        _svc.Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "restart", [], Clip(reason, 300), true, forced ? "forced: " + Clip(string.Join("; ", safety.Reasons), 280) : null));
+        _log.LogWarning("admin settings: restart requested by {Who}{Forced}", who, forced ? " (forced while unsafe)" : "");
         var why = $"restart requested from the web by {who}";
         _ = Task.Delay(RestartDelay).ContinueWith(_ => restart(why), TaskScheduler.Default);
-        return Json(202, new { accepted = true, forced = force && !safety.Safe, safety, message = "restarting: the bot stops gracefully and systemd starts it again" });
+        return Json(202, new { accepted = true, forced, safety, message = "restarting: the bot stops gracefully and systemd starts it again" });
+    }
+
+    private SupervisorReply RestartRefused(RestartSafetyResult safety, string reason, string who)
+    {
+        _svc.Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "restart_refused", [], Clip(reason, 300), false, Clip(string.Join("; ", safety.Reasons), 300)));
+        return Json(409, new { error = "not safe to restart now: " + string.Join("; ", safety.Reasons), safety });
     }
 
     private static JsonElement Root(string? body)

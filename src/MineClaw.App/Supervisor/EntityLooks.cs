@@ -112,12 +112,15 @@ public static class EntityLooks
     {
         EntityKind.Painting => "painting",
         EntityKind.XpOrb => "xp_orb",
-        _ => NameOf(e) switch
-        {
-            "item_frame" => "item_frame", "armor_stand" => "armor_stand", "arrow" or "spectral_arrow" => "arrow", "boat" => "boat",
-            "minecart" or "storage_minecart" or "powered_minecart" => "minecart", "falling_block" or "falling_sand" or "falling_gravel" => "falling_block",
-            "primed_tnt" => "tnt", "ender_crystal" => "ender_crystal", "firework" => "firework", _ => "object",
-        },
+        _ => ObjectKinds.GetValueOrDefault(NameOf(e), "object"),
+    };
+
+    private static readonly Dictionary<string, string> ObjectKinds = new(StringComparer.Ordinal)
+    {
+        ["item_frame"] = "item_frame", ["armor_stand"] = "armor_stand", ["arrow"] = "arrow", ["spectral_arrow"] = "arrow", ["boat"] = "boat",
+        ["minecart"] = "minecart", ["storage_minecart"] = "minecart", ["powered_minecart"] = "minecart",
+        ["falling_block"] = "falling_block", ["falling_sand"] = "falling_block", ["falling_gravel"] = "falling_block",
+        ["primed_tnt"] = "tnt", ["ender_crystal"] = "ender_crystal", ["firework"] = "firework",
     };
 
     /// <summary>Equipment in wire slots (canonical 0 held, 1 feet, 2 legs, 3 chest, 4 head, 5 off hand); null when nothing is worn.
@@ -182,110 +185,133 @@ public static class EntityLooks
     public static string? Look(Entity e, DateTime? nowUtc = null)
     {
         var t = new List<string>();
-        int? m16 = e.MetaInt(EntityMeta.Mob16);
-        void Tame(int? flags)
-        {
-            if (flags is not { } f) return;
-            if ((f & 4) != 0) t.Add("tame");
-            if ((f & 1) != 0) t.Add("sitting");
-            if ((f & 2) != 0) t.Add("angry");
-        }
-        void Horse()
-        {
-            if (e.MetaInt(EntityMeta.HorseStatus) is { } s)
-            {
-                if ((s & 2) != 0) t.Add("tame");
-                if ((s & 4) != 0) t.Add("saddle");
-            }
-            if (e.MetaFlag(EntityMeta.HasChest)) t.Add("chest");
-        }
-        switch (NameOf(e))
-        {
-            case "sheep" when m16 is { } w:
-                t.Add(Dyes[w & 15]);
-                if ((w & 0x10) != 0) t.Add("sheared");
-                break;
-            case "wolf":
-                Tame(m16);
-                // COLLAR_COLOR is a dye damage (0 black..15 white), the reverse of the wool order of Dyes.
-                if ((m16 & 4) != 0 && e.MetaInt(EntityMeta.CollarColor) is { } collar && At(Dyes, 15 - (collar & 15)) is { } cn) t.Add("collar=" + cn);
-                break;
-            case "pig" when m16 == 1:
-                t.Add("saddle");
-                break;
-            case "creeper":
-                if (e.MetaFlag(EntityMeta.Mob17)) t.Add("powered");
-                if (m16 == 1 || e.MetaFlag(EntityMeta.CreeperIgnited)) t.Add("fusing");
-                break;
-            case "slime" or "magma_cube" or "lava_slime" when m16 is { } size:
-                t.Add("size=" + size);
-                break;
-            case "ghast" when m16 == 1:
-            case "blaze" when m16 == 1:
-                t.Add(NameOf(e) == "ghast" ? "attacking" : "burning");
-                break;
-            case "enderman" when e.MetaFlag(EntityMeta.Screaming):
-                t.Add("screaming");
-                break;
-            case "villager_golem" or "iron_golem" when e.RoseUntil > (nowUtc ?? DateTime.UtcNow):
-                t.Add("holding_rose"); // EntityIronGolem.holdRoseTick (Entity Status 11, 400 ticks; 34 ends it)
-                break;
-            case "horse":
-                if (e.MetaInt(EntityMeta.HorseVariant) is { } hv)
-                {
-                    if (At(HorseColors, hv & 0xFF) is { } c) t.Add(c);
-                    if (At(HorseMarkings, (hv >> 8) & 0xFF) is { } mk) t.Add(mk);
-                }
-                Horse();
-                if (At(HorseArmors, e.MetaInt(EntityMeta.HorseArmor)) is { } armor) t.Add("armor=" + armor);
-                break;
-            case "donkey" or "mule" or "skeleton_horse" or "zombie_horse":
-                Horse();
-                break;
-            case "llama":
-                if (At(LlamaColors, e.MetaInt(EntityMeta.LlamaVariant)) is { } lc) t.Add(lc);
-                Horse();
-                if (At(Dyes, e.MetaInt(EntityMeta.CarpetColor)) is { } carpet) t.Add("carpet=" + carpet);
-                break;
-            case "villager" or "zombie_villager":
-                if (At(Professions, e.MetaInt(EntityMeta.Profession)) is { } prof) t.Add("profession=" + prof);
-                if (e.MetaFlag(EntityMeta.Converting)) t.Add("converting");
-                break;
-            case "ozelot" or "ocelot":
-                if (At(OcelotTypes, e.MetaInt(EntityMeta.OcelotType)) is { } ot) t.Add(ot);
-                Tame(m16);
-                break;
-            case "rabbit":
-                if (e.MetaInt(EntityMeta.RabbitType) is 99) t.Add("caerbannog");
-                else if (At(RabbitTypes, e.MetaInt(EntityMeta.RabbitType)) is { } rt) t.Add(rt);
-                break;
-            case "parrot":
-                if (At(ParrotColors, e.MetaInt(EntityMeta.ParrotVariant)) is { } pc) t.Add(pc);
-                Tame(m16);
-                break;
-            case "shulker" when At(Dyes, e.MetaInt(EntityMeta.ShulkerColor)) is { } sc:
-                t.Add(sc);
-                break;
-            case "boat" when At(BoatWoods, e.MetaInt(EntityMeta.BoatType)) is { } wood:
-                t.Add(wood);
-                break;
-            case "storage_minecart":
-                t.Add("chest");
-                break;
-            case "powered_minecart":
-                t.Add("furnace");
-                break;
-            case "minecart" when e.TypeName != null && At(CartTypes, e.Data) is { } cart:
-                t.Add(cart);
-                break;
-            case "armor_stand" when e.MetaInt(EntityMeta.StandFlags) is { } sf:
-                if ((sf & 0x01) != 0) t.Add("small");
-                if ((sf & 0x04) != 0) t.Add("arms");
-                if ((sf & 0x08) != 0) t.Add("no_base");
-                if ((sf & 0x10) != 0) t.Add("marker");
-                break;
-        }
+        if (LookByName.TryGetValue(NameOf(e), out var add)) add(e, e.MetaInt(EntityMeta.Mob16), t, nowUtc);
         return t.Count == 0 ? null : string.Join(",", t);
+    }
+
+    /// <summary>Adds an entity's look tokens: the entity, its metadata 16 (b1.8.1 flags/sizes), the tokens, the time (golem roses).</summary>
+    private delegate void LookTokens(Entity e, int? m16, List<string> t, DateTime? nowUtc);
+
+    /// <summary>The look per kind name (the version's names and b1.8.1's alike); a kind not listed has none.</summary>
+    private static readonly Dictionary<string, LookTokens> LookByName = BuildLooks();
+
+    private static Dictionary<string, LookTokens> BuildLooks()
+    {
+        var d = new Dictionary<string, LookTokens>(StringComparer.Ordinal)
+        {
+            ["sheep"] = SheepLook,
+            ["wolf"] = WolfLook,
+            ["pig"] = (_, m16, t, _) => { if (m16 == 1) t.Add("saddle"); },
+            ["creeper"] = CreeperLook,
+            ["ghast"] = (_, m16, t, _) => { if (m16 == 1) t.Add("attacking"); },
+            ["blaze"] = (_, m16, t, _) => { if (m16 == 1) t.Add("burning"); },
+            ["enderman"] = (e, _, t, _) => { if (e.MetaFlag(EntityMeta.Screaming)) t.Add("screaming"); },
+            ["horse"] = HorseLook,
+            ["llama"] = LlamaLook,
+            ["rabbit"] = RabbitLook,
+            ["parrot"] = (e, m16, t, _) => { AddAt(t, ParrotColors, e.MetaInt(EntityMeta.ParrotVariant)); TameFlags(m16, t); },
+            ["shulker"] = (e, _, t, _) => AddAt(t, Dyes, e.MetaInt(EntityMeta.ShulkerColor)),
+            ["boat"] = (e, _, t, _) => AddAt(t, BoatWoods, e.MetaInt(EntityMeta.BoatType)),
+            ["storage_minecart"] = (_, _, t, _) => t.Add("chest"),
+            ["powered_minecart"] = (_, _, t, _) => t.Add("furnace"),
+            ["minecart"] = (e, _, t, _) => { if (e.TypeName != null) AddAt(t, CartTypes, e.Data); },
+            ["armor_stand"] = ArmorStandLook,
+        };
+        foreach (var slime in new[] { "slime", "magma_cube", "lava_slime" }) d[slime] = (_, m16, t, _) => { if (m16 is { } size) t.Add("size=" + size); };
+        foreach (var golem in new[] { "villager_golem", "iron_golem" }) d[golem] = GolemLook;
+        foreach (var horse in new[] { "donkey", "mule", "skeleton_horse", "zombie_horse" }) d[horse] = (e, _, t, _) => HorseGear(e, t);
+        foreach (var villager in new[] { "villager", "zombie_villager" }) d[villager] = VillagerLook;
+        foreach (var cat in new[] { "ozelot", "ocelot" }) d[cat] = (e, m16, t, _) => { AddAt(t, OcelotTypes, e.MetaInt(EntityMeta.OcelotType)); TameFlags(m16, t); };
+        return d;
+    }
+
+    private static void AddAt(List<string> t, string[] table, int? i)
+    {
+        if (At(table, i) is { } s) t.Add(s);
+    }
+
+    /// <summary>Tameable flags (wolf, ocelot, parrot): 4 tame, 1 sitting, 2 angry.</summary>
+    private static void TameFlags(int? flags, List<string> t)
+    {
+        if (flags is not { } f) return;
+        if ((f & 4) != 0) t.Add("tame");
+        if ((f & 1) != 0) t.Add("sitting");
+        if ((f & 2) != 0) t.Add("angry");
+    }
+
+    /// <summary>A horse-like's status (2 tame, 4 saddle) and chest.</summary>
+    private static void HorseGear(Entity e, List<string> t)
+    {
+        if (e.MetaInt(EntityMeta.HorseStatus) is { } s)
+        {
+            if ((s & 2) != 0) t.Add("tame");
+            if ((s & 4) != 0) t.Add("saddle");
+        }
+        if (e.MetaFlag(EntityMeta.HasChest)) t.Add("chest");
+    }
+
+    private static void SheepLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        if (m16 is not { } w) return;
+        t.Add(Dyes[w & 15]);
+        if ((w & 0x10) != 0) t.Add("sheared");
+    }
+
+    private static void WolfLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        TameFlags(m16, t);
+        // COLLAR_COLOR is a dye damage (0 black..15 white), the reverse of the wool order of Dyes.
+        if ((m16 & 4) != 0 && e.MetaInt(EntityMeta.CollarColor) is { } collar && At(Dyes, 15 - (collar & 15)) is { } cn) t.Add("collar=" + cn);
+    }
+
+    private static void CreeperLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        if (e.MetaFlag(EntityMeta.Mob17)) t.Add("powered");
+        if (m16 == 1 || e.MetaFlag(EntityMeta.CreeperIgnited)) t.Add("fusing");
+    }
+
+    private static void GolemLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        if (e.RoseUntil > (nowUtc ?? DateTime.UtcNow)) t.Add("holding_rose"); // EntityIronGolem.holdRoseTick (Entity Status 11, 400 ticks; 34 ends it)
+    }
+
+    private static void HorseLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        if (e.MetaInt(EntityMeta.HorseVariant) is { } hv)
+        {
+            AddAt(t, HorseColors, hv & 0xFF);
+            AddAt(t, HorseMarkings, (hv >> 8) & 0xFF);
+        }
+        HorseGear(e, t);
+        if (At(HorseArmors, e.MetaInt(EntityMeta.HorseArmor)) is { } armor) t.Add("armor=" + armor);
+    }
+
+    private static void LlamaLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        AddAt(t, LlamaColors, e.MetaInt(EntityMeta.LlamaVariant));
+        HorseGear(e, t);
+        if (At(Dyes, e.MetaInt(EntityMeta.CarpetColor)) is { } carpet) t.Add("carpet=" + carpet);
+    }
+
+    private static void VillagerLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        if (At(Professions, e.MetaInt(EntityMeta.Profession)) is { } prof) t.Add("profession=" + prof);
+        if (e.MetaFlag(EntityMeta.Converting)) t.Add("converting");
+    }
+
+    private static void RabbitLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        if (e.MetaInt(EntityMeta.RabbitType) is 99) t.Add("caerbannog");
+        else AddAt(t, RabbitTypes, e.MetaInt(EntityMeta.RabbitType));
+    }
+
+    private static void ArmorStandLook(Entity e, int? m16, List<string> t, DateTime? nowUtc)
+    {
+        if (e.MetaInt(EntityMeta.StandFlags) is not { } sf) return;
+        if ((sf & 0x01) != 0) t.Add("small");
+        if ((sf & 0x04) != 0) t.Add("arms");
+        if ((sf & 0x08) != 0) t.Add("no_base");
+        if ((sf & 0x10) != 0) t.Add("marker");
     }
 
     /// <summary>An armour stand's pose (null when no part was ever sent).</summary>
