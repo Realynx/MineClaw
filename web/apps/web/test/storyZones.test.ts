@@ -1,5 +1,6 @@
 import { cellKey, rowsOf, zoneCellSet, type StoryZone } from '@mineclaw/contracts';
 import { describe, expect, it } from 'vitest';
+import { quarryModeNow } from '@/features/story/zones/quarry';
 import { outlineOf } from '@/features/story/zones/zoneDraw';
 import {
   ERASE_ANY,
@@ -85,5 +86,16 @@ describe('zone paint preview', () => {
       [0, 0, 1],
       [1, 0, 0],
     ]);
+  });
+
+  it('a Quarry paint is a quarry by default, Ores only when picked', () => {
+    expect(quarryModeNow()).toBe('quarry');
+    expect(zoneBody(add('mine'), [0, 0, 2, 2], 63, null, undefined, quarryModeNow())).toEqual({
+      op: 'add',
+      kind: 'mine',
+      area: [0, 63, 0, 2, 63, 2],
+      mode: 'quarry',
+    });
+    expect(zoneBody(add('mine'), [0, 0, 2, 2], 63, null, undefined, 'ores')).toMatchObject({ mode: 'ores' });
   });
 });

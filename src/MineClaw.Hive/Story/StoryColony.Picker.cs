@@ -414,6 +414,7 @@ public sealed partial class StoryColony
     {
         foreach (var z in Zones.Where(z => z.Kind == zoneKind).OrderBy(z => z.Area.Center.Dist(from)))
         {
+            if (IsQuarry(z)) { if (live != null && QuarryJob(p, live, z) is { } dig) return dig; continue; } // StoryColony.Quarry.cs
             // Ores only with the pickaxe they need (carried or stored): never one dug for nothing.
             ToolPlan? Tool((P3 Pos, string? Replant, string Kind) t) => zoneKind == "mine" && live != null ? PlanTool(p, live, DigBlockAt(t.Pos)) : null;
             var t = ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos) && Tool(t) is not { Wait: not null }).OrderBy(t => t.Pos.Dist(from)).FirstOrDefault();
@@ -507,6 +508,7 @@ public sealed partial class StoryColony
             case "zone" or "crop" or "sow":
                 if (j.Source == "crop") GrowHarvested(j); // counts toward the zone's planting bills
                 _zoneScan.Remove(j.SourceId ?? "");
+                _quarryScan.Remove(j.SourceId ?? ""); // a quarry rescans at once (StoryColony.Quarry.cs)
                 _growScan.Remove(j.SourceId ?? "");
                 break;
         }

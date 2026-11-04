@@ -62,6 +62,7 @@ export function zoneBody(
   level: number,
   plant: string | null,
   into: string | number | undefined,
+  mode?: 'quarry' | 'ores',
 ): StoryZoneRequest {
   const area: StoryArea = [
     Math.min(rect[0], rect[2]),
@@ -74,7 +75,13 @@ export function zoneBody(
   if (tool.op === 'remove')
     return tool.id === ERASE_ANY ? { op: 'remove', area } : { op: 'remove', kind: tool.id as never, area };
   if (into !== undefined) return { op: 'add', area, into };
-  return { op: 'add', kind: tool.id as never, area, ...(tool.id === 'farm' && plant ? { plant } : {}) };
+  return {
+    op: 'add',
+    kind: tool.id as never,
+    area,
+    ...(tool.id === 'farm' && plant ? { plant } : {}),
+    ...(tool.id === 'mine' && mode ? { mode } : {}),
+  };
 }
 
 let seq = 0;
