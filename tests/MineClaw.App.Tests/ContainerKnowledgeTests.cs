@@ -268,6 +268,20 @@ public class ContainerKnowledgeTests
     }
 
     [Fact]
+    public void A_look_at_a_block_that_was_replaced_since_is_not_its_contents()
+    {
+        var w = World((A, Blocks.Furnace));
+        var (k, store, _, _) = Make(w);
+        store.Record(new ContainerSighting(0, A, [A], Blocks.Furnace, [S(15, 2), ItemStack.Empty, ItemStack.Empty], T0.ToUnixTimeMilliseconds(), "maid_chan"));
+        Assert.Equal("furnace", k.Get(0, A)!.Kind);
+        w.SetBlock(A.X, A.Y, A.Z, Blocks.LitFurnace, 0); // lit: still the same furnace
+        Assert.Equal("memory", k.Get(0, A)!.Source);
+        w.SetBlock(A.X, A.Y, A.Z, Blocks.Chest, 0);      // broken and a chest placed
+        var v = k.Get(0, A)!;
+        Assert.Equal(("unknown", "chest"), (v.Source, v.Kind));
+    }
+
+    [Fact]
     public void The_store_is_bounded_and_drops_the_oldest_looks()
     {
         var store = new ContainerSightings { Capacity = 100 };

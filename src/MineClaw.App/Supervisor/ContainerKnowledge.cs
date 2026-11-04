@@ -103,6 +103,7 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
         if (Looked(dim, pos, cells) is { } look) cands.Add(look);
         if (Remembered(dim, pos) is { } mem) cands.Add(mem);
         if (Ledger(dim, pos) is { } led) cands.Add(led);
+        if (id > 0) cands.RemoveAll(c => !Fits(id, c)); // the block was replaced since (a furnace where a chest was): not its contents
         var best = Choose(cands);
         if (best == null)
         {
@@ -309,6 +310,16 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
         foreach (var (id, meta, n) in items) d[(id, meta)] = d.GetValueOrDefault((id, meta)) + n;
         return d;
     }
+
+    /// <summary>The candidate describes the kind of block that stands there now (a chest look for a chest, a furnace's for a
+    /// lit or unlit furnace, any shulker colour for a shulker box).</summary>
+    private static bool Fits(int worldId, Candidate c)
+    {
+        string? now = Family(ContainerSightings.KindOf(worldId));
+        return c.BlockId > 0 ? Family(ContainerSightings.KindOf(c.BlockId)) == now : Family(c.MemKind ?? "chest") == now;
+    }
+
+    private static string? Family(string? kind) => kind is "double_chest" or "trapped_chest" ? "chest" : kind;
 
     private static string Kind(int blockId, string? memKind, int size)
     {
