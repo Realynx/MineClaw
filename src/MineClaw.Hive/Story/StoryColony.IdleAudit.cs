@@ -204,15 +204,21 @@ public sealed partial class StoryColony
         foreach (var d in Designations)
             if (d.Status is null or "open" or "waiting" && WorkOf(d.Kind) is { Length: > 0 } t) set.Add(t); // waiting: for a tool
         if (Builds.Any(b => b.Status is "active" or "queued" && b.Ghosts.Any(g => g.Job && g.State is "todo"))) set.Add(WorkTypes.Build);
-        if (World is { } w)
-            foreach (var bench in Benches)
-            {
-                if (bench.LoadedBill != null) continue; // smelting: nothing to do there until it's done
-                foreach (var bill in bench.Bills)
-                    if (!bill.Paused && bill.SuspendedReason == null && StoryRecipes.Get(w.Data, bill.Recipe) is { } rec && Wanted(bill, rec))
-                        set.Add(rec.WorkType); // a bill whose count is reached (or stock is there) is no work
-            }
+        if (World is { } w) AddBillWork(w, set);
         return set;
+    }
+
+    /// <summary>The work types of the wanted bills at benches that aren't smelting (a bill whose count is reached, or whose stock is
+    /// there, is no work).</summary>
+    private void AddBillWork(IStoryWorld w, HashSet<string> set)
+    {
+        foreach (var bench in Benches)
+        {
+            if (bench.LoadedBill != null) continue; // smelting: nothing to do there until it's done
+            foreach (var bill in bench.Bills)
+                if (!bill.Paused && bill.SuspendedReason == null && StoryRecipes.Get(w.Data, bill.Recipe) is { } rec && Wanted(bill, rec))
+                    set.Add(rec.WorkType);
+        }
     }
 
     /// <summary>

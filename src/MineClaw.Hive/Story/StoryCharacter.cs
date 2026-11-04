@@ -106,17 +106,24 @@ public static class StoryCharacter
     public static int Learn(PawnState p, string work, double xp, int hour)
     {
         if (!p.Skills.TryGetValue(work, out var s)) return 0;
+        s.Xp += xp * LearnRate(p, work, s, hour);
+        int gained = 0;
+        while (s.Level < 20 && s.Xp >= XpFor(s.Level)) { s.Xp -= XpFor(s.Level); s.Level++; gained++; }
+        if (s.Level >= 20) s.Xp = Math.Min(s.Xp, XpFor(20));
+        return gained;
+    }
+
+    /// <summary>The experience multiplier: passion ×1.5, quick study ×1.5, industrious ×1.1, green thumb (farming) and steady hands
+    /// (building) ×2, a night owl at night ×1.5.</summary>
+    private static double LearnRate(PawnState p, string work, SkillState s, int hour)
+    {
         double k = s.Passion ? 1.5 : 1;
         if (p.Traits.Contains("quick_study")) k *= 1.5;
         if (p.Traits.Contains("industrious")) k *= 1.1;
         if (work == WorkTypes.Farm && p.Traits.Contains("green_thumb")) k *= 2;
         if (work == WorkTypes.Build && p.Traits.Contains("steady_hands")) k *= 2;
         if (p.Traits.Contains("night_owl") && Night(hour)) k *= 1.5;
-        s.Xp += xp * k;
-        int gained = 0;
-        while (s.Level < 20 && s.Xp >= XpFor(s.Level)) { s.Xp -= XpFor(s.Level); s.Level++; gained++; }
-        if (s.Level >= 20) s.Xp = Math.Min(s.Xp, XpFor(20));
-        return gained;
+        return k;
     }
 
     /// <summary>hp at or below which a pawn flees or eats (survival thresholds shaped by traits).</summary>
