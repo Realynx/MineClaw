@@ -69,100 +69,149 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
     /// <summary>Per version: (version, outcome so far) for telemetry/logs.</summary>
     public Action<DesignVersion, DesignOutcome>? Evaluated { get; init; }
 
+    /// <summary>One run's state: the request, the conversation with the author, the outcome so far and the stop rules' memory.</summary>
+    private sealed class LoopRun(DesignRequest req, int max)
+    {
+        public DesignRequest Req { get; } = req;
+        public int Max { get; } = max;
+        public DesignOutcome Outcome { get; } = new();
+        public List<LlmMessage> Conv { get; } = [LlmMessage.User(BlueprintPrompts.Brief(req.Description, req.SiteText, req.Constraints, req.PriorDsl, req.Change))];
+        public string? LastFailure { get; set; }
+        /// <summary>The first version that passed with no real warnings (0 = none yet).</summary>
+        public int CleanAt { get; set; }
+
+        /// <summary>Ends the loop with this reason.</summary>
+        public bool Stop(string why)
+        {
+            Outcome.Stop = why;
+            return false;
+        }
+    }
+
     public async Task<DesignOutcome> RunAsync(DesignRequest req, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        var outcome = new DesignOutcome();
-        var conv = new List<LlmMessage> { LlmMessage.User(BlueprintPrompts.Brief(req.Description, req.SiteText, req.Constraints, req.PriorDsl, req.Change)) };
-        int max = Math.Clamp(o.MaxIterations, 1, 8);
-        string? lastFailure = null;
-        int cleanAt = 0; // first version that passed with no real warnings
-        for (int n = 1; n <= max; n++)
-        {
-            if (outcome.Usd >= o.MaxUsdPerDesign) { outcome.Stop = $"cost cap ${o.MaxUsdPerDesign:0.00}"; break; }
-            AuthorTurn turn;
-            try { turn = await author.WriteAsync(conv, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (!ct.IsCancellationRequested) { outcome.Stop = "author failed: " + ex.Message; break; }
-            outcome.AuthorUsd += turn.Usd;
-            outcome.InputTokens += turn.Usage.InputTokens + turn.Usage.CacheReadTokens + turn.Usage.CacheWriteTokens;
-            outcome.OutputTokens += turn.Usage.OutputTokens;
-            if (BlueprintPrompts.WantsImage(turn.Text))
-            {
-                var last = outcome.Versions.LastOrDefault(v => v.Picture != null)?.Picture;
-                conv.Add(LlmMessage.Assistant(string.IsNullOrWhiteSpace(turn.Text) ? "SHOW" : turn.Text.Trim()));
-                if (last != null && !outcome.ImageShown)
-                {
-                    outcome.ImageShown = true;
-                    conv.Add(LlmMessage.User(new LlmImageBlock(new LlmImage(last.Png, last.Width, last.Height, "[design preview]")),
-                        new LlmText(last.Legend + "\nNow send the whole blueprint.")));
-                }
-                else conv.Add(LlmMessage.User("No image available now. Send the whole blueprint."));
-                continue; // counts against the iterations: an image round is a round
-            }
-            var dsl = BlueprintPrompts.ExtractDsl(turn.Text);
-            conv.Add(LlmMessage.Assistant("```\n" + dsl + "\n```")); // history keeps the DSL only (prose dropped)
-            DesignVersion v;
-            if (dsl.Length == 0 || turn.CutOff && BlueprintParser.Parse(dsl).Blueprint.W == 0 && !dsl.Contains("layer", StringComparison.OrdinalIgnoreCase))
-            {
-                // Nothing to parse: the reply was cut off before the blueprint (Opus 5.5 thinks even at "off"; the budget went there).
-                var why = turn.CutOff ? $"reply cut off at the output limit ({turn.Usage.OutputTokens} tokens) before any blueprint" : "empty reply (no blueprint)";
-                v = new DesignVersion { N = n, Dsl = dsl, Structural = [new BlueprintIssue(IssueLevel.Error, "cutoff", why)] };
-                outcome.Versions.Add(v);
-                Evaluated?.Invoke(v, outcome);
-                var sig = Failure(v);
-                if (sig == lastFailure) { outcome.Stop = $"stopped: the same failure twice ({sig})"; break; }
-                lastFailure = sig;
-                if (n == max) { outcome.Stop = outcome.Best is { Passing: true } ? "iterations used (best passing kept)" : $"iterations used, no passing version ({why})"; break; }
-                conv.Add(LlmMessage.User(BlueprintPrompts.CutOffHint));
-                continue;
-            }
-            v = Evaluate(dsl, n, req);
-            if (v.Passing && critic != null && o.Critique && v.Plan != null)
-            {
-                try
-                {
-                    v.Picture ??= preview.Render(v.Plan, Site().World, Roles(), Light(), Atlas(), Time());
-                    v.Critique = await critic.CritiqueAsync(v.Picture, v.Plan, req.Description, ct).ConfigureAwait(false);
-                    outcome.PerceptionUsd += v.Critique.Usd;
-                }
-                catch (Exception ex) when (!ct.IsCancellationRequested) { v.Critique = Critique.Skip("critique failed: " + ex.Message); }
-            }
-            outcome.Versions.Add(v);
-            Evaluated?.Invoke(v, outcome);
-            if (Better(v, outcome.Best)) outcome.Best = v;
-            if (v.Passing && v.Critique is null or { Ok: true } or { Skipped: true }) { outcome.Stop = "passed"; break; }
-            // A clean pass (no real warnings) gets one look revision for the reviewer, then the best is kept: no more versions
-            // chasing taste (live #8: v1 clean but for a false positive, v2/v3 only got worse).
-            if (cleanAt > 0) { outcome.Stop = "passed (clean version kept unless the look revision beat it)"; break; }
-            if (v.Passing && v.Eval!.RealWarnings == 0) cleanAt = n;
-            // The same failure twice in a row: a third try won't differ (live 10-28: 3 × "missing size" per design, $0.10 each).
-            var signature = Failure(v);
-            if (signature != null && signature == lastFailure)
-            {
-                outcome.Stop = $"stopped: the same failure twice ({signature})";
-                break;
-            }
-            lastFailure = signature;
-            if (n == max) { outcome.Stop = outcome.Best is { Passing: true } ? "iterations used (best passing kept)" : "iterations used, no passing version"; break; }
-            var ask = v.EvalText;
-            if (v.Structural.Any(i => i.Level == IssueLevel.Error && i.Code == "size")) ask += "\n" + BlueprintPrompts.SizeHint;
-            if (turn.CutOff) ask += "\n(your reply hit the output limit: keep it shorter with layer ranges and primitives)";
-            conv.Add(LlmMessage.User(ask + "\nRevise: send the whole blueprint."));
-        }
+        var run = new LoopRun(req, Math.Clamp(o.MaxIterations, 1, 8));
+        for (int n = 1; n <= run.Max; n++)
+            if (!await RoundAsync(run, n, ct).ConfigureAwait(false)) break;
+        var outcome = run.Outcome;
         if (outcome.Stop.Length == 0) outcome.Stop = "iterations used";
-        // Every version failing with the very same check errors: the author can't fix what may be a checker false positive.
-        var failed = outcome.Versions;
-        if (failed.Count >= 2 && failed.All(x => x.Eval != null && !x.Passing)
-            && failed.Select(ErrorSet).Distinct().Count() == 1 && ErrorSet(failed[0]).Length > 0)
-        {
-            outcome.SuspectChecker = true;
-            outcome.Stop += outcome.CheckerNote;
-        }
+        FlagSuspectChecker(outcome);
         // The winner gets its picture for the players (renders are cached: usually free).
         if (outcome.Best is { Plan: { } bp } best && best.Picture == null)
             try { best.Picture = preview.Render(bp, Site().World, Roles(), Light(), Atlas(), Time()); } catch (Exception) { }
         outcome.Ms = sw.ElapsedMilliseconds;
         return outcome;
+    }
+
+    /// <summary>One author turn and its version; false = the loop stops (the reason is in the outcome).</summary>
+    private async Task<bool> RoundAsync(LoopRun run, int n, CancellationToken ct)
+    {
+        var outcome = run.Outcome;
+        if (outcome.Usd >= o.MaxUsdPerDesign) return run.Stop($"cost cap ${o.MaxUsdPerDesign:0.00}");
+        AuthorTurn turn;
+        try { turn = await author.WriteAsync(run.Conv, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (!ct.IsCancellationRequested) { return run.Stop("author failed: " + ex.Message); }
+        outcome.AuthorUsd += turn.Usd;
+        outcome.InputTokens += turn.Usage.InputTokens + turn.Usage.CacheReadTokens + turn.Usage.CacheWriteTokens;
+        outcome.OutputTokens += turn.Usage.OutputTokens;
+        if (BlueprintPrompts.WantsImage(turn.Text))
+        {
+            ShowImage(run, turn);
+            return true; // counts against the iterations: an image round is a round
+        }
+        var dsl = BlueprintPrompts.ExtractDsl(turn.Text);
+        run.Conv.Add(LlmMessage.Assistant("```\n" + dsl + "\n```")); // history keeps the DSL only (prose dropped)
+        if (NothingToParse(dsl, turn)) return CutOffRound(run, n, dsl, turn);
+        var v = Evaluate(dsl, n, run.Req);
+        await CritiqueAsync(v, run, ct).ConfigureAwait(false);
+        return AfterVersion(run, n, v, turn);
+    }
+
+    /// <summary>The author asked to SEE the preview: the last picture, once.</summary>
+    private static void ShowImage(LoopRun run, AuthorTurn turn)
+    {
+        var outcome = run.Outcome;
+        var last = outcome.Versions.LastOrDefault(v => v.Picture != null)?.Picture;
+        run.Conv.Add(LlmMessage.Assistant(string.IsNullOrWhiteSpace(turn.Text) ? "SHOW" : turn.Text.Trim()));
+        if (last != null && !outcome.ImageShown)
+        {
+            outcome.ImageShown = true;
+            run.Conv.Add(LlmMessage.User(new LlmImageBlock(new LlmImage(last.Png, last.Width, last.Height, "[design preview]")),
+                new LlmText(last.Legend + "\nNow send the whole blueprint.")));
+        }
+        else run.Conv.Add(LlmMessage.User("No image available now. Send the whole blueprint."));
+    }
+
+    /// <summary>Nothing to parse: the reply was cut off before the blueprint (Opus 5.5 thinks even at "off"; the budget went there).</summary>
+    private static bool NothingToParse(string dsl, AuthorTurn turn) =>
+        dsl.Length == 0 || turn.CutOff && BlueprintParser.Parse(dsl).Blueprint.W == 0 && !dsl.Contains("layer", StringComparison.OrdinalIgnoreCase);
+
+    private bool CutOffRound(LoopRun run, int n, string dsl, AuthorTurn turn)
+    {
+        var outcome = run.Outcome;
+        var why = turn.CutOff ? $"reply cut off at the output limit ({turn.Usage.OutputTokens} tokens) before any blueprint" : "empty reply (no blueprint)";
+        var v = new DesignVersion { N = n, Dsl = dsl, Structural = [new BlueprintIssue(IssueLevel.Error, "cutoff", why)] };
+        outcome.Versions.Add(v);
+        Evaluated?.Invoke(v, outcome);
+        var sig = Failure(v);
+        if (sig == run.LastFailure) return run.Stop($"stopped: the same failure twice ({sig})");
+        run.LastFailure = sig;
+        if (n == run.Max) return run.Stop(outcome.Best is { Passing: true } ? "iterations used (best passing kept)" : $"iterations used, no passing version ({why})");
+        run.Conv.Add(LlmMessage.User(BlueprintPrompts.CutOffHint));
+        return true;
+    }
+
+    /// <summary>The perception tier's look at a passing version's preview.</summary>
+    private async Task CritiqueAsync(DesignVersion v, LoopRun run, CancellationToken ct)
+    {
+        if (!v.Passing || critic == null || !o.Critique || v.Plan == null) return;
+        try
+        {
+            v.Picture ??= preview.Render(v.Plan, Site().World, Roles(), Light(), Atlas(), Time());
+            v.Critique = await critic.CritiqueAsync(v.Picture, v.Plan, run.Req.Description, ct).ConfigureAwait(false);
+            run.Outcome.PerceptionUsd += v.Critique.Usd;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested) { v.Critique = Critique.Skip("critique failed: " + ex.Message); }
+    }
+
+    private bool AfterVersion(LoopRun run, int n, DesignVersion v, AuthorTurn turn)
+    {
+        var outcome = run.Outcome;
+        outcome.Versions.Add(v);
+        Evaluated?.Invoke(v, outcome);
+        if (Better(v, outcome.Best)) outcome.Best = v;
+        if (v.Passing && v.Critique is null or { Ok: true } or { Skipped: true }) return run.Stop("passed");
+        // A clean pass (no real warnings) gets one look revision for the reviewer, then the best is kept: no more versions
+        // chasing taste (live #8: v1 clean but for a false positive, v2/v3 only got worse).
+        if (run.CleanAt > 0) return run.Stop("passed (clean version kept unless the look revision beat it)");
+        if (v.Passing && v.Eval!.RealWarnings == 0) run.CleanAt = n;
+        return Revise(run, n, v, turn);
+    }
+
+    private static bool Revise(LoopRun run, int n, DesignVersion v, AuthorTurn turn)
+    {
+        // The same failure twice in a row: a third try won't differ (live 10-28: 3 × "missing size" per design, $0.10 each).
+        var signature = Failure(v);
+        if (signature != null && signature == run.LastFailure) return run.Stop($"stopped: the same failure twice ({signature})");
+        run.LastFailure = signature;
+        if (n == run.Max)
+            return run.Stop(run.Outcome.Best is { Passing: true } ? "iterations used (best passing kept)" : "iterations used, no passing version");
+        var ask = v.EvalText;
+        if (v.Structural.Any(i => i.Level == IssueLevel.Error && i.Code == "size")) ask += "\n" + BlueprintPrompts.SizeHint;
+        if (turn.CutOff) ask += "\n(your reply hit the output limit: keep it shorter with layer ranges and primitives)";
+        run.Conv.Add(LlmMessage.User(ask + "\nRevise: send the whole blueprint."));
+        return true;
+    }
+
+    /// <summary>Every version failing with the very same check errors: the author can't fix what may be a checker false positive.</summary>
+    private static void FlagSuspectChecker(DesignOutcome outcome)
+    {
+        var failed = outcome.Versions;
+        if (failed.Count < 2 || !failed.All(x => x.Eval != null && !x.Passing) || failed.Select(ErrorSet).Distinct().Count() != 1 || ErrorSet(failed[0]).Length == 0)
+            return;
+        outcome.SuspectChecker = true;
+        outcome.Stop += outcome.CheckerNote;
     }
 
     /// <summary>A parse-level failure's signature (same errors = same failure), or null for versions that parsed.</summary>

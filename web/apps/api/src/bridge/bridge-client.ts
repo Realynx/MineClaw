@@ -181,6 +181,39 @@ function safeDetails(body: Record<string, unknown> | undefined): Array<{ path: s
   return out.length ? out : undefined;
 }
 
+type UpstreamBody = Record<string, unknown> | undefined;
+
+/** The reply body when it is a JSON object; undefined otherwise. */
+function objectBody(text: string): UpstreamBody {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  } catch {
+    // not JSON
+  }
+  return undefined;
+}
+
+type UpstreamMapper = (body: UpstreamBody, headers: IncomingHttpHeaders, log: Logger) => ApiHttpError;
+
+/** The api.md §1 table: bridge status → public error. */
+const UPSTREAM_ERRORS: Record<number, UpstreamMapper> = {
+  400: (body) => Errors.badRequest(safeDetails(body), safeMessage(body, 'invalid request')),
+  // The bridge rejected our signature: a config problem on our side, never the browser's.
+  401: (_body, _headers, log) => {
+    log.error({ status: 401 }, 'bridge rejected the request signature (check Bridge:Key and clocks)');
+    return Errors.upstreamError(502);
+  },
+  403: (body) => Errors.forbidden(safeMessage(body, 'forbidden')),
+  404: (body) => Errors.notFound(safeMessage(body, 'not found')),
+  409: (body) => Errors.conflict(safeMessage(body, 'conflict')),
+  413: () => Errors.tooLarge(),
+  429: (body, headers) => Errors.rateLimited(retryAfterMs(headers, body), safeMessage(body, 'slow down')),
+  501: () => Errors.upstreamError(501, 'not implemented yet'),
+  503: (body, headers) =>
+    body?.code === 'busy' ? Errors.busy(retryAfterMs(headers, body)) : Errors.upstreamUnavailable(),
+};
+
 /** Maps a non-2xx bridge reply to the public `ApiError` (api.md §1 table). */
 export function mapUpstreamError(
   status: number,
@@ -188,39 +221,11 @@ export function mapUpstreamError(
   text: string,
   log: Logger,
 ): ApiHttpError {
-  let body: Record<string, unknown> | undefined;
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
-  } catch {
-    body = undefined;
-  }
-  const code = typeof body?.code === 'string' ? body.code : undefined;
-  switch (status) {
-    case 400:
-      return Errors.badRequest(safeDetails(body), safeMessage(body, 'invalid request'));
-    case 401:
-      // The bridge rejected our signature: a config problem on our side, never the browser's.
-      log.error({ status }, 'bridge rejected the request signature (check Bridge:Key and clocks)');
-      return Errors.upstreamError(502);
-    case 403:
-      return Errors.forbidden(safeMessage(body, 'forbidden'));
-    case 404:
-      return Errors.notFound(safeMessage(body, 'not found'));
-    case 409:
-      return Errors.conflict(safeMessage(body, 'conflict'));
-    case 413:
-      return Errors.tooLarge();
-    case 429:
-      return Errors.rateLimited(retryAfterMs(headers, body), safeMessage(body, 'slow down'));
-    case 501:
-      return Errors.upstreamError(501, 'not implemented yet');
-    case 503:
-      return code === 'busy' ? Errors.busy(retryAfterMs(headers, body)) : Errors.upstreamUnavailable();
-    default:
-      if (status >= 400 && status < 500)
-        return new ApiHttpError(status, { error: safeMessage(body, 'request failed'), code: 'bad_request' });
-      log.warn({ status }, 'bridge error');
-      return Errors.upstreamError(502);
-  }
+  const body = objectBody(text);
+  const mapped = UPSTREAM_ERRORS[status];
+  if (mapped) return mapped(body, headers, log);
+  if (status >= 400 && status < 500)
+    return new ApiHttpError(status, { error: safeMessage(body, 'request failed'), code: 'bad_request' });
+  log.warn({ status }, 'bridge error');
+  return Errors.upstreamError(502);
 }

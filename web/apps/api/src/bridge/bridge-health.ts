@@ -16,20 +16,25 @@ export interface BridgeHealthState {
 
 const CACHE_MS = 5000;
 
-function botState(body: unknown): 'up' | 'down' | 'unknown' {
+type BotState = 'up' | 'down' | 'unknown';
+
+const upDown = (ok: boolean): BotState => (ok ? 'up' : 'down');
+
+/** One health field: 'up' / 'down', a boolean, or an object with a boolean `ok` (or `up`); null when it says nothing. */
+function fieldState(v: unknown): BotState | null {
+  if (v === 'up' || v === 'down') return v;
+  if (typeof v === 'boolean') return upDown(v);
+  if (!v || typeof v !== 'object') return null;
+  const ok = (v as Record<string, unknown>).ok ?? (v as Record<string, unknown>).up;
+  return typeof ok === 'boolean' ? upDown(ok) : null;
+}
+
+function botState(body: unknown): BotState {
   if (!body || typeof body !== 'object') return 'unknown';
   const b = body as Record<string, unknown>;
-  for (const key of ['supervisor', 'bot']) {
-    const v = b[key];
-    if (v === 'up' || v === 'down') return v;
-    if (typeof v === 'boolean') return v ? 'up' : 'down';
-    if (v && typeof v === 'object') {
-      const ok = (v as Record<string, unknown>).ok ?? (v as Record<string, unknown>).up;
-      if (typeof ok === 'boolean') return ok ? 'up' : 'down';
-    }
-  }
-  if (typeof b.supervisor_ok === 'boolean') return b.supervisor_ok ? 'up' : 'down';
-  return 'unknown';
+  const state = fieldState(b.supervisor) ?? fieldState(b.bot);
+  if (state) return state;
+  return typeof b.supervisor_ok === 'boolean' ? upDown(b.supervisor_ok) : 'unknown';
 }
 
 export class BridgeHealth {

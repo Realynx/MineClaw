@@ -28,7 +28,7 @@ public sealed record DesignBlock(int Id, int Meta, string Name, string Spec, str
 /// that drop items, leaves that decay, ice, cobwebs, huge mushrooms). Builders still build only <see cref="BuildBlocks"/> blocks:
 /// the rest of a design is reported as unsupported cells, never placed wrong.
 /// </summary>
-public sealed class DesignPalette
+public sealed partial class DesignPalette
 {
     public const string Building = "Building", Decoration = "Decoration", Colored = "Colored", Nature = "Nature", Redstone = "Redstone",
         Transport = "Transport", Misc = "Misc";
@@ -69,19 +69,7 @@ public sealed class DesignPalette
             if (!_byId.TryGetValue(e.Id, out var l)) _byId[e.Id] = l = [];
             l.Add(e);
         }
-        // Exact spellings of an entry: its spec, its name, "<word>_<base>" (red_wool), the item model name, the aliases.
-        foreach (var e in entries)
-        {
-            Key(_exact, e.Spec, e);
-            Key(_exact, e.Name, e);
-            if (e.Word != null)
-            {
-                Key(_exact, e.Word + "_" + e.Base, e);
-                foreach (var w in WordAliases(e.Word)) { Key(_exact, w + "_" + e.Base, e); Key(_exact, e.Base + "_" + w, e); }
-            }
-            if (e.Icon != null && !e.Icon.StartsWith("item:", StringComparison.Ordinal)) Key(_exact, e.Icon, e);
-            foreach (var a in Aliases(version, e)) Key(_exact, a, e);
-        }
+        foreach (var e in entries) AddExactKeys(version, e);
         // Base names → the id's first entry (variant words and modifiers follow after ':').
         foreach (var (id, list) in _byId)
         {
@@ -91,6 +79,20 @@ public sealed class DesignPalette
         }
         foreach (var (alias, id) in BaseAliases)
             if (_byId.ContainsKey(id)) BaseKey(alias, id);
+    }
+
+    /// <summary>Exact spellings of an entry: its spec, its name, "&lt;word&gt;_&lt;base&gt;" (red_wool), the item model name, the aliases.</summary>
+    private void AddExactKeys(string version, DesignBlock e)
+    {
+        Key(_exact, e.Spec, e);
+        Key(_exact, e.Name, e);
+        if (e.Word != null)
+        {
+            Key(_exact, e.Word + "_" + e.Base, e);
+            foreach (var w in WordAliases(e.Word)) { Key(_exact, w + "_" + e.Base, e); Key(_exact, e.Base + "_" + w, e); }
+        }
+        if (e.Icon != null && !e.Icon.StartsWith("item:", StringComparison.Ordinal)) Key(_exact, e.Icon, e);
+        foreach (var a in Aliases(version, e)) Key(_exact, a, e);
     }
 
     private static void Key<T>(Dictionary<string, T> d, string s, T v) => d.TryAdd(N(s), v);
@@ -156,52 +158,6 @@ public sealed class DesignPalette
         return Valid(id, meta) ? null : $"{l[0].Name} meta {meta} isn't one of its states in {Version}";
     }
 
-    public bool Valid(int id, int meta)
-    {
-        if (meta is < 0 or > 15 || !_byId.TryGetValue(id, out var l)) return false;
-        bool modern = Version == DesignVersions.Release;
-        bool Variant(int mask) => l.Any(e => (e.Meta & mask) == (meta & mask));
-        return DesignFacing.FamilyOf(id) switch
-        {
-            DesignFamily.None => l.Any(e => e.Meta == meta),
-            DesignFamily.Stairs => meta <= (modern ? 7 : 3),
-            DesignFamily.Slab => Variant(7) && (modern || meta < 8),
-            DesignFamily.Log => Variant(3) && (modern || meta < 4),
-            DesignFamily.Leaves => Variant(3),
-            DesignFamily.Pillar => meta is 0 or 4 or 8,
-            DesignFamily.Quartz => meta <= 4,
-            DesignFamily.Door => true,
-            DesignFamily.Tall => (meta & 8) != 0 || l.Any(e => e.Meta == meta),
-            DesignFamily.Bed => (meta & 4) == 0,
-            DesignFamily.Torch => meta is >= 1 and <= 5,
-            DesignFamily.Wall => meta is >= 2 and <= 5,
-            DesignFamily.Front => meta is 0 or (>= 2 and <= 5),
-            DesignFamily.Facing6 => meta <= 5 && (modern || id != 23 || meta >= 2), // a b1.8.1 dispenser faces sideways only
-            DesignFamily.Hopper => meta is 0 or (>= 2 and <= 5),
-            DesignFamily.Horizontal => meta <= id switch { 86 or 91 or (>= 235 and <= 250) => 3, 145 or 127 => 11, _ => 15 },
-            DesignFamily.Gate => meta <= 7,
-            DesignFamily.Trapdoor => meta <= (modern ? 15 : 7),
-            DesignFamily.Button => modern ? (meta & 7) <= 5 : (meta & 7) is >= 1 and <= 4,
-            DesignFamily.Lever => modern || (meta & 7) is >= 1 and <= 6,
-            DesignFamily.Rail => meta <= 9,
-            DesignFamily.PoweredRail => (meta & 7) <= 5,
-            DesignFamily.Rotation16 or DesignFamily.Vine => true,
-            DesignFamily.Skull => meta is >= 1 and <= 5,
-            DesignFamily.Age => meta <= MaxAge(id),
-            _ => false,
-        };
-    }
-
-    private static int MaxAge(int id) => id switch
-    {
-        55 or 81 or 83 or 147 or 148 or 151 or 178 => 15,
-        59 or 60 or 78 or 104 or 105 or 117 or 141 or 142 => 7,
-        92 => 6,
-        200 => 5,
-        115 or 118 or 207 => 3,
-        _ => 1,
-    };
-
     // ------------------------------------------------------------------ names → states
 
     /// <summary>
@@ -221,44 +177,73 @@ public sealed class DesignPalette
         if (s.StartsWith("minecraft:", StringComparison.Ordinal)) s = s[10..];
         if (s.Length == 0) { why = "a block name is required"; return false; }
         var parts = s.Split([':', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-        var head = parts[0];
         var args = parts.Skip(1).ToList();
-        DesignBlock? entry = null;
-        int id, meta;
-        // "wool:red" / "log:spruce" as one spelling, then the head alone ("red_wool", "oak_door"), then a base name + variant word.
-        if (args.Count > 0 && _exact.TryGetValue(N(head + "_" + args[0]), out var e2) && !IsModifier(args[0])) { entry = e2; args.RemoveAt(0); }
-        else if (_exact.TryGetValue(N(head), out var e1)) entry = e1;
-        if (entry != null) { id = entry.Id; meta = entry.Meta; }
-        else if (_base.TryGetValue(N(head), out id) || NameLookup(head) is { } looked && (id = looked.Id) > 0)
-        {
-            var list = _byId[id];
-            meta = list[0].Meta;
-            if (NameLookup(head) is { Meta: >= 0 } hit && hit.Id == id && list.FirstOrDefault(x => x.Meta == hit.Meta) is { } byDamage) meta = byDamage.Meta;
-            if (args.Count > 0 && !IsModifier(args[0]) && !int.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out _))
-            {
-                var w = N(args[0]);
-                var hitWord = list.FirstOrDefault(x => x.Word != null && (N(x.Word) == w || WordAliases(x.Word).Any(a => N(a) == w)));
-                if (hitWord == null)
-                {
-                    var words = list.Where(x => x.Word != null).Select(x => x.Word!).Distinct().ToList();
-                    why = words.Count > 0 ? $"'{args[0]}' isn't a variant of {list[0].Base} in {Version} ({string.Join(", ", words.Take(16))})"
-                        : $"'{args[0]}' isn't a facing, variant or meta for {list[0].Base}";
-                    return false;
-                }
-                meta = hitWord.Meta;
-                args.RemoveAt(0);
-            }
-        }
-        else
-        {
-            why = Unknown(spec ?? "");
-            return false;
-        }
-        foreach (var a in args)
-            if (Modify(id, meta, a, out var m2, out var bad)) meta = m2;
-            else { why = bad; return false; }
+        if (!TryHead(parts[0], args, spec ?? "", out int id, out int meta, out why)) return false;
+        if (!ApplyModifiers(id, ref meta, args, out why)) return false;
         if (Refusal(id, meta) is { } r) { why = r; return false; }
         state = (id, meta);
+        return true;
+    }
+
+    /// <summary>The block a spelling's head names (taking a variant word off <paramref name="args"/> when it is one).</summary>
+    private bool TryHead(string head, List<string> args, string spec, out int id, out int meta, out string? why)
+    {
+        why = null;
+        // "wool:red" / "log:spruce" as one spelling, then the head alone ("red_wool", "oak_door"), then a base name + variant word.
+        if (ExactEntry(head, args) is { } entry)
+        {
+            (id, meta) = (entry.Id, entry.Meta);
+            return true;
+        }
+        if (TryBaseId(head, out id)) return TryVariant(head, id, args, out meta, out why);
+        meta = 0;
+        why = Unknown(spec);
+        return false;
+    }
+
+    private DesignBlock? ExactEntry(string head, List<string> args)
+    {
+        if (args.Count > 0 && _exact.TryGetValue(N(head + "_" + args[0]), out var e2) && !IsModifier(args[0]))
+        {
+            args.RemoveAt(0);
+            return e2;
+        }
+        return _exact.GetValueOrDefault(N(head));
+    }
+
+    private bool TryBaseId(string head, out int id) => _base.TryGetValue(N(head), out id) || NameLookup(head) is { } looked && (id = looked.Id) > 0;
+
+    /// <summary>A base name's state: its first entry, the item damage it was named with, then a variant word after ':'.</summary>
+    private bool TryVariant(string head, int id, List<string> args, out int meta, out string? why)
+    {
+        why = null;
+        var list = _byId[id];
+        meta = list[0].Meta;
+        if (NameLookup(head) is { Meta: >= 0 } hit && hit.Id == id && list.FirstOrDefault(x => x.Meta == hit.Meta) is { } byDamage) meta = byDamage.Meta;
+        if (args.Count == 0 || IsModifier(args[0]) || int.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out _)) return true;
+        var w = N(args[0]);
+        var hitWord = list.FirstOrDefault(x => x.Word != null && (N(x.Word) == w || WordAliases(x.Word).Any(a => N(a) == w)));
+        if (hitWord == null) { why = NotAVariant(list, args[0]); return false; }
+        meta = hitWord.Meta;
+        args.RemoveAt(0);
+        return true;
+    }
+
+    private string NotAVariant(List<DesignBlock> list, string word)
+    {
+        var words = list.Where(x => x.Word != null).Select(x => x.Word!).Distinct().ToList();
+        return words.Count > 0 ? $"'{word}' isn't a variant of {list[0].Base} in {Version} ({string.Join(", ", words.Take(16))})"
+            : $"'{word}' isn't a facing, variant or meta for {list[0].Base}";
+    }
+
+    private bool ApplyModifiers(int id, ref int meta, List<string> args, out string? why)
+    {
+        why = null;
+        foreach (var a in args)
+        {
+            if (!Modify(id, meta, a, out var m2, out why)) return false;
+            meta = m2;
+        }
         return true;
     }
 
@@ -272,8 +257,7 @@ public sealed class DesignPalette
         {
             if (_data.ItemByNameWithDamage(head) is { } it)
             {
-                int bid = it.Item.Id switch { 324 or 427 or 428 or 429 or 430 or 431 => DoorBlock(it.Item.Id), 330 => 71, 355 => 26, 323 => 63, 331 => 55, 338 => 83, 354 => 92,
-                    356 => 93, 404 => 149, 379 => 117, 380 => 118, 390 => 140, 397 => 144, 425 => 176, 287 => 132, 295 => 59, var x => x };
+                int bid = BlockOfItem(it.Item.Id);
                 if (_byId.ContainsKey(bid)) return (bid, bid == it.Item.Id ? it.Damage : -1);
             }
             if (_data.BlockByName(head) is { } b && _byId.ContainsKey(b.Id)) return (b.Id, -1);
@@ -282,131 +266,14 @@ public sealed class DesignPalette
         return null;
     }
 
-    private static int DoorBlock(int item) => item switch { 427 => 193, 428 => 194, 429 => 195, 430 => 196, 431 => 197, _ => 64 };
-
-    private static bool IsModifier(string a) =>
-        Dirs.Parse(a) != null || a.Contains('=') || a is "up" or "down" or "top" or "upper" or "bottom" or "lower" or "upside_down" or "open" or "x" or "y" or "z"
-            or "floor" or "ground" or "standing" or "ceiling" or "closed";
-
-    /// <summary>One modifier applied to a state ("north", "wall=west", "top", "open", "x", "5").</summary>
-    private bool Modify(int id, int meta, string a, out int result, out string? why)
+    /// <summary>Items that place a different block id (doors, signs, beds, redstone, repeaters, cauldrons…).</summary>
+    private static readonly Dictionary<int, int> ItemBlocks = new()
     {
-        result = meta;
-        why = null;
-        var fam = DesignFacing.FamilyOf(id);
-        var name = _byId[id][0].Base;
-        bool modern = Version == DesignVersions.Release;
-        if (int.TryParse(a, NumberStyles.None, CultureInfo.InvariantCulture, out var n)) { result = n; return true; }
-        int eq = a.IndexOf('=');
-        if (eq > 0)
-        {
-            var key = a[..eq];
-            if (key is not ("wall" or "on" or "against" or "support" or "facing" or "front" or "dir")) { why = $"'{a}': use wall=<side> or a direction"; return false; }
-            a = a[(eq + 1)..];
-            if (key is "facing" or "front" or "dir" && Dirs.Parse(a) is { } fd) return Facing(fd, out result, out why);
-            if (Dirs.Parse(a) is not { } wd) { why = $"'{a}': the side is north, east, south or west (where the supporting block is)"; return false; }
-            return OnWall(wd, out result, out why);
-        }
-        if (Dirs.Parse(a) is { } d)
-            return fam is DesignFamily.Torch or DesignFamily.Wall or DesignFamily.Skull or DesignFamily.Button or DesignFamily.Lever or DesignFamily.Vine
-                ? OnWall(d, out result, out why) : Facing(d, out result, out why);
-        switch (a)
-        {
-            case "up" or "floor" or "ground" or "standing":
-                result = fam switch
-                {
-                    DesignFamily.Facing6 when a == "up" => 1,
-                    DesignFamily.Torch => 5,
-                    DesignFamily.Skull => 1,
-                    DesignFamily.Button when modern => (meta & 8) | 5,
-                    DesignFamily.Lever => (meta & 8) | 5,
-                    DesignFamily.Log when modern && a == "up" => meta & 3,
-                    DesignFamily.Pillar when a == "up" => 0,
-                    _ => -1,
-                };
-                break;
-            case "down" or "ceiling":
-                result = fam switch
-                {
-                    DesignFamily.Facing6 or DesignFamily.Hopper when a == "down" => 0,
-                    DesignFamily.Button when modern => meta & 8,
-                    DesignFamily.Lever when modern => meta & 8,
-                    _ => -1,
-                };
-                break;
-            case "top" or "upper" or "upside_down":
-                result = fam switch
-                {
-                    DesignFamily.Slab when modern => (meta & 7) | 8,
-                    DesignFamily.Stairs when modern => meta | 4,
-                    DesignFamily.Trapdoor when modern => meta | 8,
-                    _ => -1,
-                };
-                break;
-            case "bottom" or "lower":
-                result = fam switch { DesignFamily.Slab => meta & 7, DesignFamily.Stairs => meta & 3, DesignFamily.Trapdoor => meta & 7, _ => -1 };
-                break;
-            case "open" or "closed":
-                result = fam is DesignFamily.Door or DesignFamily.Gate or DesignFamily.Trapdoor ? (a == "open" ? meta | 4 : meta & ~4) : -1;
-                break;
-            case "x" or "y" or "z":
-                result = fam switch
-                {
-                    DesignFamily.Log when modern => (meta & 3) | (a == "x" ? 4 : a == "z" ? 8 : 0),
-                    DesignFamily.Pillar => a == "x" ? 4 : a == "z" ? 8 : 0,
-                    DesignFamily.Quartz when meta >= 2 => a == "x" ? 3 : a == "z" ? 4 : 2,
-                    DesignFamily.Rail or DesignFamily.PoweredRail when a != "y" => (meta & 8) | (a == "x" ? 1 : 0),
-                    _ => -1,
-                };
-                break;
-            default:
-                why = $"'{a}' isn't a facing, variant or meta for {name}";
-                return false;
-        }
-        if (result < 0) { why = $"'{a}' doesn't apply to {name} in {Version}"; result = meta; return false; }
-        return true;
+        [324] = 64, [427] = 193, [428] = 194, [429] = 195, [430] = 196, [431] = 197, [330] = 71, [355] = 26, [323] = 63, [331] = 55,
+        [338] = 83, [354] = 92, [356] = 93, [404] = 149, [379] = 117, [380] = 118, [390] = 140, [397] = 144, [425] = 176, [287] = 132, [295] = 59,
+    };
 
-        bool Facing(Dir dir, out int r, out string? w)
-        {
-            w = null;
-            r = fam switch
-            {
-                DesignFamily.Door => DesignFacing.WithFacing(id, meta & 7, dir.Opposite()),
-                DesignFamily.Stairs or DesignFamily.Bed or DesignFamily.Horizontal or DesignFamily.Gate or DesignFamily.Trapdoor
-                    => DesignFacing.WithFacing(id, meta, dir),
-                DesignFamily.Front or DesignFamily.Facing6 or DesignFamily.Hopper => (fam == DesignFamily.Facing6 ? meta & 8 : 0) | (Array.IndexOf(FrontDirs, dir) + 2),
-                DesignFamily.Rotation16 => dir switch { Dir.South => 0, Dir.West => 4, Dir.North => 8, _ => 12 },
-                DesignFamily.Rail or DesignFamily.PoweredRail => (meta & 8) | (dir is Dir.East or Dir.West ? 1 : 0),
-                DesignFamily.Log when modern => (meta & 3) | (dir is Dir.East or Dir.West ? 4 : 8),
-                DesignFamily.Pillar => dir is Dir.East or Dir.West ? 4 : 8,
-                DesignFamily.Quartz when meta >= 2 => dir is Dir.East or Dir.West ? 3 : 4,
-                _ => -1,
-            };
-            if (r < 0) { w = $"{name} has no facing"; r = meta; return false; }
-            return true;
-        }
-
-        bool OnWall(Dir wall, out int r, out string? w)
-        {
-            w = null;
-            r = fam switch
-            {
-                DesignFamily.Torch => Array.IndexOf(TorchWalls, wall) + 1,
-                DesignFamily.Wall or DesignFamily.Skull => Array.IndexOf(FrontDirs, wall.Opposite()) + 2,
-                DesignFamily.Button or DesignFamily.Lever => (meta & 8) | (Array.IndexOf(ButtonFaces, wall.Opposite()) + 1),
-                DesignFamily.Vine => wall switch { Dir.South => 1, Dir.West => 2, Dir.North => 4, _ => 8 },
-                DesignFamily.Horizontal when id == 131 => Array.IndexOf(SWNE, wall.Opposite()),
-                _ => -1,
-            };
-            if (r < 0) { w = $"{name} doesn't hang on a wall (use a direction)"; r = meta; return false; }
-            return true;
-        }
-    }
-
-    private static readonly Dir[] SWNE = [Dir.South, Dir.West, Dir.North, Dir.East];
-    private static readonly Dir[] FrontDirs = [Dir.North, Dir.South, Dir.West, Dir.East];
-    private static readonly Dir[] TorchWalls = [Dir.West, Dir.East, Dir.North, Dir.South];
-    private static readonly Dir[] ButtonFaces = [Dir.East, Dir.West, Dir.South, Dir.North];
+    private static int BlockOfItem(int item) => ItemBlocks.GetValueOrDefault(item, item);
 
     /// <summary>"unknown 1.12.2 block 'redwol'; did you mean red_wool (wool:red), …?"</summary>
     public string Unknown(string spec)
@@ -459,24 +326,33 @@ public sealed class DesignPalette
         if (words.Length == 0) return Entries.Take(max).ToList();
         var scored = new List<(double Score, int Index, DesignBlock E)>();
         for (int i = 0; i < Entries.Count; i++)
-        {
-            var e = Entries[i];
-            var own = (e.Name + " " + e.Spec.Replace(':', ' ').Replace('_', ' ')).ToLowerInvariant();
-            var hay = own.Replace(" ", ""); // inside a word: the name and spec only ("red" is not in "Colored")
-            var parts = (own + " " + e.Category.ToLowerInvariant()).Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            double score = 0;
-            bool all = true;
-            foreach (var w in words)
-            {
-                if (w == e.Id.ToString(CultureInfo.InvariantCulture) || w == $"{e.Id}:{e.Meta}") score += 3;
-                else if (parts.Any(p => p == w)) score += 2;
-                else if (parts.Any(p => p.StartsWith(w, StringComparison.Ordinal))) score += 1;
-                else if (w.Length >= 3 && hay.Contains(w, StringComparison.Ordinal)) score += 0.5;
-                else { all = false; break; }
-            }
-            if (all) scored.Add((score, i, e));
-        }
+            if (FindScore(Entries[i], words) is { } score) scored.Add((score, i, Entries[i]));
         return scored.OrderByDescending(s => s.Score).ThenBy(s => s.Index).Take(max).Select(s => s.E).ToList();
+    }
+
+    /// <summary>How well an entry matches every query word (null = a word doesn't match).</summary>
+    private static double? FindScore(DesignBlock e, string[] words)
+    {
+        var own = (e.Name + " " + e.Spec.Replace(':', ' ').Replace('_', ' ')).ToLowerInvariant();
+        var hay = own.Replace(" ", ""); // inside a word: the name and spec only ("red" is not in "Colored")
+        var parts = (own + " " + e.Category.ToLowerInvariant()).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        double score = 0;
+        foreach (var w in words)
+        {
+            double s = WordScore(e, w, parts, hay);
+            if (s == 0) return null;
+            score += s;
+        }
+        return score;
+    }
+
+    /// <summary>The id or id:meta 3, a whole word 2, a word's prefix 1, inside the name or spec 0.5, else 0.</summary>
+    private static double WordScore(DesignBlock e, string w, string[] parts, string hay)
+    {
+        if (w == e.Id.ToString(CultureInfo.InvariantCulture) || w == $"{e.Id}:{e.Meta}") return 3;
+        if (parts.Any(p => p == w)) return 2;
+        if (parts.Any(p => p.StartsWith(w, StringComparison.Ordinal))) return 1;
+        return w.Length >= 3 && hay.Contains(w, StringComparison.Ordinal) ? 0.5 : 0;
     }
 
     /// <summary>
@@ -522,25 +398,26 @@ public sealed class DesignPalette
     private static readonly string[] Colors = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "silver", "cyan", "purple", "blue", "brown", "green", "red", "black"];
     private static readonly string[] Wood6 = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak"];
 
-    private static IEnumerable<string> WordAliases(string word) => word switch
+    private static readonly Dictionary<string, string[]> WordAliasTable = new(StringComparer.Ordinal)
     {
-        "silver" => ["light_gray", "light_grey", "lightgray"],
-        "gray" => ["grey"],
-        "dark_oak" => ["big_oak", "darkoak"],
-        "light_blue" => ["lightblue"],
-        "houstonia" => ["azure_bluet", "bluet"],
-        "syringa" => ["lilac"],
-        "paeonia" => ["peony"],
-        "double_rose" => ["rose_bush"],
-        "double_grass" => ["tall_grass", "double_tallgrass"],
-        "double_fern" => ["large_fern"],
-        "plain" => ["normal", "default"],
-        "stone_brick" => ["stonebrick", "stone_bricks"],
-        "cobblestone" => ["cobble"],
-        "brick" => ["bricks"],
-        "wood" => ["wooden", "oak", "planks"],
-        _ => [],
+        ["silver"] = ["light_gray", "light_grey", "lightgray"],
+        ["gray"] = ["grey"],
+        ["dark_oak"] = ["big_oak", "darkoak"],
+        ["light_blue"] = ["lightblue"],
+        ["houstonia"] = ["azure_bluet", "bluet"],
+        ["syringa"] = ["lilac"],
+        ["paeonia"] = ["peony"],
+        ["double_rose"] = ["rose_bush"],
+        ["double_grass"] = ["tall_grass", "double_tallgrass"],
+        ["double_fern"] = ["large_fern"],
+        ["plain"] = ["normal", "default"],
+        ["stone_brick"] = ["stonebrick", "stone_bricks"],
+        ["cobblestone"] = ["cobble"],
+        ["brick"] = ["bricks"],
+        ["wood"] = ["wooden", "oak", "planks"],
     };
+
+    private static IEnumerable<string> WordAliases(string word) => WordAliasTable.GetValueOrDefault(word, []);
 
     /// <summary>Base spellings across both versions (the other version's registry name, common words).</summary>
     private static readonly (string Alias, int Id)[] BaseAliases =
@@ -564,35 +441,72 @@ public sealed class DesignPalette
     /// <summary>Extra exact spellings of an entry (both versions' names for it).</summary>
     private static IEnumerable<string> Aliases(string version, DesignBlock e)
     {
-        switch (e.Id)
-        {
-            case 162 when e.Word != null: yield return "log:" + e.Word; yield return e.Word + "_log"; yield return e.Word + "_wood"; break;
-            case 17 when e.Word != null: yield return e.Word + "_log"; yield return e.Word + "_wood"; break;
-            case 126 when e.Word != null:
-                yield return "slab:" + e.Word; yield return e.Word + "_slab";
-                if (e.Word == "oak") { yield return "slab:wood"; yield return "wood_slab"; yield return "wooden_slab"; }
-                break;
-            case 161 when e.Word != null: yield return "leaves:" + e.Word; yield return e.Word + "_leaves"; break;
-            case 18 when e.Word != null: yield return e.Word + "_leaves"; break;
-            case 44 when e.Word != null: yield return "slab:" + e.Word; yield return e.Word + "_slab"; break;
-            case 98 when e.Word != null: yield return "stone_bricks:" + e.Word; yield return "stonebrick:" + e.Word; yield return e.Word + "_stone_bricks"; break;
-            case 5 when e.Word != null: yield return e.Word + "_planks"; yield return e.Word + "_wood_planks"; break;
-            case 6 when e.Word != null: yield return e.Word + "_sapling"; break;
-            case 160: yield return "stained_pane:" + e.Word; yield return e.Word + "_glass_pane"; break;
-            case 159: yield return "terracotta:" + e.Word; yield return e.Word + "_terracotta"; yield return "stained_clay:" + e.Word; break;
-            case 95: yield return e.Word + "_glass"; break;
-            case 1 when e.Word != null: yield return e.Word!; break;
-            case 3 when e.Word != null: yield return e.Word!; break;
-            case 38 when e.Word != null: yield return e.Word!; break;
-            case 175 when e.Word != null: yield return e.Word!; foreach (var w in WordAliases(e.Word)) yield return w; break;
-            case 24 or 179 when e.Word is "chiseled" or "smooth": yield return e.Word + "_" + e.Base; break;
-            case 12 when e.Word == "red": yield return "red_sand"; break;
-            case 31 when e.Word == "grass": yield return "tall_grass"; yield return "short_grass"; break;
-            case 31 when e.Word == "fern": yield return "fern"; break;
-            case 43 when e.Meta == 8: yield return "smooth_stone"; break;
-            case 99 when e.Meta == 15: yield return "mushroom_stem"; break;
-        }
+        foreach (var a in WordForms(e)) yield return a;
+        foreach (var a in FixedAliases(e)) yield return a;
+        foreach (var a in DerivedAliases(e)) yield return a;
         if (version == DesignVersions.Beta && e.Id == 44 && e.Meta == 2) { yield return "wooden_slab"; yield return "oak_slab"; yield return "wood_slab"; }
+    }
+
+    /// <summary>Spellings around a variant word ("{w}"), for an entry that has one.</summary>
+    private static readonly Dictionary<int, string[]> WordFormsById = new()
+    {
+        [162] = ["log:{w}", "{w}_log", "{w}_wood"],
+        [17] = ["{w}_log", "{w}_wood"],
+        [126] = ["slab:{w}", "{w}_slab"],
+        [161] = ["leaves:{w}", "{w}_leaves"],
+        [18] = ["{w}_leaves"],
+        [44] = ["slab:{w}", "{w}_slab"],
+        [98] = ["stone_bricks:{w}", "stonebrick:{w}", "{w}_stone_bricks"],
+        [5] = ["{w}_planks", "{w}_wood_planks"],
+        [6] = ["{w}_sapling"],
+        [1] = ["{w}"],
+        [3] = ["{w}"],
+        [38] = ["{w}"],
+        [175] = ["{w}"],
+    };
+
+    /// <summary>Spellings around the variant word even without one (the word then reads as "").</summary>
+    private static readonly Dictionary<int, string[]> AnyWordFormsById = new()
+    {
+        [160] = ["stained_pane:{w}", "{w}_glass_pane"],
+        [159] = ["terracotta:{w}", "{w}_terracotta", "stained_clay:{w}"],
+        [95] = ["{w}_glass"],
+    };
+
+    private static IEnumerable<string> WordForms(DesignBlock e)
+    {
+        var forms = e.Word != null && WordFormsById.TryGetValue(e.Id, out var f) ? f : AnyWordFormsById.GetValueOrDefault(e.Id, []);
+        var w = e.Word ?? "";
+        return forms.Select(x => x.Replace("{w}", w, StringComparison.Ordinal));
+    }
+
+    /// <summary>Other names of one variant (by id + word) or one state (by id + meta).</summary>
+    private static readonly Dictionary<(int Id, string Word), string[]> AliasesByWord = new()
+    {
+        [(126, "oak")] = ["slab:wood", "wood_slab", "wooden_slab"],
+        [(12, "red")] = ["red_sand"],
+        [(31, "grass")] = ["tall_grass", "short_grass"],
+        [(31, "fern")] = ["fern"],
+    };
+
+    private static readonly Dictionary<(int Id, int Meta), string[]> AliasesByMeta = new()
+    {
+        [(43, 8)] = ["smooth_stone"],
+        [(99, 15)] = ["mushroom_stem"],
+    };
+
+    private static IEnumerable<string> FixedAliases(DesignBlock e)
+    {
+        var byWord = e.Word != null && AliasesByWord.TryGetValue((e.Id, e.Word), out var w) ? w : [];
+        return byWord.Concat(AliasesByMeta.GetValueOrDefault((e.Id, e.Meta), []));
+    }
+
+    /// <summary>A double plant's other names ("lilac"), "chiseled_sandstone" / "smooth_red_sandstone".</summary>
+    private static IEnumerable<string> DerivedAliases(DesignBlock e)
+    {
+        if (e.Id == 175 && e.Word != null) return WordAliases(e.Word);
+        if (e.Id is 24 or 179 && e.Word is "chiseled" or "smooth") return [e.Word + "_" + e.Base];
+        return [];
     }
 
     private static string Title(string w) => w switch

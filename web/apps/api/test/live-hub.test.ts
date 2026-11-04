@@ -144,6 +144,74 @@ describe('filters', () => {
     });
   });
 
+  it('bots limit feed lines; dim limits entities; frames without a rule pass through', () => {
+    const feed = { lines: [{ bot: 'maid_chan' }, { bot: 'other' }], last: 3 };
+    const main = filterOf({ bots: 'main' });
+    expect(filterPayload(main, 'feed', feed, aliases)).toEqual({ lines: [{ bot: 'maid_chan' }], last: 3 });
+    const all = { lines: [{ bot: 'maid_chan' }], last: 4 };
+    expect(filterPayload(main, 'feed', all, aliases)).toBe(all);
+    expect(filterPayload(filterOf({ bots: 'x' }), 'feed', feed, aliases)).toBeNull();
+    expect(filterPayload(main, 'feed', { last: 1 }, aliases)).toBeNull();
+    expect(filterPayload(filterOf({}), 'feed', feed, aliases)).toBe(feed);
+    expect(filterPayload(filterOf({}), 'memoryActivity', feed, aliases)).toBe(feed);
+    expect(filterPayload(filterOf({ brain: 'b' }), 'memoryActivity', { last: 1 }, aliases)).toEqual({
+      last: 1,
+      events: [],
+      inContext: [],
+    });
+
+    const ents = {
+      entities: [
+        { dim: 0, id: 1 },
+        { dim: -1, id: 2 },
+      ],
+      removed: [
+        [0, 5],
+        [-1, 6],
+      ],
+      full: false,
+    };
+    expect(filterPayload(filterOf({ dim: -1 }), 'entities', ents, aliases)).toEqual({
+      entities: [{ dim: -1, id: 2 }],
+      removed: [[-1, 6]],
+      full: false,
+    });
+    expect(filterPayload(filterOf({ dim: 0 }), 'entities', { removed: 'x' }, aliases)).toEqual({
+      entities: [],
+      removed: 'x',
+    });
+    expect(filterPayload(filterOf({}), 'entities', ents, aliases)).toBe(ents);
+    expect(filterPayload(filterOf({ dim: 0 }), 'event', ents, aliases)).toBe(ents);
+    expect(filterPayload(filterOf({ dim: 0, bots: 'x' }), 'bots', ents, aliases)).toBe(ents);
+  });
+
+  it('dim on blocks: no columns pass through, an empty non-full frame is dropped, a full one kept', () => {
+    const f = filterOf({ dim: 0 });
+    const noCols = { rev: 1, blocks: [] };
+    expect(filterPayload(f, 'blocks', noCols, aliases)).toBe(noCols);
+    expect(filterPayload(f, 'blocks', null, aliases)).toBeNull();
+    const other = { rev: 2, columns: [{ dim: -1 }] };
+    expect(filterPayload(f, 'blocks', other, aliases)).toBeNull();
+    expect(filterPayload(f, 'blocks', { ...other, full: true }, aliases)).toEqual({ rev: 2, columns: [], full: true });
+    expect(filterPayload(f, 'blocks', { columns: [{ cx: 1 }], blocks: [] }, aliases)).toEqual({
+      columns: [{ cx: 1 }],
+      blocks: [],
+    });
+    const unfiltered = { columns: [{ dim: -1 }] };
+    expect(filterPayload(filterOf({}), 'blocks', unfiltered, aliases)).toBe(unfiltered);
+  });
+
+  it('filterOf trims, lower-cases and drops status from the topics', () => {
+    expect(filterOf(undefined)).toEqual({ topics: null, bots: null, brain: undefined, dim: undefined });
+    expect(filterOf({ topics: ' feed , status,now', bots: ' Main ,, X ', brain: '', dim: 0 })).toEqual({
+      topics: new Set(['feed', 'now']),
+      bots: new Set(['main', 'x']),
+      brain: undefined,
+      dim: 0,
+    });
+    expect(filterOf({ bots: 'a,*' }).bots).toBeNull();
+  });
+
   it('dim limits blocks frames (frame dim or column dims)', () => {
     const f = filterOf({ dim: -1 });
     expect(filterPayload(f, 'blocks', { dim: 0, blocks: [[1, 2, 3, 4, 0]] }, aliases)).toBeNull();

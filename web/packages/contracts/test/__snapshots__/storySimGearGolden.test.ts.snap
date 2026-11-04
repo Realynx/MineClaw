@@ -1,0 +1,54 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the mock gear op: a golden run > arm, armour, tools, pickup and return over a stocked colony (pins gearOp) 1`] = `
+[
+  [
+    "arm",
+    "0a015f89d159fcf2",
+  ],
+  [
+    "arm again",
+    "284833da55a6521d",
+  ],
+  [
+    "armor",
+    "f1477e146cad7406",
+  ],
+  [
+    "tools",
+    "20e33765c64e9e4e",
+  ],
+  [
+    "pickup",
+    "daebdbda6206c20e",
+  ],
+  [
+    "pickup any meta",
+    "bb4c354c8c445805",
+  ],
+  [
+    "pickup gear",
+    "de389ef310bf568a",
+  ],
+  [
+    "pickup none",
+    "e1a76ba7da352e6f",
+  ],
+  [
+    "return",
+    "a81f97e10c39739c",
+  ],
+  [
+    "return empty",
+    "95ebed99f4a1e7f3",
+  ],
+  [
+    "armor after",
+    "a4be8abfded8fa0b",
+  ],
+  [
+    "nonsense",
+    "a9f4075fdb46ab87",
+  ],
+]
+`;

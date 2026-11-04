@@ -7,9 +7,9 @@
  * preview). The overlay redraws in one animation-frame loop that also pans (keys, screen edge) and keeps it ≥ 40 fps on
  * software WebGL: no blur, no DOM per pawn, a few hundred canvas primitives.
  */
-import type { PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
+import type { EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { getViewerQuality } from '@mineclaw/world-viewer/settings';
-import { designationCells, targetPos, type StoryColonyState } from '@mineclaw/contracts';
+import { designationCells, type StoryColonyState } from '@mineclaw/contracts';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
@@ -24,6 +24,7 @@ import {
   rayAt,
   rayPlaneY,
   rectOf,
+  inRect,
   snapCells,
   standFeet,
   unitsPerPx,
@@ -35,12 +36,20 @@ import {
   type ViewMats,
 } from './math';
 import { anchorLift, bodyLook, ghostDigs, hologramCells, type BodyLook } from './bodyLook';
-import { chestBadge, drawChestBadge, useContainerBadges } from './chestBadges';
-import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type PlacedLabel } from './failedLabels';
+import { useContainerBadges } from './chestBadges';
+import { placeLabels, type FailedCluster, type PlacedLabel } from './failedLabels';
+import { designationModel, failedModel, k3, MapPainter, type FailedRing, type MapBody } from './mapDraw';
+import {
+  columnSpans,
+  designationInRect,
+  drawBuildHover,
+  drawDesignHover,
+  drawToolDrag,
+  type ScanResult,
+} from './mapDragDraw';
 import type { WorldClock } from './clock';
 import { type Selection } from './model';
 import {
-  buildItem,
   buildItems,
   DragGate,
   entitiesIn,
@@ -58,10 +67,8 @@ import {
   preview as buildPreview,
   previewTargets,
   scanIds,
-  toolArea,
   toolYRange,
   DESIGNATE_TOOLS,
-  zoneColor,
   type BuildOpts,
   type BuildToolId,
   type DesignateId,
@@ -69,13 +76,11 @@ import {
   type Target,
   failedCells,
   stalledIn,
-  type FailedCell,
 } from './tools';
-import { COLORS, glyph, pawnColor } from './visuals';
-import { growPlantNow } from './GrowingZones';
-import { drawZonePreview, drawZones, zoneLabel } from './zones/zoneDraw';
-import { previewLabel, waterColumns, zoneInto, zonePreview } from './zones/zonePaint';
-import { drawQuarries, drawQuarryPreview, quarryModeNow } from './zones/quarry';
+import { COLORS, pawnColor } from './visuals';
+import { drawZones, zoneLabel } from './zones/zoneDraw';
+import { waterColumns } from './zones/zonePaint';
+import { drawQuarries } from './zones/quarry';
 
 export type MapTool =
   | { kind: 'select' }
@@ -185,121 +190,6 @@ function settleSpot(e: WorldViewerEngine, player: string | null | undefined): V3
     : undefined;
   return me ? at(me.x, me.y, me.z) : null;
 }
-const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
-
-/** A map mark (its glyph on a dark disc) drawn once into a small canvas and stamped with drawImage after that: a few hundred
- * marks a frame cost a blit each instead of a path fill with save/restore (the Story perf profile's top item). */
-const sprites = new Map<string, HTMLCanvasElement | null>();
-function markSprite(id: string, color: string, size: number): HTMLCanvasElement | null {
-  const key = `${id}|${color}|${size}`;
-  const hit = sprites.get(key);
-  if (hit !== undefined) return hit;
-  let c: HTMLCanvasElement | null = null;
-  const g = glyph(id);
-  if (typeof document !== 'undefined') {
-    const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-    const full = size + 6;
-    c = document.createElement('canvas');
-    c.width = Math.ceil(full * dpr);
-    c.height = Math.ceil(full * dpr);
-    const x = c.getContext('2d');
-    if (!x) c = null;
-    else {
-      x.scale(dpr, dpr);
-      x.translate(3, 3);
-      x.fillStyle = 'rgba(12,14,18,0.72)';
-      x.beginPath();
-      x.arc(size / 2, size / 2, size / 2 + 2, 0, Math.PI * 2);
-      x.fill();
-      if (g) {
-        x.scale(size / 16, size / 16);
-        x.fillStyle = color;
-        x.strokeStyle = color;
-        x.lineWidth = 1.4;
-        x.fill(g, 'evenodd');
-        if (id === 'hunt') x.stroke(g);
-      }
-    }
-  }
-  if (sprites.size > 256) sprites.clear();
-  sprites.set(key, c);
-  return c;
-}
-
-/** One designation as the map draws it: its mark's cell (a tree's top log), colour, ring, owner. */
-interface DesMark {
-  d: StoryColonyState['designations'][number];
-  cell: V3;
-  col: string;
-  ring: string | null;
-  failed: boolean;
-}
-
-/** The designations' marks and the failed ones' clusters, worked out once per state (not per frame). */
-interface DesModel {
-  marks: DesMark[];
-  failed: FailedMark[];
-  clusters: FailedCluster[];
-  clusterOf: Map<string, Array<string | number>>;
-}
-
-const desModels = new WeakMap<object, DesModel>();
-
-/** The failed build cells of a ghost list (blocked, or with a failure's reason), worked out once per list; by column for hovers. */
-const failedModels = new WeakMap<object, { cells: FailedCell[]; byColumn: Map<string, FailedCell> }>();
-function failedModel(blocks: NonNullable<StoryColonyState['ghosts']>['blocks']) {
-  const hit = failedModels.get(blocks);
-  if (hit) return hit;
-  const cells = failedCells(blocks);
-  const byColumn = new Map<string, FailedCell>();
-  for (const f of cells) if (!byColumn.has(`${f.cell[0]},${f.cell[2]}`)) byColumn.set(`${f.cell[0]},${f.cell[2]}`, f);
-  const m = { cells, byColumn };
-  failedModels.set(blocks, m);
-  return m;
-}
-function designationModel(list: StoryColonyState['designations']): DesModel {
-  const hit = desModels.get(list);
-  if (hit) return hit;
-  const marks: DesMark[] = [];
-  const failed: FailedMark[] = [];
-  for (const d of list) {
-    const all = designationCells(d);
-    const cells = d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
-    const isFailed = d.status === 'failed';
-    const ring = isFailed ? COLORS.danger : (d.fails ?? 0) > 0 ? '#ffb35c' : null;
-    for (const b of cells) {
-      const cell: V3 = [b[0], b[1], b[2]];
-      marks.push({ d, cell, col: COLORS.designation[d.kind] ?? '#ffffff', ring, failed: isFailed });
-      if (isFailed) failed.push({ id: d.id, kind: d.kind, reason: d.reason ?? '', cell });
-      else if (d.wait) failed.push({ id: d.id, kind: d.kind, reason: d.wait, cell, tone: 'wait' });
-    }
-  }
-  const clusters = clusterFailed(failed);
-  const clusterOf = new Map<string, Array<string | number>>();
-  for (const cl of clusters) for (const id of cl.ids) clusterOf.set(String(id), cl.ids);
-  const m = { marks, failed, clusters, clusterOf };
-  desModels.set(list, m);
-  return m;
-}
-
-/** One column of a height-mode preview: x, z, its highest and lowest designated y, how many cells. */
-type ColumnSpan = [number, number, number, number, number];
-
-/** Groups a height drag's cells by column (once per scan, not per frame). */
-function columnSpans(cells: readonly V3[]): ColumnSpan[] {
-  const by = new Map<string, ColumnSpan>();
-  for (const [x, y, z] of cells) {
-    const k = `${x},${z}`;
-    const c = by.get(k);
-    if (!c) by.set(k, [x, z, y, y, 1]);
-    else {
-      c[2] = Math.max(c[2], y);
-      c[3] = Math.min(c[3], y);
-      c[4]++;
-    }
-  }
-  return [...by.values()];
-}
 
 /** The pointer-event `buttons` bit of a `button` (0 left → 1, 1 middle → 4, 2 right → 2). */
 const buttonBit = (b: number) => (b === 0 ? 1 : b === 1 ? 4 : b === 2 ? 2 : 1 << b);
@@ -336,7 +226,212 @@ interface DragState {
   moved: boolean;
 }
 
-export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function StoryMap(props, ref) {
+/** The pointer over the map: its point, the level cell under it, the face against the hovered block (angled view). */
+interface Hover {
+  at: Pt;
+  cell: V3 | null;
+  face: V3 | null;
+  pickAt: number;
+}
+
+/** What the viewer was last given for the holograms: the state's ghosts and builds (by identity) and the placement key. */
+interface HoloSync {
+  ghosts: unknown;
+  builds: unknown;
+  preview: string;
+}
+
+/** The frame loop's centre report: when it last ran, the column it reported, the page's callback it reported to. */
+interface CentreReport {
+  at: number;
+  key: string;
+  cb: StoryMapProps['onCentre'];
+}
+
+/** Pan keys and their direction (x, z). */
+const PAN_KEYS = new Map<string, readonly [number, number]>([
+  ['KeyW', [0, -1]],
+  ['ArrowUp', [0, -1]],
+  ['KeyS', [0, 1]],
+  ['ArrowDown', [0, 1]],
+  ['KeyA', [-1, 0]],
+  ['ArrowLeft', [-1, 0]],
+  ['KeyD', [1, 0]],
+  ['ArrowRight', [1, 0]],
+]);
+
+/** The pan direction of the keys held, into `out` (no allocation per frame). */
+function keyPan(keys: Iterable<string> | null | undefined, out: { x: number; z: number }): void {
+  out.x = 0;
+  out.z = 0;
+  for (const code of keys ?? []) {
+    const d = PAN_KEYS.get(code);
+    if (!d) continue;
+    out.x += d[0];
+    out.z += d[1];
+  }
+}
+
+/** Where a body is shown: the viewer's live model when it has one, else eased from where it was shown toward its reported
+ * position (a jump of 12 blocks or more is taken at once). */
+function easedPos(
+  live: { dim: number; x: number; y: number; z: number } | null | undefined,
+  prev: V3 | undefined,
+  pos: readonly number[],
+  k: number,
+): V3 {
+  if (live && live.dim === 0) return [live.x, live.y, live.z];
+  const [x, y, z] = pos as [number, number, number];
+  if (prev && Math.hypot(prev[0] - x, prev[2] - z) < 12)
+    return [prev[0] + (x - prev[0]) * k, prev[1] + (y - prev[1]) * k, prev[2] + (z - prev[2]) * k];
+  return [x, y, z];
+}
+
+/** A body's hit radius in px: a model's covers its height, a token's is fixed. */
+function hitRadius(m: ViewMats | null, look: BodyLook, at: Pt | null, pos: V3, ppb: number): number {
+  if (look !== 'model' || !m || !at) return 18;
+  const head = project(m, pos[0], pos[1] + 1.9, pos[2]);
+  return Math.max(14, head ? Math.abs(head.y - at.y) + 6 : 0, ppb * 0.6);
+}
+
+/** Is the body (if any) farther from the point than `d` px (or not on screen)? */
+function fartherThan(hit: MapBody | null, pt: Pt, d: number): boolean {
+  return !hit?.at || Math.hypot(hit.at.x - pt.x, hit.at.y - pt.y) > d;
+}
+
+/** The selection after a click on a body: Ctrl toggles it, Shift adds it, a plain click selects only it. */
+function clickedBodies(sel: string[], key: string, mods: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): string[] {
+  const has = sel.includes(key);
+  if (mods.ctrlKey || mods.metaKey) return has ? sel.filter((n) => n !== key) : [...sel, key];
+  if (mods.shiftKey) return has ? sel : [...sel, key];
+  return [key];
+}
+
+/** Standing heights per column at one level (`x,z` -> feet y, null = nowhere to stand), and whether a read is in flight. */
+interface StandCache {
+  level: number;
+  cols: Map<string, number | null>;
+  busy: boolean;
+}
+
+/** The columns around each formation slot whose standing height the cache lacks (each once). */
+function missingColumns(raw: readonly P2[], cols: ReadonlyMap<string, number | null>): Array<[number, number]> {
+  const missing: Array<[number, number]> = [];
+  const seen = new Set<string>();
+  for (const s of raw)
+    for (let dx = -SNAP_R; dx <= SNAP_R; dx++)
+      for (let dz = -SNAP_R; dz <= SNAP_R; dz++) {
+        const x = Math.floor(s.x) + dx,
+          z = Math.floor(s.z) + dz,
+          k = `${x},${z}`;
+        if (!cols.has(k) && !seen.has(k)) {
+          seen.add(k);
+          missing.push([x, z]);
+        }
+      }
+  return missing;
+}
+
+/** Builds that stay on the drag start's layer in the angled view. */
+const FLAT_BUILDS: ReadonlySet<string> = new Set(['wall', 'floor', 'roof', 'fence']);
+
+/** A designate scan's result handed to the drag's preview. */
+type ScanFinish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets) => void;
+
+/** Animal mob types (hunt, not fight). */
+const ANIMAL_MOBS = [90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103];
+
+/** Something drafted pawns can attack: a mob or a player (never one of the colony's pawns). */
+function isAttackable(x: EntityView, pawns: StoryColonyState['pawns']): boolean {
+  if (x.kind !== 'mob' && x.kind !== 'player') return false;
+  return !(x.kind === 'player' && pawns.some((pw) => pw.name === x.name));
+}
+
+/** Is an entity's mark (a little above its feet) within `px` of the point? */
+function withinPx(m: ViewMats, x: EntityView, pt: Pt, px: number): boolean {
+  const s = project(m, x.x, x.y + 0.4, x.z);
+  return !!s && Math.hypot(s.x - pt.x, s.y - pt.y) <= px;
+}
+
+/** The order-menu target among the entities near the point (within 18 px; the nearest wins, a pawn's player shadows). */
+function entityTargetAt(m: ViewMats, ents: readonly EntityView[], pt: Pt, st: StoryColonyState | undefined): Target | null {
+  let best: Target | null = null;
+  let bd = 18;
+  for (const x of ents) {
+    const s = project(m, x.x, x.y + 0.4, x.z);
+    if (!s) continue;
+    const dd = Math.hypot(s.x - pt.x, s.y - pt.y);
+    if (dd > bd) continue;
+    bd = dd;
+    best = entityTarget(x, st) ?? best;
+  }
+  return best;
+}
+
+/** A drop, a player (not a pawn) or a mob as an order-menu target; null for anything else. */
+function entityTarget(x: EntityView, st: StoryColonyState | undefined): Target | null {
+  if (x.kind === 'item') return { kind: 'item', entity: x.id, name: x.name ?? 'the drop', x: x.x, y: x.y, z: x.z };
+  if (x.kind === 'player') return playerTarget(x, st);
+  if (x.kind !== 'mob') return null;
+  return {
+    kind: 'mob',
+    entity: x.id,
+    name: x.name ?? 'the mob',
+    animal: ANIMAL_MOBS.includes(x.type),
+    x: x.x,
+    y: x.y,
+    z: x.z,
+  };
+}
+
+function playerTarget(x: EntityView, st: StoryColonyState | undefined): Target | null {
+  if (!x.name || (st?.pawns ?? []).some((pw) => pw.name === x.name)) return null;
+  return {
+    kind: 'player',
+    entity: x.id,
+    name: x.name,
+    bot: (st?.ai ?? []).some((a) => a.name === x.name),
+    x: x.x,
+    y: x.y,
+    z: x.z,
+  };
+}
+
+/** A queued (not done) build ghost in the cell's column, as an order-menu target. */
+function ghostTargetAt(cell: V3, st: StoryColonyState | undefined): Target | null {
+  const g = (st?.ghosts?.blocks ?? []).find((b) => b[0] === cell[0] && b[2] === cell[2] && b[6] !== 'done');
+  if (!g) return null;
+  const build = (st?.builds ?? []).find((b) => String(b.id) === String(g[5]));
+  return { kind: 'ghost', build: g[5], label: build?.label ?? 'build', x: g[0], y: g[1], z: g[2] };
+}
+
+/** Per build kind (wall, door, chest…): its cells still queued and how many of them the viewer draws as holograms now. */
+function hologramKinds(e: WorldViewerEngine | null, st: StoryColonyState | undefined) {
+  const kinds = buildKinds(st);
+  const out: Record<string, { queued: number; shown: number }> = {};
+  for (const g of st?.ghosts?.blocks ?? []) {
+    if (g[6] === 'done') continue;
+    const k = (out[kinds.get(String(g[5])) ?? '?'] ??= { queued: 0, shown: 0 });
+    k.queued++;
+    if (hologramShown(e, g)) k.shown++;
+  }
+  return out;
+}
+
+/** Does the viewer draw this ghost cell as a hologram now (a dig outline for a dig)? */
+function hologramShown(e: WorldViewerEngine | null, g: NonNullable<StoryColonyState['ghosts']>['blocks'][number]): boolean {
+  return !!e?.hologramAt(g[0], g[1], g[2], ghostDigs(g) ? 'dig' : 'block');
+}
+
+const buildKinds = (st: StoryColonyState | undefined) =>
+  new Map((st?.builds ?? []).map((b) => [String(b.id), b.kind] as const));
+
+type AiBody = NonNullable<StoryColonyState['ai']>[number];
+/** An AI body the map shows: online, in the overworld, with a position. */
+const isShownAi = (a: AiBody): a is AiBody & { pos: NonNullable<AiBody['pos']> } =>
+  a.online !== false && (a.dim ?? 0) === 0 && !!a.pos;
+
+export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryMap(props, ref) {
   const { mod, source, ready } = useWorldHost();
   const viewer = useRef<WorldViewerHandle | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
@@ -346,11 +441,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const drag = useRef<DragState | null>(null);
   /** Esc / the other button cancel a drag; the release after a cancel does nothing (tools.ts `DragGate`). */
   const gate = useRef(new DragGate());
-  const hover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
+  const hover = useRef<Hover | null>(null);
   /** The last hover over the map (kept when the pointer leaves it: the material selector previews there). */
-  const lastHover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
+  const lastHover = useRef<Hover | null>(null);
   const shown = useRef(new Map<string, V3>());
-  const scan = useRef<{ key: string; busy: boolean; result: (DragResult & { cols?: ColumnSpan[] }) | null }>({
+  const scan = useRef<{ key: string; busy: boolean; result: ScanResult }>({
     key: '',
     busy: false,
     result: null,
@@ -365,7 +460,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const appliedCut = useRef<string | undefined>(undefined);
   const lastEngine = useRef<WorldViewerEngine | null>(null);
   /** Standing heights per column at one level (`x,z` -> feet y, null = nowhere to stand); refilled for each right-drag. */
-  const stand = useRef<{ level: number; cols: Map<string, number | null>; busy: boolean }>({
+  const stand = useRef<StandCache>({
     level: 0,
     cols: new Map(),
     busy: false,
@@ -374,9 +469,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   /** The failed designations' labels (DOM over the canvas: crisp text in the theme's colours, hover titles, clickable). */
   const labelsEl = useRef<HTMLDivElement | null>(null);
   /** Where each failed designation's ring was drawn this frame, for clicks (id, the ids its cluster label stands for). */
-  const failedAt = useRef<Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }>>([]);
-  /** What the viewer was last given for the holograms: the state's ghosts and builds (by identity) and the placement key. */
-  const holo = useRef<{ ghosts: unknown; builds: unknown; preview: string }>({ ghosts: null, builds: null, preview: '' });
+  const failedAt = useRef<FailedRing[]>([]);
+  const holo = useRef<HoloSync>({ ghosts: null, builds: null, preview: '' });
+  /** The overlay's painter (mapDraw.ts): one for the map's life, re-aimed every frame. */
+  const painter = useMemo(() => new MapPainter(), []);
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
@@ -427,6 +523,17 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     },
   }));
 
+  /** Where the map is first placed: home; with no colony yet, the main bot or the player (null: neither showed up in time,
+   * the map stays where it is); undefined = keep waiting (settling not asked yet, or still waiting for a body). */
+  const firstSpot = (e: WorldViewerEngine, t0: number): V3 | null | undefined => {
+    const home = p.current.home;
+    if (home) return home;
+    if (!p.current.settle) return undefined;
+    const at = settleSpot(e, p.current.player);
+    if (!at && performance.now() - t0 < SETTLE_WAIT_MS) return undefined;
+    return at;
+  };
+
   // First placement over the colony's home; with no colony yet, over the main bot (else the viewing user's player) so a new
   // colony settles where the hive is rather than at the world origin. The target height follows the level.
   useEffect(() => {
@@ -435,16 +542,12 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const tryPlace = () => {
       const e = engine();
       if (!e || placed.current) return;
-      const home = p.current.home;
-      let at: V3 | null = home;
-      if (!at) {
-        if (!p.current.settle) return;
-        at = settleSpot(e, p.current.player);
-        if (!at && performance.now() - t0 < SETTLE_WAIT_MS) return;
-      }
+      const at = firstSpot(e, t0);
+      if (at === undefined) return;
       placed.current = true;
       e.rig.isoZoom = TOP_ZOOM;
       if (!at) return;
+      const home = p.current.home;
       if (!home) p.current.onSettled?.(at[1]);
       e.rig.target.set(at[0] + 0.5, (home ? p.current.level : at[1]) + 1, at[2] + 0.5);
     };
@@ -460,9 +563,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   useEffect(() => {
     let raf = 0;
     let last = performance.now();
-    let centreAt = 0,
-      centreKey = '',
-      centreCb: StoryMapProps['onCentre'] = undefined;
+    const centre: CentreReport = { at: 0, key: '', cb: undefined };
+    const pan = { x: 0, z: 0 };
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
       const dt = Math.min(0.1, (now - last) / 1000);
@@ -470,60 +572,14 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const e = engine(),
         c = canvas.current;
       if (!e || !c) return;
-      // The level cut (x-ray above the working level) is a per-view uniform: no re-meshing when it moves. The camera looks
-      // at the level's floor.
-      if (lastEngine.current !== e) {
-        lastEngine.current = e;
-        appliedCut.current = undefined;
-        holo.current = { ghosts: null, builds: null, preview: '' };
-        // The pawns and AI bodies are drawn as their player models; the overlay draws their names (no second label).
-        e.setBotLabels(false);
-      }
-      // Above the ground storey, the storeys below are dimmed for reference.
-      const home = p.current.home;
-      const dim = home && p.current.level > home[1] ? p.current.level + 1 : null;
-      const cutKey = `${p.current.cutY}|${dim}`;
-      if (appliedCut.current !== cutKey) {
-        appliedCut.current = cutKey;
-        e.setLevelCut(p.current.cutY !== null || dim !== null ? { y: p.current.cutY ?? 1e6, dimBelow: dim } : null);
-      }
-      if (placed.current) e.rig.target.y = p.current.level + 1;
-      // Day and night: the viewer's index time and the colony clock are one anchor (the newer sample wins).
-      p.current.clock?.syncViewer({
-        anchor: () => e.runtime.worldTimeAnchor(0),
-        set: (ticks, at, frozen) => e.runtime.setWorldTime(0, ticks, at, frozen),
-      });
-      syncHolograms(e);
+      syncView(e);
       const w = c.clientWidth,
         h = c.clientHeight;
       if (c.width !== w || c.height !== h) {
         c.width = w;
         c.height = h;
       }
-      // Pan: keys, then the screen edge — the edge only in full screen (in the page the pointer crosses the map's edge on its
-      // way to the nav and HUD, which panned the camera), only while the pointer is over the map and not dragging a box.
-      const keys = p.current.keys.current;
-      let px = 0,
-        pz = 0;
-      for (const code of keys ?? []) {
-        if (code === 'KeyW' || code === 'ArrowUp') pz -= 1;
-        if (code === 'KeyS' || code === 'ArrowDown') pz += 1;
-        if (code === 'KeyA' || code === 'ArrowLeft') px -= 1;
-        if (code === 'KeyD' || code === 'ArrowRight') px += 1;
-      }
-      const hv = hover.current;
-      if (hv && !drag.current && document.hasFocus() && document.fullscreenElement) {
-        const [ex, ey] = edgePan(hv.at, w, h, 8);
-        px += ex;
-        pz += ey;
-      }
-      if (px || pz) {
-        const speed = e.rig.isoZoom * 0.9 * dt;
-        if (e.rig.mode === 'top') {
-          e.rig.target.x += px * speed;
-          e.rig.target.z += pz * speed;
-        } else e.rig.pan(-px * speed * (h / e.rig.isoZoom), -pz * speed * (h / e.rig.isoZoom), h);
-      }
+      panStep(e, dt, w, h, pan);
       const cam = e.camera;
       mats.current = {
         view: cam.matrixWorldInverse.elements,
@@ -533,43 +589,96 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         w,
         h,
       };
-      // Chests and workbenches near the view (a worker scan every few seconds).
-      if (now - chests.current.at > 4000) {
-        chests.current.at = now;
-        const t = e.rig.target,
-          r = Math.min(64, e.rig.isoZoom);
-        const lv = p.current.level;
-        void e.runtime.host
-          .scan(0, [t.x - r, lv - 12, t.z - r], [t.x + r, lv + 16, t.z + r], [54, 146, 58, 61, 62], 400)
-          .then((s) => {
-            const cells: Array<{ pos: V3; id: number }> = [];
-            for (let i = 0; i + 5 < s.length + 1; i += 6)
-              cells.push({ pos: [s[i]!, s[i + 1]!, s[i + 2]!], id: s[i + 3]! });
-            chests.current.cells = cells;
-          })
-          .catch(() => undefined);
-      }
-      // The centre column for the panels ("settles at", "move home here"), at most five times a second, once placed, and
-      // only while a panel wants it (the page passes onCentre then: a re-render of the whole HUD per pan step otherwise).
-      if (p.current.onCentre !== centreCb) {
-        centreCb = p.current.onCentre;
-        centreKey = '';
-      }
-      if (placed.current && centreCb && now - centreAt > 200) {
-        centreAt = now;
-        const t = e.rig.target,
-          cc: V3 = [Math.floor(t.x), p.current.level, Math.floor(t.z)];
-        const key = cc.join(',');
-        if (key !== centreKey) {
-          centreKey = key;
-          p.current.onCentre?.(cc);
-        }
-      }
-      draw(c, dt, now);
+      scanChests(e, now);
+      reportCentre(e, now, centre);
+      draw(c, dt);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** [frame] The viewer follows the page: a new engine's setup, the level cut, the level's height, the clock, the holograms. */
+  const syncView = (e: WorldViewerEngine) => {
+    // The level cut (x-ray above the working level) is a per-view uniform: no re-meshing when it moves. The camera looks
+    // at the level's floor.
+    if (lastEngine.current !== e) {
+      lastEngine.current = e;
+      appliedCut.current = undefined;
+      holo.current = { ghosts: null, builds: null, preview: '' };
+      // The pawns and AI bodies are drawn as their player models; the overlay draws their names (no second label).
+      e.setBotLabels(false);
+    }
+    syncLevelCut(e);
+    if (placed.current) e.rig.target.y = p.current.level + 1;
+    // Day and night: the viewer's index time and the colony clock are one anchor (the newer sample wins).
+    p.current.clock?.syncViewer({
+      anchor: () => e.runtime.worldTimeAnchor(0),
+      set: (ticks, at, frozen) => e.runtime.setWorldTime(0, ticks, at, frozen),
+    });
+    syncHolograms(e);
+  };
+
+  /** [frame] Above the ground storey, the storeys below are dimmed for reference; the cut hides what is above it. */
+  const syncLevelCut = (e: WorldViewerEngine) => {
+    const home = p.current.home;
+    const dim = home && p.current.level > home[1] ? p.current.level + 1 : null;
+    const cutKey = `${p.current.cutY}|${dim}`;
+    if (appliedCut.current === cutKey) return;
+    appliedCut.current = cutKey;
+    e.setLevelCut(p.current.cutY !== null || dim !== null ? { y: p.current.cutY ?? 1e6, dimBelow: dim } : null);
+  };
+
+  /** [frame] Pan: keys, then the screen edge — the edge only in full screen (in the page the pointer crosses the map's edge on
+   * its way to the nav and HUD, which panned the camera), only while the pointer is over the map and not dragging a box. */
+  const panStep = (e: WorldViewerEngine, dt: number, w: number, h: number, pan: { x: number; z: number }) => {
+    keyPan(p.current.keys.current, pan);
+    const hv = hover.current;
+    if (hv && !drag.current && document.hasFocus() && document.fullscreenElement) {
+      const [ex, ey] = edgePan(hv.at, w, h, 8);
+      pan.x += ex;
+      pan.z += ey;
+    }
+    if (!pan.x && !pan.z) return;
+    const speed = e.rig.isoZoom * 0.9 * dt;
+    if (e.rig.mode === 'top') {
+      e.rig.target.x += pan.x * speed;
+      e.rig.target.z += pan.z * speed;
+    } else e.rig.pan(-pan.x * speed * (h / e.rig.isoZoom), -pan.z * speed * (h / e.rig.isoZoom), h);
+  };
+
+  /** [frame] Chests and workbenches near the view (a worker scan every few seconds). */
+  const scanChests = (e: WorldViewerEngine, now: number) => {
+    if (now - chests.current.at <= 4000) return;
+    chests.current.at = now;
+    const t = e.rig.target,
+      r = Math.min(64, e.rig.isoZoom);
+    const lv = p.current.level;
+    void e.runtime.host
+      .scan(0, [t.x - r, lv - 12, t.z - r], [t.x + r, lv + 16, t.z + r], [54, 146, 58, 61, 62], 400)
+      .then((s) => {
+        const cells: Array<{ pos: V3; id: number }> = [];
+        for (let i = 0; i + 5 < s.length + 1; i += 6) cells.push({ pos: [s[i]!, s[i + 1]!, s[i + 2]!], id: s[i + 3]! });
+        chests.current.cells = cells;
+      })
+      .catch(() => undefined);
+  };
+
+  /** [frame] The centre column for the panels ("settles at", "move home here"), at most five times a second, once placed, and
+   * only while a panel wants it (the page passes onCentre then: a re-render of the whole HUD per pan step otherwise). */
+  const reportCentre = (e: WorldViewerEngine, now: number, centre: CentreReport) => {
+    if (p.current.onCentre !== centre.cb) {
+      centre.cb = p.current.onCentre;
+      centre.key = '';
+    }
+    if (!placed.current || !centre.cb || now - centre.at <= 200) return;
+    centre.at = now;
+    const t = e.rig.target,
+      cc: V3 = [Math.floor(t.x), p.current.level, Math.floor(t.z)];
+    const key = cc.join(',');
+    if (key === centre.key) return;
+    centre.key = key;
+    p.current.onCentre?.(cc);
+  };
 
   /** [holograms] Hands the viewer the queued cells (only when the state's ghosts or builds changed) and the design being
    * placed (only when its cell or turn changed). */
@@ -582,42 +691,62 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const { cells, rev } = hologramCells(st);
       e.setHolograms(cells, rev);
     }
+    syncPlacementHologram(e, h);
+  };
+
+  /** [holograms] The placement hologram: a water placement waiting for the owner's word, else the design or the structure /
+   * furniture being placed (in the chosen material, under the cursor and while dragging: the material selector's hover shows
+   * here at once), else none. */
+  const syncPlacementHologram = (e: WorldViewerEngine, h: HoloSync) => {
     const tool = p.current.tool,
-      hv = hover.current ?? (p.current.previewHold ? lastHover.current : null);
-    const a = tool.kind === 'design' && hv?.cell && !drag.current ? startCellOf(hv) : null;
-    // A structure or furniture tool: its placement in the chosen material, under the cursor and while dragging (the
-    // material selector's hover shows here at once).
-    const d = drag.current;
-    const ba =
-      tool.kind === 'build' && tool.id !== 'remove'
-        ? (d?.startCell ?? (hv?.cell && !d ? startCellOf(hv) : null))
-        : null;
-    const held = p.current.holoPreview;
+      d = drag.current,
+      held = p.current.holoPreview;
     if (held && !d) {
-      if ('w|' + held.key !== h.preview) {
-        h.preview = 'w|' + held.key;
-        e.setHologramPreview(held.blocks.flat(), h.preview);
-      }
-    } else if (a && tool.kind === 'design') {
-      const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}`;
-      if (key !== h.preview) {
-        h.preview = key;
-        e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing, !!tool.mine).slice(0, 4096).flat(), key);
-      }
-    } else if (ba && tool.kind === 'build') {
-      const bb = d?.endCell ?? ba;
-      const o = { ...p.current.build, line: d?.alt };
-      const key = `b|${tool.id}|${ba.join(',')}|${bb.join(',')}|${JSON.stringify(o)}`;
-      if (key !== h.preview) {
-        h.preview = key;
-        // Every item it queues: a water tool's trench (dug first: dig outlines) and its water.
-        const blocks = buildItems(tool.id, ba, bb, o).flatMap((it) => buildPreview(it).blocks);
-        e.setHologramPreview(blocks.slice(0, 4096).flat(), key);
-      }
-    } else if (h.preview) {
+      if ('w|' + held.key === h.preview) return;
+      h.preview = 'w|' + held.key;
+      e.setHologramPreview(held.blocks.flat(), h.preview);
+      return;
+    }
+    const a = placementAnchor();
+    if (a && tool.kind === 'design') showDesignHologram(e, h, tool, a);
+    else if (a && tool.kind === 'build') showBuildHologram(e, h, tool.id, a, d);
+    else if (h.preview) {
       h.preview = '';
       e.setHologramPreview(null);
     }
+  };
+
+  /** Where the design or the structure / furniture being placed is anchored (a build drag's start, else the cursor's cell). */
+  const placementAnchor = (): V3 | null => {
+    const tool = p.current.tool;
+    if (tool.kind !== 'design' && !(tool.kind === 'build' && tool.id !== 'remove')) return null;
+    const d = drag.current;
+    if (tool.kind === 'build' && d?.startCell) return d.startCell;
+    return hoverAnchor();
+  };
+
+  /** The cursor's placement cell while no drag is held (a material hovered in the selector keeps the last map cell). */
+  const hoverAnchor = (): V3 | null => {
+    const hv = hover.current ?? (p.current.previewHold ? lastHover.current : null);
+    return hv?.cell && !drag.current ? startCellOf(hv) : null;
+  };
+
+  const showDesignHologram = (e: WorldViewerEngine, h: HoloSync, tool: Extract<MapTool, { kind: 'design' }>, a: V3) => {
+    const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}`;
+    if (key === h.preview) return;
+    h.preview = key;
+    e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing, !!tool.mine).slice(0, 4096).flat(), key);
+  };
+
+  const showBuildHologram = (e: WorldViewerEngine, h: HoloSync, id: BuildToolId, ba: V3, d: DragState | null) => {
+    const bb = d?.endCell ?? ba;
+    const o = { ...p.current.build, line: d?.alt };
+    const key = `b|${id}|${ba.join(',')}|${bb.join(',')}|${JSON.stringify(o)}`;
+    if (key === h.preview) return;
+    h.preview = key;
+    // Every item it queues: a water tool's trench (dug first: dig outlines) and its water.
+    const blocks = buildItems(id, ba, bb, o).flatMap((it) => buildPreview(it).blocks);
+    e.setHologramPreview(blocks.slice(0, 4096).flat(), key);
   };
 
   /**
@@ -625,41 +754,37 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
    * when it has one, else its reported position eased toward. `look`: model (overlay marks only), token, or cut (a storey
    * above the level cut); `r`: its hit radius in pixels.
    */
-  const bodies = (dt: number): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> => {
-    const m = mats.current;
+  const bodies = (dt: number): MapBody[] => {
     const st = p.current.state;
-    const e = engine();
-    const ppb = m && e ? m.h / Math.max(1, e.rig.isoZoom) : 0;
-    const out: Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> = [];
+    const ppb = pxPerBlock();
+    const out: MapBody[] = [];
     const k = Math.min(1, dt * 6);
-    const add = (name: string, pos: readonly number[] | null | undefined, kind: 'pawn' | 'ai') => {
-      if (!pos) return;
-      const live = e?.runtime.store.bot(name);
-      const prev = shown.current.get(name);
-      const next: V3 =
-        live && live.dim === 0
-          ? [live.x, live.y, live.z]
-          : prev && Math.hypot(prev[0] - pos[0]!, prev[2] - pos[2]!) < 12
-            ? [prev[0] + (pos[0]! - prev[0]) * k, prev[1] + (pos[1]! - prev[1]) * k, prev[2] + (pos[2]! - prev[2]) * k]
-            : [pos[0]!, pos[1]!, pos[2]!];
-      shown.current.set(name, next);
-      const look = bodyLook({
-        detail: live ? (e?.runtime.entities.detailOf(live.name) ?? null) : null,
-        pxPerBlock: ppb,
-        feetY: next[1],
-        cutY: p.current.cutY,
-      });
-      const at = m ? project(m, next[0], next[1] + anchorLift(look), next[2]) : null;
-      let r = 18;
-      if (look === 'model' && m && at) {
-        const head = project(m, next[0], next[1] + 1.9, next[2]);
-        r = Math.max(14, head ? Math.abs(head.y - at.y) + 6 : 0, ppb * 0.6);
-      }
-      out.push({ key: name, at, kind, pos: next, look, r });
-    };
-    for (const pw of st?.pawns ?? []) if (pw.online !== false) add(pw.name, pw.pos, 'pawn');
-    for (const a of st?.ai ?? []) if (a.online !== false && (a.dim ?? 0) === 0) add(a.name, a.pos, 'ai');
+    for (const pw of st?.pawns ?? []) if (pw.online !== false && pw.pos) out.push(placeBody(pw.name, pw.pos, 'pawn', k, ppb));
+    for (const a of st?.ai ?? []) if (isShownAi(a)) out.push(placeBody(a.name, a.pos, 'ai', k, ppb));
     return out;
+  };
+
+  const pxPerBlock = (): number => {
+    const m = mats.current,
+      e = engine();
+    return m && e ? m.h / Math.max(1, e.rig.isoZoom) : 0;
+  };
+
+  /** One body where it is shown now (moving `shown` toward its reported position by `k`). */
+  const placeBody = (name: string, pos: readonly number[], kind: MapBody['kind'], k: number, ppb: number): MapBody => {
+    const e = engine(),
+      m = mats.current;
+    const live = e?.runtime.store.bot(name);
+    const next = easedPos(live, shown.current.get(name), pos, k);
+    shown.current.set(name, next);
+    const look = bodyLook({
+      detail: live ? (e?.runtime.entities.detailOf(live.name) ?? null) : null,
+      pxPerBlock: ppb,
+      feetY: next[1],
+      cutY: p.current.cutY,
+    });
+    const at = m ? project(m, next[0], next[1] + anchorLift(look), next[2]) : null;
+    return { key: name, at, kind, pos: next, look, r: hitRadius(m, look, at, next, ppb) };
   };
 
   const entityList = (): EntityLite[] => {
@@ -707,485 +832,118 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     });
   };
 
-  const draw = (c: HTMLCanvasElement, dt: number, now: number) => {
+  /** One frame of the overlay, bottom to top (the layers live in mapDraw.ts and mapDragDraw.ts). */
+  const draw = (c: HTMLCanvasElement, dt: number) => {
     const ctx = c.getContext('2d');
     const m = mats.current;
     if (!ctx || !m) return;
     const props = p.current;
-    const st = props.state;
     ctx.clearRect(0, 0, c.width, c.height);
     const e = engine()!;
-    const upp = unitsPerPx(e.rig.isoZoom, m.h);
-    const cell = 1 / upp; // px per block
-    const cutY = props.cutY;
-    const quad = (x1: number, z1: number, x2: number, z2: number, y: number): Pt[] | null => {
-      const a = project(m, x1, y, z1),
-        b = project(m, x2, y, z1),
-        cc = project(m, x2, y, z2),
-        d = project(m, x1, y, z2);
-      return a && b && cc && d ? [a, b, cc, d] : null;
-    };
-    const poly = (pts: Pt[]) => {
-      ctx.beginPath();
-      ctx.moveTo(pts[0]!.x, pts[0]!.y);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
-      ctx.closePath();
-    };
-    const mark = (id: string, at: Pt, color: string, size = 14) => {
-      const sp = markSprite(id, color, size);
-      if (sp) {
-        ctx.drawImage(sp, at.x - size / 2 - 3, at.y - size / 2 - 3, size + 6, size + 6);
-        return;
-      }
-      const g = glyph(id);
-      ctx.save();
-      ctx.translate(at.x - size / 2, at.y - size / 2);
-      ctx.fillStyle = 'rgba(12,14,18,0.72)';
-      ctx.beginPath();
-      ctx.arc(size / 2, size / 2, size / 2 + 2, 0, Math.PI * 2);
-      ctx.fill();
-      if (g) {
-        ctx.scale(size / 16, size / 16);
-        ctx.fillStyle = color;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.4;
-        ctx.fill(g, 'evenodd');
-        if (id === 'hunt') ctx.stroke(g);
-      }
-      ctx.restore();
-    };
-    // Zones by their cells (zones/zoneDraw.ts): work zones tinted with a dashed edge (growing zones say what they sow), the
-    // overlay layers apart (houses: the home-area tint, a solid edge, the name; keep-out: red stripes).
-    drawZones(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell, (z, houseNo) =>
-      zoneLabel(z, houseNo, st?.plants),
-    );
-    drawQuarries(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell); // the quarries' stairs (zones/quarry.tsx)
-    // The colony's home: a house mark.
-    const homeAt = props.home;
-    if (homeAt) {
-      const at = project(m, homeAt[0] + 0.5, homeAt[1] + 1, homeAt[2] + 0.5);
-      if (at) {
-        mark('home', at, '#7fb8ff', 15);
-        ctx.strokeStyle = '#7fb8ff';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(at.x, at.y, 12, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-    // Beds: a bed mark, the owner's colour ring and initials.
-    for (const bd of st?.beds ?? []) {
-      if ((bd.dim ?? 0) !== 0 || (cutY !== null && bd.pos[1] >= cutY)) continue;
-      const at = project(m, bd.pos[0] + 0.5, bd.pos[1] + 0.6, bd.pos[2] + 0.5);
-      if (!at) continue;
-      const owner = bd.pawn ? st?.pawns.find((x) => x.name === bd.pawn) : undefined;
-      const col = bd.pawn ? pawnColor(bd.pawn) : '#c9ccd2';
-      mark('bed', at, col, 13);
-      if (bd.pawn) {
-        const ini = (owner?.display ?? bd.pawn).slice(0, 2).toUpperCase();
-        ctx.font = '700 9px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const w = ctx.measureText(ini).width + 6;
-        ctx.fillStyle = col;
-        ctx.fillRect(at.x + 7, at.y - 14, w, 11);
-        ctx.fillStyle = '#0c1018';
-        ctx.fillText(ini, at.x + 7 + w / 2, at.y - 8.5);
-      }
-      if (props.selection.bed && k3(props.selection.bed) === k3(bd.pos)) {
-        ctx.strokeStyle = COLORS.select;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(at.x - 11, at.y - 11, 22, 22);
-      }
-    }
-    // Build ghosts: translucent blocks by state; anything above the level cut only as a faint outline (x-rayed). With build
-    // holograms on (the viewer settings) the viewer draws them in the world instead (render/holograms.ts).
+    const pt = painter;
+    const cell = 1 / unitsPerPx(e.rig.isoZoom, m.h); // px per block
+    pt.begin(ctx, m, cell, props.cutY, props.view === 'angled', e.camera.position, c.clientWidth, c.clientHeight);
+    drawGround(pt, props);
     const holoOn = getViewerQuality().holograms;
-    const ghosts = holoOn ? [] : (st?.ghosts?.blocks ?? []);
-    const angled = props.view === 'angled';
-    const cube = (x: number, y: number, z: number, color: string, alpha: number, faint: boolean) => {
-      if (!angled) {
-        const q = quad(x, z, x + 1, z + 1, y + 1);
-        if (!q) return;
-        poly(q);
-        if (faint) {
-          ctx.strokeStyle = `${color}66`;
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        } else {
-          ctx.globalAlpha = alpha;
-          ctx.fillStyle = color;
-          ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = color;
-          ctx.lineWidth = cell > 10 ? 1.2 : 0.6;
-          ctx.stroke();
-        }
-        return;
-      }
-      // Angled: the top and the two faces toward the camera.
-      const camPos = e.camera.position;
-      const faces: Array<Array<[number, number, number]>> = [
-        [
-          [x, y + 1, z],
-          [x + 1, y + 1, z],
-          [x + 1, y + 1, z + 1],
-          [x, y + 1, z + 1],
-        ],
-      ];
-      if (camPos.x > x + 1)
-        faces.push([
-          [x + 1, y, z],
-          [x + 1, y + 1, z],
-          [x + 1, y + 1, z + 1],
-          [x + 1, y, z + 1],
-        ]);
-      else if (camPos.x < x)
-        faces.push([
-          [x, y, z],
-          [x, y + 1, z],
-          [x, y + 1, z + 1],
-          [x, y, z + 1],
-        ]);
-      if (camPos.z > z + 1)
-        faces.push([
-          [x, y, z + 1],
-          [x + 1, y, z + 1],
-          [x + 1, y + 1, z + 1],
-          [x, y + 1, z + 1],
-        ]);
-      else if (camPos.z < z)
-        faces.push([
-          [x, y, z],
-          [x + 1, y, z],
-          [x + 1, y + 1, z],
-          [x, y + 1, z],
-        ]);
-      for (const f of faces) {
-        const pts = f.map(([a, b, cc]) => project(m, a, b, cc));
-        if (pts.some((q) => !q)) continue;
-        poly(pts as Pt[]);
-        if (!faint) {
-          ctx.globalAlpha = alpha;
-          ctx.fillStyle = color;
-          ctx.fill();
-          ctx.globalAlpha = 1;
-        }
-        ctx.strokeStyle = faint ? `${color}66` : color;
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
-      }
-    };
-    const sorted = angled ? [...ghosts].sort((a, b) => a[1] - b[1]) : ghosts;
-    let drawn = 0;
-    for (const g of sorted) {
-      if (drawn++ > 3000) break;
-      const state = g[6];
-      if (state === 'done') continue;
-      const col = COLORS.ghost[state] ?? COLORS.ghost.todo!;
-      cube(g[0], g[1], g[2], col, state === 'leased' ? 0.5 : 0.32, cutY !== null && g[1] >= cutY);
-    }
-    // Failed build cells (docs/web/story-mode.md "Retrying failed build cells"): a dashed red ring with a cross on each, drawn even
-    // when the viewer shows the holograms; hovering one names its reason (the canvas title), the Retry tool (O) takes it again.
-    for (const f of failedModel(st?.ghosts?.blocks ?? EMPTY_GHOSTS).cells.slice(0, 2000)) {
-      const at = project(m, f.cell[0] + 0.5, Math.min(f.cell[1] + 1, cutY ?? 999), f.cell[2] + 0.5);
-      if (!at || at.x < -20 || at.y < -20 || at.x > c.clientWidth + 20 || at.y > c.clientHeight + 20) continue;
-      ctx.strokeStyle = COLORS.danger;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([3, 2]);
-      ctx.beginPath();
-      ctx.arc(at.x, at.y, 9, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(at.x - 4, at.y - 4);
-      ctx.lineTo(at.x + 4, at.y + 4);
-      ctx.moveTo(at.x + 4, at.y - 4);
-      ctx.lineTo(at.x - 4, at.y + 4);
-      ctx.stroke();
-    }
-    // Designations: a mark on every target (one per tree for chop). The marks and the failed ones' clusters are worked out
-    // once per state; a frame only projects and stamps them (off-screen ones skipped).
+    drawBuildLayer(pt, props.state, holoOn);
+    drawDesignationLayer(pt, props.state);
+    pt.drawChests(chests.current.cells, props.state, props.selection, badges.current, LABEL_ZOOM);
+    drawBodyLayer(pt, props, dt);
+    drawPointer(pt, props, holoOn);
+  };
+
+  /** Zones by their cells (zones/zoneDraw.ts): work zones tinted with a dashed edge (growing zones say what they sow), the
+   * overlay layers apart (houses: the home-area tint, a solid edge, the name; keep-out: red stripes); the quarries' stairs
+   * (zones/quarry.tsx); the colony's home; the beds. */
+  const drawGround = (pt: MapPainter, props: StoryMapProps) => {
+    const st = props.state;
+    const zones = st?.zones ?? [];
+    drawZones(pt.ctx, zones, pt.at, pt.cell, (z, houseNo) => zoneLabel(z, houseNo, st?.plants));
+    drawQuarries(pt.ctx, zones, pt.at, pt.cell);
+    pt.drawHome(props.home);
+    pt.drawBeds(st?.beds ?? [], st?.pawns, props.selection.bed);
+  };
+
+  /** Build ghosts: with build holograms on (the viewer settings) the viewer draws them in the world instead
+   * (render/holograms.ts). Failed build cells (docs/web/story-mode.md "Retrying failed build cells"): drawn even when the
+   * viewer shows the holograms; hovering one names its reason (the canvas title), the Retry tool (O) takes it again. */
+  const drawBuildLayer = (pt: MapPainter, st: StoryColonyState | undefined, holoOn: boolean) => {
+    const blocks = st?.ghosts?.blocks ?? EMPTY_GHOSTS;
+    if (!holoOn) pt.drawGhosts(blocks);
+    pt.drawFailedBuildCells(blocks);
+  };
+
+  /** Bodies: order lines first, then tokens. */
+  const drawBodyLayer = (pt: MapPainter, props: StoryMapProps, dt: number) => {
+    const list = bodies(dt);
+    const sel = new Set(props.selection.bodies);
+    pt.drawOrderLines(list, sel, props.state?.pawns);
+    pt.drawBodies(list, sel, props.state);
+  };
+
+  /** Designations: a mark on every target (one per tree for chop), worked out once per state; a frame only projects and stamps
+   * them. The failed ones' labels: one per cluster (same reason, adjacent), largest first, never on top of another; hidden
+   * when zoomed out (the rings stay). */
+  const drawDesignationLayer = (pt: MapPainter, st: StoryColonyState | undefined) => {
     const model = designationModel(st?.designations ?? EMPTY_LIST);
-    const failedOn: Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }> = [];
-    const markSize = cell > 18 ? 14 : 11;
-    const vw = c.clientWidth,
-      vh = c.clientHeight;
-    for (const mk of model.marks) {
-      const b = mk.cell;
-      const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
-      if (!at || at.x < -20 || at.y < -20 || at.x > vw + 20 || at.y > vh + 20) continue;
-      mark(mk.d.kind, at, mk.col, markSize);
-      // A designation that keeps failing (the director's status / reason): a red ring always; its reason as a short label
-      // (one per cluster, see below) when zoomed in.
-      if (mk.ring) {
-        ctx.strokeStyle = mk.ring;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
-        ctx.stroke();
-        if (mk.failed) failedOn.push({ id: mk.d.id, cluster: model.clusterOf.get(String(mk.d.id)) ?? [mk.d.id], x: at.x, y: at.y });
-      }
-      if (mk.d.pawn) {
-        ctx.strokeStyle = pawnColor(mk.d.pawn);
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-    // The failed designations' labels: one per cluster (same reason, adjacent), largest first, never on top of another; hidden
-    // when zoomed out (the rings stay).
-    const clusters = model.clusters;
-    failedAt.current = failedOn;
-    const view = { w: c.clientWidth, h: c.clientHeight };
+    failedAt.current = pt.drawDesignations(model);
     syncLabels(
-      cell > LABEL_ZOOM
+      pt.cell > LABEL_ZOOM
         ? placeLabels(
-            clusters.map((cl) => {
-              const a = project(m, cl.anchor[0] + 0.5, Math.min(cl.anchor[1] + 1, cutY ?? 999), cl.anchor[2] + 0.5);
+            model.clusters.map((cl) => {
+              const a = pt.at(cl.anchor[0] + 0.5, Math.min(cl.anchor[1] + 1, pt.cutY ?? 999), cl.anchor[2] + 0.5);
               return { item: cl, at: a ? { x: a.x, y: a.y + 13 } : null, text: cl.text };
             }),
-            view,
+            { w: pt.vw, h: pt.vh },
           )
         : [],
     );
-    // Chests and workbenches: registered storage gets its mark and a priority pip; unregistered chests show faintly.
-    const storages = new Map(
-      (st?.storages ?? []).flatMap((s) => [
-        [k3(s.chest), s] as const,
-        ...(s.doubleWith ? [[k3(s.doubleWith), s] as const] : []),
-      ]),
-    );
-    const selChests = new Set(props.selection.chests.map(k3));
-    const seen = new Set<string>();
-    for (const { pos, id } of chests.current.cells) {
-      if (cutY !== null && pos[1] >= cutY) continue;
-      const at = project(m, pos[0] + 0.5, pos[1] + 1, pos[2] + 0.5);
-      if (!at) continue;
-      if (id === 54 || id === 146) {
-        const s = storages.get(k3(pos));
-        if (s && seen.has(k3(s.chest))) continue;
-        if (s) seen.add(k3(s.chest));
-        const sel = selChests.has(k3(pos)) || (s && selChests.has(k3(s.chest)));
-        ctx.globalAlpha = s ? 1 : 0.45;
-        mark('chest', at, COLORS.chest, 13);
-        ctx.globalAlpha = 1;
-        if (s) {
-          const pri = ['low', 'normal', 'preferred', 'important', 'critical'].indexOf(s.priority);
-          for (let i = 0; i <= Math.max(0, pri); i++) {
-            ctx.fillStyle = pri >= 3 ? '#ff9f43' : '#ffd166';
-            ctx.fillRect(at.x + 9, at.y + 5 - i * 4, 3, 3);
-          }
-        }
-        const known = cell > LABEL_ZOOM ? badges.current.get(k3(s ? s.chest : pos)) : undefined;
-        if (cell > LABEL_ZOOM && (s || !known || k3(known.pos) === k3(pos))) {
-          const badge = chestBadge(s, known, st?.categories); // one badge per container (a double chest's first half)
-          if (badge) drawChestBadge(ctx, at, badge);
-        }
-        if (sel) {
-          ctx.strokeStyle = COLORS.select;
-          ctx.lineWidth = 2;
-          ctx.strokeRect(at.x - 11, at.y - 11, 22, 22);
-        }
-      } else {
-        const bench = (st?.workbenches ?? []).find((w) => k3(w.pos) === k3(pos));
-        mark('bench', at, COLORS.bench, 13);
-        const n = bench?.bills.length ?? 0;
-        if (n) {
-          ctx.fillStyle = '#9ec7ff';
-          ctx.beginPath();
-          ctx.arc(at.x + 10, at.y - 9, 6, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#0c1220';
-          ctx.font = '600 9px system-ui, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(String(n), at.x + 10, at.y - 9);
-        }
-        if (props.selection.bench && k3(props.selection.bench) === k3(pos)) {
-          ctx.strokeStyle = COLORS.select;
-          ctx.lineWidth = 2;
-          ctx.strokeRect(at.x - 11, at.y - 11, 22, 22);
-        }
-      }
-    }
-    // Bodies: order lines first, then tokens.
-    const list = bodies(dt);
-    const sel = new Set(props.selection.bodies);
-    for (const b of list) {
-      if (!sel.has(b.key) || !b.at) continue;
-      const pw = st?.pawns.find((x) => x.name === b.key);
-      const targets = [pw?.job?.target, ...(pw?.queue ?? []).map((o) => o.target)]
-        .map((t) => targetPos(t))
-        .filter((t): t is [number, number, number] => !!t);
-      let from = b.at;
-      ctx.strokeStyle = COLORS.order;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 4]);
-      for (const t of targets.slice(0, 6)) {
-        const at = project(m, t[0] + 0.5, t[1] + 0.2, t[2] + 0.5);
-        if (!at) continue;
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        ctx.lineTo(at.x, at.y);
-        ctx.stroke();
-        ctx.strokeRect(at.x - 4, at.y - 4, 8, 8);
-        from = at;
-      }
-      ctx.setLineDash([]);
-    }
-    const tokenR = Math.max(7, Math.min(13, cell * 0.55));
-    const names = getViewerQuality().labels;
-    ctx.font = '600 11px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    for (const b of list) {
-      if (!b.at) continue;
-      const pw = b.kind === 'pawn' ? st?.pawns.find((x) => x.name === b.key) : undefined;
-      const ai = b.kind === 'ai' ? st?.ai?.find((x) => x.name === b.key) : undefined;
-      const color = b.kind === 'ai' ? COLORS.ai : pawnColor(b.key);
-      const { x, y } = b.at;
-      // A body drawn as its model gets marks around it (no token over it); a storey above the cut shows a faint token.
-      const model = b.look === 'model';
-      const r = model ? Math.max(tokenR, b.r - 4) : tokenR;
-      ctx.globalAlpha = b.look === 'cut' ? 0.35 : 1;
-      if (sel.has(b.key)) {
-        ctx.strokeStyle = COLORS.select;
-        ctx.lineWidth = 2;
-        const s = r + 5;
-        ctx.beginPath();
-        // corner brackets (the genre's selection mark, our own drawing)
-        for (const [sx, sy] of [
-          [-1, -1],
-          [1, -1],
-          [1, 1],
-          [-1, 1],
-        ] as const) {
-          ctx.moveTo(x + sx * s, y + sy * (s - 5));
-          ctx.lineTo(x + sx * s, y + sy * s);
-          ctx.lineTo(x + sx * (s - 5), y + sy * s);
-        }
-        ctx.stroke();
-      }
-      if (model) {
-        // The body's colour as a ring on the ground at its feet.
-        const f = project(m, b.pos[0], b.pos[1] + 0.02, b.pos[2]),
-          fx = project(m, b.pos[0] + 0.5, b.pos[1] + 0.02, b.pos[2]),
-          fz = project(m, b.pos[0], b.pos[1] + 0.02, b.pos[2] + 0.5);
-        if (f && fx && fz) {
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2.5;
-          ctx.beginPath();
-          ctx.ellipse(f.x, f.y, Math.max(4, Math.hypot(fx.x - f.x, fx.y - f.y)), Math.max(2, Math.hypot(fz.x - f.x, fz.y - f.y)), 0, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-      } else {
-        ctx.fillStyle = 'rgba(10,12,16,0.78)';
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(x, y, r * 0.42, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      if (pw?.drafted) {
-        const g = glyph('drafted');
-        if (g) {
-          ctx.save();
-          ctx.translate(x + r - 4, y - r - 6);
-          ctx.scale(0.75, 0.75);
-          ctx.fillStyle = '#ff9f43';
-          ctx.fill(g);
-          ctx.restore();
-        }
-      }
-      // job mark
-      const job = pw?.job?.type;
-      if (job && GLYPH_OF[job]) {
-        const g = glyph(GLYPH_OF[job]);
-        if (g) {
-          ctx.save();
-          ctx.translate(x - r - 8, y - r - 6);
-          ctx.scale(0.7, 0.7);
-          ctx.fillStyle = COLORS.designation[job] ?? '#ffffff';
-          ctx.fill(g);
-          ctx.restore();
-        }
-      }
-      const danger = pw ? (pw.hp ?? 20) <= 8 || (pw.food ?? 20) <= 4 : false;
-      // Name tags (the viewer settings): off leaves the names of the selected bodies and those in danger.
-      if (names || sel.has(b.key) || danger) {
-        const label = pw?.display ?? (ai ? (ai.kind === 'main' ? 'main' : ai.name.replace(/^maid_chan_/, '')) : b.key);
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = 'rgba(10,12,16,0.7)';
-        ctx.fillRect(x - tw / 2 - 4, y + r + 3, tw + 8, 15);
-        ctx.fillStyle = danger ? COLORS.danger : b.kind === 'ai' ? '#d9ccff' : '#f4f6f8';
-        ctx.fillText(label, x, y + r + 4);
-      }
-      ctx.globalAlpha = 1;
-    }
-    // The drag: a selection box, a formation line, or a tool's grid rectangle with its live targets.
-    const d = drag.current;
-    if (d && d.moved && d.button === 2) {
-      void formation(d, false).then((f) => {
-        if (drag.current === d) formationShown.current = f;
-      });
-      if (formationShown.current) drawFormation(ctx, m, formationShown.current);
-    }
-    const tool = props.tool;
-    if (d && d.moved && d.button === 0) {
-      if (tool.kind === 'select') {
-        const rr = rectOf(d.start, d.now);
-        ctx.fillStyle = 'rgba(245,197,66,0.10)';
-        ctx.fillRect(rr.x, rr.y, rr.w, rr.h);
-        ctx.strokeStyle = COLORS.select;
-        ctx.lineWidth = 1.2;
-        ctx.strokeRect(rr.x + 0.5, rr.y + 0.5, rr.w, rr.h);
-      } else if (d.startCell && d.endCell) {
-        drawToolDrag(ctx, m, d, quad, poly, mark, cube);
-      }
-    } else if (tool.kind === 'design' && hover.current?.cell && !d) {
-      // A design follows the cursor (Q/E turns it) on the working level.
-      // With build holograms on, the viewer draws it in the world (green where it fits, red where blocked; syncHolograms).
-      const a = startCellOf(hover.current);
-      if (a && !holoOn)
-        for (const b of placeDesign(tool.blocks, a, props.build.facing, !!tool.mine).slice(0, 2500))
-          cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.38, false);
-      if (a)
-        label(
-          ctx,
-          hover.current.at,
-          tool.mine
-            ? `${tool.name}: y ${tool.mine.min}..${tool.mine.max} (absolute) · click to queue the mine`
-            : `${tool.name}: ${tool.blocks.length} blocks · click to queue`,
-          true,
-        );
-    } else if (tool.kind === 'build' && hover.current?.cell && !d) {
-      // The placement ghost under the cursor before a drag starts.
-      const a = startCellOf(hover.current);
-      // With build holograms on, the viewer draws it in its material (syncHolograms).
-      if (a && (!holoOn || tool.id === 'remove')) {
-        const pv = buildPreview(buildItem(tool.id, a, a, props.build));
-        for (const b of pv.blocks.slice(0, 600)) cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.4, false);
-      }
-    } else if (tool.kind !== 'select' && hover.current?.cell && !d) {
-      const hc = hover.current.cell;
-      const q = quad(hc[0], hc[2], hc[0] + 1, hc[2] + 1, hc[1] + 1.02);
-      if (q) {
-        poly(q);
-        ctx.strokeStyle = '#ffffffaa';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-    }
-    void now;
   };
 
+  /** The drag (a selection box, a formation line, or a tool's grid rectangle with its live targets), else the placement under
+   * the cursor. */
+  const drawPointer = (pt: MapPainter, props: StoryMapProps, holoOn: boolean) => {
+    const d = drag.current;
+    if (d && d.moved && d.button === 2) drawFormationDrag(pt, d);
+    if (d) {
+      if (d.moved && d.button === 0) drawLeftDrag(pt, props, d);
+      return;
+    }
+    const hv = hover.current;
+    if (hv?.cell) drawHover(pt, props, hv, holoOn);
+  };
+
+  const drawFormationDrag = (pt: MapPainter, d: DragState) => {
+    void formation(d, false).then((f) => {
+      if (drag.current === d) formationShown.current = f;
+    });
+    if (formationShown.current) drawFormation(pt, formationShown.current);
+  };
+
+  const drawLeftDrag = (pt: MapPainter, props: StoryMapProps, d: DragState) => {
+    if (props.tool.kind === 'select') {
+      const ctx = pt.ctx;
+      const rr = rectOf(d.start, d.now);
+      ctx.fillStyle = 'rgba(245,197,66,0.10)';
+      ctx.fillRect(rr.x, rr.y, rr.w, rr.h);
+      ctx.strokeStyle = COLORS.select;
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(rr.x + 0.5, rr.y + 0.5, rr.w, rr.h);
+    } else if (d.startCell && d.endCell) drawToolDrag(pt, props, d, scan.current.result, water.current);
+  };
+
+  /** Before a drag: a design follows the cursor (Q/E turns it) on the working level, a build tool shows its placement ghost
+   * (with build holograms on, the viewer draws both: syncHolograms), another tool outlines the cell. */
+  const drawHover = (pt: MapPainter, props: StoryMapProps, hv: Hover, holoOn: boolean) => {
+    const tool = props.tool;
+    if (tool.kind === 'design') {
+      const a = startCellOf(hv);
+      if (a) drawDesignHover(pt, tool, a, hv.at, props, holoOn);
+    } else if (tool.kind === 'build') {
+      const a = startCellOf(hv);
+      if (a && (!holoOn || tool.id === 'remove')) drawBuildHover(pt, tool.id, a, props.build);
+    } else if (tool.kind !== 'select' && hv.cell) pt.drawCellOutline(hv.cell);
+  };
   /**
    * The formation for a right-drag: the drafted selected pawns on distinct standable cells spread along the line, each
    * paired with the slot on its side so paths do not cross. `final` waits for the standing heights it lacks; the preview
@@ -1205,24 +963,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       b: P2 = { x: d.endCell[0] + 0.5, z: d.endCell[2] + 0.5 };
     const raw = lineSlots(a, b, drafted.length);
     const sc = stand.current;
-    if (sc.level !== level) Object.assign(sc, { level, cols: new Map() });
-    const missing: Array<[number, number]> = [];
-    const seen = new Set<string>();
-    for (const s of raw)
-      for (let dx = -SNAP_R; dx <= SNAP_R; dx++)
-        for (let dz = -SNAP_R; dz <= SNAP_R; dz++) {
-          const x = Math.floor(s.x) + dx,
-            z = Math.floor(s.z) + dz,
-            k = `${x},${z}`;
-          if (!sc.cols.has(k) && !seen.has(k)) {
-            seen.add(k);
-            missing.push([x, z]);
-          }
-        }
-    if (missing.length && (final || !sc.busy)) {
-      const read = readStand(e, missing, level);
-      if (final) await read;
-    }
+    const read = requestStand(e, sc, raw, level, final);
+    if (final && read) await read;
     const feet = (x: number, z: number) => sc.cols.get(`${x},${z}`);
     const cells = snapCells(raw, (x, z) => feet(x, z) !== null, SNAP_R);
     const pairs = assignAlong(
@@ -1236,6 +978,20 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       return { pawn, target: [x, feet(x, z) ?? level + 1, z] };
     });
     return { a, b, moves, ignored: pawns.length - drafted.length };
+  };
+
+  /** Asks for the standing heights the slots' columns lack (the cache is per level): the read, or null when none is started
+   * (nothing missing, or a preview while one is in flight). */
+  const requestStand = (
+    e: WorldViewerEngine,
+    sc: StandCache,
+    raw: readonly P2[],
+    level: number,
+    final: boolean,
+  ): Promise<void> | null => {
+    if (sc.level !== level) Object.assign(sc, { level, cols: new Map() });
+    const missing = missingColumns(raw, sc.cols);
+    return missing.length && (final || !sc.busy) ? readStand(e, missing, level) : null;
   };
 
   /** Reads the standing heights of columns (level - 4 .. level + 6) into the cache; columns not loaded count as the level. */
@@ -1262,7 +1018,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   };
 
   /** The formation preview: the dashed line and a ghost token (the pawn's colour and initials) on every slot. */
-  const drawFormation = (ctx: CanvasRenderingContext2D, m: ViewMats, f: Formation) => {
+  const drawFormation = (pt: MapPainter, f: Formation) => {
+    const ctx = pt.ctx,
+      m = pt.m;
     const y = p.current.level + 1.02;
     const s1 = project(m, f.a.x, y, f.a.z),
       s2 = project(m, f.b.x, y, f.b.z);
@@ -1296,189 +1054,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       const name = p.current.state?.pawns.find((x) => x.name === mv.pawn)?.display ?? mv.pawn;
       ctx.fillText(name.slice(0, 2).toUpperCase(), at.x, at.y + 0.5);
     }
-    if (f.ignored && s2) label(ctx, s2, `${f.ignored} undrafted: not in the line`, false);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-  };
-
-  const GLYPH_OF: Record<string, string> = {
-    chop: 'chop',
-    mine: 'mine',
-    harvest: 'harvest',
-    cut: 'cut',
-    haul: 'haul',
-    hunt: 'hunt',
-    build: 'build',
-    deconstruct: 'deconstruct',
-    attack: 'hunt',
-    craft: 'bench',
-    cook: 'bench',
-  };
-
-  const drawToolDrag = (
-    ctx: CanvasRenderingContext2D,
-    m: ViewMats,
-    d: DragState,
-    quad: (x1: number, z1: number, x2: number, z2: number, y: number) => Pt[] | null,
-    poly: (pts: Pt[]) => void,
-    mark: (id: string, at: Pt, color: string, size?: number) => void,
-    cube: (x: number, y: number, z: number, color: string, alpha: number, faint: boolean) => void,
-  ) => {
-    const props = p.current;
-    const tool = props.tool;
-    const a = d.startCell!,
-      b = d.endCell!;
-    const rect = cellRect(a, b);
-    if (tool.kind === 'build') {
-      const pv = buildPreview(buildItem(tool.id, a, b, { ...props.build, line: d.alt }));
-      const col = pv.valid ? (pv.item.kind === 'remove' ? '#ff6b6b' : '#7fd3ff') : '#ff6b6b';
-      for (const g of pv.blocks.slice(0, 1500)) cube(g[0], g[1], g[2], col, 0.42, false);
-      label(
-        ctx,
-        d.now,
-        `${pv.blocks.length} block${pv.blocks.length === 1 ? '' : 's'}${pv.item.kind !== 'remove' ? ` · ${pv.cost} ${typeof pv.item.material === 'string' ? pv.item.material.replace(/_/g, ' ') : 'blocks'}` : ''}${pv.reason ? ` · ${pv.reason}` : ''}`,
-        pv.valid,
-      );
-      return;
-    }
-    const q = quad(rect[0], rect[1], rect[2] + 1, rect[3] + 1, props.level + 1.02);
-    const col =
-      tool.kind === 'designate'
-        ? (COLORS.designation[tool.id] ?? '#ffffff')
-        : tool.kind === 'zone'
-          ? tool.op === 'remove'
-            ? '#ff6b6b'
-            : zoneColor(tool.id)
-          : COLORS.chest;
-    if (q) {
-      poly(q);
-      ctx.fillStyle = `${col}22`;
-      ctx.fill();
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      // the grid
-      const upp = unitsPerPx(engine()!.rig.isoZoom, m.h);
-      if (1 / upp >= 9 && (rect[2] - rect[0]) * (rect[3] - rect[1]) < 2500) {
-        ctx.strokeStyle = `${col}33`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (let x = rect[0] + 1; x <= rect[2]; x++) {
-          const s1 = project(m, x, props.level + 1.02, rect[1]),
-            s2 = project(m, x, props.level + 1.02, rect[3] + 1);
-          if (s1 && s2) {
-            ctx.moveTo(s1.x, s1.y);
-            ctx.lineTo(s2.x, s2.y);
-          }
-        }
-        for (let z = rect[1] + 1; z <= rect[3]; z++) {
-          const s1 = project(m, rect[0], props.level + 1.02, z),
-            s2 = project(m, rect[2] + 1, props.level + 1.02, z);
-          if (s1 && s2) {
-            ctx.moveTo(s1.x, s1.y);
-            ctx.lineTo(s2.x, s2.y);
-          }
-        }
-        ctx.stroke();
-      }
-    }
-    if (tool.kind === 'zone') {
-      // The resulting cells, as the director will paint or erase them (merges and overwrites shown; zones/zonePaint.ts).
-      const zs = props.state?.zones ?? [];
-      const into = zoneInto(tool, zs, a, d.shift);
-      const wk = `${rect.join(',')}@${props.level}`;
-      const wet = water.current.key === wk ? water.current.cells : null;
-      const out = zonePreview(zs, tool, rect, props.level, growPlantNow(), into, wet);
-      if (out)
-        drawZonePreview(ctx, out.zones, out.result.id, out.removedCells, col, props.level + 1.03, (x, y, z) =>
-          project(m, x, y, z),
-        );
-      // A quarry: its spiral stair (step 1 at the top) and how deep it goes.
-      const stair =
-        out && tool.id === 'mine' && tool.op === 'add' && into === undefined && quarryModeNow() === 'quarry'
-          ? drawQuarryPreview(
-              ctx,
-              out.zones.find((z) => String(z.id) === String(out.result.id)),
-              props.level,
-              (x, y, z) => project(m, x, y, z),
-            )
-          : '';
-      label(ctx, d.now, previewLabel(tool, out, (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)) + stair, out !== null);
-      return;
-    }
-    if (tool.kind === 'designate') {
-      const res = scan.current.result;
-      const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
-      if (res?.height && res.cols) {
-        // Exactly what will be designated: each column's top face outlined (fuller the deeper it goes), its bottom dashed.
-        const deep = res.height.layers > 1;
-        ctx.lineWidth = 1.2;
-        for (const [x, z, top, bottom, n] of res.cols.slice(0, 2500)) {
-          const qt = quad(x + 0.08, z + 0.08, x + 0.92, z + 0.92, top + 1.01);
-          if (!qt) continue;
-          poly(qt);
-          ctx.fillStyle = `${col}${n > 1 ? (n > 3 ? '66' : '44') : '22'}`;
-          ctx.fill();
-          ctx.strokeStyle = res.height.tooMany ? '#ff6b6b' : col;
-          ctx.stroke();
-          if (deep && bottom < top && props.view === 'angled') {
-            const qb = quad(x + 0.08, z + 0.08, x + 0.92, z + 0.92, bottom + 0.01);
-            if (qb) {
-              poly(qb);
-              ctx.setLineDash([3, 3]);
-              ctx.stroke();
-              ctx.setLineDash([]);
-            }
-          }
-        }
-        const mode = props.heightMode;
-        label(ctx, d.now, heightLabel(t.label, mode, res.height, props.layers), !res.height.tooMany && res.count > 0);
-      } else if (res) {
-        for (const c of res.cells.slice(0, 1200)) {
-          const s = project(m, c[0] + 0.5, c[1] + 1, c[2] + 0.5);
-          if (s) {
-            ctx.fillStyle = `${col}bb`;
-            ctx.fillRect(s.x - 3, s.y - 3, 6, 6);
-          }
-        }
-        for (const en of res.entities) {
-          const s = project(m, en.x, en.y + 0.3, en.z);
-          if (s) mark(tool.id, s, col, 12);
-        }
-        if (tool.id === 'cancel') {
-          for (const dd of props.state?.designations ?? []) {
-            const bb = designationCells(dd)[0];
-            if (bb && bb[0] >= rect[0] && bb[0] <= rect[2] && bb[2] >= rect[1] && bb[2] <= rect[3]) {
-              const s = project(m, bb[0] + 0.5, bb[1] + 1, bb[2] + 0.5);
-              if (s) {
-                ctx.strokeStyle = '#ff6b6b';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(s.x - 6, s.y - 6);
-                ctx.lineTo(s.x + 6, s.y + 6);
-                ctx.moveTo(s.x + 6, s.y - 6);
-                ctx.lineTo(s.x - 6, s.y + 6);
-                ctx.stroke();
-              }
-            }
-          }
-        }
-        label(ctx, d.now, `${t.label}: ${res.count} ${res.count === 1 ? t.noun[0] : t.noun[1]}`, true);
-      } else label(ctx, d.now, `${t.label}: …`, true);
-    } else {
-      label(ctx, d.now, `${rect[2] - rect[0] + 1} × ${rect[3] - rect[1] + 1}`, true);
-    }
-  };
-
-  const label = (ctx: CanvasRenderingContext2D, at: Pt, text: string, ok: boolean) => {
-    ctx.font = '600 12px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    const w = ctx.measureText(text).width + 12;
-    ctx.fillStyle = 'rgba(10,12,16,0.85)';
-    ctx.fillRect(at.x + 14, at.y + 10, w, 20);
-    ctx.fillStyle = ok ? '#f4f6f8' : '#ff8a8a';
-    ctx.fillText(text, at.x + 20, at.y + 20);
+    if (f.ignored && s2) pt.label(s2, `${f.ignored} undrafted: not in the line`, false);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
   };
@@ -1521,37 +1097,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const e = engine();
     if (!m || !e) return false;
     const pawns = p.current.state?.pawns ?? [];
-    for (const x of e.runtime.store.entities(0)) {
-      if (x.kind !== 'mob' && x.kind !== 'player') continue;
-      if (x.kind === 'player' && pawns.some((pw) => pw.name === x.name)) continue;
-      const s = project(m, x.x, x.y + 0.4, x.z);
-      if (s && Math.hypot(s.x - pt.x, s.y - pt.y) <= 18) return true;
-    }
-    return false;
+    return e.runtime.store.entities(0).some((x) => isAttackable(x, pawns) && withinPx(m, x, pt, 18));
   };
   const attackAt = useRef(0);
 
   const updateHover = (pt: Pt) => {
     const now = performance.now();
     const cv = canvas.current;
-    if (cv && p.current.attackMode && now - attackAt.current > 50) {
-      attackAt.current = now;
-      const on = attackableAt(pt);
-      if ((cv.dataset.attack === '1') !== on) {
-        cv.dataset.attack = on ? '1' : '';
-        cv.style.cursor = on ? ATTACK_CURSOR : '';
-      }
-    } else if (cv && !p.current.attackMode && cv.dataset.attack === '1') {
-      cv.dataset.attack = '';
-      cv.style.cursor = '';
-    }
+    if (cv) syncAttackCursor(cv, pt, now);
     const cell = groundCell(pt);
-    if (cv) {
-      // A failed build cell under the cursor: its reason as the map's tooltip.
-      const f = cell ? failedModel(p.current.state?.ghosts?.blocks ?? EMPTY_GHOSTS).byColumn.get(`${cell[0]},${cell[2]}`) : undefined;
-      const title = f ? `Build ${f.build}: ${f.cell.join(',')} failed: ${f.reason} (Retry tool: O)` : '';
-      if (cv.title !== title) cv.title = title;
-    }
+    if (cv) syncCellTitle(cv, cell);
     const h = hover.current ?? { at: pt, cell, face: null, pickAt: 0 };
     h.at = pt;
     h.cell = cell;
@@ -1566,6 +1121,30 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         if (hit) hover.current.cell = [hit.x, hit.y, hit.z];
       });
     }
+  };
+
+  /** Drafted pawns selected: the attack cursor over something they can attack (checked at most every 50 ms). */
+  const syncAttackCursor = (cv: HTMLCanvasElement, pt: Pt, now: number) => {
+    const attack = p.current.attackMode;
+    if (attack && now - attackAt.current > 50) {
+      attackAt.current = now;
+      const on = attackableAt(pt);
+      if ((cv.dataset.attack === '1') !== on) {
+        cv.dataset.attack = on ? '1' : '';
+        cv.style.cursor = on ? ATTACK_CURSOR : '';
+      }
+    } else if (!attack && cv.dataset.attack === '1') {
+      cv.dataset.attack = '';
+      cv.style.cursor = '';
+    }
+  };
+
+  /** A failed build cell under the cursor: its reason as the map's tooltip. */
+  const syncCellTitle = (cv: HTMLCanvasElement, cell: V3 | null) => {
+    const blocks = p.current.state?.ghosts?.blocks ?? EMPTY_GHOSTS;
+    const f = cell ? failedModel(blocks).byColumn.get(`${cell[0]},${cell[2]}`) : undefined;
+    const title = f ? `Build ${f.build}: ${f.cell.join(',')} failed: ${f.reason} (Retry tool: O)` : '';
+    if (cv.title !== title) cv.title = title;
   };
 
   /** What a designate drag's preview depends on: the rectangle, the tool and its filter, height mode and level. */
@@ -1640,8 +1219,6 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const key = scanKey(rect, tool.id);
     if (scan.current.key === key || scan.current.busy) return;
     scan.current.key = key;
-    const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
-    const y = toolYRange(tool.id, p.current.level, p.current.build.height, p.current.cutY);
     const finish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets) => {
       if (drag.current !== d) return; // cancelled meanwhile
       scan.current.result = {
@@ -1654,45 +1231,63 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         ...(height ? { height, cols: columnSpans(height.cells) } : {}),
       };
     };
-    if (t.entities) {
-      const ents = entitiesIn(t, rect, entityList());
-      finish([], ents.length, ents);
-      return;
-    }
-    if (tool.id === 'cancel') {
-      const n = (p.current.state?.designations ?? []).filter((dd) => {
-        const bb = designationCells(dd)[0];
-        return bb && bb[0] >= rect[0] && bb[0] <= rect[2] && bb[2] >= rect[1] && bb[2] <= rect[3];
-      }).length;
-      finish([], n, []);
-      return;
-    }
-    if (tool.id === 'retry') {
-      // Failed or resting designations and failed build cells in the box: what the release retries (its count, never a scan).
-      const st = p.current.state;
-      const n = stalledIn(st?.designations ?? [], rect).length + failedCells(st?.ghosts?.blocks ?? EMPTY_GHOSTS, rect).length;
-      finish([], n, []);
-      return;
-    }
+    if (quickPreview(tool.id, rect, finish)) return;
     scan.current.busy = true;
-    const job = hasHeight(tool.id)
-      ? heightScan(e, tool.id, rect).then((ht) => finish(ht.cells, ht.cells.length, [], ht))
-      : e.runtime.host
-          .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
-          .then((s) => {
-            const pv = previewTargets(tool.id, s, p.current.mineFilter);
-            finish(pv.cells, pv.count, []);
-          });
-    void job
+    void scanTargets(e, tool.id, rect, finish)
       .catch(() => undefined)
       .finally(() => {
         scan.current.busy = false;
-        const dd = drag.current;
-        if (dd) {
-          const r2 = dd.startCell && dd.endCell ? scanKey(cellRect(dd.startCell, dd.endCell), tool.id) : '';
-          if (r2 !== scan.current.key) rescan();
-        }
+        rescanIfMoved(tool.id);
       });
+  };
+
+  /** Previews that need no block scan: entities (drops, animals), and Cancel / Retry (counted from the colony). */
+  const quickPreview = (id: DesignateId, rect: [number, number, number, number], finish: ScanFinish): boolean => {
+    const t = DESIGNATE_TOOLS.find((x) => x.id === id)!;
+    if (t.entities) {
+      const ents = entitiesIn(t, rect, entityList());
+      finish([], ents.length, ents);
+      return true;
+    }
+    const n = colonyCount(id, rect);
+    if (n === null) return false;
+    finish([], n, []);
+    return true;
+  };
+
+  /** Cancel: the designations in the box; Retry: the failed or resting designations and failed build cells in it (what the
+   * release retries: its count, never a scan). Null for other tools. */
+  const colonyCount = (id: DesignateId, rect: [number, number, number, number]): number | null => {
+    const st = p.current.state;
+    const des = st?.designations ?? [];
+    if (id === 'cancel') return des.filter((dd) => designationInRect(dd, rect)).length;
+    if (id === 'retry') return stalledIn(des, rect).length + failedCells(st?.ghosts?.blocks ?? EMPTY_GHOSTS, rect).length;
+    return null;
+  };
+
+  /** A worker scan of the box: a height-mode column scan (Mine, Deconstruct), else the tool's blocks at the level. */
+  const scanTargets = (
+    e: WorldViewerEngine,
+    id: DesignateId,
+    rect: [number, number, number, number],
+    finish: ScanFinish,
+  ): Promise<void> => {
+    if (hasHeight(id)) return heightScan(e, id, rect).then((ht) => finish(ht.cells, ht.cells.length, [], ht));
+    const y = toolYRange(id, p.current.level, p.current.build.height, p.current.cutY);
+    return e.runtime.host
+      .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(id), 6000)
+      .then((s) => {
+        const pv = previewTargets(id, s, p.current.mineFilter);
+        finish(pv.cells, pv.count, []);
+      });
+  };
+
+  /** After a scan: the drag moved on meanwhile, so scan its new rectangle. */
+  const rescanIfMoved = (id: DesignateId) => {
+    const dd = drag.current;
+    if (!dd) return;
+    const r2 = dd.startCell && dd.endCell ? scanKey(cellRect(dd.startCell, dd.endCell), id) : '';
+    if (r2 !== scan.current.key) rescan();
   };
 
   /** Another button went down during a drag: right during a left drag (left during a right drag) cancels it. */
@@ -1748,20 +1343,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const pt = local(ev);
-    // A chorded press: pointer events report a second button going down as a move with `button` set.
-    if (ev.button >= 0 && (ev.buttons & buttonBit(ev.button)) !== 0 && gate.current.button !== null) chord(ev.button);
+    chordMove(ev);
     const d = drag.current;
     if (d && d.button === 1) {
-      // Middle-drag pans (Shift + middle-drag turns the angled view).
-      const e = engine();
-      if (e) {
-        const dx = pt.x - d.now.x,
-          dy = pt.y - d.now.y;
-        if (ev.shiftKey && e.rig.mode === 'iso') e.rig.look(dx, dy);
-        else e.rig.pan(dx, dy, canvas.current!.clientHeight);
-      }
-      d.now = pt;
-      d.moved = true;
+      middleDrag(ev, d, pt);
       return;
     }
     updateHover(pt);
@@ -1772,23 +1357,50 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       if (!d.moved && isDrag(d.start, pt)) d.moved = true;
       return;
     }
+    toolDragMove(ev, d, pt);
+  };
+
+  /** A chorded press: pointer events report a second button going down as a move with `button` set. */
+  const chordMove = (ev: React.PointerEvent) => {
+    if (ev.button >= 0 && (ev.buttons & buttonBit(ev.button)) !== 0 && gate.current.button !== null) chord(ev.button);
+  };
+
+  /** Middle-drag pans (Shift + middle-drag turns the angled view). */
+  const middleDrag = (ev: React.PointerEvent, d: DragState, pt: Pt) => {
+    const e = engine();
+    if (e) {
+      const dx = pt.x - d.now.x,
+        dy = pt.y - d.now.y;
+      if (ev.shiftKey && e.rig.mode === 'iso') e.rig.look(dx, dy);
+      else e.rig.pan(dx, dy, canvas.current!.clientHeight);
+    }
+    d.now = pt;
+    d.moved = true;
+  };
+
+  /** A tool's left drag follows the pointer (a build by the cursor's placement cell); a designate or fishing-zone drag
+   * rescans its preview. */
+  const toolDragMove = (ev: React.PointerEvent, d: DragState, pt: Pt) => {
     d.now = pt;
     d.alt = ev.altKey;
     d.shift = ev.shiftKey; // a zone paint: Shift extends the zone the drag started in
     if (!d.moved && isDrag(d.start, pt)) d.moved = true;
     const tool = p.current.tool;
-    if (tool.kind === 'build') {
-      const h = hover.current;
-      const c = h ? startCellOf(h) : null;
-      if (c && d.startCell)
-        d.endCell =
-          p.current.view === 'angled' &&
-          (tool.id === 'wall' || tool.id === 'floor' || tool.id === 'roof' || tool.id === 'fence')
-            ? [c[0], d.startCell[1], c[2]]
-            : c;
-    } else d.endCell = groundCell(pt) ?? d.endCell;
-    if (d.moved && tool.kind === 'designate') rescan();
-    else if (d.moved && tool.kind === 'zone' && tool.id === 'fish' && tool.op === 'add') rescanWater();
+    d.endCell = tool.kind === 'build' ? buildDragEnd(tool.id, d) : (groundCell(pt) ?? d.endCell);
+    if (d.moved) rescanDrag(tool);
+  };
+
+  /** A build drag's end: the cursor's placement cell; walls, floors, roofs and fences stay on the start's layer when angled. */
+  const buildDragEnd = (id: BuildToolId, d: DragState): V3 | null => {
+    const h = hover.current;
+    const c = h ? startCellOf(h) : null;
+    if (!c || !d.startCell) return d.endCell;
+    return p.current.view === 'angled' && FLAT_BUILDS.has(id) ? [c[0], d.startCell[1], c[2]] : c;
+  };
+
+  const rescanDrag = (tool: MapTool) => {
+    if (tool.kind === 'designate') rescan();
+    else if (tool.kind === 'zone' && tool.id === 'fish' && tool.op === 'add') rescanWater();
   };
 
   /** The body under a point: the nearest within its own hit radius (a model's covers its height). */
@@ -1813,190 +1425,169 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const d = drag.current;
     drag.current = null;
     const props = p.current;
-    if (ev.button === 2) {
-      // Right click: drops the active tool (the genre); with something selected, the order menu for the thing under it.
-      if (props.tool.kind !== 'select') {
-        props.onDropTool();
-        return;
-      }
-      if (d && d.button === 2 && d.moved && props.onFormation) {
-        const f = await formation(d, true);
-        if (f && f.moves.length) {
-          props.onFormation(f.moves, ev.shiftKey, f.ignored);
-          return;
-        }
-      }
-      const target = await targetAt(pt);
-      if (target) props.onContext(target, { x: ev.clientX, y: ev.clientY });
+    if (ev.button === 2) await rightUp(ev, pt, d, props);
+    else if (!d || d.button !== 0) return;
+    else if (props.tool.kind === 'select') await selectUp(ev, pt, d, props);
+    else await toolUp(ev, d, props);
+  };
+
+  /** Right click: drops the active tool (the genre); with something selected, the order menu for the thing under it; a
+   * right-drag with drafted pawns selected lines them up. */
+  const rightUp = async (ev: React.PointerEvent, pt: Pt, d: DragState | null, props: StoryMapProps) => {
+    if (props.tool.kind !== 'select') {
+      props.onDropTool();
       return;
     }
-    if (!d || d.button !== 0) return;
-    const tool = props.tool;
-    if (tool.kind === 'select') {
-      if (d.moved) {
-        const r: Rect = rectOf(d.start, pt);
-        const inBox = bodies(0).filter(
-          (b) => b.at && b.at.x >= r.x && b.at.x <= r.x + r.w && b.at.y >= r.y && b.at.y <= r.y + r.h,
-        );
-        if (inBox.length) {
-          props.onSelect({
-            bodies: d.shift
-              ? [...new Set([...props.selection.bodies, ...inBox.map((b) => b.key)])]
-              : inBox.map((b) => b.key),
-            chests: [],
-            bench: null,
-          });
-          return;
-        }
-        // No bodies: the chests in the box (edit their storage together).
-        const m = mats.current;
-        const boxChests = chests.current.cells
-          .filter((c) => c.id === 54 || c.id === 146)
-          .filter((c) => {
-            const s = m ? project(m, c.pos[0] + 0.5, c.pos[1] + 1, c.pos[2] + 0.5) : null;
-            return s && s.x >= r.x && s.x <= r.x + r.w && s.y >= r.y && s.y <= r.y + r.h;
-          })
-          .map((c) => c.pos);
-        props.onSelect({ bodies: d.shift ? props.selection.bodies : [], chests: boxChests, bench: null });
+    if (d && d.button === 2 && d.moved && props.onFormation) {
+      const f = await formation(d, true);
+      if (f && f.moves.length) {
+        props.onFormation(f.moves, ev.shiftKey, f.ignored);
         return;
       }
-      // A bed mark under the cursor wins over a body standing farther from the click (pawns sleep on their beds).
-      const m = mats.current;
-      const bedHit = m
-        ? (props.state?.beds ?? [])
-            .map((b) => ({ b, s: project(m, b.pos[0] + 0.5, b.pos[1] + 0.6, b.pos[2] + 0.5) }))
-            .map((x) => ({ ...x, d: x.s ? Math.hypot(x.s.x - pt.x, x.s.y - pt.y) : Infinity }))
-            .filter((x) => x.d <= 10)
-            .sort((a, b) => a.d - b.d)[0]
-        : undefined;
-      const hit = bodyAt(pt);
-      if (bedHit && (!hit?.at || Math.hypot(hit.at.x - pt.x, hit.at.y - pt.y) > bedHit.d)) {
-        props.onSelect({
-          bodies: [],
-          chests: [],
-          bench: null,
-          bed: [bedHit.b.pos[0], bedHit.b.pos[1], bedHit.b.pos[2]],
-        });
-        return;
-      }
-      // A failed designation's ring under the cursor (nearer than any body): its inspector (why, retry, cancel).
-      const failHit = failedAt.current
-        .map((f) => ({ f, d: Math.hypot(f.x - pt.x, f.y - pt.y) }))
-        .filter((x) => x.d <= 12)
-        .sort((a, b) => a.d - b.d)[0];
-      if (failHit && (!hit?.at || Math.hypot(hit.at.x - pt.x, hit.at.y - pt.y) > failHit.d)) {
-        props.onSelect({ ...EMPTY_SEL, designation: { id: failHit.f.id, cluster: failHit.f.cluster } });
-        return;
-      }
-      if (hit) {
-        const now = performance.now();
-        if (lastClick.current && lastClick.current.name === hit.key && now - lastClick.current.t < 350) {
-          const visible = bodies(0).filter(
-            (b) =>
-              b.kind === hit.kind &&
-              b.at &&
-              b.at.x >= 0 &&
-              b.at.y >= 0 &&
-              b.at.x <= canvas.current!.clientWidth &&
-              b.at.y <= canvas.current!.clientHeight,
-          );
-          props.onSelectSame(
-            hit.kind,
-            visible.map((b) => b.key),
-          );
-          lastClick.current = null;
-          return;
-        }
-        lastClick.current = { t: now, name: hit.key };
-        const sel = props.selection;
-        const has = sel.bodies.includes(hit.key);
-        props.onSelect({
-          bodies:
-            ev.ctrlKey || ev.metaKey
-              ? has
-                ? sel.bodies.filter((n) => n !== hit.key)
-                : [...sel.bodies, hit.key]
-              : ev.shiftKey
-                ? has
-                  ? sel.bodies
-                  : [...sel.bodies, hit.key]
-                : [hit.key],
-          chests: [],
-          bench: null,
-        });
-        return;
-      }
-      // A chest or a workbench under the cursor.
-      const block = await pick(pt);
-      if (block && (block.id === 54 || block.id === 146)) {
-        const pos: V3 = [block.x, block.y, block.z];
-        const s = (props.state?.storages ?? []).find(
-          (x) => k3(x.chest) === k3(pos) || (x.doubleWith && k3(x.doubleWith) === k3(pos)),
-        );
-        const chest: V3 = s ? s.chest : pos;
-        const sel = props.selection;
-        const has = sel.chests.some((c) => k3(c) === k3(chest));
-        props.onSelect({
-          bodies: [],
-          chests: ev.shiftKey
-            ? has
-              ? sel.chests.filter((c) => k3(c) !== k3(chest))
-              : [...sel.chests, chest]
-            : [chest],
-          bench: null,
-        });
-        return;
-      }
-      if (block && block.id === 26) {
-        const bed = (props.state?.beds ?? []).find(
-          (b) => Math.abs(b.pos[0] - block.x) + Math.abs(b.pos[2] - block.z) <= 1 && Math.abs(b.pos[1] - block.y) <= 1,
-        );
-        if (bed) {
-          props.onSelect({ bodies: [], chests: [], bench: null, bed: [bed.pos[0], bed.pos[1], bed.pos[2]] });
-          return;
-        }
-      }
-      if (block && (block.id === 58 || block.id === 61 || block.id === 62)) {
-        props.onSelect({ bodies: [], chests: [], bench: [block.x, block.y, block.z] });
-        return;
-      }
-      if (!ev.shiftKey) props.onSelect({ bodies: [], chests: [], bench: null });
+    }
+    const target = await targetAt(pt);
+    if (target) props.onContext(target, { x: ev.clientX, y: ev.clientY });
+  };
+
+  /** The select tool: a box selects the bodies in it (else the chests), a click what is under it. */
+  const selectUp = async (ev: React.PointerEvent, pt: Pt, d: DragState, props: StoryMapProps) => {
+    if (d.moved) boxSelect(pt, d, props);
+    else await clickSelect(ev, pt, props);
+  };
+
+  const boxSelect = (pt: Pt, d: DragState, props: StoryMapProps) => {
+    const r: Rect = rectOf(d.start, pt);
+    const inBox = bodies(0).filter((b) => b.at && inRect(r, b.at));
+    if (inBox.length) {
+      props.onSelect({
+        bodies: d.shift ? [...new Set([...props.selection.bodies, ...inBox.map((b) => b.key)])] : inBox.map((b) => b.key),
+        chests: [],
+        bench: null,
+      });
       return;
     }
-    // A tool: a click is a 1×1 drag.
+    // No bodies: the chests in the box (edit their storage together).
+    props.onSelect({ bodies: d.shift ? props.selection.bodies : [], chests: chestsIn(r), bench: null });
+  };
+
+  /** The chests whose marks are inside a screen rectangle. */
+  const chestsIn = (r: Rect): V3[] => {
+    const m = mats.current;
+    return chests.current.cells
+      .filter((c) => c.id === 54 || c.id === 146)
+      .filter((c) => {
+        const s = m ? project(m, c.pos[0] + 0.5, c.pos[1] + 1, c.pos[2] + 0.5) : null;
+        return s && inRect(r, s);
+      })
+      .map((c) => c.pos);
+  };
+
+  /** A click: a bed mark or a failed designation's ring nearer than any body, a body, else the block (a chest, a bed, a bench). */
+  const clickSelect = async (ev: React.PointerEvent, pt: Pt, props: StoryMapProps) => {
+    // A bed mark under the cursor wins over a body standing farther from the click (pawns sleep on their beds).
+    const bedHit = bedMarkAt(pt, props);
+    const hit = bodyAt(pt);
+    if (bedHit && fartherThan(hit, pt, bedHit.d)) {
+      props.onSelect({ bodies: [], chests: [], bench: null, bed: [bedHit.b.pos[0], bedHit.b.pos[1], bedHit.b.pos[2]] });
+      return;
+    }
+    // A failed designation's ring under the cursor (nearer than any body): its inspector (why, retry, cancel).
+    const failHit = failedRingAt(pt);
+    if (failHit && fartherThan(hit, pt, failHit.d)) {
+      props.onSelect({ ...EMPTY_SEL, designation: { id: failHit.f.id, cluster: failHit.f.cluster } });
+      return;
+    }
+    if (hit) clickBody(ev, hit, props);
+    else await clickBlock(ev, pt, props);
+  };
+
+  /** The nearest bed mark within 10 px. */
+  const bedMarkAt = (pt: Pt, props: StoryMapProps) => {
+    const m = mats.current;
+    if (!m) return undefined;
+    return (props.state?.beds ?? [])
+      .map((b) => ({ b, s: project(m, b.pos[0] + 0.5, b.pos[1] + 0.6, b.pos[2] + 0.5) }))
+      .map((x) => ({ ...x, d: x.s ? Math.hypot(x.s.x - pt.x, x.s.y - pt.y) : Infinity }))
+      .filter((x) => x.d <= 10)
+      .sort((a, b) => a.d - b.d)[0];
+  };
+
+  /** The nearest failed designation's ring within 12 px. */
+  const failedRingAt = (pt: Pt) =>
+    failedAt.current
+      .map((f) => ({ f, d: Math.hypot(f.x - pt.x, f.y - pt.y) }))
+      .filter((x) => x.d <= 12)
+      .sort((a, b) => a.d - b.d)[0];
+
+  /** A click on a body: plain = only it, Shift adds, Ctrl toggles; a double click selects every visible body of its kind. */
+  const clickBody = (ev: React.PointerEvent, hit: MapBody, props: StoryMapProps) => {
+    const now = performance.now();
+    if (lastClick.current && lastClick.current.name === hit.key && now - lastClick.current.t < 350) {
+      const c = canvas.current!;
+      const view: Rect = { x: 0, y: 0, w: c.clientWidth, h: c.clientHeight };
+      const visible = bodies(0).filter((b) => b.kind === hit.kind && b.at && inRect(view, b.at));
+      props.onSelectSame(
+        hit.kind,
+        visible.map((b) => b.key),
+      );
+      lastClick.current = null;
+      return;
+    }
+    lastClick.current = { t: now, name: hit.key };
+    props.onSelect({ bodies: clickedBodies(props.selection.bodies, hit.key, ev), chests: [], bench: null });
+  };
+
+  /** A chest or a workbench (or a bed's block) under the cursor; else nothing (Shift keeps the selection). */
+  const clickBlock = async (ev: React.PointerEvent, pt: Pt, props: StoryMapProps) => {
+    const block = await pick(pt);
+    if (block && selectBlock(ev, block, props)) return;
+    if (!ev.shiftKey) props.onSelect({ bodies: [], chests: [], bench: null });
+  };
+
+  /** Selects the chest, bed or workbench a block is; false when it is none of them. */
+  const selectBlock = (ev: React.PointerEvent, block: PickedBlock, props: StoryMapProps): boolean => {
+    if (block.id === 54 || block.id === 146) {
+      selectChest(ev, [block.x, block.y, block.z], props);
+      return true;
+    }
+    const bed = block.id === 26 ? bedOfBlock(block, props) : undefined;
+    if (bed) {
+      props.onSelect({ bodies: [], chests: [], bench: null, bed: [bed.pos[0], bed.pos[1], bed.pos[2]] });
+      return true;
+    }
+    if (block.id !== 58 && block.id !== 61 && block.id !== 62) return false;
+    props.onSelect({ bodies: [], chests: [], bench: [block.x, block.y, block.z] });
+    return true;
+  };
+
+  /** A chest block selects its storage's chest (a double chest's first half); Shift toggles it in the selection. */
+  const selectChest = (ev: React.PointerEvent, pos: V3, props: StoryMapProps) => {
+    const s = (props.state?.storages ?? []).find(
+      (x) => k3(x.chest) === k3(pos) || (x.doubleWith && k3(x.doubleWith) === k3(pos)),
+    );
+    const chest: V3 = s ? s.chest : pos;
+    const sel = props.selection;
+    const has = sel.chests.some((c) => k3(c) === k3(chest));
+    props.onSelect({
+      bodies: [],
+      chests: ev.shiftKey ? (has ? sel.chests.filter((c) => k3(c) !== k3(chest)) : [...sel.chests, chest]) : [chest],
+      bench: null,
+    });
+  };
+
+  /** The bed a bed block belongs to (its foot or head, a block apart). */
+  const bedOfBlock = (block: PickedBlock, props: StoryMapProps) =>
+    (props.state?.beds ?? []).find(
+      (b) => Math.abs(b.pos[0] - block.x) + Math.abs(b.pos[2] - block.z) <= 1 && Math.abs(b.pos[1] - block.y) <= 1,
+    );
+
+  /** A tool: a click is a 1×1 drag; a designate tool sends what its drag previewed (or scans now). */
+  const toolUp = async (ev: React.PointerEvent, d: DragState, props: StoryMapProps) => {
     if (!d.startCell) return;
     const end = d.endCell ?? d.startCell;
+    const tool = props.tool;
     if (tool.kind === 'designate') {
-      const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
-      const rect = cellRect(d.startCell, end);
-      const y = toolYRange(tool.id, props.level, props.build.height, props.cutY);
-      let res: DragResult | null = scan.current.result;
-      if (!res || scan.current.key !== scanKey(rect, tool.id) || res.rect.join(',') !== rect.join(',')) {
-        // A click, or the scan had not caught up: scan now.
-        const e = engine();
-        if (e && hasHeight(tool.id)) {
-          const ht = await heightScan(e, tool.id, rect).catch(() => null);
-          res = {
-            rect,
-            a: d.startCell,
-            b: end,
-            cells: ht?.cells ?? [],
-            entities: [],
-            count: ht?.cells.length ?? 0,
-            ...(ht ? { height: ht } : {}),
-          };
-        } else if (t.entities) {
-          const ents = entitiesIn(t, rect, entityList());
-          res = { rect, a: d.startCell, b: end, cells: [], entities: ents, count: ents.length };
-        } else if (e && tool.id !== 'cancel') {
-          const s = await e.runtime.host
-            .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
-            .catch(() => []);
-          const pv = previewTargets(tool.id, s, props.mineFilter);
-          res = { rect, a: d.startCell, b: end, cells: pv.cells, entities: [], count: pv.count };
-        } else res = { rect, a: d.startCell, b: end, cells: [], entities: [], count: 0 };
-      }
-      void toolArea;
+      const res = await designateResult(tool.id, d.startCell, end);
       props.onTool({ ...res, moved: d.moved }, ev.shiftKey);
       return;
     }
@@ -2004,6 +1595,50 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       { rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0, moved: d.moved },
       ev.shiftKey,
     );
+  };
+
+  /** A designate drag's targets: the live preview when it matches the rectangle, else scanned now (a click, or the scan had not
+   * caught up). */
+  const designateResult = async (id: DesignateId, a: V3, end: V3): Promise<DragResult> => {
+    const rect = cellRect(a, end);
+    const res = scan.current.result;
+    if (res && scan.current.key === scanKey(rect, id) && res.rect.join(',') === rect.join(',')) return res;
+    const t = DESIGNATE_TOOLS.find((x) => x.id === id)!;
+    const e = engine();
+    if (e && hasHeight(id)) return heightResult(e, id, rect, a, end);
+    if (t.entities) {
+      const ents = entitiesIn(t, rect, entityList());
+      return { rect, a, b: end, cells: [], entities: ents, count: ents.length };
+    }
+    if (e && id !== 'cancel') {
+      const pr = p.current;
+      const y = toolYRange(id, pr.level, pr.build.height, pr.cutY);
+      const s = await e.runtime.host
+        .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(id), 6000)
+        .catch(() => []);
+      const pv = previewTargets(id, s, pr.mineFilter);
+      return { rect, a, b: end, cells: pv.cells, entities: [], count: pv.count };
+    }
+    return { rect, a, b: end, cells: [], entities: [], count: 0 };
+  };
+
+  const heightResult = async (
+    e: WorldViewerEngine,
+    id: 'mine' | 'deconstruct',
+    rect: [number, number, number, number],
+    a: V3,
+    end: V3,
+  ): Promise<DragResult> => {
+    const ht = await heightScan(e, id, rect).catch(() => null);
+    return {
+      rect,
+      a,
+      b: end,
+      cells: ht?.cells ?? [],
+      entities: [],
+      count: ht?.cells.length ?? 0,
+      ...(ht ? { height: ht } : {}),
+    };
   };
 
   /** What is under the cursor for the order menu: a ghost, a mob or a drop, a block, or bare ground. */
@@ -2017,45 +1652,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const body = bodyAt(pt);
     if (body?.kind === 'ai')
       return { kind: 'player', entity: null, name: body.key, bot: true, x: body.pos[0], y: body.pos[1], z: body.pos[2] };
-    let best: Target | null = null;
-    let bd = 18;
-    for (const x of ents) {
-      const s = project(m, x.x, x.y + 0.4, x.z);
-      if (!s) continue;
-      const dd = Math.hypot(s.x - pt.x, s.y - pt.y);
-      if (dd > bd) continue;
-      bd = dd;
-      if (x.kind === 'item') best = { kind: 'item', entity: x.id, name: x.name ?? 'the drop', x: x.x, y: x.y, z: x.z };
-      else if (x.kind === 'player' && x.name && !(st?.pawns ?? []).some((pw) => pw.name === x.name))
-        best = {
-          kind: 'player',
-          entity: x.id,
-          name: x.name,
-          bot: (st?.ai ?? []).some((a) => a.name === x.name),
-          x: x.x,
-          y: x.y,
-          z: x.z,
-        };
-      else if (x.kind === 'mob')
-        best = {
-          kind: 'mob',
-          entity: x.id,
-          name: x.name ?? 'the mob',
-          animal: [90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103].includes(x.type),
-          x: x.x,
-          y: x.y,
-          z: x.z,
-        };
-    }
+    const best = entityTargetAt(m, ents, pt, st);
     if (best) return best;
     const cell = groundCell(pt);
-    if (cell) {
-      const g = (st?.ghosts?.blocks ?? []).find((b) => b[0] === cell[0] && b[2] === cell[2] && b[6] !== 'done');
-      if (g) {
-        const build = (st?.builds ?? []).find((b) => String(b.id) === String(g[5]));
-        return { kind: 'ghost', build: g[5], label: build?.label ?? 'build', x: g[0], y: g[1], z: g[2] };
-      }
-    }
+    const ghost = cell ? ghostTargetAt(cell, st) : null;
+    if (ghost) return ghost;
     const hit = await pick(pt);
     if (hit) return { kind: 'block', x: hit.x, y: hit.y, z: hit.z, id: hit.id, name: blockLabel(hit.id) };
     return cell ? { kind: 'ground', x: cell[0], y: p.current.level + 1, z: cell[2] } : null;
@@ -2165,19 +1766,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       holograms: () => engine()?.hologramStats() ?? null,
       hologramAt: (x: number, y: number, z: number, kind?: 'block' | 'dig') => engine()?.hologramAt(x, y, z, kind) ?? false,
       /** Per build kind (wall, door, chest…): its cells still queued and how many of them draw as holograms now. */
-      hologramKinds: () => {
-        const e = engine(),
-          st = p.current.state;
-        const kinds = new Map((st?.builds ?? []).map((b) => [String(b.id), b.kind] as const));
-        const out: Record<string, { queued: number; shown: number }> = {};
-        for (const g of st?.ghosts?.blocks ?? []) {
-          if (g[6] === 'done') continue;
-          const k = (out[kinds.get(String(g[5])) ?? '?'] ??= { queued: 0, shown: 0 });
-          k.queued++;
-          if (e?.hologramAt(g[0], g[1], g[2], ghostDigs(g) ? 'dig' : 'block')) k.shown++;
-        }
-        return out;
-      },
+      hologramKinds: () => hologramKinds(engine(), p.current.state),
       /** The viewer's non-air blocks in a box, flat [x, y, z, id, meta, below-id, …] (e2e: find solid ground). */
       scan: (min: V3, max: V3) => engine()?.runtime.host.scan(0, min, max, [], 4096) ?? Promise.resolve([]),
       ghosts: () => p.current.state?.ghosts?.blocks ?? [],

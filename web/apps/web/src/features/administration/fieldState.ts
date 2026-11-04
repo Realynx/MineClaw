@@ -51,46 +51,66 @@ export function validateValue(
 ): string | null {
   if (v === null) return null;
   if (!s.editable) return 'read-only';
-  const bounds = (n: number): string | null => {
-    if (s.min !== null && s.min !== undefined && n < s.min) return `at least ${s.min}`;
-    if (s.max !== null && s.max !== undefined && n > s.max) return `at most ${s.max}`;
-    return null;
-  };
-  switch (s.type) {
-    case 'bool':
-      return typeof v === 'boolean' ? null : 'on or off';
-    case 'int':
-      if (typeof v !== 'number' || !Number.isFinite(v)) return 'a number';
-      if (!Number.isInteger(v)) return 'a whole number';
-      return bounds(v);
-    case 'number':
-      if (typeof v !== 'number' || !Number.isFinite(v)) return 'a number';
-      return bounds(v);
-    case 'enum':
-      return typeof v === 'string' && (s.options ?? []).includes(v)
-        ? null
-        : `one of ${(s.options ?? []).map((o) => o || '(none)').join(', ')}`;
-    case 'url':
-      if (typeof v !== 'string') return 'a URL';
-      return v === '' || isHttpUrl(v) ? null : 'an http:// or https:// URL';
-    case 'list':
-      if (!Array.isArray(v)) return 'a list';
-      return v.some((x) => !x.trim()) ? 'no empty entries' : null;
-    case 'model': {
-      if (typeof v !== 'string' || !v.trim()) return 'pick a model';
-      const provider = ctx.provider ?? 'anthropic';
-      const allowed = ctx.allowedClaude ?? s.options ?? [];
-      if (provider === 'anthropic' && !allowed.includes(v))
-        return `Claude models must be 5.5-generation: ${allowed.join(', ')}`;
-      return null;
-    }
-    case 'secret':
-      if (typeof v !== 'string') return 'text';
-      return v.length > 400 ? 'at most 400 characters' : null;
-    default:
-      if (typeof v !== 'string') return 'text';
-      return null;
-  }
+  const rule = Object.hasOwn(VALUE_RULES, s.type) ? VALUE_RULES[s.type] : undefined;
+  return (rule ?? textRule)(s, v, ctx);
+}
+
+type ValueRule = (
+  s: AdminSetting,
+  v: Exclude<SettingValue, null>,
+  ctx: { provider?: string; allowedClaude?: readonly string[] },
+) => string | null;
+
+/** A number inside the setting's min / max (either may be unset). */
+function bounds(s: AdminSetting, n: number): string | null {
+  if (s.min !== null && s.min !== undefined && n < s.min) return `at least ${s.min}`;
+  if (s.max !== null && s.max !== undefined && n > s.max) return `at most ${s.max}`;
+  return null;
+}
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+const textRule: ValueRule = (_s, v) => (typeof v !== 'string' ? 'text' : null);
+
+function modelRule(...[s, v, ctx]: Parameters<ValueRule>): string | null {
+  if (typeof v !== 'string' || !v.trim()) return 'pick a model';
+  const provider = ctx.provider ?? 'anthropic';
+  const allowed = ctx.allowedClaude ?? s.options ?? [];
+  if (provider === 'anthropic' && !allowed.includes(v)) return `Claude models must be 5.5-generation: ${allowed.join(', ')}`;
+  return null;
+}
+
+/** The client-side rule per setting type; any other type takes text. */
+const VALUE_RULES: Record<string, ValueRule> = {
+  bool: (_s, v) => (typeof v === 'boolean' ? null : 'on or off'),
+  int: (s, v) => {
+    if (!isFiniteNumber(v)) return 'a number';
+    return Number.isInteger(v) ? bounds(s, v) : 'a whole number';
+  },
+  number: (s, v) => (isFiniteNumber(v) ? bounds(s, v) : 'a number'),
+  enum: (s, v) =>
+    typeof v === 'string' && (s.options ?? []).includes(v)
+      ? null
+      : `one of ${(s.options ?? []).map((o) => o || '(none)').join(', ')}`,
+  url: (_s, v) => {
+    if (typeof v !== 'string') return 'a URL';
+    return v === '' || isHttpUrl(v) ? null : 'an http:// or https:// URL';
+  },
+  list: (_s, v) => {
+    if (!Array.isArray(v)) return 'a list';
+    return v.some((x) => !x.trim()) ? 'no empty entries' : null;
+  },
+  model: modelRule,
+  secret: (_s, v) => {
+    if (typeof v !== 'string') return 'text';
+    return v.length > 400 ? 'at most 400 characters' : null;
+  },
+};
+
+/** An editable, untouched model field whose provider is drafted. */
+function providerSwitched(s: AdminSetting, draft: Draft): boolean {
+  if (s.type !== 'model' || !s.providerKey || !s.editable) return false;
+  return hasDraft(draft, s.providerKey) && !hasDraft(draft, s.key);
 }
 
 /** Every drafted key's client-side error. */
@@ -111,14 +131,7 @@ export function validateDraft(
   }
   // A provider switch revalidates its model even when the model itself was not touched.
   for (const s of all) {
-    if (
-      s.type !== 'model' ||
-      !s.providerKey ||
-      !hasDraft(draft, s.providerKey) ||
-      hasDraft(draft, s.key) ||
-      !s.editable
-    )
-      continue;
+    if (!providerSwitched(s, draft)) continue;
     const err = validateValue(s, s.value ?? null, { provider: providerOf(s, all, draft), allowedClaude });
     if (err) out[s.key] = `${err} (the provider changed: pick a model)`;
   }

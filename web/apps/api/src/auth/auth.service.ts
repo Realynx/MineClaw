@@ -39,6 +39,26 @@ export interface AuthState {
 
 const TOTP_PENDING_MS = 10 * 60_000;
 
+/** What a sign-in or step-up proved: the TOTP step it used (stored against replays), or null without TOTP. */
+interface Proof {
+  totpStep: number | null;
+}
+
+/** One login attempt: its audit base, the audited username (null when unknown) and its lockout keys. */
+interface LoginAttempt {
+  base: { ip: string; userAgent: string | undefined; method: string; route: string; requestId: string };
+  auditName: string | null;
+  username: string;
+  keys: string[];
+  ip: string;
+}
+
+/** The audit summary of a failed step-up (never the code or the password). */
+function stepUpFailure(user: UserRecord, body: StepUpRequest): string {
+  if (!user.totp) return 'step-up: wrong password';
+  return body.code ? 'step-up: wrong code' : 'step-up: a code is required';
+}
+
 export class AuthService {
   private readonly attempts: WindowLimiter;
   private readonly preSessions: WindowLimiter;
@@ -109,7 +129,12 @@ export class AuthService {
    * (a password is refused, so a stolen session + password is not enough); without TOTP the password. Failures count toward
    * the same lockout as login; every attempt is audited (never the code or the password).
    */
-  async stepUp(req: IncomingMessage, ctx: RequestContext, state: Required<AuthState>, body: StepUpRequest): Promise<StepUpResponse> {
+  async stepUp(
+    req: IncomingMessage,
+    ctx: RequestContext,
+    state: Required<AuthState>,
+    body: StepUpRequest,
+  ): Promise<StepUpResponse> {
     const user = state.user;
     const wait = this.attempts.hit(ctx.ip);
     if (wait > 0) throw Errors.rateLimited(wait, 'too many attempts');
@@ -126,34 +151,41 @@ export class AuthService {
       route: 'auth.stepUp',
       requestId: ctx.requestId,
     };
-    let ok = false;
-    let step: number | null = null;
-    if (user.totp) {
-      if (body.code) {
-        step = verifyTotp(user.totp.secret, body.code, this.clock.now());
-        const last = (this.q.usedGet.get(user.username) as { step: number } | undefined)?.step ?? -1;
-        ok = step !== null && step > last;
-      }
-    } else if (body.password) {
-      ok = await this.passwords.verify(user.passwordHash, body.password);
-    }
-    if (!ok) {
+    const proof = await this.stepUpProof(user, body);
+    if (!proof) {
       this.limiter.fail(keys);
-      this.audit.record({
-        ...base,
-        kind: 'step_up',
-        ok: false,
-        status: 401,
-        summary: user.totp ? (body.code ? 'step-up: wrong code' : 'step-up: a code is required') : 'step-up: wrong password',
-      });
+      this.audit.record({ ...base, kind: 'step_up', ok: false, status: 401, summary: stepUpFailure(user, body) });
       throw Errors.invalidCredentials();
     }
-    if (step !== null) this.q.usedPut.run(user.username, step);
+    if (proof.totpStep !== null) this.q.usedPut.run(user.username, proof.totpStep);
     this.limiter.reset([k.user]);
     const now = this.clock.now();
     this.sessions.setStepUp(state.session, now);
-    this.audit.record({ ...base, kind: 'step_up', ok: true, status: 200, summary: `step-up (${user.totp ? 'TOTP' : 'password'})` });
+    this.audit.record({
+      ...base,
+      kind: 'step_up',
+      ok: true,
+      status: 200,
+      summary: `step-up (${user.totp ? 'TOTP' : 'password'})`,
+    });
     return { ok: true, stepUpUntil: new Date(now + STEP_UP_MS).toISOString() };
+  }
+
+  /** With TOTP enrolled only a fresh code counts; without, the password. Null when neither proves the user. */
+  private async stepUpProof(user: UserRecord, body: StepUpRequest): Promise<Proof | null> {
+    if (user.totp) {
+      const step = body.code ? this.freshTotpStep(user.username, user.totp.secret, body.code) : null;
+      return step === null ? null : { totpStep: step };
+    }
+    if (!body.password) return null;
+    return (await this.passwords.verify(user.passwordHash, body.password)) ? { totpStep: null } : null;
+  }
+
+  /** The TOTP step a code proves, when it is newer than the user's last used step (no replays); null otherwise. */
+  private freshTotpStep(username: string, secret: string, code: string | undefined): number | null {
+    const step = code ? verifyTotp(secret, code, this.clock.now()) : null;
+    const last = (this.q.usedGet.get(username) as { step: number } | undefined)?.step ?? -1;
+    return step !== null && step > last ? step : null;
   }
 
   /** GET /api/auth/csrf: the token of the current session, creating an anonymous pre-session when there is none. */
@@ -185,55 +217,15 @@ export class AuthService {
 
     const k = LoginLimiter.keys(ctx.ip, username);
     const keys = [k.ip, k.user];
-    const lockedMs = this.limiter.lockedFor(keys);
-    if (lockedMs > 0) {
-      this.audit.record({
-        ...base,
-        kind: 'login_failed',
-        ok: false,
-        username: auditName,
-        status: 423,
-        summary: `locked out (${username})`,
-      });
-      throw Errors.locked(lockedMs);
-    }
+    const attempt: LoginAttempt = { base, auditName, username, keys, ip: ctx.ip };
+    this.refuseLockedLogin(attempt);
 
     const user = this.users.get(username);
-    let ok = await this.passwords.verify(user?.passwordHash, body.password);
-    if (ok && user?.disabled) ok = false;
-    let totpStepUsed: number | null = null;
-    if (ok && user?.totp) {
-      totpStepUsed = body.totp ? verifyTotp(user.totp.secret, body.totp, this.clock.now()) : null;
-      const last = (this.q.usedGet.get(user.username) as { step: number } | undefined)?.step ?? -1;
-      if (totpStepUsed === null || totpStepUsed <= last) ok = false;
-    }
-
-    if (!ok || !user) {
-      const { newlyLocked, lockMs } = this.limiter.fail(keys);
-      this.audit.record({
-        ...base,
-        kind: 'login_failed',
-        ok: false,
-        username: auditName,
-        status: 401,
-        summary: `failed login as "${username}"`,
-      });
-      if (newlyLocked.length > 0) {
-        this.audit.record({
-          ...base,
-          kind: 'lockout',
-          ok: false,
-          username: auditName,
-          status: 423,
-          summary: `lockout ${Math.round(lockMs / 1000)} s on ${newlyLocked.map((x) => x.split(':')[0]).join(' + ')} (${username})`,
-        });
-        this.log.warn({ ip: ctx.ip, lockMs }, 'login lockout');
-      }
-      throw Errors.invalidCredentials();
-    }
+    const proof = await this.loginProof(user, body);
+    if (!proof || !user) this.failLogin(attempt);
 
     this.limiter.reset(keys);
-    if (totpStepUsed !== null) this.q.usedPut.run(user.username, totpStepUsed);
+    if (proof.totpStep !== null) this.q.usedPut.run(user.username, proof.totpStep);
     // Rotate: the pre-session (or an older session) is gone; a fresh id and CSRF token are issued.
     this.sessions.destroy(state.session);
     const { id, session } = this.sessions.createUser(user.username, credFingerprint(user), {
@@ -252,6 +244,58 @@ export class AuthService {
       summary: 'signed in',
     });
     return { user: this.me({ session, user }), csrfToken: session.csrf };
+  }
+
+  /** A locked IP or username is refused (audited as a failed login) before any password check. */
+  private refuseLockedLogin(a: LoginAttempt): void {
+    const lockedMs = this.limiter.lockedFor(a.keys);
+    if (lockedMs <= 0) return;
+    this.audit.record({
+      ...a.base,
+      kind: 'login_failed',
+      ok: false,
+      username: a.auditName,
+      status: 423,
+      summary: `locked out (${a.username})`,
+    });
+    throw Errors.locked(lockedMs);
+  }
+
+  /**
+   * The password (checked even for an unknown user, against a dummy hash), an enabled account, and with TOTP enrolled a
+   * fresh code. Null when any of them fails.
+   */
+  private async loginProof(user: UserRecord | undefined, body: LoginRequest): Promise<Proof | null> {
+    const ok = await this.passwords.verify(user?.passwordHash, body.password);
+    if (!ok || !user || user.disabled) return null;
+    if (!user.totp) return { totpStep: null };
+    const step = this.freshTotpStep(user.username, user.totp.secret, body.totp);
+    return step === null ? null : { totpStep: step };
+  }
+
+  /** Counts the failure toward the lockout, audits it (and a new lockout), and answers the generic 401. */
+  private failLogin(a: LoginAttempt): never {
+    const { newlyLocked, lockMs } = this.limiter.fail(a.keys);
+    this.audit.record({
+      ...a.base,
+      kind: 'login_failed',
+      ok: false,
+      username: a.auditName,
+      status: 401,
+      summary: `failed login as "${a.username}"`,
+    });
+    if (newlyLocked.length > 0) {
+      this.audit.record({
+        ...a.base,
+        kind: 'lockout',
+        ok: false,
+        username: a.auditName,
+        status: 423,
+        summary: `lockout ${Math.round(lockMs / 1000)} s on ${newlyLocked.map((x) => x.split(':')[0]).join(' + ')} (${a.username})`,
+      });
+      this.log.warn({ ip: a.ip, lockMs }, 'login lockout');
+    }
+    throw Errors.invalidCredentials();
   }
 
   logout(res: ServerResponse, req: IncomingMessage, ctx: RequestContext, state: Required<AuthState>): { ok: true } {
