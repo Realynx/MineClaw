@@ -129,7 +129,7 @@
       default: return { ok: true };
     }
   };
-  /** story.next(s)|report(job, status, note?)|during(job, fn)|idle|work(job)|go(at, d)|escape() - the job loop */
+  /** story.next(s)|report(job, status, note?)|during(job, fn)|idle|work|go(at, d)|escape - the job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report: (j, status, note, pct) => H.storyReport(String(id(j)), status, note == null ? null : String(note), pct),
