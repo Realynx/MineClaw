@@ -996,27 +996,42 @@ export class StorySim {
 
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
-    if (body.op === 'update' && body.mode) {
-      // A mine zone's mode: quarry (everything to bedrock, a stair) or ores only.
-      const f = c.zones.get(String(body.id));
-      if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
-      if (f.v.kind !== 'mine') throw Object.assign(new Error('only mine zones take a mode (ores | quarry)'), { status: 400 });
-      if (body.mode === 'quarry' && !quarryRing(zoneCellSet(f.v)))
-        throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
-      f.v = { ...f.v, mode: body.mode };
-      f.rev = this.bump(c);
-      return { id: f.v.id, rev: c.rev };
-    }
+    const edited = this.editZone(c, body);
+    if (edited !== undefined) return edited;
+    return this.paintOrErase(c, body);
+  }
+
+  /** The ops on one zone: a mine zone's mode, a growing zone's settings and seeds, irrigation, its bills, its name. */
+  private editZone(c: Colony, body: StoryZoneRequest) {
+    if (body.op === 'update' && body.mode) return this.zoneMode(c, body.id, body.mode);
     if (body.op === 'update' || body.op === 'seek_seeds') return this.growOp(c, body);
     if (body.op === 'irrigation') return this.irrigation(c, String(body.id));
     if (body.op.startsWith('bill_')) return this.billOp(c, body as Extract<StoryZoneRequest, { op: `bill_${string}` }>);
-    if (body.op === 'rename') {
-      const f = c.zones.get(String(body.id));
-      if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
-      f.v = { ...f.v, name: body.name || null };
-      f.rev = this.bump(c);
-      return { id: f.v.id, name: f.v.name ?? '', rev: c.rev };
-    }
+    if (body.op === 'rename') return this.renameZone(c, body.id, body.name);
+    return undefined;
+  }
+
+  /** A mine zone's mode: quarry (everything to bedrock, a stair) or ores only. */
+  private zoneMode(c: Colony, id: Key, mode: 'ores' | 'quarry') {
+    const f = c.zones.get(String(id));
+    if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+    if (f.v.kind !== 'mine') throw Object.assign(new Error('only mine zones take a mode (ores | quarry)'), { status: 400 });
+    if (mode === 'quarry' && !quarryRing(zoneCellSet(f.v))) throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
+    f.v = { ...f.v, mode };
+    f.rev = this.bump(c);
+    return { id: f.v.id, rev: c.rev };
+  }
+
+  private renameZone(c: Colony, id: Key, name: string) {
+    const f = c.zones.get(String(id));
+    if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
+    f.v = { ...f.v, name: name || null };
+    f.rev = this.bump(c);
+    return { id: f.v.id, name: f.v.name ?? '', rev: c.rev };
+  }
+
+  /** Deletes a zone by id, erases an area's cells (of a kind, or any), or paints an area. */
+  private paintOrErase(c: Colony, body: StoryZoneRequest) {
     const list = [...c.zones.values()].map((f) => f.v);
     if (body.op === 'remove' && 'id' in body) {
       if (!c.zones.has(String(body.id))) throw Object.assign(new Error('no such zone'), { status: 404 });
@@ -1037,54 +1052,24 @@ export class StorySim {
     }
     if (body.op !== 'add')
       throw Object.assign(new Error('op must be add|remove|rename|update|seek_seeds|bill_*'), { status: 400 });
-    const into = body.into !== undefined ? c.zones.get(String(body.into))?.v : undefined;
-    if (body.into !== undefined && !into) throw Object.assign(new Error('into: no such zone'), { status: 400 });
+    return this.addZone(c, body, list, a, rect, newId);
+  }
+
+  /** Paints an area as a zone (RimWorld-style: joins, merges, overwrites; `into` extends one zone). */
+  private addZone(
+    c: Colony,
+    body: Extract<StoryZoneRequest, { op: 'add' }>,
+    list: StoryZone[],
+    a: StoryArea,
+    rect: readonly [number, number, number, number],
+    newId: () => string,
+  ) {
+    const into = this.zoneInto(c, body.into);
     const kind = into?.kind ?? body.kind ?? 'home';
-    if (!into && (body.plant || body.sow !== undefined || body.harvest !== undefined)) {
-      if (kind !== 'farm')
-        throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
-      if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
-        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
-          status: 400,
-        });
-    }
+    if (!into) checkNewZone(body, kind, list, rect);
+    const water = kind === 'fish' ? this.fishWater(rect, a, list) : null;
     const make = (k: string, plant: string | null): StoryZone =>
-      into
-        ? { ...into, id: newId(), name: null, rows: null }
-        : {
-            id: newId(),
-            kind: k,
-            area: a,
-            ...(body.name ? { name: body.name } : {}),
-            ...(k === 'mine' ? { mode: body.mode ?? 'quarry' } : {}),
-            ...(k === 'farm' && plant
-              ? {
-                  plant,
-                  sow: body.sow ?? true,
-                  harvest: body.harvest ?? true,
-                  bills: [{ id: `gb${c.seq++}`, plant, mode: 'forever' as const, target: 64, done: 0, paused: false }],
-                }
-              : {}),
-          };
-    if (
-      kind === 'mine' &&
-      !into &&
-      (body.mode ?? 'quarry') === 'quarry' &&
-      (rect[0] === rect[2] || rect[1] === rect[3]) &&
-      !list.some((z) => z.kind === 'mine' && z.mode === 'quarry' && cellsTouch(zoneCellSet(z), rectCells(...rect)))
-    )
-      throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
-    // A fishing zone keeps only still water (a source block, open above, near the level).
-    const water =
-      kind === 'fish'
-        ? new Set(
-            [...rectCells(rect[0], rect[1], rect[2], rect[3])].filter((k) =>
-              this.stillWaterAt(cellX(k), cellZ(k), a[1]),
-            ),
-          )
-        : null;
-    if (water && water.size + list.filter((z) => z.kind === 'fish').reduce((n, z) => n + (z.cells ?? 0), 0) < 4)
-      throw Object.assign(new Error('a fishing zone needs at least 4 water cells'), { status: 400 });
+      into ? { ...into, id: newId(), name: null, rows: null } : newZone(c, body, a, newId, k, plant);
     const out = paintZones(
       list,
       { kind, plant: body.plant ?? null, rect, y: [a[1], a[4]], into: body.into, cells: water },
@@ -1093,6 +1078,23 @@ export class StorySim {
     );
     this.setZones(c, out.zones);
     return { ...out.result, removed: out.result.deleted, rev: c.rev };
+  }
+
+  /** The zone an `into` names (400 when there is none). */
+  private zoneInto(c: Colony, into: Key | undefined): StoryZone | undefined {
+    const z = into !== undefined ? c.zones.get(String(into))?.v : undefined;
+    if (into !== undefined && !z) throw Object.assign(new Error('into: no such zone'), { status: 400 });
+    return z;
+  }
+
+  /** A fishing zone keeps only still water (a source block, open above, near the level); it needs 4 cells at least. */
+  private fishWater(rect: readonly [number, number, number, number], a: StoryArea, list: readonly StoryZone[]): Set<number> {
+    const water = new Set(
+      [...rectCells(rect[0], rect[1], rect[2], rect[3])].filter((k) => this.stillWaterAt(cellX(k), cellZ(k), a[1])),
+    );
+    if (water.size + list.filter((z) => z.kind === 'fish').reduce((n, z) => n + (z.cells ?? 0), 0) < 4)
+      throw Object.assign(new Error('a fishing zone needs at least 4 water cells'), { status: 400 });
+    return water;
   }
 
   private stillWaterAt(x: number, z: number, level: number): boolean {
@@ -3414,5 +3416,51 @@ function storageSettings(
   return {
     priority: priority ?? prev?.priority ?? 'normal',
     filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
+  };
+}
+
+// ------------------------------------------------------------------ zones
+
+type ZoneAdd = Extract<StoryZoneRequest, { op: 'add' }>;
+
+/** A new zone's request: plant / sow / harvest only on growing zones (a known plant); a new quarry at least 2×2 unless it
+ * extends one it touches. */
+function checkNewZone(body: ZoneAdd, kind: string, list: readonly StoryZone[], rect: readonly [number, number, number, number]): void {
+  if (body.plant || body.sow !== undefined || body.harvest !== undefined) checkGrowFields(body.plant, kind);
+  if (
+    kind === 'mine' &&
+    (body.mode ?? 'quarry') === 'quarry' &&
+    (rect[0] === rect[2] || rect[1] === rect[3]) &&
+    !list.some((z) => z.kind === 'mine' && z.mode === 'quarry' && cellsTouch(zoneCellSet(z), rectCells(...rect)))
+  )
+    throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
+}
+
+function checkGrowFields(plant: string | undefined, kind: string): void {
+  if (kind !== 'farm') throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+  if (plant && !STORY_SIM_PLANTS.some((p) => p.id === plant))
+    throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
+      status: 400,
+    });
+}
+
+/** A painted zone: its kind and area, a name, a mine zone's mode, a growing zone's plant with its first planting bill. */
+function newZone(c: Colony, body: ZoneAdd, a: StoryArea, newId: () => string, k: string, plant: string | null): StoryZone {
+  return {
+    id: newId(),
+    kind: k,
+    area: a,
+    ...(body.name ? { name: body.name } : {}),
+    ...(k === 'mine' ? { mode: body.mode ?? 'quarry' } : {}),
+    ...(k === 'farm' && plant ? growingFields(c, body, plant) : {}),
+  };
+}
+
+function growingFields(c: Colony, body: ZoneAdd, plant: string): Partial<StoryZone> {
+  return {
+    plant,
+    sow: body.sow ?? true,
+    harvest: body.harvest ?? true,
+    bills: [{ id: `gb${c.seq++}`, plant, mode: 'forever' as const, target: 64, done: 0, paused: false }],
   };
 }

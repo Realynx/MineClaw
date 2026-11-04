@@ -704,4 +704,47 @@ describe('the mock director: a golden run', () => {
     const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
     expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
   });
+
+  it('zones: modes, into, plants, quarries and strips, fishing water, removes (pins zones)', () => {
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => t });
+    const trace: unknown[] = [];
+    const call = (label: string, f: () => unknown) => {
+      try {
+        trace.push([label, f() ?? null]);
+      } catch (e) {
+        const err = e as { status?: number; message?: string };
+        trace.push([label, 'error', err.status ?? null, err.message ?? String(e)]);
+      }
+    };
+    const { id } = sim.create({ name: 'Zones', pawns: 1 });
+    const zone = (label: string, body: unknown) => call(label, () => sim.zones(id, body as never));
+    const zid = (kind: string) => String(sim.state(id).zones.find((z) => z.kind === kind)?.id ?? 'none');
+    zone('quarry', { op: 'add', kind: 'mine', area: [-20, 63, -20, -17, 63, -17], name: 'Pit' });
+    zone('strip by quarry', { op: 'add', kind: 'mine', area: [-16, 63, -20, -16, 63, -14] });
+    zone('strip alone', { op: 'add', kind: 'mine', area: [40, 63, 40, 40, 63, 45] });
+    zone('strip ores', { op: 'add', kind: 'mine', area: [40, 63, 40, 40, 63, 45], mode: 'ores' });
+    zone('mode ores', { op: 'update', id: zid('mine'), mode: 'ores' });
+    zone('mode quarry', { op: 'update', id: zid('mine'), mode: 'quarry' });
+    zone('mode missing', { op: 'update', id: 'z-none', mode: 'ores' });
+    zone('farm', { op: 'add', kind: 'farm', area: [0, 63, 14, 3, 63, 16], plant: 'carrots', sow: false });
+    zone('mode farm', { op: 'update', id: zid('farm'), mode: 'ores' });
+    zone('into farm', { op: 'add', area: [4, 63, 14, 5, 63, 16], into: zid('farm') });
+    zone('into missing', { op: 'add', area: [4, 63, 14, 5, 63, 16], into: 'z-none' });
+    zone('plant on home', { op: 'add', kind: 'home', area: [0, 63, 0, 2, 63, 2], plant: 'wheat' });
+    zone('bad plant', { op: 'add', kind: 'farm', area: [0, 63, 20, 2, 63, 22], plant: 'cactus' });
+    zone('harvest flag', { op: 'add', kind: 'farm', area: [0, 63, 24, 2, 63, 26], harvest: false });
+    zone('farm no plant', { op: 'add', kind: 'farm', area: [0, 63, 28, 2, 63, 30] });
+    zone('default kind', { op: 'add', area: [-9, 63, -3, -5, 63, 1] });
+    zone('fish dry', { op: 'add', kind: 'fish', area: [30, 63, 30, 32, 63, 32] });
+    zone('fish', { op: 'add', kind: 'fish', area: [20, 63, 20, 22, 63, 22] });
+    zone('fish more', { op: 'add', kind: 'fish', area: [23, 63, 20, 24, 63, 21] });
+    zone('rename', { op: 'rename', id: zid('home'), name: '' });
+    zone('rename missing', { op: 'rename', id: 'z-none', name: 'x' });
+    zone('remove id', { op: 'remove', id: zid('fish') });
+    zone('erase any', { op: 'remove', kind: 'any', area: [-20, 0, -20, -18, 90, -18] });
+    zone('no area', { op: 'add', kind: 'farm' });
+    call('state', () => sim.state(id).zones);
+    const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
+    expect(trace.map((s) => [(s as unknown[])[0], digest((s as unknown[]).slice(1))])).toMatchSnapshot();
+  });
 });

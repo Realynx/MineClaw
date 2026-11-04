@@ -1043,3 +1043,108 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
 ]
 `;
+
+exports[`the mock director: a golden run > zones: modes, into, plants, quarries and strips, fishing water, removes (pins zones) 1`] = `
+[
+  [
+    "quarry",
+    "5a4437e6240e418c",
+  ],
+  [
+    "strip by quarry",
+    "875a1d8d378707fa",
+  ],
+  [
+    "strip alone",
+    "2602fb7e1aa7f82f",
+  ],
+  [
+    "strip ores",
+    "d8b3f25ad9b36545",
+  ],
+  [
+    "mode ores",
+    "ca07cb69d132cbad",
+  ],
+  [
+    "mode quarry",
+    "2602fb7e1aa7f82f",
+  ],
+  [
+    "mode missing",
+    "f89c13da14dd993c",
+  ],
+  [
+    "farm",
+    "212737129ce8c698",
+  ],
+  [
+    "mode farm",
+    "ca5c49be7c2bb40f",
+  ],
+  [
+    "into farm",
+    "49a1d5ad525e27f0",
+  ],
+  [
+    "into missing",
+    "410bef282e9a9123",
+  ],
+  [
+    "plant on home",
+    "e07557cdb0152564",
+  ],
+  [
+    "bad plant",
+    "3732203b92860d67",
+  ],
+  [
+    "harvest flag",
+    "e4e276474ad8028a",
+  ],
+  [
+    "farm no plant",
+    "4dab0dba80963298",
+  ],
+  [
+    "default kind",
+    "686f0e60564349ba",
+  ],
+  [
+    "fish dry",
+    "92368f07c5c41700",
+  ],
+  [
+    "fish",
+    "46cc93b4d40a67f5",
+  ],
+  [
+    "fish more",
+    "59954620a0e678f1",
+  ],
+  [
+    "rename",
+    "18bbbcb087f68702",
+  ],
+  [
+    "rename missing",
+    "a6e0cbb984b010f0",
+  ],
+  [
+    "remove id",
+    "aa1f4e38149247c6",
+  ],
+  [
+    "erase any",
+    "b27275d305b72b70",
+  ],
+  [
+    "no area",
+    "9674da69b8ad0a90",
+  ],
+  [
+    "state",
+    "75ee81880654e545",
+  ],
+]
+`;
