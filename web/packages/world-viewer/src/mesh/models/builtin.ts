@@ -223,13 +223,18 @@ const WALL_SKULL: Record<string, [number, number, number | null]> = { north: [0.
 
 /** TileEntitySkullRenderer: the type's head (ModelSkeletonHead; ModelHumanoidHead adds the hat layer for zombie and player
  * heads; ModelDragonHead for the dragon), on the floor turned by the 16-step rotation, on a wall by its facing. */
+/** Where the head sits in its cell and its yaw: against a wall by the facing, else on the floor by the 16-step rotation. */
+function skullPlacement(s: StateRef): [M4, number] {
+  const wall = WALL_SKULL[s.props.facing];
+  const pos = wall ? translate(wall[0], 0.25, wall[1]) : translate(0.5, 0, 0.5);
+  return [pos, wall?.[2] ?? ((+s.props.rotation || 0) * 360) / 16];
+}
+
 function skullQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   const type = s.props.type ?? 'skeleton';
   const sheet = sheets(SKULL_TEXTURE[type] ?? SKULL_TEXTURE.skeleton) ?? sheets(SKULL_TEXTURE.skeleton);
   if (!sheet) return;
-  const wall = WALL_SKULL[s.props.facing];
-  const pos = wall ? translate(wall[0], 0.25, wall[1]) : translate(0.5, 0, 0.5);
-  const yaw = wall?.[2] ?? ((+s.props.rotation || 0) * 360) / 16;
+  const [pos, yaw] = skullPlacement(s);
   const m = chain(pos, scale(-1, -1, 1));
   if (type === 'dragon' && sheet.wc >= 16) {
     // The head is a parent with the jaw as its child: the yaw turns both about the head's origin.
