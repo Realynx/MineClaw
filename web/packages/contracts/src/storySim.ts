@@ -402,6 +402,65 @@ function removedSince(gone: Colony['removed'], since: number) {
   return Object.keys(removed).length ? { removed } : {};
 }
 
+type ArchitectRow = (typeof SIM_ARCHITECT)[number];
+
+/** Why a placeable is locked: its bench is missing (a crafting table for workbench tiers and glass panes, or a furnace). */
+function benchReason(eid: string, tier: string, table: boolean, furnace: boolean): string | null {
+  if ((tier === 'workbench' || eid === 'glass_pane') && !table)
+    return 'Needs a crafting table — place one or designate an existing one';
+  if (tier === 'furnace' && !furnace) return 'Needs a furnace — place one or designate an existing one';
+  return null;
+}
+
+/** How a placeable is made from its raw material (`rawKey`, `per` made from one): the chain, craftable now, from / short. */
+function craftFields(
+  stock: ReadonlyMap<string, number>,
+  row: ArchitectRow,
+  have: number,
+): Pick<StoryArchitectEntry, 'chain' | 'craftable' | 'from' | 'short'> {
+  const [, label, , tier, , , , rawKey, per] = row;
+  if (!rawKey) return { chain: [], craftable: 0, from: [], short: have > 0 ? [] : [`1 ${label}`] };
+  const craftable = have > 0 ? 0 : Math.min(64, Math.floor((stock.get(rawKey) ?? 0) * per));
+  const [rid, rmeta] = rawKey.split(':').map(Number) as [number, number];
+  const need = `${Math.max(1, Math.ceil(1 / per))} ${storyItemLabel(rid, rmeta)}`;
+  return {
+    chain: [`${tier === 'furnace' ? 'smelt' : 'craft'} ${label} from ${storyItemLabel(rid, rmeta)}`],
+    craftable,
+    from: craftable > 0 ? [need] : [],
+    short: have > 0 || craftable > 0 ? [] : [need],
+  };
+}
+
+/** One placeable of the Architect: locked by its bench, what storage has, how it is made. */
+function architectEntry(
+  row: ArchitectRow,
+  stock: ReadonlyMap<string, number>,
+  table: boolean,
+  furnace: boolean,
+): StoryArchitectEntry {
+  const [eid, label, tab, tier, item, material, kinds] = row;
+  const reason = benchReason(eid, tier, table, furnace);
+  const have = stock.get(`${item[0]}:${item[1]}`) ?? 0;
+  const made = craftFields(stock, row, have);
+  return {
+    id: eid,
+    label,
+    tab,
+    tier,
+    unlocked: reason === null,
+    reason,
+    item,
+    material,
+    kind: kinds[0]!,
+    kinds,
+    chain: made.chain,
+    have,
+    craftable: made.craftable,
+    from: made.from,
+    short: made.short,
+  };
+}
+
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
 
@@ -2498,45 +2557,7 @@ export class StorySim {
     const c = this.colony(id);
     const table = this.hasBench(c, 'crafting_table');
     const furnace = this.hasBench(c, 'furnace');
-    const entries: StoryArchitectEntry[] = SIM_ARCHITECT.map(
-      ([eid, label, tab, tier, item, material, kinds, rawKey, per]) => {
-        const needsTable = tier === 'workbench' || eid === 'glass_pane';
-        const reason =
-          needsTable && !table
-            ? 'Needs a crafting table — place one or designate an existing one'
-            : tier === 'furnace' && !furnace
-              ? 'Needs a furnace — place one or designate an existing one'
-              : null;
-        const have = c.stock.get(`${item[0]}:${item[1]}`) ?? 0;
-        const rawHave = rawKey ? (c.stock.get(rawKey) ?? 0) : 0;
-        const craftable = have > 0 || !rawKey ? 0 : Math.min(64, Math.floor(rawHave * per));
-        const [rid, rmeta] = rawKey ? (rawKey.split(':').map(Number) as [number, number]) : [0, 0];
-        return {
-          id: eid,
-          label,
-          tab,
-          tier,
-          unlocked: reason === null,
-          reason,
-          item,
-          material,
-          kind: kinds[0]!,
-          kinds,
-          chain: rawKey
-            ? [`${tier === 'furnace' ? 'smelt' : 'craft'} ${label} from ${storyItemLabel(rid, rmeta)}`]
-            : [],
-          have,
-          craftable,
-          from: rawKey && craftable > 0 ? [`${Math.max(1, Math.ceil(1 / per))} ${storyItemLabel(rid, rmeta)}`] : [],
-          short:
-            have > 0 || craftable > 0
-              ? []
-              : rawKey
-                ? [`${Math.max(1, Math.ceil(1 / per))} ${storyItemLabel(rid, rmeta)}`]
-                : [`1 ${label}`],
-        };
-      },
-    );
+    const entries: StoryArchitectEntry[] = SIM_ARCHITECT.map((row) => architectEntry(row, c.stock, table, furnace));
     // The Water tab (docs/web/story-mode.md "Water"): the bucket's tier; a bucket in storage unlocks them whatever the benches.
     const buckets = (c.stock.get('325:0') ?? 0) + (c.stock.get('326:0') ?? 0) + (c.stock.get('327:0') ?? 0);
     const ingots = c.stock.get('265:0') ?? 0;
