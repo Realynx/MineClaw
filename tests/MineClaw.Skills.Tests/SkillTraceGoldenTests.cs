@@ -17,7 +17,7 @@ namespace MineClaw.Skills.Tests;
 /// <see cref="SkillTraceGoldenData"/> unchanged. Regenerate (only for an intended change) with WP09_GOLDEN_OUT=&lt;dir&gt;:
 /// each area is written to &lt;dir&gt;/&lt;area&gt;.txt.
 /// </summary>
-public class SkillTraceGoldenTests
+public partial class SkillTraceGoldenTests
 {
     // ------------------------------------------------------------------ harness
 
