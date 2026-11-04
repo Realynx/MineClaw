@@ -145,6 +145,10 @@ export interface StorySimOptions {
 
 type Key = string | number;
 type Fn<T> = { rev: number; v: T };
+/** A build's ghost cell: x, y, z, block id, meta, the build, its state, what it does (dig, place, pour), its failure. */
+type GhostCell = [number, number, number, number, number, Key, string, ('dig' | 'place' | 'pour')?, (string | null)?];
+/** A recipe of the sim's catalogue. */
+type SimRecipe = (typeof STORY_DEFAULT_RECIPES)[number];
 
 interface PawnSim {
   rev: number;
@@ -178,7 +182,7 @@ interface Colony {
   designations: Map<Key, Fn<StoryDesignation>>;
   orders: Map<Key, Fn<StoryOrder>>;
   builds: Map<Key, Fn<StoryBuild>>;
-  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string, ('dig' | 'place' | 'pour')?, (string | null)?]>>;
+  ghostCells: Map<Key, GhostCell[]>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
@@ -2197,8 +2201,7 @@ export class StorySim {
       if (benchOk)
         wants.push({ build: b.id, item: cat[0], recipe: recipeOf(cat), n: can, bench: smelt ? 'furnace' : 'crafting_table' });
     }
-    if (!benchOk && c.options.autoPlaceBenches)
-      out.station = { kind: !benches.table ? 'crafting_table' : 'furnace', pos: [c.home[0] + 2, c.home[1], c.home[2]] };
+    if (!benchOk && c.options.autoPlaceBenches) out.station = autoStation(c, benches);
     if (short0 - can > 0) out.raw.push(`${Math.ceil((short0 - can) / cat[8])} ${storyItemLabel(rid, rmeta)}`);
   }
 
@@ -2538,118 +2541,144 @@ export class StorySim {
     }
   }
 
+  /** One pawn's tick: needs, then (in order) eating, its orders, its schedule and work; then it walks to its goal or works. */
   private stepPawn(c: Colony, p: PawnSim, dt: number): void {
     const pawn = p.p;
-    const brave = pawn.traits.some((t) => t.id === 'brave');
-    const skittish = pawn.traits.some((t) => t.id === 'skittish');
+    let changed = this.tickNeeds(p, dt);
+    // 1. urgent needs (not while drafted)
+    this.eatIfHungry(c, p);
+    // 2. orders (drafted pawns only follow orders; undrafted ones do theirs first too)
+    if (!p.task && pawn.queue.length) {
+      this.takeOrder(c, p);
+      changed = true;
+    }
+    // 3. schedule and work
+    if (!p.task && !pawn.drafted) changed = this.followSchedule(c, p) || changed;
+    if (!p.task) {
+      this.restIdle(c, p, changed);
+      return;
+    }
+    p.idleSince = this.now();
+    // Move toward the goal, then work.
+    if (p.goal && Math.hypot(p.goal[0] - p.x, p.goal[2] - p.z) > arriveWithin(p.task.kind)) this.walk(p, p.goal, dt);
+    else this.work(c, p, dt);
+    pawn.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];
+    if (p.task) pawn.job = this.jobOf(p, p.task);
+    p.rev = this.bump(c);
+  }
+
+  /** Hunger, a bulk gear op finishing (in a few seconds), healing; true when the gear work changed. */
+  private tickNeeds(p: PawnSim, dt: number): boolean {
+    const pawn = p.p;
     let changed = false;
     pawn.food = Math.max(0, (pawn.food ?? 20) - dt / 40000);
-    // Gear work (a bulk gear op) is done in a few seconds.
     if (pawn.gearTasks?.length && Math.random() < dt / 3000) {
       pawn.gearTasks = [];
       changed = true;
     }
     if ((pawn.hp ?? 20) < 20 && Math.random() < dt / 8000) pawn.hp = Math.min(20, (pawn.hp ?? 20) + 1);
-    // 1. urgent needs (not while drafted)
-    if (!pawn.drafted && (pawn.food ?? 20) <= (skittish ? 9 : brave ? 4 : 6) && p.task?.kind !== 'eat') {
-      this.drop(c, p);
-      p.task = { kind: 'eat', ref: null, label: 'Eating', target: null, type: 'eat' };
-      p.work = 2500;
+    return changed;
+  }
+
+  /** An undrafted pawn at its hunger line drops what it does and eats. */
+  private eatIfHungry(c: Colony, p: PawnSim): void {
+    const pawn = p.p;
+    if (pawn.drafted || p.task?.kind === 'eat' || (pawn.food ?? 20) > hungerLine(pawn)) return;
+    this.drop(c, p);
+    p.task = { kind: 'eat', ref: null, label: 'Eating', target: null, type: 'eat' };
+    p.work = 2500;
+  }
+
+  /** The first queued order becomes the task (its target: a position, else the entity's). */
+  private takeOrder(c: Colony, p: PawnSim): void {
+    const o = p.p.queue[0]!;
+    const at = this.orderTarget(o.target);
+    p.task = { kind: `order:${o.kind}`, ref: o.id ?? null, label: orderLabel(o.kind), target: at, type: o.kind };
+    p.goal = at;
+    p.work = orderWork(o.kind);
+    o.state = 'active';
+    const of = o.id !== null && o.id !== undefined ? c.orders.get(o.id) : undefined;
+    if (of) of.rev = this.bump(c);
+  }
+
+  private orderTarget(t: StoryOrder['target']): [number, number, number] | null {
+    const ent = t && typeof t === 'object' && !Array.isArray(t) ? t.entity : null;
+    return targetPos(t) ?? (ent !== null && ent !== undefined ? this.entityPos(ent) : null);
+  }
+
+  /** The schedule's hour: sleep at home, relax near it, else work (or idle); true when the pawn's state changed. */
+  private followSchedule(c: Colony, p: PawnSim): boolean {
+    const block = p.p.schedule[storyHour(c.tod)] ?? 'anything';
+    let changed = false;
+    if (block === 'sleep') {
+      p.task = { kind: 'sleep', ref: null, label: 'Sleeping', target: c.home, type: 'sleep' };
+      p.goal = [c.home[0] + 0.5, c.home[1] + 1, c.home[2] + 0.5];
+      p.work = 20000;
+    } else if (block === 'free') {
+      const a = Math.random() * Math.PI * 2;
+      p.task = { kind: 'free', ref: null, label: 'Relaxing near home', target: null, type: 'idle' };
+      p.goal = [c.home[0] + Math.cos(a) * 4, c.home[1] + 1, c.home[2] + Math.sin(a) * 4];
+      p.work = 4000;
+    } else if (!this.pickWork(c, p)) changed = this.goIdle(c, p);
+    return changed || !!p.task;
+  }
+
+  /** Nothing to do: idle (an alert after a minute, at most every two); true when it wasn't idle already. */
+  private goIdle(c: Colony, p: PawnSim): boolean {
+    const pawn = p.p;
+    const was = pawn.state !== 'idle';
+    pawn.state = 'idle';
+    pawn.job = null;
+    const now = this.now();
+    if (now - p.idleSince > 60_000 && now - p.lastAlert > 120_000) {
+      p.lastAlert = now;
+      this.alert(c, 'warn', `${pawn.display} is idle: nothing to do in their enabled work.`, pawn.name, {
+        tab: 'work',
+        pawn: pawn.name,
+      });
     }
-    // 2. orders (drafted pawns only follow orders; undrafted ones do theirs first too)
-    if (!p.task && pawn.queue.length) {
-      const o = pawn.queue[0]!;
-      const t = o.target;
-      const ent = t && typeof t === 'object' && !Array.isArray(t) ? t.entity : null;
-      const at: [number, number, number] | null =
-        targetPos(t) ?? (ent !== null && ent !== undefined ? this.entityPos(ent) : null);
-      p.task = { kind: `order:${o.kind}`, ref: o.id ?? null, label: orderLabel(o.kind), target: at, type: o.kind };
-      p.goal = at;
-      p.work = o.kind === 'hold' ? Infinity : (WORK_MS[o.kind] ?? (o.kind === 'move' ? 0 : 1500));
-      o.state = 'active';
-      const of = o.id !== null && o.id !== undefined ? c.orders.get(o.id) : undefined;
-      if (of) of.rev = this.bump(c);
+    return was;
+  }
+
+  /** No task this tick: a drafted pawn shows as drafted; the pawn is re-sent only when something changed. */
+  private restIdle(c: Colony, p: PawnSim, changed: boolean): void {
+    const pawn = p.p;
+    if (pawn.drafted && pawn.state !== 'drafted') {
+      pawn.state = 'drafted';
       changed = true;
     }
-    // 3. schedule and work
-    if (!p.task && !pawn.drafted) {
-      const block = pawn.schedule[storyHour(c.tod)] ?? 'anything';
-      if (block === 'sleep') {
-        p.task = { kind: 'sleep', ref: null, label: 'Sleeping', target: c.home, type: 'sleep' };
-        p.goal = [c.home[0] + 0.5, c.home[1] + 1, c.home[2] + 0.5];
-        p.work = 20000;
-      } else if (block === 'free') {
-        const a = Math.random() * Math.PI * 2;
-        p.task = { kind: 'free', ref: null, label: 'Relaxing near home', target: null, type: 'idle' };
-        p.goal = [c.home[0] + Math.cos(a) * 4, c.home[1] + 1, c.home[2] + Math.sin(a) * 4];
-        p.work = 4000;
-      } else if (!this.pickWork(c, p)) {
-        if (pawn.state !== 'idle') changed = true;
-        pawn.state = 'idle';
-        pawn.job = null;
-        const now = this.now();
-        if (now - p.idleSince > 60_000 && now - p.lastAlert > 120_000) {
-          p.lastAlert = now;
-          this.alert(c, 'warn', `${pawn.display} is idle: nothing to do in their enabled work.`, pawn.name, {
-            tab: 'work',
-            pawn: pawn.name,
-          });
-        }
-      }
-      if (p.task) changed = true;
-    }
-    if (!p.task) {
-      if (pawn.drafted && pawn.state !== 'drafted') {
-        pawn.state = 'drafted';
-        changed = true;
-      }
-      if (changed) p.rev = this.bump(c);
-      return;
-    }
-    p.idleSince = this.now();
-    // Move toward the goal, then work.
-    const t = p.task;
-    if (
-      p.goal &&
-      Math.hypot(p.goal[0] - p.x, p.goal[2] - p.z) >
-        (t.kind.startsWith('order:move') || t.kind === 'sleep' || t.kind === 'free' ? 0.3 : 1.6)
-    ) {
-      const dx = p.goal[0] - p.x,
-        dz = p.goal[2] - p.z;
-      const d = Math.hypot(dx, dz);
-      const s = Math.min(d, (SPEED * (pawn.food < 4 ? 0.6 : 1) * dt) / 1000);
-      p.x += (dx / d) * s;
-      p.z += (dz / d) * s;
-      p.y = this.opts.world.ground(Math.floor(p.x), Math.floor(p.z)) + 1;
-      pawn.state = pawn.drafted ? 'drafted' : t.kind === 'flee' ? 'fleeing' : 'moving';
-    } else {
-      pawn.state =
-        t.kind === 'eat'
-          ? 'eating'
-          : t.kind === 'sleep'
-            ? 'sleeping'
-            : t.kind === 'free'
-              ? 'idle'
-              : t.type === 'attack'
-                ? 'fighting'
-                : pawn.drafted
-                  ? 'drafted'
-                  : 'working';
-      p.work -= dt * (pawn.traits.some((x) => x.id === 'night_owl') && (storyHour(c.tod) >= 20 || storyHour(c.tod) < 6) ? 1.25 : 1);
-      if (p.work <= 0) this.finish(c, p);
-    }
-    pawn.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];
-    if (p.task) {
-      const total = WORK_MS[p.task.type] ?? 1500;
-      pawn.job = {
-        type: p.task.type,
-        label: p.task.label,
-        ...(p.task.target ? { target: { x: p.task.target[0], y: p.task.target[1], z: p.task.target[2] } } : {}),
-        progress: Number.isFinite(p.work) ? Math.max(0, Math.min(1, 1 - p.work / total)) : null,
-        since: this.iso(),
-      };
-    }
-    p.rev = this.bump(c);
+    if (changed) p.rev = this.bump(c);
+  }
+
+  private walk(p: PawnSim, goal: [number, number, number], dt: number): void {
+    const pawn = p.p;
+    const dx = goal[0] - p.x,
+      dz = goal[2] - p.z;
+    const d = Math.hypot(dx, dz);
+    const s = Math.min(d, (SPEED * (pawn.food! < 4 ? 0.6 : 1) * dt) / 1000);
+    p.x += (dx / d) * s;
+    p.z += (dz / d) * s;
+    p.y = this.opts.world.ground(Math.floor(p.x), Math.floor(p.z)) + 1;
+    pawn.state = pawn.drafted ? 'drafted' : p.task!.kind === 'flee' ? 'fleeing' : 'moving';
+  }
+
+  /** At the goal: works on the task (night owls faster at night) and finishes it when the work is done. */
+  private work(c: Colony, p: PawnSim, dt: number): void {
+    const pawn = p.p;
+    pawn.state = workState(p.task!, pawn.drafted);
+    p.work -= dt * workRate(pawn, c.tod);
+    if (p.work <= 0) this.finish(c, p);
+  }
+
+  private jobOf(p: PawnSim, task: NonNullable<PawnSim['task']>): StoryPawn['job'] {
+    const total = WORK_MS[task.type] ?? 1500;
+    return {
+      type: task.type,
+      label: task.label,
+      ...(task.target ? { target: { x: task.target[0], y: task.target[1], z: task.target[2] } } : {}),
+      progress: Number.isFinite(p.work) ? Math.max(0, Math.min(1, 1 - p.work / total)) : null,
+      since: this.iso(),
+    };
   }
 
   private entityPos(id: number): [number, number, number] | null {
@@ -2659,42 +2688,71 @@ export class StorySim {
 
   /** The job picker: the best-priority work type with an available job; ties to skill, then distance. */
   private pickWork(c: Colony, p: PawnSim): boolean {
-    const pawn = p.p;
     const here: [number, number, number] = [p.x, p.y, p.z];
-    type Cand = { pri: number; col: number; skill: number; d: number; take: () => void };
-    const cands: Cand[] = [];
-    const add = (type: string, at: readonly unknown[], take: () => void) => {
-      const pri = pawn.priorities[type] ?? 0;
-      if (pri <= 0) return;
-      cands.push({
-        pri,
-        col: STORY_WORK_TYPES.indexOf(type as never),
-        skill: pawn.skills[type]?.level ?? 0,
-        d: dist(here, at),
-        take,
-      });
-    };
+    const cands: WorkCand[] = [];
+    this.designationWork(c, p, here, cands);
+    this.buildWork(c, p, here, cands);
+    this.billWork(c, p, here, cands);
+    if (cands.length === 0) return false;
+    cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill || a.d - b.d);
+    cands[0]!.take();
+    return true;
+  }
+
+  /** A job of a work type the pawn does (priority > 0) as a candidate. */
+  private addWork(
+    pawn: StoryPawn,
+    here: [number, number, number],
+    cands: WorkCand[],
+    type: string,
+    at: readonly unknown[],
+    take: () => void,
+  ): void {
+    const pri = pawn.priorities[type] ?? 0;
+    if (pri <= 0) return;
+    cands.push({
+      pri,
+      col: STORY_WORK_TYPES.indexOf(type as never),
+      skill: pawn.skills[type]?.level ?? 0,
+      d: dist(here, at),
+      take,
+    });
+  }
+
+  /** Open designations (not leased, done, a door mark, or resting after a failure). */
+  private designationWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
     for (const [k, f] of c.designations) {
       const d = f.v;
-      if (d.pawn || d.state === 'done' || d.kind === 'forbid' || d.kind === 'allow') continue;
-      // A failed one rests until its retry.
-      if (d.retryAt && (typeof d.retryAt === 'number' ? d.retryAt : Date.parse(d.retryAt)) > this.now()) continue;
+      if (!this.designationOpen(d)) continue;
       const type = WORK_OF[d.kind];
       if (!type || !d.block) continue;
       const at = d.block;
-      add(type, at, () => {
-        d.pawn = pawn.name;
-        d.state = 'leased';
-        f.rev = this.bump(c);
-        p.task = { kind: d.kind, ref: k, label: designationLabel(d.kind), target: [at[0], at[1], at[2]], type: d.kind };
-        p.goal = [at[0] + 0.5, at[1], at[2] + 0.5];
-        p.work =
-          (WORK_MS[d.kind] ?? 1500) *
-          (d.kind === 'chop' ? Math.max(1, (d.targets?.length ?? 1) / 4) : 1) *
-          (1.4 - (pawn.skills[type]?.level ?? 0) / 40);
-      });
+      this.addWork(p.p, here, cands, type, at, () => this.leaseDesignation(c, p, k, f, type, at));
     }
-    // Builds in queue order: the first unpaused build with a todo ghost.
+  }
+
+  private designationOpen(d: StoryDesignation): boolean {
+    if (d.pawn || d.state === 'done' || d.kind === 'forbid' || d.kind === 'allow') return false;
+    // A failed one rests until its retry.
+    return !(d.retryAt && (typeof d.retryAt === 'number' ? d.retryAt : Date.parse(d.retryAt)) > this.now());
+  }
+
+  private leaseDesignation(c: Colony, p: PawnSim, k: Key, f: Fn<StoryDesignation>, type: string, at: readonly number[]): void {
+    const d = f.v;
+    const pawn = p.p;
+    d.pawn = pawn.name;
+    d.state = 'leased';
+    f.rev = this.bump(c);
+    p.task = { kind: d.kind, ref: k, label: designationLabel(d.kind), target: [at[0]!, at[1]!, at[2]!], type: d.kind };
+    p.goal = [at[0]! + 0.5, at[1]!, at[2]! + 0.5];
+    p.work =
+      (WORK_MS[d.kind] ?? 1500) *
+      (d.kind === 'chop' ? Math.max(1, (d.targets?.length ?? 1) / 4) : 1) *
+      (1.4 - (pawn.skills[type]?.level ?? 0) / 40);
+  }
+
+  /** Builds in queue order: the first unpaused build with a todo ghost (its lowest, nearest cell). */
+  private buildWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
     const queue = [...c.builds.values()]
       .map((f) => f.v)
       .filter((b) => b.status !== 'paused' && b.status !== 'done')
@@ -2703,7 +2761,7 @@ export class StorySim {
       const cells = c.ghostCells.get(b.id) ?? [];
       const g = cells.filter((x) => x[6] === 'todo').sort((a, b2) => a[1] - b2[1] || dist(here, a) - dist(here, b2))[0];
       if (!g) continue;
-      add('build', g, () => {
+      this.addWork(p.p, here, cands, 'build', g, () => {
         g[6] = 'leased';
         c.ghostsRev = this.bump(c);
         p.task = {
@@ -2714,25 +2772,22 @@ export class StorySim {
           type: 'build',
         };
         p.goal = [g[0] + 0.5, g[1], g[2] + 0.5];
-        p.work = WORK_MS.build! * (1.4 - (pawn.skills.build?.level ?? 0) / 40);
+        p.work = WORK_MS.build! * (1.4 - (p.p.skills.build?.level ?? 0) / 40);
       });
       break;
     }
-    // Bills at workbenches, top to bottom.
+  }
+
+  /** Bills at workbenches, top to bottom: each bench's first bill this pawn may do. */
+  private billWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
+    const pawn = p.p;
     for (const f of c.benches.values()) {
       const bench = f.v;
-      const bill = bench.bills.find(
-        (b) =>
-          !b.paused &&
-          !b.suspendedReason &&
-          (b.mode === 'forever' || b.done < b.target) &&
-          (b.pawn === 'any' || b.pawn === pawn.name) &&
-          (b.minSkill === null || b.minSkill === undefined || (pawn.skills.craft?.level ?? 0) >= b.minSkill),
-      );
+      const bill = bench.bills.find((b) => billWanted(b) && billOpenTo(b, pawn));
       if (!bill) continue;
       const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
       const type = recipe?.workType === 'cook' ? 'cook' : 'craft';
-      add(type, bench.pos, () => {
+      this.addWork(pawn, here, cands, type, bench.pos, () => {
         p.task = {
           kind: 'bill',
           ref: bill.id,
@@ -2744,10 +2799,6 @@ export class StorySim {
         p.work = WORK_MS.craft!;
       });
     }
-    if (cands.length === 0) return false;
-    cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill || a.d - b.d);
-    cands[0]!.take();
-    return true;
   }
 
   private grow(c: Colony, p: PawnSim, type: string): void {
@@ -2764,91 +2815,105 @@ export class StorySim {
     }
   }
 
+  /** A task's work is done: eat, an order, a bill, a build cell or a designation completes; the pawn is free again. */
   private finish(c: Colony, p: PawnSim): void {
     const t = p.task!;
-    const w = this.opts.world;
     if (t.kind === 'eat') p.p.food = 20;
-    else if (t.kind.startsWith('order:')) {
-      const o = p.p.queue.shift();
-      if (o?.id !== null && o?.id !== undefined) {
-        const of = c.orders.get(o.id);
-        if (of) {
-          of.v.state = 'done';
-          of.rev = this.bump(c);
-        }
-      }
-    } else if (t.kind === 'bill') {
-      for (const f of c.benches.values()) {
-        const bill = f.v.bills.find((b) => b.id === t.ref);
-        if (!bill) continue;
-        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
-        const k = recipe ? `${recipe.output[0]}:${recipe.output[1]}` : '';
-        const missing = recipe?.inputs.find((i) => {
-          const keys = i.category
-            ? categoryItems(STORY_DEFAULT_CATEGORIES, i.category)
-            : (i.options ?? []).map(([a, m]) => `${a}:${m === -1 ? 0 : m}`);
-          return !keys.some((key) => (c.stock.get(key.replace(':-1', ':0')) ?? 0) >= i.count);
-        });
-        if (missing && bill.mode !== 'forever' && Math.random() < 0.15) {
-          bill.suspendedReason = `missing ${storyItemLabel(missing.options?.[0]?.[0] ?? 0).toLowerCase()} within ${bill.radius} blocks`;
-          this.alert(
-            c,
-            'warn',
-            `A bill was suspended: ${recipe?.label ?? bill.recipe} (${bill.suspendedReason}).`,
-            undefined,
-            { tab: 'bills', workbench: f.v.pos },
-          );
-        } else {
-          bill.done++;
-          if (recipe) c.stock.set(k, (c.stock.get(k) ?? 0) + recipe.output[2]);
-          if (bill.mode === 'until' && (c.stock.get(k) ?? 0) >= bill.target) bill.done = bill.target;
-        }
-        f.rev = this.bump(c);
-      }
-      this.grow(c, p, t.type);
-    } else if (t.kind === 'build' && t.ref !== null && t.ref !== undefined) {
-      const cells = c.ghostCells.get(t.ref) ?? [];
-      const g = cells.find((x) => t.target && x[0] === t.target[0] && x[1] === t.target[1] && x[2] === t.target[2]);
-      const f = c.builds.get(t.ref);
-      if (g && f) {
-        g[6] = 'done';
-        w.setBlock?.(g[0], g[1], g[2], g[3], g[4]);
-        f.v.blocksDone = cells.filter((x) => x[6] === 'done').length;
-        f.v.status = f.v.blocksDone >= f.v.blocksTotal ? 'done' : 'active';
-        f.rev = this.bump(c);
-        c.ghostsRev = this.bump(c);
-        if (f.v.status === 'done') {
-          // Built furniture becomes a workbench or a chest the colony can use.
-          for (const [x, y, z, id] of cells)
-            if (id === 58 || id === 61 || CHEST_IDS.has(id))
-              this.discover(c, [x, y, z, x, y, z], CHEST_IDS.has(id) ? undefined : undefined);
-          this.alert(c, 'info', `Finished building: ${f.v.label}.`);
-        }
-      }
-      this.grow(c, p, 'build');
-    } else if (t.ref !== null && t.ref !== undefined) {
-      const f = c.designations.get(t.ref);
-      if (f) {
-        const d = f.v;
-        if (
-          d.kind === 'chop' ||
-          d.kind === 'mine' ||
-          d.kind === 'cut' ||
-          d.kind === 'harvest' ||
-          d.kind === 'deconstruct'
-        )
-          for (const b of d.targets ?? (d.block ? [d.block] : [])) w.setBlock?.(b[0], b[1], b[2], 0, 0);
-        if (d.kind === 'chop') c.stock.set('17:0', (c.stock.get('17:0') ?? 0) + (d.targets?.length ?? 1));
-        if (d.kind === 'haul') this.haul(c, p);
-        c.designations.delete(t.ref);
-        c.removed.push({ rev: this.bump(c), kind: 'designations', key: t.ref });
-        this.grow(c, p, WORK_OF[d.kind] ?? d.kind);
-      }
-    }
+    else if (t.kind.startsWith('order:')) this.finishOrder(c, p);
+    else if (t.kind === 'bill') this.finishBill(c, p, t);
+    else if (t.kind === 'build' && t.ref !== null && t.ref !== undefined) this.finishBuild(c, p, t, t.ref);
+    else if (t.ref !== null && t.ref !== undefined) this.finishDesignation(c, p, t.ref);
     p.task = null;
     p.goal = null;
     p.p.job = null;
     p.rev = this.bump(c);
+  }
+
+  private finishOrder(c: Colony, p: PawnSim): void {
+    const o = p.p.queue.shift();
+    if (o?.id === null || o?.id === undefined) return;
+    const of = c.orders.get(o.id);
+    if (!of) return;
+    of.v.state = 'done';
+    of.rev = this.bump(c);
+  }
+
+  private finishBill(c: Colony, p: PawnSim, t: NonNullable<PawnSim['task']>): void {
+    for (const f of c.benches.values()) {
+      const bill = f.v.bills.find((b) => b.id === t.ref);
+      if (bill) this.billMade(c, f, bill);
+    }
+    this.grow(c, p, t.type);
+  }
+
+  /** One round of a bill: made (stock grows; an `until` bill is done once the stock reaches it), or, sometimes, suspended for
+   * an ingredient the colony lacks. */
+  private billMade(c: Colony, f: Fn<StoryWorkbench>, bill: StoryBill): void {
+    const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
+    const missing = recipe?.inputs.find((i) => !hasInput(c.stock, i));
+    if (missing && bill.mode !== 'forever' && Math.random() < 0.15) this.suspendBill(c, f, bill, recipe, missing);
+    else stockMade(c.stock, bill, recipe);
+    f.rev = this.bump(c);
+  }
+
+  private suspendBill(
+    c: Colony,
+    f: Fn<StoryWorkbench>,
+    bill: StoryBill,
+    recipe: SimRecipe | undefined,
+    missing: SimRecipe['inputs'][number],
+  ): void {
+    bill.suspendedReason = `missing ${storyItemLabel(missing.options?.[0]?.[0] ?? 0).toLowerCase()} within ${bill.radius} blocks`;
+    this.alert(c, 'warn', `A bill was suspended: ${recipe?.label ?? bill.recipe} (${bill.suspendedReason}).`, undefined, {
+      tab: 'bills',
+      workbench: f.v.pos,
+    });
+  }
+
+  /** A build cell is placed (when it is still there); the pawn's build skill grows. */
+  private finishBuild(c: Colony, p: PawnSim, t: NonNullable<PawnSim['task']>, ref: Key): void {
+    const cells = c.ghostCells.get(ref) ?? [];
+    const g = cells.find((x) => t.target && x[0] === t.target[0] && x[1] === t.target[1] && x[2] === t.target[2]);
+    const f = c.builds.get(ref);
+    if (g && f) this.placeBuildCell(c, f, cells, g);
+    this.grow(c, p, 'build');
+  }
+
+  /** A ghost cell is built; a finished build says so, and its furniture becomes a workbench or a chest the colony can use. */
+  private placeBuildCell(
+    c: Colony,
+    f: Fn<StoryBuild>,
+    cells: GhostCell[],
+    g: GhostCell,
+  ): void {
+    g[6] = 'done';
+    this.opts.world.setBlock?.(g[0], g[1], g[2], g[3], g[4]);
+    f.v.blocksDone = cells.filter((x) => x[6] === 'done').length;
+    f.v.status = f.v.blocksDone >= f.v.blocksTotal ? 'done' : 'active';
+    f.rev = this.bump(c);
+    c.ghostsRev = this.bump(c);
+    if (f.v.status !== 'done') return;
+    for (const [x, y, z, id] of cells)
+      if (id === 58 || id === 61 || CHEST_IDS.has(id)) this.discover(c, [x, y, z, x, y, z], undefined);
+    this.alert(c, 'info', `Finished building: ${f.v.label}.`);
+  }
+
+  /** A designation is done: its blocks cleared (chop, mine, cut, harvest, deconstruct), logs stocked, a drop hauled. */
+  private finishDesignation(c: Colony, p: PawnSim, ref: Key): void {
+    const f = c.designations.get(ref);
+    if (!f) return;
+    const d = f.v;
+    this.clearDesignated(d);
+    if (d.kind === 'chop') c.stock.set('17:0', (c.stock.get('17:0') ?? 0) + (d.targets?.length ?? 1));
+    if (d.kind === 'haul') this.haul(c, p);
+    c.designations.delete(ref);
+    c.removed.push({ rev: this.bump(c), kind: 'designations', key: ref });
+    this.grow(c, p, WORK_OF[d.kind] ?? d.kind);
+  }
+
+  private clearDesignated(d: StoryDesignation): void {
+    if (!CLEARS_BLOCKS.has(d.kind)) return;
+    for (const b of d.targets ?? (d.block ? [d.block] : [])) this.opts.world.setBlock?.(b[0], b[1], b[2], 0, 0);
   }
 
   /** A hauled drop goes to the best storage that accepts it (by priority), or raises an alert. */
@@ -3082,4 +3147,76 @@ function keepAutoBill(bill: StoryBill, bench: string, wants: PlanWant[], kept: S
   if (bill.target === bill.done + w.n) return false;
   bill.target = bill.done + w.n;
   return true;
+}
+
+// ------------------------------------------------------------------ a pawn's tick
+
+/** A job a pawn could take now: its priority, work-type column, skill, distance, and how it leases it. */
+interface WorkCand {
+  pri: number;
+  col: number;
+  skill: number;
+  d: number;
+  take: () => void;
+}
+
+/** Designations whose blocks go when done. */
+const CLEARS_BLOCKS: ReadonlySet<string> = new Set(['chop', 'mine', 'cut', 'harvest', 'deconstruct']);
+
+/** How near its goal a pawn must be to work: on the spot for a move, sleep or rest, else within reach. */
+const arriveWithin = (kind: string): number =>
+  kind.startsWith('order:move') || kind === 'sleep' || kind === 'free' ? 0.3 : 1.6;
+
+/** An order's work: hold forever, a move none, others by kind. */
+const orderWork = (kind: string): number => (kind === 'hold' ? Infinity : (WORK_MS[kind] ?? (kind === 'move' ? 0 : 1500)));
+
+/** The food level a pawn stops to eat at: skittish pawns early, brave ones late. */
+function hungerLine(pawn: StoryPawn): number {
+  if (pawn.traits.some((t) => t.id === 'skittish')) return 9;
+  return pawn.traits.some((t) => t.id === 'brave') ? 4 : 6;
+}
+
+/** What a pawn at its task shows as. */
+function workState(t: NonNullable<PawnSim['task']>, drafted: boolean | null | undefined): string {
+  if (t.kind === 'eat') return 'eating';
+  if (t.kind === 'sleep') return 'sleeping';
+  if (t.kind === 'free') return 'idle';
+  if (t.type === 'attack') return 'fighting';
+  return drafted ? 'drafted' : 'working';
+}
+
+/** Night owls work a quarter faster from 20:00 to 06:00. */
+function workRate(pawn: StoryPawn, tod: number): number {
+  const night = storyHour(tod) >= 20 || storyHour(tod) < 6;
+  return pawn.traits.some((x) => x.id === 'night_owl') && night ? 1.25 : 1;
+}
+
+/** A bill with work left: not paused or suspended, forever or below its target. */
+const billWanted = (b: StoryBill): boolean => !b.paused && !b.suspendedReason && (b.mode === 'forever' || b.done < b.target);
+
+/** May this pawn do the bill (anyone or it, with the skill asked)? */
+function billOpenTo(b: StoryBill, pawn: StoryPawn): boolean {
+  if (b.pawn !== 'any' && b.pawn !== pawn.name) return false;
+  return b.minSkill === null || b.minSkill === undefined || (pawn.skills.craft?.level ?? 0) >= b.minSkill;
+}
+
+/** A bill round made: its count, the output into stock; an `until` bill is done once the stock reaches its target. */
+function stockMade(stock: Map<string, number>, bill: StoryBill, recipe: SimRecipe | undefined): void {
+  const k = recipe ? `${recipe.output[0]}:${recipe.output[1]}` : '';
+  bill.done++;
+  if (recipe) stock.set(k, (stock.get(k) ?? 0) + recipe.output[2]);
+  if (bill.mode === 'until' && (stock.get(k) ?? 0) >= bill.target) bill.done = bill.target;
+}
+
+/** The bench a build waits for, made and placed by home: a crafting table first, then a furnace. */
+function autoStation(c: Colony, benches: PlanBenches): StoryBuild['station'] {
+  return { kind: !benches.table ? 'crafting_table' : 'furnace', pos: [c.home[0] + 2, c.home[1], c.home[2]] };
+}
+
+/** Does the stock hold enough of a recipe input (any item of its category or options)? */
+function hasInput(stock: ReadonlyMap<string, number>, i: (typeof STORY_DEFAULT_RECIPES)[number]['inputs'][number]): boolean {
+  const keys = i.category
+    ? categoryItems(STORY_DEFAULT_CATEGORIES, i.category)
+    : (i.options ?? []).map(([a, m]) => `${a}:${m === -1 ? 0 : m}`);
+  return keys.some((key) => (stock.get(key.replace(':-1', ':0')) ?? 0) >= i.count);
 }
