@@ -371,6 +371,9 @@ public sealed partial class StoryColony
                     foreach (var i in r.Inputs)
                     {
                         bool M(int id, int meta) => i.Options.Any(o => o.Matches(id, meta));
+                        // Only an input something holds limits the batch (live 11-04: "the wheat in storage is reserved for builds"
+                        // with no wheat reserved at all: any reservation compared the whole batch with the stock).
+                        if (!_reserved.Any(kv => kv.Value > 0 && M(kv.Key.Id, kv.Key.Meta))) continue;
                         int own = live.Inventory.Where(s => M(s.Id, s.Meta)).Sum(s => s.Count);
                         int free = UnreservedFor(M, r.Output.Id);
                         int can = (own + Math.Max(0, free)) / Math.Max(1, i.Count);

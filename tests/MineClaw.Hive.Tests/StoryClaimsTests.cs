@@ -109,6 +109,20 @@ public class StoryClaimsTests
     }
 
     [Fact]
+    public void A_reservation_of_something_else_never_holds_a_bill_back()
+    {
+        // Live 11-04: "the wheat in storage is reserved for builds" — nothing reserved wheat; a build held cobblestone.
+        var (c, h, w, _) = Rig(new Stack(296, 0, 30), new Stack(4, 0, 3));
+        var r = c.BuildsOp("add", new JsonArray(new JsonObject { ["kind"] = "block", ["blocks"] = Cells((10, 64, 10), (11, 64, 10), (12, 64, 10)), ["material"] = "cobblestone" }), null);
+        Assert.Null(r.Error);
+        c.EnsureMaterials();
+        Assert.Null(c.BillsOp("add", new JsonObject { ["bench"] = Table.Json(), ["bill"] = new JsonObject { ["recipe"] = "craft:bread", ["mode"] = "forever" } }).Error);
+        var j = c.Next();
+        Assert.Equal("craft", j["kind"]!.GetValue<string>());
+        Assert.Null(c.Benches.Single(b => b.Kind == "crafting_table").Bills.Single().SuspendedReason);
+    }
+
+    [Fact]
     public void A_loaded_furnace_is_collected_when_done_and_the_bill_counts_on_collection()
     {
         var (c, h, w, t) = Rig(new Stack(15, 0, 3), new Stack(263, 0, 2));
