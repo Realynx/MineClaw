@@ -1006,64 +1006,79 @@ export function tick(): Array<[string, unknown]> {
   sim.tick++;
   const frames: Array<[string, unknown]> = [];
   const t = sim.tick;
-  for (const b of BOTS) {
-    let changed = false;
-    if (b.script && !b.script.paused && t % 2 === 0) {
-      b.script.line = b.script.line >= Math.min(b.script.lines, 44) ? 6 : b.script.line + 1;
-      changed = true;
-    }
-    if (b.kind !== 'script' && t % 9 === BOTS.indexOf(b)) {
-      sim.thoughtIdx[b.name] = (sim.thoughtIdx[b.name] ?? 0) + 1;
-      sim.thoughtAt[b.name] = Date.now();
-      sim.toolIdx[b.name] = (sim.toolIdx[b.name] ?? 0) + 1;
-      changed = true;
-    }
-    if (b.brain && t % 13 === BOTS.indexOf(b) * 2) {
-      sim.inFlight[b.name] = sim.inFlight[b.name] ? null : { purpose: pick(rng(t), ['turn', 'reply', 'perception']), model: 'claude-opus-5-5', since: Date.now() };
-      changed = true;
-    }
-    if (b.kind !== 'main') {
-      b.pos = [b.pos[0] + Math.sin(t / 5 + b.pos[2]) * 0.4, b.pos[1], b.pos[2] + Math.cos(t / 7) * 0.4];
-    }
-    if (changed) frames.push(['now', botNow(b)]);
-  }
-  if (t % 2 === 0) {
-    sim.entityRev++;
-    for (const e of sim.entities) if (e.kind === 'mob') e.x += Math.sin(t + (e.id ?? 0)) * 0.3;
-    frames.push(['entities', { at: Date.now(), rev: sim.entityRev, full: false, bots: worldBots(), entities: sim.entities.filter((e) => e.kind === 'mob'), removed: [] }]);
-  }
-  if (t % 3 === 0) {
-    const brain = Math.random() < 0.6 ? 'main' : 'maid_chan_67';
-    const leaf = pick(rng(t * 7), regionLeaves(brain));
-    const ev: MemoryAccessEvent = {
-      seq: ++sim.activitySeq,
-      at: nowIso(),
-      brain,
-      body: pick(rng(t), brainBodies[brain] ?? ['maid_chan']),
-      memoryKind: 'note',
-      memoryId: `doc:${leaf}`,
-      raptorNodeId: leaf,
-      source: 'rag',
-      score: 0.8,
-      turn: 112,
-    };
-    sim.activity.push(ev);
-    const existing = sim.inContext.find((c) => c.brain === brain && c.raptorNodeId === leaf);
-    if (existing) {
-      existing.lastSeenAt = ev.at;
-      existing.positionFromEnd = 2;
-    } else {
-      sim.inContext.push({ brain, memoryKind: 'note', memoryId: ev.memoryId, raptorNodeId: leaf, addedAt: ev.at, lastSeenAt: ev.at, turnsInContext: 1, positionFromEnd: 2 });
-    }
-    frames.push(['memoryActivity', { events: [ev], inContext: sim.inContext, last: sim.activitySeq }]);
-  }
-  if (t % 40 === 0) {
-    sim.eventId++;
-    const ev = { id: sim.eventId, at: nowIso(), kind: 'move', level: 'info', text: 'maid_chan_67 crossed into the nether wastes' };
-    sim.events.push(ev);
-    frames.push(['event', { events: [ev], last: sim.eventId }]);
-  }
+  for (const b of BOTS) if (tickBot(b, t)) frames.push(['now', botNow(b)]);
+  if (t % 2 === 0) frames.push(['entities', moveMobs(t)]);
+  if (t % 3 === 0) frames.push(['memoryActivity', recall(t)]);
+  if (t % 40 === 0) frames.push(['event', crossing()]);
   if (t % 15 === 0) frames.push(['status', liveStatus()]);
   if (t % 5 === 0) frames.push(['bots', statusResponse()]);
   return frames;
+}
+
+/** One bot's step: its script line, a new thought, a model call starting or ending, a little wander. True when its `now` changed. */
+function tickBot(b: MockBot, t: number): boolean {
+  let changed = false;
+  const ix = BOTS.indexOf(b);
+  if (b.script && !b.script.paused && t % 2 === 0) {
+    b.script.line = b.script.line >= Math.min(b.script.lines, 44) ? 6 : b.script.line + 1;
+    changed = true;
+  }
+  if (b.kind !== 'script' && t % 9 === ix) {
+    nextThought(b.name);
+    changed = true;
+  }
+  if (b.brain && t % 13 === ix * 2) {
+    sim.inFlight[b.name] = sim.inFlight[b.name] ? null : { purpose: pick(rng(t), ['turn', 'reply', 'perception']), model: 'claude-opus-5-5', since: Date.now() };
+    changed = true;
+  }
+  if (b.kind !== 'main') b.pos = [b.pos[0] + Math.sin(t / 5 + b.pos[2]) * 0.4, b.pos[1], b.pos[2] + Math.cos(t / 7) * 0.4];
+  return changed;
+}
+
+function nextThought(name: string) {
+  sim.thoughtIdx[name] = (sim.thoughtIdx[name] ?? 0) + 1;
+  sim.thoughtAt[name] = Date.now();
+  sim.toolIdx[name] = (sim.toolIdx[name] ?? 0) + 1;
+}
+
+/** The mobs drift; the entities frame. */
+function moveMobs(t: number) {
+  sim.entityRev++;
+  for (const e of sim.entities) if (e.kind === 'mob') e.x += Math.sin(t + (e.id ?? 0)) * 0.3;
+  return { at: Date.now(), rev: sim.entityRev, full: false, bots: worldBots(), entities: sim.entities.filter((e) => e.kind === 'mob'), removed: [] };
+}
+
+/** A brain recalls a leaf of its region: the access event, and the leaf enters (or refreshes in) its context. */
+function recall(t: number) {
+  const brain = Math.random() < 0.6 ? 'main' : 'maid_chan_67';
+  const leaf = pick(rng(t * 7), regionLeaves(brain));
+  const ev: MemoryAccessEvent = {
+    seq: ++sim.activitySeq,
+    at: nowIso(),
+    brain,
+    body: pick(rng(t), brainBodies[brain] ?? ['maid_chan']),
+    memoryKind: 'note',
+    memoryId: `doc:${leaf}`,
+    raptorNodeId: leaf,
+    source: 'rag',
+    score: 0.8,
+    turn: 112,
+  };
+  sim.activity.push(ev);
+  const existing = sim.inContext.find((c) => c.brain === brain && c.raptorNodeId === leaf);
+  if (existing) {
+    existing.lastSeenAt = ev.at;
+    existing.positionFromEnd = 2;
+  } else {
+    sim.inContext.push({ brain, memoryKind: 'note', memoryId: ev.memoryId, raptorNodeId: leaf, addedAt: ev.at, lastSeenAt: ev.at, turnsInContext: 1, positionFromEnd: 2 });
+  }
+  return { events: [ev], inContext: sim.inContext, last: sim.activitySeq };
+}
+
+/** Now and then a hive event (a body crossing into the nether). */
+function crossing() {
+  sim.eventId++;
+  const ev = { id: sim.eventId, at: nowIso(), kind: 'move', level: 'info', text: 'maid_chan_67 crossed into the nether wastes' };
+  sim.events.push(ev);
+  return { events: [ev], last: sim.eventId };
 }
