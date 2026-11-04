@@ -100,50 +100,45 @@ public static partial class VisionRouter
     public static string Answer(VisionIntent intent, string question, IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius,
         IReadOnlyList<VisionEntity>? entities = null)
     {
-        var parts = new List<string>();
-        switch (intent)
-        {
-            case VisionIntent.GenCells:
-            case VisionIntent.GenFluids:
-                parts.Add(Gen(w, roles, f, radius));
-                break;
-            case VisionIntent.Faces:
-                parts.Add(Focus(w, roles, f));
-                parts.Add(Faces(w, f));
-                parts.Add(VoidUnder(w, f));
-                break;
-            case VisionIntent.FocusBlock:
-                parts.Add(Focus(w, roles, f));
-                parts.Add(VoidUnder(w, f));
-                break;
-            case VisionIntent.Void:
-                parts.Add(Edges(w, f, question));
-                break;
-            case VisionIntent.Portal:
-                parts.Add(Portal(w, roles, f, radius));
-                break;
-            case VisionIntent.Things:
-                {
-                    // The area the question names ("within 64 of 152,63,288"), else around the focus. Live 10-29: "trees within 64
-                    // of log_chest" was answered "1 grown tree" from a 12-block scan around the asking body; the hive brain told
-                    // its 20 bodies the forest was gone while dozens of trees stood.
-                    var (c, ar) = AskedArea(question, f, Math.Max(radius, 12));
-                    parts.Add(Things(w, c, ar, question));
-                    if (entities != null && Drops(entities, f, radius) is { } d) parts.Add(d);
-                    break;
-                }
-            case VisionIntent.Drops:
-                parts.Add(entities == null ? "drops: not tracked here" : Drops(entities, f, radius) ?? $"no drops within {radius + 4} blocks");
-                if (entities != null && Mobs(entities, f, radius) is { } mobs) parts.Add(mobs);
-                break;
-        }
+        var parts = Sections(intent, question, w, roles, f, radius, entities);
         // Roles that decide what to mine / where not to walk, when the section didn't already name them.
         if (intent is not (VisionIntent.GenCells or VisionIntent.GenFluids or VisionIntent.Things)
             && PerceptionService.Grounding(w, roles, f, radius, []) is { } g)
-            foreach (var part in g.Split(" | "))
-                if (part.StartsWith("roles: ", StringComparison.Ordinal)) parts.Add(part);
+            parts.AddRange(g.Split(" | ").Where(part => part.StartsWith("roles: ", StringComparison.Ordinal)));
         var text = Prefix + string.Join(" | ", parts.Where(p => p.Length > 0));
         return text.Length <= PerceptionVerifier.MaxChars ? text : text[..(PerceptionVerifier.MaxChars - 1)] + "…";
+    }
+
+    /// <summary>The intent's own sections, in order.</summary>
+    private static List<string> Sections(VisionIntent intent, string question, IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius,
+        IReadOnlyList<VisionEntity>? entities) => intent switch
+    {
+        VisionIntent.GenCells or VisionIntent.GenFluids => [Gen(w, roles, f, radius)],
+        VisionIntent.Faces => [Focus(w, roles, f), Faces(w, f), VoidUnder(w, f)],
+        VisionIntent.FocusBlock => [Focus(w, roles, f), VoidUnder(w, f)],
+        VisionIntent.Void => [Edges(w, f, question)],
+        VisionIntent.Portal => [Portal(w, roles, f, radius)],
+        VisionIntent.Things => ThingsSection(question, w, f, radius, entities),
+        VisionIntent.Drops => DropsSection(f, radius, entities),
+        _ => [],
+    };
+
+    /// <summary>The area the question names ("within 64 of 152,63,288"), else around the focus; plus the drops there. Live 10-29:
+    /// "trees within 64 of log_chest" was answered "1 grown tree" from a 12-block scan around the asking body; the hive brain
+    /// told its 20 bodies the forest was gone while dozens of trees stood.</summary>
+    private static List<string> ThingsSection(string question, IBlockAccess w, (int X, int Y, int Z) f, int radius, IReadOnlyList<VisionEntity>? entities)
+    {
+        var (c, ar) = AskedArea(question, f, Math.Max(radius, 12));
+        var parts = new List<string> { Things(w, c, ar, question) };
+        if (entities != null && Drops(entities, f, radius) is { } d) parts.Add(d);
+        return parts;
+    }
+
+    private static List<string> DropsSection((int X, int Y, int Z) f, int radius, IReadOnlyList<VisionEntity>? entities)
+    {
+        var parts = new List<string> { entities == null ? "drops: not tracked here" : Drops(entities, f, radius) ?? $"no drops within {radius + 4} blocks" };
+        if (entities != null && Mobs(entities, f, radius) is { } mobs) parts.Add(mobs);
+        return parts;
     }
 
     /// <summary>
@@ -244,26 +239,8 @@ public static partial class VisionRouter
         var parts = new List<string>();
         foreach (var c in cells.Take(4))
         {
-            var water = new List<string>();
-            var lava = new List<string>();
-            foreach (var (n, dx, dy, dz) in FlowIn)
-            {
-                int id = w.GetBlock(c.X + dx, c.Y + dy, c.Z + dz);
-                if (Blocks.IsWater(id)) water.Add(n);
-                else if (Blocks.IsLava(id)) lava.Add(n);
-            }
-            int self = w.GetBlock(c.X, c.Y, c.Z);
-            string state = self == 0 ? " (air: refilling)" : self is Blocks.Cobblestone or Blocks.Stone ? "" : $" ({Name(self)})";
-            string flow = (water.Count > 0 ? "water " + string.Join(",", water) : "NO water next to it")
-                + " " + (lava.Count > 0 ? "lava " + string.Join(",", lava) : "NO lava next to it");
-            parts.Add(P(c) + state + " " + flow);
-            foreach (var (_, dx, dy, dz) in Dirs6)
-            {
-                var q = (c.X + dx, c.Y + dy, c.Z + dz);
-                if (dy != 0 || cellSet.Contains(q)) continue;
-                int id = w.GetBlock(q.Item1, q.Item2, q.Item3);
-                if (id != 0 && w.Info(id).Solid && !walls.Contains(q)) walls.Add(q);
-            }
+            parts.Add(GenCellText(w, c));
+            AddGenWalls(w, c, cellSet, walls);
         }
         sb.Append(string.Join("; ", parts));
         if (cells.Count > 4) sb.Append(CultureInfo.InvariantCulture, $" +{cells.Count - 4} more");
@@ -273,6 +250,36 @@ public static partial class VisionRouter
             sb.Append("; walls ").Append(string.Join(" ", walls.Take(3).Select(P))).Append(walls.Count > 3 ? $" +{walls.Count - 3}" : "");
         if (!cellSet.Contains(f)) sb.Append(" | focus ").Append(P(f)).Append(' ').Append(Name(w.GetBlock(f.X, f.Y, f.Z))).Append(" is not a gen cell");
         return sb.ToString();
+    }
+
+    /// <summary>"4,64,6 water E lava S" (with "(air: refilling)" / the block when it isn't cobble or stone).</summary>
+    private static string GenCellText(IBlockAccess w, (int X, int Y, int Z) c)
+    {
+        var water = new List<string>();
+        var lava = new List<string>();
+        foreach (var (n, dx, dy, dz) in FlowIn)
+        {
+            int id = w.GetBlock(c.X + dx, c.Y + dy, c.Z + dz);
+            if (Blocks.IsWater(id)) water.Add(n);
+            else if (Blocks.IsLava(id)) lava.Add(n);
+        }
+        int self = w.GetBlock(c.X, c.Y, c.Z);
+        string state = self == 0 ? " (air: refilling)" : self is Blocks.Cobblestone or Blocks.Stone ? "" : $" ({Name(self)})";
+        string flow = (water.Count > 0 ? "water " + string.Join(",", water) : "NO water next to it")
+            + " " + (lava.Count > 0 ? "lava " + string.Join(",", lava) : "NO lava next to it");
+        return P(c) + state + " " + flow;
+    }
+
+    /// <summary>The solid blocks level with a gen cell that aren't gen cells (its walls), each once.</summary>
+    private static void AddGenWalls(IBlockAccess w, (int X, int Y, int Z) c, HashSet<(int X, int Y, int Z)> cellSet, List<(int X, int Y, int Z)> walls)
+    {
+        foreach (var (_, dx, dy, dz) in Dirs6)
+        {
+            var q = (c.X + dx, c.Y + dy, c.Z + dz);
+            if (dy != 0 || cellSet.Contains(q)) continue;
+            int id = w.GetBlock(q.Item1, q.Item2, q.Item3);
+            if (id != 0 && w.Info(id).Solid && !walls.Contains(q)) walls.Add(q);
+        }
     }
 
     private static string Focus(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f)

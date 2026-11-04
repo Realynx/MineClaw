@@ -566,24 +566,40 @@ public sealed class PlayerActivityTracker : IDisposable
     private void HandleBlock(BlockIn b)
     {
         var ch = b.Ch;
-        if (IsPhysics(ch)) return;
-        bool placed = Replaceable.Contains(ch.OldId) && ch.NewId != 0;
-        bool broke = ch.OldId != 0 && !Replaceable.Contains(ch.OldId) && Replaceable.Contains(ch.NewId);
-        bool lit = ch.OldId == Blocks.Furnace && ch.NewId == Blocks.LitFurnace;
-        if (!placed && !broke && !lit) return;
-        if (broke) { _recentBreaks.Add((b.At, ch.Pos)); if (_recentBreaks.Count > 64) _recentBreaks.RemoveRange(0, 32); }
+        if (IsPhysics(ch) || EditOf(ch) is not { } edit) return;
+        if (edit.Broke) NoteBreak(b.At, ch.Pos);
         if (b.Self) { SelfEdits++; return; } // the bot did it (kept above only so its drops/cascades aren't blamed on anyone)
         // Blocks that change by themselves too often need a swing to count.
         bool needSwing = ch.OldId is Blocks.Leaves || ch.NewId is Blocks.Sand or Blocks.Gravel;
         var who = Attribute(ch.Pos, b.Near, b.Bot, b.BotBusy, b.At, needSwing);
         if (who is not { } w) return;
-        string kind = lit ? ActivityKinds.LitFurnace
-            : broke ? (ActivityKinds.IsCrop(ch.OldId) ? ActivityKinds.Harvested : ActivityKinds.Broke)
-            : (ActivityKinds.IsCrop(ch.NewId) ? ActivityKinds.Planted : ActivityKinds.Placed);
-        int block = broke ? ch.OldId : ch.NewId;
-        if (block is Blocks.SignPost or Blocks.WallSign && placed) { _signPlacers[ch.Pos] = (w.Name, b.At, w.Conf); return; } // text follows
+        int block = edit.Broke ? ch.OldId : ch.NewId;
+        if (block is Blocks.SignPost or Blocks.WallSign && edit.Placed) { _signPlacers[ch.Pos] = (w.Name, b.At, w.Conf); return; } // text follows
         Danger.BlockWork(w.Name, ch.Pos);
-        Record(new ActivityEvent(w.Name, kind, b.At, w.Conf) { BlockId = block, Pos = ch.Pos, Place = Place(ch.Pos) });
+        Record(new ActivityEvent(w.Name, edit.Kind(ch), b.At, w.Conf) { BlockId = block, Pos = ch.Pos, Place = Place(ch.Pos) });
+    }
+
+    /// <summary>What a block change was: placed (into air/replaceable), broken (to air/replaceable), or a furnace lit.</summary>
+    private readonly record struct BlockEdit(bool Placed, bool Broke, bool Lit)
+    {
+        public string Kind(BlockChange ch) => Lit ? ActivityKinds.LitFurnace
+            : Broke ? (ActivityKinds.IsCrop(ch.OldId) ? ActivityKinds.Harvested : ActivityKinds.Broke)
+            : (ActivityKinds.IsCrop(ch.NewId) ? ActivityKinds.Planted : ActivityKinds.Placed);
+    }
+
+    /// <summary>The edit a change is, or null for one that's none of them.</summary>
+    private static BlockEdit? EditOf(BlockChange ch)
+    {
+        bool placed = Replaceable.Contains(ch.OldId) && ch.NewId != 0;
+        bool broke = ch.OldId != 0 && !Replaceable.Contains(ch.OldId) && Replaceable.Contains(ch.NewId);
+        bool lit = ch.OldId == Blocks.Furnace && ch.NewId == Blocks.LitFurnace;
+        return placed || broke || lit ? new BlockEdit(placed, broke, lit) : null;
+    }
+
+    private void NoteBreak(DateTimeOffset at, BlockPos pos)
+    {
+        _recentBreaks.Add((at, pos));
+        if (_recentBreaks.Count > 64) _recentBreaks.RemoveRange(0, 32);
     }
 
     // ------------------------------------------------------------------ chat, signs, items, containers
