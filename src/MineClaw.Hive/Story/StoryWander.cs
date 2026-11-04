@@ -9,20 +9,36 @@ namespace MineClaw.Hive.Story;
 /// </summary>
 public static class StoryWander
 {
+    /// <summary>A flag per block id (0..255, every id both versions have) for the given ids.</summary>
+    private static bool[] Flags(params int[] ids)
+    {
+        var f = new bool[256];
+        foreach (var id in ids) f[id] = true;
+        return f;
+    }
+
+    private static bool In(bool[] flags, int id) => (uint)id < (uint)flags.Length && flags[id];
+
+    /// <summary>Walk-through blocks besides air and plants: a torch, a snow layer, a carpet, rails, redstone dust and torches.</summary>
+    private static readonly bool[] WalkThrough = Flags(50, 78, 171, 66, 27, 28, 157, 55, 76, 75);
+
     /// <summary>Cells a body walks through: air, short plants and flowers, a torch, a snow layer, a carpet, a rail, redstone dust.</summary>
-    public static bool Passable(int id) =>
-        id == 0 || StoryBlocks.Plants.Contains(id) && id != 106 && id != 111 || id is 50 or 78 or 171 or 66 or 27 or 28 or 157 or 55 or 76 or 75;
+    public static bool Passable(int id) => id == 0 || StoryBlocks.Plants.Contains(id) && id is not (106 or 111) || In(WalkThrough, id);
 
     /// <summary>What hurts or burns a body standing beside or on it: lava, fire, cactus, magma.</summary>
     public static bool Hurts(int id) => id is 10 or 11 or 51 or 81 or 213;
 
+    /// <summary>
+    /// Solid blocks that are no floor: cobweb, farmland, beds, chests, tables, furnaces, fences and gates, panes, trapdoors, iron bars,
+    /// ladders, vines, walls; and not ground at all: crops, stems, cane, signs, levers, plates, buttons, wire, tripwire, repeaters,
+    /// comparators.
+    /// </summary>
+    private static readonly bool[] NotFloor = Flags(
+        30, 60, 26, 54, 146, 58, 61, 62, 85, 107, 113, 139, 96, 167, 101, 102, 160, 65, 106, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192,
+        59, 141, 142, 207, 115, 83, 104, 105, 63, 68, 69, 70, 72, 77, 143, 147, 148, 131, 132, 93, 94, 149, 150, 176, 177);
+
     private static bool FloorOk(int id) =>
-        !Passable(id) && !StoryBlocks.Liquids.Contains(id) && !StoryBlocks.Leaves.Contains(id) && !Hurts(id) && !StoryBlocks.IsDoor(id)
-        && id is not (30 or 60 or 26 or 54 or 146 or 58 or 61 or 62 or 85 or 107 or 113 or 139 or 96 or 167 or 101 or 102 or 160 or 65 or 106)
-        && id is not (>= 183 and <= 192)
-        // Not ground at all: crops, stems, cane, signs, levers, plates, buttons, wire, tripwire, repeaters, comparators.
-        && id is not (59 or 141 or 142 or 207 or 115 or 83 or 104 or 105 or 63 or 68 or 69 or 70 or 72 or 77 or 143 or 147 or 148 or 131 or 132
-            or 93 or 94 or 149 or 150 or 176 or 177);
+        !Passable(id) && !StoryBlocks.Liquids.Contains(id) && !StoryBlocks.Leaves.Contains(id) && !Hurts(id) && !StoryBlocks.IsDoor(id) && !In(NotFloor, id);
 
     /// <summary>Feet on solid ground with room for the head (no liquid, no crop in the way): the bare minimum to stand.</summary>
     public static bool Standable(IStoryWorld w, int x, int y, int z) =>
@@ -36,27 +52,35 @@ public static class StoryWander
     {
         if (!w.Loaded(c.X, c.Z) || !Standable(w, c.X, c.Y, c.Z)) return false;
         foreach (var (dx, dz) in Around)
-        {
-            int x = c.X + dx, z = c.Z + dz;
-            if (!w.Loaded(x, z)) return false; // the edge of what the colony sees: not a place to idle
-            for (int y = c.Y - 1; y <= c.Y + 1; y++)
-            {
-                int id = w.Block(x, y, z).Id;
-                if (Hurts(id) || y >= c.Y && StoryBlocks.IsDoor(id)) return false;
-            }
-            if (!Passable(w.Block(x, c.Y, z).Id)) continue; // a wall: nothing to fall off there
-            // The neighbour is open: how far down is its ground?
-            int depth = 0;
-            for (int y = c.Y - 1; y > c.Y - 5 && y > 0; y--)
-            {
-                int id = w.Block(x, y, z).Id;
-                if (StoryBlocks.Liquids.Contains(id)) return false; // a step down into water or lava
-                if (!Passable(id)) break;
-                depth++;
-            }
-            if (depth >= 3) return false;
-        }
+            if (!NeighbourSafe(w, c, c.X + dx, c.Z + dz)) return false;
         return true;
+    }
+
+    /// <summary>A neighbour column of a cell to idle on: in view, nothing that hurts in it, no door at head height, no ledge.</summary>
+    private static bool NeighbourSafe(IStoryWorld w, P3 c, int x, int z)
+    {
+        if (!w.Loaded(x, z)) return false; // the edge of what the colony sees: not a place to idle
+        for (int y = c.Y - 1; y <= c.Y + 1; y++)
+        {
+            int id = w.Block(x, y, z).Id;
+            if (Hurts(id) || y >= c.Y && StoryBlocks.IsDoor(id)) return false;
+        }
+        if (!Passable(w.Block(x, c.Y, z).Id)) return true; // a wall: nothing to fall off there
+        return NoLedge(w, c, x, z);
+    }
+
+    /// <summary>The neighbour is open: its ground is less than three down, and no step down into water or lava.</summary>
+    private static bool NoLedge(IStoryWorld w, P3 c, int x, int z)
+    {
+        int depth = 0;
+        for (int y = c.Y - 1; y > c.Y - 5 && y > 0; y--)
+        {
+            int id = w.Block(x, y, z).Id;
+            if (StoryBlocks.Liquids.Contains(id)) return false; // a step down into water or lava
+            if (!Passable(id)) break;
+            depth++;
+        }
+        return depth < 3;
     }
 
     private static readonly (int Dx, int Dz)[] Around = [(1, 0), (-1, 0), (0, 1), (0, -1)];
