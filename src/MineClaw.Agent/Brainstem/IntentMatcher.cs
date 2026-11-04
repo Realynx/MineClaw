@@ -155,7 +155,7 @@ public static class IntentMatcher
     {
         if (string.IsNullOrWhiteSpace(text)) return Intent.None;
         var s = Normalize(text, names);
-        if (s.Length == 0 || Negation.IsMatch(s) || QuestionStart.IsMatch(s)) return Intent.None;
+        if (NeverSpeculates(s)) return Intent.None;
         if (ComeAnyRx.IsMatch(s)) return new Intent(IntentKind.SpecToSpeaker); // "grab cobble and come here": the player first
         if (BringRx.Match(s) is { Success: true } b) return new Intent(IntentKind.SpecBring, b.Groups["item"].Value.Trim());
         // "mine cobble/stone" means the gen only where stone comes from one (skyblock); a normal world needs the word "gen".
@@ -165,6 +165,9 @@ public static class IntentMatcher
         if (PlaceRx.Match(s) is { Success: true } p) return new Intent(IntentKind.SpecPlace, p.Groups["place"].Value.Trim());
         return Intent.None;
     }
+
+    /// <summary>Empty, a negation or a how/what question: never a speculative step.</summary>
+    private static bool NeverSpeculates(string s) => s.Length == 0 || Negation.IsMatch(s) || QuestionStart.IsMatch(s);
 
     /// <summary>
     /// True when a chat batch needs only a quick reaction: a reflex, one clear short job, or short small talk — no planning

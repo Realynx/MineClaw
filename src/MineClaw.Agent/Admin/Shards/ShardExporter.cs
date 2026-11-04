@@ -126,15 +126,25 @@ public sealed class ShardExporter
         var shard = Build(req, semanticRefs);
         long bytes = ShardFile.ToBytes(shard).LongLength;
         var notes = new List<string>();
-        if (shard.Records.Count == 0) notes.Add("nothing matches this selection");
-        if (req.IncludeEmbeddings && shard.Manifest.Embeddings == null && shard.Records.Count > 0) notes.Add("no stored vectors: the target re-embeds");
-        if (shard.Manifest.SecretsRedacted > 0) notes.Add($"{shard.Manifest.SecretsRedacted} record(s) dropped or redacted as secrets");
-        if (!req.Selection.IncludeRules && req.Selection.Mode is "person" or "filter" or "subtree") notes.Add("standing rules left out (tick \"include rules\")");
-        if (!req.Selection.IncludeWorld && req.Selection.Mode is not "pack") notes.Add("places/structures left out (tick \"include world memory\")");
+        AddContentNotes(notes, req, shard);
+        AddSelectionNotes(notes, req.Selection);
         return new ShardPreview(
             shard.Records.GroupBy(r => r.Kind).ToDictionary(g => g.Key, g => g.Count()), shard.Records.Count,
             shard.Embeddings.Count, shard.Manifest.Embeddings?.Model, shard.Manifest.Embeddings?.Dims ?? 0, shard.Summaries.Count, bytes,
             shard.Manifest.SecretsRedacted, shard.Records.Take(8).Select(r => $"{r.Kind}: {Trim(r.Label, 110)}").ToList(), notes, shard.Manifest.PackVersion);
+    }
+
+    private static void AddContentNotes(List<string> notes, ShardExportRequest req, Shard shard)
+    {
+        if (shard.Records.Count == 0) notes.Add("nothing matches this selection");
+        if (req.IncludeEmbeddings && shard.Manifest.Embeddings == null && shard.Records.Count > 0) notes.Add("no stored vectors: the target re-embeds");
+        if (shard.Manifest.SecretsRedacted > 0) notes.Add($"{shard.Manifest.SecretsRedacted} record(s) dropped or redacted as secrets");
+    }
+
+    private static void AddSelectionNotes(List<string> notes, ShardSelection sel)
+    {
+        if (!sel.IncludeRules && sel.Mode is "person" or "filter" or "subtree") notes.Add("standing rules left out (tick \"include rules\")");
+        if (!sel.IncludeWorld && sel.Mode is not "pack") notes.Add("places/structures left out (tick \"include world memory\")");
     }
 
     /// <summary>Builds and writes the shard. Returns it with the bytes written.</summary>

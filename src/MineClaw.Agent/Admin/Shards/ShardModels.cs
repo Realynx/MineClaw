@@ -30,20 +30,20 @@ public static class ShardKinds
     public static bool IsDoc(string kind) => DocKinds.Contains(kind);
     public static bool IsWorld(string kind) => World.Contains(kind);
 
+    /// <summary>Other words for a kind (after a plural 's' of a known kind is dropped).</summary>
+    private static readonly Dictionary<string, string> KindAliases = new(StringComparer.Ordinal)
+    {
+        ["note"] = Fact, ["player"] = Fact, ["directive"] = Rule, ["waypoint"] = Place,
+        ["recipe"] = GameData, ["recipes"] = GameData, ["game"] = GameData, ["kb"] = Knowledge,
+    };
+
     public static string? Normalize(string? kind)
     {
         if (string.IsNullOrWhiteSpace(kind)) return null;
         var k = kind.Trim().ToLowerInvariant();
         if (k.EndsWith('s') && All.Contains(k[..^1])) k = k[..^1];
-        return k switch
-        {
-            "note" or "player" => Fact,
-            "directive" => Rule,
-            "waypoint" => Place,
-            "recipe" or "recipes" or "game" => GameData,
-            "kb" => Knowledge,
-            _ => All.Contains(k) ? k : null,
-        };
+        if (KindAliases.TryGetValue(k, out var alias)) return alias;
+        return All.Contains(k) ? k : null;
     }
 
     /// <summary>The kind name the RAPTOR section rebuilder takes for a shard kind (null = not in the tree).</summary>
@@ -247,14 +247,19 @@ public sealed record ShardImportOptions
     /// <summary>Cap for each RAPTOR section rebuild the import queues.</summary>
     public decimal RebuildMaxUsd { get; init; } = 0.25m;
 
-    public static ShardImportMode ParseMode(string? s) => s?.Trim().ToLowerInvariant() switch
+    private static readonly Dictionary<string, ShardImportMode> ModeWords = new(StringComparer.Ordinal)
     {
-        "replace" or "replace-section" or "replacesection" or "replace_section" => ShardImportMode.ReplaceSection,
-        "swap" or "swap-pack" or "swappack" or "swap_pack" => ShardImportMode.SwapPack,
-        "add-mode" or "addmode" or "add_mode" or "add" => ShardImportMode.AddMode,
-        "remove-mode" or "removemode" or "remove_mode" or "remove" => ShardImportMode.RemoveMode,
-        _ => ShardImportMode.Merge,
+        ["replace"] = ShardImportMode.ReplaceSection, ["replace-section"] = ShardImportMode.ReplaceSection,
+        ["replacesection"] = ShardImportMode.ReplaceSection, ["replace_section"] = ShardImportMode.ReplaceSection,
+        ["swap"] = ShardImportMode.SwapPack, ["swap-pack"] = ShardImportMode.SwapPack, ["swappack"] = ShardImportMode.SwapPack, ["swap_pack"] = ShardImportMode.SwapPack,
+        ["add-mode"] = ShardImportMode.AddMode, ["addmode"] = ShardImportMode.AddMode, ["add_mode"] = ShardImportMode.AddMode, ["add"] = ShardImportMode.AddMode,
+        ["remove-mode"] = ShardImportMode.RemoveMode, ["removemode"] = ShardImportMode.RemoveMode, ["remove_mode"] = ShardImportMode.RemoveMode,
+        ["remove"] = ShardImportMode.RemoveMode,
     };
+
+    /// <summary>The import mode a word names; anything else (or nothing) merges.</summary>
+    public static ShardImportMode ParseMode(string? s) =>
+        s == null ? ShardImportMode.Merge : ModeWords.GetValueOrDefault(s.Trim().ToLowerInvariant(), ShardImportMode.Merge);
 
     public static ShardConflictPolicy ParseConflict(string? s) => s?.Trim().ToLowerInvariant() switch
     {

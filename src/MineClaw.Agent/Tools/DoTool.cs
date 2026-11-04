@@ -106,40 +106,44 @@ public static class DoTool
         if (input.ValueKind != JsonValueKind.Object) return input;
         var o = JsonNode.Parse(input.GetRawText())!.AsObject();
         var action = input.Str("action");
-        if (!input.TryGetProperty("action", out _))
-        {
-            var shorthand = input.EnumerateObject().FirstOrDefault(p => Actions.Contains(p.Name, StringComparer.OrdinalIgnoreCase));
-            if (shorthand.Name != null)
-            {
-                action = shorthand.Name;
-                o["action"] = action;
-                o["args"] = JsonNode.Parse(shorthand.Value.GetRawText());
-                o.Remove(shorthand.Name);
-            }
-        }
-        if (action != null && o["action"] is JsonValue v && v.TryGetValue<string>(out _))
-        {
-            action = action.Trim().ToLowerInvariant();
-            o["action"] = action;
-            if (o["args"] is { } args)
-            {
-                var element = JsonSerializer.SerializeToElement(args);
-                if (element.ValueKind is JsonValueKind.String or JsonValueKind.Number)
-                    o["args"] = JsonNode.Parse(Normalize(action, element).GetRawText());
-            }
-        }
-        if (input.TryGetProperty("then", out var then))
-        {
-            var steps = then.ValueKind switch
-            {
-                JsonValueKind.Array => then.EnumerateArray().ToArray(),
-                JsonValueKind.Object => [then],
-                JsonValueKind.String => [JsonSerializer.SerializeToElement(new { action = then.GetString() })],
-                _ => null,
-            };
-            if (steps != null) o["then"] = new JsonArray(steps.Select(s => JsonNode.Parse(NormalizeInput(s).GetRawText())).ToArray());
-        }
+        if (!input.TryGetProperty("action", out _)) action = LiftShorthand(input, o) ?? action;
+        if (action != null && o["action"] is JsonValue v && v.TryGetValue<string>(out _)) NormalizeActionArgs(o, action);
+        if (input.TryGetProperty("then", out var then)) NormalizeThen(o, then);
         return JsonSerializer.SerializeToElement(o);
+    }
+
+    /// <summary>{goto: "gen"} → {action: "goto", args: "gen"}; returns the action, or null when no key is an action.</summary>
+    private static string? LiftShorthand(JsonElement input, JsonObject o)
+    {
+        var shorthand = input.EnumerateObject().FirstOrDefault(p => Actions.Contains(p.Name, StringComparer.OrdinalIgnoreCase));
+        if (shorthand.Name == null) return null;
+        o["action"] = shorthand.Name;
+        o["args"] = JsonNode.Parse(shorthand.Value.GetRawText());
+        o.Remove(shorthand.Name);
+        return shorthand.Name;
+    }
+
+    /// <summary>The action in lower case; a string/number arg becomes the tool's main parameter.</summary>
+    private static void NormalizeActionArgs(JsonObject o, string action)
+    {
+        action = action.Trim().ToLowerInvariant();
+        o["action"] = action;
+        if (o["args"] is not { } args) return;
+        var element = JsonSerializer.SerializeToElement(args);
+        if (element.ValueKind is JsonValueKind.String or JsonValueKind.Number)
+            o["args"] = JsonNode.Parse(Normalize(action, element).GetRawText());
+    }
+
+    private static void NormalizeThen(JsonObject o, JsonElement then)
+    {
+        var steps = then.ValueKind switch
+        {
+            JsonValueKind.Array => then.EnumerateArray().ToArray(),
+            JsonValueKind.Object => [then],
+            JsonValueKind.String => [JsonSerializer.SerializeToElement(new { action = then.GetString() })],
+            _ => null,
+        };
+        if (steps != null) o["then"] = new JsonArray(steps.Select(s => JsonNode.Parse(NormalizeInput(s).GetRawText())).ToArray());
     }
 
     private static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "action", "args", "then", "queue", "body" };
@@ -152,67 +156,57 @@ public static class DoTool
     /// </summary>
     public static List<(JsonElement? Body, JsonElement Input)> SplitByBody(JsonElement input)
     {
-        if (input.ValueKind != JsonValueKind.Object || !input.TryGetProperty("then", out var then) || then.ValueKind != JsonValueKind.Array
-            || !then.EnumerateArray().Any(t => t.ValueKind == JsonValueKind.Object && t.TryGetProperty("body", out _)))
-            return [(null, input)];
+        if (!HasStepBodies(input, out var then)) return [(null, input)];
         var own = new JsonArray();
-        var others = new List<(string Key, JsonElement Body, List<JsonNode> Steps)>();
-        foreach (var t in then.EnumerateArray())
-        {
-            if (t.ValueKind == JsonValueKind.Object && t.TryGetProperty("body", out var b))
-            {
-                var key = b.GetRawText();
-                var step = JsonNode.Parse(t.GetRawText())!.AsObject();
-                step.Remove("body");
-                var g = others.FindIndex(x => x.Key == key);
-                if (g < 0) { others.Add((key, b.Clone(), new List<JsonNode>())); g = others.Count - 1; }
-                others[g].Steps.Add(step);
-            }
-            else own.Add(JsonNode.Parse(t.GetRawText()));
-        }
+        var others = GroupByStepBody(then, own);
         var first = JsonNode.Parse(input.GetRawText())!.AsObject();
         if (own.Count > 0) first["then"] = own; else first.Remove("then");
         var list = new List<(JsonElement?, JsonElement)> { (null, JsonSerializer.SerializeToElement(first)) };
-        foreach (var (_, body, steps) in others)
-        {
-            var o = steps[0].AsObject();
-            if (steps.Count > 1) o["then"] = new JsonArray(steps.Skip(1).Select(s => s.DeepClone()).ToArray());
-            if (input.TryGetProperty("queue", out var q)) o["queue"] = JsonNode.Parse(q.GetRawText());
-            list.Add((body, JsonSerializer.SerializeToElement(o)));
-        }
+        foreach (var (_, body, steps) in others) list.Add((body, BodyDo(input, steps)));
         return list;
+    }
+
+    private static bool HasStepBodies(JsonElement input, out JsonElement then)
+    {
+        then = default;
+        return input.ValueKind == JsonValueKind.Object && input.TryGetProperty("then", out then) && then.ValueKind == JsonValueKind.Array
+            && then.EnumerateArray().Any(t => t.ValueKind == JsonValueKind.Object && t.TryGetProperty("body", out _));
+    }
+
+    /// <summary>The steps naming a body, grouped per body in order of first mention (body removed); the rest go to <paramref name="own"/>.</summary>
+    private static List<(string Key, JsonElement Body, List<JsonNode> Steps)> GroupByStepBody(JsonElement then, JsonArray own)
+    {
+        var others = new List<(string Key, JsonElement Body, List<JsonNode> Steps)>();
+        foreach (var t in then.EnumerateArray())
+        {
+            if (t.ValueKind != JsonValueKind.Object || !t.TryGetProperty("body", out var b))
+            {
+                own.Add(JsonNode.Parse(t.GetRawText()));
+                continue;
+            }
+            var key = b.GetRawText();
+            var step = JsonNode.Parse(t.GetRawText())!.AsObject();
+            step.Remove("body");
+            var g = others.FindIndex(x => x.Key == key);
+            if (g < 0) { others.Add((key, b.Clone(), new List<JsonNode>())); g = others.Count - 1; }
+            others[g].Steps.Add(step);
+        }
+        return others;
+    }
+
+    /// <summary>A body's own <c>do</c>: its first step as the action, the rest as <c>then</c>, the call's <c>queue</c> kept.</summary>
+    private static JsonElement BodyDo(JsonElement input, List<JsonNode> steps)
+    {
+        var o = steps[0].AsObject();
+        if (steps.Count > 1) o["then"] = new JsonArray(steps.Skip(1).Select(s => s.DeepClone()).ToArray());
+        if (input.TryGetProperty("queue", out var q)) o["queue"] = JsonNode.Parse(q.GetRawText());
+        return JsonSerializer.SerializeToElement(o);
     }
 
     private static bool AddStep(JsonElement step, List<(string, JsonElement)> steps, out string? error)
     {
         error = null;
-        string? action = null;
-        JsonElement args = default;
-        if (step.ValueKind == JsonValueKind.Object && step.TryGetProperty("action", out var a) && a.ValueKind == JsonValueKind.String)
-        {
-            action = a.GetString();
-            if (step.TryGetProperty("args", out var ar)) args = ar;
-            else
-            {
-                // {action:"goto", to:"gen"}: the args sit next to action.
-                var o = new JsonObject();
-                foreach (var p in step.EnumerateObject())
-                    if (!Reserved.Contains(p.Name)) o[p.Name] = JsonNode.Parse(p.Value.GetRawText());
-                args = JsonSerializer.SerializeToElement(o);
-            }
-        }
-        else if (step.ValueKind == JsonValueKind.Object)
-        {
-            // Shorthand {goto: "cobble gen"} / {harvest_generator: {count: 64}}.
-            foreach (var p in step.EnumerateObject())
-            {
-                if (Reserved.Contains(p.Name)) continue;
-                if (!Actions.Contains(p.Name, StringComparer.OrdinalIgnoreCase)) continue;
-                action = p.Name;
-                args = p.Value;
-                break;
-            }
-        }
+        var (action, args) = StepAction(step);
         if (string.IsNullOrWhiteSpace(action)) { error = $"do needs an action ({string.Join("|", Actions)})"; return false; }
         action = action.Trim().ToLowerInvariant();
         if (!Actions.Contains(action)) { error = $"do can't run '{action}' (use {string.Join("|", Actions)}; delegate other jobs)"; return false; }
@@ -222,19 +216,43 @@ public static class DoTool
         return true;
     }
 
+    /// <summary>A step's action and args: {action, args}, {action, ...args beside it} or the shorthand {goto: "gen"}.</summary>
+    private static (string? Action, JsonElement Args) StepAction(JsonElement step)
+    {
+        if (step.ValueKind != JsonValueKind.Object) return (null, default);
+        if (step.TryGetProperty("action", out var a) && a.ValueKind == JsonValueKind.String)
+            return (a.GetString(), step.TryGetProperty("args", out var ar) ? ar : ArgsBesideAction(step));
+        // Shorthand {goto: "cobble gen"} / {harvest_generator: {count: 64}}.
+        foreach (var p in step.EnumerateObject())
+        {
+            if (Reserved.Contains(p.Name)) continue;
+            if (Actions.Contains(p.Name, StringComparer.OrdinalIgnoreCase)) return (p.Name, p.Value);
+        }
+        return (null, default);
+    }
+
+    /// <summary>{action:"goto", to:"gen"}: the args sit next to action.</summary>
+    private static JsonElement ArgsBesideAction(JsonElement step)
+    {
+        var o = new JsonObject();
+        foreach (var p in step.EnumerateObject())
+            if (!Reserved.Contains(p.Name)) o[p.Name] = JsonNode.Parse(p.Value.GetRawText());
+        return JsonSerializer.SerializeToElement(o);
+    }
+
+    /// <summary>The parameter a bare string/number arg fills, per action ("value" for any other).</summary>
+    private static readonly Dictionary<string, string> MainArg = new(StringComparer.Ordinal)
+    {
+        ["goto"] = "to", ["follow"] = "player", ["give_items"] = "player", ["drop_items"] = "item", ["mine"] = "block", ["withdraw"] = "item",
+        ["craft"] = "item", ["act"] = "move", ["harvest_generator"] = "at", ["chop_tree"] = "at", ["deposit"] = "at", ["see"] = "view",
+        ["light"] = "design", ["dig"] = "site",
+    };
+
     private static JsonElement Normalize(string action, JsonElement args)
     {
         if (args.ValueKind == JsonValueKind.Object) return args.Clone();
-        if (args.ValueKind is JsonValueKind.String or JsonValueKind.Number)
-        {
-            var key = action switch
-            {
-                "goto" => "to", "follow" or "give_items" => "player", "drop_items" => "item", "mine" => "block", "withdraw" or "craft" => "item", "act" => "move",
-                "harvest_generator" or "chop_tree" or "deposit" => "at", "see" => "view", "light" => "design", "dig" => "site", _ => "value",
-            };
-            var o = new JsonObject { [key] = JsonNode.Parse(args.GetRawText()) };
-            return JsonSerializer.SerializeToElement(o);
-        }
-        return JsonSerializer.SerializeToElement(new { });
+        if (args.ValueKind is not (JsonValueKind.String or JsonValueKind.Number)) return JsonSerializer.SerializeToElement(new { });
+        var o = new JsonObject { [MainArg.GetValueOrDefault(action, "value")] = JsonNode.Parse(args.GetRawText()) };
+        return JsonSerializer.SerializeToElement(o);
     }
 }

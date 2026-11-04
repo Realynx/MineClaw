@@ -289,22 +289,33 @@ public static class ShardFile
     {
         try
         {
-            if (b.Length < 16 || !b.AsSpan(0, 8).SequenceEqual(Magic)) throw new ShardFormatException("embeddings.bin has no MCEMB1 header");
-            int d = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(8));
-            int n = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(12));
-            if (d != dims || d <= 0 || d > 65536 || n < 0) throw new ShardFormatException($"embeddings.bin is {d}-dimensional, the manifest says {dims}");
+            var (d, n) = EmbeddingsHeader(b, dims);
             int o = 16;
-            for (int i = 0; i < n; i++)
-            {
-                int hl = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(o)); o += 4;
-                if (hl <= 0 || hl > 256) throw new ShardFormatException("embeddings.bin is corrupt");
-                var hash = Encoding.UTF8.GetString(b, o, hl); o += hl;
-                var v = new float[d];
-                for (int k = 0; k < d; k++) { v[k] = BinaryPrimitives.ReadSingleLittleEndian(b.AsSpan(o)); o += 4; }
-                into[hash] = v;
-            }
+            for (int i = 0; i < n; i++) o = ReadEmbedding(b, o, d, into);
             if (o != b.Length) throw new ShardFormatException("embeddings.bin has trailing bytes");
         }
         catch (ArgumentOutOfRangeException) { throw new ShardFormatException("embeddings.bin is truncated"); }
+    }
+
+    /// <summary>The MCEMB1 header: dimensions (must match the manifest) and vector count.</summary>
+    private static (int Dims, int Count) EmbeddingsHeader(byte[] b, int dims)
+    {
+        if (b.Length < 16 || !b.AsSpan(0, 8).SequenceEqual(Magic)) throw new ShardFormatException("embeddings.bin has no MCEMB1 header");
+        int d = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(8));
+        int n = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(12));
+        if (d != dims || d <= 0 || d > 65536 || n < 0) throw new ShardFormatException($"embeddings.bin is {d}-dimensional, the manifest says {dims}");
+        return (d, n);
+    }
+
+    /// <summary>One (hash, vector) entry at <paramref name="o"/>; returns the offset after it.</summary>
+    private static int ReadEmbedding(byte[] b, int o, int d, Dictionary<string, float[]> into)
+    {
+        int hl = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(o)); o += 4;
+        if (hl <= 0 || hl > 256) throw new ShardFormatException("embeddings.bin is corrupt");
+        var hash = Encoding.UTF8.GetString(b, o, hl); o += hl;
+        var v = new float[d];
+        for (int k = 0; k < d; k++) { v[k] = BinaryPrimitives.ReadSingleLittleEndian(b.AsSpan(o)); o += 4; }
+        into[hash] = v;
+        return o;
     }
 }

@@ -91,17 +91,19 @@ public sealed class TerseOptions
     /// <summary>"thinking=lite delegate=full ..." (startup log).</summary>
     public string Describe() => string.Join(" ", TersePurpose.All.Select(p => $"{p}={For(p).ToString().ToLowerInvariant()}"));
 
+    private static readonly Dictionary<string, TerseLevel> LevelWords = new(StringComparer.Ordinal)
+    {
+        ["off"] = TerseLevel.Off, ["none"] = TerseLevel.Off, ["false"] = TerseLevel.Off, ["0"] = TerseLevel.Off,
+        ["lite"] = TerseLevel.Lite, ["light"] = TerseLevel.Lite, ["1"] = TerseLevel.Lite,
+        ["full"] = TerseLevel.Full, ["on"] = TerseLevel.Full, ["true"] = TerseLevel.Full, ["2"] = TerseLevel.Full,
+        ["ultra"] = TerseLevel.Ultra, ["3"] = TerseLevel.Ultra,
+    };
+
     public static bool TryParse(string? text, out TerseLevel level)
     {
+        if (LevelWords.TryGetValue((text ?? "").Trim().ToLowerInvariant(), out level)) return true;
         level = TerseLevel.Off;
-        switch ((text ?? "").Trim().ToLowerInvariant())
-        {
-            case "off" or "none" or "false" or "0": level = TerseLevel.Off; return true;
-            case "lite" or "light" or "1": level = TerseLevel.Lite; return true;
-            case "full" or "on" or "true" or "2": level = TerseLevel.Full; return true;
-            case "ultra" or "3": level = TerseLevel.Ultra; return true;
-            default: return false;
-        }
+        return false;
     }
 }
 

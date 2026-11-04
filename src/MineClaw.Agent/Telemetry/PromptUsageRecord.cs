@@ -44,16 +44,17 @@ public static class PromptPurpose
     public const string RaptorSummary = "raptor_summary";
 
     /// <summary>Maps an <c>LlmRequest.Purpose</c> label to its normalised name (unknown labels pass through).</summary>
-    public static string Normalize(string? purpose) => (purpose ?? "").ToLowerInvariant() switch
+    private static readonly Dictionary<string, string> PurposeNames = new(StringComparer.Ordinal)
     {
-        "chat" or "task" or "" => ChatTurn,
-        "worker" => DelegateRound,
-        "ask_memory" => AskMemory,
-        "compact" => Compaction,
-        "reflect" => Reflection,
-        "raptor" => RaptorSummary,
-        var p => p,
+        ["chat"] = ChatTurn, ["task"] = ChatTurn, [""] = ChatTurn, ["worker"] = DelegateRound, ["ask_memory"] = AskMemory,
+        ["compact"] = Compaction, ["reflect"] = Reflection, ["raptor"] = RaptorSummary,
     };
+
+    public static string Normalize(string? purpose)
+    {
+        var p = (purpose ?? "").ToLowerInvariant();
+        return PurposeNames.TryGetValue(p, out var name) ? name : p;
+    }
 }
 
 /// <summary>

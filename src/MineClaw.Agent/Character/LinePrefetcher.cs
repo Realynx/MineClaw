@@ -192,16 +192,23 @@ public sealed class LinePrefetcher
         {
             using var doc = JsonDocument.Parse(text[a..(b + 1)]);
             foreach (var p in doc.RootElement.EnumerateObject())
-            {
-                var list = new List<string>();
-                if (p.Value.ValueKind == JsonValueKind.Array)
-                    foreach (var x in p.Value.EnumerateArray()) { if (x.ValueKind == JsonValueKind.String && x.GetString() is { } s) list.Add(s); }
-                else if (p.Value.ValueKind == JsonValueKind.String && p.Value.GetString() is { } one) list.Add(one);
-                if (list.Count > 0) map[p.Name] = list;
-            }
+                if (LinesOf(p.Value) is { Count: > 0 } list) map[p.Name] = list;
         }
         catch (JsonException) { }
         return map;
+    }
+
+    /// <summary>A moment's lines: the strings of an array, or one string.</summary>
+    private static List<string> LinesOf(JsonElement v)
+    {
+        var list = new List<string>();
+        if (v.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var x in v.EnumerateArray())
+                if (x.ValueKind == JsonValueKind.String && x.GetString() is { } s) list.Add(s);
+        }
+        else if (v.ValueKind == JsonValueKind.String && v.GetString() is { } one) list.Add(one);
+        return list;
     }
 
     private static readonly Regex Coords = new(@"-?\d+\s*[, ]\s*-?\d+(?:\s*[, ]\s*-?\d+)?", RegexOptions.Compiled);
@@ -212,14 +219,17 @@ public sealed class LinePrefetcher
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
         var t = text.Replace("\r", "").Trim().Trim('"', '\'', '`').Trim();
-        if (t.Length == 0 || t.Length > maxChars || t.Contains('\n') || t.StartsWith('/') || t.Contains('{') || t.Contains('[')) return null;
-        if (t.Any(c => c > 127)) return null; // the server's chat is ASCII
+        if (!IsOneChatLine(t, maxChars)) return null;
         if (Coords.IsMatch(t) || Claims.IsMatch(t)) return null;
         var situation = ctx.Describe();
         foreach (Match m in Regex.Matches(t, @"\d+"))
             if (!Regex.IsMatch(situation, $@"(?<!\d){m.Value}(?!\d)")) return null;
         return t;
     }
+
+    /// <summary>Non-empty, short enough, one line, no command, no JSON, ASCII only (the server's chat is ASCII).</summary>
+    private static bool IsOneChatLine(string t, int maxChars) =>
+        t.Length > 0 && t.Length <= maxChars && !t.Contains('\n') && !t.StartsWith('/') && !t.Contains('{') && !t.Contains('[') && !t.Any(c => c > 127);
 
     private static string Trunc(string s, int max) { s = (s ?? "").Trim(); return s.Length <= max ? s : s[..max]; }
 }

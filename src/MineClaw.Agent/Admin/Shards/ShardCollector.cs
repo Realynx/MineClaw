@@ -65,7 +65,11 @@ public sealed class ShardCollector
     // ======================= per kind =======================
 
     /// <summary>Every record of a kind in this db (world and rule kinds included: the flags are applied by the selection).</summary>
-    public IReadOnlyList<ShardRecord> All(string kind) => kind switch
+    public IReadOnlyList<ShardRecord> All(string kind) => IsDocKind(kind) ? DocRecords(kind) : KindRecords(kind);
+
+    private static bool IsDocKind(string kind) => kind is ShardKinds.Episode or ShardKinds.Knowledge or ShardKinds.GameData;
+
+    private IReadOnlyList<ShardRecord> KindRecords(string kind) => kind switch
     {
         ShardKinds.Fact => Facts(),
         ShardKinds.Claim => Claims(),
@@ -74,7 +78,6 @@ public sealed class ShardCollector
         ShardKinds.Lesson => Lessons(),
         ShardKinds.Place => Places(),
         ShardKinds.Structure => Structures(),
-        ShardKinds.Episode or ShardKinds.Knowledge or ShardKinds.GameData => DocRecords(kind),
         _ => [],
     };
 
@@ -254,56 +257,51 @@ public sealed class ShardCollector
     /// </summary>
     public List<ShardRecord> Select(ShardSelection s, IReadOnlyCollection<string>? semanticRefs = null)
     {
-        bool Allowed(string kind) => (!ShardKinds.IsWorld(kind) || s.IncludeWorld) && (kind != ShardKinds.Rule || s.IncludeRules);
-        IEnumerable<ShardRecord> result;
-        switch (s.Mode)
+        IEnumerable<ShardRecord> result = s.Mode switch
         {
-            case "subtree":
-            {
-                var refs = s.LeafRefs ?? [];
-                result = refs.Distinct(StringComparer.Ordinal).Select(ForRef).OfType<ShardRecord>().Where(r => Allowed(r.Kind));
-                break;
-            }
-            case "person":
-            {
-                var names = PersonNames(s.People);
-                if (names.Count == 0) throw new ArgumentException("a person shard needs at least one name");
-                var rx = MentionRegex(names);
-                result = ShardKinds.All.Where(Allowed).Where(k => k is not (ShardKinds.Knowledge or ShardKinds.GameData or ShardKinds.Lesson))
-                    .SelectMany(All).Where(r => AboutPerson(r, names, rx));
-                break;
-            }
-            case "pack":
-            {
-                // A mode pack is its knowledge docs only; a version pack is the game data (+ its knowledge docs, or every chunk).
-                IEnumerable<ShardRecord> kb = s.KnowledgeFiles is { Count: > 0 } files
-                    ? All(ShardKinds.Knowledge).Where(r => InFiles(r, files))
-                    : s.IncludeKnowledgeDocs && s.PackMode == null ? All(ShardKinds.Knowledge) : [];
-                result = (s.PackMode == null ? All(ShardKinds.GameData) : []).Concat(kb);
-                break;
-            }
-            default:
-            {
-                var kinds = s.Kinds is { Count: > 0 } ks ? ks.Select(ShardKinds.Normalize).OfType<string>().Distinct().ToList() : ShardKinds.All.ToList();
-                result = kinds.Where(Allowed).SelectMany(All);
-                if (s.Dimension is { } d) result = result.Where(r => r.Dimension == d);
-                if (!string.IsNullOrWhiteSpace(s.Query))
-                {
-                    if (s.Semantic && semanticRefs != null)
-                    {
-                        var set = semanticRefs as IReadOnlySet<string> ?? semanticRefs.ToHashSet(StringComparer.Ordinal);
-                        result = result.Where(r => r.Ref != null && set.Contains(r.Ref));
-                    }
-                    else
-                    {
-                        var terms = s.Query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                        result = result.Where(r => Haystack(r) is var h && terms.All(t => h.Contains(t, StringComparison.Ordinal)));
-                    }
-                }
-                break;
-            }
-        }
+            "subtree" => (s.LeafRefs ?? []).Distinct(StringComparer.Ordinal).Select(ForRef).OfType<ShardRecord>().Where(r => Allowed(s, r.Kind)),
+            "person" => PersonRecords(s),
+            "pack" => PackRecords(s),
+            _ => FilterRecords(s, semanticRefs),
+        };
         return result.GroupBy(r => r.Id, StringComparer.Ordinal).Select(g => g.First()).ToList();
+    }
+
+    private static bool Allowed(ShardSelection s, string kind) =>
+        (!ShardKinds.IsWorld(kind) || s.IncludeWorld) && (kind != ShardKinds.Rule || s.IncludeRules);
+
+    private IEnumerable<ShardRecord> PersonRecords(ShardSelection s)
+    {
+        var names = PersonNames(s.People);
+        if (names.Count == 0) throw new ArgumentException("a person shard needs at least one name");
+        var rx = MentionRegex(names);
+        return ShardKinds.All.Where(k => Allowed(s, k)).Where(k => k is not (ShardKinds.Knowledge or ShardKinds.GameData or ShardKinds.Lesson))
+            .SelectMany(All).Where(r => AboutPerson(r, names, rx));
+    }
+
+    /// <summary>A mode pack is its knowledge docs only; a version pack is the game data (+ its knowledge docs, or every chunk).</summary>
+    private IEnumerable<ShardRecord> PackRecords(ShardSelection s)
+    {
+        IEnumerable<ShardRecord> kb = s.KnowledgeFiles is { Count: > 0 } files
+            ? All(ShardKinds.Knowledge).Where(r => InFiles(r, files))
+            : s.IncludeKnowledgeDocs && s.PackMode == null ? All(ShardKinds.Knowledge) : [];
+        return (s.PackMode == null ? All(ShardKinds.GameData) : []).Concat(kb);
+    }
+
+    /// <summary>The selected kinds (all by default), in a dimension, matching the query (every term, or the semantic hits).</summary>
+    private IEnumerable<ShardRecord> FilterRecords(ShardSelection s, IReadOnlyCollection<string>? semanticRefs)
+    {
+        var kinds = s.Kinds is { Count: > 0 } ks ? ks.Select(ShardKinds.Normalize).OfType<string>().Distinct().ToList() : ShardKinds.All.ToList();
+        var result = kinds.Where(k => Allowed(s, k)).SelectMany(All);
+        if (s.Dimension is { } d) result = result.Where(r => r.Dimension == d);
+        if (string.IsNullOrWhiteSpace(s.Query)) return result;
+        if (s.Semantic && semanticRefs != null)
+        {
+            var set = semanticRefs as IReadOnlySet<string> ?? semanticRefs.ToHashSet(StringComparer.Ordinal);
+            return result.Where(r => r.Ref != null && set.Contains(r.Ref));
+        }
+        var terms = s.Query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return result.Where(r => Haystack(r) is var h && terms.All(t => h.Contains(t, StringComparison.Ordinal)));
     }
 
     private static string Haystack(ShardRecord r) => string.Join(" ", r.Fields.Values.Where(v => v != null)).ToLowerInvariant();
@@ -336,15 +334,20 @@ public sealed class ShardCollector
     /// <summary>Mentioning or attributed to the person: facts about them, their claims, their rules, relationship entries, episodes with them.</summary>
     private static bool AboutPerson(ShardRecord r, IReadOnlyList<string> names, Regex rx) => r.Kind switch
     {
-        ShardKinds.Fact => Is(r.Get("subject"), names) || Mentions(rx, r.Get("text")),
-        ShardKinds.Claim => (r.Get("claimants") ?? r.Get("claimant") ?? "").Split(',').Any(c => Is(c, names)) || Mentions(rx, r.Get("text")),
+        ShardKinds.Fact => IsOrMentions(r.Get("subject"), names, rx, r.Get("text")),
+        ShardKinds.Claim => ClaimedBy(r, names) || Mentions(rx, r.Get("text")),
         ShardKinds.Rule => Is(r.Get("player"), names),
-        ShardKinds.Trait => Is(r.Get("player"), names) || Mentions(rx, r.Get("text")),
+        ShardKinds.Trait => IsOrMentions(r.Get("player"), names, rx, r.Get("text")),
         ShardKinds.Place => Mentions(rx, r.Get("name"), r.Get("note")),
-        ShardKinds.Structure => Is(r.Get("taught_by"), names) || Mentions(rx, r.Get("name")),
+        ShardKinds.Structure => IsOrMentions(r.Get("taught_by"), names, rx, r.Get("name")),
         ShardKinds.Episode => Mentions(rx, r.Get("title"), r.Get("body")),
         _ => false,
     };
+
+    private static bool IsOrMentions(string? who, IReadOnlyList<string> names, Regex rx, string? text) => Is(who, names) || Mentions(rx, text);
+
+    private static bool ClaimedBy(ShardRecord r, IReadOnlyList<string> names) =>
+        (r.Get("claimants") ?? r.Get("claimant") ?? "").Split(',').Any(c => Is(c, names));
 
     /// <summary>Doc refs of every RAPTOR leaf under a node (deduplicated across soft-cluster parents).</summary>
     public static List<string> LeafRefsUnder(RaptorMemory raptor, int node) => raptor.Index.Read(t => LeafRefsUnder(t, node));
