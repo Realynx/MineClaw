@@ -59,42 +59,56 @@ public static class DesignConvert
         to = DesignVersions.Normalize(to) ?? to;
         if (id <= 0 || from == to) return (id, meta, ConvertKind.Same);
         var dst = DesignPalette.For(to);
-        if (from == DesignVersions.Beta)
-        {
-            if (id == 44 && (meta & 7) == 2) return (126, 0, ConvertKind.Same);
-            if (id == 95) return (id, meta, ConvertKind.Missing); // b1.8.1's locked chest is never 1.12.2's stained glass
-            return dst.Valid(id, meta) ? (id, meta, ConvertKind.Same) : (id, meta, ConvertKind.Missing);
-        }
-        // 1.12.2 → b1.8.1
+        return from == DesignVersions.Beta ? FromBeta(dst, id, meta) : ToBeta(dst, id, meta);
+    }
+
+    private static (int Id, int Meta, ConvertKind Kind) FromBeta(DesignPalette dst, int id, int meta)
+    {
+        if (id == 44 && (meta & 7) == 2) return (126, 0, ConvertKind.Same);
+        if (id == 95) return (id, meta, ConvertKind.Missing); // b1.8.1's locked chest is never 1.12.2's stained glass
+        return dst.Valid(id, meta) ? (id, meta, ConvertKind.Same) : (id, meta, ConvertKind.Missing);
+    }
+
+    /// <summary>1.12.2 → b1.8.1: the same state when b1.8.1 has it, else its nearest b1.8.1 block (<see cref="Substitutes"/>).</summary>
+    private static (int Id, int Meta, ConvertKind Kind) ToBeta(DesignPalette dst, int id, int meta)
+    {
         if (id == 95) return (20, 0, ConvertKind.Substitute);
         if (id == 126) return (44, 2, (meta & 7) == 0 && (meta & 8) == 0 ? ConvertKind.Same : ConvertKind.Substitute);
         if (id <= 109 && dst.Valid(id, meta)) return (id, meta, ConvertKind.Same);
-        (int Id, int Meta)? sub = id switch
-        {
-            5 => (5, 0),
-            17 => (17, (meta & 3) == 3 ? 0 : meta & 3),
-            162 => (17, 0),
-            134 or 135 or 136 or 163 or 164 => (53, meta & 3),
-            53 or 67 or 108 or 109 => (id, meta & 3),
-            44 when dst.Valid(44, meta & 7) => (44, meta & 7),
-            188 or 189 or 190 or 191 or 192 => (85, 0),
-            183 or 184 or 185 or 186 or 187 => (107, meta & 7),
-            193 or 194 or 195 or 196 or 197 => (64, meta),
-            24 => (24, 0),
-            12 => (12, 0),
-            98 => (98, 0),
-            2 or 3 or 110 or 208 => (3, 0),
-            38 => (38, 0),
-            6 => (6, 0),
-            160 => (102, 0),
-            96 => (96, meta & 7),
-            167 => (96, meta & 7),
-            143 or 77 when (meta & 7) is >= 1 and <= 4 => (77, meta),
-            146 => (54, meta),
-            _ => null,
-        };
-        if (sub is { } s && dst.Valid(s.Id, s.Meta)) return (s.Id, s.Meta, ConvertKind.Substitute);
+        if (Substitutes.TryGetValue(id, out var sub) && sub(id, meta) is { } s && dst.Valid(s.Id, s.Meta)) return (s.Id, s.Meta, ConvertKind.Substitute);
         return (id, meta, ConvertKind.Missing);
+    }
+
+    private delegate (int Id, int Meta)? Substitute(int id, int meta);
+
+    /// <summary>A 1.12.2 block's nearest b1.8.1 state (checked against b1.8.1's palette by the caller): woods → oak, stone kinds →
+    /// their plain block, stained panes → panes, top halves → bottom halves, wooden buttons → stone, trapped chests → chests.</summary>
+    private static readonly Dictionary<int, Substitute> Substitutes = SubstituteTable(
+        ([5], (_, _) => (5, 0)),
+        ([17], (_, m) => (17, (m & 3) == 3 ? 0 : m & 3)),
+        ([162], (_, _) => (17, 0)),
+        ([134, 135, 136, 163, 164], (_, m) => (53, m & 3)),
+        ([53, 67, 108, 109], (id, m) => (id, m & 3)),
+        ([44], (_, m) => (44, m & 7)),
+        ([188, 189, 190, 191, 192], (_, _) => (85, 0)),
+        ([183, 184, 185, 186, 187], (_, m) => (107, m & 7)),
+        ([193, 194, 195, 196, 197], (_, m) => (64, m)),
+        ([24], (_, _) => (24, 0)),
+        ([12], (_, _) => (12, 0)),
+        ([98], (_, _) => (98, 0)),
+        ([2, 3, 110, 208], (_, _) => (3, 0)),
+        ([38], (_, _) => (38, 0)),
+        ([6], (_, _) => (6, 0)),
+        ([160], (_, _) => (102, 0)),
+        ([96, 167], (_, m) => (96, m & 7)),
+        ([143, 77], (_, m) => (m & 7) is >= 1 and <= 4 ? (77, m) : null),
+        ([146], (_, m) => (54, m)));
+
+    private static Dictionary<int, Substitute> SubstituteTable(params (int[] Ids, Substitute To)[] rows)
+    {
+        var d = new Dictionary<int, Substitute>();
+        foreach (var (ids, to) in rows) foreach (var id in ids) d[id] = to;
+        return d;
     }
 
     /// <summary>
