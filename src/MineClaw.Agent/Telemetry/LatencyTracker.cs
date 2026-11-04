@@ -265,9 +265,9 @@ public sealed class LatencyTracker
         {
             if (_open is not { } o) return;
             if (o.Tools.Count < 16) o.Tools.Add(filler ? "~" + tool : tool);
-            if (filler || !(BodyTools.Contains(tool) || tool == "stop")) return; // a stop is the action a "stop" asks for
+            if (filler || !IsBodyAction(tool)) return;
             var now = Now;
-            if (o.Reaction == null) { o.Reaction = now; o.ReactionBy = ActivityManagerMovement(tool) ? "move" : tool == "act" ? "gesture" : "action"; }
+            if (o.Reaction == null) { o.Reaction = now; o.ReactionBy = ReactionKind(tool); }
             if (ActivityManagerMovement(tool)) o.Move ??= now;
             done = MarkActionLocked(o, now);
         }
@@ -332,11 +332,20 @@ public sealed class LatencyTracker
 
     private static bool ActivityManagerMovement(string tool) => tool is "goto" or "follow";
 
+    /// <summary>A body tool is a game action; so is a stop (the action a "stop" asks for).</summary>
+    private static bool IsBodyAction(string tool) => BodyTools.Contains(tool) || tool == "stop";
+
+    private static string ReactionKind(string tool) => ActivityManagerMovement(tool) ? "move" : tool == "act" ? "gesture" : "action";
+
+    /// <summary>The rounds at the first action: given, else the earliest seen so far, else the current count.</summary>
+    private static int RoundsAtAction(Open o, int? rounds) =>
+        rounds ?? (o.RoundsAtAction is { } ra && ra < o.Rounds ? ra : o.Rounds);
+
     private LatencyRecord? MarkActionLocked(Open o, DateTimeOffset at, int? rounds = null)
     {
         if (o.Action != null && o.Action <= at) return null;
         o.Action = at;
-        o.RoundsAtAction = rounds ?? (o.RoundsAtAction is { } ra && ra < o.Rounds ? ra : o.Rounds);
+        o.RoundsAtAction = RoundsAtAction(o, rounds);
         if (o.Reaction is not { } r || r > at) { o.Reaction = at; o.ReactionBy ??= "action"; }
         // The turn already ended and only waited for this: close now.
         return !o.InTurn && o.CloseBy != null ? CloseLocked() : null;

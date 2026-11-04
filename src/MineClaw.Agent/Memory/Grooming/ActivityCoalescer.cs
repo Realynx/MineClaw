@@ -161,50 +161,82 @@ public sealed partial class ActivityCoalesceStage : IMemoryGroomer
     {
         if (!doc.Ref.StartsWith(ActivityMeta.DocPrefix, StringComparison.Ordinal) || doc.Level != 0) return [doc];
         if (Parse(doc, ctx) is not { } span) return [doc];
-        var o = ctx.Options.Activity;
-        var state = ctx.Episodes;
-        var place = span.PlaceKey;
-        bool crew = ctx.Crew.Contains(span.Actor);
-
-        if (span.IsRoutine && !span.Parts.Any(p => p.Verb == "place" && p.Count >= o.BuildMinBlocks))
+        bool routine = Foldable(span, ctx.Options.Activity);
+        if (routine && OpenEpisodeFor(span, doc, ctx) is { } hit)
         {
-            var open = state.Open(place, doc.Dimension, span.Day);
-            ActivityEpisode? hit = null;
-            foreach (var e in open)
-            {
-                if (span.StartMs - e.StartMs >= TimeSpan.FromMinutes(Math.Max(1, o.RoutineWindowMinutes)).TotalMilliseconds) continue;
-                if (span.StartMs < e.StartMs - 60_000) continue;
-                bool mine = e.Members.Count == 1 && e.Members[0].Equals(span.Actor, StringComparison.OrdinalIgnoreCase)
-                            || e.Members.Contains(span.Actor, StringComparer.OrdinalIgnoreCase) && e.Members.All(ctx.Crew.Contains);
-                bool join = crew && o.CrewMerge && e.Members.All(ctx.Crew.Contains)
-                            && span.StartMs <= e.EndMs + (long)TimeSpan.FromMinutes(Math.Max(0, o.CrewOverlapMinutes)).TotalMilliseconds;
-                if (mine || join) { hit = e; break; }
-            }
-            if (hit != null)
-            {
-                Merge(hit, span, doc);
-                state.Save(hit);
-                return [Render(hit, doc, ctx)];
-            }
+            Merge(hit, span, doc);
+            ctx.Episodes.Save(hit);
+            return [Render(hit, doc, ctx)];
         }
 
+        var ep = NewEpisode(span, doc, ctx.Episodes, routine);
+        ctx.Episodes.Save(ep);
+        return [Render(ep, doc, ctx)];
+    }
+
+    /// <summary>A routine span that is no build (a big "placed") can fold into an open episode.</summary>
+    private static bool Foldable(ActivitySpan span, ActivityEpisodeOptions o) =>
+        span.IsRoutine && !span.Parts.Any(p => p.Verb == "place" && p.Count >= o.BuildMinBlocks);
+
+    /// <summary>The first open routine episode at the span's place this span belongs to (its own, or a crew one it overlaps).</summary>
+    private static ActivityEpisode? OpenEpisodeFor(ActivitySpan span, RagDoc doc, GroomContext ctx)
+    {
+        var o = ctx.Options.Activity;
+        bool crew = ctx.Crew.Contains(span.Actor);
+        foreach (var e in ctx.Episodes.Open(span.PlaceKey, doc.Dimension, span.Day))
+        {
+            if (!InWindow(e, span, o)) continue;
+            if (IsMine(e, span, ctx) || Joins(e, span, ctx, o, crew)) return e;
+        }
+        return null;
+    }
+
+    private static bool InWindow(ActivityEpisode e, ActivitySpan span, ActivityEpisodeOptions o) =>
+        span.StartMs - e.StartMs < TimeSpan.FromMinutes(Math.Max(1, o.RoutineWindowMinutes)).TotalMilliseconds
+        && span.StartMs >= e.StartMs - 60_000;
+
+    private static bool IsMine(ActivityEpisode e, ActivitySpan span, GroomContext ctx) =>
+        e.Members.Count == 1 && e.Members[0].Equals(span.Actor, StringComparison.OrdinalIgnoreCase)
+        || e.Members.Contains(span.Actor, StringComparer.OrdinalIgnoreCase) && e.Members.All(ctx.Crew.Contains);
+
+    private static bool Joins(ActivityEpisode e, ActivitySpan span, GroomContext ctx, ActivityEpisodeOptions o, bool crew) =>
+        crew && o.CrewMerge && e.Members.All(ctx.Crew.Contains)
+        && span.StartMs <= e.EndMs + (long)TimeSpan.FromMinutes(Math.Max(0, o.CrewOverlapMinutes)).TotalMilliseconds;
+
+    private static ActivityEpisode NewEpisode(ActivitySpan span, RagDoc doc, ActivityEpisodeState state, bool routine)
+    {
         var ep = new ActivityEpisode
         {
-            Ref = doc.Ref, Place = place, Dim = doc.Dimension, Day = span.Day, WallStart = span.WallStart, WallEnd = span.WallEnd,
-            StartMs = span.StartMs, EndMs = span.EndMs, Routine = span.IsRoutine && !span.Parts.Any(p => p.Verb == "place" && p.Count >= o.BuildMinBlocks),
+            Ref = doc.Ref, Place = span.PlaceKey, Dim = doc.Dimension, Day = span.Day, WallStart = span.WallStart, WallEnd = span.WallEnd,
+            StartMs = span.StartMs, EndMs = span.EndMs, Routine = routine,
             At = span.At, Sessions = span.Sessions, Members = [span.Actor], Novel = [.. span.Novel],
-            First = span.At.Length > 0 && !state.Visited(span.Actor, place, doc.Dimension),
+            First = span.At.Length > 0 && !state.Visited(span.Actor, span.PlaceKey, doc.Dimension),
             Bounds = doc.Bounds is { } b ? [b.MinX, b.MinY, b.MinZ, b.MaxX, b.MaxY, b.MaxZ] : null,
         };
         ep.Parts = span.Parts.ToList();
         ep.ByMember[span.Actor] = span.Parts.ToDictionary(p => p.Key, p => p.Count);
-        state.Save(ep);
-        return [Render(ep, doc, ctx)];
+        return ep;
     }
 
     private static void Merge(ActivityEpisode e, ActivitySpan s, RagDoc doc)
     {
         if (!e.Members.Contains(s.Actor, StringComparer.OrdinalIgnoreCase)) e.Members.Add(s.Actor);
+        AddParts(e, s);
+        e.Sessions += s.Sessions;
+        if (s.EndMs > e.EndMs) { e.EndMs = s.EndMs; e.WallEnd = s.WallEnd; }
+        if (s.StartMs < e.StartMs) { e.StartMs = s.StartMs; e.WallStart = s.WallStart; }
+        if (e.At.Length == 0) e.At = s.At;
+        if (doc.Bounds is { } b) e.Bounds = Widen(e.Bounds, b);
+    }
+
+    private static double[] Widen(double[]? bounds, Box b) =>
+        bounds is { Length: 6 } a
+            ? [Math.Min(a[0], b.MinX), Math.Min(a[1], b.MinY), Math.Min(a[2], b.MinZ), Math.Max(a[3], b.MaxX), Math.Max(a[4], b.MaxY), Math.Max(a[5], b.MaxZ)]
+            : [b.MinX, b.MinY, b.MinZ, b.MaxX, b.MaxY, b.MaxZ];
+
+    /// <summary>Sums the span's parts into the episode and into the actor's own breakdown.</summary>
+    private static void AddParts(ActivityEpisode e, ActivitySpan s)
+    {
         if (!e.ByMember.TryGetValue(s.Actor, out var mine)) e.ByMember[s.Actor] = mine = new Dictionary<string, int>();
         foreach (var p in s.Parts)
         {
@@ -217,14 +249,6 @@ public sealed partial class ActivityCoalesceStage : IMemoryGroomer
             }
             mine[p.Key] = mine.GetValueOrDefault(p.Key) + p.Count;
         }
-        e.Sessions += s.Sessions;
-        if (s.EndMs > e.EndMs) { e.EndMs = s.EndMs; e.WallEnd = s.WallEnd; }
-        if (s.StartMs < e.StartMs) { e.StartMs = s.StartMs; e.WallStart = s.WallStart; }
-        if (e.At.Length == 0) e.At = s.At;
-        if (doc.Bounds is { } b)
-            e.Bounds = e.Bounds is { Length: 6 } a
-                ? [Math.Min(a[0], b.MinX), Math.Min(a[1], b.MinY), Math.Min(a[2], b.MinZ), Math.Max(a[3], b.MaxX), Math.Max(a[4], b.MaxY), Math.Max(a[5], b.MaxZ)]
-                : [b.MinX, b.MinY, b.MinZ, b.MaxX, b.MaxY, b.MaxZ];
     }
 
     // ======================= rendering =======================
@@ -259,20 +283,20 @@ public sealed partial class ActivityCoalesceStage : IMemoryGroomer
         var (v, o) = p.Verb switch
         {
             "mine" => (ActivityVerbs.Broken(p.Item), $"{Qty(p)}{p.Item}"),
-            "harvest" => ("harvested", $"{Qty(p)}{p.Item}"),
-            "plant" => ("planted", $"{Qty(p)}{p.Item}"),
-            "place" => ("placed", $"{Qty(p)}{p.Item}"),
-            "take" => ("took", $"{Qty(p)}{p.Item}"),
-            "store" => ("stored", $"{Qty(p)}{p.Item}"),
-            "craft" => ("crafted", $"{Qty(p)}{p.Item}"),
-            "collect" => ("collected", $"{Qty(p)}{p.Item}"),
             "open" => ("opened", $"the {p.Item}{times}"),
             "light" => ("lit", $"the furnace{times}"),
             "chests" => ("used", $"{p.Count} chests"),
-            _ => (p.Verb, $"{Qty(p)}{p.Item}"),
+            _ => (CountedPast.GetValueOrDefault(p.Verb, p.Verb), $"{Qty(p)}{p.Item}"),
         };
         return ((p.Probably ? "probably " : "") + v, o);
     }
+
+    /// <summary>Past tense of the counted verb classes ("harvest" → "harvested"); an unknown class is said as it is.</summary>
+    private static readonly Dictionary<string, string> CountedPast = new(StringComparer.Ordinal)
+    {
+        ["harvest"] = "harvested", ["plant"] = "planted", ["place"] = "placed", ["take"] = "took",
+        ["store"] = "stored", ["craft"] = "crafted", ["collect"] = "collected",
+    };
 
     private static string List(IReadOnlyList<string> items) =>
         items.Count == 1 ? items[0] : string.Join(", ", items.Take(items.Count - 1)) + " and " + items[^1];
@@ -293,17 +317,20 @@ public sealed partial class ActivityCoalesceStage : IMemoryGroomer
         phrases.AddRange(grouped);
         var what = phrases.Count == 0 ? "was busy" : nested ? string.Join("; ", phrases) : List(phrases);
         var sb = new StringBuilder(Who(e, main)).Append(' ').Append(what);
-        if (e.Members.Count > 1 && parts.FirstOrDefault() is { } top)
-        {
-            var split = Ordered(e, main).Select(m => (m, n: e.ByMember.TryGetValue(m, out var d) ? d.GetValueOrDefault(top.Key) : 0))
-                .Where(x => x.n > 0).Select(x => $"{Short(x.m, main)} {(top.Approx ? "~" : "")}{x.n}").ToList();
-            if (split.Count > 1)
-                sb.Append(" (").Append(phrases.Count > 1 || parts.Count > 1 ? Split(top).Verb + " " + top.Item + ": " : "").Append(string.Join(", ", split)).Append(')');
-        }
+        if (e.Members.Count > 1 && parts.FirstOrDefault() is { } top) AppendCrewSplit(sb, e, main, top, phrases.Count > 1 || parts.Count > 1);
         sb.Append(e.At);
         if (e.First) sb.Append(", first time there");
         sb.Append(' ').Append(GroomText.Span(e.Day, e.WallStart, e.WallEnd, e.Sessions));
         return sb.ToString();
+    }
+
+    /// <summary>The crew's share of the top part (" (mined cobblestone: main ~120, 67 ~80)"), when more than one member did it.</summary>
+    private static void AppendCrewSplit(StringBuilder sb, ActivityEpisode e, string? main, ActivityPart top, bool named)
+    {
+        var split = Ordered(e, main).Select(m => (m, n: e.ByMember.TryGetValue(m, out var d) ? d.GetValueOrDefault(top.Key) : 0))
+            .Where(x => x.n > 0).Select(x => $"{Short(x.m, main)} {(top.Approx ? "~" : "")}{x.n}").ToList();
+        if (split.Count > 1)
+            sb.Append(" (").Append(named ? Split(top).Verb + " " + top.Item + ": " : "").Append(string.Join(", ", split)).Append(')');
     }
 
     private static RagDoc Render(ActivityEpisode e, RagDoc doc, GroomContext ctx) => doc with
@@ -336,13 +363,15 @@ public sealed partial class ActivityCoalesceStage : IMemoryGroomer
     [GeneratedRegex(@", first time there$")]
     private static partial Regex FirstTail();
 
-    private static string VerbClass(string v) => v switch
+    /// <summary>A rollup's past-tense verb → its verb class ("chopped" → "mine"); an unknown verb is its own class.</summary>
+    private static readonly Dictionary<string, string> VerbClasses = new(StringComparer.Ordinal)
     {
-        "mined" or "broke" or "chopped" or "dug" or "cleared" or "took down" => "mine",
-        "harvested" => "harvest", "planted" => "plant", "placed" => "place", "crafted" => "craft", "stored" => "store",
-        "took" => "take", "picked up" or "collected" => "collect",
-        _ => v,
+        ["mined"] = "mine", ["broke"] = "mine", ["chopped"] = "mine", ["dug"] = "mine", ["cleared"] = "mine", ["took down"] = "mine",
+        ["harvested"] = "harvest", ["planted"] = "plant", ["placed"] = "place", ["crafted"] = "craft", ["stored"] = "store",
+        ["took"] = "take", ["picked up"] = "collect", ["collected"] = "collect",
     };
+
+    private static string VerbClass(string v) => VerbClasses.GetValueOrDefault(v, v);
 
     /// <summary>One phrase of a rollup list → a counted part (null = not routine: a fight, a death, a sign…).</summary>
     public static ActivityPart? ParsePart(string phrase)
@@ -352,17 +381,25 @@ public sealed partial class ActivityCoalesceStage : IMemoryGroomer
         if (prob) p = p["probably ".Length..];
         if (p.StartsWith("placed sign", StringComparison.Ordinal)) return null;
         var m = Counted().Match(p);
-        if (m.Success)
-        {
-            var item = m.Groups[4].Value.Trim();
-            if (item.Length == 0 || item.Contains('"') || item.Contains('(')) return null;
-            int n = m.Groups[3].Success ? int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture) : 1;
-            return new ActivityPart(VerbClass(m.Groups[1].Value), item, n, m.Groups[2].Success, prob);
-        }
-        if ((m = Opened().Match(p)).Success)
-            return new ActivityPart("open", m.Groups[1].Value, m.Groups[2].Success ? int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) : 1, false, prob);
-        if ((m = Lit().Match(p)).Success)
-            return new ActivityPart("light", "furnace", m.Groups[1].Success ? int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : 1, false, prob);
+        return m.Success ? CountedPart(m, prob) : UncountedPart(p, prob);
+    }
+
+    private static int CountOrOne(Group g) => g.Success ? int.Parse(g.Value, CultureInfo.InvariantCulture) : 1;
+
+    /// <summary>"mined ~312 cobblestone" → a counted part (null when the object is quoted or annotated: not routine).</summary>
+    private static ActivityPart? CountedPart(Match m, bool prob)
+    {
+        var item = m.Groups[4].Value.Trim();
+        if (item.Length == 0 || item.Contains('"') || item.Contains('(')) return null;
+        return new ActivityPart(VerbClass(m.Groups[1].Value), item, CountOrOne(m.Groups[3]), m.Groups[2].Success, prob);
+    }
+
+    /// <summary>"opened the chest 4 times", "lit the furnace", "used 3 chests" → a part; anything else is null.</summary>
+    private static ActivityPart? UncountedPart(string p, bool prob)
+    {
+        Match m;
+        if ((m = Opened().Match(p)).Success) return new ActivityPart("open", m.Groups[1].Value, CountOrOne(m.Groups[2]), false, prob);
+        if ((m = Lit().Match(p)).Success) return new ActivityPart("light", "furnace", CountOrOne(m.Groups[1]), false, prob);
         if ((m = Chests().Match(p)).Success)
             return new ActivityPart("chests", "chests", int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), false, prob);
         return null;
