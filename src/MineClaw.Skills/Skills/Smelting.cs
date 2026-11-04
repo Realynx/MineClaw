@@ -18,9 +18,7 @@ public sealed class SmeltBatchSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        var name = args.Str("item") ?? "cobblestone";
-        if (name.Contains("charcoal", StringComparison.OrdinalIgnoreCase)) name = "log";
-        if (name.Equals("stone", StringComparison.OrdinalIgnoreCase)) name = "cobblestone";
+        var name = InputName(args.Str("item"));
         if (SkillJson.Item(name) is not { } it || !Smelting.IsSmeltable(it.Id)) return Fail($"'{name}' doesn't smelt");
         int have = ctx.Count(it.Id);
         if (have == 0) return Fail($"no {Item(it.Id)} to smelt");
@@ -30,23 +28,39 @@ public sealed class SmeltBatchSkill : Skill
         var furnaces = ctx.Find((id, _) => id is Blocks.Furnace or Blocks.LitFurnace, ctx.Options.SearchRadius, 4);
         if (furnaces.Count == 0) return Fail("no furnace nearby (craft one: 8 cobblestone)");
         bool wait = args.Flag("wait");
-        // ≤ 64 per furnace; spread larger batches.
+        var (started, notes) = await StartAsync(ctx, it.Id, n, fuel, wait, furnaces, ct);
+        if (started == 0) return Fail($"couldn't start smelting: {string.Join("; ", notes)}");
+        var output = Smelting.ResultFor(it.Id);
+        return Ok($"smelting {started} {Item(it.Id)} in {Math.Min(furnaces.Count, (started + 63) / 64)} furnace(s)" +
+                  (output is null ? "" : $" -> {Item(output.OutputId, output.OutputDamage)}") + (wait ? "" : "; collect_furnace later"));
+    }
+
+    /// <summary>"charcoal" smelts logs, "stone" smelts cobblestone; nothing named: cobblestone.</summary>
+    private static string InputName(string? item)
+    {
+        var name = item ?? "cobblestone";
+        if (name.Contains("charcoal", StringComparison.OrdinalIgnoreCase)) name = "log";
+        if (name.Equals("stone", StringComparison.OrdinalIgnoreCase)) name = "cobblestone";
+        return name;
+    }
+
+    /// <summary>≤ 64 per furnace; larger batches are spread. → how many started, and why the furnaces that didn't take any refused.</summary>
+    private static async Task<(int Started, List<string> Notes)> StartAsync(SkillContext ctx, int input, int n, int? fuel, bool wait,
+        IReadOnlyList<FoundBlock> furnaces, CancellationToken ct)
+    {
         int left = n, started = 0;
         var notes = new List<string>();
         foreach (var f in furnaces)
         {
             if (left <= 0) break;
             int part = Math.Min(64, left);
-            var r = await ctx.Game.SmeltAsync(it.Id, part, fuel, wait && furnaces.Count == 1, f.Pos, ct);
+            var r = await ctx.Game.SmeltAsync(input, part, fuel, wait && furnaces.Count == 1, f.Pos, ct);
             if (!r.Ok) { notes.Add(r.Message); continue; }
             left -= part;
             started += part;
-            fuel = Fuel(ctx, it.Id) ?? fuel;
+            fuel = Fuel(ctx, input) ?? fuel;
         }
-        if (started == 0) return Fail($"couldn't start smelting: {string.Join("; ", notes)}");
-        var output = Smelting.ResultFor(it.Id);
-        return Ok($"smelting {started} {Item(it.Id)} in {Math.Min(furnaces.Count, (started + 63) / 64)} furnace(s)" +
-                  (output is null ? "" : $" -> {Item(output.OutputId, output.OutputDamage)}") + (wait ? "" : "; collect_furnace later"));
+        return (started, notes);
     }
 
     /// <summary>Best fuel that isn't the thing being smelted: charcoal/coal first, then the rest by burn time from the version's
@@ -110,20 +124,27 @@ public sealed class RefuelFurnaceSkill : Skill
         int count = Clamp(args.Int("count"), 8, 1, 64);
         var open = await ctx.Game.OpenContainerAsync(f, ct);
         if (!open.Ok) return SkillResult.From(open);
-        try
-        {
-            // Furnace window: 0 input, 1 fuel, 2 output, 3.. player inventory. Pick up the fuel stack, right-click into slot 1.
-            var win = ctx.World.Inventory.OpenWindow;
-            if (win is null) return Fail("furnace window didn't open");
-            int src = -1;
-            for (int i = 3; i < win.SlotCount; i++) if (win[i] is { IsEmpty: false } s && s.Id == fuel) { src = i; break; }
-            if (src < 0) return Fail("fuel not in inventory view");
-            await ctx.Game.ClickSlotAsync(src, false, false, ct);
-            int moved = 0;
-            for (; moved < count && !ctx.World.Inventory.Cursor.IsEmpty; moved++) await ctx.Game.ClickSlotAsync(1, true, false, ct);
-            if (!ctx.World.Inventory.Cursor.IsEmpty) await ctx.Game.ClickSlotAsync(src, false, false, ct);
-            return Ok($"added {moved} {Item(fuel)} to furnace at {P(f)}");
-        }
+        try { return await MoveFuelAsync(ctx, f, fuel, count, ct); }
         finally { await ctx.Game.CloseWindowAsync(ct); }
+    }
+
+    // Furnace window: 0 input, 1 fuel, 2 output, 3.. player inventory. Pick up the fuel stack, right-click into slot 1.
+    private static async Task<SkillResult> MoveFuelAsync(SkillContext ctx, BlockPos f, int fuel, int count, CancellationToken ct)
+    {
+        var win = ctx.World.Inventory.OpenWindow;
+        if (win is null) return Fail("furnace window didn't open");
+        int src = FuelSlot(win, fuel);
+        if (src < 0) return Fail("fuel not in inventory view");
+        await ctx.Game.ClickSlotAsync(src, false, false, ct);
+        int moved = 0;
+        for (; moved < count && !ctx.World.Inventory.Cursor.IsEmpty; moved++) await ctx.Game.ClickSlotAsync(1, true, false, ct);
+        if (!ctx.World.Inventory.Cursor.IsEmpty) await ctx.Game.ClickSlotAsync(src, false, false, ct);
+        return Ok($"added {moved} {Item(fuel)} to furnace at {P(f)}");
+    }
+
+    private static int FuelSlot(Window win, int fuel)
+    {
+        for (int i = 3; i < win.SlotCount; i++) if (win[i] is { IsEmpty: false } s && s.Id == fuel) return i;
+        return -1;
     }
 }

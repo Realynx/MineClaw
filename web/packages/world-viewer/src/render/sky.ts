@@ -22,6 +22,21 @@ function texture(img: ImageBitmap | undefined): THREE.Texture | null {
   return t;
 }
 
+interface SkyImages {
+  sun?: ImageBitmap;
+  /** The moon_phases sheet when the version has one, else the single moon. */
+  moon?: ImageBitmap;
+  clouds?: ImageBitmap;
+  phases: boolean;
+}
+
+/** A bundle's sky images (none without a bundle). */
+function skyImages(b: AssetBundle | null): SkyImages {
+  if (!b) return { phases: false };
+  const env = b.env;
+  return { sun: env.sun, moon: env.moon_phases ?? env.moon, clouds: env.clouds, phases: !!env.moon_phases };
+}
+
 export class SkyLayer {
   readonly group = new THREE.Group();
   private readonly sun: THREE.Mesh;
@@ -68,8 +83,9 @@ export class SkyLayer {
   setBundle(b: AssetBundle | null): void {
     for (const t of this.textures) t.dispose();
     this.textures = [];
-    const sun = texture(b?.env.sun), moon = texture(b?.env.moon_phases ?? b?.env.moon), clouds = texture(b?.env.clouds);
-    this.moonPhases = b?.env.moon_phases ? 8 : 1;
+    const env = skyImages(b);
+    const sun = texture(env.sun), moon = texture(env.moon), clouds = texture(env.clouds);
+    this.moonPhases = env.phases ? 8 : 1;
     this.cloudHeight = b?.version === 'b1.8.1' ? 108 : 128;
     this.sunMat.map = sun;
     this.moonMat.map = moon;
@@ -102,28 +118,36 @@ export class SkyLayer {
     this.moon.position.copy(cam).addScaledVector(dir, -radius);
     this.moon.lookAt(cam);
     this.moonMat.opacity = r;
-    if (this.moonMat.map && this.moonPhases > 1 && time != null) {
-      // moon_phases.png: 4 × 2 phases; phase = day % 8.
-      const phase = Math.floor(time / 24000) % 8;
-      this.moonMat.map.repeat.set(1 / 4, 1 / 2);
-      this.moonMat.map.offset.set((phase % 4) / 4, Math.floor(phase / 4) / 2);
-    }
+    this.setMoonPhase(time);
     const day = Math.cos(th) * 2 + 0.25;
     const star = Math.max(0, Math.min(1, 1 - day));
     this.starMat.opacity = star * star * 0.5 * r;
     this.stars.visible = this.starMat.opacity > 0.01;
     this.stars.position.copy(cam);
     this.stars.rotation.set(0, 0, th);
-    // Only from below: the iso/top cameras sit far above the cloud layer, which would hide the world they look at.
-    this.clouds.visible = clouds && !!this.cloudMat.map && cam.y < this.cloudHeight - 1;
-    if (this.clouds.visible && this.cloudMat.map) {
-      // Clouds drift with world time (vanilla: 0.03 blocks per tick westward); kept centred on the camera.
-      const drift = ((time ?? nowMs / 50) * 0.03) / 12 / 256;
-      this.clouds.position.set(cam.x, this.cloudHeight + 0.33, cam.z);
-      this.cloudMat.map.offset.set(cam.x / 12 / 256 + drift, cam.z / 12 / 256);
-      const lit = 0.55 + 0.45 * Math.max(0, Math.min(1, Math.cos(th) * 2 + 0.5));
-      this.cloudMat.color.setRGB(lit * (1 - rain * 0.5), lit * (1 - rain * 0.5), lit * (1 - rain * 0.4));
-    }
+    this.placeClouds(cam, time, rain, clouds, nowMs, th);
+  }
+
+  /** moon_phases.png: 4 × 2 phases; phase = day % 8 (kept as it was while the time is unknown). */
+  private setMoonPhase(time: number | null): void {
+    const map = this.moonMat.map;
+    if (!map || this.moonPhases <= 1 || time == null) return;
+    const phase = Math.floor(time / 24000) % 8;
+    map.repeat.set(1 / 4, 1 / 2);
+    map.offset.set((phase % 4) / 4, Math.floor(phase / 4) / 2);
+  }
+
+  /** The cloud layer, only from below: the iso/top cameras sit far above it, which would hide the world they look at. */
+  private placeClouds(cam: THREE.Vector3, time: number | null, rain: number, clouds: boolean, nowMs: number, th: number): void {
+    const map = this.cloudMat.map;
+    this.clouds.visible = clouds && !!map && cam.y < this.cloudHeight - 1;
+    if (!this.clouds.visible || !map) return;
+    // Clouds drift with world time (vanilla: 0.03 blocks per tick westward); kept centred on the camera.
+    const drift = ((time ?? nowMs / 50) * 0.03) / 12 / 256;
+    this.clouds.position.set(cam.x, this.cloudHeight + 0.33, cam.z);
+    map.offset.set(cam.x / 12 / 256 + drift, cam.z / 12 / 256);
+    const lit = 0.55 + 0.45 * Math.max(0, Math.min(1, Math.cos(th) * 2 + 0.5));
+    this.cloudMat.color.setRGB(lit * (1 - rain * 0.5), lit * (1 - rain * 0.5), lit * (1 - rain * 0.4));
   }
 
   dispose(): void {

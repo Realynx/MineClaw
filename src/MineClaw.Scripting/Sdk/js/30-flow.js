@@ -71,18 +71,28 @@
     if (!r.ok) H.fail('room: ' + r.msg);
     return true;
   });
+  // One quota round: fn's result and what it added (o.item: that item's inventory gain).
+  const quotaRound = (f, left, i, o) => {
+    const before = o.item ? H.inv(o.item) : 0;
+    const r = f(left, i);
+    return { r, g: o.item ? Math.max(0, H.inv(o.item) - before) : failed(r) ? 0 : gain(r) };
+  };
+  // Why a round ends the quota (null: go on): fn failed, or `idle` rounds in a row added nothing.
+  const quotaStop = (q, r, g, idle) => {
+    if (failed(r)) return isObj(r) && r.msg ? r.msg : 'stopped';
+    if (g > 0) q.dry = 0; else if (++q.dry >= idle) return `nothing added in ${idle} rounds`;
+    return null;
+  };
   /** quota(n, fn, {max, idle:3, item}) - fn(left, i) until n: fn returns what it added (number, a result's n, true = 1; item: that item's inventory gain); stops on false/{ok:false}, idle empty rounds or max (n+10). -> {ok, n, msg}. */
   def('quota', (n, f, o = {}) => {
     n = Math.max(0, Math.floor(n || 0));
-    const max = Math.max(1, Math.floor(o.max ?? n + 10)), idle = Math.max(1, Math.floor(o.idle ?? 3));
-    let total = 0, dry = 0, why = 'max rounds';
+    const max = Math.max(1, Math.floor(o.max ?? n + 10)), idle = Math.max(1, Math.floor(o.idle ?? 3)), q = { dry: 0 };
+    let total = 0, why = 'max rounds';
     for (let i = 1; total < n && i <= max; i++) {
-      const before = o.item ? H.inv(o.item) : 0;
-      const r = f(n - total, i);
-      const g = o.item ? Math.max(0, H.inv(o.item) - before) : failed(r) ? 0 : gain(r);
+      const { r, g } = quotaRound(f, n - total, i, o);
       total += g;
-      if (failed(r)) { why = isObj(r) && r.msg ? r.msg : 'stopped'; break; }
-      if (g > 0) dry = 0; else if (++dry >= idle) { why = `nothing added in ${idle} rounds`; break; }
+      const stop = quotaStop(q, r, g, idle);
+      if (stop !== null) { why = stop; break; }
       if (n > 0) H.prog(Math.min(100, (100 * total) / n));
       H.idle(0.05);
     }
@@ -90,76 +100,108 @@
   });
   // This body's own failed targets (key -> clock s until): its next forEach rounds skip them too.
   const failedUntil = new Map();
+  // The target list's entry nearest this body (one that isn't a position counts as far).
+  const nearest = list => {
+    const me = H.me('pos');
+    let best = Infinity, k = 0;
+    list.forEach((t, j) => {
+      const p = at(t);
+      const d = p ? Math.hypot(p.x - me.x, p.y - me.y, p.z - me.z) : 1e9;
+      if (d < best) { best = d; k = j; }
+    });
+    return k;
+  };
+  const leaseKey = (t, o) => {
+    const p = o.claim === false ? null : at(t);
+    return p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : null;
+  };
+  // One body per target: a sibling running the same job already works this one (or it failed here a short while ago), so take
+  // the next (never follow it).
+  const leasedElsewhere = (key, o) => key && ((failedUntil.get(key) ?? 0) > H.clock() || !H.claimTarget(key, o.lease ?? 300));
+  // Done: it stays marked for a while so a sibling with an older list skips it too (outliving this run). Failed: marked for a
+  // short while too, for every body: a target this body couldn't work (logs out of reach) was otherwise taken at once by the next
+  // body, which failed the same way, then by this one again (live 10-30: 119 and 1337 took turns on one spruce at 144,66,267).
+  // -> the lease is kept.
+  const markWorked = (key, r, o) => {
+    if (!failed(r) && r !== 'stop') return H.claimTarget(key, o.doneLease ?? 600, true);
+    if (!failed(r)) return false;
+    const s = o.failLease ?? 180;
+    failedUntil.set(key, H.clock() + s);
+    return H.claimTarget(key, s, true);
+  };
+  // fn on one target under its lease. A run that ends mid-target (stopped, logged out) gives its lease back at its end.
+  const workTarget = (st, t, key, f, o) => {
+    let r, kept = false;
+    try {
+      r = f(t, ++st.tried);
+      if (key) kept = markWorked(key, r, o);
+    } finally { if (key && !kept) H.releaseTarget(key); }
+    return r;
+  };
+  const tally = (st, r) => {
+    if (!failed(r)) { st.n++; return; }
+    st.bad++;
+    if (isObj(r) && r.msg) st.last = r.msg;
+  };
+  const beyondText = b => `${b.name || ''} ${b.x},${b.y},${b.z}${b.d != null ? ` (${b.d} m)` : ''}`.trim();
+  // The work frontier, typed: nothing here was left for this body; where the nearest remaining ones are (find's beyond).
+  const exhausted = (res, targets, taken) => {
+    const beyond = Array.isArray(targets) && Array.isArray(targets.beyond) ? targets.beyond : [];
+    res.exhausted = true;
+    res.beyond = beyond;
+    res.msg = 'exhausted: ' + (taken ? `all ${taken} targets taken by other bodies` : 'no targets')
+      + (beyond.length ? '; nearest beyond: ' + beyond.map(beyondText).join(', ') : '');
+    return res;
+  };
+  const forEachResult = (st, targets) => {
+    const { n, bad, tried, taken, last } = st;
+    const res = { ok: n > 0 || (tried === 0 && taken === 0), n, failed: bad, taken,
+      msg: `${n}/${tried} done` + (bad ? `, ${bad} failed (last: ${last || 'false'})` : '') + (taken ? `, ${taken} taken by other bodies` : '') };
+    return tried === 0 ? exhausted(res, targets, taken) : res;
+  };
   /** forEach(targets, fn, {order:'nearest', budget, claim:true}) - fn(t, i) per target (find() results, positions), nearest to you next (order:'given' keeps it); targets are leased while fn runs (another body's are skipped); at most budget calls; 'stop' ends. -> {ok, n: done, failed, taken, msg}; nothing left -> exhausted:true, beyond (from find). */
   def('forEach', (targets, f, o = {}) => {
     const list = Array.isArray(targets) ? targets.slice() : targets == null ? [] : [targets];
-    const budget = Math.max(0, Math.floor(o.budget ?? list.length));
-    let n = 0, bad = 0, tried = 0, taken = 0, last = '';
-    const lease = t => {
-      const p = o.claim === false ? null : at(t);
-      return p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : null;
-    };
-    while (list.length > 0 && tried < budget) {
-      let k = 0;
-      if (o.order !== 'given') {
-        const me = H.me('pos');
-        let best = Infinity;
-        list.forEach((t, j) => {
-          const p = at(t);
-          const d = p ? Math.hypot(p.x - me.x, p.y - me.y, p.z - me.z) : 1e9;
-          if (d < best) { best = d; k = j; }
-        });
-      }
-      const t = list.splice(k, 1)[0];
-      // One body per target: a sibling running the same job already works this one, so take the next (never follow it).
-      const key = lease(t);
-      if (key && (failedUntil.get(key) ?? 0) > H.clock()) { taken++; continue; }
-      if (key && !H.claimTarget(key, o.lease ?? 300)) { taken++; continue; }
-      let r, kept = false;
-      try {
-        r = f(t, ++tried);
-        // Done: it stays marked for a while so a sibling with an older list skips it too (outliving this run). Failed: marked
-        // for a short while too, for every body: a target this body couldn't work (logs out of reach) was otherwise taken at once
-        // by the next body, which failed the same way, then by this one again (live 10-30: 119 and 1337 took turns on one
-        // spruce at 144,66,267). A run that ends mid-target (stopped, logged out) gives its lease back at its end.
-        if (key && !failed(r) && r !== 'stop') kept = H.claimTarget(key, o.doneLease ?? 600, true);
-        else if (key && failed(r)) { const s = o.failLease ?? 180; failedUntil.set(key, H.clock() + s); kept = H.claimTarget(key, s, true); }
-      } finally { if (key && !kept) H.releaseTarget(key); }
+    const budget = Math.max(0, Math.floor(o.budget ?? list.length)), st = { n: 0, bad: 0, tried: 0, taken: 0, last: '' };
+    while (list.length > 0 && st.tried < budget) {
+      const t = list.splice(o.order !== 'given' ? nearest(list) : 0, 1)[0];
+      const key = leaseKey(t, o);
+      if (leasedElsewhere(key, o)) { st.taken++; continue; }
+      const r = workTarget(st, t, key, f, o);
       if (r === 'stop') break;
-      if (failed(r)) { bad++; if (isObj(r) && r.msg) last = r.msg; } else n++;
+      tally(st, r);
     }
-    const res = { ok: n > 0 || (tried === 0 && taken === 0), n, failed: bad, taken,
-      msg: `${n}/${tried} done` + (bad ? `, ${bad} failed (last: ${last || 'false'})` : '') + (taken ? `, ${taken} taken by other bodies` : '') };
-    if (tried === 0) {
-      // The work frontier, typed: nothing here was left for this body; where the nearest remaining ones are (find's beyond).
-      const beyond = Array.isArray(targets) && Array.isArray(targets.beyond) ? targets.beyond : [];
-      res.exhausted = true;
-      res.beyond = beyond;
-      res.msg = 'exhausted: ' + (taken ? `all ${taken} targets taken by other bodies` : 'no targets')
-        + (beyond.length ? '; nearest beyond: ' + beyond.map(b => `${b.name || ''} ${b.x},${b.y},${b.z}${b.d != null ? ` (${b.d} m)` : ''}`.trim()).join(', ') : '');
-    }
-    return res;
+    return forEachResult(st, targets);
   });
+  // The first of names fn (take | craft) gets one of that this body then holds; else x.
+  const firstGot = (f, names, x) => {
+    for (const y of names) if (f(y, 1).ok && H.inv(y) > 0) return y;
+    return x;
+  };
+  const acquired = (acquire, w, have) => {
+    const r = acquire(w);
+    const x = have();
+    if (!x) H.fail(`ensure: no ${w} (${r.msg})`);
+    return x;
+  };
+  // One kind (any tier held, else acquire, a chest, a craft) -> the name held.
+  const ensureOne = w => {
+    const names = cat[w] ? known(cat[w]) : [w];
+    const have = () => names.find(x => H.inv(x) > 0);
+    let x = have();
+    const acquire = fn('acquire');
+    if (!x && acquire) x = acquired(acquire, w, have);
+    const take = fn('take');
+    if (!x && take) x = firstGot(take, names, x);
+    const craft = fn('craft');
+    if (!x && craft) x = firstGot(craft, craftable[w] ? known(craftable[w]) : [w], x);
+    if (!x) H.fail(`ensure: no ${w} (not in inventory or chests, can't craft)`);
+    return x;
+  };
   /** ensure(what) - ensure('pickaxe') / ensure(['pickaxe','food']): have one (any tier), else acquire it (chests, hive, craft, bootstrap) or fail; -> names held. */
   def('ensure', what => {
     const got = [];
-    for (const w of Array.isArray(what) ? what : [what]) {
-      const names = cat[w] ? known(cat[w]) : [w];
-      const have = () => names.find(x => H.inv(x) > 0);
-      let x = have();
-      const acquire = fn('acquire');
-      if (!x && acquire) {
-        const r = acquire(w);
-        x = have();
-        if (!x) H.fail(`ensure: no ${w} (${r.msg})`);
-      }
-      const take = fn('take');
-      if (!x && take) for (const y of names) { if (take(y, 1).ok && H.inv(y) > 0) { x = y; break; } }
-      const craft = fn('craft');
-      if (!x && craft) for (const y of craftable[w] ? known(craftable[w]) : [w]) { if (craft(y, 1).ok && H.inv(y) > 0) { x = y; break; } }
-      if (!x) H.fail(`ensure: no ${w} (not in inventory or chests, can't craft)`);
-      got.push(x);
-    }
+    for (const w of Array.isArray(what) ? what : [what]) got.push(ensureOne(w));
     return got.join(',');
   });
 }

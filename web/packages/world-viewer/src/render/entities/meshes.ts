@@ -139,16 +139,15 @@ export class InstancedDraw {
     f[i * 4 + 1] = d.sky;
     f[i * 4 + 2] = d.block;
     f[i * 4 + 3] = d.flash;
-    if (this.tile) {
-      const fa = a.aFaceA, fb = a.aFaceB, fc = d.faces;
-      fa[i * 3] = fc?.[0] ?? 0;
-      fa[i * 3 + 1] = fc?.[1] ?? 0;
-      fa[i * 3 + 2] = fc?.[2] ?? 0;
-      fb[i * 4] = fc?.[3] ?? 0;
-      fb[i * 4 + 1] = fc?.[4] ?? 0;
-      fb[i * 4 + 2] = fc?.[5] ?? 0;
-      fb[i * 4 + 3] = d.tintMask ?? 0;
-    }
+    if (this.tile) this.pushFaces(i, d);
+  }
+
+  /** A tile draw's per-face cells (aFaceA: faces 0..2, aFaceB: faces 3..5 and the tint mask); missing ones are 0. */
+  private pushFaces(i: number, d: InstanceData): void {
+    const fa = this.arrays.aFaceA, fb = this.arrays.aFaceB, fc = d.faces;
+    for (let k = 0; k < 3; k++) fa[i * 3 + k] = fc?.[k] ?? 0;
+    for (let k = 0; k < 3; k++) fb[i * 4 + k] = fc?.[k + 3] ?? 0;
+    fb[i * 4 + 3] = d.tintMask ?? 0;
   }
 
   commit(): void {

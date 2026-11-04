@@ -53,6 +53,18 @@ const b = (beta: boolean, modern: string, old: string) => (beta ? old : modern);
 /** Numeric Mob16 bits apply only to the older numeric variant. */
 const bit = (v: Variant, mask: number) => !v.isString && (v.num & mask) !== 0;
 
+/** The wolf skin's suffix: angry ("angry", flag 2) over tame, else none. */
+function wolfSkin(v: Variant, tame: boolean): string {
+  if (v.has('angry') || bit(v, 2)) return '_angry';
+  return tame ? '_tame' : '';
+}
+
+/** The collar's dye ("collar:red"), vanilla's default red without one. */
+function collarDye(v: Variant): number {
+  const d = v.dye('collar');
+  return d >= 0 ? d : 14;
+}
+
 /** The common mobs (models in common.ts); both versions. */
 const COMMON_LOOKS: Record<string, LookFn> = {
   zombie: (_v, beta) => ({ model: beta ? 'zombie_beta' : 'zombie', texture: b(beta, 'entity/zombie/zombie', 'mob/zombie'), colour: 0x3a7a5a }),
@@ -90,14 +102,12 @@ const COMMON_LOOKS: Record<string, LookFn> = {
   chicken: (_v, beta) => ({ model: 'chicken', texture: b(beta, 'entity/chicken', 'mob/chicken'), colour: 0xf8f8f8 }),
   // "collar:red,angry,tame" / numeric flags (2 angry, 4 tame).
   wolf: (v, beta) => {
-    const angry = v.has('angry') || bit(v, 2), tame = v.has('tame', 'tamed') || v.get('collar') != null || bit(v, 4);
-    const tex = angry ? 'angry' : tame ? 'tame' : '';
-    const collar = v.dye('collar');
+    const tame = v.has('tame', 'tamed') || v.get('collar') != null || bit(v, 4);
     return {
       model: beta ? 'wolf_beta' : 'wolf',
-      texture: beta ? `mob/wolf${tex ? '_' + tex : ''}` : `entity/wolf/wolf${tex ? '_' + tex : ''}`,
+      texture: (beta ? 'mob/wolf' : 'entity/wolf/wolf') + wolfSkin(v, tame),
       // EntityWolf collar colour (EnumDyeColor components); vanilla's default red.
-      layers: !beta && tame ? [{ texture: 'entity/wolf/wolf_collar', tint: dyeRgb(collar >= 0 ? collar : 14) }] : [],
+      layers: !beta && tame ? [{ texture: 'entity/wolf/wolf_collar', tint: dyeRgb(collarDye(v)) }] : [],
       colour: 0xd8d8d8,
     };
   },
@@ -119,16 +129,21 @@ const FALLBACK: Look = { model: 'box', texture: '', colour: 0xb05050 };
 
 /** The canonical name of a mob type, or of a mob name the wire sends ("Zombie", "PigZombie"). */
 export function mobName(type: number, name: string | null): string | null {
-  // A name the looks know wins over the type (the wire sends wither skeletons and strays by name).
   const n = name ? canonical(name) : null;
-  if (n && ALL_LOOKS[n] && n !== MOB_NAMES[type]) {
-    const alias = ALIASES[n] ?? n;
-    if (alias !== 'zombie' && alias !== 'skeleton') return alias;
-  }
+  const byName = n ? nameOverType(n, type) : null;
+  if (byName) return byName;
   const byId = MOB_NAMES[type];
   if (byId) return byId;
   if (!n) return null;
   return ALIASES[n] ?? n;
+}
+
+/** A name the looks know wins over the type (the wire sends wither skeletons and strays by name); plain zombies and
+ * skeletons never override their type. */
+function nameOverType(n: string, type: number): string | null {
+  if (!ALL_LOOKS[n] || n === MOB_NAMES[type]) return null;
+  const alias = ALIASES[n] ?? n;
+  return alias !== 'zombie' && alias !== 'skeleton' ? alias : null;
 }
 
 const ALIASES: Record<string, string> = { pigzombie: 'zombie_pigman', pig_zombie: 'zombie_pigman', cavespider: 'cave_spider', lavaslime: 'magma_cube', lava_slime: 'magma_cube', snow_golem: 'snowman', iron_golem: 'villager_golem', mushroomcow: 'mooshroom', mushroom_cow: 'mooshroom', witherskeleton: 'wither_skeleton', polarbear: 'polar_bear', zombievillager: 'zombie_villager', skeletonhorse: 'skeleton_horse', zombiehorse: 'zombie_horse', villagergolem: 'villager_golem', enderdragon: 'ender_dragon', entityhorse: 'horse', ozelot: 'ocelot', vindicator: 'vindication_illager', evoker: 'evocation_illager', illusioner: 'illusion_illager', elderguardian: 'elder_guardian' };

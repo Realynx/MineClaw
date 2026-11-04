@@ -61,30 +61,53 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
     public static string Render(string player, string kind, JsonObject d, string id, int? count = null, long? design = null)
     {
         var area = Area.Parse(d["area"]);
-        var where = area is { } a ? $" in the area {Box(a)}" : d["targets"] is JsonArray t && t.Count > 0 ? $" at {t.Count} spot{(t.Count == 1 ? "" : "s")}" : "";
-        string n(string what) => count is { } c ? $"the {c} {what}{(c == 1 ? "" : "s")}" : $"the {what}s";
+        var parts = new LineParts(d, Where(d, area), count, area, design);
         var text = d["text"]?.GetValue<string>()?.Trim();
-        string body = kind switch
-        {
-            "chop" => $"chop {n("tree")}{where}",
-            "cut" => $"cut the plants{where}",
-            "harvest" => $"harvest {n("ripe crop")}{where} and replant",
-            "mine" => $"mine {(d["filter"]?.GetValue<string>() is { } f && f != "all" ? f : "the blocks")}{where}",
-            "haul" => $"pick up {n("drop")}{where} and store them",
-            "hunt" => $"hunt {n("animal")}{where}",
-            "deconstruct" => $"take down the built blocks{where}",
-            "build" => design is { } ds ? $"build design #{F((int)ds)}{(d["build"]?["name"]?.GetValue<string>() is { } bn ? $" '{bn}'" : "")}{where}" : $"build {Describe(d["build"])}{where}",
-            "move" => $"go to {(area is { } ma ? Box(ma) : where.Trim())}",
-            "attack" => $"attack the target{where}",
-            "guard" => $"guard the area{where}",
-            "craft" => $"craft {d["bill"]?["recipe"]?.GetValue<string>()?.Replace("craft:", "").Replace("smelt:", "smelt ") ?? "it"}" +
-                (d["bill"]?["target"] is { } bt ? $" x{bt}" : ""),
-            _ => text ?? "",
-        };
+        string body = Bodies.TryGetValue(kind, out var line) ? line(parts) : text ?? "";
         if (kind != "text" && !string.IsNullOrWhiteSpace(text)) body += " — " + text;
-        var line = $"{player} (story map): {body} [{id}]";
-        return line.Length <= MaxLine ? line : line[..(MaxLine - 1)] + "…";
+        var full = $"{player} (story map): {body} [{id}]";
+        return full.Length <= MaxLine ? full : full[..(MaxLine - 1)] + "…";
     }
+
+    /// <summary>" in the area x,y,z → x,y,z", " at N spots", or nothing.</summary>
+    private static string Where(JsonObject d, Area? area)
+    {
+        if (area is { } a) return $" in the area {Box(a)}";
+        return d["targets"] is JsonArray t && t.Count > 0 ? $" at {t.Count} spot{(t.Count == 1 ? "" : "s")}" : "";
+    }
+
+    /// <summary>What a directive's line is made of: the directive, where it applies, the counted targets, its area and saved design.</summary>
+    private sealed record LineParts(JsonObject D, string Where, int? Count, Area? Area, long? Design)
+    {
+        /// <summary>"the 14 trees", "the 1 tree", or "the trees" without a count.</summary>
+        public string N(string what) => Count is { } c ? $"the {c} {what}{(c == 1 ? "" : "s")}" : $"the {what}s";
+    }
+
+    /// <summary>The line's body per kind (a "text" directive, or an unknown kind, is its text).</summary>
+    private static readonly Dictionary<string, Func<LineParts, string>> Bodies = new(StringComparer.Ordinal)
+    {
+        ["chop"] = p => $"chop {p.N("tree")}{p.Where}",
+        ["cut"] = p => $"cut the plants{p.Where}",
+        ["harvest"] = p => $"harvest {p.N("ripe crop")}{p.Where} and replant",
+        ["mine"] = p => $"mine {(p.D["filter"]?.GetValue<string>() is { } f && f != "all" ? f : "the blocks")}{p.Where}",
+        ["haul"] = p => $"pick up {p.N("drop")}{p.Where} and store them",
+        ["hunt"] = p => $"hunt {p.N("animal")}{p.Where}",
+        ["deconstruct"] = p => $"take down the built blocks{p.Where}",
+        ["build"] = BuildBody,
+        ["move"] = p => $"go to {(p.Area is { } ma ? Box(ma) : p.Where.Trim())}",
+        ["attack"] = p => $"attack the target{p.Where}",
+        ["guard"] = p => $"guard the area{p.Where}",
+        ["craft"] = CraftBody,
+    };
+
+    private static string BuildBody(LineParts p) =>
+        p.Design is { } ds
+            ? $"build design #{F((int)ds)}{(p.D["build"]?["name"]?.GetValue<string>() is { } bn ? $" '{bn}'" : "")}{p.Where}"
+            : $"build {Describe(p.D["build"])}{p.Where}";
+
+    private static string CraftBody(LineParts p) =>
+        $"craft {p.D["bill"]?["recipe"]?.GetValue<string>()?.Replace("craft:", "").Replace("smelt:", "smelt ") ?? "it"}" +
+        (p.D["bill"]?["target"] is { } bt ? $" x{bt}" : "");
 
     private static string Describe(JsonNode? b)
     {
@@ -100,51 +123,20 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
     public async Task<(Directive? D, string? Error)> SendAsync(IReadOnlyList<string> bots, JsonObject directive, string player, bool allowCommands,
         string? requestId, CancellationToken ct)
     {
-        var kind = directive["kind"]?.GetValue<string>()?.Trim().ToLowerInvariant();
-        if (kind == null || !Kinds.Contains(kind)) return (null, $"directive.kind must be {string.Join("|", Kinds)}");
-        if (kind == "text" && string.IsNullOrWhiteSpace(directive["text"]?.GetValue<string>())) return (null, "a text directive needs text");
-        if (directive["text"]?.GetValue<string>() is { Length: > 200 }) return (null, "text over 200 chars");
-        if (directive["area"] != null && Area.Parse(directive["area"]) == null) return (null, "area must be [x1,y1,z1,x2,y2,z2]");
-        var targets = new List<(string Bot, string Login)>();
-        foreach (var b in bots.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (data.Resolve(b) is not { } login) return (null, $"no such bot '{b}'");
-            targets.Add((b, login));
-        }
-        if (targets.Count == 0) return (null, "bots required");
+        var (kind, invalid) = KindOf(directive);
+        if (kind == null) return (null, invalid);
+        var (targets, unknown) = Targets(bots);
+        if (targets == null) return (null, unknown);
         string id;
         lock (_lock) id = "dir" + (++_seq).ToString(CultureInfo.InvariantCulture);
         var d = new Directive { Id = id, At = _time.GetUtcNow(), Bots = targets.Select(t => t.Login).ToList(), Kind = kind, RequestId = requestId };
         // Counts from the world view (the brain gets the count and the bounds; the list stays here for its lookup).
-        int? count = null;
-        if (World?.Invoke() is { } w && Area.Parse(directive["area"]) is { } area)
-        {
-            var list = kind switch
-            {
-                "chop" => StoryBlocks.TreesIn(w, area).Select(p => (JsonNode)p.Json()).ToList(),
-                "harvest" => area.Volume <= 262_144 ? area.Blocks().Where(p => StoryBlocks.Crop(w, p.X, p.Y, p.Z) is { Ripe: true }).Take(2048).Select(p => (JsonNode)p.Json()).ToList() : null,
-                "haul" => w.Entities().Where(e => e.Kind == "item" && area.Contains(e.Block)).Select(e => (JsonNode)JsonValue.Create(e.Id)).ToList(),
-                "hunt" => w.Entities().Where(e => e.Kind == "mob" && !e.Hostile && area.Contains(e.Block)).Select(e => (JsonNode)JsonValue.Create(e.Id)).ToList(),
-                _ => null,
-            };
-            if (list != null) { count = list.Count; d.Detail = new JsonObject { ["targets"] = new JsonArray(list.ToArray()) }; }
-        }
-        if (kind == "build" && directive["build"] is JsonObject spec && Data?.Invoke() is { } gd)
-        {
-            var (ghosts, _, err) = StoryConstruction.Expand(gd, spec, World?.Invoke());
-            if (err != null) return (null, "build: " + err);
-            d.Design = SaveDesign?.Invoke(spec["name"]?.GetValue<string>() ?? $"story {spec["kind"]}", ghosts, player);
-            d.Detail = new JsonObject { ["build"] = spec.DeepClone(), ["blocks"] = ghosts.Count };
-        }
+        int? count = CountTargets(kind, directive, d);
+        if (kind == "build" && ExpandBuild(directive, player, d) is { } buildError) return (null, buildError);
         d.Line = Render(player, kind, directive, id, count, d.Design);
         d.Summary = d.Line[(d.Line.IndexOf(": ", StringComparison.Ordinal) + 2)..];
         d.FeedSeq = feed?.Last ?? 0;
-        foreach (var (_, login) in targets)
-        {
-            feed?.Add(login, "viewer", player, d.Line, "viewer", requestId);
-            if (await data.SendAsync(new RemoteChat(player, d.Line, "viewer", login, allowCommands, requestId ?? id), ct).ConfigureAwait(false))
-                d.Delivered.Add(login);
-        }
+        await DeliverAsync(d, targets, player, allowCommands, requestId, ct).ConfigureAwait(false);
         if (d.Delivered.Count == 0) d.Status = "failed";
         lock (_lock)
         {
@@ -152,6 +144,69 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
             if (_all.Count > 200) _all.RemoveRange(0, _all.Count - 200);
         }
         return (d, null);
+    }
+
+    /// <summary>The directive's kind (lower case), or why the directive is refused.</summary>
+    private static (string? Kind, string? Error) KindOf(JsonObject directive)
+    {
+        var kind = directive["kind"]?.GetValue<string>()?.Trim().ToLowerInvariant();
+        if (kind == null || !Kinds.Contains(kind)) return (null, $"directive.kind must be {string.Join("|", Kinds)}");
+        if (kind == "text" && string.IsNullOrWhiteSpace(directive["text"]?.GetValue<string>())) return (null, "a text directive needs text");
+        if (directive["text"]?.GetValue<string>() is { Length: > 200 }) return (null, "text over 200 chars");
+        if (directive["area"] != null && Area.Parse(directive["area"]) == null) return (null, "area must be [x1,y1,z1,x2,y2,z2]");
+        return (kind, null);
+    }
+
+    /// <summary>Each named bot (once) with its login, or the first one that isn't a bot.</summary>
+    private (List<(string Bot, string Login)>? Targets, string? Error) Targets(IReadOnlyList<string> bots)
+    {
+        var targets = new List<(string Bot, string Login)>();
+        foreach (var b in bots.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (data.Resolve(b) is not { } login) return (null, $"no such bot '{b}'");
+            targets.Add((b, login));
+        }
+        return targets.Count == 0 ? (null, "bots required") : (targets, null);
+    }
+
+    /// <summary>A chop/harvest/haul/hunt in an area: its targets from the world view into the directive's detail; their count (null = not counted).</summary>
+    private int? CountTargets(string kind, JsonObject directive, Directive d)
+    {
+        if (World?.Invoke() is not { } w || Area.Parse(directive["area"]) is not { } area) return null;
+        var list = kind switch
+        {
+            "chop" => StoryBlocks.TreesIn(w, area).Select(p => (JsonNode)p.Json()).ToList(),
+            "harvest" => area.Volume <= 262_144 ? area.Blocks().Where(p => StoryBlocks.Crop(w, p.X, p.Y, p.Z) is { Ripe: true }).Take(2048).Select(p => (JsonNode)p.Json()).ToList() : null,
+            "haul" => w.Entities().Where(e => e.Kind == "item" && area.Contains(e.Block)).Select(e => (JsonNode)JsonValue.Create(e.Id)).ToList(),
+            "hunt" => w.Entities().Where(e => e.Kind == "mob" && !e.Hostile && area.Contains(e.Block)).Select(e => (JsonNode)JsonValue.Create(e.Id)).ToList(),
+            _ => null,
+        };
+        if (list == null) return null;
+        d.Detail = new JsonObject { ["targets"] = new JsonArray(list.ToArray()) };
+        return list.Count;
+    }
+
+    /// <summary>A build spec becomes ghosts, saved as a design the line names; null = fine (or no game data), else the expansion error.</summary>
+    private string? ExpandBuild(JsonObject directive, string player, Directive d)
+    {
+        if (directive["build"] is not JsonObject spec || Data?.Invoke() is not { } gd) return null;
+        var (ghosts, _, err) = StoryConstruction.Expand(gd, spec, World?.Invoke());
+        if (err != null) return "build: " + err;
+        d.Design = SaveDesign?.Invoke(spec["name"]?.GetValue<string>() ?? $"story {spec["kind"]}", ghosts, player);
+        d.Detail = new JsonObject { ["build"] = spec.DeepClone(), ["blocks"] = ghosts.Count };
+        return null;
+    }
+
+    /// <summary>The line to every target bot as a viewer chat line (the feed shows it first); the ones it reached.</summary>
+    private async Task DeliverAsync(Directive d, List<(string Bot, string Login)> targets, string player, bool allowCommands, string? requestId,
+        CancellationToken ct)
+    {
+        foreach (var (_, login) in targets)
+        {
+            feed?.Add(login, "viewer", player, d.Line, "viewer", requestId);
+            if (await data.SendAsync(new RemoteChat(player, d.Line, "viewer", login, allowCommands, requestId ?? d.Id), ct).ConfigureAwait(false))
+                d.Delivered.Add(login);
+        }
     }
 
     private static readonly Regex DoneWords = new(@"\b(done|finished|complete[d]?|all (?:chopped|mined|harvested|built|stored)|built it|that's all)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);

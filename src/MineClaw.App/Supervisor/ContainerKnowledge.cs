@@ -99,32 +99,55 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
         int id = w?.GetBlock(pos) ?? -1;
         if (w != null && ContainerSightings.KindOf(id) == null) return null;
         BlockPos[] cells = w != null && ChestPairs.IsPairable(id) ? ChestPairs.Cells(w, pos) : [pos];
+        var best = Choose(CandidatesAt(dim, pos, cells, id));
+        return best == null ? Unknown(dim, id, cells) : View(dim, id, cells, best);
+    }
+
+    /// <summary>The looks, the world memory's row and Story Mode's ledger for the container; with a block there, only those of its kind.</summary>
+    private List<Candidate> CandidatesAt(int dim, BlockPos pos, BlockPos[] cells, int id)
+    {
         var cands = new List<Candidate>();
         if (Looked(dim, pos, cells) is { } look) cands.Add(look);
         if (Remembered(dim, pos) is { } mem) cands.Add(mem);
         if (Ledger(dim, pos) is { } led) cands.Add(led);
         if (id > 0) cands.RemoveAll(c => !Fits(id, c)); // the block was replaced since (a furnace where a chest was): not its contents
-        var best = Choose(cands);
-        if (best == null)
-        {
-            var kind0 = ContainerSightings.KindOf(id, cells.Length > 1 ? 54 : 27) ?? "chest";
-            return new ContainerView(P(cells[0]), dim, kind0, ContainerSightings.SizeOf(kind0), [], null, null, "unknown", version(), true, cells.Select(P).ToList());
-        }
+        return cands;
+    }
+
+    /// <summary>Nobody looked yet: the block's kind (a chest without one), no slots.</summary>
+    private ContainerView Unknown(int dim, int id, BlockPos[] cells)
+    {
+        var kind0 = ContainerSightings.KindOf(id, cells.Length > 1 ? 54 : 27) ?? "chest";
+        return new ContainerView(P(cells[0]), dim, kind0, ContainerSightings.SizeOf(kind0), [], null, null, "unknown", version(), true, cells.Select(P).ToList());
+    }
+
+    private ContainerView View(int dim, int id, BlockPos[] cells, Candidate best)
+    {
         if (best.Cells.Length > cells.Length) cells = best.Cells;
         int blockId = id > 0 ? id : best.BlockId;
         int size = Math.Max(best.Size, cells.Length > 1 && ChestPairs.IsPairable(blockId < 0 ? ChestPairs.Chest : blockId) ? ChestPairs.DoubleSlots : 0);
         string kind = Kind(blockId, best.MemKind, size);
-        var slots = best.Slots ?? Pack(best.Counts ?? [], size);
-        if (best.Slots != null && slots.Length < size) slots = [.. slots, .. Enumerable.Repeat(ItemStack.Empty, size - slots.Length)];
-        // A furnace smelts on unseen: between looks its slots are estimated (an item every 10 s while fuelled), marked as such.
-        bool estimated = false;
-        if (kind == "furnace" && best.Source != "live" && best.Exact && best.At is { } seenAt)
-            (estimated, slots) = EstimateFurnace(slots, Now - seenAt, id);
+        var (estimated, slots) = Estimate(kind, best, SlotsOf(best, size), id);
         var list = new List<InventorySlot>();
         for (int i = 0; i < slots.Length; i++)
             if (BodyInventories.Slot(i, slots[i]) is { } s) list.Add(s);
         return new ContainerView(P(cells[0]), dim, kind, size, list, best.At, best.By, best.Source, version(), best.Exact, cells.Select(P).ToList(),
             best.Partial ? true : null, estimated ? true : null);
+    }
+
+    /// <summary>A furnace smelts on unseen: between looks its slots are estimated (an item every 10 s while fuelled), marked as such.</summary>
+    private (bool Estimated, ItemStack[] Slots) Estimate(string kind, Candidate best, ItemStack[] slots, int id)
+    {
+        if (kind == "furnace" && best.Source != "live" && best.Exact && best.At is { } seenAt)
+            return EstimateFurnace(slots, Now - seenAt, id);
+        return (false, slots);
+    }
+
+    /// <summary>A look's slots padded to <paramref name="size"/>, or item counts laid out in slot order.</summary>
+    private static ItemStack[] SlotsOf(Candidate best, int size)
+    {
+        if (best.Slots is not { } slots) return Pack(best.Counts ?? [], size);
+        return slots.Length < size ? [.. slots, .. Enumerable.Repeat(ItemStack.Empty, size - slots.Length)] : slots;
     }
 
     /// <summary>
@@ -140,9 +163,22 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
         if (!output.IsEmpty && (output.Id != rec.OutputId || output.Damage != rec.OutputDamage)) return (false, slots);
         var fuel = slots[1];
         double per = fuel.IsEmpty ? 0 : Smelting.ItemsPerFuel(fuel.Id);
-        double byFuel = blockNow == Blocks.LitFurnace ? double.MaxValue : fuel.Count * per + 8; // a unit (a coal) may have been burning
-        int n = (int)Math.Min(Math.Min(slots[0].Count, elapsedMs / 10_000), Math.Min(byFuel, 64 - (output.IsEmpty ? 0 : output.Count)));
+        int n = Smelted(slots[0], output, fuel, per, elapsedMs, blockNow);
         if (n <= 0) return (false, slots);
+        return (true, AfterSmelting(slots, rec, n, per));
+    }
+
+    /// <summary>How many items smelted: one per 10 s, as far as the input, the fuel and the output stack allow.</summary>
+    private static int Smelted(ItemStack input, ItemStack output, ItemStack fuel, double per, long elapsedMs, int blockNow)
+    {
+        double byFuel = blockNow == Blocks.LitFurnace ? double.MaxValue : fuel.Count * per + 8; // a unit (a coal) may have been burning
+        return (int)Math.Min(Math.Min(input.Count, elapsedMs / 10_000), Math.Min(byFuel, 64 - (output.IsEmpty ? 0 : output.Count)));
+    }
+
+    /// <summary>The slots after <paramref name="n"/> items smelted: input down, output up, the fuel burnt for them.</summary>
+    private static ItemStack[] AfterSmelting(ItemStack[] slots, SmeltingRecipe rec, int n, double per)
+    {
+        var (output, fuel) = (slots[2], slots[1]);
         var next = (ItemStack[])slots.Clone();
         next[0] = slots[0].Count - n <= 0 ? ItemStack.Empty : slots[0] with { Count = (byte)(slots[0].Count - n) };
         next[2] = new ItemStack((short)rec.OutputId, (byte)((output.IsEmpty ? 0 : output.Count) + n), (short)rec.OutputDamage);
@@ -151,47 +187,78 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
             int used = Math.Min(fuel.Count, (int)Math.Ceiling(Math.Max(0, n - 1) / per));
             next[1] = fuel.Count - used <= 0 ? ItemStack.Empty : fuel with { Count = (byte)(fuel.Count - used) };
         }
-        return (true, next);
+        return next;
     }
 
     /// <summary>Every known container with a block in the box (inclusive), newest look first, at most <paramref name="limit"/>.</summary>
     public (IReadOnlyList<ContainerSummary> Items, bool Capped) InBox(int dim, BlockPos min, BlockPos max, int limit)
     {
-        bool In(BlockPos c) => c.X >= min.X && c.X <= max.X && c.Y >= min.Y && c.Y <= max.Y && c.Z >= min.Z && c.Z <= max.Z;
         var cands = new List<Candidate>();
+        AddLooksInBox(cands, dim, min, max, limit);
+        if (memory() is { } obs)
+        {
+            try { AddMemoryInBox(cands, obs, dim, min, max, limit); }
+            catch (Exception) { /* memory unavailable: the looks alone */ }
+        }
+        try { AddLedgersInBox(cands, dim, min, max); }
+        catch (Exception) { }
+        var outList = new List<ContainerSummary>();
+        foreach (var (gc, list) in GroupByContainer(cands))
+            if (Summary(dim, gc, list) is { } summary) outList.Add(summary);
+        var sorted = outList.OrderByDescending(s => s.SeenAt ?? 0).ToList();
+        return (sorted.Take(Math.Max(0, limit)).ToList(), sorted.Count > limit);
+    }
+
+    private static bool In(BlockPos c, BlockPos min, BlockPos max) =>
+        c.X >= min.X && c.X <= max.X && c.Y >= min.Y && c.Y <= max.Y && c.Z >= min.Z && c.Z <= max.Z;
+
+    /// <summary>The bodies' looks in the box (live while a window is open).</summary>
+    private void AddLooksInBox(List<Candidate> cands, int dim, BlockPos min, BlockPos max, int limit)
+    {
         long now = Now;
         foreach (var s in store.InBox(dim, min, max, limit * 2))
             cands.Add(store.Get(dim, s.Pos, now) is { } g
                 ? new Candidate(g.Sighting.Cells, g.Sighting.BlockId, null, g.Sighting.Slots, null, g.Sighting.Size, g.Sighting.At, g.Sighting.By, g.Live ? "live" : "memory")
                 : new Candidate(s.Cells, s.BlockId, null, s.Slots, null, s.Size, s.At, s.By, "memory"));
-        if (memory() is { } obs)
+    }
+
+    /// <summary>The world memory's containers with contents near the box's centre that have a cell in the box, at most twice the limit.</summary>
+    private static void AddMemoryInBox(List<Candidate> cands, ObservationStore obs, int dim, BlockPos min, BlockPos max, int limit)
+    {
+        double cx = (min.X + max.X) / 2.0, cy = (min.Y + max.Y) / 2.0, cz = (min.Z + max.Z) / 2.0;
+        double r = Math.Sqrt(Math.Pow(max.X - min.X, 2) + Math.Pow(max.Y - min.Y, 2) + Math.Pow(max.Z - min.Z, 2)) / 2 + 1;
+        int n = 0;
+        foreach (var (row, _) in obs.Nearest(null, cx, cy, cz, 4000, r, dim))
         {
-            try
-            {
-                double cx = (min.X + max.X) / 2.0, cy = (min.Y + max.Y) / 2.0, cz = (min.Z + max.Z) / 2.0;
-                double r = Math.Sqrt(Math.Pow(max.X - min.X, 2) + Math.Pow(max.Y - min.Y, 2) + Math.Pow(max.Z - min.Z, 2)) / 2 + 1;
-                int n = 0;
-                foreach (var (row, _) in obs.Nearest(null, cx, cy, cz, 4000, r, dim))
-                {
-                    if (Array.IndexOf(MemoryKinds, row.Kind) < 0 || row.Bounds is not { } b || row.ContentsAt is null) continue;
-                    var rc = CellsOf(b);
-                    if (!rc.Any(In)) continue;
-                    if (++n > limit * 2) break;
-                    cands.Add(FromRow(obs, row, rc));
-                }
-            }
-            catch (Exception) { /* memory unavailable: the looks alone */ }
+            if (!HasContents(row, out var b)) continue;
+            var rc = CellsOf(b);
+            if (!rc.Any(c => In(c, min, max))) continue;
+            if (++n > limit * 2) break;
+            cands.Add(FromRow(obs, row, rc));
         }
-        try
+    }
+
+    /// <summary>A container row of a kind the memory tracks, with bounds and a contents stamp.</summary>
+    private static bool HasContents(ObservationRow row, out Box bounds)
+    {
+        bounds = default;
+        if (Array.IndexOf(MemoryKinds, row.Kind) < 0 || row.Bounds is not { } b || row.ContentsAt is null) return false;
+        bounds = b;
+        return true;
+    }
+
+    private void AddLedgersInBox(List<Candidate> cands, int dim, BlockPos min, BlockPos max)
+    {
+        foreach (var v in _story()?.All(dim) ?? [])
         {
-            foreach (var v in _story()?.All(dim) ?? [])
-            {
-                var vc = StoryCells(v);
-                if (vc.Any(In)) cands.Add(FromLedger(v, vc));
-            }
+            var vc = StoryCells(v);
+            if (vc.Any(c => In(c, min, max))) cands.Add(FromLedger(v, vc));
         }
-        catch (Exception) { }
-        // one group per container (overlapping cells), the best candidate of each
+    }
+
+    /// <summary>One group per container (overlapping cells), in the order the candidates first name it.</summary>
+    private static List<(HashSet<BlockPos> Cells, List<Candidate> List)> GroupByContainer(List<Candidate> cands)
+    {
         var groups = new List<(HashSet<BlockPos> Cells, List<Candidate> List)>();
         foreach (var c in cands)
         {
@@ -199,34 +266,40 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
             if (g.List == null) groups.Add((new HashSet<BlockPos>(c.Cells), [c]));
             else { g.List.Add(c); g.Cells.UnionWith(c.Cells); }
         }
-        var outList = new List<ContainerSummary>();
-        foreach (var (gc, list) in groups)
+        return groups;
+    }
+
+    /// <summary>A group's best candidate as a summary; null when none fits or the block is gone.</summary>
+    private ContainerSummary? Summary(int dim, HashSet<BlockPos> gc, List<Candidate> list)
+    {
+        if (Choose(list) is not { } best) return null;
+        var cells = gc.OrderBy(c => c.X).ThenBy(c => c.Z).ThenBy(c => c.Y).ToArray();
+        if (cells.Length > 2) cells = best.Cells;
+        var w = WorldAt(dim, cells[0]);
+        int id = w?.GetBlock(cells[0]) ?? best.BlockId;
+        if (w != null && ContainerSightings.KindOf(id) == null) return null; // the block is gone
+        int size = Math.Max(best.Size, cells.Length > 1 ? ChestPairs.DoubleSlots : 0);
+        var (totals, used) = ItemTotals(best.Slots ?? Pack(best.Counts ?? [], size));
+        var top = totals.OrderByDescending(kv => kv.Value).Take(5)
+            .Select(kv => new ContainerItemCount(kv.Key.Item1, kv.Key.Item2, BodyInventories.Slot(0, new ItemStack((short)kv.Key.Item1, 1, (short)kv.Key.Item2))?.Name ?? $"unknown_{kv.Key.Item1}", kv.Value))
+            .ToList();
+        return new ContainerSummary(P(cells[0]), dim, Kind(id, best.MemKind, size), size, used, totals.Values.Sum(), top, best.At, best.By, best.Source,
+            cells.Select(P).ToList());
+    }
+
+    /// <summary>Item totals by id and meta (a tool's damage isn't its meta) and the slots used.</summary>
+    private static (Dictionary<(int, int), int> Totals, int Used) ItemTotals(ItemStack[] stacks)
+    {
+        var totals = new Dictionary<(int, int), int>();
+        int used = 0;
+        foreach (var st in stacks)
         {
-            if (Choose(list) is not { } best) continue;
-            var cells = gc.OrderBy(c => c.X).ThenBy(c => c.Z).ThenBy(c => c.Y).ToArray();
-            if (cells.Length > 2) cells = best.Cells;
-            var w = WorldAt(dim, cells[0]);
-            int id = w?.GetBlock(cells[0]) ?? best.BlockId;
-            if (w != null && ContainerSightings.KindOf(id) == null) continue; // the block is gone
-            int size = Math.Max(best.Size, cells.Length > 1 ? ChestPairs.DoubleSlots : 0);
-            var stacks = best.Slots ?? Pack(best.Counts ?? [], size);
-            var totals = new Dictionary<(int, int), int>();
-            int used = 0;
-            foreach (var st in stacks)
-            {
-                if (st.IsEmpty) continue;
-                used++;
-                int meta = Damageable(st.Id) ? 0 : st.Damage;
-                totals[(st.Id, meta)] = totals.GetValueOrDefault((st.Id, meta)) + st.Count;
-            }
-            var top = totals.OrderByDescending(kv => kv.Value).Take(5)
-                .Select(kv => new ContainerItemCount(kv.Key.Item1, kv.Key.Item2, BodyInventories.Slot(0, new ItemStack((short)kv.Key.Item1, 1, (short)kv.Key.Item2))?.Name ?? $"unknown_{kv.Key.Item1}", kv.Value))
-                .ToList();
-            outList.Add(new ContainerSummary(P(cells[0]), dim, Kind(id, best.MemKind, size), size, used, totals.Values.Sum(), top, best.At, best.By, best.Source,
-                cells.Select(P).ToList()));
+            if (st.IsEmpty) continue;
+            used++;
+            int meta = Damageable(st.Id) ? 0 : st.Damage;
+            totals[(st.Id, meta)] = totals.GetValueOrDefault((st.Id, meta)) + st.Count;
         }
-        var sorted = outList.OrderByDescending(s => s.SeenAt ?? 0).ToList();
-        return (sorted.Take(Math.Max(0, limit)).ToList(), sorted.Count > limit);
+        return (totals, used);
     }
 
     // ---------------------------------------------------------------- sources
@@ -234,33 +307,43 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
     /// <summary>The bodies' looks: live or the last one; a double chest whose halves were looked at as singles is joined.</summary>
     private Candidate? Looked(int dim, BlockPos pos, BlockPos[] cells)
     {
+        var found = LooksAt(dim, pos, cells);
+        if (found.Count == 0) return null;
+        var whole = found.FirstOrDefault(f => cells.All(f.S.Cells.Contains));
+        if (whole.S != null) return FromLook(whole.S, whole.Live);
+        if (cells.Length == 2) return JoinHalves(cells, found);
+        return FromLook(found[0].S, found[0].Live);
+    }
+
+    /// <summary>The looks at the container's cells (and the asked cell), one per sighting.</summary>
+    private List<(ContainerSighting S, bool Live)> LooksAt(int dim, BlockPos pos, BlockPos[] cells)
+    {
         long now = Now;
         var found = new List<(ContainerSighting S, bool Live)>();
         foreach (var c in cells.Contains(pos) ? cells : [pos, .. cells])
             if (store.Get(dim, c, now) is { } g && !found.Any(f => f.S.Pos == g.Sighting.Pos)) found.Add((g.Sighting, g.Live));
-        if (found.Count == 0) return null;
-        var whole = found.FirstOrDefault(f => cells.All(f.S.Cells.Contains));
-        if (whole.S != null)
-            return new Candidate(whole.S.Cells, whole.S.BlockId, null, whole.S.Slots, null, whole.S.Size, whole.S.At, whole.S.By, whole.Live ? "live" : "memory");
-        if (cells.Length == 2)
+        return found;
+    }
+
+    private static Candidate FromLook(ContainerSighting s, bool live) =>
+        new(s.Cells, s.BlockId, null, s.Slots, null, s.Size, s.At, s.By, live ? "live" : "memory");
+
+    /// <summary>The pair as two single looks (or one): first half's 27 slots, then the second's; dated by the older look.</summary>
+    private static Candidate JoinHalves(BlockPos[] cells, List<(ContainerSighting S, bool Live)> found)
+    {
+        var slots = new ItemStack[ChestPairs.DoubleSlots];
+        Array.Fill(slots, ItemStack.Empty);
+        ContainerSighting? older = null;
+        bool partial = false, allLive = true;
+        for (int h = 0; h < 2; h++)
         {
-            // the pair as two single looks (or one): first half's 27 slots, then the second's
-            var slots = new ItemStack[ChestPairs.DoubleSlots];
-            Array.Fill(slots, ItemStack.Empty);
-            ContainerSighting? older = null;
-            bool partial = false, allLive = true;
-            for (int h = 0; h < 2; h++)
-            {
-                var f = found.FirstOrDefault(x => x.S.Cells.Contains(cells[h]));
-                if (f.S == null) { partial = true; allLive = false; continue; }
-                allLive &= f.Live;
-                Array.Copy(f.S.Slots, 0, slots, h * ChestPairs.HalfSlots, Math.Min(ChestPairs.HalfSlots, f.S.Slots.Length));
-                if (older == null || f.S.At < older.At) older = f.S;
-            }
-            return new Candidate(cells, older!.BlockId, null, slots, null, ChestPairs.DoubleSlots, older.At, older.By, allLive ? "live" : "memory", partial);
+            var f = found.FirstOrDefault(x => x.S.Cells.Contains(cells[h]));
+            if (f.S == null) { partial = true; allLive = false; continue; }
+            allLive &= f.Live;
+            Array.Copy(f.S.Slots, 0, slots, h * ChestPairs.HalfSlots, Math.Min(ChestPairs.HalfSlots, f.S.Slots.Length));
+            if (older == null || f.S.At < older.At) older = f.S;
         }
-        var one = found[0];
-        return new Candidate(one.S.Cells, one.S.BlockId, null, one.S.Slots, null, one.S.Size, one.S.At, one.S.By, one.Live ? "live" : "memory");
+        return new Candidate(cells, older!.BlockId, null, slots, null, ChestPairs.DoubleSlots, older.At, older.By, allLive ? "live" : "memory", partial);
     }
 
     /// <summary>The world memory's row for the container (the indexer's item counts, when and by whom).</summary>

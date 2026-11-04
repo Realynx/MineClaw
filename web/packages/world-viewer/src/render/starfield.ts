@@ -22,9 +22,17 @@ export const STAR_LAYERS = 17;
 
 /** TileEntityEndPortalRenderer.getPasses: the layer count by the squared distance to the block (`gateway`: one more). */
 export function starPasses(d2: number, gateway = false): number {
-  const i = d2 > 36864 ? 1 : d2 > 25600 ? 3 : d2 > 16384 ? 5 : d2 > 9216 ? 7 : d2 > 4096 ? 9 : d2 > 1024 ? 11 : d2 > 576 ? 13 : d2 > 256 ? 14 : 15;
+  let i = 15;
+  for (let k = 0; k < PASS_STEPS.length; k += 2)
+    if (d2 > PASS_STEPS[k]) {
+      i = PASS_STEPS[k + 1];
+      break;
+    }
   return i + 1 + (gateway ? 1 : 0);
 }
+
+/** getPasses' ladder, farthest first: beyond this squared distance, this many passes − 1 (15 within 16 blocks). */
+const PASS_STEPS = [36864, 1, 25600, 3, 16384, 5, 9216, 7, 4096, 9, 1024, 11, 576, 13, 256, 14];
 
 /** The colour of each layer (r, g, b), as the client computes them every frame from Random(31100). */
 export function starLayerColours(): Array<[number, number, number]> {

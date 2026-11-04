@@ -166,32 +166,28 @@ export interface QuadInit {
 
 /** A quad from corners + UVs; facing and flushness from the geometry. */
 export function makeQuad(p: number[], uv: number[], o: QuadInit = {}): Quad {
-  const n = normalOf(p);
-  const dir = o.dir ?? dirOf(n);
+  const dir = o.dir ?? dirOf(normalOf(p));
   return {
     p,
     uv,
-    c: o.c ?? 0,
-    r: o.r ?? 0,
-    span: o.span ?? 0,
-    wrap: o.wrap ?? false,
-    tint: o.tint ?? TINT_NONE,
-    ovC: o.ovC ?? -1,
-    ovR: o.ovR ?? -1,
-    ovTint: o.ovTint ?? TINT_NONE,
+    ...atlasFields(o),
     shade: o.shade ?? (dir >= 0 ? FACE_SHADE[dir] : 1),
     dir,
     cull: o.cull ?? -1,
     flush: dir >= 0 && onBoundary(dir, p),
-    layer: o.layer ?? Layer.Opaque,
-    twoSided: o.twoSided ?? false,
-    ao: o.ao ?? true,
-    emissive: o.emissive ?? false,
-    flat: o.flat ?? 0x808080,
-    alpha: o.alpha ?? 1,
-    textured: o.textured ?? true,
+    ...drawFields(o),
     fx: o.fx,
   };
+}
+
+/** Where the quad samples the atlas, and its tints (defaults: cell 0, untinted, no overlay). */
+function atlasFields(o: QuadInit): Pick<Quad, 'c' | 'r' | 'span' | 'wrap' | 'tint' | 'ovC' | 'ovR' | 'ovTint'> {
+  return { c: o.c ?? 0, r: o.r ?? 0, span: o.span ?? 0, wrap: o.wrap ?? false, tint: o.tint ?? TINT_NONE, ovC: o.ovC ?? -1, ovR: o.ovR ?? -1, ovTint: o.ovTint ?? TINT_NONE };
+}
+
+/** How the quad draws (defaults: opaque, one-sided, occluded, lit, textured). */
+function drawFields(o: QuadInit): Pick<Quad, 'layer' | 'twoSided' | 'ao' | 'emissive' | 'flat' | 'alpha' | 'textured'> {
+  return { layer: o.layer ?? Layer.Opaque, twoSided: o.twoSided ?? false, ao: o.ao ?? true, emissive: o.emissive ?? false, flat: o.flat ?? 0x808080, alpha: o.alpha ?? 1, textured: o.textured ?? true };
 }
 
 /** Recomputes facing/flushness after the corners moved. */
@@ -274,20 +270,25 @@ export function clipAxis(q: Quad, axis: number, min: number, max: number): Quad 
   if (hi <= min + e || lo >= max - e) return hi - lo < e && lo >= min - e && hi <= max + e ? q : null;
   if (lo >= min - e && hi <= max + e) return q;
   const out = { ...q, p: q.p.slice(), uv: q.uv.slice() };
-  // P = P0 + s·(P1 − P0) + t·(P3 − P0), UV likewise; corners are (s, t) = (0,0) (1,0) (1,1) (0,1).
-  const st = [[0, 0], [1, 0], [1, 1], [0, 1]];
-  const d1 = q.p[3 + axis] - q.p[axis], d3 = q.p[9 + axis] - q.p[axis];
-  for (let k = 0; k < 4; k++) {
-    let [s, t] = st[k];
-    const v = q.p[axis] + s * d1 + t * d3;
-    const target = Math.max(min, Math.min(max, v));
-    if (Math.abs(target - v) < e) continue;
-    if (Math.abs(d1) > e) s = (target - q.p[axis] - t * d3) / d1;
-    else t = (target - q.p[axis] - s * d1) / d3;
-    for (let a = 0; a < 3; a++) out.p[k * 3 + a] = q.p[a] + s * (q.p[3 + a] - q.p[a]) + t * (q.p[9 + a] - q.p[a]);
-    for (let a = 0; a < 2; a++) out.uv[k * 2 + a] = q.uv[a] + s * (q.uv[2 + a] - q.uv[a]) + t * (q.uv[6 + a] - q.uv[a]);
-  }
+  for (let k = 0; k < 4; k++) clipCorner(out, q, k, axis, min, max);
   return refresh(out, true);
+}
+
+/** Corners as (s, t) along the quad's edges P0→P1 and P0→P3. */
+const CORNER_ST = [[0, 0], [1, 0], [1, 1], [0, 1]];
+
+/** Moves corner k of `out` onto the clip range: P = P0 + s·(P1 − P0) + t·(P3 − P0), UV likewise. */
+function clipCorner(out: Quad, q: Quad, k: number, axis: number, min: number, max: number): void {
+  const e = 1e-5;
+  const d1 = q.p[3 + axis] - q.p[axis], d3 = q.p[9 + axis] - q.p[axis];
+  let [s, t] = CORNER_ST[k];
+  const v = q.p[axis] + s * d1 + t * d3;
+  const target = Math.max(min, Math.min(max, v));
+  if (Math.abs(target - v) < e) return;
+  if (Math.abs(d1) > e) s = (target - q.p[axis] - t * d3) / d1;
+  else t = (target - q.p[axis] - s * d1) / d3;
+  for (let a = 0; a < 3; a++) out.p[k * 3 + a] = q.p[a] + s * (q.p[3 + a] - q.p[a]) + t * (q.p[9 + a] - q.p[a]);
+  for (let a = 0; a < 2; a++) out.uv[k * 2 + a] = q.uv[a] + s * (q.uv[2 + a] - q.uv[a]) + t * (q.uv[6 + a] - q.uv[a]);
 }
 
 /** Moves every corner. */

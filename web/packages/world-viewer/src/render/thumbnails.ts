@@ -6,6 +6,7 @@
 
 import * as THREE from 'three';
 import type { Dim } from '../types';
+import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
 import { lookDir } from './cameraRig';
 import { newViewId, type RuntimeView, type ViewSetup, type WorldRuntime } from './runtime';
@@ -96,42 +97,17 @@ export class ThumbnailView implements RuntimeView {
 
   frame(rt: WorldRuntime, now: number): ViewSetup | null {
     const b = this.bot();
-    if (!b || !this.ctx || !this.onScreen) return null;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return null;
-    const fps = Math.max(0.5, Math.min(10, (this.opts.fps ?? 3) * rt.quality.state.profile.thumbFpsScale));
-    if (now - this.lastAt < 1000 / fps || !rt.takeSlot()) return null;
+    if (!b || !this.ctx || !this.due(rt, now)) return null;
     this.lastAt = now;
-    const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
-    const cw = Math.max(1, Math.round(this.canvas.clientWidth * dpr)), ch = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
-    if (this.canvas.width !== cw || this.canvas.height !== ch) {
-      this.canvas.width = cw;
-      this.canvas.height = ch;
-    }
+    const [cw, ch] = this.fitCanvas();
     const [w, h] = rt.thumbSize(cw, ch);
-    // Behind the bot, smoothed between renders, or the fixed Explorer angle.
-    this.target.set(b.x, b.y + 1.3, b.z);
-    const wantYaw = (this.opts.angle ?? 'behind') === 'behind' ? b.yaw : 315;
-    if (Number.isNaN(this.yaw)) this.yaw = wantYaw;
-    this.yaw += ((((wantYaw - this.yaw) % 360) + 540) % 360 - 180) * 0.35;
-    this.camera.position.copy(this.target).addScaledVector(lookDir(this.yaw, this.opts.pitch ?? 28), -(this.opts.distance ?? 6));
-    this.camera.lookAt(this.target);
-    this.camera.far = this.drawDistance * 1.6 + 16;
-    this.camera.updateMatrixWorld();
-    // The cone toward the bot when the last test found the camera buried (tested at the view's own rate, never blocking).
+    this.placeCamera(b);
     const xray = this.opts.xray ?? true;
-    if (xray && !this.busy) {
-      this.busy = true;
-      const c = this.camera.position;
-      rt.host
-        .viewInfo(b.dim, [c.x, c.y, c.z], [b.x, b.y, b.z], null)
-        .then((i) => {
-          this.cone = i.cameraInside; // a hidden bot shows as a silhouette (ghosts below)
-          // Roof cut-away like the main view: the bot is under cover and the camera looks down on it.
-          this.roof = (this.opts.cutaway ?? true) && i.covered && c.y > b.y + 1.5 ? { x: b.x, y: Math.floor(b.y) + 2, z: b.z, r: 7 } : null;
-        })
-        .catch(() => undefined)
-        .finally(() => (this.busy = false));
-    }
+    if (xray && !this.busy) this.testView(rt, b);
+    return this.setupFor(b, w, h, xray, this.ctx);
+  }
+
+  private setupFor(b: BotView, w: number, h: number, xray: boolean, ctx: CanvasRenderingContext2D): ViewSetup {
     return {
       dim: b.dim,
       camera: this.camera,
@@ -150,8 +126,54 @@ export class ThumbnailView implements RuntimeView {
       viewId: this.id,
       bubbles: (this.opts.bubbles ?? true) ? 'compact' : 'off',
       pxScale: h / Math.max(1, this.canvas.clientHeight),
-      target: this.ctx,
+      target: ctx,
     };
+  }
+
+  /** On screen, the tab visible, its own frame rate due, and one of this frame's thumbnail slots free. */
+  private due(rt: WorldRuntime, now: number): boolean {
+    if (!this.onScreen) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    const fps = Math.max(0.5, Math.min(10, (this.opts.fps ?? 3) * rt.quality.state.profile.thumbFpsScale));
+    return now - this.lastAt >= 1000 / fps && rt.takeSlot();
+  }
+
+  /** The canvas at its CSS size in device pixels (2× at most); returns that size. */
+  private fitCanvas(): [number, number] {
+    const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
+    const cw = Math.max(1, Math.round(this.canvas.clientWidth * dpr)), ch = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw;
+      this.canvas.height = ch;
+    }
+    return [cw, ch];
+  }
+
+  /** Behind the bot, smoothed between renders, or the fixed Explorer angle. */
+  private placeCamera(b: BotView): void {
+    this.target.set(b.x, b.y + 1.3, b.z);
+    const wantYaw = (this.opts.angle ?? 'behind') === 'behind' ? b.yaw : 315;
+    if (Number.isNaN(this.yaw)) this.yaw = wantYaw;
+    this.yaw += ((((wantYaw - this.yaw) % 360) + 540) % 360 - 180) * 0.35;
+    this.camera.position.copy(this.target).addScaledVector(lookDir(this.yaw, this.opts.pitch ?? 28), -(this.opts.distance ?? 6));
+    this.camera.lookAt(this.target);
+    this.camera.far = this.drawDistance * 1.6 + 16;
+    this.camera.updateMatrixWorld();
+  }
+
+  /** The cone toward the bot when the last test found the camera buried (tested at the view's own rate, never blocking). */
+  private testView(rt: WorldRuntime, b: BotView): void {
+    this.busy = true;
+    const c = this.camera.position;
+    rt.host
+      .viewInfo(b.dim, [c.x, c.y, c.z], [b.x, b.y, b.z], null)
+      .then((i) => {
+        this.cone = i.cameraInside; // a hidden bot shows as a silhouette (ghosts below)
+        // Roof cut-away like the main view: the bot is under cover and the camera looks down on it.
+        this.roof = (this.opts.cutaway ?? true) && i.covered && c.y > b.y + 1.5 ? { x: b.x, y: Math.floor(b.y) + 2, z: b.z, r: 7 } : null;
+      })
+      .catch(() => undefined)
+      .finally(() => (this.busy = false));
   }
 
   dispose(): void {

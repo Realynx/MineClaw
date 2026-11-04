@@ -15,49 +15,48 @@ interface WorkerScope {
 const scope = self as unknown as WorkerScope;
 let queue: Promise<void> = Promise.resolve();
 
+type Result = Extract<WorkerResponse, { ok: true }>['result'];
+/** A request's answer and the buffers it hands over (meshes travel without a copy). */
+type Answer = { result: Result; transfer?: Transferable[] };
+type Handlers = { [K in WorkerRequest['op']]: (m: Extract<WorkerRequest, { op: K }>) => Answer | Promise<Answer> };
+
+const HANDLERS: Handlers = {
+  configure: (m) => {
+    engine.configure(m.version, m.assets, m.textured, m.fastLeaves);
+    return { result: null };
+  },
+  apply: async (m) => ({ result: await engine.apply(m.buf) }),
+  touch: (m) => ({ result: engine.touch(m.dim, m.cols) }),
+  patch: (m) => ({ result: engine.patch(m.dim, m.blocks) }),
+  drop: (m) => ({ result: engine.drop(m.dim, m.cols) }),
+  mesh: (m) => {
+    const meshes = engine.mesh(m.dim, m.sections, m.cut);
+    return { result: meshes, transfer: meshes.flatMap((s: SectionMesh) => [...meshBuffers(s.solid), ...meshBuffers(s.translucent)]) };
+  },
+  pick: (m) => ({ result: engine.pick(m.dim, m.o, m.d, m.max, m.cut) }),
+  blocksAt: (m) => ({ result: engine.blocksAt(m.dim, m.pts) }),
+  scan: (m) => ({ result: engine.scan(m.dim, m.min, m.max, m.ids, m.maxHits) }),
+  stacks: (m) => ({ result: engine.stacks(m.dim, m.min, m.max, m.skip, m.depth, m.above, m.maxHits) }),
+  lights: (m) => ({ result: engine.lights(m.dim, m.pts) }),
+  occluded: (m) => ({ result: engine.occluded(m.dim, m.cam, m.bodies) }),
+  view: (m) => ({ result: engine.viewInfo(m.dim, m.cam, m.body, m.cut) }),
+  blockEntities: (m) => ({ result: engine.setBlockEntities(m.dim, m.cols) }),
+  holo: (m) => {
+    const rs = engine.meshHolo(m.dim, m.reqs);
+    return { result: rs, transfer: holoBuffers(rs) };
+  },
+  clear: () => {
+    engine.clear();
+    return { result: null };
+  },
+};
+
 async function handle(m: WorkerRequest): Promise<void> {
   try {
-    switch (m.op) {
-      case 'configure':
-        engine.configure(m.version, m.assets, m.textured, m.fastLeaves);
-        return reply({ id: m.id, ok: true, result: null });
-      case 'apply':
-        return reply({ id: m.id, ok: true, result: await engine.apply(m.buf) });
-      case 'touch':
-        return reply({ id: m.id, ok: true, result: engine.touch(m.dim, m.cols) });
-      case 'patch':
-        return reply({ id: m.id, ok: true, result: engine.patch(m.dim, m.blocks) });
-      case 'drop':
-        return reply({ id: m.id, ok: true, result: engine.drop(m.dim, m.cols) });
-      case 'mesh': {
-        const meshes = engine.mesh(m.dim, m.sections, m.cut);
-        const transfer = meshes.flatMap((s: SectionMesh) => [...meshBuffers(s.solid), ...meshBuffers(s.translucent)]);
-        return reply({ id: m.id, ok: true, result: meshes }, transfer);
-      }
-      case 'pick':
-        return reply({ id: m.id, ok: true, result: engine.pick(m.dim, m.o, m.d, m.max, m.cut) });
-      case 'blocksAt':
-        return reply({ id: m.id, ok: true, result: engine.blocksAt(m.dim, m.pts) });
-      case 'scan':
-        return reply({ id: m.id, ok: true, result: engine.scan(m.dim, m.min, m.max, m.ids, m.maxHits) });
-      case 'stacks':
-        return reply({ id: m.id, ok: true, result: engine.stacks(m.dim, m.min, m.max, m.skip, m.depth, m.above, m.maxHits) });
-      case 'lights':
-        return reply({ id: m.id, ok: true, result: engine.lights(m.dim, m.pts) });
-      case 'occluded':
-        return reply({ id: m.id, ok: true, result: engine.occluded(m.dim, m.cam, m.bodies) });
-      case 'view':
-        return reply({ id: m.id, ok: true, result: engine.viewInfo(m.dim, m.cam, m.body, m.cut) });
-      case 'blockEntities':
-        return reply({ id: m.id, ok: true, result: engine.setBlockEntities(m.dim, m.cols) });
-      case 'holo': {
-        const rs = engine.meshHolo(m.dim, m.reqs);
-        return reply({ id: m.id, ok: true, result: rs }, holoBuffers(rs));
-      }
-      case 'clear':
-        engine.clear();
-        return reply({ id: m.id, ok: true, result: null });
-    }
+    const run = HANDLERS[m.op] as ((m: WorkerRequest) => Answer | Promise<Answer>) | undefined;
+    if (!run) return;
+    const { result, transfer } = await run(m);
+    reply({ id: m.id, ok: true, result }, transfer);
   } catch (e) {
     reply({ id: m.id, ok: false, error: e instanceof Error ? e.message : String(e) });
   }
