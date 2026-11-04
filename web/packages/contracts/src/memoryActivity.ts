@@ -92,11 +92,48 @@ export const MemoryHeatResponse = z.object({
 export type MemoryHeatResponse = z.infer<typeof MemoryHeatResponse>;
 
 /**
- * GET /api/memory-activity/cloud: the memory cloud (architecture.md, "Memory activity tab" → Cloud). Every RAPTOR leaf at its
- * 2-D UMAP position (the bot's own reducer over the stored leaf embeddings, cosine, seeded), in the unit square. Leaves inserted
- * since the last RAPTOR build are placed from their nearest build leaves, so the picture never reshuffles between builds. Columns
- * are parallel arrays (index `i` is one leaf) to keep tens of thousands of points small on the wire. Ids are RAPTOR node ids,
- * the same as `/api/raptor/graph` and the heat routes.
+ * The memory cloud's arrangements (architecture.md, "Memory cloud"): `mds` (default) = metric MDS on cosine distance, so drawn
+ * distance ≈ embedding distance; `umap` = the bot's own UMAP (neighbourhoods, not distances); `pca` = the top two principal axes;
+ * `tree` = force-directed along the RAPTOR parent links, started from the MDS picture.
+ */
+export const CloudArrangement = z.enum(['mds', 'umap', 'pca', 'tree']);
+export type CloudArrangement = z.infer<typeof CloudArrangement>;
+
+export const MemoryCloudQuery = z.object({
+  arrangement: CloudArrangement.default('mds'),
+});
+export type MemoryCloudQuery = z.infer<typeof MemoryCloudQuery>;
+
+/**
+ * How faithfully the arrangement draws embedding distances, measured the same way for every arrangement on one seeded sample of
+ * leaf pairs (all pairs when there are few): correlation between cosine distance (1 − cos) and drawn distance, and stress after the
+ * best uniform scale.
+ */
+export const CloudFidelity = z.object({
+  metric: z.literal('cosine').describe('the embedding distance: 1 − cos of the stored vectors'),
+  stress: Double.describe('√(Σ(δ − αd)² / Σδ²) after the best scale α: 0 = perfect, ~0.1 good, > 0.3 distances are not to be read'),
+  pearson: Double.describe('linear correlation of drawn and embedding distance on the sample'),
+  spearman: Double.describe('rank correlation (does "farther" stay farther)'),
+  unitDistance: Double.describe('α: the cosine distance one unit of the unit square stands for (scale bar, drawn distance)'),
+  pairs: z.number().int(),
+  varianceExplained: z.array(Double).nullish().describe('PCA only: the share of variance on each axis'),
+});
+export type CloudFidelity = z.infer<typeof CloudFidelity>;
+
+export const CloudArrangementStatus = z.object({
+  id: CloudArrangement,
+  label: z.string(),
+  metric: z.boolean().describe('drawn distance is meant to be read as embedding distance (scale bar shown)'),
+  status: z.enum(['ready', 'computing', 'queued', 'error', 'idle']).describe('for the current tree; idle = not asked for yet'),
+});
+export type CloudArrangementStatus = z.infer<typeof CloudArrangementStatus>;
+
+/**
+ * GET /api/memory-activity/cloud?arrangement=: the memory cloud (architecture.md, "Memory activity tab" → Cloud). Every RAPTOR
+ * leaf at its 2-D position in one arrangement (bridge-computed from the stored leaf embeddings, seeded), in the unit square. Leaves
+ * inserted since the last RAPTOR build are placed from the build's fit (nearest-anchor stress for MDS, projection for PCA, next to
+ * their parent for the tree), so the picture never reshuffles between builds. Columns are parallel arrays (index `i` is one leaf) to
+ * keep tens of thousands of points small on the wire. Ids are RAPTOR node ids, the same as `/api/raptor/graph` and the heat routes.
  */
 export const CloudPoints = z.object({
   id: z.array(z.number().int()),
@@ -146,13 +183,32 @@ export const MemoryCloudResponse = z.object({
   points: CloudPoints,
   summaries: CloudSummaries,
   clusters: z.array(CloudCluster),
-  anchors: z.number().int().describe('leaves the UMAP ran on (an even sample above 2000)'),
-  placedSinceBuild: z.number().int().describe('leaves placed from their neighbours instead'),
+  anchors: z.number().int().describe('leaves the arrangement was fitted on (MDS: ≤ 3000, UMAP: ≤ 2000, an even sample above)'),
+  placedSinceBuild: z.number().int().describe('leaves placed from the fit instead'),
   computeMs: Double.nullish(),
   computedAt: IsoDateTime.nullish(),
   computingStateKey: z.string().nullish(),
+  arrangement: CloudArrangement.default('mds'),
+  fidelity: CloudFidelity.nullish().describe('null until the arrangement has been laid out'),
+  arrangements: z.array(CloudArrangementStatus).default([]).describe('every arrangement and its state for this tree'),
 });
 export type MemoryCloudResponse = z.infer<typeof MemoryCloudResponse>;
+
+export const CloudDistanceQuery = z.object({
+  a: QInt.min(0),
+  b: QInt.min(0),
+});
+export type CloudDistanceQuery = z.infer<typeof CloudDistanceQuery>;
+
+/** GET /api/memory-activity/cloud/distance?a=&b=: the embedding distance of two memories, computed in the bridge (vectors never leave it). */
+export const CloudDistanceResponse = z.object({
+  a: z.number().int(),
+  b: z.number().int(),
+  metric: z.literal('cosine'),
+  distance: Double.describe('1 − cos of the two stored embeddings (0 = same direction)'),
+  similarity: Double,
+});
+export type CloudDistanceResponse = z.infer<typeof CloudDistanceResponse>;
 
 /** Client helper: brightness of a node now, from its lastAccessAt and the server half-life. */
 export function decayHeat(lastAccessAtMs: number | null | undefined, nowMs: number, halfLifeS: number): number {

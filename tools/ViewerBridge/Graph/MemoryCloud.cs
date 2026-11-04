@@ -4,99 +4,203 @@ namespace MineClaw.ViewerBridge.Graph;
 
 /// <summary>The leaves (columns, same order in every array). <c>Xy</c> is x, y interleaved in the unit square.</summary>
 public sealed record CloudPointsDto(int[] Id, float[] Xy, int[] Cluster, int[] Kind, string[] Title, int[][] Parents, bool[] Inserted);
-/// <summary>Summaries sit at the mean of their children (bottom-up), for the faded link overlay and region labels.</summary>
+/// <summary>Summaries sit at the mean of their children (bottom-up; the tree arrangement lays them out itself), for the link overlay and region labels.</summary>
 public sealed record CloudSummariesDto(int[] Id, float[] Xy, int[] Layer, int[] Cluster, int[][] Parents);
 public sealed record CloudClusterDto(int Id, int Node, int Layer, string Label, IReadOnlyList<string> Terms, string Summary, int Size, double X, double Y, double Spread);
 public sealed record MemoryCloudDto(string Status, string Version, string StateKey, string? Note, int ClusterLayer, IReadOnlyList<string> Kinds, CloudPointsDto Points,
     CloudSummariesDto Summaries, IReadOnlyList<CloudClusterDto> Clusters, int Anchors, int PlacedSinceBuild, double? ComputeMs, DateTimeOffset? ComputedAt,
-    string? ComputingStateKey);
+    string? ComputingStateKey, string Arrangement = CloudArrangements.Default, CloudFidelityDto? Fidelity = null,
+    IReadOnlyList<CloudArrangementStatusDto>? Arrangements = null);
+/// <summary>One arrangement's state for the current tree: ready, computing, queued, error, or idle (not asked for since the tree changed).</summary>
+public sealed record CloudArrangementStatusDto(string Id, string Label, bool Metric, string Status);
+/// <summary>The cosine distance between two RAPTOR nodes' stored embeddings (vectors never leave the bridge).</summary>
+public sealed record CloudDistanceDto(int A, int B, string Metric, double Distance, double Similarity);
 
 /// <summary>
-/// The memory cloud (architecture.md, "Memory activity tab" → Cloud): every RAPTOR leaf at its 2-D UMAP position (<see cref="CloudLayout"/>),
-/// coloured by the bot's own clusters at one summary layer, with summaries placed at their children's mean. The projection runs in the
-/// background on <see cref="BridgeOptions.CloudThreads"/> threads and is cached per tree state; a request never waits for it: it gets
-/// the previous layout (or none) with <c>status: "computing"</c> and polls.
+/// The memory cloud (architecture.md, "Memory activity tab" → Cloud): every RAPTOR leaf at its 2-D position in one of several
+/// arrangements (<see cref="CloudArrangements"/>: metric MDS by default, UMAP, PCA, the tree's own force layout), coloured by the bot's
+/// own clusters at one summary layer, with summaries placed at their children's mean (the tree arrangement places them itself). Each
+/// arrangement is computed lazily (on its first request) on one background queue on <see cref="BridgeOptions.CloudThreads"/> threads and
+/// cached per tree state, with its fidelity numbers; a request never waits: it gets the previous layout (or none) with
+/// <c>status: "computing"</c> and polls.
 /// </summary>
 public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudService> log, TimeProvider time)
 {
+    private sealed class Slot
+    {
+        public CloudAnchors? Anchors;
+        public MemoryCloudDto? Ready;
+        /// <summary>Leaf positions of <see cref="Ready"/> (the tree arrangement starts from the MDS ones).</summary>
+        public Dictionary<int, (float X, float Y)>? Positions;
+        public string? Failed;
+    }
+
     private readonly object _lock = new();
     private readonly BoundedRunner _runner = new(config.Bridge.CloudThreads);
-    private readonly CloudLayoutOptions _options = new() { MaxUmapPoints = Math.Clamp(config.Bridge.CloudMaxUmapPoints, 100, CloudLayoutOptions.UmapSequentialLimit) };
-    private CloudAnchors? _anchors;
-    private MemoryCloudDto? _ready;
-    private string? _computingKey;
-    private string? _failed;
-    private Task? _job;
+    private readonly CloudLayoutOptions _options = new()
+    {
+        MaxUmapPoints = Math.Clamp(config.Bridge.CloudMaxUmapPoints, 100, CloudLayoutOptions.UmapSequentialLimit),
+        MaxMdsPoints = Math.Clamp(config.Bridge.CloudMaxMdsPoints, 100, CloudLayoutOptions.MdsAllPairsLimit),
+    };
+    private readonly Dictionary<string, Slot> _slots = CloudArrangements.Ids.ToDictionary(a => a, _ => new Slot());
+    private readonly List<string> _queue = new();
+    private string? _running;
+    private bool _looping;
+    private MemoryBank? _bank;
+    private Task _job = Task.CompletedTask;
 
     public CloudLayoutOptions Options => _options;
+    public CloudLayoutOptions OptionsFor(string arrangement) => _options with { Arrangement = arrangement };
 
-    /// <summary>The current layout for <paramref name="bank"/>; starts (at most one) background computation when it is missing.</summary>
-    public MemoryCloudDto Get(MemoryBank bank)
+    /// <summary>The current <paramref name="arrangement"/> for <paramref name="bank"/>; queues (at most once) a background computation of it when it is missing.</summary>
+    public MemoryCloudDto Get(MemoryBank bank, string arrangement = CloudArrangements.Default)
     {
-        if (!bank.HasTree) return Empty(bank, "empty", bank.TreeNote ?? "no RAPTOR tree stored in this db");
+        if (!CloudArrangements.IsKnown(arrangement)) throw new ArgumentException($"arrangement must be one of {string.Join("|", CloudArrangements.Ids)}");
+        if (!bank.HasTree)
+        {
+            lock (_lock) return Empty(bank, "empty", bank.TreeNote ?? "no RAPTOR tree stored in this db", arrangement) with { Arrangements = Statuses("none") };
+        }
         string key = bank.StateKey;
-        string version = $"{key}|{_options.Version}";
+        string version = VersionOf(key, arrangement);
         lock (_lock)
         {
-            if (_ready is { } r && r.Version == version) return r;
-            if (_failed == version) return (_ready ?? Empty(bank, "error", "")) with { Status = "error", Note = "the memory cloud layout failed (see the bridge log)" };
-            if (_job is not { IsCompleted: false })
+            _bank = bank;
+            var slot = _slots[arrangement];
+            if (slot.Ready is { } r && r.Version == version) return r with { Arrangements = Statuses(key) };
+            if (slot.Failed == version)
+                return (slot.Ready ?? Empty(bank, "error", "", arrangement)) with
+                {
+                    Status = "error", Note = "the memory cloud layout failed (see the bridge log)", Arrangements = Statuses(key),
+                };
+            if (_running != arrangement && !_queue.Contains(arrangement)) _queue.Add(arrangement);
+            if (!_looping)
             {
-                _computingKey = key;
-                _job = Task.Run(() => ComputeAsync(bank, key, version));
+                _looping = true;
+                _job = Task.Run(LoopAsync);
             }
-            var stale = _ready;
-            return stale != null
-                ? stale with { Status = "computing", ComputingStateKey = _computingKey }
-                : Empty(bank, "computing", "laying out the memory cloud") with { ComputingStateKey = _computingKey };
+            var stale = slot.Ready;
+            var dto = stale != null
+                ? stale with { Status = "computing", ComputingStateKey = key }
+                : Empty(bank, "computing", "laying out the memory cloud", arrangement) with { ComputingStateKey = key };
+            return dto with { Arrangements = Statuses(key) };
         }
     }
 
-    /// <summary>Waits for the running computation (tests).</summary>
-    public Task Idle() { lock (_lock) return _job ?? Task.CompletedTask; }
+    /// <summary>The cosine distance between two nodes' stored embeddings, or null when either is unknown or has no vector.</summary>
+    public static CloudDistanceDto? Distance(MemoryBank bank, int a, int b) =>
+        bank.ReadTree(t =>
+        {
+            if (!t.TryGet(a, out var na) || !t.TryGet(b, out var nb)) return null;
+            var d = CloudFidelity.CosineDistance(na.Embedding, nb.Embedding);
+            return d is { } v ? new CloudDistanceDto(a, b, "cosine", Math.Round(v, 5), Math.Round(1 - v, 5)) : null;
+        }, (CloudDistanceDto?)null);
 
-    private async Task ComputeAsync(MemoryBank bank, string key, string version)
+    /// <summary>Waits until the queue is empty (tests).</summary>
+    public async Task Idle()
     {
-        try
+        while (true)
         {
-            var dto = await _runner.Run(() => Build(bank, key, version));
+            Task job;
             lock (_lock)
             {
-                if (dto != null) _ready = dto;
-                _computingKey = null;
+                if (!_looping) return;
+                job = _job;
             }
+            await job;
         }
-        catch (Exception ex)
+    }
+
+    private string VersionOf(string key, string arrangement) => $"{key}|{OptionsFor(arrangement).Version}";
+
+    /// <summary>Caller holds the lock.</summary>
+    private List<CloudArrangementStatusDto> Statuses(string key) =>
+        CloudArrangements.All.Select(a => new CloudArrangementStatusDto(a.Id, a.Label, a.Metric,
+            _slots[a.Id].Ready?.Version == VersionOf(key, a.Id) ? "ready"
+            : _running == a.Id ? "computing"
+            : _queue.Contains(a.Id) ? "queued"
+            : _slots[a.Id].Failed == VersionOf(key, a.Id) ? "error"
+            : "idle")).ToList();
+
+    private async Task LoopAsync()
+    {
+        while (true)
         {
-            log.LogWarning(ex, "memory cloud layout failed");
+            string arrangement;
+            MemoryBank bank;
+            string key;
             lock (_lock)
             {
-                _computingKey = null;
-                _failed = version;
+                if (_queue.Count == 0)
+                {
+                    _running = null;
+                    _looping = false;
+                    return;
+                }
+                arrangement = _queue[0];
+                _queue.RemoveAt(0);
+                _running = arrangement;
+                bank = _bank!;
+                key = bank.StateKey;
+            }
+            try
+            {
+                await _runner.Run(() => Build(bank, arrangement));
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "memory cloud layout ({Arrangement}) failed", arrangement);
+                lock (_lock) _slots[arrangement].Failed = VersionOf(key, arrangement);
             }
         }
     }
 
-    private MemoryCloudDto? Build(MemoryBank bank, string key, string version)
+    private sealed record TreeRead(long BuildId, string Key, List<CloudLeaf> Leaves, Dictionary<int, int[]> Parents, Dictionary<int, int> Layer);
+
+    /// <summary>Runs on the bounded runner: reads the tree once and lays out <paramref name="arrangement"/> (and the MDS it starts from, for the tree).</summary>
+    private int Build(MemoryBank bank, string arrangement)
     {
         var g = bank.Graph();
-        if (g == null) return null;
-        var (buildId, leaves, parents) = bank.ReadTree(t => (t.BuildId,
+        if (g == null) return 0;
+        var read = bank.ReadTree(t => new TreeRead(t.BuildId, MemoryBank.StateKeyOf(t),
                 t.Leaves.Select(n => new CloudLeaf(n.Index, n.Embedding, n.InsertedSeq)).ToList(),
-                t.AllNodes.Values.ToDictionary(n => n.Index, n => n.Parents.ToArray())),
-            (0L, new List<CloudLeaf>(), new Dictionary<int, int[]>()));
+                t.AllNodes.Values.ToDictionary(n => n.Index, n => n.Parents.ToArray()),
+                t.AllNodes.Values.ToDictionary(n => n.Index, n => n.Layer)),
+            new TreeRead(0L, "none", [], [], []));
+        BuildOne(g, read, arrangement);
+        return 0;
+    }
+
+    private Dictionary<int, (float X, float Y)> BuildOne(GraphModel g, TreeRead read, string arrangement)
+    {
+        string version = VersionOf(read.Key, arrangement);
+        Slot slot;
+        lock (_lock)
+        {
+            slot = _slots[arrangement];
+            if (slot.Ready?.Version == version && slot.Positions != null) return slot.Positions;
+        }
+        CloudTreeInput? tree = null;
+        if (arrangement == CloudArrangements.Tree)
+            tree = new CloudTreeInput(read.Parents, read.Layer, BuildOne(g, read, CloudArrangements.Mds));
         CloudAnchors? prev;
-        lock (_lock) prev = _anchors;
-        var r = CloudLayout.Compute(buildId, leaves, prev, _options);
-        lock (_lock) _anchors = r.Anchors;
-        var dto = Assemble(g, leaves, parents, r.Positions, key, version) with
+        lock (_lock) prev = slot.Anchors;
+        var o = OptionsFor(arrangement);
+        var r = CloudLayout.Compute(read.BuildId, read.Leaves, prev, o, default, tree);
+        var fidelity = CloudFidelity.Measure(read.Leaves, r.Positions, o.Seed, varianceExplained: r.Anchors.VarianceExplained);
+        var dto = Assemble(g, read.Leaves, read.Parents, r.Positions, read.Key, version, r.Anchors.SummaryXy) with
         {
             Anchors = r.Anchors.Index.Length, PlacedSinceBuild = r.Anchors.Placed.Count, ComputeMs = Math.Round(r.Ms, 1),
-            ComputedAt = time.GetUtcNow(),
+            ComputedAt = time.GetUtcNow(), Arrangement = arrangement, Fidelity = fidelity,
         };
-        log.LogInformation("memory cloud: {Leaves} leaves ({Mode}, {Placed} placed) in {Ms:0} ms on {Threads} thread(s)", leaves.Count,
-            r.Full ? "full UMAP" : "incremental", r.PlacedNow, r.Ms, _runner.Threads);
-        return dto;
+        lock (_lock)
+        {
+            slot.Anchors = r.Anchors;
+            slot.Ready = dto;
+            slot.Positions = r.Positions;
+        }
+        log.LogInformation("memory cloud {Arrangement}: {Leaves} leaves ({Mode}, {Placed} placed) in {Ms:0} ms (fit {Fit:0} ms, {Iter} iterations) on {Threads} thread(s); r={R} stress={Stress}",
+            arrangement, read.Leaves.Count, r.Full ? "full fit" : "incremental", r.PlacedNow, r.Ms, r.Anchors.FitMs, r.Anchors.FitIterations, _runner.Threads, fidelity.Pearson, fidelity.Stress);
+        return r.Positions;
     }
 
     /// <summary>
@@ -110,9 +214,9 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
         return Math.Min(1, g.NumLayers);
     }
 
-    /// <summary>Builds the wire shape from the graph (clusters, labels, kinds) and the leaf positions.</summary>
+    /// <summary>Builds the wire shape from the graph (clusters, labels, kinds) and the leaf positions (and, for the tree arrangement, the summaries' own).</summary>
     public static MemoryCloudDto Assemble(GraphModel g, IReadOnlyList<CloudLeaf> leaves, IReadOnlyDictionary<int, int[]> parents,
-        IReadOnlyDictionary<int, (float X, float Y)> positions, string stateKey, string version)
+        IReadOnlyDictionary<int, (float X, float Y)> positions, string stateKey, string version, IReadOnlyDictionary<int, (float X, float Y)>? summaryPositions = null)
     {
         int layer = ClusterLayer(g);
         // Leaf → cluster node: the first node at or below the cluster layer on its primary path from the top.
@@ -168,7 +272,7 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
             ins[i] = l.InsertedSeq > 0;
         }
 
-        // Summaries at the mean of their placed children, bottom-up (slots descend with layer ascending).
+        // Summaries at the mean of their placed children, bottom-up (slots descend with layer ascending), unless laid out themselves.
         var sum = new Dictionary<int, (double X, double Y, int N)>();
         foreach (var l in placedLeaves)
             foreach (var p in parents.GetValueOrDefault(l.Index, []))
@@ -183,12 +287,13 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
         {
             if (!sum.TryGetValue(s.Index, out var a) || a.N == 0) continue;
             float x = (float)R(a.X / a.N), y = (float)R(a.Y / a.N);
+            if (summaryPositions != null && summaryPositions.TryGetValue(s.Index, out var own)) (x, y) = own;
             sIds.Add(s.Index);
             sXy.Add(x);
             sXy.Add(y);
             sLayer.Add(s.Layer);
             int c = -1;
-            if (clusterId.TryGetValue(s.Slot, out var own)) c = own;
+            if (clusterId.TryGetValue(s.Slot, out var mine)) c = mine;
             else foreach (var t in g.PathToTop(s.Slot)) if (clusterId.TryGetValue(t, out var up)) { c = up; break; }
             sCluster.Add(c);
             var sp = parents.GetValueOrDefault(s.Index, []);
@@ -208,9 +313,9 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
         sum[p] = (a.X + x, a.Y + y, a.N + 1);
     }
 
-    private static MemoryCloudDto Empty(MemoryBank bank, string status, string note) =>
+    private static MemoryCloudDto Empty(MemoryBank bank, string status, string note, string arrangement) =>
         new(status, $"{bank.StateKey}|none", bank.StateKey, note, 0, [], new CloudPointsDto([], [], [], [], [], [], []), new CloudSummariesDto([], [], [], [], []), [],
-            0, 0, null, null, null);
+            0, 0, null, null, null, arrangement);
 
     private static double Sq(double v) => v * v;
     private static double R(double v) => Math.Round(v, 4);
