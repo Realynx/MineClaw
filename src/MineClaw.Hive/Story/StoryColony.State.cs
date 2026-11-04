@@ -31,7 +31,7 @@ public sealed partial class StoryColony
             int hour = HourNow;
             var o = new JsonObject
             {
-                ["id"] = Id, ["rev"] = _rev, ["since"] = since, ["full"] = full, ["at"] = Now, ["time_of_day"] = w?.TimeOfDay, ["hour"] = hour,
+                ["id"] = Id, ["rev"] = _rev, ["since"] = since, ["full"] = full, ["at"] = Now, ["time_of_day"] = w?.TimeOfDay, ["time_frozen"] = w?.TimeFrozen, ["hour"] = hour,
                 ["paused"] = Meta.Paused, ["active"] = Meta.Active, ["home"] = Home()?.Json(), ["tie_break"] = Meta.TieBreak, ["options"] = OptionsJson(),
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),

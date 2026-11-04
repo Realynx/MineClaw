@@ -111,10 +111,14 @@ describe('story contracts', () => {
   });
 
   it('hours and clock labels', () => {
-    expect(C.storyHour(0)).toBe(0);
-    expect(C.storyHour(23999)).toBe(23);
-    expect(C.storyClock(0)).toBe('06:00');
-    expect(C.storyClock(20)).toBe('02:00');
+    // The clock hour (the bot's StoryCharacter.Hour): tick 0 = 06:00, a schedule is indexed by it.
+    expect(C.storyHour(0)).toBe(6);
+    expect(C.storyHour(23999)).toBe(5);
+    expect(C.storyHour(18000)).toBe(0);
+    expect(C.storyHour(-6000)).toBe(12); // a stopped daylight cycle: the absolute value
+    expect(C.storyClock(0)).toBe('00:00');
+    expect(C.storyClock(6)).toBe('06:00');
+    expect(C.storyClock(20)).toBe('20:00');
   });
 
   it('time of day: ticks and clock times map both ways (0 = 06:00, 6000 noon, 18000 midnight)', () => {

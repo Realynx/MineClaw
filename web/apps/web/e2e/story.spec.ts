@@ -16,6 +16,7 @@ interface StoryDebug {
   level(): number;
   beds(): Array<{ pos: [number, number, number]; pawn: string | null }>;
   failed(): Array<{ id: string | number; cell: [number, number, number] | null; x: number | null; y: number | null }>;
+  sky(): { time: number | null; skySub: number } | null;
 }
 
 async function signIn(page: Page, empty: boolean) {
@@ -1029,4 +1030,110 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   await designate.getByRole('button', { name: 'Use as colony workbench' }).click();
   expect(body(await again)).toMatchObject({ op: 'designate' });
   await expect(page.getByTestId('bills-inspector')).toBeVisible();
+});
+
+/** Drags the time of day slider to a fraction of the day (0 = 06:00) and waits for its one POST. */
+async function setTime(page: Page, at: number): Promise<number> {
+  const slider = page.getByLabel('Time of day');
+  await expect(slider).toBeEnabled();
+  const sb = (await slider.boundingBox())!;
+  const sent = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/story/time');
+  const from = at > 0.5 ? 0.3 : 0.7;
+  await page.mouse.move(sb.x + sb.width * from, sb.y + sb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sb.x + sb.width * at, sb.y + sb.height / 2, { steps: 6 });
+  await page.mouse.up();
+  return (body(await sent) as { time: number }).time;
+}
+
+test('one world clock: the HUD, the schedule column and the map light follow the server time', async ({ page }) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  const clock = page.getByTestId('colony-clock');
+  const hudHour = async () => Number((await page.getByTestId('colony-time').textContent())!.slice(0, 2));
+
+  // Midnight: the HUD shows night, the map's sky light is taken off (the view darkens), the schedule's column follows.
+  const night = await setTime(page, 0.75);
+  expect(Math.abs(night - 18000)).toBeLessThan(1500);
+  await expect(clock).toHaveAttribute('data-night', 'true');
+  await expect.poll(async () => (await story(page, 'sky'))?.skySub ?? 0, { timeout: 15_000 }).toBeGreaterThan(9);
+  await page.keyboard.press('y');
+  const now = page.getByTestId('schedule-panel').locator('th[data-now="true"]');
+  await expect(now).toHaveCount(1);
+  await expect.poll(async () => Number(await now.textContent())).toBe(await hudHour());
+  expect([22, 23, 0, 1, 2]).toContain(await hudHour());
+  if (shots) await page.screenshot({ path: `${shots}/story-night.png` });
+
+  // Morning again (the mock allows one change a second): day on the HUD, full light on the map, the column moves with it.
+  await page.waitForTimeout(1100);
+  const noon = await setTime(page, 0.25);
+  expect(Math.abs(noon - 6000)).toBeLessThan(1500);
+  await expect(clock).toHaveAttribute('data-night', 'false');
+  await expect.poll(async () => (await story(page, 'sky'))?.skySub ?? 11, { timeout: 15_000 }).toBeLessThan(1);
+  await expect.poll(async () => Number(await now.textContent())).toBe(await hudHour());
+  expect([10, 11, 12, 13, 14]).toContain(await hudHour());
+});
+
+test('the material selector: docked bottom-left with the tool options, keyboard choice, used by the build', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  await story(page, 'focus', 1, -3);
+  await story(page, 'setZoom', 36);
+  await page.waitForTimeout(800);
+  await page.keyboard.press('b');
+  const arch = page.getByTestId('architect');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  await arch.getByRole('button', { name: 'Floor' }).click();
+
+  // Docked bottom-left, above the tab bar; no centred popup; nothing over the map's centre.
+  const bar = page.getByTestId('material-bar');
+  await expect(bar).toBeVisible();
+  await expect(page.getByTestId('tool-options')).toHaveCount(0);
+  const vp = page.viewportSize()!;
+  const bb = (await bar.boundingBox())!;
+  const tabs = (await page.getByTestId('tab-bar').boundingBox())!;
+  expect(bb.x).toBeLessThan(vp.width * 0.1);
+  expect(bb.y + bb.height).toBeLessThanOrEqual(tabs.y + 1);
+  expect(bb.y + bb.height).toBeGreaterThan(tabs.y - 40);
+  const mapBox = (await page.getByTestId('story-map').boundingBox())!;
+  const cx = mapBox.x + mapBox.width / 2,
+    cy = mapBox.y + mapBox.height / 2;
+  expect(cx >= bb.x && cx <= bb.x + bb.width && cy >= bb.y && cy <= bb.y + bb.height).toBe(false);
+
+  // The floor's materials: planks and the slab, no fence.
+  const list = bar.getByTestId('material-list');
+  await expect(list.locator('[data-material="44:0"]')).toBeVisible();
+  await expect(list.locator('[data-material="5:0"]')).toBeVisible();
+  await expect(list.locator('[data-material="85:0"]')).toHaveCount(0);
+  const chosen = async () => (await list.locator('[aria-pressed="true"]').getAttribute('data-material'))!;
+  const before = await chosen();
+  await page.mouse.move(cx, cy);
+  await page.keyboard.press(']');
+  await expect.poll(chosen).not.toBe(before);
+  const key = await chosen();
+
+  // A drag queues a floor in that material.
+  const lv = await story(page, 'level');
+  const floor = post(page, /\/builds$/);
+  await dragCells(page, [-8, lv, 2], [-6, lv, 4]);
+  await page.mouse.up();
+  const item = (body(await floor) as { items: Array<{ kind: string; material: unknown }> }).items[0]!;
+  expect(item.kind).toBe('floor');
+  expect(item.material).toEqual(key.split(':').map(Number));
+  if (shots) await page.screenshot({ path: `${shots}/story-material-bar.png` });
+
+  // Wall: its materials (glass yes, the slab no) and the height control in the same bar; the floor keeps its choice.
+  await arch.getByRole('button', { name: 'Wall' }).click();
+  await expect(bar.getByTestId('wall-height')).toHaveText('3');
+  await expect(list.locator('[data-material="20:0"]')).toBeVisible();
+  await expect(list.locator('[data-material="44:0"]')).toHaveCount(0);
+  await bar.getByRole('button', { name: 'Higher' }).click();
+  await expect(bar.getByTestId('wall-height')).toHaveText('4');
+  await arch.getByRole('button', { name: 'Floor' }).click();
+  await expect.poll(chosen).toBe(key);
+  await expect(page.getByTestId('recent-materials').locator(`[data-recent="${key}"]`)).toBeVisible();
 });

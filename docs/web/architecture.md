@@ -447,6 +447,11 @@ when storage is unavailable. Other tabs follow through the `storage` event.
     WebGL is software-rendered (`WEBGL_debug_renderer_info`: SwiftShader, llvmpipe and the like).
   - Smooth lighting and antialiasing are not offered: the first is baked into the meshes in the worker, the second is fixed when
     the WebGL context is created.
+- **Day and night** (not a setting): every view's sky light, sky and fog follow the world time (`WorldCache.timeNow`, per
+  dimension): the index replies' `time` (negative or `time_frozen` = the daylight cycle is stopped: held, never advanced),
+  advanced at 20 ticks/s for at most a minute. Another feed of the server clock may anchor it too (`WorldRuntime.setWorldTime`;
+  the newer sample by receipt wins): Story Mode joins its colony clock to it, so the map and the HUD agree.
+  `WorldViewerEngine.sky()` reports a view's last `uSkySub` (tests, the Story debug hook).
 - **Per-view overrides.** Bot-card thumbnails keep their own 40-block distance and low rate (the entity distance and draw
   distance settings only ever lower them; the effect toggles apply). The Design Studio canvas caps its draw distance at 96 (its
   plot is 64 × 64). Story Mode caps its perspective distance at 112; its top-down picture is governed by the ground cover.

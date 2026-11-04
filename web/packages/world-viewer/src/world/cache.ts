@@ -25,13 +25,22 @@ export interface ReconcileResult {
 
 const key = (cx: number, cz: number) => `${cx},${cz}`;
 
+/** A world time sample: ticks, when it was received (ms), and whether the server stopped the daylight cycle. */
+export interface WorldTimeAnchor {
+  time: number;
+  at: number;
+  frozen: boolean;
+}
+
+/** How far a time anchor is advanced locally before it counts as stale (and stops). */
+export const TIME_ADVANCE_CAP_MS = 60_000;
+
 export class WorldCache {
   private readonly dims = new Map<Dim, Map<string, CachedColumn>>();
   private gameVersion: string | null = null;
   private maxHeight = 128;
-  private time: number | null = null;
-  private timeAt = 0;
-  private timeDim = 0;
+  /** Per dimension: the last world time heard (ticks), when it was received (ms) and whether the daylight cycle is stopped. */
+  private readonly times = new Map<Dim, WorldTimeAnchor>();
   private weather = new Map<Dim, { rain: number; thunder: number }>();
   bytesReceived = 0;
   /** Bumped on every change. */
@@ -70,18 +79,33 @@ export class WorldCache {
   /** Records what an index said about the world: version, time (advanced locally at 20 ticks/s), weather. */
   setWorldInfo(idx: WorldIndex, nowMs: number): void {
     if (idx.version) this.gameVersion = idx.version;
-    if (idx.time != null) {
-      this.time = idx.time;
-      this.timeAt = nowMs;
-      this.timeDim = idx.dim;
-    }
+    if (idx.time != null && Number.isFinite(idx.time)) this.setTime(idx.dim, idx.time, nowMs, idx.timeFrozen === true);
     if (idx.rain != null) this.weather.set(idx.dim, { rain: clamp01(idx.rain), thunder: clamp01(idx.thunder ?? 0) });
   }
 
-  /** World ticks now in `d`, or null when unknown. */
+  /**
+   * Anchors the world time of `d`: `time` ticks received at `atMs`. The newer anchor (by receipt) wins, so an index reply and
+   * another feed of the same server clock (Story Mode's colony state) can both call this. A negative time is the 1.12.2
+   * server's "daylight cycle stopped" (its absolute value is the time); a frozen time is never advanced locally.
+   */
+  setTime(d: Dim, time: number, atMs: number, frozen = false): void {
+    const cur = this.times.get(d);
+    if (cur && atMs < cur.at) return;
+    this.times.set(d, { time: Math.abs(time), at: atMs, frozen: frozen || time < 0 });
+  }
+
+  /** The last time anchor of `d` (null = never heard). */
+  timeAnchor(d: Dim): WorldTimeAnchor | null {
+    const a = this.times.get(d);
+    return a ? { ...a } : null;
+  }
+
+  /** World ticks now in `d`, or null when unknown: the anchor advanced at 20 ticks/s, for at most a minute (stale after). */
   timeNow(d: Dim, nowMs: number): number | null {
-    if (this.time == null || d !== this.timeDim) return null;
-    return this.time + Math.min(60_000, Math.max(0, nowMs - this.timeAt)) / 50;
+    const a = this.times.get(d);
+    if (!a) return null;
+    if (a.frozen) return a.time;
+    return a.time + Math.min(TIME_ADVANCE_CAP_MS, Math.max(0, nowMs - a.at)) / 50;
   }
 
   weatherIn(d: Dim): { rain: number; thunder: number } {

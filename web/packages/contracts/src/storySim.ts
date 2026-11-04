@@ -216,8 +216,9 @@ const TRAITS = [
   { id: 'green_thumb', label: 'Green thumb', effect: 'Farming skill grows faster' },
   { id: 'steady_hands', label: 'Steady hands', effect: 'Building skill grows faster' },
 ];
+/** By clock hour (index 0 = 00:00, as the bot): work 06–19, anything 20–21, free 22, sleep 23–05. */
 const DEFAULT_SCHEDULE = Array.from({ length: 24 }, (_, h) =>
-  h < 14 ? 'work' : h < 16 ? 'anything' : h < 17 ? 'free' : 'sleep',
+  h >= 6 && h < 20 ? 'work' : h < 6 || h === 23 ? 'sleep' : h < 22 ? 'anything' : 'free',
 );
 const SPEED = 4.3; // blocks per second
 const WORK_MS: Record<string, number> = {
@@ -1652,7 +1653,7 @@ export class StorySim {
                 : pawn.drafted
                   ? 'drafted'
                   : 'working';
-      p.work -= dt * (pawn.traits.some((x) => x.id === 'night_owl') && storyHour(c.tod) >= 14 ? 1.25 : 1);
+      p.work -= dt * (pawn.traits.some((x) => x.id === 'night_owl') && (storyHour(c.tod) >= 20 || storyHour(c.tod) < 6) ? 1.25 : 1);
       if (p.work <= 0) this.finish(c, p);
     }
     pawn.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];

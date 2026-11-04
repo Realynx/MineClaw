@@ -52,6 +52,7 @@ import {
   WORK_TYPES,
   type SortKey,
 } from './model';
+import { useWorldClock, type WorldClock } from './clock';
 import { panel } from './StoryHud';
 import { BringOnlineBox } from './StoryInspector';
 import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, ZONE_TOOLS } from './tools';
@@ -448,19 +449,23 @@ export function WorkPanel({
 const BLOCK_COLOR: Record<string, string> = { work: '#d9a441', sleep: '#4d6fb8', anything: '#6f7b8a', free: '#5bb07a' };
 
 export function SchedulePanel({
+  clock: given,
   pawns,
   ai,
-  hour,
   canWrite,
   onPaint,
 }: {
+  /** The page's world clock (else the context's). */
+  clock?: WorldClock | null;
   pawns: StoryPawn[];
   ai: StoryAiBody[];
-  hour: number | null | undefined;
   canWrite: boolean;
   onPaint: (req: Array<{ pawns: string[]; hours: Record<string, StoryScheduleBlock> }>) => void;
 }) {
   const [brush, setBrush] = useState<StoryScheduleBlock>('work');
+  // The column in force: the clock hour of the page's world clock (the server's time; the bot indexes schedules by it).
+  const clock = useWorldClock(given);
+  const hour = clock.known ? clock.hour : null;
   const [drag, setDrag] = useState<{ from: { row: number; hour: number }; to: { row: number; hour: number } } | null>(
     null,
   );
@@ -516,6 +521,7 @@ export function SchedulePanel({
               <th
                 key={h}
                 className={cn('w-[22px] pb-0.5 font-medium text-subtle', Number(h) === hour && 'text-accent')}
+                data-now={Number(h) === hour ? 'true' : undefined}
               >
                 {storyClock(Number(h)).slice(0, 2)}
               </th>

@@ -188,6 +188,11 @@ export class WorldViewerEngine implements RuntimeView {
     this.levelCut = cut ? { y: cut.y, r: cut.r ?? 512, dimBelow: cut.dimBelow ?? null } : null;
   }
 
+  /** This view's world time and sky light subtraction (0 noon … 11 midnight) as of its last frame (null before one). */
+  sky(): { time: number | null; skySub: number } | null {
+    return this.runtime.skyOf(this.id);
+  }
+
   /** Name labels over bots in this view (default on); off where the app draws its own (Story Mode's overlay). */
   setBotLabels(on: boolean): void {
     this.botLabels = on;

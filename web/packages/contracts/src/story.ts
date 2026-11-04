@@ -30,7 +30,7 @@ export const STORY_WORK_TYPES = [
 export const StoryWorkType = z.enum(STORY_WORK_TYPES);
 export type StoryWorkType = z.infer<typeof StoryWorkType>;
 
-/** One schedule hour. Hour 0 = 06:00 (world time 0), 1000 ticks per hour. */
+/** One schedule hour. A schedule is indexed by the clock hour (0 = 00:00, the bot's StoryCharacter.Hour): world time 0 is 06:00, 1000 ticks an hour. */
 export const STORY_SCHEDULE_BLOCKS = ['work', 'sleep', 'anything', 'free'] as const;
 export const StoryScheduleBlock = z.enum(STORY_SCHEDULE_BLOCKS);
 export type StoryScheduleBlock = z.infer<typeof StoryScheduleBlock>;
@@ -293,7 +293,7 @@ export const StoryPawn = z.object({
   skills: z.record(z.string(), StorySkill).default({}),
   traits: z.array(StoryTrait).default([]),
   priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
-  schedule: z.array(z.string()).default([]).describe('24 blocks, hour 0 = 06:00'),
+  schedule: z.array(z.string()).default([]).describe('24 blocks by clock hour (index 0 = 00:00)'),
   held: z.string().nullish(),
   inventory: z.array(StoryStack).default([]),
 });
@@ -628,8 +628,9 @@ export const StoryColonyState = z.object({
   tieBreak: z.string().nullish().describe('column | skill: equal priorities go by column order or by skill'),
   options: z.lazy(() => StoryColonyOptions).nullish(),
   version: z.union([z.string(), z.number()]).nullish(),
-  timeOfDay: z.number().nullish().describe('world ticks 0..24000'),
-  hour: z.number().int().nullish().describe('0..23, 0 = 06:00'),
+  timeOfDay: z.number().nullish().describe('world ticks 0..24000 (tick 0 = 06:00); negative = the daylight cycle is stopped'),
+  timeFrozen: z.boolean().nullish().describe('true = the server stopped the daylight cycle (doDaylightCycle false)'),
+  hour: z.number().int().nullish().describe('the clock hour 0..23 (0 = 00:00): the schedule column in force'),
   paused: z.boolean().nullish(),
   home: Vec3i.nullish(),
   workTypes: z.array(z.string()).default([...STORY_WORK_TYPES]),
@@ -1085,14 +1086,18 @@ export type StoryDirectiveResponse = z.infer<typeof StoryDirectiveResponse>;
 
 // ------------------------------------------------------------------ helpers (the web's preview and the mocks share them)
 
-/** Time of day (ticks) → schedule hour (0 = 06:00). */
+/**
+ * Time of day (ticks, tick 0 = 06:00) → the clock hour (0..23, 0 = midnight): the schedule column in force, as the bot's
+ * StoryCharacter.Hour. A negative time (1.12.2, daylight cycle stopped) counts by its absolute value.
+ */
 export function storyHour(timeOfDay: number): number {
-  return Math.floor((((timeOfDay % 24000) + 24000) % 24000) / 1000);
+  const t = Math.abs(Math.floor(timeOfDay)) % 24000;
+  return (Math.floor(t / 1000) + 6) % 24;
 }
 
-/** Schedule hour → clock label ("06:00"). */
+/** Clock hour (a schedule column) → its label ("06:00"). */
 export function storyClock(hour: number): string {
-  return `${String((hour + 6) % 24).padStart(2, '0')}:00`;
+  return `${String(((Math.floor(hour) % 24) + 24) % 24).padStart(2, '0')}:00`;
 }
 
 /** Time of day (ticks, 0 = 06:00, 1000 a game hour) → clock label to the minute ("13:30"). */
@@ -1158,6 +1163,10 @@ const SLAB = 44;
 const OAK_STAIRS = 53;
 const COBBLE_STAIRS = 67;
 const STAIRS_META: Record<StoryFacing, number> = { e: 0, w: 1, s: 2, n: 3 };
+/** Block ids that are a door, a fence or stairs themselves (b1.8.1 and 1.12.2): such a material is placed as it is. */
+const PLACED_DOOR_IDS = new Set([64, 71, 193, 194, 195, 196, 197]);
+const FENCE_IDS = new Set([85, 113, 188, 189, 190, 191, 192]);
+const STAIRS_IDS = new Set([53, 67, 108, 109, 114, 128, 134, 135, 136, 156, 163, 164, 180, 203]);
 
 /**
  * The reference expansion of a build item into blocks [x, y, z, id, meta] (the director owns the real one; the web uses this
@@ -1223,8 +1232,8 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
     }
     case 'door':
       for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
-        put(x, y, z, DOOR, STAIRS_META[item.facing ?? 's'] & 3);
-        put(x, y + 1, z, DOOR, 8);
+        put(x, y, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, STAIRS_META[item.facing ?? 's'] & 3);
+        put(x, y + 1, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, 8);
       }
       break;
     case 'window':
@@ -1234,11 +1243,11 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
           for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, 20, 0);
       break;
     case 'fence':
-      outline((x, z) => put(x, a![1], z, FENCE, 0));
-      for (const [x, y, z] of cells) put(x, y, z, FENCE, 0);
+      outline((x, z) => put(x, a![1], z, FENCE_IDS.has(id) ? id : FENCE, 0));
+      for (const [x, y, z] of cells) put(x, y, z, FENCE_IDS.has(id) ? id : FENCE, 0);
       break;
     case 'stairs': {
-      const sid = id === 4 ? COBBLE_STAIRS : OAK_STAIRS;
+      const sid = STAIRS_IDS.has(id) ? id : id === 4 ? COBBLE_STAIRS : OAK_STAIRS;
       const m = STAIRS_META[item.facing ?? 'n'];
       for (const [x, y, z] of cells) put(x, y, z, sid, m);
       if (a) {
