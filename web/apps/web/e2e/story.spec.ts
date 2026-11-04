@@ -634,6 +634,8 @@ test('+ adds a joining pawn; − removes the selected one after a confirm; a gro
   expect(body(await add)).toEqual({ op: 'add', count: 1 });
   await expect(bar.getByTestId('bar-joining')).toHaveCount(1);
 
+  const here = await portraits.count();
+  expect(here).toBeGreaterThanOrEqual(before); // the new one is pending, not a portrait
   await portraits.first().click();
   await bar.getByTestId('bar-remove-pawn').click();
   const confirm = page.getByTestId('remove-pawn-confirm');
@@ -641,7 +643,7 @@ test('+ adds a joining pawn; − removes the selected one after a confirm; a gro
   const rm = post(page, /\/api\/story\/colonies\/[^/]+\/pawns$/);
   await confirm.getByRole('button', { name: 'Remove' }).click();
   expect(body(await rm)).toMatchObject({ op: 'remove' });
-  await expect(portraits).toHaveCount(before - 1, { timeout: 10_000 });
+  await expect(portraits).toHaveCount(here - 1, { timeout: 10_000 });
 
   // A growing zone: the Zones tool's Growing zone shows the plant picker; the zone is sent with the plant.
   await page.keyboard.press('Escape');
