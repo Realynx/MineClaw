@@ -576,7 +576,15 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 - **Offline pawns and failed designations** see "Offline pawns" and "A pawn's own claim" above.
 - **Permissions.** Needs the `admin` role, or a new `story` role, for writes. Viewers can watch.
 - **Performance.** It must stay smooth with software WebGL at 40 fps or more. It uses the shared renderer, and the
-  overlays are cheap.
+  overlays are cheap. Live 11-03 it lagged with 10 pawns and a few hundred designations. Since then the designations' marks and
+  the failed ones' clusters are worked out once per state (not per frame), each mark is stamped from a cached sprite and skipped
+  off screen, the pawn portraits and the viewer's element are memoised (the page re-renders on every state poll), and the map
+  centre reaches the page only while the Colony tab or the new-colony card needs it. Measured with `STORY_PERF=1` in
+  `e2e/story.spec.ts` (the mock's `busy` seed: 10 pawns, ~1100 designations, 120 failed; Chromium with SwiftShader, dev
+  build, 1440×900), before → after: panning 35 → 40 fps (p95 frame 50 → 33 ms) and main-thread script 263–299 → 178 ms/s;
+  idle 43 → 40 fps (noise; p95 33 ms both), script 199–245 → 211 ms/s; zoomed in on the failed labels 51 → 57 fps, script
+  213–219 → 175 ms/s. In the CPU profile React's render work fell 981 → 371 ms and the overlay's draw 779 → 491 ms per 12 s.
+  `STORY_PROFILE=<file>` also saves the CPU profile.
 
 ## Construction (added 2026-11-03)
 
