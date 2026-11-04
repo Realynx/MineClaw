@@ -44,7 +44,7 @@ public sealed partial class StoryColony
     {
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick
-        _pickPawn = p.Name; // chests this pawn can't reach are left out of its plans (StoryColony.Ledger.cs)
+        _pickPawn = p.Name; _pickClaims = null; // chests this pawn can't reach are left out of its plans (StoryColony.Ledger.cs)
         PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
         try { return PillarHint(PickCore(p, live), live); } // a job up high: blocks to climb with (StoryColony.Reach.cs)
         finally { _pickEnts = null; _pickPawn = null; }

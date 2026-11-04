@@ -174,7 +174,7 @@ public sealed partial class StoryColony
     /// <summary>Every unclaimed unit of stored gear matching <paramref name="pick"/>, enchanted ones named (nearest chests first).</summary>
     private List<Unit> StoredUnits(Func<int, int, bool> pick, P3 near, Dictionary<(P3 Chest, int Id, int Meta), int>? claims = null)
     {
-        claims ??= GearClaims();
+        claims ??= _pickPawn != null ? (_pickClaims ??= GearClaims()) : GearClaims(); // read-only here: once per pick
         var list = new List<Unit>();
         foreach (var st in Storages.Where(s => ChestOpen(s.Chest)).OrderBy(s => s.Chest.Dist(near)))
             foreach (var c in st.Contents)

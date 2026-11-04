@@ -45,8 +45,12 @@ public sealed partial class Pathfinder
     {
         var o = options ?? PathOptions.Default;
         var pf = new Pathfinder(world, o);
-        var r = pf.Search(start, goal, ct);
-        return o.AllowOneWay || r.Steps.Count == 0 ? r : pf.CheckReturn(r, start, goal, ct);
+        // One budget for the whole search, the return checks' re-plans and probes included (live 11-04: a 12.7 s search with a 2 s budget:
+        // each re-plan had its own 2 s).
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(o.Timeout + TimeSpan.FromMilliseconds(250));
+        var r = pf.Search(start, goal, budget.Token);
+        return o.AllowOneWay || r.Steps.Count == 0 ? r : pf.CheckReturn(r, start, goal, budget.Token);
     }
 
     /// <summary>Finds a path from a feet position (see <see cref="StartCellFor"/>).</summary>
@@ -92,7 +96,10 @@ public sealed partial class Pathfinder
         /// <summary>Estimated elapsed ticks (physics move times, not costs): pulse windows are checked against it.</summary>
         public double T;
         public Node? Parent;
-        public PathStep? Step;
+        /// <summary>The move that reached it (its <see cref="PathStep"/> is made only for the path built: a search relaxes many
+        /// more nodes than it returns, and a step per relaxation was most of a long search's garbage).</summary>
+        public Candidate Move;
+        public TriggerUse? Requires;
         public Mod? Mods;
         public int Scaffold;
         public bool Closed;
@@ -144,7 +151,7 @@ public sealed partial class Pathfinder
             if (n.H < best.H || (n.H == best.H && n.G < best.G)) best = n;
 
             if (explored >= _o.MaxNodes) { reason = "node budget exhausted"; break; }
-            if ((explored & 255) == 0)
+            if ((explored & 63) == 0) // often enough that a slow expansion (a GC pause, a busy world lock) can't run far past the budget
             {
                 if (sw.Elapsed > _o.Timeout) { reason = "timeout"; break; }
                 if (ct.IsCancellationRequested) { reason = "cancelled"; break; }
@@ -192,7 +199,8 @@ public sealed partial class Pathfinder
                 t.Mods = mods;
                 t.Pulse = pulse;
                 t.Levers = levers;
-                t.Step = new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open, m.Jump, m.Trigger, requires);
+                t.Move = m;
+                t.Requires = requires;
                 open.Enqueue((t, ng), ng + t.H * PathOptions.WalkCost);
             }
         }
@@ -206,7 +214,11 @@ public sealed partial class Pathfinder
     private static PathResult Build(PathStatus status, Node end, int explored, TimeSpan elapsed, string? reason)
     {
         var steps = new List<PathStep>();
-        for (var n = end; n.Parent is not null; n = n.Parent) steps.Add(n.Step!);
+        for (var n = end; n.Parent is not null; n = n.Parent)
+        {
+            var m = n.Move;
+            steps.Add(new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open, m.Jump, m.Trigger, n.Requires));
+        }
         steps.Reverse();
         // A plate walked over that no later step needs is just a walk (the follower doesn't wait on it).
         for (int i = 0; i < steps.Count; i++)
@@ -509,14 +521,14 @@ public sealed partial class Pathfinder
     private void TryBreakWalk(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int tx, int tz)
     {
         if (here.Water) return;
-        var breaks = new List<BlockPos>(2);
+        List<BlockPos>? breaks = null; // made only when something is in the way (tried for every neighbour of every node)
         for (int yy = y + 1; yy >= y; yy--) // head first so nothing falls on us
         {
             if (!HasCollisionAt(tx, yy, tz) && !Safety.IsHazard(_w, _w.GetBlock(tx, yy, tz))) continue;
             if (!Breakable(tx, yy, tz)) return;
-            breaks.Add(new BlockPos(tx, yy, tz));
+            (breaks ??= new List<BlockPos>(2)).Add(new BlockPos(tx, yy, tz));
         }
-        if (breaks.Count == 0) return;
+        if (breaks == null) return;
         var c = WithBroken(breaks, () => (CellUncached(tx, y, tz), BodyClear(x, z, y) && BodyClear(tx, tz, Math.Max(here.Floor, y))));
         if (!c.Item1.Ok || !c.Item2 || c.Item1.Floor - here.Floor > _step + 1e-6 || c.Item1.Floor < here.Floor - 0.5 - 1e-6) return;
         AddWalk(output, here, hereEdge, tx, y, tz, c.Item1, MoveKind.Walk, 1.0, breaks);
@@ -527,14 +539,15 @@ public sealed partial class Pathfinder
         if (!here.Ground || Math.Abs(here.Floor - y) > 1e-6) return;
         // Target (tx, y+1, tz) needs support from (tx, y, tz), which must stay.
         if (!HasCollisionAt(tx, y, tz) || !IsFullSupport(tx, y, tz)) return;
-        var breaks = new List<BlockPos>(3);
-        foreach (var p in new[] { new BlockPos(x, y + 2, z), new BlockPos(tx, y + 2, tz), new BlockPos(tx, y + 1, tz) })
+        List<BlockPos>? breaks = null; // made only when something is in the way
+        for (int i = 0; i < 3; i++)
         {
+            var p = i == 0 ? new BlockPos(x, y + 2, z) : i == 1 ? new BlockPos(tx, y + 2, tz) : new BlockPos(tx, y + 1, tz);
             if (!HasCollisionAt(p.X, p.Y, p.Z) && !Safety.IsHazard(_w, _w.GetBlock(p.X, p.Y, p.Z))) continue;
             if (!Breakable(p.X, p.Y, p.Z)) return;
-            breaks.Add(p);
+            (breaks ??= new List<BlockPos>(3)).Add(p);
         }
-        if (breaks.Count == 0) return;
+        if (breaks == null) return;
         var r = WithBroken(breaks, () => (CellUncached(tx, y + 1, tz), BodyClear(x, z, y + 1)));
         if (!r.Item1.Ok || !r.Item2) return;
         AddJump(output, here, hereEdge, tx, y + 1, tz, r.Item1, breaks);

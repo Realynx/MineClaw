@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using MineClaw.Hive.Story;
 using Xunit.Abstractions;
 
@@ -35,10 +36,12 @@ public sealed class StoryPickerBenchmarkTests(ITestOutputHelper output)
 
         // 1) The pick itself with all 500 open: every pawn asks for the nearest mine job.
         const int rounds = 50;
+        long ab = GC.GetAllocatedBytesForCurrentThread();
         var sw = Stopwatch.StartNew();
         for (int r = 0; r < rounds; r++)
             foreach (var p in c.Pawns.Values) Assert.NotNull(c.Candidate(WorkTypes.Mine, p, h.Live(p.Name)));
         double pickRound = sw.Elapsed.TotalMilliseconds / rounds;
+        output.WriteLine($"a mine candidate search: {(GC.GetAllocatedBytesForCurrentThread() - ab) / (rounds * 10) / 1024.0:0.0} KB");
 
         // 2) A whole dig-out: each round every pawn takes its job and finishes it, then the tick and a state delta (the browser polls).
         long since = c.Rev;
@@ -66,5 +69,83 @@ public sealed class StoryPickerBenchmarkTests(ITestOutputHelper output)
         // Generous bounds (CI machines vary): the point is no O(n²) per pick.
         Assert.True(pickRound < 25, $"a pick round took {pickRound:0.0} ms");
         Assert.True(perTick < 25, $"a tick took {perTick:0.0} ms");
+    }
+
+    /// <summary>The real host builds a pawn's pockets (inventory and gear, slot by slot) when they changed and a fresh
+    /// <see cref="PawnLive"/> per call (<see cref="PawnLiveCache"/>): this one does too.</summary>
+    private sealed class LiveLikeHost(FakeStoryHost inner) : IStoryHost
+    {
+        public long LiveCalls;
+        private readonly Dictionary<string, (PawnLive From, PawnLive Built)> _built = new();
+        public IStoryWorld? World => inner.World;
+        public (IReadOnlyList<string> Accounts, string? Why) Spawn(string colony, int n, IReadOnlyList<string>? prefer) => inner.Spawn(colony, n, prefer);
+        public int Release(string colony) => inner.Release(colony);
+        public PawnLive Live(string account)
+        {
+            LiveCalls++;
+            var l = inner.Live(account);
+            if (_built.TryGetValue(account, out var b) && ReferenceEquals(b.From, l)) return b.Built with { };
+            var inv = l.Inventory.Select(s => s with { }).ToList();
+            var gear = new List<GearSlot>();
+            for (int slot = 5; slot <= 44; slot++) if (slot < 9 + inv.Count) gear.Add(new GearSlot(slot, 274, 0, 1, new Dictionary<string, int>()));
+            var built = l with { Inventory = inv, Gear = gear };
+            _built[account] = (l, built);
+            return built with { };
+        }
+        public string? StartPawn(string account, string colony) => inner.StartPawn(account, colony);
+        public void Interrupt(string account, string why) => inner.Interrupt(account, why);
+    }
+
+    /// <summary>
+    /// Per pick and per tick: time, allocations (GC.GetAllocatedBytesForCurrentThread) and pawn live-state reads, with a host that builds
+    /// the live state like the real one (live 11-04: 53 ms a pick, 164 MB/s allocated, 4.1 s of GC pause a minute).
+    /// </summary>
+    [Fact]
+    public void A_busy_colony_allocates_little_per_pick_and_tick()
+    {
+        var (c0, h, w) = Rig();
+        var live = new LiveLikeHost(h);
+        var c = new StoryColony(c0.Meta, live) { DoneGrace = TimeSpan.Zero };
+        foreach (var p in c0.Pawns.Values) c.Pawns[p.Name] = p;
+        foreach (var d in c0.Designations) c.Designations.Add(d);
+        foreach (var z in c0.Zones) c.Zones.Add(z);
+        c.Joined(c.Pawns.Keys);
+        Assert.Null(c.StorageOp("set", [new P3(0, 64, 9)], null, null, null).Error);
+        c.AddContents(c.StorageAt(new P3(0, 64, 9))!, new Stack(274, 0, 4));
+        w.Set(3, 64, -3, 58);
+        Assert.Null(c.WorkbenchOp("designate", new P3(3, 64, -3)).Error);
+        foreach (var r in new[] { "craft:stick", "craft:planks_any", "craft:wood_pickaxe", "craft:stone_pickaxe" })
+            c.BillsOp("add", new JsonObject { ["bench"] = new P3(3, 64, -3).Json(), ["bill"] = new JsonObject { ["recipe"] = r, ["mode"] = "until", ["target"] = 8 } });
+        c.State();
+        for (int i = 0; i < 3; i++) foreach (var n in c.Pawns.Keys) { var j = c.Next(n); if (j != null) c.Report(n, j["id"]!.GetValue<string>(), "done", null, null); }
+
+        const int rounds = 30;
+        long since = c.Rev, calls0 = live.LiveCalls, b0 = GC.GetAllocatedBytesForCurrentThread();
+        var sw = Stopwatch.StartNew();
+        int picks = 0;
+        long pickBytes = 0, tickBytes = 0, stateBytes = 0;
+        for (int r = 0; r < rounds; r++)
+        {
+            foreach (var n in c.Pawns.Keys)
+            {
+                long a0 = GC.GetAllocatedBytesForCurrentThread();
+                var j = c.Next(n);
+                pickBytes += GC.GetAllocatedBytesForCurrentThread() - a0;
+                picks++;
+                if (j != null) c.Report(n, j["id"]!.GetValue<string>(), "failed", "can't reach dirt at 1,63,1", null);
+            }
+            long t0 = GC.GetAllocatedBytesForCurrentThread();
+            c.Tick();
+            long s0 = GC.GetAllocatedBytesForCurrentThread();
+            tickBytes += s0 - t0;
+            since = c.State(since)["rev"]!.GetValue<long>();
+            stateBytes += GC.GetAllocatedBytesForCurrentThread() - s0;
+        }
+        double ms = sw.Elapsed.TotalMilliseconds;
+        long bytes = GC.GetAllocatedBytesForCurrentThread() - b0, calls = live.LiveCalls - calls0;
+        output.WriteLine($"{picks} picks + {rounds} ticks/states: {ms / picks:0.00} ms and {bytes / picks / 1024.0:0.0} KB a pick (tick and state included), "
+            + $"{(double)calls / picks:0.0} live reads a pick; a pick {pickBytes / picks / 1024.0:0.0} KB, a tick {tickBytes / rounds / 1024.0:0.0} KB, "
+            + $"a state delta {stateBytes / rounds / 1024.0:0.0} KB");
+        Assert.True(bytes / picks < 2 * 1024 * 1024, $"{bytes / picks / 1024} KB a pick");
     }
 }

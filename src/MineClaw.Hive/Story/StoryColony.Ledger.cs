@@ -144,10 +144,16 @@ public sealed partial class StoryColony
 
     /// <summary>The pawn whose job is being picked (its unreachable chests are left out of its plans), or null.</summary>
     private string? _pickPawn;
+    /// <summary>Gear claims, read once per pick (StoredUnits asks for each block a pawn could dig).</summary>
+    private Dictionary<(P3 Chest, int Id, int Meta), int>? _pickClaims;
     private readonly Dictionary<(string Pawn, P3 Chest), int> _chestFails = new();
     /// <summary>Chests no pawn gets to: their contents aren't stock until the time is up (or someone gets there).</summary>
     private readonly Dictionary<P3, DateTimeOffset> _unreachable = new();
     private readonly Dictionary<P3, DateTimeOffset> _unreachableSaid = new();
+    /// <summary>A pawn's rest from a chest it couldn't reach, until when (by key, not a string: asked per chest per stack per pick).</summary>
+    private readonly Dictionary<(string Pawn, P3 Chest), DateTimeOffset> _chestSkip = new();
+
+    private bool ChestSkipped(string pawn, P3 chest) => _chestSkip.TryGetValue((pawn, chest), out var until) && until > Now;
 
     /// <summary>A chest's rest for one pawn after its n-th "can't reach": 2, then 5, then 10 minutes.</summary>
     public static TimeSpan ChestRest(int n) => TimeSpan.FromMinutes(n <= 1 ? 2 : n == 2 ? 5 : 10);
@@ -156,7 +162,7 @@ public sealed partial class StoryColony
     internal bool ChestUnreachable(P3 chest) => _unreachable.TryGetValue(chest, out var until) && until > Now;
 
     /// <summary>The chest is in this pick's plans: someone gets there, and the pawn picking hasn't just failed to.</summary>
-    internal bool ChestOpen(P3 chest) => !ChestUnreachable(chest) && (_pickPawn == null || !Skipped($"chestskip:{_pickPawn}@{chest}"));
+    internal bool ChestOpen(P3 chest) => !ChestUnreachable(chest) && (_pickPawn == null || _chestSkip.Count == 0 || !ChestSkipped(_pickPawn, chest));
 
     /// <summary>
     /// A job failed because the pawn couldn't reach a chest or a bench (not its target): that pawn leaves the chest out of every plan for
@@ -176,9 +182,9 @@ public sealed partial class StoryColony
         if (StorageAt(at) is not { } st) return false;
         var chest = st.Chest;
         int n = _chestFails[(p.Name, chest)] = _chestFails.GetValueOrDefault((p.Name, chest)) + 1;
-        _skip[$"chestskip:{p.Name}@{chest}"] = Now + ChestRest(n);
+        _chestSkip[(p.Name, chest)] = Now + ChestRest(n);
         var online = Pawns.Values.Where(o => Host.Live(o.Name).Online).ToList();
-        if (online.Count > 0 && online.All(o => Skipped($"chestskip:{o.Name}@{chest}")))
+        if (online.Count > 0 && online.All(o => ChestSkipped(o.Name, chest)))
         {
             _unreachable[chest] = Now + TimeSpan.FromMinutes(10);
             MaterialsChanged(); // its contents aren't stock any more
@@ -198,7 +204,7 @@ public sealed partial class StoryColony
         {
             var key = StorageAt(chest)?.Chest ?? chest;
             _chestFails.Remove((p.Name, key));
-            _skip.Remove($"chestskip:{p.Name}@{key}");
+            _chestSkip.Remove((p.Name, key));
             if (_unreachable.Remove(key)) MaterialsChanged();
         }
     }
@@ -229,7 +235,7 @@ public sealed partial class StoryColony
 
     // ---------------------------------------------------------------- bench throughput
 
-    private DateTimeOffset _benchAlertAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _benchAlertAt = DateTimeOffset.MinValue, _benchCheckAt = DateTimeOffset.MinValue;
 
     /// <summary>
     /// One pawn works a bench at a time (the genre's rule). With several runnable bills on the only bench of its kind and a crafter
@@ -237,7 +243,9 @@ public sealed partial class StoryColony
     /// </summary>
     internal void BenchLoadAlert()
     {
-        if (World is not { } w || Now - _benchAlertAt < TimeSpan.FromMinutes(10)) return;
+        // Looked at every 30 s at most (it counts stock per bill: live 11-04, every state poll did it).
+        if (World is not { } w || Now - _benchAlertAt < TimeSpan.FromMinutes(10) || Now - _benchCheckAt < TimeSpan.FromSeconds(30)) return;
+        _benchCheckAt = Now;
         foreach (var kind in new[] { "crafting_table", "furnace" })
         {
             var benches = Benches.Where(b => b.Kind == kind).ToList();
