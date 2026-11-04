@@ -220,7 +220,7 @@ public sealed class SupervisorStoryRouteTests
         var build = st2!["builds"]![0]!;
         Assert.Equal("paused", build["status"]!.GetValue<string>());
         Assert.Equal(8 * 2 + 9, build["blocks_total"]!.GetValue<int>());
-        Assert.Equal(7, st2["ghosts"]!["blocks"]![0]!.AsArray().Count); // [x,y,z,id,meta,build_id,state]
+        Assert.Equal(8, st2["ghosts"]!["blocks"]![0]!.AsArray().Count); // [x,y,z,id,meta,build_id,state,dig|place]
         w.Blocks[new P3(1, 64, 1)] = (54, 0);
         var (ss, sj) = await Call(r, "POST", b + "storage", new { op = "assign_area", area = new[] { 0, 60, 0, 3, 70, 3 }, filter = new { allow = new[] { "wood" } }, priority = "critical" });
         Assert.Equal(200, ss);

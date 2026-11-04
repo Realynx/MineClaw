@@ -405,7 +405,7 @@ public static class AppHost
             // /api/designer/*: the Design Studio (a sandbox canvas co-designed with a model of the user's choice, saved as designs)
             if (o.Viewer.Designer.Enabled)
                 server.Designer = new Supervisor.DesignerRoutes(o, () => bot.Blueprints?.Service, new MineClaw.Bot.Blueprints.DesignerStore(bot.Runtime.Db),
-                    bot.Runtime.Llm, bot.Runtime.Options.Llm, bot.Runtime.Usage, () => main);
+                    bot.Runtime.Llm, bot.Runtime.Options.Llm, bot.Runtime.Usage, () => main) { ServerSeed = () => client.World.Seed };
             // /api/story/*: Story Mode (colonies of script-only pawns, docs/web/story-mode.md); the viewer's gate, AllowStory for writes
             server.Story = Supervisor.StoryWiring.Attach(o, bot, client, mainHive?.Hierarchy, viewer, viewerFeed, allBodies, log);
         }

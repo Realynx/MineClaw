@@ -24,6 +24,12 @@ export const DesignerCell = z.tuple([
 export type DesignerCell = z.infer<typeof DesignerCell>;
 
 export const DESIGNER_PLOT = { size: 64, height: 48, depth: 16 } as const;
+/** A mine session's plot: absolute world y 0..127 (depth 0: the canvas y is the world's). */
+export const DESIGNER_MINE_PLOT = { size: 64, height: 128, depth: 0 } as const;
+
+/** A session's (and a design's) kind: a build stands on the grass; a mine is dug into generated terrain at absolute y. */
+export const DesignerKind = z.enum(['build', 'mine']);
+export type DesignerKind = z.infer<typeof DesignerKind>;
 /** The cell id of undisturbed ground (below y 0 only): a dug cell filled back in. */
 export const DESIGNER_EARTH = -1;
 
@@ -44,6 +50,10 @@ export const DesignerModelsResponse = z.object({
   default: z.string().nullish(),
   version: z.string().describe('the server version ("b1.8.1" | "1.12.2"): a new design starts in it'),
   versions: z.array(z.string()).nullish().describe('the versions a design can be drawn for'),
+  serverSeed: z
+    .string()
+    .nullish()
+    .describe("the server's world seed when the bot knows it (b1.8.1's login tells it): a mine canvas can use it"),
   budget: z
     .object({ mode: z.string(), todayUsd: z.number(), dailyCapUsd: z.number() })
     .nullish()
@@ -141,6 +151,12 @@ export const DesignerSession = z.object({
     "drawn for another version than the server's: how it would build there (null = the same version)",
   ),
   plot: z.object({ size: z.number().int(), height: z.number().int(), depth: z.number().int().nullish() }),
+  kind: DesignerKind.nullish().describe('build (default: on the grass) | mine (dug into generated terrain, absolute y)'),
+  seed: z.string().nullish().describe("a mine session's terrain seed (the generator is MineClaw's own)"),
+  preferredFor: z
+    .string()
+    .nullish()
+    .describe('a version-preferred mine design: the version it is preferred for (saved as `preferred_for`)'),
   revisions: z.array(DesignRevision).describe("the saved design's revisions, newest first"),
   created: UnixMs.nullish(),
   updated: UnixMs.nullish(),
@@ -153,6 +169,9 @@ export const DesignerCreateRequest = z
   .object({
     model: z.string().max(100).optional(),
     designId: z.number().int().min(1).optional().describe("open this design's newest revision on the canvas"),
+    rev: z.number().int().min(1).optional().describe('with designId: open this revision instead of the newest'),
+    kind: DesignerKind.optional().describe('the kind of a new canvas (default build)'),
+    seed: z.string().max(32).optional().describe("a new mine canvas's seed (default: random)"),
     version: z.enum(['b1.8.1', '1.12.2']).optional().describe("a new canvas's version (default: the server's)"),
     convertTo: z
       .enum(['b1.8.1', '1.12.2'])
@@ -165,7 +184,10 @@ export type DesignerCreateRequest = z.infer<typeof DesignerCreateRequest>;
 export const DesignerVersionRequest = z
   .object({
     version: z.enum(['b1.8.1', '1.12.2']),
-    apply: z.boolean().optional().describe('false (default) = the compatibility check only; true = convert'),
+    kind: DesignerKind.optional().describe('switch build ↔ mine (a full canvas needs apply: it is cleared)'),
+    seed: z.string().max(32).optional().describe("a mine canvas's terrain seed"),
+    preferredFor: z.string().max(16).nullish().describe('tag (or untag: null) the design as preferred for a version'),
+    apply: z.boolean().optional().describe('false (default) = the compatibility check only; true = convert (or clear)'),
   })
   .strict();
 export type DesignerVersionRequest = z.infer<typeof DesignerVersionRequest>;
@@ -226,6 +248,7 @@ export const DesignerVersionResponse = z.object({
   target: z.string(),
   changed: z.boolean(),
   report: DesignerCompatReport.nullish().describe('null for an empty canvas (it just switches)'),
+  needsClear: z.boolean().nullish().describe('a kind switch of a full canvas: say apply to clear it'),
   session: DesignerSession.nullish().describe('the session after a switch or a conversion'),
 });
 export type DesignerVersionResponse = z.infer<typeof DesignerVersionResponse>;
@@ -603,6 +626,13 @@ export interface MockSavedDesign {
   updated: number;
   /** The game version it is drawn for. */
   version?: string;
+  /** build | mine, the mine's seed, its version tag, its anchor (a mine's entry). */
+  kind?: DesignerKind;
+  seed?: string | null;
+  preferredFor?: string | null;
+  anchor?: [number, number, number] | null;
+  /** Each revision's cells (opened with `rev`). */
+  revs?: Record<number, { blocks: DesignerCell[]; dug: string[] }>;
 }
 
 type MockSession = DesignerSession & { cells: Map<string, DesignerCell>; holes: Set<string> };
@@ -653,19 +683,15 @@ export function createDesignerMock(
   const key = (c: readonly number[]) => `${c[0]},${c[1]},${c[2]}`;
   const apply = (s: MockSession, cells: readonly DesignerCell[]): DesignerCell[] => {
     const changed: DesignerCell[] = [];
+    const mine = s.kind === 'mine';
+    const plot = mine ? DESIGNER_MINE_PLOT : DESIGNER_PLOT;
     for (const c of cells) {
-      if (
-        c[0] < 0 ||
-        c[0] >= DESIGNER_PLOT.size ||
-        c[2] < 0 ||
-        c[2] >= DESIGNER_PLOT.size ||
-        c[1] < -DESIGNER_PLOT.depth ||
-        c[1] >= DESIGNER_PLOT.height
-      )
-        continue;
+      if (c[0] < 0 || c[0] >= plot.size || c[2] < 0 || c[2] >= plot.size || c[1] < -plot.depth || c[1] >= plot.height) continue;
+      // A mine has no terrain in the mock: every cell is ground but the bedrock floor (y 0), which never digs.
+      if (mine && c[1] === 0 && c[3] === 0) continue;
       const k = key(c);
       const old = s.cells.get(k);
-      const below = c[1] < 0;
+      const below = mine ? c[1] > 0 : c[1] < 0;
       if (c[3] === 0 || c[3] === DESIGNER_EARTH) {
         // Below ground: air digs the cell out, earth fills it back; above it both are air.
         const dig = below && c[3] === 0;
@@ -697,6 +723,10 @@ export function createDesignerMock(
       dug: [...holes].map((h) => h.split(',').map(Number) as [number, number, number]),
       revisions: d ? [...d.revisions] : [],
       messages: [...s.messages],
+      kind: s.kind ?? 'build',
+      seed: s.kind === 'mine' ? (s.seed ?? '0') : null,
+      preferredFor: s.preferredFor ?? null,
+      plot: s.kind === 'mine' ? { ...DESIGNER_MINE_PLOT } : { ...DESIGNER_PLOT },
       serverCompat: s.version !== MOCK_SERVER_VERSION && blocks.length ? mockConvert(blocks, s.version, MOCK_SERVER_VERSION).report : null,
     };
   };
@@ -728,7 +758,7 @@ export function createDesignerMock(
     s.versions = ['b1.8.1', '1.12.2'];
   };
   function make(
-    body: { model?: string; designId?: number; version?: string; convertTo?: string },
+    body: { model?: string; designId?: number; version?: string; convertTo?: string; rev?: number; kind?: DesignerKind; seed?: string },
     owner: string,
     forceId?: number,
   ): MockSession {
@@ -755,9 +785,16 @@ export function createDesignerMock(
       updated: Date.now(),
       cells: new Map<string, DesignerCell>(),
       holes: new Set<string>(d?.dug ?? []),
+      kind: d?.kind ?? body.kind ?? 'build',
+      seed: null,
+      preferredFor: d?.preferredFor ?? null,
     };
+    if (s.kind === 'mine') s.seed = d?.seed ?? body.seed ?? String(Math.floor(Math.random() * 1e9) + 1);
+    if (d?.anchor) s.anchor = d.anchor;
     setVersion(s, d?.version ?? body.version ?? MOCK_SERVER_VERSION);
-    let blocks = d?.blocks ?? [];
+    const at = d && body.rev ? d.revs?.[body.rev] : undefined;
+    if (at) s.holes = new Set(at.dug);
+    let blocks = at?.blocks ?? d?.blocks ?? [];
     if (d && body.convertTo && body.convertTo !== s.version) {
       const conv = mockConvert(blocks, s.version, body.convertTo);
       blocks = conv.cells;
@@ -776,12 +813,35 @@ export function createDesignerMock(
       default: 'main',
       version: MOCK_SERVER_VERSION,
       versions: ['b1.8.1', '1.12.2'],
+      serverSeed: '8675309',
       budget: { mode: 'normal', todayUsd: 1.24, dailyCapUsd: 50 },
     }),
     /** The canvas's version: an empty one switches; a full one is checked, and converted with `apply`. */
-    version: (id: number, body: { version: string; apply?: boolean }): DesignerVersionResponse => {
+    version: (
+      id: number,
+      body: { version: string; kind?: DesignerKind; seed?: string; preferredFor?: string | null; apply?: boolean },
+    ): DesignerVersionResponse => {
       const s = get(id);
       const target = body.version;
+      // The mode first: a kind switch (a full canvas is cleared on apply), a seed, a version tag.
+      if (body.kind && body.kind !== (s.kind ?? 'build')) {
+        if (s.cells.size + s.holes.size > 0 && !body.apply)
+          return { version: s.version, target, changed: false, report: null, session: null, needsClear: true };
+        s.cells.clear();
+        s.holes.clear();
+        s.anchor = null;
+        s.kind = body.kind;
+        s.seed = body.kind === 'mine' ? (body.seed ?? s.seed ?? String(Math.floor(Math.random() * 1e9) + 1)) : null;
+        if (body.kind === 'build') s.preferredFor = null;
+        s.rev++;
+        if (target !== s.version) setVersion(s, target);
+        return { version: s.version, target, changed: true, report: null, session: view(s) };
+      }
+      if ((body.seed !== undefined && s.kind === 'mine' && body.seed !== s.seed) || body.preferredFor !== undefined) {
+        if (body.seed !== undefined && s.kind === 'mine') s.seed = body.seed.trim() || '0';
+        if (body.preferredFor !== undefined) s.preferredFor = body.preferredFor;
+        if (target === s.version) return { version: s.version, target, changed: true, report: null, session: view(s) };
+      }
       if (target === s.version) return { version: s.version, target, changed: false, report: null, session: view(s) };
       if (s.cells.size === 0 && s.holes.size === 0) {
         setVersion(s, target);
@@ -796,7 +856,10 @@ export function createDesignerMock(
       msg(s, 'assistant', `Converted the design from ${from} to ${target}: ${conv.report.text}.`);
       return { version: s.version, target, changed: true, report: conv.report, session: view(s) };
     },
-    create: (body: { model?: string; designId?: number; version?: string; convertTo?: string }, owner: string): DesignerSession => {
+    create: (
+      body: { model?: string; designId?: number; version?: string; convertTo?: string; rev?: number; kind?: DesignerKind; seed?: string },
+      owner: string,
+    ): DesignerSession => {
       if (body.designId && !saved.some((x) => x.id === body.designId)) {
         // A design the mock didn't make: a small stand-in so "Open in studio" works for every listed design.
         const blocks = fakeDesignerTurn('build a house', []).ops.flatMap((o) => o.cells);
@@ -878,8 +941,13 @@ export function createDesignerMock(
       d.blocks = [...s.cells.values()];
       d.dug = [...s.holes];
       d.version = s.version;
+      d.kind = s.kind ?? 'build';
+      d.seed = s.seed ?? null;
+      d.preferredFor = s.preferredFor ?? null;
+      d.anchor = s.anchor ?? null;
       d.updated = Date.now();
       const rev = (d.revisions[0]?.rev ?? 0) + 1;
+      d.revs = { ...(d.revs ?? {}), [rev]: { blocks: [...d.blocks], dug: [...d.dug] } };
       d.revisions.unshift({
         rev,
         author: owner,
@@ -889,10 +957,14 @@ export function createDesignerMock(
         created: Date.now(),
         n: d.blocks.length,
         version: s.version,
+        kind: s.kind ?? 'build',
       });
       s.designId = d.id;
       s.name = body.name;
-      const text = `${created ? 'saved as design' : 'saved'} #${d.id} r${rev} (${s.version}): ${body.name}, ${d.blocks.length} blocks`;
+      const text =
+        s.kind === 'mine'
+          ? `${created ? 'saved as design' : 'saved'} #${d.id} r${rev} (${s.version}, mine, anchor absolute): ${body.name}, ${d.dug.length} cells to dig, ${d.blocks.length} blocks`
+          : `${created ? 'saved as design' : 'saved'} #${d.id} r${rev} (${s.version}): ${body.name}, ${d.blocks.length} blocks`;
       msg(s, 'assistant', text);
       return { designId: d.id, rev, name: body.name, blocks: d.blocks.length, created, text };
     },

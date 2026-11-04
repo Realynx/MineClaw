@@ -1,0 +1,47 @@
+{
+  "about": "Ore and stone-pocket heights per game version: the Design Studio's mine terrain generator (MineTerrain.cs / mineTerrain.ts) and its ore-height guide both read this file. Numbers only (attempts per 16x16 chunk, the vein size, the y range), taken from public documentation; the generator that uses them is MineClaw's own (no game code).",
+  "sources": [
+    "Minecraft Wiki, 'Ore' (Java Edition 1.12 distribution table and its history section for Beta 1.8): y ranges, veins per chunk, vein sizes",
+    "Minecraft Wiki, 'Customized' world type (Java Edition 1.8-1.12): the default ore and stone settings (count, size, min/max height; lapis centre 16, spread 16)",
+    "Minecraft Wiki, 'Tutorials/Mining': strip-mining levels (diamond at y 11-12, above the lava lakes at y 10 and below; tunnels 3 blocks apart)",
+    "Minecraft Wiki, 'Bedrock': the overworld floor is y 0 with a patchy layer up to y 4"
+  ],
+  "versions": {
+    "1.12.2": {
+      "bedrock": { "floor": 0, "top": 4 },
+      "lava": 10,
+      "ores": [
+        { "id": "coal", "name": "Coal ore", "block": 16, "meta": 0, "min": 0, "max": 127, "veins": 20, "size": 17, "shape": "uniform", "best": 48, "color": "#2b2b2b", "note": "anywhere below the surface" },
+        { "id": "iron", "name": "Iron ore", "block": 15, "meta": 0, "min": 0, "max": 63, "veins": 20, "size": 9, "shape": "uniform", "best": 16, "color": "#d8af93", "note": "evenly spread below y 64" },
+        { "id": "gold", "name": "Gold ore", "block": 14, "meta": 0, "min": 0, "max": 31, "veins": 2, "size": 9, "shape": "uniform", "best": 11, "color": "#fcee4b", "note": "below y 32 (mesa badlands add more higher up: not generated here)" },
+        { "id": "redstone", "name": "Redstone ore", "block": 73, "meta": 0, "min": 0, "max": 15, "veins": 8, "size": 8, "shape": "uniform", "best": 11, "color": "#ff1a1a", "note": "below y 16" },
+        { "id": "diamond", "name": "Diamond ore", "block": 56, "meta": 0, "min": 0, "max": 15, "veins": 1, "size": 8, "shape": "uniform", "best": 11, "color": "#5decf5", "note": "below y 16; y 11-12 stays above the lava lakes" },
+        { "id": "lapis", "name": "Lapis lazuli ore", "block": 21, "meta": 0, "min": 0, "max": 30, "veins": 1, "size": 7, "shape": "triangle", "center": 16, "spread": 16, "best": 16, "color": "#1f4fd8", "note": "most at y 16, fading to y 0 and y 30" },
+        { "id": "emerald", "name": "Emerald ore", "block": 129, "meta": 0, "min": 4, "max": 31, "veins": 0, "size": 1, "shape": "uniform", "best": 16, "color": "#17dd62", "note": "extreme hills only, single blocks: not generated in the studio" }
+      ],
+      "pockets": [
+        { "id": "dirt", "name": "Dirt", "block": 3, "meta": 0, "min": 0, "max": 255, "veins": 10, "size": 33 },
+        { "id": "gravel", "name": "Gravel", "block": 13, "meta": 0, "min": 0, "max": 255, "veins": 8, "size": 33 },
+        { "id": "granite", "name": "Granite", "block": 1, "meta": 1, "min": 0, "max": 79, "veins": 10, "size": 33 },
+        { "id": "diorite", "name": "Diorite", "block": 1, "meta": 3, "min": 0, "max": 79, "veins": 10, "size": 33 },
+        { "id": "andesite", "name": "Andesite", "block": 1, "meta": 5, "min": 0, "max": 79, "veins": 10, "size": 33 }
+      ]
+    },
+    "b1.8.1": {
+      "bedrock": { "floor": 0, "top": 4 },
+      "lava": 10,
+      "ores": [
+        { "id": "coal", "name": "Coal ore", "block": 16, "meta": 0, "min": 0, "max": 127, "veins": 20, "size": 16, "shape": "uniform", "best": 48, "color": "#2b2b2b", "note": "anywhere below the surface" },
+        { "id": "iron", "name": "Iron ore", "block": 15, "meta": 0, "min": 0, "max": 63, "veins": 20, "size": 8, "shape": "uniform", "best": 16, "color": "#d8af93", "note": "evenly spread below y 64" },
+        { "id": "gold", "name": "Gold ore", "block": 14, "meta": 0, "min": 0, "max": 31, "veins": 2, "size": 8, "shape": "uniform", "best": 11, "color": "#fcee4b", "note": "below y 32" },
+        { "id": "redstone", "name": "Redstone ore", "block": 73, "meta": 0, "min": 0, "max": 15, "veins": 8, "size": 7, "shape": "uniform", "best": 11, "color": "#ff1a1a", "note": "below y 16" },
+        { "id": "diamond", "name": "Diamond ore", "block": 56, "meta": 0, "min": 0, "max": 15, "veins": 1, "size": 7, "shape": "uniform", "best": 11, "color": "#5decf5", "note": "below y 16; y 11-12 stays above the lava lakes" },
+        { "id": "lapis", "name": "Lapis lazuli ore", "block": 21, "meta": 0, "min": 0, "max": 30, "veins": 1, "size": 6, "shape": "triangle", "center": 16, "spread": 16, "best": 16, "color": "#1f4fd8", "note": "most at y 16, fading to y 0 and y 30" }
+      ],
+      "pockets": [
+        { "id": "dirt", "name": "Dirt", "block": 3, "meta": 0, "min": 0, "max": 127, "veins": 20, "size": 32 },
+        { "id": "gravel", "name": "Gravel", "block": 13, "meta": 0, "min": 0, "max": 127, "veins": 10, "size": 32 }
+      ]
+    }
+  }
+}

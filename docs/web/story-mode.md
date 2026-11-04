@@ -499,6 +499,14 @@ facing?: n|e|s|w, level?:y, name?, group?}`.
 - **stairs:** a staircase rising toward `facing`, from y1 to y2.
 - **Furniture** (crafting_table, furnace, chest, bed, torch): each block. A bed is two.
 - **remove:** every diggable block in the area becomes a dig job.
+- **mine (added 2026-11-03):** a placed mine design (docs/web/api.md "Mine designs"): `blocks` are the cells to dig at their
+  absolute y (the design's y is kept: ore heights matter), `place` is `[[x,y,z,id,meta]]`, the blocks that go into dug cells
+  (torches, ladders, rails). At most 4096 cells per item; a big mine is several items with one `group`. Each dig ghost carries
+  the block the world view shows there when it is queued (its expected material, for the tools a pawn needs; 0 when the column
+  isn't in view yet, and such a cell is only done once its column is). Refused when a cell is below y 1 or would cut bedrock;
+  open cells (a cave) need nothing, liquids, fire and portals are left alone. Order: a cell opens once a neighbour is open (from
+  the entry at the surface outward and down), top-down first, then nearest; a block goes in as its cell opens. The web places a
+  mine at its saved y (only x, z and the turn follow the click), refuses one that would reach below y 1 and says its y range.
 - **group:** the items of one placed design. A design with a basement (Design Studio dug cells) is queued as a `remove`
   item of its dug cells first, then its block items, all with the same `group`: its blocks wait until that dig is done.
   The design's ground floor goes on the clicked level and the basement under it.
@@ -511,7 +519,8 @@ facing?: n|e|s|w, level?:y, name?, group?}`.
   finishes around them.
 
 Build: `{id, kind, label, status: queued|active|paused|blocked|done, reason, blocks_total, blocks_done, material, order, created}`.
-Ghosts: `[x,y,z,id,meta,build_id,state]`, with state `todo|leased|done|blocked|unsupported`.
+Ghosts: `[x,y,z,id,meta,build_id,state,kind]`, with state `todo|leased|done|blocked|unsupported` and kind `dig|place` (a dig
+ghost's id/meta is the block expected there, read from the world view when it was queued).
 
 Execution:
 - Every ghost is one job for a pawn with Build on, by the picker and lease rules.
