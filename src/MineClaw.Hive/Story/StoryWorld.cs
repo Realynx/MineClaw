@@ -157,6 +157,8 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
 
     public (int Id, int Meta) Block(int x, int y, int z) => At(x, z) is { } w ? (w.GetBlock(x, y, z), w.GetMeta(x, y, z)) : (0, 0);
 
+    public int? NightLight(int x, int y, int z) => At(x, z) is { } w ? w.Light.LightLevel(x, y, z, LightEngine.NightSubtracted) : null;
+
     public IReadOnlyList<StoryEntity> Entities()
     {
         var seen = new HashSet<int>();
