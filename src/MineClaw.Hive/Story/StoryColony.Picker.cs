@@ -246,10 +246,11 @@ public sealed partial class StoryColony
         var outer = _blockedNotes;
         var notes = new List<string>(0);
         _blockedNotes = notes;
+        Array.Clear(_passed);
         try
         {
             var job = WorkSearch(p, live);
-            _looks[p.Name] = new Look(Now, job != null, notes);
+            _looks[p.Name] = new Look(Now, job != null, notes, job == null ? NoReachNote() : null);
             return job;
         }
         finally { _blockedNotes = outer; }
@@ -308,7 +309,7 @@ public sealed partial class StoryColony
 
     private ActiveJob? ChopJob(PawnState p, PawnLive live)
     {
-        if (LeaveToSurfacePawn(p, live, WorkTypes.Chop)) return null; // under ground: a pawn up top takes the trees
+        if (LeaveToSurfacePawn(p, live, WorkTypes.Chop)) { PassedMark(MarkPass.LeftToSurface, "chop", null); return null; } // a pawn up top takes the trees
         var from = live.Block;
         return DesignationJob(p, live, from, WorkTypes.Chop, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, WorkTypes.Chop, "cut", "dig", "cutting plants")
             ?? ZoneJob(p, from, WorkTypes.Chop, "chop");
@@ -350,7 +351,7 @@ public sealed partial class StoryColony
         var ents = Ents().ToDictionary(e => e.Id);
         var d = Designations.Where(x => x.Kind == "hunt" && x.Entity is { } id && ents.ContainsKey(id) && Open("e:" + id, p.Name, null))
             .OrderBy(x => ents[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
-        if (d == null) return null;
+        if (d == null) { PassedEntityMarks("hunt", ents); return null; }
         var e = ents[d.Entity!.Value];
         return Job(WorkTypes.Hunt, "attack", $"hunting a {e.Name}", e.Block, "e:" + e.Id, "designation", d.Id, "fighting", j => j["mob"] = e.Name, xp: 30);
     }
@@ -359,18 +360,25 @@ public sealed partial class StoryColony
     /// Surface work (trees) for a pawn under ground (a quarry, a cave, a trench: natural ground over it) waits while another pawn that
     /// does that work stands up top: that one goes, and this one keeps to work down there or heads up by itself (live 11-04 story-1:
     /// pawns 5 to 8 blocks under the trees failed "no path … it's 5 blocks up" and walked far round under ground). With no pawn up top
-    /// it still takes it (its route out digs short through the ground, the chop climbs out beside the trunk).
+    /// it still takes it (its route out digs short through the ground, the chop climbs out beside the trunk). Only a pawn up top that
+    /// will take it counts: one idle now or at that work now, never one busy at other work (it may not come back to the trees for
+    /// hours, while this one stood idle under ground with the trees open: "no reachable target").
     /// </summary>
     private bool LeaveToSurfacePawn(PawnState p, PawnLive live, string type)
     {
         if (World is not { } w || !live.Online || !w.Loaded(live.Block.X, live.Block.Z) || !StoryWander.Underground(w, live.Block)) return false;
         foreach (var o in Pawns.Values)
-        {
-            if (o == p || o.Drafted || o.Priorities.GetValueOrDefault(type) is not (>= 1 and <= 4)) continue;
-            var ol = Host.Live(o.Name);
-            if (ol.Online && !_stuck.ContainsKey(o.Name) && !StoryWander.Underground(w, ol.Block)) return true;
-        }
+            if (o != p && SurfacePawnFor(w, o, type)) return true;
         return false;
+    }
+
+    /// <summary>Does that work, is up top (online, not stuck), and idle now or at that work now.</summary>
+    private bool SurfacePawnFor(IStoryWorld w, PawnState o, string type)
+    {
+        if (o.Drafted || o.Priorities.GetValueOrDefault(type) is not (>= 1 and <= 4) || _stuck.ContainsKey(o.Name)) return false;
+        if (!IdleNow(o) && !(_current.TryGetValue(o.Name, out var cur) && cur.Type == type)) return false;
+        var ol = Host.Live(o.Name);
+        return ol.Online && !StoryWander.Underground(w, ol.Block);
     }
 
     /// <summary>A block designation of <paramref name="kind"/> (nearest open first).</summary>
@@ -403,30 +411,42 @@ public sealed partial class StoryColony
             var at = x.Target;
             double score = at.Dist(from) - 0.25 * at.Y + (s.Mine.Contains(at) ? 1000 : 0);
             if (score >= bestScore) continue;
-            if (!Open(x.Key, p.Name, at) || !MarkWorkable(p, live, x.D, at, s, ref stoodOn)) continue;
+            if (!Open(x.Key, p.Name, null) || !MarkWorkable(p, live, x.D, at, s, ref stoodOn)) continue; // leased or resting, else why not
             best = x;
             bestScore = score;
         }
         return best;
     }
 
-    /// <summary>Can the pawn work this mark now: surface work out of caves, a dig only exposed and not under someone's feet, a tool for
-    /// it (else the mark waits, said on the map, no failure).</summary>
+    /// <summary>Can the pawn work this mark now: not forbidden nor by a stuck spot, surface work out of caves, a dig only exposed and
+    /// not under someone's feet (each passed over is noted for the idle audit), a tool for it (else the mark waits, said on the map, no
+    /// failure).</summary>
     private bool MarkWorkable(PawnState p, PawnLive live, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
     {
-        if (s.W is not { } w) return true;
-        // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
-        if (s.Kind is "cut" or "harvest" && StoryWander.Underground(w, at)) return false;
-        // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone. Never the block
-        // under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
-        if (s.Digs && DigBlocked(w, at, p.Name, ref stoodOn)) return false;
+        if (MarkPassedOver(p.Name, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
         // No tool for its material (carried or stored): the target waits, said on the map, no failure.
-        if (s.Tooled && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(d, why); return false; }
+        if (s.Tooled && s.W is { } w && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(d, why); return false; }
         return true;
     }
 
-    private bool DigBlocked(IStoryWorld w, P3 at, string pawn, ref HashSet<P3>? stoodOn) =>
-        !Exposed(w, at) || (stoodOn ??= StoodOnByOthers(pawn)).Contains(at);
+    /// <summary>Why the pawn can't take this mark now (null = it can).</summary>
+    private MarkPass? MarkPassedOver(string pawn, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
+    {
+        if (Forbidden(at)) return MarkPass.Forbidden;
+        if (NearHazard(at, pawn)) return MarkPass.StuckSpot;
+        if (s.W is not { } w) return null;
+        // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
+        if (s.Kind is "cut" or "harvest" && StoryWander.Underground(w, at)) return MarkPass.Cave;
+        return s.Digs ? DigPassedOver(w, pawn, at, ref stoodOn) : null;
+    }
+
+    /// <summary>Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone. Never the
+    /// block under someone else's feet (the client refuses it: "won't dig: someone is standing on it").</summary>
+    private MarkPass? DigPassedOver(IStoryWorld w, string pawn, P3 at, ref HashSet<P3>? stoodOn)
+    {
+        if (!Exposed(w, at)) return MarkPass.Buried;
+        return (stoodOn ??= StoodOnByOthers(pawn)).Contains(at) ? MarkPass.Underfoot : null;
+    }
 
     private ActiveJob MarkJob(PawnState p, PawnLive live, string type, string scriptKind, string label, List<(DesignationState D, string Key, P3 Target)> list,
         (DesignationState D, string Key, P3 Target) best, MarkSearch s)
@@ -708,6 +728,7 @@ public sealed partial class StoryColony
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
         if (StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note)) return;
+        if (DropsGone(j, why)) return; // someone else picked them up: nothing failed (StoryColony.Hauling.cs)
         MarkFullChests(j, why);
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
         // (live 11-04: one pawn in a hole failed grass after grass for everyone; StoryColony.Rescue.cs).

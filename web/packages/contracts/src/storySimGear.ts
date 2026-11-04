@@ -139,18 +139,25 @@ function structuredCloneList<T>(v: T[]): T[] {
 }
 
 /** A gear item for an [id, meta] (meta = damage for tools, so durability follows). */
+type GearInfo = ReturnType<typeof gearItemInfo>;
+
+/** A gear item's label ("Iron Pickaxe"), or "Item N" for an unknown id. */
+const gearLabel = (g: GearInfo, id: number) =>
+  g ? toolLabel(g.name.replace(/^(wooden|stone|iron|diamond|golden|leather|chainmail)_/, ''), g.tier) : `Item ${id}`;
+
+/** What is left of its uses (0..1; null for an unknown id). */
+const gearDurability = (g: GearInfo, meta: number) => (g ? Math.max(0, Math.min(1, (g.max - meta) / g.max)) : null);
+
 export function gearItem(id: number, meta: number, ench: Record<string, number> = {}): StoryGearItem {
   const g = gearItemInfo(id);
   const kind = g?.kind ?? 'other';
   return {
     item: [id, meta],
     name: g?.name ?? String(id),
-    label: g
-      ? toolLabel(g.name.replace(/^(wooden|stone|iron|diamond|golden|leather|chainmail)_/, ''), g.tier)
-      : `Item ${id}`,
+    label: gearLabel(g, id),
     kind,
     tier: g?.tier ?? null,
-    durability: g ? Math.max(0, Math.min(1, (g.max - meta) / g.max)) : null,
+    durability: gearDurability(g, meta),
     ench,
     slot: ARMOR_SLOT[kind] ?? null,
   };
@@ -197,91 +204,107 @@ export const SIM_ARMORY: Array<[number, number, number]> = [
 
 // ------------------------------------------------------------------ policies
 
+type PolicySpec = Partial<StoryPolicy> & { name?: string };
+type SimPawns = Map<string, { p: StoryPawn }>;
+
+/** The policy fields a `set` copies when given, in this order. */
+const POLICY_FIELDS = ['toolsByWork', 'spare', 'tools', 'weapon', 'armor', 'food'] as const;
+
+/** A new policy's settings. */
+const newPolicy = (id: string, name: string): StoryPolicy => ({
+  id,
+  name,
+  default: false,
+  toolsByWork: true,
+  tools: [],
+  weapon: 'best',
+  armor: 'drafted',
+  food: 0,
+  spare: false,
+});
+
+function existingPolicy(gear: SimGear, id: string): StoryPolicy {
+  const p = gear.policies.find((x) => x.id === id);
+  if (!p) throw fail(400, `no policy '${id}'`);
+  return p;
+}
+
+function addPolicy(gear: SimGear, name: string): StoryPolicy {
+  const p = newPolicy(`pol${gear.seq++}`, name);
+  gear.policies.push(p);
+  return p;
+}
+
+/** `set`: edits the policy `spec.id` names, or adds one; only the fields given change. */
+function setPolicy(gear: SimGear, spec: PolicySpec) {
+  const name = String(spec.name ?? '').trim();
+  if (!name || name.length > 40) throw fail(400, 'policy.name: 1..40 characters');
+  const p = spec.id ? existingPolicy(gear, spec.id) : addPolicy(gear, name);
+  p.name = name;
+  for (const k of POLICY_FIELDS) {
+    const v = spec[k];
+    if (v !== undefined) Object.assign(p, { [k]: Array.isArray(v) ? [...v] : v });
+  }
+  return { id: p.id };
+}
+
+/** `remove`: the default policy stays; its pawns fall back to the default. */
+function removePolicy(gear: SimGear, pawns: SimPawns, p: StoryPolicy) {
+  if (p.default) throw fail(400, 'the default policy stays (edit it instead)');
+  gear.policies = gear.policies.filter((x) => x !== p);
+  for (const ps of pawns.values()) if (ps.p.policy === p.id) ps.p.policy = null;
+  return { id: p.id, removed: true };
+}
+
+/** `assign`: these pawns follow the policy (the default one is no policy). */
+function assignPolicy(pawns: SimPawns, p: StoryPolicy, names: readonly string[]) {
+  const done: string[] = [];
+  for (const n of names) {
+    const ps = pawns.get(n);
+    if (!ps) throw fail(404, `no pawn '${n}'`);
+    ps.p.policy = p.default ? null : p.id;
+    done.push(n);
+  }
+  return { id: p.id, pawns: done };
+}
+
 export function policiesOp(
   gear: SimGear,
-  pawns: Map<string, { p: StoryPawn }>,
-  body: { op: string; policy?: Partial<StoryPolicy> & { name?: string }; id?: string; pawns?: string[] },
+  pawns: SimPawns,
+  body: { op: string; policy?: PolicySpec; id?: string; pawns?: string[] },
 ) {
-  if (body.op === 'set') {
-    const spec = body.policy ?? {};
-    const name = String(spec.name ?? '').trim();
-    if (!name || name.length > 40) throw fail(400, 'policy.name: 1..40 characters');
-    let p = spec.id ? gear.policies.find((x) => x.id === spec.id) : undefined;
-    if (spec.id && !p) throw fail(400, `no policy '${spec.id}'`);
-    if (!p) {
-      p = {
-        id: `pol${gear.seq++}`,
-        name,
-        default: false,
-        toolsByWork: true,
-        tools: [],
-        weapon: 'best',
-        armor: 'drafted',
-        food: 0,
-        spare: false,
-      };
-      gear.policies.push(p);
-    }
-    p.name = name;
-    if (spec.toolsByWork !== undefined) p.toolsByWork = spec.toolsByWork;
-    if (spec.spare !== undefined) p.spare = spec.spare;
-    if (spec.tools !== undefined) p.tools = [...spec.tools];
-    if (spec.weapon !== undefined) p.weapon = spec.weapon;
-    if (spec.armor !== undefined) p.armor = spec.armor;
-    if (spec.food !== undefined) p.food = spec.food;
-    return { id: p.id };
-  }
+  if (body.op === 'set') return setPolicy(gear, body.policy ?? {});
   const p = gear.policies.find((x) => x.id === body.id);
   if (!p) throw fail(400, `no policy '${body.id ?? ''}'`);
-  if (body.op === 'remove') {
-    if (p.default) throw fail(400, 'the default policy stays (edit it instead)');
-    gear.policies = gear.policies.filter((x) => x !== p);
-    for (const ps of pawns.values()) if (ps.p.policy === p.id) ps.p.policy = null;
-    return { id: p.id, removed: true };
-  }
-  if (body.op === 'assign') {
-    const names: string[] = [];
-    for (const n of body.pawns ?? []) {
-      const ps = pawns.get(n);
-      if (!ps) throw fail(404, `no pawn '${n}'`);
-      ps.p.policy = p.default ? null : p.id;
-      names.push(n);
-    }
-    return { id: p.id, pawns: names };
-  }
+  if (body.op === 'remove') return removePolicy(gear, pawns, p);
+  if (body.op === 'assign') return assignPolicy(pawns, p, body.pawns ?? []);
   throw fail(400, 'op must be set|remove|assign');
 }
 
 // ------------------------------------------------------------------ material rules
 
-export function materialRulesOp(
-  gear: SimGear,
-  body: {
-    op: string;
-    material?: string;
-    rule?: { material: string; tool?: string; tier?: string | null; enchant?: string | null; fallback?: string };
-  },
-  version: string | null,
-) {
-  if (body.op === 'remove') {
-    const before = gear.rules.length;
-    gear.rules = gear.rules.filter((r) => r.material !== body.material);
-    return { removed: gear.rules.length < before };
-  }
-  if (body.op !== 'set' || !body.rule) throw fail(400, 'op must be set|remove');
-  const r = body.rule;
-  const info = SIM_MATERIALS.find((m) => m.id === r.material);
-  if (!info) throw fail(400, `unknown material '${r.material}'`);
+type RuleSpec = { material: string; tool?: string; tier?: string | null; enchant?: string | null; fallback?: string };
+
+/** The rule's tool (else the material's own, its keep tool, a pickaxe), refused when it can't harvest the material. */
+function ruleTool(info: StoryMaterialInfo, r: RuleSpec): string {
   const tool = r.tool ?? info.tool ?? info.keepTool ?? 'pickaxe';
   if (!(STORY_TOOL_KINDS as readonly string[]).includes(tool))
     throw fail(400, `tool must be ${STORY_TOOL_KINDS.join('|')}`);
   // A material that needs a tool takes only a tool that harvests it (cobweb: a sword or shears).
   if (info.floor && tool !== info.tool && !(tool === 'shears' && info.keepTool === 'shears'))
     throw fail(400, `a ${tool} can't harvest ${r.material.replace('group:', '')}`);
+  return tool;
+}
+
+/** A checked rule (unknown material, wrong tool, a tier below the floor, enchantments on b1.8.1 are refused). */
+function checkedRule(r: RuleSpec, version: string | null): StoryMaterialRule {
+  const info = SIM_MATERIALS.find((m) => m.id === r.material);
+  if (!info) throw fail(400, `unknown material '${r.material}'`);
+  const tool = ruleTool(info, r);
   const problem = tierProblem(r.material, tool, r.tier ?? null, info.floor);
   if (problem) throw fail(400, problem);
   if (r.enchant && version === 'b1.8.1') throw fail(400, 'b1.8.1 has no enchantments');
-  const rule: StoryMaterialRule = {
+  return {
     material: r.material,
     label: info.label,
     tool,
@@ -290,7 +313,21 @@ export function materialRulesOp(
     fallback: r.fallback ?? 'plain',
     floor: info.floor ?? null,
   };
-  gear.rules = [...gear.rules.filter((x) => x.material !== r.material), rule];
+}
+
+export function materialRulesOp(
+  gear: SimGear,
+  body: { op: string; material?: string; rule?: RuleSpec },
+  version: string | null,
+) {
+  if (body.op === 'remove') {
+    const before = gear.rules.length;
+    gear.rules = gear.rules.filter((r) => r.material !== body.material);
+    return { removed: gear.rules.length < before };
+  }
+  if (body.op !== 'set' || !body.rule) throw fail(400, 'op must be set|remove');
+  const rule = checkedRule(body.rule, version);
+  gear.rules = [...gear.rules.filter((x) => x.material !== rule.material), rule];
   return { rule };
 }
 
@@ -355,9 +392,13 @@ const WORK_TOOLS: Record<string, string[]> = {
 export function policyKinds(p: StoryPawn, policies: StoryPolicy[]): string[] {
   const pol = policies.find((x) => x.id === p.policy) ?? policies.find((x) => x.default) ?? null;
   const kinds = new Set<string>(pol?.tools ?? []);
-  if (pol?.toolsByWork ?? true)
-    for (const [w, ks] of Object.entries(WORK_TOOLS)) if ((p.priorities[w] ?? 0) > 0) for (const k of ks) kinds.add(k);
+  if (pol?.toolsByWork ?? true) addWorkTools(p, kinds);
   return [...kinds];
+}
+
+/** The tools of every work type the pawn does (priority above 0). */
+function addWorkTools(p: StoryPawn, kinds: Set<string>): void {
+  for (const [w, ks] of Object.entries(WORK_TOOLS)) if ((p.priorities[w] ?? 0) > 0) for (const k of ks) kinds.add(k);
 }
 
 export function gearOp(
@@ -424,7 +465,8 @@ function armOp({ ordered, storages, res }: GearRun): void {
 /** Equip armour: slot by slot, each pawn in turn takes the best stored piece better than what it wears (that goes back). */
 function armorOp({ ordered, storages, res, results }: GearRun): void {
   const pool = storedUnits(storages, armorScore).sort((a, b) => b.score - a.score);
-  for (const slot of ['head', 'chest', 'legs', 'feet']) for (const x of ordered) wearBetter(x.p, slot, pool, storages, res);
+  for (const slot of ['head', 'chest', 'legs', 'feet'])
+    for (const x of ordered) wearBetter(x.p, slot, pool, storages, res);
   for (const r of results) if (!r.got.length) r.missing.push('no better armour in storage');
 }
 
