@@ -949,21 +949,24 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
     internal static string Verb(string task)
     {
         var w = System.Text.RegularExpressions.Regex.Match(task ?? "", @"[A-Za-z]+").Value.ToLowerInvariant();
-        return w switch
-        {
-            "" => "working",
-            "mine" or "dig" or "harvest" or "grind" => "mining",
-            "chop" or "cut" => "chopping",
-            "craft" or "make" => "crafting",
-            "build" or "place" => "building",
-            "smelt" or "cook" => "smelting",
-            "organize" or "organise" or "sort" => "sorting",
-            "deposit" or "store" or "stash" => "storing",
-            "fetch" or "get" or "bring" or "collect" or "gather" => "fetching",
-            "farm" or "plant" => "farming",
-            _ => w.EndsWith('e') ? w[..^1] + "ing" : w + "ing",
-        };
+        if (w.Length == 0) return "working";
+        if (Verbs.TryGetValue(w, out var known)) return known;
+        return w.EndsWith('e') ? w[..^1] + "ing" : w + "ing";
     }
+
+    /// <summary>A task's first word → what the clone is doing (words not listed get "-ing").</summary>
+    private static readonly Dictionary<string, string> Verbs = new(StringComparer.Ordinal)
+    {
+        ["mine"] = "mining", ["dig"] = "mining", ["harvest"] = "mining", ["grind"] = "mining",
+        ["chop"] = "chopping", ["cut"] = "chopping",
+        ["craft"] = "crafting", ["make"] = "crafting",
+        ["build"] = "building", ["place"] = "building",
+        ["smelt"] = "smelting", ["cook"] = "smelting",
+        ["organize"] = "sorting", ["organise"] = "sorting", ["sort"] = "sorting",
+        ["deposit"] = "storing", ["store"] = "storing", ["stash"] = "storing",
+        ["fetch"] = "fetching", ["get"] = "fetching", ["bring"] = "fetching", ["collect"] = "fetching", ["gather"] = "fetching",
+        ["farm"] = "farming", ["plant"] = "farming",
+    };
 
     private static string CloneActivity(CloneSlot s)
     {

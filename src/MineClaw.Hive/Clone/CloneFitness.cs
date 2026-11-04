@@ -93,31 +93,50 @@ public static class CloneFitness
     public static CloneFit Score(string name, CloneVitals v, TaskIntent intent, bool online, double? mainX = null, double? mainZ = null)
     {
         bool carriesFood = v.Items?.Any(IsFood) == true;
+        double s = Points(v, intent, online, carriesFood, mainX, mainZ);
+        return new CloneFit(name, Math.Round(s, 3), Blocker(v, intent, carriesFood), Summary(v, intent));
+    }
+
+    /// <summary>Health, food (and carrying some), the intent's gear, being online, closeness to main; unknown vitals cost a little.</summary>
+    private static double Points(CloneVitals v, TaskIntent intent, bool online, bool carriesFood, double? mainX, double? mainZ)
+    {
         int hp = v.Hp ?? 14, food = v.Food ?? 14; // never seen: assume middling, below a known-healthy clone
         double s = hp / 20.0 * 3 + food / 20.0 * 2 + (carriesFood ? 0.8 : 0);
-        int weapon = Math.Max(Tier(v.Items, "sword"), Tier(v.Items, "axe") - 1);
-        switch (intent)
-        {
-            case TaskIntent.Fight: s += weapon * 0.4 + Armor(v.Items) * 0.3; break;
-            case TaskIntent.Mine: s += Tier(v.Items, "pickaxe") * 0.4; break;
-            case TaskIntent.Chop: s += Tier(v.Items, "axe") * 0.3; break;
-        }
+        s += GearPoints(v.Items, intent);
         if (online) s += 0.5;
         if (v.X is { } x && v.Z is { } z && mainX is { } mx && mainZ is { } mz)
             s -= Math.Min(2.0, Math.Sqrt((x - mx) * (x - mx) + (z - mz) * (z - mz)) / 32.0);
         if (v.Hp == null) s -= 0.6; // unknown is a risk too
-
-        string? blocker = null;
-        if (v.Hp is { } h && h <= 4) blocker = $"hp {h} is critical: needs food and rest first";
-        else if (intent == TaskIntent.Fight && v.Hp is { } fh && (fh < 10 || (fh < 14 && food < 6)) && !carriesFood)
-            blocker = $"hp {fh}, food {food}{(v.Food is 0 ? " (starving)" : "")}, no food: needs food (bread or cooked meat) before fighting";
-        else if (v.Food is 0 && !carriesFood && v.Hp is { } sh && sh <= 10)
-            blocker = $"starving (food 0, hp {sh}), no food: needs food first";
-
-        var summary = v.Hp == null ? "vitals unknown" : $"hp {v.Hp} food {v.Food}"
-            + (intent == TaskIntent.Fight ? WeaponText(v.Items) : intent == TaskIntent.Mine ? (Tier(v.Items, "pickaxe") > 0 ? ", has a pickaxe" : "") : "");
-        return new CloneFit(name, Math.Round(s, 3), blocker, summary);
+        return s;
     }
+
+    private static double GearPoints(IReadOnlyList<ItemMsg>? items, TaskIntent intent) => intent switch
+    {
+        TaskIntent.Fight => Math.Max(Tier(items, "sword"), Tier(items, "axe") - 1) * 0.4 + Armor(items) * 0.3,
+        TaskIntent.Mine => Tier(items, "pickaxe") * 0.4,
+        TaskIntent.Chop => Tier(items, "axe") * 0.3,
+        _ => 0,
+    };
+
+    /// <summary>Why this clone can't take the job now: critical health, unfit to fight without food, or starving.</summary>
+    private static string? Blocker(CloneVitals v, TaskIntent intent, bool carriesFood)
+    {
+        int food = v.Food ?? 14;
+        if (v.Hp is { } h && h <= 4) return $"hp {h} is critical: needs food and rest first";
+        if (intent == TaskIntent.Fight && FightBlocker(v, food, carriesFood) is { } fight) return fight;
+        if (v.Food is 0 && !carriesFood && v.Hp is { } sh && sh <= 10) return $"starving (food 0, hp {sh}), no food: needs food first";
+        return null;
+    }
+
+    private static string? FightBlocker(CloneVitals v, int food, bool carriesFood)
+    {
+        if (v.Hp is not { } fh || !(fh < 10 || (fh < 14 && food < 6)) || carriesFood) return null;
+        return $"hp {fh}, food {food}{(v.Food is 0 ? " (starving)" : "")}, no food: needs food (bread or cooked meat) before fighting";
+    }
+
+    private static string Summary(CloneVitals v, TaskIntent intent) =>
+        v.Hp == null ? "vitals unknown" : $"hp {v.Hp} food {v.Food}"
+            + (intent == TaskIntent.Fight ? WeaponText(v.Items) : intent == TaskIntent.Mine ? (Tier(v.Items, "pickaxe") > 0 ? ", has a pickaxe" : "") : "");
 
     private static string WeaponText(IReadOnlyList<ItemMsg>? items)
     {
