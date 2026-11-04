@@ -50,6 +50,7 @@ import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { ContainerContents } from '@/features/world/ContainerPanel';
+import { InventorySection } from '@/features/live/inventory/InventoryPanel';
 import { retryIn, shortReason } from './failedLabels';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
@@ -388,7 +389,7 @@ export function PawnInspector({
   blocked?: readonly StoryOnlineBlocked[];
   onBringOnline?: (overCap: boolean) => void;
 }) {
-  const [tab, setTab] = useState<'overview' | 'skills' | 'orders'>('overview');
+  const [tab, setTab] = useState<'overview' | 'inventory' | 'skills' | 'orders'>('overview');
   const offline = pawn.online === false || pawn.state === 'offline';
   return (
     <Shell
@@ -396,6 +397,7 @@ export function PawnInspector({
       sub={offline ? 'offline' : `${pawn.state ?? 'idle'}`}
       onClose={onClose}
       avatar={<Avatar name={pawn.name} size={30} />}
+      wide={tab === 'inventory'}
     >
       {offline && onBringOnline ? (
         <div className="mb-2">
@@ -409,9 +411,10 @@ export function PawnInspector({
           />
         </div>
       ) : null}
-      <TabRow<'overview' | 'skills' | 'orders'>
+      <TabRow<'overview' | 'inventory' | 'skills' | 'orders'>
         tabs={[
           ['overview', 'Overview'],
+          ['inventory', 'Inventory'],
           ['skills', 'Skills'],
           ['orders', 'Orders'],
         ]}
@@ -495,6 +498,11 @@ export function PawnInspector({
             <span className="tabular-nums">{pawn.xpLevel ?? 0}</span>
           </li>
         </ul>
+      ) : null}
+      {tab === 'inventory' ? (
+        // The pawn's own window (armour, offhand, 27 main slots, hotbar with the held slot), polled while open: the same
+        // panel the Live hive shows for any body (bots.inventory answers for colony pawns by login).
+        <InventorySection bot={pawn.name} compact />
       ) : null}
       {tab === 'orders' ? (
         <div className="space-y-1 text-xs">
