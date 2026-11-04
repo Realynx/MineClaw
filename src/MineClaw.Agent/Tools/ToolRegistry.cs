@@ -180,15 +180,9 @@ public sealed class ToolRegistry
         try
         {
             ct.ThrowIfCancellationRequested();
-            // A model sent arguments that weren't JSON (even after the client's repair attempt): answer, never run.
-            if (Llm.LlmToolArgs.IsInvalid(input, out var raw))
-                return ToolResult.Error($"invalid arguments for {tool.Name} (not a JSON object): {TextUtil.Truncate(raw, 120)}; call it again with valid JSON");
-            (Func<JsonElement, JsonElement>? Normalize, ToolInputValidator? Validator) adapter;
-            lock (_lock) adapter = _inputAdapters.TryGetValue(tool.Name, out var a) ? a : default;
-            if (adapter.Normalize != null) input = adapter.Normalize(input);
-            if ((adapter.Validator ?? _validators.GetValue(tool, t => new ToolInputValidator(t.InputSchema))).Error(input) is { } invalid)
-                return ToolResult.Error("bad input: " + invalid).Truncate(CapFor(tool.Name));
-            if (Refusal(tool.Name, input, ToolCaller.Current) is { } refused) return ToolResult.Error(refused).Truncate(CapFor(tool.Name));
+            var (rejected, prepared) = Prepare(tool, input);
+            if (rejected != null) return rejected;
+            input = prepared;
             try { Executing?.Invoke(tool.Name, input); } catch (Exception) { /* telemetry only */ }
             result = await tool.ExecuteAsync(input, ct).ConfigureAwait(false) ?? ToolResult.Error("no result");
         }
@@ -205,5 +199,26 @@ public sealed class ToolRegistry
             result = ToolResult.Error(ex.GetType().Name + ": " + TextUtil.OneLine(ex.Message));
         }
         return result.Truncate(CapFor(tool.Name));
+    }
+
+    /// <summary>
+    /// The input as the tool will get it (its adapter's normalisation), or why it never runs: arguments that weren't JSON (even after
+    /// the client's repair attempt), input failing the schema, or a caller policy's refusal.
+    /// </summary>
+    private (ToolResult? Rejected, JsonElement Input) Prepare(IAgentTool tool, JsonElement input)
+    {
+        if (Llm.LlmToolArgs.IsInvalid(input, out var raw))
+            return (ToolResult.Error($"invalid arguments for {tool.Name} (not a JSON object): {TextUtil.Truncate(raw, 120)}; call it again with valid JSON"), input);
+        var adapter = AdapterFor(tool.Name);
+        if (adapter.Normalize != null) input = adapter.Normalize(input);
+        if ((adapter.Validator ?? _validators.GetValue(tool, t => new ToolInputValidator(t.InputSchema))).Error(input) is { } invalid)
+            return (ToolResult.Error("bad input: " + invalid).Truncate(CapFor(tool.Name)), input);
+        if (Refusal(tool.Name, input, ToolCaller.Current) is { } refused) return (ToolResult.Error(refused).Truncate(CapFor(tool.Name)), input);
+        return (null, input);
+    }
+
+    private (Func<JsonElement, JsonElement>? Normalize, ToolInputValidator? Validator) AdapterFor(string name)
+    {
+        lock (_lock) return _inputAdapters.TryGetValue(name, out var a) ? a : default;
     }
 }

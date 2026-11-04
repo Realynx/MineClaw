@@ -47,13 +47,19 @@ public sealed class MinecraftDataSource : IGameDataSource
         var full = Path.GetFullPath(root);
         string? dataDir = DataDirOf(full);
         var used = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var kind in new[] { "items", "blocks", "recipes", "foods", "entities" })
-            if (DataFileOf(full, dataDir, kind, edition, dataPathsKey ?? version, version, used) is { } file) _files[kind] = file;
-        if (!_files.ContainsKey("items") || !_files.ContainsKey("blocks"))
-            throw new FileNotFoundException($"no minecraft-data items.json/blocks.json for {edition} {dataPathsKey ?? version} under {full}");
+        FindDataFiles(full, dataDir, edition, dataPathsKey ?? version, version, used);
         if (factsDirectory != null && Directory.Exists(factsDirectory)) FactsDirectory = Path.GetFullPath(factsDirectory);
         var facts = FactsDirectory != null ? AddFactFiles(FactsDirectory) : [];
         Description = DescribeSource(used, edition, version, facts, tables);
+    }
+
+    /// <summary>The version's data files by kind; items and blocks are required.</summary>
+    private void FindDataFiles(string full, string? dataDir, string edition, string pathsKey, string version, SortedSet<string> used)
+    {
+        foreach (var kind in new[] { "items", "blocks", "recipes", "foods", "entities" })
+            if (DataFileOf(full, dataDir, kind, edition, pathsKey, version, used) is { } file) _files[kind] = file;
+        if (!_files.ContainsKey("items") || !_files.ContainsKey("blocks"))
+            throw new FileNotFoundException($"no minecraft-data items.json/blocks.json for {edition} {pathsKey} under {full}");
     }
 
     /// <summary>The minecraft-data folder holding <c>dataPaths.json</c> (the repo root or its data folder); null = a version folder.</summary>
