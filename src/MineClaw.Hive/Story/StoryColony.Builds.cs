@@ -28,97 +28,122 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             MaterialsChanged(); // the queue changes: reservations and auto bills follow
-            switch (op)
+            return op switch
             {
-                case "add":
-                {
-                    if (items is not { Count: > 0 }) return (null, "items required");
-                    if (items.Count > 64) return (null, "at most 64 items per request");
-                    var made = new List<BuildState>();
-                    var warnings = new List<string>();
-                    JsonObject? flow = null;
-                    foreach (var n in items)
-                    {
-                        if (n is not JsonObject item) return (null, "each item is an object {kind, area|blocks, material, ...}");
-                        var (ghosts, mat, err) = StoryConstruction.Expand(w.Data, item, w);
-                        if (err != null) return (null, err);
-                        if (ghosts.Count > 4096) return (null, "an item expands to at most 4096 blocks");
-                        // Liquids: the cells must take the water (open, or dug first by the item's group), lava only when allowed (StoryColony.Water.cs).
-                        if (ghosts.Count > 0 && StoryConstruction.IsLiquid(ghosts[0]) && CheckLiquid(w, item, ghosts, made, warnings) is { } lerr) return (null, lerr);
-                        made.Add(new BuildState
-                        {
-                            Kind = item["kind"]!.GetValue<string>().ToLowerInvariant(), Spec = (JsonObject)item.DeepClone(), Ghosts = ghosts,
-                            Material = mat?.Name ?? "", Created = Now,
-                        });
-                    }
-                    int order = Builds.Count == 0 ? 0 : Builds.Max(b => b.Order) + 1;
-                    foreach (var b in made)
-                    {
-                        b.Id = NextId("b");
-                        b.Order = order++;
-                        b.Label = $"{b.Kind} ({b.BlocksTotal} block{(b.BlocksTotal == 1 ? "" : "s")}{(b.Material.Length > 0 && b.Kind != "remove" ? ", " + b.Material : "")})";
-                        var r = Touch();
-                        b.Rev = r;
-                        foreach (var g in b.Ghosts)
-                        {
-                            g.Rev = r;
-                            // Already there (a wall over a finished one): done at once.
-                            var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
-                            if (!g.Remove && id == g.Id && (g.Meta == meta || !g.Job)) g.State = "done";
-                            if (g.Remove && id == 0 && w.Loaded(g.At.X, g.At.Z)) g.State = "done";
-                        }
-                        Builds.Add(b);
-                        if (b.Ghosts.Count > 0 && StoryConstruction.IsLiquid(b.Ghosts[0])) flow = LiquidAdded(w, b, flow); // its label, the expected flow
-                        // Blocks the pawns can't place yet (crops, liquids, signs…): shown as ghosts and said once, never a stuck job.
-                        if (b.Ghosts.Where(g => g.State == "unsupported").ToList() is { Count: > 0 } odd)
-                            Alert("warn", $"Build {b.Id} ({b.Kind}): {odd.Count} block{(odd.Count == 1 ? "" : "s")} the pawns can't place yet, left as ghosts: "
-                                          + string.Join("; ", odd.Select(g => g.Reason ?? "special placement").Distinct().Take(3)));
-                    }
-                    WakeIdle();
-                    var added = new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) };
-                    if (warnings.Count > 0) added["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray());
-                    if (flow != null) added["flow"] = flow;
-                    return (added, null);
-                }
-                case "preview":
-                    return LiquidPreview(w, items); // a water item's cells checked and its expected flow, nothing queued (StoryColony.Water.cs)
-                case "remove":
-                case "pause":
-                case "resume":
-                {
-                    if (ids is not { Count: > 0 }) return (null, "ids required");
-                    var hit = Builds.Where(b => ids.Contains(b.Id)).ToList();
-                    if (hit.Count == 0) return (null, "no such build");
-                    foreach (var b in hit)
-                    {
-                        if (op == "remove")
-                        {
-                            Builds.Remove(b);
-                            Removed("build", b.Id);
-                            _buildAlerted.Remove(b.Id);
-                            foreach (var k in _leases.Keys.Where(k => k.StartsWith("g:" + b.Id + "|", StringComparison.Ordinal)).ToList()) _leases.Remove(k);
-                            continue;
-                        }
-                        if (b.Status != "done") b.Status = op == "pause" ? "paused" : "queued";
-                        b.Rev = Touch();
-                    }
-                    return (new JsonObject { ["ids"] = new JsonArray(hit.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
-                }
-                case "reorder":
-                {
-                    if (ids is not { Count: > 0 }) return (null, "ids required");
-                    if (ids.Any(i => Builds.All(b => b.Id != i))) return (null, "unknown build id");
-                    // The named ones first, in that order; the rest keep their relative order after them.
-                    var rest = Builds.Where(b => !ids.Contains(b.Id)).OrderBy(b => b.Order).ToList();
-                    int o = 0;
-                    foreach (var id in ids.Distinct()) { var b = Builds.First(x => x.Id == id); b.Order = o++; b.Rev = Touch(); }
-                    foreach (var b in rest) { b.Order = o++; b.Rev = Touch(); }
-                    return (new JsonObject { ["ids"] = new JsonArray(Builds.OrderBy(b => b.Order).Select(b => (JsonNode)b.Id!).ToArray()) }, null);
-                }
-                default:
-                    return (null, "op must be add|preview|remove|reorder|pause|resume");
-            }
+                "add" => AddBuilds(w, items),
+                "preview" => LiquidPreview(w, items), // a water item's cells checked and its expected flow, nothing queued (StoryColony.Water.cs)
+                "remove" or "pause" or "resume" => ToggleBuilds(op, ids),
+                "reorder" => ReorderBuilds(ids),
+                _ => (null, "op must be add|preview|remove|reorder|pause|resume"),
+            };
         }
+    }
+
+    /// <summary>Each item expanded and checked (all or none), then queued after the builds there are.</summary>
+    private (JsonNode? Result, string? Error) AddBuilds(IStoryWorld w, JsonArray? items)
+    {
+        if (items is not { Count: > 0 }) return (null, "items required");
+        if (items.Count > 64) return (null, "at most 64 items per request");
+        var made = new List<BuildState>();
+        var warnings = new List<string>();
+        foreach (var n in items)
+            if (ExpandBuildItem(w, n, made, warnings) is { } err) return (null, err);
+        var flow = QueueBuilds(w, made);
+        WakeIdle();
+        var added = new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) };
+        if (warnings.Count > 0) added["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray());
+        if (flow != null) added["flow"] = flow;
+        return (added, null);
+    }
+
+    private string? ExpandBuildItem(IStoryWorld w, JsonNode? n, List<BuildState> made, List<string> warnings)
+    {
+        if (n is not JsonObject item) return "each item is an object {kind, area|blocks, material, ...}";
+        var (ghosts, mat, err) = StoryConstruction.Expand(w.Data, item, w);
+        if (err != null) return err;
+        if (ghosts.Count > 4096) return "an item expands to at most 4096 blocks";
+        // Liquids: the cells must take the water (open, or dug first by the item's group), lava only when allowed (StoryColony.Water.cs).
+        if (ghosts.Count > 0 && StoryConstruction.IsLiquid(ghosts[0]) && CheckLiquid(w, item, ghosts, made, warnings) is { } lerr) return lerr;
+        made.Add(new BuildState
+        {
+            Kind = item["kind"]!.GetValue<string>().ToLowerInvariant(), Spec = (JsonObject)item.DeepClone(), Ghosts = ghosts,
+            Material = mat?.Name ?? "", Created = Now,
+        });
+        return null;
+    }
+
+    /// <summary>The new builds join the queue in order; the last liquid build's expected flow, or null.</summary>
+    private JsonObject? QueueBuilds(IStoryWorld w, List<BuildState> made)
+    {
+        int order = Builds.Count == 0 ? 0 : Builds.Max(b => b.Order) + 1;
+        JsonObject? flow = null;
+        foreach (var b in made) flow = QueueBuild(w, b, order++, flow);
+        return flow;
+    }
+
+    private JsonObject? QueueBuild(IStoryWorld w, BuildState b, int order, JsonObject? flow)
+    {
+        b.Id = NextId("b");
+        b.Order = order;
+        b.Label = $"{b.Kind} ({b.BlocksTotal} block{(b.BlocksTotal == 1 ? "" : "s")}{(b.Material.Length > 0 && b.Kind != "remove" ? ", " + b.Material : "")})";
+        var r = Touch();
+        b.Rev = r;
+        foreach (var g in b.Ghosts) MarkBuiltAlready(w, g, r);
+        Builds.Add(b);
+        if (b.Ghosts.Count > 0 && StoryConstruction.IsLiquid(b.Ghosts[0])) flow = LiquidAdded(w, b, flow); // its label, the expected flow
+        AlertUnplaceable(b);
+        return flow;
+    }
+
+    /// <summary>Already there (a wall over a finished one; a dig where it is open): done at once.</summary>
+    private static void MarkBuiltAlready(IStoryWorld w, GhostState g, long rev)
+    {
+        g.Rev = rev;
+        var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
+        if (!g.Remove && id == g.Id && (g.Meta == meta || !g.Job)) g.State = "done";
+        if (g.Remove && id == 0 && w.Loaded(g.At.X, g.At.Z)) g.State = "done";
+    }
+
+    /// <summary>Blocks the pawns can't place yet (crops, liquids, signs…): shown as ghosts and said once, never a stuck job.</summary>
+    private void AlertUnplaceable(BuildState b)
+    {
+        if (b.Ghosts.Where(g => g.State == "unsupported").ToList() is not { Count: > 0 } odd) return;
+        Alert("warn", $"Build {b.Id} ({b.Kind}): {odd.Count} block{(odd.Count == 1 ? "" : "s")} the pawns can't place yet, left as ghosts: "
+                      + string.Join("; ", odd.Select(g => g.Reason ?? "special placement").Distinct().Take(3)));
+    }
+
+    private (JsonNode? Result, string? Error) ToggleBuilds(string op, IReadOnlyList<string>? ids)
+    {
+        if (ids is not { Count: > 0 }) return (null, "ids required");
+        var hit = Builds.Where(b => ids.Contains(b.Id)).ToList();
+        if (hit.Count == 0) return (null, "no such build");
+        foreach (var b in hit)
+        {
+            if (op == "remove") { RemoveBuild(b); continue; }
+            if (b.Status != "done") b.Status = op == "pause" ? "paused" : "queued";
+            b.Rev = Touch();
+        }
+        return (new JsonObject { ["ids"] = new JsonArray(hit.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
+    }
+
+    private void RemoveBuild(BuildState b)
+    {
+        Builds.Remove(b);
+        Removed("build", b.Id);
+        _buildAlerted.Remove(b.Id);
+        foreach (var k in _leases.Keys.Where(k => k.StartsWith("g:" + b.Id + "|", StringComparison.Ordinal)).ToList()) _leases.Remove(k);
+    }
+
+    /// <summary>The named ones first, in that order; the rest keep their relative order after them.</summary>
+    private (JsonNode? Result, string? Error) ReorderBuilds(IReadOnlyList<string>? ids)
+    {
+        if (ids is not { Count: > 0 }) return (null, "ids required");
+        if (ids.Any(i => Builds.All(b => b.Id != i))) return (null, "unknown build id");
+        var rest = Builds.Where(b => !ids.Contains(b.Id)).OrderBy(b => b.Order).ToList();
+        int o = 0;
+        foreach (var id in ids.Distinct()) { var b = Builds.First(x => x.Id == id); b.Order = o++; b.Rev = Touch(); }
+        foreach (var b in rest) { b.Order = o++; b.Rev = Touch(); }
+        return (new JsonObject { ["ids"] = new JsonArray(Builds.OrderBy(b => b.Order).Select(b => (JsonNode)b.Id!).ToArray()) }, null);
     }
 
     private bool Solid(P3 p) => World is { } w && w.Block(p.X, p.Y, p.Z).Id is var id && !StoryBlocks.Replaceable.Contains(id);
@@ -157,162 +182,275 @@ public sealed partial class StoryColony
         if (World is not { } w) return null;
         EnsureMaterials(); // what each build may take (reserved in queue order) and what is being crafted for it
         var from = live.Block;
+        int builders = BuilderCount();
+        foreach (var b in Builds.Where(b => b.Status is not ("paused" or "done")).OrderBy(b => b.Order))
+            if (BuildJobFor(w, p, live, b, builders, from) is { } job) return job;
+        return null;
+    }
+
+    /// <summary>Pawns that build now (build work enabled, not drafted, in game): each builder's fair share is the open cells over them.</summary>
+    private int BuilderCount()
+    {
         int builders = 0;
         foreach (var o in Pawns.Values)
             if (o.Priorities.GetValueOrDefault(WorkTypes.Build) is >= 1 and <= 4 && !o.Drafted && Host.Live(o.Name).Online) builders++;
-        builders = Math.Max(1, builders);
-        foreach (var b in Builds.Where(b => b.Status is not ("paused" or "done")).OrderBy(b => b.Order))
+        return Math.Max(1, builders);
+    }
+
+    /// <summary>One build's scan for a pawn's next batch: the build, its open work, and what the cells tried so far found.</summary>
+    private struct GhostScan
+    {
+        public BuildState Build;
+        public List<GhostState> Todo;
+        public int Builders;
+        public P3 From;
+        public bool Mine;
+        /// <summary>Items found out (no stock, none carried): their other cells are skipped.</summary>
+        public HashSet<string>? OutOf;
+        /// <summary>The first material shortage: the build's status and reason, whether to alert, the blocked-work note.</summary>
+        public (string Status, string Reason, bool Alert, string Note)? Held;
+        /// <summary>Another builder carries this build's items (its batch is in flight).</summary>
+        public bool InFlight;
+        /// <summary>The build waits (for water): no more cells, and no blocked note of its own.</summary>
+        public bool SkipBuild;
+    }
+
+    /// <summary>This build's next job for the pawn, or null (and why it has none, as blocked work).</summary>
+    private ActiveJob? BuildJobFor(IStoryWorld w, PawnState p, PawnLive live, BuildState b, int builders, P3 from)
+    {
+        var todo = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
+        if (todo.Count == 0) { FinishOrStuck(b); return null; }
+        // A design placed with a basement: its blocks wait until the ground is dug out (dig, then place).
+        if (DigFirst(b)) { Blocked($"build {b.Id}: its ground is dug out first"); return null; }
+        var scan = new GhostScan { Build = b, Todo = todo, Builders = builders, From = from, Mine = b.Kind == "mine" };
+        var open = OpenCells(b, todo, scan.Mine);
+        foreach (var g in CellOrder(b, open, scan.Mine, from))
         {
-            var todo = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
-            if (todo.Count == 0)
-            {
-                if (b.Ghosts.Count(g => g.Job && g.State == "blocked") is var stuckCells and > 0) { Blocked($"build {b.Id}: {stuckCells} blocks can't be placed"); continue; }
-                b.Status = "done"; b.Rev = Touch();
-                continue;
-            }
-            // A design placed with a basement: its blocks wait until the ground is dug out (dig, then place).
-            if (DigFirst(b)) { Blocked($"build {b.Id}: its ground is dug out first"); continue; }
-            // Support first: a level waits for the one below, blocked blocks included (it never builds over a gap). Digging goes
-            // the other way: top-down (a buried cell opens once the one above it is gone).
-            var left = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").ToList();
-            bool digs = left.All(g => g.Remove);
-            int lowest = digs ? left.Max(g => g.At.Y) : left.Min(g => g.At.Y);
-            // A mine goes in reachable order: a cell opens once a neighbour is open (from the entry at the surface outward and down),
-            // top-down first; its blocks (torches, ladders…) go in as their cells open, one per job.
-            bool mine = b.Kind == "mine";
-            var open = mine ? todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList() : todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
-            // Spread out: a cell next to another pawn's batch comes after the rest (its neighbours are leased anyway).
-            var busy = b.Ghosts.Where(g => g.State == "leased").Select(g => g.At).ToList();
-            // A material that is out holds only its own cells: the level's other blocks go on (live 11-04: a design with one missing
-            // material stood still as a whole when the first seed was that material, and its reservations held the queue behind it).
-            HashSet<string>? outOf = null;
-            (string Status, string Reason, bool Alert, string Note)? held = null;
-            bool inFlight = false;
-            foreach (var g in mine ? open.OrderByDescending(g => g.At.Y).ThenBy(g => g.Remove ? 0 : 1).ThenBy(g => g.At.Dist(from)) : Seeds(open, busy, from))
-            {
-                var key = $"g:{b.Id}|{g.At}";
-                if (!Open(key, p.Name, g.At) || Occupied(g.At)) continue;
-                if (g.Remove)
-                {
-                    if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z)) { g.State = "done"; g.Rev = Touch(); continue; }
-                    // A dug cell takes its material's tool (a mine design's ore: the right pickaxe), else the build waits for one.
-                    var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
-                    if (dt is { Wait: { } why }) { NoteBuildWait(b, why); Blocked($"build {b.Id}: {b.Reason}"); continue; }
-                    ClearBuildWait(b);
-                    return Claim(b, [g], p.Name,
-                        WithTool(dt, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10)));
-                }
-                // A liquid source: poured from a bucket filled at a still source (StoryColony.Water.cs).
-                if (StoryConstruction.IsLiquid(g))
-                {
-                    var (pj, wait) = PourJob(p, live, b, g, todo, builders);
-                    if (pj != null) return pj;
-                    if (wait) { Blocked($"build {b.Id}: {b.Reason ?? "waiting for water"}"); goto nextBuild; }
-                    continue;
-                }
-                var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
-                if (cur != 0 && Matches(g, cur, curMeta, Modern)) { CellDone(b, g); continue; } // already there: done, never a job
-                // There but turned the wrong way: taken back and placed again once (a clear), unless it was tried already or it holds
-                // things (a chest, a furnace: never broken open for its rotation). Then the cell says so on the map.
-                if (cur != 0 && WrongTurn(g, cur, curMeta, Modern) && (_turnRedo.GetValueOrDefault(key) >= 1 || KeepsItems(cur)))
-                { Misrotated(b, g, curMeta); continue; }
-                // A block in the way is dug first: with its tool (stone in a wall's line takes a pickaxe). The batch clears only cells
-                // of that same block (one tool per job).
-                var clearTool = !StoryBlocks.Replaceable.Contains(cur) ? PlanTool(p, live, cur) : null;
-                if (clearTool is { Wait: { } cwhy }) { NoteBuildWait(b, cwhy); Blocked($"build {b.Id}: {b.Reason}"); continue; }
-                var item = g.Item ?? w.Data.Item(g.Id).Name;
-                if (outOf?.Contains(item) == true) continue;
-                var ik = KeyOfItem(w, item, g.Id);
-                int have = live.Inventory.Where(s => s.Id == ik.Id && s.Meta == ik.Meta).Sum(s => s.Count);
-                var mat = b.Materials.FirstOrDefault(m => m.Item == item);
-                // What an earlier build reserved stays for it: this one takes from storage only its own share.
-                bool reservedAway = mat is { Have: 0 };
-                var stores = reservedAway ? [] : Stored(ik, from);
-                int stored = stores.Sum(s => s.N);
-                if (have == 0 && stored == 0)
-                {
-                    (outOf ??= new(StringComparer.Ordinal)).Add(item);
-                    // Another builder carries this build's items (its batch is in flight): no job here now, and nothing is blocked.
-                    if (_current.Values.Any(j => j.Source == "ghost" && j.Cells is { Count: > 0 } && j.SourceId?.StartsWith(b.Id + "|", StringComparison.Ordinal) == true))
-                    {
-                        inFlight = true;
-                        continue;
-                    }
-                    int need = b.Ghosts.Count(x => x.Job && x.State is "todo" or "leased" && (x.Item ?? "") == item);
-                    var display = w.Data.DisplayName(ik.Id, ik.Meta).ToLowerInvariant();
-                    string status = "blocked", reason;
-                    bool alert = true;
-                    if (mat is { Crafting: > 0 }) { status = "waiting"; alert = false; reason = $"waiting for {mat.Crafting} {display} (being crafted)"; }
-                    else if (reservedAway && Stored(ik, from).Count > 0)
-                    { status = "waiting"; alert = false; reason = $"waiting: the {display} in storage is reserved for an earlier build"; }
-                    else
-                    {
-                        reason = $"need {need} {display}";
-                        alert = mat is not { Short: > 0 }; // the materials pass already said what's short and why
-                    }
-                    held ??= (status, reason, alert, $"build {b.Id}: {reason}{ShortSource(mat)}");
-                    continue; // the level's other materials may still go in
-                }
-                if (b.Status != "active") { b.Status = "active"; b.Reason = null; b.Rev = Touch(); }
-                // The pawn's fair share of what is open (ten builders on one floor each get a part), no more than it can get items for.
-                int openCells = todo.Count(x => (x.Item ?? "") == item); // open or in a batch now: every builder's share of the whole
-                int cap = mine ? 1 : Math.Min(Math.Clamp((int)Math.Ceiling(openCells / (double)builders), 1, BatchMax), have + stored);
-                var (cells, stand) = Batch(w, b, g, cap, from, p.Name, StoryBlocks.Replaceable.Contains(cur) ? -1 : cur);
-                int fetchN = Math.Max(0, cells.Count - have);
-                var fetch = new JsonArray();
-                var takes = new List<(P3, Stack)>();
-                foreach (var (st, stack, n) in stores)
-                {
-                    if (fetchN <= 0) break;
-                    int t = Math.Min(n, fetchN);
-                    fetchN -= t;
-                    fetch.Add(new JsonObject { ["from"] = st.Chest.ToString(), ["item"] = ItemName(stack.Id, stack.Meta), ["n"] = t });
-                    takes.Add((st.Chest, stack with { Count = t }));
-                }
-                var want = w.Data.BlockExists(g.Id) ? w.Data.Block(g.Id).Name : null;
-                var clear = cells.Where(c => !StoryBlocks.Replaceable.Contains(w.Block(c.At.X, c.At.Y, c.At.Z).Id)).Select(c => c.At.ToString()).ToList();
-                var label = cells.Count == 1 ? $"building {b.Label}" : $"building {b.Label}: {cells.Count} blocks";
-                var job = Job(WorkTypes.Build, "place", label, g.At, key, "ghost", $"{b.Id}|{g.At}", "working", f =>
-                {
-                    f["block"] = item;
-                    if (want != null) f["want"] = want; // what the cell shows once built: already there = done
-                    f["cells"] = new JsonArray(cells.Select(c => (JsonNode)c.At.ToString()).ToArray());
-                    if (clear.Count > 0) f["clear"] = new JsonArray(clear.Select(c => (JsonNode)c).ToArray());
-                    if (g.Facing is { } fc) f["facing"] = fc;
-                    // A design's turned blocks (a furnace's front, stairs, a log's axis, a wall torch): each cell's meta, placed with
-                    // place_turned (docs/web/story-mode.md "Rotation").
-                    if (cells.Any(c => MineClaw.World.BlockOrientation.Turns(c.Id, c.Meta, Modern)))
-                        f["metas"] = new JsonArray(cells.Select(c => (JsonNode)c.Meta).ToArray());
-                    if (stand is { } sp) f["stand"] = sp.ToString(); // where the whole batch is within reach
-                    if (fetch.Count > 0) f["fetch"] = fetch;
-                }, xp: Math.Min(60, 8 + 4 * cells.Count));
-                job.Takes.AddRange(takes);
-                var claimed = Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
-                // A wrong-turned cell this batch takes back and places again: its one second chance, counted when handed out.
-                var redo = cells.Where(c => w.Block(c.At.X, c.At.Y, c.At.Z) is var (rid, rmeta) && WrongTurn(c, rid, rmeta, Modern))
-                    .Select(c => $"g:{b.Id}|{c.At}").ToList();
-                if (redo.Count > 0 && claimed.Assign is { } assign)
-                    claimed.Assign = () => { assign(); foreach (var k in redo) _turnRedo[k] = _turnRedo.GetValueOrDefault(k) + 1; };
-                return claimed;
-            }
-            // Nothing here for this pawn: a material is out, the open cells are another builder's, or the level below isn't built yet.
-            if (held is { } h)
-            {
-                if (b.Status != h.Status || b.Reason != h.Reason)
-                {
-                    b.Status = h.Status; b.Reason = h.Reason; b.Rev = Touch();
-                    // Said once per reason (the build turns active between, while its other materials go in).
-                    if (h.Alert && _buildBlockSaid.GetValueOrDefault(b.Id) != h.Reason) Alert("warn", $"Build {b.Id} ({b.Kind}) is blocked: {h.Reason}");
-                    _buildBlockSaid[b.Id] = h.Reason;
-                }
-                Blocked(h.Note);
-            }
-            else if (inFlight) Blocked($"build {b.Id}: its last items are on their way with another builder");
-            else if (open.Count == 0) Blocked($"build {b.Id}: the level below is still being built");
-            else Blocked($"build {b.Id}: its open cells are taken or backing off");
-            nextBuild:;
+            if (GhostCell(w, p, live, ref scan, g) is { } job) return job;
+            if (scan.SkipBuild) return null;
         }
+        NoteBuildHeld(b, ref scan, open.Count);
         return null;
+    }
+
+    /// <summary>No open cell left: done, unless some are blocked (those can't be placed: said as blocked work).</summary>
+    private void FinishOrStuck(BuildState b)
+    {
+        if (b.Ghosts.Count(g => g.Job && g.State == "blocked") is var stuckCells and > 0) { Blocked($"build {b.Id}: {stuckCells} blocks can't be placed"); return; }
+        b.Status = "done";
+        b.Rev = Touch();
+    }
+
+    /// <summary>
+    /// The cells open now. Support first: a level waits for the one below, blocked blocks included (it never builds over a gap).
+    /// Digging goes the other way: top-down (a buried cell opens once the one above it is gone). A mine goes in reachable order: a
+    /// cell opens once a neighbour is open (from the entry at the surface outward and down).
+    /// </summary>
+    private List<GhostState> OpenCells(BuildState b, List<GhostState> todo, bool mine)
+    {
+        var left = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").ToList();
+        bool digs = left.All(g => g.Remove);
+        int lowest = digs ? left.Max(g => g.At.Y) : left.Min(g => g.At.Y);
+        return mine ? todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList() : todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
+    }
+
+    /// <summary>A mine: top-down first, digs before its blocks (torches, ladders… one per job), nearest; a level: <see cref="Seeds"/>,
+    /// spread out (a cell next to another pawn's batch comes after the rest: its neighbours are leased anyway).</summary>
+    private IEnumerable<GhostState> CellOrder(BuildState b, List<GhostState> open, bool mine, P3 from)
+    {
+        if (mine) return open.OrderByDescending(g => g.At.Y).ThenBy(g => g.Remove ? 0 : 1).ThenBy(g => g.At.Dist(from));
+        var busy = b.Ghosts.Where(g => g.State == "leased").Select(g => g.At).ToList();
+        return Seeds(open, busy, from);
+    }
+
+    /// <summary>One cell tried as the seed of a batch: a dig, a pour, or a place job; null = not this one (done, taken, short…).</summary>
+    private ActiveJob? GhostCell(IStoryWorld w, PawnState p, PawnLive live, ref GhostScan scan, GhostState g)
+    {
+        var b = scan.Build;
+        var key = $"g:{b.Id}|{g.At}";
+        if (!Open(key, p.Name, g.At) || Occupied(g.At)) return null;
+        if (g.Remove) return DigCell(w, p, live, b, g, key);
+        // A liquid source: poured from a bucket filled at a still source (StoryColony.Water.cs).
+        if (StoryConstruction.IsLiquid(g)) return PourCell(p, live, ref scan, g);
+        var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
+        if (CellSettled(b, g, key, cur, curMeta)) return null;
+        return PlaceCell(w, p, live, ref scan, g, key, cur);
+    }
+
+    private ActiveJob? DigCell(IStoryWorld w, PawnState p, PawnLive live, BuildState b, GhostState g, string key)
+    {
+        if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z)) { g.State = "done"; g.Rev = Touch(); return null; }
+        // A dug cell takes its material's tool (a mine design's ore: the right pickaxe), else the build waits for one.
+        var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
+        if (dt is { Wait: { } why }) { NoteBuildWait(b, why); Blocked($"build {b.Id}: {b.Reason}"); return null; }
+        ClearBuildWait(b);
+        return Claim(b, [g], p.Name,
+            WithTool(dt, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10)));
+    }
+
+    private ActiveJob? PourCell(PawnState p, PawnLive live, ref GhostScan scan, GhostState g)
+    {
+        var b = scan.Build;
+        var (pj, wait) = PourJob(p, live, b, g, scan.Todo, scan.Builders);
+        if (pj != null) return pj;
+        if (wait) { Blocked($"build {b.Id}: {b.Reason ?? "waiting for water"}"); scan.SkipBuild = true; }
+        return null;
+    }
+
+    /// <summary>
+    /// The cell already holds the ghost's block: done, never a job. There but turned the wrong way: taken back and placed again once
+    /// (a clear), unless it was tried already or it holds things (a chest, a furnace: never broken open for its rotation); then the
+    /// cell says so on the map.
+    /// </summary>
+    private bool CellSettled(BuildState b, GhostState g, string key, int cur, int curMeta)
+    {
+        if (cur == 0) return false;
+        if (Matches(g, cur, curMeta, Modern)) { CellDone(b, g); return true; }
+        if (!WrongTurn(g, cur, curMeta, Modern) || _turnRedo.GetValueOrDefault(key) < 1 && !KeepsItems(cur)) return false;
+        Misrotated(b, g, curMeta);
+        return true;
+    }
+
+    /// <summary>What a batch of one item has to place with: carried, and stored (its own share when an earlier build reserved the rest).</summary>
+    private readonly record struct CellSupply(string Item, int Have, int Stored, List<(StorageState Store, Stack Stack, int N)> Stores);
+
+    /// <summary>A place job seeded at the cell, unless its block in the way waits for a tool or its item is out.</summary>
+    private ActiveJob? PlaceCell(IStoryWorld w, PawnState p, PawnLive live, ref GhostScan scan, GhostState g, string key, int cur)
+    {
+        var b = scan.Build;
+        // A block in the way is dug first: with its tool (stone in a wall's line takes a pickaxe). The batch clears only cells of
+        // that same block (one tool per job).
+        var clearTool = !StoryBlocks.Replaceable.Contains(cur) ? PlanTool(p, live, cur) : null;
+        if (clearTool is { Wait: { } cwhy }) { NoteBuildWait(b, cwhy); Blocked($"build {b.Id}: {b.Reason}"); return null; }
+        var item = g.Item ?? w.Data.Item(g.Id).Name;
+        if (scan.OutOf?.Contains(item) == true) return null;
+        var ik = KeyOfItem(w, item, g.Id);
+        int have = live.Inventory.Where(s => s.Id == ik.Id && s.Meta == ik.Meta).Sum(s => s.Count);
+        var mat = b.Materials.FirstOrDefault(m => m.Item == item);
+        // What an earlier build reserved stays for it: this one takes from storage only its own share.
+        bool reservedAway = mat is { Have: 0 };
+        var stores = reservedAway ? [] : Stored(ik, scan.From);
+        int stored = stores.Sum(s => s.N);
+        if (have == 0 && stored == 0)
+        {
+            OutOfItem(w, ref scan, item, ik, mat, reservedAway);
+            return null; // the level's other materials may still go in
+        }
+        if (b.Status != "active") { b.Status = "active"; b.Reason = null; b.Rev = Touch(); }
+        return PlaceJob(w, p, scan, g, key, cur, clearTool, new CellSupply(item, have, stored, stores));
+    }
+
+    /// <summary>
+    /// The item is out (none carried, none stored). A material that is out holds only its own cells: the level's other blocks go on
+    /// (live 11-04: a design with one missing material stood still as a whole when the first seed was that material, and its
+    /// reservations held the queue behind it).
+    /// </summary>
+    private void OutOfItem(IStoryWorld w, ref GhostScan scan, string item, (int Id, int Meta) ik, BuildMaterial? mat, bool reservedAway)
+    {
+        var b = scan.Build;
+        (scan.OutOf ??= new(StringComparer.Ordinal)).Add(item);
+        // Another builder carries this build's items (its batch is in flight): no job here now, and nothing is blocked.
+        if (_current.Values.Any(j => j.Source == "ghost" && j.Cells is { Count: > 0 } && j.SourceId?.StartsWith(b.Id + "|", StringComparison.Ordinal) == true))
+        {
+            scan.InFlight = true;
+            return;
+        }
+        var (status, reason, alert) = HeldReason(w, b, item, ik, mat, reservedAway, scan.From);
+        scan.Held ??= (status, reason, alert, $"build {b.Id}: {reason}{ShortSource(mat)}");
+    }
+
+    /// <summary>Why a build holds for an item: being crafted, reserved for an earlier build (waiting), else short (blocked; alerted unless
+    /// the materials pass already said what's short and why).</summary>
+    private (string Status, string Reason, bool Alert) HeldReason(IStoryWorld w, BuildState b, string item, (int Id, int Meta) ik, BuildMaterial? mat, bool reservedAway, P3 from)
+    {
+        int need = b.Ghosts.Count(x => x.Job && x.State is "todo" or "leased" && (x.Item ?? "") == item);
+        var display = w.Data.DisplayName(ik.Id, ik.Meta).ToLowerInvariant();
+        if (mat is { Crafting: > 0 }) return ("waiting", $"waiting for {mat.Crafting} {display} (being crafted)", false);
+        if (reservedAway && Stored(ik, from).Count > 0) return ("waiting", $"waiting: the {display} in storage is reserved for an earlier build", false);
+        return ("blocked", $"need {need} {display}", mat is not { Short: > 0 });
+    }
+
+    /// <summary>The place job: the pawn's fair share of what is open (ten builders on one floor each get a part), no more than it can get
+    /// items for, as one batch reachable from one stand, with its fetches and the cells it clears first.</summary>
+    private ActiveJob PlaceJob(IStoryWorld w, PawnState p, GhostScan scan, GhostState g, string key, int cur, ToolPlan? clearTool, CellSupply s)
+    {
+        var b = scan.Build;
+        int openCells = scan.Todo.Count(x => (x.Item ?? "") == s.Item); // open or in a batch now: every builder's share of the whole
+        int cap = scan.Mine ? 1 : Math.Min(Math.Clamp((int)Math.Ceiling(openCells / (double)scan.Builders), 1, BatchMax), s.Have + s.Stored);
+        var (cells, stand) = Batch(w, b, g, cap, scan.From, p.Name, StoryBlocks.Replaceable.Contains(cur) ? -1 : cur);
+        var (fetch, takes) = BatchFetch(s.Stores, Math.Max(0, cells.Count - s.Have));
+        var want = w.Data.BlockExists(g.Id) ? w.Data.Block(g.Id).Name : null;
+        var clear = cells.Where(c => !StoryBlocks.Replaceable.Contains(w.Block(c.At.X, c.At.Y, c.At.Z).Id)).Select(c => c.At.ToString()).ToList();
+        var label = cells.Count == 1 ? $"building {b.Label}" : $"building {b.Label}: {cells.Count} blocks";
+        var item = s.Item;
+        var job = Job(WorkTypes.Build, "place", label, g.At, key, "ghost", $"{b.Id}|{g.At}", "working",
+            f => PlaceFields(f, item, want, cells, clear, g, stand, fetch), xp: Math.Min(60, 8 + 4 * cells.Count));
+        job.Takes.AddRange(takes);
+        var claimed = Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
+        CountRedo(w, b, cells, claimed);
+        return claimed;
+    }
+
+    /// <summary>What a batch fetches: from the nearest stores first, as much as it lacks.</summary>
+    private (JsonArray Fetch, List<(P3, Stack)> Takes) BatchFetch(List<(StorageState Store, Stack Stack, int N)> stores, int fetchN)
+    {
+        var fetch = new JsonArray();
+        var takes = new List<(P3, Stack)>();
+        foreach (var (st, stack, n) in stores)
+        {
+            if (fetchN <= 0) break;
+            int t = Math.Min(n, fetchN);
+            fetchN -= t;
+            fetch.Add(new JsonObject { ["from"] = st.Chest.ToString(), ["item"] = ItemName(stack.Id, stack.Meta), ["n"] = t });
+            takes.Add((st.Chest, stack with { Count = t }));
+        }
+        return (fetch, takes);
+    }
+
+    private void PlaceFields(JsonObject f, string item, string? want, List<GhostState> cells, List<string> clear, GhostState g, P3? stand, JsonArray fetch)
+    {
+        f["block"] = item;
+        if (want != null) f["want"] = want; // what the cell shows once built: already there = done
+        f["cells"] = new JsonArray(cells.Select(c => (JsonNode)c.At.ToString()).ToArray());
+        if (clear.Count > 0) f["clear"] = new JsonArray(clear.Select(c => (JsonNode)c).ToArray());
+        if (g.Facing is { } fc) f["facing"] = fc;
+        // A design's turned blocks (a furnace's front, stairs, a log's axis, a wall torch): each cell's meta, placed with place_turned
+        // (docs/web/story-mode.md "Rotation").
+        if (cells.Any(c => MineClaw.World.BlockOrientation.Turns(c.Id, c.Meta, Modern)))
+            f["metas"] = new JsonArray(cells.Select(c => (JsonNode)c.Meta).ToArray());
+        if (stand is { } sp) f["stand"] = sp.ToString(); // where the whole batch is within reach
+        if (fetch.Count > 0) f["fetch"] = fetch;
+    }
+
+    /// <summary>A wrong-turned cell this batch takes back and places again: its one second chance, counted when handed out.</summary>
+    private void CountRedo(IStoryWorld w, BuildState b, List<GhostState> cells, ActiveJob claimed)
+    {
+        var redo = cells.Where(c => w.Block(c.At.X, c.At.Y, c.At.Z) is var (rid, rmeta) && WrongTurn(c, rid, rmeta, Modern))
+            .Select(c => $"g:{b.Id}|{c.At}").ToList();
+        if (redo.Count > 0 && claimed.Assign is { } assign)
+            claimed.Assign = () => { assign(); foreach (var k in redo) _turnRedo[k] = _turnRedo.GetValueOrDefault(k) + 1; };
+    }
+
+    /// <summary>Nothing here for this pawn: a material is out, the open cells are another builder's, or the level below isn't built yet.</summary>
+    private void NoteBuildHeld(BuildState b, ref GhostScan scan, int openCount)
+    {
+        if (scan.Held is { } h)
+        {
+            SayBuildHeld(b, h.Status, h.Reason, h.Alert);
+            Blocked(h.Note);
+        }
+        else if (scan.InFlight) Blocked($"build {b.Id}: its last items are on their way with another builder");
+        else if (openCount == 0) Blocked($"build {b.Id}: the level below is still being built");
+        else Blocked($"build {b.Id}: its open cells are taken or backing off");
+    }
+
+    /// <summary>The build's held status and reason; said once per reason (the build turns active between, while its other materials go in).</summary>
+    private void SayBuildHeld(BuildState b, string status, string reason, bool alert)
+    {
+        if (b.Status == status && b.Reason == reason) return;
+        b.Status = status; b.Reason = reason; b.Rev = Touch();
+        if (alert && _buildBlockSaid.GetValueOrDefault(b.Id) != reason) Alert("warn", $"Build {b.Id} ({b.Kind}) is blocked: {reason}");
+        _buildBlockSaid[b.Id] = reason;
     }
 
     /// <summary>The seeds of a level in order: support first (touching something solid), then away from other pawns' batches, then nearest.</summary>
@@ -695,6 +833,8 @@ public sealed partial class StoryColony
             if (soft < SoftLimit) { _skip[key] = Now + SoftRest; return; }
             _softFails.Remove(key);
         }
+        // A pour cell with nothing to pour against won't take a retry either (live 11-04: 371 of them, each tried 6 times): blocked at once.
+        if (StoryConstruction.IsLiquid(g) && why.Contains("nothing beside or under", StringComparison.Ordinal)) _ghostFails[id] = Math.Max(_ghostFails.GetValueOrDefault(id), 2);
         int n = _ghostFails[id] = _ghostFails.GetValueOrDefault(id) + 1;
         if (!counted) _skip[key] = Now + Backoff(n);
         if (g.State is "leased" or "todo") g.State = n >= 3 ? "blocked" : "todo";
