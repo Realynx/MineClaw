@@ -3,7 +3,6 @@
 // (id × meta × face × fancy; id × meta × seeded neighbourhoods) or a seeded random world, so any output change shows up
 // as a digest mismatch. The digests hash in-memory values only (no files), so they don't depend on line endings.
 
-import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { BlockEntityDto } from '../src/types';
 import { meshSection, type SectionMesh } from '../src/mesh/mesher';
@@ -12,38 +11,8 @@ import { cacheKey, potContents, resolveState, skullType, type Nb } from '../src/
 import { tileFor } from '../src/mesh/beta/textures';
 import { meshAssets } from '../src/atlas/assets';
 import { storeWith, type B } from './helpers';
+import { Digest, rng } from './digest';
 import { pack1122, packBeta, table1122, tableBeta } from './pack';
-
-/** mulberry32: a small seeded PRNG so the inputs are the same on every run. */
-export function rng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-export class Digest {
-  private readonly h = createHash('sha256');
-  add(s: string): void {
-    this.h.update(s);
-    this.h.update('\n');
-  }
-  bytes(a: ArrayBufferView | null | undefined): void {
-    if (!a) {
-      this.add('null');
-      return;
-    }
-    this.add(`${a.constructor.name}:${a.byteLength}`);
-    this.h.update(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
-  }
-  hex(): string {
-    return this.h.digest('hex').slice(0, 32);
-  }
-}
 
 // Ids that the neighbour-dependent properties look for, drawn more often than chance.
 const INTERESTING = [0, 0, 0, 1, 2, 3, 17, 18, 20, 26, 51, 53, 54, 55, 64, 67, 69, 75, 76, 77, 78, 80, 85, 86, 93, 94, 101, 102, 103, 104, 105, 106, 107, 108, 113, 130, 131, 134, 139, 143, 146, 147, 149, 151, 152, 160, 161, 175, 178, 183, 188, 193, 203, 218, 219];
