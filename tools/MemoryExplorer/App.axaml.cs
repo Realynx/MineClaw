@@ -64,31 +64,38 @@ public sealed class StartupOptions
         var o = new StartupOptions();
         for (int i = 0; i < args.Length; i++)
         {
-            string? Next() => i + 1 < args.Length ? args[++i] : null;
-            switch (args[i].ToLowerInvariant())
-            {
-                case "--db": o.Db = Next(); break;
-                case "--config": o.Config = Next(); break;
-                case "--page": o.Page = Next(); break;
-                case "--theme": o.Theme = Next()?.ToLowerInvariant(); break;
-                case "--screenshot": o.Screenshot = Next(); break;
-                case "--query": o.Query = Next(); break;
-                case "--node": o.Node = int.TryParse(Next(), out var n) ? n : null; break;
-                case "--graph": o.Graph = true; break;
-                case "--graph-layout": o.GraphLayout = Next()?.ToLowerInvariant(); o.Graph = true; break;
-                case "--color-by": o.ColorBy = Next()?.ToLowerInvariant(); break;
-                case "--focus": o.Focus = int.TryParse(Next(), out var fo) ? fo : null; o.Graph = true; break;
-                case "--tip": o.Tip = int.TryParse(Next(), out var tp) ? tp : null; break;
-                case "--freecam-profile": o.FreecamProfile = Next(); break;
-                case "--livehive-watch": o.LiveHiveWatch = Next(); break;
-                case "--profile-tab": o.ProfileTab = Next()?.ToLowerInvariant(); break;
-                case "--profile-seconds": o.ProfileSeconds = double.TryParse(Next(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ps) ? ps : 15; break;
-                case "--renderer": o.Renderer = Next()?.ToLowerInvariant(); break;
-                case "--profile-size":
-                    if (Next()?.Split('x') is [var pw, var ph] && int.TryParse(pw, out var iw) && int.TryParse(ph, out var ih)) o.ProfileSize = (iw, ih);
-                    break;
-            }
+            if (!Flags.TryGetValue(args[i].ToLowerInvariant(), out var apply)) continue;
+            apply(o, () => i + 1 < args.Length ? args[++i] : null);
         }
         return o;
     }
+
+    /// <summary>Each flag (lower case) and how it reads its value: <c>next()</c> takes the following argument (null at the end).</summary>
+    private static readonly Dictionary<string, Action<StartupOptions, Func<string?>>> Flags = new(StringComparer.Ordinal)
+    {
+        ["--db"] = (o, next) => o.Db = next(),
+        ["--config"] = (o, next) => o.Config = next(),
+        ["--page"] = (o, next) => o.Page = next(),
+        ["--theme"] = (o, next) => o.Theme = next()?.ToLowerInvariant(),
+        ["--screenshot"] = (o, next) => o.Screenshot = next(),
+        ["--query"] = (o, next) => o.Query = next(),
+        ["--node"] = (o, next) => o.Node = Int(next()),
+        ["--graph"] = (o, _) => o.Graph = true,
+        ["--graph-layout"] = (o, next) => { o.GraphLayout = next()?.ToLowerInvariant(); o.Graph = true; },
+        ["--color-by"] = (o, next) => o.ColorBy = next()?.ToLowerInvariant(),
+        ["--focus"] = (o, next) => { o.Focus = Int(next()); o.Graph = true; },
+        ["--tip"] = (o, next) => o.Tip = Int(next()),
+        ["--freecam-profile"] = (o, next) => o.FreecamProfile = next(),
+        ["--livehive-watch"] = (o, next) => o.LiveHiveWatch = next(),
+        ["--profile-tab"] = (o, next) => o.ProfileTab = next()?.ToLowerInvariant(),
+        ["--profile-seconds"] = (o, next) => o.ProfileSeconds =
+            double.TryParse(next(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ps) ? ps : 15,
+        ["--renderer"] = (o, next) => o.Renderer = next()?.ToLowerInvariant(),
+        ["--profile-size"] = (o, next) =>
+        {
+            if (next()?.Split('x') is [var pw, var ph] && int.TryParse(pw, out var iw) && int.TryParse(ph, out var ih)) o.ProfileSize = (iw, ih);
+        },
+    };
+
+    private static int? Int(string? s) => int.TryParse(s, out var n) ? n : null;
 }
