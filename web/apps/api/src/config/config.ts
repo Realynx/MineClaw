@@ -189,45 +189,53 @@ function devDefaults(cwd: string): Record<string, unknown> {
   };
 }
 
-export function loadConfig(opts: LoadOptions = {}): LoadedConfig {
-  const argv = opts.argv ?? process.argv.slice(2);
-  const env = opts.env ?? process.env;
-  const cwd = opts.cwd ?? process.cwd();
-  const nodeEnv = env.NODE_ENV ?? '';
-  const dev = argv.includes('--dev') || nodeEnv === 'development';
+type Layer = Record<string, unknown>;
 
-  let merged: Record<string, unknown> = dev ? devDefaults(cwd) : {};
-  if (nodeEnv === 'test') merged = deepMerge(merged, { web: { validateResponses: 'strict', logLevel: 'silent' } });
-
+/** `--config a.json,b.json` or MINECLAW_WEB_CONFIG, else /etc/mineclaw-web/config.json when it exists. */
+function configFiles(argv: readonly string[], env: NodeJS.ProcessEnv): string[] {
   const fileArg = argValue(argv, '--config') ?? env.MINECLAW_WEB_CONFIG;
-  const files = fileArg
-    ? fileArg
-        .split(',')
-        .map((f) => f.trim())
-        .filter(Boolean)
-    : existsSync('/etc/mineclaw-web/config.json')
-      ? ['/etc/mineclaw-web/config.json']
-      : [];
-  for (const f of files) {
-    const path = isAbsolute(f) ? f : resolve(cwd, f);
-    const json = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-    merged = deepMerge(merged, normalizeKeys(json) as Record<string, unknown>);
-  }
-  merged = deepMerge(merged, envOverrides(env));
+  if (fileArg)
+    return fileArg
+      .split(',')
+      .map((f) => f.trim())
+      .filter(Boolean);
+  return existsSync('/etc/mineclaw-web/config.json') ? ['/etc/mineclaw-web/config.json'] : [];
+}
 
+/** Dev defaults (`--dev` or NODE_ENV=development), then the test settings under NODE_ENV=test. */
+function baseLayer(dev: boolean, nodeEnv: string, cwd: string): Layer {
+  const merged: Layer = dev ? devDefaults(cwd) : {};
+  return nodeEnv === 'test' ? deepMerge(merged, { web: { validateResponses: 'strict', logLevel: 'silent' } }) : merged;
+}
+
+function readConfigFile(f: string, cwd: string): Layer {
+  const path = isAbsolute(f) ? f : resolve(cwd, f);
+  const json = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  return normalizeKeys(json) as Layer;
+}
+
+/** The bridge key (or key file) from MINECLAW_BRIDGE_KEY / MINECLAW_BRIDGE_KEY_FILE. */
+function bridgeKeyLayer(merged: Layer, env: NodeJS.ProcessEnv): Layer {
   const keyFromEnv = env.MINECLAW_BRIDGE_KEY;
   const keyFileFromEnv = env.MINECLAW_BRIDGE_KEY_FILE;
   if (keyFromEnv) merged = deepMerge(merged, { bridge: { key: keyFromEnv } });
   if (keyFileFromEnv) merged = deepMerge(merged, { bridge: { keyFile: keyFileFromEnv } });
+  return merged;
+}
 
+/** `--mock-bridge`, `--port`, `--bind`. */
+function argvLayer(merged: Layer, argv: readonly string[]): Layer {
   if (argv.includes('--mock-bridge')) merged = deepMerge(merged, { bridge: { mock: true } });
   const port = argValue(argv, '--port');
   if (port) merged = deepMerge(merged, { web: { port: Number(port) } });
   const bind = argValue(argv, '--bind');
   if (bind) merged = deepMerge(merged, { web: { bind } });
-  if (opts.overrides) merged = deepMerge(merged, opts.overrides);
+  return merged;
+}
 
-  const bridge = (merged.bridge ?? {}) as Record<string, unknown>;
+/** The key from the key file when none is set; the mock bridge (never in production) gets a throwaway key. */
+function resolveBridge(merged: Layer, nodeEnv: string): Layer {
+  const bridge = (merged.bridge ?? {}) as Layer;
   if (!bridge.key && typeof bridge.keyFile === 'string' && bridge.keyFile) {
     bridge.key = readFileSync(bridge.keyFile, 'utf8').trim();
   }
@@ -236,19 +244,37 @@ export function loadConfig(opts: LoadOptions = {}): LoadedConfig {
     // The in-process mock bridge gets a throwaway key; it never leaves this process.
     bridge.key ??= randomBytes(32).toString('hex');
   }
-  merged.bridge = bridge;
+  return bridge;
+}
 
+/** The validated config; the error lists every issue (a bad bridge key never echoes the key). */
+function parseConfig(merged: Layer): ApiConfig {
   const parsed = ApiConfigSchema.safeParse(merged);
-  if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map(
-        (i) =>
-          `${i.path.join('.')}: ${i.path.join('.') === 'bridge.key' ? 'missing or shorter than 32 chars' : i.message}`,
-      )
-      .join('; ');
-    throw new Error(`invalid config: ${issues}`);
-  }
-  return { config: parsed.data, dev, files };
+  if (parsed.success) return parsed.data;
+  const issues = parsed.error.issues
+    .map(
+      (i) =>
+        `${i.path.join('.')}: ${i.path.join('.') === 'bridge.key' ? 'missing or shorter than 32 chars' : i.message}`,
+    )
+    .join('; ');
+  throw new Error(`invalid config: ${issues}`);
+}
+
+export function loadConfig(opts: LoadOptions = {}): LoadedConfig {
+  const argv = opts.argv ?? process.argv.slice(2);
+  const env = opts.env ?? process.env;
+  const cwd = opts.cwd ?? process.cwd();
+  const nodeEnv = env.NODE_ENV ?? '';
+  const dev = argv.includes('--dev') || nodeEnv === 'development';
+
+  let merged = baseLayer(dev, nodeEnv, cwd);
+  const files = configFiles(argv, env);
+  for (const f of files) merged = deepMerge(merged, readConfigFile(f, cwd));
+  merged = deepMerge(merged, envOverrides(env));
+  merged = argvLayer(bridgeKeyLayer(merged, env), argv);
+  if (opts.overrides) merged = deepMerge(merged, opts.overrides);
+  merged.bridge = resolveBridge(merged, nodeEnv);
+  return { config: parseConfig(merged), dev, files };
 }
 
 /** The sqlite path: `Web:DbPath` if set, else `<Web:DataDir>/web.db`. */
