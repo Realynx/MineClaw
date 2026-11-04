@@ -263,6 +263,7 @@ public sealed partial class StoryColony : IStoryPort
             {
                 case "progress":
                     cur.Progress = pct;
+                    if (cur.Source == "escape" && note != null) EscapeStep(body, note); // what a stuck pawn tries now
                     if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
                     if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
                     if (p != null) p.Rev = Bump();
@@ -414,6 +415,7 @@ public sealed partial class StoryColony : IStoryPort
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
+            PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
             // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
             foreach (var p in Pawns.Values)
             {
@@ -422,6 +424,7 @@ public sealed partial class StoryColony : IStoryPort
                 else if (!online) _online.Remove(p.Name);
             }
         }
+        SpeedTick(); // Fast / Faster on the pawn bodies, the Speed effects (StoryColony.Speed.cs)
         foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
         if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
         foreach (var name in restart)

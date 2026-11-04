@@ -69,7 +69,8 @@ There is one per colony. It holds:
 
   Jobs are leased so that two pawns never take the same tree, block or drop. The existing crew lease logic can be reused.
 - **State** is persisted in the agent db (new tables, `story_*`). It survives restarts, and the colony resumes.
-- **Pause.** "Pause colony" makes every pawn hold. There is no time control: the Minecraft server owns the clock.
+- **Pause.** "Pause colony" makes every pawn hold. There is no time control: the Minecraft server owns the clock. Fast and Faster
+  speed up the pawns' movement instead (see "Speed").
 
 ## Supervisor routes (bot)
 
@@ -116,13 +117,16 @@ storage is chests (see "Storage").
 {id, rev, since, full, at, time_of_day, time_frozen, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
  pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
- alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
+ alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state,kind]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null}, policies:[Policy], material_rules:[MaterialRule], materials:[MaterialInfo] (full only),
  removed:{zones:[id], designations:[id], builds:[id], storages:["x,y,z"]} (delta only)}
 ```
 
 A delta (`since=rev`) carries only the objects with a newer revision, plus every pawn (they move all the time) and `removed`.
+That holds for `ghosts.blocks` too: a delta lists only the ghosts that changed (often none), so the client merges them into
+what it holds by build and cell, and a build in `removed.builds` takes its ghosts with it (fixed 2026-11-04: the web replaced
+the whole list with each delta's, so the holograms and flat ghosts vanished a few seconds after the page loaded).
 Pass the answer's `rev` back as the next `since`. This is the `story` event source the bridge polls, at 2 Hz while a client
 watches.
 
@@ -338,21 +342,35 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   5. ask the colony for help (`story.stuck`).
 - **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute, or a pawn under ground (three blocks of
   natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and with no queued order: the
-  pawn's next job is `escape` (label "stuck: getting out", "stuck? heading home", "under ground: heading back up"). It gets out by
-  itself, else walks home, else asks for help. A pawn that moved more than 4 blocks from where it got stuck is free again.
+  pawn's next job is `escape` (label "stuck: getting out (attempt N)", "stuck? heading home", "under ground: heading back up").
+- **Stuck is sticky (live 11-04, a ravine at y 49 under home at y 63).** Pawns stuck in the ravine went back to work after a few
+  blocks' walk along its floor and failed task after task, about 100 failures each in 20 minutes. A stuck pawn now gets only escape work
+  (never a regular task) until its escape walks it home. That walk is the path check: the `escape` job is done only when `go(home)`
+  succeeds. The state carries `stuck: {since, at, reason, step, attempts}`; `step` is what it tries now. Each step goes to the log
+  ("stuck: no way home (…): trying a staircase toward home", "teleporting home (rescue_teleport)").
+- **The escape job:**
+  1. out of a pit, a cave or water by itself (above);
+  2. walk home (a ravine with a walkable slope ends here);
+  3. with no walkable way home, whatever the shape (a ravine, a canyon, a deep hole), climb toward home (`storyPit(home, climb)`):
+     walk to the floor cell nearest home (`approach`), then cut a staircase up the wall toward home, one step up a block, under the
+     same safe rules as above. Pillar when the wall can't be cut, dig for blocks when it has none. It stops level with home, and then
+     walks home again;
+  4. nothing works: `story.stuck`.
 - **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
   `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
   needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
   **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
   coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
-  why.
+  why. Blocks are thrown into a pit only: a pawn with no way home from a ravine or a canyon is teleported at once, because a rescuer
+  would only walk in after it. A teleport counts once the pawn shows up at home. When it hasn't within 20 s (the server refused the
+  `/tp`), one warning says so and the colony doesn't try again.
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.
 - **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
   Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
   ignored (see Defending).
-- The pawn's row carries `stuck` (why, or null).
+- The pawn's row carries `stuck` (`{since, at, reason, step, attempts}`, or null); the web lists stuck pawns as a condition.
 
 ### Keeping loot while gathering (added 2026-11-04)
 
@@ -376,6 +394,38 @@ later while they keep mining until the job is done or their inventory is full."
   the one it carries. The block under way finishes as it started (never cut mid-swing). A rule that now waits (an enchantment that isn't
   there, fallback `wait`) leaves the rest of the field waiting with that reason and no failure.
 
+### Reaching high blocks (added 2026-11-04)
+
+Fox 11-04: "With the blocks-out-of-reach prompt for mining, cutting or harvesting, it should nerd-pole up to reach those blocks on its
+own and destroy the nerd pole on the way back down. Not many blocks should truly be out of reach."
+
+- **Digging (mine, cut, harvest, deconstruct, a build's dig cells): `story.dig(at, job)`.** A dig refused for reach ("can't
+  reach", "… blocks from my eyes") goes through `storyReach` (zero tokens).
+  - The scan picks a column under the target (a ceiling) or beside it, up to 2 away. The column needs ground under it (never a
+    liquid) and must be free all the way up, with no lava beside it. A column under the target is not used when sand or gravel sits
+    over the target.
+  - It picks the fewest blocks to stack (at most 24, never above the build height) until the target's centre is within 4 blocks of
+    the eyes.
+  - The pawn walks there and nerd-poles up: each step is `place(block, its own feet)`, a pillar step (jump, place under itself, land
+    on it). It digs the target, then digs its pillar back down from the top, standing on each block it placed and collecting them
+    again. Nothing is left behind.
+  - A walk that can't get within reach of a block high above stops below it instead (`story.go`), and the dig climbs from there.
+- **Blocks to climb with:**
+  - the cheap blocks it carries: dirt, cobblestone, netherrack, planks, stone, sandstone;
+  - else the job's `pillar` stack from storage. The colony adds `{from, item, n}` to a job more than 3 blocks above the pawn, or a
+    tall tree, when the pawn carries fewer than it needs. It is taken only if the climb happens;
+  - else dirt dug around the column (never the ground under its feet).
+- **The pillar stack:** a pawn keeps a kind of pillar block (dirt first, then cobblestone, netherrack) out of its store trips while it
+  carries no more than option `pillar_stack` (default 16, 0 = none). A bigger pile is stored, and fetched back when a climb needs it.
+- **Tall trees (`chop_tree`, client):** in a normal world the tree pillar may now be 12 blocks high instead of 2, using dirt as well
+  as cobble (skyblock keeps dirt and the short pillar). Each step goes straight on from the top of its own pillar. The pillar is dug
+  back down from the top afterwards. Build-mode `goto` and clutch blocks count dirt as a scaffold block in a normal world too.
+- **Truly out of reach** (only liquid under it, no free column, more than 24 up): "out of reach even from a pillar: …". The target
+  rests for that pawn; once 3 different pawns (fewer when fewer are online) couldn't reach it, the designation waits with the reason
+  (`wait`). It is not counted as a failure and raises no alert.
+- Not yet: several targets from one pillar top (each high block is its own climb; a tree is one job), a short staircase instead of a
+  pillar, the night-outside rule while climbing.
+
 ### Defending (added 2026-11-04)
 
 Live 11-04: "attack failed: no skeleton within 16" ×15, creeper ×8, zombie ×7 for one pawn (82 failures). The merged view showed every
@@ -387,6 +437,50 @@ that meets all of these:
 - **Not just missed by this pawn.** One it couldn't find rests 60 s for that pawn only. That is not a failure: no alert, no rest.
 
 Among guards with nothing better to do (idle or wandering), the nearest goes. Drafted pawns' attack orders are separate and unchanged.
+
+### Speed: Fast and Faster (added 2026-11-04)
+
+Fox 11-04: "next to the pause button on the bottom right, add a Fast and Faster mode. They should just change the movement speed
+through the network itself." There is still no time control (the server owns the clock): Fast and Faster make the colony's pawns
+**move** about 2× and 3× as fast. Main and every other body are never touched.
+
+- **The option.** `POST …/options {speed: normal|fast|faster, speed_effect?: bool}`; state `options.speed` (default `normal`) and
+  `options.speed_effect` (default on), saved with the colony. Each pawn carries `speed: {level, multiplier, requested,
+  server_factor, rollbacks}` (null while offline): `level`/`multiplier` are what the body actually runs at.
+- **How (client).** The director gives every online pawn body the multiplier each tick (`MinecraftClient.SpeedMultiplier`, 1..3;
+  default 1 for every body). After the normal physics tick (input, friction, gravity, jumps, falls all vanilla), the body is moved
+  again by `(factor − 1) ×` what the tick moved horizontally, with the version's own `Entity.move` (b1.8.1 `PlayerPhysics.MoveEntity`,
+  ySize zeroed like the server's replay; 1.12.2 `Physics1122.Move`: the same swept collision, step-up and ground contact), in
+  segments of at most 0.75 blocks, **each its own position packet** after the normal tick's own packet (`SpeedBoost`,
+  MinecraftClient.Speed.cs). Velocity, fall distance and fall damage stay the normal tick's.
+- **Only where it's safe.** On the ground (not sneaking, not in a web, never near lava), swimming (capped at ×1.5) and climbing a
+  ladder up (×1.5, the feet must stay on the ladder); never in the air, so jumps, gap jumps, drops and falls are vanilla. Each extra
+  move must end with ground within a step below and out of liquids (in water when swimming), else it is halved, then dropped. An edge,
+  drop or liquid within about a block past where it would end lowers the factor to ×1.25. Only the path follower boosts, and only
+  as far as its **room** allows (`PathFollower.BoostRoom`: a plain walk or diagonal to its cell centre plus the steps that go on in
+  a straight line at the same floor, at most 1 block a tick, so no cell is skipped; 0 for precise steps, actions, sneaking, jumps,
+  drops, bridges, pillars, doors and the last step). A boosted body keeps sprinting on straights. Fights, holds, planned drops,
+  gap jumps, void steps and the 10 ticks after any teleport are never boosted. Stuck detection and escape work as before (they
+  count ticks, not distance).
+- **The server's checks.** Vanilla replays each packet's delta with that same `Entity.move`: "moved wrongly" past 0.25 blocks off
+  (horizontally; b1.8.1 `NetServerHandler`, 1.12.2 `NetHandlerPlayServer`) means a teleport back, "moved too quickly" past 10
+  blocks a packet a kick (b1.8.1) or a teleport back (1.12.2, against the start of the server tick, × the packets in it). One
+  packet per collision pass keeps the replay identical; no packet carries more than about 1.1 blocks; b1.8.1's stance stays legal.
+- **Rollback safety.** A correction (a teleport back within 8 blocks, not a login, respawn or `/tp`) within 2 s of a boosted tick
+  counts against the boost; two within 30 s step the body down one level (3 → 2 → 1) and the colony raises one alert per level:
+  "Server rejected faster movement — using Fast" (or "— using normal speed"). The HUD marks the level the slowest pawn runs at.
+  Choosing a speed again clears the step-down.
+- **Speed effect (1.12.2, `speed_effect`).** With an op account (main is op: the server's word, else `Supervisor:Viewer:OpAccounts`),
+  Fast and Faster also ask the server for `/effect <pawn> minecraft:speed 30 1|2 true` (Speed II / III: +40 % / +60 % on the
+  movement attribute, which the 1.12.2 physics applies), renewed every 20 s, through the command gate's scoped exception
+  (`CommandGate.ArmManagedSpeed`: only that shape, only the hive's own managed accounts, never main or a player, never when the
+  config blocks `/effect`; audited). The server then sees part of the speed as legit and the client adds only the rest
+  (`multiplier / server_factor`). Back to normal, the option off, a pawn leaving or a released colony clears it
+  (`/effect <pawn> minecraft:speed 0`). b1.8.1 has no effects: the client boost only.
+- **Measured** (the fake server enforcing both checks, 30-block corridor, sprinting, timed from the first step; 5 ms test ticks):
+  b1.8.1 131 ticks normal, 67 fast (1.96×), 49 faster (2.67×); 1.12.2 127 / 67 (1.90×) / 49 (2.59×); zero rollbacks, zero
+  "moved wrongly", largest packet under 0.8 blocks. Faster stays under 3× because accelerating and braking for the goal run at
+  vanilla speed.
 
 ### Idle behaviour (added 2026-11-03)
 
@@ -498,6 +592,15 @@ Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
 - Add: `POST …/designations` `{op:"add", kind: chop|cut|harvest|mine|haul|hunt|deconstruct|forbid|allow, area?:[x1,y1,z1,x2,y2,z2] | blocks?:[[x,y,z]], filter?: all|ores|stone|soil}`
   → `{count, targets:[[x,y,z]] | [entity id]}`.
 - Remove: `{op:"remove"|"cancel", kind?, area? | blocks? | ids?}` → `{count, removed:[id]}`.
+- **Marks on entities follow their entity (added 2026-11-04).** Fox: "When I have items selected for hauling and they get hauled to a
+  chest or into an inventory, the hauling icons don't go away, but the items do."
+  - A haul trip takes the designated drops within 6 blocks of the first one with it (each leased, "(+2 more)").
+  - A collect job done completes the haul designation of every drop it leased, standing pick-ups included.
+  - Every 3 s, a haul, hunt or forbid designation whose entity the colony's view hasn't shown for 8 s goes (picked up by a player or
+    another bot, killed, despawned). That happens only while the column where the entity lay is in view and no pawn's job holds it.
+  - A drop that merged into a stack of the same item right beside it passes its designation on to that stack (or simply goes when
+    that stack is designated already).
+  - Each removal is in the state delta's `removed.designations`, so the web clears the icon.
 
 The area expands at designation time to the matching targets in the bot's world view. Each target is one designation, at most
 4096 per request; targets already designated are skipped.
@@ -1134,7 +1237,7 @@ Build state gains `materials: [{item, label, need, have, crafting, short, via: c
 `no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
 recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
 
-`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay, allow_lava?}` → the options (see "Idle behaviour" for `idle`); the colony state carries `options`.
+`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay, speed?: normal|fast|faster, speed_effect?, allow_lava?}` → the options (see "Idle behaviour" for `idle`, "Speed" for `speed`, "Water" for `allow_lava`); the colony state carries `options`.
 
 ### Architect palette and tiers (added 2026-11-03)
 
@@ -1356,6 +1459,16 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
     way, green where it fits and red where a block is in the way. The viewer setting "Build holograms" (default on) turns
     them off; the map then draws the flat ghosts as before. Measured (SwiftShader, 1440 × 900, top view at the default
     zoom, the mock colony): 58 fps before, 48 fps with a 2,000-cell build queued, 41 fps in the angled view.
+    Fixed 2026-11-04 (Fox: "I still can't see holograms for queued builds like chests, or other blocks"): the live bot sends
+    only the changed ghosts in a delta, and the web replaced its whole list with them, so every hologram went with the first
+    catch-up a few seconds after the page loaded (the mock sends all of them, so mock mode never showed it). The client now
+    merges ghost deltas (see "The colony state"). Ghosts are read by their 8th element: a `dig` ghost carries the block
+    expected there, and is drawn as a red outline until the cell is air (by id it looked built and was hidden). Every block
+    kind is the section mesher's own model, block entities included: chests (a double chest as one), beds, signs, banners,
+    skulls, shulker boxes, doors, torches, slabs, stairs, fences, panes, ladders. A b1.8.1 door's upper half takes the
+    lower half's facing (the queue sends it as plain 8, the 1.12.2 form, so the halves stood on different sides of the
+    cell). A furniture tool's placement (chest, bed,
+    furnace…) previews as a hologram too. The test hook `hologramKinds()` counts each build kind's queued and drawn cells.
 - **Selection.**
   - A left-drag box selects many pawns, or objects (trees, blocks, drops) in designation mode.
   - A click selects one, shift adds, a double-click selects every visible pawn of the same kind, and Esc clears.
@@ -1364,6 +1477,11 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a mob gives attack
   - a drop gives haul
   - a design gives build
+- **Speed (added 2026-11-04).** Beside Pause in the bottom-right controls, a RimWorld-style segmented control ▶ / ▶▶ / ▶▶▶
+  (normal, fast, faster) sets `options.speed`; its tooltips say it is a movement-speed boost for the colony's pawns, not time.
+  Keys **1 / 2 / 3** set it while no tool is in hand (the select tool); with a tool they stay the tool's (Mine / Deconstruct
+  height modes, a structure tool's recent materials). A level some pawn was stepped down to by the server's rejections has a
+  warning ring. See "Speed" for what it does.
 - **Mining height (added 2026-11-03).** Live 11-03: Fox flattening the ground mined too deep, because a Mine drag took a whole
   storey (level − 1 to the wall height) and nothing showed how deep. A Mine or Deconstruct drag now has an explicit height mode,
   picked on the tool's options bar or with 1–5 while the tool is active:

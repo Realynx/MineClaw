@@ -33,7 +33,15 @@ internal sealed partial class JsRuntime
         {
             s.SafePoint();
             var toward = Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null;
-            return V(Story.PitScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, toward));
+            bool climb = Jint.Runtime.TypeConverter.ToBoolean(JsConvert.Arg(a, 1)); // no way home from here: climb toward it whatever the shape
+            return V(Story.PitScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, toward, climb));
+        });
+        // story.dig's eyes (Story/ReachScan.cs): a block above reach, the column to nerd-pole from and what to pole with.
+        H(h, "storyReach", a =>
+        {
+            s.SafePoint();
+            var at = (Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null) ?? throw ScriptSession.Bug("storyReach(at) needs a position");
+            return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at));
         });
         // story.pour's eyes: the liquid at a cell -> "water" | "lava" (a source: what a poured bucket leaves), "flowing_water" |
         // "flowing_lava" (a flow level, or falling), "" (no liquid). Zero tokens, no action.

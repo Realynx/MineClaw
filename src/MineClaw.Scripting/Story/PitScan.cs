@@ -32,7 +32,10 @@ public static class PitScan
     private static readonly HashSet<int> Terrain = [1, 2, 3, 7, 12, 13, 14, 15, 16, 21, 24, 48, 49, 56, 73, 74, 82, 87, 88, 97, 110, 121, 129, 153, 159, 172, 179, 243];
     private static readonly (int Dx, int Dz)[] Dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
-    public static JsonObject Scan(WorldState w, IGameData data, Vec3d pos, BlockPos? toward)
+    /// <param name="climb">No walkable way home from here (a ravine, a canyon, a deep hole the colony saw): treat it as a pit whatever
+    /// its size, never walk back down to a cave exit, and say which walkable cell is nearest <paramref name="toward"/> (<c>approach</c>:
+    /// the wall to cut the stair into).</param>
+    public static JsonObject Scan(WorldState w, IGameData data, Vec3d pos, BlockPos? toward, bool climb = false)
     {
         int H = w.WorldHeight;
         var feet = new BlockPos((int)Math.Floor(pos.X), (int)Math.Floor(pos.Y + 1e-6), (int)Math.Floor(pos.Z));
@@ -58,7 +61,8 @@ public static class PitScan
         var o = new JsonObject { ["feet"] = Fmt(feet), ["pit"] = false };
         bool water = Liquid(feet.X, feet.Y, feet.Z) || Liquid(feet.X, feet.Y + 1, feet.Z);
         bool cave = !water && Cover(feet.X, feet.Y, feet.Z) >= 1;
-        if (!water && !cave && Roofed(feet.X, feet.Y, feet.Z)) return o; // under a build's roof: a house, never dug out of
+        o["feet_y"] = feet.Y;
+        if (!water && !cave && !climb && Roofed(feet.X, feet.Y, feet.Z)) return o; // under a build's roof: a house, never dug out of
         if (!water && !Solid(feet.X, feet.Y - 1, feet.Z)) return o;   // in the air (falling, mid-jump): not stuck
         double Pref(int x, int z) => toward is { } t ? Math.Sqrt((double)(t.X - x) * (t.X - x) + (double)(t.Z - z) * (t.Z - z)) : 0;
 
@@ -92,7 +96,7 @@ public static class PitScan
         while (q.Count > 0 && !open)
         {
             var c = q.Dequeue();
-            if (cave && Cover(c.X, c.Y, c.Z) == 0) { exit = c; break; }
+            if (cave && !climb && Cover(c.X, c.Y, c.Z) == 0) { exit = c; break; }
             foreach (var (dx, dz) in Dirs)
             {
                 int x = c.X + dx, z = c.Z + dz;
@@ -115,10 +119,17 @@ public static class PitScan
             }
         }
         // It can walk away, or around a wide floor (an island, a courtyard): whatever failed, it isn't a pit.
-        if (!cave && (open || seen.Count > PitCells)) return o;
+        if (!cave && !climb && (open || seen.Count > PitCells)) return o;
         o["pit"] = true;
         if (cave) o["cave"] = true;
-        if (exit is { } e && e != feet) o["exit"] = Fmt(e);
+        if (!climb && exit is { } e && e != feet) o["exit"] = Fmt(e);
+        if (climb)
+        {
+            o["climb"] = true;
+            // The walkable cell nearest home: the stair starts from there (a ravine's floor runs along; its wall faces home).
+            if (toward != null && seen.OrderBy(c => Pref(c.X, c.Z)).ThenBy(c => -c.Y).FirstOrDefault() is var near && Pref(near.X, near.Z) < Pref(feet.X, feet.Z) - 0.5)
+                o["approach"] = Fmt(near);
+        }
         if (!cave)
         {
             // How high the rim is: the blocks a nerd-pole needs to step out.

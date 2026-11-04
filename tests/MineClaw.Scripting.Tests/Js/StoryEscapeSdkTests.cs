@@ -200,6 +200,85 @@ public sealed class StoryEscapeSdkTests
         Assert.All(rig.Norm().Where(c => c.StartsWith("dig ")), c => Assert.DoesNotContain(",64,", c));
     }
 
+    // ================================================================ ravines (live 11-04: pawns on a ravine floor cycled tasks forever)
+
+    private const string Home = "0,65,14";
+
+    /// <summary>Dirt ground (walk level 65) with a ravine along x: 3 wide (z −1..1), 13 deep (floor at 51, feet 52), 29 long, no slope.
+    /// The body on its floor; home 14 blocks north. goto: a step to a neighbouring cell (≤ 1 up), or anywhere once level with the
+    /// ground (<paramref name="slope"/>: the ravine has a walkable slope at one end, home is reachable from its floor).</summary>
+    private static (Rig Rig, Director Port) Ravine(bool slope = false)
+    {
+        var rig = Rig.Js();
+        var w = rig.World;
+        for (int x = -15; x <= 15; x++)
+            for (int z = -12; z <= 15; z++)
+                for (int y = 51; y <= 64; y++)
+                    w.SetBlock(x, y, z, x is >= -14 and <= 14 && z is >= -1 and <= 1 && y >= 52 ? 0 : Blocks.Dirt, 0);
+        w.Player.ServerTeleport(new Vec3d(0.5, 52, 0.5), 53.62, 0, 0, true);
+        var port = new Director();
+        rig.Host.Story = port;
+        BlockPos Feet() => new((int)Math.Floor(w.Player.Position.X), (int)Math.Floor(w.Player.Position.Y + 1e-6), (int)Math.Floor(w.Player.Position.Z));
+        bool Solid(int x, int y, int z) => MineClaw.World.BlockShapes.HasCollision(w, x, y, z);
+        rig.On["goto"] = (a, _) =>
+        {
+            var to = Pos(a, "to");
+            var f = Feet();
+            bool near = Math.Abs(to.X - f.X) <= 1 && Math.Abs(to.Z - f.Z) <= 1 && to.Y - f.Y <= 1;
+            bool stand = Solid(to.X, to.Y - 1, to.Z) && !Solid(to.X, to.Y, to.Z) && !Solid(to.X, to.Y + 1, to.Z);
+            if (!stand || !(near || slope || f.Y >= 63))
+                return Task.FromResult(ActResult.Fail($"no path to within 2 of ({to.X}, {to.Y}, {to.Z}) (no route); it's {to.Y - f.Y} blocks up; unreachable even by pillaring/bridging"));
+            w.Player.ServerTeleport(new Vec3d(to.X + 0.5, to.Y, to.Z + 0.5), to.Y + 1.62, 0, 0, true);
+            return Task.FromResult(ActResult.Success("arrived"));
+        };
+        rig.On["dig"] = (a, _) =>
+        {
+            var p = Pos(a, "at");
+            w.SetBlock(p.X, p.Y, p.Z, 0, 0);
+            return Task.FromResult(ActResult.Success("dug"));
+        };
+        return (rig, port);
+    }
+
+    [Fact]
+    public async Task A_pawn_on_a_ravine_floor_cuts_a_staircase_up_the_wall_toward_home_then_walks_home()
+    {
+        var (rig, port) = Ravine();
+        using var _ = rig;
+        var outcome = await Run(rig, $"return JSON.stringify(story.work({{ id: 'e1', kind: 'escape', at: '{Home}', dist: 2, s: 1 }}))");
+        Assert.Contains("\"ok\":true", outcome);
+        var p = rig.World.Player.Position;
+        Assert.Equal(65, (int)Math.Floor(p.Y)); // at home, on the ground
+        var digs = rig.Norm().Where(c => c.StartsWith("dig ")).ToList();
+        Assert.True(digs.Count >= 12, string.Join(" | ", digs)); // a stair cut into the wall, one step a block
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("place ")); // no blocks needed
+        Assert.All(digs, d => Assert.DoesNotContain(",51,", d)); // never below the floor
+        Assert.Empty(port.Stuck);
+    }
+
+    [Fact]
+    public async Task A_ravine_with_a_walkable_slope_is_walked_out_of_without_digging()
+    {
+        var (rig, port) = Ravine(slope: true);
+        using var _ = rig;
+        var outcome = await Run(rig, $"return JSON.stringify(story.work({{ id: 'e1', kind: 'escape', at: '{Home}', dist: 2, s: 1 }}))");
+        Assert.Contains("\"ok\":true", outcome);
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("dig "));
+        Assert.Empty(port.Stuck);
+    }
+
+    [Fact]
+    public async Task A_ravine_with_walls_it_can_t_cut_asks_the_colony_for_help()
+    {
+        var (rig, port) = Ravine();
+        using var _ = rig;
+        for (int x = -15; x <= 15; x++)
+            for (int y = 52; y <= 64; y++) { rig.World.SetBlock(x, y, 2, Blocks.Obsidian, 0); rig.World.SetBlock(x, y, -2, Blocks.Obsidian, 0); }
+        var outcome = await Run(rig, $"return JSON.stringify(story.work({{ id: 'e1', kind: 'escape', at: '{Home}', dist: 2, s: 1 }}))");
+        Assert.Contains("\"stuck\":true", outcome);
+        Assert.Contains("no way home", Assert.Single(port.Stuck));
+    }
+
     [Fact]
     public void Pit_scan_says_where_it_is_and_never_calls_a_roofed_room_a_pit()
     {

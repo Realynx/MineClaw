@@ -18,6 +18,7 @@ import {
   type StoryBuildItem,
   type StoryOnlineBlocked,
   type StoryZone,
+  type StorySpeed,
   waterItems,
 } from '@mineclaw/contracts';
 import { Maximize2, Minimize2 } from 'lucide-react';
@@ -37,6 +38,7 @@ import {
   EMPTY_SELECTION,
   orderAi,
   orderPawns,
+  slowestSpeed,
   splitBodies,
   type DirectorCall,
   type Selection,
@@ -118,6 +120,7 @@ import {
   type HeightMode,
   type MenuItem,
   type Target,
+  stalledIn,
 } from './tools';
 import type { StorageClip } from './storage';
 import { AssignPanel } from './assign/AssignPanel';
@@ -485,6 +488,17 @@ export function StoryMode() {
       return;
     }
     if (!shift && tool.kind !== 'zone') setTool({ kind: 'select' }); // zone tools stay in hand (Shift extends a zone)
+    if (tool.kind === 'designate' && tool.id === 'retry') {
+      // Failed or resting designations under the box (any height) are tried again now; nothing new is designated.
+      const ids = stalledIn(state?.designations ?? [], [r.rect[0], r.rect[1], r.rect[2], r.rect[3]]);
+      if (!ids.length) return say('No failed or resting designations there');
+      if (!canWrite) return say('Needs the story role', 'warn');
+      await write('story.designations', { op: 'retry', ids }).then(
+        () => say(`Trying ${ids.length} designation${ids.length === 1 ? '' : 's'} again now`),
+        (e) => say(errorText(e), 'warn'),
+      );
+      return;
+    }
     if (tool.kind === 'designate' && hasHeight(tool.id) && r.height) {
       // Exactly the cells the preview showed (its height mode), as blocks: the director never expands them deeper.
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
@@ -742,6 +756,25 @@ export function StoryMode() {
     );
   }, [state, canWrite, write, say]);
 
+  // Fast / Faster: a movement-speed boost for the colony's pawns (docs/web/story-mode.md "Speed").
+  const setSpeed = useCallback(
+    (speed: StorySpeed) => {
+      if (!state || !canWrite || state.options?.speed === speed) return;
+      void write('story.options', { speed }).then(
+        () =>
+          say(
+            speed === 'normal'
+              ? 'Normal speed'
+              : speed === 'fast'
+                ? 'Fast: pawns move about twice as fast'
+                : 'Faster: pawns move about three times as fast',
+          ),
+        (e) => say(errorText(e), 'warn'),
+      );
+    },
+    [state, canWrite, write, say],
+  );
+
   const pickChest = useCallback(
     () =>
       new Promise<V3 | null>((resolve) => {
@@ -761,7 +794,7 @@ export function StoryMode() {
         e.preventDefault();
         return;
       }
-      const a = keyAction(e, tool.kind === 'build', heightTool !== null, matTool !== null);
+      const a = keyAction(e, tool.kind === 'build', heightTool !== null, matTool !== null, tool.kind === 'select');
       if (!a) return;
       e.preventDefault();
       if (a === 'materialNext' || a === 'materialPrev' || a.startsWith('recent:')) {
@@ -796,6 +829,7 @@ export function StoryMode() {
         lastDraft.current = { key, drafted: anyUndrafted, at: Date.now() };
         void draft(split.pawns, anyUndrafted);
       } else if (a === 'pause') togglePause();
+      else if (a.startsWith('speed:')) setSpeed(a.slice(6) as StorySpeed);
       else if (a === 'escape') {
         // A drag in progress is cancelled first (nothing happens on release); the key goes no further.
         if (map.current?.cancelDrag()) {
@@ -862,6 +896,7 @@ export function StoryMode() {
     selection,
     draft,
     togglePause,
+    setSpeed,
     focusBody,
     xrayOn,
     toggleFullscreen,
@@ -1396,6 +1431,9 @@ export function StoryMode() {
                 paused={!!state.paused}
                 canWrite={canWrite}
                 onPause={togglePause}
+                speed={state.options?.speed ?? 'normal'}
+                speedEffective={slowestSpeed(state.pawns)}
+                onSpeed={setSpeed}
                 view={view}
                 onView={() => setView((v) => (v === 'top' ? 'angled' : 'top'))}
                 level={lv}
@@ -1495,6 +1533,15 @@ export function StoryMode() {
               layers={layers}
               onLayers={(n) => setLayers(clampLayers(n))}
               level={lv}
+              stalled={stalledIn(state?.designations ?? [], null).length}
+              onRetryAll={() => {
+                const ids = stalledIn(state?.designations ?? [], null);
+                if (!ids.length) return say('No failed or resting designations');
+                void write('story.designations', { op: 'retry', ids }).then(
+                  () => say(`Trying all ${ids.length} failed designation${ids.length === 1 ? '' : 's'} again now`),
+                  (e) => say(errorText(e), 'warn'),
+                );
+              }}
               onClose={() => setTool({ kind: 'select' })}
             />
             {pickHint ? (

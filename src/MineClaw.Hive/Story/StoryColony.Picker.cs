@@ -44,7 +44,7 @@ public sealed partial class StoryColony
     {
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick
-        try { return PickCore(p, live); }
+        try { return PillarHint(PickCore(p, live), live); } // a job up high: blocks to climb with (StoryColony.Reach.cs)
         finally { _pickEnts = null; }
     }
 
@@ -178,9 +178,11 @@ public sealed partial class StoryColony
         if (World is not { } w) return [];
         var cats = StoryCategories.For(w.Data);
         bool foodKept = false;
+        int pillar = PillarKeepKind(live); // its small stack of blocks to nerd-pole with stays (StoryColony.Reach.cs)
         var list = new List<Stack>();
         foreach (var s in live.Inventory)
         {
+            if (s.Id == pillar) continue;
             var leaf = cats.LeafOf(s.Id, s.Meta);
             if (leaf is "tools" or "weapons" or "armour") continue;
             if (!foodKept && w.Data.Food(s.Id, s.Meta) != null && !Raw(w, s.Id)) { foodKept = true; continue; }
@@ -478,6 +480,7 @@ public sealed partial class StoryColony
         if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
         Reached(p, j); // it isn't stuck; a rescue's blocks arrived (StoryColony.Rescue.cs)
         if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
+        HauledDone(j); // every drop a collect trip leased: its haul designation is done (StoryColony.EntityMarks.cs)
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         switch (j.Source)
         {

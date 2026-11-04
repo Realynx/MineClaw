@@ -154,12 +154,21 @@
   // there is one, else dig a staircase (never down, never beside liquid or under sand/gravel), else nerd-pole with blocks it carries,
   // else dig the walls for blocks and pole. Nothing works: the colony is asked for help (a pawn brings blocks, or a teleport home).
   // -> {ok, out: it moved out, stuck: still stuck, msg}
-  const escape = toward => {
-    const g = globalThis, tried = {};
+  // climb (the colony found no way home from here: a ravine, a canyon): whatever its shape, walk to the wall nearest home
+  // (s.approach) and cut a staircase up it toward home until level with home; the caller asks for help when it can't.
+  const escape = (toward, climb) => {
+    const g = globalThis, tried = {}, ty = toward == null ? null : +String(toward).split(',')[1];
     let s = null, why = '', moved = false;
-    for (let i = 0; i < 40; i++) {
-      s = H.storyPit(toward == null ? null : String(toward));
+    for (let i = 0; i < (climb ? 64 : 40); i++) {
+      s = H.storyPit(toward == null ? null : String(toward), !!climb);
+      if (climb && ty != null && s.feet_y >= ty - 1) return { ok: true, out: true, msg: 'climbed up to ' + s.feet };
       if (!s.pit) return { ok: true, out: moved, msg: moved ? 'got out' : 'not stuck' };
+      if (s.approach && !tried['a' + s.approach]) {
+        tried['a' + s.approach] = 1;
+        const r = g.go(s.approach, 0);
+        if (g.ok(r)) { moved = true; continue; }
+        why = r.msg;
+      }
       if (s.exit && !tried['e' + s.exit]) {
         tried['e' + s.exit] = 1;
         const r = g.go(s.exit, 0);
@@ -190,7 +199,8 @@
       }
       break;
     }
-    const where = (s.water ? 'in water' : s.cave ? 'in a cave' : 'in a pit') + ' at ' + s.feet;
+    const where = (s.water ? 'in water' : climb ? 'below home' : s.cave ? 'in a cave' : 'in a pit') + ' at ' + s.feet;
+    if (climb) return { ok: false, stuck: true, msg: "couldn't climb out " + where + (why ? ' (' + why + ')' : '') };
     const help = H.storyStuck('stuck ' + where + (why ? ' (' + why + ')' : ''));
     return { ok: false, stuck: true, msg: 'stuck ' + where + (why ? ' (' + why + ')' : '') + ': ' + help };
   };
@@ -202,7 +212,60 @@
     if (g.ok(r) || r.cancelled || !NO_WAY.test(r.msg || '')) return r;
     const e = escape(at);
     if (!g.ok(e)) return { ok: false, stuck: true, msg: r.msg + '; ' + e.msg };
-    return e.out ? walk() : r;
+    if (e.out) return walk();
+    // A target high above (a crown log, a ledge, a ceiling): stand below it; story.dig pillars up from there.
+    const t = typeof at === 'string' ? at.split(',').map(Number) : null;
+    if (t && t.length === 3 && t[1] > H.me('pos').y + 2) {
+      const s = H.storyReach(at);
+      if (s.within) return { ok: true, msg: 'in reach' };
+      if (s.stand) { const b = g.go(s.stand, 0); if (g.ok(b)) return { ok: true, msg: 'below it at ' + s.stand }; }
+    }
+    return r;
+  };
+  const REACH = /can't reach|out of reach|from my eyes|no walkable spot/i;
+  const feet = () => { const p = H.me('pos'); return Math.floor(p.x) + ',' + Math.floor(p.y + 1e-6) + ',' + Math.floor(p.z); };
+  // reachUp(at, fn, job?): a block above reach. Walk to the column H.storyReach picks (under it or beside it), nerd-pole up (one
+  // place at its own feet per step) until it is in reach, do fn, then dig the pillar back down from the top (every block it placed,
+  // collected again). Short of blocks: the job's pillar stack from storage (j.pillar), else dirt dug around the column.
+  const reachUp = (at, fn, j) => {
+    const g = globalThis, scan = () => H.storyReach(String(at));
+    let s = scan();
+    if (s.within) return fn();
+    if (!s.stand) return { ok: false, msg: 'out of reach even from a pillar: ' + s.why };
+    if (s.blocks < s.steps && j && j.pillar) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    s = scan();
+    for (const c of s.gather || []) {
+      if (s.blocks >= s.steps) break;
+      g.dig(c);
+      s = scan();
+    }
+    if (!s.stand) return { ok: false, msg: 'out of reach even from a pillar: ' + s.why };
+    if (s.blocks < s.steps) return { ok: false, msg: 'out of reach: ' + s.steps + ' block(s) to pillar up, ' + s.blocks + ' on me' };
+    const w = g.go(s.stand, 0);
+    if (!g.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };
+    const placed = [];
+    for (let i = 0; i < s.steps + 2; i++) {
+      const now = scan();
+      if (now.within || !now.block) break;
+      const f = feet(), p = g.place(now.block, f);
+      if (!g.ok(p)) break;
+      placed.push(f);
+    }
+    const r = fn();
+    for (let i = placed.length - 1; i >= 0; i--) if (!g.ok(g.dig(placed[i]))) break;
+    return r;
+  };
+  // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on.
+  const dig = (at, j) => {
+    const g = globalThis, r = g.dig(at);
+    if (g.ok(r) || !REACH.test(r.msg || '')) return r;
+    return reachUp(at, () => g.dig(at), j);
+  };
+  // ready(job): a job up high (a tall tree) starts with blocks to pillar with: the job's pillar stack from storage when short.
+  const ready = j => {
+    const g = globalThis;
+    if (j && j.pillar && g.inv(j.pillar.item) < 4) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    return { ok: true };
   };
   // run(job): the colony's own kinds (story.work hands them over). escape: the colony saw it stuck (a pit, a cave, a run of
   // unreachable targets): out by itself, else to j.at (home); help is asked for when nothing works. dump: no storage takes these:
@@ -211,12 +274,22 @@
     const g = globalThis;
     switch (j.kind) {
       case 'escape': {
-        const e = escape(j.at);
+        // Done only once home is reached by walking (the colony then knows it is out); a pit, a cave or water first.
+        let e = escape(j.at);
         if (!g.ok(e)) { g.wait(j.s || 8); return e; }
-        if (e.out || !j.at) return e;
-        const r = g.go(j.at, j.dist ?? 2);
+        if (!j.at) return e;
+        let r = g.go(j.at, j.dist ?? 2);
         if (g.ok(r) || r.cancelled) return r;
-        return { ok: false, stuck: true, msg: r.msg + ': ' + H.storyStuck('no way home: ' + r.msg) };
+        // No walkable way home (a ravine, a canyon, a deep hole): climb toward home, then walk again.
+        report(j, 'progress', 'no way home (' + r.msg + '): trying a staircase toward home');
+        e = escape(j.at, true);
+        if (g.ok(e)) {
+          r = g.go(j.at, j.dist ?? 2);
+          if (g.ok(r) || r.cancelled) return r;
+        }
+        const help = H.storyStuck('no way home: ' + (g.ok(e) ? r.msg : e.msg));
+        g.wait(j.s || 8);
+        return { ok: false, stuck: true, msg: 'no way home (' + (g.ok(e) ? r.msg : e.msg) + '): ' + help };
       }
       case 'dump': {
         const r = go(j.at, j.dist ?? 1);
@@ -230,7 +303,7 @@
       default: return { ok: true };
     }
   };
-  /** story.next(s)|report(job, status, note?)|during(job, fn)|idle|work|fetch|go(at, d)|escape - the job loop */
+  /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|go|dig|escape - the job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report,
@@ -238,6 +311,8 @@
     idle,
     go,
     escape,
+    dig,
+    ready,
     work,
     till,
     fetch,

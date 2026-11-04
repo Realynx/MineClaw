@@ -14,7 +14,7 @@ public class Release1122FightTests
     private static Task<(MinecraftClient C, FakeServer S)> Start(Action<FakeServer>? setup = null) =>
         Harness.StartAsync(srv =>
         {
-            for (int x = 0; x <= 16; x++)
+            for (int x = 0; x <= 31; x++) // room east: the zombie comes from there, and every hit knocks it back that way
             for (int z = 0; z <= 16; z++)
                 srv.Blocks[(x, 63, z)] = Blocks.Stone;
             setup?.Invoke(srv);

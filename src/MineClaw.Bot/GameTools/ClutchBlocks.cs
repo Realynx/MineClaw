@@ -18,7 +18,9 @@ public static class ClutchBlocks
     public const int Want = 4;
 
     public static int Held(IGameClient c) =>
-        Ids.Where(id => !c.ReservedItems.Contains(id)).Sum(id => c.World.Inventory.CountItem(id));
+        Ids.Where(id => !c.ReservedItems.Contains(id)).Sum(id => c.World.Inventory.CountItem(id))
+        // A normal world has dirt to spare: it catches a fall and builds a pillar as well as cobble (skyblock never spends it).
+        + (MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain || c.ReservedItems.Contains(Blocks.Dirt) ? 0 : c.World.Inventory.CountItem(Blocks.Dirt));
 
     /// <summary>
     /// Ensures at least <paramref name="want"/> clutch blocks: had them → null (no note); otherwise tries cobble/planks from
