@@ -2502,38 +2502,47 @@ export class StorySim {
   /** POST …/workbenches: designate a placed bench as the colony's, or release it. */
   workbenches(id: string, body: StoryWorkbenchesRequest): StoryWorkbenchesResponse {
     const c = this.colony(id);
-    const k = keyOf(body.pos);
-    if (body.op === 'release') {
-      const f = c.benches.get(k);
-      if (!f) throw Object.assign(new Error("that workbench isn't the colony's"), { status: 400 });
-      c.benches.delete(k);
-      c.removed.push({ rev: this.bump(c), kind: 'workbenches', key: body.pos });
-      this.plan(c);
-      return { pos: body.pos, kind: f.v.kind, designated: false };
-    }
-    const have = c.benches.get(k);
-    if (body.op === 'fuel') {
-      // A furnace's fuel choice: the sim's version is b1.8.1 (no blaze rods).
-      const f = have ?? null;
-      if (!f || f.v.kind !== 'furnace')
-        throw Object.assign(new Error('only a furnace takes a fuel choice'), { status: 400 });
-      if (body.fuel === 'blaze_rod') throw Object.assign(new Error('fuel must be ' + SIM_FUELS.join('|')), { status: 400 });
-      f.v.fuel = body.fuel;
-      for (const b of f.v.bills) if (!b.fuel) b.fuelNeed = this.fuelNeedOf(b, body.fuel);
-      f.rev = this.bump(c);
-      return { pos: body.pos, kind: f.v.kind, designated: true, fuel: body.fuel };
-    }
-    if (have) return { pos: body.pos, kind: have.v.kind, designated: true };
-    const [bid] = this.opts.world.blockAt(body.pos[0], body.pos[1], body.pos[2]);
+    if (body.op === 'release') return this.releaseBench(c, body.pos);
+    if (body.op === 'fuel') return this.benchFuel(c, body.pos, body.fuel);
+    return this.designateBench(c, body.pos);
+  }
+
+  /** workbenches release: the bench is not the colony's any more. */
+  private releaseBench(c: Colony, pos: [number, number, number]): StoryWorkbenchesResponse {
+    const f = c.benches.get(keyOf(pos));
+    if (!f) throw Object.assign(new Error("that workbench isn't the colony's"), { status: 400 });
+    c.benches.delete(keyOf(pos));
+    c.removed.push({ rev: this.bump(c), kind: 'workbenches', key: pos });
+    this.plan(c);
+    return { pos, kind: f.v.kind, designated: false };
+  }
+
+  /** workbenches fuel: a furnace's fuel choice (the sim's version is b1.8.1: no blaze rods); its bills' fuel follows. */
+  private benchFuel(c: Colony, pos: [number, number, number], fuel: string): StoryWorkbenchesResponse {
+    const f = c.benches.get(keyOf(pos));
+    if (!f || f.v.kind !== 'furnace') throw Object.assign(new Error('only a furnace takes a fuel choice'), { status: 400 });
+    if (fuel === 'blaze_rod') throw Object.assign(new Error('fuel must be ' + SIM_FUELS.join('|')), { status: 400 });
+    f.v.fuel = fuel;
+    for (const b of f.v.bills) if (!b.fuel) b.fuelNeed = this.fuelNeedOf(b, fuel);
+    f.rev = this.bump(c);
+    return { pos, kind: f.v.kind, designated: true, fuel };
+  }
+
+  /** workbenches designate: the bench block there becomes the colony's (already is: as it is). */
+  private designateBench(c: Colony, pos: [number, number, number]): StoryWorkbenchesResponse {
+    const have = c.benches.get(keyOf(pos));
+    if (have) return { pos, kind: have.v.kind, designated: true };
+    const [bid] = this.opts.world.blockAt(pos[0], pos[1], pos[2]);
     const kind = BENCH_KIND[bid];
     if (!kind) throw Object.assign(new Error('no workbench there'), { status: 400 });
-    c.benches.set(k, {
+    c.benches.set(keyOf(pos), {
       rev: this.bump(c),
-      v: { pos: body.pos, kind, label: null, supported: true, station: this.stationOf(kind, body.pos), ...this.fuelOf(kind), bills: [] },
+      v: { pos, kind, label: null, supported: true, station: this.stationOf(kind, pos), ...this.fuelOf(kind), bills: [] },
     });
     this.plan(c);
-    return { pos: body.pos, kind, designated: true };
+    return { pos, kind, designated: true };
   }
+
 
   /** POST …/options. */
   /** Fast / Faster: every online pawn's body runs at the multiplier (the mock server never rejects it). */
