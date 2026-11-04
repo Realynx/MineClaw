@@ -200,7 +200,7 @@ public static class GameToolSet
                 // reach, so a goto>withdraw chain doesn't end outside the wall next to it (live 10-27, chest 14,64,-5).
                 if (Resolve(to, places) is { } p)
                     goal = dist is null && Blocks.Get(c.World.GetBlock(p)).Interactable
-                        ? new GoalUseBlock(c.World, p, Aiming.DefaultReach - 0.6) : Near(p, dist ?? 1);
+                        ? new GoalUseBlock(c.World, p, Aiming.DefaultReach - 0.6) : Near(c.World, p, dist ?? 1);
                 else if (c.World.Entities.FindPlayer(to) is { } e) goal = new GoalNearPosition(e.Position, Math.Max(1, dist ?? 2));
                 else return ToolResult.Error($"unknown place or player '{to}'");
                 return R(await c.GotoAsync(goal, opts, ct));
@@ -567,7 +567,9 @@ public static class GameToolSet
 
     internal static BlockPos? Resolve(string spec, IPlaceResolver places) => Locations.ParseCoords(spec) ?? places.Resolve(spec);
 
-    private static Goal Near(BlockPos p, double dist) => dist <= 0 ? new GoalBlock(p.X, p.Y, p.Z) : new GoalNear(p.X, p.Y, p.Z, dist);
+    /// <summary>"within dist of p" never met from under the ground below it (<see cref="GoalFiltered.NearNotFromBelow"/>).</summary>
+    private static Goal Near(IBlockAccess w, BlockPos p, double dist) =>
+        dist <= 0 ? new GoalBlock(p.X, p.Y, p.Z) : GoalFiltered.NearNotFromBelow(w, p, dist);
 
     private static BlockPos? OptionalAt(JsonElement i, IPlaceResolver places, out ToolResult? error)
     {

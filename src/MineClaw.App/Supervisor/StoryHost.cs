@@ -122,6 +122,7 @@ public sealed class StoryHost : IStoryHost
             // A pawn never digs a block for nothing (iron ore with a wooden pickaxe: refused) and keeps the tool the director chose.
             pc.StrictHarvest = true;
             pc.PreferHeldTool = true;
+            pc.DigThroughDetours = true; // a long way round under ground is dug short through the dirt (normal world)
         }
         var v = lane.Library.Resolve(StoryColonies.PawnScript, null, out var why);
         if (v == null) return why ?? "no saved story_pawn";

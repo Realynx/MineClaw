@@ -76,6 +76,8 @@ public sealed class SupervisorPerf
         sb.Append(CultureInfo.InvariantCulture, $"{ThreadPool.PendingWorkItemCount} queued, gc {gcs[0]}/{gcs[1]}/{gcs[2]} pause {pauseMs:0} ms alloc {mbs:0.0} MB/s; ");
         sb.Append(CultureInfo.InvariantCulture, $"a* {a.Searches} searches busy {a.Busy.TotalSeconds:0.0}s ({100 * a.Busy.TotalSeconds / secs:0}% of a core) ");
         sb.Append(CultureInfo.InvariantCulture, $"longest {a.Longest.TotalMilliseconds:0} ms waited {a.Waited.TotalSeconds:0.0}s; ");
+        // Route shapes: detours (3x the straight line, or a dip under both ends) and those dug short (MineClaw.Client.RouteStats).
+        if (MineClaw.Client.RouteStats.Take() is { } shapes) sb.Append(shapes).Append("; ");
         var st = MineClaw.Hive.Story.StoryPerf.Take();
         sb.Append(CultureInfo.InvariantCulture, $"story {st.Picks} picks {st.PickTime.TotalMilliseconds:0} ms, {st.Ticks} ticks {st.TickTime.TotalMilliseconds:0} ms");
         if (MineClaw.Hive.Story.StoryPerf.TakeIdle() is { } idle) sb.Append(", ").Append(idle); // pawns idle in work hours with work about, by why

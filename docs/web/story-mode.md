@@ -510,6 +510,47 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
 - Not yet: several targets from one pillar top (each high block is its own climb; a tree is one job), a short staircase instead of a
   pillar, the night-outside rule while climbing.
 
+### Tree farming and routes under ground (added 2026-11-04)
+
+Fox 11-04: "There are still edge cases with the pathing, where it makes the pawn go way out of the way underground. I'm seeing this a
+lot when I'm trying to make it farm trees." Live 11-04 (story-1, trees at x 110–150, z 330–365): "39 log(s) out of reach (up to y 76);
+chopped 0/39", "no clutch blocks on me (no cobble/planks to be had) … 4 log(s) out of reach (up to y 67)", "no path to within 3 of
+(144,65,334) (no route); it's 5 blocks up" for trees 5 to 8 blocks above the pawn, and gotos of 16–28 s. The pawns were under the trees
+(a cave, a trench, a quarry) when they got them:
+- "within 3 of" the tree's base was met in a cave under it, three blocks of ground between the pawn and the trunk;
+- from there no walk reached a spot that sees a log, so not even the bottom log came down;
+- the pillar spot was looked for "within 3 of the pawn's feet", five blocks under the trunk, so the climb never started;
+- only cobblestone or planks were pillar blocks in practice (dirt came after them), and with none of either the tree failed whole.
+
+Now:
+- **A walk "within N of" a spot** (`goto` with a distance of 2 or more, so every `story.go`) is never met from under the ground below
+  it: a cell lower than the spot counts only when nothing solid (leaves aside) stands between its eyes and the spot.
+- **A chop from below** (normal world; the pawn's feet more than a block under the trunk's ground) first digs its own way up beside the
+  trunk: the walk may dig natural ground (soil, sand, gravel, stone, leaves; never ores, never a placed or protected block, never the
+  tree's own soil) and place the pillar blocks it carries. A step with natural ground over it costs about six walked blocks, so a short
+  dug stair beats a long walk round through a cave, while an open quarry's own stair (no ground over it) stays the cheap way out. When
+  no walk reaches a spot by the tree, the dig is the fallback too.
+- **Pillar blocks (normal world):** any placeable junk, dirt first, then cobblestone, netherrack, stone, sandstone, gravel, sand,
+  planks, stone bricks, and the felled logs of the tree itself (its own pillar is never taken for "the next log"). With nothing at all,
+  it digs dirt or grass 2 to 5 out from the trunk (never its soil, never under anyone, never beside water or lava) for the climb, and
+  fills those holes again once the pillar is dug back. A taller climb starts where one step doesn't reach a log yet, as long as the
+  column is free all the way up. The pillar spot is by the trunk at the trunk's ground, wherever the pawn stands.
+- **Partial trees stay designated.** A chop that took part of a tree (`partial: …`) keeps the designation, now on the lowest log left;
+  the pawn that took part rests from it 20 s, so another pawn (or it, later) climbs for the rest. After two partial goes the designation
+  leaves the map with the alert, as before.
+- **Under ground, trees go to a pawn up top.** A pawn under ground (natural ground over it) leaves chop work to a pawn on the surface
+  that does chop work (not drafted, not stuck); it keeps to the work down there, or heads up by the under-ground rule. With nobody up
+  top it takes the tree itself.
+- **Replanting (normal world).** With no sapling of the tree's species on it, the pawn breaks crown leaves it can reach (from its
+  pillar before it comes down, then from the ground, at most 24, no long walks) until a sapling drops, and waits up to 12 s for the
+  rest of the crown to decay. The spot is planted with the tree's own species, as on Skyblock.
+- **Route diagnostics.** Every planned route's shape is counted: its walked length against the straight line from start to end, and
+  its lowest y. A **detour** is longer than 3 times the straight line (and at least 10 blocks longer), or dips more than 4 below both
+  its start and its end. A chop's own walks log `goto (chop): route 39 blocks for 8 straight, …, lowest y 57 (start 57, end 64)`;
+  any detour logs `goto: detour: …`. The supervisor's perf line adds `routes N, detours M (K dug short; worst …)`.
+- **Detours dug short (pawns only).** A pawn's walk planned as a detour (normal world, first plan of the walk) is planned once more
+  digging natural ground with the under-ground step cost; the dug route is taken when it is at most 60% of the walk's length.
+
 ### Defending (added 2026-11-04)
 
 Live 11-04: "attack failed: no skeleton within 16" ×15, creeper ×8, zombie ×7 for one pawn (82 failures). The merged view showed every
@@ -713,7 +754,8 @@ A chop job also carries `wood` (the version's log item names), `wood_blocks`, `p
 `story_pawn` uses them to work a tree from an empty inventory. It fells what it can reach. If some logs came down but not all, it
 crafts planks from them in the 2x2 grid (clutch and pillar blocks for the work up high) and goes once more at the lowest log still
 standing. The fall-safety rules of `chop_tree` are unchanged. Logs still out of reach after that make a partial job: reported done
-with a note starting `partial:`. The designation leaves the map and an alert says what was left.
+with a note starting `partial:`. The designation stays on its lowest log left for another go (twice at most); then it leaves the map
+and an alert says what was left (see "Tree farming and routes under ground").
 
 ### Home
 

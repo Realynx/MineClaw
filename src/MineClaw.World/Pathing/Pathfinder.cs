@@ -672,6 +672,7 @@ public sealed partial class Pathfinder
             if (meta != 0) p = Math.Max(p, _o.FlowingWaterPenalty);
         }
         if (_fromSurface && _o.SkyLight is { } sky && sky(x, y, z) <= 3 && sky(x, y + 1, z) <= 3) p += _o.UndergroundPenalty;
+        if (_o.Covered is { } covered && covered(x, y, z)) p += _o.CoveredPenalty; // a way up: fewer steps under ground win
         return p;
     }
 
