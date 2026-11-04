@@ -539,15 +539,21 @@ public sealed class BlueprintService
         var waiting = plans.AtGate();
         if (waiting.Count == 0 || !IsTrusted(player)) return null;
         var bp = waiting[0];
-        var anchor = bp.Gate.Blocks.FirstOrDefault();
-        char axis = 'x';
-        if (Store.Get(bp.BlueprintId) is { } rec0 && PlanOf(rec0, out _) is { } plan0) axis = plan0.Max.X - plan0.Min.X >= plan0.Max.Z - plan0.Min.Z ? 'x' : 'z';
-        if (Building.BuildGate.Parse(text, player, anchor, axis) is not { } reply) return null;
+        if (Building.BuildGate.Parse(text, player, bp.Gate.Blocks.FirstOrDefault(), GateAxis(bp.BlueprintId)) is not { } reply) return null;
         if (Store.Get(bp.BlueprintId) is not { } rec) return null;
         // A "no": name the exact blocks standing and the undo (a worker can't find "the 5 blocks just placed" on its own).
         var held = reply.Verdict == Building.GateVerdict.Hold && Building.BuildGate.Placed(bp, rec.Id) is { } blocks ? "; " + blocks : "";
         if (Gates.Answer(bp.BlueprintId, reply)) return $"gate #{rec.Id}: {player} → {reply.Verdict}{held}";
-        // Nobody waits (restart): record it in the plan and start the build again (it applies it first).
+        return GateAnswerAfterRestart(plans, bp, rec, reply, player, held);
+    }
+
+    /// <summary>The design's longer axis ('x' when wider along x, or unknown): the axis a gate's "flip it" mirrors across.</summary>
+    private char GateAxis(long id) =>
+        Store.Get(id) is { } rec && PlanOf(rec, out _) is { } plan && plan.Max.X - plan.Min.X < plan.Max.Z - plan.Min.Z ? 'z' : 'x';
+
+    /// <summary>Nobody waits (restart): record the answer in the plan and start the build again (it applies it first).</summary>
+    private string GateAnswerAfterRestart(Building.BuildPlanStore plans, Building.BuildPlan bp, BlueprintRecord rec, Building.GateReply reply, string player, string held)
+    {
         switch (reply.Verdict)
         {
             case Building.GateVerdict.Approve:
