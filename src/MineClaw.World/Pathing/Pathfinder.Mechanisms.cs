@@ -91,44 +91,74 @@ public sealed partial class Pathfinder
         levers = n.Levers;
         requires = null;
 
-        if (m.Trigger is null && Openables.IsPlate(_w.GetBlock(m.X, m.Y, m.Z)) && (m.X != n.X || m.Z != n.Z || m.Y != n.Y)
-            && PlateLink(new BlockPos(m.X, m.Y, m.Z)) is { } plate && Usable(plate)
-            && pulse?.Use.Link.Trigger != plate.Trigger && !plate.EffectsIn(_w, on: true))
+        if (m.Trigger is null && SteppedOnPlate(n, m, pulse) is { } plate)
             m = m with { Kind = MoveKind.Trigger, Trigger = new TriggerUse(plate, TurnOn: true) };
 
-        if (pulse is null && levers is null && m.Trigger is null) return true;
-        if (pulse is not null)
-        {
-            double deadline = pulse.Deadline;
-            // Standing on the plate holds it down: it only pops on a scheduled check after the body leaves.
-            if (pulse.Plate is { } pp && pp.X == n.X && pp.Y == n.Y && pp.Z == n.Z) deadline = Math.Max(deadline, n.T + 0.6 * time);
-            int touch = Touch(pulse.Cells, pulse.Solid, n, m);
-            if (touch != 0)
-            {
-                // Openables: be past the panel's plane (about mid-move); moved blocks: be fully out of their cells.
-                double need = n.T + (touch == 2 ? time : 0.6 * time);
-                double margin = _o.PulseMargin + _o.PulseMarginFraction * Math.Max(0, need - pulse.Activated);
-                if (need > deadline - margin) return false;
-                requires = pulse.Use;
-            }
-            else if (n.T + time > deadline) pulse = null; // over: the world is back to normal
-            if (pulse is not null && deadline != pulse.Deadline) pulse = pulse with { Deadline = deadline };
-        }
-        for (var l = levers; l is not null && requires is null; l = l.Next)
-            if (Touch(l.Cells, l.Solid, n, m) != 0) requires = l.Use;
-
-        if (m.Trigger is { } tu)
-        {
-            var (cells, solid) = CellsOf(tu.Link);
-            if (tu.Link.IsPulse)
-            {
-                double act = tu.IsPlate ? n.T + 0.5 * time : n.T + _o.TriggerTicks;
-                pulse = new PulseState(tu, EffectMods(tu, null), act, act + tu.Link.WindowTicks, tu.IsPlate ? tu.Pos : null, cells, solid);
-            }
-            else levers = new LeverUse(tu, cells, solid, levers);
-            time += tu.Link.LagTicks;
-        }
+        // (With no pulse, no lever and no trigger nothing below changes anything.)
+        if (pulse is not null && !CarryPulse(n, m, time, ref pulse, ref requires)) return false;
+        requires ??= LeverRequired(n, m, levers);
+        if (m.Trigger is { } tu) StartTrigger(n, tu, ref pulse, ref levers, ref time);
         return true;
+    }
+
+    /// <summary>A known (or presumed) plate the move walks onto that fires something now: it becomes a Trigger step.</summary>
+    private MechanismLink? SteppedOnPlate(Node n, in Candidate m, PulseState? pulse)
+    {
+        if (!Openables.IsPlate(_w.GetBlock(m.X, m.Y, m.Z)) || (m.X == n.X && m.Z == n.Z && m.Y == n.Y)) return null;
+        if (PlateLink(new BlockPos(m.X, m.Y, m.Z)) is not { } plate || !Usable(plate)) return null;
+        return pulse?.Use.Link.Trigger != plate.Trigger && !plate.EffectsIn(_w, on: true) ? plate : null;
+    }
+
+    /// <summary>
+    /// The active pulse through this move: extended while standing on its plate, checked against its window when the move passes
+    /// one of its effect cells (false = can't make it in time; else the move requires it), or over (null) once the move ends past
+    /// its deadline.
+    /// </summary>
+    private bool CarryPulse(Node n, in Candidate m, double time, ref PulseState? pulse, ref TriggerUse? requires)
+    {
+        var p = pulse!;
+        double deadline = p.Deadline;
+        // Standing on the plate holds it down: it only pops on a scheduled check after the body leaves.
+        if (p.Plate is { } pp && pp.X == n.X && pp.Y == n.Y && pp.Z == n.Z) deadline = Math.Max(deadline, n.T + 0.6 * time);
+        int touch = Touch(p.Cells, p.Solid, n, m);
+        if (touch != 0)
+        {
+            if (!InPulseTime(n, p, touch, time, deadline)) return false;
+            requires = p.Use;
+        }
+        else if (n.T + time > deadline) pulse = null; // over: the world is back to normal
+        if (pulse is not null && deadline != pulse.Deadline) pulse = pulse with { Deadline = deadline };
+        return true;
+    }
+
+    /// <summary>Openables: be past the panel's plane (about mid-move); moved blocks: be fully out of their cells; with the
+    /// margin (growing with the time since the activation) before the deadline.</summary>
+    private bool InPulseTime(Node n, PulseState p, int touch, double time, double deadline)
+    {
+        double need = n.T + (touch == 2 ? time : 0.6 * time);
+        double margin = _o.PulseMargin + _o.PulseMarginFraction * Math.Max(0, need - p.Activated);
+        return !(need > deadline - margin);
+    }
+
+    /// <summary>The first latched lever whose effect cells the move passes (the move requires it to stay on).</summary>
+    private static TriggerUse? LeverRequired(Node n, in Candidate m, LeverUse? levers)
+    {
+        for (var l = levers; l is not null; l = l.Next)
+            if (Touch(l.Cells, l.Solid, n, m) != 0) return l.Use;
+        return null;
+    }
+
+    /// <summary>A trigger step starts a pulse (buttons and plates) or latches a lever; the mechanism's lag adds to the time.</summary>
+    private void StartTrigger(Node n, TriggerUse tu, ref PulseState? pulse, ref LeverUse? levers, ref double time)
+    {
+        var (cells, solid) = CellsOf(tu.Link);
+        if (tu.Link.IsPulse)
+        {
+            double act = tu.IsPlate ? n.T + 0.5 * time : n.T + _o.TriggerTicks;
+            pulse = new PulseState(tu, EffectMods(tu, null), act, act + tu.Link.WindowTicks, tu.IsPlate ? tu.Pos : null, cells, solid);
+        }
+        else levers = new LeverUse(tu, cells, solid, levers);
+        time += tu.Link.LagTicks;
     }
 
     /// <summary>Buttons and levers of known links within reach (and in sight) of the node's eye.</summary>
@@ -139,19 +169,35 @@ public sealed partial class Pathfinder
         var eye = new Vec3d(n.X + 0.5, here.Floor + PlayerPhysics.EyeHeight, n.Z + 0.5);
         foreach (var link in _view!.TriggersNear(at, 6))
         {
-            if (link.IsPlate || !Usable(link)) continue;
-            bool lever = link.Kind == TriggerKind.Lever;
-            if (!lever && (n.Pulse is not null || link.TriggerOn(_w))) continue; // one pulse at a time; a pressed button can't be pressed
-            if (lever && HasLever(n.Levers, link)) continue;
-            bool on = !lever || !link.TriggerOn(_w);
-            if (link.EffectsIn(_w, on)) continue; // nothing would change
-            var c = link.Trigger.Center;
-            if (eye.DistanceTo(c) > _o.ActuatorReach + 0.5) continue;
-            if (Aiming.FindDigAim(_w, eye, link.Trigger, _o.ActuatorReach + 0.5) is null) continue;
-            var use = new TriggerUse(link, on, Restore: lever && _o.RestoreLevers);
+            if (TriggerUseFrom(n, eye, link) is not { } use) continue;
             output.Add(new Candidate(n.X, n.Y, n.Z, MoveKind.Trigger, here.Floor, _o.TriggerCost, [], null, false,
                 Time: _o.TriggerTicks + 2, Trigger: use));
         }
+    }
+
+    /// <summary>Using the button or lever of <paramref name="link"/> from here: usable, pressable, it would change something, and
+    /// within reach and in sight of the eye; else null.</summary>
+    private TriggerUse? TriggerUseFrom(Node n, Vec3d eye, MechanismLink link)
+    {
+        if (link.IsPlate || !Usable(link)) return null;
+        bool lever = link.Kind == TriggerKind.Lever;
+        if (!Pressable(n, link, lever)) return null;
+        bool on = !lever || !link.TriggerOn(_w);
+        if (link.EffectsIn(_w, on)) return null; // nothing would change
+        if (!TriggerInReach(eye, link)) return null;
+        return new TriggerUse(link, on, Restore: lever && _o.RestoreLevers);
+    }
+
+    /// <summary>A lever not already flipped on this path; a button only with no pulse running (one at a time) and not pressed
+    /// (a pressed button can't be pressed).</summary>
+    private bool Pressable(Node n, MechanismLink link, bool lever) =>
+        lever ? !HasLever(n.Levers, link) : n.Pulse is null && !link.TriggerOn(_w);
+
+    private bool TriggerInReach(Vec3d eye, MechanismLink link)
+    {
+        var c = link.Trigger.Center;
+        if (eye.DistanceTo(c) > _o.ActuatorReach + 0.5) return false;
+        return Aiming.FindDigAim(_w, eye, link.Trigger, _o.ActuatorReach + 0.5) is not null;
     }
 
     /// <summary>The link's effects (in the trigger state <see cref="TriggerUse.TurnOn"/>) on top of <paramref name="chain"/>,
@@ -197,26 +243,44 @@ public sealed partial class Pathfinder
     {
         if (_view?.ForTrigger(p) is { } known) return known;
         if (_presumed.TryGetValue(p, out var c)) return c;
-        c = null;
-        if (Mechanisms.KindOf(_world.GetBlock(p.X, p.Y, p.Z)) is { } kind && !Explosives(p))
-            foreach (var (dx, dz) in Cardinals)
-            {
-                var q = new BlockPos(p.X + dx, p.Y, p.Z + dz);
-                if (_world.GetBlock(q.X, q.Y, q.Z) != Openables.IronDoor || Openables.IsUpperHalf(Openables.IronDoor, _world.GetMeta(q.X, q.Y, q.Z))) continue;
-                if (_banned.Contains(q) || _view?.Affecting(q).Count > 0) continue;
-                var effects = new List<MechanismEffect>(2);
-                foreach (var h in new[] { q, q.Up() })
-                {
-                    if (_world.GetBlock(h.X, h.Y, h.Z) != Openables.IronDoor) continue;
-                    int m = _world.GetMeta(h.X, h.Y, h.Z);
-                    effects.Add(new MechanismEffect(h, new BlockState(Openables.IronDoor, m & ~Openables.OpenBit),
-                        new BlockState(Openables.IronDoor, m | Openables.OpenBit)));
-                }
-                c = new MechanismLink(p, kind, effects) { Confidence = 0.4, Dimension = _view?.Dimension ?? 0 };
-                break;
-            }
+        c = PresumedPlateLink(p);
         _presumed[p] = c;
         return c;
+    }
+
+    /// <summary>The classic setup: the plate opens the first iron door beside it that we know nothing about (never with
+    /// explosives near).</summary>
+    private MechanismLink? PresumedPlateLink(BlockPos p)
+    {
+        if (Mechanisms.KindOf(_world.GetBlock(p.X, p.Y, p.Z)) is not { } kind || Explosives(p)) return null;
+        foreach (var (dx, dz) in Cardinals)
+        {
+            var q = new BlockPos(p.X + dx, p.Y, p.Z + dz);
+            if (!UnknownIronDoor(q)) continue;
+            return new MechanismLink(p, kind, IronDoorEffects(q)) { Confidence = 0.4, Dimension = _view?.Dimension ?? 0 };
+        }
+        return null;
+    }
+
+    /// <summary>The lower half of an iron door, not banned, that no known link affects.</summary>
+    private bool UnknownIronDoor(BlockPos q)
+    {
+        if (_world.GetBlock(q.X, q.Y, q.Z) != Openables.IronDoor || Openables.IsUpperHalf(Openables.IronDoor, _world.GetMeta(q.X, q.Y, q.Z))) return false;
+        return !(_banned.Contains(q) || _view?.Affecting(q).Count > 0);
+    }
+
+    /// <summary>Both halves of the iron door at <paramref name="q"/> opening (the open bit set).</summary>
+    private List<MechanismEffect> IronDoorEffects(BlockPos q)
+    {
+        var effects = new List<MechanismEffect>(2);
+        foreach (var h in new[] { q, q.Up() })
+        {
+            if (_world.GetBlock(h.X, h.Y, h.Z) != Openables.IronDoor) continue;
+            int m = _world.GetMeta(h.X, h.Y, h.Z);
+            effects.Add(new MechanismEffect(h, new BlockState(Openables.IronDoor, m & ~Openables.OpenBit),
+                new BlockState(Openables.IronDoor, m | Openables.OpenBit)));
+        }
+        return effects;
     }
 
     private bool Explosives(BlockPos p)
@@ -298,15 +362,24 @@ public sealed partial class Pathfinder
             var levers = passages.Where(p => p.Trigger is { Link.Kind: TriggerKind.Lever, Restore: true }
                 || p.Toggle is { Actuator: { } a } && _world.GetBlock(a.X, a.Y, a.Z) == Openables.Lever).ToList();
             if (levers.Count > 0 && Escapes(end, start, LeftOn(levers), passages, ct)) return KeepLevers(r, levers);
-            foreach (var p in passages) _banned.Add(p.Key);
-            _cellCache.Clear();
-            _deadlyCache.Clear();
-            var again = Search(start, goal, ct);
-            string why = $"no known way back out past the {string.Join(", ", passages.Select(Describe))}";
-            if (again.Steps.Count == 0) return again with { Reason = again.Reason is null ? why : $"{again.Reason}; {why}" };
-            r = again with { Reason = again.Reason ?? (again.Success ? null : why) };
+            r = BanAndReplan(start, goal, passages, ct, out bool final);
+            if (final) return r;
         }
         return r;
+    }
+
+    /// <summary>The passages become one-way traps for this search and it plans again; <paramref name="final"/> when nothing was
+    /// found (the reason then says why).</summary>
+    private PathResult BanAndReplan(BlockPos start, Goal goal, List<Passage> passages, CancellationToken ct, out bool final)
+    {
+        foreach (var p in passages) _banned.Add(p.Key);
+        _cellCache.Clear();
+        _deadlyCache.Clear();
+        var again = Search(start, goal, ct);
+        string why = $"no known way back out past the {string.Join(", ", passages.Select(Describe))}";
+        final = again.Steps.Count == 0;
+        if (final) return again with { Reason = again.Reason is null ? why : $"{again.Reason}; {why}" };
+        return again with { Reason = again.Reason ?? (again.Success ? null : why) };
     }
 
     private static string Describe(Passage p) => p.Toggle is { } t

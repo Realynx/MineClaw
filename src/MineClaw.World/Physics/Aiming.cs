@@ -28,21 +28,34 @@ public static class Aiming
         foreach (var face in BlockFaceExtensions.All)
         {
             if (!FacesEye(box, face, eye)) continue;
-            foreach (var (u, v) in Samples)
-            {
-                var p = PointOnFace(box, face, u, v);
-                double d = eye.DistanceTo(p);
-                if (d > reach || (best is not null && d >= best.Value.Distance)) continue;
-                var hit = Raycast.Cast(w, eye, p - eye, d + 0.01);
-                if (hit is { } h && h.Pos == target && h.Face == face)
-                {
-                    var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
-                    best = new DigAim(target, face, p, yaw, pitch, d);
-                    break;
-                }
-            }
+            if (!VisibleSample(w, eye, box, face, target, reach, best?.Distance ?? double.PositiveInfinity, out var p, out double d)) continue;
+            var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
+            best = new DigAim(target, face, p, yaw, pitch, d);
         }
         return best;
+    }
+
+    /// <summary>The first sample point of the box's face, within <paramref name="reach"/> and nearer than
+    /// <paramref name="bestD"/>, that a ray from the eye hits first on that very face of <paramref name="block"/>.</summary>
+    private static bool VisibleSample(IBlockAccess w, Vec3d eye, AABB box, BlockFace face, BlockPos block, double reach, double bestD,
+        out Vec3d point, out double dist)
+    {
+        foreach (var (u, v) in Samples)
+        {
+            var p = PointOnFace(box, face, u, v);
+            double d = eye.DistanceTo(p);
+            if (d > reach || d >= bestD) continue;
+            var hit = Raycast.Cast(w, eye, p - eye, d + 0.01);
+            if (hit is { } h && h.Pos == block && h.Face == face)
+            {
+                point = p;
+                dist = d;
+                return true;
+            }
+        }
+        point = default;
+        dist = 0;
+        return false;
     }
 
     /// <summary>
@@ -64,27 +77,15 @@ public static class Aiming
             // Neighbour N is at target - normal(face); clicking N on `face` puts the block at target.
             var n = face.Normal();
             var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
-            int id = w.GetBlock(against.X, against.Y, against.Z);
-            if (id == 0 || BlockShapes.IsLiquid(id) || w.Info(id).Interactable) continue;
-            if (!BlockShapes.HasCollision(w, against.X, against.Y, against.Z)) continue;
+            if (!PlaceRules.IsSupport(w, against)) continue;
             boxes.Clear();
             BlockShapes.AddSelectionBoxes(w, against.X, against.Y, against.Z, boxes);
             foreach (var box in boxes)
             {
                 if (!FacesEye(box, face, eye)) continue;
-                foreach (var (u, v) in Samples)
-                {
-                    var p = PointOnFace(box, face, u, v);
-                    double d = eye.DistanceTo(p);
-                    if (d > reach || (best is not null && d >= best.Value.Distance)) continue;
-                    var hit = Raycast.Cast(w, eye, p - eye, d + 0.01);
-                    if (hit is { } h && h.Pos == against && h.Face == face)
-                    {
-                        var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
-                        best = new PlaceAim(target, against, face, p, yaw, pitch, d);
-                        break;
-                    }
-                }
+                if (!VisibleSample(w, eye, box, face, against, reach, best?.Distance ?? double.PositiveInfinity, out var p, out double d)) continue;
+                var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
+                best = new PlaceAim(target, against, face, p, yaw, pitch, d);
             }
         }
         return best;
@@ -115,29 +116,49 @@ public static class Aiming
         {
             var n = face.Normal();
             var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
-            int id = w.GetBlock(against.X, against.Y, against.Z);
-            // A replaceable block (snow layer) hit on its top takes the liquid itself (1.12.2 ItemBucket), not the target.
-            if (id == 0 || IsReplaceable(w, id) || w.Info(id).Interactable) continue;
-            if (!BlockShapes.HasCollision(w, against.X, against.Y, against.Z)) continue;
+            if (!CanPourAgainst(w, against)) continue;
             boxes.Clear();
             BlockShapes.AddSelectionBoxes(w, against.X, against.Y, against.Z, boxes);
             foreach (var box in boxes)
             {
                 if (!FacesEye(box, face, eye) || !FacesEye(box, face, low)) continue;
-                foreach (var (u, v) in Samples)
-                {
-                    var p = PointOnFace(box, face, u, v);
-                    double d = eye.DistanceTo(p);
-                    if (d > range || (best is not null && d >= best.Value.Distance)) continue;
-                    var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
-                    var dir = PlayerPhysics.LookVector(yaw, pitch); // what the server rebuilds from the sent floats
-                    if (!HitsFace(w, eye, dir, range, against, face) || !HitsFace(w, low, dir, range, against, face)) continue;
+                if (PourSample(w, eye, low, box, face, against, range, best?.Distance ?? double.PositiveInfinity, out var p, out double d, out float yaw, out float pitch))
                     best = new PlaceAim(target, against, face, p, yaw, pitch, d);
-                    break;
-                }
             }
         }
         return best;
+    }
+
+    /// <summary>A solid neighbour a bucket's ray can stop on: a replaceable block (snow layer) hit on its top takes the liquid
+    /// itself (1.12.2 ItemBucket), not the target; never a container or door.</summary>
+    private static bool CanPourAgainst(IBlockAccess w, BlockPos against)
+    {
+        int id = w.GetBlock(against.X, against.Y, against.Z);
+        if (id == 0 || IsReplaceable(w, id) || w.Info(id).Interactable) return false;
+        return BlockShapes.HasCollision(w, against.X, against.Y, against.Z);
+    }
+
+    /// <summary>The first sample point of the face, within range and nearer than <paramref name="bestD"/>, whose look (as the
+    /// server rebuilds it from the sent floats) hits that face from both the standing and the sneaking eye.</summary>
+    private static bool PourSample(IBlockAccess w, Vec3d eye, Vec3d low, AABB box, BlockFace face, BlockPos against, double range, double bestD,
+        out Vec3d point, out double dist, out float yaw, out float pitch)
+    {
+        foreach (var (u, v) in Samples)
+        {
+            var p = PointOnFace(box, face, u, v);
+            double d = eye.DistanceTo(p);
+            if (d > range || d >= bestD) continue;
+            (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
+            var dir = PlayerPhysics.LookVector(yaw, pitch); // what the server rebuilds from the sent floats
+            if (!HitsFace(w, eye, dir, range, against, face) || !HitsFace(w, low, dir, range, against, face)) continue;
+            point = p;
+            dist = d;
+            return true;
+        }
+        point = default;
+        dist = 0;
+        yaw = pitch = 0;
+        return false;
     }
 
     private static bool HitsFace(IBlockAccess w, Vec3d from, Vec3d dir, double range, BlockPos against, BlockFace face) =>

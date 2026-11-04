@@ -534,14 +534,42 @@ public sealed partial class Pathfinder
     {
         bool targetEdge = IsEdge(tx, ty, tz);
         bool water = here.Water || t.Water;
-        double cost = water ? PathOptions.SwimCost * dist : PathOptions.WalkCost * dist;
-        if (t.Floor > here.Floor + 1e-6) cost += 0.5;
+        double cost = MoveCost(here, t, water, dist);
         bool sneak = (hereEdge || targetEdge) && !water;
         if (sneak) cost *= _o.EdgeCostMultiplier;
-        // Across a field: prefer the paths around it. Only a target ON the field (planting, harvesting) makes it worth walking:
-        // everywhere else crossing costs PathOptions.FarmlandWalkPenalty a step (a detour of ~9 blocks). How it is walked is the
-        // version's: b1.8.1 sneaks (a walker tramples), 1.12.2 walks without sprinting (only a landing tramples; Gentle).
-        bool toFarm = OnFarmland(tx, ty, tz), gentle = false;
+        bool gentle = false;
+        FieldCare(water, tx, ty, tz, ref sneak, ref gentle, ref cost);
+        double time = cost + (breaks.Count > 0 ? DigCosts(breaks) : 0);
+        cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
+        ApplyOpens(ref open, ref cost, ref time, ref kind);
+        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak, open, Time: time,
+            Gentle: gentle));
+    }
+
+    /// <summary>A walk's or swim's cost over <paramref name="dist"/>, + 0.5 for a step up.</summary>
+    private static double MoveCost(CellInfo here, CellInfo t, bool water, double dist)
+    {
+        double cost = water ? PathOptions.SwimCost * dist : PathOptions.WalkCost * dist;
+        if (t.Floor > here.Floor + 1e-6) cost += 0.5;
+        return cost;
+    }
+
+    /// <summary>Fields and growing zones: the care a step on or off them takes and what it costs.</summary>
+    private void FieldCare(bool water, int tx, int ty, int tz, ref bool sneak, ref bool gentle, ref double cost)
+    {
+        FarmCare(water, tx, ty, tz, ref sneak, ref gentle, ref cost);
+        // Past the plants of a growing zone: the same care (no extra cost beyond a sneak's slower pace).
+        if (!water && (_hereCareful || Careful(tx, ty, tz))) TakeCare(ref sneak, ref gentle, ref cost);
+    }
+
+    /// <summary>
+    /// Across a field: prefer the paths around it. Only a target ON the field (planting, harvesting) makes it worth walking:
+    /// everywhere else crossing costs PathOptions.FarmlandWalkPenalty a step (a detour of ~9 blocks). How it is walked is the
+    /// version's: b1.8.1 sneaks (a walker tramples), 1.12.2 walks without sprinting (only a landing tramples; Gentle).
+    /// </summary>
+    private void FarmCare(bool water, int tx, int ty, int tz, ref bool sneak, ref bool gentle, ref double cost)
+    {
+        bool toFarm = OnFarmland(tx, ty, tz);
         if (!water && (_hereFarmland || toFarm))
         {
             TakeCare(ref sneak, ref gentle, ref cost);
@@ -549,10 +577,11 @@ public sealed partial class Pathfinder
         }
         // Out of the water onto a field (the trench rim): the swimmer jumps out, and a jump lands on the soil.
         else if (water && toFarm && !NearGoal(tx, ty, tz)) cost += PathOptions.FarmlandJumpPenalty;
-        // Past the plants of a growing zone: the same care (no extra cost beyond a sneak's slower pace).
-        if (!water && (_hereCareful || Careful(tx, ty, tz))) TakeCare(ref sneak, ref gentle, ref cost);
-        double time = cost + (breaks.Count > 0 ? DigCosts(breaks) : 0);
-        cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
+    }
+
+    /// <summary>Doors and gates opened on the way: their cost and time, and the move becomes the opening kind.</summary>
+    private void ApplyOpens(ref IReadOnlyList<DoorToggle>? open, ref double cost, ref double time, ref MoveKind kind)
+    {
         if (open is { Count: > 0 })
         {
             cost += OpenCosts(open);
@@ -560,8 +589,6 @@ public sealed partial class Pathfinder
             kind = OpenKind(open);
         }
         else open = null;
-        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak, open, Time: time,
-            Gentle: gentle));
     }
 
     /// <summary>A move over farmland or past a growing zone's plants, the version's way (<see cref="Versioning.IPhysicsRules.WalkingTramplesFarmland"/>):
@@ -594,53 +621,73 @@ public sealed partial class Pathfinder
     private bool TryDrop(List<Candidate> output, CellInfo here, int x, int y, int z, int dx, int dz)
     {
         int tx = x + dx, tz = z + dz;
-        if (here.Climb && !here.Ground) return false;
-        // Must be able to step off into the target column at the current height.
-        if (!BodyClear(tx, tz, Math.Max(here.Floor, y))) return false;
-        if (!TransitOk(x, z, tx, tz, y, Math.Max(here.Floor, y), out var dropOpens) || dropOpens != null) return false;
-        if (HazardInColumn(tx, y, y + 1, tz)) return false;
+        if (!CanStepOff(here, x, y, z, tx, tz)) return false;
         int maxScan = Math.Max(_o.MaxDrop, _o.AllowSwim ? _o.MaxWaterDrop : 0) + 1;
         for (int d = 1; d <= maxScan && y - d >= 0; d++)
         {
             int ty = y - d;
             var c = Cell(tx, ty, tz);
-            if (!c.Ok)
-            {
-                if (HasCollisionAt(tx, ty, tz) || HazardInColumn(tx, ty, ty, tz)) return false;
-                continue;
-            }
-            double fall = here.Floor - c.Floor;
-            if (fall <= 0.5) return false; // that's a walk, not a drop
-            bool soft = c.Water;
-            if (soft)
-            {
-                // Water only cancels the fall if a tick samples the feet inside it (Safety.WaterLanding): shallow water
-                // under a long drop is a hard landing on its floor.
-                int top = ty;
-                while (top + 1 < _worldHeight && BlockShapes.IsWater(_w.GetBlock(tx, top + 1, tz))) top++;
-                var landing = Safety.WaterLanding(_w, tx, tz, here.Floor, top);
-                if (!landing.BreaksFall)
-                {
-                    if (landing.FallToFloor > _o.MaxDrop + 1e-6) return false;
-                    soft = false;
-                    fall = landing.FallToFloor;
-                }
-            }
-            if (!soft && fall > _o.MaxDrop + 1e-6) return false;
-            // A fall of more than half a block onto farmland turns it to dirt (1.12 BlockFarmland.onFallenUpon): never planned.
-            if (!c.Water && OnFarmland(tx, ty, tz)) return false;
-            if (soft && (!_o.AllowSwim || fall > _o.MaxWaterDrop + 1e-6)) return false;
-            // Overshoot guard: the cell beyond the landing spot must not be a deadly drop.
-            if (!soft && IsDeadly(tx + dx, ty, tz + dz)) return false;
-            double cost = PathOptions.WalkCost + FallTicks[Math.Min((int)Math.Ceiling(fall), FallTicks.Length - 1)]
-                          + HazardPenalty(tx, ty, tz);
-            if (IsEdge(tx, ty, tz)) cost *= 1.5;
-            // Down into a ditch (a 1-deep trench or hole, dry or a water channel): it takes a jump to get back out.
-            if (fall <= 1.25 + 1e-6 && InDitch(tx, ty, tz)) cost += _o.DitchPenalty;
-            output.Add(new Candidate(tx, ty, tz, c.Water ? MoveKind.Swim : MoveKind.Drop, c.Floor, cost, [], null, false));
-            return true;
+            if (c.Ok) return TryLanding(output, here, tx, ty, tz, dx, dz, c);
+            if (HasCollisionAt(tx, ty, tz) || HazardInColumn(tx, ty, ty, tz)) return false;
         }
         return false;
+    }
+
+    /// <summary>The body can step off into the target column at the current height (not hanging on a ladder or vine).</summary>
+    private bool CanStepOff(CellInfo here, int x, int y, int z, int tx, int tz)
+    {
+        if (here.Climb && !here.Ground) return false;
+        if (!BodyClear(tx, tz, Math.Max(here.Floor, y))) return false;
+        if (!TransitOk(x, z, tx, tz, y, Math.Max(here.Floor, y), out var dropOpens) || dropOpens != null) return false;
+        return !HazardInColumn(tx, y, y + 1, tz);
+    }
+
+    /// <summary>The drop's landing cell (the first cell down the column): a drop (or a swim into water) when the fall is safe.</summary>
+    private bool TryLanding(List<Candidate> output, CellInfo here, int tx, int ty, int tz, int dx, int dz, CellInfo c)
+    {
+        double fall = here.Floor - c.Floor;
+        if (fall <= 0.5) return false; // that's a walk, not a drop
+        bool soft = c.Water;
+        if (soft && !CheckWaterLanding(here, tx, ty, tz, ref soft, ref fall)) return false;
+        if (LandingRefused(c, tx, ty, tz, dx, dz, soft, fall)) return false;
+        double cost = DropCost(tx, ty, tz, fall);
+        output.Add(new Candidate(tx, ty, tz, c.Water ? MoveKind.Swim : MoveKind.Drop, c.Floor, cost, [], null, false));
+        return true;
+    }
+
+    /// <summary>Water only cancels the fall if a tick samples the feet inside it (Safety.WaterLanding): shallow water under a
+    /// long drop is a hard landing on its floor (then no longer soft, and the fall is the one to the floor); false when that
+    /// fall is too far.</summary>
+    private bool CheckWaterLanding(CellInfo here, int tx, int ty, int tz, ref bool soft, ref double fall)
+    {
+        int top = ty;
+        while (top + 1 < _worldHeight && BlockShapes.IsWater(_w.GetBlock(tx, top + 1, tz))) top++;
+        var landing = Safety.WaterLanding(_w, tx, tz, here.Floor, top);
+        if (landing.BreaksFall) return true;
+        if (landing.FallToFloor > _o.MaxDrop + 1e-6) return false;
+        soft = false;
+        fall = landing.FallToFloor;
+        return true;
+    }
+
+    private bool LandingRefused(CellInfo c, int tx, int ty, int tz, int dx, int dz, bool soft, double fall)
+    {
+        if (!soft && fall > _o.MaxDrop + 1e-6) return true;
+        // A fall of more than half a block onto farmland turns it to dirt (1.12 BlockFarmland.onFallenUpon): never planned.
+        if (!c.Water && OnFarmland(tx, ty, tz)) return true;
+        if (soft && (!_o.AllowSwim || fall > _o.MaxWaterDrop + 1e-6)) return true;
+        // Overshoot guard: the cell beyond the landing spot must not be a deadly drop.
+        return !soft && IsDeadly(tx + dx, ty, tz + dz);
+    }
+
+    private double DropCost(int tx, int ty, int tz, double fall)
+    {
+        double cost = PathOptions.WalkCost + FallTicks[Math.Min((int)Math.Ceiling(fall), FallTicks.Length - 1)]
+                      + HazardPenalty(tx, ty, tz);
+        if (IsEdge(tx, ty, tz)) cost *= 1.5;
+        // Down into a ditch (a 1-deep trench or hole, dry or a water channel): it takes a jump to get back out.
+        if (fall <= 1.25 + 1e-6 && InDitch(tx, ty, tz)) cost += _o.DitchPenalty;
+        return cost;
     }
 
     /// <summary>
@@ -666,20 +713,19 @@ public sealed partial class Pathfinder
         // Protect the original field even if an earlier hypothetical edit removed a crop. Never replace crops or cover
         // farmland/crops with scaffold in either of the two cells above them (bridging and pillaring share this veto).
         for (int y = p.Y; y >= Math.Max(0, p.Y - 2); y--)
-            if (_world.GetBlock(p.X, y, p.Z) is BlockShapes.Farmland or 59 or 81 or 83 or 86 or 103 or 104 or 105 or 115 or 127 or 141 or 142 or 207)
-                return false; // wheat, cactus, cane, fruit/stems, nether wart, cocoa, carrots, potatoes, beetroot
+            if (ScaffoldVeto.Contains(_world.GetBlock(p.X, y, p.Z))) return false;
         return _o.CanPlace is null || _o.CanPlace(p);
     }
 
+    /// <summary>Farmland and crops scaffold never replaces or covers: wheat, cactus, cane, fruit/stems, nether wart, cocoa,
+    /// carrots, potatoes, beetroot.</summary>
+    private static readonly IdSet ScaffoldVeto = IdSet.Of([BlockShapes.Farmland, 59, 81, 83, 86, 103, 104, 105, 115, 127, 141, 142, 207]);
+
     private void TryBridge(List<Candidate> output, CellInfo here, int x, int y, int z, int tx, int tz)
     {
-        if (!here.Ground || here.Water || Math.Abs(here.Floor - y) > 1e-6) return;
+        if (!BridgeFrom(here, y)) return;
         int fy = y - 1;
-        if (fy < 0) return;
-        if (!Aiming.IsReplaceable(_w, _w.GetBlock(tx, fy, tz))) return;
-        if (!CanPlaceScaffold(new BlockPos(tx, fy, tz))) return;
-        if (!HasCollisionAt(x, fy, z) || _w.Info(_w.GetBlock(x, fy, z)).Interactable) return; // block we stand on = placement support
-        if (!BodyClear(tx, tz, y) || HazardInColumn(tx, y, y + 1, tz)) return;
+        if (!BridgeTarget(x, y, z, tx, tz, fy)) return;
         // Evaluate the target with the scaffold in place.
         var saved = _w.Mods;
         _w.Mods = new Mod(new BlockPos(tx, fy, tz), _o.ScaffoldBlockId, saved);
@@ -690,39 +736,72 @@ public sealed partial class Pathfinder
         output.Add(new Candidate(tx, y, tz, MoveKind.Bridge, y, cost, [], new BlockPos(tx, fy, tz), true));
     }
 
+    /// <summary>Bridging starts standing on the ground at the cell's own level (not swimming), above the world's floor.</summary>
+    private static bool BridgeFrom(CellInfo here, int y) => here.Ground && !here.Water && !(Math.Abs(here.Floor - y) > 1e-6) && y - 1 >= 0;
+
+    /// <summary>The scaffold cell is empty and may take a block, the block we stand on is its placement support, and the body
+    /// fits over it with no hazard.</summary>
+    private bool BridgeTarget(int x, int y, int z, int tx, int tz, int fy)
+    {
+        if (!Aiming.IsReplaceable(_w, _w.GetBlock(tx, fy, tz))) return false;
+        if (!CanPlaceScaffold(new BlockPos(tx, fy, tz))) return false;
+        if (!HasCollisionAt(x, fy, z) || _w.Info(_w.GetBlock(x, fy, z)).Interactable) return false; // block we stand on = placement support
+        return BodyClear(tx, tz, y) && !HazardInColumn(tx, y, y + 1, tz);
+    }
+
     private void TryBreakWalk(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int tx, int tz)
     {
         if (here.Water) return;
-        List<BlockPos>? breaks = null; // made only when something is in the way (tried for every neighbour of every node)
-        for (int yy = y + 1; yy >= y; yy--) // head first so nothing falls on us
-        {
-            if (!HasCollisionAt(tx, yy, tz) && !Safety.IsHazard(_w, _w.GetBlock(tx, yy, tz))) continue;
-            if (!Breakable(tx, yy, tz)) return;
-            (breaks ??= new List<BlockPos>(2)).Add(new BlockPos(tx, yy, tz));
-        }
+        var breaks = WalkBreaks(tx, y, tz);
         if (breaks == null) return;
         var c = WithBroken(breaks, () => (CellUncached(tx, y, tz), BodyClear(x, z, y) && BodyClear(tx, tz, Math.Max(here.Floor, y))));
         if (!c.Item1.Ok || !c.Item2 || c.Item1.Floor - here.Floor > _step + 1e-6 || c.Item1.Floor < here.Floor - 0.5 - 1e-6) return;
         AddWalk(output, here, hereEdge, tx, y, tz, c.Item1, MoveKind.Walk, 1.0, breaks);
     }
 
+    /// <summary>The blocks to break for a walk into column (tx, tz): head first so nothing falls on us; null when nothing is
+    /// in the way or something can't be broken (the list is made only when something is in the way: this is tried for every
+    /// neighbour of every node).</summary>
+    private List<BlockPos>? WalkBreaks(int tx, int y, int tz)
+    {
+        List<BlockPos>? breaks = null;
+        for (int yy = y + 1; yy >= y; yy--)
+        {
+            if (!InTheWay(tx, yy, tz)) continue;
+            if (!Breakable(tx, yy, tz)) return null;
+            (breaks ??= new List<BlockPos>(2)).Add(new BlockPos(tx, yy, tz));
+        }
+        return breaks;
+    }
+
+    /// <summary>A block the body collides with, or a hazard.</summary>
+    private bool InTheWay(int x, int y, int z) => HasCollisionAt(x, y, z) || Safety.IsHazard(_w, _w.GetBlock(x, y, z));
+
     private void TryBreakJump(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int tx, int tz)
     {
         if (!here.Ground || Math.Abs(here.Floor - y) > 1e-6) return;
         // Target (tx, y+1, tz) needs support from (tx, y, tz), which must stay.
         if (!HasCollisionAt(tx, y, tz) || !IsFullSupport(tx, y, tz)) return;
-        List<BlockPos>? breaks = null; // made only when something is in the way
-        for (int i = 0; i < 3; i++)
-        {
-            var p = i == 0 ? new BlockPos(x, y + 2, z) : i == 1 ? new BlockPos(tx, y + 2, tz) : new BlockPos(tx, y + 1, tz);
-            if (!HasCollisionAt(p.X, p.Y, p.Z) && !Safety.IsHazard(_w, _w.GetBlock(p.X, p.Y, p.Z))) continue;
-            if (!Breakable(p.X, p.Y, p.Z)) return;
-            (breaks ??= new List<BlockPos>(3)).Add(p);
-        }
+        var breaks = JumpBreaks(x, y, z, tx, tz);
         if (breaks == null) return;
         var r = WithBroken(breaks, () => (CellUncached(tx, y + 1, tz), BodyClear(x, z, y + 1)));
         if (!r.Item1.Ok || !r.Item2) return;
         AddJump(output, here, hereEdge, tx, y + 1, tz, r.Item1, breaks);
+    }
+
+    /// <summary>The blocks to break for a jump up into (tx, y+1, tz): above my head, above the target and the target's feet
+    /// cell, in that order; null when nothing is in the way or something can't be broken.</summary>
+    private List<BlockPos>? JumpBreaks(int x, int y, int z, int tx, int tz)
+    {
+        List<BlockPos>? breaks = null;
+        for (int i = 0; i < 3; i++)
+        {
+            var p = i == 0 ? new BlockPos(x, y + 2, z) : i == 1 ? new BlockPos(tx, y + 2, tz) : new BlockPos(tx, y + 1, tz);
+            if (!InTheWay(p.X, p.Y, p.Z)) continue;
+            if (!Breakable(p.X, p.Y, p.Z)) return null;
+            (breaks ??= new List<BlockPos>(3)).Add(p);
+        }
+        return breaks;
     }
 
     private T WithBroken<T>(List<BlockPos> breaks, Func<T> f)
@@ -772,6 +851,15 @@ public sealed partial class Pathfinder
     /// </summary>
     private double TerrainPenalty(int x, int y, int z)
     {
+        double p = FlowingWaterPenalty(x, y, z);
+        if (_fromSurface && _o.SkyLight is { } sky && sky(x, y, z) <= 3 && sky(x, y + 1, z) <= 3) p += _o.UndergroundPenalty;
+        if (_o.Covered is { } covered && covered(x, y, z)) p += _o.CoveredPenalty; // a way up: fewer steps under ground win
+        return p;
+    }
+
+    /// <summary>Flowing water in the body's cells: a falling column (a waterfall) costs the most, a stream less.</summary>
+    private double FlowingWaterPenalty(int x, int y, int z)
+    {
         double p = 0;
         for (int yy = y; yy <= y + 1; yy++)
         {
@@ -781,8 +869,6 @@ public sealed partial class Pathfinder
             if (meta >= 8) { p = Math.Max(p, _o.FallingWaterPenalty); break; }
             if (meta != 0) p = Math.Max(p, _o.FlowingWaterPenalty);
         }
-        if (_fromSurface && _o.SkyLight is { } sky && sky(x, y, z) <= 3 && sky(x, y + 1, z) <= 3) p += _o.UndergroundPenalty;
-        if (_o.Covered is { } covered && covered(x, y, z)) p += _o.CoveredPenalty; // a way up: fewer steps under ground win
         return p;
     }
 
@@ -819,28 +905,41 @@ public sealed partial class Pathfinder
         if (y < 0 || y + 1 >= _worldHeight) return CellInfo.Invalid;
         if (!_w.IsLoaded(x, z)) return CellInfo.Invalid;
         int feet = _w.GetBlock(x, y, z), head = _w.GetBlock(x, y + 1, z);
-        if (Safety.IsHazard(_w, feet) || Safety.IsHazard(_w, head)) return CellInfo.Invalid;
-        if (Openables.IsPlate(feet) && !PlateOk(x, y, z)) return CellInfo.Invalid;
-        if (_o.AvoidPistonPaths && (InPistonPath(x, y, z) || InPistonPath(x, y + 1, z))) return CellInfo.Invalid;
+        if (CellBlocked(x, y, z, feet, head)) return CellInfo.Invalid;
         bool water = BlockShapes.IsWater(feet);
         bool climb = BlockShapes.IsClimbableAt(_w, x, y, z);
 
         double? support = SupportHeight(x, y, z);
         // A closed trapdoor is a floor anyone can open: never stand on one over the void or a deadly drop.
-        if (support is { } sh && Openables.IsTrapdoor(feet) && !Openables.IsOpen(_w.GetMeta(x, y, z)) && sh - y < 0.25
-            && TrapdoorOverDrop(x, y, z)) return CellInfo.Invalid;
+        if (support is { } sh && UnsafeTrapdoor(x, y, z, feet, sh)) return CellInfo.Invalid;
         bool ground = support is not null;
-        if (!ground && !(water && _o.AllowSwim) && !(climb && _o.AllowClimb)) return CellInfo.Invalid;
+        if (!CanOccupy(ground, water, climb)) return CellInfo.Invalid;
         double floor = support ?? y;
-
-        if (!BodyClear(x, z, floor)) return CellInfo.Invalid;
-        if (Safety.IsHazard(_w, _w.GetBlock(x, (int)Math.Floor(floor + 1.8), z))) return CellInfo.Invalid;
-        if (!ground && water)
-        {
-            // Swimming: must not be water hanging over the void (it would carry us down).
-            if (Safety.IsOverVoid(_w, x, y, z)) return CellInfo.Invalid;
-        }
+        if (!BodyFits(x, y, z, floor, ground, water)) return CellInfo.Invalid;
         return new CellInfo(true, floor, ground, water, climb);
+    }
+
+    /// <summary>A hazard at the feet or head, a plate we may not step on, or (when avoided) a piston's push path.</summary>
+    private bool CellBlocked(int x, int y, int z, int feet, int head)
+    {
+        if (Safety.IsHazard(_w, feet) || Safety.IsHazard(_w, head)) return true;
+        if (Openables.IsPlate(feet) && !PlateOk(x, y, z)) return true;
+        return _o.AvoidPistonPaths && (InPistonPath(x, y, z) || InPistonPath(x, y + 1, z));
+    }
+
+    private bool UnsafeTrapdoor(int x, int y, int z, int feet, double support) =>
+        Openables.IsTrapdoor(feet) && !Openables.IsOpen(_w.GetMeta(x, y, z)) && support - y < 0.25 && TrapdoorOverDrop(x, y, z);
+
+    /// <summary>Standing, swimming (when allowed) or climbing (when allowed).</summary>
+    private bool CanOccupy(bool ground, bool water, bool climb) => ground || (water && _o.AllowSwim) || (climb && _o.AllowClimb);
+
+    /// <summary>The body fits at <paramref name="floor"/> with no hazard at its head, and a swimmer isn't in water hanging over
+    /// the void (it would carry us down).</summary>
+    private bool BodyFits(int x, int y, int z, double floor, bool ground, bool water)
+    {
+        if (!BodyClear(x, z, floor)) return false;
+        if (Safety.IsHazard(_w, _w.GetBlock(x, (int)Math.Floor(floor + 1.8), z))) return false;
+        return ground || !water || !Safety.IsOverVoid(_w, x, y, z);
     }
 
     /// <summary>Highest collision top in [y, y+1) under the centered player footprint, from cells y-1 and y.</summary>
@@ -855,12 +954,20 @@ public sealed partial class Pathfinder
             if (id == 0) continue;
             _boxes.Clear();
             BlockShapes.AddCollisionBoxes(_w, id, _w.GetMeta(x, yy, z), x, yy, z, _boxes);
-            foreach (var b in _boxes)
-            {
-                if (b.MaxX <= foot.MinX || b.MinX >= foot.MaxX || b.MaxZ <= foot.MinZ || b.MinZ >= foot.MaxZ) continue;
-                if (b.MaxY < y - 1e-9 || b.MaxY >= y + 1 - 1e-9) continue;
-                if (best is null || b.MaxY > best) best = b.MaxY;
-            }
+            best = HighestUnderFoot(foot, y, best);
+        }
+        return best;
+    }
+
+    /// <summary>The highest top in [y, y+1) of the boxes in <see cref="_boxes"/> that overlap the footprint, or
+    /// <paramref name="best"/> when higher.</summary>
+    private double? HighestUnderFoot(AABB foot, int y, double? best)
+    {
+        foreach (var b in _boxes)
+        {
+            if (b.MaxX <= foot.MinX || b.MinX >= foot.MaxX || b.MaxZ <= foot.MinZ || b.MinZ >= foot.MaxZ) continue;
+            if (b.MaxY < y - 1e-9 || b.MaxY >= y + 1 - 1e-9) continue;
+            if (best is null || b.MaxY > best) best = b.MaxY;
         }
         return best;
     }
@@ -903,16 +1010,20 @@ public sealed partial class Pathfinder
         for (int yy = y - 2; yy >= 0; yy--)
         {
             int id = _w.GetBlock(x, yy, z);
-            if (BlockShapes.IsWater(id))
-            {
-                if (Safety.IsOverVoid(_w, x, yy, z)) return true;
-                var landing = Safety.WaterLanding(_w, x, z, y, yy);
-                return !landing.BreaksFall && landing.FallToFloor > _o.MaxDrop + 1e-6;
-            }
+            if (BlockShapes.IsWater(id)) return DropIntoWaterDeadly(x, y, z, yy);
             if (Safety.IsHazard(_w, id) && BlockShapes.IsLava(id)) return true;
             if (HasCollisionAt(x, yy, z)) return y - (yy + 1) > _o.MaxDrop;
         }
         return true;
+    }
+
+    /// <summary>A drop from foot level <paramref name="y"/> into water topped at <paramref name="waterY"/>: deadly over the void,
+    /// or when the water doesn't break the fall and its floor is further down than the max drop.</summary>
+    private bool DropIntoWaterDeadly(int x, int y, int z, int waterY)
+    {
+        if (Safety.IsOverVoid(_w, x, waterY, z)) return true;
+        var landing = Safety.WaterLanding(_w, x, z, y, waterY);
+        return !landing.BreaksFall && landing.FallToFloor > _o.MaxDrop + 1e-6;
     }
 
     /// <summary>Any of the 8 neighbours at this level is a deadly drop.</summary>
@@ -1003,26 +1114,39 @@ public sealed partial class Pathfinder
         if (_boxes.Count == 0) return true;
         if (!_o.AllowOpenDoors) return false;
 
+        var list = PanelToggles(x, z, tx, tz, y, sweep);
+        if (list is null || list.Count == 0) return false; // a panel that can't be opened, or something other than a panel in the gap
+        bool clear = WithToggles(list, () => BlockShapes.GetCollidingBoxes(_w, sweep, _boxes).Count == 0);
+        if (!clear) return false;
+        toggles = list;
+        return true;
+    }
+
+    /// <summary>The toggles of every panel in either column that the sweep hits (each once); null when one can't be opened.</summary>
+    private List<DoorToggle>? PanelToggles(int x, int z, int tx, int tz, int y, AABB sweep)
+    {
         var hereCell = new BlockPos(x, y, z);
         var list = new List<DoorToggle>(2);
         var tmp = new List<AABB>(2);
         foreach (var (cx, cz) in new[] { (x, z), (tx, tz) })
         for (int yy = Math.Max(0, y - 1); yy <= Math.Min(_worldHeight - 1, y + 2); yy++)
         {
-            int id = _w.GetBlock(cx, yy, cz);
-            if (!IsPanel(id)) continue;
-            tmp.Clear();
-            BlockShapes.AddCollisionBoxes(_w, id, _w.GetMeta(cx, yy, cz), cx, yy, cz, tmp);
-            if (!tmp.Any(b => b.Intersects(sweep))) continue;
+            if (!PanelInSweep(cx, yy, cz, sweep, tmp)) continue;
             var tg = MakeToggle(new BlockPos(cx, yy, cz), hereCell, new BlockPos(tx, y, tz));
-            if (tg is null) return false;
+            if (tg is null) return null;
             if (!list.Any(o => o.Pos == tg.Pos)) list.Add(tg);
         }
-        if (list.Count == 0) return false; // something other than a panel is in the gap
-        bool clear = WithToggles(list, () => BlockShapes.GetCollidingBoxes(_w, sweep, _boxes).Count == 0);
-        if (!clear) return false;
-        toggles = list;
-        return true;
+        return list;
+    }
+
+    /// <summary>A door or trapdoor panel at (x, y, z) whose collision boxes the sweep hits.</summary>
+    private bool PanelInSweep(int x, int y, int z, AABB sweep, List<AABB> tmp)
+    {
+        int id = _w.GetBlock(x, y, z);
+        if (!IsPanel(id)) return false;
+        tmp.Clear();
+        BlockShapes.AddCollisionBoxes(_w, id, _w.GetMeta(x, y, z), x, y, z, tmp);
+        return tmp.Any(b => b.Intersects(sweep));
     }
 
     /// <summary>The toggle that flips the openable at <paramref name="p"/>, or null when it can't be opened from
@@ -1054,21 +1178,30 @@ public sealed partial class Pathfinder
         for (int dz = -2; dz <= 2; dz++)
         for (int dy = -1; dy <= 2; dy++)
         {
-            int ax = door.X + dx, ay = door.Y + dy, az = door.Z + dz;
-            int id = _w.GetBlock(ax, ay, az);
-            if (id is not (Openables.Lever or Openables.StoneButton)) continue;
-            double ex = ax + 0.5 - eye.X, ey = ay + 0.5 - eye.Y, ez = az + 0.5 - eye.Z;
-            double d = Math.Sqrt(ex * ex + ey * ey + ez * ez);
-            double dFrom = Math.Pow(ax - from.X, 2) + Math.Pow(az - from.Z, 2);
-            double dTo = Math.Pow(ax - to.X, 2) + Math.Pow(az - to.Z, 2);
-            if (d > _o.ActuatorReach || dFrom >= dTo) continue;
-            var ap = new BlockPos(ax, ay, az);
-            if (_view?.ForTrigger(ap) is not null || Explosives(ap)) continue;
-            // An unknown lever inside someone's build might run anything: only levers we learned (or were allowed).
-            if (id == Openables.Lever && !_o.AllowUnknownLevers && _o.IsBuild is { } build && build(ap, id)) continue;
+            var ap = new BlockPos(door.X + dx, door.Y + dy, door.Z + dz);
+            if (!UnknownActuator(ap, eye, from, to, out double d)) continue;
             if (d < bestD) { bestD = d; best = ap; }
         }
         return best;
+    }
+
+    /// <summary>A lever or button we know nothing about at <paramref name="ap"/>, within reach of the near side's eye and nearer
+    /// the near side than the far side, with no explosives around (and no unknown lever in someone's build unless allowed);
+    /// <paramref name="d"/> is its distance from the eye.</summary>
+    private bool UnknownActuator(BlockPos ap, Vec3d eye, BlockPos from, BlockPos to, out double d)
+    {
+        d = 0;
+        int ax = ap.X, ay = ap.Y, az = ap.Z;
+        int id = _w.GetBlock(ax, ay, az);
+        if (id is not (Openables.Lever or Openables.StoneButton)) return false;
+        double ex = ax + 0.5 - eye.X, ey = ay + 0.5 - eye.Y, ez = az + 0.5 - eye.Z;
+        d = Math.Sqrt(ex * ex + ey * ey + ez * ez);
+        double dFrom = Math.Pow(ax - from.X, 2) + Math.Pow(az - from.Z, 2);
+        double dTo = Math.Pow(ax - to.X, 2) + Math.Pow(az - to.Z, 2);
+        if (d > _o.ActuatorReach || dFrom >= dTo) return false;
+        if (_view?.ForTrigger(ap) is not null || Explosives(ap)) return false;
+        // An unknown lever inside someone's build might run anything: only levers we learned (or were allowed).
+        return !(id == Openables.Lever && !_o.AllowUnknownLevers && _o.IsBuild is { } build && build(ap, id));
     }
 
     private Mod? ToggleMods(DoorToggle tg, Mod? mods)
@@ -1109,19 +1242,8 @@ public sealed partial class Pathfinder
     private void TryOpenThrough(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int tx, int tz)
     {
         if (here.Water) return;
-        var list = new List<DoorToggle>(2);
-        for (int yy = y; yy <= y + 1; yy++)
-        {
-            int id = _w.GetBlock(tx, yy, tz);
-            bool closed = !Openables.IsOpen(_w.GetMeta(tx, yy, tz));
-            bool gate = Openables.IsFenceGate(id) && closed;
-            bool headTrapdoor = id == Openables.Trapdoor && yy == y + 1 && closed;
-            if (!gate && !headTrapdoor) continue;
-            var tg = MakeToggle(new BlockPos(tx, yy, tz), new BlockPos(x, y, z), new BlockPos(tx, y, tz));
-            if (tg is null) return;
-            list.Add(tg);
-        }
-        if (list.Count == 0) return;
+        var list = ThroughToggles(x, y, z, tx, tz);
+        if (list is null || list.Count == 0) return;
         var r = WithToggles(list, () =>
         {
             var c = CellUncached(tx, y, tz);
@@ -1132,6 +1254,30 @@ public sealed partial class Pathfinder
         });
         if (!r.Item2) return;
         AddWalk(output, here, hereEdge, tx, y, tz, r.Item1, MoveKind.Walk, 1.0, [], list);
+    }
+
+    /// <summary>The toggles for the closed gate (feet or head) and the closed trapdoor at head height in the target column;
+    /// null when one of them can't be opened.</summary>
+    private List<DoorToggle>? ThroughToggles(int x, int y, int z, int tx, int tz)
+    {
+        var list = new List<DoorToggle>(2);
+        for (int yy = y; yy <= y + 1; yy++)
+        {
+            if (!ClosedInTheWay(tx, yy, tz, y)) continue;
+            var tg = MakeToggle(new BlockPos(tx, yy, tz), new BlockPos(x, y, z), new BlockPos(tx, y, tz));
+            if (tg is null) return null;
+            list.Add(tg);
+        }
+        return list;
+    }
+
+    private bool ClosedInTheWay(int tx, int yy, int tz, int y)
+    {
+        int id = _w.GetBlock(tx, yy, tz);
+        bool closed = !Openables.IsOpen(_w.GetMeta(tx, yy, tz));
+        bool gate = Openables.IsFenceGate(id) && closed;
+        bool headTrapdoor = id == Openables.Trapdoor && yy == y + 1 && closed;
+        return gate || headTrapdoor;
     }
 
     /// <summary>Ladder up into a hatch: a closed trapdoor at the head of the cell above.</summary>

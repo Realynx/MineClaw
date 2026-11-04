@@ -132,15 +132,23 @@ public static class SwimSim
             PlayerPhysics.Tick(w, s, policy(s));
             if (s.Frozen) return new SwimResult(false, t, minY, s, "chunk not loaded");
             minY = Math.Min(minY, s.Position.Y);
-            bool inCell = Math.Abs(s.Position.X - (c.X + 0.5)) < 0.8 && Math.Abs(s.Position.Z - (c.Z + 0.5)) < 0.8;
-            bool onExit = exit is { } e && Math.Abs(s.Position.X - (e.X + 0.5)) < 0.8 && Math.Abs(s.Position.Z - (e.Z + 0.5)) < 0.8;
-            if (!s.InWater && !s.OnGround && s.Position.Y < c.SourceY - 0.5)
-                return new SwimResult(false, t, minY, s, $"left the water at {s.Position.X:0.00},{s.Position.Y:0.0},{s.Position.Z:0.00} (the column ends above the depth?)");
-            if (!inCell && !onExit && s.Position.Y < c.SourceY + 0.5)
-                return new SwimResult(false, t, minY, s, "drifted out of the column");
+            if (Strayed(s, c, exit) is { } why) return new SwimResult(false, t, minY, s, why);
             if (done(s)) { if (++good >= settleTicks) return new SwimResult(true, t, minY, s); }
             else good = 0;
         }
         return new SwimResult(false, maxTicks, minY, s, $"didn't settle within {maxTicks} ticks (at y {s.Position.Y:0.0})");
+    }
+
+    /// <summary>Why the swim went wrong this tick: out of the water below the source (the column ends above the depth), or out
+    /// of the column (and off the exit) below the source's top; null while it's fine.</summary>
+    private static string? Strayed(PhysicsState s, SwimColumn c, BlockPos? exit)
+    {
+        bool inCell = Math.Abs(s.Position.X - (c.X + 0.5)) < 0.8 && Math.Abs(s.Position.Z - (c.Z + 0.5)) < 0.8;
+        bool onExit = exit is { } e && Math.Abs(s.Position.X - (e.X + 0.5)) < 0.8 && Math.Abs(s.Position.Z - (e.Z + 0.5)) < 0.8;
+        if (!s.InWater && !s.OnGround && s.Position.Y < c.SourceY - 0.5)
+            return $"left the water at {s.Position.X:0.00},{s.Position.Y:0.0},{s.Position.Z:0.00} (the column ends above the depth?)";
+        if (!inCell && !onExit && s.Position.Y < c.SourceY + 0.5)
+            return "drifted out of the column";
+        return null;
     }
 }

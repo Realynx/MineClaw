@@ -50,16 +50,19 @@ public readonly record struct ClaimKey(ClaimKind Kind, BlockPos Min, BlockPos Ma
     public bool ConflictsWith(ClaimKey o)
     {
         if (Kind != ClaimKind.Task && o.Kind != ClaimKind.Task && Dim != o.Dim) return false; // same coordinates, other dimension
-        if (Kind == o.Kind) return Kind switch
-        {
-            ClaimKind.Task => string.Equals(Name, o.Name, StringComparison.Ordinal),
-            ClaimKind.Area => Overlaps(o),
-            ClaimKind.Chest => Min == o.Min || (Min.Y == o.Min.Y && Math.Abs(Min.X - o.Min.X) + Math.Abs(Min.Z - o.Min.Z) == 1),
-            _ => Min == o.Min,
-        };
-        bool spatial = Kind is ClaimKind.Block or ClaimKind.Area && o.Kind is ClaimKind.Block or ClaimKind.Area;
-        return spatial && Overlaps(o);
+        if (Kind == o.Kind) return SameKindConflicts(o);
+        return IsSpatial(Kind) && IsSpatial(o.Kind) && Overlaps(o);
     }
+
+    private bool SameKindConflicts(ClaimKey o) => Kind switch
+    {
+        ClaimKind.Task => string.Equals(Name, o.Name, StringComparison.Ordinal),
+        ClaimKind.Area => Overlaps(o),
+        ClaimKind.Chest => Min == o.Min || (Min.Y == o.Min.Y && Math.Abs(Min.X - o.Min.X) + Math.Abs(Min.Z - o.Min.Z) == 1),
+        _ => Min == o.Min,
+    };
+
+    private static bool IsSpatial(ClaimKind kind) => kind is ClaimKind.Block or ClaimKind.Area;
 
     public static bool TryParse(string? id, out ClaimKey key)
     {
@@ -68,39 +71,55 @@ public readonly record struct ClaimKey(ClaimKind Kind, BlockPos Min, BlockPos Ma
         int c = id.IndexOf(':');
         if (c <= 0) return false;
         string kind = id[..c], rest = id[(c + 1)..];
-        int dim = 0;
+        if (!SplitDim(kind, ref rest, out int dim)) return false;
+        return FromParts(kind, rest, dim, out key);
+    }
+
+    /// <summary>A spatial key's "@dim" suffix (tasks have none: an '@' is part of the name).</summary>
+    private static bool SplitDim(string kind, ref string rest, out int dim)
+    {
+        dim = 0;
         int at = kind == "task" ? -1 : rest.LastIndexOf('@');
-        if (at >= 0)
-        {
-            if (!int.TryParse(rest[(at + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out dim)) return false;
-            rest = rest[..at];
-        }
-        static bool Pos(string s, out BlockPos p)
-        {
-            p = default;
-            var parts = s.Split(',');
-            if (parts.Length != 3) return false;
-            if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var x)
-                || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var y)
-                || !int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var z)) return false;
-            p = new BlockPos(x, y, z);
-            return true;
-        }
+        if (at < 0) return true;
+        if (!int.TryParse(rest[(at + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out dim)) return false;
+        rest = rest[..at];
+        return true;
+    }
+
+    private static bool FromParts(string kind, string rest, int dim, out ClaimKey key)
+    {
+        key = default;
         switch (kind)
         {
             case "task" when rest.Length > 0: key = Task(rest); return true;
-            case "area":
-                {
-                    var i = rest.IndexOf("..", StringComparison.Ordinal);
-                    if (i < 0 || !Pos(rest[..i], out var a) || !Pos(rest[(i + 2)..], out var b)) return false;
-                    key = Area(a, b, dim);
-                    return true;
-                }
-            case "block" when Pos(rest, out var p): key = Block(p, dim); return true;
-            case "chest" when Pos(rest, out var p): key = Chest(p, dim); return true;
-            case "furnace" when Pos(rest, out var p): key = Furnace(p, dim); return true;
+            case "area": return TryArea(rest, dim, out key);
+            case "block" when TryPos(rest, out var p): key = Block(p, dim); return true;
+            case "chest" when TryPos(rest, out var p): key = Chest(p, dim); return true;
+            case "furnace" when TryPos(rest, out var p): key = Furnace(p, dim); return true;
             default: return false;
         }
+    }
+
+    /// <summary>"x,y,z..x,y,z".</summary>
+    private static bool TryArea(string rest, int dim, out ClaimKey key)
+    {
+        key = default;
+        var i = rest.IndexOf("..", StringComparison.Ordinal);
+        if (i < 0 || !TryPos(rest[..i], out var a) || !TryPos(rest[(i + 2)..], out var b)) return false;
+        key = Area(a, b, dim);
+        return true;
+    }
+
+    private static bool TryPos(string s, out BlockPos p)
+    {
+        p = default;
+        var parts = s.Split(',');
+        if (parts.Length != 3) return false;
+        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var x)
+            || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var y)
+            || !int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var z)) return false;
+        p = new BlockPos(x, y, z);
+        return true;
     }
 }
 

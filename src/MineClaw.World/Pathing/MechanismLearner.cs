@@ -128,24 +128,38 @@ public sealed class MechanismLearner : IDisposable
             }
             if (newKind is { } k && ch.OldId == ch.NewId)
             {
-                bool before = Openables.IsActuatorOn(ch.OldId, ch.OldMeta), after = Openables.IsActuatorOn(ch.NewId, ch.NewMeta);
-                if (before == after) return;
-                if (k != TriggerKind.Lever && !after)
-                {
-                    foreach (var e in _episodes) if (e.Trigger == ch.Pos && e.Released is null) e.Released = now;
-                    return;
-                }
-                StartEpisode(ch.Pos, k, after, now, dim);
+                TriggerFlipped(ch, k, now, dim);
                 return;
             }
             if (oldKind is not null || newKind is not null) return;
             if (Ignored(ch)) return;
-            foreach (var e in _episodes)
-            {
-                if (e.Closed || e.Dim != dim || now - e.At > _o.EffectWindow || !Near(e.Trigger, ch.Pos)) continue;
-                if (!e.Before.ContainsKey(ch.Pos)) e.Before[ch.Pos] = new BlockState(ch.OldId, ch.OldMeta);
-                e.FirstEffect ??= now;
-            }
+            NoteEffect(ch, now, dim);
+        }
+    }
+
+    /// <summary>A trigger changed state: switched on (or a lever either way) starts an episode; a button or plate popping marks
+    /// its episodes released.</summary>
+    private void TriggerFlipped(BlockChange ch, TriggerKind k, DateTimeOffset now, int dim)
+    {
+        bool before = Openables.IsActuatorOn(ch.OldId, ch.OldMeta), after = Openables.IsActuatorOn(ch.NewId, ch.NewMeta);
+        if (before == after) return;
+        if (k != TriggerKind.Lever && !after)
+        {
+            foreach (var e in _episodes) if (e.Trigger == ch.Pos && e.Released is null) e.Released = now;
+            return;
+        }
+        StartEpisode(ch.Pos, k, after, now, dim);
+    }
+
+    /// <summary>Any other block change near an open episode (within its effect window) is a candidate effect: its state before
+    /// the first change is kept.</summary>
+    private void NoteEffect(BlockChange ch, DateTimeOffset now, int dim)
+    {
+        foreach (var e in _episodes)
+        {
+            if (e.Closed || e.Dim != dim || now - e.At > _o.EffectWindow || !Near(e.Trigger, ch.Pos)) continue;
+            if (!e.Before.ContainsKey(ch.Pos)) e.Before[ch.Pos] = new BlockState(ch.OldId, ch.OldMeta);
+            e.FirstEffect ??= now;
         }
     }
 
@@ -197,32 +211,7 @@ public sealed class MechanismLearner : IDisposable
             var now = _time.GetUtcNow();
             int dim = _world.Dimension;
             for (int i = _episodes.Count - 1; i >= 0; i--)
-            {
-                var e = _episodes[i];
-                if (e.Dim != dim) { _episodes.RemoveAt(i); continue; }
-                if (!e.Closed)
-                {
-                    if (now - e.At < _o.EffectWindow) continue;
-                    e.Closed = true;
-                    var obs = Close(e);
-                    if (obs != null) events.Add(obs);
-                    if (obs is null || obs.Miss || e.Kind == TriggerKind.Lever || e.Watch is null) { _episodes.RemoveAt(i); continue; }
-                }
-                // Pulse watch: the effects reverted → that's the pulse length.
-                if (e.Watch is { } w && w.All(x => x.IsIn(_world, on: false)))
-                {
-                    int ticks = Ticks(now - e.At);
-                    if (e.Kind != TriggerKind.Button) ticks = Math.Min(ticks, MechanismLink.DefaultPulseTicks + LagOf(e));
-                    var (trigger, d) = (e.Trigger, e.Dim);
-                    _deferred.Add(() =>
-                    {
-                        if (Graph.Get(trigger, d) is { } link)
-                            Graph.Put(link with { PulseTicks = link.PulseTicks is { } p ? Math.Min(p, ticks) : ticks });
-                    });
-                    _episodes.RemoveAt(i);
-                }
-                else if (now - e.At > _o.PulseWatch) _episodes.RemoveAt(i);
-            }
+                if (!Advance(_episodes[i], now, dim, events)) _episodes.RemoveAt(i);
             writes = _deferred.ToList();
             _deferred.Clear();
         }
@@ -230,10 +219,63 @@ public sealed class MechanismLearner : IDisposable
         foreach (var ev in events) Observed?.Invoke(ev);
     }
 
+    /// <summary>One episode on a pump: closed once its effect window is over (→ an observation), then its pulse watched until
+    /// the effects revert (→ the pulse length) or the watch times out. False = it's done (or in another dimension now).</summary>
+    private bool Advance(Episode e, DateTimeOffset now, int dim, List<MechanismObservation> events)
+    {
+        if (e.Dim != dim) return false;
+        if (!e.Closed)
+        {
+            if (now - e.At < _o.EffectWindow) return true;
+            if (!CloseEpisode(e, events)) return false;
+        }
+        // Pulse watch: the effects reverted → that's the pulse length.
+        if (e.Watch is { } w && w.All(x => x.IsIn(_world, on: false)))
+        {
+            RecordPulse(e, now);
+            return false;
+        }
+        return !(now - e.At > _o.PulseWatch);
+    }
+
+    /// <summary>Closes the effect window; true when its pulse is to be watched (a button or plate whose effects were seen).</summary>
+    private bool CloseEpisode(Episode e, List<MechanismObservation> events)
+    {
+        e.Closed = true;
+        var obs = Close(e);
+        if (obs != null) events.Add(obs);
+        return !(obs is null || obs.Miss || e.Kind == TriggerKind.Lever || e.Watch is null);
+    }
+
+    /// <summary>The observed pulse (plates: at most the default pulse plus the lag) goes to the link, keeping the shortest seen.</summary>
+    private void RecordPulse(Episode e, DateTimeOffset now)
+    {
+        int ticks = Ticks(now - e.At);
+        if (e.Kind != TriggerKind.Button) ticks = Math.Min(ticks, MechanismLink.DefaultPulseTicks + LagOf(e));
+        var (trigger, d) = (e.Trigger, e.Dim);
+        _deferred.Add(() =>
+        {
+            if (Graph.Get(trigger, d) is { } link)
+                Graph.Put(link with { PulseTicks = link.PulseTicks is { } p ? Math.Min(p, ticks) : ticks });
+        });
+    }
+
     private static int Ticks(TimeSpan t) => (int)Math.Floor(t.TotalMilliseconds / 50 + 1e-6);
     private static int LagOf(Episode e) => e.FirstEffect is { } f ? Ticks(f - e.At) : 0;
 
     private MechanismObservation? Close(Episode e)
+    {
+        var effects = ObservedEffects(e);
+        var old = Graph.Get(e.Trigger, e.Dim);
+        if (effects.Count == 0) return Missed(e, old);
+        var link = LearnedLink(e, old, effects);
+        _deferred.Add(() => Graph.Put(link));
+        if (e.Kind != TriggerKind.Lever) e.Watch = effects;
+        return new MechanismObservation(link, e.By, old is null, false, e.Demo);
+    }
+
+    /// <summary>The cells near the trigger that changed and stayed changed (not mid-move), in the trigger's on direction.</summary>
+    private List<MechanismEffect> ObservedEffects(Episode e)
     {
         var effects = new List<MechanismEffect>();
         foreach (var (pos, before) in e.Before)
@@ -243,26 +285,33 @@ public sealed class MechanismLearner : IDisposable
             if (Same(before, after)) continue;
             effects.Add(e.TurnedOn ? new MechanismEffect(pos, before, after) : new MechanismEffect(pos, after, before));
         }
-        var old = Graph.Get(e.Trigger, e.Dim);
-        if (effects.Count == 0)
+        return effects;
+    }
+
+    /// <summary>An activation that changed nothing: a known link loses confidence (forgotten below the threshold unless taught).</summary>
+    private MechanismObservation? Missed(Episode e, MechanismLink? old)
+    {
+        if (old is null) return null;
+        var weak = old with { Misses = old.Misses + 1, Confidence = old.Confidence * 0.7, LastSeen = e.At };
+        if (weak.Confidence < _o.ForgetBelow && !weak.Taught)
         {
-            if (old is null) return null;
-            var weak = old with { Misses = old.Misses + 1, Confidence = old.Confidence * 0.7, LastSeen = e.At };
-            if (weak.Confidence < _o.ForgetBelow && !weak.Taught)
-            {
-                _deferred.Add(() => Graph.Remove(old.Trigger, old.Dimension));
-                return new MechanismObservation(weak, e.By, false, true, false);
-            }
-            _deferred.Add(() => Graph.Put(weak));
+            _deferred.Add(() => Graph.Remove(old.Trigger, old.Dimension));
             return new MechanismObservation(weak, e.By, false, true, false);
         }
+        _deferred.Add(() => Graph.Put(weak));
+        return new MechanismObservation(weak, e.By, false, true, false);
+    }
 
+    /// <summary>The link after this activation: the effects merged with what was seen before, confidence growing with the sightings
+    /// (a demonstration or a taught link at least 0.85), the shortest lag.</summary>
+    private MechanismLink LearnedLink(Episode e, MechanismLink? old, List<MechanismEffect> effects)
+    {
         int lag = LagOf(e);
         int n = (old?.Observations ?? 0) + 1;
         var merged = Merge(old?.Effects, effects, n);
         double conf = Math.Min(0.97, 1 - 0.5 * Math.Pow(0.6, n - 1));
         if (e.Demo || old?.Taught == true) conf = Math.Max(conf, 0.85);
-        var link = new MechanismLink(e.Trigger, e.Kind, merged)
+        return new MechanismLink(e.Trigger, e.Kind, merged)
         {
             Dimension = e.Dim,
             PulseTicks = old?.PulseTicks,
@@ -275,9 +324,6 @@ public sealed class MechanismLearner : IDisposable
             Dangerous = Mechanisms.LooksDangerous(_world, e.Trigger, merged),
             LastSeen = e.At,
         };
-        _deferred.Add(() => Graph.Put(link));
-        if (e.Kind != TriggerKind.Lever) e.Watch = effects;
-        return new MechanismObservation(link, e.By, old is null, false, e.Demo);
     }
 
     private static bool Same(BlockState a, BlockState b)

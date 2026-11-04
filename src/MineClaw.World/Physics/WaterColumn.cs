@@ -56,35 +56,47 @@ public static class WaterColumn
         while (falls.Count > 0 && cells.Count < maxCells)
         {
             var (from, level) = falls.Dequeue();
-            var p = from;
-            // Down while it can.
-            while (p.Y - 1 >= 0 && CanFlowInto(w, p.X, p.Y - 1, p.Z) && !cells.ContainsKey(p.Down()))
-            {
-                p = p.Down();
-                cells[p] = 8;
-                level = 0;
-                if (cells.Count >= maxCells) break;
-            }
+            var p = FallFrom(w, cells, from, ref level, maxCells);
             if (p.Y - 1 < 0 || cells.ContainsKey(p.Down())) continue; // the void, or met itself
             // Landed: spread sideways (a falling cell spreads at level 1).
-            var q = new Queue<(BlockPos P, int L)>();
-            q.Enqueue((p, cells[p] >= 8 ? 0 : level));
-            while (q.Count > 0 && cells.Count < maxCells)
-            {
-                var (c, l) = q.Dequeue();
-                int next = l + 1;
-                if (next >= 8) continue;
-                foreach (var (dx, dz) in Sides)
-                {
-                    var n = c.Offset(dx, 0, dz);
-                    if (cells.ContainsKey(n) || !CanFlowInto(w, n.X, n.Y, n.Z)) continue;
-                    cells[n] = next;
-                    if (CanFlowInto(w, n.X, n.Y - 1, n.Z)) falls.Enqueue((n, next));
-                    else q.Enqueue((n, next));
-                }
-            }
+            Spread(w, cells, falls, p, cells[p] >= 8 ? 0 : level, maxCells);
         }
         return cells.Select(kv => (kv.Key, kv.Value)).ToList();
+    }
+
+    /// <summary>Down while it can (falling cells, level 8); the lowest cell reached.</summary>
+    private static BlockPos FallFrom(IBlockAccess w, Dictionary<BlockPos, int> cells, BlockPos p, ref int level, int maxCells)
+    {
+        while (p.Y - 1 >= 0 && CanFlowInto(w, p.X, p.Y - 1, p.Z) && !cells.ContainsKey(p.Down()))
+        {
+            p = p.Down();
+            cells[p] = 8;
+            level = 0;
+            if (cells.Count >= maxCells) break;
+        }
+        return p;
+    }
+
+    /// <summary>The sideways spread from a landed cell (BFS, one level per cell up to 7); a spread cell over a drop is queued
+    /// to fall again.</summary>
+    private static void Spread(IBlockAccess w, Dictionary<BlockPos, int> cells, Queue<(BlockPos From, int Level)> falls, BlockPos p, int level, int maxCells)
+    {
+        var q = new Queue<(BlockPos P, int L)>();
+        q.Enqueue((p, level));
+        while (q.Count > 0 && cells.Count < maxCells)
+        {
+            var (c, l) = q.Dequeue();
+            int next = l + 1;
+            if (next >= 8) continue;
+            foreach (var (dx, dz) in Sides)
+            {
+                var n = c.Offset(dx, 0, dz);
+                if (cells.ContainsKey(n) || !CanFlowInto(w, n.X, n.Y, n.Z)) continue;
+                cells[n] = next;
+                if (CanFlowInto(w, n.X, n.Y - 1, n.Z)) falls.Enqueue((n, next));
+                else q.Enqueue((n, next));
+            }
+        }
     }
 
     /// <summary>Ticks until a column poured at <paramref name="source"/> reaches down to <paramref name="y"/>.</summary>

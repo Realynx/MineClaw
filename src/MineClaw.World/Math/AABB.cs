@@ -42,26 +42,33 @@ public readonly record struct AABB(double MinX, double MinY, double MinZ, double
     /// <summary>Clips movement dx of <paramref name="moving"/> against this box (AxisAlignedBB.calculateXOffset).</summary>
     public double CalculateXOffset(AABB moving, double dx)
     {
-        if (moving.MaxY <= MinY || moving.MinY >= MaxY || moving.MaxZ <= MinZ || moving.MinZ >= MaxZ) return dx;
-        if (dx > 0 && moving.MaxX <= MinX + Eps) { double d = MinX - moving.MaxX; if (d < dx) dx = d; }
-        if (dx < 0 && moving.MinX >= MaxX - Eps) { double d = MaxX - moving.MinX; if (d > dx) dx = d; }
-        return dx;
+        if (Apart(moving.MinY, moving.MaxY, MinY, MaxY) || Apart(moving.MinZ, moving.MaxZ, MinZ, MaxZ)) return dx;
+        return Clip(dx, moving.MinX, moving.MaxX, MinX, MaxX);
     }
 
     public double CalculateYOffset(AABB moving, double dy)
     {
-        if (moving.MaxX <= MinX || moving.MinX >= MaxX || moving.MaxZ <= MinZ || moving.MinZ >= MaxZ) return dy;
-        if (dy > 0 && moving.MaxY <= MinY + Eps) { double d = MinY - moving.MaxY; if (d < dy) dy = d; }
-        if (dy < 0 && moving.MinY >= MaxY - Eps) { double d = MaxY - moving.MinY; if (d > dy) dy = d; }
-        return dy;
+        if (Apart(moving.MinX, moving.MaxX, MinX, MaxX) || Apart(moving.MinZ, moving.MaxZ, MinZ, MaxZ)) return dy;
+        return Clip(dy, moving.MinY, moving.MaxY, MinY, MaxY);
     }
 
     public double CalculateZOffset(AABB moving, double dz)
     {
-        if (moving.MaxX <= MinX || moving.MinX >= MaxX || moving.MaxY <= MinY || moving.MinY >= MaxY) return dz;
-        if (dz > 0 && moving.MaxZ <= MinZ + Eps) { double d = MinZ - moving.MaxZ; if (d < dz) dz = d; }
-        if (dz < 0 && moving.MinZ >= MaxZ - Eps) { double d = MaxZ - moving.MinZ; if (d > dz) dz = d; }
-        return dz;
+        if (Apart(moving.MinX, moving.MaxX, MinX, MaxX) || Apart(moving.MinY, moving.MaxY, MinY, MaxY)) return dz;
+        return Clip(dz, moving.MinZ, moving.MaxZ, MinZ, MaxZ);
+    }
+
+    /// <summary>The moving span doesn't overlap this box's span on an axis (touching counts as apart).</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool Apart(double movingMin, double movingMax, double min, double max) => movingMax <= min || movingMin >= max;
+
+    /// <summary>The motion <paramref name="d"/> along one axis clipped so the moving span stops at this box's face.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static double Clip(double d, double movingMin, double movingMax, double min, double max)
+    {
+        if (d > 0 && movingMax <= min + Eps) { double g = min - movingMax; if (g < d) d = g; }
+        if (d < 0 && movingMin >= max - Eps) { double g = max - movingMin; if (g > d) d = g; }
+        return d;
     }
 
     /// <summary>Ray/box intersection (slab method). Returns entry distance t (≥0) along <paramref name="dir"/> and the face entered, or null

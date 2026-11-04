@@ -81,29 +81,43 @@ public static class SpeedBoost
     /// </summary>
     public static BoostPlan? Plan(IBlockAccess w, PhysicsState s, Vec3d before, bool groundBefore, double factor, double room)
     {
-        if (factor <= 1.0001 || room <= 0 || s.Frozen || s.Sneaking || s.InLava || s.InWeb) return null;
+        if (Refused(s, factor, room)) return null;
         factor = Math.Min(factor, MaxMultiplier);
         var d = s.Position - before;
         double h = Math.Sqrt(d.X * d.X + d.Z * d.Z);
         if (LavaNear(w, s.BoundingBox.Grow(1, 0.5, 1))) return null;
+        return s.OnLadder ? PlanLadder(w, s, d, h, factor, room) : PlanMove(w, s, d, h, groundBefore, factor, room);
+    }
 
-        if (s.OnLadder)
+    /// <summary>No boost at all: no factor, no room, a frozen body, sneaking, in lava or in a web.</summary>
+    private static bool Refused(PhysicsState s, double factor, double room) =>
+        factor <= 1.0001 || room <= 0 || s.Frozen || s.Sneaking || s.InLava || s.InWeb;
+
+    /// <summary>Climbing up: more of the same vertical motion, as long as the feet stay on the ladder.</summary>
+    private static BoostPlan? PlanLadder(IBlockAccess w, PhysicsState s, Vec3d d, double h, double factor, double room)
+    {
+        if (d.Y < 0.05 || h > 0.2) return null;
+        double f = Math.Min(factor, LadderCap);
+        double ey = Math.Min(d.Y * (f - 1), Math.Max(0, room - d.Y));
+        for (int attempt = 0; attempt < 2 && ey >= MinExtra; attempt++, ey /= 2)
         {
-            // Climbing up: more of the same vertical motion, as long as the feet stay on the ladder.
-            if (d.Y < 0.05 || h > 0.2) return null;
-            double f = Math.Min(factor, LadderCap);
-            double ey = Math.Min(d.Y * (f - 1), Math.Max(0, room - d.Y));
-            for (int attempt = 0; attempt < 2 && ey >= MinExtra; attempt++, ey /= 2)
-            {
-                var plan = new BoostPlan(0, ey, 0, 1, "ladder", f);
-                var t = s.Clone();
-                if (Trial(w, t, plan) && w.Physics.IsClimbable(w, (int)Math.Floor(t.Position.X), (int)Math.Floor(t.BoundingBox.MinY), (int)Math.Floor(t.Position.Z))
-                    && t.Position.Y - s.Position.Y >= ey - 1e-6)
-                    return plan;
-            }
-            return null;
+            var plan = new BoostPlan(0, ey, 0, 1, "ladder", f);
+            if (LadderTrialHolds(w, s, plan, ey)) return plan;
         }
+        return null;
+    }
 
+    /// <summary>The trial climb moved the whole way up and the feet are still on the ladder.</summary>
+    private static bool LadderTrialHolds(IBlockAccess w, PhysicsState s, BoostPlan plan, double ey)
+    {
+        var t = s.Clone();
+        return Trial(w, t, plan) && w.Physics.IsClimbable(w, (int)Math.Floor(t.Position.X), (int)Math.Floor(t.BoundingBox.MinY), (int)Math.Floor(t.Position.Z))
+            && t.Position.Y - s.Position.Y >= ey - 1e-6;
+    }
+
+    /// <summary>On the ground or swimming: more of the tick's horizontal move, cut near an edge, a drop or a liquid ahead.</summary>
+    private static BoostPlan? PlanMove(IBlockAccess w, PhysicsState s, Vec3d d, double h, bool groundBefore, double factor, double room)
+    {
         bool swim = s.InWater;
         bool ground = !swim && groundBefore && s.OnGround;
         if (!swim && !ground) return null;          // in the air: jumps, gap jumps and falls are vanilla's
@@ -112,17 +126,27 @@ public static class SpeedBoost
         double dirX = d.X / h, dirZ = d.Z / h;
         double total = Total(h, fac, room);
         if (ground && HazardAhead(w, s, dirX, dirZ, total - h)) total = Total(h, fac = Math.Min(fac, EdgeFactor), room);
-        double extra = total - h;
+        return TryExtra(w, s, dirX, dirZ, total - h, swim, fac);
+    }
+
+    /// <summary>The extra move in packet-sized segments, halved and retried (three tries) until a trial holds.</summary>
+    private static BoostPlan? TryExtra(IBlockAccess w, PhysicsState s, double dirX, double dirZ, double extra, bool swim, double fac)
+    {
         for (int attempt = 0; attempt < 3 && extra >= MinExtra; attempt++, extra /= 2)
         {
             int n = Math.Max(1, (int)Math.Ceiling(extra / MaxPacketStep - 1e-9));
             var plan = new BoostPlan(dirX * extra, swim ? 0 : GroundProbe * n, dirZ * extra, n, swim ? "swim" : "ground", fac);
-            var t = s.Clone();
-            if (!Trial(w, t, plan)) continue;
-            if (swim ? !InWater(w, t.BoundingBox) : !Supported(w, t) || AnyLiquid(w, t.BoundingBox)) continue;
-            return plan;
+            if (MoveTrialHolds(w, s, plan, swim)) return plan;
         }
         return null;
+    }
+
+    /// <summary>The trial move went through and ends in water (swimming), or supported and out of liquids (on land).</summary>
+    private static bool MoveTrialHolds(IBlockAccess w, PhysicsState s, BoostPlan plan, bool swim)
+    {
+        var t = s.Clone();
+        if (!Trial(w, t, plan)) return false;
+        return swim ? InWater(w, t.BoundingBox) : Supported(w, t) && !AnyLiquid(w, t.BoundingBox);
     }
 
     private static double Total(double h, double fac, double room) => Math.Min(Math.Min(h * fac, MaxTickHorizontal), Math.Max(h, room));
@@ -135,9 +159,21 @@ public static class SpeedBoost
         var v = s.Velocity;
         double fall = s.FallDistance;
         int fallDamage = s.FallDamage;
+        int done = MoveSegments(w, s, plan, afterSegment, out bool stopX, out bool stopZ);
+        // Position only: the next tick starts from the normal tick's motion (a collision still stops that axis).
+        s.Velocity = new Vec3d(stopX ? 0 : v.X, v.Y, stopZ ? 0 : v.Z);
+        if (plan.Mode != "ladder") s.FallDistance = fall;
+        s.FallDamage = fallDamage;
+        return done;
+    }
+
+    /// <summary>The plan's segments, each with the version's move; an axis a collision stopped goes nowhere new after it.</summary>
+    private static int MoveSegments(IBlockAccess w, PhysicsState s, BoostPlan plan, Action<int>? afterSegment, out bool stopX, out bool stopZ)
+    {
         int n = Math.Max(1, plan.Segments);
         double sx = plan.Ex / n, sy = plan.Ey / n, sz = plan.Ez / n;
-        bool stopX = false, stopZ = false;
+        stopX = false;
+        stopZ = false;
         int done = 0;
         for (int i = 0; i < n; i++)
         {
@@ -145,19 +181,18 @@ public static class SpeedBoost
             if (!Move(w, s, sx, sy, sz)) break;
             done++;
             // A collision stops that axis (vanilla zeroes its motion); the rest of the extra move goes nowhere new.
-            if (sx != 0 && Math.Abs(s.Position.X - at.X - sx) > 1e-9) stopX = true;
-            if (sz != 0 && Math.Abs(s.Position.Z - at.Z - sz) > 1e-9) stopZ = true;
+            stopX |= Stopped(sx, s.Position.X - at.X);
+            stopZ |= Stopped(sz, s.Position.Z - at.Z);
             if (i < n - 1) afterSegment?.Invoke(i);
             if (stopX && stopZ) break;
             if (stopX) sx = 0;
             if (stopZ) sz = 0;
         }
-        // Position only: the next tick starts from the normal tick's motion (a collision still stops that axis).
-        s.Velocity = new Vec3d(stopX ? 0 : v.X, v.Y, stopZ ? 0 : v.Z);
-        if (plan.Mode != "ladder") s.FallDistance = fall;
-        s.FallDamage = fallDamage;
         return done;
     }
+
+    /// <summary>A segment's axis moved other than asked.</summary>
+    private static bool Stopped(double step, double moved) => step != 0 && Math.Abs(moved - step) > 1e-9;
 
     /// <summary>Runs the plan on a copy: true when every segment moved (the last may stop at a wall).</summary>
     private static bool Trial(IBlockAccess w, PhysicsState t, BoostPlan plan)

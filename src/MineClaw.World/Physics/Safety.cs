@@ -95,16 +95,20 @@ public static class Safety
             int id = w.GetBlock(x, yy, z);
             if (id == 0) continue;
             if (BlockShapes.IsLava(id)) return true;
-            if (BlockShapes.IsWater(id))
-            {
-                if (IsOverVoid(w, x, yy, z)) return true;
-                var landing = WaterLanding(w, x, z, feetY, yy);
-                return !landing.BreaksFall && landing.FallToFloor > maxFall + 1e-6;
-            }
+            if (BlockShapes.IsWater(id)) return DeadlyWater(w, x, z, feetY, yy, maxFall);
             if (BlockShapes.HasCollision(w, x, yy, z))
                 return feetY - (yy + BlockShapes.CollisionTop(w, x, yy, z)) > maxFall + 1e-6;
         }
         return true;
+    }
+
+    /// <summary>A fall into water topped at <paramref name="waterY"/>: deadly over the void, or when the water doesn't break the
+    /// fall and the floor under it is too far down.</summary>
+    private static bool DeadlyWater(IBlockAccess w, int x, int z, int feetY, int waterY, double maxFall)
+    {
+        if (IsOverVoid(w, x, waterY, z)) return true;
+        var landing = WaterLanding(w, x, z, feetY, waterY);
+        return !landing.BreaksFall && landing.FallToFloor > maxFall + 1e-6;
     }
 
     /// <summary>Feet must be below this offset above the top water cell for Entity.f_() to see the water: the check box is
