@@ -64,8 +64,16 @@ public sealed partial class StoryColony
             if (!live.Online) continue;
             foreach (var st in live.Inventory)
                 if (cats.LeafOf(st.Id, st.Meta) is not ("tools" or "weapons" or "armour")) Add(st.Id, st.Meta, st.Count);
+            // A job's takes are still listed in the chest until it ends, and once fetched they are in the pocket too: that copy never
+            // counts twice. A craft (bill, hand craft, bench, eating) consumes them, so they don't count at all; a builder's blocks
+            // or a haul only move them.
             if (_current.TryGetValue(p.Name, out var cur))
-                foreach (var (_, t) in cur.Takes) Add(t.Id, t.Meta, -t.Count);
+                foreach (var (_, t) in cur.Takes)
+                {
+                    bool consumed = cur.Source is "bill" or "hand" or "station" or "need";
+                    int pocket = live.Inventory.Where(s => s.Id == t.Id && s.Meta == t.Meta).Sum(s => s.Count);
+                    Add(t.Id, t.Meta, -((consumed ? t.Count : 0) + Math.Min(t.Count, pocket)));
+                }
         }
         foreach (var bench in Benches)
             if (bench.LoadedBill is { } lb && bench.Bills.FirstOrDefault(x => x.Id == lb) is { } bill && StoryRecipes.Get(w.Data, bill.Recipe) is { } r)

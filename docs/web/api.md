@@ -388,6 +388,9 @@ Notes on specific routes:
 | `story.builds` | `POST /api/story/colonies/:id/builds` | story | params `StoryColonyParams`<br>body `StoryBuildRequest` | `StoryBuildResponse` | `POST /v1/sup/story/colonies/{id}/builds` | /api/story/colonies/{id}/builds | story |
 | `story.storage` | `POST /api/story/colonies/:id/storage` | story | params `StoryColonyParams`<br>body `StoryStorageRequest` | `StoryStorageResponse` | `POST /v1/sup/story/colonies/{id}/storage` | /api/story/colonies/{id}/storage | story |
 | `story.bills` | `POST /api/story/colonies/:id/bills` | story | params `StoryColonyParams`<br>body `StoryBillsRequest` | `StoryBillsResponse` | `POST /v1/sup/story/colonies/{id}/bills` | /api/story/colonies/{id}/bills | story |
+| `story.workbenches` | `POST /api/story/colonies/:id/workbenches` | story | params `StoryColonyParams`<br>body `StoryWorkbenchesRequest` | `StoryWorkbenchesResponse` | `POST /v1/sup/story/colonies/{id}/workbenches` | /api/story/colonies/{id}/workbenches | story |
+| `story.options` | `POST /api/story/colonies/:id/options` | story | params `StoryColonyParams`<br>body `StoryOptionsRequest` | `StoryColonyOptions` | `POST /v1/sup/story/colonies/{id}/options` | /api/story/colonies/{id}/options | story |
+| `story.architect` | `GET /api/story/colonies/:id/architect` | viewer | params `StoryColonyParams` | `StoryArchitectResponse` | `GET /v1/sup/story/colonies/{id}/architect` | /api/story/colonies/{id}/architect | – |
 
 ### Live stream
 

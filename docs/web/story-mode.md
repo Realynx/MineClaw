@@ -410,9 +410,16 @@ Hauling:
 
 ## Workbenches & bills
 
-Workbenches:
-- Crafting tables and furnaces in the home zone (or 12 blocks around home) are found every 30 s, or registered by their first
-  bill.
+Workbenches (designated, added 2026-11-03):
+- The colony uses only the benches it was given. A bench becomes the colony's when the owner designates it (the bench
+  inspector's "Use as colony workbench" → `POST …/workbenches {op:"designate", pos:[x,y,z]}`), when the owner adds its first
+  bill, or when the colony places one for a build (below). `{op:"release", pos}` gives it back: its bills go with it, the
+  builds' auto bills move to another bench or wait. Answer `{pos, kind, designated}`; 400 for no bench at `pos`, or releasing one
+  that isn't the colony's. Another player's table near home is never used.
+- Detection is a colony option: with `detect_benches` on, crafting tables and furnaces in the home zones (or 12 blocks around
+  home) join by themselves every 30 s, as before. Off by default (`POST …/options {detect_benches}`); colonies saved before keep
+  the benches they had.
+- Only designated benches unlock the Architect's tiers (below) and receive bills.
 - Brewing stands, anvils and enchanting tables are listed (`supported:false`) but take no bills yet: there is no primitive.
 - Workbench: `{pos, kind, label, supported, loaded, ready_at, bills:[Bill]}`.
 
@@ -436,6 +443,60 @@ Execution:
 - A furnace is loaded and left to smelt (10 s an item). Its fuel comes from storage: coal or charcoal, then planks, then logs.
   A later job of the same work type collects it, and the output is stored.
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
+- An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
+  with "the … in storage is reserved for builds".
+
+### Builds craft what they need (added 2026-11-03)
+
+A queued build whose items aren't in storage or in the pawns' pockets has them crafted, colony-sim style. The director's
+materials pass runs whenever storage, the queue, benches or bills change (and every 3 s otherwise, for the pawns' pockets):
+- **Reservations, queue order.** Each live build (not paused or done) reserves what the colony has of its items: storage plus
+  the pawns' pockets (tools, weapons and armour excluded), minus what jobs in flight already took from a chest, plus what a
+  furnace is smelting. A later build never counts on what an earlier one reserved; a builder fetches only its own build's share
+  ("waiting: the … in storage is reserved for an earlier build").
+- **The shortfall goes through the recipes** of the colony's version (`RecipePlanner`, smelting allowed), against what is still
+  unreserved: logs → planks → sticks → fence, cobblestone → stairs, sand → glass (fuel: coal or charcoal 1 per 8, planks or logs
+  1 per 1.5) → panes. What the stock covers (the most, by a binary search; fuel included) is crafted; its ingredients are
+  reserved too, so two builds or an owner's bill never take the same planks.
+- **Auto bills.** Each step is a `count` bill "for build #N" (`for_build`, `for_item`, `step`) on the colony's crafting table or
+  furnace nearest home, listed first on the bench (build order, then step: ingredients before products), radius 256. Its target
+  is `done` + what is still to make, so it follows the build and goes when nothing is left to make (a loaded furnace's bill stays
+  until collected). A step whose ingredient isn't there yet waits quietly (an earlier step makes it). The owner can only cancel an
+  auto bill (`update`, `pause`, `resume`, `reorder` answer 400): the build then waits for that item (`no_craft`).
+- **2×2 recipes** run in a pawn's own grid while the colony has no crafting table (a `craft` job with no bench, Craft work).
+- **No bench.** A chain that needs a crafting table (or a furnace, which is made at a table) the colony hasn't got: with
+  `auto_place_benches` (a colony option, default on) a pawn with Craft on fetches the materials, crafts the bench and places it
+  on a free cell near home (solid ground, headroom, not a build's cell); it becomes the colony's. One at a time; the build shows
+  it as `station`. Off, or nothing to make one from: an alert "Build bN needs a crafting table: place one or designate an
+  existing one".
+- **Short raw materials** are said once per change, per build: "Build b3 (fence) is short of materials: need 3 oak fence (short
+  of raw materials: 2 Wood)". Nothing is designated by itself (no surprise chopping).
+- A build waiting for crafted items is `waiting` with "waiting for N … (being crafted)" and no alert; one with nothing to craft
+  from is `blocked` ("need N …").
+
+Build state gains `materials: [{item, label, need, have, crafting, short, via: craft|smelt|none, chain:[step], raw:[missing]}]`,
+`no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
+recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
+
+`POST …/options` `{auto_place_benches?, detect_benches?}` → the options; the colony state carries `options`.
+
+### Architect palette and tiers (added 2026-11-03)
+
+`GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace}, tabs}`. Entries are every placeable the
+version has (`StoryArchitect`: blocks, stairs, slabs, fences, doors, glass and panes, wool, beds, bookshelves, carpets, benches,
+chests, torches, glowstone, ladders…; variants the version lacks are left out), by tab: structure, furniture, production,
+storage, lighting, misc. Entry: `{id, label, tab, tier, unlocked, reason, item:[id,meta], material:[id,meta], kind, kinds, chain,
+have, craftable, from, short}`.
+- `tier` from the recipes: `gathered` (no recipe), `hand` (2×2 only), `workbench` (a 3×3 step), `furnace` (a smelting step).
+- `unlocked`: gathered and hand always; workbench with a designated crafting table; furnace with a designated furnace (and a
+  table when its chain has a 3×3 step). Else `reason`: "Needs a crafting table — place one or designate an existing one".
+- `have` = unreserved stock, `craftable` = how many (up to 64) the unreserved stock makes now, `from` = what one takes, `short`
+  = what one is short of when neither.
+
+The web's Architect (B) has tabs Orders, Zones, Structure, Furniture, Production, Storage, Lighting, Misc. The build tools stay
+where they were; beside them, the tab's placeables: icon, name, tier and "have N" / "craftable N from …" / "short: …". Locked ones
+are greyed with a lock and the reason; picking an unlocked one arms its build tool with it as the material (a furniture entry its
+furniture tool), and the queued build's auto bills craft what's missing.
 
 ## AI hives
 
