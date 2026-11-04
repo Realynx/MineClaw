@@ -1,0 +1,4414 @@
+{
+  "tool": "web/scripts/complexity.mjs",
+  "language": "typescript",
+  "convention": "ESLint `complexity` (classic): 1 + if, ?:, &&, ||, ??, logical assignments, for, for-in, for-of, while, do, catch, non-default case, default parameter values, optional chaining (?. and ?.()). Each function/arrow/method measured on its own.",
+  "threshold": 10,
+  "totals": {
+    "files": 333,
+    "functions": 7714,
+    "over": 437,
+    "excess": 5774
+  },
+  "byProject": [
+    {
+      "project": "apps/web",
+      "functions": 4423,
+      "over": 216,
+      "excess": 2611,
+      "max": 176
+    },
+    {
+      "project": "packages/world-viewer",
+      "functions": 2048,
+      "over": 141,
+      "excess": 1974,
+      "max": 233
+    },
+    {
+      "project": "packages/contracts",
+      "functions": 678,
+      "over": 52,
+      "excess": 852,
+      "max": 87
+    },
+    {
+      "project": "apps/api",
+      "functions": 565,
+      "over": 28,
+      "excess": 337,
+      "max": 80
+    }
+  ],
+  "functions": [
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/states.ts",
+      "line": 172,
+      "endLine": 544,
+      "member": "Function 'resolveState'",
+      "kind": "function",
+      "complexity": 233,
+      "loc": 373,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 710,
+      "endLine": 1187,
+      "member": "Arrow function draw in StoryMap",
+      "kind": "arrow function",
+      "complexity": 176,
+      "loc": 478,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/textures.ts",
+      "line": 44,
+      "endLine": 153,
+      "member": "Function 'tileFor'",
+      "kind": "function",
+      "complexity": 158,
+      "loc": 110,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 248,
+      "endLine": 1799,
+      "member": "Function 'StudioBody'",
+      "kind": "function",
+      "complexity": 108,
+      "loc": 1552,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/live/[bot]/page.tsx",
+      "line": 25,
+      "endLine": 199,
+      "member": "Function 'BotPage'",
+      "kind": "function",
+      "complexity": 91,
+      "loc": 175,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 784,
+      "endLine": 872,
+      "member": "Method 'refreshEntity' in EntityLayer",
+      "kind": "method",
+      "complexity": 90,
+      "loc": 89,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/contracts/src/story.ts",
+      "line": 1750,
+      "endLine": 1883,
+      "member": "Function 'expandBuildItem'",
+      "kind": "function",
+      "complexity": 87,
+      "loc": 134,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 189,
+      "endLine": 1732,
+      "member": "Function 'StoryMode'",
+      "kind": "function",
+      "complexity": 86,
+      "loc": 1544,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 978,
+      "endLine": 1059,
+      "member": "Method 'poseModel' in EntityLayer",
+      "kind": "method",
+      "complexity": 81,
+      "loc": 82,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/mock/mock-bridge.ts",
+      "line": 419,
+      "endLine": 645,
+      "member": "Arrow function handle in startMockBridge",
+      "kind": "arrow function",
+      "complexity": 80,
+      "loc": 227,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1507,
+      "endLine": 1600,
+      "member": "Method 'showFor' in EntityLayer",
+      "kind": "method",
+      "complexity": 76,
+      "loc": 94,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 1809,
+      "endLine": 2007,
+      "member": "Async arrow function onPointerUp in StoryMap",
+      "kind": "arrow function",
+      "complexity": 72,
+      "loc": 199,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2072,
+      "endLine": 2213,
+      "member": "Method 'plan' in StorySim",
+      "kind": "method",
+      "complexity": 68,
+      "loc": 142,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/cloud/CloudCanvas.tsx",
+      "line": 515,
+      "endLine": 759,
+      "member": "Arrow function useCallback() callback in CloudCanvas",
+      "kind": "arrow function",
+      "complexity": 67,
+      "loc": 245,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2515,
+      "endLine": 2627,
+      "member": "Method 'stepPawn' in StorySim",
+      "kind": "method",
+      "complexity": 66,
+      "loc": 113,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/items.ts",
+      "line": 322,
+      "endLine": 389,
+      "member": "Function 'cubeBeta'",
+      "kind": "function",
+      "complexity": 66,
+      "loc": 68,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1929,
+      "endLine": 2059,
+      "member": "Method 'bills' in StorySim",
+      "kind": "method",
+      "complexity": 65,
+      "loc": 131,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 151,
+      "endLine": 275,
+      "member": "Method 'build' in BetaBuilder",
+      "kind": "method",
+      "complexity": 63,
+      "loc": 125,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 1318,
+      "endLine": 1471,
+      "member": "Arrow function drawToolDrag in StoryMap",
+      "kind": "arrow function",
+      "complexity": 62,
+      "loc": 154,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1665,
+      "endLine": 1731,
+      "member": "Method 'pushDetail' in EntityLayer",
+      "kind": "method",
+      "complexity": 61,
+      "loc": 67,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/facing.ts",
+      "line": 226,
+      "endLine": 284,
+      "member": "Function 'placeMeta'",
+      "kind": "function",
+      "complexity": 59,
+      "loc": 59,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/runtime.ts",
+      "line": 1052,
+      "endLine": 1172,
+      "member": "Method 'render' in WorldRuntime",
+      "kind": "method",
+      "complexity": 59,
+      "loc": 121,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2741,
+      "endLine": 2826,
+      "member": "Method 'finish' in StorySim",
+      "kind": "method",
+      "complexity": 58,
+      "loc": 86,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/apps/web/src/features/graph/GraphCanvas.tsx",
+      "line": 128,
+      "endLine": 260,
+      "member": "Arrow function requestAnimationFrame() callback in useEffect() callback",
+      "kind": "arrow function",
+      "complexity": 56,
+      "loc": 133,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/items.ts",
+      "line": 193,
+      "endLine": 273,
+      "member": "Function 'look1122'",
+      "kind": "function",
+      "complexity": 55,
+      "loc": 81,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 814,
+      "endLine": 896,
+      "member": "Arrow function down in useEffect() callback",
+      "kind": "arrow function",
+      "complexity": 53,
+      "loc": 83,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 881,
+      "endLine": 948,
+      "member": "Function 'keyAction'",
+      "kind": "function",
+      "complexity": 53,
+      "loc": 68,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/memory.ts",
+      "line": 195,
+      "endLine": 327,
+      "member": "Function 'get'",
+      "kind": "function",
+      "complexity": 52,
+      "loc": 133,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 498,
+      "endLine": 615,
+      "member": "Async arrow function onTool in StoryMode",
+      "kind": "arrow function",
+      "complexity": 51,
+      "loc": 118,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/cloudMock.ts",
+      "line": 85,
+      "endLine": 267,
+      "member": "Function 'memoryCloudMock'",
+      "kind": "function",
+      "complexity": 51,
+      "loc": 183,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/engine.ts",
+      "line": 384,
+      "endLine": 485,
+      "member": "Method 'frame' in WorldViewerEngine",
+      "kind": "method",
+      "complexity": 51,
+      "loc": 102,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1613,
+      "endLine": 1761,
+      "member": "Method 'builds' in StorySim",
+      "kind": "method",
+      "complexity": 50,
+      "loc": 149,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1464,
+      "endLine": 1555,
+      "member": "Method 'designations' in StorySim",
+      "kind": "method",
+      "complexity": 49,
+      "loc": 92,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 15,
+      "endLine": 42,
+      "member": "Function 'renderType'",
+      "kind": "function",
+      "complexity": 49,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 690,
+      "endLine": 725,
+      "member": "Method 'equip' in EntityLayer",
+      "kind": "method",
+      "complexity": 49,
+      "loc": 36,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/cli/users.ts",
+      "line": 130,
+      "endLine": 257,
+      "member": "Async function 'runUsersCli'",
+      "kind": "function",
+      "complexity": 47,
+      "loc": 128,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/memory-activity/page.tsx",
+      "line": 140,
+      "endLine": 563,
+      "member": "Function 'ActivityInner'",
+      "kind": "function",
+      "complexity": 47,
+      "loc": 424,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/BotCard.tsx",
+      "line": 18,
+      "endLine": 84,
+      "member": "Function 'BotCardInner'",
+      "kind": "function",
+      "complexity": 46,
+      "loc": 67,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 912,
+      "endLine": 1018,
+      "member": "Arrow function onKey in useEffect() callback",
+      "kind": "arrow function",
+      "complexity": 46,
+      "loc": 107,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/WorldPane.tsx",
+      "line": 66,
+      "endLine": 552,
+      "member": "Function 'WorldPane'",
+      "kind": "function",
+      "complexity": 46,
+      "loc": 487,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 993,
+      "endLine": 1092,
+      "member": "Method 'zones' in StorySim",
+      "kind": "method",
+      "complexity": 46,
+      "loc": 100,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 607,
+      "endLine": 641,
+      "member": "Function 'chestTile'",
+      "kind": "function",
+      "complexity": 46,
+      "loc": 35,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 682,
+      "endLine": 747,
+      "member": "Async arrow function useCallback() callback in StudioBody",
+      "kind": "arrow function",
+      "complexity": 45,
+      "loc": 66,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/designer.ts",
+      "line": 388,
+      "endLine": 523,
+      "member": "Function 'mockDesignerPalette'",
+      "kind": "function",
+      "complexity": 45,
+      "loc": 136,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySimGear.ts",
+      "line": 363,
+      "endLine": 513,
+      "member": "Function 'gearOp'",
+      "kind": "function",
+      "complexity": 42,
+      "loc": 151,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/wire/normalize.ts",
+      "line": 149,
+      "endLine": 192,
+      "member": "Function 'entity'",
+      "kind": "function",
+      "complexity": 42,
+      "loc": 44,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/mock/generate.ts",
+      "line": 121,
+      "endLine": 200,
+      "member": "Function 'generate'",
+      "kind": "function",
+      "complexity": 41,
+      "loc": 80,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 1247,
+      "endLine": 1364,
+      "member": "Arrow function bench.bills.map() callback in BillsInspector",
+      "kind": "arrow function",
+      "complexity": 41,
+      "loc": 118,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/blockEntityLayer.ts",
+      "line": 202,
+      "endLine": 261,
+      "member": "Method 'update' in BlockEntityLayer",
+      "kind": "method",
+      "complexity": 41,
+      "loc": 60,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/items.ts",
+      "line": 71,
+      "endLine": 135,
+      "member": "Function 'variant1122'",
+      "kind": "function",
+      "complexity": 41,
+      "loc": 65,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/cloud/CloudView.tsx",
+      "line": 60,
+      "endLine": 478,
+      "member": "Function 'CloudView'",
+      "kind": "function",
+      "complexity": 40,
+      "loc": 419,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/DebuggerDrawer.tsx",
+      "line": 47,
+      "endLine": 254,
+      "member": "Function 'DebuggerDrawer'",
+      "kind": "function",
+      "complexity": 39,
+      "loc": 208,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/mine/mineTerrain.ts",
+      "line": 176,
+      "endLine": 279,
+      "member": "Method 'generate' in MineTerrain",
+      "kind": "method",
+      "complexity": 39,
+      "loc": 104,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1764,
+      "endLine": 1834,
+      "member": "Method 'discover' in StorySim",
+      "kind": "method",
+      "complexity": 39,
+      "loc": 71,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/blocks.ts",
+      "line": 324,
+      "endLine": 369,
+      "member": "Function 'flatColour'",
+      "kind": "function",
+      "complexity": 39,
+      "loc": 46,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 466,
+      "endLine": 569,
+      "member": "Arrow function loop in useEffect() callback",
+      "kind": "arrow function",
+      "complexity": 38,
+      "loc": 104,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/designer.ts",
+      "line": 760,
+      "endLine": 807,
+      "member": "Function 'make' in createDesignerMock",
+      "kind": "function",
+      "complexity": 38,
+      "loc": 48,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/mesher.ts",
+      "line": 237,
+      "endLine": 305,
+      "member": "Function 'emit'",
+      "kind": "function",
+      "complexity": 38,
+      "loc": 69,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/memory/page.tsx",
+      "line": 117,
+      "endLine": 278,
+      "member": "Function 'MemoryInner'",
+      "kind": "function",
+      "complexity": 37,
+      "loc": 162,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/admin/EditForm.tsx",
+      "line": 65,
+      "endLine": 235,
+      "member": "Function 'EditForm'",
+      "kind": "function",
+      "complexity": 37,
+      "loc": 171,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/fieldState.ts",
+      "line": 47,
+      "endLine": 94,
+      "member": "Function 'validateValue'",
+      "kind": "function",
+      "complexity": 37,
+      "loc": 48,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/WorldPane.tsx",
+      "line": 223,
+      "endLine": 264,
+      "member": "Arrow function onKey in useEffect() callback",
+      "kind": "arrow function",
+      "complexity": 36,
+      "loc": 42,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/api/src/mock/generate.ts",
+      "line": 82,
+      "endLine": 109,
+      "member": "Function 'sampleString'",
+      "kind": "function",
+      "complexity": 35,
+      "loc": 28,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/routes/dispatcher.ts",
+      "line": 278,
+      "endLine": 411,
+      "member": "Async method 'forward' in RouteDispatcher",
+      "kind": "method",
+      "complexity": 35,
+      "loc": 134,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/story/MaterialBar.tsx",
+      "line": 36,
+      "endLine": 327,
+      "member": "Function 'MaterialBar'",
+      "kind": "function",
+      "complexity": 35,
+      "loc": 292,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/administration.ts",
+      "line": 686,
+      "endLine": 718,
+      "member": "Function 'check'",
+      "kind": "function",
+      "complexity": 35,
+      "loc": 33,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/memory.ts",
+      "line": 58,
+      "endLine": 156,
+      "member": "Function 'rows'",
+      "kind": "function",
+      "complexity": 35,
+      "loc": 99,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/api/src/mock/story.ts",
+      "line": 93,
+      "endLine": 163,
+      "member": "Method 'run' in MockStory",
+      "kind": "method",
+      "complexity": 34,
+      "loc": 71,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 1505,
+      "endLine": 1742,
+      "member": "Function 'BillDialog'",
+      "kind": "function",
+      "complexity": 33,
+      "loc": 238,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 576,
+      "endLine": 621,
+      "member": "Arrow function syncHolograms in StoryMap",
+      "kind": "arrow function",
+      "complexity": 33,
+      "loc": 46,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/light.ts",
+      "line": 51,
+      "endLine": 169,
+      "member": "Function 'relight'",
+      "kind": "function",
+      "complexity": 33,
+      "loc": 119,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 1749,
+      "endLine": 1792,
+      "member": "Arrow function onPointerMove in StoryMap",
+      "kind": "arrow function",
+      "complexity": 32,
+      "loc": 44,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 973,
+      "endLine": 1085,
+      "member": "Arrow function ()=>{constclose=()=>setSelection(EMPTY_S() callback in StoryMode",
+      "kind": "arrow function",
+      "complexity": 32,
+      "loc": 113,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/mine/mineTemplates.ts",
+      "line": 217,
+      "endLine": 255,
+      "member": "Function 'fromStep'",
+      "kind": "function",
+      "complexity": 32,
+      "loc": 39,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/cameraRig.ts",
+      "line": 87,
+      "endLine": 134,
+      "member": "Method 'desired' in CameraRig",
+      "kind": "method",
+      "complexity": 32,
+      "loc": 48,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/live/filters.ts",
+      "line": 63,
+      "endLine": 103,
+      "member": "Function 'filterPayload'",
+      "kind": "function",
+      "complexity": 31,
+      "loc": 41,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 376,
+      "endLine": 540,
+      "member": "Function 'PawnInspector'",
+      "kind": "function",
+      "complexity": 31,
+      "loc": 165,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 2010,
+      "endLine": 2062,
+      "member": "Async arrow function targetAt in StoryMap",
+      "kind": "arrow function",
+      "complexity": 31,
+      "loc": 53,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryPanels.tsx",
+      "line": 721,
+      "endLine": 996,
+      "member": "Function 'ColonyPanel'",
+      "kind": "function",
+      "complexity": 31,
+      "loc": 276,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/baker.ts",
+      "line": 165,
+      "endLine": 219,
+      "member": "Method 'bake' in ModelBaker",
+      "kind": "method",
+      "complexity": 31,
+      "loc": 55,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 524,
+      "endLine": 563,
+      "member": "Method 'applyEvents' in EntityLayer",
+      "kind": "method",
+      "complexity": 31,
+      "loc": 40,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryHud.tsx",
+      "line": 905,
+      "endLine": 1024,
+      "member": "Function 'OptionsBar'",
+      "kind": "function",
+      "complexity": 30,
+      "loc": 120,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/mesher.ts",
+      "line": 86,
+      "endLine": 153,
+      "member": "Function 'fill'",
+      "kind": "function",
+      "complexity": 30,
+      "loc": 68,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/visibility.ts",
+      "line": 36,
+      "endLine": 86,
+      "member": "Function 'sectionVisibility'",
+      "kind": "function",
+      "complexity": 30,
+      "loc": 51,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/SettingField.tsx",
+      "line": 144,
+      "endLine": 232,
+      "member": "Function 'Control'",
+      "kind": "function",
+      "complexity": 29,
+      "loc": 89,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/GrowingZones.tsx",
+      "line": 234,
+      "endLine": 347,
+      "member": "Arrow function bills.map() callback in GrowingZone",
+      "kind": "arrow function",
+      "complexity": 29,
+      "loc": 114,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/tools.ts",
+      "line": 101,
+      "endLine": 151,
+      "member": "Function 'brush'",
+      "kind": "function",
+      "complexity": 29,
+      "loc": 51,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/designer.ts",
+      "line": 684,
+      "endLine": 715,
+      "member": "Arrow function apply in createDesignerMock",
+      "kind": "arrow function",
+      "complexity": 29,
+      "loc": 32,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storyZones.ts",
+      "line": 207,
+      "endLine": 272,
+      "member": "Function 'paintZones'",
+      "kind": "function",
+      "complexity": 29,
+      "loc": 66,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/query.ts",
+      "line": 28,
+      "endLine": 55,
+      "member": "Function 'pick'",
+      "kind": "function",
+      "complexity": 29,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/runtime.ts",
+      "line": 803,
+      "endLine": 883,
+      "member": "Method 'step' in WorldRuntime",
+      "kind": "method",
+      "complexity": 29,
+      "loc": 81,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/config/config.ts",
+      "line": 192,
+      "endLine": 252,
+      "member": "Function 'loadConfig'",
+      "kind": "function",
+      "complexity": 28,
+      "loc": 61,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/story/GrowingZones.tsx",
+      "line": 159,
+      "endLine": 427,
+      "member": "Function 'GrowingZone'",
+      "kind": "function",
+      "complexity": 28,
+      "loc": 269,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storyWater.ts",
+      "line": 184,
+      "endLine": 240,
+      "member": "Function 'irrigationPlan'",
+      "kind": "function",
+      "complexity": 28,
+      "loc": 57,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/blockEntityTex.ts",
+      "line": 8,
+      "endLine": 18,
+      "member": "Function 'charWidth'",
+      "kind": "function",
+      "complexity": 28,
+      "loc": 11,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/notices.ts",
+      "line": 198,
+      "endLine": 260,
+      "member": "Function 'conditions'",
+      "kind": "function",
+      "complexity": 27,
+      "loc": 63,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySimGear.ts",
+      "line": 200,
+      "endLine": 253,
+      "member": "Function 'policiesOp'",
+      "kind": "function",
+      "complexity": 27,
+      "loc": 54,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/mesher.ts",
+      "line": 314,
+      "endLine": 372,
+      "member": "Function 'meshSection'",
+      "kind": "function",
+      "complexity": 27,
+      "loc": 59,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/states.ts",
+      "line": 100,
+      "endLine": 131,
+      "member": "Function 'potContents'",
+      "kind": "function",
+      "complexity": 27,
+      "loc": 32,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/font.ts",
+      "line": 142,
+      "endLine": 197,
+      "member": "Function 'layoutLine'",
+      "kind": "function",
+      "complexity": 27,
+      "loc": 56,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/entities.ts",
+      "line": 94,
+      "endLine": 142,
+      "member": "Method 'apply' in EntityStore",
+      "kind": "method",
+      "complexity": 27,
+      "loc": 49,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/live/inventory/InventoryPanel.tsx",
+      "line": 84,
+      "endLine": 147,
+      "member": "Function 'Slot'",
+      "kind": "function",
+      "complexity": 26,
+      "loc": 64,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/settings/SettingsPage.tsx",
+      "line": 40,
+      "endLine": 238,
+      "member": "Function 'ViewerQualitySection'",
+      "kind": "function",
+      "complexity": 26,
+      "loc": 199,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/roles/WorkPanel.tsx",
+      "line": 224,
+      "endLine": 270,
+      "member": "Arrow function WORK_TYPES.map() callback in rows.map() callback",
+      "kind": "arrow function",
+      "complexity": 26,
+      "loc": 47,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/mine/mineTemplates.ts",
+      "line": 154,
+      "endLine": 193,
+      "member": "Function 'strip'",
+      "kind": "function",
+      "complexity": 26,
+      "loc": 40,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/live.ts",
+      "line": 1005,
+      "endLine": 1069,
+      "member": "Function 'tick'",
+      "kind": "function",
+      "complexity": 26,
+      "loc": 65,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/shards/ImportPanel.tsx",
+      "line": 27,
+      "endLine": 190,
+      "member": "Function 'ImportPanel'",
+      "kind": "function",
+      "complexity": 25,
+      "loc": 164,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 774,
+      "endLine": 826,
+      "member": "Function 'contextMenu'",
+      "kind": "function",
+      "complexity": 25,
+      "loc": 53,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 752,
+      "endLine": 784,
+      "member": "Async arrow function useCallback() callback in StudioBody",
+      "kind": "arrow function",
+      "complexity": 25,
+      "loc": 33,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/studioWorld.ts",
+      "line": 148,
+      "endLine": 206,
+      "member": "Method 'encode' in StudioWorld",
+      "kind": "method",
+      "complexity": 25,
+      "loc": 59,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storyRoles.ts",
+      "line": 76,
+      "endLine": 119,
+      "member": "Function 'rolesOp'",
+      "kind": "function",
+      "complexity": 25,
+      "loc": 44,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/index.ts",
+      "line": 79,
+      "endLine": 103,
+      "member": "Method 'classify' in Models1122",
+      "kind": "method",
+      "complexity": 25,
+      "loc": 25,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/query.ts",
+      "line": 58,
+      "endLine": 87,
+      "member": "Function 'blocked'",
+      "kind": "function",
+      "complexity": 25,
+      "loc": 30,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/thumbnails.ts",
+      "line": 97,
+      "endLine": 155,
+      "member": "Method 'frame' in ThumbnailView",
+      "kind": "method",
+      "complexity": 25,
+      "loc": 59,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 831,
+      "endLine": 962,
+      "member": "Function 'StorageInspector'",
+      "kind": "function",
+      "complexity": 24,
+      "loc": 132,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/notices.ts",
+      "line": 109,
+      "endLine": 136,
+      "member": "Function 'addMessage'",
+      "kind": "function",
+      "complexity": 24,
+      "loc": 28,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/designer.ts",
+      "line": 820,
+      "endLine": 858,
+      "member": "Method 'version' in createDesignerMock",
+      "kind": "method",
+      "complexity": 24,
+      "loc": 39,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1147,
+      "endLine": 1209,
+      "member": "Method 'billOp' in StorySim",
+      "kind": "method",
+      "complexity": 24,
+      "loc": 63,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/light.ts",
+      "line": 13,
+      "endLine": 25,
+      "member": "Function 'emission'",
+      "kind": "function",
+      "complexity": 24,
+      "loc": 13,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/bubbles.ts",
+      "line": 497,
+      "endLine": 565,
+      "member": "Method 'showFor' in BubbleLayer",
+      "kind": "method",
+      "complexity": 24,
+      "loc": 69,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 929,
+      "endLine": 968,
+      "member": "Method 'writeRow' in EntityLayer",
+      "kind": "method",
+      "complexity": 24,
+      "loc": 40,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/features/live/HistoryDrawer.tsx",
+      "line": 237,
+      "endLine": 322,
+      "member": "Function 'HistoryDrawer'",
+      "kind": "function",
+      "complexity": 23,
+      "loc": 86,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/inventory/InventoryPanel.tsx",
+      "line": 150,
+      "endLine": 176,
+      "member": "Function 'sameSlot'",
+      "kind": "function",
+      "complexity": 23,
+      "loc": 27,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 640,
+      "endLine": 681,
+      "member": "Async arrow function onMenuPick in StoryMode",
+      "kind": "arrow function",
+      "complexity": 23,
+      "loc": 42,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/facing.ts",
+      "line": 294,
+      "endLine": 316,
+      "member": "Function 'rotateMeta'",
+      "kind": "function",
+      "complexity": 23,
+      "loc": 23,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/scripts/page.tsx",
+      "line": 83,
+      "endLine": 263,
+      "member": "Function 'Detail'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 181,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/VisionDrawer.tsx",
+      "line": 16,
+      "endLine": 128,
+      "member": "Function 'VisionDrawer'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 113,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/NodeDetail.tsx",
+      "line": 28,
+      "endLine": 150,
+      "member": "Function 'NodeDetail'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 123,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 1534,
+      "endLine": 1569,
+      "member": "Arrow function updateHover in StoryMap",
+      "kind": "arrow function",
+      "complexity": 22,
+      "loc": 36,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryPanels.tsx",
+      "line": 190,
+      "endLine": 332,
+      "member": "Function 'ArchitectPanel'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 143,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/canvas.ts",
+      "line": 174,
+      "endLine": 201,
+      "member": "Arrow function set in apply",
+      "kind": "arrow function",
+      "complexity": 22,
+      "loc": 28,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/mine/mineTemplates.ts",
+      "line": 116,
+      "endLine": 151,
+      "member": "Function 'spiral'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 36,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/DotMap.tsx",
+      "line": 14,
+      "endLine": 85,
+      "member": "Function 'drawDotMap'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 72,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1240,
+      "endLine": 1290,
+      "member": "Method 'growStatus' in StorySim",
+      "kind": "method",
+      "complexity": 22,
+      "loc": 51,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/textures.ts",
+      "line": 31,
+      "endLine": 41,
+      "member": "Function 'mushroom'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 11,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/holo.ts",
+      "line": 58,
+      "endLine": 86,
+      "member": "Function 'meshHolograms'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 29,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/quad.ts",
+      "line": 168,
+      "endLine": 195,
+      "member": "Function 'makeQuad'",
+      "kind": "function",
+      "complexity": 22,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/auth/auth.service.ts",
+      "line": 169,
+      "endLine": 255,
+      "member": "Async method 'login' in AuthService",
+      "kind": "method",
+      "complexity": 21,
+      "loc": 87,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/designs/page.tsx",
+      "line": 46,
+      "endLine": 148,
+      "member": "Function 'Detail'",
+      "kind": "function",
+      "complexity": 21,
+      "loc": 103,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/overview/page.tsx",
+      "line": 30,
+      "endLine": 158,
+      "member": "Function 'OverviewPage'",
+      "kind": "function",
+      "complexity": 21,
+      "loc": 129,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/shards/ExportDialog.tsx",
+      "line": 23,
+      "endLine": 213,
+      "member": "Function 'ExportDialog'",
+      "kind": "function",
+      "complexity": 21,
+      "loc": 191,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryHud.tsx",
+      "line": 268,
+      "endLine": 371,
+      "member": "Arrow function portrait in ColonistBar",
+      "kind": "arrow function",
+      "complexity": 21,
+      "loc": 104,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/zones/ZoneToolbar.tsx",
+      "line": 31,
+      "endLine": 104,
+      "member": "Function 'ZoneToolbar'",
+      "kind": "function",
+      "complexity": 21,
+      "loc": 74,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySimGear.ts",
+      "line": 257,
+      "endLine": 295,
+      "member": "Function 'materialRulesOp'",
+      "kind": "function",
+      "complexity": 21,
+      "loc": 39,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 363,
+      "endLine": 401,
+      "member": "Method 'wire' in BetaBuilder",
+      "kind": "method",
+      "complexity": 21,
+      "loc": 39,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/builtin.ts",
+      "line": 92,
+      "endLine": 119,
+      "member": "Function 'chestQuads'",
+      "kind": "function",
+      "complexity": 21,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1131,
+      "endLine": 1155,
+      "member": "Method 'syncRiders' in EntityLayer",
+      "kind": "method",
+      "complexity": 21,
+      "loc": 25,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/icons.ts",
+      "line": 149,
+      "endLine": 192,
+      "member": "Function 'drawBlockIcon'",
+      "kind": "function",
+      "complexity": 21,
+      "loc": 44,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/app/setup/page.tsx",
+      "line": 67,
+      "endLine": 232,
+      "member": "Function 'AccountStep'",
+      "kind": "function",
+      "complexity": 20,
+      "loc": 166,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/chat/ChatPane.tsx",
+      "line": 28,
+      "endLine": 81,
+      "member": "Function 'Line'",
+      "kind": "function",
+      "complexity": 20,
+      "loc": 54,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/chat/ChatPane.tsx",
+      "line": 134,
+      "endLine": 299,
+      "member": "Function 'ChatPane'",
+      "kind": "function",
+      "complexity": 20,
+      "loc": 166,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/BotCard.tsx",
+      "line": 87,
+      "endLine": 105,
+      "member": "Function 'sameCard'",
+      "kind": "function",
+      "complexity": 20,
+      "loc": 19,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/heat.ts",
+      "line": 64,
+      "endLine": 81,
+      "member": "Function 'lastAccessFromServer'",
+      "kind": "function",
+      "complexity": 20,
+      "loc": 18,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryPanels.tsx",
+      "line": 552,
+      "endLine": 662,
+      "member": "Arrow function list.map() callback in QueuePanel",
+      "kind": "arrow function",
+      "complexity": 20,
+      "loc": 111,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 508,
+      "endLine": 546,
+      "member": "Function 'buildItem'",
+      "kind": "function",
+      "complexity": 20,
+      "loc": 39,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/tools.ts",
+      "line": 35,
+      "endLine": 56,
+      "member": "Function 'boxCells'",
+      "kind": "function",
+      "complexity": 20,
+      "loc": 22,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 96,
+      "endLine": 130,
+      "member": "Method 'box' in BetaBuilder",
+      "kind": "method",
+      "complexity": 20,
+      "loc": 35,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/columns.ts",
+      "line": 156,
+      "endLine": 190,
+      "member": "Method 'patch' in ColumnStore",
+      "kind": "method",
+      "complexity": 20,
+      "loc": 35,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/index.ts",
+      "line": 164,
+      "endLine": 208,
+      "member": "Method 'bakeNow' in Models1122",
+      "kind": "method",
+      "complexity": 20,
+      "loc": 45,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/sections.ts",
+      "line": 153,
+      "endLine": 181,
+      "member": "Method 'showAround' in SectionManager",
+      "kind": "method",
+      "complexity": 20,
+      "loc": 29,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/bridge/bridge-client.ts",
+      "line": 185,
+      "endLine": 226,
+      "member": "Function 'mapUpstreamError'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 42,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/admin/RebuildDialog.tsx",
+      "line": 17,
+      "endLine": 65,
+      "member": "Function 'JobProgress'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 49,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/SettingField.tsx",
+      "line": 44,
+      "endLine": 126,
+      "member": "Function 'SettingField'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 83,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/HistoryDrawer.tsx",
+      "line": 21,
+      "endLine": 45,
+      "member": "Function 'BlockView'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 25,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 545,
+      "endLine": 620,
+      "member": "Function 'BedInspector'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 76,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 1147,
+      "endLine": 1395,
+      "member": "Function 'BillsInspector'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 249,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 1634,
+      "endLine": 1696,
+      "member": "Arrow function rescan in StoryMap",
+      "kind": "arrow function",
+      "complexity": 19,
+      "loc": 63,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/assign/AssignPanel.tsx",
+      "line": 186,
+      "endLine": 332,
+      "member": "Function 'PolicyEditor'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 147,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 183,
+      "endLine": 232,
+      "member": "Function 'heightTargets'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 50,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 561,
+      "endLine": 592,
+      "member": "Arrow function useEffect() callback in StudioBody",
+      "kind": "arrow function",
+      "complexity": 19,
+      "loc": 32,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/facing.ts",
+      "line": 319,
+      "endLine": 342,
+      "member": "Function 'mirrorMeta'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 24,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 634,
+      "endLine": 690,
+      "member": "Method 'state' in StorySim",
+      "kind": "method",
+      "complexity": 19,
+      "loc": 57,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1320,
+      "endLine": 1374,
+      "member": "Method 'growOp' in StorySim",
+      "kind": "method",
+      "complexity": 19,
+      "loc": 55,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1566,
+      "endLine": 1611,
+      "member": "Method 'checkWater' in StorySim",
+      "kind": "method",
+      "complexity": 19,
+      "loc": 46,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1836,
+      "endLine": 1892,
+      "member": "Method 'storage' in StorySim",
+      "kind": "method",
+      "complexity": 19,
+      "loc": 57,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2340,
+      "endLine": 2376,
+      "member": "Arrow function SIM_ARCHITECT.map() callback in architect",
+      "kind": "arrow function",
+      "complexity": 19,
+      "loc": 37,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2635,
+      "endLine": 2725,
+      "member": "Method 'pickWork' in StorySim",
+      "kind": "method",
+      "complexity": 19,
+      "loc": 91,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/engine.ts",
+      "line": 122,
+      "endLine": 151,
+      "member": "Method 'stacks' in MeshEngine",
+      "kind": "method",
+      "complexity": 19,
+      "loc": 30,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/holo.ts",
+      "line": 93,
+      "endLine": 152,
+      "member": "Function 'meshCells'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 60,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/worker.ts",
+      "line": 18,
+      "endLine": 64,
+      "member": "Async function 'handle'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 47,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/bubbles.ts",
+      "line": 51,
+      "endLine": 92,
+      "member": "Function 'wrapText'",
+      "kind": "function",
+      "complexity": 19,
+      "loc": 42,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 582,
+      "endLine": 650,
+      "member": "Method 'update' in EntityLayer",
+      "kind": "method",
+      "complexity": 19,
+      "loc": 69,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/mock/generate.ts",
+      "line": 47,
+      "endLine": 80,
+      "member": "Function 'limitsOf'",
+      "kind": "function",
+      "complexity": 18,
+      "loc": 34,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryHud.tsx",
+      "line": 129,
+      "endLine": 506,
+      "member": "Function 'ColonistBar'",
+      "kind": "function",
+      "complexity": 18,
+      "loc": 378,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/failedLabels.ts",
+      "line": 85,
+      "endLine": 137,
+      "member": "Function 'clusterFailed'",
+      "kind": "function",
+      "complexity": 18,
+      "loc": 53,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/model.ts",
+      "line": 61,
+      "endLine": 97,
+      "member": "Function 'mergeColony'",
+      "kind": "function",
+      "complexity": 18,
+      "loc": 37,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/designer.ts",
+      "line": 927,
+      "endLine": 970,
+      "member": "Method 'save' in createDesignerMock",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 44,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2252,
+      "endLine": 2279,
+      "member": "Method 'options' in StorySim",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 28,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2966,
+      "endLine": 2980,
+      "member": "Function 'directiveSummary'",
+      "kind": "function",
+      "complexity": 18,
+      "loc": 15,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/builtin.ts",
+      "line": 122,
+      "endLine": 147,
+      "member": "Function 'bedQuads'",
+      "kind": "function",
+      "complexity": 18,
+      "loc": 26,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/index.ts",
+      "line": 211,
+      "endLine": 225,
+      "member": "Method 'tintOf' in Models1122",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 15,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/meshes.ts",
+      "line": 120,
+      "endLine": 152,
+      "member": "Method 'push' in InstancedDraw",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 33,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/wire/mcwc.ts",
+      "line": 43,
+      "endLine": 86,
+      "member": "Function 'decodeMcwc'",
+      "kind": "function",
+      "complexity": 18,
+      "loc": 44,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/deltas.ts",
+      "line": 111,
+      "endLine": 155,
+      "member": "Async method 'flush' in BlockDeltaFeed",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 45,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/sync.ts",
+      "line": 169,
+      "endLine": 237,
+      "member": "Async method 'tick' in WorldSync",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 69,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/mock/mock-bridge.ts",
+      "line": 708,
+      "endLine": 738,
+      "member": "Async arrow function async()=>{try{constbody=awaitreadAll(req() callback in createServer() callback",
+      "kind": "arrow function",
+      "complexity": 17,
+      "loc": 31,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/routes/dispatcher.ts",
+      "line": 193,
+      "endLine": 231,
+      "member": "Async method 'parseInput' in RouteDispatcher",
+      "kind": "method",
+      "complexity": 17,
+      "loc": 39,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/RestartPanel.tsx",
+      "line": 72,
+      "endLine": 218,
+      "member": "Function 'RestartDialog'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 147,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/SettingField.tsx",
+      "line": 270,
+      "endLine": 345,
+      "member": "Function 'SecretControl'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 76,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 1095,
+      "endLine": 1134,
+      "member": "Async arrow function async()=>{constname=awaitapi('designs.ge() callback in useEffect() callback",
+      "kind": "arrow function",
+      "complexity": 17,
+      "loc": 40,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 1243,
+      "endLine": 1411,
+      "member": "Arrow function ()=>{switch(tab){case'architect':return(() callback in StoryMode",
+      "kind": "arrow function",
+      "complexity": 17,
+      "loc": 169,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/zones/zoneDraw.ts",
+      "line": 117,
+      "endLine": 158,
+      "member": "Function 'drawZones'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 42,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/mine/mineStats.ts",
+      "line": 143,
+      "endLine": 171,
+      "member": "Function 'xrayCells'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 29,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/tools.ts",
+      "line": 197,
+      "endLine": 225,
+      "member": "Function 'faceArea'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 29,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/mockSource.ts",
+      "line": 52,
+      "endLine": 86,
+      "member": "Function 'pawnBots'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 35,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/lib/setupFlow.ts",
+      "line": 57,
+      "endLine": 98,
+      "member": "Function 'passwordStrength'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 42,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/administration.ts",
+      "line": 612,
+      "endLine": 641,
+      "member": "Function 'setting'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 30,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 765,
+      "endLine": 805,
+      "member": "Method 'online' in StorySim",
+      "kind": "method",
+      "complexity": 17,
+      "loc": 41,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/atlas/anim.ts",
+      "line": 97,
+      "endLine": 124,
+      "member": "Method 'update' in SpriteAnimator",
+      "kind": "method",
+      "complexity": 17,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/baker.ts",
+      "line": 257,
+      "endLine": 281,
+      "member": "Function 'element'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 25,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/builtin.ts",
+      "line": 266,
+      "endLine": 281,
+      "member": "Function 'builtinQuads'",
+      "kind": "function",
+      "complexity": 17,
+      "loc": 16,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/blockEntityLayer.ts",
+      "line": 337,
+      "endLine": 409,
+      "member": "Method 'buildText' in BlockEntityLayer",
+      "kind": "method",
+      "complexity": 17,
+      "loc": 73,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/live/page.tsx",
+      "line": 51,
+      "endLine": 137,
+      "member": "Function 'LiveInner'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 87,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/search/page.tsx",
+      "line": 70,
+      "endLine": 182,
+      "member": "Function 'SearchInner'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 113,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/graph/GraphCanvas.tsx",
+      "line": 288,
+      "endLine": 310,
+      "member": "Arrow function onKey in GraphCanvas",
+      "kind": "arrow function",
+      "complexity": 16,
+      "loc": 23,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/graph/geometry.ts",
+      "line": 48,
+      "endLine": 66,
+      "member": "Function 'contains'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 19,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/cloud/CloudCanvas.tsx",
+      "line": 979,
+      "endLine": 996,
+      "member": "Arrow function onKeyDown={} in CloudCanvas",
+      "kind": "arrow function",
+      "complexity": 16,
+      "loc": 18,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryHud.tsx",
+      "line": 230,
+      "endLine": 266,
+      "member": "Arrow function up in ColonistBar",
+      "kind": "arrow function",
+      "complexity": 16,
+      "loc": 37,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 1194,
+      "endLine": 1239,
+      "member": "Async arrow function formation in StoryMap",
+      "kind": "arrow function",
+      "complexity": 16,
+      "loc": 46,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/assign/MaterialRulesEditor.tsx",
+      "line": 104,
+      "endLine": 225,
+      "member": "Function 'RuleRow'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 122,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/chestBadges.ts",
+      "line": 36,
+      "endLine": 52,
+      "member": "Function 'chestBadge'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 17,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/storage.ts",
+      "line": 344,
+      "endLine": 362,
+      "member": "Function 'stationLines'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 19,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/ContainerPanel.tsx",
+      "line": 64,
+      "endLine": 127,
+      "member": "Function 'ContainerContents'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 64,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/live.ts",
+      "line": 700,
+      "endLine": 736,
+      "member": "Function 'turnSummary'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 37,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/story.ts",
+      "line": 1709,
+      "endLine": 1716,
+      "member": "Function 'liquidOf'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 8,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/story.ts",
+      "line": 1927,
+      "endLine": 1955,
+      "member": "Function 'matchesTool'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 29,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 1379,
+      "endLine": 1441,
+      "member": "Method 'pawns' in StorySim",
+      "kind": "method",
+      "complexity": 16,
+      "loc": 63,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storyZones.ts",
+      "line": 367,
+      "endLine": 380,
+      "member": "Function 'describeZonePaint'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 14,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 424,
+      "endLine": 453,
+      "member": "Method 'rail' in BetaBuilder",
+      "kind": "method",
+      "complexity": 16,
+      "loc": 30,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/engine.ts",
+      "line": 92,
+      "endLine": 114,
+      "member": "Method 'scan' in MeshEngine",
+      "kind": "method",
+      "complexity": 16,
+      "loc": 23,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/fluids.ts",
+      "line": 60,
+      "endLine": 94,
+      "member": "Function 'flowVector'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 35,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/blockstate.ts",
+      "line": 70,
+      "endLine": 104,
+      "member": "Method 'select' in BlockStateFile",
+      "kind": "method",
+      "complexity": 16,
+      "loc": 35,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/index.ts",
+      "line": 128,
+      "endLine": 147,
+      "member": "Method 'build' in Models1122",
+      "kind": "method",
+      "complexity": 16,
+      "loc": 20,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/source.ts",
+      "line": 68,
+      "endLine": 90,
+      "member": "Constructor constructor in BetaSource",
+      "kind": "constructor",
+      "complexity": 16,
+      "loc": 23,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/models/misc.ts",
+      "line": 20,
+      "endLine": 53,
+      "member": "Function 'bipedPose'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 34,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 75,
+      "endLine": 85,
+      "member": "Function 'entityText'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 11,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/icons.ts",
+      "line": 65,
+      "endLine": 124,
+      "member": "Function 'drawQuad'",
+      "kind": "function",
+      "complexity": 16,
+      "loc": 60,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/runtime.ts",
+      "line": 717,
+      "endLine": 744,
+      "member": "Async method 'configure' in WorldRuntime",
+      "kind": "method",
+      "complexity": 16,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/cache.ts",
+      "line": 116,
+      "endLine": 143,
+      "member": "Method 'reconcile' in WorldCache",
+      "kind": "method",
+      "complexity": 16,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/bridge/bridge-health.ts",
+      "line": 19,
+      "endLine": 33,
+      "member": "Function 'botState'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 15,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/live/live-hub.ts",
+      "line": 154,
+      "endLine": 216,
+      "member": "Method 'attach' in LiveHub",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 63,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/mock/mock-bridge.ts",
+      "line": 378,
+      "endLine": 406,
+      "member": "Arrow function designerReply in startMockBridge",
+      "kind": "arrow function",
+      "complexity": 15,
+      "loc": 29,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/mock/story.ts",
+      "line": 58,
+      "endLine": 91,
+      "member": "Method 'handle' in MockStory",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 34,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/shards/page.tsx",
+      "line": 44,
+      "endLine": 149,
+      "member": "Function 'ShardsInner'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 106,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/diff.ts",
+      "line": 35,
+      "endLine": 61,
+      "member": "Function 'buildDiff'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 27,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/graph/GraphCanvas.tsx",
+      "line": 43,
+      "endLine": 72,
+      "member": "Function 'traceShape'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 30,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/graph/geometry.ts",
+      "line": 106,
+      "endLine": 116,
+      "member": "Function 'walk'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 11,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/inventory/BodyPanel.tsx",
+      "line": 16,
+      "endLine": 67,
+      "member": "Function 'BodyPanel'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 52,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/heat.ts",
+      "line": 105,
+      "endLine": 127,
+      "member": "Function 'stalenessByNode'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 23,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 260,
+      "endLine": 283,
+      "member": "Function 'designationModel'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 24,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 635,
+      "endLine": 659,
+      "member": "Arrow function add in bodies",
+      "kind": "arrow function",
+      "complexity": 15,
+      "loc": 25,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/bodyLook.ts",
+      "line": 39,
+      "endLine": 54,
+      "member": "Function 'hologramCells'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 16,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/MinePanel.tsx",
+      "line": 156,
+      "endLine": 538,
+      "member": "Function 'MinePanel'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 383,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 180,
+      "endLine": 246,
+      "member": "Function 'StudioPage'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 67,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/facing.ts",
+      "line": 167,
+      "endLine": 196,
+      "member": "Function 'codecOf'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 30,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/mine/mineStats.ts",
+      "line": 86,
+      "endLine": 134,
+      "member": "Function 'mineStats'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 49,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/misc.ts",
+      "line": 446,
+      "endLine": 465,
+      "member": "Arrow function Array.from() callback",
+      "kind": "arrow function",
+      "complexity": 15,
+      "loc": 20,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/light.ts",
+      "line": 104,
+      "endLine": 122,
+      "member": "Arrow function seed in relight",
+      "kind": "arrow function",
+      "complexity": 15,
+      "loc": 19,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/light.ts",
+      "line": 123,
+      "endLine": 139,
+      "member": "Arrow function spread in relight",
+      "kind": "arrow function",
+      "complexity": 15,
+      "loc": 17,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/mesher.ts",
+      "line": 204,
+      "endLine": 224,
+      "member": "Function 'cornerLights'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 21,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/builtin.ts",
+      "line": 207,
+      "endLine": 229,
+      "member": "Function 'skullQuads'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 23,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/visibility.ts",
+      "line": 92,
+      "endLine": 115,
+      "member": "Function 'visibleSections'",
+      "kind": "function",
+      "complexity": 15,
+      "loc": 24,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/pose.ts",
+      "line": 167,
+      "endLine": 211,
+      "member": "Method 'write' in Skeleton",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 45,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 672,
+      "endLine": 681,
+      "member": "Method 'setLook' in EntityLayer",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 10,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1224,
+      "endLine": 1283,
+      "member": "Method 'poseHead' in EntityLayer",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 60,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1647,
+      "endLine": 1656,
+      "member": "Method 'ghostFlags' in EntityLayer",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 10,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/holograms.ts",
+      "line": 444,
+      "endLine": 478,
+      "member": "Async method 'runPreview' in HologramLayer",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 35,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/runtime.ts",
+      "line": 257,
+      "endLine": 318,
+      "member": "Constructor constructor in WorldRuntime",
+      "kind": "constructor",
+      "complexity": 15,
+      "loc": 62,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/auth/auth.service.ts",
+      "line": 112,
+      "endLine": 157,
+      "member": "Async method 'stepUp' in AuthService",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 46,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/live/live-hub.ts",
+      "line": 418,
+      "endLine": 467,
+      "member": "Async method 'run' in LiveHub",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 50,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/mock/terrain.ts",
+      "line": 82,
+      "endLine": 96,
+      "member": "Function 'mockBlock'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 15,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/app/login/page.tsx",
+      "line": 42,
+      "endLine": 72,
+      "member": "Async arrow function submit in LoginForm",
+      "kind": "arrow function",
+      "complexity": 14,
+      "loc": 31,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/components/shell/CommandPalette.tsx",
+      "line": 50,
+      "endLine": 224,
+      "member": "Function 'CommandPalette'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 175,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/MaterialBar.tsx",
+      "line": 91,
+      "endLine": 135,
+      "member": "Arrow function chip in MaterialBar",
+      "kind": "arrow function",
+      "complexity": 14,
+      "loc": 45,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryHud.tsx",
+      "line": 219,
+      "endLine": 229,
+      "member": "Arrow function move in ColonistBar",
+      "kind": "arrow function",
+      "complexity": 14,
+      "loc": 11,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/model.ts",
+      "line": 43,
+      "endLine": 58,
+      "member": "Function 'mergeGhosts'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 16,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/roles/WorkPanel.tsx",
+      "line": 23,
+      "endLine": 333,
+      "member": "Function 'WorkPanel'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 311,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 973,
+      "endLine": 985,
+      "member": "Function 'failedCells'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 13,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/visuals.tsx",
+      "line": 91,
+      "endLine": 136,
+      "member": "Function 'Avatar'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 46,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/ChatPanel.tsx",
+      "line": 103,
+      "endLine": 145,
+      "member": "Arrow function p.messages.map() callback in ChatPanel",
+      "kind": "arrow function",
+      "complexity": 14,
+      "loc": 43,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/lib/live/merge.ts",
+      "line": 55,
+      "endLine": 64,
+      "member": "Function 'mergeEntities'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 10,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/lib/navGuard.tsx",
+      "line": 116,
+      "endLine": 138,
+      "member": "Function 'guardedHref'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 23,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/designer.ts",
+      "line": 528,
+      "endLine": 567,
+      "member": "Function 'mockConvert'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 40,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storyWater.ts",
+      "line": 86,
+      "endLine": 153,
+      "member": "Function 'liquidFlow'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 68,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/atlas/betaFx.ts",
+      "line": 45,
+      "endLine": 73,
+      "member": "Method 'tick' in WaterFX",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 29,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 494,
+      "endLine": 509,
+      "member": "Method 'lever' in BetaBuilder",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 16,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 537,
+      "endLine": 546,
+      "member": "Method 'pane' in BetaBuilder",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 10,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/blockEntityLayer.ts",
+      "line": 271,
+      "endLine": 284,
+      "member": "Arrow function want.forEach() callback in rebuild",
+      "kind": "arrow function",
+      "complexity": 14,
+      "loc": 14,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/items.ts",
+      "line": 391,
+      "endLine": 404,
+      "member": "Function 'lookBeta'",
+      "kind": "function",
+      "complexity": 14,
+      "loc": 14,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 741,
+      "endLine": 774,
+      "member": "Method 'refreshBot' in EntityLayer",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 34,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1164,
+      "endLine": 1208,
+      "member": "Method 'poseRiders' in EntityLayer",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 45,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/runtime.ts",
+      "line": 1015,
+      "endLine": 1050,
+      "member": "Method 'ghostsFor' in WorldRuntime",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 36,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/sections.ts",
+      "line": 216,
+      "endLine": 239,
+      "member": "Method 'maintain' in SectionManager",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 24,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/deltas.ts",
+      "line": 84,
+      "endLine": 97,
+      "member": "Method 'push' in BlockDeltaFeed",
+      "kind": "method",
+      "complexity": 14,
+      "loc": 14,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/live/sse-parser.ts",
+      "line": 34,
+      "endLine": 53,
+      "member": "Method 'line' in SseParser",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 20,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/memory/page.tsx",
+      "line": 57,
+      "endLine": 115,
+      "member": "Function 'Detail'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 59,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/diff.ts",
+      "line": 21,
+      "endLine": 28,
+      "member": "Function 'formatValue'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 8,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/inventory/InventoryPanel.tsx",
+      "line": 287,
+      "endLine": 328,
+      "member": "Function 'InventorySection'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 42,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/shards/ExportDialog.tsx",
+      "line": 42,
+      "endLine": 60,
+      "member": "Arrow function request in ExportDialog",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 19,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 628,
+      "endLine": 663,
+      "member": "Arrow function bodies in StoryMap",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 36,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 806,
+      "endLine": 878,
+      "member": "Arrow function cube in draw",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 73,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 1517,
+      "endLine": 1531,
+      "member": "Arrow function attackableAt in StoryMap",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 15,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 2168,
+      "endLine": 2180,
+      "member": "Method 'hologramKinds' in useEffect() callback",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 13,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 617,
+      "endLine": 638,
+      "member": "Arrow function onContext in StoryMode",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 22,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/assign/AssignPanel.tsx",
+      "line": 35,
+      "endLine": 99,
+      "member": "Function 'AssignPanel'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 65,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/assign/AssignPanel.tsx",
+      "line": 124,
+      "endLine": 171,
+      "member": "Arrow function pawns.map() callback in PawnPolicies",
+      "kind": "arrow function",
+      "complexity": 13,
+      "loc": 48,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/storage.ts",
+      "line": 273,
+      "endLine": 284,
+      "member": "Function 'updateBillBody'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 12,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 610,
+      "endLine": 629,
+      "member": "Function 'designBlocks'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 20,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/lib/api/client.ts",
+      "line": 251,
+      "endLine": 265,
+      "member": "Function 'errorText'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 15,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/lib/live/connection.ts",
+      "line": 31,
+      "endLine": 45,
+      "member": "Function 'liveFromStatus'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 15,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/live.ts",
+      "line": 592,
+      "endLine": 677,
+      "member": "Function 'bodyScript'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 86,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/scripts.ts",
+      "line": 315,
+      "endLine": 349,
+      "member": "Function 'diff'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 35,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/story.ts",
+      "line": 284,
+      "endLine": 294,
+      "member": "Function 'targetPos'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 11,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 565,
+      "endLine": 625,
+      "member": "Method 'newPawn' in StorySim",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 61,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2452,
+      "endLine": 2473,
+      "member": "Method 'step' in StorySim",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 22,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/fluids.ts",
+      "line": 120,
+      "endLine": 167,
+      "member": "Function 'fluidQuads'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 48,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/index.ts",
+      "line": 50,
+      "endLine": 70,
+      "member": "Constructor constructor in Models1122",
+      "kind": "constructor",
+      "complexity": 13,
+      "loc": 21,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/states.ts",
+      "line": 83,
+      "endLine": 91,
+      "member": "Function 'skullType'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 9,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/quad.ts",
+      "line": 270,
+      "endLine": 291,
+      "member": "Function 'clipAxis'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 22,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/states.ts",
+      "line": 29,
+      "endLine": 40,
+      "member": "Function 'buildStateTable'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 12,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/blockAtlas.ts",
+      "line": 107,
+      "endLine": 153,
+      "member": "Method 'update' in BlockAtlas",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 47,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/bubbles.ts",
+      "line": 127,
+      "endLine": 154,
+      "member": "Method 'say' in ChatBubbles",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/models/animals.ts",
+      "line": 802,
+      "endLine": 811,
+      "member": "Method 'ocelot'",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 10,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/models/common.ts",
+      "line": 166,
+      "endLine": 198,
+      "member": "Function 'biped'",
+      "kind": "function",
+      "complexity": 13,
+      "loc": 33,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/registry.ts",
+      "line": 92,
+      "endLine": 103,
+      "member": "Method 'wolf'",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 12,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1828,
+      "endLine": 1851,
+      "member": "Method 'pushItem' in EntityLayer",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 24,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1895,
+      "endLine": 1908,
+      "member": "Method 'pushOrb' in EntityLayer",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 14,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/sky.ts",
+      "line": 68,
+      "endLine": 83,
+      "member": "Method 'setBundle' in SkyLayer",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 16,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/auth/users-store.ts",
+      "line": 152,
+      "endLine": 180,
+      "member": "Method 'reload' in UsersStore",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 29,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/mock/terrain.ts",
+      "line": 43,
+      "endLine": 76,
+      "member": "Function 'build'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 34,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/shards/page.tsx",
+      "line": 87,
+      "endLine": 120,
+      "member": "Arrow function packs.data.packs.map() callback in ShardsInner",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 34,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/AdministrationView.tsx",
+      "line": 43,
+      "endLine": 264,
+      "member": "Function 'AdministrationView'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 222,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/SettingField.tsx",
+      "line": 394,
+      "endLine": 448,
+      "member": "Function 'OllamaModelSelect'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 55,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/administration/fieldState.ts",
+      "line": 97,
+      "endLine": 126,
+      "member": "Function 'validateDraft'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 30,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/DebuggerDrawer.tsx",
+      "line": 25,
+      "endLine": 45,
+      "member": "Function 'StatusLine'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 21,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/HiveTreeView.tsx",
+      "line": 13,
+      "endLine": 46,
+      "member": "Function 'Row'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 34,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/cloud/CloudCanvas.tsx",
+      "line": 427,
+      "endLine": 467,
+      "member": "Arrow function useEffect() callback in CloudCanvas",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 41,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/cloud/CloudCanvas.tsx",
+      "line": 470,
+      "endLine": 506,
+      "member": "Arrow function useCallback() callback in CloudCanvas",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 37,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/memory-activity/cloud/cloudStyle.ts",
+      "line": 295,
+      "endLine": 316,
+      "member": "Function 'fidelityBadge'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 22,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryHud.tsx",
+      "line": 81,
+      "endLine": 98,
+      "member": "Arrow function pawns.map() callback in barBodies",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 18,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryHud.tsx",
+      "line": 581,
+      "endLine": 707,
+      "member": "Function 'ControlCluster'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 127,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 446,
+      "endLine": 458,
+      "member": "Async arrow function placeWater in StoryMode",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 13,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 459,
+      "endLine": 476,
+      "member": "Async arrow function irrigate in StoryMode",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 18,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 687,
+      "endLine": 701,
+      "member": "Async arrow function attack in StoryMode",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 15,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/WaterTools.tsx",
+      "line": 28,
+      "endLine": 36,
+      "member": "Function 'pendingHolo'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 9,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/model.ts",
+      "line": 324,
+      "endLine": 338,
+      "member": "Function 'dispatch'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 15,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 688,
+      "endLine": 710,
+      "member": "Function 'mineItems'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 23,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/zones/zoneDraw.ts",
+      "line": 161,
+      "endLine": 173,
+      "member": "Function 'zoneLabel'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 13,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/mine/mineTemplates.ts",
+      "line": 62,
+      "endLine": 73,
+      "member": "Function 'edgeOf'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 12,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/studio.ts",
+      "line": 331,
+      "endLine": 381,
+      "member": "Async method 'send' in Studio",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 51,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/WorldPane.tsx",
+      "line": 292,
+      "endLine": 319,
+      "member": "Async arrow function go in WorldPane",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 28,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/chatBubbles.ts",
+      "line": 17,
+      "endLine": 31,
+      "member": "Function 'bubbleOf'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 15,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/live.ts",
+      "line": 578,
+      "endLine": 588,
+      "member": "Arrow function BOTS.map() callback in bodyScripts",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 11,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/live.ts",
+      "line": 679,
+      "endLine": 696,
+      "member": "Function 'controller'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 18,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/live.ts",
+      "line": 896,
+      "endLine": 947,
+      "member": "Function 'memoryHeat'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 52,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/raptor.ts",
+      "line": 90,
+      "endLine": 186,
+      "member": "Function 'build'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 97,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/story.ts",
+      "line": 96,
+      "endLine": 102,
+      "member": "Method 'ground'",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 7,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/util.ts",
+      "line": 71,
+      "endLine": 94,
+      "member": "Function 'lineDiff'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 24,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2216,
+      "endLine": 2249,
+      "member": "Method 'workbenches' in StorySim",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 34,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySimGear.ts",
+      "line": 355,
+      "endLine": 361,
+      "member": "Function 'policyKinds'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 7,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/atlas/betaFx.ts",
+      "line": 128,
+      "endLine": 152,
+      "member": "Method 'tick' in FlamesFX",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 25,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/beta/geometry.ts",
+      "line": 81,
+      "endLine": 89,
+      "member": "Method 'flatOf' in BetaBuilder",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 9,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/columns.ts",
+      "line": 228,
+      "endLine": 238,
+      "member": "Function 'sectionChanged'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 11,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/react/WorldViewer.tsx",
+      "line": 72,
+      "endLine": 187,
+      "member": "Function 'WorldViewer'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 116,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/bubbles.ts",
+      "line": 226,
+      "endLine": 237,
+      "member": "Function 'findSpeaker'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 12,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/builder.ts",
+      "line": 124,
+      "endLine": 178,
+      "member": "Method 'cube' in CubeSink",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 55,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/motion.ts",
+      "line": 51,
+      "endLine": 80,
+      "member": "Function 'stepMotion'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 30,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/variant.ts",
+      "line": 27,
+      "endLine": 49,
+      "member": "Constructor constructor in Variant",
+      "kind": "constructor",
+      "complexity": 12,
+      "loc": 23,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 566,
+      "endLine": 577,
+      "member": "Method 'eventTarget' in EntityLayer",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 12,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 2051,
+      "endLine": 2076,
+      "member": "Method 'dispose' in EntityLayer",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 26,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/font.ts",
+      "line": 211,
+      "endLine": 240,
+      "member": "Function 'rasterLine'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 30,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/sky.ts",
+      "line": 86,
+      "endLine": 127,
+      "member": "Method 'update' in SkyLayer",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 42,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/wire/normalize.ts",
+      "line": 74,
+      "endLine": 84,
+      "member": "Function 'itemRef'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 11,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/wire/normalize.ts",
+      "line": 204,
+      "endLine": 230,
+      "member": "Function 'blockEntity'",
+      "kind": "function",
+      "complexity": 12,
+      "loc": 27,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/blockEntities.ts",
+      "line": 77,
+      "endLine": 112,
+      "member": "Async arrow function async()=>{try{constreply=normalizeBlockE() callback in tick",
+      "kind": "arrow function",
+      "complexity": 12,
+      "loc": 36,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/apps/api/src/audit/audit.service.ts",
+      "line": 59,
+      "endLine": 75,
+      "member": "Method 'record' in AuditService",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 17,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/auth/setup.service.ts",
+      "line": 146,
+      "endLine": 157,
+      "member": "Arrow function in gate",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 12,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/live/filters.ts",
+      "line": 20,
+      "endLine": 36,
+      "member": "Function 'filterOf'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 17,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/mock/generate.ts",
+      "line": 111,
+      "endLine": 119,
+      "member": "Function 'sampleNumber'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 9,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/api/src/mock/mock-bridge.ts",
+      "line": 662,
+      "endLine": 696,
+      "member": "Arrow function setInterval() callback in stream",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 35,
+      "project": "apps/api"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/designs/page.tsx",
+      "line": 150,
+      "endLine": 229,
+      "member": "Function 'DesignsInner'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 80,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/app/(app)/search/page.tsx",
+      "line": 15,
+      "endLine": 68,
+      "member": "Function 'Hit'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 54,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/chat/ChatPane.tsx",
+      "line": 83,
+      "endLine": 112,
+      "member": "Function 'PendingBubble'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 30,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/chat/pending.ts",
+      "line": 73,
+      "endLine": 104,
+      "member": "Function 'reconcile'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 32,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/ScriptCard.tsx",
+      "line": 13,
+      "endLine": 63,
+      "member": "Function 'ScriptCard'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 51,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/live/groups.ts",
+      "line": 37,
+      "endLine": 88,
+      "member": "Function 'groupBodies'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 52,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/settings/SettingsPage.tsx",
+      "line": 274,
+      "endLine": 289,
+      "member": "Function 'PreviewViewer'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 16,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 283,
+      "endLine": 365,
+      "member": "Function 'DesignationInspector'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 83,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryInspector.tsx",
+      "line": 1701,
+      "endLine": 1706,
+      "member": "Arrow function pawns.map() callback in BillDialog",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 6,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMap.tsx",
+      "line": 435,
+      "endLine": 450,
+      "member": "Arrow function tryPlace in useEffect() callback",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 16,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 294,
+      "endLine": 319,
+      "member": "Async arrow function bringOnline in StoryMode",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 26,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 480,
+      "endLine": 496,
+      "member": "Async arrow function retryFailed in StoryMode",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 17,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryMode.tsx",
+      "line": 936,
+      "endLine": 948,
+      "member": "Arrow function onAlert in StoryMode",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 13,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/StoryNotices.tsx",
+      "line": 76,
+      "endLine": 222,
+      "member": "Function 'StoryNotices'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 147,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/assign/GearActions.tsx",
+      "line": 232,
+      "endLine": 264,
+      "member": "Function 'EquipmentView'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 33,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/materials.ts",
+      "line": 52,
+      "endLine": 100,
+      "member": "Function 'materialsFor'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 49,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/model.ts",
+      "line": 182,
+      "endLine": 188,
+      "member": "Function 'pawnMood'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 7,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/tools.ts",
+      "line": 716,
+      "endLine": 737,
+      "member": "Function 'designItems'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 22,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/zones/FishingZones.tsx",
+      "line": 38,
+      "endLine": 77,
+      "member": "Arrow function zones.map() callback in FishingZonesPanel",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 40,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/story/zones/zoneDraw.ts",
+      "line": 16,
+      "endLine": 53,
+      "member": "Function 'outlineOf'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 38,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 654,
+      "endLine": 677,
+      "member": "Arrow function useCallback() callback in StudioBody",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 24,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/StudioPage.tsx",
+      "line": 1102,
+      "endLine": 1116,
+      "member": "Arrow function useMemo() callback in StudioBody",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 15,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/canvas.ts",
+      "line": 139,
+      "endLine": 157,
+      "member": "Method 'chestMeta' in Canvas",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 19,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/canvas.ts",
+      "line": 402,
+      "endLine": 425,
+      "member": "Function 'connected'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 24,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/studio/palette.ts",
+      "line": 25,
+      "endLine": 38,
+      "member": "Arrow function entries.forEach() callback in searchPalette",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 14,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/features/world/InWorld.tsx",
+      "line": 116,
+      "endLine": 239,
+      "member": "Function 'ChatOverlay'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 124,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/lib/api/query.ts",
+      "line": 37,
+      "endLine": 46,
+      "member": "Function 'staleTimeFor'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 10,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/lib/live/dispatch.ts",
+      "line": 39,
+      "endLine": 83,
+      "member": "Function 'applyLiveEvent'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 45,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/api.ts",
+      "line": 662,
+      "endLine": 671,
+      "member": "Function 'mockDesignBlocks'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 10,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/data/live.ts",
+      "line": 380,
+      "endLine": 405,
+      "member": "Function 'botNow'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 26,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/apps/web/src/mocks/handlers.ts",
+      "line": 34,
+      "endLine": 53,
+      "member": "Async arrow function method() callback in routeHandler",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 20,
+      "project": "apps/web"
+    },
+    {
+      "file": "web/packages/contracts/src/designer.ts",
+      "line": 352,
+      "endLine": 357,
+      "member": "Arrow function box(x0,1,z0,x1,3,z1,5,0,wall).map() callback in fakeDesignerTurn",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 6,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/story.ts",
+      "line": 1904,
+      "endLine": 1924,
+      "member": "Function 'harvestable'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 21,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 493,
+      "endLine": 508,
+      "member": "Method 'time' in StorySim",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 16,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 826,
+      "endLine": 846,
+      "member": "Method 'beds' in StorySim",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 21,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 889,
+      "endLine": 908,
+      "member": "Method 'priorities' in StorySim",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 20,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2289,
+      "endLine": 2305,
+      "member": "Method 'attackTarget' in StorySim",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 17,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySim.ts",
+      "line": 2699,
+      "endLine": 2704,
+      "member": "Arrow function bench.bills.find() callback in pickWork",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 6,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storySimGear.ts",
+      "line": 142,
+      "endLine": 157,
+      "member": "Function 'gearItem'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 16,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/contracts/src/storyZones.ts",
+      "line": 307,
+      "endLine": 338,
+      "member": "Function 'quarryRing'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 32,
+      "project": "packages/contracts"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/light.ts",
+      "line": 28,
+      "endLine": 35,
+      "member": "Function 'opacity'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 8,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/mesh/models/states.ts",
+      "line": 558,
+      "endLine": 578,
+      "member": "Function 'stairShape'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 21,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/engine.ts",
+      "line": 626,
+      "endLine": 647,
+      "member": "Arrow function this.listen() callback in bindInput",
+      "kind": "arrow function",
+      "complexity": 11,
+      "loc": 22,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/models/animals.ts",
+      "line": 335,
+      "endLine": 388,
+      "member": "Method 'pose'",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 54,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/models/animals.ts",
+      "line": 726,
+      "endLine": 739,
+      "member": "Function 'horseLook'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 14,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entities/registry.ts",
+      "line": 121,
+      "endLine": 132,
+      "member": "Function 'mobName'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 12,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 63,
+      "endLine": 73,
+      "member": "Function 'entityLook'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 11,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1376,
+      "endLine": 1401,
+      "member": "Method 'poseHeld' in EntityLayer",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 26,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1934,
+      "endLine": 1961,
+      "member": "Method 'botLabel' in EntityLayer",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 28,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/entityLayer.ts",
+      "line": 1963,
+      "endLine": 1982,
+      "member": "Method 'entityLabel' in EntityLayer",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 20,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/font.ts",
+      "line": 66,
+      "endLine": 83,
+      "member": "Function 'trimToWidth'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 18,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/font.ts",
+      "line": 106,
+      "endLine": 120,
+      "member": "Function 'richToLegacy'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 15,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/holograms.ts",
+      "line": 405,
+      "endLine": 442,
+      "member": "Method 'apply' in HologramLayer",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 38,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/sections.ts",
+      "line": 289,
+      "endLine": 310,
+      "member": "Method 'install' in SectionManager",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 22,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/render/starfield.ts",
+      "line": 24,
+      "endLine": 27,
+      "member": "Function 'starPasses'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 4,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/wire/chunk.ts",
+      "line": 59,
+      "endLine": 88,
+      "member": "Function 'parseLight'",
+      "kind": "function",
+      "complexity": 11,
+      "loc": 30,
+      "project": "packages/world-viewer"
+    },
+    {
+      "file": "web/packages/world-viewer/src/world/entities.ts",
+      "line": 158,
+      "endLine": 168,
+      "member": "Method 'entities' in EntityStore",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 11,
+      "project": "packages/world-viewer"
+    }
+  ]
+}
