@@ -129,24 +129,67 @@ public static partial class BuildGate
         string? previewUrl)
     {
         // Never describe the build relative to itself ("away from mob drop tower" for the mob drop tower).
-        bool Self(string text) => text.Contains(name, StringComparison.OrdinalIgnoreCase) || text.Contains(name.Replace(' ', '_'), StringComparison.OrdinalIgnoreCase);
-        var lm = landmark;
-        landmark = p => lm(p) is { } t && !Self(t) ? t : null;
-        var pl = place;
-        if (pl != null) place = p => pl(p) is { } np && !Self(np.Name) && !InFootprint(np.At) ? np : null;
-        bool InFootprint(BlockPos p) => p.X >= plan.Min.X && p.X <= plan.Max.X && p.Z >= plan.Min.Z && p.Z <= plan.Max.Z;
-        // The recorded gate blocks (placement order) keep the wording stable across restarts; step states can re-verify differently.
-        var gate = bp.Gate.Blocks.Count > 0 ? bp.Gate.Blocks.Distinct().ToList() : bp.Steps.Where(s => s.Gate && s.Finished).Select(s => s.Target).ToList();
-        if (gate.Count == 0) gate = bp.Steps.Where(s => s.Action == StepAction.Place && s.Finished).Take(5).Select(s => s.Target).ToList();
+        landmark = NotSelf(landmark, name);
+        place = NotSelf(place, name, plan);
+        var gate = GateCells(bp);
         var anchor = gate.Count > 0 ? gate[0] : plan.Min;
-        bool alongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;
-        var far = alongX ? (anchor.X <= (plan.Min.X + plan.Max.X) / 2 ? plan.Max.X : plan.Min.X) : (anchor.Z <= (plan.Min.Z + plan.Max.Z) / 2 ? plan.Max.Z : plan.Min.Z);
-        var end = alongX ? anchor with { X = far } : anchor with { Z = far };
+        var end = FarEnd(plan, anchor);
         int dx = Math.Sign(end.X - anchor.X), dz = Math.Sign(end.Z - anchor.Z);
-        string runs = dx > 0 ? "east" : dx < 0 ? "west" : dz > 0 ? "south" : dz < 0 ? "north" : "in place";
         var bits = new List<string>();
         var start = landmark(anchor);
         bits.Add($"First {gate.Count} block{(gate.Count == 1 ? "" : "s")} down: the {name} starts {start ?? "here"}");
+        bits.Add($"runs {Runs(dx, dz)}" + Relative(place, anchor, end, dx, dz));
+        var (fx, fz) = plan.Blueprint.Footprint;
+        bits.Add($"{fx}×{fz}" + (plan.Blueprint.H > 1 ? $"×{plan.Blueprint.H}" : ""));
+        var endText = landmark(end);
+        if (endText != null && endText != start) bits.Add($"ending {endText}");
+        if (!bp.Transform.IsNone) bits.Add($"({bp.Transform.Text})");
+        return string.Join(", ", bits) + ". Keep going? (say 'keep going', or 'wrong way' / 'turn it' / 'flip it' / 'move 2 east'"
+               + (previewUrl != null ? $"; preview {previewUrl}" : "") + ")";
+    }
+
+    private static bool Self(string text, string name) =>
+        text.Contains(name, StringComparison.OrdinalIgnoreCase) || text.Contains(name.Replace(' ', '_'), StringComparison.OrdinalIgnoreCase);
+
+    private static Func<BlockPos, string?> NotSelf(Func<BlockPos, string?> landmark, string name) =>
+        p => landmark(p) is { } t && !Self(t, name) ? t : null;
+
+    /// <summary>A named place, never the build itself nor one inside its footprint.</summary>
+    private static Func<BlockPos, NamedPlace?>? NotSelf(Func<BlockPos, NamedPlace?>? place, string name, VoxelPlan plan)
+    {
+        if (place == null) return null;
+        bool InFootprint(BlockPos p) => p.X >= plan.Min.X && p.X <= plan.Max.X && p.Z >= plan.Min.Z && p.Z <= plan.Max.Z;
+        return p => place(p) is { } np && !Self(np.Name, name) && !InFootprint(np.At) ? np : null;
+    }
+
+    /// <summary>The gate blocks: as recorded (placement order keeps the wording stable across restarts; step states can re-verify
+    /// differently), else the finished gate steps, else the first five finished placements.</summary>
+    private static List<BlockPos> GateCells(BuildPlan bp)
+    {
+        var gate = bp.Gate.Blocks.Count > 0 ? bp.Gate.Blocks.Distinct().ToList() : bp.Steps.Where(s => s.Gate && s.Finished).Select(s => s.Target).ToList();
+        return gate.Count > 0 ? gate : bp.Steps.Where(s => s.Action == StepAction.Place && s.Finished).Take(5).Select(s => s.Target).ToList();
+    }
+
+    /// <summary>The far end of the build's long axis from <paramref name="anchor"/>.</summary>
+    private static BlockPos FarEnd(VoxelPlan plan, BlockPos anchor)
+    {
+        bool alongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;
+        if (alongX) return anchor with { X = anchor.X <= (plan.Min.X + plan.Max.X) / 2 ? plan.Max.X : plan.Min.X };
+        return anchor with { Z = anchor.Z <= (plan.Min.Z + plan.Max.Z) / 2 ? plan.Max.Z : plan.Min.Z };
+    }
+
+    private static string Runs(int dx, int dz) => (dx, dz) switch
+    {
+        ( > 0, _) => "east",
+        ( < 0, _) => "west",
+        (_, > 0) => "south",
+        (_, < 0) => "north",
+        _ => "in place",
+    };
+
+    /// <summary>", away from the well toward the farm": where it starts and ends relative to named places.</summary>
+    private static string Relative(Func<BlockPos, NamedPlace?>? place, BlockPos anchor, BlockPos end, int dx, int dz)
+    {
         var rel = new List<string>();
         if (place?.Invoke(anchor) is { } from)
         {
@@ -155,14 +198,7 @@ public static partial class BuildGate
             if (place(end) is { } to && to.Name != from.Name) rel.Add($"toward {to.Name}");
         }
         else if (place?.Invoke(end) is { } to) rel.Add($"toward {to.Name}");
-        bits.Add($"runs {runs}" + (rel.Count > 0 ? ", " + string.Join(" ", rel) : ""));
-        var (fx, fz) = plan.Blueprint.Footprint;
-        bits.Add($"{fx}×{fz}" + (plan.Blueprint.H > 1 ? $"×{plan.Blueprint.H}" : ""));
-        var endText = landmark(end);
-        if (endText != null && endText != start) bits.Add($"ending {endText}");
-        if (!bp.Transform.IsNone) bits.Add($"({bp.Transform.Text})");
-        return string.Join(", ", bits) + ". Keep going? (say 'keep going', or 'wrong way' / 'turn it' / 'flip it' / 'move 2 east'"
-               + (previewUrl != null ? $"; preview {previewUrl}" : "") + ")";
+        return rel.Count > 0 ? ", " + string.Join(" ", rel) : "";
     }
 }
 
