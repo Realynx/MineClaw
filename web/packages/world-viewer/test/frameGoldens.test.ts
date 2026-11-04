@@ -194,17 +194,22 @@ async function run(): Promise<string> {
   const copy = new WorldViewerEngine(container(320, 200), { source: src, runtime: rt, follow: 'Bob', cameraMode: 'iso', pixelRatio: 1 });
   const thumb = new ThumbnailView(rt, fakeCanvas(240, 150, 'thumb'), 'Bob', { fps: 10 });
   rt.addView(thumb);
+  // The network loops stop before they ever run (their timers would interleave with the column inflation, which is a real
+  // stream); the world is fetched by hand below.
+  (rt as unknown as { pause(): void }).pause();
 
   rt.store.apply({ rev: 1, full: true, bots: bots(0), entities: [
     { kind: 'mob', id: 1, dim: 0, x: 6, y: 70, z: 4, type: 54 },
     { kind: 'player', id: 2, dim: 0, x: 2, y: 70, z: -3, name: 'Steve' },
     { kind: 'item', id: 3, dim: 0, x: 5, y: 70, z: 5, item: 1, count: 1 },
   ] });
-  // The world: one index + chunk pass around the views, meshed on the inline host, then the network loops stop.
+  // The world: one index + chunk pass around the views, meshed on the inline host.
   rt.step(clock, 0);
-  await (rt.sync as unknown as { tick(n: number): Promise<void> }).tick(EPOCH + clock);
+  const sync = rt.sync as unknown as { running: boolean; tick(n: number): Promise<void> };
+  sync.running = true;
+  await sync.tick(EPOCH + clock);
+  sync.running = false;
   await flush();
-  (rt as unknown as { pause(): void }).pause();
   log.length = 0;
 
   // Taps: the arguments every layer receives each frame.
@@ -358,6 +363,6 @@ describe('frame golden', () => {
     const frames = log.filter((l) => l.startsWith('---- frame')).length;
     expect(frames).toBe(25);
     expect(log.filter((l) => l.startsWith('render.camera')).length).toBeGreaterThan(40);
-    expect(a).toBe('7fab7ed57e9c47de5d0665ab26495705');
+    expect(a).toBe('6aa2a3888933a69b6d1dcb89a8a27f48');
   }, 30000);
 });
