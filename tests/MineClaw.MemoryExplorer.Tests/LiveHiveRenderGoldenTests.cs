@@ -175,6 +175,13 @@ public sealed class LiveHiveRenderGoldenTests(ITestOutputHelper output)
                 Dump($"{n} bots, back to 2");
             }
         }
+        // Let the view model's background texture load land on this session's dispatcher before it goes (a late post from it
+        // would hit the next test's headless app).
+        for (int i = 0; i < 1500 && vm.TextureStatus == "textures: loading…"; i++)
+        {
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(20);
+        }
         return sb.ToString();
     }).GetAwaiter().GetResult();
 
