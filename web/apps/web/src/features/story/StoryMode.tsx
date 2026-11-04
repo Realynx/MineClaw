@@ -37,7 +37,6 @@ import {
   type Selection,
 } from './model';
 import {
-  AlertsStack,
   barBodies,
   ColonistBar,
   ContextMenu,
@@ -58,6 +57,8 @@ import {
   StorageInspector,
 } from './StoryInspector';
 import { useFullscreen } from './useFullscreen';
+import type { Condition } from './notices';
+import { StoryNotices, type JumpTarget } from './StoryNotices';
 import { StoryMap, type DragResult, type FormationMove, type MapTool, type StoryMapHandle } from './StoryMap';
 import {
   ArchitectPanel,
@@ -175,7 +176,6 @@ export function StoryMode() {
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
   const [help, setHelp] = useState(false);
   const [chat, setChat] = useState(false);
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [clip, setClip] = useState<StorageClip | null>(null);
   const picking = useRef<((c: V3 | null) => void) | null>(null);
   const lastDraft = useRef<{ key: string; drafted: boolean; at: number } | null>(null);
@@ -584,13 +584,6 @@ export function StoryMode() {
 
   // ------------------------------------------------------------------ alerts
 
-  const alerts = (state?.alerts ?? [])
-    .filter((a) => !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)) && a.level !== 'info')
-    .concat(
-      (state?.alerts ?? [])
-        .filter((a) => a.level === 'info' && !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)))
-        .slice(-2),
-    );
   const onAlert = (a: StoryAlert) => {
     if (a.pawn) {
       setSelection({ ...EMPTY_SELECTION, bodies: [a.pawn] });
@@ -603,6 +596,27 @@ export function StoryMode() {
       else setTool({ kind: 'storage' });
     }
     if (a.fix?.workbench) setSelection({ bodies: [], chests: [], bench: a.fix.workbench });
+  };
+  /** A message or log entry: its alert's fix, its pawn, or the place it names. */
+  const onJump = (t: JumpTarget) => {
+    if (t.alert) onAlert(t.alert);
+    else if (t.pawn) {
+      setSelection({ ...EMPTY_SELECTION, bodies: [t.pawn] });
+      focusBody(t.pawn);
+    }
+    if (!t.pawn && t.pos) map.current?.focus(t.pos[0], t.pos[2], t.pos[1]);
+  };
+  /** An ongoing condition: select the pawns it is about, or open what fixes it. */
+  const onCondition = (c: Condition) => {
+    if (c.pawns.length) {
+      setSelection({ ...EMPTY_SELECTION, bodies: c.pawns });
+      focusBody(c.pawns[0]!);
+    }
+    if (c.tab === 'storage') {
+      const s = state?.storages?.[0];
+      if (s) setSelection({ bodies: [], chests: [s.chest], bench: null });
+      else setTool({ kind: 'storage' });
+    }
   };
 
   // ------------------------------------------------------------------ the inspector
@@ -1017,7 +1031,7 @@ export function StoryMode() {
             ) : null}
           </div>
           <div className="absolute top-[5.75rem] right-2">
-            <AlertsStack alerts={alerts} onPick={onAlert} onDismiss={(k) => setDismissed((d) => new Set([...d, k]))} />
+            <StoryNotices state={state} colony={id} toast={toast} onJump={onJump} onCondition={onCondition} />
           </div>
 
           {/* middle overlays */}

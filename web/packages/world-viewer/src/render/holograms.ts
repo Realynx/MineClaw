@@ -84,11 +84,13 @@ void main() {
   vec3 p = clamp(vWorld - cell, 0.0, 1.0);
   vec3 d = min(p, 1.0 - p);
   float mid = max(min(d.x, d.y), min(max(d.x, d.y), d.z));
-  float edge = 1.0 - smoothstep(0.015, 0.085, mid);
+  // A thin line (about a pixel at any zoom) plus a faint halo inside it.
+  float w = max(fwidth(mid), 1e-4);
+  float edge = (1.0 - smoothstep(w * 0.5, w * 1.6, mid)) * 0.75 + (1.0 - smoothstep(0.0, 0.08, mid)) * 0.2;
   // Static scanlines (no animation: calm).
   float scan = step(0.5, fract(vWorld.y * 5.0));
-  float a = uOpacity * (0.86 + 0.14 * scan) + edge * 0.32;
-  rgb = rgb * (0.92 + 0.08 * scan) + uTint * edge * 0.5;
+  float a = uOpacity * (0.86 + 0.14 * scan) + edge * 0.3;
+  rgb = rgb * (0.92 + 0.08 * scan) + uTint * edge * 0.35;
   if (uStripes > 0.5) {
     float s = step(0.5, fract((vWorld.x + vWorld.y + vWorld.z) * 1.5));
     rgb = mix(rgb, vec3(0.95, 0.22, 0.2), 0.35 * s);

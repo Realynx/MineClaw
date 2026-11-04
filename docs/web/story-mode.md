@@ -503,6 +503,26 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
     blocks of zoom).
   - With no colony yet, the map opens over the main bot (else the signed-in user's player), not the world origin.
   - Pawns draw with name labels and job icons, and zones and designations are coloured overlays.
+  - **Bodies as models (added 2026-11-03).** Every pawn and AI body is drawn as its Minecraft player model (skin, held
+    item, armour, walking), like the Live view. They are bots of the world store; the server leaves bot players out of the
+    entity list, and the map had mounted the viewer with bots off, so only mobs showed. Bots keep the full model out to at
+    least 96 blocks of apparent distance, so the top-down camera hanging far above still gets models; the detailed-model
+    setting at 0 still means boxes. The overlay draws only its marks on a model: selection brackets, a colour ring at the
+    feet, the name (name tags setting; off keeps selected and endangered names), drafted and job marks. The hit area covers
+    the model's height. Zoomed out below 9 px per block, or with no model for the body (not loaded, beyond the entity
+    distance, a far box), the flat token is drawn as before. A body on a storey above the level cut is hidden like the
+    blocks there (a faint token stays clickable), and bodies below a dimmed storey are dimmed.
+  - **Build holograms (added 2026-11-03).** Queued cells show in the world as translucent holograms of the block they
+    will become: the block's own model and texture (variant and facing) in a calm tint, about 40 % opaque, with static
+    scanlines and a thin edge line. Cyan to do, brighter while a pawn builds it, grey-blue while its build waits (paused,
+    missing materials), striped red when blocked or unsupported. Cells to dig are faint red outlines. A built cell's
+    hologram goes as soon as the block appears (matched by cell in the mesh worker). The cells are meshed in the worker,
+    one merged mesh per state, rebuilt only when the ghosts or builds change or a block change lands on a queued cell. At
+    most 20,000 cells draw; past that, and below 3 px per block, each build is one outline box. They are drawn after the
+    opaque world with depth test on and depth writes off, and follow the level cut. A design being placed shows the same
+    way, green where it fits and red where a block is in the way. The viewer setting "Build holograms" (default on) turns
+    them off; the map then draws the flat ghosts as before. Measured (SwiftShader, 1440 × 900, top view at the default
+    zoom, the mock colony): 58 fps before, 48 fps with a 2,000-cell build queued, 41 fps in the angled view.
 - **Selection.**
   - A left-drag box selects many pawns, or objects (trees, blocks, drops) in designation mode.
   - A click selects one, shift adds, a double-click selects every visible pawn of the same kind, and Esc clears.
@@ -541,6 +561,18 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   click the spot) asks for a confirm, then home moves to that column (its surface) and far pawns are brought there. The
   map marks home with a house.
 - **Alerts.** A feed of alerts, such as a pawn in danger or idle with nothing to do.
+- **Notifications (added 2026-11-03).** On the right edge, the genre's split:
+  - **Alerts** are ongoing conditions derived from the state: pawns offline, pawns without a bed, no food in storage, no
+    seeds for a growing zone (both once storage contents are known), main not op. They clear themselves and are never
+    clicked away. A click selects the pawns or opens the storage.
+  - **Messages** are the colony's alerts as they arrive. Info expires after 6 s and warn after 12 s; danger stays until
+    dismissed. Hovering holds the timers. Repeats of a kind (the text with its positions and numbers taken out) collapse
+    into one message with a ×count, and each repeat refreshes its timer. At most four show; "+N more" opens the log.
+    "Dismiss all" and Esc on the stack clear them. An alert is taken in once (by id), so a state poll never shows it again;
+    alerts older than a minute when the page first sees them go to the log only.
+  - **Log**: the last 200 messages and the page's own toasts, coalesced the same way, filterable (all, problems, events)
+    and searchable. A click jumps to the pawn, the alert's fix or the place named in the text. An unread badge counts new
+    entries while it is closed.
 - **Full screen (added 2026-11-03).** The button at the top right or Shift+F (F alone is the Forbid tool) puts the whole Story
   Mode element in full screen, the Live world pane's way: the map and the whole HUD (colonist bar, tabs, inspector, alerts,
   clock, toasts, menus). Esc (the browser's) or Shift+F leaves it. The map follows the new size every frame; drags, box
@@ -556,8 +588,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 Building is queued, colony-sim style. Pawns with Build enabled fill queued builds in queue order, bottom-up.
 - **Architect palette:** wall (height 1–12), floor, door, window, stairs, fence, roof (flat, slab, gable or none, with an
   optional overhang), single block, and deconstruct. Each takes a material.
-- **Placement:** drag on the map to place, and Q/E rotates. Blueprints draw as ghost blocks, coloured todo, leased, done
-  or blocked.
+- **Placement:** drag on the map to place, and Q/E rotates. Queued blueprints draw as block holograms in the world (see
+  "Build holograms" above), or as flat ghost blocks with the setting off.
 - **Build queue panel:** progress, the reason a build is blocked (such as missing materials), reorder, pause and cancel.
 - **Multi-floor levels:** PgUp/PgDn change the working level. Everything above it, roofs included, is x-rayed in
   top-down, and the level below is dimmed.
