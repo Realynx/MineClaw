@@ -115,6 +115,53 @@ public sealed class StoryBuildGoldenTests
     [Fact]
     public void Batches_progress_and_ends_1122() => Golden("builds-progress-1122", Run(Release1122GameData.Instance));
 
+    /// <summary>Water and lava items through preview and add: every cell problem (out of view, the other liquid, a block in the way,
+    /// nothing under it, no face, a house, indoors, fire near), done cells, labels and the expected flow.</summary>
+    [Fact]
+    public void Liquid_checks_previews_and_adds()
+    {
+        var t = new Clock(new DateTimeOffset(2026, 11, 4, 12, 0, 0, TimeSpan.Zero));
+        var (c, _, w) = StoryRig.Make(1, null, t);
+        var sb = new StringBuilder();
+        for (int x = -2; x <= 40; x++) for (int z = -2; z <= 40; z++) w.Set(x, 63, z, 2);
+        for (int x = 4; x <= 9; x++) w.Set(x, 63, 12, 0); // a dug trench
+        w.Set(6, 63, 14, 9); // a source already there
+        w.Set(20, 63, 20, 11); // lava in the ground
+        w.Set(21, 63, 21, 1); // stone in the way
+        c.ZoneOp("add", "home", Area.Of(30, 64, 30, 34, 66, 34));
+        for (int x = 30; x <= 34; x++) for (int z = 30; z <= 34; z++) w.Set(x, 67, z, 5); // the house's roof
+        static JsonArray Cells(params (int X, int Y, int Z)[] cells) => new(cells.Select(p => (JsonNode)new JsonArray(p.X, p.Y, p.Z)).ToArray());
+        static JsonArray Line(int x1, int x2, int y, int z) => Cells(Enumerable.Range(x1, x2 - x1 + 1).Select(x => (x, y, z)).ToArray());
+        JsonObject W(JsonArray blocks, string? material = null, params (string K, JsonNode V)[] more)
+        {
+            var o = new JsonObject { ["kind"] = "water", ["blocks"] = blocks };
+            if (material != null) o["material"] = material;
+            foreach (var (k, v) in more) o[k] = v;
+            return o;
+        }
+        var items = new JsonObject[]
+        {
+            W(Line(4, 9, 63, 12)), W(Line(4, 9, 64, 12)), W(Cells((6, 63, 14))), W(Cells((20, 63, 20))), W(Cells((21, 63, 21))),
+            W(Cells((10, 70, 10))), W(Cells((500, 63, 500))), W(Cells((32, 64, 32))), W(Cells((32, 64, 32)), null, ("indoor", true)),
+            W(Cells((0, 63, 24), (1, 63, 24), (0, 63, 25), (1, 63, 25)), null, ("infinite", true)), W(Line(15, 17, 63, 3), null, ("name", "Moat")),
+            W(Line(10, 11, 64, 30), "lava"), W(Cells((20, 63, 21)), "lava"), W(Cells((33, 64, 33)), "lava"),
+        };
+        foreach (var lava in new[] { false, true })
+        {
+            if (lava) { c.SetWaterOptions(true); w.Set(12, 64, 31, 5); }
+            foreach (var it in items)
+            {
+                sb.Append("preview ").Append(it.ToJsonString()).Append(" => ").Append(R(c.BuildsOp("preview", new JsonArray(it.DeepClone()), null))).Append('\n');
+                sb.Append("add => ").Append(R(c.BuildsOp("add", new JsonArray(it.DeepClone()), null))).Append('\n');
+            }
+            sb.Append("preview all => ").Append(R(c.BuildsOp("preview", new JsonArray(items.Select(i => (JsonNode)i.DeepClone()).ToArray()), null))).Append('\n');
+        }
+        sb.Append("preview none => ").Append(R(c.BuildsOp("preview", new JsonArray(), null))).Append('\n');
+        sb.Append("preview bad => ").Append(R(c.BuildsOp("preview", new JsonArray(1), null))).Append('\n');
+        foreach (var b in c.Builds) sb.Append(b.Id).Append(' ').Append(b.Label).Append(' ').Append(b.Status).Append(' ').Append(string.Join(",", b.Ghosts.Select(g => g.State))).Append('\n');
+        Golden("liquids", sb.ToString());
+    }
+
     [Fact]
     public void Item_holder_table_matches_the_old_pattern_for_every_id()
     {
