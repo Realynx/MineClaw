@@ -63,65 +63,75 @@ public static class SignalEffects
 {
     public const string Mood = "mood", Rel = "rel", Pref = "pref";
 
-    public static IEnumerable<SignalEffect> Of(SelfSignal s)
+    public static IEnumerable<SignalEffect> Of(SelfSignal s) =>
+        s.Kind != null && Table.TryGetValue(s.Kind, out var effects) ? effects(new Fx(s)) : []; // directive, catchphrase: no effect on any aggregate
+
+    /// <summary>One signal's effect builders: mood (M), relationship with its player (R) and task-type preference (P).</summary>
+    private sealed class Fx(SelfSignal s)
     {
-        double a = Math.Clamp(s.Intensity, 0, 1) * Math.Clamp(s.Weight, 0, 1);
-        var p = s.Player?.ToLowerInvariant();
-        var subj = s.Subject;
-        IEnumerable<SignalEffect> M(double cheer = 0, double conf = 0, double energy = 0, double aff = 0)
+        public readonly SelfSignal S = s;
+        private readonly double _a = Math.Clamp(s.Intensity, 0, 1) * Math.Clamp(s.Weight, 0, 1);
+        private readonly string? _p = s.Player?.ToLowerInvariant();
+
+        public IEnumerable<SignalEffect> M(double cheer = 0, double conf = 0, double energy = 0, double aff = 0)
         {
-            if (cheer != 0) yield return new(Mood, "", "cheer", cheer * a);
-            if (conf != 0) yield return new(Mood, "", "confidence", conf * a);
-            if (energy != 0) yield return new(Mood, "", "energy", energy * a);
-            if (aff != 0) yield return new(Mood, "", "affection", aff * a);
+            if (cheer != 0) yield return new(Mood, "", "cheer", cheer * _a);
+            if (conf != 0) yield return new(Mood, "", "confidence", conf * _a);
+            if (energy != 0) yield return new(Mood, "", "energy", energy * _a);
+            if (aff != 0) yield return new(Mood, "", "affection", aff * _a);
         }
-        IEnumerable<SignalEffect> R(double affinity = 0, double trust = 0, double playful = 0, string? treat = null)
+
+        public IEnumerable<SignalEffect> R(double affinity = 0, double trust = 0, double playful = 0, string? treat = null)
         {
-            if (p == null) yield break;
-            if (affinity != 0) yield return new(Rel, p, "affinity", affinity * a);
-            if (trust != 0) yield return new(Rel, p, "trust", trust * a);
-            if (playful != 0) yield return new(Rel, p, "playful", playful * a);
-            if (treat != null) yield return new(Rel, p, "t_" + treat, a);
+            if (_p == null) yield break;
+            if (affinity != 0) yield return new(Rel, _p, "affinity", affinity * _a);
+            if (trust != 0) yield return new(Rel, _p, "trust", trust * _a);
+            if (playful != 0) yield return new(Rel, _p, "playful", playful * _a);
+            if (treat != null) yield return new(Rel, _p, "t_" + treat, _a);
         }
-        IEnumerable<SignalEffect> P(double done = 0, double ok = 0, double fail = 0, double praise = 0)
+
+        public IEnumerable<SignalEffect> P(double done = 0, double ok = 0, double fail = 0, double praise = 0)
         {
+            var subj = S.Subject;
             if (string.IsNullOrEmpty(subj)) yield break;
             if (done != 0) yield return new(Pref, subj, "done", done);
             if (ok != 0) yield return new(Pref, subj, "ok", ok);
             if (fail != 0) yield return new(Pref, subj, "fail", fail);
-            if (praise != 0) yield return new(Pref, subj, "praise", praise * a);
+            if (praise != 0) yield return new(Pref, subj, "praise", praise * _a);
         }
 
-        switch (s.Kind)
-        {
-            case SignalKinds.Praise: return [.. M(cheer: 0.5, conf: 0.4), .. R(affinity: 0.5, treat: s.Kind), .. P(praise: 1)];
-            case SignalKinds.Thanks: return [.. M(cheer: 0.25), .. R(affinity: 0.3, treat: s.Kind), .. P(praise: 0.5)];
-            case SignalKinds.Tease: return [.. M(cheer: 0.1, conf: -0.03), .. R(affinity: 0.15, playful: 0.6, treat: s.Kind)];
-            case SignalKinds.Affection: return [.. M(cheer: 0.4, aff: 0.6), .. R(affinity: 0.6, treat: s.Kind)];
-            case SignalKinds.Scold: return [.. M(cheer: -0.35, conf: -0.35), .. R(affinity: -0.2, treat: s.Kind), .. P(praise: -1)];
-            // Abuse hurts a little and makes the bot wary (floored), never mean: no hostile dimension exists at all.
-            case SignalKinds.Abuse: return [.. M(cheer: -0.3, conf: -0.15), .. R(affinity: -0.35, trust: -0.1, treat: s.Kind)];
-            case SignalKinds.Request: return p == null || subj == null ? [] : [new(Rel, p, "req:" + subj, a)];
-            case SignalKinds.Activity: return [.. M(energy: -0.04 * Math.Max(1, s.Intensity * 5)), .. P(done: Math.Max(0.2, s.Intensity))];
-            case SignalKinds.TaskOk: return [.. M(cheer: 0.1, conf: 0.25, energy: -0.08), .. P(done: 1, ok: 1)];
-            case SignalKinds.TaskFail: return [.. M(cheer: -0.15, conf: -0.3, energy: -0.08), .. P(done: 1, fail: 1)];
-            case SignalKinds.NeedsInput: return M(conf: -0.05);
-            case SignalKinds.NearFall: return M(cheer: -0.1, conf: -0.2, energy: -0.05);
-            case SignalKinds.VoidFall: return M(cheer: -0.2, conf: -0.3);
-            case SignalKinds.LowHealth: return M(conf: -0.15, energy: -0.1);
-            case SignalKinds.Death: return M(cheer: -0.5, conf: -0.5, energy: -0.3);
-            case SignalKinds.SparWin: return [.. M(cheer: 0.3, conf: 0.4, energy: -0.1), .. R(playful: 0.3), .. P(done: 1, ok: 1)];
-            case SignalKinds.SparLoss: return [.. M(cheer: 0.05, conf: -0.2, energy: -0.1), .. R(playful: 0.3), .. P(done: 1)];
-            case SignalKinds.SparDraw: return [.. M(cheer: 0.15, energy: -0.1), .. R(playful: 0.3), .. P(done: 1)];
-            case SignalKinds.FightWin: return [.. M(conf: 0.3, energy: -0.1), .. P(done: 1, ok: 1)];
-            case SignalKinds.FightLoss: return [.. M(cheer: -0.1, conf: -0.3, energy: -0.1), .. P(done: 1, fail: 1)];
-            case SignalKinds.FirstTime: return M(cheer: 0.2);
-            case SignalKinds.InsideJoke: return R(affinity: 0.2, playful: 0.3);
-            case SignalKinds.Nickname: return R(affinity: 0.25);
-            // Belief system feed: verified claims build trust, refuted ones cost a little; slow (own half-life), floored.
-            case SignalKinds.ClaimOutcome:
-                return R(trust: s.Valence >= 0 ? 0.25 * s.Valence : 0.15 * s.Valence);
-            default: return []; // directive, catchphrase: no effect on any aggregate
-        }
+        /// <summary>A request: the player asked for this task type.</summary>
+        public IEnumerable<SignalEffect> Request() => _p == null || S.Subject == null ? [] : [new(Rel, _p, "req:" + S.Subject, _a)];
     }
+
+    /// <summary>The deterministic signal kind → effects table.</summary>
+    private static readonly Dictionary<string, Func<Fx, IEnumerable<SignalEffect>>> Table = new(StringComparer.Ordinal)
+    {
+        [SignalKinds.Praise] = x => [.. x.M(cheer: 0.5, conf: 0.4), .. x.R(affinity: 0.5, treat: x.S.Kind), .. x.P(praise: 1)],
+        [SignalKinds.Thanks] = x => [.. x.M(cheer: 0.25), .. x.R(affinity: 0.3, treat: x.S.Kind), .. x.P(praise: 0.5)],
+        [SignalKinds.Tease] = x => [.. x.M(cheer: 0.1, conf: -0.03), .. x.R(affinity: 0.15, playful: 0.6, treat: x.S.Kind)],
+        [SignalKinds.Affection] = x => [.. x.M(cheer: 0.4, aff: 0.6), .. x.R(affinity: 0.6, treat: x.S.Kind)],
+        [SignalKinds.Scold] = x => [.. x.M(cheer: -0.35, conf: -0.35), .. x.R(affinity: -0.2, treat: x.S.Kind), .. x.P(praise: -1)],
+        // Abuse hurts a little and makes the bot wary (floored), never mean: no hostile dimension exists at all.
+        [SignalKinds.Abuse] = x => [.. x.M(cheer: -0.3, conf: -0.15), .. x.R(affinity: -0.35, trust: -0.1, treat: x.S.Kind)],
+        [SignalKinds.Request] = x => x.Request(),
+        [SignalKinds.Activity] = x => [.. x.M(energy: -0.04 * Math.Max(1, x.S.Intensity * 5)), .. x.P(done: Math.Max(0.2, x.S.Intensity))],
+        [SignalKinds.TaskOk] = x => [.. x.M(cheer: 0.1, conf: 0.25, energy: -0.08), .. x.P(done: 1, ok: 1)],
+        [SignalKinds.TaskFail] = x => [.. x.M(cheer: -0.15, conf: -0.3, energy: -0.08), .. x.P(done: 1, fail: 1)],
+        [SignalKinds.NeedsInput] = x => x.M(conf: -0.05),
+        [SignalKinds.NearFall] = x => x.M(cheer: -0.1, conf: -0.2, energy: -0.05),
+        [SignalKinds.VoidFall] = x => x.M(cheer: -0.2, conf: -0.3),
+        [SignalKinds.LowHealth] = x => x.M(conf: -0.15, energy: -0.1),
+        [SignalKinds.Death] = x => x.M(cheer: -0.5, conf: -0.5, energy: -0.3),
+        [SignalKinds.SparWin] = x => [.. x.M(cheer: 0.3, conf: 0.4, energy: -0.1), .. x.R(playful: 0.3), .. x.P(done: 1, ok: 1)],
+        [SignalKinds.SparLoss] = x => [.. x.M(cheer: 0.05, conf: -0.2, energy: -0.1), .. x.R(playful: 0.3), .. x.P(done: 1)],
+        [SignalKinds.SparDraw] = x => [.. x.M(cheer: 0.15, energy: -0.1), .. x.R(playful: 0.3), .. x.P(done: 1)],
+        [SignalKinds.FightWin] = x => [.. x.M(conf: 0.3, energy: -0.1), .. x.P(done: 1, ok: 1)],
+        [SignalKinds.FightLoss] = x => [.. x.M(cheer: -0.1, conf: -0.3, energy: -0.1), .. x.P(done: 1, fail: 1)],
+        [SignalKinds.FirstTime] = x => x.M(cheer: 0.2),
+        [SignalKinds.InsideJoke] = x => x.R(affinity: 0.2, playful: 0.3),
+        [SignalKinds.Nickname] = x => x.R(affinity: 0.25),
+        // Belief system feed: verified claims build trust, refuted ones cost a little; slow (own half-life), floored.
+        [SignalKinds.ClaimOutcome] = x => x.R(trust: x.S.Valence >= 0 ? 0.25 * x.S.Valence : 0.15 * x.S.Valence),
+    };
 }

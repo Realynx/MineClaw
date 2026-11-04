@@ -31,7 +31,14 @@ internal sealed class ToolInputValidator
 
     public string? Error(JsonElement value, string path = "$")
     {
-        bool matches = _type switch
+        if (!Matches(value)) return $"{path}: expected {_type}";
+        if (_enum != null && !_enum.Any(v => JsonElement.DeepEquals(v, value))) return $"{path}: value is not in enum";
+        if (value.ValueKind == JsonValueKind.Object && ObjectError(value, path) is { } objectError) return objectError;
+        return _items != null && value.ValueKind == JsonValueKind.Array ? ItemsError(value, path) : null;
+    }
+
+    private bool Matches(JsonElement value) =>
+        _type switch
         {
             null => true,
             "object" => value.ValueKind == JsonValueKind.Object,
@@ -43,27 +50,28 @@ internal sealed class ToolInputValidator
             "null" => value.ValueKind == JsonValueKind.Null,
             _ => throw new InvalidOperationException("unsupported tool schema type " + _type),
         };
-        if (!matches) return $"{path}: expected {_type}";
-        if (_enum != null && !_enum.Any(v => JsonElement.DeepEquals(v, value))) return $"{path}: value is not in enum";
-        if (value.ValueKind == JsonValueKind.Object)
+
+    /// <summary>A missing required property, then the first property that fails its schema (or isn't allowed).</summary>
+    private string? ObjectError(JsonElement value, string path)
+    {
+        foreach (var name in _required)
+            if (!value.TryGetProperty(name, out _)) return $"{path}.{name}: required";
+        foreach (var p in value.EnumerateObject())
         {
-            foreach (var name in _required)
-                if (!value.TryGetProperty(name, out _)) return $"{path}.{name}: required";
-            foreach (var p in value.EnumerateObject())
+            if (_properties.TryGetValue(p.Name, out var property))
             {
-                if (_properties.TryGetValue(p.Name, out var property))
-                {
-                    if (property.Error(p.Value, path + "." + p.Name) is { } error) return error;
-                }
-                else if (!_allowAdditional) return $"{path}.{p.Name}: unexpected property";
+                if (property.Error(p.Value, path + "." + p.Name) is { } error) return error;
             }
+            else if (!_allowAdditional) return $"{path}.{p.Name}: unexpected property";
         }
-        if (_items != null && value.ValueKind == JsonValueKind.Array)
-        {
-            int index = 0;
-            foreach (var item in value.EnumerateArray())
-                if (_items.Error(item, $"{path}[{index++}]") is { } error) return error;
-        }
+        return null;
+    }
+
+    private string? ItemsError(JsonElement value, string path)
+    {
+        int index = 0;
+        foreach (var item in value.EnumerateArray())
+            if (_items!.Error(item, $"{path}[{index++}]") is { } error) return error;
         return null;
     }
 }
