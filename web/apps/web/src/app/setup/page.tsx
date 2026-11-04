@@ -64,6 +64,82 @@ function Notice({ tone, icon, children }: { tone: 'warn' | 'info' | 'danger'; ic
   );
 }
 
+/** Everything the account needs is there and valid (and this request may create it). */
+function readyToCreate(allowedHere: boolean, namesOk: boolean, password: string, match: boolean, roles: readonly Role[]): boolean {
+  return allowedHere && namesOk && password.length >= PASSWORD_MIN_LENGTH && match && roles.length > 0;
+}
+
+/** Why the account could not be created (a refusal from outside the local network says so). */
+function createError(err: unknown): string {
+  if (err instanceof ApiError && err.status === 403 && err.code === 'forbidden') return 'Setup can only be completed from the local network, not through the tunnel.';
+  return errorText(err);
+}
+
+/** The password, its confirmation, and the strength meter with its hint (or the mismatch). */
+function PasswordFields(p: {
+  password: string;
+  setPassword: (v: string) => void;
+  confirm: string;
+  setConfirm: (v: string) => void;
+  match: boolean;
+  strength: ReturnType<typeof passwordStrength>;
+}) {
+  const { password, confirm, match, strength } = p;
+  return (
+    <>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Password" htmlFor="setup-password">
+          <Input id="setup-password" type="password" autoComplete="new-password" value={password} onChange={(e) => p.setPassword(e.target.value)} />
+        </Field>
+        <Field label="Confirm password" htmlFor="setup-confirm">
+          <Input
+            id="setup-confirm"
+            type="password"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => p.setConfirm(e.target.value)}
+            aria-invalid={confirm !== '' && !match}
+          />
+        </Field>
+      </div>
+      <div className="-mt-1 space-y-1.5" aria-live="polite">
+        <Meter value={password ? strength.score : 0} max={4} tone={STRENGTH_TONE[strength.score]} label="Password strength" />
+        <p className="flex justify-between gap-3 text-[11px]">
+          <span className={cn('font-medium', password ? STRENGTH_TEXT[strength.score] : 'text-subtle')}>
+            {password ? strength.label : `At least ${PASSWORD_MIN_LENGTH} characters`}
+          </span>
+          <span className="text-right text-subtle">
+            {confirm && !match ? <span className="text-danger">The passwords do not match.</span> : password ? strength.hint : null}
+          </span>
+        </p>
+      </div>
+    </>
+  );
+}
+
+/** The first account's roles (Admin recommended; at least one). */
+function RolesFieldset({ roles, toggle }: { roles: readonly Role[]; toggle: (role: Role, on: boolean) => void }) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="mb-1.5 text-xs font-medium text-muted">Roles</legend>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {ROLE_INFO.map((r) => (
+          <div key={r.role} className="rounded-lg border border-border px-3 py-2">
+            <Checkbox label={r.label} checked={roles.includes(r.role)} onChange={(on) => toggle(r.role, on)} />
+            <p className="mt-0.5 pl-6 text-[11px] text-subtle">{r.hint}</p>
+          </div>
+        ))}
+      </div>
+      {!roles.includes('admin') ? (
+        <p className="text-[11px] text-warn">
+          Without Admin, nobody can edit memory or read the audit log until you add an admin from the terminal.
+        </p>
+      ) : null}
+      {roles.length === 0 ? <p className="text-[11px] text-danger">Pick at least one role.</p> : null}
+    </fieldset>
+  );
+}
+
 function AccountStep({ allowedHere, onCreated }: { allowedHere: boolean; onCreated: (password: string) => void }) {
   const qc = useQueryClient();
   const router = useRouter();
@@ -80,7 +156,8 @@ function AccountStep({ allowedHere, onCreated }: { allowedHere: boolean; onCreat
   const playerOk = player === '' || PLAYER_PATTERN.test(player);
   const strength = passwordStrength(password, [name, player]);
   const match = confirm.length > 0 && confirm === password;
-  const ready = allowedHere && nameOk && playerOk && password.length >= PASSWORD_MIN_LENGTH && match && roles.length > 0;
+  const ready = readyToCreate(allowedHere, nameOk && playerOk, password, match, roles);
+  const fields = { password, setPassword, confirm, setConfirm, match, strength };
 
   const toggle = (role: Role, on: boolean) =>
     setRoles((r) => (on ? [...new Set([...r, role])] : r.filter((x) => x !== role)));
@@ -99,16 +176,9 @@ function AccountStep({ allowedHere, onCreated }: { allowedHere: boolean; onCreat
       qc.setQueryData(setupKey, { needed: false, allowedHere: false });
       onCreated(password);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        // Someone else finished first (or an account was added from the terminal).
-        router.replace('/login');
-        return;
-      }
-      if (err instanceof ApiError && err.status === 403 && err.code === 'forbidden') {
-        setError('Setup can only be completed from the local network, not through the tunnel.');
-      } else {
-        setError(errorText(err));
-      }
+      // Someone else finished first (or an account was added from the terminal).
+      if (err instanceof ApiError && err.status === 409) router.replace('/login');
+      else setError(createError(err));
     } finally {
       setBusy(false);
     }
@@ -147,38 +217,7 @@ function AccountStep({ allowedHere, onCreated }: { allowedHere: boolean; onCreat
         />
       </Field>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Password" htmlFor="setup-password">
-          <Input
-            id="setup-password"
-            type="password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </Field>
-        <Field label="Confirm password" htmlFor="setup-confirm">
-          <Input
-            id="setup-confirm"
-            type="password"
-            autoComplete="new-password"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            aria-invalid={confirm !== '' && !match}
-          />
-        </Field>
-      </div>
-      <div className="-mt-1 space-y-1.5" aria-live="polite">
-        <Meter value={password ? strength.score : 0} max={4} tone={STRENGTH_TONE[strength.score]} label="Password strength" />
-        <p className="flex justify-between gap-3 text-[11px]">
-          <span className={cn('font-medium', password ? STRENGTH_TEXT[strength.score] : 'text-subtle')}>
-            {password ? strength.label : `At least ${PASSWORD_MIN_LENGTH} characters`}
-          </span>
-          <span className="text-right text-subtle">
-            {confirm && !match ? <span className="text-danger">The passwords do not match.</span> : password ? strength.hint : null}
-          </span>
-        </p>
-      </div>
+      <PasswordFields {...fields} />
 
       <Field
         label={
@@ -201,23 +240,7 @@ function AccountStep({ allowedHere, onCreated }: { allowedHere: boolean; onCreat
         />
       </Field>
 
-      <fieldset className="space-y-2">
-        <legend className="mb-1.5 text-xs font-medium text-muted">Roles</legend>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {ROLE_INFO.map((r) => (
-            <div key={r.role} className="rounded-lg border border-border px-3 py-2">
-              <Checkbox label={r.label} checked={roles.includes(r.role)} onChange={(on) => toggle(r.role, on)} />
-              <p className="mt-0.5 pl-6 text-[11px] text-subtle">{r.hint}</p>
-            </div>
-          ))}
-        </div>
-        {!roles.includes('admin') ? (
-          <p className="text-[11px] text-warn">
-            Without Admin, nobody can edit memory or read the audit log until you add an admin from the terminal.
-          </p>
-        ) : null}
-        {roles.length === 0 ? <p className="text-[11px] text-danger">Pick at least one role.</p> : null}
-      </fieldset>
+      <RolesFieldset roles={roles} toggle={toggle} />
 
       {error ? (
         <p role="alert" className="text-sm text-danger">
