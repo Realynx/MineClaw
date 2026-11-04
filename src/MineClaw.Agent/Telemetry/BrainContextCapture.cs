@@ -95,30 +95,8 @@ public sealed class BrainContextCapture
             {
                 var call = new CapturedCall(++_seq, now, request, messages, request.System.ToArray(), lane, purpose, body, start);
                 var ring = RingOf(lane);
-                CapturedTurn? turn = null;
-                if (key != null)
-                    for (int i = ring.Count - 1, n = 0; i >= 0 && n < 8; i--, n++)
-                        if (ring[i].Lane == lane && ReferenceEquals(ring[i].Key, key)) { turn = ring[i]; break; }
-                if (turn == null)
-                {
-                    long? parent = null;
-                    if (lane != Lanes.Brain)
-                        parent = info != null && _turnOfInfo.TryGetValue(info, out var box) ? box.Value : _lastBrainCall?.Turn.Id;
-                    turn = new CapturedTurn(++_turns, lane, purpose, key, now, parent);
-                    ring.Add(turn);
-                    int cap = lane == Lanes.Background ? Math.Max(1, _o.BackgroundTurns) : Capacity;
-                    while (ring.Count > cap)
-                    {
-                        _evicted.Add((ring[0].Id, _version + 1));
-                        ring.RemoveAt(0);
-                    }
-                    while (_evicted.Count > 256) { _evictFloor = _evicted[0].Version; _evicted.RemoveAt(0); }
-                }
-                call.Turn = turn;
-                call.Round = turn.Calls.Count + turn.Dropped;
-                turn.Calls.Add(call);
-                if (turn.Calls.Count > Math.Max(2, _o.CallsPerTurn)) { turn.Calls.RemoveAt(1); turn.Dropped++; } // keep the first call (the turn's input)
-                if (body != null) turn.Body ??= body;
+                var turn = (key != null ? RecentTurnLocked(ring, lane, key) : null) ?? NewTurnLocked(ring, lane, purpose, key, now, info);
+                AddCallLocked(turn, call, body);
                 if (lane == Lanes.Brain)
                 {
                     _lastBrainCall = call;
@@ -129,6 +107,43 @@ public sealed class BrainContextCapture
             }
         }
         catch (Exception) { return null; } // the capture never breaks a call
+    }
+
+    /// <summary>The turn among the lane's 8 newest whose key block is this very object (another tool round of it); null = new turn.</summary>
+    private static CapturedTurn? RecentTurnLocked(List<CapturedTurn> ring, string lane, LlmBlock key)
+    {
+        for (int i = ring.Count - 1, n = 0; i >= 0 && n < 8; i--, n++)
+            if (ring[i].Lane == lane && ReferenceEquals(ring[i].Key, key)) return ring[i];
+        return null;
+    }
+
+    /// <summary>Opens a turn (a sub-entry links to its brain turn) and evicts the ring's oldest past its capacity.</summary>
+    private CapturedTurn NewTurnLocked(List<CapturedTurn> ring, string lane, string purpose, LlmBlock? key, DateTimeOffset now, TurnInfo? info)
+    {
+        long? parent = lane != Lanes.Brain ? ParentLocked(info) : null;
+        var turn = new CapturedTurn(++_turns, lane, purpose, key, now, parent);
+        ring.Add(turn);
+        int cap = lane == Lanes.Background ? Math.Max(1, _o.BackgroundTurns) : Capacity;
+        while (ring.Count > cap)
+        {
+            _evicted.Add((ring[0].Id, _version + 1));
+            ring.RemoveAt(0);
+        }
+        while (_evicted.Count > 256) { _evictFloor = _evicted[0].Version; _evicted.RemoveAt(0); }
+        return turn;
+    }
+
+    /// <summary>The brain turn whose ambient turn info a sub-entry inherited, else the brain turn running now.</summary>
+    private long? ParentLocked(TurnInfo? info) =>
+        info != null && _turnOfInfo.TryGetValue(info, out var box) ? box.Value : _lastBrainCall?.Turn.Id;
+
+    private void AddCallLocked(CapturedTurn turn, CapturedCall call, string? body)
+    {
+        call.Turn = turn;
+        call.Round = turn.Calls.Count + turn.Dropped;
+        turn.Calls.Add(call);
+        if (turn.Calls.Count > Math.Max(2, _o.CallsPerTurn)) { turn.Calls.RemoveAt(1); turn.Dropped++; } // keep the first call (the turn's input)
+        if (body != null) turn.Body ??= body;
     }
 
     /// <summary>Called once the call returned (response), failed (error) or was cancelled. Never throws.</summary>
@@ -161,7 +176,7 @@ public sealed class BrainContextCapture
     /// <param name="body">The subhive filter: mark the turns and tool calls that targeted this body.</param>
     public BrainContextPage Page(long since, string? body = null)
     {
-        body = string.IsNullOrWhiteSpace(body) ? null : body.Trim();
+        body = BodyFilter(body);
         List<CapturedTurn> turns;
         List<long> evicted;
         long version;
@@ -181,13 +196,18 @@ public sealed class BrainContextCapture
         CtxWindow? window = null;
         if (last != null && (full || last.Version > since)) window = Window(last, body);
         return new BrainContextPage(Brain, version, _time.GetUtcNow(), Capacity, _o.Enabled, inFlight, summaries, window, evicted, body,
-            !_o.Enabled ? "capture off (Telemetry:Capture:Enabled)" : full && since > 0 ? "full" : null);
+            PageNote(full, since));
     }
+
+    private static string? BodyFilter(string? body) => string.IsNullOrWhiteSpace(body) ? null : body.Trim();
+
+    private string? PageNote(bool full, long since) =>
+        !_o.Enabled ? "capture off (Telemetry:Capture:Enabled)" : full && since > 0 ? "full" : null;
 
     /// <summary>One turn in full; null = not (or no longer) kept.</summary>
     public BrainTurnDetail? Turn(long id, string? body = null)
     {
-        body = string.IsNullOrWhiteSpace(body) ? null : body.Trim();
+        body = BodyFilter(body);
         CapturedTurn? turn;
         List<CapturedTurn> children;
         lock (_lock)
@@ -254,38 +274,65 @@ public sealed class BrainContextCapture
         DateTimeOffset? end;
         long version;
         lock (_lock) { calls = t.Calls.ToArray(); end = t.End; version = t.Version; }
-        long i = 0, o = 0, cr = 0, cw = 0, lat = 0;
-        decimal cost = 0;
-        var tools = new List<string>();
-        bool thinking = false, inFlight = false, targets = false;
-        string? error = null;
+        var sum = new TurnTotals();
         foreach (var c in calls)
         {
-            if (c.EndedAt == null) inFlight = true;
-            var u = c.Usage();
-            if (u != null) { i += u.InputTokens; o += u.OutputTokens; cr += u.CacheReadTokens; cw += u.CacheWriteTokens; }
-            cost += c.Record?.CostUsd ?? 0;
-            lat += c.LatencyMs();
-            if (c.Response is { } r)
-            {
-                foreach (var tu in r.ToolUses) if (!tools.Contains(tu.Name)) tools.Add(tu.Name);
-                thinking |= r.Content.Any(b => b is LlmThinking or LlmRedactedThinking) || !string.IsNullOrEmpty(r.Reasoning);
-            }
-            if (c.Error is { } e && e is not OperationCanceledException) error = e.GetType().Name + ": " + Redact(e.Message);
-            else if (c.Error is OperationCanceledException && error == null) error = "interrupted";
-            if (body != null && !targets) targets = CallTargets(c, body);
+            sum.Add(c);
+            sum.AddError(c.Error, Redact);
+            if (body != null && !sum.Targets) sum.Targets = CallTargets(c, body);
         }
         var last = calls[^1];
-        return new CtxTurnSummary(t.Id, t.Lane, t.Purpose, t.Start, inFlight ? null : end, inFlight, calls.Length + t.Dropped, ModelName(last),
-            TierName(last), last.Record?.Provider ?? last.Response?.Provider, i, o, cr, cw, Math.Round(cost, 6), lat, Preview(calls[0]), tools,
-            thinking, t.Parent, t.Body, targets, version, error, t.Dropped);
+        return new CtxTurnSummary(t.Id, t.Lane, t.Purpose, t.Start, sum.InFlight ? null : end, sum.InFlight, calls.Length + t.Dropped, ModelName(last),
+            TierName(last), last.Record?.Provider ?? last.Response?.Provider, sum.In, sum.Out, sum.CacheRead, sum.CacheWrite, Math.Round(sum.Cost, 6),
+            sum.Latency, Preview(calls[0]), sum.Tools, sum.Thinking, t.Parent, t.Body, sum.Targets, version, sum.Error, t.Dropped);
+    }
+
+    /// <summary>A turn summary's sums over its calls: tokens, cost, latency, tools used, thinking, in flight, the last error.</summary>
+    private sealed class TurnTotals
+    {
+        public long In, Out, CacheRead, CacheWrite, Latency;
+        public decimal Cost;
+        public readonly List<string> Tools = new();
+        public bool Thinking, InFlight, Targets;
+        public string? Error;
+
+        public void Add(CapturedCall c)
+        {
+            if (c.EndedAt == null) InFlight = true;
+            var u = c.Usage();
+            if (u != null) { In += u.InputTokens; Out += u.OutputTokens; CacheRead += u.CacheReadTokens; CacheWrite += u.CacheWriteTokens; }
+            Cost += c.Record?.CostUsd ?? 0;
+            Latency += c.LatencyMs();
+            if (c.Response is { } r) AddResponse(r);
+        }
+
+        private void AddResponse(LlmResponse r)
+        {
+            foreach (var tu in r.ToolUses) if (!Tools.Contains(tu.Name)) Tools.Add(tu.Name);
+            Thinking |= r.Content.Any(b => b is LlmThinking or LlmRedactedThinking) || !string.IsNullOrEmpty(r.Reasoning);
+        }
+
+        /// <summary>A failure names itself (redacted); a cancel is "interrupted" unless a failure was already seen.</summary>
+        public void AddError(Exception? error, Func<string?, string> redact)
+        {
+            if (error is { } e && e is not OperationCanceledException) Error = e.GetType().Name + ": " + redact(e.Message);
+            else if (error is OperationCanceledException && Error == null) Error = "interrupted";
+        }
     }
 
     private CtxWindow Window(CapturedCall c, string? filter)
     {
         long v;
         lock (_lock) v = c.Version;
-        if (Volatile.Read(ref _windowCache) is { } wc && wc.Seq == c.Seq && wc.Version == v && wc.Filter == filter) return wc.Window;
+        if (CachedWindow(c.Seq, v, filter) is { } cached) return cached;
+        return RenderWindow(c, v, filter);
+    }
+
+    private CtxWindow? CachedWindow(long seq, long version, string? filter) =>
+        Volatile.Read(ref _windowCache) is { } wc && wc.Seq == seq && wc.Version == version && wc.Filter == filter ? wc.Window : null;
+
+    private CtxWindow RenderWindow(CapturedCall c, long v, string? filter)
+    {
         Interlocked.Increment(ref _renders);
         double scale = ScaleOf(c);
         var system = SystemBlocks(c, scale);
@@ -338,37 +385,46 @@ public sealed class BrainContextCapture
     {
         var list = new List<CtxBlock>(content.Count + 1);
         if (!string.IsNullOrEmpty(reasoning)) list.Add(new CtxBlock("reasoning", Redact(reasoning), ReasoningLabel));
-        foreach (var b in content)
-            switch (b)
-            {
-                case LlmText t when t.Text.StartsWith("[journal]", StringComparison.Ordinal):
-                    list.Add(new CtxBlock("text", Redact(t.Text["[journal]".Length..].TrimStart('\n')), "journal"));
-                    break;
-                case LlmText t when turnInput:
-                    foreach (var (label, text) in Sections(t.Text)) list.Add(new CtxBlock("text", Redact(text), label));
-                    break;
-                case LlmText t:
-                    list.Add(new CtxBlock("text", Redact(t.Text)));
-                    break;
-                case LlmToolUse u:
-                    list.Add(new CtxBlock("tool_use", Name: u.Name, Id: u.Id, Input: Redact(Raw(u.Input)), Target: filter != null && UseTargets(u, filter)));
-                    break;
-                case LlmToolResult r:
-                    list.Add(new CtxBlock("tool_result", Redact(r.Content), r.Image is { } img ? $"+ image {img.Width}x{img.Height} (~{img.Tokens} tok)" : null,
-                        Id: r.ToolUseId, IsError: r.IsError, Bytes: r.Image?.Data.Length));
-                    break;
-                case LlmImageBlock ib:
-                    list.Add(new CtxBlock("image", Label: $"image {ib.Image.Width}x{ib.Image.Height} (~{ib.Image.Tokens} tok)", Bytes: ib.Image.Data.Length));
-                    break;
-                case LlmThinking th:
-                    list.Add(new CtxBlock("thinking", Redact(th.Thinking), th.Thinking.Length == 0 ? ThinkingOmittedLabel : ThinkingLabel,
-                        Bytes: th.Signature.Length));
-                    break;
-                case LlmRedactedThinking rt:
-                    list.Add(new CtxBlock("redacted_thinking", Label: RedactedThinkingLabel, Bytes: rt.Data.Length));
-                    break;
-            }
+        foreach (var b in content) AddBlock(list, b, filter, turnInput);
         return list;
+    }
+
+    private void AddBlock(List<CtxBlock> list, LlmBlock b, string? filter, bool turnInput)
+    {
+        switch (b)
+        {
+            case LlmText t:
+                AddText(list, t.Text, turnInput);
+                break;
+            case LlmToolUse u:
+                list.Add(new CtxBlock("tool_use", Name: u.Name, Id: u.Id, Input: Redact(Raw(u.Input)), Target: filter != null && UseTargets(u, filter)));
+                break;
+            case LlmToolResult r:
+                list.Add(new CtxBlock("tool_result", Redact(r.Content), r.Image is { } img ? $"+ image {img.Width}x{img.Height} (~{img.Tokens} tok)" : null,
+                    Id: r.ToolUseId, IsError: r.IsError, Bytes: r.Image?.Data.Length));
+                break;
+            case LlmImageBlock ib:
+                list.Add(new CtxBlock("image", Label: $"image {ib.Image.Width}x{ib.Image.Height} (~{ib.Image.Tokens} tok)", Bytes: ib.Image.Data.Length));
+                break;
+            case LlmThinking th:
+                list.Add(new CtxBlock("thinking", Redact(th.Thinking), th.Thinking.Length == 0 ? ThinkingOmittedLabel : ThinkingLabel,
+                    Bytes: th.Signature.Length));
+                break;
+            case LlmRedactedThinking rt:
+                list.Add(new CtxBlock("redacted_thinking", Label: RedactedThinkingLabel, Bytes: rt.Data.Length));
+                break;
+        }
+    }
+
+    /// <summary>A text block: the journal (its marker cut), a turn input's [tag] sections, or the plain text.</summary>
+    private void AddText(List<CtxBlock> list, string text, bool turnInput)
+    {
+        if (text.StartsWith("[journal]", StringComparison.Ordinal))
+            list.Add(new CtxBlock("text", Redact(text["[journal]".Length..].TrimStart('\n')), "journal"));
+        else if (turnInput)
+            foreach (var (label, section) in Sections(text)) list.Add(new CtxBlock("text", Redact(section), label));
+        else
+            list.Add(new CtxBlock("text", Redact(text)));
     }
 
     /// <summary>Tool results inherit their call's target flag (the viewer highlights the pair). Blocks are records: replaced in place.</summary>
@@ -464,18 +520,22 @@ public sealed class BrainContextCapture
     }
 
     /// <summary>Which lane a call belongs to (normalized purpose).</summary>
-    public static string LaneOf(string purpose, ModelTier tier) => purpose switch
+    public static string LaneOf(string purpose, ModelTier tier) =>
+        LaneOfPurpose.TryGetValue(purpose, out var lane) ? lane
+        : purpose.StartsWith("author", StringComparison.Ordinal) ? Lanes.Author
+        : tier == ModelTier.Worker ? Lanes.Worker
+        : Lanes.Background;
+
+    /// <summary>The purposes that name their lane outright (the rest: an author purpose, else the worker tier, else background).</summary>
+    private static readonly Dictionary<string, string> LaneOfPurpose = new(StringComparer.Ordinal)
     {
-        PromptPurpose.ChatTurn => Lanes.Brain,
-        "quick_ack" or "quick_reply" => Lanes.Reply,
-        PromptPurpose.Compaction => Lanes.Compaction,
-        PromptPurpose.DelegateRound => Lanes.Worker,
-        PromptPurpose.AskMemory => Lanes.Memory,
-        "perception" => Lanes.Perception,
-        "patch" or "blueprint" => Lanes.Author,
-        _ when purpose.StartsWith("author", StringComparison.Ordinal) => Lanes.Author,
-        _ when tier == ModelTier.Worker => Lanes.Worker,
-        _ => Lanes.Background,
+        [PromptPurpose.ChatTurn] = Lanes.Brain,
+        ["quick_ack"] = Lanes.Reply, ["quick_reply"] = Lanes.Reply,
+        [PromptPurpose.Compaction] = Lanes.Compaction,
+        [PromptPurpose.DelegateRound] = Lanes.Worker,
+        [PromptPurpose.AskMemory] = Lanes.Memory,
+        ["perception"] = Lanes.Perception,
+        ["patch"] = Lanes.Author, ["blueprint"] = Lanes.Author,
     };
 
     /// <summary>The newest user message with text and no tool results: the turn's input (-1 = none).</summary>

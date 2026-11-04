@@ -27,41 +27,57 @@ public sealed partial class ChatRouter
     {
         if (string.IsNullOrWhiteSpace(player) || IsSelf(player) || IsHive(player)) return GestureAnswer.None;
         var text = GestureReply(yes);
-        try
-        {
-            if (OwnedElsewhere?.Invoke(new ChatMessage(ChatKind.Public, player, text, text)) == true) return GestureAnswer.None;
-        }
-        catch (Exception) { }
-        Waiter? done = null;
-        var result = GestureAnswer.None;
-        lock (_lock)
-        {
-            if (_rejectUntil.TryGetValue(player, out var r) && r > Now) return GestureAnswer.None;
-            var w = _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player != null && x.Player.Equals(player, StringComparison.OrdinalIgnoreCase))
-                    ?? (atMe ? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player == null) : null);
-            if (w != null)
-            {
-                w.From = player;
-                w.First = Now;
-                w.Parts.Add(text);
-                _waiters.Remove(w);
-                done = w;
-                result = GestureAnswer.Waiter;
-            }
-            else if (_askedAt.TryGetValue(player, out var q) && Now - q <= TimeSpan.FromSeconds(Math.Max(0, _options.GestureAnswerSeconds)))
-            {
-                _askedAt.Remove(player);
-                _requestAt.Remove(player);
-                result = GestureAnswer.Question;
-            }
-            if (result != GestureAnswer.None)
-            {
-                _lastTalkedWith[player] = Now;
-                _lastToUs[player] = Now;
-            }
-        }
+        if (GestureOwnedElsewhere(player, text)) return GestureAnswer.None;
+        Waiter? done;
+        GestureAnswer result;
+        lock (_lock) result = AnswerGestureLocked(player, text, atMe, out done);
         if (done != null) Complete(done);
         return result;
+    }
+
+    /// <summary>Hive: a thread another bot owns keeps its replies (a failing hook owns nothing).</summary>
+    private bool GestureOwnedElsewhere(string player, string text)
+    {
+        try { return OwnedElsewhere?.Invoke(new ChatMessage(ChatKind.Public, player, text, text)) == true; }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>The gesture answers a waiter (handed back in <paramref name="done"/>), else our open question, else nothing.</summary>
+    private GestureAnswer AnswerGestureLocked(string player, string text, bool atMe, out Waiter? done)
+    {
+        done = null;
+        if (_rejectUntil.TryGetValue(player, out var r) && r > Now) return GestureAnswer.None;
+        var result = TakeGestureWaiterLocked(player, text, atMe, out done) ? GestureAnswer.Waiter
+            : CloseQuestionLocked(player) ? GestureAnswer.Question
+            : GestureAnswer.None;
+        if (result != GestureAnswer.None)
+        {
+            _lastTalkedWith[player] = Now;
+            _lastToUs[player] = Now;
+        }
+        return result;
+    }
+
+    /// <summary>Their own waiter, or an "anyone" one when the gesture was aimed at us, gets the gesture as its whole reply.</summary>
+    private bool TakeGestureWaiterLocked(string player, string text, bool atMe, out Waiter? done)
+    {
+        done = _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player != null && x.Player.Equals(player, StringComparison.OrdinalIgnoreCase))
+               ?? (atMe ? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player == null) : null);
+        if (done == null) return false;
+        done.From = player;
+        done.First = Now;
+        done.Parts.Add(text);
+        _waiters.Remove(done);
+        return true;
+    }
+
+    /// <summary>Our chat question to them within the answer window: closed (with its request), so a second nod is no second answer.</summary>
+    private bool CloseQuestionLocked(string player)
+    {
+        if (!(_askedAt.TryGetValue(player, out var q) && Now - q <= TimeSpan.FromSeconds(Math.Max(0, _options.GestureAnswerSeconds)))) return false;
+        _askedAt.Remove(player);
+        _requestAt.Remove(player);
+        return true;
     }
 
     /// <summary>The bot asked this player something within <see cref="ChatOptions.GestureAnswerSeconds"/> or an ask waits on them.</summary>

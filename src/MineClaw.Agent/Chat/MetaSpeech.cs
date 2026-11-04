@@ -358,23 +358,41 @@ public static partial class MetaSpeech
         var t = (line ?? "").Trim();
         if (t.Length == 0) return false;
         int coords = 0, names = 0;
-        foreach (var raw in Regex.Split(t, @"[\s|;]+"))
+        foreach (var part in DataParts(t))
         {
-            var tok = raw.Trim().Trim('(', ')', '[', ']', '{', '}').TrimEnd(',', '.', ':');
-            if (tok.Length == 0) continue;
-            // "4,6=cobblestone" / "4,64,6:water" / "stone@4,63,6" / "x3"
-            foreach (var part in Regex.Split(tok, @"[=:@]"))
+            switch (DataPartOf(part))
             {
-                if (part.Length == 0) continue;
-                if (CoordRx().IsMatch(part)) { coords++; continue; }
-                if (Regex.IsMatch(part, @"^(?:x?\d+|\d+x|-?\d+(?:\.\d+)?%?)$")) continue;
-                if (Regex.IsMatch(part, @"^\W+$")) continue;
-                if (!NameRx().IsMatch(part) || SpeechWords.Contains(part)) return false;
-                names++;
+                case DataPart.Coord: coords++; break;
+                case DataPart.Name: names++; break;
+                case DataPart.Speech: return false;
             }
         }
         // A bare coordinate is an answer ("14,64,-5"); coordinates WITH block/item names and nothing else are a dump.
         return coords > 0 && names > 0 && names <= coords * 4 + 2;
+    }
+
+    private enum DataPart { Skip, Coord, Name, Speech }
+
+    /// <summary>The line's tokens (brackets and trailing punctuation cut), each split at = : @ ("4,6=cobblestone", "stone@4,63,6").</summary>
+    private static IEnumerable<string> DataParts(string t)
+    {
+        foreach (var raw in Regex.Split(t, @"[\s|;]+"))
+        {
+            var tok = raw.Trim().Trim('(', ')', '[', ']', '{', '}').TrimEnd(',', '.', ':');
+            if (tok.Length == 0) continue;
+            foreach (var part in Regex.Split(tok, @"[=:@]")) yield return part;
+        }
+    }
+
+    /// <summary>A coordinate, a block/item name, a number/separator (skipped), or a word of speech.</summary>
+    private static DataPart DataPartOf(string part)
+    {
+        if (part.Length == 0) return DataPart.Skip;
+        if (CoordRx().IsMatch(part)) return DataPart.Coord;
+        if (Regex.IsMatch(part, @"^(?:x?\d+|\d+x|-?\d+(?:\.\d+)?%?)$")) return DataPart.Skip;
+        if (Regex.IsMatch(part, @"^\W+$")) return DataPart.Skip;
+        if (!NameRx().IsMatch(part) || SpeechWords.Contains(part)) return DataPart.Speech;
+        return DataPart.Name;
     }
 
     /// <summary>A short sentence that only narrates internal mechanics.</summary>

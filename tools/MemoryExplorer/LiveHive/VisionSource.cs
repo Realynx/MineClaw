@@ -103,22 +103,8 @@ public sealed class LocalSheetComposer(HiveWorldCache cache, Func<TextureAtlas?>
             var ps = spec.Views.Where(v => !v.Params.IsEmpty).GroupBy(v => v.Kind.ToLowerInvariant())
                 .ToDictionary(g => g.Key, g => g.First().Params, StringComparer.OrdinalIgnoreCase);
             float yaw = b.Yaw ?? 0, pitch = b.Pitch ?? 20;
-            EyeScene? eye = null;
             var ents = Entities(spec, radius);
-            if (names.Count == 0 || names.Contains("eye"))
-            {
-                // VisionHub.SheetRequest for a body's own see: from its eyes toward the focus (its own yaw, 60 down, at its feet).
-                double ex = b.X, ey = b.Y + 1.62, ez = b.Z;
-                double dx = f.X + 0.5 - ex, dy = f.Y + 0.5 - ey, dz = f.Z + 0.5 - ez;
-                bool self = Math.Abs(dx) < 1 && Math.Abs(dz) < 1;
-                float eyaw = self ? yaw : (float)(Math.Atan2(-dx, dz) * 180 / Math.PI);
-                float epitch = self ? 60 : (float)(-Math.Atan2(dy, Math.Sqrt(dx * dx + dz * dz)) * 180 / Math.PI);
-                eye = new EyeScene
-                {
-                    World = _vox, Atlas = atlas(), EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = eyaw, Pitch = epitch, Time = cache.TimeNow(b.Dim) ?? 6000, Nether = b.Dim == -1,
-                    Entities = ents, Target = f, Viewer = b.Key, Weather = cache.WeatherIn(b.Dim),
-                };
-            }
+            var eye = names.Count == 0 || names.Contains("eye") ? EyeFor(b, f, yaw, ents) : null;
             var feet = ((int)Math.Floor(b.X), (int)Math.Floor(b.Y), (int)Math.Floor(b.Z));
             var img = _sheet.Render(new ContactSheetRequest
             {
@@ -140,17 +126,46 @@ public sealed class LocalSheetComposer(HiveWorldCache cache, Func<TextureAtlas?>
         return Math.Abs(Math.Cos(rad)) >= Math.Abs(Math.Sin(rad)) ? SideAxis.LookEast : SideAxis.LookNorth;
     }
 
+    /// <summary>VisionHub.SheetRequest for a body's own see: from its eyes toward the focus (its own yaw, 60 down, at its feet).</summary>
+    private EyeScene EyeFor(BotDto b, (int X, int Y, int Z) f, float yaw, List<VisionEntity> ents)
+    {
+        double ex = b.X, ey = b.Y + 1.62, ez = b.Z;
+        double dx = f.X + 0.5 - ex, dy = f.Y + 0.5 - ey, dz = f.Z + 0.5 - ez;
+        bool self = Math.Abs(dx) < 1 && Math.Abs(dz) < 1;
+        float eyaw = self ? yaw : (float)(Math.Atan2(-dx, dz) * 180 / Math.PI);
+        float epitch = self ? 60 : (float)(-Math.Atan2(dy, Math.Sqrt(dx * dx + dz * dz)) * 180 / Math.PI);
+        return new EyeScene
+        {
+            World = _vox, Atlas = atlas(), EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = eyaw, Pitch = epitch, Time = cache.TimeNow(b.Dim) ?? 6000, Nether = b.Dim == -1,
+            Entities = ents, Target = f, Viewer = b.Key, Weather = cache.WeatherIn(b.Dim),
+        };
+    }
+
     private List<VisionEntity> Entities(ComposeSpec spec, int radius)
     {
         var list = new List<VisionEntity>();
-        var b = spec.Body;
         double reach = radius + 6;
-        bool Near(double x, double z) => Math.Abs(x - spec.Focus.X) <= reach && Math.Abs(z - spec.Focus.Z) <= reach;
-        foreach (var o in bots())
-            if (o.Dim == b.Dim && o.Name != b.Name && Near(o.X, o.Z)) list.Add(new VisionEntity("hive", o.Key, o.X, o.Y, o.Z) { Yaw = o.Yaw });
-        foreach (var e in entities())
-            if (e.Dim == b.Dim && e.Kind is "player" or "mob" or "item" && Near(e.X, e.Z) && !string.Equals(e.Name, b.Name, StringComparison.OrdinalIgnoreCase))
-                list.Add(Gpu.FrameScene.Vision(e));
+        AddBots(list, spec, reach);
+        AddEntities(list, spec, reach);
         return list;
+    }
+
+    private static bool Near(ComposeSpec spec, double reach, double x, double z) => Math.Abs(x - spec.Focus.X) <= reach && Math.Abs(z - spec.Focus.Z) <= reach;
+
+    /// <summary>The other bots near the focus in the body's dimension.</summary>
+    private void AddBots(List<VisionEntity> list, ComposeSpec spec, double reach)
+    {
+        var b = spec.Body;
+        foreach (var o in bots())
+            if (o.Dim == b.Dim && o.Name != b.Name && Near(spec, reach, o.X, o.Z)) list.Add(new VisionEntity("hive", o.Key, o.X, o.Y, o.Z) { Yaw = o.Yaw });
+    }
+
+    /// <summary>Players, mobs and drops near the focus in the body's dimension (not the body itself).</summary>
+    private void AddEntities(List<VisionEntity> list, ComposeSpec spec, double reach)
+    {
+        var b = spec.Body;
+        foreach (var e in entities())
+            if (e.Dim == b.Dim && e.Kind is "player" or "mob" or "item" && Near(spec, reach, e.X, e.Z) && !string.Equals(e.Name, b.Name, StringComparison.OrdinalIgnoreCase))
+                list.Add(Gpu.FrameScene.Vision(e));
     }
 }

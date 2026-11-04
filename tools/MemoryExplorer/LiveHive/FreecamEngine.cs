@@ -140,17 +140,29 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         finally { if (hiRes) try { timeEndPeriod(1); } catch (Exception) { } }
     }
 
+    /// <summary>The render loop's state between iterations (one per loop; nothing allocated per frame).</summary>
+    private sealed class LoopState
+    {
+        public readonly Stopwatch Clock = Stopwatch.StartNew();
+        public double Last, LastDraw = -1, FpsT;
+        public int Frames;
+        public long CamRev = -1, CacheVer = -1, DataVer = -1;
+        public int LastW, LastH;
+        public bool WasMoving;
+
+        public LoopState()
+        {
+            Last = Clock.Elapsed.TotalSeconds;
+            FpsT = Last;
+        }
+    }
+
     private void LoopCore()
     {
-        var clock = Stopwatch.StartNew();
-        double last = clock.Elapsed.TotalSeconds, lastDraw = -1, fpsT = last;
-        int frames = 0;
-        long camRev = -1, cacheVer = -1, dataVer = -1;
-        int lastW = 0, lastH = 0;
-        bool wasMoving = false;
+        var s = new LoopState();
         while (_run)
         {
-            try { Iteration(); }
+            try { Iteration(s); }
             catch (Exception ex)
             {
                 // Never let the render thread die (a frozen camera): log once, breathe, continue.
@@ -158,47 +170,76 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
                 Thread.Sleep(20);
             }
         }
+    }
 
-        void Iteration()
-        {
-            double now = clock.Elapsed.TotalSeconds, dt = Math.Min(0.1, now - last);
-            last = now;
-            if (!_visible) { Thread.Sleep(50); return; }
-            int k = _keys;
-            double fwd = ((k & 1) != 0 ? 1 : 0) - ((k & 2) != 0 ? 1 : 0), strafe = ((k & 8) != 0 ? 1 : 0) - ((k & 4) != 0 ? 1 : 0);
-            double up = ((k & 16) != 0 ? 1 : 0) - ((k & 32) != 0 ? 1 : 0);
-            bool moved = Camera.Move(fwd, strafe, up, dt, (k & 64) != 0);
-            long rev = Camera.Revision;
-            if (!moved && rev != _lastLookRev) { _lastLookRev = rev; _lookAt = clock.ElapsedMilliseconds; }
-            bool moving = moved || clock.ElapsedMilliseconds - _lookAt < 160;
-            double scale = moving ? MovingScale : 1;
-            int w = (int)(_tw * scale), h = (int)(_th * scale);
-            double px = (double)w * h;
-            if (px > MaxPixels) { double f = Math.Sqrt(MaxPixels / px); w = (int)(w * f); h = (int)(h * f); }
-            w = Math.Max(64, w); h = Math.Max(48, h);
-            bool dirty = rev != camRev || _cache.Version != cacheVer || Interlocked.Read(ref DataVersion) != dataVer || w != lastW || h != lastH
-                || (wasMoving && !moving) || now - lastDraw > (_cache.WeatherIn(Camera.Pose.Dim).Wet ? 0.1 : 0.5); // falling rain animates
-            if (!dirty) { Thread.Sleep(1); return; } // ~1 ms: a look or key shows up on the next frame, not 15 ms later
-            camRev = rev; cacheVer = _cache.Version; dataVer = Interlocked.Read(ref DataVersion); lastW = w; lastH = h; wasMoving = moving;
-            double t0 = clock.Elapsed.TotalMilliseconds;
-            try { Draw(w, h); }
-            catch (Exception) { Thread.Sleep(50); return; }
-            lastDraw = clock.Elapsed.TotalSeconds;
-            FrameMs = clock.Elapsed.TotalMilliseconds - t0;
-            FreecamStats.Shared.FrameMs.Add(FrameMs);
-            frames++;
-            if (now - fpsT >= 1) { Fps = frames / (now - fpsT); frames = 0; fpsT = now; }
-            SleepUntil(clock, t0 + 1000.0 / Math.Max(1, MaxFps));
-        }
+    /// <summary>One turn of the render loop: move the camera by the held keys, then draw if anything changed (at most <see cref="MaxFps"/>).</summary>
+    private void Iteration(LoopState s)
+    {
+        double now = s.Clock.Elapsed.TotalSeconds, dt = Math.Min(0.1, now - s.Last);
+        s.Last = now;
+        if (!_visible) { Thread.Sleep(50); return; }
+        bool moving = MoveCamera(s.Clock, dt, out long rev);
+        double scale = moving ? MovingScale : 1;
+        var (w, h) = FrameFit.Fit((int)(_tw * scale), (int)(_th * scale), MaxPixels);
+        if (!IsDirty(s, rev, w, h, moving, now)) { Thread.Sleep(1); return; } // ~1 ms: a look or key shows up on the next frame, not 15 ms later
+        s.CamRev = rev; s.CacheVer = _cache.Version; s.DataVer = Interlocked.Read(ref DataVersion); s.LastW = w; s.LastH = h; s.WasMoving = moving;
+        double t0 = s.Clock.Elapsed.TotalMilliseconds;
+        try { Draw(w, h); }
+        catch (Exception) { Thread.Sleep(50); return; }
+        s.LastDraw = s.Clock.Elapsed.TotalSeconds;
+        FrameMs = s.Clock.Elapsed.TotalMilliseconds - t0;
+        FreecamStats.Shared.FrameMs.Add(FrameMs);
+        CountFrame(s, now);
+        SleepUntil(s.Clock, t0 + 1000.0 / Math.Max(1, MaxFps));
+    }
+
+    /// <summary>+1 / −1 / 0 along one axis from its two key bits.</summary>
+    private static double KeyAxis(int keys, int plus, int minus) => ((keys & plus) != 0 ? 1 : 0) - ((keys & minus) != 0 ? 1 : 0);
+
+    /// <summary>Integrates the held keys; true while moving or just after a look (frames render at the moving scale then).</summary>
+    private bool MoveCamera(Stopwatch clock, double dt, out long rev)
+    {
+        int k = _keys;
+        bool moved = Camera.Move(KeyAxis(k, 1, 2), KeyAxis(k, 8, 4), KeyAxis(k, 16, 32), dt, (k & 64) != 0);
+        rev = Camera.Revision;
+        if (!moved && rev != _lastLookRev) { _lastLookRev = rev; _lookAt = clock.ElapsedMilliseconds; }
+        return moved || clock.ElapsedMilliseconds - _lookAt < 160;
+    }
+
+    /// <summary>A frame is due when the camera, world, data or size changed, motion stopped, or the redraw interval passed
+    /// (0.1 s in rain: falling rain animates).</summary>
+    private bool IsDirty(LoopState s, long rev, int w, int h, bool moving, double now) =>
+        rev != s.CamRev || _cache.Version != s.CacheVer || Interlocked.Read(ref DataVersion) != s.DataVer || w != s.LastW || h != s.LastH
+        || (s.WasMoving && !moving) || now - s.LastDraw > (_cache.WeatherIn(Camera.Pose.Dim).Wet ? 0.1 : 0.5);
+
+    private void CountFrame(LoopState s, double now)
+    {
+        s.Frames++;
+        if (now - s.FpsT >= 1) { Fps = s.Frames / (now - s.FpsT); s.Frames = 0; s.FpsT = now; }
+    }
+
+    /// <summary>The raycaster for a frame size (a few sizes kept: moving and still).</summary>
+    private EyeRenderer EyeFor(int w, int h)
+    {
+        if (_eyes.TryGetValue((w, h), out var eye)) return eye;
+        if (_eyes.Count > 4) _eyes.Clear();
+        _eyes[(w, h)] = eye = new EyeRenderer { Width = w, Height = h, MaxDistance = Math.Clamp(MaxDistance, 16, 128), MaxThreads = Threads };
+        return eye;
+    }
+
+    /// <summary>The bots, players, mobs and drops drawn as models (only with the Bots overlay on).</summary>
+    private static List<VisionEntity> VisibleEntities(CamPose pose, IReadOnlyList<BotDto> bots, IReadOnlyList<EntityDto> ents, Overlay flags)
+    {
+        var visible = new List<VisionEntity>();
+        if (!flags.HasFlag(Overlay.Bots)) return visible;
+        foreach (var b in bots) if (b.Dim == pose.Dim) visible.Add(new VisionEntity("hive", b.Key, b.X, b.Y, b.Z) { Yaw = b.Yaw });
+        foreach (var e in ents) if (e.Dim == pose.Dim && e.Kind is "player" or "mob" or "item") visible.Add(Gpu.FrameScene.Vision(e));
+        return visible;
     }
 
     private void Draw(int w, int h)
     {
-        if (!_eyes.TryGetValue((w, h), out var eye))
-        {
-            if (_eyes.Count > 4) _eyes.Clear();
-            _eyes[(w, h)] = eye = new EyeRenderer { Width = w, Height = h, MaxDistance = Math.Clamp(MaxDistance, 16, 128), MaxThreads = Threads };
-        }
+        var eye = EyeFor(w, h);
         long alloc0 = GC.GetAllocatedBytesForCurrentThread();
         double inputMs = Camera.TakeInputStamp();
         var pose = Camera.Pose;
@@ -207,12 +248,7 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         var bots = Bots();
         var ents = Entities();
         var flags = Flags;
-        var visible = new List<VisionEntity>();
-        if (flags.HasFlag(Overlay.Bots))
-        {
-            foreach (var b in bots) if (b.Dim == pose.Dim) visible.Add(new VisionEntity("hive", b.Key, b.X, b.Y, b.Z) { Yaw = b.Yaw });
-            foreach (var e in ents) if (e.Dim == pose.Dim && e.Kind is "player" or "mob" or "item") visible.Add(Gpu.FrameScene.Vision(e));
-        }
+        var visible = VisibleEntities(pose, bots, ents, flags);
         var scene = new EyeScene
         {
             World = _vox, Atlas = _atlas(), EyeX = pose.X, EyeY = pose.Y, EyeZ = pose.Z, Yaw = pose.Yaw, Pitch = pose.Pitch, Time = _cache.TimeNow(pose.Dim) ?? 6000,

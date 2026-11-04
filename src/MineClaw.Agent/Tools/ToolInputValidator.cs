@@ -37,19 +37,24 @@ internal sealed class ToolInputValidator
         return _items != null && value.ValueKind == JsonValueKind.Array ? ItemsError(value, path) : null;
     }
 
-    private bool Matches(JsonElement value) =>
-        _type switch
-        {
-            null => true,
-            "object" => value.ValueKind == JsonValueKind.Object,
-            "array" => value.ValueKind == JsonValueKind.Array,
-            "string" => value.ValueKind == JsonValueKind.String,
-            "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
-            "number" => value.ValueKind == JsonValueKind.Number,
-            "integer" => value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var n) && decimal.Truncate(n) == n,
-            "null" => value.ValueKind == JsonValueKind.Null,
-            _ => throw new InvalidOperationException("unsupported tool schema type " + _type),
-        };
+    private bool Matches(JsonElement value)
+    {
+        if (_type == null) return true;
+        if (!TypeChecks.TryGetValue(_type, out var check)) throw new InvalidOperationException("unsupported tool schema type " + _type);
+        return check(value);
+    }
+
+    /// <summary>The JSON schema types a tool input may declare, each with its check.</summary>
+    private static readonly Dictionary<string, Func<JsonElement, bool>> TypeChecks = new(StringComparer.Ordinal)
+    {
+        ["object"] = v => v.ValueKind == JsonValueKind.Object,
+        ["array"] = v => v.ValueKind == JsonValueKind.Array,
+        ["string"] = v => v.ValueKind == JsonValueKind.String,
+        ["boolean"] = v => v.ValueKind is JsonValueKind.True or JsonValueKind.False,
+        ["number"] = v => v.ValueKind == JsonValueKind.Number,
+        ["integer"] = v => v.ValueKind == JsonValueKind.Number && v.TryGetDecimal(out var n) && decimal.Truncate(n) == n,
+        ["null"] = v => v.ValueKind == JsonValueKind.Null,
+    };
 
     /// <summary>A missing required property, then the first property that fails its schema (or isn't allowed).</summary>
     private string? ObjectError(JsonElement value, string path)

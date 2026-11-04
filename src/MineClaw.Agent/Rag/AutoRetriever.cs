@@ -67,21 +67,33 @@ public sealed class AutoRetriever
             lock (_lock) return _injectedAt.TryGetValue(id, out var seq) && seq >= oldest && seq < next;
         }
 
-        var hits = await _index.SearchAsync(new RagQuery
-        {
-            Text = text,
-            Near = position is { } p && _o.AutoNearRadius > 0 ? (p.X, p.Y, p.Z) : null,
-            Radius = _o.AutoNearRadius,
-            NearKinds = SpatialKinds,
-            // Spatial memories of the other dimension never ride along (their coordinates would mislead); text-only docs pass.
-            Dimension = _index.CurrentDim,
-            Limit = _o.AutoTopK,
-            Strict = true,
-            IgnoreWords = ignoreWords,
-            Exclude = Excluded,
-        }, ct).ConfigureAwait(false);
+        var hits = await _index.SearchAsync(Query(text, position, ignoreWords, Excluded), ct).ConfigureAwait(false);
         if (hits.Count == 0) return "";
 
+        var (block, used) = MemoryBlock(hits);
+        if (used.Count == 0) return "";
+        MemoryAccess.Note(this, "rag", hits.Where(h => used.Contains(h.Id))); // the viewer's memory map (observer only)
+        NoteInjected(used, oldest, next);
+        return block;
+    }
+
+    private RagQuery Query(string text, BlockPos? position, IEnumerable<string>? ignoreWords, Func<long, bool> excluded) => new()
+    {
+        Text = text,
+        Near = position is { } p && _o.AutoNearRadius > 0 ? (p.X, p.Y, p.Z) : null,
+        Radius = _o.AutoNearRadius,
+        NearKinds = SpatialKinds,
+        // Spatial memories of the other dimension never ride along (their coordinates would mislead); text-only docs pass.
+        Dimension = _index.CurrentDim,
+        Limit = _o.AutoTopK,
+        Strict = true,
+        IgnoreWords = ignoreWords,
+        Exclude = excluded,
+    };
+
+    /// <summary>"[memory]" plus the hits' lines that fit the size cap, and which hits made it in.</summary>
+    private (string Block, List<long> Used) MemoryBlock(IReadOnlyList<RagHit> hits)
+    {
         var sb = new StringBuilder("[memory]");
         var used = new List<long>();
         foreach (var h in hits)
@@ -91,14 +103,17 @@ public sealed class AutoRetriever
             sb.Append('\n').Append(line);
             used.Add(h.Id);
         }
-        if (used.Count == 0) return "";
-        MemoryAccess.Note(this, "rag", hits.Where(h => used.Contains(h.Id))); // the viewer's memory map (observer only)
+        return (sb.ToString(), used);
+    }
+
+    /// <summary>Remembers when each doc rode along (not re-injected while that turn is in the window); old marks are pruned.</summary>
+    private void NoteInjected(List<long> used, long oldest, long next)
+    {
         lock (_lock)
         {
             foreach (var id in used) _injectedAt[id] = next;
             if (_injectedAt.Count > 2000)
                 foreach (var k in _injectedAt.Where(kv => kv.Value < oldest).Select(kv => kv.Key).ToList()) _injectedAt.Remove(k);
         }
-        return sb.ToString();
     }
 }

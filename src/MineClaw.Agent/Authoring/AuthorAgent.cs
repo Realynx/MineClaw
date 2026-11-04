@@ -64,68 +64,96 @@ public sealed class AuthorAgent(ILlmClient llm, LlmOptions options, UsageTracker
     {
         var model = Model;
         if (Refusal() is { } no) return new AuthorOutcome(false, null, 0, LlmUsage.Zero, 0, model, no);
-        decimal cap = options.AuthorMaxUsd > 0 ? options.AuthorMaxUsd : 3.00m;
-        if (job.MaxUsd is { } jobCap && jobCap > 0) cap = Math.Min(cap, jobCap);
-        var prices = usage?.Prices ?? new PriceTable();
-        var conversation = new List<LlmMessage> { LlmMessage.User(job.Brief) };
-        var total = LlmUsage.Zero;
-        decimal spent = 0;
-        string? blocker = null;
-        int versions = 0, maxVersions = Math.Max(1, options.AuthorMaxVersions);
+        var run = new AuthorRun(job, model, JobCap(job), usage?.Prices ?? new PriceTable());
+        int maxVersions = Math.Max(1, options.AuthorMaxVersions);
         for (int i = 0; i < maxVersions; i++)
         {
-            LlmResponse resp;
-            try
-            {
-                resp = await llm.CompleteAsync(new LlmRequest
-                {
-                    Tier = ModelTier.Main, Model = model, MaxTokens = options.AuthorMaxTokensClamped, Purpose = "author-" + job.Kind,
-                    System = [new LlmSystemBlock(job.System, Cache: true)], Messages = conversation, CacheHistory = true,
-                    Effort = string.IsNullOrWhiteSpace(options.AuthorEffort) ? null : options.AuthorEffort.Trim(),
-                    MaxUsd = cap - spent, CostOf = u => prices.Cost(model, u),
-                }, ct).ConfigureAwait(false);
-            }
-            catch (LlmCostCapException cc)
-            {
-                total = total.Add(cc.PartialUsage);
-                spent += Book(cc.Model, cc.PartialUsage, prices);
-                log?.LogWarning("author {Kind}: call aborted at ${Usd:0.00} (job cap ${Cap:0.00}, {Out} output tokens)", job.Kind, spent, cap, cc.PartialUsage.OutputTokens);
-                blocker = $"cost cap ${cap:0.00} reached";
-                break;
-            }
-            catch (LlmInterruptedException ie) when (ie.PartialUsage is { } pu)
-            {
-                total = total.Add(pu);
-                spent += Book(ie.Model, pu, prices);
-                throw;
-            }
-            versions++;
-            total = total.Add(resp.Usage);
-            spent += Book(resp.Model, resp.Usage, prices);
-
-            var text = resp.Text;
-            var artifact = job.Extract(text);
-            AuthorCheck check = artifact == null
-                ? AuthorCheck.Fail(resp.StopReason == StopReasons.MaxTokens
-                    ? "Your reply hit the output limit before the artifact. Answer at once with ONLY the artifact in one ``` block."
-                    : "Reply with ONLY the artifact in one ``` block.")
-                : SafeCheck(job, artifact);
+            var resp = await CallAsync(run, ct).ConfigureAwait(false);
+            if (resp == null) break; // the call hit the cost cap
+            var (artifact, check) = Draft(run, resp);
             if (check.Ok)
             {
-                log?.LogInformation("author {Kind}: ok after {Versions} version(s), {Out} output tokens, ${Usd:0.00}", job.Kind, versions, total.OutputTokens, spent);
-                return new AuthorOutcome(true, artifact, versions, total, spent, model, null);
+                log?.LogInformation("author {Kind}: ok after {Versions} version(s), {Out} output tokens, ${Usd:0.00}", job.Kind, run.Versions, run.Total.OutputTokens, run.Spent);
+                return new AuthorOutcome(true, artifact, run.Versions, run.Total, run.Spent, model, null);
             }
-            blocker = artifact == null ? (resp.StopReason == StopReasons.MaxTokens ? "cut off at the output limit" : "no artifact in the reply")
-                : "checks still failing: " + FirstLine(check.Feedback);
-            if (spent >= cap) { blocker = $"cost cap ${cap:0.00} reached"; break; }
+            run.Blocker = BlockerOf(artifact, resp.StopReason, check);
+            if (run.Spent >= run.Cap) { run.Blocker = $"cost cap ${run.Cap:0.00} reached"; break; }
             // The draft and its errors stay in THIS context only (the brain never sees them).
-            if (text.Length > 0) conversation.Add(LlmMessage.Assistant(text));
-            else conversation.Add(LlmMessage.Assistant("(no reply)"));
-            conversation.Add(LlmMessage.User(check.Feedback + "\nAnswer with the WHOLE corrected artifact in one ``` block, nothing else."));
+            run.Conversation.Add(LlmMessage.Assistant(resp.Text.Length > 0 ? resp.Text : "(no reply)"));
+            run.Conversation.Add(LlmMessage.User(check.Feedback + "\nAnswer with the WHOLE corrected artifact in one ``` block, nothing else."));
         }
-        log?.LogInformation("author {Kind}: gave up after {Versions} version(s): {Blocker} (${Usd:0.00})", job.Kind, versions, blocker, spent);
-        return new AuthorOutcome(false, null, versions, total, spent, model, blocker ?? "no passing version");
+        log?.LogInformation("author {Kind}: gave up after {Versions} version(s): {Blocker} (${Usd:0.00})", job.Kind, run.Versions, run.Blocker, run.Spent);
+        return new AuthorOutcome(false, null, run.Versions, run.Total, run.Spent, model, run.Blocker ?? "no passing version");
     }
+
+    /// <summary>One job's running state: its own conversation (drafts and feedback never leave it), usage, spend, last blocker.</summary>
+    private sealed class AuthorRun(AuthorJob job, string model, decimal cap, PriceTable prices)
+    {
+        public AuthorJob Job => job;
+        public string Model => model;
+        public decimal Cap => cap;
+        public PriceTable Prices => prices;
+        public List<LlmMessage> Conversation { get; } = [LlmMessage.User(job.Brief)];
+        public LlmUsage Total { get; set; } = LlmUsage.Zero;
+        public decimal Spent { get; set; }
+        public string? Blocker { get; set; }
+        public int Versions { get; set; }
+    }
+
+    /// <summary>The job's spend cap: the configured one (default $3), tightened by the job's own.</summary>
+    private decimal JobCap(AuthorJob job)
+    {
+        decimal cap = options.AuthorMaxUsd > 0 ? options.AuthorMaxUsd : 3.00m;
+        if (job.MaxUsd is { } jobCap && jobCap > 0) cap = Math.Min(cap, jobCap);
+        return cap;
+    }
+
+    private LlmRequest Request(AuthorRun run) => new()
+    {
+        Tier = ModelTier.Main, Model = run.Model, MaxTokens = options.AuthorMaxTokensClamped, Purpose = "author-" + run.Job.Kind,
+        System = [new LlmSystemBlock(run.Job.System, Cache: true)], Messages = run.Conversation, CacheHistory = true,
+        Effort = string.IsNullOrWhiteSpace(options.AuthorEffort) ? null : options.AuthorEffort.Trim(),
+        MaxUsd = run.Cap - run.Spent, CostOf = u => run.Prices.Cost(run.Model, u),
+    };
+
+    /// <summary>One author call; null when it hit the cost cap (its partial usage booked). An interrupt books and rethrows.</summary>
+    private async Task<LlmResponse?> CallAsync(AuthorRun run, CancellationToken ct)
+    {
+        try { return await llm.CompleteAsync(Request(run), ct).ConfigureAwait(false); }
+        catch (LlmCostCapException cc)
+        {
+            run.Total = run.Total.Add(cc.PartialUsage);
+            run.Spent += Book(cc.Model, cc.PartialUsage, run.Prices);
+            log?.LogWarning("author {Kind}: call aborted at ${Usd:0.00} (job cap ${Cap:0.00}, {Out} output tokens)", run.Job.Kind, run.Spent, run.Cap, cc.PartialUsage.OutputTokens);
+            run.Blocker = $"cost cap ${run.Cap:0.00} reached";
+            return null;
+        }
+        catch (LlmInterruptedException ie) when (ie.PartialUsage is { } pu)
+        {
+            run.Total = run.Total.Add(pu);
+            run.Spent += Book(ie.Model, pu, run.Prices);
+            throw;
+        }
+    }
+
+    /// <summary>Books a version and checks its artifact (none: ask for the block alone, sooner when it was cut off).</summary>
+    private (string? Artifact, AuthorCheck Check) Draft(AuthorRun run, LlmResponse resp)
+    {
+        run.Versions++;
+        run.Total = run.Total.Add(resp.Usage);
+        run.Spent += Book(resp.Model, resp.Usage, run.Prices);
+        var artifact = run.Job.Extract(resp.Text);
+        var check = artifact == null
+            ? AuthorCheck.Fail(resp.StopReason == StopReasons.MaxTokens
+                ? "Your reply hit the output limit before the artifact. Answer at once with ONLY the artifact in one ``` block."
+                : "Reply with ONLY the artifact in one ``` block.")
+            : SafeCheck(run.Job, artifact);
+        return (artifact, check);
+    }
+
+    private static string BlockerOf(string? artifact, string? stopReason, AuthorCheck check) =>
+        artifact == null ? (stopReason == StopReasons.MaxTokens ? "cut off at the output limit" : "no artifact in the reply")
+            : "checks still failing: " + FirstLine(check.Feedback);
 
     private static AuthorCheck SafeCheck(AuthorJob job, string artifact)
     {

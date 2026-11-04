@@ -347,24 +347,35 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
 
     private void RelayoutCore()
     {
-        int n = SelectedLayout.Key switch { "1" => 1, "2" => 2, "4" => 4, "6" => 6, _ => 0 };
-        (GridColumns, GridRows) = n switch { 1 => (1, 1), 2 => (2, 1), 4 => (2, 2), 6 => (3, 2), _ => (1, 1) };
+        int n = GridSize(SelectedLayout.Key);
+        (GridColumns, GridRows) = GridShape(n);
         GridTiles.Clear();
         StripTiles.Clear();
-        if (IsFocusLayout)
-        {
-            if (FocusedTile == null || !AllTiles.Contains(FocusedTile)) FocusedTile = AllTiles.FirstOrDefault();
-            foreach (var t in AllTiles) { t.IsFocused = t == FocusedTile; if (t != FocusedTile) StripTiles.Add(t); }
-            HiddenTiles = "";
-        }
-        else
-        {
-            foreach (var t in AllTiles.Take(n)) { GridTiles.Add(t); t.IsFocused = false; }
-            if (n > 0 && AllTiles.Count == 1) (GridColumns, GridRows) = (1, 1);
-            else if (n >= 4 && AllTiles.Count <= 2) (GridColumns, GridRows) = (AllTiles.Count, 1);
-            HiddenTiles = AllTiles.Count > n ? $"{AllTiles.Count - n} more online (pick a bigger grid or focus + strip)" : "";
-        }
+        if (IsFocusLayout) LayoutFocus();
+        else LayoutGrid(n);
         UpdateWants();
+    }
+
+    /// <summary>Tiles a grid layout shows (0 = the focus layout).</summary>
+    private static int GridSize(string layout) => layout switch { "1" => 1, "2" => 2, "4" => 4, "6" => 6, _ => 0 };
+
+    private static (int Columns, int Rows) GridShape(int n) => n switch { 1 => (1, 1), 2 => (2, 1), 4 => (2, 2), 6 => (3, 2), _ => (1, 1) };
+
+    /// <summary>Focus + strip: the focused tile (the first when none or it left), every other one in the strip.</summary>
+    private void LayoutFocus()
+    {
+        if (FocusedTile == null || !AllTiles.Contains(FocusedTile)) FocusedTile = AllTiles.FirstOrDefault();
+        foreach (var t in AllTiles) { t.IsFocused = t == FocusedTile; if (t != FocusedTile) StripTiles.Add(t); }
+        HiddenTiles = "";
+    }
+
+    /// <summary>A grid of the first <paramref name="n"/> tiles (shrunk to fit one or two bots); the rest are counted as hidden.</summary>
+    private void LayoutGrid(int n)
+    {
+        foreach (var t in AllTiles.Take(n)) { GridTiles.Add(t); t.IsFocused = false; }
+        if (n > 0 && AllTiles.Count == 1) (GridColumns, GridRows) = (1, 1);
+        else if (n >= 4 && AllTiles.Count <= 2) (GridColumns, GridRows) = (AllTiles.Count, 1);
+        HiddenTiles = AllTiles.Count > n ? $"{AllTiles.Count - n} more online (pick a bigger grid or focus + strip)" : "";
     }
 
     private IEnumerable<BotTileViewModel> ShownTiles() =>
@@ -616,23 +627,12 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     private void RefreshStats()
     {
         MaybePollTree();
-        if (_api is { } api)
-        {
-            double ms = api.LatencyMs;
-            LatencyText = ms < 0 ? "" : string.Create(CultureInfo.InvariantCulture, $"{ms:0} ms");
-        }
+        if (_api is { } api) LatencyText = LatencyOf(api.LatencyMs);
         var p = _camera.Pose;
-        FreecamStats = UseGpuFreecam
-            ? string.Create(CultureInfo.InvariantCulture,
-                $"GPU · {Gpu.Fps:0} fps · {Gpu.Scene.Width}x{Gpu.Scene.Height} · {Stats.SectionsLive} sections · {Stats.PendingMeshes} queued · {Gpu.GlInfo}")
-            : string.Create(CultureInfo.InvariantCulture,
-                $"CPU · {Freecam.Fps:0} fps · raster {Freecam.RasterMs:0.0} ms · {Freecam.LastW}x{Freecam.LastH} on {Freecam.Threads} threads");
+        FreecamStats = UseGpuFreecam ? GpuStatsText() : CpuStatsText();
         CacheStats = string.Create(CultureInfo.InvariantCulture,
             $"{_cache.Count} columns cached ({_cache.CountIn(p.Dim)} here) · {(_api?.BytesIn ?? 0) / 1024.0 / 1024.0:0.0} MB received");
-        OverlayNotes = _sync?.Overlays(p.Dim) is { } ov
-            ? $"{ov.Claims.Count} claims · {ov.Places.Count} places · {ov.Points.Count} points · {ov.Plans.Sum(x => x.Blocks.Count)} plan blocks · {ov.Dangers.Count} dangers"
-              + (ov.Notes.Count > 0 ? " · " + string.Join(", ", ov.Notes) : "")
-            : "";
+        OverlayNotes = _sync?.Overlays(p.Dim) is { } ov ? OverlayNotesOf(ov) : "";
         if (IsFreecamTab) RefreshDrops();
         // Per-tile "stale Ns" / "reconnecting…" badges, and the same for the free camera's HUD.
         var utcNow = DateTime.UtcNow;
@@ -640,11 +640,37 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         foreach (var t in AllTiles) t.RefreshStale(linkUp, utcNow);
         ScriptDebug?.Tick(utcNow);
         Controller?.Tick(utcNow);
+        Gpu.LinkNote = LinkNote(linkUp, utcNow);
+        SyncText = SyncAgeText();
+        ReaimSync(p);
+    }
+
+    private static string LatencyOf(double ms) => ms < 0 ? "" : string.Create(CultureInfo.InvariantCulture, $"{ms:0} ms");
+
+    private string GpuStatsText() => string.Create(CultureInfo.InvariantCulture,
+        $"GPU · {Gpu.Fps:0} fps · {Gpu.Scene.Width}x{Gpu.Scene.Height} · {Stats.SectionsLive} sections · {Stats.PendingMeshes} queued · {Gpu.GlInfo}");
+
+    private string CpuStatsText() => string.Create(CultureInfo.InvariantCulture,
+        $"CPU · {Freecam.Fps:0} fps · raster {Freecam.RasterMs:0.0} ms · {Freecam.LastW}x{Freecam.LastH} on {Freecam.Threads} threads");
+
+    private static string OverlayNotesOf(OverlaysDto ov) =>
+        $"{ov.Claims.Count} claims · {ov.Places.Count} places · {ov.Points.Count} points · {ov.Plans.Sum(x => x.Blocks.Count)} plan blocks · {ov.Dangers.Count} dangers"
+        + (ov.Notes.Count > 0 ? " · " + string.Join(", ", ov.Notes) : "");
+
+    /// <summary>The free camera's HUD note: reconnecting, or the world sync stale for over 5 s (with its last error); null = fine.</summary>
+    private string? LinkNote(bool linkUp, DateTime utcNow)
+    {
         double worldAge = _sync is { WorldOkAt: var ok } && ok > DateTime.MinValue ? (utcNow - ok).TotalSeconds : 0;
-        Gpu.LinkNote = _sync == null ? null : !linkUp ? "reconnecting… (" + StateText + ")"
+        return _sync == null ? null : !linkUp ? "reconnecting… (" + StateText + ")"
             : worldAge > 5 ? $"world stale {worldAge:0} s" + (_sync.LastError is { } le ? " · " + le : "") : null;
-        SyncText = _sync?.EntitiesAt is { } at && at > DateTime.MinValue ? $"bots updated {Math.Max(0, (DateTime.UtcNow - at).TotalSeconds):0.0} s ago" : "";
-        // The camera moved on: re-aim the world sync at it.
+    }
+
+    private string SyncAgeText() =>
+        _sync?.EntitiesAt is { } at && at > DateTime.MinValue ? $"bots updated {Math.Max(0, (DateTime.UtcNow - at).TotalSeconds):0.0} s ago" : "";
+
+    /// <summary>The camera moved on to another chunk: re-aim the world sync at it.</summary>
+    private void ReaimSync(CamPose p)
+    {
         int bx = (int)Math.Floor(p.X) >> 4, bz = (int)Math.Floor(p.Z) >> 4;
         if (bx != _lastIndexX || bz != _lastIndexZ) { _lastIndexX = bx; _lastIndexZ = bz; UpdateWants(); }
     }

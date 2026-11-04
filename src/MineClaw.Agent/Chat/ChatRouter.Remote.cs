@@ -27,11 +27,7 @@ public sealed partial class ChatRouter
     /// </summary>
     public bool OnRemoteChat(RemoteChat chat)
     {
-        var player = chat.Player?.Trim();
-        var text = ChatText.StripColors(chat.Text ?? "").Trim();
-        var target = chat.Target?.Trim();
-        if (string.IsNullOrEmpty(player) || text.Length == 0 || string.IsNullOrEmpty(target)) return false;
-        if (IsSelf(player) || IsHive(player)) return false;
+        if (!IsRemoteLine(chat, out var player, out var text, out var target)) return false;
         var msg = new ChatMessage(ChatKind.Public, player, text, "[" + chat.Origin + "] " + text);
         bool self = IsSelf(target);
         if (!self && !HostsBody(msg with { Text = target })) return false;
@@ -41,6 +37,17 @@ public sealed partial class ChatRouter
         try { HandleRemote(msg); }
         finally { _remote = null; }
         return true;
+    }
+
+    /// <summary>A whole remote line (player, text and target, trimmed) from a player: not this bot nor a hive bot.</summary>
+    private bool IsRemoteLine(RemoteChat chat, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? player, out string text,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? target)
+    {
+        player = chat.Player?.Trim();
+        text = ChatText.StripColors(chat.Text ?? "").Trim();
+        target = chat.Target?.Trim();
+        if (string.IsNullOrEmpty(player) || text.Length == 0 || string.IsNullOrEmpty(target)) return false;
+        return !IsSelf(player) && !IsHive(player);
     }
 
     // A body (not this login) is ours when the hive/body hooks say a line naming it is explicitly for this bot.

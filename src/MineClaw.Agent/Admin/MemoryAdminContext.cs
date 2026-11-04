@@ -82,22 +82,13 @@ public sealed class MemoryAdminContext : IDisposable
             owned.Add(memory);
             var beliefs = new BeliefStore(db, rag);
             var observations = new ObservationStore(rag);
-            SelfProfile? self = null;
-            try { self = new SelfProfile(db, options.Self, rag); }
-            catch (Exception ex) when (readOnly) { Log("MineClaw.Admin").LogDebug(ex, "self profile unavailable on a read-only db"); }
+            var self = OpenSelf(db, options, rag, readOnly, Log);
 
             RaptorMemory? raptor = null;
-            string? note = null;
-            if (!options.Rag.Enabled || !options.Rag.Raptor.Enabled) note = "RAPTOR is off (Agent:Rag:Raptor:Enabled)";
-            else if (!embedder.IsAvailable) note = "embeddings are not configured";
-            else if (StoredTreeModel(db) is { } stored && stored != (embedder.Model, embedder.Dimensions))
-                note = $"the stored tree was built with {stored.Model}@{stored.Dims}, the embedder is {embedder.Model}@{embedder.Dimensions}; tree left alone";
-            else
+            string? note = RaptorUnavailable(db, options, embedder);
+            if (note == null)
             {
-                var summarizer = new HaikuSummarizer(llm ?? new NoLlm(), options.Llm, usage) { StyleHint = StyleHint(options) };
-                raptor = new RaptorMemory(db, rag, new CachedEmbedder(db, embedder, options.Embeddings, usage), summarizer, options.Rag.Raptor,
-                    log: Log("MineClaw.Raptor"));
-                raptor.Store.LoadWritesBack = !readOnly;
+                raptor = OpenRaptor(db, rag, options, embedder, llm, usage, readOnly, Log);
                 owned.Add(raptor);
                 rag.Augmenter = raptor;
                 raptor.LoadAsync().GetAwaiter().GetResult();
@@ -118,6 +109,33 @@ public sealed class MemoryAdminContext : IDisposable
             foreach (var o in owned) { try { o.Dispose(); } catch (Exception) { } }
             throw;
         }
+    }
+
+    /// <summary>The self profile; on a read-only db it may be unavailable (null).</summary>
+    private static SelfProfile? OpenSelf(AgentDb db, AgentOptions options, RagIndex rag, bool readOnly, Func<string, ILogger> log)
+    {
+        try { return new SelfProfile(db, options.Self, rag); }
+        catch (Exception ex) when (readOnly) { log("MineClaw.Admin").LogDebug(ex, "self profile unavailable on a read-only db"); return null; }
+    }
+
+    /// <summary>Why the RAPTOR tree isn't loaded (off, no embeddings, a tree built with another embedder); null = load it.</summary>
+    private static string? RaptorUnavailable(AgentDb db, AgentOptions options, IEmbeddingProvider embedder)
+    {
+        if (!options.Rag.Enabled || !options.Rag.Raptor.Enabled) return "RAPTOR is off (Agent:Rag:Raptor:Enabled)";
+        if (!embedder.IsAvailable) return "embeddings are not configured";
+        if (StoredTreeModel(db) is { } stored && stored != (embedder.Model, embedder.Dimensions))
+            return $"the stored tree was built with {stored.Model}@{stored.Dims}, the embedder is {embedder.Model}@{embedder.Dimensions}; tree left alone";
+        return null;
+    }
+
+    private static RaptorMemory OpenRaptor(AgentDb db, RagIndex rag, AgentOptions options, IEmbeddingProvider embedder, ILlmClient? llm,
+        UsageTracker usage, bool readOnly, Func<string, ILogger> log)
+    {
+        var summarizer = new HaikuSummarizer(llm ?? new NoLlm(), options.Llm, usage) { StyleHint = StyleHint(options) };
+        var raptor = new RaptorMemory(db, rag, new CachedEmbedder(db, embedder, options.Embeddings, usage), summarizer, options.Rag.Raptor,
+            log: log("MineClaw.Raptor"));
+        raptor.Store.LoadWritesBack = !readOnly;
+        return raptor;
     }
 
     /// <summary>The running bot's own stores (main runtime). Owns nothing.</summary>

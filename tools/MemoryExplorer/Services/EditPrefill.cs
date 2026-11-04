@@ -16,63 +16,90 @@ public static class EditPrefill
     {
         var p = row.Props.GroupBy(x => x.Key).ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
         string? P(string k) => p.TryGetValue(k, out var v) ? v : null;
-        string Dim() => row.Dimension == -1 ? "nether" : "overworld";
         var d = new Dictionary<string, string?>(StringComparer.Ordinal);
-        switch (MemoryKinds.Normalize(kind))
-        {
-            case MemoryKinds.Fact:
-                d["subject"] = row.Name;
-                d["text"] = row.Text;
-                break;
-            case MemoryKinds.Place:
-                d["name"] = row.Name;
-                d["x"] = P("x"); d["y"] = P("y"); d["z"] = P("z");
-                d["dim"] = Dim();
-                d["note"] = P("note") ?? "";
-                break;
-            case MemoryKinds.Structure:
-            {
-                var lines = row.Text.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
-                d["name"] = row.Name;
-                d["kind"] = row.Type;
-                d["note"] = string.Join("\n", lines.Where(l => !l.StartsWith("• ", StringComparison.Ordinal)));
-                d["confidence"] = row.Confidence?.ToString("0.00", CultureInfo.InvariantCulture);
-                d["steps"] = string.Join("\n", lines.Where(l => l.StartsWith("• ", StringComparison.Ordinal)).Select(l => l[2..]));
-                d["min"] = P("min") ?? "";
-                d["max"] = P("max") ?? "";
-                d["dim"] = Dim();
-                break;
-            }
-            case MemoryKinds.Claim:
-                d["text"] = row.Text;
-                d["claimant"] = P("claimant");
-                d["status"] = row.State;
-                d["confidence"] = row.Confidence?.ToString("0.00", CultureInfo.InvariantCulture);
-                d["reason"] = P("reason") ?? "";
-                break;
-            case MemoryKinds.Trait:
-                d["section"] = row.Type;
-                d["text"] = row.Text;
-                d["player"] = P("player") ?? "";
-                d["reason"] = "";
-                break;
-            case MemoryKinds.Lesson:
-                d["title"] = row.Name;
-                d["correction"] = row.Text;
-                d["patterns"] = "";
-                break;
-            case MemoryKinds.Observation:
-            {
-                var text = row.Text;
-                string annotation = "";
-                int i = text.IndexOf("\nannotation: ", StringComparison.Ordinal);
-                if (i >= 0) { annotation = text[(i + "\nannotation: ".Length)..]; text = text[..i]; }
-                d["text"] = text;
-                d["annotation"] = annotation;
-                break;
-            }
-        }
+        if (MemoryKinds.Normalize(kind) is { } k && Fills.TryGetValue(k, out var fill)) fill(d, row, P);
         return d;
+    }
+
+    /// <summary>Fills the form's fields for one kind from the row (<c>p</c> reads a detail property; null = absent).</summary>
+    private delegate void Fill(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p);
+
+    private static readonly Dictionary<string, Fill> Fills = new(StringComparer.Ordinal)
+    {
+        [MemoryKinds.Fact] = FillFact,
+        [MemoryKinds.Place] = FillPlace,
+        [MemoryKinds.Structure] = FillStructure,
+        [MemoryKinds.Claim] = FillClaim,
+        [MemoryKinds.Trait] = FillTrait,
+        [MemoryKinds.Lesson] = FillLesson,
+        [MemoryKinds.Observation] = FillObservation,
+    };
+
+    private static string DimOf(MemoryRow row) => row.Dimension == -1 ? "nether" : "overworld";
+
+    private static string? ConfidenceOf(MemoryRow row) => row.Confidence?.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private static void FillFact(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p)
+    {
+        d["subject"] = row.Name;
+        d["text"] = row.Text;
+    }
+
+    private static void FillPlace(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p)
+    {
+        d["name"] = row.Name;
+        d["x"] = p("x"); d["y"] = p("y"); d["z"] = p("z");
+        d["dim"] = DimOf(row);
+        d["note"] = p("note") ?? "";
+    }
+
+    /// <summary>A structure's text is its note plus "• " step lines.</summary>
+    private static void FillStructure(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p)
+    {
+        var lines = row.Text.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+        d["name"] = row.Name;
+        d["kind"] = row.Type;
+        d["note"] = string.Join("\n", lines.Where(l => !l.StartsWith("• ", StringComparison.Ordinal)));
+        d["confidence"] = ConfidenceOf(row);
+        d["steps"] = string.Join("\n", lines.Where(l => l.StartsWith("• ", StringComparison.Ordinal)).Select(l => l[2..]));
+        d["min"] = p("min") ?? "";
+        d["max"] = p("max") ?? "";
+        d["dim"] = DimOf(row);
+    }
+
+    private static void FillClaim(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p)
+    {
+        d["text"] = row.Text;
+        d["claimant"] = p("claimant");
+        d["status"] = row.State;
+        d["confidence"] = ConfidenceOf(row);
+        d["reason"] = p("reason") ?? "";
+    }
+
+    private static void FillTrait(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p)
+    {
+        d["section"] = row.Type;
+        d["text"] = row.Text;
+        d["player"] = p("player") ?? "";
+        d["reason"] = "";
+    }
+
+    private static void FillLesson(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p)
+    {
+        d["title"] = row.Name;
+        d["correction"] = row.Text;
+        d["patterns"] = "";
+    }
+
+    /// <summary>An observation's text may end in "\nannotation: …" (the annotation field).</summary>
+    private static void FillObservation(Dictionary<string, string?> d, MemoryRow row, Func<string, string?> p)
+    {
+        var text = row.Text;
+        string annotation = "";
+        int i = text.IndexOf("\nannotation: ", StringComparison.Ordinal);
+        if (i >= 0) { annotation = text[(i + "\nannotation: ".Length)..]; text = text[..i]; }
+        d["text"] = text;
+        d["annotation"] = annotation;
     }
 
     /// <summary>Only the fields the user changed (the backend keeps absent fields; "" clears an optional one).</summary>
