@@ -149,7 +149,7 @@ const LEAF_KINDS: MemoryKindKey[] = ['facts', 'episodes', 'recipes', 'structures
 /** The fields every row draws first, in this order: person, dimension, state, age. */
 function drawCommon(r: () => number, kind: MemoryKindKey, i: number) {
   const person = pick(r, PEOPLE);
-  const dim = r() < 0.85 ? 'overworld' : r() < 0.6 ? 'nether' : '';
+  const dim: MemoryRow['dim'] = r() < 0.85 ? 'overworld' : r() < 0.6 ? 'nether' : '';
   const states = STATES[kind];
   const state = states ? pick(r, states) : null;
   const updated = minsAgo(i * (kind === 'chat' || kind === 'activity' ? 1.7 : 37) + r() * 20);
