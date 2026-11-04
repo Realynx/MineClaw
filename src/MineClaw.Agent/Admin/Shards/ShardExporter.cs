@@ -34,60 +34,13 @@ public sealed class ShardExporter
     public Shard Build(ShardExportRequest req, IReadOnlyCollection<string>? semanticRefs = null)
     {
         if (string.IsNullOrWhiteSpace(req.Name)) throw new ArgumentException("a shard needs a name");
-        var sel = req.Selection;
-        string? pack = null;
-        if (sel.IsPack)
-        {
-            pack = (sel.PackVersion ?? KnowledgePack.ActiveVersion(_db)).Trim();
-            if (!KnowledgePack.ValidVersion(pack)) throw new ArgumentException($"'{pack}' is not a version tag (e.g. b1.8.1)");
-            sel = sel with { PackVersion = pack, IncludeRules = false, IncludeWorld = false };
-        }
-        var collector = new ShardCollector(_db);
-        var picked = collector.Select(sel, semanticRefs);
-
-        int secrets = 0;
-        var records = new List<ShardRecord>(picked.Count);
-        foreach (var r in picked)
-        {
-            if (r.Fields.Values.Concat(r.Info?.Values ?? Enumerable.Empty<string?>()).Any(ShardRedactor.IsSecret)) { secrets++; continue; }
-            int n = 0;
-            var fields = new SortedDictionary<string, string?>(StringComparer.Ordinal);
-            foreach (var (k, v) in r.Fields)
-            {
-                if (v == null || k is "patterns" or "data" or "ref") { fields[k] = v; continue; }
-                fields[k] = ShardRedactor.Redact(v, out var c);
-                n += c;
-            }
-            if (n > 0)
-            {
-                secrets++;
-                records.Add(r with { Fields = fields, Hash = ShardFile.RecordHash(r.Kind, fields), DocHash = null });
-            }
-            else records.Add(r);
-        }
+        var (sel, pack) = PackScoped(req.Selection);
+        var picked = new ShardCollector(_db).Select(sel, semanticRefs);
+        var (records, secrets) = WithoutSecrets(picked);
 
         var embeddings = new Dictionary<string, float[]>(StringComparer.Ordinal);
-        ShardEmbeddingInfo? embInfo = null;
-        if (req.IncludeEmbeddings)
-        {
-            var (model, dims, vecs) = Vectors(records);
-            if (model != null)
-            {
-                foreach (var (h, v) in vecs) embeddings[h] = v;
-                embInfo = new ShardEmbeddingInfo { Model = model, Dims = dims };
-            }
-        }
-
-        var summaries = new List<ShardSummary>();
-        if (req.IncludeSummaries && _tree != null)
-        {
-            var refs = records.Where(r => r.Ref != null).Select(r => r.Ref!).ToHashSet(StringComparer.Ordinal);
-            foreach (var (s, emb) in Summaries(refs))
-            {
-                summaries.Add(s);
-                if (embInfo != null && emb is { } e && e.Length == embInfo.Dims) embeddings.TryAdd(VectorMath.Hash(s.Text), e);
-            }
-        }
+        var embInfo = req.IncludeEmbeddings ? AddVectors(records, embeddings) : null;
+        var summaries = req.IncludeSummaries && _tree != null ? CachedSummaries(records, embInfo, embeddings) : new List<ShardSummary>();
 
         var manifest = new ShardManifest
         {
@@ -103,6 +56,69 @@ public sealed class ShardExporter
             SecretsRedacted = secrets,
         };
         return new Shard { Manifest = manifest, Records = records, Embeddings = embeddings, Summaries = summaries };
+    }
+
+    /// <summary>A pack selection pinned to its version (the db's active one by default), without rules or world memory.</summary>
+    private (ShardSelection Selection, string? Pack) PackScoped(ShardSelection sel)
+    {
+        if (!sel.IsPack) return (sel, null);
+        var pack = (sel.PackVersion ?? KnowledgePack.ActiveVersion(_db)).Trim();
+        if (!KnowledgePack.ValidVersion(pack)) throw new ArgumentException($"'{pack}' is not a version tag (e.g. b1.8.1)");
+        return (sel with { PackVersion = pack, IncludeRules = false, IncludeWorld = false }, pack);
+    }
+
+    /// <summary>Drops records about secrets and redacts token-shaped strings in the rest; counts both.</summary>
+    private static (List<ShardRecord> Records, int Secrets) WithoutSecrets(List<ShardRecord> picked)
+    {
+        int secrets = 0;
+        var records = new List<ShardRecord>(picked.Count);
+        foreach (var r in picked)
+        {
+            if (r.Fields.Values.Concat(r.Info?.Values ?? Enumerable.Empty<string?>()).Any(ShardRedactor.IsSecret)) { secrets++; continue; }
+            var (fields, n) = RedactFields(r);
+            if (n > 0)
+            {
+                secrets++;
+                records.Add(r with { Fields = fields, Hash = ShardFile.RecordHash(r.Kind, fields), DocHash = null });
+            }
+            else records.Add(r);
+        }
+        return (records, secrets);
+    }
+
+    private static (SortedDictionary<string, string?> Fields, int Redacted) RedactFields(ShardRecord r)
+    {
+        int n = 0;
+        var fields = new SortedDictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var (k, v) in r.Fields)
+        {
+            if (v == null || k is "patterns" or "data" or "ref") { fields[k] = v; continue; }
+            fields[k] = ShardRedactor.Redact(v, out var c);
+            n += c;
+        }
+        return (fields, n);
+    }
+
+    /// <summary>The records' current vectors into <paramref name="embeddings"/>; their model, or null when none is stored.</summary>
+    private ShardEmbeddingInfo? AddVectors(IReadOnlyList<ShardRecord> records, Dictionary<string, float[]> embeddings)
+    {
+        var (model, dims, vecs) = Vectors(records);
+        if (model == null) return null;
+        foreach (var (h, v) in vecs) embeddings[h] = v;
+        return new ShardEmbeddingInfo { Model = model, Dims = dims };
+    }
+
+    /// <summary>The tree summaries wholly inside the records (a cache), with their vectors when the dims match.</summary>
+    private List<ShardSummary> CachedSummaries(IReadOnlyList<ShardRecord> records, ShardEmbeddingInfo? embInfo, Dictionary<string, float[]> embeddings)
+    {
+        var summaries = new List<ShardSummary>();
+        var refs = records.Where(r => r.Ref != null).Select(r => r.Ref!).ToHashSet(StringComparer.Ordinal);
+        foreach (var (s, emb) in Summaries(refs))
+        {
+            summaries.Add(s);
+            if (embInfo != null && emb is { } e && e.Length == embInfo.Dims) embeddings.TryAdd(VectorMath.Hash(s.Text), e);
+        }
+        return summaries;
     }
 
     public ShardPreview Preview(ShardExportRequest req, IReadOnlyCollection<string>? semanticRefs = null)

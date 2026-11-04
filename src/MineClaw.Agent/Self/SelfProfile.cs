@@ -99,22 +99,25 @@ public sealed class SelfProfile
 
     public static string Name(SelfSection s) => s.ToString().ToLowerInvariant();
 
+    /// <summary>Section words the brain and admins use, after trimming, lower-casing and dropping trailing 's'.</summary>
+    private static readonly Dictionary<string, SelfSection> SectionWords = new()
+    {
+        ["quirk"] = SelfSection.Trait, ["trait"] = SelfSection.Trait,
+        ["like"] = SelfSection.Like,
+        ["dislike"] = SelfSection.Dislike,
+        ["opinion"] = SelfSection.Opinion,
+        ["joke"] = SelfSection.Joke, ["catchphrase"] = SelfSection.Joke, ["running_joke"] = SelfSection.Joke,
+        ["nickname"] = SelfSection.Nickname,
+        ["relationship"] = SelfSection.Relationship, ["people"] = SelfSection.Relationship, ["player"] = SelfSection.Relationship,
+        ["milestone"] = SelfSection.Milestone, ["memory"] = SelfSection.Milestone, ["memorie"] = SelfSection.Milestone,
+    };
+
     public static bool TryParseSection(string? s, out SelfSection section)
     {
         section = default;
         if (string.IsNullOrWhiteSpace(s)) return false;
         var k = s.Trim().ToLowerInvariant().TrimEnd('s');
-        switch (k)
-        {
-            case "quirk": case "trait": section = SelfSection.Trait; return true;
-            case "like": section = SelfSection.Like; return true;
-            case "dislike": section = SelfSection.Dislike; return true;
-            case "opinion": section = SelfSection.Opinion; return true;
-            case "joke": case "catchphrase": case "running_joke": section = SelfSection.Joke; return true;
-            case "nickname": section = SelfSection.Nickname; return true;
-            case "relationship": case "people": case "player": section = SelfSection.Relationship; return true;
-            case "milestone": case "memory": case "memorie": section = SelfSection.Milestone; return true;
-        }
+        if (SectionWords.TryGetValue(k, out section)) return true;
         return Enum.TryParse(s, true, out section);
     }
 
@@ -134,75 +137,81 @@ public sealed class SelfProfile
 
     private SelfChangeResult ApplyCore(SelfChange c, string source, IReadOnlyList<long>? episodes)
     {
+        var op = c.Op.Trim().ToLowerInvariant();
+        if (CheckChange(c, op, source, out var reason, out var player) is { } refused) return refused;
+        return op switch
         {
-            var op = c.Op.Trim().ToLowerInvariant();
-            var reason = c.Reason is { Length: > 0 } r ? TextUtil.Truncate(TextUtil.OneLine(r), 120) : null;
-            if (reason == null && source != SourceAdmin) return new(false, "give a one-line reason");
-            var player = c.Player != null ? SelfSanitizer.CleanPlayer(c.Player) : null;
-            if (c.Player != null && player == null) return new(false, "bad player name");
-            if (c.Section == SelfSection.Relationship && player == null && op == "add") return new(false, "relationship needs a player");
+            "add" => AddEntry(c, player, reason, source, episodes),
+            "reinforce" => Find(c) is { } found ? Reinforce(found, reason, source, episodes) : new(false, "no such entry"),
+            "adjust" => AdjustEntry(c, player, reason, source, episodes),
+            "remove" => RemoveEntry(c, reason, source, episodes),
+            _ => new(false, "op must be add, reinforce, adjust or remove"),
+        };
+    }
 
-            switch (op)
-            {
-                case "add":
-                {
-                    var text = SelfSanitizer.Clean(c.Text, _o.MaxEntryChars, _o.BlockedWords, out var why);
-                    if (text == null) return new(false, "rejected: " + why);
-                    var similar = FindSimilar(c.Section, player, text);
-                    if (similar != null) return Reinforce(similar, reason, source, episodes);
+    /// <summary>Refuses a change without a reason (unless admin), with a bad player name, or a relationship without a player.</summary>
+    private static SelfChangeResult? CheckChange(SelfChange c, string op, string source, out string? reason, out string? player)
+    {
+        reason = c.Reason is { Length: > 0 } r ? TextUtil.Truncate(TextUtil.OneLine(r), 120) : null;
+        player = null;
+        if (reason == null && source != SourceAdmin) return new(false, "give a one-line reason");
+        player = c.Player != null ? SelfSanitizer.CleanPlayer(c.Player) : null;
+        if (c.Player != null && player == null) return new(false, "bad player name");
+        if (c.Section == SelfSection.Relationship && player == null && op == "add") return new(false, "relationship needs a player");
+        return null;
+    }
 
-                    var inSection = _entries.Where(e => e.Section == c.Section).ToList();
-                    SelfEntry? evicted = null;
-                    if (inSection.Count >= Cap(c.Section))
-                    {
-                        var weakest = inSection.OrderBy(e => e.Strength).First();
-                        if (weakest.Strength >= _o.InitialStrength)
-                            return new(false, $"{Name(c.Section)} full; remove or adjust one (weakest #{weakest.Id} '{weakest.Text}')");
-                        evicted = weakest;
-                        _entries.Remove(weakest);
-                    }
-                    var now = Now;
-                    var e = new SelfEntry
-                    {
-                        Id = NextId(), Section = c.Section, Text = text, Player = player, Strength = _o.InitialStrength,
-                        Created = now, Reinforced = now, Reason = reason,
-                    };
-                    _entries.Add(e);
-                    var v = Persist("add", e, reason, source, episodes, evicted != null ? $" (replaced '{evicted.Text}')" : "");
-                    return new(true, $"added {Name(e.Section)} #{e.Id}: {e.Text}", e.Id, v);
-                }
-                case "reinforce":
-                {
-                    var e = Find(c);
-                    return e == null ? new(false, "no such entry") : Reinforce(e, reason, source, episodes);
-                }
-                case "adjust":
-                {
-                    var e = Find(c);
-                    if (e == null) return new(false, "no such entry");
-                    var text = SelfSanitizer.Clean(c.Text, _o.MaxEntryChars, _o.BlockedWords, out var why);
-                    if (text == null) return new(false, "rejected: " + why);
-                    var before = e.Text;
-                    e.Text = text;
-                    if (player != null) e.Player = player;
-                    e.Strength = Math.Min(1, e.Strength + (1 - e.Strength) * _o.ReinforceRate * 0.3);
-                    e.Reinforced = Now;
-                    e.Reason = reason ?? e.Reason;
-                    var v = Persist("adjust", e, reason, source, episodes, $" (was '{before}')");
-                    return new(true, $"adjusted #{e.Id}: {e.Text}", e.Id, v);
-                }
-                case "remove":
-                {
-                    var e = Find(c);
-                    if (e == null) return new(false, "no such entry");
-                    _entries.Remove(e);
-                    var v = Persist("remove", e, reason, source, episodes, "");
-                    return new(true, $"removed #{e.Id}", e.Id, v);
-                }
-                default:
-                    return new(false, "op must be add, reinforce, adjust or remove");
-            }
+    private SelfChangeResult AddEntry(SelfChange c, string? player, string? reason, string source, IReadOnlyList<long>? episodes)
+    {
+        var text = SelfSanitizer.Clean(c.Text, _o.MaxEntryChars, _o.BlockedWords, out var why);
+        if (text == null) return new(false, "rejected: " + why);
+        var similar = FindSimilar(c.Section, player, text);
+        if (similar != null) return Reinforce(similar, reason, source, episodes);
+
+        var inSection = _entries.Where(e => e.Section == c.Section).ToList();
+        SelfEntry? evicted = null;
+        if (inSection.Count >= Cap(c.Section))
+        {
+            var weakest = inSection.OrderBy(e => e.Strength).First();
+            if (weakest.Strength >= _o.InitialStrength)
+                return new(false, $"{Name(c.Section)} full; remove or adjust one (weakest #{weakest.Id} '{weakest.Text}')");
+            evicted = weakest;
+            _entries.Remove(weakest);
         }
+        var now = Now;
+        var e = new SelfEntry
+        {
+            Id = NextId(), Section = c.Section, Text = text, Player = player, Strength = _o.InitialStrength,
+            Created = now, Reinforced = now, Reason = reason,
+        };
+        _entries.Add(e);
+        var v = Persist("add", e, reason, source, episodes, evicted != null ? $" (replaced '{evicted.Text}')" : "");
+        return new(true, $"added {Name(e.Section)} #{e.Id}: {e.Text}", e.Id, v);
+    }
+
+    private SelfChangeResult AdjustEntry(SelfChange c, string? player, string? reason, string source, IReadOnlyList<long>? episodes)
+    {
+        var e = Find(c);
+        if (e == null) return new(false, "no such entry");
+        var text = SelfSanitizer.Clean(c.Text, _o.MaxEntryChars, _o.BlockedWords, out var why);
+        if (text == null) return new(false, "rejected: " + why);
+        var before = e.Text;
+        e.Text = text;
+        if (player != null) e.Player = player;
+        e.Strength = Math.Min(1, e.Strength + (1 - e.Strength) * _o.ReinforceRate * 0.3);
+        e.Reinforced = Now;
+        e.Reason = reason ?? e.Reason;
+        var v = Persist("adjust", e, reason, source, episodes, $" (was '{before}')");
+        return new(true, $"adjusted #{e.Id}: {e.Text}", e.Id, v);
+    }
+
+    private SelfChangeResult RemoveEntry(SelfChange c, string? reason, string source, IReadOnlyList<long>? episodes)
+    {
+        var e = Find(c);
+        if (e == null) return new(false, "no such entry");
+        _entries.Remove(e);
+        var v = Persist("remove", e, reason, source, episodes, "");
+        return new(true, $"removed #{e.Id}", e.Id, v);
     }
 
     private SelfChangeResult Reinforce(SelfEntry e, string? reason, string source, IReadOnlyList<long>? episodes)

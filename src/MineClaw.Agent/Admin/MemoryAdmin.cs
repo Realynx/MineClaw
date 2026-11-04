@@ -47,41 +47,53 @@ public sealed class MemoryAdmin
         await _ctx.WriteGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (kind == null) result = Fail($"unknown kind '{edit.Kind}' ({string.Join("|", MemoryKinds.All)})", edit.Id);
-            else if (!MemoryEditSchema.Ops(kind).Contains(op)) result = Fail($"op must be {string.Join("|", MemoryEditSchema.Ops(kind))} for {kind}", edit.Id);
-            else if (_ctx.ReadOnly) result = Fail("the database is open read-only; nothing was changed", edit.Id);
-            else
-            {
-                Outcome? o = null;
-                string? before = null;
-                try
-                {
-                    var f = new Fields(kind, edit.Fields);
-                    o = kind switch
-                    {
-                        MemoryKinds.Fact => Fact(op, edit.Id, f, b => before = b),
-                        MemoryKinds.Place => Place(op, edit.Id, f, b => before = b),
-                        MemoryKinds.Structure => Structure(op, edit.Id, f, who, b => before = b),
-                        MemoryKinds.Claim => Claim(op, edit.Id, f, who, b => before = b),
-                        MemoryKinds.Trait => Trait(op, edit.Id, f, edit.Reason, b => before = b),
-                        MemoryKinds.Lesson => Lesson(op, edit.Id, f, b => before = b),
-                        _ => Observation(op, edit.Id, f, b => before = b),
-                    };
-                    result = new MemoryEditResult(true, o.Message, o.Id, o.Before, o.After);
-                }
-                catch (Exception ex) when (ex is Rejected or ArgumentException or InvalidOperationException or FormatException or JsonException
-                                               or Microsoft.Data.Sqlite.SqliteException or RegexParseException)
-                {
-                    result = Fail(ex is Microsoft.Data.Sqlite.SqliteException ? "database error: " + ex.Message : ex.Message, edit.Id, before);
-                }
-                if (result.Ok) result = await AfterWriteAsync(result, ct).ConfigureAwait(false);
-            }
+            result = Refusal(edit, op, kind) ?? Run(edit, op, kind!, who);
+            if (result.Ok) result = await AfterWriteAsync(result, ct).ConfigureAwait(false);
         }
         finally { _ctx.WriteGate.Release(); }
         _audit.Write(new AuditEntry(DateTimeOffset.UtcNow, who, _target, op.Length > 0 ? op : edit.Op ?? "", kind ?? edit.Kind ?? "", result.Id ?? edit.Id,
             result.Before, result.After, edit.Reason, result.Ok, result.Message));
         return result;
     }
+
+    /// <summary>Why the edit can't run at all (unknown kind, an op the kind lacks, a read-only db), or null.</summary>
+    private MemoryEditResult? Refusal(MemoryEdit edit, string op, string? kind)
+    {
+        if (kind == null) return Fail($"unknown kind '{edit.Kind}' ({string.Join("|", MemoryKinds.All)})", edit.Id);
+        if (!MemoryEditSchema.Ops(kind).Contains(op)) return Fail($"op must be {string.Join("|", MemoryEditSchema.Ops(kind))} for {kind}", edit.Id);
+        return _ctx.ReadOnly ? Fail("the database is open read-only; nothing was changed", edit.Id) : null;
+    }
+
+    /// <summary>One store call for the edit's kind; a rejected or failed edit comes back as a failure with the record before it.</summary>
+    private MemoryEditResult Run(MemoryEdit edit, string op, string kind, string who)
+    {
+        string? before = null;
+        try
+        {
+            var f = new Fields(kind, edit.Fields);
+            var o = Dispatch(kind, op, edit, f, who, b => before = b);
+            return new MemoryEditResult(true, o.Message, o.Id, o.Before, o.After);
+        }
+        catch (Exception ex) when (IsEditError(ex))
+        {
+            return Fail(ex is Microsoft.Data.Sqlite.SqliteException ? "database error: " + ex.Message : ex.Message, edit.Id, before);
+        }
+    }
+
+    private Outcome Dispatch(string kind, string op, MemoryEdit edit, Fields f, string who, Action<string?> before) => kind switch
+    {
+        MemoryKinds.Fact => Fact(op, edit.Id, f, before),
+        MemoryKinds.Place => Place(op, edit.Id, f, before),
+        MemoryKinds.Structure => Structure(op, edit.Id, f, who, before),
+        MemoryKinds.Claim => Claim(op, edit.Id, f, who, before),
+        MemoryKinds.Trait => Trait(op, edit.Id, f, edit.Reason, before),
+        MemoryKinds.Lesson => Lesson(op, edit.Id, f, before),
+        _ => Observation(op, edit.Id, f, before),
+    };
+
+    private static bool IsEditError(Exception ex) =>
+        ex is Rejected or ArgumentException or InvalidOperationException or FormatException or JsonException
+            or Microsoft.Data.Sqlite.SqliteException or RegexParseException;
 
     private static MemoryEditResult Fail(string message, string? id, string? before = null) => new(false, message, id, before);
 
@@ -141,87 +153,117 @@ public sealed class MemoryAdmin
         return new Outcome($"updated fact #{nid}", nid.ToString(CultureInfo.InvariantCulture), old, Js(View(e)));
     }
 
+    private static object PlaceView(Waypoint w) => new { name = w.Name, x = w.X, y = w.Y, z = w.Z, dim = MemoryEditSchema.DimName(w.Dimension), note = w.Note };
+
     private Outcome Place(string op, string? id, Fields f, Action<string?> before)
     {
         var mem = _ctx.Memory;
-        static object View(Waypoint w) => new { name = w.Name, x = w.X, y = w.Y, z = w.Z, dim = MemoryEditSchema.DimName(w.Dimension), note = w.Note };
-        if (op == "add")
-        {
-            var name = f.Req("name");
-            if (mem.GetWaypoint(name) != null) throw new Rejected($"a place named '{name}' already exists (use update)");
-            var w = mem.SetWaypoint(name, f.ReqInt("x"), f.ReqInt("y"), f.ReqInt("z"), f.Opt("note") is { Length: > 0 } nt ? nt : null,
-                MemoryEditSchema.ParseDim(f.Get("dim")) ?? 0);
-            return new Outcome($"added place {w.Name}", w.Name, null, Js(View(w)));
-        }
+        if (op == "add") return AddPlace(f);
         var key = Req(id, "place name");
         var cur = mem.GetWaypoint(key) ?? throw new Rejected($"no place '{key}'");
-        var old = Js(View(cur));
+        var old = Js(PlaceView(cur));
         before(old);
         if (op == "delete")
         {
             mem.Forget("waypoint", cur.Name);
             return new Outcome($"deleted place {cur.Name}", cur.Name, old, null);
         }
+        return UpdatePlace(f, cur, key, old);
+    }
+
+    private Outcome AddPlace(Fields f)
+    {
+        var mem = _ctx.Memory;
+        var name = f.Req("name");
+        if (mem.GetWaypoint(name) != null) throw new Rejected($"a place named '{name}' already exists (use update)");
+        var w = mem.SetWaypoint(name, f.ReqInt("x"), f.ReqInt("y"), f.ReqInt("z"), f.Opt("note") is { Length: > 0 } nt ? nt : null,
+            MemoryEditSchema.ParseDim(f.Get("dim")) ?? 0);
+        return new Outcome($"added place {w.Name}", w.Name, null, Js(PlaceView(w)));
+    }
+
+    private Outcome UpdatePlace(Fields f, Waypoint cur, string key, string old)
+    {
+        var mem = _ctx.Memory;
         if (!f.Any) throw new Rejected("nothing to change");
         string? name2 = f.Has("name") ? f.Req("name") : null;
         int? x = f.Int("x"), y = f.Int("y"), z = f.Int("z"), dim = MemoryEditSchema.ParseDim(f.Get("dim"));
         string? note = f.Opt("note");
         if (name2 != null && !name2.Equals(cur.Name, StringComparison.OrdinalIgnoreCase) && mem.GetWaypoint(name2) != null)
             throw new Rejected($"a place named '{name2}' already exists");
-        var e = mem.EditWaypoint(cur.Name, w =>
+        var e = mem.EditWaypoint(cur.Name, w => ApplyPlace(w, name2, x, y, z, dim, note)) ?? throw new Rejected($"no place '{key}'");
+        return new Outcome($"updated place {e.Name}", e.Name, old, Js(PlaceView(e)));
+    }
+
+    private static void ApplyPlace(Waypoint w, string? name, int? x, int? y, int? z, int? dim, string? note)
+    {
+        if (name != null) w.Name = name;
+        if (x is { } vx) w.X = vx;
+        if (y is { } vy) w.Y = vy;
+        if (z is { } vz) w.Z = vz;
+        if (dim is { } d) w.Dimension = d;
+        if (note != null) w.Note = note.Length == 0 ? null : note;
+    }
+
+    private static object StructureView(Structure s) => new
+    {
+        name = s.Name, kind = s.Kind, note = s.Note, confidence = s.Confidence, steps = s.Steps, min = s.Min?.ToString(), max = s.Max?.ToString(),
+        dim = MemoryEditSchema.DimName(s.Dimension), key_blocks = s.KeyBlocks.Count, taught_by = s.TaughtBy,
+    };
+
+    /// <summary>A structure edit's fields, parsed and checked up front; null = keep (a "" text clears it).</summary>
+    private sealed record StructurePatch(string? Name, string? Kind, string? Note, string? Steps, double? Confidence,
+        string? MinText, BlockPos? Min, string? MaxText, BlockPos? Max, int? Dim)
+    {
+        public static StructurePatch From(Fields f)
         {
-            if (name2 != null) w.Name = name2;
-            if (x is { } vx) w.X = vx;
-            if (y is { } vy) w.Y = vy;
-            if (z is { } vz) w.Z = vz;
-            if (dim is { } d) w.Dimension = d;
-            if (note != null) w.Note = note.Length == 0 ? null : note;
-        }) ?? throw new Rejected($"no place '{key}'");
-        return new Outcome($"updated place {e.Name}", e.Name, old, Js(View(e)));
+            string? name = f.Has("name") ? f.Req("name") : null, kind = f.Opt("kind"), note = f.Opt("note"), steps = f.Opt("steps");
+            double? conf = Confidence01(f);
+            string? minS = f.Opt("min"), maxS = f.Opt("max");
+            var min = MemoryEditSchema.ParsePos(minS, "min");
+            var max = MemoryEditSchema.ParsePos(maxS, "max");
+            int? dim = MemoryEditSchema.ParseDim(f.Get("dim"));
+            return new StructurePatch(name, kind, note, steps, conf, minS, min, maxS, max, dim);
+        }
+
+        public void ApplyTo(Structure s)
+        {
+            ApplyText(s);
+            ApplyShape(s);
+        }
+
+        private void ApplyText(Structure s)
+        {
+            if (Name != null) s.Name = Name;
+            if (Kind != null) s.Kind = Kind.Length == 0 ? StructureKinds.Unknown : Kind.Trim();
+            if (Note != null) s.Note = Note.Length == 0 ? null : Note.Trim();
+            if (Confidence is { } c) s.Confidence = c;
+            if (Steps != null) s.Steps = Steps.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        }
+
+        private void ApplyShape(Structure s)
+        {
+            if (MinText != null) s.Min = Min;
+            if (MaxText != null) s.Max = Max;
+            if (Dim is { } d) s.Dimension = d;
+        }
+    }
+
+    /// <summary>The <c>confidence</c> field: null when absent, else a number in 0..1.</summary>
+    private static double? Confidence01(Fields f)
+    {
+        double? conf = f.Num("confidence");
+        if (conf is < 0 or > 1) throw new Rejected("confidence must be 0..1");
+        return conf;
     }
 
     private Outcome Structure(string op, string? id, Fields f, string who, Action<string?> before)
     {
         var mem = _ctx.Memory;
-        static object View(Structure s) => new
-        {
-            name = s.Name, kind = s.Kind, note = s.Note, confidence = s.Confidence, steps = s.Steps, min = s.Min?.ToString(), max = s.Max?.ToString(),
-            dim = MemoryEditSchema.DimName(s.Dimension), key_blocks = s.KeyBlocks.Count, taught_by = s.TaughtBy,
-        };
-        string? name2 = f.Has("name") ? f.Req("name") : null, kind = f.Opt("kind"), note = f.Opt("note"), steps = f.Opt("steps");
-        double? conf = f.Num("confidence");
-        if (conf is < 0 or > 1) throw new Rejected("confidence must be 0..1");
-        string? minS = f.Opt("min"), maxS = f.Opt("max");
-        var min = MemoryEditSchema.ParsePos(minS, "min");
-        var max = MemoryEditSchema.ParsePos(maxS, "max");
-        int? dim = MemoryEditSchema.ParseDim(f.Get("dim"));
-        void Apply(Structure s)
-        {
-            if (name2 != null) s.Name = name2;
-            if (kind != null) s.Kind = kind.Length == 0 ? StructureKinds.Unknown : kind.Trim();
-            if (note != null) s.Note = note.Length == 0 ? null : note.Trim();
-            if (conf is { } c) s.Confidence = c;
-            if (steps != null) s.Steps = steps.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
-            if (minS != null) s.Min = min;
-            if (maxS != null) s.Max = max;
-            if (dim is { } d) s.Dimension = d;
-        }
-        if (op == "add")
-        {
-            var name = f.Req("name");
-            if (mem.GetStructure(name) != null) throw new Rejected($"a structure named '{name}' already exists (use update)");
-            var s = mem.UpsertStructure(name, s =>
-            {
-                Apply(s);
-                s.Name = name.Trim();
-                if (dim == null) s.Dimension = 0;
-                s.TaughtBy ??= who;
-            });
-            return new Outcome($"added structure {s.Name}", s.Name, null, Js(View(s)));
-        }
+        var patch = StructurePatch.From(f);
+        if (op == "add") return AddStructure(f, patch, who);
         var key = Req(id, "structure name");
         var cur = mem.GetStructure(key) ?? throw new Rejected($"no structure '{key}'");
-        var old = Js(View(cur));
+        var old = Js(StructureView(cur));
         before(old);
         if (op == "delete")
         {
@@ -229,142 +271,201 @@ public sealed class MemoryAdmin
             return new Outcome($"deleted structure {cur.Name}", cur.Name, old, null);
         }
         if (!f.Any) throw new Rejected("nothing to change");
-        if (name2 != null && !name2.Equals(cur.Name, StringComparison.OrdinalIgnoreCase) && mem.GetStructure(name2) != null)
-            throw new Rejected($"a structure named '{name2}' already exists");
-        var e = mem.EditStructure(cur.Name, Apply) ?? throw new Rejected($"no structure '{key}'");
-        return new Outcome($"updated structure {e.Name}", e.Name, old, Js(View(e)));
+        if (patch.Name != null && !patch.Name.Equals(cur.Name, StringComparison.OrdinalIgnoreCase) && mem.GetStructure(patch.Name) != null)
+            throw new Rejected($"a structure named '{patch.Name}' already exists");
+        var e = mem.EditStructure(cur.Name, patch.ApplyTo) ?? throw new Rejected($"no structure '{key}'");
+        return new Outcome($"updated structure {e.Name}", e.Name, old, Js(StructureView(e)));
+    }
+
+    private Outcome AddStructure(Fields f, StructurePatch patch, string who)
+    {
+        var mem = _ctx.Memory;
+        var name = f.Req("name");
+        if (mem.GetStructure(name) != null) throw new Rejected($"a structure named '{name}' already exists (use update)");
+        var s = mem.UpsertStructure(name, s =>
+        {
+            patch.ApplyTo(s);
+            s.Name = name.Trim();
+            if (patch.Dim == null) s.Dimension = 0;
+            s.TaughtBy ??= who;
+        });
+        return new Outcome($"added structure {s.Name}", s.Name, null, Js(StructureView(s)));
+    }
+
+    private static object ClaimView(BeliefClaim c) => new
+    {
+        id = c.Id, claimant = c.Claimant, claimants = c.Claimants, text = c.Text, status = BeliefRanks.Name(c.Status),
+        confidence = Math.Round(c.Confidence, 3), reason = c.Reason, category = BeliefRanks.Name(c.Category),
+    };
+
+    private static string? NonEmpty(string? s) => s is { Length: > 0 } ? s : null;
+
+    private static ClaimStatus? ClaimStatusField(Fields f)
+    {
+        if (f.Get("status") is not { Length: > 0 } st) return null;
+        return Enum.TryParse<ClaimStatus>(st.Trim(), true, out var ps)
+            ? ps
+            : throw new Rejected($"status must be {string.Join("|", Enum.GetNames<ClaimStatus>().Select(n => n.ToLowerInvariant()))}");
     }
 
     private Outcome Claim(string op, string? id, Fields f, string who, Action<string?> before)
     {
         var b = _ctx.Beliefs;
-        static object View(BeliefClaim c) => new
-        {
-            id = c.Id, claimant = c.Claimant, claimants = c.Claimants, text = c.Text, status = BeliefRanks.Name(c.Status),
-            confidence = Math.Round(c.Confidence, 3), reason = c.Reason, category = BeliefRanks.Name(c.Category),
-        };
-        ClaimStatus? status = f.Get("status") is { Length: > 0 } st
-            ? Enum.TryParse<ClaimStatus>(st.Trim(), true, out var ps) ? ps : throw new Rejected($"status must be {string.Join("|", Enum.GetNames<ClaimStatus>().Select(n => n.ToLowerInvariant()))}")
-            : null;
-        double? conf = f.Num("confidence");
-        if (conf is < 0 or > 1) throw new Rejected("confidence must be 0..1");
+        ClaimStatus? status = ClaimStatusField(f);
+        double? conf = Confidence01(f);
         string? reason = f.Opt("reason");
-        if (op == "add")
-        {
-            var r = b.Ingest(f.Req("claimant"), f.Req("text"));
-            if (!r.Stored || r.Claim == null) throw new Rejected(r.Text);
-            var c = r.Claim;
-            if (status != null || conf != null || reason != null)
-                c = b.AdminSet(c.Id, status ?? c.Status, conf, reason is { Length: > 0 } ? reason : null, who) ?? c;
-            return new Outcome($"added claim#{c.Id}: {r.Text}", c.Id.ToString(CultureInfo.InvariantCulture), null, Js(View(c)));
-        }
+        if (op == "add") return AddClaim(f, status, conf, reason, who);
         long cid = LongId(id, "claim");
         var cur = b.Get(cid) ?? throw new Rejected($"no claim#{cid}");
-        var old = Js(View(cur));
+        var old = Js(ClaimView(cur));
         before(old);
         if (op == "delete")
         {
             if (!b.AdminDelete(cid)) throw new Rejected($"no claim#{cid}");
             return new Outcome($"deleted claim#{cid}", cid.ToString(CultureInfo.InvariantCulture), old, null);
         }
+        return UpdateClaim(cur, status, conf, reason, who, old);
+    }
+
+    private Outcome AddClaim(Fields f, ClaimStatus? status, double? conf, string? reason, string who)
+    {
+        var b = _ctx.Beliefs;
+        var r = b.Ingest(f.Req("claimant"), f.Req("text"));
+        if (!r.Stored || r.Claim == null) throw new Rejected(r.Text);
+        var c = r.Claim;
+        if (status != null || conf != null || reason != null)
+            c = b.AdminSet(c.Id, status ?? c.Status, conf, NonEmpty(reason), who) ?? c;
+        return new Outcome($"added claim#{c.Id}: {r.Text}", c.Id.ToString(CultureInfo.InvariantCulture), null, Js(ClaimView(c)));
+    }
+
+    private Outcome UpdateClaim(BeliefClaim cur, ClaimStatus? status, double? conf, string? reason, string who, string old)
+    {
+        long cid = cur.Id;
         if (status == null && conf == null && reason == null) throw new Rejected("nothing to change (status, confidence, reason)");
         if (cur.Directive) throw new Rejected("an instruction (directive) is never a fact; delete it instead");
-        var after = b.AdminSet(cid, status ?? cur.Status, conf ?? (status == null ? cur.Confidence : null), reason is { Length: > 0 } ? reason : null, who) ?? throw new Rejected($"no claim#{cid}");
-        return new Outcome($"claim#{cid} {BeliefRanks.Name(after.Status)} ({after.Confidence:0.##})", cid.ToString(CultureInfo.InvariantCulture), old, Js(View(after)));
+        var after = _ctx.Beliefs.AdminSet(cid, status ?? cur.Status, conf ?? (status == null ? cur.Confidence : null), NonEmpty(reason), who)
+            ?? throw new Rejected($"no claim#{cid}");
+        return new Outcome($"claim#{cid} {BeliefRanks.Name(after.Status)} ({after.Confidence:0.##})", cid.ToString(CultureInfo.InvariantCulture), old, Js(ClaimView(after)));
     }
+
+    private static object TraitView(SelfEntry e) => new
+    {
+        id = e.Id, section = SelfProfile.Name(e.Section), text = e.Text, player = e.Player, strength = Math.Round(e.Strength, 3), reason = e.Reason,
+    };
 
     private Outcome Trait(string op, string? id, Fields f, string? editReason, Action<string?> before)
     {
         var self = _ctx.Self ?? throw new Rejected("the self profile is off (Agent:Self:Enabled)");
-        static object View(SelfEntry e) => new
-        {
-            id = e.Id, section = SelfProfile.Name(e.Section), text = e.Text, player = e.Player, strength = Math.Round(e.Strength, 3), reason = e.Reason,
-        };
         string? reason = f.Opt("reason") is { Length: > 0 } fr ? fr : editReason;
-        SelfChangeResult res;
-        if (op == "add")
-        {
-            if (!SelfProfile.TryParseSection(f.Req("section"), out var section)) throw new Rejected($"unknown section '{f.Get("section")}'");
-            res = self.Apply(new SelfChange("add", section, f.Req("text"), f.Opt("player") is { Length: > 0 } p ? p : null, Reason: reason), SelfProfile.SourceAdmin);
-            if (!res.Ok) throw new Rejected(res.Message);
-            var added = self.Entries.FirstOrDefault(e => e.Id == res.EntryId);
-            return new Outcome(res.Message, res.EntryId?.ToString(CultureInfo.InvariantCulture), null, added == null ? null : Js(View(added)));
-        }
+        if (op == "add") return AddTrait(self, f, reason);
         long eid = LongId(id, "trait");
         var cur = self.Entries.FirstOrDefault(e => e.Id == eid) ?? throw new Rejected($"no self-profile entry #{eid}");
-        var old = Js(View(cur));
+        var old = Js(TraitView(cur));
         before(old);
         if (op == "delete")
         {
-            res = self.Apply(new SelfChange("remove", cur.Section, Id: eid, Reason: reason), SelfProfile.SourceAdmin);
+            var res = self.Apply(new SelfChange("remove", cur.Section, Id: eid, Reason: reason), SelfProfile.SourceAdmin);
             if (!res.Ok) throw new Rejected(res.Message);
             return new Outcome(res.Message, eid.ToString(CultureInfo.InvariantCulture), old, null);
         }
+        return AdjustTrait(self, f, cur, reason, old);
+    }
+
+    private static Outcome AddTrait(SelfProfile self, Fields f, string? reason)
+    {
+        if (!SelfProfile.TryParseSection(f.Req("section"), out var section)) throw new Rejected($"unknown section '{f.Get("section")}'");
+        var res = self.Apply(new SelfChange("add", section, f.Req("text"), f.Opt("player") is { Length: > 0 } p ? p : null, Reason: reason), SelfProfile.SourceAdmin);
+        if (!res.Ok) throw new Rejected(res.Message);
+        var added = self.Entries.FirstOrDefault(e => e.Id == res.EntryId);
+        return new Outcome(res.Message, res.EntryId?.ToString(CultureInfo.InvariantCulture), null, added == null ? null : Js(TraitView(added)));
+    }
+
+    private static Outcome AdjustTrait(SelfProfile self, Fields f, SelfEntry cur, string? reason, string old)
+    {
+        long eid = cur.Id;
+        var player = CheckTraitAdjust(f, cur);
+        var text = f.Has("text") ? f.Req("text") : cur.Text;
+        var res = self.Apply(new SelfChange("adjust", cur.Section, text, player is { Length: > 0 } ? player : null, Id: eid, Reason: reason), SelfProfile.SourceAdmin);
+        if (!res.Ok) throw new Rejected(res.Message);
+        var after = self.Entries.FirstOrDefault(e => e.Id == eid);
+        return new Outcome(res.Message, eid.ToString(CultureInfo.InvariantCulture), old, after == null ? null : Js(TraitView(after)));
+    }
+
+    /// <summary>Refuses an adjust that changes nothing, moves the entry's section or clears its player; returns the player field.</summary>
+    private static string? CheckTraitAdjust(Fields f, SelfEntry cur)
+    {
         if (!f.Any) throw new Rejected("nothing to change");
         if (f.Get("section") is { Length: > 0 } sec && (!SelfProfile.TryParseSection(sec, out var s2) || s2 != cur.Section))
             throw new Rejected("an entry's section can't change; delete it and add a new one");
         var player = f.Opt("player");
         if (player is { Length: 0 } && cur.Player != null) throw new Rejected("the player can't be cleared; delete the entry and add a new one");
-        var text = f.Has("text") ? f.Req("text") : cur.Text;
-        res = self.Apply(new SelfChange("adjust", cur.Section, text, player is { Length: > 0 } ? player : null, Id: eid, Reason: reason), SelfProfile.SourceAdmin);
-        if (!res.Ok) throw new Rejected(res.Message);
-        var after = self.Entries.FirstOrDefault(e => e.Id == eid);
-        return new Outcome(res.Message, eid.ToString(CultureInfo.InvariantCulture), old, after == null ? null : Js(View(after)));
+        return player;
     }
+
+    private static object LessonView(KnowledgeCorrection c, string? source) => new
+    {
+        id = c.Id, title = c.Title, correction = c.Correction, patterns = PatternLines(c), source,
+    };
+
+    private KnowledgeCorrection? ActiveLesson(string lid, AgentDb db, ILogger log) =>
+        _ctx.Rag.Corrections?.Items.FirstOrDefault(c => c.Id.Equals(lid, StringComparison.OrdinalIgnoreCase))
+        ?? KnowledgeCorrections.LoadAdmin(db, log).FirstOrDefault(c => c.Id.Equals(lid, StringComparison.OrdinalIgnoreCase));
+
+    private void SaveLesson(KnowledgeCorrection c, AgentDb db, ILogger log) => db.Tx(() =>
+    {
+        KnowledgeCorrections.SaveAdmin(db, c);
+        KnowledgeCorrections.Apply(_ctx.Rag, _ctx.Options.KnowledgeDirectory, log);
+    });
 
     private Outcome Lesson(string op, string? id, Fields f, Action<string?> before)
     {
         var db = _ctx.Db;
         var log = _ctx.Logger("MineClaw.Rag");
-        static object View(KnowledgeCorrection c, string? source) => new
+        if (op == "add") return AddLesson(f, db, log);
+        var key = Req(id, "lesson id");
+        var cur = ActiveLesson(key, db, log) ?? throw new Rejected($"no lesson '{key}'");
+        var source = KnowledgeCorrections.SourceOf(db, cur.Id) ?? KnowledgeCorrections.Source;
+        var old = Js(LessonView(cur, source));
+        before(old);
+        if (op == "delete") return DeleteLesson(cur, source, old, db, log);
+        return UpdateLesson(f, cur, old, db, log);
+    }
+
+    private Outcome AddLesson(Fields f, AgentDb db, ILogger log)
+    {
+        var title = f.Req("title");
+        var lid = f.Opt("id") is { Length: > 0 } given ? Slug(given) : Slug(title);
+        if (lid.Length == 0) throw new Rejected("lesson id is empty");
+        if (ActiveLesson(lid, db, log) != null || KnowledgeCorrections.SourceOf(db, lid) != null) throw new Rejected($"a lesson '{lid}' already exists (use update)");
+        var (clauses, whole) = ParsePatterns(f.Req("patterns"));
+        var c = new KnowledgeCorrection(lid, title, f.Req("correction"), Short(f.Req("correction")), clauses, whole);
+        SaveLesson(c, db, log);
+        return new Outcome($"added lesson {lid}", lid, null, Js(LessonView(c, KnowledgeCorrections.AdminSource)));
+    }
+
+    private Outcome DeleteLesson(KnowledgeCorrection cur, string source, string old, AgentDb db, ILogger log)
+    {
+        if (source != KnowledgeCorrections.AdminSource)
+            throw new Rejected($"'{cur.Id}' is a built-in/file lesson, rebuilt at every start; update it instead (an admin edit overrides it)");
+        db.Tx(() =>
         {
-            id = c.Id, title = c.Title, correction = c.Correction, patterns = PatternLines(c), source,
-        };
-        KnowledgeCorrection? Active(string lid) =>
-            _ctx.Rag.Corrections?.Items.FirstOrDefault(c => c.Id.Equals(lid, StringComparison.OrdinalIgnoreCase))
-            ?? KnowledgeCorrections.LoadAdmin(db, log).FirstOrDefault(c => c.Id.Equals(lid, StringComparison.OrdinalIgnoreCase));
-        void Save(KnowledgeCorrection c) => db.Tx(() =>
-        {
-            KnowledgeCorrections.SaveAdmin(db, c);
+            KnowledgeCorrections.DeleteAdmin(db, cur.Id);
             KnowledgeCorrections.Apply(_ctx.Rag, _ctx.Options.KnowledgeDirectory, log);
         });
+        var back = _ctx.Rag.Corrections?.Items.FirstOrDefault(c => c.Id.Equals(cur.Id, StringComparison.OrdinalIgnoreCase));
+        return new Outcome(back == null ? $"deleted lesson {cur.Id}" : $"deleted the admin override of {cur.Id}; the built-in lesson is back",
+            cur.Id, old, back == null ? null : Js(LessonView(back, KnowledgeCorrections.Source)));
+    }
 
-        if (op == "add")
-        {
-            var title = f.Req("title");
-            var lid = f.Opt("id") is { Length: > 0 } given ? Slug(given) : Slug(title);
-            if (lid.Length == 0) throw new Rejected("lesson id is empty");
-            if (Active(lid) != null || KnowledgeCorrections.SourceOf(db, lid) != null) throw new Rejected($"a lesson '{lid}' already exists (use update)");
-            var (clauses, whole) = ParsePatterns(f.Req("patterns"));
-            var c = new KnowledgeCorrection(lid, title, f.Req("correction"), Short(f.Req("correction")), clauses, whole);
-            Save(c);
-            return new Outcome($"added lesson {lid}", lid, null, Js(View(c, KnowledgeCorrections.AdminSource)));
-        }
-        var key = Req(id, "lesson id");
-        var cur = Active(key) ?? throw new Rejected($"no lesson '{key}'");
-        var source = KnowledgeCorrections.SourceOf(db, cur.Id) ?? KnowledgeCorrections.Source;
-        var old = Js(View(cur, source));
-        before(old);
-        if (op == "delete")
-        {
-            if (source != KnowledgeCorrections.AdminSource)
-                throw new Rejected($"'{cur.Id}' is a built-in/file lesson, rebuilt at every start; update it instead (an admin edit overrides it)");
-            db.Tx(() =>
-            {
-                KnowledgeCorrections.DeleteAdmin(db, cur.Id);
-                KnowledgeCorrections.Apply(_ctx.Rag, _ctx.Options.KnowledgeDirectory, log);
-            });
-            var back = _ctx.Rag.Corrections?.Items.FirstOrDefault(c => c.Id.Equals(cur.Id, StringComparison.OrdinalIgnoreCase));
-            return new Outcome(back == null ? $"deleted lesson {cur.Id}" : $"deleted the admin override of {cur.Id}; the built-in lesson is back",
-                cur.Id, old, back == null ? null : Js(View(back, KnowledgeCorrections.Source)));
-        }
+    private Outcome UpdateLesson(Fields f, KnowledgeCorrection cur, string old, AgentDb db, ILogger log)
+    {
         if (!f.Any) throw new Rejected("nothing to change");
         var patterns = f.Opt("patterns");
         var (cl, wh) = patterns is { Length: > 0 } ? ParsePatterns(patterns) : (cur.Clauses, cur.Whole);
         var corr = f.Has("correction") ? f.Req("correction") : cur.Correction;
         var updated = new KnowledgeCorrection(cur.Id, f.Has("title") ? f.Req("title") : cur.Title, corr, Short(corr), cl, wh);
-        Save(updated);
-        return new Outcome($"updated lesson {cur.Id}", cur.Id, old, Js(View(updated, KnowledgeCorrections.AdminSource)));
+        SaveLesson(updated, db, log);
+        return new Outcome($"updated lesson {cur.Id}", cur.Id, old, Js(LessonView(updated, KnowledgeCorrections.AdminSource)));
     }
 
     private Outcome Observation(string op, string? id, Fields f, Action<string?> before)
