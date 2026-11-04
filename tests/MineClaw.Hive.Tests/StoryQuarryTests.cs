@@ -11,9 +11,15 @@ public sealed class StoryQuarryTests
 {
     private const int X0 = 10, Z0 = 10, BedrockTop = 2;
 
-    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig(int w, int d)
+    private sealed class Clock : TimeProvider
     {
-        var (c, h, world) = StoryRig.Make();
+        public DateTimeOffset Now = DateTimeOffset.Parse("2026-11-04T12:00:00Z");
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig(int w, int d, TimeProvider? time = null)
+    {
+        var (c, h, world) = StoryRig.Make(time: time);
         c.DoneGrace = TimeSpan.Zero;
         foreach (var t in WorkTypes.All) c.Pawns.Values.First().Priorities[t] = t == WorkTypes.Mine ? 1 : 0;
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: new Stack(4, 0, 64)); // a stone pickaxe and cobblestone for steps
@@ -32,7 +38,8 @@ public sealed class StoryQuarryTests
     }
 
     /// <summary>The pawn does every job the quarry hands out (the world changes as the script would), until it has none.</summary>
-    private static (int Digs, int Places, List<JsonObject> Jobs) Work(StoryColony c, FakeStoryWorld w, int max = 6000)
+    private static (int Digs, int Places, List<JsonObject> Jobs) Work(StoryColony c, FakeStoryWorld w, int max = 6000,
+        Func<JsonObject, bool>? until = null, Func<P3, bool>? fails = null, int others = 0)
     {
         int digs = 0, places = 0;
         var jobs = new List<JsonObject>();
@@ -40,9 +47,15 @@ public sealed class StoryQuarryTests
         {
             var j = c.Next();
             var kind = j["kind"]!.GetValue<string>();
-            if (kind is not ("dig" or "place")) break;
+            if (kind is not ("dig" or "place") && others-- > 0) { c.Report(c.P(), j["id"]!.GetValue<string>(), "done", null, null); continue; }
+            if (kind is not ("dig" or "place") || until?.Invoke(j) == true) break;
             jobs.Add(j);
             var at = P3.Parse(JsonNode.Parse("[" + j["at"]!.GetValue<string>() + "]"))!.Value;
+            if (fails?.Invoke(at) == true)
+            {
+                c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", $"no path to within 3 of ({at}) (no route)", null);
+                continue;
+            }
             if (kind == "dig") { Assert.NotEqual(7, w.Block(at.X, at.Y, at.Z).Id); w.Set(at.X, at.Y, at.Z, 0); digs++; }
             else { w.Set(at.X, at.Y, at.Z, 4); places++; }
             c.Report(c.P(), j["id"]!.GetValue<string>(), "done", null, null);
@@ -168,6 +181,57 @@ public sealed class StoryQuarryTests
         Assert.Equal(1, w.Block(X0 + 3, 40, zz).Id); // the seal stays
         Assert.Contains(c.Alerts, a => a.Text.Contains("beside lava or water"));
         Assert.True(c.Zones.Single(x => x.Id == id).QuarryLayer > 60); // the quarry still went down to the bottom
+    }
+
+    private static JsonObject QuarryState(StoryColony c, string id) =>
+        c.State()["zones"]!.AsArray().Select(n => n!.AsObject()).Single(o => o["id"]!.GetValue<string>() == id)["quarry"]!.AsObject();
+
+    [Fact]
+    public void Live_a_layer_is_never_left_half_dug_cells_that_failed_hold_it_until_they_are_dug()
+    {
+        // Live 11-04: "No pawn wants to mine in it any more after about the 7th depth layer." Cells that failed ("no path to within
+        // 3", the pawn's path dropped onto a cell another pawn had dug) rested, the layer moved on without them, the floor went
+        // uneven and pawns were stranded on the leftovers. Now the layer waits for them (and says so).
+        var clock = new Clock();
+        var (c, _, w) = Rig(9, 9, clock);
+        var id = Quarry(c, 9, 9);
+        var stuck = new P3(X0 + 4, 60, Z0 + 4); // layer 3
+        Work(c, w, fails: at => at == stuck);
+        // Everything else of layer 3 dug; the stuck cell rests: nothing deeper is offered, the status says why.
+        Assert.Equal(1, w.Block(stuck.X, stuck.Y, stuck.Z).Id);
+        Assert.Equal(3, c.Zones.Single().QuarryLayer);
+        Assert.All(Enumerable.Range(X0, 9), x => Assert.Equal(1, w.Block(x, 59, Z0 + 1).Id)); // layer 4 untouched
+        Assert.Contains("resting after failures", QuarryState(c, id)["status"]!.GetValue<string>());
+        // Its rest over, it is dug, then the quarry goes on down.
+        clock.Now += TimeSpan.FromMinutes(15);
+        Work(c, w, others: 20, until: j => j["at"]!.GetValue<string>() is var a && P3.Parse(JsonNode.Parse("[" + a + "]"))!.Value.Y < 55);
+        Assert.Equal(0, w.Block(stuck.X, stuck.Y, stuck.Z).Id);
+    }
+
+    [Fact]
+    public void Live_a_broken_or_refilled_stair_is_repaired_before_any_more_digging_and_a_refilled_layer_is_found_again()
+    {
+        var clock = new Clock();
+        var (c, _, w) = Rig(9, 9, clock);
+        var id = Quarry(c, 9, 9);
+        Work(c, w, until: j => j["at"]!.GetValue<string>().Contains(",55,")); // down to layer 8 (y 55)
+        c.Report(c.P(), c.CurrentOf(c.P())!.Id, "done", null, null); // that one is left for later
+        var ring = StoryQuarry.Ring(c.Zones.Single().Cells)!;
+        var gone = StoryQuarry.Step(ring, 63, 5);
+        w.Set(gone.X, gone.Y, gone.Z, 0); // a step lost (mined by mistake, a creeper…)
+        clock.Now += TimeSpan.FromSeconds(6);
+        Assert.Contains($"stair broken at y {gone.Y}", QuarryState(c, id)["status"]!.GetValue<string>());
+        var next = c.Next();
+        Assert.Equal("place", next["kind"]!.GetValue<string>());
+        Assert.Equal(gone.ToString(), next["at"]!.GetValue<string>());
+        w.Set(gone.X, gone.Y, gone.Z, 4);
+        c.Report(c.P(), next["id"]!.GetValue<string>(), "done", null, null);
+        // A cell three layers up refilled (a block placed back): found on the next full look, and dug before anything deeper.
+        var refill = new P3(X0 + 4, 61, Z0 + 4);
+        w.Set(refill.X, refill.Y, refill.Z, 1);
+        clock.Now += TimeSpan.FromSeconds(31);
+        var j = c.Next();
+        Assert.Equal(refill.ToString(), j["at"]!.GetValue<string>());
     }
 
     [Fact]
