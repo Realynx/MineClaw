@@ -247,9 +247,11 @@ public static class StoryConstruction
                     // a block pawns can't place yet is kept as an unsupported ghost (alerted, never a job).
                     bool second = kind == "block" && MineClaw.Bot.Blueprints.DesignFacing.SecondHalf(mat.Id, mat.Meta);
                     var (placing, why) = kind == "block" ? PlacingItem(d, mat.Id, mat.Meta) : (mat.Item, null);
+                    // The Architect's turn (furniture, a single block): the meta faces that way, so the hologram and the pawn agree.
+                    int meta = Faced(mat.Id, mat.Meta, facing);
                     foreach (var p in Positions())
                     {
-                        Add(p.X, p.Y, p.Z, mat.Id, mat.Meta, placing ?? mat.Item, facing.Length > 0 ? facing : null, job: !second && placing != null);
+                        Add(p.X, p.Y, p.Z, mat.Id, meta, placing ?? mat.Item, facing.Length > 0 ? facing : null, job: !second && placing != null);
                         if (!second && placing == null && g.Count > 0 && g[^1].At == p) { g[^1].State = "unsupported"; g[^1].Reason = why; }
                     }
                     break;
@@ -257,6 +259,20 @@ public static class StoryConstruction
         }
         foreach (var gh in g.Where(x => x.Item == null && !x.Remove)) gh.Item = d.ItemExists(gh.Id) ? d.Item(gh.Id).Name : d.Block(gh.Id).Name;
         return (g, mat, g.Count == 0 ? "nothing to build there" : null);
+    }
+
+    /// <summary>
+    /// A block's meta turned to an item's <c>facing</c> word (n|e|s|w; empty = as it is), in the family's own sense (DesignFacing): a
+    /// furnace's or chest's front, the way stairs rise, a bed's foot → head, a pumpkin's face. A piston, dispenser or hopper pointing
+    /// up or down (meta 0/1) turns to face that way too. A floor torch, an upright log, a block with no facing: unchanged.
+    /// </summary>
+    public static int Faced(int id, int meta, string facing)
+    {
+        if (MineClaw.Bot.Blueprints.Dirs.Parse(facing) is not { } dir) return meta;
+        var fam = MineClaw.Bot.Blueprints.DesignFacing.FamilyOf(id);
+        if (fam is MineClaw.Bot.Blueprints.DesignFamily.Facing6 or MineClaw.Bot.Blueprints.DesignFamily.Hopper && (meta & 7) is 0 or 1)
+            return (meta & 8) | (dir switch { MineClaw.Bot.Blueprints.Dir.North => 2, MineClaw.Bot.Blueprints.Dir.South => 3, MineClaw.Bot.Blueprints.Dir.West => 4, _ => 5 });
+        return MineClaw.Bot.Blueprints.DesignFacing.HasFacing(fam) ? MineClaw.Bot.Blueprints.DesignFacing.WithFacing(id, meta, dir) : meta;
     }
 
     /// <summary>The liquid a water item pours: its <c>material</c> "water" (default) or "lava" (also by block id 8–11); null = neither.</summary>

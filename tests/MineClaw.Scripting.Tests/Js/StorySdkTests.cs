@@ -211,6 +211,46 @@ public sealed class StorySdkTests
             "maid_chan j2 done"], port.Reports);
     }
 
+    /// <summary>
+    /// Rotation (docs/web/story-mode.md "Rotation"): a batch with <c>metas</c> places each cell with place_turned and its meta; a
+    /// "placed with wrong rotation" is reported as that cell's failure even though the block is there (never taken as built).
+    /// </summary>
+    [Fact]
+    public async Task A_turned_batch_places_each_cell_with_its_meta_and_a_wrong_rotation_is_not_built()
+    {
+        var port = new FakeDirector(
+            J("j1", "place", j =>
+            {
+                j["at"] = "1,64,1"; j["block"] = "planks"; j["want"] = "planks"; // (the rig is b1.8.1: any block will do)
+                j["cells"] = new JsonArray("1,64,1", "2,64,1");
+                j["metas"] = new JsonArray(2, 3);
+            }),
+            J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(5, 2, 0));
+        rig.On["place_turned"] = (args, _) =>
+        {
+            var at = args.GetProperty("at").GetString()!;
+            var p = at.Split(',').Select(int.Parse).ToArray();
+            rig.World.SetBlock(p[0], p[1], p[2], 5, args.GetProperty("meta").GetInt32());
+            return Task.FromResult(at == "2,64,1"
+                ? ActResult.Fail("placed with wrong rotation at 2,64,1: rising south, wants rising north")
+                : ActResult.Success("placed oak stairs at " + at + " rising south"));
+        };
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        Assert.Contains("""place_turned {"at":"1,64,1","block":"planks","meta":2}""", calls);
+        Assert.Contains("""place_turned {"at":"2,64,1","block":"planks","meta":3}""", calls);
+        Assert.DoesNotContain(calls, c => c.StartsWith("place {"));
+        Assert.Equal([
+            "maid_chan j1 progress cell 1,64,1 done",
+            "maid_chan j1 progress cell 2,64,1 failed: placed with wrong rotation at 2,64,1: rising south, wants rising north",
+            "maid_chan j1 done batch: 1/2 placed",
+            "maid_chan j2 done"], port.Reports);
+    }
+
     [Fact]
     public async Task The_pawn_script_takes_and_holds_a_jobs_tool_runs_gear_jobs_and_attacks_the_exact_entity()
     {

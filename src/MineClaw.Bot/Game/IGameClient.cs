@@ -78,6 +78,10 @@ public interface IGameClient
     /// neighbour (doors: the top of the block below). Default: plain <see cref="PlaceBlockAsync(int,int,int,int,CancellationToken)"/>.</summary>
     Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         PlaceBlockAsync(x, y, z, itemId, ct);
+    /// <summary>Places an item so its block gets <paramref name="meta"/>'s facing, axis or half (a design's furnace front, stairs, log
+    /// axis, wall torch: <see cref="MinecraftClient.PlaceTurnedAsync"/>). Default: <see cref="PlaceVariantAsync"/> (the click's own).</summary>
+    Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
+        PlaceVariantAsync(x, y, z, itemId, damage, null, ct);
     Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default);
     /// <summary>Right-clicks <paramref name="face"/> of a block holding <paramref name="itemId"/>: a hoe tills dirt/grass, seeds
@@ -221,6 +225,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) => Inner.PlaceBlockAsync(x, y, z, itemId, ct);
     public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         Inner.PlaceVariantAsync(x, y, z, itemId, damage, face, ct);
+    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
+        Inner.PlaceTurnedAsync(new BlockPos(x, y, z), itemId, damage, meta, ct);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>

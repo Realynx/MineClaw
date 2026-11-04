@@ -36,6 +36,8 @@ describe('hologram states', () => {
     expect(holoState('unsupported', 'queued')).toBe('blocked');
     expect(holoState('done', 'active')).toBeNull();
     expect(holoState('todo', 'done')).toBeNull();
+    expect(holoState('misrotated', 'active')).toBe('blocked'); // placed turned the wrong way: shown over it
+    expect(holoState('misrotated', 'done')).toBe('blocked'); // even once its build is done
   });
 
   it('gives each state its own calm look', () => {

@@ -209,6 +209,8 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceBlockAsync(x, y, z, itemId, ct), ct);
     public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceVariantAsync(x, y, z, itemId, damage, face, ct), ct);
+    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
+        Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceTurnedAsync(x, y, z, itemId, damage, meta, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) =>
         GenHeld(new BlockPos(x, y, z), p => inner.HarvestGeneratorAsync(p.X, p.Y, p.Z, count, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>

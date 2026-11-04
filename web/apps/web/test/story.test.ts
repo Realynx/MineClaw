@@ -80,6 +80,7 @@ import {
   levelCutY,
   placeDesign,
   lineEnd,
+  materialTurns,
   nextLevel,
   orderBody,
   preview,
@@ -589,6 +590,19 @@ describe('the Architect', () => {
       }).success,
     ).toBe(true);
     expect(preview(buildItem('block', [0, 65, 0], [0, 65, 0], o), 0).reason).toBe('short of 1');
+  });
+
+  it('a single block that faces somewhere takes the Q/E turn as its meta (the hologram and the pawn agree)', () => {
+    const at: [number, number, number] = [0, 65, 0];
+    // A furnace's front east = meta 5; stairs rising west = 1; a pumpkin facing north = 2; planks stay as they are.
+    expect(buildItem('block', at, at, { ...o, material: [61, 0], facing: 'e' }).material).toEqual([61, 5]);
+    expect(buildItem('block', at, at, { ...o, material: [53, 0], facing: 'w' }).material).toEqual([53, 1]);
+    expect(buildItem('block', at, at, { ...o, material: [53, 4], facing: 'n' }).material).toEqual([53, 7]); // upside down kept
+    expect(buildItem('block', at, at, { ...o, material: [86, 0], facing: 'n' }).material).toEqual([86, 2]);
+    expect(buildItem('block', at, at, { ...o, material: 'oak_planks', facing: 'e' }).material).toBe('oak_planks');
+    expect(preview(buildItem('block', at, at, { ...o, material: [61, 0], facing: 's' })).blocks[0]![4]).toBe(3);
+    expect(materialTurns([61, 0])).toBe(true);
+    expect(materialTurns('cobblestone')).toBe(false);
   });
 
   it('levels, the cut, facing and face snapping', () => {

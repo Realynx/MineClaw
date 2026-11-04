@@ -58,6 +58,7 @@ public sealed class Rig : IDisposable
                 new ScriptAction("smelt", ["item", "count", "fuel"], Atomic: true),
                 new ScriptAction("withdraw", ["item", "count", "at"], Atomic: true),
                 new ScriptAction("place", ["block", "at"], Atomic: true),
+                new ScriptAction("place_turned", ["block", "at", "meta"], Atomic: true),
                 new ScriptAction("use_block", ["at"], Atomic: true),
                 new ScriptAction("eat", [], Atomic: true),
                 new ScriptAction("harvest_generator", ["at", "count", "store", "stand"]),

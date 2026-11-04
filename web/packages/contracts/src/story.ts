@@ -596,7 +596,8 @@ export const StoryBuild = z.object({
 export type StoryBuild = z.infer<typeof StoryBuild>;
 
 /** Ghost block [x, y, z, id, meta, build_id, state, kind?] (state: todo | leased | done | blocked | unsupported: a block pawns
- * can't place yet, shown and alerted, never a job; kind: dig | place | pour — a dig ghost's id/meta is the live world's block
+ * can't place yet, shown and alerted, never a job | misrotated: placed, but turned another way than the design (meta), shown over
+ * it and alerted; kind: dig | place | pour — a dig ghost's id/meta is the live world's block
  * there, the material the dig expects; a pour ghost is a liquid source, water 9 or lava 11, poured from a bucket). */
 export const StoryGhostBlock = z.tuple([
   z.number().int(),
@@ -1700,6 +1701,10 @@ const SLAB = 44;
 const OAK_STAIRS = 53;
 const COBBLE_STAIRS = 67;
 const STAIRS_META: Record<StoryFacing, number> = { e: 0, w: 1, s: 2, n: 3 };
+/** A door's lower half: the placer's facing E S W N (the director's `DoorMeta`). */
+const DOOR_META: Record<StoryFacing, number> = { e: 0, s: 1, w: 2, n: 3 };
+/** A chest's or furnace's front N S W E = metas 2..5 (the director's `Faced`). */
+export const FRONT_META: Record<StoryFacing, number> = { n: 2, s: 3, w: 4, e: 5 };
 /** Block ids that are a door, a fence or stairs themselves (b1.8.1 and 1.12.2): such a material is placed as it is. */
 const PLACED_DOOR_IDS = new Set([64, 71, 193, 194, 195, 196, 197]);
 const FENCE_IDS = new Set([85, 113, 188, 189, 190, 191, 192]);
@@ -1769,7 +1774,7 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
     }
     case 'door':
       for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
-        put(x, y, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, STAIRS_META[item.facing ?? 's'] & 3);
+        put(x, y, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, DOOR_META[item.facing ?? 'n']);
         put(x, y + 1, z, PLACED_DOOR_IDS.has(id) ? id : DOOR, 8);
       }
       break;
@@ -1812,7 +1817,8 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
           const [dx, dz] = ({ s: [0, 1], w: [-1, 0], n: [0, -1], e: [1, 0] } as const)[f];
           put(x, y, z, 26, dir);
           put(x + dx, y, z + dz, 26, dir | 8);
-        } else put(x, y, z, fid, fmeta);
+        } else if (fid === 54 || fid === 61) put(x, y, z, fid, FRONT_META[f]); // the front faces `facing` (as the pawns place it)
+        else put(x, y, z, fid, fmeta);
       }
       break;
     }

@@ -939,8 +939,8 @@ Execution:
   `blocked` with `reason:"need 34 wooden planks"` and an alert. It goes on by itself once some is stored (a Chop, Mine or Haul
   pawn, or a bill, can supply it).
 - A ghost that failed 3 times is `blocked`.
-- Facing uses the place tool's own placement. Scaffolding and pillaring are the place and goto tools' own; there is no extra
-  scaffold.
+- Facing, axis and half are the design's: each turned cell is placed the way its meta says (see "Rotation" below). Scaffolding
+  and pillaring are the place and goto tools' own; there is no extra scaffold.
 
 ### Building fast (added 2026-11-03, night)
 
@@ -1007,11 +1007,12 @@ Now:
   The job ends `done` with `batch: n/m placed`. A cell left unreported at the end goes back to the queue with no failure, unless
   the world shows it built. (A job's own message now rides with every `done`. Before, the stash step's empty result replaced
   it, so a chop's `partial: …` note never reached the director.)
-- **Already built is done.** A cell that holds the same block and variant (`DesignFacing.VariantMask`; a facing is the
-  placement's own) is done at pick time, when the pawn reports it, and when a job ends or fails. "Occupied by" anything else is
+- **Already built is done.** A cell that holds the same block and variant (`DesignFacing.VariantMask`), turned the designed way
+  where the placement decides it (see "Rotation"), is done at pick time, when the pawn reports it, and when a job ends or fails. "Occupied by" anything else is
   transient: the next pick clears the cell first (`clear`), and only repeated refusals count. A "done" for a cell that shows another
   block (another variant with the same name) is not taken.
-- A job: `{kind:"place", at, block, want, cells:["x,y,z"…], clear?:["x,y,z"…], stand?, facing?, fetch?:[{from, item, n}…]}`.
+- A job: `{kind:"place", at, block, want, cells:["x,y,z"…], metas?:[meta…], clear?:["x,y,z"…], stand?, facing?, fetch?:[{from, item, n}…]}`
+  (`metas`: each cell's meta, when the batch has a turned block; see "Rotation").
   An older saved pawn script places only `at` and reports the whole job. Its first cell counts as built, and the rest go back.
 
 Measured on the director with a simulated colony (`StoryBuildBenchmarkTests`): 10 pawns with only Build on, a 16×16 planks
@@ -1033,6 +1034,55 @@ within reach works.
 FakeServer 1.12.2 (`StoryFakeServerTests.Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures`): three pawns lay
 a 6×6 floor from one chest with no failed cell (no busy chest, no "too far", no "occupied") in about 2 s of wall time (1.8–2.5 s
 over the runs). The fake clients tick every 5 ms, so that is about 20 s of game time. Each pawn placed 12. The test allows 60 s.
+
+### Rotation (added 2026-11-04)
+
+Fox, 11-04: "When pawns place special blocks like furnaces that have rotation, they don't take into consideration the direction
+they're facing when they place it to replicate the same rotation that was specified in the hologram." The ghosts already carried
+the design's meta (the hologram showed it), but the pawn placed with the plain `place` tool: the client clicked the nearest
+visible support face while looking at it, so the furnace faced wherever the pawn happened to stand, a log lay along whichever face
+was nearest, and a cell holding the block turned any way counted as built.
+
+Now:
+
+- **The meta goes to the pawn.** The Architect's turn (Q/E, or the turn buttons) becomes the ghost's meta for furniture and single
+  blocks too (`StoryConstruction.Faced`: a furnace's or chest's front, stairs' rise, a pumpkin's face; a piston from the palette
+  turns from "down" to the facing). The Single block tool shows the turn control when its material faces somewhere and sends the
+  turned meta, so the hologram is what gets built. A batch with a turned block carries `metas`, and `story.place` places those cells
+  with the hidden `place_turned(block, at, meta)` tool (`MinecraftClient.PlaceTurnedAsync`).
+- **The click that gives the meta** (`MineClaw.World.BlockOrientation`, per version, from the 1.12.2 decompile and b1.8.1 mc-dev):
+  - From the yaw (said in a look packet right before the click; the server reads the player's rotation then): furnaces, chests,
+    trapped chests, b1.8.1 dispensers, pumpkins, jack-o'-lanterns, glazed terracotta, repeaters and comparators face the player;
+    stairs, fence gates, doors and beds take the look; an anvil the look turned clockwise.
+  - From the stand: pistons, 1.12.2 dispensers and droppers point at the player in 3D, observers away. Up when the player is within
+    2 blocks horizontally and the eyes are more than 2 above the block's base (a stand one block higher, beside it); down when the
+    eyes are below its base (two lower); else horizontal from the yaw. The pitch is never read.
+  - From the clicked face: torches, ladders, buttons, levers, end rods, shulker boxes, tripwire hooks, side-clicked trapdoors; a
+    hopper outputs into the block clicked; 1.12.2 logs, hay, bone blocks, purpur and quartz pillars lie along the face's axis.
+  - From the face and cursor height (1.12.2): slabs, stairs and trapdoors are the top half from the underside or high on a side,
+    else the bottom half.
+  - Doors and beds go on the top face of the block below. A 1.12.2 door is asked for the left hinge (designs don't keep the hinge;
+    neighbours can still turn it).
+  The client takes a click from where it stands when one reaches the face (a face in view first), else walks to the nearest stand
+  that has one, says the yaw, sends the face and the cursor.
+- **Checked after placing.** The world's meta must agree on the bits the click decides (`BlockOrientation.Same`: not the open,
+  powered or lit bits; a b1.8.1 door's flipped form counts as its look, a b1.8.1 floor lever is 5 or 6 at random). A wrong one is
+  dug and placed once more from another stand when the pawn can dig it for its drop (a furnace needs a pickaxe); else the cell
+  reports `failed: placed with wrong rotation …`.
+- **Shown, not hidden.** The director counts a cell built only when it is turned the designed way. A wrong one already there is
+  cleared and placed again once; after that, or at once for a block that holds items (chests, furnaces, dispensers, hoppers,
+  brewing stands, shulker boxes: never broken for their rotation), the ghost is `misrotated` with the reason ("placed facing north,
+  wants facing east"), an alert says so, and it counts as finished for the build. The map keeps drawing it as a blocked hologram over
+  the block, even once the build is done.
+- **Not decided by the click:** rails (their shape follows the neighbours), a chest beside a chest of its kind (both halves take
+  the newer one's facing, so a designed double chest faces one way; three in a row can't be placed in vanilla), an end rod on an
+  end rod. Signs, banners and skulls stay unsupported ghosts.
+
+Tests: `BlockOrientationTests` (metas → face, yaw, cursor, stand, both versions; the model against the fake server's own
+transcription of the vanilla rules over every face, quarter, half and a ring of stands), `TurnedPlacementTests` (the client on
+the fake server: a furnace, stairs each way, a wall torch, a log on its side, an upside-down stair, a top slab, a piston pointing
+up from a stand over it), `StoryRotationTests` (the director), and `StoryFakeServerTests.A_pawn_builds_a_design_with_each_block_turned_as_drawn`
+(a pawn, both versions).
 
 ## Water (added 2026-11-04)
 

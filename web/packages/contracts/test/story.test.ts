@@ -184,6 +184,14 @@ describe('build expansion (the preview)', () => {
       C.expandBuildItem({ kind: 'remove', area: [0, 64, 0, 1, 65, 0], material: 'stone' }).every((b) => b[3] === 0),
     ).toBe(true);
   });
+
+  it('the turn shows in the preview the way the pawns place it: a furnace front, a door', () => {
+    // A furnace or chest faces `facing` (fronts N S W E = 2..5); a door's lower half is the placer's facing E S W N.
+    expect(C.expandBuildItem({ kind: 'furnace', blocks: [[0, 64, 0]], facing: 'e' })[0]![4]).toBe(5);
+    expect(C.expandBuildItem({ kind: 'chest', blocks: [[0, 64, 0]], facing: 'n' })[0]![4]).toBe(2);
+    expect(C.expandBuildItem({ kind: 'door', blocks: [[0, 64, 0]], material: 'oak_planks', facing: 's' })[0]![4]).toBe(1);
+    expect(C.expandBuildItem({ kind: 'door', blocks: [[0, 64, 0]], material: 'oak_planks', facing: 'w' })[0]![4]).toBe(2);
+  });
 });
 
 describe('tool matching', () => {

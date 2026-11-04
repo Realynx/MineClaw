@@ -79,7 +79,7 @@ public sealed partial class StoryColony
         foreach (var b in Builds)
             if (b.Status != "done")
                 foreach (var g in b.Ghosts)
-                    if (g.State is not ("done" or "unsupported")) cells.Add(g.At);
+                    if (g.State is not ("done" or "unsupported" or "misrotated")) cells.Add(g.At);
         var fronts = Storages.SelectMany(s => s.DoubleWith is { } d ? new[] { s.Chest, d } : [s.Chest]).Concat(Benches.Select(b => b.Pos)).ToList();
         // Inside a wall or fence ring still going up: an idle pawn there gets walled in (FakeServer: a hut's pawn shut in).
         var rings = Builds.Where(b => b.Status != "done").Select(Footprint).Where(f => f.Walled).ToList();

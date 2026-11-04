@@ -189,4 +189,16 @@ describe('the docked bar', () => {
     expect(document.querySelector('[data-testid="material-list"]')).toBeNull();
     expect(document.querySelector('[data-testid="facing"]')!.textContent).toBe('s');
   });
+
+  it('a single block turns with Q / E (and the turn buttons) when its material faces somewhere', () => {
+    const block = (material: BuildOpts['material']) =>
+      bar('block' as 'wall', { build: { ...build, material }, options: materialsFor('block', PALETTE) });
+    block([5, 0]); // planks: nothing to turn
+    expect(document.querySelector('[data-testid="facing"]')).toBeNull();
+    cleanup();
+    const f = block([61, 0]); // a furnace: the turn control, and a click turns it
+    expect(document.querySelector('[data-testid="facing"]')!.textContent).toBe('s');
+    fireEvent.click(document.querySelector('[aria-label="Turn right (E)"]')!);
+    expect(f.onBuild).toHaveBeenCalledWith({ facing: 'w' });
+  });
 });
