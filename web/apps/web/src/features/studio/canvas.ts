@@ -7,7 +7,7 @@
  * double plant's upper half, a bed's head: `partnerOf`), and a chest placed beside a single chest takes its facing (they pair),
  * the same rules as the bot's canvas.
  */
-import { DESIGNER_EARTH, DESIGNER_PLOT, type DesignerCell } from '@mineclaw/contracts';
+import { DESIGNER_EARTH, DESIGNER_MINE_PLOT, DESIGNER_PLOT, type DesignerCell } from '@mineclaw/contracts';
 import { facingOf, firstHalfOf, partnerOf, twoCell } from './facing';
 
 export type Cell = DesignerCell;
@@ -20,12 +20,49 @@ export const DEPTH = DESIGNER_PLOT.depth;
 /** Undisturbed ground (below y 0 only). */
 export const EARTH = DESIGNER_EARTH;
 
+/** What a mine canvas's ground is made of: the generated terrain (./mine/mineTerrain). */
+export interface PlotTerrain {
+  /** The state at a cell (id << 4 | meta; 0 = air). */
+  state(x: number, y: number, z: number): number;
+}
+
+/**
+ * The plot's mode (one studio per page, so module-wide): a build stands on flat grass (canvas y -16..47, the ground is y < 0,
+ * canvas y 0 = world y 64); a mine is dug into generated terrain at absolute y (canvas y 0..127 = the world's), its ground
+ * every solid generated cell, bedrock never dug.
+ */
+export interface PlotMode {
+  kind: 'build' | 'mine';
+  minY: number;
+  maxY: number;
+  /** World y of canvas y 0. */
+  baseY: number;
+  terrain: PlotTerrain | null;
+}
+
+const BUILD_MODE: PlotMode = { kind: 'build', minY: -DEPTH, maxY: HEIGHT - 1, baseY: 64, terrain: null };
+let plot: PlotMode = BUILD_MODE;
+
+/** Sets the plot's mode: a build (the default) or a mine over a terrain. */
+export function setPlotMode(m: { kind: 'build' } | { kind: 'mine'; terrain: PlotTerrain }): void {
+  plot =
+    m.kind === 'mine'
+      ? { kind: 'mine', minY: 0 - DESIGNER_MINE_PLOT.depth, maxY: DESIGNER_MINE_PLOT.height - 1, baseY: 0, terrain: m.terrain }
+      : BUILD_MODE;
+}
+
+/** The plot's mode now. */
+export const plotMode = (): PlotMode => plot;
+
 export const inside = (x: number, y: number, z: number): boolean =>
-  x >= 0 && x < SIZE && z >= 0 && z < SIZE && y >= -DEPTH && y < HEIGHT;
+  x >= 0 && x < SIZE && z >= 0 && z < SIZE && y >= plot.minY && y <= plot.maxY;
 export const keyOf = (x: number, y: number, z: number): number => x + SIZE * (z + SIZE * (y + DEPTH));
 export const posOf = (k: number): V3 => [k % SIZE, Math.floor(k / (SIZE * SIZE)) - DEPTH, Math.floor(k / SIZE) % SIZE];
-/** Below the grass's top (the ground). */
-export const below = (y: number): boolean => y < 0;
+/** The ground (undisturbed unless dug): below the grass's top on a build plot, any solid generated cell on a mine. */
+export const below = (x: number, y: number, z: number): boolean =>
+  plot.terrain ? (plot.terrain.state(x, y, z) >> 4) !== 0 : y < 0;
+/** Ground that never digs (a mine's bedrock). */
+export const bedrock = (x: number, y: number, z: number): boolean => !!plot.terrain && plot.terrain.state(x, y, z) >> 4 === 7;
 
 /** An applied change set: the cells as they became (`forward`) and as they were (`backward`). */
 export interface Change {
@@ -48,7 +85,7 @@ export class Canvas {
     const k = keyOf(x, y, z);
     const v = this.blocks.get(k);
     if (v !== undefined) return [v >> 4, v & 15];
-    return below(y) && !this.dug.has(k) ? [EARTH, 0] : [0, 0];
+    return below(x, y, z) && !this.dug.has(k) ? [EARTH, 0] : [0, 0];
   }
 
   /** The block id at a cell: 0 = air, `EARTH` = undisturbed ground (anything not 0 is solid to the tools). */
@@ -58,7 +95,7 @@ export class Canvas {
 
   /** Undisturbed ground: below the grass, no block, not dug. */
   earth(x: number, y: number, z: number): boolean {
-    return below(y) && !this.blocks.has(keyOf(x, y, z)) && !this.dug.has(keyOf(x, y, z));
+    return below(x, y, z) && !this.blocks.has(keyOf(x, y, z)) && !this.dug.has(keyOf(x, y, z));
   }
 
   /** Every block as cells. */
@@ -82,15 +119,17 @@ export class Canvas {
     for (const c of cells)
       if (inside(c[0], c[1], c[2]) && c[3] > 0) this.blocks.set(keyOf(c[0], c[1], c[2]), c[3] * 16 + (c[4] & 15));
     for (const p of dug)
-      if (inside(p[0], p[1], p[2]) && below(p[1]) && !this.blocks.has(keyOf(p[0], p[1], p[2])))
+      // A mine keeps every dug cell it loads (a design keeps its digs whatever the terrain); a build only those below ground.
+      if (inside(p[0], p[1], p[2]) && (plot.kind === 'mine' || below(p[0], p[1], p[2])) && !this.blocks.has(keyOf(p[0], p[1], p[2])))
         this.dug.add(keyOf(p[0], p[1], p[2]));
   }
 
   /** A cell's state as one number: id * 16 + meta, 0 = air, -1 = earth. */
-  private state(k: number, y: number): number {
+  private state(k: number): number {
     const v = this.blocks.get(k);
     if (v !== undefined) return v;
-    return below(y) && !this.dug.has(k) ? -1 : 0;
+    const [x, y, z] = posOf(k);
+    return below(x, y, z) && !this.dug.has(k) ? -1 : 0;
   }
 
   /**
@@ -125,18 +164,21 @@ export class Canvas {
   apply(cells: readonly Cell[], pairDoors = true): Change {
     const before = new Map<number, number>();
     const touched: number[] = [];
-    const put = (k: number, y: number, next: number) => {
+    const put = (k: number, next: number) => {
+      const [x, y, z] = posOf(k);
       this.blocks.delete(k);
       this.dug.delete(k);
       if (next > 0) this.blocks.set(k, next);
-      else if (next === 0 && below(y)) this.dug.add(k);
+      else if (next === 0 && below(x, y, z)) this.dug.add(k);
     };
     const set = (x: number, y: number, z: number, id: number, meta: number) => {
       if (!inside(x, y, z)) return;
       const k = keyOf(x, y, z);
-      const old = this.state(k, y);
-      // Air below ground is dug; earth above ground is plain air.
-      const next = id > 0 ? id * 16 + (meta & 15) : id === EARTH && below(y) ? -1 : 0;
+      const old = this.state(k);
+      // Air below ground is dug; earth above ground is plain air. A mine's bedrock never digs (a block removed there is
+      // ground again).
+      const rock = id <= 0 && bedrock(x, y, z);
+      const next = id > 0 ? id * 16 + (meta & 15) : (id === EARTH || rock) && below(x, y, z) ? -1 : 0;
       if (old === next) return;
       if (!before.has(k)) {
         before.set(k, old);
@@ -152,10 +194,10 @@ export class Canvas {
             before.set(ok, other);
             touched.push(ok);
           }
-          put(ok, oy, 0);
+          put(ok, bedrock(ox, oy, oz) ? -1 : 0);
         }
       }
-      put(k, y, next);
+      put(k, next);
     };
     for (const c of cells) {
       const meta = pairDoors && c[3] > 0 ? this.chestMeta(c[0], c[1], c[2], c[3], c[4]) : c[4];
@@ -169,7 +211,7 @@ export class Canvas {
       v < 0 ? [x, y, z, EARTH, 0] : [x, y, z, v >> 4, v & 15];
     for (const k of touched) {
       const [x, y, z] = posOf(k);
-      const now = this.state(k, y);
+      const now = this.state(k);
       const was = before.get(k)!;
       if (now === was) continue;
       forward.push(cell(x, y, z, now));
@@ -181,8 +223,8 @@ export class Canvas {
   /** The box of the blocks and the dug cells, or null when empty. */
   bounds(): { min: V3; max: V3 } | null {
     if (this.blocks.size === 0 && this.dug.size === 0) return null;
-    const min: V3 = [SIZE, HEIGHT, SIZE];
-    const max: V3 = [-1, -DEPTH - 1, -1];
+    const min: V3 = [SIZE, plot.maxY + 1, SIZE];
+    const max: V3 = [-1, plot.minY - 1, -1];
     for (const k of [...this.blocks.keys(), ...this.dug]) {
       const p = posOf(k);
       for (let i = 0; i < 3; i++) {
@@ -282,7 +324,7 @@ export function boxOf(a: V3, b: V3): { min: V3; max: V3 } {
 
 export const clampV = (p: V3): V3 => [
   Math.max(0, Math.min(SIZE - 1, p[0])),
-  Math.max(-DEPTH, Math.min(HEIGHT - 1, p[1])),
+  Math.max(plot.minY, Math.min(plot.maxY, p[1])),
   Math.max(0, Math.min(SIZE - 1, p[2])),
 ];
 
@@ -344,8 +386,8 @@ export function invert(c: Canvas, s: Selection | null): Selection | null {
 }
 
 export function maskSelection(mask: Set<number>): Selection {
-  const min: V3 = [SIZE, HEIGHT, SIZE];
-  const max: V3 = [-1, -DEPTH - 1, -1];
+  const min: V3 = [SIZE, plot.maxY + 1, SIZE];
+  const max: V3 = [-1, plot.minY - 1, -1];
   for (const k of mask) {
     const p = posOf(k);
     for (let i = 0; i < 3; i++) {
