@@ -380,4 +380,7 @@ public sealed class ColonyMeta
     /// <summary>Workbenches near home and in houses join the colony by themselves. Off by default: only designated benches (the owner's
     /// "Use as colony crafting table", a bill added at a bench, a bench the colony placed) are used, never another player's.</summary>
     public bool DetectBenches { get; set; }
+    /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls
+    /// only) or stay (hold where they are).</summary>
+    public string Idle { get; set; } = "recreation";
 }

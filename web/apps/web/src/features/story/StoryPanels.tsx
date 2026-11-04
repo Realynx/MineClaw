@@ -18,6 +18,7 @@ import {
   type StoryOnlineBlocked,
   type StoryPawn,
   type StoryPlant,
+  type StoryIdleMode,
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
@@ -870,7 +871,7 @@ export function ColonyPanel({
   onBringAll?: (overCap: boolean) => void;
   displayOf?: (account: string) => string;
   /** Colony options (auto-place benches builds need, detect benches near home). */
-  onOptions?: (o: { autoPlaceBenches?: boolean; detectBenches?: boolean }) => void;
+  onOptions?: (o: { autoPlaceBenches?: boolean; detectBenches?: boolean; idle?: StoryIdleMode }) => void;
 }) {
   const offline = (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').length;
   const opts = state?.options;
@@ -949,6 +950,24 @@ export function ColonyPanel({
               onChange={(e) => onOptions({ detectBenches: e.target.checked })}
             />
             Use any bench near home (no designation)
+          </label>
+          <label
+            className="flex items-center gap-2"
+            title="With nothing to do, in free hours and while resting after failures: pastimes (wander, socialise, stargaze, sit, the garden, the sunset), strolls only, or stay put"
+          >
+            Idle pawns
+            <select
+              aria-label="Idle pawns"
+              data-testid="colony-idle"
+              disabled={!canWrite}
+              value={opts.idle ?? 'recreation'}
+              onChange={(e) => onOptions({ idle: e.target.value as StoryIdleMode })}
+              className="rounded border border-border bg-surface px-1 py-0.5"
+            >
+              <option value="recreation">recreation</option>
+              <option value="wander">wander</option>
+              <option value="stay">stay put</option>
+            </select>
           </label>
         </div>
       ) : null}

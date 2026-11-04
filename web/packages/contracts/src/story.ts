@@ -1079,17 +1079,29 @@ export type StoryWorkbenchesRequest = z.infer<typeof StoryWorkbenchesRequest>;
 export const StoryWorkbenchesResponse = z.object({ pos: Vec3i, kind: z.string(), designated: z.boolean() });
 export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
 
+/** What idle pawns do (docs/web/story-mode.md "Idle behaviour"). */
+export const STORY_IDLE_MODES = ['recreation', 'wander', 'stay'] as const;
+export type StoryIdleMode = (typeof STORY_IDLE_MODES)[number];
+
 /** The colony's options: auto-placing a bench a build needs (default on), detecting benches near home (default off). */
 export const StoryColonyOptions = z.object({
   autoPlaceBenches: z.boolean().default(true),
   detectBenches: z.boolean().default(false),
+  idle: z
+    .enum(STORY_IDLE_MODES)
+    .default('recreation')
+    .describe('with nothing to do, in free hours and resting: recreation (pastimes), wander (strolls) or stay (hold)'),
 });
 export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
-/** POST /api/story/colonies/{id}/options: either or both flags. */
+/** POST /api/story/colonies/{id}/options: any of the flags and the idle mode. */
 export const StoryOptionsRequest = z
-  .object({ autoPlaceBenches: z.boolean().optional(), detectBenches: z.boolean().optional() })
+  .object({
+    autoPlaceBenches: z.boolean().optional(),
+    detectBenches: z.boolean().optional(),
+    idle: z.enum(STORY_IDLE_MODES).optional(),
+  })
   .strict()
-  .describe('either or both (the bot answers 400 for neither)');
+  .describe('any of them (the bot answers 400 for none)');
 export type StoryOptionsRequest = z.infer<typeof StoryOptionsRequest>;
 
 export const STORY_ARCHITECT_TABS = ['structure', 'furniture', 'production', 'storage', 'lighting', 'misc'] as const;

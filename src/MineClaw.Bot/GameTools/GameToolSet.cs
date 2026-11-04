@@ -461,6 +461,7 @@ public static class GameToolSet
             async (_, ct) => R(await FoodSupply.EatAsync(c, ct)), longRunning: true);
         TreeTools.Register(tools, c, places);
         AcquireTool.Register(tools, c); // hidden: scripts' ensure/acquire (no definition in any prefix)
+        FaceTool.Register(tools, c); // hidden: scripts' face{at} (Story pawns' body language)
     }
 
     // ------------------------------------------------------------------ helpers

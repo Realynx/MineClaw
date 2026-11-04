@@ -99,6 +99,12 @@ public sealed class SupervisorStoryRouteTests
         Assert.Equal("seek_seeds", z["seeds"]!["action"]!.GetValue<string>());
         Assert.Contains(state["plants"]!.AsArray(), p => p!["id"]!.GetValue<string>() == "wheat");
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "seek_seeds", id = zone })).Status); // no grass near
+        // What idle pawns do: recreation (default) | wander | stay.
+        Assert.Equal("recreation", state["options"]!["idle"]!.GetValue<string>());
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/options", new { idle = "wander" });
+        Assert.Equal(200, s);
+        Assert.Equal("wander", j!["idle"]!.GetValue<string>());
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/options", new { idle = "dance" })).Status);
         w.Blocks[new P3(12, 64, 3)] = (31, 1);
         (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "seek_seeds", id = zone });
         Assert.Equal(200, s);
