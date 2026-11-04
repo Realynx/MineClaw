@@ -42,6 +42,7 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
         var (c, h, w) = StoryRig.Make(1, data, time);
         Only(c, WorkTypes.Mine);
         Assert.Null(c.StorageOp("set", [Chest], null, null, null).Error);
+        c.SetHaulOptions(null, null, null, pillarStack: 0); // every block to storage here (the pillar stack has its own test)
         var cells = Enumerable.Range(0, n).Select(i => new P3(2 + i % 12, 64, 2 + i / 12)).ToList();
         foreach (var at in cells) w.Set(at.X, at.Y, at.Z, 3);
         Assert.Equal(n, c.Designate("add", "mine", null, cells, "all").Result!["count"]!.GetValue<int>());

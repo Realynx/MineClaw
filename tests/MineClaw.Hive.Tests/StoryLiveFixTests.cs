@@ -258,7 +258,7 @@ public sealed class StoryLiveFixTests
         var clock = NewClock();
         var (c, h, _) = StoryRig.Make(time: clock);
         Only(c, 0);
-        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: new Stack(4, 0, 10));
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: new Stack(4, 0, 40)); // more than the pillar stack it keeps
         c.StorageOp("set", [new P3(0, 64, 4)], null, null, null);
         var j = c.Next();
         Assert.Contains("storing", j["label"]!.GetValue<string>());

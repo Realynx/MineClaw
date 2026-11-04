@@ -468,6 +468,9 @@ public sealed class ColonyMeta
     /// <summary>A chest keeps what its filter no longer allows until a compatible chest exists (default off: like the genre, the haulers
     /// take it out and drop it by the chest, where it despawns unless it is hauled).</summary>
     public bool KeepDisallowed { get; set; }
+    /// <summary>Blocks a pawn keeps to nerd-pole with (dirt first, then cobblestone, netherrack) out of its store trips: a kind it
+    /// carries no more of than this stays with it (default 16; 0 = none). Fox 11-04: high blocks are reached from a pillar.</summary>
+    public int PillarStack { get; set; } = 16;
     /// <summary>Gear policies, material tool rules, tool auto-crafting and spare tools (StoryColony.Gear.cs).</summary>
     public GearSettings Gear { get; set; } = new();
     /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls

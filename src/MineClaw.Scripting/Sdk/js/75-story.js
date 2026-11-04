@@ -164,7 +164,60 @@
     if (g.ok(r) || r.cancelled || !NO_WAY.test(r.msg || '')) return r;
     const e = escape(at);
     if (!g.ok(e)) return { ok: false, stuck: true, msg: r.msg + '; ' + e.msg };
-    return e.out ? walk() : r;
+    if (e.out) return walk();
+    // A target high above (a crown log, a ledge, a ceiling): stand below it; story.dig pillars up from there.
+    const t = typeof at === 'string' ? at.split(',').map(Number) : null;
+    if (t && t.length === 3 && t[1] > H.me('pos').y + 2) {
+      const s = H.storyReach(at);
+      if (s.within) return { ok: true, msg: 'in reach' };
+      if (s.stand) { const b = g.go(s.stand, 0); if (g.ok(b)) return { ok: true, msg: 'below it at ' + s.stand }; }
+    }
+    return r;
+  };
+  const REACH = /can't reach|out of reach|from my eyes|no walkable spot/i;
+  const feet = () => { const p = H.me('pos'); return Math.floor(p.x) + ',' + Math.floor(p.y + 1e-6) + ',' + Math.floor(p.z); };
+  // reachUp(at, fn, job?): a block above reach. Walk to the column H.storyReach picks (under it or beside it), nerd-pole up (one
+  // place at its own feet per step) until it is in reach, do fn, then dig the pillar back down from the top (every block it placed,
+  // collected again). Short of blocks: the job's pillar stack from storage (j.pillar), else dirt dug around the column.
+  const reachUp = (at, fn, j) => {
+    const g = globalThis, scan = () => H.storyReach(String(at));
+    let s = scan();
+    if (s.within) return fn();
+    if (!s.stand) return { ok: false, msg: 'out of reach even from a pillar: ' + s.why };
+    if (s.blocks < s.steps && j && j.pillar) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    s = scan();
+    for (const c of s.gather || []) {
+      if (s.blocks >= s.steps) break;
+      g.dig(c);
+      s = scan();
+    }
+    if (!s.stand) return { ok: false, msg: 'out of reach even from a pillar: ' + s.why };
+    if (s.blocks < s.steps) return { ok: false, msg: 'out of reach: ' + s.steps + ' block(s) to pillar up, ' + s.blocks + ' on me' };
+    const w = g.go(s.stand, 0);
+    if (!g.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };
+    const placed = [];
+    for (let i = 0; i < s.steps + 2; i++) {
+      const now = scan();
+      if (now.within || !now.block) break;
+      const f = feet(), p = g.place(now.block, f);
+      if (!g.ok(p)) break;
+      placed.push(f);
+    }
+    const r = fn();
+    for (let i = placed.length - 1; i >= 0; i--) if (!g.ok(g.dig(placed[i]))) break;
+    return r;
+  };
+  // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on.
+  const dig = (at, j) => {
+    const g = globalThis, r = g.dig(at);
+    if (g.ok(r) || !REACH.test(r.msg || '')) return r;
+    return reachUp(at, () => g.dig(at), j);
+  };
+  // ready(job): a job up high (a tall tree) starts with blocks to pillar with: the job's pillar stack from storage when short.
+  const ready = j => {
+    const g = globalThis;
+    if (j && j.pillar && g.inv(j.pillar.item) < 4) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    return { ok: true };
   };
   // run(job): the colony's own kinds (story.work hands them over). escape: the colony saw it stuck (a pit, a cave, a run of
   // unreachable targets): out by itself, else to j.at (home); help is asked for when nothing works. dump: no storage takes these:
@@ -192,7 +245,7 @@
       default: return { ok: true };
     }
   };
-  /** story.next(s)|report(job, status, note?)|during(job, fn)|idle|work|fetch|go(at, d)|escape - the job loop */
+  /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|go|dig|escape - the job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report,
@@ -200,6 +253,8 @@
     idle,
     go,
     escape,
+    dig,
+    ready,
     work,
     till,
     fetch,

@@ -379,6 +379,38 @@ later while they keep mining until the job is done or their inventory is full."
   the one it carries. The block under way finishes as it started (never cut mid-swing). A rule that now waits (an enchantment that isn't
   there, fallback `wait`) leaves the rest of the field waiting with that reason and no failure.
 
+### Reaching high blocks (added 2026-11-04)
+
+Fox 11-04: "With the blocks-out-of-reach prompt for mining, cutting or harvesting, it should nerd-pole up to reach those blocks on its
+own and destroy the nerd pole on the way back down. Not many blocks should truly be out of reach."
+
+- **Digging (mine, cut, harvest, deconstruct, a build's dig cells): `story.dig(at, job)`.** A dig refused for reach ("can't
+  reach", "… blocks from my eyes") goes through `storyReach` (zero tokens).
+  - The scan picks a column under the target (a ceiling) or beside it, up to 2 away. The column needs ground under it (never a
+    liquid) and must be free all the way up, with no lava beside it. A column under the target is not used when sand or gravel sits
+    over the target.
+  - It picks the fewest blocks to stack (at most 24, never above the build height) until the target's centre is within 4 blocks of
+    the eyes.
+  - The pawn walks there and nerd-poles up: each step is `place(block, its own feet)`, a pillar step (jump, place under itself, land
+    on it). It digs the target, then digs its pillar back down from the top, standing on each block it placed and collecting them
+    again. Nothing is left behind.
+  - A walk that can't get within reach of a block high above stops below it instead (`story.go`), and the dig climbs from there.
+- **Blocks to climb with:**
+  - the cheap blocks it carries: dirt, cobblestone, netherrack, planks, stone, sandstone;
+  - else the job's `pillar` stack from storage. The colony adds `{from, item, n}` to a job more than 3 blocks above the pawn, or a
+    tall tree, when the pawn carries fewer than it needs. It is taken only if the climb happens;
+  - else dirt dug around the column (never the ground under its feet).
+- **The pillar stack:** a pawn keeps a kind of pillar block (dirt first, then cobblestone, netherrack) out of its store trips while it
+  carries no more than option `pillar_stack` (default 16, 0 = none). A bigger pile is stored, and fetched back when a climb needs it.
+- **Tall trees (`chop_tree`, client):** in a normal world the tree pillar may now be 12 blocks high instead of 2, using dirt as well
+  as cobble (skyblock keeps dirt and the short pillar). Each step goes straight on from the top of its own pillar. The pillar is dug
+  back down from the top afterwards. Build-mode `goto` and clutch blocks count dirt as a scaffold block in a normal world too.
+- **Truly out of reach** (only liquid under it, no free column, more than 24 up): "out of reach even from a pillar: …". The target
+  rests for that pawn; once 3 different pawns (fewer when fewer are online) couldn't reach it, the designation waits with the reason
+  (`wait`). It is not counted as a failure and raises no alert.
+- Not yet: several targets from one pillar top (each high block is its own climb; a tree is one job), a short staircase instead of a
+  pillar, the night-outside rule while climbing.
+
 ### Defending (added 2026-11-04)
 
 Live 11-04: "attack failed: no skeleton within 16" ×15, creeper ×8, zombie ×7 for one pawn (82 failures). The merged view showed every
