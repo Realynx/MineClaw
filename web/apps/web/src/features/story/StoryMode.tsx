@@ -67,6 +67,7 @@ import {
 import { useFullscreen } from './useFullscreen';
 import { GrowingZonesPanel, growPlantNow, type GrowBillChange } from './GrowingZones';
 import { FishingZonesPanel } from './zones/FishingZones';
+import { QuarryZonesPanel, quarryModeNow } from './zones/quarry';
 import { zoneBody, zoneInto, zoneToast } from './zones/zonePaint';
 import type { Condition } from './notices';
 import { StoryNotices, type JumpTarget } from './StoryNotices';
@@ -539,7 +540,7 @@ export function StoryMode() {
       const into = zoneInto(tool, state?.zones ?? [], r.a, shift);
       const label =
         into !== undefined ? 'Zone extended' : `${ZONE_TOOLS.find((z) => z.id === tool.id)?.label ?? 'Zone'} painted`;
-      await write('story.zones', zoneBody(tool, r.rect, lv, growPlantNow(), into)).then(
+      await write('story.zones', zoneBody(tool, r.rect, lv, growPlantNow(), into, quarryModeNow())).then(
         (out) =>
           say(
             zoneToast(label, tool, out) + (out.warnings?.length ? ` (${out.warnings.join('; ')})` : ''),
@@ -1167,6 +1168,20 @@ export function StoryMode() {
     map.current?.focus(Math.floor((z.area[0] + z.area[3]) / 2), Math.floor((z.area[2] + z.area[5]) / 2), z.area[1]);
   /** Fishing zones (zones/FishingZones.tsx), under the growing zones: water, fishers, catches, bills. */
   const fishingZones = <FishingZonesPanel state={state} canWrite={canWrite} onBill={onZoneBill} onShow={focusZone} />;
+  /** Quarries (zones/quarry.tsx), under them: progress, depth, the stair, the mode. */
+  const quarryZones = (
+    <QuarryZonesPanel
+      state={state}
+      canWrite={canWrite}
+      onShow={focusZone}
+      onMode={(z, mode) =>
+        void write('story.zones', { op: 'update', id: z.id, mode }).then(
+          () => say(mode === 'quarry' ? 'Quarry: digging everything to bedrock' : 'Quarry: ores only'),
+          (e) => say(errorText(e), 'warn'),
+        )
+      }
+    />
+  );
 
   /** Growing zones (GrowingZones.tsx), beside the Colony tab: plant, seeds, status, seek seeds. */
   const growingZones = (
@@ -1582,6 +1597,7 @@ export function StoryMode() {
                 <>
                   {growingZones}
                   {fishingZones}
+                  {quarryZones}
                 </>
               ) : null}
             </div>

@@ -320,6 +320,32 @@ describe('the mock director', () => {
     expect(st().activePlant).toBe('wheat');
   });
 
+  it('quarries: new mine zones are quarries with a clockwise spiral stair; 2×2 is the smallest; ores only stays', () => {
+    expect(C.quarryRing(C.rectCells(0, 0, 1, 1))).toEqual([
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ]);
+    expect(C.quarryRing(C.rectCells(0, 0, 2, 2))).toHaveLength(8);
+    expect(C.quarryRing(C.rectCells(0, 0, 5, 0))).toBeNull();
+    const ring = C.quarryRing(C.rectCells(0, 0, 3, 2))!;
+    expect(C.quarryStep(ring, 63, 0)).toEqual([0, 63, 0]);
+    expect(C.quarryStep(ring, 63, ring.length + 1)).toEqual([1, 63 - ring.length - 1, 0]);
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 1 });
+    const q = sim.zones(id, { op: 'add', kind: 'mine', area: [10, 63, 10, 13, 63, 12] }) as C.StoryAck;
+    const zone = () => sim.state(id).zones.find((z) => z.id === q.id)!;
+    expect(zone().mode).toBe('quarry');
+    expect(zone().quarry?.stair[0]).toEqual([10, 63, 10]);
+    expect(zone().quarry?.depth).toBe(61);
+    expect(() => sim.zones(id, { op: 'add', kind: 'mine', area: [30, 63, 0, 40, 63, 0] })).toThrow(/at least 2×2/);
+    sim.zones(id, { op: 'add', kind: 'mine', area: [30, 63, 0, 40, 63, 0], mode: 'ores' });
+    sim.zones(id, { op: 'update', id: String(q.id), mode: 'ores' });
+    expect(zone().mode).toBe('ores');
+    expect(zone().quarry).toBeUndefined();
+  });
+
   it('beds: found near home, one per pawn, in the house they stand in; houses are named home zones', () => {
     const w = world();
     const blocks = new Map<string, [number, number]>([

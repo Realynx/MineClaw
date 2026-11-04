@@ -71,6 +71,7 @@ import { COLORS, glyph, pawnColor } from './visuals';
 import { growPlantNow } from './GrowingZones';
 import { drawZonePreview, drawZones, zoneLabel } from './zones/zoneDraw';
 import { previewLabel, waterColumns, zoneInto, zonePreview } from './zones/zonePaint';
+import { drawQuarries, drawQuarryPreview, quarryModeNow } from './zones/quarry';
 
 export type MapTool =
   | { kind: 'select' }
@@ -738,6 +739,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     drawZones(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell, (z, houseNo) =>
       zoneLabel(z, houseNo, st?.plants),
     );
+    drawQuarries(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell); // the quarries' stairs (zones/quarry.tsx)
     // The colony's home: a house mark.
     const homeAt = props.home;
     if (homeAt) {
@@ -1352,7 +1354,17 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         drawZonePreview(ctx, out.zones, out.result.id, out.removedCells, col, props.level + 1.03, (x, y, z) =>
           project(m, x, y, z),
         );
-      label(ctx, d.now, previewLabel(tool, out, (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)), out !== null);
+      // A quarry: its spiral stair (step 1 at the top) and how deep it goes.
+      const stair =
+        out && tool.id === 'mine' && tool.op === 'add' && into === undefined && quarryModeNow() === 'quarry'
+          ? drawQuarryPreview(
+              ctx,
+              out.zones.find((z) => String(z.id) === String(out.result.id)),
+              props.level,
+              (x, y, z) => project(m, x, y, z),
+            )
+          : '';
+      label(ctx, d.now, previewLabel(tool, out, (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)) + stair, out !== null);
       return;
     }
     if (tool.kind === 'designate') {

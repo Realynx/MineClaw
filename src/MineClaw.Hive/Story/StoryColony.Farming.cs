@@ -347,6 +347,7 @@ public sealed partial class StoryColony
             ["rows"] = new JsonArray((z.Rows ?? z.Cells.Rows()).Select(r => (JsonNode)new JsonArray(r[0], r[1], r[2])).ToArray()),
         };
         if (z.Kind == "fish") { FishJson(z, o); return o; } // StoryColony.Fishing.cs
+        if (z.Kind == "mine") { QuarryJson(z, o); return o; } // StoryColony.Quarry.cs
         if (z.Kind != "farm" || World is not { } w) return o;
         if (z.Bills == null && StoryPlants.Get(w.Data, z.Plant) == null) return o; // a plain farm zone
         var plant = ActivePlant(w, z);
