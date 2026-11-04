@@ -132,16 +132,30 @@ public sealed class BodyInventories
     {
         if (st.IsEmpty) return null;
         int id = st.Id, meta = st.Damage;
-        ItemInfo? info = null;
-        try { info = Items.Get(id); } catch (Exception) { }
+        var info = InfoOf(id);
         bool damageable = info is { MaxDamage: > 0 };
-        string name, display;
-        try { name = damageable ? info!.Name : Items.VariantName(id, meta); }
-        catch (Exception) { name = info?.Name ?? $"unknown_{id}"; }
-        try { display = damageable ? info!.DisplayName : Items.DisplayName(id, meta); }
-        catch (Exception) { display = info?.DisplayName ?? $"Unknown ({id})"; }
+        var name = ItemName(id, meta, info, damageable);
+        var display = DisplayName(id, meta, info, damageable);
         if (st.Tag?.DisplayName is { Length: > 0 } custom) display = custom;
         var durability = damageable ? new InventoryDurability(info!.MaxDamage, Math.Clamp(info.MaxDamage - meta, 0, info.MaxDamage)) : null;
         return new InventorySlot(index, id, meta, st.Count, name, display, durability, EntityLooks.Glint(st));
+    }
+
+    private static ItemInfo? InfoOf(int id)
+    {
+        try { return Items.Get(id); } catch (Exception) { return null; }
+    }
+
+    /// <summary>The item's id name: a damageable tool's own, else the variant's (an unknown id still gets one).</summary>
+    private static string ItemName(int id, int meta, ItemInfo? info, bool damageable)
+    {
+        try { return damageable ? info!.Name : Items.VariantName(id, meta); }
+        catch (Exception) { return info?.Name ?? $"unknown_{id}"; }
+    }
+
+    private static string DisplayName(int id, int meta, ItemInfo? info, bool damageable)
+    {
+        try { return damageable ? info!.DisplayName : Items.DisplayName(id, meta); }
+        catch (Exception) { return info?.DisplayName ?? $"Unknown ({id})"; }
     }
 }

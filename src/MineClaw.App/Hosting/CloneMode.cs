@@ -440,12 +440,17 @@ public static class CloneMode
             try { await client.StopAsync().WaitAsync(TimeSpan.FromSeconds(5)); } catch (Exception) { }
         }
 
-        public void AssignTask(TaskMsg task)
+        /// <summary>A later task may move the brain to another profile (the next call uses it).</summary>
+        private void ApplyProfile(TaskMsg task)
         {
-            // A later task may move the brain to another profile (the next call uses it).
             if (task.Profile is { Length: > 0 } p && !string.Equals(p, rt.Options.Llm.MainProfile, StringComparison.OrdinalIgnoreCase)
                 && rt.Options.Llm.ApplyBrainProfile(p) is { } bad)
                 log.LogWarning("profile {Profile} not applied: {Why}", p, bad);
+        }
+
+        public void AssignTask(TaskMsg task)
+        {
+            ApplyProfile(task);
             // Script task: started by C# at once, brain asleep (no notice, no turn).
             if (runner != null && CloneScriptRunner.Handles(task)) { runner.Start(task); return; }
             if (runner?.Task != null) runner.Release("new task from main");

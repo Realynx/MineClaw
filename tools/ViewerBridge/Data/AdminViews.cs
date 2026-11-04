@@ -31,30 +31,46 @@ public static class AdminViews
     public static async Task<GroomPreviewResponse> GroomAsync(MemoryBank bank, BridgeConfig config, GroomPreviewBody req, CancellationToken ct)
     {
         var options = config.Agent;
-        IGroomRewriter? rewriter = null;
-        string? note = null;
-        if (req.Rewrite)
-        {
-            if (options.Memory.Groom.Rewrite.Enabled && config.LlmConfigured)
-                rewriter = new LlmGroomRewriter(LlmClientFactory.Create(options.Llm), options.Memory.Groom.Rewrite, prices: options.Prices);
-            else note = "rewrite skipped: Agent:Memory:Groom:Rewrite:Enabled is off or the cheap tier is not configured";
-        }
+        var rewriter = Rewriter(config, req, out var note);
         var groomer = new MemoryGroomer(options.Memory.Groom, GroomEnvironment.From(options, bank.Db, rewriter));
         var ctx = groomer.Context(dryRun: true);
         var reference = (req.DocRef ?? "").Trim();
-        if (reference.Length > 0)
+        if (reference.Length > 0) return await GroomDocAsync(bank, groomer, ctx, reference, note, ct);
+        return await GroomTextAsync(groomer, ctx, req, note, ct);
+    }
+
+    /// <summary>The LLM rewrite stage when asked and allowed; else null (with a note when it was asked but is off).</summary>
+    private static IGroomRewriter? Rewriter(BridgeConfig config, GroomPreviewBody req, out string? note)
+    {
+        note = null;
+        if (!req.Rewrite) return null;
+        var options = config.Agent;
+        if (options.Memory.Groom.Rewrite.Enabled && config.LlmConfigured)
+            return new LlmGroomRewriter(LlmClientFactory.Create(options.Llm), options.Memory.Groom.Rewrite, prices: options.Prices);
+        note = "rewrite skipped: Agent:Memory:Groom:Rewrite:Enabled is off or the cheap tier is not configured";
+        return null;
+    }
+
+    /// <summary>One doc of the db through the chain, with the count after every stage.</summary>
+    private static async Task<GroomPreviewResponse> GroomDocAsync(MemoryBank bank, MemoryGroomer groomer, GroomContext ctx, string reference, string? note,
+        CancellationToken ct)
+    {
+        if (LoadDoc(bank, reference) is not { } doc) throw new KeyNotFoundException("no doc with that ref");
+        var trace = await groomer.GroomAsync(doc, ctx, ct);
+        var stages = new List<GroomStage>();
+        int prev = 1;
+        foreach (var s in trace.Steps)
         {
-            if (LoadDoc(bank, reference) is not { } doc) throw new KeyNotFoundException("no doc with that ref");
-            var trace = await groomer.GroomAsync(doc, ctx, ct);
-            var stages = new List<GroomStage>();
-            int prev = 1;
-            foreach (var s in trace.Steps)
-            {
-                stages.Add(new GroomStage(s.Stage, s.Docs.Count == 0 ? "dropped" : null, prev, s.Docs.Count));
-                prev = s.Docs.Count;
-            }
-            return new GroomPreviewResponse(Docs(trace.Output), 1, trace.Output.Count, stages, null, note);
+            stages.Add(new GroomStage(s.Stage, s.Docs.Count == 0 ? "dropped" : null, prev, s.Docs.Count));
+            prev = s.Docs.Count;
         }
+        return new GroomPreviewResponse(Docs(trace.Output), 1, trace.Output.Count, stages, null, note);
+    }
+
+    /// <summary>Pasted text through <see cref="LogIngest"/> (only the chain's ends are counted).</summary>
+    private static async Task<GroomPreviewResponse> GroomTextAsync(MemoryGroomer groomer, GroomContext ctx, GroomPreviewBody req, string? note,
+        CancellationToken ct)
+    {
         var text = (req.Text ?? "").Trim();
         if (text.Length == 0) throw new ArgumentException("text or doc_ref is required");
         var raw = LogIngest.Parse(text, req.Source, LogIngest.DayOf(null));

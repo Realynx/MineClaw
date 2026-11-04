@@ -81,6 +81,10 @@ internal static class SubhiveWiring
 
     private static BusReply Reply(string text) => text.StartsWith("ok", StringComparison.Ordinal) ? BusReply.Of(text) : BusReply.Fail(text);
 
+    /// <summary>Main's answer to a body request as one line (its text, its refusal, or that it didn't answer).</summary>
+    private static string SpawnReplyText(BusReply? r) =>
+        r == null ? "main didn't answer on the hive bus: no bodies" : r.Ok ? r.As<string>() ?? "ok" : r.Error ?? "refused";
+
     private static async Task RequestAsync(Func<string, object?, TimeSpan, Task<BusReply?>> send, AgentRuntime rt, int wanted, Func<bool> inGame,
         CancellationToken stop, ILogger log, HiveCrews? crews = null, string? crew = null)
     {
@@ -89,7 +93,7 @@ internal static class SubhiveWiring
             while (!inGame() && !stop.IsCancellationRequested) await Task.Delay(500, stop).ConfigureAwait(false);
             // Reset: after a crash restart the bodies this hive had died with its old process; main reuses those accounts first.
             var r = await send(BusTypes.Spawn, new SpawnReq(Kind: "subhive", Bodies: wanted, Reset: true, Crew: crew), TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-            var text = r == null ? "main didn't answer on the hive bus: no bodies" : r.Ok ? r.As<string>() ?? "ok" : r.Error ?? "refused";
+            var text = SpawnReplyText(r);
             log.LogInformation("hive: asked main for {N} subhive bodies: {Text}", wanted, text);
             if (crew != null && crews != null)
             {
