@@ -85,6 +85,8 @@ public sealed class CloneSlot(string name)
     internal ICloneProcess? Process;
     internal HiveLink? Link;
     internal int Generation;
+    /// <summary>OnGone is detaching this slot (under its lock): a nested OnGone from the same thread is the same exit.</summary>
+    internal bool Detaching;
     internal int Probing;
     internal TaskCompletionSource? Gone;
     internal event Action<PromptUsageRecord>? Usage;

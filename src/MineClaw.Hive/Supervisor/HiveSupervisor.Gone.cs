@@ -9,8 +9,7 @@ namespace MineClaw.Hive.Supervisor;
 /// <summary>
 /// A clone's process or link is gone (<see cref="OnGone"/>): under the slot's lock it is detached (holds, link, process, claims to
 /// resume) and its next state settled (someone else's login, a refused login, a clean logout or recall, a config error, a crash
-/// with backoff); then, outside the lock, its link is closed and its process stopped, its leases go, main hears what happened,
-/// and a queued task or a restart follows.
+/// with backoff); then its leases go, main hears what happened, and a queued task or a restart follows.
 /// </summary>
 public sealed partial class HiveSupervisor
 {
@@ -24,9 +23,6 @@ public sealed partial class HiveSupervisor
         public (TaskMsg Task, string? ForPlayer, bool Unnamed)? Respawn;
         public TaskCompletionSource? Gone;
         public List<ItemMsg>? Inventory;
-        /// <summary>The detached link and process, closed and stopped once the slot's state has settled (outside its lock).</summary>
-        public HiveLink? Link;
-        public ICloneProcess? Process;
     }
 
     private void OnGone(CloneSlot slot, int gen, bool clean, string reason, int? exitCode = null)
@@ -34,15 +30,18 @@ public sealed partial class HiveSupervisor
         GoneOutcome o;
         lock (slot.Lock)
         {
-            if (gen != slot.Generation || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
-            o = DetachLocked(slot, reason, exitCode);
-            SettleLocked(slot, o, clean);
+            if (gen != slot.Generation || slot.Detaching || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
+            // Detaching disposes the link, whose Closed calls this method again on this thread: the lock is re-entrant and the
+            // state isn't settled yet, so without the flag that nested call settled and relaunched the slot (a task queued by a
+            // recall), and this one then killed the NEW process and set the slot Idle.
+            slot.Detaching = true;
+            try
+            {
+                o = DetachLocked(slot, reason, exitCode);
+                SettleLocked(slot, o, clean);
+            }
+            finally { slot.Detaching = false; }
         }
-        // After the state settled and outside the lock: disposing the link raises its Closed (this method again), and a kill can
-        // run the process's continuations inline. Under the (re-entrant) lock, before the state settled, that nested call passed
-        // the check above, settled and relaunched the slot; this call then killed the NEW process and set the slot Idle (the
-        // "recall + new task in one turn" relaunch that never came back).
-        CloseLinkAndStopProcess(o);
         // Immediately: the dead clone's leases, grants and conversations go.
         int released = Claims.ReleaseAll(slot.Name);
         Ledger.Close(slot.Name);
@@ -69,11 +68,11 @@ public sealed partial class HiveSupervisor
         slot.PendingLend = null;
         slot.Connected = false;
         slot.LastExit = reason;
-        o.Link = slot.Link;
+        var link = slot.Link;
         slot.Link = null;
+        if (link != null) _ = link.DisposeAsync().AsTask();
         o.External = slot.ExternalKick || exitCode == CloneExitCodes.ExternalLogin;
-        o.Process = slot.Process;
-        slot.Process = null;
+        StopProcessLocked(slot, o.External);
         slot.ResumeClaims = Claims.Leases().Where(l => l.Owner.Equals(slot.Name, StringComparison.OrdinalIgnoreCase))
             .Select(l => l.Key.Id).ToArray();
         slot.ExternalKick = false;
@@ -81,14 +80,11 @@ public sealed partial class HiveSupervisor
         return o;
     }
 
-    private static void CloseLinkAndStopProcess(GoneOutcome o)
+    // caller holds slot.Lock
+    private static void StopProcessLocked(CloneSlot slot, bool external)
     {
-        if (o.Link is { } link) _ = link.DisposeAsync().AsTask();
-        StopProcess(o.Process, o.External);
-    }
-
-    private static void StopProcess(ICloneProcess? proc, bool external)
-    {
+        var proc = slot.Process;
+        slot.Process = null;
         if (external && proc is { HasExited: false })
             // The kicked clone is already offline and exits by itself: give it a moment, then make sure.
             _ = Task.Run(async () =>
