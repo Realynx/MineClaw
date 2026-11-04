@@ -106,11 +106,15 @@ public static class DesignFacing
 
     public static DesignFamily FamilyOf(int id) => Families.TryGetValue(id, out var f) ? f : DesignFamily.None;
 
+    private static readonly HashSet<DesignFamily> FacingFamilies =
+    [
+        DesignFamily.Stairs, DesignFamily.Door, DesignFamily.Bed, DesignFamily.Torch, DesignFamily.Wall, DesignFamily.Front, DesignFamily.Facing6,
+        DesignFamily.Hopper, DesignFamily.Horizontal, DesignFamily.Gate, DesignFamily.Trapdoor, DesignFamily.Button, DesignFamily.Lever,
+        DesignFamily.Rail, DesignFamily.PoweredRail, DesignFamily.Rotation16, DesignFamily.Skull, DesignFamily.Vine,
+    ];
+
     /// <summary>A family whose meta says where it faces (placement asks for a direction).</summary>
-    public static bool HasFacing(DesignFamily f) => f is DesignFamily.Stairs or DesignFamily.Door or DesignFamily.Bed or DesignFamily.Torch
-        or DesignFamily.Wall or DesignFamily.Front or DesignFamily.Facing6 or DesignFamily.Hopper or DesignFamily.Horizontal or DesignFamily.Gate
-        or DesignFamily.Trapdoor or DesignFamily.Button or DesignFamily.Lever or DesignFamily.Rail or DesignFamily.PoweredRail
-        or DesignFamily.Rotation16 or DesignFamily.Skull or DesignFamily.Vine;
+    public static bool HasFacing(DesignFamily f) => FacingFamilies.Contains(f);
 
     /// <summary>The bits of a meta that are the block's variant (what a "replace wool:red" compares); 0 = none.</summary>
     public static int VariantMask(int id) => FamilyOf(id) switch
@@ -135,106 +139,135 @@ public static class DesignFacing
     private static readonly Dir[] ButtonFaces = [Dir.East, Dir.West, Dir.South, Dir.North]; // metas 1..4: the way it faces
 
     /// <summary>The horizontal facing a meta encodes (null = none, a floor torch, an upright log).</summary>
-    public static Dir? FacingOf(int id, int meta)
-    {
-        switch (FamilyOf(id))
-        {
-            case DesignFamily.Stairs: return StairDirs[meta & 3];
-            case DesignFamily.Door: return DoorDirs[meta & 3];
-            case DesignFamily.Bed: case DesignFamily.Horizontal: case DesignFamily.Gate: return SWNE[meta & 3];
-            case DesignFamily.Torch: return meta is >= 1 and <= 4 ? TorchWalls[meta - 1] : null;
-            case DesignFamily.Wall: case DesignFamily.Front: case DesignFamily.Facing6: case DesignFamily.Hopper: case DesignFamily.Skull:
-                return (meta & 7) is >= 2 and <= 5 ? FrontDirs[(meta & 7) - 2] : null;
-            case DesignFamily.Trapdoor: return TrapWalls[meta & 3];
-            case DesignFamily.Button: case DesignFamily.Lever: return (meta & 7) is >= 1 and <= 4 ? ButtonFaces[(meta & 7) - 1] : null;
-            default: return null;
-        }
-    }
+    public static Dir? FacingOf(int id, int meta) => FacingRules.TryGetValue(FamilyOf(id), out var r) ? r.Of(meta) : null;
 
     /// <summary>The meta with its facing set to <paramref name="d"/> (the family's own sense of a direction, see <see cref="DesignFamily"/>).</summary>
-    public static int WithFacing(int id, int meta, Dir d)
+    public static int WithFacing(int id, int meta, Dir d) => FacingRules.TryGetValue(FamilyOf(id), out var r) ? r.With(meta, d) : meta;
+
+    /// <summary>How a family's meta encodes its facing: read it, and set it.</summary>
+    private sealed record FacingRule(Func<int, Dir?> Of, Func<int, Dir, int> With);
+
+    /// <summary>Two low bits = an index into <paramref name="dirs"/> (stairs, doors, beds, gates, trapdoors…).</summary>
+    private static FacingRule LowBits(Dir[] dirs) => new(m => dirs[m & 3], (m, d) => (m & ~3) | Array.IndexOf(dirs, d));
+
+    /// <summary>A front 2..5 (chests, furnaces, dispensers, hoppers, skulls): <paramref name="always"/> = set even from no front.</summary>
+    private static FacingRule FrontRule(bool always) => new(
+        m => (m & 7) is >= 2 and <= 5 ? FrontDirs[(m & 7) - 2] : null,
+        (m, d) => always || (m & 7) is >= 2 and <= 5 ? (m & 8) | (Array.IndexOf(FrontDirs, d) + 2) : m);
+
+    private static readonly FacingRule TorchRule = new(
+        m => m is >= 1 and <= 4 ? TorchWalls[m - 1] : null,
+        (m, d) => m is >= 1 and <= 4 ? Array.IndexOf(TorchWalls, d) + 1 : m);
+
+    private static readonly FacingRule ButtonRule = new(
+        m => (m & 7) is >= 1 and <= 4 ? ButtonFaces[(m & 7) - 1] : null,
+        (m, d) => (m & 7) is >= 1 and <= 4 ? (m & 8) | (Array.IndexOf(ButtonFaces, d) + 1) : m);
+
+    private static readonly Dictionary<DesignFamily, FacingRule> FacingRules = new()
     {
-        switch (FamilyOf(id))
-        {
-            case DesignFamily.Stairs: return (meta & ~3) | Array.IndexOf(StairDirs, d);
-            case DesignFamily.Door: return (meta & ~3) | Array.IndexOf(DoorDirs, d);
-            case DesignFamily.Bed: case DesignFamily.Horizontal: case DesignFamily.Gate: return (meta & ~3) | Array.IndexOf(SWNE, d);
-            case DesignFamily.Torch: return meta is >= 1 and <= 4 ? Array.IndexOf(TorchWalls, d) + 1 : meta;
-            case DesignFamily.Wall: case DesignFamily.Front: case DesignFamily.Facing6: case DesignFamily.Hopper: case DesignFamily.Skull:
-                return (meta & 7) is >= 2 and <= 5 || FamilyOf(id) is DesignFamily.Wall or DesignFamily.Front ? (meta & 8) | (Array.IndexOf(FrontDirs, d) + 2) : meta;
-            case DesignFamily.Trapdoor: return (meta & ~3) | Array.IndexOf(TrapWalls, d);
-            case DesignFamily.Button: case DesignFamily.Lever:
-                return (meta & 7) is >= 1 and <= 4 ? (meta & 8) | (Array.IndexOf(ButtonFaces, d) + 1) : meta;
-            default: return meta;
-        }
-    }
+        [DesignFamily.Stairs] = LowBits(StairDirs),
+        [DesignFamily.Door] = LowBits(DoorDirs),
+        [DesignFamily.Bed] = LowBits(SWNE),
+        [DesignFamily.Horizontal] = LowBits(SWNE),
+        [DesignFamily.Gate] = LowBits(SWNE),
+        [DesignFamily.Trapdoor] = LowBits(TrapWalls),
+        [DesignFamily.Torch] = TorchRule,
+        [DesignFamily.Wall] = FrontRule(always: true),
+        [DesignFamily.Front] = FrontRule(always: true),
+        [DesignFamily.Facing6] = FrontRule(always: false),
+        [DesignFamily.Hopper] = FrontRule(always: false),
+        [DesignFamily.Skull] = FrontRule(always: false),
+        [DesignFamily.Button] = ButtonRule,
+        [DesignFamily.Lever] = ButtonRule,
+    };
 
     /// <summary>A meta turned <paramref name="quarters"/> clockwise (seen from above, north up).</summary>
     public static int Rotate(int id, int meta, int quarters)
     {
         int q = ((quarters % 4) + 4) % 4;
         if (q == 0) return meta;
-        switch (FamilyOf(id))
-        {
-            case DesignFamily.Log when q % 2 == 1 && GameData.Current.VersionId == DesignVersions.Release:
-            case DesignFamily.Pillar when q % 2 == 1:
-                return (meta & 12) switch { 4 => (meta & ~12) | 8, 8 => (meta & ~12) | 4, _ => meta };
-            case DesignFamily.Quartz when q % 2 == 1: return meta switch { 3 => 4, 4 => 3, _ => meta };
-            case DesignFamily.Rotation16: return (meta + q * 4) & 15;
-            case DesignFamily.Rail: return RailTurn(meta, q);
-            case DesignFamily.PoweredRail: return (meta & 8) | RailTurn(meta & 7, q);
-            case DesignFamily.Vine:
-                {
-                    // bits S W N E: a clockwise turn moves S→W→N→E→S.
-                    int m = meta & 15;
-                    for (int i = 0; i < q; i++) m = ((m << 1) | (m >> 3)) & 15;
-                    return m;
-                }
-            case DesignFamily.Lever when q % 2 == 1 && (meta & 7) is 0 or 5 or 6 or 7:
-                return (meta & 8) | ((meta & 7) switch { 5 => 6, 6 => 5, 0 => 7, _ => 0 });
-        }
+        if (RotateOwn(id, FamilyOf(id), meta, q) is { } own) return own;
         return FacingOf(id, meta) is { } d ? WithFacing(id, meta, d.Turn(q)) : meta;
+    }
+
+    /// <summary>The families that turn by their own rule rather than by their facing (null = by the facing).</summary>
+    private static int? RotateOwn(int id, DesignFamily fam, int meta, int q) => fam switch
+    {
+        _ when q % 2 == 1 && TurnsAxis(fam) => SwapAxis(meta),
+        DesignFamily.Quartz when q % 2 == 1 => QuartzTurn(meta),
+        DesignFamily.Rotation16 => (meta + q * 4) & 15,
+        DesignFamily.Rail => RailTurn(meta, q),
+        DesignFamily.PoweredRail => (meta & 8) | RailTurn(meta & 7, q),
+        DesignFamily.Vine => VineTurn(meta, q),
+        DesignFamily.Lever when q % 2 == 1 && LeverOnAxis(meta) => (meta & 8) | LeverTurn(meta & 7),
+        _ => null,
+    };
+
+    /// <summary>An axis block whose x and z axes swap on a quarter turn (b1.8.1 logs have no axis).</summary>
+    private static bool TurnsAxis(DesignFamily fam) =>
+        fam == DesignFamily.Pillar || fam == DesignFamily.Log && GameData.Current.VersionId == DesignVersions.Release;
+
+    /// <summary>Axis bits 4 (x) ↔ 8 (z); any other axis value stays.</summary>
+    private static int SwapAxis(int meta) => (meta & 12) switch { 4 => (meta & ~12) | 8, 8 => (meta & ~12) | 4, _ => meta };
+
+    private static int QuartzTurn(int meta) => meta switch { 3 => 4, 4 => 3, _ => meta };
+
+    /// <summary>A lever on the floor or ceiling (0, 5, 6, 7): its axis swaps on a quarter turn.</summary>
+    private static bool LeverOnAxis(int meta) => (meta & 7) is 0 or 5 or 6 or 7;
+
+    private static int LeverTurn(int m) => m switch { 5 => 6, 6 => 5, 0 => 7, _ => 0 };
+
+    /// <summary>bits S W N E: a clockwise turn moves S→W→N→E→S.</summary>
+    private static int VineTurn(int meta, int q)
+    {
+        int m = meta & 15;
+        for (int i = 0; i < q; i++) m = ((m << 1) | (m >> 3)) & 15;
+        return m;
     }
 
     /// <summary>A meta mirrored across x ('x': east ↔ west) or z ('z': north ↔ south): the studio's convention.</summary>
     public static int Mirror(int id, int meta, char axis)
     {
-        Dir M(Dir d) => axis == 'x' ? d switch { Dir.East => Dir.West, Dir.West => Dir.East, _ => d } : d switch { Dir.North => Dir.South, Dir.South => Dir.North, _ => d };
-        switch (FamilyOf(id))
-        {
-            case DesignFamily.Rotation16: return axis == 'x' ? (16 - meta) & 15 : (8 - meta) & 15;
-            case DesignFamily.Rail:
-            case DesignFamily.PoweredRail:
-                {
-                    int shape = meta & (FamilyOf(id) == DesignFamily.Rail ? 15 : 7), rest = meta & ~(FamilyOf(id) == DesignFamily.Rail ? 15 : 7);
-                    int m = shape switch
-                    {
-                        2 or 3 when axis == 'x' => shape ^ 1, 4 or 5 when axis == 'z' => shape ^ 1,
-                        6 => axis == 'x' ? 7 : 9, 7 => axis == 'x' ? 6 : 8, 8 => axis == 'x' ? 9 : 7, 9 => axis == 'x' ? 8 : 6,
-                        _ => shape,
-                    };
-                    return rest | m;
-                }
-            case DesignFamily.Vine:
-                {
-                    int m = meta & 15;
-                    return axis == 'x' ? (m & 5) | ((m & 2) << 2) | ((m & 8) >> 2) : (m & 10) | ((m & 1) << 2) | ((m & 4) >> 2);
-                }
-        }
-        return FacingOf(id, meta) is { } d ? WithFacing(id, meta, M(d)) : meta;
+        if (MirrorOwn(FamilyOf(id), meta, axis) is { } own) return own;
+        return FacingOf(id, meta) is { } d ? WithFacing(id, meta, MirrorDir(d, axis)) : meta;
     }
 
-    // Rail shapes: 2..5 ascending E W N S, 6..9 curves SE SW NW NE (clockwise in that order).
+    private static int? MirrorOwn(DesignFamily fam, int meta, char axis) => fam switch
+    {
+        DesignFamily.Rotation16 => axis == 'x' ? (16 - meta) & 15 : (8 - meta) & 15,
+        DesignFamily.Rail => MirrorRail(meta, 15, axis),
+        DesignFamily.PoweredRail => MirrorRail(meta, 7, axis),
+        DesignFamily.Vine => MirrorVine(meta & 15, axis),
+        _ => null,
+    };
+
+    private static Dir MirrorDir(Dir d, char axis) => axis == 'x'
+        ? d switch { Dir.East => Dir.West, Dir.West => Dir.East, _ => d }
+        : d switch { Dir.North => Dir.South, Dir.South => Dir.North, _ => d };
+
+    private static int MirrorVine(int m, char axis) =>
+        axis == 'x' ? (m & 5) | ((m & 2) << 2) | ((m & 8) >> 2) : (m & 10) | ((m & 1) << 2) | ((m & 4) >> 2);
+
+    /// <summary>A rail's shape (the <paramref name="shapeMask"/> bits) mirrored; the rest of the meta kept.</summary>
+    private static int MirrorRail(int meta, int shapeMask, char axis) => (meta & ~shapeMask) | MirrorRailShape(meta & shapeMask, axis);
+
+    // Curves 6..9 (SE SW NW NE) mirrored across x / across z.
+    private static readonly int[] CurveMirrorX = [7, 6, 9, 8], CurveMirrorZ = [9, 8, 7, 6];
+
+    private static int MirrorRailShape(int shape, char axis)
+    {
+        // An ascending rail flips when it climbs along the mirrored axis (2/3 east-west, 4/5 north-south).
+        if (shape is 2 or 3 && axis == 'x' || shape is 4 or 5 && axis == 'z') return shape ^ 1;
+        return shape is >= 6 and <= 9 ? (axis == 'x' ? CurveMirrorX : CurveMirrorZ)[shape - 6] : shape;
+    }
+
+    // Rail shapes: 2..5 ascending E W N S, 6..9 curves SE SW NW NE (clockwise in that order). One clockwise turn of shapes 0..9:
+    // straight N-S ↔ E-W, ascending east → south → west → north, the curves around.
+    private static readonly int[] RailClockwise = [1, 0, 5, 4, 2, 3, 7, 8, 9, 6];
+
     private static int RailTurn(int shape, int q)
     {
-        for (int i = 0; i < q; i++)
-            shape = shape switch
-            {
-                0 => 1, 1 => 0,
-                2 => 5, 5 => 3, 3 => 4, 4 => 2, // ascending east → south → west → north
-                6 => 7, 7 => 8, 8 => 9, 9 => 6,
-                _ => shape,
-            };
+        for (int i = 0; i < q; i++) shape = shape is >= 0 and <= 9 ? RailClockwise[shape] : shape;
         return shape;
     }
 

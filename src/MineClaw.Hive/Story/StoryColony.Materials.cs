@@ -200,135 +200,251 @@ public sealed partial class StoryColony
         if (World is not { } w) return;
         using var scope = ReferenceEquals(GameData.Current, w.Data) ? null : GameData.Override(w.Data);
         var pool = Pool(w);
-        var reserved = new Dictionary<(int, int), int>();
-        var claims = new List<StockClaim>();
-        var wants = new List<Want>();
-        var hand = new List<HandCraft>();
-        StationWant? station = null;
         var near = Home() ?? Builds.SelectMany(b => b.Ghosts).Select(g => g.At).FirstOrDefault();
         _plannerFuels = BenchFor("furnace", near) is { } fb
             ? StoryFuels.For(w.Data, FuelChoice(fb, null)).Select(f => (f.Item.Id, f.Item.Meta, 1 / f.ItemsPerUnit)).ToList()
             : null;
-        bool hasTable = Benches.Any(b => b.Kind == "crafting_table"), hasFurnace = Benches.Any(b => b.Kind == "furnace");
-        List<MaterialNeed> Used(IReadOnlyList<MaterialNeed> used, Dictionary<(int Id, int Meta), int> after) { pool = after; return used.ToList(); }
-        pool = ToolCrafts(w, pool, reserved, wants, hasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
-        bool bucketCovered = BucketsHeld() > 0; // any bucket anywhere, empty or full, is the one liquid builds share (StoryColony.Water.cs)
-        bool bucketAsked = false;
-        foreach (var b in Builds.OrderBy(b => b.Order))
-        {
-            if (!Builds_Live(b)) { if (b.Materials.Count > 0) { b.Materials = new(); b.Rev = Bump(); } continue; }
-            var mats = new List<BuildMaterial>();
-            var notes = new List<string>();
-            int step = 0;
-            var groups = b.Ghosts.Where(g => g.Job && !g.Remove && g.State is "todo" or "leased" or "blocked")
-                .GroupBy(g => g.Item ?? (w.Data.ItemExists(g.Id) ? w.Data.Item(g.Id).Name : g.Id.ToString()));
-            foreach (var grp in groups)
-            {
-                // Liquid sources take a bucket (kept, never used up): one for all the colony's liquid builds (StoryColony.Water.cs).
-                bool liquid = StoryConstruction.IsLiquid(grp.First());
-                var item = liquid ? "bucket" : grp.Key;
-                var key = liquid ? (Id: Items.Bucket, Meta: 0) : KeyOfItem(w, item, grp.First().Id);
-                int need = liquid ? 1 : grp.Count();
-                // The colony's one bucket is asked for once (an earlier liquid build is crafting or asking for it): no second bill,
-                // no second alert (live 11-04: "need 1 bucket" from every water build).
-                if (liquid && !bucketCovered && bucketAsked)
-                {
-                    mats.Add(new BuildMaterial(item, Display(w, key.Id, key.Meta), 1, 0, 0, 1, "none", [], []));
-                    continue;
-                }
-                if (liquid) bucketAsked = true;
-                bool carried = liquid && bucketCovered;
-                int have = carried ? 1 : Take(pool, key, need);
-                Reserve(reserved, key, have);
-                if (have > 0 && !carried) claims.Add(new StockClaim(key, have, b.Id, item, null)); // who holds what (StoryColony.Claims.cs)
-                int shortN = need - have, crafting = 0;
-                string via = "none";
-                var chain = new List<string>();
-                var raw = new List<string>();
-                if (shortN > 0 && !b.NoCraft.Contains(item))
-                {
-                    var full = PlanFor(key, shortN, pool);
-                    if (full.Steps.Count > 0)
-                    {
-                        via = full.Steps.Any(s => s.IsSmelt) ? "smelt" : "craft";
-                        chain.AddRange(full.Steps.Select(s => s.ToString()));
-                        // The bench the chain needs comes first (a furnace is made at a table, so no table → the table first).
-                        bool needsTable = full.Steps.Any(s => s.RequiresCraftingTable), needsFurnace = full.Steps.Any(s => s.IsSmelt);
-                        string? bench = !hasTable && (needsTable || needsFurnace && !hasFurnace) ? "crafting_table" : needsFurnace && !hasFurnace ? "furnace" : null;
-                        if (bench != null)
-                        {
-                            var benchKey = bench == "furnace" ? (61, 0) : (58, 0);
-                            if (Meta.AutoPlaceBenches && station == null && StationSpot(w) is { } spot
-                                && (Take(pool, benchKey, 1) == 1 ? new List<MaterialNeed> { new(benchKey.Item1, 0, 1) } : Feasible(benchKey, 1, pool) is { } sf
-                                    ? Used(sf.Plan.Used, sf.After) : null) is { } stationRaw)
-                            {
-                                foreach (var u in stationRaw) Reserve(reserved, (u.Id, u.Damage), u.Count);
-                                station = new StationWant(bench, b.Id, spot, stationRaw, bench == "furnace" ? BenchFor("crafting_table", spot)?.Pos : null);
-                            }
-                            else if (station?.Kind != bench) notes.Add(bench);
-                        }
-                        var (can, plan, after, fuel) = MostCraftable(key, shortN, pool);
-                        if (can > 0 && plan != null && after != null)
-                        {
-                            // The chain's inputs are claimed for it; a bill that makes one of its steps may still use them.
-                            var chainOut = plan.Steps.Select(s => s.OutputId).ToHashSet();
-                            foreach (var u in plan.Used)
-                            {
-                                Reserve(reserved, (u.Id, u.Damage), u.Count);
-                                claims.Add(new StockClaim((u.Id, u.Damage), u.Count, b.Id, item, chainOut));
-                            }
-                            if (fuel.Count > 0) { Reserve(reserved, (fuel.Id, 0), fuel.Count); claims.Add(new StockClaim((fuel.Id, 0), fuel.Count, b.Id, item, chainOut)); }
-                            pool = after;
-                            crafting = can;
-                            foreach (var s in plan.Steps)
-                            {
-                                if (RecipeOf(w.Data, s, intermediate: (s.Recipe?.OutputId ?? -1) != key.Id) is not { } r) continue;
-                                // An owner's bill already makes this step (smelting the iron ore into ingots): no second, automatic one.
-                                if (OwnerMakes(w, s.OutputId)) { step++; continue; }
-                                int outputs = s.OutputCount;
-                                // A step whose bench the colony hasn't got yet waits (the bench is on its way, or asked for).
-                                if (s.IsSmelt) { if (hasFurnace) wants.Add(new Want(b.Id, b.Order, item, r, outputs, step++, "furnace")); }
-                                else if (hasTable) wants.Add(new Want(b.Id, b.Order, item, r, outputs, step++, "crafting_table"));
-                                else if (!s.RequiresCraftingTable) hand.Add(new HandCraft(b.Id, item, r, outputs, step++));
-                            }
-                        }
-                        int left = shortN - can;
-                        if (left > 0)
-                        {
-                            var rest = PlanFor(key, left, pool);
-                            raw.AddRange(rest.Missing.Select(m => m.ToString()));
-                            if (rest.Complete && rest.ItemsToSmelt > 0)
-                                raw.Add($"fuel for {rest.ItemsToSmelt} smelt{(rest.ItemsToSmelt == 1 ? "" : "s")} (coal, planks or logs)");
-                        }
-                    }
-                    else raw.Add($"{shortN} {Display(w, key.Id, key.Meta)}");
-                }
-                else if (shortN > 0) raw.Add($"{shortN} {Display(w, key.Id, key.Meta)}");
-                mats.Add(new BuildMaterial(item, Display(w, key.Id, key.Meta), need, have, crafting, shortN - crafting, via, chain, raw));
-                if (liquid && have + crafting > 0) bucketCovered = true; // in hand, in storage or being crafted: later liquid builds share it
-            }
-            // A bench this build's chain needs and the colony hasn't got: the colony makes one (one at a time), or the owner is asked.
-            string? alert = null;
-            foreach (var kind in notes.Distinct())
-                alert ??= Meta.AutoPlaceBenches
-                    ? $"Build {b.Id} needs a {(kind == "furnace" ? "furnace" : "crafting table")} and the colony can't make one yet: place or designate one"
-                    : $"Build {b.Id} needs a {(kind == "furnace" ? "furnace" : "crafting table")}: place one or designate an existing one (or allow auto-placing benches)";
-            var shortRaw = mats.Where(m => m.Short > 0 && m.Raw.Count > 0).ToList();
-            if (alert == null && shortRaw.Count > 0)
-                alert = $"Build {b.Id} ({b.Kind}) is short of materials: " + string.Join("; ",
-                    shortRaw.Select(m => $"need {m.Short} {m.Label} (" + (m.Via == "none" ? (b.NoCraft.Contains(m.Item) ? "none in storage; its crafting was cancelled" : "none in storage, and no recipe makes it") :$"short of raw materials: {string.Join(", ", m.Raw)}") + ")"));
-            if (alert == null) _buildAlerted.Remove(b.Id);
-            else if (_buildAlerted.GetValueOrDefault(b.Id) != alert) { _buildAlerted[b.Id] = alert; Alert("warn", alert); }
-            if (!mats.Select(m => m.Key).SequenceEqual(b.Materials.Select(m => m.Key))) { b.Materials = mats; b.Rev = Bump(); }
-        }
-        _reserved = reserved;
-        _claims = claims;
-        _freePool = pool;
-        _handCrafts = hand;
+        var pass = new MaterialsPass(this, w, pool);
+        pass.Pool = ToolCrafts(w, pass.Pool, pass.Reserved, pass.Wants, pass.HasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
+        pass.BucketCovered = BucketsHeld() > 0; // any bucket anywhere, empty or full, is the one liquid builds share (StoryColony.Water.cs)
+        foreach (var b in Builds.OrderBy(b => b.Order)) pass.Build(b);
+        CommitMaterials(pass, near);
+    }
+
+    /// <summary>The pass's outcome goes live: reservations, claims, the free pool, hand crafts, the bench to make, the auto bills.</summary>
+    private void CommitMaterials(MaterialsPass pass, P3 near)
+    {
+        _reserved = pass.Reserved;
+        _claims = pass.Claims;
+        _freePool = pass.Pool;
+        _handCrafts = pass.Hand;
+        var station = pass.Station;
         if (station?.Kind != _station?.Kind || station?.Spot != _station?.Spot || station?.Build != _station?.Build)
             foreach (var b in Builds.Where(b => b.Id == station?.Build || b.Id == _station?.Build)) b.Rev = Bump();
         _station = station;
-        ReconcileAutoBills(wants, near);
+        ReconcileAutoBills(pass.Wants, near);
+    }
+
+    /// <summary>A build's materials alert (a bench it needs, else what it is short of); said once until it changes, dropped when none.</summary>
+    private void SayBuildAlert(BuildState b, string? alert)
+    {
+        if (alert == null) _buildAlerted.Remove(b.Id);
+        else if (_buildAlerted.GetValueOrDefault(b.Id) != alert) { _buildAlerted[b.Id] = alert; Alert("warn", alert); }
+    }
+
+    /// <summary>A bench this build's chain needs and the colony hasn't got: the colony makes one (one at a time), or the owner is asked.</summary>
+    private string? BenchAlert(BuildState b, List<string> notes)
+    {
+        if (notes.Count == 0) return null;
+        var what = notes[0] == "furnace" ? "furnace" : "crafting table";
+        return Meta.AutoPlaceBenches
+            ? $"Build {b.Id} needs a {what} and the colony can't make one yet: place or designate one"
+            : $"Build {b.Id} needs a {what}: place one or designate an existing one (or allow auto-placing benches)";
+    }
+
+    private static string? ShortAlert(BuildState b, List<BuildMaterial> mats)
+    {
+        var shortRaw = mats.Where(m => m.Short > 0 && m.Raw.Count > 0).ToList();
+        if (shortRaw.Count == 0) return null;
+        return $"Build {b.Id} ({b.Kind}) is short of materials: " + string.Join("; ", shortRaw.Select(m => $"need {m.Short} {m.Label} (" + ShortWhy(b, m) + ")"));
+    }
+
+    private static string ShortWhy(BuildState b, BuildMaterial m) => m.Via == "none"
+        ? b.NoCraft.Contains(m.Item) ? "none in storage; its crafting was cancelled" : "none in storage, and no recipe makes it"
+        : $"short of raw materials: {string.Join(", ", m.Raw)}";
+
+    /// <summary>
+    /// One materials pass over the queue: the stock still unreserved (<see cref="Pool"/>), what builds reserved and claimed, the auto
+    /// bills and hand crafts wanted, the bench the colony makes next, and the one bucket all liquid builds share.
+    /// </summary>
+    private sealed class MaterialsPass(StoryColony c, IStoryWorld w, Dictionary<(int Id, int Meta), int> pool)
+    {
+        public Dictionary<(int Id, int Meta), int> Pool = pool;
+        public readonly Dictionary<(int Id, int Meta), int> Reserved = new();
+        public readonly List<StockClaim> Claims = new();
+        public readonly List<Want> Wants = new();
+        public readonly List<HandCraft> Hand = new();
+        public StationWant? Station;
+        public readonly bool HasTable = c.Benches.Any(b => b.Kind == "crafting_table"), HasFurnace = c.Benches.Any(b => b.Kind == "furnace");
+        public bool BucketCovered;
+        private bool _bucketAsked;
+
+        /// <summary>A build's materials and alert: each item it still places, what the colony has, crafts, or lacks.</summary>
+        public void Build(BuildState b)
+        {
+            if (!Builds_Live(b))
+            {
+                if (b.Materials.Count > 0) { b.Materials = new(); b.Rev = c.Bump(); }
+                return;
+            }
+            var acc = new BuildAcc(b);
+            foreach (var grp in Groups(b)) Group(acc, grp);
+            c.SayBuildAlert(b, c.BenchAlert(b, acc.Notes.Distinct().ToList()) ?? ShortAlert(b, acc.Mats));
+            if (!acc.Mats.Select(m => m.Key).SequenceEqual(b.Materials.Select(m => m.Key))) { b.Materials = acc.Mats; b.Rev = c.Bump(); }
+        }
+
+        private IEnumerable<IGrouping<string, GhostState>> Groups(BuildState b) =>
+            b.Ghosts.Where(g => g.Job && !g.Remove && g.State is "todo" or "leased" or "blocked")
+                .GroupBy(g => g.Item ?? (w.Data.ItemExists(g.Id) ? w.Data.Item(g.Id).Name : g.Id.ToString()));
+
+        /// <summary>One item of a build: held from stock, the rest crafted or said short. Liquid sources take a bucket (kept, never
+        /// used up): one for all the colony's liquid builds (StoryColony.Water.cs).</summary>
+        private void Group(BuildAcc acc, IGrouping<string, GhostState> grp)
+        {
+            var (liquid, item, key, need) = GroupKey(grp);
+            // The colony's one bucket is asked for once (an earlier liquid build is crafting or asking for it): no second bill, no
+            // second alert (live 11-04: "need 1 bucket" from every water build).
+            if (BucketAlreadyAsked(liquid))
+            {
+                acc.Mats.Add(new BuildMaterial(item, c.Display(w, key.Id, key.Meta), 1, 0, 0, 1, "none", [], []));
+                return;
+            }
+            int have = Hold(key, need, liquid && BucketCovered, acc.Build.Id, item);
+            int shortN = need - have;
+            var plan = Shortfall(acc, item, key, shortN);
+            acc.Mats.Add(new BuildMaterial(item, c.Display(w, key.Id, key.Meta), need, have, plan.Crafting, shortN - plan.Crafting, plan.Via, plan.Chain, plan.Raw));
+            if (liquid && have + plan.Crafting > 0) BucketCovered = true; // in hand, in storage or being crafted: later liquid builds share it
+        }
+
+        private (bool Liquid, string Item, (int Id, int Meta) Key, int Need) GroupKey(IGrouping<string, GhostState> grp)
+        {
+            if (StoryConstruction.IsLiquid(grp.First())) return (true, "bucket", (Items.Bucket, 0), 1);
+            return (false, grp.Key, c.KeyOfItem(w, grp.Key, grp.First().Id), grp.Count());
+        }
+
+        private bool BucketAlreadyAsked(bool liquid)
+        {
+            if (!liquid) return false;
+            if (!BucketCovered && _bucketAsked) return true;
+            _bucketAsked = true;
+            return false;
+        }
+
+        /// <summary>What the colony has of the item, reserved for the build and claimed by it (a carried bucket: held, not claimed).</summary>
+        private int Hold((int Id, int Meta) key, int need, bool carried, string build, string item)
+        {
+            int have = carried ? 1 : Take(Pool, key, need);
+            Reserve(Reserved, key, have);
+            if (have > 0 && !carried) Claims.Add(new StockClaim(key, have, build, item, null)); // who holds what (StoryColony.Claims.cs)
+            return have;
+        }
+
+        /// <summary>The shortfall: crafted as far as the pool goes (the chain, its bench first), the rest said as raw needs.</summary>
+        private MatPlan Shortfall(BuildAcc acc, string item, (int Id, int Meta) key, int shortN)
+        {
+            var plan = new MatPlan();
+            if (shortN <= 0) return plan;
+            if (acc.Build.NoCraft.Contains(item)) { plan.Raw.Add($"{shortN} {c.Display(w, key.Id, key.Meta)}"); return plan; }
+            var full = PlanFor(key, shortN, Pool);
+            if (full.Steps.Count == 0) { plan.Raw.Add($"{shortN} {c.Display(w, key.Id, key.Meta)}"); return plan; }
+            plan.Via = full.Steps.Any(s => s.IsSmelt) ? "smelt" : "craft";
+            plan.Chain.AddRange(full.Steps.Select(s => s.ToString()));
+            BenchFirst(acc, full);
+            Craft(acc, item, key, shortN, plan);
+            return plan;
+        }
+
+        private void Craft(BuildAcc acc, string item, (int Id, int Meta) key, int shortN, MatPlan plan)
+        {
+            var (can, made, after, fuel) = MostCraftable(key, shortN, Pool);
+            if (can > 0 && made != null && after != null)
+            {
+                ClaimChain(acc.Build, item, made, fuel);
+                Pool = after;
+                plan.Crafting = can;
+                AddSteps(acc, item, key, made);
+            }
+            if (shortN - can > 0) RawRest(key, shortN - can, plan);
+        }
+
+        /// <summary>The chain's inputs are claimed for it; a bill that makes one of its steps may still use them.</summary>
+        private void ClaimChain(BuildState b, string item, CraftPlan plan, (int Id, int Count) fuel)
+        {
+            var chainOut = plan.Steps.Select(s => s.OutputId).ToHashSet();
+            foreach (var u in plan.Used)
+            {
+                Reserve(Reserved, (u.Id, u.Damage), u.Count);
+                Claims.Add(new StockClaim((u.Id, u.Damage), u.Count, b.Id, item, chainOut));
+            }
+            if (fuel.Count > 0) { Reserve(Reserved, (fuel.Id, 0), fuel.Count); Claims.Add(new StockClaim((fuel.Id, 0), fuel.Count, b.Id, item, chainOut)); }
+        }
+
+        /// <summary>The chain's steps as auto bills on the bench they need, or hand crafts (2×2) while the colony has no table.</summary>
+        private void AddSteps(BuildAcc acc, string item, (int Id, int Meta) key, CraftPlan plan)
+        {
+            var b = acc.Build;
+            foreach (var s in plan.Steps)
+            {
+                if (RecipeOf(w.Data, s, intermediate: (s.Recipe?.OutputId ?? -1) != key.Id) is not { } r) continue;
+                // An owner's bill already makes this step (smelting the iron ore into ingots): no second, automatic one.
+                if (c.OwnerMakes(w, s.OutputId)) { acc.Step++; continue; }
+                int outputs = s.OutputCount;
+                // A step whose bench the colony hasn't got yet waits (the bench is on its way, or asked for).
+                if (s.IsSmelt) { if (HasFurnace) Wants.Add(new Want(b.Id, b.Order, item, r, outputs, acc.Step++, "furnace")); }
+                else if (HasTable) Wants.Add(new Want(b.Id, b.Order, item, r, outputs, acc.Step++, "crafting_table"));
+                else if (!s.RequiresCraftingTable) Hand.Add(new HandCraft(b.Id, item, r, outputs, acc.Step++));
+            }
+        }
+
+        private void RawRest((int Id, int Meta) key, int left, MatPlan plan)
+        {
+            var rest = PlanFor(key, left, Pool);
+            plan.Raw.AddRange(rest.Missing.Select(m => m.ToString()));
+            if (rest.Complete && rest.ItemsToSmelt > 0)
+                plan.Raw.Add($"fuel for {rest.ItemsToSmelt} smelt{(rest.ItemsToSmelt == 1 ? "" : "s")} (coal, planks or logs)");
+        }
+
+        /// <summary>The bench the chain needs comes first (a furnace is made at a table, so no table → the table first).</summary>
+        private void BenchFirst(BuildAcc acc, CraftPlan full)
+        {
+            if (BenchNeeded(full) is not { } bench) return;
+            if (!PlanStation(acc.Build, bench) && Station?.Kind != bench) acc.Notes.Add(bench);
+        }
+
+        private string? BenchNeeded(CraftPlan full)
+        {
+            bool needsTable = full.Steps.Any(s => s.RequiresCraftingTable), needsFurnace = full.Steps.Any(s => s.IsSmelt);
+            if (!HasTable && (needsTable || needsFurnace && !HasFurnace)) return "crafting_table";
+            return needsFurnace && !HasFurnace ? "furnace" : null;
+        }
+
+        /// <summary>The colony makes and places the bench itself (when allowed, one at a time, with a spot for it and its materials).</summary>
+        private bool PlanStation(BuildState b, string bench)
+        {
+            var benchKey = bench == "furnace" ? (61, 0) : (58, 0);
+            if (!c.Meta.AutoPlaceBenches || Station != null || c.StationSpot(w) is not { } spot) return false;
+            if (StationRaw(benchKey) is not { } stationRaw) return false;
+            foreach (var u in stationRaw) Reserve(Reserved, (u.Id, u.Damage), u.Count);
+            Station = new StationWant(bench, b.Id, spot, stationRaw, bench == "furnace" ? c.BenchFor("crafting_table", spot)?.Pos : null);
+            return true;
+        }
+
+        /// <summary>A stored bench (taken), else what crafting one uses (the pool after it); null when neither.</summary>
+        private List<MaterialNeed>? StationRaw((int Id, int Meta) benchKey)
+        {
+            if (Take(Pool, benchKey, 1) == 1) return new List<MaterialNeed> { new(benchKey.Id, 0, 1) };
+            if (Feasible(benchKey, 1, Pool) is not { } sf) return null;
+            Pool = sf.After;
+            return sf.Plan.Used.ToList();
+        }
+    }
+
+    /// <summary>One build's materials as the pass gathers them: its materials, the benches it asks for, the next chain step number.</summary>
+    private sealed class BuildAcc(BuildState b)
+    {
+        public readonly BuildState Build = b;
+        public readonly List<BuildMaterial> Mats = new();
+        public readonly List<string> Notes = new();
+        public int Step;
+    }
+
+    /// <summary>How one item's shortfall is met: none | craft | smelt, the chain, how many are being crafted, the raw needs left.</summary>
+    private sealed class MatPlan
+    {
+        public string Via = "none";
+        public readonly List<string> Chain = new();
+        public readonly List<string> Raw = new();
+        public int Crafting;
     }
 
     /// <summary>The auto bills on the benches match <paramref name="wants"/>: targets follow the shortfall, unwanted ones go (never a

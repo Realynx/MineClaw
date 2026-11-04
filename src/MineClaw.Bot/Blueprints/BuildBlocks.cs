@@ -19,14 +19,15 @@ public static class Dirs
 
     public static string Name(this Dir d) => d.ToString().ToLowerInvariant();
 
-    public static Dir? Parse(string? s) => s?.Trim().ToLowerInvariant() switch
+    private static readonly Dictionary<string, Dir> Names = new(StringComparer.Ordinal)
     {
-        "n" or "north" or "-z" => Dir.North,
-        "e" or "east" or "+x" => Dir.East,
-        "s" or "south" or "+z" => Dir.South,
-        "w" or "west" or "-x" => Dir.West,
-        _ => null,
+        ["n"] = Dir.North, ["north"] = Dir.North, ["-z"] = Dir.North,
+        ["e"] = Dir.East, ["east"] = Dir.East, ["+x"] = Dir.East,
+        ["s"] = Dir.South, ["south"] = Dir.South, ["+z"] = Dir.South,
+        ["w"] = Dir.West, ["west"] = Dir.West, ["-x"] = Dir.West,
     };
+
+    public static Dir? Parse(string? s) => s != null && Names.TryGetValue(s.Trim().ToLowerInvariant(), out var d) ? d : null;
 }
 
 /// <summary>How a block behaves for planning, support and placement.</summary>
@@ -82,18 +83,19 @@ public static class BuildBlocks
     public static string? Refusal(int id)
     {
         if (!Blocks.Exists(id)) return $"block id {id} doesn't exist in {MineClaw.Data.Versioning.GameData.Current.VersionId}";
-        if (Kinds.ContainsKey(id)) return null;
-        return id switch
-        {
-            Blocks.Air => "air is '.' in a layer, not a palette block",
-            Blocks.Grass => "grass can't be placed (place dirt: grass spreads onto it)",
-            Blocks.DoubleSlab => "double slabs aren't an item: use two slab cells' worth of stone or a full block",
-            Blocks.Leaves => MineClaw.Data.Versioning.GameData.Current.VersionId == "b1.8.1" ? "placed leaves decay in b1.8.1" : "leaves aren't buildable in blueprints",
-            Blocks.Ice => "ice melts next to light and leaves water",
-            _ when Blocks.IsWater(id) || Blocks.IsLava(id) => "liquids aren't buildable",
-            _ => $"{Blocks.Get(id).Name} isn't supported in blueprints (only building blocks, stairs, slabs, doors, torches, ladders, fences, panes, stations)",
-        };
+        return Kinds.ContainsKey(id) ? null : RefusalOfUnbuildable(id);
     }
+
+    private static string RefusalOfUnbuildable(int id) => id switch
+    {
+        Blocks.Air => "air is '.' in a layer, not a palette block",
+        Blocks.Grass => "grass can't be placed (place dirt: grass spreads onto it)",
+        Blocks.DoubleSlab => "double slabs aren't an item: use two slab cells' worth of stone or a full block",
+        Blocks.Leaves => MineClaw.Data.Versioning.GameData.Current.VersionId == "b1.8.1" ? "placed leaves decay in b1.8.1" : "leaves aren't buildable in blueprints",
+        Blocks.Ice => "ice melts next to light and leaves water",
+        _ when Blocks.IsWater(id) || Blocks.IsLava(id) => "liquids aren't buildable",
+        _ => $"{Blocks.Get(id).Name} isn't supported in blueprints (only building blocks, stairs, slabs, doors, torches, ladders, fences, panes, stations)",
+    };
 
     public static BuildKind KindOf(int id) => Kinds.TryGetValue(id, out var k) ? k : BuildKind.Solid;
 
@@ -160,52 +162,73 @@ public static class BuildBlocks
     public static int Rotate(int id, int meta, int quarters)
     {
         if (quarters % 4 == 0) return meta;
-        switch (KindOf(id))
+        return KindOf(id) switch
         {
-            case BuildKind.Stairs: return StairsMeta(StairsAscend(meta).Turn(quarters)) | (meta & 4); // 1.12.2: keep upside down
-            case BuildKind.Door:
-                {
-                    int upper = meta & 8, hinge = meta & 4;
-                    return DoorFacingMeta(DoorPlacerFacing(meta).Turn(quarters)) | hinge | upper;
-                }
-        }
-        if (id == Blocks.Ladder && meta is >= 2 and <= 5)
-            return LadderMeta(((Dir[])[Dir.South, Dir.North, Dir.East, Dir.West])[meta - 2].Turn(quarters));
-        if (id is Blocks.Chest or Blocks.Furnace or Blocks.Dispenser && meta is >= 2 and <= 5)
-            return FrontMeta(((Dir[])[Dir.North, Dir.South, Dir.West, Dir.East])[meta - 2].Turn(quarters));
-        if (id == Blocks.FenceGate)
-            return GateMeta(((Dir[])[Dir.South, Dir.West, Dir.North, Dir.East])[meta & 3].Turn(quarters)) | (meta & 4);
-        // BlockTorch: 1..4 = the wall on the west/east/north/south (5 = floor); BlockTrapdoor: 0..3 = the wall south/north/east/
-        // west (+4 open); BlockPumpkin: the placer's yaw quarter (+1 per clockwise turn).
-        Dir[] torchWalls = [Dir.West, Dir.East, Dir.North, Dir.South], trapWalls = [Dir.South, Dir.North, Dir.East, Dir.West];
-        if (id == Blocks.Torch && meta is >= 1 and <= 4) return Array.IndexOf(torchWalls, torchWalls[meta - 1].Turn(quarters)) + 1;
-        if (id == Blocks.Trapdoor) return Array.IndexOf(trapWalls, trapWalls[meta & 3].Turn(quarters)) | (meta & 4);
-        if (id is Blocks.Pumpkin or Blocks.JackOLantern) return ((meta + quarters) % 4 + 4) % 4;
-        // Every other design block (1.12.2 stairs and doors of other woods, beds, signs, rails, logs' axes…): the design rules.
-        return DesignFacing.Rotate(id, meta, quarters);
+            BuildKind.Stairs => StairsMeta(StairsAscend(meta).Turn(quarters)) | (meta & 4), // 1.12.2: keep upside down
+            BuildKind.Door => DoorFacingMeta(DoorPlacerFacing(meta).Turn(quarters)) | (meta & 4) | (meta & 8), // hinge, upper half
+            // Every other design block (1.12.2 stairs and doors of other woods, beds, signs, rails, logs' axes…): the design rules.
+            _ => RotateFronted(id, meta, quarters) ?? RotateOther(id, meta, quarters) ?? DesignFacing.Rotate(id, meta, quarters),
+        };
     }
+
+    /// <summary>The wall a ladder hangs on (metas 2..5), a chest/furnace/dispenser's front (metas 2..5), a gate's way through
+    /// (meta &amp; 3), a torch's wall (metas 1..4), a trapdoor's wall (meta &amp; 3; mc-dev BlockTrapdoor).</summary>
+    internal static readonly Dir[] LadderWalls = [Dir.South, Dir.North, Dir.East, Dir.West], FrontSides = [Dir.North, Dir.South, Dir.West, Dir.East],
+        GateWays = [Dir.South, Dir.West, Dir.North, Dir.East], TorchWalls = [Dir.West, Dir.East, Dir.North, Dir.South],
+        TrapdoorWalls = [Dir.South, Dir.North, Dir.East, Dir.West];
+
+    internal static bool IsFronted(int id) => id is Blocks.Chest or Blocks.Furnace or Blocks.Dispenser;
+
+    private static int? RotateFronted(int id, int meta, int quarters)
+    {
+        if (id == Blocks.Ladder && meta is >= 2 and <= 5) return LadderMeta(LadderWalls[meta - 2].Turn(quarters));
+        if (IsFronted(id) && meta is >= 2 and <= 5) return FrontMeta(FrontSides[meta - 2].Turn(quarters));
+        if (id == Blocks.FenceGate) return GateMeta(GateWays[meta & 3].Turn(quarters)) | (meta & 4);
+        return null;
+    }
+
+    // BlockTorch: 1..4 = the wall on the west/east/north/south (5 = floor); BlockTrapdoor: 0..3 = the wall south/north/east/
+    // west (+4 open); BlockPumpkin: the placer's yaw quarter (+1 per clockwise turn).
+    private static int? RotateOther(int id, int meta, int quarters)
+    {
+        if (id == Blocks.Torch && meta is >= 1 and <= 4) return Array.IndexOf(TorchWalls, TorchWalls[meta - 1].Turn(quarters)) + 1;
+        if (id == Blocks.Trapdoor) return Array.IndexOf(TrapdoorWalls, TrapdoorWalls[meta & 3].Turn(quarters)) | (meta & 4);
+        if (id is Blocks.Pumpkin or Blocks.JackOLantern) return ((meta + quarters) % 4 + 4) % 4;
+        return null;
+    }
+
+    /// <summary>A meta range rule of <see cref="MetaProblem"/>: the blocks it covers, the metas it refuses, and why.</summary>
+    private sealed record MetaRule(Func<int, BuildKind, bool> Covers, Func<int, bool> Bad, Func<string, int, string> Why);
+
+    /// <summary>In order: the first rule that covers a block and refuses its meta names the problem.</summary>
+    private static readonly MetaRule[] MetaRules =
+    [
+        new((_, k) => k == BuildKind.Stairs, m => m is < 0 or > 3, (n, m) => $"{n} meta {m}: stairs are 0..3 (no upside-down stairs in blueprints)"),
+        new((_, k) => k == BuildKind.Slab, m => m is < 0 or > 5, (_, m) => $"slab meta {m}: 0 stone, 1 sandstone, 2 wood, 3 cobble, 4 brick, 5 stone brick"),
+        new((_, k) => k == BuildKind.Door, m => m is < 0 or > 15, (_, m) => $"door meta {m} out of range"),
+        new((id, _) => id == Blocks.Wool, m => m is < 0 or > 15, (_, m) => $"wool meta {m}: colours are 0..15"),
+        new((id, _) => id == Blocks.Log, m => m is < 0 or > 2, (_, m) => $"log meta {m}: 0 oak, 1 spruce, 2 birch"),
+        new((id, _) => id == Blocks.StoneBricks, m => m is < 0 or > 2, (_, m) => $"stone brick meta {m}: 0 plain, 1 mossy, 2 cracked"),
+        new((id, _) => id == Blocks.Ladder, m => m is < 2 or > 5, (_, m) => $"ladder meta {m}: 2..5 (the wall side)"),
+        new((id, _) => id == Blocks.Torch, m => m is < 0 or > 5, (_, m) => $"torch meta {m}: 1..5"),
+        new((id, _) => IsFronted(id), m => m is not (0 or >= 2 and <= 5), (n, m) => $"{n} meta {m}: 2..5 (front)"),
+        new((id, _) => id is Blocks.FenceGate or Blocks.Trapdoor, m => m is < 0 or > 7, (n, m) => $"{n} meta {m}: 0..7"),
+        new((id, _) => id is Blocks.Pumpkin or Blocks.JackOLantern, m => m is < 0 or > 3, (n, m) => $"{n} meta {m}: 0..3"),
+        new((id, _) => !TakesMeta(id), m => m != 0, (n, m) => $"{n} has no metadata variants (meta {m})"),
+    ];
+
+    /// <summary>A block whose meta means something (a variant, a facing, a torch's wall, a trapdoor's or pumpkin's turn).</summary>
+    private static bool TakesMeta(int id) =>
+        HasVariants(id) || Directional(id) || id is Blocks.Torch or Blocks.Trapdoor or Blocks.Pumpkin or Blocks.JackOLantern;
 
     /// <summary>Null = (id, meta) is a valid b1.8.1 state for a blueprint cell; else why not.</summary>
     public static string? MetaProblem(int id, int meta)
     {
         string n = Blocks.Get(id).Name;
-        return KindOf(id) switch
-        {
-            BuildKind.Stairs when meta is < 0 or > 3 => $"{n} meta {meta}: stairs are 0..3 (no upside-down stairs in blueprints)",
-            BuildKind.Slab when meta is < 0 or > 5 => $"slab meta {meta}: 0 stone, 1 sandstone, 2 wood, 3 cobble, 4 brick, 5 stone brick",
-            BuildKind.Door when meta is < 0 or > 15 => $"door meta {meta} out of range",
-            _ when id == Blocks.Wool && meta is < 0 or > 15 => $"wool meta {meta}: colours are 0..15",
-            _ when id == Blocks.Log && meta is < 0 or > 2 => $"log meta {meta}: 0 oak, 1 spruce, 2 birch",
-            _ when id == Blocks.StoneBricks && meta is < 0 or > 2 => $"stone brick meta {meta}: 0 plain, 1 mossy, 2 cracked",
-            _ when id == Blocks.Ladder && meta is < 2 or > 5 => $"ladder meta {meta}: 2..5 (the wall side)",
-            _ when id == Blocks.Torch && meta is < 0 or > 5 => $"torch meta {meta}: 1..5",
-            _ when id is Blocks.Chest or Blocks.Furnace or Blocks.Dispenser && meta is not (0 or >= 2 and <= 5) => $"{n} meta {meta}: 2..5 (front)",
-            _ when id is Blocks.FenceGate or Blocks.Trapdoor && meta is < 0 or > 7 => $"{n} meta {meta}: 0..7",
-            _ when id is Blocks.Pumpkin or Blocks.JackOLantern && meta is < 0 or > 3 => $"{n} meta {meta}: 0..3",
-            _ when meta != 0 && !(HasVariants(id) || Directional(id) || id is Blocks.Torch or Blocks.Trapdoor or Blocks.Pumpkin or Blocks.JackOLantern)
-                => $"{n} has no metadata variants (meta {meta})",
-            _ => null,
-        };
+        var kind = KindOf(id);
+        foreach (var rule in MetaRules)
+            if (rule.Covers(id, kind) && rule.Bad(meta)) return rule.Why(n, meta);
+        return null;
     }
 
     /// <summary>Short display name of a placed state ("cobblestone", "oak stairs", "red wool").</summary>
