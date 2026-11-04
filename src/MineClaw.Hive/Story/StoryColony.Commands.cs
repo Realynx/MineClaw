@@ -259,6 +259,7 @@ public sealed partial class StoryColony
                     var key = DesignationKey(d);
                     _skip.Remove(key);
                     _leaseFails.Remove(key);
+                    _softFails.Remove(key);
                     d.Status = "open";
                     d.Rev = Touch();
                 }
@@ -278,8 +279,10 @@ public sealed partial class StoryColony
             var madeAt = new HashSet<P3>();
             var madeEnt = new HashSet<int>();
             // Also what this call made already: a tall plant's two halves (or any repeated cell) become one designation.
-            bool Taken(string k, P3? at, int? ent) => at is { } ma && !madeAt.Add(ma) || ent is { } me && !madeEnt.Add(me)
-                || Designations.Any(d => d.Kind == k && (at != null && d.At == at || ent != null && d.Entity == ent));
+            // What this kind has already (sets: a 4096-cell box over a few hundred designations was O(n·m)).
+            var hasAt = Designations.Where(d => d.Kind == kind && d.At != null).Select(d => d.At!.Value).ToHashSet();
+            var hasEnt = Designations.Where(d => d.Kind == kind && d.Entity != null).Select(d => d.Entity!.Value).ToHashSet();
+            bool Taken(string k, P3? at, int? ent) => at is { } ma && (!madeAt.Add(ma) || hasAt.Contains(ma)) || ent is { } me && (!madeEnt.Add(me) || hasEnt.Contains(me));
             void Block(P3 at, List<P3>? col = null, string? replant = null, string? label = null)
             {
                 if (Taken(kind, at, null)) return;
@@ -315,11 +318,11 @@ public sealed partial class StoryColony
                     break;
                 case "mine":
                     foreach (var c in Cells())
-                        if (StoryBlocks.MineMatch(w.Block(c.X, c.Y, c.Z).Id, filter)) Block(c, null, null, "mining");
+                        if (StoryBlocks.MineMatch(w.Block(c.X, c.Y, c.Z).Id, filter)) Block(PlantBase(c), null, null, "mining"); // a tall plant: one designation, its lower half
                     break;
                 case "deconstruct":
                     foreach (var c in Cells())
-                        if (w.Block(c.X, c.Y, c.Z).Id is var id && !StoryBlocks.Natural.Contains(id) && !StoryBlocks.Undiggable.Contains(id)) Block(c, null, null, "deconstructing");
+                        if (w.Block(c.X, c.Y, c.Z).Id is var id && !StoryBlocks.Natural.Contains(id) && !StoryBlocks.Undiggable.Contains(id)) Block(PlantBase(c), null, null, "deconstructing");
                     break;
                 case "haul":
                     foreach (var e in w.Entities().Where(e => e.Kind == "item" && In(e))) Entity(e, "hauling " + e.Name);

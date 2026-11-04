@@ -277,6 +277,24 @@ public sealed class BuildState
     public long Rev { get; set; }
     public int BlocksTotal => Ghosts.Count(g => g.Job);
     public int BlocksDone => Ghosts.Count(g => g.Job && g.State == "done");
+    /// <summary>Items whose auto-crafting the owner cancelled (an auto bill's cancel): the build waits for them instead.</summary>
+    public List<string> NoCraft { get; set; } = new();
+    /// <summary>What the build still needs, per item (the materials pass: have, crafting, short, via); not saved.</summary>
+    [JsonIgnore] public List<BuildMaterial> Materials { get; set; } = new();
+}
+
+/// <summary>One item a build still needs: how many, how many the colony has for it (reserved in queue order), how many are being
+/// crafted for it (auto bills), how many are short (raw materials missing), the recipe chain and the raw shortfall.</summary>
+public sealed record BuildMaterial(string Item, string Label, int Need, int Have, int Crafting, int Short, string Via, IReadOnlyList<string> Chain,
+    IReadOnlyList<string> Raw)
+{
+    public JsonObject Json() => new()
+    {
+        ["item"] = Item, ["label"] = Label, ["need"] = Need, ["have"] = Have, ["crafting"] = Crafting, ["short"] = Short, ["via"] = Via,
+        ["chain"] = new JsonArray(Chain.Select(c => (JsonNode)c!).ToArray()), ["raw"] = new JsonArray(Raw.Select(c => (JsonNode)c!).ToArray()),
+    };
+
+    public string Key => $"{Item}|{Need}|{Have}|{Crafting}|{Short}|{Via}|{string.Join(";", Chain)}|{string.Join(";", Raw)}";
 }
 
 /// <summary>One block of a build: what goes where, and its state (todo | leased | done | blocked).</summary>
@@ -314,6 +332,14 @@ public sealed class BillState
     public int? MinSkill { get; set; }
     /// <summary>"best" or a chest [x,y,z].</summary>
     public JsonNode? Store { get; set; } = JsonValue.Create("best");
+    /// <summary>An auto bill (docs/web/story-mode.md "Builds craft what they need"): the build it crafts for; null = the owner's bill.
+    /// It follows the build's shortfall (target = done + what is still to make) and goes when the build no longer needs it; the owner
+    /// can only cancel it (the build then waits for the item).</summary>
+    public string? ForBuild { get; set; }
+    /// <summary>The build's item an auto bill's chain ends in (cancelling the bill makes the build wait for that item).</summary>
+    public string? ForItem { get; set; }
+    /// <summary>An auto bill's place in its build's recipe chain (lower first: ingredients before products).</summary>
+    public int Step { get; set; }
 }
 
 public sealed class WorkbenchState
@@ -348,4 +374,10 @@ public sealed class ColonyMeta
     public int Seq { get; set; }
     /// <summary>Bed assignments: a bed's foot ("x,y,z") → the pawn that sleeps there (one bed per pawn, one pawn per bed).</summary>
     public Dictionary<string, string> Beds { get; set; } = new();
+    /// <summary>A build that needs a crafting table (or furnace) the colony hasn't got: a pawn crafts one and places it near home
+    /// (default on). Off: an alert asks the owner to place or designate one.</summary>
+    public bool AutoPlaceBenches { get; set; } = true;
+    /// <summary>Workbenches near home and in houses join the colony by themselves. Off by default: only designated benches (the owner's
+    /// "Use as colony crafting table", a bill added at a bench, a bench the colony placed) are used, never another player's.</summary>
+    public bool DetectBenches { get; set; }
 }

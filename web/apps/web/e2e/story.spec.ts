@@ -657,3 +657,414 @@ test('+ adds a joining pawn; − removes the selected one after a confirm; a gro
   await page.mouse.up();
   expect(body(await zone)).toMatchObject({ op: 'add', kind: 'farm', plant: 'carrots' });
 });
+
+// ------------------------------------------------------------------ the world under the HUD: models, holograms, notices
+
+type Ghost = [number, number, number, number, number, string | number, string];
+interface WorldDebug {
+  models(): Array<{ name: string; look: string; model: boolean | null }>;
+  botModels(): number;
+  holograms(): { cells: number; digs: number; boxes: number; lod: boolean } | null;
+  hologramAt(x: number, y: number, z: number): boolean;
+  ghosts(): Ghost[];
+}
+const dbg = <K extends keyof WorldDebug>(page: Page, m: K, ...a: Parameters<WorldDebug[K]>) =>
+  page.evaluate(
+    ([mm, aa]) => (window as unknown as { __story: Record<string, (...x: unknown[]) => unknown> }).__story[mm]!(...aa),
+    [m, a] as const,
+  ) as Promise<ReturnType<WorldDebug[K]>>;
+
+test('pawns are drawn as their player models; a queued build shows as holograms that go once built', async ({ page }) => {
+  await signIn(page, false);
+  await openStory(page);
+  // The seeded colony's online pawns: player models (the viewer's bots), with the overlay's marks instead of tokens.
+  await expect
+    .poll(async () => (await dbg(page, 'models')).filter((b) => b.name.startsWith('maid_s1_') && b.look === 'model').length, {
+      timeout: 60_000,
+    })
+    .toBeGreaterThan(0);
+  expect(await dbg(page, 'botModels')).toBeGreaterThan(0);
+  if (shots) await page.screenshot({ path: `${shots}/story-models.png` });
+  // Zoomed far out, the 2D tokens come back.
+  await story(page, 'setZoom', 112);
+  await expect.poll(async () => (await dbg(page, 'models')).filter((b) => b.look === 'model').length).toBe(0);
+  await story(page, 'setZoom', 40);
+  // The seeded shed (a cobblestone wall) is queued: holograms in the world.
+  await expect.poll(async () => (await dbg(page, 'holograms'))?.cells ?? 0, { timeout: 30_000 }).toBeGreaterThan(0);
+  const todo = (await dbg(page, 'ghosts')).find((g) => g[6] === 'todo' || g[6] === 'leased');
+  if (todo) await expect.poll(() => dbg(page, 'hologramAt', todo[0], todo[1], todo[2])).toBe(true);
+  if (shots) await page.screenshot({ path: `${shots}/story-holograms.png` });
+  // Pawns build it: a built cell has no hologram any more.
+  await expect
+    .poll(
+      async () => {
+        const done = (await dbg(page, 'ghosts')).filter((g) => g[6] === 'done');
+        if (!done.length) return 'none built yet';
+        for (const g of done)
+          if (await dbg(page, 'hologramAt', g[0], g[1], g[2])) return `hologram left at ${g.slice(0, 3).join(',')}`;
+        return 'ok';
+      },
+      { timeout: 90_000, intervals: [1000] },
+    )
+    .toBe('ok');
+});
+
+test('notifications: repeats coalesce, messages expire, Dismiss all, conditions and the log', async ({ page }) => {
+  await signIn(page, false);
+  await openStory(page);
+  const notices = (fn: string, ...a: unknown[]) =>
+    page.evaluate(
+      ([f, aa]) =>
+        (window as unknown as { __storyNotices: Record<string, (...x: unknown[]) => unknown> }).__storyNotices[f]!(...aa),
+      [fn, a] as const,
+    );
+  await page.waitForFunction(() => !!(window as unknown as { __storyNotices?: unknown }).__storyNotices);
+  await page.mouse.move(700, 450); // off the stack (hovering it holds the timers)
+  const msgs = page.getByTestId('message');
+  if (await page.getByTestId('dismiss-all').isVisible()) await page.getByTestId('dismiss-all').click();
+  // 20 identical failures: one message, ×20.
+  const now = new Date().toISOString();
+  await notices(
+    'ingest',
+    Array.from({ length: 20 }, (_, i) => ({
+      id: `e2e-${i}`,
+      at: now,
+      level: 'warn',
+      text: `Cut at ${i},64,${-i} failed ${i + 1} times: busy: claimed`,
+    })),
+  );
+  await expect(msgs.filter({ hasText: /Cut at/ })).toHaveCount(1);
+  await expect(msgs.filter({ hasText: /Cut at/ }).getByTestId('message-count')).toHaveText('×20');
+  if (shots) await page.screenshot({ path: `${shots}/story-notices.png` });
+  // Dismiss all clears the stack (the log keeps them, unread).
+  await page.getByTestId('dismiss-all').click();
+  await expect(msgs.filter({ hasText: /Cut at/ })).toHaveCount(0);
+  await expect(page.getByTestId('log-unread')).toBeVisible();
+  // Messages expire by themselves (a short test lifetime).
+  await notices('setTtlScale', 0.05);
+  await notices('ingest', [{ id: 'e2e-info', at: new Date().toISOString(), level: 'info', text: 'Ann is now level 5 in mining.' }]);
+  await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(1);
+  await expect(msgs.filter({ hasText: 'level 5' })).toHaveCount(0, { timeout: 5000 });
+  // At most four show; the rest are "+N more", which opens the log.
+  await notices('setTtlScale', 1);
+  await notices(
+    'ingest',
+    ['Ann is idle', 'Bob is hungry', 'A cow wandered off', 'The furnace is cold', 'A chest is full', 'Rain is coming'].map(
+      (t, i) => ({ id: `e2e-k${i}`, at: new Date().toISOString(), level: 'warn', text: t }),
+    ),
+  );
+  await expect(msgs).toHaveCount(4);
+  await page.getByTestId('more-messages').click();
+  const log = page.getByTestId('message-log');
+  await expect(log).toContainText('Cut at');
+  await expect(log).toContainText('Rain is coming');
+  await expect(page.getByTestId('log-unread')).toHaveCount(0);
+  // Esc on the stack dismisses all.
+  await page.getByTestId('alerts').focus();
+  await page.keyboard.press('Escape');
+  await expect(msgs.filter({ hasText: 'Rain is coming' })).toHaveCount(0);
+  // Ongoing conditions are listed apart (two of the seeded pawns are offline) and need no clicking away.
+  await expect(page.getByTestId('conditions').locator('[data-condition="offline"]')).toBeVisible();
+});
+
+interface Preview {
+  count: number;
+  cells: number;
+  label: string | null;
+  top: number | null;
+  bottom: number | null;
+}
+const preview = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __story: { preview(): Preview | null } }).__story.preview());
+const blockIds = (page: Page, pts: number[][]) =>
+  page.evaluate(
+    (p) => (window as unknown as { __story: { blocks(p: number[][]): Promise<number[]> } }).__story.blocks(p),
+    pts,
+  );
+const PLANTS = new Set([6, 31, 32, 37, 38, 39, 40, 175, 78]);
+
+test('mine height: Surface designates one layer; Flatten here previews exactly what it sends', async ({ page }) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  // The tall grass and flowers east of the wheat (fixture island x 8..15, z -12..-8): plants on grass.
+  const x0 = 9,
+    z0 = -12;
+  await story(page, 'focus', x0 + 2, z0 + 2);
+  await story(page, 'setZoom', 40);
+  await page.waitForTimeout(800);
+  const lv = await story(page, 'level');
+
+  // Mine (M) starts in Surface: the sub-bar says so.
+  await page.keyboard.press('m');
+  const modes = page.getByTestId('height-modes');
+  await expect(modes.getByRole('radio', { name: /Surface/ })).toHaveAttribute('aria-checked', 'true');
+  await dragCells(page, [x0, lv, z0], [x0 + 4, lv, z0 + 4]);
+  const pv = (await preview(page))!;
+  expect(pv.label).toMatch(/^Mine \(Surface\): y \d+/);
+  const des = post(page, /\/designations$/);
+  await page.mouse.up();
+  const sent = body(await des) as { op: string; kind: string; blocks: number[][]; area?: unknown };
+  expect(sent).toMatchObject({ op: 'add', kind: 'mine' });
+  expect(sent.area).toBeUndefined(); // exact cells, never an area the director could expand deeper
+  expect(sent.blocks.length).toBe(pv.cells);
+  // One layer: per column exactly one block that isn't a plant, and nothing but air over the highest designated cell.
+  const ids = await blockIds(page, sent.blocks);
+  const above = await blockIds(
+    page,
+    [...new Set(sent.blocks.map((b) => `${b[0]},${b[2]}`))].map((k) => {
+      const [x, z] = k.split(',').map(Number) as [number, number];
+      const top = Math.max(...sent.blocks.filter((b) => b[0] === x && b[2] === z).map((b) => b[1]!));
+      return [x, top + 1, z];
+    }),
+  );
+  const solid = new Map<string, number>();
+  sent.blocks.forEach((b, i) => {
+    expect(ids[i]).toBeGreaterThan(0); // never air
+    if (!PLANTS.has(ids[i]!)) solid.set(`${b[0]},${b[2]}`, (solid.get(`${b[0]},${b[2]}`) ?? 0) + 1);
+  });
+  expect(solid.size).toBe(25);
+  expect([...solid.values()].every((n) => n === 1)).toBe(true);
+  expect(above.every((id) => id === 0 || PLANTS.has(id))).toBe(true);
+  await expect(page.getByTestId('story-toast')).toContainText(/Mine: \d+ blocks?/);
+
+  // Flatten here (4) to one below the lowest ground of a slope (x 16..19, z -12..-9): everything above that level in the box,
+  // the preview's count is what is sent, and the ground comes out flat at the level.
+  await page.keyboard.press('m');
+  await page.keyboard.press('4');
+  await expect(modes.getByRole('radio', { name: /Flatten here/ })).toHaveAttribute('aria-checked', 'true');
+  const box: Array<[number, number]> = [];
+  for (let x = 16; x <= 19; x++) for (let z = -12; z <= -9; z++) box.push([x, z]);
+  const tops = await Promise.all(
+    box.map(async ([x, z]) => {
+      const ids = await blockIds(page, Array.from({ length: 40 }, (_, i) => [x, 100 - i, z]));
+      return 100 - ids.findIndex((id) => id !== 0 && !PLANTS.has(id));
+    }),
+  );
+  const target = Math.min(...tops) - 1;
+  for (let l = lv; l !== target; l += l < target ? 1 : -1)
+    await page.keyboard.press(l < target ? 'Shift+PageUp' : 'Shift+PageDown');
+  await expect.poll(() => story(page, 'level')).toBe(target);
+  await expect(page.getByTestId('height-level')).toHaveText(`level y ${target} (PgUp / PgDn)`);
+  await story(page, 'focus', 17, -10);
+  await page.waitForTimeout(500);
+  await dragCells(page, [16, target, -12], [19, target, -9]);
+  const fp = (await preview(page))!;
+  expect(fp.label).toMatch(/^Mine \(Flatten here\): y \d+ → \d+ · \d+ layers? · \d+ blocks?$/);
+  expect(fp.bottom).toBe(target + 1);
+  expect(fp.cells).toBeGreaterThanOrEqual(tops.reduce((n, t) => n + (t - target), 0));
+  const flat = post(page, /\/designations$/);
+  await page.mouse.up();
+  const fb = body(await flat) as { blocks: number[][] };
+  expect(fb.blocks.length).toBe(fp.cells);
+  expect(fb.blocks.every((b) => b[1]! > target)).toBe(true);
+  if (shots) await page.screenshot({ path: `${shots}/story-flatten.png` });
+});
+
+test('a drag is cancelled by Esc or a right-click: nothing is sent, the tool stays', async ({ page }) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const posts: Request[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/api\/story\//.test(new URL(r.url()).pathname)) posts.push(r);
+  });
+  const c = await story(page, 'center');
+  const lv = await story(page, 'level');
+  const a: [number, number, number] = [Math.floor(c[0]) - 3, lv, Math.floor(c[2]) - 3];
+  const b: [number, number, number] = [Math.floor(c[0]) + 3, lv, Math.floor(c[2]) + 3];
+
+  // Esc while dragging a mine box: the preview goes, the release does nothing, the tool stays.
+  await page.keyboard.press('m');
+  await dragCells(page, a, b);
+  expect(await preview(page)).not.toBeNull();
+  await page.keyboard.press('Escape');
+  expect(await preview(page)).toBeNull();
+  await page.mouse.up();
+  await expect(page.getByTestId('story-toast')).toHaveText('Cancelled');
+  await expect(page.getByTestId('tool-options')).toContainText('Mine');
+
+  // A right-click during a zone drag: the same, and the right-click doesn't put the tool down either.
+  await page.keyboard.press('Escape'); // the tool
+  await page.keyboard.press('c'); // chop: a designate tool again
+  await dragCells(page, a, b);
+  expect(await preview(page)).not.toBeNull();
+  await page.mouse.down({ button: 'right' });
+  expect(await preview(page)).toBeNull(); // cancelled on the press
+  await page.mouse.up({ button: 'right' });
+  await page.mouse.up();
+  await expect(page.getByTestId('order-menu')).toHaveCount(0);
+  await expect(page.getByTestId('tool-options')).toContainText('Chop wood');
+
+  // A click (no drag) where there is nothing to act on designates nothing (the cancel tool over no designations).
+  await page.keyboard.press('z');
+  const pa = (await story(page, 'toPage', c[0] + 0.5, lv + 1, c[2] + 0.5))!;
+  await page.mouse.click(pa.x, pa.y);
+  await expect(page.getByTestId('tool-options')).toContainText('Cancel');
+
+  // Esc during a formation line (drafted pawns, right-drag): no move orders, no menu.
+  await page.keyboard.press('Escape');
+  const bar = page.getByTestId('colonist-bar');
+  const names = await bar
+    .locator('[data-kind="pawn"]')
+    .evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.portrait!));
+  await bar.locator(`[data-portrait="${names[0]}"]`).click();
+  await page.mouse.move(700, 500);
+  await page.keyboard.press('r');
+  await expect(bar.locator('[data-kind="pawn"][data-drafted="true"]')).toHaveCount(1);
+  const drafted = posts.length;
+  const p1 = (await story(page, 'toPage', a[0] + 0.5, lv + 1, b[2] + 0.5))!;
+  const p2 = (await story(page, 'toPage', b[0] + 0.5, lv + 1, b[2] + 0.5))!;
+  await page.mouse.move(p1.x, p1.y);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(p2.x, p2.y, { steps: 6 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up({ button: 'right' });
+  await page.waitForTimeout(1000);
+  await expect(page.getByTestId('order-menu')).toHaveCount(0);
+  expect(posts.slice(drafted).map((r) => new URL(r.url()).pathname)).toEqual([]);
+  // Nothing but the draft was ever sent.
+  expect(posts.map((r) => new URL(r.url()).pathname).filter((p) => !/\/draft$/.test(p))).toEqual([]);
+});
+
+test('story map frame rate and main-thread time on software WebGL (10 pawns, hundreds of designations)', async ({
+  page,
+}) => {
+  test.skip(!process.env.STORY_PERF, 'set STORY_PERF=1 to measure');
+  test.setTimeout(240_000);
+  await page.addInitScript(() => sessionStorage.setItem('mcx-mock-story', 'busy'));
+  await signIn(page, false);
+  await openStory(page);
+  await expect(page.getByTestId('colonist-bar').locator('[data-kind="pawn"]')).toHaveCount(10);
+  await page.waitForTimeout(3000);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const metrics = async () => {
+    const { metrics: m } = await cdp.send('Performance.getMetrics');
+    return Object.fromEntries(m.map((x) => [x.name, x.value]));
+  };
+  const out: Record<string, unknown> = {};
+  const measure = async (label: string, act: () => Promise<void>) => {
+    await page.evaluate(() => {
+      const w = window as unknown as { __frames: number[]; __run: number };
+      const run = (w.__run = (w.__run ?? 0) + 1);
+      w.__frames = [];
+      const tick = (t: number) => {
+        if (w.__run !== run) return;
+        w.__frames.push(t);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const a = await metrics();
+    const t0 = Date.now();
+    await act();
+    const secs = (Date.now() - t0) / 1000;
+    const b = await metrics();
+    const f = await page.evaluate(() => (window as unknown as { __frames: number[] }).__frames);
+    const gaps = f
+      .slice(1)
+      .map((t, i) => t - f[i]!)
+      .sort((x, y) => x - y);
+    const per = (k: string) => Math.round(((b[k]! - a[k]!) * 1000) / secs);
+    out[label] = {
+      fps: Math.round((f.length - 1) / ((f[f.length - 1]! - f[0]!) / 1000)),
+      frameP95: Math.round(gaps[Math.floor(gaps.length * 0.95)] ?? NaN),
+      // main-thread milliseconds per second of wall time
+      taskMsPerS: per('TaskDuration'),
+      scriptMsPerS: per('ScriptDuration'),
+      layoutMsPerS: per('LayoutDuration'),
+      styleMsPerS: per('RecalcStyleDuration'),
+    };
+  };
+  await page.mouse.move(720, 450);
+  // STORY_PROFILE=<file> also saves a CPU profile of the idle and panning phases (chrome://inspect → Performance can load it).
+  const profile = process.env.STORY_PROFILE;
+  if (profile) {
+    await cdp.send('Profiler.enable');
+    await cdp.send('Profiler.setSamplingInterval', { interval: 200 });
+    await cdp.send('Profiler.start');
+  }
+  await measure('idle', () => page.waitForTimeout(6000));
+  await measure('panning', async () => {
+    for (const k of ['d', 's', 'a', 'w']) {
+      await page.keyboard.down(k);
+      await page.waitForTimeout(1500);
+      await page.keyboard.up(k);
+    }
+  });
+  if (profile) {
+    const { profile: p } = (await cdp.send('Profiler.stop')) as { profile: unknown };
+    const fs = await import('node:fs');
+    fs.writeFileSync(profile, JSON.stringify(p));
+  }
+  const failed = await story(page, 'failed');
+  out.failed = failed.length;
+  const cell = failed[0]!.cell!;
+  await story(page, 'focus', cell[0], cell[2]);
+  await story(page, 'setZoom', 24);
+  await page.waitForTimeout(800);
+  await measure('labels', () => page.waitForTimeout(5000));
+  console.warn(`STORY_PERF ${JSON.stringify(out)}`);
+});
+
+test('the Architect palette: tiers unlock with designated benches; builds list their materials; release and designate', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  await story(page, 'focus', 1, -3);
+  await story(page, 'setZoom', 36);
+  await page.waitForTimeout(800);
+
+  // The camp's table is the colony's (found at founding): the workbench tier is open, the furnace tier isn't.
+  await page.keyboard.press('b');
+  const arch = page.getByTestId('architect');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  const pal = page.getByTestId('architect-palette');
+  await expect(pal.locator('[data-entry="fence"]')).toHaveAttribute('data-unlocked', 'true');
+  await expect(pal.locator('[data-entry="glass"]')).toHaveAttribute('data-tier', 'furnace'); // the camp has a furnace too
+  await expect(pal.locator('[data-entry="planks"]')).toContainText('Hand');
+  await arch.getByRole('button', { name: 'Lighting' }).click();
+  await expect(pal.locator('[data-entry="torch"]')).toBeVisible();
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  // Picking the fence arms the fence tool; a fence queued from it lists its materials (crafted from logs at the table).
+  await pal.locator('[data-entry="fence"]').click();
+  await expect(arch.getByRole('button', { name: 'Fence' })).toHaveAttribute('aria-pressed', 'true');
+  const lv = await story(page, 'level');
+  const fence = post(page, /\/builds$/);
+  await dragCells(page, [-8, lv, 2], [-6, lv, 2]);
+  await page.mouse.up();
+  expect((body(await fence) as { items: Array<{ kind: string }> }).items[0]?.kind).toBe('fence');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('u');
+  const queue = page.getByTestId('queue-panel');
+  await expect(queue.locator('[data-material="fence"]')).toBeVisible();
+  await expect(queue.locator('[data-material="fence"] [data-crafting]')).toBeVisible();
+  if (shots) await page.screenshot({ path: `${shots}/story-materials.png` });
+
+  // The table's inspector: the fence's auto bill, cancel-only; release the bench, then designate it again.
+  await page.keyboard.press('Escape');
+  const table = await pageAt(page, -3.5, -1.5);
+  await page.mouse.click(table.x, table.y);
+  const bills = page.getByTestId('bills-inspector');
+  await expect(bills.locator('[data-auto-bill]')).toHaveCount(1);
+  await expect(bills.locator('[data-auto-bill]')).toContainText(/for build #/);
+  const release = post(page, /\/workbenches$/);
+  await bills.getByRole('button', { name: 'Release' }).click();
+  expect(body(await release)).toMatchObject({ op: 'release' });
+  // Without the table the workbench tier locks, with the reason.
+  await page.keyboard.press('b');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  await expect(pal.locator('[data-entry="fence"]')).toHaveAttribute('data-unlocked', 'false');
+  await expect(pal.locator('[data-entry="fence"]')).toContainText('Needs a crafting table');
+  await page.keyboard.press('Escape');
+  const designate = page.getByTestId('bench-designate');
+  await page.mouse.click(table.x, table.y);
+  await expect(designate).toBeVisible();
+  const again = post(page, /\/workbenches$/);
+  await designate.getByRole('button', { name: 'Use as colony workbench' }).click();
+  expect(body(await again)).toMatchObject({ op: 'designate' });
+  await expect(page.getByTestId('bills-inspector')).toBeVisible();
+});

@@ -180,8 +180,10 @@ public sealed class StoryDirectorTests
         Assert.Equal(2, c.Leases().Count);
         // Asking again returns the job it already holds (a script restart), not a new target.
         Assert.Equal(a["id"]!.GetValue<string>(), c.Next(0)["id"]!.GetValue<string>());
-        // A stale lease (the pawn vanished) runs out and the target goes back.
+        // A stale lease (the pawn vanished: its script isn't running any more) runs out and the target goes back. A pawn whose script
+        // still runs keeps its lease (see StoryMiningFixTests).
         c.Report(c.P(2), third["id"]!.GetValue<string>(), "done", null, null);
+        foreach (var i in new[] { 0, 1 }) h.Lives[c.P(i)] = h.Lives[c.P(i)] with { ScriptRunning = false };
         clock.Now += StoryColony.LeaseTtl + TimeSpan.FromSeconds(1);
         c.Tick();
         Assert.Empty(c.Leases());

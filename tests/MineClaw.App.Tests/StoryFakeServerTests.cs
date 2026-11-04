@@ -462,4 +462,24 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(16, 63, 4)] = 9;                               // water near it
         s.Inventory[38] = new ItemStack((short)295, 8, 0);       // wheat seeds
     });
+
+    [Fact]
+    public Task A_fence_build_has_its_fences_crafted_from_stored_planks_at_the_colony_table_then_builds_them() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        lock (srv.BlockLock) srv.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Planks, 12, 0);
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Everything").Error);
+        c.AddContents(c.StorageAt(WoodChest)!, new Stack(Blocks.Planks, 0, 12)); // what the bot remembers of the chest
+        Assert.Null(c.WorkbenchOp("designate", Table).Error); // the colony's table (detection is off)
+        Only(x, WorkTypes.Craft, WorkTypes.Build);
+        var cells = new JsonArray(new JsonArray(15, 64, 2), new JsonArray(16, 64, 2), new JsonArray(17, 64, 2));
+        Assert.Null(c.BuildsOp("add", new JsonArray(new JsonObject { ["kind"] = "fence", ["blocks"] = cells }), null).Error);
+        var b = c.Builds.Single();
+        Assert.True(await Until(() => b.Status == "done", 150_000),
+            $"fence: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason} | {string.Join("; ", b.Materials.Select(m => m.Key))} | " + x.Diag());
+        foreach (var g in b.Ghosts) Assert.Equal(85, srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)));
+        Assert.Empty(c.Benches.Single().Bills); // the auto bills went with the need
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("short of materials"));
+    });
 }

@@ -81,7 +81,23 @@ type ColonyWrite =
   | 'story.designations'
   | 'story.builds'
   | 'story.storage'
-  | 'story.bills';
+  | 'story.bills'
+  | 'story.workbenches'
+  | 'story.options';
+
+/**
+ * The Architect palette (placeables by tab, tier, unlock state, stock). Refreshed with the colony's revision while the
+ * Architect is open: designating a bench or storing materials changes it.
+ */
+export function useArchitect(id: string | null, rev: number | undefined, open: boolean) {
+  return useQuery({
+    queryKey: [...qk('story.architect', { id: id ?? '' }), Math.floor((rev ?? 0) / 20)],
+    queryFn: ({ signal }) => api('story.architect', { params: { id: id! }, signal }),
+    enabled: !!id && open,
+    staleTime: 5_000,
+    placeholderData: (prev) => prev,
+  });
+}
 
 /** `write('story.orders', body)` for the current colony; resolves to the route's reply and catches the state up. */
 export function useStoryWrite(id: string | null) {
@@ -91,6 +107,14 @@ export function useStoryWrite(id: string | null) {
       if (!id) throw new Error('no colony');
       const out = await api(route, { params: { id }, body });
       void catchUp(qc, id).catch(() => undefined);
+      // What the colony can make changes with its benches, its storage and its queue: the Architect's tiers follow.
+      if (
+        route === 'story.workbenches' ||
+        route === 'story.options' ||
+        route === 'story.builds' ||
+        route === 'story.storage'
+      )
+        void qc.invalidateQueries({ queryKey: qk('story.architect', { id }) });
       return out;
     },
     [qc, id],

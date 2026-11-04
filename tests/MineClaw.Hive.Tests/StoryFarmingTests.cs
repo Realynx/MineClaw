@@ -160,8 +160,8 @@ public sealed class StoryFarmingTests
     public void Pumpkin_seeds_get_a_bill_when_a_pumpkin_is_stored_and_stems_stay_when_the_fruit_is_picked()
     {
         var (c, h, w) = Farm(Release1122GameData.Instance);
-        w.Set(3, 64, 0, 58); // a crafting table at home
-        c.Tick();
+        w.Set(3, 64, 0, 58); // a crafting table at home, the colony's
+        Assert.Null(c.WorkbenchOp("designate", new P3(3, 64, 0)).Error);
         w.Set(10, 63, 0, 60); w.Set(12, 63, 0, 60);
         w.Set(10, 63, 2, 9);
         c.StorageOp("set", [new P3(0, 64, 4)], null, null, null);
@@ -196,7 +196,7 @@ public sealed class StoryFarmingTests
         // Wheat on grass with no hoe anywhere: a crafting table gets a hoe bill.
         var (c2, _, w2) = Farm(null, new Stack(295, 0, 3));
         w2.Set(3, 64, 0, 58);
-        c2.Tick();
+        Assert.Null(c2.WorkbenchOp("designate", new P3(3, 64, 0)).Error);
         w2.Set(10, 63, 0, 2); w2.Set(10, 63, 2, 9);
         AddZone(c2, Area.Of(10, 63, 0, 10, 63, 0), "wheat");
         Assert.NotEqual("till", c2.Next()["kind"]!.GetValue<string>());

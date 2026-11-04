@@ -42,6 +42,9 @@ import {
   DESIGNATE_TOOLS,
   FURNITURE_TOOLS,
   MINE_FILTERS,
+  HEIGHT_MODES,
+  hasHeight,
+  type HeightMode,
   STRUCTURE_TOOLS,
   ZONE_TOOLS,
   storeyOf,
@@ -715,12 +718,88 @@ export function TimeSlider({
 
 // ------------------------------------------------------------------ the active tool's options
 
+/**
+ * The height sub-bar of Mine and Deconstruct: Surface · Level · Down to level · Flatten here · Layers (1–5 while the tool is
+ * active), the Layers stepper (+ / −) and the working level the level modes go to.
+ */
+function HeightModes({
+  mode,
+  onMode,
+  layers,
+  onLayers,
+  level,
+}: {
+  mode: HeightMode;
+  onMode?: (m: HeightMode) => void;
+  layers: number;
+  onLayers?: (n: number) => void;
+  level?: number;
+}) {
+  const levelled = mode === 'level' || mode === 'down' || mode === 'flatten';
+  return (
+    <span className="flex flex-wrap items-center gap-1" role="radiogroup" aria-label="How deep" data-testid="height-modes">
+      {HEIGHT_MODES.map((h, i) => (
+        <button
+          key={h.id}
+          type="button"
+          role="radio"
+          aria-checked={mode === h.id}
+          title={`${h.hint} (${i + 1})`}
+          onClick={() => onMode?.(h.id)}
+          className={cn(
+            'h-6 rounded border px-1.5',
+            mode === h.id
+              ? 'border-accent bg-accent/15 font-semibold text-fg'
+              : 'border-border bg-surface-2 text-muted hover:bg-surface-3',
+          )}
+        >
+          <span className="mr-1 text-[10px] text-muted">{i + 1}</span>
+          {h.label}
+        </button>
+      ))}
+      {mode === 'layers' ? (
+        <span className="flex items-center gap-1" title="Layers deep (+ / −)">
+          <button
+            type="button"
+            aria-label="Fewer layers"
+            className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3"
+            onClick={() => onLayers?.(layers - 1)}
+          >
+            −
+          </button>
+          <span className="w-4 text-center font-semibold tabular-nums" aria-label="Layers">
+            {layers}
+          </span>
+          <button
+            type="button"
+            aria-label="More layers"
+            className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3"
+            onClick={() => onLayers?.(layers + 1)}
+          >
+            +
+          </button>
+        </span>
+      ) : null}
+      {levelled && level !== undefined ? (
+        <span className="text-muted" data-testid="height-level">
+          level y {level} (PgUp / PgDn)
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function OptionsBar({
   tool,
   build,
   onBuild,
   mineFilter,
   onMineFilter,
+  heightMode = 'surface',
+  onHeightMode,
+  layers = 2,
+  onLayers,
+  level,
   stock,
   onClose,
 }: {
@@ -729,6 +808,13 @@ export function OptionsBar({
   onBuild: (b: Partial<BuildOpts>) => void;
   mineFilter: string;
   onMineFilter: (f: 'all' | 'ores' | 'stone' | 'soil') => void;
+  /** Mine / Deconstruct: how deep a drag goes (1–5 while the tool is active), and the Layers count (+ / −). */
+  heightMode?: HeightMode;
+  onHeightMode?: (m: HeightMode) => void;
+  layers?: number;
+  onLayers?: (n: number) => void;
+  /** The working level (PgUp / PgDn): what Level, Down to level and Flatten here go to. */
+  level?: number;
   stock: Map<string, number>;
   onClose: () => void;
 }) {
@@ -783,6 +869,9 @@ export function OptionsBar({
       <ToolIcon id={icon} className="size-4 text-accent" />
       <span className="font-semibold">{name}</span>
       <span className="text-muted">{hint}</span>
+      {tool.kind === 'designate' && hasHeight(tool.id) ? (
+        <HeightModes mode={heightMode} onMode={onHeightMode} layers={layers} onLayers={onLayers} level={level} />
+      ) : null}
       {tool.kind === 'designate' && tool.id === 'mine' ? (
         <select
           aria-label="Mine filter"
@@ -1027,10 +1116,15 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
     [<Kbd key="10">B P Y U O I</Kbd>, 'Architect, work, schedule, queue, directives, colony'],
     [<Kbd key="11">PgUp / PgDn</Kbd>, 'Change storey (Shift: one block) · X x-ray above it'],
     [<Kbd key="12">Q / E · + / −</Kbd>, 'Turn a door or stairs · wall height'],
+    [
+      <Kbd key="12m">1–5 · + / −</Kbd>,
+      'Mine / deconstruct depth: surface, level, down to level, flatten here, layers (+ / − layers)',
+    ],
     [<Kbd key="13">V</Kbd>, 'Top-down ↔ angled view'],
     [<Kbd key="13f">Shift+F</Kbd>, 'Full screen: the map and every panel (Esc leaves)'],
     [<Kbd key="14">T / Enter</Kbd>, 'Chat to the selected AI bodies'],
-    [<Kbd key="15">Esc</Kbd>, 'Close a menu · drop the tool · clear the selection'],
+    [<Kbd key="15">Esc</Kbd>, 'Cancel a drag · close a menu · drop the tool · clear the selection'],
+    [<Kbd key="16">Right-click while dragging</Kbd>, 'Cancel the drag (nothing is designated)'],
   ];
   return (
     <div className={cn(panel, 'pointer-events-auto w-[30rem] p-3 text-xs')} role="dialog" aria-label="Controls">

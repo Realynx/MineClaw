@@ -9,6 +9,7 @@
 import {
   materialKey,
   normArea,
+  STORY_FURNITURE,
   tickClock,
   type StoryAlert,
   type StoryColonyState,
@@ -37,7 +38,6 @@ import {
   type Selection,
 } from './model';
 import {
-  AlertsStack,
   barBodies,
   ColonistBar,
   ContextMenu,
@@ -56,9 +56,12 @@ import {
   GroupInspector,
   PawnInspector,
   StorageInspector,
+  UndesignatedBench,
 } from './StoryInspector';
 import { useFullscreen } from './useFullscreen';
 import { GrowingZonesPanel, growPlantNow } from './GrowingZones';
+import type { Condition } from './notices';
+import { StoryNotices, type JumpTarget } from './StoryNotices';
 import { StoryMap, type DragResult, type FormationMove, type MapTool, type StoryMapHandle } from './StoryMap';
 import {
   ArchitectPanel,
@@ -73,8 +76,11 @@ import {
 } from './StoryPanels';
 import {
   buildItem,
+  cellsArea,
   clampHeight,
+  clampLayers,
   contextMenu,
+  DEFAULT_HEIGHT,
   countLabel,
   designBlocks,
   designationBody,
@@ -82,8 +88,13 @@ import {
   designCells,
   designItems,
   DESIGNATE_TOOLS,
+  hasHeight,
+  heightBody,
+  HEIGHT_MODES,
+  MAX_DRAG_CELLS,
   placeDesign,
   keyAction,
+  releaseIsNoop,
   levelCutY,
   nextLevel,
   orderBody,
@@ -93,11 +104,12 @@ import {
   toolArea,
   toolYRange,
   type BuildOpts,
+  type HeightMode,
   type MenuItem,
   type Target,
 } from './tools';
 import type { StorageClip } from './storage';
-import { catchUp, colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
+import { catchUp, colonyKey, useArchitect, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -153,6 +165,11 @@ export function StoryMode() {
     material: 'oak_planks',
   });
   const [mineFilter, setMineFilter] = useState<'all' | 'ores' | 'stone' | 'soil'>('all');
+  /** How deep Mine and Deconstruct drags go (each tool keeps its own mode), and the Layers count. */
+  const [heightModes, setHeightModes] = useState<Record<'mine' | 'deconstruct', HeightMode>>({ ...DEFAULT_HEIGHT });
+  const [layers, setLayers] = useState(2);
+  const heightTool = tool.kind === 'designate' && hasHeight(tool.id) ? tool.id : null;
+  const heightMode: HeightMode = heightTool ? heightModes[heightTool] : 'surface';
   // Before a colony exists, the floor under the main bot the map settled over.
   const [settledY, setSettledY] = useState<number | null>(null);
   const ground = state?.home?.[1] ?? settledY ?? 64;
@@ -167,6 +184,7 @@ export function StoryMode() {
   const [xray, setXray] = useState<'auto' | 'on' | 'off'>('auto');
   const [view, setView] = useState<'top' | 'angled'>('top');
   const [tab, setTab] = useState<TabId | null>(null);
+  const architect = useArchitect(id, state?.rev, tab === 'architect');
   const [menu, setMenu] = useState<{
     at: { x: number; y: number };
     title: string;
@@ -176,7 +194,6 @@ export function StoryMode() {
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
   const [help, setHelp] = useState(false);
   const [chat, setChat] = useState(false);
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [clip, setClip] = useState<StorageClip | null>(null);
   const picking = useRef<((c: V3 | null) => void) | null>(null);
   const lastDraft = useRef<{ key: string; drafted: boolean; at: number } | null>(null);
@@ -299,7 +316,34 @@ export function StoryMode() {
   };
 
   const onTool = async (r: DragResult, shift: boolean) => {
+    // A click (under the drag threshold) paints no zone, and a box with nothing in it designates nothing: no request, the tool stays.
+    const kind =
+      tool.kind === 'designate' || tool.kind === 'zone' || tool.kind === 'storage' ? tool.kind : ('other' as const);
+    if (releaseIsNoop(kind, r.moved ?? true, r.count)) {
+      if (tool.kind === 'designate' && r.moved) {
+        const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+        say(`${t.label}: nothing ${hasHeight(tool.id) ? 'at that height ' : ''}in the box`, 'warn');
+      }
+      return;
+    }
+    if (tool.kind === 'designate' && r.height?.tooMany) {
+      say(`Too many blocks (max ${MAX_DRAG_CELLS}): drag a smaller box or a shallower mode`, 'warn');
+      return;
+    }
     if (!shift) setTool({ kind: 'select' });
+    if (tool.kind === 'designate' && hasHeight(tool.id) && r.height) {
+      // Exactly the cells the preview showed (its height mode), as blocks: the director never expands them deeper.
+      const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+      const area = cellsArea(r.height.cells, toolArea(r.rect, [lv, lv]));
+      const body = heightBody(tool.id, r.height.cells, mineFilter);
+      await run(
+        { route: 'story.designations', body },
+        designationDirective(tool.id, area, r.height.cells, mineFilter),
+        'designated',
+        (out) => countLabel(t, (out as { count?: number } | null)?.count ?? r.count),
+      );
+      return;
+    }
     if (tool.kind === 'designate') {
       const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
       const area = toolArea(r.rect, toolYRange(tool.id, lv, build.height, cutY));
@@ -508,9 +552,20 @@ export function StoryMode() {
         e.preventDefault();
         return;
       }
-      const a = keyAction(e, tool.kind === 'build');
+      const a = keyAction(e, tool.kind === 'build', heightTool !== null);
       if (!a) return;
       e.preventDefault();
+      if (a.startsWith('height:') && heightTool) {
+        const m = a.slice(7) as HeightMode;
+        setHeightModes((cur) => ({ ...cur, [heightTool]: m }));
+        say(`${HEIGHT_MODES.find((h) => h.id === m)!.label}${m === 'layers' ? `: ${layers}` : ''}`);
+        return;
+      }
+      if (a === 'layersUp' || a === 'layersDown') {
+        setLayers((n) => clampLayers(n + (a === 'layersUp' ? 1 : -1)));
+        if (heightTool) setHeightModes((cur) => ({ ...cur, [heightTool]: 'layers' }));
+        return;
+      }
       if (a === 'draft') {
         // R toggles; a second press before the state caught up flips the last request rather than re-reading old state.
         const key = [...split.pawns].sort().join(',');
@@ -523,6 +578,11 @@ export function StoryMode() {
         void draft(split.pawns, anyUndrafted);
       } else if (a === 'pause') togglePause();
       else if (a === 'escape') {
+        // A drag in progress is cancelled first (nothing happens on release); the key goes no further.
+        if (map.current?.cancelDrag()) {
+          e.stopPropagation();
+          return;
+        }
         if (picking.current) {
           picking.current(null);
           picking.current = null;
@@ -569,6 +629,9 @@ export function StoryMode() {
     };
   }, [
     tool,
+    heightTool,
+    say,
+    layers,
     split,
     state,
     menu,
@@ -587,13 +650,6 @@ export function StoryMode() {
 
   // ------------------------------------------------------------------ alerts
 
-  const alerts = (state?.alerts ?? [])
-    .filter((a) => !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)) && a.level !== 'info')
-    .concat(
-      (state?.alerts ?? [])
-        .filter((a) => a.level === 'info' && !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)))
-        .slice(-2),
-    );
   const onAlert = (a: StoryAlert) => {
     if (a.pawn) {
       setSelection({ ...EMPTY_SELECTION, bodies: [a.pawn] });
@@ -606,6 +662,27 @@ export function StoryMode() {
       else setTool({ kind: 'storage' });
     }
     if (a.fix?.workbench) setSelection({ bodies: [], chests: [], bench: a.fix.workbench });
+  };
+  /** A message or log entry: its alert's fix, its pawn, or the place it names. */
+  const onJump = (t: JumpTarget) => {
+    if (t.alert) onAlert(t.alert);
+    else if (t.pawn) {
+      setSelection({ ...EMPTY_SELECTION, bodies: [t.pawn] });
+      focusBody(t.pawn);
+    }
+    if (!t.pawn && t.pos) map.current?.focus(t.pos[0], t.pos[2], t.pos[1]);
+  };
+  /** An ongoing condition: select the pawns it is about, or open what fixes it. */
+  const onCondition = (c: Condition) => {
+    if (c.pawns.length) {
+      setSelection({ ...EMPTY_SELECTION, bodies: c.pawns });
+      focusBody(c.pawns[0]!);
+    }
+    if (c.tab === 'storage') {
+      const s = state?.storages?.[0];
+      if (s) setSelection({ bodies: [], chests: [s.chest], bench: null });
+      else setTool({ kind: 'storage' });
+    }
   };
 
   // ------------------------------------------------------------------ the inspector
@@ -652,7 +729,9 @@ export function StoryMode() {
           onPickChest={pickChest}
           onClose={close}
         />
-      ) : null;
+      ) : (
+        <UndesignatedBench pos={selection.bench} canWrite={canWrite} write={write} onClose={close} />
+      );
     }
     if (selection.bed) {
       const bed = (state?.beds ?? []).find((b) => k3(b.pos) === k3(selection.bed!));
@@ -821,7 +900,21 @@ export function StoryMode() {
   const panelEl = (() => {
     switch (tab) {
       case 'architect':
-        return <ArchitectPanel tool={tool} onTool={setTool} plants={state?.plants} />;
+        return (
+          <ArchitectPanel
+            tool={tool}
+            onTool={setTool}
+            plants={state?.plants}
+            palette={architect.data}
+            onPick={(e) => {
+              // A placeable: its default build tool, with it as the material (the build's auto bills craft what's missing).
+              const furniture = (STORY_FURNITURE as readonly string[]).includes(e.kind);
+              setTool({ kind: 'build', id: furniture ? `furniture:${e.kind}` : e.kind } as MapTool);
+              if (!furniture) setBuild((b) => ({ ...b, material: [e.material[0], e.material[1]] }));
+              say(`${e.label}: drag on the map to place`);
+            }}
+          />
+        );
       case 'work':
         return (
           <WorkPanel
@@ -894,6 +987,7 @@ export function StoryMode() {
               )
             }
             onPause={togglePause}
+            onOptions={(o) => void write('story.options', o).catch((e) => say(errorText(e), 'warn'))}
             onRelease={() => void write('story.release', {}).then(() => say('Pawns released; the colony is saved'))}
             onResume={() =>
               void write('story.resume', {}).then(
@@ -936,6 +1030,8 @@ export function StoryMode() {
             tool={tool}
             build={build}
             mineFilter={mineFilter}
+            heightMode={heightMode}
+            layers={layers}
             level={lv}
             cutY={cutY}
             view={view}
@@ -943,7 +1039,7 @@ export function StoryMode() {
             home={(state?.home as V3 | undefined) ?? null}
             settle={noColony}
             player={me.player ?? null}
-            onCentre={setCentre}
+            onCentre={noColony || tab === 'colony' ? setCentre : undefined}
             onSettled={setSettledY}
             onSelect={onSelect}
             onSelectSame={(kind, visible) =>
@@ -958,6 +1054,7 @@ export function StoryMode() {
             onContext={onContext}
             onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
             onDropTool={() => setTool({ kind: 'select' })}
+            onCancelled={() => say('Cancelled')}
           />
         </WorldHost>
 
@@ -1066,6 +1163,11 @@ export function StoryMode() {
               onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
               mineFilter={mineFilter}
               onMineFilter={setMineFilter}
+              heightMode={heightMode}
+              onHeightMode={(m) => heightTool && setHeightModes((cur) => ({ ...cur, [heightTool]: m }))}
+              layers={layers}
+              onLayers={(n) => setLayers(clampLayers(n))}
+              level={lv}
               stock={stock}
               onClose={() => setTool({ kind: 'select' })}
             />
@@ -1076,7 +1178,7 @@ export function StoryMode() {
             ) : null}
           </div>
           <div className="absolute top-[5.75rem] right-2">
-            <AlertsStack alerts={alerts} onPick={onAlert} onDismiss={(k) => setDismissed((d) => new Set([...d, k]))} />
+            <StoryNotices state={state} colony={id} toast={toast} onJump={onJump} onCondition={onCondition} />
           </div>
 
           {/* middle overlays */}

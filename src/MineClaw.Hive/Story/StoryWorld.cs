@@ -46,6 +46,8 @@ public interface IStoryHost
     /// <summary>Releases the colony group's bodies (deposit, logout, whitelist remove). Returns how many go.</summary>
     int Release(string colony);
     PawnLive Live(string account);
+    /// <summary>The pawn body's own world view (what its connection saw), or null: the colony then checks with <see cref="World"/>.</summary>
+    IStoryWorld? ViewOf(string account) => null;
     /// <summary>Starts the pawn script on an online body (no model ever): null = started, else why not.</summary>
     string? StartPawn(string account, string colony);
     /// <summary>Cuts the pawn's current action (a new order, drafted, paused): its script stops; the director restarts it.</summary>
