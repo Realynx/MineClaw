@@ -65,6 +65,10 @@ describe('entity model goldens', () => {
       const v = Variant.of(raw as number | string | null, look);
       d.add(`${JSON.stringify(v)} ${v.num} ${v.isString} ${v.has('tame', 'angry')} ${v.get('collar')} ${v.dye('collar')} ${v.dye()} ${v.numOf('size', -1)}`);
     }
+    for (const [raw, look] of [['3,-1,size=2', '5'], [null, '7;8|9'], [12, 'x=1,4'], [NaN, '2'], [Infinity, null], ['', ''], ['a:b=c', 'Minecraft:Red - Dye, -0'], [-3, null]] as const) {
+      const v = Variant.of(raw, look);
+      d.add(`${JSON.stringify(v)} ${v.num} ${v.get('a')} ${v.get('x')}`);
+    }
     const NAMES = [null, 'Zombie', 'PigZombie', 'minecraft:wither_skeleton', 'WitherSkeleton', 'Stray', 'EntityHorse', 'cave_spider', 'Ozelot', 'nope', 'skeleton', 'zombie', 'Wither Skeleton', 'LavaSlime', 'villager_golem', 'Husk'];
     const types = Object.keys(MOB_NAMES).map(Number).concat([-1, 0, 49, 999]);
     for (const type of types)
@@ -81,7 +85,7 @@ describe('entity model goldens', () => {
         const n = objectName(t, beta);
         d.add(`${t} ${beta} ${n} ${n ? JSON.stringify(objectLook(beta ? 'b1.8.1' : '1.12.2', n, Math.floor(r() * 8), t)) : ''}`);
       }
-    expect(d.hex()).toBe('c4e5e720935dab97b4e97d0200395617');
+    expect(d.hex()).toBe('2d80f0845187f73f07d8b7a560f8ee46');
   });
 
   it('stepMotion', () => {
