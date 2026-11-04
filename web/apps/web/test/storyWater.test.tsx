@@ -12,7 +12,8 @@ import { StorySim } from '@mineclaw/contracts/testing';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dryText, needsWater } from '@/features/story/GrowingZones';
-import { buildItem, buildItems, waterDig, type BuildOpts } from '@/features/story/tools';
+import { buildItem, buildItems, failedByBuild, failedCells, waterDig, type BuildOpts } from '@/features/story/tools';
+import { QueuePanel } from '@/features/story/StoryPanels';
 import { pendingHolo, pendingLine, WaterBar, WaterConfirm, type PendingWater } from '@/features/story/WaterTools';
 
 afterEach(cleanup);
@@ -123,6 +124,56 @@ describe('irrigation', () => {
   });
 });
 
+describe('retrying failed build cells', () => {
+  type G = [number, number, number, number, number, string, string, string?, string?];
+  const ghosts: G[] = [
+    [4, 64, 4, 9, 0, 'b1', 'blocked', 'pour', 'no block face to pour against at 4,64,4'],
+    [5, 64, 4, 9, 0, 'b1', 'todo', 'pour', 'a protected water source'], // resting after a failure
+    [6, 64, 4, 9, 0, 'b1', 'todo', 'pour'],
+    [9, 64, 9, 5, 0, 'b2', 'blocked', 'place'],
+    [1, 64, 1, 59, 0, 'b3', 'unsupported', 'place', 'crops are planted, not placed'],
+    [2, 64, 2, 5, 0, 'b2', 'done', 'place', 'old reason'],
+  ];
+
+  it('finds the failed cells (blocked or with a reason; never done or unsupported), in a drag rect, by build', () => {
+    expect(failedCells(ghosts).map((f) => f.cell.join(','))).toEqual(['4,64,4', '5,64,4', '9,64,9']);
+    expect(failedCells(ghosts)[2]!.reason).toBe('blocked after repeated failures');
+    expect(failedCells(ghosts, [3, 3, 5, 5])).toHaveLength(2);
+    const by = failedByBuild(failedCells(ghosts));
+    expect([...by.keys()]).toEqual(['b1', 'b2']);
+    expect(by.get('b1')!.cells).toEqual([
+      [4, 64, 4],
+      [5, 64, 4],
+    ]);
+  });
+
+  it('the mock director fails a pour cell with nothing under it, and retry / retry_all reopen it', () => {
+    const s = new StorySim({ world: { blockAt: world(), ground: () => 63, entities: () => [] }, timeRateMs: 0 });
+    const { id } = s.create({ name: 'Retry', pawns: 1 });
+    s.builds(id, {
+      op: 'add',
+      items: [
+        {
+          kind: 'water',
+          blocks: [
+            [4, 66, 4],
+            [4, 64, 6],
+          ],
+        },
+      ],
+    });
+    const st = StoryColonyState.parse(s.state(id));
+    const bid = String(st.builds![0]!.id);
+    const failed = failedCells(st.ghosts!.blocks);
+    expect(failed.map((f) => f.cell.join(','))).toEqual(['4,66,4']);
+    expect(failed[0]!.reason).toContain('nothing under 4,66,4');
+    expect(s.builds(id, { op: 'retry', id: bid, cells: [[4, 66, 4]] }).reopened).toBe(1);
+    expect(failedCells(StoryColonyState.parse(s.state(id)).ghosts!.blocks)).toEqual([]);
+    expect(s.builds(id, { op: 'retry_all' }).reopened).toBe(0);
+    expect(() => s.builds(id, { op: 'retry', id: 'b999' })).toThrow(/no such build/);
+  });
+});
+
 describe('the mock director', () => {
   const sim = (extra: Record<string, readonly [number, number]> = {}) =>
     new StorySim({ world: { blockAt: world(extra), ground: () => 63, entities: () => [] }, timeRateMs: 0 });
@@ -205,6 +256,16 @@ describe('water UI', () => {
     expect(screen.getByTestId('water-confirm').textContent).toContain('spread to 2 cells');
     fireEvent.click(screen.getByTestId('water-queue'));
     expect(onQueue).toHaveBeenCalled();
+  });
+
+  it('the build queue offers "Retry failed cells (N)" for a build with failed cells', () => {
+    const onRetry = vi.fn();
+    const build = { id: 'b1', kind: 'water', label: 'water channel (3 sources)', status: 'blocked', blocksTotal: 3, blocksDone: 0, order: 1, materials: [] };
+    render(<QueuePanel builds={[build as never]} canWrite onOp={() => {}} failed={new Map([['b1', 2]])} onRetry={onRetry} />);
+    const b = screen.getByTestId('build-retry');
+    expect(b.textContent).toBe('Retry failed cells (2)');
+    fireEvent.click(b);
+    expect(onRetry).toHaveBeenCalledWith('b1');
   });
 
   it('the water bar toggles digging the trench', () => {

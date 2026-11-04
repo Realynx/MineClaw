@@ -280,16 +280,26 @@ public sealed class StoryStuckPawnTests
         Assert.Equal("teleported home", c.Stuck(c.P(0), "no way home: couldn't climb out below home at 40,49,40 (obsidian)"));
         Assert.Single(h.Teleported);
         Assert.NotEqual("give", Kind(c.Next(1))); // no rescuer walks into a ravine after it
-        // The server never moved it (a refused /tp): said once, not tried again.
-        var wait = c.Next(0);
-        Assert.Equal("hold", Kind(wait));
-        clock.Now += StoryColony.TeleportCheck + TimeSpan.FromSeconds(1);
-        c.Report(c.P(0), Id(wait), "done", null, null);
-        Assert.True(c.IsStuck(c.P(0)));
-        Assert.Equal("escape", Kind(c.Next(0)));
+        // The server never moved it (a refused /tp, or one dropped in a backed-up chat queue — live 11-04): tried again
+        // TeleportRetry apart, MaxTeleportTries in all, and said once when the last one didn't take either.
+        for (int miss = 1; miss <= StoryColony.MaxTeleportTries; miss++)
+        {
+            var wait = c.Next(0);
+            Assert.Equal("hold", Kind(wait));
+            clock.Now += StoryColony.TeleportCheck + TimeSpan.FromSeconds(1);
+            c.Report(c.P(0), Id(wait), "done", null, null);
+            Assert.True(c.IsStuck(c.P(0)));
+            var esc = c.Next(0);
+            Assert.Equal("escape", Kind(esc));
+            Assert.Equal(miss, h.Teleported.Count);
+            if (miss == StoryColony.MaxTeleportTries) break;
+            Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("teleport home didn't take"));
+            clock.Now += StoryColony.TeleportRetry;
+            c.Report(c.P(0), Id(esc), "failed", "no way home: still", null); // the escape fails again: past the retry, sent again
+        }
         Assert.Single(c.Alerts, a => a.Text.Contains("teleport home didn't take"));
         Assert.StartsWith("nobody can help", c.Stuck(c.P(0), "no way home: still"));
-        Assert.Single(h.Teleported);
+        Assert.Equal(StoryColony.MaxTeleportTries, h.Teleported.Count);
     }
 
     // ================================================================ the escape budget (Fox 11-04: "they should teleport sooner")

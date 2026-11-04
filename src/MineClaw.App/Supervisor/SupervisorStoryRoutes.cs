@@ -339,7 +339,18 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 return Result(c.Designate(op, S(b, "kind"), area, blocks?.Select(x => x!.Value).ToList(), S(b, "filter"), Names(b["ids"])));
             }
             case "builds":
-                return Result(c.BuildsOp(S(b, "op") ?? "", b["items"] as JsonArray, Names(b["ids"])));
+            {
+                // retry {id|ids, cells?} | retry_all: failed build cells start over (StoryColony.BuildRetry.cs)
+                var bop = S(b, "op") ?? "";
+                if (bop is "retry" or "retry_all")
+                {
+                    var cells = b["cells"] is JsonArray rc ? rc.Select(P3.Parse).ToList() : null;
+                    if (cells != null && cells.Any(x => x == null)) return Bad("cells must be [[x,y,z], ...]");
+                    var rids = S(b, "id") is { } one ? new List<string> { one } : Names(b["ids"]);
+                    return Result(c.RetryBuilds(bop, rids, cells?.Select(x => x!.Value).ToList()));
+                }
+                return Result(c.BuildsOp(bop, b["items"] as JsonArray, Names(b["ids"])));
+            }
             case "storage":
             {
                 var op = S(b, "op") ?? "";

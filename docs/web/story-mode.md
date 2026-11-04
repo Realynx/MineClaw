@@ -424,6 +424,15 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.
+- **Ditches (added 2026-11-04).** Fox: "The pawns are very bad at navigating one-drop-level holes. I have channels for water to flow,
+  one level down … They fall into it when they're walking, and they can't walk out because they have to jump once to get out."
+  A step down into a ditch (a 1-deep trench or hole, dry or a water channel, with a bank on both sides within 2 cells) costs
+  `DitchPenalty` (15 ticks, about 3 blocks), and a level gap jump over one only `DitchJumpPenalty` (6, instead of 30: a miss lands in
+  it and climbs out), so a pawn walks round a short channel or jumps a 1-wide one rather than wading through. A long one is still
+  crossed through it: down, then a jump out (out of water: jump held while pushing into the bank, vanilla's collided-in-liquid hop).
+  A body knocked off a level step into a ditch beside it jumps straight back out onto the step (it used to push into the wall until
+  "stuck" 4 s later and then avoid that move); one that lands farther away re-plans from there at once. The goto's own escape for
+  "stuck twice here" hops toward the step holding jump in water (one tap only floated the body off the floor).
 - **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
   Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
   ignored (see Defending).
@@ -528,8 +537,9 @@ through the network itself." There is still no time control (the server owns the
   "Server rejected faster movement — using Fast" (or "— using normal speed"). The HUD marks the level the slowest pawn runs at.
   Choosing a speed again clears the step-down.
 - **Speed effect (1.12.2, `speed_effect`).** With an op account (main is op: the server's word, else `Supervisor:Viewer:OpAccounts`),
-  Fast and Faster also ask the server for `/effect <pawn> minecraft:speed 30 1|2 true` (Speed II / III: +40 % / +60 % on the
-  movement attribute, which the 1.12.2 physics applies), renewed every 20 s, through the command gate's scoped exception
+  Fast and Faster also ask the server for `/effect <pawn> minecraft:speed 1000000 1|2 true` (Speed II / III: +40 % / +60 % on the
+  movement attribute, which the 1.12.2 physics applies) — once, as a toggle: sent again only when the level changes, the pawn comes
+  back online, or its body shows no Speed effect any more (it died; checked at most once a minute) — through the command gate's scoped exception
   (`CommandGate.ArmManagedSpeed`: only that shape, only the hive's own managed accounts, never main or a player, never when the
   config blocks `/effect`; audited). The server then sees part of the speed as legit and the client adds only the rest
   (`multiplier / server_factor`). Back to normal, the option off, a pawn leaving or a released colony clears it
@@ -808,6 +818,20 @@ with the plant picker; mode and target; drag or the arrows to reorder; pause; re
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
 
+**Walking fields (added 2026-11-04).** Fox: "The pawns need to crouch-walk through growing zones, so they don't crush plants or
+tilled ground", "If the ground in a grow zone isn't planted or tilled, they don't have to crouch-walk — better for speed", and "In
+the version we're using now (1.12.2) we can walk on wheat and not crush it. We can't sprint on it, but we don't have to crouch-walk
+either, like the beta version." Each director tick hands every online pawn's body the colony's growing zones
+(`IStoryHost.SetGrowZone`: the zones' cells at their painted level ± 2, an immutable filter rebuilt only when a zone changes). A move
+takes care when it is onto or off farmland (anywhere, zone or not), or onto, off or past a planted cell inside a zone (a crop,
+sapling, stem, cane, wart, cocoa in or beside the body's cells), read from the live blocks, so a harvested or untilled patch is
+walked at full speed. The care is the version's (`IPhysicsRules.WalkingTramplesFarmland`): b1.8.1 tramples under a walker that
+isn't sneaking (mc-dev `BlockSoil.b`, 1 in 4 per step), so those moves are sneaked (the server sees the entity action; a sneaking
+body is never sped up); 1.12.2 tramples only on a landing from more than half a block (`BlockFarmland.onFallenUpon`), so they are
+walked at normal speed, never sprinted (`PathStep.Gentle`). On both, a path prefers an aisle to the soil, no drop and no gap jump
+ever lands on farmland, and a hop onto it (only out of an irrigation trench, a fall of about 0.3) costs as much as a 20-block walk
+round.
+
 ## Quarries (added 2026-11-04)
 
 Fox 11-04: "The quarry zone didn't make sense — nothing happened." (A mine zone only offered its ores: a square of stone and dirt
@@ -1073,7 +1097,8 @@ Now:
   cleared and placed again once; after that, or at once for a block that holds items (chests, furnaces, dispensers, hoppers,
   brewing stands, shulker boxes: never broken for their rotation), the ghost is `misrotated` with the reason ("placed facing north,
   wants facing east"), an alert says so, and it counts as finished for the build. The map keeps drawing it as a blocked hologram over
-  the block, even once the build is done.
+  the block, even once the build is done. A retry (`builds {op:retry}` / `retry_all`, the Retry tool) counts it as a failed cell:
+  it starts over with its one take-back again (a container is only looked at again: turned by hand, it is done).
 - **Not decided by the click:** rails (their shape follows the neighbours), a chest beside a chest of its kind (both halves take
   the newer one's facing, so a designed double chest faces one way; three in a row can't be placed in vanilla), an end rod on an
   end rod. Signs, banners and skulls stay unsupported ghosts.
@@ -1097,6 +1122,9 @@ poured the same way. Checked when queued (`StoryColony.Water.cs`, 400 with why):
 - Each cell is open (air, tall grass, flowers, snow, vines, flowing liquid) or dug first by its `group` (a `remove` item of the
   same group, earlier in the request or queued: the dig goes first, as for a basement). Anything else: "4,63,12 holds stone: dig it
   first". Water never goes onto lava, nor lava onto water (obsidian or cobblestone).
+- Something must hold each cell: under it a block that stays (not dug first), another cell of the item, or a source of the same
+  liquid. Else "nothing under 4,66,12 to hold the water: it would pour down" (once, at queue time: live 11-04 it was "no block
+  face to pour against" cell after cell).
 - Indoors (a home zone with a roof within 8 above) only with `indoor: true`: the Water source tool's explicit click sends it, the
   channel tool and the irrigation planner never do.
 - A cell that already holds the source is done at once.
@@ -1115,7 +1143,7 @@ fair share), with one stand in reach of them:
   one alert. Buckets are tools: the pawn keeps them (deliveries never take tools); the batch that pours the colony's last
   liquid cells returns them to storage (`stash`).
 - **Fill source** (`FillSource`): a still source within 24 blocks of the cells that won't be used up: one the colony poured that
-  refills (an infinite pool it built) first, then any that refills (two source neighbours over ground: a lake, a pool), then a
+  refills (an infinite pool it built first, then a channel of its own that refills), then any that refills (two source neighbours over ground: a lake, a pool), then a
   source with another source beside it; never a lone puddle, never water the colony poured that doesn't refill (Fox's
   channels), never a cell of the batch. None and no full bucket: blocked, "no still water within 24 blocks to fill a bucket
   from". Lava: any lava source the colony didn't pour.
@@ -1157,6 +1185,50 @@ the previews left the dig out). The Growing zones window says when cells are dry
 Add irrigation: the planner's channels, pre-filled as a pending placement to confirm. The mock director (`storySim`) and
 `@mineclaw/contracts` (`storyWater.ts`: `waterToolCells`, `waterItems`, `liquidFlow`, `pourOrder`, `irrigationPlan`) carry
 reference copies of these rules.
+
+**Canals that work (fixed 2026-11-04).** Fox, live 11-04: "The pawns have a really difficult time pouring water in the canals." The
+log: 79 "no block face to pour against", 26 fills refused as "a protected water source" (the colony's own infinite pool), ponds at
+the bottom of a pit ("no path to any reach (227,54,406)"), pawns nearly drowning in the channel, a `story_pawn` run at its 30-minute
+limit with 429 actions, and "server correction" ledger lines for every bucket. Causes and fixes:
+- **Pour stand.** `empty_bucket` stepped to within 2 blocks of the cell's centre when its face wasn't in view: from the bank of a
+  1-deep trench the eye is 2.1 away, so only the channel itself qualified and the pawn walked into the water, where no face was in
+  view either. Now it walks to a dry stand (feet, head and floor out of any liquid) from which a pour aim exists (`BucketOps.DryStand`,
+  `Aiming.FindPourAim` from that cell's eye): the bank, looking down at the trench floor. A cell already holding flowing water takes
+  the pour (the full bucket's ray passes liquids) and becomes a source. A cell with nothing solid beside or under it says so.
+- **Protected sources.** Protection (farm irrigation, a generator, the colony's pool) refused every scoop. A source that refills
+  (`FluidRules.Refills`) is never used up, so `BucketOps.Scoopable` lets a bucket take it; a lone or non-refilling protected source
+  stays refused.
+- **Fill sources.** The director takes only a source with dry ground beside it (a bank at water level, or a shallow step), prefers
+  one near the cells' height (3 per block of height difference), and a pond a pawn couldn't fill at (`fill failed at x,y,z: why`, the
+  SDK's progress note) rests 10 minutes for that pawn, with the cells of its batch back in the queue and no failure counted.
+- **No retry loops.** `story.pour` tries a cell twice at most, reports it, and moves on; a fill that fails ends the batch at once.
+  In water, the pawn gets out (`story.escape`) before it fills or pours.
+- **One bucket.** Water builds ask for the colony's bucket once: the first is crafting it (or short of iron, with the one alert);
+  the others wait on it without a bill or an alert of their own.
+- **Ledger.** 1.12.2 answers every item use with the whole inventory (`sendContainerToPlayer`): a bucket filling or emptying in that
+  resync is the use ("a bucket filled or emptied"), not a server correction.
+- FakeServer: `LiquidFlow` settles water after a pour or a scoop (a cell between two sources over ground becomes one; a source runs
+  one step into an open cell beside it), and `PouredInto` records what each pour replaced. `StoryFakeServerTests.A_pawn_pours_an_infinite_pool_then_a_canal_every_other_cell_filling_at_its_own_pool`
+  (b1.8.1 and 1.12.2) pours a 2×2 pool from two full buckets, then a 4-long canal every other cell, filling at that pool; the
+  canal's end holds flowing water before its pour. `BucketPourTests` (skills) cover the bank stand, flowing cells and protected pools.
+
+**Retrying failed build cells (added 2026-11-04).** Fox: "There are some water channels I can't unblock to retry to make them
+fill." The Retry tool only covered designations; a build cell that failed three times stayed `blocked` for good.
+- `POST …/builds {op:"retry", id | ids, cells?}` reopens a build's failed cells (all of them, or the given ones): blocked → todo,
+  their failure counts, rests, soft failures and per-pawn skips forgotten, a blocked build queued again. `{op:"retry_all"}` does
+  it for every build. → `{ids, reopened, reasons:[{id, reason}]}`: the build's checks run at once (a water build's cells, its
+  bucket, water to fill from; ponds a pawn missed are tried again), and a reason that still holds blocks it again now, said in
+  `reasons`, instead of after three more failures.
+- A failed cell keeps its last reason (`GhostState.Reason`), sent as the ghost's 9th element: the map draws a dashed red ring with a
+  cross on each failed cell (holograms on or off), and hovering one names it in the map's tooltip ("Build b3: 4,63,12 failed: …
+  (Retry tool: O)").
+- The Retry tool's drag (O) takes the failed designations and the failed build cells in the box (one `retry {id, cells}` per build),
+  and its live count counts both (before, its count was always 0 and a drag sent nothing); "Retry all failed (N)" counts both and
+  sends `retry_all`. The build queue shows "Retry failed cells (N)" on a build with failed cells.
+- On the first load after this fix (`ColonyMeta.WaterRetried`), blocked water cells reopen (they were blocked before cells kept a
+  reason, or by "no block face", "protected", an unreachable pond), and a water build blocked by those reasons is queued again.
+- The mock director fails a pour cell with nothing under it at queue time (blocked, with the reason) so the retry UI has something
+  to show; the bot refuses such an item outright.
 
 **Tests.** `StoryWaterTests` (director: checks, flow, dig before pour, fill-source choice, bucket fetch and auto bill, infinite
 sources, irrigation), `StoryPourSdkTests` (the SDK), `StoryFakeServerTests.A_pawn_digs_a_canal_fills_its_bucket_at_a_pool_and_pours_each_cell_a_source`
@@ -1715,7 +1787,7 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 ## Web: the Story Mode tab
 
 - **Map.** A top-down orthographic view (the world viewer's `top` camera) over the colony.
-  - The mouse wheel zooms around the cursor, out to 112 blocks of view height. Pan with WASD/arrows, a middle-drag or the
+  - The mouse wheel zooms around the cursor, out to 112 blocks of view height. Pan with WASD/arrows, a middle-drag or (in full screen only) the
     screen edge.
   - In the top-down and angled views the viewer draws the whole ground the picture shows (its footprint's half diagonal,
     capped at 192 blocks) whatever the draw distance or the software quality lever says, with the fog beyond it; mobs keep

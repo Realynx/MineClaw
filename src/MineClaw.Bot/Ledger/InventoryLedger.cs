@@ -35,6 +35,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
     private string? _diedWhere;
     private DateTimeOffset? _resyncUntil;
     private const string Correction = "server correction";
+    private static bool IsBucket(int id) => id is Items.Bucket or Items.WaterBucket or Items.LavaBucket or Items.MilkBucket;
     private long _nextToken;
 
     /// <summary>How long a change waits for its pickup/death note before it is attributed.</summary>
@@ -65,10 +66,18 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             bool correction = _resyncUntil is { } until && now <= until;
             _resyncUntil = null;
             string? scope = correction ? Correction : _scopes.Count > 0 ? _scopes[^1].Cause : null;
-            foreach (var key in _last.Keys.Union(counts.Keys).ToList())
+            // 1.12.2 answers every item use with the whole inventory (PlayerInteractionManager.processRightClick →
+            // sendContainerToPlayer): a bucket that filled or emptied arrives as a resync. An empty and a full bucket trading places
+            // there is that use, not a correction of a wrong model (live 11-04: "server correction" for every pour and fill).
+            var keys = _last.Keys.Union(counts.Keys).ToList();
+            int Delta((int Id, int Damage) k) => counts.GetValueOrDefault(k) - _last.GetValueOrDefault(k);
+            bool bucketUse = correction && keys.Any(k => IsBucket(k.Id) && Delta(k) != 0) && keys.Where(k => IsBucket(k.Id)).Sum(Delta) == 0;
+            foreach (var key in keys)
             {
-                int d = counts.GetValueOrDefault(key) - _last.GetValueOrDefault(key);
-                if (d != 0) _pending.Add((now, key.Id, key.Damage, d, scope, action, container));
+                int d = Delta(key);
+                if (d == 0) continue;
+                var why = bucketUse && IsBucket(key.Id) ? (d < 0 ? "used (a bucket filled or emptied)" : "a bucket filled or emptied") : scope;
+                _pending.Add((now, key.Id, key.Damage, d, why, action, container));
             }
             _last = new(counts);
         }

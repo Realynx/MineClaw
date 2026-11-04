@@ -90,6 +90,14 @@ public sealed class StoryRotationTests
         c.Report(c.P(), Id(j), "done", "batch: 0/1 placed", null);
         Assert.Equal("done", b.Status);
         Assert.Equal("misrotated", ((JsonArray)((JsonObject)c.State()["ghosts"]!)["blocks"]!).Select(x => x![6]!.GetValue<string>()).Single());
+        // Retry (the Retry tool / "Retry failed cells"): the misrotated cell counts as failed, starts over and gets its take-back again.
+        Assert.Equal(1, c.FailedCells());
+        Assert.Null(c.RetryBuilds("retry_all", null, null).Error);
+        Assert.Equal("todo", g.State);
+        Assert.Equal("queued", b.Status);
+        var again = c.Next();
+        Assert.Contains("4,64,12", again["clear"]!.AsArray().Select(x => x!.GetValue<string>()));
+        c.Report(c.P(), Id(again), "done", "batch: 0/1 placed", null);
         // Turned right later (by hand): a new build there is done at once.
         w.Set(4, 64, 12, 53, 2);
         var b2 = Add(c, Block(53, 2, [4, 64, 12]));

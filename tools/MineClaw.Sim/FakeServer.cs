@@ -290,6 +290,7 @@ public partial class FakeServer : IDisposable
         if (p is PlayerOnGroundPacket or PlayerPositionPacket or PlayerLookPacket or PlayerPositionLookPacket) Interlocked.Increment(ref _flyingPackets);
         TrackPlacer(p); // the look and feet a placed block's facing reads (FakeServer.Placement.cs)
         if (Hook?.Invoke(p) == true) return;
+        if (TrampleFarmland) TrackTrample(p); // farmland back to dirt under a careless walker / a hard landing (FakeServer.Movement.cs)
         if (MovementChecks && CheckMovement(p)) return; // vanilla "moved too quickly" / "moved wrongly" (FakeServer.Movement.cs)
         HandleMobs(p); // P4: the bot's melee on mobs (server-side charge and crit), orb pickups
         if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar

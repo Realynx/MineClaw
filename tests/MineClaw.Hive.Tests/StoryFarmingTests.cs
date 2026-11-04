@@ -41,6 +41,27 @@ public sealed class StoryFarmingTests
     }
 
     [Fact]
+    public void Each_pawn_body_gets_the_growing_zones_to_crouch_walk_through()
+    {
+        // Fox 11-04: "The pawns need to crouch-walk through growing zones": the bodies' planner gets the farm zones as a filter.
+        var (c, h, w) = Farm();
+        c.Tick();
+        Assert.Null(h.GrowZones[c.P()]); // no growing zone yet
+        for (int x = 10; x <= 12; x++) { w.Set(x, 62, 0, 3); w.Set(x, 63, 0, 60); w.Set(x, 63, 1, 9); }
+        AddZone(c, Area.Of(10, 63, 0, 12, 63, 0), "wheat");
+        c.Tick();
+        var f = h.GrowZones[c.P()];
+        Assert.NotNull(f);
+        Assert.True(f!(11, 63, 0));
+        Assert.True(f(11, 64, 0));
+        Assert.False(f(13, 64, 0));
+        Assert.False(f(11, 64, 1));
+        Assert.False(f(11, 70, 0));
+        c.Tick();
+        Assert.Same(f, h.GrowZones[c.P()]); // unchanged zones: the same snapshot, no rebuild
+    }
+
+    [Fact]
     public void A_growing_zone_takes_a_plant_this_version_grows_on_soil_that_suits_it()
     {
         var (c, _, w) = Farm();

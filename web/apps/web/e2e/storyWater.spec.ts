@@ -5,7 +5,7 @@ import { expect, test, type Page, type Request } from '@playwright/test';
 const shots = process.env.SHOTS_DIR;
 
 type Pt = { x: number; y: number };
-type Ghost = [number, number, number, number, number, string | number, string, string?];
+type Ghost = [number, number, number, number, number, string | number, string, string?, string?];
 interface Debug {
   ready(): boolean;
   toPage(x: number, y: number, z: number): Pt | null;
@@ -233,4 +233,76 @@ test('a trench through solid ground: red dig outlines in the drag preview, the c
       { timeout: 90_000, intervals: [1000] },
     )
     .toBe('ok');
+});
+
+/** POSTs a build request the way the page does (its CSRF token first), as an owner would from the API: the colony's first. */
+async function postBuilds(page: Page, body: Record<string, unknown>) {
+  return page.evaluate(async (b) => {
+    const csrf = ((await (await fetch('/api/auth/csrf')).json()) as { csrfToken: string }).csrfToken;
+    const list = (await (await fetch('/api/story')).json()) as { colonies: Array<{ id: string }> };
+    const id = list.colonies[0]!.id;
+    const res = await fetch(`/api/story/colonies/${id}/builds`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+      body: JSON.stringify(b),
+    });
+    return (await res.json()) as { ids?: string[] };
+  }, body);
+}
+
+test('failed build cells: "Retry failed cells" in the queue and the Retry tool\'s drag reopen them', async ({ page }) => {
+  await openColony(page);
+  await page.keyboard.press('Space'); // pause: the cells stay as they are while they are counted
+  // Water cells hanging in the air (nothing under them): the mock's pawns fail them, as the live canals failed.
+  const lv = await call(page, 'level');
+  const hits = await call(page, 'scan', [-20, lv + 5, -20], [20, lv + 9, 20]);
+  const taken = new Set<string>();
+  for (let i = 0; i < hits.length; i += 6) taken.add(`${hits[i]},${hits[i + 2]}`);
+  let at: [number, number] | null = null;
+  for (let z = -6; z <= 6 && !at; z++)
+    for (let x = -6; x <= 5 && !at; x++) if (!taken.has(`${x},${z}`) && !taken.has(`${x + 1},${z}`)) at = [x, z];
+  expect(at, 'open air over the island').not.toBeNull();
+  const [x0, z0] = at!;
+  const y = lv + 7;
+  await postBuilds(page, {
+    op: 'add',
+    items: [
+      {
+        kind: 'water',
+        blocks: [
+          [x0, y, z0],
+          [x0 + 1, y, z0],
+        ],
+      },
+    ],
+  });
+  await expect.poll(async () => (await call(page, 'ghosts')).filter((g) => g[6] === 'blocked' && g[7] === 'pour').length).toBe(2);
+  const failed = (await call(page, 'ghosts')).find((g) => g[6] === 'blocked')!;
+  expect(String(failed[8])).toContain('nothing under');
+
+  // The build queue: "Retry failed cells (2)" sends the build's retry.
+  await page.keyboard.press('u');
+  const button = page.getByTestId('build-retry');
+  await expect(button).toHaveText('Retry failed cells (2)');
+  const retry = post(page, /\/builds$/, 'retry');
+  await button.click();
+  expect(((await retry).postDataJSON() as { op: string; id?: string }).id).toBeTruthy();
+  await expect(button).toHaveCount(0); // reopened: nothing failed now
+  await page.keyboard.press('Escape');
+
+  // One more in the air: the Retry tool's drag over it sends its cell.
+  await postBuilds(page, { op: 'add', items: [{ kind: 'water', blocks: [[x0, y + 1, z0]] }] });
+  await expect.poll(async () => (await call(page, 'ghosts')).filter((g) => g[6] === 'blocked').length).toBe(1);
+  await call(page, 'focus', x0, z0);
+  await page.waitForTimeout(500);
+  await page.keyboard.press('o');
+  const a = (await call(page, 'toPage', x0 - 0.5, lv, z0 - 0.5))!,
+    b = (await call(page, 'toPage', x0 + 1.5, lv, z0 + 1.5))!;
+  const dragRetry = post(page, /\/builds$/, 'retry');
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 6 });
+  await page.mouse.up();
+  expect(((await dragRetry).postDataJSON() as { cells: Array<[number, number, number]> }).cells).toEqual([[x0, y + 1, z0]]);
+  await expect.poll(async () => (await call(page, 'ghosts')).filter((g) => g[6] === 'blocked').length).toBe(0);
 });

@@ -582,6 +582,7 @@ public sealed partial class StoryColony
             MaterialsChanged();
             return;
         }
+        if (note.StartsWith("fill failed at ", StringComparison.Ordinal)) { FillFailed(p, note); return; } // StoryColony.Water.cs
         if (!note.StartsWith("cell ", StringComparison.Ordinal) || j.Cells == null) return;
         int sp = note.IndexOf(' ', 5);
         if (sp < 0 || ParseCell(note[5..sp]) is not { } at) return;
@@ -673,6 +674,7 @@ public sealed partial class StoryColony
         int n = _ghostFails[id] = _ghostFails.GetValueOrDefault(id) + 1;
         if (!counted) _skip[key] = Now + Backoff(n);
         if (g.State is "leased" or "todo") g.State = n >= 3 ? "blocked" : "todo";
+        g.Reason = why; // the cell's last failure: the map's marker says it, Retry clears it (StoryColony.BuildRetry.cs)
         g.Rev = Touch();
         if (n >= 3)
         {

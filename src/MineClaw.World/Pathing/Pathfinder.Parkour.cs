@@ -33,10 +33,21 @@ public sealed partial class Pathfinder
     private void TryParkourCore(List<Candidate> output, CellInfo here, int x, int y, int z)
     {
         Span<int> run = stackalloc int[8];
+        Span<int> ditch = stackalloc int[8], ditchDy = stackalloc int[8];
         bool any = false;
         for (int i = 0; i < 8; i++)
         {
             run[i] = GapAhead(here, x, y, z, ParkourDirs[i].Dx, ParkourDirs[i].Dz);
+            ditch[i] = 0;
+            // A shallow ditch ahead (a 1-deep trench or water channel): only the one straight jump from its edge to the far bank, 1 or 2
+            // wide. Every other way across it is walked (down and up). A field cut by Story water channels put every node within
+            // 3 cells of one through the whole candidate fan, ~16 simulations each: 2-3 s searches, past the 2 s plan budget.
+            if (run[i] >= 0 && DitchAhead(here, x, y, z, ParkourDirs[i].Dx, ParkourDirs[i].Dz, run[i], out int bdy) is int wd and >= 0)
+            {
+                bool straight = ParkourDirs[i].Dx == 0 || ParkourDirs[i].Dz == 0;
+                if (wd > 0 && straight && run[i] == 0) { ditch[i] = wd; ditchDy[i] = bdy; }
+                else run[i] = -1;
+            }
             any |= run[i] >= 0;
         }
         if (!any) return;
@@ -54,12 +65,14 @@ public sealed partial class Pathfinder
             double dev = Math.Abs(Math.IEEERemainder(ang - di * Math.PI / 4, 2 * Math.PI));
             if (dev > MaxOffAxis || run[di] < 0) continue;
             var (dx, dz) = ParkourDirs[di];
+            if (ditch[di] > 0 && (ox != dx * (ditch[di] + 1) || oz != dz * (ditch[di] + 1))) continue;
             double proj = (ox * dx + oz * dz) / (double)(dx * dx + dz * dz);
             if (proj < run[di] + 1.5) continue; // must land past the gap
             int tx = x + ox, tz = z + oz;
             for (int dy = 1; dy >= -3; dy--)
             {
                 int ty = y + dy;
+                if (ditch[di] > 0 && dy != ditchDy[di]) continue;
                 var c = Cell(tx, ty, tz);
                 if (!c.Ok || !c.Ground || c.Water || c.Climb) continue;
                 if (OnFarmland(tx, ty, tz)) continue; // a gap jump lands with a fall of 1.25+: it would trample the field
@@ -94,7 +107,9 @@ public sealed partial class Pathfinder
                 plan = PlanJump(from, here.Floor, to, c.Floor, sprint: false, allowVoid);
             if (plan is null && _o.CanSprint) plan = PlanJump(from, here.Floor, to, c.Floor, sprint: true, allowVoid);
             if (plan is null) continue;
-            double cost = plan.LandTick + 8 + _o.ParkourPenalty + (plan.OverVoid ? _o.VoidParkourPenalty : 0)
+            // Over a ditch (a level jump across a 1-deep trench or water channel): a miss lands a block down and climbs out.
+            double risk = !plan.OverVoid && OverDitch(x, y, z, here, to.X, to.Z, c) ? Math.Min(_o.ParkourPenalty, _o.DitchJumpPenalty) : _o.ParkourPenalty;
+            double cost = plan.LandTick + 8 + risk + (plan.OverVoid ? _o.VoidParkourPenalty : 0)
                           + Math.Max(0, 0.3 - plan.Margin) * 30 + HazardPenalty(to.X, to.Y, to.Z);
             output.Add(new Candidate(to.X, to.Y, to.Z, plan.Kind, c.Floor, cost, [], null, false, null, plan));
         }
@@ -150,6 +165,66 @@ public sealed partial class Pathfinder
         if (bx == tx && bz == tz) return true;
         var b = Cell(bx, ty, bz);
         return !(b.Ok && b.Ground && Math.Abs(b.Floor - c.Floor) < 0.01);
+    }
+
+    /// <summary>
+    /// The gap <paramref name="run"/> flat cells ahead in direction (dx,dz) is a shallow ditch: its first cell's floor is 0.5..1.25 below
+    /// (standable, or water). Returns its width (1 or 2) when the far bank is a standable cell at this floor (± 0.1: farmland beside
+    /// grass) right after it, with that cell's foot row offset in <paramref name="bankDy"/>; 0 for a ditch that isn't jumped (wider,
+    /// or the far side not level); −1 when the gap isn't a ditch (a real drop: the usual gap-jump fan).
+    /// </summary>
+    private int DitchAhead(CellInfo here, int x, int y, int z, int dx, int dz, int run, out int bankDy)
+    {
+        bankDy = 0;
+        for (int i = 1; i <= 3; i++)
+        {
+            int cx = x + (run + i) * dx, cz = z + (run + i) * dz;
+            if (i > 1 && LevelBank(here, cx, y, cz) is int b) { bankDy = b; return i - 1; }
+            if (!DitchFloor(here, cx, y, cz)) return i == 1 ? -1 : 0;
+        }
+        return 0;
+    }
+
+    /// <summary>Column (cx,cz) holds a ditch's floor seen from <paramref name="here"/>: a standable or water cell 0.5..1.25 below it.</summary>
+    private bool DitchFloor(CellInfo here, int cx, int y, int cz)
+    {
+        for (int yy = y; yy >= y - 1; yy--)
+        {
+            var c = Cell(cx, yy, cz);
+            if (c.Ok && c.Floor < here.Floor - 0.5 && c.Floor >= here.Floor - 1.25 - 1e-6) return true;
+        }
+        return false;
+    }
+
+    /// <summary>The foot-row offset (−1, 0, +1) of a standable cell in column (cx,cz) level with <paramref name="here"/> (± 0.1).</summary>
+    private static readonly int[] BankRows = [0, 1, -1];
+
+    private int? LevelBank(CellInfo here, int cx, int y, int cz)
+    {
+        foreach (int dy in BankRows)
+        {
+            var c = Cell(cx, y + dy, cz);
+            if (c.Ok && c.Ground && !c.Water && Math.Abs(c.Floor - here.Floor) <= 0.1) return dy;
+        }
+        return null;
+    }
+
+    /// <summary>A level jump whose gap columns are all a ditch's floor (one block down, standable or water): a miss is a step
+    /// down into it.</summary>
+    private bool OverDitch(int x, int y, int z, CellInfo here, int tx, int tz, CellInfo t)
+    {
+        if (Math.Abs(t.Floor - here.Floor) > 0.1) return false;
+        double ax = x + 0.5, az = z + 0.5, bx = tx + 0.5, bz = tz + 0.5;
+        double len = Math.Sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
+        for (double d = 0.5; d <= len - 0.5 + 1e-9; d += 0.25)
+        {
+            int cx = (int)Math.Floor(ax + (bx - ax) * d / len), cz = (int)Math.Floor(az + (bz - az) * d / len);
+            if ((cx == x && cz == z) || (cx == tx && cz == tz)) continue;
+            var a = Cell(cx, y, cz);
+            if (a.Ok && Math.Abs(a.Floor - here.Floor) <= 0.5 + 1e-6) continue;
+            if (!DitchFloor(here, cx, y, cz)) return false;
+        }
+        return true;
     }
 
     /// <summary>Some column strictly between the two cells is standable at neither level (there is a gap to jump).</summary>

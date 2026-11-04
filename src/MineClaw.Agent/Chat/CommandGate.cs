@@ -354,6 +354,9 @@ public sealed class CommandGate
     private static readonly Regex ManagedTeleportLine = new(@"^/tp (?<name>[A-Za-z0-9_]{3,16}) -?\d{1,8} -?\d{1,3} -?\d{1,8}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private readonly List<(string Line, string By, DateTimeOffset Until)> _tpArmed = new();
+    /// <summary>How long an armed Story line waits to be sent: main's chat queue paces commands, and 15 s ran out behind a queue of
+    /// them (live 11-04: a rescue /tp was "dropped (not authorised)" when it finally went out).</summary>
+    public static readonly TimeSpan StoryArmWindow = TimeSpan.FromSeconds(90);
 
     /// <summary>
     /// Arms exactly one <c>/tp &lt;name&gt; x y z</c> for Story Mode: the colony owner founded the colony or moved its home (an
@@ -374,7 +377,7 @@ public sealed class CommandGate
         {
             var now = _time.GetUtcNow();
             _tpArmed.RemoveAll(a => a.Until < now);
-            _tpArmed.Add((t, by, now + TimeSpan.FromSeconds(15)));
+            _tpArmed.Add((t, by, now + StoryArmWindow));
         }
         return true;
     }
@@ -397,12 +400,12 @@ public sealed class CommandGate
         {
             var now = _time.GetUtcNow();
             _tpArmed.RemoveAll(a => a.Until < now);
-            _tpArmed.Add((t, by, now + TimeSpan.FromSeconds(15)));
+            _tpArmed.Add((t, by, now + StoryArmWindow));
         }
         return true;
     }
 
-    private static readonly Regex ManagedSpeedLine = new(@"^/effect (?<name>[A-Za-z0-9_]{3,16}) minecraft:speed (?:0|\d{1,3} [0-4] true)$",
+    private static readonly Regex ManagedSpeedLine = new(@"^/effect (?<name>[A-Za-z0-9_]{3,16}) minecraft:speed (?:0|\d{1,7} [0-4] true)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -424,7 +427,7 @@ public sealed class CommandGate
         {
             var now = _time.GetUtcNow();
             _tpArmed.RemoveAll(a => a.Until < now);
-            _tpArmed.Add((t, by, now + TimeSpan.FromSeconds(15)));
+            _tpArmed.Add((t, by, now + StoryArmWindow));
         }
         return true;
     }
