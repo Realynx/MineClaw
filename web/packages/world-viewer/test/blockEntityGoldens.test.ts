@@ -99,6 +99,11 @@ describe('block-entity layer golden', () => {
       layer.update(store, { dim: p.dim ?? 0, centre, software: p.software ?? false, now, ticks: now / 50, displayMobs: p.displayMobs === undefined ? calls : p.displayMobs, playerNear: p.playerNear === undefined ? (_d, x) => near.on && x > -10 : p.playerNear });
       for (const o of objs.values())
         rec('obj', [o.key, o.kind, o.group.visible, !!o.text, o.text?.geometry?.attributes?.position ? 'mesh' : o.text ? 'empty' : null, o.slate?.rotation.x ?? null, o.spin ?? null, o.ticks ?? null, o.usedAt, o.obfuscated ?? null, o.textAt ?? null]);
+      for (const o of objs.values()) {
+        const g = o.text?.geometry;
+        const tex = o.texture as THREE.Texture | undefined;
+        if (g?.attributes?.position) rec('text', [o.key, [...(g.attributes.position.array as Float32Array)], [...(g.attributes.uv.array as Float32Array)], g.index ? [...g.index.array] : null, o.text!.matrix.elements, tex?.magFilter, tex?.flipY, (tex as THREE.CanvasTexture | undefined)?.image?.width ?? null]);
+      }
       rec('count', [layer.count, layer.group.children.length, layer.signDistance, layer.detailDistance, layer.maxTextures]);
       await flush();
     };
@@ -123,6 +128,6 @@ describe('block-entity layer golden', () => {
     for (const l of log) d.add(l);
     expect(log.filter((l) => l.startsWith('show')).length).toBeGreaterThan(5);
     if (process.env.GOLDEN_DUMP) (await import('node:fs')).writeFileSync(process.env.GOLDEN_DUMP, log.join('\n'));
-    expect(d.hex()).toBe('abb4903e88229ff395b79c12a806ee5e');
+    expect(d.hex()).toBe('7ca4912a66c59f45c05bb0c96c7066dc');
   });
 });
