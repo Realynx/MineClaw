@@ -44,12 +44,18 @@ public sealed partial class StoryColony
         double mine = mob.Block.Dist(Host.Live(p.Name).Block);
         foreach (var o in Pawns.Values)
         {
-            if (o == p || o.Drafted || o.Priorities.GetValueOrDefault(WorkTypes.Guard) is < 1 or > 4) continue;
-            if (_current.TryGetValue(o.Name, out var cur) && cur.Source is not ("none" or "wander")) continue;
-            if (Skipped(PawnKey("e:" + mob.Id, o.Name))) continue; // it couldn't find this one
+            if (!FreeGuard(o, p, mob)) continue;
             var l = Host.Live(o.Name);
             if (l.Online && mob.Block.Dist(l.X, l.Y, l.Z) + 4 < mine) return true;
         }
         return false;
+    }
+
+    /// <summary>Another undrafted guard (priority 1–4) with nothing better to do (idle, wandering) that could find this monster.</summary>
+    private bool FreeGuard(PawnState o, PawnState p, StoryEntity mob)
+    {
+        if (o == p || o.Drafted || o.Priorities.GetValueOrDefault(WorkTypes.Guard) is < 1 or > 4) return false;
+        if (_current.TryGetValue(o.Name, out var cur) && cur.Source is not ("none" or "wander")) return false;
+        return !Skipped(PawnKey("e:" + mob.Id, o.Name)); // it couldn't find this one
     }
 }

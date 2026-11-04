@@ -44,24 +44,32 @@ public sealed partial class StoryColony
         ix.ForbidEntities.Clear();
         ix.ForbidCols.Clear();
         foreach (var z in Zones)
-            if (z.Kind == "forbidden")
-                foreach (var k in z.Cells.Keys)
-                    ix.ForbidCols[k] = ix.ForbidCols.TryGetValue(k, out var r) ? (Math.Min(r.Y1, z.Area.Y1), Math.Max(r.Y2, z.Area.Y2)) : (z.Area.Y1, z.Area.Y2);
-        foreach (var d in Designations)
-        {
-            if (d.Kind == "forbid")
-            {
-                if (d.At is { } fa) ix.ForbidCells.Add(fa);
-                if (d.Entity is { } fe) ix.ForbidEntities.Add(fe);
-                continue;
-            }
-            if (d.At is not { } at) continue;
-            var target = BlockTarget(d.Kind, at);
-            if (!ix.ByKind.TryGetValue(d.Kind, out var list)) ix.ByKind[d.Kind] = list = new();
-            list.Add((d, "b:" + target, target));
-        }
+            if (z.Kind == "forbidden") IndexForbiddenZone(ix, z);
+        foreach (var d in Designations) IndexDesignation(ix, d);
         ix.Stamp = stamp;
         return ix;
+    }
+
+    /// <summary>A keep-out zone's columns and their level range (merged with another zone's over the same column).</summary>
+    private static void IndexForbiddenZone(PickIndex ix, ZoneState z)
+    {
+        foreach (var k in z.Cells.Keys)
+            ix.ForbidCols[k] = ix.ForbidCols.TryGetValue(k, out var r) ? (Math.Min(r.Y1, z.Area.Y1), Math.Max(r.Y2, z.Area.Y2)) : (z.Area.Y1, z.Area.Y2);
+    }
+
+    /// <summary>A forbid designation's cell or entity; any other block designation under its kind, by the block its job works.</summary>
+    private void IndexDesignation(PickIndex ix, DesignationState d)
+    {
+        if (d.Kind == "forbid")
+        {
+            if (d.At is { } fa) ix.ForbidCells.Add(fa);
+            if (d.Entity is { } fe) ix.ForbidEntities.Add(fe);
+            return;
+        }
+        if (d.At is not { } at) return;
+        var target = BlockTarget(d.Kind, at);
+        if (!ix.ByKind.TryGetValue(d.Kind, out var list)) ix.ByKind[d.Kind] = list = new();
+        list.Add((d, "b:" + target, target));
     }
 
     /// <summary>The block a designation's job works: a tall plant's lower half for any block kind (cut, mine, deconstruct: breaking either
