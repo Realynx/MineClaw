@@ -98,7 +98,8 @@ test('a water channel: the Water tab, a drawn canal previewed and queued as dig 
   expect(sent.items[1]!.group).toBe(sent.items[0]!.group);
   const cells = sent.items[1]!.blocks;
   expect(cells).toHaveLength(4);
-  expect(new Set(cells.map((c) => c[1]))).toEqual(new Set([lv - 1])); // one below the floor: in the trench
+  // The level is the floor the map stands on (the drag picks the layer above it): the trench is the floor itself, dug first.
+  expect(new Set(cells.map((c) => c[1]))).toEqual(new Set([lv]));
   await page.keyboard.press('Escape');
 
   // The queue lists it with its bucket; the cells are pour ghosts drawn as water holograms.
