@@ -21,6 +21,24 @@
     }
     return { ok: true, msg: j.act || 'idle' };
   });
+  // work(job): a station bill the pawn script hands over (1.12.2: brewing stand, enchanting table, anvil). A brew fills its glass
+  // bottles first (j.fill: a water source or cauldron); every other kind is nothing to do.
+  const work = j => {
+    const g = globalThis;
+    switch (j.kind) {
+      case 'brew': {
+        if (j.fill && j.fill.n > 0) {
+          const f = H.skill('fill_bottles', { pos: j.fill.at, count: j.fill.n });
+          if (!g.ok(f)) return f;
+        }
+        return H.skill('brew', { potion: j.potion, form: j.form, count: j.n, pos: j.at });
+      }
+      case 'enchant':
+        return H.skill('enchant_item', { item: j.item, option: j.option || 3, prefer: j.prefer || '', prefer_only: !!j.prefer_only, pos: j.at });
+      case 'anvil': return H.skill('use_anvil', { item: j.item, mode: j.mode || 'repair', pos: j.at });
+      default: return { ok: true };
+    }
+  };
   // till(job): hold the hoe (j.hoe) and use it on the dirt or grass at j.at, walking over first when it is far.
   const till = j => {
     const g = globalThis;
@@ -31,12 +49,13 @@
     g.skill('hold_item', j.hoe);
     return g.use_block(j.at);
   };
-  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle(job) - the job loop */
+  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle(job)|work(job) */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report: (j, status, note, pct) => H.storyReport(String(id(j)), status, note == null ? null : String(note), pct),
     during,
     idle,
+    work,
     till,
   }));
 }

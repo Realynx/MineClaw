@@ -245,6 +245,7 @@ public sealed partial class StoryColony
         g.State = "done";
         g.Rev = Touch();
         MaterialsChanged();
+        StationBuilt(g); // a brewing stand, anvil or enchanting table the colony built is its own (StoryColony.Stations.cs)
         var b = Builds.First(x => x.Ghosts.Contains(g));
         // A door's / bed's other half came with it.
         foreach (var other in b.Ghosts.Where(o => !o.Job && o.State != "done" && Math.Abs(o.At.X - g.At.X) + Math.Abs(o.At.Y - g.At.Y) + Math.Abs(o.At.Z - g.At.Z) == 1))

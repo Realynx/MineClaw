@@ -516,7 +516,8 @@ public sealed partial class StoryColony
             return new JsonObject
             {
                 ["entries"] = entries,
-                ["benches"] = new JsonObject { ["crafting_table"] = Benches.Count(b => b.Kind == "crafting_table"), ["furnace"] = Benches.Count(b => b.Kind == "furnace") },
+                ["benches"] = new JsonObject(StoryRecipes.Benches.Where(k => StoryRecipes.SupportedIn(w.Data, k))
+                    .Select(k => new KeyValuePair<string, JsonNode?>(k, Benches.Count(b => b.Kind == k)))),
                 ["tabs"] = new JsonArray(StoryArchitect.Tabs.Select(t => (JsonNode)t!).ToArray()),
             };
         }

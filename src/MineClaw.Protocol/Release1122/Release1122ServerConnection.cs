@@ -139,6 +139,8 @@ public sealed class Release1122ServerConnection : IGameConnection
             }
             case Ids1122.CloseWindowOut:
                 return new CloseWindowPacket { WindowId = (sbyte)r.ReadUByte() };
+            case Ids1122.EnchantItem:
+                return new EnchantItemPacket { WindowId = (sbyte)r.ReadUByte(), Enchantment = r.ReadSByte() };
             case Ids1122.UseEntity:
             {
                 int target = r.ReadVarInt();
@@ -292,6 +294,10 @@ public sealed class Release1122ServerConnection : IGameConnection
             case OpenWindowPacket ow:
             {
                 var (type, slots) = Codec1122.WindowTypeName(ow.InventoryType, ow.SlotCount);
+                // A window kind of its own (brewing_stand, enchanting_table, anvil...): its own type string; the table and the anvil
+                // are interaction objects (slot count 0), the rest send their size.
+                if (ow.Kind is { Length: > 0 } kind && ow.InventoryType == 0 && kind != "chest")
+                    (type, slots) = ("minecraft:" + kind, kind is "enchanting_table" or "anvil" ? 0 : ow.SlotCount);
                 _windowTypes[(byte)ow.WindowId] = ow.InventoryType;
                 yield return WireWriter.ForPacket(Ids1122.OpenWindow).WriteUByte((byte)ow.WindowId).WriteString(type, 32)
                     .WriteString(ChatComponent.Text(ow.Title)).WriteUByte((byte)slots);

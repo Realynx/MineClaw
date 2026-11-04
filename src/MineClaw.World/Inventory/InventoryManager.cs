@@ -98,12 +98,12 @@ public sealed partial class InventoryManager
     // ---- server → client ----
 
     /// <summary>0x64 Open Window.</summary>
-    public Window Open(int windowId, WindowType type, string title, int slotCount)
+    public Window Open(int windowId, WindowType type, string title, int slotCount, string? kind = null)
     {
         Window w;
         lock (_sync)
         {
-            w = new Window(windowId, type, title, slotCount, _player);
+            w = new Window(windowId, type, title, slotCount, _player) { Kind = kind };
             _open = w;
         }
         WindowOpened?.Invoke(w);
