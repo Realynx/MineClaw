@@ -25,7 +25,8 @@ import { ContainerPanel, sameContainer, type ContainerTarget } from './Container
 import { DotMap } from './DotMap';
 import { useWorldHost } from './integration';
 import { ChatOverlay, Crosshair as AimCross, SelectionBar, TargetReadout } from './InWorld';
-import { closesOpenBar, isTyping, nextSelection, selectByNumber, sendDirective, type SendResult } from './directives';
+import { nextSelection, selectByNumber, sendDirective, type SendResult } from './directives';
+import { onWorldKey } from './worldKeys';
 
 /** The Keyboard Lock API (fullscreen, secure contexts only): with Escape locked, Esc reaches the page instead of the browser. */
 type KeyboardLock = { lock?: (keys: string[]) => Promise<void>; unlock?: () => void };
@@ -220,48 +221,26 @@ export function WorldPane({
   }, [closeChat, ready]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'F3') {
-        e.preventDefault();
-        setHud((h) => !h);
-        return;
-      }
-      if (isTyping(e.target)) return;
-      const el = stage.current;
-      const inWorld = !!el && (el.contains(document.activeElement) || document.fullscreenElement === el || (!!document.pointerLockElement && el.contains(document.pointerLockElement)));
-      if (!inWorld || e.altKey || e.ctrlKey || e.metaKey) return;
-      if ((e.key === 'Enter' || e.key === ' ') && (e.target as HTMLElement | null)?.closest?.('button, a')) return; // a focused control
-      if (chatOpenRef.current) {
-        // The bar is open but its input doesn't have the keys (disabled, or a button has focus): T / Enter / Esc close it.
-        if (closesOpenBar(e)) {
-          e.preventDefault();
-          closeChat();
-        }
-        return;
-      }
-      if (e.code === 'KeyF' && !e.shiftKey) {
-        e.preventDefault();
-        toggleFullscreen();
-      } else if (e.code === 'KeyT' || e.key === 'Enter' || e.key === '/') {
-        e.preventDefault();
-        openChat();
-      } else if (e.code === 'KeyE' && document.pointerLockElement && !e.shiftKey) {
-        const t = aimRef.current;
-        if (t?.kind === 'block' && isContainerBlock(t.id)) {
-          const next = { dim: dimRef.current, x: t.x, y: t.y, z: t.z };
-          setContainer((cur) => (sameContainer(cur, next) ? null : next));
-        } else setContainer(null);
-      } else if (e.key === 'Tab') {
-        e.preventDefault();
-        setHud((h) => !h);
-      } else if (/^Digit[1-9]$/.test(e.code)) {
-        const names = viewer.current?.botsInView().map((b) => b.name) ?? [];
-        setSelected((cur) => selectByNumber(cur, names, Number(e.code.slice(5)), e.shiftKey));
-      } else if (e.key === 'Escape') {
-        if (document.pointerLockElement) document.exitPointerLock();
-        else if (document.fullscreenElement === el) void document.exitFullscreen().catch(() => undefined);
-      }
-    };
+    const onKey = (e: KeyboardEvent) =>
+      onWorldKey(e, {
+        stage: stage.current,
+        chatOpen: () => chatOpenRef.current,
+        toggleHud: () => setHud((h) => !h),
+        openChat,
+        closeChat,
+        toggleFullscreen,
+        toggleAimedContainer: () => {
+          const t = aimRef.current;
+          if (t?.kind === 'block' && isContainerBlock(t.id)) {
+            const next = { dim: dimRef.current, x: t.x, y: t.y, z: t.z };
+            setContainer((cur) => (sameContainer(cur, next) ? null : next));
+          } else setContainer(null);
+        },
+        selectNumber: (n, add) => {
+          const names = viewer.current?.botsInView().map((b) => b.name) ?? [];
+          setSelected((cur) => selectByNumber(cur, names, n, add));
+        },
+      });
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [toggleFullscreen, openChat, closeChat]);
