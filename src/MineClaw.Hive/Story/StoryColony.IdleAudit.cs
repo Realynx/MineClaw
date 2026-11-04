@@ -156,7 +156,7 @@ public sealed partial class StoryColony
     /// ran out), and at most <paramref name="budget"/> searches this tick (live 11-04: each idle pawn searched every 2 s).</summary>
     private bool ProbeDue(PawnState p, long stamp, ref int budget)
     {
-        if (_probed.TryGetValue(p.Name, out var last) && (Now - last.At < TimeSpan.FromSeconds(2) || Now - last.At < TimeSpan.FromSeconds(10) && last.Stamp == stamp))
+        if (_probed.TryGetValue(p.Name, out var last) && (Now - last.At < TimeSpan.FromSeconds(3) || Now - last.At < TimeSpan.FromSeconds(10) && last.Stamp == stamp))
             return false;
         if (budget <= 0) return false;
         budget--;

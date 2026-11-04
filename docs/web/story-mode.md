@@ -437,8 +437,8 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   per reason, only when nothing of it can go in.
 - **Wake checks stay cheap.** A wandering pawn searches for work again when new work is announced. Otherwise it searches only when
   something it reads has changed since its last empty search: designations, zones, builds, benches, storages, materials or leases.
-  At most every 10 s it searches regardless, and the tick runs at most two such searches. A search from the tick sets up the same
-  per-pawn caches as a pick, such as tool plans.
+  It searches at most every 3 s, and regardless every 10 s. The tick runs one such search at most. A search from the tick sets up
+  the same per-pawn caches as a pick, such as tool plans.
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.

@@ -221,10 +221,10 @@ public sealed partial class StoryColony
         foreach (var k in _spots.Where(kv => kv.Value.Until <= Now).Select(kv => kv.Key).ToList()) _spots.Remove(k);
         if (Meta.Paused || !Meta.Active) return;
         int hour = HourNow;
-        // New work (a wake): every wanderer looks. Otherwise only one whose last empty search is out of date, two a tick at most
+        // New work (a wake): every wanderer looks. Otherwise only one whose last empty search is out of date, one a tick
         // (live 11-04: a full search per wanderer every 2 s, ~110 ms a tick with 4 idle pawns).
         bool wake = _wakePending;
-        int budget = 2;
+        int budget = 1;
         long stamp = WorkStamp();
         foreach (var p in Pawns.Values)
         {
