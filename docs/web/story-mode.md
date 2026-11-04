@@ -1044,7 +1044,11 @@ entries at the bucket's tier ("workbench"; a bucket anywhere in the colony unloc
 into the ground, a `remove` item of the same group first). The placement shows as water holograms; on release the director
 previews it: water that would run beyond the drawn cells (or an irrigation suggestion) waits in a confirm bar ("Water channel: 4
 sources · spreads to 23 more cells", the director's warnings, Queue / Cancel) with the flow drawn as flowing-water holograms;
-otherwise it is queued at once. The Growing zones window says when cells are dry ("40 cells have no water within 4 blocks") with
+otherwise it is queued at once. The trench's cells (the `remove` item) show as red dig cells in the drag preview and the confirm
+bar alike, apart from the water and its flow; queued, a trench cell shows its dig outline while the ground is there and its
+water hologram once it is dug (a pour in a still-solid cell waits underground: fixed 2026-11-04, Fox: "The holograms for
+digging the water trenches don't show up"; the dig outlines sat just inside the cell, so the ground around them hid them, and
+the previews left the dig out). The Growing zones window says when cells are dry ("40 cells have no water within 4 blocks") with
 Add irrigation: the planner's channels, pre-filled as a pending placement to confirm. The mock director (`storySim`) and
 `@mineclaw/contracts` (`storyWater.ts`: `waterToolCells`, `waterItems`, `liquidFlow`, `pourOrder`, `irrigationPlan`) carry
 reference copies of these rules.
@@ -1620,7 +1624,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - **Build holograms (added 2026-11-03).** Queued cells show in the world as translucent holograms of the block they
     will become: the block's own model and texture (variant and facing) in a calm tint, about 40 % opaque, with static
     scanlines and a thin edge line. Cyan to do, brighter while a pawn builds it, grey-blue while its build waits (paused,
-    missing materials), striped red when blocked or unsupported. Cells to dig are faint red outlines. A built cell's
+    missing materials), striped red when blocked or unsupported. Cells to dig are red outlines just outside the cell with a faint red fill over
+    the exposed top, lifted a little above the ground around them (an outline on or inside the cell's own edges is hidden by the
+    ground the cell is in). A water or lava cell still filled by a solid block is not drawn (its dig shows there). A built cell's
     hologram goes as soon as the block appears (matched by cell in the mesh worker). The cells are meshed in the worker,
     one merged mesh per state, rebuilt only when the ghosts or builds change or a block change lands on a queued cell. At
     most 20,000 cells draw; past that, and below 3 px per block, each build is one outline box. They are drawn after the

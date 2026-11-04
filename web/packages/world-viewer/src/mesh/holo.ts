@@ -4,9 +4,11 @@
 // block models: stairs, doors, fences and torches in their variant and facing), then merged into ONE vertex set per request,
 // positioned relative to an origin, so the main thread draws a request with a single draw call.
 // The world decides what still shows ("match by cell"):
-// - build: a cell whose world block already has the target id is built and left out;
+// - build: a cell whose world block already has the target id is built and left out; a liquid to pour (water, lava) is also
+//   left out while a solid block still fills its cell (it waits for its dig: the trench's dig outline shows there instead);
 // - dig: a cell whose world block is already air is dug and left out (dig cells come back as cells, drawn as outlines);
-// - place: nothing is left out, but the cells are split into placeable and blocked (a solid block is in the way).
+// - place: nothing is left out, but the cells are split into placeable and blocked (a solid block is in the way, unless the
+//   placement digs that cell first: `clear`).
 // Cells in columns the worker does not hold always show.
 
 import { cellIndex } from '../wire/chunk';
@@ -23,6 +25,8 @@ export interface HoloRequest {
   /** Flat [x, y, z, id, meta, …]. */
   blocks: number[];
   mode: HoloMode;
+  /** 'place': cells the placement digs out first, flat [x, y, z, …] (a solid block there is not in the way). */
+  clear?: number[];
 }
 
 /** One request's merged geometry: the section mesher's attributes, positions relative to `origin`, plus each vertex's block cell
@@ -45,6 +49,8 @@ export interface HoloResult {
   cells: number[];
 }
 
+/** Water and lava, flowing and still. */
+const LIQUIDS = new Set([8, 9, 10, 11]);
 /** Blocks a placement may replace (air, plants, snow, vines, water). */
 const REPLACEABLE = new Set([0, 8, 9, 31, 32, 37, 38, 78, 106, 175]);
 
@@ -55,10 +61,12 @@ export function meshHolograms(world: ColumnStore, dim: number, table: StateTable
     const n = Math.floor(r.blocks.length / 5);
     if (r.mode === 'place') {
       const ok: number[] = [], blocked: number[] = [];
+      const clear = new Set<string>();
+      for (let i = 0; i + 2 < (r.clear?.length ?? 0); i += 3) clear.add(`${r.clear![i]},${r.clear![i + 1]},${r.clear![i + 2]}`);
       for (let i = 0; i < n; i++) {
         const b = r.blocks.slice(i * 5, i * 5 + 5);
         const w = world.blockAt(dim, b[0], b[1], b[2]);
-        (w && !REPLACEABLE.has(w.id) && b[3] !== 0 ? blocked : ok).push(...b);
+        (w && !REPLACEABLE.has(w.id) && b[3] !== 0 && !clear.has(`${b[0]},${b[1]},${b[2]}`) ? blocked : ok).push(...b);
       }
       out.push(result(`${r.key}:ok`, ok, table), result(`${r.key}:blocked`, blocked, table));
       continue;
@@ -69,6 +77,7 @@ export function meshHolograms(world: ColumnStore, dim: number, table: StateTable
       const x = r.blocks[o], y = r.blocks[o + 1], z = r.blocks[o + 2], id = r.blocks[o + 3];
       const w = world.blockAt(dim, x, y, z);
       if (r.mode === 'dig' ? w && w.id === 0 : w && w.id === (id & 255)) continue;
+      if (r.mode === 'build' && LIQUIDS.has(id & 255) && w && !REPLACEABLE.has(w.id) && !LIQUIDS.has(w.id)) continue;
       keep.push(x, y, z, id, r.blocks[o + 4]);
     }
     out.push(r.mode === 'dig' ? { key: r.key, mesh: null, cells: keep } : result(r.key, keep, table));
