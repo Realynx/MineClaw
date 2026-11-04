@@ -912,6 +912,8 @@ export function OptionsBar({
   layers = 2,
   onLayers,
   level,
+  stalled = 0,
+  onRetryAll,
   onClose,
 }: {
   tool: MapTool;
@@ -925,6 +927,9 @@ export function OptionsBar({
   onLayers?: (n: number) => void;
   /** The working level (PgUp / PgDn): what Level, Down to level and Flatten here go to. */
   level?: number;
+  /** Retry tool: how many designations are failed or resting colony-wide, and the "retry them all" action. */
+  stalled?: number;
+  onRetryAll?: () => void;
   onClose: () => void;
 }) {
   // Structure and furniture tools have the docked material selector instead (MaterialBar.tsx): one place, no second bar.
@@ -985,6 +990,17 @@ export function OptionsBar({
             </option>
           ))}
         </select>
+      ) : null}
+      {tool.kind === 'designate' && tool.id === 'retry' ? (
+        <button
+          type="button"
+          onClick={onRetryAll}
+          disabled={!stalled}
+          data-testid="retry-all"
+          className="rounded border border-border bg-surface-2 px-2 py-0.5 font-medium hover:bg-surface-3 disabled:opacity-50"
+        >
+          Retry all failed ({stalled})
+        </button>
       ) : null}
       {tool.kind === 'design' ? (
         <span className="flex items-center gap-1" title="Facing (Q / E)">
