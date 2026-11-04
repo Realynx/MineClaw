@@ -462,7 +462,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       const base = dataFor(id, params) as { items?: Obj[]; total?: number };
       const saved = designer.saved.map((d) => ({
         id: d.id, name: d.name, status: 'accepted', requester: d.requester, rev: d.revisions[0]?.rev ?? 1, revisions: d.revisions.length,
-        updated: d.updated, has_picture: false, version: d.version ?? null,
+        updated: d.updated, has_picture: false, version: d.version ?? null, kind: d.kind ?? null,
       }));
       return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
     }

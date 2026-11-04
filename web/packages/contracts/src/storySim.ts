@@ -142,7 +142,7 @@ interface Colony {
   designations: Map<Key, Fn<StoryDesignation>>;
   orders: Map<Key, Fn<StoryOrder>>;
   builds: Map<Key, Fn<StoryBuild>>;
-  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string]>>;
+  ghostCells: Map<Key, Array<[number, number, number, number, number, Key, string, ('dig' | 'place')?]>>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
@@ -1207,7 +1207,7 @@ export class StorySim {
           label: buildLabel(item.kind, cells.length, item.material),
           status: 'queued',
           reason:
-            have < need && item.kind !== 'remove' && !(STORY_FURNITURE as readonly string[]).includes(item.kind)
+            have < need && item.kind !== 'remove' && item.kind !== 'mine' && !(STORY_FURNITURE as readonly string[]).includes(item.kind)
               ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}`
               : null,
           blocksTotal: cells.length,
@@ -1220,7 +1220,7 @@ export class StorySim {
         c.builds.set(bid, { rev: this.bump(c), v: b });
         c.ghostCells.set(
           bid,
-          cells.map(([x, y, z, bi, bm]) => [x, y, z, bi, bm, bid, 'todo']),
+          cells.map(([x, y, z, bi, bm]) => [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : 'place']),
         );
         ids.push(bid);
       }

@@ -764,7 +764,57 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   never locked). Over 32 a side is refused.
 - **Bridge.** `/v1/sup/designer/*` passes reads for any signed role; every POST needs `design` or `admin`, and the bridge
   writes `player` (the linked player) and `who` ("user (web)") into the body, refusing a body that sets them.
-- **Persistence.** `designer_sessions` and `designer_messages` in the agent db.
+- **Persistence.** `designer_sessions` and `designer_messages` in the agent db (a session's `kind`, `seed` and `preferred_for`
+  columns were added for mine designs; older rows are builds).
+
+### Mine designs (added 2026-11-03)
+
+A session is a `build` (the grassland plot above) or a `mine` (`kind`). A mine is the inverse of a build: the cells to dig out
+of the ground, so a large underground strip mine can be drawn once and placed in the world for the pawns to mine.
+
+- **The canvas.** The same 64×64 plot, but the ground is generated terrain and y is **absolute world y 0..127** (`plot` =
+  `{size: 64, height: 128, depth: 0}`). A cell is undisturbed ground where the terrain is solid; air there digs it (never
+  bedrock: refused), `-1` fills it back, air over the terrain's air changes nothing; blocks go anywhere (torches, ladders,
+  rails, chests: placed once their cell is dug). A loaded mine keeps its dug cells as saved whatever the terrain under them.
+  `anchor` is the mine's entry (the top of its shaft). The browser holds the same terrain (`mineTerrain.ts`), so both canvases
+  apply the same rule.
+- **The terrain** (src/MineClaw.Bot/Blueprints/Mine/MineTerrain.cs, a line-for-line port in
+  web/apps/web/src/features/studio/mine/mineTerrain.ts; MineClaw's own generator, no game code): the session's `seed` (text;
+  a whole number as it is, other text by Java's string hash) and version give rolling hills (surface y 58..81 from three
+  octaves of fixed-point value noise), grass on 3-4 dirt layers, stone, a bedrock floor at y 0 patchy up to y 4; per 16×16
+  chunk, stone pockets (dirt, gravel; 1.12.2 granite, diorite, andesite), ore veins at their heights and now and then one light
+  cave, each chunk from its own position only. Integer math only (a 32-bit hash, mulberry32, 16.16 noise), so C# and the
+  browser agree bit for bit; both test suites check the same golden plot hashes.
+- **Ore heights** (`web/apps/web/src/features/studio/mine/ore-heights.json`, embedded in the bot; its public sources are listed
+  in it): per version, each ore's band, veins per chunk, vein size, shape (lapis: a triangle at 16 ± 16) and the level a strip
+  mine goes to (`best`: diamond, redstone and gold y 11, above the lava lakes at y ≤ 10; lapis and iron 16; coal 48), plus the
+  bedrock layer. 1.12.2: coal 0-127, iron 0-63, gold 0-31, redstone 0-15, diamond 0-15, lapis 0-30 (peak 16), emerald
+  (extreme hills only: not generated). b1.8.1: the same bands with veins one block smaller and no emerald or granite family.
+- **Templates** (MineTemplates.cs / mineTemplates.ts, the same cells for the same parameters): `spiral` — an n×n shaft (3..6)
+  around a centred c×c core (1|2) left standing, one block down per step and 3 high (feet, head, the room a step needs), so a
+  lap later the same cell is 4(n−1) lower with solid floor between; top (default: the highest ground over its square) to
+  bottom, clockwise or not, a torch on the outer wall every N steps, landings (the whole square dug 2 high) at given levels;
+  `strip` — a main corridor (1×2 or 2×3) along x or z with 1×2 branches off both sides every spacing+1 cells, torches on the
+  corridor's wall. Presets (`mine-presets.json`): "1.12.2 diamond strip mine at y 11" (branches 3 apart), "1.12.2 lapis and
+  iron strip mine at y 16", "b1.8.1 diamond strip mine at y 11" (2 apart: smaller veins), "b1.8.1 lapis and gold strip mine
+  at y 16"; a design made from one is saved with `preferred_for <version>`.
+- **Routes.** `POST sessions {kind?, seed?, rev?, …}`: a new mine canvas (a random seed when none), or revision `rev` of a design
+  (saving it again makes it the newest revision: a revert). `POST sessions/{id}/version {version, kind?, seed?, preferred_for?,
+  apply?}`: `kind` switches an empty canvas at once and answers `needs_clear: true` for a full one (`apply` clears it and
+  switches: nothing carries over between a grassland and absolute y); `seed` changes the terrain in place; `preferred_for` (a
+  version, `""`/`"none"` to drop it) marks a version-preferred mine. `GET models` → `server_seed` when the server told the bot
+  its world seed (b1.8.1's login does; 1.12.2's doesn't): our terrain from it, never the real world's.
+- **Saved as DSL.** `kind mine`, `anchor absolute X,Y,Z` (layer 0 at world y Y; X,Z where its min corner sat on the plot),
+  `entry x,y,z` (local), `seed S`, `preferred_for V`, the blocks as layers and the cells to dig as `clear` boxes (merged
+  greedily: a 64×64×100 mine is a few hundred short lines), drawn then parsed back and compared cell by cell. Only a mine may be
+  taller than 32 (up to 128) or place nothing at all; it never digs below y 1. Every builder places it at its absolute y
+  (`Blueprint.OriginOn`: the entry's column on the site's), and the history's revisions, diff and revert keep it a mine.
+- **The AI designer.** On a mine canvas only: a compact system section (absolute y, the surface range here, the version's ore
+  heights in one line, the preset ids, the walkable-mine rules) and three more tools: `spiral_shaft {at:[x,z], size?, core?,
+  top?, bottom, dir?, torch_every?, landings?}`, `strip_mine {at:[x,y,z], axis?, length?, corridor? 1x2|2x3, spacing?,
+  branch_length?, sides?, torch_every?}`, `mine_preset {id}`. `remove` digs rooms; a build turn's prompt and tools are unchanged.
+- **Story Mode.** A placed mine is one `mine` build item group (docs/web/story-mode.md "Construction"): `blocks` = the cells to dig
+  at their absolute y, `place` = `[[x,y,z,id,meta]]` the blocks that go in them.
 
 ## 7. Binary formats
 

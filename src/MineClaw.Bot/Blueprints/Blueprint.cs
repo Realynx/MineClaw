@@ -44,6 +44,21 @@ public sealed class Blueprint
     /// <summary>The game version the design is drawn for (<c>version X</c>; <see cref="DesignVersions"/>): its palette resolves in
     /// that version's names and may hold any of its design blocks. Null = the server's (a legacy DSL: buildable blocks only).</summary>
     public string? Version { get; set; }
+    /// <summary><c>kind mine</c>: a mine design (docs/web/api.md "Mine designs"): mostly cells to dig (its forced air), anchored to
+    /// absolute world y (<see cref="AbsoluteY"/>) instead of a site's surface; else "build".</summary>
+    public string Kind { get; set; } = "build";
+    public bool Mine => Kind == "mine";
+    /// <summary><c>anchor absolute X,Y,Z</c>: the world y of layer 0 (ore heights matter, so a placed mine keeps it); X,Z = where its
+    /// min corner sat on the Design Studio's 64×64 plot (its terrain preview). Null = surface-relative (<see cref="Ground"/>).</summary>
+    public int? AbsoluteY { get; set; }
+    public (int X, int Z)? PlotAt { get; set; }
+    /// <summary><c>entry x,y,z</c> (local): a mine's top, where its shaft meets the surface; a placement puts this column on the
+    /// clicked one.</summary>
+    public (int X, int Y, int Z)? Entry { get; set; }
+    /// <summary><c>seed S</c>: the studio terrain a mine was drawn on.</summary>
+    public string? Seed { get; set; }
+    /// <summary><c>preferred_for V</c>: a version-preferred mine design (the strip mine that suits that version's ore heights).</summary>
+    public string? PreferredFor { get; set; }
     public Dictionary<char, PaletteEntry> Palette { get; } = new();
     /// <summary>Layer index → rows (north first), each W chars.</summary>
     public SortedDictionary<int, (List<string> Rows, int Line)> Layers { get; } = new();
@@ -71,7 +86,13 @@ public sealed class Blueprint
 
     /// <summary>The origin (min corner) that stands this design centred on <paramref name="ground"/> (the site's ground block):
     /// layer <see cref="Ground"/> one above it, the dug layers below.</summary>
-    public BlockPos OriginOn(BlockPos ground) => new(ground.X - Footprint.Wx / 2, ground.Y + 1 - Ground, ground.Z - Footprint.Dz / 2);
+    public BlockPos OriginOn(BlockPos ground)
+    {
+        // A mine keeps its absolute y; its entry's column (unturned) goes on the ground's.
+        if (AbsoluteY is { } ay)
+            return Entry is { } e && Quarters == 0 ? new(ground.X - e.X, ay, ground.Z - e.Z) : new(ground.X - Footprint.Wx / 2, ay, ground.Z - Footprint.Dz / 2);
+        return new(ground.X - Footprint.Wx / 2, ground.Y + 1 - Ground, ground.Z - Footprint.Dz / 2);
+    }
 }
 
 /// <summary>A block of the normalized plan, in world coordinates, with its meta already rotated.</summary>

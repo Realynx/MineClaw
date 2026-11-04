@@ -20,6 +20,7 @@ import {
   inside,
   keyOf,
   N6,
+  plotMode,
   posOf,
   selected,
   type Selection,
@@ -257,8 +258,8 @@ export interface Transformed {
  */
 function relocate(blocks: Cell[], s: Selection, map: (b: Cell) => Cell, holes = !s.mask): Transformed {
   if (blocks.length === 0) return { cells: [], selection: s };
-  const moved = blocks.map(map).filter((m) => m[3] !== 0 || below(m[1]));
-  const cells: Cell[] = blocks.map((b): Cell => [b[0], b[1], b[2], holes && below(b[1]) ? EARTH : 0, 0]);
+  const moved = blocks.map(map).filter((m) => m[3] !== 0 || below(m[0], m[1], m[2]));
+  const cells: Cell[] = blocks.map((b): Cell => [b[0], b[1], b[2], holes && below(b[0], b[1], b[2]) ? EARTH : 0, 0]);
   for (const m of moved) cells.push(m);
   const corners = [s.min, s.max, [s.min[0], s.min[1], s.max[2]] as V3, [s.max[0], s.min[1], s.min[2]] as V3].map(
     (p) => {
@@ -339,14 +340,14 @@ export function copy(c: Canvas, s: Selection): Clip | null {
 export function pasteCells(clip: Clip, at: V3): Cell[] {
   return clip.cells
     .map((b): Cell => [b[0] + at[0], b[1] + at[1], b[2] + at[2], b[3], b[4]])
-    .filter((b) => inside(b[0], b[1], b[2]) && (b[3] !== 0 || below(b[1])));
+    .filter((b) => inside(b[0], b[1], b[2]) && (b[3] !== 0 || below(b[0], b[1], b[2])));
 }
 
 /** Delete the selected blocks; with `dig` (underground mode) a box selection's earth is dug out too. */
 export function erase(c: Canvas, s: Selection, dig = false): Cell[] {
   const out = selected(c, s).map((b): Cell => [b[0], b[1], b[2], 0, 0]);
   if (dig && !s.mask)
-    for (let y = s.min[1]; y <= Math.min(-1, s.max[1]); y++)
+    for (let y = s.min[1]; y <= (plotMode().kind === 'mine' ? s.max[1] : Math.min(-1, s.max[1])); y++)
       for (let z = s.min[2]; z <= s.max[2]; z++)
         for (let x = s.min[0]; x <= s.max[0]; x++) if (c.earth(x, y, z)) out.push([x, y, z, 0, 0]);
   return out;
@@ -363,8 +364,11 @@ export { posOf };
 
 // ---------------------------------------------------------------------------------------------------------- aim and underground
 
-/** World y of canvas y 0 (the studio world's grass is one below). */
+/** World y of canvas y 0 on a build plot (the studio world's grass is one below); a mine's canvas y is the world's. */
 export const CANVAS_BASE_Y = 64;
+
+/** World y of canvas y 0 in the plot's mode. */
+export const baseY = (): number => plotMode().baseY;
 
 export interface Hit {
   /** The block hit (canvas coordinates), null on the ground or outside the plot. */
@@ -380,7 +384,9 @@ export interface Hit {
  */
 export function aimHit(t: AimTarget | null, c: Canvas, dig: boolean): Hit | null {
   if (!t || t.kind !== 'block') return null;
-  const y = t.y - CANVAS_BASE_Y;
+  const y = t.y - baseY();
+  // A mine's ground is always editable: the primary tool digs it.
+  if (plotMode().kind === 'mine') dig = true;
   const n = FACE_NORMAL[t.face] ?? [0, 1, 0];
   const place: V3 = [t.x + n[0], y + n[1], t.z + n[2]];
   const hit = inside(t.x, y, t.z) && (dig || c.id(t.x, y, t.z) !== EARTH);
@@ -390,9 +396,17 @@ export function aimHit(t: AimTarget | null, c: Canvas, dig: boolean): Hit | null
 /** Underground mode's first level: everything above the grass's layer cut away. */
 export const UNDER_DEFAULT = -1;
 
-/** The underground toggle: off → the default level, on → off. */
-export const toggleUnder = (level: number | null): number | null => (level === null ? UNDER_DEFAULT : null);
+/** The underground slider's range in the plot's mode (a mine: y 1..127, the whole depth). */
+export const underRange = (): { min: number; max: number } =>
+  plotMode().kind === 'mine' ? { min: 1, max: plotMode().maxY } : { min: -DEPTH, max: 0 };
+
+/** The underground toggle: off → the default level (`first`: a mine's highest surface), on → off. */
+export const toggleUnder = (level: number | null, first: number = UNDER_DEFAULT): number | null =>
+  level === null ? first : null;
 
 /** The view's level cut for an underground level (world y; every layer above `level` is cut away), null when off. */
-export const underCut = (level: number | null): { y: number } | null =>
-  level === null ? null : { y: CANVAS_BASE_Y + Math.max(-DEPTH, Math.min(0, level)) + 1 };
+export const underCut = (level: number | null): { y: number } | null => {
+  if (level === null) return null;
+  const r = underRange();
+  return { y: baseY() + Math.max(r.min, Math.min(r.max, level)) + 1 };
+};

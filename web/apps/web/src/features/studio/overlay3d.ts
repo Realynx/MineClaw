@@ -2,13 +2,18 @@
  * The Design Studio's own 3D layer, added to the (private) world runtime's scene: the plot border and grid, the selection box,
  * the drag / brush preview, the move gizmo, the anchor marker and instanced ghost cubes (the paste ghost, and the brief flash of
  * the AI's ops as they land). Cheap on software WebGL: a handful of line objects and two instanced meshes, rebuilt only when
- * their data changes; nothing here touches the section meshes.
+ * their data changes; nothing here touches the section meshes. A mine plot adds the X-ray layer: its terrain's ores as
+ * coloured cubes drawn through the stone (one instanced mesh, depth test off).
  */
 import * as THREE from 'three';
-import type { Cell, V3 } from './canvas';
-import { BASE_Y } from './studioWorld';
+import { plotMode, type Cell, type V3 } from './canvas';
 
 const MAX_GHOSTS = 4096;
+/** X-ray cubes at most (the rest of a crowded window is left out). */
+export const MAX_XRAY = 6000;
+
+/** World y of canvas y 0 in the plot's mode (64 on a build plot, 0 on a mine). */
+const base = (): number => plotMode().baseY;
 
 function boxLines(color: number, opacity = 1): THREE.LineSegments {
   const g = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
@@ -21,7 +26,7 @@ function boxLines(color: number, opacity = 1): THREE.LineSegments {
 }
 
 function placeBox(o: THREE.Object3D, min: V3, max: V3, pad = 0.02): void {
-  o.position.set((min[0] + max[0] + 1) / 2, (min[1] + max[1] + 1) / 2 + BASE_Y, (min[2] + max[2] + 1) / 2);
+  o.position.set((min[0] + max[0] + 1) / 2, (min[1] + max[1] + 1) / 2 + base(), (min[2] + max[2] + 1) / 2);
   o.scale.set(max[0] - min[0] + 1 + pad * 2, max[1] - min[1] + 1 + pad * 2, max[2] - min[2] + 1 + pad * 2);
   o.visible = true;
 }
@@ -36,6 +41,7 @@ export class Overlay3D {
   private readonly anchor = boxLines(0xf472b6);
   private readonly ghosts: THREE.InstancedMesh;
   private readonly flash: THREE.InstancedMesh;
+  private readonly xray: THREE.InstancedMesh;
   private flashUntil = 0;
   private flashStart = 0;
   readonly gizmo = new THREE.Group();
@@ -43,7 +49,7 @@ export class Overlay3D {
   private readonly tmp = new THREE.Object3D();
   private readonly colour = new THREE.Color();
 
-  constructor(plot: number) {
+  constructor(plot: number, gridY?: number) {
     const cube = new THREE.BoxGeometry(1.02, 1.02, 1.02);
     this.ghosts = new THREE.InstancedMesh(
       cube,
@@ -55,7 +61,13 @@ export class Overlay3D {
       new THREE.MeshBasicMaterial({ color: 0x5ee08a, transparent: true, opacity: 0.55, depthWrite: false }),
       MAX_GHOSTS,
     );
-    for (const m of [this.ghosts, this.flash]) {
+    this.xray = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.7, 0.7, 0.7),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false }),
+      MAX_XRAY,
+    );
+    this.xray.name = 'xray';
+    for (const m of [this.ghosts, this.flash, this.xray]) {
       m.count = 0;
       m.frustumCulled = false;
       m.renderOrder = 9;
@@ -63,7 +75,8 @@ export class Overlay3D {
     }
     // The plot: its border at grass level and a faint 1-block grid (one LineSegments).
     const pts: number[] = [];
-    const y = BASE_Y + 0.01;
+    // A build's grid lies on its grass; a mine's over its highest ground (`gridY`, canvas y).
+    const y = (gridY ?? 0) + base() + 0.01;
     for (let i = 0; i <= plot; i += 1) {
       pts.push(i, y, 0, i, y, plot, 0, y, i, plot, y, i);
     }
@@ -108,6 +121,7 @@ export class Overlay3D {
       this.anchor,
       this.ghosts,
       this.flash,
+      this.xray,
       this.gizmo,
     );
   }
@@ -124,7 +138,7 @@ export class Overlay3D {
       return;
     }
     placeBox(this.selection, s.min, s.max, 0.03);
-    this.gizmo.position.set((s.min[0] + s.max[0] + 1) / 2, s.max[1] + 1 + BASE_Y + 0.2, (s.min[2] + s.max[2] + 1) / 2);
+    this.gizmo.position.set((s.min[0] + s.max[0] + 1) / 2, s.max[1] + 1 + base() + 0.2, (s.min[2] + s.max[2] + 1) / 2);
     this.gizmo.visible = true;
   }
 
@@ -147,7 +161,7 @@ export class Overlay3D {
     const n = Math.min(cells.length, MAX_GHOSTS);
     for (let i = 0; i < n; i++) {
       const c = cells[i]!;
-      this.tmp.position.set(c[0] + 0.5, c[1] + BASE_Y + 0.5, c[2] + 0.5);
+      this.tmp.position.set(c[0] + 0.5, c[1] + base() + 0.5, c[2] + 0.5);
       this.tmp.updateMatrix();
       mesh.setMatrixAt(i, this.tmp.matrix);
       if (tint) mesh.setColorAt(i, this.colour.setHex(tint(i)));
@@ -155,6 +169,27 @@ export class Overlay3D {
     mesh.count = n;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }
+
+  /** The X-ray layer: ore cells (canvas coordinates) with their colours; null or empty hides it. */
+  setXray(cells: ReadonlyArray<readonly [number, number, number, number]> | null): void {
+    const list = cells ?? [];
+    const n = Math.min(list.length, MAX_XRAY);
+    for (let i = 0; i < n; i++) {
+      const c = list[i]!;
+      this.tmp.position.set(c[0] + 0.5, c[1] + base() + 0.5, c[2] + 0.5);
+      this.tmp.updateMatrix();
+      this.xray.setMatrixAt(i, this.tmp.matrix);
+      this.xray.setColorAt(i, this.colour.setHex(c[3]));
+    }
+    this.xray.count = n;
+    this.xray.instanceMatrix.needsUpdate = true;
+    if (this.xray.instanceColor) this.xray.instanceColor.needsUpdate = true;
+  }
+
+  /** X-ray cubes shown now. */
+  get xrayCount(): number {
+    return this.xray.count;
   }
 
   /** The paste / placement ghost (null hides it). */
