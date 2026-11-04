@@ -68,5 +68,8 @@ public class StoryMineTests
         w.Set(9, 40, 9, 0);
         var cave = c.BuildsOp("add", new JsonArray(new JsonObject { ["kind"] = "mine", ["blocks"] = Cells((9, 40, 9)) }), null);
         Assert.Contains("nothing to dig", cave.Error);
+        // A big mine's last item may carry only the blocks that go in.
+        var placeOnly = c.BuildsOp("add", new JsonArray(new JsonObject { ["kind"] = "mine", ["place"] = new JsonArray(new JsonArray(9, 40, 9, 50, 5)) }), null);
+        Assert.Null(placeOnly.Error);
     }
 }

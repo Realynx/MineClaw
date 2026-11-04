@@ -129,7 +129,9 @@ public static class StoryConstruction
         if (!Kinds.Contains(kind)) return ([], null, $"kind must be {string.Join("|", Kinds)}");
         var area = Area.Parse(item["area"]);
         var blocks = item["blocks"] is JsonArray ba ? ba.Select(P3.Parse).Where(p => p != null).Select(p => p!.Value).ToList() : null;
-        if (area == null && (blocks == null || blocks.Count == 0)) return ([], null, "area or blocks required");
+        // A mine item may carry only blocks to put in (`place`: the last of a big mine's items).
+        if (area == null && (blocks == null || blocks.Count == 0) && !(kind == "mine" && item["place"] is JsonArray { Count: > 0 }))
+            return ([], null, "area or blocks required");
         int height = Math.Clamp(item["height"]?.GetValue<int>() ?? (kind == "wall" ? 3 : 1), 1, 12);
         string facing = (item["facing"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant() is { Length: 1 } f && "nesw".Contains(f) ? f : "";
         int? level = item["level"]?.GetValue<int>();
@@ -154,7 +156,7 @@ public static class StoryConstruction
         IEnumerable<P3> Positions() => blocks ?? area!.Value.Blocks();
 
         // A placed mine design (docs/web/api.md "Mine designs"): its cells to dig at their absolute y, then the blocks that go in them.
-        if (kind == "mine") return Mine(d, item, Positions(), world, Add, g);
+        if (kind == "mine") return Mine(d, item, blocks ?? area?.Blocks() ?? [], world, Add, g);
 
         switch (kind)
         {
