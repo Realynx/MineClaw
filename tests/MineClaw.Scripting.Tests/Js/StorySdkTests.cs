@@ -96,6 +96,33 @@ public sealed class StorySdkTests
     }
 
     [Fact]
+    public async Task A_pastime_walks_to_its_cell_and_looks_at_each_point_and_till_holds_the_hoe_first()
+    {
+        var port = new TakesBack(
+            J("j1", "idle", j =>
+            {
+                j["at"] = "3,65,3"; j["dist"] = 0; j["s"] = 2; j["wander"] = true; j["act"] = "socialise";
+                j["look"] = new JsonArray("5.5,66.6,3.5", "3.5,95,11.5");
+            }),
+            J("j2", "till", j => { j["at"] = "1,64,1"; j["hoe"] = "wood_hoe"; }),
+            J("j3", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        int go = calls.FindIndex(c => c.StartsWith("goto "));
+        int f1 = calls.IndexOf("""face {"at":"5.5,66.6,3.5"}"""), f2 = calls.IndexOf("""face {"at":"3.5,95,11.5"}""");
+        Assert.True(go >= 0 && go < f1 && f1 < f2, string.Join(" | ", calls)); // walk, then look at each point in turn
+        int hold = calls.FindIndex(c => c.StartsWith("skill:hold_item")), use = calls.FindIndex(c => c.StartsWith("use_block "));
+        Assert.True(hold >= 0 && hold < use, string.Join(" | ", calls)); // the hoe in hand, then on the block
+        var reports = port.Reports.ToList();
+        Assert.Equal("j1 done socialise", reports[0]);
+        Assert.StartsWith("j2 done", reports[1]);
+        Assert.Equal("j3 done", reports[2]);
+    }
+
+    [Fact]
     public async Task Story_during_runs_the_function_while_the_job_holds()
     {
         var port = new TakesBack { TakenBack = "gone" };
