@@ -62,7 +62,14 @@ public static class Codec1122
         var potion = c.GetString("Potion") is { } pt ? (pt.StartsWith("minecraft:", StringComparison.Ordinal) ? pt[10..] : pt) : null;
         bool effects = (potion is not null && potion is not ("empty" or "water" or "mundane" or "thick" or "awkward"))
                        || c.GetList("CustomPotionEffects") is { Count: > 0 };
-        return new ItemTag(bytes, ench, display?.GetString("Name"), color) { Enchanted = enchanted, PotionEffects = effects };
+        var stored = new Dictionary<int, int>();
+        if (c.GetList("StoredEnchantments") is { } sl)
+            foreach (var o in sl.Items)
+                if (o is NbtCompound e && e.GetInt("id") is { } id) stored[id] = e.GetInt("lvl") ?? 1;
+        return new ItemTag(bytes, ench, display?.GetString("Name"), color)
+        {
+            Enchanted = enchanted, PotionEffects = effects, Potion = potion, StoredEnchantments = stored, RepairCost = c.GetInt("RepairCost") ?? 0,
+        };
     }
 
     /// <summary>A tag built from a compound (fixtures, the fake server).</summary>

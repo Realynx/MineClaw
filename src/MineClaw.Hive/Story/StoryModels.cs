@@ -340,6 +340,16 @@ public sealed class BillState
     public string? ForItem { get; set; }
     /// <summary>An auto bill's place in its build's recipe chain (lower first: ingredients before products).</summary>
     public int Step { get; set; }
+    /// <summary>An enchant bill's highest offer to take (1–3: its lapis and the levels it costs); null = 3.</summary>
+    public int? Option { get; set; }
+    /// <summary>An enchant bill's preferred enchantment (fortune, silk_touch...): the offer hinting it first.</summary>
+    public string? Prefer { get; set; }
+    /// <summary>Only an offer hinting <see cref="Prefer"/> (else the highest one the pawn can pay).</summary>
+    public bool PreferOnly { get; set; }
+    /// <summary>The XP levels the last try needed (an offer's level, the anvil's price): pawns with fewer don't take it.</summary>
+    public int? XpNeeded { get; set; }
+    /// <summary>What the last job made ("enchanted diamond pickaxe: Fortune III", "brewed 3 Potion of Swiftness").</summary>
+    public string? Last { get; set; }
 }
 
 public sealed class WorkbenchState
@@ -353,6 +363,8 @@ public sealed class WorkbenchState
     public string? LoadedBill { get; set; }
     public int LoadedCount { get; set; }
     public DateTimeOffset? ReadyAt { get; set; }
+    /// <summary>A brewing stand's fuel (brews left) as the colony last left it; null = unknown.</summary>
+    public int? Fuel { get; set; }
     public long Rev { get; set; }
 }
 

@@ -37,6 +37,12 @@ public sealed class ClientGameActions(MinecraftClient client) : IGameActions
     public Task<ActionResult> SmeltAsync(int input, int count, int? fuel, bool wait, BlockPos? furnace, CancellationToken ct) =>
         Inner.SmeltAsync(input, count, fuel, wait, furnace, ct);
     public Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace, CancellationToken ct) => Inner.CollectFurnaceAsync(furnace, ct);
+    public Task<ActionResult> FillBottlesAsync(BlockPos water, int count, CancellationToken ct) => Inner.FillBottlesAsync(water, count, ct);
+    public Task<ActionResult> BrewAsync(BlockPos stand, string baseType, int baseForm, IReadOnlyList<Brewing.Step> steps, int count, CancellationToken ct) =>
+        Inner.BrewAsync(stand, baseType, baseForm, steps, count, ct);
+    public Task<ActionResult> EnchantAsync(BlockPos table, int itemId, int maxOption, int? preferId, bool preferOnly, CancellationToken ct) =>
+        Inner.EnchantAsync(table, itemId, maxOption, preferId, preferOnly, ct);
+    public Task<ActionResult> AnvilAsync(BlockPos anvil, string mode, int itemId, CancellationToken ct) => Inner.AnvilAsync(anvil, mode, itemId, ct);
     public Task<ActionResult> OpenContainerAsync(BlockPos p, CancellationToken ct) => Inner.OpenContainerAsync(p.X, p.Y, p.Z, ct);
     public Task<ActionResult> CloseWindowAsync(CancellationToken ct) => Inner.CloseWindowAsync(ct);
     public Task<ActionResult> ClickSlotAsync(int slot, bool rightClick, bool shift, CancellationToken ct) => Inner.ClickSlotAsync(slot, rightClick, shift, ct);

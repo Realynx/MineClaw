@@ -501,7 +501,7 @@ public sealed partial class StoryColony
                 break;
             case "bill":
             case "furnace":
-                BillDone(p, j);
+                BillDone(p, j, note);
                 break;
             case "order":
                 OrderDone(p, j, ok: true, note);

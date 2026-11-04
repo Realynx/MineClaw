@@ -29,8 +29,10 @@ public interface IStoryWorld
 }
 
 /// <summary>A live pawn body as the director reads it each time it picks.</summary>
+/// <param name="Inventory">Totals by item; a 1.12.2 potion's meta is its potion type id (<see cref="MineClaw.Data.Brewing.TypeId"/>).</param>
+/// <param name="XpLevel">The body's experience level (it earns XP mining ore, smelting, killing): enchanting and anvil bills spend it.</param>
 public sealed record PawnLive(bool Online, int Hp, int Food, double X, double Y, double Z, int Dim, string? Held, IReadOnlyList<Stack> Inventory,
-    bool ScriptRunning, int FreeSlots = 36)
+    bool ScriptRunning, int FreeSlots = 36, int XpLevel = 0)
 {
     public P3 Block => new((int)Math.Floor(X), (int)Math.Floor(Y), (int)Math.Floor(Z));
     public static readonly PawnLive Offline = new(false, 0, 0, 0, 0, 0, 0, null, [], false, 0);

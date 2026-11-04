@@ -302,7 +302,12 @@ export const StoryPawn = z.object({
   priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
   schedule: z.array(z.string()).default([]).describe('24 blocks, hour 0 = 06:00'),
   held: z.string().nullish(),
-  inventory: z.array(StoryStack).default([]),
+  inventory: z.array(StoryStack).default([]).describe("a 1.12.2 potion's meta is its potion type id (water 1, awkward 4, …)"),
+  xpLevel: z
+    .number()
+    .int()
+    .nullish()
+    .describe('the experience level (earned mining ore, smelting, killing); enchanting and anvil bills spend it'),
 });
 export type StoryPawn = z.infer<typeof StoryPawn>;
 
@@ -535,16 +540,41 @@ export const StoryBill = z.object({
     .describe('an auto bill: the build it crafts for (cancel-only; it follows the build)'),
   forItem: z.string().nullish().describe("an auto bill: the build's item its chain ends in"),
   step: z.number().int().nullish().describe("an auto bill's place in the recipe chain (ingredients first)"),
+  option: z.number().int().nullish().describe('an enchant bill: the highest offer (1–3) it takes; its lapis and levels'),
+  prefer: z.string().nullish().describe('an enchant bill: the enchantment it prefers (the offer hinting it first)'),
+  preferOnly: z.boolean().nullish().describe('only an offer hinting the preferred enchantment'),
+  xpNeeded: z
+    .number()
+    .int()
+    .nullish()
+    .describe('the XP levels the last try needed (an offer, an anvil price): pawns with fewer leave it'),
+  last: z.string().nullish().describe('what the last job made ("enchanted diamond pickaxe: Fortune II")'),
 });
 export type StoryBill = z.infer<typeof StoryBill>;
+
+/** A station's facts for the bench inspector (1.12.2 brewing stand, enchanting table, anvil). */
+export const StoryStationInfo = z.object({
+  present: z.boolean().nullish().describe('false: the block is gone (a worn-through anvil)'),
+  bookshelves: z.number().int().nullish().describe('an enchanting table: bookshelves powering it'),
+  maxBookshelves: z.number().int().nullish(),
+  topOffer: z.array(z.number().int()).nullish().describe("an enchanting table: the top offer's level range [min, max]"),
+  condition: z.string().nullish().describe('an anvil: intact | chipped | damaged | gone'),
+  water: Vec3i.nullish().describe('a brewing stand: the water source or cauldron its bottles are filled at'),
+  fuel: z.number().int().nullish().describe('a brewing stand: brews of fuel left, as the colony last left it'),
+});
+export type StoryStationInfo = z.infer<typeof StoryStationInfo>;
 
 export const StoryWorkbench = z.object({
   pos: Vec3i,
   kind: z.string(),
   label: z.string().nullish(),
-  supported: z.boolean().nullish().describe('false: listed, but no bills yet (brewing stand, anvil, enchanting table)'),
+  supported: z
+    .boolean()
+    .nullish()
+    .describe('false: this version has no such bills (b1.8.1: no brewing stand, anvil or enchanting table)'),
   loaded: z.unknown().optional().describe('a furnace: what is smelting'),
   readyAt: When.nullish(),
+  station: StoryStationInfo.nullish(),
   bills: z.array(StoryBill).default([]),
 });
 export type StoryWorkbench = z.infer<typeof StoryWorkbench>;
@@ -565,6 +595,19 @@ export const StoryRecipe = z.object({
   inputs: z.array(StoryRecipeInput).default([]),
   fuel: z.union([z.boolean(), z.number(), z.string()]).nullish(),
   group: z.string().nullish().describe('a loot category id for the picker (the web groups by it when present)'),
+  requires: z
+    .object({
+      xpLevels: z.number().int().nullish().describe('the least XP levels a pawn needs'),
+      lapis: z.number().int().nullish().describe('lapis per enchant (the bill option: 1–3)'),
+      fuelItem: z.string().nullish(),
+      water: z.boolean().nullish().describe('fills glass bottles at a water source or cauldron near the stand'),
+      note: z.string().nullish(),
+    })
+    .nullish()
+    .describe('a station recipe: what it asks of the pawn and the bench'),
+  chain: z.array(z.string()).nullish().describe("a brew's steps from water bottles"),
+  enchantments: z.array(z.string()).nullish().describe('an enchant: what it can prefer'),
+  modes: z.array(StoryBillMode).nullish().describe('the bill modes it takes (null: all)'),
 });
 export type StoryRecipe = z.infer<typeof StoryRecipe>;
 
@@ -1032,6 +1075,9 @@ export const StoryBillSpec = z
     pawn: z.string().min(1).max(64).optional(),
     minSkill: z.number().int().min(0).max(20).optional(),
     store: StoryBillStore.optional(),
+    option: z.number().int().min(1).max(3).nullish().describe('an enchant bill: the highest offer to take (1–3)'),
+    prefer: z.string().max(40).nullish().describe('an enchant bill: the preferred enchantment (fortune, silk_touch…)'),
+    preferOnly: z.boolean().optional(),
   })
   .strict();
 export type StoryBillSpec = z.infer<typeof StoryBillSpec>;
@@ -1050,6 +1096,18 @@ export const StoryBillsRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('pause'), id: BillId }).strict(),
   z.object({ op: z.literal('resume'), id: BillId }).strict(),
   z.object({ op: z.literal('reorder'), bench: Vec3i, ids: z.array(BillId).min(1).max(64) }).strict(),
+  // The tools system's hook: enchant bills (count) at the colony's table for pickaxes (or `items`) preferring an enchantment,
+  // or the one a mined material wants (`material`: fortune for ores, silk touch for glass and ice, else efficiency).
+  z
+    .object({
+      op: z.literal('enchant_tools'),
+      prefer: z.string().max(40).optional(),
+      material: z.string().max(64).optional(),
+      items: z.array(z.string().max(64)).max(16).optional(),
+      count: z.number().int().min(1).max(64).optional(),
+      preferOnly: z.boolean().optional(),
+    })
+    .strict(),
 ]);
 export type StoryBillsRequest = z.infer<typeof StoryBillsRequest>;
 
@@ -1057,6 +1115,7 @@ export const StoryBillsResponse = z.object({
   ok: z.boolean().nullish(),
   id: z.union([z.string(), z.number()]).nullish().describe('the new bill (add)'),
   ids: z.array(z.union([z.string(), z.number()])).nullish(),
+  note: z.string().nullish(),
   rev: z.number().int().nullish(),
 });
 export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;

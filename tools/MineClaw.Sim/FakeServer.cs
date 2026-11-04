@@ -292,6 +292,7 @@ public partial class FakeServer : IDisposable
         HandleMobs(p); // P4: the bot's melee on mobs (server-side charge and crit), orb pickups
         if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
         if (Buckets && HandleBucket(p)) return;
+        if (Modern && HandleStations(p)) return; // brewing stands, enchanting tables (FakeServer.Stations.cs)
         if (Modern && HandleModern(p)) return;
         if (CraftingEnabled && HandleCrafting(p)) return;
         switch (p)

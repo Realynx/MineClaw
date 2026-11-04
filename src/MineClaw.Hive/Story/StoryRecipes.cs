@@ -12,27 +12,84 @@ public sealed record StoryRecipe(string Id, string Label, string Workbench, stri
     /// <summary>The name the craft/smelt tool takes: the output (craft) or the input (smelt).</summary>
     public string ToolItem { get; init; } = "";
 
-    public JsonObject Json() => new()
+    /// <summary>A station recipe (brewing stand, enchanting table, anvil): what it asks of the pawn and the bench. Null for crafting and
+    /// smelting.</summary>
+    public StationSpec? Station { get; init; }
+
+    public JsonObject Json()
     {
-        ["id"] = Id, ["label"] = Label, ["workbench"] = Workbench, ["work_type"] = WorkType, ["output"] = Output.Json(),
-        ["inputs"] = new JsonArray(Inputs.Select(i => (JsonNode)new JsonObject
+        var json = new JsonObject
         {
-            ["options"] = new JsonArray(i.Options.Select(o => (JsonNode)o.Json()).ToArray()), ["count"] = i.Count,
-        }).ToArray()),
-        ["fuel"] = Fuel,
-    };
+            ["id"] = Id, ["label"] = Label, ["workbench"] = Workbench, ["work_type"] = WorkType, ["output"] = Output.Json(),
+            ["inputs"] = new JsonArray(Inputs.Select(i => (JsonNode)new JsonObject
+            {
+                ["options"] = new JsonArray(i.Options.Select(o => (JsonNode)o.Json()).ToArray()), ["count"] = i.Count,
+            }).ToArray()),
+            ["fuel"] = Fuel,
+        };
+        if (Station is { } s)
+        {
+            json["requires"] = new JsonObject
+            {
+                ["xp_levels"] = s.XpLevels, ["lapis"] = s.Lapis, ["fuel_item"] = s.FuelItem, ["water"] = s.Water, ["note"] = s.Note,
+            };
+            if (s.Chain is { Count: > 0 } chain) json["chain"] = new JsonArray(chain.Select(c => (JsonNode)c!).ToArray());
+            if (s.Enchantments is { Count: > 0 } ench) json["enchantments"] = new JsonArray(ench.Select(e => (JsonNode)e!).ToArray());
+            json["modes"] = new JsonArray(s.Modes.Select(m => (JsonNode)m!).ToArray());
+        }
+        return json;
+    }
+}
+
+/// <param name="Kind">brew | enchant | repair | combine | book.</param>
+/// <param name="Item">The item a brew makes (potion, splash_potion, lingering_potion) or the item an enchant / anvil job works on.</param>
+/// <param name="Potion">A brew's potion type (swiftness, long_swiftness...).</param>
+/// <param name="XpLevels">The least XP levels a pawn needs (the offer's level or the anvil's price can be more: learned per bill).</param>
+/// <param name="Lapis">Lapis per enchant (1–3: the bill's option); null otherwise.</param>
+/// <param name="FuelItem">blaze_powder for a brew.</param>
+/// <param name="Water">A brew from water bottles fills glass bottles at a water source or cauldron near the stand.</param>
+/// <param name="Chain">A brew's steps from water bottles ("Water Bottle + Nether Wart → Awkward Potion", ...).</param>
+/// <param name="Enchantments">What an enchant can prefer: the table's enchantments for the item.</param>
+/// <param name="Modes">The bill modes it takes (an enchanted or repaired item can't be told apart in storage: no "until").</param>
+public sealed record StationSpec(string Kind, string Item, string? Potion = null, int XpLevels = 0, int? Lapis = null, string? FuelItem = null,
+    bool Water = false, IReadOnlyList<string>? Chain = null, IReadOnlyList<string>? Enchantments = null, string? Note = null)
+{
+    public IReadOnlyList<string> Modes { get; init; } = ["count", "until", "forever"];
 }
 
 /// <summary>
 /// The recipes each workbench kind offers, per game version, from the bot's recipe data: the crafting table every crafting
 /// recipe (one entry per distinct output: the craft tool picks the pattern), the furnace every smelting recipe (food → Cook, the rest
-/// Craft). Brewing stands, anvils and enchanting tables have no primitive yet: they list no recipes.
+/// Craft), and on 1.12.2 the brewing stand (every potion, splash and lingering potion a chain from water bottles makes: Cook), the
+/// enchanting table (every item the table takes: Craft) and the anvil (repair with the material, combine two, apply a book: Craft).
+/// b1.8.1 has none of those three blocks.
 /// </summary>
 public static class StoryRecipes
 {
     public static readonly IReadOnlyList<string> Benches = ["crafting_table", "furnace", "brewing_stand", "anvil", "enchanting_table"];
-    /// <summary>Workbench kinds whose bills a pawn can run with today's primitives.</summary>
+    /// <summary>Workbench kinds whose bills a pawn can run on every version.</summary>
     public static readonly IReadOnlyList<string> Supported = ["crafting_table", "furnace"];
+    /// <summary>The 1.12.2 stations (b1.8.1 has no brewing stand, anvil or enchanting table).</summary>
+    public static readonly IReadOnlyList<string> Stations = ["brewing_stand", "anvil", "enchanting_table"];
+
+    /// <summary>Does this version's colony take bills at a <paramref name="bench"/>?</summary>
+    public static bool SupportedIn(IGameData d, string bench) => Supported.Contains(bench) || Stations.Contains(bench) && d.BlockExists(117) && d.ItemExists(373);
+
+    /// <summary>
+    /// The other blocks a player can open or use, and why they take no bills (docs/web/story-mode.md "Interactive blocks"): bills are
+    /// for stations that turn inputs into a product with a pawn's work.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> NotBenches = new Dictionary<string, string>
+    {
+        ["chest"] = "storage (chests take storage settings, not bills)",
+        ["hopper"] = "moves items by itself; no bills (a \"fill with X\" order may come later)",
+        ["dropper"] = "a container fired by redstone; no bills (a \"fill with X\" order may come later)",
+        ["dispenser"] = "a container fired by redstone; no bills (a \"fill with X\" order may come later)",
+        ["cauldron"] = "a water source for brewing: a brew fills its glass bottles at it (a level each)",
+        ["beacon"] = "a one-time setup (pyramid and payment), not repeated work; no bills",
+        ["jukebox"] = "plays a disc; no bills",
+        ["noteblock"] = "plays a note; no bills",
+    };
 
     public static string? BenchOf(int blockId) => blockId switch
     {
@@ -91,6 +148,12 @@ public static class StoryRecipes
             list.Add(new StoryRecipe(id, $"{(food ? "Cook" : "Smelt")} {Label(d, s.InputId, s.InputDamage)} → {Label(d, s.OutputId, s.OutputDamage)}", "furnace",
                 food ? WorkTypes.Cook : WorkTypes.Craft, new Stack(s.OutputId, Math.Max(0, s.OutputDamage), s.OutputCount),
                 [new RecipeInput([new ItemKey(s.InputId, s.InputDamage)], 1)], true) { ToolItem = name });
+        }
+        if (SupportedIn(d, "brewing_stand"))
+        {
+            list.AddRange(StoryBrewing.Recipes(d));
+            list.AddRange(StoryEnchanting.Recipes(d));
+            list.AddRange(StoryAnvil.Recipes(d));
         }
         return list;
     }
