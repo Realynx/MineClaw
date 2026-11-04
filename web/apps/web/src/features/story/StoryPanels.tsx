@@ -37,7 +37,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import {
@@ -187,49 +187,33 @@ export function ArchitectPalette({
   );
 }
 
-export function ArchitectPanel({
-  tool,
-  onTool,
-  palette,
-  onPick,
-  plants,
-  zones,
-}: {
-  tool: MapTool;
-  onTool: (t: MapTool) => void;
-  palette?: StoryArchitectResponse;
-  onPick?: (e: StoryArchitectEntry) => void;
-  /** What a growing zone can grow here (the plant picker under the Zones tools). */
-  plants?: readonly StoryPlant[] | null;
-  /** The colony's zones (the Zones tools name the zone being extended). */
-  zones?: readonly StoryZone[];
-}) {
-  const [cat, setCat] = useState<ArchCat>(
-    tool.kind === 'zone'
-      ? 'zones'
-      : tool.kind === 'build'
-        ? tool.id.startsWith('furniture:')
-          ? 'furniture'
-          : WATER_TOOLS.some((w) => w.id === tool.id)
-            ? 'water'
-            : 'structure'
-        : tool.kind === 'storage'
-          ? 'storage'
-          : 'orders',
-  );
-  const cats: Array<[ArchCat, string]> = [
-    ['orders', 'Orders'],
-    ['zones', 'Zones'],
-    ['structure', 'Structure'],
-    ['furniture', 'Furniture'],
-    ['production', 'Production'],
-    ['storage', 'Storage'],
-    ['lighting', 'Lighting'],
-    ['water', 'Water'],
-    ['misc', 'Misc'],
-  ];
+const ARCH_CATS: ReadonlyArray<[ArchCat, string]> = [
+  ['orders', 'Orders'],
+  ['zones', 'Zones'],
+  ['structure', 'Structure'],
+  ['furniture', 'Furniture'],
+  ['production', 'Production'],
+  ['storage', 'Storage'],
+  ['lighting', 'Lighting'],
+  ['water', 'Water'],
+  ['misc', 'Misc'],
+];
+
+/** The category the Architect opens on: the one holding the tool in hand. */
+function categoryOf(tool: MapTool): ArchCat {
+  if (tool.kind === 'zone') return 'zones';
+  if (tool.kind === 'storage') return 'storage';
+  if (tool.kind !== 'build') return 'orders';
+  if (tool.id.startsWith('furniture:')) return 'furniture';
+  return WATER_TOOLS.some((w) => w.id === tool.id) ? 'water' : 'structure';
+}
+
+type ToolBtn = (t: MapTool, icon: string, label: string, hint: string, key?: string) => ReactNode;
+
+/** One tool button (pressed while in hand; clicking it again puts it down). */
+function toolButton(tool: MapTool, onTool: (t: MapTool) => void): ToolBtn {
   const active = (t: MapTool) => JSON.stringify(t) === JSON.stringify(tool);
-  const btn = (t: MapTool, icon: string, label: string, hint: string, key?: string) => (
+  return (t, icon, label, hint, key) => (
     <button
       key={label}
       type="button"
@@ -248,6 +232,77 @@ export function ArchitectPanel({
       {key ? <span className="absolute top-0.5 right-1 font-mono text-[9px] text-subtle">{key}</span> : null}
     </button>
   );
+}
+
+type CatProps = {
+  tool: MapTool;
+  onTool: (t: MapTool) => void;
+  palette?: StoryArchitectResponse;
+  plants?: readonly StoryPlant[] | null;
+  zones?: readonly StoryZone[];
+  btn: ToolBtn;
+};
+
+const loadingPalette = ({ palette }: CatProps) =>
+  palette ? null : <p className="w-56 text-[11px] leading-snug text-muted">Loading what the colony can make…</p>;
+
+/** Each category's tools (the palette's own entries show beside the panel). */
+const CATEGORY_TOOLS: Record<ArchCat, (p: CatProps) => ReactNode> = {
+  orders: ({ btn }) =>
+    DESIGNATE_TOOLS.map((t) => btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', ''))),
+  zones: ({ tool, onTool, plants, zones, btn }) => (
+    <ZoneToolbar tool={tool} onTool={onTool} plants={plants} zones={zones ?? []} btn={btn} />
+  ),
+  structure: ({ btn }) => STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint)),
+  furniture: ({ btn }) =>
+    FURNITURE_TOOLS.map((f) =>
+      btn({ kind: 'build', id: `furniture:${f.id}` }, f.id, f.label, `Place a ${f.label.toLowerCase()} (Q/E turns)`),
+    ),
+  water: ({ palette, btn }) => (
+    <>
+      {WATER_TOOLS.filter(
+        // Lava only while the colony allows it (the palette lists it then).
+        (w) => w.id !== 'lava' || palette?.entries.some((e) => e.kind === 'lava'),
+      ).map((w) => btn({ kind: 'build', id: w.id }, w.id, w.label, w.hint))}
+      <p className="w-56 text-[11px] leading-snug text-muted" data-testid="water-note">
+        Pawns bring a bucket (3 iron ingots at a crafting table), fill it at still water and pour each cell. Dig the
+        trench first for a canal; a 2×2 infinite source refills.
+      </p>
+    </>
+  ),
+  storage: ({ btn }) => (
+    <>
+      {btn({ kind: 'storage' }, 'storage', 'Register chests', 'Drag over chests: every chest in the area becomes storage')}
+      <p className="w-56 text-[11px] leading-snug text-muted">
+        Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to choose what it
+        keeps and how much it matters.
+      </p>
+    </>
+  ),
+  production: loadingPalette,
+  lighting: loadingPalette,
+  misc: loadingPalette,
+};
+
+export function ArchitectPanel({
+  tool,
+  onTool,
+  palette,
+  onPick,
+  plants,
+  zones,
+}: {
+  tool: MapTool;
+  onTool: (t: MapTool) => void;
+  palette?: StoryArchitectResponse;
+  onPick?: (e: StoryArchitectEntry) => void;
+  /** What a growing zone can grow here (the plant picker under the Zones tools). */
+  plants?: readonly StoryPlant[] | null;
+  /** The colony's zones (the Zones tools name the zone being extended). */
+  zones?: readonly StoryZone[];
+}) {
+  const [cat, setCat] = useState<ArchCat>(categoryOf(tool));
+  const btn = toolButton(tool, onTool);
   return (
     <div className="flex items-end gap-2">
       <section
@@ -256,7 +311,7 @@ export function ArchitectPanel({
         data-testid="architect"
       >
         <div className="flex w-24 flex-col gap-0.5">
-          {cats.map(([id, label]) => (
+          {ARCH_CATS.map(([id, label]) => (
             <button
               key={id}
               type="button"
@@ -272,56 +327,7 @@ export function ArchitectPanel({
           ))}
         </div>
         <div className="flex flex-1 flex-wrap content-start gap-1.5">
-          {cat === 'orders'
-            ? DESIGNATE_TOOLS.map((t) =>
-                btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', '')),
-              )
-            : null}
-          {cat === 'zones' ? (
-            <ZoneToolbar tool={tool} onTool={onTool} plants={plants} zones={zones ?? []} btn={btn} />
-          ) : null}
-          {cat === 'structure'
-            ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
-            : null}
-          {cat === 'furniture'
-            ? FURNITURE_TOOLS.map((f) =>
-                btn(
-                  { kind: 'build', id: `furniture:${f.id}` },
-                  f.id,
-                  f.label,
-                  `Place a ${f.label.toLowerCase()} (Q/E turns)`,
-                ),
-              )
-            : null}
-          {cat === 'water'
-            ? WATER_TOOLS.filter(
-                // Lava only while the colony allows it (the palette lists it then).
-                (w) => w.id !== 'lava' || palette?.entries.some((e) => e.kind === 'lava'),
-              ).map((w) => btn({ kind: 'build', id: w.id }, w.id, w.label, w.hint))
-            : null}
-          {cat === 'water' ? (
-            <p className="w-56 text-[11px] leading-snug text-muted" data-testid="water-note">
-              Pawns bring a bucket (3 iron ingots at a crafting table), fill it at still water and pour each cell. Dig the
-              trench first for a canal; a 2×2 infinite source refills.
-            </p>
-          ) : null}
-          {cat === 'storage' ? (
-            <>
-              {btn(
-                { kind: 'storage' },
-                'storage',
-                'Register chests',
-                'Drag over chests: every chest in the area becomes storage',
-              )}
-              <p className="w-56 text-[11px] leading-snug text-muted">
-                Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to
-                choose what it keeps and how much it matters.
-              </p>
-            </>
-          ) : null}
-          {(cat === 'production' || cat === 'lighting' || cat === 'misc') && !palette ? (
-            <p className="w-56 text-[11px] leading-snug text-muted">Loading what the colony can make…</p>
-          ) : null}
+          {CATEGORY_TOOLS[cat]({ tool, onTool, palette, plants, zones, btn })}
         </div>
       </section>
       {palette && onPick && cat !== 'orders' && cat !== 'zones' ? (
@@ -521,6 +527,8 @@ export function MaterialRow({ m }: { m: StoryBuildMaterial }) {
   );
 }
 
+type QueueOp = (op: 'remove' | 'pause' | 'resume' | 'reorder', ids: Array<string | number>) => void;
+
 export function QueuePanel({
   builds,
   canWrite,
@@ -530,7 +538,7 @@ export function QueuePanel({
 }: {
   builds: StoryBuild[];
   canWrite: boolean;
-  onOp: (op: 'remove' | 'pause' | 'resume' | 'reorder', ids: Array<string | number>) => void;
+  onOp: QueueOp;
   /** Failed cells per build id: "Retry failed cells (N)". */
   failed?: ReadonlyMap<string, number>;
   onRetry?: (id: string | number) => void;
@@ -539,6 +547,16 @@ export function QueuePanel({
   const done = builds.filter((b) => b.status === 'done').length;
   const dragId = useRef<string | number | null>(null);
   const [over, setOver] = useState<string | number | null>(null);
+  /** Dropping the dragged build on `onto`: it goes before it. */
+  const drop = (onto: string | number) => {
+    setOver(null);
+    const from = dragId.current;
+    dragId.current = null;
+    if (from === null || from === undefined || from === onto) return;
+    const ids = list.map((x) => x.id).filter((x) => x !== from);
+    ids.splice(ids.indexOf(onto), 0, from);
+    onOp('reorder', ids);
+  };
   return (
     <section
       className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[30rem] overflow-auto p-2')}
@@ -560,109 +578,157 @@ export function QueuePanel({
               setOver(b.id);
             }}
             onDragLeave={() => setOver((o) => (o === b.id ? null : o))}
-            onDrop={() => {
-              setOver(null);
-              const from = dragId.current;
-              dragId.current = null;
-              if (from === null || from === undefined || from === b.id) return;
-              const ids = list.map((x) => x.id).filter((x) => x !== from);
-              ids.splice(ids.indexOf(b.id), 0, from);
-              onOp('reorder', ids);
-            }}
+            onDrop={() => drop(b.id)}
             className={cn(
               'flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs',
               over === b.id && 'border-t-2 border-t-[#f5c542]',
             )}
           >
-            <GripVertical className="size-3.5 cursor-grab text-subtle" aria-hidden />
-            <span className="w-4 text-right text-subtle tabular-nums">{i + 1}</span>
-            <ToolIcon id={b.kind === 'furniture' ? 'block' : b.kind} className="size-3.5 text-muted" />
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-semibold">{b.label}</div>
-              <div className="mt-0.5 flex items-center gap-1.5">
-                <span className="block h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
-                  <span
-                    className="block h-full bg-accent"
-                    style={{ width: `${b.blocksTotal ? (b.blocksDone / b.blocksTotal) * 100 : 0}%` }}
-                  />
-                </span>
-                <span className="tabular-nums text-subtle">
-                  {b.blocksDone}/{b.blocksTotal}
-                </span>
-              </div>
-              {b.reason || b.status === 'blocked' ? (
-                <div className={cn('text-[10.5px]', b.status === 'waiting' ? 'text-muted' : 'text-danger')}>
-                  {b.reason ?? 'blocked'}
-                </div>
-              ) : null}
-              {(failed?.get(String(b.id)) ?? 0) > 0 && onRetry ? (
-                <button
-                  type="button"
-                  disabled={!canWrite}
-                  onClick={() => onRetry(b.id)}
-                  data-testid="build-retry"
-                  className="mt-0.5 rounded border border-border px-1.5 py-0.5 text-[10.5px] font-semibold hover:bg-surface-3 disabled:opacity-40"
-                  title="These cells failed (or rest after failing): try them again now"
-                >
-                  Retry failed cells ({failed!.get(String(b.id))})
-                </button>
-              ) : null}
-              {b.station ? (
-                <div className="text-[10.5px] text-muted">
-                  making a {b.station.kind.replace(/_/g, ' ')} at {b.station.pos.join(', ')}
-                </div>
-              ) : null}
-              {(b.materials ?? []).map((m) => (
-                <MaterialRow key={m.item} m={m} />
-              ))}
-            </div>
-            <span
-              className={cn(
-                'rounded px-1 text-[10px] font-semibold uppercase',
-                b.status === 'active'
-                  ? 'bg-ok-soft text-ok'
-                  : b.status === 'paused'
-                    ? 'bg-warn-soft text-warn'
-                    : b.status === 'blocked'
-                      ? 'bg-danger-soft text-danger'
-                      : 'bg-surface-3 text-muted',
-              )}
-            >
-              {b.status}
-            </span>
-            <button
-              type="button"
-              disabled={!canWrite || i === 0}
-              onClick={() => onOp('reorder', [b.id, ...list.filter((x) => x.id !== b.id).map((x) => x.id)])}
-              className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
-              title="Build first"
-              aria-label={`Build ${b.label} first`}
-            >
-              Top
-            </button>
-            <button
-              type="button"
-              disabled={!canWrite}
-              onClick={() => onOp(b.status === 'paused' ? 'resume' : 'pause', [b.id])}
-              className="rounded p-0.5 hover:bg-surface-3"
-              aria-label={b.status === 'paused' ? `Resume ${b.label}` : `Pause ${b.label}`}
-            >
-              {b.status === 'paused' ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-            </button>
-            <button
-              type="button"
-              disabled={!canWrite}
-              onClick={() => onOp('remove', [b.id])}
-              className="rounded p-0.5 text-danger hover:bg-danger-soft"
-              aria-label={`Cancel ${b.label}`}
-            >
-              <Trash2 className="size-3.5" />
-            </button>
+            <QueueRow
+              b={b}
+              i={i}
+              canWrite={canWrite}
+              onOp={onOp}
+              failedCells={failed?.get(String(b.id)) ?? 0}
+              onRetry={onRetry}
+              others={list}
+            />
           </li>
         ))}
       </ol>
       {done ? <p className="mt-1 px-1 text-[10.5px] text-subtle">{done} finished</p> : null}
     </section>
+  );
+}
+
+const STATUS_TONE: Record<string, string> = {
+  active: 'bg-ok-soft text-ok',
+  paused: 'bg-warn-soft text-warn',
+  blocked: 'bg-danger-soft text-danger',
+};
+
+/** One queued build: its progress, why it waits, its retry, its station and materials, and its buttons. */
+function QueueRow({
+  b,
+  i,
+  canWrite,
+  onOp,
+  failedCells,
+  onRetry,
+  others,
+}: {
+  b: StoryBuild;
+  i: number;
+  canWrite: boolean;
+  onOp: QueueOp;
+  failedCells: number;
+  onRetry?: (id: string | number) => void;
+  others: readonly StoryBuild[];
+}) {
+  const paused = b.status === 'paused';
+  return (
+    <>
+      <GripVertical className="size-3.5 cursor-grab text-subtle" aria-hidden />
+      <span className="w-4 text-right text-subtle tabular-nums">{i + 1}</span>
+      <ToolIcon id={b.kind === 'furniture' ? 'block' : b.kind} className="size-3.5 text-muted" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-semibold">{b.label}</div>
+        <BuildProgress b={b} />
+        <BuildNotes b={b} canWrite={canWrite} failedCells={failedCells} onRetry={onRetry} />
+        {b.station ? (
+          <div className="text-[10.5px] text-muted">
+            making a {b.station.kind.replace(/_/g, ' ')} at {b.station.pos.join(', ')}
+          </div>
+        ) : null}
+        {(b.materials ?? []).map((m) => (
+          <MaterialRow key={m.item} m={m} />
+        ))}
+      </div>
+      <span
+        className={cn('rounded px-1 text-[10px] font-semibold uppercase', STATUS_TONE[b.status] ?? 'bg-surface-3 text-muted')}
+      >
+        {b.status}
+      </span>
+      <button
+        type="button"
+        disabled={!canWrite || i === 0}
+        onClick={() => onOp('reorder', [b.id, ...others.filter((x) => x.id !== b.id).map((x) => x.id)])}
+        className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
+        title="Build first"
+        aria-label={`Build ${b.label} first`}
+      >
+        Top
+      </button>
+      <button
+        type="button"
+        disabled={!canWrite}
+        onClick={() => onOp(paused ? 'resume' : 'pause', [b.id])}
+        className="rounded p-0.5 hover:bg-surface-3"
+        aria-label={paused ? `Resume ${b.label}` : `Pause ${b.label}`}
+      >
+        {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+      </button>
+      <button
+        type="button"
+        disabled={!canWrite}
+        onClick={() => onOp('remove', [b.id])}
+        className="rounded p-0.5 text-danger hover:bg-danger-soft"
+        aria-label={`Cancel ${b.label}`}
+      >
+        <Trash2 className="size-3.5" />
+      </button>
+    </>
+  );
+}
+
+/** Why a build waits or is blocked, and its "Retry failed cells" button. */
+function BuildNotes({
+  b,
+  canWrite,
+  failedCells,
+  onRetry,
+}: {
+  b: StoryBuild;
+  canWrite: boolean;
+  failedCells: number;
+  onRetry?: (id: string | number) => void;
+}) {
+  return (
+    <>
+      {b.reason || b.status === 'blocked' ? (
+        <div className={cn('text-[10.5px]', b.status === 'waiting' ? 'text-muted' : 'text-danger')}>
+          {b.reason ?? 'blocked'}
+        </div>
+      ) : null}
+      {failedCells > 0 && onRetry ? (
+        <button
+          type="button"
+          disabled={!canWrite}
+          onClick={() => onRetry(b.id)}
+          data-testid="build-retry"
+          className="mt-0.5 rounded border border-border px-1.5 py-0.5 text-[10.5px] font-semibold hover:bg-surface-3 disabled:opacity-40"
+          title="These cells failed (or rest after failing): try them again now"
+        >
+          Retry failed cells ({failedCells})
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+function BuildProgress({ b }: { b: StoryBuild }) {
+  return (
+    <div className="mt-0.5 flex items-center gap-1.5">
+      <span className="block h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
+        <span
+          className="block h-full bg-accent"
+          style={{ width: `${b.blocksTotal ? (b.blocksDone / b.blocksTotal) * 100 : 0}%` }}
+        />
+      </span>
+      <span className="tabular-nums text-subtle">
+        {b.blocksDone}/{b.blocksTotal}
+      </span>
+    </div>
   );
 }
 

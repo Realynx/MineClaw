@@ -8,7 +8,9 @@ import type { ReactElement } from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MaterialBar } from '@/features/story/MaterialBar';
 import { materialsFor } from '@/features/story/materials';
-import { ColonyPanel } from '@/features/story/StoryPanels';
+import type { StoryBuild } from '@mineclaw/contracts';
+import type { MapTool } from '@/features/story/StoryMap';
+import { ArchitectPanel, ColonyPanel, QueuePanel } from '@/features/story/StoryPanels';
 import type { BuildOpts, BuildToolId } from '@/features/story/tools';
 import { storyUiStates, type StoryUiStates } from './storyUiFixture';
 
@@ -175,5 +177,97 @@ describe('ColonyPanel', () => {
     const r = html(panel({ state: S.ordered }));
     fireEvent.click(r.root.querySelector('[aria-label^="Rename"]')!);
     expect(r.out()).toMatchSnapshot();
+  });
+});
+
+describe('ArchitectPanel', () => {
+  const tools: Record<string, MapTool> = {
+    select: { kind: 'select' },
+    mine: { kind: 'designate', id: 'mine' },
+    farm: { kind: 'zone', id: 'farm', op: 'add' },
+    quarry: { kind: 'zone', id: 'mine', op: 'add' },
+    erase: { kind: 'zone', id: 'any', op: 'remove' },
+    extend: { kind: 'zone', id: 'farm', op: 'add', into: '__first__' },
+    extendGone: { kind: 'zone', id: 'farm', op: 'add', into: 'nope' },
+    wall: { kind: 'build', id: 'wall' },
+    bed: { kind: 'build', id: 'furniture:bed' },
+    channel: { kind: 'build', id: 'water_channel' },
+    storage: { kind: 'storage' },
+    home: { kind: 'home' },
+  };
+  const arch = (tool: MapTool, withPalette: boolean, lava = false) => {
+    const into = tool.kind === 'zone' && tool.into === '__first__' ? { ...tool, into: S.ordered.zones[0]!.id } : tool;
+    const entries = lava
+      ? [...S.architect.entries, { ...S.architect.entries[0]!, id: 'lava', kind: 'lava' }]
+      : S.architect.entries;
+    return (
+      <ArchitectPanel
+        tool={into}
+        onTool={vi.fn()}
+        palette={withPalette ? { ...S.architect, entries } : undefined}
+        onPick={withPalette ? vi.fn() : undefined}
+        plants={S.ordered.plants}
+        zones={S.ordered.zones}
+      />
+    );
+  };
+
+  it('opens on the tool’s category', () => {
+    const cases: Record<string, () => ReactElement> = {};
+    for (const [name, t] of Object.entries(tools)) cases[name] = () => arch(t, true);
+    expect(variants(cases)).toMatchSnapshot();
+  });
+
+  it('every category, with and without the palette', () => {
+    const out: Record<string, string> = {};
+    for (const [mode, withPalette, lava] of [
+      ['palette', true, false],
+      ['lava', true, true],
+      ['none', false, false],
+    ] as const) {
+      const r = html(arch(tools.wall!, withPalette, lava));
+      for (const b of [...r.root.querySelectorAll<HTMLButtonElement>('section[data-testid="architect"] > div:first-child > button')]) {
+        fireEvent.click(b);
+        out[`${mode} ${b.textContent}`] = r.out();
+      }
+      cleanup();
+    }
+    expect(out).toMatchSnapshot();
+  });
+});
+
+describe('QueuePanel', () => {
+  it('every build state', () => {
+    const builds = S.worked.builds ?? [];
+    const b0 = builds[0]!;
+    const hand: StoryBuild[] = [
+      ...builds,
+      { ...b0, id: 'p', order: 90, status: 'paused', label: 'Paused one', reason: null, blocksTotal: 0 },
+      { ...b0, id: 'k', order: 91, status: 'blocked', label: 'Blocked one', reason: null, kind: 'furniture' },
+      {
+        ...b0,
+        id: 'w',
+        order: 92,
+        status: 'waiting',
+        label: 'Waiting one',
+        reason: 'waiting for planks',
+        station: { kind: 'crafting_table', pos: [1, 64, 2] },
+        materials: [
+          { item: 'oak_planks', label: null, have: 2, need: 8, crafting: 3, via: 'craft', short: 3, chain: ['log', 'planks'], raw: ['log'] },
+          { item: 'iron_ingot', label: 'Iron ingot', have: 0, need: 2, crafting: 2, via: 'smelt', short: 0, chain: [], raw: [] },
+          { item: 'diamond', label: 'Diamond', have: 0, need: 1, crafting: 0, via: 'none', short: 1, chain: [], raw: [] },
+        ] as never,
+      },
+      { ...b0, id: 'd', order: 93, status: 'done', label: 'Done one' },
+    ];
+    const failed = new Map([[String(b0.id), 4]]);
+    expect(
+      variants({
+        empty: () => <QueuePanel builds={[]} canWrite onOp={vi.fn()} />,
+        sim: () => <QueuePanel builds={builds} canWrite onOp={vi.fn()} failed={failed} onRetry={vi.fn()} />,
+        hand: () => <QueuePanel builds={hand} canWrite onOp={vi.fn()} failed={failed} onRetry={vi.fn()} />,
+        readOnly: () => <QueuePanel builds={hand} canWrite={false} onOp={vi.fn()} failed={failed} />,
+      }),
+    ).toMatchSnapshot();
   });
 });
