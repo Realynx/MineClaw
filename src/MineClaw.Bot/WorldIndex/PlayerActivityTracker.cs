@@ -19,22 +19,68 @@ namespace MineClaw.Bot.WorldIndex;
 /// </summary>
 public sealed class PlayerActivityTracker : IDisposable
 {
-    private abstract record Input(DateTimeOffset At);
+    /// <summary>One captured event; <see cref="Handle"/> runs on the pump.</summary>
+    private abstract record Input(DateTimeOffset At)
+    {
+        public abstract void Handle(PlayerActivityTracker t);
+    }
     /// <param name="Self">The bot's own dig/placement (its outbound 0x0E/0x0F, <see cref="WorldState.SelfEdits"/>): never a player's.</param>
-    private sealed record BlockIn(DateTimeOffset At, BlockChange Ch, PlayerSample[] Near, PlayerSample? Bot, bool BotBusy, bool Self = false) : Input(At);
-    private sealed record AnimIn(DateTimeOffset At, int Entity, int Anim) : Input(At);
-    private sealed record BlockActionIn(DateTimeOffset At, BlockPos Pos, PlayerSample[] Near) : Input(At);
-    private sealed record ChatIn(DateTimeOffset At, string Raw) : Input(At);
-    private sealed record PresenceIn(DateTimeOffset At, string Name, bool Joined) : Input(At);
-    private sealed record CollectIn(DateTimeOffset At, int ItemEntity, int Collector, ItemStack Item) : Input(At);
-    private sealed record EquipIn(DateTimeOffset At, int Entity, int Slot, int Item) : Input(At);
-    private sealed record StatusIn(DateTimeOffset At, int Entity, int Status) : Input(At);
-    private sealed record BedIn(DateTimeOffset At, int Entity, BlockPos Pos) : Input(At);
-    private sealed record AttachIn(DateTimeOffset At, int Entity, int Vehicle) : Input(At);
-    private sealed record SignIn(DateTimeOffset At, BlockPos Pos, string[] Lines, PlayerSample[] Near) : Input(At);
-    private sealed record SpawnIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At);
-    private sealed record RemovedIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At);
-    private sealed record SnapshotIn(DateTimeOffset At, string Kind, string Key, BlockPos Pos, IReadOnlyList<ItemCount> Items, bool First) : Input(At);
+    private sealed record BlockIn(DateTimeOffset At, BlockChange Ch, PlayerSample[] Near, PlayerSample? Bot, bool BotBusy, bool Self = false) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleBlock(this);
+    }
+    private sealed record AnimIn(DateTimeOffset At, int Entity, int Anim) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleAnim(this);
+    }
+    private sealed record BlockActionIn(DateTimeOffset At, BlockPos Pos, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleBlockAction(this);
+    }
+    private sealed record ChatIn(DateTimeOffset At, string Raw) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleChat(this);
+    }
+    private sealed record PresenceIn(DateTimeOffset At, string Name, bool Joined) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandlePresence(this);
+    }
+    private sealed record CollectIn(DateTimeOffset At, int ItemEntity, int Collector, ItemStack Item) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleCollect(this);
+    }
+    private sealed record EquipIn(DateTimeOffset At, int Entity, int Slot, int Item) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleEquip(this);
+    }
+    private sealed record StatusIn(DateTimeOffset At, int Entity, int Status) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleStatus(this);
+    }
+    private sealed record BedIn(DateTimeOffset At, int Entity, BlockPos Pos) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleBed(this);
+    }
+    private sealed record AttachIn(DateTimeOffset At, int Entity, int Vehicle) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleAttach(this);
+    }
+    private sealed record SignIn(DateTimeOffset At, BlockPos Pos, string[] Lines, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleSign(this);
+    }
+    private sealed record SpawnIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleSpawn(this);
+    }
+    private sealed record RemovedIn(DateTimeOffset At, Entity E, PlayerSample[] Near) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleRemoved(this);
+    }
+    private sealed record SnapshotIn(DateTimeOffset At, string Kind, string Key, BlockPos Pos, IReadOnlyList<ItemCount> Items, bool First) : Input(At)
+    {
+        public override void Handle(PlayerActivityTracker t) => t.HandleSnapshot(this);
+    }
 
     private sealed class PlayerState
     {
@@ -341,50 +387,53 @@ public sealed class PlayerActivityTracker : IDisposable
         DimensionSwitches++;
     }
 
-    private void Handle(Input input)
+    private void Handle(Input input) => input.Handle(this);
+
+    private void HandleAnim(AnimIn a)
     {
-        switch (input)
-        {
-            case AnimIn a:
-                _swings[a.Entity] = a.At;
-                if (a.Anim == 2 && NameOf(a.Entity) is { } hurt) Danger.Hurt(hurt, _world.Entities.Get(a.Entity)?.Position);
-                break;
-            case BlockIn b: HandleBlock(b); break;
-            case BlockActionIn ba:
-                if (_world.GetBlock(ba.Pos) == Blocks.Chest && Attribute(ba.Pos, ba.Near, null, false, ba.At, needSwing: false) is { } who)
-                    Record(new ActivityEvent(who.Name, ActivityKinds.Opened, ba.At, who.Conf) { BlockId = Blocks.Chest, Pos = ba.Pos, Place = Place(ba.Pos, 1) });
-                break;
-            case ChatIn c: HandleChat(c); break;
-            case PresenceIn p:
-                if (p.Name.Equals(_self, StringComparison.OrdinalIgnoreCase)) break;
-                Record(new ActivityEvent(p.Name, p.Joined ? ActivityKinds.Joined : ActivityKinds.Left, p.At, 1.0));
-                break;
-            case CollectIn ci:
-                _collected.Add(ci.ItemEntity);
-                if (NameOf(ci.Collector) is { } col && !ci.Item.IsEmpty)
-                    Record(new ActivityEvent(col, ActivityKinds.PickedUp, ci.At, 1.0) { ItemId = ci.Item.Id, Count = ci.Item.Count });
-                break;
-            case EquipIn eq:
-                if (eq.Slot == 0 && NameOf(eq.Entity) is { } eqn) HeldChanged(eqn, eq.Item, eq.At);
-                break;
-            case StatusIn st:
-                if (NameOf(st.Entity) is { } stn)
-                {
-                    if (st.Status == 2) Danger.Hurt(stn, _world.Entities.Get(st.Entity)?.Position);
-                    else if (st.Status == 3) Danger.DeathStatus(stn);
-                }
-                break;
-            case BedIn bed:
-                if (NameOf(bed.Entity) is { } bn) Record(new ActivityEvent(bn, ActivityKinds.Slept, bed.At, 1.0) { Pos = bed.Pos, Place = Place(bed.Pos, 2) });
-                break;
-            case AttachIn at:
-                if (NameOf(at.Entity) is { } an) VehicleChanged(an, at.Vehicle, at.At);
-                break;
-            case SignIn si: HandleSign(si); break;
-            case SpawnIn sp: HandleSpawn(sp); break;
-            case RemovedIn rm: HandleRemoved(rm); break;
-            case SnapshotIn sn: HandleSnapshot(sn); break;
-        }
+        _swings[a.Entity] = a.At;
+        if (a.Anim == 2 && NameOf(a.Entity) is { } hurt) Danger.Hurt(hurt, _world.Entities.Get(a.Entity)?.Position);
+    }
+
+    private void HandleBlockAction(BlockActionIn ba)
+    {
+        if (_world.GetBlock(ba.Pos) == Blocks.Chest && Attribute(ba.Pos, ba.Near, null, false, ba.At, needSwing: false) is { } who)
+            Record(new ActivityEvent(who.Name, ActivityKinds.Opened, ba.At, who.Conf) { BlockId = Blocks.Chest, Pos = ba.Pos, Place = Place(ba.Pos, 1) });
+    }
+
+    private void HandlePresence(PresenceIn p)
+    {
+        if (p.Name.Equals(_self, StringComparison.OrdinalIgnoreCase)) return;
+        Record(new ActivityEvent(p.Name, p.Joined ? ActivityKinds.Joined : ActivityKinds.Left, p.At, 1.0));
+    }
+
+    private void HandleCollect(CollectIn ci)
+    {
+        _collected.Add(ci.ItemEntity);
+        if (NameOf(ci.Collector) is { } col && !ci.Item.IsEmpty)
+            Record(new ActivityEvent(col, ActivityKinds.PickedUp, ci.At, 1.0) { ItemId = ci.Item.Id, Count = ci.Item.Count });
+    }
+
+    private void HandleEquip(EquipIn eq)
+    {
+        if (eq.Slot == 0 && NameOf(eq.Entity) is { } eqn) HeldChanged(eqn, eq.Item, eq.At);
+    }
+
+    private void HandleStatus(StatusIn st)
+    {
+        if (NameOf(st.Entity) is not { } stn) return;
+        if (st.Status == 2) Danger.Hurt(stn, _world.Entities.Get(st.Entity)?.Position);
+        else if (st.Status == 3) Danger.DeathStatus(stn);
+    }
+
+    private void HandleBed(BedIn bed)
+    {
+        if (NameOf(bed.Entity) is { } bn) Record(new ActivityEvent(bn, ActivityKinds.Slept, bed.At, 1.0) { Pos = bed.Pos, Place = Place(bed.Pos, 2) });
+    }
+
+    private void HandleAttach(AttachIn at)
+    {
+        if (NameOf(at.Entity) is { } an) VehicleChanged(an, at.Vehicle, at.At);
     }
 
     private string? NameOf(int entityId)
@@ -402,43 +451,76 @@ public sealed class PlayerActivityTracker : IDisposable
     /// <summary>Changes the world makes by itself: never a player action.</summary>
     private bool IsPhysics(BlockChange ch)
     {
-        var p = ch.Pos;
         int o = ch.OldId, n = ch.NewId;
-        if (Blocks.IsWater(o) || Blocks.IsLava(o) || Blocks.IsWater(n) || Blocks.IsLava(n)) return true;
-        if (o is Blocks.Fire || n is Blocks.Fire || o is Blocks.PistonMoving or Blocks.PistonHead || n is Blocks.PistonMoving or Blocks.PistonHead) return true;
-        // Generator refill / lava meeting water.
-        if (n is Blocks.Cobblestone or Blocks.Stone or Blocks.Obsidian && Replaceable.Contains(o))
-        {
-            if (_index?.IsGeneratorCell(p) == true) return true;
-            bool lava = false, water = false;
-            foreach (var d in new[] { new BlockPos(1, 0, 0), new BlockPos(-1, 0, 0), new BlockPos(0, 0, 1), new BlockPos(0, 0, -1), new BlockPos(0, 1, 0), new BlockPos(0, -1, 0) })
-            {
-                int id = _world.GetBlock(p + d);
-                lava |= Blocks.IsLava(id);
-                water |= Blocks.IsWater(id);
-            }
-            if (lava && water) return true;
-        }
-        // Gravity: sand/gravel leaving an unsupported cell or landing.
-        if (o is Blocks.Sand or Blocks.Gravel && n == 0 && Replaceable.Contains(_world.GetBlock(p.Down()))) return true;
-        if (n is Blocks.Sand or Blocks.Gravel && o == 0 && _world.Entities.Nearby(p.Center, 2, e => e.Kind == EntityKind.Object && e.TypeId is 70 or 71).Count > 0) return true;
-        // Natural spread/decay/growth.
-        if ((o, n) is (Blocks.Grass, Blocks.Dirt) or (Blocks.Dirt, Blocks.Grass) or (Blocks.Farmland, Blocks.Dirt)
-            or (Blocks.Ice, _) or (Blocks.SnowLayer, 0) or (0, Blocks.SnowLayer) or (Blocks.Leaves, 0)) return true;
-        if (n is Blocks.SugarCane or Blocks.Cactus && o == 0 && _world.GetBlock(p.Down()) == n) return true;   // growing
-        if (n is Blocks.Melon or Blocks.Pumpkin && o == 0 && HasNeighbour(p, n == Blocks.Melon ? Blocks.MelonStem : Blocks.PumpkinStem)) return true;
-        if (n == Blocks.Log && o is Blocks.Sapling) return true; // a sapling grew
-        if (n is Blocks.Leaves && o is 0 or Blocks.Sapling) return true;
-        // Cascades: things that pop when their support goes.
-        if (n == 0 && o is Blocks.SugarCane or Blocks.Cactus && _world.GetBlock(p.Down()) is 0) return true;
-        if (n == 0 && o is Blocks.Torch or Blocks.Crops or Blocks.Sapling or Blocks.Dandelion or Blocks.Rose or Blocks.TallGrass or Blocks.RedstoneWire
-                or Blocks.BrownMushroom or Blocks.RedMushroom or Blocks.SignPost or Blocks.WoodenDoor or Blocks.Rail
-            && _world.GetBlock(p.Down()) is 0 && RecentlyBroken(p.Down(), ch)) return true;
-        if (o == Blocks.LitFurnace && n == Blocks.Furnace) return true; // burned out
-        return false;
+        return IsFluidOrMoving(o) || IsFluidOrMoving(n)
+            || IsGeneratorRefill(ch.Pos, o, n)  // generator refill / lava meeting water
+            || IsGravity(ch.Pos, o, n)          // sand/gravel leaving an unsupported cell or landing
+            || IsNaturalChange(o, n)            // natural spread/decay/growth
+            || IsGrowth(ch.Pos, o, n)
+            || IsCascade(ch, o, n)              // things that pop when their support goes
+            || o == Blocks.LitFurnace && n == Blocks.Furnace; // burned out
     }
 
-    private bool HasNeighbour(BlockPos p, int id) =>
+    /// <summary>Water, lava, fire or a moving piston: never a player's edit on either side of a change.</summary>
+    private static bool IsFluidOrMoving(int id) =>
+        Blocks.IsWater(id) || Blocks.IsLava(id) || id is Blocks.Fire or Blocks.PistonMoving or Blocks.PistonHead;
+
+    private static readonly BlockPos[] Faces =
+        [new(1, 0, 0), new(-1, 0, 0), new(0, 0, 1), new(0, 0, -1), new(0, 1, 0), new(0, -1, 0)];
+
+    private bool IsGeneratorRefill(BlockPos p, int o, int n)
+    {
+        if (n is not (Blocks.Cobblestone or Blocks.Stone or Blocks.Obsidian) || !Replaceable.Contains(o)) return false;
+        if (_index?.IsGeneratorCell(p) == true) return true;
+        bool lava = false, water = false;
+        foreach (var d in Faces)
+        {
+            int id = _world.GetBlock(p + d);
+            lava |= Blocks.IsLava(id);
+            water |= Blocks.IsWater(id);
+        }
+        return lava && water;
+    }
+
+    private bool IsGravity(BlockPos p, int o, int n) =>
+        o is Blocks.Sand or Blocks.Gravel && n == 0 && Replaceable.Contains(_world.GetBlock(p.Down()))
+        || n is Blocks.Sand or Blocks.Gravel && o == 0 && _world.Entities.Nearby(p.Center, 2, e => e.Kind == EntityKind.Object && e.TypeId is 70 or 71).Count > 0;
+
+    /// <summary>(old, new) pairs the world makes by itself: grass spreading/dying, farmland drying, snow, leaf decay, a sapling
+    /// growing into a log or leaves appearing on a growing tree.</summary>
+    private static readonly HashSet<(int Old, int New)> NaturalPairs =
+    [
+        (Blocks.Grass, Blocks.Dirt), (Blocks.Dirt, Blocks.Grass), (Blocks.Farmland, Blocks.Dirt), (Blocks.SnowLayer, 0), (0, Blocks.SnowLayer),
+        (Blocks.Leaves, 0), (Blocks.Sapling, Blocks.Log), (0, Blocks.Leaves), (Blocks.Sapling, Blocks.Leaves),
+    ];
+
+    /// <summary>Ice melting into anything, or one of the <see cref="NaturalPairs"/>.</summary>
+    private static bool IsNaturalChange(int o, int n) => o == Blocks.Ice || NaturalPairs.Contains((o, n));
+
+    /// <summary>Cane/cactus growing on itself, a melon/pumpkin appearing beside its stem.</summary>
+    private bool IsGrowth(BlockPos p, int o, int n)
+    {
+        if (o != 0) return false;
+        if (n is Blocks.SugarCane or Blocks.Cactus) return _world.GetBlock(p.Down()) == n;
+        return n is Blocks.Melon or Blocks.Pumpkin && HasNeighbour(p, n == Blocks.Melon ? Blocks.MelonStem : Blocks.PumpkinStem);
+    }
+
+    /// <summary>Blocks that pop off when the block under them was just broken.</summary>
+    private static readonly HashSet<int> PopsWithoutSupport =
+    [
+        Blocks.Torch, Blocks.Crops, Blocks.Sapling, Blocks.Dandelion, Blocks.Rose, Blocks.TallGrass, Blocks.RedstoneWire,
+        Blocks.BrownMushroom, Blocks.RedMushroom, Blocks.SignPost, Blocks.WoodenDoor, Blocks.Rail,
+    ];
+
+    private bool IsCascade(BlockChange ch, int o, int n)
+    {
+        if (n != 0) return false;
+        var below = ch.Pos.Down();
+        if (o is Blocks.SugarCane or Blocks.Cactus) return _world.GetBlock(below) is 0;
+        return PopsWithoutSupport.Contains(o) && _world.GetBlock(below) is 0 && RecentlyBroken(below, ch);
+    }
+
+        private bool HasNeighbour(BlockPos p, int id) =>
         _world.GetBlock(p.Offset(1, 0, 0)) == id || _world.GetBlock(p.Offset(-1, 0, 0)) == id ||
         _world.GetBlock(p.Offset(0, 0, 1)) == id || _world.GetBlock(p.Offset(0, 0, -1)) == id;
 

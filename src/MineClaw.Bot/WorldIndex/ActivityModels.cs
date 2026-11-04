@@ -20,22 +20,26 @@ public static class ActivityKinds
         WroteSign = "wrote_sign", Joined = "joined", Left = "left", Chat = "chat", Arrived = "arrived", Departed = "departed",
         Crafted = "crafted", Took = "took", Stored = "stored", Harvested = "harvested", Planted = "planted";
 
-    public static string CategoryOf(string kind, int? blockId) => kind switch
+    /// <summary>The category of each kind (a broken or placed crop is farming; anything unlisted is status).</summary>
+    private static readonly Dictionary<string, string> Categories = new(StringComparer.Ordinal)
     {
-        Broke when blockId is { } b && IsCrop(b) => ActivityCategory.Farmed,
-        Placed when blockId is { } b && IsCrop(b) => ActivityCategory.Farmed,
-        Harvested or Planted => ActivityCategory.Farmed,
-        Broke => ActivityCategory.Mined,
-        Placed or WroteSign => ActivityCategory.Built,
-        Opened or Took or Stored => ActivityCategory.Container,
-        LitFurnace or Crafted => ActivityCategory.Crafted,
-        PickedUp or Dropped or Equipped => ActivityCategory.Items,
-        Hurt or Fought => ActivityCategory.Fought,
-        Died => ActivityCategory.Died,
-        Arrived or Departed => ActivityCategory.Travelled,
-        Joined or Left or Chat => ActivityCategory.Social,
-        _ => ActivityCategory.Status,
+        [Harvested] = ActivityCategory.Farmed, [Planted] = ActivityCategory.Farmed,
+        [Broke] = ActivityCategory.Mined,
+        [Placed] = ActivityCategory.Built, [WroteSign] = ActivityCategory.Built,
+        [Opened] = ActivityCategory.Container, [Took] = ActivityCategory.Container, [Stored] = ActivityCategory.Container,
+        [LitFurnace] = ActivityCategory.Crafted, [Crafted] = ActivityCategory.Crafted,
+        [PickedUp] = ActivityCategory.Items, [Dropped] = ActivityCategory.Items, [Equipped] = ActivityCategory.Items,
+        [Hurt] = ActivityCategory.Fought, [Fought] = ActivityCategory.Fought,
+        [Died] = ActivityCategory.Died,
+        [Arrived] = ActivityCategory.Travelled, [Departed] = ActivityCategory.Travelled,
+        [Joined] = ActivityCategory.Social, [Left] = ActivityCategory.Social, [Chat] = ActivityCategory.Social,
     };
+
+    public static string CategoryOf(string kind, int? blockId)
+    {
+        if (kind is Broke or Placed && blockId is { } b && IsCrop(b)) return ActivityCategory.Farmed;
+        return kind is not null && Categories.TryGetValue(kind, out var category) ? category : ActivityCategory.Status;
+    }
 
     public static bool IsCrop(int id) => id is Blocks.Crops or Blocks.SugarCane or Blocks.Cactus or Blocks.Melon or Blocks.Pumpkin
         or Blocks.Sapling or Blocks.MelonStem or Blocks.PumpkinStem or Blocks.BrownMushroom or Blocks.RedMushroom;
@@ -151,37 +155,42 @@ public static class ActivityText
 
     public static string Qty(int n) => n >= 10 ? "~" + (n >= 100 ? n / 10 * 10 : n) : n.ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>The pieces of an event's sentence.</summary>
+    private readonly record struct Parts(ActivityEvent E, string P, string At, string Blk, string Itm, string N);
+
+    /// <summary>One sentence template per kind; any other kind reads "{player} {kind}{at}".</summary>
+    private static readonly Dictionary<string, Func<Parts, string>> Sentences = new(StringComparer.Ordinal)
+    {
+        [ActivityKinds.Broke] = s => $"{s.P} {ActivityVerbs.Broken(s.Blk)} {s.N}{s.Blk}{s.At}",
+        [ActivityKinds.Placed] = s => $"{s.P} placed {s.N}{s.Blk}{s.At}",
+        [ActivityKinds.Harvested] = s => $"{s.P} harvested {s.N}{s.Blk}{s.At}",
+        [ActivityKinds.Planted] = s => $"{s.P} planted {s.N}{s.Blk}{s.At}",
+        [ActivityKinds.Opened] = s => $"{s.P} opened the {s.E.Place?.Name ?? s.Blk}" + (s.E.Place == null && s.E.Pos is { } op ? " at " + P(op) : ""),
+        [ActivityKinds.Took] = s => $"{s.P} took {s.N}{s.Itm} from the {s.E.Place?.Name ?? "chest"}",
+        [ActivityKinds.Stored] = s => $"{s.P} put {s.N}{s.Itm} in the {s.E.Place?.Name ?? "chest"}",
+        [ActivityKinds.LitFurnace] = s => $"{s.P} lit the furnace{s.At}",
+        [ActivityKinds.PickedUp] = s => $"{s.P} picked up {(s.E.Count > 1 ? s.E.Count + " " : "")}{s.Itm}",
+        [ActivityKinds.Dropped] = s => $"{s.P} dropped {(s.E.Count > 1 ? s.E.Count + " " : "")}{s.Itm}{s.At}",
+        [ActivityKinds.Equipped] = s => $"{s.P} switched to {s.Itm}",
+        [ActivityKinds.Crafted] = s => $"{s.P} crafted {s.Itm}{s.At}",
+        [ActivityKinds.Hurt] = s => $"{s.P} got hurt{s.At}",
+        [ActivityKinds.Fought] = s => $"{s.P} fought a {s.E.Detail ?? "mob"}, {s.E.Count} hit{(s.E.Count == 1 ? "" : "s")} taken{s.At}",
+        [ActivityKinds.Died] = s => $"{s.P} {s.E.Detail ?? "died"}{(s.E.Place != null ? s.At : "")}",
+        [ActivityKinds.Slept] = s => $"{s.P} slept in a bed{s.At}",
+        [ActivityKinds.Rode] = s => $"{s.P} got in a {s.E.Detail ?? "vehicle"}",
+        [ActivityKinds.WroteSign] = s => $"{s.P} placed sign \"{s.E.Detail}\"{s.At}",
+        [ActivityKinds.Joined] = s => $"{s.P} joined",
+        [ActivityKinds.Left] = s => $"{s.P} left",
+        [ActivityKinds.Chat] = s => s.E.Detail is { Length: > 0 } d ? $"{s.P} said \"{d}\"" : $"{s.P} chatted",
+        [ActivityKinds.Arrived] = s => $"{s.P} arrived{s.At}",
+        [ActivityKinds.Departed] = s => $"{s.P} left{(s.E.Place != null ? " the " + s.E.Place.Name : s.At)}",
+    };
+
     public static string Describe(ActivityEvent e)
     {
         string p = e.Player, at = At(e.Place, e.Pos);
         string blk = e.BlockId is { } b ? Block(b) : "block", itm = e.ItemId is { } i ? Item(i) : "item";
         string n = e.Count > 1 ? Qty(e.Count) + " " : "";
-        return e.Kind switch
-        {
-            ActivityKinds.Broke => $"{p} {ActivityVerbs.Broken(blk)} {n}{blk}{at}",
-            ActivityKinds.Placed => $"{p} placed {n}{blk}{at}",
-            ActivityKinds.Harvested => $"{p} harvested {n}{blk}{at}",
-            ActivityKinds.Planted => $"{p} planted {n}{blk}{at}",
-            ActivityKinds.Opened => $"{p} opened the {e.Place?.Name ?? blk}" + (e.Place == null && e.Pos is { } op ? " at " + P(op) : ""),
-            ActivityKinds.Took => $"{p} took {n}{itm} from the {e.Place?.Name ?? "chest"}",
-            ActivityKinds.Stored => $"{p} put {n}{itm} in the {e.Place?.Name ?? "chest"}",
-            ActivityKinds.LitFurnace => $"{p} lit the furnace{at}",
-            ActivityKinds.PickedUp => $"{p} picked up {(e.Count > 1 ? e.Count + " " : "")}{itm}",
-            ActivityKinds.Dropped => $"{p} dropped {(e.Count > 1 ? e.Count + " " : "")}{itm}{at}",
-            ActivityKinds.Equipped => $"{p} switched to {itm}",
-            ActivityKinds.Crafted => $"{p} crafted {itm}{at}",
-            ActivityKinds.Hurt => $"{p} got hurt{at}",
-            ActivityKinds.Fought => $"{p} fought a {e.Detail ?? "mob"}, {e.Count} hit{(e.Count == 1 ? "" : "s")} taken{at}",
-            ActivityKinds.Died => $"{p} {e.Detail ?? "died"}{(e.Place != null ? at : "")}",
-            ActivityKinds.Slept => $"{p} slept in a bed{at}",
-            ActivityKinds.Rode => $"{p} got in a {e.Detail ?? "vehicle"}",
-            ActivityKinds.WroteSign => $"{p} placed sign \"{e.Detail}\"{at}",
-            ActivityKinds.Joined => $"{p} joined",
-            ActivityKinds.Left => $"{p} left",
-            ActivityKinds.Chat => e.Detail is { Length: > 0 } d ? $"{p} said \"{d}\"" : $"{p} chatted",
-            ActivityKinds.Arrived => $"{p} arrived{at}",
-            ActivityKinds.Departed => $"{p} left{(e.Place != null ? " the " + e.Place.Name : at)}",
-            _ => $"{p} {e.Kind}{at}",
-        };
+        return e.Kind is not null && Sentences.TryGetValue(e.Kind, out var sentence) ? sentence(new Parts(e, p, at, blk, itm, n)) : $"{p} {e.Kind}{at}";
     }
 }
