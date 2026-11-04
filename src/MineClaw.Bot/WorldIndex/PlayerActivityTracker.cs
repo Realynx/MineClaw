@@ -402,43 +402,76 @@ public sealed class PlayerActivityTracker : IDisposable
     /// <summary>Changes the world makes by itself: never a player action.</summary>
     private bool IsPhysics(BlockChange ch)
     {
-        var p = ch.Pos;
         int o = ch.OldId, n = ch.NewId;
-        if (Blocks.IsWater(o) || Blocks.IsLava(o) || Blocks.IsWater(n) || Blocks.IsLava(n)) return true;
-        if (o is Blocks.Fire || n is Blocks.Fire || o is Blocks.PistonMoving or Blocks.PistonHead || n is Blocks.PistonMoving or Blocks.PistonHead) return true;
-        // Generator refill / lava meeting water.
-        if (n is Blocks.Cobblestone or Blocks.Stone or Blocks.Obsidian && Replaceable.Contains(o))
-        {
-            if (_index?.IsGeneratorCell(p) == true) return true;
-            bool lava = false, water = false;
-            foreach (var d in new[] { new BlockPos(1, 0, 0), new BlockPos(-1, 0, 0), new BlockPos(0, 0, 1), new BlockPos(0, 0, -1), new BlockPos(0, 1, 0), new BlockPos(0, -1, 0) })
-            {
-                int id = _world.GetBlock(p + d);
-                lava |= Blocks.IsLava(id);
-                water |= Blocks.IsWater(id);
-            }
-            if (lava && water) return true;
-        }
-        // Gravity: sand/gravel leaving an unsupported cell or landing.
-        if (o is Blocks.Sand or Blocks.Gravel && n == 0 && Replaceable.Contains(_world.GetBlock(p.Down()))) return true;
-        if (n is Blocks.Sand or Blocks.Gravel && o == 0 && _world.Entities.Nearby(p.Center, 2, e => e.Kind == EntityKind.Object && e.TypeId is 70 or 71).Count > 0) return true;
-        // Natural spread/decay/growth.
-        if ((o, n) is (Blocks.Grass, Blocks.Dirt) or (Blocks.Dirt, Blocks.Grass) or (Blocks.Farmland, Blocks.Dirt)
-            or (Blocks.Ice, _) or (Blocks.SnowLayer, 0) or (0, Blocks.SnowLayer) or (Blocks.Leaves, 0)) return true;
-        if (n is Blocks.SugarCane or Blocks.Cactus && o == 0 && _world.GetBlock(p.Down()) == n) return true;   // growing
-        if (n is Blocks.Melon or Blocks.Pumpkin && o == 0 && HasNeighbour(p, n == Blocks.Melon ? Blocks.MelonStem : Blocks.PumpkinStem)) return true;
-        if (n == Blocks.Log && o is Blocks.Sapling) return true; // a sapling grew
-        if (n is Blocks.Leaves && o is 0 or Blocks.Sapling) return true;
-        // Cascades: things that pop when their support goes.
-        if (n == 0 && o is Blocks.SugarCane or Blocks.Cactus && _world.GetBlock(p.Down()) is 0) return true;
-        if (n == 0 && o is Blocks.Torch or Blocks.Crops or Blocks.Sapling or Blocks.Dandelion or Blocks.Rose or Blocks.TallGrass or Blocks.RedstoneWire
-                or Blocks.BrownMushroom or Blocks.RedMushroom or Blocks.SignPost or Blocks.WoodenDoor or Blocks.Rail
-            && _world.GetBlock(p.Down()) is 0 && RecentlyBroken(p.Down(), ch)) return true;
-        if (o == Blocks.LitFurnace && n == Blocks.Furnace) return true; // burned out
-        return false;
+        return IsFluidOrMoving(o) || IsFluidOrMoving(n)
+            || IsGeneratorRefill(ch.Pos, o, n)  // generator refill / lava meeting water
+            || IsGravity(ch.Pos, o, n)          // sand/gravel leaving an unsupported cell or landing
+            || IsNaturalChange(o, n)            // natural spread/decay/growth
+            || IsGrowth(ch.Pos, o, n)
+            || IsCascade(ch, o, n)              // things that pop when their support goes
+            || o == Blocks.LitFurnace && n == Blocks.Furnace; // burned out
     }
 
-    private bool HasNeighbour(BlockPos p, int id) =>
+    /// <summary>Water, lava, fire or a moving piston: never a player's edit on either side of a change.</summary>
+    private static bool IsFluidOrMoving(int id) =>
+        Blocks.IsWater(id) || Blocks.IsLava(id) || id is Blocks.Fire or Blocks.PistonMoving or Blocks.PistonHead;
+
+    private static readonly BlockPos[] Faces =
+        [new(1, 0, 0), new(-1, 0, 0), new(0, 0, 1), new(0, 0, -1), new(0, 1, 0), new(0, -1, 0)];
+
+    private bool IsGeneratorRefill(BlockPos p, int o, int n)
+    {
+        if (n is not (Blocks.Cobblestone or Blocks.Stone or Blocks.Obsidian) || !Replaceable.Contains(o)) return false;
+        if (_index?.IsGeneratorCell(p) == true) return true;
+        bool lava = false, water = false;
+        foreach (var d in Faces)
+        {
+            int id = _world.GetBlock(p + d);
+            lava |= Blocks.IsLava(id);
+            water |= Blocks.IsWater(id);
+        }
+        return lava && water;
+    }
+
+    private bool IsGravity(BlockPos p, int o, int n) =>
+        o is Blocks.Sand or Blocks.Gravel && n == 0 && Replaceable.Contains(_world.GetBlock(p.Down()))
+        || n is Blocks.Sand or Blocks.Gravel && o == 0 && _world.Entities.Nearby(p.Center, 2, e => e.Kind == EntityKind.Object && e.TypeId is 70 or 71).Count > 0;
+
+    /// <summary>(old, new) pairs the world makes by itself: grass spreading/dying, farmland drying, snow, leaf decay, a sapling
+    /// growing into a log or leaves appearing on a growing tree.</summary>
+    private static readonly HashSet<(int Old, int New)> NaturalPairs =
+    [
+        (Blocks.Grass, Blocks.Dirt), (Blocks.Dirt, Blocks.Grass), (Blocks.Farmland, Blocks.Dirt), (Blocks.SnowLayer, 0), (0, Blocks.SnowLayer),
+        (Blocks.Leaves, 0), (Blocks.Sapling, Blocks.Log), (0, Blocks.Leaves), (Blocks.Sapling, Blocks.Leaves),
+    ];
+
+    /// <summary>Ice melting into anything, or one of the <see cref="NaturalPairs"/>.</summary>
+    private static bool IsNaturalChange(int o, int n) => o == Blocks.Ice || NaturalPairs.Contains((o, n));
+
+    /// <summary>Cane/cactus growing on itself, a melon/pumpkin appearing beside its stem.</summary>
+    private bool IsGrowth(BlockPos p, int o, int n)
+    {
+        if (o != 0) return false;
+        if (n is Blocks.SugarCane or Blocks.Cactus) return _world.GetBlock(p.Down()) == n;
+        return n is Blocks.Melon or Blocks.Pumpkin && HasNeighbour(p, n == Blocks.Melon ? Blocks.MelonStem : Blocks.PumpkinStem);
+    }
+
+    /// <summary>Blocks that pop off when the block under them was just broken.</summary>
+    private static readonly HashSet<int> PopsWithoutSupport =
+    [
+        Blocks.Torch, Blocks.Crops, Blocks.Sapling, Blocks.Dandelion, Blocks.Rose, Blocks.TallGrass, Blocks.RedstoneWire,
+        Blocks.BrownMushroom, Blocks.RedMushroom, Blocks.SignPost, Blocks.WoodenDoor, Blocks.Rail,
+    ];
+
+    private bool IsCascade(BlockChange ch, int o, int n)
+    {
+        if (n != 0) return false;
+        var below = ch.Pos.Down();
+        if (o is Blocks.SugarCane or Blocks.Cactus) return _world.GetBlock(below) is 0;
+        return PopsWithoutSupport.Contains(o) && _world.GetBlock(below) is 0 && RecentlyBroken(below, ch);
+    }
+
+        private bool HasNeighbour(BlockPos p, int id) =>
         _world.GetBlock(p.Offset(1, 0, 0)) == id || _world.GetBlock(p.Offset(-1, 0, 0)) == id ||
         _world.GetBlock(p.Offset(0, 0, 1)) == id || _world.GetBlock(p.Offset(0, 0, -1)) == id;
 

@@ -51,141 +51,204 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
         IReadOnlyList<BlockPos> cells = [cell, .. (rotation ?? []).Where(p => p != cell).Distinct()];
         // Live 10-28: "dug 64/64, stored 4 cobblestone" read as "I mined all 64". The target is cobble, not digs: count what
         // each batch really gained (the client's "+N cobblestone", its inventory delta) and dig until that reaches the target.
-        int mined = 0, gained = 0, lostDrops = 0, deposited = 0, fails = 0;
+        var run = new GenRun(cell, count);
         var started = DateTime.UtcNow;
-        bool upgraded = false, replacedWorn = false;
-        var notes = new List<string>();
-        string? stop = null;
-        bool ok = true;
-        while (gained < count && stop == null)
+        while (run.Gained < count && run.Stop == null)
         {
             ct.ThrowIfCancellationRequested();
-            // 1) tool: the loop never digs bare-handed (cobble drops nothing without a pickaxe).
-            // A worn pick (1/131 left) is replaced once before it breaks mid-batch, from storage / chest cobble + sticks.
-            bool worn = !replacedWorn && Loadout.Have(c.World, Loadout.Kinds["pickaxe"]) > 0 && Loadout.HaveUsable(c.World, Loadout.Kinds["pickaxe"]) == 0;
-            if (worn)
-            {
-                replacedWorn = true;
-                var w = await Loadout.FetchAsync(c, _s.Observations, ["pickaxe"], ct).ConfigureAwait(false);
-                if (w.Got.Count > 0) notes.Add(w.Text);
-            }
-            if (Loadout.Have(c.World, Loadout.Kinds["pickaxe"]) == 0)
-            {
-                var r = await Loadout.FetchAsync(c, _s.Observations, ["pickaxe"], ct).ConfigureAwait(false);
-                if (r.Missing.Count > 0) { stop = "no pickaxe left: none in storage and no materials to craft one"; ok = mined > 0; break; }
-                notes.Add(r.Text);
-            }
-            // 2) room: deposit before the batch when there's no room for cobble.
-            if (c.World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) == 0)
-            {
-                var d = await DepositAsync(store, ct).ConfigureAwait(false);
-                if (!d.Ok) { stop = d.Message; ok = mined > 0; break; }
-                deposited += d.Count;
-                if (d.Message.Contains("placed", StringComparison.Ordinal)) notes.Add(d.Message);
-            }
-            int want = Math.Min(Batch, count - gained), invBefore = c.World.Inventory.CountItem(Blocks.Cobblestone);
-            var res = cells.Count > 1
-                ? await c.HarvestGeneratorAsync(cells, want, stand, ct).ConfigureAwait(false)
-                : stand is { } st
-                    ? await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, want, st, ct).ConfigureAwait(false)
-                    : await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, want, ct).ConfigureAwait(false);
-            gained += BatchGain(res.Message) ?? Math.Max(0, c.World.Inventory.CountItem(Blocks.Cobblestone) - invBefore);
-            lostDrops += LostRx().Match(res.Message) is { Success: true } lm ? int.Parse(lm.Groups[1].Value) : 0;
-            if (stand != null && res.Count == 0 && res.Message.Contains("taught stand spot", StringComparison.Ordinal))
-            {
-                stop = res.Message; // never dig the cell from anywhere but where the player showed
-                ok = mined > 0;
-                break;
-            }
-            mined += res.Count;
-            var msg = res.Message;
-            // Enclosed cell: retrying can't help; the caller asks a player once where to stand.
-            if (res.Count == 0 && msg.Contains(" is enclosed (", StringComparison.Ordinal))
-            {
-                stop = msg;
-                ok = mined > 0;
-                break;
-            }
-            if (res.Count == 0 && msg.StartsWith("busy:", StringComparison.Ordinal))
-            {
-                stop = msg; // another bot holds this cell: the caller picks another one (never wait out retries on it)
-                ok = mined > 0;
-                break;
-            }
-            if (msg.Contains("isn't regenerating", StringComparison.Ordinal) || msg.Contains("stopped producing", StringComparison.Ordinal))
-            {
-                stop = msg.StartsWith("generator: ", StringComparison.Ordinal) ? msg["generator: ".Length..] : msg;
-                ok = false; // the wrong cell (or a broken gen): never keep digging there
-                // The concrete cause from the taught layout ("the lava at 4,64,7 is gone"): then the gen is broken and the cell is
-                // right, so it stays taught; only an intact layout means the cell itself is wrong.
-                string? cause = null;
-                try { cause = _s.Diagnose?.Invoke(cell); } catch (Exception) { /* memory busy */ }
-                if (cause != null) stop += "; cause: " + cause;
-                else if (msg.Contains("isn't regenerating", StringComparison.Ordinal))
-                {
-                    try { _s.BadCell?.Invoke(cell, "yield guard: " + stop); } catch (Exception) { /* memory busy */ }
-                }
-                break;
-            }
-            if (msg.Contains("inventory full", StringComparison.Ordinal) || msg.Contains("pickaxe", StringComparison.Ordinal))
-            {
-                // Handled at the top of the loop; no progress over and over = stop (never spin).
-                if (res.Count > 0) fails = 0;
-                else if (++fails >= MaxConsecutiveFailures) { stop = msg; ok = mined > 0; break; }
-                continue;
-            }
-            if (msg.Contains("hungry", StringComparison.OrdinalIgnoreCase) || msg.Contains("starving", StringComparison.OrdinalIgnoreCase))
-            {
-                var f = await Loadout.FetchAsync(c, _s.Observations, ["food"], ct).ConfigureAwait(false);
-                if (f.Missing.Count > 0) { stop = "too hungry to keep mining and no food in storage"; ok = mined > 0; break; }
-                await FoodSupply.EatAsync(c, ct).ConfigureAwait(false);
-                notes.Add(f.Text);
-                if (res.Count == 0 && ++fails >= MaxConsecutiveFailures) { stop = msg; ok = mined > 0; break; }
-                continue;
-            }
-            if (res.Count > 0)
-            {
-                fails = 0;
-                // Digging on while the drops are lost only wears the pickaxe out: stop and say what happened to them.
-                if ((mined >= StallDigs && gained * 2 < mined) || (gained < count && mined >= count * 2 + StallDigs))
-                {
-                    stop = $"stalled: {mined} digs gave {gained} cobble ("
-                           + (lostDrops > 0 ? $"{lostDrops} drop(s) washed into the gen's water/lava, not collected)" : "the drops never reached my inventory)");
-                    ok = false;
-                    break;
-                }
-                // Took a wood pick to get going: upgrade to stone as soon as the gen's cobble allows it (one craft, no walking).
-                if (!upgraded && gained < count && await Acquisition.Planner(c, _s.Observations).UpgradeIfCheapAsync("pickaxe", ct).ConfigureAwait(false) is { } up)
-                {
-                    upgraded = true;
-                    notes.Add(up);
-                }
-                continue;
-            }
-            if (res.Ok) break; // the client says done without digging: nothing to loop on
-            // 3) interrupted (mob, danger, can't reach): pause and resume; stop only after repeated failures.
-            if (++fails >= MaxConsecutiveFailures) { stop = msg; ok = mined > 0; break; }
-            await Task.Delay(RetryPause, ct).ConfigureAwait(false);
+            if (!await PrepareBatchAsync(run, store, ct).ConfigureAwait(false)) break;
+            var res = await HarvestBatchAsync(run, cells, stand, ct).ConfigureAwait(false);
+            var step = await AfterBatchAsync(run, res, stand != null, ct).ConfigureAwait(false);
+            if (step == GenStep.Stop) break;
+            if (step == GenStep.Retry) await Task.Delay(RetryPause, ct).ConfigureAwait(false);
         }
-        // Live 10-27 21:12: "chest 14,64,-5 not topped up (have 8 cobble in inventory)": whatever the job got goes into the store
-        // at the end, target met or not (a stop for storage itself excepted).
-        if (store != null && mined > 0 && c.World.Inventory.CountItem(Blocks.Cobblestone) > 0 && stop?.StartsWith("storage full", StringComparison.Ordinal) != true)
-        {
-            try
-            {
-                var d = await DepositAsync(store, ct).ConfigureAwait(false);
-                if (d.Ok) deposited += d.Count;
-                else notes.Add("final deposit: " + d.Message);
-            }
-            catch (OperationCanceledException) { /* cancelled: keep the partial result */ }
-        }
+        await FinalDepositAsync(run, store, ct).ConfigureAwait(false);
         // "generator: 7/64 cobblestone in 2m10s (dug 9 at 5,64,7), stored ...": the count is cobble gained, never digs.
-        var text = $"generator: {gained}/{count} cobblestone in {Duration(DateTime.UtcNow - started)} (dug {mined} at {cell.X},{cell.Y},{cell.Z})"
-                   + (deposited > 0 ? StoredText() : "")
+        var text = $"generator: {run.Gained}/{count} cobblestone in {Duration(DateTime.UtcNow - started)} (dug {run.Mined} at {cell.X},{cell.Y},{cell.Z})"
+                   + (run.Deposited > 0 ? StoredText() : "")
                    + $" (have {c.World.Inventory.CountItem(Blocks.Cobblestone)} cobblestone)"
-                   + (lostDrops > 0 && stop?.StartsWith("stalled", StringComparison.Ordinal) != true ? $"; {lostDrops} drop(s) washed into the gen's water/lava (not collected)" : "")
-                   + (notes.Count > 0 ? "; " + string.Join("; ", notes.Distinct().Take(3)) : "") + (stop != null ? "; " + stop : "");
-        return ok ? ActionResult.Success(text, mined) : ActionResult.Fail(text, mined);
+                   + run.Tail();
+        return run.Ok ? ActionResult.Success(text, run.Mined) : ActionResult.Fail(text, run.Mined);
+    }
+
+    /// <summary>What the loop does after a batch: dig on, pause and retry, or stop.</summary>
+    private enum GenStep { Next, Retry, Stop }
+
+    /// <summary>One <see cref="RunAsync"/>: its counts, notes and the reason it stopped.</summary>
+    private sealed class GenRun(BlockPos cell, int count)
+    {
+        public readonly BlockPos Cell = cell;
+        public readonly int Count = count;
+        public int Mined, Gained, LostDrops, Deposited, Fails;
+        public bool Upgraded, ReplacedWorn, Ok = true;
+        public readonly List<string> Notes = new();
+        public string? Stop;
+
+        /// <summary>Stops with <paramref name="why"/>: a failure unless something was dug.</summary>
+        public GenStep Halt(string why)
+        {
+            Stop = why;
+            Ok = Mined > 0;
+            return GenStep.Stop;
+        }
+
+        /// <summary>A repeat of a handled condition: dug something = progress; nothing over and over = stop (never spin).</summary>
+        public GenStep NoProgress(int dug, string msg, int maxFailures)
+        {
+            if (dug > 0) Fails = 0;
+            else if (++Fails >= maxFailures) return Halt(msg);
+            return GenStep.Next;
+        }
+
+        /// <summary>Digs whose drops don't arrive (fewer than half, or twice the target dug) only wear the pickaxe out.</summary>
+        public bool Stalled(int stallDigs) => (Mined >= stallDigs && Gained * 2 < Mined) || (Gained < Count && Mined >= Count * 2 + stallDigs);
+
+        /// <summary>The result's tail: lost drops (unless the stall line says so), notes and the stop reason.</summary>
+        public string Tail() =>
+            (LostDrops > 0 && Stop?.StartsWith("stalled", StringComparison.Ordinal) != true ? $"; {LostDrops} drop(s) washed into the gen's water/lava (not collected)" : "")
+            + (Notes.Count > 0 ? "; " + string.Join("; ", Notes.Distinct().Take(3)) : "") + (Stop != null ? "; " + Stop : "");
+    }
+
+    /// <summary>
+    /// Tool and room before a batch: the loop never digs bare-handed (cobble drops nothing without a pickaxe), and deposits
+    /// first when there's no room for cobble. False = stopped.
+    /// </summary>
+    private async Task<bool> PrepareBatchAsync(GenRun run, BlockPos? store, CancellationToken ct)
+    {
+        await ReplaceWornPickaxeAsync(run, ct).ConfigureAwait(false);
+        if (Loadout.Have(c.World, Loadout.Kinds["pickaxe"]) == 0)
+        {
+            var r = await Loadout.FetchAsync(c, _s.Observations, ["pickaxe"], ct).ConfigureAwait(false);
+            if (r.Missing.Count > 0) { run.Halt("no pickaxe left: none in storage and no materials to craft one"); return false; }
+            run.Notes.Add(r.Text);
+        }
+        if (c.World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) != 0) return true;
+        var d = await DepositAsync(store, ct).ConfigureAwait(false);
+        if (!d.Ok) { run.Halt(d.Message); return false; }
+        run.Deposited += d.Count;
+        if (d.Message.Contains("placed", StringComparison.Ordinal)) run.Notes.Add(d.Message);
+        return true;
+    }
+
+    /// <summary>A worn pick (1/131 left) is replaced once before it breaks mid-batch, from storage / chest cobble + sticks.</summary>
+    private async Task ReplaceWornPickaxeAsync(GenRun run, CancellationToken ct)
+    {
+        if (run.ReplacedWorn || Loadout.Have(c.World, Loadout.Kinds["pickaxe"]) <= 0 || Loadout.HaveUsable(c.World, Loadout.Kinds["pickaxe"]) != 0) return;
+        run.ReplacedWorn = true;
+        var w = await Loadout.FetchAsync(c, _s.Observations, ["pickaxe"], ct).ConfigureAwait(false);
+        if (w.Got.Count > 0) run.Notes.Add(w.Text);
+    }
+
+    /// <summary>One batch (every rotation cell in reach, else the cell from the taught stand or a spot the client picks);
+    /// counts the cobble it really gained and the drops lost to the gen's fluids.</summary>
+    private async Task<ActionResult> HarvestBatchAsync(GenRun run, IReadOnlyList<BlockPos> cells, BlockPos? stand, CancellationToken ct)
+    {
+        var cell = cells[0];
+        int want = Math.Min(Batch, run.Count - run.Gained), invBefore = c.World.Inventory.CountItem(Blocks.Cobblestone);
+        var res = cells.Count > 1
+            ? await c.HarvestGeneratorAsync(cells, want, stand, ct).ConfigureAwait(false)
+            : stand is { } st
+                ? await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, want, st, ct).ConfigureAwait(false)
+                : await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, want, ct).ConfigureAwait(false);
+        run.Gained += BatchGain(res.Message) ?? Math.Max(0, c.World.Inventory.CountItem(Blocks.Cobblestone) - invBefore);
+        run.LostDrops += LostRx().Match(res.Message) is { Success: true } lm ? int.Parse(lm.Groups[1].Value) : 0;
+        return res;
+    }
+
+    private async Task<GenStep> AfterBatchAsync(GenRun run, ActionResult res, bool taughtStand, CancellationToken ct)
+    {
+        if (RecordBatch(run, res, taughtStand) is { } stop) return stop;
+        var msg = res.Message;
+        // Handled at the top of the loop.
+        if (msg.Contains("inventory full", StringComparison.Ordinal) || msg.Contains("pickaxe", StringComparison.Ordinal))
+            return run.NoProgress(res.Count, msg, MaxConsecutiveFailures);
+        if (msg.Contains("hungry", StringComparison.OrdinalIgnoreCase) || msg.Contains("starving", StringComparison.OrdinalIgnoreCase))
+            return await FeedAsync(run, res, ct).ConfigureAwait(false);
+        if (res.Count > 0) return await AfterDigAsync(run, ct).ConfigureAwait(false);
+        if (res.Ok) return GenStep.Stop; // the client says done without digging: nothing to loop on
+        // Interrupted (mob, danger, can't reach): pause and resume; stop only after repeated failures.
+        return ++run.Fails >= MaxConsecutiveFailures ? run.Halt(msg) : GenStep.Retry;
+    }
+
+    /// <summary>Counts the batch's digs; a stop when the batch says digging this cell can't go on, else null.</summary>
+    private GenStep? RecordBatch(GenRun run, ActionResult res, bool taughtStand)
+    {
+        var msg = res.Message;
+        // Never dig the cell from anywhere but where the player showed.
+        if (taughtStand && res.Count == 0 && msg.Contains("taught stand spot", StringComparison.Ordinal)) return run.Halt(msg);
+        run.Mined += res.Count;
+        // Enclosed cell: retrying can't help; the caller asks a player once where to stand. Busy: another bot holds this cell,
+        // the caller picks another one (never wait out retries on it).
+        if (res.Count == 0 && (msg.Contains(" is enclosed (", StringComparison.Ordinal) || msg.StartsWith("busy:", StringComparison.Ordinal)))
+            return run.Halt(msg);
+        if (msg.Contains("isn't regenerating", StringComparison.Ordinal) || msg.Contains("stopped producing", StringComparison.Ordinal))
+            return CellStopped(run, msg);
+        return null;
+    }
+
+    /// <summary>The wrong cell (or a broken gen): never keep digging there. The concrete cause from the taught layout ("the lava
+    /// at 4,64,7 is gone") means the gen is broken and the cell is right, so it stays taught; only an intact layout means the
+    /// cell itself is wrong.</summary>
+    private GenStep CellStopped(GenRun run, string msg)
+    {
+        var cell = run.Cell;
+        run.Stop = msg.StartsWith("generator: ", StringComparison.Ordinal) ? msg["generator: ".Length..] : msg;
+        run.Ok = false;
+        string? cause = null;
+        try { cause = _s.Diagnose?.Invoke(cell); } catch (Exception) { /* memory busy */ }
+        if (cause != null) run.Stop += "; cause: " + cause;
+        else if (msg.Contains("isn't regenerating", StringComparison.Ordinal))
+        {
+            try { _s.BadCell?.Invoke(cell, "yield guard: " + run.Stop); } catch (Exception) { /* memory busy */ }
+        }
+        return GenStep.Stop;
+    }
+
+    private async Task<GenStep> FeedAsync(GenRun run, ActionResult res, CancellationToken ct)
+    {
+        var f = await Loadout.FetchAsync(c, _s.Observations, ["food"], ct).ConfigureAwait(false);
+        if (f.Missing.Count > 0) return run.Halt("too hungry to keep mining and no food in storage");
+        await FoodSupply.EatAsync(c, ct).ConfigureAwait(false);
+        run.Notes.Add(f.Text);
+        if (res.Count == 0 && ++run.Fails >= MaxConsecutiveFailures) return run.Halt(res.Message);
+        return GenStep.Next;
+    }
+
+    /// <summary>A batch dug something: stop when the drops don't arrive (say what happened to them); else upgrade a wood pick
+    /// to stone as soon as the gen's cobble allows it (one craft, no walking).</summary>
+    private async Task<GenStep> AfterDigAsync(GenRun run, CancellationToken ct)
+    {
+        run.Fails = 0;
+        if (run.Stalled(StallDigs))
+        {
+            run.Stop = $"stalled: {run.Mined} digs gave {run.Gained} cobble ("
+                       + (run.LostDrops > 0 ? $"{run.LostDrops} drop(s) washed into the gen's water/lava, not collected)" : "the drops never reached my inventory)");
+            run.Ok = false;
+            return GenStep.Stop;
+        }
+        if (!run.Upgraded && run.Gained < run.Count && await Acquisition.Planner(c, _s.Observations).UpgradeIfCheapAsync("pickaxe", ct).ConfigureAwait(false) is { } up)
+        {
+            run.Upgraded = true;
+            run.Notes.Add(up);
+        }
+        return GenStep.Next;
+    }
+
+    /// <summary>
+    /// Live 10-27 21:12: "chest 14,64,-5 not topped up (have 8 cobble in inventory)": whatever the job got goes into the store at
+    /// the end, target met or not (a stop for storage itself excepted).
+    /// </summary>
+    private async Task FinalDepositAsync(GenRun run, BlockPos? store, CancellationToken ct)
+    {
+        if (store == null || run.Mined <= 0 || c.World.Inventory.CountItem(Blocks.Cobblestone) <= 0
+            || run.Stop?.StartsWith("storage full", StringComparison.Ordinal) == true) return;
+        try
+        {
+            var d = await DepositAsync(store, ct).ConfigureAwait(false);
+            if (d.Ok) run.Deposited += d.Count;
+            else run.Notes.Add("final deposit: " + d.Message);
+        }
+        catch (OperationCanceledException) { /* cancelled: keep the partial result */ }
     }
 
     /// <summary>Digs before the stall check may stop a run whose drops don't arrive (fewer than half).</summary>
