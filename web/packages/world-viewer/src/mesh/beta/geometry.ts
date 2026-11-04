@@ -6,7 +6,7 @@
 // use the animated portal tile.
 
 import { flatColour, Layer } from '../../world/blocks';
-import { chain, fixedTint, makeQuad, rotate, scale, transformQuad, translate, type M4, type Quad, TINT_NONE } from '../quad';
+import { chain, fixedTint, makeQuad, rotate, scale, transformQuad, translate, type M4, type Quad, type QuadInit, TINT_NONE } from '../quad';
 import { fluidQuads, isFluid } from '../fluids';
 import type { Nb } from '../models/states';
 import { emissiveBeta, NO_TILE, tileFor, FOLIAGE_TINT, TILE_FIRE_A, TILE_FIRE_B, TILE_LAVA_FLOW, TILE_LAVA_STILL, TILE_PORTAL, TILE_WATER_FLOW, TILE_WATER_STILL, type TileRef } from './textures';
@@ -409,43 +409,36 @@ export class BetaBuilder {
 
   /** renderBlockRedstoneWire: the dot trimmed to its connections, or the line tile along one axis; power-coloured. */
   private wire(nb: Nb, meta: number): void {
-    const p = meta / 15;
-    const r = meta === 0 ? 0.3 : p * 0.6 + 0.4, g = Math.max(0, p * p * 0.7 - 0.5), b = Math.max(0, p * p * 0.6 - 0.7);
-    const tint = ((r * 255) << 16) | ((g * 255) << 8) | (b * 255);
-    const attracts = (id: number) => id === 55 || id === 75 || id === 76 || id === 69 || id === 70 || id === 72 || id === 77 || id === 93 || id === 94;
-    const conn = (dx: number, dz: number) => {
-      if (attracts(nb.id(dx, 0, dz))) return true;
-      if (!opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, -1, dz) === 55) return true;
-      return !opaqueBeta(nb.id(0, 1, 0)) && opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, 1, dz) === 55;
-    };
-    const w = conn(-1, 0), e = conn(1, 0), n = conn(0, -1), s = conn(0, 1);
+    const w = wireLinks(nb, -1, 0), e = wireLinks(nb, 1, 0), n = wireLinks(nb, 0, -1), s = wireLinks(nb, 0, 1);
+    const opts = { tint: fixedTint(wireTint(meta)), layer: Layer.Cutout, flat: 0x8a0a0a, textured: this.textured, shade: 1, twoSided: true };
     const h = 1 / 64;
-    let shape = 0;
-    if ((w || e) && !n && !s) shape = 1;
-    if ((n || s) && !e && !w) shape = 2;
-    const opts = { tint: fixedTint(tint), layer: Layer.Cutout, flat: 0x8a0a0a, textured: this.textured, shade: 1, twoSided: true };
-    if (shape === 0) {
-      let x0 = 0, x1 = 1, z0 = 0, z1 = 1;
-      if (w || e || n || s) {
-        if (!w) x0 += 0.3125;
-        if (!e) x1 -= 0.3125;
-        if (!n) z0 += 0.3125;
-        if (!s) z1 -= 0.3125;
-      }
-      this.out.push(makeQuad([x0, h, z0, x0, h, z1, x1, h, z1, x1, h, z0], [x0, z0, x0, z1, x1, z1, x1, z0], { ...opts, c: 164 & 15, r: 164 >> 4 }));
-    } else if (shape === 1) this.out.push(makeQuad([0, h, 0, 0, h, 1, 1, h, 1, 1, h, 0], [0, 0, 0, 1, 1, 1, 1, 0], { ...opts, c: 165 & 15, r: 165 >> 4 }));
-    else this.out.push(makeQuad([0, h, 0, 0, h, 1, 1, h, 1, 1, h, 0], [0, 1, 1, 1, 1, 0, 0, 0], { ...opts, c: 165 & 15, r: 165 >> 4 }));
+    if ((w || e) && !n && !s) this.out.push(makeQuad([0, h, 0, 0, h, 1, 1, h, 1, 1, h, 0], [0, 0, 0, 1, 1, 1, 1, 0], { ...opts, c: 165 & 15, r: 165 >> 4 }));
+    else if ((n || s) && !e && !w) this.out.push(makeQuad([0, h, 0, 0, h, 1, 1, h, 1, 1, h, 0], [0, 1, 1, 1, 1, 0, 0, 0], { ...opts, c: 165 & 15, r: 165 >> 4 }));
+    else this.wireDot(w, e, n, s, opts);
     // Climbing up the faces of opaque neighbours.
-    if (!opaqueBeta(nb.id(0, 1, 0))) {
-      const o = 1 / 64;
-      const climb = (dx: number, dz: number, p: number[]) => {
-        if (opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, 1, dz) === 55) this.out.push(makeQuad(p, [1, 0, 1, 1, 0, 1, 0, 0], { ...opts, c: 165 & 15, r: 165 >> 4, dir: -1 }));
-      };
-      climb(-1, 0, [o, 1, 1, o, 0, 1, o, 0, 0, o, 1, 0]);
-      climb(1, 0, [1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o, 1, 1]);
-      climb(0, -1, [0, 1, o, 0, 0, o, 1, 0, o, 1, 1, o]);
-      climb(0, 1, [1, 1, 1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o]);
+    if (opaqueBeta(nb.id(0, 1, 0))) return;
+    const o = 1 / 64;
+    this.wireClimb(nb, -1, 0, [o, 1, 1, o, 0, 1, o, 0, 0, o, 1, 0], opts);
+    this.wireClimb(nb, 1, 0, [1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o, 1, 1], opts);
+    this.wireClimb(nb, 0, -1, [0, 1, o, 0, 0, o, 1, 0, o, 1, 1, o], opts);
+    this.wireClimb(nb, 0, 1, [1, 1, 1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o], opts);
+  }
+
+  /** The dot (the cross tile), trimmed to the sides it links to. */
+  private wireDot(w: boolean, e: boolean, n: boolean, s: boolean, opts: QuadInit): void {
+    const h = 1 / 64;
+    let x0 = 0, x1 = 1, z0 = 0, z1 = 1;
+    if (w || e || n || s) {
+      if (!w) x0 += 0.3125;
+      if (!e) x1 -= 0.3125;
+      if (!n) z0 += 0.3125;
+      if (!s) z1 -= 0.3125;
     }
+    this.out.push(makeQuad([x0, h, z0, x0, h, z1, x1, h, z1, x1, h, z0], [x0, z0, x0, z1, x1, z1, x1, z0], { ...opts, c: 164 & 15, r: 164 >> 4 }));
+  }
+
+  private wireClimb(nb: Nb, dx: number, dz: number, p: number[], opts: QuadInit): void {
+    if (opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, 1, dz) === 55) this.out.push(makeQuad(p, [1, 0, 1, 1, 0, 1, 0, 0], { ...opts, c: 165 & 15, r: 165 >> 4, dir: -1 }));
   }
 
   private crops(meta: number): void {
@@ -624,6 +617,23 @@ export class BetaBuilder {
 
 const ref1 = (tile: number): TileRef => (tile < 0 ? NO_TILE : { tile, tint: 0, overlay: -1, overlayTint: 0 });
 
+/** Redstone wire's power colour: dark red unpowered, brighter and yellower with power. */
+function wireTint(meta: number): number {
+  const p = meta / 15;
+  const r = meta === 0 ? 0.3 : p * 0.6 + 0.4, g = Math.max(0, p * p * 0.7 - 0.5), b = Math.max(0, p * p * 0.6 - 0.7);
+  return ((r * 255) << 16) | ((g * 255) << 8) | (b * 255);
+}
+
+/** Blocks redstone wire links to on its own level. */
+const WIRE_ATTRACTS = new Set([55, 75, 76, 69, 70, 72, 77, 93, 94]);
+
+/** Wire links toward (dx, dz): to a power component, down over a non-opaque side, or up an opaque one (nothing above). */
+function wireLinks(nb: Nb, dx: number, dz: number): boolean {
+  if (WIRE_ATTRACTS.has(nb.id(dx, 0, dz))) return true;
+  if (!opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, -1, dz) === 55) return true;
+  return !opaqueBeta(nb.id(0, 1, 0)) && opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, 1, dz) === 55;
+}
+
 function uvOn(f: number, x: number, y: number, z: number): [number, number] {
   switch (f) {
     case 0: case 1: return [x, z];
@@ -653,39 +663,49 @@ function doorTex(idx: number, side: number, meta: number): number {
 /** BlockChest.getBlockTexture(world, x, y, z, side): singles face away from an opaque neighbour, pairs show the wide
  * front (41/42) and back (57/58) halves. */
 export function chestTile(nb: Nb, l: number): number {
-  const idx = 26, id = 54;
-  if (l === 0 || l === 1) return idx - 1;
-  const B = (dx: number, dz: number) => nb.id(dx, 0, dz);
-  const op = (v: number) => opaqueBeta(v);
-  const i1 = B(0, -1), j1 = B(0, 1), k1 = B(-1, 0), l1 = B(1, 0);
-  if (i1 === id || j1 === id) {
-    if (l === 2 || l === 3) return idx;
-    let i2 = 0;
-    if (i1 === id) i2 = -1;
-    const k2 = B(-1, i1 !== id ? 1 : -1), i3 = B(1, i1 !== id ? 1 : -1);
-    if (l === 4) i2 = -1 - i2;
-    let b1 = 5;
-    if ((op(k1) || op(k2)) && !op(l1) && !op(i3)) b1 = 5;
-    if ((op(l1) || op(i3)) && !op(k1) && !op(k2)) b1 = 4;
-    return (l !== b1 ? idx + 32 : idx + 16) + i2;
-  }
-  if (k1 === id || l1 === id) {
-    if (l === 4 || l === 5) return idx;
-    let j2 = 0;
-    if (k1 === id) j2 = -1;
-    const l2 = B(k1 !== id ? 1 : -1, -1), j3 = B(k1 !== id ? 1 : -1, 1);
-    if (l === 3) j2 = -1 - j2;
-    let b2 = 3;
-    if ((op(i1) || op(l2)) && !op(j1) && !op(j3)) b2 = 3;
-    if ((op(j1) || op(j3)) && !op(i1) && !op(l2)) b2 = 2;
-    return (l !== b2 ? idx + 32 : idx + 16) + j2;
-  }
+  if (l === 0 || l === 1) return CHEST_TILE - 1;
+  const i1 = nb.id(0, 0, -1), j1 = nb.id(0, 0, 1), k1 = nb.id(-1, 0, 0), l1 = nb.id(1, 0, 0);
+  if (i1 === CHEST || j1 === CHEST) return chestPairZ(nb, l, i1, k1, l1);
+  if (k1 === CHEST || l1 === CHEST) return chestPairX(nb, l, i1, j1, k1);
+  return chestSingle(l, i1, j1, k1, l1);
+}
+
+const CHEST = 54, CHEST_TILE = 26;
+
+/** A pair along z (its partner north or south): the wide halves on the west/east faces, the front where nothing opaque is. */
+function chestPairZ(nb: Nb, l: number, i1: number, k1: number, l1: number): number {
+  if (l === 2 || l === 3) return CHEST_TILE;
+  let i2 = i1 === CHEST ? -1 : 0;
+  const dz = i1 !== CHEST ? 1 : -1;
+  const k2 = nb.id(-1, 0, dz), i3 = nb.id(1, 0, dz);
+  if (l === 4) i2 = -1 - i2;
+  const front = blockedOnlyOn(l1, i3, k1, k2) ? 4 : 5;
+  return (l !== front ? CHEST_TILE + 32 : CHEST_TILE + 16) + i2;
+}
+
+/** A pair along x (its partner west or east): the wide halves on the north/south faces. */
+function chestPairX(nb: Nb, l: number, i1: number, j1: number, k1: number): number {
+  if (l === 4 || l === 5) return CHEST_TILE;
+  let j2 = k1 === CHEST ? -1 : 0;
+  const dx = k1 !== CHEST ? 1 : -1;
+  const l2 = nb.id(dx, 0, -1), j3 = nb.id(dx, 0, 1);
+  if (l === 3) j2 = -1 - j2;
+  const front = blockedOnlyOn(j1, j3, i1, l2) ? 2 : 3;
+  return (l !== front ? CHEST_TILE + 32 : CHEST_TILE + 16) + j2;
+}
+
+/** One of `a`/`a2` is opaque and neither of `b`/`b2` is: the pair's front turns away from the `a` side. */
+function blockedOnlyOn(a: number, a2: number, b: number, b2: number): boolean {
+  return (opaqueBeta(a) || opaqueBeta(a2)) && !opaqueBeta(b) && !opaqueBeta(b2);
+}
+
+/** A single chest faces away from an opaque neighbour (the last rule that applies: south, north, east, west). */
+function chestSingle(l: number, i1: number, j1: number, k1: number, l1: number): number {
   let b0 = 3;
-  if (op(i1) && !op(j1)) b0 = 3;
-  if (op(j1) && !op(i1)) b0 = 2;
-  if (op(k1) && !op(l1)) b0 = 5;
-  if (op(l1) && !op(k1)) b0 = 4;
-  return l !== b0 ? idx : idx + 1;
+  if (opaqueBeta(j1) && !opaqueBeta(i1)) b0 = 2;
+  if (opaqueBeta(k1) && !opaqueBeta(l1)) b0 = 5;
+  if (opaqueBeta(l1) && !opaqueBeta(k1)) b0 = 4;
+  return l !== b0 ? CHEST_TILE : CHEST_TILE + 1;
 }
 
 export { isFluid };
