@@ -177,23 +177,32 @@ public static class ServerPing
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
-        int? protocol = null;
-        string? name = null;
-        if (root.TryGetProperty("version", out var v))
-        {
-            if (v.TryGetProperty("protocol", out var p) && p.TryGetInt32(out var pi)) protocol = pi;
-            if (v.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String) name = n.GetString();
-        }
+        var (protocol, name) = StatusVersion(root);
         int online = 0, max = 0;
         if (root.TryGetProperty("players", out var pl))
         {
-            if (pl.TryGetProperty("online", out var o) && o.TryGetInt32(out var oi)) online = oi;
-            if (pl.TryGetProperty("max", out var m) && m.TryGetInt32(out var mi)) max = mi;
+            online = StatusInt(pl, "online");
+            max = StatusInt(pl, "max");
         }
         string motd = root.TryGetProperty("description", out var d) ? ComponentText(d) : "";
         if (protocol is null) throw new InvalidDataException("status JSON has no version.protocol");
         return new ServerPingResult(false, protocol, name, motd, online, max);
     }
+
+    /// <summary><c>version.protocol</c> and <c>version.name</c>, each null when missing or mistyped.</summary>
+    private static (int? Protocol, string? Name) StatusVersion(JsonElement root)
+    {
+        int? protocol = null;
+        string? name = null;
+        if (!root.TryGetProperty("version", out var v)) return (protocol, name);
+        if (v.TryGetProperty("protocol", out var p) && p.TryGetInt32(out var pi)) protocol = pi;
+        if (v.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String) name = n.GetString();
+        return (protocol, name);
+    }
+
+    /// <summary>An int property of the players object, 0 when missing or not an int.</summary>
+    private static int StatusInt(JsonElement players, string key) =>
+        players.TryGetProperty(key, out var e) && e.TryGetInt32(out var i) ? i : 0;
 
     /// <summary>Plain text of a chat component (string, {text, extra[]}, or an array).</summary>
     private static string ComponentText(JsonElement e) => e.ValueKind switch

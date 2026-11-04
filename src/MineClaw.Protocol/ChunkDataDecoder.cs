@@ -88,39 +88,15 @@ public static class ChunkDataDecoder
     /// </summary>
     public static MapChunkPacket Encode(ChunkRegion region)
     {
-        if (region.Y < 0 || region.Y + region.SizeY > WorldHeight)
-            throw new ArgumentException("Region Y range must lie within 0..128", nameof(region));
-        if (region.SizeX is < 1 or > 256 || region.SizeY is < 1 or > 256 || region.SizeZ is < 1 or > 256)
-            throw new ArgumentException("Region sizes must be 1..256", nameof(region));
-
-        int height = region.SizeY, y0 = region.Y, firstY = y0 & ~1;
+        CheckEncodable(region);
         var data = new byte[region.SizeX * region.SizeY * region.SizeZ * 5 / 2];
         int offset = 0;
-        foreach (var (cx, lx0, lx1, cz, lz0, lz1) in Columns(region.X, region.Z, region.SizeX, region.SizeZ))
+        foreach (var column in Columns(region.X, region.Z, region.SizeX, region.SizeZ))
         {
-            for (int lx = lx0; lx < lx1; lx++)
-            for (int lz = lz0; lz < lz1; lz++)
-            {
-                int src = region.Index(cx * 16 + lx - region.X, 0, cz * 16 + lz - region.Z);
-                Buffer.BlockCopy(region.BlockIds, src, data, offset, height);
-                offset += height;
-            }
-            foreach (var arr in new[] { region.Metadata, region.BlockLight, region.SkyLight })
-            {
-                for (int lx = lx0; lx < lx1; lx++)
-                for (int lz = lz0; lz < lz1; lz++)
-                {
-                    int col = region.Index(cx * 16 + lx - region.X, 0, cz * 16 + lz - region.Z);
-                    for (int k = 0; k < height / 2; k++)
-                    {
-                        int yLow = firstY + 2 * k, yHigh = yLow + 1;
-                        int lo = yLow >= y0 && yLow < y0 + height ? arr[col + yLow - y0] & 0x0F : 0;
-                        int hi = yHigh >= y0 && yHigh < y0 + height ? arr[col + yHigh - y0] & 0x0F : 0;
-                        data[offset + k] = (byte)(lo | (hi << 4));
-                    }
-                    offset += height / 2;
-                }
-            }
+            offset = PackIds(region, column, data, offset);
+            offset = PackNibbles(region, region.Metadata, column, data, offset);
+            offset = PackNibbles(region, region.BlockLight, column, data, offset);
+            offset = PackNibbles(region, region.SkyLight, column, data, offset);
         }
         return new MapChunkPacket
         {
@@ -128,6 +104,48 @@ public static class ChunkDataDecoder
             SizeX = region.SizeX, SizeY = region.SizeY, SizeZ = region.SizeZ,
             CompressedData = Compress(data),
         };
+    }
+
+    private static void CheckEncodable(ChunkRegion region)
+    {
+        if (region.Y < 0 || region.Y + region.SizeY > WorldHeight)
+            throw new ArgumentException("Region Y range must lie within 0..128", nameof(region));
+        if (region.SizeX is < 1 or > 256 || region.SizeY is < 1 or > 256 || region.SizeZ is < 1 or > 256)
+            throw new ArgumentException("Region sizes must be 1..256", nameof(region));
+    }
+
+    /// <summary>One column's block ids: a run of the region's height per (x, z).</summary>
+    private static int PackIds(ChunkRegion region, (int Cx, int Lx0, int Lx1, int Cz, int Lz0, int Lz1) col, byte[] data, int offset)
+    {
+        int height = region.SizeY;
+        for (int lx = col.Lx0; lx < col.Lx1; lx++)
+        for (int lz = col.Lz0; lz < col.Lz1; lz++)
+        {
+            int src = region.Index(col.Cx * 16 + lx - region.X, 0, col.Cz * 16 + lz - region.Z);
+            Buffer.BlockCopy(region.BlockIds, src, data, offset, height);
+            offset += height;
+        }
+        return offset;
+    }
+
+    /// <summary>One column's nibble array (metadata or light): pairs start on an even y, cells outside the region are 0.</summary>
+    private static int PackNibbles(ChunkRegion region, byte[] arr, (int Cx, int Lx0, int Lx1, int Cz, int Lz0, int Lz1) col, byte[] data, int offset)
+    {
+        int height = region.SizeY, y0 = region.Y, firstY = y0 & ~1;
+        for (int lx = col.Lx0; lx < col.Lx1; lx++)
+        for (int lz = col.Lz0; lz < col.Lz1; lz++)
+        {
+            int at = region.Index(col.Cx * 16 + lx - region.X, 0, col.Cz * 16 + lz - region.Z);
+            for (int k = 0; k < height / 2; k++)
+            {
+                int yLow = firstY + 2 * k, yHigh = yLow + 1;
+                int lo = yLow >= y0 && yLow < y0 + height ? arr[at + yLow - y0] & 0x0F : 0;
+                int hi = yHigh >= y0 && yHigh < y0 + height ? arr[at + yHigh - y0] & 0x0F : 0;
+                data[offset + k] = (byte)(lo | (hi << 4));
+            }
+            offset += height / 2;
+        }
+        return offset;
     }
 
     /// <summary>Chunk columns touched by the region and the local x/z ranges within each (vanilla order).</summary>

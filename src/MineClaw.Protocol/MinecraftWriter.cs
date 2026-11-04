@@ -64,25 +64,30 @@ public sealed class MinecraftWriter
             {
                 if (e.Index > 31) throw new ArgumentException($"metadata index {e.Index} > 31");
                 WriteUByte((byte)(((int)e.Type << 5) | (e.Index & 0x1F)));
-                switch (e.Type)
-                {
-                    case MetadataType.Byte: WriteSByte(Convert.ToSByte(e.Value)); break;
-                    case MetadataType.Short: WriteShort(Convert.ToInt16(e.Value)); break;
-                    case MetadataType.Int: WriteInt(Convert.ToInt32(e.Value)); break;
-                    case MetadataType.Float: WriteFloat(Convert.ToSingle(e.Value)); break;
-                    case MetadataType.String: WriteString16((string)e.Value); break;
-                    case MetadataType.Item:
-                        var s = (ItemStack)e.Value;
-                        WriteShort(s.Id); WriteUByte(s.Count); WriteShort(s.Damage);
-                        break;
-                    case MetadataType.Vector:
-                        var v = (MetadataVector)e.Value;
-                        WriteInt(v.X); WriteInt(v.Y); WriteInt(v.Z);
-                        break;
-                    default: throw new ArgumentException($"Unknown metadata type {e.Type}");
-                }
+                WriteMetadataValue(e);
             }
         }
         WriteUByte(EntityMetadata.Terminator);
+    }
+
+    private void WriteMetadataValue(MetadataEntry e)
+    {
+        switch (e.Type)
+        {
+            case MetadataType.Byte: WriteSByte(Convert.ToSByte(e.Value)); break;
+            case MetadataType.Short: WriteShort(Convert.ToInt16(e.Value)); break;
+            case MetadataType.Int: WriteInt(Convert.ToInt32(e.Value)); break;
+            case MetadataType.Float: WriteFloat(Convert.ToSingle(e.Value)); break;
+            case MetadataType.String: WriteString16((string)e.Value); break;
+            case MetadataType.Item:
+                var s = (ItemStack)e.Value;
+                WriteShort(s.Id); WriteUByte(s.Count); WriteShort(s.Damage);
+                break;
+            case MetadataType.Vector:
+                var v = (MetadataVector)e.Value;
+                WriteInt(v.X); WriteInt(v.Y); WriteInt(v.Z);
+                break;
+            default: throw new ArgumentException($"Unknown metadata type {e.Type}");
+        }
     }
 }

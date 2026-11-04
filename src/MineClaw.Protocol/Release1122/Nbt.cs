@@ -75,52 +75,65 @@ public static class Nbt
     private static object ReadPayload(ref WireReader r, NbtType type, int depth)
     {
         if (depth > MaxDepth) throw new ProtocolException("NBT nested deeper than 512");
-        switch (type)
+        return type switch
         {
-            case NbtType.Byte: return r.ReadSByte();
-            case NbtType.Short: return r.ReadShort();
-            case NbtType.Int: return r.ReadInt();
-            case NbtType.Long: return r.ReadLong();
-            case NbtType.Float: return r.ReadFloat();
-            case NbtType.Double: return r.ReadDouble();
-            case NbtType.ByteArray:
-                return r.ReadBytes(Length(ref r, 1)).ToArray();
-            case NbtType.String: return ReadModifiedUtf8(ref r);
-            case NbtType.List:
-            {
-                var et = (NbtType)r.ReadUByte();
-                int n = r.ReadInt();
-                if (n < 0 || n > r.Remaining) throw new ProtocolException($"NBT list length {n} out of range");
-                if (n > 0 && et == NbtType.End) throw new ProtocolException("NBT list of TAG_End with elements");
-                var items = new List<object>(n);
-                for (int i = 0; i < n; i++) items.Add(ReadPayload(ref r, et, depth + 1));
-                return new NbtList(et, items);
-            }
-            case NbtType.Compound:
-            {
-                var c = new NbtCompound();
-                while (true)
-                {
-                    var t = (NbtType)r.ReadUByte();
-                    if (t == NbtType.End) return c;
-                    string key = ReadModifiedUtf8(ref r);
-                    c[key] = ReadPayload(ref r, t, depth + 1);
-                }
-            }
-            case NbtType.IntArray:
-            {
-                var a = new int[Length(ref r, 4)];
-                for (int i = 0; i < a.Length; i++) a[i] = r.ReadInt();
-                return a;
-            }
-            case NbtType.LongArray:
-            {
-                var a = new long[Length(ref r, 8)];
-                for (int i = 0; i < a.Length; i++) a[i] = r.ReadLong();
-                return a;
-            }
-            default: throw new ProtocolException($"unknown NBT tag type {(byte)type}");
+            NbtType.Byte => r.ReadSByte(),
+            NbtType.Short => r.ReadShort(),
+            NbtType.Int => r.ReadInt(),
+            NbtType.Long => r.ReadLong(),
+            NbtType.Float => r.ReadFloat(),
+            NbtType.Double => r.ReadDouble(),
+            NbtType.String => ReadModifiedUtf8(ref r),
+            _ => ReadContainer(ref r, type, depth),
+        };
+    }
+
+    /// <summary>The payload of an array, list or compound tag.</summary>
+    private static object ReadContainer(ref WireReader r, NbtType type, int depth) => type switch
+    {
+        NbtType.ByteArray => r.ReadBytes(Length(ref r, 1)).ToArray(),
+        NbtType.List => ReadList(ref r, depth),
+        NbtType.Compound => ReadCompound(ref r, depth),
+        NbtType.IntArray => ReadIntArray(ref r),
+        NbtType.LongArray => ReadLongArray(ref r),
+        _ => throw new ProtocolException($"unknown NBT tag type {(byte)type}"),
+    };
+
+    private static NbtList ReadList(ref WireReader r, int depth)
+    {
+        var et = (NbtType)r.ReadUByte();
+        int n = r.ReadInt();
+        if (n < 0 || n > r.Remaining) throw new ProtocolException($"NBT list length {n} out of range");
+        if (n > 0 && et == NbtType.End) throw new ProtocolException("NBT list of TAG_End with elements");
+        var items = new List<object>(n);
+        for (int i = 0; i < n; i++) items.Add(ReadPayload(ref r, et, depth + 1));
+        return new NbtList(et, items);
+    }
+
+    private static NbtCompound ReadCompound(ref WireReader r, int depth)
+    {
+        var c = new NbtCompound();
+        while (true)
+        {
+            var t = (NbtType)r.ReadUByte();
+            if (t == NbtType.End) return c;
+            string key = ReadModifiedUtf8(ref r);
+            c[key] = ReadPayload(ref r, t, depth + 1);
         }
+    }
+
+    private static int[] ReadIntArray(ref WireReader r)
+    {
+        var a = new int[Length(ref r, 4)];
+        for (int i = 0; i < a.Length; i++) a[i] = r.ReadInt();
+        return a;
+    }
+
+    private static long[] ReadLongArray(ref WireReader r)
+    {
+        var a = new long[Length(ref r, 8)];
+        for (int i = 0; i < a.Length; i++) a[i] = r.ReadLong();
+        return a;
     }
 
     private static int Length(ref WireReader r, int elementSize)
@@ -167,8 +180,13 @@ public static class Nbt
     public static NbtType TypeOf(object v) => v switch
     {
         sbyte => NbtType.Byte, short => NbtType.Short, int => NbtType.Int, long => NbtType.Long, float => NbtType.Float,
-        double => NbtType.Double, byte[] => NbtType.ByteArray, string => NbtType.String, NbtList => NbtType.List,
-        NbtCompound => NbtType.Compound, int[] => NbtType.IntArray, long[] => NbtType.LongArray,
+        double => NbtType.Double, string => NbtType.String,
+        _ => ContainerTypeOf(v),
+    };
+
+    private static NbtType ContainerTypeOf(object v) => v switch
+    {
+        byte[] => NbtType.ByteArray, NbtList => NbtType.List, NbtCompound => NbtType.Compound, int[] => NbtType.IntArray, long[] => NbtType.LongArray,
         _ => throw new ArgumentException($"{v.GetType().Name} is not an NBT value"),
     };
 
@@ -182,8 +200,16 @@ public static class Nbt
             case long l: w.WriteLong(l); break;
             case float f: w.WriteFloat(f); break;
             case double d: w.WriteDouble(d); break;
-            case byte[] a: w.WriteInt(a.Length).WriteBytes(a); break;
             case string s: WriteModifiedUtf8(w, s); break;
+            default: WriteContainer(w, v); break;
+        }
+    }
+
+    private static void WriteContainer(WireWriter w, object v)
+    {
+        switch (v)
+        {
+            case byte[] a: w.WriteInt(a.Length).WriteBytes(a); break;
             case NbtList list:
                 w.WriteUByte((byte)list.ElementType).WriteInt(list.Count);
                 foreach (var item in list.Items) WritePayload(w, item);

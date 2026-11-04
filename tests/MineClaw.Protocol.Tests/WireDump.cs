@@ -51,7 +51,7 @@ internal static class WireDump
         switch (o)
         {
             case null: sb.Append("null"); return;
-            case string s: sb.Append('"').Append(s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n")).Append('"'); return;
+            case string s: AppendString(sb, s); return;
             case double d: sb.Append(d.ToString("R", CultureInfo.InvariantCulture)); return;
             case float f: sb.Append(f.ToString("R", CultureInfo.InvariantCulture)); return;
             case bool b: sb.Append(b ? "true" : "false"); return;
@@ -88,6 +88,20 @@ internal static class WireDump
             Append(sb, v, depth + 1);
         }
         sb.Append('}');
+    }
+
+    /// <summary>A quoted string; surrogates (a lone one can't be UTF-8 encoded) as \uXXXX.</summary>
+    private static void AppendString(StringBuilder sb, string s)
+    {
+        sb.Append('"');
+        foreach (char c in s)
+        {
+            if (char.IsSurrogate(c)) sb.Append("\\u").Append(((int)c).ToString("X4"));
+            else if (c == '\\' || c == '"') sb.Append('\\').Append(c);
+            else if (c == '\n') sb.Append("\\n");
+            else sb.Append(c);
+        }
+        sb.Append('"');
     }
 
     private static IEnumerable<MemberInfo> Members(Type type)

@@ -128,18 +128,19 @@ public sealed class MinecraftReader
             if (header == EntityMetadata.Terminator) return md;
             var type = (MetadataType)((header & 0xE0) >> 5);
             byte index = (byte)(header & 0x1F);
-            object value = type switch
-            {
-                MetadataType.Byte => ReadSByte(),
-                MetadataType.Short => ReadShort(),
-                MetadataType.Int => ReadInt(),
-                MetadataType.Float => ReadFloat(),
-                MetadataType.String => ReadString16(),
-                MetadataType.Item => new ItemStack(ReadShort(), ReadUByte(), ReadShort()),
-                MetadataType.Vector => new MetadataVector(ReadInt(), ReadInt(), ReadInt()),
-                _ => throw new ProtocolException($"Unknown entity metadata type {(int)type} (header 0x{header:X2}, index {index})"),
-            };
-            md.Add(new MetadataEntry(index, type, value));
+            md.Add(new MetadataEntry(index, type, ReadMetadataValue(type, header, index)));
         }
     }
+
+    private object ReadMetadataValue(MetadataType type, byte header, byte index) => type switch
+    {
+        MetadataType.Byte => ReadSByte(),
+        MetadataType.Short => ReadShort(),
+        MetadataType.Int => ReadInt(),
+        MetadataType.Float => ReadFloat(),
+        MetadataType.String => ReadString16(),
+        MetadataType.Item => new ItemStack(ReadShort(), ReadUByte(), ReadShort()),
+        MetadataType.Vector => new MetadataVector(ReadInt(), ReadInt(), ReadInt()),
+        _ => throw new ProtocolException($"Unknown entity metadata type {(int)type} (header 0x{header:X2}, index {index})"),
+    };
 }

@@ -425,7 +425,7 @@ internal sealed class Wire1122Script(StringBuilder sb) : Wire1122Harness(sb)
     private static WireWriter W(int id) => WireWriter.ForPacket(id);
 
     /// <summary>One entry of every 1.12.2 metadata serializer (<c>DataSerializers</c> 0..13), then the end.</summary>
-    private static WireWriter AllSerializers(WireWriter w)
+    internal static WireWriter AllSerializers(WireWriter w)
     {
         w.WriteUByte(0).WriteVarInt(0).WriteUByte(0x21);                       // flags: burning + invisible
         w.WriteUByte(1).WriteVarInt(1).WriteVarInt(250);                       // air
