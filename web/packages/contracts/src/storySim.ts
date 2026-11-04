@@ -492,6 +492,20 @@ function retryTargets(body: Extract<StoryBuildRequest, { op: 'retry' | 'retry_al
   return { want, cells };
 }
 
+/** The role a priorities request names (null: none, Custom); 404 when it names no role. */
+function roleNamed(c: Colony, id: string | null): Omit<StoryRole, 'pawns'> | null {
+  if (!id) return null;
+  const role = c.roles.find((r) => r.id === id);
+  if (!role) throw Object.assign(new Error(`role: no such role '${id}'`), { status: 404 });
+  return role;
+}
+
+/** The pawn follows the role (its values), or turns Custom with the values it has. */
+function followRole(p: StoryPawn, role: Omit<StoryRole, 'pawns'> | null): void {
+  p.role = role?.id ?? null;
+  if (role) applyRole(p, role);
+}
+
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
 
@@ -1161,17 +1175,12 @@ export class StorySim {
     body: { pawns: string[]; work: Partial<Record<string, number>> } | { pawns: string[]; role: string | null },
   ) {
     const c = this.colony(id);
-    const role = 'role' in body && body.role ? c.roles.find((r) => r.id === body.role) : null;
-    if ('role' in body && body.role && !role)
-      throw Object.assign(new Error(`role: no such role '${body.role}'`), { status: 404 });
+    const role = 'role' in body ? roleNamed(c, body.role) : null;
     for (const p of this.pawnsOf(c, body.pawns)) {
       if ('work' in body) {
         p.p.role = null;
         Object.assign(p.p.priorities, body.work);
-      } else {
-        p.p.role = role?.id ?? null;
-        if (role) applyRole(p.p, role);
-      }
+      } else followRole(p.p, role);
       p.rev = this.bump(c);
     }
     return { ok: true, rev: c.rev };
@@ -1694,16 +1703,20 @@ export class StorySim {
   private removeDesignations(c: Colony, body: StoryDesignationRequest, a: StoryArea | null): DesignationsAck {
     let n = 0;
     for (const [k, f] of c.designations) {
-      const d = f.v;
-      if (body.kind && d.kind !== body.kind) continue;
-      const cells = d.targets ?? (d.block ? [d.block] : []);
-      if (!this.designationInArea(d, cells, a) && !designationListed(d, k, cells, body)) continue;
+      if (!this.designationRemoved(f.v, k, body, a)) continue;
       c.designations.delete(k);
       c.removed.push({ rev: this.bump(c), kind: 'designations', key: k });
       for (const p of c.pawns.values()) if (p.task?.ref === k) this.drop(c, p);
       n++;
     }
     return { ok: true, count: n, rev: c.rev };
+  }
+
+  /** Does a remove request take this designation (its kind, if given; in the area or listed)? */
+  private designationRemoved(d: StoryDesignation, k: Key, body: StoryDesignationRequest, a: StoryArea | null): boolean {
+    if (body.kind && d.kind !== body.kind) return false;
+    const cells = d.targets ?? (d.block ? [d.block] : []);
+    return this.designationInArea(d, cells, a) || designationListed(d, k, cells, body);
   }
 
   private designationInArea(d: StoryDesignation, cells: ReadonlyArray<readonly number[]>, a: StoryArea | null): boolean {
@@ -2558,20 +2571,18 @@ export class StorySim {
   /** Who an attack order is on: a player or bot (confirm needed), one of the colony's pawns (refused), or a mob. */
   private attackTarget(c: Colony, t: StoryOrderRequest['order']['target']): AttackTarget | null {
     if (!t || typeof t !== 'object') return null;
-    const ai = this.opts.world.ai?.() ?? [];
-    const kindOf = (name: string): AttackTarget['kind'] =>
-      c.pawns.has(name) || [...c.pawns.values()].some((p) => p.p.display === name)
-        ? 'pawn'
-        : ai.some((a) => a.name === name)
-          ? 'bot'
-          : 'player';
+    const ai = this.aiBodies();
+    const kindOf = (name: string) => this.attackKind(c, ai, name);
     if ('player' in t) return { name: t.player, kind: kindOf(t.player) };
-    if ('entity' in t) {
-      const e = this.opts.world.entities().find((x) => x.id === t.entity);
-      if (e?.kind === 'player') return { name: e.name ?? `#${e.id}`, kind: kindOf(e.name ?? '') };
-      return null;
-    }
-    return null;
+    if (!('entity' in t)) return null;
+    const e = this.opts.world.entities().find((x) => x.id === t.entity);
+    return e?.kind === 'player' ? { name: e.name ?? `#${e.id}`, kind: kindOf(e.name ?? '') } : null;
+  }
+
+  /** Who a named target is: one of the colony's pawns, an AI bot, else a player. */
+  private attackKind(c: Colony, ai: readonly StoryAiBody[], name: string): AttackTarget['kind'] {
+    if (c.pawns.has(name) || [...c.pawns.values()].some((p) => p.p.display === name)) return 'pawn';
+    return ai.some((a) => a.name === name) ? 'bot' : 'player';
   }
 
   /** POST …/policies. */
