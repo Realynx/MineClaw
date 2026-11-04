@@ -1,0 +1,1150 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the mock director: a golden run > bills: every op, refused and accepted, at a table, a furnace and an enchanting table (pins bills) 1`] = `
+[
+  [
+    "designate -2,64,-2",
+    "251e57a70805520f",
+  ],
+  [
+    "designate -3,64,-2",
+    "74d7c25cff050f09",
+  ],
+  [
+    "designate -10,64,-6",
+    "04715c777d0f4c2c",
+  ],
+  [
+    "designate -14,64,-6",
+    "75b0d450cb16fefe",
+  ],
+  [
+    "designate -16,64,-6",
+    "cbdc7bb6f757350b",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+  [
+    "add no bench",
+    "8c05b94656a161d4",
+  ],
+  [
+    "add unknown",
+    "ea1748c73988e9e3",
+  ],
+  [
+    "add wrong bench",
+    "cf9bfdd7b9f17479",
+  ],
+  [
+    "add sticks",
+    "52c7d89dd24cca24",
+  ],
+  [
+    "add torches",
+    "5407b2d848b969a2",
+  ],
+  [
+    "add glass",
+    "13d9d59f8a4132e8",
+  ],
+  [
+    "add glass inherit",
+    "2cfd3dfc5c5f41d0",
+  ],
+  [
+    "add planks",
+    "0130d044b88ab363",
+  ],
+  [
+    "add sticks",
+    "9f3ab338ae1a3572",
+  ],
+  [
+    "add torch",
+    "2c03e76457d2c985",
+  ],
+  [
+    "add chest",
+    "58b92a0be3be375d",
+  ],
+  [
+    "add crafting_table",
+    "2f0fc1af64c012ee",
+  ],
+  [
+    "add furnace",
+    "a79461a3ba261660",
+  ],
+  [
+    "add ladder",
+    "f62c6d919980f3b8",
+  ],
+  [
+    "add fence",
+    "d76407a4c6f7cfed",
+  ],
+  [
+    "add door",
+    "5b26341a8efd938e",
+  ],
+  [
+    "add wooden_pickaxe",
+    "11d13685e6547a78",
+  ],
+  [
+    "add stone_pickaxe",
+    "3b439eddeef94307",
+  ],
+  [
+    "add stone_axe",
+    "995b6cddbf7c5282",
+  ],
+  [
+    "add stone_sword",
+    "44c5ee74e6171e16",
+  ],
+  [
+    "add iron_pickaxe",
+    "cb2d85df6de6f8e5",
+  ],
+  [
+    "add bow",
+    "817b6369abf0b53c",
+  ],
+  [
+    "add bread",
+    "7147e85a3c8e4719",
+  ],
+  [
+    "add bucket",
+    "2ac8d96ffc4ec488",
+  ],
+  [
+    "add cook_pork",
+    "26acbcad629a4f8b",
+  ],
+  [
+    "add cook_beef",
+    "4884c13bf56aa47b",
+  ],
+  [
+    "add cook_chicken",
+    "7bf571aea57d6c45",
+  ],
+  [
+    "add cook_fish",
+    "73263d58abfc23bf",
+  ],
+  [
+    "add smelt_iron",
+    "ce0030765f3a4147",
+  ],
+  [
+    "add smelt_gold",
+    "2b3cbe688759f354",
+  ],
+  [
+    "add glass",
+    "18d89d8faa9f6ef4",
+  ],
+  [
+    "add stone",
+    "a0e3eadc1a3ac1d0",
+  ],
+  [
+    "add charcoal",
+    "4a997117544fdc6f",
+  ],
+  [
+    "add brew:awkward",
+    "6719d4079a690dff",
+  ],
+  [
+    "add brew:swiftness",
+    "798ef1eefdbbeb54",
+  ],
+  [
+    "add brew:splash_healing",
+    "ae3b65252895cf0f",
+  ],
+  [
+    "add enchant:diamond_pickaxe",
+    "f58c7746c4afeae3",
+  ],
+  [
+    "add enchant:iron_sword",
+    "ec86d84ce1b89f38",
+  ],
+  [
+    "add enchant:book",
+    "af6006cb54d799dc",
+  ],
+  [
+    "add repair:iron_pickaxe",
+    "9d90ca1b9654ebb3",
+  ],
+  [
+    "add combine:bow",
+    "c8392be2b17015d8",
+  ],
+  [
+    "add book:diamond_sword",
+    "cc4f7ee6f5bfd7b6",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+  [
+    "update",
+    "3775a892cbb86889",
+  ],
+  [
+    "update fuel at table",
+    "165f8fc7b65bbba4",
+  ],
+  [
+    "update fuel",
+    "b698209ff71338fb",
+  ],
+  [
+    "update fuel inherit",
+    "d02a70cbdfce4008",
+  ],
+  [
+    "pause",
+    "de36c7ccb4218d65",
+  ],
+  [
+    "resume",
+    "9c510c563c33b23e",
+  ],
+  [
+    "pause missing",
+    "abb6498ddf4e745c",
+  ],
+  [
+    "reorder",
+    "7188b75a30251462",
+  ],
+  [
+    "release claim",
+    "c391f1531d6885fa",
+  ],
+  [
+    "enchant",
+    "f101df46c5c2eb54",
+  ],
+  [
+    "enchant again",
+    "32777ba9f00171af",
+  ],
+  [
+    "enchant plain",
+    "0968b3a8ef6d14d5",
+  ],
+  [
+    "remove",
+    "894c4ed34104d670",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+  [
+    "workbench fuel",
+    "f984c40b956f844e",
+  ],
+  [
+    "add after fuel",
+    "328c0d3afb21d8e3",
+  ],
+  [
+    "benches",
+    "04a7c2b69b98033c",
+  ],
+]
+`;
+
+exports[`the mock director: a golden run > designations and builds: every op and selector, refused and accepted (pins designations / builds) 1`] = `
+[
+  [
+    "chop",
+    "5f5c552b831d5970",
+  ],
+  [
+    "chop again",
+    "aef0409b0ae9f461",
+  ],
+  [
+    "mine blocks",
+    "fe659372499b4a44",
+  ],
+  [
+    "mine stone",
+    "5705b5f0348bfb91",
+  ],
+  [
+    "haul area",
+    "1ae715f6b8443d1e",
+  ],
+  [
+    "haul entities",
+    "dad1bf9bb4ecea1e",
+  ],
+  [
+    "hunt",
+    "2d9ee4c59879c9e0",
+  ],
+  [
+    "forbid area",
+    "e6be784624c0f52b",
+  ],
+  [
+    "allow blocks",
+    "b8dc65b103a1a073",
+  ],
+  [
+    "cut",
+    "6386e62b38560c1d",
+  ],
+  [
+    "harvest none",
+    "7775c36deb1e93c9",
+  ],
+  [
+    "too big",
+    "7775c36deb1e93c9",
+  ],
+  [
+    "default kind",
+    "e2b068fa0d6cc4bb",
+  ],
+  [
+    "after adds",
+    "e0d3edd2e31a95ae",
+  ],
+  [
+    "remove ids",
+    "586b0a6f01f791cd",
+  ],
+  [
+    "remove blocks",
+    "bc60f08fd1ed39c5",
+  ],
+  [
+    "remove entities",
+    "8cd89cea291358fa",
+  ],
+  [
+    "remove kind area",
+    "e3a47b0a14980334",
+  ],
+  [
+    "remove nothing",
+    "41d9be871f9a6088",
+  ],
+  [
+    "retry none",
+    "cc73fde9bab312d7",
+  ],
+  [
+    "fail",
+    "1d8fc6ceb1f94c63",
+  ],
+  [
+    "retry",
+    "c0679691382e289b",
+  ],
+  [
+    "after removes",
+    "55a8c836717b7b22",
+  ],
+  [
+    "add",
+    "6d2c2ca0eccd366f",
+  ],
+  [
+    "water infinite",
+    "a62054285fd016b2",
+  ],
+  [
+    "water named",
+    "fe94468e8fe431cc",
+  ],
+  [
+    "lava off",
+    "67a702231b6999e1",
+  ],
+  [
+    "water bad material",
+    "8574312ba4d7facb",
+  ],
+  [
+    "water preview",
+    "ed0a2ca0f48b744f",
+  ],
+  [
+    "dug water",
+    "cb04b4f25acae6f2",
+  ],
+  [
+    "after builds",
+    "3ebbfb62d21c6f58",
+  ],
+  [
+    "pause",
+    "f47bf7e922c57045",
+  ],
+  [
+    "resume",
+    "fb3fee5eb8ea3926",
+  ],
+  [
+    "retry none",
+    "ce7995ebd5f804d7",
+  ],
+  [
+    "retry one",
+    "7fdfbb24e73aa82c",
+  ],
+  [
+    "retry ids",
+    "662b08c747ed730a",
+  ],
+  [
+    "reorder",
+    "681f42cc485712a3",
+  ],
+  [
+    "remove",
+    "2e37cd5b4244bf57",
+  ],
+  [
+    "after work",
+    "2882d09598bff137",
+  ],
+  [
+    "retry all",
+    "1fcc6d772da4c336",
+  ],
+  [
+    "end",
+    "87537e02db5a8bfc",
+  ],
+]
+`;
+
+exports[`the mock director: a golden run > materials: builds without benches, auto-placed stations, smelting, auto bills and their cancel (pins the plan pass) 1`] = `
+[
+  [
+    "release table",
+    "3ba5a136a3f62236",
+  ],
+  [
+    "add",
+    "addd02bbd2170c4a",
+  ],
+  [
+    "builds",
+    "e4f459181e395a89",
+  ],
+  [
+    "no auto place",
+    "54cfb1a8af1f56fb",
+  ],
+  [
+    "add more",
+    "c562d4b313eeb522",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "auto place",
+    "1920ddae38d9ac8e",
+  ],
+  [
+    "designate table",
+    "251e57a70805520f",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "designate furnace",
+    "74d7c25cff050f09",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "cancel auto",
+    "a6be1227bba9e1d9",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+  [
+    "reorder",
+    "2157d74fd3a1a380",
+  ],
+  [
+    "builds",
+    "6e2e3e71f88413ad",
+  ],
+  [
+    "benches",
+    "23aa5d7cf23616ff",
+  ],
+]
+`;
+
+exports[`the mock director: a golden run > records every request and the colony as it works (pins storySim.ts) 1`] = `
+[
+  [
+    "list empty",
+    "d6d757ad4f578fe7",
+  ],
+  [
+    "create bad",
+    "f849d51480862141",
+  ],
+  [
+    "delta founded",
+    "bad540bbc2d3719c",
+  ],
+  [
+    "state founded",
+    "3b2fa4edc5227a24",
+  ],
+  [
+    "priorities",
+    "35ed6573d1b4ad92",
+  ],
+  [
+    "priorities bad",
+    "04906340a66c5626",
+  ],
+  [
+    "roles add",
+    "f9cbd8a3adadc2f5",
+  ],
+  [
+    "roles assign",
+    "9b467253e25266ef",
+  ],
+  [
+    "schedule",
+    "bcb59f9347053f75",
+  ],
+  [
+    "options",
+    "dbfd525a85e4812a",
+  ],
+  [
+    "designate chop",
+    "b7c9ba1ef7137c16",
+  ],
+  [
+    "designate harvest",
+    "00d12c60d9415a45",
+  ],
+  [
+    "designate cut",
+    "b78e4d0e637000c9",
+  ],
+  [
+    "designate haul",
+    "1ae715f6b8443d1e",
+  ],
+  [
+    "designate hunt",
+    "2d9ee4c59879c9e0",
+  ],
+  [
+    "designate mine",
+    "5a55cb8de4abe9ea",
+  ],
+  [
+    "designate deconstruct",
+    "341e2c6b42fcd615",
+  ],
+  [
+    "designate forbid",
+    "7dfffadcd85581dc",
+  ],
+  [
+    "designate mine ores",
+    "3405521f47fd12ec",
+  ],
+  [
+    "designate blocks",
+    "da73e15be98bfcad",
+  ],
+  [
+    "designate entities",
+    "ce0103dbfa418ef8",
+  ],
+  [
+    "designate bad",
+    "60159137aebad4e7",
+  ],
+  [
+    "cancel area",
+    "01b711e8881ac923",
+  ],
+  [
+    "delta designated",
+    "2e3309aa7893d3c0",
+  ],
+  [
+    "zone farm",
+    "9ea80428f12f5f9c",
+  ],
+  [
+    "zone farm 2",
+    "f779fe795714cbad",
+  ],
+  [
+    "zone farm merge",
+    "5df6d1014648f505",
+  ],
+  [
+    "zone home",
+    "d8b86259e8d9d948",
+  ],
+  [
+    "zone quarry",
+    "c9fb5fce927ae143",
+  ],
+  [
+    "zone quarry small",
+    "2602fb7e1aa7f82f",
+  ],
+  [
+    "zone ores",
+    "591218e14014be90",
+  ],
+  [
+    "zone fish",
+    "ef437a16fcfefd36",
+  ],
+  [
+    "zone chop",
+    "259f522689ace3a0",
+  ],
+  [
+    "zone forbidden",
+    "f82f1367e2251889",
+  ],
+  [
+    "zone dump",
+    "6f0ece55f2ca8a22",
+  ],
+  [
+    "zone bill add",
+    "cfce3b9f1dc6e8f7",
+  ],
+  [
+    "zone bill add 2",
+    "a1f92794c8624427",
+  ],
+  [
+    "zone seek seeds",
+    "e8d3f990eb28acbe",
+  ],
+  [
+    "zone irrigation",
+    "ac24f59a50679d83",
+  ],
+  [
+    "zone update",
+    "89c5efe56704b85c",
+  ],
+  [
+    "zone erase",
+    "ee098e81ae4c7cdf",
+  ],
+  [
+    "zone rename",
+    "a0671187b1c9369e",
+  ],
+  [
+    "zone bad bill",
+    "7f608fe0f34de951",
+  ],
+  [
+    "zone remove id",
+    "a6e0cbb984b010f0",
+  ],
+  [
+    "delta zoned",
+    "5b4a3a793dd7c295",
+  ],
+  [
+    "builds",
+    "1c1624b137c0bf7c",
+  ],
+  [
+    "builds water refused",
+    "f3d19924d97d4bf1",
+  ],
+  [
+    "builds water",
+    "0580b06cf5c17cf8",
+  ],
+  [
+    "builds preview",
+    "4beeb10fb552d363",
+  ],
+  [
+    "builds bad",
+    "a2148f51b9dac54d",
+  ],
+  [
+    "builds reorder",
+    "5febbea154e8ce8f",
+  ],
+  [
+    "delta built",
+    "0b54099a3d4afa9d",
+  ],
+  [
+    "storage area",
+    "54dfc11565c74fda",
+  ],
+  [
+    "storage set",
+    "cb4b9a314359bee0",
+  ],
+  [
+    "storage copy",
+    "d5fa18fc0f5ba813",
+  ],
+  [
+    "storage bad",
+    "36e79a279a7ac4ec",
+  ],
+  [
+    "bench designate",
+    "251e57a70805520f",
+  ],
+  [
+    "furnace designate",
+    "74d7c25cff050f09",
+  ],
+  [
+    "bench fuel",
+    "42a3c0bd7f208843",
+  ],
+  [
+    "recipes",
+    "be0c9aa80a96be7b",
+  ],
+  [
+    "bill sticks",
+    "4ab1ab9a43bbe591",
+  ],
+  [
+    "bill torch",
+    "962cabce75205025",
+  ],
+  [
+    "bill stone_pickaxe",
+    "1b7ca5e2a092f997",
+  ],
+  [
+    "bill bread",
+    "1d38ac949973d26a",
+  ],
+  [
+    "bill nonsense",
+    "ea1748c73988e9e3",
+  ],
+  [
+    "bill smelt",
+    "664fcddeb59a43de",
+  ],
+  [
+    "policy set 2",
+    "6cccb49f2eb288bf",
+  ],
+  [
+    "bill pause",
+    "97a2ee29d0fd43a2",
+  ],
+  [
+    "bill resume",
+    "97a2ee29d0fd43a2",
+  ],
+  [
+    "bill reorder",
+    "2223f21eacdcb111",
+  ],
+  [
+    "delta benches",
+    "587f08dc3656734f",
+  ],
+  [
+    "draft",
+    "78727272a280e47e",
+  ],
+  [
+    "order move",
+    "1955764684a622e1",
+  ],
+  [
+    "order queue",
+    "58bb03e9c6ac82f3",
+  ],
+  [
+    "order attack mob",
+    "16a561d689c78327",
+  ],
+  [
+    "order attack player",
+    "f86d5f00d46ac3c9",
+  ],
+  [
+    "order attack bot",
+    "2157d74fd3a1a380",
+  ],
+  [
+    "order undrafted",
+    "cbc5a14898f10d90",
+  ],
+  [
+    "gear arm",
+    "2dbf8fb5f8312ce2",
+  ],
+  [
+    "gear tools",
+    "7167a6afe9bfa804",
+  ],
+  [
+    "gear pickup",
+    "439826f1085dec3d",
+  ],
+  [
+    "policy set",
+    "552ad493a8240a7b",
+  ],
+  [
+    "policy assign",
+    "6cccb49f2eb288bf",
+  ],
+  [
+    "material rule",
+    "9bddf020372283e3",
+  ],
+  [
+    "beds assign",
+    "160ac4369244ef50",
+  ],
+  [
+    "beds bad",
+    "f4417190bba26f75",
+  ],
+  [
+    "pawns add",
+    "a8fcb73bcd288d04",
+  ],
+  [
+    "offline",
+    "1d8fc6ceb1f94c63",
+  ],
+  [
+    "seats",
+    "1d8fc6ceb1f94c63",
+  ],
+  [
+    "online",
+    "45d8cbea1f9bada6",
+  ],
+  [
+    "online over cap",
+    "6c026a03887606cf",
+  ],
+  [
+    "time",
+    "180a3a35f45e9669",
+  ],
+  [
+    "directive text",
+    "4d62b1a7dae0d03e",
+  ],
+  [
+    "directive chop",
+    "8b68aef79d6f13cc",
+  ],
+  [
+    "directive craft",
+    "a79e6dc373959813",
+  ],
+  [
+    "directives",
+    "fadab2373bba24e2",
+  ],
+  [
+    "architect",
+    "f912569c934f9395",
+  ],
+  [
+    "delta ordered",
+    "b353a52ed631e8ff",
+  ],
+  [
+    "state ordered",
+    "a7be6c00aa30dc15",
+  ],
+  [
+    "delta work 0",
+    "e33e6970aa7f48fc",
+  ],
+  [
+    "delta work 1",
+    "bab18d8303773c68",
+  ],
+  [
+    "delta work 2",
+    "bdf19df2b3158120",
+  ],
+  [
+    "delta work 3",
+    "7f5fd702fb7d488d",
+  ],
+  [
+    "delta work 4",
+    "4c90411bd5c80181",
+  ],
+  [
+    "delta work 5",
+    "cc76f1e5a2c14659",
+  ],
+  [
+    "delta work 6",
+    "937a1949f20619ba",
+  ],
+  [
+    "delta work 7",
+    "db8bc140fc62aaf6",
+  ],
+  [
+    "fail",
+    "1d8fc6ceb1f94c63",
+  ],
+  [
+    "retry",
+    "003314accdf098f7",
+  ],
+  [
+    "builds retry all",
+    "2578d56e1b4dc413",
+  ],
+  [
+    "home move",
+    "c2be6fa706ca6219",
+  ],
+  [
+    "pause",
+    "c7a5795dfdc386c4",
+  ],
+  [
+    "resume",
+    "f779443bf9d9ff13",
+  ],
+  [
+    "pawns remove",
+    "af36f3146c694419",
+  ],
+  [
+    "release",
+    "768d220f29606cee",
+  ],
+  [
+    "delta end",
+    "9809e85ca1317e7e",
+  ],
+  [
+    "state end",
+    "52ac17b65dd4da41",
+  ],
+  [
+    "list",
+    "8ad7c78bb31dba32",
+  ],
+]
+`;
+
+exports[`the mock director: a golden run > zones: modes, into, plants, quarries and strips, fishing water, removes (pins zones) 1`] = `
+[
+  [
+    "quarry",
+    "5a4437e6240e418c",
+  ],
+  [
+    "strip by quarry",
+    "875a1d8d378707fa",
+  ],
+  [
+    "strip alone",
+    "2602fb7e1aa7f82f",
+  ],
+  [
+    "strip ores",
+    "d8b3f25ad9b36545",
+  ],
+  [
+    "mode ores",
+    "ca07cb69d132cbad",
+  ],
+  [
+    "mode quarry",
+    "2602fb7e1aa7f82f",
+  ],
+  [
+    "mode missing",
+    "f89c13da14dd993c",
+  ],
+  [
+    "farm",
+    "212737129ce8c698",
+  ],
+  [
+    "mode farm",
+    "ca5c49be7c2bb40f",
+  ],
+  [
+    "into farm",
+    "49a1d5ad525e27f0",
+  ],
+  [
+    "into missing",
+    "410bef282e9a9123",
+  ],
+  [
+    "plant on home",
+    "e07557cdb0152564",
+  ],
+  [
+    "bad plant",
+    "3732203b92860d67",
+  ],
+  [
+    "harvest flag",
+    "e4e276474ad8028a",
+  ],
+  [
+    "farm no plant",
+    "4dab0dba80963298",
+  ],
+  [
+    "default kind",
+    "686f0e60564349ba",
+  ],
+  [
+    "fish dry",
+    "92368f07c5c41700",
+  ],
+  [
+    "fish",
+    "46cc93b4d40a67f5",
+  ],
+  [
+    "fish more",
+    "59954620a0e678f1",
+  ],
+  [
+    "rename",
+    "18bbbcb087f68702",
+  ],
+  [
+    "rename missing",
+    "a6e0cbb984b010f0",
+  ],
+  [
+    "remove id",
+    "aa1f4e38149247c6",
+  ],
+  [
+    "erase any",
+    "b27275d305b72b70",
+  ],
+  [
+    "no area",
+    "9674da69b8ad0a90",
+  ],
+  [
+    "state",
+    "75ee81880654e545",
+  ],
+]
+`;
