@@ -160,21 +160,27 @@ public static class Recipes
         for (int ox = 0; ox <= n - r.Width; ox++)
             for (int oy = 0; oy <= n - r.Height; oy++)
                 foreach (var mirror in new[] { false, true })
-                {
-                    bool ok = true;
-                    for (int x = 0; x < n && ok; x++)
-                        for (int y = 0; y < n && ok; y++)
-                        {
-                            int rx = x - ox, ry = y - oy;
-                            Ingredient? want = null;
-                            if (rx >= 0 && ry >= 0 && rx < r.Width && ry < r.Height)
-                                want = r.Pattern[ry * r.Width + (mirror ? r.Width - rx - 1 : rx)];
-                            var have = grid[y * n + x];
-                            ok = want is { } w ? w.Matches(have) : have.IsEmpty;
-                        }
-                    if (ok) return true;
-                }
+                    if (ShapedAt(r, grid, n, ox, oy, mirror)) return true;
         return false;
+    }
+
+    /// <summary>The pattern placed at (<paramref name="ox"/>, <paramref name="oy"/>) (mirrored or not) is exactly the grid: every
+    /// pattern cell matches and every other cell is empty.</summary>
+    private static bool ShapedAt(Recipe r, IReadOnlyList<ItemStack> grid, int n, int ox, int oy, bool mirror)
+    {
+        for (int x = 0; x < n; x++)
+            for (int y = 0; y < n; y++)
+            {
+                var have = grid[y * n + x];
+                if (!(PatternAt(r, x - ox, y - oy, mirror) is { } w ? w.Matches(have) : have.IsEmpty)) return false;
+            }
+        return true;
+    }
+
+    private static Ingredient? PatternAt(Recipe r, int rx, int ry, bool mirror)
+    {
+        if (rx < 0 || ry < 0 || rx >= r.Width || ry >= r.Height) return null;
+        return r.Pattern[ry * r.Width + (mirror ? r.Width - rx - 1 : rx)];
     }
 
     // ---------------------------------------------------------------- table

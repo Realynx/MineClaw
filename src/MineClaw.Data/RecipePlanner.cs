@@ -207,41 +207,60 @@ public static class RecipePlanner
 
         var candidates = Candidates(need, ctx.Options).Where(c => !Cyclic(c, stack, need)).ToList();
         if (candidates.Count == 0) { ctx.AddMissing(need, n); return; }
+        if (PickCandidate(ctx, inv, candidates, need, n, depth, stack) is { } chosen) Apply(ctx, inv, chosen, need, n, depth, stack);
+    }
 
-        Candidate chosen = candidates[0];
+    /// <summary>The candidate to apply, or null when the need is already settled (counted missing, or applied with the tied variants
+    /// generalized).</summary>
+    private static Candidate? PickCandidate(Ctx ctx, SimInventory inv, List<Candidate> candidates, Ingredient need, int n, int depth,
+        HashSet<Ingredient> stack)
+    {
         if (candidates.All(IsUnpack))
         {
             // Only an unpack (iron ingot ← iron block, no smelting): the item itself is what's missing unless the block is there.
             var tctx = ctx.Clone();
-            Apply(tctx, inv.Clone(), chosen, need, n, depth, stack);
-            if (tctx.MissingTotal > ctx.MissingTotal) { ctx.AddMissing(need, n); return; }
+            Apply(tctx, inv.Clone(), candidates[0], need, n, depth, stack);
+            if (tctx.MissingTotal <= ctx.MissingTotal) return candidates[0];
+            ctx.AddMissing(need, n);
+            return null;
         }
-        else if (candidates.Count > 1)
+        return candidates.Count > 1 ? BestCandidate(ctx, inv, candidates, need, n, depth, stack) : candidates[0];
+    }
+
+    /// <summary>Tries each candidate on a copy and keeps the one missing least (the first that misses nothing new). An "any variant"
+    /// need short of material is applied here, its tied alternatives generalizing what's missing (null then).</summary>
+    private static Candidate? BestCandidate(Ctx ctx, SimInventory inv, List<Candidate> candidates, Ingredient need, int n, int depth,
+        HashSet<Ingredient> stack)
+    {
+        Candidate chosen = candidates[0];
+        int bestMissing = int.MaxValue;
+        var tried = new List<(Candidate C, int Missing, Dictionary<(int, int), int> Added)>();
+        foreach (var c in candidates)
         {
-            int bestMissing = int.MaxValue;
-            var tried = new List<(Candidate C, int Missing, Dictionary<(int, int), int> Added)>();
-            foreach (var c in candidates)
-            {
-                var tctx = ctx.Clone();
-                var tinv = inv.Clone();
-                Apply(tctx, tinv, c, need, n, depth, stack);
-                int m = tctx.MissingTotal;
-                // Unpacking (iron block → 9 ingots) only when the block is really there: a missing block is never the plan
-                // ("need 3 more iron ingots", not "1 more block of iron").
-                if (IsUnpack(c) && m > ctx.MissingTotal) m = int.MaxValue - 1;
-                tried.Add((c, m, AddedMissing(ctx, tctx)));
-                if (m < bestMissing) { bestMissing = m; chosen = c; }
-                if (m == ctx.MissingTotal) break; // nothing new missing: good enough
-            }
-            if (need.Damage < 0 && bestMissing > ctx.MissingTotal && bestMissing < int.MaxValue - 1)
-            {
-                var before = ctx.Clone();
-                Apply(ctx, inv, chosen, need, n, depth, stack);
-                Generalize(ctx, before, tried.Where(t => t.Missing == bestMissing && t.C != chosen).Select(t => t.Added).ToList());
-                return;
-            }
+            int m = TrialMissing(ctx, inv, c, need, n, depth, stack, out var added);
+            tried.Add((c, m, added));
+            if (m < bestMissing) { bestMissing = m; chosen = c; }
+            if (m == ctx.MissingTotal) break; // nothing new missing: good enough
         }
+        if (need.Damage >= 0 || bestMissing <= ctx.MissingTotal || bestMissing >= int.MaxValue - 1) return chosen;
+        var before = ctx.Clone();
         Apply(ctx, inv, chosen, need, n, depth, stack);
+        Generalize(ctx, before, tried.Where(t => t.Missing == bestMissing && t.C != chosen).Select(t => t.Added).ToList());
+        return null;
+    }
+
+    /// <summary>What applying <paramref name="c"/> would leave missing in all (on copies), and what it adds. Unpacking (iron block → 9
+    /// ingots) only when the block is really there: a missing block is never the plan ("need 3 more iron ingots", not "1 more block
+    /// of iron").</summary>
+    private static int TrialMissing(Ctx ctx, SimInventory inv, Candidate c, Ingredient need, int n, int depth, HashSet<Ingredient> stack,
+        out Dictionary<(int, int), int> added)
+    {
+        var tctx = ctx.Clone();
+        Apply(tctx, inv.Clone(), c, need, n, depth, stack);
+        int m = tctx.MissingTotal;
+        if (IsUnpack(c) && m > ctx.MissingTotal) m = int.MaxValue - 1;
+        added = AddedMissing(ctx, tctx);
+        return m;
     }
 
     /// <summary>The missing amounts <paramref name="after"/> added over <paramref name="before"/>.</summary>

@@ -91,6 +91,16 @@ public static class Brewing
     {
         if (!IsPotionItem(form) || TypeId(type) < 0) return null;
         if (type == "water") return form == Potion ? null : FormSteps(form, type, []); // water bottles come from a water source
+        if (MixesFromWater(type) is not { } back) return null;
+        var steps = new List<Step>();
+        for (var t = type; t != "water"; t = back[t].From) steps.Insert(0, new Step(back[t].With, back[t].From, Potion, t, Potion));
+        return FormSteps(form, type, steps);
+    }
+
+    /// <summary>The shortest mixes from water (breadth first): each type reached and the type and ingredient it was made from; null when
+    /// <paramref name="type"/> isn't reached.</summary>
+    private static Dictionary<string, (string From, Ingredient With)>? MixesFromWater(string type)
+    {
         var back = new Dictionary<string, (string From, Ingredient With)>();
         var queue = new Queue<string>();
         queue.Enqueue("water");
@@ -101,10 +111,7 @@ public static class Brewing
             foreach (var m in TypeMixes.Where(m => m.From == t))
                 if (seen.Add(m.To)) { back[m.To] = (t, m.With); queue.Enqueue(m.To); }
         }
-        if (!seen.Contains(type)) return null;
-        var steps = new List<Step>();
-        for (var t = type; t != "water"; t = back[t].From) steps.Insert(0, new Step(back[t].With, back[t].From, Potion, t, Potion));
-        return FormSteps(form, type, steps);
+        return seen.Contains(type) ? back : null;
     }
 
     private static List<Step> FormSteps(int form, string type, List<Step> steps)
@@ -114,15 +121,19 @@ public static class Brewing
         return steps;
     }
 
+    /// <summary>The water bottle's and the base potions' labels (no effect), else null.</summary>
+    private static string? BaseLabel(int form, string type, string prefix) => type switch
+    {
+        "water" => form == Potion ? "Water Bottle" : prefix + "Water Bottle",
+        "awkward" or "mundane" or "thick" => $"{prefix}{char.ToUpperInvariant(type[0])}{type[1..]} Potion",
+        _ => null,
+    };
+
     /// <summary>"Potion of Swiftness II", "Splash Potion of Healing", "Awkward Potion", "Water Bottle", "Potion of Fire Resistance (extended)".</summary>
     public static string Label(int form, string type)
     {
         string prefix = form switch { SplashPotion => "Splash ", LingeringPotion => "Lingering ", _ => "" };
-        switch (type)
-        {
-            case "water": return form == Potion ? "Water Bottle" : prefix + "Water Bottle";
-            case "awkward" or "mundane" or "thick": return $"{prefix}{char.ToUpperInvariant(type[0])}{type[1..]} Potion";
-        }
+        if (BaseLabel(form, type, prefix) is { } plain) return plain;
         bool strong = type.StartsWith("strong_", StringComparison.Ordinal), ext = type.StartsWith("long_", StringComparison.Ordinal);
         var core = strong ? type[7..] : ext ? type[5..] : type;
         var name = string.Join(' ', core.Split('_').Select(w => char.ToUpperInvariant(w[0]) + w[1..]));

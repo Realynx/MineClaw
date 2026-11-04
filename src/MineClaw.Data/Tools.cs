@@ -163,32 +163,47 @@ public static class Tools
     /// <summary>Index into <paramref name="slots"/> of the best tool for the block, or -1 for bare hand.</summary>
     public static int BestToolIndex(int blockId, IReadOnlyList<ItemStack> slots)
     {
-        bool handHarvests = CanHarvest(blockId, -1);
-        int handTicks = DigTicks(blockId, -1);
+        var hand = new ToolFit(CanHarvest(blockId, -1), DigTicks(blockId, -1), int.MaxValue, false);
         bool wantsShears = blockId is Blocks.Leaves or Blocks.Vine or Blocks.TallGrass; // shears change the drop
-        int best = -1, bestTicks = handTicks, bestTier = int.MaxValue;
-        bool bestHarvest = handHarvests;
+        int best = -1;
+        var bestFit = hand;
         for (int i = 0; i < slots.Count; i++)
         {
-            var s = slots[i];
-            if (s.IsEmpty) continue;
-            var info = Items.Get(s.Id);
-            if (info.Tool is ToolType.None or ToolType.Hoe) continue;
-            if (info.Tool == ToolType.Sword && blockId != Blocks.Web) continue;
-            bool harvest = CanHarvest(blockId, s.Id);
-            int ticks = DigTicks(blockId, s.Id);
-            bool shearBonus = wantsShears && info.Tool == ToolType.Shears;
-            if (!shearBonus && ticks >= handTicks && harvest == handHarvests) continue; // no improvement over hand
-            int tier = info.Tool == ToolType.Shears ? 0 : info.ToolTier == 4 ? 0 : info.ToolTier;
-            bool better =
-                harvest != bestHarvest ? harvest :
-                ticks != bestTicks ? ticks < bestTicks :
-                tier < bestTier;
-            if (best < 0 || better || (shearBonus && Items.Get(slots[best].Id).Tool != ToolType.Shears))
+            if (FitOf(blockId, slots[i], hand, wantsShears) is not { } fit) continue;
+            if (best < 0 || fit.Beats(bestFit) || (fit.ShearBonus && Items.Get(slots[best].Id).Tool != ToolType.Shears))
             {
-                best = i; bestTicks = ticks; bestTier = tier; bestHarvest = harvest;
+                best = i;
+                bestFit = fit;
             }
         }
         return best;
     }
+
+    /// <summary>How a tool does on a block: harvests it, its dig ticks, its tier rank (lower wins a tie), and whether it is the shears a
+    /// leafy block wants.</summary>
+    private readonly record struct ToolFit(bool Harvest, int Ticks, int Tier, bool ShearBonus)
+    {
+        /// <summary>Harvesting first, then fewer ticks, then the lower tier.</summary>
+        public bool Beats(ToolFit o) => Harvest != o.Harvest ? Harvest : Ticks != o.Ticks ? Ticks < o.Ticks : Tier < o.Tier;
+    }
+
+    /// <summary>The stack's fit on the block, or null when it is no tool for it (not a tool, a hoe, a sword off cobweb) or no better
+    /// than the bare hand (shears for a leafy block always are).</summary>
+    private static ToolFit? FitOf(int blockId, ItemStack s, ToolFit hand, bool wantsShears)
+    {
+        if (s.IsEmpty) return null;
+        var info = Items.Get(s.Id);
+        if (!DigsWith(info, blockId)) return null;
+        bool harvest = CanHarvest(blockId, s.Id);
+        int ticks = DigTicks(blockId, s.Id);
+        bool shearBonus = wantsShears && info.Tool == ToolType.Shears;
+        if (!shearBonus && ticks >= hand.Ticks && harvest == hand.Harvest) return null; // no improvement over hand
+        return new ToolFit(harvest, ticks, TierRank(info), shearBonus);
+    }
+
+    private static bool DigsWith(ItemInfo info, int blockId) =>
+        info.Tool is not (ToolType.None or ToolType.Hoe) && !(info.Tool == ToolType.Sword && blockId != Blocks.Web);
+
+    /// <summary>Shears and gold tools (tier 4) rank 0, the others their tier.</summary>
+    private static int TierRank(ItemInfo info) => info.Tool == ToolType.Shears ? 0 : info.ToolTier == 4 ? 0 : info.ToolTier;
 }

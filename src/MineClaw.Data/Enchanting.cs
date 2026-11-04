@@ -127,22 +127,27 @@ public static class Enchanting
     public static int Bookshelves(Func<int, int, int, int> blockAt, int x, int y, int z)
     {
         int n = 0;
-        bool Shelf(int dx, int dy, int dz) => blockAt(x + dx, y + dy, z + dz) == Bookshelf;
         for (int dz = -1; dz <= 1; dz++)
             for (int dx = -1; dx <= 1; dx++)
             {
                 if (dx == 0 && dz == 0 || blockAt(x + dx, y, z + dz) != 0 || blockAt(x + dx, y + 1, z + dz) != 0) continue;
-                for (int dy = 0; dy <= 1; dy++)
-                {
-                    if (Shelf(dx * 2, dy, dz * 2)) n++;
-                    if (dx != 0 && dz != 0)
-                    {
-                        if (Shelf(dx * 2, dy, dz)) n++;
-                        if (Shelf(dx, dy, dz * 2)) n++;
-                    }
-                }
+                n += ShelvesToward(blockAt, x, y, z, dx, dz);
             }
         return Math.Min(MaxShelves, n);
+    }
+
+    /// <summary>The bookshelves two out in one open direction, at both levels (a corner direction also the two cells beside it).</summary>
+    private static int ShelvesToward(Func<int, int, int, int> blockAt, int x, int y, int z, int dx, int dz)
+    {
+        int n = 0;
+        for (int dy = 0; dy <= 1; dy++)
+        {
+            if (blockAt(x + dx * 2, y + dy, z + dz * 2) == Bookshelf) n++;
+            if (dx == 0 || dz == 0) continue;
+            if (blockAt(x + dx * 2, y + dy, z + dz) == Bookshelf) n++;
+            if (blockAt(x + dx, y + dy, z + dz * 2) == Bookshelf) n++;
+        }
+        return n;
     }
 
     /// <summary>The level range of the top (third) offer with <paramref name="shelves"/> bookshelves: the game rolls

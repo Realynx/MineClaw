@@ -72,19 +72,27 @@ public static partial class Items
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
         var key = Blocks.Normalize(name);
-        if (Variants.TryGetValue(key, out var v)) return (GetB(v.Id), v.Damage);
-        if (_byName.TryGetValue(key, out var i)) return (i, -1);
-        foreach (var suffix in new[] { "s", "es" })
-            if (key.EndsWith(suffix))
-            {
-                var k2 = key[..^suffix.Length];
-                if (Variants.TryGetValue(k2, out v)) return (GetB(v.Id), v.Damage);
-                if (_byName.TryGetValue(k2, out i)) return (i, -1);
-            }
+        if (ExactNameB(key) is { } exact) return exact;
+        if (PluralNameB(key) is { } plural) return plural;
         if (int.TryParse(key, out var id) && ExistsB(id)) return (_byId[id], -1);
         if (Blocks.ByNameB(name) is { } b && ExistsB(b.Id)) return (_byId[b.Id], -1);
         // "20 cobble slabs", "cobble slab x20", "a red wool": drop the amount and try again.
         if (ParseAmount(name) is { Count: not null } a && a.Name != name.Trim()) return ByNameWithDamageB(a.Name);
+        return null;
+    }
+
+    /// <summary>A variant name ("charcoal") with its damage, else an item name (-1).</summary>
+    private static (ItemInfo Item, int Damage)? ExactNameB(string key)
+    {
+        if (Variants.TryGetValue(key, out var v)) return (GetB(v.Id), v.Damage);
+        return _byName.TryGetValue(key, out var i) ? (i, -1) : null;
+    }
+
+    /// <summary>A plural ("torches", "glasses") read as its singular.</summary>
+    private static (ItemInfo Item, int Damage)? PluralNameB(string key)
+    {
+        foreach (var suffix in new[] { "s", "es" })
+            if (key.EndsWith(suffix) && ExactNameB(key[..^suffix.Length]) is { } hit) return hit;
         return null;
     }
 
