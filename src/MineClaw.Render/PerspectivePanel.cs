@@ -122,8 +122,8 @@ public static partial class PerspectivePanel
         var at = new Spot(focus.X + 0.5, feetY + 0.5, focus.Z + 0.5, radius);
         return view switch
         {
-            "eye" => eye == null ? null : EyeRig(eye),
-            "shoulder" => body is { } b ? Shoulder(b, at) : null,
+            "eye" => EyeRig(eye),
+            "shoulder" => Shoulder(body, at),
             "orbit" => Orbit(at, "ORBIT", -1, -1, 40, 50, "ORBIT NW>SE"),
             "orbit2" => Orbit(at, "ORBIT", 1, 1, 40, 50, "ORBIT SE>NW"),
             "orbit3" => Orbit(at, "ORBIT", 1, -1, 40, 50, "ORBIT NE>SW"),
@@ -157,13 +157,14 @@ public static partial class PerspectivePanel
         return Orbit(at, "ISO", sx, sz, 35, 45, $"ISO {name}");
     }
 
-    private static Rig EyeRig(EyeScene eye) =>
-        new(eye.EyeX, eye.EyeY, eye.EyeZ, eye.Yaw, eye.Pitch, 70f, "EYE" + (eye.Viewer is { } who ? " " + Short(who) : "") + " >" + EyeRenderer.Compass(eye.Yaw),
+    private static Rig? EyeRig(EyeScene? eye) => eye == null ? null :
+        new Rig(eye.EyeX, eye.EyeY, eye.EyeZ, eye.Yaw, eye.Pitch, 70f, "EYE" + (eye.Viewer is { } who ? " " + Short(who) : "") + " >" + EyeRenderer.Compass(eye.Yaw),
             $"EYE (first person{(eye.Viewer != null ? " of " + eye.Viewer : "")}) facing {EyeRenderer.Compass(eye.Yaw)}", false, 48);
 
     /// <summary>Behind the body: looking where it looks when it stands at the spot, else at the spot.</summary>
-    private static Rig Shoulder(Body b, Spot at)
+    private static Rig? Shoulder(Body? body, Spot at)
     {
+        if (body is not { } b) return null;
         double ex = b.X, ey = b.Y + 1.62, ez = b.Z;
         double tx = at.X - ex, tz = at.Z - ez;
         bool self = tx * tx + tz * tz < 2.5;

@@ -240,13 +240,16 @@ public sealed class ModelBaker
         for (int i = 0; i < 4; i++)
         {
             var c = Corners[face][i];
-            var p = new Vector3(c.X == 0 ? el.From.X : el.To.X, c.Y == 0 ? el.From.Y : el.To.Y, c.Z == 0 ? el.From.Z : el.To.Z);
+            var p = CornerOf(el, c);
             if (el.Angle != 0) p = Vector3.Transform(p - el.Origin, erot) * scale + el.Origin;
             pos[i] = v.Rotated ? Vector3.Transform(p, v.Rotation) : p;
             int k = (i + fd.Rotation / 90) % 4;
             uv[i] = new Vector2(k is 0 or 1 ? r[0] : r[2], k is 0 or 3 ? r[1] : r[3]);
         }
     }
+
+    private static Vector3 CornerOf(ElementDef el, (int X, int Y, int Z) c) =>
+        new(c.X == 0 ? el.From.X : el.To.X, c.Y == 0 ? el.From.Y : el.To.Y, c.Z == 0 ? el.From.Z : el.To.Z);
 
     /// <summary>The baked quad of one face from its corners: direction, uv lock, cull face, texture, shade and light face.</summary>
     private ModelQuad BakeFace(ElementDef el, int face, FaceDef fd, Variant v, Dictionary<string, string> textures, Span<Vector3> pos, Span<Vector2> uv)
@@ -255,8 +258,7 @@ public sealed class ModelBaker
         var n = Vector3.Normalize(Vector3.Cross(pos[1] - pos[0], pos[3] - pos[0]));
         if (float.IsNaN(n.X)) n = v.Rotated ? Vector3.TransformNormal(Normals[face], v.Rotation) : Normals[face];
         int dir = DirOf(n);
-        if (v.UvLock && v.Rotated && dir >= 0 && el.Angle == 0)
-            for (int i = 0; i < 4; i++) uv[i] = Project(dir, pos[i]);
+        if (v.UvLock && v.Rotated && dir >= 0 && el.Angle == 0) LockUv(dir, pos, uv);
         int cull = fd.Cull;
         if (cull >= 0 && v.Rotated) cull = DirOf(Vector3.TransformNormal(Normals[cull], v.Rotation));
         var q = GeoQuad.Make(pos[0] / 16f, pos[1] / 16f, pos[2] / 16f, pos[3] / 16f, uv[0] / 16f, uv[1] / 16f, uv[2] / 16f, uv[3] / 16f);
@@ -266,6 +268,12 @@ public sealed class ModelBaker
         q.LightFace = (sbyte)(dir >= 0 && OnBoundary(dir, pos) ? dir : -1);
         return new ModelQuad { Q = q, TintIndex = (sbyte)fd.TintIndex, Cull = (sbyte)cull, Dir = (sbyte)dir };
     }
+    /// <summary>uv lock: the uvs follow the rotated face's position in the block, not the element.</summary>
+    private static void LockUv(int dir, Span<Vector3> pos, Span<Vector2> uv)
+    {
+        for (int i = 0; i < 4; i++) uv[i] = Project(dir, pos[i]);
+    }
+
     private static bool OnBoundary(int dir, ReadOnlySpan<Vector3> p)
     {
         const float e = 1e-3f;

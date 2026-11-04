@@ -143,8 +143,7 @@ public static class ReadingAids
             list.Add(new Cand(0, sp.X + 0.5, sp.Y + 1.0, sp.Z + 0.5, Pos(sp.X, sp.Y, sp.Z), Gold, true, $"spot {Pos(sp.X, sp.Y, sp.Z)}"));
         foreach (var e in s.Entities)
         {
-            double hx = s.EyeX - e.X, hz = s.EyeZ - e.Z;
-            if (e.Kind != "item" && hx * hx + hz * hz < 0.36 && s.EyeY - e.Y is > -0.2 and < 2.0) continue; // the camera's own body
+            if (e.Kind != "item" && s.IsViewerBody(e)) continue; // the camera's own body
             if (EntityCandidate(e) is { } cand) list.Add(cand);
         }
         if (a.Slab is { Roles: not null } slab) GenCellCandidates(slab, list);
@@ -158,16 +157,18 @@ public static class ReadingAids
     {
         switch (e.Kind)
         {
-            case "player" or "hive" or "self":
-            {
-                var name = string.IsNullOrEmpty(e.Name) ? e.Kind : e.Name!.Length > 14 ? e.Name[..14] : e.Name;
-                return new Cand(1, e.X, e.Y + (e.Sneaking ? 2.0 : 2.15), e.Z, name, e.Kind is "hive" or "self" ? 0xff9f43 : VisionRenderer.PlayerColour(e.Name), true,
-                    $"{(e.Kind == "player" ? "player" : "bot")} {e.Name} {Pos(e.X, e.Y, e.Z)}");
-            }
+            case "player" or "hive" or "self": return NameCandidate(e);
             case "mob": return MobCandidate(e);
             case "item": return new Cand(2, e.X, e.Y + 0.45, e.Z, EyeRenderer.DropLabel(e), 0xf2e46a, false, $"drop {EyeRenderer.DropLabel(e)} {Pos(e.X, e.Y, e.Z)}");
             default: return null;
         }
+    }
+
+    private static Cand NameCandidate(VisionEntity e)
+    {
+        var name = string.IsNullOrEmpty(e.Name) ? e.Kind : e.Name!.Length > 14 ? e.Name[..14] : e.Name;
+        return new Cand(1, e.X, e.Y + (e.Sneaking ? 2.0 : 2.15), e.Z, name, e.Kind is "hive" or "self" ? 0xff9f43 : VisionRenderer.PlayerColour(e.Name), true,
+            $"{(e.Kind == "player" ? "player" : "bot")} {e.Name} {Pos(e.X, e.Y, e.Z)}");
     }
 
     private static Cand MobCandidate(VisionEntity e)
@@ -193,14 +194,16 @@ public static class ReadingAids
                 }
     }
 
+    private static string FurnaceState(int id, string label) =>
+        id == Blocks.LitFurnace ? " LIT" : id == Blocks.Furnace && label.Contains("FURNACE", StringComparison.OrdinalIgnoreCase) ? " OFF" : "";
+
     /// <summary>A mark's short label (furnaces say LIT / OFF; stations rank above other marks), null when it has no text.</summary>
     private static Cand? MarkCandidate(EyeScene s, VisionMark m)
     {
         var t = VisionRenderer.ShortLabel(m.Text);
         if (t.Length == 0) return null;
         int id = s.World.Block(m.MinX, m.MinY, m.MinZ);
-        if (id == Blocks.LitFurnace) t += " LIT";
-        else if (id == Blocks.Furnace && t.Contains("FURNACE", StringComparison.OrdinalIgnoreCase)) t += " OFF";
+        t += FurnaceState(id, t);
         bool station = id is Blocks.Chest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Workbench or Blocks.Dispenser;
         return new Cand(station ? 4 : 5, m.CentreX + 0.5, m.MaxY + (m.Box ? 1.2 : 1.1), m.CentreZ + 0.5, t, m.Box ? Gold : 0xe8ecf4, false,
             $"{t.ToLowerInvariant()} {m.MinX},{m.MinY},{m.MinZ}");

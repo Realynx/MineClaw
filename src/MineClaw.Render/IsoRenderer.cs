@@ -321,13 +321,17 @@ public sealed class IsoRenderer
     private void GlyphCell(ref IsoCell cell, IsoInput input, int top, int bottom, uint bg)
     {
         int k = _mat[top] != 0 || (_grid[top] && _mat[bottom] == 0) ? top : bottom;
-        char ch = ' ';
-        if (_mat[k] == 255) ch = input.Unicode ? '◇' : 'o';
-        else if (_mat[k] != 0 && IsoPalette.Mat(_mat[k]) is { } m) ch = _face[k] == IsoFace.Top ? m.GTop : m.GSide;
-        else if (_grid[k]) ch = '.';
-        cell.Ch = ch;
+        cell.Ch = GlyphAt(k, input.Unicode);
         if (input.Colours == IsoColours.None) { cell.Fg = cell.Bg = 0; cell.Flags = IsoCellFlags.None; }
         else { cell.Fg = _px[k]; cell.Bg = bg; cell.Flags = IsoCellFlags.Fg | IsoCellFlags.Bg; }
+    }
+
+    /// <summary>The glyph of a buffer pixel: the target marker, the block's face glyph, the lattice dot, or blank.</summary>
+    private char GlyphAt(int k, bool unicode)
+    {
+        if (_mat[k] == 255) return unicode ? '◇' : 'o';
+        if (_mat[k] != 0 && IsoPalette.Mat(_mat[k]) is { } m) return _face[k] == IsoFace.Top ? m.GTop : m.GSide;
+        return _grid[k] ? '.' : ' ';
     }
 
     /// <summary>6. Path dots (only where visible).</summary>
@@ -546,8 +550,7 @@ public sealed class IsoRenderer
         if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) return;
         int k = Y * W + X;
         var colours = input.Colours;
-        uint c = glyphMode && colours == IsoColours.None ? 0
-            : _texturer?.Invoke(b.Id, b.Wx, b.Wy, b.Wz, p, s) is { } tc ? IsoPalette.Scale(tc, b.Df) : Shade(b.Mat, p, b.Wx, b.Wy, b.Wz, b.Df, colours, s);
+        uint c = glyphMode && colours == IsoColours.None ? 0 : PixelColour(s, b, p, colours);
         if (translucent && colours == IsoColours.TrueColor && (_px[k] & IsoPalette.Indexed) == 0) c = IsoPalette.Mix(_px[k], c, 0.62f);
         _px[k] = c;
         _mat[k] = (byte)b.Id;
@@ -555,6 +558,10 @@ public sealed class IsoRenderer
         _grid[k] = false;
         if (!outline && !translucent) _depth[k] = b.Key;
     }
+
+    /// <summary>A sprite pixel's colour: the image texturer's, else the palette shading.</summary>
+    private uint PixelColour(IsoSprite s, in BlockAt b, SpritePx p, IsoColours colours) =>
+        _texturer?.Invoke(b.Id, b.Wx, b.Wy, b.Wz, p, s) is { } tc ? IsoPalette.Scale(tc, b.Df) : Shade(b.Mat, p, b.Wx, b.Wy, b.Wz, b.Df, colours, s);
 
     /// <summary>4. Target outline.</summary>
     private void TargetOutline(IsoInput input, int[] tgt, IsoSprite s, int zoom, int W, int PH, int ox, int oy)

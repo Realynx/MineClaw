@@ -113,17 +113,22 @@ public static class EntityTextures
             var hb = headPart.Boxes[0];
             face(p, hb.U + hb.D, hb.V + hb.D, hb.W, hb.H);
         }
-        if (tex == "cow")
-        {
-            // White patches on the hide.
-            for (int i = 0; i < 6; i++) p.Rect(18 + p.Rnd.Next(40), 4 + p.Rnd.Next(24), 3 + p.Rnd.Next(4), 2 + p.Rnd.Next(4), 0xe8e8e8);
-        }
-        if (tex == "slime")
-        {
-            for (int i = 0; i < Painter.W * Painter.H; i++) if (p.Px[i] != 0 && i / Painter.W < 16) p.Px[i] = (p.Px[i] & 0xffffff) | 0xb0000000;
-            p.Rect(32, 0, 8, 12, 0x1c3a18, false);
-        }
+        if (tex == "cow") CowPatches(p);
+        if (tex == "slime") SlimeJelly(p);
         return (Painter.W, Painter.H, p.Px);
+    }
+
+    /// <summary>White patches on the hide.</summary>
+    private static void CowPatches(Painter p)
+    {
+        for (int i = 0; i < 6; i++) p.Rect(18 + p.Rnd.Next(40), 4 + p.Rnd.Next(24), 3 + p.Rnd.Next(4), 2 + p.Rnd.Next(4), 0xe8e8e8);
+    }
+
+    /// <summary>The outer cube translucent, a dark core.</summary>
+    private static void SlimeJelly(Painter p)
+    {
+        for (int i = 0; i < Painter.W * Painter.H; i++) if (p.Px[i] != 0 && i / Painter.W < 16) p.Px[i] = (p.Px[i] & 0xffffff) | 0xb0000000;
+        p.Rect(32, 0, 8, 12, 0x1c3a18, false);
     }
 
     /// <summary>One part's boxes in its colour (the sheep's fur parts only in the fur texture, never the hat layer).</summary>

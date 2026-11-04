@@ -53,6 +53,13 @@ public sealed class EyeScene
     /// <summary>Only blocks inside this box are drawn (a side slice, one layer); null = everything.</summary>
     public ClipBox? Clip { get; init; }
 
+    /// <summary>The entity is the camera's own body (the eye inside it): no tag, no label.</summary>
+    internal bool IsViewerBody(VisionEntity e)
+    {
+        double hx = EyeX - e.X, hz = EyeZ - e.Z;
+        return hx * hx + hz * hz < 0.36 && EyeY - e.Y is > -0.2 and < 2.0;
+    }
+
     /// <summary>Yaw/pitch (MC degrees) from (ex, ey, ez) toward (tx, ty, tz).</summary>
     public static (float Yaw, float Pitch) LookAt(double ex, double ey, double ez, double tx, double ty, double tz)
     {
@@ -604,12 +611,12 @@ public sealed class EyeRenderer
         for (int step = 0; step < maxSteps && t0 <= maxDist; step++)
         {
             if (eT <= t0) return (Finish(ctx, blend, eC, eT, dy), (float)eT, NoCell);
-            if (dda.Vy < 0 && dy < 0 || dda.Vy >= height && dy > 0) break;
+            if (LeftWorld(dda.Vy, dy, height)) break;
             int id = (uint)dda.Vy < height ? w.Block(dda.Vx, dda.Vy, dda.Vz) : 0;
             double tExit = dda.Exit;
             bool cutEdge = cutBefore;
             id = XRayed(ctx.S, dda, id, step, out cutBefore);
-            if (id != 0 && step > 0 && Drawn(ctx.S, dda.Vx, dda.Vy, dda.Vz)
+            if (Visible(ctx.S, dda, id, step)
                 && HitCell(ctx, ray, dda, id, prevId, t0, tExit, cutEdge, eT, ref blend, cache, hits, out var hit))
                 return (hit.Colour, hit.Depth, hit.Cell);
             prevId = id;
@@ -659,6 +666,12 @@ public sealed class EyeRenderer
         return 0;
     }
 
+    /// <summary>The ray left the world through its bottom or top.</summary>
+    private static bool LeftWorld(int vy, double dy, int height) => vy < 0 && dy < 0 || vy >= height && dy > 0;
+
+    /// <summary>A block in a cell past the eye's own that the view draws.</summary>
+    private static bool Visible(EyeScene s, in Dda d, int id, int step) => id != 0 && step > 0 && Drawn(s, d.Vx, d.Vy, d.Vz);
+
     /// <summary>The cell is drawn: not under a cut-away roof, inside the clip box.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool Drawn(EyeScene s, int x, int y, int z) =>
@@ -681,7 +694,7 @@ public sealed class EyeRenderer
         var s = ctx.S;
         var w = s.World;
         // Glass beside glass and ice beside ice draw no face between them (fancy leaves do).
-        if (shape != BlockShape.Cube && id != Blocks.Leaves && prevId == id && !(models != null && id == 161)) return false;
+        if (CulledAgainstSame(shape, id, prevId, models)) return false;
         int meta = w.Meta(d.Vx, d.Vy, d.Vz);
         Face face = d.EntryFace;
         double hx = r.Ox + r.Dx * t0, hy = r.Oy + r.Dy * t0, hz = r.Oz + r.Dz * t0;
@@ -689,7 +702,7 @@ public sealed class EyeRenderer
         uint texel = CubeTexel(s, models, d, id, meta, face, hx, hy, hz, u, v);
         float a = shape == BlockShape.TranslucentCube ? 0.62f : (texel >> 24) / 255f;
         if (!(shape == BlockShape.Cube || a >= 0.5f)) return false;
-        float k = models != null && models.Emissive(id) ? 1f : CubeLight(s, w, id, d.Vx, d.Vy, d.Vz, face, u, v, ctx.Sub, cache, ctx.MinB);
+        float k = ModelEmissive(models, id) ? 1f : CubeLight(s, w, id, d.Vx, d.Vy, d.Vz, face, u, v, ctx.Sub, cache, ctx.MinB);
         uint c = Lighting.Scale(texel, k);
         if (face == Face.Up) c = ShadowAt(ctx, c, hx, hy, hz);
         if (cutEdge) c = Hatch(c, hx, hy, hz);
@@ -698,6 +711,12 @@ public sealed class EyeRenderer
         hit = new Hit(Finish(ctx, blend, Fog(ctx, c, t0), t0, r.Dy), (float)t0, CellKey(d.Vx, d.Vy, d.Vz));
         return true;
     }
+
+    /// <summary>Glass beside glass and ice beside ice draw no face between them (fancy leaves do; 1.12.2's dark oak leaves too).</summary>
+    private static bool CulledAgainstSame(BlockShape shape, int id, int prevId, IBlockModels? models) =>
+        shape != BlockShape.Cube && id != Blocks.Leaves && prevId == id && !(models != null && id == 161);
+
+    private static bool ModelEmissive(IBlockModels? models, int id) => models != null && models.Emissive(id);
 
     /// <summary>Texel (0xAARRGGBB) of a full cube's face at the hit: the 1.12.2 model, the b1.8.1 tile, or the flat colour.</summary>
     private static uint CubeTexel(EyeScene s, IBlockModels? models, in Dda d, int id, int meta, Face face, double hx, double hy, double hz, double u, double v)
@@ -1005,8 +1024,7 @@ public sealed class EyeRenderer
         /// <summary>A player's or bot's name over its head (not the camera's own body).</summary>
         public void Name(VisionEntity e)
         {
-            double hx = s.EyeX - e.X, hz = s.EyeZ - e.Z;
-            if (hx * hx + hz * hz < 0.36 && s.EyeY - e.Y is > -0.2 and < 2.0) return;
+            if (s.IsViewerBody(e)) return;
             if (r.Project(s, e.X, e.Y + (e.Sneaking ? 2.0 : 2.15), e.Z) is not { } p || p.Dist >= maxDist) return;
             var t = string.IsNullOrEmpty(e.Name) ? e.Kind : e.Name!.Length > 14 ? e.Name[..14] : e.Name;
             Tag(p.X, p.Y - 2, t, e.Kind is "hive" or "self" ? 0xff9f43 : VisionRenderer.PlayerColour(e.Name));

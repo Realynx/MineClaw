@@ -106,7 +106,13 @@ public static class BlockGeometry
         int i1 = w.Block(i, j, k - 1), j1 = w.Block(i, j, k + 1), k1 = w.Block(i - 1, j, k), l1 = w.Block(i + 1, j, k);
         if (i1 == id || j1 == id) return PairAlongZ(w, i, j, k, l, i1, k1, l1);
         if (k1 == id || l1 == id) return PairAlongX(w, i, j, k, l, i1, j1, k1);
-        // A single chest faces south unless that side is walled: then away from the opaque neighbour.
+        return SingleChestTile(l, i1, j1, k1, l1);
+    }
+
+    /// <summary>A single chest faces south unless that side is walled: then away from the opaque neighbour.</summary>
+    private static int SingleChestTile(int l, int i1, int j1, int k1, int l1)
+    {
+        const int idx = 26;
         int b0 = 3;
         if (Op(j1) && !Op(i1)) b0 = 2;
         if (Op(k1) && !Op(l1)) b0 = 5;

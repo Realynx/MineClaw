@@ -291,10 +291,14 @@ public sealed class ContactSheet
             Focus = ctx.Focus, Pointed = ctx.Pointed, Target = ctx.Target, Slab = ctx.Slab, Smooth = ctx.Smooth,
             Cut = ctx.CutAway && rig.Cut && job.WorldOverride == null ? PerspectivePanel.Cut(ctx.Slab, ctx.FeetY) : null,
             Aids = ctx.Aids ? new ReadingAids.Input { Focus = ctx.Focus, FeetY = ctx.FeetY, Radius = ctx.Radius, Spots = ctx.Spots, Body = ctx.Body, Slab = ctx.Slab, Rings = rig.Ortho == 0 } : null,
-            Stamp = ctx.TimeOfDay + (ctx.WeatherText is { } wt ? ", " + wt : "") + (ctx.Staleness != null ? ", " + ctx.Staleness : ""),
+            Stamp = StampOf(ctx),
             XRay = job.WorldOverride == null && ctx.CutAway ? ctx.XRay : XRay.Off, Subject = ctx.Subject, FeetY = ctx.FeetY, Weather = ctx.Nether ? default : ctx.Weather, // design previews (no cut-away) stay exact
         };
     }
+
+    /// <summary>Caption line 2: time of day, weather, staleness.</summary>
+    private static string StampOf(PanelContext ctx) =>
+        ctx.TimeOfDay + (ctx.WeatherText is { } wt ? ", " + wt : "") + (ctx.Staleness != null ? ", " + ctx.Staleness : "");
 
     /// <summary>Two orthographic slices side by side: the feet layer and the one below, each seen from straight above.</summary>
     private Panel LayersPanel(PanelJob job, int pw, int ph)

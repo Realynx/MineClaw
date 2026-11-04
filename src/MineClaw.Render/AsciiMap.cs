@@ -41,6 +41,12 @@ public static class AsciiMap
         if (Blocks.IsWater(under)) return '~';
         if (Blocks.IsLava(under)) return '!';
         if (under != 0 && (Blocks.Get(under).Solid || under is Blocks.Slab or Blocks.Farmland)) return deco ? 'o' : '.';
+        return Below(w, x, y, z);
+    }
+
+    /// <summary>Nothing right underfoot: lower ground within 4 blocks, deep ground further down, or the void.</summary>
+    private static char Below(IBlockAccess w, int x, int y, int z)
+    {
         for (int d = 2; d <= 4; d++) if (w.GetBlock(x, y - d, z) != 0) return ',';
         for (int yy = y - 5; yy >= 0; yy--) if (w.GetBlock(x, yy, z) != 0) return '_';
         return ' ';
@@ -110,17 +116,20 @@ public static class AsciiMap
         {
             int ix = (int)Math.Floor(e.X) - x0, iz = (int)Math.Floor(e.Z) - z0;
             if ((uint)ix >= (uint)size || (uint)iz >= (uint)size) continue;
-            char g = e.Kind switch
-            {
-                "mob" => 'm',
-                "item" => grid[iz, ix],
-                _ => e.Glyph ?? (string.IsNullOrEmpty(e.Name) ? 'p' : char.ToLowerInvariant(e.Name[0])),
-            };
+            char g = EntityGlyph(e, grid[iz, ix]);
             grid[iz, ix] = g;
             if (e.Kind is "player" or "hive" && e.Name is { Length: > 0 } n && !who.Contains($"{g}={n}")) who.Add($"{g}={n}");
         }
         return who;
     }
+
+    /// <summary>Mobs 'm', players and bots by glyph or initial; items leave the cell as it is.</summary>
+    private static char EntityGlyph(VisionEntity e, char cell) => e.Kind switch
+    {
+        "mob" => 'm',
+        "item" => cell,
+        _ => e.Glyph ?? (string.IsNullOrEmpty(e.Name) ? 'p' : char.ToLowerInvariant(e.Name[0])),
+    };
 
     /// <summary>The x ruler (every 5th x) and the rows with z labels (every 5th z).</summary>
     private static void AppendRows(StringBuilder sb, char[,] grid, int x0, int z0, int size)

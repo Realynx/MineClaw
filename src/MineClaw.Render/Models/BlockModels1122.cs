@@ -222,16 +222,18 @@ public sealed class BlockModels1122 : IBlockModels
     }
 
     /// <summary>BlockColors.colorMultiplier for the tinted faces (0 = none), plains biome.</summary>
-    private static uint TintOf(int id, StateRef s) => id switch
+    private static uint TintOf(int id, StateRef s) => Tints.TryGetValue(id, out var tint) ? tint(s) : 0;
+
+    /// <summary>BlockColors per block id (plains biome).</summary>
+    private static readonly Dictionary<int, Func<StateRef, uint>> Tints = new()
     {
-        2 or 31 or 83 => BiomeTints.Grass(),
-        175 => s.File is "double_grass" or "double_fern" ? BiomeTints.Grass() : 0,
-        18 => s.File switch { "spruce_leaves" => BiomeTints.Spruce, "birch_leaves" => BiomeTints.Birch, _ => BiomeTints.Foliage() },
-        161 or 106 => BiomeTints.Foliage(),
-        111 => BiomeTints.LilyPad,
-        104 or 105 => StemTint(s),
-        55 => WireColour(s.Props.TryGetValue("power", out var pw) ? int.Parse(pw) : 0),
-        _ => 0,
+        [2] = _ => BiomeTints.Grass(), [31] = _ => BiomeTints.Grass(), [83] = _ => BiomeTints.Grass(),
+        [175] = s => s.File is "double_grass" or "double_fern" ? BiomeTints.Grass() : 0,
+        [18] = s => s.File switch { "spruce_leaves" => BiomeTints.Spruce, "birch_leaves" => BiomeTints.Birch, _ => BiomeTints.Foliage() },
+        [161] = _ => BiomeTints.Foliage(), [106] = _ => BiomeTints.Foliage(),
+        [111] = _ => BiomeTints.LilyPad,
+        [104] = StemTint, [105] = StemTint,
+        [55] = s => WireColour(s.Props.TryGetValue("power", out var pw) ? int.Parse(pw) : 0),
     };
 
     /// <summary>Stems: green to orange with the age (a bent stem has no age: fully grown).</summary>

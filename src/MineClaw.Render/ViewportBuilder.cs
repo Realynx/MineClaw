@@ -103,17 +103,18 @@ public static class ViewportBuilder
         return side;
     }
 
+    private static string? MarkerKind(Entity e) => e.Kind switch
+    {
+        EntityKind.Player => "player",
+        EntityKind.Mob when e.IsHostileMob => "mob",
+        EntityKind.Item => "item",
+        _ => null,
+    };
+
     /// <summary>A player (not the bot itself), hostile mob or item within the grid, as a marker relative to the feet.</summary>
     private static ViewMarker? Marker(Entity e, BlockPos c, int r, string? selfName)
     {
-        string? kind = e.Kind switch
-        {
-            EntityKind.Player => "player",
-            EntityKind.Mob when e.IsHostileMob => "mob",
-            EntityKind.Item => "item",
-            _ => null,
-        };
-        if (kind == null) return null;
+        if (MarkerKind(e) is not { } kind) return null;
         if (kind == "player" && selfName != null && string.Equals(e.Name, selfName, StringComparison.OrdinalIgnoreCase)) return null;
         var p = e.Position.ToBlockPos();
         int mdx = p.X - c.X, mdz = p.Z - c.Z;
