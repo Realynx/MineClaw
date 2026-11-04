@@ -231,9 +231,16 @@ public sealed partial class StoryColony
     internal bool Wanted(BillState b, StoryRecipe r) => b.Mode switch
     {
         "count" => b.Done < b.Target,
-        "until" => CountItem(r.Output.Id, r.Output.Meta) < b.Target,
+        "until" => StockOf(r) < b.Target,
         _ => true,
     };
+
+    /// <summary>
+    /// How much of a bill's product the colony has, every chest and every pocket: a family product (planks from any logs) counts every
+    /// variant, a tool or armour piece every wear state (a used pickaxe is still a pickaxe: live 11-04, "stone_pickaxe until 10" made 11).
+    /// </summary>
+    internal int StockOf(StoryRecipe r) =>
+        CountItem(r.Output.Id, r.AnyOutput || World?.Data is { } d && d.ItemExists(r.Output.Id) && d.Item(r.Output.Id).MaxDamage > 0 ? -1 : r.Output.Meta);
 
     private bool MayTake(BillState b, PawnState p, string work) =>
         (b.Pawn == "any" || b.Pawn.Equals(p.Name, StringComparison.OrdinalIgnoreCase)) && (b.MinSkill is not { } m || (p.Skills.GetValueOrDefault(work)?.Level ?? 0) >= m);
@@ -247,11 +254,38 @@ public sealed partial class StoryColony
             int need = input.Count * crafts;
             bool Ok(Stack s) => input.Options.Any(o => o.Matches(s.Id, s.Meta)) && Cats!.Accepts(b.Ingredients, s.Id, s.Meta);
             if (live.Inventory.Where(Ok).Sum(s => s.Count) >= need) { got.Add((null, live.Inventory.First(Ok) with { Count = need })); continue; }
-            var src = FindStored(s => Ok(s) && s.Count >= need, bench.Pos, b.Radius) ?? FindStored(Ok, bench.Pos, b.Radius);
-            if (src == null) return (got, $"no {World!.Data.DisplayName(input.Options[0].Id, Math.Max(0, input.Options[0].Meta)).ToLowerInvariant()} within {b.Radius} blocks");
-            got.Add((src.Value.Store.Chest, src.Value.Stack with { Count = Math.Min(need, src.Value.Stack.Count) }));
+            // Whatever variants are stocked, several stacks if need be (vanilla's wildcard recipes take mixed planks; a family bill
+            // takes any log): the most plentiful first, then the nearest. Live 11-04: "no oak wood planks" with birch in the chest.
+            int left = need;
+            foreach (var (store, stack) in Storages.Where(s => s.Chest.Dist(bench.Pos) <= b.Radius)
+                         .SelectMany(s => s.Contents.Where(Ok).Select(c => (Store: s, Stack: c)))
+                         .OrderByDescending(x => x.Stack.Count).ThenBy(x => x.Store.Chest.Dist(bench.Pos)))
+            {
+                if (left <= 0) break;
+                if (r.Fuel && got.Any(g => g.Item1 != null && (g.Item2.Id != stack.Id || g.Item2.Meta != stack.Meta))) continue; // a furnace load is one item
+                int n = Math.Min(left, stack.Count);
+                got.Add((store.Chest, stack with { Count = n }));
+                left -= n;
+            }
+            if (left == need) return (got, MissingText(input, b.Radius)); // some is a smaller batch; none is missing
         }
         return (got, null);
+    }
+
+    /// <summary>"no planks within 32 blocks — needs logs (chop trees)": an any-variant input says its family, and where its raw
+    /// material comes from when the colony has none of it.</summary>
+    private string MissingText(RecipeInput input, int radius)
+    {
+        var d = World!.Data;
+        var first = input.Options[0];
+        var fam = input.Options.All(o => o.Meta < 0) || input.Options.Select(o => o.Id).Distinct().Count() > 1 ? StoryRecipeFamilies.FamilyOf(first.Id) : null;
+        var name = fam ?? d.DisplayName(first.Id, Math.Max(0, first.Meta)).ToLowerInvariant();
+        var text = $"no {name} within {radius} blocks";
+        if (StoryRecipeFamilies.Source(first.Id) is not { } from) return text;
+        // Planks or sticks with logs in stock: they can be made (the "any" bills); with no logs either: chop trees.
+        bool logs = Storages.Any(s => s.Contents.Any(c => c.Id is 17 or 162));
+        if (first.Id is 5 or 280 && logs) return text + " — make them from the stored logs (a \"from any logs\" bill)";
+        return text + $" — needs {(first.Id is 5 or 280 or 17 or 162 ? "logs" : name)} ({from})";
     }
 
     /// <summary>A bill job (craft or cook), or collecting a furnace that is done, for this pawn; null = none runnable.</summary>
@@ -290,7 +324,7 @@ public sealed partial class StoryColony
                     if (_billAlerted.GetValueOrDefault(bill.Id) != why) { _billAlerted[bill.Id] = why; Alert("warn", $"Bill {r.Label} suspended: {why}"); }
                     continue;
                 }
-                int left = bill.Mode == "count" ? bill.Target - bill.Done : bill.Mode == "until" ? bill.Target - CountItem(r.Output.Id, r.Output.Meta) : 64;
+                int left = bill.Mode == "count" ? bill.Target - bill.Done : bill.Mode == "until" ? bill.Target - StockOf(r) : 64;
                 int crafts = Math.Clamp((int)Math.Ceiling(Math.Max(1, left) / (double)Math.Max(1, r.Output.Count)), 1, bench.Kind == "furnace" ? 8 : 16);
                 var (got, missing) = Ingredients(bill, r, crafts, bench, live);
                 bool auto = bill.ForBuild != null;
@@ -312,7 +346,8 @@ public sealed partial class StoryColony
                 var job = Job(work, bench.Kind == "furnace" ? "smelt" : "craft", r.Label + (bill.Mode == "count" ? $" ({bill.Done}/{bill.Target})" : ""), bench.Pos, key,
                     "bill", bill.Id, "working", f =>
                     {
-                        f["item"] = r.ToolItem;
+                        // A family smelt (charcoal from any logs) smelts the log it fetched (one item id per furnace load).
+                        f["item"] = bench.Kind == "furnace" && r.Any && got.FirstOrDefault().Chest != null ? ItemName(got[0].Stack.Id, got[0].Stack.Meta) : r.ToolItem;
                         f["n"] = bench.Kind == "furnace" ? crafts : crafts * r.Output.Count;
                         f["fetch"] = fetch;
                     }, xp: 25, count: crafts * r.Output.Count);

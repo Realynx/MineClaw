@@ -16,11 +16,19 @@ public sealed record StoryRecipe(string Id, string Label, string Workbench, stri
     /// smelting.</summary>
     public StationSpec? Station { get; init; }
 
+    /// <summary>Takes any variant of a material family (planks, logs, sand, coal): StoryRecipeFamilies.</summary>
+    public bool Any { get; init; }
+    /// <summary>The family its "any" input is (logs, planks, sand, coal), or null.</summary>
+    public string? Family { get; init; }
+    /// <summary>The output's variant follows the input's (planks of the log's wood): its stock counts every variant.</summary>
+    public bool AnyOutput { get; init; }
+
     public JsonObject Json()
     {
         var json = new JsonObject
         {
             ["id"] = Id, ["label"] = Label, ["workbench"] = Workbench, ["work_type"] = WorkType, ["output"] = Output.Json(),
+            ["any"] = Any, ["family"] = Family, ["any_output"] = AnyOutput,
             ["inputs"] = new JsonArray(Inputs.Select(i => (JsonNode)new JsonObject
             {
                 ["options"] = new JsonArray(i.Options.Select(o => (JsonNode)o.Json()).ToArray()), ["count"] = i.Count,
@@ -136,8 +144,8 @@ public static class StoryRecipes
             var id = "craft:" + name;
             if (!seen.Add(id)) continue;
             var inputs = r.Totals.Select(t => new RecipeInput([new ItemKey(t.Ingredient.Id, t.Ingredient.Damage)], t.Count)).ToList();
-            list.Add(new StoryRecipe(id, $"Make {Label(d, r.OutputId, r.OutputDamage)}", "crafting_table", WorkTypes.Craft,
-                new Stack(r.OutputId, Math.Max(0, r.OutputDamage), r.OutputCount), inputs, false) { ToolItem = name });
+            list.Add(StoryRecipeFamilies.Mark(new StoryRecipe(id, $"Make {Label(d, r.OutputId, r.OutputDamage)}", "crafting_table", WorkTypes.Craft,
+                new Stack(r.OutputId, Math.Max(0, r.OutputDamage), r.OutputCount), inputs, false) { ToolItem = name }));
         }
         foreach (var s in d.AllSmelting)
         {
@@ -145,10 +153,12 @@ public static class StoryRecipes
             var id = "smelt:" + name;
             if (!seen.Add(id)) continue;
             bool food = d.Food(s.OutputId, s.OutputDamage) != null;
-            list.Add(new StoryRecipe(id, $"{(food ? "Cook" : "Smelt")} {Label(d, s.InputId, s.InputDamage)} → {Label(d, s.OutputId, s.OutputDamage)}", "furnace",
+            list.Add(StoryRecipeFamilies.Mark(new StoryRecipe(id, $"{(food ? "Cook" : "Smelt")} {Label(d, s.InputId, s.InputDamage)} → {Label(d, s.OutputId, s.OutputDamage)}", "furnace",
                 food ? WorkTypes.Cook : WorkTypes.Craft, new Stack(s.OutputId, Math.Max(0, s.OutputDamage), s.OutputCount),
-                [new RecipeInput([new ItemKey(s.InputId, s.InputDamage)], 1)], true) { ToolItem = name });
+                [new RecipeInput([new ItemKey(s.InputId, s.InputDamage)], 1)], true) { ToolItem = name }));
         }
+        // The "any" bills (planks from any logs, charcoal from any logs) come first in their bench's list (StoryRecipeFamilies).
+        list.InsertRange(0, StoryRecipeFamilies.Build(d, (i, m) => Name(d, i, m), (i, m) => Label(d, i, m)).Where(f => seen.Add(f.Id)));
         if (SupportedIn(d, "brewing_stand"))
         {
             list.AddRange(StoryBrewing.Recipes(d));

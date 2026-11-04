@@ -82,6 +82,7 @@ export const StoryPolicy = z.object({
   weapon: z.string().default('best'),
   armor: z.string().default('drafted'),
   food: z.number().int().default(0),
+  spare: z.boolean().default(false).describe('carry one spare of each tool kind; else extras go back to storage'),
 });
 export type StoryPolicy = z.infer<typeof StoryPolicy>;
 
@@ -133,6 +134,7 @@ export const StoryPolicySpec = z
     weapon: StoryWeaponPref.optional(),
     armor: StoryArmorMode.optional(),
     food: z.number().int().min(0).max(16).optional(),
+    spare: z.boolean().optional(),
   })
   .strict();
 export type StoryPolicySpec = z.infer<typeof StoryPolicySpec>;

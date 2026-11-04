@@ -721,6 +721,17 @@ describe('bills', () => {
     expect(g.flatMap((x) => x.recipes.map((r) => r.id))).toContain('torch'); // uses sticks
     expect(searchRecipes(STORY_DEFAULT_RECIPES, '').find((x) => x.group === 'food_cooked')?.label).toBe('Meals');
   });
+
+  it('lists the any-variant recipe first in its group, the exact variants below', () => {
+    const base = { workbench: 'crafting_table', workType: 'craft', inputs: [], group: 'wood_planks' };
+    const recipes = [
+      { ...base, id: 'craft:birch_planks', label: 'Make Birch Wood Planks', output: [5, 2, 4] as [number, number, number] },
+      { ...base, id: 'craft:planks_any', label: 'Make Planks (from any logs)', output: [5, 0, 4] as [number, number, number], any: true, family: 'logs' },
+      { ...base, id: 'craft:oak_planks', label: 'Make Oak Wood Planks', output: [5, 0, 4] as [number, number, number] },
+    ];
+    const ids = searchRecipes(recipes, '').find((g) => g.group === 'wood_planks')!.recipes.map((r) => r.id);
+    expect(ids).toEqual(['craft:planks_any', 'craft:birch_planks', 'craft:oak_planks']);
+  });
 });
 
 describe('keys', () => {

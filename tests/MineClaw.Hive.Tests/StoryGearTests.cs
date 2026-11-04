@@ -42,10 +42,10 @@ public sealed class StoryGearTests
         var j = c.Next(0);
         Assert.NotEqual("dig", Kind(j));
         var d = c.Designations.Single();
-        Assert.Equal("needs a stone pickaxe", d.Wait);
+        Assert.StartsWith("needs a stone pickaxe", d.Wait);
         Assert.Equal(0, d.Fails);
-        Assert.Equal("open", d.Status);
-        Assert.Equal("needs a stone pickaxe", S(c.State()["designations"]![0]!["wait"]));
+        Assert.Equal("waiting", d.Status);
+        Assert.StartsWith("needs a stone pickaxe", S(c.State()["designations"]![0]!["wait"]));
         Assert.Empty(c.Alerts.Where(a => a.Text.Contains("failed")));
     }
 
@@ -137,7 +137,7 @@ public sealed class StoryGearTests
         Assert.NotEqual("dig", Kind(c.Next(0)));
         var b = c.Builds.Single();
         Assert.Equal("waiting", b.Status);
-        Assert.Equal("needs a stone pickaxe", b.Reason);
+        Assert.StartsWith("needs a stone pickaxe", b.Reason);
         h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 0, new Stack(274, 0, 1));
         c.Report(c.P(), c.CurrentOf(c.P())!.Id, "done", null, null);
         var j = c.Next(0);
@@ -187,7 +187,7 @@ public sealed class StoryGearTests
         Assert.Null(c.MaterialRulesOp(new JsonObject { ["op"] = "set", ["rule"] = new JsonObject { ["material"] = "iron_ore", ["tier"] = "iron" } }).Error);
         c.Designate("add", "mine", null, [new P3(3, 64, 3)], null);
         Assert.NotEqual("dig", Kind(c.Next(0)));
-        Assert.Equal("needs an iron pickaxe", c.Designations.Single().Wait);
+        Assert.StartsWith("needs an iron pickaxe", c.Designations.Single().Wait);
     }
 
     private static PawnLive WithGear(double x, double z, params GearSlot[] gear) =>

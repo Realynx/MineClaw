@@ -160,13 +160,17 @@ public sealed partial class StoryColony
     }
 
     /// <summary>The bench-kind recipe a planner step is (the bill's recipe), or null.</summary>
-    internal static StoryRecipe? RecipeOf(IGameData d, CraftStep s)
+    /// <param name="intermediate">The step makes an ingredient of a later step (planks for sticks), not the item wanted itself: a family
+    /// recipe that takes any variant ("Planks (from any logs)") is used, so the chain never stalls on one wood (StoryRecipeFamilies).</param>
+    internal static StoryRecipe? RecipeOf(IGameData d, CraftStep s, bool intermediate = false)
     {
         if (s.Smelt is { } sm)
             return StoryRecipes.For(d, "furnace").FirstOrDefault(r => r.Inputs.Count > 0 && r.Inputs[0].Options.Any(o => o.Id == sm.InputId
                 && (o.Meta < 0 || sm.InputDamage < 0 || o.Meta == sm.InputDamage)));
         var rc = s.Recipe!;
-        return StoryRecipes.For(d, "crafting_table").FirstOrDefault(r => r.Output.Id == rc.OutputId && r.Output.Meta == Math.Max(0, rc.OutputDamage));
+        var table = StoryRecipes.For(d, "crafting_table");
+        if (intermediate && table.FirstOrDefault(r => r.AnyOutput && r.Output.Id == rc.OutputId) is { } any) return any;
+        return table.FirstOrDefault(r => !r.AnyOutput && r.Output.Id == rc.OutputId && r.Output.Meta == Math.Max(0, rc.OutputDamage));
     }
 
     private (int Id, int Meta) KeyOfItem(IStoryWorld w, string item, int fallbackId) =>
@@ -248,7 +252,7 @@ public sealed partial class StoryColony
                             crafting = can;
                             foreach (var s in plan.Steps)
                             {
-                                if (RecipeOf(w.Data, s) is not { } r) continue;
+                                if (RecipeOf(w.Data, s, intermediate: (s.Recipe?.OutputId ?? -1) != key.Id) is not { } r) continue;
                                 int outputs = s.OutputCount;
                                 // A step whose bench the colony hasn't got yet waits (the bench is on its way, or asked for).
                                 if (s.IsSmelt) { if (hasFurnace) wants.Add(new Want(b.Id, b.Order, item, r, outputs, step++, "furnace")); }
