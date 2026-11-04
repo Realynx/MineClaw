@@ -137,6 +137,10 @@ public static class StoryConstruction
         int? level = item["level"]?.GetValue<int>();
         // Liquid sources poured from a bucket (docs/web/story-mode.md "Water"): each cell a still source of the item's liquid.
         if (kind == "water") return Liquid(item, blocks ?? area!.Value.Blocks());
+        // A design's water (or lava) source cells: poured like a water item (a flowing cell stays an unsupported ghost).
+        if (kind == "block" && item["material"] is JsonArray la && la.Count >= 1 && la[0] is JsonValue lv && lv.TryGetValue<int>(out var lid)
+            && lid is >= 8 and <= 11 && (la.Count < 2 || la[1] is JsonValue lm && lm.TryGetValue<int>(out var lmeta) && lmeta == 0))
+            return Liquid(item, blocks ?? area!.Value.Blocks());
         var mat = item["material"] is { } mn ? Resolve(d, mn) : null;
         if (item["material"] != null && mat == null && kind != "remove") return ([], null, "unknown material");
         mat ??= kind switch

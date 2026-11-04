@@ -94,7 +94,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: irrigation, id}` → `{id, cells, dig, axis, lines, note}` (see "Water"); `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -483,7 +483,8 @@ Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
     reports each one.
 - **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`; a build job adds
     `cells`, `want`, `clear` and `stand` (see "Building fast").
-  - Kinds: `go|chop|dig|harvest|till|collect|place|attack|equip|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
+  - Kinds: `go|chop|dig|harvest|till|collect|place|pour|attack|equip|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`
+    (`pour`: `story.pour(job)`, see "Water").
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
     `attack`, `eat`, `craft`, `smelt`, `collect_furnace`, `handTo`, `build`, `wait`), deposits the `stash` items and reports.
   - Gear (added 2026-11-03), in the SDK so the pawn script stays under its 4000-character cap: `story.fetch(job)` takes the
@@ -689,9 +690,12 @@ bite in 45 s reels in and casts again. The fake server (`FakeServer.Fishing`) se
 - `{op:"remove", ids}`, `{op:"pause", ids}` or `{op:"resume", ids}` → `{ids}`.
 - `{op:"reorder", ids}` → `{ids}`: the whole queue order, with the named ones first and the rest after them in their order.
 
-Item: `{kind: wall|floor|roof|door|window|stairs|fence|block|remove|crafting_table|furnace|chest|bed|torch, area?:[x1,y1,z1,x2,y2,z2],
+Item: `{kind: wall|floor|roof|door|window|stairs|fence|block|remove|water|crafting_table|furnace|chest|bed|torch, area?:[x1,y1,z1,x2,y2,z2],
 blocks?:[[x,y,z]], material?: <block name> | [id,meta], height?:1..12, roof?:{style: flat|slab|gable|none, material?, overhang?:0|1},
-facing?: n|e|s|w, level?:y, name?, group?}`.
+facing?: n|e|s|w, level?:y, name?, group?, infinite?, indoor?}` (`water`, `infinite`, `indoor`: see "Water").
+
+`{op:"preview", items}` → `{cells, done, error, warnings, flow:{spread, cells}}` checks water items and says where the water would
+run; nothing is queued (see "Water").
 
 - **wall / fence:** the rectangle's perimeter (corners included) × height, from the area's y1 up. Walls default to 3 high,
   fences to 1. A wall with `roof` also gets its roof, one above its top.
@@ -723,13 +727,14 @@ facing?: n|e|s|w, level?:y, name?, group?}`.
   with `convertTo`): a design drawn for the other version keeps what maps (the substitutions are said with the placement
   hint) and is refused, naming the blocks, when one of them doesn't exist here. Each `block` item's cells get the item that
   places exactly that state (red wool, not wool; a spruce door's item for a spruce door); a second half (a door's upper, a
-  bed's head, a double plant's top) comes with its first, never a job of its own. Blocks pawns can't place yet (crops,
-  liquids, signs, banners, skulls) stay `unsupported` ghosts: shown, said once in an alert, never a job, and the build
-  finishes around them.
+  bed's head, a double plant's top) comes with its first, never a job of its own. A water or lava source cell (meta 0) is
+  poured like a `water` item (see "Water"). Blocks pawns can't place yet (crops, flowing liquids, signs, banners, skulls) stay
+  `unsupported` ghosts: shown, said once in an alert, never a job, and the build finishes around them.
 
 Build: `{id, kind, label, status: queued|active|paused|blocked|done, reason, blocks_total, blocks_done, material, order, created}`.
-Ghosts: `[x,y,z,id,meta,build_id,state,kind]`, with state `todo|leased|done|blocked|unsupported` and kind `dig|place` (a dig
-ghost's id/meta is the block expected there, read from the world view when it was queued).
+Ghosts: `[x,y,z,id,meta,build_id,state,kind]`, with state `todo|leased|done|blocked|unsupported` and kind `dig|place|pour` (a dig
+ghost's id/meta is the block expected there, read from the world view when it was queued; a pour ghost is a liquid source, water
+9 or lava 11). A water build adds `liquid: water|lava` and `renewable` (its poured sources refill).
 
 Execution:
 - A pawn with Build on gets a batch of ghosts as one job (see "Building fast" below), by the picker and lease rules.
@@ -836,6 +841,81 @@ within reach works.
 FakeServer 1.12.2 (`StoryFakeServerTests.Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures`): three pawns lay
 a 6×6 floor from one chest with no failed cell (no busy chest, no "too far", no "occupied") in about 2 s of wall time (1.8–2.5 s
 over the runs). The fake clients tick every 5 ms, so that is about 20 s of game time. Each pawn placed 12. The test allows 60 s.
+
+## Water (added 2026-11-04)
+
+Fox 11-04: "I need a way to make them pour water down in different blocks so that I can make aquifers and hydroponics for
+different farming." Pawns place water (and lava, off by default) with buckets, cell by cell, through the build queue.
+
+**Build items.** `{kind: "water", blocks | area, material?: "water" (default) | "lava", infinite?, indoor?, name?, group?}`: each
+cell becomes a still source of the liquid (ghost id 9 or 11, meta 0, kind `pour`). A design's water or lava source cells are
+poured the same way. Checked when queued (`StoryColony.Water.cs`, 400 with why):
+- Lava only with the colony option `allow_lava` (`POST …/options {allow_lava}`, default off); never in a home zone, never with
+  something that burns (planks, logs, leaves, wool, fences, chests, benches…) within 2 blocks.
+- Each cell is open (air, tall grass, flowers, snow, vines, flowing liquid) or dug first by its `group` (a `remove` item of the
+  same group, earlier in the request or queued: the dig goes first, as for a basement). Anything else: "4,63,12 holds stone: dig it
+  first". Water never goes onto lava, nor lava onto water (obsidian or cobblestone).
+- Indoors (a home zone with a roof within 8 above) only with `indoor: true`: the Water source tool's explicit click sends it, the
+  channel tool and the irrigation planner never do.
+- A cell that already holds the source is done at once.
+
+**Flow preview.** The answer (and `op: "preview"`, which queues nothing) carries `flow: {spread, cells}` and `warnings`: where the
+water would run beyond the drawn cells, after the game's rules (BlockFlowing: straight down while it can fall, else 7 sideways,
+lava 3; a fall lands and spreads again), and whether it would meet the other liquid. Fox wants deliberate placement: a trench dug
+into the ground stays put; a channel laid on open ground runs off ("the water will spread to 40 cells beyond what was drawn (e.g.
+4,64,11): place dam blocks first, or dig the channel into the ground").
+
+**The pour job** (Build work, batched like other builds; `PourJob`). A batch is up to 12 cells of one water build (the pawn's
+fair share), with one stand in reach of them:
+- **Bucket.** The pawn's own (empty or full), else up to two from storage (empty first), else the build waits: the materials pass
+  counts a liquid build's need as one bucket, not one per cell, and liquid builds share it; a bucket missing makes an auto bill
+  "for build #N" (3 iron ingots at the crafting table), "waiting for a bucket (being crafted)", or "needs a bucket" blocked with
+  one alert. Buckets are tools: the pawn keeps them (deliveries never take tools); the batch that pours the colony's last
+  liquid cells returns them to storage (`stash`).
+- **Fill source** (`FillSource`): a still source within 24 blocks of the cells that won't be used up: one the colony poured that
+  refills (an infinite pool it built) first, then any that refills (two source neighbours over ground: a lake, a pool), then a
+  source with another source beside it; never a lone puddle, never water the colony poured that doesn't refill (Fox's
+  channels), never a cell of the batch. None and no full bucket: blocked, "no still water within 24 blocks to fill a bucket
+  from". Lava: any lava source the colony didn't pour.
+- **Order** (`PourOrder`): every other cell first, then the ones between them. A cell between two sources over ground becomes a
+  source by itself (the game's rule), so a canal or a 2×2 pool takes about half the pours; the pawn finds those cells done.
+- Job: `{kind: "pour", liquid, block: "bucket", want, at, cells, source?, buckets, stand?, fetch?, stash?}`.
+
+**`story.pour(job)`** (SDK, `75-story.js`; the pawn script hands `pour` to `story.work`): for each cell, a source already there is
+reported done; with no full bucket it fills every empty one at `source` (`fill_bucket`), goes back to the stand and pours aimed at
+the cell (`empty_bucket`, lava `move_lava`: the pour aim lands it in that exact cell), then checks the cell shows a source of its
+liquid (the hidden host call `storyLiquid(pos)` → `water | lava | flowing_water | flowing_lava | ""`). Each cell is reported
+`cell x,y,z done | failed: why`; a cell that shows flowing water instead is a failure ("shows flowing_water, not a water source").
+No way to fill a bucket ends the batch (the rest go back), or fails the job when nothing was poured. The director takes a cell as
+done only when its view shows the source (water 8 or 9 with meta 0: a just-poured source is 8 for a tick) or still air (its copy
+lags); flowing water there is not done.
+
+**Infinite sources.** The Architect's "Infinite water source" queues a 2×2 pool (dug into the ground by default) with `infinite:
+true`; poured as two opposite corners. Once its sources refill, the build is `renewable` and an alert says "… refills: pawns fill
+their buckets there from now on"; fills prefer it over any other water.
+
+**Irrigation** (`POST …/zones {op: "irrigation", id}`, nothing queued): the channels a growing zone wants. Farmland needs water
+within 4 blocks, so for a crop a straight channel at soil level along the zone's longer side, one every 9 rows (a centre line in a
+zone 9 or narrower; one more by the far edge when that would stay dry); sugar cane needs water right beside it, so one every 3
+rows. A line whose band is watered already is left out, and so are indoor cells. → `{id, cells, dig, axis, lines, note}`: `dig` are
+the cells holding soil (queued as a `remove` item in the water item's group).
+
+**Web.** The Architect's Water tab: Water source (click: one cell, indoors allowed), Water channel (drag a line or an area: a
+canal, a hydroponic tray), Infinite source (click a corner: a 2×2), Lava source (only while `allow_lava` is on), and the palette's
+entries at the bucket's tier ("workbench"; a bucket anywhere in the colony unlocks them). A water tool docks its own bar
+(`WaterTools.tsx`) where the material selector sits: "Dig the trench" (on for the channel and the pool: the cells go one block
+into the ground, a `remove` item of the same group first). The placement shows as water holograms; on release the director
+previews it: water that would run beyond the drawn cells (or an irrigation suggestion) waits in a confirm bar ("Water channel: 4
+sources · spreads to 23 more cells", the director's warnings, Queue / Cancel) with the flow drawn as flowing-water holograms;
+otherwise it is queued at once. The Growing zones window says when cells are dry ("40 cells have no water within 4 blocks") with
+Add irrigation: the planner's channels, pre-filled as a pending placement to confirm. The mock director (`storySim`) and
+`@mineclaw/contracts` (`storyWater.ts`: `waterToolCells`, `waterItems`, `liquidFlow`, `pourOrder`, `irrigationPlan`) carry
+reference copies of these rules.
+
+**Tests.** `StoryWaterTests` (director: checks, flow, dig before pour, fill-source choice, bucket fetch and auto bill, infinite
+sources, irrigation), `StoryPourSdkTests` (the SDK), `StoryFakeServerTests.A_pawn_digs_a_canal_fills_its_bucket_at_a_pool_and_pours_each_cell_a_source`
+(b1.8.1 and 1.12.2: the fake server's vanilla buckets now scoop as well as pour), `storyWater.test.tsx` (web) and
+`e2e/storyWater.spec.ts`.
 
 ## Storage
 
@@ -1054,14 +1134,14 @@ Build state gains `materials: [{item, label, need, have, crafting, short, via: c
 `no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
 recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
 
-`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay}` → the options (see "Idle behaviour" for `idle`); the colony state carries `options`.
+`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay, allow_lava?}` → the options (see "Idle behaviour" for `idle`); the colony state carries `options`.
 
 ### Architect palette and tiers (added 2026-11-03)
 
 `GET /api/story/colonies/{id}/architect` → `{entries, benches:{crafting_table, furnace, brewing_stand?, anvil?, enchanting_table?}, tabs}` (the designated benches per kind the version has). Entries are every placeable the
 version has (`StoryArchitect`: blocks, stairs, slabs, fences, doors, glass and panes, wool, beds, bookshelves, carpets, benches,
 chests, torches, glowstone, ladders…; variants the version lacks are left out), by tab: structure, furniture, production,
-storage, lighting, misc. Entry: `{id, label, tab, tier, unlocked, reason, item:[id,meta], material:[id,meta], kind, kinds, chain,
+storage, lighting, water (see "Water"), misc. Entry: `{id, label, tab, tier, unlocked, reason, item:[id,meta], material:[id,meta], kind, kinds, chain,
 have, craftable, from, short}`.
 - `tier` from the recipes: `gathered` (no recipe), `hand` (2×2 only), `workbench` (a 3×3 step), `furnace` (a smelting step).
 - `unlocked`: gathered and hand always; workbench with a designated crafting table; furnace with a designated furnace (and a
@@ -1069,7 +1149,7 @@ have, craftable, from, short}`.
 - `have` = unreserved stock, `craftable` = how many (up to 64) the unreserved stock makes now, `from` = what one takes, `short`
   = what one is short of when neither.
 
-The web's Architect (B) has tabs Orders, Zones, Structure, Furniture, Production, Storage, Lighting, Misc. The build tools stay
+The web's Architect (B) has tabs Orders, Zones, Structure, Furniture, Production, Storage, Lighting, Water, Misc. The build tools stay
 where they were; beside them, the tab's placeables: icon, name, tier and "have N" / "craftable N from …" / "short: …". Locked ones
 are greyed with a lock and the reason; picking an unlocked one arms its build tool with it as the material (a furniture entry its
 furniture tool), and the queued build's auto bills craft what's missing.

@@ -41,13 +41,16 @@ public sealed class StoryDesignBlockTests
     public void Blocks_pawns_cant_place_yet_are_unsupported_ghosts_and_never_block_the_build()
     {
         var m = Release1122GameData.Instance;
-        foreach (var (id, why) in new[] { (59, "planted"), (9, "bucket"), (63, "text"), (176, "block-entity") })
+        foreach (var (id, meta, why) in new[] { (59, 0, "planted"), (8, 3, "bucket"), (63, 0, "text"), (176, 0, "block-entity") })
         {
-            var g = Block(m, id, 0).Single();
+            var g = Block(m, id, meta).Single();
             Assert.Equal("unsupported", g.State);
             Assert.False(g.Job);
             Assert.Contains(why, g.Reason);
         }
+        // A design's water source is poured from a bucket (docs/web/story-mode.md "Water"); its flowing water stays a ghost (above).
+        var water = Block(m, 9, 0).Single();
+        Assert.Equal(("todo", true, "water_bucket"), (water.State, water.Job, water.Item));
         // Queued in a colony: an alert names them; the build finishes around them.
         var (c, _, _) = StoryRig.Make(data: m);
         var r = c.BuildsOp("add", new JsonArray(new JsonObject

@@ -160,6 +160,8 @@ export interface StoryMapProps {
   onHover?(info: string | null): void;
   /** Drafted pawns are selected: an entity under the cursor (mob, animal, player, AI bot) shows the attack cursor. */
   attackMode?: boolean;
+  /** A placement waiting for the owner's word (a water placement and where it would run): drawn as the placement hologram. */
+  holoPreview?: { key: string; blocks: ReadonlyArray<readonly [number, number, number, number, number]> } | null;
 }
 
 const TOP_ZOOM = 44;
@@ -571,7 +573,13 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       tool.kind === 'build' && tool.id !== 'remove' && !tool.id.startsWith('furniture:')
         ? (d?.startCell ?? (hv?.cell && !d ? startCellOf(hv) : null))
         : null;
-    if (a && tool.kind === 'design') {
+    const held = p.current.holoPreview;
+    if (held && !d) {
+      if ('w|' + held.key !== h.preview) {
+        h.preview = 'w|' + held.key;
+        e.setHologramPreview(held.blocks.flat(), h.preview);
+      }
+    } else if (a && tool.kind === 'design') {
       const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}`;
       if (key !== h.preview) {
         h.preview = key;

@@ -51,7 +51,7 @@ public sealed class StoryPourSdkTests
         var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
         Assert.True(s.Ok, s.Outcome);
         var calls = rig.Norm();
-        Assert.Equal(2, calls.Count(c => c.StartsWith("skill:fill_bucket ")));
+        Assert.True(calls.Count(c => c.StartsWith("skill:fill_bucket ")) == 2, string.Join(" | ", calls) + " // " + string.Join(" | ", port.Reports));
         Assert.Contains("""skill:fill_bucket {"liquid":"water","pos":"9,63,9"}""", calls);
         Assert.DoesNotContain(calls, c => c.StartsWith("skill:empty_bucket") && c.Contains("2,64,1")); // already a source: not poured
         int fill = calls.FindIndex(c => c.StartsWith("skill:fill_bucket")), back = calls.FindIndex(fill, c => c.StartsWith("goto ") && c.Contains("0,64,3")),
