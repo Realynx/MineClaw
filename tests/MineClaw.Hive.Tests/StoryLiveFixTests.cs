@@ -125,6 +125,7 @@ public sealed class StoryLiveFixTests
     {
         var clock = NewClock();
         var (c, h, w) = StoryRig.Make(pawns: 3, time: clock);
+        c.Meta.Home = null; // no home: nowhere to wander, so the plain idle hold (idle legs: StoryIdleTests)
         for (int i = 0; i < 3; i++) Only(c, i, WorkTypes.Chop);
         for (int i = 0; i < 3; i++)
         {
@@ -282,7 +283,10 @@ public sealed class StoryLiveFixTests
         c.SetHome(new P3(100, 60, 100)); // a click on the ground's top face, inside the stone: the spot is the surface above
         Assert.Equal(new P3(100, 60, 100), c.Meta.Home);
         Assert.Equal(new[] { c.P(0), c.P(1) }, h.Teleported.Select(t => t.Account).OrderBy(x => x).ToArray());
-        Assert.All(h.Teleported, t => Assert.Equal(new P3(100, 64, 100), t.To));
+        // Each to its own standable spot by home, never one cell for all (the first gets the home column itself).
+        Assert.Equal(new P3(100, 64, 100), h.Teleported[0].To);
+        Assert.All(h.Teleported, t => Assert.True(t.To.Y == 64 && Math.Abs(t.To.X - 100) <= 4 && Math.Abs(t.To.Z - 100) <= 4, t.To.ToString()));
+        Assert.True(StoryWander.Gap(h.Teleported[0].To, h.Teleported[1].To) >= 2, "spread out");
         Assert.Contains(c.Alerts, a => a.Text.Contains("another dimension"));
         Assert.Equal(2, c.Alerts.Count(a => a.Text.Contains("brought home to")));
         Assert.Contains(h.Interrupted, i => i.StartsWith(c.P(1)) && i.EndsWith("brought home"));
@@ -303,7 +307,9 @@ public sealed class StoryLiveFixTests
         c.Tick();
         h.Lives[c.P(1)] = FakeStoryHost.Live(250, 70, -40); // reconnects far away
         c.Tick();
-        Assert.Equal((c.P(1), new P3(0, 64, 0)), Assert.Single(h.Teleported));
+        var tp = Assert.Single(h.Teleported);
+        Assert.Equal(c.P(1), tp.Account);
+        Assert.True(StoryWander.Gap(tp.To, new P3(0, 64, 0)) is >= 2 and <= 4, tp.To.ToString()); // by home, not on the pawn standing there
 
         // b1.8.1's /tp takes no coordinates (or the gate refused): a move order home, before any work.
         h.TeleportError = "b1.8.1's /tp takes no coordinates";
@@ -314,7 +320,7 @@ public sealed class StoryLiveFixTests
         var p0 = c.Pawns[c.P(0)];
         var order = Assert.Single(p0.Queue);
         Assert.Equal("move", order.Kind);
-        Assert.Equal(new P3(0, 64, 0), order.At);
+        Assert.True(order.At is { Y: 64 } at && Math.Abs(at.X) <= 4 && Math.Abs(at.Z) <= 4, order.At.ToString());
         var j = c.Next(0);
         Assert.Equal("go", j["kind"]!.GetValue<string>());
         Assert.Contains(c.Alerts, a => a.Text.Contains("walks home"));

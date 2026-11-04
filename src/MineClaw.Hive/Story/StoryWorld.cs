@@ -24,6 +24,8 @@ public interface IStoryWorld
     int Dimension => 0;
     /// <summary>The column at x,z is in the view (an unloaded one reads as air: never a spot to send a pawn to).</summary>
     bool Loaded(int x, int z) => true;
+    /// <summary>The light level at x,y,z after dark (0-15; mobs spawn at 7 or less), or null when the view doesn't know.</summary>
+    int? NightLight(int x, int y, int z) => null;
 }
 
 /// <summary>A live pawn body as the director reads it each time it picks.</summary>
@@ -68,6 +70,9 @@ public interface IStoryHost
     /// Brings exactly these pawn accounts in: a hosted one is whitelisted again and retried now; another logs in, the player cap
     /// permitting (<paramref name="overCap"/>: the regulars' seats too). Never another account. (account, null = started | why not).
     /// </summary>
+    /// <summary>One pawn leaves the colony: it deposits, logs out and its account is released (whitelist removal through main).
+    /// Null = on its way; else why not.</summary>
+    string? ReleasePawn(string account, string why) => "releasing one pawn isn't available here";
     IReadOnlyList<(string Account, string? Why)> Bring(string colony, IReadOnlyList<string> accounts, bool overCap) =>
         accounts.Select(a => (a, (string?)"bringing pawns online isn't available here")).ToList();
 }
@@ -84,6 +89,7 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
     public int Height => world()?.WorldHeight ?? 128;
     public int Dimension => world()?.Dimension ?? 0;
     public bool Loaded(int x, int z) => world()?.IsLoaded(x, z) ?? false;
+    public int? NightLight(int x, int y, int z) => world() is { } w ? w.Light.LightLevel(x, y, z, LightEngine.NightSubtracted) : null;
 
     public (int Id, int Meta) Block(int x, int y, int z) => world() is { } w ? (w.GetBlock(x, y, z), w.GetMeta(x, y, z)) : (0, 0);
 

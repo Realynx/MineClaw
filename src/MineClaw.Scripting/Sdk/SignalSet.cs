@@ -125,6 +125,13 @@ internal sealed class SignalSet(ScriptSession s)
         lock (_lock) _list.Add(new Signal { Topic = topic, Cond = () => true, Owner = owner, Due = now + after, Text = topic });
     }
 
+    /// <summary>A one-shot condition under its own topic, polled off the script thread (so it fires while an action runs):
+    /// <c>story.during()</c>'s "the director took the job back". Remove it with <see cref="Remove"/>.</summary>
+    public void AddCond(string topic, Func<bool> cond, object owner)
+    {
+        lock (_lock) _list.Add(new Signal { Topic = topic, Cond = cond, Owner = owner, Text = topic });
+    }
+
     /// <summary>"after:5000" → (once, 5 s); "every:20" → (repeating, 1 s = 20 game ticks); else (false, null).</summary>
     public static (bool Once, TimeSpan? Span) ParseTimer(string topic)
     {

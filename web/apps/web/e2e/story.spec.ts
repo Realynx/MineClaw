@@ -620,6 +620,46 @@ test('offline pawns say why and come back; a failed cut says why; full screen ke
   await expect(bar).toBeVisible();
 });
 
+test('+ adds a joining pawn; − removes the selected one after a confirm; a growing zone takes a plant', async ({
+  page,
+}) => {
+  // The seeded colony has 1 free seat and 2 kept for regulars: a new pawn waits for a seat ("joining…").
+  await signIn(page, false);
+  await openStory(page);
+  const bar = page.getByTestId('colonist-bar');
+  const portraits = bar.locator('[data-kind="pawn"]');
+  const before = await portraits.count();
+  const add = post(page, /\/api\/story\/colonies\/[^/]+\/pawns$/);
+  await bar.getByTestId('bar-add-pawn').click();
+  expect(body(await add)).toEqual({ op: 'add', count: 1 });
+  await expect(bar.getByTestId('bar-joining')).toHaveCount(1);
+
+  const here = await portraits.count();
+  expect(here).toBeGreaterThanOrEqual(before); // the new one is pending, not a portrait
+  await portraits.first().click();
+  await bar.getByTestId('bar-remove-pawn').click();
+  const confirm = page.getByTestId('remove-pawn-confirm');
+  await expect(confirm).toContainText('Their items go to storage.');
+  const rm = post(page, /\/api\/story\/colonies\/[^/]+\/pawns$/);
+  await confirm.getByRole('button', { name: 'Remove' }).click();
+  expect(body(await rm)).toMatchObject({ op: 'remove' });
+  await expect(portraits).toHaveCount(here - 1, { timeout: 10_000 });
+
+  // A growing zone: the Zones tool's Growing zone shows the plant picker; the zone is sent with the plant.
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('KeyB'); // the Architect
+  await page.getByRole('button', { name: 'Zones', exact: true }).click();
+  await page.getByRole('button', { name: 'Growing zone' }).click();
+  const picker = page.getByTestId('grow-plant-picker');
+  await expect(picker).toBeVisible();
+  await picker.getByRole('radio', { name: /Carrots/ }).click();
+  const [cx, cy, cz] = await story(page, 'center');
+  const zone = post(page, /\/zones$/);
+  await dragCells(page, [cx, cy, cz], [cx + 2, cy, cz + 2]);
+  await page.mouse.up();
+  expect(body(await zone)).toMatchObject({ op: 'add', kind: 'farm', plant: 'carrots' });
+});
+
 // ------------------------------------------------------------------ the world under the HUD: models, holograms, notices
 
 type Ghost = [number, number, number, number, number, string | number, string];
