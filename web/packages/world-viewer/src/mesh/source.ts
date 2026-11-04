@@ -56,6 +56,20 @@ export type MeshAssets = BetaAssets | Assets1122;
 /** The b1.8.1 cells the procedural TextureFX animate (water/lava still + flow, fire, portal). */
 export const BETA_ANIMATED = [205, 206, 237, 238, 31, 47, 14];
 
+/** Neighbour-dependent: chests (halves), fluids, fences/panes, wire, tall grass jitter, portals. */
+const BETA_DYNAMIC = new Set([54, 8, 9, 10, 11, 85, 101, 102, 55, 31, 90]);
+
+/** The flags every state of a b1.8.1 block shares (fast leaves are opaque). */
+function betaFlags(id: number, fastLeaves: boolean): number {
+  let f = BETA_ID_FLAGS[id] ?? 0;
+  if (classifyBeta(id) === BetaShape.Cube || (fastLeaves && id === 18)) f |= F_OPAQUE;
+  if (emissiveBeta(id)) f |= F_EMISSIVE;
+  return f;
+}
+
+/** Glass and ice cull against themselves; water, lava and leaves are marked as such. */
+const BETA_ID_FLAGS: Record<number, number> = { 20: F_SELF_CULL, 79: F_SELF_CULL, 8: F_WATER, 9: F_WATER, 10: F_LAVA, 11: F_LAVA, 18: F_LEAVES };
+
 export class BetaSource implements BlockSource {
   readonly version = 'b1.8.1' as const;
   readonly flags = new Uint8Array(STATES);
@@ -72,16 +86,8 @@ export class BetaSource implements BlockSource {
   ) {
     this.builder = new BetaBuilder(textured, (t) => (info && info[t] ? info[t][2] : null), !fastLeaves);
     for (let id = 0; id < 256; id++) {
-      const shape = classifyBeta(id);
-      let f = 0;
-      if (shape === BetaShape.Cube || (fastLeaves && id === 18)) f |= F_OPAQUE;
-      if (id === 20 || id === 79) f |= F_SELF_CULL;
-      if (emissiveBeta(id)) f |= F_EMISSIVE;
-      if (id === 8 || id === 9) f |= F_WATER;
-      if (id === 10 || id === 11) f |= F_LAVA;
-      if (id === 18) f |= F_LEAVES;
-      // Neighbour-dependent: chests (halves), fluids, fences/panes, wire, tall grass jitter, portals.
-      const dyn = [54, 8, 9, 10, 11, 85, 101, 102, 55, 31, 90].includes(id) ? 1 : 0;
+      const f = betaFlags(id, fastLeaves);
+      const dyn = BETA_DYNAMIC.has(id) ? 1 : 0;
       for (let m = 0; m < 16; m++) {
         this.flags[(id << 4) | m] = f;
         this.dynamic[(id << 4) | m] = dyn;
