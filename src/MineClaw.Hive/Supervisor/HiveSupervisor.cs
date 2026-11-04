@@ -852,37 +852,49 @@ public sealed partial class HiveSupervisor : IAsyncDisposable
     /// <summary>Terse status line for <c>list_clones</c>.</summary>
     public string List()
     {
-        var parts = _slots.Values.Select(s =>
-        {
-            string st = s.State switch
-            {
-                CloneState.Running when s.Connected => "out",
-                CloneState.Running or CloneState.Starting => "starting",
-                CloneState.Stopping => "logging out",
-                CloneState.Backoff => "restarting",
-                CloneState.Retired => $"retired ({s.Crashes.Count} crashes)",
-                _ => ExternalOccupant(s) is { } occupied ? occupied : OfflineState(s),
-            };
-            var line = $"{s.Number} {st}";
-            if (s.State is not (CloneState.Idle or CloneState.Retired) && s.Task is { Script: { } script } st2)
-            {
-                // "67: script cobble_loop 42% (brain asleep, profile haiku)"
-                bool asleep = s.Snapshot?.Brain is not { } b || b.StartsWith("asleep", StringComparison.Ordinal);
-                line = $"{s.Number}: script {script} {s.Progress * 100:0}% (brain {(asleep ? "asleep" : "awake")}, profile {st2.Profile ?? "default"})" +
-                    (st != "out" ? $" {st}" : "") + (s.ResultIn ? $" (result: {Trunc(s.ResultText ?? "", 60)})" : "");
-            }
-            else if (s.State is not (CloneState.Idle or CloneState.Retired) && s.Task != null)
-            {
-                if (s.Task.Profile != null) line += $" (profile {s.Task.Profile})";
-                line += $": {Trunc(s.Task.Text, 50)}" + (s.Pending ? " (pending, no result yet)" : s.ResultIn ? $" (result: {Trunc(s.ResultText ?? "", 60)})" : "");
-                if (s.Progress > 0) line += $" {Percent.Of(s.Progress)}";
-                if (s.Snapshot?.Pos is { } p) line += $" @{p}";
-            }
-            if (s.Deaths > 0) line += $" died x{s.Deaths}";
-            return line;
-        });
+        var parts = _slots.Values.Select(ListLine);
         var (d, _) = Ledger.ClonesSpend();
         return string.Join(" | ", parts) + $" | clones today ${d:0.00}";
+    }
+
+    /// <summary>One clone's part of <see cref="List"/>: number and state, its task (a script's progress or a job's text), deaths.</summary>
+    private string ListLine(CloneSlot s)
+    {
+        string st = SlotStateText(s);
+        bool active = s.State is not (CloneState.Idle or CloneState.Retired);
+        var line = active && s.Task is { Script: { } script } t ? ScriptTaskLine(s, t, script, st)
+            : active && s.Task != null ? $"{s.Number} {st}" + JobText(s)
+            : $"{s.Number} {st}";
+        return s.Deaths > 0 ? line + $" died x{s.Deaths}" : line;
+    }
+
+    private string SlotStateText(CloneSlot s) => s.State switch
+    {
+        CloneState.Running when s.Connected => "out",
+        CloneState.Running or CloneState.Starting => "starting",
+        CloneState.Stopping => "logging out",
+        CloneState.Backoff => "restarting",
+        CloneState.Retired => $"retired ({s.Crashes.Count} crashes)",
+        _ => ExternalOccupant(s) is { } occupied ? occupied : OfflineState(s),
+    };
+
+    /// <summary>"67: script cobble_loop 42% (brain asleep, profile haiku)", the state when not out, and the result once in.</summary>
+    private static string ScriptTaskLine(CloneSlot s, TaskMsg t, string script, string st)
+    {
+        bool asleep = s.Snapshot?.Brain is not { } b || b.StartsWith("asleep", StringComparison.Ordinal);
+        return $"{s.Number}: script {script} {s.Progress * 100:0}% (brain {(asleep ? "asleep" : "awake")}, profile {t.Profile ?? "default"})" +
+            (st != "out" ? $" {st}" : "") + (s.ResultIn ? $" (result: {Trunc(s.ResultText ?? "", 60)})" : "");
+    }
+
+    /// <summary>A job's profile, text, pending/result, progress and position.</summary>
+    private static string JobText(CloneSlot s)
+    {
+        var task = s.Task!;
+        var text = task.Profile != null ? $" (profile {task.Profile})" : "";
+        text += $": {Trunc(task.Text, 50)}" + (s.Pending ? " (pending, no result yet)" : s.ResultIn ? $" (result: {Trunc(s.ResultText ?? "", 60)})" : "");
+        if (s.Progress > 0) text += $" {Percent.Of(s.Progress)}";
+        if (s.Snapshot?.Pos is { } p) text += $" @{p}";
+        return text;
     }
 
     /// <summary>Persists a clone's hp/food/position when they change (main restarts keep knowing who is fit for what).</summary>
