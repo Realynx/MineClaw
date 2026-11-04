@@ -1301,33 +1301,48 @@ public sealed partial class StoryColony
         var pol = PolicyOf(p);
         var gear = GearOf(live);
         foreach (var g in gear.Where(g => g.Slot is >= 5 and <= 8)) keep.Add(g);
-        var kinds = KindsFor(p);
-        foreach (var r in Meta.Gear.Rules) if (StoryTools.Kind(r.Tool) is { } rk) kinds.Add(rk);
-        if (_current.TryGetValue(p.Name, out var cur) && cur.Json["tool"] is JsonValue tv && tv.TryGetValue<string>(out var tn)
-            && d.ItemByName(tn) is { } ti && StoryTools.ToolOf(d, ti.Id) is var tk and not ToolType.None) kinds.Add(tk);
+        var kinds = KeptToolKinds(p, d);
         bool marked = Meta.Gear.Rules.Any(r => r.Enchant != null);
-        foreach (var kind in kinds)
-        {
-            var mine = gear.Where(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind)
-                .OrderBy(g => StoryTools.Worn(d, g.Id, g.Meta) ? 1 : 0).ThenByDescending(g => StoryTools.LevelOf(d, g.Id)).ThenBy(g => g.Enchanted ? 0 : 1)
-                .ThenBy(g => g.Meta).ToList();
-            if (mine.Count == 0) continue;
-            keep.Add(mine[0]);
-            if (marked && mine[0].Enchanted && mine.FirstOrDefault(g => !g.Enchanted && !StoryTools.Worn(d, g.Id, g.Meta)) is { } plain) keep.Add(plain);
-            if (pol.Spare && mine.Skip(1).FirstOrDefault(g => !keep.Contains(g) && !StoryTools.Worn(d, g.Id, g.Meta)) is { } spareOne) keep.Add(spareOne);
-        }
+        foreach (var kind in kinds) KeepTools(d, pol, gear, kind, marked, keep);
         var pref = pol.Weapon is "none" ? "best" : pol.Weapon;
         if (gear.Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0 && StoryTools.ToolOf(d, g.Id) != ToolType.Axe)
                 .OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref)).ThenBy(g => g.Meta).FirstOrDefault() is { } weapon) keep.Add(weapon);
         if (pol.Armor != "none")
-            foreach (var slot in new[] { "head", "chest", "legs", "feet" })
-            {
-                if (gear.Any(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot)) continue;
-                if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } a)
-                    keep.Add(a);
-            }
+            foreach (var slot in ArmorSlotOrder)
+                if (BagArmorFor(gear, slot) is { } a) keep.Add(a);
         return keep;
     }
+
+    /// <summary>The tool kinds a pawn keeps one of: its work's (by policy), every material rule's, and the one its job uses now.</summary>
+    private HashSet<ToolType> KeptToolKinds(PawnState p, IGameData d)
+    {
+        var kinds = KindsFor(p);
+        foreach (var r in Meta.Gear.Rules) if (StoryTools.Kind(r.Tool) is { } rk) kinds.Add(rk);
+        if (CurrentJobTool(p, d) is { } tk) kinds.Add(tk);
+        return kinds;
+    }
+
+    /// <summary>The kind of the tool the pawn's current job names (null = none, or not a tool).</summary>
+    private ToolType? CurrentJobTool(PawnState p, IGameData d) =>
+        _current.TryGetValue(p.Name, out var cur) && cur.Json["tool"] is JsonValue tv && tv.TryGetValue<string>(out var tn)
+        && d.ItemByName(tn) is { } ti && StoryTools.ToolOf(d, ti.Id) is var tk and not ToolType.None ? tk : null;
+
+    /// <summary>Of one tool kind: the best fresh one, a plain one beside an enchanted one (a rule marks a material), a spare by policy.</summary>
+    private static void KeepTools(IGameData d, GearPolicy pol, List<GearSlot> gear, ToolType kind, bool marked, HashSet<GearSlot> keep)
+    {
+        var mine = gear.Where(g => g.Slot >= 9 && StoryTools.ToolOf(d, g.Id) == kind)
+            .OrderBy(g => StoryTools.Worn(d, g.Id, g.Meta) ? 1 : 0).ThenByDescending(g => StoryTools.LevelOf(d, g.Id)).ThenBy(g => g.Enchanted ? 0 : 1)
+            .ThenBy(g => g.Meta).ToList();
+        if (mine.Count == 0) return;
+        keep.Add(mine[0]);
+        if (marked && mine[0].Enchanted && mine.FirstOrDefault(g => !g.Enchanted && !StoryTools.Worn(d, g.Id, g.Meta)) is { } plain) keep.Add(plain);
+        if (pol.Spare && mine.Skip(1).FirstOrDefault(g => !keep.Contains(g) && !StoryTools.Worn(d, g.Id, g.Meta)) is { } spareOne) keep.Add(spareOne);
+    }
+
+    /// <summary>For an armour slot nothing is worn in: the best piece in the bag for it (null = one is worn, or the bag has none).</summary>
+    private static GearSlot? BagArmorFor(List<GearSlot> gear, string slot) =>
+        gear.Any(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot) ? null
+            : gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault();
 
     /// <summary>The pawn's extra gear (see <see cref="KeepOf"/>), per item: how many go into which chest and how many of it stay.</summary>
     internal List<GearKeep> ExtrasOf(PawnState p, PawnLive live, P3 from)
@@ -1386,40 +1401,48 @@ public sealed partial class StoryColony
         p.Gear.Tasks.RemoveAll(t => t.Op is "draft" or "restore");
         var pol = PolicyOf(p);
         var gear = GearOf(live);
-        if (drafted)
-        {
-            var t = new GearTask { Id = NextId("g"), Op = "draft", Label = "arming for the draft" };
-            var pref = pol.Weapon == "none" ? "best" : pol.Weapon;
-            var weapon = gear.Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0 && g.Id != 261).OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref))
-                .ThenBy(g => g.Meta).FirstOrDefault();
-            var heldName = live.Held;
-            p.Gear.RestoreHeld = heldName != null && (weapon == null || heldName != ItemName(weapon.Id, weapon.Meta)) ? heldName : null;
-            if (weapon != null && heldName != ItemName(weapon.Id, weapon.Meta)) { t.Hold = ItemName(weapon.Id, weapon.Meta); t.HoldEnch = weapon.Enchanted ? "any" : "none"; }
-            bool night = HourNow >= 13 && HourNow <= 22;
-            if (pol.Armor is "drafted" or "always" || pol.Armor == "night" && night)
-            {
-                foreach (var slot in new[] { "head", "chest", "legs", "feet" })
-                {
-                    if (gear.Any(g => g.Slot is >= 5 and <= 8 && StoryTools.ArmorSlot(g.Id) == slot)) continue;
-                    if (gear.Where(g => g.Slot >= 9 && StoryTools.ArmorSlot(g.Id) == slot).OrderByDescending(g => StoryTools.ArmorRank(g.Id)).FirstOrDefault() is { } a)
-                        t.Wear.Add(ItemName(a.Id, a.Meta));
-                }
-                p.Gear.DraftArmor = t.Wear.Count > 0 && pol.Armor == "drafted";
-            }
-            if (t.Hold != null || t.Wear.Count > 0) p.Gear.Tasks.Insert(0, t);
-        }
-        else
-        {
-            var t = new GearTask { Id = NextId("g"), Op = "restore", Label = "putting the weapon away" };
-            if (p.Gear.RestoreHeld is { } back && live.Inventory.Any(s => ItemName(s.Id, s.Meta) == back)) t.Hold = back;
-            if (p.Gear.DraftArmor && pol.Armor != "always") t.Unwear = true;
-            p.Gear.RestoreHeld = null;
-            p.Gear.DraftArmor = false;
-            p.Gear.Post = null;
-            RevokePermits(p);
-            if (t.Hold != null || t.Unwear) p.Gear.Tasks.Insert(0, t);
-        }
+        if (drafted) ArmForDraft(p, d, live, pol, gear);
+        else StandDown(p, live, pol);
         p.Rev = Touch();
+    }
+
+    /// <summary>Drafted: its best weapon in hand (what it held remembered), its armour on when the policy says so.</summary>
+    private void ArmForDraft(PawnState p, IGameData d, PawnLive live, GearPolicy pol, List<GearSlot> gear)
+    {
+        var t = new GearTask { Id = NextId("g"), Op = "draft", Label = "arming for the draft" };
+        DraftWeapon(p, d, live, pol, gear, t);
+        bool night = HourNow >= 13 && HourNow <= 22;
+        if (pol.Armor is "drafted" or "always" || pol.Armor == "night" && night)
+        {
+            foreach (var slot in ArmorSlotOrder)
+                if (BagArmorFor(gear, slot) is { } a) t.Wear.Add(ItemName(a.Id, a.Meta));
+            p.Gear.DraftArmor = t.Wear.Count > 0 && pol.Armor == "drafted";
+        }
+        if (t.Hold != null || t.Wear.Count > 0) p.Gear.Tasks.Insert(0, t);
+    }
+
+    private void DraftWeapon(PawnState p, IGameData d, PawnLive live, GearPolicy pol, List<GearSlot> gear, GearTask t)
+    {
+        var pref = pol.Weapon == "none" ? "best" : pol.Weapon;
+        var weapon = gear.Where(g => g.Slot >= 9 && StoryTools.WeaponScore(d, g.Id, pref) > 0 && g.Id != 261).OrderByDescending(g => StoryTools.WeaponScore(d, g.Id, pref))
+            .ThenBy(g => g.Meta).FirstOrDefault();
+        var heldName = live.Held;
+        p.Gear.RestoreHeld = heldName != null && (weapon == null || heldName != ItemName(weapon.Id, weapon.Meta)) ? heldName : null;
+        if (weapon != null && heldName != ItemName(weapon.Id, weapon.Meta)) { t.Hold = ItemName(weapon.Id, weapon.Meta); t.HoldEnch = weapon.Enchanted ? "any" : "none"; }
+    }
+
+    /// <summary>Undrafted: the old item back in the hand, the draft's armour off again (unless the policy says always), the post and any
+    /// player permits gone.</summary>
+    private void StandDown(PawnState p, PawnLive live, GearPolicy pol)
+    {
+        var t = new GearTask { Id = NextId("g"), Op = "restore", Label = "putting the weapon away" };
+        if (p.Gear.RestoreHeld is { } back && live.Inventory.Any(s => ItemName(s.Id, s.Meta) == back)) t.Hold = back;
+        if (p.Gear.DraftArmor && pol.Armor != "always") t.Unwear = true;
+        p.Gear.RestoreHeld = null;
+        p.Gear.DraftArmor = false;
+        p.Gear.Post = null;
+        RevokePermits(p);
+        if (t.Hold != null || t.Unwear) p.Gear.Tasks.Insert(0, t);
     }
 
     // ---------------------------------------------------------------- state JSON

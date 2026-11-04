@@ -242,18 +242,7 @@ public sealed partial class StoryColony : IStoryPort
 
     public bool Report(string body, string job, string status, string? note, double? pct)
     {
-        if (status == "done" && DoneGrace > TimeSpan.Zero)
-        {
-            // The pawn's script thread waits here (never under the lock) until the world agrees or the grace is over.
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            while (true)
-            {
-                lock (_lock)
-                    if (!_current.TryGetValue(body, out var c0) || c0.Id != job || c0.Source != "designation" || Left(c0, body) == null) break;
-                if (sw.Elapsed >= DoneGrace) break;
-                Thread.Sleep(TimeSpan.FromMilliseconds(Math.Min(100, Math.Max(5, DoneGrace.TotalMilliseconds / 10))));
-            }
-        }
+        if (status == "done" && DoneGrace > TimeSpan.Zero) AwaitDoneGrace(body, job);
         lock (_lock)
         {
             if (!_current.TryGetValue(body, out var cur) || cur.Id != job) return false;
@@ -269,37 +258,68 @@ public sealed partial class StoryColony : IStoryPort
             switch (status)
             {
                 case "progress":
-                    cur.Progress = pct;
-                    if (cur.Source == "escape" && note != null) EscapeStep(body, note); // what a stuck pawn tries now
-                    if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
-                    if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
-                    if (p != null) p.Rev = Bump();
-                    return true;
-                case "done" when p != null && cur.Source == "designation" && Left(cur, body) is { } left:
-                    // Live 11-03: harvest and cut designations vanished with no line in the log: the script's dig on a block out of
-                    // its view did nothing and said ok. A designation is done only when the world agrees.
-                    _current.Remove(body);
-                    Release(cur);
-                    Failed(p, cur, $"reported done, but {left}");
-                    _lastSource[body] = "failed";
-                    p.Rev = Bump();
-                    return true;
+                    ReportProgress(body, p, cur, note, pct);
+                    break;
                 case "done":
-                    _current.Remove(body);
-                    Release(cur);
-                    if (p != null) Done(p, cur, note);
-                    _lastSource[body] = cur.Source;
-                    if (p != null) p.Rev = Touch(); // its experience is saved
-                    return true;
+                    ReportDone(body, p, cur, note);
+                    break;
                 default:
-                    _current.Remove(body);
-                    Release(cur);
-                    if (p != null) Failed(p, cur, note);
-                    _lastSource[body] = "failed";
-                    if (p != null) p.Rev = Bump();
-                    return true;
+                    ReportFailed(body, p, cur, note);
+                    break;
             }
+            return true;
         }
+    }
+
+    /// <summary>The pawn's script thread waits here (never under the lock) until the world agrees with a designation's "done" or the
+    /// grace is over.</summary>
+    private void AwaitDoneGrace(string body, string job)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            lock (_lock)
+                if (!_current.TryGetValue(body, out var c0) || c0.Id != job || c0.Source != "designation" || Left(c0, body) == null) return;
+            if (sw.Elapsed >= DoneGrace) return;
+            Thread.Sleep(TimeSpan.FromMilliseconds(Math.Min(100, Math.Max(5, DoneGrace.TotalMilliseconds / 10))));
+        }
+    }
+
+    private void ReportProgress(string body, PawnState? p, ActiveJob cur, string? note, double? pct)
+    {
+        cur.Progress = pct;
+        if (cur.Source == "escape" && note != null) EscapeStep(body, note); // what a stuck pawn tries now
+        if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
+        if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
+        if (p != null) p.Rev = Bump();
+    }
+
+    private void ReportDone(string body, PawnState? p, ActiveJob cur, string? note)
+    {
+        // Live 11-03: harvest and cut designations vanished with no line in the log: the script's dig on a block out of its view did
+        // nothing and said ok. A designation is done only when the world agrees.
+        var left = p != null && cur.Source == "designation" ? Left(cur, body) : null;
+        _current.Remove(body);
+        Release(cur);
+        if (left != null)
+        {
+            Failed(p!, cur, $"reported done, but {left}");
+            _lastSource[body] = "failed";
+            p!.Rev = Bump();
+            return;
+        }
+        if (p != null) Done(p, cur, note);
+        _lastSource[body] = cur.Source;
+        if (p != null) p.Rev = Touch(); // its experience is saved
+    }
+
+    private void ReportFailed(string body, PawnState? p, ActiveJob cur, string? note)
+    {
+        _current.Remove(body);
+        Release(cur);
+        if (p != null) Failed(p, cur, note);
+        _lastSource[body] = "failed";
+        if (p != null) p.Rev = Bump();
     }
 
     private bool HoldsLease(string key, string owner) =>
