@@ -22,6 +22,9 @@ public sealed partial class MinecraftClient
     /// </summary>
     public bool PreferHeldTool { get; set; }
 
+    /// <summary>This body's recent failed searches (<see cref="NoRouteCache"/>): the same one isn't run again for a while.</summary>
+    public NoRouteCache NoRoutes { get; } = new();
+
     /// <summary>Armour slot (5 head … 8 feet) for an item, or -1.</summary>
     public static int ArmorSlotOf(int itemId)
     {

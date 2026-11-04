@@ -12,6 +12,11 @@ public sealed class EntityTracker
     private readonly object _sync = new();
     private readonly Dictionary<int, Entity> _entities = new();
     private readonly HashSet<string> _onlinePlayers = new(StringComparer.OrdinalIgnoreCase);
+    private long _membership;
+
+    /// <summary>Moves with every spawn, removal, clear and stack change (not with moves): a reader's cache of who is here can tell it is
+    /// stale without walking the tracker (StoryWorld.cs: the colony reads every body's entities several times a second).</summary>
+    public long Membership => Interlocked.Read(ref _membership);
 
     public event Action<Entity>? Spawned;
     public event Action<Entity>? Removed;
@@ -33,6 +38,7 @@ public sealed class EntityTracker
     public Entity Spawn(Entity e)
     {
         lock (_sync) _entities[e.Id] = e;
+        Interlocked.Increment(ref _membership);
         Spawned?.Invoke(e);
         return e;
     }
@@ -129,7 +135,11 @@ public sealed class EntityTracker
     });
 
     /// <summary>A dropped item's stack changed (1.12.2 item metadata: merged stacks, a partial pickup).</summary>
-    public bool SetItem(int id, ItemStack item) => Update(id, e => e.Kind == EntityKind.Item ? e with { Item = item } : e);
+    public bool SetItem(int id, ItemStack item)
+    {
+        Interlocked.Increment(ref _membership);
+        return Update(id, e => e.Kind == EntityKind.Item ? e with { Item = item } : e);
+    }
 
     /// <summary>0x05 equipment slot 0 (held item) for players.</summary>
     public bool SetHeldItem(int id, int itemId) => Update(id, e => e with { HeldItem = itemId });
@@ -192,6 +202,7 @@ public sealed class EntityTracker
         {
             if (!_entities.Remove(id, out e)) return false;
         }
+        Interlocked.Increment(ref _membership);
         Removed?.Invoke(e);
         return true;
     }
@@ -199,6 +210,7 @@ public sealed class EntityTracker
     public void Clear()
     {
         lock (_sync) _entities.Clear();
+        Interlocked.Increment(ref _membership);
     }
 
     // ---- queries ----

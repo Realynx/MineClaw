@@ -83,10 +83,16 @@ public sealed partial class StoryColony
         var fronts = Storages.SelectMany(s => s.DoubleWith is { } d ? new[] { s.Chest, d } : [s.Chest]).Concat(Benches.Select(b => b.Pos)).ToList();
         // Inside a wall or fence ring still going up: an idle pawn there gets walled in (FakeServer: a hut's pawn shut in).
         var rings = Builds.Where(b => b.Status != "done").Select(Footprint).Where(f => f.Walled).ToList();
-        return c => cells.Contains(c) || cells.Contains(c.Add(0, -1, 0)) || cells.Contains(c.Add(0, 1, 0))
-            || rings.Any(f => c.X >= f.X1 && c.X <= f.X2 && c.Z >= f.Z1 && c.Z <= f.Z2)
-            || fronts.Any(f => Math.Abs(f.X - c.X) <= 1 && Math.Abs(f.Z - c.Z) <= 1 && Math.Abs(f.Y - c.Y) <= 1)
-            || Forbidden(c) || Forbidden(c.Add(0, -1, 0));
+        // Loops, not Any(lambda): this runs per idle cell, and each inner lambda over c was a closure and a delegate per call.
+        return c =>
+        {
+            if (cells.Contains(c) || cells.Contains(c.Add(0, -1, 0)) || cells.Contains(c.Add(0, 1, 0))) return true;
+            foreach (var f in rings)
+                if (c.X >= f.X1 && c.X <= f.X2 && c.Z >= f.Z1 && c.Z <= f.Z2) return true;
+            foreach (var f in fronts)
+                if (Math.Abs(f.X - c.X) <= 1 && Math.Abs(f.Z - c.Z) <= 1 && Math.Abs(f.Y - c.Y) <= 1) return true;
+            return Forbidden(c) || Forbidden(c.Add(0, -1, 0));
+        };
     }
 
     /// <summary>
@@ -133,7 +139,14 @@ public sealed partial class StoryColony
         var all = cells.ToList();
         foreach (var r in rooms ?? Room)
         {
-            var ok = all.Where(c => taken.All(t => StoryWander.Gap(c, t) >= r && t != c)).ToList();
+            var ok = new List<P3>();
+            foreach (var c in all)
+            {
+                bool free = true; // a loop, not taken.All(lambda over c): a closure per cell
+                foreach (var t in taken)
+                    if (StoryWander.Gap(c, t) < r || t == c) { free = false; break; }
+                if (free) ok.Add(c);
+            }
             if (ok.Count > 0) { room = r; return ok; }
         }
         room = 0;

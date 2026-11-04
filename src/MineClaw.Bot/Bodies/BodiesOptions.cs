@@ -53,8 +53,8 @@ public sealed class BodiesOptions
     public double JoinTimeoutSeconds { get; set; } = 60;
 
     // ---- process
-    /// <summary>Concurrent A* searches across all bodies (MineClaw.Client.PathfindGate).</summary>
-    public int MaxPathfinds { get; set; } = 2;
+    /// <summary>Concurrent A* searches across all bodies (MineClaw.Client.PathfindGate): half the cores, 2..4 (the 4-core host: 2).</summary>
+    public int MaxPathfinds { get; set; } = Math.Clamp(Environment.ProcessorCount / 2, 2, 4);
     /// <summary>How often each body's "tick behind" count is checked and logged when it grew (0 = never).</summary>
     public double TickReportSeconds { get; set; } = 60;
 

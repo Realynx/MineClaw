@@ -1541,6 +1541,14 @@ stock errors while bills waited.
   potatoes while anything else exists; those only when starving, hunger ≤ 6, fetched and left to the body's own starving reflex, never
   an "eat" that refuses them). A food fetch that fails corrects that chest's record, makes that pawn wait 15 s (then 60 s) and skips
   that chest for it for 2 minutes (an unreachable chest too: another chest, or it waits). No food anywhere: one alert, and it waits.
+- **Unreachable chests (added 2026-11-04).** Live: 334 of 462 failed searches in 5 minutes were "can't reach chest at 218,64,400 …
+  no path to use", each an A* run to its 30k-node / 2 s budget, because the rest went to the designation and not the chest. Now a
+  pawn that can't reach a chest (or a bench) leaves it out of every plan of its own (fetches, deposits, food, ingredients) for 2, then
+  5, then 10 minutes as it keeps failing; the job is never the target's failure and nobody rests. When every pawn in game has failed
+  it, one alert says "Chest at x,y,z is unreachable — pawns can't get to it" and its contents aren't stock (builds and bills don't count
+  on them) for 10 minutes or until a pawn gets there. A body's goto also remembers its failed searches (`NoRouteCache`): the same search
+  from the same cell to the same goal with the same freedoms isn't run again for 15 s unless a block changes within 24 blocks of
+  either end or a chunk loads. `Bodies:MaxPathfinds` defaults to half the cores, 2..4.
 - **Missing stock is no failure:** a bill whose ingredient isn't there is suspended with why, with where the raw material comes from
   ("no planks within 32 blocks — needs logs (chop trees)"; with logs stored: "make them from the stored logs"), never attempted, and
   retried by itself every 30 s. A failure that was the plan's (the record said the item was there; "no … within", "reserved for",
