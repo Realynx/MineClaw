@@ -86,40 +86,52 @@ public sealed partial class MinecraftClient
         var p = World.Player;
         if (_surfacing is { } ep)
         {
-            // Breathing again for half a second with the air back: the episode is over.
-            if (!under && p.Air >= Breath.MaxAir && _breathingSince != long.MinValue && TickCount - _breathingSince >= 10)
-            {
-                _surfacing = null;
-                var at = phys.Position;
-                string msg = $"surfaced at {(int)Math.Floor(at.X)},{(int)Math.Floor(at.Y)},{(int)Math.Floor(at.Z)}: air was {Breath.Bubbles(ep.Air)}/10 bubbles"
-                             + (_drownHits > 0 ? $", {_drownHits * Breath.DrownDamage} drowning damage taken" : "");
-                _drownHits = 0;
-                Log("survival: " + msg);
-                RaiseDanger(DangerKind.Recovered, msg, abort: false);
-            }
+            EndSurfacingWhenBreathing(phys, under, ep.Air);
             return;
         }
         if (!under) { if (p.Air >= Breath.MaxAir) _drownHits = 0; _airPath = null; _airSteps = -1; return; }
-        // Where is the nearest air, and how long is the swim? (Every 10 ticks while under: the body moves.)
         var feet = FeetCell();
-        if (TickCount - _airSearchTick >= 10)
-        {
-            _airSearchTick = TickCount;
-            var found = Breath.NearestBreathable(World, feet);
-            _airPath = found?.Path;
-            _airSteps = found?.Steps ?? -1;
-        }
+        RefreshAirSearch(feet);
         // Surface once the air left only just covers the swim to air (far from the hole under a ceiling, that is long before
         // the last 5 s), at the fixed low line, or after a drowning hit. A deliberate dive keeps its depth until then.
-        bool drowning = p.Air <= o.SurfaceAtAir || TickCount - _lastDrownHitTick < 40
-                        || _airSteps > 0 && p.Air <= Breath.AirNeeded(_airSteps);
-        if (!drowning) return;
+        if (!DrowningRisk(p.Air, o.SurfaceAtAir)) return;
+        StartSurfacing(phys, feet, p.Air);
+    }
+
+    /// <summary>Breathing again for half a second with the air back: the episode is over (one line, "surfaced at …").</summary>
+    private void EndSurfacingWhenBreathing(PhysicsState phys, bool under, int airThen)
+    {
+        if (under || World.Player.Air < Breath.MaxAir || _breathingSince == long.MinValue || TickCount - _breathingSince < 10) return;
+        _surfacing = null;
+        var at = phys.Position;
+        string msg = $"surfaced at {(int)Math.Floor(at.X)},{(int)Math.Floor(at.Y)},{(int)Math.Floor(at.Z)}: air was {Breath.Bubbles(airThen)}/10 bubbles"
+                     + (_drownHits > 0 ? $", {_drownHits * Breath.DrownDamage} drowning damage taken" : "");
+        _drownHits = 0;
+        Log("survival: " + msg);
+        RaiseDanger(DangerKind.Recovered, msg, abort: false);
+    }
+
+    /// <summary>Where is the nearest air, and how long is the swim? (Every 10 ticks while under: the body moves.)</summary>
+    private void RefreshAirSearch(BlockPos feet)
+    {
+        if (TickCount - _airSearchTick < 10) return;
+        _airSearchTick = TickCount;
+        var found = Breath.NearestBreathable(World, feet);
+        _airPath = found?.Path;
+        _airSteps = found?.Steps ?? -1;
+    }
+
+    private bool DrowningRisk(int air, int surfaceAtAir) =>
+        air <= surfaceAtAir || TickCount - _lastDrownHitTick < 40 || _airSteps > 0 && air <= Breath.AirNeeded(_airSteps);
+
+    private void StartSurfacing(PhysicsState phys, BlockPos feet, int air)
+    {
         BlockPos? target = _airPath is { Count: > 0 } ap ? ap[^1] : null;
-        _surfacing = (TickCount, p.Air, target);
+        _surfacing = (TickCount, air, target);
         string where = target is { } t
             ? t.X == feet.X && t.Z == feet.Z ? "straight up" : $"to {Fmt(t)}"
             : "up (no breathable cell found nearby)";
-        string why = $"drowning risk: head under water at {Fmt(phys.Position)}, {Breath.Text(p.Air)}: stopped, surfacing {where}";
+        string why = $"drowning risk: head under water at {Fmt(phys.Position)}, {Breath.Text(air)}: stopped, surfacing {where}";
         Log("survival: " + why);
         RaiseDanger(DangerKind.Drowning, why, abort: true, critical: true);
     }
@@ -133,40 +145,46 @@ public sealed partial class MinecraftClient
     {
         var p = World.Player;
         if (!Options.Survival.Enabled) return input;
-        if (_surfacing is { } ep)
-        {
-            if (!phys.InWater && !p.HeadUnderWater) return input with { Jump = input.Jump };
-            var me = phys.Position;
-            // Follow the searched route cell by cell (the first cell past the one the body is in); jump held all the way.
-            BlockPos? next = null;
-            int mx = (int)Math.Floor(me.X), mz = (int)Math.Floor(me.Z);
-            if (_airPath is { Count: > 0 } path)
-            {
-                int at = -1;
-                for (int i = path.Count - 1; i >= 0; i--)
-                    if (path[i].X == mx && path[i].Z == mz) { at = i; break; }
-                for (int i = at + 1; i < path.Count; i++)
-                    if (path[i].X != mx || path[i].Z != mz) { next = path[i]; break; }
-            }
-            if (next is null && ep.Target is { } t && (t.X != mx || t.Z != mz)) next = t;
-            if (next is { } n)
-            {
-                var c = new Vec3d(n.X + 0.5, me.Y, n.Z + 0.5);
-                float yaw = PlayerPhysics.YawPitchTo(me, c).Yaw;
-                double dx = c.X - me.X, dz = c.Z - me.Z;
-                bool close = dx * dx + dz * dz < 0.15 * 0.15;
-                return new MoveInput(Forward: close ? 0 : 1, Jump: true, Yaw: yaw, Pitch: -30);
-            }
-            return new MoveInput(Jump: true, Yaw: input.Yaw, Pitch: input.Pitch);
-        }
+        if (_surfacing is { } ep) return SurfacingInput(phys, input, ep.Target);
         // Floating idle (in water, off the ground): hold jump like a player, so the head stays above the surface instead of
         // bobbing under every few ticks.
-        if (!p.HeadUnderWater)
-            return !driven && !fighting && phys.InWater && !phys.OnGround && !InWaterHold(phys) && !input.Jump ? input with { Jump = true } : input;
+        if (!p.HeadUnderWater) return FloatingInput(phys, input, driven, fighting);
         bool spare = p.Air > Options.Survival.SurfaceAtAir + 60;
         if (InWaterHold(phys) && spare) return input;    // the bucket column: the hover holds the depth
         if ((driven || fighting) && spare) return input; // a planned swim step / a fight may dip; the planner caps the time
         return input.Jump ? input : input with { Jump = true };
+    }
+
+    private MoveInput FloatingInput(PhysicsState phys, MoveInput input, bool driven, bool fighting) =>
+        !driven && !fighting && phys.InWater && !phys.OnGround && !InWaterHold(phys) && !input.Jump ? input with { Jump = true } : input;
+
+    /// <summary>Surfacing: follows the searched route cell by cell (the first cell past the one the body is in), else heads for the
+    /// target; jump held all the way.</summary>
+    private MoveInput SurfacingInput(PhysicsState phys, MoveInput input, BlockPos? target)
+    {
+        if (!phys.InWater && !World.Player.HeadUnderWater) return input with { Jump = input.Jump };
+        var me = phys.Position;
+        int mx = (int)Math.Floor(me.X), mz = (int)Math.Floor(me.Z);
+        var next = NextAirStep(mx, mz);
+        if (next is null && target is { } t && (t.X != mx || t.Z != mz)) next = t;
+        if (next is not { } n) return new MoveInput(Jump: true, Yaw: input.Yaw, Pitch: input.Pitch);
+        var c = new Vec3d(n.X + 0.5, me.Y, n.Z + 0.5);
+        float yaw = PlayerPhysics.YawPitchTo(me, c).Yaw;
+        double dx = c.X - me.X, dz = c.Z - me.Z;
+        bool close = dx * dx + dz * dz < 0.15 * 0.15;
+        return new MoveInput(Forward: close ? 0 : 1, Jump: true, Yaw: yaw, Pitch: -30);
+    }
+
+    /// <summary>The route cell after the column the body is in (the last time the route passes it), or null.</summary>
+    private BlockPos? NextAirStep(int mx, int mz)
+    {
+        if (_airPath is not { Count: > 0 } path) return null;
+        int at = -1;
+        for (int i = path.Count - 1; i >= 0; i--)
+            if (path[i].X == mx && path[i].Z == mz) { at = i; break; }
+        for (int i = at + 1; i < path.Count; i++)
+            if (path[i].X != mx || path[i].Z != mz) return path[i];
+        return null;
     }
 
     /// <summary>New jobs wait while the body is surfacing (resume only with full air), up to <paramref name="max"/>.</summary>
@@ -188,41 +206,69 @@ public sealed partial class MinecraftClient
     {
         try
         {
-            var p = World.Player;
-            var phys = p.Physics;
-            var eye = phys.EyePosition;
-            var feet = phys.Position;
-            if (p.HeadUnderWater && (p.Air <= 0 || TickCount - _lastDrownHitTick < 10) && dmg == Breath.DrownDamage)
-                return $"drowning (head under water, {Breath.Text(p.Air)})";
-            var box = phys.BoundingBox;
-            bool lava = false, fire = false, cactus = false;
-            for (int x = (int)Math.Floor(box.MinX - 0.01); x <= (int)Math.Floor(box.MaxX + 0.01); x++)
-            for (int y = (int)Math.Floor(box.MinY); y <= (int)Math.Floor(box.MaxY); y++)
-            for (int z = (int)Math.Floor(box.MinZ - 0.01); z <= (int)Math.Floor(box.MaxZ + 0.01); z++)
-            {
-                int id = World.GetBlock(x, y, z);
-                if (BlockShapes.IsLava(id)) lava = true;
-                else if (id == Blocks.Fire) fire = true;
-                else if (id == Blocks.Cactus) cactus = true;
-            }
-            if (lava) return "lava (standing in it)";
-            if (fire) return "fire (standing in it)";
-            if (TickCount - _lastBurnTick <= 40) return "burning (on fire)";
-            int eyeId = World.GetBlock((int)Math.Floor(eye.X), (int)Math.Floor(eye.Y), (int)Math.Floor(eye.Z));
-            if (eyeId != 0 && !BlockShapes.IsLiquid(eyeId) && BlockShapes.IsFullCube(World, (int)Math.Floor(eye.X), (int)Math.Floor(eye.Y), (int)Math.Floor(eye.Z))
-                && Blocks.Get(eyeId) is { Transparent: false })
-                return "suffocation (head inside a block)";
-            if (cactus) return "cactus (touching one)";
-            if (TickCount - _lastLandTick <= 10 && _lastLandFall > 3) return $"a fall of {_lastLandFall:0.#} blocks";
-            var hostile = World.Entities.Nearby(feet, 4.5, CombatRules.IsThreat).OrderBy(e => e.Position.DistanceTo(feet)).FirstOrDefault();
-            if (TickCount - _lastKnockbackTick <= 10 || hostile is not null)
-                return hostile is { } h ? $"{h.DisplayName} attacking ({h.Position.DistanceTo(feet):0.#}m away)" : "hit by something (knocked back)";
-            if (p.Food <= 0 && dmg == 1) return "starvation (food 0)";
-            if (p.HasEffect(PotionEffects.Wither)) return "withering";
-            if (p.HasEffect(PotionEffects.Poison)) return "poison";
-            if (p.HeadUnderWater && p.Air <= 0) return $"drowning (head under water, {Breath.Text(p.Air)})";
-            return null;
+            return DamageCauseCore(dmg);
         }
         catch (Exception) { return null; }
+    }
+
+    private string? DamageCauseCore(int dmg)
+    {
+        var p = World.Player;
+        var phys = p.Physics;
+        if (DrowningHit(p, dmg))
+            return $"drowning (head under water, {Breath.Text(p.Air)})";
+        var (lava, fire, cactus) = TouchingHazards(phys.BoundingBox);
+        if (lava) return "lava (standing in it)";
+        if (fire) return "fire (standing in it)";
+        if (TickCount - _lastBurnTick <= 40) return "burning (on fire)";
+        if (EyeInsideBlock(phys.EyePosition)) return "suffocation (head inside a block)";
+        if (cactus) return "cactus (touching one)";
+        return FallOrMobCause(phys.Position) ?? StatusDamageCause(p, dmg);
+    }
+
+    /// <summary>Head under, the air out (or a drowning hit just now), and a drowning-sized hit.</summary>
+    private bool DrowningHit(PlayerState p, int dmg) =>
+        p.HeadUnderWater && (p.Air <= 0 || TickCount - _lastDrownHitTick < 10) && dmg == Breath.DrownDamage;
+
+    /// <summary>Lava, fire and cactus in the cells the body box (grown 0.01 sideways) touches.</summary>
+    private (bool Lava, bool Fire, bool Cactus) TouchingHazards(AABB box)
+    {
+        bool lava = false, fire = false, cactus = false;
+        for (int x = (int)Math.Floor(box.MinX - 0.01); x <= (int)Math.Floor(box.MaxX + 0.01); x++)
+        for (int y = (int)Math.Floor(box.MinY); y <= (int)Math.Floor(box.MaxY); y++)
+        for (int z = (int)Math.Floor(box.MinZ - 0.01); z <= (int)Math.Floor(box.MaxZ + 0.01); z++)
+        {
+            int id = World.GetBlock(x, y, z);
+            if (BlockShapes.IsLava(id)) lava = true;
+            else if (id == Blocks.Fire) fire = true;
+            else if (id == Blocks.Cactus) cactus = true;
+        }
+        return (lava, fire, cactus);
+    }
+
+    /// <summary>The eye is inside an opaque full block.</summary>
+    private bool EyeInsideBlock(Vec3d eye)
+    {
+        int ex = (int)Math.Floor(eye.X), ey = (int)Math.Floor(eye.Y), ez = (int)Math.Floor(eye.Z);
+        int eyeId = World.GetBlock(ex, ey, ez);
+        return eyeId != 0 && !BlockShapes.IsLiquid(eyeId) && BlockShapes.IsFullCube(World, ex, ey, ez) && Blocks.Get(eyeId) is { Transparent: false };
+    }
+
+    /// <summary>A fall just now, or a mob (knocked back just now, or a hostile within reach).</summary>
+    private string? FallOrMobCause(Vec3d feet)
+    {
+        if (TickCount - _lastLandTick <= 10 && _lastLandFall > 3) return $"a fall of {_lastLandFall:0.#} blocks";
+        var hostile = World.Entities.Nearby(feet, 4.5, CombatRules.IsThreat).OrderBy(e => e.Position.DistanceTo(feet)).FirstOrDefault();
+        if (TickCount - _lastKnockbackTick > 10 && hostile is null) return null;
+        return hostile is { } h ? $"{h.DisplayName} attacking ({h.Position.DistanceTo(feet):0.#}m away)" : "hit by something (knocked back)";
+    }
+
+    private static string? StatusDamageCause(PlayerState p, int dmg)
+    {
+        if (p.Food <= 0 && dmg == 1) return "starvation (food 0)";
+        if (p.HasEffect(PotionEffects.Wither)) return "withering";
+        if (p.HasEffect(PotionEffects.Poison)) return "poison";
+        if (p.HeadUnderWater && p.Air <= 0) return $"drowning (head under water, {Breath.Text(p.Air)})";
+        return null;
     }
 }

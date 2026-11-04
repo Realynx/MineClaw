@@ -174,67 +174,92 @@ public sealed partial class MinecraftClient
     private async Task<CollectResult> CollectDropsCoreAsync(double radius, int maxEntities, CancellationToken ct, Vec3d? around = null,
         ISet<int>? lostIds = null, ISet<int>? stuckIds = null, bool dryOnly = false)
     {
-        var skip = new HashSet<int>();
-        var settled = new HashSet<int>();
-        int picked = 0, lost = 0, lostItems = 0, stuck = 0, hazard = 0, water = 0;
+        var run = new DropRun(lostIds, stuckIds, dryOnly);
         int startCount = TotalItems();
         var origin = around ?? World.Player.Position;
-        for (int guard = 0; guard < maxEntities * 2 && picked < maxEntities; guard++)
+        for (int guard = 0; guard < maxEntities * 2 && run.Picked < maxEntities; guard++)
         {
             var me = World.Player.Position;
-            var drop = World.Entities.Nearby(origin, radius, e => e.Kind == EntityKind.Item && !skip.Contains(e.Id)
+            var drop = World.Entities.Nearby(origin, radius, e => e.Kind == EntityKind.Item && !run.Skip.Contains(e.Id)
                     && World.Inventory.RoomFor(e.Item) > 0)
                 .OrderBy(e => e.Position.DistanceSquaredTo(me)).FirstOrDefault();
             if (drop is null) break;
-            int id = drop.Id;
             // mc-dev pickup box (ItemEntityRules): an item one block below the feet is not in range.
-            bool inRange = ItemEntityRules.InPickupRange(me, drop.Position);
-            if (!inRange)
-            {
-                // Lying on a leaf up in a crown: out of reach from the ground but not lost (the leaf under it is what to break).
-                if (MineClaw.Client.Trees.TreeScan.SupportingLeaf(World, drop.Position) is { } leaf
-                    && !World.IsOverVoid(leaf.X, leaf.Y - 1, leaf.Z))
-                {
-                    skip.Add(id);
-                    stuck++;
-                    if (stuckIds?.Add(id) ?? true)
-                        Log($"collect: {drop.DisplayName} at {Fmt(drop.Position)} is lying on the leaves at {Fmt(leaf)} (out of reach, not lost)");
-                    continue;
-                }
-                if (LostDropReason(drop.Position, dryOnly) is not null && DateTime.UtcNow - drop.SpawnedAt < DropSettleTime && settled.Add(id))
-                {
-                    // A fresh gen drop is still moving: it lies in the just-dug cell until the regen pushes it out (mc-dev
-                    // Entity.g pushOutOfBlocks) and the water carries it to a corner. Give it a moment to settle, then look again.
-                    var left = DropSettleTime - (DateTime.UtcNow - drop.SpawnedAt);
-                    await WaitUntilAsync(() => World.Entities.Get(id) is not { } e || LostDropReason(e.Position, dryOnly) is null, left, ct).ConfigureAwait(false);
-                    continue;
-                }
-                if (LostDropReason(drop.Position, dryOnly) is { } why)
-                {
-                    skip.Add(id);
-                    lost++;
-                    lostItems += drop.Item.Count;
-                    if (why.Contains("hazard", StringComparison.Ordinal)) hazard++;
-                    if (why.StartsWith("in water,", StringComparison.Ordinal)) water++;
-                    // Logged once per drop: callers without their own set (mine/harvest passes) share the client's.
-                    if (lostIds?.Add(id) ?? FirstLostReport(id))
-                        Log($"collect: not chasing {drop.DisplayName} at {Fmt(drop.Position)}: {why}");
-                    continue;
-                }
-                var g = await GotoCoreAsync(SafePickupGoal(drop.Position, dryOnly), GotoOptions.Default with
-                    { Timeout = TimeSpan.FromSeconds(dryOnly ? 2 : 15), MaxReplans = dryOnly ? 0 : 1 }, ct)
-                    .ConfigureAwait(false);
-                if (!g.Ok && World.Entities.Get(id) is not null) { skip.Add(id); continue; }
-                // The spot touches the drop only off its centre (a corner of the gen's water): lean into range.
-                if (World.Entities.Get(id) is { } d2 && !ItemEntityRules.InPickupRange(World.Player.Position, d2.Position))
-                    await LeanToDropAsync(id, ct).ConfigureAwait(false);
-            }
+            if (!ItemEntityRules.InPickupRange(me, drop.Position) && !await ReachDropAsync(drop, run, ct).ConfigureAwait(false)) continue;
             // A freshly thrown item (player hand-off) has a 40-tick pickup delay: wait it out on top of the usual 1.5 s.
             var wait = TimeSpan.FromSeconds(1.5) + ItemEntityRules.RemainingPickupDelay(DateTime.UtcNow - drop.SpawnedAt);
-            if (await WaitUntilAsync(() => World.Entities.Get(id) is null, wait, ct).ConfigureAwait(false)) picked++;
-            else skip.Add(id);
+            if (await WaitUntilAsync(() => World.Entities.Get(drop.Id) is null, wait, ct).ConfigureAwait(false)) run.Picked++;
+            else run.Skip.Add(drop.Id);
         }
-        return new CollectResult(picked, Math.Max(0, TotalItems() - startCount), lost, lostItems, stuck, hazard, water);
+        return new CollectResult(run.Picked, Math.Max(0, TotalItems() - startCount), run.Lost, run.LostItems, run.Stuck, run.Hazard, run.Water);
+    }
+
+    /// <summary>One collect pass: the drops passed over and settled once, the counts, and the callers' report sets.</summary>
+    private sealed class DropRun(ISet<int>? lostIds, ISet<int>? stuckIds, bool dryOnly)
+    {
+        public readonly HashSet<int> Skip = new(), Settled = new();
+        public int Picked, Lost, LostItems, Stuck, Hazard, Water;
+        public ISet<int>? LostIds => lostIds;
+        public ISet<int>? StuckIds => stuckIds;
+        public bool DryOnly => dryOnly;
+    }
+
+    /// <summary>A drop out of pickup range: walks to it (leaning in when the spot only touches it off-centre), unless it lies on a leaf
+    /// in a crown, is still settling, or is written off. True = in range now (wait for the pickup).</summary>
+    private async Task<bool> ReachDropAsync(Entity drop, DropRun run, CancellationToken ct)
+    {
+        int id = drop.Id;
+        if (DropOnLeaves(drop, run)) return false;
+        if (LostDropReason(drop.Position, run.DryOnly) is not null && DateTime.UtcNow - drop.SpawnedAt < DropSettleTime && run.Settled.Add(id))
+        {
+            // A fresh gen drop is still moving: it lies in the just-dug cell until the regen pushes it out (mc-dev
+            // Entity.g pushOutOfBlocks) and the water carries it to a corner. Give it a moment to settle, then look again.
+            var left = DropSettleTime - (DateTime.UtcNow - drop.SpawnedAt);
+            await WaitUntilAsync(() => World.Entities.Get(id) is not { } e || LostDropReason(e.Position, run.DryOnly) is null, left, ct).ConfigureAwait(false);
+            return false;
+        }
+        if (LostDropReason(drop.Position, run.DryOnly) is { } why)
+        {
+            WriteOffDrop(drop, why, run);
+            return false;
+        }
+        return await GoToDropAsync(id, drop.Position, run, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Lying on a leaf up in a crown: out of reach from the ground but not lost (the leaf under it is what to break).</summary>
+    private bool DropOnLeaves(Entity drop, DropRun run)
+    {
+        if (MineClaw.Client.Trees.TreeScan.SupportingLeaf(World, drop.Position) is not { } leaf || World.IsOverVoid(leaf.X, leaf.Y - 1, leaf.Z)) return false;
+        run.Skip.Add(drop.Id);
+        run.Stuck++;
+        if (run.StuckIds?.Add(drop.Id) ?? true)
+            Log($"collect: {drop.DisplayName} at {Fmt(drop.Position)} is lying on the leaves at {Fmt(leaf)} (out of reach, not lost)");
+        return true;
+    }
+
+    private void WriteOffDrop(Entity drop, string why, DropRun run)
+    {
+        run.Skip.Add(drop.Id);
+        run.Lost++;
+        run.LostItems += drop.Item.Count;
+        if (why.Contains("hazard", StringComparison.Ordinal)) run.Hazard++;
+        if (why.StartsWith("in water,", StringComparison.Ordinal)) run.Water++;
+        // Logged once per drop: callers without their own set (mine/harvest passes) share the client's.
+        if (run.LostIds?.Add(drop.Id) ?? FirstLostReport(drop.Id))
+            Log($"collect: not chasing {drop.DisplayName} at {Fmt(drop.Position)}: {why}");
+    }
+
+    /// <summary>Walks to a safe spot touching the drop; the spot touches it only off its centre (a corner of the gen's water): leans into
+    /// range. False = no way there while the drop is still lying (skipped).</summary>
+    private async Task<bool> GoToDropAsync(int id, Vec3d at, DropRun run, CancellationToken ct)
+    {
+        var g = await GotoCoreAsync(SafePickupGoal(at, run.DryOnly), GotoOptions.Default with
+            { Timeout = TimeSpan.FromSeconds(run.DryOnly ? 2 : 15), MaxReplans = run.DryOnly ? 0 : 1 }, ct)
+            .ConfigureAwait(false);
+        if (!g.Ok && World.Entities.Get(id) is not null) { run.Skip.Add(id); return false; }
+        if (World.Entities.Get(id) is { } d2 && !ItemEntityRules.InPickupRange(World.Player.Position, d2.Position))
+            await LeanToDropAsync(id, ct).ConfigureAwait(false);
+        return true;
     }
 
     private int TotalItems()
@@ -267,59 +292,90 @@ public sealed partial class MinecraftClient
             if (count >= Options.Survival.LongMiningCount && await SurvivalGateAsync($"mine {count} blocks", c).ConfigureAwait(false) is { } refused)
                 return refused;
             int firstId = blockIds.First();
-            string name = BlockName(firstId, 0);
-            var dropItem = Drops.Primary(firstId, 0, BestToolId(firstId))?.ItemId ?? firstId;
+            var m = new MineRun(blockIds, count, radius, protect, BlockName(firstId, 0), firstId);
+            int dropItem = Drops.Primary(firstId, 0, BestToolId(firstId))?.ItemId ?? firstId;
             int haveBefore = World.Inventory.CountItem(dropItem);
-            var failed = new HashSet<BlockPos>();
-            int mined = 0, failures = 0, lostDrops = 0, hazardDrops = 0;
-            string stop = "";
+            string stop;
             try
             {
-                while (mined < count)
-                {
-                    if (World.Inventory.RoomFor(new ItemStack((short)dropItem, 1, 0)) == 0) { stop = "inventory full"; break; }
-                    await SurvivalWindowAsync(c).ConfigureAwait(false);
-                    var target = PickMineTarget(blockIds, radius, failed, (p, id) => EditBlocked(p) || (protect?.Invoke(p, id) ?? false));
-                    if (target is null)
-                    {
-                        stop = $"no more reachable {name} within {radius:0}";
-                        if (PickMineTarget(blockIds, radius, failed, protect) is { } inside && EditBlocked(inside))
-                            stop += $" outside spawn protection (the server undid my digs within {_protectedRegion?.Radius ?? VanillaSpawnProtection} of spawn; needs op)";
-                        // Never refuse silently (rule 5): protected candidates were skipped, say which and how to unlock them.
-                        else if (_lastMineSkip is { } skip)
-                            stop += $"; skipped {_lastMineSkipCount} protected: " + ProtectedRefusal(skip, World.GetBlock(skip));
-                        if (_lastMineNonSource > 0)
-                            stop += $"; left {_lastMineNonSource} placed {name} alone (floors/walls/builds): mine only takes "
-                                    + (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone ? "generator cells, " : "natural stone/dirt, ")
-                                    + "ores, sand/gravel, tree logs and my own blocks"
-                                    + (firstId is Blocks.Cobblestone or Blocks.Stone && MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone ? " (for cobble use harvest_generator)" : "")
-                                    + (firstId is Blocks.Crops ? " (for wheat use the harvest_wheat skill: ripe only, replants)" : "")
-                                    + "; a trusted player can point at one and say 'you can break it'";
-                        break;
-                    }
-                    var r = await DigCoreAsync(target.Value, c, floorGuard: true).ConfigureAwait(false);
-                    if (!r.Ok)
-                    {
-                        failed.Add(target.Value);
-                        if (++failures >= 8) { stop = "too many failures, last: " + r.Message; break; }
-                        continue;
-                    }
-                    mined++;
-                    var cr = await CollectDropsCoreAsync(5, 4, c).ConfigureAwait(false);
-                    lostDrops += cr.Lost - cr.Hazard;
-                    hazardDrops += cr.Hazard;
-                }
+                stop = await MineLoopAsync(m, dropItem, c).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (mined > 0)
+            catch (OperationCanceledException) when (m.Mined > 0)
             {
                 stop = _abortReason ?? "stopped";
             }
-            int gained = World.Inventory.CountItem(dropItem) - haveBefore;
-            string msg = $"mined {mined} {name}, +{gained} {ItemName(dropItem)} (have {World.Inventory.CountItem(dropItem)})"
-                         + (lostDrops > 0 ? $"; {lostDrops} drop(s) left near the void" : "")
-                         + (hazardDrops > 0 ? $"; {hazardDrops} drop(s) left in lava/water" : "") + (stop.Length > 0 ? "; " + stop : "");
-            return mined > 0 ? ActionResult.Success(msg, mined) : ActionResult.Fail(msg);
+            return MineResult(m, dropItem, haveBefore, stop);
         });
+
+    /// <summary>One mine job: what to mine and how much, and how it went so far.</summary>
+    private sealed class MineRun(IReadOnlySet<int> ids, int count, double radius, Func<BlockPos, int, bool>? protect, string name, int firstId)
+    {
+        public IReadOnlySet<int> Ids => ids;
+        public int Count => count;
+        public double Radius => radius;
+        public Func<BlockPos, int, bool>? Protect => protect;
+        public string Name => name;
+        public int FirstId => firstId;
+        public readonly HashSet<BlockPos> Failed = new();
+        public int Mined, Failures, LostDrops, HazardDrops;
+    }
+
+    /// <summary>Digs the nearest minable target and collects its drops until the count is reached; why it stopped early, else "".</summary>
+    private async Task<string> MineLoopAsync(MineRun m, int dropItem, CancellationToken c)
+    {
+        while (m.Mined < m.Count)
+        {
+            if (World.Inventory.RoomFor(new ItemStack((short)dropItem, 1, 0)) == 0) return "inventory full";
+            await SurvivalWindowAsync(c).ConfigureAwait(false);
+            var target = PickMineTarget(m.Ids, m.Radius, m.Failed, (p, id) => EditBlocked(p) || (m.Protect?.Invoke(p, id) ?? false));
+            if (target is null) return NothingLeftToMine(m);
+            var r = await DigCoreAsync(target.Value, c, floorGuard: true).ConfigureAwait(false);
+            if (!r.Ok)
+            {
+                m.Failed.Add(target.Value);
+                if (++m.Failures >= 8) return "too many failures, last: " + r.Message;
+                continue;
+            }
+            m.Mined++;
+            var cr = await CollectDropsCoreAsync(5, 4, c).ConfigureAwait(false);
+            m.LostDrops += cr.Lost - cr.Hazard;
+            m.HazardDrops += cr.Hazard;
+        }
+        return "";
+    }
+
+    /// <summary>No reachable target left: says so, and why candidates were passed over (spawn protection, protected, not a source).
+    /// Never refuses silently (rule 5): protected candidates were skipped, say which and how to unlock them.</summary>
+    private string NothingLeftToMine(MineRun m)
+    {
+        string stop = $"no more reachable {m.Name} within {m.Radius:0}";
+        if (PickMineTarget(m.Ids, m.Radius, m.Failed, m.Protect) is { } inside && EditBlocked(inside))
+            stop += $" outside spawn protection (the server undid my digs within {_protectedRegion?.Radius ?? VanillaSpawnProtection} of spawn; needs op)";
+        else if (_lastMineSkip is { } skip)
+            stop += $"; skipped {_lastMineSkipCount} protected: " + ProtectedRefusal(skip, World.GetBlock(skip));
+        if (_lastMineNonSource > 0) stop += NonSourceNote(m);
+        return stop;
+    }
+
+    private string NonSourceNote(MineRun m)
+    {
+        bool gen = MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone;
+        return $"; left {_lastMineNonSource} placed {m.Name} alone (floors/walls/builds): mine only takes "
+               + (gen ? "generator cells, " : "natural stone/dirt, ")
+               + "ores, sand/gravel, tree logs and my own blocks"
+               + (m.FirstId is Blocks.Cobblestone or Blocks.Stone && gen ? " (for cobble use harvest_generator)" : "")
+               + (m.FirstId is Blocks.Crops ? " (for wheat use the harvest_wheat skill: ripe only, replants)" : "")
+               + "; a trusted player can point at one and say 'you can break it'";
+    }
+
+    private ActionResult MineResult(MineRun m, int dropItem, int haveBefore, string stop)
+    {
+        int gained = World.Inventory.CountItem(dropItem) - haveBefore;
+        string msg = $"mined {m.Mined} {m.Name}, +{gained} {ItemName(dropItem)} (have {World.Inventory.CountItem(dropItem)})"
+                     + (m.LostDrops > 0 ? $"; {m.LostDrops} drop(s) left near the void" : "")
+                     + (m.HazardDrops > 0 ? $"; {m.HazardDrops} drop(s) left in lava/water" : "") + (stop.Length > 0 ? "; " + stop : "");
+        return m.Mined > 0 ? ActionResult.Success(msg, m.Mined) : ActionResult.Fail(msg);
+    }
 
     private int BestToolId(int blockId)
     {
@@ -349,22 +405,29 @@ public sealed partial class MinecraftClient
         foreach (var f in found)
         {
             var p = f.Pos;
-            if (failed.Contains(p) || support.Contains(p)) continue;
-            if (IsBlockProtected(p, f.Id))
-            {
-                if (_lastMineSkipCount++ == 0) _lastMineSkip = p; // found nearest first
-                continue;
-            }
-            if (protect?.Invoke(p, f.Id) ?? false) continue;
-            if (!IsMineSource(p, f.Id)) { _lastMineNonSource++; continue; }
-            if (NextToLava(p) || WouldDropIntoVoid(p)) continue;
-            if (WalkwayFloorVeto(p, "") is not null) continue; // never the island floor next to the void (B21)
-            if (!IsExposed(p)) continue;
+            if (MineSkipped(p, f.Id, failed, support) || !MineTargetable(p, f.Id, protect)) continue;
             double score = f.DistanceSquared;
             if (Aiming.FindDigAim(World, eye, p, Options.Reach) is not null) score -= 1000; // in reach right now
             if (score < bestScore) { bestScore = score; best = p; }
         }
         return best;
+    }
+
+    /// <summary>Already failed, holding someone up, or protected (the nearest protected one is remembered for the refusal).</summary>
+    private bool MineSkipped(BlockPos p, int id, HashSet<BlockPos> failed, HashSet<BlockPos> support)
+    {
+        if (failed.Contains(p) || support.Contains(p)) return true;
+        if (!IsBlockProtected(p, id)) return false;
+        if (_lastMineSkipCount++ == 0) _lastMineSkip = p; // found nearest first
+        return true;
+    }
+
+    /// <summary>A resource source (not a placed build) that is safe to dig and exposed; never the island floor next to the void (B21).</summary>
+    private bool MineTargetable(BlockPos p, int id, Func<BlockPos, int, bool>? protect)
+    {
+        if (protect?.Invoke(p, id) ?? false) return false;
+        if (!IsMineSource(p, id)) { _lastMineNonSource++; return false; }
+        return !(NextToLava(p) || WouldDropIntoVoid(p)) && WalkwayFloorVeto(p, "") is null && IsExposed(p);
     }
 
     private bool IsExposed(BlockPos p)
