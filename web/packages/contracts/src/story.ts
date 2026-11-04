@@ -356,6 +356,10 @@ export const StoryPawn = z.object({
   equipment: StoryEquipment.nullish().describe('held item, worn armour, carried tools and weapons (durability, enchantments)'),
   policy: z.string().nullish().describe("the pawn's gear policy id (null = the colony's default policy)"),
   gearTasks: z.array(StoryGearTask).nullish().describe('pending gear work (arm, armor, pickup, return, tools, …)'),
+  speed: z
+    .lazy(() => StoryPawnSpeed)
+    .nullish()
+    .describe("the body's movement boost as it runs (null while offline)"),
 });
 export type StoryPawn = z.infer<typeof StoryPawn>;
 
@@ -1254,6 +1258,20 @@ export type StoryWorkbenchesRequest = z.infer<typeof StoryWorkbenchesRequest>;
 export const StoryWorkbenchesResponse = z.object({ pos: Vec3i, kind: z.string(), designated: z.boolean() });
 export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
 
+/** Movement speed of the colony's pawns (docs/web/story-mode.md "Speed"): normal, fast (×2), faster (×3). */
+export const STORY_SPEEDS = ['normal', 'fast', 'faster'] as const;
+export type StorySpeed = (typeof STORY_SPEEDS)[number];
+
+/** A pawn body's speed boost as the client runs it: what it was asked for, what it runs at after the server's rejections. */
+export const StoryPawnSpeed = z.object({
+  level: z.enum(STORY_SPEEDS).describe('the effective level (after any step-down)'),
+  multiplier: Num.describe('the effective movement multiplier (1, 2, 3)'),
+  requested: Num.describe('the multiplier the colony asked for'),
+  serverFactor: Num.default(1).describe("the server's own share: a Speed effect on 1.12.2 (1.4 = Speed II), else 1"),
+  rollbacks: z.number().int().default(0).describe('server corrections of boosted moves since the body logged in'),
+});
+export type StoryPawnSpeed = z.infer<typeof StoryPawnSpeed>;
+
 /** What idle pawns do (docs/web/story-mode.md "Idle behaviour"). */
 export const STORY_IDLE_MODES = ['recreation', 'wander', 'stay'] as const;
 export type StoryIdleMode = (typeof STORY_IDLE_MODES)[number];
@@ -1274,6 +1292,16 @@ export const StoryColonyOptions = z.object({
     .describe('with nothing to do, in free hours and resting: recreation (pastimes), wander (strolls) or stay (hold)'),
   autoCraftTools: z.boolean().default(true).describe('a job waiting for a tool gets an auto bill "for tools"'),
   spareTools: StorySpareTools.default({ count: 0, kinds: [] }).describe('keep N spare tools of each kind in storage'),
+  speed: z
+    .enum(STORY_SPEEDS)
+    .default('normal')
+    .describe(
+      "the pawns' movement speed: normal, fast (×2) or faster (×3) — a client-side boost, stepped down if the server rejects it",
+    ),
+  speedEffect: z
+    .boolean()
+    .default(true)
+    .describe('1.12.2 with an op account: fast / faster also give the pawns a Speed effect (/effect, renewed)'),
 });
 export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
 /** POST /api/story/colonies/{id}/options: any of the flags and the idle mode. */
@@ -1290,6 +1318,8 @@ export const StoryOptionsRequest = z
       .object({ count: z.number().int().min(0).max(8), kinds: z.array(StoryToolKind).max(6) })
       .strict()
       .optional(),
+    speed: z.enum(STORY_SPEEDS).optional(),
+    speedEffect: z.boolean().optional(),
   })
   .strict()
   .describe('any of them (the bot answers 400 for none)');

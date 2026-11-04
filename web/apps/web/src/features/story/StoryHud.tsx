@@ -11,6 +11,7 @@ import {
   type StoryAlert,
   type StoryPawn,
   type StoryTimeControl,
+  type StorySpeed,
 } from '@mineclaw/contracts';
 import {
   AlertTriangle,
@@ -506,12 +507,86 @@ export function ColonistBar({
 
 // ------------------------------------------------------------------ clock, pause, view, level
 
+/** The speed buttons (RimWorld's ▶ / ▶▶ / ▶▶▶) and what each one does. */
+type SpeedButton = { id: StorySpeed; glyph: string; label: string; key: string; hint: string };
+export const SPEED_BUTTONS: readonly SpeedButton[] = [
+  { id: 'normal', glyph: '▶', label: 'Normal speed', key: '1', hint: 'Pawns walk and sprint at normal speed' },
+  {
+    id: 'fast',
+    glyph: '▶▶',
+    label: 'Fast',
+    key: '2',
+    hint: "Pawns move about twice as fast: a movement-speed boost for the colony's pawns only (not time: the server owns the clock)",
+  },
+  {
+    id: 'faster',
+    glyph: '▶▶▶',
+    label: 'Faster',
+    key: '3',
+    hint: "Pawns move about three times as fast: a movement-speed boost for the colony's pawns only; it steps down by itself if the server rejects it",
+  },
+];
+
+/**
+ * The pawns' movement speed as a segmented control beside Pause: ▶ normal, ▶▶ fast, ▶▶▶ faster (keys 1 / 2 / 3 with no tool in
+ * hand). A pawn the server pushed back runs slower than asked: the control shows the level the pawns actually run at as a dim mark.
+ */
+export function SpeedControl({
+  speed,
+  effective,
+  canWrite,
+  onSpeed,
+}: {
+  speed: StorySpeed;
+  /** The slowest level a pawn runs at (a stepped-down body), when below `speed`. */
+  effective?: StorySpeed | null;
+  canWrite: boolean;
+  onSpeed: (s: StorySpeed) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Pawn speed"
+      className="flex items-center rounded bg-surface-2"
+      data-testid="speed-control"
+    >
+      {SPEED_BUTTONS.map((b) => {
+        const on = b.id === speed;
+        const held = effective && effective !== speed && b.id === effective;
+        return (
+          <button
+            key={b.id}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            aria-label={b.label}
+            disabled={!canWrite}
+            onClick={() => onSpeed(b.id)}
+            title={`${b.label} (${b.key}): ${b.hint}${held ? ' — some pawns run at this speed: the server rejected faster movement' : ''}`}
+            data-speed={b.id}
+            className={cn(
+              'inline-flex h-6 min-w-6 items-center justify-center rounded px-1 text-[10px] leading-none tracking-[-0.15em] tabular-nums',
+              on ? 'bg-accent-soft text-accent' : 'hover:bg-surface-3',
+              held && 'ring-1 ring-warn ring-inset',
+            )}
+          >
+            {b.glyph}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ControlCluster({
   clock,
   name,
   paused,
   canWrite,
   onPause,
+  speed,
+  speedEffective,
+  onSpeed,
   view,
   onView,
   level,
@@ -529,6 +604,10 @@ export function ControlCluster({
   paused: boolean;
   canWrite: boolean;
   onPause: () => void;
+  /** The pawns' movement speed (absent = no speed control). */
+  speed?: StorySpeed;
+  speedEffective?: StorySpeed | null;
+  onSpeed?: (s: StorySpeed) => void;
   view: 'top' | 'angled';
   onView: () => void;
   level: number;
@@ -560,6 +639,9 @@ export function ControlCluster({
           {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
           {paused ? 'Paused' : 'Pause'}
         </button>
+        {speed && onSpeed ? (
+          <SpeedControl speed={speed} effective={speedEffective} canWrite={canWrite} onSpeed={onSpeed} />
+        ) : null}
       </div>
       <div className="flex items-center gap-1.5">
         <button
@@ -1054,6 +1136,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
     [<Kbd key="4">Right-click</Kbd>, 'Orders for the thing under the cursor · put a tool down'],
     [<Kbd key="5">R</Kbd>, 'Draft / undraft the selected pawns'],
     [<Kbd key="6">Space</Kbd>, 'Pause the colony'],
+    [<Kbd key="6s">1 / 2 / 3</Kbd>, 'Pawn speed: normal, fast, faster (with no tool in hand)'],
     [<Kbd key="7">WASD · arrows · edge · middle-drag</Kbd>, 'Pan'],
     [<Kbd key="8">Wheel</Kbd>, 'Zoom to the cursor'],
     [

@@ -65,6 +65,16 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     /// <summary>Attack permits in force: (pawn, entity).</summary>
     public HashSet<(string Pawn, int Entity)> Permits { get; } = new();
     public void PermitAttack(string account, int entity, bool on) { if (on) Permits.Add((account, entity)); else Permits.Remove((account, entity)); }
+    /// <summary>Fast / Faster: each body's requested multiplier, the cap a test's "server" left, and the Speed effect commands.</summary>
+    public Dictionary<string, double> Speeds { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, double> SpeedCaps { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<(string Pawn, int Amp)> Effects { get; } = new();
+    public bool EffectsAvailable;
+    public void SetSpeed(string account, double multiplier) => Speeds[account] = multiplier;
+    public PawnSpeed? Speed(string account) => Live(account).Online && Speeds.TryGetValue(account, out var m)
+        ? new PawnSpeed(m, Math.Min(m, SpeedCaps.GetValueOrDefault(account, 3)), 1, SpeedCaps.ContainsKey(account) ? 2 : 0) : null;
+    public bool SpeedEffectAvailable => EffectsAvailable;
+    public string? SpeedEffect(string account, int amplifier, string why) { Effects.Add((account, amplifier)); return null; }
     /// <summary>Pawns released one by one (removed from the colony).</summary>
     public List<string> ReleasedPawns { get; } = new();
     public string? ReleasePawn(string account, string why) { ReleasedPawns.Add(account); Lives.Remove(account); return null; }
