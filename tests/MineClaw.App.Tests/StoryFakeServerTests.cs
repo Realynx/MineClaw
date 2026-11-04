@@ -304,6 +304,40 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Contains(c.Alerts, a => a.Text.Contains("is done"));
     });
 
+    /// <summary>
+    /// Building fast (docs/web/story-mode.md "Building fast"; live 11-03 "building floors goes very slowly"): three builders split a
+    /// 6×6 planks floor into batches, each fetches its share in one chest session and lays it from one stand spot. No cell fails
+    /// (no "busy" chest, no "too far", no "occupied" for a cell that is already built) and the floor is done in well under a minute.
+    /// </summary>
+    [Fact]
+    public Task Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures() => Colony("1.12.2", 3, async x =>
+    {
+        var c = x.C;
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Wood").Error);
+        c.AddContents(c.StorageAt(WoodChest)!, new Stack(Blocks.Planks, 0, 64)); // what the bot remembers of the chest
+        Only(x, WorkTypes.Build);
+        int logBefore;
+        lock (x.Log) logBefore = x.Log.Count;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Null(c.BuildsOp("add", new JsonArray(new JsonObject
+        {
+            ["kind"] = "floor", ["area"] = new JsonArray(14, 64, 14, 19, 64, 19), ["material"] = "planks",
+        }), null).Error);
+        var b = c.Builds.Single();
+        Assert.Equal(36, b.BlocksTotal);
+        Assert.True(await Until(() => b.Status == "done", 120_000), $"floor: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason}: " + x.Diag());
+        sw.Stop();
+        var srv = x.Servers[x.Pawns[0]];
+        foreach (var g in b.Ghosts) Assert.Equal(Blocks.Planks, srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)));
+        List<string> lines;
+        lock (x.Log) lines = x.Log.Skip(logBefore).Where(l => l.StartsWith("story story-1:", StringComparison.Ordinal) && l.Contains(" failed: ")).ToList();
+        output.WriteLine($"6x6 floor by 3 pawns: {sw.Elapsed.TotalSeconds:0.0} s; placed per pawn: " +
+                         string.Join(", ", x.Pawns.Select(p => $"{p} {x.Placed.GetValueOrDefault(p)}")));
+        Assert.True(lines.Count == 0, "failures: " + string.Join(" | ", lines));
+        Assert.True(x.Pawns.Count(p => x.Placed.GetValueOrDefault(p) > 0) >= 2, "the floor was shared: " + string.Join(", ", x.Pawns.Select(p => $"{p} {x.Placed.GetValueOrDefault(p)}")));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(60), $"took {sw.Elapsed.TotalSeconds:0} s");
+    }, s => s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Planks, 64, 0));
+
     [Theory]
     [InlineData("b1.8.1")]
     [InlineData("1.12.2")]
