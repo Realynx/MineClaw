@@ -525,22 +525,17 @@ public static class Physics1122
         if (Shapes1122.IsWater(id)) return false;
         if (id is Shapes1122.Ice or Shapes1122.PackedIce or Shapes1122.FrostedIce) return false;   // Material.ICE / PACKED_ICE
         if (Shapes1122.IsStairs(id)) return false;
-        bool exception = id is >= Shapes1122.ShulkerFirst and <= Shapes1122.ShulkerLast or Shapes1122.Leaves or Shapes1122.Leaves2
-            or Shapes1122.Trapdoor or Shapes1122.IronTrapdoor or Shapes1122.Beacon or Shapes1122.Cauldron or Shapes1122.Glass
-            or Shapes1122.Glowstone or Shapes1122.Ice or Shapes1122.SeaLantern or Shapes1122.StainedGlass or Shapes1122.Piston
-            or Shapes1122.StickyPiston or Shapes1122.PistonHead;
-        return !exception && Shapes1122.SideSolid(w, id, x, y, z, side);
+        return !Shapes1122.AttachException.Contains(id) && Shapes1122.SideSolid(w, id, x, y, z, side);
     }
 
     /// <summary><c>Material.blocksMovement</c>: false for air, liquids, plants, circuits (torches, rails, redstone, buttons, levers,
     /// tripwire, comparators, end rods), carpets, snow layers, fire, portals, web and structure voids.</summary>
-    public static bool BlocksMovement(int id) => id switch
-    {
-        0 or 6 or (>= 8 and <= 11) or 27 or 28 or 30 or 31 or 32 or (>= 37 and <= 40) or 50 or 51 or 55 or 59 or 65 or 66 or 69 or 75
-            or 76 or 77 or 78 or 83 or 90 or 93 or 94 or 104 or 105 or 106 or 111 or 115 or 119 or 127 or 131 or 132 or 141 or 142
-            or 143 or 149 or 150 or 157 or 171 or 175 or 198 or 207 or 209 or 217 => false,
-        _ => true,
-    };
+    public static bool BlocksMovement(int id) => !NonBlockingMaterial.Contains(id);
+
+    private static readonly IdSet NonBlockingMaterial = IdSet.Of(
+        [0, 6, 27, 28, 30, 31, 32, 50, 51, 55, 59, 65, 66, 69, 75, 76, 77, 78, 83, 90, 93, 94, 104, 105, 106, 111, 115, 119, 127, 131, 132,
+         141, 142, 143, 149, 150, 157, 171, 175, 198, 207, 209, 217],
+        (8, 11), (37, 40));
 
     private static bool IsOffsetPositionInLiquid(IBlockAccess w, PhysicsState s, double dx, double dy, double dz)
     {
