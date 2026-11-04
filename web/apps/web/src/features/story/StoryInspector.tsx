@@ -31,11 +31,8 @@ import {
   ClipboardPaste,
   Copy,
   Flame,
-  GripVertical,
   MessageSquare,
   Minus,
-  Pause,
-  Play,
   Plus,
   Power,
   RotateCcw,
@@ -53,18 +50,17 @@ import { cn } from '@/lib/utils';
 import { ContainerContents } from '@/features/world/ContainerPanel';
 import { InventorySection } from '@/features/live/inventory/InventoryPanel';
 import { retryIn, shortReason } from './failedLabels';
+import { BillRow } from './inspector/BillRow';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
 import { DirectiveList } from './StoryPanels';
 import {
   addBillBody,
   allowAll,
-  billProgress,
   billSummary,
   FUEL_CHOICES,
   fuelBody,
   fuelLabel,
-  fuelLine,
   fuelTable,
   reservationLine,
   reservationRows,
@@ -1174,6 +1170,23 @@ export function BillsInspector({
   };
   const pos = bench.pos;
   const recipeOf = (id: string) => recipes.data?.find((r) => r.id === id);
+  /** A bill dropped on row `i`: the owner's bills reorder (auto bills, listed first, follow their builds' order). */
+  const dropBill = (i: number) => {
+    const from = dragFrom.current;
+    dragFrom.current = null;
+    if (from === null || from === i) return;
+    const auto = bench.bills.filter((x) => (x.forBuild ?? null) !== null).length;
+    if (from < auto || i < auto) return;
+    void write(
+      'story.bills',
+      reorderBills(
+        pos,
+        bench.bills.filter((x) => (x.forBuild ?? null) === null).map((x) => x.id),
+        from - auto,
+        i - auto,
+      ) as never,
+    );
+  };
   const label = bench.label ?? bench.kind.replace(/_/g, ' ');
   return (
     <Shell
@@ -1259,107 +1272,18 @@ export function BillsInspector({
                 />
               );
             return (
-              <li
+              <BillRow
                 key={b.id}
-                data-bill={b.id}
-                draggable={canWrite}
+                bill={b}
+                recipe={r}
+                bench={bench}
+                state={state}
+                canWrite={canWrite}
+                write={write}
                 onDragStart={() => (dragFrom.current = i)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => {
-                  const from = dragFrom.current;
-                  dragFrom.current = null;
-                  if (from === null || from === i) return;
-                  // Auto bills (listed first) follow their builds' order: only the owner's bills reorder.
-                  const auto = bench.bills.filter((x) => (x.forBuild ?? null) !== null).length;
-                  if (from < auto || i < auto) return;
-                  void write(
-                    'story.bills',
-                    reorderBills(
-                      pos,
-                      bench.bills.filter((x) => (x.forBuild ?? null) === null).map((x) => x.id),
-                      from - auto,
-                      i - auto,
-                    ) as never,
-                  );
-                }}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-1.5 py-1',
-                  b.paused && 'opacity-60',
-                )}
-              >
-                <GripVertical className="size-3 cursor-grab text-subtle" aria-hidden />
-                {r ? <ItemIcon id={r.output[0]} meta={r.output[1]} size={18} /> : null}
-                <button
-                  type="button"
-                  onClick={() => setEditing({ bill: b, draft: draftOf(b), key: 0 })}
-                  className="min-w-0 flex-1 text-left"
-                >
-                  <div className="truncate font-semibold">{r?.label ?? b.recipe}</div>
-                  <div className="text-[10.5px] text-muted">
-                    {billSummary(b)} · {billProgress(b)}
-                    {b.pawn !== 'any'
-                      ? ` · ${(state?.pawns ?? []).find((p) => p.name === b.pawn)?.display ?? b.pawn} only`
-                      : ''}
-                  </div>
-                  {b.prefer || b.xpNeeded ? (
-                    <div className="text-[10.5px] text-muted">
-                      {b.prefer ? `prefers ${enchantLabel(b.prefer)}${b.preferOnly ? ' only' : ''}` : ''}
-                      {b.prefer && b.xpNeeded ? ' · ' : ''}
-                      {b.xpNeeded ? `needs XP level ${b.xpNeeded}` : ''}
-                    </div>
-                  ) : null}
-                  {b.fuelNeed ? (
-                    <div className={cn('text-[10.5px]', b.fuelNeed.short ? 'text-danger' : 'text-muted')} data-testid="bill-fuel">
-                      {fuelLine(b.fuelNeed)}
-                    </div>
-                  ) : null}
-                  {b.last ? <div className="truncate text-[10.5px] text-subtle">Last: {b.last}</div> : null}
-                  {b.suspendedReason ? (
-                    <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div>
-                  ) : null}
-                </button>
-                {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
-                  <select
-                    aria-label={`Fuel for ${r?.label ?? b.recipe}`}
-                    title="Fuel for this bill (the furnace's unless set)"
-                    disabled={!canWrite}
-                    value={b.fuel ?? ''}
-                    onChange={(e) =>
-                      void write('story.bills', { op: 'update', id: b.id, fuel: e.target.value || 'inherit' } as never)
-                    }
-                    className={cn(
-                      'h-6 max-w-[6.5rem] rounded border border-border bg-surface px-0.5 text-[10.5px]',
-                      b.fuel && 'border-accent',
-                    )}
-                    data-testid="bill-fuel-chip"
-                  >
-                    <option value="">Furnace's ({fuelLabel(bench.fuel).split(' (')[0]})</option>
-                    {bench.fuelChoices.map((f) => (
-                      <option key={f} value={f}>
-                        {fuelLabel(f)}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                <button
-                  type="button"
-                  disabled={!canWrite}
-                  onClick={() => void write('story.bills', { op: b.paused ? 'resume' : 'pause', id: b.id } as never)}
-                  aria-label={b.paused ? `Resume ${r?.label ?? b.recipe}` : `Pause ${r?.label ?? b.recipe}`}
-                  className="rounded p-0.5 hover:bg-surface-3"
-                >
-                  {b.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-                </button>
-                <button
-                  type="button"
-                  disabled={!canWrite}
-                  onClick={() => void write('story.bills', { op: 'remove', id: b.id } as never)}
-                  aria-label={`Delete ${r?.label ?? b.recipe}`}
-                  className="rounded p-0.5 text-danger hover:bg-danger-soft"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
-              </li>
+                onDrop={() => dropBill(i)}
+                onEdit={() => setEditing({ bill: b, draft: draftOf(b), key: 0 })}
+              />
             );
           })}
         </ol>
