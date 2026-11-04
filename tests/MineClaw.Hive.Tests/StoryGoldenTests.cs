@@ -56,6 +56,58 @@ public sealed class StoryGoldenTests
 
     internal static string R((JsonNode? Result, string? Error) r) => r.Error != null ? "ERR " + r.Error : "OK " + J(r.Result);
 
+    // ---------------------------------------------------------------- lookup tables vs the switches they replaced
+
+    private static int OldStairsId(Material m) => m.Id switch
+    {
+        5 => m.Meta switch { 1 => 134, 2 => 135, 3 => 136, 4 => 163, 5 => 164, _ => 53 },
+        4 or 1 or 48 => 67, 45 => 108, 98 => 109, 112 => 114, 24 => 128, 155 => 156, 179 => 180, 201 => 203,
+        53 or 67 or 108 or 109 or 114 or 128 or 134 or 135 or 136 or 156 or 163 or 164 or 180 or 203 => m.Id,
+        _ => 53,
+    };
+
+    private static (int, int) OldSlab(bool modern, Material m) => m.Id switch
+    {
+        5 => modern ? (126, m.Meta) : (44, 2),
+        4 => (44, 3), 24 => (44, 1), 45 => (44, 4), 98 => (44, 5),
+        112 when modern => (44, 6), 155 when modern => (44, 7),
+        44 or 126 => (m.Id, m.Meta),
+        _ => (44, 0),
+    };
+
+    [Fact]
+    public void Stairs_and_slab_tables_match_the_old_switches_for_every_state()
+    {
+        foreach (var d in new IGameData[] { Beta181GameData.Instance, Release1122GameData.Instance })
+            for (int id = -1; id < 260; id++)
+                for (int meta = -1; meta < 17; meta++)
+                {
+                    var m = new Material(id, meta, "x", "x");
+                    int old = OldStairsId(m);
+                    Assert.Equal(d.BlockExists(old) ? old : 53, StoryConstruction.StairsFor(d, m));
+                    Assert.Equal(OldSlab(d.BlockExists(126), m), StoryConstruction.SlabFor(d, m));
+                }
+    }
+
+    [Fact]
+    public void Placing_item_and_liquid_names_for_every_state()
+    {
+        var sb = new StringBuilder();
+        foreach (var d in new IGameData[] { Beta181GameData.Instance, Release1122GameData.Instance })
+            for (int id = 0; id < 260; id++)
+                for (int meta = 0; meta < 16; meta++)
+                {
+                    if (!d.BlockExists(id) && meta > 0) continue;
+                    var (item, why) = StoryConstruction.PlacingItem(d, id, meta);
+                    sb.Append(d.VersionId).Append(' ').Append(id).Append(':').Append(meta).Append(' ').Append(item ?? "-").Append(' ').Append(why ?? "").Append('\n');
+                }
+        foreach (var m in new JsonNode?[] { null, "water", " Lava ", "still_water", "flowing_water", "water_bucket", "still_lava", "flowing_lava",
+                     "lava_bucket", "mud", 3, new JsonArray(8), new JsonArray(9, 1), new JsonArray(10), new JsonArray(11), new JsonArray(12), new JsonArray(),
+                     new JsonArray("8"), new JsonObject() })
+            sb.Append(J(m)).Append(" => ").Append(StoryConstruction.LiquidOf(new JsonObject { ["material"] = m?.DeepClone() }) ?? "null").Append('\n');
+        GoldenHash("placing-items", sb.ToString());
+    }
+
     // ================================================================ StoryConstruction.Expand
 
     private static IEnumerable<JsonObject> ExpandItems()
