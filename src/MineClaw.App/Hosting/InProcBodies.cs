@@ -129,7 +129,7 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
         _shutdown = shutdown;
         var rt = bot.Runtime;
         _store = new HiveStore(rt.Db, _main);
-        _regulars = _o.RegularPlayers.Length > 0 ? _o.RegularPlayers : _hive.RegularPlayers.Length > 0 ? _hive.RegularPlayers : rt.Options.Self.TrustedPlayers;
+        _regulars = ConfiguredRegulars(rt);
         PathfindGate.MaxConcurrent = _o.MaxPathfinds;
         rt.Chat.IsHiveBot ??= n => HiveBots().Contains(n, StringComparer.OrdinalIgnoreCase);
         // One flusher pumps every body's remembered world (main's included).
@@ -175,6 +175,10 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
             string.Join(", ", _regulars));
     }
 
+    /// <summary>The regular players: Bodies:RegularPlayers, else Hive:RegularPlayers, else the trusted players.</summary>
+    private IReadOnlyList<string> ConfiguredRegulars(AgentRuntime rt) =>
+        _o.RegularPlayers.Length > 0 ? _o.RegularPlayers : _hive.RegularPlayers.Length > 0 ? _hive.RegularPlayers : rt.Options.Self.TrustedPlayers;
+
     // ================================================================ ISubhiveHost (subhive mode)
 
     /// <summary>Logs an allocated account in as a body of this hive and starts its job; an online body just gets the new job.</summary>
@@ -184,19 +188,25 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
         reg.AddAccount(account);
         var s = reg.Spawn(account);
         if (!s.Ok || s.Body is not Body body) return s.Text;
-        if (!string.IsNullOrWhiteSpace(task) || !string.IsNullOrWhiteSpace(script))
-        {
-            string? scriptName = null;
-            if (!string.IsNullOrWhiteSpace(script))
-            {
-                if (Bot.GameTools.ScriptTools.Of(bot.Runtime) is not { } bridge) return "error: scripts are off";
-                var prep = bridge.PrepareForHive(script, null, ToolCaller.Current?.Tag);
-                if (prep.Error != null) return "error: " + prep.Error;
-                scriptName = prep.Name;
-            }
-            _ = RunJobAsync(bot.Runtime, body, task ?? "", scriptName, null);
-        }
+        if (string.IsNullOrWhiteSpace(task) && string.IsNullOrWhiteSpace(script)) return s.Text;
+        if (PrepareScript(bot.Runtime, script, null, out var scriptName) is { } error) return error;
+        _ = RunJobAsync(bot.Runtime, body, task ?? "", scriptName, null);
         return s.Text;
+    }
+
+    /// <summary>
+    /// A job's saved script (or inline code) made ready for a body: null = ready (<paramref name="scriptName"/> stays null when the
+    /// job has no script), else the error text.
+    /// </summary>
+    private static string? PrepareScript(AgentRuntime rt, string? script, string? code, out string? scriptName)
+    {
+        scriptName = null;
+        if (string.IsNullOrWhiteSpace(script) && string.IsNullOrWhiteSpace(code)) return null;
+        if (Bot.GameTools.ScriptTools.Of(rt) is not { } bridge) return "error: scripts are off";
+        var prep = bridge.PrepareForHive(script, code, ToolCaller.Current?.Tag);
+        if (prep.Error != null) return "error: " + prep.Error;
+        scriptName = prep.Name;
+        return null;
     }
 
     /// <summary>Planned logout of a body (deposit first). <see cref="Gone"/> follows once it is offline.</summary>
@@ -266,13 +276,7 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
 
     public async Task ConnectAsync(IBody body, CancellationToken ct)
     {
-        // Subhive mode: the account must be on the whitelist before its first login (main adds it and waits for the server's word).
-        bool first;
-        lock (_cleared) first = _cleared.Add(body.Name);
-        if (first && BeforeConnect is { } before)
-            try { await before(body.Name, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { lock (_cleared) _cleared.Remove(body.Name); throw; }
-            catch (Exception ex) { _log.LogWarning(ex, "bodies: whitelisting {Body} before login failed; logging in anyway", body.Name); }
+        await WhitelistBeforeFirstLoginAsync(body.Name, ct).ConfigureAwait(false);
         for (int attempt = 0; ; attempt++)
         {
             _log.LogInformation("bodies: connecting {Body} to {Host}:{Port}", body.Name, _mc.Host, _mc.Port);
@@ -288,15 +292,35 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
             {
                 // Live 11-03: the startup reconcile had taken colony pawns off the whitelist, and every reconnect was kicked "not
                 // white-listed" for good (the add ran only before the first login). Main adds it again, then it retries soon.
-                int n = _whitelistKicks.AddOrUpdate(body.Name, 1, (_, v) => v + 1);
-                _log.LogWarning("bodies: {Body} isn't on the whitelist ({Reason}); asking main to add it again", body.Name, ex.Message);
-                string? why;
-                try { why = await re(body.Name, ct).ConfigureAwait(false); }
-                catch (Exception e) when (e is not OperationCanceledException) { why = e.Message; }
-                if (why != null || attempt >= 2) throw; // main can't (its note says why), or still refused: the runner's backoff takes over
-                await Task.Delay(WhitelistRetryDelay(n), ct).ConfigureAwait(false);
+                if (!await RewhitelistAsync(re, body.Name, ex.Message, attempt, ct).ConfigureAwait(false))
+                    throw; // main can't (its note says why), or still refused: the runner's backoff takes over
             }
         }
+    }
+
+    /// <summary>Subhive mode: the account must be on the whitelist before its first login (main adds it and waits for the server's word).</summary>
+    private async Task WhitelistBeforeFirstLoginAsync(string name, CancellationToken ct)
+    {
+        bool first;
+        lock (_cleared) first = _cleared.Add(name);
+        if (!first || BeforeConnect is not { } before) return;
+        try { await before(name, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { lock (_cleared) _cleared.Remove(name); throw; }
+        catch (Exception ex) { _log.LogWarning(ex, "bodies: whitelisting {Body} before login failed; logging in anyway", name); }
+    }
+
+    /// <summary>After a "not white-listed" kick main adds the account again: true = retry the login after the backoff, false = give up.</summary>
+    private async Task<bool> RewhitelistAsync(Func<string, CancellationToken, Task<string?>> re, string name, string reason, int attempt,
+        CancellationToken ct)
+    {
+        int n = _whitelistKicks.AddOrUpdate(name, 1, (_, v) => v + 1);
+        _log.LogWarning("bodies: {Body} isn't on the whitelist ({Reason}); asking main to add it again", name, reason);
+        string? why;
+        try { why = await re(name, ct).ConfigureAwait(false); }
+        catch (Exception e) when (e is not OperationCanceledException) { why = e.Message; }
+        if (why != null || attempt >= 2) return false;
+        await Task.Delay(WhitelistRetryDelay(n), ct).ConfigureAwait(false);
+        return true;
     }
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _whitelistKicks = new(StringComparer.OrdinalIgnoreCase);
@@ -428,23 +452,22 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
     {
         var reg = Registry!;
         var task = input.Str("task") ?? "";
-        string? script = input.Str("script"), code = null; // inline Lua goes through the script tool (Opus-only policy)
-        string? args = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
-        string? scriptName = null;
-        if (!string.IsNullOrWhiteSpace(script) || !string.IsNullOrWhiteSpace(code))
-        {
-            if (Bot.GameTools.ScriptTools.Of(rt) is not { } bridge) return "error: scripts are off";
-            var prep = bridge.PrepareForHive(script, code, ToolCaller.Current?.Tag);
-            if (prep.Error != null) return "error: " + prep.Error;
-            scriptName = prep.Name;
-        }
+        var args = ArgsJson(input);
+        // A saved script only (no inline code): inline Lua goes through the script tool (Opus-only policy).
+        if (PrepareScript(rt, input.Str("script"), null, out var scriptName) is { } error) return error;
         if (scriptName == null && string.IsNullOrWhiteSpace(task)) return "error: spawn needs task (or script)";
         var s = reg.Spawn(input.Str("name"));
         if (!s.Ok || s.Body is not Body body) return s.Text;
         _ = RunJobAsync(rt, body, task, scriptName, args);
-        var job = scriptName != null ? "runs script " + scriptName : "job: " + (task.Length > 60 ? task[..59] + "…" : task);
-        return $"{s.Text}; {job} once it's in game (its [{body.Short} task] events report back)";
+        return $"{s.Text}; {JobText(scriptName, task)} once it's in game (its [{body.Short} task] events report back)";
     }
+
+    /// <summary>The spawn's <c>args</c> object as raw JSON (null when absent or not an object).</summary>
+    private static string? ArgsJson(JsonElement input) =>
+        input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
+
+    private static string JobText(string? scriptName, string task) =>
+        scriptName != null ? "runs script " + scriptName : "job: " + (task.Length > 60 ? task[..59] + "…" : task);
 
     /// <summary>Waits for the body to be in game, then starts its job: its script on its own lane, or a delegate on its slot.</summary>
     private async Task RunJobAsync(AgentRuntime rt, Body body, string task, string? script, string? args)
@@ -457,24 +480,32 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
                 return;
             }
             if (body.Activities.Current != null) body.Activities.Cancel("superseded: new hive task");
-            if (script != null)
-            {
-                var r = await body.RunScriptAsync(script, args, _shutdown).ConfigureAwait(false);
-                if (!r.Ok) Post(GameEvent.TaskFail($"script {script}: {r.Text}", true) with { Body = body.Short, MustWake = true });
-                return;
-            }
-            // The worker pool (step 3) gives this body a worker of its own, within the cap; without one, wait for the one worker.
-            for (int i = 0; i < 300 && rt.Worker is { Pool: null, IsRunning: true } && !_shutdown.IsCancellationRequested; i++)
-                await Task.Delay(2000, _shutdown).ConfigureAwait(false);
-            if (!rt.Tools.TryGet(Agent.Worker.WorkerAgent.ToolName, out var del))
-            {
-                Post(GameEvent.TaskFail("no worker for " + body.Short, true) with { Body = body.Short });
-                return;
-            }
-            _ = body.Activities.RunAsync([(del, JsonSerializer.SerializeToElement(new { task }))], TimeSpan.Zero, _shutdown);
+            if (script != null) await RunScriptJobAsync(body, script, args).ConfigureAwait(false);
+            else await StartWorkerJobAsync(rt, body, task).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { _log.LogWarning(ex, "bodies: {Body}'s job didn't start", body.Name); }
+    }
+
+    /// <summary>The job's script on the body's own lane; a failure wakes the brain.</summary>
+    private async Task RunScriptJobAsync(Body body, string script, string? args)
+    {
+        var r = await body.RunScriptAsync(script, args, _shutdown).ConfigureAwait(false);
+        if (!r.Ok) Post(GameEvent.TaskFail($"script {script}: {r.Text}", true) with { Body = body.Short, MustWake = true });
+    }
+
+    /// <summary>The job as a delegate on the body's slot (started, not awaited).</summary>
+    private async Task StartWorkerJobAsync(AgentRuntime rt, Body body, string task)
+    {
+        // The worker pool (step 3) gives this body a worker of its own, within the cap; without one, wait for the one worker.
+        for (int i = 0; i < 300 && rt.Worker is { Pool: null, IsRunning: true } && !_shutdown.IsCancellationRequested; i++)
+            await Task.Delay(2000, _shutdown).ConfigureAwait(false);
+        if (!rt.Tools.TryGet(Agent.Worker.WorkerAgent.ToolName, out var del))
+        {
+            Post(GameEvent.TaskFail("no worker for " + body.Short, true) with { Body = body.Short });
+            return;
+        }
+        _ = body.Activities.RunAsync([(del, JsonSerializer.SerializeToElement(new { task }))], TimeSpan.Zero, _shutdown);
     }
 
     private string Recall(string who)

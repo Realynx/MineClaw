@@ -59,14 +59,27 @@ public sealed class SettingsOverrideStore(string path, int keep = 10, TimeProvid
     public static void Set(JsonObject root, string key, JsonNode? value)
     {
         var segs = key.Split(':');
-        var o = root;
         var trail = new List<(JsonObject Parent, string Name)>();
+        if (LeafParent(root, segs, create: value != null, trail) is not { } o) return; // nothing to remove
+        var leaf = Child(o, segs[^1]);
+        if (leaf != null) o.Remove(leaf);
+        if (value == null) PruneEmpty(trail);
+        else o[leaf ?? segs[^1]] = value;
+    }
+
+    /// <summary>
+    /// The object holding the key's leaf, walking existing names case-insensitively; a missing (or non-object) parent is created
+    /// when <paramref name="create"/>, else null. <paramref name="trail"/> gets each (parent, name) step.
+    /// </summary>
+    private static JsonObject? LeafParent(JsonObject root, string[] segs, bool create, List<(JsonObject Parent, string Name)> trail)
+    {
+        var o = root;
         for (int i = 0; i < segs.Length - 1; i++)
         {
             var name = Child(o, segs[i]);
             if (name == null || o[name] is not JsonObject next)
             {
-                if (value == null) return; // nothing to remove
+                if (!create) return null;
                 name ??= segs[i];
                 next = [];
                 o[name] = next;
@@ -74,20 +87,18 @@ public sealed class SettingsOverrideStore(string path, int keep = 10, TimeProvid
             trail.Add((o, name));
             o = next;
         }
-        var leaf = Child(o, segs[^1]);
-        if (value == null)
+        return o;
+    }
+
+    /// <summary>After a removal: empty parents go, innermost first, up to the first one that still holds something.</summary>
+    private static void PruneEmpty(List<(JsonObject Parent, string Name)> trail)
+    {
+        for (int i = trail.Count - 1; i >= 0; i--)
         {
-            if (leaf != null) o.Remove(leaf);
-            for (int i = trail.Count - 1; i >= 0; i--)
-            {
-                var (parent, name) = trail[i];
-                if (parent[name] is JsonObject child && child.Count == 0) parent.Remove(name);
-                else break;
-            }
-            return;
+            var (parent, name) = trail[i];
+            if (parent[name] is JsonObject child && child.Count == 0) parent.Remove(name);
+            else break;
         }
-        if (leaf != null) o.Remove(leaf);
-        o[leaf ?? segs[^1]] = value;
     }
 
     /// <summary>

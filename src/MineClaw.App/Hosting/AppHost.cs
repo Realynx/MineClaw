@@ -300,23 +300,26 @@ public static partial class AppHost
         ring.Add(new LogLine(DateTimeOffset.Now, LogLevel.Information, "MineClaw.App", "demo mode: fake bots, no server, no API calls"));
 
         var (useTui, why) = TerminalDetect.Decide(cli.Tui, TerminalDetect.Current());
-        if (cli.Frame is { } size || !useTui)
-        {
-            for (int i = 0; i < 64; i++) demo.Tick();
-            var (w, h) = cli.Frame ?? (120, 40);
-            var app = new TuiApp(demo.Sources, roster, ring, host.Tui, _ => { }, NullLogger.Instance, cli.Bot - 1, ParseView(cli.ViewMode));
-            // --frame: ANSI 24-bit colour (NO_COLOR=1 for plain text); the headless fallback prints plain text.
-            bool ansi = cli.Frame != null && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
-            Console.Out.WriteLine(app.RenderOnce(w, h, ansi));
-            if (cli.Frame == null) Console.Error.WriteLine($"(demo: printed one frame because {why}; run in a terminal for the live TUI)");
-            return ExitCodes.Ok;
-        }
+        if (cli.Frame is { } size || !useTui) return PrintDemoFrame(cli, demo, roster, ring, host, why);
 
         using var signals = new ShutdownSignals();
         using var minutesTimer = cli.Minutes is { } minutes ? new Timer(_ => signals.Request("--minutes elapsed"), null, TimeSpan.FromMinutes(minutes), Timeout.InfiniteTimeSpan) : null;
         demo.Start();
         var tui = new TuiApp(demo.Sources, roster, ring, host.Tui, w => signals.Request("tui " + w), NullLogger.Instance, cli.Bot - 1, ParseView(cli.ViewMode));
         await tui.RunAsync(signals.Token);
+        return ExitCodes.Ok;
+    }
+
+    /// <summary><c>--frame</c> (or no terminal): one frame of the demo after 64 ticks, printed instead of the live TUI.</summary>
+    private static int PrintDemoFrame(AppCli cli, DemoHive demo, HiveRoster roster, RingLoggerProvider ring, HostSettings host, string why)
+    {
+        for (int i = 0; i < 64; i++) demo.Tick();
+        var (w, h) = cli.Frame ?? (120, 40);
+        var app = new TuiApp(demo.Sources, roster, ring, host.Tui, _ => { }, NullLogger.Instance, cli.Bot - 1, ParseView(cli.ViewMode));
+        // --frame: ANSI 24-bit colour (NO_COLOR=1 for plain text); the headless fallback prints plain text.
+        bool ansi = cli.Frame != null && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
+        Console.Out.WriteLine(app.RenderOnce(w, h, ansi));
+        if (cli.Frame == null) Console.Error.WriteLine($"(demo: printed one frame because {why}; run in a terminal for the live TUI)");
         return ExitCodes.Ok;
     }
 }
