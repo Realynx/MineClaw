@@ -150,77 +150,104 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             var roles = RolesList();
-            string? id = Str(body["id"]) ?? Str(spec?["id"]);
-            bool wake = false;
-            switch (op)
-            {
-                case "add":
-                case "update":
-                {
-                    if (spec == null) return (null, "role required");
-                    WorkRole? r = null;
-                    if (op == "update" && (r = RoleById(id)) == null) return (null, id == null ? "role.id required" : $"role.id: no such role '{id}'");
-                    var name = spec["name"] != null ? Str(spec["name"]) : r?.Name;
-                    if (name is not { Length: >= 1 and <= 40 }) return (null, "role.name: 1..40 characters");
-                    if (roles.Any(x => x != r && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return (null, $"role.name: '{name}' is taken");
-                    string? icon = r?.Icon;
-                    if (spec.ContainsKey("icon"))
-                    {
-                        icon = Str(spec["icon"]);
-                        if (spec["icon"] != null && spec["icon"] is not JsonValue) return (null, "role.icon must be a short key");
-                        if (icon != null && (icon.Length > 24 || !icon.All(ch => char.IsAsciiLetterLower(ch) || char.IsAsciiDigit(ch) || ch == '-')))
-                            return (null, "role.icon: up to 24 of a-z 0-9 -");
-                    }
-                    var prios = r != null ? new Dictionary<string, int>(r.Priorities) : WorkTypes.All.ToDictionary(t => t, _ => 0);
-                    if (spec["priorities"] is JsonObject po)
-                    {
-                        foreach (var (t, v) in po)
-                        {
-                            if (!WorkTypes.Known(t)) return (null, $"role.priorities: unknown work type '{t}' ({string.Join("|", WorkTypes.All)})");
-                            if (StoryJson.Int(v) is not { } n || n is < 0 or > 4) return (null, "role.priorities: 0 (off) .. 4");
-                            prios[t] = n;
-                        }
-                    }
-                    else if (spec["priorities"] != null) return (null, "role.priorities must be {type: 0..4}");
-                    if (r == null)
-                    {
-                        r = new WorkRole { Id = NextRoleId(name) };
-                        roles.Add(r);
-                    }
-                    r.Name = name; r.Icon = icon; r.Priorities = prios;
-                    wake = ReapplyRole(r);
-                    id = r.Id;
-                    break;
-                }
-                case "remove":
-                {
-                    if (RoleById(id) is not { } gone) return (null, id == null ? "id required" : $"id: no such role '{id}'");
-                    roles.Remove(gone);
-                    foreach (var p in Pawns.Values.Where(p => p.Role == gone.Id)) { p.Role = null; p.Rev = Touch(); } // Custom, same values
-                    break;
-                }
-                default: // reset_defaults
-                {
-                    var defs = DefaultRoles();
-                    for (int i = 0; i < defs.Count; i++)
-                    {
-                        var d = defs[i];
-                        // A name an own role took gives way: the own role keeps it, the built-in its id-derived name stays unique.
-                        if (roles.Any(x => x.Id != d.Id && x.Name.Equals(d.Name, StringComparison.OrdinalIgnoreCase))) d.Name += " (built-in)";
-                        if (RoleById(d.Id) is { } have) { have.Name = d.Name; have.Icon = d.Icon; have.Priorities = d.Priorities; d = have; }
-                        else roles.Insert(Math.Min(i, roles.Count), d);
-                        wake |= ReapplyRole(d);
-                    }
-                    id = null;
-                    break;
-                }
-            }
+            var (wake, id, err) = RoleEdit(op, spec, Str(body["id"]) ?? Str(spec?["id"]), roles);
+            if (err != null) return (null, err);
             Touch();
             if (wake) WakeIdle();
             var o = new JsonObject { ["id"] = id, ["roles"] = RolesJson() };
             if (op == "remove") o["removed"] = true;
             return (o, null);
         }
+    }
+
+    /// <summary>One roles op on the list: whether a pawn's priorities changed, the id it answers with, or why it was refused.</summary>
+    private (bool Wake, string? Id, string? Error) RoleEdit(string op, JsonObject? spec, string? id, List<WorkRole> roles) => op switch
+    {
+        "add" or "update" => SaveRole(op == "update", spec, id, roles),
+        "remove" => RemoveRole(id, roles),
+        _ => ResetDefaultRoles(roles),
+    };
+
+    private static (bool Wake, string? Id, string? Error) RoleRefused(string why) => (false, null, why);
+
+    /// <summary>add (a new role) or update (the role <paramref name="id"/>): name, icon and priorities checked, then its pawns follow.</summary>
+    private (bool Wake, string? Id, string? Error) SaveRole(bool update, JsonObject? spec, string? id, List<WorkRole> roles)
+    {
+        if (spec == null) return RoleRefused("role required");
+        WorkRole? r = null;
+        if (update && (r = RoleById(id)) == null) return RoleRefused(id == null ? "role.id required" : $"role.id: no such role '{id}'");
+        var name = spec["name"] != null ? Str(spec["name"]) : r?.Name;
+        if (RoleNameError(name, r, roles) is { } bad) return RoleRefused(bad);
+        var (icon, iconErr) = RoleIconOf(spec, r?.Icon);
+        if (iconErr != null) return RoleRefused(iconErr);
+        var (prios, prioErr) = RolePrioritiesOf(spec, r);
+        if (prioErr != null) return RoleRefused(prioErr);
+        if (r == null)
+        {
+            r = new WorkRole { Id = NextRoleId(name!) };
+            roles.Add(r);
+        }
+        r.Name = name!; r.Icon = icon; r.Priorities = prios!;
+        return (ReapplyRole(r), r.Id, null);
+    }
+
+    private static string? RoleNameError(string? name, WorkRole? self, List<WorkRole> roles)
+    {
+        if (name is not { Length: >= 1 and <= 40 }) return "role.name: 1..40 characters";
+        return roles.Any(x => x != self && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) ? $"role.name: '{name}' is taken" : null;
+    }
+
+    /// <summary>The role's icon: the spec's when it names one (null clears it), else <paramref name="current"/>.</summary>
+    private static (string? Icon, string? Error) RoleIconOf(JsonObject spec, string? current)
+    {
+        if (!spec.ContainsKey("icon")) return (current, null);
+        var icon = Str(spec["icon"]);
+        if (spec["icon"] != null && spec["icon"] is not JsonValue) return (null, "role.icon must be a short key");
+        if (icon != null && (icon.Length > 24 || !icon.All(RoleIconChar))) return (null, "role.icon: up to 24 of a-z 0-9 -");
+        return (icon, null);
+    }
+
+    private static bool RoleIconChar(char ch) => char.IsAsciiLetterLower(ch) || char.IsAsciiDigit(ch) || ch == '-';
+
+    /// <summary>The role's priorities: its own (or all off for a new one) with the spec's merged in.</summary>
+    private static (Dictionary<string, int>? Priorities, string? Error) RolePrioritiesOf(JsonObject spec, WorkRole? r)
+    {
+        var prios = r != null ? new Dictionary<string, int>(r.Priorities) : WorkTypes.All.ToDictionary(t => t, _ => 0);
+        if (spec["priorities"] is not JsonObject po)
+            return spec["priorities"] != null ? (null, "role.priorities must be {type: 0..4}") : (prios, null);
+        foreach (var (t, v) in po)
+        {
+            if (!WorkTypes.Known(t)) return (null, $"role.priorities: unknown work type '{t}' ({string.Join("|", WorkTypes.All)})");
+            if (StoryJson.Int(v) is not { } n || n is < 0 or > 4) return (null, "role.priorities: 0 (off) .. 4");
+            prios[t] = n;
+        }
+        return (prios, null);
+    }
+
+    /// <summary>remove: the role goes; its pawns turn Custom with the same values.</summary>
+    private (bool Wake, string? Id, string? Error) RemoveRole(string? id, List<WorkRole> roles)
+    {
+        if (RoleById(id) is not { } gone) return RoleRefused(id == null ? "id required" : $"id: no such role '{id}'");
+        roles.Remove(gone);
+        foreach (var p in Pawns.Values.Where(p => p.Role == gone.Id)) { p.Role = null; p.Rev = Touch(); } // Custom, same values
+        return (false, id, null);
+    }
+
+    /// <summary>reset_defaults: the built-in roles as shipped, added back if removed; own roles kept.</summary>
+    private (bool Wake, string? Id, string? Error) ResetDefaultRoles(List<WorkRole> roles)
+    {
+        bool wake = false;
+        var defs = DefaultRoles();
+        for (int i = 0; i < defs.Count; i++)
+        {
+            var d = defs[i];
+            // A name an own role took gives way: the own role keeps it, the built-in its id-derived name stays unique.
+            if (roles.Any(x => x.Id != d.Id && x.Name.Equals(d.Name, StringComparison.OrdinalIgnoreCase))) d.Name += " (built-in)";
+            if (RoleById(d.Id) is { } have) { have.Name = d.Name; have.Icon = d.Icon; have.Priorities = d.Priorities; d = have; }
+            else roles.Insert(Math.Min(i, roles.Count), d);
+            wake |= ReapplyRole(d);
+        }
+        return (wake, null, null);
     }
 
     /// <summary>A fresh role id from its name (farmer → "farmer", taken → "farmer-2"), never a built-in one.</summary>

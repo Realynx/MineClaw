@@ -39,7 +39,7 @@ public sealed partial class StoryColony
             if (source == null) cells = cells.Take(kit.Full).ToList(); // only what its full buckets pour
         }
         if (b.Status != "active") { b.Status = "active"; b.Reason = null; b.Rev = Touch(); }
-        return (Claim(b, cells, p.Name, NewPourJob(b, seed, cells, stand, source, kit, live.Block)), false);
+        return (Claim(b, cells, p.Name, NewPourJob(b, seed, cells, stand, source, kit)), false);
     }
 
     /// <summary>Why this build gives no pour job for this seed now, or null: an earlier water build first (wait), lava off (wait), the
@@ -68,7 +68,8 @@ public sealed partial class StoryColony
                           && o.Ghosts.Any(g => g.Job && g.State is "todo" or "leased"))
             .OrderBy(o => o.Order).FirstOrDefault();
 
-    /// <summary>The pawn's buckets (empty and full of this liquid); with none, up to two from storage, empty ones first.</summary>
+    /// <summary>The pawn's buckets (empty and full of this liquid); with none, up to two from storage, full ones first (a full one
+    /// pours at once, no fill trip).</summary>
     private PourKit BucketsFor(PawnLive live, bool lava)
     {
         int fullId = lava ? Items.LavaBucket : Items.WaterBucket;
@@ -81,7 +82,7 @@ public sealed partial class StoryColony
     private PourKit FetchBuckets(PourKit kit, int fullId, P3 from)
     {
         int full = kit.Full, carried = 0;
-        foreach (var id in new[] { Items.Bucket, fullId })
+        foreach (var id in new[] { fullId, Items.Bucket })
             foreach (var (st, stack, n) in Stored((id, 0), from))
             {
                 int t = Math.Min(n, PourBuckets - carried);
@@ -132,12 +133,12 @@ public sealed partial class StoryColony
         return (PourOrder(batch), stand);
     }
 
-    private ActiveJob NewPourJob(BuildState b, GhostState seed, List<GhostState> cells, P3? stand, P3? source, PourKit kit, P3 from)
+    private ActiveJob NewPourJob(BuildState b, GhostState seed, List<GhostState> cells, P3? stand, P3? source, PourKit kit)
     {
+        // The pourer keeps its buckets after the batch (they are tools: deliveries leave them): the colony's working bucket never goes
+        // back to a chest while water builds still have cells (live 11-04: a water bucket stashed mid-job, then "Make Bucket" asked for
+        // iron). A full one left over pours first in the next batch.
         string liquid = LiquidName(seed);
-        // The last liquid cells: the buckets go back to storage after (else the pourer keeps them for the next channel).
-        bool last = Builds.Where(Builds_Live).SelectMany(x => x.Ghosts).Count(g => StoryConstruction.IsLiquid(g) && g.Job && g.State is "todo" or "leased") <= cells.Count;
-        var home = last ? BestChest(Items.Bucket, 0, from) : null;
         var label = $"pouring {liquid} ({b.Label}){(cells.Count > 1 ? $": {cells.Count} cells" : "")}";
         var job = Job(WorkTypes.Build, "pour", label, seed.At, $"g:{b.Id}|{seed.At}", "ghost", $"{b.Id}|{seed.At}", "working", f =>
         {
@@ -149,10 +150,8 @@ public sealed partial class StoryColony
             f["buckets"] = kit.Carried;
             if (stand is { } sp) f["stand"] = sp.ToString();
             if (kit.Fetch.Count > 0) f["fetch"] = kit.Fetch;
-            if (home != null) f["stash"] = new JsonArray(new JsonObject { ["to"] = home.Chest.ToString(), ["items"] = new JsonArray("bucket") });
         }, xp: Math.Min(60, 8 + 4 * cells.Count));
         job.Takes.AddRange(kit.Takes);
-        if (home != null) job.Puts.Add((home.Chest, [new Stack(Items.Bucket, 0, kit.Carried)]));
         return job;
     }
 

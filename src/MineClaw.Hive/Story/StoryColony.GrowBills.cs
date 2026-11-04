@@ -74,101 +74,157 @@ public sealed partial class StoryColony
         {
             if (Zones.FirstOrDefault(z => z.Id == id) is not { } zone) return (null, "id: no such zone");
             if (zone.Kind is not ("farm" or "fish")) return (null, "only growing and fishing zones take bills");
-            bool fishing = zone.Kind == "fish"; // fishing bills: plant "fish", mode forever | until (raw fish stored) | count (catches)
             if (World is not { } w) return (null, "no world view yet");
-            var bills = zone.Bills ?? [];
             _fishScan.Remove(zone.Id);
-            var warnings = new List<string>();
-            string? billId = Str(body["bill"]);
-            GrowBill? bill = billId == null ? null : bills.FirstOrDefault(b => b.Id == billId);
-            if (op is "bill_update" or "bill_remove" or "bill_pause" or "bill_resume" && bill == null) return (null, "bill: no such bill in the zone");
-            string? Apply(GrowBill b, bool adding)
+            var edit = new GrowBillEdit(this, w, zone, body);
+            if (edit.Run(op) is { } err) return (null, err);
+            return (GrowBillsSaved(w, edit, op), null);
+        }
+    }
+
+    /// <summary>The edited bills become the zone's (a growing zone's plant: its first bill's); the answer names them and what is active.</summary>
+    private JsonObject GrowBillsSaved(IStoryWorld w, GrowBillEdit edit, string op)
+    {
+        var zone = edit.Zone;
+        var bills = edit.Bills;
+        zone.Bills = bills;
+        if (!edit.Fishing) zone.Plant = bills.FirstOrDefault()?.Plant;
+        zone.Rev = Touch();
+        _growScan.Remove(zone.Id);
+        WakeIdle();
+        var res = new JsonObject
+        {
+            ["id"] = zone.Id, ["ids"] = new JsonArray(bills.Select(b => (JsonNode)b.Id!).ToArray()),
+            ["active_bill"] = edit.Fishing ? bills.FirstOrDefault(b => !b.Paused && !FishBillMet(b))?.Id : ActiveBill(w, zone)?.Id,
+            ["warnings"] = new JsonArray(edit.Warnings.Select(x => (JsonNode)x!).ToArray()),
+        };
+        if (op == "bill_add") res["bill"] = edit.Bill!.Id;
+        return res;
+    }
+
+    /// <summary>
+    /// One bill op on a growing (or fishing: plant "fish", mode forever | until (raw fish stored) | count (catches)) zone's bills, on a
+    /// working list: the zone takes it only when the op succeeds.
+    /// </summary>
+    private sealed class GrowBillEdit(StoryColony c, IStoryWorld w, ZoneState zone, JsonObject body)
+    {
+        public ZoneState Zone => zone;
+        public bool Fishing { get; } = zone.Kind == "fish";
+        public List<GrowBill> Bills { get; private set; } = zone.Bills ?? [];
+        public List<string> Warnings { get; } = new();
+        /// <summary>The bill the op names (or the one it added).</summary>
+        public GrowBill? Bill { get; private set; }
+
+        /// <summary>An id as the browser sends it: a string, or a number.</summary>
+        private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : n is JsonValue nv && nv.TryGetValue<long>(out var l) ? l.ToString() : null;
+
+        private static bool NamesABill(string op) => op is "bill_update" or "bill_remove" or "bill_pause" or "bill_resume";
+
+        /// <summary>The op applied (null), or why not.</summary>
+        public string? Run(string op)
+        {
+            Bill = Str(body["bill"]) is { } billId ? Bills.FirstOrDefault(b => b.Id == billId) : null;
+            if (NamesABill(op) && Bill == null) return "bill: no such bill in the zone";
+            return op switch
             {
-                if (fishing)
-                {
-                    if (body["plant"] != null && Str(body["plant"]) != "fish") return "a fishing zone's bills fish: plant must be fish";
-                    b.Plant = "fish";
-                }
-                else if (body["plant"] != null || adding)
-                {
-                    if (StoryPlants.Get(w.Data, Str(body["plant"])) is not { } plant)
-                        return $"plant must be one of {string.Join("|", StoryPlants.For(w.Data).Select(x => x.Id))} on {w.Version}";
-                    if (plant.Id != b.Plant)
-                    {
-                        var (bad, warn) = ValidateGrow(zone, plant.Id);
-                        if (bad != null) return bad;
-                        warnings.AddRange(warn);
-                    }
-                    b.Plant = plant.Id;
-                }
-                if (body["mode"] != null)
-                {
-                    var mode = Str(body["mode"]);
-                    if (mode == null || !GrowBillModes.Contains(mode)) return $"mode must be {string.Join("|", GrowBillModes)}";
-                    b.Mode = mode;
-                }
-                if (body["target"] != null)
-                {
-                    if (StoryJson.Int(body["target"]) is not { } t || t < 1 || t > 100_000) return "target must be 1..100000";
-                    b.Target = t;
-                }
-                if (body["paused"] is JsonValue pv && pv.TryGetValue<bool>(out var paused)) b.Paused = paused;
-                return null;
-            }
-            switch (op)
-            {
-                case "bill_add":
-                {
-                    if (bills.Count >= 16) return (null, "a zone takes at most 16 bills");
-                    var nb = new GrowBill { Id = NextId("gb") };
-                    if (Apply(nb, true) is { } err) return (null, err);
-                    bills.Add(nb);
-                    bill = nb;
-                    break;
-                }
-                case "bill_update":
-                {
-                    var copy = new GrowBill { Id = bill!.Id, Plant = bill.Plant, Mode = bill.Mode, Target = bill.Target, Done = bill.Done, Paused = bill.Paused };
-                    if (Apply(copy, false) is { } err) return (null, err);
-                    if (copy.Mode != bill.Mode || copy.Plant != bill.Plant) copy.Done = 0; // a new goal starts from zero
-                    bills[bills.IndexOf(bill)] = copy;
-                    bill = copy;
-                    break;
-                }
-                case "bill_remove":
-                    bills.Remove(bill!);
-                    break;
-                case "bill_pause" or "bill_resume":
-                    bill!.Paused = op == "bill_pause";
-                    break;
-                case "bill_reorder":
-                {
-                    if (body["ids"] is not JsonArray ids) return (null, "ids: the bills in their new order");
-                    var order = ids.Select(Str).ToList();
-                    if (order.Any(i => i == null || bills.All(b => b.Id != i))) return (null, "ids: no such bill in the zone");
-                    var sorted = order.Distinct().Select(i => bills.First(b => b.Id == i)).ToList();
-                    sorted.AddRange(bills.Where(b => !sorted.Contains(b))); // any left out keep their order, after
-                    bills = sorted;
-                    break;
-                }
-                default:
-                    return (null, "op must be bill_add|bill_update|bill_remove|bill_pause|bill_resume|bill_reorder");
-            }
-            zone.Bills = bills;
-            if (!fishing) zone.Plant = bills.FirstOrDefault()?.Plant;
-            zone.Rev = Touch();
-            _growScan.Remove(zone.Id);
-            WakeIdle();
-            var res = new JsonObject
-            {
-                ["id"] = zone.Id, ["ids"] = new JsonArray(bills.Select(b => (JsonNode)b.Id!).ToArray()),
-                ["active_bill"] = fishing ? bills.FirstOrDefault(b => !b.Paused && !FishBillMet(b))?.Id : ActiveBill(w, zone)?.Id, ["warnings"] = new JsonArray(warnings.Select(x => (JsonNode)x!).ToArray()),
+                "bill_add" => Add(),
+                "bill_update" => Update(Bill!),
+                "bill_remove" => Remove(Bill!),
+                "bill_pause" or "bill_resume" => Pause(Bill!, op == "bill_pause"),
+                "bill_reorder" => Reorder(),
+                _ => "op must be bill_add|bill_update|bill_remove|bill_pause|bill_resume|bill_reorder",
             };
-            if (op == "bill_add") res["bill"] = bill!.Id;
-            return (res, null);
         }
 
-        static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : n is JsonValue nv && nv.TryGetValue<long>(out var l) ? l.ToString() : null;
+        private string? Add()
+        {
+            if (Bills.Count >= 16) return "a zone takes at most 16 bills";
+            var nb = new GrowBill { Id = c.NextId("gb") };
+            if (Apply(nb, true) is { } err) return err;
+            Bills.Add(nb);
+            Bill = nb;
+            return null;
+        }
+
+        private string? Update(GrowBill bill)
+        {
+            var copy = new GrowBill { Id = bill.Id, Plant = bill.Plant, Mode = bill.Mode, Target = bill.Target, Done = bill.Done, Paused = bill.Paused };
+            if (Apply(copy, false) is { } err) return err;
+            if (copy.Mode != bill.Mode || copy.Plant != bill.Plant) copy.Done = 0; // a new goal starts from zero
+            Bills[Bills.IndexOf(bill)] = copy;
+            Bill = copy;
+            return null;
+        }
+
+        private string? Remove(GrowBill bill)
+        {
+            Bills.Remove(bill);
+            return null;
+        }
+
+        private static string? Pause(GrowBill bill, bool paused)
+        {
+            bill.Paused = paused;
+            return null;
+        }
+
+        private string? Reorder()
+        {
+            if (body["ids"] is not JsonArray ids) return "ids: the bills in their new order";
+            var order = ids.Select(Str).ToList();
+            if (order.Any(i => i == null || Bills.All(b => b.Id != i))) return "ids: no such bill in the zone";
+            var sorted = order.Distinct().Select(i => Bills.First(b => b.Id == i)).ToList();
+            sorted.AddRange(Bills.Where(b => !sorted.Contains(b))); // any left out keep their order, after
+            Bills = sorted;
+            return null;
+        }
+
+        /// <summary>The body's plant, mode, target and paused onto a bill, each checked (the first error stops).</summary>
+        private string? Apply(GrowBill b, bool adding) => ApplyPlant(b, adding) ?? ApplyMode(b) ?? ApplyTarget(b) ?? ApplyPaused(b);
+
+        private string? ApplyPlant(GrowBill b, bool adding)
+        {
+            if (Fishing)
+            {
+                if (body["plant"] != null && Str(body["plant"]) != "fish") return "a fishing zone's bills fish: plant must be fish";
+                b.Plant = "fish";
+                return null;
+            }
+            if (body["plant"] == null && !adding) return null;
+            if (StoryPlants.Get(w.Data, Str(body["plant"])) is not { } plant)
+                return $"plant must be one of {string.Join("|", StoryPlants.For(w.Data).Select(x => x.Id))} on {w.Version}";
+            if (plant.Id != b.Plant)
+            {
+                var (bad, warn) = c.ValidateGrow(zone, plant.Id);
+                if (bad != null) return bad;
+                Warnings.AddRange(warn);
+            }
+            b.Plant = plant.Id;
+            return null;
+        }
+
+        private string? ApplyMode(GrowBill b)
+        {
+            if (body["mode"] == null) return null;
+            var mode = Str(body["mode"]);
+            if (mode == null || !GrowBillModes.Contains(mode)) return $"mode must be {string.Join("|", GrowBillModes)}";
+            b.Mode = mode;
+            return null;
+        }
+
+        private string? ApplyTarget(GrowBill b)
+        {
+            if (body["target"] == null) return null;
+            if (StoryJson.Int(body["target"]) is not { } t || t < 1 || t > 100_000) return "target must be 1..100000";
+            b.Target = t;
+            return null;
+        }
+
+        private string? ApplyPaused(GrowBill b)
+        {
+            if (body["paused"] is JsonValue pv && pv.TryGetValue<bool>(out var paused)) b.Paused = paused;
+            return null;
+        }
     }
 
     /// <summary>The zone's bills in the state: each with its plant, mode, target, progress (done or stored), met, active, seeds.</summary>

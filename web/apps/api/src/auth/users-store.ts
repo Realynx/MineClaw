@@ -134,6 +134,16 @@ export interface UsersStoreLog {
   error(obj: object, msg: string): void;
 }
 
+/** mtime and size, or 'missing' (a missing file = no users). */
+function fileStamp(path: string): string {
+  try {
+    const st = statSync(path);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return 'missing';
+  }
+}
+
 export class UsersStore {
   private data: UsersFileData = { version: 1, users: [] };
   /** False until the file has been read successfully once (a missing file counts as read: no users). */
@@ -153,14 +163,13 @@ export class UsersStore {
     const now = Date.now();
     if (!force && now - this.checkedAt < this.recheckMs) return;
     this.checkedAt = now;
-    let stamp = 'missing';
-    try {
-      const st = statSync(this.path);
-      stamp = `${st.mtimeMs}:${st.size}`;
-    } catch {
-      // missing file = no users
-    }
+    const stamp = fileStamp(this.path);
     if (!force && stamp === this.stamp) return;
+    this.load(stamp);
+  }
+
+  /** Reads the file; a bad file keeps the last good copy. An empty or missing file opens first-run setup. */
+  private load(stamp: string): void {
     try {
       this.data = readUsersFile(this.path);
       this.loaded = true;

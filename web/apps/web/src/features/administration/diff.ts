@@ -23,8 +23,12 @@ export function formatValue(v: SettingValue | undefined, s?: Pick<AdminSetting, 
   if (typeof v === 'boolean') return v ? 'on' : 'off';
   if (Array.isArray(v)) return v.length ? v.join(', ') : '(none)';
   if (v === '') return '(empty)';
-  const unit = s?.unit && typeof v === 'number' ? ` ${s.unit}` : '';
-  return `${String(v)}${unit}`;
+  return `${String(v)}${unitOf(v, s)}`;
+}
+
+/** " ms" & co after a number when the setting has a unit. */
+function unitOf(v: SettingValue, s?: Pick<AdminSetting, 'unit'>): string {
+  return s?.unit && typeof v === 'number' ? ` ${s.unit}` : '';
 }
 
 function same(a: SettingValue | undefined, b: SettingValue | undefined): boolean {
@@ -38,26 +42,28 @@ export function buildDiff(all: readonly AdminSetting[], draft: Draft): DiffRow[]
     if (!hasDraft(draft, s.key)) continue;
     const v = draft[s.key] ?? null;
     const base = { key: s.key, label: s.label, group: s.group, section: s.section, apply: s.apply };
-    if (s.secret) {
-      const was = s.secretState?.set ? 'set' : 'not set';
-      if (v === null) {
-        if (!s.overridden) continue;
-        rows.push({ ...base, kind: 'secret-reset', from: was, to: 'base config' });
-      } else if (v === '') {
-        if (!s.secretState?.set) continue;
-        rows.push({ ...base, kind: 'secret-cleared', from: was, to: 'cleared' });
-      } else rows.push({ ...base, kind: 'secret-changed', from: was, to: 'changed' });
-      continue;
-    }
-    if (v === null) {
-      if (!s.overridden) continue;
-      rows.push({ ...base, kind: 'reset', from: formatValue(s.value, s), to: 'base config' });
-      continue;
-    }
-    if (same(v, s.value)) continue;
-    rows.push({ ...base, kind: 'change', from: formatValue(s.value, s), to: formatValue(v, s) });
+    const change = s.secret ? secretChange(s, v) : valueChange(s, v);
+    if (change) rows.push({ ...base, ...change });
   }
   return rows;
+}
+
+type Change = Pick<DiffRow, 'kind' | 'from' | 'to'> | null;
+
+/** A secret shows only set / changed / cleared; a reset of a secret without an override, or clearing an unset one, is no change. */
+function secretChange(s: AdminSetting, v: SettingValue): Change {
+  const set = !!s.secretState?.set;
+  const was = set ? 'set' : 'not set';
+  if (v === null) return s.overridden ? { kind: 'secret-reset', from: was, to: 'base config' } : null;
+  if (v === '') return set ? { kind: 'secret-cleared', from: was, to: 'cleared' } : null;
+  return { kind: 'secret-changed', from: was, to: 'changed' };
+}
+
+/** A reset of an overridden value, or a value different from the running one. */
+function valueChange(s: AdminSetting, v: SettingValue): Change {
+  if (v === null) return s.overridden ? { kind: 'reset', from: formatValue(s.value, s), to: 'base config' } : null;
+  if (same(v, s.value)) return null;
+  return { kind: 'change', from: formatValue(s.value, s), to: formatValue(v, s) };
 }
 
 /** The save body's changes, in diff order. */

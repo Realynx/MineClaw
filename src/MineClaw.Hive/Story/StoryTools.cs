@@ -121,13 +121,22 @@ public static class StoryTools
     public static int WeaponScore(IGameData d, int id, string pref = "best")
     {
         var t = ToolOf(d, id);
-        int dmg = MaterialTier(d, id) switch { 0 or 4 => 4, 1 => 5, 2 => 6, 3 => 7, _ => 0 };
+        int dmg = AttackDamage(d, id);
         int s = t == ToolType.Sword ? 100 + dmg * 10 : t == ToolType.Axe ? 50 + dmg * 5 : id == 261 ? 20 : 0;
-        if (s > 0 && pref == "axe" && t == ToolType.Axe) s += 200;
-        if (s > 0 && pref == "sword" && t == ToolType.Sword) s += 200;
-        if (s > 0 && pref == "bow" && id == 261) s += 300;
-        return s;
+        return s > 0 ? s + PreferredBonus(t, id, pref) : s;
     }
+
+    /// <summary>A sword's attack damage by its material: wood/gold 4, stone 5, iron 6, diamond 7.</summary>
+    private static int AttackDamage(IGameData d, int id) => MaterialTier(d, id) switch { 0 or 4 => 4, 1 => 5, 2 => 6, 3 => 7, _ => 0 };
+
+    /// <summary>The policy's preferred weapon kind ranks first.</summary>
+    private static int PreferredBonus(ToolType t, int id, string pref) => pref switch
+    {
+        "axe" when t == ToolType.Axe => 200,
+        "sword" when t == ToolType.Sword => 200,
+        "bow" when id == 261 => 300,
+        _ => 0,
+    };
 
     /// <summary>"a stone pickaxe", "an iron sword", "shears", "a pickaxe" (no tier).</summary>
     public static string Describe(ToolType kind, int level)
