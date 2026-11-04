@@ -636,8 +636,7 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   await arch.getByRole('button', { name: 'Structure' }).click();
   const pal = page.getByTestId('architect-palette');
   await expect(pal.locator('[data-entry="fence"]')).toHaveAttribute('data-unlocked', 'true');
-  await expect(pal.locator('[data-entry="glass"]')).toHaveAttribute('data-unlocked', 'false');
-  await expect(pal.locator('[data-entry="glass"]')).toContainText('Needs a furnace');
+  await expect(pal.locator('[data-entry="glass"]')).toHaveAttribute('data-tier', 'furnace'); // the camp has a furnace too
   await expect(pal.locator('[data-entry="planks"]')).toContainText('Hand');
   await arch.getByRole('button', { name: 'Lighting' }).click();
   await expect(pal.locator('[data-entry="torch"]')).toBeVisible();
@@ -667,6 +666,12 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   const release = post(page, /\/workbenches$/);
   await bills.getByRole('button', { name: 'Release' }).click();
   expect(body(await release)).toMatchObject({ op: 'release' });
+  // Without the table the workbench tier locks, with the reason.
+  await page.keyboard.press('b');
+  await arch.getByRole('button', { name: 'Structure' }).click();
+  await expect(pal.locator('[data-entry="fence"]')).toHaveAttribute('data-unlocked', 'false');
+  await expect(pal.locator('[data-entry="fence"]')).toContainText('Needs a crafting table');
+  await page.keyboard.press('Escape');
   const designate = page.getByTestId('bench-designate');
   await page.mouse.click(table.x, table.y);
   await expect(designate).toBeVisible();
