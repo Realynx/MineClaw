@@ -46,24 +46,29 @@ const TAU = Math.PI * 2;
 
 /** Whether a unit-space point is inside a node's shape. */
 export function contains(n: GraphNode, layout: GraphLayout, ux: number, uy: number, unitPerPx = 0): boolean {
-  if (layout === 'icicle') {
-    const w = n.w ?? 0;
-    const h = n.h ?? 0;
-    return Math.abs(ux - n.x) <= w / 2 && Math.abs(uy - n.y) <= h / 2;
-  }
-  if (layout === 'radial') {
-    const dx = ux - 0.5;
-    const dy = uy - 0.5;
-    const r = Math.hypot(dx, dy);
-    if (r < (n.r0 ?? 0) || r > (n.r1 ?? 0)) return false;
-    // angle: 0 = up, clockwise
-    let a = Math.atan2(dx, -dy);
-    if (a < 0) a += TAU;
-    return a >= (n.a0 ?? 0) && a <= (n.a1 ?? 0);
-  }
-  const rr = Math.max(n.r ?? 0.005, unitPerPx * 4);
-  return Math.hypot(ux - n.x, uy - n.y) <= rr;
+  return (CONTAINS[layout] ?? inDot)(n, ux, uy, unitPerPx);
 }
+
+type Contains = (n: GraphNode, ux: number, uy: number, unitPerPx: number) => boolean;
+
+/** Icicle: inside the node's rectangle. */
+const inRect: Contains = (n, ux, uy) => Math.abs(ux - n.x) <= (n.w ?? 0) / 2 && Math.abs(uy - n.y) <= (n.h ?? 0) / 2;
+
+/** Radial: inside the node's ring sector (angle 0 = up, clockwise). */
+const inSector: Contains = (n, ux, uy) => {
+  const dx = ux - 0.5;
+  const dy = uy - 0.5;
+  const r = Math.hypot(dx, dy);
+  if (r < (n.r0 ?? 0) || r > (n.r1 ?? 0)) return false;
+  let a = Math.atan2(dx, -dy);
+  if (a < 0) a += TAU;
+  return a >= (n.a0 ?? 0) && a <= (n.a1 ?? 0);
+};
+
+/** Node-link: within the dot's radius (at least 4 px). */
+const inDot: Contains = (n, ux, uy, unitPerPx) => Math.hypot(ux - n.x, uy - n.y) <= Math.max(n.r ?? 0.005, unitPerPx * 4);
+
+const CONTAINS: Partial<Record<GraphLayout, Contains>> = { icicle: inRect, radial: inSector };
 
 /** The topmost node under a unit point (leaves are drawn last, so search from the end). */
 export function hitTest(nodes: readonly GraphNode[], layout: GraphLayout, ux: number, uy: number, unitPerPx = 0): GraphNode | null {
@@ -104,15 +109,17 @@ export function indexGraph(g: Pick<RaptorGraph, 'nodes' | 'edges'>): GraphIndex 
 
 /** Keyboard walk: up = parent, down = first child, left/right = previous/next sibling. */
 export function walk(idx: GraphIndex, from: number | null, dir: 'up' | 'down' | 'left' | 'right'): number | null {
-  if (from === null) return idx.roots[0] ?? null;
-  const n = idx.byId.get(from);
-  if (!n) return idx.roots[0] ?? null;
+  const n = from === null ? undefined : idx.byId.get(from);
+  if (from === null || !n) return idx.roots[0] ?? null;
   if (dir === 'up') return n.parent ?? from;
   if (dir === 'down') return idx.children.get(from)?.[0] ?? from;
+  return sibling(idx, n, from, dir === 'left' ? -1 : 1);
+}
+
+/** The previous (-1) or next (+1) sibling (among the roots for a root), or the node itself at the end. */
+function sibling(idx: GraphIndex, n: GraphNode, from: number, step: number): number {
   const siblings = n.parent !== null && n.parent !== undefined ? (idx.children.get(n.parent) ?? []) : idx.roots;
-  const i = siblings.indexOf(from);
-  const j = dir === 'left' ? i - 1 : i + 1;
-  return siblings[j] ?? from;
+  return siblings[siblings.indexOf(from) + step] ?? from;
 }
 
 /** All ancestors of a node (every parent link), nearest first, without duplicates. */
