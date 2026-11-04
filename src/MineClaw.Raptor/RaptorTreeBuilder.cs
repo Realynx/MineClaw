@@ -84,21 +84,11 @@ public sealed class RaptorTreeBuilder
         long seq = insertSeqStart ?? 0;
         foreach (var doc in documents)
         {
-            var chunks = doc.Chunk
-                ? TextSplitter.Split(doc.Text, _tok, _o.ChunkMaxTokens, _o.ChunkOverlap, _o.Split)
-                : string.IsNullOrWhiteSpace(doc.Text) ? [] : [doc.Text];
+            var chunks = Chunks(doc);
             for (int c = 0; c < chunks.Count; c++)
             {
                 bool pre = doc.Embedding != null && chunks.Count == 1;
-                var node = new RaptorNode(index++, 0, chunks[c], pre ? VectorMath.Normalized(doc.Embedding!) : [], _tok.Count(chunks[c]))
-                {
-                    Key = doc.Key,
-                    Chunk = c,
-                    Kind = doc.Kind,
-                    Source = doc.Source,
-                    Pinned = doc.Pinned,
-                    InsertedSeq = insertSeqStart == null ? 0 : ++seq,
-                };
+                var node = NewLeaf(doc, chunks[c], c, index++, pre, insertSeqStart == null ? 0 : ++seq);
                 if (!pre) toEmbed.Add(leaves.Count);
                 leaves.Add(node);
             }
@@ -108,6 +98,22 @@ public sealed class RaptorTreeBuilder
         return (leaves, tokens);
     }
 
+    private List<string> Chunks(RaptorDocument doc) => doc.Chunk
+        ? TextSplitter.Split(doc.Text, _tok, _o.ChunkMaxTokens, _o.ChunkOverlap, _o.Split)
+        : string.IsNullOrWhiteSpace(doc.Text) ? [] : [doc.Text];
+
+    /// <summary>An unattached leaf for one chunk; a precomputed embedding is used only for a single-chunk document.</summary>
+    private RaptorNode NewLeaf(RaptorDocument doc, string chunk, int c, int index, bool pre, long insertedSeq) =>
+        new(index, 0, chunk, pre ? VectorMath.Normalized(doc.Embedding!) : [], _tok.Count(chunk))
+        {
+            Key = doc.Key,
+            Chunk = c,
+            Kind = doc.Kind,
+            Source = doc.Source,
+            Pinned = doc.Pinned,
+            InsertedSeq = insertedSeq,
+        };
+
     /// <summary>
     /// Builds a fresh tree over already-embedded leaves (used by the static build and by Rebuild, which keeps leaf
     /// texts and embeddings). Leaves are renumbered 0…n−1 in the given order.
@@ -116,21 +122,10 @@ public sealed class RaptorTreeBuilder
     {
         var sw = Stopwatch.StartNew();
         budget ??= RaptorBudget.Unlimited();
-        var tree = new RaptorTree { EmbeddingModel = _embedder.Model, BuildId = DateTimeOffset.UtcNow.UtcTicks, BuiltAt = DateTimeOffset.UtcNow };
-        for (int i = 0; i < leaves.Count; i++)
-        {
-            var src = leaves[i];
-            tree.Add(new RaptorNode(i, 0, src.Text, src.Embedding, src.TokenCount)
-            {
-                Key = src.Key, Chunk = src.Chunk, Kind = src.Kind, Source = src.Source, Pinned = src.Pinned,
-            });
-        }
-        tree.Dimensions = leaves.Count > 0 ? leaves[0].Embedding.Length : _embedder.Dimensions;
-        tree.NextIndex = leaves.Count;
-
+        var tree = NewTree(leaves);
         var clustering = new RaptorClustering(_o);
         var current = tree.Layer(0).OrderBy(n => n.Index).ToList();
-        int summaries = 0, placeholders = 0, failures = 0, reclusters = 0, fallback = 0, reused = 0;
+        var tally = new BuildTally();
         long embedTokens = 0;
         TimeSpan clusterTime = TimeSpan.Zero, summaryTime = TimeSpan.Zero;
         tree.NumLayers = 0;
@@ -146,33 +141,16 @@ public sealed class RaptorTreeBuilder
             var csw = Stopwatch.StartNew();
             var clusters = await Task.Run(() => clustering.Cluster(current.Select(n => n.Embedding).ToList(), current.Select(n => n.TokenCount).ToList()), ct).ConfigureAwait(false);
             clusterTime += csw.Elapsed;
-            reclusters += clustering.ReclusterCount;
-            fallback += clustering.FallbackSplits;
+            tally.Reclusters += clustering.ReclusterCount;
+            tally.Fallback += clustering.FallbackSplits;
 
             var groups = clusters.Select(c => c.Select(i => current[i]).ToList()).ToList();
             var ssw = Stopwatch.StartNew();
             var results = await SummarizeManyAsync(groups, budget, ct, reuse).ConfigureAwait(false);
             summaryTime += ssw.Elapsed;
-            var need = Enumerable.Range(0, results.Count).Where(g => results[g].Embedding == null).ToList();
-            var (fresh, tokens) = await EmbedAllAsync(need.Select(g => results[g].Text).ToList(), ct).ConfigureAwait(false);
+            var (vecs, tokens) = await SummaryVectorsAsync(results, ct).ConfigureAwait(false);
             embedTokens += tokens;
-            var vecs = results.Select(r => r.Embedding).ToArray();
-            for (int t = 0; t < need.Count; t++) vecs[need[t]] = fresh[t];
-
-            var next = new List<RaptorNode>(groups.Count);
-            for (int g = 0; g < groups.Count; g++)
-            {
-                var r = results[g];
-                if (r.Summarized) summaries++;
-                if (r.Pending) placeholders++;
-                if (r.Failed) failures++;
-                if (r.Reused) reused++;
-                var node = new RaptorNode(tree.NextIndex, layer + 1, r.Text, vecs[g]!, _tok.Count(r.Text)) { SummaryPending = r.Pending };
-                tree.Add(node);
-                foreach (var child in groups[g]) tree.Link(node.Index, child.Index);
-                next.Add(node);
-            }
-            current = next;
+            current = AddLayer(tree, layer, groups, results, vecs, tally);
             tree.NumLayers = layer + 1;
         }
 
@@ -184,18 +162,75 @@ public sealed class RaptorTreeBuilder
             Leaves = tree.LeafCount,
             NumLayers = tree.NumLayers,
             NodesPerLayer = Enumerable.Range(0, tree.NumLayers + 1).Select(l => tree.LayerIndices(l).Count).ToList(),
-            Summaries = summaries,
-            ReusedSummaries = reused,
-            Placeholders = placeholders,
-            SummaryFailures = failures,
-            Reclusters = reclusters,
-            FallbackSplits = fallback,
+            Summaries = tally.Summaries,
+            ReusedSummaries = tally.Reused,
+            Placeholders = tally.Placeholders,
+            SummaryFailures = tally.Failures,
+            Reclusters = tally.Reclusters,
+            FallbackSplits = tally.Fallback,
             EmbeddingTokens = embedTokens,
             ClusteringTime = clusterTime,
             SummaryTime = summaryTime,
             Elapsed = sw.Elapsed,
         };
         return (tree, stats);
+    }
+
+    /// <summary>Counters for <see cref="BuildStats"/> gathered over the layers of one build.</summary>
+    private sealed class BuildTally
+    {
+        public int Summaries, Placeholders, Failures, Reclusters, Fallback, Reused;
+
+        public void Add(SummaryOutcome r)
+        {
+            if (r.Summarized) Summaries++;
+            if (r.Pending) Placeholders++;
+            if (r.Failed) Failures++;
+            if (r.Reused) Reused++;
+        }
+    }
+
+    /// <summary>A tree holding copies of the leaves, renumbered 0…n−1.</summary>
+    private RaptorTree NewTree(IReadOnlyList<RaptorNode> leaves)
+    {
+        var tree = new RaptorTree { EmbeddingModel = _embedder.Model, BuildId = DateTimeOffset.UtcNow.UtcTicks, BuiltAt = DateTimeOffset.UtcNow };
+        for (int i = 0; i < leaves.Count; i++)
+        {
+            var src = leaves[i];
+            tree.Add(new RaptorNode(i, 0, src.Text, src.Embedding, src.TokenCount)
+            {
+                Key = src.Key, Chunk = src.Chunk, Kind = src.Kind, Source = src.Source, Pinned = src.Pinned,
+            });
+        }
+        tree.Dimensions = leaves.Count > 0 ? leaves[0].Embedding.Length : _embedder.Dimensions;
+        tree.NextIndex = leaves.Count;
+        return tree;
+    }
+
+    /// <summary>Summary embeddings: reused ones as they are, the rest embedded in one batch.</summary>
+    private async Task<(float[]?[] Vectors, long Tokens)> SummaryVectorsAsync(List<SummaryOutcome> results, CancellationToken ct)
+    {
+        var need = Enumerable.Range(0, results.Count).Where(g => results[g].Embedding == null).ToList();
+        var (fresh, tokens) = await EmbedAllAsync(need.Select(g => results[g].Text).ToList(), ct).ConfigureAwait(false);
+        var vecs = results.Select(r => r.Embedding).ToArray();
+        for (int t = 0; t < need.Count; t++) vecs[need[t]] = fresh[t];
+        return (vecs, tokens);
+    }
+
+    /// <summary>One summary node per group (layer + 1), linked to its children; returns the new layer.</summary>
+    private List<RaptorNode> AddLayer(RaptorTree tree, int layer, List<List<RaptorNode>> groups, List<SummaryOutcome> results, float[]?[] vecs, BuildTally tally)
+    {
+        var next = new List<RaptorNode>(groups.Count);
+        for (int g = 0; g < groups.Count; g++)
+        {
+            var r = results[g];
+            tally.Add(r);
+            var node = new RaptorNode(tree.NextIndex, layer + 1, r.Text, vecs[g]!, _tok.Count(r.Text)) { SummaryPending = r.Pending };
+            tree.Add(node);
+            foreach (var child in groups[g]) tree.Link(node.Index, child.Index);
+            next.Add(node);
+        }
+        return next;
     }
 
     internal static (double Mean, double Std) LeafParentSimilarity(RaptorTree tree)

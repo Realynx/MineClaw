@@ -85,24 +85,44 @@ public sealed class RaptorTree
     public List<string> Validate()
     {
         var errors = new List<string>();
+        ValidateLayers(errors);
+        foreach (var n in _all.Values)
+        {
+            ValidateChildren(n, errors);
+            ValidateParents(n, errors);
+            ValidateShape(n, errors);
+        }
+        return errors;
+    }
+
+    private void ValidateLayers(List<string> errors)
+    {
         for (int l = 0; l < _layers.Count; l++)
             foreach (var i in _layers[l])
                 if (!_all.TryGetValue(i, out var n) || n.Layer != l) errors.Add($"layer {l} lists #{i} wrongly");
-        foreach (var n in _all.Values)
+    }
+
+    private void ValidateChildren(RaptorNode n, List<string> errors)
+    {
+        foreach (var c in n.Children)
         {
-            foreach (var c in n.Children)
-            {
-                if (!_all.TryGetValue(c, out var cn)) { errors.Add($"#{n.Index} has missing child #{c}"); continue; }
-                if (cn.Layer != n.Layer - 1) errors.Add($"#{n.Index} (L{n.Layer}) child #{c} is L{cn.Layer}");
-                if (!cn.Parents.Contains(n.Index)) errors.Add($"#{c} lacks parent link to #{n.Index}");
-            }
-            foreach (var p in n.Parents)
-                if (!_all.TryGetValue(p, out var pn) || !pn.Children.Contains(n.Index)) errors.Add($"#{n.Index} parent #{p} does not list it");
-            if (n.Layer > 0 && n.Children.Count == 0) errors.Add($"summary #{n.Index} has no children");
-            if (n.Layer < NumLayers && n.Parents.Count == 0) errors.Add($"non-root #{n.Index} (L{n.Layer}) has no parent");
-            if (n.Layer > NumLayers) errors.Add($"#{n.Index} above NumLayers");
-            if (n.Embedding.Length != Dimensions && Dimensions > 0) errors.Add($"#{n.Index} embedding dims {n.Embedding.Length}");
+            if (!_all.TryGetValue(c, out var cn)) { errors.Add($"#{n.Index} has missing child #{c}"); continue; }
+            if (cn.Layer != n.Layer - 1) errors.Add($"#{n.Index} (L{n.Layer}) child #{c} is L{cn.Layer}");
+            if (!cn.Parents.Contains(n.Index)) errors.Add($"#{c} lacks parent link to #{n.Index}");
         }
-        return errors;
+    }
+
+    private void ValidateParents(RaptorNode n, List<string> errors)
+    {
+        foreach (var p in n.Parents)
+            if (!_all.TryGetValue(p, out var pn) || !pn.Children.Contains(n.Index)) errors.Add($"#{n.Index} parent #{p} does not list it");
+    }
+
+    private void ValidateShape(RaptorNode n, List<string> errors)
+    {
+        if (n.Layer > 0 && n.Children.Count == 0) errors.Add($"summary #{n.Index} has no children");
+        if (n.Layer < NumLayers && n.Parents.Count == 0) errors.Add($"non-root #{n.Index} (L{n.Layer}) has no parent");
+        if (n.Layer > NumLayers) errors.Add($"#{n.Index} above NumLayers");
+        if (n.Embedding.Length != Dimensions && Dimensions > 0) errors.Add($"#{n.Index} embedding dims {n.Embedding.Length}");
     }
 }

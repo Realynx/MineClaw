@@ -21,15 +21,17 @@ public sealed partial class StoryColony
         var areas = Zones.Where(z => z.Kind == "home").Select(z => (Area: z.Area, Cells: (ZoneCells?)z.Cells)).ToList();
         areas.Add((Area.Of(home.X - 12, home.Y - 4, home.Z - 12, home.X + 12, home.Y + 6, home.Z + 12), null));
         foreach (var (a, cells) in areas)
-        {
-            if (a.Volume > 100_000) continue;
-            foreach (var p in a.Blocks())
-                if ((cells == null || cells.Contains(p.X, p.Z)) && StoryRecipes.BenchOf(w.Block(p.X, p.Y, p.Z).Id) is { } kind && Benches.All(b => b.Pos != p))
-                {
-                    Benches.Add(new WorkbenchState { Pos = p, Kind = kind, Rev = Touch() });
-                    MaterialsChanged();
-                }
-        }
+            if (a.Volume <= 100_000) ScanBenchesIn(w, a, cells);
+    }
+
+    private void ScanBenchesIn(IStoryWorld w, Area a, ZoneCells? cells)
+    {
+        foreach (var p in a.Blocks())
+            if ((cells == null || cells.Contains(p.X, p.Z)) && StoryRecipes.BenchOf(w.Block(p.X, p.Y, p.Z).Id) is { } kind && Benches.All(b => b.Pos != p))
+            {
+                Benches.Add(new WorkbenchState { Pos = p, Kind = kind, Rev = Touch() });
+                MaterialsChanged();
+            }
     }
 
     private WorkbenchState? Bench(P3 at) => Benches.FirstOrDefault(b => b.Pos == at);
@@ -44,42 +46,47 @@ public sealed partial class StoryColony
         if (World is not { } w) return (null, "no world view yet");
         lock (_lock)
         {
-            switch (op)
+            return op switch
             {
-                case "designate":
-                {
-                    if (Bench(pos) is { } have) return (new JsonObject { ["pos"] = pos.Json(), ["kind"] = have.Kind, ["designated"] = true }, null);
-                    if (StoryRecipes.BenchOf(w.Block(pos.X, pos.Y, pos.Z).Id) is not { } kind) return (null, "no workbench there (crafting table, furnace, brewing stand, anvil, enchanting table)");
-                    Benches.Add(new WorkbenchState { Pos = pos, Kind = kind, Rev = Touch() });
-                    MaterialsChanged();
-                    WakeIdle();
-                    return (new JsonObject { ["pos"] = pos.Json(), ["kind"] = kind, ["designated"] = true }, null);
-                }
-                case "release":
-                {
-                    if (Bench(pos) is not { } bench) return (null, "that workbench isn't the colony's");
-                    Benches.Remove(bench);
-                    Removed("workbench", pos.ToString());
-                    foreach (var k in _leases.Keys.Where(k => k == "bench:" + pos).ToList()) _leases.Remove(k);
-                    MaterialsChanged();
-                    return (new JsonObject { ["pos"] = pos.Json(), ["kind"] = bench.Kind, ["designated"] = false }, null);
-                }
-                case "fuel":
-                {
-                    // A furnace's fuel choice (StoryColony.Fuel.cs); designating it if it wasn't the colony's yet.
-                    var bench = Bench(pos);
-                    if (bench == null)
-                    {
-                        if (StoryRecipes.BenchOf(w.Block(pos.X, pos.Y, pos.Z).Id) is not { } kind) return (null, "no workbench there");
-                        if (kind != "furnace" || !StoryFuels.Valid(w.Data, fuel)) return SetBenchFuel(new WorkbenchState { Pos = pos, Kind = kind }, fuel);
-                        Benches.Add(bench = new WorkbenchState { Pos = pos, Kind = kind, Rev = Touch() });
-                    }
-                    return SetBenchFuel(bench, fuel);
-                }
-                default:
-                    return (null, "op must be designate|release|fuel");
-            }
+                "designate" => DesignateBench(w, pos),
+                "release" => ReleaseBench(pos),
+                "fuel" => FuelBench(w, pos, fuel),
+                _ => (null, "op must be designate|release|fuel"),
+            };
         }
+    }
+
+    private (JsonNode? Result, string? Error) DesignateBench(IStoryWorld w, P3 pos)
+    {
+        if (Bench(pos) is { } have) return (new JsonObject { ["pos"] = pos.Json(), ["kind"] = have.Kind, ["designated"] = true }, null);
+        if (StoryRecipes.BenchOf(w.Block(pos.X, pos.Y, pos.Z).Id) is not { } kind) return (null, "no workbench there (crafting table, furnace, brewing stand, anvil, enchanting table)");
+        Benches.Add(new WorkbenchState { Pos = pos, Kind = kind, Rev = Touch() });
+        MaterialsChanged();
+        WakeIdle();
+        return (new JsonObject { ["pos"] = pos.Json(), ["kind"] = kind, ["designated"] = true }, null);
+    }
+
+    private (JsonNode? Result, string? Error) ReleaseBench(P3 pos)
+    {
+        if (Bench(pos) is not { } bench) return (null, "that workbench isn't the colony's");
+        Benches.Remove(bench);
+        Removed("workbench", pos.ToString());
+        foreach (var k in _leases.Keys.Where(k => k == "bench:" + pos).ToList()) _leases.Remove(k);
+        MaterialsChanged();
+        return (new JsonObject { ["pos"] = pos.Json(), ["kind"] = bench.Kind, ["designated"] = false }, null);
+    }
+
+    /// <summary>A furnace's fuel choice (StoryColony.Fuel.cs); designating it if it wasn't the colony's yet.</summary>
+    private (JsonNode? Result, string? Error) FuelBench(IStoryWorld w, P3 pos, string? fuel)
+    {
+        var bench = Bench(pos);
+        if (bench == null)
+        {
+            if (StoryRecipes.BenchOf(w.Block(pos.X, pos.Y, pos.Z).Id) is not { } kind) return (null, "no workbench there");
+            if (kind != "furnace" || !StoryFuels.Valid(w.Data, fuel)) return SetBenchFuel(new WorkbenchState { Pos = pos, Kind = kind }, fuel);
+            Benches.Add(bench = new WorkbenchState { Pos = pos, Kind = kind, Rev = Touch() });
+        }
+        return SetBenchFuel(bench, fuel);
     }
 
     private static readonly JsonSerializerOptions J = StoryJson.Options;
@@ -366,18 +373,29 @@ public sealed partial class StoryColony
     /// material comes from when the colony has none of it.</summary>
     private string MissingText(RecipeInput input, int radius, WorkbenchState? bench = null)
     {
-        var d = World!.Data;
         var first = input.Options[0];
-        var fam = input.Options.All(o => o.Meta < 0) || input.Options.Select(o => o.Id).Distinct().Count() > 1 ? StoryRecipeFamilies.FamilyOf(first.Id) : null;
-        var name = fam ?? d.DisplayName(first.Id, Math.Max(0, first.Meta)).ToLowerInvariant();
+        var name = InputName(World!.Data, input);
         // What it looked at (StoryColony.StockCheck.cs): "no planks: checked 6 chests within 32 of the bench (2 not looked into lately)".
         var text = bench != null ? $"no {name}: {CheckedText(bench, radius)}" : $"no {name} within {radius} blocks";
         if (PocketText(input, null) is { } pockets) text += $"; {pockets} (stored soon)";
         if (StoryRecipeFamilies.Source(first.Id) is not { } from) return text;
-        // Planks or sticks with logs in stock: they can be made (the "any" bills); with no logs either: chop trees.
+        return text + SourceHint(first.Id, name, from);
+    }
+
+    /// <summary>An any-variant input by its family ("planks"), else the item's display name.</summary>
+    private static string InputName(MineClaw.Data.Versioning.IGameData d, RecipeInput input)
+    {
+        var first = input.Options[0];
+        var fam = input.Options.All(o => o.Meta < 0) || input.Options.Select(o => o.Id).Distinct().Count() > 1 ? StoryRecipeFamilies.FamilyOf(first.Id) : null;
+        return fam ?? d.DisplayName(first.Id, Math.Max(0, first.Meta)).ToLowerInvariant();
+    }
+
+    /// <summary>Planks or sticks with logs in stock: they can be made (the "any" bills); with no logs either: chop trees.</summary>
+    private string SourceHint(int id, string name, string from)
+    {
         bool logs = Storages.Any(s => s.Contents.Any(c => c.Id is 17 or 162));
-        if (first.Id is 5 or 280 && logs) return text + " — make them from the stored logs (a \"from any logs\" bill)";
-        return text + $" — needs {(first.Id is 5 or 280 or 17 or 162 ? "logs" : name)} ({from})";
+        if (id is 5 or 280 && logs) return " — make them from the stored logs (a \"from any logs\" bill)";
+        return $" — needs {(id is 5 or 280 or 17 or 162 ? "logs" : name)} ({from})";
     }
 
     /// <summary>A bill job (craft or cook), or collecting a furnace that is done, for this pawn; null = none runnable.</summary>
@@ -593,83 +611,106 @@ public sealed partial class StoryColony
         // A furnace loaded: it smelts on whether or not its bill is still there (an auto bill can go while the pawn walks).
         if (j.Source == "bill" && j.Kind == "smelt" && Benches.FirstOrDefault(b => b.Pos == j.At && b.Kind == "furnace") is { } fur)
         {
-            if (fur.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } lb) _billFails.Remove(lb.Id);
-            MaterialsChanged();
-            int items = Math.Max(1, j.Json["n"]?.GetValue<int>() ?? 1);
-            fur.LoadedBill = j.SourceId;
-            fur.LoadedCount = j.Count;
-            fur.LoadedRecipe = j.Json["recipe"]?.GetValue<string>();
-            fur.LoadedAt = Now;
-            fur.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * items);
-            FuelLoaded(fur, j);
-            fur.Rev = Touch();
+            FurnaceLoaded(fur, j);
             return;
         }
         foreach (var bench in Benches)
         {
-            if (j.Source == "furnace" && bench.LoadedBill == j.SourceId && j.At == bench.Pos)
-            {
-                // Collected: the bill counts what came out (done on collection, never on loading); what still smelts stays loaded.
-                MaterialsChanged();
-                var m = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"collected (\d+)");
-                int got = m is { Success: true } ? int.Parse(m.Groups[1].Value) : bench.LoadedCount;
-                var still = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"still smelting (\d+)");
-                if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } fb) fb.Done += Math.Min(got, bench.LoadedCount);
-                int left = bench.LoadedCount - got;
-                if (left > 0 && still is { Success: true } && int.Parse(still.Groups[1].Value) > 0)
-                {
-                    bench.LoadedCount = left;
-                    bench.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * int.Parse(still.Groups[1].Value));
-                }
-                else { bench.LoadedBill = null; bench.LoadedCount = 0; bench.ReadyAt = null; bench.LoadedRecipe = null; bench.LoadedAt = null; }
-                bench.Rev = Touch();
-                _lastSource[p.Name] = "furnace"; // what it took out is stored next (deliveries)
-                return;
-            }
+            if (CollectsFrom(j, bench)) { FurnaceCollected(p, bench, j, note); return; }
             if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is not { } bill) continue;
-            _billFails.Remove(bill.Id);
-            MaterialsChanged();
-            if (bench.Kind == "furnace")
-            {
-                // Loaded and left to smelt: another job collects when it's done.
-                bench.LoadedBill = bill.Id;
-                bench.LoadedCount = j.Count;
-                FuelLoaded(bench, j);
-                bench.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * Math.Max(1, j.Json["n"]?.GetValue<int>() ?? 1));
-            }
-            else bill.Done += j.Count;
-            if (StoryRecipes.Stations.Contains(bench.Kind)) StationDone(bench, bill, j, note);
-            bench.Rev = Touch();
+            BillJobDone(bench, bill, j, note);
             return;
         }
+    }
+
+    /// <summary>A collect job at this furnace for what it smelts.</summary>
+    private static bool CollectsFrom(ActiveJob j, WorkbenchState bench) => j.Source == "furnace" && bench.LoadedBill == j.SourceId && j.At == bench.Pos;
+
+    /// <summary>The items a smelt job loaded (at least one).</summary>
+    private static int SmeltItems(ActiveJob j) => Math.Max(1, j.Json["n"]?.GetValue<int>() ?? 1);
+
+    private void FurnaceLoaded(WorkbenchState fur, ActiveJob j)
+    {
+        if (fur.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } lb) _billFails.Remove(lb.Id);
+        MaterialsChanged();
+        int items = SmeltItems(j);
+        fur.LoadedBill = j.SourceId;
+        fur.LoadedCount = j.Count;
+        fur.LoadedRecipe = j.Json["recipe"]?.GetValue<string>();
+        fur.LoadedAt = Now;
+        fur.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * items);
+        FuelLoaded(fur, j);
+        fur.Rev = Touch();
+    }
+
+    /// <summary>Collected: the bill counts what came out (done on collection, never on loading); what still smelts stays loaded.</summary>
+    private void FurnaceCollected(PawnState p, WorkbenchState bench, ActiveJob j, string? note)
+    {
+        MaterialsChanged();
+        var m = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"collected (\d+)");
+        int got = m is { Success: true } ? int.Parse(m.Groups[1].Value) : bench.LoadedCount;
+        var still = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"still smelting (\d+)");
+        if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } fb) fb.Done += Math.Min(got, bench.LoadedCount);
+        int left = bench.LoadedCount - got;
+        if (left > 0 && still is { Success: true } && int.Parse(still.Groups[1].Value) > 0)
+        {
+            bench.LoadedCount = left;
+            bench.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * int.Parse(still.Groups[1].Value));
+        }
+        else { bench.LoadedBill = null; bench.LoadedCount = 0; bench.ReadyAt = null; bench.LoadedRecipe = null; bench.LoadedAt = null; }
+        bench.Rev = Touch();
+        _lastSource[p.Name] = "furnace"; // what it took out is stored next (deliveries)
+    }
+
+    /// <summary>A bill's job done at its bench: a furnace is loaded and left to smelt (another job collects when it's done), anything
+    /// else counts its output; a station says what it made.</summary>
+    private void BillJobDone(WorkbenchState bench, BillState bill, ActiveJob j, string? note)
+    {
+        _billFails.Remove(bill.Id);
+        MaterialsChanged();
+        if (bench.Kind == "furnace")
+        {
+            bench.LoadedBill = bill.Id;
+            bench.LoadedCount = j.Count;
+            FuelLoaded(bench, j);
+            bench.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * SmeltItems(j));
+        }
+        else bill.Done += j.Count;
+        if (StoryRecipes.Stations.Contains(bench.Kind)) StationDone(bench, bill, j, note);
+        bench.Rev = Touch();
     }
 
     private void BillFailed(PawnState p, ActiveJob j, string why)
     {
         foreach (var bench in Benches)
         {
-            if (j.Source == "furnace" && bench.LoadedBill == j.SourceId && j.At == bench.Pos)
+            if (CollectsFrom(j, bench))
             {
                 bench.ReadyAt = Now + TimeSpan.FromSeconds(20); // not done yet: look again later
                 bench.Rev = Touch();
                 return;
             }
             if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is not { } bill) continue;
-            if (StoryRecipes.Stations.Contains(bench.Kind) && StationFailed(p, bench, bill, why))
-            {
-                bench.Rev = Touch();
-                return;
-            }
-            // Short of fuel at the furnace: what the colony thought it still held isn't there (emptied, or another fuel taken out).
-            if (bench.Kind == "furnace" && why.Contains("fuel", StringComparison.OrdinalIgnoreCase)) bench.FuelCredit = 0;
-            if ((_billFails[bill.Id] = _billFails.GetValueOrDefault(bill.Id) + 1) >= 3)
-            {
-                bill.SuspendedReason = why;
-                Alert("warn", $"Bill {bill.Recipe} suspended: {why}", p.Name);
-            }
+            BillJobFailed(p, bench, bill, why);
+            return;
+        }
+    }
+
+    private void BillJobFailed(PawnState p, WorkbenchState bench, BillState bill, string why)
+    {
+        if (StoryRecipes.Stations.Contains(bench.Kind) && StationFailed(p, bench, bill, why))
+        {
             bench.Rev = Touch();
             return;
         }
+        // Short of fuel at the furnace: what the colony thought it still held isn't there (emptied, or another fuel taken out).
+        if (bench.Kind == "furnace" && why.Contains("fuel", StringComparison.OrdinalIgnoreCase)) bench.FuelCredit = 0;
+        if ((_billFails[bill.Id] = _billFails.GetValueOrDefault(bill.Id) + 1) >= 3)
+        {
+            bill.SuspendedReason = why;
+            Alert("warn", $"Bill {bill.Recipe} suspended: {why}", p.Name);
+        }
+        bench.Rev = Touch();
     }
 
     /// <summary>Suspended bills whose ingredients may be back are retried (every storage change wakes them).</summary>

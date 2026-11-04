@@ -69,10 +69,14 @@ public static class ScriptText
         var reason = s.Reason ?? "?";
         // An error right after a failed action is usually about it: "failed at line 12 (goto: no route)".
         if (reason == "fail()" && s.LastFailure != null) reason = s.LastFailure;
-        var progress = s.CheckpointTotal > 0 ? $"cp {s.CheckpointsPassed}/{s.CheckpointTotal}, {s.Actions} acts" : $"{s.Actions} acts";
-        var tail = (gained.Count > 0 ? ", " + string.Join(", ", gained) : "") + (report != null ? ", " + report : "");
-        return Cap($"{head}: script {s.Name}{where} ({reason}): {progress}{tail}, {dur}", max);
+        return Cap($"{head}: script {s.Name}{where} ({reason}): {Progress(s)}{FailTail(gained, report)}, {dur}", max);
     }
+
+    private static string Progress(ScriptSession s) =>
+        s.CheckpointTotal > 0 ? $"cp {s.CheckpointsPassed}/{s.CheckpointTotal}, {s.Actions} acts" : $"{s.Actions} acts";
+
+    private static string FailTail(IReadOnlyList<string> gained, string? report) =>
+        (gained.Count > 0 ? ", " + string.Join(", ", gained) : "") + (report != null ? ", " + report : "");
 
     /// <summary>A finished run: what it returned, its reports, the items gained (else its action count), the time.</summary>
     private static List<string> DoneParts(ScriptSession s, string? completion, IReadOnlyList<string> gained, string? report, string dur)

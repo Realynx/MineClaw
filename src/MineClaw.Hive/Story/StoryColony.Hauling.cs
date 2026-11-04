@@ -281,42 +281,41 @@ public sealed partial class StoryColony
         var ents = Ents();
         var items = ents.Where(e => e.Kind == "item").ToList();
         if (items.Count == 0) { if (!riskOnly) PassedEntityMarks("haul", null); return null; }
-        if (!riskOnly)
-        {
-            var byId = items.Where(e => !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
-            var d = Designations.Where(x => x.Kind == "haul" && x.Entity is { } id && byId.ContainsKey(id) && Open("e:" + id, p.Name, null))
-                .OrderBy(x => byId[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
-            if (d == null) PassedEntityMarks("haul", byId); // marked drops out of sight: the idle audit says so
-            if (d != null)
-            {
-                var de = byId[d.Entity!.Value];
-                // The designated drops around it go in the same trip (each leased; their designations are done with it).
-                int slots = Math.Max(1, live.FreeSlots - 1);
-                var more = Designations.Where(x => x != d && x.Kind == "haul" && x.Entity is { } mid && byId.ContainsKey(mid) && Open("e:" + mid, p.Name, null))
-                    .Select(x => byId[x.Entity!.Value])
-                    .Where(m => Math.Abs(m.X - de.X) <= BatchRadius && Math.Abs(m.Z - de.Z) <= BatchRadius && Math.Abs(m.Y - de.Y) <= 3)
-                    .OrderBy(m => m.Block.Dist(de.X, de.Y, de.Z)).Take(slots - 1).ToList();
-                double far = more.Count == 0 ? 0 : more.Max(m => Math.Sqrt(Math.Pow(m.X - de.X, 2) + Math.Pow(m.Z - de.Z, 2)));
-                var dj = Job(WorkTypes.Haul, "collect", $"hauling {w.Data.DisplayName(de.ItemId, de.ItemMeta)}" + (more.Count > 0 ? $" (+{more.Count} more)" : ""),
-                    de.Block, "e:" + de.Id, "designation", d.Id, "working", j => j["r"] = Math.Clamp((int)Math.Ceiling(far) + 2, 3, 8), xp: 5);
-                foreach (var m in more) dj.MoreLeases.Add("e:" + m.Id);
-                return dj;
-            }
-        }
-        var cands = new List<(StoryEntity E, (StorageState? Chest, P3? Dump, bool Fallback) Dest, bool Risk)>();
-        foreach (var e in items)
-        {
-            if (Haulable(e, p, from, ents) is not { } dest) continue;
-            bool risk = Age(e) >= DespawnRisk;
-            if (riskOnly && !risk) continue;
-            cands.Add((e, dest, risk));
-        }
+        if (!riskOnly && DesignatedHaul(w, p, live, items, from) is { } dj) return dj;
+        return DropHaul(w, p, live, items, ents, from, riskOnly);
+    }
+
+    /// <summary>The nearest designated drop, with the designated drops around it in the same trip (each leased; their designations are
+    /// done with it). None: the marked drops out of sight are noted (the idle audit says so).</summary>
+    private ActiveJob? DesignatedHaul(IStoryWorld w, PawnState p, PawnLive live, List<StoryEntity> items, P3 from)
+    {
+        var byId = items.Where(e => !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
+        var d = Designations.Where(x => x.Kind == "haul" && x.Entity is { } id && byId.ContainsKey(id) && Open("e:" + id, p.Name, null))
+            .OrderBy(x => byId[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
+        if (d == null) { PassedEntityMarks("haul", byId); return null; }
+        var de = byId[d.Entity!.Value];
+        int slots = Math.Max(1, live.FreeSlots - 1);
+        var more = Designations.Where(x => x != d && x.Kind == "haul" && x.Entity is { } mid && byId.ContainsKey(mid) && Open("e:" + mid, p.Name, null))
+            .Select(x => byId[x.Entity!.Value])
+            .Where(m => Math.Abs(m.X - de.X) <= BatchRadius && Math.Abs(m.Z - de.Z) <= BatchRadius && Math.Abs(m.Y - de.Y) <= 3)
+            .OrderBy(m => m.Block.Dist(de.X, de.Y, de.Z)).Take(slots - 1).ToList();
+        double far = more.Count == 0 ? 0 : more.Max(m => Math.Sqrt(Math.Pow(m.X - de.X, 2) + Math.Pow(m.Z - de.Z, 2)));
+        var dj = Job(WorkTypes.Haul, "collect", $"hauling {w.Data.DisplayName(de.ItemId, de.ItemMeta)}" + (more.Count > 0 ? $" (+{more.Count} more)" : ""),
+            de.Block, "e:" + de.Id, "designation", d.Id, "working", j => j["r"] = Math.Clamp((int)Math.Ceiling(far) + 2, 3, 8), xp: 5);
+        foreach (var m in more) dj.MoreLeases.Add("e:" + m.Id);
+        return dj;
+    }
+
+    /// <summary>The standing task: the drop at despawn risk first, then the nearest, batched with the drops near it that go to the same
+    /// place.</summary>
+    private ActiveJob? DropHaul(IStoryWorld w, PawnState p, PawnLive live, List<StoryEntity> items, IReadOnlyList<StoryEntity> ents, P3 from, bool riskOnly)
+    {
+        var cands = HaulCandidates(p, items, ents, from, riskOnly);
         if (cands.Count == 0) return null;
         var first = cands.OrderBy(c => c.Risk ? 0 : 1).ThenBy(c => c.E.Block.Dist(from)).First();
-        object DestKey((StorageState? Chest, P3? Dump, bool Fallback) d) => d.Chest?.Chest ?? d.Dump ?? default;
-        var key0 = DestKey(first.Dest);
+        var key0 = HaulDestKey(first.Dest);
         int room = Math.Max(1, live.FreeSlots - 1);
-        var batch = cands.Where(c => c.E != first.E && Equals(DestKey(c.Dest), key0)
+        var batch = cands.Where(c => c.E != first.E && Equals(HaulDestKey(c.Dest), key0)
                 && Math.Abs(c.E.X - first.E.X) <= BatchRadius && Math.Abs(c.E.Z - first.E.Z) <= BatchRadius && Math.Abs(c.E.Y - first.E.Y) <= 3)
             .OrderBy(c => c.E.Block.Dist(first.E.X, first.E.Y, first.E.Z)).Take(room - 1).ToList();
         double reach = batch.Count == 0 ? 0 : batch.Max(c => Math.Sqrt(Math.Pow(c.E.X - first.E.X, 2) + Math.Pow(c.E.Z - first.E.Z, 2)));
@@ -328,6 +327,23 @@ public sealed partial class StoryColony
         foreach (var c in batch) job.MoreLeases.Add("e:" + c.E.Id);
         return job;
     }
+
+    private List<(StoryEntity E, (StorageState? Chest, P3? Dump, bool Fallback) Dest, bool Risk)> HaulCandidates(PawnState p, List<StoryEntity> items,
+        IReadOnlyList<StoryEntity> ents, P3 from, bool riskOnly)
+    {
+        var cands = new List<(StoryEntity E, (StorageState? Chest, P3? Dump, bool Fallback) Dest, bool Risk)>();
+        foreach (var e in items)
+        {
+            if (Haulable(e, p, from, ents) is not { } dest) continue;
+            bool risk = Age(e) >= DespawnRisk;
+            if (riskOnly && !risk) continue;
+            cands.Add((e, dest, risk));
+        }
+        return cands;
+    }
+
+    /// <summary>Where a drop goes, as one comparable key: its chest, else its dump spot.</summary>
+    private static object HaulDestKey((StorageState? Chest, P3? Dump, bool Fallback) d) => d.Chest?.Chest ?? d.Dump ?? default;
 
     // ---------------------------------------------------------------- a collect that found nothing
 
@@ -376,19 +392,28 @@ public sealed partial class StoryColony
         var moves = new List<(StorageState, Stack, StorageState?, bool)>();
         foreach (var src in Storages)
             foreach (var st in src.Contents)
-            {
-                bool allowed = Accepts(src, st.Id, st.Meta);
-                var dst = BestChest(st.Id, st.Meta, src.Chest, except: src);
-                if (dst != null && (!allowed || StoragePriority.Rank(dst.Priority) > StoragePriority.Rank(src.Priority))) { moves.Add((src, st, dst, false)); continue; }
-                if (allowed) continue;
-                // No chest's filter takes it. What the fallback put here stays; anything else goes to a fallback chest, else out.
-                if (Meta.UnfilteredTakesAnything && !Denied(src, st.Id, st.Meta) && _fallbackStored.Contains((src.Chest, st.Id, st.Meta))) continue;
-                if (Meta.UnfilteredTakesAnything && Fallback(st.Id, st.Meta, src.Chest, src) is { } fb) { moves.Add((src, st, fb, true)); continue; }
-                Unstored(st.Id, st.Meta);
-                if (!Meta.KeepDisallowed) moves.Add((src, st, null, false));
-            }
+                ResortStack(src, st, moves);
         _resort = (stamp, moves);
         return moves;
+    }
+
+    /// <summary>A stack moves to a chest that takes it when its own doesn't, or to a better chest that pulls it.</summary>
+    private void ResortStack(StorageState src, Stack st, List<(StorageState, Stack, StorageState?, bool)> moves)
+    {
+        bool allowed = Accepts(src, st.Id, st.Meta);
+        var dst = BestChest(st.Id, st.Meta, src.Chest, except: src);
+        if (dst != null && (!allowed || StoragePriority.Rank(dst.Priority) > StoragePriority.Rank(src.Priority))) { moves.Add((src, st, dst, false)); return; }
+        if (!allowed) ResortUnwanted(src, st, moves);
+    }
+
+    /// <summary>No chest's filter takes it. What the fallback put here stays; anything else goes to a fallback chest, else out (dropped,
+    /// or kept with <see cref="ColonyMeta.KeepDisallowed"/>).</summary>
+    private void ResortUnwanted(StorageState src, Stack st, List<(StorageState, Stack, StorageState?, bool)> moves)
+    {
+        if (Meta.UnfilteredTakesAnything && !Denied(src, st.Id, st.Meta) && _fallbackStored.Contains((src.Chest, st.Id, st.Meta))) return;
+        if (Meta.UnfilteredTakesAnything && Fallback(st.Id, st.Meta, src.Chest, src) is { } fb) { moves.Add((src, st, fb, true)); return; }
+        Unstored(st.Id, st.Meta);
+        if (!Meta.KeepDisallowed) moves.Add((src, st, null, false));
     }
 
     /// <summary>One re-sort trip: from the chest with the most to move (lowest priority, then nearest), as many stacks as the pawn has
@@ -399,59 +424,77 @@ public sealed partial class StoryColony
         var all = Resorts();
         if (all.Count == 0) return null;
         foreach (var g in all.GroupBy(m => m.Src).OrderBy(g => StoragePriority.Rank(g.Key.Priority)).ThenBy(g => g.Key.Chest.Dist(from)))
-        {
-            var src = g.Key;
-            var key = "resort:" + src.Chest;
-            if (!Open(key, p.Name, null)) continue;
-            int room = Math.Max(1, live.FreeSlots - 1), used = 0;
-            var take = new List<(Stack St, int N, StorageState? Dst, bool Fallback)>();
-            foreach (var m in g)
-            {
-                int stacks = (m.St.Count + MaxStack(m.St.Id) - 1) / MaxStack(m.St.Id);
-                if (used >= room) break;
-                int n = Math.Min(m.St.Count, (room - used) * MaxStack(m.St.Id));
-                used += Math.Min(stacks, room - used);
-                take.Add((m.St, n, m.Dst, m.Fallback));
-            }
-            if (take.Count == 0) continue;
-            var drops = take.Where(t => t.Dst == null).ToList();
-            var puts = take.Where(t => t.Dst != null).GroupBy(t => t.Dst!).ToList();
-            foreach (var fb in take.Where(x => x.Fallback)) _fallbackStored.Add((fb.Dst!.Chest, fb.St.Id, fb.St.Meta));
-            var fetch = new JsonArray(take.Select(t => (JsonNode)new JsonObject { ["from"] = src.Chest.ToString(), ["item"] = ItemName(t.St.Id, t.St.Meta), ["n"] = t.N }).ToArray());
-            var stash = new JsonArray(puts.Select(pg => (JsonNode)new JsonObject
-            {
-                ["to"] = pg.Key.Chest.ToString(),
-                ["items"] = new JsonArray(pg.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct().Select(n => (JsonNode)n!).ToArray()),
-            }).ToArray());
-            string where = src.Label ?? src.Chest.ToString();
-            ActiveJob j;
-            if (drops.Count > 0)
-            {
-                var beside = World is { } w ? SafeSpot(w, src.Chest, 2) ?? src.Chest : src.Chest;
-                j = Job(WorkTypes.Haul, "dump", $"re-sorting {where}: dropping {string.Join(", ", drops.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct())} (no chest takes it)",
-                    beside, key, "move", src.Chest.ToString(), "working", f =>
-                    {
-                        f["dist"] = 1;
-                        f["fetch"] = fetch;
-                        f["drop"] = new JsonArray(drops.Select(t => (JsonNode)new JsonObject { ["item"] = ItemName(t.St.Id, t.St.Meta), ["n"] = t.N }).ToArray());
-                        if (stash.Count > 0) f["stash"] = stash;
-                    }, xp: 5);
-                _log.LogInformation("story {Colony}: re-sorting {Chest}: dropping {Items} beside it (no chest takes them)", Id, src.Chest,
-                    string.Join(", ", drops.Select(t => ItemName(t.St.Id, t.St.Meta))));
-            }
-            else
-                j = Job(WorkTypes.Haul, "go", $"re-sorting {where}: moving {string.Join(", ", take.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct())}",
-                    puts[0].Key.Chest, key, "move", src.Chest.ToString(), "working", f =>
-                    {
-                        f["dist"] = 2;
-                        f["fetch"] = fetch;
-                        f["stash"] = stash;
-                    }, xp: 5);
-            foreach (var t in take) j.Takes.Add((src.Chest, t.St with { Count = t.N }));
-            foreach (var pg in puts) j.Puts.Add((pg.Key.Chest, pg.Select(t => t.St with { Count = t.N }).ToList()));
-            return j;
-        }
+            if (ResortTrip(p, live, g.Key, g) is { } j) return j;
         return null;
+    }
+
+    /// <summary>One stack of a re-sort trip: how many, to where (null: dropped), whether to a fallback chest.</summary>
+    private readonly record struct ResortPart(Stack St, int N, StorageState? Dst, bool Fallback);
+
+    private ActiveJob? ResortTrip(PawnState p, PawnLive live, StorageState src, IEnumerable<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> moves)
+    {
+        var key = "resort:" + src.Chest;
+        if (!Open(key, p.Name, null)) return null;
+        var take = ResortParts(moves, Math.Max(1, live.FreeSlots - 1));
+        if (take.Count == 0) return null;
+        var drops = take.Where(t => t.Dst == null).ToList();
+        var puts = take.Where(t => t.Dst != null).GroupBy(t => t.Dst!).ToList();
+        foreach (var fb in take.Where(x => x.Fallback)) _fallbackStored.Add((fb.Dst!.Chest, fb.St.Id, fb.St.Meta));
+        var fetch = new JsonArray(take.Select(t => (JsonNode)new JsonObject { ["from"] = src.Chest.ToString(), ["item"] = ItemName(t.St.Id, t.St.Meta), ["n"] = t.N }).ToArray());
+        var stash = new JsonArray(puts.Select(pg => (JsonNode)new JsonObject
+        {
+            ["to"] = pg.Key.Chest.ToString(),
+            ["items"] = new JsonArray(pg.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct().Select(n => (JsonNode)n!).ToArray()),
+        }).ToArray());
+        var j = drops.Count > 0 ? ResortDropJob(src, key, drops, fetch, stash) : ResortMoveJob(src, key, take, puts[0].Key, fetch, stash);
+        foreach (var t in take) j.Takes.Add((src.Chest, t.St with { Count = t.N }));
+        foreach (var pg in puts) j.Puts.Add((pg.Key.Chest, pg.Select(t => t.St with { Count = t.N }).ToList()));
+        return j;
+    }
+
+    /// <summary>The stacks the pawn has room for (in slots), in order.</summary>
+    private List<ResortPart> ResortParts(IEnumerable<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> moves, int room)
+    {
+        int used = 0;
+        var take = new List<ResortPart>();
+        foreach (var m in moves)
+        {
+            int stacks = (m.St.Count + MaxStack(m.St.Id) - 1) / MaxStack(m.St.Id);
+            if (used >= room) break;
+            int n = Math.Min(m.St.Count, (room - used) * MaxStack(m.St.Id));
+            used += Math.Min(stacks, room - used);
+            take.Add(new ResortPart(m.St, n, m.Dst, m.Fallback));
+        }
+        return take;
+    }
+
+    private ActiveJob ResortDropJob(StorageState src, string key, List<ResortPart> drops, JsonArray fetch, JsonArray stash)
+    {
+        string where = src.Label ?? src.Chest.ToString();
+        var beside = World is { } w ? SafeSpot(w, src.Chest, 2) ?? src.Chest : src.Chest;
+        var j = Job(WorkTypes.Haul, "dump", $"re-sorting {where}: dropping {string.Join(", ", drops.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct())} (no chest takes it)",
+            beside, key, "move", src.Chest.ToString(), "working", f =>
+            {
+                f["dist"] = 1;
+                f["fetch"] = fetch;
+                f["drop"] = new JsonArray(drops.Select(t => (JsonNode)new JsonObject { ["item"] = ItemName(t.St.Id, t.St.Meta), ["n"] = t.N }).ToArray());
+                if (stash.Count > 0) f["stash"] = stash;
+            }, xp: 5);
+        _log.LogInformation("story {Colony}: re-sorting {Chest}: dropping {Items} beside it (no chest takes them)", Id, src.Chest,
+            string.Join(", ", drops.Select(t => ItemName(t.St.Id, t.St.Meta))));
+        return j;
+    }
+
+    private ActiveJob ResortMoveJob(StorageState src, string key, List<ResortPart> take, StorageState to, JsonArray fetch, JsonArray stash)
+    {
+        string where = src.Label ?? src.Chest.ToString();
+        return Job(WorkTypes.Haul, "go", $"re-sorting {where}: moving {string.Join(", ", take.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct())}",
+            to.Chest, key, "move", src.Chest.ToString(), "working", f =>
+            {
+                f["dist"] = 2;
+                f["fetch"] = fetch;
+                f["stash"] = stash;
+            }, xp: 5);
     }
 
     // ---------------------------------------------------------------- the tick: a drop about to despawn

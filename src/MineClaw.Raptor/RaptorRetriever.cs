@@ -128,29 +128,10 @@ public sealed class RaptorRetriever
         int maxTokens = q.MaxTokens ?? _o.CollapsedMaxTokens;
         int? topK = q.TopK ?? _o.CollapsedTopK;
         if (maxTokens < 1) throw new ArgumentException("max_tokens must be an integer and at least 1");
-        int rows = _rowIndex.Length;
-        var scores = new float[rows];
-        if (rows * (long)_dims > 1_000_000)
-            Parallel.For(0, (rows + 2047) / 2048, b =>
-            {
-                int end = Math.Min(rows, (b + 1) * 2048);
-                for (int r = b * 2048; r < end; r++) scores[r] = VectorMath.Dot(qv, _matrix.AsSpan(r * _dims, _dims));
-            });
-        else
-            for (int r = 0; r < rows; r++) scores[r] = VectorMath.Dot(qv, _matrix.AsSpan(r * _dims, _dims));
-
+        var scores = ScoreRows(qv);
         var result = new List<Scored>();
         var taken = new HashSet<int>();
-        int total = 0;
-        foreach (var p in PinnedFirst(qv, q, eligible))
-        {
-            int t = _tree[p.Index].TokenCount;
-            if (total + t > maxTokens) continue;
-            result.Add(p);
-            taken.Add(p.Index);
-            total += t;
-        }
-
+        int total = TakePinned(PinnedFirst(qv, q, eligible), maxTokens, result, taken);
         foreach (var r in RankedRows(scores, eligible))
         {
             if (topK is { } k && result.Count >= k) break;
@@ -164,17 +145,60 @@ public sealed class RaptorRetriever
         return result;
     }
 
+    /// <summary>Cosine of the query with every row of the flat matrix (in parallel blocks for big trees).</summary>
+    private float[] ScoreRows(float[] qv)
+    {
+        int rows = _rowIndex.Length;
+        var scores = new float[rows];
+        if (rows * (long)_dims > 1_000_000)
+            Parallel.For(0, (rows + 2047) / 2048, b =>
+            {
+                int end = Math.Min(rows, (b + 1) * 2048);
+                for (int r = b * 2048; r < end; r++) scores[r] = VectorMath.Dot(qv, _matrix.AsSpan(r * _dims, _dims));
+            });
+        else
+            for (int r = 0; r < rows; r++) scores[r] = VectorMath.Dot(qv, _matrix.AsSpan(r * _dims, _dims));
+        return scores;
+    }
+
+    /// <summary>Pinned leaves first, each one that still fits the budget (skipping, not stopping); returns the tokens used.</summary>
+    private int TakePinned(List<Scored> pinned, int maxTokens, List<Scored> result, HashSet<int> taken)
+    {
+        int total = 0;
+        foreach (var p in pinned)
+        {
+            int t = _tree[p.Index].TokenCount;
+            if (total + t > maxTokens) continue;
+            result.Add(p);
+            taken.Add(p.Index);
+            total += t;
+        }
+        return total;
+    }
+
     /// <summary>Rows by descending score (ties: lower index). Partial heap first, full sort only if consumed.</summary>
     private IEnumerable<int> RankedRows(float[] scores, HashSet<int>? eligible)
     {
-        bool Eligible(int r) => eligible == null || eligible.Contains(_rowIndex[r]);
-        int rows = scores.Length;
         const int First = 256;
+        var top = TopRows(scores, eligible, First);
+        foreach (var r in top) yield return r;
+        if (top.Count < First) yield break;
+        var seen = new HashSet<int>(top);
+        var rest = Enumerable.Range(0, scores.Length).Where(r => RowEligible(r, eligible) && !seen.Contains(r)).ToArray();
+        Array.Sort(rest, (a, b) => scores[a] != scores[b] ? scores[b].CompareTo(scores[a]) : a.CompareTo(b));
+        foreach (var r in rest) yield return r;
+    }
+
+    private bool RowEligible(int r, HashSet<int>? eligible) => eligible == null || eligible.Contains(_rowIndex[r]);
+
+    /// <summary>The best <paramref name="first"/> eligible rows, best first, through a bounded min-heap.</summary>
+    private List<int> TopRows(float[] scores, HashSet<int>? eligible, int first)
+    {
         var heap = new PriorityQueue<int, (float, int)>(Comparer<(float S, int R)>.Create((a, b) => a.S != b.S ? a.S.CompareTo(b.S) : b.R.CompareTo(a.R)));
-        for (int r = 0; r < rows; r++)
+        for (int r = 0; r < scores.Length; r++)
         {
-            if (!Eligible(r)) continue;
-            if (heap.Count < First) heap.Enqueue(r, (scores[r], r));
+            if (!RowEligible(r, eligible)) continue;
+            if (heap.Count < first) heap.Enqueue(r, (scores[r], r));
             else
             {
                 heap.TryPeek(out _, out var min);
@@ -184,12 +208,7 @@ public sealed class RaptorRetriever
         var top = new List<int>(heap.Count);
         while (heap.Count > 0) top.Add(heap.Dequeue());
         top.Reverse();
-        foreach (var r in top) yield return r;
-        if (top.Count < First) yield break;
-        var seen = new HashSet<int>(top);
-        var rest = Enumerable.Range(0, rows).Where(r => Eligible(r) && !seen.Contains(r)).ToArray();
-        Array.Sort(rest, (a, b) => scores[a] != scores[b] ? scores[b].CompareTo(scores[a]) : a.CompareTo(b));
-        foreach (var r in rest) yield return r;
+        return top;
     }
 
     /// <summary>
@@ -198,15 +217,10 @@ public sealed class RaptorRetriever
     /// </summary>
     private List<Scored> Traverse(float[] qv, RaptorQuery q, HashSet<int>? eligible)
     {
-        int startLayer = q.StartLayer ?? _tree.NumLayers;
-        if (startLayer < 0 || startLayer > _tree.NumLayers) throw new ArgumentException("start_layer must be an integer between 0 and tree.num_layers");
-        int numLayers = q.NumLayers ?? Math.Min(_tree.NumLayers + 1, startLayer + 1);
-        if (numLayers < 1) throw new ArgumentException("num_layers must be an integer and at least 1");
-        if (numLayers > startLayer + 1) throw new ArgumentException("num_layers must be less than or equal to start_layer + 1");
+        var (startLayer, numLayers) = TraversalLayers(q);
         int topK = q.TopK ?? _o.TraversalTopK;
         var mode = q.Selection ?? _o.Selection;
         double threshold = q.Threshold ?? _o.SelectionThreshold;
-        int? maxTokens = q.MaxTokens;
 
         var selected = PinnedFirst(qv, q, eligible);
         var taken = new HashSet<int>(selected.Select(s => s.Index));
@@ -217,25 +231,47 @@ public sealed class RaptorRetriever
             var scored = nodeList.Select(i => new Scored(i, VectorMath.Dot(qv, _tree[i].Embedding)))
                 .OrderByDescending(s => s.Score).ThenBy(s => s.Index).ToList();
             var best = mode == SelectionMode.TopK ? scored.Take(topK).ToList() : scored.Where(s => s.Score >= threshold).ToList();
-            foreach (var s in best)
-            {
-                if (taken.Contains(s.Index)) continue;
-                int t = _tree[s.Index].TokenCount;
-                if (maxTokens is { } m && total + t > m) continue;
-                selected.Add(s);
-                taken.Add(s.Index);
-                total += t;
-            }
-            if (layer != numLayers - 1)
-            {
-                var children = new List<int>();
-                var seen = new HashSet<int>();
-                foreach (var s in best)
-                    foreach (var c in _tree[s.Index].Children)
-                        if ((eligible == null || eligible.Contains(c)) && seen.Add(c)) children.Add(c);
-                nodeList = children;
-            }
+            total = TakeWithin(best, q.MaxTokens, selected, taken, total);
+            if (layer != numLayers - 1) nodeList = ChildrenOf(best, eligible);
         }
         return selected;
     }
+
+    /// <summary>Start layer and depth, defaulted and validated as tree_retriever.py does.</summary>
+    private (int StartLayer, int NumLayers) TraversalLayers(RaptorQuery q)
+    {
+        int startLayer = q.StartLayer ?? _tree.NumLayers;
+        if (startLayer < 0 || startLayer > _tree.NumLayers) throw new ArgumentException("start_layer must be an integer between 0 and tree.num_layers");
+        int numLayers = q.NumLayers ?? Math.Min(_tree.NumLayers + 1, startLayer + 1);
+        if (numLayers < 1) throw new ArgumentException("num_layers must be an integer and at least 1");
+        if (numLayers > startLayer + 1) throw new ArgumentException("num_layers must be less than or equal to start_layer + 1");
+        return (startLayer, numLayers);
+    }
+
+    /// <summary>Adds each not-yet-taken node that fits the optional token cap; returns the new token total.</summary>
+    private int TakeWithin(List<Scored> best, int? maxTokens, List<Scored> selected, HashSet<int> taken, int total)
+    {
+        foreach (var s in best)
+        {
+            if (taken.Contains(s.Index)) continue;
+            int t = _tree[s.Index].TokenCount;
+            if (maxTokens is { } m && total + t > m) continue;
+            selected.Add(s);
+            taken.Add(s.Index);
+            total += t;
+        }
+        return total;
+    }
+
+    /// <summary>The eligible children of the selected nodes, first occurrence order.</summary>
+    private List<int> ChildrenOf(List<Scored> best, HashSet<int>? eligible)
+    {
+        var children = new List<int>();
+        var seen = new HashSet<int>();
+        foreach (var s in best)
+            foreach (var c in _tree[s.Index].Children)
+                if ((eligible == null || eligible.Contains(c)) && seen.Add(c)) children.Add(c);
+        return children;
+    }
+
 }

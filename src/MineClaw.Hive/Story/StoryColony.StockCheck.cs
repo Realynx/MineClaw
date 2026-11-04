@@ -29,22 +29,26 @@ public sealed partial class StoryColony
     {
         bool any = false;
         foreach (var st in list.ToList())
-        {
-            if (!force && _seenAsked.TryGetValue(st.Chest, out var asked) && Now - asked < TimeSpan.FromSeconds(5)) continue;
-            _seenAsked[st.Chest] = Now;
-            (IReadOnlyList<Stack> Contents, DateTimeOffset At)? seen;
-            try { seen = Host.SeenChest(st.Chest); }
-            catch (Exception) { continue; }
-            if (seen is not { } s || st.SeenAt is { } s0 && s.At <= s0) continue;
-            st.SeenAt = s.At;
-            st.Rev = Touch();
-            if (st.KnownAt is { } k && s.At <= k) continue; // the record's own last change is newer than that look
-            st.Contents = s.Contents.GroupBy(x => (x.Id, x.Meta)).Select(g => new Stack(g.Key.Id, g.Key.Meta, g.Sum(x => x.Count))).ToList();
-            Recount(st);
-            any = true;
-        }
+            if (RefreshOneSeen(st, force)) any = true;
         if (any) _stockChanged = true;
         return any;
+    }
+
+    /// <summary>One storage: a body's newer look replaces its record (unless the record changed since). True when it did.</summary>
+    private bool RefreshOneSeen(StorageState st, bool force)
+    {
+        if (!force && _seenAsked.TryGetValue(st.Chest, out var asked) && Now - asked < TimeSpan.FromSeconds(5)) return false;
+        _seenAsked[st.Chest] = Now;
+        (IReadOnlyList<Stack> Contents, DateTimeOffset At)? seen;
+        try { seen = Host.SeenChest(st.Chest); }
+        catch (Exception) { return false; }
+        if (seen is not { } s || st.SeenAt is { } s0 && s.At <= s0) return false;
+        st.SeenAt = s.At;
+        st.Rev = Touch();
+        if (st.KnownAt is { } k && s.At <= k) return false; // the record's own last change is newer than that look
+        st.Contents = s.Contents.GroupBy(x => (x.Id, x.Meta)).Select(g => new Stack(g.Key.Id, g.Key.Meta, g.Sum(x => x.Count))).ToList();
+        Recount(st);
+        return true;
     }
 
     /// <summary>Waiting bills are retried once the stock changed (a deposit, a take, a look that corrected a record).</summary>

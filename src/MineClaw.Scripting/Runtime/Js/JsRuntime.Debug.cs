@@ -60,104 +60,146 @@ internal sealed partial class JsRuntime : IScriptDebugProbe
         var envs = acc.ScriptEnvironments(e);
         if (envs.Count == 0) return (null, "no script frame on the stack");
         var list = new List<ScriptLocal>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var env in envs)
-        {
-            if (acc.Scopes(env) is not { } scopes) continue;
-            foreach (var scope in scopes)
-            {
-                if (scope.ScopeType is DebugScopeType.Global or DebugScopeType.Script or DebugScopeType.With or DebugScopeType.Module) break;
-                string kind = scope.ScopeType switch
-                {
-                    DebugScopeType.Local => "local",
-                    DebugScopeType.Closure => "closure",
-                    DebugScopeType.Catch => "catch",
-                    _ => "block",
-                };
-                foreach (var name in scope.BindingNames)
-                {
-                    if (name is "arguments" or "this" || !seen.Add(name)) continue;
-                    JsValue? v;
-                    try { v = scope.GetBindingValue(name); } catch (Exception) { v = null; }
-                    if (v is Function) continue; // helper functions are code, not state
-                    list.Add(new ScriptLocal(name, v == null ? "(uninitialized)" : Preview(v, 0), kind));
-                    if (list.Count >= 40) return (list, "first 40 shown");
-                }
-                if (scope.ScopeType == DebugScopeType.Closure) break; // the frame's own function and its blocks, plus one closure
-            }
-            break; // the innermost script frame only
-        }
+        // the innermost script frame only (the first one whose scopes resolve)
+        if (FirstScopes(acc, envs) is { } scopes && !CollectLocals(scopes, list)) return (list, "first 40 shown");
         return (list, list.Count == 0 ? "no locals in this frame" : null);
+    }
+
+    private static DebugScopes? FirstScopes(LocalsAccess acc, List<object> envs)
+    {
+        foreach (var env in envs)
+            if (acc.Scopes(env) is { } scopes) return scopes;
+        return null;
+    }
+
+    /// <summary>The frame's own function and its blocks, plus one closure; false once the 40-local cap is hit.</summary>
+    private static bool CollectLocals(DebugScopes scopes, List<ScriptLocal> list)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var scope in scopes)
+        {
+            if (scope.ScopeType is DebugScopeType.Global or DebugScopeType.Script or DebugScopeType.With or DebugScopeType.Module) break;
+            if (!AddScopeLocals(scope, ScopeKind(scope.ScopeType), seen, list)) return false;
+            if (scope.ScopeType == DebugScopeType.Closure) break;
+        }
+        return true;
+    }
+
+    private static string ScopeKind(DebugScopeType type) => type switch
+    {
+        DebugScopeType.Local => "local",
+        DebugScopeType.Closure => "closure",
+        DebugScopeType.Catch => "catch",
+        _ => "block",
+    };
+
+    private static bool AddScopeLocals(DebugScope scope, string kind, HashSet<string> seen, List<ScriptLocal> list)
+    {
+        foreach (var name in scope.BindingNames)
+        {
+            if (name is "arguments" or "this" || !seen.Add(name)) continue;
+            JsValue? v;
+            try { v = scope.GetBindingValue(name); } catch (Exception) { v = null; }
+            if (v is Function) continue; // helper functions are code, not state
+            list.Add(new ScriptLocal(name, v == null ? "(uninitialized)" : Preview(v, 0), kind));
+            if (list.Count >= 40) return false;
+        }
+        return true;
     }
 
     /// <summary>A short JS-looking preview that never runs script code (data properties only; getters show as "get").</summary>
     internal static string Preview(JsValue v, int depth)
     {
-        try
-        {
-            switch (v)
-            {
-                case { } when v.IsUndefined(): return "undefined";
-                case { } when v.IsNull(): return "null";
-                case { } when v.IsBoolean(): return v.AsBoolean() ? "true" : "false";
-                case { } when v.IsNumber(): return ScriptSession.Fmt(v.AsNumber());
-                case { } when v.IsString(): return "'" + ScriptSession.Short(v.AsString().Replace("\n", "\\n"), depth == 0 ? 80 : 24) + "'";
-                case Function f: return "ƒ " + JsConvert.Text(f.Get("name")) + "()";
-                case JsArray a:
-                {
-                    var n = (int)Math.Min(a.Length, int.MaxValue);
-                    if (depth > 0) return $"Array({n})";
-                    var items = new List<string>();
-                    for (uint i = 0; i < Math.Min(n, 6); i++)
-                        items.Add(Preview(a[i], depth + 1));
-                    return "[" + string.Join(", ", items) + (n > 6 ? $", … {n} items" : "") + "]";
-                }
-                case ObjectInstance o:
-                {
-                    if (depth > 0) return "{…}";
-                    var parts = new List<string>();
-                    int count = 0;
-                    foreach (var (key, desc) in o.GetOwnProperties())
-                    {
-                        if (!key.IsString()) continue;
-                        if (++count > 6) continue;
-                        var val = desc.IsAccessorDescriptor() ? "get" : desc.Value is { } dv ? Preview(dv, depth + 1) : "?";
-                        parts.Add(key.AsString() + ": " + val);
-                    }
-                    return "{" + string.Join(", ", parts) + (count > 6 ? $", … {count} keys" : "") + "}";
-                }
-                default: return ScriptSession.Short(v?.ToString() ?? "?", 60);
-            }
-        }
+        try { return PreviewScalar(v, depth) ?? PreviewComposite(v, depth); }
         catch (Exception) { return "?"; }
+    }
+
+    private static string? PreviewScalar(JsValue? v, int depth)
+    {
+        if (v is null) return null;
+        if (v.IsUndefined()) return "undefined";
+        if (v.IsNull()) return "null";
+        if (v.IsBoolean()) return v.AsBoolean() ? "true" : "false";
+        if (v.IsNumber()) return ScriptSession.Fmt(v.AsNumber());
+        if (v.IsString()) return "'" + ScriptSession.Short(v.AsString().Replace("\n", "\\n"), depth == 0 ? 80 : 24) + "'";
+        return null;
+    }
+
+    private static string PreviewComposite(JsValue? v, int depth) => v switch
+    {
+        Function f => "ƒ " + JsConvert.Text(f.Get("name")) + "()",
+        JsArray a => PreviewArray(a, depth),
+        ObjectInstance o => PreviewObject(o, depth),
+        _ => ScriptSession.Short(v?.ToString() ?? "?", 60),
+    };
+
+    private static string PreviewArray(JsArray a, int depth)
+    {
+        var n = (int)Math.Min(a.Length, int.MaxValue);
+        if (depth > 0) return $"Array({n})";
+        var items = new List<string>();
+        for (uint i = 0; i < Math.Min(n, 6); i++)
+            items.Add(Preview(a[i], depth + 1));
+        return "[" + string.Join(", ", items) + (n > 6 ? $", … {n} items" : "") + "]";
+    }
+
+    private static string PreviewObject(ObjectInstance o, int depth)
+    {
+        if (depth > 0) return "{…}";
+        var parts = new List<string>();
+        int count = 0;
+        foreach (var (key, desc) in o.GetOwnProperties())
+        {
+            if (!key.IsString()) continue;
+            if (++count > 6) continue;
+            var val = desc.IsAccessorDescriptor() ? "get" : desc.Value is { } dv ? Preview(dv, depth + 1) : "?";
+            parts.Add(key.AsString() + ": " + val);
+        }
+        return "{" + string.Join(", ", parts) + (count > 6 ? $", … {count} keys" : "") + "}";
     }
 
     /// <summary>A value as JSON reading data properties only (never a getter or a proxy trap), ≤ 4 levels, ≤ 64 keys/items each.</summary>
     internal static System.Text.Json.Nodes.JsonNode? SafeNode(JsValue v, int depth)
     {
-        if (v.IsUndefined() || v.IsNull()) return null;
-        if (v.IsBoolean()) return System.Text.Json.Nodes.JsonValue.Create(v.AsBoolean());
-        if (v.IsNumber()) { var d = v.AsNumber(); return double.IsFinite(d) ? System.Text.Json.Nodes.JsonValue.Create(d) : System.Text.Json.Nodes.JsonValue.Create(d.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-        if (v.IsString()) return System.Text.Json.Nodes.JsonValue.Create(ScriptSession.Short(v.AsString(), 200));
-        if (v is Function f) return System.Text.Json.Nodes.JsonValue.Create("ƒ " + JsConvert.Text(f.Get("name")));
+        if (TrySafeScalar(v, out var scalar)) return scalar;
         if (depth >= 4) return System.Text.Json.Nodes.JsonValue.Create("…");
-        if (v is JsArray a)
-        {
-            var arr = new System.Text.Json.Nodes.JsonArray();
-            for (uint i = 0; i < Math.Min(a.Length, 64u); i++) arr.Add(SafeNode(a[i], depth + 1));
-            return arr;
-        }
-        if (v is ObjectInstance o)
-        {
-            var obj = new System.Text.Json.Nodes.JsonObject();
-            foreach (var (key, desc) in o.GetOwnProperties())
-            {
-                if (!key.IsString() || obj.Count >= 64) continue;
-                obj[key.AsString()] = desc.IsAccessorDescriptor() ? System.Text.Json.Nodes.JsonValue.Create("(getter)") : desc.Value is { } dv ? SafeNode(dv, depth + 1) : null;
-            }
-            return obj;
-        }
+        if (v is JsArray a) return SafeArray(a, depth);
+        if (v is ObjectInstance o) return SafeObject(o, depth);
         return System.Text.Json.Nodes.JsonValue.Create(v.ToString());
+    }
+
+    /// <summary>undefined/null, booleans, numbers (non-finite as text), short strings and functions (by name).</summary>
+    private static bool TrySafeScalar(JsValue v, out System.Text.Json.Nodes.JsonNode? node)
+    {
+        node = null;
+        if (v.IsUndefined() || v.IsNull()) return true;
+        if (v.IsBoolean()) node = System.Text.Json.Nodes.JsonValue.Create(v.AsBoolean());
+        else if (v.IsNumber()) node = SafeNumber(v.AsNumber());
+        else if (v.IsString()) node = System.Text.Json.Nodes.JsonValue.Create(ScriptSession.Short(v.AsString(), 200));
+        else if (v is Function f) node = System.Text.Json.Nodes.JsonValue.Create("ƒ " + JsConvert.Text(f.Get("name")));
+        return node != null;
+    }
+
+    private static System.Text.Json.Nodes.JsonNode SafeNumber(double d) => double.IsFinite(d)
+        ? System.Text.Json.Nodes.JsonValue.Create(d)
+        : System.Text.Json.Nodes.JsonValue.Create(d.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    private static System.Text.Json.Nodes.JsonArray SafeArray(JsArray a, int depth)
+    {
+        var arr = new System.Text.Json.Nodes.JsonArray();
+        for (uint i = 0; i < Math.Min(a.Length, 64u); i++) arr.Add(SafeNode(a[i], depth + 1));
+        return arr;
+    }
+
+    private static System.Text.Json.Nodes.JsonObject SafeObject(ObjectInstance o, int depth)
+    {
+        var obj = new System.Text.Json.Nodes.JsonObject();
+        foreach (var (key, desc) in o.GetOwnProperties())
+        {
+            if (!key.IsString() || obj.Count >= 64) continue;
+            obj[key.AsString()] = desc.IsAccessorDescriptor() ? System.Text.Json.Nodes.JsonValue.Create("(getter)") : desc.Value is { } dv ? SafeNode(dv, depth + 1) : null;
+        }
+        return obj;
     }
 
     /// <summary>Reflection over Jint internals, resolved once: the execution-context stack and the DebugScopes constructor.</summary>
@@ -194,14 +236,17 @@ internal sealed partial class JsRuntime : IScriptDebugProbe
             if (stackObj == null || _array.GetValue(stackObj) is not Array arr) return list;
             int size = Math.Min((int)(_size.GetValue(stackObj) ?? 0), arr.Length);
             for (int i = size - 1; i >= 0 && list.Count < 4; i--)
-            {
-                var ctx = arr.GetValue(i);
-                if (ctx == null) continue;
-                if (_function.GetValue(ctx) is not Function f) continue;
-                if (f.FunctionDeclaration is not Node decl || decl.Location.SourceFile != "script") continue;
-                if (_lexical.GetValue(ctx) is { } env) list.Add(env);
-            }
+                if (ScriptLexical(arr.GetValue(i)) is { } env) list.Add(env);
             return list;
+        }
+
+        /// <summary>A context's lexical environment when it runs a script-sourced function, else null.</summary>
+        private object? ScriptLexical(object? ctx)
+        {
+            if (ctx == null) return null;
+            if (_function.GetValue(ctx) is not Function f) return null;
+            if (f.FunctionDeclaration is not Node decl || decl.Location.SourceFile != "script") return null;
+            return _lexical.GetValue(ctx);
         }
 
         public DebugScopes? Scopes(object env)

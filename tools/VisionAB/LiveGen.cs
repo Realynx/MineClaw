@@ -29,6 +29,19 @@ static class LiveGen
         var w = Load(db);
         var dig = DigCells(db);
         Console.WriteLine($"{w.RememberedCount} columns; dig cells {string.Join(" ", dig)}");
+        var layers = Layers(w, box);
+        File.WriteAllText(Path.Combine(outDir, "livegen-layers.txt"), layers);
+        Console.WriteLine(layers);
+        if (arg("fixture") is { } fx) WriteFixture(Path.IsPathRooted(fx) ? fx : Path.Combine(root, fx), w, box, dig, db);
+        var digSet = dig.ToHashSet();
+        EvalSheet(outDir, w, self, focus, yaw, digSet);
+        LiveSheet(root, outDir, db, w, self, focus, yaw, digSet);
+        return 0;
+    }
+
+    /// <summary>The box's non-empty y layers as character maps (x digits across, z down).</summary>
+    private static string Layers(WorldState w, int[] box)
+    {
         var sb = new StringBuilder();
         for (int yy = box[1]; yy <= box[4]; yy++)
         {
@@ -43,33 +56,49 @@ static class LiveGen
                 {
                     int id = w.PlanningView.GetBlock(x, yy, z);
                     any |= id != 0;
-                    layer.Append(id switch { 0 => '.', 4 => 'c', 1 => 's', 8 or 9 => '~', 10 or 11 => '!', 2 or 3 => 'd', 17 => 'L', 18 => 'l', 5 => 'p', 54 => 'C', 61 or 62 => 'F', 58 => 'W', 89 => 'g', 20 => 'o', _ => '#' });
+                    layer.Append(Glyph(id));
                 }
                 layer.Append('\n');
             }
             if (any) sb.Append(layer);
         }
-        File.WriteAllText(Path.Combine(outDir, "livegen-layers.txt"), sb.ToString());
-        Console.WriteLine(sb.ToString());
-        if (arg("fixture") is { } fx)
-        {
-            var path = Path.IsPathRooted(fx) ? fx : Path.Combine(root, fx);
-            var f = new StringBuilder($"# overworld around the dual cobble gen (dig {string.Join(" ", dig)}), from {Path.GetFileName(db)} world_chunks (x y z id meta)\n");
-            for (int x = box[0]; x <= box[3]; x++)
-                for (int z = box[2]; z <= box[5]; z++)
-                    for (int yy = 0; yy < 128; yy++)
-                        if (w.PlanningView.GetBlock(x, yy, z) is var id and not 0) f.Append(CultureInfo.InvariantCulture, $"{x} {yy} {z} {id} {w.PlanningView.GetMeta(x, yy, z)}\n");
-            File.WriteAllText(path, f.ToString());
-            Console.WriteLine($"fixture {path}");
-        }
-        var digSet = dig.ToHashSet();
+        return sb.ToString();
+    }
+
+    private static char Glyph(int id) => Glyphs.TryGetValue(id, out var g) ? g : '#';
+
+    private static readonly Dictionary<int, char> Glyphs = new()
+    {
+        [0] = '.', [4] = 'c', [1] = 's', [8] = '~', [9] = '~', [10] = '!', [11] = '!', [2] = 'd', [3] = 'd', [17] = 'L', [18] = 'l', [5] = 'p',
+        [54] = 'C', [61] = 'F', [62] = 'F', [58] = 'W', [89] = 'g', [20] = 'o',
+    };
+
+    /// <summary>The box's blocks as "x y z id meta" lines (a vision-eval fixture).</summary>
+    private static void WriteFixture(string path, WorldState w, int[] box, List<(int, int, int)> dig, string db)
+    {
+        var f = new StringBuilder($"# overworld around the dual cobble gen (dig {string.Join(" ", dig)}), from {Path.GetFileName(db)} world_chunks (x y z id meta)\n");
+        for (int x = box[0]; x <= box[3]; x++)
+            for (int z = box[2]; z <= box[5]; z++)
+                for (int yy = 0; yy < 128; yy++)
+                    if (w.PlanningView.GetBlock(x, yy, z) is var id and not 0) f.Append(CultureInfo.InvariantCulture, $"{x} {yy} {z} {id} {w.PlanningView.GetMeta(x, yy, z)}\n");
+        File.WriteAllText(path, f.ToString());
+        Console.WriteLine($"fixture {path}");
+    }
+
+    /// <summary>The eval harness's sheet for this spot.</summary>
+    private static void EvalSheet(string outDir, WorldState w, (int X, int Y, int Z) self, (int X, int Y, int Z) focus, float yaw, HashSet<(int, int, int)> digSet)
+    {
         var c = new VisionEvalCase("live", "live", w, self, focus, "q", "", _ => false, p => digSet.Contains((p.X, p.Y, p.Z)), Radius: 5, Yaw: yaw);
         var sheet = VisionEval.Sheet(c);
         File.WriteAllBytes(Path.Combine(outDir, "livegen-sheet.png"), sheet.Png);
         File.WriteAllText(Path.Combine(outDir, "livegen-sheet.txt"), sheet.Legend);
         Console.WriteLine($"{sheet.Width}x{sheet.Height} ~{sheet.Tokens} tok\n{sheet.Legend}");
+    }
 
-        // As live: memory regions ($ soft-protected), structure boxes + object labels as marks, textures, the job target.
+    /// <summary>As live: memory regions ($ soft-protected), structure boxes + object labels as marks, textures, the job target.</summary>
+    private static void LiveSheet(string root, string outDir, string db, WorldState w, (int X, int Y, int Z) self, (int X, int Y, int Z) focus, float yaw,
+        HashSet<(int, int, int)> digSet)
+    {
         var (regions, marks) = Regions(db);
         var roles = new RoleClassifier
         {
@@ -90,7 +119,6 @@ static class LiveGen
         File.WriteAllBytes(Path.Combine(outDir, "livegen-live.png"), live.Png);
         File.WriteAllText(Path.Combine(outDir, "livegen-live.txt"), live.Legend);
         Console.WriteLine($"live-like: {live.Width}x{live.Height} ~{live.Tokens} tok, atlas {(atlas != null)}\n{live.Legend}");
-        return 0;
     }
 
     private static char Mod(int x) => (char)('0' + ((x % 10) + 10) % 10);
@@ -132,36 +160,42 @@ static class LiveGen
         var marks = new List<VisionMark>();
         using var c = new SqliteConnection($"Data Source={tmp};Pooling=False");
         c.Open();
-        using (var cmd = c.CreateCommand())
-        {
-            cmd.CommandText = "SELECT name, data FROM structures WHERE dimension = 0";
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                using var j = JsonDocument.Parse(r.GetString(1));
-                if (!j.RootElement.TryGetProperty("min", out var mn) || mn.ValueKind != JsonValueKind.Object) continue;
-                var mx = j.RootElement.TryGetProperty("max", out var m2) && m2.ValueKind == JsonValueKind.Object ? m2 : mn;
-                int I(JsonElement e, string k) => e.GetProperty(k).GetInt32();
-                var b = (Math.Min(I(mn, "x"), I(mx, "x")), Math.Min(I(mn, "y"), I(mx, "y")), Math.Min(I(mn, "z"), I(mx, "z")),
-                    Math.Max(I(mn, "x"), I(mx, "x")), Math.Max(I(mn, "y"), I(mx, "y")), Math.Max(I(mn, "z"), I(mx, "z")));
-                regions.Add(b);
-                marks.Add(new VisionMark(r.GetString(0), b.Item1, b.Item2, b.Item3, b.Item4, b.Item5, b.Item6, Box: true));
-            }
-        }
-        using (var cmd = c.CreateCommand())
-        {
-            cmd.CommandText = "SELECT kind, min_x, min_y, min_z, max_x, max_y, max_z FROM observations WHERE dimension = 0 AND removed IS NULL " +
-                              "AND kind IN ('chest','furnace','crafting_table','cobble_generator','portal','farm') AND min_x IS NOT NULL";
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                string label = r.GetString(0) switch { "crafting_table" => "bench", "cobble_generator" => "gen", var k => k };
-                int x0 = (int)r.GetDouble(1), y0 = (int)r.GetDouble(2), z0 = (int)r.GetDouble(3), x1 = (int)r.GetDouble(4), y1 = (int)r.GetDouble(5), z1 = (int)r.GetDouble(6);
-                if (marks.Any(m => Math.Abs(m.CentreX - (x0 + x1) / 2.0) <= 2 && Math.Abs(m.CentreZ - (z0 + z1) / 2.0) <= 2 && m.Box)) continue;
-                marks.Add(new VisionMark(label, x0, y0, z0, x1, y1, z1, Box: x1 > x0 || z1 > z0));
-            }
-        }
+        ReadStructures(c, regions, marks);
+        ReadObjects(c, marks);
         return (regions, marks);
+    }
+
+    private static void ReadStructures(SqliteConnection c, List<(int, int, int, int, int, int)> regions, List<VisionMark> marks)
+    {
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT name, data FROM structures WHERE dimension = 0";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            using var j = JsonDocument.Parse(r.GetString(1));
+            if (!j.RootElement.TryGetProperty("min", out var mn) || mn.ValueKind != JsonValueKind.Object) continue;
+            var mx = j.RootElement.TryGetProperty("max", out var m2) && m2.ValueKind == JsonValueKind.Object ? m2 : mn;
+            int I(JsonElement e, string k) => e.GetProperty(k).GetInt32();
+            var b = (Math.Min(I(mn, "x"), I(mx, "x")), Math.Min(I(mn, "y"), I(mx, "y")), Math.Min(I(mn, "z"), I(mx, "z")),
+                Math.Max(I(mn, "x"), I(mx, "x")), Math.Max(I(mn, "y"), I(mx, "y")), Math.Max(I(mn, "z"), I(mx, "z")));
+            regions.Add(b);
+            marks.Add(new VisionMark(r.GetString(0), b.Item1, b.Item2, b.Item3, b.Item4, b.Item5, b.Item6, Box: true));
+        }
+    }
+
+    private static void ReadObjects(SqliteConnection c, List<VisionMark> marks)
+    {
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT kind, min_x, min_y, min_z, max_x, max_y, max_z FROM observations WHERE dimension = 0 AND removed IS NULL " +
+                          "AND kind IN ('chest','furnace','crafting_table','cobble_generator','portal','farm') AND min_x IS NOT NULL";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            string label = r.GetString(0) switch { "crafting_table" => "bench", "cobble_generator" => "gen", var k => k };
+            int x0 = (int)r.GetDouble(1), y0 = (int)r.GetDouble(2), z0 = (int)r.GetDouble(3), x1 = (int)r.GetDouble(4), y1 = (int)r.GetDouble(5), z1 = (int)r.GetDouble(6);
+            if (marks.Any(m => Math.Abs(m.CentreX - (x0 + x1) / 2.0) <= 2 && Math.Abs(m.CentreZ - (z0 + z1) / 2.0) <= 2 && m.Box)) continue;
+            marks.Add(new VisionMark(label, x0, y0, z0, x1, y1, z1, Box: x1 > x0 || z1 > z0));
+        }
     }
 
     internal static List<(int, int, int)> DigCells(string db)

@@ -374,14 +374,20 @@ public sealed partial class StoryColony : IStoryPort
         long? stamp = null;
         foreach (var p in Pawns.Values)
         {
-            if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "none" || cur.Label != NothingToDo) continue;
-            if (Now - cur.Since < WakeAfter) continue;
-            if (_woken.TryGetValue(p.Name, out var at) && Now - at < WakeCooldown) continue;
+            if (!Wakeable(p)) continue;
             var live = Host.Live(p.Name);
             if (!live.Online || ProbeWork(p, live, stamp ??= WorkStamp()) == null) continue;
             _woken[p.Name] = Now;
             Supersede(p, "new work");
         }
+    }
+
+    /// <summary>Idle with nothing to do (not drafted) for <see cref="WakeAfter"/>, and not woken within <see cref="WakeCooldown"/>.</summary>
+    private bool Wakeable(PawnState p)
+    {
+        if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "none" || cur.Label != NothingToDo) return false;
+        if (Now - cur.Since < WakeAfter) return false;
+        return !(_woken.TryGetValue(p.Name, out var at) && Now - at < WakeCooldown);
     }
 
     /// <summary>The current job of a pawn (null = none).</summary>
@@ -667,27 +673,38 @@ public sealed partial class StoryColony : IStoryPort
     /// </summary>
     internal static P3? SafeSpot(IStoryWorld w, P3 home, int radius = 4)
     {
-        bool Free(int x, int y, int z) => w.Block(x, y, z).Id is var id && (id == 0 || StoryBlocks.Plants.Contains(id) || id is 50 or 78);
-        bool Floor(int x, int y, int z) => w.Block(x, y, z).Id is var id && !Free(x, y, z) && !StoryBlocks.Liquids.Contains(id)
-            && !StoryBlocks.Leaves.Contains(id) && id is not (51 or 81 or 30 or 10 or 11);
-        bool Standable(int x, int y, int z) => y > 0 && y < w.Height - 1 && Floor(x, y - 1, z) && Free(x, y, z) && Free(x, y + 1, z)
-            && !StoryBlocks.Liquids.Contains(w.Block(x, y, z).Id);
         for (int r = 0; r <= radius; r++)
             for (int dx = -r; dx <= r; dx++)
                 for (int dz = -r; dz <= r; dz++)
                 {
                     if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
                     int x = home.X + dx, z = home.Z + dz;
-                    if (!w.Loaded(x, z)) continue;
-                    for (int dy = 0; dy <= 2; dy++) // the home cell itself, or just above it
-                        if (Standable(x, home.Y + dy, z)) return new P3(x, home.Y + dy, z);
-                    // The open-sky surface: the first block down from the top that isn't free.
-                    int y = w.Height - 2;
-                    while (y > 0 && Free(x, y, z)) y--;
-                    if (y > 0 && Standable(x, y + 1, z)) return new P3(x, y + 1, z);
+                    if (w.Loaded(x, z) && SafeInColumn(w, x, z, home.Y) is { } spot) return spot;
                 }
         return null;
     }
+
+    /// <summary>The home cell itself or just above it, else the column's open-sky surface (the first block down from the top that
+    /// isn't free).</summary>
+    private static P3? SafeInColumn(IStoryWorld w, int x, int z, int homeY)
+    {
+        for (int dy = 0; dy <= 2; dy++)
+            if (SafeStandable(w, x, homeY + dy, z)) return new P3(x, homeY + dy, z);
+        int y = w.Height - 2;
+        while (y > 0 && SafeFree(w, x, y, z)) y--;
+        return y > 0 && SafeStandable(w, x, y + 1, z) ? new P3(x, y + 1, z) : null;
+    }
+
+    /// <summary>Air, a small plant, a torch or snow: a body fits.</summary>
+    private static bool SafeFree(IStoryWorld w, int x, int y, int z) =>
+        w.Block(x, y, z).Id is var id && (id == 0 || StoryBlocks.Plants.Contains(id) || id is 50 or 78);
+
+    /// <summary>Solid ground that isn't a leaf, liquid, fire, cactus or cobweb.</summary>
+    private static bool SafeFloor(IStoryWorld w, int x, int y, int z) => w.Block(x, y, z).Id is var id && !SafeFree(w, x, y, z)
+        && !StoryBlocks.Liquids.Contains(id) && !StoryBlocks.Leaves.Contains(id) && id is not (51 or 81 or 30 or 10 or 11);
+
+    private static bool SafeStandable(IStoryWorld w, int x, int y, int z) => y > 0 && y < w.Height - 1 && SafeFloor(w, x, y - 1, z)
+        && SafeFree(w, x, y, z) && SafeFree(w, x, y + 1, z) && !StoryBlocks.Liquids.Contains(w.Block(x, y, z).Id);
 
     /// <summary>The colony's home point: its setting, else the first home zone's centre, else the first pawn's spot.</summary>
     public P3? Home()

@@ -66,10 +66,7 @@ public static class NetherHazards
         var parts = new List<string>();
         int lava = ctx.Find((id, _) => BlockShapes.IsLava(id), 6, 512).Count;
         if (lava > 0) parts.Add($"lava x{lava} within 6");
-        var ghasts = ctx.World.Entities.Nearby(me, 48, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Ghast);
-        if (ghasts.Count > 0) parts.Add($"{ghasts.Count} ghast(s) within 48 (fireballs: keep off edges)");
-        var pigmen = ctx.World.Entities.Nearby(me, 16, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.PigZombie);
-        if (pigmen.Count > 0) parts.Add($"{pigmen.Count} pigmen (neutral: never hit)");
+        AddMobHazards(ctx, me, parts);
         if (ctx.Find(Blocks.Fire, 4, 8).Count > 0) parts.Add("fire nearby");
         // Magma block (1.12.2, id 213; absent from b1.8.1 worlds): burns whoever stands on it without sneaking.
         if (ctx.Find(MagmaBlock, 4, 64) is { Count: > 0 } magma) parts.Add($"magma x{magma.Count} within 4 (burns to stand on; sneak)");
@@ -77,6 +74,14 @@ public static class NetherHazards
         if (ctx.Find(Blocks.Gravel, 3, 8).Any(f => f.Pos.Y > ctx.Me.Y + 1)) parts.Add("gravel overhead");
         if (Safety.EdgeDistance(ctx.World, ctx.Me.X, ctx.Me.Y, ctx.Me.Z) is var d and <= 2) parts.Add($"edge {d} away");
         return parts.Count == 0 ? "no nether hazards close" : string.Join("; ", parts);
+    }
+
+    private static void AddMobHazards(SkillContext ctx, Vec3d me, List<string> parts)
+    {
+        var ghasts = ctx.World.Entities.Nearby(me, 48, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Ghast);
+        if (ghasts.Count > 0) parts.Add($"{ghasts.Count} ghast(s) within 48 (fireballs: keep off edges)");
+        var pigmen = ctx.World.Entities.Nearby(me, 16, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.PigZombie);
+        if (pigmen.Count > 0) parts.Add($"{pigmen.Count} pigmen (neutral: never hit)");
     }
 
     /// <summary>Edge/combat work in the nether with a ghast in range is refused (knockback into lava).</summary>
@@ -136,13 +141,12 @@ public sealed class BuildPortalSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         if (ctx.Count(Blocks.Obsidian) < 10) return Fail($"needs 10 obsidian (have {ctx.Count(Blocks.Obsidian)}); make_obsidian first");
-        bool alongX = !(args.Str("axis")?.Contains('z', StringComparison.OrdinalIgnoreCase) ?? false);
+        bool alongX = AlongX(args);
         var origin = args.Pos() ?? Spot(ctx, alongX);
         if (origin is not { } o) return Fail("no flat 4-wide spot with solid floor nearby; give pos (bottom-left corner)");
         var (obs, corners, inside) = PortalFrames.Cells(o, alongX);
-        if (inside.Concat(obs).Concat(corners).Any(ctx.Protected)) return Fail("portal area overlaps protected blocks");
-        if (inside.Any(p => !SkillWorld.Replaceable(ctx.World, p))) return Fail("portal interior isn't clear");
-        int corner = SkillWorld.BuildingBlock(ctx) is { } b && b != Blocks.Obsidian ? b : Blocks.Obsidian;
+        if (AreaProblem(ctx, obs, corners, inside) is { } problem) return Fail(problem);
+        int corner = CornerBlock(ctx);
         if (corner == Blocks.Obsidian && ctx.Count(Blocks.Obsidian) < 14) return Fail("needs 4 corner blocks (cobble/dirt) or 14 obsidian");
         var c = await BuildOps.PlaceAllAsync(ctx, corners.Where(p => p.Y == o.Y).ToList(), corner, ct);
         var r = await BuildOps.PlaceAllAsync(ctx, obs.Where(p => p.Y < o.Y + 4).ToList(), Blocks.Obsidian, ct);
@@ -150,8 +154,24 @@ public sealed class BuildPortalSkill : Skill
         var t = await BuildOps.PlaceAllAsync(ctx, obs.Where(p => p.Y == o.Y + 4).ToList(), Blocks.Obsidian, ct);
         bool ok = PortalFrames.IsFrame(ctx.World, inside[0], alongX);
         return ok ? Ok($"portal frame at {P(o)} ({(alongX ? "x" : "z")} axis); light_portal next")
-                  : Fail($"frame incomplete at {P(o)}: placed {c.Placed + r.Placed + top.Placed + t.Placed}" + ((r.Error ?? t.Error) is { } e ? $" ({e})" : ""));
+                  : Fail(Incomplete(o, c.Placed + r.Placed + top.Placed + t.Placed, r.Error ?? t.Error));
     }
+
+    /// <summary>The frame runs along x unless axis names z.</summary>
+    private static bool AlongX(JsonElement args) => !(args.Str("axis")?.Contains('z', StringComparison.OrdinalIgnoreCase) ?? false);
+
+    private static string? AreaProblem(SkillContext ctx, List<BlockPos> obs, List<BlockPos> corners, List<BlockPos> inside)
+    {
+        if (inside.Concat(obs).Concat(corners).Any(ctx.Protected)) return "portal area overlaps protected blocks";
+        if (inside.Any(p => !SkillWorld.Replaceable(ctx.World, p))) return "portal interior isn't clear";
+        return null;
+    }
+
+    /// <summary>A building block for the 4 corners (any block will do), else obsidian.</summary>
+    private static int CornerBlock(SkillContext ctx) => SkillWorld.BuildingBlock(ctx) is { } b && b != Blocks.Obsidian ? b : Blocks.Obsidian;
+
+    private static string Incomplete(BlockPos o, int placed, string? error) =>
+        $"frame incomplete at {P(o)}: placed {placed}" + (error is { } e ? $" ({e})" : "");
 
     private static BlockPos? Spot(SkillContext ctx, bool alongX)
     {

@@ -232,26 +232,29 @@ public sealed partial class StoryColony
     {
         var active = ActiveBill(w, z);
         o["active_bill"] = active?.Id;
-        o["bills"] = new JsonArray(z.Bills!.Select(b =>
-        {
-            var p = StoryPlants.Get(w.Data, b.Plant);
-            var j = new JsonObject
-            {
-                ["id"] = b.Id, ["plant"] = b.Plant, ["label"] = p?.Label ?? b.Plant, ["mode"] = b.Mode, ["target"] = b.Target, ["done"] = b.Done,
-                ["paused"] = b.Paused, ["active"] = b == active,
-            };
-            if (p == null) { j["met"] = false; j["missing"] = $"{b.Plant} doesn't grow in {w.Version}"; return (JsonNode)j; }
-            if (b.Mode == "until") j["stored"] = ProduceStored(p);
-            j["met"] = BillMet(b, p);
-            int have = CountItem(p.SeedId, p.SeedId == 6 ? p.SeedMeta : -1);
-            int needed = b == active ? room : 0;
-            j["seeds"] = new JsonObject
-            {
-                ["item"] = StoryPlants.SeedName(w.Data, p), ["have"] = have, ["needed_for_empty"] = needed, ["source_hint"] = p.Source,
-                ["missing"] = have == 0 ? SeedHint(p) : null,
-                ["action"] = have == 0 && p.Id == "wheat" ? "seek_seeds" : have == 0 && p.Harvest == "fruit" ? "craft_seeds" : null,
-            };
-            return j;
-        }).ToArray());
+        o["bills"] = new JsonArray(z.Bills!.Select(b => (JsonNode)ZoneBillJson(w, b, active, room)).ToArray());
     }
+
+    private JsonObject ZoneBillJson(IStoryWorld w, GrowBill b, GrowBill? active, int room)
+    {
+        var p = StoryPlants.Get(w.Data, b.Plant);
+        var j = new JsonObject
+        {
+            ["id"] = b.Id, ["plant"] = b.Plant, ["label"] = p?.Label ?? b.Plant, ["mode"] = b.Mode, ["target"] = b.Target, ["done"] = b.Done,
+            ["paused"] = b.Paused, ["active"] = b == active,
+        };
+        if (p == null) { j["met"] = false; j["missing"] = $"{b.Plant} doesn't grow in {w.Version}"; return j; }
+        if (b.Mode == "until") j["stored"] = ProduceStored(p);
+        j["met"] = BillMet(b, p);
+        int have = CountItem(p.SeedId, p.SeedId == 6 ? p.SeedMeta : -1);
+        j["seeds"] = BillSeedsJson(w, p, have, b == active ? room : 0);
+        return j;
+    }
+
+    private static JsonObject BillSeedsJson(IStoryWorld w, StoryPlant p, int have, int needed) => new()
+    {
+        ["item"] = StoryPlants.SeedName(w.Data, p), ["have"] = have, ["needed_for_empty"] = needed, ["source_hint"] = p.Source,
+        ["missing"] = have == 0 ? SeedHint(p) : null,
+        ["action"] = have == 0 && p.Id == "wheat" ? "seek_seeds" : have == 0 && p.Harvest == "fruit" ? "craft_seeds" : null,
+    };
 }

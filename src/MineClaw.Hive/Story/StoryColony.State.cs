@@ -104,21 +104,16 @@ public sealed partial class StoryColony
     {
         var live = Host.Live(p.Name);
         var cur = _current.GetValueOrDefault(p.Name);
-        string state = !live.Online ? "offline" : p.Drafted && (cur == null || cur.Type is "order" or "idle") ? "drafted" : cur?.State ?? "idle";
-        if (state == "working" && cur?.Kind == "go") state = "moving";
         return new JsonObject
         {
             ["name"] = p.Name, ["display"] = p.Display, ["kind"] = "pawn", ["online"] = live.Online, ["hp"] = live.Hp, ["food"] = live.Food,
             ["pos"] = new JsonArray(Math.Round(live.X, 2), Math.Round(live.Y, 2), Math.Round(live.Z, 2)), ["dim"] = live.Dim, ["drafted"] = p.Drafted,
-            ["state"] = state,
+            ["state"] = PawnStateWord(p, live, cur),
             ["leaving"] = _leaving.ContainsKey(p.Name),
             ["stuck"] = StuckJson(p.Name), // {since, at, reason, step, attempts} while it is stuck (StoryColony.Rescue.cs)
             ["idle_reason"] = _idleReason.GetValueOrDefault(p.Name), // idle in its work hours with work about: why (StoryColony.IdleAudit.cs)
             ["offline_reason"] = OfflineReason(p, live),
-            ["job"] = cur == null ? null : new JsonObject
-            {
-                ["type"] = cur.Type, ["label"] = cur.Label, ["target"] = cur.At?.Json(), ["progress"] = cur.Progress, ["since"] = cur.Since,
-            },
+            ["job"] = cur == null ? null : CurrentJobJson(cur),
             ["queue"] = new JsonArray(p.Queue.Select(q => (JsonNode)OrderJson(q, null)).ToArray()),
             ["skills"] = new JsonObject(p.Skills.Select(kv => new KeyValuePair<string, JsonNode?>(kv.Key, new JsonObject
             {
@@ -138,6 +133,18 @@ public sealed partial class StoryColony
             ["speed"] = live.Online ? PawnSpeedJson(p) : null, // the body's speed boost (StoryColony.Speed.cs)
         };
     }
+
+    /// <summary>offline | drafted (no job of its own, or an order or idle one) | its job's state (a "go" at work reads moving) | idle.</summary>
+    private static string PawnStateWord(PawnState p, PawnLive live, ActiveJob? cur)
+    {
+        string state = !live.Online ? "offline" : p.Drafted && (cur == null || cur.Type is "order" or "idle") ? "drafted" : cur?.State ?? "idle";
+        return state == "working" && cur?.Kind == "go" ? "moving" : state;
+    }
+
+    private static JsonObject CurrentJobJson(ActiveJob cur) => new()
+    {
+        ["type"] = cur.Type, ["label"] = cur.Label, ["target"] = cur.At?.Json(), ["progress"] = cur.Progress, ["since"] = cur.Since,
+    };
 
     /// <summary>{online, wanted, cap_free, kept_for_regulars}: how many pawns are in, how many the colony wants, the server's seats.</summary>
     private JsonObject SeatsJson()

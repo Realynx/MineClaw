@@ -104,103 +104,152 @@ public static class SpectralSolver
         int n = g.N;
         int m = Math.Min(n - 1, Math.Max(ncv, count + 2));
         if (m <= count) return Dense(g, dinv, count);
-        var V = new double[m + 1][];
-        for (int i = 0; i <= m; i++) V[i] = new double[n];
-        double inv = 1.0 / Math.Sqrt(n);
-        for (int i = 0; i < n; i++) V[0][i] = inv;
-        var H = new double[m * m];
-        var w = new double[n];
-        var rng = new Rng(7919);
+        var krylov = new Krylov(g, dinv, m);
         int j0 = 0;
-        double lastBeta = 0;
         for (int restart = 0; restart <= maxRestarts; restart++)
         {
-            for (int j = j0; j < m; j++)
-            {
-                MatVec(g, dinv, V[j], w);
-                for (int i = 0; i <= j; i++) H[i * m + j] = 0;
-                for (int pass = 0; pass < 2; pass++)
-                    for (int i = 0; i <= j; i++)
-                    {
-                        double h = Dot(V[i], w);
-                        H[i * m + j] += h;
-                        Axpy(-h, V[i], w);
-                    }
-                for (int i = 0; i < j; i++) H[j * m + i] = H[i * m + j];
-                double beta = Math.Sqrt(Dot(w, w));
-                if (beta < 1e-12)
-                {
-                    // Invariant subspace: continue with a random vector orthogonal to the basis.
-                    for (int i = 0; i < n; i++) w[i] = rng.NextGaussian();
-                    for (int pass = 0; pass < 2; pass++)
-                        for (int i = 0; i <= j; i++) Axpy(-Dot(V[i], w), V[i], w);
-                    double nw = Math.Sqrt(Dot(w, w));
-                    for (int i = 0; i < n; i++) V[j + 1][i] = w[i] / nw;
-                    beta = 0;
-                }
-                else
-                {
-                    for (int i = 0; i < n; i++) V[j + 1][i] = w[i] / beta;
-                }
-                if (j + 1 < m)
-                {
-                    H[(j + 1) * m + j] = beta;
-                    H[j * m + (j + 1)] = beta;
-                }
-                lastBeta = beta;
-            }
+            krylov.Extend(j0);
+            var eig = new SymmetricEigen(krylov.H, m);
+            if (krylov.Converged(eig, count, tol)) return krylov.RitzVectors(eig, count);
+            if (restart == maxRestarts) return null;
+            j0 = krylov.ThickRestart(eig, count);
+        }
+        return null;
+    }
 
-            var eig = new SymmetricEigen(H, m);
-            // descending order of Ritz values
-            bool converged = true;
+    /// <summary>
+    /// The Lanczos basis V (m + 1 vectors), the projected matrix H (m × m) and the last residual norm. Operation order
+    /// matches the original single-method solver exactly (the goldens pin the vectors bit for bit).
+    /// </summary>
+    private sealed class Krylov
+    {
+        private readonly SparseGraph _g;
+        private readonly double[] _dinv;
+        private readonly int _m, _n;
+        private readonly double[][] _v;
+        private readonly double[] _w;
+        private readonly Rng _rng = new(7919);
+        private double _lastBeta;
+
+        public double[] H { get; }
+
+        public Krylov(SparseGraph g, double[] dinv, int m)
+        {
+            _g = g;
+            _dinv = dinv;
+            _m = m;
+            _n = g.N;
+            _v = new double[m + 1][];
+            for (int i = 0; i <= m; i++) _v[i] = new double[_n];
+            double inv = 1.0 / Math.Sqrt(_n);
+            for (int i = 0; i < _n; i++) _v[0][i] = inv;
+            H = new double[m * m];
+            _w = new double[_n];
+        }
+
+        /// <summary>Lanczos steps j0 .. m-1 with full (twice) reorthogonalization.</summary>
+        public void Extend(int j0)
+        {
+            for (int j = j0; j < _m; j++) Step(j);
+        }
+
+        private void Step(int j)
+        {
+            int m = _m;
+            MatVec(_g, _dinv, _v[j], _w);
+            for (int i = 0; i <= j; i++) H[i * m + j] = 0;
+            for (int pass = 0; pass < 2; pass++)
+                for (int i = 0; i <= j; i++)
+                {
+                    double h = Dot(_v[i], _w);
+                    H[i * m + j] += h;
+                    Axpy(-h, _v[i], _w);
+                }
+            for (int i = 0; i < j; i++) H[j * m + i] = H[i * m + j];
+            double beta = Math.Sqrt(Dot(_w, _w));
+            if (beta < 1e-12)
+            {
+                RandomContinuation(j);
+                beta = 0;
+            }
+            else
+            {
+                for (int i = 0; i < _n; i++) _v[j + 1][i] = _w[i] / beta;
+            }
+            if (j + 1 < m)
+            {
+                H[(j + 1) * m + j] = beta;
+                H[j * m + (j + 1)] = beta;
+            }
+            _lastBeta = beta;
+        }
+
+        /// <summary>Invariant subspace: continue with a random vector orthogonal to the basis.</summary>
+        private void RandomContinuation(int j)
+        {
+            for (int i = 0; i < _n; i++) _w[i] = _rng.NextGaussian();
+            for (int pass = 0; pass < 2; pass++)
+                for (int i = 0; i <= j; i++) Axpy(-Dot(_v[i], _w), _v[i], _w);
+            double nw = Math.Sqrt(Dot(_w, _w));
+            for (int i = 0; i < _n; i++) _v[j + 1][i] = _w[i] / nw;
+        }
+
+        /// <summary>Every wanted Ritz pair (descending Ritz values) has a small enough residual.</summary>
+        public bool Converged(SymmetricEigen eig, int count, double tol)
+        {
             for (int c = 0; c < count; c++)
             {
-                int col = m - 1 - c;
+                int col = _m - 1 - c;
                 double theta = eig.Values[col];
-                double resid = Math.Abs(lastBeta * eig.Vector(m - 1, col));
-                if (resid > tol * Math.Max(Math.Abs(theta), 1e-12)) { converged = false; break; }
+                double resid = Math.Abs(_lastBeta * eig.Vector(_m - 1, col));
+                if (resid > tol * Math.Max(Math.Abs(theta), 1e-12)) return false;
             }
-            if (converged || restart == maxRestarts)
-            {
-                if (!converged) return null;
-                var res = new double[count][];
-                for (int c = 0; c < count; c++)
-                {
-                    int col = m - 1 - c;
-                    var x = new double[n];
-                    for (int j = 0; j < m; j++) Axpy(eig.Vector(j, col), V[j], x);
-                    double nx = Math.Sqrt(Dot(x, x));
-                    for (int i = 0; i < n; i++) x[i] /= nx;
-                    res[c] = x;
-                }
-                return res;
-            }
+            return true;
+        }
 
+        /// <summary>The <paramref name="count"/> leading Ritz vectors, normalized.</summary>
+        public double[][] RitzVectors(SymmetricEigen eig, int count)
+        {
+            var res = new double[count][];
+            for (int c = 0; c < count; c++)
+            {
+                var x = RitzVector(eig, _m - 1 - c);
+                double nx = Math.Sqrt(Dot(x, x));
+                for (int i = 0; i < _n; i++) x[i] /= nx;
+                res[c] = x;
+            }
+            return res;
+        }
+
+        private double[] RitzVector(SymmetricEigen eig, int col)
+        {
+            var x = new double[_n];
+            for (int j = 0; j < _m; j++) Axpy(eig.Vector(j, col), _v[j], x);
+            return x;
+        }
+
+        /// <summary>Thick restart: keep the leading Ritz vectors plus the residual; returns the next start step.</summary>
+        public int ThickRestart(SymmetricEigen eig, int count)
+        {
+            int m = _m;
             int keep = Math.Min(m - 2, count + (m - count) / 2);
             var newBasis = new double[keep][];
-            for (int c = 0; c < keep; c++)
-            {
-                int col = m - 1 - c;
-                var x = new double[n];
-                for (int j = 0; j < m; j++) Axpy(eig.Vector(j, col), V[j], x);
-                newBasis[c] = x;
-            }
-            var residual = V[m];
+            for (int c = 0; c < keep; c++) newBasis[c] = RitzVector(eig, m - 1 - c);
+            var residual = _v[m];
             Array.Clear(H);
             for (int c = 0; c < keep; c++)
             {
                 int col = m - 1 - c;
                 H[c * m + c] = eig.Values[col];
-                double s = lastBeta * eig.Vector(m - 1, col);
+                double s = _lastBeta * eig.Vector(m - 1, col);
                 H[c * m + keep] = s;
                 H[keep * m + c] = s;
             }
-            for (int c = 0; c < keep; c++) V[c] = newBasis[c];
-            V[keep] = (double[])residual.Clone();
-            for (int i = keep + 1; i <= m; i++) V[i] ??= new double[n];
-            j0 = keep;
+            for (int c = 0; c < keep; c++) _v[c] = newBasis[c];
+            _v[keep] = (double[])residual.Clone();
+            for (int i = keep + 1; i <= m; i++) _v[i] ??= new double[_n];
+            return keep;
         }
-        return null;
     }
 
     public static void SignFlip(double[] v)

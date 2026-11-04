@@ -37,41 +37,11 @@ public sealed class UmapReducer
         double cut = gmax / (nEpochs > 10 ? nEpochs : defaultEpochs);
         graph = graph.Where(v => v >= cut);
 
-        float[] emb;
-        if (_o.SpectralInit)
-        {
-            var init = SpectralLayout(x, graph, dim, rng);
-            emb = NoisyScaleCoords(init, rng, 10.0, 0.0001);
-        }
-        else
-        {
-            emb = new float[n * dim];
-            for (int i = 0; i < emb.Length; i++) emb[i] = (float)rng.Uniform(-10, 10);
-        }
-
-        // epochs_per_sample, head/tail from COO (row-major)
-        int nnz = graph.Nnz;
-        var head = new int[nnz];
-        var tail = new int[nnz];
-        var weights = new double[nnz];
-        for (int i = 0, p = 0; i < n; i++)
-            for (int q = graph.RowPtr[i]; q < graph.RowPtr[i + 1]; q++, p++)
-            {
-                head[p] = i;
-                tail[p] = graph.Col[q];
-                weights[p] = graph.Val[q];
-            }
+        var emb = InitialEmbedding(x, graph, dim, rng);
+        var (head, tail, weights) = Coo(graph);
         var eps = MakeEpochsPerSample(weights, nEpochs);
         var tau = rng.NextTauState();
-
-        // embedding = 10 * (embedding - min) / (max - min), per dimension
-        for (int d = 0; d < dim; d++)
-        {
-            float mn = float.MaxValue, mx = float.MinValue;
-            for (int i = 0; i < n; i++) { var v = emb[i * dim + d]; if (v < mn) mn = v; if (v > mx) mx = v; }
-            float range = mx - mn;
-            for (int i = 0; i < n; i++) emb[i * dim + d] = range > 0 ? 10f * (emb[i * dim + d] - mn) / range : 0f;
-        }
+        RescaleToTen(emb, n, dim);
 
         var (a, b) = AbParams.Find(_o.Spread, _o.MinDist);
         OptimizeLayoutEuclidean(emb, n, dim, head, tail, nEpochs, eps, (float)a, (float)b, tau, (float)_o.RepulsionStrength, (float)_o.LearningRate, _o.NegativeSampleRate, _o.ParallelSgd);
@@ -79,6 +49,44 @@ public sealed class UmapReducer
         var result = new double[n * dim];
         for (int i = 0; i < result.Length; i++) result[i] = emb[i];
         return result;
+    }
+
+    /// <summary>Spectral layout plus noise, or uniform random in [-10, 10) when spectral init is off.</summary>
+    private float[] InitialEmbedding(float[][] x, SparseGraph graph, int dim, Rng rng)
+    {
+        if (_o.SpectralInit) return NoisyScaleCoords(SpectralLayout(x, graph, dim, rng), rng, 10.0, 0.0001);
+        var emb = new float[graph.N * dim];
+        for (int i = 0; i < emb.Length; i++) emb[i] = (float)rng.Uniform(-10, 10);
+        return emb;
+    }
+
+    /// <summary>epochs_per_sample input: head/tail/weight per stored edge, row-major (COO).</summary>
+    private static (int[] Head, int[] Tail, double[] Weights) Coo(SparseGraph graph)
+    {
+        int nnz = graph.Nnz;
+        var head = new int[nnz];
+        var tail = new int[nnz];
+        var weights = new double[nnz];
+        for (int i = 0, p = 0; i < graph.N; i++)
+            for (int q = graph.RowPtr[i]; q < graph.RowPtr[i + 1]; q++, p++)
+            {
+                head[p] = i;
+                tail[p] = graph.Col[q];
+                weights[p] = graph.Val[q];
+            }
+        return (head, tail, weights);
+    }
+
+    /// <summary>embedding = 10 * (embedding - min) / (max - min), per dimension.</summary>
+    private static void RescaleToTen(float[] emb, int n, int dim)
+    {
+        for (int d = 0; d < dim; d++)
+        {
+            float mn = float.MaxValue, mx = float.MinValue;
+            for (int i = 0; i < n; i++) { var v = emb[i * dim + d]; if (v < mn) mn = v; if (v > mx) mx = v; }
+            float range = mx - mn;
+            for (int i = 0; i < n; i++) emb[i * dim + d] = range > 0 ? 10f * (emb[i * dim + d] - mn) / range : 0f;
+        }
     }
 
     internal static double[] MakeEpochsPerSample(double[] weights, int nEpochs)
@@ -132,55 +140,64 @@ public sealed class UmapReducer
     {
         int n = graph.N;
         var result = new double[n * dim];
-        double[] meta; // nComponents × dim
-        if (nComponents > 2 * dim)
-        {
-            meta = ComponentLayout(x, nComponents, labels, dim);
-        }
-        else
-        {
-            int kk = (int)Math.Ceiling(nComponents / 2.0);
-            meta = new double[nComponents * dim];
-            for (int c = 0; c < nComponents; c++)
-            {
-                int axis = c % kk;
-                meta[c * dim + axis] = c < kk ? 1.0 : -1.0;
-            }
-        }
-
+        double[] meta = nComponents > 2 * dim ? ComponentLayout(x, nComponents, labels, dim) : AxisMeta(nComponents, dim);
         for (int label = 0; label < nComponents; label++)
         {
-            var members = Enumerable.Range(0, n).Where(i => labels[i] == label).ToArray();
-            double minDist = double.PositiveInfinity;
-            for (int o = 0; o < nComponents; o++)
-            {
-                double s = 0;
-                for (int d = 0; d < dim; d++) { double t = meta[label * dim + d] - meta[o * dim + d]; s += t * t; }
-                double dist = Math.Sqrt(s);
-                if (dist > 0 && dist < minDist) minDist = dist;
-            }
-            double dataRange = double.IsPositiveInfinity(minDist) ? 1.0 : minDist / 2.0;
+            int lab = label;
+            var members = Enumerable.Range(0, n).Where(i => labels[i] == lab).ToArray();
+            double dataRange = DataRange(meta, nComponents, label, dim);
             int m = members.Length;
-
             double[][]? vecs = null;
             if (!(m < 2 * dim || m <= dim + 1))
                 vecs = SpectralSolver.TopNormalizedAdjacency(graph.Subgraph(members), dim + 1);
-
-            if (vecs == null)
-            {
-                foreach (var i in members)
-                    for (int d = 0; d < dim; d++)
-                        result[i * dim + d] = rng.Uniform(-dataRange, dataRange) + meta[label * dim + d];
-                continue;
-            }
-            double amax = 0;
-            for (int c = 1; c <= dim; c++) foreach (var v in vecs[c]) amax = Math.Max(amax, Math.Abs(v));
-            double expansion = amax > 0 ? dataRange / amax : 1.0;
-            for (int t = 0; t < m; t++)
-                for (int c = 1; c <= dim; c++)
-                    result[members[t] * dim + (c - 1)] = vecs[c][t] * expansion + meta[label * dim + (c - 1)];
+            if (vecs == null) RandomComponent(result, members, meta, label, dim, dataRange, rng);
+            else PlaceComponent(result, members, meta, label, dim, dataRange, vecs);
         }
         return result;
+    }
+
+    /// <summary>Few components: one per axis direction, +1 or -1 on axis c % ceil(n/2).</summary>
+    private static double[] AxisMeta(int nComponents, int dim)
+    {
+        int kk = (int)Math.Ceiling(nComponents / 2.0);
+        var meta = new double[nComponents * dim];
+        for (int c = 0; c < nComponents; c++)
+        {
+            int axis = c % kk;
+            meta[c * dim + axis] = c < kk ? 1.0 : -1.0;
+        }
+        return meta;
+    }
+
+    /// <summary>Half the distance to the nearest other component's meta position (1 when there is none).</summary>
+    private static double DataRange(double[] meta, int nComponents, int label, int dim)
+    {
+        double minDist = double.PositiveInfinity;
+        for (int o = 0; o < nComponents; o++)
+        {
+            double s = 0;
+            for (int d = 0; d < dim; d++) { double t = meta[label * dim + d] - meta[o * dim + d]; s += t * t; }
+            double dist = Math.Sqrt(s);
+            if (dist > 0 && dist < minDist) minDist = dist;
+        }
+        return double.IsPositiveInfinity(minDist) ? 1.0 : minDist / 2.0;
+    }
+
+    private static void RandomComponent(double[] result, int[] members, double[] meta, int label, int dim, double dataRange, Rng rng)
+    {
+        foreach (var i in members)
+            for (int d = 0; d < dim; d++)
+                result[i * dim + d] = rng.Uniform(-dataRange, dataRange) + meta[label * dim + d];
+    }
+
+    private static void PlaceComponent(double[] result, int[] members, double[] meta, int label, int dim, double dataRange, double[][] vecs)
+    {
+        double amax = 0;
+        for (int c = 1; c <= dim; c++) foreach (var v in vecs[c]) amax = Math.Max(amax, Math.Abs(v));
+        double expansion = amax > 0 ? dataRange / amax : 1.0;
+        for (int t = 0; t < members.Length; t++)
+            for (int c = 1; c <= dim; c++)
+                result[members[t] * dim + (c - 1)] = vecs[c][t] * expansion + meta[label * dim + (c - 1)];
     }
 
     /// <summary>
@@ -189,27 +206,12 @@ public sealed class UmapReducer
     /// </summary>
     private static double[] ComponentLayout(float[][] x, int nComponents, int[] labels, int dim)
     {
-        int d0 = x[0].Length;
-        var centroids = new float[nComponents][];
-        var counts = new int[nComponents];
-        for (int c = 0; c < nComponents; c++) centroids[c] = new float[d0];
-        for (int i = 0; i < x.Length; i++)
-        {
-            counts[labels[i]]++;
-            var cen = centroids[labels[i]];
-            for (int j = 0; j < d0; j++) cen[j] += x[i][j];
-        }
-        for (int c = 0; c < nComponents; c++)
-            for (int j = 0; j < d0; j++) centroids[c][j] /= counts[c];
-
+        var centroids = Centroids(x, nComponents, labels);
         int nc = nComponents;
         var aff = new double[nc * nc];
         for (int i = 0; i < nc; i++)
             for (int j = 0; j < nc; j++)
-            {
-                double dist = i == j ? 0 : Math.Clamp(1.0 - VectorMath.Cosine(centroids[i], centroids[j]), 0, 2);
-                aff[i * nc + j] = i == j ? 0 : Math.Exp(-(dist * dist)); // csgraph laplacian ignores the diagonal
-            }
+                aff[i * nc + j] = i == j ? 0 : Affinity(centroids[i], centroids[j]); // csgraph laplacian ignores the diagonal
         var deg = new double[nc];
         for (int i = 0; i < nc; i++) for (int j = 0; j < nc; j++) deg[i] += aff[i * nc + j];
         var sq = deg.Select(v => Math.Sqrt(Math.Max(v, 1e-300))).ToArray();
@@ -224,6 +226,30 @@ public sealed class UmapReducer
             for (int i = 0; i < nc; i++) meta[i * dim + (c - 1)] = v[i];
         }
         return meta;
+    }
+
+    /// <summary>exp(-d*d) of the clamped cosine distance between two centroids.</summary>
+    private static double Affinity(float[] a, float[] b)
+    {
+        double dist = Math.Clamp(1.0 - VectorMath.Cosine(a, b), 0, 2);
+        return Math.Exp(-(dist * dist));
+    }
+
+    private static float[][] Centroids(float[][] x, int nComponents, int[] labels)
+    {
+        int d0 = x[0].Length;
+        var centroids = new float[nComponents][];
+        var counts = new int[nComponents];
+        for (int c = 0; c < nComponents; c++) centroids[c] = new float[d0];
+        for (int i = 0; i < x.Length; i++)
+        {
+            counts[labels[i]]++;
+            var cen = centroids[labels[i]];
+            for (int j = 0; j < d0; j++) cen[j] += x[i][j];
+        }
+        for (int c = 0; c < nComponents; c++)
+            for (int j = 0; j < d0; j++) centroids[c][j] /= counts[c];
+        return centroids;
     }
 
     // ---------- SGD (umap/layouts.py optimize_layout_euclidean) ----------
@@ -253,49 +279,64 @@ public sealed class UmapReducer
         }
         float alpha = initialAlpha;
 
+        float Dist2(int cj, int ck)
+        {
+            float dist2 = 0;
+            for (int d = 0; d < dim; d++) { float t = emb[cj + d] - emb[ck + d]; dist2 += t * t; }
+            return dist2;
+        }
+
+        // Pull head and tail together (move_other=True: head == tail embedding).
+        void Attract(int cj, int ck)
+        {
+            float dist2 = Dist2(cj, ck);
+            float gradCoeff = 0f;
+            if (dist2 > 0f)
+            {
+                gradCoeff = -2.0f * a * b * MathF.Pow(dist2, b - 1.0f);
+                gradCoeff /= a * MathF.Pow(dist2, b) + 1.0f;
+            }
+            for (int d = 0; d < dim; d++)
+            {
+                float g = Clip(gradCoeff * (emb[cj + d] - emb[ck + d]));
+                emb[cj + d] += g * alpha;
+                emb[ck + d] += -g * alpha;
+            }
+        }
+
+        // Push the head away from one random vertex (negative sample); a self-sample at distance 0 is skipped.
+        void Repel(int j, int cj, long[] state)
+        {
+            int k = (int)(TauRandInt(state) % nVertices);
+            int ck = k * dim;
+            float dist2 = Dist2(cj, ck);
+            float gradCoeff;
+            if (dist2 > 0f)
+            {
+                gradCoeff = 2.0f * gamma * b;
+                gradCoeff /= (0.001f + dist2) * (a * MathF.Pow(dist2, b) + 1f);
+            }
+            else if (j == k) return;
+            else gradCoeff = 0f;
+            for (int d = 0; d < dim; d++)
+            {
+                float g = gradCoeff > 0f ? Clip(gradCoeff * (emb[cj + d] - emb[ck + d])) : 0f;
+                emb[cj + d] += g * alpha;
+            }
+        }
+
         void Edges(int from, int to, int epoch, long[] state)
         {
             for (int i = from; i < to; i++)
             {
                 if (epochsPerSample[i] < 0 || nextSample[i] > epoch) continue;
-                int j = head[i], k = tail[i];
-                int cj = j * dim, ck = k * dim;
-                float dist2 = 0;
-                for (int d = 0; d < dim; d++) { float t = emb[cj + d] - emb[ck + d]; dist2 += t * t; }
-                float gradCoeff = 0f;
-                if (dist2 > 0f)
-                {
-                    gradCoeff = -2.0f * a * b * MathF.Pow(dist2, b - 1.0f);
-                    gradCoeff /= a * MathF.Pow(dist2, b) + 1.0f;
-                }
-                for (int d = 0; d < dim; d++)
-                {
-                    float g = Clip(gradCoeff * (emb[cj + d] - emb[ck + d]));
-                    emb[cj + d] += g * alpha;
-                    emb[ck + d] += -g * alpha; // move_other=True (head == tail embedding)
-                }
+                int j = head[i];
+                int cj = j * dim;
+                Attract(cj, tail[i] * dim);
                 nextSample[i] += epochsPerSample[i];
 
                 int nNeg = (int)((epoch - nextNeg[i]) / epochsPerNeg[i]);
-                for (int p = 0; p < nNeg; p++)
-                {
-                    k = (int)(TauRandInt(state) % nVertices);
-                    ck = k * dim;
-                    dist2 = 0;
-                    for (int d = 0; d < dim; d++) { float t = emb[cj + d] - emb[ck + d]; dist2 += t * t; }
-                    if (dist2 > 0f)
-                    {
-                        gradCoeff = 2.0f * gamma * b;
-                        gradCoeff /= (0.001f + dist2) * (a * MathF.Pow(dist2, b) + 1f);
-                    }
-                    else if (j == k) continue;
-                    else gradCoeff = 0f;
-                    for (int d = 0; d < dim; d++)
-                    {
-                        float g = gradCoeff > 0f ? Clip(gradCoeff * (emb[cj + d] - emb[ck + d])) : 0f;
-                        emb[cj + d] += g * alpha;
-                    }
-                }
+                for (int p = 0; p < nNeg; p++) Repel(j, cj, state);
                 nextNeg[i] += nNeg * epochsPerNeg[i];
             }
         }

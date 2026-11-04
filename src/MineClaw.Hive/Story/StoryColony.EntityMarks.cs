@@ -52,29 +52,40 @@ public sealed partial class StoryColony
         foreach (var e in ents) byId.TryAdd(e.Id, e);
         var held = _current.Values.SelectMany(j => j.MoreLeases.Append(j.Lease ?? "")).ToHashSet(StringComparer.Ordinal);
         var marked = marks.Select(d => d.Entity!.Value).ToHashSet();
-        foreach (var d in marks)
-        {
-            int id = d.Entity!.Value;
-            if (byId.TryGetValue(id, out var e)) { _markSeen[id] = (e.Block, e.ItemId, Now); continue; }
-            if (held.Contains("e:" + id)) continue; // a pawn is at it: its job's end decides
-            if (!_markSeen.TryGetValue(id, out var last)) { _markSeen[id] = (d.At, -1, Now); continue; } // first miss: the clock starts
-            if (last.At is { } at && !w.Loaded(at.X, at.Z)) { _markSeen[id] = last with { Seen = Now }; continue; } // out of every body's sight
-            // Merged into a stack of the same item right by it: the designation follows the stack.
-            if (d.Kind != "hunt" && last.At is { } la && last.Item >= 0
-                && ents.Where(x => x.Kind == "item" && x.ItemId == last.Item && x.Id != id && Math.Abs(x.X - (la.X + 0.5)) <= 1.5 && Math.Abs(x.Z - (la.Z + 0.5)) <= 1.5
-                        && Math.Abs(x.Y - la.Y) <= 1.5).OrderBy(x => Math.Abs(x.X - (la.X + 0.5)) + Math.Abs(x.Z - (la.Z + 0.5))).FirstOrDefault() is { } into)
-            {
-                _markSeen.Remove(id);
-                if (marked.Contains(into.Id)) { DropMark(d); continue; }
-                d.Entity = into.Id;
-                d.Rev = Touch();
-                marked.Add(into.Id);
-                _markSeen[into.Id] = (into.Block, into.ItemId, Now);
-                continue;
-            }
-            if (Now - last.Seen < EntityGone) continue;
-            DropMark(d); // picked up (by a pawn, a player, another bot), killed, despawned
-        }
+        foreach (var d in marks) PruneMark(w, d, ents, byId, held, marked);
         foreach (var k in _markSeen.Keys.Where(k => !marked.Contains(k)).ToList()) _markSeen.Remove(k);
+    }
+
+    /// <summary>One entity mark: seen (its last place noted), held by a pawn's job, missing for the first time (the clock starts), out
+    /// of every body's sight, merged into a stack (it follows), or gone for <see cref="EntityGone"/> (picked up, killed, despawned).</summary>
+    private void PruneMark(IStoryWorld w, DesignationState d, IReadOnlyList<StoryEntity> ents, Dictionary<int, StoryEntity> byId, HashSet<string> held, HashSet<int> marked)
+    {
+        int id = d.Entity!.Value;
+        if (byId.TryGetValue(id, out var e)) { _markSeen[id] = (e.Block, e.ItemId, Now); return; }
+        if (held.Contains("e:" + id)) return; // a pawn is at it: its job's end decides
+        if (!_markSeen.TryGetValue(id, out var last)) { _markSeen[id] = (d.At, -1, Now); return; } // first miss: the clock starts
+        if (last.At is { } at && !w.Loaded(at.X, at.Z)) { _markSeen[id] = last with { Seen = Now }; return; } // out of every body's sight
+        if (d.Kind != "hunt" && MergedInto(ents, id, last) is { } into) { FollowMerge(d, id, into, marked); return; }
+        if (Now - last.Seen < EntityGone) return;
+        DropMark(d); // picked up (by a pawn, a player, another bot), killed, despawned
+    }
+
+    /// <summary>A stack of the same item right by where the drop was last seen: it merged into that one.</summary>
+    private static StoryEntity? MergedInto(IReadOnlyList<StoryEntity> ents, int id, (P3? At, int Item, DateTimeOffset Seen) last)
+    {
+        if (last.At is not { } la || last.Item < 0) return null;
+        return ents.Where(x => x.Kind == "item" && x.ItemId == last.Item && x.Id != id && Math.Abs(x.X - (la.X + 0.5)) <= 1.5 && Math.Abs(x.Z - (la.Z + 0.5)) <= 1.5
+                && Math.Abs(x.Y - la.Y) <= 1.5).OrderBy(x => Math.Abs(x.X - (la.X + 0.5)) + Math.Abs(x.Z - (la.Z + 0.5))).FirstOrDefault();
+    }
+
+    /// <summary>Merged into a stack of the same item right by it: the designation follows the stack (or goes, when that one is marked too).</summary>
+    private void FollowMerge(DesignationState d, int id, StoryEntity into, HashSet<int> marked)
+    {
+        _markSeen.Remove(id);
+        if (marked.Contains(into.Id)) { DropMark(d); return; }
+        d.Entity = into.Id;
+        d.Rev = Touch();
+        marked.Add(into.Id);
+        _markSeen[into.Id] = (into.Block, into.ItemId, Now);
     }
 }

@@ -102,51 +102,9 @@ public static class FuzzySimplicialSet
 
         for (int i = 0; i < n; i++)
         {
-            double lo = 0.0, hi = double.PositiveInfinity, mid = 1.0;
             var ith = distances[i];
-            var nonZero = ith.Where(d => d > 0.0).ToArray();
-            if (nonZero.Length >= localConnectivity)
-            {
-                int index = (int)Math.Floor(localConnectivity);
-                double interpolation = localConnectivity - index;
-                if (index > 0)
-                {
-                    rho[i] = nonZero[index - 1];
-                    if (interpolation > SmoothKTolerance)
-                        rho[i] += interpolation * (nonZero[index] - nonZero[index - 1]);
-                }
-                else
-                {
-                    rho[i] = interpolation * nonZero[0];
-                }
-            }
-            else if (nonZero.Length > 0)
-            {
-                rho[i] = nonZero.Max();
-            }
-
-            for (int it = 0; it < nIter; it++)
-            {
-                double psum = 0.0;
-                for (int j = 1; j < ith.Length; j++)
-                {
-                    double d = ith[j] - rho[i];
-                    psum += d > 0 ? Math.Exp(-(d / mid)) : 1.0;
-                }
-                if (Math.Abs(psum - target) < SmoothKTolerance) break;
-                if (psum > target)
-                {
-                    hi = mid;
-                    mid = (lo + hi) / 2.0;
-                }
-                else
-                {
-                    lo = mid;
-                    if (double.IsPositiveInfinity(hi)) mid *= 2;
-                    else mid = (lo + hi) / 2.0;
-                }
-            }
-            result[i] = mid;
+            rho[i] = Rho(ith, localConnectivity);
+            result[i] = Sigma(ith, rho[i], target, nIter);
             if (rho[i] > 0.0)
             {
                 double meanIth = ith.Average(d => (double)d);
@@ -160,6 +118,53 @@ public static class FuzzySimplicialSet
         return (result, rho);
     }
 
+    /// <summary>Distance to the local_connectivity-th nearest non-zero neighbour (interpolated), umap's rho.</summary>
+    private static double Rho(float[] ith, double localConnectivity)
+    {
+        var nonZero = ith.Where(d => d > 0.0).ToArray();
+        if (nonZero.Length < localConnectivity) return nonZero.Length > 0 ? nonZero.Max() : 0.0;
+        int index = (int)Math.Floor(localConnectivity);
+        double interpolation = localConnectivity - index;
+        if (index <= 0) return interpolation * nonZero[0];
+        double rho = nonZero[index - 1];
+        if (interpolation > SmoothKTolerance)
+            rho += interpolation * (nonZero[index] - nonZero[index - 1]);
+        return rho;
+    }
+
+    /// <summary>Binary search for the sigma whose membership sum hits log2(k)·bandwidth.</summary>
+    private static double Sigma(float[] ith, double rho, double target, int nIter)
+    {
+        double lo = 0.0, hi = double.PositiveInfinity, mid = 1.0;
+        for (int it = 0; it < nIter; it++)
+        {
+            double psum = MembershipSum(ith, rho, mid);
+            if (Math.Abs(psum - target) < SmoothKTolerance) break;
+            if (psum > target)
+            {
+                hi = mid;
+                mid = (lo + hi) / 2.0;
+            }
+            else
+            {
+                lo = mid;
+                mid = double.IsPositiveInfinity(hi) ? mid * 2 : (lo + hi) / 2.0;
+            }
+        }
+        return mid;
+    }
+
+    private static double MembershipSum(float[] ith, double rho, double sigma)
+    {
+        double psum = 0.0;
+        for (int j = 1; j < ith.Length; j++)
+        {
+            double d = ith[j] - rho;
+            psum += d > 0 ? Math.Exp(-(d / sigma)) : 1.0;
+        }
+        return psum;
+    }
+
     /// <summary>
     /// umap_.py fuzzy_simplicial_set: membership strengths then the fuzzy union
     /// <c>mix·(A + Aᵀ − A∘Aᵀ) + (1 − mix)·(A∘Aᵀ)</c>, zeros eliminated.
@@ -170,7 +175,15 @@ public static class FuzzySimplicialSet
         var (knnI, knnD) = NearestNeighbors(x, nNeighbors);
         var (sigmas, rhos) = SmoothKnnDist(knnD, nNeighbors, localConnectivity);
 
-        // A in CSR (sorted columns)
+        var (aRp, aCol, aVal) = Memberships(knnI, knnD, sigmas, rhos, nNeighbors);
+        var (tRp, tCol, tVal) = Transpose(n, aRp, aCol, aVal);
+        return FuzzyUnion(n, aRp, aCol, aVal, tRp, tCol, tVal, setOpMixRatio);
+    }
+
+    /// <summary>A in CSR (sorted columns): exp(-(d - rho) / sigma) membership strengths, zeros dropped.</summary>
+    private static (int[] RowPtr, List<int> Col, List<double> Val) Memberships(int[][] knnI, float[][] knnD, double[] sigmas, double[] rhos, int nNeighbors)
+    {
+        int n = knnI.Length;
         var aRp = new int[n + 1];
         var aCol = new List<int>(n * nNeighbors);
         var aVal = new List<double>(n * nNeighbors);
@@ -181,20 +194,26 @@ public static class FuzzySimplicialSet
             for (int j = 0; j < nNeighbors; j++)
             {
                 int c = knnI[i][j];
-                double d = knnD[i][j];
-                double val;
-                if (c == i) val = 0.0;
-                else if (d >= CosineDisconnection) val = 0.0;
-                else if (d - rhos[i] <= 0.0 || sigmas[i] == 0.0) val = 1.0;
-                else val = Math.Exp(-((d - rhos[i]) / sigmas[i]));
+                double val = Membership(c == i, knnD[i][j], rhos[i], sigmas[i]);
                 if (val != 0.0) rowBuf.Add((c, val));
             }
             rowBuf.Sort((p, q) => p.c.CompareTo(q.c));
             foreach (var (c, v) in rowBuf) { aCol.Add(c); aVal.Add(v); }
             aRp[i + 1] = aCol.Count;
         }
+        return (aRp, aCol, aVal);
+    }
 
-        // Aᵀ in CSR
+    private static double Membership(bool self, double d, double rho, double sigma)
+    {
+        if (self || d >= CosineDisconnection) return 0.0;
+        if (d - rho <= 0.0 || sigma == 0.0) return 1.0;
+        return Math.Exp(-((d - rho) / sigma));
+    }
+
+    /// <summary>Aᵀ in CSR (rows visited ascending, so columns come out sorted).</summary>
+    private static (int[] RowPtr, int[] Col, double[] Val) Transpose(int n, int[] aRp, List<int> aCol, List<double> aVal)
+    {
         var tCount = new int[n + 1];
         foreach (var c in aCol) tCount[c + 1]++;
         for (int i = 0; i < n; i++) tCount[i + 1] += tCount[i];
@@ -207,10 +226,15 @@ public static class FuzzySimplicialSet
             {
                 int c = aCol[p];
                 int q = fill[c]++;
-                tCol[q] = i; // rows visited ascending → sorted
+                tCol[q] = i;
                 tVal[q] = aVal[p];
             }
+        return (tRp, tCol, tVal);
+    }
 
+    /// <summary>mix·(A + Aᵀ − A∘Aᵀ) + (1 − mix)·(A∘Aᵀ), merged row by row over the two sorted CSRs.</summary>
+    private static SparseGraph FuzzyUnion(int n, int[] aRp, List<int> aCol, List<double> aVal, int[] tRp, int[] tCol, double[] tVal, double setOpMixRatio)
+    {
         var rp = new int[n + 1];
         var col = new List<int>(aCol.Count * 2);
         var val2 = new List<double>(aCol.Count * 2);

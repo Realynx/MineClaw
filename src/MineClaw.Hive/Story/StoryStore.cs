@@ -56,32 +56,39 @@ public sealed class StoryStore(AgentDb db)
             Ensure();
             var list = new List<StoryColony>();
             foreach (var (id, json, rev) in db.Query("SELECT id, json, rev FROM story_colonies ORDER BY id", r => (r.GetString(0), r.GetString(1), r.GetInt64(2))))
-            {
-                var meta = JsonSerializer.Deserialize<ColonyMeta>(json, J);
-                if (meta == null) continue;
-                var c = make(meta);
-                foreach (var pj in db.Query("SELECT json FROM story_pawns WHERE colony = $c", r => r.GetString(0), ("$c", id)))
-                    if (JsonSerializer.Deserialize<PawnState>(pj, J) is { } p) c.Pawns[p.Name] = p;
-                foreach (var (kind, oj) in db.Query("SELECT kind, json FROM story_objects WHERE colony = $c ORDER BY rowid", r => (r.GetString(0), r.GetString(1)), ("$c", id)))
-                {
-                    switch (kind)
-                    {
-                        case "zone" when JsonSerializer.Deserialize<ZoneState>(oj, J) is { } z: c.Zones.Add(z); break;
-                        case "designation" when JsonSerializer.Deserialize<DesignationState>(oj, J) is { } d: c.Designations.Add(d); break;
-                        case "storage" when JsonSerializer.Deserialize<StorageState>(oj, J) is { } s: c.Storages.Add(s); break;
-                        case "build" when JsonSerializer.Deserialize<BuildState>(oj, J) is { } b:
-                            foreach (var g in b.Ghosts.Where(g => g.State == "leased")) g.State = "todo"; // its lease went with the old process
-                            c.Builds.Add(b);
-                            break;
-                        case "bench" when JsonSerializer.Deserialize<WorkbenchState>(oj, J) is { } w: c.Benches.Add(w); break;
-                    }
-                }
-                c.SetRev(rev);
-                // Older saves: rectangle zones become cell sets (the same cells), a growing zone's plant a one-bill list. Saved at once.
-                if (c.MigrateZones() | c.MigrateRoles() | c.MigrateWaterFailures()) Save(c);
-                list.Add(c);
-            }
+                if (LoadColony(make, id, json, rev) is { } c) list.Add(c);
             return list;
+        }
+    }
+
+    /// <summary>One saved colony: its meta, pawns and objects (zones, designations, storages, builds, benches), migrated when older.</summary>
+    private StoryColony? LoadColony(Func<ColonyMeta, StoryColony> make, string id, string json, long rev)
+    {
+        var meta = JsonSerializer.Deserialize<ColonyMeta>(json, J);
+        if (meta == null) return null;
+        var c = make(meta);
+        foreach (var pj in db.Query("SELECT json FROM story_pawns WHERE colony = $c", r => r.GetString(0), ("$c", id)))
+            if (JsonSerializer.Deserialize<PawnState>(pj, J) is { } p) c.Pawns[p.Name] = p;
+        foreach (var (kind, oj) in db.Query("SELECT kind, json FROM story_objects WHERE colony = $c ORDER BY rowid", r => (r.GetString(0), r.GetString(1)), ("$c", id)))
+            LoadObject(c, kind, oj);
+        c.SetRev(rev);
+        // Older saves: rectangle zones become cell sets (the same cells), a growing zone's plant a one-bill list. Saved at once.
+        if (c.MigrateZones() | c.MigrateRoles() | c.MigrateWaterFailures()) Save(c);
+        return c;
+    }
+
+    private static void LoadObject(StoryColony c, string kind, string oj)
+    {
+        switch (kind)
+        {
+            case "zone" when JsonSerializer.Deserialize<ZoneState>(oj, J) is { } z: c.Zones.Add(z); break;
+            case "designation" when JsonSerializer.Deserialize<DesignationState>(oj, J) is { } d: c.Designations.Add(d); break;
+            case "storage" when JsonSerializer.Deserialize<StorageState>(oj, J) is { } s: c.Storages.Add(s); break;
+            case "build" when JsonSerializer.Deserialize<BuildState>(oj, J) is { } b:
+                foreach (var g in b.Ghosts.Where(g => g.State == "leased")) g.State = "todo"; // its lease went with the old process
+                c.Builds.Add(b);
+                break;
+            case "bench" when JsonSerializer.Deserialize<WorkbenchState>(oj, J) is { } w: c.Benches.Add(w); break;
         }
     }
 

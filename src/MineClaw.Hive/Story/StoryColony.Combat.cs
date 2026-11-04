@@ -36,14 +36,25 @@ public sealed partial class StoryColony
         if (e == null) return (null, "attack target: no such entity in view");
         if (e.Kind == "item") return (null, "attack target is a dropped item");
         if (e.Kind != "player") return (null, null);
-        if (Pawns.ContainsKey(e.Name) || Pawns.Values.Any(p => p.Display.Equals(e.Name, StringComparison.OrdinalIgnoreCase)))
-            return (null, $"won't attack {e.Name}: it is one of the colony's own pawns");
+        return PlayerAttackCheck(id, e.Name, confirm);
+    }
+
+    /// <summary>A player or bot: never one of the colony's own pawns; anyone else only with <c>confirm: true</c>.</summary>
+    private (JsonObject? Confirm, string? Error) PlayerAttackCheck(int id, string name, JsonNode? confirm)
+    {
+        if (Pawns.ContainsKey(name) || Pawns.Values.Any(p => p.Display.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            return (null, $"won't attack {name}: it is one of the colony's own pawns");
         bool ok = confirm is JsonValue v && v.TryGetValue<bool>(out var b) && b;
         if (ok) return (null, null);
-        bool bot;
-        try { bot = Host.IsBot(e.Name); } catch (Exception) { bot = false; }
-        var info = new JsonObject { ["entity"] = id, ["name"] = e.Name, ["kind"] = bot ? "bot" : "player" };
-        return (info, $"{ConfirmError}: attacking {(bot ? "the bot" : "the player")} {e.Name} needs confirm: true");
+        bool bot = IsBotSafe(name);
+        var info = new JsonObject { ["entity"] = id, ["name"] = name, ["kind"] = bot ? "bot" : "player" };
+        return (info, $"{ConfirmError}: attacking {(bot ? "the bot" : "the player")} {name} needs confirm: true");
+    }
+
+    /// <summary>Whether the host runs a bot by that name (false when it can't tell).</summary>
+    private bool IsBotSafe(string name)
+    {
+        try { return Host.IsBot(name); } catch (Exception) { return false; }
     }
 
     /// <summary>An attack order's job: the exact entity (by id), every ordered pawn at once (no lease: they gang up), a player only

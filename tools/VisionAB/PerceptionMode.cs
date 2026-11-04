@@ -30,10 +30,7 @@ static class PerceptionMode
 
     public static async Task<int> Live(string root, string outDir, Func<string, string?> arg, LlmOptions llm)
     {
-        const int HardMaxCalls = 20;
-        const decimal HardCapUsd = 0.50m;
-        int maxCalls = Math.Min(HardMaxCalls, int.TryParse(arg("max-calls"), out var mc) ? mc : HardMaxCalls);
-        decimal cap = Math.Min(HardCapUsd, decimal.TryParse(arg("cap"), NumberStyles.Number, CultureInfo.InvariantCulture, out var cv) ? cv : HardCapUsd);
+        var (maxCalls, cap) = Limits(arg);
         var fixture = File.ReadAllText(Path.Combine(root, "tests", "fixtures", "portal-trip", "nether.txt"));
         var only = arg("only")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var dualGen = File.ReadAllText(Path.Combine(root, "tests", "fixtures", "vision-eval", "dual-gen.txt"));
@@ -58,29 +55,46 @@ static class PerceptionMode
                 if (row.InputTokens > 0 || row.Error != null) calls++; // an exact (voxel) answer makes no call
                 spent += row.Usd;
                 rows.Add(row);
-                Console.WriteLine($"{c.Id,-19} {arm.Name,-18} {(row.Ok ? "OK " : "BAD")} raw {(row.RawOk ? "ok " : "bad")} in {row.InputTokens,5} out {row.OutputTokens,4} " +
-                    $"brain {row.BrainTokens,4} ${row.Usd:0.00000} {row.LatencyMs,5}ms halluc {row.Mismatched}/{row.Checked}  {Trunc(row.Answer, 90)}{(row.Error != null ? " ERR " + row.Error : "")}");
-                File.AppendAllText(log, JsonSerializer.Serialize(new { @case = c.Id, arm = arm.Name, row.Ok, row.RawOk, row.Answer, expected = c.Expected, row.InputTokens,
-                    row.OutputTokens, row.BrainTokens, row.Usd, row.LatencyMs, row.Checked, row.Mismatched, row.Error }) + "\n");
+                PrintRow(c, arm, row, log);
             }
         }
     done:
         Console.WriteLine();
         Console.WriteLine(VisionEval.Report(rows));
         Console.WriteLine($"total {calls} calls ${spent:0.0000} (cap ${cap}); log {log}");
-        if (arg("record") != null || Environment.GetCommandLineArgs().Contains("--record"))
-        {
-            var dir = Path.Combine(root, "tests", "fixtures", "vision-eval");
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, "recorded.json");
-            // Merge: a partial re-run replaces only its own (case, model) answers.
-            var all = File.Exists(path) ? JsonSerializer.Deserialize<List<RecordedAnswer>>(File.ReadAllText(path)) ?? [] : [];
-            all.RemoveAll(o => recorder.Recorded.Any(n => n.Case == o.Case && n.Model == o.Model));
-            all.AddRange(recorder.Recorded);
-            File.WriteAllText(path, JsonSerializer.Serialize(all.OrderBy(x => x.Case).ThenBy(x => x.Model).ToList(), new JsonSerializerOptions { WriteIndented = true }));
-            Console.WriteLine($"recorded {recorder.Recorded.Count} answers ({all.Count} in total) to {path}");
-        }
+        if (arg("record") != null || Environment.GetCommandLineArgs().Contains("--record")) SaveRecorded(root, recorder);
         return 0;
+    }
+
+    /// <summary>--max-calls and --cap, never above the hard limits (20 calls, $0.50).</summary>
+    private static (int MaxCalls, decimal Cap) Limits(Func<string, string?> arg)
+    {
+        const int HardMaxCalls = 20;
+        const decimal HardCapUsd = 0.50m;
+        int maxCalls = Math.Min(HardMaxCalls, int.TryParse(arg("max-calls"), out var mc) ? mc : HardMaxCalls);
+        decimal cap = Math.Min(HardCapUsd, decimal.TryParse(arg("cap"), NumberStyles.Number, CultureInfo.InvariantCulture, out var cv) ? cv : HardCapUsd);
+        return (maxCalls, cap);
+    }
+
+    private static void PrintRow(VisionEvalCase c, VisionEvalArm arm, VisionEvalRow row, string log)
+    {
+        Console.WriteLine($"{c.Id,-19} {arm.Name,-18} {(row.Ok ? "OK " : "BAD")} raw {(row.RawOk ? "ok " : "bad")} in {row.InputTokens,5} out {row.OutputTokens,4} " +
+            $"brain {row.BrainTokens,4} ${row.Usd:0.00000} {row.LatencyMs,5}ms halluc {row.Mismatched}/{row.Checked}  {Trunc(row.Answer, 90)}{(row.Error != null ? " ERR " + row.Error : "")}");
+        File.AppendAllText(log, JsonSerializer.Serialize(new { @case = c.Id, arm = arm.Name, row.Ok, row.RawOk, row.Answer, expected = c.Expected, row.InputTokens,
+            row.OutputTokens, row.BrainTokens, row.Usd, row.LatencyMs, row.Checked, row.Mismatched, row.Error }) + "\n");
+    }
+
+    /// <summary>Merge: a partial re-run replaces only its own (case, model) answers.</summary>
+    private static void SaveRecorded(string root, RecordingLlm recorder)
+    {
+        var dir = Path.Combine(root, "tests", "fixtures", "vision-eval");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "recorded.json");
+        var all = File.Exists(path) ? JsonSerializer.Deserialize<List<RecordedAnswer>>(File.ReadAllText(path)) ?? [] : [];
+        all.RemoveAll(o => recorder.Recorded.Any(n => n.Case == o.Case && n.Model == o.Model));
+        all.AddRange(recorder.Recorded);
+        File.WriteAllText(path, JsonSerializer.Serialize(all.OrderBy(x => x.Case).ThenBy(x => x.Model).ToList(), new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"recorded {recorder.Recorded.Count} answers ({all.Count} in total) to {path}");
     }
 
     private static string Trunc(string s, int n) => (s.Length <= n ? s : s[..n]).Replace('\n', ' ');

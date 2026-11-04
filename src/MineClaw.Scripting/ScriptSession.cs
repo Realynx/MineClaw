@@ -237,7 +237,7 @@ public sealed partial class ScriptSession
     /// <summary>Asks for a pause at the next safe point. <paramref name="abort"/> also cuts an interruptible action short (re-run on resume).</summary>
     public bool RequestPause(PauseKind kind, string reason, bool abort)
     {
-        CancellationTokenSource? cut = null;
+        CancellationTokenSource? cut;
         lock (_lock)
         {
             if (!IsLive || _stopReason != null) return false;
@@ -247,10 +247,18 @@ public sealed partial class ScriptSession
                 return true;
             }
             if (_pauseReq is not { } cur || kind >= cur) { _pauseReq = kind; _pauseReqReason = reason; _pauseReqEvent = _nextPauseEvent; }
-            if (abort && !_currentAtomic && _abortCts != null) { _abortedForPause = true; cut = _abortCts; }
+            cut = TakeAbortForPause(abort);
         }
         try { cut?.Cancel(); } catch (ObjectDisposedException) { }
         return true;
+    }
+
+    /// <summary>The in-flight interruptible action's token to cut for a pause, if asked and possible (caller holds the lock).</summary>
+    private CancellationTokenSource? TakeAbortForPause(bool abort)
+    {
+        if (!abort || _currentAtomic || _abortCts == null) return null;
+        _abortedForPause = true;
+        return _abortCts;
     }
 
     [ThreadStatic] private static ScriptEvent? _nextPauseEvent;
@@ -299,6 +307,13 @@ public sealed partial class ScriptSession
     private void Body()
     {
         using var scope = _owner.StepScope?.Invoke(); // this lane's body, for the whole thread
+        var (final, reason, result) = Execute();
+        Finish(final, reason, result);
+    }
+
+    /// <summary>Runs the script (restarts included) and classifies how it ended.</summary>
+    private (ScriptStatus Final, string? Reason, IReadOnlyList<JsonNode?> Result) Execute()
+    {
         ScriptStatus final;
         string? reason = null;
         IReadOnlyList<JsonNode?> result = [];
@@ -309,14 +324,7 @@ public sealed partial class ScriptSession
             lock (_lock) if (Status == ScriptStatus.Starting) Status = ScriptStatus.Running;
             _active.Start();
             TouchSegment();
-            while (true)
-            {
-                try { result = _runtime.Run(Code, _hardCt); break; }
-                catch (Exception ex) when (FindRestart(ex) is { } restart && _stopReason == null)
-                {
-                    Restart(restart.Label);
-                }
-            }
+            result = RunWithRestarts();
             ThrowIfStopping();
             if (_resumeTarget != null) throw new ScriptFailException($"checkpoint '{_resumeTarget}' not reached");
             final = ScriptStatus.Done;
@@ -326,30 +334,30 @@ public sealed partial class ScriptSession
         {
             (final, reason) = Classify(ex);
         }
+        return (final, reason, result);
+    }
+
+    /// <summary>The runtime's run; a restart_step (not while stopping) restarts it on a fresh engine.</summary>
+    private IReadOnlyList<JsonNode?> RunWithRestarts()
+    {
+        while (true)
+        {
+            try { return _runtime!.Run(Code, _hardCt); }
+            catch (Exception ex) when (FindRestart(ex) is { } restart && _stopReason == null)
+            {
+                Restart(restart.Label);
+            }
+        }
+    }
+
+    /// <summary>The script thread's last words: nothing here may throw out of the thread.</summary>
+    private void Finish(ScriptStatus final, string? reason, IReadOnlyList<JsonNode?> result)
+    {
         try { CarryJson = _runtime?.CarryJson(); } catch (Exception) { }
         try { VerifyAtEnd(final); } catch (Exception) { }
         _active.Stop();
         try { _watchdog?.Dispose(); } catch (Exception) { }
-        TaskCompletionSource settled;
-        string outcome;
-        lock (_lock)
-        {
-            Status = final;
-            Reason = reason;
-            Finished = _time.GetUtcNow();
-            Result = final == ScriptStatus.Done ? Completed(result) : null;
-            // The script thread's last words: nothing here may throw out of the thread (an exception escaping a thread ends the
-            // process, and with in-process hives every hive in it).
-            try { outcome = Outcome = ScriptText.Outcome(this, Result, InventoryDelta(), _o.ResultChars); }
-            catch (Exception ex) { outcome = Outcome = $"{final}: {reason ?? "-"} (outcome unavailable: {ex.Message})"; }
-            try
-            {
-                var now = InventoryCounts();
-                ItemsGained = now.Sum(kv => Math.Max(0, kv.Value - _invStart.GetValueOrDefault(kv.Key)));
-            }
-            catch (Exception) { }
-            settled = _settled;
-        }
+        var (settled, outcome) = SettleEnd(final, reason, result);
         try { _runtime?.Dispose(); } catch (Exception) { }
         try { _owner.OnEnded(this); } // stats, saves, promotion before anyone waiting sees the end
         catch (Exception) { /* the end still settles below; the owner's own failure is not the script's */ }
@@ -358,19 +366,61 @@ public sealed partial class ScriptSession
         _abortCts?.Dispose();
     }
 
+    /// <summary>Final status, result, outcome text and items gained, under the lock; returns the waiters to release and the outcome.</summary>
+    private (TaskCompletionSource Settled, string Outcome) SettleEnd(ScriptStatus final, string? reason, IReadOnlyList<JsonNode?> result)
+    {
+        lock (_lock)
+        {
+            Status = final;
+            Reason = reason;
+            Finished = _time.GetUtcNow();
+            Result = final == ScriptStatus.Done ? Completed(result) : null;
+            // The script thread's last words: nothing here may throw out of the thread (an exception escaping a thread ends the
+            // process, and with in-process hives every hive in it).
+            string outcome;
+            try { outcome = Outcome = ScriptText.Outcome(this, Result, InventoryDelta(), _o.ResultChars); }
+            catch (Exception ex) { outcome = Outcome = $"{final}: {reason ?? "-"} (outcome unavailable: {ex.Message})"; }
+            try
+            {
+                var now = InventoryCounts();
+                ItemsGained = now.Sum(kv => Math.Max(0, kv.Value - _invStart.GetValueOrDefault(kv.Key)));
+            }
+            catch (Exception) { }
+            return (_settled, outcome);
+        }
+    }
+
     private (ScriptStatus, string) Classify(Exception ex)
     {
         string? stop, limit;
         bool stopIsLimit;
         lock (_lock) { stop = _stopReason; stopIsLimit = _stopIsLimit; limit = _limitHit; }
-        (string? Reason, int Line)? desc = null;
-        try { desc = _runtime?.Describe(ex); } catch (Exception) { }
+        var desc = DescribeSafely(ex);
         // Our own exceptions may arrive wrapped by the engine (whose message carries the line); the innermost one decides.
         if (Line == 0 && desc is { Line: > 0 } at)
         {
             Line = at.Line;
             Snippet = SourceLine(Line);
         }
+        if (OwnException(ex) is { } own) return own;
+        if (limit != null) return (ScriptStatus.Failed, limit);
+        if (stop != null) return (stopIsLimit ? ScriptStatus.Failed : ScriptStatus.Cancelled, stop);
+        if (desc is { Reason: { } why } d2)
+        {
+            if (d2.Line > 0) { Line = d2.Line; Snippet = SourceLine(Line); }
+            return (ScriptStatus.Failed, why);
+        }
+        return HostError(ex);
+    }
+
+    private (string? Reason, int Line)? DescribeSafely(Exception ex)
+    {
+        try { return _runtime?.Describe(ex); } catch (Exception) { return null; }
+    }
+
+    /// <summary>The first of our own stop/limit/fail/unwind exceptions in the chain (outermost first), as a status.</summary>
+    private static (ScriptStatus, string)? OwnException(Exception ex)
+    {
         for (var e = ex; e != null; e = e.InnerException)
             switch (e)
             {
@@ -379,13 +429,11 @@ public sealed partial class ScriptSession
                 case ScriptFailException f: return (ScriptStatus.Failed, f.Message);
                 case Sdk.ScriptUnwind u: return (ScriptStatus.Failed, "error: " + u.Message + " outside its machine/timeout");
             }
-        if (limit != null) return (ScriptStatus.Failed, limit);
-        if (stop != null) return (stopIsLimit ? ScriptStatus.Failed : ScriptStatus.Cancelled, stop);
-        if (desc is { Reason: { } why } d2)
-        {
-            if (d2.Line > 0) { Line = d2.Line; Snippet = SourceLine(Line); }
-            return (ScriptStatus.Failed, why);
-        }
+        return null;
+    }
+
+    private (ScriptStatus, string) HostError(Exception ex)
+    {
         switch (ex)
         {
             case OperationCanceledException: return (ScriptStatus.Cancelled, "shutdown");
@@ -480,41 +528,56 @@ public sealed partial class ScriptSession
                 if (OwnerLost?.Invoke() is { } lost) { Stop(lost); ThrowIfStopping(); }
                 Signals.Poll(onScriptThread: true);
                 if (TakeHandler(out var h, out var ev)) { RunHandler(h!, ev!); continue; }
-                PauseKind kind;
-                string reason;
-                ScriptEvent? cause;
-                lock (_lock)
-                {
-                    if (_pauseReq is not { } k)
-                    {
-                        if (_interruptReqs.Count == 0) return;
-                        kind = default;
-                        reason = "";
-                        cause = null;
-                    }
-                    else
-                    {
-                        kind = k;
-                        reason = _pauseReqReason ?? kind.ToString().ToLowerInvariant();
-                        cause = _pauseReqEvent;
-                        _pauseReq = null;
-                        _pauseReqEvent = null;
-                    }
-                }
-                if (reason.Length == 0) { TakeInterruptRequest(); continue; }
+                if (NextPauseRequest() is not { } req) return;
+                if (req.Reason.Length == 0) { TakeInterruptRequest(); continue; }
                 // Inline fix first (onInterrupt → learned handler → patch turn); escalation pauses and wakes the brain as before.
-                if (PatchPause(kind, cause)) continue;
-                PauseHere(kind, reason);
+                if (PatchPause(req.Kind, req.Cause)) continue;
+                PauseHere(req.Kind, req.Reason);
             }
         }
         finally { _inSafePoint = false; }
+    }
+
+    /// <summary>
+    /// Takes the pending pause request (cleared), or an empty reason when only interrupt requests wait; null when there is
+    /// nothing to do.
+    /// </summary>
+    private (PauseKind Kind, string Reason, ScriptEvent? Cause)? NextPauseRequest()
+    {
+        lock (_lock)
+        {
+            if (_pauseReq is not { } k) return _interruptReqs.Count == 0 ? null : (default(PauseKind), "", null);
+            var reason = _pauseReqReason ?? k.ToString().ToLowerInvariant();
+            var cause = _pauseReqEvent;
+            _pauseReq = null;
+            _pauseReqEvent = null;
+            return (k, reason, cause);
+        }
     }
 
     /// <summary>Blocks the script thread until resume/cancel/timeout. Returns the resume answer (ask"brain").</summary>
     internal string? PauseHere(PauseKind kind, string reason)
     {
         var at = _time.GetUtcNow();
-        TaskCompletionSource settled;
+        var settled = EnterPause(kind, reason, at);
+        _active.Stop();
+        SnapshotVars();
+        _owner.OnPaused(this);
+        settled.TrySetResult();
+        _blocked = true; // parked: the debugger may read the engine's locals
+        bool auto = WaitWhilePaused(at, reason);
+        WaitProbe();
+        var answer = LeavePause();
+        ThrowIfStopping();
+        _active.Start();
+        TouchSegment();
+        _owner.OnResumed(this, auto);
+        return answer;
+    }
+
+    /// <summary>Marks the session paused; returns the waiters to release (a fresh one replaces it).</summary>
+    private TaskCompletionSource EnterPause(PauseKind kind, string reason, DateTimeOffset at)
+    {
         lock (_lock)
         {
             Status = ScriptStatus.Paused;
@@ -525,49 +588,65 @@ public sealed partial class ScriptSession
             _resumeReq = false;
             _resumeAnswer = null;
             _wake.Reset();
-            settled = _settled;
+            var settled = _settled;
             _settled = NewTcs();
+            return settled;
         }
-        _active.Stop();
-        SnapshotVars();
-        _owner.OnPaused(this);
-        settled.TrySetResult();
-        bool auto = false;
+    }
+
+    private enum PauseCheck { Wait, Leave, AutoResume, Danger }
+
+    /// <summary>Parks until resumed, stopped or timed out; true when it resumed on its own (chat timeout, calm after danger).</summary>
+    private bool WaitWhilePaused(DateTimeOffset at, string reason)
+    {
         DateTimeOffset? safeSince = null;
-        _blocked = true; // parked: the debugger may read the engine's locals
         while (true)
         {
             _wake.Wait(TimeSpan.FromMilliseconds(100));
             var now = _time.GetUtcNow();
-            bool dangerPause;
-            lock (_lock)
-            {
-                if (_stopReason != null || _hardCt.IsCancellationRequested) break;
-                if (_resumeReq) break;
-                if (PausedFor == PauseKind.Chat && now - at >= TimeSpan.FromSeconds(_o.ChatAutoResumeSeconds)) { auto = true; break; }
-                dangerPause = PausedFor == PauseKind.Danger && Unattended;
-            }
-            if (dangerPause)
-            {
-                // Unattended (live 10-29: 20 hive bodies' lanes sat paused on a zombie each until the brain resumed them one by one):
-                // the body's reflexes fight/shelter/eat; once they let go and no new danger came for a moment, carry on (the cut
-                // action re-runs). Too long in danger: fail, so the coordinator re-runs the role and the leases go back.
-                bool busy = _host.SafetyBusy is { } sb && SafeBusyNow(sb);
-                var calm = TimeSpan.FromSeconds(Math.Max(0.2, _o.LaneSafeSeconds));
-                if (busy) safeSince = null; else safeSince ??= now;
-                DateTimeOffset last;
-                lock (_lock) last = _lastDanger;
-                if (safeSince is { } since && now - since >= calm && now - last >= calm) { auto = true; break; }
-                if (now - at >= TimeSpan.FromSeconds(Math.Max(1, _o.LaneDangerMaxSeconds)))
-                {
-                    Stop($"interrupted: {reason} for over {ScriptText.Dur(TimeSpan.FromSeconds(_o.LaneDangerMaxSeconds))}", limit: true);
-                    break;
-                }
-            }
-            if (now - at >= _o.MaxPause) { Stop($"paused over {ScriptText.Dur(_o.MaxPause)}"); break; }
+            var check = CheckPause(at, now);
+            if (check == PauseCheck.Leave) return false;
+            if (check == PauseCheck.AutoResume) return true;
+            if (check == PauseCheck.Danger && DangerSettled(at, now, reason, ref safeSince) is { } auto) return auto;
+            if (now - at >= _o.MaxPause) { Stop($"paused over {ScriptText.Dur(_o.MaxPause)}"); return false; }
         }
-        WaitProbe();
-        string? answer;
+    }
+
+    private PauseCheck CheckPause(DateTimeOffset at, DateTimeOffset now)
+    {
+        lock (_lock)
+        {
+            if (_stopReason != null || _hardCt.IsCancellationRequested) return PauseCheck.Leave;
+            if (_resumeReq) return PauseCheck.Leave;
+            if (PausedFor == PauseKind.Chat && now - at >= TimeSpan.FromSeconds(_o.ChatAutoResumeSeconds)) return PauseCheck.AutoResume;
+            return PausedFor == PauseKind.Danger && Unattended ? PauseCheck.Danger : PauseCheck.Wait;
+        }
+    }
+
+    /// <summary>
+    /// Unattended danger pause (live 10-29: 20 hive bodies' lanes sat paused on a zombie each until the brain resumed them one by
+    /// one): the body's reflexes fight/shelter/eat; once they let go and no new danger came for a moment, carry on (true: the cut
+    /// action re-runs). Too long in danger: fail (false), so the coordinator re-runs the role and the leases go back. Null: wait on.
+    /// </summary>
+    private bool? DangerSettled(DateTimeOffset at, DateTimeOffset now, string reason, ref DateTimeOffset? safeSince)
+    {
+        bool busy = _host.SafetyBusy is { } sb && SafeBusyNow(sb);
+        var calm = TimeSpan.FromSeconds(Math.Max(0.2, _o.LaneSafeSeconds));
+        if (busy) safeSince = null; else safeSince ??= now;
+        DateTimeOffset last;
+        lock (_lock) last = _lastDanger;
+        if (safeSince is { } since && now - since >= calm && now - last >= calm) return true;
+        if (now - at >= TimeSpan.FromSeconds(Math.Max(1, _o.LaneDangerMaxSeconds)))
+        {
+            Stop($"interrupted: {reason} for over {ScriptText.Dur(TimeSpan.FromSeconds(_o.LaneDangerMaxSeconds))}", limit: true);
+            return false;
+        }
+        return null;
+    }
+
+    /// <summary>Back to running (a hard cancel while parked becomes a "shutdown" stop); returns the resume answer.</summary>
+    private string? LeavePause()
+    {
         lock (_lock)
         {
             if (_hardCt.IsCancellationRequested && _stopReason == null) _stopReason = "shutdown";
@@ -576,14 +655,10 @@ public sealed partial class ScriptSession
             PauseReason = null;
             PausedAt = null;
             _resumeReq = false;
-            answer = _resumeAnswer;
+            var answer = _resumeAnswer;
             _resumeAnswer = null;
+            return answer;
         }
-        ThrowIfStopping();
-        _active.Start();
-        TouchSegment();
-        _owner.OnResumed(this, auto);
-        return answer;
     }
 
     private static bool SafeBusyNow(Func<bool> busy)
