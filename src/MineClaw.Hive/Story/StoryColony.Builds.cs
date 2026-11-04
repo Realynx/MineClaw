@@ -25,6 +25,7 @@ public sealed partial class StoryColony
         if (World is not { } w) return (null, "no world view yet");
         lock (_lock)
         {
+            MaterialsChanged(); // the queue changes: reservations and auto bills follow
             switch (op)
             {
                 case "add":
@@ -82,6 +83,7 @@ public sealed partial class StoryColony
                         {
                             Builds.Remove(b);
                             Removed("build", b.Id);
+                            _buildAlerted.Remove(b.Id);
                             foreach (var k in _leases.Keys.Where(k => k.StartsWith("g:" + b.Id + "|", StringComparison.Ordinal)).ToList()) _leases.Remove(k);
                             continue;
                         }
@@ -111,7 +113,7 @@ public sealed partial class StoryColony
 
     private bool Occupied(P3 at)
     {
-        foreach (var e in World?.Entities() ?? [])
+        foreach (var e in Ents())
             if (e.Kind == "player" && (int)Math.Floor(e.X) == at.X && (int)Math.Floor(e.Z) == at.Z && (at.Y == (int)Math.Floor(e.Y) || at.Y == (int)Math.Floor(e.Y) + 1))
                 return true;
         return false;
@@ -121,6 +123,7 @@ public sealed partial class StoryColony
     private ActiveJob? GhostJob(PawnState p, PawnLive live)
     {
         if (World is not { } w) return null;
+        EnsureMaterials(); // what each build may take (reserved in queue order) and what is being crafted for it
         var from = live.Block;
         foreach (var b in Builds.Where(b => b.Status is not ("paused" or "done")).OrderBy(b => b.Order))
         {
@@ -156,15 +159,28 @@ public sealed partial class StoryColony
                 var item = g.Item ?? w.Data.Item(g.Id).Name;
                 var itemId = w.Data.ItemByNameWithDamage(item)?.Item.Id ?? g.Id;
                 bool have = live.Inventory.Any(s => s.Id == itemId);
-                (StorageState Store, Stack Stack)? stored = have ? null : FindStored(s => s.Id == itemId, from);
+                var mat = b.Materials.FirstOrDefault(m => m.Item == item);
+                // What an earlier build reserved stays for it: this one takes from storage only its own share.
+                bool reservedAway = mat is { Have: 0 };
+                (StorageState Store, Stack Stack)? stored = have || reservedAway ? null : FindStored(s => s.Id == itemId, from);
                 if (!have && stored == null)
                 {
                     int need = b.Ghosts.Count(x => x.Job && x.State is "todo" or "leased" && (x.Item ?? "") == item);
-                    var reason = $"need {need} {w.Data.DisplayName(itemId, 0).ToLowerInvariant()}";
-                    if (b.Status != "blocked" || b.Reason != reason)
+                    var display = w.Data.DisplayName(itemId, 0).ToLowerInvariant();
+                    string status = "blocked", reason;
+                    bool alert = true;
+                    if (mat is { Crafting: > 0 }) { status = "waiting"; alert = false; reason = $"waiting for {mat.Crafting} {display} (being crafted)"; }
+                    else if (reservedAway && FindStored(s => s.Id == itemId, from) != null)
+                    { status = "waiting"; alert = false; reason = $"waiting: the {display} in storage is reserved for an earlier build"; }
+                    else
                     {
-                        b.Status = "blocked"; b.Reason = reason; b.Rev = Touch();
-                        Alert("warn", $"Build {b.Id} ({b.Kind}) is blocked: {reason}");
+                        reason = $"need {need} {display}";
+                        alert = mat is not { Short: > 0 }; // the materials pass already said what's short and why
+                    }
+                    if (b.Status != status || b.Reason != reason)
+                    {
+                        b.Status = status; b.Reason = reason; b.Rev = Touch();
+                        if (alert) Alert("warn", $"Build {b.Id} ({b.Kind}) is blocked: {reason}");
                     }
                     goto nextBuild;
                 }
@@ -228,6 +244,7 @@ public sealed partial class StoryColony
         if (FindGhost(j.SourceId) is not { } g) return;
         g.State = "done";
         g.Rev = Touch();
+        MaterialsChanged();
         var b = Builds.First(x => x.Ghosts.Contains(g));
         // A door's / bed's other half came with it.
         foreach (var other in b.Ghosts.Where(o => !o.Job && o.State != "done" && Math.Abs(o.At.X - g.At.X) + Math.Abs(o.At.Y - g.At.Y) + Math.Abs(o.At.Z - g.At.Z) == 1))

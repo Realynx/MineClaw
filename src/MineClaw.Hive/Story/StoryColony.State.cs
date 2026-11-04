@@ -23,6 +23,7 @@ public sealed partial class StoryColony
     {
         lock (_lock)
         {
+            EnsureMaterials(); // builds' materials and auto bills current (it may stamp a new revision: before "rev")
             long s = since ?? -1;
             bool full = since == null;
             bool New(long rev) => full || rev > s;
@@ -31,7 +32,7 @@ public sealed partial class StoryColony
             var o = new JsonObject
             {
                 ["id"] = Id, ["rev"] = _rev, ["since"] = since, ["full"] = full, ["at"] = Now, ["time_of_day"] = w?.TimeOfDay, ["hour"] = hour,
-                ["paused"] = Meta.Paused, ["active"] = Meta.Active, ["home"] = Home()?.Json(), ["tie_break"] = Meta.TieBreak,
+                ["paused"] = Meta.Paused, ["active"] = Meta.Active, ["home"] = Home()?.Json(), ["tie_break"] = Meta.TieBreak, ["options"] = OptionsJson(),
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
@@ -50,6 +51,9 @@ public sealed partial class StoryColony
                 {
                     ["id"] = b.Id, ["kind"] = b.Kind, ["label"] = b.Label, ["status"] = b.Status, ["reason"] = b.Reason, ["blocks_total"] = b.BlocksTotal,
                     ["blocks_done"] = b.BlocksDone, ["material"] = b.Material, ["order"] = b.Order, ["created"] = b.Created,
+                    ["materials"] = new JsonArray(b.Materials.Select(m => (JsonNode)m.Json()).ToArray()),
+                    ["no_craft"] = new JsonArray(b.NoCraft.Select(n => (JsonNode)n!).ToArray()),
+                    ["station"] = _station is { } st && st.Build == b.Id ? new JsonObject { ["kind"] = st.Kind, ["pos"] = st.Spot.Json() } : null,
                 }).ToArray()),
                 ["ghosts"] = new JsonObject
                 {
@@ -80,7 +84,7 @@ public sealed partial class StoryColony
             {
                 var removed = new JsonObject();
                 foreach (var g in _removed.Where(r => r.Rev > s).GroupBy(r => r.Kind))
-                    removed[g.Key + "s"] = new JsonArray(g.Select(r => (JsonNode)r.Id!).ToArray());
+                    removed[g.Key == "workbench" ? "workbenches" : g.Key + "s"] =new JsonArray(g.Select(r => (JsonNode)r.Id!).ToArray());
                 o["removed"] = removed;
             }
             return o;
@@ -158,5 +162,6 @@ public sealed partial class StoryColony
             ["deny"] = new JsonArray(b.Ingredients.Deny.Select(a => (JsonNode)a!).ToArray()),
         },
         ["radius"] = b.Radius, ["pawn"] = b.Pawn, ["min_skill"] = b.MinSkill, ["store"] = b.Store?.DeepClone(),
+        ["for_build"] = b.ForBuild, ["for_item"] = b.ForItem, ["step"] = b.ForBuild != null ? b.Step : null,
     };
 }

@@ -9,7 +9,7 @@ internal sealed class FakeStoryWorld(IGameData? data = null) : IStoryWorld
     public IGameData Data { get; } = data ?? Beta181GameData.Instance;
     public long TimeOfDay { get; set; } = 6000; // 12:00
     public int Height => 128;
-    public Dictionary<P3, (int Id, int Meta)> Blocks { get; } = new();
+    public System.Collections.Concurrent.ConcurrentDictionary<P3, (int Id, int Meta)> Blocks { get; } = new(); // a test may change a block while a report waits
     public List<StoryEntity> Ents { get; } = new();
     public (int Id, int Meta) Block(int x, int y, int z) => Blocks.TryGetValue(new P3(x, y, z), out var b) ? b : y <= 63 ? (1, 0) : (0, 0);
     public IReadOnlyList<StoryEntity> Entities() => Ents.ToList();
@@ -44,6 +44,9 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
 
     public int Release(string colony) => Lives.Count;
     public PawnLive Live(string account) => Lives.TryGetValue(account, out var l) ? l : PawnLive.Offline;
+    /// <summary>A pawn's own world view (its connection's), when a test gives it one; else the colony checks with main's.</summary>
+    public Dictionary<string, IStoryWorld> Views { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public IStoryWorld? ViewOf(string account) => Views.GetValueOrDefault(account);
     public string? StartPawn(string account, string colony) { Started.Add(account); return null; }
     public void Interrupt(string account, string why) => Interrupted.Add(account + ": " + why);
     public List<(string Account, P3 To)> Teleported { get; } = new();
@@ -68,7 +71,10 @@ internal static class StoryRig
     {
         var w = new FakeStoryWorld(data);
         var h = new FakeStoryHost(w);
-        var c = new StoryColony(new ColonyMeta { Id = "story-1", Name = "Test", Home = new P3(0, 64, 0) }, h, time);
+        var c = new StoryColony(new ColonyMeta { Id = "story-1", Name = "Test", Home = new P3(0, 64, 0) }, h, time)
+        {
+            DoneGrace = TimeSpan.FromMilliseconds(30), // a "done" the world doesn't confirm waits this long (1.5 s live)
+        };
         var (accounts, _) = h.Spawn("story-1", pawns, null);
         c.Joined(accounts);
         foreach (var p in c.Pawns.Values)

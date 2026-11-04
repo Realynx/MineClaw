@@ -35,6 +35,7 @@ public sealed partial class StoryColony
         s.FreeSlots = Math.Max(0, s.Slots - used);
         s.KnownAt = Now;
         s.Rev = Touch();
+        MaterialsChanged(); // what the builds can count on changed
     }
 
     internal void AddContents(StorageState s, Stack add)

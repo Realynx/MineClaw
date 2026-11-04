@@ -48,6 +48,7 @@ internal static class StoryWiring
         }
         catch (Exception ex) { log.LogWarning(ex, "story: loading the saved colonies failed"); }
         colonies.Start();
+        ContainerKnowledge.Story = new StoryChests(colonies, () => client.World.Dimension); // the viewer's container panel reads the ledgers
         StoryDirectives? directives = viewer == null ? null : new StoryDirectives(viewer, feed)
         {
             Data = () => client.Options.Profile.Data,

@@ -69,6 +69,242 @@ export function toolYRange(tool: DesignateId, level: number, height: number, cut
   return [level - 8, top];
 }
 
+// ------------------------------------------------------------------ height modes (mine, deconstruct)
+
+/**
+ * How deep a Mine or Deconstruct drag goes, the colony-sim way: the vertical extent is explicit, and the drag designates exactly
+ * the cells its preview shows (sent as `blocks`, never an area the director could expand deeper).
+ * - surface: the top block of each column (trees, plants and snow looked through) and the plants on it: one layer.
+ * - level: only blocks at the working level (PgUp / PgDn).
+ * - down: from the surface down to and including the working level (terrace down to a height).
+ * - flatten: everything above the working level, plants on it included: a flat floor at the level.
+ * - layers: N blocks deep from the surface (1–8).
+ */
+export type HeightMode = 'surface' | 'level' | 'down' | 'flatten' | 'layers';
+
+export const HEIGHT_MODES: ReadonlyArray<{ id: HeightMode; label: string; key: string; hint: string }> = [
+  { id: 'surface', label: 'Surface', key: 'Digit1', hint: 'The top block of each column and the plants on it: one layer' },
+  { id: 'level', label: 'Level', key: 'Digit2', hint: 'Only blocks at the working level (PgUp / PgDn)' },
+  { id: 'down', label: 'Down to level', key: 'Digit3', hint: 'From the surface down to and including the working level' },
+  { id: 'flatten', label: 'Flatten here', key: 'Digit4', hint: 'Everything above the working level: flat ground at the level' },
+  { id: 'layers', label: 'Layers', key: 'Digit5', hint: 'N blocks deep from the surface' },
+];
+
+/** The default mode per tool: Mine takes the surface (one layer, no surprises); Deconstruct the building down to its floor. */
+export const DEFAULT_HEIGHT: Record<'mine' | 'deconstruct', HeightMode> = { mine: 'surface', deconstruct: 'down' };
+
+/** Tools whose drag has a height mode. */
+export function hasHeight(tool: DesignateId): tool is 'mine' | 'deconstruct' {
+  return tool === 'mine' || tool === 'deconstruct';
+}
+
+/** At most this many cells per drag (the director's per-request limit). */
+export const MAX_DRAG_CELLS = 4096;
+/** How far below the working level a Surface or Layers drag looks for the top of a column (a pit, a ravine). */
+export const SURFACE_REACH = 32;
+/** With no level cut, the top of a column is searched this far above the working level. */
+export const TOP_REACH = 64;
+
+export function clampLayers(n: number): number {
+  return Math.max(1, Math.min(8, Math.round(n)));
+}
+
+/** What a column's top looks through (not ground): logs, leaves, plants, snow, crops, cane, vines, torches' neighbours. */
+export const NOT_GROUND_IDS: readonly number[] = [
+  ...LOG_IDS, 18, 161, 6, 31, 32, 37, 38, 39, 40, 175, 78, 59, 83, 106, 111, 141, 142, 207, 81, 115,
+];
+/** On a column's top, these go with it (cut or dug): plants, flowers, saplings, mushrooms, snow. */
+const ON_TOP_IDS: ReadonlySet<number> = new Set([6, 31, 32, 37, 38, 39, 40, 175, 78]);
+
+export interface HeightQuery {
+  /** The y span the column tops are searched in (the bottom is never gone below). */
+  min: number;
+  max: number;
+  /** Cells taken from the top down. */
+  depth: number;
+  /** Cells over the top to look at (plants on it). */
+  above: number;
+}
+
+/** The `stacks` query a height mode needs at a level (`cutY` = the x-ray cut: Surface and Layers see nothing at or over it;
+ * Down to level and Flatten here take the whole column above the level either way). */
+export function heightQuery(mode: HeightMode, level: number, layers: number, cutY: number | null): HeightQuery {
+  const top = cutY !== null ? cutY - 1 : level + TOP_REACH;
+  switch (mode) {
+    case 'surface':
+      return { min: level - SURFACE_REACH, max: top, depth: 1, above: 2 };
+    case 'layers':
+      return { min: level - SURFACE_REACH, max: top, depth: clampLayers(layers), above: 2 };
+    case 'level':
+      return { min: level, max: level, depth: 1, above: 0 };
+    case 'down':
+    case 'flatten':
+      // Everything above the level, x-rayed or not: the ground comes out flat at the level, not at the cut.
+      return { min: level, max: level + TOP_REACH, depth: TOP_REACH + 1, above: 2 };
+  }
+}
+
+export interface HeightTargets {
+  cells: V3[];
+  /** Columns with at least one cell. */
+  columns: number;
+  /** The highest and lowest designated y (null when nothing). */
+  top: number | null;
+  bottom: number | null;
+  /** The most cells in one column (the layers a drag takes). */
+  layers: number;
+  /** Over {@link MAX_DRAG_CELLS}: the drag designates nothing. */
+  tooMany: boolean;
+}
+
+/**
+ * The cells a height-mode drag designates, from a `stacks` answer ([x, y, z, id, meta, below, …], each column from the top
+ * down). Never air, never under the mode's bottom, plants only where they stand on the column's top.
+ */
+export function heightTargets(
+  tool: 'mine' | 'deconstruct',
+  mode: HeightMode,
+  stacks: readonly number[],
+  level: number,
+  filter: StoryMineFilter = 'all',
+): HeightTargets {
+  const cells: V3[] = [];
+  let colKey = '',
+    colTop: number | null = null,
+    colCount = 0,
+    layers = 0,
+    columns = 0,
+    top: number | null = null,
+    bottom: number | null = null;
+  const skip = new Set(NOT_GROUND_IDS);
+  const flush = () => {
+    if (colCount > 0) columns++;
+    layers = Math.max(layers, colCount);
+  };
+  for (let i = 0; i + 5 < stacks.length + 1; i += 6) {
+    const x = stacks[i]!, y = stacks[i + 1]!, z = stacks[i + 2]!, id = stacks[i + 3]!, meta = stacks[i + 4]!, below = stacks[i + 5]!;
+    const key = `${x},${z}`;
+    if (key !== colKey) {
+      flush();
+      colKey = key;
+      colTop = null;
+      colCount = 0;
+    }
+    if (id === 0) continue;
+    let take: boolean;
+    if (colTop === null && skip.has(id)) {
+      // Over the column's top: a plant (or snow) standing on it goes with it; trees stay (Chop takes them).
+      take = tool === 'mine' && ON_TOP_IDS.has(id) && filter === 'all';
+    } else {
+      if (colTop === null) colTop = y;
+      take = matchesTool(tool, id, meta, below, filter);
+    }
+    if (take && mode === 'level') take = y === level;
+    else if (take && mode === 'down') take = y >= level;
+    else if (take && mode === 'flatten') take = y > level;
+    if (!take) continue;
+    cells.push([x, y, z]);
+    colCount++;
+    top = top === null ? y : Math.max(top, y);
+    bottom = bottom === null ? y : Math.min(bottom, y);
+  }
+  flush();
+  return { cells, columns, top, bottom, layers, tooMany: cells.length > MAX_DRAG_CELLS };
+}
+
+/** The HUD line while dragging: "Mine (Surface): y 64 → 62 · 3 layers · 48 blocks". */
+export function heightLabel(toolLabel: string, mode: HeightMode, t: HeightTargets, layersN?: number): string {
+  const m = HEIGHT_MODES.find((h) => h.id === mode)!;
+  const name = mode === 'layers' ? `${m.label}: ${clampLayers(layersN ?? 1)}` : m.label;
+  const head = `${toolLabel} (${name})`;
+  if (!t.cells.length || t.top === null || t.bottom === null) return `${head}: nothing here`;
+  const span = t.top === t.bottom ? `y ${t.top}` : `y ${t.top} → ${t.bottom}`;
+  const n = t.cells.length;
+  const tail = t.tooMany ? ` · too many (max ${MAX_DRAG_CELLS}): make the box smaller` : '';
+  return `${head}: ${span} · ${t.layers} layer${t.layers === 1 ? '' : 's'} · ${n} block${n === 1 ? '' : 's'}${tail}`;
+}
+
+/** The designations request for exactly these cells (a height-mode drag). */
+export function heightBody(tool: 'mine' | 'deconstruct', cells: readonly V3[], filter?: StoryMineFilter): Record<string, unknown> {
+  return {
+    op: 'add',
+    kind: tool,
+    blocks: cells.slice(0, MAX_DRAG_CELLS).map((c) => [c[0], c[1], c[2]]),
+    ...(tool === 'mine' && filter && filter !== 'all' ? { filter } : {}),
+  };
+}
+
+/** The bounding box of some cells (a directive's area). */
+export function cellsArea(cells: readonly V3[], fallback: StoryArea): StoryArea {
+  if (!cells.length) return fallback;
+  let x1 = Infinity, y1 = Infinity, z1 = Infinity, x2 = -Infinity, y2 = -Infinity, z2 = -Infinity;
+  for (const [x, y, z] of cells) {
+    x1 = Math.min(x1, x); y1 = Math.min(y1, y); z1 = Math.min(z1, z);
+    x2 = Math.max(x2, x); y2 = Math.max(y2, y); z2 = Math.max(z2, z);
+  }
+  return [x1, y1, z1, x2, y2, z2];
+}
+
+// ------------------------------------------------------------------ cancelling a drag
+
+/**
+ * One map drag's life, the genre's way: Esc, or a press of the other button (right during a left drag, left during a right
+ * drag such as a formation line), cancels it; the release after a cancel does nothing, and neither does the click that
+ * cancelled it. A middle drag (panning) is never cancelled. Pure, so the map and the tests share it.
+ */
+export class DragGate {
+  /** The button that started the drag (null = none). */
+  button: number | null = null;
+  cancelled = false;
+
+  start(button: number): void {
+    this.button = button;
+    this.cancelled = false;
+  }
+
+  get active(): boolean {
+    return this.button !== null && !this.cancelled;
+  }
+
+  /** Another button went down during the drag (pointer events report it as a chorded move). True = it cancels the drag. */
+  chord(button: number): boolean {
+    if (!this.active || button === this.button || button === 1 || this.button === 1) return false;
+    this.cancelled = true;
+    return true;
+  }
+
+  /** Esc during the drag. True = it cancelled one (the key goes no further). */
+  escape(): boolean {
+    if (!this.active || this.button === 1) return false;
+    this.cancelled = true;
+    return true;
+  }
+
+  /** A button came up with `buttons` still held: 'act' = the drag's release does its thing, 'ignore' = it was cancelled
+   * (or there was none), 'wait' = a cancelled drag still has a button down. */
+  release(buttons: number): 'act' | 'ignore' | 'wait' {
+    if (this.button === null) return 'ignore';
+    if (this.cancelled) {
+      if (buttons !== 0) return 'wait';
+      this.button = null;
+      this.cancelled = false;
+      return 'ignore';
+    }
+    this.button = null;
+    return 'act';
+  }
+}
+
+/**
+ * Whether a released drag does nothing: a zone or storage box needs a real drag (a click, under the drag threshold, paints
+ * nothing), and a designate drag with nothing under it posts nothing.
+ */
+export function releaseIsNoop(kind: 'designate' | 'zone' | 'storage' | 'other', moved: boolean, count: number): boolean {
+  if (kind === 'zone' || kind === 'storage') return !moved;
+  if (kind === 'designate') return count === 0;
+  return false;
+}
+
 /** The area a drag designates (grid rect + the tool's y span). */
 export function toolArea(rect: readonly [number, number, number, number], y: readonly [number, number]): StoryArea {
   return [rect[0], y[0], rect[1], rect[2], y[1], rect[3]];
@@ -522,6 +758,9 @@ export type KeyAction =
   | 'help'
   | 'focus'
   | 'fullscreen'
+  | 'layersUp'
+  | 'layersDown'
+  | `height:${HeightMode}`
   | `tool:${DesignateId}`
   | `tab:${string}`;
 
@@ -529,11 +768,22 @@ export type KeyAction =
 export const TAB_KEYS: Record<string, string> = { KeyB: 'architect', KeyP: 'work', KeyY: 'schedule', KeyU: 'queue', KeyI: 'colony', KeyO: 'directives' };
 
 /**
- * A key on the map → its action, or null (WASD/arrows pan in the frame loop; 1–9 stay free). Typing in a field never reaches
- * here (the caller checks `isTyping` first).
+ * A key on the map → its action, or null (WASD/arrows pan in the frame loop; 1–9 stay free, except 1–5 pick the height mode
+ * while Mine or Deconstruct is the tool, whose + / − then set the Layers count). Typing in a field never reaches here (the
+ * caller checks `isTyping` first).
  */
-export function keyAction(e: { code: string; key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean }, buildTool: boolean): KeyAction | null {
+export function keyAction(
+  e: { code: string; key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
+  buildTool: boolean,
+  heightTool = false,
+): KeyAction | null {
   if (e.ctrlKey || e.metaKey) return null;
+  if (heightTool) {
+    const mode = HEIGHT_MODES.find((h) => h.key === e.code || h.key.replace('Digit', 'Numpad') === e.code);
+    if (mode && !e.shiftKey && !e.altKey) return `height:${mode.id}`;
+    if (e.code === 'Equal' || e.code === 'NumpadAdd') return 'layersUp';
+    if (e.code === 'Minus' || e.code === 'NumpadSubtract') return 'layersDown';
+  }
   switch (e.code) {
     case 'KeyR':
       return 'draft';

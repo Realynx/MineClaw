@@ -54,6 +54,8 @@ function storyWrites(): Partial<Record<RouteId, Ctx>> {
     'story.builds': w({ op: 'add', items: [{ kind: 'wall', area: [0, 70, 0, 4, 70, 4], material: 'cobblestone', height: 3 }] }),
     'story.storage': w({ op: 'assign_area', area: [1, 60, -5, 7, 80, -3] }),
     'story.bills': w({ op: 'add', bench: benchPos(), bill: { recipe: 'sticks', mode: 'until', target: 64 } }),
+    'story.workbenches': w({ op: 'designate', pos: benchPos() }),
+    'story.options': w({ autoPlaceBenches: true }),
     'story.resume': w({}),
     'story.online': w({ pawns: null }),
     'story.directives': { params: {}, query: {}, body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'hi' }, requestId: 'r-12345678' } },
