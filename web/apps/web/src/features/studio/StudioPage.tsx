@@ -162,6 +162,11 @@ function StudioOpening() {
   );
 }
 
+/** The models the designer offers, its default, and the server's seed (none before they load). */
+function modelChoice(m: ReturnType<typeof useApi<'designer.models'>>['data']) {
+  return { models: m?.models ?? [], defaultModel: m?.default ?? null, serverSeed: m?.serverSeed ?? null };
+}
+
 export function StudioPage() {
   const params = useSearchParams();
   const router = useRouter();
@@ -206,16 +211,13 @@ export function StudioPage() {
 
   if (loadError) return <ErrorState error={loadError} title="The Design Studio could not open" />;
   if (!session || !mod) return <StudioOpening />;
-  const m = models.data;
   return (
     <StudioBody
       key={sessionKey(session)}
       session={session}
       onSession={setSession}
       mod={mod}
-      models={m?.models ?? []}
-      defaultModel={m?.default ?? null}
-      serverSeed={m?.serverSeed ?? null}
+      {...modelChoice(models.data)}
       canWrite={canWrite}
       canChat={canChat}
       player={me.player ?? me.username}
