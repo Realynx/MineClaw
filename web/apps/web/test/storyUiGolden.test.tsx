@@ -10,6 +10,7 @@ import { MaterialBar } from '@/features/story/MaterialBar';
 import { materialsFor } from '@/features/story/materials';
 import type { StoryBuild, StoryColonyState, StoryZone } from '@mineclaw/contracts';
 import { GrowingZonesPanel } from '@/features/story/GrowingZones';
+import { WorkPanel } from '@/features/story/roles/WorkPanel';
 import { barBodies, ColonistBar, ControlCluster, OptionsBar } from '@/features/story/StoryHud';
 import type { MapTool } from '@/features/story/StoryMap';
 import { ArchitectPanel, ColonyPanel, QueuePanel } from '@/features/story/StoryPanels';
@@ -545,6 +546,80 @@ describe('ControlCluster', () => {
         speedOnly: () => cluster({ speed: 'faster' }),
       }),
     ).toMatchSnapshot();
+  });
+});
+
+describe('WorkPanel', () => {
+  const pawns = () => {
+    const w = S.worked;
+    return w.pawns.map((p, i) => ({
+      ...p,
+      role: i === 0 ? 'farmer' : p.role,
+      skills: i === 1 ? { farm: { level: 12, passion: true }, mine: { level: 3 } } : p.skills,
+    })) as typeof w.pawns;
+  };
+  const work = (extra: Partial<Parameters<typeof WorkPanel>[0]>, log: unknown[] = []) => (
+    <WorkPanel
+      pawns={pawns()}
+      ai={S.worked.ai ?? []}
+      canWrite
+      onSet={(p, w) => log.push(['set', p, w])}
+      roles={S.worked.roles ?? []}
+      onRole={(p, r) => log.push(['role', p, r])}
+      onRoleOp={(b) => log.push(['roleOp', b])}
+      {...extra}
+    />
+  );
+
+  it('every grid state', () => {
+    const names = S.worked.pawns.map((p) => p.name);
+    expect(
+      variants({
+        roles: () => work({}),
+        picked: () => work({ selected: [names[0]!, 'nobody', names[2]!] }),
+        allPicked: () => work({ selected: names }),
+        noRoles: () => work({ onRole: undefined, onRoleOp: undefined }),
+        readOnly: () => work({ canWrite: false }),
+        noAi: () => work({ ai: [], roles: [] }),
+      }),
+    ).toMatchSnapshot();
+  });
+
+  it('sorting, editing, detaching, bulk roles and the roles editor', () => {
+    const log: unknown[] = [];
+    const r = html(work({}, log));
+    const out: Record<string, string> = {};
+    const names = S.worked.pawns.map((p) => p.name);
+    const cell = (n: string, t: string) => r.root.querySelector(`[data-cell="${n}:${t}"]`)!;
+    const head = (label: string) => [...r.root.querySelectorAll('th button')].find((b) => b.textContent?.startsWith(label))!;
+    fireEvent.click(head('Pawn'));
+    out.sortName = r.out();
+    fireEvent.click(head('Farm'));
+    fireEvent.click(head('Farm'));
+    out.sortFarm = r.out();
+    fireEvent.click(cell(names[1]!, 'farm'));
+    fireEvent.click(cell(names[1]!, 'mine'), { shiftKey: true });
+    fireEvent.contextMenu(cell(names[2]!, 'haul'));
+    fireEvent.click(cell(names[0]!, 'farm'));
+    out.detached = r.out();
+    fireEvent.click([...r.root.querySelectorAll('button')].find((b) => b.textContent?.includes('Undo'))!);
+    fireEvent.click(r.root.querySelector('[aria-label="Select every pawn"]')!);
+    out.bulk = r.out();
+    fireEvent.change(r.root.querySelector('[data-testid="role-bulk-select"]')!, { target: { value: S.worked.roles![1]!.id } });
+    fireEvent.change(r.root.querySelector(`[data-testid="role-select-${names[3]}"]`)!, { target: { value: '' } });
+    fireEvent.click(r.root.querySelector(`[aria-label="Select ${S.worked.pawns[2]!.display}"]`)!);
+    out.unticked = r.out();
+    fireEvent.click([...r.root.querySelectorAll('button')].find((b) => b.textContent === 'Clear')!);
+    fireEvent.click(r.root.querySelector('[data-testid="roles-toggle"]')!);
+    out.rolesOpen = r.out();
+    const del = (role: string) => {
+      fireEvent.click(r.root.querySelector(`[aria-label="Delete ${role}"]`)!);
+      fireEvent.click([...r.root.querySelectorAll('button')].find((b) => b.textContent === 'Delete')!);
+    };
+    del('Miner');
+    del('Cook');
+    out.end = r.out();
+    expect({ log, out }).toMatchSnapshot();
   });
 });
 
