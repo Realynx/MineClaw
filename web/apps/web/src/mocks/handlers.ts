@@ -26,6 +26,29 @@ async function readBody(request: Request, multipart: boolean): Promise<{ body: u
   return { body: text ? (JSON.parse(text) as unknown) : {}, file: null };
 }
 
+type Route = (typeof ROUTES)[RouteId];
+type Issues = { issues: Array<{ path: unknown[]; message: string }> };
+
+/** The request's query, path params and body, checked against the route's schemas (a file for multipart). */
+async function parseRequest(route: Route, request: Request, params: Record<string, unknown>) {
+  const url = new URL(request.url);
+  const rawQuery = Object.fromEntries(url.searchParams);
+  const query = route.query ? (route.query.parse(rawQuery) as Record<string, unknown>) : {};
+  const parsedParams = route.params ? (route.params.parse(params) as Record<string, unknown>) : {};
+  const { body, file } = await readBody(request, route.bodyKind === 'multipart');
+  const parsedBody = route.body ? route.body.parse(body) : body;
+  return { params: parsedParams, query, body: parsedBody, file };
+}
+
+const isValidationError = (e: unknown): e is Issues => !!e && typeof e === 'object' && 'issues' in e;
+
+function invalidRequest(e: Issues) {
+  return HttpResponse.json(
+    { error: 'Invalid request', code: 'bad_request', details: e.issues.map((i) => ({ path: i.path.join('.'), message: i.message })) },
+    { status: 400 },
+  );
+}
+
 function routeHandler(id: RouteId): HttpHandler | null {
   const route = ROUTES[id];
   const resolve = resolvers[id];
@@ -35,20 +58,11 @@ function routeHandler(id: RouteId): HttpHandler | null {
     await delay(route.method === 'GET' ? 60 + Math.random() * 140 : 250);
     try {
       checkAccess(id, request.headers.get('X-CSRF-Token'), request.method);
-      const url = new URL(request.url);
-      const rawQuery = Object.fromEntries(url.searchParams);
-      const query = route.query ? (route.query.parse(rawQuery) as Record<string, unknown>) : {};
-      const parsedParams = route.params ? (route.params.parse(params) as Record<string, unknown>) : {};
-      const { body, file } = await readBody(request, route.bodyKind === 'multipart');
-      const parsedBody = route.body ? (route.body.parse(body)) : body;
-      const out = resolve({ params: parsedParams, query, body: parsedBody, file });
+      const out = resolve(await parseRequest(route, request, params));
       if (out instanceof Response) return out;
       return HttpResponse.json(out as never, { status: route.status ?? 200 });
     } catch (e) {
-      if (e && typeof e === 'object' && 'issues' in e) {
-        return HttpResponse.json({ error: 'Invalid request', code: 'bad_request', details: (e as { issues: Array<{ path: unknown[]; message: string }> }).issues.map((i) => ({ path: i.path.join('.'), message: i.message })) }, { status: 400 });
-      }
-      return errorResponse(e);
+      return isValidationError(e) ? invalidRequest(e) : errorResponse(e);
     }
   });
 }
