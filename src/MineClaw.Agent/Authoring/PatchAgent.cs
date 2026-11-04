@@ -37,12 +37,14 @@ public sealed class PatchAgent(ILlmClient llm, LlmOptions options, UsageTracker?
             """).RootElement.Clone());
 
     /// <summary>"resume" | "restart_step" | "stop" | "escalate" (unknown → escalate; empty → resume).</summary>
-    public static string NormalizeThen(string? s) => (s ?? "").Trim().ToLowerInvariant().Replace('-', '_') switch
+    public static string NormalizeThen(string? s) => ThenWords.GetValueOrDefault((s ?? "").Trim().ToLowerInvariant().Replace('-', '_'), "escalate");
+
+    /// <summary>The words a patch's <c>then</c> may use for each continuation.</summary>
+    private static readonly Dictionary<string, string> ThenWords = new(StringComparer.Ordinal)
     {
-        "" or "resume" or "continue" or "ok" => "resume",
-        "restart_step" or "restart" or "retry" or "redo" => "restart_step",
-        "stop" or "cancel" or "end" => "stop",
-        _ => "escalate",
+        [""] = "resume", ["resume"] = "resume", ["continue"] = "resume", ["ok"] = "resume",
+        ["restart_step"] = "restart_step", ["restart"] = "restart_step", ["retry"] = "restart_step", ["redo"] = "restart_step",
+        ["stop"] = "stop", ["cancel"] = "stop", ["end"] = "stop",
     };
 
     /// <summary>The model patches run on: the brain's model when it is Opus 5.5, else Opus 5.5 itself.</summary>
@@ -63,23 +65,11 @@ public sealed class PatchAgent(ILlmClient llm, LlmOptions options, UsageTracker?
         var model = Model;
         if (Refusal() is { } no) return new PatchReply(null, "escalate", null, LlmUsage.Zero, 0, model, 0, no);
         var sw = Stopwatch.StartNew();
-        var resp = await llm.CompleteAsync(new LlmRequest
-        {
-            Tier = ModelTier.Main, Model = model, MaxTokens = Math.Clamp(options.PatchMaxTokens <= 0 ? 600 : options.PatchMaxTokens, 256, 4096),
-            Purpose = Purpose, System = [new LlmSystemBlock(system, Cache: true)], Tools = [Tool],
-            Messages = [LlmMessage.User(context)], CacheHistory = false,
-            Effort = string.IsNullOrWhiteSpace(options.PatchEffort) ? null : options.PatchEffort.Trim(),
-        }, ct).ConfigureAwait(false);
+        var resp = await llm.CompleteAsync(Request(model, system, context), ct).ConfigureAwait(false);
         long ms = sw.ElapsedMilliseconds;
-        decimal usd;
-        try { usd = usage?.Record(resp.Model, resp.Usage, ModelTier.Main) ?? 0; } catch (Exception) { usd = 0; }
+        decimal usd = Book(resp);
         var call = resp.ToolUses.FirstOrDefault(t => t.Name == ToolName);
-        if (call == null)
-        {
-            var text = resp.Text.Trim();
-            log?.LogInformation("patch turn: no tool call ({Stop}) in {Ms} ms: {Text}", resp.StopReason, ms, text.Length > 80 ? text[..80] : text);
-            return new PatchReply(null, "escalate", text.Length > 0 ? text : "no patch", resp.Usage, usd, resp.Model, ms);
-        }
+        if (call == null) return NoPatch(resp, ms, usd);
         string? Str(string key) => call.Input.ValueKind == JsonValueKind.Object && call.Input.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         var js = StripFences(Str("js"));
         var then = NormalizeThen(Str("then") ?? (js is { Length: > 0 } ? "resume" : "escalate"));
@@ -87,6 +77,28 @@ public sealed class PatchAgent(ILlmClient llm, LlmOptions options, UsageTracker?
         log?.LogInformation("patch turn: {Then} ({Chars} chars js) in {Ms} ms, out {Out} tok, ${Usd:0.000}: {Note}", then, js?.Length ?? 0, ms,
             resp.Usage.OutputTokens, usd, note ?? "");
         return new PatchReply(js, then, note, resp.Usage, usd, resp.Model, ms);
+    }
+
+    private LlmRequest Request(string model, string system, string context) => new()
+    {
+        Tier = ModelTier.Main, Model = model, MaxTokens = Math.Clamp(options.PatchMaxTokens <= 0 ? 600 : options.PatchMaxTokens, 256, 4096),
+        Purpose = Purpose, System = [new LlmSystemBlock(system, Cache: true)], Tools = [Tool],
+        Messages = [LlmMessage.User(context)], CacheHistory = false,
+        Effort = string.IsNullOrWhiteSpace(options.PatchEffort) ? null : options.PatchEffort.Trim(),
+    };
+
+    /// <summary>The call's cost as the usage tracker books it (0 without one, or when booking fails).</summary>
+    private decimal Book(LlmResponse resp)
+    {
+        try { return usage?.Record(resp.Model, resp.Usage, ModelTier.Main) ?? 0; } catch (Exception) { return 0; }
+    }
+
+    /// <summary>No patch tool call: the full brain turn takes it (its text, if any, as the note).</summary>
+    private PatchReply NoPatch(LlmResponse resp, long ms, decimal usd)
+    {
+        var text = resp.Text.Trim();
+        log?.LogInformation("patch turn: no tool call ({Stop}) in {Ms} ms: {Text}", resp.StopReason, ms, text.Length > 80 ? text[..80] : text);
+        return new PatchReply(null, "escalate", text.Length > 0 ? text : "no patch", resp.Usage, usd, resp.Model, ms);
     }
 
     /// <summary>A model that wrapped its js in ``` anyway.</summary>

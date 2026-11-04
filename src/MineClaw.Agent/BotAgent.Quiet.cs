@@ -95,14 +95,19 @@ public sealed partial class BotAgent
     /// <summary>An event a player is on the other end of: their chat/emote/join, a notice about them (a hand-over), their danger.</summary>
     public static bool IsPlayerFacing(GameEvent e) => e.Kind switch
     {
-        EventKind.Chat or EventKind.Whisper or EventKind.Emote or EventKind.PlayerJoined => e.Player != null,
+        EventKind.LowHealth or EventKind.VoidFall or EventKind.Death => true,
+        _ => e.Player != null && FacesItsPlayer(e),
+    };
+
+    /// <summary>For an event naming a player: whether its kind puts that player on the other end.</summary>
+    private static bool FacesItsPlayer(GameEvent e) => e.Kind switch
+    {
+        EventKind.Chat or EventKind.Whisper or EventKind.Emote or EventKind.PlayerJoined or EventKind.Notice => true,
         // A nod/shake answering our question or a wave at us: a player gestured to the bot (a background one never woke it).
-        EventKind.Gesture => e.Player != null && e.Wakes,
-        EventKind.Notice => e.Player != null,
+        EventKind.Gesture => e.Wakes,
         // DangerMonitor posts a player's danger as an Activity at Normal/High ("robin is taking damage near the tree"): a
         // safety warning goes out even when the player asked for quiet. Plain world observations stay Low (quiet).
-        EventKind.Activity => e.Player != null && e.Priority >= EventPriority.Normal,
-        EventKind.LowHealth or EventKind.VoidFall or EventKind.Death => true,
+        EventKind.Activity => e.Priority >= EventPriority.Normal,
         _ => false,
     };
 

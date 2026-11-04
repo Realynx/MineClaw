@@ -71,22 +71,29 @@ public sealed class GestureClassifier
         var chat = new List<string>();
         foreach (var raw in text.Replace("\r", "").Split('\n'))
         {
-            var line = raw.Trim();
-            if (line.Length == 0) continue;
-            if (line.StartsWith("/me ", StringComparison.OrdinalIgnoreCase))
-            {
-                if (Emote(line[4..]) is { } e) return Real(e);
-                continue;
-            }
-            if (line.StartsWith('/')) continue; // /tell etc.: a command, not body language
-            // "Hai foxy /me curtsies" (inline /me) and "*bows*"
-            int me = line.IndexOf(" /me ", StringComparison.OrdinalIgnoreCase);
-            if (me >= 0 && Emote(line[(me + 5)..]) is { } ie) return Real(ie);
-            foreach (Match m in InlineEmote.Matches(line))
-                if (Emote(m.Groups["a"].Value) is { } se) return Real(se);
-            chat.Add(me >= 0 ? line[..me] : line);
+            if (LineEmote(raw.Trim(), out var said) is { } e) return Real(e);
+            if (said != null) chat.Add(said);
         }
         return chat.Count == 0 ? null : Real(Chat(chat[0]));
+    }
+
+    /// <summary>
+    /// One outgoing line's emote gesture (a /me line, an inline /me, a "*bows*"); else null, with <paramref name="said"/> its
+    /// chat part (null for an empty line, a /me without a gesture, or a command: /tell etc. is not body language).
+    /// </summary>
+    private GestureHit? LineEmote(string line, out string? said)
+    {
+        said = null;
+        if (line.Length == 0) return null;
+        if (line.StartsWith("/me ", StringComparison.OrdinalIgnoreCase)) return Emote(line[4..]);
+        if (line.StartsWith('/')) return null;
+        // "Hai foxy /me curtsies" (inline /me) and "*bows*"
+        int me = line.IndexOf(" /me ", StringComparison.OrdinalIgnoreCase);
+        if (me >= 0 && Emote(line[(me + 5)..]) is { } ie) return ie;
+        foreach (Match m in InlineEmote.Matches(line))
+            if (Emote(m.Groups["a"].Value) is { } se) return se;
+        said = me >= 0 ? line[..me] : line;
+        return null;
     }
 
     /// <summary>A /me action ("bows deeply and holds the bread close") → its gesture, or null.</summary>
@@ -109,18 +116,18 @@ public sealed class GestureClassifier
         int end = t.IndexOfAny(['.', '!', '?', ';']);
         var head = end > 0 ? t[..(end + 1)] : t;
         foreach (var r in _rules)
-        {
-            bool hit = r.Scope switch
-            {
-                "start" => Safe(r.Rx, lead) || (stripped != null && Safe(r.Rx, stripped)),
-                "head" => Safe(r.Rx, head),
-                "any" => Safe(r.Rx, t),
-                _ => false,
-            };
-            if (hit) return new(r.Gesture, r.Id);
-        }
+            if (RuleHits(r.Scope, r.Rx, lead, stripped, head, t)) return new(r.Gesture, r.Id);
         return null;
     }
+
+    /// <summary>A chat rule by its scope: the line's start (also after a "foxy," vocative), its first sentence, or anywhere.</summary>
+    private static bool RuleHits(string scope, Regex rx, string lead, string? stripped, string head, string t) => scope switch
+    {
+        "start" => Safe(rx, lead) || (stripped != null && Safe(rx, stripped)),
+        "head" => Safe(rx, head),
+        "any" => Safe(rx, t),
+        _ => false,
+    };
 
     /// <summary>"yes", "nope", "sure, go ahead": a short yes/no reply.</summary>
     public static bool IsYesNo(string text)

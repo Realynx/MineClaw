@@ -266,35 +266,46 @@ public sealed partial class MergeStage : IMemoryGroomer
         var key = FactKey(doc.Body);
         if (key.Length == 0) return [doc];
         var (day, time) = When(doc, ctx);
+        RagDoc? hit = ctx.Emitted.LastOrDefault(e => e.Kind == doc.Kind && e.Source == doc.Source && FactKey(e.Body) == key)
+                      ?? StoredTwin(doc, ctx, key);
+        if (hit == null) return [doc];
+        return [Merged(doc, hit, day, time)];
+    }
+
+    /// <summary>The same fact stored within the merge window (before the doc's own time), as a doc with its ref; null = none.</summary>
+    private static RagDoc? StoredTwin(RagDoc doc, GroomContext ctx, string key)
+    {
+        if (ctx.Db == null) return null;
         var since = ctx.Time.GetUtcNow() - TimeSpan.FromMinutes(Math.Max(1, ctx.Options.MergeWindowMinutes));
         if (doc.At is { } at && at < ctx.Time.GetUtcNow()) since = at - TimeSpan.FromMinutes(Math.Max(1, ctx.Options.MergeWindowMinutes));
-        RagDoc? hit = ctx.Emitted.LastOrDefault(e => e.Kind == doc.Kind && e.Source == doc.Source && FactKey(e.Body) == key);
-        if (hit == null && ctx.Db != null)
-        {
-            var rows = ctx.Db.Query("""
-                SELECT ref, title, body FROM docs WHERE kind = $k AND source IS $s AND level = 0 AND updated >= $t ORDER BY updated DESC LIMIT 300
-                """, r => (Ref: r.GetString(0), Title: r.GetString(1), Body: r.GetString(2)),
-                ("$k", doc.Kind), ("$s", doc.Source), ("$t", AgentDb.ToUnixMs(since)));
-            var row = rows.FirstOrDefault(r => FactKey(r.Body) == key);
-            if (row.Ref != null) hit = doc with { Ref = row.Ref, Title = row.Title, Body = row.Body };
-        }
-        if (hit == null) return [doc];
+        var rows = ctx.Db.Query("""
+            SELECT ref, title, body FROM docs WHERE kind = $k AND source IS $s AND level = 0 AND updated >= $t ORDER BY updated DESC LIMIT 300
+            """, r => (Ref: r.GetString(0), Title: r.GetString(1), Body: r.GetString(2)),
+            ("$k", doc.Kind), ("$s", doc.Source), ("$t", AgentDb.ToUnixMs(since)));
+        var row = rows.FirstOrDefault(r => FactKey(r.Body) == key);
+        return row.Ref != null ? doc with { Ref = row.Ref, Title = row.Title, Body = row.Body } : null;
+    }
+
+    /// <summary>The twin with its span widened and its count bumped; the twin as is when the doc falls inside its span already.</summary>
+    private static RagDoc Merged(RagDoc doc, RagDoc hit, string day, string time)
+    {
         var fact = GroomText.TrailingSpan().Replace(Leading().Replace(doc.Body.Trim(), ""), "");
         var span = GroomText.TrailingSpan().Match(hit.Body);
-        string d0 = day, t0 = time;
-        int n = 1;
-        if (span.Success)
-        {
-            d0 = span.Groups[1].Value;
-            t0 = span.Groups[2].Value;
-            n = span.Groups[4].Success ? int.Parse(span.Groups[4].Value, CultureInfo.InvariantCulture) : 1;
-        }
-        else if (Leading().Match(hit.Body) is { Success: true } lead) { d0 = lead.Groups[1].Value; t0 = lead.Groups[2].Value; }
+        var (d0, t0, n) = TwinStart(hit, span, day, time);
         // Already inside the doc's span (the same line ingested twice, or the same fact twice in one minute): nothing new.
         var hitEnd = span.Success && span.Groups[3].Success ? span.Groups[3].Value : t0;
-        if (d0 == day && string.CompareOrdinal(time, hitEnd) <= 0) return [hit];
+        if (d0 == day && string.CompareOrdinal(time, hitEnd) <= 0) return hit;
         var end = d0 == day ? time : t0;
-        return [doc with { Ref = hit.Ref, Title = hit.Title, Body = fact + " " + GroomText.Span(d0, t0, end, n + 1, "×") }];
+        return doc with { Ref = hit.Ref, Title = hit.Title, Body = fact + " " + GroomText.Span(d0, t0, end, n + 1, "×") };
+    }
+
+    /// <summary>Where the twin's span starts and how many it counts (its span, else its leading time, else the doc's time).</summary>
+    private static (string Day, string Time, int Count) TwinStart(RagDoc hit, Match span, string day, string time)
+    {
+        if (span.Success)
+            return (span.Groups[1].Value, span.Groups[2].Value, span.Groups[4].Success ? int.Parse(span.Groups[4].Value, CultureInfo.InvariantCulture) : 1);
+        if (Leading().Match(hit.Body) is { Success: true } lead) return (lead.Groups[1].Value, lead.Groups[2].Value, 1);
+        return (day, time, 1);
     }
 
     private static (string Day, string Time) When(RagDoc doc, GroomContext ctx)
@@ -324,7 +335,23 @@ public sealed partial class SizeStage : IMemoryGroomer
 
     public IReadOnlyList<RagDoc> Apply(RagDoc doc, GroomContext ctx)
     {
-        var d = doc;
+        var d = Filled(doc);
+        int max = Math.Max(40, ctx.ChunkMaxTokens);
+        if (TextUtil.EstimateTokens(d.Body) <= max) return [d];
+
+        var chunks = Chunks(d.Body, max);
+        if (chunks.Count <= 1) return [d];
+        return chunks.Select((c, i) => d with
+        {
+            Ref = i == 0 ? d.Ref : $"{d.Ref}#{i + 1}",
+            Title = $"{d.Title} ({i + 1}/{chunks.Count})",
+            Body = c,
+        }).ToList();
+    }
+
+    /// <summary>An empty title takes the first sentence; a doc without bounds takes the first "@x,y,z" / "at x,y,z" it names.</summary>
+    private static RagDoc Filled(RagDoc d)
+    {
         if (string.IsNullOrWhiteSpace(d.Title))
         {
             var first = Sentence().Split(d.Body.Trim())[0].Split('\n')[0];
@@ -333,10 +360,13 @@ public sealed partial class SizeStage : IMemoryGroomer
         if (d.Bounds == null && At().Match(d.Body) is { Success: true } m)
             d = d with { Bounds = Box.Point(int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture),
                 int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture)) };
-        int max = Math.Max(40, ctx.ChunkMaxTokens);
-        if (TextUtil.EstimateTokens(d.Body) <= max) return [d];
+        return d;
+    }
 
-        var pieces = d.Body.Split('\n').SelectMany(l => TextUtil.EstimateTokens(l) > max ? Sentence().Split(l) : [l]).ToList();
+    /// <summary>The body in chunks of at most <paramref name="max"/> tokens, cut at lines (and at sentences in a long line).</summary>
+    private static List<string> Chunks(string body, int max)
+    {
+        var pieces = body.Split('\n').SelectMany(l => TextUtil.EstimateTokens(l) > max ? Sentence().Split(l) : [l]).ToList();
         var chunks = new List<string>();
         var cur = new StringBuilder();
         foreach (var p in pieces)
@@ -350,13 +380,7 @@ public sealed partial class SizeStage : IMemoryGroomer
             cur.Append(p);
         }
         if (cur.Length > 0) chunks.Add(cur.ToString().Trim());
-        if (chunks.Count <= 1) return [d];
-        return chunks.Select((c, i) => d with
-        {
-            Ref = i == 0 ? d.Ref : $"{d.Ref}#{i + 1}",
-            Title = $"{d.Title} ({i + 1}/{chunks.Count})",
-            Body = c,
-        }).ToList();
+        return chunks;
     }
 }
 

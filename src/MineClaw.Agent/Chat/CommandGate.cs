@@ -123,8 +123,7 @@ public sealed class CommandGate
     public bool IsBlocked(string line)
     {
         var text = (line ?? "").Trim();
-        if (_o.Allowed is { Length: > 0 } && NameOf(text) is { } first && !InList(_o.Allowed, first) && !InList(_o.AlwaysAllowed, first))
-            return true; // an allowlist is set and this command isn't on it
+        if (OffTheAllowlist(text)) return true; // an allowlist is set and this command isn't on it
         for (int depth = 0; depth < 16; depth++)
         {
             var name = NameOf(text);
@@ -137,6 +136,9 @@ public sealed class CommandGate
         }
         return true; // absurdly nested: refuse rather than guess
     }
+
+    private bool OffTheAllowlist(string text) =>
+        _o.Allowed is { Length: > 0 } && NameOf(text) is { } first && !InList(_o.Allowed, first) && !InList(_o.AlwaysAllowed, first);
 
     private bool IsTrusted(string? player) =>
         player != null && _trusted().Any(p => string.Equals(p, player, StringComparison.OrdinalIgnoreCase));
@@ -159,26 +161,31 @@ public sealed class CommandGate
             lock (_lock) _requests.RemoveAll(r => string.Equals(r.Player, msg.Player, StringComparison.OrdinalIgnoreCase));
             return 0;
         }
-        if (msg.Kind == ChatKind.Whisper) { /* the whisper format itself is the proof */ }
-        else if (msg.Kind != ChatKind.Public || !explicitAddress || !IsOwnLine(msg)) return 0;
+        // A whisper: the whisper format itself is the proof. A public line must name this bot and be the player's own line.
+        if (msg.Kind != ChatKind.Whisper && (msg.Kind != ChatKind.Public || !explicitAddress || !IsOwnLine(msg))) return 0;
         var now = _time.GetUtcNow();
-        int n = 0;
-        lock (_lock)
-        {
-            Prune(now);
-            // An example /command doesn't cancel the request in plain words ("teleport him: /tp it to ...").
-            // Keep both paths; Authorize still enforces the allowlist and blocklist before either grant is used.
-            if (_o.RequestSeconds > 0 && msg.Text.Trim().Length > 0)
-                _requests.Add(new Request(msg.Player, msg.Text.Trim(), now));
-            foreach (Match m in CommandInText.Matches(msg.Text))
-            {
-                var cmd = m.Groups["cmd"].Value.Trim();
-                if (cmd.Length < 2) continue;
-                _grants.Add(new Grant(cmd, msg.Player, now));
-                n++;
-            }
-        }
+        int n;
+        lock (_lock) n = RecordLocked(msg.Player, msg.Text, now);
         if (n > 0) _log.LogInformation("command authorisation from {Player}: {Text}", msg.Player, msg.Text);
+        return n;
+    }
+
+    /// <summary>The line's request (in plain words) and its exact /commands as one-shot grants; returns the grants added.</summary>
+    private int RecordLocked(string player, string text, DateTimeOffset now)
+    {
+        Prune(now);
+        // An example /command doesn't cancel the request in plain words ("teleport him: /tp it to ...").
+        // Keep both paths; Authorize still enforces the allowlist and blocklist before either grant is used.
+        if (_o.RequestSeconds > 0 && text.Trim().Length > 0)
+            _requests.Add(new Request(player, text.Trim(), now));
+        int n = 0;
+        foreach (Match m in CommandInText.Matches(text))
+        {
+            var cmd = m.Groups["cmd"].Value.Trim();
+            if (cmd.Length < 2) continue;
+            _grants.Add(new Grant(cmd, player, now));
+            n++;
+        }
         return n;
     }
 

@@ -442,22 +442,27 @@ public sealed partial class BotAgent
         {
             text = SpeechFacts.DropStalePresence(text, _chat.OnlinePlayers, _chat.JoinedSince(since), dropped);
             text = CorrectCounts(text);
-            if (_activities.Current is { } cur && cur.Started >= since)
-            {
-                bool moving = cur.Kind == ActivityKind.Move || (cur.Steps.Count > 0 && cur.Steps.All(st => ActivityManager.MovementTools.Contains(st.Tool)));
-                text = SpeechFacts.DropPrematureClaims(text, moving, working: cur.Kind == ActivityKind.Job, dropped);
-            }
-            if (_chat.Landmark is { } landmark && Human.Questions.HasCoords(text))
-            {
-                var recent = audience.Count > 0 ? audience.SelectMany(p => _chat.RecentFrom(p)).ToList() : _chat.RecentFrom(null);
-                var human = Human.Questions.Humanize(text, recent, landmark);
-                if (human != text) _log.LogInformation("[coords as landmarks] {Text}", human);
-                text = human;
-            }
+            if (_activities.Current is { } cur && cur.Started >= since) text = DropPremature(text, cur, dropped);
+            if (_chat.Landmark is { } landmark && Human.Questions.HasCoords(text)) text = CoordsAsLandmarks(text, audience, landmark);
         }
         catch (Exception ex) { _log.LogWarning(ex, "speech fact check failed"); }
         foreach (var d in dropped) _log.LogInformation("[stale claim suppressed] {Line}", d);
         return text.Trim();
+    }
+
+    /// <summary>"I'm back" / "done" while this turn's walk or job still runs: dropped.</summary>
+    private static string DropPremature(string text, RunningActivity cur, List<string> dropped)
+    {
+        bool moving = cur.Kind == ActivityKind.Move || (cur.Steps.Count > 0 && cur.Steps.All(st => ActivityManager.MovementTools.Contains(st.Tool)));
+        return SpeechFacts.DropPrematureClaims(text, moving, working: cur.Kind == ActivityKind.Job, dropped);
+    }
+
+    private string CoordsAsLandmarks(string text, IReadOnlyCollection<string> audience, Func<int, int, int, string?> landmark)
+    {
+        var recent = audience.Count > 0 ? audience.SelectMany(p => _chat.RecentFrom(p)).ToList() : _chat.RecentFrom(null);
+        var human = Human.Questions.Humanize(text, recent, landmark);
+        if (human != text) _log.LogInformation("[coords as landmarks] {Text}", human);
+        return human;
     }
 
     /// <summary>The running turn's events (task results included), null when idle.</summary>
@@ -508,7 +513,7 @@ public sealed partial class BotAgent
         var kind = simple ? KindOf(lines) : "plan";
         Latency?.NoteKind(kind);
         if (!simple) return (null, null);
-        (string? Effort, string? Thinking) want = (bs.SimpleTurnEffort is { Length: > 0 } e ? e : null, bs.SimpleTurnThinking is { Length: > 0 } t ? t : null);
+        var want = SimpleTurnVariant(bs);
         // The history cache is per effort/thinking variant: a cheaper-effort turn whose variant went cold (>4.5 min) would
         // re-write the whole history (live 10-27 15:55: 2 × 38K cache-write tokens). Stay on the warm variant instead.
         var key = CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), want.Effort, want.Thinking);
@@ -521,6 +526,10 @@ public sealed partial class BotAgent
         }
         return want;
     }
+
+    /// <summary>The configured effort/thinking for a simple chat turn (empty = the tier's own).</summary>
+    private static (string? Effort, string? Thinking) SimpleTurnVariant(Brainstem.BrainstemOptions bs) =>
+        (bs.SimpleTurnEffort is { Length: > 0 } e ? e : null, bs.SimpleTurnThinking is { Length: > 0 } t ? t : null);
 
     /// <summary>Which brain effort/thinking variants have a warm history cache (see <see cref="CacheWarmth"/>).</summary>
     public CacheWarmth Warmth { get; } = new();
@@ -706,10 +715,13 @@ public sealed partial class BotAgent
         var acts = FocusActivities;
         if (acts.Filler is { Kind: ActivityKind.Speculative } f && now - f.Started <= TimeSpan.FromSeconds(20))
             return $"{DoingTag} {SpecWhat(f)} (speculative, {(now - f.Started).TotalSeconds:0.0}s): your matching move adopts it; a different plan cancels it";
-        if (acts.Current is { Kind: ActivityKind.Move or ActivityKind.Job } c && now - c.Started <= TimeSpan.FromSeconds(20)
-            && c.Steps.Count > 0 && c.Steps[0].Tool is "goto" or "follow" or "skill" or "act")
+        if (acts.Current is { } c && StartedForChat(c, now))
             return $"{DoingTag} {c.Label} #{c.Id} for {(now - c.Started).TotalSeconds:0.0}s (started for this chat): keep it (no need to mention it), amend it, or stop it if it's wrong";
         return "";
+
+        static bool StartedForChat(RunningActivity c, DateTimeOffset now) =>
+            c.Kind is ActivityKind.Move or ActivityKind.Job && now - c.Started <= TimeSpan.FromSeconds(20)
+            && c.Steps.Count > 0 && c.Steps[0].Tool is "goto" or "follow" or "skill" or "act";
 
         static string SpecWhat(RunningActivity a) =>
             a.Steps.Count > 0 && a.Steps[0].Input.ValueKind == System.Text.Json.JsonValueKind.Object && a.Steps[0].Input.TryGetProperty("to", out var to)
@@ -927,18 +939,24 @@ public sealed partial class BotAgent
             {
                 // Hive clone: main logs public chat; a remote (viewer) line only reaches the bot it names, so that bot logs it.
                 if (!LogPublicChat && e.Kind != EventKind.Whisper && e.Origin == null) continue;
-                string? kind = e.Kind switch
-                {
-                    EventKind.Chat => "chat", EventKind.Whisper => "whisper", EventKind.Emote => "emote",
-                    EventKind.PlayerJoined => "join", EventKind.PlayerLeft => "leave", _ => null,
-                };
-                // Injected test chat (console /as) is kept, tagged: it never counts as the real player speaking.
-                // Viewer lines are real speech, kept apart from server lines: "viewer_chat".
-                if (kind != null) Rag.LogChat(e.At, e.IsTest ? "test_" + kind : e.Origin is { Length: > 0 } origin ? origin + "_" + kind : kind, e.Player, e.Text);
+                if (ChatLogKind(e.Kind) is { } kind) Rag.LogChat(e.At, ChatLogTag(e, kind), e.Player, e.Text);
             }
         }
         catch (Exception ex) { _log.LogWarning(ex, "chat log write failed"); }
     }
+
+    private static string? ChatLogKind(EventKind kind) => kind switch
+    {
+        EventKind.Chat => "chat", EventKind.Whisper => "whisper", EventKind.Emote => "emote",
+        EventKind.PlayerJoined => "join", EventKind.PlayerLeft => "leave", _ => null,
+    };
+
+    /// <summary>
+    /// Injected test chat (console /as) is kept, tagged: it never counts as the real player speaking.
+    /// Viewer lines are real speech, kept apart from server lines: "viewer_chat".
+    /// </summary>
+    private static string ChatLogTag(GameEvent e, string kind) =>
+        e.IsTest ? "test_" + kind : e.Origin is { Length: > 0 } origin ? origin + "_" + kind : kind;
 
     private void LogSaid(IReadOnlyList<string> lines, string? whisperTo, bool test = false)
     {
@@ -973,24 +991,30 @@ public sealed partial class BotAgent
         NoteJoinLeave(e);
         // Any line from a player (even one not for us: "I hopped off it", live 10-28 15:36) may mean they moved or answered:
         // failures that were only "someone is standing on it" / "waiting for a player" can be tried again.
-        if (e.Player != null && e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote)
-        {
-            int cleared = Guard.ClearTransient(TransientCause.Occupied) + Guard.ClearTransient(TransientCause.WaitingForPlayer);
-            if (cleared > 0) _log.LogDebug("tool guard: cleared {Count} passing failure(s) on {Player}'s line", cleared, e.Player);
-        }
-        if (EventQueue.IsTyped(e) && e.Kind is EventKind.Chat or EventKind.Whisper)
-        {
-            Latency?.OnChat(e.Player, e.Text, _time.GetUtcNow());
-            // A player said something new (the door is open now, they moved, they re-ask): old dead ends don't apply.
-            int forgot = Guard.ForgetAll();
-            if (forgot > 0) _log.LogDebug("tool guard: forgot {Count} failure(s) on new chat", forgot);
-        }
-        if (e.Wakes && e.Priority >= _options.InterruptPriority)
-        {
-            // Only the body the event concerns is interrupted (null = the brain / main body: as before).
-            var cancelled = ActivitiesFor(e.Body).Cancel("interrupted by " + e.Kind);
-            if (cancelled != null) _log.LogInformation("interrupted {Activity} due to {Event}", cancelled, e.Format());
-        }
+        if (e.Player != null && e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote) ClearPassingFailures(e.Player);
+        if (EventQueue.IsTyped(e) && e.Kind is EventKind.Chat or EventKind.Whisper) OnNewChat(e);
+        if (e.Wakes && e.Priority >= _options.InterruptPriority) InterruptFor(e);
+    }
+
+    private void ClearPassingFailures(string player)
+    {
+        int cleared = Guard.ClearTransient(TransientCause.Occupied) + Guard.ClearTransient(TransientCause.WaitingForPlayer);
+        if (cleared > 0) _log.LogDebug("tool guard: cleared {Count} passing failure(s) on {Player}'s line", cleared, player);
+    }
+
+    private void OnNewChat(GameEvent e)
+    {
+        Latency?.OnChat(e.Player, e.Text, _time.GetUtcNow());
+        // A player said something new (the door is open now, they moved, they re-ask): old dead ends don't apply.
+        int forgot = Guard.ForgetAll();
+        if (forgot > 0) _log.LogDebug("tool guard: forgot {Count} failure(s) on new chat", forgot);
+    }
+
+    private void InterruptFor(GameEvent e)
+    {
+        // Only the body the event concerns is interrupted (null = the brain / main body: as before).
+        var cancelled = ActivitiesFor(e.Body).Cancel("interrupted by " + e.Kind);
+        if (cancelled != null) _log.LogInformation("interrupted {Activity} due to {Event}", cancelled, e.Format());
     }
 
     private void OnBudgetModeChanged(BudgetMode mode, string reason)
@@ -1038,24 +1062,39 @@ public sealed partial class BotAgent
     private async Task ResumeOnStartAsync(CancellationToken ct)
     {
         // Restart / reboot / clone respawn: once the join settled, go back to the standing order.
-        try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, (_options.Idle ?? new Human.IdleOptions()).ResumeOnStartSeconds)), _time, ct).ConfigureAwait(false); }
+        try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, IdleOptionsNow.ResumeOnStartSeconds)), _time, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
         // Once per process (a pause/resume of the loop runs this again): lift a failure pause the old process persisted.
         bool first = Interlocked.Exchange(ref _startHandled, 1) == 0;
-        string? lifted = null;
-        if (first)
-            try { lifted = Orders?.OnProcessStart(); } catch (Exception ex) { _log.LogWarning(ex, "standing order start check failed"); }
+        string? lifted = first ? LiftStartPause() : null;
         // Safe first (deterministic, before any job or brain turn): an exposed body walks home or boxes itself in.
-        string? safety = null;
-        if (SafetyFirst is { } secure)
-            try { safety = await secure(ct).WaitAsync(SafetyFirstWait, _time, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
-            catch (Exception ex) { _log.LogWarning(ex, "startup safety check failed"); }
-        bool resumed = false;
-        try { resumed = Orders?.ResumeIfIdle("start", ct) == true; } catch (Exception ex) { _log.LogWarning(ex, "standing order resume failed"); }
-        if (first && WakeOnStart && (_options.Idle ?? new Human.IdleOptions()).StartupWake)
+        var (safety, cancelled) = await StartupSafetyAsync(ct).ConfigureAwait(false);
+        if (cancelled) return;
+        bool resumed = ResumeOrderOnStart(ct);
+        if (first && WakeOnStart && IdleOptionsNow.StartupWake)
             try { PostStartupWake(resumed, lifted, safety); } catch (Exception ex) { _log.LogWarning(ex, "startup wake failed"); }
         else if (safety != null) _events.Post(GameEvent.Notice(safety, EventPriority.Normal));
+    }
+
+    private Human.IdleOptions IdleOptionsNow => _options.Idle ?? new Human.IdleOptions();
+
+    private string? LiftStartPause()
+    {
+        try { return Orders?.OnProcessStart(); } catch (Exception ex) { _log.LogWarning(ex, "standing order start check failed"); return null; }
+    }
+
+    /// <summary>The startup safety step's notice (null: none or it failed); Cancelled when the loop is stopping.</summary>
+    private async Task<(string? Safety, bool Cancelled)> StartupSafetyAsync(CancellationToken ct)
+    {
+        if (SafetyFirst is not { } secure) return (null, false);
+        try { return (await secure(ct).WaitAsync(SafetyFirstWait, _time, ct).ConfigureAwait(false), false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return (null, true); }
+        catch (Exception ex) { _log.LogWarning(ex, "startup safety check failed"); return (null, false); }
+    }
+
+    private bool ResumeOrderOnStart(CancellationToken ct)
+    {
+        try { return Orders?.ResumeIfIdle("start", ct) == true; } catch (Exception ex) { _log.LogWarning(ex, "standing order resume failed"); return false; }
     }
 
     private bool _idleDefaultFired;
@@ -1075,43 +1114,60 @@ public sealed partial class BotAgent
         var idle = _options.Idle ?? new Human.IdleOptions();
         if (_activities.IsBusy)
         {
-            _lastBusyAt = now;
+            NoteBusy(now);
             _idleDefaultFired = false;
-            _watchdogStreak = 0;
             return null;
         }
         if (Orders?.ResumeIfIdle("idle", _activities.Shutdown) == true) return "resumed";
         if (_events.HasWaking) return null;
 
-        bool humans;
-        try { humans = HumansOnline?.Invoke() ?? _chat.OnlinePlayers.Count > 0; } catch (Exception) { humans = true; }
-        var quietSince = _lastEpisode > _lastBusyAt ? _lastEpisode : _lastBusyAt;
-        if (idle.IdleDefault && humans && !_idleDefaultFired && Orders?.Current == null && idle.Jobs.Length > 0 &&
-            now - quietSince >= TimeSpan.FromMinutes(Math.Max(0, idle.AfterMinutes)))
-        {
-            _idleDefaultFired = true;
-            _events.Post(GameEvent.Idle($"{IdleDefaultTag} for {(int)Math.Round((now - quietSince).TotalMinutes)}m and players are on: pick one useful job " +
-                $"({string.Join("; ", idle.Jobs)}) and delegate it, or ask once with a default"));
-            return "idle default";
-        }
+        bool humans = HumansNow();
+        var quietSince = QuietSince;
+        if (TryIdleDefault(now, quietSince, idle, humans)) return "idle default";
 
         var holder = BodyHolderNow();
-        if (holder != null)
-        {
-            _lastBusyAt = now;
-            _watchdogStreak = 0;
-        }
+        if (holder != null) NoteBusy(now);
         else if (WatchdogTick(now, quietSince, idle)) return "watchdog";
 
         // A standing order or a script is the bot's plan already: no check-in to ask what to do.
         if (Orders?.Current != null || holder != null) return null;
+        return IdleCheckIn(now);
+    }
+
+    /// <summary>Busy right now (a job, or a script holding the body): the quiet clock and the watchdog restart.</summary>
+    private void NoteBusy(DateTimeOffset now)
+    {
+        _lastBusyAt = now;
+        _watchdogStreak = 0;
+    }
+
+    /// <summary>Whether players are on (a failing probe counts as yes).</summary>
+    private bool HumansNow()
+    {
+        try { return HumansOnline?.Invoke() ?? _chat.OnlinePlayers.Count > 0; } catch (Exception) { return true; }
+    }
+
+    /// <summary>Quiet since the later of the last episode and the last busy moment.</summary>
+    private DateTimeOffset QuietSince => _lastEpisode > _lastBusyAt ? _lastEpisode : _lastBusyAt;
+
+    /// <summary>No job, no order, quiet long enough with players on: one "[idle]" wake to pick a job (once per idle stretch).</summary>
+    private bool TryIdleDefault(DateTimeOffset now, DateTimeOffset quietSince, Human.IdleOptions idle, bool humans)
+    {
+        if (!(idle.IdleDefault && humans && !_idleDefaultFired && Orders?.Current == null && idle.Jobs.Length > 0 &&
+              now - quietSince >= TimeSpan.FromMinutes(Math.Max(0, idle.AfterMinutes)))) return false;
+        _idleDefaultFired = true;
+        _events.Post(GameEvent.Idle($"{IdleDefaultTag} for {(int)Math.Round((now - quietSince).TotalMinutes)}m and players are on: pick one useful job " +
+            $"({string.Join("; ", idle.Jobs)}) and delegate it, or ask once with a default"));
+        return true;
+    }
+
+    /// <summary>The legacy idle check-in: an "[idle]" wake every so many quiet minutes.</summary>
+    private string? IdleCheckIn(DateTimeOffset now)
+    {
         int minutes = IdleCheckInMinutesNow();
-        if (minutes > 0 && now - _lastEpisode >= TimeSpan.FromMinutes(minutes))
-        {
-            _lastEpisode = now;
-            _events.Post(GameEvent.Idle());
-            return "check-in";
-        }
-        return null;
+        if (minutes <= 0 || now - _lastEpisode < TimeSpan.FromMinutes(minutes)) return null;
+        _lastEpisode = now;
+        _events.Post(GameEvent.Idle());
+        return "check-in";
     }
 }

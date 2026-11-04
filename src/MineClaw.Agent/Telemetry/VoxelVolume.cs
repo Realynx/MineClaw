@@ -117,22 +117,29 @@ public static class VoxelCodec
         while (o < data.Length && at < count)
         {
             int idx = data[o++];
-            uint len = 0;
-            int shift = 0;
-            while (o < data.Length)
-            {
-                byte b = data[o++];
-                len |= (uint)(b & 0x7f) << shift;
-                if ((b & 0x80) == 0) break;
-                shift += 7;
-                if (shift > 28) return cells;
-            }
+            if (!ReadRunLength(data, ref o, out uint len)) return cells;
             int n = (int)Math.Min(len + 1, (uint)(count - at));
             byte id = idx < pc ? palette[idx] : (byte)0;
             if (id != 0) cells.AsSpan(at, n).Fill(id);
             at += n;
         }
         return cells;
+    }
+
+    /// <summary>A run's varint length (a truncated one ends with what was read); false when it overflows 32 bits (corrupt).</summary>
+    private static bool ReadRunLength(ReadOnlySpan<byte> data, ref int o, out uint len)
+    {
+        len = 0;
+        int shift = 0;
+        while (o < data.Length)
+        {
+            byte b = data[o++];
+            len |= (uint)(b & 0x7f) << shift;
+            if ((b & 0x80) == 0) break;
+            shift += 7;
+            if (shift > 28) return false;
+        }
+        return true;
     }
 
     public static uint Hash(ReadOnlySpan<byte> cells, int x0, int y0, int z0, int sx, int sy, int sz)
