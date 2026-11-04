@@ -324,8 +324,12 @@ public sealed class SupervisorStoryRouteTests
         var (_, st) = await Call(r, "GET", $"/api/story/colonies/{id}");
         Assert.Equal(new[] { 69, 64, 215 }, st!["home"]!.AsArray().Select(n => n!.GetValue<int>()).ToArray());
         Assert.Equal(new P3(69, 64, 215), r.Colonies.Get(id)!.Meta.Home);
-        // The pawns were far from the new home: no teleport on this host, so each walks there (a move order before any work).
-        Assert.All(r.Colonies.Get(id)!.Pawns.Values, p => Assert.Contains(p.Queue, o => o.Kind == "move" && o.At == new P3(69, 64, 215)));
+        // The pawns were far from the new home: no teleport on this host, so each walks there (a move order before any work), each to
+        // its own spot by home (never one cell for all).
+        var moves = r.Colonies.Get(id)!.Pawns.Values.Select(p => Assert.Single(p.Queue, o => o.Kind == "move").At!.Value).ToList();
+        Assert.Equal(new P3(69, 64, 215), moves[0]);
+        Assert.All(moves, m => Assert.True(Math.Abs(m.X - 69) <= 4 && Math.Abs(m.Z - 215) <= 4, m.ToString()));
+        Assert.Equal(moves.Count, moves.Distinct().Count());
 
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { })).Status);
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { home = new { x = 1, y = 64 } })).Status);
