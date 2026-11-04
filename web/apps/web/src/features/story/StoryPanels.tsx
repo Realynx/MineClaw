@@ -18,10 +18,12 @@ import {
   type StoryOnlineBlocked,
   type StoryPawn,
   type StoryPlant,
+  type StoryIdleMode,
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
-import { GrowPlantPicker } from './GrowingZones';
+import { zoneCellCount } from './zones/zonePaint';
+import { ZoneToolbar } from './zones/ZoneToolbar';
 import {
   ClipboardPaste,
   Copy,
@@ -54,9 +56,10 @@ import {
   WORK_TYPES,
   type SortKey,
 } from './model';
+import { useWorldClock, type WorldClock } from './clock';
 import { panel } from './StoryHud';
 import { BringOnlineBox } from './StoryInspector';
-import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, ZONE_TOOLS } from './tools';
+import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS } from './tools';
 import type { MapTool } from './StoryMap';
 import { AiMark, Avatar, ItemIcon, ToolIcon } from './visuals';
 
@@ -197,6 +200,7 @@ export function ArchitectPanel({
   palette,
   onPick,
   plants,
+  zones,
 }: {
   tool: MapTool;
   onTool: (t: MapTool) => void;
@@ -204,6 +208,8 @@ export function ArchitectPanel({
   onPick?: (e: StoryArchitectEntry) => void;
   /** What a growing zone can grow here (the plant picker under the Zones tools). */
   plants?: readonly StoryPlant[] | null;
+  /** The colony's zones (the Zones tools name the zone being extended). */
+  zones?: readonly StoryZone[];
 }) {
   const [cat, setCat] = useState<ArchCat>(
     tool.kind === 'zone'
@@ -275,19 +281,8 @@ export function ArchitectPanel({
                 btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', '')),
               )
             : null}
-          {cat === 'zones'
-            ? [
-                ...ZONE_TOOLS.map((z) => btn({ kind: 'zone', id: z.id, op: 'add' }, 'zone', z.label, z.hint)),
-                btn(
-                  { kind: 'zone', id: 'home', op: 'remove' },
-                  'cancel',
-                  'Remove zone',
-                  'Drag over a zone to remove it',
-                ),
-              ]
-            : null}
-          {cat === 'zones' && tool.kind === 'zone' && tool.id === 'farm' && tool.op === 'add' ? (
-            <GrowPlantPicker plants={plants} />
+          {cat === 'zones' ? (
+            <ZoneToolbar tool={tool} onTool={onTool} plants={plants} zones={zones ?? []} btn={btn} />
           ) : null}
           {cat === 'structure'
             ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
@@ -456,19 +451,23 @@ export function WorkPanel({
 const BLOCK_COLOR: Record<string, string> = { work: '#d9a441', sleep: '#4d6fb8', anything: '#6f7b8a', free: '#5bb07a' };
 
 export function SchedulePanel({
+  clock: given,
   pawns,
   ai,
-  hour,
   canWrite,
   onPaint,
 }: {
+  /** The page's world clock (else the context's). */
+  clock?: WorldClock | null;
   pawns: StoryPawn[];
   ai: StoryAiBody[];
-  hour: number | null | undefined;
   canWrite: boolean;
   onPaint: (req: Array<{ pawns: string[]; hours: Record<string, StoryScheduleBlock> }>) => void;
 }) {
   const [brush, setBrush] = useState<StoryScheduleBlock>('work');
+  // The column in force: the clock hour of the page's world clock (the server's time; the bot indexes schedules by it).
+  const clock = useWorldClock(given);
+  const hour = clock.known ? clock.hour : null;
   const [drag, setDrag] = useState<{ from: { row: number; hour: number }; to: { row: number; hour: number } } | null>(
     null,
   );
@@ -524,6 +523,7 @@ export function SchedulePanel({
               <th
                 key={h}
                 className={cn('w-[22px] pb-0.5 font-medium text-subtle', Number(h) === hour && 'text-accent')}
+                data-now={Number(h) === hour ? 'true' : undefined}
               >
                 {storyClock(Number(h)).slice(0, 2)}
               </th>
@@ -864,7 +864,7 @@ export function ColonyPanel({
   onBringAll?: (overCap: boolean) => void;
   displayOf?: (account: string) => string;
   /** Colony options (auto-place benches builds need, detect benches near home). */
-  onOptions?: (o: { autoPlaceBenches?: boolean; detectBenches?: boolean }) => void;
+  onOptions?: (o: { autoPlaceBenches?: boolean; detectBenches?: boolean; idle?: StoryIdleMode }) => void;
 }) {
   const offline = (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').length;
   const opts = state?.options;
@@ -973,6 +973,24 @@ export function ColonyPanel({
               onChange={(e) => onOptions({ rescueTeleport: e.target.checked })}
             />
             Teleport stuck pawns home
+          </label>
+          <label
+            className="flex items-center gap-2"
+            title="With nothing to do, in free hours and while resting after failures: pastimes (wander, socialise, stargaze, sit, the garden, the sunset), strolls only, or stay put"
+          >
+            Idle pawns
+            <select
+              aria-label="Idle pawns"
+              data-testid="colony-idle"
+              disabled={!canWrite}
+              value={opts.idle ?? 'recreation'}
+              onChange={(e) => onOptions({ idle: e.target.value as StoryIdleMode })}
+              className="rounded border border-border bg-surface px-1 py-0.5"
+            >
+              <option value="recreation">recreation</option>
+              <option value="wander">wander</option>
+              <option value="stay">stay put</option>
+            </select>
           </label>
         </div>
       ) : null}
@@ -1128,8 +1146,8 @@ function Houses({
                     >
                       {name}
                     </button>
-                    <span className="text-subtle tabular-nums">
-                      {Math.abs(z.area[3] - z.area[0]) + 1} × {Math.abs(z.area[5] - z.area[2]) + 1}
+                    <span className="text-subtle tabular-nums" data-testid="zone-cells">
+                      {zoneCellCount(z)} cells
                     </span>
                     <Button
                       size="sm"

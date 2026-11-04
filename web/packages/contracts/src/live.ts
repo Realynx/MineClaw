@@ -243,7 +243,8 @@ export const WorldIndex = z.object({
   at: UnixMs,
   columns: z.array(WorldColumnInfo),
   version: z.enum(['b1.8.1', '1.12.2']),
-  time: z.number().describe('world ticks'),
+  time: z.number().describe('world ticks (negative from a 1.12.2 server whose daylight cycle is stopped)'),
+  timeFrozen: z.boolean().nullish().describe('true = the daylight cycle is stopped: the time does not advance'),
   rain: Double.describe('0..1'),
   thunder: Double.describe('0..1'),
 });

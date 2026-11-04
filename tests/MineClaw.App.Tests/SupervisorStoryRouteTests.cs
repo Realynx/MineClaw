@@ -99,10 +99,27 @@ public sealed class SupervisorStoryRouteTests
         Assert.Equal("seek_seeds", z["seeds"]!["action"]!.GetValue<string>());
         Assert.Contains(state["plants"]!.AsArray(), p => p!["id"]!.GetValue<string>() == "wheat");
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "seek_seeds", id = zone })).Status); // no grass near
+        // What idle pawns do: recreation (default) | wander | stay.
+        Assert.Equal("recreation", state["options"]!["idle"]!.GetValue<string>());
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/options", new { idle = "wander" });
+        Assert.Equal(200, s);
+        Assert.Equal("wander", j!["idle"]!.GetValue<string>());
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/options", new { idle = "dance" })).Status);
         w.Blocks[new P3(12, 64, 3)] = (31, 1);
         (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "seek_seeds", id = zone });
         Assert.Equal(200, s);
         Assert.Equal(1, j!["count"]!.GetValue<int>());
+
+        // Planting bills, and an erase (cells; no kind = any, any level) on the same route (docs/web/story-mode.md "Zones").
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "bill_add", id = zone, plant = "pumpkin", mode = "count", target = 3 });
+        Assert.Equal(200, s);
+        var bill = j!["bill"]!.GetValue<string>();
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "bill_reorder", id = zone, ids = new[] { bill } });
+        Assert.Equal(200, s);
+        Assert.Equal(bill, j!["ids"]![0]!.GetValue<string>());
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/zones", new { op = "remove", area = new[] { 10, 70, 0, 10, 70, 0 } });
+        Assert.Equal(200, s);
+        Assert.Equal(zone, j!["deleted"]![0]!.GetValue<string>());
     }
 
     [Fact]
@@ -214,7 +231,7 @@ public sealed class SupervisorStoryRouteTests
         var build = st2!["builds"]![0]!;
         Assert.Equal("paused", build["status"]!.GetValue<string>());
         Assert.Equal(8 * 2 + 9, build["blocks_total"]!.GetValue<int>());
-        Assert.Equal(7, st2["ghosts"]!["blocks"]![0]!.AsArray().Count); // [x,y,z,id,meta,build_id,state]
+        Assert.Equal(8, st2["ghosts"]!["blocks"]![0]!.AsArray().Count); // [x,y,z,id,meta,build_id,state,dig|place]
         w.Blocks[new P3(1, 64, 1)] = (54, 0);
         var (ss, sj) = await Call(r, "POST", b + "storage", new { op = "assign_area", area = new[] { 0, 60, 0, 3, 70, 3 }, filter = new { allow = new[] { "wood" } }, priority = "critical" });
         Assert.Equal(200, ss);

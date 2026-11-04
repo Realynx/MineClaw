@@ -95,7 +95,7 @@ public sealed partial class StoryColony
         if (World is not { } w) return [];
         var homes = Zones.Where(z => z.Kind == "home").ToList();
         var anchor = Home();
-        var key = $"{night}|{anchor}|{string.Join(";", homes.Select(z => z.Id + z.Area))}";
+        var key = $"{night}|{anchor}|{string.Join(";", homes.Select(z => z.Id + ":" + z.Rev))}";
         if (_idleCells is { } c && c.Key == key && Now - c.At < TimeSpan.FromSeconds(5)) return c.Cells;
         var cells = new List<P3>();
         var seen = new HashSet<(int, int)>();
@@ -110,12 +110,11 @@ public sealed partial class StoryColony
         }
         if (homes.Count > 0)
         {
-            long columns = homes.Sum(z => (long)(z.Area.X2 - z.Area.X1 + 1) * (z.Area.Z2 - z.Area.Z1 + 1));
+            long columns = homes.Sum(z => (long)z.Cells.Count);
             int step = columns > 2000 ? (int)Math.Ceiling(Math.Sqrt(columns / 2000.0)) : 1; // a huge zone is sampled, not scanned whole
             foreach (var z in homes)
-                for (int x = z.Area.X1; x <= z.Area.X2; x += step)
-                    for (int zz = z.Area.Z1; zz <= z.Area.Z2; zz += step)
-                        Column(x, zz, z.Area.Y1, true);
+                foreach (var (x, zz) in z.Cells.Sorted())
+                    if ((x - z.Area.X1) % step == 0 && (zz - z.Area.Z1) % step == 0) Column(x, zz, z.Area.Y1, true);
         }
         else if (anchor is { } h)
             for (int dx = -WanderRadius; dx <= WanderRadius; dx++)
@@ -126,51 +125,16 @@ public sealed partial class StoryColony
     }
 
     /// <summary>The open cells with at least <paramref name="room"/> to every other pawn (most room first), or empty.</summary>
-    private static List<P3> WithRoom(IEnumerable<P3> cells, List<P3> taken, out double room)
+    private static List<P3> WithRoom(IEnumerable<P3> cells, List<P3> taken, out double room, double[]? rooms = null)
     {
         var all = cells.ToList();
-        foreach (var r in Room)
+        foreach (var r in rooms ?? Room)
         {
             var ok = all.Where(c => taken.All(t => StoryWander.Gap(c, t) >= r && t != c)).ToList();
             if (ok.Count > 0) { room = r; return ok; }
         }
         room = 0;
         return [];
-    }
-
-    /// <summary>
-    /// The pawn's idle job, or null when there is nowhere to go (no home, nothing loaded, another dimension): a wander leg by day (and
-    /// in its free hours), and at night (when nothing indoors or lit is free) a spread spot at home to stand on.
-    /// </summary>
-    /// <param name="why">"work" (nothing to do in its work hours) or "free" (its free hours): what ends the leg early.</param>
-    private ActiveJob? IdleJob(PawnState p, PawnLive live, string why, int hour)
-    {
-        if (World is not { } w || live.Dim != w.Dimension || Home() is not { } home) return null;
-        bool night = StoryCharacter.Night(hour);
-        var from = live.Block;
-        var busy = Busy();
-        var taken = Taken(p.Name);
-        var open = IdleCells(night).Where(c => c != from && !busy(c) && !Skipped("wander:" + c));
-        var ok = WithRoom(open, taken, out _);
-        if (ok.Count == 0)
-        {
-            if (!night) return null;
-            // Nothing indoors or lit: stand at home, spread out, and stay there (no strolling about in the dark).
-            if (RestSpot(p, live, home) is not { } spot) return null;
-            var stay = Job("idle", "idle", why == "free" ? $"free time, at home ({hour:00}:00)" : "Idle (at home)", spot, null, "wander", why, "idle",
-                j => { j["s"] = 20; j["dist"] = 0; }, xp: 0);
-            Reserve(p.Name, spot, stay, TimeSpan.FromSeconds(50));
-            return stay;
-        }
-        // A stroll: somewhere 3..12 blocks off when there is such a cell, else (far from home) one of the nearest.
-        var near = ok.Where(c => StoryWander.Gap(c, from) is >= 3 and <= 12).ToList();
-        if (near.Count == 0) near = ok.OrderBy(c => c.Dist(from)).Take(8).ToList();
-        var to = near[Rng.Next(near.Count)];
-        int linger = Rng.Next(4, 13);
-        var leg = Job("idle", "idle", why == "free" ? $"Free time (wandering)" : "Idle (wandering)", to, null, "wander", why, "idle",
-            j => { j["s"] = linger; j["dist"] = 0; j["wander"] = true; }, xp: 0);
-        Reserve(p.Name, to, leg, TimeSpan.FromSeconds(to.Dist(from) / 3.0 + linger + 20));
-        return leg;
     }
 
     /// <summary>
@@ -248,14 +212,16 @@ public sealed partial class StoryColony
             if (!live.Online) continue;
             var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
             bool workHours = block is ScheduleBlocks.Work or ScheduleBlocks.Anything;
-            bool stillItsHours = cur.SourceId == "free" ? block == ScheduleBlocks.Free : workHours;
+            // A resting pawn's leg lasts while its back-off does (the rest is never cut short); then it asks again and works.
+            bool resting = cur.SourceId == "rest";
+            bool stillItsHours = resting ? RestLeft(p) != null : cur.SourceId == "free" ? block == ScheduleBlocks.Free : workHours;
             if (!stillItsHours || p.Queue.Count > 0)
             {
-                _current.Remove(p.Name); // its hours moved on (or it has orders): it asks again
+                _current.Remove(p.Name); // its hours (or its rest) moved on, or it has orders: it asks again
                 p.Rev = Bump();
                 continue;
             }
-            var job = Urgent(p, live) ?? (workHours ? Work(p, live) : null);
+            var job = Urgent(p, live) ?? (workHours && !resting ? Work(p, live) : null);
             if (job == null) continue;
             if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
             _current[p.Name] = job;

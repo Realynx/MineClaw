@@ -355,14 +355,17 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 }
                 var auto = Flag("auto_place_benches");
                 var detect = Flag("detect_benches");
+                // idle: recreation | wander | stay (what pawns do with nothing to do; StoryColony.Recreation.cs)
+                var idle = b["idle"] is null ? null : b["idle"] is JsonValue iv && iv.TryGetValue<string>(out var im) ? im : "";
                 // {rescue_teleport?, unfiltered_storage_takes_anything?, keep_disallowed?: bool} (StoryColony.Hauling.cs)
                 var rescue = Flag("rescue_teleport");
                 var unfiltered = Flag("unfiltered_storage_takes_anything");
                 var keep = Flag("keep_disallowed");
-                if (auto == null && detect == null && rescue == null && unfiltered == null && keep == null)
-                    return Bad("auto_place_benches, detect_benches, rescue_teleport, unfiltered_storage_takes_anything or keep_disallowed required");
+                if (auto == null && detect == null && idle == null && rescue == null && unfiltered == null && keep == null)
+                    return Bad("auto_place_benches, detect_benches, idle, rescue_teleport, unfiltered_storage_takes_anything or keep_disallowed required");
+                if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 if (rescue != null || unfiltered != null || keep != null) c.SetHaulOptions(rescue, unfiltered, keep);
-                return Reply(200, auto == null && detect == null ? c.SetHaulOptions(null, null, null) : c.SetOptions(auto, detect));
+                return Reply(200, c.SetOptions(auto, detect));
             }
             default:
                 return Reply(404, new JsonObject { ["error"] = "not found" });

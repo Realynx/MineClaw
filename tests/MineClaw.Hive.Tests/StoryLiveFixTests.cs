@@ -208,8 +208,8 @@ public sealed class StoryLiveFixTests
         }
         Assert.Equal(3, tried.Distinct().Count()); // never the one that just failed
         var rest = c.Next();
-        Assert.Equal("hold", rest["kind"]!.GetValue<string>());
-        Assert.StartsWith("resting", rest["label"]!.GetValue<string>());
+        Assert.Equal("idle", rest["kind"]!.GetValue<string>()); // it rests on its feet: an idle leg about home (StoryIdleTests)
+        Assert.StartsWith("Resting", rest["label"]!.GetValue<string>());
         c.Report(c.P(), rest["id"]!.GetValue<string>(), "done", null, null);
         clock.Now += StoryColony.FailRest;
         Assert.Equal("dig", c.Next()["kind"]!.GetValue<string>()); // rested: back to work (the fourth block)

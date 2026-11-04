@@ -32,5 +32,6 @@ export function savedDesigns(): DesignSummary[] {
     updated: d.updated,
     hasPicture: false,
     version: d.version ?? null,
+    kind: d.kind ?? null,
   }));
 }

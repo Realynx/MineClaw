@@ -138,7 +138,7 @@ public sealed partial class StoryColony
             return Escape(p, live, st.Asked ? "stuck: getting out" : "stuck? heading home");
         }
         if (p.Queue.Count == 0 && World is { } w && w.Loaded(live.Block.X, live.Block.Z) && StoryWander.Underground(w, live.Block) && !MiningNear(live.Block)
-            && !Zones.Any(z => z.Kind == "home" && z.Area.Contains(live.Block)))
+            && !Zones.Any(z => z.Kind == "home" && z.Contains(live.Block.X, live.Block.Z)))
         {
             _stuck[p.Name] = new StuckState { Since = Now, At = live.Block, Why = "under ground with no mining to do" };
             return Escape(p, live, "under ground: heading back up");

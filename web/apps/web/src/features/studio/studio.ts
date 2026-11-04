@@ -27,8 +27,10 @@ import {
   type OpGroup,
   posOf,
   type Selection,
+  setPlotMode,
   type V3,
 } from './canvas';
+import { MineTerrain } from './mine/mineTerrain';
 
 /** The routes the studio calls (the app passes the typed client; tests pass fakes and read the bodies). */
 export interface StudioApi {
@@ -40,6 +42,8 @@ export interface StudioApi {
 export interface StudioSnapshot {
   rev: number;
   blocks: number;
+  /** Dug cells (a mine is mostly these). */
+  dug: number;
   canUndo: boolean;
   canRedo: boolean;
   undoLabel: string | null;
@@ -84,12 +88,17 @@ export class Studio {
   private saved = new Map<number, number>();
   /** Keys of the touched cells whose state differs from the saved one. */
   private diverged = new Set<number>();
+  /** A mine session's generated terrain (null for a build). */
+  readonly terrain: MineTerrain | null;
 
   constructor(
     readonly session: DesignerSession,
     private readonly api: StudioApi,
     readonly flushMs = 400,
   ) {
+    // The plot's mode first: a mine's ground is its terrain (the canvas's rules follow it).
+    this.terrain = session.kind === 'mine' ? MineTerrain.for(session.seed, session.version) : null;
+    setPlotMode(this.terrain ? { kind: 'mine', terrain: this.terrain } : { kind: 'build' });
     this.canvas.load(session.blocks, session.dug ?? []);
     this.rev = session.rev;
     this.messages = [...session.messages];
@@ -102,6 +111,11 @@ export class Studio {
 
   get id(): number {
     return this.session.id;
+  }
+
+  /** A mine session (dug into generated terrain at absolute y). */
+  get mine(): boolean {
+    return this.terrain !== null;
   }
 
   // ------------------------------------------------------------------ subscriptions (useSyncExternalStore)
@@ -123,6 +137,7 @@ export class Studio {
     return {
       rev: this.rev,
       blocks: this.canvas.size,
+      dug: this.canvas.dug.size,
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,
       undoLabel: this.history.peekUndo()?.label ?? null,

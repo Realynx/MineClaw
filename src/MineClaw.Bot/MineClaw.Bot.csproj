@@ -8,6 +8,12 @@
     <ProjectReference Include="..\MineClaw.Render\MineClaw.Render.csproj" />
   </ItemGroup>
 
+  <!-- The Design Studio's mine data, shared with the browser (one file each: the generator, the guide and the presets read it). -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\web\apps\web\src\features\studio\mine\ore-heights.json" LogicalName="mine.ore-heights.json" />
+    <EmbeddedResource Include="..\..\web\apps\web\src\features\studio\mine\mine-presets.json" LogicalName="mine.mine-presets.json" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

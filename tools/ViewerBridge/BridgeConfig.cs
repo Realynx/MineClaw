@@ -42,6 +42,11 @@ public sealed class BridgeOptions
     public int CloudThreads { get; set; } = 1;
     /// <summary>Above this many build leaves the cloud's UMAP runs on an even sample and places the rest from their neighbours (100..2000).</summary>
     public int CloudMaxUmapPoints { get; set; } = 2000;
+    /// <summary>
+    /// Above this many build leaves the cloud's distance layout (metric MDS, all-pairs SMACOF) runs on an even sample and places the
+    /// rest by minimising their own stress against it (100..3000; 3000 leaves = a 36 MB distance matrix while it runs).
+    /// </summary>
+    public int CloudMaxMdsPoints { get; set; } = 3000;
 }
 
 public sealed class BridgeConfig

@@ -100,7 +100,12 @@ public sealed class WorldState : IBlockAccess, IDisposable
     private long _time;
     /// <summary>World time in ticks (0x04 Time Update). 0 = sunrise, 6000 noon, 12000 sunset, 18000 midnight.</summary>
     public long Time { get => Interlocked.Read(ref _time); set => Interlocked.Exchange(ref _time, value); }
-    public long TimeOfDay => ((Time % 24000) + 24000) % 24000;
+    /// <summary>The time of day 0..23999. A negative <see cref="Time"/> (1.12.2's "daylight cycle stopped") counts by its
+    /// absolute value (the server's convention), never as the time before midnight.</summary>
+    public long TimeOfDay => Time is var t && t < 0 ? (t == long.MinValue ? 0 : -t % 24000) : t % 24000;
+    private volatile bool _timeFrozen;
+    /// <summary>The server stopped the daylight cycle (1.12.2 <c>doDaylightCycle false</c>): the time holds until it says otherwise.</summary>
+    public bool TimeFrozen { get => _timeFrozen; set => _timeFrozen = value; }
     public bool IsNight => TimeOfDay is >= 13000 and < 23000;
 
     private BlockPos _spawn;

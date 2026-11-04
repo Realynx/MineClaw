@@ -219,6 +219,14 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         return null;
     }
 
+    /// <summary>Whether the server stopped the daylight cycle (as the first in-process body in <paramref name="dim"/> heard it).</summary>
+    public bool? WorldTimeFrozen(int dim)
+    {
+        foreach (var b in Bodies())
+            if (b.World.Dimension == dim) return b.World.TimeFrozen;
+        return null;
+    }
+
     /// <summary>The rain and thunder of the first in-process body in <paramref name="dim"/> (the server's weather; live 10-29 the
     /// viewer never showed it).</summary>
     public (float Rain, float Thunder)? WorldWeather(int dim)

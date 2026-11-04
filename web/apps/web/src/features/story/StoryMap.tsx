@@ -37,6 +37,7 @@ import {
 import { anchorLift, bodyLook, hologramCells, type BodyLook } from './bodyLook';
 import { chestBadge, drawChestBadge, useContainerBadges } from './chestBadges';
 import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type PlacedLabel } from './failedLabels';
+import type { WorldClock } from './clock';
 import { type Selection } from './model';
 import {
   buildItem,
@@ -67,13 +68,16 @@ import {
   type Target,
 } from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
+import { growPlantNow } from './GrowingZones';
+import { drawZonePreview, drawZones, zoneLabel } from './zones/zoneDraw';
+import { previewLabel, waterColumns, zoneInto, zonePreview } from './zones/zonePaint';
 
 export type MapTool =
   | { kind: 'select' }
   | { kind: 'designate'; id: DesignateId }
-  | { kind: 'zone'; id: string; op: 'add' | 'remove' }
+  | { kind: 'zone'; id: string; op: 'add' | 'remove'; into?: string | number }
   | { kind: 'build'; id: BuildToolId }
-  | { kind: 'design'; id: number; name: string; blocks: DesignBlock[] }
+  | { kind: 'design'; id: number; name: string; blocks: DesignBlock[]; mine?: { min: number; max: number } }
   | { kind: 'storage' }
   | { kind: 'home' };
 
@@ -149,6 +153,10 @@ export interface StoryMapProps {
   onDropTool: () => void;
   /** A drag was cancelled (Esc, the other mouse button, leaving full screen). */
   onCancelled?: () => void;
+  /** The page's world clock: the map's sky light and it share one anchor (the newer server sample wins, both ways). */
+  clock?: WorldClock;
+  /** A material hovered in the material selector: the placement preview keeps showing at the last map cell meanwhile. */
+  previewHold?: boolean;
   onHover?(info: string | null): void;
 }
 
@@ -316,6 +324,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   /** Esc / the other button cancel a drag; the release after a cancel does nothing (tools.ts `DragGate`). */
   const gate = useRef(new DragGate());
   const hover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
+  /** The last hover over the map (kept when the pointer leaves it: the material selector previews there). */
+  const lastHover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
   const shown = useRef(new Map<string, V3>());
   const scan = useRef<{ key: string; busy: boolean; result: (DragResult & { cols?: ColumnSpan[] }) | null }>({
     key: '',
@@ -455,6 +465,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         e.setLevelCut(p.current.cutY !== null || dim !== null ? { y: p.current.cutY ?? 1e6, dimBelow: dim } : null);
       }
       if (placed.current) e.rig.target.y = p.current.level + 1;
+      // Day and night: the viewer's index time and the colony clock are one anchor (the newer sample wins).
+      p.current.clock?.syncViewer({
+        anchor: () => e.runtime.worldTimeAnchor(0),
+        set: (ticks, at, frozen) => e.runtime.setWorldTime(0, ticks, at, frozen),
+      });
       syncHolograms(e);
       const w = c.clientWidth,
         h = c.clientHeight;
@@ -544,13 +559,28 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       e.setHolograms(cells, rev);
     }
     const tool = p.current.tool,
-      hv = hover.current;
+      hv = hover.current ?? (p.current.previewHold ? lastHover.current : null);
     const a = tool.kind === 'design' && hv?.cell && !drag.current ? startCellOf(hv) : null;
+    // A structure tool: its placement in the chosen material, under the cursor and while dragging (the material selector's
+    // hover shows here at once).
+    const d = drag.current;
+    const ba =
+      tool.kind === 'build' && tool.id !== 'remove' && !tool.id.startsWith('furniture:')
+        ? (d?.startCell ?? (hv?.cell && !d ? startCellOf(hv) : null))
+        : null;
     if (a && tool.kind === 'design') {
       const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}`;
       if (key !== h.preview) {
         h.preview = key;
-        e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing).slice(0, 4096).flat(), key);
+        e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing, !!tool.mine).slice(0, 4096).flat(), key);
+      }
+    } else if (ba && tool.kind === 'build') {
+      const bb = d?.endCell ?? ba;
+      const o = { ...p.current.build, line: d?.alt };
+      const key = `b|${tool.id}|${ba.join(',')}|${bb.join(',')}|${JSON.stringify(o)}`;
+      if (key !== h.preview) {
+        h.preview = key;
+        e.setHologramPreview(buildPreview(buildItem(tool.id, ba, bb, o)).blocks.slice(0, 4096).flat(), key);
       }
     } else if (h.preview) {
       h.preview = '';
@@ -687,36 +717,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
       ctx.restore();
     };
-    // Zones: tinted areas. Home zones (the houses) are the genre's home-area tint: a stronger fill, a solid edge, the name.
-    let houseNo = 0;
-    for (const z of st?.zones ?? []) {
-      const [x1, y1, z1, x2, , z2] = z.area;
-      const home = z.kind === 'home';
-      if (home) houseNo++;
-      const q = quad(Math.min(x1, x2), Math.min(z1, z2), Math.max(x1, x2) + 1, Math.max(z1, z2) + 1, y1 + 1.02);
-      if (!q) continue;
-      const col = zoneColor(z.kind);
-      poly(q);
-      ctx.fillStyle = home ? `${col}40` : `${col}2e`;
-      ctx.fill();
-      ctx.strokeStyle = home ? col : `${col}cc`;
-      ctx.lineWidth = home ? 2 : 1.5;
-      if (!home) ctx.setLineDash([6, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (home && cell > 3) {
-        const name = z.name || z.label || `House ${houseNo}`;
-        ctx.font = '600 11px system-ui, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        const tl = q.reduce((a, b) => (a.x + a.y <= b.x + b.y ? a : b));
-        const w = ctx.measureText(name).width;
-        ctx.fillStyle = 'rgba(10,12,16,0.7)';
-        ctx.fillRect(tl.x + 3, tl.y + 3, w + 8, 15);
-        ctx.fillStyle = '#cfe3ff';
-        ctx.fillText(name, tl.x + 7, tl.y + 4.5);
-      }
-    }
+    // Zones by their cells (zones/zoneDraw.ts): work zones tinted with a dashed edge (growing zones say what they sow), the
+    // overlay layers apart (houses: the home-area tint, a solid edge, the name; keep-out: red stripes).
+    drawZones(ctx, st?.zones ?? [], (x, y, z) => project(m, x, y, z), cell, (z, houseNo) =>
+      zoneLabel(z, houseNo, st?.plants),
+    );
     // The colony's home: a house mark.
     const homeAt = props.home;
     if (homeAt) {
@@ -1092,13 +1097,22 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       // With build holograms on, the viewer draws it in the world (green where it fits, red where blocked; syncHolograms).
       const a = startCellOf(hover.current);
       if (a && !holoOn)
-        for (const b of placeDesign(tool.blocks, a, props.build.facing).slice(0, 2500))
-          cube(b[0], b[1], b[2], '#7fd3ff', 0.38, false);
-      if (a) label(ctx, hover.current.at, `${tool.name}: ${tool.blocks.length} blocks · click to queue`, true);
+        for (const b of placeDesign(tool.blocks, a, props.build.facing, !!tool.mine).slice(0, 2500))
+          cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.38, false);
+      if (a)
+        label(
+          ctx,
+          hover.current.at,
+          tool.mine
+            ? `${tool.name}: y ${tool.mine.min}..${tool.mine.max} (absolute) · click to queue the mine`
+            : `${tool.name}: ${tool.blocks.length} blocks · click to queue`,
+          true,
+        );
     } else if (tool.kind === 'build' && hover.current?.cell && !d) {
       // The placement ghost under the cursor before a drag starts.
       const a = startCellOf(hover.current);
-      if (a) {
+      // With build holograms on, the viewer draws it in its material (syncHolograms).
+      if (a && (!holoOn || tool.id === 'remove' || tool.id.startsWith('furniture:'))) {
         const pv = buildPreview(buildItem(tool.id, a, a, props.build));
         for (const b of pv.blocks.slice(0, 600)) cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.4, false);
       }
@@ -1275,7 +1289,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       tool.kind === 'designate'
         ? (COLORS.designation[tool.id] ?? '#ffffff')
         : tool.kind === 'zone'
-          ? zoneColor(tool.id)
+          ? tool.op === 'remove'
+            ? '#ff6b6b'
+            : zoneColor(tool.id)
           : COLORS.chest;
     if (q) {
       poly(q);
@@ -1308,6 +1324,20 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         }
         ctx.stroke();
       }
+    }
+    if (tool.kind === 'zone') {
+      // The resulting cells, as the director will paint or erase them (merges and overwrites shown; zones/zonePaint.ts).
+      const zs = props.state?.zones ?? [];
+      const into = zoneInto(tool, zs, a, d.shift);
+      const wk = `${rect.join(',')}@${props.level}`;
+      const wet = water.current.key === wk ? water.current.cells : null;
+      const out = zonePreview(zs, tool, rect, props.level, growPlantNow(), into, wet);
+      if (out)
+        drawZonePreview(ctx, out.zones, out.result.id, out.removedCells, col, props.level + 1.03, (x, y, z) =>
+          project(m, x, y, z),
+        );
+      label(ctx, d.now, previewLabel(tool, out, (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)), out !== null);
+      return;
     }
     if (tool.kind === 'designate') {
       const res = scan.current.result;
@@ -1423,6 +1453,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     h.at = pt;
     h.cell = cell;
     hover.current = h;
+    lastHover.current = h;
     const tool = p.current.tool;
     if (p.current.view === 'angled' && (tool.kind === 'build' || tool.kind === 'design') && now - h.pickAt > 60) {
       h.pickAt = now;
@@ -1469,6 +1500,31 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     formationShown.current = null;
     lockEsc(false);
     p.current.onCancelled?.();
+  };
+
+  /** A fishing-zone drag: the still water under the rectangle (one scan in flight; the latest rectangle wins). */
+  const water = useRef<{ key: string; cells: Set<number> | null; busy: boolean }>({ key: '', cells: null, busy: false });
+  const rescanWater = () => {
+    const d = drag.current,
+      e = engine();
+    if (!d || !e || !d.startCell || !d.endCell || water.current.busy) return;
+    const rect = cellRect(d.startCell, d.endCell);
+    const lv = p.current.level;
+    const key = `${rect.join(',')}@${lv}`;
+    if (water.current.key === key) return;
+    water.current.busy = true;
+    void e.runtime.host
+      .scan(0, [rect[0], lv - 4, rect[1]], [rect[2], lv + 3, rect[3]], [8, 9], 20000)
+      .then((s) => {
+        if (drag.current === d) water.current = { key, cells: waterColumns(s), busy: true };
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        water.current.busy = false;
+        const dd = drag.current;
+        if (dd?.startCell && dd.endCell && `${cellRect(dd.startCell, dd.endCell).join(',')}@${p.current.level}` !== water.current.key)
+          rescanWater();
+      });
   };
 
   /** Rescans a designate drag's targets (one scan in flight; the latest rectangle wins). */
@@ -1608,6 +1664,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     }
     d.now = pt;
     d.alt = ev.altKey;
+    d.shift = ev.shiftKey; // a zone paint: Shift extends the zone the drag started in
     if (!d.moved && isDrag(d.start, pt)) d.moved = true;
     const tool = p.current.tool;
     if (tool.kind === 'build') {
@@ -1621,6 +1678,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
             : c;
     } else d.endCell = groundCell(pt) ?? d.endCell;
     if (d.moved && tool.kind === 'designate') rescan();
+    else if (d.moved && tool.kind === 'zone' && tool.id === 'fish' && tool.op === 'add') rescanWater();
   };
 
   /** The body under a point: the nearest within its own hit radius (a model's covers its height). */
@@ -1962,6 +2020,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           ...(toPage(pos[0], pos[1] + 0.2, pos[2]) ?? { x: NaN, y: NaN }),
         })),
       fps: () => engine()?.stats().fps,
+      /** The view's world time and sky light subtraction (0 noon … 11 midnight) of its last frame. */
+      sky: () => engine()?.sky() ?? null,
       /** Each body: how it is shown (model, token, cut) and whether the viewer drew its model last frame. */
       models: () =>
         bodies(0).map((b) => ({ name: b.key, look: b.look, model: engine()?.runtime.entities.detailOf(b.key) ?? null })),

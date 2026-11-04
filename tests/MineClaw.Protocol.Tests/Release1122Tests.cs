@@ -383,6 +383,7 @@ public class Release1122Tests
         server.Send(0x47, w => w.WriteLong(100).WriteLong(-6000)); // doDaylightCycle off: negative time of day
         var t = Assert.IsType<TimeUpdatePacket>(client.ReadPacket()); // the keep-alive never surfaces
         Assert.Equal(6000, t.Time);
+        Assert.True(t.Frozen);
         var ka = server.Read();
         Assert.Equal(0x0B, ka.Id);
         Assert.Equal(-1234567890123L, new WireReader(ka.Body).ReadLong());

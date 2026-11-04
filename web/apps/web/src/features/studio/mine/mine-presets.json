@@ -1,0 +1,53 @@
+{
+  "about": "Version-preferred mine designs: each preset is a list of template steps (MineTemplates.cs / mineTemplates.ts) on the 64x64 plot, in absolute world y. A design made from one is saved with 'preferred_for <version>'. top 'surface' = the highest ground over the shaft's square on the session's terrain.",
+  "presets": [
+    {
+      "id": "1.12.2-diamond-y11",
+      "version": "1.12.2",
+      "name": "1.12.2 diamond strip mine at y 11",
+      "ore": "diamond",
+      "y": 11,
+      "notes": "A 4x4 spiral shaft from the surface to a landing at y 11, then a 2x3 main corridor east with 1x2 branches 3 blocks apart on both sides. y 11 is the lowest level above the lava lakes (y 10 and below) and inside the diamond, redstone and gold bands; 3 solid blocks between branches show every ore within 1 block of a wall (1.12.2 diamond veins are up to 8 blocks).",
+      "steps": [
+        { "template": "spiral", "x": 30, "z": 30, "size": 4, "core": 2, "top": "surface", "bottom": 11, "dir": "cw", "torchEvery": 6, "landings": [11] },
+        { "template": "strip", "x": 34, "y": 11, "z": 31, "axis": "x", "length": 30, "width": 2, "height": 3, "spacing": 3, "branchLength": 14, "sides": "both", "torchEvery": 8 }
+      ]
+    },
+    {
+      "id": "1.12.2-lapis-iron-y16",
+      "version": "1.12.2",
+      "name": "1.12.2 lapis and iron strip mine at y 16",
+      "ore": "lapis",
+      "y": 16,
+      "notes": "Lapis is most common at y 16 and iron is spread evenly below y 64: a 3x3 spiral (1x1 core) down to y 16, then 1x2 branches 3 apart.",
+      "steps": [
+        { "template": "spiral", "x": 30, "z": 30, "size": 3, "core": 1, "top": "surface", "bottom": 16, "dir": "ccw", "torchEvery": 6, "landings": [16] },
+        { "template": "strip", "x": 33, "y": 16, "z": 31, "axis": "x", "length": 31, "width": 1, "height": 2, "spacing": 3, "branchLength": 14, "sides": "both", "torchEvery": 8 }
+      ]
+    },
+    {
+      "id": "b1.8.1-diamond-y11",
+      "version": "b1.8.1",
+      "name": "b1.8.1 diamond strip mine at y 11",
+      "ore": "diamond",
+      "y": 11,
+      "notes": "Beta 1.8.1's ore veins are one block smaller (diamond up to 7), so the branches are 2 blocks apart: every ore touching a wall is seen. y 11 is above the lava lakes and inside the diamond, redstone and gold bands.",
+      "steps": [
+        { "template": "spiral", "x": 30, "z": 30, "size": 4, "core": 2, "top": "surface", "bottom": 11, "dir": "cw", "torchEvery": 6, "landings": [11] },
+        { "template": "strip", "x": 34, "y": 11, "z": 31, "axis": "x", "length": 30, "width": 2, "height": 3, "spacing": 2, "branchLength": 14, "sides": "both", "torchEvery": 8 }
+      ]
+    },
+    {
+      "id": "b1.8.1-lapis-gold-y16",
+      "version": "b1.8.1",
+      "name": "b1.8.1 lapis and gold strip mine at y 16",
+      "ore": "lapis",
+      "y": 16,
+      "notes": "Lapis peaks at y 16 and gold sits below y 32: a 3x3 spiral (1x1 core) down to y 16, then 1x2 branches 2 apart.",
+      "steps": [
+        { "template": "spiral", "x": 30, "z": 30, "size": 3, "core": 1, "top": "surface", "bottom": 16, "dir": "ccw", "torchEvery": 6, "landings": [16] },
+        { "template": "strip", "x": 33, "y": 16, "z": 31, "axis": "x", "length": 31, "width": 1, "height": 2, "spacing": 2, "branchLength": 14, "sides": "both", "torchEvery": 8 }
+      ]
+    }
+  ]
+}

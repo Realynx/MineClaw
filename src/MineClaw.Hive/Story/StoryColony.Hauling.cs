@@ -95,7 +95,7 @@ public sealed partial class StoryColony
     }
 
     private bool AtDump(P3 at) =>
-        Zones.Any(z => z.Kind == "dump" && z.Area.Contains(at)) || DumpSpot() is { } d && Math.Abs(d.X - at.X) <= 3 && Math.Abs(d.Z - at.Z) <= 3 && Math.Abs(d.Y - at.Y) <= 3;
+        Zones.Any(z => z.Kind == "dump" && z.Contains(at.X, at.Z) && at.Y >= z.Area.Y1 - 1 && at.Y <= z.Area.Y2 + 2) || DumpSpot() is { } d && Math.Abs(d.X - at.X) <= 3 && Math.Abs(d.Z - at.Z) <= 3 && Math.Abs(d.Y - at.Y) <= 3;
 
     /// <summary>No storage takes this: one condition alert while any kind has nowhere to go (<c>unstored_kinds</c> lists them).</summary>
     private void Unstored(int id, int meta, string? pawn = null)

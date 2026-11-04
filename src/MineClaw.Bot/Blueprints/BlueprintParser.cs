@@ -31,6 +31,11 @@ public static partial class BlueprintParser
 {
     // 64 a side (a base-63 pyramid has 32 layers); a capture stays 32 (StructureCapture); the author is asked for ≤ 24
     public const int MaxSide = 64, MaxHeight = 32;
+    /// <summary>A mine design's height (<c>kind mine</c>: bedrock to over the surface; b1.8.1's whole world).</summary>
+    public const int MaxMineHeight = 128;
+
+    /// <summary>The height limit of a design of this kind.</summary>
+    public static int HeightLimit(Blueprint bp) => bp.Mine ? MaxMineHeight : MaxHeight;
 
     [GeneratedRegex(@"^(\d+)\s*[x×*]\s*(\d+)\s*[x×*]\s*(\d+)$", RegexOptions.IgnoreCase)]
     private static partial Regex SizeRx();
@@ -78,6 +83,7 @@ public static partial class BlueprintParser
         var lines = (text ?? "").Replace("\r", "").Split('\n');
         int i = 0;
         bool sized = false, sizeTried = false;
+        int sizeLine = 0;
         while (i < lines.Length)
         {
             int ln = i + 1;
@@ -88,9 +94,10 @@ public static partial class BlueprintParser
             {
                 if (SizeOf(raw) is not { } sz) { Err(ln, "size", "size must be WxHxD with numbers, e.g. size 5x4x5"); sizeTried = true; continue; }
                 (bp.W, bp.H, bp.D) = sz;
-                if (bp.W is < 1 or > MaxSide || bp.D is < 1 or > MaxSide || bp.H is < 1 or > MaxHeight)
+                if (bp.W is < 1 or > MaxSide || bp.D is < 1 or > MaxSide || bp.H is < 1 or > MaxMineHeight)
                     Err(ln, "size", $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{MaxHeight} high)");
                 sized = true;
+                sizeLine = ln;
                 continue;
             }
             var sp = raw.IndexOf(' ');
@@ -108,9 +115,10 @@ public static partial class BlueprintParser
                         bp.W = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
                         bp.H = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
                         bp.D = int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
-                        if (bp.W is < 1 or > MaxSide || bp.D is < 1 or > MaxSide || bp.H is < 1 or > MaxHeight)
+                        if (bp.W is < 1 or > MaxSide || bp.D is < 1 or > MaxSide || bp.H is < 1 or > MaxMineHeight)
                             Err(ln, "size", $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{MaxHeight} high)");
                         sized = true;
+                        sizeLine = ln;
                         break;
                     }
                 case "origin":
@@ -131,6 +139,37 @@ public static partial class BlueprintParser
                     break;
                 case "version":
                     if (DesignVersions.Normalize(rest) == null) Err(ln, "version", $"version must be {string.Join(" or ", DesignVersions.All)}");
+                    break;
+                case "kind":
+                    if (rest.Trim().ToLowerInvariant() is var kind && kind is "mine" or "build") bp.Kind = kind;
+                    else Err(ln, "kind", "kind must be build or mine");
+                    break;
+                case "anchor":
+                    {
+                        // anchor absolute X,Y,Z (or anchor absolute Y): a mine's layer 0 at world y Y (X,Z: its place on the studio plot).
+                        var t = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        bool abs = t.Length == 2 && t[0].Equals("absolute", StringComparison.OrdinalIgnoreCase);
+                        if (abs && P3(t[1]) is { } at)
+                        {
+                            bp.AbsoluteY = at.Y;
+                            bp.PlotAt = (at.X, at.Z);
+                        }
+                        else if (abs && int.TryParse(t[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ay)) bp.AbsoluteY = ay;
+                        else if (t.Length >= 1 && t[0].ToLowerInvariant() is "surface" or "ground") bp.AbsoluteY = null;
+                        else Err(ln, "anchor", "anchor must be 'absolute X,Y,Z' (a mine at world y Y) or 'surface'");
+                        if (bp.AbsoluteY is < 1) Err(ln, "anchor", $"anchor absolute y {bp.AbsoluteY} must be 1 or more (y 0 is bedrock)");
+                        break;
+                    }
+                case "entry":
+                    if (P3(rest) is { } en) bp.Entry = en;
+                    else Err(ln, "entry", "entry must be x,y,z (the mine's top, in the design's own coordinates)");
+                    break;
+                case "seed":
+                    bp.Seed = rest.Trim().Length is > 0 and <= 32 ? rest.Trim() : null;
+                    break;
+                case "preferred_for" or "preferred":
+                    if (DesignVersions.Normalize(rest) is { } pv) bp.PreferredFor = pv;
+                    else Err(ln, "preferred_for", $"preferred_for must be {string.Join(" or ", DesignVersions.All)}");
                     break;
                 case "palette":
                     foreach (var tok in rest.Split([' ', '\t', ';'], StringSplitOptions.RemoveEmptyEntries)) ParsePalette(bp, tok, ln, issues);
@@ -176,21 +215,25 @@ public static partial class BlueprintParser
                 bp.D = bp.Layers.Values.Max(l => l.Rows.Count);
                 bp.H = bp.Layers.Keys.Max() + 1;
                 issues.Add(new BlueprintIssue(IssueLevel.Warning, "size-inferred", $"no size line: inferred {bp.W}x{bp.H}x{bp.D} from the layers"));
-                if (bp.W > MaxSide || bp.D > MaxSide || bp.H > MaxHeight)
-                    Err(0, "size", $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{MaxHeight} high)");
+                if (bp.W > MaxSide || bp.D > MaxSide || bp.H > HeightLimit(bp))
+                    Err(0, "size", $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{HeightLimit(bp)} high)");
             }
             else Err(0, "size", "missing 'size WxHxD'");
         }
         if (bp.Ground > 0 && bp.H > 0 && bp.Ground > bp.H) Err(0, "ground", $"ground {bp.Ground} is deeper than the design (size is {bp.H} high)");
+        // Only a mine reaches past 32 high (the kind line may come after the size line).
+        if (sized && !bp.Mine && bp.H > MaxHeight && bp.W <= MaxSide && bp.D <= MaxSide)
+            Err(sizeLine, "size", $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{MaxHeight} high)");
         // Settle the drawn front now (doors drawn on the facing side = not turned) so the footprint is right before normalizing.
-        if (bp.Facing != Dir.South && bp.W > 0 && bp.H > 0 && bp.D > 0 && bp.W <= MaxSide && bp.D <= MaxSide && bp.H <= MaxHeight)
+        if (bp.Facing != Dir.South && bp.W > 0 && bp.H > 0 && bp.D > 0 && bp.W <= MaxSide && bp.D <= MaxSide && bp.H <= HeightLimit(bp))
             BlueprintNormalizer.Normalize(bp);
         return (bp, issues);
     }
 
     private static readonly HashSet<string> Statements = new(StringComparer.OrdinalIgnoreCase)
     {
-        "blueprint", "name", "size", "origin", "ground", "facing", "front", "light", "lit", "palette", "version", "layer", "layers", "box", "fill", "hollow", "walls", "wall",
+        "blueprint", "name", "size", "origin", "ground", "facing", "front", "light", "lit", "palette", "version", "kind", "anchor", "entry", "seed",
+        "preferred_for", "layer", "layers", "box", "fill", "hollow", "walls", "wall",
         "floor", "clear", "air", "pillar", "door", "window", "stairs", "roof", "pyramid",
     };
 

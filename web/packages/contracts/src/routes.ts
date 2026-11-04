@@ -120,8 +120,11 @@ import {
   WorldOverlays,
 } from './live.js';
 import {
+  CloudDistanceQuery,
+  CloudDistanceResponse,
   MemoryActivityQuery,
   MemoryActivityResponse,
+  MemoryCloudQuery,
   MemoryCloudResponse,
   MemoryHeatQuery,
   MemoryHeatResponse,
@@ -606,14 +609,25 @@ export const ROUTES = {
   }),
   'memoryActivity.cloud': get('/api/memory-activity/cloud', {
     access: 'viewer',
+    query: MemoryCloudQuery,
     response: MemoryCloudResponse,
     responseKind: 'json',
     bridge: b('/v1/memory-activity/cloud'),
     supervisor:
-      'bridge-native (UMAP over the RAPTOR leaf embeddings, computed in the background and cached per tree state)',
+      'bridge-native (MDS / UMAP / PCA / tree layouts of the RAPTOR leaf embeddings, computed lazily in the background and cached per tree state)',
     audit: null,
     summary:
-      "Memory cloud: every RAPTOR leaf at its 2-D UMAP position, coloured by the bot's own clusters; `status: computing` while the layout runs.",
+      "Memory cloud: every RAPTOR leaf at its 2-D position in one arrangement (`mds` default: drawn distance ≈ embedding distance), coloured by the bot's own clusters, with fidelity numbers; `status: computing` while the layout runs.",
+  }),
+  'memoryActivity.cloudDistance': get('/api/memory-activity/cloud/distance', {
+    access: 'viewer',
+    query: CloudDistanceQuery,
+    response: CloudDistanceResponse,
+    responseKind: 'json',
+    bridge: b('/v1/memory-activity/cloud/distance'),
+    supervisor: 'bridge-native (cosine of two stored RAPTOR embeddings; vectors never leave the bridge)',
+    audit: null,
+    summary: 'The embedding (cosine) distance between two memories, for the cloud hover.',
   }),
   'memoryActivity.list': get('/api/memory-activity', {
     access: 'viewer',
@@ -1361,8 +1375,10 @@ export const ROUTES = {
     supervisor: '/api/story/colonies/{id}/zones',
     audit: 'story',
     summary:
-      'Adds, removes or renames zones (home zones are the houses); growing zones take a plant, sow and harvest (update), ' +
-      'and seek_seeds designates tall grass to cut (wheat) or queues a seed bill (pumpkin, melon).',
+      'Paints (add: merges with touching zones of the type, overwrites other work zones), erases (remove an area), deletes ' +
+      '(remove an id) or renames zones (cell sets; home and forbidden are overlay layers; home zones are the houses); growing ' +
+      'zones take a plant, sow and harvest (update) and planting bills (bill_add|update|remove|pause|resume|reorder), and ' +
+      'seek_seeds designates tall grass to cut (wheat) or queues a seed bill (pumpkin, melon).',
   }),
   'story.designations': post('/api/story/colonies/:id/designations', {
     access: 'story',
