@@ -67,6 +67,9 @@ import {
   type DesignateId,
   type EntityLite,
   type Target,
+  failedCells,
+  stalledIn,
+  type FailedCell,
 } from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
 import { growPlantNow } from './GrowingZones';
@@ -241,6 +244,19 @@ interface DesModel {
 }
 
 const desModels = new WeakMap<object, DesModel>();
+
+/** The failed build cells of a ghost list (blocked, or with a failure's reason), worked out once per list; by column for hovers. */
+const failedModels = new WeakMap<object, { cells: FailedCell[]; byColumn: Map<string, FailedCell> }>();
+function failedModel(blocks: NonNullable<StoryColonyState['ghosts']>['blocks']) {
+  const hit = failedModels.get(blocks);
+  if (hit) return hit;
+  const cells = failedCells(blocks);
+  const byColumn = new Map<string, FailedCell>();
+  for (const f of cells) if (!byColumn.has(`${f.cell[0]},${f.cell[2]}`)) byColumn.set(`${f.cell[0]},${f.cell[2]}`, f);
+  const m = { cells, byColumn };
+  failedModels.set(blocks, m);
+  return m;
+}
 function designationModel(list: StoryColonyState['designations']): DesModel {
   const hit = desModels.get(list);
   if (hit) return hit;
@@ -868,6 +884,25 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       if (state === 'done') continue;
       const col = COLORS.ghost[state] ?? COLORS.ghost.todo!;
       cube(g[0], g[1], g[2], col, state === 'leased' ? 0.5 : 0.32, cutY !== null && g[1] >= cutY);
+    }
+    // Failed build cells (docs/web/story-mode.md "Retrying failed build cells"): a dashed red ring with a cross on each, drawn even
+    // when the viewer shows the holograms; hovering one names its reason (the canvas title), the Retry tool (O) takes it again.
+    for (const f of failedModel(st?.ghosts?.blocks ?? EMPTY_GHOSTS).cells.slice(0, 2000)) {
+      const at = project(m, f.cell[0] + 0.5, Math.min(f.cell[1] + 1, cutY ?? 999), f.cell[2] + 0.5);
+      if (!at || at.x < -20 || at.y < -20 || at.x > c.clientWidth + 20 || at.y > c.clientHeight + 20) continue;
+      ctx.strokeStyle = COLORS.danger;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(at.x - 4, at.y - 4);
+      ctx.lineTo(at.x + 4, at.y + 4);
+      ctx.moveTo(at.x + 4, at.y - 4);
+      ctx.lineTo(at.x - 4, at.y + 4);
+      ctx.stroke();
     }
     // Designations: a mark on every target (one per tree for chop). The marks and the failed ones' clusters are worked out
     // once per state; a frame only projects and stamps them (off-screen ones skipped).
@@ -1511,6 +1546,12 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       cv.style.cursor = '';
     }
     const cell = groundCell(pt);
+    if (cv) {
+      // A failed build cell under the cursor: its reason as the map's tooltip.
+      const f = cell ? failedModel(p.current.state?.ghosts?.blocks ?? EMPTY_GHOSTS).byColumn.get(`${cell[0]},${cell[2]}`) : undefined;
+      const title = f ? `Build ${f.build}: ${f.cell.join(',')} failed: ${f.reason} (Retry tool: O)` : '';
+      if (cv.title !== title) cv.title = title;
+    }
     const h = hover.current ?? { at: pt, cell, face: null, pickAt: 0 };
     h.at = pt;
     h.cell = cell;
@@ -1623,6 +1664,13 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         const bb = designationCells(dd)[0];
         return bb && bb[0] >= rect[0] && bb[0] <= rect[2] && bb[2] >= rect[1] && bb[2] <= rect[3];
       }).length;
+      finish([], n, []);
+      return;
+    }
+    if (tool.id === 'retry') {
+      // Failed or resting designations and failed build cells in the box: what the release retries (its count, never a scan).
+      const st = p.current.state;
+      const n = stalledIn(st?.designations ?? [], rect).length + failedCells(st?.ghosts?.blocks ?? EMPTY_GHOSTS, rect).length;
       finish([], n, []);
       return;
     }
@@ -2237,6 +2285,7 @@ const LABEL_CLASS =
 const WAIT_LABEL_CLASS = LABEL_CLASS.replace('border-danger/50', 'border-border-strong text-muted');
 const EMPTY_SEL: Selection = { bodies: [], chests: [], bench: null };
 const EMPTY_LIST: StoryColonyState['designations'] = [];
+const EMPTY_GHOSTS: NonNullable<StoryColonyState['ghosts']>['blocks'] = [];
 
 const BLOCK_LABELS: Record<number, string> = {
   1: 'stone',

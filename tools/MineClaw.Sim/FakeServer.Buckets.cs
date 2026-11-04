@@ -16,8 +16,17 @@ public partial class FakeServer
     /// <summary>Serve water/lava buckets like the vanilla server (see the class remarks). Off by default.</summary>
     public bool Buckets { get; set; }
 
+    /// <summary>With <see cref="Buckets"/>: water settles after a pour or a scoop, two vanilla rules on the cells around it (BlockFlowing):
+    /// an open or flowing cell with two water sources beside it, over a solid block or a source, becomes a source; a source runs one
+    /// step into an open cell beside it that has ground under it (flowing water, level 1). Enough for a channel poured every other
+    /// cell (the ends get flowing water before the second pass) and for an infinite pool (a scooped cell comes back).</summary>
+    public bool LiquidFlow { get; set; }
+
     /// <summary>Every scoop: the source an empty bucket took.</summary>
     public System.Collections.Concurrent.ConcurrentQueue<(int X, int Y, int Z)> Scoops { get; } = new();
+
+    /// <summary>Every pour with what the cell held before it (air, or flowing water a neighbour's pour ran into it).</summary>
+    public System.Collections.Concurrent.ConcurrentQueue<(int X, int Y, int Z, int Id, int Meta)> PouredInto { get; } = new();
 
     /// <summary>Every pour: where the liquid went.</summary>
     public System.Collections.Concurrent.ConcurrentQueue<(int X, int Y, int Z)> Pours { get; } = new();
@@ -67,14 +76,49 @@ public partial class FakeServer
                     : (c.Item1, c.Item2, prev.Item3);
                 int at = Blocks.GetValueOrDefault(cell);
                 if (at != 0 && at is not (>= 8 and <= 11) && at != 31) return; // tryPlaceContainedLiquid: a solid block there
+                PouredInto.Enqueue((cell.Item1, cell.Item2, cell.Item3, at, Metas.GetValueOrDefault(cell)));
                 SetBlock(cell.Item1, cell.Item2, cell.Item3, lava ? 11 : 9);
                 Mirror?.Invoke(cell.Item1, cell.Item2, cell.Item3, lava ? 11 : 9, 0);
                 Pours.Enqueue(cell);
+                if (LiquidFlow && !lava) Settle(cell);
                 Inventory[36 + _heldSlot] = new ItemStack((short)Items.Bucket, 1, 0);
                 Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = Inventory[36 + _heldSlot] });
                 return;
             }
             prev = c;
+        }
+    }
+
+    private void Settle((int X, int Y, int Z) at)
+    {
+        bool Source((int, int, int) c) => Blocks.GetValueOrDefault(c) is 8 or 9 && Metas.GetValueOrDefault(c) == 0;
+        bool Open((int, int, int) c) => Blocks.GetValueOrDefault(c) is var id && (id == 0 || id is 8 or 9 && Metas.GetValueOrDefault(c) != 0);
+        bool Ground((int, int, int) c) => Blocks.GetValueOrDefault(c) is var id && id != 0 && id is not (>= 8 and <= 11) && id != 31;
+        (int, int, int)[] Sides((int X, int Y, int Z) c) => [(c.X + 1, c.Y, c.Z), (c.X - 1, c.Y, c.Z), (c.X, c.Y, c.Z + 1), (c.X, c.Y, c.Z - 1)];
+        void Put((int X, int Y, int Z) c, int meta)
+        {
+            SetBlock(c.X, c.Y, c.Z, 9, meta);
+            Mirror?.Invoke(c.X, c.Y, c.Z, 9, meta);
+        }
+        for (int pass = 0; pass < 6; pass++)
+        {
+            bool changed = false;
+            for (int dx = -4; dx <= 4; dx++)
+                for (int dz = -4; dz <= 4; dz++)
+                {
+                    var c = (at.X + dx, at.Y, at.Z + dz);
+                    var below = (c.Item1, c.Item2 - 1, c.Item3);
+                    if (Open(c) && Sides(c).Count(Source) >= 2 && (Ground(below) || Source(below))) { Put(c, 0); changed = true; }
+                }
+            for (int dx = -4; dx <= 4; dx++)
+                for (int dz = -4; dz <= 4; dz++)
+                {
+                    var c = (at.X + dx, at.Y, at.Z + dz);
+                    if (!Source(c)) continue;
+                    foreach (var n in Sides(c))
+                        if (Blocks.GetValueOrDefault(n) == 0 && Ground((n.Item1, n.Item2 - 1, n.Item3))) { Put(n, 1); changed = true; }
+                }
+            if (!changed) break;
         }
     }
 
@@ -99,6 +143,7 @@ public partial class FakeServer
                 SetBlock(c.Item1, c.Item2, c.Item3, 0);
                 Mirror?.Invoke(c.Item1, c.Item2, c.Item3, 0, 0);
                 Scoops.Enqueue(c);
+                if (LiquidFlow && id < 10) Settle(c);
                 Inventory[36 + _heldSlot] = new ItemStack((short)(id >= 10 ? Items.LavaBucket : Items.WaterBucket), 1, 0);
                 Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = Inventory[36 + _heldSlot] });
                 return;

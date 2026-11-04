@@ -89,6 +89,27 @@ public class InventoryLedgerTests
     }
 
     [Fact]
+    public void A_bucket_that_fills_or_empties_in_a_1_12_2_resync_is_that_use_not_a_correction()
+    {
+        // 1.12.2 answers an item use with the whole inventory (sendContainerToPlayer): live 11-04, "server correction" for every pour.
+        var (l, c) = New((Items.Bucket, 0, 2), (Cobble, 0, 5));
+        c.Advance(1);
+        l.NoteResync();
+        l.Observe(Inv((Items.Bucket, 0, 1), (Items.WaterBucket, 0, 1), (Cobble, 0, 5)));
+        c.Advance(1);
+        l.NoteResync();
+        l.Observe(Inv((Items.Bucket, 0, 2), (Cobble, 0, 5)));
+        c.Advance(1);
+        l.Flush();
+        Assert.All(l.History("bucket").Concat(l.History("water_bucket")), e => Assert.DoesNotContain("correction", e.Cause));
+        // Anything else in the same resync still is one.
+        l.NoteResync();
+        l.Observe(Inv((Items.Bucket, 0, 2)));
+        c.Advance(1);
+        Assert.StartsWith("server correction", Assert.Single(l.History("cobblestone")).Cause);
+    }
+
+    [Fact]
     public void Pickups_crafting_death_and_unexplained_losses_all_get_a_cause()
     {
         var (l, c) = New((Cobble, 0, 15));
