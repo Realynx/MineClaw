@@ -564,11 +564,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const tool = p.current.tool,
       hv = hover.current ?? (p.current.previewHold ? lastHover.current : null);
     const a = tool.kind === 'design' && hv?.cell && !drag.current ? startCellOf(hv) : null;
-    // A structure tool: its placement in the chosen material, under the cursor and while dragging (the material selector's
-    // hover shows here at once).
+    // A structure or furniture tool: its placement in the chosen material, under the cursor and while dragging (the
+    // material selector's hover shows here at once).
     const d = drag.current;
     const ba =
-      tool.kind === 'build' && tool.id !== 'remove' && !tool.id.startsWith('furniture:')
+      tool.kind === 'build' && tool.id !== 'remove'
         ? (d?.startCell ?? (hv?.cell && !d ? startCellOf(hv) : null))
         : null;
     if (a && tool.kind === 'design') {
@@ -1120,7 +1120,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       // The placement ghost under the cursor before a drag starts.
       const a = startCellOf(hover.current);
       // With build holograms on, the viewer draws it in its material (syncHolograms).
-      if (a && (!holoOn || tool.id === 'remove' || tool.id.startsWith('furniture:'))) {
+      if (a && (!holoOn || tool.id === 'remove')) {
         const pv = buildPreview(buildItem(tool.id, a, a, props.build));
         for (const b of pv.blocks.slice(0, 600)) cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.4, false);
       }
@@ -2092,6 +2092,20 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       botModels: () => engine()?.runtime.entities.botModels ?? 0,
       holograms: () => engine()?.hologramStats() ?? null,
       hologramAt: (x: number, y: number, z: number) => engine()?.hologramAt(x, y, z) ?? false,
+      /** Per build kind (wall, door, chest…): its cells still queued and how many of them draw as holograms now. */
+      hologramKinds: () => {
+        const e = engine(),
+          st = p.current.state;
+        const kinds = new Map((st?.builds ?? []).map((b) => [String(b.id), b.kind] as const));
+        const out: Record<string, { queued: number; shown: number }> = {};
+        for (const g of st?.ghosts?.blocks ?? []) {
+          if (g[6] === 'done') continue;
+          const k = (out[kinds.get(String(g[5])) ?? '?'] ??= { queued: 0, shown: 0 });
+          k.queued++;
+          if (e?.hologramAt(g[0], g[1], g[2])) k.shown++;
+        }
+        return out;
+      },
       ghosts: () => p.current.state?.ghosts?.blocks ?? [],
       mode: () => engine()?.rig.mode,
       level: () => p.current.level,

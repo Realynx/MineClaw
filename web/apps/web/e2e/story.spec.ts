@@ -767,8 +767,16 @@ type Ghost = [number, number, number, number, number, string | number, string];
 interface WorldDebug {
   models(): Array<{ name: string; look: string; model: boolean | null }>;
   botModels(): number;
-  holograms(): { cells: number; digs: number; boxes: number; lod: boolean } | null;
+  holograms(): {
+    cells: number;
+    digs: number;
+    boxes: number;
+    lod: boolean;
+    visible: boolean;
+    preview: { ok: number; blocked: number };
+  } | null;
   hologramAt(x: number, y: number, z: number): boolean;
+  hologramKinds(): Record<string, { queued: number; shown: number }>;
   ghosts(): Ghost[];
 }
 const dbg = <K extends keyof WorldDebug>(page: Page, m: K, ...a: Parameters<WorldDebug[K]>) =>
@@ -815,6 +823,86 @@ test('pawns are drawn as their player models; a queued build shows as holograms 
       { timeout: 90_000, intervals: [1000] },
     )
     .toBe('ok');
+});
+
+test('queued furniture, walls and doors each show as holograms; the Build holograms setting hides and shows them', async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 2);
+  await page.keyboard.press('Space'); // pause the colony: nothing gets built while the holograms are counted
+  await story(page, 'focus', -5, 4);
+  await story(page, 'setZoom', 24);
+  await page.waitForTimeout(800);
+  const lv = await story(page, 'level');
+  const arch = page.getByTestId('architect');
+  const pick = async (tab: 'Structure' | 'Furniture', tool: string) => {
+    await page.keyboard.press('b');
+    await arch.getByRole('button', { name: tab }).click();
+    await arch.getByRole('button', { name: tool, exact: true }).click();
+    await page.keyboard.press('b');
+  };
+  // A wall (a 4 × 3 outline), a door beside it and a chest: three builds.
+  await pick('Structure', 'Wall');
+  const wall = post(page, /\/builds$/);
+  await dragCells(page, [-9, lv, 2], [-6, lv, 4]);
+  await page.mouse.up();
+  await wall;
+  await pick('Structure', 'Door');
+  const doorAt = (await story(page, 'toPage', -3.5, lv, 2.5))!;
+  const door = post(page, /\/builds$/);
+  await page.mouse.click(doorAt.x, doorAt.y);
+  await door;
+  await pick('Furniture', 'Chest');
+  const chestAt = (await story(page, 'toPage', -3.5, lv, 5.5))!;
+  // Hovering the chest tool previews the chest as a hologram in the world before it is placed.
+  await page.mouse.move(chestAt.x, chestAt.y);
+  await expect
+    .poll(async () => (await dbg(page, 'holograms'))?.preview.ok ?? 0)
+    .toBe(1);
+  const chest = post(page, /\/builds$/);
+  await page.mouse.click(chestAt.x, chestAt.y);
+  expect((body(await chest) as { items: Array<{ kind: string }> }).items[0]?.kind).toBe('chest');
+  await page.keyboard.press('Escape');
+  // Every queued cell of each kind is drawn: the wall's blocks, both halves of the door, the chest.
+  const allShown = async () => {
+    const k = await dbg(page, 'hologramKinds');
+    return ['wall', 'door', 'chest'].map((n) => `${n} ${k[n]?.shown ?? 0}/${k[n]?.queued ?? 0}`).join(', ');
+  };
+  await expect.poll(allShown, { timeout: 30_000 }).toBe('wall 30/30, door 2/2, chest 1/1');
+  // Still there after a few catch-ups (the state's deltas keep the ghosts).
+  await page.waitForTimeout(7000);
+  expect(await allShown()).toBe('wall 30/30, door 2/2, chest 1/1');
+  expect((await dbg(page, 'holograms'))?.visible).toBe(true);
+  if (shots) {
+    await story(page, 'focus', -3, 5);
+    await story(page, 'setZoom', 10);
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: `${shots}/story-holograms-chest.png` });
+    await page.keyboard.press('v'); // the angled view, close on the chest and the door
+    await page.waitForTimeout(1000);
+    await story(page, 'focus', -3.5, 4);
+    await story(page, 'setZoom', 7);
+    await page.waitForTimeout(2000);
+    await page.screenshot({ path: `${shots}/story-holograms-door-angled.png` });
+    await page.keyboard.press('v');
+  }
+  // The viewer setting "Build holograms" off (as from the settings page in another tab): hidden; on again: back.
+  const setHolograms = (on: boolean) =>
+    page.evaluate((v) => {
+      const w = window as unknown as { __mcxViewer: { settings(): { custom: object } & Record<string, unknown> } };
+      const s = w.__mcxViewer.settings();
+      const next = JSON.stringify({ ...s, preset: 'custom', custom: { ...s.custom, holograms: v } });
+      localStorage.setItem('mcx-viewer-settings', next);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'mcx-viewer-settings', newValue: next }));
+    }, on);
+  await setHolograms(false);
+  await expect.poll(async () => (await dbg(page, 'holograms'))?.visible).toBe(false);
+  if (shots) await page.screenshot({ path: `${shots}/story-holograms-off.png` });
+  await setHolograms(true);
+  await expect.poll(async () => (await dbg(page, 'holograms'))?.visible).toBe(true);
+  expect(await allShown()).toBe('wall 30/30, door 2/2, chest 1/1');
 });
 
 test('notifications: repeats coalesce, messages expire, Dismiss all, conditions and the log', async ({ page }) => {

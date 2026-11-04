@@ -1,3 +1,4 @@
+import type * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { InlineMeshHost } from '../src/mesh/host';
 import { meshCells, meshHolograms } from '../src/mesh/holo';
@@ -9,6 +10,7 @@ import { cellIndex } from '../src/wire/chunk';
 import { encodeColumn, encodeMcwc, lightSections } from '../src/wire/encode';
 import { combineHash } from '../src/wire/hash';
 import { storeWith } from './helpers';
+import { table1122, tableBeta } from './pack';
 
 const cell = (x: number, y: number, z: number, id = 4, state: HoloCell['state'] = 'todo', build: string | number = 1): HoloCell => ({ x, y, z, id, meta: 0, build, state });
 
@@ -182,6 +184,107 @@ describe('HologramLayer', () => {
     expect(layer.stats().preview).toEqual({ ok: 1, blocked: 1 });
     layer.setPreview(null);
     expect(layer.stats().preview).toEqual({ ok: 0, blocked: 0 });
+    layer.dispose();
+  });
+});
+
+describe('every queued block kind bakes a hologram', () => {
+  // [x, y, z, id, meta, …] as the bot queues them (furniture with meta 0; a door's and a bed's second half come with the first).
+  const KINDS: Record<string, number[]> = {
+    chest: [0, 64, 0, 54, 0],
+    'double chest': [0, 64, 0, 54, 2, 1, 64, 0, 54, 2],
+    bed: [0, 64, 0, 26, 0, 0, 64, 1, 26, 8],
+    'standing sign': [0, 64, 0, 63, 4],
+    'wall sign': [0, 64, 0, 68, 2],
+    door: [0, 64, 0, 64, 1, 0, 65, 0, 64, 8],
+    torch: [0, 64, 0, 50, 0],
+    'wall torch': [0, 64, 0, 50, 3],
+    slab: [0, 64, 0, 44, 0],
+    stairs: [0, 64, 0, 53, 2],
+    fence: [0, 64, 0, 85, 0],
+    pane: [0, 64, 0, 102, 0],
+    ladder: [0, 64, 0, 65, 2],
+    furnace: [0, 64, 0, 61, 0],
+    'crafting table': [0, 64, 0, 58, 0],
+  };
+  const ONLY_1122: Record<string, number[]> = {
+    'trapped chest': [0, 64, 0, 146, 2],
+    'ender chest': [0, 64, 0, 130, 2],
+    'standing banner': [0, 64, 0, 176, 0],
+    'wall banner': [0, 64, 0, 177, 2],
+    skull: [0, 64, 0, 144, 1],
+    'shulker box': [0, 64, 0, 219, 1],
+  };
+  type Mesh = NonNullable<ReturnType<typeof meshCells>>;
+  const textured = (m: Mesh) => m.tile.some((v, i) => i % 4 === 2 && (v & 1) === 1);
+  const axis = (m: Mesh, k: number) => m.pos.filter((_, i) => i % 3 === k);
+
+  for (const [name, table] of [
+    ['b1.8.1', tableBeta],
+    ['1.12.2', table1122],
+  ] as const)
+    it(`${name}: block entities (chests, beds, signs…) and partial models in their own textured shape`, () => {
+      const t = table();
+      const kinds = name === '1.12.2' ? { ...KINDS, ...ONLY_1122 } : KINDS;
+      for (const [kind, cells] of Object.entries(kinds)) {
+        const m = meshCells(cells, t);
+        expect(m, kind).not.toBeNull();
+        expect(m!.quads, kind).toBeGreaterThan(0);
+        expect(textured(m!), kind).toBe(true);
+        // Every vertex belongs to one of the item's cells (the level cut and the "built" match use it).
+        const at = new Set<string>();
+        for (let i = 0; i < cells.length; i += 5) at.add(`${cells[i] - m!.origin[0]},${cells[i + 1] - m!.origin[1]},${cells[i + 2] - m!.origin[2]}`);
+        for (let v = 0; v < m!.cell.length; v += 3) expect(at.has(`${m!.cell[v]},${m!.cell[v + 1]},${m!.cell[v + 2]}`), kind).toBe(true);
+      }
+      // Not box stand-ins: a slab is half a block high, a door has both halves, a chest is its smaller model, a bed is two
+      // cells long and low.
+      expect(Math.max(...axis(meshCells(KINDS.slab, t)!, 1))).toBeCloseTo(0.5, 3);
+      expect(Math.max(...axis(meshCells(KINDS.door, t)!, 1))).toBeCloseTo(2, 3);
+      // (b1.8.1's chest is a full block with its chest faces, 1.12.2's the entity model.)
+      expect(Math.max(...axis(meshCells(KINDS.chest, t)!, 1))).toBeCloseTo(name === '1.12.2' ? 0.875 : 1, 3);
+      const bed = meshCells(KINDS.bed, t)!;
+      expect(Math.max(...axis(bed, 2))).toBeCloseTo(2, 3);
+      expect(Math.max(...axis(bed, 1))).toBeLessThan(0.6);
+      // A double chest is one wide chest, not two singles.
+      expect(meshCells(KINDS['double chest'], t)!.quads).toBeLessThan(2 * meshCells(KINDS.chest, t)!.quads);
+      // A door's two halves stand on the same side of the cell for every facing (b1.8.1's upper half takes the lower's
+      // facing: the queue sends it as plain 8).
+      for (const meta of [0, 1, 2, 3]) {
+        const m = meshCells([0, 64, 0, 64, meta, 0, 65, 0, 64, 8], t)!;
+        const span = (lower: boolean) => {
+          const xs: number[] = [], zs: number[] = [];
+          for (let v = 0; v < m.pos.length; v += 3)
+            if ((m.cell[v + 1] === 0) === lower) {
+              xs.push(m.pos[v]);
+              zs.push(m.pos[v + 2]);
+            }
+          return [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+        };
+        expect(span(false), `door meta ${meta}`).toEqual(span(true));
+      }
+    });
+
+  it('the layer draws a queued chest, a door and a torch, and drops the chest once it is placed', async () => {
+    const host = await hostWith([]);
+    const layer = new HologramLayer(host, createChunkUniforms());
+    const cells: HoloCell[] = [
+      { x: 2, y: 64, z: 2, id: 54, meta: 0, build: 'chest', state: 'todo' },
+      { x: 4, y: 64, z: 2, id: 64, meta: 1, build: 'door', state: 'todo' },
+      { x: 4, y: 65, z: 2, id: 64, meta: 8, build: 'door', state: 'todo' },
+      { x: 6, y: 64, z: 2, id: 50, meta: 5, build: 'torch', state: 'active' },
+    ];
+    layer.set(cells, 'r1');
+    await layer.idle;
+    expect(layer.stats()).toMatchObject({ cells: 4, digs: 0 });
+    for (const c of cells) expect(layer.has(c.x, c.y, c.z)).toBe(true);
+    const meshes = layer.group.children.flatMap((g) => g.children).filter((o) => o.name.startsWith('holo ')) as THREE.Mesh[];
+    expect(meshes.map((m) => m.name).sort()).toEqual(['holo active', 'holo todo']);
+    for (const m of meshes) expect(m.geometry.index!.count).toBeGreaterThan(0);
+    await host.patch(0, [[2, 64, 2, 54, 0]]);
+    layer.blocksChanged(0, [[2, 64, 2]]);
+    await layer.idle;
+    expect(layer.has(2, 64, 2)).toBe(false);
+    expect(layer.stats().cells).toBe(3);
     layer.dispose();
   });
 });
