@@ -109,3 +109,60 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
         return list;
     }
 }
+
+/// <summary>
+/// The colony's sight: main's world where it has the column live, else any online body (pawns, hive bodies) that has it live.
+/// Main alone misses columns only the pawns load (live 11-04: home ~160 blocks from main, chop/cut boxes there designated 0).
+/// Entities are merged by id (server-wide ids); time, height and dimension are main's.
+/// </summary>
+public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<WorldState>> others, IGameData data) : IStoryWorld
+{
+    private IReadOnlyList<WorldState> _others = [];
+    private long _othersAt;
+
+    public IGameData Data => data;
+    public long TimeOfDay => main()?.TimeOfDay ?? 0;
+    public int Height => main()?.WorldHeight ?? 128;
+    public int Dimension => main()?.Dimension ?? 0;
+
+    /// <summary>The other bodies in main's dimension, refreshed at most every half second (the picker asks per cell).</summary>
+    private IReadOnlyList<WorldState> Others()
+    {
+        long now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _othersAt) < 500) return _others;
+        int dim = Dimension;
+        IReadOnlyList<WorldState> list;
+        try { list = others().Where(w => w.Dimension == dim && !ReferenceEquals(w, main())).ToList(); }
+        catch (Exception) { list = []; }
+        _others = list;
+        Interlocked.Exchange(ref _othersAt, now);
+        return list;
+    }
+
+    /// <summary>The world that has column x,z live: main first, else the first body that does; null = nobody.</summary>
+    private WorldState? At(int x, int z)
+    {
+        if (main() is { } m && m.IsLoaded(x, z)) return m;
+        foreach (var w in Others()) if (w.IsLoaded(x, z)) return w;
+        return null;
+    }
+
+    public bool Loaded(int x, int z) => At(x, z) != null;
+
+    public (int Id, int Meta) Block(int x, int y, int z) => At(x, z) is { } w ? (w.GetBlock(x, y, z), w.GetMeta(x, y, z)) : (0, 0);
+
+    public IReadOnlyList<StoryEntity> Entities()
+    {
+        var seen = new HashSet<int>();
+        var list = new List<StoryEntity>();
+        void Add(WorldState w)
+        {
+            foreach (var e in new WorldStateStoryWorld(() => w, data).Entities())
+                if (seen.Add(e.Id)) list.Add(e);
+        }
+        if (main() is { } m) Add(m);
+        foreach (var w in Others()) Add(w);
+        return list;
+    }
+}
+

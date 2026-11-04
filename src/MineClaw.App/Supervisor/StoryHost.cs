@@ -31,7 +31,9 @@ public sealed class StoryHost : IStoryHost
         _bodies = bodies;
         _scripts = scripts;
         _log = log ?? NullLogger.Instance;
-        World = new WorldStateStoryWorld(world, data);
+        // Main's sight plus every online body's (pawns load the chunks around a far home that main may not).
+        World = new MergedStoryWorld(world, () => (_bodies()?.All ?? []).OfType<Body>().Where(b => b.State == BodyState.Online)
+            .Select(b => b.Adapter.World).ToList(), data);
     }
 
     public IStoryWorld? World { get; }

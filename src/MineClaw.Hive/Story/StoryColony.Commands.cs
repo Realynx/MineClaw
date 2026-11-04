@@ -269,11 +269,27 @@ public sealed partial class StoryColony
             // Also what this call made already: a tall plant's two halves (or any repeated cell) become one designation.
             // What this kind has already (sets: a 4096-cell box over a few hundred designations was O(n·m)).
             var hasAt = Designations.Where(d => d.Kind == kind && d.At != null).Select(d => d.At!.Value).ToHashSet();
+            // Marking a cell that already holds a failed/resting designation of this kind tries it again now (live 11-04: re-marking
+            // a grove whose cuts had failed answered "0" and nothing happened).
+            var existing = Designations.Where(d => d.Kind == kind && d.At != null).GroupBy(d => d.At!.Value).ToDictionary(g => g.Key, g => g.First());
+            int revived = 0;
+            void Revive(P3 at)
+            {
+                if (!existing.TryGetValue(at, out var d) || d.Status is null or "open") return;
+                var key = DesignationKey(d);
+                _skip.Remove(key);
+                _leaseFails.Remove(key);
+                _softFails.Remove(key);
+                d.Status = "open";
+                d.Rev = Touch();
+                revived++;
+                targets.Add(at.Json());
+            }
             var hasEnt = Designations.Where(d => d.Kind == kind && d.Entity != null).Select(d => d.Entity!.Value).ToHashSet();
             bool Taken(string k, P3? at, int? ent) => at is { } ma && (!madeAt.Add(ma) || hasAt.Contains(ma)) || ent is { } me && (!madeEnt.Add(me) || hasEnt.Contains(me));
             void Block(P3 at, List<P3>? col = null, string? replant = null, string? label = null)
             {
-                if (Taken(kind, at, null)) return;
+                if (Taken(kind, at, null)) { Revive(at); return; }
                 made.Add(new DesignationState { Id = NextId("d"), Kind = kind, At = at, Blocks = col, Replant = replant, Label = label, Created = Now });
                 targets.Add(at.Json());
             }
@@ -332,8 +348,8 @@ public sealed partial class StoryColony
             }
             if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
             foreach (var d in made) { d.Rev = Touch(); Designations.Add(d); }
-            if (made.Count > 0) WakeIdle();
-            return (new JsonObject { ["count"] = made.Count, ["targets"] = targets }, null);
+            if (made.Count > 0 || revived > 0) WakeIdle();
+            return (new JsonObject { ["count"] = made.Count + revived, ["revived"] = revived, ["targets"] = targets }, null);
         }
     }
 }
