@@ -464,7 +464,7 @@ public sealed partial class PathFollower
         switch (kind)
         {
             case MoveKind.Jump:
-                g.Jump = (s.OnGround || s.InWater) && pos.Y < step.Floor - 0.3 && (s.CollidedHorizontally || dist < 1.3);
+                g.Jump = JumpNow(s, step, dist);
                 g.Forward = 1;
                 break;
             case MoveKind.ClimbUp:
@@ -485,6 +485,10 @@ public sealed partial class PathFollower
                 break;
         }
     }
+
+    /// <summary>A Jump step jumps once standing (or swimming) below its floor, against the wall or close to it.</summary>
+    private static bool JumpNow(PhysicsState s, PathStep step, double dist) =>
+        (s.OnGround || s.InWater) && s.Position.Y < step.Floor - 0.3 && (s.CollidedHorizontally || dist < 1.3);
 
     /// <summary>Push into the wall the ladder hangs on: collidedHorizontally on a ladder → climb at 0.2/tick.</summary>
     private static void ClimbUpGait(ref Gait g, IBlockAccess w, PhysicsState s, double dist)

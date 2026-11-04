@@ -202,11 +202,11 @@ public static class PlayerPhysics
         BlockShapes.GetCollidingBoxes(w, box.Expand(dx, dy, dz), boxes);
         foreach (var b in boxes) dy = b.CalculateYOffset(box, dy);
         box = box.Offset(0, dy, 0);
-        bool canStep = s.OnGround || (oy != dy && oy < 0);
+        bool canStep = CanStep(s.OnGround, oy, dy);
         CollideXz(boxes, ref box, ref dx, ref dz);
 
         // mc-dev 1.8 Entity.move: `bI > 0 && flag1 && (flag || bH < 0.05F)`: sneaking on ground may step up whatever ySize is.
-        if (stepHeight > 0 && canStep && (sneakOnGround || s.YSize < 0.05f) && (ox != dx || oz != dz))
+        if (ShouldStepUp(s, stepHeight, canStep, sneakOnGround, ox != dx || oz != dz))
             StepUp(w, s, boxes, startBox, stepHeight, ox, oz, ref box, ref dx, ref dy, ref dz);
 
         s.Position = new Vec3d((box.MinX + box.MaxX) / 2, box.MinY, (box.MinZ + box.MaxZ) / 2);
@@ -221,6 +221,13 @@ public static class PlayerPhysics
         s.Velocity = StopBlockedAxes(s.Velocity, ox != dx, oy != dy, oz != dz);
         DoBlockCollisions(w, s);
     }
+
+    /// <summary>On the ground, or the fall was stopped by a floor this move.</summary>
+    private static bool CanStep(bool onGround, double oy, double dy) => onGround || (oy != dy && oy < 0);
+
+    /// <summary>mc-dev 1.8 Entity.move: <c>bI &gt; 0 &amp;&amp; flag1 &amp;&amp; (flag || bH &lt; 0.05F)</c>, and a horizontal axis was blocked.</summary>
+    private static bool ShouldStepUp(PhysicsState s, double stepHeight, bool canStep, bool sneakOnGround, bool blocked) =>
+        stepHeight > 0 && canStep && (sneakOnGround || s.YSize < 0.05f) && blocked;
 
     private static void SlowInWeb(PhysicsState s, ref double dx, ref double dy, ref double dz)
     {
