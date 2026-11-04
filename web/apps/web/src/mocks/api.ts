@@ -548,6 +548,20 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'world.entities': ({ query }) => live.entitiesSince(query.since === undefined ? undefined : num(query.since)),
   'world.overlays': ({ query }) => live.overlays(num(query.dim)),
   'world.blockEntities': () => ({ columns: [] }),
+  'world.container': ({ query }) => live.container(num(query.dim), num(query.x), num(query.y), num(query.z)),
+  'world.containers': ({ query }) =>
+    live.containers(
+      num(query.dim),
+      {
+        x0: num(query.x0),
+        z0: num(query.z0),
+        x1: num(query.x1),
+        z1: num(query.z1),
+        ...(query.y0 === undefined ? {} : { y0: num(query.y0) }),
+        ...(query.y1 === undefined ? {} : { y1: num(query.y1) }),
+      },
+      query.limit === undefined ? undefined : num(query.limit),
+    ),
   'world.blocks': ({ query }) => ({
     at: Date.now(),
     rev: Math.max(1, num(query.since)),
@@ -721,6 +735,8 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'brains.turn': { params: { brain: 'main', n: 104 }, query: {}, body: null },
   'world.index': { params: {}, query: { x: 4, z: 6 }, body: null },
   'world.blockEntities': { params: {}, query: { dim: 0, cols: '0,0;1,0' }, body: null },
+  'world.container': { params: {}, query: { dim: 0, x: 3, y: 74, z: -4 }, body: null },
+  'world.containers': { params: {}, query: { dim: 0, x0: -16, z0: -40, x1: 32, z1: 8 }, body: null },
   'world.overlays': { params: {}, query: {}, body: null },
   'admin.rebuildJob': { params: { jobId: 'job-x' }, query: {}, body: null },
   'admin.memoryEdit': { params: {}, query: {}, body: { op: 'update', kind: 'fact', id: '3', fields: { text: 'x' } } },
