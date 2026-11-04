@@ -21,6 +21,7 @@ export * from './controller.js';
 export * from './vision.js';
 export * from './viewer.js';
 export * from './inventory.js';
+export * from './containers.js';
 export * from './memoryActivity.js';
 export * from './story.js';
 export * from './storyData.js';

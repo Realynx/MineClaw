@@ -70,6 +70,8 @@ export interface RouteTypes {
   'world.overlays': { params: never; query: z.input<typeof C.DimQuery>; body: never; response: z.output<typeof C.WorldOverlays> };
   'world.blocks': { params: never; query: z.input<typeof C.WorldBlocksQuery>; body: never; response: z.output<typeof C.WorldBlockDeltas> };
   'world.blockEntities': { params: never; query: z.input<typeof C.WorldBlockEntitiesQuery>; body: never; response: z.output<typeof C.WorldBlockEntities> };
+  'world.container': { params: never; query: z.input<typeof C.ContainerQuery>; body: never; response: z.output<typeof C.ContainerView> };
+  'world.containers': { params: never; query: z.input<typeof C.ContainerBoxQuery>; body: never; response: z.output<typeof C.ContainerList> };
   'bots.tile': { params: z.input<typeof C.BotParams>; query: z.input<typeof C.TileQuery>; body: never; response: never };
   'bots.now': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BotNow> };
   'bots.inventory': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BodyInventory> };

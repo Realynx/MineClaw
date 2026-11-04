@@ -147,6 +147,7 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
     private readonly ILogger? _log;
     private readonly TimeProvider _time;
     private readonly WorldColumnSource _columns;
+    private readonly ContainerKnowledge _containers;
     private readonly Dictionary<string, (DateTimeOffset Asked, HiveEyePose? Pose, bool Busy)> _poses = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
@@ -163,6 +164,8 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         _log = log;
         _time = time ?? TimeProvider.System;
         _columns = new WorldColumnSource(Bodies, () => hub.WorldStore, _time);
+        _containers = new ContainerKnowledge(ContainerSightings.Process, () => Bodies().Select(b => b.World).ToList(), () => _rt?.Observations,
+            () => Version, _time);
     }
 
     /// <summary>Every body this process controls (a hive's subhive bodies too: their snapshot positions); null = the hub's hive
@@ -382,6 +385,11 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
     }
 
     /// <summary>The columns' block entities, merged over every in-process body in <paramref name="dim"/>.</summary>
+    /// <summary>A container's contents: live, the last look of any body, the world memory or Story's ledger (<see cref="ContainerKnowledge"/>).</summary>
+    public ContainerView? Container(int dim, BlockPos pos) => _containers.Get(dim, pos);
+
+    public (IReadOnlyList<ContainerSummary> Items, bool Capped) Containers(int dim, BlockPos min, BlockPos max, int limit) => _containers.InBox(dim, min, max, limit);
+
     public IReadOnlyList<WorldBlockEntityColumn> BlockEntities(int dim, IReadOnlyList<(int Cx, int Cz)> cols)
     {
         var worlds = Bodies().Select(b => b.World).Where(w => w.Dimension == dim).ToList();

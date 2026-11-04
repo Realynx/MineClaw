@@ -9,7 +9,6 @@
 import {
   regularsSeatsWouldHelp,
   STORY_STORAGE_PRIORITIES,
-  storyItemLabel,
   type StoryAiBody,
   type StoryDesignation,
   type StoryOnlineBlocked,
@@ -50,6 +49,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
+import { ContainerContents } from '@/features/world/ContainerPanel';
 import { retryIn, shortReason } from './failedLabels';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
@@ -806,6 +806,9 @@ export function StorageInspector({
       testid="storage-inspector"
     >
       <div className="space-y-2 text-xs">
+        {chests.length === 1 ? (
+          <ContainerContents target={{ dim: 0, x: keys[0]![0], y: keys[0]![1], z: keys[0]![2] }} heading />
+        ) : null}
         {!registered ? (
           <Button
             size="sm"
@@ -870,28 +873,6 @@ export function StorageInspector({
               />
             ) : null}
             <FilterTree tree={tree} filter={filter} onChange={(f) => canWrite && set({ filter: f })} />
-            {chests.length === 1 && first ? (
-              <div>
-                <div className="mb-1 flex items-center text-[10.5px] font-semibold tracking-wide text-subtle uppercase">
-                  Contents
-                  <span className="ml-auto font-normal normal-case">
-                    {first.knownAt ? `seen ${new Date(String(first.knownAt)).toLocaleTimeString()}` : 'not seen yet'}
-                  </span>
-                </div>
-                <ul className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-                  {first.contents.map(([id, meta, n], i) => (
-                    <li key={i} className="flex items-center gap-1">
-                      <ItemIcon id={id} meta={meta} size={16} />
-                      <span className="truncate">{storyItemLabel(id, meta)}</span>
-                      <span className="ml-auto tabular-nums text-muted">{n}</span>
-                    </li>
-                  ))}
-                </ul>
-                {first.freeSlots !== null && first.freeSlots !== undefined ? (
-                  <div className="mt-1 text-[10.5px] text-subtle">{first.freeSlots} free slots</div>
-                ) : null}
-              </div>
-            ) : null}
             <Button
               size="sm"
               variant="ghost"
@@ -1054,6 +1035,9 @@ export function BillsInspector({
           >
             A {bench.kind.replace(/_/g, ' ')} takes no bills yet.
           </p>
+        ) : null}
+        {bench.kind === 'furnace' || bench.kind === 'brewing_stand' ? (
+          <ContainerContents target={{ dim: 0, x: pos[0], y: pos[1], z: pos[2] }} heading />
         ) : null}
         <div className="flex items-center gap-1.5">
           <Button

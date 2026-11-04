@@ -55,12 +55,14 @@ public sealed class BodyInventories
     /// <summary>The game version the snapshots name (the process's one version; tests override it).</summary>
     public Func<string?> Version { get; init; } = () => MineClaw.Data.Versioning.GameData.Current.VersionId;
 
-    /// <summary>A body's client (main, a hive, a subhive body, a pawn): online while it plays; a snapshot is kept when it disconnects.</summary>
+    /// <summary>A body's client (main, a hive, a subhive body, a pawn): online while it plays; a snapshot is kept when it disconnects.
+    /// Its container windows are watched too (<see cref="ContainerWatch"/>).</summary>
     public static void Attach(string name, MinecraftClient client)
     {
         var weak = new WeakReference<MinecraftClient>(client);
         Process.Register(name, client.World, () => weak.TryGetTarget(out var c) && c.State == ClientState.Playing);
         client.Disconnected += _ => Process.Remember(name);
+        ContainerWatch.Attach(name, client); // the containers it opens, for the viewer's container panel (/api/world/containers)
     }
 
     /// <summary>Registers (or replaces: a new client for the same account) a body's world.</summary>

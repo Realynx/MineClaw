@@ -209,6 +209,7 @@ import {
 import { LiveStreamQuery } from './sse.js';
 import { ChatAccepted, ChatRequest, FeedQuery, FeedResponse, BotNow } from './viewer.js';
 import { BodyInventory } from './inventory.js';
+import { ContainerBoxQuery, ContainerList, ContainerQuery, ContainerView } from './containers.js';
 import { VisionList, VisionListQuery, VisionRenderQuery, VisionSheetInfo, VisionSheetParams } from './vision.js';
 
 export type HttpMethod = 'GET' | 'POST';
@@ -943,6 +944,27 @@ export const ROUTES = {
     audit: null,
     summary:
       'Block entities (sign text, bed colours, banners, skulls, flower pots, spawners) of some columns, hashed per column.',
+  }),
+  'world.container': get('/api/world/container', {
+    access: 'viewer',
+    query: ContainerQuery,
+    response: ContainerView,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/containers'),
+    supervisor: '/api/world/containers?dim&x&y&z',
+    audit: null,
+    summary:
+      "One container's contents by any of its blocks (live while a body has it open, else the freshest look, memory or Story ledger; source unknown = never opened).",
+  }),
+  'world.containers': get('/api/world/containers', {
+    access: 'viewer',
+    query: ContainerBoxQuery,
+    response: ContainerList,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/containers'),
+    supervisor: '/api/world/containers?dim&x0&y0&z0&x1&y1&z1&limit',
+    audit: null,
+    summary: 'Known containers in a box (≤ 512 wide) with their top items, fill and freshness, for map badges; capped.',
   }),
   'bots.tile': get('/api/bots/:bot/tile.png', {
     access: 'viewer',
