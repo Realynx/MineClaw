@@ -176,8 +176,7 @@ public static class ZonePainter
         ZoneState? into, Func<ZoneState> make, Func<string> newId)
     {
         if (into != null) { kind = into.Kind; plant = into.Plant; }
-        var touched = zones.Where(z => SameType(z, kind, plant) && z.Cells.Touches(cells)).ToList();
-        if (into != null && !touched.Contains(into) && into.Cells.Touches(cells)) touched.Add(into);
+        var touched = TouchedOfType(zones, kind, plant, cells, into);
         var target = into != null && touched.Contains(into) ? into : touched.FirstOrDefault();
         long size = cells.Count + touched.Sum(z => (long)z.Cells.Count);
         if (size > MaxCells) return (null, $"zone too large ({MaxCells} cells max)");
@@ -187,19 +186,34 @@ public static class ZonePainter
         if (!IsOverlay(kind))
             foreach (var z in zones.Where(z => !IsOverlay(z.Kind) && !SameType(z, kind, plant) && z.Cells.Overlaps(cells)).ToList())
                 Subtract(zones, z, cells, r, newId);
+        r.Id = target == null ? NewZone(zones, kind, plant, cells, y1, y2, make, r) : GrowZone(zones, target, touched, cells, y1, y2, r);
+        return (r, null);
+    }
 
-        if (target == null)
-        {
-            var z = make();
-            z.Kind = kind;
-            if (kind == "farm" && z.Plant == null && plant != null) z.Plant = plant;
-            z.SetCells(cells.Clone(), y1, y2);
-            zones.Add(z);
-            r.Created.Add(z.Id);
-            r.Changed.Add(z);
-            r.Id = z.Id;
-            return (r, null);
-        }
+    /// <summary>The zones of the paint's type its cells touch (and the zone painted into, when it touches them).</summary>
+    private static List<ZoneState> TouchedOfType(List<ZoneState> zones, string kind, string? plant, ZoneCells cells, ZoneState? into)
+    {
+        var touched = zones.Where(z => SameType(z, kind, plant) && z.Cells.Touches(cells)).ToList();
+        if (into != null && !touched.Contains(into) && into.Cells.Touches(cells)) touched.Add(into);
+        return touched;
+    }
+
+    /// <summary>The cells touch no zone of the type: a new one (settings from <paramref name="make"/>).</summary>
+    private static string NewZone(List<ZoneState> zones, string kind, string? plant, ZoneCells cells, int y1, int y2, Func<ZoneState> make, ZonePaintResult r)
+    {
+        var z = make();
+        z.Kind = kind;
+        if (kind == "farm" && z.Plant == null && plant != null) z.Plant = plant;
+        z.SetCells(cells.Clone(), y1, y2);
+        zones.Add(z);
+        r.Created.Add(z.Id);
+        r.Changed.Add(z);
+        return z.Id;
+    }
+
+    /// <summary>The target grows by the cells, and the other touched zones of the type merge into it (it keeps its place and id).</summary>
+    private static string GrowZone(List<ZoneState> zones, ZoneState target, List<ZoneState> touched, ZoneCells cells, int y1, int y2, ZonePaintResult r)
+    {
         var all = target.Cells.Clone();
         int before = all.Count;
         all.UnionWith(cells);
@@ -220,8 +234,7 @@ public static class ZonePainter
             target.SetCells(all, lo, hi);
             r.Changed.Add(target);
         }
-        r.Id = target.Id;
-        return (r, null);
+        return target.Id;
     }
 
     /// <summary>Erase <paramref name="cells"/> from every zone of <paramref name="kind"/> (null = any kind).</summary>
