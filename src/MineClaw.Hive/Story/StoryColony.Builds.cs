@@ -28,97 +28,122 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             MaterialsChanged(); // the queue changes: reservations and auto bills follow
-            switch (op)
+            return op switch
             {
-                case "add":
-                {
-                    if (items is not { Count: > 0 }) return (null, "items required");
-                    if (items.Count > 64) return (null, "at most 64 items per request");
-                    var made = new List<BuildState>();
-                    var warnings = new List<string>();
-                    JsonObject? flow = null;
-                    foreach (var n in items)
-                    {
-                        if (n is not JsonObject item) return (null, "each item is an object {kind, area|blocks, material, ...}");
-                        var (ghosts, mat, err) = StoryConstruction.Expand(w.Data, item, w);
-                        if (err != null) return (null, err);
-                        if (ghosts.Count > 4096) return (null, "an item expands to at most 4096 blocks");
-                        // Liquids: the cells must take the water (open, or dug first by the item's group), lava only when allowed (StoryColony.Water.cs).
-                        if (ghosts.Count > 0 && StoryConstruction.IsLiquid(ghosts[0]) && CheckLiquid(w, item, ghosts, made, warnings) is { } lerr) return (null, lerr);
-                        made.Add(new BuildState
-                        {
-                            Kind = item["kind"]!.GetValue<string>().ToLowerInvariant(), Spec = (JsonObject)item.DeepClone(), Ghosts = ghosts,
-                            Material = mat?.Name ?? "", Created = Now,
-                        });
-                    }
-                    int order = Builds.Count == 0 ? 0 : Builds.Max(b => b.Order) + 1;
-                    foreach (var b in made)
-                    {
-                        b.Id = NextId("b");
-                        b.Order = order++;
-                        b.Label = $"{b.Kind} ({b.BlocksTotal} block{(b.BlocksTotal == 1 ? "" : "s")}{(b.Material.Length > 0 && b.Kind != "remove" ? ", " + b.Material : "")})";
-                        var r = Touch();
-                        b.Rev = r;
-                        foreach (var g in b.Ghosts)
-                        {
-                            g.Rev = r;
-                            // Already there (a wall over a finished one): done at once.
-                            var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
-                            if (!g.Remove && id == g.Id && (g.Meta == meta || !g.Job)) g.State = "done";
-                            if (g.Remove && id == 0 && w.Loaded(g.At.X, g.At.Z)) g.State = "done";
-                        }
-                        Builds.Add(b);
-                        if (b.Ghosts.Count > 0 && StoryConstruction.IsLiquid(b.Ghosts[0])) flow = LiquidAdded(w, b, flow); // its label, the expected flow
-                        // Blocks the pawns can't place yet (crops, liquids, signs…): shown as ghosts and said once, never a stuck job.
-                        if (b.Ghosts.Where(g => g.State == "unsupported").ToList() is { Count: > 0 } odd)
-                            Alert("warn", $"Build {b.Id} ({b.Kind}): {odd.Count} block{(odd.Count == 1 ? "" : "s")} the pawns can't place yet, left as ghosts: "
-                                          + string.Join("; ", odd.Select(g => g.Reason ?? "special placement").Distinct().Take(3)));
-                    }
-                    WakeIdle();
-                    var added = new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) };
-                    if (warnings.Count > 0) added["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray());
-                    if (flow != null) added["flow"] = flow;
-                    return (added, null);
-                }
-                case "preview":
-                    return LiquidPreview(w, items); // a water item's cells checked and its expected flow, nothing queued (StoryColony.Water.cs)
-                case "remove":
-                case "pause":
-                case "resume":
-                {
-                    if (ids is not { Count: > 0 }) return (null, "ids required");
-                    var hit = Builds.Where(b => ids.Contains(b.Id)).ToList();
-                    if (hit.Count == 0) return (null, "no such build");
-                    foreach (var b in hit)
-                    {
-                        if (op == "remove")
-                        {
-                            Builds.Remove(b);
-                            Removed("build", b.Id);
-                            _buildAlerted.Remove(b.Id);
-                            foreach (var k in _leases.Keys.Where(k => k.StartsWith("g:" + b.Id + "|", StringComparison.Ordinal)).ToList()) _leases.Remove(k);
-                            continue;
-                        }
-                        if (b.Status != "done") b.Status = op == "pause" ? "paused" : "queued";
-                        b.Rev = Touch();
-                    }
-                    return (new JsonObject { ["ids"] = new JsonArray(hit.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
-                }
-                case "reorder":
-                {
-                    if (ids is not { Count: > 0 }) return (null, "ids required");
-                    if (ids.Any(i => Builds.All(b => b.Id != i))) return (null, "unknown build id");
-                    // The named ones first, in that order; the rest keep their relative order after them.
-                    var rest = Builds.Where(b => !ids.Contains(b.Id)).OrderBy(b => b.Order).ToList();
-                    int o = 0;
-                    foreach (var id in ids.Distinct()) { var b = Builds.First(x => x.Id == id); b.Order = o++; b.Rev = Touch(); }
-                    foreach (var b in rest) { b.Order = o++; b.Rev = Touch(); }
-                    return (new JsonObject { ["ids"] = new JsonArray(Builds.OrderBy(b => b.Order).Select(b => (JsonNode)b.Id!).ToArray()) }, null);
-                }
-                default:
-                    return (null, "op must be add|preview|remove|reorder|pause|resume");
-            }
+                "add" => AddBuilds(w, items),
+                "preview" => LiquidPreview(w, items), // a water item's cells checked and its expected flow, nothing queued (StoryColony.Water.cs)
+                "remove" or "pause" or "resume" => ToggleBuilds(op, ids),
+                "reorder" => ReorderBuilds(ids),
+                _ => (null, "op must be add|preview|remove|reorder|pause|resume"),
+            };
         }
+    }
+
+    /// <summary>Each item expanded and checked (all or none), then queued after the builds there are.</summary>
+    private (JsonNode? Result, string? Error) AddBuilds(IStoryWorld w, JsonArray? items)
+    {
+        if (items is not { Count: > 0 }) return (null, "items required");
+        if (items.Count > 64) return (null, "at most 64 items per request");
+        var made = new List<BuildState>();
+        var warnings = new List<string>();
+        foreach (var n in items)
+            if (ExpandBuildItem(w, n, made, warnings) is { } err) return (null, err);
+        var flow = QueueBuilds(w, made);
+        WakeIdle();
+        var added = new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) };
+        if (warnings.Count > 0) added["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray());
+        if (flow != null) added["flow"] = flow;
+        return (added, null);
+    }
+
+    private string? ExpandBuildItem(IStoryWorld w, JsonNode? n, List<BuildState> made, List<string> warnings)
+    {
+        if (n is not JsonObject item) return "each item is an object {kind, area|blocks, material, ...}";
+        var (ghosts, mat, err) = StoryConstruction.Expand(w.Data, item, w);
+        if (err != null) return err;
+        if (ghosts.Count > 4096) return "an item expands to at most 4096 blocks";
+        // Liquids: the cells must take the water (open, or dug first by the item's group), lava only when allowed (StoryColony.Water.cs).
+        if (ghosts.Count > 0 && StoryConstruction.IsLiquid(ghosts[0]) && CheckLiquid(w, item, ghosts, made, warnings) is { } lerr) return lerr;
+        made.Add(new BuildState
+        {
+            Kind = item["kind"]!.GetValue<string>().ToLowerInvariant(), Spec = (JsonObject)item.DeepClone(), Ghosts = ghosts,
+            Material = mat?.Name ?? "", Created = Now,
+        });
+        return null;
+    }
+
+    /// <summary>The new builds join the queue in order; the last liquid build's expected flow, or null.</summary>
+    private JsonObject? QueueBuilds(IStoryWorld w, List<BuildState> made)
+    {
+        int order = Builds.Count == 0 ? 0 : Builds.Max(b => b.Order) + 1;
+        JsonObject? flow = null;
+        foreach (var b in made) flow = QueueBuild(w, b, order++, flow);
+        return flow;
+    }
+
+    private JsonObject? QueueBuild(IStoryWorld w, BuildState b, int order, JsonObject? flow)
+    {
+        b.Id = NextId("b");
+        b.Order = order;
+        b.Label = $"{b.Kind} ({b.BlocksTotal} block{(b.BlocksTotal == 1 ? "" : "s")}{(b.Material.Length > 0 && b.Kind != "remove" ? ", " + b.Material : "")})";
+        var r = Touch();
+        b.Rev = r;
+        foreach (var g in b.Ghosts) MarkBuiltAlready(w, g, r);
+        Builds.Add(b);
+        if (b.Ghosts.Count > 0 && StoryConstruction.IsLiquid(b.Ghosts[0])) flow = LiquidAdded(w, b, flow); // its label, the expected flow
+        AlertUnplaceable(b);
+        return flow;
+    }
+
+    /// <summary>Already there (a wall over a finished one; a dig where it is open): done at once.</summary>
+    private static void MarkBuiltAlready(IStoryWorld w, GhostState g, long rev)
+    {
+        g.Rev = rev;
+        var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
+        if (!g.Remove && id == g.Id && (g.Meta == meta || !g.Job)) g.State = "done";
+        if (g.Remove && id == 0 && w.Loaded(g.At.X, g.At.Z)) g.State = "done";
+    }
+
+    /// <summary>Blocks the pawns can't place yet (crops, liquids, signs…): shown as ghosts and said once, never a stuck job.</summary>
+    private void AlertUnplaceable(BuildState b)
+    {
+        if (b.Ghosts.Where(g => g.State == "unsupported").ToList() is not { Count: > 0 } odd) return;
+        Alert("warn", $"Build {b.Id} ({b.Kind}): {odd.Count} block{(odd.Count == 1 ? "" : "s")} the pawns can't place yet, left as ghosts: "
+                      + string.Join("; ", odd.Select(g => g.Reason ?? "special placement").Distinct().Take(3)));
+    }
+
+    private (JsonNode? Result, string? Error) ToggleBuilds(string op, IReadOnlyList<string>? ids)
+    {
+        if (ids is not { Count: > 0 }) return (null, "ids required");
+        var hit = Builds.Where(b => ids.Contains(b.Id)).ToList();
+        if (hit.Count == 0) return (null, "no such build");
+        foreach (var b in hit)
+        {
+            if (op == "remove") { RemoveBuild(b); continue; }
+            if (b.Status != "done") b.Status = op == "pause" ? "paused" : "queued";
+            b.Rev = Touch();
+        }
+        return (new JsonObject { ["ids"] = new JsonArray(hit.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
+    }
+
+    private void RemoveBuild(BuildState b)
+    {
+        Builds.Remove(b);
+        Removed("build", b.Id);
+        _buildAlerted.Remove(b.Id);
+        foreach (var k in _leases.Keys.Where(k => k.StartsWith("g:" + b.Id + "|", StringComparison.Ordinal)).ToList()) _leases.Remove(k);
+    }
+
+    /// <summary>The named ones first, in that order; the rest keep their relative order after them.</summary>
+    private (JsonNode? Result, string? Error) ReorderBuilds(IReadOnlyList<string>? ids)
+    {
+        if (ids is not { Count: > 0 }) return (null, "ids required");
+        if (ids.Any(i => Builds.All(b => b.Id != i))) return (null, "unknown build id");
+        var rest = Builds.Where(b => !ids.Contains(b.Id)).OrderBy(b => b.Order).ToList();
+        int o = 0;
+        foreach (var id in ids.Distinct()) { var b = Builds.First(x => x.Id == id); b.Order = o++; b.Rev = Touch(); }
+        foreach (var b in rest) { b.Order = o++; b.Rev = Touch(); }
+        return (new JsonObject { ["ids"] = new JsonArray(Builds.OrderBy(b => b.Order).Select(b => (JsonNode)b.Id!).ToArray()) }, null);
     }
 
     private bool Solid(P3 p) => World is { } w && w.Block(p.X, p.Y, p.Z).Id is var id && !StoryBlocks.Replaceable.Contains(id);
