@@ -49,7 +49,7 @@ public sealed class StoryGearStockTests
             Assert.NotEqual("dig", Kind(again)); // no second fetch of what isn't there: it waits
             c.Report(c.P(), again["id"]!.GetValue<string>(), "done", null, null);
         }
-        Assert.Equal("needs a wooden pickaxe", d.Wait);
+        Assert.StartsWith("needs a wooden pickaxe", d.Wait);
         Assert.Equal(0, d.Fails);
         Assert.Contains(c.Alerts, a => a.Text.Contains("record is corrected"));
     }

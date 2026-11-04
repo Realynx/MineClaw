@@ -534,6 +534,7 @@ public sealed partial class StoryColony
     /// <summary>A build cell no pawn can dig for want of a tool: the build waits and says why (no alert, no failure).</summary>
     private void NoteBuildWait(BuildState b, string why)
     {
+        why = WaitText(why)!;
         if (b.Status is "paused" or "done" || b.Status == "waiting" && b.Reason == why) return;
         b.Status = "waiting";
         b.Reason = why;
@@ -552,10 +553,20 @@ public sealed partial class StoryColony
     /// <summary>A designation no pawn could take for want of a tool shows why (no failure, no alert).</summary>
     private void NoteWait(DesignationState d, string? why)
     {
-        if (d.Wait == why) return;
+        why = WaitText(why);
+        var status = why != null && d.Status is "open" or "waiting" ? "waiting" : why == null && d.Status == "waiting" ? "open" : d.Status;
+        if (d.Wait == why && d.Status == status) return;
         d.Wait = why;
+        d.Status = status;
         d.Rev = Bump();
     }
+
+    /// <summary>What the colony is doing about a missing tool, per wait ("needs a stone pickaxe" → "crafting one" | "no cobblestone
+    /// for it" | "no crafting table for it" | "auto-crafting tools is off"): the materials pass's tool step says.</summary>
+    private readonly Dictionary<string, string> _toolWantNote = new(StringComparer.Ordinal);
+
+    private string? WaitText(string? why) =>
+        why != null && why.StartsWith("needs ", StringComparison.Ordinal) && _toolWantNote.TryGetValue(why, out var note) ? why + " — " + note : why;
 
     /// <summary>A job ended: the enchanted tool it took leaves the chest's record (whatever the outcome: it is in a pocket or not
     /// in the chest any more).</summary>
@@ -582,8 +593,11 @@ public sealed partial class StoryColony
     {
         foreach (var k in _toolWants.Where(kv => Now - kv.Value >= ToolWantTtl).Select(kv => kv.Key).ToList()) _toolWants.Remove(k);
         var g = Meta.Gear;
-        if (!g.AutoCraftTools || !hasTable) return pool;
         var d = w.Data;
+        _toolWantNote.Clear();
+        foreach (var ((kind, lvl), _) in _toolWants)
+            _toolWantNote[$"needs {StoryTools.Describe(kind, lvl)}"] = !g.AutoCraftTools ? "auto-crafting tools is off" : !hasTable ? "no crafting table for it" : "no materials for it";
+        if (!g.AutoCraftTools || !hasTable) return pool;
         var asks = new List<(ToolType Kind, int Level, int N, bool Spare)>();
         foreach (var ((kind, lvl), _) in _toolWants) asks.Add((kind, lvl, 1, false));
         if (g.SpareCount > 0)
@@ -596,8 +610,17 @@ public sealed partial class StoryColony
             foreach (var pn in Pawns.Keys)
                     have += GearOf(Host.Live(pn)).Count(x => x.Slot >= 9 && StoryTools.ToolOf(d, x.Id) == kind && StoryTools.LevelOf(d, x.Id) >= lvl && !StoryTools.Worn(d, x.Id, x.Meta));
             int missing = n - have;
+            var noteKey = $"needs {StoryTools.Describe(kind, lvl)}";
             if (missing <= 0) continue;
             int[] levels = spare ? [2, 1, 0] : lvl == 0 ? [1, 0] : [lvl];
+            if (!spare && StoryTools.ItemFor(kind, levels[^1]) is { } want && d.ItemExists(want))
+            {
+                // Why it can't be made, said with the wait: the raw material it is short of (or its bill was cancelled).
+                var plan = PlanFor((want, 0), 1, pool);
+                _toolWantNote[noteKey] = g.NoCraft.Contains(d.Item(want).Name) ? "its auto bill was cancelled"
+                    : plan.Missing.Count > 0 ? $"no {string.Join(", ", plan.Missing.Select(m => d.DisplayName(m.Id, Math.Max(0, m.Damage)).ToLowerInvariant()))} for it"
+                    : "no materials for it";
+            }
             foreach (var level in levels)
             {
                 if (StoryTools.ItemFor(kind, level) is not { } id || !d.ItemExists(id)) continue;
@@ -608,7 +631,8 @@ public sealed partial class StoryColony
                 pool = f.After;
                 int step = 0;
                 foreach (var s in f.Plan.Steps)
-                    if (RecipeOf(d, s) is { } r) wants.Add(new Want(ToolsTag, -1, name, r, s.OutputCount, step++, "crafting_table"));
+                    if (RecipeOf(d, s, intermediate: (s.Recipe?.OutputId ?? -1) != id) is { } r) wants.Add(new Want(ToolsTag, -1, name, r, s.OutputCount, step++, "crafting_table"));
+                if (!spare) _toolWantNote[noteKey] = "crafting one";
                 break;
             }
         }
@@ -1169,6 +1193,7 @@ public sealed partial class StoryColony
     /// <summary>The colony's gear lists for the state: policies, material rules (and, full only, the rules editor's catalog).</summary>
     internal void GearStateJson(JsonObject o, bool full)
     {
+        BenchLoadAlert(); // many bills, one bench, a crafter idle: say so (StoryColony.Ledger.cs)
         o["policies"] = PoliciesJson();
         o["material_rules"] = RulesJson();
         if (full && World is { } w) o["materials"] = StoryTools.Catalog(w.Data);
