@@ -686,9 +686,15 @@ public partial class FakeServer : IDisposable
     {
         var cur = _srv!.PlayerSlots();
         for (int i = 0; i < 45; i++) Inventory[i] = cur[i];
-        if (_openChest is { } at && _srv.OpenWindow is { Type: WindowType.Chest } w && Chests.TryGetValue(at, out var contents))
+        SyncOutOpenContainer();
+    }
+
+    /// <summary>The open chest's or furnace's slots back into its contents.</summary>
+    private void SyncOutOpenContainer()
+    {
+        if (_openChest is { } at && _srv!.OpenWindow is { Type: WindowType.Chest } w && Chests.TryGetValue(at, out var contents))
             for (int i = 0; i < contents.Length && i < w.ContainerSlots; i++) contents[i] = w.Get(i);
-        if (_openFurnace is { } fat && _srv.OpenWindow is { Type: WindowType.Furnace } fw && Furnaces.TryGetValue(fat, out var fs))
+        if (_openFurnace is { } fat && _srv!.OpenWindow is { Type: WindowType.Furnace } fw && Furnaces.TryGetValue(fat, out var fs))
             for (int i = 0; i < 3; i++) fs[i] = fw.Get(i);
     }
 
@@ -799,16 +805,20 @@ public partial class FakeServer : IDisposable
         Blocks.TryGetValue((x, y, z), out int id);
         if (id is not (MineClaw.Data.Blocks.WoodenDoor or MineClaw.Data.Blocks.Trapdoor or MineClaw.Data.Blocks.FenceGate)) return false;
         Metas.TryGetValue((x, y, z), out int meta);
-        if (id == MineClaw.Data.Blocks.WoodenDoor && (meta & 8) != 0 && Blocks.TryGetValue((x, y - 1, z), out int below) && below == id) { y--; Metas.TryGetValue((x, y, z), out meta); }
+        if (DoorHalfAt(id, x, y - 1, z) && (meta & 8) != 0) { y--; Metas.TryGetValue((x, y, z), out meta); }
         if (Locked.Contains((x, y, z)))
         {
             Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)id, Metadata = (byte)meta });
             return true;
         }
         SetBlock(x, y, z, id, meta ^ 4);
-        if (id == MineClaw.Data.Blocks.WoodenDoor && Blocks.TryGetValue((x, y + 1, z), out int up) && up == id) SetBlock(x, y + 1, z, id, (meta ^ 4) | 8);
+        if (DoorHalfAt(id, x, y + 1, z)) SetBlock(x, y + 1, z, id, (meta ^ 4) | 8);
         return true;
     }
+
+    /// <summary>A wooden door's other half is at (x, y, z).</summary>
+    private bool DoorHalfAt(int id, int x, int y, int z) =>
+        id == MineClaw.Data.Blocks.WoodenDoor && Blocks.TryGetValue((x, y, z), out int other) && other == id;
 
     /// <summary>Item gravity: drops resting on a removed block fall to the next block below (or out of the world).</summary>
     private void SettleDrops(int x, int y, int z)
@@ -861,17 +871,21 @@ public partial class FakeServer : IDisposable
         return id;
     }
 
+    /// <summary>The item's box against the player's box expanded by 1 on x/z (strict: the y overlap too: a slab stand misses floor
+    /// drops).</summary>
+    private bool InPickupReach(double dropX, double dropY, double dropZ, double x, double y, double z)
+    {
+        if (Math.Abs(dropX - x) > 1.425 || Math.Abs(dropZ - z) > 1.425 || Math.Abs(dropY - y) > 1.5) return false;
+        return !(StrictPickup && (dropY + 0.125 <= y || dropY - 0.125 >= y + 1.8));
+    }
+
     private void CheckPickups(double x, double y, double z)
     {
         foreach (var (id, d) in Drops)
         {
             // Vanilla EntityPlayer.onLivingUpdate: items intersecting the player box expanded by 1 on x/z
             // (0.3 + 1 + item half-width 0.125 per axis).
-            double dx = d.X - x, dz = d.Z - z;
-            if (Math.Abs(dx) > 1.425 || Math.Abs(dz) > 1.425 || Math.Abs(d.Y - y) > 1.5) continue;
-            // mc-dev box overlap on y too (the item box ±0.125 against feet..feet+1.8): a slab stand misses floor drops.
-            if (StrictPickup && (d.Y + 0.125 <= y || d.Y - 0.125 >= y + 1.8)) continue;
-            if (!Drops.TryRemove(id, out _)) continue;
+            if (!InPickupReach(d.X, d.Y, d.Z, x, y, z) || !Drops.TryRemove(id, out _)) continue;
             int slot = Array.FindIndex(Inventory, 36, 9, s => s.IsEmpty || s.Id == d.Item.Id);
             if (slot < 0) slot = Array.FindIndex(Inventory, 9, 27, s => s.IsEmpty || s.Id == d.Item.Id);
             var cur = Inventory[slot];

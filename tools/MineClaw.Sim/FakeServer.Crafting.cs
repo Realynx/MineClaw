@@ -122,15 +122,21 @@ public partial class FakeServer
     }
     private static int CraftLimit(int id) => id is 270 or 271 or 274 or 275 ? 1 : 64;
     private static ItemStack CraftAmount(ItemStack s, int count) => count <= 0 ? ItemStack.Empty : new(s.Id, (byte)count, s.Damage);
+    /// <summary>Room for <paramref name="item"/> in a slot: pass 0 tops up the same stacks, pass 1 fills empty slots.</summary>
+    private static int CraftRoom(int pass, ItemStack d, ItemStack item)
+    {
+        if (pass == 0 && !d.IsEmpty && d.Id == item.Id && d.Damage == item.Damage) return CraftLimit(item.Id) - d.Count;
+        return pass == 1 && d.IsEmpty ? CraftLimit(item.Id) : 0;
+    }
+
     private static bool CraftInsert(ItemStack[] slots, int start, ItemStack item)
     {
         int n = item.IsEmpty ? 0 : item.Count;
         for (int pass = 0; pass < 2 && n > 0; pass++)
             for (int i = start + 35; i >= start && n > 0; i--)
             {
-                var d = slots[i]; int room = 0;
-                if (pass == 0 && !d.IsEmpty && d.Id == item.Id && d.Damage == item.Damage) room = CraftLimit(item.Id) - d.Count;
-                else if (pass == 1 && d.IsEmpty) room = CraftLimit(item.Id);
+                var d = slots[i];
+                int room = CraftRoom(pass, d, item);
                 if (room <= 0) continue;
                 int k = Math.Min(room, n); slots[i] = CraftAmount(item, (d.IsEmpty ? 0 : d.Count) + k); n -= k;
             }
